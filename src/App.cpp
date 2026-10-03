@@ -177,6 +177,71 @@ void App::bootStatus(const char* line) {
     bootFrame();
 }
 
+void App::photoProgressFrame() {
+    // The photo frame just submitted must be done before its image is read and the command buffer reused.
+    vkWaitForFences(ctx.device, 1, &ctx.fenceFrame, VK_TRUE, UINT64_MAX);
+    uint32_t idx = 0;
+    const VkResult ar = vkAcquireNextImageKHR(ctx.device, ctx.swapchain, 0, ctx.semImageAvailable, VK_NULL_HANDLE, &idx);
+    if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR)
+        return; // no image right now (or out of date: the resize waits for the photo to end) — skip this one
+    const VkExtent2D photoExt = ctx.swapExtent, winExt = ctx.photoSavedExtent;
+    VkCommandBuffer cmd = ctx.commandBuffer;
+    vkResetFences(ctx.device, 1, &ctx.fenceFrame);
+    vkResetCommandBuffer(cmd, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    vkBeginCommandBuffer(cmd, &bi);
+    VkImage photoImg = ctx.swapImages[ctx.photoIndex], dst = ctx.swapImages[idx];
+    ctx.imageBarrier(cmd, photoImg, VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    ctx.imageBarrier(cmd, dst, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageBlit blit{};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[1] = {(int32_t)photoExt.width, (int32_t)photoExt.height, 1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstOffsets[1] = {(int32_t)winExt.width, (int32_t)winExt.height, 1};
+    vkCmdBlitImage(cmd, photoImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                   ctx.bestBlitFilter(ctx.swapFormat));
+    // The photo pass's render pass starts from UNDEFINED, so the photo image may stay in TRANSFER_SRC.
+    // The UI over it, in the load variant of the main pass (initial layout TRANSFER_DST, as the blit left it), at the
+    // window's size (the UI pipeline was built for it; swapExtent is the photo's while the target is up).
+    VkClearValue clears[2];
+    clears[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    clears[1].depthStencil = {1.0f, 0};
+    VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    rbi.renderPass = ctx.renderPassLoad;
+    rbi.framebuffer = ctx.framebuffers[idx];
+    rbi.renderArea = {{0, 0}, winExt};
+    rbi.clearValueCount = 2;
+    rbi.pClearValues = clears;
+    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+    ctx.swapExtent = winExt;
+    ui.record(cmd, ctx);
+    ctx.swapExtent = photoExt;
+    vkCmdEndRenderPass(cmd);
+    vkEndCommandBuffer(cmd);
+    VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &ctx.semImageAvailable;
+    si.pWaitDstStageMask = &waitStage;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    si.signalSemaphoreCount = 1;
+    si.pSignalSemaphores = &ctx.semRenderDone[idx];
+    if (vkQueueSubmit(ctx.graphicsQueue, 1, &si, ctx.fenceFrame) != VK_SUCCESS)
+        throw std::runtime_error("vkQueueSubmit (photo progress) failed.");
+    VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    pi.waitSemaphoreCount = 1;
+    pi.pWaitSemaphores = &ctx.semRenderDone[idx];
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &ctx.swapchain;
+    pi.pImageIndices = &idx;
+    vkQueuePresentKHR(ctx.graphicsQueue, &pi);
+}
+
 void App::bootFrame() {
     // The window is up: keep the message pump fed (Esc/close work; the sim's input handlers are
     // held back until init() returns — see the callbacks at the bottom of this file).
@@ -548,9 +613,14 @@ void App::drawFrame() {
         throw std::runtime_error("vkQueueSubmit failed.");
     submittedOnce = true;
     ftMark("queueSubmit");
-    // A photo frame is not presented; a resize waits for the photo to end (resized stays set).
+    // A photo frame is not presented; a resize waits for the photo to end (resized stays set). A few times a
+    // second the window gets a progress frame instead (photoProgressFrame).
     if (photo) {
         if (ft) ++ftFrame;
+        if (now - photoPresentT >= 0.25) {
+            photoPresentT = now;
+            photoProgressFrame();
+        }
         return;
     }
 

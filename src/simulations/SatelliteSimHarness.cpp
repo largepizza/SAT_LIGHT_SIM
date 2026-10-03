@@ -14,6 +14,7 @@
 #include "../Log.h"
 #include "../MusicAnalysis.h"
 #include "version.h"
+#include "clay.h" // ui click: element lookup
 
 #include <nlohmann/json.hpp>
 
@@ -157,9 +158,17 @@ const json *lookupPath(const json &root, const std::string &dotted)
     {
         size_t dot = dotted.find('.', start);
         std::string part = dotted.substr(start, dot == std::string::npos ? std::string::npos : dot - start);
-        if (!cur->is_object() || !cur->contains(part))
+        if (cur->is_array() && !part.empty() && part.find_first_not_of("0123456789") == std::string::npos)
+        {
+            const size_t i = (size_t)std::stoul(part); // an index into an array (cine.shots.0.keys.1.t)
+            if (i >= cur->size())
+                return nullptr;
+            cur = &(*cur)[i];
+        }
+        else if (!cur->is_object() || !cur->contains(part))
             return nullptr;
-        cur = &(*cur)[part];
+        else
+            cur = &(*cur)[part];
         if (dot == std::string::npos)
             break;
         start = dot + 1;
@@ -191,9 +200,9 @@ const char *kHelp =
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
     "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [drift=intro|default]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
-    "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; "
+    "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|hint; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|hint|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -1292,6 +1301,34 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["message"] = pos(0) + " = " + v->dump();
         return Status::Done;
     }
+    if (n == "expect")
+    {
+        // expect <setting path | cine.<path>> <value> [tol=1e-4]: fails the run unless it matches (numbers within tol,
+        // anything else as text). cine.<path> reads the open cinematic's JSON (cine.name, cine.shots.0.keys.1.t).
+        const std::string path = pos(0);
+        const json src = path.rfind("cine.", 0) == 0 ? cineToJson(cine_) : buildSettingsJson();
+        const json *v = lookupPath(src, path.rfind("cine.", 0) == 0 ? path.substr(5) : path);
+        if (!v)
+            fail("expect: no value '" + path + "'");
+        const std::string want = pos(1);
+        bool ok;
+        if (v->is_number())
+        {
+            char *end = nullptr;
+            const double w = std::strtod(want.c_str(), &end);
+            ok = end != want.c_str() && std::abs(v->get<double>() - w) <= c.num("tol", 1e-4) * std::max(1.0, std::abs(w));
+        }
+        else if (v->is_boolean())
+            ok = (want == "true" || want == "1" || want == "on") == v->get<bool>();
+        else
+            ok = (v->is_string() ? v->get<std::string>() : v->dump()) == want;
+        r["key"] = path;
+        r["value"] = *v;
+        if (!ok)
+            fail("expect " + path + " = " + want + ", got " + v->dump());
+        r["message"] = path + " = " + v->dump() + " (as expected)";
+        return Status::Done;
+    }
     if (n == "set")
     {
         std::vector<std::pair<std::string, std::string>> pairs;
@@ -1511,6 +1548,92 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                            " off-screen, " + std::to_string(overlaps.size()) + " overlapping text";
             return Status::Done;
         }
+        if (sub == "click")
+        {
+            // ui click <ElementId>[:index] [hold=frames]: the pointer moves onto the element's centre (last frame's
+            // layout), presses for a frame, releases. Drives the real input path (hover, click, text-field focus).
+            if (a.frame == 0)
+            {
+                std::string idStr = pos(1);
+                int index = -1;
+                const size_t colon = idStr.rfind(':');
+                if (colon != std::string::npos)
+                {
+                    index = (int)parseNum(idStr.substr(colon + 1), "ui click index");
+                    idStr = idStr.substr(0, colon);
+                }
+                if (idStr.empty())
+                    fail("ui click <ElementId>[:index] (ids as in `ui dump`)");
+                const Clay_String cs{false, (int32_t)idStr.size(), idStr.c_str()};
+                const Clay_ElementId eid = index >= 0 ? Clay_GetElementIdWithIndex(cs, (uint32_t)index) : Clay_GetElementId(cs);
+                const Clay_ElementData d = Clay_GetElementData(eid);
+                if (!d.found)
+                    fail("ui click: no element '" + pos(1) + "' in the last frame's layout");
+                harnessPtrX_ = d.boundingBox.x + d.boundingBox.width * (float)c.num("fx", 0.5);
+                harnessPtrY_ = d.boundingBox.y + d.boundingBox.height * 0.5f;
+                if (harnessUi_ && (harnessPtrX_ < 0.0f || harnessPtrY_ < 0.0f || harnessPtrX_ >= harnessUi_->input().screenW ||
+                                   harnessPtrY_ >= harnessUi_->input().screenH))
+                    fail("ui click: '" + pos(1) + "' is off screen at " + std::to_string((int)harnessPtrX_) + ", " +
+                         std::to_string((int)harnessPtrY_) + " (scrolled out of its window?)");
+                harnessPtrActive_ = true;
+                harnessPtrDown_ = false;
+                a.scratch["x"] = harnessPtrX_;
+                a.scratch["y"] = harnessPtrY_;
+                return Status::Pending; // a frame with the pointer over it (hover), then the press
+            }
+            if (a.frame == 1)
+            {
+                harnessPtrDown_ = true;
+                return Status::Pending;
+            }
+            if (a.frame < 2 + (int)c.num("hold", 0.0))
+                return Status::Pending;
+            if (harnessPtrDown_)
+            {
+                harnessPtrDown_ = false;
+                return Status::Pending; // the release frame
+            }
+            harnessPtrActive_ = false;
+            r["x"] = a.scratch["x"];
+            r["y"] = a.scratch["y"];
+            r["text_focus"] = textEdit_.id != 0;
+            r["message"] = "clicked " + pos(1);
+            return Status::Done;
+        }
+        if (sub == "type")
+        {
+            // ui type <text>: each character as typed (onChar), into the focused text field or the console.
+            std::string t;
+            for (size_t i = 1; i < c.pos.size(); ++i)
+                t += (i > 1 ? " " : "") + c.pos[i];
+            for (char ch : t)
+                onChar(win, (unsigned char)ch);
+            r["text_focus"] = textEdit_.id != 0;
+            r["buffer"] = textEdit_.buf;
+            r["message"] = "typed " + std::to_string(t.size()) + " chars";
+            return Status::Done;
+        }
+        if (sub == "key")
+        {
+            // ui key <enter|esc|tab|backspace|delete|left|right|home|end|ctrl+a|ctrl+v|...>: a key press (onKey).
+            const std::string k = lower(pos(1));
+            static const std::pair<const char *, int> keys[] = {
+                {"enter", GLFW_KEY_ENTER}, {"esc", GLFW_KEY_ESCAPE}, {"escape", GLFW_KEY_ESCAPE}, {"tab", GLFW_KEY_TAB},
+                {"backspace", GLFW_KEY_BACKSPACE}, {"delete", GLFW_KEY_DELETE}, {"left", GLFW_KEY_LEFT},
+                {"right", GLFW_KEY_RIGHT}, {"home", GLFW_KEY_HOME}, {"end", GLFW_KEY_END}, {"w", GLFW_KEY_W}};
+            int code = -1;
+            for (const auto &e : keys)
+                if (k == e.first)
+                    code = e.second;
+            if (code < 0)
+                fail("ui key: enter | esc | tab | backspace | delete | left | right | home | end | w");
+            onKey(win, code, GLFW_PRESS);
+            onKey(win, code, GLFW_RELEASE);
+            r["text_focus"] = textEdit_.id != 0;
+            r["buffer"] = textEdit_.buf;
+            r["message"] = "key " + k;
+            return Status::Done;
+        }
         if (sub == "show" || sub == "hide")
             uiVisible = sub == "show";
         else if (sub == "scale")
@@ -1566,7 +1689,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 fail("ui close: settings, viewcontrols, trace, info, viewer, all");
         }
         else
-            fail("ui: show | hide | scale <x> | open <window> [tab=<name>] | close <window|all> | hint | dump [name]");
+            fail("ui: show | hide | scale <x> | open <window> [tab=<name>] | close <window|all> | hint | dump [name] | "
+                 "click <ElementId>[:index] | type <text> | key <name>");
         r["message"] = "ui " + sub + (pos(1).empty() ? "" : " " + pos(1));
         return Status::Done;
     }
@@ -1670,7 +1794,19 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         }
         if (sub == "goto")
         {
-            harnessApplyCam(harnessEvalPath(parseNum(pos(1), "path goto <t>")));
+            const double t = parseNum(pos(1), "path goto <t>");
+            cineKeys();
+            if (cine_.shots[cineShot_].followSat >= 0)
+            {
+                // A follow shot (2026-10-03): its keys are in the satellite's frame, so it goes through the
+                // cinematic's own evaluation (a plain camera key would end follow mode).
+                const bool one = cinePlayOneShot_;
+                cinePlayOneShot_ = true;
+                cineApplyAt(t - cine_.shots[cineShot_].keys.front().t, true);
+                cinePlayOneShot_ = one;
+            }
+            else
+                harnessApplyCam(harnessEvalPath(t));
             r["message"] = "path at t=" + pos(1);
             return Status::Done;
         }
@@ -2679,6 +2815,26 @@ bool SatelliteSim::consoleKey(int key, int action)
 
 void SatelliteSim::onChar(GLFWwindow *, unsigned int cp)
 {
+    if (textEdit_.id != 0)
+    {
+        // A focused text field (SatelliteSimUI.cpp "Text fields"): printable ASCII only (the font is ASCII).
+        if (cp >= 32 && cp < 127)
+        {
+            if (textEdit_.selAll)
+            {
+                textEdit_.buf.clear();
+                textEdit_.caret = 0;
+                textEdit_.selAll = false;
+            }
+            if (textEdit_.buf.size() < 120)
+            {
+                textEdit_.buf.insert(textEdit_.buf.begin() + std::clamp(textEdit_.caret, 0, (int)textEdit_.buf.size()), (char)cp);
+                ++textEdit_.caret;
+            }
+            textEdit_.t0 = glfwGetTime();
+        }
+        return;
+    }
     if (!consoleOpen_ || cp == '`' || cp == '~')
         return; // the toggle key's own character
     if (cp >= 32 && cp < 127 && consoleInput_.size() < 400)

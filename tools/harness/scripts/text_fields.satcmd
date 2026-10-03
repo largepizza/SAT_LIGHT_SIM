@@ -1,0 +1,110 @@
+# Text entry (2026-10-03): the slider value boxes and the Cinematics window's text fields, driven through the
+# real input path (`ui click` moves the pointer and presses; `ui type` / `ui key` are the keyboard callbacks).
+# Every check is an `expect`, so a wrong value fails the run.
+#   p*  Photometry sliders: type + Enter, Esc cancels, a click elsewhere commits, out of range clamps,
+#       text that is not a number is ignored, typing does not move the observer (WASD off while focused)
+#   v*  Sound: a volume typed in percent
+#   c*  Cinematics: the name field, Save writes <name>.json, a key's typed time ripples the later keys,
+#       the shot name, the key gap
+#   x*  Esc with a field focused cancels the edit (and must not quit the app: the run continues)
+ui open settings tab=photometry
+wait 3
+# p1: type a value, Enter
+ui click PhotoVal:0
+ui type 1.5
+ui key enter
+wait 1
+expect photometry.brightness_scale 1.5
+# p2: Esc cancels
+ui click PhotoVal:0
+ui type 3
+ui key esc
+wait 1
+expect photometry.brightness_scale 1.5
+# p3: a click elsewhere commits (here: another slider's label)
+ui click PhotoVal:1
+ui type 77
+ui click PhotoLbl:2
+wait 1
+expect photometry.day_suppression 77
+# p4: out of range clamps to the slider's range (Brightness 0.05..20)
+ui click PhotoVal:0
+ui type 99
+ui key enter
+wait 1
+expect photometry.brightness_scale 20
+# p5: not a number: unchanged
+ui click PhotoVal:0
+ui type abc
+ui key enter
+wait 1
+expect photometry.brightness_scale 20
+# p6: backspace edits; W goes to the field, not the camera
+ui click PhotoVal:0
+ui type 2.25
+ui key backspace
+ui key w
+ui key enter
+wait 1
+expect photometry.brightness_scale 2.2
+capture p6_photometry ui=on scale=0.5
+# v1: Sound tab, a percentage
+ui open settings tab=sound
+wait 3
+ui click VolVal:0
+ui type 37
+ui key enter
+wait 1
+expect audio.master_vol 0.37 tol=0.01
+# c*: the Cinematics window
+ui close settings
+cine new textfield_test
+observer lat=46.55 lon=7.98 agl=200
+camera az=200 el=5 fov=60
+cine key t=0
+camera az=220
+cine key t=2
+camera az=240
+cine key t=4
+ui open cine
+wait 3
+ui dump c0_window
+capture c0_window ui=on scale=0.5
+# c1: rename the cinematic and save it under the new name
+ui click CineNameField
+ui type text fields demo
+ui key enter
+wait 1
+expect cine.name "text fields demo"
+ui click CineBtn:14
+wait 2
+cine state
+# c2: key 2's time typed as 3 s: key 2 -> 3, key 3 -> 5 (the later segment keeps its 2 s)
+ui click CineKeyT:1
+ui type 3
+ui key enter
+wait 1
+expect cine.shots.0.keys.1.t 3
+expect cine.shots.0.keys.2.t 5
+# c3: the shot's name
+ui click CineShotNameField
+ui type sweep left
+ui key tab
+wait 1
+expect cine.shots.0.name "sweep left"
+# c4: the key gap (+ Key at view uses it)
+ui click CineKeyGap
+ui type 1.5
+ui key enter
+wait 1
+ui click CineBtn:5
+wait 1
+expect cine.shots.0.keys.3.t 6.5
+# x1: Esc with a field focused cancels the edit and does not quit
+ui click CineNameField
+ui type should not stick
+ui key esc
+wait 1
+expect cine.name "text fields demo"
+ui dump c9_window
+capture c9_window ui=on scale=0.5

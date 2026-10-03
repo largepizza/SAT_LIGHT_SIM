@@ -54,6 +54,11 @@ private:
     void drawFrame();
     void bootStatus(const char* line);   // append a loading-screen line, log it, present a frame
     void bootFrame();                    // one frame of the loading screen (BOOT_LOADER_PLAN.md)
+    // While the HQ photo target is up (an HQ photo or an HQ cinematic export), frames are rendered offscreen and
+    // never presented: a few times a second this shows the latest one, scaled to the window, with the UI over it
+    // (2026-10-03: a 451-frame export left one frozen frame on screen for ~20 minutes, no progress, no Stop).
+    void photoProgressFrame();
+    double                   photoPresentT = 0.0;
     void buildBootUI();                  // its Clay tree — called between beginFrame and record
     void bootCaptureWrite(uint32_t w, uint32_t h); // PNG of the frame just copied (bootCapture)
 

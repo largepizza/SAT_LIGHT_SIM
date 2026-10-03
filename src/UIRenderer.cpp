@@ -16,6 +16,7 @@
 
 // ── Standard includes ─────────────────────────────────────────────────────────
 #include "UIRenderer.h"
+#include <array>
 #include "VulkanContext.h"
 
 #include <stdexcept>
@@ -1237,12 +1238,14 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
     // Set initial full-viewport dynamic scissor so subsequent draws are unclipped
     VkRect2D fullScissor{ {0, 0}, ctx.swapExtent };
     vkCmdSetScissor(cmd, 0, 1, &fullScissor);
+    std::vector<VkRect2D> scissorStack;
 
     Clay_RenderCommandArray cmds = Clay_EndLayout(frameInput.dt);
 
     if (layoutDumpPending_) {
         layoutDump_.clear();
         float clip[4] = {0.0f, 0.0f, (float)ctx.swapExtent.width, (float)ctx.swapExtent.height};
+        std::vector<std::array<float, 4>> clipStack;
         for (int32_t i = 0; i < cmds.length; ++i) {
             Clay_RenderCommand* rc = Clay_RenderCommandArray_Get(&cmds, i);
             const Clay_BoundingBox& bb = rc->boundingBox;
@@ -1259,12 +1262,21 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
             default:                                     it.kind = "other"; break;
             }
             if (rc->commandType == CLAY_RENDER_COMMAND_TYPE_SCISSOR_END) {
-                clip[0] = 0.0f; clip[1] = 0.0f;
-                clip[2] = (float)ctx.swapExtent.width; clip[3] = (float)ctx.swapExtent.height;
+                if (!clipStack.empty()) clipStack.pop_back();
+                if (clipStack.empty()) {
+                    clip[0] = 0.0f; clip[1] = 0.0f;
+                    clip[2] = (float)ctx.swapExtent.width; clip[3] = (float)ctx.swapExtent.height;
+                } else {
+                    for (int k = 0; k < 4; ++k) clip[k] = clipStack.back()[k];
+                }
             }
             for (int k = 0; k < 4; ++k) it.clip[k] = clip[k];
             if (rc->commandType == CLAY_RENDER_COMMAND_TYPE_SCISSOR_START) {
-                clip[0] = bb.x; clip[1] = bb.y; clip[2] = bb.width; clip[3] = bb.height;
+                // Nested clips intersect (as the renderer's scissor stack does).
+                const float x0 = std::max(clip[0], bb.x), y0 = std::max(clip[1], bb.y);
+                const float x1 = std::min(clip[0] + clip[2], bb.x + bb.width), y1 = std::min(clip[1] + clip[3], bb.y + bb.height);
+                clip[0] = x0; clip[1] = y0; clip[2] = std::max(0.0f, x1 - x0); clip[3] = std::max(0.0f, y1 - y0);
+                clipStack.push_back({clip[0], clip[1], clip[2], clip[3]});
             }
             if (Clay_LayoutElementHashMapItem* item = Clay__GetHashMapItem(rc->id))
                 if (item->elementId.stringId.length > 0)
@@ -1367,22 +1379,30 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
             break;
         }
 
+        // Clips nest (2026-10-03): a clip inside a clipped scroll view is intersected with it, and its end restores
+        // the parent's scissor. The end used to reset to the full screen, so everything drawn after a nested clip
+        // (a text box, a key row) escaped its window's scroll view.
         case CLAY_RENDER_COMMAND_TYPE_SCISSOR_START: {
             flushBatch(cmd);
+            const VkRect2D parent = scissorStack.empty() ? fullScissor : scissorStack.back();
+            const int32_t x0 = std::max(parent.offset.x, std::max(0, (int32_t)bb.x));
+            const int32_t y0 = std::max(parent.offset.y, std::max(0, (int32_t)bb.y));
+            const int32_t x1 = std::min(parent.offset.x + (int32_t)parent.extent.width, (int32_t)(bb.x + bb.width));
+            const int32_t y1 = std::min(parent.offset.y + (int32_t)parent.extent.height, (int32_t)(bb.y + bb.height));
             VkRect2D scissor{};
-            scissor.offset.x      = std::max(0, (int32_t)bb.x);
-            scissor.offset.y      = std::max(0, (int32_t)bb.y);
-            scissor.extent.width  = std::min((uint32_t)bb.width,
-                                             ctx.swapExtent.width  - (uint32_t)scissor.offset.x);
-            scissor.extent.height = std::min((uint32_t)bb.height,
-                                             ctx.swapExtent.height - (uint32_t)scissor.offset.y);
+            scissor.offset = {x0, y0};
+            scissor.extent = {(uint32_t)std::max(0, x1 - x0), (uint32_t)std::max(0, y1 - y0)};
+            scissorStack.push_back(scissor);
             vkCmdSetScissor(cmd, 0, 1, &scissor);
             break;
         }
 
         case CLAY_RENDER_COMMAND_TYPE_SCISSOR_END: {
             flushBatch(cmd);
-            vkCmdSetScissor(cmd, 0, 1, &fullScissor);
+            if (!scissorStack.empty())
+                scissorStack.pop_back();
+            const VkRect2D back = scissorStack.empty() ? fullScissor : scissorStack.back();
+            vkCmdSetScissor(cmd, 0, 1, &back);
             break;
         }
 

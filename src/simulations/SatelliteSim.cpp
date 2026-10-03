@@ -1173,6 +1173,14 @@ void SatelliteSim::pollGamepad(float dt)
 // and pollGamepad's comment for how vCursorX/Y/Active/Click are maintained).
 bool SatelliteSim::virtualCursor(float &x, float &y, bool &lmb) const
 {
+    if (harnessPtrActive_)
+    {
+        // Harness `ui click`: the scripted pointer (docs/HARNESS.md).
+        x = harnessPtrX_;
+        y = harnessPtrY_;
+        lmb = harnessPtrDown_;
+        return true;
+    }
     if (!vCursorActive)
         return false;
     x = vCursorX;
@@ -1278,7 +1286,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // beat onward (its camera-live check above), so this can run unopposed; !showIntro covers the
     // normal post-intro case the same way the old "else" branch did.
     boostHeldNow = false;
-    if ((!showIntro || introCaptionIndex >= kIntroControlsIndex) && win && !consoleOpen_ && !cineActive())
+    if ((!showIntro || introCaptionIndex >= kIntroControlsIndex) && win && !consoleOpen_ && !textEditing() && !cineActive())
     {
         bool boost = (win && glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS) || gpHeld(KB_MOVE_BOOST);
         boostHeldNow = boost;   // review 22: the clouds' fast-flight LOD
@@ -4751,7 +4759,7 @@ void SatelliteSim::updateFollow(float dt)
     }
 
     // A flight in progress: any move key ends it at its destination.
-    if (followFlight != 0 && win && dt > 0.0f)
+    if (followFlight != 0 && win && dt > 0.0f && !textEditing() && !consoleOpen_)
     {
         const int keys[] = {GLFW_KEY_W, GLFW_KEY_A, GLFW_KEY_S, GLFW_KEY_D, keybindings[KB_RAISE_ELEV].key, keybindings[KB_LOWER_ELEV].key};
         bool any = std::abs(gpMoveFwd) > 0.2f || std::abs(gpMoveRight) > 0.2f;
@@ -4763,7 +4771,8 @@ void SatelliteSim::updateFollow(float dt)
 
     // WASD / Q-E, in the observer's own horizontal frame (as on the ground), converted to the
     // satellite's frame. Speed scales with the distance, so 10 km → 10 m is a few seconds' travel.
-    if (win && dt > 0.0f && followFlight == 0)
+    // Not while typing, nor while a cinematic owns the camera (its keys set the offset every frame).
+    if (win && dt > 0.0f && followFlight == 0 && !textEditing() && !consoleOpen_ && !cineActive())
     {
         const bool boost = glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS || gpHeld(KB_MOVE_BOOST);
         const bool fine = fineMoveToggled && !boost;
@@ -7491,8 +7500,16 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
 void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
 {
     win = w;
+    if (textEditKey(key, action)) // a focused text field owns the keyboard (SatelliteSimUI.cpp "Text fields")
+        return;
     if (consoleKey(key, action)) // the ~ console (docs/HARNESS.md) owns the keyboard while open
         return;
+    // Esc stops a playing or exporting cinematic (capturesKeyboard keeps it from quitting the app meanwhile).
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS && cineActive())
+    {
+        cineStop("Stopped (Esc)");
+        return;
+    }
     if (action != GLFW_PRESS)
         return;
 

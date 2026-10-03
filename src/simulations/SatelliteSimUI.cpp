@@ -598,6 +598,15 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     dmx = dmy = 0.0f;
 
     const UIInput &inp = ui.input();
+    // Text fields (2026-10-03): their per-frame strings, and the end-of-frame commit / lost-focus check on every
+    // return path below.
+    textFieldBufN_ = 0;
+    struct TextEditFrameEnd
+    {
+        SatelliteSim *s;
+        const UIInput &in;
+        ~TextEditFrameEnd() { s->textEditEndFrame(in); }
+    } textEditFrameEnd{this, inp};
 
     // UC4/UC5: mouse click/drag/scroll means the player is at the mouse, not the pad. lmbPressed
     // specifically needs the !vCursorActive guard — App.cpp overrides inp.lmbDown/lmbPressed with
@@ -707,6 +716,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
     buildHarnessConsole(inp, ui);  // the ~ console draws even with the HUD hidden
     buildHarnessOverlays(inp, ui); // harness `overlay` titles/labels, likewise (docs/HARNESS.md)
+    buildCineHud(inp, ui);         // a playing / exporting cinematic's progress and Stop, likewise
 
     // ── Tab: skip all UI when hidden ─────────────────────────────────────────
     if (!uiVisible)
@@ -2983,11 +2993,19 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
                 }
                 CLAY_TEXT(CLAY_STRING("-"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
             }
-            CLAY(CLAY_IDI("VolVal", vr.bufIdx), {.layout = {
-                                                     .sizing = {CLAY_SIZING_FIXED(38), CLAY_SIZING_FIT(0)},
-                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+            (void)volStr;
+            float pct = vr.vol * 100.0f;
+            if (numberField(inp, ui, CLAY_IDI("VolVal", vr.bufIdx), pct, 0.0f, 100.0f, "%3.0f%%", 44.0f, 12, Pal::volValue) && audio_)
             {
-                CLAY_TEXT(volStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
+                const float v = pct / 100.0f;
+                if (vr.bufIdx == 0)
+                    audio_->setMasterVolume(v);
+                else if (vr.bufIdx == 1)
+                    audio_->setMusicVolume(v);
+                else if (vr.bufIdx == 2)
+                    audio_->setSfxVolume(v);
+                else
+                    audio_->setAmbienceVolume(v);
             }
             Clay_Color cPlus = vr.hPlus ? Pal::btnHover : Pal::btnIdle;
             CLAY(CLAY_IDI("VolPlus", vr.bufIdx), {.layout = {
@@ -4342,12 +4360,8 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
                 }
             }
 
-            CLAY(CLAY_IDI("PhotoVal", pi), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(58), CLAY_SIZING_FIT(0)},
-                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
-            {
-                CLAY_TEXT(valStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
-            }
+            (void)valStr;
+            numberField(inp, ui, CLAY_IDI("PhotoVal", pi), *pp.val, pp.vmin, pp.vmax, pp.fmt, 58.0f, 12, Pal::volValue);
 
             Clay_Color cMinus = hovPhotoMinus[pi] ? Pal::btnHover : Pal::btnIdle;
             CLAY(CLAY_IDI("PhotoMinus", pi), {.layout = {
@@ -4572,6 +4586,282 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
     }
 }
 
+// ─── Text fields (2026-10-03) ────────────────────────────────────────────────
+// One field at a time has the keyboard (textEdit_). Click a field to focus it with its text selected (the first
+// key replaces it); Left/Right/Home/End move the caret, Backspace/Delete edit, Ctrl+A selects all, Ctrl+C/V copy
+// and paste; Enter or Tab or a click elsewhere commits, Esc cancels. A field learns its edit was committed when it
+// is next drawn (doneId / doneBuf), so the caller just reads the return value. While a field is focused the game
+// keys (WASD, Q/E, zoom, shortcuts) are off and Esc does not quit (capturesKeyboard).
+const char *SatelliteSim::textFieldStr(const std::string &s)
+{
+    // Clay keeps raw string pointers until the frame is recorded: each display string lives in a slot that is
+    // not reused before the next buildUI.
+    char *b = textFieldBufs_[textFieldBufN_ % 64];
+    ++textFieldBufN_;
+    snprintf(b, sizeof(textFieldBufs_[0]), "%s", s.c_str());
+    return b;
+}
+
+void SatelliteSim::textEditFocus(uint32_t id, const std::string &text)
+{
+    if (textEdit_.id != 0 && textEdit_.id != id)
+        textEditCommit(); // clicking another field commits this one
+    textEdit_.id = id;
+    textEdit_.buf = text;
+    textEdit_.caret = (int)text.size();
+    textEdit_.selAll = true;
+    textEdit_.t0 = glfwGetTime();
+}
+
+void SatelliteSim::textEditCommit()
+{
+    if (textEdit_.id == 0)
+        return;
+    textEdit_.doneId = textEdit_.id;
+    textEdit_.doneBuf = textEdit_.buf;
+    textEdit_.doneAge = 0;
+    textEdit_.id = 0;
+    textEdit_.selAll = false;
+}
+
+bool SatelliteSim::textEditKey(int key, int action)
+{
+    if (textEdit_.id == 0)
+        return false;
+    if (action != GLFW_PRESS && action != GLFW_REPEAT)
+        return true; // releases of keys pressed while typing must not reach the game
+    TextEdit &e = textEdit_;
+    const bool ctrl = win && (glfwGetKey(win, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(win, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS);
+    e.caret = std::clamp(e.caret, 0, (int)e.buf.size());
+    e.t0 = glfwGetTime();
+    auto dropSel = [&]()
+    {
+        if (e.selAll)
+        {
+            e.buf.clear();
+            e.caret = 0;
+            e.selAll = false;
+            return true;
+        }
+        return false;
+    };
+    switch (key)
+    {
+    case GLFW_KEY_ENTER:
+    case GLFW_KEY_KP_ENTER:
+    case GLFW_KEY_TAB:
+        if (action == GLFW_PRESS)
+            textEditCommit();
+        break;
+    case GLFW_KEY_ESCAPE:
+        if (action == GLFW_PRESS)
+        {
+            e.id = 0;
+            e.selAll = false;
+        }
+        break;
+    case GLFW_KEY_BACKSPACE:
+        if (!dropSel() && e.caret > 0)
+            e.buf.erase(e.buf.begin() + --e.caret);
+        break;
+    case GLFW_KEY_DELETE:
+        if (!dropSel() && e.caret < (int)e.buf.size())
+            e.buf.erase(e.buf.begin() + e.caret);
+        break;
+    case GLFW_KEY_LEFT:
+        e.caret = e.selAll ? 0 : std::max(0, e.caret - 1);
+        e.selAll = false;
+        break;
+    case GLFW_KEY_RIGHT:
+        e.caret = e.selAll ? (int)e.buf.size() : std::min((int)e.buf.size(), e.caret + 1);
+        e.selAll = false;
+        break;
+    case GLFW_KEY_HOME:
+        e.caret = 0;
+        e.selAll = false;
+        break;
+    case GLFW_KEY_END:
+        e.caret = (int)e.buf.size();
+        e.selAll = false;
+        break;
+    case GLFW_KEY_A:
+        if (ctrl)
+            e.selAll = true;
+        break;
+    case GLFW_KEY_C:
+        if (ctrl && win)
+            glfwSetClipboardString(win, e.buf.c_str());
+        break;
+    case GLFW_KEY_V:
+        if (ctrl && win)
+            if (const char *clip = glfwGetClipboardString(win))
+            {
+                dropSel();
+                std::string add;
+                for (const char *p = clip; *p && e.buf.size() + add.size() < 120; ++p)
+                    if (*p >= 32 && *p < 127)
+                        add += *p;
+                e.buf.insert((size_t)e.caret, add);
+                e.caret += (int)add.size();
+            }
+        break;
+    default:
+        break; // printable keys arrive through onChar
+    }
+    return true;
+}
+
+void SatelliteSim::textEditEndFrame(const UIInput &inp)
+{
+    if (textEdit_.id != 0)
+    {
+        if (!textEdit_.drawn)
+        {
+            // The field is gone (its window closed, its section collapsed): nothing left to apply it to.
+            textEdit_.id = 0;
+            textEdit_.selAll = false;
+        }
+        else if (inp.lmbPressed && !textEdit_.hovered)
+            textEditCommit(); // a click elsewhere
+    }
+    textEdit_.drawn = textEdit_.hovered = false;
+    if (textEdit_.doneId != 0 && ++textEdit_.doneAge > 2)
+        textEdit_.doneId = 0; // its field was not drawn again
+}
+
+bool SatelliteSim::textField(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width,
+                             float fontPx, const char *tip, size_t maxLen)
+{
+    bool committed = false;
+    if (textEdit_.doneId == id.id)
+    {
+        std::string v = textEdit_.doneBuf.substr(0, maxLen);
+        textEdit_.doneId = 0;
+        committed = v != value;
+        value = v;
+    }
+    const bool focused = textEdit_.id == id.id;
+    const uint16_t f = fs((int)fontPx);
+    const bool hovPrev = Clay_PointerOver(id);
+    CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(width), CLAY_SIZING_FIXED((float)f + 8.0f)},
+                         .padding = {6, 6, 0, 0},
+                         .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                         .layoutDirection = CLAY_LEFT_TO_RIGHT},
+              .backgroundColor = focused ? Clay_Color{6, 6, 8, 255} : Clay_Color{20, 20, 23, 235},
+              .cornerRadius = CLAY_CORNER_RADIUS(3),
+              .clip = {.horizontal = true},
+              .border = {.color = focused ? Pal::btnAccent : (hovPrev ? Clay_Color{90, 90, 96, 255} : Clay_Color{48, 48, 52, 255}),
+                         .width = CLAY_BORDER_ALL(1)}})
+    {
+        const bool hov = Clay_Hovered();
+        if (!focused && tip)
+            ui.tooltip(inp, hov, tip, fs(11));
+        if (hov && inp.lmbPressed && !focused)
+            textEditFocus(id.id, value);
+        if (textEdit_.id == id.id)
+        {
+            textEdit_.drawn = true;
+            textEdit_.hovered = textEdit_.hovered || hov;
+            const TextEdit &e = textEdit_;
+            const int c = std::clamp(e.caret, 0, (int)e.buf.size());
+            const bool blinkOn = std::fmod(glfwGetTime() - e.t0, 1.0) < 0.6;
+            if (e.selAll && !e.buf.empty())
+            {
+                CLAY(CLAY_IDI("TfSel", (int)(id.id & 0x7fffffff)), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}},
+                                                                     .backgroundColor = {120, 30, 30, 255}})
+                {
+                    const char *s = textFieldStr(e.buf);
+                    CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}),
+                              CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                }
+            }
+            else
+            {
+                const char *a = textFieldStr(e.buf.substr(0, (size_t)c));
+                const char *b = textFieldStr(e.buf.substr((size_t)c));
+                if (*a)
+                    CLAY_TEXT((Clay_String{false, (int32_t)strlen(a), a}),
+                              CLAY_TEXT_CONFIG({.textColor = {240, 240, 245, 255}, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                CLAY(CLAY_IDI("TfCaret", (int)(id.id & 0x7fffffff)), {.layout = {.sizing = {CLAY_SIZING_FIXED(1.5f), CLAY_SIZING_FIXED((float)f)}},
+                                                                       .backgroundColor = blinkOn ? Clay_Color{240, 240, 245, 255} : Clay_Color{0, 0, 0, 0}}) {}
+                if (*b)
+                    CLAY_TEXT((Clay_String{false, (int32_t)strlen(b), b}),
+                              CLAY_TEXT_CONFIG({.textColor = {240, 240, 245, 255}, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            }
+        }
+        else
+        {
+            const char *s = textFieldStr(value);
+            CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+    }
+    return committed;
+}
+
+// A number: plain text until clicked (a slider's value label), then a text box. Accepts anything strtod reads
+// ("2", "-0.5", "1e-3"); a value outside [vmin, vmax] is clamped, text that is not a number is ignored.
+bool SatelliteSim::numberFieldD(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, double &v, double vmin, double vmax,
+                                const char *fmt, float width, float fontPx, Clay_Color color)
+{
+    bool committed = false;
+    if (textEdit_.doneId == id.id)
+    {
+        const std::string s = textEdit_.doneBuf;
+        textEdit_.doneId = 0;
+        char *end = nullptr;
+        const double nv = std::strtod(s.c_str(), &end);
+        if (end != s.c_str() && std::isfinite(nv))
+        {
+            const double cv = std::clamp(nv, vmin, vmax);
+            committed = cv != v;
+            v = cv;
+        }
+    }
+    char shown[64];
+    snprintf(shown, sizeof(shown), fmt, v);
+    if (textEdit_.id == id.id)
+    {
+        std::string val = shown;
+        textField(inp, ui, id, val, width, fontPx);
+        return committed;
+    }
+    const uint16_t f = fs((int)fontPx);
+    const bool hovPrev = Clay_PointerOver(id);
+    CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(width), CLAY_SIZING_FIXED((float)f + 8.0f)},
+                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+              .backgroundColor = hovPrev ? Clay_Color{40, 40, 44, 230} : Clay_Color{0, 0, 0, 0},
+              .cornerRadius = CLAY_CORNER_RADIUS(3),
+              .border = {.color = hovPrev ? Clay_Color{90, 90, 96, 255} : Clay_Color{0, 0, 0, 0}, .width = CLAY_BORDER_ALL(1)}})
+    {
+        const bool hov = Clay_Hovered();
+        ui.tooltip(inp, hov, "Click to type a value", fs(11));
+        const char *s = textFieldStr(shown);
+        CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}),
+                  CLAY_TEXT_CONFIG({.textColor = color, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        if (hov && inp.lmbPressed)
+        {
+            // The text to edit: the shown value without padding.
+            std::string t = shown;
+            t.erase(0, t.find_first_not_of(' '));
+            textEditFocus(id.id, t);
+            textEdit_.drawn = textEdit_.hovered = true;
+        }
+    }
+    return committed;
+}
+
+bool SatelliteSim::numberField(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, float &v, float vmin, float vmax,
+                               const char *fmt, float width, float fontPx, Clay_Color color)
+{
+    double d = v;
+    // fmt is a float format; a double prints the same through varargs.
+    if (!numberFieldD(inp, ui, id, d, vmin, vmax, fmt, width, fontPx, color))
+        return false;
+    v = (float)d;
+    return true;
+}
+
 // ─── buildCloudSliderRows ────────────────────────────────────────────────────
 // Shared row-renderer for the Clouds/Ocean/Terrain/Aurora tabs (split from one combined "Clouds"
 // tab, session 28 follow-up #9 — 33 sliders in one list had become unmanageable). `idx` on each
@@ -4642,12 +4932,11 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
                 }
             }
 
-            CLAY(CLAY_IDI("CloudVal", ci), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(58), CLAY_SIZING_FIT(0)},
-                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
-            {
-                CLAY_TEXT(valStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
-            }
+            // 2026-10-03: the value is a text box on click (type an exact value; Enter applies, Esc cancels).
+            (void)valStr;
+            if (numberField(inp, ui, CLAY_IDI("CloudVal", ci), *cs.val, cs.vmin, cs.vmax, cs.fmt, 58.0f, 12, Pal::volValue) &&
+                marksPreset)
+                graphicsPreset = GraphicsPreset::Custom;
 
             Clay_Color cMinus = hovCloudMinus[ci] ? Pal::btnHover : Pal::btnIdle;
             CLAY(CLAY_IDI("CloudMinus", ci), {.layout = {
@@ -5914,49 +6203,64 @@ void SatelliteSim::buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRende
     }
 }
 
-// ─── buildCinematicWindow (review 17) ────────────────────────────────────────
+// ─── buildCinematicWindow (review 17; redesigned 2026-10-03) ─────────────────
 // The camera-path editor: shots of keyframes (Cinematic.h), played in real time or exported frame by frame
 // (preview: as rendered in motion; HQ: each frame a settled HQ photo). The harness's `path` / `cine` commands
 // edit the same shot (docs/HARNESS.md "Cinematics").
+//
+// Top to bottom: the cinematic (name, Save, New, the saved files), the shots (one tab each), the current shot's
+// timeline (click or drag to scrub, drag a key to retime it) and keys (each key's time can be typed), the shot's
+// options, playback, and export (with the HQ export's expected duration — it can be tens of minutes).
 void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
 {
     if (!cineChrome.open)
         return;
     if (cineChrome.w <= 0.0f)
     {
-        cineChrome.w = 540.0f;
-        cineChrome.h = std::min(640.0f, std::max(420.0f, inp.screenH * 0.7f));
+        cineChrome.w = 560.0f;
+        // Clear of the time bar at the bottom (a taller window ran under it).
+        const float top = cineChrome.y > 0.0f ? cineChrome.y : 140.0f;
+        cineChrome.h = std::max(380.0f, std::min(760.0f, inp.screenH - top - 80.0f));
     }
-    std::vector<CineKey> &keys = cineKeys();
-    CineShot &shot = cine_.shots[cineShot_];
+    cineKeys(); // a shot exists from here on
     auto text = [&](const char *str, Clay_Color c, float size)
+    {
+        Clay_String cs{false, (int32_t)strlen(str), str};
+        CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+    };
+    auto wrapText = [&](const char *str, Clay_Color c, float size)
     {
         Clay_String cs{false, (int32_t)strlen(str), str};
         CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
     };
-    auto btnH = [&](Clay_ElementId id, const char *label, bool &hov, const char *tip, bool on = false)
+    auto btnH = [&](Clay_ElementId id, const char *label, bool &hov, const char *tip, bool on = false, bool enabled = true)
     {
         bool clicked = false;
+        const Clay_Color bg = !enabled ? Clay_Color{24, 24, 25, 160}
+                                       : on ? (hov ? Pal::btnAccentHv : Pal::btnAccent) : (hov ? Pal::btnHover : Pal::btnIdle);
         CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(20))},
                              .padding = {8, 8, 0, 0},
                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                  .backgroundColor = on ? (hov ? Pal::btnAccentHv : Pal::btnAccent) : (hov ? Pal::btnHover : Pal::btnIdle),
+                  .backgroundColor = bg,
                   .cornerRadius = CLAY_CORNER_RADIUS(3)})
         {
             bool n = Clay_Hovered();
-            sndRollover(n, hov);
-            sndClick(n, inp.lmbPressed);
+            if (enabled)
+            {
+                sndRollover(n, hov);
+                sndClick(n, inp.lmbPressed);
+            }
             hov = n;
-            clicked = n && inp.lmbPressed;
+            clicked = enabled && n && inp.lmbPressed;
             if (tip)
                 ui.tooltip(inp, n, tip, fs(11));
-            text(label, Pal::btnLabel, 11);
+            text(label, enabled ? Pal::btnLabel : Pal::textHint, 11);
         }
         return clicked;
     };
-    auto btn = [&](int id, const char *label, const char *tip, bool on = false)
+    auto btn = [&](int id, const char *label, const char *tip, bool on = false, bool enabled = true)
     {
-        return btnH(CLAY_IDI("CineBtn", id), label, hovCineBtn[id], tip, on);
+        return btnH(CLAY_IDI("CineBtn", id), label, hovCineBtn[id], tip, on, enabled);
     };
     auto row = [&](int id, const std::function<void()> &f)
     {
@@ -5968,9 +6272,23 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
             f();
         }
     };
-    // A slider hit-tested on its own track's laid-out box (last frame's layout).
-    static char sliderLab[8][64], sliderVal[8][32];
-    auto slider = [&](int id, const char *label, float &v, float vmin, float vmax, float step, const char *fmt)
+    auto spacer = [&](int id)
+    {
+        CLAY(CLAY_IDI("CineSpacer", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+    };
+    auto section = [&](int id, const char *title)
+    {
+        CLAY(CLAY_IDI("CineSection", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                      .padding = {0, 0, 6, 1}}})
+        {
+            text(title, Pal::textSection, 11);
+        }
+        CLAY(CLAY_IDI("CineSectionLine", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}},
+                                               .backgroundColor = Pal::divider}) {}
+    };
+    // A slider hit-tested on its own track's laid-out box (last frame's layout); its value can be typed.
+    static char sliderLab[8][64];
+    auto slider = [&](int id, const char *label, float &v, float vmin, float vmax, float step, const char *fmt, const char *tip = nullptr)
     {
         bool changed = false;
         const Clay_ElementId tid = CLAY_IDI("CineSliderTrack", id);
@@ -5995,14 +6313,16 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
         if (!inp.lmbDown && cineDragSlider_ == id)
             cineDragSlider_ = -1;
         snprintf(sliderLab[id], sizeof(sliderLab[id]), "%s", label);
-        snprintf(sliderVal[id], sizeof(sliderVal[id]), fmt, v);
         CLAY(CLAY_IDI("CineSliderRow", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                         .childGap = 6,
                                                         .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                         .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY(CLAY_IDI("CineSliderLab", id), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(120)), CLAY_SIZING_FIT(0)}}})
+            CLAY(CLAY_IDI("CineSliderLab", id), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(140)), CLAY_SIZING_FIT(0)}}})
             {
+                const bool h = Clay_Hovered();
+                if (tip)
+                    ui.tooltip(inp, h, tip, fs(11));
                 text(sliderLab[id], Pal::textDim, 11);
             }
             CLAY(tid, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED((float)fs(10))}},
@@ -6014,10 +6334,8 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                                                       .backgroundColor = {150, 40, 40, 220},
                                                       .cornerRadius = CLAY_CORNER_RADIUS(3)}) {}
             }
-            CLAY(CLAY_IDI("CineSliderVal", id), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(52)), CLAY_SIZING_FIT(0)}}})
-            {
-                text(sliderVal[id], Pal::textPrimary, 11);
-            }
+            if (numberField(inp, ui, CLAY_IDI("CineSliderVal", id), v, vmin, vmax, fmt, (float)fs(56), 11, Pal::textPrimary))
+                changed = true;
         }
         return changed;
     };
@@ -6025,7 +6343,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
     static char titleBuf[96];
     snprintf(titleBuf, sizeof(titleBuf), "Cinematics: %s", cine_.name.c_str());
     buildResizableWindow(
-        inp, ui, cineChrome, 5, titleBuf, true, hovCineClose, 12.0f, 140.0f, 400.0f, 360.0f, 1200.0f, 1400.0f,
+        inp, ui, cineChrome, 5, titleBuf, true, hovCineClose, 12.0f, 140.0f, 420.0f, 380.0f, 1200.0f, 1400.0f,
         [&]()
         {
             CLAY(CLAY_ID("CineBody"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
@@ -6034,26 +6352,64 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                                                   .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                        .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
             {
-                snprintf(cineInfoBuf_, sizeof(cineInfoBuf_), "Shot %d / %d  \"%s\"  %d keys  %.1f s   |   all %.1f s%s",
-                         cineShot_ + 1, (int)cine_.shots.size(), shot.name.c_str(), (int)keys.size(), shot.duration(),
-                         cine_.duration(), shot.settings.is_null() ? "" : "   [look stored]");
-                text(cineInfoBuf_, Pal::textPrimary, 12);
+                // ── The cinematic ───────────────────────────────────────────────────────────────────
+                row(10, [&]()
+                    {
+                    text("Name", Pal::textDim, 11);
+                    std::string nm = cine_.name;
+                    if (textField(inp, ui, CLAY_ID("CineNameField"), nm, (float)fs(210), 12,
+                                  "The cinematic's name: Save writes it as <name>.json (a new name saves a copy)"))
+                        cine_.name = nm.empty() ? "untitled" : nm;
+                    if (btn(14, "Save", "Save to user data/cinematics/<name>.json"))
+                    {
+                        std::string err;
+                        if (!cineSave("", err))
+                            cineStatus_ = err;
+                    }
+                    if (btn(13, "New", "Start a new, empty cinematic (save this one first)"))
+                    {
+                        cineStop("New");
+                        cine_ = Cinematic{};
+                        char nm2[48];
+                        const time_t now = time(nullptr);
+                        struct tm lt;
+#ifdef _WIN32
+                        localtime_s(&lt, &now);
+#else
+                        localtime_r(&now, &lt);
+#endif
+                        strftime(nm2, sizeof(nm2), "cine_%Y%m%d_%H%M%S", &lt);
+                        cine_.name = nm2;
+                        cineShot_ = 0;
+                        cineScrub_ = 0.0f;
+                        cineFile_.clear();
+                        cineKeys();
+                    } });
+                {
+                    const std::string savedAs = cineFile_.empty() ? std::string("not saved yet")
+                                                                  : "file: " + std::filesystem::path(cineFile_).filename().string();
+                    snprintf(cineInfoBuf_, sizeof(cineInfoBuf_), "%s   |   %d shot%s, %.1f s", savedAs.c_str(),
+                             (int)cine_.shots.size(), cine_.shots.size() == 1 ? "" : "s", cine_.duration());
+                    text(cineInfoBuf_, Pal::textDim, 11);
+                }
                 if (!cineStatus_.empty())
-                    text(cineStatus_.c_str(), {230, 190, 120, 255}, 11);
+                    wrapText(cineStatus_.c_str(), {230, 190, 120, 255}, 11);
 
+                // ── Shots: one tab each ─────────────────────────────────────────────────────────────
+                section(0, "SHOTS");
                 row(0, [&]()
                     {
-                    if (btn(0, "< Shot", "Previous shot") && cineShot_ > 0)
+                    static char tabLab[16][40];
+                    for (int i = 0; i < (int)cine_.shots.size() && i < 16; ++i)
                     {
-                        --cineShot_;
-                        cineScrub_ = 0.0f;
+                        snprintf(tabLab[i], sizeof(tabLab[i]), "%d  %.20s", i + 1, cine_.shots[i].name.c_str());
+                        if (btnH(CLAY_IDI("CineShotTab", i), tabLab[i], hovCineShotTab[i], nullptr, i == cineShot_) && i != cineShot_)
+                        {
+                            cineShot_ = i;
+                            cineScrub_ = 0.0f;
+                        }
                     }
-                    if (btn(1, "Shot >", "Next shot") && cineShot_ + 1 < (int)cine_.shots.size())
-                    {
-                        ++cineShot_;
-                        cineScrub_ = 0.0f;
-                    }
-                    if (btn(2, "+ Shot", "Add a shot after this one, starting at the current view"))
+                    if (btn(2, "+", "Add a shot after this one, starting at the current view"))
                     {
                         CineShot ns;
                         ns.name = "shot " + std::to_string(cine_.shots.size() + 1);
@@ -6061,22 +6417,43 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                         ns.keys.back().t = 0.0;
                         ns.simStartValid = true;
                         ns.simStart = ns.keys.back().simT;
+                        if (followActive)
+                            ns.followSat = followSatIndex; // the view is a follow view: ride with that satellite
                         cine_.shots.insert(cine_.shots.begin() + cineShot_ + 1, ns);
                         ++cineShot_;
+                        cineScrub_ = 0.0f;
+                    } });
+                row(5, [&]()
+                    {
+                    text("Shot name", Pal::textDim, 11);
+                    std::string sn = cine_.shots[cineShot_].name;
+                    if (textField(inp, ui, CLAY_ID("CineShotNameField"), sn, (float)fs(150), 12, "This shot's name"))
+                        cine_.shots[cineShot_].name = sn;
+                    spacer(0);
+                    if (btn(17, "Duplicate", "Copy this shot (keys, look, follow) after it"))
+                    {
+                        CineShot cp = cine_.shots[cineShot_];
+                        cp.name += " copy";
+                        cine_.shots.insert(cine_.shots.begin() + cineShot_ + 1, cp);
+                        ++cineShot_;
                     }
-                    if (btn(3, "Del shot", "Delete this shot") && !cine_.shots.empty())
+                    else if (btn(3, "Delete shot", "Delete this shot", false, cine_.shots.size() > 1))
                     {
                         cine_.shots.erase(cine_.shots.begin() + cineShot_);
                         cineShot_ = std::max(0, cineShot_ - 1);
+                        cineScrub_ = 0.0f;
                     } });
-                // cineKeys() recreates a shot if the last was deleted: re-take the references.
+                // Taken after every edit of the shot list above (an insert may move the shots).
                 std::vector<CineKey> &K = cineKeys();
                 CineShot &S = cine_.shots[cineShot_];
-                row(5, [&]()
+                static std::string why; // tooltips keep the pointer until the frame is drawn
+
+                // ── This shot: options ─────────────────────────────────────────────────────────────
+                row(6, [&]()
                     {
-                    if (btn(4, S.settings.is_null() ? "Store look" : "Clear look",
+                    if (btn(4, S.settings.is_null() ? "Store look" : "Look stored",
                             S.settings.is_null() ? "Store the current clouds, lighting, constellations and render settings with this shot (applied at its cut)"
-                                                 : "Forget this shot's stored settings",
+                                                 : "This shot applies its stored look at its cut. Click to forget it",
                             !S.settings.is_null()))
                     {
                         S.settings = S.settings.is_null() ? cineLookSettings() : nlohmann::json();
@@ -6084,21 +6461,136 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                         S.driftOffset = cloudDriftPhaseOffset;
                         S.driftRate = cloudDriftRate;
                     }
-                    if (btn(16, S.followSat >= 0 ? "Follow: on" : "Follow sel", S.followSat >= 0 ? "Stop riding with the satellite in this shot"
-                                                                                       : "This shot rides with the selected satellite (keys = the camera's offset from it; use Go to / follow to frame it)",
-                            S.followSat >= 0))
+                    // Follow: the shot rides with a satellite. It takes the satellite being followed (Go to), else the
+                    // selected one; the keys are then the camera's offset and view in the satellite's frame.
+                    const int cand = followActive ? followSatIndex : selectedSatIndex;
+                    if (btn(16, S.followSat >= 0 ? "Following" : "Follow satellite",
+                            S.followSat >= 0 ? "This shot rides with its satellite. Click to make it a ground / free camera shot"
+                                             : "Ride with the satellite being followed (Go to), or the selected one: keys become the camera's offset and view in its frame",
+                            S.followSat >= 0, S.followSat >= 0 || cand >= 0))
                     {
-                        S.followSat = S.followSat >= 0 ? -1 : selectedSatIndex;
                         if (S.followSat >= 0)
-                            startFollow(S.followSat);
+                            S.followSat = -1;
+                        else
+                        {
+                            S.followSat = cand;
+                            if (!followActive || followSatIndex != cand)
+                                startFollow(cand, true);
+                            if (!followActive)
+                            {
+                                S.followSat = -1;
+                                cineStatus_ = "That satellite has no geometry model: it cannot be followed";
+                            }
+                            else if (!K.empty())
+                                cineStatus_ = "Follow on: the keys taken before are not follow keys — press Set on each once framed";
+                        }
                     }
-                    if (btn(6, "Sim from now", "The shot's sim time starts at the current sim time"))
+                    if (btn(6, "Sim time from now", "The shot's sim time starts at the current sim time"))
                     {
                         S.simStartValid = true;
                         S.simStart = (double)simDayJ2000 * 86400.0 + simSecInDay;
                     } });
+                if (S.followSat >= 0 && S.followSat < (int)satOrbits.size())
+                {
+                    static char followBuf[160];
+                    const bool on = followActive && followSatIndex == S.followSat;
+                    snprintf(followBuf, sizeof(followBuf), "Follows %s #%d%s", satTypes[satOrbits[S.followSat].typeIdx].name.c_str(),
+                             S.followSat, on ? "" : "  -  not following it now: Go to it before taking keys");
+                    text(followBuf, on ? Pal::textDim : Clay_Color{230, 190, 120, 255}, 11);
+                }
+                else if (followActive)
+                    text("You are following a satellite: switch Follow on to ride with it in this shot", {230, 190, 120, 255}, 11);
 
-                // Keys
+                // ── Timeline ───────────────────────────────────────────────────────────────────────
+                section(1, "TIMELINE  (click / drag to scrub, drag a key to retime it)");
+                const double t0 = K.empty() ? 0.0 : K.front().t;
+                const double dur = std::max(S.duration(), 0.0);
+                {
+                    const Clay_ElementId tlId = CLAY_ID("CineTimeline");
+                    const Clay_ElementData td = Clay_GetElementData(tlId);
+                    const float tlW = td.found ? td.boundingBox.width : 300.0f;
+                    const float pad = 6.0f, usable = std::max(tlW - 2.0f * pad, 10.0f);
+                    auto xOf = [&](double t) { return pad + (float)(dur > 0.0 ? std::clamp((t - t0) / dur, 0.0, 1.0) : 0.0) * usable; };
+                    auto tOf = [&](float x) { return t0 + std::clamp((double)(x - pad) / usable, 0.0, 1.0) * dur; };
+                    if (td.found && !cineActive())
+                    {
+                        const Clay_BoundingBox bb = td.boundingBox;
+                        const bool over = inp.mouseX >= bb.x && inp.mouseX <= bb.x + bb.width && inp.mouseY >= bb.y &&
+                                          inp.mouseY <= bb.y + bb.height;
+                        const float mx = inp.mouseX - bb.x;
+                        if (inp.lmbPressed && over)
+                        {
+                            cineTimelineDrag_ = -2;
+                            for (int i = 1; i < (int)K.size(); ++i) // the first key anchors the shot: not draggable
+                                if (std::abs(mx - xOf(K[i].t)) <= 5.0f)
+                                    cineTimelineDrag_ = i;
+                        }
+                        if (!inp.lmbDown)
+                            cineTimelineDrag_ = -1;
+                        if (cineTimelineDrag_ >= 1 && cineTimelineDrag_ < (int)K.size() && dur > 0.0)
+                        {
+                            const int i = cineTimelineDrag_;
+                            const double lo = K[i - 1].t + 0.05, hi = i + 1 < (int)K.size() ? K[i + 1].t - 0.05 : 1e9;
+                            // The last key moves the shot's end: the scale is that of the drag's start (no feedback loop).
+                            const double nt = std::clamp(t0 + (double)(mx - pad) / usable * dur, lo, hi);
+                            K[i].t = std::round(nt * 20.0) / 20.0;
+                        }
+                        else if (cineTimelineDrag_ == -2 && K.size() >= 2)
+                        {
+                            cineScrub_ = (float)(tOf(mx) - t0);
+                            const bool one = cinePlayOneShot_;
+                            cinePlayOneShot_ = true;
+                            cineApplyAt(cineScrub_, true);
+                            cinePlayOneShot_ = one;
+                        }
+                    }
+                    // The bar: fixed-width gaps between markers (no floating elements, so it clips with the scroll).
+                    struct Mark
+                    {
+                        float x;
+                        int kind; // 0 = key, 1 = playhead
+                        int key;
+                    };
+                    std::vector<Mark> marks;
+                    for (int i = 0; i < (int)K.size() && i < 64; ++i)
+                        marks.push_back({xOf(K[i].t), 0, i});
+                    const double playT = cineActive() && cineRun_ == CineRun::Play && !cinePlayOneShot_ ? -1.0 : t0 + cineScrub_;
+                    if (playT >= 0.0)
+                        marks.push_back({xOf(playT), 1, -1});
+                    std::sort(marks.begin(), marks.end(), [](const Mark &a, const Mark &b) { return a.x < b.x; });
+                    CLAY(tlId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED((float)fs(26))},
+                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                           .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                .backgroundColor = {14, 14, 16, 230},
+                                .cornerRadius = CLAY_CORNER_RADIUS(4),
+                                .border = {.color = {48, 48, 52, 255}, .width = CLAY_BORDER_ALL(1)}})
+                    {
+                        hovCineTimeline_ = Clay_Hovered();
+                        float x = 0.0f;
+                        int gi = 0;
+                        for (const Mark &m : marks)
+                        {
+                            const float w = m.kind == 1 ? 2.0f : 4.0f;
+                            const float left = std::max(0.0f, m.x - w * 0.5f - x);
+                            CLAY(CLAY_IDI("CineTlGap", gi++), {.layout = {.sizing = {CLAY_SIZING_FIXED(left), CLAY_SIZING_FIXED(1)}}}) {}
+                            const bool hot = m.kind == 0 && (cineTimelineDrag_ == m.key);
+                            const Clay_Color c = m.kind == 1 ? Clay_Color{240, 240, 245, 255}
+                                                 : hot      ? Clay_Color{255, 120, 120, 255}
+                                                            : Pal::btnAccent;
+                            const float mh = m.kind == 1 ? (float)fs(24) : (float)fs(14);
+                            const float mr = m.kind == 1 ? 1.0f : 2.0f;
+                            CLAY(CLAY_IDI("CineTlMark", gi), {.layout = {.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIXED(mh)}},
+                                                              .backgroundColor = c,
+                                                              .cornerRadius = CLAY_CORNER_RADIUS(mr)}) {}
+                            x += left + w;
+                        }
+                    }
+                    static char tlBuf[96];
+                    snprintf(tlBuf, sizeof(tlBuf), "playhead %.2f s  of  %.2f s   (%d keys)", (double)cineScrub_, dur, (int)K.size());
+                    text(tlBuf, Pal::textDim, 11);
+                }
+
+                // ── Keys ───────────────────────────────────────────────────────────────────────────
                 CLAY(CLAY_ID("CineKeys"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                       .padding = {4, 4, 4, 4},
                                                       .childGap = 3,
@@ -6109,36 +6601,63 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     if (K.empty())
                         text("No keys: frame a view and press + Key at view", Pal::textDim, 11);
                     int del = -1;
+                    const bool mismatch = cineKeyFollowMismatch(why);
                     for (int i = 0; i < (int)K.size() && i < 24; ++i)
                     {
                         const CineKey k = K[i];
-                        const double altKm = k.alt / 1000.0;
                         if (S.followSat >= 0) // a follow shot's keys are offsets from the satellite (m)
-                            snprintf(cineKeyBuf_[i], sizeof(cineKeyBuf_[i]), "%2d %5.1fs  offset %.0f, %.0f, %.0f m  fov %.0f",
-                                     i + 1, k.t, k.ox, k.oy, k.oz, k.fov);
+                            snprintf(cineKeyBuf_[i], sizeof(cineKeyBuf_[i]), "%s %.0f, %.0f, %.0f m  %s  fov %.0f",
+                                     k.hasOffset ? "offset" : "NO OFFSET (Set)", k.ox, k.oy, k.oz, k.hasView ? "framed" : "aimed", k.fov);
                         else
-                            snprintf(cineKeyBuf_[i], sizeof(cineKeyBuf_[i]), "%2d %5.1fs %.2f %.2f %.1f km az %.0f el %.0f fov %.0f",
-                                     i + 1, k.t, k.lat, k.lon, altKm, k.az, k.el, k.fov);
+                            snprintf(cineKeyBuf_[i], sizeof(cineKeyBuf_[i]), "%.2f, %.2f  %.1f km  az %.0f el %.0f  fov %.0f",
+                                     k.lat, k.lon, k.alt / 1000.0, k.az, k.el, k.fov);
+                        const bool atHead = std::abs((k.t - t0) - cineScrub_) < 0.03;
                         CLAY(CLAY_IDI("CineKeyRow", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                    .childGap = 3,
+                                                                    .padding = {2, 2, 1, 1},
+                                                                    .childGap = 4,
                                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                                         .backgroundColor = atHead ? Clay_Color{60, 20, 20, 160} : Clay_Color{0, 0, 0, 0},
+                                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
                         {
+                            static char idxBuf[24][8];
+                            snprintf(idxBuf[i], sizeof(idxBuf[i]), "%2d", i + 1);
+                            text(idxBuf[i], Pal::textDim, 11);
+                            // Its time, typed: moves this key and every later one by the same amount (the later
+                            // segments keep their lengths). The first key anchors the shot and stays put.
+                            double kt = k.t - t0;
+                            if (i > 0 && numberFieldD(inp, ui, CLAY_IDI("CineKeyT", i), kt, K[i - 1].t - t0 + 0.05, 1e6, "%.2f s",
+                                                      (float)fs(58), 11, Pal::textPrimary))
+                            {
+                                const double d = (kt + t0) - K[i].t;
+                                for (int j = i; j < (int)K.size(); ++j)
+                                    K[j].t += d;
+                            }
+                            else if (i == 0)
+                            {
+                                CLAY(CLAY_IDI("CineKeyT0", i), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(58)), CLAY_SIZING_FIT(0)},
+                                                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+                                {
+                                    text("0.00 s", Pal::textDim, 11);
+                                }
+                            }
                             CLAY(CLAY_IDI("CineKeyText", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}},
                                                               .clip = {.horizontal = true}})
                             {
                                 Clay_String cs{false, (int32_t)strlen(cineKeyBuf_[i]), cineKeyBuf_[i]};
-                                CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                                CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = (S.followSat >= 0 && !k.hasOffset) ? Clay_Color{230, 190, 120, 255} : Pal::textPrimary,
+                                                                .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
                             }
-                            if (btnH(CLAY_IDI("CineKeyGo", i), "Go", hovCineKey[i][0], "Jump to this key's view"))
+                            if (btnH(CLAY_IDI("CineKeyGo", i), "Go", hovCineKey[i][0], "Jump to this key's view", false, !cineActive()))
                             {
                                 const bool one = cinePlayOneShot_;
                                 cinePlayOneShot_ = true;
-                                cineScrub_ = (float)(k.t - K.front().t);
+                                cineScrub_ = (float)(k.t - t0);
                                 cineApplyAt(cineScrub_, true);
                                 cinePlayOneShot_ = one;
                             }
-                            if (btnH(CLAY_IDI("CineKeySet", i), "Set", hovCineKey[i][1], "Replace this key's view with the current one"))
+                            if (btnH(CLAY_IDI("CineKeySet", i), "Set", hovCineKey[i][1],
+                                     mismatch ? why.c_str() : "Replace this key's view with the current one (its time stays)", false, !mismatch && !cineActive()))
                             {
                                 CineKey n = cineCurrentPose();
                                 n.t = k.t;
@@ -6147,116 +6666,232 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                                     n.simT = k.simT;
                                 K[i] = n;
                             }
-                            if (btnH(CLAY_IDI("CineKeyM", i), "-", hovCineKey[i][2], "0.5 s earlier (and every later key)") && i > 0 &&
-                                k.t - 0.5 > K[i - 1].t + 1e-6)
-                                for (int j = i; j < (int)K.size(); ++j)
-                                    K[j].t -= 0.5;
-                            if (btnH(CLAY_IDI("CineKeyP", i), "+", hovCineKey[i][3], "0.5 s later (and every later key)") && i > 0)
-                                for (int j = i; j < (int)K.size(); ++j)
-                                    K[j].t += 0.5;
-                            if (btnH(CLAY_IDI("CineKeyDel", i), "x", hovCineKey[i][4], "Delete this key"))
+                            if (btnH(CLAY_IDI("CineKeyDel", i), "x", hovCineKey[i][4], "Delete this key", false, !cineActive()))
                                 del = i;
                         }
                     }
+                    if ((int)K.size() > 24)
+                        text("(more keys than shown: the list shows the first 24)", Pal::textDim, 11);
                     if (del >= 0)
                         K.erase(K.begin() + del);
                 }
                 row(1, [&]()
                     {
-                    if (btn(5, "+ Key at view", "Add the current view as a key, 2 s after the last"))
+                    const bool mismatch = cineKeyFollowMismatch(why);
+                    if (btn(5, "+ Key at view", mismatch ? why.c_str() : "Add the current view as a key, the gap on the right after the last key",
+                            false, !mismatch && !cineActive()))
                     {
                         CineKey n = cineCurrentPose();
-                        n.t = K.empty() ? 0.0 : K.back().t + 2.0;
+                        n.t = K.empty() ? 0.0 : K.back().t + std::max(0.05, (double)cineKeyGap_);
                         if (K.empty())
                         {
                             S.simStartValid = true;   // the first key fixes the shot's sim time
                             S.simStart = n.simT;
                         }
                         K.push_back(n);
-                    } });
+                        cineScrub_ = (float)(n.t - K.front().t);
+                    }
+                    text("after", Pal::textDim, 11);
+                    numberField(inp, ui, CLAY_ID("CineKeyGap"), cineKeyGap_, 0.05f, 600.0f, "%.1f s", (float)fs(52), 11, Pal::textPrimary); });
+
                 cineSimRateUi_ = (float)S.simRate;
-                if (slider(0, "Sim time rate (x)", cineSimRateUi_, 0.0f, 600.0f, 1.0f, "%.0f"))
+                if (slider(0, "Sim time rate (x)", cineSimRateUi_, 0.0f, 600.0f, 1.0f, "%.0f",
+                           "How fast sim time runs during the shot (keys with their own sim time override it)"))
                     S.simRate = cineSimRateUi_;
                 cineEaseUi_ = (float)S.ease;
-                if (slider(5, "Ease in / out", cineEaseUi_, 0.0f, 1.0f, 0.05f, "%.2f"))
+                if (slider(5, "Ease in / out", cineEaseUi_, 0.0f, 1.0f, 0.05f, "%.2f", "0 = constant speed, 1 = the shot starts and stops gently"))
                     S.ease = cineEaseUi_;
 
-                // Transport
-                const float shotDur = (float)S.duration();
-                if (slider(1, "Scrub shot (s)", cineScrub_, 0.0f, std::max(shotDur, 0.01f), 0.0f, "%.2f") && !cineActive() &&
-                    K.size() >= 2)
-                {
-                    const bool one = cinePlayOneShot_;
-                    cinePlayOneShot_ = true;
-                    cineApplyAt(cineScrub_, true);
-                    cinePlayOneShot_ = one;
-                }
+                // ── Playback ───────────────────────────────────────────────────────────────────────
+                section(2, "PLAYBACK  (Esc stops)");
                 row(2, [&]()
                     {
-                    if (btn(7, "Play all", "Play every shot in order", cineRun_ == CineRun::Play && !cinePlayOneShot_))
-                        cineStart(CineRun::Play, false);
                     if (btn(8, "Play shot", "Play this shot", cineRun_ == CineRun::Play && cinePlayOneShot_))
                         cineStart(CineRun::Play, true);
-                    if (btn(9, "Stop", "Stop playback or the export"))
+                    if (btn(7, "Play all", "Play every shot in order", cineRun_ == CineRun::Play && !cinePlayOneShot_))
+                        cineStart(CineRun::Play, false);
+                    if (btn(9, "Stop", "Stop playback or the export", false, cineActive()))
                         cineStop("Stopped");
                     if (btn(10, cineLoop_ ? "Loop on" : "Loop off", "Loop playback", cineLoop_))
                         cineLoop_ = !cineLoop_; });
 
-                // Export
-                text("EXPORT  (frames to screenshots/cinematics/)", Pal::textSection, 11);
+                // ── Export ─────────────────────────────────────────────────────────────────────────
+                section(3, "EXPORT  (frames to screenshots/cinematics/)");
                 slider(2, "Frames per second", cineExportFps_, 12.0f, 60.0f, 6.0f, "%.0f");
-                slider(3, "HQ resolution (x)", photoScaleSetting, 1.0f, 4.0f, 1.0f, "%.0f");
-                slider(4, "HQ settle frames", photoSettleFrames, 4.0f, 240.0f, 4.0f, "%.0f");
+                slider(3, "HQ resolution (x window)", photoScaleSetting, 1.0f, 4.0f, 1.0f, "%.0f",
+                       "Each HQ frame is rendered at this multiple of the window size (2 = 4x the pixels)");
+                slider(4, "HQ settle frames", photoSettleFrames, 4.0f, 240.0f, 4.0f, "%.0f",
+                       "Frames rendered at each pose before it is saved, so clouds and anti-aliasing converge");
                 slider(6, "Motion blur (subframes)", cineBlurSubs_, 1.0f, 16.0f, 1.0f, "%.0f");
+                {
+                    static char estBuf[200];
+                    const double est = cineEstimateHqS();
+                    const double frames = std::floor(cine_.duration() * std::clamp((double)cineExportFps_, 1.0, 240.0) + 1e-6) + 1.0;
+                    const double s = std::clamp(std::round((double)photoScaleSetting), 1.0, 4.0);
+                    snprintf(estBuf, sizeof(estBuf), "HQ: %.0f frames at %.0fx%.0f, about %.0f %s (estimated from the current frame rate)",
+                             frames, s * inp.screenW, s * inp.screenH, est >= 120.0 ? est / 60.0 : est,
+                             est >= 120.0 ? "min" : "s");
+                    wrapText(estBuf, est > 600.0 ? Clay_Color{230, 190, 120, 255} : Pal::textDim, 11);
+                }
                 row(3, [&]()
                     {
-                    if (btn(11, "Export preview", "Every frame as rendered in motion, at the fps above"))
+                    if (btn(11, "Export preview", "Every frame as rendered in motion, at the fps above (fast)", cineRun_ == CineRun::ExportPreview,
+                            !cineActive()))
                         cineStart(CineRun::ExportPreview, false);
-                    if (btn(12, "Export HQ", "Every frame a settled HQ photo (slow: the settle frames per frame)"))
+                    if (btn(12, "Export HQ", "Every frame a settled HQ photo (slow: see the estimate above). The window shows its progress; Esc stops",
+                            cineRun_ == CineRun::ExportHQ, !cineActive()))
                         cineStart(CineRun::ExportHQ, false); });
 
-                // Files
-                text("FILES  (user data/cinematics)", Pal::textSection, 11);
-                row(4, [&]()
-                    {
-                    if (btn(13, "New", "Start a new cinematic"))
-                    {
-                        cineStop("New");
-                        cine_ = Cinematic{};
-                        char nm[48];
-                        const time_t now = time(nullptr);
-                        struct tm lt;
-#ifdef _WIN32
-                        localtime_s(&lt, &now);
-#else
-                        localtime_r(&now, &lt);
-#endif
-                        strftime(nm, sizeof(nm), "cine_%Y%m%d_%H%M%S", &lt);
-                        cine_.name = nm;
-                        cineShot_ = 0;
-                    }
-                    if (btn(14, "Save", "Save to user data/cinematics/<name>.json"))
-                    {
-                        std::string err;
-                        if (!cineSave("", err))
-                            cineStatus_ = err;
-                    }
-                    if (btn(15, "Refresh", "List the saved cinematics again"))
-                        cineRefreshFiles(); });
-                static char fileLab[8][128];
-                for (int f = 0; f < (int)cineFiles_.size() && f < 8; ++f)
+                // ── Saved cinematics ───────────────────────────────────────────────────────────────
+                section(4, "SAVED  (user data/cinematics)");
+                if (cineFiles_.empty())
+                    text("None yet: name this one and press Save", Pal::textDim, 11);
+                static char fileLab[16][128];
+                bool deleted = false;
+                for (int f = 0; f < (int)cineFiles_.size() && f < 16; ++f)
                 {
-                    snprintf(fileLab[f], sizeof(fileLab[f]), "Load %s", std::filesystem::path(cineFiles_[f]).stem().string().c_str());
-                    if (btnH(CLAY_IDI("CineFile", f), fileLab[f], hovCineFile[f], nullptr))
+                    const bool current = !cineFile_.empty() && std::filesystem::path(cineFiles_[f]) == std::filesystem::path(cineFile_);
+                    snprintf(fileLab[f], sizeof(fileLab[f]), "%s%s", std::filesystem::path(cineFiles_[f]).stem().string().c_str(),
+                             current ? "   (open)" : "");
+                    CLAY(CLAY_IDI("CineFileRow", f), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                 .childGap = 4,
+                                                                 .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                     {
-                        std::string err;
-                        if (!cineLoad(cineFiles_[f], err))
-                            cineStatus_ = err;
+                        CLAY(CLAY_IDI("CineFileName", f), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}},
+                                                           .clip = {.horizontal = true}})
+                        {
+                            text(fileLab[f], current ? Pal::textPrimary : Pal::textDim, 11);
+                        }
+                        if (btnH(CLAY_IDI("CineFileLoad", f), "Load", hovCineFile[f][0], "Load this cinematic (unsaved changes to the open one are lost)",
+                                 false, !cineActive()))
+                        {
+                            std::string err;
+                            if (!cineLoad(cineFiles_[f], err))
+                                cineStatus_ = err;
+                        }
+                        const bool armed = cineDeleteArmed_ == cineFiles_[f];
+                        if (btnH(CLAY_IDI("CineFileDel", f), armed ? "Confirm" : "Delete", hovCineFile[f][1],
+                                 armed ? "Click again to delete the file" : "Delete this file (asks once more)", armed, !cineActive()))
+                        {
+                            if (!armed)
+                                cineDeleteArmed_ = cineFiles_[f];
+                            else
+                            {
+                                std::error_code ec;
+                                std::filesystem::remove(cineFiles_[f], ec);
+                                cineStatus_ = ec ? "Could not delete: " + ec.message()
+                                                 : "Deleted " + std::filesystem::path(cineFiles_[f]).filename().string();
+                                if (!ec && current)
+                                    cineFile_.clear();
+                                cineDeleteArmed_.clear();
+                                deleted = true; // the list is refreshed after the loop (no break inside an element)
+                            }
+                        }
                     }
                 }
+                if (deleted)
+                    cineRefreshFiles();
+                if (inp.lmbPressed && !cineDeleteArmed_.empty())
+                {
+                    // Any click other than the armed Delete button disarms it.
+                    bool onArmed = false;
+                    for (int f = 0; f < (int)cineFiles_.size() && f < 16; ++f)
+                        if (cineFiles_[f] == cineDeleteArmed_ && hovCineFile[f][1])
+                            onArmed = true;
+                    if (!onArmed)
+                        cineDeleteArmed_.clear();
+                }
+                row(4, [&]()
+                    {
+                    if (btn(15, "Refresh list", "List the saved cinematics again"))
+                        cineRefreshFiles(); });
             }
             ui.scrollbar(CLAY_ID("CineBody"));
         });
+}
+
+// Over everything while a cinematic plays or exports (even with the window closed or the HUD hidden): what is
+// running, how far, the time left, and Stop. An HQ export renders offscreen; this is drawn on the progress frames
+// App presents a few times a second.
+void SatelliteSim::buildCineHud(const UIInput &inp, UIRenderer &ui)
+{
+    if (!cineActive())
+        return;
+    static char line[200];
+    float frac = 0.0f;
+    const double el = glfwGetTime() - cineExportT0_;
+    if (cineRun_ == CineRun::Play)
+    {
+        const double dur = cinePlayOneShot_ && !cine_.shots.empty() ? cine_.shots[std::clamp(cineShot_, 0, (int)cine_.shots.size() - 1)].duration()
+                                                                     : cine_.duration();
+        frac = dur > 0.0 ? (float)std::clamp(cineT_ / dur, 0.0, 1.0) : 0.0f;
+        snprintf(line, sizeof(line), "Playing %s%s   %.1f / %.1f s   (Esc stops)", cine_.name.c_str(), cinePlayOneShot_ ? " (shot)" : "",
+                 cineT_, dur);
+    }
+    else
+    {
+        frac = cineFrames_ > 0 ? (float)cineFrame_ / (float)cineFrames_ : 0.0f;
+        char left[48] = "";
+        if (cineFrame_ > 0 && el > 1.0)
+        {
+            const double rem = el / cineFrame_ * (cineFrames_ - cineFrame_);
+            if (rem >= 3600.0)
+                snprintf(left, sizeof(left), ", %.0f h %02.0f min left", std::floor(rem / 3600.0), std::fmod(rem / 60.0, 60.0));
+            else if (rem >= 60.0)
+                snprintf(left, sizeof(left), ", %.0f min %02.0f s left", std::floor(rem / 60.0), std::fmod(rem, 60.0));
+            else
+                snprintf(left, sizeof(left), ", %.0f s left", rem);
+        }
+        snprintf(line, sizeof(line), "Exporting %s %s   frame %d / %d  (%.0f%%%s)   Esc stops",
+                 cineRun_ == CineRun::ExportHQ ? "HQ" : "preview", cine_.name.c_str(), cineFrame_, cineFrames_, 100.0f * frac, left);
+    }
+    const float w = std::min(560.0f, inp.screenW - 40.0f);
+    CLAY(CLAY_ID("CineHud"), {.layout = {.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIT(0)},
+                                         .padding = {12, 12, 8, 8},
+                                         .childGap = 5,
+                                         .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                              .backgroundColor = {10, 10, 12, 225},
+                              .cornerRadius = CLAY_CORNER_RADIUS(6),
+                              .floating = {.offset = {0, 12}, .zIndex = 45, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT},
+                              .border = {.color = {60, 60, 66, 255}, .width = CLAY_BORDER_ALL(1)}})
+    {
+        CLAY(CLAY_ID("CineHudRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                .childGap = 8,
+                                                .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY(CLAY_ID("CineHudText"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}, .clip = {.horizontal = true}})
+            {
+                CLAY_TEXT((Clay_String{false, (int32_t)strlen(line), line}),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            }
+            CLAY(CLAY_ID("CineHudStop"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(20))},
+                                                     .padding = {10, 10, 0, 0},
+                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                          .backgroundColor = hovCineHudStop ? Pal::closeBgHov : Pal::closeBgIdle,
+                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                const bool n = Clay_Hovered();
+                sndRollover(n, hovCineHudStop);
+                sndClick(n, inp.lmbPressed);
+                hovCineHudStop = n;
+                if (n && inp.lmbPressed)
+                    cineStop("Stopped");
+                CLAY_TEXT(CLAY_STRING("Stop"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
+            }
+        }
+        CLAY(CLAY_ID("CineHudBar"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(6)}},
+                                     .backgroundColor = {30, 30, 33, 255},
+                                     .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            CLAY(CLAY_ID("CineHudFill"), {.layout = {.sizing = {CLAY_SIZING_PERCENT(frac), CLAY_SIZING_GROW(0)}},
+                                          .backgroundColor = Pal::btnAccent,
+                                          .cornerRadius = CLAY_CORNER_RADIUS(3)}) {}
+        }
+    }
+    if (const Clay_ElementData d = Clay_GetElementData(CLAY_ID("CineHud")); d.found)
+        ui.addMouseCaptureRect(d.boundingBox.x, d.boundingBox.y, d.boundingBox.width, d.boundingBox.height);
 }
 
 // ─── buildSelectHint ─────────────────────────────────────────────────────────

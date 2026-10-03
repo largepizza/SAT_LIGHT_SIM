@@ -108,6 +108,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `track [on\|off]` | the selection panel's **Track** button: lock the camera onto the selected satellite and re-aim every frame (the observer stays put, so WASD still walks, and the wheel's `camera fov=` zoom is untouched). No argument = toggle; needs a satellite selection. Released by `select none`, `select planet`, `follow` and any explicit aim (`camera az=`/`el=`, `camera look`, `camera track`, a scripted camera key). `state` reports it as `camera.tracking` and `selection.track`. Not to be confused with `camera track <target>`, which is the harness's own aim-every-frame |
 | `viewer [aim=free\|observer\|toward\|sun] [light=live\|studio] [glare=on\|off] [shadows=on\|off] [dist=<radii>]` | the 3D view's own controls, for a `ui open viewer` / `ui open info` capture: `aim=observer` is the Observer chip (the satellite from the ground observer's direction), `aim=sun` (harness only) looks from the Sun's side, where a Sun-facing array glints; `dist` is in model radii. `glare=on` (the default) draws the main view's glare on the glints that make the flare the observer sees (Live light and a tracked satellite only). Reports `flare_per_i` (the observer's effectFlare per unit intensity; 0 = no glare), `glints_last_frame` (the previous frame's glint list: `wait` a frame after a change) and the PHOTOMETRY lines |
 | `const list`, `const "<name>"\|all on\|off [highlight=on\|off]` | constellation visibility |
+| `expect <key\|cine.<path>> <value> [tol=1e-4]` | fails the run unless the setting (or the open cinematic's JSON, `cine.name`, `cine.shots.0.keys.1.t`) equals the value (numbers within tol, relative past 1) |
 | `get [section[.key]]` | any persisted setting; `get` alone lists them all (the keys are `settings.json`'s) |
 | `set <section.key> <value>` (also `key=value`, several per line) | change settings through the same code path `settings.json` loads through. Unknown keys and wrong types are errors. Doesn't change the preset label |
 | `preset <Planetarium\|Low\|Medium\|High\|Ultra\|Potato\|Custom>` | apply a graphics preset (it overwrites knockouts and quality sliders) |
@@ -130,6 +131,8 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|console>`, `ui close <name\|all>` | windows (`info`/`viewer`/`trace` need a selected satellite). An advanced tab turns on "show advanced settings" |
 | `ui hint` | show the post-intro "click a satellite to select it" hint (it hides on a selection or after 30 s) |
 | `ui open cine` | the Cinematics window (see "Cinematics") |
+| `ui click <ElementId>[:index] [fx=0.5] [hold=N]` | the scripted pointer moves onto the element's centre (last frame's layout; ids as in `ui dump`), presses for a frame and releases — the real hover/click path. Fails if the element is off screen (scrolled out of its window) |
+| `ui type <text>`, `ui key <enter\|esc\|tab\|backspace\|delete\|left\|right\|home\|end\|w>` | keyboard input as typed (`onChar` / `onKey`): into the focused text field, else the game. Results carry `text_focus` and the field's `buffer` |
 | `ui dump [name]` | every drawn rect/text/image with its box and element id, plus checks: text cut by its scissor, text off the window, and overlapping text under the same scissor |
 | `window <W>x<H>` | resize the window and wait for the new swapchain |
 | `path clear`, `path key <t> [lat= lon= alt= az= el= fov= sim=<ISO>\|simadd=<s>]` | camera-path keyframes at path time `t` (seconds). Channels you leave out inherit from the previous key (from the current view for the first). See "Camera paths" |
@@ -195,7 +198,7 @@ button in the time bar): a cinematic is a list of SHOTS, each a spline through k
 | `cine new [name]`, `cine name <n>` | start a cinematic / rename it (the save file and export folder names) |
 | `cine shot add [name]` / `del` / `<n>` | add a shot (made current; its sim time starts now) / delete / select (1-based) |
 | `cine shot look [clear]` | store the current look with the shot (clouds, clouds_v2, photometry, constellations, planets, render settings) — applied at its cut |
-| `cine shot follow <sel\|index\|off>` | the shot rides with a satellite (follow mode, aimed at it): its keys are the camera's OFFSET in the satellite's frame — frame each with `follow offset=along,cross,radial` then `cine key` |
+| `cine shot follow <sel\|index\|off>` | the shot rides with a satellite: its keys are the camera's OFFSET and VIEW in the satellite's frame — frame each with `follow offset=along,cross,radial` (the view stays put in the satellite's frame) and `camera`, then `cine key`. `path goto <t>` on a follow shot goes through the cinematic's evaluation (follow mode stays on) |
 | `cine shot ease <0-1>` | ease in/out over the shot (0.5 default: the camera starts and stops gently; sim time is not eased) |
 | `cine shot simrate <x>`, `cine shot simnow` | sim time rate along the shot (0 = frozen) / its start = now |
 | `cine key [t=]` | the current view as a key (2 s after the last by default) |
@@ -203,6 +206,12 @@ button in the time bar): a cinematic is a list of SHOTS, each a spline through k
 | `cine export preview\|hq [fps=] [scale=] [frames=] [blur=] [shot]` | frames to `captures/cine_<name>[_hq]/frame_NNNNN.png` (in-app: `screenshots/cinematics/<name>_<stamp>/`) + `cinematic.json` + a README with the frames2video command. **preview** = rendered in motion at a fixed 1/fps; **hq** = every frame a settled HQ photo (`scale` x the window, `frames` settle frames per frame). `blur=N`: motion blur, each frame the linear-light mean of N subframes over a 180-degree shutter (HQ: the subframes share the settle budget, at least 4 each) |
 | `cine save [file]`, `cine load <file>` | JSON in `<user data>/cinematics/` (`sat-light-sim-cinematic/1`) |
 | `cine state`, `cine stop` | the cinematic as JSON (shots, keys) / stop playback or an export |
+
+Text entry (2026-10-03): the window's name fields, each key's time and every slider value are text boxes
+(SatelliteSimUI.cpp "Text fields"); `tools/harness/scripts/text_fields.satcmd` checks them through `ui click` /
+`ui type` / `ui key` / `expect`, and `cine_follow.satcmd` checks that a follow key plays back with its framing and
+that HQ and preview exports finish (run it with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`: App presents
+progress frames during the HQ export).
 
 A cut (the next shot) resets the sky TAA and the clouds' history, so nothing of the last shot smears into the
 first frames. The worked example, the application tour, is `tools/harness/scripts/tour.satcmd`.

@@ -8,6 +8,13 @@
 > `data/benchmarks/KNOWN_RESIDUALS.md`.
 
 ### Added
+- **Type values instead of dragging.** Every settings slider's value (Clouds, Weather, Terrain, Ocean, Photometry
+  and the rest), the volumes and the Cinematics window's fields are text boxes on click: type a number, Enter
+  applies, Esc cancels. Cinematics get a name field (the file is saved under it), shot names, typed key times and
+  a timeline you can scrub and drag keys on, plus Duplicate shot and Delete for saved files.
+- **HQ cinematic exports show their progress.** An HQ export can take tens of minutes; the window now shows the
+  frames as they render, a progress bar with the time left and a Stop button, and Esc stops it. The window
+  estimates the export's length before you start.
 - **Real eclipses, at their real times.** The Moon's position now follows the standard lunar series (it was a
   plain ellipse, off by up to a couple of degrees and hours), and the Earth turns by real sidereal time, so the
   sim's clock is real UTC: the total lunar eclipse of 31 January 2037 and the total solar eclipse of 13 July 2037
@@ -176,6 +183,10 @@
   scrollable instead of just ending at the window edge.
 
 ### Fixed
+- **Cinematics following a satellite play back the framing the keys were taken with** (they always aimed at
+  the satellite), keys taken before Follow was switched on no longer put the camera inside it, and a key whose
+  heading crossed due south no longer spins the camera a full turn.
+- Windows with scrolled content no longer draw part of it outside the window after a text box or clipped row.
 - Reflect beams on high ground light the site itself: the ground spot was traced to sea level and landed
   kilometres past a mountain-top or plateau site.
 - **Clouds stay the same clouds as you climb.** Up close and from orbit the low clouds are placed by one rule (the cells

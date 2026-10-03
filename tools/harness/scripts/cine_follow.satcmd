@@ -1,0 +1,39 @@
+# Cinematic follow shots + exports (2026-10-03). A follow shot's keys are the camera's offset AND view in the
+# satellite's frame, so playing a key back gives the framing it was taken with (follow mode's aim is free; until
+# this, keys kept only the offset and playback aimed at the satellite: a different picture).
+#   f1/f3  key 1 taken looking at the satellite, then `path goto 0`: same camera (az/el/fov in the state files)
+#   f2/f4  key 2 after moving the offset (the view stays put in the satellite's frame: the satellite drifts
+#          off-centre) and zooming, then `path goto 3`: same camera, satellite off-centre in both captures
+#   f5     the shot played (no Go to flight runs under it)
+#   e*     a short HQ export and a preview export finish (App presents progress frames during the HQ one:
+#          run with VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation and read app_stdout.txt)
+observer lat=28.5 lon=-80.6 agl=50
+time sun -12 setting
+time pause
+select const "International Space Station"
+follow offset=-60,0,15
+wait settle
+cine new follow_test
+cine shot follow sel
+cine key t=0
+state f1_key0
+capture f1_key0 scale=0.5
+follow offset=-30,25,5
+camera fov=40
+wait 2
+state f2_key1
+capture f2_key1 scale=0.5
+cine key t=3
+path goto 0
+wait 2
+state f3_goto0
+capture f3_goto0 scale=0.5
+path goto 3
+wait 2
+state f4_goto3
+capture f4_goto3 scale=0.5
+cine play shot
+state f5_played
+cine state
+cine export hq fps=4 scale=1 frames=8 shot
+cine export preview fps=4 shot

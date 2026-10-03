@@ -43,8 +43,38 @@ CineKey SatelliteSim::cineCurrentPose() const
         k.ox = followOffset.x;
         k.oy = followOffset.y;
         k.oz = followOffset.z;
+        k.hasOffset = true;
+        // The view in the satellite's along / cross / radial frame (follow mode's aim is free on arrival, and a
+        // follow key that only kept the offset played back aimed at the satellite: a different framing).
+        if (followBasisValid && !followAimLock)
+        {
+            const double el = glm::radians((double)camera.elDeg);
+            const glm::dvec3 v = std::cos(el) * glm::dvec3(obsFacing) + std::sin(el) * glm::dvec3(obsDir);
+            k.hasView = true;
+            k.vx = glm::dot(v, followBasisT);
+            k.vy = glm::dot(v, followBasisN);
+            k.vz = glm::dot(v, followBasisR);
+        }
     }
     return k;
+}
+
+// A follow shot's keys are offsets from ITS satellite: one taken while not following it (or following another)
+// would put the camera somewhere unrelated, so the window refuses it and says why.
+bool SatelliteSim::cineKeyFollowMismatch(std::string &why) const
+{
+    if (cine_.shots.empty())
+        return false;
+    const CineShot &S = cine_.shots[std::clamp(cineShot_, 0, (int)cine_.shots.size() - 1)];
+    if (S.followSat < 0)
+        return false;
+    if (!followActive || followSatIndex != S.followSat)
+    {
+        why = "This shot follows satellite #" + std::to_string(S.followSat) +
+              ": select it and press Go to (or Follow) before taking a key";
+        return true;
+    }
+    return false;
 }
 
 std::string SatelliteSim::cineDir() const
@@ -62,10 +92,22 @@ void SatelliteSim::cineRefreshFiles()
     std::sort(cineFiles_.begin(), cineFiles_.end());
 }
 
+// Letters, digits, - _ . kept; anything else (spaces included) becomes _. Never empty.
+std::string SatelliteSim::cineFileStem(const std::string &name)
+{
+    std::string o;
+    for (char c : name)
+        o += (std::isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.') ? c : '_';
+    while (!o.empty() && (o.back() == '.' || o.back() == ' '))
+        o.pop_back();
+    return o.empty() ? "untitled" : o;
+}
+
 bool SatelliteSim::cineSave(const std::string &file, std::string &err)
 {
-    // A bare name goes to <user data>/cinematics/<name>.json; a path is used as given.
-    std::filesystem::path p = file.empty() ? std::filesystem::path(cineDir()) / (cine_.name + ".json")
+    // A bare name goes to <user data>/cinematics/<name>.json; a path is used as given. No name: the cinematic's
+    // own (the window's Name field), as a file name.
+    std::filesystem::path p = file.empty() ? std::filesystem::path(cineDir()) / (cineFileStem(cine_.name) + ".json")
                                            : std::filesystem::path(file);
     if (!file.empty() && !p.has_parent_path())
         p = std::filesystem::path(cineDir()) / (p.extension() == ".json" ? p : std::filesystem::path(file + ".json"));
@@ -79,6 +121,7 @@ bool SatelliteSim::cineSave(const std::string &file, std::string &err)
     }
     out << cineToJson(cine_).dump(1);
     cineStatus_ = "Saved " + p.filename().string();
+    cineFile_ = p.string();
     cineRefreshFiles();
     return true;
 }
@@ -105,9 +148,12 @@ bool SatelliteSim::cineLoad(const std::string &file, std::string &err)
     Cinematic c;
     if (!cineFromJson(j, c, err))
         return false;
+    cineStop("Loaded another cinematic");
     cine_ = std::move(c);
     cineShot_ = 0;
+    cineScrub_ = 0.0f;
     cineStatus_ = "Loaded " + p.filename().string();
+    cineFile_ = p.string();
     return true;
 }
 
@@ -173,11 +219,35 @@ void SatelliteSim::cineApplyAt(double t, bool force)
             startFollow(shot.followSat);
         if (followActive)
         {
-            followAimLock = true;
-            followOffset = glm::dvec3(k.ox, k.oy, k.oz);
-            camera.fovYDeg = (float)k.fov;
+            // 2026-10-03: no flight in progress (a Go to started before playing kept flying under the shot), the
+            // key's own offset (a key without one — taken before Follow was switched on — sits behind the satellite
+            // where Go to would put it, not at its centre), and the key's own framing.
+            followFlight = 0;
+            followFlightAlign = false;
+            glm::dvec3 off(k.ox, k.oy, k.oz);
+            if (!k.hasOffset || glm::length(off) < 1e-3)
+            {
+                const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh((int)satOrbits[shot.followSat].typeIdx);
+                const double r = tm ? std::max(1.0, (double)tm->boundsRadius) : 10.0;
+                off = glm::dvec3(-4.0 * r, 0.0, 1.5 * r);
+            }
+            followOffset = off;
+            followAimLock = !k.hasView;
+            camera.fovYDeg = glm::clamp((float)k.fov, SkyCamera::kMinFovDeg, SkyCamera::kMaxFovDeg);
             updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, 0.0f);
             updateFollow(0.0f);
+            if (k.hasView && followBasisValid)
+            {
+                // The view from the satellite's frame to the observer's local az / el (updateFollow keeps it in the
+                // satellite's frame from here on, like a free aim).
+                const glm::dvec3 d = glm::normalize(k.vx * followBasisT + k.vy * followBasisN + k.vz * followBasisR);
+                const glm::dvec3 up = glm::dvec3(obsDir);
+                const double cLH = std::sqrt(up.x * up.x + up.y * up.y);
+                const glm::dvec3 east = cLH > 1e-9 ? glm::dvec3(-up.y / cLH, up.x / cLH, 0.0) : glm::dvec3(0.0, 1.0, 0.0);
+                const glm::dvec3 north = glm::cross(up, east);
+                aimCameraAzEl((float)glm::degrees(std::atan2(glm::dot(d, east), glm::dot(d, north))),
+                              (float)glm::degrees(std::asin(std::clamp(glm::dot(d, up), -1.0, 1.0))));
+            }
             return;
         }
     }
@@ -267,6 +337,7 @@ void SatelliteSim::cineStart(CineRun mode, bool oneShot)
         photoScaleActive = (uint32_t)s;
     }
     cineApplyAt(0.0, true);
+    cineExportT0_ = glfwGetTime();
     cineStatus_ = mode == CineRun::Play ? "Playing" : "Exporting";
     Log::line("cinematic: start " + cine_.name + " (" + std::to_string(cineFrames_) + " frames)");
 }
@@ -373,4 +444,20 @@ nlohmann::json SatelliteSim::cineLookSettings()
             if (all["display"].contains(k))
                 out["display"][k] = all["display"][k];
     return out;
+}
+
+// The HQ export's expected wall time: every frame settles "HQ photo settle frames" (+ the copy) at the photo's
+// pixel count, so it is about frames x settle x scale^2 window frames at the current frame rate. Rough (the photo
+// target's cost is not quite proportional to its pixels), but the right order: the export that looked like a
+// freeze was 451 x 48 frames at 4x the pixels, ~20 minutes.
+double SatelliteSim::cineEstimateHqS() const
+{
+    const double fps = std::max((double)fpsBadgeEma, 1.0);
+    const double dur = cinePlayOneShot_ && !cine_.shots.empty() ? cine_.shots[std::clamp(cineShot_, 0, (int)cine_.shots.size() - 1)].duration()
+                                                                 : cine_.duration();
+    const double frames = std::floor(dur * std::clamp((double)cineExportFps_, 1.0, 240.0) + 1e-6) + 1.0;
+    const double subs = std::max(1.0, std::round((double)cineBlurSubs_));
+    const double perFrame = subs * std::max(subs > 1.0 ? 4.0 : 1.0, std::round(photoSettleFrames / subs)) + 2.0;
+    const double s = std::clamp(std::round((double)photoScaleSetting), 1.0, 4.0);
+    return frames * perFrame * s * s / fps;
 }

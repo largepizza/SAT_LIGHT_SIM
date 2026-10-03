@@ -15,7 +15,12 @@ struct CineKey
     bool hasSim = false;
     double simT = 0.0;                                          // sim time, seconds since J2000
     double ox = 0.0, oy = 0.0, oz = 0.0;                        // a FOLLOW shot's camera offset from the satellite
-                                                                // (m: along-track, cross-track, radial; aimed at it)
+                                                                // (m: along-track, cross-track, radial)
+    // A follow key's view direction in the same frame (2026-10-03). Without it (older files) the camera is aimed
+    // at the satellite; with it the framing is the one the key was taken with (follow mode's aim is free).
+    bool hasView = false;
+    double vx = 0.0, vy = 0.0, vz = 0.0;
+    bool hasOffset = false;                                     // ox/oy/oz were taken while following (follow shots)
 };
 
 struct CineShot

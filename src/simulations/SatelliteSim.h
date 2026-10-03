@@ -1798,7 +1798,9 @@ public:
     float frameDt(float realDt) override;
     bool wantsQuit() const override { return harnessQuit_; }
     void onChar(GLFWwindow *w, unsigned int codepoint) override;
-    bool capturesKeyboard() const override { return consoleOpen_; }
+    // The console, a focused text field (Esc cancels the edit) and a playing / exporting cinematic (Esc stops it)
+    // keep Esc from quitting the app.
+    bool capturesKeyboard() const override { return consoleOpen_ || textEdit_.id != 0 || cineActive(); }
 
 private:
     // ── SSBOs ─────────────────────────────────────────────────────────────────
@@ -4258,10 +4260,21 @@ private:
     std::vector<float> cineAccum_;
     bool   cineHqSettingsSaved_ = false;
     WindowChrome cineChrome;
-    bool   hovCineClose = false, hovCineBtn[40] = {}, hovTimeCine = false, hovCineKey[24][5] = {}, hovCineFile[8] = {};
+    bool   hovCineClose = false, hovCineBtn[40] = {}, hovTimeCine = false, hovCineKey[24][5] = {}, hovCineFile[16][2] = {};
+    bool   hovCineShotTab[16] = {}, hovCineHudStop = false;
+    float  cineKeyGap_ = 2.0f;           // "+ Key at view": seconds after the last key
     int    cineDragSlider_ = -1;
     std::vector<std::string> cineFiles_;  // <user data>/cinematics/*.json, refreshed when the window opens
     char   cineInfoBuf_[256] = {}, cineKeyBuf_[24][128] = {};
+    // 2026-10-03: the file the cinematic was loaded from / saved to (empty = never saved), an export's wall-clock
+    // start (progress, ETA), and the timeline's drag state.
+    std::string cineFile_;
+    double cineExportT0_ = 0.0;
+    int    cineTimelineDrag_ = -1;            // -2 = the playhead, >= 0 = a key being dragged
+    bool   hovCineTimeline_ = false;
+    std::string cineDeleteArmed_;             // a file whose Delete was clicked once (a second click deletes)
+    double cineEstimateHqS() const;           // the HQ export's expected wall time at the last measured frame cost
+    bool   cineKeyFollowMismatch(std::string &why) const;   // a follow shot's key can only be taken while following
     bool cineActive() const { return cineRun_ != CineRun::Idle; }
     void cineStart(CineRun mode, bool oneShot);
     void cineStop(const char *why);
@@ -4272,6 +4285,8 @@ private:
     std::string cineDir() const;
     void cineRefreshFiles();
     void buildCinematicWindow(const UIInput &inp, UIRenderer &ui);
+    void buildCineHud(const UIInput &inp, UIRenderer &ui);   // playback / export progress, over everything
+    static std::string cineFileStem(const std::string &name);   // a cinematic's name as a file name
     nlohmann::json cineLookSettings();    // the settings a shot stores: clouds, photometry, rosters, render
     HarnessCamKey harnessEvalPath(double t) const;
     void harnessApplyCam(const HarnessCamKey &k);
@@ -4396,6 +4411,42 @@ private:
     // UC4: reports the virtual cursor's screen position/click state (updated in pollGamepad);
     // see Simulation.h for the calling convention.
     bool virtualCursor(float &x, float &y, bool &lmb) const override;
+    // Harness `ui click` (docs/HARNESS.md): a scripted pointer that overrides the mouse for a few frames.
+    bool  harnessPtrActive_ = false, harnessPtrDown_ = false;
+    float harnessPtrX_ = 0.0f, harnessPtrY_ = 0.0f;
+
+    // ── Text entry (2026-10-03, SatelliteSimUI.cpp "Text fields") ───────────────────────────────────────────
+    // One field at a time has the keyboard. Enter / Tab / a click elsewhere commits, Esc cancels. A field learns
+    // that its edit ended when it is next drawn (doneId), so the commit needs no callback.
+    struct TextEdit
+    {
+        uint32_t id = 0;              // Clay id of the focused field (0 = none)
+        std::string buf;
+        int  caret = 0;
+        bool selAll = false;          // the whole text is selected: the first key replaces it
+        bool drawn = false, hovered = false;   // the focused field this frame
+        uint32_t doneId = 0;          // a field whose edit was committed: it applies doneBuf when next drawn
+        std::string doneBuf;
+        int  doneAge = 0;
+        double t0 = 0.0;              // caret blink phase
+    } textEdit_;
+    bool textEditing() const { return textEdit_.id != 0; }
+    void textEditFocus(uint32_t id, const std::string &text);
+    void textEditCommit();
+    bool textEditKey(int key, int action);  // onKey: true = consumed
+    void textEditEndFrame(const UIInput &inp);
+    // A one-line text box: true (and value set) on the frame an edit is committed.
+    bool textField(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width, float fontPx,
+                   const char *tip = nullptr, size_t maxLen = 64);
+    // A number shown as text that turns into a text box on click (sliders' value labels): true on commit, v set
+    // (clamped to [vmin, vmax]).
+    bool numberField(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, float &v, float vmin, float vmax,
+                     const char *fmt, float width, float fontPx, Clay_Color color);
+    bool numberFieldD(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, double &v, double vmin, double vmax,
+                      const char *fmt, float width, float fontPx, Clay_Color color);
+    char textFieldBufs_[64][128] = {};     // per-frame display strings (Clay keeps raw pointers until record)
+    int  textFieldBufN_ = 0;
+    const char *textFieldStr(const std::string &s);
 
     // ── ECI → ENU rotation (updated each frame in updatePositions) ────────────
     // Encodes the surface-fixed observer's local frame in ECI coordinates.

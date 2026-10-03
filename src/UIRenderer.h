@@ -7,6 +7,7 @@
 #include <string>
 
 struct VulkanContext;   // forward declare
+struct Clay_Color;      // forward declare (SatelliteSim.h text fields)
 struct Clay_ElementId;  // forward declare (full definition in clay.h, included by UIRenderer.cpp
                         // and by any .cpp that calls scrollbar())
 

@@ -30,8 +30,18 @@ int Cinematic::shotAt(double t, double &local) const
     return -1;
 }
 
-CineKey cineEval(const std::vector<CineKey> &K, double t)
+CineKey cineEval(const std::vector<CineKey> &Kin, double t)
 {
+    // Azimuth unwrapped against the previous key (2026-10-03: the comment always said so, the code did not — a key
+    // at az 240 followed by one taken at -120, the same direction, swung the camera a full turn between them).
+    std::vector<CineKey> K = Kin;
+    for (size_t j = 1; j < K.size(); ++j)
+    {
+        while (K[j].az - K[j - 1].az > 180.0)
+            K[j].az -= 360.0;
+        while (K[j].az - K[j - 1].az < -180.0)
+            K[j].az += 360.0;
+    }
     if (K.empty())
         return CineKey{};
     if (t <= K.front().t)
@@ -65,6 +75,32 @@ CineKey cineEval(const std::vector<CineKey> &K, double t)
     r.ox = herm([](const CineKey &k) { return k.ox; });
     r.oy = herm([](const CineKey &k) { return k.oy; });
     r.oz = herm([](const CineKey &k) { return k.oz; });
+    r.hasOffset = a.hasOffset && b.hasOffset;
+    // The view: its components interpolated, then normalised (a key without one is aimed at the satellite,
+    // i.e. along -offset, so a shot can mix both).
+    if (a.hasView || b.hasView)
+    {
+        auto vOf = [](const CineKey &k, int c) -> double
+        {
+            if (k.hasView)
+                return c == 0 ? k.vx : c == 1 ? k.vy : k.vz;
+            const double l = std::sqrt(k.ox * k.ox + k.oy * k.oy + k.oz * k.oz);
+            if (l <= 1e-9)
+                return 0.0;
+            return -(c == 0 ? k.ox : c == 1 ? k.oy : k.oz) / l;
+        };
+        const double x = (1.0 - (3 * s * s - 2 * s * s * s)) * vOf(a, 0) + (3 * s * s - 2 * s * s * s) * vOf(b, 0);
+        const double y = (1.0 - (3 * s * s - 2 * s * s * s)) * vOf(a, 1) + (3 * s * s - 2 * s * s * s) * vOf(b, 1);
+        const double z = (1.0 - (3 * s * s - 2 * s * s * s)) * vOf(a, 2) + (3 * s * s - 2 * s * s * s) * vOf(b, 2);
+        const double l = std::sqrt(x * x + y * y + z * z);
+        if (l > 1e-6)
+        {
+            r.hasView = true;
+            r.vx = x / l;
+            r.vy = y / l;
+            r.vz = z / l;
+        }
+    }
     // Sim time: linear between the keys that set it (hold outside them).
     const CineKey *sa = nullptr, *sb = nullptr;
     for (const auto &k : K)
@@ -116,7 +152,11 @@ nlohmann::json cineToJson(const Cinematic &c)
             if (k.hasSim)
                 jk["sim_j2000_s"] = k.simT;
             if (s.followSat >= 0)
+            {
                 jk["offset_m"] = {k.ox, k.oy, k.oz};
+                if (k.hasView)
+                    jk["view_sat"] = {k.vx, k.vy, k.vz};
+            }
             js["keys"].push_back(jk);
         }
         j["shots"].push_back(js);
@@ -171,6 +211,14 @@ bool cineFromJson(const nlohmann::json &j, Cinematic &c, std::string &err)
                     k.ox = jk["offset_m"][0].get<double>();
                     k.oy = jk["offset_m"][1].get<double>();
                     k.oz = jk["offset_m"][2].get<double>();
+                    k.hasOffset = true;
+                }
+                if (jk.contains("view_sat") && jk["view_sat"].size() == 3)
+                {
+                    k.hasView = true;
+                    k.vx = jk["view_sat"][0].get<double>();
+                    k.vy = jk["view_sat"][1].get<double>();
+                    k.vz = jk["view_sat"][2].get<double>();
                 }
                 s.keys.push_back(k);
             }

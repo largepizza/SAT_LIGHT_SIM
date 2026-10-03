@@ -1471,6 +1471,30 @@ exported frame is N subframes over a 180-degree shutter (frameDt 1/(fps N); HQ s
 >= 4 each), summed in LINEAR light in `finalizeScreenshot` (`cineAccum_`; only the last subframe reaches the
 encode). The settled temporal passes cannot blur (they reproject the camera's motion away), hence screen space.
 
+**2026-10-03 revision** (the user: an HQ export "froze and crashed", follow inconsistent, text entry wanted):
+- **The HQ "crash" was a ~20-minute export with no feedback.** The photo target is never presented, so the window
+  showed one frozen frame for 451 frames x 48 settle frames at 4x the pixels (the log: 256 frames written, a clean
+  exit). App now presents a **progress frame** every 0.25 s while the photo target is up (`App::photoProgressFrame`:
+  wait for the photo frame, blit the photo image down into a swapchain image, the UI over it in `renderPassLoad`
+  with `swapExtent` swapped to the window's for `ui.record`, present). `buildCineHud` (drawn even with the window
+  closed or the HUD hidden) shows the run, frame n / N, the time left and Stop; **Esc stops** a playing or exporting
+  cinematic (`capturesKeyboard` keeps it from quitting meanwhile). The window shows the HQ export's expected time
+  before it starts (`cineEstimateHqS`: frames x settle x scale^2 / the current fps).
+- **Follow shots keep their framing.** A follow key stores the view in the satellite's along/cross/radial frame
+  (`CineKey::hasView`, `vx/vy/vz`, JSON `view_sat`) as well as the offset; playback sets it (`aimCameraAzEl` from
+  the satellite frame) and `updateFollow`'s free view holds it. Keys used to keep only the offset and playback forced
+  the aim lock, so any framing set after review 23's free aim on arrival came out different. A key without an offset
+  (taken before Follow was switched on, `hasOffset` false or zero) plays from Go to's default spot behind the
+  satellite, not its centre. "+ Key" / "Set" are refused (with the reason) on a follow shot while not following its
+  satellite. Playback clears any Go to flight in progress; WASD in follow mode is off while a cinematic runs.
+- **`cineEval` unwraps the azimuth** against the previous key (its comment said so; the code did not): a key at az
+  240 after one at -120 spun the camera a full turn.
+- **The window** (redesigned): Name field + Save (writes `<name>.json`; a new name saves a copy, `cineFile_` is the
+  open file) + New; shot tabs, shot name, Duplicate / Delete; a **timeline** (click / drag scrubs, drag a key to
+  retime it; built from fixed-width gaps, not floating elements, so it clips with the scroll view); each key's time
+  is a text box that ripples the later keys; "+ Key at view" with a typed gap; the saved files with Load and a
+  two-click Delete. Default height stays clear of the time bar.
+
 ## Loading screen (2026-09-26)
 
 `App::run()` creates the UI before `sim->init()`, with its pipeline built against
@@ -1521,6 +1545,23 @@ Invariants:
   thin thumb along its right edge, sized from `Clay_GetScrollContainerData`. Without it a long panel
   looks like it simply ends at the window edge (the Settings tab bodies and the satellite window's
   section list both had no indication they continue below).
+
+- **Text fields (2026-10-03, SatelliteSimUI.cpp "Text fields"):** `textField` (a string) and `numberField` /
+  `numberFieldD` (a value shown as text that becomes a text box on click — every shared slider row's value, the
+  Photometry rows, the volumes, the Cinematics window). One field at a time has the keyboard (`textEdit_`): Enter /
+  Tab / a click elsewhere commits, Esc cancels, Ctrl+A/C/V; the field applies a commit when it is next drawn
+  (`doneId`), so no callbacks. While one is focused `onKey` sends everything to it (`textEditKey`, before the
+  console), `onChar` types into it, the polled movement keys (WASD, Q/E, zoom, follow mode's) are off and Esc does
+  not quit. `textEditEndFrame` runs at the end of every `buildUI` path (a scope guard): a field not drawn this frame
+  loses focus. Display strings live in `textFieldBufs_` (Clay keeps the pointers until record). Typed numbers are
+  clamped to the slider's range. Harness: `ui click` / `ui type` / `ui key` / `expect`
+  (`tools/harness/scripts/text_fields.satcmd`).
+- **Clips nest (2026-10-03):** `UIRenderer::record` keeps a scissor stack — a clip inside a clipped scroll view is
+  intersected with it and its end restores the parent's. SCISSOR_END used to reset to the full screen, so anything
+  drawn after a nested clip (a text box, a horizontally clipped row) escaped its window's scroll view. `ui dump`'s
+  clip boxes follow the same rule.
+- **Never `return` or `break` inside a `CLAY(...)` block**: the macro is a for loop that closes the element at its
+  end; leaving it early leaves the element open and corrupts the layout. Set a flag and act after the block.
 
 ### Icon Atlas
 - `ui.loadIcons(ctx, paths, count)` — loads PNGs, packs into RGBA GPU atlas, rebinds descriptor. Call once on first frame (lazy init). Store `VulkanContext*` in your sim.
