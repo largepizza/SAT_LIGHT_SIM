@@ -444,23 +444,23 @@ void SatelliteSim::init(VulkanContext &ctx)
     //              it's a mouse-drag-flavored feature (see dispatchKeyAction).
     keybindings = {
         {"Toggle UI", GLFW_KEY_TAB, GLFW_GAMEPAD_BUTTON_BACK, false, false},                 // KB_TOGGLE_UI
-        {"Pause/Resume", GLFW_KEY_SPACE, GLFW_GAMEPAD_BUTTON_B, false, false},               // KB_PAUSE — moved off Start (session follow-up) to free it for KB_TOGGLE_CURSOR below
-        {"Slow Down", GLFW_KEY_COMMA, GLFW_GAMEPAD_BUTTON_DPAD_LEFT, false, false},          // KB_SLOWER
-        {"Speed Up", GLFW_KEY_PERIOD, GLFW_GAMEPAD_BUTTON_DPAD_RIGHT, false, false},         // KB_FASTER
-        {"Reverse Time", GLFW_KEY_R, GLFW_GAMEPAD_BUTTON_DPAD_UP, false, false},             // KB_REVERSE
+        {"Pause/Resume", GLFW_KEY_SPACE, GLFW_GAMEPAD_BUTTON_X, false, false},               // KB_PAUSE — X since pad layout 2 (B is "back" in the selection navigation, pollGamepad)
+        {"Slow Down", GLFW_KEY_COMMA, GLFW_GAMEPAD_BUTTON_DPAD_DOWN, false, false},          // KB_SLOWER — D-pad left/right choose a selection button (pad layout 2)
+        {"Speed Up", GLFW_KEY_PERIOD, GLFW_GAMEPAD_BUTTON_DPAD_UP, false, false},            // KB_FASTER
+        {"Reverse Time", GLFW_KEY_R, GLFW_GAMEPAD_BUTTON_Y, false, false},                   // KB_REVERSE
         {"Move Fast", GLFW_KEY_LEFT_SHIFT, GLFW_GAMEPAD_BUTTON_LEFT_THUMB, true, false},     // KB_MOVE_BOOST (held)
-        {"Move Fine", GLFW_KEY_LEFT_CONTROL, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB, false, false}, // KB_MOVE_FINE  (event, toggle)
+        {"Move Fine", GLFW_KEY_LEFT_CONTROL, -1, false, false},                              // KB_MOVE_FINE  (event, toggle) — the sticks are analog; RS resets zoom since pad layout 2
         {"Cinematic Pan", GLFW_KEY_LEFT_ALT, -1, false, false},                              // KB_CINEMATIC  (event, toggle)
         {"Raise Elevation", GLFW_KEY_Q, -1, true, false},                                    // KB_RAISE_ELEV (held) — gamepad is the analog right trigger, see gpElevRaise
         {"Lower Elevation", GLFW_KEY_E, -1, true, false},                                    // KB_LOWER_ELEV (held) — gamepad is the analog left trigger, see gpElevLower
         {"Reset Elevation", GLFW_KEY_Z, -1, false, false},                                   // KB_RESET_ELEV (event) — Y reassigned to Reset Zoom below
         {"Zoom In", GLFW_KEY_EQUAL, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER, true, false},          // KB_ZOOM_IN    (held)
         {"Zoom Out", GLFW_KEY_MINUS, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER, true, false},          // KB_ZOOM_OUT   (held)
-        {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_Y, false, false},                     // KB_ZOOM_RESET (event)
+        {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB, false, false},           // KB_ZOOM_RESET (event)
         {"Select Satellite", GLFW_KEY_T, GLFW_GAMEPAD_BUTTON_A, false, false},               // KB_SELECT_SAT (event) — center-of-screen pick; moved off F (session follow-up) to free F for KB_TOGGLE_TRAILS below
         {"Screenshot", GLFW_KEY_F12, -1, false, false},                                      // KB_SCREENSHOT (event) — no standard gamepad "capture" button to default to
         {"Toggle Cursor", GLFW_KEY_C, GLFW_GAMEPAD_BUTTON_START, false, false},              // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
-        {"Star Trails", GLFW_KEY_F, GLFW_GAMEPAD_BUTTON_X, false, false},                    // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off
+        {"Star Trails", GLFW_KEY_F, -1, false, false},                                       // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off (X went to Pause, pad layout 2)
         {"Save Snapshot", GLFW_KEY_F9, -1, false, false},                                    // KB_SAVE_SNAPSHOT (event) — how the user hands over a location
         {"HQ Photo", GLFW_KEY_F8, -1, false, false},                                         // KB_PHOTO (event) — supersampled screenshot (requestPhoto)
     };
@@ -959,27 +959,18 @@ void SatelliteSim::pollGamepad(float dt)
     // UC3/UC4: a controller has no Space bar, so Start is its one defined skip button — mirrors
     // onKey()'s single-key Space rule (see its comment) rather than the old "any newly-pressed
     // button" behavior, which was just as easy to trigger by accident as a stray keypress/click.
-    // Kept live for the WHOLE intro (both before and after controls unlock below), same as Space.
+    // Kept live for the whole intro, same as Space.
     if (showIntro)
     {
         if (state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS &&
             prevGpButtons[GLFW_GAMEPAD_BUTTON_START] != GLFW_PRESS)
             finishIntro(true);
 
-        // UC3 follow-up: movement/look go live once the controls-hint beat is showing, same
-        // handoff point recordCompute's WASD block and buildUI's mouse-look block already use
-        // (introCaptionIndex >= kIntroControlsIndex) — this used to be missing here, so gamepad
-        // movement/look silently stayed dead for the rest of the intro even after the on-screen
-        // text said otherwise (keyboard/mouse already worked via those two call sites; only this
-        // early-return was gamepad-specific). Rebind capture, edge-triggered button actions, and
-        // the virtual cursor stay fully cinematic-locked for the whole intro though — mirroring
-        // onKey()'s Space-only gate, which blocks everything else regardless of caption index.
-        if (introCaptionIndex < kIntroControlsIndex)
-        {
-            memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
-            gpState = state;
-            return;
-        }
+        // Rebind capture, edge-triggered button actions, movement, look and the virtual cursor stay
+        // cinematic-locked for the whole intro, mirroring onKey()'s Space-only gate.
+        memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
+        gpState = state;
+        return;
     }
 
     if (!showIntro)
@@ -1043,11 +1034,19 @@ void SatelliteSim::pollGamepad(float dt)
         // the same press that clicks the cursor — see that skip's comment.
         bool cursorWillBeActive = vCursorToggled && uiVisible;
 
+        // Context buttons, ahead of the bindings: a button used here is not also dispatched below.
+        bool consumed[GLFW_GAMEPAD_BUTTON_LAST + 1] = {};
+        auto edge = [&](int b) { return state.buttons[b] == GLFW_PRESS && prevGpButtons[b] != GLFW_PRESS; };
+        for (int b : {GLFW_GAMEPAD_BUTTON_START, GLFW_GAMEPAD_BUTTON_BACK, GLFW_GAMEPAD_BUTTON_DPAD_LEFT,
+                      GLFW_GAMEPAD_BUTTON_DPAD_RIGHT, GLFW_GAMEPAD_BUTTON_A, GLFW_GAMEPAD_BUTTON_B})
+            if (edge(b) && padContextButton(b, cursorWillBeActive))
+                consumed[b] = true;
+
         // Edge-triggered (event) actions.
         for (size_t i = 0; i < keybindings.size(); ++i)
         {
             const KeyBinding &kb = keybindings[i];
-            if (kb.held || kb.gpButton < 0 || kb.gpButton > GLFW_GAMEPAD_BUTTON_LAST)
+            if (kb.held || kb.gpButton < 0 || kb.gpButton > GLFW_GAMEPAD_BUTTON_LAST || consumed[kb.gpButton])
                 continue;
             // UC5: A double-books as both "select nearest satellite to screen center" and the
             // virtual cursor's click. While the cursor is up, A should only click whatever it's
@@ -1168,6 +1167,48 @@ void SatelliteSim::pollGamepad(float dt)
             }
 }
 
+// ─── padContextButton ────────────────────────────────────────────────────────
+// A gamepad button whose meaning depends on what is on screen, ahead of the bindings (pollGamepad; the
+// harness's `pad` command). True = used here, so the button's binding does not also fire.
+//  - the tutorial's card: Start = Next / Finish, View = Skip (no cursor needed for it)
+//  - a selected satellite (pad layout 2): D-pad left/right move the focus over its buttons, A presses
+//    the focused one (buildSelActionButton), B goes back one layer (padBack). The windows' controls are
+//    too small for the virtual cursor to be how a controller reaches what a satellite can do.
+bool SatelliteSim::padContextButton(int b, bool cursorActive)
+{
+    if (cursorActive || !uiVisible || showIntro)
+        return false;
+    if (tutActive)
+    {
+        if (b == GLFW_GAMEPAD_BUTTON_START)
+        {
+            setTutorialStep(tutStep + 1);
+            return true;
+        }
+        if (b == GLFW_GAMEPAD_BUTTON_BACK)
+        {
+            endTutorial(false);
+            return true;
+        }
+    }
+    if (selectedSatIndex >= 0)
+    {
+        if (b == GLFW_GAMEPAD_BUTTON_DPAD_LEFT || b == GLFW_GAMEPAD_BUTTON_DPAD_RIGHT)
+        {
+            padFocusStep(b == GLFW_GAMEPAD_BUTTON_DPAD_LEFT ? -1 : 1);
+            return true;
+        }
+        if (b == GLFW_GAMEPAD_BUTTON_A && selActionAvailMask() != 0)
+        {
+            padActivatePending = true;
+            return true;
+        }
+    }
+    if (b == GLFW_GAMEPAD_BUTTON_B)
+        return padBack();
+    return false;
+}
+
 // ─── virtualCursor ───────────────────────────────────────────────────────────
 // UC4: reports the current virtual-cursor state to App (see Simulation.h's calling convention
 // and pollGamepad's comment for how vCursorX/Y/Active/Click are maintained).
@@ -1279,14 +1320,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // advances introElapsed/introCaptionIndex and eventually calls finishIntro().
         updateIntroCinematic(dt);
     }
-    // UC3 follow-up: once the controls-hint beat is showing ("WASD to move" / "Q / E to
-    // raise/lower height" — see buildIntroOverlay), real input starts responding immediately
-    // rather than waiting for the intro to fully end. It felt wrong to display those instructions
-    // while the keys visibly did nothing. updateIntroCinematic stops forcing the camera from that
-    // beat onward (its camera-live check above), so this can run unopposed; !showIntro covers the
-    // normal post-intro case the same way the old "else" branch did.
     boostHeldNow = false;
-    if ((!showIntro || introCaptionIndex >= kIntroControlsIndex) && win && !consoleOpen_ && !textEditing() && !cineActive())
+    if (!showIntro && win && !consoleOpen_ && !textEditing() && !cineActive())
     {
         bool boost = (win && glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS) || gpHeld(KB_MOVE_BOOST);
         boostHeldNow = boost;   // review 22: the clouds' fast-flight LOD
@@ -6841,9 +6876,8 @@ void SatelliteSim::updateIntroCinematic(float dt)
     // move. Replaced with a Catmull-Rom/cubic-Hermite spline through all the keyframes: the
     // tangent at each interior key is estimated from its two neighbors (time-weighted, since beats
     // aren't evenly spaced), so velocity carries through a waypoint instead of resetting there.
-    // Endpoints fall back to the one-sided neighbor difference, which happens to already be ~0 for
-    // this beat sheet (beats 0-1 and the final hold beats share identical values), so the start and
-    // end still ease naturally without a special case.
+    // The start falls back to the one-sided neighbor difference (~0: beats 0-1 share their values);
+    // the end eases to a stop (see m1).
     auto hermite = [&](float IntroKeyframe::*field) -> float
     {
         float p0 = kIntroKeyframes[i].*field;
@@ -6855,8 +6889,10 @@ void SatelliteSim::updateIntroCinematic(float dt)
                        ? (p1 - p0) / segDt
                        : (kIntroKeyframes[i + 1].*field - kIntroKeyframes[i - 1].*field) /
                              (kIntroKeyframes[i + 1].t - kIntroKeyframes[i - 1].t);
+        // The final key eases to a stop (zero tangent): the intro hands the camera to the player
+        // there, and a one-sided tangent arrived at speed and stopped dead on the handoff frame.
         float m1 = (i + 1 == kIntroKeyframeCount - 1)
-                       ? (p1 - p0) / segDt
+                       ? 0.0f
                        : (kIntroKeyframes[i + 2].*field - kIntroKeyframes[i].*field) /
                              (kIntroKeyframes[i + 2].t - kIntroKeyframes[i].t);
         float u = (segDt > 0.0f) ? glm::clamp((tClamped - t0) / segDt, 0.0f, 1.0f) : 1.0f;
@@ -6868,11 +6904,6 @@ void SatelliteSim::updateIntroCinematic(float dt)
         return h00 * p0 + h10 * (m0 * segDt) + h01 * p1 + h11 * (m1 * segDt);
     };
 
-    // UC3 follow-up: once the controls-hint beat is reached, WASD/Q-E become live (see
-    // recordCompute) — the camera has already arrived at its final framing there, so simply
-    // stopping the forced overwrite is enough; nothing further needs blending in.
-    bool controlsLive = introCaptionIndex >= kIntroControlsIndex;
-    if (!controlsLive)
     {
         obsHeightOffset = std::max(0.0f, hermite(&IntroKeyframe::altM));
         camera.elDeg = hermite(&IntroKeyframe::elDeg);
@@ -6911,7 +6942,11 @@ void SatelliteSim::finishIntro(bool wasSkipped)
 {
     showIntro = false;
     introSkipped = wasSkipped;
-    selectHintTimer = 30.0f;   // review 17: tell the player satellites are clickable (buildSelectHint)
+    // The controls are taught by the tutorial (SatelliteSimTutorial.cpp), once; a replay of the intro
+    // does not re-run it (the Display tab has its own Replay Tutorial).
+    if (!tutorialDone && !tutActive && !introIsReplay && !harnessRunner_)
+        startTutorial();
+    tutAutoChecked = true;
 
     // UC1 mechanisms 2+3: only decide anything when the intro played to completion (a skip
     // means no representative frame-time average was collected) and never during crash recovery

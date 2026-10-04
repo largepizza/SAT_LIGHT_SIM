@@ -1,0 +1,140 @@
+site_name: SAT LIGHT SIM
+site_description: How SAT LIGHT SIM simulates and renders satellite megaconstellations, and how to mod it.
+repo_url: https://github.com/largepizza/SAT_LIGHT_SIM
+repo_name: largepizza/SAT_LIGHT_SIM
+edit_uri: edit/main/wiki/
+docs_dir: wiki
+site_dir: build-wiki
+
+# Notes waiting for the next wiki pass live in wiki/_inbox/ (committed, never published).
+# See wiki/development/wiki.md.
+exclude_docs: |
+  _inbox/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - navigation.instant
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  icon:
+    logo: material/satellite-variant
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home: index.md
+  - Using:
+      - using/index.md
+      - Getting started: using/getting-started.md
+      - Controls: using/controls.md
+      - Features tour: using/features.md
+      - Graphics settings: using/graphics-settings.md
+  - Modding:
+      - modding/index.md
+      - Constellations: modding/constellations.md
+      - Satellite models: modding/satellite-models.md
+      - Reflector targets: modding/reflector-targets.md
+  - Simulation:
+      - simulation/index.md
+      - Time and reference frames: simulation/time-and-frames.md
+      - Orbits and constellations: simulation/orbits.md
+      - Attitude: simulation/attitude.md
+      - Satellite photometry: simulation/photometry.md
+      - Seeing a satellite from the ground: simulation/visibility.md
+      - Reflectors and beams: simulation/reflectors.md
+      - Sun, Moon and planets: simulation/sun-moon-planets.md
+  - Accuracy:
+      - accuracy/index.md
+      - Benchmark datasets: accuracy/benchmarks.md
+      - SatBench and the accuracy gate: accuracy/satbench.md
+      - Results and known residuals: accuracy/results.md
+      - Model provenance: accuracy/provenance.md
+  - Rendering:
+      - rendering/index.md
+      - Atmosphere and sky: rendering/atmosphere-and-sky.md
+      - Clouds:
+          - The cloud field: rendering/clouds/field.md
+          - The cloud march: rendering/clouds/march.md
+          - Temporal resolve and the far layer: rendering/clouds/temporal.md
+          - Weather, rain, lightning, fog: rendering/clouds/weather.md
+      - Terrain: rendering/terrain.md
+      - The sea: rendering/sea.md
+      - Cities, farms and solar parks: rendering/cities.md
+      - Aurora and airglow: rendering/aurora-airglow.md
+      - Moon and eclipses: rendering/moon-and-eclipses.md
+      - Points, bloom and glare: rendering/points-bloom-glare.md
+      - Satellite meshes: rendering/satellite-meshes.md
+      - Weak-hardware tiers: rendering/hardware-tiers.md
+  - Sound:
+      - sound/index.md
+      - Ambience: sound/ambience.md
+      - Music and tonality: sound/music.md
+  - Development:
+      - development/index.md
+      - Building and releasing: development/building.md
+      - Code architecture: development/architecture.md
+      - GPU conventions: development/gpu-conventions.md
+      - UI (Clay): development/ui.md
+      - Controls and settings plumbing: development/controls-and-settings.md
+      - Automation harness: development/harness.md
+      - Tools: development/tools.md
+      - Profiling: development/profiling.md
+      - Working on this wiki: development/wiki.md
+      - Wiki style guide: development/style-guide.md
+  - History:
+      - history/index.md
+      - Changelog: history/changelog.md
+      - Design notes: history/design-notes.md
+      - Known issues: history/known-issues.md

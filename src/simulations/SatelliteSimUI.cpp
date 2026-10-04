@@ -12,6 +12,7 @@
 #include "../Harness.h"
 #include "version.h"
 #include "clay.h"
+#include "UIPalette.h"
 
 #include <cstdio>
 #include <cstring>
@@ -167,7 +168,7 @@ int settingsTabIndexByName(const std::string &name)
 const char *settingsTabName(int i) { return (i >= 0 && i < kSettingsTabCount) ? kSettingsTabNames[i] : ""; }
 
 // Helper: short display name for a GLFW key code (used in settings window + tooltips).
-static const char *keyDisplayName(int key)
+const char *keyDisplayName(int key) // also SatelliteSimTutorial.cpp
 {
     switch (key)
     {
@@ -281,7 +282,7 @@ static const char *keyDisplayName(int key)
 
 // Helper: short display name for a GLFW gamepad button code (used in settings window).
 // -1 (unbound) is handled by the caller, not here.
-static const char *gamepadButtonDisplayName(int button)
+const char *gamepadButtonDisplayName(int button) // also SatelliteSimTutorial.cpp
 {
     switch (button)
     {
@@ -318,82 +319,6 @@ static const char *gamepadButtonDisplayName(int button)
     default:
         return "?";
     }
-}
-
-// ── UI color palette ──────────────────────────────────────────────────────────
-// Edit here to restyle the entire UI. All buildUI colors reference these names.
-namespace Pal
-{
-    // Backgrounds
-    constexpr Clay_Color panelBg = {8, 8, 9, 210};            // floating panel
-    constexpr Clay_Color panelBgFade = {8, 8, 9, 180};        // panel, slightly transparent
-    constexpr Clay_Color panelSolid = {12, 12, 13, 245};      // settings window
-    constexpr Clay_Color titleBar = {18, 18, 19, 255};        // title / header strip
-    constexpr Clay_Color sectionHdr = {22, 22, 23, 130};      // section divider strip
-    constexpr Clay_Color rowEnabled = {45, 10, 10, 180};      // enabled constellation row
-    constexpr Clay_Color rowDisabled = {16, 16, 17, 160};     // disabled constellation row
-    constexpr Clay_Color rowHighlight = {35, 30, 8, 180};     // highlighted constellation row
-    constexpr Clay_Color btnHighlight = {160, 120, 15, 240};  // HLT active (amber)
-    constexpr Clay_Color btnHighlightHv = {110, 85, 10, 230}; // HLT hovered
-    constexpr Clay_Color listenRow = {50, 10, 10, 185};       // keybind capture row
-    // Buttons
-    constexpr Clay_Color btnIdle = {30, 30, 31, 210};      // default button
-    constexpr Clay_Color btnHover = {52, 52, 54, 230};     // hovered button
-    constexpr Clay_Color btnAccent = {150, 20, 20, 240};   // ON / active (red)
-    constexpr Clay_Color btnAccentHv = {100, 15, 15, 230}; // accent hovered
-    constexpr Clay_Color closeBgIdle = {50, 16, 16, 180};  // [X] idle
-    constexpr Clay_Color closeBgHov = {170, 30, 30, 220};  // [X] hovered
-    constexpr Clay_Color pauseActive = {140, 25, 25, 230}; // pause btn when paused
-    constexpr Clay_Color listenBtn = {120, 18, 18, 220};   // rebind btn while listening
-    // Chrome
-    constexpr Clay_Color divider = {48, 48, 50, 120}; // separator line
-    // Text
-    constexpr Clay_Color textPrimary = {205, 205, 210, 255}; // main readable text
-    constexpr Clay_Color textDim = {130, 130, 135, 200};     // secondary / dim
-    constexpr Clay_Color textHint = {72, 72, 76, 160};       // hint / footer
-    constexpr Clay_Color textSection = {155, 155, 165, 200}; // section header labels
-    constexpr Clay_Color textCamera = {110, 110, 115, 180};  // dim descriptive text
-    constexpr Clay_Color volLabel = {185, 185, 195, 220};    // vol/scale label
-    constexpr Clay_Color volValue = {210, 210, 215, 255};    // vol/scale value readout
-    constexpr Clay_Color btnLabel = {210, 210, 215, 255};    // text inside +/- buttons
-    constexpr Clay_Color listenKey = {255, 85, 85, 255};     // key label while listening
-    constexpr Clay_Color keyText = {140, 140, 145, 200};     // normal key label
-    // Speed indicator
-    constexpr Clay_Color speedFwd = {200, 55, 55, 220};    // forward (red)
-    constexpr Clay_Color speedRev = {155, 155, 165, 220};  // reverse (grey)
-    constexpr Clay_Color speedPaused = {95, 95, 100, 220}; // paused (dark grey)
-    // Selection
-    constexpr Clay_Color reticule = {255, 205, 60, 230}; // target-lock reticule (amber — distinct
-                                                         // from the red accent used everywhere else)
-    // View-preset chips over the 3D render (buildViewChip): translucent, so the image reads through
-    // them, with a dark scrim under the idle/hover states because a bare white icon over bright clouds
-    // or the Earth's limb is invisible.
-    constexpr Clay_Color chipIdle = {0, 0, 0, 84};
-    constexpr Clay_Color chipHover = {0, 0, 0, 150};
-    constexpr Clay_Color chipOn = {150, 20, 20, 150}; // the accent, translucent
-    constexpr Clay_Color chipOnHover = {150, 20, 20, 205};
-}
-
-// ── Global styling parameters ─────────────────────────────────────────────────
-// Structural theming knobs shared across every window/panel — one place to tune
-// the "shape" of the UI, as opposed to Pal's colors above. Added because the
-// bevel border used to be redeclared per-element (each with its own hardcoded
-// 1px width), so testing a different width meant editing three separate spots
-// that could silently drift out of sync.
-namespace Style
-{
-    // Corner rounding ("bevel", in the sense the user actually meant — not a
-    // border) — windows (Settings/Controls) are slightly more rounded than the
-    // smaller HUD panels. This is the knob to retune for a "more/less rounded"
-    // look.
-    constexpr float windowCornerRadius = 2.0f;
-    constexpr float panelCornerRadius = 16.0f;
-
-    // Border — a separate, purely optional decoration, currently drawn only on
-    // the two real windows (Settings, Controls); the HUD panels intentionally
-    // have none (a border there cut up the panels' text too much).
-    constexpr uint16_t borderWidthPx = 1;
-    constexpr Clay_Color borderColor = {255, 255, 255, 22};
 }
 
 // ── Small member helpers (declared in SatelliteSim.h) ─────────────────────────
@@ -489,12 +414,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // UC3: skip during the intro cinematic — updateIntroCinematic() (recordCompute) drives
     // camera.elDeg/obsFacing directly, and letting RMB-look run concurrently would fight it (and
     // would leave the cursor captured/hidden partway through a cutscene the user hasn't consented
-    // to control yet). Same early-unlock exception as the WASD/Q-E movement block in
-    // recordCompute: once the controls-hint beat is showing, updateIntroCinematic has already
-    // stopped forcing the camera (see its controlsLive check), so mouse-look — and this block's
-    // own camera.azDeg-from-obsFacing derivation just below, which movement now depends on too —
-    // can safely run alongside the (by then static) cinematic hold.
-    if (win && (!showIntro || introCaptionIndex >= kIntroControlsIndex) && !cineActive())
+    // to control yet).
+    if (win && !showIntro && !cineActive())
     {
         // Track lock: the aim above owns the camera's direction this frame, so every look input —
         // mouse deltas, their cinematic-drift velocities, the gamepad stick — is dropped rather than
@@ -631,6 +552,9 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         buildIntroOverlay(inp, ui);
         return;
     }
+    // Before the click handling below: a click on the tutorial's card must not also pick a satellite,
+    // and its completion test reads this frame's look (the block above) and keys.
+    updateTutorial(dt);
 
     // ── Lazy icon loading (first buildUI call after init) ─────────────────────
     if (!iconsLoaded && ctx_)
@@ -756,7 +680,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildCrashRecoveryNotice(dt, inp, ui);
     buildGraphicsAutoNotice(dt, inp, ui);
     buildScreenshotToast(dt, inp, ui);
-    buildSelectHint(dt, inp, ui);
+    buildTutorial(inp, ui); // after every panel it points at: their boxes are last frame's layout
 
     // UC4: draw the virtual cursor itself — inp.mouseX/Y IS vCursorX/Y here (App overrode the
     // real mouse position before this frame's ui.beginFrame()), so no separate position plumbing
@@ -1244,6 +1168,17 @@ static void captureLaidOut(UIRenderer &ui, Clay_ElementId id, float x, float y, 
 
 void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
 {
+    selBtnDrawnMask = 0;
+    padHintBuf[0] = '\0';
+    // A press from the pad lands on this frame's buttons only (a selection gone meanwhile drops it).
+    padActivateNow = padActivatePending;
+    padActivatePending = false;
+    if (selectedSatIndex != padFocusSat)
+    {
+        padFocusSat = selectedSatIndex;
+        padFocus = 0;
+        padFocusStep(0); // onto the first button this satellite has
+    }
     if (selectedSatIndex < 0 && selectedPlanetIndex < 0)
         return;
 
@@ -1409,6 +1344,9 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                 buildTraceButton(inp, ui, 1);
                 buildTrackButton(inp, ui, 1);
             }
+            if (padHintBuf[0])
+                CLAY_TEXT((Clay_String{false, (int32_t)strlen(padHintBuf), padHintBuf}),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
         }
     }
     // Panel size isn't known until Clay lays it out this frame — this is a rough estimate for
@@ -2355,25 +2293,94 @@ bool SatelliteSim::buildSelActionButton(const UIInput &inp, UIRenderer &ui, int 
                                         bool on, bool &hov)
 {
     bool clicked = false;
+    selBtnDrawnMask |= 1u << id; // the tutorial outlines the buttons drawn this frame (Clay keeps stale boxes)
+    // The gamepad's focus (pollGamepad): a ring while the pad is in use, and A clicks it here, through
+    // the same path as the mouse.
+    const bool focused = padFocusVisible() && (id % 4) == padFocus;
+    if (focused && padActivateNow)
+    {
+        clicked = true;
+        padActivateNow = false;
+        if (audio_)
+            audio_->playSfx("assets/sound/ui/buttonclick.wav");
+    }
+    if (focused)
+        snprintf(padHintBuf, sizeof(padHintBuf), "%s      < >  choose   A  press   B  back", name);
     const float sz = std::max(kSelIconBtnMin, (float)fs(12) + 12.0f);
     const float isz = sz - 8.0f;
+    const uint16_t ring = focused ? 2 : 0;
     CLAY(CLAY_SIDI(CLAY_STRING("SelActBtn"), id),
          {.layout = {.sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
                      .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-          .backgroundColor = hov ? (on ? Pal::btnAccentHv : Pal::btnHover) : (on ? Pal::btnAccent : Pal::btnIdle),
-          .cornerRadius = CLAY_CORNER_RADIUS(4)})
+          .backgroundColor = (hov || focused) ? (on ? Pal::btnAccentHv : Pal::btnHover) : (on ? Pal::btnAccent : Pal::btnIdle),
+          .cornerRadius = CLAY_CORNER_RADIUS(4),
+          .border = {.color = {230, 60, 60, 255}, .width = {ring, ring, ring, ring, 0}}})
     {
         bool n = Clay_Hovered();
         sndRollover(n, hov);
         sndClick(n, inp.lmbPressed);
         hov = n;
-        clicked = n && inp.lmbPressed;
+        clicked = clicked || (n && inp.lmbPressed);
         ui.tooltip(inp, n, name, fs(11));
         CLAY(CLAY_SIDI(CLAY_STRING("SelActIcon"), id),
              {.layout = {.sizing = {CLAY_SIZING_FIXED(isz), CLAY_SIZING_FIXED(isz)}},
               .image = {.imageData = (void *)(intptr_t)(iconIdx + 1)}}) {}
     }
     return clicked;
+}
+
+// ─── Gamepad navigation of the selection (pollGamepad) ───────────────────────
+uint32_t SatelliteSim::selActionAvailMask() const
+{
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+        return 0u;
+    const bool model = meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx) != nullptr;
+    return (model ? 0x3u : 0u) | 0xCu; // Info and Go to need a geometry model; Trace and Track do not
+}
+
+void SatelliteSim::padFocusStep(int dir)
+{
+    const uint32_t avail = selActionAvailMask();
+    if (!avail)
+        return;
+    int f = std::clamp(padFocus, 0, 3);
+    if (dir == 0 && (avail & (1u << f)))
+        return;
+    const int step = dir < 0 ? 3 : 1; // wraps
+    for (int i = 0; i < 4; ++i)
+    {
+        f = (f + step) % 4;
+        if (avail & (1u << f))
+            break;
+    }
+    padFocus = f;
+    if (dir != 0 && audio_)
+        audio_->playSfx("assets/sound/ui/buttonrollover.wav");
+}
+
+// B: one layer back — the selection's windows, then Go to, then Track, then the selection itself.
+bool SatelliteSim::padBack()
+{
+    if (viewerChrome.open)
+        viewerChrome.open = false;
+    else if (infoChrome.open)
+        infoChrome.open = false;
+    else if (traceChrome.open)
+        traceChrome.open = false;
+    else if (followActive)
+        stopFollow(true);
+    else if (trackActive)
+        stopTrack();
+    else if (selectedSatIndex >= 0 || selectedPlanetIndex >= 0)
+    {
+        selectedSatIndex = -1;
+        selectedPlanetIndex = -1;
+    }
+    else
+        return false;
+    if (audio_)
+        audio_->playSfx("assets/sound/ui/buttonclick.wav");
+    return true;
 }
 
 // ─── buildInfoButton ─────────────────────────────────────────────────────────
@@ -3543,6 +3550,24 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
             }
             ui.tooltip(inp, n, "Replay the cinematic intro", fs(11));
             CLAY_TEXT(CLAY_STRING("Replay Intro"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
+        }
+        CLAY(CLAY_ID("ReplayTutorialBtn"), {.layout = {
+                                                .sizing = {CLAY_SIZING_FIXED(140), CLAY_SIZING_FIXED(22)},
+                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                            .backgroundColor = hovReplayTutorial ? Pal::btnHover : Pal::btnIdle,
+                                            .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovReplayTutorial);
+            sndClick(n, inp.lmbPressed);
+            hovReplayTutorial = n;
+            if (n && inp.lmbPressed && !showIntro)
+            {
+                settingsChrome.open = false; // the tutorial starts with the view, not this window
+                startTutorial();
+            }
+            ui.tooltip(inp, n, "Walk through the controls again", fs(11));
+            CLAY_TEXT(CLAY_STRING("Replay Tutorial"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
         }
     }
 
@@ -5971,6 +5996,8 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {"Look around", "Right-click drag", "R stick"},
         {"Zoom (FOV)", "Scroll wheel", nullptr},
         {"Raise/Lower elevation", nullptr, "RT / LT trigger"},
+        {"Selection: choose a button", nullptr, "D-pad Left/Right"},
+        {"Selection: press it / back", nullptr, "A / B"},
     };
 
     auto ctrlRow = [&](int idx, const char *label, const char *keyText)
@@ -5995,7 +6022,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
                                              .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                          .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
     {
-        static char keyBufs[KB_COUNT + 4][40];
+        static char keyBufs[KB_COUNT + 8][40];
         int idx = 0;
         for (auto &row : digitalRows)
         {
@@ -6087,17 +6114,7 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
 
     bool isYearBeat = (introCaptionIndex == kIntroYearIndex);
     bool isTitleBeat = (introCaptionIndex == kIntroTitleIndex);
-    bool isControlsBeat = (introCaptionIndex == kIntroControlsIndex);
     const char *text = kIntroKeyframes[introCaptionIndex].text;
-    // The controls beat reads live keybindings instead of a compile-time literal, so a rebind or
-    // a controller-only player still sees the right prompt (UC4: don't hardcode control text).
-    if (isControlsBeat)
-    {
-        snprintf(introControlsTextBuf, sizeof(introControlsTextBuf),
-                 "%s / %s to raise/lower height",
-                 keyDisplayName(keybindings[KB_RAISE_ELEV].key), keyDisplayName(keybindings[KB_LOWER_ELEV].key));
-        text = introControlsTextBuf;
-    }
 
     if (text && textA > 0)
     {
@@ -6135,15 +6152,6 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
                 {
                     CLAY_TEXT(CLAY_STRING("SAT LIGHT SIM"),
                               CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(34)}));
-                }
-                else if (isControlsBeat)
-                {
-                    CLAY_TEXT(CLAY_STRING("WASD to move"),
-                              CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(19)}));
-                    Clay_String txtStr{false, (int32_t)strlen(text), text};
-                    CLAY_TEXT(txtStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(19)}));
-                    CLAY_TEXT(CLAY_STRING("Click a satellite to select it"),
-                              CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(19)}));
                 }
                 else
                 {
@@ -6894,37 +6902,6 @@ void SatelliteSim::buildCineHud(const UIInput &inp, UIRenderer &ui)
         ui.addMouseCaptureRect(d.boundingBox.x, d.boundingBox.y, d.boundingBox.width, d.boundingBox.height);
 }
 
-// ─── buildSelectHint ─────────────────────────────────────────────────────────
-// Review 17: playtesters did not find out that satellites can be clicked until told. After the intro
-// (finishIntro arms the timer) a hint sits above the time bar until a satellite or planet is selected or
-// 30 s pass; it fades over its last 2 s.
-void SatelliteSim::buildSelectHint(float dt, const UIInput &inp, UIRenderer &ui)
-{
-    (void)inp;
-    if (selectHintTimer <= 0.0f)
-        return;
-    if (selectedSatIndex >= 0 || selectedPlanetIndex >= 0)
-    {
-        selectHintTimer = 0.0f;
-        return;
-    }
-    selectHintTimer -= dt;
-    const float a = std::clamp(selectHintTimer / 2.0f, 0.0f, 1.0f);
-    CLAY(CLAY_ID("SelectHint"), {.layout = {
-                                     .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                     .padding = {16, 16, 9, 9},
-                                     .childGap = 2,
-                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER},
-                                     .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                 .backgroundColor = {10, 14, 24, 200.0f * a},
-                                 .cornerRadius = CLAY_CORNER_RADIUS(6),
-                                 .floating = {.offset = {0, -(float)fs(70)}, .zIndex = 24, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_BOTTOM, .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM}, .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH, .attachTo = CLAY_ATTACH_TO_ROOT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Click to select any satellite"),
-                  CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255.0f * a}, .fontSize = fs(14)}));
-    }
-}
-
 // ─── buildScreenshotToast ────────────────────────────────────────────────────
 // UC6: bottom-center confirmation toast ("Saved satlight_....png") after F12. Same dismissible-
 // timer-banner pattern as buildCrashRecoveryNotice/buildGraphicsAutoNotice, anchored to the
@@ -7397,6 +7374,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             playIntroOnStartup = d.value("play_intro_on_startup", false);
             showIntro = playIntroOnStartup;
         }
+        // Absent (every settings.json before 2026-10-03) = not done: the tutorial is new, and the
+        // players it is for are exactly the ones who already never found the controls.
+        tutorialDone = d.value("tutorial_done", isPatch ? tutorialDone : false);
     }
 
     // Left/right HUD panels are corner-anchored, not persisted (see buildLeftHudPanel/
@@ -7477,6 +7457,10 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             int gpButton;
             bool hasGp;
         };
+        // Pad layout 2 (2026-10-03): D-pad up/down = time, X pause, Y reverse, RS reset zoom, and D-pad
+        // left/right + A + B navigate the selection (pollGamepad). Pad buttons saved under the old layout
+        // are dropped once, or B would still pause and the D-pad still change the time scale.
+        const bool padLayoutCurrent = j["controls"].value("pad_layout", 1) >= kPadLayoutVersion;
         std::unordered_map<std::string, LoadedBinding> actionKey;
         for (const auto &kb : j["controls"]["keybindings"])
             if (kb.contains("action") && kb.contains("key"))
@@ -7488,7 +7472,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             if (it != actionKey.end())
             {
                 kb.key = it->second.key;
-                if (it->second.hasGp)
+                if (it->second.hasGp && padLayoutCurrent)
                     kb.gpButton = it->second.gpButton;
             }
         }
@@ -7894,6 +7878,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"active_tab", settingsActiveTab},
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
         {"play_intro_on_startup", playIntroOnStartup},
+        {"tutorial_done", tutorialDone},
         {"photo_scale", photoScaleSetting},
         {"photo_frames", photoSettleFrames},
         {"trail_enabled", trailEnabled}};
@@ -8186,6 +8171,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     for (const auto &kb : keybindings)
         kbArr.push_back({{"action", kb.action}, {"key", kb.key}, {"gp_button", kb.gpButton}});
     j["controls"]["keybindings"] = kbArr;
+    j["controls"]["pad_layout"] = kPadLayoutVersion;
     j["controls"]["invert_mouse_x"] = invertMouseX;
     j["controls"]["invert_mouse_y"] = invertMouseY;
     j["controls"]["invert_pad_x"] = invertPadX;

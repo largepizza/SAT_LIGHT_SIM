@@ -202,7 +202,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|hint|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; tutorial [start [step]|next|back|skip|state]; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -216,6 +216,7 @@ void SatelliteSim::harnessInit()
     // A harness run starts in the scene, not the cinematic, and without first-run notices that would
     // otherwise sit in every UI capture for their first eight seconds.
     showIntro = false;
+    tutAutoChecked = true; // nor the first-run tutorial (`tutorial start` shows it)
     graphicsAutoNoticeTimer = 0.0f;
     crashRecoveryNoticeTimer = 0.0f;
     harnessRunner_ = new harness::Runner();
@@ -1251,6 +1252,86 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["message"] = trackActive ? "track on" : "track off";
         return Status::Done;
     }
+    if (n == "pad")
+    {
+        // A gamepad button press as pollGamepad handles it (no controller needed): the context meaning
+        // first (tutorial card, selection focus / A / B), else the button's binding. Marks the pad as
+        // the last input, so the HUD shows its focus ring and hints.
+        static const std::pair<const char *, int> kButtons[] = {
+            {"a", GLFW_GAMEPAD_BUTTON_A}, {"b", GLFW_GAMEPAD_BUTTON_B}, {"x", GLFW_GAMEPAD_BUTTON_X},
+            {"y", GLFW_GAMEPAD_BUTTON_Y}, {"lb", GLFW_GAMEPAD_BUTTON_LEFT_BUMPER}, {"rb", GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER},
+            {"view", GLFW_GAMEPAD_BUTTON_BACK}, {"back", GLFW_GAMEPAD_BUTTON_BACK}, {"start", GLFW_GAMEPAD_BUTTON_START},
+            {"ls", GLFW_GAMEPAD_BUTTON_LEFT_THUMB}, {"rs", GLFW_GAMEPAD_BUTTON_RIGHT_THUMB},
+            {"up", GLFW_GAMEPAD_BUTTON_DPAD_UP}, {"down", GLFW_GAMEPAD_BUTTON_DPAD_DOWN},
+            {"left", GLFW_GAMEPAD_BUTTON_DPAD_LEFT}, {"right", GLFW_GAMEPAD_BUTTON_DPAD_RIGHT}};
+        const std::string name = lower(pos(0));
+        int b = -1;
+        for (const auto &e : kButtons)
+            if (name == e.first)
+                b = e.second;
+        if (b < 0)
+            fail("pad: a|b|x|y|lb|rb|view|start|ls|rs|up|down|left|right");
+        lastInputWasGamepad = true;
+        bool used = padContextButton(b, vCursorToggled && uiVisible);
+        std::string fired = used ? "context" : "";
+        if (!used)
+            for (size_t i = 0; i < keybindings.size(); ++i)
+                if (!keybindings[i].held && keybindings[i].gpButton == b)
+                {
+                    dispatchKeyAction((int)i);
+                    fired = keybindings[i].action;
+                }
+        r["button"] = name;
+        r["action"] = fired;
+        r["pad_focus"] = padFocus;
+        r["selection"] = selectedSatIndex;
+        r["message"] = "pad " + name + " -> " + (fired.empty() ? std::string("nothing") : fired);
+        return Status::Done;
+    }
+    if (n == "tutorial")
+    {
+        // The first-run tutorial (SatelliteSimTutorial.cpp): start it (at a step: a number or a name),
+        // move through it, end it, or report where it is. Its steps finish on real input, which a
+        // harness run cannot press — `next` is the way past an action step.
+        static const char *kNames[TUT_COUNT] = {"look", "move", "altitude", "boost", "select",
+                                                "actions", "time", "capture", "settings"};
+        const std::string sub = lower(pos(0));
+        auto stepArg = [&](const std::string &a) -> int
+        {
+            for (int i = 0; i < TUT_COUNT; ++i)
+                if (a == kNames[i])
+                    return i;
+            if (!a.empty() && std::isdigit((unsigned char)a[0]))
+                return std::clamp(std::atoi(a.c_str()) - 1, 0, TUT_COUNT - 1);
+            fail("tutorial: unknown step '" + a + "' (1-9 or look|move|altitude|boost|select|actions|time|capture|settings)");
+            return 0;
+        };
+        // pad=1 shows the gamepad graphics (the card follows the last input used; a real pad is not needed)
+        if (!c.str("pad", "").empty())
+            lastInputWasGamepad = c.str("pad", "0") != "0";
+        if (sub == "start")
+            startTutorial(pos(1).empty() ? 0 : stepArg(lower(pos(1))));
+        else if (sub == "step")
+            startTutorial(stepArg(lower(pos(1))));
+        else if (sub == "next")
+            setTutorialStep(tutStep + 1);
+        else if (sub == "back")
+            setTutorialStep(std::max(0, tutStep - 1));
+        else if (sub == "skip" || sub == "end")
+            endTutorial(false);
+        else if (!sub.empty() && sub != "state")
+            fail("tutorial: start [step] | step <n> | next | back | skip | state  [pad=0|1]");
+        r["active"] = tutActive;
+        r["step"] = tutActive ? tutStep + 1 : 0;
+        r["step_name"] = tutActive ? kNames[tutStep] : "";
+        r["progress"] = tutProgress;
+        r["done_showing"] = tutDoneT >= 0.0f;
+        r["tutorial_done"] = tutorialDone;
+        r["gamepad_view"] = tutGamepadView();
+        r["message"] = tutActive ? std::string("tutorial step ") + std::to_string(tutStep + 1) + " (" + kNames[tutStep] + ")"
+                                 : std::string("tutorial off");
+        return Status::Done;
+    }
     if (n == "const")
     {
         const std::string name = pos(0);
@@ -1465,13 +1546,6 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 return &cineChrome;
             return nullptr;
         };
-        if (sub == "hint")
-        {
-            // The post-intro "click a satellite" hint (review 17), armed as finishIntro arms it.
-            selectHintTimer = 30.0f;
-            r["message"] = "select hint shown";
-            return Status::Done;
-        }
         if (sub == "dump")
         {
             // Every drawn rect/text/image with its box, id and text, plus three automatic checks:

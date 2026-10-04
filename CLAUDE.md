@@ -16,7 +16,9 @@ Design decisions and their dates live next to the code they constrain, not in a 
 | Document | What it is |
 |---|---|
 | `README.md` | User-facing: what this is, prerequisites, build, packaging |
+| `wiki/` + `mkdocs.yml` | **The project wiki** (MkDocs Material): present-tense reference for using, modding, simulation, accuracy, rendering, sound, development; dated material only under `wiki/history/`. Process in `wiki/development/wiki.md` |
 | `docs/CONSTELLATION_MODDING.md` | User-facing modding guide (`constellations.json`, `satellite_models/*.json`) |
+| `docs/rendering/` | **As-is rendering architecture**: frame graph, cloud field / march / lighting / temporal, terrain + depth, sky composite, points + meshes; `FINDINGS.md` lists suspected bugs and doc drift |
 | `docs/HARNESS.md` | **Automation harness**: scripted runs, captures, perf, UI dumps — how an agent runs and sees the app |
 | `docs/FREEZES.md` | The 2026-09 machine freezes (unresolved; mitigated by launch spacing) and the forensics tools built for them |
 | `CHANGELOG.md` | What changed per release |
@@ -55,7 +57,7 @@ samples, the tonality that follows the soundtrack (`MusicAnalysis`), the harness
 mode and the mix rule).
 
 **State, profiling, cinematics, terrain** — *Persistent Settings* · *Fixed Simulation State* · *GPU
-Performance Profiling* · *Intro Cinematic (UC3)* · *Controls / Keybinding Pipeline* · *Active
+Performance Profiling* · *Intro Cinematic (UC3)* · *First-run tutorial* · *Controls / Keybinding Pipeline* · *Active
 Development: Earth / Terrain Rendering* (read **Elevation texture encoding** before touching terrain
 code).
 
@@ -67,6 +69,12 @@ from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: sound
 offline synth renders) · `tools/benchmarks/` ·
 `cmake/AccuracyGate.cmake` (`cmake --build build --target accuracy-gate`) ·
 `cmake/PackageRelease.cmake` (the single "what ships" list).
+
+**Wiki routine** — never edit `wiki/` pages during feature work. When a change alters something the wiki
+describes (behaviour, technique, file format, setting/default, accuracy or perf number), finish by leaving a
+note in `wiki/_inbox/` with the `wiki-note` skill. Pages are rewritten only in a dedicated pass (`wiki-pass`
+skill), which folds the notes in as present-tense prose, files their history under `wiki/history/`, and must
+pass `python tools/wiki/check.py`.
 
 **Rules that bite (each one has a section behind it)** — launch the app only through the harness
 (`tools/harness/run.py`, docs/HARNESS.md), never interactively, and never back-to-back (the harness
@@ -1807,6 +1815,21 @@ height above the ground per second, never below 3 m/s and never above the old 0.
 orbit is unchanged); boost and fine scale it the same way. A fixed 510 km/s crossed a cloud in a frame.
 Q/E follow the same setting (review 7): `moveSpeedPerHeight` x (10 m/s + 0.5 x the height above the
 ground), boost x10, fine x0.1 — it was 100 m/s + 0.5 x the height above SEA LEVEL.
+
+### Gamepad layout 2 and the selection's focus (2026-10-03)
+
+Default pad bindings: A select (centre pick) · B back · X pause · Y reverse · D-pad up/down faster/slower ·
+LB/RB zoom · RS click reset zoom · LS click boost (held) · View toggle UI · Start virtual cursor; Move Fine
+and Star Trails have no pad default (the sticks are analog). **`padContextButton`** runs ahead of the
+bindings in `pollGamepad` and consumes a press it uses: with a satellite selected (and no cursor),
+D-pad left/right move `padFocus` over its buttons (`SelActBtn` id % 4: Info, Go to, Trace pass, Track; Info
+and Go to only with a geometry model, `selActionAvailMask`), A presses the focused one THROUGH the button's
+own click path (`padActivatePending` -> `padActivateNow`, read by `buildSelActionButton`), B goes back one
+layer (`padBack`: the 3D view / info / trace window, then Go to, then Track, then the selection). The ring and
+a hint line under the panel show only while the pad was the last input. The windows themselves are still
+cursor-driven. Saved bindings from layout 1 (B pause, D-pad time) keep their keys but drop their pad
+buttons once (`controls.pad_layout`, `kPadLayoutVersion`). Harness `pad <button>` presses one without a
+controller.
 
 ### `KeyBinding` struct
 ```cpp
@@ -4096,9 +4119,9 @@ like every other caption but at a larger font size (not centered — that was tr
 read as inconsistent with the rest of the captions); `kIntroHintRevealIndex` (1) is the first
 narrative line and also where the bottom-right skip hint first appears (not from frame 0 — see
 below); the middle beats hold at ground level then pull to LEO; `kIntroTitleIndex` (6) is the
-arrival "SAT LIGHT SIM" reveal (`kIntroBenchEndT` marks this as the benchmark cutoff);
-`kIntroControlsIndex` (7) is the WASD/Q-E controls hint, Q/E text generated at render time from
-live keybindings (`introControlsTextBuf`).
+arrival "SAT LIGHT SIM" reveal; beat 7 (the last key, text null) settles the final framing while the
+title fades, and the intro ends there (`kIntroBenchEndT` = its time: the whole intro feeds the UC1
+benchmark).
 
 **Camera path is a Catmull-Rom/cubic-Hermite spline, not per-segment smoothstep.** The original
 implementation eased in/out (smoothstep) independently within each keyframe segment, which gives
@@ -4106,26 +4129,15 @@ zero velocity at *every* waypoint, not just the first and last — the camera vi
 a stop and re-accelerated at every beat boundary, reading as a stutter rather than one continuous
 move. `updateIntroCinematic`'s local `hermite(field)` lambda instead estimates a time-weighted
 tangent at each interior key from its two neighbors and blends with cubic Hermite basis functions,
-so velocity carries through a waypoint instead of resetting there. Endpoint tangents fall back to
-the one-sided neighbor difference, which happens to already be ~0 for this specific beat sheet
-(the first two beats and the final hold beats each share identical values), so the start and end
-still ease naturally with no special-cased boundary velocity.
+so velocity carries through a waypoint instead of resetting there. The start's tangent is the
+one-sided difference (~0: beats 0-1 share their values); the LAST key's is zero, so the camera eases
+to a stop on the handoff frame.
 
-**Controls go live mid-cinematic, at `kIntroControlsIndex`.** It read as broken to show "WASD to
-move" / "Q / E to raise/lower height" on screen while those keys visibly did nothing — control now
-unlocks the moment that caption is showing, not at the very end. Mechanism: `updateIntroCinematic`
-checks `introCaptionIndex >= kIntroControlsIndex` and stops forcing
-`obsHeightOffset`/`camera.azDeg/elDeg/fovYDeg`/`obsFacing` from that point on (safe with no
-discontinuity, since the camera has already arrived at its final framing by then); `recordCompute`
-separately runs the real WASD/Q-E/zoom movement block whenever `!showIntro || introCaptionIndex >=
-kIntroControlsIndex`, replacing the old plain `else` so both can be true at once. `buildUI`'s
-mouse-look block (RMB drag, cinematic pan, gamepad look, and its own `camera.azDeg`-from-
-`obsFacing` derivation) uses the identical condition, so free-look and WASD are both live from the
-same beat — the rest of the HUD (settings/view-controls windows, satellite picking) still waits
-for the intro to actually end (`finishIntro`), since only WASD/Q-E/look are what the on-screen text
-promises. Caution: any values kIntroKeyframes gives the final hold beat(s) *after*
-`kIntroControlsIndex` for alt/az/el/fov are dead data for camera purposes once this fires — only
-that beat's own `.t` still matters, as the auto-handoff time.
+**No controls in the intro (2026-10-03).** Beat 7 used to be a "WASD to move / Q-E / click a
+satellite" caption that unlocked movement and look (`kIntroControlsIndex`) while clicking stayed
+disabled until the intro ended — and the post-intro "Click to select any satellite" hint
+(`buildSelectHint`) then said it again. Both are gone: input is live only once `showIntro` is
+false, and `finishIntro` starts the first-run tutorial (below).
 
 **Dismissal is a single defined key, not "any key."** `onKey()` only calls `finishIntro(true)` for
 literal `GLFW_KEY_SPACE` (independent of whatever `Pause/Resume` is currently rebound to);
@@ -4161,6 +4173,31 @@ restored from settings.json's own `"observer"`/`"camera"` blocks regardless of `
 turning the intro off just resumes wherever the player last was.
 
 ---
+
+## Subsystem: First-run tutorial (2026-10-03, `SatelliteSimTutorial.cpp`)
+
+One card at a time (`buildTutorial`, z 40) — a low, wide strip, the graphic beside the text, in the HUD's
+palette (`Pal` / `Style`, moved to `UIPalette.h` so every UI file shares it; wanted input pulses in the
+red accent, held input is solid red) — nine steps (`TutStep`): look, move, climb, boost, select —
+each finished by DOING it, with a keyboard (Q W E / A S D / Shift, labels from the live bindings), mouse
+or gamepad graphic (`buildTutKeyboard/Mouse/Gamepad`; the pad's when `lastInputWasGamepad`), plus a progress bar — then the selection's buttons, the
+time controls, the picture buttons and the gear, each OUTLINED on the HUD (PASSTHROUGH floating boxes
+from last frame's layout) and finished by using one of them (a change from the state the step began in,
+`tutBase*`) or Next. A finished step shows "Done!" for 1.1 s and moves on. The card sits low in the
+middle, above both corner panels, or above the panel it points at (`CLAY_ATTACH_TO_ELEMENT_WITH_ID`).
+- **Starts** from `finishIntro` (not on a replay of the intro), or on the first frame in the scene when
+  the intro is off (`updateTutorial`, `tutAutoChecked`), once: Skip and Finish both set
+  `display.tutorial_done` (absent = not done, so existing installs see it once). Settings > Display >
+  Replay Tutorial runs it again. A harness run never starts it on its own.
+- **Detection** (`updateTutorial`, in buildUI right after the look block and before the click pick) reads
+  the keys and gamepad values itself; it does not hook the movement code.
+- **Clay keeps stale boxes** for elements not drawn this frame, so the selection buttons' outline uses only
+  the `SelActBtn` ids `buildSelActionButton` drew this frame (`selBtnDrawnMask`).
+- `keyDisplayName` / `gamepadButtonDisplayName` (SatelliteSimUI.cpp) are no longer file-static; keyDisplayName's
+  letters rotate through a 4-slot pool, so keycap labels are copied (`tutKeyLabel`).
+- A controller moves through the card with **Start = Next / Finish, View = Skip** (`padContextButton`).
+- Harness: `tutorial start [step] [pad=1] | step <n> | next | back | skip | state`;
+  `tools/harness/scripts/tutorial.satcmd` captures every card and clicks through the HUD steps.
 
 ## Active Development: Earth / Terrain Rendering
 

@@ -1,0 +1,94 @@
+# The first-run tutorial (SatelliteSimTutorial.cpp). Every card captured with the UI (keyboard/mouse
+# and gamepad graphics), its layout dumped (overlap / clipped-text checks), and the steps that finish
+# on a HUD control driven by the real click path:
+#   tut5   select: a satellite selection finishes it (results: done_showing true)
+#   tut6   actions: the four SelActBtn outlined; `ui click SelActBtn:4` (Info) finishes it
+#   tut7   time: the four time buttons outlined; `ui click TimePauseBtn` finishes it, the card moves on
+#   tut9   settings: the gear outlined; Finish ends it (tutorial_done true)
+#   intro  the replayed intro's last second: the title fading, no controls caption
+preset High
+observer lat=35.869 lon=-121.402 agl=50
+time sun -6 setting
+time pause
+wait settle
+camera az=-106 el=20 fov=70
+tutorial start
+wait 5
+state tut1
+ui dump tut1_look
+capture tut1_look ui=on scale=0.5
+tutorial next
+wait 3
+capture tut2_move ui=on scale=0.5
+tutorial next
+wait 3
+capture tut3_altitude ui=on scale=0.5
+tutorial next
+wait 3
+ui dump tut4_boost
+capture tut4_boost ui=on scale=0.5
+tutorial next
+wait 3
+capture tut5_select ui=on scale=0.5
+select const "Starlink Gen1"
+camera look sel
+wait 3
+tutorial state
+capture tut5_done ui=on scale=0.5
+wait 80
+tutorial state
+ui dump tut6_actions
+capture tut6_actions ui=on scale=0.5
+ui click SelActBtn:4
+wait 3
+tutorial state
+ui close all
+wait 80
+tutorial state
+ui dump tut7_time
+capture tut7_time ui=on scale=0.5
+ui click TimePauseBtn
+wait 3
+tutorial state
+wait 80
+tutorial state
+ui dump tut8_capture
+capture tut8_capture ui=on scale=0.5
+ui click TutNext
+wait 3
+tutorial state
+ui dump tut9_settings
+capture tut9_settings ui=on scale=0.5
+ui click TutNext
+wait 3
+tutorial state
+# Gamepad graphics, and a larger UI scale
+tutorial start look pad=1
+wait 3
+capture tutp1_look ui=on scale=0.5
+tutorial step altitude pad=1
+wait 3
+capture tutp3_altitude ui=on scale=0.5
+tutorial step select pad=1
+wait 3
+capture tutp5_select ui=on scale=0.5
+ui scale 1.5
+tutorial start move pad=0
+wait 3
+ui dump tuts2_move
+capture tuts2_move ui=on scale=0.5
+tutorial step settings
+wait 3
+ui dump tuts9_settings
+capture tuts9_settings ui=on scale=0.5
+tutorial skip
+ui scale 1
+# The replayed intro's end (53.3 s at the fixed 1/60 step): the title fades, no controls beat
+ui open settings tab=Display
+wait 3
+ui click ReplayIntroBtn
+wait 3150
+capture intro_end ui=on scale=0.5
+wait 60
+state intro_after
+tutorial state

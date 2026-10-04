@@ -1,0 +1,109 @@
+preset High
+set display.render_scale 1
+set clouds_v2.auto_exposure 0
+set clouds_v2.exposure_ev 0
+set clouds_v2.light_steps 8
+set clouds_v2.coverage 0.84
+time pause
+follow off
+cine new short2_how_many
+# 1. One satellite: the ISS in sunlight
+const all off
+const "International Space Station" on
+time set 2036-11-22T03:21:22Z
+observer lat=35.869 lon=-121.402 agl=2
+select const "International Space Station"
+follow
+cine shot simnow
+cine shot follow sel
+follow offset=-230,40,70
+camera look sel
+wait settle 30
+cine shot look
+cine key t=0
+follow offset=-90,-200,55
+camera look sel
+cine key t=5
+follow off
+# 2. Starlink Gen1 from 8,000 km (highlighted)
+const "International Space Station" off
+const "Starlink Gen1" on highlight=on
+time set 2036-11-22T02:06:22Z
+observer lat=35.869 lon=-121.402 alt=8000000
+camera az=60 el=-58 fov=80
+wait settle 30
+wait 60
+cine shot add gen1
+cine shot simnow
+cine shot look
+cine key t=0
+camera az=67 el=-57 fov=78
+cine key t=4.5
+# 3. Every broadband shell
+const "Starlink Gen2" on highlight=on
+const "Starlink Gen3 Broadband" on highlight=on
+const "Starlink Gen3 Direct-to-Cell" on highlight=on
+const "OneWeb" on highlight=on
+const "Amazon Leo Shell 1" on highlight=on
+const "Amazon Leo Shell 2" on highlight=on
+const "Amazon Leo Shell 3" on highlight=on
+const "Guowang-2 Polar" on highlight=on
+const "Guowang-2 Mid-Inclination" on highlight=on
+const "Guowang GW-A59" on highlight=on
+wait settle 10
+cine shot add comms
+cine shot simnow
+cine shot look
+cine key t=0
+camera az=74 el=-56 fov=76
+cine key t=5
+# 4. The AI filing: a million more
+const "SpaceX AI Satellites" on highlight=on
+wait settle 10
+cine shot add ai
+cine shot simnow
+cine shot look
+cine key t=0
+camera az=45 el=-70 fov=90
+cine key t=6
+# 5. One AI satellite with the ring behind it
+const all on
+const "Gen2 shell - legacy (comparison)" off
+observer lat=35.869 lon=-121.402 agl=2
+select const "SpaceX AI Satellites"
+follow
+cine shot add ai_close
+cine shot simnow
+cine shot follow sel
+follow offset=-90,20,30
+camera look sel
+wait settle 30
+cine shot look
+cine key t=0
+follow offset=-75,-10,24
+camera look sel
+cine key t=5
+follow off
+# 6. From your backyard, everything on
+observer lat=35.869 lon=-121.402 agl=2
+camera az=-61 el=30 fov=90
+wait settle 30
+cine shot add backyard
+cine shot simnow
+cine shot look
+cine key t=0
+camera az=-58 el=38 fov=90
+cine key t=5
+# 7. Three hours later: Earth's shadow has taken them
+time add 10800
+wait settle 30
+cine shot add later
+cine shot simnow
+cine shot look
+camera az=-58 el=38 fov=90
+cine key t=0
+camera az=-56 el=40 fov=90
+cine key t=4
+cine shot 1
+cine save short2_how_many
+cine export preview fps=30

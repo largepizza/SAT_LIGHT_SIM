@@ -1,0 +1,91 @@
+preset High
+set display.render_scale 1
+set clouds_v2.auto_exposure 0
+set clouds_v2.exposure_ev 0
+set clouds_v2.light_steps 8
+set clouds_v2.coverage 0.84
+time pause
+cine new short1_2036
+
+# 1. Ridge at twilight: the AI ring and its flaring train
+time set 2036-11-22T02:06:22Z
+observer lat=35.869 lon=-121.402 agl=2
+camera az=-75 el=18 fov=70
+wait settle 60
+cine shot simnow
+cine shot look
+cine key t=0
+camera az=-61 el=27 fov=76
+cine key t=4.5
+
+# 2. Tight on the flaring train
+cine shot add train
+cine shot simnow
+cine shot look
+camera az=-52 el=18 fov=26
+cine key t=0
+camera az=-45 el=17 fov=20
+cine key t=4
+
+# 3. Beams fanning into the solar park, from 25 km
+set clouds_v2.coverage 0
+beams go rank=1 dist_km=25 bearing=160 agl=2 look=site
+wait settle 40
+cine shot add beams
+cine shot simnow
+cine shot look
+camera az=-34 el=11 fov=62
+cine key t=0
+camera az=-27 el=9 fov=50
+cine key t=5
+
+# 4. Inside the lit spot, the mirrors overhead
+beams go rank=1 dist_km=5 bearing=90 agl=2 look=up
+wait settle 40
+cine shot add spot
+cine shot simnow
+cine shot look
+camera az=-89 el=6 fov=88
+cine key t=0
+camera az=-86 el=14 fov=80
+cine key t=4
+
+# 5. The rise (the intro's climb), ending on the ring over the sunrise limb
+set clouds_v2.coverage 0.84
+time set 2036-11-22T02:06:22Z
+observer lat=35.869 lon=-121.402 agl=2
+camera az=-61 el=25 fov=70
+wait settle 40
+cine shot add rise
+cine shot simnow
+cine shot look
+cine key t=0
+path key 2.5 alt=60000 az=-86 el=35 fov=62
+path key 5 alt=250000 az=-106 el=10 fov=70
+path key 8 alt=300000 az=-106 el=20 fov=110
+
+# 6. Night side: aurora and city lights from 1,500 km
+observer lat=35.869 lon=-121.402 alt=1500000
+camera az=-5 el=-24 fov=62
+wait settle 40
+cine shot add night
+cine shot simnow
+cine shot look
+cine key t=0
+camera az=10 el=-30 fov=55
+cine key t=5
+
+# 7. End card: back on the ridge
+observer lat=35.869 lon=-121.402 agl=2
+camera az=-61 el=25 fov=70
+wait settle 40
+cine shot add end
+cine shot simnow
+cine shot look
+cine key t=0
+camera az=-60 el=26 fov=68
+cine key t=4
+
+cine shot 1
+cine save short1_2036
+cine export preview fps=30

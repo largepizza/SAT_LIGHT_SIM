@@ -8,6 +8,15 @@
 > `data/benchmarks/KNOWN_RESIDUALS.md`.
 
 ### Added
+- **A tutorial for the controls.** After the intro, a short walk-through teaches looking around, moving,
+  climbing, boosting and selecting a satellite. A keyboard, mouse or gamepad picture lights up the keys to
+  press, and each step moves on once you've done it. It then points out the satellite's buttons, the time
+  controls, the picture buttons and the settings. Skip it at any time, or replay it from Settings > Display.
+  The intro no longer shows the controls itself, and the separate "Click to select any satellite" hint is gone.
+- **Better controller play.** With a satellite selected, the D-pad's left and right move between its buttons
+  (Info, Go to, Trace, Track), A presses one and B steps back (closes the window, leaves Go to, deselects), with no
+  cursor needed. Time moved to the D-pad's up and down, pause to X and reverse to Y; the right stick's click resets
+  the zoom. Controller bindings saved by older versions are reset to this layout once.
 - **Type values instead of dragging.** Every settings slider's value (Clouds, Weather, Terrain, Ocean, Photometry
   and the rest), the volumes and the Cinematics window's fields are text boxes on click: type a number, Enter
   applies, Esc cancels. Cinematics get a name field (the file is saved under it), shot names, typed key times and

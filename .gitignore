@@ -36,7 +36,8 @@ Thumbs.db
 
 # - Debug
 .renderDoc_captures/
-.claude
+.claude/*
+!.claude/skills/
 .plans
 
 # ── GPU capture / benchmark scratch (kept in-repo, never committed) ───────────
@@ -64,3 +65,6 @@ satlight_log.txt
 # `rmdir /s /q build-win-release` — no longer takes the images with it. The published images in
 # docs/screenshots/ (README) are separate and stay tracked.
 /screenshots/
+
+# ── Wiki (mkdocs.yml) ─────────────────────────────────────────────────────────
+/build-wiki/

@@ -129,7 +129,8 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `sweep` | the automated knockout sweep (≈15 s); returns the whole record |
 | `ui show\|hide`, `ui scale <0.75-2>` | HUD visibility and UI scale |
 | `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|console>`, `ui close <name\|all>` | windows (`info`/`viewer`/`trace` need a selected satellite). An advanced tab turns on "show advanced settings" |
-| `ui hint` | show the post-intro "click a satellite to select it" hint (it hides on a selection or after 30 s) |
+| `tutorial start [step] [pad=1]`, `tutorial step <n\|name>`, `tutorial next\|back\|skip\|state` | the first-run tutorial (never started on its own in a harness run). Steps 1-9 or look/move/altitude/boost/select/actions/time/capture/settings; its action steps finish on real input, so `next` moves past them. `pad=1` shows the gamepad graphics. Results carry `step`, `progress`, `done_showing`, `tutorial_done`. `scripts/tutorial.satcmd` |
+| `pad <a\|b\|x\|y\|lb\|rb\|start\|view\|ls\|rs\|up\|down\|left\|right>` | a gamepad button press as `pollGamepad` handles it, no controller needed: its context meaning first (the tutorial card's Start/View, the selection's D-pad focus / A / B), else its binding. Marks the pad as the last input. Results carry `action`, `pad_focus`. `scripts/gamepad_nav.satcmd` |
 | `ui open cine` | the Cinematics window (see "Cinematics") |
 | `ui click <ElementId>[:index] [fx=0.5] [hold=N]` | the scripted pointer moves onto the element's centre (last frame's layout; ids as in `ui dump`), presses for a frame and releases — the real hover/click path. Fails if the element is off screen (scrolled out of its window) |
 | `ui type <text>`, `ui key <enter\|esc\|tab\|backspace\|delete\|left\|right\|home\|end\|w>` | keyboard input as typed (`onChar` / `onKey`): into the focused text field, else the game. Results carry `text_focus` and the field's `buffer` |

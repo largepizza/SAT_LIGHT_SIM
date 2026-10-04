@@ -1839,9 +1839,6 @@ private:
     VkBuffer pickedVisibleBuf = VK_NULL_HANDLE;
     VkDeviceMemory pickedVisibleMem = VK_NULL_HANDLE;
     void *pickedVisibleMapped = nullptr;
-    // Review 17: after the intro, a hint that satellites can be clicked (playtesters never found out alone).
-    // Shown until something is selected or the timer runs out (buildSelectHint).
-    float selectHintTimer = 0.0f;
     int selectedSatIndex = -1;        // index into satOrbits[]/satVisibleBuf; -1 = no selection
     glm::vec3 lastPickedSkyDir{0.0f}; // previous frame's ENU sky direction for the selection
     float lastPickedFlare = 0.0f;     // previous frame's flareIntensity for the selection (>0 = on screen)
@@ -4162,10 +4159,6 @@ private:
                                   // it's a one-shot first-run decision, not something a replay should redo
     float introBenchMsSum = 0.0f; // accumulates gpuMsTotalSmoothed across the camera-motion beats (see updateIntroCinematic)
     int introBenchFrames = 0;
-    char introControlsTextBuf[96] = {}; // member buffer for the final WASD/Q-E controls caption (built
-                                        // from live keybindings — Clay stores raw string pointers read
-                                        // after buildUI returns, so this can't be a stack local; see
-                                        // CLAUDE.md's Clay runtime-string rule)
 
     // Post-intro "graphics set to X" notice (UC1 mechanism 3: always tell the user, never
     // silently re-decide) — same dismissible-banner pattern as buildCrashRecoveryNotice, separate
@@ -5015,7 +5008,67 @@ private:
     void buildIntroOverlay(const UIInput &inp, UIRenderer &ui);
     void buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRenderer &ui); // NEW-3
     void buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRenderer &ui);  // UC1 mechanism 3
-    void buildSelectHint(float dt, const UIInput &inp, UIRenderer &ui);
+    // ── First-run tutorial (2026-10-03, SatelliteSimTutorial.cpp) ────────────────────────────────
+    // Replaced the intro's "WASD to move / Q-E / click a satellite" beat (shown while clicking was still
+    // disabled) and the post-intro "Click to select any satellite" hint (review 17). One card at a time,
+    // each step finished by DOING it (the keys / buttons light on the graphic as they are pressed), then
+    // the HUD's own controls pointed at with outlines. Runs after the intro, once (display.tutorial_done).
+    enum TutStep
+    {
+        TUT_LOOK = 0,
+        TUT_MOVE,
+        TUT_ALTITUDE,
+        TUT_BOOST,
+        TUT_SELECT,
+        TUT_ACTIONS,
+        TUT_TIME,
+        TUT_CAPTURE,
+        TUT_SETTINGS,
+        TUT_COUNT,
+    };
+    bool tutActive = false;
+    bool tutorialDone = false;      // persisted (display.tutorial_done); Skip or Finish sets it
+    bool tutAutoChecked = false;    // the once-per-session auto start has been considered
+    int tutStep = 0;
+    float tutClock = 0.0f;          // drives the highlight pulse
+    float tutProgress = 0.0f;       // 0..1 toward finishing the current step's action
+    float tutDoneT = -1.0f;         // >= 0: the step is done, its "Done" shows this long before the next
+    float tutLastAz = 0.0f, tutLastEl = 0.0f;
+    // The state a step started from (Time / Capture / Settings / Actions finish on a CHANGE of it).
+    int tutBaseTimeIdx = 0;
+    bool tutBasePaused = false, tutBaseReverse = false, tutBaseTrails = false, tutBaseCine = false;
+    bool tutBaseSettings = false, tutBaseAction = false;
+    char tutKeyLabel[3][16] = {};   // rebindable keycap labels (keyDisplayName's letters rotate through a pool)
+    bool hovTutNext = false, hovTutBack = false, hovTutSkip = false, hovReplayTutorial = false;
+    // ── Gamepad navigation of the selection (2026-10-03, pollGamepad) ──
+    // With a satellite selected and no virtual cursor: D-pad left/right move a focus ring across its
+    // buttons (Info, Go to, Trace pass, Track = SelActBtn id % 4), A presses the focused one (the
+    // button's own click path: buildSelActionButton), B goes back one layer (padBack). The default pad
+    // bindings moved to make room (time on D-pad up/down, pause X, reverse Y): kPadLayoutVersion.
+    static constexpr int kPadLayoutVersion = 2;
+    int padFocus = 0;               // 0 Info, 1 Go to, 2 Trace pass, 3 Track
+    int padFocusSat = -1;           // the selection padFocus was chosen for (a new one resets it)
+    bool padActivatePending = false; // A pressed: the focused button clicks in this frame's buildUI
+    bool padActivateNow = false;
+    char padHintBuf[64] = {};
+    uint32_t selActionAvailMask() const; // which of the four buttons the selection has (bit = id % 4)
+    void padFocusStep(int dir);
+    bool padBack();                 // true if B did something (closed / left / released / deselected)
+    bool padContextButton(int glfwPadButton, bool cursorActive); // true = used (the binding does not fire)
+    bool padFocusVisible() const { return lastInputWasGamepad && !vCursorActive; }
+    uint32_t selBtnDrawnMask = 0;   // SelActBtn ids drawn this frame (buildSelActionButton; reset by buildSelectedSatPanel)
+    char tutBodyBuf[320] = {};
+    char tutHeadBuf[48] = {};
+    void startTutorial(int step = 0);
+    void endTutorial(bool finished);
+    void setTutorialStep(int step);
+    void updateTutorial(float dt); // completion detection, every frame after the look block
+    bool tutActionOn() const;      // the selection's info window / Go to / Trace / Track in use
+    void buildTutorial(const UIInput &inp, UIRenderer &ui);
+    void buildTutKeyboard(int step);  // the key cluster graphic (Q W E / A S D / Shift)
+    void buildTutMouse(int step, const UIInput &inp);
+    void buildTutGamepad(int step);
+    bool tutGamepadView() const { return lastInputWasGamepad; }
     void buildScreenshotToast(float dt, const UIInput &inp, UIRenderer &ui);     // UC6 confirmation toast
     // UC3: advances introElapsed and drives obsHeightOffset/camera.elDeg/fovYDeg/obsFacing from
     // kIntroKeyframes; called from recordCompute() in place of the normal WASD/zoom block while
@@ -5093,18 +5146,17 @@ static constexpr IntroKeyframe kIntroKeyframes[] = {
     // rising sun. Camera motion stops here; beats 7-8 hold this exact framing. Title reveal.
     // Azimuth nudged +5deg right (vs. the beat 5 pan target) to catch the sunset before FOV expands.
     {songbeat * 6.0, 300000.0f, kIntroStartAzDeg - 45, 0.0, 80.0f, "SAT LIGHT SIM"},
-    // Beat 7 — controls hint. "WASD to move" is a fixed line (buildIntroOverlay); the Q/E line is
-    // generated at render time from live keybindings, not this literal (kIntroControlsIndex marks
-    // which entry to override).
-    {songbeat * 7.0, 300000.0f, kIntroStartAzDeg - 45, 20.0, 120.0f, "Q / E to raise/lower height"},
-    {songbeat * 8.0, 0000.0f, kIntroStartAzDeg - 45, 20.0, 80.0f, nullptr}, // hold, then auto-handoff (finishIntro(false))
+    // Beat 7 — arrival: the camera settles on the final framing and the title fades over the last
+    // second (buildIntroOverlay's alphaOut), then finishIntro(false) hands over to the tutorial
+    // (SatelliteSimTutorial.cpp). Until 2026-10-03 this beat was a "WASD to move / Q-E / click a
+    // satellite" caption that unlocked movement but not clicking, and a ninth keyframe held it for a
+    // further beat; the controls are the tutorial's job now.
+    {songbeat * 7.0, 300000.0f, kIntroStartAzDeg - 45, 20.0, 120.0f, nullptr},
 };
 static constexpr int kIntroKeyframeCount = sizeof(kIntroKeyframes) / sizeof(kIntroKeyframes[0]);
 static constexpr int kIntroYearIndex = 0;       // "2036" title/date card
 static constexpr int kIntroHintRevealIndex = 1; // skip hint doesn't show before this beat is reached
 static constexpr int kIntroTitleIndex = 6;      // "SAT LIGHT SIM" reveal, arrival in LEO
-static constexpr int kIntroControlsIndex = 7;   // WASD / Q-E controls hint
-// Beats 0-6 (through arrival in LEO, where camera motion stops) feed the UC1 benchmark
-// accumulator; the static hold over beats 7-8 isn't representative load, so it's excluded.
-static constexpr float kIntroBenchEndT = songbeat * 8.0f;
+// The camera moves until the last keyframe, so the whole intro feeds the UC1 benchmark accumulator.
+static constexpr float kIntroBenchEndT = songbeat * 7.0f;
 static constexpr const char *kGraphicsPresetNames[] = {"Planetarium", "Low", "Medium", "High", "Ultra", "Custom", "Potato"};
