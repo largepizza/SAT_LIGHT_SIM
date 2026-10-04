@@ -7,7 +7,7 @@
 //   look, move, climb, boost, select    — finished by DOING it; a keyboard / mouse / gamepad graphic
 //                                         lights the input to use (amber) and what is held (green)
 //   the satellite's buttons, time,       — outlines on the HUD's own controls; finished by using one
-//   pictures, settings                     of them, or Next
+//   pictures, menus                        of them, or Next
 // It follows the intro (finishIntro), or the first frame when the intro is off, once: Skip or Finish
 // sets display.tutorial_done. Settings > Display > Replay Tutorial runs it again. A harness run never
 // starts it on its own (`tutorial start [step]` does).
@@ -42,7 +42,7 @@ constexpr float kBoostS = 1.0f;
 
 const char *const kTitles[] = {
     "Look around", "Move over the Earth", "Climb and descend", "Go faster", "Pick a satellite",
-    "Your satellite", "Time", "Pictures", "Settings"};
+    "Your satellite", "Time", "Pictures", "Menus"};
 
 Clay_String clayStr(const char *s) { return Clay_String{false, (int32_t)strlen(s), s}; }
 
@@ -116,6 +116,7 @@ void SatelliteSim::setTutorialStep(int step)
     tutBaseReverse = timeDir < 0.0f;
     tutBaseTrails = trailEnabled;
     tutBaseCine = cineChrome.open;
+    tutBaseBookmarks = bmChrome.open;
     tutBaseSettings = settingsChrome.open;
     tutBaseAction = tutActionOn();
 }
@@ -199,12 +200,11 @@ void SatelliteSim::updateTutorial(float dt)
             tutProgress = 1.0f;
         break;
     case TUT_CAPTURE:
-        if (trailEnabled != tutBaseTrails || cineChrome.open != tutBaseCine || photoState != 0 ||
-            screenshotRequested || screenshotCopyPending || screenshotEncoding.load())
+        if (trailEnabled != tutBaseTrails || photoState != 0 || screenshotRequested || screenshotCopyPending || screenshotEncoding.load())
             tutProgress = 1.0f;
         break;
     case TUT_SETTINGS:
-        if (settingsChrome.open && !tutBaseSettings)
+        if ((settingsChrome.open && !tutBaseSettings) || cineChrome.open != tutBaseCine || bmChrome.open != tutBaseBookmarks)
             tutProgress = 1.0f;
         break;
     default:
@@ -401,10 +401,11 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
     case TUT_CAPTURE:
         addBox(CLAY_ID("TimeScreenshotBtn"));
         addBox(CLAY_ID("TimePhotoBtn"));
-        addBox(CLAY_ID("TimeCineBtn"));
         addBox(CLAY_ID("TrailsBtn"));
         break;
-    case TUT_SETTINGS:
+    case TUT_SETTINGS: // the right panel's menu buttons
+        addBox(CLAY_ID("TimeBookmarkBtn"));
+        addBox(CLAY_ID("TimeCineBtn"));
         addBox(CLAY_ID("SettingsBtn"));
         break;
     default:
@@ -493,14 +494,14 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         snprintf(k1, sizeof(k1), "%s", K(KB_SCREENSHOT));
         snprintf(k2, sizeof(k2), "%s", K(KB_PHOTO));
         snprintf(k3, sizeof(k3), "%s", K(KB_TOGGLE_TRAILS));
-        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Screenshot (%s), HQ photo (%s) for a sharper image, Cinematics to record camera paths, "
-                                                 "and Star trails (%s) for a long exposure.%s",
+        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Screenshot (%s), HQ photo (%s) for a sharper image, and Star trails (%s) for a long exposure.%s",
                  k1, k2, k3, pad ? " On a controller, after the tutorial, Start gives a cursor for these buttons." : "");
         break;
     case TUT_SETTINGS:
         snprintf(k1, sizeof(k1), "%s", K(KB_TOGGLE_UI));
-        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Graphics quality, constellations, clouds, sound and key bindings. %s hides the interface for a clean view.%s",
-                 pad ? P(KB_TOGGLE_UI) : k1, pad ? " After the tutorial, Start gives a cursor to open it." : "");
+        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Bookmarks save a place and time, Cinematics record camera paths, and Settings hold graphics, "
+                                                 "constellations, sound and key bindings. %s hides the interface for a clean view.%s",
+                 pad ? P(KB_TOGGLE_UI) : k1, pad ? " After the tutorial, Start gives a cursor for these buttons." : "");
         break;
     default:
         tutBodyBuf[0] = '\0';

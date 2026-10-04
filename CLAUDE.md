@@ -46,7 +46,7 @@ Constellations* · *GPU Orbital Pipeline* (two-dispatch pattern, buffers, `Gpu*`
 constants) · *TargetedReflector / Mirror Ground Targets* · *Reflect-Orbital Beam Cloud Occlusion* ·
 *GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22).
 
-**Rendering** — *UIRenderer / Clay* (icon atlas, the fixed-bitmap font, manual hit-testing) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
+**Rendering** — *UIRenderer / Clay* (icon atlas, the fixed-bitmap font, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
 *Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
 Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Scaling* · *Weak-Hardware
 Sky Tiers (Potato / SKY_LITE)*. The mesh renderer, model viewer and environment probes are
@@ -57,7 +57,7 @@ samples, the tonality that follows the soundtrack (`MusicAnalysis`), the harness
 mode and the mix rule).
 
 **State, profiling, cinematics, terrain** — *Persistent Settings* · *Fixed Simulation State* · *GPU
-Performance Profiling* · *Intro Cinematic (UC3)* · *First-run tutorial* · *Controls / Keybinding Pipeline* · *Active
+Performance Profiling* · *Intro Cinematic (UC3)* · *First-run tutorial* · *Bookmarks* · *Controls / Keybinding Pipeline* · *Active
 Development: Earth / Terrain Rendering* (read **Elevation texture encoding** before touching terrain
 code).
 
@@ -1379,9 +1379,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (was "Aurora": scattering + the sky march's samples, airglow & zodiacal light, aurora), Terrain (relief;
   surface & lighting), **Night lights** (city lights, roads, sprites, city light on clouds, night sky light),
   Ocean, Beams (+ the beam light in clouds), Attributions. A tab's INDEX is persisted (`display.active_tab`)
-  and indexes `hovTab[]`, so new tabs are APPENDED to `kSettingsTabNames` (Weather 12, Night lights 13) and
-  the strip draws `kSettingsTabOrder`; `settingsTabIsAdvanced()` is the one "behind Show advanced settings"
-  test (UI, toggle, harness). `settingsTabIndexByName("aurora")` still finds Atmosphere. Collapsible
+  and indexes `hovTab[]`, so new tabs are APPENDED to `kSettingsTabNames` (Weather 12, Night lights 13,
+  **Performance 14**) and the strip draws `kSettingsStrip`, grouped under headings (GENERAL: Display, Controls,
+  Sound; SKY: Constellations, Photometry; RENDERING: the advanced tabs + Performance; ABOUT: Attributions — a
+  negative entry is a heading) in its own vertical scroll view (an unclipped strip taller than the window
+  stretched the body and spilled the content below the window). **Camera (3) has no button** since 2026-10-03:
+  its two lines are the Controls tab's MOUSE section, and index 3 still opens Controls. `settingsTabIsAdvanced()`
+  is the one "behind Show advanced settings" test (UI, toggle, harness). `settingsTabIndexByName("aurora")` still finds Atmosphere. Collapsible
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
@@ -1460,7 +1464,7 @@ window, not just more pixels. The bloom's radius is in its own texels and is NOT
 
 `Cinematic.h/.cpp` (data: shots of `CineKey`s, `cineEval` — the Catmull-Rom path the harness used — JSON
 `sat-light-sim-cinematic/1`), `SatelliteSimCinematic.cpp` (play / export / save / load), `buildCinematicWindow`
-(SatelliteSimUI.cpp; the film button `TimeCineBtn` in the time bar, `pixel--film.png`), harness `cine` + `path`
+(SatelliteSimUI.cpp; the clapperboard button `TimeCineBtn` on the right HUD panel, `pixel--film.png`), harness `cine` + `path`
 (docs/HARNESS.md "Cinematics"). **The harness's camera path IS the current shot** (`HarnessCamKey` = `CineKey`,
 `cineKeys()`), so a path authored by a script shows in the window and the reverse. `cineTick` runs right after
 `harnessTick` in buildUI; while `cineActive()` WASD/Q-E and mouse look are off and `timePaused` is held (sim time
@@ -1502,6 +1506,29 @@ encode). The settled temporal passes cannot blur (they reproject the camera's mo
   retime it; built from fixed-width gaps, not floating elements, so it clips with the scroll view); each key's time
   is a text box that ripples the later keys; "+ Key at view" with a typed gap; the saved files with Load and a
   two-click Delete. Default height stays clear of the time bar.
+
+## Bookmarks (2026-10-03)
+
+`SatelliteSimBookmarks.cpp`; the bookmark button on the right HUD panel (`TimeBookmarkBtn`, `pixel--bookmark.png`) opens
+the window (`bmChrome`, window id 6). A bookmark is the observer (`obsDir` as a double ECEF direction,
+`obsHeightOffset`), the camera (az / el / fov), the sim time and the cloud map's **drift** (phase + rate — session
+state, like a snapshot's `view`; without it a storm bookmark came back to clear sky). Stored in
+`<user data>/bookmarks/bookmarks.json` (`sat-light-sim-bookmarks/1`) with `<id>.png` thumbnails beside it. Go
+(`bookmarkGo`) stops follow / Track, sets everything and resets the temporal histories (a cut); a bookmark taken in
+follow mode is a free camera at the camera's place.
+- **Thumbnails** are the next CLEAN frame after Add / Update: `bookmarkTick` (every buildUI, before any layout)
+  asks the screenshot path for a frame without the UI once nothing else is capturing (`bmCaptureFor_`), and
+  `finalizeScreenshot` hands its pixels to `bookmarkCaptureThumb` (16:9 centre crop, box filter to 256x144) instead
+  of writing a file. They live in ONE 2048x2048 R8G8B8A8_SRGB atlas (8 x 14 = `kBmMax` 112 cells), registered once
+  with the UI — `UIRenderer` has only four external image slots — and each card's `UIImage` is its cell's
+  sub-rect, inset half a texel. Saved thumbnails load lazily, four per frame, while the window is open.
+- **Add and Delete are deferred to the next `bookmarkTick`** (`bmAddPending_`, `bmDeletePending_`): Clay keeps
+  pointers into `bookmarks_` (the `UIImage`s, the meta strings) until the frame is recorded, so growing or
+  shrinking the vector after the layout would leave them dangling. Go / Update / a rename change no address.
+- The window: a name field + "Add current view", then cards in as many columns as fit (Clay has no wrapping rows:
+  the column count comes from the list's last laid-out width) — thumbnail (click = Go), the name (a text field),
+  when / where, Go / Update / Delete (two clicks). Harness: `bookmark add [name] | go <n> | update <n> |
+  rename <n> <name> | delete <n> | list`, `ui open bookmarks`.
 
 ## Loading screen (2026-09-26)
 
@@ -1570,6 +1597,30 @@ Invariants:
   clip boxes follow the same rule.
 - **Never `return` or `break` inside a `CLAY(...)` block**: the macro is a for loop that closes the element at its
   end; leaving it early leaves the element open and corrupts the layout. Set a flag and act after the block.
+- **UI kit (2026-10-03, SatelliteSimUI.cpp "UI kit"): build windows and settings rows from it.** `uiSection` (small
+  caps over a 1-px rule — the Cinematics window's form), `uiKV` (a label column and a value column), `uiStatTile`
+  (a label over a large value in a dark inset), `uiButton` (a 20-px pill; `on`, `enabled`, `grow`), `uiToggleRow`
+  (label + On/Off pill, custom words: the knockouts read Skip/On) and `uiChoiceRow` (label + segmented pills;
+  returns the picked index). Ids are `CLAY_SIDI(key, index)` — scripts click them as `Key:index`
+  (`ui click ReplayIntroBtn:0`) — and the previous frame's hover lives in `uiHov_`, so a row needs no hover
+  member. Formatted labels go through `uiKitStr` (a per-frame ring; Clay keeps the pointers). Used by the info,
+  trace and Bookmarks windows and the Display, Performance, Controls, Sound, Constellations and Photometry tabs;
+  the slider rows are still `buildCloudSliderRows`.
+- **HUD text entry (2026-10-03):** the time bar's clock and the right panel's latitude, longitude and altitude are
+  `inlineTextField`s (a readout until clicked; the box starts with an edit form — signed decimal degrees, the
+  altitude in the HUD's unit). `setSimTimeFromText` takes "2036-11-22 02:06[:30]", ISO with T/Z, or "HH:MM[:SS]"
+  for the current date — the WHOLE text must match one form, the day must exist in its month and the year be
+  1800-2200 (a day was only checked against 31, so 2036-11-31 rolled over to December 1); `setLatLonFromText` takes a sign or N/S/E/W and "lat, lon" in either field;
+  `setAltitudeFromText` takes km/mi (the HUD's unit) or a m/km/ft/mi suffix, MSL or AGL by the HUD's toggle. Text
+  that does not parse shows an amber toast (`screenshotToastWarn`) and changes nothing. **The altitude readout was
+  wrong above the ground until then**: it showed terrain + offset as MSL and the offset as AGL, but
+  `obsHeightOffset` is already above SEA LEVEL (floored at the ground), so MSL = max(ground, offset) and AGL =
+  max(0, offset - ground), the ground the GPU's when the depth pass runs. Harness `expect state.<path>`
+  (`tools/harness/scripts/ui_windows.satcmd`).
+- **HUD layout (2026-10-03):** the bottom-left panel is the clock, the time buttons and the picture buttons
+  (Screenshot, HQ photo, Star trails); the bottom-right panel ends in the MENU buttons — Bookmarks, Cinematics,
+  Settings (`menuBtn` in `buildRightHudPanel`: lit while the window is open). Their ids kept the `Time` prefix
+  (`TimeCineBtn`, `TimeBookmarkBtn`) for scripts. The tutorial's last step ("Menus") outlines the three.
 
 ### Icon Atlas
 - `ui.loadIcons(ctx, paths, count)` — loads PNGs, packs into RGBA GPU atlas, rebinds descriptor. Call once on first frame (lazy init). Store `VulkanContext*` in your sim.
@@ -1577,7 +1628,8 @@ Invariants:
 - Shader `mode`: `0.0` = solid rect, `1.0` = text glyph, `2.0` = icon sprite. Binding 1 is always valid (1×1 white placeholder at init).
 - **The PNGs are generated, not hand-drawn: `python tools/make_icons.py [name...]`** rewrites
   `assets/icons/ui/pixel--<name>.png` from the shapes declared in that file (all WHITE + alpha, 48×48,
-  3× supersampled edges) and prints a 48 px preview plus the box-filtered **16 px** one — the size they
+  3× supersampled edges, or — the `PIXEL_STYLE` set — solid and hard-edged on a 24-px grid doubled, the look of
+  the gear and the camera: new icons are FILLED silhouettes with detail punched out (`cut`), never thin outlines) and prints a 48 px preview plus the box-filtered **16 px** one — the size they
   are actually drawn at, which is the only preview worth judging. Edit a `build_*` shape list and
   re-run; do not retouch the PNGs by hand, or the next run silently drops the change. To add an icon:
   add the builder + the `ICONS` entry there, append its path in `buildUI`'s lazy-load block (the count
@@ -2109,16 +2161,17 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   `kTraceSamples` = 400 points (`computeSelectedTrace()`), and
   plots it in its own window: apparent magnitude after extinction, above-atmosphere magnitude,
   phase angle on a second axis, whole-magnitude / phase / sim-clock tick labels (floating Clay text
-  placed from the plot's last laid-out size), a moving "now" marker, and a per-frame "Now: mag …"
-  readout evaluated with the trace's own inputs (so it sits on the curve; the window says when the
-  observer has moved since). **The window opens default 520x380 in the bottom-left, just above the
-  time controls, so it coexists with the 3D view window in the top-right corner** (it used to open
-  centered at 680x440, over the middle of the sky); its labels are sized for that width — the legend
-  is "apparent / above air / phase / now" (the full wording totalled ~527 px against ~496 px of
-  content width) and the "Now …" line is split in two (`traceNowLine` magnitude, `traceNowDetail`
-  elevation/phase). **Live** (default on) retraces at up to `kTraceLiveHz` = 10 while the
+  placed from the plot's last laid-out size), a moving "now" marker, and two rows of stat tiles (2026-10-03,
+  `uiStatTile`): PASS — peak magnitude, its time, the pass length, max elevation (`tracePeakMag` etc., set by
+  `computeSelectedTrace`) — and NOW — the clock, magnitude, elevation and phase evaluated per frame with the
+  trace's own inputs (so the magnitude sits on the curve). The legend and both axis titles share one line; the
+  toolbar is Retrace / Live / Export CSV (kit buttons; Retrace's tooltip carries one retrace's cost) and the
+  export result. A status line (amber) says why there is no pass, or that the observer moved with Live off.
+  **The window opens default 520x460 (min 340 tall) in the bottom-left, just above the time controls, so it
+  coexists with the 3D view window in the top-right corner**; the title names the satellite as the selection
+  panel does ("<constellation> #<n>"). **Live** (default on) retraces at up to `kTraceLiveHz` = 10 while the
   window is open, only when `traceStale()` says the result would change (observer moved, selection
-  changed, pass over, extinction/tilt/occlusion changed); the window shows one retrace's cost. Tick
+  changed, pass over, extinction/tilt/occlusion changed). Tick
   labels are thinned to what fits the plot's pixel size (grid lines stay at every whole magnitude).
   When a satellite can't be traced (legacy type, ground-site aim, no pass
   within two orbits) the window says why instead of plotting. The plot is `UIPlot`, a Clay custom
@@ -2250,20 +2303,24 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     (`openModelViewer(..., popOut = true)`), so the viewer never shows an unreferenced satellite and a
     station is one click to find.
     - **Info window** (`buildInfoWindow`, default 470x~680 at the right edge, min 380x470): the title is
-      the satellite's name as the selection panel gives it ("<constellation> #<n>"), amber +
-      "(selected)" while it is the selection, plus the **Select / Go to title-bar icons**
+      the satellite's name as the selection panel gives it ("<constellation> #<n>"), amber while it is the
+      selection, plus the **Select / Go to title-bar icons**
       (`buildViewTitleIcons`; both satellite windows carry them, each with its own hover pair, and
       `buildResizableWindow` skips the title drag when the click is on one — `viewTitleIconsHovered`).
       A **fixed 4:3 render band** sits at the top with the
       **view chips** floating over it (`buildViewChips`, anchored to the image element with
-      `attachTo = ELEMENT_WITH_ID` so a resize cannot slide them off), then the scrollable
+      `attachTo = ELEMENT_WITH_ID` so a resize cannot slide them off), a row of four **stat tiles**
+      (MAGNITUDE as seen, ELEVATION, RANGE, PHASE; a phrase shortens to Dark / Below), then the scrollable
       collapsible **sections** — the Clouds tab's form (`infoSection`, `+`/`-` headers, because the font
-      atlas is ASCII-only): SATELLITE (`viewerInfo`: type, model, triangles, parts, size), ORBIT
-      (`viewerOrbitValue[5]`: altitude, inclination, RAAN, period, the flare-mitigation power — the rows
-      the selection panel used to list), PHOTOMETRY (`viewerPhotLine[4]`: phase, magnitude above the air,
-      magnitude as seen with its extinction, the 1000 km figure) — those three **open by default** —
-      then OBSERVER (`viewerObsLine[3]` + the markers toggle), CAMERA, RENDER and CHECK, collapsed.
-      `infoSectionOpen[]` is session state, like the Clouds sections'. The band does not scroll with the
+      atlas is ASCII-only), every body a label / value grid (`uiKV`, 2026-10-03): SATELLITE
+      (`viewerSatValue[4]`: type, model, size, mesh) and ORBIT (`viewerOrbitValue[5]`: altitude, inclination,
+      RAAN, period, the flare-mitigation power) **open by default**, then BRIGHTNESS (`viewerPhotValue[5]`
+      with `kViewerPhotLabels`: magnitude as seen, above the air, the extinction, at 1000 km, phase angle; +
+      Trace pass), SKY POSITION (`viewerObsValue[4]`: visibility, elevation, azimuth, range), VIEW (the 3D
+      view's camera / light / pose choices and the shadows, reflections, detail, glare, markers toggles +
+      Reset view — the old CAMERA and RENDER sections) and CHECK (`viewerCheckValue[3]`: render, model,
+      difference + `viewerCheckNote`; Run check), collapsed. `infoSectionOpen[]` is session state, like the
+      Clouds sections'. The band does not scroll with the
       sections: it is re-drawn each frame from the same crop.
     - **The chips** (`buildViewChip`: the icon alone, tooltip = its name, on a translucent scrim so a
       white icon survives bright clouds) are the 3D VIEW's own controls, four of them: **Spin**
@@ -3784,12 +3841,12 @@ compute / flare compute done) and 4 in `recordDraw` (sky background draw done �
 isolates the fullscreen atmosphere/terrain/ocean shader's own cost from the satellite/star point
 draws that follow it in the same render pass; they used to be one fused bucket).
 `SatelliteSim::updateGpuTimingStats()` EMA-smooths the six deltas into `gpuMsSmoothed[6]`,
-displayed in Settings → Display → "GPU FRAME BREAKDOWN" (one-frame-stale, same pattern as
+displayed in Settings → Performance → "GPU FRAME (ms)" (the Display tab until 2026-10-03) (one-frame-stale, same pattern as
 `peakMagnitude`).
 
 **CPU frame timing** (`CpuBucket` / `cpuMsRaw[]` / `cpuMsSmoothed[]` / `beginCpuFrameTiming()`,
-2026-08-10): the counterpart to the GPU timestamp buckets, displayed in Settings → Display →
-"CPU FRAME BREAKDOWN" and logged as `cpu_timing_ms` (snapshots) / `knockout_sweep.baseline_cpu`
+2026-08-10): the counterpart to the GPU timestamp buckets, displayed in Settings → Performance →
+"CPU FRAME (ms)" and logged as `cpu_timing_ms` (snapshots) / `knockout_sweep.baseline_cpu`
 (sweeps). Buckets: `build_ui`, `update_positions`, `beam_readback`, `update_stars`,
 `light_pollution_dome`, `update_planets`, plus a derived `other` = wall clock − GPU total −
 everything measured (present/vsync wait, driver submit, App-side work, and any CPU block without a
@@ -3812,8 +3869,8 @@ sample a CPU frame and a GPU frame from the same moment instead of one lagging t
 **Perf knockout toggles**: `debugDisableMask` (uint32) is a profiling-only bitmask. It rides in the
 CloudParams UBO as `cloud.dbgDisableMask` (read by `sat_sky.frag` and `cloud_march.comp`), plus a
 copy in `PointDrawPC` for `sat_point.frag`'s bit 4096 — all pushed from the single
-`SatelliteSim::debugDisableMask` member each frame. Checkboxes in Settings → Display →
-"KNOCKOUT PROFILING" (19 as of 2026-09-23, driven by the single `kDebugToggles` table at the top of
+`SatelliteSim::debugDisableMask` member each frame. Toggles in Settings → Performance →
+"KNOCKOUTS" ("Skip" = knocked out) (19 as of 2026-09-23, driven by the single `kDebugToggles` table at the top of
 `SatelliteSimUI.cpp` — bit, display label, and stable JSON key per row; adding a row there adds a
 checkbox AND a sweep step for free) each disable one shader block or dispatch — each with a mathematically-safe
 zero/no-op fallback (e.g. terrain-skip leaves `tHit=-1`, the same value the "no hit" path already
@@ -3850,7 +3907,7 @@ Reflect-Orbital Beam Cloud Occlusion" ("knockout bit 128 gates … but NOT `clou
 per-pixel ray loop … flagged here so a future profiling session doesn't assume bit 128 isolates the
 full beam rendering cost").
 
-**Automated knockout sweep** (Settings → Display → "Run knockout sweep", `startKnockoutSweep`/
+**Automated knockout sweep** (Settings → Performance → "Run knockout sweep", `startKnockoutSweep`/
 `updateKnockoutSweep` in `SatelliteSimUI.cpp`): walks the whole `kDebugToggles` table on its own —
 baseline first, then one step per bit — holding each mask for `kSweepSettleFrames` (6) discarded
 frames then averaging `gpuMsRaw[]` over `kSweepSampleFrames` (24), and appends ONE
@@ -3872,7 +3929,7 @@ because nothing occludes it any more, bit 1024 being the standing example), and 
 which bucket actually moved most — measured rather than assumed, since a bit can sit in a different
 pass than expected (128 spans two shaders; 1024 is a producer whose skip shows up downstream).
 
-**`perf_profiles/profile_log.jsonl`**: the "Save Snapshot" button (same panel) appends one JSON
+**`perf_profiles/profile_log.jsonl`**: the "Save snapshot" button (Performance tab, RECORD) appends one JSON
 record per press — GPU timing breakdown, resolution, observer lat/lon/altitude, sim time, active
 knockout mask, GPU device name, quality settings, graphics preset name, and (2026-08-10) a `beams`
 block: `active_count`/`ground_spot_count` and their capacities, plus `show_beam_rays`. Beam count is
@@ -4181,14 +4238,14 @@ palette (`Pal` / `Style`, moved to `UIPalette.h` so every UI file shares it; wan
 red accent, held input is solid red) — nine steps (`TutStep`): look, move, climb, boost, select —
 each finished by DOING it, with a keyboard (Q W E / A S D / Shift, labels from the live bindings), mouse
 or gamepad graphic (`buildTutKeyboard/Mouse/Gamepad`; the pad's when `lastInputWasGamepad`), plus a progress bar — then the selection's buttons, the
-time controls, the picture buttons and the gear, each OUTLINED on the HUD (PASSTHROUGH floating boxes
+time controls, the picture buttons and the menu buttons (Bookmarks, Cinematics, Settings), each OUTLINED on the HUD (PASSTHROUGH floating boxes
 from last frame's layout) and finished by using one of them (a change from the state the step began in,
 `tutBase*`) or Next. A finished step shows "Done!" for 1.1 s and moves on. The card sits low in the
 middle, above both corner panels, or above the panel it points at (`CLAY_ATTACH_TO_ELEMENT_WITH_ID`).
 - **Starts** from `finishIntro` (not on a replay of the intro), or on the first frame in the scene when
   the intro is off (`updateTutorial`, `tutAutoChecked`), once: Skip and Finish both set
   `display.tutorial_done` (absent = not done, so existing installs see it once). Settings > Display >
-  Replay Tutorial runs it again. A harness run never starts it on its own.
+  STARTUP > Replay tutorial runs it again. A harness run never starts it on its own.
 - **Detection** (`updateTutorial`, in buildUI right after the look block and before the click pick) reads
   the keys and gamepad values itself; it does not hook the movement code.
 - **Clay keeps stale boxes** for elements not drawn this frame, so the selection buttons' outline uses only

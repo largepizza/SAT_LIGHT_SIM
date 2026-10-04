@@ -86,7 +86,7 @@ ui scale 1
 # The replayed intro's end (53.3 s at the fixed 1/60 step): the title fades, no controls beat
 ui open settings tab=Display
 wait 3
-ui click ReplayIntroBtn
+ui click ReplayIntroBtn:0
 wait 3150
 capture intro_end ui=on scale=0.5
 wait 60

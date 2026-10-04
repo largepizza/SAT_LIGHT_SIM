@@ -1,0 +1,202 @@
+# UI review (2026-10-03): the reorganised settings tabs, the info and trace windows, the HUD's typed time /
+# coordinates / altitude, and the Bookmarks window with thumbnails. Every value check is an `expect`.
+#   s*  settings tabs at UI scale 1.5 (Display, Performance, Controls, Sound, Constellations, Photometry) + 2.0
+#   i*  the info window (ISS), every section open;  t*  the trace window
+#   h*  HUD text entry: time, latitude, longitude ("lat, lon" in one field), altitude (MSL), bad input ignored
+#   b*  bookmarks: two added with thumbnails, the window, Go back to the first, rename, delete
+#   u*  the tutorial's Pictures (left panel) and Menus (right panel) steps
+preset High
+observer lat=34.05 lon=-118.25 agl=10
+time set 2036-11-22T02:30:00Z
+time pause
+camera az=270 el=15 fov=70
+wait settle 20
+ui scale 1.5
+# ── settings ──────────────────────────────────────────────────────────────
+ui open settings tab=Display
+wait 3
+ui dump s15_display
+capture s15_display ui=on scale=0.5
+ui open settings tab=Performance
+wait 3
+ui dump s15_performance
+capture s15_performance ui=on scale=0.5
+ui open settings tab=Controls
+wait 3
+ui dump s15_controls
+capture s15_controls ui=on scale=0.5
+ui open settings tab=Sound
+wait 3
+ui dump s15_sound
+capture s15_sound ui=on scale=0.5
+ui open settings tab=Constellations
+wait 3
+ui dump s15_constellations
+capture s15_constellations ui=on scale=0.5
+ui open settings tab=Photometry
+wait 3
+ui dump s15_photometry
+capture s15_photometry ui=on scale=0.5
+ui scale 2.0
+ui open settings tab=Display
+wait 3
+ui dump s20_display
+capture s20_display ui=on scale=0.5
+ui scale 1.5
+ui close all
+# ── info + trace ──────────────────────────────────────────────────────────
+select const "International Space Station"
+ui open info
+wait 10
+ui dump i0_info
+capture i0_info ui=on scale=0.5
+ui click InfoSectHdr:2
+ui click InfoSectHdr:3
+ui click InfoSectHdr:4
+wait 3
+ui dump i1_info_sections
+capture i1_info_sections ui=on scale=0.5
+ui close all
+# (a `ui click` presses on the frame the pointer arrives, so the sky picker may take it for a click on empty sky)
+select const "International Space Station"
+ui open trace
+wait 5
+ui dump t0_trace
+capture t0_trace ui=on scale=0.5
+ui close all
+select none
+# ── HUD text entry ────────────────────────────────────────────────────────
+ui click TimeField
+ui type 2036-12-01 05:30
+ui key enter
+wait 1
+expect state.time.utc 2036-12-01T05:30:00.000Z
+ui click TimeField
+ui type 06:45:10
+ui key enter
+wait 1
+expect state.time.utc 2036-12-01T06:45:10.000Z
+ui click TimeField
+ui type not a time
+ui key enter
+wait 1
+capture h3_bad_input ui=on crop=0,700,1600,200 scale=0.5
+expect state.time.utc 2036-12-01T06:45:10.000Z
+# impossible dates, out-of-range years and trailing text are refused: the clock keeps the last valid time
+ui click TimeField
+ui type 2036-02-30 05:00
+ui key enter
+wait 1
+expect state.time.utc 2036-12-01T06:45:10.000Z
+ui click TimeField
+ui type 2036-11-31 00:00
+ui key enter
+wait 1
+expect state.time.utc 2036-12-01T06:45:10.000Z
+ui click TimeField
+ui type 2035-02-29 12:00
+ui key enter
+wait 1
+expect state.time.utc 2036-12-01T06:45:10.000Z
+ui click TimeField
+ui type 1-1-1
+ui key enter
+wait 1
+expect state.time.utc 2036-12-01T06:45:10.000Z
+ui click TimeField
+ui type 2036-11-22 05:30 junk
+ui key enter
+wait 1
+expect state.time.utc 2036-12-01T06:45:10.000Z
+ui click TimeField
+ui type 25:00
+ui key enter
+wait 1
+expect state.time.utc 2036-12-01T06:45:10.000Z
+ui click TimeField
+ui type 2036-11-22 05
+ui key enter
+wait 1
+expect state.time.utc 2036-12-01T06:45:10.000Z
+# a real leap day is accepted
+ui click TimeField
+ui type 2036-02-29 06:45:10
+ui key enter
+wait 1
+expect state.time.utc 2036-02-29T06:45:10.000Z
+ui click TimeField
+ui type 2036-12-01 06:45:10
+ui key enter
+wait 1
+expect state.time.utc 2036-12-01T06:45:10.000Z
+ui click SBLatField
+ui type 46.55 N
+ui key enter
+wait 1
+expect state.observer.lat_deg 46.55 tol=1e-4
+ui click SBLonField
+ui type 7.98E
+ui key enter
+wait 1
+expect state.observer.lon_deg 7.98 tol=1e-4
+ui click SBLatField
+ui type 36.1, -112.1
+ui key enter
+wait 1
+expect state.observer.lat_deg 36.1 tol=1e-4
+expect state.observer.lon_deg -112.1 tol=1e-4
+ui click SBAltField
+ui type 3.5
+ui key enter
+wait 1
+expect state.observer.height_offset_m 3500 tol=1e-3
+ui click SBAltField
+ui type 12000 m
+ui key enter
+wait 3
+expect state.observer.height_offset_m 12000 tol=1e-3
+ui dump h0_hud
+capture h0_hud ui=on scale=0.5
+capture h1_hud_left ui=on crop=0,800,420,100 scale=2
+capture h2_hud_right ui=on crop=800,840,800,60 scale=2
+# ── bookmarks ─────────────────────────────────────────────────────────────
+observer lat=36.06 lon=-112.14 agl=200
+camera az=0 el=5 fov=70
+time set 2036-11-22T00:40:00Z
+wait settle 10
+bookmark add Grand Canyon dusk
+wait 4
+observer lat=46.55 lon=7.98 agl=1500
+camera az=200 el=0 fov=60
+time set 2036-11-22T08:00:00Z
+wait settle 10
+bookmark add Jungfrau morning
+wait 4
+bookmark list
+ui open bookmarks
+wait 5
+ui dump b0_window
+capture b0_window ui=on scale=0.5
+bookmark go 1
+wait settle 10
+expect state.observer.lat_deg 36.06 tol=1e-3
+expect state.time.utc 2036-11-22T00:40:00.000Z
+capture b1_went_back ui=on scale=0.5
+bookmark rename 2 Jungfrau
+ui click BmDelete:0
+wait 1
+ui click BmDelete:0
+wait 3
+bookmark list
+ui dump b2_after_delete
+capture b2_after_delete ui=on scale=0.5
+# ── tutorial: the picture buttons (left) and the menus (right, 2026-10-03) ──
+ui close all
+tutorial start capture
+wait 3
+capture u7_tutorial_pictures ui=on scale=0.5
+tutorial step settings
+wait 3
+ui dump u8_tutorial_menus
+capture u8_tutorial_menus ui=on scale=0.5
+tutorial skip

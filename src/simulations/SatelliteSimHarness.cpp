@@ -202,7 +202,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; tutorial [start [step]|next|back|skip|state]; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; tutorial [start [step]|next|back|skip|state]; bookmark add [name]|go <n>|update <n>|rename <n> <name>|delete <n>|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -1216,9 +1216,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["glints_last_frame"] = meshRenderer.viewerGlintCount(); // the previous frame's list
         r["sat"] = viewerSatIndex;
         nlohmann::json phot = nlohmann::json::array();
-        for (const auto &l : viewerPhotLine)
-            if (l[0])
-                phot.push_back(l);
+        for (int i = 0; i < kViewerPhotRows; ++i)
+            phot.push_back(std::string(kViewerPhotLabels[i]) + ": " + viewerPhotValue[i]);
         r["photometry"] = phot;
         r["message"] = std::string("viewer aim=") + (viewerAim == 1 ? "observer" : viewerAim == 2 ? "toward" : "free") +
                        (viewerGlare ? " glare=on" : " glare=off");
@@ -1286,6 +1285,70 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["pad_focus"] = padFocus;
         r["selection"] = selectedSatIndex;
         r["message"] = "pad " + name + " -> " + (fired.empty() ? std::string("nothing") : fired);
+        return Status::Done;
+    }
+    if (n == "bookmark" || n == "bookmarks")
+    {
+        // bookmark add [name] | go <n> | update <n> | rename <n> <name> | delete <n> | list   (n from 1, as listed)
+        // The Bookmarks window's actions (SatelliteSimBookmarks.cpp). A thumbnail is captured on a later frame:
+        // `wait 3` after add / update before looking at the window.
+        if (!bookmarksLoaded_)
+            bookmarksLoad();
+        const std::string sub = lower(pos(0));
+        auto idxArg = [&]() -> int
+        {
+            const int i = (int)parseNum(pos(1), "bookmark index") - 1;
+            if (i < 0 || i >= (int)bookmarks_.size())
+                fail("bookmark: no bookmark " + pos(1) + " (" + std::to_string(bookmarks_.size()) + " saved)");
+            return i;
+        };
+        std::string msg;
+        if (sub == "add")
+        {
+            std::string name;
+            for (size_t k = 1; !pos(k).empty(); ++k)
+                name += (name.empty() ? "" : " ") + pos(k);
+            const int i = bookmarkAdd(name);
+            if (i < 0)
+                fail("bookmark add: " + bmStatus_);
+            msg = "added " + std::to_string(i + 1) + ": " + bookmarks_[i].name;
+        }
+        else if (sub == "go")
+        {
+            const int i = idxArg();
+            bookmarkGo(i);
+            msg = "went to " + std::to_string(i + 1) + ": " + bookmarks_[i].name;
+        }
+        else if (sub == "update")
+        {
+            const int i = idxArg();
+            bookmarkUpdate(i);
+            msg = "updated " + std::to_string(i + 1);
+        }
+        else if (sub == "rename")
+        {
+            const int i = idxArg();
+            std::string name;
+            for (size_t k = 2; !pos(k).empty(); ++k)
+                name += (name.empty() ? "" : " ") + pos(k);
+            bookmarks_[i].name = name;
+            bookmarksSave();
+            msg = "renamed " + std::to_string(i + 1) + ": " + name;
+        }
+        else if (sub == "delete")
+        {
+            const int i = idxArg();
+            bookmarkDelete(i);
+            msg = "deleted " + std::to_string(i + 1);
+        }
+        else if (!sub.empty() && sub != "list")
+            fail("bookmark: add [name] | go <n> | update <n> | rename <n> <name> | delete <n> | list");
+        json list = json::array();
+        for (const Bookmark &b : bookmarks_)
+            list.push_back({{"name", b.name}, {"id", b.id}, {"when", b.meta[0]}, {"where", b.meta[1]}, {"thumbnail", b.slot >= 0}});
+        r["bookmarks"] = list;
+        r["thumbnail_pending"] = !bmPendingThumb_.empty() || !bmCaptureFor_.empty();
+        r["message"] = msg.empty() ? std::to_string(bookmarks_.size()) + " bookmarks" : msg;
         return Status::Done;
     }
     if (n == "tutorial")
@@ -1384,11 +1447,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
     if (n == "expect")
     {
-        // expect <setting path | cine.<path>> <value> [tol=1e-4]: fails the run unless it matches (numbers within tol,
-        // anything else as text). cine.<path> reads the open cinematic's JSON (cine.name, cine.shots.0.keys.1.t).
+        // expect <setting path | cine.<path> | state.<path>> <value> [tol=1e-4]: fails the run unless it matches
+        // (numbers within tol, anything else as text). cine.<path> reads the open cinematic's JSON (cine.name,
+        // cine.shots.0.keys.1.t); state.<path> the `state` command's JSON (state.observer.lat_deg, state.time.utc).
         const std::string path = pos(0);
-        const json src = path.rfind("cine.", 0) == 0 ? cineToJson(cine_) : buildSettingsJson();
-        const json *v = lookupPath(src, path.rfind("cine.", 0) == 0 ? path.substr(5) : path);
+        const bool isCine = path.rfind("cine.", 0) == 0, isState = path.rfind("state.", 0) == 0;
+        const json src = isCine ? cineToJson(cine_) : isState ? harnessStateJson() : buildSettingsJson();
+        const json *v = lookupPath(src, isCine ? path.substr(5) : isState ? path.substr(6) : path);
         if (!v)
             fail("expect: no value '" + path + "'");
         const std::string want = pos(1);
@@ -1542,6 +1607,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 return &infoChrome;
             if (l == "viewer" || l == "view")
                 return &viewerChrome;
+            if (l == "bookmarks" || l == "bookmark")
+                return &bmChrome;
             if (l == "cine" || l == "cinematics")
                 return &cineChrome;
             return nullptr;
@@ -1736,7 +1803,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             {
                 WindowChrome *ch = chromeOf(w);
                 if (!ch)
-                    fail("ui open: settings, viewcontrols, trace, info, viewer, console");
+                    fail("ui open: settings, viewcontrols, trace, info, viewer, cine, bookmarks, console");
                 ch->open = true;
             }
             if (c.has("tab"))
@@ -1754,13 +1821,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             if (lower(pos(1)) == "all")
                 consoleOpen_ = settingsChrome.open = viewControlsChrome.open = traceChrome.open = infoChrome.open =
-                    viewerChrome.open = false;
+                    viewerChrome.open = cineChrome.open = bmChrome.open = false;
             else if (lower(pos(1)) == "console")
                 consoleOpen_ = false;
             else if (WindowChrome *ch = chromeOf(pos(1)))
                 ch->open = false;
             else
-                fail("ui close: settings, viewcontrols, trace, info, viewer, all");
+                fail("ui close: settings, viewcontrols, trace, info, viewer, cine, bookmarks, all");
         }
         else
             fail("ui: show | hide | scale <x> | open <window> [tab=<name>] | close <window|all> | hint | dump [name] | "

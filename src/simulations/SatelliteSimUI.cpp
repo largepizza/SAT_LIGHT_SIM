@@ -14,6 +14,7 @@
 #include "clay.h"
 #include "UIPalette.h"
 
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -23,6 +24,8 @@
 #include <unordered_map>
 #include <nlohmann/json.hpp>
 #include <string>
+
+void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate); // SatelliteSim.cpp: "HH:MM:SS" UTC
 
 // Icon index constants (match order passed to ui.loadIcons in buildUI's lazy-load block).
 static constexpr int kIconAngleLeft = 0;  // pixel--angle-left.png  → slow down
@@ -42,8 +45,9 @@ static constexpr int kIconObserver = 13;  // pixel--observer.png — the view fr
 static constexpr int kIconStudio = 14;    // pixel--studio.png — studio lighting (vs the live sky)
 static constexpr int kIconMaximize = 15;  // pixel--maximize.png — pop the 3D view out / restore
 static constexpr int kIconTrack = 16;     // pixel--track.png — "Track": lock the camera onto the satellite
-static constexpr int kIconPhoto = 17;
-static constexpr int kIconFilm = 18; // pixel--film.png — the Cinematics window (review 17)     // pixel--photo.png — HQ photo (supersampled screenshot)
+static constexpr int kIconPhoto = 17;    // pixel--photo.png — HQ photo (supersampled screenshot)
+static constexpr int kIconFilm = 18;     // pixel--film.png — the Cinematics window (review 17)
+static constexpr int kIconBookmark = 19; // pixel--bookmark.png — the Bookmarks window (2026-10-03)
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
 // are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
@@ -138,15 +142,19 @@ bool debugToggleAt(int i, uint32_t &bit, const char *&label, const char *&jsonKe
 // Attributions once — appending at 11 instead would have avoided that but put the tab button
 // underneath Attributions in the strip, which reads as an afterthought.
 // A tab's INDEX is persisted (display.active_tab) and indexes hovTab[] — new tabs are appended, and the
-// strip shows them in kSettingsTabOrder (review 4 reorganisation: Weather and Night lights split out of
+// strip shows them in kSettingsStrip (review 4 reorganisation: Weather and Night lights split out of
 // Clouds and Terrain; "Aurora" became "Atmosphere", with the scattering and the airglow).
-static constexpr int kSettingsTabCount = 14;
+// 2026-10-03: the strip is grouped under headings (kSettingsStrip: a negative entry is a heading, -1 - its index in
+// kSettingsStripHeadings); "Performance" (14) took the profiling tools out of Display; "Camera" (3) is folded into
+// Controls and no longer has a button (its index still opens Controls).
+static constexpr int kSettingsTabCount = 15;
 static constexpr const char *kSettingsTabNames[kSettingsTabCount] = {
     "Constellations", "Sound", "Controls", "Camera",
     "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Atmosphere", "Beams", "Attributions",
-    "Weather", "Night lights"};
-static constexpr int kSettingsTabOrder[kSettingsTabCount] = {0, 1, 2, 3, 4, 5, 6, 12, 9, 8, 13, 7, 10, 11};
-bool settingsTabIsAdvanced(int i) { return (i >= 6 && i <= 10) || i == 12 || i == 13; }
+    "Weather", "Night lights", "Performance"};
+static constexpr const char *kSettingsStripHeadings[] = {"GENERAL", "SKY", "RENDERING", "ABOUT"};
+static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 5, -3, 6, 12, 9, 8, 13, 7, 10, 14, -4, 11};
+bool settingsTabIsAdvanced(int i) { return (i >= 6 && i <= 10) || i == 12 || i == 13 || i == 14; }
 int settingsTabIndexByName(const std::string &name)
 {
     if (name.size() == 6 && tolower((unsigned char)name[0]) == 'a' && tolower((unsigned char)name[1]) == 'u')
@@ -367,6 +375,175 @@ void SatelliteSim::adjustLon(float deltaDeg)
     obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
 }
 
+// ─── HUD text entry (2026-10-03) ─────────────────────────────────────────────
+// The time bar's clock, latitude, longitude and altitude are click-to-type fields (inlineTextField). The parsers
+// are forgiving: a hemisphere letter or a sign, a unit or none, "lat, lon" typed into either coordinate.
+namespace
+{
+    // Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's days_from_civil).
+    int64_t hudDaysFromCivil(int64_t y, unsigned m, unsigned d)
+    {
+        y -= m <= 2;
+        const int64_t era = (y >= 0 ? y : y - 399) / 400;
+        const unsigned yoe = (unsigned)(y - era * 400);
+        const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+        const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        return era * 146097 + (int64_t)doe - 719468;
+    }
+    std::string hudTrim(std::string s)
+    {
+        s.erase(0, s.find_first_not_of(" \t"));
+        s.erase(s.find_last_not_of(" \t") + 1);
+        return s;
+    }
+    // One coordinate: "34.05", "-118.2", "34.05 N", "118.2W". `neg` = the letters that make it negative (S / W).
+    bool hudParseCoord(const std::string &in, const char *pos, const char *neg, double &out)
+    {
+        std::string s = hudTrim(in);
+        double sign = 1.0;
+        if (!s.empty())
+        {
+            const char c = (char)toupper((unsigned char)s.back());
+            if (strchr(pos, c) || strchr(neg, c))
+            {
+                sign = strchr(neg, c) ? -1.0 : 1.0;
+                s = hudTrim(s.substr(0, s.size() - 1));
+            }
+        }
+        // A trailing degree sign (UTF-8 C2 B0) or 'd' is allowed.
+        if (s.size() >= 2 && (unsigned char)s[s.size() - 2] == 0xC2 && (unsigned char)s.back() == 0xB0)
+            s.resize(s.size() - 2);
+        char *end = nullptr;
+        const double v = std::strtod(s.c_str(), &end);
+        if (end == s.c_str() || !std::isfinite(v))
+            return false;
+        out = sign * v;
+        return true;
+    }
+}
+
+void SatelliteSim::setObserverLatLon(double latDeg, double lonDeg)
+{
+    if (followActive)
+        stopFollow(); // in follow mode the observer IS the camera beside the satellite
+    setLat((float)std::clamp(latDeg, -89.999, 89.999));
+    lonDeg = std::remainder(lonDeg, 360.0);
+    adjustLon((float)std::remainder(lonDeg - (double)obsLonDeg, 360.0));
+    obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+    trailClearPending = true;
+}
+
+bool SatelliteSim::setLatLonFromText(const std::string &text, bool isLat)
+{
+    double lat = obsLatDeg, lon = obsLonDeg;
+    const size_t comma = text.find(',');
+    if (comma != std::string::npos)
+    {
+        if (!hudParseCoord(text.substr(0, comma), "N", "S", lat) || !hudParseCoord(text.substr(comma + 1), "E", "W", lon))
+            return false;
+    }
+    else if (!(isLat ? hudParseCoord(text, "N", "S", lat) : hudParseCoord(text, "E", "W", lon)))
+        return false;
+    if (lat < -90.0 || lat > 90.0)
+        return false;
+    setObserverLatLon(lat, lon);
+    return true;
+}
+
+bool SatelliteSim::setAltitudeFromText(const std::string &text)
+{
+    std::string s = hudTrim(text);
+    for (char &c : s)
+        c = (char)tolower((unsigned char)c);
+    double scale = unitSystem == UnitSystem::Imperial ? 1609.344 : 1000.0; // the HUD's unit
+    struct Unit
+    {
+        const char *suffix;
+        double m;
+    };
+    static const Unit kUnits[] = {{"km", 1000.0}, {"mi", 1609.344}, {"ft", 0.3048}, {"m", 1.0}};
+    for (const Unit &u : kUnits)
+    {
+        const size_t n = strlen(u.suffix);
+        if (s.size() > n && s.compare(s.size() - n, n, u.suffix) == 0)
+        {
+            scale = u.m;
+            s = hudTrim(s.substr(0, s.size() - n));
+            break;
+        }
+    }
+    char *end = nullptr;
+    const double v = std::strtod(s.c_str(), &end);
+    if (end == s.c_str() || !std::isfinite(v))
+        return false;
+    if (followActive)
+        stopFollow();
+    // obsHeightOffset is the eye's altitude ABOVE SEA LEVEL, floored at the ground (terrain.glsl
+    // observerEffHeight), so MSL is set directly and AGL adds the ground under the observer.
+    const double ground = harnessGpuGroundValid() ? (double)terrainFrameMapped[1] : (double)obsTerrainH;
+    const double meters = v * scale;
+    const double asl = altModeSeaLevel ? meters : (meters <= 0.0 ? 0.0 : ground + meters);
+    obsHeightOffset = (float)std::clamp(asl, 0.0, (double)kMaxObsHeightM);
+    return true;
+}
+
+bool SatelliteSim::setSimTimeFromText(const std::string &text)
+{
+    std::string s = hudTrim(text);
+    for (const char *strip : {"UTC", "utc", "Z", "z"})
+    {
+        if (s.rfind(strip, 0) == 0)
+            s = hudTrim(s.substr(strlen(strip)));
+        const size_t n = strlen(strip);
+        if (s.size() >= n && s.compare(s.size() - n, n, strip) == 0)
+            s = hudTrim(s.substr(0, s.size() - n));
+    }
+    int Y = 0, M = 0, D = 0, h = 0, mi = 0;
+    double sec = 0.0;
+    int64_t days;
+    // The WHOLE text must be one of these forms (`%n` = characters consumed): a date that does not exist
+    // ("2036-02-31", "2036-13-01") or trailing junk is refused, so the clock keeps the last valid time. Until
+    // 2026-10-03 the day was only checked against 31 and days_from_civil rolled 2036-11-31 over to December 1.
+    const char *c = s.c_str();
+    const int len = (int)s.size();
+    int used = -1;
+    bool hasDate = false;
+    if ((used = -1, sscanf(c, "%d-%d-%d%*[ T]%d:%d:%lf%n", &Y, &M, &D, &h, &mi, &sec, &used) == 6 && used == len) ||
+        (used = -1, sec = 0.0, sscanf(c, "%d-%d-%d%*[ T]%d:%d%n", &Y, &M, &D, &h, &mi, &used) == 5 && used == len) ||
+        (used = -1, h = mi = 0, sscanf(c, "%d-%d-%d%n", &Y, &M, &D, &used) == 3 && used == len))
+        hasDate = true;
+    else if (!((used = -1, sscanf(c, "%d:%d:%lf%n", &h, &mi, &sec, &used) == 3 && used == len) ||
+               (used = -1, sec = 0.0, sscanf(c, "%d:%d%n", &h, &mi, &used) == 2 && used == len)))
+        return false;
+    if (h < 0 || h > 23 || mi < 0 || mi > 59 || !(sec >= 0.0 && sec < 60.0))
+        return false;
+    if (hasDate)
+    {
+        // 1800-2200: the planets' Keplerian elements are fitted to 1800-2050, and nothing past that is meaningful.
+        static const int kMonthDays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+        if (Y < 1800 || Y > 2200 || M < 1 || M > 12 || D < 1)
+            return false;
+        const bool leap = (Y % 4 == 0 && Y % 100 != 0) || Y % 400 == 0;
+        if (D > kMonthDays[M - 1] + (M == 2 && leap ? 1 : 0))
+            return false;
+        days = hudDaysFromCivil(Y, (unsigned)M, (unsigned)D);
+    }
+    else
+    {
+        // "HH:MM[:SS]": that time on the sim's current UTC date.
+        const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        days = (int64_t)std::floor((tNow + 946728000.0) / 86400.0);
+    }
+    const double t = (double)(days * 86400 - 946728000) + h * 3600.0 + mi * 60.0 + sec; // s since J2000
+    const double whole = std::floor(t / 86400.0);
+    simDayJ2000 = (int64_t)whole;
+    simSecInDay = t - whole * 86400.0;
+    trailClearPending = true;
+    skyTaaHistValid = false; // a jump: nothing temporal may carry the old moment over
+    cv2HistoryValid = false;
+    return true;
+}
+
 // formatAltitude: converts a metres value to the current unit system's display string.
 static void formatAltitude(char *buf, size_t bufSize, float meters, UnitSystem unit)
 {
@@ -397,6 +574,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         savePerfSnapshot(ui.input().dt);
         snprintf(screenshotToastText, sizeof(screenshotToastText), "Snapshot saved (perf_profiles/profile_log.jsonl)");
         screenshotToastTimer = 2.5f;
+        screenshotToastWarn = false;
     }
 
     // Track (the selection panel's toggle) re-aims at the selection here, before the look block below:
@@ -522,6 +700,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // Text fields (2026-10-03): their per-frame strings, and the end-of-frame commit / lost-focus check on every
     // return path below.
     textFieldBufN_ = 0;
+    uiKitBufN_ = 0;
     struct TextEditFrameEnd
     {
         SatelliteSim *s;
@@ -579,6 +758,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--track.png",
             "assets/icons/ui/pixel--photo.png",
             "assets/icons/ui/pixel--film.png",
+            "assets/icons/ui/pixel--bookmark.png",
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -641,6 +821,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildHarnessConsole(inp, ui);  // the ~ console draws even with the HUD hidden
     buildHarnessOverlays(inp, ui); // harness `overlay` titles/labels, likewise (docs/HARNESS.md)
     buildCineHud(inp, ui);         // a playing / exporting cinematic's progress and Stop, likewise
+    bookmarkTick(ui);              // bookmarks: the list, thumbnail captures and uploads (window open or not)
 
     // ── Tab: skip all UI when hidden ─────────────────────────────────────────
     if (!uiVisible)
@@ -652,6 +833,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildViewControlsWindow(inp, ui);
     buildTraceWindow(inp, ui);
     buildCinematicWindow(inp, ui);
+    buildBookmarksWindow(inp, ui);
     updateViewerView(inp, ui); // the satellite windows' shared prologue (target, drag, readouts)
     buildInfoWindow(inp, ui);
     buildViewPopoutWindow(inp, ui);
@@ -662,14 +844,27 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // Left/right HUD panels are corner-anchored (CLAY_SIZING_FIT, no stored chrome) —
     // these are rough size estimates for capture purposes only, same approximation
     // the original hardcoded capture rects used.
-    ui.addMouseCaptureRect(12.0f, inp.screenH - 90.0f, 320.0f, 78.0f);
-    ui.addMouseCaptureRect(inp.screenW - 372.0f, inp.screenH - 50.0f, 360.0f, 38.0f);
+    // Their real laid-out boxes (last frame's layout) once known: the time and coordinate fields change their width.
+    {
+        const Clay_ElementData l = Clay_GetElementData(CLAY_ID("LeftPanel"));
+        const Clay_ElementData r = Clay_GetElementData(CLAY_ID("RightPanel"));
+        if (l.found)
+            ui.addMouseCaptureRect(l.boundingBox.x, l.boundingBox.y, l.boundingBox.width, l.boundingBox.height);
+        else
+            ui.addMouseCaptureRect(12.0f, inp.screenH - 90.0f, 320.0f, 78.0f);
+        if (r.found)
+            ui.addMouseCaptureRect(r.boundingBox.x, r.boundingBox.y, r.boundingBox.width, r.boundingBox.height);
+        else
+            ui.addMouseCaptureRect(inp.screenW - 372.0f, inp.screenH - 50.0f, 360.0f, 38.0f);
+    }
     if (settingsChrome.open)
         ui.addMouseCaptureRect(settingsChrome.x, settingsChrome.y, settingsChrome.w, settingsChrome.h);
     if (viewControlsChrome.open)
         ui.addMouseCaptureRect(viewControlsChrome.x, viewControlsChrome.y, viewControlsChrome.w, viewControlsChrome.h);
     if (traceChrome.open)
         ui.addMouseCaptureRect(traceChrome.x, traceChrome.y, traceChrome.w, traceChrome.h);
+    if (bmChrome.open)
+        ui.addMouseCaptureRect(bmChrome.x, bmChrome.y, bmChrome.w, bmChrome.h);
     // The satellite windows: without these a drag on a render also clicked the sky behind the window
     // and re-selected (or deselected) whatever satellite was under it.
     if (infoChrome.open && meshRendererInit)
@@ -710,7 +905,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 }
 
 // ─── buildLeftHudPanel ──────────────────────────────────────────────────────
-// Time controls: UTC clock, speed label, slower/pause|play/faster/reverse buttons.
+// Time controls: UTC clock, speed label, slower/pause|play/faster/reverse buttons, then the picture buttons
+// (screenshot, HQ photo, star trails). The windows' buttons are on the right panel (2026-10-03).
 // Anchored to the bottom-left corner via Clay attachPoints — recomputed against
 // the actual window size every frame, so it stays stuck to the corner across
 // resizes instead of a persisted free position (dragging/pinning was tried and
@@ -750,9 +946,16 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            Clay_String timeStr{false, (int32_t)strlen(timeBuf), timeBuf};
-            CLAY_TEXT(timeStr,
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
+            // Click to type a time (2026-10-03): "2036-11-22 02:06", or "02:06:30" for today (setSimTimeFromText).
+            std::string typed;
+            if (inlineTextField(inp, ui, CLAY_ID("TimeField"), timeBuf, timeBuf + 4, typed, 0.0f, 12,
+                                Pal::textDim, "Click to type a UTC time: 2036-11-22 02:06, or 02:06:30 for today") &&
+                !setSimTimeFromText(typed))
+            {
+                snprintf(screenshotToastText, sizeof(screenshotToastText), "Not a time: %.40s  (try 2036-11-22 02:06)", typed.c_str());
+                screenshotToastTimer = 3.0f;
+                screenshotToastWarn = true;
+            }
 
             Clay_Color speedCol = timePaused       ? Pal::speedPaused
                                   : timeDir < 0.0f ? Pal::speedRev
@@ -914,30 +1117,6 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                                                 .image = {.imageData = (void *)(intptr_t)(kIconPhoto + 1)}}) {}
             }
 
-            // ── Cinematics (review 17) ───────────────────────────────────────────
-            Clay_Color cineBg = cineActive() ? Pal::pauseActive : (cineChrome.open ? Pal::btnAccent : (hovTimeCine ? Pal::btnHover : Pal::btnIdle));
-            CLAY(CLAY_ID("TimeCineBtn"), {.layout = {
-                                              .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
-                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                          .backgroundColor = cineBg,
-                                          .cornerRadius = CLAY_CORNER_RADIUS(4)})
-            {
-                bool n = Clay_Hovered();
-                sndRollover(n, hovTimeCine);
-                sndClick(n, inp.lmbPressed);
-                if (n && inp.lmbPressed)
-                {
-                    cineChrome.open = !cineChrome.open;
-                    if (cineChrome.open)
-                        cineRefreshFiles();
-                }
-                hovTimeCine = n;
-                ui.tooltip(inp, n, "Cinematics", fs(11));
-                CLAY(CLAY_ID("TimeCineIcon"), {.layout = {
-                                                   .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
-                                               .image = {.imageData = (void *)(intptr_t)(kIconFilm + 1)}}) {}
-            }
-
             // ── Star Trails ───────────────────────────────────────────────────────
             // Single consolidated control: OFF hides the trail immediately (recordDraw()'s
             // composite draw is itself gated on trailEnabled) and ON always starts from a blank
@@ -971,7 +1150,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
 }
 
 // ─── buildRightHudPanel ─────────────────────────────────────────────────────
-// Lat/lon/altitude/fps + settings gear. Anchored to the bottom-right corner,
+// Lat/lon/altitude/fps + the menu buttons (Bookmarks, Cinematics, Settings). Anchored to the bottom-right corner,
 // same fixed-to-window-edge approach as the left panel. All three geo fields
 // (lat/lon/altitude) support scroll-to-adjust; holding the Move-Fast keybind
 // (default LShift) multiplies the step 5x, holding Move-Fine (default LCtrl)
@@ -980,22 +1159,25 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
 void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
 {
     static char latBuf[20], lonBuf[20], altBuf[24], fpsBuf[24];
+    float altMetersShown = 0.0f;
     {
         float absLat = fabsf(obsLatDeg);
         float absLon = fabsf(obsLonDeg);
         snprintf(latBuf, sizeof(latBuf), "%.1f\xc2\xb0 %c", absLat, obsLatDeg >= 0.0f ? 'N' : 'S');
         snprintf(lonBuf, sizeof(lonBuf), "%.1f\xc2\xb0 %c", absLon, obsLonDeg >= 0.0f ? 'E' : 'W');
-        float altMeters = altModeSeaLevel ? (obsTerrainH + obsHeightOffset) : obsHeightOffset;
+        // obsHeightOffset is the eye's altitude above SEA LEVEL floored at the ground (the shaders' observerEffHeight),
+        // so MSL = max(ground, offset) and AGL = max(0, offset - ground). Until 2026-10-03 this showed terrain + offset
+        // as MSL and the offset as AGL — right only while standing on the ground.
+        const float ground = harnessGpuGroundValid() ? terrainFrameMapped[1] : obsTerrainH;
+        float altMeters = altModeSeaLevel ? std::max(ground, obsHeightOffset) : std::max(0.0f, obsHeightOffset - ground);
         formatAltitude(altBuf, sizeof(altBuf), altMeters, unitSystem);
+        altMetersShown = altMeters;
         // inp.dt is the real frame delta (App clamps it only against multi-second hitches), so
         // 1/dt is the true frame rate. EMA-smooth it so a genuinely low rate shows a steady number.
         float instFps = inp.dt > 0.0f ? 1.0f / inp.dt : 0.0f;
         fpsBadgeEma = fpsBadgeEma > 0.0f ? fpsBadgeEma + 0.1f * (instFps - fpsBadgeEma) : instFps;
         snprintf(fpsBuf, sizeof(fpsBuf), "%.0f fps", fpsBadgeEma);
     }
-    Clay_String latStr{false, (int32_t)strlen(latBuf), latBuf};
-    Clay_String lonStr{false, (int32_t)strlen(lonBuf), lonBuf};
-    Clay_String altStr{false, (int32_t)strlen(altBuf), altBuf};
     Clay_String fpsStr{false, (int32_t)strlen(fpsBuf), fpsBuf};
 
     // Scroll step modifier — reuses the Move-Fast/Move-Fine keybindings (whatever
@@ -1008,12 +1190,11 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
         else if (glfwGetKey(win, keybindings[KB_MOVE_FINE].key) == GLFW_PRESS)
             scrollMult = 0.2f;
     }
-    static char geoTip[64];
-    snprintf(geoTip, sizeof(geoTip), "Scroll to adjust  (%s = fast, %s = fine)",
+    static char geoTip[96];
+    snprintf(geoTip, sizeof(geoTip), "Click to type, scroll to adjust (%s = fast, %s = fine)",
              keyDisplayName(keybindings[KB_MOVE_BOOST].key), keyDisplayName(keybindings[KB_MOVE_FINE].key));
 
     const int kGearSz = 28;
-    Clay_Color settingsBg = hovSettings ? Pal::btnHover : Pal::panelBgFade;
 
     CLAY(CLAY_ID("RightPanel"), {.layout = {
                                      .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(38)},
@@ -1027,14 +1208,22 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
     {
         // ── Lat display (scroll to adjust) ────────────────────────────────
         CLAY(CLAY_ID("SBLatDisplay"), {.layout = {
-                                           .sizing = {CLAY_SIZING_FIXED(62), CLAY_SIZING_FIT(0)},
+                                           .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
         {
             bool n = Clay_Hovered();
-            if (n && inp.scrollY != 0.0f)
+            if (n && inp.scrollY != 0.0f && !textEditing())
                 setLat(obsLatDeg + inp.scrollY * 5.0f * scrollMult);
-            ui.tooltip(inp, n, geoTip, fs(11));
-            CLAY_TEXT(latStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
+            char edit[32];
+            snprintf(edit, sizeof(edit), "%.4f", obsLatDeg);
+            std::string typed;
+            if (inlineTextField(inp, ui, CLAY_ID("SBLatField"), latBuf, edit, typed, (float)fs(12) * 4.6f, 12, Pal::volValue, geoTip) &&
+                !setLatLonFromText(typed, true))
+            {
+                snprintf(screenshotToastText, sizeof(screenshotToastText), "Latitude not understood: %.40s", typed.c_str());
+                screenshotToastTimer = 3.0f;
+                screenshotToastWarn = true;
+            }
         }
 
         CLAY(CLAY_ID("SBDiv2"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
@@ -1042,14 +1231,22 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
 
         // ── Lon display (scroll to adjust) ────────────────────────────────
         CLAY(CLAY_ID("SBLonDisplay"), {.layout = {
-                                           .sizing = {CLAY_SIZING_FIXED(62), CLAY_SIZING_FIT(0)},
+                                           .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
         {
             bool n = Clay_Hovered();
-            if (n && inp.scrollY != 0.0f)
+            if (n && inp.scrollY != 0.0f && !textEditing())
                 adjustLon(inp.scrollY * 5.0f * scrollMult);
-            ui.tooltip(inp, n, geoTip, fs(11));
-            CLAY_TEXT(lonStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
+            char edit[32];
+            snprintf(edit, sizeof(edit), "%.4f", obsLonDeg);
+            std::string typed;
+            if (inlineTextField(inp, ui, CLAY_ID("SBLonField"), lonBuf, edit, typed, (float)fs(12) * 4.6f, 12, Pal::volValue, geoTip) &&
+                !setLatLonFromText(typed, false))
+            {
+                snprintf(screenshotToastText, sizeof(screenshotToastText), "Longitude not understood: %.40s", typed.c_str());
+                screenshotToastTimer = 3.0f;
+                screenshotToastWarn = true;
+            }
         }
 
         CLAY(CLAY_ID("SBDiv3"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
@@ -1057,17 +1254,25 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
 
         // ── Altitude display (scroll to adjust) + MSL/AGL toggle ──────────
         CLAY(CLAY_ID("SBAltDisplay"), {.layout = {
-                                           .sizing = {CLAY_SIZING_FIXED(78), CLAY_SIZING_FIT(0)},
+                                           .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
         {
             bool n = Clay_Hovered();
-            if (n && inp.scrollY != 0.0f)
+            if (n && inp.scrollY != 0.0f && !textEditing())
             {
                 float step = std::max(10.0f, obsHeightOffset * 0.05f) * scrollMult;
                 obsHeightOffset = std::clamp(obsHeightOffset + inp.scrollY * step, 0.0f, kMaxObsHeightM);
             }
-            ui.tooltip(inp, n, geoTip, fs(11));
-            CLAY_TEXT(altStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
+            char edit[32];
+            snprintf(edit, sizeof(edit), "%.3f", altMetersShown / (unitSystem == UnitSystem::Imperial ? 1609.344f : 1000.0f));
+            std::string typed;
+            if (inlineTextField(inp, ui, CLAY_ID("SBAltField"), altBuf, edit, typed, (float)fs(12) * 5.6f, 12, Pal::volValue, geoTip) &&
+                !setAltitudeFromText(typed))
+            {
+                snprintf(screenshotToastText, sizeof(screenshotToastText), "Altitude not understood: %.40s", typed.c_str());
+                screenshotToastTimer = 3.0f;
+                screenshotToastWarn = true;
+            }
         }
         Clay_Color altBtnBg = hovAltModeToggle ? Pal::btnHover : Pal::btnIdle;
         CLAY(CLAY_ID("SBAltModeBtn"), {.layout = {
@@ -1116,23 +1321,47 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
         CLAY(CLAY_ID("SBDiv5"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
                                  .backgroundColor = Pal::divider}) {}
 
-        // ── Settings gear button ──────────────────────────────────────────
-        CLAY(CLAY_ID("SettingsBtn"), {.layout = {
-                                          .sizing = {CLAY_SIZING_FIXED(kGearSz), CLAY_SIZING_FIXED(kGearSz)},
-                                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                      .backgroundColor = settingsBg,
-                                      .cornerRadius = CLAY_CORNER_RADIUS(4)})
+        // ── Menus: Bookmarks, Cinematics, Settings (2026-10-03) ─────────────
+        // The left panel is the clock and the picture buttons; the windows open from here. Each button is lit
+        // (accent) while its window is open, the Cinematics one amber while a cinematic plays or exports.
+        auto menuBtn = [&](Clay_ElementId id, Clay_ElementId iconId, int icon, bool &hov, Clay_Color onBg, bool on,
+                           const char *tip, bool &toggled)
         {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovSettings);
-            sndClick(n, inp.lmbPressed);
-            if (n && inp.lmbPressed)
-                settingsChrome.open = !settingsChrome.open;
-            hovSettings = n;
-            ui.tooltip(inp, n, "Open settings", fs(11));
-            CLAY(CLAY_ID("SettingsIcon"), {.layout = {.sizing = {CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18)}},
-                                           .image = {.imageData = (void *)(intptr_t)(kIconSettings + 1)}}) {}
+            toggled = false;
+            const Clay_Color bg = on ? onBg : (hov ? Pal::btnHover : Pal::panelBgFade);
+            const float sz = (float)kGearSz;
+            CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
+                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                      .backgroundColor = bg,
+                      .cornerRadius = CLAY_CORNER_RADIUS(4)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hov);
+                sndClick(n, inp.lmbPressed);
+                toggled = n && inp.lmbPressed;
+                hov = n;
+                ui.tooltip(inp, n, tip, fs(11));
+                CLAY(iconId, {.layout = {.sizing = {CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18)}},
+                              .image = {.imageData = (void *)(intptr_t)(icon + 1)}}) {}
+            }
+        };
+        bool toggled = false;
+        menuBtn(CLAY_ID("TimeBookmarkBtn"), CLAY_ID("TimeBookmarkIcon"), kIconBookmark, hovTimeBookmark, Pal::btnAccent,
+                bmChrome.open, "Bookmarks", toggled);
+        if (toggled)
+            bmChrome.open = !bmChrome.open;
+        menuBtn(CLAY_ID("TimeCineBtn"), CLAY_ID("TimeCineIcon"), kIconFilm, hovTimeCine,
+                cineActive() ? Pal::pauseActive : Pal::btnAccent, cineActive() || cineChrome.open, "Cinematics", toggled);
+        if (toggled)
+        {
+            cineChrome.open = !cineChrome.open;
+            if (cineChrome.open)
+                cineRefreshFiles();
         }
+        menuBtn(CLAY_ID("SettingsBtn"), CLAY_ID("SettingsIcon"), kIconSettings, hovSettings, Pal::btnAccent,
+                settingsChrome.open, "Settings", toggled);
+        if (toggled)
+            settingsChrome.open = !settingsChrome.open;
     }
 }
 
@@ -1370,13 +1599,11 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
         return;
     if (traceChrome.w <= 0.0f)
     {
-        // 520x380, shrunk on a small window (never wider than ~34% of it, never taller than ~50%) so
-        // that the default leaves the middle of the sky alone and stops short of the view window. The
-        // height is what the plot gets the leftovers of: the summary, the two readout lines, the
-        // legend, the axis titles, the clock gutter and the button row come to ~240 px with the title
-        // bar, so 380 leaves a ~140 px plot.
+        // 520 x 460, shrunk on a small window (never wider than ~34% of it, never taller than ~55%) so the
+        // default leaves the middle of the sky alone. Two tile rows, the legend, the axis gutters and the
+        // toolbar come to ~250 px with the title bar, so 460 leaves a ~200 px plot.
         traceChrome.w = std::min(520.0f, std::max(420.0f, inp.screenW * 0.34f));
-        traceChrome.h = std::min(380.0f, std::max(300.0f, inp.screenH * 0.5f));
+        traceChrome.h = std::min(460.0f, std::max(340.0f, inp.screenH * 0.55f));
     }
     // Live mode: retrace at up to kTraceLiveHz, only when the result would change.
     if (traceLive && std::chrono::steady_clock::now() - traceLastRetrace >= std::chrono::duration<double>(1.0 / kTraceLiveHz) &&
@@ -1392,29 +1619,36 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
     traceNowY[1] = nowIn ? 1.0f : NAN;
     traceNowTickY[0] = traceNowTickY[1] = NAN;
     bool observerMoved = false;
+    // Tiles: 0 peak mag, 1 peak at, 2 length, 3 max elevation | 4 now (clock), 5 magnitude, 6 elevation, 7 phase.
+    for (auto &b : traceTileBuf)
+        snprintf(b, sizeof(b), "-");
+    if (traceValid)
+    {
+        if (std::isfinite(tracePeakMag))
+        {
+            snprintf(traceTileBuf[0], sizeof(traceTileBuf[0]), "%.2f", tracePeakMag);
+            formatSimClock(tracePeakT, traceTileBuf[1], sizeof(traceTileBuf[1]), false);
+        }
+        else
+            snprintf(traceTileBuf[0], sizeof(traceTileBuf[0]), "Dark");
+        snprintf(traceTileBuf[2], sizeof(traceTileBuf[2]), "%dm %02ds", tracePassS / 60, tracePassS % 60);
+        snprintf(traceTileBuf[3], sizeof(traceTileBuf[3]), "%.0f deg", traceMaxEl);
+    }
     if (traceValid && traceSetup.satelliteIndex >= 0 && traceSetup.satelliteIndex < (int)satOrbits.size())
     {
-        // Both readout lines are rebuilt together, so one can never show last pass's numbers.
-        traceNowLine[0] = traceNowDetail[0] = '\0';
         const uint32_t ti = satOrbits[traceSetup.satelliteIndex].typeIdx;
         const SatelliteType &type = satTypes[ti];
         const SatTraceRow r = evalSatTraceRow(traceSetup, type.groups, type.lobes, &type.occlusion, tNow);
-        char clock[16];
-        time_t unixSim = (time_t)std::floor(tNow) + 946728000;
-        struct tm *utc = gmtime(&unixSim);
-        snprintf(clock, sizeof(clock), "%02d:%02d:%02d", utc ? utc->tm_hour : 0, utc ? utc->tm_min : 0,
-                 utc ? utc->tm_sec : 0);
-        // Two short lines rather than one 72-character one: the window is 520 px wide by default, and
-        // the single line wrapped to two messily (a mid-word break in the middle of the numbers).
-        snprintf(traceNowDetail, sizeof(traceNowDetail), "el %.0f deg  phase %.0f deg", r.elevationDeg, r.phaseDeg);
+        formatSimClock(tNow, traceTileBuf[4], sizeof(traceTileBuf[4]), false);
+        snprintf(traceTileBuf[6], sizeof(traceTileBuf[6]), "%.0f deg", r.elevationDeg);
+        snprintf(traceTileBuf[7], sizeof(traceTileBuf[7]), "%.0f deg", r.phaseDeg);
         if (r.elevationDeg <= 0.0)
-            snprintf(traceNowLine, sizeof(traceNowLine), "Now %s: below the horizon", clock);
+            snprintf(traceTileBuf[5], sizeof(traceTileBuf[5]), "Below");
         else if (!std::isfinite(r.magApparent))
-            snprintf(traceNowLine, sizeof(traceNowLine), "Now %s: in Earth's shadow", clock);
+            snprintf(traceTileBuf[5], sizeof(traceTileBuf[5]), "Dark");
         else
         {
-            snprintf(traceNowLine, sizeof(traceNowLine), "Now %s: mag %.2f  (%.2f above the air)", clock,
-                     r.magApparent, r.mag);
+            snprintf(traceTileBuf[5], sizeof(traceTileBuf[5]), "%.2f", r.magApparent);
             if (nowIn)
             {
                 const float y = (traceMagFaint - (float)r.magApparent) / (traceMagFaint - traceMagBright);
@@ -1429,37 +1663,27 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
     }
 
     static char titleBuf[128];
-    snprintf(titleBuf, sizeof(titleBuf), "Magnitude trace: %s", traceTitle);
+    snprintf(titleBuf, sizeof(titleBuf), "Trace: %s", traceTitle);
     auto text = [&](const char *s, Clay_Color c, float size)
     {
         Clay_String str{false, (int32_t)strlen(s), s};
-        CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
-    };
-    auto button = [&](int id, const char *label, bool &hov, const char *tip)
-    {
-        bool clicked = false;
-        CLAY(CLAY_IDI("TraceBtn", id), {.layout = {
-                                            .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(24)},
-                                            .padding = {10, 10, 0, 0},
-                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                        .backgroundColor = hov ? Pal::btnHover : Pal::btnIdle,
-                                        .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hov);
-            sndClick(n, inp.lmbPressed);
-            hov = n;
-            clicked = n && inp.lmbPressed;
-            ui.tooltip(inp, n, tip, fs(11));
-            text(label, Pal::btnLabel, 11);
-        }
-        return clicked;
+        CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size), .wrapMode = CLAY_TEXT_WRAP_NONE}));
     };
     auto legend = [&](int id, Clay_Color c, const char *label)
     {
         CLAY(CLAY_IDI("TraceLegendSwatch", id), {.layout = {.sizing = {CLAY_SIZING_FIXED(14), CLAY_SIZING_FIXED(3)}},
                                                  .backgroundColor = c}) {}
         text(label, Pal::textDim, 11);
+        CLAY(CLAY_IDI("TraceLegendGap", id), {.layout = {.sizing = {CLAY_SIZING_FIXED(6), CLAY_SIZING_FIXED(1)}}}) {}
+    };
+    auto tileRow = [&](int id, const std::function<void()> &f)
+    {
+        CLAY(CLAY_IDI("TraceTiles", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                     .childGap = 4,
+                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            f();
+        }
     };
     // Tick labels float over the plot's edges, placed from its size in the last layout (one frame
     // behind while the window is resized, which is invisible).
@@ -1485,10 +1709,13 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
         }
     };
     static const char *kPhaseTicks[kTracePhaseTicks] = {"180", "135", "90", "45", "0"};
+    static char retraceTip[96];
+    snprintf(retraceTip, sizeof(retraceTip), "Trace the selection's pass from now (last retrace %.1f ms)", traceRetraceMs);
+    const char *status = traceStatus[0] ? traceStatus : (observerMoved && !traceLive ? "Observer moved: Retrace to update" : nullptr);
 
     buildResizableWindow(
         inp, ui, traceChrome, 2, titleBuf, true, hovTraceClose, 12.0f,
-        inp.screenH - traceChrome.h - 88.0f, 420.0f, 300.0f, 1600.0f, 1000.0f,
+        inp.screenH - traceChrome.h - 88.0f, 420.0f, 340.0f, 1600.0f, 1000.0f,
         [&]()
         {
             CLAY(CLAY_ID("TraceBody"), {.layout = {
@@ -1497,33 +1724,37 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                                             .childGap = 6,
                                             .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
-                if (traceSummary[0])
-                    text(traceSummary, Pal::textPrimary, 12);
-                if (traceValid && traceNowLine[0])
-                    text(traceNowLine, {255, 255, 255, 230}, 12);
-                if (traceValid && traceNowDetail[0])
-                    text(traceNowDetail, Pal::textDim, 11);
+                if (status)
+                    text(status, traceValid ? Clay_Color{230, 190, 120, 255} : Pal::listenKey, 11);
+                tileRow(0, [&]()
+                        {
+                            uiStatTile("TraceTile", 0, "PEAK MAG", traceTileBuf[0], Pal::textPrimary);
+                            uiStatTile("TraceTile", 1, "PEAK AT", traceTileBuf[1], Pal::textPrimary);
+                            uiStatTile("TraceTile", 2, "PASS", traceTileBuf[2], Pal::textPrimary);
+                            uiStatTile("TraceTile", 3, "MAX ELEV", traceTileBuf[3], Pal::textPrimary); });
+                tileRow(1, [&]()
+                        {
+                            uiStatTile("TraceTile", 4, "NOW", traceTileBuf[4], {255, 255, 255, 235});
+                            uiStatTile("TraceTile", 5, "MAGNITUDE", traceTileBuf[5], {140, 204, 255, 255});
+                            uiStatTile("TraceTile", 6, "ELEVATION", traceTileBuf[6], Pal::textPrimary);
+                            uiStatTile("TraceTile", 7, "PHASE", traceTileBuf[7], kPhaseCol); });
                 if (traceValid)
                 {
+                    // Legend and axis titles on one line: mag on the left gutter, phase on the right.
                     CLAY(CLAY_ID("TraceLegend"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                             .childGap = 6,
+                                                             .padding = {0, 0, 4, 0},
+                                                             .childGap = 4,
                                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                     {
-                        // Short labels: the full ones ("apparent (after extinction)", "above atmosphere")
-                        // total ~527 px and no longer fit the narrower window's 496 px content width.
+                        text("mag", Pal::textDim, 11);
+                        CLAY(CLAY_ID("TraceLegendGapL"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
                         legend(0, {140, 204, 255, 255}, "apparent");
                         legend(1, {140, 204, 255, 90}, "above air");
                         legend(2, {255, 173, 77, 190}, "phase");
                         legend(3, {255, 255, 255, 128}, "now");
-                    }
-                    // Axis titles over the two label gutters.
-                    CLAY(CLAY_ID("TraceAxisTitles"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-                    {
-                        text("mag", Pal::textDim, 11);
-                        CLAY(CLAY_ID("TraceAxisTitleGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-                        text("phase (deg)", kPhaseCol, 11);
+                        CLAY(CLAY_ID("TraceLegendGapR"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+                        text("phase", kPhaseCol, 11);
                     }
                     // Plot between two label gutters; the labels themselves float (tick() below).
                     CLAY(CLAY_ID("TracePlotRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
@@ -1572,29 +1803,34 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                                      CLAY_ATTACH_POINT_LEFT_BOTTOM, plotW * i / (kTraceTimeTicks - 1), 4.0f);
                     }
                 }
-                if (traceStatus[0])
-                    text(traceStatus, traceValid ? Pal::textDim : Pal::listenKey, 11);
-                if (traceExportStatus[0])
-                    text(traceExportStatus, Pal::textDim, 11);
-                if (observerMoved && !traceLive)
-                    text("You have moved since this trace was taken; Retrace to trace from here.", Pal::textHint, 11);
+                else
+                {
+                    CLAY(CLAY_ID("TraceEmpty"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
+                                                 .backgroundColor = {12, 14, 18, 255},
+                                                 .border = {.color = Style::borderColor, .width = CLAY_BORDER_ALL(1)}}) {}
+                }
                 CLAY(CLAY_ID("TraceButtons"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                          .childGap = 8,
+                                                          .childGap = 6,
                                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    if (button(0, "Retrace", hovTraceRetrace, "Trace the current selection's pass from the current time"))
+                    if (uiButton(inp, ui, "TraceBtn", 0, "Retrace", retraceTip))
                         computeSelectedTrace();
-                    if (button(2, traceLive ? "Live: ON" : "Live: OFF", hovTraceLive,
-                               "Retrace up to 10 times a second when you move, the selection changes, the pass ends "
-                               "or a photometry setting changes"))
+                    if (uiButton(inp, ui, "TraceBtn", 2, "Live", "Retrace up to 10 times a second when you move, the selection "
+                                                               "changes, the pass ends or a photometry setting changes",
+                                 traceLive))
                         traceLive = !traceLive;
-                    if (traceValid &&
-                        button(1, "Export CSV", hovTraceExport, "Write this trace as CSV (replay: SatModelTool --replay-trace)"))
+                    if (uiButton(inp, ui, "TraceBtn", 1, "Export CSV", "Write this trace as CSV (replay: SatModelTool --replay-trace)",
+                                 false, traceValid))
                         exportTrace();
-                    static char costBuf[48];
-                    snprintf(costBuf, sizeof(costBuf), "retrace %.1f ms", traceRetraceMs);
-                    text(costBuf, Pal::textHint, 11);
+                    if (traceExportStatus[0])
+                    {
+                        CLAY(CLAY_ID("TraceExportStatus"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}},
+                                                            .clip = {.horizontal = true}})
+                        {
+                            text(traceExportStatus, Pal::textDim, 11);
+                        }
+                    }
                 }
             }
         });
@@ -1780,13 +2016,22 @@ void SatelliteSim::updateViewerView(const UIInput &inp, UIRenderer &ui)
             }
         const double iRender = sum / glm::pi<double>();
         const double mR = satMagnitudeFromIntensity(iRender, 1.0e6), mM = satMagnitudeFromIntensity(viewerCheckModelI, 1.0e6);
+        // Magnitudes at 1000 km, sun only, from the view's direction.
         if (std::isfinite(mR) && std::isfinite(mM))
-            snprintf(viewerCheckLine, sizeof(viewerCheckLine),
-                     "Sun only, phase %.0f deg%s:\nrender %.2f, model %.2f\n(1000 km; difference %+.3f)",
-                     viewerCheckPhaseDeg, viewerShadows ? ", shadows" : "", mR, mM, mR - mM);
+        {
+            snprintf(viewerCheckValue[0], sizeof(viewerCheckValue[0]), "%.2f", mR);
+            snprintf(viewerCheckValue[1], sizeof(viewerCheckValue[1]), "%.2f", mM);
+            snprintf(viewerCheckValue[2], sizeof(viewerCheckValue[2]), "%+.3f mag", mR - mM);
+            snprintf(viewerCheckNote, sizeof(viewerCheckNote), "Sun only, phase %.0f deg%s", viewerCheckPhaseDeg,
+                     viewerShadows ? ", shadows" : "");
+        }
         else
-            snprintf(viewerCheckLine, sizeof(viewerCheckLine), "Phase %.0f deg: not sunlit from\nthis side (render %s, model %s)",
-                     viewerCheckPhaseDeg, std::isfinite(mR) ? "lit" : "dark", std::isfinite(mM) ? "lit" : "dark");
+        {
+            snprintf(viewerCheckValue[0], sizeof(viewerCheckValue[0]), "%s", std::isfinite(mR) ? "lit" : "dark");
+            snprintf(viewerCheckValue[1], sizeof(viewerCheckValue[1]), "%s", std::isfinite(mM) ? "lit" : "dark");
+            snprintf(viewerCheckValue[2], sizeof(viewerCheckValue[2]), "-");
+            snprintf(viewerCheckNote, sizeof(viewerCheckNote), "Not sunlit from this side (phase %.0f deg)", viewerCheckPhaseDeg);
+        }
     }
 
     // Observer box: re-evaluated at up to 10 Hz.
@@ -1982,46 +2227,20 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
     const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size();
     const bool isSelected = tracked && selectedSatIndex == viewerSatIndex;
 
-    static const char *kInfoSectionNames[kInfoSectionCount] = {
-        "SATELLITE", "ORBIT", "PHOTOMETRY", "OBSERVER", "CAMERA", "RENDER", "CHECK"};
+    static const char *kInfoSectionNames[kInfoSectionCount] = {"SATELLITE", "ORBIT", "BRIGHTNESS", "SKY POSITION", "VIEW", "CHECK"};
+    static const char *kSatLabels[kViewerSatRows] = {"Type", "Model", "Size", "Mesh"};
     static const char *kOrbitLabels[kViewerOrbitRows] = {"Altitude", "Inclination", "RAAN", "Period", "Power"};
+    static const char *kObsLabels[kViewerObsRows] = {"Visibility", "Elevation", "Azimuth", "Range"};
+    static const char *kCheckLabels[3] = {"Render", "Model", "Difference"};
+    const float lw = (float)fs(11) * 8.5f;
 
-    auto text = [&](const char *s, Clay_Color c, float size)
-    {
-        Clay_String str{false, (int32_t)strlen(s), s};
-        CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size)}));
-    };
-    // A full-width button of a section; `on` shows an active state.
-    auto button = [&](int id, const char *label, const char *tip, bool on = false)
-    {
-        bool clicked = false;
-        bool &hov = hovViewerBtn[id];
-        CLAY(CLAY_IDI("ViewerBtn", id), {.layout = {
-                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED((float)fs(11) + 12.0f)},
-                                             .padding = {8, 8, 0, 0},
-                                             .childAlignment = {.x = CLAY_ALIGN_X_LEFT, .y = CLAY_ALIGN_Y_CENTER}},
-                                         .backgroundColor = hov ? (on ? Pal::btnAccentHv : Pal::btnHover) : (on ? Pal::btnAccent : Pal::btnIdle),
-                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hov);
-            sndClick(n, inp.lmbPressed);
-            hov = n;
-            clicked = n && inp.lmbPressed;
-            ui.tooltip(inp, n, tip, fs(11));
-            Clay_String ls{false, (int32_t)strlen(label), label};
-            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
-        }
-        return clicked;
-    };
-    // A collapsible section: header + body, the Clouds tab's form (buildCloudSliderSections). "+"/"-"
-    // rather than a chevron glyph — the font atlas bakes ASCII 32-126 only — and the open state is
-    // session-only, not a preference.
+    // A collapsible section: header + an indented body, the Clouds tab's form (buildCloudSliderSections). "+"/"-"
+    // rather than a chevron glyph — the font atlas bakes ASCII 32-126 only — and the open state is session-only.
     auto infoSection = [&](int si, const std::function<void()> &body)
     {
         bool open = infoSectionOpen[si];
         CLAY(CLAY_IDI("InfoSectHdr", si), {.layout = {
-                                               .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
+                                               .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED((float)fs(12) + 10.0f)},
                                                .padding = {8, 10, 0, 0},
                                                .childGap = 8,
                                                .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
@@ -2045,28 +2264,55 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
             CLAY(CLAY_IDI("InfoSectTitle", si), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
             {
                 Clay_String ts{false, (int32_t)strlen(kInfoSectionNames[si]), kInfoSectionNames[si]};
-                CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
+                CLAY_TEXT(ts, CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
             }
         }
-        if (open)
+        if (!open)
+            return;
+        CLAY(CLAY_IDI("InfoSectBody", si), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                       .padding = {8, 4, 4, 8},
+                                                       .childGap = 2,
+                                                       .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+        {
             body();
+        }
     };
-
-    // Title: the satellite's name, highlighted while it is the selection.
-    static char titleBuf[140];
-    snprintf(titleBuf, sizeof(titleBuf), "%s%s", viewerTitle, isSelected ? "  (selected)" : "");
+    auto buttonRow = [&](int id, const std::function<void()> &f)
+    {
+        CLAY(CLAY_IDI("InfoBtnRow", id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                     .padding = {0, 0, 4, 0},
+                                                     .childGap = 6,
+                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            f();
+        }
+    };
+    // A tile's value is a number or a word that fits: the readouts' longer phrases are shortened.
+    auto tileVal = [&](const char *v) -> const char *
+    {
+        if (!tracked || !v[0])
+            return "-";
+        if (strncmp(v, "In Earth", 8) == 0)
+            return "Dark";
+        if (strncmp(v, "Below", 5) == 0)
+            return "Below";
+        if (strncmp(v, "n/a", 3) == 0)
+            return "n/a";
+        return v;
+    };
 
     // minH 470: the render band is 4:3 (268 px at the 380 px minimum width) and the sections need a
     // usable slice under it — below that the window would be all render and no list.
     buildResizableWindow(
-        inp, ui, infoChrome, 4, titleBuf, true, hovInfoClose, inp.screenW - infoChrome.w - 12.0f, 12.0f,
+        inp, ui, infoChrome, 4, viewerTitle, true, hovInfoClose, inp.screenW - infoChrome.w - 12.0f, 12.0f,
         380.0f, 470.0f, 1400.0f, 1600.0f,
         [&]()
         {
             CLAY(CLAY_ID("InfoBody"), {.layout = {
                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
                                            .padding = {10, 10, 8, 8},
-                                           .childGap = 8,
+                                           .childGap = 6,
                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
                 // ── The render: fixed 4:3 with the chips over it, never scrolls away ──────────────
@@ -2095,7 +2341,16 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                     }
                     buildViewerMarkerLabels(0);
                 }
-                text("Drag to orbit, scroll to zoom. Cyan: you; orange: site", Pal::textHint, 11);
+                // ── The four numbers a player looks for first ─────────────────────────────────────
+                CLAY(CLAY_ID("InfoTiles"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                       .childGap = 4,
+                                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                {
+                    uiStatTile("InfoTile", 0, "MAGNITUDE", tileVal(viewerPhotValue[0]), Pal::textPrimary);
+                    uiStatTile("InfoTile", 1, "ELEVATION", tileVal(viewerObsValue[1]), Pal::textPrimary);
+                    uiStatTile("InfoTile", 2, "RANGE", tileVal(viewerObsValue[3]), Pal::textPrimary);
+                    uiStatTile("InfoTile", 3, "PHASE", tileVal(viewerPhotValue[4]), Pal::textPrimary);
+                }
                 // ── The sections: only these scroll ──────────────────────────────────────────────
                 CLAY(CLAY_ID("InfoSections"), {.layout = {
                                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
@@ -2103,112 +2358,81 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                                    .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                                .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
                 {
-                    // ── SATELLITE: what model it is ──────────────────────────────────────────────
                     infoSection(0, [&]()
                                 {
-                                    text(viewerInfo, Pal::textDim, 11);
-                                    if (!tracked)
-                                        text("Not tracking a satellite: pick one from the sky.", Pal::textHint, 11);
-                                    else if (isSelected)
-                                        text("Selected in the sky", Pal::textDim, 11);
-                                    if (tracked && followActive && followSatIndex == viewerSatIndex)
-                                        text("Following it (Go to)", Pal::textDim, 11); });
-                    // ── ORBIT: the rows the selection panel used to carry ───────────────────────
+                                    for (int i = 0; i < kViewerSatRows; ++i)
+                                        uiKV("InfoSatKV", i, kSatLabels[i], viewerSatValue[i], lw); });
                     infoSection(1, [&]()
                                 {
+                                    if (viewerOrbitCount == 0)
+                                        uiKV("InfoOrbitKV", 9, "Orbit", "-", lw);
                                     for (int i = 0; i < viewerOrbitCount && i < kViewerOrbitRows; ++i)
-                                    {
-                                        CLAY(CLAY_IDI("InfoOrbitRow", i), {.layout = {
-                                                                               .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                               .childGap = 8,
-                                                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                                               .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-                                        {
-                                            CLAY(CLAY_IDI("InfoOrbitLabel", i), {.layout = {
-                                                                                     .sizing = {CLAY_SIZING_FIXED((float)fs(11) * 8.0f),
-                                                                                                CLAY_SIZING_FIT(0)}}})
-                                            {
-                                                Clay_String ls{false, (int32_t)strlen(kOrbitLabels[i]), kOrbitLabels[i]};
-                                                CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::textDim,
-                                                                                .fontSize = fs(11),
-                                                                                .wrapMode = CLAY_TEXT_WRAP_NONE}));
-                                            }
-                                            Clay_String vs{false, (int32_t)strlen(viewerOrbitValue[i]), viewerOrbitValue[i]};
-                                            CLAY_TEXT(vs, CLAY_TEXT_CONFIG({.textColor = Pal::volValue,
-                                                                            .fontSize = fs(11),
-                                                                            .wrapMode = CLAY_TEXT_WRAP_NONE}));
-                                        }
-                                    } });
-                    // ── PHOTOMETRY: the CPU evaluator on the viewed satellite + the pass trace ──
+                                        uiKV("InfoOrbitKV", i, kOrbitLabels[i], viewerOrbitValue[i], lw); });
                     infoSection(2, [&]()
                                 {
-                                    for (const auto &line : viewerPhotLine)
-                                        if (line[0])
-                                            text(line, Pal::textDim, 11);
-                                    if (tracked && button(10, "Trace pass", "Trace pass"))
-                                    {
-                                        selectSatellite(viewerSatIndex);
-                                        computeSelectedTrace();
-                                    } });
-                    // ── OBSERVER: where it is in the parked observer's sky ─────────────────────
+                                    for (int i = 0; i < kViewerPhotRows; ++i)
+                                        uiKV("InfoPhotKV", i, kViewerPhotLabels[i], tracked ? viewerPhotValue[i] : "-", lw,
+                                             i == 0 ? &Pal::textPrimary : &Pal::volValue);
+                                    if (tracked)
+                                        buttonRow(0, [&]()
+                                                  {
+                                                      if (uiButton(inp, ui, "InfoTraceBtn", 0, "Trace pass", "Plot this satellite's magnitude over its pass"))
+                                                      {
+                                                          selectSatellite(viewerSatIndex);
+                                                          computeSelectedTrace();
+                                                      } }); });
                     infoSection(3, [&]()
                                 {
-                                    for (const auto &line : viewerObsLine)
-                                        if (line[0])
-                                            text(line, Pal::textDim, 11);
-                                    if (button(9, viewerMarkers ? "Markers: on" : "Markers: off", "Markers",
-                                               viewerMarkers))
-                                        viewerMarkers = !viewerMarkers; });
-                    // ── CAMERA: the presets' long tail (the chips carry the quick ones) ────────
+                                    for (int i = 0; i < kViewerObsRows; ++i)
+                                        uiKV("InfoObsKV", i, kObsLabels[i], viewerObsValue[i][0] ? viewerObsValue[i] : "-", lw); });
+                    // ── VIEW: the 3D view's camera and rendering (the chips over the render carry the quick ones) ──
                     infoSection(4, [&]()
                                 {
-                                    static const char *kAimLabels[3] = {"Camera: Free", "Camera: From you",
-                                                                        "Camera: Toward you"};
-                                    if (button(8, kAimLabels[viewerAim], "Camera aim", viewerAim != 0))
-                                        viewerAim = (viewerAim + 1) % 3;
-                                    if (button(0, viewerSpin ? "Spin: on" : "Spin: off", "Spin", viewerSpin))
-                                        viewerSpin = !viewerSpin;
-                                    if (button(5, "Reset view", "Reset view"))
-                                    {
-                                        viewerDist = 0.0f;
-                                        viewerYawDeg = 35.0f;
-                                        viewerPitchDeg = 18.0f;
-                                        viewerAim = 0;
-                                    } });
-
-                    // ── RENDER ─────────────────────────────────────────────────────────────────
+                                    static const char *kAim[3] = {"Free", "From you", "Toward you"};
+                                    static const char *kLight[2] = {"Live", "Studio"};
+                                    static const char *kPose[2] = {"Sunlit", "Rest"};
+                                    if (int c = uiChoiceRow(inp, ui, "InfoAim", 0, "Camera", kAim, 3, viewerAim,
+                                                            "Free orbit, from your direction (the side you see), or behind it toward you");
+                                        c >= 0)
+                                        viewerAim = c;
+                                    if (int c = uiChoiceRow(inp, ui, "InfoLight", 0, "Light", kLight, 2, viewerStudioLight ? 1 : 0,
+                                                            "The sim's sun and sky, or a fixed studio light");
+                                        c >= 0)
+                                        viewerStudioLight = c == 1;
+                                    if (int c = uiChoiceRow(inp, ui, "InfoPose", 0, "Pose", kPose, 2, viewerSunlitPose ? 0 : 1,
+                                                            "Its attitude now, or every joint at rest");
+                                        c >= 0)
+                                        viewerSunlitPose = c == 0;
+                                    uiToggleRow(inp, ui, "InfoView", 0, "Spin", viewerSpin, "The free camera turns slowly on its own");
+                                    uiToggleRow(inp, ui, "InfoView", 1, "Shadows", viewerShadows);
+                                    uiToggleRow(inp, ui, "InfoView", 2, "Reflections", viewerReflections);
+                                    uiToggleRow(inp, ui, "InfoView", 3, "Surface detail", viewerDetail);
+                                    uiToggleRow(inp, ui, "InfoView", 4, "Glare", viewerGlare, "Glare on the glints that make the flare you see");
+                                    uiToggleRow(inp, ui, "InfoView", 5, "Markers", viewerMarkers, "Your position (cyan) and a mirror's target site (orange)");
+                                    buttonRow(1, [&]()
+                                              {
+                                                  if (uiButton(inp, ui, "InfoResetView", 0, "Reset view", nullptr))
+                                                  {
+                                                      viewerDist = 0.0f;
+                                                      viewerYawDeg = 35.0f;
+                                                      viewerPitchDeg = 18.0f;
+                                                      viewerAim = 0;
+                                                  } }); });
+                    // ── CHECK: the render-vs-lobes cross-check ───────────────────────────────────────
                     infoSection(5, [&]()
                                 {
-                                    if (button(1, viewerStudioLight ? "Light: Studio" : "Light: Live", "Light",
-                                               viewerStudioLight))
-                                        viewerStudioLight = !viewerStudioLight;
-                                    if (button(2, viewerSunlitPose ? "Pose: Sunlit" : "Pose: Rest", "Pose",
-                                               viewerSunlitPose))
-                                        viewerSunlitPose = !viewerSunlitPose;
-                                    if (button(3, viewerShadows ? "Shadows: on" : "Shadows: off", "Shadows",
-                                               viewerShadows))
-                                        viewerShadows = !viewerShadows;
-                                    if (button(4, viewerReflections ? "Reflections: on" : "Reflections: off",
-                                               "Reflections", viewerReflections))
-                                        viewerReflections = !viewerReflections;
-                                    if (button(7, viewerDetail ? "Detail: on" : "Detail: off", "Detail",
-                                               viewerDetail))
-                                        viewerDetail = !viewerDetail;
-                                    // Glare on the glints that make the flare you see (recordViewerGlare):
-                                    // Live light and a tracked satellite only.
-                                    if (button(11, viewerGlare ? "Glare: on" : "Glare: off", "Glare", viewerGlare))
-                                        viewerGlare = !viewerGlare; });
-
-                    // ── CHECK: the render-vs-lobes cross-check ─────────────────────────────────
-                    infoSection(6, [&]()
-                                {
-                                    if (button(6, "Photometric check", "Photometric check"))
-                                        viewerCheckRequested = true;
-                                    if (viewerCheckLine[0])
-                                        text(viewerCheckLine, Pal::textDim, 11); });
+                                    for (int i = 0; i < 3; ++i)
+                                        uiKV("InfoCheckKV", i, kCheckLabels[i], viewerCheckValue[i][0] ? viewerCheckValue[i] : "-", lw);
+                                    if (viewerCheckNote[0])
+                                        uiKV("InfoCheckKV", 3, "", viewerCheckNote, lw, &Pal::textDim);
+                                    buttonRow(2, [&]()
+                                              {
+                                                  if (uiButton(inp, ui, "InfoCheckBtn", 0, "Run check",
+                                                               "Integrate a sun-only render from this direction and compare it with the photometric model (magnitudes at 1000 km)"))
+                                                      viewerCheckRequested = true; }); });
                 }
                 // A visible thumb on the section list: without it nothing says the list continues
-                // below the window's edge (the tab bodies are long and only the summary is in view).
+                // below the window's edge.
                 ui.scrollbar(CLAY_ID("InfoSections"));
             }
         },
@@ -2228,7 +2452,7 @@ void SatelliteSim::buildViewPopoutWindow(const UIInput &inp, UIRenderer &ui)
     const bool isSelected = tracked && selectedSatIndex == viewerSatIndex;
 
     static char titleBuf[140];
-    snprintf(titleBuf, sizeof(titleBuf), "%s%s", viewerTitle, isSelected ? "  (selected)" : "");
+    snprintf(titleBuf, sizeof(titleBuf), "%s", viewerTitle); // amber while it is the selection (titleHighlight)
 
     // The pop-out opens beside (left of) the info window — or at the right edge if the info window has
     // never been placed. Only used the first time it is placed (x < 0).
@@ -2633,7 +2857,7 @@ void SatelliteSim::buildSettingsWindow(const UIInput &inp, UIRenderer &ui)
     // the buttons — see buildSettingsDisplayTab).
     static char settingsTitleBuf[64];
     if (!settingsTitleBuf[0])
-        snprintf(settingsTitleBuf, sizeof(settingsTitleBuf), "Settings — v%s (%s)", APP_VERSION, APP_GIT_COMMIT);
+        snprintf(settingsTitleBuf, sizeof(settingsTitleBuf), "Settings"); // the version is in the HUD; the font is ASCII-only (no em dash)
     // The Controls rows scale with uiScale (buildSettingsControlsTab), so the minimum width does too —
     // at 2.0 the fixed 680 let the "Bind Pad" column run past the window's right edge.
     const float minW = std::min(680.0f * std::max(1.0f, uiScale / 1.5f), inp.screenW - 40.0f);
@@ -2649,24 +2873,43 @@ void SatelliteSim::buildSettingsWindow(const UIInput &inp, UIRenderer &ui)
 // The settings window's body: left tab strip + scrollable content for the active tab.
 void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
 {
+    static_assert(sizeof(hovTab) / sizeof(hovTab[0]) == kSettingsTabCount, "hovTab[] is indexed by tab");
+    // A scroll view of its own (2026-10-03): with the headings and the advanced tabs the strip is taller than a short
+    // window, and an unclipped strip stretched the window's body — the tabs and the content spilled below its edge.
     CLAY(CLAY_ID("SettingsTabStrip"), {.layout = {
                                            .sizing = {CLAY_SIZING_FIXED(140), CLAY_SIZING_GROW(0)},
                                            .padding = {8, 6, 10, 10},
                                            .childGap = 2,
-                                           .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+                                           .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                       .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
     {
         // UC1 settings restructure: the Clouds/Ocean/Terrain/Aurora/Beams tabs are ~46 developer
         // sliders — hidden behind Display > "Show advanced settings" so a new user's front door
         // is the preset selector, not a wall of tuning knobs. hovTab[]/settingsActiveTab still
         // index by the tab's real (unchanged) id even while its button is skipped here, so
         // nothing about the other tabs' state needs remapping.
-        for (int oi = 0; oi < kSettingsTabCount; ++oi)
+        for (int oi = 0; oi < (int)(sizeof(kSettingsStrip) / sizeof(kSettingsStrip[0])); ++oi)
         {
-            const int ti = kSettingsTabOrder[oi];
+            const int ti = kSettingsStrip[oi];
+            if (ti < 0)
+            {
+                // A heading, shown when the next tab under it is (RENDERING is all advanced tabs).
+                const int next = oi + 1 < (int)(sizeof(kSettingsStrip) / sizeof(kSettingsStrip[0])) ? kSettingsStrip[oi + 1] : -1;
+                if (next < 0 || (settingsTabIsAdvanced(next) && !showAdvancedSettings))
+                    continue;
+                const char *h = kSettingsStripHeadings[-ti - 1];
+                CLAY(CLAY_IDI("SettingsTabHeading", -ti), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                      .padding = {8, 8, (uint16_t)(oi == 0 ? 2 : 12), 3}}})
+                {
+                    CLAY_TEXT((Clay_String{false, (int32_t)strlen(h), h}),
+                              CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                }
+                continue;
+            }
             bool isAdvancedTab = settingsTabIsAdvanced(ti);
             if (isAdvancedTab && !showAdvancedSettings)
                 continue;
-            bool active = settingsActiveTab == ti;
+            bool active = settingsActiveTab == ti || (ti == 2 && settingsActiveTab == 3);
             Clay_Color tabBg = active ? Pal::btnAccent : (hovTab[ti] ? Pal::btnHover : Clay_Color{0, 0, 0, 0});
             CLAY(CLAY_IDI("SettingsTab", ti), {.layout = {
                                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26)},
@@ -2687,12 +2930,14 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
         }
     }
 
+    ui.scrollbar(CLAY_ID("SettingsTabStrip"));
+
     CLAY(CLAY_ID("SettingsTabDivider"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_GROW(0)}},
                                          .backgroundColor = Pal::divider}) {}
 
     CLAY(CLAY_ID("SettingsContent"), {.layout = {
                                           .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
-                                          .padding = {14, 14, 10, 10},
+                                          .padding = {14, 20, 10, 10}, // right: room for the scrollbar (kSliderFixedRight counts it)
                                           .childGap = 4,
                                           .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                       .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
@@ -2708,8 +2953,8 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
         case 2:
             buildSettingsControlsTab(inp, ui);
             break;
-        case 3:
-            buildSettingsCameraTab(inp, ui);
+        case 3: // Camera: folded into Controls (2026-10-03)
+            buildSettingsControlsTab(inp, ui);
             break;
         case 4:
             buildSettingsDisplayTab(inp, ui);
@@ -2741,6 +2986,9 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
         case 13:
             buildSettingsNightLightsTab(inp, ui);
             break;
+        case 14:
+            buildSettingsPerformanceTab(inp, ui);
+            break;
         }
     }
     ui.scrollbar(CLAY_ID("SettingsContent"));
@@ -2750,6 +2998,28 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
 void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer &ui)
 {
     static char constCntBuf[256][16]; // one slot per constellation; 256 > any realistic mod
+    uiSection("ConstSec", 0, "CONSTELLATIONS");
+    // Column header over the buttons: Show / Highlight / 3D view, the name, the satellite count.
+    CLAY(CLAY_ID("ConstHeader"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                             .padding = {4, 4, 4, 0},
+                                             .childGap = 6,
+                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        auto hdr = [&](Clay_ElementId id, float w, const char *s, bool right)
+        {
+            CLAY(id, {.layout = {.sizing = {w > 0.0f ? CLAY_SIZING_FIXED(w) : CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                 .childAlignment = {.x = right ? CLAY_ALIGN_X_RIGHT : CLAY_ALIGN_X_LEFT}}})
+            {
+                CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            }
+        };
+        hdr(CLAY_ID("ConstHdrShow"), 30, "Show", false);
+        hdr(CLAY_ID("ConstHdrHlt"), 30, "Hlt", false);
+        hdr(CLAY_ID("ConstHdrView"), 38, "3D", false);
+        hdr(CLAY_ID("ConstHdrName"), 0.0f, "Name", false);
+        hdr(CLAY_ID("ConstHdrCount"), 52, "Count", true);
+    }
     for (int ci = 0; ci < (int)constellations.size() && ci < 256; ++ci)
     {
         ConstellationConfig &c = constellations[ci];
@@ -2868,41 +3138,8 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     // invented (RELEASE_v1_1_PLAN.md follow-up, session 30). A global "Show planets" toggle
     // sits above the per-planet rows; per-planet rows still work when the global is off (so
     // preferences survive), they're just moot until it's back on.
-    CLAY(CLAY_ID("PlanetsSectionGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(10)}}}) {}
-    CLAY(CLAY_ID("PlanetsSectionLabel"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
-    {
-        CLAY_TEXT(CLAY_STRING("PLANETS"), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-    }
-    {
-        Clay_Color showBg = showPlanets ? Pal::btnAccent : (hovShowPlanets ? Pal::btnAccentHv : Pal::btnIdle);
-        CLAY(CLAY_ID("ShowPlanetsRow"), {.layout = {
-                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
-                                             .padding = {4, 4, 3, 3},
-                                             .childGap = 6,
-                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-        {
-            CLAY(CLAY_ID("ShowPlanetsBtn"), {.layout = {
-                                                 .sizing = {CLAY_SIZING_FIXED(30), CLAY_SIZING_FIXED(18)},
-                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                             .backgroundColor = showBg,
-                                             .cornerRadius = CLAY_CORNER_RADIUS(3)})
-            {
-                bool n = Clay_Hovered();
-                sndRollover(n, hovShowPlanets);
-                sndClick(n, inp.lmbPressed);
-                hovShowPlanets = n;
-                if (n && inp.lmbPressed)
-                    showPlanets = !showPlanets;
-                CLAY_TEXT(showPlanets ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
-            }
-            CLAY(CLAY_ID("ShowPlanetsName"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
-            {
-                CLAY_TEXT(CLAY_STRING("Show planets"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            }
-        }
-    }
+    uiSection("ConstSec", 1, "PLANETS");
+    uiToggleRow(inp, ui, "ShowPlanetsBtn", 0, "Show planets", showPlanets, "Each planet below keeps its own choice while this is off");
     for (int pi = 0; pi < kPlanetCount; ++pi)
     {
         bool hov = hovPlanetBtn[pi];
@@ -2954,11 +3191,12 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
         int bufIdx;
     };
     VolRow volRows[] = {
-        {"Master vol", audio_ ? audio_->getMasterVolume() : masterVol_, hovMasterVolMinus, hovMasterVolPlus, 0},
-        {"Music vol", audio_ ? audio_->getMusicVolume() : musicVol_, hovMusicVolMinus, hovMusicVolPlus, 1},
-        {"SFX vol", audio_ ? audio_->getSfxVolume() : sfxVol_, hovSfxVolMinus, hovSfxVolPlus, 2},
+        {"Master", audio_ ? audio_->getMasterVolume() : masterVol_, hovMasterVolMinus, hovMasterVolPlus, 0},
+        {"Music", audio_ ? audio_->getMusicVolume() : musicVol_, hovMusicVolMinus, hovMusicVolPlus, 1},
+        {"Effects", audio_ ? audio_->getSfxVolume() : sfxVol_, hovSfxVolMinus, hovSfxVolPlus, 2},
         {"Ambience", audio_ ? audio_->getAmbienceVolume() : ambienceVol_, hovAmbVolMinus, hovAmbVolPlus, 3},
     };
+    uiSection("SoundSec", 0, "VOLUME");
     for (auto &vr : volRows)
     {
         snprintf(volBufs[vr.bufIdx], sizeof(volBufs[0]), "%3.0f%%", vr.vol * 100.0f);
@@ -2970,7 +3208,7 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                  .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY(CLAY_IDI("VolLabel", vr.bufIdx), {.layout = {.sizing = {CLAY_SIZING_FIXED(76), CLAY_SIZING_FIT(0)}}})
+            CLAY(CLAY_IDI("VolLabel", vr.bufIdx), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(12) * 7.0f), CLAY_SIZING_FIT(0)}}})
             {
                 Clay_String lblStr{false, (int32_t)strlen(vr.label), vr.label};
                 CLAY_TEXT(lblStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
@@ -3068,6 +3306,7 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
             snprintf(trackLine, sizeof(trackLine), "%s%s  %s / %s", audio_->musicPaused() ? "(paused) " : "",
                      name.c_str(), pos, len);
     }
+    uiSection("SoundSec", 1, "MUSIC");
     CLAY(CLAY_ID("MusicRow"), {.layout = {
                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(30)},
                                    .padding = {4, 4, 4, 4},
@@ -3075,10 +3314,6 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
     {
-        CLAY(CLAY_ID("MusicLbl"), {.layout = {.sizing = {CLAY_SIZING_FIXED(76), CLAY_SIZING_FIT(0)}}})
-        {
-            CLAY_TEXT(CLAY_STRING("Music"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-        }
         CLAY(CLAY_ID("MusicTrack"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
         {
             Clay_String tStr{false, (int32_t)strlen(trackLine), trackLine};
@@ -3118,58 +3353,38 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
 
     // What the ambience is playing here, loudest first — the quickest way to tell "wrong layer"
     // from "wrong mix" while flying around.
+    uiSection("SoundSec", 2, "AMBIENCE");
     static char nowPlaying[256];
-    snprintf(nowPlaying, sizeof(nowPlaying), "Ambience now: %s", ambienceNowPlaying().c_str());
+    snprintf(nowPlaying, sizeof(nowPlaying), "%s", ambienceNowPlaying().c_str());
     CLAY(CLAY_ID("AmbNowPlaying"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                               .padding = {4, 4, 6, 2}}})
+                                               .padding = {2, 2, 1, 1},
+                                               .childGap = 8,
+                                               .layoutDirection = CLAY_LEFT_TO_RIGHT}})
     {
-        Clay_String npStr{false, (int32_t)strlen(nowPlaying), nowPlaying};
-        CLAY_TEXT(npStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(11)}));
+        CLAY(CLAY_ID("AmbNowLbl"), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(11) * 8.0f), CLAY_SIZING_FIT(0)}}})
+        {
+            CLAY_TEXT(CLAY_STRING("Playing"), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+        }
+        CLAY(CLAY_ID("AmbNowVal"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+        {
+            Clay_String npStr{false, (int32_t)strlen(nowPlaying), nowPlaying};
+            CLAY_TEXT(npStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(11)}));
+        }
     }
     // The key the ambience is in (the playing track's, from its analysis — updateTonality).
     static char keyLine[224];
-    snprintf(keyLine, sizeof(keyLine), "%s", tonalityLine().c_str());
-    CLAY(CLAY_ID("AmbKeyLine"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}, .padding = {4, 4, 2, 2}}})
     {
-        Clay_String kStr{false, (int32_t)strlen(keyLine), keyLine};
-        CLAY_TEXT(kStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(11)}));
+        const std::string k = tonalityLine();
+        snprintf(keyLine, sizeof(keyLine), "%s", k.rfind("Key: ", 0) == 0 ? k.c_str() + 5 : k.c_str());
     }
+    uiKV("AmbKeyKV", 0, "Key", keyLine);
 
     // ── Advanced: the mix ────────────────────────────────────────────────────
     if (!showAdvancedSettings)
         return;
-    CLAY(CLAY_ID("AmbAdvHdr"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}, .padding = {4, 4, 10, 2}}})
-    {
-        CLAY_TEXT(CLAY_STRING("AMBIENCE MIX"), CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
-    }
+    uiSection("SoundSec", 3, "AMBIENCE MIX");
     // The key: from the music (the playing track's tonic, gliding between tracks) or the slider below.
-    CLAY(CLAY_ID("RootFollowRow"), {.layout = {
-                                        .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                        .padding = {4, 4, 4, 4},
-                                        .childGap = 8,
-                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Key follows the music"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-        CLAY(CLAY_ID("RootFollowSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-        Clay_Color chkBg = ambRootFollowMusic ? Pal::btnAccent : (hovRootFollowMusic ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("RootFollowChk"), {.layout = {
-                                            .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                        .backgroundColor = chkBg,
-                                        .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovRootFollowMusic);
-            sndClick(n, inp.lmbPressed);
-            hovRootFollowMusic = n;
-            if (n && inp.lmbPressed)
-                ambRootFollowMusic = !ambRootFollowMusic;
-            ui.tooltip(inp, n, "Off: the Tonal root slider sets the key", fs(11));
-            CLAY_TEXT(ambRootFollowMusic ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-    }
+    uiToggleRow(inp, ui, "RootFollowChk", 0, "Key follows the music", ambRootFollowMusic, "Off: the Tonal root slider sets the key");
     // Slot idx 99..109 (see buildCloudSliderRows' arrays). Fades are multipliers on each layer's own
     // fade times; the root is the key every pitched voice (drones, whines, status tones) shares —
     // the slider's value is used only while the key does not follow the music.
@@ -3193,96 +3408,56 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
 // ─── buildSettingsControlsTab ───────────────────────────────────────────────
 void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
 {
-    // The floating quick-reference window (buildViewControlsWindow) used to auto-open on
-    // startup; user testing found almost nobody closed it, so demo footage was consistently
-    // full of it sitting in the top-left. It no longer opens itself — this button is the only
-    // way to bring it up now, and it lives here rather than on the HUD since a player reaching
-    // for a control reminder is already in Settings looking at the live rebind list below.
-    CLAY(CLAY_ID("OpenControlsWindowRow"), {.layout = {
-                                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(32)},
-                                                .padding = {4, 4, 4, 4},
-                                                .childGap = 8,
-                                                .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    // ── MOVEMENT: WASD speed is this many times the height above the ground per second (review 6), up to the
+    // orbital speed, so clouds and small things can be explored.
+    uiSection("CtrlSec", 0, "MOVEMENT");
     {
-        CLAY_TEXT(CLAY_STRING("Quick-reference overlay"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-        CLAY(CLAY_ID("OpenControlsWindowSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-
-        Clay_Color btnBg = viewControlsChrome.open ? Pal::btnAccent : (hovOpenControlsWindow ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("OpenControlsWindowBtn"), {.layout = {
-                                                    .sizing = {CLAY_SIZING_FIXED(140), CLAY_SIZING_FIXED(24)},
-                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                                .backgroundColor = btnBg,
-                                                .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovOpenControlsWindow);
-            sndClick(n, inp.lmbPressed);
-            hovOpenControlsWindow = n;
-            if (n && inp.lmbPressed)
-                viewControlsChrome.open = !viewControlsChrome.open;
-            CLAY_TEXT(viewControlsChrome.open ? CLAY_STRING("Showing") : CLAY_STRING("Show window"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-    }
-    { // Movement speed near the ground (review 6): WASD speed is this many times the height above
-        // the ground per second, up to the orbital speed. Clouds and small things can be explored.
         CloudSlider mv[] = {
             {"Move speed (x height per s)", &moveSpeedPerHeight, 0.05f, 5.0f, 0.05f, "%.2f", 210},
         };
         buildCloudSliderRows(inp, ui, mv, 1, false);
     }
-    CLAY(CLAY_ID("ControlsTabDiv"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                                .padding = {0, 0, 4, 8}},
-                                     .backgroundColor = {40, 40, 44, 255}}) {}
 
+    // ── KEY BINDINGS: column widths and the row height scale with uiScale like the fonts in them (fixed pixels
+    // wrapped "Lower Elevation" and ran "[D-Right]" into its button at 2.0 — the harness's `ui dump` overlap check).
+    uiSection("CtrlSec", 1, "BINDINGS");
+    const float cs = uiScale / 1.5f;
+    auto colText = [&](Clay_ElementId id, float w, const char *s, Clay_Color c, uint16_t size)
+    {
+        CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIT(0)}}})
+        {
+            CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}), CLAY_TEXT_CONFIG({.textColor = c, .fontSize = size, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+    };
+    CLAY(CLAY_ID("KbHeader"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                          .padding = {4, 4, 4, 0},
+                                          .childGap = 6,
+                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        colText(CLAY_ID("KbHdrAction"), 130 * cs, "Action", Pal::textHint, fs(10));
+        colText(CLAY_ID("KbHdrKey"), (60 + 120) * cs + 6, "Keyboard", Pal::textHint, fs(10));
+        colText(CLAY_ID("KbHdrPad"), (70 + 90) * cs + 6, "Gamepad", Pal::textHint, fs(10));
+    }
     static char kbKeyBuf[KB_COUNT][16];
     static char kbPadBuf[KB_COUNT][16];
     for (int ki = 0; ki < (int)keybindings.size() && ki < KB_COUNT; ++ki)
     {
         KeyBinding &kb = keybindings[ki];
-        snprintf(kbKeyBuf[ki], sizeof(kbKeyBuf[ki]), "[%s]", keyDisplayName(kb.key));
-        snprintf(kbPadBuf[ki], sizeof(kbPadBuf[ki]), "[%s]", kb.gpButton >= 0 ? gamepadButtonDisplayName(kb.gpButton) : "-");
-
-        Clay_Color rowBg = (kb.listening || kb.listeningPad)
-                               ? Pal::listenRow
-                               : Clay_Color{0, 0, 0, 0};
-        // Column widths and the row height scale with uiScale like the fonts in them (they were fixed
-        // pixels sized at the default 1.5: at 2.0 "Lower Elevation" wrapped onto the next row and
-        // "[D-Right]" ran into its button — found by the harness's `ui dump` overlap check).
-        const float cs = uiScale / 1.5f;
+        snprintf(kbKeyBuf[ki], sizeof(kbKeyBuf[ki]), "%s", keyDisplayName(kb.key));
+        snprintf(kbPadBuf[ki], sizeof(kbPadBuf[ki]), "%s", kb.gpButton >= 0 ? gamepadButtonDisplayName(kb.gpButton) : "-");
+        const Clay_Color rowBg = (kb.listening || kb.listeningPad) ? Pal::listenRow : (ki % 2 ? Clay_Color{255, 255, 255, 6} : Clay_Color{0, 0, 0, 0});
         CLAY(CLAY_IDI("KbRow", ki), {.layout = {
-                                         .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28 * cs)},
-                                         .padding = {4, 4, 4, 4},
+                                         .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26 * cs)},
+                                         .padding = {4, 4, 2, 2},
                                          .childGap = 6,
                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                          .layoutDirection = CLAY_LEFT_TO_RIGHT},
                                      .backgroundColor = rowBg,
                                      .cornerRadius = CLAY_CORNER_RADIUS(3)})
         {
-            CLAY(CLAY_IDI("KbAction", ki), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(130 * cs), CLAY_SIZING_FIT(0)}}})
-            {
-                Clay_String actStr{false, (int32_t)strlen(kb.action), kb.action};
-                CLAY_TEXT(actStr,
-                          CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13), .wrapMode = CLAY_TEXT_WRAP_NONE}));
-            }
-
-            CLAY(CLAY_IDI("KbKey", ki), {.layout = {
-                                             .sizing = {CLAY_SIZING_FIXED(60 * cs), CLAY_SIZING_FIT(0)}}})
-            {
-                Clay_String keyStr{false, (int32_t)strlen(kbKeyBuf[ki]), kbKeyBuf[ki]};
-                Clay_Color keyCol = kb.listening
-                                        ? Pal::listenKey
-                                        : Pal::keyText;
-                CLAY_TEXT(keyStr,
-                          CLAY_TEXT_CONFIG({.textColor = keyCol, .fontSize = fs(13)}));
-            }
-
-            Clay_Color rebindBg = kb.listening
-                                      ? Pal::listenBtn
-                                      : (hovRebind[ki] ? Pal::btnHover : Pal::btnIdle);
+            colText(CLAY_IDI("KbAction", ki), 130 * cs, kb.action, Pal::volLabel, fs(12));
+            colText(CLAY_IDI("KbKey", ki), 60 * cs, kbKeyBuf[ki], kb.listening ? Pal::listenKey : Pal::volValue, fs(12));
+            const Clay_Color rebindBg = kb.listening ? Pal::listenBtn : (hovRebind[ki] ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_IDI("KbRebind", ki), {.layout = {
                                                 .sizing = {CLAY_SIZING_FIXED(120 * cs), CLAY_SIZING_FIXED(20 * cs)},
                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -3302,24 +3477,11 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
                     }
                     kb.listening = true;
                 }
-                CLAY_TEXT(kb.listening ? CLAY_STRING("PRESS KEY") : CLAY_STRING("Rebind"),
+                CLAY_TEXT(kb.listening ? CLAY_STRING("Press a key") : CLAY_STRING("Rebind"),
                           CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(10)}));
             }
-
-            CLAY(CLAY_IDI("KbPad", ki), {.layout = {
-                                             .sizing = {CLAY_SIZING_FIXED(70 * cs), CLAY_SIZING_FIT(0)}}})
-            {
-                Clay_String padStr{false, (int32_t)strlen(kbPadBuf[ki]), kbPadBuf[ki]};
-                Clay_Color padCol = kb.listeningPad
-                                        ? Pal::listenKey
-                                        : Pal::keyText;
-                CLAY_TEXT(padStr,
-                          CLAY_TEXT_CONFIG({.textColor = padCol, .fontSize = fs(13)}));
-            }
-
-            Clay_Color rebindPadBg = kb.listeningPad
-                                         ? Pal::listenBtn
-                                         : (hovRebindPad[ki] ? Pal::btnHover : Pal::btnIdle);
+            colText(CLAY_IDI("KbPad", ki), 70 * cs, kbPadBuf[ki], kb.listeningPad ? Pal::listenKey : Pal::volValue, fs(12));
+            const Clay_Color rebindPadBg = kb.listeningPad ? Pal::listenBtn : (hovRebindPad[ki] ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_IDI("KbRebindPad", ki), {.layout = {
                                                    .sizing = {CLAY_SIZING_FIXED(90 * cs), CLAY_SIZING_FIXED(20 * cs)},
                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -3339,888 +3501,298 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
                     }
                     kb.listeningPad = true;
                 }
-                CLAY_TEXT(kb.listeningPad ? CLAY_STRING("PRESS PAD") : CLAY_STRING("Bind Pad"),
+                CLAY_TEXT(kb.listeningPad ? CLAY_STRING("Press a button") : CLAY_STRING("Bind"),
                           CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(10)}));
             }
         }
     }
 
-    // ── Look-axis inversion ───────────────────────────────────────────────────
-    // Applied where the mouse dmx/dmy and gamepad right-stick look deltas are consumed
-    // (SatelliteSim.cpp / SatelliteSimUI.cpp look block). Persisted in settings.json's "controls".
-    CLAY(CLAY_ID("InvertDiv"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                           .padding = {0, 0, 8, 6}},
-                                .backgroundColor = {40, 40, 44, 255}}) {}
-    CLAY_TEXT(CLAY_STRING("INVERT LOOK AXES"),
-              CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10)}));
+    // ── MOUSE: the two inputs that are not bindings (the old Camera tab) ──────────────────────────────────
+    uiSection("CtrlSec", 2, "MOUSE");
+    uiKV("CtrlMouseKV", 0, "Look around", "Right-drag", 130 * cs);
+    uiKV("CtrlMouseKV", 1, "Zoom", "Scroll wheel", 130 * cs);
+    uiKV("CtrlMouseKV", 2, "Select", "Left-click", 130 * cs);
 
-    struct InvertRow
+    // ── INVERT LOOK: applied where the mouse and right-stick look deltas are consumed (buildUI's look block) ──
+    uiSection("CtrlSec", 3, "INVERT LOOK");
+    uiToggleRow(inp, ui, "InvertChk", 0, "Mouse horizontal", invertMouseX);
+    uiToggleRow(inp, ui, "InvertChk", 1, "Mouse vertical", invertMouseY);
+    uiToggleRow(inp, ui, "InvertChk", 2, "Controller horizontal", invertPadX);
+    uiToggleRow(inp, ui, "InvertChk", 3, "Controller vertical", invertPadY);
+
+    // ── HELP: the floating quick-reference window no longer opens on its own (demo footage was full of it). ──
+    uiSection("CtrlSec", 4, "HELP");
     {
-        const char *label;
-        bool *value;
-        bool *hov;
-    };
-    InvertRow invertRows[] = {
-        {"Mouse X (horizontal)", &invertMouseX, &hovInvertMouseX},
-        {"Mouse Y (vertical)", &invertMouseY, &hovInvertMouseY},
-        {"Controller X (horizontal)", &invertPadX, &hovInvertPadX},
-        {"Controller Y (vertical)", &invertPadY, &hovInvertPadY},
-    };
-    int invIdx = 0;
-    for (auto &row : invertRows)
-    {
-        CLAY(CLAY_IDI("InvertRow", invIdx), {.layout = {
-                                                 .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
-                                                 .padding = {4, 4, 2, 2},
-                                                 .childGap = 8,
-                                                 .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-        {
-            Clay_String lbl{false, (int32_t)strlen(row.label), row.label};
-            CLAY_TEXT(lbl, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            CLAY(CLAY_IDI("InvertSpacer", invIdx), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            Clay_Color chkBg = *row.value ? Pal::btnAccent : (*row.hov ? Pal::btnHover : Pal::btnIdle);
-            CLAY(CLAY_IDI("InvertChk", invIdx), {.layout = {
-                                                     .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                                 .backgroundColor = chkBg,
-                                                 .cornerRadius = CLAY_CORNER_RADIUS(3)})
-            {
-                bool n = Clay_Hovered();
-                sndRollover(n, *row.hov);
-                sndClick(n, inp.lmbPressed);
-                if (n && inp.lmbPressed)
-                    *row.value = !*row.value;
-                *row.hov = n;
-                CLAY_TEXT(*row.value ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-            }
-        }
-        ++invIdx;
+        bool open = viewControlsChrome.open;
+        if (uiToggleRow(inp, ui, "OpenControlsWindowBtn", 0, "Controls overlay", open, "A small floating window listing the controls"))
+            viewControlsChrome.open = open;
     }
-}
-
-// ─── buildSettingsCameraTab ─────────────────────────────────────────────────
-void SatelliteSim::buildSettingsCameraTab(const UIInput &inp, UIRenderer &ui)
-{
-    CLAY_TEXT(CLAY_STRING("Right-click drag   Look around"),
-              CLAY_TEXT_CONFIG({.textColor = Pal::textCamera, .fontSize = fs(12)}));
-    CLAY_TEXT(CLAY_STRING("Scroll wheel        Zoom (FOV)"),
-              CLAY_TEXT_CONFIG({.textColor = Pal::textCamera, .fontSize = fs(12)}));
 }
 
 // ─── buildSettingsDisplayTab ────────────────────────────────────────────────
 void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
 {
-    // ── Graphics preset (UC1, RELEASE_v1_1_PLAN.md) ────────────────────────
-    // The front door: a new user should see this before any of the ~46 developer sliders behind
-    // "Show advanced settings" below. Custom has no button of its own — it's a status readout for
-    // "you edited an advanced slider by hand", not something you click into. Label and buttons are
-    // on separate rows (not one wide LEFT_TO_RIGHT row) deliberately: 5 buttons at 82px + gaps
-    // already need ~450px, and cramming a scaled (uiScale up to 2x) text label into whatever's
-    // left of a single row is exactly the kind of fixed-width overflow the settings window had —
-    // stacking removes the collision instead of trying to out-guess the label's rendered width.
-    CLAY(CLAY_ID("PresetSection"), {.layout = {
-                                        .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                        .padding = {4, 4, 4, 4},
-                                        .childGap = 4,
-                                        .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    // 2026-10-03: sections in the Cinematics window's form (uiSection), every row a kit row. The profiling tools that
+    // used to fill the bottom of this tab (frame breakdowns, knockouts, snapshot, sweep) are the Performance tab.
+    // A labelled row whose right side is a [-] value [+] stepper (the value can be typed).
+    auto stepper = [&](const char *key, const char *label, float &v, float vmin, float vmax, float step, const char *fmt,
+                       float shownScale, const char *tip) -> bool
     {
-        // static, not automatic: Clay stores this pointer and dereferences it in ui.record(),
-        // after this frame's buildUI has returned. A stack buffer survives that only by luck
-        // (Debug keeps it; Release reuses the frame and the label renders as garbage).
-        static char presetLabelBuf[40];
-        snprintf(presetLabelBuf, sizeof(presetLabelBuf), "Graphics preset%s",
-                 graphicsPreset == GraphicsPreset::Custom ? " — Custom" : "");
-        Clay_String presetLabelStr2{false, (int32_t)strlen(presetLabelBuf), presetLabelBuf};
-        CLAY_TEXT(presetLabelStr2, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-
-        CLAY(CLAY_ID("PresetButtonRow"), {.layout = {
-                                              .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
-                                              .childGap = 6,
-                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        bool changed = false;
+        const Clay_String ks{false, (int32_t)strlen(key), key};
+        CLAY(CLAY_SIDI(ks, 0x60000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT((float)fs(20) + 6.0f)},
+                                                                                            .padding = {2, 2, 2, 2},
+                                                                                            .childGap = 4,
+                                                                                            .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                                            .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            // Display order is cheapest → most expensive; it is independent of the enum's
-            // numeric order (Potato is enum value 6, appended after Custom, but shown first).
-            static const char *kPresetLabels[6] = {"Potato", "Planetarium", "Low", "Medium", "High", "Ultra"};
-            static const GraphicsPreset kPresetValues[6] = {
-                GraphicsPreset::Potato, GraphicsPreset::Planetarium, GraphicsPreset::Low,
-                GraphicsPreset::Medium, GraphicsPreset::High, GraphicsPreset::Ultra};
-            for (int i = 0; i < 6; ++i)
+            CLAY(CLAY_SIDI(ks, 0x60001u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
             {
-                bool isActive = graphicsPreset == kPresetValues[i];
-                Clay_Color btnBg = isActive ? Pal::btnAccent : (hovPreset[i] ? Pal::btnHover : Pal::btnIdle);
-                CLAY(CLAY_IDI("PresetBtn", i), {.layout = {
-                                                    .sizing = {CLAY_SIZING_FIXED(82), CLAY_SIZING_FIXED(22)},
-                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                                .backgroundColor = btnBg,
-                                                .cornerRadius = CLAY_CORNER_RADIUS(3)})
-                {
-                    bool n = Clay_Hovered();
-                    sndRollover(n, hovPreset[i]);
-                    sndClick(n, inp.lmbPressed);
-                    hovPreset[i] = n;
-                    if (n && inp.lmbPressed && graphicsPreset != kPresetValues[i])
-                        applyGraphicsPreset(kPresetValues[i]);
-                    Clay_String presetLabelStr{false, (int32_t)strlen(kPresetLabels[i]), kPresetLabels[i]};
-                    CLAY_TEXT(presetLabelStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-                }
+                const bool h = Clay_Hovered();
+                if (tip)
+                    ui.tooltip(inp, h, tip, fs(11));
+                CLAY_TEXT((Clay_String{false, (int32_t)strlen(label), label}), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            }
+            if (uiButton(inp, ui, key, 0, "-", nullptr))
+            {
+                v = std::max(vmin, v - step);
+                changed = true;
+            }
+            float shown = v * shownScale;
+            if (numberField(inp, ui, CLAY_SIDI(ks, 0x60002u), shown, vmin * shownScale,
+                            vmax * shownScale, fmt, (float)fs(44), 12, Pal::volValue))
+            {
+                v = std::clamp(shown / shownScale, vmin, vmax);
+                changed = true;
+            }
+            if (uiButton(inp, ui, key, 1, "+", nullptr))
+            {
+                v = std::min(vmax, v + step);
+                changed = true;
             }
         }
+        return changed;
+    };
 
-        // Quick-access copy of the "Show beam pointing rays" checkbox (buildSettingsBeamsTab owns
-        // the canonical one, next to the beam diagnostics). Placed here too (2026-08-06 user
-        // request) so a low-end preset + beams-on "planetarium demo" combo — the reason this
-        // debug view is graduating toward a real display mode — is a single-tab operation instead
-        // of a tab switch. Both checkboxes drive the same showBeamDebugRays bool; only the hover
-        // state is duplicated (hovBeamDebugRaysToggleQuick), since Clay hover is per-element.
-        CLAY(CLAY_ID("BeamDebugRayRowQuick"), {.layout = {
-                                                   .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
-                                                   .padding = {0, 0, 2, 2},
-                                                   .childGap = 8,
-                                                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                   .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    // ── GRAPHICS ───────────────────────────────────────────────────────────────────────────────────────────
+    uiSection("DispSec", 0, "GRAPHICS");
+    {
+        // Display order is cheapest -> most expensive, independent of the enum's numeric order (Potato is enum value
+        // 6, appended after Custom). Custom has no button: it is a status ("an advanced slider was edited by hand").
+        static const char *kPresetLabels[6] = {"Potato", "Planetarium", "Low", "Medium", "High", "Ultra"};
+        static const GraphicsPreset kPresetValues[6] = {
+            GraphicsPreset::Potato, GraphicsPreset::Planetarium, GraphicsPreset::Low,
+            GraphicsPreset::Medium, GraphicsPreset::High, GraphicsPreset::Ultra};
+        int cur = -1;
+        for (int i = 0; i < 6; ++i)
+            if (graphicsPreset == kPresetValues[i])
+                cur = i;
+        if (int c = uiChoiceRow(inp, ui, "PresetBtn", 0, graphicsPreset == GraphicsPreset::Custom ? "Preset (custom)" : "Preset",
+                                kPresetLabels, 6, cur, "Sets every quality setting at once; editing an advanced slider makes it Custom");
+            c >= 0)
+            applyGraphicsPreset(kPresetValues[c]);
+    }
+    // Below 100% the sky/terrain/ocean background renders at reduced resolution and is upscaled; satellites, stars
+    // and the UI stay native.
+    if (stepper("RenderScale", "Render scale", renderScale, 0.5f, 1.0f, 0.05f, "%.0f%%", 100.0f,
+                "Background resolution (satellites, stars and the UI always render at full resolution)") &&
+        ctx_)
+    {
+        renderScale = std::round(renderScale * 100.0f) / 100.0f;
+        destroySkyLowResResources(ctx_->device);
+        createSkyLowResResources(*ctx_);
+    }
+    uiToggleRow(inp, ui, "SkyTaa", 0, "Temporal anti-aliasing", skyTaaEnabled, "Terrain, sky and sea (render scale 100% only)");
+    {
+        // MAILBOX was the old unconditional default, which runs the GPU flat out on a laptop; V-Sync (FIFO) is.
+        static const char *kFpsCapLabels[5] = {"Off", "30", "60", "120", "V-Sync"};
+        static const FpsCapMode kFpsCapValues[5] = {FpsCapMode::Off, FpsCapMode::Cap30, FpsCapMode::Cap60, FpsCapMode::Cap120,
+                                                    FpsCapMode::VSync};
+        int cur = 0;
+        for (int i = 0; i < 5; ++i)
+            if (fpsCapMode == kFpsCapValues[i])
+                cur = i;
+        if (int c = uiChoiceRow(inp, ui, "FpsCapBtn", 0, "Frame limiter", kFpsCapLabels, 5, cur); c >= 0)
         {
-            CLAY_TEXT(CLAY_STRING("Show beam pointing rays"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            CLAY(CLAY_ID("BeamDebugRaySpacerQuick"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            Clay_Color rayChkBgQuick = showBeamDebugRays ? Pal::btnAccent : (hovBeamDebugRaysToggleQuick ? Pal::btnHover : Pal::btnIdle);
-            CLAY(CLAY_ID("BeamDebugRayChkQuick"), {.layout = {
-                                                       .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                                       .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                                   .backgroundColor = rayChkBgQuick,
-                                                   .cornerRadius = CLAY_CORNER_RADIUS(3)})
-            {
-                bool n = Clay_Hovered();
-                sndRollover(n, hovBeamDebugRaysToggleQuick);
-                sndClick(n, inp.lmbPressed);
-                if (n && inp.lmbPressed)
-                    showBeamDebugRays = !showBeamDebugRays;
-                hovBeamDebugRaysToggleQuick = n;
-                CLAY_TEXT(showBeamDebugRays ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-            }
+            fpsCapMode = kFpsCapValues[c];
+            applyFpsCapMode();
         }
     }
+    // The Beams tab owns the same toggle beside the beam diagnostics; here for a low preset + beams "planetarium
+    // demo" in one tab.
+    uiToggleRow(inp, ui, "BeamRaysQuick", 0, "Beam pointing rays", showBeamDebugRays, "The Reflect Orbital mirrors' beams as lines");
 
-    { // HQ photo (review 13, requestPhoto): the resolution in window sizes, and how many frames the
-        // clouds and the sky TAA accumulate first (the window freezes for that long).
+    // ── WINDOW ─────────────────────────────────────────────────────────────────────────────────────────────
+    uiSection("DispSec", 1, "WINDOW");
+    {
+        const bool isFs = win && glfwGetWindowMonitor(win) != nullptr;
+        static const char *kWinModes[2] = {"Windowed", "Fullscreen"};
+        if (int c = uiChoiceRow(inp, ui, "WinMode", 0, "Window mode", kWinModes, 2, isFs ? 1 : 0); c >= 0 && win)
+        {
+            if (c == 1)
+            {
+                glfwGetWindowPos(win, &windowedX, &windowedY);
+                glfwGetWindowSize(win, &windowedW, &windowedH);
+                GLFWmonitor *mon = glfwGetPrimaryMonitor();
+                const GLFWvidmode *mode = glfwGetVideoMode(mon);
+                glfwSetWindowMonitor(win, mon, 0, 0, mode->width, mode->height, mode->refreshRate);
+            }
+            else
+                glfwSetWindowMonitor(win, nullptr, windowedX, windowedY, windowedW, windowedH, 0);
+        }
+    }
+    {
+        float s = uiScale;
+        if (stepper("UiScale", "Text scale", s, 0.75f, 2.0f, 0.125f, "%.2fx", 1.0f, nullptr))
+            uiScale = s;
+    }
+    {
+        static const char *kUnits[2] = {"Metric", "Imperial"};
+        if (int c = uiChoiceRow(inp, ui, "Units", 0, "Units", kUnits, 2, unitSystem == UnitSystem::Metric ? 0 : 1); c >= 0)
+            unitSystem = c == 0 ? UnitSystem::Metric : UnitSystem::Imperial;
+    }
+
+    // ── HQ PHOTO (requestPhoto) ────────────────────────────────────────────────────────────────────────────
+    uiSection("DispSec", 2, "HQ PHOTO");
+    {
         CloudSlider ph[] = {
-            {"HQ photo resolution (x window)", &photoScaleSetting, 1.0f, 4.0f, 1.0f, "%.0f", 227},
-            {"HQ photo settle frames", &photoSettleFrames, 4.0f, 240.0f, 4.0f, "%.0f", 228},
+            {"Resolution (x window)", &photoScaleSetting, 1.0f, 4.0f, 1.0f, "%.0f", 227},
+            {"Settle frames", &photoSettleFrames, 4.0f, 240.0f, 4.0f, "%.0f", 228},
         };
         buildCloudSliderRows(inp, ui, ph, 2, false);
     }
 
-    // ── Replay Intro (UC3) ───────────────────────────────────────────────────
-    CLAY(CLAY_ID("ReplayIntroRow"), {.layout = {
-                                         .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                         .padding = {4, 4, 4, 4},
-                                         .childGap = 8,
-                                         .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                         .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    // ── STARTUP ────────────────────────────────────────────────────────────────────────────────────────────
+    // Turning the intro off does not move the observer: the observer and camera are restored from settings.json.
+    uiSection("DispSec", 3, "STARTUP");
+    uiToggleRow(inp, ui, "PlayIntro", 0, "Play intro on startup", playIntroOnStartup);
+    CLAY(CLAY_ID("DispStartupBtns"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                 .padding = {2, 2, 4, 2},
+                                                 .childGap = 6,
+                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
     {
-        Clay_Color replayBtnBg = hovReplayIntro ? Pal::btnHover : Pal::btnIdle;
-        CLAY(CLAY_ID("ReplayIntroBtn"), {.layout = {
-                                             .sizing = {CLAY_SIZING_FIXED(140), CLAY_SIZING_FIXED(22)},
-                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                         .backgroundColor = replayBtnBg,
-                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        if (uiButton(inp, ui, "ReplayIntroBtn", 0, "Replay intro", nullptr, false, !showIntro))
         {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovReplayIntro);
-            sndClick(n, inp.lmbPressed);
-            hovReplayIntro = n;
-            if (n && inp.lmbPressed && !showIntro)
+            // introIsReplay suppresses the UC1 benchmark however this playthrough ends (see finishIntro).
+            showIntro = true;
+            introElapsed = 0.0f;
+            introCaptionIndex = 0;
+            introBasisValid = false;
+            introBenchMsSum = 0.0f;
+            introBenchFrames = 0;
+            introIsReplay = true;
+            if (audio_) // the intro is cut to the first track
             {
-                // Rewind the playhead; introIsReplay suppresses the UC1 benchmark regardless of
-                // how this playthrough ends (see finishIntro) — it's a one-shot first-run
-                // decision, not something a replay should redo.
-                showIntro = true;
-                introElapsed = 0.0f;
-                introCaptionIndex = 0;
-                introBasisValid = false;
-                introBenchMsSum = 0.0f;
-                introBenchFrames = 0;
-                introIsReplay = true;
-                if (audio_) // the intro is cut to the first track
-                {
-                    audio_->setMusicPaused(false);
-                    audio_->playTrack(0);
-                }
-            }
-            ui.tooltip(inp, n, "Replay the cinematic intro", fs(11));
-            CLAY_TEXT(CLAY_STRING("Replay Intro"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
-        }
-        CLAY(CLAY_ID("ReplayTutorialBtn"), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(140), CLAY_SIZING_FIXED(22)},
-                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                            .backgroundColor = hovReplayTutorial ? Pal::btnHover : Pal::btnIdle,
-                                            .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovReplayTutorial);
-            sndClick(n, inp.lmbPressed);
-            hovReplayTutorial = n;
-            if (n && inp.lmbPressed && !showIntro)
-            {
-                settingsChrome.open = false; // the tutorial starts with the view, not this window
-                startTutorial();
-            }
-            ui.tooltip(inp, n, "Walk through the controls again", fs(11));
-            CLAY_TEXT(CLAY_STRING("Replay Tutorial"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
-        }
-    }
-
-    // ── Play intro on startup (UC3 follow-up) ─────────────────────────────────
-    // Same labeled-row + toggle pattern as "Show controls window on startup" below. Disabling
-    // this does NOT touch the observer/camera position — that's already restored from
-    // settings.json's own "observer"/"camera" blocks regardless, so turning the intro off simply
-    // resumes at whatever location was last saved.
-    CLAY(CLAY_ID("PlayIntroRow"), {.layout = {
-                                       .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                       .padding = {4, 4, 4, 4},
-                                       .childGap = 8,
-                                       .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Play intro on startup"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-        CLAY(CLAY_ID("PlayIntroSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-
-        Clay_Color chkBg = playIntroOnStartup ? Pal::btnAccent : (hovPlayIntroStartup ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("PlayIntroChk"), {.layout = {
-                                           .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                       .backgroundColor = chkBg,
-                                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovPlayIntroStartup);
-            sndClick(n, inp.lmbPressed);
-            hovPlayIntroStartup = n;
-            if (n && inp.lmbPressed)
-                playIntroOnStartup = !playIntroOnStartup;
-            CLAY_TEXT(playIntroOnStartup ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-    }
-
-    // ── Temporal AA of the background (2026-09-30: sky_taa.comp) ─────────────────────────
-    CLAY(CLAY_ID("SkyTaaRow"), {.layout = {
-                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                    .padding = {4, 4, 4, 4},
-                                    .childGap = 8,
-                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Temporal AA (terrain, sky, sea)"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-        CLAY(CLAY_ID("SkyTaaSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-        Clay_Color chkBg = skyTaaEnabled ? Pal::btnAccent : (hovSkyTaa ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("SkyTaaChk"), {.layout = {
-                                        .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                        .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                    .backgroundColor = chkBg,
-                                    .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovSkyTaa);
-            sndClick(n, inp.lmbPressed);
-            hovSkyTaa = n;
-            if (n && inp.lmbPressed)
-                skyTaaEnabled = !skyTaaEnabled;
-            CLAY_TEXT(skyTaaEnabled ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-    }
-
-    // ── UI Scale ──────────────────────────────────────────────────
-    CLAY(CLAY_ID("UiScaleRow"), {.layout = {
-                                     .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                     .padding = {4, 4, 4, 4},
-                                     .childGap = 8,
-                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Text scale"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-        CLAY(CLAY_ID("UiScaleSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-
-        Clay_Color scaleMinusBg = hovScaleMinus ? Pal::btnHover : Pal::btnIdle;
-        CLAY(CLAY_ID("UiScaleMinus"), {.layout = {
-                                           .sizing = {CLAY_SIZING_FIXED(22), CLAY_SIZING_FIXED(22)},
-                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                       .backgroundColor = scaleMinusBg,
-                                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovScaleMinus);
-            sndClick(n, inp.lmbPressed);
-            hovScaleMinus = n;
-            if (hovScaleMinus && inp.lmbPressed)
-                uiScale = std::max(0.75f, uiScale - 0.125f);
-            CLAY_TEXT(CLAY_STRING("-"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(13)}));
-        }
-
-        static char scaleBuf[8];
-        snprintf(scaleBuf, sizeof(scaleBuf), "%.2fx", uiScale);
-        Clay_String scaleStr{false, (int32_t)strlen(scaleBuf), scaleBuf};
-        CLAY(CLAY_ID("UiScaleVal"), {.layout = {
-                                         .sizing = {CLAY_SIZING_FIXED(44), CLAY_SIZING_FIT(0)},
-                                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
-        {
-            CLAY_TEXT(scaleStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(13)}));
-        }
-
-        Clay_Color scalePlusBg = hovScalePlus ? Pal::btnHover : Pal::btnIdle;
-        CLAY(CLAY_ID("UiScalePlus"), {.layout = {
-                                          .sizing = {CLAY_SIZING_FIXED(22), CLAY_SIZING_FIXED(22)},
-                                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                      .backgroundColor = scalePlusBg,
-                                      .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovScalePlus);
-            sndClick(n, inp.lmbPressed);
-            hovScalePlus = n;
-            if (hovScalePlus && inp.lmbPressed)
-                uiScale = std::min(2.0f, uiScale + 0.125f);
-            CLAY_TEXT(CLAY_STRING("+"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(13)}));
-        }
-    }
-
-    // ── Render scale (resolution scaling, session 29) ──────────────────────
-    // Below 100%, the sky/terrain/ocean background renders at reduced resolution and gets
-    // upscaled — satellites/stars/UI stay at native resolution always (see SatelliteSim.h's
-    // resolution-scaling member comment). A lower-end-hardware fallback, not the default.
-    // Placed near the top of Display (not down by the debug/knockout tools below) since this is
-    // a real user-facing performance option, not a profiling aid.
-    CLAY(CLAY_ID("RenderScaleRow"), {.layout = {
-                                         .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                         .padding = {4, 4, 4, 4},
-                                         .childGap = 8,
-                                         .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                         .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Render scale"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-        CLAY(CLAY_ID("RenderScaleSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-
-        Clay_Color rsMinusBg = hovRenderScaleMinus ? Pal::btnHover : Pal::btnIdle;
-        CLAY(CLAY_ID("RenderScaleMinus"), {.layout = {
-                                               .sizing = {CLAY_SIZING_FIXED(22), CLAY_SIZING_FIXED(22)},
-                                               .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                           .backgroundColor = rsMinusBg,
-                                           .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovRenderScaleMinus);
-            sndClick(n, inp.lmbPressed);
-            hovRenderScaleMinus = n;
-            if (hovRenderScaleMinus && inp.lmbPressed)
-            {
-                renderScale = std::max(0.5f, renderScale - 0.05f);
-                if (ctx_)
-                {
-                    destroySkyLowResResources(ctx_->device);
-                    createSkyLowResResources(*ctx_);
-                }
-            }
-            CLAY_TEXT(CLAY_STRING("-"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(13)}));
-        }
-
-        static char renderScaleBuf[8];
-        snprintf(renderScaleBuf, sizeof(renderScaleBuf), "%.0f%%", renderScale * 100.0f);
-        Clay_String renderScaleStr{false, (int32_t)strlen(renderScaleBuf), renderScaleBuf};
-        CLAY(CLAY_ID("RenderScaleVal"), {.layout = {
-                                             .sizing = {CLAY_SIZING_FIXED(44), CLAY_SIZING_FIT(0)},
-                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
-        {
-            CLAY_TEXT(renderScaleStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(13)}));
-        }
-
-        Clay_Color rsPlusBg = hovRenderScalePlus ? Pal::btnHover : Pal::btnIdle;
-        CLAY(CLAY_ID("RenderScalePlus"), {.layout = {
-                                              .sizing = {CLAY_SIZING_FIXED(22), CLAY_SIZING_FIXED(22)},
-                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                          .backgroundColor = rsPlusBg,
-                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovRenderScalePlus);
-            sndClick(n, inp.lmbPressed);
-            hovRenderScalePlus = n;
-            if (hovRenderScalePlus && inp.lmbPressed)
-            {
-                renderScale = std::min(1.0f, renderScale + 0.05f);
-                if (ctx_)
-                {
-                    destroySkyLowResResources(ctx_->device);
-                    createSkyLowResResources(*ctx_);
-                }
-            }
-            CLAY_TEXT(CLAY_STRING("+"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(13)}));
-        }
-    }
-
-    // Long-exposure trails: consolidated to a single ON/OFF control (turning OFF immediately hides
-    // the trail — recordDraw()'s composite draw is itself gated on trailEnabled — and turning ON
-    // always starts from a blank buffer via trailClearPending, so there is nothing separate to
-    // "clear"). Lives as an icon button next to the Screenshot button (buildLeftHudPanel,
-    // "TrailsBtn") and on the Star Trails hotkey (default F, KB_TOGGLE_TRAILS), not here — no
-    // settings-window control for it. "Trail decay (s)"/"Trail gain" sliders (tuning, not the
-    // on/off control itself) still live in the Photometry tab alongside flareGlowGain/flareStreakGain.
-
-    // ── Frame limiter (NEW-7, RELEASE_v1_1_PLAN.md) ────────────────────────
-    // MAILBOX was the old unconditional default, which runs the GPU flat out forever on a
-    // laptop — fans, heat, and battery drain, a real comfort issue for exactly the low-end
-    // audience this release targets. Defaults to V-Sync (FIFO).
-    CLAY(CLAY_ID("FpsCapRow"), {.layout = {
-                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                    .padding = {4, 4, 4, 4},
-                                    .childGap = 6,
-                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Frame limiter"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-        CLAY(CLAY_ID("FpsCapSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-
-        static const char *kFpsCapLabels[5] = {"Off", "30", "60", "120", "V-Sync"};
-        static const FpsCapMode kFpsCapValues[5] = {
-            FpsCapMode::Off, FpsCapMode::Cap30, FpsCapMode::Cap60, FpsCapMode::Cap120, FpsCapMode::VSync};
-        for (int i = 0; i < 5; ++i)
-        {
-            bool isActive = fpsCapMode == kFpsCapValues[i];
-            Clay_Color btnBg = isActive ? Pal::btnAccent : (hovFpsCap[i] ? Pal::btnHover : Pal::btnIdle);
-            CLAY(CLAY_IDI("FpsCapBtn", i), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(44), CLAY_SIZING_FIXED(22)},
-                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                            .backgroundColor = btnBg,
-                                            .cornerRadius = CLAY_CORNER_RADIUS(3)})
-            {
-                bool n = Clay_Hovered();
-                sndRollover(n, hovFpsCap[i]);
-                sndClick(n, inp.lmbPressed);
-                hovFpsCap[i] = n;
-                if (n && inp.lmbPressed && fpsCapMode != kFpsCapValues[i])
-                {
-                    fpsCapMode = kFpsCapValues[i];
-                    applyFpsCapMode();
-                }
-                Clay_String fpsCapLabelStr{false, (int32_t)strlen(kFpsCapLabels[i]), kFpsCapLabels[i]};
-                CLAY_TEXT(fpsCapLabelStr,
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+                audio_->setMusicPaused(false);
+                audio_->playTrack(0);
             }
         }
+        if (uiButton(inp, ui, "ReplayTutorialBtn", 0, "Replay tutorial", nullptr, false, !showIntro))
+        {
+            settingsChrome.open = false; // the tutorial starts with the view, not this window
+            startTutorial();
+        }
     }
 
-    // ── Fullscreen toggle ─────────────────────────────────────────
-    bool isFs = win && glfwGetWindowMonitor(win) != nullptr;
-    CLAY(CLAY_ID("WinModeRow"), {.layout = {
-                                     .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                     .padding = {4, 4, 4, 4},
-                                     .childGap = 8,
-                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    // ── SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────
+    uiSection("DispSec", 4, "SETTINGS");
     {
-        CLAY_TEXT(CLAY_STRING("Window mode"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-        CLAY(CLAY_ID("WinModeSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-
-        Clay_Color fsBg = isFs ? (hovFullscreen ? Pal::btnAccentHv : Pal::btnAccent)
-                               : (hovFullscreen ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("FsToggleBtn"), {.layout = {
-                                          .sizing = {CLAY_SIZING_FIXED(92), CLAY_SIZING_FIXED(22)},
-                                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                      .backgroundColor = fsBg,
-                                      .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        bool adv = showAdvancedSettings;
+        if (uiToggleRow(inp, ui, "AdvancedToggle", 0, "Show advanced settings", adv,
+                        "The rendering tabs (Clouds, Weather, Atmosphere, Terrain, Night lights, Ocean, Beams, Performance)"))
         {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovFullscreen);
-            sndClick(n, inp.lmbPressed);
-            hovFullscreen = n;
-            if (hovFullscreen && inp.lmbPressed && win)
-            {
-                if (!isFs)
-                {
-                    glfwGetWindowPos(win, &windowedX, &windowedY);
-                    glfwGetWindowSize(win, &windowedW, &windowedH);
-                    GLFWmonitor *mon = glfwGetPrimaryMonitor();
-                    const GLFWvidmode *mode = glfwGetVideoMode(mon);
-                    glfwSetWindowMonitor(win, mon, 0, 0,
-                                         mode->width, mode->height, mode->refreshRate);
-                }
-                else
-                {
-                    glfwSetWindowMonitor(win, nullptr,
-                                         windowedX, windowedY, windowedW, windowedH, 0);
-                }
-            }
-            CLAY_TEXT(isFs ? CLAY_STRING("Windowed") : CLAY_STRING("Fullscreen"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+            showAdvancedSettings = adv;
+            // A hidden tab can't be clicked back to: bounce off it now.
+            if (!showAdvancedSettings && settingsTabIsAdvanced(settingsActiveTab))
+                settingsActiveTab = 4; // Display
         }
     }
-
-    // ── Unit system (metric / imperial) ───────────────────────────
-    CLAY(CLAY_ID("UnitSystemRow"), {.layout = {
-                                        .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                        .padding = {4, 4, 4, 4},
-                                        .childGap = 8,
-                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    // Deletes settings.json from the user data directory and asks for a restart (a live in-place reset would need
+    // a third hand-kept copy of the settings field list).
+    if (resetDefaultsMsgTimer > 0.0f)
+        resetDefaultsMsgTimer = std::max(0.0f, resetDefaultsMsgTimer - inp.dt);
+    CLAY(CLAY_ID("DispResetRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                              .padding = {2, 2, 4, 2},
+                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
     {
-        CLAY_TEXT(CLAY_STRING("Units"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-        CLAY(CLAY_ID("UnitSystemSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-
-        bool isMetric = unitSystem == UnitSystem::Metric;
-        Clay_Color metricBg = isMetric ? Pal::btnAccent : (hovUnitMetric ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("UnitMetricBtn"), {.layout = {
-                                            .sizing = {CLAY_SIZING_FIXED(70), CLAY_SIZING_FIXED(22)},
-                                            .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                        .backgroundColor = metricBg,
-                                        .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        if (uiButton(inp, ui, "ResetDefaultsBtn", 0, resetDefaultsMsgTimer > 0.0f ? "Restart to apply" : "Reset to defaults",
+                     "Delete saved settings and restore the defaults on the next launch", resetDefaultsMsgTimer > 0.0f))
         {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovUnitMetric);
-            sndClick(n, inp.lmbPressed);
-            hovUnitMetric = n;
-            if (n && inp.lmbPressed)
-                unitSystem = UnitSystem::Metric;
-            CLAY_TEXT(CLAY_STRING("Metric"), CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-        bool isImperial = unitSystem == UnitSystem::Imperial;
-        Clay_Color imperialBg = isImperial ? Pal::btnAccent : (hovUnitImperial ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("UnitImperialBtn"), {.layout = {
-                                              .sizing = {CLAY_SIZING_FIXED(70), CLAY_SIZING_FIXED(22)},
-                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                          .backgroundColor = imperialBg,
-                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovUnitImperial);
-            sndClick(n, inp.lmbPressed);
-            hovUnitImperial = n;
-            if (n && inp.lmbPressed)
-                unitSystem = UnitSystem::Imperial;
-            CLAY_TEXT(CLAY_STRING("Imperial"), CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+            std::error_code ec;
+            std::filesystem::remove((std::filesystem::path(userDataDir_) / "settings.json"), ec);
+            resetDefaultsMsgTimer = 3.0f;
         }
     }
+}
 
-    // ── Show advanced settings (UC1) ────────────────────────────────
-    // Reveals the Clouds/Ocean/Terrain/Aurora/Beams tabs (hidden from the tab bar above otherwise).
-    CLAY(CLAY_ID("AdvancedToggleRow"), {.layout = {
-                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                            .padding = {4, 4, 4, 4},
-                                            .childGap = 8,
-                                            .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                            .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Show advanced settings"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(13)}));
-        CLAY(CLAY_ID("AdvancedToggleSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-
-        Clay_Color advBg = showAdvancedSettings ? Pal::btnAccent : (hovAdvancedToggle ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("AdvancedToggleChk"), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                            .backgroundColor = advBg,
-                                            .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovAdvancedToggle);
-            sndClick(n, inp.lmbPressed);
-            hovAdvancedToggle = n;
-            if (n && inp.lmbPressed)
-            {
-                showAdvancedSettings = !showAdvancedSettings;
-                // A hidden tab can't be clicked back to, so bounce off it now rather than leave
-                // its stale content showing behind a tab bar that no longer has a button for it.
-                if (!showAdvancedSettings && settingsTabIsAdvanced(settingsActiveTab))
-                    settingsActiveTab = 4; // Display
-            }
-            CLAY_TEXT(showAdvancedSettings ? CLAY_STRING("On") : CLAY_STRING("Off"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-    }
-
-    // ── GPU frame breakdown (read-only) ────────────────────────────
-    // gpuMsSmoothed[]/gpuMsTotalSmoothed are EMA-smoothed GPU timestamp-query
-    // results, one frame stale (see the member comments in SatelliteSim.h).
-    CLAY(CLAY_ID("PerfDiv"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                         .padding = {0, 0, 6, 4}},
-                              .backgroundColor = {30, 30, 32, 255}}) {}
-    CLAY_TEXT(CLAY_STRING("GPU FRAME BREAKDOWN"),
-              CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
-
-    // Order must match gpuMsSmoothed[]'s slot semantics — see VulkanContext::kTimestampCount
-    // for the authoritative table, and savePerfSnapshot() below for the matching JSON keys.
-    // "Beam cloud block (retired)" always reads ~0.00ms as of 2026-08-09 — that dispatch was
-    // replaced by beam_self_march.comp, whose real cost now folds into "Orbit compute" instead
-    // (see savePerfSnapshot()'s own comment on gpu_timing_ms for why the slot wasn't rewired).
+// ─── buildSettingsPerformanceTab (2026-10-03, out of the Display tab) ──────
+// The frame breakdowns, the knockout toggles, Save snapshot and the automated sweep: profiling tools, behind
+// "Show advanced settings".
+void SatelliteSim::buildSettingsPerformanceTab(const UIInput &inp, UIRenderer &ui)
+{
+    const float lw = (float)fs(11) * 14.0f;
+    // ── GPU frame breakdown: gpuMsSmoothed[] are EMA-smoothed timestamp results, one frame stale ──────────
+    // Order must match gpuMsSmoothed[]'s slot semantics (VulkanContext::kTimestampCount; savePerfSnapshot's keys).
+    // "Beam cloud block (retired)" always reads ~0: beam_self_march.comp's cost folds into "Orbit compute".
+    uiSection("PerfSec", 0, "GPU FRAME (ms)");
     static const char *kPerfLabels[8] = {
         "Scene depth", "Beam cloud block (retired)", "Orbit compute", "Cloud march", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
-    static char perfBufs[8][20];
     for (int pi = 0; pi < 8; ++pi)
-    {
-        snprintf(perfBufs[pi], sizeof(perfBufs[pi]), "%.2f ms", gpuMsSmoothed[pi]);
-        Clay_String labelStr{false, (int32_t)strlen(kPerfLabels[pi]), kPerfLabels[pi]};
-        Clay_String valStr{false, (int32_t)strlen(perfBufs[pi]), perfBufs[pi]};
-        CLAY(CLAY_IDI("PerfRow", pi), {.layout = {
-                                           .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
-                                           .padding = {4, 4, 2, 2},
-                                           .childGap = 8,
-                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-        {
-            CLAY_TEXT(labelStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            CLAY(CLAY_IDI("PerfSpacer", pi), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            CLAY_TEXT(valStr, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
-        }
-    }
-    snprintf(perfBufs[6], sizeof(perfBufs[6]), "%.2f ms", gpuMsTotalSmoothed);
-    Clay_String totalStr{false, (int32_t)strlen(perfBufs[6]), perfBufs[6]};
-    CLAY(CLAY_ID("PerfTotalRow"), {.layout = {
-                                       .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
-                                       .padding = {4, 4, 2, 2},
-                                       .childGap = 8,
-                                       .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("GPU total"), CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY(CLAY_ID("PerfTotalSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-        CLAY_TEXT(totalStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-    }
+        uiKV("PerfGpuKV", pi, kPerfLabels[pi], uiKitStr("%.2f", gpuMsSmoothed[pi]), lw);
+    uiKV("PerfGpuKV", 8, "Total", uiKitStr("%.2f", gpuMsTotalSmoothed), lw, &Pal::textPrimary);
 
-    // ── CPU frame breakdown (2026-08-10) ────────────────────────────
-    // Same instrument as the GPU rows above, for the other side of the frame. "Other" is the
-    // wall-clock frame time minus everything measured here — present/vsync wait, driver submit,
-    // App-side work, and any CPU block that doesn't have a bucket yet. A large "Other" means the
-    // cost is somewhere this table doesn't look, which is itself the finding.
-    CLAY(CLAY_ID("CpuPerfDiv"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                            .padding = {0, 0, 6, 4}},
-                                 .backgroundColor = {30, 30, 32, 255}}) {}
-    CLAY_TEXT(CLAY_STRING("CPU FRAME BREAKDOWN"),
-              CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
+    // ── CPU frame breakdown: "Other" is the wall clock minus everything measured — present/vsync wait, driver
+    // submit, App-side work, and any CPU block without a bucket (a large "Other" is itself the finding).
+    uiSection("PerfSec", 1, "CPU FRAME (ms)");
     {
         static const char *kCpuLabels[CPU_COUNT] = {
             "Build UI (Clay)", "Update positions", "Beam readback + cluster",
             "Update stars", "Light pollution dome", "Update planets"};
-        static char cpuBufs[CPU_COUNT + 2][20];
         float measured = 0.0f;
         for (int ci = 0; ci < CPU_COUNT; ++ci)
+        {
             measured += cpuMsSmoothed[ci];
-        for (int ci = 0; ci < CPU_COUNT; ++ci)
-        {
-            snprintf(cpuBufs[ci], sizeof(cpuBufs[ci]), "%.2f ms", cpuMsSmoothed[ci]);
-            Clay_String lbl{false, (int32_t)strlen(kCpuLabels[ci]), kCpuLabels[ci]};
-            Clay_String val{false, (int32_t)strlen(cpuBufs[ci]), cpuBufs[ci]};
-            CLAY(CLAY_IDI("CpuPerfRow", ci), {.layout = {
-                                                  .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
-                                                  .padding = {4, 4, 2, 2},
-                                                  .childGap = 8,
-                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                  .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-            {
-                CLAY_TEXT(lbl, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-                CLAY(CLAY_IDI("CpuPerfSpacer", ci), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-                CLAY_TEXT(val, CLAY_TEXT_CONFIG({.textColor = Pal::volValue, .fontSize = fs(12)}));
-            }
+            uiKV("PerfCpuKV", ci, kCpuLabels[ci], uiKitStr("%.2f", cpuMsSmoothed[ci]), lw);
         }
-        // inp.dt is this frame's real wall clock; the buckets are last frame's. At steady state
-        // that's the same number, and a one-frame skew is not worth a second smoothing chain.
-        float other = std::max(0.0f, inp.dt * 1000.0f - gpuMsTotalSmoothed - measured);
-        snprintf(cpuBufs[CPU_COUNT], sizeof(cpuBufs[CPU_COUNT]), "%.2f ms", other);
-        Clay_String otherStr{false, (int32_t)strlen(cpuBufs[CPU_COUNT]), cpuBufs[CPU_COUNT]};
-        CLAY(CLAY_ID("CpuPerfOtherRow"), {.layout = {
-                                              .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
-                                              .padding = {4, 4, 2, 2},
-                                              .childGap = 8,
-                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-        {
-            CLAY_TEXT(CLAY_STRING("Other (present/submit/App)"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-            CLAY(CLAY_ID("CpuPerfOtherSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            CLAY_TEXT(otherStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        }
+        // inp.dt is this frame's wall clock; the buckets are last frame's (the same at steady state).
+        const float other = std::max(0.0f, inp.dt * 1000.0f - gpuMsTotalSmoothed - measured);
+        uiKV("PerfCpuKV", CPU_COUNT, "Other (present / submit / App)", uiKitStr("%.2f", other), lw, &Pal::textPrimary);
     }
 
-    // ── Knockout profiling toggles ──────────────────────────────────
-    // Each disables one shader block or one whole dispatch. Compare the bucket rows above with a
-    // toggle on vs. off to read that block's isolated GPU cost directly, without a GPU capture
-    // tool — or press "Run knockout sweep" below to have the app do the whole table automatically.
-    // The bit/label/json-key table is kDebugToggles at the top of this file; the bit semantics are
-    // documented in SatelliteSim.h's debugDisableMask comment.
-    //
-    // 512 and 1024 are the PRODUCER-side knockouts (they skip a whole dispatch in recordCompute);
-    // every other bit disables a block inside a shader. 256 used to be producer-side too, back
-    // when the shadow was its own 128x128 dispatch; it now gates the per-pixel shadow march
-    // inside cloud_march.comp, so its cost shows up in that bucket.
-    //
-    // 1024 is the big one: the scene depth pass fills kNoSurfaceT when skipped, so nothing
-    // occludes anything and the renderer reverts to its pre-unification occlusion behaviour.
-    // That makes the entire shared-depth architecture a single A/B checkbox.
-    CLAY_TEXT(CLAY_STRING("KNOCKOUT PROFILING (disables rendering correctness for cost isolation)"),
-              CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11)}));
-    // kDebugToggles also drives the automated knockout sweep below — adding a row there adds a
-    // checkbox here and a sweep step, both for free.
+    // ── Records: Save snapshot (perf_profiles/profile_log.jsonl) and the automated knockout sweep ──────────
+    uiSection("PerfSec", 2, "RECORD");
+    if (snapshotMsgTimer > 0.0f)
+        snapshotMsgTimer = std::max(0.0f, snapshotMsgTimer - inp.dt);
+    CLAY(CLAY_ID("PerfRecordBtns"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                .padding = {2, 2, 4, 2},
+                                                .childGap = 6,
+                                                .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        if (uiButton(inp, ui, "SaveSnapshotBtn", 0, snapshotMsgTimer > 0.0f ? "Saved" : "Save snapshot",
+                     "Append the current view, settings and timings to perf_profiles/profile_log.jsonl", snapshotMsgTimer > 0.0f))
+            savePerfSnapshot(inp.dt);
+        // +2 steps: the baseline, every measured bit, and the trailing baseline re-measure.
+        const char *sweepLabel = sweepActive              ? uiKitStr("Sweeping %d/%d", sweepStep + 1, sweepBitCount + 2)
+                                 : sweepDoneMsgTimer > 0.0f ? "Sweep saved"
+                                                            : "Run knockout sweep";
+        if (uiButton(inp, ui, "RunSweepBtn", 0, sweepLabel,
+                     "Measures every knockout below in turn (~15 s, pauses time; hold the camera still) and writes one record "
+                     "with the whole cost table",
+                     sweepActive || sweepDoneMsgTimer > 0.0f) &&
+            !sweepActive)
+            startKnockoutSweep();
+    }
+
+    // ── Knockouts: each disables one shader block or dispatch (rendering is wrong while on) to read its cost from
+    // the breakdowns above. kDebugToggles drives these rows and the sweep. 1024 (the scene depth pass) reverts the
+    // whole shared-depth architecture to pre-unification occlusion.
+    uiSection("PerfSec", 3, "KNOCKOUTS (skip a pass to measure it)");
     for (int ti = 0; ti < kDebugToggleCount; ++ti)
     {
         bool on = (debugDisableMask & kDebugToggles[ti].bit) != 0u;
-        Clay_String lblStr{false, (int32_t)strlen(kDebugToggles[ti].label), kDebugToggles[ti].label};
-        CLAY(CLAY_IDI("DebugToggleRow", ti), {.layout = {
-                                                  .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26)},
-                                                  .padding = {4, 4, 2, 2},
-                                                  .childGap = 8,
-                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                  .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-        {
-            CLAY_TEXT(lblStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            CLAY(CLAY_IDI("DebugToggleSpacer", ti), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            Clay_Color chkBg = on ? Pal::btnAccent : (hovDebugToggle[ti] ? Pal::btnHover : Pal::btnIdle);
-            CLAY(CLAY_IDI("DebugToggleChk", ti), {.layout = {
-                                                      .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                                      .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                                  .backgroundColor = chkBg,
-                                                  .cornerRadius = CLAY_CORNER_RADIUS(3)})
-            {
-                bool n = Clay_Hovered();
-                sndRollover(n, hovDebugToggle[ti]);
-                sndClick(n, inp.lmbPressed);
-                if (n && inp.lmbPressed && !sweepActive) // a sweep owns the mask while it runs
-                    debugDisableMask ^= kDebugToggles[ti].bit;
-                hovDebugToggle[ti] = n;
-                CLAY_TEXT(on ? CLAY_STRING("SKIP") : CLAY_STRING("ON"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-            }
-        }
-    }
-
-    // (The Reflect-Orbital beam diagnostic readout and the "Show beam pointing rays" toggle used to
-    // sit here, between the knockout toggles and Save Snapshot. Moved to the Beams tab 2026-08-06 —
-    // they belong with the beam sliders they are used to interpret, not next to the GPU profiling
-    // controls they only ever shared a tab with by accident of when they were written.)
-
-    // ── Save snapshot ────────────────────────────────────────────
-    // Appends the current status + averaged GPU timing above to
-    // perf_profiles/profile_log.jsonl next to the exe (see savePerfSnapshot).
-    if (snapshotMsgTimer > 0.0f)
-        snapshotMsgTimer = std::max(0.0f, snapshotMsgTimer - inp.dt);
-    CLAY(CLAY_ID("SaveSnapshotRow"), {.layout = {
-                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(30)},
-                                          .padding = {4, 4, 4, 4},
-                                          .childGap = 8,
-                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        Clay_Color snapBtnBg = snapshotMsgTimer > 0.0f ? Pal::btnAccent
-                               : hovSaveSnapshot       ? Pal::btnHover
-                                                       : Pal::btnIdle;
-        CLAY(CLAY_ID("SaveSnapshotBtn"), {.layout = {
-                                              .sizing = {CLAY_SIZING_FIXED(140), CLAY_SIZING_FIXED(24)},
-                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                          .backgroundColor = snapBtnBg,
-                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovSaveSnapshot);
-            sndClick(n, inp.lmbPressed);
-            if (n && inp.lmbPressed)
-                savePerfSnapshot(inp.dt);
-            hovSaveSnapshot = n;
-            ui.tooltip(inp, n, "Append current status + GPU timing to perf_profiles/profile_log.jsonl", fs(11));
-            CLAY_TEXT(snapshotMsgTimer > 0.0f ? CLAY_STRING("Saved") : CLAY_STRING("Save Snapshot"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
-        }
-    }
-
-    // ── Automated knockout sweep ─────────────────────────────────
-    // One press measures every knockout bit in turn and writes a single record carrying the whole
-    // per-effect cost table (see updateKnockoutSweep). The label doubles as the progress readout —
-    // the sweep runs over several seconds and pauses sim time, so it needs to be obvious that it's
-    // running and roughly how far along it is.
-    {
-        static char sweepBtnBuf[32];
-        if (sweepActive)
-            // +2 total steps: the baseline, every measured bit, and the trailing baseline re-measure.
-            snprintf(sweepBtnBuf, sizeof(sweepBtnBuf), "Sweeping %d/%d...", sweepStep + 1, sweepBitCount + 2);
-        else if (sweepDoneMsgTimer > 0.0f)
-            snprintf(sweepBtnBuf, sizeof(sweepBtnBuf), "Sweep saved");
-        else
-            snprintf(sweepBtnBuf, sizeof(sweepBtnBuf), "Run knockout sweep");
-        Clay_String sweepStr{false, (int32_t)strlen(sweepBtnBuf), sweepBtnBuf};
-        CLAY(CLAY_ID("RunSweepRow"), {.layout = {
-                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(30)},
-                                          .padding = {4, 4, 4, 4},
-                                          .childGap = 8,
-                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-        {
-            Clay_Color sweepBg = (sweepActive || sweepDoneMsgTimer > 0.0f) ? Pal::btnAccent
-                                 : hovRunSweep                             ? Pal::btnHover
-                                                                           : Pal::btnIdle;
-            CLAY(CLAY_ID("RunSweepBtn"), {.layout = {
-                                              .sizing = {CLAY_SIZING_FIXED(180), CLAY_SIZING_FIXED(24)},
-                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                          .backgroundColor = sweepBg,
-                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
-            {
-                bool n = Clay_Hovered();
-                sndRollover(n, hovRunSweep);
-                sndClick(n, inp.lmbPressed);
-                if (n && inp.lmbPressed && !sweepActive)
-                    startKnockoutSweep();
-                hovRunSweep = n;
-                ui.tooltip(inp, n,
-                           "Measures every knockout bit automatically (~15s, pauses time). "
-                           "Hold the camera still. Writes one record with the full cost table.",
-                           fs(11));
-                CLAY_TEXT(sweepStr, CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
-            }
-        }
-    }
-
-    // ── Reset to defaults (NEW-5) ───────────────────────────────────
-    // Deletes settings.json from the user data directory and asks for a restart, rather than
-    // resetting live members in place — simplest safe option given how many scattered fields
-    // loadSettings/saveSettings enumerate (a live in-place reset would need a 4th hand-maintained
-    // copy of that same field list, which is exactly the kind of permutation risk CLAUDE.md
-    // warns about for CloudParams). Once UC1's preset system lands, "reset" becomes "apply the
-    // auto-detected preset" instead and can act immediately without a restart.
-    if (resetDefaultsMsgTimer > 0.0f)
-        resetDefaultsMsgTimer = std::max(0.0f, resetDefaultsMsgTimer - inp.dt);
-    CLAY(CLAY_ID("ResetDefaultsRow"), {.layout = {
-                                           .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(30)},
-                                           .padding = {4, 4, 4, 4},
-                                           .childGap = 8,
-                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        Clay_Color resetBtnBg = resetDefaultsMsgTimer > 0.0f ? Pal::btnAccent
-                                : hovResetDefaults           ? Pal::btnHover
-                                                             : Pal::btnIdle;
-        CLAY(CLAY_ID("ResetDefaultsBtn"), {.layout = {
-                                               .sizing = {CLAY_SIZING_FIXED(140), CLAY_SIZING_FIXED(24)},
-                                               .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                           .backgroundColor = resetBtnBg,
-                                           .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovResetDefaults);
-            sndClick(n, inp.lmbPressed);
-            if (n && inp.lmbPressed)
-            {
-                std::error_code ec;
-                std::filesystem::remove((std::filesystem::path(userDataDir_) / "settings.json"), ec);
-                resetDefaultsMsgTimer = 3.0f;
-            }
-            hovResetDefaults = n;
-            ui.tooltip(inp, n, "Delete saved settings and restore defaults on next launch", fs(11));
-            CLAY_TEXT(resetDefaultsMsgTimer > 0.0f ? CLAY_STRING("Restart to apply") : CLAY_STRING("Reset to Defaults"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
-        }
+        // "On" = skipped. A sweep owns the mask while it runs.
+        if (uiToggleRow(inp, ui, "DebugToggleChk", ti, kDebugToggles[ti].label, on, nullptr, "Skip", "On") && !sweepActive)
+            debugDisableMask ^= kDebugToggles[ti].bit;
     }
 }
 
@@ -4244,7 +3816,7 @@ static constexpr float kSliderLabelW = 150.0f;
 // scroll content.
 static constexpr float kSliderRowMinH = 28.0f;
 static constexpr float kSliderFixedLeft = 140.0f + 1.0f + 14.0f + 4.0f + kSliderLabelW + 6.0f;        // tab strip+divider+pad+label+gap = 315
-static constexpr float kSliderFixedRight = 6.0f + 58.0f + 6.0f + 22.0f + 6.0f + 22.0f + 4.0f + 14.0f; // gap+value+gap+minus+gap+plus+pad = 138
+static constexpr float kSliderFixedRight = 6.0f + 58.0f + 6.0f + 22.0f + 6.0f + 22.0f + 4.0f + 20.0f; // gap+value+gap+minus+gap+plus+pad = 144
 static constexpr float kSliderMinW = 80.0f;
 static constexpr float kSliderMaxW = 228.0f;
 static float settingsSliderWidth(float chromeW)
@@ -4274,7 +3846,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
         {"Mirror boost", &mirrorBoost, 50.0f, 1000.0f, 25.0f, "%.0f", 2},
         {"Vis threshold", &visThresh, 0.0001f, 0.1f, 0.0001f, "%.3f", 3},
-        {"Hlgt flare", &highlightFlare, 0.01f, 1.0f, 0.01f, "%.2f", 4},
+        {"Highlight flare", &highlightFlare, 0.01f, 1.0f, 0.01f, "%.2f", 4},
         {"Moon suppress", &moonSuppression, 0.0f, 500.0f, 5.0f, "%.0f", 5},
         {"Pollution gain", &lightPollutionGain, 0.0f, 100.0f, 0.1f, "%.2f", 6},
         {"Extinction", &extinctionCoeff, 0.0f, 1.0f, 0.02f, "%.2f", 7},
@@ -4289,8 +3861,8 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         // "City sky mag" is the value it ramps TO; the fade times ease the dome feeding it. See
         // the mwPollutionThresholdLo/darkSkyCityMag member comments (SatelliteSim.h) and
         // shaders/include/darksky.glsl.
-        {"MW pollut. lo", &mwPollutionThresholdLo, 0.0f, 0.5f, 0.005f, "%.3f", 11},
-        {"MW pollut. hi", &mwPollutionThresholdHi, 0.001f, 0.5f, 0.005f, "%.3f", 12},
+        {"MW pollution lo", &mwPollutionThresholdLo, 0.0f, 0.5f, 0.005f, "%.3f", 11},
+        {"MW pollution hi", &mwPollutionThresholdHi, 0.001f, 0.5f, 0.005f, "%.3f", 12},
         // mag/arcsec^2, so LOWER = brighter city sky = harsher suppression. 22 is pristine (the gate
         // does nothing); ~16 is already brighter than any real site. The floor goes to 1.0 anyway —
         // below the real-world range on purpose — as an artistic knob for fully washing dark-sky
@@ -4339,7 +3911,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"Glare near gain", &glareNearGain, 1.0f, 8.0f, 0.25f, "%.2f", 33},
         {"Glare near range (km)", &glareNearRangeKm, 1.0f, 20000.0f, 10.0f, "%.0f", 34},
     };
-    for (auto &pp : photoParams)
+    auto photoRow = [&](PhotoParam &pp)
     {
         int pi = pp.idx;
         snprintf(photoBufs[pi], sizeof(photoBufs[pi]), pp.fmt, *pp.val);
@@ -4420,106 +3992,44 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
                 CLAY_TEXT(CLAY_STRING("+"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
             }
         }
+    };
+    // 2026-10-03: grouped by what they act on (each row keeps its idx: PhotoVal:<idx> etc.).
+    struct PhotoGroup
+    {
+        const char *title;
+        int ids[10];
+        int n;
+    };
+    static const PhotoGroup kGroups[] = {
+        {"BRIGHTNESS", {0, 2, 3, 4, 21}, 5},
+        {"SKY DIMMING", {1, 5, 6, 7, 8}, 5},
+        {"POINT SOURCES", {22, 23, 24, 25, 26, 27}, 6},
+        {"BLOOM AND GLARE", {9, 10, 28, 29, 30, 31, 32, 33, 34}, 9},
+        {"DARK SKY (MILKY WAY, ZODIACAL LIGHT)", {11, 12, 13, 14, 15, 16, 17, 18}, 8},
+        {"STAR TRAILS", {19, 20}, 2},
+    };
+    for (int g = 0; g < (int)(sizeof(kGroups) / sizeof(kGroups[0])); ++g)
+    {
+        uiSection("PhotoSec", g, kGroups[g].title);
+        for (int k = 0; k < kGroups[g].n; ++k)
+            for (auto &pp : photoParams)
+                if (pp.idx == kGroups[g].ids[k])
+                    photoRow(pp);
     }
 
     // Occlusion between satellite parts (geometry-model types) — off by default, see
     // satPartOcclusion (SatelliteSim.h). Same labeled-row + toggle pattern as "Play intro on startup".
-    CLAY(CLAY_ID("SatOcclusionRow"), {.layout = {
-                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                          .padding = {4, 4, 4, 4},
-                                          .childGap = 8,
-                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Satellite part occlusion"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-        CLAY(CLAY_ID("SatOcclusionSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-
-        Clay_Color chkBg = satPartOcclusion ? Pal::btnAccent : (hovSatOcclusionChk ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("SatOcclusionChk"), {.layout = {
-                                              .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                          .backgroundColor = chkBg,
-                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovSatOcclusionChk);
-            sndClick(n, inp.lmbPressed);
-            hovSatOcclusionChk = n;
-            if (n && inp.lmbPressed)
-                satPartOcclusion = !satPartOcclusion;
-            ui.tooltip(inp, n, "Parts of a modelled satellite shadow and hide each other (costly at millions of satellites)", fs(11));
-            CLAY_TEXT(satPartOcclusion ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-    }
-    // Environment probes for satellite meshes (SatEnvProbes): the full sky renderer around each
-    // satellite drawn as a model, for its reflections and the Earth light on its sides.
-    CLAY(CLAY_ID("EnvReflRow"), {.layout = {
-                                     .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                     .padding = {4, 4, 4, 4},
-                                     .childGap = 8,
-                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Full-renderer reflections"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-        CLAY(CLAY_ID("EnvReflSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-        Clay_Color chkBg = envReflections ? Pal::btnAccent : (hovEnvReflChk ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("EnvReflChk"), {.layout = {
-                                         .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                     .backgroundColor = chkBg,
-                                     .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovEnvReflChk);
-            sndClick(n, inp.lmbPressed);
-            hovEnvReflChk = n;
-            if (n && inp.lmbPressed)
-                envReflections = !envReflections;
-            ui.tooltip(inp, n,
-                       "Satellite models reflect, and are lit by, what the full sky renderer draws around them - "
-                       "the Earth with its clouds, oceans and city lights, the aurora, the Moon and the Milky Way. "
-                       "Off: a simpler analytic Earth (cheaper). The model viewer uses it for its background too",
-                       fs(11));
-            CLAY_TEXT(envReflections ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-    }
-    // Sharp mirror reflections (SKY_REFL): the full renderer per pixel in mirror-smooth surfaces.
-    CLAY(CLAY_ID("SharpReflRow"), {.layout = {
-                                       .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
-                                       .padding = {4, 4, 4, 4},
-                                       .childGap = 8,
-                                       .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Sharp mirror reflections"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-        CLAY(CLAY_ID("SharpReflSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-        Clay_Color chkBg = sharpReflections ? Pal::btnAccent : (hovSharpReflChk ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("SharpReflChk"), {.layout = {
-                                           .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                       .backgroundColor = chkBg,
-                                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovSharpReflChk);
-            sndClick(n, inp.lmbPressed);
-            hovSharpReflChk = n;
-            if (n && inp.lmbPressed)
-                sharpReflections = !sharpReflections;
-            ui.tooltip(inp, n,
-                       "Mirrors (a Reflect Orbital membrane, quartz radiators) reflect the full sky renderer pixel by "
-                       "pixel, sharp at any distance, instead of a reflection map. Costs a sky render of the mirror's "
-                       "area on screen, for the four largest such satellites in view. Needs full-renderer reflections",
-                       fs(11));
-            CLAY_TEXT(sharpReflections ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-    }
+    uiSection("PhotoSec", 10, "SATELLITE MODELS");
+    uiToggleRow(inp, ui, "SatOcclusionChk", 0, "Part occlusion", satPartOcclusion,
+                "Parts of a modelled satellite shadow and hide each other (costly at millions of satellites)");
+    uiToggleRow(inp, ui, "EnvReflChk", 0, "Full-renderer reflections", envReflections,
+                "Satellite models reflect, and are lit by, what the full sky renderer draws around them - "
+                "the Earth with its clouds, oceans and city lights, the aurora, the Moon and the Milky Way. "
+                "Off: a simpler analytic Earth (cheaper). The model viewer uses it for its background too");
+    uiToggleRow(inp, ui, "SharpReflChk", 0, "Sharp mirror reflections", sharpReflections,
+                "Mirrors (a Reflect Orbital membrane, quartz radiators) reflect the full sky renderer pixel by "
+                "pixel, sharp at any distance, instead of a reflection map. Costs a sky render of the mirror's "
+                "area on screen, for the four largest such satellites in view. Needs full-renderer reflections");
     buildBulkExportRows(inp, ui);
 }
 
@@ -4586,10 +4096,7 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
         return clicked;
     };
 
-    CLAY(CLAY_ID("BulkHeader"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}, .padding = {4, 4, 12, 2}}})
-    {
-        label("BULK EXPORT  (samples CSV, SatBench schema)", Pal::textDim, 11);
-    }
+    uiSection("PhotoSec", 11, "BULK EXPORT (SAMPLES CSV)");
     if (row(0, "Source", bulkSourceBuf, hovBulkSource, "Click to cycle: the selected satellite, or a whole constellation") &&
         !running)
         bulkSource = bulkSource + 1 >= (int)constellations.size() ? -1 : bulkSource + 1;
@@ -4605,10 +4112,228 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
                                            .childGap = 2,
                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
-        label("Constraints (SatBench defaults): Sun -18..-6 deg, elevation >= 20 deg, fully sunlit.", Pal::textHint, 11);
+        label("Sun -18..-6 deg, elevation >= 20 deg, fully sunlit (SatBench's defaults)", Pal::textHint, 11);
         if (bulkStatus[0])
             label(bulkStatus, Pal::textDim, 11);
     }
+}
+
+// ─── UI kit (2026-10-03) ─────────────────────────────────────────────────────
+// The shared blocks of the info, trace, bookmarks and settings windows, in the Cinematics window's style (see the
+// header's comment). Every id is (key, index): a key is a literal per call site, the index separates rows.
+namespace
+{
+    Clay_String kitStr(const char *s) { return Clay_String{false, (int32_t)strlen(s), s}; }
+    constexpr Clay_Color kInset = {14, 14, 16, 220};      // stat tiles, lists
+    constexpr Clay_Color kBtnOff = {24, 24, 25, 160};     // a disabled button
+}
+
+const char *SatelliteSim::uiKitStr(const char *fmt, ...)
+{
+    char *b = uiKitBufs_[uiKitBufN_ % 160];
+    ++uiKitBufN_;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(b, sizeof(uiKitBufs_[0]), fmt, ap);
+    va_end(ap);
+    return b;
+}
+
+bool SatelliteSim::uiHovRoll(uint32_t id, bool nowHov)
+{
+    bool &prev = uiHov_[id];
+    sndRollover(nowHov, prev);
+    prev = nowHov;
+    return nowHov;
+}
+
+void SatelliteSim::uiSection(const char *key, int idx, const char *title)
+{
+    CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx * 2u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                 .padding = {0, 0, 10, 2}}})
+    {
+        CLAY_TEXT(kitStr(title), CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+    }
+    CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx * 2u + 1u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}},
+                                                           .backgroundColor = Pal::divider}) {}
+}
+
+void SatelliteSim::uiKV(const char *key, int idx, const char *label, const char *value, float labelW, const Clay_Color *valueColor)
+{
+    const float lw = labelW > 0.0f ? labelW : (float)fs(11) * 8.0f;
+    CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                            .padding = {2, 2, 1, 1},
+                                                            .childGap = 8,
+                                                            .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                            .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x10000u), {.layout = {.sizing = {CLAY_SIZING_FIXED(lw), CLAY_SIZING_FIT(0)}}})
+        {
+            CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+        CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x20000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}},
+                                                                .clip = {.horizontal = true}})
+        {
+            CLAY_TEXT(kitStr(value), CLAY_TEXT_CONFIG({.textColor = valueColor ? *valueColor : Pal::volValue, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+    }
+}
+
+void SatelliteSim::uiStatTile(const char *key, int idx, const char *label, const char *value, Clay_Color valueColor)
+{
+    CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                            .padding = {8, 8, 5, 6},
+                                                            .childGap = 1,
+                                                            .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                                 .backgroundColor = kInset,
+                                                 .cornerRadius = CLAY_CORNER_RADIUS(4),
+                                                 .clip = {.horizontal = true}})
+    {
+        CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        CLAY_TEXT(kitStr(value), CLAY_TEXT_CONFIG({.textColor = valueColor, .fontSize = fs(15), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+    }
+}
+
+bool SatelliteSim::uiButton(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, const char *tip,
+                            bool on, bool enabled, bool grow)
+{
+    const Clay_ElementId id = CLAY_SIDI(kitStr(key), (uint32_t)idx);
+    const bool hovPrev = enabled && uiHov_[id.id];
+    const Clay_Color bg = !enabled ? kBtnOff : on ? (hovPrev ? Pal::btnAccentHv : Pal::btnAccent) : (hovPrev ? Pal::btnHover : Pal::btnIdle);
+    bool clicked = false;
+    CLAY(id, {.layout = {.sizing = {grow ? CLAY_SIZING_GROW(0) : CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(20))},
+                         .padding = {8, 8, 0, 0},
+                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+              .backgroundColor = bg,
+              .cornerRadius = CLAY_CORNER_RADIUS(3)})
+    {
+        const bool n = Clay_Hovered();
+        if (enabled)
+        {
+            uiHovRoll(id.id, n);
+            sndClick(n, inp.lmbPressed);
+            clicked = n && inp.lmbPressed;
+        }
+        if (tip)
+            ui.tooltip(inp, n, tip, fs(11));
+        CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = enabled ? Pal::btnLabel : Pal::textHint, .fontSize = fs(11),
+                                                   .wrapMode = CLAY_TEXT_WRAP_NONE}));
+    }
+    return clicked;
+}
+
+bool SatelliteSim::uiToggleRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, bool &v,
+                               const char *tip, const char *onText, const char *offText)
+{
+    bool changed = false;
+    CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x30000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT((float)fs(20) + 6.0f)},
+                                                                        .padding = {2, 2, 2, 2},
+                                                                        .childGap = 8,
+                                                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x40000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+        {
+            const bool h = Clay_Hovered();
+            if (tip)
+                ui.tooltip(inp, h, tip, fs(11));
+            CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+        }
+        const Clay_ElementId id = CLAY_SIDI(kitStr(key), (uint32_t)idx);
+        const bool hovPrev = uiHov_[id.id];
+        CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(40)), CLAY_SIZING_FIXED((float)fs(20))},
+                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                  .backgroundColor = v ? (hovPrev ? Pal::btnAccentHv : Pal::btnAccent) : (hovPrev ? Pal::btnHover : Pal::btnIdle),
+                  .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            const bool n = Clay_Hovered();
+            uiHovRoll(id.id, n);
+            sndClick(n, inp.lmbPressed);
+            if (tip)
+                ui.tooltip(inp, n, tip, fs(11));
+            if (n && inp.lmbPressed)
+            {
+                v = !v;
+                changed = true;
+            }
+            CLAY_TEXT(kitStr(v ? onText : offText), CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
+        }
+    }
+    return changed;
+}
+
+int SatelliteSim::uiChoiceRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label,
+                              const char *const *options, int count, int current, const char *tip)
+{
+    int picked = -1;
+    CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x30000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT((float)fs(20) + 6.0f)},
+                                                                        .padding = {2, 2, 2, 2},
+                                                                        .childGap = 4,
+                                                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x40000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+        {
+            const bool h = Clay_Hovered();
+            if (tip)
+                ui.tooltip(inp, h, tip, fs(11));
+            CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+        }
+        for (int i = 0; i < count; ++i)
+            if (uiButton(inp, ui, key, idx * 32 + i + 0x50000, options[i], nullptr, i == current) && i != current)
+                picked = i;
+    }
+    return picked;
+}
+
+// Text shown as a readout until clicked, then a text box (the time bar's clock, the coordinates): the readout keeps
+// its own formatting (units, a hemisphere letter), the box starts with `editText`.
+bool SatelliteSim::inlineTextField(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, const char *shown,
+                                   const std::string &editText, std::string &out, float width, float fontPx,
+                                   Clay_Color color, const char *tip)
+{
+    bool committed = false;
+    if (textEdit_.doneId == id.id)
+    {
+        out = textEdit_.doneBuf;
+        textEdit_.doneId = 0;
+        committed = true;
+    }
+    if (textEdit_.id == id.id)
+    {
+        // width <= 0: the box keeps the width the readout had (last frame's layout), so nothing beside it moves.
+        float w = width;
+        if (w <= 0.0f)
+        {
+            const Clay_ElementData d = Clay_GetElementData(id);
+            w = d.found ? d.boundingBox.width : (float)fs((int)fontPx) * 12.0f;
+        }
+        std::string v = editText;
+        textField(inp, ui, id, v, w, fontPx, nullptr, 96);
+        return committed;
+    }
+    const uint16_t f = fs((int)fontPx);
+    const bool hovPrev = Clay_PointerOver(id);
+    CLAY(id, {.layout = {.sizing = {width > 0.0f ? CLAY_SIZING_FIXED(width) : CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)f + 8.0f)},
+                         .padding = {4, 4, 0, 0},
+                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+              .backgroundColor = hovPrev ? Clay_Color{40, 40, 44, 230} : Clay_Color{0, 0, 0, 0},
+              .cornerRadius = CLAY_CORNER_RADIUS(3),
+              .border = {.color = hovPrev ? Clay_Color{90, 90, 96, 255} : Clay_Color{0, 0, 0, 0}, .width = CLAY_BORDER_ALL(1)}})
+    {
+        const bool hov = Clay_Hovered();
+        if (tip)
+            ui.tooltip(inp, hov, tip, fs(11));
+        const char *s = textFieldStr(shown);
+        CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}),
+                  CLAY_TEXT_CONFIG({.textColor = color, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        if (hov && inp.lmbPressed)
+        {
+            textEditFocus(id.id, editText);
+            textEdit_.drawn = textEdit_.hovered = true;
+        }
+    }
+    return committed;
 }
 
 // ─── Text fields (2026-10-03) ────────────────────────────────────────────────
@@ -4621,7 +4346,7 @@ const char *SatelliteSim::textFieldStr(const std::string &s)
 {
     // Clay keeps raw string pointers until the frame is recorded: each display string lives in a slot that is
     // not reused before the next buildUI.
-    char *b = textFieldBufs_[textFieldBufN_ % 64];
+    char *b = textFieldBufs_[textFieldBufN_ % 256];
     ++textFieldBufN_;
     snprintf(b, sizeof(textFieldBufs_[0]), "%s", s.c_str());
     return b;
@@ -6918,9 +6643,10 @@ void SatelliteSim::buildScreenshotToast(float dt, const UIInput &inp, UIRenderer
                                           .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                           .padding = {14, 14, 8, 8},
                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
-                                      .backgroundColor = {20, 60, 30, 235},
+                                      .backgroundColor = screenshotToastWarn ? Clay_Color{70, 45, 12, 235} : Clay_Color{20, 60, 30, 235},
                                       .cornerRadius = CLAY_CORNER_RADIUS(6),
-                                      .floating = {.offset = {0, -16}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_BOTTOM, .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM}, .attachTo = CLAY_ATTACH_TO_ROOT}})
+                                      // Above the bottom HUD panels (a long message at bottom centre ran into the right one).
+                                      .floating = {.offset = {0, -64}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_BOTTOM, .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
         CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
     }

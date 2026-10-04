@@ -1015,7 +1015,15 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                            std::clamp(cv2CuLobesTop, 0.0f, 1.0f));   // zw: review 22's cumulus lobes
     p.farTune = glm::vec4(std::clamp(cv2FarSlant, 0.0f, 4.0f), std::clamp(cv2FarCoverBias, -0.5f, 0.5f),
                           std::clamp(cv2FarDensity, 0.0f, 8.0f), std::clamp(cv2FarSoftness, 0.1f, 8.0f));
-    p.farTune2 = glm::vec4(std::clamp(cv2FarLowSun, 0.0f, 4.0f), 0.0f, 0.0f, 0.0f);
+    {
+        // The mid layer reads the morphology at 1.7x its frequency (clouds_v2.glsl). Scaling the shader's
+        // frac(anchor) by 1.7 jumped the pattern by 0.7 of a period whenever the observer crossed a period
+        // plane (an instant change of the Ac/As texture on moving ~1 km): reduce the scaled anchor here.
+        const double mp = (double)std::clamp(cv2MorphPeriodKm, 40.0f, 2000.0f) * 1000.0 / 1.7;
+        const glm::dvec3 a = (sea + windDir * ((double)cv2WindMps * 0.6 * simT)) / mp;
+        p.farTune2 = glm::vec4(std::clamp(cv2FarLowSun, 0.0f, 4.0f),
+                               (float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z));
+    }
     p.anchorCell = anchor(cv2CellPeriodM, 0.85);
     const double stormScale = std::clamp((double)cv2StormScale, 0.25, 16.0);
     p.anchorStorm = anchor(cv2ShapePeriodM * stormScale, 1.0);

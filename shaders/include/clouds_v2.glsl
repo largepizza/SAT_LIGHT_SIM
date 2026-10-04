@@ -114,7 +114,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  farLight;       // review 18: the far cloud layer's key-light and sky-light gains (cloud_v2_far.comp);
                           // zw review 22: "Cumulus lobes (bottom / top)", replacing form.x on convective types
     vec4  farTune;        // review 24: the far layer's x slant coverage, y coverage bias (field units), z density, w edge softness
-    vec4  farTune2;       // review 24: x the far layer's low-Sun light (0 = a flat slab's mu0), yzw unused
+    vec4  farTune2;       // review 24: x the far layer's low-Sun light (0 = a flat slab's mu0); yzw the mid layer's
+                          // morphology anchor, frac(anchor x 1.7) reduced on the CPU
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -976,9 +977,11 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     // (orbit)": from orbit the mid layer was the cluster Perlin's blotches.
     if (cv2.morph.x > 0.0) {
         vec3  wdM = cv2Drift(q.dirE), aw = abs(wdM);
-        vec3  aM  = cv2.anchorMorph.xyz + cv2Drift(q.seaProjE) * cv2.anchorMorph.w;
+        // At 1.7x the frequency, on its own anchor (farTune2.yzw): never scale an anchored coordinate by a
+        // non-integer — frac(a) x 1.7 jumps 0.7 of a period as the observer crosses a period plane.
+        vec3  aM  = cv2.farTune2.yzw + cv2Drift(q.seaProjE) * (cv2.anchorMorph.w * 1.7);
         vec2  uvM = (aw.x >= aw.y && aw.x >= aw.z) ? aM.yz : (aw.y >= aw.z ? aM.xz + vec2(0.37) : aM.xy + vec2(0.71));
-        float uM  = textureLod(cv2MorphTex, uvM * 1.7, cv2Lod(fpM, cv2.anchorMorph.w * 1.7) + 3.0).r;
+        float uM  = textureLod(cv2MorphTex, uvM, cv2Lod(fpM, cv2.anchorMorph.w * 1.7) + 3.0).r;
         clA = mix(cl.a, 0.5 + 0.057 * 2.6 * (uM - 0.5) * 1.2, cv2.morph.x * 0.75);
         uMid = uM;
     }

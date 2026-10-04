@@ -49,6 +49,7 @@ bool settingsTabIsAdvanced(int i);   // behind Display > "Show advanced settings
 
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <cstdint>
 #include <cstddef> // offsetof — GpuSatListHeader's layout asserts
 #include <cmath>
@@ -661,7 +662,7 @@ struct GpuCloudV2Params
     glm::vec4 morph;
     glm::vec4 farLight;    // review 18: the far cloud layer's key-light (x) and sky-light (y) gains
     glm::vec4 farTune;     // review 24: the far cloud layer's x slant coverage, y coverage bias, z density, w edge softness
-    glm::vec4 farTune2;    // review 24: x the far layer's low-Sun light, yzw unused
+    glm::vec4 farTune2;    // review 24: x the far layer's low-Sun light; yzw the mid layer's morphology anchor (frac(anchor x 1.7))
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -1922,10 +1923,12 @@ private:
     float traceMagTickFrac[kTraceMagTicks] = {};
     char traceMagTickBuf[kTraceMagTicks][8] = {};
     char traceTimeTickBuf[kTraceTimeTicks][12] = {};
-    char traceStatus[200] = {};     // export result, or why there is no trace
-    char traceSummary[112] = {};    // peak brightness, pass length
-    char traceNowLine[128] = {};    // current magnitude, rebuilt every frame the window is open
-    char traceNowDetail[64] = {};   // its elevation / phase, on a second short line (narrow window)
+    char traceStatus[200] = {};     // why there is no trace, or that the window is not a pass
+    // The pass's numbers (the window's PASS tiles): peak apparent magnitude (NAN = dark the whole pass), when
+    // and at what phase, the pass's length and highest elevation.
+    double tracePeakMag = NAN, tracePeakT = 0.0, tracePeakPhase = 0.0, traceMaxEl = 0.0;
+    int tracePassS = 0;
+    char traceTileBuf[8][32] = {};  // the tiles' values, formatted every frame the window is open
     char traceExportStatus[160] = {}; // last export result (kept across live retraces)
     // Live mode: retrace at up to kTraceLiveHz while the window is open, whenever the result would
     // differ — the observer moved, the selection changed, the pass ended, or a photometry input
@@ -1994,7 +1997,9 @@ private:
                                   // at viewerAltM above the observer
     float viewerAltM = 550000.0f; // altitude it is placed at
     char viewerTitle[96] = {};
-    char viewerInfo[160] = {};
+    // SATELLITE section: type, model id, size across, mesh (triangles, parts).
+    static constexpr int kViewerSatRows = 4;
+    char viewerSatValue[kViewerSatRows][64] = {};
     float viewerYawDeg = 35.0f, viewerPitchDeg = 18.0f;
     float viewerDist = 0.0f; // m from the model's centre; 0 = frame it on the next render
     // The render target's width / height: the projection's aspect, and what the two views crop.
@@ -2027,22 +2032,25 @@ private:
     // The info window's collapsible sections (buildInfoWindow). Satellite / Orbit / Photometry start
     // OPEN — those are what the window is for; the rest start collapsed. Open state is session-only,
     // like the Clouds tab's section state (buildCloudSliderSections), not a preference.
-    static constexpr int kInfoSectionCount = 7;
-    bool infoSectionOpen[kInfoSectionCount] = {true, true, true, false, false, false, false};
+    // 2026-10-03: SATELLITE, ORBIT, BRIGHTNESS, SKY POSITION, VIEW (camera + render), CHECK; the stat tiles over
+    // them carry the four numbers a player looks for first.
+    static constexpr int kInfoSectionCount = 6;
+    bool infoSectionOpen[kInfoSectionCount] = {true, true, false, false, false, false};
     bool hovInfoSection[kInfoSectionCount] = {};
     // ORBIT section rows: altitude, inclination, RAAN, period, then the flare-mitigation power readout
     // (only for types whose primary surface uses the tilt, so the count is usually 4).
     static constexpr int kViewerOrbitRows = 5;
     char viewerOrbitValue[kViewerOrbitRows][40] = {};
     int viewerOrbitCount = 0;
-    // OBSERVER section: where the viewed satellite is in the parked ground observer's sky.
-    // 0 = "In your sky" / "Below your horizon", 1 = elevation + azimuth, 2 = range.
-    static constexpr int kViewerObsLines = 3;
-    char viewerObsLine[kViewerObsLines][96] = {};
-    // PHOTOMETRY section: the CPU evaluator on the viewed satellite. 0 = phase, 1 = magnitude above the
-    // air, 2 = magnitude as seen (with the extinction it lost), 3 = the 1000 km figure or why not.
-    static constexpr int kViewerPhotLines = 4;
-    char viewerPhotLine[kViewerPhotLines][96] = {};
+    // SKY POSITION section: where the viewed satellite is in the parked ground observer's sky — visibility
+    // ("Above horizon" / "Below horizon"), elevation, azimuth, range. Empty = no satellite.
+    static constexpr int kViewerObsRows = 4;
+    char viewerObsValue[kViewerObsRows][40] = {};
+    // BRIGHTNESS section: the CPU evaluator on the viewed satellite — magnitude as seen (after extinction), above
+    // the air, the extinction, the 1000 km magnitude, the phase angle. "-" where it does not apply.
+    static constexpr int kViewerPhotRows = 5;
+    char viewerPhotValue[kViewerPhotRows][40] = {};
+    static const char *const kViewerPhotLabels[kViewerPhotRows];
     double viewerObsNextWall = 0.0;
     void updateViewerObserverInfo();
     // Select a satellite as a click on it does (clears a planet selection, refreshes its info).
@@ -2051,7 +2059,10 @@ private:
     // recordModelViewer). Requested by the button, recorded in recordCompute, read the next buildUI.
     bool viewerCheckRequested = false, viewerCheckAwaiting = false;
     double viewerCheckModelI = 0.0, viewerCheckTanHalf = 0.0, viewerCheckPhaseDeg = 0.0;
-    char viewerCheckLine[200] = {};
+    // CHECK section: the render and the model at 1000 km (sun only) and their difference; a note when the
+    // satellite is dark from that side.
+    char viewerCheckValue[3][40] = {};
+    char viewerCheckNote[96] = {};
     std::vector<bool> hovViewConst;
     // Viewer camera presets: 0 free orbit; 1 "from you" — on the line from the satellite toward the
     // observer, so the view is the satellite as you see it; 2 "toward you" — behind the satellite,
@@ -4179,6 +4190,7 @@ private:
     std::string screenshotPath; // full output path, built at request time
     float screenshotToastTimer = 0.0f;
     char screenshotToastText[160] = {};
+    bool screenshotToastWarn = false; // amber instead of green: a failure or input that was not understood
     bool snapshotKeyPending = false;   // KB_SAVE_SNAPSHOT: saved in buildUI, which has the frame's dt
     // PNG encoding (stbi_write_png) is genuinely slow in an unoptimized Debug build — easily
     // tens of seconds at 1080p+, which reads as "the game froze" since finalizeScreenshot() used
@@ -4437,9 +4449,99 @@ private:
                      const char *fmt, float width, float fontPx, Clay_Color color);
     bool numberFieldD(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, double &v, double vmin, double vmax,
                       const char *fmt, float width, float fontPx, Clay_Color color);
-    char textFieldBufs_[64][128] = {};     // per-frame display strings (Clay keeps raw pointers until record)
+    // Text shown as-is (a readout) that turns into a text box on click: true on commit, `out` = the typed text.
+    // `editText` is what the box starts with (the readout may carry units or a hemisphere letter).
+    bool inlineTextField(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, const char *shown, const std::string &editText,
+                         std::string &out, float width, float fontPx, Clay_Color color, const char *tip);
+    char textFieldBufs_[256][128] = {};    // per-frame display strings (Clay keeps raw pointers until record)
     int  textFieldBufN_ = 0;
     const char *textFieldStr(const std::string &s);
+
+    // ── UI kit (2026-10-03, SatelliteSimUI.cpp "UI kit") ───────────────────────────────────────────────────
+    // The blocks every window and settings tab is built from, in the Cinematics window's style: a section is a
+    // small-caps title over a 1-px rule; a readout is a label column and a value column; a stat tile is a label
+    // over a large value in a dark inset; toggles, choices and buttons are 20-px pills. Ids are hashed from
+    // (`key`, index), so a helper needs no hover member of its own: the previous frame's hover (for the rollover
+    // sound) lives in uiHov_.
+    void uiSection(const char *key, int idx, const char *title);
+    void uiKV(const char *key, int idx, const char *label, const char *value, float labelW = 0.0f,
+              const Clay_Color *valueColor = nullptr); // nullptr = Pal::volValue
+    void uiStatTile(const char *key, int idx, const char *label, const char *value, Clay_Color valueColor);
+    bool uiButton(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, const char *tip,
+                  bool on = false, bool enabled = true, bool grow = false);
+    bool uiToggleRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, bool &v,
+                     const char *tip = nullptr, const char *onText = "On", const char *offText = "Off");
+    int  uiChoiceRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label,
+                     const char *const *options, int count, int current, const char *tip = nullptr);
+    bool uiHovRoll(uint32_t id, bool nowHov);   // rollover sound + the hover memory; returns nowHov
+    std::unordered_map<uint32_t, bool> uiHov_;
+    char uiKitBufs_[160][96] = {};              // per-frame strings the kit formats (labels with suffixes)
+    int  uiKitBufN_ = 0;
+    const char *uiKitStr(const char *fmt, ...);
+
+    // ── Bookmarks (2026-10-03, SatelliteSimBookmarks.cpp) ──────────────────────────────────────────────────
+    // A place at a moment: the observer (ECEF direction + height), the camera, the sim time and the cloud map's
+    // drift (session state, like a snapshot's view: without it a storm bookmark frames clear sky), with a
+    // thumbnail of the clean frame. Stored in <user data>/bookmarks/bookmarks.json + <id>.png. Thumbnails live in
+    // one 2048x2048 SRGB atlas (kBmThumbW x kBmThumbH cells), drawn through a single UIImage id with sub-rects.
+    static constexpr int kBmThumbW = 256, kBmThumbH = 144, kBmAtlasW = 2048, kBmAtlasH = 2048;
+    static constexpr int kBmMax = (kBmAtlasW / kBmThumbW) * (kBmAtlasH / kBmThumbH); // 8 x 14 = 112
+    struct Bookmark
+    {
+        std::string id, name;
+        double simT = 0.0;
+        glm::dvec3 obsDir{0.0, 0.0, 1.0};
+        float heightM = 0.0f, az = 0.0f, el = 0.0f, fov = 60.0f;
+        double driftPhase = 0.0;
+        float driftRate = 0.0f;
+        bool hasDrift = false;
+        int slot = -1;           // atlas cell, -1 = no thumbnail yet
+        bool thumbTried = false; // its PNG was looked for (loaded lazily, a few per frame)
+        UIImage img;             // the thumbnail's sub-rect (Clay keeps a pointer: lives in the vector)
+        char meta[2][64] = {};   // "2036-11-22 02:06 UTC", "34.05 N 118.24 W  1.2 km"
+    };
+    std::vector<Bookmark> bookmarks_;
+    bool bookmarksLoaded_ = false;
+    WindowChrome bmChrome;
+    bool hovBmClose = false, hovTimeBookmark = false;
+    std::string bmNewName_;               // the name field beside "Add" (empty = "Bookmark N")
+    std::string bmCaptureFor_;            // the bookmark the screenshot copy in flight is for (finalizeScreenshot)
+    std::string bmPendingThumb_;          // a bookmark whose thumbnail the next clean frame provides
+    int bmPendingDelay_ = 0;              // frames to wait before capturing it (a Go settles first)
+    std::vector<uint8_t> bmThumbPixels_;  // the captured thumbnail (RGBA, kBmThumbW x kBmThumbH), uploaded in buildUI
+    std::string bmThumbPixelsFor_;
+    std::string bmDeleteArmed_, bmStatus_;
+    int bmDeletePending_ = -1;            // the window's Delete / Add, applied by the next bookmarkTick (before any
+    bool bmAddPending_ = false;           // layout: Clay keeps pointers into bookmarks_ until the frame is recorded)
+    // The atlas: one image, registered once with the UI.
+    VkImage bmAtlasImg = VK_NULL_HANDLE;
+    VkDeviceMemory bmAtlasMem = VK_NULL_HANDLE;
+    VkImageView bmAtlasView = VK_NULL_HANDLE;
+    VkSampler bmAtlasSampler = VK_NULL_HANDLE;
+    uint32_t bmAtlasUiId = 0;
+    std::string bookmarkDir() const;
+    void bookmarksLoad();
+    void bookmarksSave();
+    int  bookmarkAdd(const std::string &name);           // the current view; returns its index
+    void bookmarkUpdate(int i);                          // replace a bookmark's view (and thumbnail) with the current one
+    void bookmarkGo(int i);
+    void bookmarkDelete(int i);
+    void bookmarkFormatMeta(Bookmark &b) const;
+    void bookmarkRequestThumb(const std::string &id, int delayFrames = 0);
+    void bookmarkCaptureThumb(const std::vector<uint8_t> &rgba, uint32_t w, uint32_t h); // finalizeScreenshot
+    void bookmarkTick(UIRenderer &ui);                   // buildUI: thumbnail requests and uploads
+    bool bookmarkEnsureAtlas(UIRenderer &ui);
+    void bookmarkUploadThumb(int slot, const uint8_t *rgba);
+    void bookmarkLoadThumb(Bookmark &b);
+    int  bookmarkFreeSlot() const;
+    void bookmarksDestroy(VkDevice device);
+    void buildBookmarksWindow(const UIInput &inp, UIRenderer &ui);
+
+    // ── HUD text entry (2026-10-03): the time bar's UTC clock, latitude, longitude and altitude ────────────
+    bool setSimTimeFromText(const std::string &text);    // "2036-11-22 02:06", "02:06:30" (today), ISO; false = unparsed
+    bool setLatLonFromText(const std::string &text, bool isLat); // "34.05", "34.05 S", "34.05, -118.24"
+    bool setAltitudeFromText(const std::string &text);   // in the HUD's unit (km / mi), or with m/km/ft/mi
+    void setObserverLatLon(double latDeg, double lonDeg);
 
     // ── ECI → ENU rotation (updated each frame in updatePositions) ────────────
     // Encodes the surface-fixed observer's local frame in ECI coordinates.
@@ -4654,7 +4756,7 @@ private:
     bool hovOpenControlsWindow = false; // Controls tab's "Open Controls Reference" button
     bool hovInvertMouseX = false, hovInvertMouseY = false; // Controls tab look-invert toggles
     bool hovInvertPadX = false, hovInvertPadY = false;
-    bool hovTab[14] = {}; // one per settings-window tab (kSettingsTabNames)
+    bool hovTab[15] = {}; // one per settings-window tab (kSettingsTabNames: kSettingsTabCount)
     bool hovScaleMinus = false;
     bool hovScalePlus = false;
     bool hovRenderScaleMinus = false;
@@ -4961,8 +5063,8 @@ private:
     void buildSettingsConstellationsTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui);
-    void buildSettingsCameraTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsPerformanceTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui);
@@ -5036,7 +5138,7 @@ private:
     float tutLastAz = 0.0f, tutLastEl = 0.0f;
     // The state a step started from (Time / Capture / Settings / Actions finish on a CHANGE of it).
     int tutBaseTimeIdx = 0;
-    bool tutBasePaused = false, tutBaseReverse = false, tutBaseTrails = false, tutBaseCine = false;
+    bool tutBasePaused = false, tutBaseReverse = false, tutBaseTrails = false, tutBaseCine = false, tutBaseBookmarks = false;
     bool tutBaseSettings = false, tutBaseAction = false;
     char tutKeyLabel[3][16] = {};   // rebindable keycap labels (keyDisplayName's letters rotate through a pool)
     bool hovTutNext = false, hovTutBack = false, hovTutSkip = false, hovReplayTutorial = false;

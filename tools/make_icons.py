@@ -90,6 +90,11 @@ def seg(x0, y0, x1, y1, half):
     return hit
 
 
+def cut(fill, *holes):
+    """`fill` with `holes` punched out (transparent): detail on a solid silhouette."""
+    return lambda px, py: fill(px, py) and not any(h(px, py) for h in holes)
+
+
 def rect(x0, y0, x1, y1):
     return lambda px, py: x0 <= px <= x1 and y0 <= py <= y1
 
@@ -112,63 +117,67 @@ def tri(p0, p1, p2):
 # The icons (name -> shapes). Index order lives in SatelliteSimUI.cpp's kIcon* constants.
 # ─────────────────────────────────────────────────────────────────────────────
 def build_maximize():
-    """Two diagonal arrows with a centre gap: pop the 3D view out / restore it.
+    """Pop the 3D view out / restore it: four solid corner brackets (the "expand" glyph).
 
-    The barbs are two strokes at 90 degrees (the classic corner arrowhead) rather than the filled
-    triangle `arrow()` makes — at 16 px that triangle merged with the shaft into one blob."""
-    return [
-        seg(22, 26, 10, 38, 2.6), seg(10, 38, 10, 30, 2.6), seg(10, 38, 18, 38, 2.6),
-        seg(26, 22, 38, 10, 2.6), seg(38, 10, 38, 18, 2.6), seg(38, 10, 30, 10, 2.6),
-    ]
+    Filled since 2026-10-03, like the gear and the camera: the first cut was two thin diagonal
+    arrows, which read as a different icon family from everything else in the HUD."""
+    t, leg = 5.0, 14.0
+    shapes = []
+    for (cx, sx) in ((5.0, 1.0), (43.0, -1.0)):
+        for (cy, sy) in ((5.0, 1.0), (43.0, -1.0)):
+            xa, xb = sorted((cx, cx + sx * leg))
+            ya, yb = sorted((cy, cy + sy * t))
+            shapes.append(rect(xa, ya, xb, yb))                          # horizontal leg
+            xa, xb = sorted((cx, cx + sx * t))
+            ya, yb = sorted((cy, cy + sy * leg))
+            shapes.append(rect(xa, ya, xb, yb))                          # vertical leg
+    return shapes
 
 
 def build_observer():
-    """The view from the ground observer: horizon arc, sight line, satellite.
+    """The view from the ground observer: a telescope on its tripod, aimed up the sky.
 
-    There was an eye above the arc first, which read as a generic "eye" — the same idea as the Go
-    to icon two buttons away — and at 16 px was a smudge under the arc. Ground -> up -> satellite
-    is what the preset actually does. The star is deliberately the biggest element (r 6.5): at 16 px
-    anything smaller box-filters away to a dot and the glyph loses its subject."""
+    The code's "observer" is the parked ground telescope, so that is the glyph (2026-10-03). The
+    first two cuts (an eye over a horizon arc, then a hill with a sight arrow) read as the Go to icon
+    or as nothing at button size."""
     return [
-        parabola(24.0, 37.5, 16.0, 5.0, 2.0),            # the horizon
-        *arrow(16.5, 33.5, 28.5, 19.5, 2.0, 5.5, 3.6),   # the sight line (shaft + head)
-        sparkle(36.5, 10.0, 6.5),                        # the satellite
+        seg(10.0, 30.0, 30.0, 17.0, 4.0),        # the tube
+        seg(27.0, 19.0, 33.0, 15.0, 6.0),        # its wider objective end
+        seg(21.0, 26.0, 13.0, 43.0, 2.0),        # tripod legs
+        seg(21.0, 26.0, 29.0, 43.0, 2.0),
+        seg(21.0, 26.0, 21.0, 43.0, 2.0),
     ]
 
 
 def build_spin():
-    """Rotate / idle spin: a 3/4 ring with a chunky tangential arrowhead at its open end."""
-    cx, cy, r = 24.0, 24.0, 12.5
-    a_head = math.radians(300.0)
+    """Rotate / idle spin: a thick 3/4 ring with a big tangential arrowhead at its open end."""
+    cx, cy, r = 24.0, 25.0, 12.5
+    a_head = math.radians(290.0)
     px, py = cx + r * math.cos(a_head), cy + r * math.sin(a_head)
     tx, ty = math.cos(a_head + math.pi / 2), math.sin(a_head + math.pi / 2)  # clockwise tangent
     nx, ny = math.cos(a_head), math.sin(a_head)                              # radial
     return [
-        arc(cx, cy, r, 2.2, 20.0, 300.0),  # the ring, with a gap at the 1-3 o'clock wedge
-        tri((px + 6.5 * tx, py + 6.5 * ty),
-            (px + 4.6 * nx, py + 4.6 * ny),
-            (px - 4.6 * nx, py - 4.6 * ny)),
+        arc(cx, cy, r, 3.5, 35.0, 292.0),     # the ring, open at the 1-2 o'clock wedge
+        tri((px + 12.0 * tx, py + 12.0 * ty),
+            (px + 9.5 * nx, py + 9.5 * ny),
+            (px - 9.5 * nx, py - 9.5 * ny)),
     ]
 
 
 def build_studio():
-    """Studio lighting: a bulb with light lines coming off it (against the live sky).
-
-    The diagonal rays start clear of the bulb (13.5 rather than 12.5): further in and they merge
-    with the bulb's top into one flower-shaped blob at button size."""
+    """Studio lighting: a solid bulb with its screw base, and light rays over it (against the live sky)."""
     cx, cy = 24.0, 22.0
     shapes = [
-        # Bulb: a ring open only where the neck joins, so it reads as a round bulb, not a ring.
-        lambda px, py: abs(math.hypot(px - cx, py - cy) - 9.2) <= 2.5 and py <= 26.5,
-        rect(20.5, 24.5, 27.5, 29.5),  # neck
-        rect(19.0, 31.0, 29.0, 34.0),  # screw
-        rect(21.0, 35.5, 27.0, 38.0),  # base tip
+        disc(cx, cy, 10.5),
+        tri((15.0, 27.0), (33.0, 27.0), (24.0, 36.0)),   # the bulb's taper into the neck
+        rect(18.0, 30.0, 30.0, 33.0),                    # screw bands, a gap between them
+        rect(18.0, 35.0, 30.0, 38.0),
+        rect(21.0, 39.0, 27.0, 42.0),                    # base tip
     ]
-    for ang, r0, r1 in ((90.0, 13.5, 17.5), (45.0, 13.5, 18.5), (135.0, 13.5, 18.5),
-                        (0.0, 12.5, 17.5), (180.0, 12.5, 17.5)):
+    for ang in (180.0, 225.0, 270.0, 315.0, 0.0):        # y down: 270 = straight up
         a = math.radians(ang)
         dx, dy = math.cos(a), math.sin(a)
-        shapes.append(seg(cx + dx * r0, cy + dy * r0, cx + dx * r1, cy + dy * r1, 1.7))
+        shapes.append(seg(cx + dx * 14.5, cy + dy * 14.5, cx + dx * 20.0, cy + dy * 20.0, 2.2))
     return shapes
 
 
@@ -188,41 +197,45 @@ def build_track():
 
 
 def build_photo():
-    """HQ photo: a camera body (outline, lens ring) with a sparkle at its top right — the "quality"
-    mark that keeps it apart from the plain screenshot camera (camera-solid.png) beside it."""
-    def body(px, py):
-        inside = 6.0 <= px <= 36.0 and 16.0 <= py <= 38.0
-        inner = 9.0 <= px <= 33.0 and 19.0 <= py <= 35.0
-        return inside and not inner
+    """HQ photo: a solid camera (the screenshot icon's family: lens punched out, a dot inside) with a
+    sparkle at its top right — the "quality" mark that keeps it apart from camera-solid.png beside it."""
+    body = rect(4.0, 17.0, 36.0, 41.0)
+    hump = rect(10.0, 12.0, 22.0, 17.0)
+    lens_hole = disc(20.0, 29.0, 8.0)
     return [
-        body,
-        rect(13.0, 11.5, 22.0, 16.5),          # viewfinder hump
-        ring(21.0, 27.0, 5.0, 2.0),            # lens
-        sparkle(39.5, 11.0, 7.5),              # the "HQ" sparkle
+        cut(lambda px, py: body(px, py) or hump(px, py), lens_hole),
+        disc(20.0, 29.0, 4.5),                 # the lens
+        sparkle(40.0, 9.5, 8.5, 0.8),         # the "HQ" sparkle (0.8: fat enough for the pixel grid)
     ]
 
 
 def build_film():
-    """Cinematics: a film-strip frame (outline with sprocket holes down both edges) holding a play
-    triangle — the camera-path editor's button in the time bar (review 17)."""
-    def strip(px, py):
-        inside = 6.0 <= px <= 42.0 and 8.0 <= py <= 40.0
-        inner = 13.0 <= px <= 35.0 and 11.0 <= py <= 37.0
-        if not inside or inner:
+    """Cinematics: a clapperboard — a solid slate with a play triangle punched out, under a striped
+    clapper arm — the camera-path editor's button (review 17; filled since 2026-10-03)."""
+    def arm(px, py):
+        if not (6.0 <= px <= 42.0 and 9.0 <= py <= 16.0):
             return False
-        # sprocket holes punched in the two side bands
-        if (7.5 <= px <= 11.5 or 36.5 <= px <= 40.5):
-            for cy in (13.0, 20.0, 27.0, 34.0):
-                if abs(py - cy) <= 1.6:
-                    return False
-        return True
-    def play(px, py):
-        # triangle pointing right, centred in the frame
-        return 19.0 <= px <= 30.0 and abs(py - 24.0) <= (30.0 - px) * 0.62
-    return [strip, play]
+        return (px + (py - 9.0)) % 10.0 >= 4.0   # slanted stripes cut through it
+    slate = rect(6.0, 19.0, 42.0, 41.0)
+    play = tri((19.0, 24.0), (19.0, 36.0), (31.0, 30.0))
+    return [arm, cut(slate, play)]
+
+
+def build_bookmark():
+    """Bookmarks: a solid ribbon bookmark (notched tail) with a star punched out of it — a saved place
+    at a moment, the Bookmarks window (2026-10-03)."""
+    def ribbon(px, py):
+        x0, x1, top, bot, notch = 11.0, 37.0, 5.0, 43.0, 32.0
+        if not (x0 <= px <= x1 and top <= py <= bot):
+            return False
+        half = (x1 - x0) * 0.5
+        cutline = bot - (bot - notch) * (1.0 - abs(px - 24.0) / half)  # the V notch in the tail
+        return py <= cutline
+    return [cut(ribbon, sparkle(24.0, 18.0, 8.0, 0.8))]
 
 
 ICONS = {
+    "bookmark": build_bookmark,
     "film": build_film,
     "photo": build_photo,
     "maximize": build_maximize,
@@ -231,6 +244,11 @@ ICONS = {
     "studio": build_studio,
     "track": build_track,
 }
+
+# Drawn in the HUD's "pixel" style: solid silhouettes with hard edges on a 24-px grid, doubled to 48 —
+# the look of the gear, the camera, play / pause, the crosshair and the eye. Soft-edged thin strokes
+# beside them read as another icon family (the user, 2026-10-03).
+PIXEL_STYLE = {"bookmark", "film", "photo", "maximize", "observer", "spin", "studio"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -253,6 +271,26 @@ def rasterise(shapes) -> list[list[int]]:
             row.append(round(255 * hits / total))
         out.append(row)
     return out
+
+
+def rasterise_pixel(shapes, grid=24, sub=4) -> list[list[int]]:
+    """Hard-edged: each grid cell is on when at least half of it is covered, then doubled up to SIZE."""
+    cell = SIZE / grid
+    on = []
+    for gy in range(grid):
+        row = []
+        for gx in range(grid):
+            hits = 0
+            for sy in range(sub):
+                for sx in range(sub):
+                    px = (gx + (sx + 0.5) / sub) * cell
+                    py = (gy + (sy + 0.5) / sub) * cell
+                    if any(s(px, py) for s in shapes):
+                        hits += 1
+            row.append(hits * 2 >= sub * sub)
+        on.append(row)
+    k = SIZE // grid
+    return [[255 if on[y // k][x // k] else 0 for x in range(SIZE)] for y in range(SIZE)]
 
 
 def preview(pixels: list[list[int]]) -> str:
@@ -278,7 +316,8 @@ def main(argv: list[str]) -> int:
         if name not in ICONS:
             print(f"unknown icon '{name}' (known: {', '.join(sorted(ICONS))})", file=sys.stderr)
             return 2
-        pixels = rasterise(ICONS[name]())
+        shapes = ICONS[name]()
+        pixels = rasterise_pixel(shapes) if name in PIXEL_STYLE else rasterise(shapes)
         out = OUT_DIR / f"pixel--{name}.png"
         write_png(out, pixels)
         print(f"=== pixel--{name}.png ({out.stat().st_size} bytes) ===")

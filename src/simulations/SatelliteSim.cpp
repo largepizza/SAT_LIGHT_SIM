@@ -1303,6 +1303,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         std::lock_guard<std::mutex> lock(screenshotResultMutex);
         snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", screenshotResultText.c_str());
         screenshotToastTimer = 4.0f;
+        screenshotToastWarn = screenshotResultText.rfind("Saved", 0) != 0;
     }
 
     // ── WASD surface navigation ───────────────────────────────────────────────
@@ -3481,11 +3482,13 @@ void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM, i
     else
         snprintf(viewerTitle, sizeof(viewerTitle), "%s", label);
     const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(typeIdx);
-    snprintf(viewerInfo, sizeof(viewerInfo), "%s  -  %s, %d triangles, %zu parts, %.1f m across", t.name.c_str(),
-             t.modelId.c_str(), tm->triangles, t.model ? t.model->components.size() : (size_t)0,
-             2.0f * tm->boundsRadius);
+    snprintf(viewerSatValue[0], sizeof(viewerSatValue[0]), "%s", t.name.c_str());
+    snprintf(viewerSatValue[1], sizeof(viewerSatValue[1]), "%s", t.modelId.c_str());
+    snprintf(viewerSatValue[2], sizeof(viewerSatValue[2]), "%.1f m", 2.0f * tm->boundsRadius);
+    snprintf(viewerSatValue[3], sizeof(viewerSatValue[3]), "%d triangles, %zu parts", tm->triangles,
+             t.model ? t.model->components.size() : (size_t)0);
     viewerObsNextWall = 0.0; // refresh the readouts now
-    viewerCheckLine[0] = '\0';
+    viewerCheckValue[0][0] = viewerCheckValue[1][0] = viewerCheckValue[2][0] = viewerCheckNote[0] = '\0';
     viewerCheckAwaiting = viewerCheckRequested = false;
     infoChrome.open = true;             // the satellite window
     if (popOut)
@@ -3506,21 +3509,21 @@ void SatelliteSim::selectSatellite(int idx)
 // the flare-mitigation power — the rows the selection panel used to carry), the OBSERVER lines (where
 // it is in the parked ground observer's sky) and the PHOTOMETRY lines (phase, brightness above the air
 // and after the line of sight's extinction).
+const char *const SatelliteSim::kViewerPhotLabels[SatelliteSim::kViewerPhotRows] = {
+    "Magnitude", "Above the air", "Extinction", "At 1000 km", "Phase angle"};
+
 void SatelliteSim::updateViewerObserverInfo()
 {
-    for (auto &l : viewerObsLine)
+    for (auto &l : viewerObsValue)
         l[0] = '\0';
-    for (auto &l : viewerPhotLine)
-        l[0] = '\0';
+    for (auto &l : viewerPhotValue)
+        snprintf(l, sizeof(l), "-");
     for (auto &v : viewerOrbitValue)
         v[0] = '\0';
     viewerOrbitCount = 0;
     viewerFlarePerI = 0.0;
     if (viewerSatIndex < 0 || viewerSatIndex >= (int)satOrbits.size())
-    {
-        snprintf(viewerObsLine[0], sizeof(viewerObsLine[0]), "No satellite tracked");
         return;
-    }
     const SatOrbit &orb = satOrbits[viewerSatIndex];
     if (orb.typeIdx >= satTypes.size())
         return;
@@ -3585,24 +3588,26 @@ void SatelliteSim::updateViewerObserverInfo()
     const double b = glm::dot(obs, d), c = glm::dot(obs, obs) - (double)kEarthRadius * kEarthRadius;
     const double disc = b * b - c;
     const bool hidden = disc > 0.0 && -b - std::sqrt(disc) > 0.0 && -b - std::sqrt(disc) < range;
-    // OBSERVER: the ground observer's sky. The window is ~450 px wide, so these can be full phrases.
-    snprintf(viewerObsLine[0], sizeof(viewerObsLine[0]), hidden ? "Below your horizon" : "In your sky");
-    snprintf(viewerObsLine[1], sizeof(viewerObsLine[1]), "Elevation %.1f deg, azimuth %.0f deg", elDeg, azDeg);
-    snprintf(viewerObsLine[2], sizeof(viewerObsLine[2]), "Range %.0f km", range / 1000.0);
-    // PHOTOMETRY: what the observer sees, from the same evaluator the selection panel's magnitude uses.
-    snprintf(viewerPhotLine[0], sizeof(viewerPhotLine[0]), "Phase %.0f deg", glm::degrees(r.phaseAngleRad));
+    // SKY POSITION: the ground observer's sky.
+    snprintf(viewerObsValue[0], sizeof(viewerObsValue[0]), hidden ? "Below horizon" : "Above horizon");
+    snprintf(viewerObsValue[1], sizeof(viewerObsValue[1]), "%.1f deg", elDeg);
+    snprintf(viewerObsValue[2], sizeof(viewerObsValue[2]), "%.0f deg", azDeg);
+    snprintf(viewerObsValue[3], sizeof(viewerObsValue[3]), "%.0f km", range / 1000.0);
+    // BRIGHTNESS: what the observer sees, from the same evaluator the selection panel's magnitude uses.
+    snprintf(viewerPhotValue[4], sizeof(viewerPhotValue[4]), "%.0f deg", glm::degrees(r.phaseAngleRad));
     if (!r.supported)
     {
-        snprintf(viewerPhotLine[1], sizeof(viewerPhotLine[1]), "Mag: n/a (ground-site aim)");
+        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "n/a (ground-site aim)");
         return;
     }
+    if (std::isfinite(r.magnitude1000))
+        snprintf(viewerPhotValue[3], sizeof(viewerPhotValue[3]), "%.2f", r.magnitude1000);
     if (!std::isfinite(r.magnitude))
     {
-        snprintf(viewerPhotLine[1], sizeof(viewerPhotLine[1]), "Dark: in Earth's shadow");
-        snprintf(viewerPhotLine[3], sizeof(viewerPhotLine[3]), "1000 km: %.2f", r.magnitude1000);
+        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "In Earth's shadow");
         return;
     }
-    snprintf(viewerPhotLine[1], sizeof(viewerPhotLine[1]), "Mag %.2f above the air", r.magnitude);
+    snprintf(viewerPhotValue[1], sizeof(viewerPhotValue[1]), "%.2f", r.magnitude);
     // The viewer's glare (recordViewerGlare): effectFlare per unit of intensity per unit irradiance as
     // the ground observer receives it — sat_orbit.comp's K_FLUX·I/r²·brightnessScale, dimmed by the line
     // of sight's extinction. Below the horizon, above the air (the glints are still the ones that would
@@ -3612,10 +3617,11 @@ void SatelliteSim::updateViewerObserverInfo()
     {
         const double ext = atmExtinctionMag(obs, d, range, (double)extinctionCoeff);
         viewerFlarePerI *= std::pow(10.0, -0.4 * ext);
-        snprintf(viewerPhotLine[2], sizeof(viewerPhotLine[2]), "Mag %.2f as you see it (ext %.2f)",
-                 r.magnitude + ext, ext);
+        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "%.2f", r.magnitude + ext);
+        snprintf(viewerPhotValue[2], sizeof(viewerPhotValue[2]), "%.2f mag", ext);
     }
-    snprintf(viewerPhotLine[3], sizeof(viewerPhotLine[3]), "1000 km: %.2f", r.magnitude1000);
+    else
+        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "Below horizon");
 }
 
 int SatelliteSim::pickViewerSatellite(int constIdx) const
@@ -5330,7 +5336,7 @@ SatOrbitElems SatelliteSim::orbitElemsOf(const SatOrbit &orb) const
 
 // ─── Magnitude trace (benchmarking M9) ───────────────────────────────────────
 // Sim clock → "HH:MM:SS" UTC (the clock the time panel shows).
-static void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate)
+void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate) // also SatelliteSimUI.cpp
 {
     time_t unixSim = (time_t)std::floor(tJ2000) + 946728000;
     struct tm *utc = gmtime(&unixSim);
@@ -5399,21 +5405,28 @@ void SatelliteSim::computeSelectedTrace()
         traceExportStatus[0] = '\0'; // a different satellite: the last export message no longer applies
     traceValid = false;
     traceRows.clear();
-    traceStatus[0] = traceSummary[0] = traceNowLine[0] = traceNowDetail[0] = '\0';
+    traceStatus[0] = '\0';
+    tracePeakMag = NAN;
+    tracePassS = 0;
     traceMagTickCount = 0;
     tracePlot.seriesCount = 0;
     traceChrome.open = true;
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
     {
-        snprintf(traceTitle, sizeof(traceTitle), "no satellite selected");
-        snprintf(traceStatus, sizeof(traceStatus), "Select a satellite, then press Retrace.");
+        snprintf(traceTitle, sizeof(traceTitle), "no satellite");
+        snprintf(traceStatus, sizeof(traceStatus), "Select a satellite, then Retrace");
         return;
     }
     const SatOrbit &orb = satOrbits[selectedSatIndex];
     if (orb.typeIdx >= satTypes.size())
         return;
     const SatelliteType &type = satTypes[orb.typeIdx];
-    snprintf(traceTitle, sizeof(traceTitle), "%s  #%d", type.name.c_str(), selectedSatIndex);
+    // Named as the selection panel and the info window name it: constellation + its number within it.
+    if (orb.constIdx < constellations.size())
+        snprintf(traceTitle, sizeof(traceTitle), "%s #%d", constellations[orb.constIdx].name.c_str(),
+                 selectedSatIndex - (int)constellations[orb.constIdx].orbitStart);
+    else
+        snprintf(traceTitle, sizeof(traceTitle), "%s #%d", type.name.c_str(), selectedSatIndex);
     if (const char *why = photometryUnsupportedReason(type))
     {
         snprintf(traceStatus, sizeof(traceStatus), "Can't trace: %s", why);
@@ -5473,23 +5486,20 @@ void SatelliteSim::computeSelectedTrace()
                        sizeof(traceTimeTickBuf[i]), false);
     const int passS = (int)std::lround(traceT1 - traceT0);
     if (!tracePassFound)
-        snprintf(traceStatus, sizeof(traceStatus),
-                 "No pass above your horizon within two orbits; showing 10 minutes either side of now.");
+        snprintf(traceStatus, sizeof(traceStatus), "No pass within two orbits: 10 minutes either side of now");
+    tracePassS = passS;
+    traceMaxEl = maxEl;
     if (!std::isfinite(bright))
     {
-        snprintf(traceSummary, sizeof(traceSummary),
-                 tracePassFound ? "In Earth's shadow for the whole pass (%dm %02ds, max el %.0f deg)"
-                                : "Nothing to plot (%dm %02ds window, max el %.0f deg)",
-                 passS / 60, passS % 60, maxEl);
+        tracePeakMag = NAN; // dark (in Earth's shadow) for the whole window
         bright = 0.0;
         faint = 10.0;
     }
     else
     {
-        char peakBuf[16];
-        formatSimClock(peakT, peakBuf, sizeof(peakBuf), false);
-        snprintf(traceSummary, sizeof(traceSummary), "Peak mag %.2f at %s, phase %.0f deg; pass %dm %02ds, max el %.0f deg",
-                 peak, peakBuf, peakPhase, passS / 60, passS % 60, maxEl);
+        tracePeakMag = peak;
+        tracePeakT = peakT;
+        tracePeakPhase = peakPhase;
     }
     traceMagBright = (float)std::floor(bright);
     traceMagFaint = std::max((float)std::ceil(faint), traceMagBright + 2.0f);
@@ -6317,6 +6327,7 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyPipeline(device, skyBgLitePipeline, nullptr);
     destroySkyLowResResources(device);
     destroySkyTaaResources(device);
+    bookmarksDestroy(device); // the bookmark thumbnails' atlas (SatelliteSimBookmarks.cpp)
     vkDestroyPipeline(device, drawPipeline, nullptr);
     vkDestroyPipelineLayout(device, compPipeLayout, nullptr);
     vkDestroyPipelineLayout(device, skyBgPipeLayout, nullptr);
@@ -7065,6 +7076,7 @@ void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx,
         snprintf(screenshotToastText, sizeof(screenshotToastText),
                  "Screenshot not supported (GPU/driver lacks swapchain TRANSFER_SRC).");
         screenshotToastTimer = 4.0f;
+        screenshotToastWarn = true;
         return;
     }
 
@@ -7206,6 +7218,16 @@ void SatelliteSim::finalizeScreenshot()
         if (isBgra)
             std::swap(pixels[i * 4 + 0], pixels[i * 4 + 2]);
         pixels[i * 4 + 3] = 255;
+    }
+    // A bookmark's thumbnail (SatelliteSimBookmarks.cpp): this frame was asked for by bookmarkTick, not as a
+    // screenshot — hand it over and write nothing.
+    if (!bmCaptureFor_.empty())
+    {
+        bookmarkCaptureThumb(pixels, screenshotW, screenshotH);
+        screenshotCrop[0] = screenshotCrop[1] = screenshotCrop[2] = screenshotCrop[3] = 0;
+        screenshotScale = 1.0f;
+        screenshotIncludeUI = false;
+        return;
     }
 
     // Harness captures (docs/HARNESS.md): crop, then rescale — down by a box filter (a thumbnail
@@ -7375,6 +7397,7 @@ void SatelliteSim::requestPhoto()
     {
         snprintf(screenshotToastText, sizeof(screenshotToastText), "HQ photo not supported on this GPU/driver.");
         screenshotToastTimer = 4.0f;
+        screenshotToastWarn = true;
         return;
     }
     const float s = std::clamp(std::round(photoScaleSetting), 1.0f, 4.0f);

@@ -108,7 +108,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `track [on\|off]` | the selection panel's **Track** button: lock the camera onto the selected satellite and re-aim every frame (the observer stays put, so WASD still walks, and the wheel's `camera fov=` zoom is untouched). No argument = toggle; needs a satellite selection. Released by `select none`, `select planet`, `follow` and any explicit aim (`camera az=`/`el=`, `camera look`, `camera track`, a scripted camera key). `state` reports it as `camera.tracking` and `selection.track`. Not to be confused with `camera track <target>`, which is the harness's own aim-every-frame |
 | `viewer [aim=free\|observer\|toward\|sun] [light=live\|studio] [glare=on\|off] [shadows=on\|off] [dist=<radii>]` | the 3D view's own controls, for a `ui open viewer` / `ui open info` capture: `aim=observer` is the Observer chip (the satellite from the ground observer's direction), `aim=sun` (harness only) looks from the Sun's side, where a Sun-facing array glints; `dist` is in model radii. `glare=on` (the default) draws the main view's glare on the glints that make the flare the observer sees (Live light and a tracked satellite only). Reports `flare_per_i` (the observer's effectFlare per unit intensity; 0 = no glare), `glints_last_frame` (the previous frame's glint list: `wait` a frame after a change) and the PHOTOMETRY lines |
 | `const list`, `const "<name>"\|all on\|off [highlight=on\|off]` | constellation visibility |
-| `expect <key\|cine.<path>> <value> [tol=1e-4]` | fails the run unless the setting (or the open cinematic's JSON, `cine.name`, `cine.shots.0.keys.1.t`) equals the value (numbers within tol, relative past 1) |
+| `expect <key\|cine.<path>\|state.<path>> <value> [tol=1e-4]` | fails the run unless the setting (or the open cinematic's JSON, `cine.name`, `cine.shots.0.keys.1.t`, or the `state` JSON, `state.observer.lat_deg`, `state.time.utc`) equals the value (numbers within tol, relative past 1) |
 | `get [section[.key]]` | any persisted setting; `get` alone lists them all (the keys are `settings.json`'s) |
 | `set <section.key> <value>` (also `key=value`, several per line) | change settings through the same code path `settings.json` loads through. Unknown keys and wrong types are errors. Doesn't change the preset label |
 | `preset <Planetarium\|Low\|Medium\|High\|Ultra\|Potato\|Custom>` | apply a graphics preset (it overwrites knockouts and quality sliders) |
@@ -128,7 +128,8 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `lightning` | the lightning flashes in progress (the previous frame's list, `cloud_v2_lightning.comp`): each one's id, intensity, cloud-to-ground or not, `sprite` (a red sprite, kind 2), age, distance and observer-relative position, plus the thunder queue (`thunder_pending`, `thunder_rolls`). Flashes follow sim time, so with time paused one stays frozen: `time add 0.25` steps through a flash |
 | `sweep` | the automated knockout sweep (≈15 s); returns the whole record |
 | `ui show\|hide`, `ui scale <0.75-2>` | HUD visibility and UI scale |
-| `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|console>`, `ui close <name\|all>` | windows (`info`/`viewer`/`trace` need a selected satellite). An advanced tab turns on "show advanced settings" |
+| `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|cine\|bookmarks\|console>`, `ui close <name\|all>` | windows (`info`/`viewer`/`trace` need a selected satellite). An advanced tab (incl. Performance) turns on "show advanced settings". A UI kit row is clicked as `Key:index` (`ui click ReplayIntroBtn:0`, `ui click InfoSectHdr:2`). A `ui click` presses on the frame the pointer arrives, which the sky picker can take for a click on empty sky: re-`select` before a window that needs the selection |
+| `bookmark add [name]\|go <n>\|update <n>\|rename <n> <name>\|delete <n>\|list` | the Bookmarks window's actions (n from 1). The thumbnail is captured a few frames later (`wait 3`); results list each bookmark (`thumbnail` true once it has one). `scripts/ui_windows.satcmd` |
 | `tutorial start [step] [pad=1]`, `tutorial step <n\|name>`, `tutorial next\|back\|skip\|state` | the first-run tutorial (never started on its own in a harness run). Steps 1-9 or look/move/altitude/boost/select/actions/time/capture/settings; its action steps finish on real input, so `next` moves past them. `pad=1` shows the gamepad graphics. Results carry `step`, `progress`, `done_showing`, `tutorial_done`. `scripts/tutorial.satcmd` |
 | `pad <a\|b\|x\|y\|lb\|rb\|start\|view\|ls\|rs\|up\|down\|left\|right>` | a gamepad button press as `pollGamepad` handles it, no controller needed: its context meaning first (the tutorial card's Start/View, the selection's D-pad focus / A / B), else its binding. Marks the pad as the last input. Results carry `action`, `pad_focus`. `scripts/gamepad_nav.satcmd` |
 | `ui open cine` | the Cinematics window (see "Cinematics") |
@@ -191,7 +192,7 @@ then `python tools/harness/frames2video.py harness_runs/<run>/captures/alps -o a
 ## Cinematics (review 17)
 
 The camera paths are one object shared by the harness and the in-app **Cinematics** window (the film
-button in the time bar): a cinematic is a list of SHOTS, each a spline through keys (`Cinematic.h`).
+button on the right HUD panel): a cinematic is a list of SHOTS, each a spline through keys (`Cinematic.h`).
 `path key` / `path clear` / `path play` edit and play the CURRENT shot; `cine` manages the rest:
 
 | Command | |
