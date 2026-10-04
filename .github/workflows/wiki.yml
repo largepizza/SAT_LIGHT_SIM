@@ -1,8 +1,10 @@
 name: wiki
 
 # Builds the wiki (strict + history-leak lint) on every push that touches it, so a broken link or a
-# changelog-style sentence on a main page fails in the PR. Publishing to GitHub Pages is manual
-# (Actions -> wiki -> Run workflow), from any branch, because main is reserved for releases.
+# changelog-style sentence on a main page fails in the PR. Publishes to GitHub Pages on a push to main or
+# to a development branch (*_dev), or on a manual run (Actions -> wiki -> Run workflow; that button only
+# appears once this file is on the default branch). The github-pages environment must allow the branch:
+# Settings -> Environments -> github-pages -> Deployment branches.
 
 on:
   push:
@@ -28,20 +30,26 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      DEPLOY: ${{ (github.event_name == 'workflow_dispatch' && inputs.deploy) || (github.event_name == 'push' && (github.ref_name == 'main' || endsWith(github.ref_name, '_dev'))) }}
+    outputs:
+      deploy: ${{ steps.flag.outputs.deploy }}
     steps:
+      - id: flag
+        run: echo "deploy=$DEPLOY" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r tools/wiki/requirements.txt
       - run: python tools/wiki/check.py
-      - if: github.event_name == 'workflow_dispatch' && inputs.deploy
+      - if: env.DEPLOY == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: build-wiki
 
   deploy:
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    if: needs.build.outputs.deploy == 'true'
     needs: build
     runs-on: ubuntu-latest
     environment:
