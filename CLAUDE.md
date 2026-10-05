@@ -791,27 +791,45 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   conservative per-column ceiling (tropopause top + overshoot, ground-lifted low tops) — 0% (the
   steps are inside the cloud, not above it); a vertical step cap growing with the footprint (200 -> up
   to 500 m) — -0.4%. An orbit LOD needs a cheaper field (an impostor), not fewer steps.
-- **Lightning + thunder (2026-09-29, `include/cloud_lightning.glsl`):** `cloud_v2_lightning.comp` (one
-  workgroup, before the march, same set and push constants) walks the Cb tower lattice around the observer
-  out to the cloud tops' horizon and, for every anvil-reaching tower (strength at its centre > ~0.4),
-  evaluates a flash schedule hashed from the cell and a 2 s slot of SIM time (`lightning.w`): a start in
-  the slot, 0.25-0.85 s, 1-4 return strokes over a fading glow, a quarter of the strongest towers' flashes
-  cloud-to-ground. Deterministic and reversible; `cv2FlashBuf` (32 flashes, host-visible) holds them.
-  They are drawn in `cloud_march.comp` AFTER the resolve (`lightningCS`): a flash lasts a few frames and
-  the history (weight 0.05, sparse 1-in-4) would swallow it. The cloud glows around each flash at the
-  resolved cloud's mean depth, by its opacity (`cv2FlashGlow`: in-cloud diffusion, ~5 km, then the
-  inverse square); a cloud-to-ground channel is a random-walk polyline with one branch
-  (`cv2BoltPoint`), energy spread over the pixel footprint, hidden by terrain and by cloud in front. A
-  halo around the channel was dropped: occluded by a rain curtain's transmittance it drew the curtain's
-  march banding as stripes. Settings: "Lightning (flashes/min/tower)" `lightning_rate` 3 (0 = off),
-  "Lightning glow" `lightning_glow`, "Lightning bolts" `lightning_bolt` (slots 179-181). Cost ~0-0.3 ms.
-  **Thunder** (`SatelliteSim::updateThunder`, SatelliteSimAmbience.cpp): the host reads the list back,
-  and each new flash within 30 km rolls the `thunder` layer's synth (AmbientSynth `thunder`: low-passed
-  noise under swelling peals, a crack under ~2.5 km; distance lowers the cutoff, slows the onset,
-  lengthens the roll and the level) at its distance / 343 m/s after the flash, in sim time. Harness:
-  `lightning` lists the flashes and the thunder queue; with time paused a flash stays frozen, so `time
-  add 0.25` steps through one (harness_runs/perf_sprint/ltest*.satcmd). How it looks and sounds is the
-  user's to judge.
+- **Lightning + thunder (rebuilt 2026-10-05; `cloud_v2_lightning.comp`, `SatelliteSimLightning.cpp`,
+  `lightning.vert/.frag`, `include/lightning_draw.glsl`):** WHICH flashes happen is the GPU's: one workgroup walks two
+  lattices around the observer out to the cloud tops' horizon — the Cb TOWERS (dominant, anvil-reaching: "Lightning
+  (flashes/min/tower)" `lightning_rate`) and a STORM-CELL lattice over every deep-convective, raining region of the
+  weather cube ("Storm lightning (flashes/min/cell)" `lightning_storm_rate` 2, slot 267, `cv2.lightning2.x`; cells
+  20 km, 6% of the eye's altitude from orbit, rate scaled by area; up to 3 flashes per cell per 2-s slot) — so whole
+  storms flash, not only their towers. Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
+  1-4 return strokes ~35 ms over a continuing current; in-cloud flashes 2-6 softer pulses). Record (`CV2Flash`, 64 B,
+  `kCv2FlashMax` 128): origin, ground point, KIND (0 in cloud, 1 cloud-to-ground ~30% where strong, 2 red sprite, 3
+  spider lightning just under the base), seed, age, the cloud's base/top, strength, duration. Ground strokes leave the
+  cloud's flank and land 1.5-9 km aside (slanted). HOW they look is the host's: `updateLightningBolts` reads the
+  previous frame's list (only a list the pass wrote last frame: `cv2LightningObsDirValid`, one-shot, with the observer
+  direction it was written in) and builds each new flash's CHANNEL once as geometry (`buildBoltTree`, a fractal tree
+  from its seed: midpoint displacement down to ~3 px at its distance; a ground stroke's in-cloud wander, exit and long
+  slanted descent, branches every ~260 m / "Lightning tendrils" (`lightning_tendrils`, slot 268), twigs and many dim
+  tendrils, upward streamers at the strike point; a spider's 3-6 near-level arms 6-30 km with a web of twigs and
+  drooping tendrils; a sprite's 20-45 forking tendrils and rising streamers), cached by id, and uploads the flashes'
+  frames + state (`GpuBoltFlash`: revealed arc — the leader working down, a spider spreading at 150 km/s — the
+  branches' share, which fades ~0.12 s after the first stroke, 4 cloud-glow emitters) and the segments (`GpuBoltSeg`,
+  32 B, up to 128k). Drawn in the main pass AFTER the sky TAA at full resolution, SCREEN-blended (src + dst(1 - src):
+  exactly the sky tonemap 1 - exp(-x) of the summed light, so overlaps saturate instead of clipping): channels as
+  antialiased capsules at their TRUE luminous width (3 m main, 1.2 / 0.6 / 0.35 m; sprites 120-380 m) — thinner than a
+  pixel they are a pixel wide with their energy kept, never fatter — plus a halo (light scattered by rain and air: 70 m
+  main, 22 m branches), hidden by the cloud composite in front (`cloudPointVisibilityAt`; rain shafts included), faded by
+  the air COLUMN between eye and point (`boltAir`: a flat haze length left ~5% from orbit); then the cloud lit around
+  the flashes in ONE full-screen pass looping over the emitters (per texel of the half-res composite, `boltGlow`: a
+  ~4-km diffusion core floored at ~3.5 km and a faint 15-km tail, windowed to 45 km — from orbit a flash is a soft
+  10-20 km patch). The lightning pass's thread 1 adds the flashes' light to the rain at the eye (`cv2RainAmb`): drops
+  light up in a close strike. **Thunder from the channel** (`queueThunder`, within 35 km): each segment's sound arrives
+  at its distance / 343 m/s, weighted by length, 1/r and how far it lies across the line of sight; binned at 50 ms that
+  envelope IS the roll, handed to the `thunder` synth through `AmbientSynth::pushEvent` (a lock-free queue; the noise
+  low-passed by the distance the sound has come, which grows through the roll; a ripping crack under ~3 km).
+  `updateThunder` only plays the queue. Harness: `lightning` (flashes with kind / segments, `trees`, drawn counts,
+  thunder queue), `lightning spawn kind=cg|ic|spider|sprite dist_km= az= [seed=] [base_m=] [top_m=] [ground_km=]`
+  (heights above the eye's ground; injected flashes run the same channels, glow and thunder), scripts in
+  harness_runs/lightning (spawn2: a clear desert night; t5: orbit + aircraft at 5 N 90 W). Cost ~0.3 ms for the
+  lightning draw. It REPLACED (2026-09-29 .. 10-04) `lightningCS` / `spriteCS` in cloud_march.comp: a 14-vertex channel
+  with fixed branches and the glow, per pixel inside the half-res composite (smeared by the sky TAA, a 3-m minimum
+  width = pudgy), and only dominant towers flashed (a map-typed storm without anvil towers had none: user snapshot 43).
 - **Weather evolution (2026-09-29, decision A):** the weather cube is re-baked as sim time moves
   (`SatelliteSim::recordWeatherEvolution`, one face per frame with all its mips, once it lags by ~300 m of
   wind drift or the settings change; the bake's pipeline and per-mip sets are kept, `cv2Wx*`). The bake
@@ -1426,7 +1444,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
-- The Clouds tab's slider slots: `kCloudSliderSlots` (267 since 2026-10-05: 261-266 rain particles; 258 since review 28: 257 sea wave range fade; 257 since review 27: 256 far sea ripple size; 256 since review 24: 248-250 far sea ripple, sea warp x2, 251-255 far cloud layer tunables; 248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
+- The Clouds tab's slider slots: `kCloudSliderSlots` (269 since 2026-10-05: 261-266 rain particles, 267-268 storm lightning / tendrils; 258 since review 28: 257 sea wave range fade; 257 since review 27: 256 far sea ripple size; 256 since review 24: 248-250 far sea ripple, sea warp x2, 251-255 far cloud layer tunables; 248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
   `cloudBufs` (212 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
   moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind; 210 move speed (Controls tab), 211 erosion size); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive

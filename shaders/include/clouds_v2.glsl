@@ -126,6 +126,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (x a drop's terminal speed), zw the rain's wind drift (rain frame E/N, m, mod 1024); rainWind xy the wind now
     // (m/s), zw the snow's wind drift (x "Snow wind", m, mod 1024).
     vec4  rainMotion, rainWind;
+    // 2026-10-05: lightning from whole storms. x "Storm lightning (flashes/min/cell)" (cells of ~20 km), yzw spare.
+    vec4  lightning2;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

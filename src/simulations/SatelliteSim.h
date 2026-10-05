@@ -582,6 +582,35 @@ struct RainDrawPC
 };
 static_assert(sizeof(RainDrawPC) == 128, "RainDrawPC layout mismatch");
 
+// ── Lightning channels (SatelliteSimLightning.cpp, lightning.vert/.frag, 2026-10-05) ──
+struct BoltDrawPC
+{
+    glm::mat4 skyView;
+    float fovYRad, aspect, screenW, screenH;
+    glm::vec4 params;    // x the sky's exposure, y "Lightning bolts" gain, z "Lightning glow" gain, w mode (0 channels, 1 glow)
+    glm::vec4 params2;   // x highlight roll-off, yzw spare
+    glm::vec4 spare;
+};
+static_assert(sizeof(BoltDrawPC) == 128, "BoltDrawPC layout mismatch");
+struct GpuBoltSeg   // 32 B: a channel piece in its flash's local frame (t1, t2, up; metres from the origin)
+{
+    glm::vec3 p0;
+    float w;            // brightness weight (order and position along its branch)
+    glm::vec3 p1;
+    uint32_t packed;    // bits 0-6 flash slot, 7-8 order, 9-20 arc / the tree's longest arc, 21-30 f along its branch
+};
+static_assert(sizeof(GpuBoltSeg) == 32, "GpuBoltSeg layout");
+struct GpuBoltFlash   // 144 B, == BoltFlash in lightning.vert
+{
+    glm::vec4 o;      // xyz the origin (this frame's ENU about the eye, m), w intensity now
+    glm::vec4 u;      // xyz up at the flash (ENU), w age (s)
+    glm::vec4 t1;     // xyz the local frame's first tangent, w kind (0 in cloud, 1 to ground, 2 sprite, 3 spider under the base)
+    glm::vec4 t2;     // xyz the second tangent, w the tree's longest arc (m)
+    glm::vec4 m;      // x revealed arc (m), y the branches' share now, z 1 during the stepped leader, w spare
+    glm::vec4 e[4];   // the cloud-glow emitters: xyz (ENU about the eye), w weight
+};
+static_assert(sizeof(GpuBoltFlash) == 144, "GpuBoltFlash layout");
+
 // ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
 // Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
 // SatDrawPC (own pipeline layout, own push-constant range) — carries only the fields the moved
@@ -683,6 +712,7 @@ struct GpuCloudV2Params
     glm::vec4 rainMotion;  // x fall phase (integral of the reference fall speed / 64, m, mod 1024), y reference speed now,
                            // zw the rain's wind drift (rain frame E/N, m, mod 1024)
     glm::vec4 rainWind;    // xy the wind now (m/s, rain frame), zw the snow's wind drift (m, mod 1024)
+    glm::vec4 lightning2;  // 2026-10-05: x "Storm lightning (flashes/min/cell)", yzw spare
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -696,7 +726,7 @@ static_assert(offsetof(GpuCloudV2Params, farLight) == 288 + 48 * kCloudV2Types +
 static_assert(offsetof(GpuCloudV2Params, farTune) == 288 + 48 * kCloudV2Types + 528, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, shapeRotA) == 288 + 48 * kCloudV2Types + 560, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, rainMotion) == 288 + 48 * kCloudV2Types + 640, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 672, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 688, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -3059,6 +3089,8 @@ private:
     float cv2DropDistM = 32.0f;        // the rain particles' reach (m; each doubling is one more level, at most 64)
     float cv2RainParticlesK = 16.0f;   // drops in the nearest box, thousands (each farther level holds twice as many)
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
+    float cv2LightningStormRate = 2.0f;   // flashes / min of a ~20 km storm cell at full strength (whole storms flash)
+    float cv2LightningTendrils = 1.0f;    // the channels' branching (x the branch and tendril counts)
     float cv2RainFallSpeed = 1.3f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
     float cv2RainWindGain = 1.5f;      // x the ground wind on the drops (0.4 x the wind aloft)
     float cv2RainStormWind = 14.0f;    // the outflow from a heavy shower (m/s at rain rate 1), away from its core
@@ -3288,9 +3320,9 @@ private:
     void *cv2FlashMapped = nullptr;
     VkBuffer cv2BlueNoiseBuf = VK_NULL_HANDLE;   // 64x64 blue-noise tile (march binding 15)
     VkDeviceMemory cv2BlueNoiseMem = VK_NULL_HANDLE;
-    static constexpr uint32_t kCv2FlashMax = 32;             // == kCv2FlashMax in cloud_lightning.glsl
+    static constexpr uint32_t kCv2FlashMax = 128;             // == kCv2FlashMax in cloud_lightning.glsl
     // + review 22's rain map (cloud_lightning.glsl): 4 workgroup maxima and 32 x 32 rain rates after the flashes.
-    static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * 48 + 16 + 80;   // + review 22b's Sun profile
+    static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * 64 + 16 + 80;   // + review 22b's Sun profile
     static constexpr VkDeviceSize kCv2RainLightOffset = kCv2RainMapOffset + 1024 * 4;   // cv2RainKey .. cv2RainMisc
     static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2RainLightOffset + 4 * 16;
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
@@ -3593,7 +3625,7 @@ private:
     Ambience *ambience_ = nullptr;
     // Thunder (updateThunder): each lightning flash within 30 km of the listener, heard at its distance
     // / 343 m/s after it (sim time), as a roll of the "thunder" layer's synth.
-    struct ThunderEvent { double arriveS; float distKm, energy, pan; };
+    struct ThunderEvent { double arriveS; float distKm, energy, pan; std::vector<float> env; float binS = 0.05f; };
     std::vector<ThunderEvent> thunderPending_;
     std::vector<std::pair<uint32_t, double>> thunderSeen_;   // flash id, sim time first seen
     double thunderLastSimS_ = 0.0;
@@ -4886,7 +4918,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 267;   // 261-266 rain particles (count, shutter, fall speed, wind, storm wind, gusts)
+    static constexpr int kCloudSliderSlots = 269;   // 261-266 rain particles (count, shutter, fall speed, wind, storm wind, gusts)
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),
@@ -5037,6 +5069,47 @@ private:
                                                      // trailComposite (graphics) pipelines
     void initStars(VulkanContext &ctx);
     void createStarPipeline(VulkanContext &ctx);
+    // Lightning channels, glow and thunder (SatelliteSimLightning.cpp, 2026-10-05).
+    struct BoltSegC : GpuBoltSeg { float arc = 0.0f, f = 0.0f; };
+    struct BoltTree
+    {
+        uint32_t id = 0;
+        int kind = 0;
+        glm::dvec3 originEcef{0.0}, up{0.0}, t1{0.0}, t2{0.0};
+        glm::vec3 groundLocal{0.0f}, exitLocal{0.0f};
+        float baseLocalZ = -1000.0f, strength = 0.5f, maxArc = 1.0f, mainArc = 1.0f;
+        std::vector<BoltSegC> segs;
+        std::vector<std::vector<glm::vec4>> arms;   // a spider's arms: xyz local, w arc
+        uint64_t lastFrame = 0;
+    };
+    static constexpr uint32_t kBoltMaxFlashes = 128;
+    static constexpr uint32_t kBoltMaxSegs = 1u << 17;
+    void createLightningResources(VulkanContext &ctx);
+    void createLightningPipeline(VulkanContext &ctx);
+    void writeLightningDescriptors(VulkanContext &ctx);
+    void destroyLightningResources(VkDevice device);
+    void updateLightningBolts();
+    void recordLightning(VkCommandBuffer cmd, VulkanContext &ctx);
+    void buildBoltTree(BoltTree &t, uint32_t seed, float distM);
+    void queueThunder(const BoltTree &t, const glm::dvec3 &eye, double flashStartS);
+    std::unordered_map<uint32_t, BoltTree> boltTrees_;
+    VkBuffer boltFlashBuf = VK_NULL_HANDLE, boltSegBuf = VK_NULL_HANDLE;
+    VkDeviceMemory boltFlashMem = VK_NULL_HANDLE, boltSegMem = VK_NULL_HANDLE;
+    void *boltFlashMapped = nullptr, *boltSegMapped = nullptr;
+    VkDescriptorSetLayout boltDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool boltDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet boltDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout boltPipeLayout = VK_NULL_HANDLE;
+    VkPipeline boltPipeline = VK_NULL_HANDLE;
+    uint32_t boltFlashCount = 0, boltSegCount = 0;
+    uint64_t boltFrame = 0;
+    glm::dvec3 cv2LightningObsDir{0.0, 0.0, 1.0};   // the observer direction the last lightning pass ran with
+    glm::dvec3 cv2LightningObsDirPending{0.0, 0.0, 1.0};
+    bool cv2LightningObsDirValid = false;
+    // Harness `lightning spawn`: flashes placed by hand, run through the same channels, glow and thunder.
+    struct InjectedFlash { uint32_t id, seed; int kind; glm::dvec3 origin, ground; float base, top, strength, dur; double startS; };
+    std::vector<InjectedFlash> boltInjected_;
+    uint32_t boltInjectSerial_ = 0;
     // Rain, snow and diamond dust at the eye as particles (SatelliteSimRain.cpp, 2026-10-04).
     void createRainParticles(VulkanContext &ctx);
     void createRainPipeline(VulkanContext &ctx);

@@ -2324,6 +2324,43 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     // ── lightning: the flashes in progress (the previous frame's list, cloud_lightning.glsl) ──
     if (n == "lightning")
     {
+        // `lightning spawn kind=cg|ic|spider|sprite dist_km= az= [seed=] [base_m=1500] [top_m=10000] [ground_km=4]
+        // [ground_az=<az + 90>] [dur=]`: a flash placed by hand (SatelliteSimLightning.cpp). base_m / top_m are above
+        // the eye's ground.
+        if (lower(pos(0)) == "spawn")
+        {
+            const std::string k = lower(c.str("kind").empty() ? std::string("cg") : c.str("kind"));
+            const int kind = k == "ic" ? 0 : k == "sprite" ? 2 : k == "spider" ? 3 : 1;
+            const double dist = c.num("dist_km", 10.0) * 1000.0, az = glm::radians(c.num("az", (double)camera.azDeg));
+            const float gnd0 = terrainFrameMapped ? terrainFrameMapped[1] : obsTerrainH;
+            const float base = gnd0 + (float)c.num("base_m", 1500.0), top = gnd0 + (float)c.num("top_m", 10000.0);
+            const double gOff = c.num("ground_km", 4.0) * 1000.0;
+            const double gAz = glm::radians(c.num("ground_az", glm::degrees(az) + 90.0));
+            const float ground = terrainFrameMapped ? terrainFrameMapped[1] : obsTerrainH;
+            const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+            const glm::dvec3 E = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), up)), N = glm::cross(up, E);
+            auto at = [&](double e, double nn, double h) {
+                return glm::normalize(up * 6371000.0 + E * e + N * nn) * (6371000.0 + h);
+            };
+            const double oe = dist * std::sin(az), on = dist * std::cos(az);
+            const double oAlt = kind == 2 ? 75000.0 : kind == 3 ? base - 150.0
+                              : kind == 0 ? base + 0.5 * (top - base) : base + 0.35 * (top - base);
+            InjectedFlash q;
+            q.id = 0xF0000000u | (++boltInjectSerial_);
+            q.seed = (uint32_t)c.num("seed", (double)(boltInjectSerial_ * 2654435761u % 100000u));
+            q.kind = kind;
+            q.origin = at(oe, on, oAlt);
+            q.ground = kind == 1 ? at(oe + gOff * std::sin(gAz), on + gOff * std::cos(gAz), ground) : q.origin;
+            q.base = base;
+            q.top = top;
+            q.strength = 0.8f;
+            q.dur = (float)c.num("dur", kind == 1 ? 0.6 : 0.8);
+            q.startS = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            boltInjected_.push_back(q);
+            r["id"] = q.id;
+            r["message"] = "spawned kind " + std::to_string(kind) + " at " + std::to_string(dist / 1000.0) + " km";
+            return Status::Done;
+        }
         json list = json::array();
         uint32_t cnt = 0;
         if (cv2FlashMapped)
@@ -2333,11 +2370,16 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             cnt = std::min(hdr[0], kCv2FlashMax);
             for (uint32_t i = 0; i < cnt; ++i)
             {
-                const float *e = f + i * 12;
+                const float *e = f + i * 16;
                 uint32_t id;
                 std::memcpy(&id, &e[8], 4);
-                list.push_back({{"id", id}, {"intensity", e[3]}, {"cloud_to_ground", e[7] > 0.5f && e[7] < 1.5f}, {"sprite", e[7] > 1.5f},
-                                {"age_s", e[10]}, {"dist_km", e[11] / 1000.0f},
+                const int kind = (int)(e[7] + 0.5f);
+                static const char *kKinds[4] = {"in_cloud", "cloud_to_ground", "sprite", "spider"};
+                auto tr = boltTrees_.find(id);
+                list.push_back({{"id", id}, {"intensity", e[3]}, {"kind", kKinds[std::clamp(kind, 0, 3)]},
+                                {"cloud_to_ground", kind == 1}, {"sprite", kind == 2},
+                                {"age_s", e[10]}, {"dist_km", e[11] / 1000.0f}, {"base_m", e[12]}, {"top_m", e[13]},
+                                {"strength", e[14]}, {"segments", tr == boltTrees_.end() ? 0 : (int)tr->second.segs.size()},
                                 {"enu_m", {e[0], e[1], e[2] - (float)(6371000.0)}}});
             }
         }
@@ -2345,6 +2387,20 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["flashes"] = list;
         r["thunder_pending"] = thunderPending_.size();
         r["thunder_rolls"] = thunderRolls_;
+        json trees = json::array();
+        for (const auto &kv : boltTrees_)
+        {
+            const BoltTree &t = kv.second;
+            int ord[4] = {0, 0, 0, 0};
+            for (const BoltSegC &sg : t.segs)
+                ++ord[(sg.packed >> 7) & 3u];
+            trees.push_back({{"id", t.id}, {"kind", t.kind}, {"ground_local_m", {t.groundLocal.x, t.groundLocal.y, t.groundLocal.z}},
+                             {"base_local_z_m", t.baseLocalZ}, {"segments_by_order", {ord[0], ord[1], ord[2], ord[3]}},
+                             {"main_arc_m", t.mainArc}, {"max_arc_m", t.maxArc}});
+        }
+        r["trees"] = trees;
+        r["drawn_flashes"] = boltFlashCount;
+        r["drawn_segments"] = boltSegCount;
         r["message"] = std::to_string(cnt) + " flash(es) in progress";
         return Status::Done;
     }

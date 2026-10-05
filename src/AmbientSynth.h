@@ -54,6 +54,10 @@ public:
     void setParam(int i, float v);
     float param(int i) const;
 
+    // A one-off event with data (main thread -> audio thread; a kind's own format, e.g. a thunder roll's
+    // envelope). False if this kind takes no events (or its queue is full).
+    virtual bool pushEvent(const float * /*data*/, int /*n*/) { return false; }
+
     // Interleaved stereo. Audio thread (or the offline render on the main thread).
     void render(float *out, uint32_t frames);
 

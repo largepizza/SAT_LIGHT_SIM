@@ -543,6 +543,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createBeamSelfMarchPipeline(ctx);
     writeCloudsV2ConsumerDescriptors(ctx); // cloud_march 15-20 + beam_self_march 5-8, both sets exist now
     createRainParticles(ctx);              // rain at the eye (SatelliteSimRain.cpp): needs the cloud UBOs, flash buffer, depth
+    createLightningResources(ctx);         // lightning channels and glow (SatelliteSimLightning.cpp): the cloud targets
     createSkyBgPipeline(ctx);
     createSkyLowResResources(ctx); // resolution scaling — needs skyBgPipeLayout from just above
     createSkyTaaResources(ctx);    // the background's TAA (same layout)
@@ -839,6 +840,7 @@ void SatelliteSim::recreateComputeScaledTargets(VulkanContext &ctx)
     }
     writeCloudsV2ConsumerDescriptors(ctx);
     writeRainDescriptors(ctx);   // the scene depth image was recreated
+    writeLightningDescriptors(ctx);
     computeHalfExtentBuilt = computeHalfExtent(ctx);
 }
 
@@ -872,6 +874,12 @@ void SatelliteSim::onResize(VulkanContext &ctx)
         vkDestroyPipeline(ctx.device, rainPipeline, nullptr);
         rainPipeline = VK_NULL_HANDLE;
         createRainPipeline(ctx);
+    }
+    if (boltPipeline)
+    {
+        vkDestroyPipeline(ctx.device, boltPipeline, nullptr);
+        boltPipeline = VK_NULL_HANDLE;
+        createLightningPipeline(ctx);
     }
 
     recreateComputeScaledTargets(ctx);
@@ -3135,6 +3143,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // The volumetric clouds (clouds v2, .plans/CLOUDS_V2_PLAN.md): the sparse march + temporal
         // resolve, whose result this dispatch composites. Inside this timestamp bucket, so the
         // "cloud_march" figure is the clouds plus everything else here (cirrus, fog, aurora, beams).
+        updateLightningBolts();   // the previous frame's flash list -> channels (SatelliteSimLightning.cpp)
         recordCloudsV2(cmd, ctx, cpc);
 
         // Pre-dispatch: both targets are left in SHADER_READ_ONLY_OPTIMAL after the previous
@@ -6332,7 +6341,9 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
 
-    // ── Pass 6: rain, snow and diamond dust at the eye (particles, over everything; SatelliteSimRain.cpp) ──
+    // ── Pass 6: lightning channels and the cloud lit around them (SatelliteSimLightning.cpp) ──
+    recordLightning(cmd, ctx);
+    // ── Pass 7: rain, snow and diamond dust at the eye (particles, over everything; SatelliteSimRain.cpp) ──
     recordRainParticles(cmd, ctx, dt);
 }
 
@@ -6973,6 +6984,7 @@ void SatelliteSim::cleanup(VkDevice device)
     vkFreeMemory(device, beamGlowDomeMem, nullptr);
 
     destroyRainParticles(device);
+    destroyLightningResources(device);
     vkDestroyPipeline(device, starPipeline, nullptr);
     vkDestroyPipelineLayout(device, starPipeLayout, nullptr);
     vkDestroyDescriptorPool(device, starDescPool, nullptr);

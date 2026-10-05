@@ -1154,6 +1154,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                         glm::length(eye - cv2PrevEye) > 1.0 ? 1.0f : 0.0f, 0.0f);
     p.lightning = glm::vec4(std::max(cv2LightningRate, 0.0f), std::max(cv2LightningGlow, 0.0f),
                             std::max(cv2LightningBolt, 0.0f), (float)std::fmod((double)simDayJ2000 * 86400.0 + simSecInDay, 100000.0));
+    p.lightning2 = glm::vec4(std::max(cv2LightningStormRate, 0.0f), 0.0f, 0.0f, 0.0f);
 
     static const int kOffsets[4][2] = {{0, 0}, {1, 1}, {1, 0}, {0, 1}};
     const int *o = kOffsets[cv2Frame & 3u];
@@ -1439,6 +1440,8 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
         cv2LightningRanThisFrame = true;
+        cv2LightningObsDir = glm::dvec3(cpc.obsECEFDir);   // the frame its flash list is in (updateLightningBolts)
+        cv2LightningObsDirValid = true;
     }
     // Four levels of the light volume (the godrays read it in the march, after this barrier).
     if (cv2LightVolPipeline && cv2Godrays > 0.0f)

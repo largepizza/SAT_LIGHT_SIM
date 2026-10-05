@@ -9,13 +9,34 @@
 // channel of a cloud-to-ground stroke. The host reads the list back for thunder (SatelliteSimAmbience).
 //
 // Define CV2_FLASH_BINDING (and CV2_FLASH_WRITE for the writer) before including.
-const uint kCv2FlashMax = 32u;
+const uint kCv2FlashMax = 128u;
 struct CV2Flash {
-    vec4 a;   // xyz the light's centre (observer ENU about the Earth's centre, like obsPos), w intensity now
-    vec4 b;   // xyz a cloud-to-ground stroke's ground end (= a.xyz in cloud), w 1 = cloud-to-ground,
-              // 2 = a red sprite (a.xyz its centre ~75 km up)
-    vec4 c;   // x id (uint bits), y the stroke's shape seed (uint bits), z age (s), w distance from the eye (m)
+    vec4 a;   // xyz the flash's origin (observer ENU about the Earth's centre, like obsPos), w intensity now
+    vec4 b;   // xyz a cloud-to-ground stroke's ground end (= a.xyz otherwise), w the KIND: 0 in the cloud,
+              // 1 cloud-to-ground, 2 a red sprite (a.xyz its centre ~75 km up), 3 spider lightning under the base
+    vec4 c;   // x id (uint bits), y the shape seed (uint bits), z age (s, from the leader's start), w distance (m)
+    vec4 d;   // x the cloud's base, y its top (m above sea level), z the storm's strength, w the flash's duration (s)
 };
+const float kCv2FlashSlot = 2.0;     // the schedule's time slot (s of sim time)
+const float kCv2LeaderS   = 0.05;    // the stepped leader before the first return stroke (s)
+
+// A flash's brightness at `age` (s since its leader started): nothing during the leader (its faint channel is
+// the host's to draw), then 1-4 return strokes (sharp pulses, ~35 ms) over a fading continuing current; a flash
+// in the cloud flickers through 2-6 softer pulses over a longer glow. fh: the flash's hash.
+float cv2FlashIntensity(float age, float dur, uvec3 fh, bool cg)
+{
+    float a = age - kCv2LeaderS;
+    if (a < 0.0) return 0.0;
+    int   nS = cg ? 1 + int(3.99 * float(fh.y >> 16u) / 65535.0) : 2 + int(4.99 * float(fh.y >> 16u) / 65535.0);
+    float tau = cg ? 0.035 : 0.06;
+    float I = 0.0;
+    for (int k = 0; k < 6; ++k) {
+        if (k >= nS) break;
+        float tk = (k == 0) ? 0.0 : dur * (float(k) + 0.3 * float((fh.z >> uint(5 * k)) & 0x1Fu) / 31.0) / float(nS);
+        if (a >= tk) I += (cg ? 1.0 : 0.6) * exp(-(a - tk) / tau);
+    }
+    return I + 0.3 * smoothstep(0.0, 0.02, a) * exp(-a / (0.4 * dur + 0.05));
+}
 layout(std430, set = 0, binding = CV2_FLASH_BINDING)
 #ifndef CV2_FLASH_WRITE
 readonly

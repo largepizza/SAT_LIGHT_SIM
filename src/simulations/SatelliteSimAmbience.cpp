@@ -647,47 +647,14 @@ void SatelliteSim::updateAmbience(float dt)
 // block); a crowd of arrivals queues. Reversed or jumped time drops the queue.
 void SatelliteSim::updateThunder()
 {
-    if (!ambience_ || !cv2FlashMapped)
+    // The rolls are scheduled by the lightning channels (SatelliteSimLightning.cpp queueThunder: each flash's
+    // envelope from its own geometry, arriving at its distance / 343 m/s); this plays them when they arrive.
+    if (!ambience_)
         return;
     const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
     if (now < thunderLastSimS_ - 1.0 || now > thunderLastSimS_ + 120.0)
-    {
         thunderPending_.clear();
-        thunderSeen_.clear();
-    }
     thunderLastSimS_ = now;
-
-    const uint32_t *hdr = (const uint32_t *)cv2FlashMapped;
-    const float *f = (const float *)((const char *)cv2FlashMapped + 16);
-    const uint32_t n = std::min(hdr[0], kCv2FlashMax);
-    for (uint32_t i = 0; i < n; ++i)
-    {
-        const float *e = f + i * 12;
-        uint32_t id;
-        std::memcpy(&id, &e[8], 4);
-        bool seen = false;
-        for (auto &s : thunderSeen_)
-            if (s.first == id)
-                seen = true;
-        if (seen)
-            continue;
-        thunderSeen_.push_back({id, now});
-        if (e[7] > 1.5f)   // a red sprite (cloud_lightning.glsl): silent
-            continue;
-        const float distM = e[11];
-        if (distM > 30000.0f)
-            continue;
-        // Bearing from the listener (x east, y north in the observer's ENU frame) against the
-        // camera's heading: +1 = right.
-        const float bearing = atan2f(e[0], e[1]);
-        const float rel = bearing - glm::radians(camera.azDeg);
-        const bool cg = e[7] > 0.5f;
-        thunderPending_.push_back({now - (double)e[10] + distM / 343.0, distM / 1000.0f, cg ? 1.0f : 0.55f, sinf(rel)});
-    }
-    // Forget flashes long over (their ids recur only in another time slot).
-    thunderSeen_.erase(std::remove_if(thunderSeen_.begin(), thunderSeen_.end(),
-                                      [&](const std::pair<uint32_t, double> &s) { return now - s.second > 10.0; }),
-                       thunderSeen_.end());
 
     const int li = ambience_->layerIndex("thunder");
     const int v = (li >= 0) ? ambience_->layerVoice(li) : -1;
@@ -700,11 +667,17 @@ void SatelliteSim::updateThunder()
         thunderPending_.erase(thunderPending_.begin() + (long)i);
         if (syn)
         {
-            syn->setParam(syn->paramIndex("distance_km"), ev.distKm);
-            syn->setParam(syn->paramIndex("energy"), ev.energy);
-            syn->setParam(syn->paramIndex("pan"), ev.pan);
-            thunderTrigger_ += 1.0f;
-            syn->setParam(syn->paramIndex("trigger"), thunderTrigger_);
+            // [distance km, energy, pan, bin (s), the envelope...]
+            std::vector<float> data = {ev.distKm, ev.energy, ev.pan, ev.binS};
+            data.insert(data.end(), ev.env.begin(), ev.env.end());
+            if (!syn->pushEvent(data.data(), (int)data.size()))
+            {
+                syn->setParam(syn->paramIndex("distance_km"), ev.distKm);
+                syn->setParam(syn->paramIndex("energy"), ev.energy);
+                syn->setParam(syn->paramIndex("pan"), ev.pan);
+                thunderTrigger_ += 1.0f;
+                syn->setParam(syn->paramIndex("trigger"), thunderTrigger_);
+            }
             ++thunderRolls_;
         }
         break;   // one per frame
