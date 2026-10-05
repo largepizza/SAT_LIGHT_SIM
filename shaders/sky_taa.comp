@@ -29,7 +29,7 @@ layout(set = 0, binding = 5, r32f)    uniform writeonly image2D outDepth;
 layout(push_constant) uniform PC {
     vec4 c2e0, c2e1, c2e2;   // camera -> ENU (this frame), rows; w: jitter x, jitter y (input px), input width
     vec4 e2p0, e2p1, e2p2;   // this frame's ENU -> last frame's camera, rows; e2p0.w input height
-    vec4 eyeDelta;           // xyz: this eye - last eye, in this frame's ENU (m); w: 1 = history valid
+    vec4 eyeDelta;           // xyz: this eye - last eye, in this frame's ENU (m); w: 0 none, 1 history, 2 history + nothing moved, 3 + time paused
     vec4 cam;                // x tan(fovY/2), y aspect, z new-sample weight when still, w weight in motion
 } pc;
 
@@ -39,6 +39,10 @@ float distanceFromDepth(float d) { return kDepthNearM * exp2(d * log2(kDepthFarM
 float depthFromDistance(float t) {
     return clamp(log2(max(t, kDepthNearM) / kDepthNearM) / log2(kDepthFarM / kDepthNearM), 0.0, 0.99999);
 }
+
+// Non-finite -> black (2026-10-04): a NaN in the history spreads through the Catmull-Rom taps into a growing
+// black block (the user's snapshot at the Earth's limb); dropped here it costs one pixel for one frame.
+vec3 fin(vec3 c) { return (any(isnan(c)) || any(isinf(c))) ? vec3(0.0) : c; }
 
 vec3 toYCoCg(vec3 c) { return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b); }
 vec3 fromYCoCg(vec3 y) { return vec3(y.x + y.y - y.z, y.x + y.z, y.x - y.y - y.z); }
@@ -77,15 +81,19 @@ void main() {
     vec3  cur;
     float d;
     float conf = 1.0;                  // how close this frame's nearest sample landed (upscaling)
+    float yMax = 0.0;
+    float seaA = 1.0;                  // sat_sky.frag's sea marker: 1 not sea, else 0.5 x (1 - storm trail share)
     vec3 m1 = vec3(0.0), m2 = vec3(0.0);
     if (!up) {
-        cur = texelFetch(curColor, p, 0).rgb;
-        d   = texelFetch(curDepth, p, 0).r;
+        vec4 c4 = texelFetch(curColor, p, 0);
+        cur  = fin(c4.rgb);
+        seaA = c4.a;
+        d    = texelFetch(curDepth, p, 0).r;
         // The neighbourhood of this frame's samples (YCoCg mean and deviation).
         for (int k = 0; k < 9; ++k) {
             ivec2 q = clamp(p + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), sz - 1);
-            vec3  y = toYCoCg(texelFetch(curColor, q, 0).rgb);
-            m1 += y; m2 += y * y;
+            vec3  y = toYCoCg(fin(texelFetch(curColor, q, 0).rgb));
+            m1 += y; m2 += y * y; yMax = max(yMax, y.x);
         }
     } else {
         vec2  k2o = size / vec2(isz);                         // output px per input px
@@ -96,17 +104,22 @@ void main() {
         float ws  = 0.0, wMax = 0.0;
         for (int k = 0; k < 9; ++k) {
             ivec2 q  = clamp(c + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), isz - 1);
-            vec3  cq = texelFetch(curColor, q, 0).rgb;
+            vec3  cq = fin(texelFetch(curColor, q, 0).rgb);
             vec2  dO = (vec2(q) + 0.5 + jit - ip) * k2o;      // sample -> pixel, OUTPUT px
             float w  = exp(-dot(dO, dO) * (1.0 / (2.0 * 0.6 * 0.6)));
             acc += cq * w; ws += w; wMax = max(wMax, w);
             vec3  y = toYCoCg(cq);
-            m1 += y; m2 += y * y;
+            m1 += y; m2 += y * y; yMax = max(yMax, y.x);
         }
         cur  = acc / max(ws, 1e-6);
         conf = wMax;
+        seaA = texelFetch(curColor, c, 0).a;
         d    = texelFetch(curDepth, c, 0).r;
     }
+    // The neighbourhood's mean luma WITHOUT its brightest sample, for the flash rule: lightning raises all nine,
+    // a lone spark (a glint on a wave facet, a far light caught by one jitter phase in 16) does not, and it used
+    // to take its frame raw — white specks on the sea (user snapshot, SF Bay, 2026-10-04).
+    const float mRob = (m1.x - yMax) / 8.0;
     m1 /= 9.0; m2 /= 9.0;
     vec3 sd = sqrt(max(m2 - m1 * m1, vec3(0.0)));
 
@@ -137,25 +150,38 @@ void main() {
             if (dE < lo4 - 0.004 || dE > hi4 + 0.004) ok = false;
         }
         if (ok) {
-            vec3  h  = toYCoCg(sampleHistory(uvP, size));
+            vec3  h  = toYCoCg(fin(sampleHistory(uvP, size)));
             // Variance clip toward the mean (a box of 1.25 sd): a colour history cannot hold does not ghost.
             vec3  lo = m1 - 1.25 * sd, hi = m1 + 1.25 * sd;
             vec3  c  = 0.5 * (lo + hi), e = 0.5 * (hi - lo) + 1e-5;
             vec3  v  = h - c;
             vec3  a  = abs(v / e);
             float mx = max(a.x, max(a.y, a.z));
-            if (mx > 1.0) h = c + v / mx;
+            // Nothing moved this frame (CPU: eyeDelta.w = 2), so nothing can ghost: no clip. A light smaller than a
+            // pixel is caught by only some jitter phases, and in the others the all-dark 3x3 box clipped its
+            // accumulated light away — far city lights blinked on the jitter cycle (user snapshots, 2026-10-04).
+            // NOT on the sea (2026-10-04, user snapshot): its waves move while the camera is still, and unclipped
+            // the crests smeared into long trails until the camera moved. On a stormy sea the user liked that
+            // look, so it is kept there on purpose ("Storm sea trails", sat_sky.frag's marker): the history is
+            // blended toward unclipped by the trail share and held at the still weight, moving or not.
+            const bool  sea    = seaA < 0.75;
+            const float trail  = sea ? clamp(1.0 - 2.0 * seaA, 0.0, 1.0) : 0.0;
+            const bool  still  = pc.eyeDelta.w > 1.5;
+            const bool  noClip = still && (!sea || pc.eyeDelta.w > 2.5);   // paused: the waves are frozen too
+            if (mx > 1.0 && !noClip) h = mix(c + v / mx, h, trail);
             // Motion (in pixels) raises the new sample's weight: a moving view keeps its detail.
             float mv = length((uvP - (vec2(p) + 0.5) / size) * size);
-            float w  = mix(pc.cam.z, pc.cam.w, smoothstep(0.5, 4.0, mv));
+            float w  = mix(pc.cam.z, pc.cam.w, smoothstep(0.5, 4.0, mv) * (1.0 - trail));
             // A flash (lightning, a sprite, a glint): when the whole NEIGHBOURHOOD brightens past the history,
             // take the new frame at once — at weight 0.1 a flash lasting a few frames came out ~10x dimmer.
             // Jitter alternating across an edge leaves the 3x3 mean where it was, so edges still accumulate.
-            w = max(w, smoothstep(0.3, 1.2, (m1.x - h.x) / max(h.x, 0.02)));
+            // The spark-proof mean only when nothing moved: in motion it fired less often and the history lagged
+            // (+3% on the climb benchmark), and the specks it removes are a still-view problem.
+            w = max(w, smoothstep(0.3, 1.2, ((still ? mRob : mix(m1.x, mRob, trail)) - h.x) / max(h.x, 0.02)));
             w *= conf;   // upscaling: a sample far from this pixel moves it less (1 at 100%)
             res = fromYCoCg(mix(h, toYCoCg(cur), w));
         }
     }
-    imageStore(outColor, p, vec4(max(res, vec3(0.0)), 1.0));
+    imageStore(outColor, p, vec4(max(fin(res), vec3(0.0)), 1.0));
     imageStore(outDepth, p, vec4(d, 0.0, 0.0, 0.0));
 }

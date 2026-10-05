@@ -79,7 +79,11 @@ void main() {
 
     // Depth = the satellite's true range in the unified encoding (include/depth.glsl), so it is
     // hidden by any nearer surface (terrain, ocean, opaque cloud, a mesh) and by nothing farther.
-    gl_Position  = vec4(ndcX, ndcY, sceneDepthFromDistance(sat.rangeM), 1.0);
+    // A city light (meshPx -1) sits a few metres over the ground: its depth is taken at 0.95 of its range, as
+    // the manual test below does. With the sky TAA the restored ground depth is the jittered sample's, and at
+    // grazing angles a sub-pixel jitter moves it by ~0.5-2% of the distance: the lights z-fought it, blinking
+    // from frame to frame (user snapshots 1-2, 2026-10-04).
+    gl_Position  = vec4(ndcX, ndcY, sceneDepthFromDistance(sat.meshPx < -0.5 ? 0.95 * sat.rangeM : sat.rangeM), 1.0);
     gl_PointSize = sat.angularSize;  // sized by compute shader already
 
     fragColor     = unpackUnorm4x8(sat.color).rgb;

@@ -1480,7 +1480,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         // move through it, end it, or report where it is. Its steps finish on real input, which a
         // harness run cannot press — `next` is the way past an action step.
         static const char *kNames[TUT_COUNT] = {"look", "move", "altitude", "boost", "select",
-                                                "actions", "time", "capture", "settings"};
+                                                "actions", "time", "capture", "settings", "graphics"};
         const std::string sub = lower(pos(0));
         auto stepArg = [&](const std::string &a) -> int
         {

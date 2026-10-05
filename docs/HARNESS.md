@@ -248,6 +248,23 @@ python tools/harness/tstab.py compare run1 run2
   cost while moving.
 - **Yaw-only pans hide row-aligned errors** (the horizon's structure is horizontal): the pitch
   scenario is what found review 15's depth-history bug (mean 5.4 -> 1.3).
+- **Run it over CLOUDS, and only the scenarios that isolate the question** (the user, 2026-10-04): motion bugs live
+  mostly in the clouds' temporal passes, and the clear-night Reflect-site snapshot (profile_log_1004e 24) measures only
+  the sky TAA. The full 12-scenario suite on three scenes cost ~15 min and was too bright to show anything; the climb
+  trails the user reported were measured with `--only rise,boostrise` on two of their snapshots in ~2 min a build:
+  `harness_runs/trails/r37|r38.satcmd` (profile_log_1004j 37 = Pacific cumulus from 2 km, 38 = Edmonton from 4.3 km).
+- **Sample before you commit to a benchmark.** One launch that loads each candidate snapshot, captures it still and
+  records a few seconds of the motion in question (no settled references: `harness_runs/trails/look.satcmd`), then
+  look at the frames: keep only the candidates where the problem is on screen (clouds, city lights, beams, a
+  horizon), then run the scored benchmark on those, on both builds. The harness is bit-deterministic run to run, so
+  one run per build is enough.
+
+## Still-view flicker benchmark (`harness_runs/rscale/bench4.satcmd` + `bench4.py <run>`)
+
+Four of the user's still views with city lights (Irvine horizon from 330 m, SF Bay from 1.2 km, SoCal from 1805 km,
+Dallas from 3.5 km), 61 frames each, scored with `flicker.py` (below). Any change to the sky TAA or the city lights
+runs all four: a fix measured on one view (the orbit one) doubled the flicker at the low horizon (2026-10-04).
+Local files (harness_runs/ is gitignored; the snapshots are profile_log_1004i 35-36, 1004h 33, 1004f 30).
 
 ## Still-view flicker (`tools/harness/flicker.py`)
 

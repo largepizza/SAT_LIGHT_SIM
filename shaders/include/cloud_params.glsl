@@ -451,7 +451,8 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // pixel) where each layer of the procedural city lights ends. x lamp posts + their pools, y the street
     // grid (every street; past it the glitter alone), z the major roads, w the street LAYOUT (past it only
     // cityLightFar's glitter; the pattern's mean reaches the map's by then). cityLod2: x the streets' share
-    // of the light close up, y their share where they start fading out; zw unused.
+    // of the light close up, y their share where they start fading out; z "Sea wave range fade" (review 28),
+    // w "Storm sea trails" (the sky TAA's unclipped history on a stormy sea, 2026-10-04).
     vec4  cityLod;
     vec4  cityLod2;
     // -- The sea (848 -> 864, review 24, Ocean tab): x "Far sea ripple" (the resolvable ripple normal where the wave

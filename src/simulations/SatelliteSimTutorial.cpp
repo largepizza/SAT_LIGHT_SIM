@@ -42,7 +42,7 @@ constexpr float kBoostS = 1.0f;
 
 const char *const kTitles[] = {
     "Look around", "Move over the Earth", "Climb and descend", "Go faster", "Pick a satellite",
-    "Your satellite", "Time", "Pictures", "Menus"};
+    "Your satellite", "Time", "Pictures", "Menus", "Graphics"};
 
 Clay_String clayStr(const char *s) { return Clay_String{false, (int32_t)strlen(s), s}; }
 
@@ -88,7 +88,9 @@ void SatelliteSim::startTutorial(int step)
 {
     tutActive = true;
     tutAutoChecked = true;
-    setTutorialStep(std::clamp(step, 0, TUT_COUNT - 1));
+    tutGraphicsCard = graphicsPreset == GraphicsPreset::Planetarium || graphicsPreset == GraphicsPreset::Potato ||
+                      step >= TUT_GRAPHICS;
+    setTutorialStep(std::clamp(step, 0, tutStepCount() - 1));
 }
 
 void SatelliteSim::endTutorial(bool finished)
@@ -101,7 +103,7 @@ void SatelliteSim::endTutorial(bool finished)
 
 void SatelliteSim::setTutorialStep(int step)
 {
-    if (step >= TUT_COUNT)
+    if (step >= tutStepCount())
     {
         endTutorial(true);
         return;
@@ -119,6 +121,7 @@ void SatelliteSim::setTutorialStep(int step)
     tutBaseBookmarks = bmChrome.open;
     tutBaseSettings = settingsChrome.open;
     tutBaseAction = tutActionOn();
+    tutBasePreset = (int)graphicsPreset;
 }
 
 // Any of the selection's actions in use: its info window, Go to, Trace pass, Track.
@@ -155,7 +158,7 @@ void SatelliteSim::updateTutorial(float dt)
     if (tutDoneT >= 0.0f)
     {
         tutDoneT += dt;
-        if (tutDoneT > (tutStep + 1 >= TUT_COUNT ? kLastHoldS : kDoneHoldS))
+        if (tutDoneT > (tutStep + 1 >= tutStepCount() ? kLastHoldS : kDoneHoldS))
             setTutorialStep(tutStep + 1);
         return;
     }
@@ -205,6 +208,10 @@ void SatelliteSim::updateTutorial(float dt)
         break;
     case TUT_SETTINGS:
         if ((settingsChrome.open && !tutBaseSettings) || cineChrome.open != tutBaseCine || bmChrome.open != tutBaseBookmarks)
+            tutProgress = 1.0f;
+        break;
+    case TUT_GRAPHICS:
+        if ((settingsChrome.open && !tutBaseSettings) || (int)graphicsPreset != tutBasePreset)
             tutProgress = 1.0f;
         break;
     default:
@@ -361,7 +368,7 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
     const float pulse = 0.5f + 0.5f * sinf(tutClock * 4.5f);
     const bool done = tutDoneT >= 0.0f;
     const int step = tutStep;
-    const bool last = step + 1 >= TUT_COUNT;
+    const bool last = step + 1 >= tutStepCount();
     static_assert(sizeof(kTitles) / sizeof(kTitles[0]) == TUT_COUNT, "a title per step");
 
     // ── Outline what the card talks about (the HUD's own controls; boxes from the last layout) ──
@@ -406,6 +413,9 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
     case TUT_SETTINGS: // the right panel's menu buttons
         addBox(CLAY_ID("TimeBookmarkBtn"));
         addBox(CLAY_ID("TimeCineBtn"));
+        addBox(CLAY_ID("SettingsBtn"));
+        break;
+    case TUT_GRAPHICS:
         addBox(CLAY_ID("SettingsBtn"));
         break;
     default:
@@ -503,11 +513,17 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
                                                  "constellations, sound and key bindings. %s hides the interface for a clean view.%s",
                  pad ? P(KB_TOGGLE_UI) : k1, pad ? " After the tutorial, Start gives a cursor for these buttons." : "");
         break;
+    case TUT_GRAPHICS:
+        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Graphics are on %s, the fastest preset: there are no clouds, and the terrain, sky and sea "
+                                                 "are simplified. If it runs smoothly, try Low under Settings > Display > Preset: it brings "
+                                                 "back the clouds and every effect, at half resolution.",
+                 kGraphicsPresetNames[(int)graphicsPreset]);
+        break;
     default:
         tutBodyBuf[0] = '\0';
         break;
     }
-    snprintf(tutHeadBuf, sizeof(tutHeadBuf), "%d / %d", step + 1, (int)TUT_COUNT);
+    snprintf(tutHeadBuf, sizeof(tutHeadBuf), "%d / %d", step + 1, tutStepCount());
 
     // ── Where: beside the panel it points at, else low in the middle of the view ──
     Clay_FloatingElementConfig fl{};
@@ -519,7 +535,7 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         fl.attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_BOTTOM, .parent = CLAY_ATTACH_POINT_LEFT_TOP};
         fl.attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID;
     }
-    else if (step == TUT_SETTINGS)
+    else if (step == TUT_SETTINGS || step == TUT_GRAPHICS)
     {
         fl.offset = {0.0f, -10.0f};
         fl.parentId = CLAY_ID("RightPanel").id;

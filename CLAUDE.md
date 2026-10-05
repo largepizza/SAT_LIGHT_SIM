@@ -4034,6 +4034,44 @@ aliased because the sky pass shades one ray per pixel. At renderScale 1 with the
   and the input size. The depth restore reads the RESOLVE's full-res depth (`skyTaaRestoreSet[2]`, one per ping-pong
   side). The sky pass's detail LOD uses the OUTPUT pixel (`CloudParams::skyLodScreenH`, v1's unread maxRenderDistM).
   Cost ~1 ms over the plain stretch (the full-res resolve). The plain low-res blit stays for TAA off / SKY_LITE.
+- **Point-like lights under the sky TAA (2026-10-04, user snapshots: far city lights blinking "like z-fighting").**
+  Two benchmarks, run on BOTH sides of any change here (docs/HARNESS.md): the still-view flicker set
+  (`harness_runs/rscale/bench4.satcmd` + `bench4.py`: Irvine horizon from 330 m, SF Bay from 1.2 km, SoCal from 1805
+  km, Dallas from 3.5 km; % of pixels varying > 8 levels; TAA off reads 0%) and the climb set over clouds
+  (`harness_runs/trails/r37|r38.satcmd`, tstab `rise` + `boostrise`; profile_log_1004j 37 Pacific cumulus from 2 km, 38
+  Edmonton from 4.3 km). Committed state before the day: flicker 2.31 / 0.58 / 1.07 / 0.94, climb 1.60 / 0.85. Now:
+  flicker 0.57 / 0.04 / 0.13 / 0.04, climb 1.65 / 0.91 (the moving frames differ from the committed ones only by
+  cloud-march sampling grain, ~0.4/255 mean; checked by eye).
+  - **The resolve** (`sky_taa.comp`, otherwise as committed): when NOTHING moved this frame — the CPU's exact test:
+    the eye moved < 1 cm, the view did not turn, sim time <= ~1.5x; `eyeDelta.w` = 2 — the history is not clipped
+    (a light smaller than a pixel is caught by only some jitter phases, and in the others the all-dark 3x3 box clipped
+    its accumulated light away) and the flash rule uses the 3x3 mean without its brightest sample (a lone glint on a
+    wave facet took its frame raw: white specks on the sea). Non-finite inputs are dropped (`fin`).
+  - **The city lights** (`sat_sky.frag`): read at the UNJITTERED pixel only where the view is steeper than ~12
+    degrees (`uvTaa0` / `taaDn`, gated on |cos| > 0.2 of the unjittered ray): the night map, the terrain contour, the
+    land test and the pattern's point. Glitter points are at least an input pixel wide under the upscale, the
+    glitter's presence ramps over a band of the hash, the steep-ground cut fades past a 400-1200 m footprint, `cFoot`
+    takes the sphere's slope past ~100-400 m; city sprites take their hardware depth at 0.95 of their range.
+  - **Tried and REVERTED, each made rendering less stable** (the user: "over-optimizing the bugfix ... made rendering
+    a lot more unstable"; trails climbing over clouds): (1) the unjitter at every view angle — the tangent-plane point
+    slides kilometres toward a grazing horizon (Irvine 2.3% -> 4.6%); (2) a PER-PIXEL "still" (reprojection < 0.1 px)
+    widening or dropping the clip and raising the flash threshold — climbing, the far clouds move less than that while
+    the layer being crossed changes: trails and stair bands (climb 1.60 -> 3.87, and two settles of one view no
+    longer agreed); (3) the flash rule against the history's neighbourhood; (4) restoring the 3x3 farthest depth with
+    a wider disocclusion tolerance; (5) the disocclusion tolerance widened by the 3x3 depth spread; (6) the
+    footprint's |cos| floor 0.2 -> 0.03. Most of these measured well on the still views alone.
+  Debugging notes: print the worst pixels' value series (lit in 1 of 8 or 16 frames = the jitter; any other period is
+  something else) and A/B with the history off (`set display.sky_taa_weight 1`); `Copy-Item` keeps a file's old
+  timestamp, so restoring a shader from a backup does NOT rebuild it (touch it) — identical-to-the-digit results
+  across a change mean it did not build. The harness is bit-deterministic run to run. `cloud_v2_resolve.comp` writes
+  "no cloud" for a non-finite result (user snapshot: black squares at the limb after a fast climb; not reproduced).
+- **Presets (2026-10-04, the user):** Medium renders at 67%, Low is Medium's settings at 50% with every effect on
+  (aurora, beams, fog, terrain detail); Planetarium is the "everything off" tier. Measured (RTX 3070 Ti, 1600x900, the
+  user's snapshots): Low 12.3 / 13.8 / 9.9 / 7.9 ms, Medium 17.8 / 18.2 / 13.8 / 11.2 (orbit storm, anvils, Dushanbe,
+  Dallas night). First runs on integrated GPUs (and CPU / virtual devices) seed **Planetarium**
+  (`seedGraphicsPresetFromDevice`; discrete GPUs Medium), and the tutorial then ends with a "Graphics" card
+  (`TUT_GRAPHICS`, shown only when it starts on Planetarium or Potato) saying there are no clouds and pointing at
+  Settings > Display > Preset.
 - **Automatic render scale (2026-10-04, `updateDynamicResolution`, Display "Automatic render scale", keys
   `display.dynamic_resolution` (off) / `dynamic_target_fps` (60) / `dynamic_min_scale` (0.5)):** keeps the GPU frame
   under 0.9 x 1000 / fps by 5% steps (down as far as a 30% fixed + 70% x scale^2 model says, after 0.75 s; up one step
@@ -4282,7 +4320,8 @@ turning the intro off just resumes wherever the player last was.
 
 One card at a time (`buildTutorial`, z 40) — a low, wide strip, the graphic beside the text, in the HUD's
 palette (`Pal` / `Style`, moved to `UIPalette.h` so every UI file shares it; wanted input pulses in the
-red accent, held input is solid red) — nine steps (`TutStep`): look, move, climb, boost, select —
+red accent, held input is solid red) — nine steps (`TutStep`; a tenth, Graphics, only on the light presets: "no
+clouds", the preset to try, done by opening Settings or changing the preset; `tutStepCount()`): look, move, climb, boost, select —
 each finished by DOING it, with a keyboard (Q W E / A S D / Shift, labels from the live bindings), mouse
 or gamepad graphic (`buildTutKeyboard/Mouse/Gamepad`; the pad's when `lastInputWasGamepad`), plus a progress bar — then the selection's buttons, the
 time controls, the picture buttons and the menu buttons (Bookmarks, Cinematics, Settings), each OUTLINED on the HUD (PASSTHROUGH floating boxes

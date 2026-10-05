@@ -773,6 +773,7 @@ const float kGlitP = 0.4;
 // screen at grazing angles — the "gigantic yellow blobs" of distant towns (user review 2, snapshot 3).
 vec3  gCityViewE  = vec3(0.0, 0.0, 1.0);
 float gCityFootX  = 1e9;
+vec3  gDirTaa0    = vec3(0.0, 0.0, 1.0);   // the unjittered view ray (ENU), SKY_TAA: the city pattern's point
 // Rooftop PV (2026-10-03): where a solar park's outline overlaps a city, its panels go on the city's
 // roofs instead of in ground rows. The caller sets gCityPvK (the park's rooftop density at the pixel,
 // 0..1) before the day pattern; cityDayGrid writes the panels' share of the pixel (gCityPvCov, already
@@ -807,7 +808,11 @@ vec3 cityGlitterLevel(vec2 p2, ivec2 dAnc, int f, int k, float foot, float ledP,
         ivec2 o  = o0 + ivec2(n & 1, n >> 1);
         ivec2 ci = dAnc * per + ivec2(xi) + o;
         vec3  r  = tdRand3(ivec3(ci, 3701 + 17 * k + f));
-        if (r.z * 0.5 + 0.5 > pres) continue;
+        // Presence ramps in over a band of the hash (same expectation as the hard cut): pres follows the
+        // night map at the JITTERED sample, and a hard threshold switched points near it on and off frame
+        // to frame (still views from orbit, 0.27% of pixels flickering even at 100%).
+        float pw = clamp((pres - (r.z * 0.5 + 0.5)) * 25.0 + 0.5, 0.0, 1.0);
+        if (pw <= 0.0) continue;
         vec3  r2 = tdRand3(ivec3(ci, 3703 + 17 * k + f)) * 0.5 + 0.5;
         vec2  d  = x - (xi + vec2(o) + 0.5 + 0.45 * r.xy);
         float w  = exp(1.3 * (r2.x * 2.0 - 1.0)) / 1.45;             // lognormal-ish, mean ~1
@@ -827,7 +832,7 @@ vec3 cityGlitterLevel(vec2 p2, ivec2 dAnc, int f, int k, float foot, float ledP,
         // centre lines: a crosshatch over sparse cities seen from orbit (user snapshot 5).
         float g   = ((1.0 - hs) * exp(-0.5 * q2) + hs * 0.25 * exp(-0.125 * q2)) / (sgA * sgX)
                   * (1.0 - smoothstep(0.1225, 0.3025, r2d));
-        e += w * cityGlitterColor(fract(r2.y * 7.31 + r2.z * 3.17), ledP, 1.0 - smoothstep(4.0, 16.0, foot))
+        e += pw * w * cityGlitterColor(fract(r2.y * 7.31 + r2.z * 3.17), ledP, 1.0 - smoothstep(4.0, 16.0, foot))
            * g * 0.15915494;
     }
     return e / kGlitP;
@@ -837,6 +842,12 @@ vec3 cityGlitterLevel(vec2 p2, ivec2 dAnc, int f, int k, float foot, float ledP,
 // suburb is fewer points at the same brightness, not dimmer ones — the edges of a city stay crisp instead
 // of the map's 5-km blobs). The result is normalised to mean 1 for the caller's map multiply.
 vec3 cityGlitter(vec2 p2, ivec2 dAnc, int f, float foot, float ledP, float dens01) {
+    // Points at least a RENDERED pixel wide: under the temporal upscale the footprint is the output
+    // pixel's (skyLodScreenH), and a 0.6-footprint point was ~0.4 of an input sample, hit or missed by
+    // each frame's jitter — far cities from orbit flickered (user snapshots 33-34, 2026-10-04; zoomed
+    // in, where a light spans many pixels, they did not). Sized to the input sample, every jitter phase
+    // sees each point and the resolve converges. 1 when not upscaling.
+    foot *= max(1.0, cloud.skyLodScreenH / max(cloud.skyScreenH, 1.0));
     float lvl  = clamp(log2(max(foot * 4.0, 8.0) / 8.0), 0.0, 8.99);   // cell ~4 footprints, up to 4 km
     int   k0   = int(floor(lvl));
     float fr   = lvl - float(k0);
@@ -926,7 +937,10 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poo
         eC += cloud.cityRoadsStrength * cityRoadLight(uv, L.rel, foot) * (1.0 - smoothstep(0.43 * roadsEnd, roadsEnd, foot)) * kLampLedW;
     // Steep ground carries almost no lights: the night map's 5-km blur spreads a city's light over the
     // mountains beside it (the Sandias glowed like a suburb).
-    float e = mix(0.04, 1.0, smoothstep(0.86, 0.96, nUp));
+    // It gives way as the pixel passes the DEM's ~2.7-km texel (as in cityLightFar): the normal there is read
+    // at the jittered sample within a texel, and on slopes in the 0.86-0.96 band a light swung 25x between
+    // frames under the TAA. That far out the terrain contour limit keeps the lights off the mountains.
+    float e = mix(mix(0.04, 1.0, smoothstep(0.86, 0.96, nUp)), 1.0, smoothstep(400.0, 1200.0, foot));
     // Macro: commercial strips along the arterials, dark voids, a mild 2-km variation.
     float lit   = mix(0.12, 1.0, smoothstep(-0.65, -0.25, L.voidN));
     float macro = (0.25 + 2.6 * strip) / 1.55 * lit / 0.88 * exp(0.7 * cityValue2(L.p2, L.dAnc, 2048.0, 5557 + L.f)) / 1.1;
@@ -956,7 +970,13 @@ vec3 cityLightFar(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot, float lum
     gCityCool = clamp(lampS.y, 0.0, 1.0);
     gCitySign = lampS.z;
     float ledP = clamp(mix(0.25, 0.85, dens) + lampS.x + 0.35 * cityValue2(p2, dAnc, 4096.0, 4129 + f), 0.05, 0.95);
-    return cityGlitter(p2, dAnc, f, foot, ledP, lum / 0.25) * mix(0.04, 1.0, smoothstep(0.86, 0.96, nUp));
+    // The steep-ground cut gives way as the pixel passes the DEM's ~2.7-km texel: there the normal is read
+    // at the jittered sample within a texel, its slope sat in the 0.86-0.96 band over the SoCal ranges, and
+    // a light swung 25x between frames (still views from orbit, user snapshots 33-34, 2026-10-04). That far
+    // out the terrain contour limit (cityTerrainLimit) keeps the lights off the mountains.
+    float steepK = mix(0.04, 1.0, smoothstep(0.86, 0.96, nUp));
+    steepK = mix(steepK, 1.0, smoothstep(400.0, 1200.0, foot));
+    return cityGlitter(p2, dAnc, f, foot, ledP, lum / 0.25) * steepK;
 }
 
 // Review 7: the DAY side past the street layout (the user: "night lights reach the horizon, the day
@@ -2340,6 +2360,10 @@ const float kSeaOctA[8]    = float[8](1.0, 2.0, 3.0, 5.0, 8.0, 14.0, 24.0, 41.0)
 // Sea state (set per pixel before the wave calls): amplitude and choppiness scale from the weather.
 float gSeaAmp    = 1.0;
 float gSeaChoppy = 0.0;
+// Sky TAA (2026-10-04): -1 off the sea; on it the share of the history sky_taa.comp keeps UNCLIPPED ("Storm sea
+// trails" x the sea state's storm share), written to the TAA colour's alpha. Any sea pixel also opts out of the
+// resolve's still-camera no-clip rule: the waves move while the camera does not, and the crests smeared.
+float gTaaSeaTrail = -1.0;
 // Review 14: the pixel footprint (m) the wave NORMAL is filtered to (0 = none). Octaves whose cells fall
 // below ~2 footprints fade out: grazing views of a rough sea under a low Sun aliased into glittering pixel
 // noise that crawled whenever the camera moved (user snapshot 4, the South Atlantic at 630 m).
@@ -3004,6 +3028,7 @@ void main() {
     // Sub-pixel jitter (cloud.taaJitter.xy, pixels): the interpolated ray moves linearly across the screen,
     // so its screen derivatives are exact.
     dir = normalize(enuDir + dFdx(enuDir) * cloud.taaJitter.x + dFdy(enuDir) * cloud.taaJitter.y);
+    gDirTaa0 = normalize(enuDir);
 #endif
 #endif
     vec3 sunDir = normalize(sunDirENU.xyz);
@@ -4006,6 +4031,35 @@ void main() {
             float geoLon = atan(hE.y, hE.x);
             uvSurf = vec2((geoLon + PI) / (2.0*PI), (0.5*PI - geoLat) / PI);
         }
+        // The city lights read everything at the UNJITTERED pixel under the sky TAA at 100% (uvTaa0, and
+        // taaDn = the jittered hit minus the unjittered ray's point on the hit's tangent plane, ENU m). Their
+        // points are pixel-sized and their inputs switch them: the night map minus its blue base crosses zero
+        // at a city's fringe, the terrain contour cuts over 120 m of height, and the glitter concentrates a
+        // sparse fringe's light into a few points (x ~500) — jittered, a light was on in 1-2 of the 8 phases,
+        // and the resolve's flash and clip rules showed it raw (still views from orbit, user snapshots
+        // 2026-10-04: dark with the TAA off). Only where the view meets the ground at more than ~12 degrees
+        // (|cos| > 0.2 on the unjittered ray, so the choice itself does not move with the jitter): toward a
+        // grazing horizon the tangent-plane point slides kilometres for half a pixel and over hills is simply
+        // wrong — applied there it doubled the low-horizon flicker (user snapshot, Irvine from 330 m: 2.3% ->
+        // 4.6% of pixels). Under the temporal upscale too: an unjittered light then moves by up to half an input
+        // pixel per frame, but its points are an input pixel wide (cityGlitter) and measured far steadier.
+        vec2 uvTaa0 = uvSurf;
+        vec3 taaDn  = vec3(0.0);
+        bool taaUnj = false;
+#ifdef SKY_TAA
+        {
+            float tC = tHit > 0.0 ? tHit : tSeaLvl;
+            vec3  hu = normalize(hitPt);
+            float c0 = dot(gDirTaa0, hu);
+            if (tC > 0.0 && abs(c0) > 0.2) {
+                vec3 Dn = dir * tC - gDirTaa0 * (tC * dot(dir, hu) / c0);
+                vec3 P0 = hitPt - Dn;
+                uvTaa0 = dirToUV(normalize(P0.x * enuX + P0.y * enuY + P0.z * enuZ));
+                taaUnj = true;
+                taaDn  = Dn;   // 100%: the points too
+            }
+        }
+#endif
 
         vec3  shadingN   = (tHit > 0.0) ? terrainNorm : normalize(hitPt);
         float sunDot     = dot(shadingN, sunDir);
@@ -4091,7 +4145,7 @@ void main() {
         if (uvd_dy.x >  0.5) uvd_dy.x -= 1.0;
         if (uvd_dy.x < -0.5) uvd_dy.x += 1.0;
         vec3 dayColor   = textureGrad(earthDayTex,   uvSurf, uvd_dx, uvd_dy).rgb;
-        vec3 nightColor = textureGrad(earthNightTex, uvSurf, uvd_dx, uvd_dy).rgb;
+        vec3 nightColor = textureGrad(earthNightTex, uvTaa0, uvd_dx, uvd_dy).rgb;
         // Blur city lights toward a coarser mip under cloud (see localCloudOpacity above and
         // cloud.cityLightBlurLod) — real light passing through cloud droplets is diffused, not a
         // clean pass-through of whatever's behind it, so a sharp copy of earthNightTex's city
@@ -4106,7 +4160,7 @@ void main() {
         vec3  nightBlurLights = vec3(0.0);
         float nightBlurK      = 0.0;
         if (cloud.cityLightBlurLod > 0.01 && localCloudOpacity > 0.001) {
-            vec3 nightColorBlur = textureLod(earthNightTex, uvSurf, cloud.cityLightBlurLod).rgb;
+            vec3 nightColorBlur = textureLod(earthNightTex, uvTaa0, cloud.cityLightBlurLod).rgb;
             if (cloud.cityLightsStrength > 0.0) {
                 nightBlurK      = localCloudOpacity;
                 nightBlurLights = max(nightColorBlur - vec3(0.006, 0.006, 0.0132), vec3(0.0));
@@ -4246,7 +4300,10 @@ void main() {
         // Terrain: lights and built-up land end at a contour above the valley floor and below ~4.5 km
         // (terrain.glsl cityTerrainLimit, shared with the city light sprites).
         if (cityLum > 1e-5) {
-            float cTerrK = cityTerrainLimit(earthElevTex, uvSurf, tHit > 0.0 ? terrainH0 : 0.0, smoothstep(0.004, 0.12, cityLum));
+            // At the unjittered point (uvTaa0): the cut is 120 m of height wide, and from orbit the jitter
+            // moved the sample a third of a DEM texel — 100-300 m of height on a slope.
+            float cH = tHit > 0.0 ? (taaUnj ? terrainHeightAtUV(earthElevTex, earthSpecTex, uvTaa0, 0.0) : terrainH0) : 0.0;
+            float cTerrK = cityTerrainLimit(earthElevTex, uvTaa0, cH, smoothstep(0.004, 0.12, cityLum));
             cityLights *= cTerrK;
             cityLum    *= cTerrK;
         }
@@ -4254,7 +4311,7 @@ void main() {
         // the city pattern stopped on an arc around the observer and the far side showed the raw map's
         // 5-km texels (user snapshot 5, Tokyo from 527 km).
         bool  cityLand   = tHit > 0.0 || (tSeaLvl > 0.0 && (waterPx == 0
-                         || (waterPx < 0 && textureLod(earthSpecTex, uvSurf, 0.0).r <= 0.5)));
+                         || (waterPx < 0 && textureLod(earthSpecTex, uvTaa0, 0.0).r <= 0.5)));
         // ── Solar PV parks (2026-10-02): the reflector targets of kind "solar" (fillSolarSites) ─────
         // Rows of glass over graded ground, at every distance (a park is a dark patch from orbit too). The
         // glass's specular lobe takes the Sun below and the Reflect beams in the ground-spot loop.
@@ -4301,7 +4358,15 @@ void main() {
 #endif
             float cT = tHit > 0.0 ? tHit : tSeaLvl;
             cQ    = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
-            cFoot = pixAngle * cT / max(abs(dot(dir, shadingN)), 0.2);
+            cQ   -= taaDn;   // the pattern (layout, lamp lines, glitter) at the unjittered pixel (uvTaa0)
+            // The slope that stretches the footprint: the shading normal close up, the sphere's from ~100-400 m
+            // a pixel. Far out the shading normal is read at the jittered sample within a DEM texel, and the
+            // footprint (which sizes the ~1-px glitter points) moved by tens of percent per frame: the lights'
+            // edges blinked under the TAA (still views from orbit, user snapshots 33-34, 2026-10-04).
+            float cCosS = abs(dot(dir, normalize(hitPt)));
+            float cCos  = mix(abs(dot(dir, shadingN)), cCosS,
+                              smoothstep(100.0, 400.0, pixAngle * cT / max(cCosS, 0.2)));
+            cFoot = pixAngle * cT / max(cCos, 0.2);
             cityFar = cFoot >= cloud.cityLod.w;
             if (cFoot < cloud.cityLod.w) {   // past it both patterns are uniform: orbit sees the maps as before
                 cityL   = cityLayout(cQ, enuX, enuY, enuZ, cityLum, cFoot < cloud.cityLod.y);
@@ -4637,7 +4702,8 @@ void main() {
             // dots around every town from orbit (user review 2, snapshot 2).
             if (cityLOk || cityFar) {
                 gCityViewE = enuX * dir.x + enuY * dir.y + enuZ * dir.z;
-                gCityFootX = pixAngle * (tHit > 0.0 ? tHit : tSeaLvl);
+                gCityFootX = pixAngle * (tHit > 0.0 ? tHit : tSeaLvl)
+                           * max(1.0, cloud.skyLodScreenH / max(cloud.skyScreenH, 1.0));
             }
             if (cityLOk || cityFar)
                 cityLights = mix(cityLights, vec3(dot(cityLights, vec3(0.2126, 0.7152, 0.0722))), cloud.cityLightsStrength);
@@ -4647,7 +4713,11 @@ void main() {
                 cityPool = cityLights * poolM * cloud.cityLightsStrength;
                 cityLights *= mix(vec3(1.0), pat, cloud.cityLightsStrength);
             } else if (cityFar) {
-                vec3 pat = cityLightFar(cQ, enuX, enuY, enuZ, cFoot, cityLum, cNUp);
+                // The glitter's size from the SPHERE's slope, not the shading normal: read at the jittered
+                // sample, the terrain normal changed the stretched footprint by tens of percent per frame, and
+                // the ~1-px points' edges blinked under the TAA (still views from orbit, 2026-10-04).
+                float cFootG = pixAngle * (tHit > 0.0 ? tHit : tSeaLvl) / max(abs(dot(dir, hitUp)), 0.2);
+                vec3 pat = cityLightFar(cQ, enuX, enuY, enuZ, cFootG, cityLum, cNUp);
                 cityLights *= mix(vec3(1.0), pat, cloud.cityLightsStrength);
             }
             // Where the city light sprites carry the lights (city_sprites.comp, cloud.cityParams.z = their
@@ -4798,6 +4868,8 @@ void main() {
             float seaState = oceanSeaState(normalize(hitPt.x * enuX + hitPt.y * enuY + hitPt.z * enuZ));
             gSeaAmp    = seaState;
             gSeaChoppy = clamp((seaState - 1.0) * 1.2, -1.2, 2.0);
+            // Rough seas: the westerly belts reach ~1.4-1.55 (a light touch here), storms 2-4 (full; oceanSeaState).
+            gTaaSeaTrail = cloud.cityLod2.w * smoothstep(1.3, 1.9, seaState) * altFadeW;
             // Shore (2026-09-30): the distance to the height function's waterline, near a shore and near the
             // observer. The waves shoal (damped over the last ~200 m: at full chop their crests stood metres
             // above a beach that rises 0.25 m/m, a hard seam seen from the water), surf lines roll in, and the
@@ -6069,6 +6141,11 @@ void main() {
 
     outColor = vec4(color, 1.0);
     if (terrainDebugActive) outColor = vec4(terrainDebugColor, 1.0);
+#ifdef SKY_TAA
+    // Alpha 1 = not sea; [0, 0.5] = sea, 0.5 x (1 - trail). Cloud in front keeps its own clip (it would ghost).
+    if (gTaaSeaTrail >= 0.0 && !meshHit && !terrainDebugActive)
+        outColor.a = 0.5 * (1.0 - clamp(gTaaSeaTrail * (1.0 - localCloudOpacity), 0.0, 1.0));
+#endif
 
     // Unified scene depth (include/depth.glsl) for the passes that follow: the TRUE distance to the
     // first opaque surface — terrain, else ocean (tSeaLvl covers ocean pixels with no terrain

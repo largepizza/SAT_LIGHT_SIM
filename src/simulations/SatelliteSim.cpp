@@ -2510,7 +2510,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.cityParams = glm::vec4(cityTwinkleRate, glm::mix(1.0f, citySpriteGround, std::min(sprOn, 1.0f)), reach,
                                       citySpriteStartFootM);
             cp.cityLod  = glm::vec4(cityPostsFootM, cityGridFootM, cityRoadsFootM, cityLayoutFootM);
-            cp.cityLod2 = glm::vec4(cityStreetShareNear, cityStreetShareFar, std::clamp(oceanWaveRangeFade, 0.05f, 1.0f), 0.0f);
+            cp.cityLod2 = glm::vec4(cityStreetShareNear, cityStreetShareFar, std::clamp(oceanWaveRangeFade, 0.05f, 1.0f), std::clamp(oceanStormTrails, 0.0f, 1.0f));
         }
         cp.cloudShadowRangeM = cloudShadowRangeM;
         // sat_sky.frag's render target: the low-res prepass extent when renderScale<1 (recordPrePass
@@ -11628,7 +11628,17 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
         tp.c2e[i] = glm::vec4(view3[i], 0.0f);          // camera -> ENU rows = the view's columns
         tp.e2p[i] = glm::vec4(e2p[0][i], e2p[1][i], e2p[2][i], 0.0f);   // row i
     }
-    tp.eyeDelta = glm::vec4(glm::vec3(dEnu), valid ? 1.0f : 0.0f);
+    // w: 0 = no history, 1 = history, 2 = history and NOTHING MOVED (2026-10-04): the eye moved < 1 cm, the view did
+    // not turn and sim time runs at <= ~1x. Only then does the resolve drop its colour clip (sky_taa.comp). A
+    // per-pixel "still" (reprojection under 0.1 px) was tried first: climbing, the far clouds move less than that
+    // while the layer being crossed changes, and they left trails (user snapshots 37-38).
+    bool camStill = glm::length(dEnu) < 0.01 && glm::length(up - skyTaaPrevObsDir) < 1e-9;
+    for (int c = 0; c < 4 && camStill; ++c)
+        for (int r = 0; r < 4; ++r)
+            camStill = camStill && std::abs(pc.skyView[c][r] - skyTaaPrevView[c][r]) < 1e-6f;
+    const bool timeStill = timePaused || std::abs(kTimeScales[timeScaleIdx]) <= 1.5;
+    // 3 = also paused: the waves (sim time) are frozen too, so the sea may skip the clip like everything else.
+    tp.eyeDelta = glm::vec4(glm::vec3(dEnu), valid ? (camStill && timeStill ? (timePaused ? 3.0f : 2.0f) : 1.0f) : 0.0f);
     // The spare w's: this frame's jitter (input px) and the input extent (render scale < 1 = upscale).
     tp.c2e[0].w = skyTaaJitterNow.x;
     tp.c2e[1].w = skyTaaJitterNow.y;

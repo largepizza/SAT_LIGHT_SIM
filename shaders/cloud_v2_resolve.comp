@@ -326,6 +326,9 @@ void main()
     }
     if (cv2.fog2.z > 0.5 && tFull)          // debug view 11 (fog2.z): the adaptive rate's full-rate tiles
         outC.rgb = outC.rgb * vec3(1.3, 0.7, 0.7) + vec3(0.05, 0.0, 0.0);
+    // A non-finite value (from any input) would live on in the history and spread through the neighbourhood
+    // reads into a growing block (black squares at the Earth's limb, user snapshot 2026-10-04): no cloud.
+    if (any(isnan(outC)) || any(isinf(outC))) outC = vec4(0.0, 0.0, 0.0, 1.0);
     imageStore(outColor, c, outC);
     // Review 12: the DISTANCE gets a history too, in a still view: it was this frame's sample's (a sparse
     // block takes its one sample's distance, and the sample moves through the block every frame), and the sky

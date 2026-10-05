@@ -145,9 +145,10 @@ enum class FpsCapMode
 // whatever is currently loaded/set — don't overwrite it with a preset table."
 enum class GraphicsPreset
 {
-    Planetarium, // v1.0 experience: flat textured Earth, stars, satellites, atmosphere. No clouds.
-    Low,         // integrated graphics / old laptops — flat 2D cloud paste, tight terrain reach
-    Medium,      // mainstream discrete GPU — volumetric clouds/terrain at reduced budgets
+    Planetarium, // v1.0 experience: flat textured Earth, stars, satellites, atmosphere. No clouds. The
+                 // first-run seed for integrated GPUs (seedGraphicsPresetFromDevice).
+    Low,         // Medium's effects (volumetric clouds, aurora, beams, fog, terrain detail) at 50% render scale
+    Medium,      // mainstream discrete GPU — volumetric clouds/terrain at reduced budgets, 67% render scale
     High,        // today's tuned defaults
     Ultra,       // uncapped for showcase/screenshots
     Custom,      // user has hand-edited an advanced slider since the last named preset was applied
@@ -1570,7 +1571,7 @@ struct GpuCloudParams
     glm::vec4 moonCenter;    // xyz the Moon's centre from the Earth's, observer ENU (km); w its angular radius (rad)
     glm::vec4 moonMisc;      // x Sun fraction the observer sees past the Moon, y solar / z lunar eclipse possible, w distance (km) (784 -> 816)
     glm::vec4 cityLod;       // footprint (m/px) where x posts, y the street grid, z major roads, w the street layout end (816 -> 832)
-    glm::vec4 cityLod2;      // x streets' share close up, y their share as they fade; z "Sea wave range fade" (review 28); w unused (832 -> 848)
+    glm::vec4 cityLod2;      // x streets' share close up, y their share as they fade; z "Sea wave range fade" (review 28); w "Storm sea trails" (832 -> 848)
     glm::vec4 seaTune;       // review 24: x far sea ripple, y sea warp, z sea warp detail, w ripple size (px) (848 -> 864)
     // The auroral oval (864 -> 928, 2026-10-03): AuroraGpu (SpaceWeather.h), see cloud_params.glsl.
     glm::vec4 auroraMidnight; // xyz toward magnetic midnight (ECEF), w Kp
@@ -4167,6 +4168,8 @@ private:
     // and the wave field's 2D warp at 24 / 8 cells (octave-0 cells, ~18 m).
     float oceanFarRipple = 1.5f, oceanWarp = 3.5f, oceanWarpDetail = 1.2f;
     float oceanFarRippleSize = 5.0f;   // review 27 (slot 256): the far ripple's cell, in along-view pixel footprints
+    float oceanStormTrails = 1.0f;     // 2026-10-04 (slot 260): "Storm sea trails", the sky TAA keeps a stormy sea's history
+                                       // unclipped (crests smear like spray and chop); 0 = off, x the sea state's storm share
     float oceanWaveRangeFade = 0.4f;   // review 28 (slot 257): the share of the wave range the waves fade over (0.4 = from 0.6x)
     float oceanWaveSharpness = 0.5f;         // review 21: x the footprint the wave octaves are filtered at (1 = review 14; slot 243)
     float oceanReflSamples = 6.0f;           // ocean sky-reflection loop sample count (N_REFL)
@@ -4860,7 +4863,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 260;
+    static constexpr int kCloudSliderSlots = 261;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),
@@ -5184,8 +5187,14 @@ private:
         TUT_TIME,
         TUT_CAPTURE,
         TUT_SETTINGS,
+        TUT_GRAPHICS,   // only when the tutorial starts on a light preset (tutGraphicsCard): no clouds there
         TUT_COUNT,
     };
+    // The light presets (Planetarium, Potato) draw no clouds; a first run on an integrated GPU starts on
+    // Planetarium, and the tutorial ends with a card that says so and where to change it (2026-10-04).
+    bool tutGraphicsCard = false;
+    int tutBasePreset = 0;
+    int tutStepCount() const { return tutGraphicsCard ? (int)TUT_COUNT : (int)TUT_GRAPHICS; }
     bool tutActive = false;
     bool tutorialDone = false;      // persisted (display.tutorial_done); Skip or Finish sets it
     bool tutAutoChecked = false;    // the once-per-session auto start has been considered

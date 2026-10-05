@@ -5078,6 +5078,9 @@ void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
         // Review 28: how much of the range the waves fade out over (1 = from the observer out; 0.4 = the last 40%).
         {"Sea wave range fade", &oceanWaveRangeFade, 0.05f, 1.0f, 0.05f, "%.2f", 257},
         {"Sea wave sharpness", &oceanWaveSharpness, 0.1f, 1.0f, 0.05f, "%.2f", 243},
+        // 2026-10-04: a stormy sea keeps the temporal AA's history unclipped, so its crests smear like spray (the
+        // user liked the look when it was a bug). Needs Temporal AA; 0 = off.
+        {"Storm sea trails", &oceanStormTrails, 0.0f, 1.0f, 0.05f, "%.2f", 260},
         // Review 24: the far sea's resolvable ripple (columns of light instead of a mirror past the waves) and the
         // wave field's warp (higher = the ridges meander more, and stretch in places).
         {"Far sea ripple", &oceanFarRipple, 0.0f, 15.0f, 0.05f, "%.2f", 248},
@@ -6798,11 +6801,14 @@ GraphicsPreset SatelliteSim::seedGraphicsPresetFromDevice(VulkanContext &ctx) co
     {
     case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
         return GraphicsPreset::Medium;
+    // Planetarium, the "everything off" tier (no volumetric clouds), since 2026-10-04: Low became Medium's
+    // effects at a 50% render scale, too heavy to start an unknown laptop on. The tutorial's graphics card
+    // says so and points at the preset (TutStep::Graphics).
     case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
     case VK_PHYSICAL_DEVICE_TYPE_CPU:
     case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
     default:
-        return GraphicsPreset::Low;
+        return GraphicsPreset::Planetarium;
     }
 }
 
@@ -6907,8 +6913,11 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // reflection octaves matched to Medium/High/Ultra (3/5/6) per the same "never compromise on
         // ocean quality" directive — those sliders are effectively free relative to everything else
         // this tier turns down.
-        v = {kBitAurora | kBitBeams | kBitFog,
-             0.7f, 1.0f, 200.0f, 3.0f, 0.02f, 6.0f, 64.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 300000.0f, 5000.0f, 50000.0f};
+        // 2026-10-04 (the user): Low is Medium's look at half resolution — every effect on (aurora, beams, fog,
+        // terrain detail), render scale 50%. The clouds and the depth pass follow the render scale and the sky
+        // TAA upscales, so this is ~half Medium's GPU frame. Planetarium is the "everything off" tier.
+        v = {0u,
+             0.5f, 1.0f, 300.0f, 6.0f, 0.015f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 600000.0f, 80000.0f, 200000.0f};
         break;
     case GraphicsPreset::Medium:
         // Nothing disabled outright — volumetric clouds and aurora both run, at reduced step
@@ -6918,8 +6927,9 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // no real budget to save by tightening them at this tier.
         // Review 16: light steps 4 -> 6. With 4 over 2.5 km a Cb head lit at a grazing Sun never settled (mean
         // |diff| between two settles 7.4 levels; 6: 5.3), for +0.14 ms in that storm view.
+        // 2026-10-04: render scale 67% (was 85%): the clouds follow it and the sky TAA upscales.
         v = {0u,
-             0.85f, 1.0f, 300.0f, 6.0f, 0.015f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 600000.0f, 80000.0f, 200000.0f};
+             0.67f, 1.0f, 300.0f, 6.0f, 0.015f, 6.0f, 96.0f, 2.0f, 3.0f, 5.0f, 6.0f, 50000.0f, 600000.0f, 80000.0f, 200000.0f};
         break;
     case GraphicsPreset::High:
         // The compiled-in class member defaults, verbatim — "today's tuned values." Re-synced
@@ -6962,7 +6972,8 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
     // mountains, ~+1 ms from aircraft altitude. Off on the integrated-GPU tiers — and on Planetarium /
     // Potato the sky shader could not draw it anyway, while scene_depth.comp would still march it.
     {
-        const bool detail = p == GraphicsPreset::Medium || p == GraphicsPreset::High || p == GraphicsPreset::Ultra;
+        const bool detail = p == GraphicsPreset::Low || p == GraphicsPreset::Medium || p == GraphicsPreset::High ||
+                            p == GraphicsPreset::Ultra;
         terrainDetailStrength = detail ? 1.0f : 0.0f;
         terrainShadowStrength = detail ? 1.0f : 0.0f;
         terrainMaterialStrength = detail ? 1.0f : 0.0f;
@@ -7488,6 +7499,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         oceanFarRipple = c.value("ocean_far_ripple", oceanFarRipple);
         oceanFarRippleSize = c.value("ocean_far_ripple_size", oceanFarRippleSize);
         oceanWaveRangeFade = std::clamp(c.value("ocean_wave_range_fade", oceanWaveRangeFade), 0.05f, 1.0f);
+        oceanStormTrails = std::clamp(c.value("ocean_storm_trails", oceanStormTrails), 0.0f, 1.0f);
         oceanWarp = c.value("ocean_warp", oceanWarp);
         oceanWarpDetail = c.value("ocean_warp_detail", oceanWarpDetail);
         oceanGlintMinFlux = c.value("ocean_glint_min_flux", oceanGlintMinFlux);
@@ -7771,6 +7783,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ocean_far_ripple", oceanFarRipple},
         {"ocean_far_ripple_size", oceanFarRippleSize},
         {"ocean_wave_range_fade", oceanWaveRangeFade},
+        {"ocean_storm_trails", oceanStormTrails},
         {"ocean_warp", oceanWarp},
         {"ocean_warp_detail", oceanWarpDetail},
         {"ocean_glint_min_flux", oceanGlintMinFlux},
