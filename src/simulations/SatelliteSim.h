@@ -571,6 +571,17 @@ struct PointDrawPC
 }; // total: 128 bytes
 static_assert(sizeof(PointDrawPC) == 128, "PointDrawPC layout mismatch");
 
+// ── Push constants for the rain particles (rain_particles.vert / .frag, include/rain_particles.glsl) ──
+struct RainDrawPC
+{
+    glm::mat4 skyView;
+    float fovYRad, aspect, screenW, screenH;
+    glm::vec4 eyeVel;      // xyz the eye's velocity (ENU, m/s), w the shutter (s)
+    glm::vec4 params;      // x drops in level 0, y levels, z visibility gain, w the sky's exposure
+    glm::vec4 obsECEFDir;  // xyz the observer's direction, w mode bits (1 diamond dust, 2 manual depth test)
+};
+static_assert(sizeof(RainDrawPC) == 128, "RainDrawPC layout mismatch");
+
 // ── Push constants for cloud_march.comp (half-res cloud compute pass, C15-perf) ──────────────
 // Matches the layout(push_constant) block in cloud_march.comp exactly. A separate struct from
 // SatDrawPC (own pipeline layout, own push-constant range) — carries only the fields the moved
@@ -668,6 +679,10 @@ struct GpuCloudV2Params
     // 2026-10-04: the low shape volume's rotated frame (clouds_v2.glsl: columns) and its anchors.
     glm::vec4 shapeRotA[3];
     glm::vec4 anchorShapeA, anchorStormA;
+    // 2026-10-05: the rain particles' motion, integrated over sim time on the CPU (SatelliteSimRain.cpp).
+    glm::vec4 rainMotion;  // x fall phase (integral of the reference fall speed / 64, m, mod 1024), y reference speed now,
+                           // zw the rain's wind drift (rain frame E/N, m, mod 1024)
+    glm::vec4 rainWind;    // xy the wind now (m/s, rain frame), zw the snow's wind drift (m, mod 1024)
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -680,7 +695,8 @@ static_assert(offsetof(GpuCloudV2Params, anchorMorph) == 288 + 48 * kCloudV2Type
 static_assert(offsetof(GpuCloudV2Params, farLight) == 288 + 48 * kCloudV2Types + 512, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, farTune) == 288 + 48 * kCloudV2Types + 528, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, shapeRotA) == 288 + 48 * kCloudV2Types + 560, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 640, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, rainMotion) == 288 + 48 * kCloudV2Types + 640, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 672, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -3037,10 +3053,16 @@ private:
     float cv2CirrusWindMps = 30.0f;    // the jet: cirrus moves this fast eastward over the map
     float cv2RainAmount = 1.0f;        // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
-    float cv2RainStreaks = 1.0f;       // falling-rain streaks when the observer stands in rain
+    float cv2RainStreaks = 1.0f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
     float moveSpeedPerHeight = 1.0f;   // WASD: this many times the height above the ground per second (capped
                                        // at the old fixed 0.08 rad/s, ~510 km/s): slow near the surface
-    float cv2DropDistM = 128.0f;       // ... drawn out to this distance (m; each doubling is one more lattice layer)
+    float cv2DropDistM = 32.0f;        // the rain particles' reach (m; each doubling is one more level, at most 64)
+    float cv2RainParticlesK = 16.0f;   // drops in the nearest box, thousands (each farther level holds twice as many)
+    float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
+    float cv2RainFallSpeed = 1.3f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
+    float cv2RainWindGain = 1.5f;      // x the ground wind on the drops (0.4 x the wind aloft)
+    float cv2RainStormWind = 14.0f;    // the outflow from a heavy shower (m/s at rain rate 1), away from its core
+    float cv2RainGusts = 1.0f;         // the wind's gustiness (x; stronger in heavy rain)
     float cv2SnowWind = 1.0f;          // snow's drift x this (blizzards: flakes driven sideways, streaking)
     float cv2ExposureEV = 0.0f;        // exposure compensation (stops) on the sky's auto exposure
     float cv2HighlightRolloff = 0.5f;  // 0 = the old tonemap; 1 = a long highlight shoulder
@@ -3269,7 +3291,8 @@ private:
     static constexpr uint32_t kCv2FlashMax = 32;             // == kCv2FlashMax in cloud_lightning.glsl
     // + review 22's rain map (cloud_lightning.glsl): 4 workgroup maxima and 32 x 32 rain rates after the flashes.
     static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * 48 + 16 + 80;   // + review 22b's Sun profile
-    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2RainMapOffset + 1024 * 4;
+    static constexpr VkDeviceSize kCv2RainLightOffset = kCv2RainMapOffset + 1024 * 4;   // cv2RainKey .. cv2RainMisc
+    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2RainLightOffset + 4 * 16;
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;
@@ -4863,7 +4886,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 261;
+    static constexpr int kCloudSliderSlots = 267;   // 261-266 rain particles (count, shutter, fall speed, wind, storm wind, gusts)
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),
@@ -5014,6 +5037,31 @@ private:
                                                      // trailComposite (graphics) pipelines
     void initStars(VulkanContext &ctx);
     void createStarPipeline(VulkanContext &ctx);
+    // Rain, snow and diamond dust at the eye as particles (SatelliteSimRain.cpp, 2026-10-04).
+    void createRainParticles(VulkanContext &ctx);
+    void createRainPipeline(VulkanContext &ctx);
+    void writeRainDescriptors(VulkanContext &ctx);
+    void destroyRainParticles(VkDevice device);
+    void recordRainParticles(VkCommandBuffer cmd, VulkanContext &ctx, float dt);
+    VkDescriptorSetLayout rainDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool rainDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet rainDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout rainPipeLayout = VK_NULL_HANDLE;
+    VkPipeline rainPipeline = VK_NULL_HANDLE;
+    bool cv2LightningRanThisFrame = false;   // the rain light at the eye is this frame's (recordCloudsV2)
+    glm::dvec3 rainPrevEye{0.0};
+    void updateRainMotion(GpuCloudV2Params &p);   // fillCloudsV2Params: integrates the fall and the wind over sim time
+    double rainPrevSimT = 0.0;
+    bool rainPrevSimTValid = false;
+    double rainFallPhase = 0.0;                  // integral of the reference fall speed (m)
+    glm::dvec2 rainDrift{0.0}, snowDrift{0.0};   // integral of the wind (m, rain frame E/N)
+    glm::vec2 rainWindNow{0.0f};                 // eased wind (m/s)
+    float rainRateEased = 0.0f;
+    float rainFallRefNow = 1.0f;
+    bool rainPrevEyeValid = false;
+    int rainModeLastFrame = 0;               // 0 none, 1 rain / snow, 2 diamond dust (harness state)
+    uint32_t rainInstancesLastFrame = 0;
+    int rainLevelsLastFrame = 0;
     void updateStars();
     void initPlanets(VulkanContext &ctx);                                       // planetBuf + planetDescSet, reusing starDescLayout
     void updatePlanets();                                                       // mirrors updateStars(); called right after it

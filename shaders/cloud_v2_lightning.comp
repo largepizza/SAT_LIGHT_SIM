@@ -34,6 +34,51 @@ layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define CV2_FLASH_BINDING 12
 #define CV2_FLASH_WRITE
 #include "cloud_lightning.glsl"
+#include "atmosphere.glsl"
+layout(set = 0, binding = 7) uniform sampler2D earthNightTex;   // the march set's (city light on the rain at the eye)
+
+// ── The light on a rain drop at the eye (rain particles, 2026-10-04) ───────────────────────────────
+// Copies of cloud_v2_march.comp's sunTransmit / sunColorAt / skyZenithAt (keep in step): the particles
+// must be lit as the march lights a rain sample at the eye, or the drawn drops and the rain volume
+// beyond them disagree.
+vec3 rlSunTransmit(vec3 p, vec3 d, vec3 betaR, float betaM) {
+    float r = length(p), c = dot(p, d) / r;
+    float odR = atmColumnInf(r, c, H_R) * H_R;
+    float odM = atmColumnInf(r, c, H_M) * H_M;
+    const float rO = R_EARTH + 25000.0;
+    float sin2 = (r / rO) * (r / rO) * (1.0 - c * c);
+    float sec  = inversesqrt(max(1.0 - sin2, 1e-3));
+    float nX   = (r <= rO) ? 1.0 : ((c < 0.0 && sin2 < 1.0) ? 2.0 : 0.0);
+    vec3  odO  = vec3(0.019, 0.027, 0.0016) * min(sec, 30.0) * nX;
+    return exp(-(betaR * odR + betaM * 1.1 * odM + odO));
+}
+vec3 rlSunColorAt(vec3 p, vec3 sunDir, vec3 betaR, float betaM) {
+    vec2 tSE = raySphere(p, sunDir, R_EARTH);
+    if (tSE.x > 0.0 && tSE.y > 0.0) return vec3(0.0);
+    return SUN_INTENSITY * rlSunTransmit(p, sunDir, betaR, betaM);
+}
+vec3 rlSkyZenithAt(vec3 p, vec3 sunDir, vec3 betaR, float betaM) {
+    vec3 zen = normalize(p);
+    vec2 tSA = raySphere(p, zen, R_ATMOS);
+    if (tSA.y <= 0.0) return vec3(0.0);
+    const int N_Z = 6;
+    float seg = tSA.y / float(N_Z);
+    float cosUp = dot(zen, sunDir);
+    float odR = 0.0, odM = 0.0, accM = 0.0;
+    vec3  accR = vec3(0.0);
+    for (int i = 0; i < N_Z; ++i) {
+        vec3  sp = p + zen * ((float(i) + 0.5) * seg);
+        float h  = max(0.0, length(sp) - R_EARTH);
+        float dR = exp(-h / H_R) * seg, dM = exp(-h / H_M) * seg;
+        odR += dR; odM += dM;
+        vec2 tSE = raySphere(sp, sunDir, R_EARTH);
+        if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+        vec3 att  = exp(-(betaR * odR + betaM * 1.1 * odM)) * rlSunTransmit(sp, sunDir, betaR, betaM);
+        accR += att * dR;
+        accM += dot(att, vec3(1.0 / 3.0)) * dM;
+    }
+    return SUN_INTENSITY * (phaseR(cosUp) * betaR * accR + vec3(phaseM(cosUp) * betaM * accM));
+}
 
 shared uint sFlashN;
 shared float sRainMax[256];
@@ -48,7 +93,7 @@ void main()
     uint li = gl_LocalInvocationIndex;
     // Review 22: workgroups 1-4 fill the rain map around the eye (cloud_lightning.glsl): the rain rate at each
     // cell, from the same field and the same formula as the march's rate at the eye, so the drops in each depth
-    // layer (cloud_march.comp rainDrops) follow the rain volume — walking toward a shaft, its drops appear in
+    // layer (the rain particles, rain_particles.vert) follow the rain volume — walking toward a shaft, its drops appear in
     // the far layers first. They used to come from the rate at the eye alone: none until inside, then all.
     if (gl_WorkGroupID.x > 0u) {
         uint  cell = (gl_WorkGroupID.x - 1u) * 256u + li;
@@ -250,5 +295,76 @@ void main()
         cv2EyeSunT = floatBitsToUint(sunT);
         cv2FlashPad2 = floatBitsToUint(discT);
         cv2EyeIceS = floatBitsToUint(iceS);
+
+        // ── The light on a rain drop at the eye (rain_particles.vert, 2026-10-04): the march's rain sample there.
+        // Key light: the Sun through the clouds toward it (discT, the 400-km march above) and the Earth's shadow,
+        // or the Moon at night (dimmed by the column above, at its slant). Ambient: the zenith sky through the
+        // cloud above (two-stream diffuse transmission of the column's optical depth, as the march's ambVis) +
+        // the ground and horizon (the march's 0.35) + the key light's bounce off the ground.
+        {
+            vec3  BETA_R  = BETA_R_BASE * cloud.atmosRayleighGain;   // as the march's
+            float BETA_M  = BETA_M_BASE * cloud.atmosMieGain;
+            vec3  eyeP    = vec3(0.0, 0.0, R_EARTH + eyeH);
+            vec3  moonENU = normalize(pc.moonDirENU.xyz);
+            float horizS  = -sqrt(max(1.0 - (R_EARTH / eyeP.z) * (R_EARTH / eyeP.z), 0.0));
+            float sunUp   = sunENU.z;
+            float sunVis  = smoothstep(horizS - 0.004, horizS + 0.004, sunUp);
+            float dayness = clamp((sunUp + 0.2) / 0.5, 0.0, 1.0);
+            float nightK  = 1.0 - min(dayness * 3.0, 1.0);
+            float tauUp = 0.0;
+            if (eyeH < cv2.shell.y) {
+                float Lu = cv2.shell.y - eyeH;
+                for (int i = 0; i < 12; ++i) {
+                    float u0 = float(i) / 12.0, u1 = float(i + 1) / 12.0;
+                    float t  = Lu * (0.5 * (u0 + u1)) * (0.5 * (u0 + u1));
+                    float dt = Lu * (u1 * u1 - u0 * u0);
+                    tauUp += cv2Field(cv2Pos(vec3(0.0, 0.0, t), eyeH, enuToEcef), 0.0, max(30.0, dt * 0.5)).sigma * dt;
+                }
+            }
+            const vec3 kMoonCol = vec3(0.92, 0.95, 1.0);   // == kMoonColor (cloud_v2_march.comp)
+            vec3  moonKey = kMoonCol * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y;
+            vec3  key = vec3(0.0), kDir = sunENU;
+            float isMoon = 0.0;
+            vec3  sc = rlSunColorAt(eyeP, sunENU, BETA_R_BASE * cv2.atmo.x, BETA_M);
+            if (sunVis > 0.0 && dot(sc, sc) > 0.0) {
+                key = sc * sunVis * cv2.look2.y * discT;
+                if (cloud.moonMisc.y > 0.5) key *= cloud.moonMisc.x;   // a solar eclipse: the Sun the eye sees
+            } else if (nightK > 0.0) {
+                key = moonKey * nightK * smoothstep(-0.05, 0.1, moonENU.z) * exp(-tauUp / max(moonENU.z, 0.2));
+                kDir = moonENU; isMoon = 1.0;
+            }
+            float twi     = smoothstep(horizS - 0.12, horizS, sunUp) * (1.0 - smoothstep(horizS + 0.05, horizS + 0.25, sunUp));
+            float skyDusk = smoothstep(horizS - 0.09, horizS + 0.04, sunUp);
+            vec3  skyAmb  = rlSkyZenithAt(eyeP, sunENU, BETA_R, BETA_M) * skyDusk * cv2.look.w * (1.0 + cv2.atmo.y * twi)
+                          + moonKey * nightK * 0.03 * max(moonENU.z, 0.0)
+                          + kMoonCol * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z);
+            if (cloud.moonMisc.y > 0.5) skyAmb *= cloud.moonMisc.x;
+            vec3  amb = skyAmb * (0.7 / (1.0 + 0.11 * tauUp) + 0.35)
+                      + key * max(kDir.z, 0.0) * 0.15 * cv2.look2.x;
+            // City light at night, as the march's nightS on a rain sample (kCityUpwellStrength, cityBrightness: keep
+            // in step with cloud_v2_march.comp): the street lights under a shower light its drops.
+            if (dayness < 0.9) {
+                vec3  dE  = normalize(pc.obsECEFDir.xyz);
+                vec2  uv  = vec2((atan(dE.y, dE.x) + PI) / (2.0 * PI), (0.5 * PI - asin(clamp(dE.z, -1.0, 1.0))) / PI);
+                vec3  cr  = textureLod(earthNightTex, uv, 3.0).rgb;
+                float lum = dot(cr, vec3(0.2126, 0.7152, 0.0722));
+                float raw = max(0.0, lum - 0.002);
+                amb += (cr / max(lum, 0.001)) * (raw / (raw + 0.08)) * (1.0 - dayness) * 0.004 * cloud.ambientGain;
+            }
+            // The white balance sat_sky.frag divides the frame by (luminance-preserving, faded below ~11 deg of Sun):
+            // the particles are drawn after the tonemap, so they take it here.
+            vec3 wbDiv = vec3(1.0);
+            if (cloud.whiteBalance > 0.0) {
+                float rW = R_EARTH + max(eyeH - 2.0, 0.0), cW = sunUp;
+                vec3  sunW = exp(-(BETA_R * (atmColumnInf(rW, cW, H_R) * H_R) + BETA_M * 1.1 * (atmColumnInf(rW, cW, H_M) * H_M)));
+                vec3  wb = sunW / max(dot(sunW, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+                wbDiv = mix(vec3(1.0), clamp(wb, vec3(0.4), vec3(2.5)), cloud.whiteBalance * smoothstep(0.02, 0.2, cW));
+            }
+            float liq = smoothstep(-1.0, 2.5, cv2.precip.x);
+            cv2RainKey    = vec4(key / wbDiv, isMoon);
+            cv2RainKeyDir = vec4(kDir, liq);
+            cv2RainAmb    = vec4(amb / wbDiv, tauUp);
+            cv2RainMisc   = vec4(0.0);   // (the rain map is written by this dispatch's other workgroups: not readable here)
+        }
     }
 }

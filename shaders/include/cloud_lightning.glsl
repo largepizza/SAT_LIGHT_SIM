@@ -36,9 +36,39 @@ buffer CV2FlashBuf {
     // from the eye to L x (k / 16)^2, k = 0..16 (the march's own quadratic steps); [18..19] pad.
     float    cv2SunProf[20];
     float    cv2RainMap[1024];
+    // Rain particles (2026-10-04, rain_particles.vert): the light on a drop at the eye, written by the lightning
+    // pass (thread 1) with the same terms the cloud march gives a rain sample there (its key light and sky ambient),
+    // so the drawn drops and the rain volume beyond them agree. Pre-exposure radiance, / the white balance.
+    vec4     cv2RainKey;      // xyz the key light (Sun, or the Moon at night) x its cloud and Earth shadow, w 1 = the Moon
+    vec4     cv2RainKeyDir;   // xyz the direction TO the key light (ENU at the eye), w the liquid share (1 rain .. 0 snow)
+    vec4     cv2RainAmb;      // xyz the ambient (the sky through the cloud above + the ground), w the column's optical depth
+    vec4     cv2RainMisc;     // spare
 };
 const int   kCv2RainMapN  = 32;
 const float kCv2RainCellM = 40.0;
+
+// The rain's own variability: showers come in bursts (a value noise over ~6 s of sim time, on top of the rain
+// field's rate). 0.35..1. (Moved here from cloud_march.comp with the drops, 2026-10-04.)
+float cv2RainHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float cv2RainBurst(float t)
+{
+    float i = floor(t / 6.0), f = fract(t / 6.0);
+    return mix(0.35, 1.0, mix(cv2RainHash(vec2(i, 7.1)), cv2RainHash(vec2(i + 1.0, 7.1)), f * f * (3.0 - 2.0 * f)));
+}
+
+// The rain map at en (metres east / north of the eye), bilinear, 0 off it.
+float cv2RainMapAt(vec2 en)
+{
+    vec2  g  = en / kCv2RainCellM + 0.5 * float(kCv2RainMapN) - 0.5;
+    vec2  g0 = floor(g), f = g - g0;
+    float s  = 0.0;
+    for (int k = 0; k < 4; ++k) {
+        ivec2 c = ivec2(g0) + ivec2(k & 1, k >> 1);
+        if (c.x < 0 || c.y < 0 || c.x >= kCv2RainMapN || c.y >= kCv2RainMapN) continue;
+        s += cv2RainMap[c.y * kCv2RainMapN + c.x] * ((k & 1) != 0 ? f.x : 1.0 - f.x) * ((k >> 1) != 0 ? f.y : 1.0 - f.y);
+    }
+    return s;
+}
 
 // The cloud's glow around a flash, per unit intensity, at distance r (m) from it. Inside a storm the
 // light diffuses (multiple scattering over a mean free path of tens of metres): a flash in a tower

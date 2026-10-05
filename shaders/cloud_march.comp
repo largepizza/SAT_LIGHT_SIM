@@ -1588,136 +1588,9 @@ void cullBeamsForTile(vec3 cAxis, float tileHalfAngle, vec3 obsPos) {
     barrier();
 }
 
-// The rain's own variability (rainBurst) and the drops at the eye (rainDrops, below).
-float rainHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-
-// The rain's own variability: showers come in bursts (a value noise over ~6 s, on top of the rain
-// field's rate at the eye). 0.35..1.
-float rainBurst(float t)
-{
-    float i = floor(t / 6.0), f = fract(t / 6.0);
-    return mix(0.35, 1.0, mix(rainHash(vec2(i, 7.1)), rainHash(vec2(i + 1.0, 7.1)), f * f * (3.0 - 2.0 * f)));
-}
-
-// Rain / sleet / snow at the eye as DROPS IN THE WORLD (review 3): five depth layers (2..32 m) of a 3D
-// lattice fixed in the rain frame (cv2.rainE/N/U: world-fixed, the eye's position from double), falling
-// and drifting with the wind; a cell holds a drop with a probability that is the rain RATE (light rain =
-// a few drops, heavy = many — it used to set their brightness), each a short motion-blurred segment
-// (a flake: a slow, wobbling dot) with its energy spread over the pixel footprint. The 2x2x2 cells nearest
-// the ray's point at each layer's depth are tested, so a drop is never cut at a cell edge. It replaced
-// streaks in DIRECTION space, which travelled with the eye (walking never moved through the rain).
-// dirE: the ray (ECEF); rate 0..1; wind m/s toward east aloft; tScene: the surface (drops behind it hide).
-// GLINTS (review 4): an ice crystal is a plate tilted a little from level, fluttering; it flashes the Sun
-// when its face mirrors the Sun into the eye (a narrow lobe about the half vector). A raindrop sparkles
-// when backlit. sunE: the Sun (ECEF), sunT: its transmittance at the eye. dust: DIAMOND DUST — the
-// crystals themselves are too small to see, only their glints (rate = the ice fog's density).
-// Returns .x the drop light (x the caller's lit colour), .y the snow's share of it, .z the glint light
-// (x the Sun's colour).
-// Review 22: the rain map around the eye (cloud_lightning.glsl, from cloud_v2_lightning.comp), bilinear, 0 off it.
-// en: metres east / north of the eye.
-float rainMapAt(vec2 en)
-{
-    vec2  g  = en / kCv2RainCellM + 0.5 * float(kCv2RainMapN) - 0.5;
-    vec2  g0 = floor(g), f = g - g0;
-    float s  = 0.0;
-    for (int k = 0; k < 4; ++k) {
-        ivec2 c = ivec2(g0) + ivec2(k & 1, k >> 1);
-        if (c.x < 0 || c.y < 0 || c.x >= kCv2RainMapN || c.y >= kCv2RainMapN) continue;
-        s += cv2RainMap[c.y * kCv2RainMapN + c.x] * ((k & 1) != 0 ? f.x : 1.0 - f.x) * ((k >> 1) != 0 ? f.y : 1.0 - f.y);
-    }
-    return s;
-}
-
-// rate: for rain, the bursts' factor — each depth layer takes the rain RATE at its own point from the rain map
-// (review 22: the drops follow the rain volume; they came from the rate at the eye alone, so a shaft's drops
-// appeared all at once on stepping into it); for diamond dust, the rate itself.
-vec3 rainDrops(vec3 dirE, float rate, float wind, float tScene, float pixAng, vec3 sunE, float sunT, bool dust)
-{
-    vec3  sR   = vec3(dot(sunE, cv2.rainE.xyz), dot(sunE, cv2.rainN.xyz), dot(sunE, cv2.rainU.xyz));
-    float Lg   = 0.0;
-    vec3  dR   = vec3(dot(dirE, cv2.rainE.xyz), dot(dirE, cv2.rainN.xyz), dot(dirE, cv2.rainU.xyz));
-    vec3  eyeR = vec3(cv2.rainE.w, cv2.rainN.w, cv2.rainU.w);
-    float t    = cv2.precip.y;
-    float snowP = dust ? 1.0 : 1.0 - smoothstep(-1.0, 2.5, cv2.precip.x);   // sleet between: some drops, some flakes
-    float Lr = 0.0, Ls = 0.0;
-    // Layers out to "Drop distance" (precip.w; review 5: five layers ended at 32 m, and past a few metres
-    // the rain had no depth). Each layer's cells grow with its depth, so every layer puts about the same
-    // number of drops on screen; the far ones are fainter (a drop's energy spread over its pixel).
-    float snowW = mix(1.0, cv2.precip.z, snowP);          // "Snow wind" (blizzards): x the flakes' drift
-    int   nLay  = clamp(int(log2(max(cv2.precip.w, 2.0) * 0.5)) + 1, 1, 9);
-    for (int k = 0; k < nLay; ++k) {
-        float r  = 2.0 * float(1 << k);
-        if (r > tScene) break;
-        float rateK = dust ? rate : rainMapAt(dR.xy * r) * rate;   // dR.xy: east / north in the rain frame
-        if (rateK <= 0.0) continue;
-        float prob  = 0.85 * pow(clamp(rateK, 0.0, 1.0), 0.8);
-        float c  = 0.14 * r;
-        // The layer's motion: rain ~10 m/s (snow ~1), the ground wind ~40% of the wind aloft, gusting.
-        // (Review 22: was 8, the user wanted it a little faster. It cannot follow the rain RATE: the
-        // offset is v x t with t up to 600 s, so any change of v moves every drop at once.)
-        float v  = dust ? 0.3 : mix(10.0 - 0.4 * float(min(k, 4)), 1.1, snowP);
-        float w0 = 0.4 * wind * snowW;
-        float wg = w0 * (1.0 + 0.35 * sin(t * 0.21 + float(k) * 1.7));
-        vec3  F  = normalize(vec3(wg, 0.0, -v));
-        // The drift is the INTEGRAL of the gusting wind. It was wg(t) x t, whose rate of change carries
-        // t x dwg/dt — up to ~140 m/s at t ~ 600 s: the rain stopped, went back up and fell again (review 6).
-        float sV = v * t / c, sW = w0 * (t - (0.35 / 0.21) * cos(t * 0.21 + float(k) * 1.7)) / c;
-        vec3  qf = vec3(-fract(sW), 0.0, fract(sV));
-        ivec3 qi = ivec3(-int(floor(sW)), 0, int(floor(sV)));
-        vec3  q  = (eyeR + dR * r) / c + qf;
-        ivec3 b  = ivec3(floor(q - 0.5));
-        for (int n = 0; n < 8; ++n) {
-            ivec3 cl = b + ivec3(n & 1, (n >> 1) & 1, n >> 2);
-            vec3  h  = tdRand3(cl + qi + ivec3(0, 0, 7919 * k)) * 0.5 + 0.5;
-            if (h.x > prob) continue;
-            vec3  h2 = tdRand3(cl + qi + ivec3(131, 7, 7919 * k + 3)) * 0.5 + 0.5;
-            bool  flake = h2.z < snowP;
-            vec3  ctr = (vec3(cl) + 0.2 + 0.6 * vec3(h.yz, h2.x) - qf) * c - eyeR;
-            // A flake is a dot, drawn out into a short streak once a blizzard drives it (> 4 m/s).
-            float len = flake ? 0.01 + 0.02 * max(length(vec2(wg, v)) - 4.0, 0.0) : min(v / 25.0, 0.6 * c);
-            if (flake)                                                 // flakes flutter as they fall (more in a gale)
-                ctr.xy += 0.25 * min(sqrt(max(snowW, 1.0)), 1.2) * c * vec2(sin(t * (1.1 + h2.y) + 6.28 * h.y), cos(t * (0.9 + h.z) + 6.28 * h2.x));
-            vec3  q0 = ctr - F * (0.5 * len), u = F * len;
-            float a  = dot(u, u), bb = dot(u, dR), d0 = dot(u, q0), e = dot(dR, q0);
-            float sg = clamp((bb * e - d0) / max(a - bb * bb, 1e-9), 0.0, 1.0);
-            float tR = dot(q0 + u * sg, dR);
-            if (tR <= 0.1 || tR > tScene) continue;
-            sg = clamp(dot(dR * tR - q0, u) / max(a, 1e-9), 0.0, 1.0);
-            float dd = length(q0 + u * sg - dR * tR);
-            float rad = dust ? 0.0003 : (flake ? 0.004 : 0.0012);
-            float w  = max(tR * pixAng * 0.7, rad);
-            float core = exp(-(dd * dd) / (w * w));
-            // One drop's energy over the footprint is rad / w (to the 0.5 here until review 5, and past
-            // ~30 m the drops vanished). But each layer draws about the same number of drops on screen
-            // while a real shower has ~r^3 more drops in each deeper layer: a far lattice drop stands for
-            // a clump of them, and carries more light: rad / w to the 0.25.
-            float g  = core * pow(rad / w, 0.25) * (0.6 + 0.4 * h2.y);
-            if (!dust) { if (flake) Ls += g; else Lr += g; }
-            if (sunT > 0.01) {
-                vec3 hv = normalize(sR - dR);                          // the mirror's half vector
-                float gl;
-                if (dust) {
-                    // Diamond dust: tiny crystals of every orientation, tumbling (sparkles all around,
-                    // twinkling); a cell stands for many crystals, so its lobe is wide (~8 deg).
-                    float ph = t * (0.5 + 1.5 * h.z) + 6.2832 * h2.y;
-                    vec3  n0 = vec3(h.y, h2.x, h.z) * 2.0 - 1.0;
-                    vec3  n  = normalize(vec3(n0.x * cos(ph) - n0.y * sin(ph), n0.x * sin(ph) + n0.y * cos(ph), n0.z) + 1e-4);
-                    gl = exp(-(1.0 - abs(dot(n, hv))) / 0.008);
-                } else if (flake) {
-                    // The plate's normal: near vertical, tilted up to ~12 deg, turning as it flutters.
-                    float ph = t * (0.7 + 1.3 * h.z) + 6.2832 * h2.y;
-                    vec3  n  = normalize(vec3(0.21 * h.y * vec2(cos(ph), sin(ph)), 1.0));
-                    gl = exp(-(1.0 - abs(dot(n, hv))) / 0.0006);
-                } else {
-                    gl = 0.15 * smoothstep(0.75, 1.0, dot(dR, sR));    // backlit drops
-                }
-                // A capped peak (a glint saturates to a point, it does not swell).
-                Lg += gl * core * (dust ? min(12.0, 0.3 / w) : min(3.0, 0.02 / w));
-            }
-        }
-    }
-    return vec3(Lr + 1.6 * Ls, 1.6 * Ls, Lg * sunT);
-}
+// Rain, snow and diamond dust at the eye are drawn as PARTICLES after the sky TAA (rain_particles.vert,
+// 2026-10-04). They were drawn here (rainDrops: a per-pixel lattice search, review 3-22) into the half-res
+// composite, where the TAA smeared them; the rain map and its bursts are in cloud_lightning.glsl.
 
 void main() {
     ivec2 size  = imageSize(targetA);
@@ -1832,36 +1705,11 @@ void main() {
     vec3  B_total = B_cirrus * A_cloud + B_cloud;
     B_total += lightningCS(obsPos, dir, tCloudMeanT, rc.a, tScene, 2.0 * tanHalfFov / float(size.y));
 
-    // Rain at the eye: the same field at the observer (cv2FieldLow's rain branch). Streaks lit like
-    // the cloud they fall from (its own radiance), over whatever the ray shows.
-    if (cv2.rain.z > 0.0 && cv2.rain.x > 0.0 && obsEffH < 6000.0) {
-        // The rain rate (a light shower ~0.2, a Cb core ~1) in bursts, from the rain map around the eye (review 22;
-        // it was one cv2FieldLow at the eye per pixel). rainNear: any rain within the map (+-640 m).
-        float burst    = rainBurst(cv2.precip.y);
-        float rainEye  = rainMapAt(vec2(0.0)) * burst;
+    // Debug view 6: red = the rain rate at the eye (the rain map, bursts included), green = any rain within the map.
+    if (int(cv2.shell.z + 0.5) == 6 && cv2.rain.x > 0.0) {
         float rainNear = max(max(cv2RainWgMax[0], cv2RainWgMax[1]), max(cv2RainWgMax[2], cv2RainWgMax[3]));
-        vec3  drops   = vec3(0.0);
-        vec3  dirE    = dir.x * enuX + dir.y * enuY + dir.z * enuZ;
-        float eyeSunT = uintBitsToFloat(cv2EyeSunT);
-        if (rainNear > 0.0) {
-            drops = rainDrops(dirE, burst, cv2.rain.w, tScene, 2.0 * tanHalfFov / float(size.y), sunDirECEF,
-                              eyeSunT, false);
-            vec3 lit = rc.rgb / max(1.0 - rc.a, 0.25) + vec3(0.003);
-            B_total += lit * drops.x * cv2.rain.z * 0.6 + vec3(1.0, 0.97, 0.9) * drops.z * cv2.rain.z;
-        } else {
-            // Diamond dust: ice fog at the eye in sunshine sparkles (only the glints of its crystals).
-            float iceEye = uintBitsToFloat(cv2EyeIceS);
-            if (iceEye > 1e-6 && eyeSunT > 0.01) {
-                drops = rainDrops(dirE, clamp(iceEye / 5e-5, 0.0, 1.0), cv2.rain.w, tScene,
-                                  2.0 * tanHalfFov / float(size.y), sunDirECEF, eyeSunT, true);
-                B_total += vec3(1.0, 0.97, 0.9) * drops.z * cv2.rain.z;
-            }
-        }
-        // Debug view 6: red = rain at the eye, green = the drop mask, blue = its snow share.
-        if (int(cv2.shell.z + 0.5) == 6)
-            B_total = vec3(rainEye, drops.x, drops.y) * 0.05;
+        B_total = vec3(cv2RainMapAt(vec2(0.0)) * cv2RainBurst(cv2.precip.y), rainNear, 0.0) * 0.05;
     }
-
 
     // Aurora sky curtain (moved here this session — perf: half-res instead of full-res).
     // Cloud suppression uses the LOCAL A_total already computed above — more accurate than

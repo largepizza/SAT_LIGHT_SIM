@@ -542,6 +542,7 @@ void SatelliteSim::init(VulkanContext &ctx)
                                          // (createGlowResources above) and reflectBeamsBuf (createBuffers)
     createBeamSelfMarchPipeline(ctx);
     writeCloudsV2ConsumerDescriptors(ctx); // cloud_march 15-20 + beam_self_march 5-8, both sets exist now
+    createRainParticles(ctx);              // rain at the eye (SatelliteSimRain.cpp): needs the cloud UBOs, flash buffer, depth
     createSkyBgPipeline(ctx);
     createSkyLowResResources(ctx); // resolution scaling — needs skyBgPipeLayout from just above
     createSkyTaaResources(ctx);    // the background's TAA (same layout)
@@ -837,6 +838,7 @@ void SatelliteSim::recreateComputeScaledTargets(VulkanContext &ctx)
         cv2HistoryValid = true;
     }
     writeCloudsV2ConsumerDescriptors(ctx);
+    writeRainDescriptors(ctx);   // the scene depth image was recreated
     computeHalfExtentBuilt = computeHalfExtent(ctx);
 }
 
@@ -864,6 +866,13 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     vkDestroyPipeline(ctx.device, starPipeline, nullptr);
     starPipeline = VK_NULL_HANDLE;
     createStarPipeline(ctx);
+
+    if (rainPipeline)
+    {
+        vkDestroyPipeline(ctx.device, rainPipeline, nullptr);
+        rainPipeline = VK_NULL_HANDLE;
+        createRainPipeline(ctx);
+    }
 
     recreateComputeScaledTargets(ctx);
 
@@ -6133,7 +6142,7 @@ void SatelliteSim::recordPrePass(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // in); the render pass's own automatic transition takes it to COLOR_ATTACHMENT_OPTIMAL.
 }
 
-void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*dt*/)
+void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
 {
     SatDrawPC skyPc = buildSkyDrawPC(ctx);  // Pass 1 (sky background) — skyBgPipeLayout
     PointDrawPC pc = buildPointDrawPC(ctx); // Passes 2/3/3.5 (satellite/star/planet points)
@@ -6322,6 +6331,9 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
                            0, sizeof(tcpc), &tcpc);
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
+
+    // ── Pass 6: rain, snow and diamond dust at the eye (particles, over everything; SatelliteSimRain.cpp) ──
+    recordRainParticles(cmd, ctx, dt);
 }
 
 // ─── setAudio ─────────────────────────────────────────────────────────────────
@@ -6960,6 +6972,7 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyBuffer(device, beamGlowDomeBuf, nullptr);
     vkFreeMemory(device, beamGlowDomeMem, nullptr);
 
+    destroyRainParticles(device);
     vkDestroyPipeline(device, starPipeline, nullptr);
     vkDestroyPipelineLayout(device, starPipeLayout, nullptr);
     vkDestroyDescriptorPool(device, starDescPool, nullptr);

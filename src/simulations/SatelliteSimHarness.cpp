@@ -468,6 +468,36 @@ json SatelliteSim::harnessStateJson()
                       {"still_frames", cv2StillFrames}, {"history_valid", cv2HistoryValid},
                       {"sun_cloud_t", sunCloudTEased}, {"fast_lod", cv2FastLodNow},
                       {"shape_frame", cv2ShapeFrame}};   // review 22: the Sun disc's cloud transmittance
+    // Rain at the eye (2026-10-04, the particles): what was drawn last frame, and the light and rain map the lightning
+    // pass wrote (the previous frame's).
+    {
+        json rn = {{"mode", rainModeLastFrame == 1 ? "rain" : rainModeLastFrame == 2 ? "diamond_dust" : "none"},
+                   {"instances", rainInstancesLastFrame}, {"levels", rainLevelsLastFrame}};
+        if (cv2FlashMapped)
+        {
+            const char *base = (const char *)cv2FlashMapped;
+            const float *wg = (const float *)(base + kCv2RainMapOffset - 16 - 80);
+            const float *map = (const float *)(base + kCv2RainMapOffset);
+            const float *lt = (const float *)(base + kCv2RainLightOffset);
+            const int n = 32, c = n / 2;
+            rn["rate_eye"] = 0.25f * (map[(c - 1) * n + c - 1] + map[(c - 1) * n + c] + map[c * n + c - 1] + map[c * n + c]);
+            rn["rate_near_max"] = std::max(std::max(wg[0], wg[1]), std::max(wg[2], wg[3]));
+            int best = 0;
+            for (int i = 1; i < n * n; ++i)
+                if (map[i] > map[best]) best = i;
+            rn["max_at_en_m"] = {((best % n) - c + 0.5f) * 40.0f, ((best / n) - c + 0.5f) * 40.0f};   // kCv2RainCellM
+            rn["key"] = {lt[0], lt[1], lt[2]};
+            rn["key_is_moon"] = lt[3] > 0.5f;
+            rn["key_dir_enu"] = {lt[4], lt[5], lt[6]};
+            rn["liquid_share"] = lt[7];
+            rn["ambient"] = {lt[8], lt[9], lt[10]};
+            rn["tau_up"] = lt[11];
+            rn["wind_mps"] = {rainWindNow.x, rainWindNow.y};
+            rn["fall_speed_ref"] = rainFallRefNow;
+            rn["rate_eased"] = rainRateEased;
+        }
+        j["clouds_v2"]["rain"] = rn;
+    }
 
     static const char *kBucketKeys[8] = {"scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
                                          "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};

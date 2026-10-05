@@ -1223,6 +1223,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         p.precip = glm::vec4((float)tC, (float)std::fmod(simSecInDay, 600.0), std::clamp(cv2SnowWind, 0.0f, 8.0f),
                              std::clamp(cv2DropDistM, 8.0f, 512.0f));
         cv2EyeTempC = (float)tC;
+        updateRainMotion(p);   // the rain particles' fall and wind (SatelliteSimRain.cpp)
     }
     const bool lowFloor = cv2RainAmount > 0.0f || p.fog.x > 0.0f || p.fog.w > 0.0f || p.fog2.w > 0.0f;   // they reach the ground
     p.shell = glm::vec4(lowFloor ? 0.0f : std::max(lo, 0.0f), hi, cv2DebugView == 11 ? 0.0f : (float)cv2DebugView,
@@ -1434,6 +1435,10 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightningPipeline);
         vkCmdDispatch(cmd, 5, 1, 1);   // + 4 workgroups for the rain map around the eye (review 22)
+        // The rain particles (main pass, vertex stage) read the rain map and the light at the eye it just wrote.
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
+        cv2LightningRanThisFrame = true;
     }
     // Four levels of the light volume (the godrays read it in the march, after this barrier).
     if (cv2LightVolPipeline && cv2Godrays > 0.0f)

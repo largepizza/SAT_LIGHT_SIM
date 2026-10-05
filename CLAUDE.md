@@ -357,6 +357,8 @@ neighbour's value. This shipped once — `flatSunGainScale` read a pad (0, so 2D
 black) while `flatCoverageScale` read 4.0 (so coverage quadrupled and swallowed the Earth).
 Prefer appending at the end of both files.
 | `reflect_beam.glsl` | `ReflectBeam` + `BEAM_MAX_ACTIVE` |
+| `cv2_optics.glsl` | the bows, halos, pillar and `cv2HG` (pure functions): the cloud march and the rain particles share them |
+| `rain_particles.glsl` | the rain particles' push constants (`RainDrawPC`) |
 
 **`observerEffHeight` must be used by every pass that produces or consumes a distance.**
 `cloud_march.comp` previously took a CPU-computed `obsEffH` while `sat_sky.frag` did its own GPU
@@ -505,38 +507,54 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   350 ms frames over Anchorage (the user's profile; 3-4 ms after). Harness framing: `beams` / `beams go`
   (the site where beams converge NOW — a guessed time and site framed none three times), coverage forced to
   0 / up for clear / cloudy nights (harness_runs/cloud_v2_p10b.satcmd).
-- **Rain / sleet / snow at the eye** (cloud_march.comp `rainDrops`, review 3, 2026-09-29): DROPS IN THE
-  WORLD — five depth layers (2..32 m) of a 3D lattice (cell 0.14 x the layer's depth) in a frame fixed to
-  the nearest 0.25-degree point (`cv2.rainE/N/U`: axes in ECEF, w = the eye's position in that frame from
-  double, wrapped to 1024 m; every cell divides it), falling (rain ~10 m/s since review 22, snow ~1.1) and drifting with the
-  ground wind (0.4 x the wind aloft, gusting); the 2x2x2 cells nearest the ray's point at each depth are
-  tested, so a drop is never cut at a cell edge. The rain RATE sets the probability that a cell holds a
-  drop (light rain = a few, heavy = many) — it used to scale their brightness. Each drop is a segment
-  v/25 s long (a flake: a fluttering dot), its energy spread over the pixel footprint. The fall time is
-  `cv2.precip.y` = sim time mod 600 s from double (a float time of day steps every 8 ms). It replaced
-  streaks in DIRECTION space (the old `rainStreaks`, around the fall direction's vanishing point), which
-  travelled with the eye. **Precipitation type**: `cv2.precip.x` = the air temperature at the eye
-  (`SatelliteSimCloudsV2.cpp`: -18 + 45 cos(lat)^1.5 at sea level, + 0.35 x |lat| x the season from the
-  Sun's declination in that hemisphere, - 6.5 C/km); snow below ~-1 C, rain above ~2.5 C, sleet (a mix
-  of drops and flakes) between. Only the eye's precipitation changes type — the distant rain curtains
-  are still rain. The `rain` ambience driver takes the liquid share (`cv2EyeTempC`). The wind drift of each layer is the INTEGRAL of its gusting wind (it was
-  wind(t) x t, whose speed carried t x d(wind)/dt, up to ~140 m/s near t = 600 s: the rain stopped,
-  rose and fell again — review 6). Rate in ~6 s bursts
-  (`rainBurst`); [review 22: from the rain map, see "Review 22"; until then] `cloud_v2_march.comp` wrote the rate into `terrainFrame.w` (scene_depth.comp writes only
-  .xyz); the host reads it for the `rain` ambience driver (synth `rain`, layer `rain`). **Glints (review 4):**
-  an ice crystal (a flake) is a plate tilted up to ~12 deg, fluttering, that flashes the Sun where its face
-  mirrors it into the eye (a narrow lobe about the half vector); raindrops sparkle when backlit; with no
-  rain, ICE FOG at the eye in sunshine draws DIAMOND DUST: the same lattice, crystals too small to see,
-  tumbling in every orientation, only their glints (rate = the ice fog's density / 5e-5). The eye's Sun
-  transmittance (a 24-step march) and ice fog density are computed once per frame by
-  cloud_v2_lightning.comp (thread 1) into the flash buffer's header (`cv2EyeSunT`, `cv2EyeIceS`: the old
-  pads). Cost ~0.3 ms in diamond dust, a few ops per drop otherwise. **Review 5:** layers out to "Drop
-  distance (m)" (`drop_distance_m` 128, slot 208, `precip.w`; one layer per doubling, 2..512 m, up to 9;
-  +~0.2 ms at 128, +0.3 at 512 in a snow view) — five layers ended at 32 m. A drop's brightness is
-  (rad / w)^0.25, not ^0.5: each layer draws about the same number of drops on screen while a real shower
-  has ~r^3 more per deeper layer, so a far lattice drop stands for a clump. "Snow wind (blizzard)"
-  (`snow_wind` 1, slot 209, `precip.z`): x the flakes' drift (by snow share), more flutter (capped so a
-  flake stays in the tested cells), and a flake over 4 m/s draws out into a short streak. **Snow shafts
+- **Rain / sleet / snow / diamond dust at the eye are PARTICLES** (2026-10-04, `rain_particles.vert/.frag`,
+  `SatelliteSimRain.cpp`): one instanced draw in the main pass after everything else, i.e. AFTER the sky TAA,
+  at full resolution, premultiplied over the tonemapped frame (ONE / ONE_MINUS_SRC_ALPHA: a drop dimmer than the
+  sky behind it darkens it). Everything is procedural from `gl_InstanceIndex`: nested world-fixed boxes in the
+  rain frame (`cv2.rainE/N/U`, the nearest 0.25-degree point, eye position from double wrapped to 1024 m), box k
+  = 4 m x 2^k holding N0 x 2^k drops ("Drop particles (x1000, nearest box)" `rain_particles_k` 16, slot 261),
+  drawn over [L/4, L/2] and cross-faded with the next over [0.4, 0.5] L, out to "Drop reach (m)" (`drop_reach_m`
+  32, slot 208, at most 64 = 6 levels; the old `drop_distance_m` was the lattice's and is not read). Rain drops
+  take a Marshall-Palmer size (0.5-5 mm) and its terminal velocity, FIXED per drop (an offset is v x t with t up
+  to 600 s); flakes 2-8 mm at ~1 m/s, fluttering. **Motion is integrated over sim time on the CPU**
+  (`updateRainMotion`, 2026-10-05; `cv2.rainMotion` / `rainWind`, wrapped to 1024 m): the fall phase (a drop's
+  offset = its terminal speed, quantised to 1/64 m/s, x the phase) and the wind drift of rain and of snow, so speed
+  and wind change smoothly (the first cut used v x t with t up to 600 s: both had to be constants). Fall = "Rain
+  fall speed (x)" (`rain_fall_speed` 1.3, slot 263) x 1.35 at rain rate 0.6+. Wind = "Rain wind (x ground wind)"
+  (`rain_wind_gain` 1.5, slot 264) x 0.4 x the wind aloft, toward the east, + a shower's OUTFLOW "Storm wind (m/s)"
+  (`rain_storm_wind_mps` 14, slot 265, full at rate 0.6) away from the rain map's rain-weighted centre, in gusts
+  ("Wind gusts" `rain_gusts` 1, slot 266: ~4 s noise, +-20-60%, +-15 deg). The user's storm snapshot (profile_log
+  43): 19 m/s. Which drops exist follows the rain map at each drop (`cv2RainMapAt` x
+  `cv2RainBurst`, now in cloud_lightning.glsl): a shaft's drops appear in the far levels first. **Coverage is
+  conserved:** a drop is the streak it sweeps over "Drop shutter (ms)" (`rain_shutter_ms` 33, slot 262; + the
+  eye's velocity, capped at 30 m/s), each pixel's alpha the share of the exposure it spent there, and each
+  particle carries (the real rain's geometric cross-section per m^3, Marshall-Palmer at R = 60 rate^1.5 mm/h;
+  snow x4) / (particles per m^3): summed along a ray the particles' coverage is the rain's optical depth. Where
+  one particle would carry so much that it draws as a bright dot (far, heavy rain: alpha 0.12-0.35) it fades and
+  the volume carries that distance. "Drops at the eye (visibility)" (`rain_streaks`, slot 157) multiplies the
+  alpha: 1 = physical. **Light = the march's rain sample at the eye**: cloud_v2_lightning.comp thread 1 writes
+  `cv2RainKey` (Sun x its cloud transmittance x the Earth's shadow, or the Moon), `cv2RainKeyDir` (w the liquid
+  share), `cv2RainAmb` (zenith sky through the column above as the march's ambVis, + the ground bounce + city
+  light at night), already / the white balance (`kCv2RainLightOffset`); copies of the march's `sunColorAt` /
+  `skyZenithAt` there (keep in step). The phase is the volume's own (`include/cv2_optics.glsl`, moved out of
+  clouds_v2.glsl unchanged — the march's SPIR-V is identical): drops 42 degrees from the antisolar point flash
+  the bow's colours, drops toward the Sun glow in its diffraction lobe; flakes add a fluttering plate glint;
+  diamond dust (ice fog at the eye in sunshine, no rain) draws only tumbling plates' glints. The host draws
+  only when the lightning pass ran this frame and the previous frame's map held rain (or diamond dust).
+  Harness `state` -> `clouds_v2.rain` (mode, instances, rate at the eye / max, `max_at_en_m`, key, ambient);
+  benchmark: the user's Venezuela snapshots (`profile_log` 40-41, harness_runs/rain_rebuild/base.satcmd; walk
+  into a shaft with time PAUSED: the clouds drift ~40 m/s and outran a timed walk). Cost ~0.35 ms at the
+  defaults (496k instances, mostly culled in the vertex shader), +0.45 at 64 m; the cloud march lost ~1 ms
+  without the old drops. Not modelled: the volume still marches the rain within the particles' reach (tau
+  ~0.02-0.05, a slight double count); lightning does not light the drops. **Precipitation type**:
+  `cv2.precip.x` = the air temperature at the eye (`SatelliteSimCloudsV2.cpp`: -18 + 45 cos(lat)^1.5 at sea
+  level, + the season swing, - 6.5 C/km); snow below ~-1 C, rain above ~2.5 C, sleet between. Only the eye's
+  precipitation changes type. The `rain` ambience driver takes the liquid share (`cv2EyeTempC`) and the rain
+  map's centre. **Replaced** (review 3-22): `cloud_march.comp`'s `rainDrops`, a per-pixel search of a 3D
+  lattice's nearest cells in up to 9 depth layers inside the HALF-RES composite: a few hundred fat streaks, smeared
+  by the sky TAA, lit by the cloud colour along the ray, a far drop "a clump" ((rad/w)^0.25) — and before it
+  streaks in direction space that travelled with the eye. Debug view 6 now shows the rain at the eye (r) and in
+  the map (g). **Snow shafts
   show no rainbow** (review 6: the shafts' air is 500 m above the GROUND under the eye, and the season
   swing is 0.25 x |lat|, at most 15 C — 0.35 x |lat| made the Antarctic plateau rain in November) (cloud_v2_march.comp, per ray): below freezing ~500 m up (the eye's temperature,
   6.5 C/km), the rain phase's bows give way to faint ice optics (sundogs, a weak 22 degree halo, a pillar
@@ -1408,7 +1426,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
-- The Clouds tab's slider slots: `kCloudSliderSlots` (258 since review 28: 257 sea wave range fade; 257 since review 27: 256 far sea ripple size; 256 since review 24: 248-250 far sea ripple, sea warp x2, 251-255 far cloud layer tunables; 248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
+- The Clouds tab's slider slots: `kCloudSliderSlots` (267 since 2026-10-05: 261-266 rain particles; 258 since review 28: 257 sea wave range fade; 257 since review 27: 256 far sea ripple size; 256 since review 24: 248-250 far sea ripple, sea warp x2, 251-255 far cloud layer tunables; 248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
   `cloudBufs` (212 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
   moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind; 210 move speed (Controls tab), 211 erosion size); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive

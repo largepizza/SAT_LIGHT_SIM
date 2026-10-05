@@ -5004,8 +5004,14 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
 
     CloudSlider secRain[] = {
         {"Rain", &cv2RainAmount, 0.0f, 3.0f, 0.05f, "%.2f", 155},
-        {"Drops at the eye (rain/snow)", &cv2RainStreaks, 0.0f, 3.0f, 0.05f, "%.2f", 157},
-        {"Drop distance (m)", &cv2DropDistM, 8.0f, 512.0f, 8.0f, "%.0f", 208},
+        {"Drops at the eye (visibility)", &cv2RainStreaks, 0.0f, 10.0f, 0.05f, "%.2f", 157},
+        {"Drop reach (m)", &cv2DropDistM, 4.0f, 64.0f, 4.0f, "%.0f", 208},
+        {"Drop particles (x1000, nearest box)", &cv2RainParticlesK, 0.5f, 64.0f, 0.5f, "%.1f", 261},
+        {"Drop shutter (ms)", &cv2RainShutterMs, 1.0f, 100.0f, 1.0f, "%.0f", 262},
+        {"Rain fall speed (x)", &cv2RainFallSpeed, 0.3f, 3.0f, 0.05f, "%.2f", 263},
+        {"Rain wind (x ground wind)", &cv2RainWindGain, 0.0f, 5.0f, 0.1f, "%.1f", 264},
+        {"Storm wind (m/s)", &cv2RainStormWind, 0.0f, 40.0f, 0.5f, "%.1f", 265},
+        {"Wind gusts", &cv2RainGusts, 0.0f, 3.0f, 0.05f, "%.2f", 266},
         {"Snow wind (blizzard)", &cv2SnowWind, 0.0f, 8.0f, 0.1f, "%.1f", 209},
     };
 
@@ -7389,7 +7395,15 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2RainAmount = c.value("rain_amount", cv2RainAmount);
         cv2OpticsGain = c.value("optics_gain", cv2OpticsGain);
         cv2RainStreaks = c.value("rain_streaks", cv2RainStreaks);
-        cv2DropDistM = c.value("drop_distance_m", cv2DropDistM);
+        // "drop_reach_m": the rain particles' reach (2026-10-04). The old "drop_distance_m" was the per-pixel lattice's
+        // last layer (to 512 m, default 128) and is not read: it would have put every saved setting at the 64-m maximum.
+        cv2DropDistM = std::clamp(c.value("drop_reach_m", cv2DropDistM), 4.0f, 64.0f);
+        cv2RainParticlesK = c.value("rain_particles_k", cv2RainParticlesK);
+        cv2RainShutterMs = c.value("rain_shutter_ms", cv2RainShutterMs);
+        cv2RainFallSpeed = c.value("rain_fall_speed", cv2RainFallSpeed);
+        cv2RainWindGain = c.value("rain_wind_gain", cv2RainWindGain);
+        cv2RainStormWind = c.value("rain_storm_wind_mps", cv2RainStormWind);
+        cv2RainGusts = c.value("rain_gusts", cv2RainGusts);
         cv2SnowWind = c.value("snow_wind", cv2SnowWind);
         cv2ExposureEV = c.value("exposure_ev", cv2ExposureEV);
         cv2HighlightRolloff = c.value("highlight_rolloff", cv2HighlightRolloff);
@@ -7917,7 +7931,13 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"rain_amount", cv2RainAmount},
         {"optics_gain", cv2OpticsGain},
         {"rain_streaks", cv2RainStreaks},
-        {"drop_distance_m", cv2DropDistM},
+        {"drop_reach_m", cv2DropDistM},
+        {"rain_particles_k", cv2RainParticlesK},
+        {"rain_shutter_ms", cv2RainShutterMs},
+        {"rain_fall_speed", cv2RainFallSpeed},
+        {"rain_wind_gain", cv2RainWindGain},
+        {"rain_storm_wind_mps", cv2RainStormWind},
+        {"rain_gusts", cv2RainGusts},
         {"snow_wind", cv2SnowWind},
         {"exposure_ev", cv2ExposureEV},
         {"highlight_rolloff", cv2HighlightRolloff},
