@@ -594,13 +594,22 @@ void main()
             stepF = min(stepF, kMaxVertStep / max(dz, 0.01));
             vec3  rel   = dir * t;
             CV2Pos p    = cv2Pos(rel, eyeH, enuToEcef);
-            float fp = t * pixAng;
+            float fp = t * pixAng * cv2.motion.w; // LOD at the 100%-scale pixel (motion.w)
             float detailAmt = 1.0 - smoothstep(cv2.shell.w, cv2.shell.w * 4.0, t);
             // One call for the coarse (no erosion, the upper bound) and the fine sample.
             gCv2DbgWant = dbgLayers && fine;
             gCv2Stretch = 1.0 / max(dz, 0.25);
             CV2Field f = cv2Field(p, fine ? detailAmt : -1.0, fp);
             gCv2DbgWant = false;
+            // The thin ice's bounce light (below) reads the map where the field did. Its flow is still in
+            // gCv2FlowD (cv2Field sets it; cv2FlowWeatherDirAt ignores its second argument): recomputing the
+            // eight waves per cirrus sample was ~2 ms of a view from inside the high layer (2026-10-04, 11 km).
+            float covB = 0.0;
+            if (f.thin > 0.0) {
+                vec3 wdB = cv2Drift(p.dirE);
+                covB = clamp((textureLod(cv2WeatherTex, cv2FlowWeatherDir(wdB, gCv2FlowD), 2.0).r * cv2.look.x - cv2.cover.x)
+                             / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
+            }
             // Thin ice alone (the cirrus veil, lit without a light march): shaded at the coarse step
             // itself, as one sample of two steps, instead of dropping into fine steps. The high layer
             // spans the sky and its fine steps were a large share of the march from altitude (perf
@@ -626,7 +635,13 @@ void main()
                 pathLen += 2.0 * stepF;
                 continue;
             }
-            if (coarseThin) pathLen += 2.0 * stepF;
+            // Rain alone (a shaft below a base) stands for FOUR steps (2026-10-04): each rain sample runs a light march,
+            // and every light step evaluates the whole field, towers included. Under a snowing storm at night (user
+            // snapshot, Dushanbe) the shafts were ~14 of 40 ms of cloud march; x4 saved 13 ms there and 1.5 ms in the
+            // review-22 daytime storm, where a shaft's edge reads ~3 levels brighter (a step carries its density a
+            // little past the edge).
+            float rK = (coarseThin && f.rain > 0.9) ? 4.0 : 2.0;
+            if (coarseThin) pathLen += rK * stepF;
             else {
                 pathLen += stepF;
                 if (f.sigma <= 0.0) {
@@ -833,8 +848,6 @@ void main()
             // only by its weak phase there, and read dark orange over white cloud. The albedo below is
             // the map's coverage over ~20 km (mip 2); the Sun must reach down there too.
             if (f.thin > 0.0) {
-                float covB = clamp((textureLod(cv2WeatherTex, cv2FlowWeatherDirAt(p), 2.0).r * cv2.look.x - cv2.cover.x)
-                                   / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
                 bounceS += keyCol * max(dot(up, keyDir), 0.0) * (0.08 + 0.6 * covB) * 0.25 * cv2.look2.x
                          * smoothstep(-0.03, 0.02, dot(up, keyDir)) * f.thin;
             }
@@ -858,7 +871,7 @@ void main()
             // perf win is from altitude). Near the eye, inside or just above the layer (review 9: 9 km at
             // 62 N), two-step samples caught its fibres on some frames and missed them on others: crisp
             // flickering specks over the low clouds' edges.
-            float stepW = ((f.thin > 0.9 && fp > 60.0) || (f.rain > 0.9 && !fine)) ? 2.0 * stepF : stepF;
+            float stepW = ((f.thin > 0.9 && fp > 60.0) || (f.rain > 0.9 && !fine)) ? rK * stepF : stepF;
             float Tstep = exp(-f.sigma * stepW);
             float w     = T * (1.0 - Tstep);
             L    += w * S;
@@ -910,6 +923,10 @@ void main()
         }
         if (tbS.x > 0.0) ta = max(ta, tb - 150000.0);
         else             tb = min(tb, ta + 150000.0);
+        // From above the band, under a cloud that hides what is behind it (T ~ 0), nothing of the fog and
+        // dust shows: they lie below the cloud (the part above it is thin dust, x0.25 seen from above). The
+        // march ran its 20 steps there anyway: ~3.7 ms of an orbit storm view (2026-10-04, user snap 1).
+        if (tbS.x > 0.0 && T < 0.01) tb = ta;
         if (tb > ta) {
             float mcT  = (wAcc > 1e-4) ? dAcc / wAcc : 1e30;
             vec3  pm   = eye + dir * (0.5 * (ta + tb));

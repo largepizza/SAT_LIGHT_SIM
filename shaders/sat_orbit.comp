@@ -1158,6 +1158,22 @@ bool processSatellite(uint i, out SatVisible rec)
 
     // ── Attitude vectors ──────────────────────────────────────────────────────
     vec3 satNadir = -normalize(satECI);
+
+    // ── Soft Earth shadow (umbra/penumbra cones) ──────────────────────────────
+    // Computed before the ground-site block: a mirror in the Earth's shadow reflects no beam.
+    // Project the satellite onto the shadow axis and measure how far its cross-sectional radius
+    // is from the umbra/penumbra cone radii AT THAT DISTANCE — not a fixed-width band.
+    // smoothstep between the two cone radii gives a penumbra whose width scales with altitude.
+    vec3  shadowDir = -pc.sunDirECI;               // points away from sun
+    float proj      = dot(satECI, shadowDir);       // + = on the night side
+    vec3  perpVec   = satECI - proj * shadowDir;    // component ⊥ shadow axis
+    float perpLen   = length(perpVec);
+    float dShadow   = max(proj, 0.0);                        // distance behind Earth center
+    float rUmbra    = max(0.0, R_EARTH - dShadow * kTanUmbra);
+    float rPenumbra = R_EARTH + dShadow * kTanPenumbra;
+    float litFactor = (proj > 0.0)
+        ? smoothstep(rUmbra, rPenumbra, perpLen)
+        : 1.0;
     // Along-track velocity direction — derivative of ECI position w.r.t. mean anomaly.
     // Already unit length for circular orbits; used by KnifeEdge attitude.
     vec3 velHat = vec3(
@@ -1322,7 +1338,9 @@ bool processSatellite(uint i, out SatVisible rec)
             float mirrorAreaM2   = ty.crossSection * ty.crossSection * 10.0;
             float cosIncidence   = max(0.0, dot(mirrorN, pc.sunDirECI));
             float groundIrradiance = SOLAR_CONSTANT * mirrorAreaM2 * ty.mirrorFrac * cosIncidence;
-            float intensity = groundIrradiance * pc.beamGain;
+            // x litFactor: a mirror in the Earth's umbra has no sunlight to reflect (it used to
+            // beam at full strength from the night side, e.g. a polar winter).
+            float intensity = groundIrradiance * pc.beamGain * litFactor;
 
             if (intensity > 0.0) {
                 // C12 follow-up #31: contribute to the directional sky-glow suppression dome —
@@ -1417,20 +1435,6 @@ bool processSatellite(uint i, out SatVisible rec)
     float distFactor = REF_RANGE / max(range, REF_RANGE);
     distFactor *= distFactor;  // 1/r²
 
-    // ── Soft Earth shadow (umbra/penumbra cones) ──────────────────────────────
-    // Project the satellite onto the shadow axis and measure how far its cross-sectional radius
-    // is from the umbra/penumbra cone radii AT THAT DISTANCE — not a fixed-width band.
-    // smoothstep between the two cone radii gives a penumbra whose width scales with altitude.
-    vec3  shadowDir = -pc.sunDirECI;               // points away from sun
-    float proj      = dot(satECI, shadowDir);       // + = on the night side
-    vec3  perpVec   = satECI - proj * shadowDir;    // component ⊥ shadow axis
-    float perpLen   = length(perpVec);
-    float dShadow   = max(proj, 0.0);                        // distance behind Earth center
-    float rUmbra    = max(0.0, R_EARTH - dShadow * kTanUmbra);
-    float rPenumbra = R_EARTH + dShadow * kTanPenumbra;
-    float litFactor = (proj > 0.0)
-        ? smoothstep(rUmbra, rPenumbra, perpLen)
-        : 1.0;
 
     // ── Earthshine irradiance (analytical horizon correction) ─────────────────
     // illumFrac: fraction of the visible Earth cap that lies on the lit side.

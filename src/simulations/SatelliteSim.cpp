@@ -634,31 +634,59 @@ void SatelliteSim::init(VulkanContext &ctx)
 }
 
 // ─── onResize ─────────────────────────────────────────────────────────────────
-void SatelliteSim::onResize(VulkanContext &ctx)
+// ─── The half-res compute targets ─────────────────────────────────────────────────────────────────
+// Scene depth (+ quarter seed), the cloud march targets and clouds v2's screen images, plus every set
+// that points at them. Sized by computeHalfExtent(): on a resize, and when the render scale (or the
+// "follow" toggle) changes the extent — recordCompute checks that before recording anything.
+// ─── Automatic render scale ───────────────────────────────────────────────────────────────────────
+// The GPU frame against the target's budget (90% of 1000 / fps, the CPU's share being on top); the cost
+// is modelled as 30% fixed + 70% x scale^2 (measured: the storm views' 100 -> 50% went 32 -> 12 ms). Down
+// as far as the model says in one go (after 0.75 s), up one 5% step at a time once the step is
+// predicted to stay under 85% of the budget (after 1.5 s): it settles instead of oscillating. Off while
+// the HQ photo target is up.
+void SatelliteSim::updateDynamicResolution()
 {
-    vkDestroyPipeline(ctx.device, skyBgPipeline, nullptr);
-    skyBgPipeline = VK_NULL_HANDLE;
-    vkDestroyPipeline(ctx.device, skyBgMinimalPipeline, nullptr);
-    skyBgMinimalPipeline = VK_NULL_HANDLE;
-    vkDestroyPipeline(ctx.device, skyBgLitePipeline, nullptr);
-    skyBgLitePipeline = VK_NULL_HANDLE;
-    createSkyBgPipeline(ctx); // recreates skyBgPipeline + skyBgMinimalPipeline + skyBgLitePipeline
+    if (!dynResEnabled || photoScaleActive || gpuMsRawTotal <= 0.0f)
+        return;
+    const float ms = gpuMsRawTotal;
+    dynResGpuMs = dynResGpuMs > 0.0f ? glm::mix(dynResGpuMs, ms, 0.1f) : ms;
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (now < dynResNextChangeS)
+        return;
+    const float budget = 0.9f * 1000.0f / std::clamp(dynResTargetFps, 20.0f, 240.0f);
+    const float minS = std::clamp(dynResMinScale, 0.5f, 1.0f);
+    const float s = renderScale;
+    auto cost = [&](float sNew) { return dynResGpuMs * (0.3f + 0.7f * (sNew * sNew) / (s * s)); };
+    float sNew = s;
+    if (dynResGpuMs > budget && s > minS + 1e-3f)
+    {
+        const float r = (0.95f * budget / dynResGpuMs - 0.3f) / 0.7f;
+        sNew = s * std::sqrt(std::max(r, 0.05f));
+        sNew = std::floor(sNew / 0.05f + 1e-3f) * 0.05f;
+        sNew = std::clamp(std::min(sNew, s - 0.05f), minS, 1.0f);
+        dynResNextChangeS = now + 0.75;
+    }
+    else if (s < 0.999f && cost(std::min(s + 0.05f, 1.0f)) < 0.85f * budget)
+    {
+        sNew = std::min(s + 0.05f, 1.0f);
+        dynResNextChangeS = now + 1.5;
+    }
+    if (std::abs(sNew - s) < 1e-3f)
+        return;
+    dynResGpuMs = cost(sNew);
+    renderScale = std::round(sNew * 100.0f) / 100.0f;
+}
 
-    // Resolution scaling: low-res target is sized off ctx.swapExtent too, so it needs the same
-    // destroy+recreate treatment as skyBgPipeline just above.
-    destroySkyLowResResources(ctx.device);
-    createSkyLowResResources(ctx);
-    destroySkyTaaResources(ctx.device);
-    createSkyTaaResources(ctx);
+VkExtent2D SatelliteSim::computeHalfExtent(const VulkanContext &ctx) const
+{
+    const float s = computeFollowsRenderScale ? std::clamp(renderScale, 0.25f, 1.0f) : 1.0f;
+    const uint32_t w = std::max(1u, (uint32_t)std::ceil(ctx.swapExtent.width * s * 0.5f));
+    const uint32_t h = std::max(1u, (uint32_t)std::ceil(ctx.swapExtent.height * s * 0.5f));
+    return {w, h};
+}
 
-    vkDestroyPipeline(ctx.device, drawPipeline, nullptr);
-    drawPipeline = VK_NULL_HANDLE;
-    createDrawPipeline(ctx);
-
-    vkDestroyPipeline(ctx.device, starPipeline, nullptr);
-    starPipeline = VK_NULL_HANDLE;
-    createStarPipeline(ctx);
-
+void SatelliteSim::recreateComputeScaledTargets(VulkanContext &ctx)
+{
     // ── Half-res cloud march targets (C15-perf) — the only swapchain-size-dependent images this
     // class owns; recreate at the new half-extent, then patch the two descriptor sets that point
     // at their views (the sampler is resolution-independent and kept as-is). Safe with no extra
@@ -762,9 +790,82 @@ void SatelliteSim::onResize(VulkanContext &ctx)
 
     // Clouds v2: its screen-sized images, and every set that points at them (or at the scene depth
     // just recreated above).
+    // The temporal history (history, resolved colour + depth) is carried across: blitted into the new
+    // size, so a render-scale change (by hand or the automatic one) does not restart the clouds from a
+    // single noisy frame.
+    struct KeptImg { VkImage img; VkDeviceMemory mem; VkImageView view; };
+    const bool keepHist = cv2HistoryValid && cv2HistoryImg && cv2HalfW > 0;
+    const VkExtent2D oldE{cv2HalfW, cv2HalfH};
+    KeptImg kept[3] = {{cv2HistoryImg, cv2HistoryMem, cv2HistoryView},
+                       {cv2ResolvedImg, cv2ResolvedMem, cv2ResolvedView},
+                       {cv2ResolvedDepthImg, cv2ResolvedDepthMem, cv2ResolvedDepthView}};
+    if (keepHist)
+    {
+        cv2HistoryImg = cv2ResolvedImg = cv2ResolvedDepthImg = VK_NULL_HANDLE;
+        cv2HistoryMem = cv2ResolvedMem = cv2ResolvedDepthMem = VK_NULL_HANDLE;
+        cv2HistoryView = cv2ResolvedView = cv2ResolvedDepthView = VK_NULL_HANDLE;
+    }
     destroyCloudsV2Targets(ctx.device);
-    createCloudsV2Targets(ctx);
+    createCloudsV2Targets(ctx); // leaves cv2HistoryValid false
+    if (keepHist)
+    {
+        const VkImage dst[3] = {cv2HistoryImg, cv2ResolvedImg, cv2ResolvedDepthImg};
+        VkCommandBuffer c = ctx.beginOneTimeCommands();
+        for (int i = 0; i < 3; ++i)
+        {
+            VkImageBlit b{};
+            b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            b.srcOffsets[1] = {(int32_t)oldE.width, (int32_t)oldE.height, 1};
+            b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            b.dstOffsets[1] = {(int32_t)cv2HalfW, (int32_t)cv2HalfH, 1};
+            // The depth (RG32F) nearest: linear blits of 32-bit floats are an optional feature.
+            vkCmdBlitImage(c, kept[i].img, VK_IMAGE_LAYOUT_GENERAL, dst[i], VK_IMAGE_LAYOUT_GENERAL, 1, &b,
+                           i == 2 ? VK_FILTER_NEAREST : ctx.bestBlitFilter(VK_FORMAT_R16G16B16A16_SFLOAT));
+        }
+        VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(c, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0,
+                             nullptr, 0, nullptr);
+        ctx.endOneTimeCommands(c);
+        for (auto &k : kept)
+        {
+            vkDestroyImageView(ctx.device, k.view, nullptr);
+            vkDestroyImage(ctx.device, k.img, nullptr);
+            vkFreeMemory(ctx.device, k.mem, nullptr);
+        }
+        cv2HistoryValid = true;
+    }
     writeCloudsV2ConsumerDescriptors(ctx);
+    computeHalfExtentBuilt = computeHalfExtent(ctx);
+}
+
+void SatelliteSim::onResize(VulkanContext &ctx)
+{
+    vkDestroyPipeline(ctx.device, skyBgPipeline, nullptr);
+    skyBgPipeline = VK_NULL_HANDLE;
+    vkDestroyPipeline(ctx.device, skyBgMinimalPipeline, nullptr);
+    skyBgMinimalPipeline = VK_NULL_HANDLE;
+    vkDestroyPipeline(ctx.device, skyBgLitePipeline, nullptr);
+    skyBgLitePipeline = VK_NULL_HANDLE;
+    createSkyBgPipeline(ctx); // recreates skyBgPipeline + skyBgMinimalPipeline + skyBgLitePipeline
+
+    // Resolution scaling: low-res target is sized off ctx.swapExtent too, so it needs the same
+    // destroy+recreate treatment as skyBgPipeline just above.
+    destroySkyLowResResources(ctx.device);
+    createSkyLowResResources(ctx);
+    destroySkyTaaResources(ctx.device);
+    createSkyTaaResources(ctx);
+
+    vkDestroyPipeline(ctx.device, drawPipeline, nullptr);
+    drawPipeline = VK_NULL_HANDLE;
+    createDrawPipeline(ctx);
+
+    vkDestroyPipeline(ctx.device, starPipeline, nullptr);
+    starPipeline = VK_NULL_HANDLE;
+    createStarPipeline(ctx);
+
+    recreateComputeScaledTargets(ctx);
 
     // ── Flare/corona render-to-texture pipeline (flare architecture overhaul) — flareExtent
     // derives from ctx.swapExtent, same destroy/recreate/patch dance as the targets above.
@@ -1293,6 +1394,25 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // mask change it makes takes effect in the push constants filled later in this same call.
     updateKnockoutSweep(dt);
     pollGamepad(dt);
+
+    updateDynamicResolution();
+    // The half-res compute targets follow the render scale (computeHalfExtent): recreate them when the
+    // slider, a preset, the harness, the settings load or the automatic scale moved it. Before anything is
+    // recorded, so no set it patches is bound yet; single frame in flight, so the GPU is done with the old
+    // images. The low-res sky target too, when the plain (non-TAA) scaled path will use it.
+    {
+        const VkExtent2D e = computeHalfExtent(ctx);
+        if (e.width != computeHalfExtentBuilt.width || e.height != computeHalfExtentBuilt.height)
+            recreateComputeScaledTargets(ctx);
+        const VkExtent2D lo{std::max(1u, (uint32_t)(ctx.swapExtent.width * renderScale)),
+                            std::max(1u, (uint32_t)(ctx.swapExtent.height * renderScale))};
+        if (renderScale < 0.999f && !skyTaaWanted() &&
+            (lo.width != skyLowResExtent.width || lo.height != skyLowResExtent.height))
+        {
+            destroySkyLowResResources(ctx.device);
+            createSkyLowResResources(ctx);
+        }
+    }
 
     // UC6: pick up a finished background screenshot encode, if any (see finalizeScreenshot()'s
     // comment for why the encode runs on a thread). Polled here (always runs, every frame)
@@ -2398,6 +2518,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // point shaders don't read these — they carry their own always-full-res screenSizePx.
         cp.skyScreenW = (renderScale < 0.999f) ? (float)skyLowResExtent.width : (float)ctx.swapExtent.width;
         cp.skyScreenH = (renderScale < 0.999f) ? (float)skyLowResExtent.height : (float)ctx.swapExtent.height;
+        cp.skyLodScreenH = cp.skyScreenH;
+        if (skyTaaWanted()) // the upscaler's input rectangle (== the swap extent at 100%)
+        {
+            cp.skyLodScreenH = (float)ctx.swapExtent.height; // detail filtered to the OUTPUT pixel
+            const VkExtent2D inE = skyTaaInExtent(ctx);
+            cp.skyScreenW = (float)inE.width;
+            cp.skyScreenH = (float)inE.height;
+        }
         // Zodiacal light (see GpuCloudParams / cloud_params.glsl). eclipticPoleENU is
         // recomputed each frame in updatePositions(), alongside the Milky Way basis.
         cp.zodiacalWidthDeg = zodiacalWidthDeg;
@@ -2406,7 +2534,6 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // w: "Erosion size" as log2 of its factor (terrain_detail.glsl tdErosionK: powers of two only).
         cp.envMainObsDir = glm::vec4(glm::normalize(obsDir), std::round(std::log2(std::clamp(terrainErosionSize, 0.5f, 4.0f)))); // SKY_ENV: the frame of the two bases
         cp.groundPatternFootM = groundPatternRangeM;
-        cp.maxRenderDistM = cloudMaxRenderDistM;
         cp.viewSamplesMin = viewSamplesMin;
         cp.viewSamplesMax = viewSamplesMax;
         cp.lightSamples = lightSamples;
@@ -2436,8 +2563,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 while (i > 0) { f /= (float)b; r += f * (float)(i % b); i /= b; }
                 return r;
             };
-            const uint32_t hi = (skyTaaFrame++ % 8u) + 1u;
+            // 16 phases when upscaling: each output pixel needs ~1/scale^2 more input positions.
+            const uint32_t hi = (skyTaaFrame++ % (renderScale < 0.999f ? 16u : 8u)) + 1u;
             cp.taaJitter = skyTaaWanted() ? glm::vec4(halton(hi, 2) - 0.5f, halton(hi, 3) - 0.5f, 0.0f, 0.0f) : glm::vec4(0.0f);
+            skyTaaJitterNow = glm::vec2(cp.taaJitter);
             const double altG = followActive ? followRadiusM - 6371000.0 : (double)obsHeightOffset;
             cp.taaJitter.z = orbitGrade * glm::smoothstep(30000.0f, 300000.0f, (float)altG);
             cp.taaJitter.w = sunAngRTrue; // the Sun's true angular radius (rad), the eclipse geometry's
@@ -2512,6 +2641,22 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.atmosTermWidth = atmosTermWidth;
         cp.atmosRayleighGain = atmosRayleighGain;
         cp.atmosMieGain = atmosMieGain;
+        {
+            // Aurora activity this frame (pure function of sim time) and the oval it implies.
+            const double tSw = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            spaceWeather_ = spaceWeatherAt(tSw, auroraStormRate,
+                                           auroraActivityAuto >= 0.5f ? -1.0 : (double)auroraKpManual);
+            const double th = earthRotationAngle(tSw), c = std::cos(th), s = std::sin(th);
+            const glm::dvec3 se(sunDirECI);
+            const glm::dvec3 sunEcef = glm::normalize(glm::dvec3(c * se.x + s * se.y, -s * se.x + c * se.y, se.z));
+            auroraGpu_ = auroraGpuParams(spaceWeather_, sunEcef);
+            // Kp 9 -> 0.85: at 1 the coverage gate fills the whole oval (a featureless ring from orbit).
+            stormStrength = (float)std::clamp((spaceWeather_.kp - 1.0) / 9.0, 0.0, 0.85);
+            cp.auroraMidnight = auroraGpu_.midnight;
+            cp.auroraOval = auroraGpu_.oval;
+            cp.auroraSub = auroraGpu_.sub;
+            cp.auroraOval2 = auroraGpu_.oval2;
+        }
         cp.stormStrength = stormStrength;
         cp.auroraGain = auroraGain;
         cp.auroraCloudGain = auroraCloudGain;
@@ -2658,14 +2803,15 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         dpc.debugDisableMask = debugDisableMask;
         dpc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
 
-        uint32_t halfW = (ctx.swapExtent.width + 1) / 2;
-        uint32_t halfH = (ctx.swapExtent.height + 1) / 2;
+        const VkExtent2D halfE = computeHalfExtent(ctx);
+        uint32_t halfW = halfE.width;
+        uint32_t halfH = halfE.height;
 
         // Quarter-res pre-pass: the same march at 1/16 of the pixels; its result seeds the half-res
         // pass below (and it writes terrainFrameBuf). Measured with the harness: the half-res pass
         // marched ground-level rays from the eye and cost 2-4 ms among mountains.
         {
-            const uint32_t qW = (ctx.swapExtent.width + 3) / 4, qH = (ctx.swapExtent.height + 3) / 4;
+            const uint32_t qW = (halfW + 1) / 2, qH = (halfH + 1) / 2;
             ctx.imageBarrier(cmd, sceneDepthQImg,
                              VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
@@ -2973,8 +3119,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // maxPushConstantsSize floor — filled in the CloudParams block above, read shader-side as
         // cloud.dbgDisableMask etc.
 
-        uint32_t halfW = (ctx.swapExtent.width + 1) / 2;
-        uint32_t halfH = (ctx.swapExtent.height + 1) / 2;
+        const VkExtent2D halfE = computeHalfExtent(ctx);
+        uint32_t halfW = halfE.width;
+        uint32_t halfH = halfE.height;
 
         // The volumetric clouds (clouds v2, .plans/CLOUDS_V2_PLAN.md): the sparse march + temporal
         // resolve, whose result this dispatch composites. Inside this timestamp bucket, so the
@@ -3088,7 +3235,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     vkCmdDispatchIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, dispatchX));
 
     // City lights as satellite point sprites (city_sprites.comp): appended to the finished list.
-    if (citySpriteGain > 0.0f && cityLightsStrength > 0.0f)
+    // Not under Potato (bit 262144): it skips the depth pass that writes the observer's ground and the terrain
+    // frame the sprites are placed in, so they stayed where the first frame put them, locked to the observer.
+    if (citySpriteGain > 0.0f && cityLightsStrength > 0.0f && (debugDisableMask & 262144u) == 0u)
     {
         if (citySpritePipeline == VK_NULL_HANDLE)
             createCitySprites(ctx);
@@ -4346,6 +4495,8 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         glm::dvec3 satEcef{0.0};
         float fade = 0.0f, keep = 1.0f, glareKeep = 1.0f;
         uint32_t glintDir = 0u; // review 28: the sprite's direction (octahedral snorm2x16, ENU), 0 = its centre
+        glm::vec3 spriteEnu{0.0f}; // the same, unencoded (harness)
+        float glintW = 0.0f, px = 0.0f;
         float rangeM = 0.0f; // its range from the observer, for the glare's proximity size
         MeshDrawn drawn{};
     };
@@ -4456,8 +4607,13 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
             {
                 const glm::dvec3 d = s - 2.0 * sn * n;   // from the camera toward the Sun's image
                 const glm::dvec3 Q = satEcef + poses[L.group].t;
-                const glm::dvec3 X = obsEcef + d * glm::dot(Q - obsEcef, d);
-                glm::dvec3 off = X - Q;
+                // Where the camera's ray along d meets the lobe's plane: the Sun's image is at infinity along d, so on
+                // the mirror it shows at a FIXED place on screen at any distance. The point of the ray nearest Q,
+                // projected onto the plane along n (until 2026-10-04), left the ray for a mirror seen obliquely: the
+                // sprite sat ~10 px from the mesh's own glint, which the glare then jumped to (Reflect Orbital #997).
+                const double dn = glm::dot(d, n);
+                const double tPlane = std::abs(dn) > 1e-6 ? glm::dot(Q - obsEcef, n) / dn : -1.0;
+                glm::dvec3 off = (tPlane > 0.0 ? obsEcef + d * tPlane : obsEcef + d * glm::dot(Q - obsEcef, d)) - Q;
                 off -= glm::dot(off, n) * n;
                 const double rl = 0.5 * std::sqrt(std::max((double)L.area, 0.0));
                 const double ol = glm::length(off);
@@ -4473,6 +4629,8 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
                 out.glintDir = glm::packSnorm2x16(oc);
                 if (out.glintDir == 0u)
                     out.glintDir = 1u;   // 0 means "at the centre"
+                out.spriteEnu = dirEnu;
+                out.glintW = (float)w;
             }
         }
         inst.probeSlot = kNoProbe; // assigned below, once every instance is known
@@ -4481,6 +4639,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         out.satEcef = satEcef;
         out.fade = fade;
         out.rangeM = (float)range;
+        out.px = (float)px;
         out.keep = 1.0f - spriteGone;
         out.glareKeep = glarePoint;
         out.drawn = {sat, glm::normalize(glm::vec3(ecefToEnu * glm::vec3(rel))),
@@ -4502,11 +4661,23 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     std::vector<KeepEntry> keepEntries;
     meshDrawn.clear();
     meshGlareRangeM = 0.0f;
+    selMeshDbg = SelMeshDbg{};
     for (size_t i = 0; i < jobs.size(); ++i)
     {
         const InstResult &r = results[i];
         if (!r.ok)
             continue;
+        if (jobs[i].sat == selectedSatIndex)
+        {
+            selMeshDbg.drawn = true;
+            selMeshDbg.fade = r.fade;
+            selMeshDbg.keep = r.keep;
+            selMeshDbg.glareKeep = r.glareKeep;
+            selMeshDbg.px = r.px;
+            selMeshDbg.glintW = r.glintW;
+            selMeshDbg.centreEnu = r.drawn.enuDir;
+            selMeshDbg.spriteEnu = r.glintDir != 0u ? r.spriteEnu : r.drawn.enuDir;
+        }
         insts.push_back(r.inst);
         types.push_back(r.type);
         instEcef.push_back(r.satEcef);
@@ -4724,6 +4895,7 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
         followFlight = 1;
         followFlightT = 0.0;
         followFlightFrom = fromEye;
+        followFlightFromRel = false;
         followFlightDur = 0.0;   // set on the first update, from the distance to the target
     }
     followBasisValid = false;
@@ -4742,10 +4914,11 @@ void SatelliteSim::stopFollow(bool fly)
         // Fly home: updateFollow ends follow mode (this function, fly = false) on arrival.
         followFlight = 2;
         followFlightT = 0.0;
-        followFlightFrom = followObsEcef;
         const glm::dvec3 home = glm::dvec3(followSavedObsDir) *
                                 ((double)kEarthRadius + std::max((double)followSavedGround, (double)followSavedHeight) + 2.0);
-        followFlightDur = followFlightDuration(glm::length(home - followFlightFrom));
+        followFlightDur = followFlightDuration(glm::length(home - followObsEcef));
+        followFlightFrom = followObsEcef - followLastP;   // relative to the satellite: made absolute on the first update
+        followFlightFromRel = true;
         followFlightFacing0 = obsFacing;
         followFlightEl0 = camera.elDeg;
         followFlightInit = false;
@@ -4869,6 +5042,11 @@ void SatelliteSim::updateFollow(float dt)
         if (!followFlightInit)
         {
             followFlightInit = true;
+            if (followFlightFromRel)
+            {
+                followFlightFrom += P;   // the camera's place by the satellite, this frame
+                followFlightFromRel = false;
+            }
             if (followFlightDur <= 0.0)
                 followFlightDur = followFlightDuration(glm::length(to - followFlightFrom));
             const glm::dvec3 ab = P - home;
@@ -5003,6 +5181,7 @@ void SatelliteSim::updateFollow(float dt)
     followBasisN = Nh;
     followBasisR = Rh;
     followBasisValid = true;
+    followLastP = P;
     obsFacing = glm::normalize(obsFacing - glm::dot(obsFacing, upF) * upF);
     // camera.azDeg from obsFacing, as buildUI derives it (it runs before this, one frame behind).
     {
@@ -5891,21 +6070,18 @@ PointDrawPC SatelliteSim::buildPointDrawPC(VulkanContext &ctx)
     // but skip the fetch entirely then.
     bool scaledPrepass = renderScale < 0.999f;
     bool sceneDepthLive = (debugDisableMask & 1024u) == 0u;
-    pc.manualTerrainTest = (scaledPrepass && sceneDepthLive) ? 1.0f : 0.0f;
+    pc.manualTerrainTest = (scaledPrepass && sceneDepthLive && !skyTaaUsedThisFrame) ? 1.0f : 0.0f;
     return pc;
 }
 
 void SatelliteSim::recordPrePass(VkCommandBuffer cmd, VulkanContext &ctx, float /*dt*/, uint32_t imgIdx)
 {
-    if (renderScale >= 0.999f)
-    {
-        // Full-res: the TAA path renders the background here (and returns true); otherwise Pass 1
-        // draws inline in recordDraw as before.
-        recordSkyTaa(cmd, ctx, imgIdx);
+    // The TAA path renders the background here at any render scale (below 100% it upscales); when it
+    // does not run, full res draws inline in recordDraw's Pass 1 and a reduced scale takes the
+    // low-res blit below.
+    const bool taa = recordSkyTaa(cmd, ctx, imgIdx);
+    if (taa || renderScale >= 0.999f)
         return;
-    }
-    skyTaaUsedThisFrame = false;
-    skyTaaHistValid = false;
 
     SatDrawPC pc = buildSkyDrawPC(ctx); // low-res target size rides in the CloudParams UBO (skyScreenW/H)
 
@@ -5972,7 +6148,7 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float /*d
         // Sky TAA: the background is already in the swapchain (recordPrePass); restore its depth for
         // the point draws below (colour writes off). The sky timestamp was written in the prepass.
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyTaaRestorePipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyTaaRestorePipeLayout, 0, 1, &skyTaaRestoreSet, 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyTaaRestorePipeLayout, 0, 1, &skyTaaRestoreSet[1 - skyTaaHist], 0, nullptr);
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
     else if (renderScale >= 0.999f)
@@ -8703,8 +8879,9 @@ void SatelliteSim::createAuroraNoisePipeline(VulkanContext &ctx)
 // onResize (see there for the matching descriptor-set patch).
 void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
 {
-    uint32_t w = (ctx.swapExtent.width + 1) / 2;
-    uint32_t h = (ctx.swapExtent.height + 1) / 2;
+    const VkExtent2D halfE = computeHalfExtent(ctx);
+    uint32_t w = halfE.width;
+    uint32_t h = halfE.height;
 
     auto createTarget = [&](VkImage &img, VkDeviceMemory &mem, VkImageView &view)
     {
@@ -8936,8 +9113,9 @@ void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
         std::memset(p, 0, 16);
         terrainFrameMapped = static_cast<const float *>(p);
     }
-    uint32_t w = (ctx.swapExtent.width + 1) / 2;
-    uint32_t h = (ctx.swapExtent.height + 1) / 2;
+    const VkExtent2D halfE = computeHalfExtent(ctx);
+    uint32_t w = halfE.width;
+    uint32_t h = halfE.height;
 
     ctx.createImage(w, h, VK_FORMAT_R32_SFLOAT,
                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -8975,7 +9153,7 @@ void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
     // setup role createCloudMarchResources' matching barriers play, for first init and onResize.
     // The quarter-res pre-pass image (see sceneDepthQImg).
     {
-        const uint32_t qw = (ctx.swapExtent.width + 3) / 4, qh = (ctx.swapExtent.height + 3) / 4;
+        const uint32_t qw = (w + 1) / 2, qh = (h + 1) / 2;
         ctx.createImage(qw, qh, VK_FORMAT_R32_SFLOAT,
                         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                         sceneDepthQImg, sceneDepthQMem);
@@ -11031,11 +11209,19 @@ void SatelliteSim::destroySkyLowResResources(VkDevice device)
 // (RGBA16F colour + its unified depth as R32F), sky_taa.comp resolves it against the reprojected history
 // (ping-pong RGBA16F/R32F pairs, GENERAL layout), the result is blitted into the swapchain, and the main
 // pass opens with taa_depth_restore.frag writing the depth back — so stars, planets and satellites draw
-// over it unjittered and occluded as before. Swapchain-size dependent: recreated on resize. Used only at
-// renderScale 1 with the full sky shader (skyTaaWanted); otherwise the inline draw as before.
+// over it unjittered and occluded as before. Swapchain-size dependent: recreated on resize. Used with the
+// full sky shader (skyTaaWanted); otherwise the inline draw as before. Below render scale 100% it is a
+// temporal UPSCALER: the sky renders into the top-left skyTaaInExtent() and the resolve outputs full size.
+VkExtent2D SatelliteSim::skyTaaInExtent(const VulkanContext &ctx) const
+{
+    if (renderScale >= 0.999f) return ctx.swapExtent;
+    return {std::max(1u, (uint32_t)(ctx.swapExtent.width * renderScale)),
+            std::max(1u, (uint32_t)(ctx.swapExtent.height * renderScale))};
+}
+
 bool SatelliteSim::skyTaaWanted() const
 {
-    return skyTaaEnabled && renderScale >= 0.999f && skyTaaPipeline != VK_NULL_HANDLE &&
+    return skyTaaEnabled && skyTaaPipeline != VK_NULL_HANDLE &&
            ctx_ && ctx_->swapTransferDstSupported &&
            (debugDisableMask & (262144u | 524288u)) == 0u;
 }
@@ -11181,6 +11367,12 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
         ci.pColorBlendState = &cb;
         ci.layout = skyBgPipeLayout;
         ci.renderPass = skyTaaRenderPass;
+        // Dynamic: the render scale picks the sub-rectangle each frame (temporal upscaling).
+        const VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo dsi{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dsi.dynamicStateCount = 2;
+        dsi.pDynamicStates = dyn;
+        ci.pDynamicState = &dsi;
         if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &skyTaaPipeline) != VK_SUCCESS)
         {
             Log::line("sky TAA: pipeline creation failed; TAA off");
@@ -11204,10 +11396,10 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
 
     // ── Descriptors: the resolve's two ping-pong sets and the depth restore's set ─────────────────
     {
-        VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 9},
+        VkDescriptorPoolSize sizes[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10},
                                          {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4}};
         VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pci.maxSets = 3;
+        pci.maxSets = 4;
         pci.poolSizeCount = 2;
         pci.pPoolSizes = sizes;
         vkCreateDescriptorPool(ctx.device, &pci, nullptr, &skyTaaPool);
@@ -11234,16 +11426,17 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
         lci.pBindings = &rb;
         vkCreateDescriptorSetLayout(ctx.device, &lci, nullptr, &skyTaaRestoreLayout);
 
-        VkDescriptorSetLayout layouts[3] = {skyTaaResolveLayout, skyTaaResolveLayout, skyTaaRestoreLayout};
-        VkDescriptorSet sets[3];
+        VkDescriptorSetLayout layouts[4] = {skyTaaResolveLayout, skyTaaResolveLayout, skyTaaRestoreLayout, skyTaaRestoreLayout};
+        VkDescriptorSet sets[4];
         VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         ai.descriptorPool = skyTaaPool;
-        ai.descriptorSetCount = 3;
+        ai.descriptorSetCount = 4;
         ai.pSetLayouts = layouts;
         vkAllocateDescriptorSets(ctx.device, &ai, sets);
         skyTaaResolveSet[0] = sets[0];
         skyTaaResolveSet[1] = sets[1];
-        skyTaaRestoreSet = sets[2];
+        skyTaaRestoreSet[0] = sets[2];
+        skyTaaRestoreSet[1] = sets[3];
 
         for (int k = 0; k < 2; ++k)
         {
@@ -11266,14 +11459,19 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
             }
             vkUpdateDescriptorSets(ctx.device, 6, w, 0, nullptr);
         }
-        VkDescriptorImageInfo di{skyTaaNearestSampler, skyTaaDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        w.dstSet = skyTaaRestoreSet;
-        w.dstBinding = 0;
-        w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        w.pImageInfo = &di;
-        vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+        // The restore reads the RESOLVE's full-resolution depth (the history depth it wrote this frame:
+        // set k = what resolve set k wrote, image 1 - k), so it is right at any render scale.
+        for (int k = 0; k < 2; ++k)
+        {
+            VkDescriptorImageInfo di{skyTaaNearestSampler, skyTaaHistDepthView[1 - k], VK_IMAGE_LAYOUT_GENERAL};
+            VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            w.dstSet = skyTaaRestoreSet[k];
+            w.dstBinding = 0;
+            w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            w.pImageInfo = &di;
+            vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+        }
     }
 
     // ── The resolve (compute) ───────────────────────────────────────────────────────────────────
@@ -11384,9 +11582,16 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass = skyTaaRenderPass;
     rbi.framebuffer = skyTaaFramebuffer;
-    rbi.renderArea = {{0, 0}, ctx.swapExtent};
+    const VkExtent2D inE = skyTaaInExtent(ctx);
+    rbi.renderArea = {{0, 0}, inE};
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyTaaPipeline);
+    {
+        const VkViewport vp{0.0f, 0.0f, (float)inE.width, (float)inE.height, 0.0f, 1.0f};
+        const VkRect2D sc{{0, 0}, inE};
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+    }
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBgPipeLayout, 0, 1, &skyDescSet, 0, nullptr);
     vkCmdPushConstants(cmd, skyBgPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -11424,6 +11629,11 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
         tp.e2p[i] = glm::vec4(e2p[0][i], e2p[1][i], e2p[2][i], 0.0f);   // row i
     }
     tp.eyeDelta = glm::vec4(glm::vec3(dEnu), valid ? 1.0f : 0.0f);
+    // The spare w's: this frame's jitter (input px) and the input extent (render scale < 1 = upscale).
+    tp.c2e[0].w = skyTaaJitterNow.x;
+    tp.c2e[1].w = skyTaaJitterNow.y;
+    tp.c2e[2].w = (float)inE.width;
+    tp.e2p[0].w = (float)inE.height;
     tp.cam = glm::vec4(tanHF, pc.aspect, skyTaaWeightStill, skyTaaWeightMoving);
 
     const int k = skyTaaHist;
@@ -11432,6 +11642,10 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     vkCmdPushConstants(cmd, skyTaaResolvePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(tp), &tp);
     vkCmdDispatch(cmd, (ctx.swapExtent.width + 15) / 16, (ctx.swapExtent.height + 15) / 16, 1);
 
+    // The resolved depth -> the main pass's depth restore (fragment).
+    ctx.imageBarrier(cmd, skyTaaHistDepthImg[1 - k], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                     VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     // The resolved colour -> the swapchain.
     ctx.imageBarrier(cmd, skyTaaHistColorImg[1 - k], VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
                      VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,

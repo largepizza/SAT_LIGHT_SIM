@@ -1,0 +1,39 @@
+# 2026-10-03 the oval from dark sites: Coldfoot (MLAT ~67) quiet, eastern Montana (MLAT ~54) at Kp 3 / 5 / 8
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds_v2.auto_exposure 0
+time set 2036-12-21T06:00:00Z
+time pause
+aurora kp 3
+observer lat=67.25 lon=-150.18 agl=2
+time sun midnight
+camera az=0 el=30 fov=100
+wait settle
+capture g_coldfoot_kp3
+state g_coldfoot_kp3
+camera az=0 el=85 fov=100
+wait settle
+capture g_coldfoot_kp3_zenith
+observer lat=46.9 lon=-106.0 agl=2
+time sun midnight
+camera az=0 el=20 fov=100
+wait settle
+capture g_montana_kp3
+aurora kp 5
+wait settle
+capture g_montana_kp5
+aurora kp 8
+wait settle
+capture g_montana_kp8
+state g_montana_kp8
+camera az=0 el=80 fov=100
+wait settle
+capture g_montana_kp8_zenith
+perf frames=60 name=montana_kp8
+observer lat=80.7 lon=-72.7 alt=9000000
+camera az=0 el=-90 fov=70
+aurora kp 9
+wait settle
+capture o_kp9
+quit

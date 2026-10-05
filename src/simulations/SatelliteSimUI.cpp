@@ -3595,14 +3595,26 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // Below 100% the sky/terrain/ocean background renders at reduced resolution and is upscaled; satellites, stars
     // and the UI stay native.
     if (stepper("RenderScale", "Render scale", renderScale, 0.5f, 1.0f, 0.05f, "%.0f%%", 100.0f,
-                "Background resolution (satellites, stars and the UI always render at full resolution)") &&
+                "Background and cloud resolution (satellites, stars and the UI always render at full resolution)") &&
         ctx_)
     {
         renderScale = std::round(renderScale * 100.0f) / 100.0f;
         destroySkyLowResResources(ctx_->device);
         createSkyLowResResources(*ctx_);
     }
-    uiToggleRow(inp, ui, "SkyTaa", 0, "Temporal anti-aliasing", skyTaaEnabled, "Terrain, sky and sea (render scale 100% only)");
+    uiToggleRow(inp, ui, "DynRes", 0, "Automatic render scale", dynResEnabled,
+                "Lowers the render scale (5% steps) when the GPU frame runs over the target frame rate, raises it when there is room");
+    if (dynResEnabled)
+    {
+        stepper("DynResFps", "Target frame rate", dynResTargetFps, 30.0f, 144.0f, 5.0f, "%.0f fps", 1.0f,
+                "The automatic render scale keeps the GPU frame under 90% of this rate's frame time");
+        stepper("DynResMin", "Lowest render scale", dynResMinScale, 0.5f, 1.0f, 0.05f, "%.0f%%", 100.0f,
+                "The automatic render scale never goes below this");
+    }
+    uiToggleRow(inp, ui, "CloudsFollowScale", 0, "Clouds follow render scale", computeFollowsRenderScale,
+                "Below 100% the clouds and the terrain depth pass also render at the reduced resolution");
+    uiToggleRow(inp, ui, "SkyTaa", 0, "Temporal anti-aliasing", skyTaaEnabled,
+                "Terrain, sky and sea; below 100% render scale it also upscales (rebuilds full resolution over frames)");
     {
         // MAILBOX was the old unconditional default, which runs the GPU flat out on a laptop; V-Sync (FIFO) is.
         static const char *kFpsCapLabels[5] = {"Off", "30", "60", "120", "V-Sync"};
@@ -5384,7 +5396,10 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
     };
 
     CloudSlider secAurora[] = {
-        {"Storm strength", &stormStrength, 0.0f, 1.0f, 0.05f, "%.2f", 25},
+        // 2026-10-03: activity from a deterministic space-weather history (SpaceWeather.cpp) or a fixed Kp.
+        {"Space weather (0 manual / 1 auto)", &auroraActivityAuto, 0.0f, 1.0f, 1.0f, "%.0f", 258},
+        {"Aurora Kp (manual)", &auroraKpManual, 0.0f, 11.0f, 0.1f, "%.1f", 25},
+        {"Storm frequency (x)", &auroraStormRate, 0.0f, 5.0f, 0.1f, "%.1f", 259},
         {"Aurora gain", &auroraGain, 0.0f, 0.1f, 0.001f, "%.3f", 26},
         {"Coverage freq", &auroraCoverageFreq, 0.05f, 2.0f, 0.05f, "%.2f", 29},
         {"Coverage az freq", &auroraCoverageAzFreq, 0.0f, 6.0f, 0.1f, "%.1f", 30},
@@ -5407,6 +5422,32 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         CLOUD_SEC("Aurora", secAurora),
     };
 #undef CLOUD_SEC
+    // The aurora's activity right now (SpaceWeather.cpp, this frame's), above the sliders.
+    {
+        const SpaceWeather &w = spaceWeather_;
+        const float lw = (float)fs(11) * 11.0f;
+        static const char *kG[6] = {"quiet", "G1 minor storm", "G2 moderate storm", "G3 strong storm",
+                                    "G4 severe storm", "G5 extreme storm"};
+        const int g = geomagStormScale(w.kp);
+        uiSection("AuroraNowSec", 0, "AURORA NOW");
+        uiKV("AuroraNowKV", 0, "Activity",
+             uiKitStr("Kp %.1f  %s%s", w.kp, g > 0 ? kG[g] : (w.kp >= 4.0 ? "active" : "quiet"),
+                      auroraActivityAuto >= 0.5f ? "" : "  (manual)"), lw);
+        uiKV("AuroraNowKV", 1, "Driver",
+             auroraActivityAuto < 0.5f ? "fixed Kp"
+             : w.cmePeakKp > 0.0 && w.cme >= w.hss && w.cme >= w.kpQuiet
+                 ? uiKitStr("CME storm, %.0f h since it arrived", w.cmeHoursSince)
+             : w.hss > w.kpQuiet ? "high-speed solar wind stream"
+                                 : uiKitStr("background (solar cycle %.0f%%)", w.cycle * 100.0), lw);
+        uiKV("AuroraNowKV", 2, "Substorm",
+             w.subMinutes >= 0.0 && w.subI > 0.05
+                 ? uiKitStr("%s, %.0f min, near %.1f h MLT", w.subMinutes < 30.0 ? "expansion" : "recovery", w.subMinutes,
+                            24.0 + w.subMltRad * 12.0 / 3.14159265)
+                 : "none", lw);
+        const AuroraOvalBounds b = auroraOvalBounds(w.kp);
+        uiKV("AuroraNowKV", 3, "Oval at midnight",
+             uiKitStr("%.0f - %.0f deg magnetic latitude", 90.0 - b.eqMid, 90.0 - b.polMid), lw);
+    }
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 24);
 }
 
@@ -7059,6 +7100,10 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         {
             uiScale = d.value("ui_scale", uiScale);
             renderScale = d.value("render_scale", renderScale);
+            computeFollowsRenderScale = d.value("clouds_follow_render_scale", computeFollowsRenderScale);
+            dynResEnabled = d.value("dynamic_resolution", dynResEnabled);
+            dynResTargetFps = std::clamp(d.value("dynamic_target_fps", dynResTargetFps), 20.0f, 240.0f);
+            dynResMinScale = std::clamp(d.value("dynamic_min_scale", dynResMinScale), 0.5f, 1.0f);
             skyTaaEnabled = d.value("sky_taa", skyTaaEnabled);
             skyTaaWeightStill = std::clamp(d.value("sky_taa_weight", skyTaaWeightStill), 0.02f, 1.0f);
             skyTaaWeightMoving = std::clamp(d.value("sky_taa_weight_moving", skyTaaWeightMoving), 0.02f, 1.0f);
@@ -7464,7 +7509,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         oceanDetailOctaves = c.value("ocean_detail_octaves", oceanDetailOctaves);
         oceanReflSamples = c.value("ocean_refl_samples", oceanReflSamples);
         moonGain = c.value("moon_gain", moonGain);
-        stormStrength = c.value("storm_strength", stormStrength);
+        auroraActivityAuto = c.value("aurora_activity_auto", auroraActivityAuto) >= 0.5f ? 1.0f : 0.0f;
+        auroraKpManual = std::clamp(c.value("aurora_kp_manual", auroraKpManual), 0.0f, 11.0f);
+        auroraStormRate = std::clamp(c.value("aurora_storm_rate", auroraStormRate), 0.0f, 5.0f);
         auroraGain = c.value("aurora_gain", auroraGain);
         auroraGroundGain = c.value("aurora_ground_gain", auroraGroundGain);
         auroraCoverageFreq = c.value("aurora_coverage_freq", auroraCoverageFreq);
@@ -7594,6 +7641,10 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     j["display"] = {
         {"ui_scale", uiScale},
         {"render_scale", renderScale},
+        {"clouds_follow_render_scale", computeFollowsRenderScale},
+        {"dynamic_resolution", dynResEnabled},
+        {"dynamic_target_fps", dynResTargetFps},
+        {"dynamic_min_scale", dynResMinScale},
         {"sky_taa", skyTaaEnabled},
         {"sky_taa_weight", skyTaaWeightStill},
         {"sky_taa_weight_moving", skyTaaWeightMoving},
@@ -7731,7 +7782,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ocean_detail_octaves", oceanDetailOctaves},
         {"ocean_refl_samples", oceanReflSamples},
         {"moon_gain", moonGain},
-        {"storm_strength", stormStrength},
+        {"aurora_activity_auto", auroraActivityAuto},
+        {"aurora_kp_manual", auroraKpManual},
+        {"aurora_storm_rate", auroraStormRate},
         {"aurora_gain", auroraGain},
         {"aurora_ground_gain", auroraGroundGain},
         {"aurora_coverage_freq", auroraCoverageFreq},
@@ -8031,11 +8084,11 @@ nlohmann::json SatelliteSim::buildPerfSnapshotJson(float cpuDt)
     // slow" apart from "quality was cranked up when this was captured".
     j["quality"] = {
         // render_scale matters more than any other quality field for interpreting these numbers:
-        // the sky/terrain/cloud background renders at this fraction of the swapchain extent while
-        // scene_depth and the cloud targets are ALWAYS half the full extent. So the relative cost
-        // of those fixed-size passes rises sharply as this drops, and two snapshots at different
-        // render scales are not comparable even at identical resolution/viewpoint.
+        // the sky/terrain/cloud background renders at this fraction of the swapchain extent, and
+        // (clouds_follow_render_scale, since 2026-10-04) so do scene_depth and the cloud targets.
+        // Two snapshots at different render scales are not comparable even at identical resolution.
         {"render_scale", renderScale},
+        {"clouds_follow_render_scale", computeFollowsRenderScale},
         {"cloud_march_budget", cv2MaxIters},
         {"cloud_light_steps", cv2LightSteps},
         {"cloud_step_growth", cv2StepGrowth},

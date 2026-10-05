@@ -321,8 +321,8 @@ cirrus+cloud+beam+aurora, so none could be occluded independently), and the opac
 `tCloudOcclude` for terrain purposes. Each volumetric march now clamps to `tScene` at march time,
 which also gives real partial truncation where a ridge pokes into a shell.
 
-**Sizing is deliberate and load-bearing:** half of the SWAP extent, independent of `renderScale`,
-exactly matching `cloudMarchTargetA/B`. That is what lets `cloud_march.comp` read it 1:1 with
+**Sizing is deliberate and load-bearing:** half of the (render-scaled, since 2026-10-04 —
+`computeHalfExtent()`) swap extent, exactly matching `cloudMarchTargetA/B`. That is what lets `cloud_march.comp` read it 1:1 with
 `texelFetch` at its own `gl_GlobalInvocationID` — no UV math to get wrong. Fragment consumers use
 `gl_FragCoord.xy / pc.screenSizePx`. **Consequence:** at `renderScale < 1.0` the depth pass does
 not shrink, so its relative cost rises sharply (at 50% it marches terrain at the same pixel count
@@ -765,7 +765,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   candidate search (~35% of the rest), mostly coarse steps through broken cumulus out to max distance.
   **From orbit (420 km, ~13-14 ms full rate) the cost is spread over the layers** — each off: Cb
   columns -3.5 ms, mid -2.6, anvil -2.0, high -2.0, light steps 1 -1.8, max_iters 80 -2.3
-  (`harness_runs/orbit_lod/attrI.json`). Tried and dropped: skipping the empty shell above a
+  (`harness_runs/orbit_lod/attrI.json`). **From inside the high layer (11 km, 2026-10-04)** the cirrus is ~11 of 32 ms: horizon
+  rays stay in its band for ~200 km and every sample is evaluated and shaded (density does not change the cost); the
+  anvil heads ~3, columns ~2.4. Its bounce term now reuses the field's flow (`gCv2FlowD`) instead of re-running the
+  eight waves. Tried: 4x steps for far thin-only samples (-1.2 ms) and a 100-km sun-colour cache (-1.3, sunset
+  colours change): not adopted. Tried and dropped: skipping the empty shell above a
   conservative per-column ceiling (tropopause top + overshoot, ground-lifted low tops) — 0% (the
   steps are inside the cloud, not above it); a vertical step cap growing with the footprint (200 -> up
   to 500 m) — -0.4%. An orbit LOD needs a cheaper field (an impostor), not fewer steps.
@@ -898,7 +902,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   own AFTER the clouds' (u^2 spacing through their band, cut at the scene depth and 150 km), lit cheaply
   (the key light at the band's middle x the map's cover overhead x the path to the fog's top; sky zenith;
   Moon and city light at night), composited by distance around the clouds' mean depth. Cost ~0 at the
-  benchmark views. Settings (section "Fog & dust", slots 194-199): `fog_amount` 0.6, `fog_depth_m` 250,
+  benchmark views; from above the band it is skipped where the cloud's T < 0.01 (2026-10-04: its 20 steps under
+  opaque cloud were ~3 ms of an orbit storm view, user snap 1; image within run-to-run noise). Settings (section "Fog & dust", slots 194-199): `fog_amount` 0.6, `fog_depth_m` 250,
   `fog_density` 0.012, `dust_amount` 0.5, `dust_height_m` 1500, `dust_density` 0.00025. Knockout bit 2048
   (was "fog layer"; the Low / Planetarium / Potato presets set it) switches both off. Harness scenes:
   harness_runs/fogdust (Po valley at sunrise from 2.5 km is the reference look). Not yet: fog in the light
@@ -921,6 +926,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - **Soft ground contact (pass 10):** the march fades extinction over the last max(40 m, 3 pixel
   footprints) before the half-res scene depth: dense cloud meeting a slope ended on a hard,
   stair-stepped line.
+- **Rain-only samples stand for four coarse steps** (2026-10-04, `rK`): each runs a light march whose steps evaluate
+  the whole field (towers included). Under a snowing storm at night (user snapshot, Dushanbe, 2 km) the cloud march went
+  40.6 -> 27.2 ms; in review 22's daytime storm 8.3 -> 6.8, a shaft's edge ~3 levels brighter. Tried: skipping the
+  rain light march (-20 ms, but sunlight would reach shafts under thick cloud again), reusing it over 1.5-4 km of rain
+  (222 registers).
 - **Rain + optics** (2026-09-28, `.plans/ATMOS_OPTICS_AND_STORMS.md`): rain shafts are cv2FieldLow's
   below-base branch (`CV2Field.rain`; the shell floor is 0 m while Rain > 0); rain at the eye drives a
   streak overlay in cloud_march.comp (after the resolve, so it animates). Halos / sundogs / parhelic
@@ -1370,6 +1380,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   tracks its site). The environment probes are not involved (the Sun glint is analytic; sharp reflections are per
   frame). The GPU-parity log's mismatches at ~170 m are the GPU's float satellite position (0.5 m = 0.17 deg there);
   0.02 mag at 6 km.
+- **The low shape volume is read in a rotated frame (2026-10-04, `shapeRotA`, `anchorShapeA/StormA`):** a tiling 3D volume
+  sliced by the sphere repeats wherever the local horizontal plane holds a short lattice direction of the tile (an axis,
+  a face or body diagonal): the equator always holds z, and with the drift the meridians every 45 deg hold x, y or a
+  diagonal - rows of the same puffs (user snapshot, 9.6 N 134.6 W, frame 0's clearance 0.007). The CPU keeps the identity
+  where its clearance (min |up . v| over those directions, longer ones x1.3 / x1.6) is >= 0.05, else the clearest of
+  three fixed rotations (harness `state` -> `clouds_v2.shape_frame`). A switch reshapes the lobes, never the
+  placement. Tried: per-sample warps (Perlin, analytic sines, in place or not) all flipped cv2FieldLow to ~220
+  registers (+5-9 ms); a cross-fade of two frames cost 0.7 ms idle. Only the low lobes and storm lobes use it; the
+  detail erosion, cells, mid layer etc. still tile in the drifted ECEF frame.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
@@ -3065,6 +3084,10 @@ comment above `hashU`/`pairScore` in `sat_orbit.comp`), independent of scan orde
 other candidates exist — the same load-spreading property the old `hash11`-based score was designed
 to have, minus the magnitude-collapse bug.
 
+**Beams need sunlight (2026-10-04):** a beam's intensity is x the satellite's Earth-shadow `litFactor` (the
+soft umbra/penumbra, now computed before the ground-site block): until then a mirror in the Earth's shadow beamed
+at full strength (user snap: Reflect satellites lighting the Antarctic winter night).
+
 ### Orientation — a rate-limited ease, not integrated slew
 2026-08-06 same-day follow-up: the first cut of this rework smoothed only ONE transition case (both
 the current and a look-AHEAD "next window" valid and different) via a fixed-fraction-of-window
@@ -4002,6 +4025,20 @@ aliased because the sky pass shades one ray per pixel. At renderScale 1 with the
   been blitting into images without it. **The main pass's three variants share ONE dependency list**
   (`mainPassDependencies`): compatibility includes dependencies, and every draw of a load or boot frame was
   invalid against the framebuffers and pipelines made with ctx.renderPass (validation layer, 2026-09-30).
+- **Temporal UPSCALING below render scale 100% (2026-10-04):** the TAA path now runs at any render scale (with the
+  full sky shader). The sky pass renders into the top-left `skyTaaInExtent()` of its full-size input images
+  (dynamic viewport/scissor, so a scale change recreates nothing), jittered over 16 Halton phases in INPUT pixels; the
+  resolve (`sky_taa.comp`, output size) builds this frame's estimate at each output pixel as a Gaussian (sigma 0.6
+  output px) of the 3x3 input samples at their jittered positions, and scales its blend weight by the nearest
+  sample's Gaussian weight (`conf`); the 100% path is the old code unchanged. SkyTaaPC's spare w's carry the jitter
+  and the input size. The depth restore reads the RESOLVE's full-res depth (`skyTaaRestoreSet[2]`, one per ping-pong
+  side). The sky pass's detail LOD uses the OUTPUT pixel (`CloudParams::skyLodScreenH`, v1's unread maxRenderDistM).
+  Cost ~1 ms over the plain stretch (the full-res resolve). The plain low-res blit stays for TAA off / SKY_LITE.
+- **Automatic render scale (2026-10-04, `updateDynamicResolution`, Display "Automatic render scale", keys
+  `display.dynamic_resolution` (off) / `dynamic_target_fps` (60) / `dynamic_min_scale` (0.5)):** keeps the GPU frame
+  under 0.9 x 1000 / fps by 5% steps (down as far as a 30% fixed + 70% x scale^2 model says, after 0.75 s; up one step
+  when predicted under 85% of the budget, after 1.5 s). The clouds' history is BLITTED across a resize
+  (`recreateComputeScaledTargets`), so a step does not restart them. The orbit storm snapshot settled at 55% (13.8 ms).
 - Run with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` after touching any of this; the harness run's
   `app_stdout.txt` holds the messages. `scripts/sky_taa.satcmd` (set `display.sky_taa` with `true`/`false`).
 
@@ -4053,6 +4090,16 @@ CloudParams UBO / `PointDrawPC` in the 128-byte push-constant split. `buildSkyDr
 
 See `TERRAIN_PLAN.md` session 29 log for the full design writeup and the bug's root-cause
 narrative.
+
+**The half-res compute passes follow it (2026-10-04, "Clouds follow render scale", `display.clouds_follow_render_scale`,
+default on):** scene depth (+ its quarter seed), the cloud march targets and clouds v2's screen images are sized by
+`computeHalfExtent()` = half of the SCALED extent, recreated by `recreateComputeScaledTargets()` (onResize, and
+recordCompute's check before anything is recorded when the extent changes). Every consumer already sized itself from
+`imageSize`/`textureSize` or sampled by UV. The march's noise LOD keeps the 100% pixel (`cv2.motion.w` = march pixel /
+100% pixel x `fp`): with the coarser footprint the storm cumulus texture filtered away. Measured (RTX 3070 Ti,
+1600x900, user snapshots, full-rate march): orbit storm total 32.4 / 20.6 / 11.9 ms at 100 / 75 / 50% (fixed-size
+clouds at 50%: 28.0), Dushanbe snow 28.3 / 17.4 / 10.9 (22.6), Arizona anvils 34.0 / 21.8 / 14.0 (28.1). Rain/snow
+drops (drawn in the half-res composite) get softer and larger below 100%. The paragraph below predates this.
 
 **Its value has shrunk since the pipeline unification.** `scene_depth.comp` and the cloud targets
 are fixed at half the SWAP extent and do not scale, so at 1920x1009 dropping to 50% removes only
@@ -4446,6 +4493,29 @@ Read it at the start of any terrain-related session before making changes.
   215-218, UBO `auroraSheets`). The aurora's light on the ground (terrain and sea) was REMOVED the same day
   (the user: green and bad); `auroraContribTerrain` stays as a zero term. Test from a DARK site (Coldfoot,
   67.25 N 150.18 W, December): Fairbanks' skyglow gates the aurora out. `scripts/aurora_sheets.satcmd`.
+- **The auroral oval + space weather (2026-10-03, `include/aurora_oval.glsl`, `src/simulations/SpaceWeather.h/.cpp`).**
+  The oval is a RING fixed relative to the SUN: magnetic local time from `cloud.auroraMidnight` (the anti-Sun
+  direction projected on the dipole's equatorial plane), widest and furthest equatorward at ~23 MLT, thin at noon,
+  the polar cap inside it dark; a sharp poleward edge (discrete arcs) and a soft equatorward one (diffuse aurora;
+  the sheets carry a quarter of their light there, `auroraDiscreteShare`). Its edges are Feldstein-Starkov-like
+  functions of an activity index Kp (`auroraOvalBounds`: midnight equatorward edge 66.5 - 2.1 Kp MLAT, Kp 9 ->
+  ~47), brightness 0.4 + 0.2 Kp (1 at Kp 3). It replaced a band at 20 deg colatitude (+8 x storm) that faded
+  out over TWICE its width: at the default storm it was lit from ~5 deg off the pole, a cap. **Kp is a pure
+  function of sim time** (`spaceWeatherAt`, CPU double, each frame into the UBO's auroraMidnight / auroraOval /
+  auroraSub / auroraOval2, 864 -> 928): the 11-year cycle (cycle 25 min Dec 2019), recurrent coronal-hole
+  streams (27.27 d, a hole lives ~6 rotations), CME storms (a daily Poisson chance x cycle x the Russell-McPherron
+  equinox bias; sudden commencement, a 3-9 h main phase, a 0.5-1.3 d recovery; peak Kp from knots fitted to
+  NOAA's per-cycle counts — measured 936 / 501 / 174 / 103 / 9 three-hour intervals at G1-G5 against NOAA's
+  1700 / 600 / 200 / 100 / 4), and substorms (2.5-h bins, ~2.5 a day, more with activity: onset near 23 MLT,
+  a bulge pushed 2-6.5 deg poleward that widens and drifts west, brighter and filled in, ~2 h). Time reversal,
+  warp and bookmarks see the same storm. `cloud.stormStrength` (fold chaos, coverage fill) is now DERIVED:
+  (Kp - 1) / 9, max 0.85 (at 1 the coverage gate filled the oval). Atmosphere tab: "AURORA NOW" readout,
+  "Space weather (0 manual / 1 auto)" (slot 258), "Aurora Kp (manual)" (slot 25, was "Storm strength"),
+  "Storm frequency (x)" (slot 259); keys `clouds.aurora_activity_auto / aurora_kp_manual / aurora_storm_rate`
+  (`storm_strength` is no longer read). The ambience's `aurora` driver uses the CPU mirror
+  (`auroraOvalWeightCpu`). Harness `aurora` (docs/HARNESS.md). Open: a storm from orbit is a filled ring of
+  concentric bands (the coverage noise varies with colatitude by design); the noise azimuth is still Earth-fixed
+  while the oval is Sun-fixed; no dawn-side omega bands / pulsating aurora; the dipole axis is fixed (no IGRF).
 - **Next:** C14 (Anvil) remains not started — deferred repeatedly in favor of C15/C16 per the
   2026-07-12 session — and can be picked up whenever; it has no dependency on C15/C16. Otherwise
   Phase E is complete (C13, C15, C16 done); C9/C11/C12 and noise-repetition cleanup are next in
@@ -4650,6 +4720,9 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   (`clouds.city_lights_strength`, slot 58; 0 = the old detail texture) and "Major road lights"
   (`clouds.city_roads_strength`, slot 77), in the UBO where `oceanGlintPad0/1` were (renamed in place).
   Cost +0.8 ms over LA from 10 km (in-app A/B). Harness: `scripts/city_lights.satcmd`.
+  **Not gated on terrain detail (2026-10-04):** Low and Planetarium (SKY_LITE) draw the full pattern too (it was
+  `tdEnabled()`-gated, so those tiers showed the night map's blobs): +0.7 ms on Low, +2.4 ms on Planetarium over LA
+  from 1.5 km (RTX 3070 Ti). Farmland and beaches still follow the terrain detail.
   **Day side (phase 2, 2026-09-29):** the same layout (`cityLayout()`, a `CityLayout` struct computed
   ONCE per pixel before the material block and reused by the night) drives `cityDayAlbedo()`: asphalt
   streets (12 m, arterials 24 m, exact box-filter coverage `cityBoxCover`), each base block split into
@@ -4739,7 +4812,9 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   (`city_sprite_start_footprint_m` 25, slot 206, `cityParams.w`) of ground — the SAME stretched footprint
   the ground uses (pixAngle x t / max(|dir . up|, 0.2)), tested per light in the compute
   (`CitySpritePC::pixAng/startFootM`), and the ground's hand-off uses it too (`cFoot`); levels whose
-  reach is inside 1.5x the nearest range that can qualify are not dispatched. **Fog hides
+  reach is inside 1.5x the nearest range that can qualify are not dispatched. **Not under Potato** (it skips the
+  depth pass whose terrain frame they are placed in: they froze, locked to the observer), and with terrain knocked out
+  (Planetarium, bit 1) they sit on the sea-level sphere the ground is drawn as (2026-10-04). **Fog hides
   them** (point cloud occlusion: an LA radiation fog of optical depth ~3 counts as opaque while the
   brighter ground glitter still shows through) — test them with `clouds_v2.fog_amount 0`. Harness
   `state` reports `satellites.visible_count` (the list with them: +36k over LA from 2 km). Cost ~0.

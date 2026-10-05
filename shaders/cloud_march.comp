@@ -50,6 +50,7 @@ layout(set = 0, binding = 3) uniform sampler2D noiseTex;
 // hand-copied here; see cloud_params.glsl for why that was a standing hazard.
 #define CLOUD_PARAMS_BINDING 4
 #include "cloud_params.glsl"
+#include "aurora_oval.glsl"
 
 // Target A: rgb = combined additive radiance (B_total), a = tCloudOcclude (m, -1 = none)
 layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D targetA;
@@ -413,18 +414,9 @@ const float kWarpDriftRate  = 0.08;
 const float kWarpEvolveRate = 0.00002;
 
 
-// Aurora ground-glow (C16 follow-up, redo — session 28 follow-up #5). Duplicates sat_sky.frag's
-// kGeomagPoleECEF/kAuroraOvalColatDeg/kAuroraOvalWidthDeg and a stripped-down oval mask (no
-// ripple warp, no fold noise — this evaluates once per IN-CLOUD march sample, the hottest loop in
-// the renderer, so kept as cheap as possible) rather than sharing code with the full curtain
-// primitive there. Evaluated LOCALLY using each sample's own dirECEF (already computed in the
-// march loop below), NOT a CPU-computed observer-position scalar — the first version lit the
-// whole visible cloud deck uniformly whenever the OBSERVER was under the oval and went dark
-// the instant they left it, regardless of what was actually under the curtain.
+// Aurora colour + pole for the airglow polar boost; the oval itself is include/aurora_oval.glsl.
 const vec3  kAuroraGroundColor  = vec3(0.15, 1.0, 0.35);
 const vec3  kGeomagPoleECEF     = vec3(0.0481, -0.1543, 0.9868);
-const float kAuroraOvalColatDeg = 20.0;
-const float kAuroraOvalWidthDeg = 6.0;
 // Large-scale coverage gate — mirrors sat_sky.frag's auroraCoverage (see that file's comment for
 // the full "why patches, not a solid ring" reasoning, and why it varies primarily with COLATITUDE
 // rather than azimuth — a colat-constant/az-varying field's threshold crossings fall on
@@ -553,7 +545,6 @@ float warpPerlin3(vec3 p) {
 const float kAuroraShellInnerM  = 95000.0;
 const float kAuroraShellOuterM  = 300000.0;
 const float kAuroraRingWarpFreq = 3.0;
-const float kAuroraOvalWarpDeg  = 4.0;
 const float kAuroraOvalDriftRate = 0.003;
 const float kAuroraTangentFreq  = 40.0;
 const float kAuroraRadialFreq   = 70.0;
@@ -583,18 +574,19 @@ float auroraCoverage(float colat, float az, float t, float storm) {
     return smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
 }
 
-float auroraOvalMask(float colat, float az, float t, float storm) {
-    // Same conservative 70deg pre-filter as sat_sky.frag's copy — see that file for the full
-    // worst-case-reach derivation.
-    if (degrees(colat) > 70.0)
+// The oval (include/aurora_oval.glsl): a ring fixed relative to the Sun whose edges follow the activity,
+// with a dark polar cap inside it. Same as sat_sky.frag's copy.
+float auroraOvalMask(AuroraGeom g, float colat, float az, float t, float storm) {
+    float cd = degrees(colat);
+    float rip = 1.5 * cloud.auroraOval2.z;  // the ripple's reach (warpPerlin3 stays well inside +-1.5)
+    if (cd > cloud.auroraOval2.y || cd < g.polDeg - 0.8 - rip || cd > g.eqDeg + 3.5 + rip)
         return 0.0;
     vec2  ringP  = vec2(cos(az), sin(az)) * kAuroraRingWarpFreq;
-    float ripple = warpPerlin3(vec3(ringP, t * kAuroraOvalDriftRate)) * kAuroraOvalWarpDeg;
-    float centerDeg = kAuroraOvalColatDeg + ripple + storm * 8.0;
-    float widthDeg  = kAuroraOvalWidthDeg * (1.0 + storm * 1.5);
-    float distDeg = abs(degrees(colat) - centerDeg);
-    float band = smoothstep(widthDeg * 2.0, widthDeg * 0.5, distDeg);
-    return band * auroraCoverage(colat, az, t, storm);
+    float ripple = warpPerlin3(vec3(ringP, t * kAuroraOvalDriftRate)) * cloud.auroraOval2.z;
+    float band = auroraOvalBand(g, cd, ripple);
+    if (band <= 0.0) return 0.0;
+    // A substorm fills its bulge in (the coverage gate's threshold falls with the local storm).
+    return band * auroraCoverage(colat, az, t, clamp(storm + 0.6 * g.boost, 0.0, 1.0));
 }
 
 // "base" is a texture read against auroraNoiseTex's R channel (baked by aurora_noise.comp)
@@ -620,7 +612,7 @@ float auroraCurtainNoise(float colat, float az, float altM, float t, float storm
 // terms consistent with the rest of this file.
 // Outputs for the sheets (auroraSheetsAdd): the point's frame (colat, az), altitude, and the oval mask x
 // night side (0 where this sample returned early).
-float gAurColat = 0.0, gAurAz = 0.0, gAurAlt = 0.0, gAurOvalN = 0.0;
+float gAurColat = 0.0, gAurAz = 0.0, gAurAlt = 0.0, gAurOvalN = 0.0, gAurCentre = 20.0;
 vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirECEF, float t, float storm) {
     gAurOvalN = 0.0;
     vec3 pDirECEF = normalize(rp.x * enuX + rp.y * enuY + rp.z * enuZ);
@@ -631,11 +623,13 @@ vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirEC
     float colat, az; vec3 radialT, tangentT;
     auroraFrame(pDirECEF, poleDir, colat, az, radialT, tangentT);
     gAurColat = colat; gAurAz = az;
+    AuroraGeom ag = auroraOvalGeom(pDirECEF);
+    gAurCentre = 0.5 * (ag.eqDeg + ag.polDeg);
     float dayness = clamp((dot(pDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
     float night   = 1.0 - dayness;
     if (night <= 0.001) return vec3(0.0);
-    float oval = auroraOvalMask(colat, az, t, storm);
-    gAurOvalN = oval * night;
+    float oval = auroraOvalMask(ag, colat, az, t, storm);
+    gAurOvalN = oval * night * auroraDiscreteShare(ag, degrees(colat));
     if (oval <= 0.001) return vec3(0.0);
     const float kAuroraInnerFalloffM = 7500.0;
     const float kAuroraOuterFalloffM = 15000.0;
@@ -686,9 +680,10 @@ vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirEC
 // own samples (a few sines each), so the cost is almost nothing.
 // Hash of a sheet index (a float integer): three values in [-1, 1].
 vec3 tdRandCM(float n) { return tdRand3(ivec3(int(n), 7121, 3343)); }
-float auroraSheetIndex(float colat, float az, float t) {
+// centreDeg: the oval's middle at this MLT (aurora_oval.glsl), so the sheets run along the oval's shape.
+float auroraSheetIndex(float colat, float az, float t, float centreDeg) {
     float sp = max(cloud.auroraSheets.y, 0.02);
-    float y  = (degrees(colat) - kAuroraOvalColatDeg - 8.0 * cloud.stormStrength) / sp;
+    float y  = (degrees(colat) - centreDeg) / sp;
     float T  = t * (0.02 + 0.5 * cloud.auroraShimmerRate);
     float fo = cloud.auroraSheets.w;
     float W  = 0.9  * sin(3.0 * az + 0.25 * y + 0.05 * T)
@@ -721,7 +716,8 @@ float auroraSheetIndexAt(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, out float alt
     vec3 pole = (dot(pD, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
     float colat; vec3 rT, tT;
     auroraFrame(pD, pole, colat, az, rT, tT);
-    return auroraSheetIndex(colat, az, pc.waveTime);
+    AuroraGeom ag = auroraOvalGeom(pD);
+    return auroraSheetIndex(colat, az, pc.waveTime, 0.5 * (ag.eqDeg + ag.polDeg));
 }
 
 // erf, |error| < 1.3e-4 (Winitzki).
@@ -754,7 +750,7 @@ vec3 auroraMarchSegment(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
         if (!wantS) continue;
         // The index is carried across every sample (dropping it where the mask is 0 cut the sheets in
         // whole-step chunks along the oval's edge: a staircase); the mask fades linearly across a crossing.
-        float S = auroraSheetIndex(gAurColat, gAurAz, pc.waveTime);
+        float S = auroraSheetIndex(gAurColat, gAurAz, pc.waveTime, gAurCentre);
         if (havePrev && max(oPrev, gAurOvalN) > 0.001) {
             // Each sheet n is integrated EXACTLY over this step with S linear in t (review 11): the path length
             // through a Gaussian sheet over [S0, S1] is step / |dS| x sigma sqrt(pi/2) |erf(b) - erf(a)|, which
@@ -903,7 +899,8 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
         vec3 bPole    = (dot(bDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
         minBoundColatDeg = min(minBoundColatDeg, degrees(acos(clamp(dot(bDirECEF, bPole), -1.0, 1.0))));
     }
-    if (minBoundColatDeg > 80.0) return vec3(0.0);
+    // The largest colatitude the oval can light now (auroraOval2.y) + 10 deg for the 5-sample spacing.
+    if (minBoundColatDeg > cloud.auroraOval2.y + 10.0) return vec3(0.0);
 
     // Past this point the march genuinely runs — record the entry distance for terrain
     // suppression. Unlike cloudMarchCS/cirrusMarchCS, this canNOT just reuse atEnter: the march

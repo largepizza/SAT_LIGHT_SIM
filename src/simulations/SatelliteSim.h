@@ -14,6 +14,7 @@
 #include "SatModel.h"      // attitude groups, satellite models, baked lobes (lighting overhaul)
 #include "SatPhotometry.h" // earthshine table axes (satTypeBuf layout)
 #include "SatTrace.h"      // magnitude trace + CSV export (benchmarking M9)
+#include "SpaceWeather.h"  // aurora activity over sim time + the oval (2026-10-03)
 #include "SatBench.h"      // shared sample schema + bulk export (benchmarking M10)
 #include "SatMeshRenderer.h"
 #include "SatEnvProbes.h" // Phase 4: satellite meshes (model viewer; scene pass in 4c)
@@ -663,6 +664,9 @@ struct GpuCloudV2Params
     glm::vec4 farLight;    // review 18: the far cloud layer's key-light (x) and sky-light (y) gains
     glm::vec4 farTune;     // review 24: the far cloud layer's x slant coverage, y coverage bias, z density, w edge softness
     glm::vec4 farTune2;    // review 24: x the far layer's low-Sun light; yzw the mid layer's morphology anchor (frac(anchor x 1.7))
+    // 2026-10-04: the low shape volume's rotated frame (clouds_v2.glsl: columns) and its anchors.
+    glm::vec4 shapeRotA[3];
+    glm::vec4 anchorShapeA, anchorStormA;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -674,7 +678,8 @@ static_assert(offsetof(GpuCloudV2Params, rainE) == 288 + 48 * kCloudV2Types + 41
 static_assert(offsetof(GpuCloudV2Params, anchorMorph) == 288 + 48 * kCloudV2Types + 480, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, farLight) == 288 + 48 * kCloudV2Types + 512, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, farTune) == 288 + 48 * kCloudV2Types + 528, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 560, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, shapeRotA) == 288 + 48 * kCloudV2Types + 560, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 640, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -1296,7 +1301,7 @@ struct GpuCloudParams
     float airglowRedGain;     // C15: red (630.0nm) band gain
     float airglowSodiumGain;  // C15: sodium (589.3nm) band gain — keep dim relative to green
     float groundPatternFootM; // review 8: farm/ground pattern range, a pixel footprint (m) (was v1's unread shadowMaxDistM)
-    float maxRenderDistM;     // cloudMarch's tExit distance cap (was a hardcoded 80km)
+    float skyLodScreenH;      // sat_sky.frag's LOD pixel rows (output height while upscaling; was v1's maxRenderDistM)
     float viewSamplesMin;     // perf (session 24 round 2): N_VIEW floor for short rays (was pad2)
     float lightSamples;       // perf (session 24): N_LIGHT optDepth sub-march count (was pad3)
     float oceanSeaOctaves;    // perf (session 24): seaMap() octave count (height-trace geometry)
@@ -1567,8 +1572,13 @@ struct GpuCloudParams
     glm::vec4 cityLod;       // footprint (m/px) where x posts, y the street grid, z major roads, w the street layout end (816 -> 832)
     glm::vec4 cityLod2;      // x streets' share close up, y their share as they fade; z "Sea wave range fade" (review 28); w unused (832 -> 848)
     glm::vec4 seaTune;       // review 24: x far sea ripple, y sea warp, z sea warp detail, w ripple size (px) (848 -> 864)
+    // The auroral oval (864 -> 928, 2026-10-03): AuroraGpu (SpaceWeather.h), see cloud_params.glsl.
+    glm::vec4 auroraMidnight; // xyz toward magnetic midnight (ECEF), w Kp
+    glm::vec4 auroraOval;     // colatitudes (deg): equatorward midnight / noon, poleward midnight / noon
+    glm::vec4 auroraSub;      // substorm: intensity, cos / sin MLT angle, 1 / half-width^2
+    glm::vec4 auroraOval2;    // x brightness, y max lit colatitude, z ripple (deg), w substorm poleward push (deg)
 };
-static_assert(sizeof(GpuCloudParams) == 864, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 928, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -2254,6 +2264,12 @@ private:
     bool       followFlightInit = false;
     double     followFlightS0 = 0.0;
     glm::dvec3 followFlightDelta0{0.0};
+    // The followed satellite's position at the last updateFollow (ECEF). A flight home starts from the camera's place
+    // RELATIVE to it (followFlightFromRel: followFlightFrom holds that offset until the flight's first update adds this
+    // frame's satellite): taken absolute, the start lagged the satellite by a frame of orbital motion (~130 m at 1x)
+    // and the view swung ~37 deg round a satellite 166 m away on the first frame home (2026-10-04, Reflect Orbital #997).
+    glm::dvec3 followLastP{0.0};
+    bool       followFlightFromRel = false;
     glm::dvec3 followHomeEcef() const;
     glm::dvec3 followBasisT{0.0}, followBasisN{0.0}, followBasisR{0.0};
     bool       followBasisValid = false;
@@ -2404,6 +2420,23 @@ private:
     // portability concern specifically on the lower-end hardware this feature targets) — a known,
     // accepted tradeoff: satellites/stars are not occluded by terrain while scaled below 100%.
     float renderScale = 1.0f;                          // [0.5, 1.0], Settings > Display "Render scale"
+    // The half-res compute passes (scene depth + its quarter-res seed, the cloud march, resolve and
+    // composite) follow the render scale too (2026-10-04): at 50% they march a quarter of the pixels.
+    // Off = the old behaviour (always half the swap extent). Settings > Display, key
+    // display.clouds_follow_render_scale. computeHalfExtent() is the ONE sizing rule for all of them.
+    bool computeFollowsRenderScale = true;
+    VkExtent2D computeHalfExtent(const VulkanContext &ctx) const;
+    VkExtent2D computeHalfExtentBuilt{0, 0}; // what the targets were last created at
+    void recreateComputeScaledTargets(VulkanContext &ctx);
+    // Automatic render scale (2026-10-04, Settings > Display "Automatic render scale"): moves renderScale
+    // in 5% steps between dynResMinScale and 1 to keep the GPU frame under the target frame rate's budget
+    // (x 0.9). Keys display.dynamic_resolution / dynamic_target_fps / dynamic_min_scale.
+    bool dynResEnabled = false;
+    float dynResTargetFps = 60.0f;
+    float dynResMinScale = 0.5f;
+    float dynResGpuMs = 0.0f;       // eased GPU frame (ms)
+    double dynResNextChangeS = 0.0; // steady-clock seconds: no change before this
+    void updateDynamicResolution();
     VkRenderPass skyLowResRenderPass = VK_NULL_HANDLE; // color-only, CLEAR, finalLayout=TRANSFER_SRC_OPTIMAL
     VkImage skyLowResColorImg = VK_NULL_HANDLE;
     VkDeviceMemory skyLowResColorMem = VK_NULL_HANDLE;
@@ -2825,7 +2858,13 @@ private:
     VkDescriptorSetLayout skyTaaResolveLayout = VK_NULL_HANDLE, skyTaaRestoreLayout = VK_NULL_HANDLE;
     VkPipelineLayout skyTaaResolvePipeLayout = VK_NULL_HANDLE, skyTaaRestorePipeLayout = VK_NULL_HANDLE;
     VkPipeline skyTaaResolvePipeline = VK_NULL_HANDLE, skyTaaRestorePipeline = VK_NULL_HANDLE;
-    VkDescriptorSet skyTaaResolveSet[2] = {}, skyTaaRestoreSet = VK_NULL_HANDLE;
+    VkDescriptorSet skyTaaResolveSet[2] = {}, skyTaaRestoreSet[2] = {};
+    // Temporal UPSCALING (2026-10-04): below render scale 100% the sky pass renders into the top-left
+    // skyTaaInExtent() of its (full-size) input images with a jitter in INPUT pixels, and the resolve
+    // reconstructs the full-resolution frame from it and the history. Nothing is recreated on a scale
+    // change (viewport/scissor are dynamic). skyTaaJitterNow = this frame's jitter (input px).
+    VkExtent2D skyTaaInExtent(const VulkanContext &ctx) const;
+    glm::vec2 skyTaaJitterNow{0.0f};
     bool skyTaaWanted() const;
     void createSkyTaaResources(VulkanContext &ctx);
     void destroySkyTaaResources(VkDevice device);
@@ -2973,6 +3012,7 @@ private:
     float cv2HalfRateMoving = 0.0f;       // 1 = where the march would run at full rate, half (a checkerboard)
     float cv2Godrays = 0.0f;              // EXPERIMENTAL: the sky dims by the share of its airlight in cloud shadow (the light volume); 0 = off (and no bake)
     float cv2GodrayRangeKm = 400.0f;      // the light volume's half-extent about the eye (km)
+    int   cv2ShapeFrame = 0;   // the low shape volume's frame this frame (harness state)
     float cv2StepBaseM = 60.0f;        // step at the eye ...
     float cv2StepGrowth = 0.01f;       // ... growing by this per metre of distance ...
     float cv2StepMaxM = 1500.0f;       // ... capped here (and at 1.2% of the distance beyond)
@@ -3330,6 +3370,14 @@ private:
                                                    // glint list's records carry it so a mesh's glare gets
                                                    // the proximity size a sprite's rangeM gives its own
                                                    // (updateMeshes -> recordCompute -> glare_find.comp)
+    // Harness: the SELECTED satellite's mesh hand-off this frame (state's selection.mesh): its fade, the
+    // sprite's keep, glare keep, on-screen size, and the ENU directions of its centre and its sprite.
+    struct SelMeshDbg
+    {
+        bool  drawn = false;
+        float fade = 0.0f, keep = 1.0f, glareKeep = 1.0f, px = 0.0f, glintW = 0.0f;
+        glm::vec3 centreEnu{0.0f}, spriteEnu{0.0f};
+    } selMeshDbg;
     // Ocean-glint list (see GpuOceanGlintBuf) — device-local, zeroed every frame like glowBuf.
     VkBuffer oceanGlintBuf = VK_NULL_HANDLE;
     VkDeviceMemory oceanGlintMem = VK_NULL_HANDLE;
@@ -4124,7 +4172,16 @@ private:
     float oceanReflSamples = 6.0f;           // ocean sky-reflection loop sample count (N_REFL)
     float moonGain = 0.0053f;                // shared moonlight brightness: terrain direct term + cloud
                                              // moonContrib (default matches the prior hardcoded cloud value)
-    float stormStrength = 0.33f;             // C16: aurora oval expansion/brightness/chaos [0,1]
+    float stormStrength = 0.29f;             // C16: aurora fold chaos / coverage fill [0,1]; DERIVED each frame
+                                             // from the activity index (Kp - 1) / 9 (max 0.85) since 2026-10-03
+    // Aurora activity (2026-10-03, SpaceWeather.h): "Space weather (0 manual / 1 auto)" picks between the
+    // deterministic space-weather history over sim time and a fixed "Aurora Kp (manual)"; "Storm frequency"
+    // scales the CME and coronal-hole odds. spaceWeather_ / auroraGpu_ are this frame's.
+    float auroraActivityAuto = 1.0f;         // slot 258
+    float auroraKpManual = 3.0f;             // slot 25 (was "Storm strength")
+    float auroraStormRate = 1.0f;            // slot 259
+    SpaceWeather spaceWeather_{};
+    AuroraGpu auroraGpu_{};
     float auroraGain = 0.1f;                 // C16: master aurora brightness multiplier
     float auroraCloudGain = 0.0018f;         // C16: ambient aurora light on clouds only (no albedo term
                                              // in that formula, so it needs a much lower default than
@@ -4343,6 +4400,7 @@ private:
     harness::Status harnessExec(harness::Active &a);
     bool harnessLookDir(int track, int planet, glm::vec3 &enuDir); // false if unavailable
     nlohmann::json harnessStateJson();
+    nlohmann::json auroraStateJson() const; // SatelliteSimHarness.cpp: the aurora activity (SpaceWeather.h)
     float cpuTerrainHeightM(float latDeg, float lonDeg) const;
     nlohmann::json buildSettingsJson();
     void applySettingsJson(const nlohmann::json &j, bool isPatch);
@@ -4802,7 +4860,7 @@ private:
     bool draggingPhoto[35] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 258;
+    static constexpr int kCloudSliderSlots = 260;
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),
                                  // idx 91-96 the terrain detail sliders, 97/98 terrain erosion (2026-09-25),

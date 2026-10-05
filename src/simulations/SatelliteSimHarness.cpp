@@ -202,13 +202,37 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; tutorial [start [step]|next|back|skip|state]; bookmark add [name]|go <n>|update <n>|rename <n> <name>|delete <n>|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; bookmark add [name]|go <n>|update <n>|rename <n> <name>|delete <n>|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
 } // namespace
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────────────────────────
+// The aurora's activity this frame (SpaceWeather.h) for `state` and the `aurora` command.
+nlohmann::json SatelliteSim::auroraStateJson() const
+{
+    const SpaceWeather &w = spaceWeather_;
+    const AuroraOvalBounds b = auroraOvalBounds(w.kp);
+    nlohmann::json j = {{"auto", auroraActivityAuto >= 0.5f}, {"kp", w.kp}, {"g_scale", geomagStormScale(w.kp)},
+                        {"quiet", w.kpQuiet}, {"hss", w.hss}, {"cme", w.cme}, {"cme_peak_kp", w.cmePeakKp},
+                        {"cme_hours", w.cmeHoursSince}, {"solar_cycle", w.cycle}, {"storm01", stormStrength}};
+    j["oval_mlat_deg"] = {{"eq_midnight", 90.0 - b.eqMid}, {"eq_noon", 90.0 - b.eqNoon},
+                          {"pol_midnight", 90.0 - b.polMid}, {"pol_noon", 90.0 - b.polNoon}};
+    j["substorm"] = {{"intensity", w.subI}, {"minutes", w.subMinutes}, {"mlt_h", 24.0 + w.subMltRad * 12.0 / 3.14159265},
+                     {"halfwidth_h", w.subHalfWRad * 12.0 / 3.14159265}, {"poleward_deg", w.subPoleDeg}};
+    // The observer under the oval: magnetic latitude and MLT, and the oval's brightness overhead.
+    {
+        const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir)), ax = geomagPoleEcef();
+        const glm::dvec3 m(auroraGpu_.midnight), e = glm::cross(ax, m);
+        const double mlat = glm::degrees(std::asin(std::clamp(glm::dot(up, ax), -1.0, 1.0)));
+        double mlt = std::atan2(glm::dot(up, e), glm::dot(up, m)) * 12.0 / 3.14159265;
+        if (mlt < 0.0) mlt += 24.0;
+        j["observer"] = {{"mlat_deg", mlat}, {"mlt_h", mlt}, {"oval_overhead", auroraOvalWeightCpu(auroraGpu_, up)}};
+    }
+    return j;
+}
+
 void SatelliteSim::harnessInit()
 {
     if (!harness::active())
@@ -371,6 +395,8 @@ json SatelliteSim::harnessStateJson()
                  {"sun_seen_frac", moonEclipseSolarObs}, {"sky_light_frac", moonEclipseSkyObs}, {"sky_exposure", skyExposure()}, {"solar_possible", moonEclipseSolarPossible},
                  {"lunar_possible", moonEclipseLunarPossible}};
 
+    j["aurora"] = auroraStateJson();
+
     json ko = json::array();
     for (int i = 0; i < debugToggleTableSize(); ++i)
     {
@@ -390,6 +416,8 @@ json SatelliteSim::harnessStateJson()
                    {"knockout_mask", debugDisableMask},
                    {"knockouts", ko},
                    {"render_scale", renderScale},
+                   {"dynamic_resolution", dynResEnabled},
+                   {"sky_taa_used", skyTaaUsedThisFrame},
                    {"width", ctx_ ? ctx_->swapExtent.width : 0},
                    {"height", ctx_ ? ctx_->swapExtent.height : 0},
                    {"ui_visible", uiVisible},
@@ -411,6 +439,26 @@ json SatelliteSim::harnessStateJson()
         sel["el_deg"] = elDegOf(selSkyDirCpu);
         sel["above_earth"] = selAboveEarth;
         sel["track"] = trackActive; // the camera lock below `camera.tracking`, on the satellite it follows
+        // Its screen position (px, top-left origin) and, when its mesh is drawn, the hand-off: the mesh fade, the
+        // sprite's keep (1 - spriteGone), the glare keep, its size in px, and where the sprite (point, bloom,
+        // point-like glare) is placed — the Sun's image in its dominant lobe, weighted by the lobe's specular share.
+        if (ctx_)
+        {
+            const float W = (float)ctx_->swapExtent.width, H = (float)ctx_->swapExtent.height;
+            float sx = 0.0f, sy = 0.0f;
+            if (projectSkyDirToScreen(selSkyDirCpu, W, H, sx, sy))
+                sel["screen_px"] = {sx, sy};
+            if (selMeshDbg.drawn)
+            {
+                json m = {{"fade", selMeshDbg.fade}, {"keep", selMeshDbg.keep}, {"glare_keep", selMeshDbg.glareKeep},
+                          {"px", selMeshDbg.px}, {"glint_w", selMeshDbg.glintW}};
+                if (projectSkyDirToScreen(selMeshDbg.centreEnu, W, H, sx, sy))
+                    m["centre_px"] = {sx, sy};
+                if (projectSkyDirToScreen(selMeshDbg.spriteEnu, W, H, sx, sy))
+                    m["sprite_px"] = {sx, sy};
+                sel["mesh"] = m;
+            }
+        }
     }
     if (selectedPlanetIndex >= 0)
         sel["planet"] = kPlanetNames[selectedPlanetIndex];
@@ -418,7 +466,8 @@ json SatelliteSim::harnessStateJson()
     // The v2 march's rate this frame: sparse (1 pixel in 4), full, half (checkerboard) or adaptive.
     j["clouds_v2"] = {{"rate", cv2AdaptiveNow ? "adaptive" : cv2HalfRateNow ? "half" : cv2FullRateNow ? "full" : "sparse"},
                       {"still_frames", cv2StillFrames}, {"history_valid", cv2HistoryValid},
-                      {"sun_cloud_t", sunCloudTEased}, {"fast_lod", cv2FastLodNow}};   // review 22: the Sun disc's cloud transmittance
+                      {"sun_cloud_t", sunCloudTEased}, {"fast_lod", cv2FastLodNow},
+                      {"shape_frame", cv2ShapeFrame}};   // review 22: the Sun disc's cloud transmittance
 
     static const char *kBucketKeys[8] = {"scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
                                          "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};
@@ -981,6 +1030,80 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         char buf[160];
         snprintf(buf, sizeof(buf), "%s eclipse at j2000 %.0f s, observer %.2f, %.2f (Sun seen %.3f)", kind.c_str(), t,
                  obsLatDeg, obsLonDeg, moonEclipseSolarObs);
+        r["message"] = buf;
+        return Status::Done;
+    }
+
+    // ── aurora: the activity now | next <kp> (jump to the peak of the next storm reaching it) | substorm
+    //    (jump to ~10 min after the next substorm onset) | kp <v> (manual) | auto ──
+    if (n == "aurora")
+    {
+        const std::string sub = lower(pos(0));
+        const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        auto jumpTo = [&](double t)
+        {
+            const double days = std::floor(t / 86400.0);
+            simDayJ2000 = (int64_t)days;
+            simSecInDay = t - days * 86400.0;
+            trailClearPending = true;
+            updatePositions(t, 0.0f);
+        };
+        if (sub == "kp")
+        {
+            auroraActivityAuto = 0.0f;
+            auroraKpManual = (float)std::clamp(std::stod(pos(1)), 0.0, 11.0);
+        }
+        else if (sub == "auto")
+            auroraActivityAuto = 1.0f;
+        else if (sub == "next")
+        {
+            const double want = pos(1).empty() ? 7.0 : std::stod(pos(1));
+            const double maxDays = c.num("days", 1100.0);
+            double t = now + 3600.0, found = -1.0;
+            for (; t < now + maxDays * 86400.0; t += 900.0)
+                if (spaceWeatherKp(t, auroraStormRate) >= want) { found = t; break; }
+            if (found < 0.0)
+                fail("aurora next: no Kp >= " + pos(1) + " within the search window");
+            // Climb to the storm's peak (within a day).
+            double best = found, bestKp = spaceWeatherKp(found, auroraStormRate);
+            for (double u = found; u < found + 86400.0; u += 600.0)
+            {
+                const double k = spaceWeatherKp(u, auroraStormRate);
+                if (k > bestKp) { bestKp = k; best = u; }
+            }
+            auroraActivityAuto = 1.0f;
+            jumpTo(best);
+        }
+        else if (sub == "substorm")
+        {
+            const double kpNow = auroraActivityAuto >= 0.5f ? -1.0 : (double)auroraKpManual;
+            double found = -1.0;
+            bool wasOn = spaceWeatherAt(now, auroraStormRate, kpNow).subMinutes >= 0.0;
+            for (double t = now + 60.0; t < now + 3.0 * 86400.0; t += 60.0)
+            {
+                const SpaceWeather w = spaceWeatherAt(t, auroraStormRate, kpNow);
+                const bool on = w.subMinutes >= 0.0 && w.subMinutes < 2.0;
+                if (on && !wasOn && w.subI >= 0.0)
+                {
+                    const SpaceWeather w10 = spaceWeatherAt(t + 600.0, auroraStormRate, kpNow);
+                    if (w10.subI >= c.num("min", 0.4)) { found = t + 600.0; break; }
+                }
+                wasOn = on;
+            }
+            if (found < 0.0)
+                fail("aurora substorm: none found within 3 days");
+            jumpTo(found);
+        }
+        else if (!sub.empty())
+            fail("aurora: [next <kp> [days=]] | substorm [min=] | kp <v> | auto");
+        const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        spaceWeather_ = spaceWeatherAt(tNow, auroraStormRate, auroraActivityAuto >= 0.5f ? -1.0 : (double)auroraKpManual);
+        r["aurora"] = auroraStateJson();
+        r["t_j2000"] = tNow;
+        char buf[200];
+        snprintf(buf, sizeof(buf), "Kp %.2f (G%d)%s, substorm %.2f at %.0f min", spaceWeather_.kp,
+                 geomagStormScale(spaceWeather_.kp), auroraActivityAuto >= 0.5f ? "" : " manual", spaceWeather_.subI,
+                 spaceWeather_.subMinutes);
         r["message"] = buf;
         return Status::Done;
     }

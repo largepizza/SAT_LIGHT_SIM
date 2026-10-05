@@ -19,7 +19,7 @@
 layout(set = 0, binding = 0, rgba32f) uniform readonly image2D meshColorImg; // rgb radiance, a = slot + 1
 // Stride must equal GpuMeshInstance (432 B, SatMeshRenderer.h): the earthshine SH block was appended
 // 2026-09-24 — this struct must grow with it or every instance past the first reads the wrong one.
-// tail = firstComponent, probeSlot, glareNorm, glarePoint (float bits; glarePoint unused here since 2026-09-25).
+// tail = firstComponent, probeSlot, glareNorm, glarePoint (float bits).
 struct MeshInstanceBloom { vec4 pad[20]; uint firstMaterial, firstOccluder, occluderCount; float bloomScale; uvec4 tail; vec4 earthSh[5]; };
 layout(set = 0, binding = 1, std430) readonly buffer MeshInstances { MeshInstanceBloom instances[]; };
 layout(push_constant) uniform PC {
@@ -35,10 +35,10 @@ layout(location = 0) out vec4 outColor;
 // OSR radiator ~2e3, in Starlink's dielectric film ~2e2; a rough-metal edge glint, even at grazing
 // incidence, stays below ~50.
 const float kGlareRadiance0 = 150.0, kGlareRadiance1 = 1500.0;
-// Glare saturates at effectFlare 256 (glare.glsl's log response); the cap keeps the half-float target
-// (and glare_find.comp's sums) finite.
-const float kMaxTexelFlare = 1.0e4;
-
+// The glare light is stored as log2(1 + effectFlare): the half-float target overflows past 65504, and the
+// linear cap (1e4) it replaced made every texel of a close mirror equal, a plateau whose maximum
+// glare_find.comp picked by texel index � the glare sat on the plateau's top-left corner and slid along
+// the mirror's edge as the camera approached, away from the Sun's image (Reflect Orbital #997, 2026-10-04).
 void main()
 {
     ivec2 size = imageSize(meshColorImg);
@@ -58,9 +58,12 @@ void main()
             float k = l * inst.bloomScale;
             seed += k;
             float glareW = smoothstep(kGlareRadiance0, kGlareRadiance1, l);
-            flare += k * uintBitsToFloat(inst.tail.z) * glareW;
+            // A point-like mesh glares through its sprite (glare.vert, at its glint; glarePoint = the
+            // sprite's glare keep), so only the rest glares here: both at once drew two stars a few
+            // pixels apart over the hand-off.
+            flare += k * uintBitsToFloat(inst.tail.z) * glareW * (1.0 - uintBitsToFloat(inst.tail.w));
             col  += m.rgb * (k / max(dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-6));
         }
     if (seed <= 0.0) discard;
-    outColor = vec4(col * pc.gain, min(flare, kMaxTexelFlare)); // rgb carries the tint, like fragColor × brightness
+    outColor = vec4(col * pc.gain, log2(1.0 + flare)); // rgb carries the tint, like fragColor × brightness
 }

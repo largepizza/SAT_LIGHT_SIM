@@ -68,7 +68,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  anchorStorm;    // the shape volume at period x storm scale
     vec4  anchorStormDetail; // the detail volume at period x storm scale
     vec4  motion;         // x how far the noise volumes slid against each other since last frame (m):
-                          // the evolution the resolve cannot reproject; y the new-sample weight in motion ("History weight moving"), zw unused
+                          // the evolution the resolve cannot reproject; y the new-sample weight in motion ("History weight moving"), z "Cb head lobes",
+                          // w the march pixel / the 100%-render-scale one (the noise LOD footprint scale)
     vec4  high;           // the high layer: x amount, y 1/along-wind period (m^-1, divides the equator),
                           // z along-wind offset (periods, the jet), w 1/across-wind period (m^-1)
     vec4  high2;          // x high-layer density, y 1 / cirrus field size (m^-1), z cirrus flow (x the low
@@ -116,6 +117,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  farTune;        // review 24: the far layer's x slant coverage, y coverage bias (field units), z density, w edge softness
     vec4  farTune2;       // review 24: x the far layer's low-Sun light (0 = a flat slab's mu0); yzw the mid layer's
                           // morphology anchor, frac(anchor x 1.7) reduced on the CPU
+    // 2026-10-04: the low cloud's shape volume is read in a ROTATED frame chosen at the observer
+    // (SatelliteSimCloudsV2.cpp): shapeRotA = its columns (drifted ECEF -> texture); the anchors in that frame.
+    vec4  shapeRotA[3];
+    vec4  anchorShapeA, anchorStormA;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -776,12 +781,20 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
         if (m0 - gB * gB / 0.3 + lobeK * (legacy ? 0.6 : 0.75) <= 0.0 && subPix <= 0.0) return f;
     }
 
-    vec4  s  = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + rS * cv2.anchorShape.w,
-                          cv2Lod(fpM, cv2.anchorShape.w));
+    // The shape volume tiles, and a sphere slices it: wherever the local horizontal plane holds a short lattice
+    // direction of the tile (an axis, a face or body diagonal), the slice repeats along it every 1-1.7 periods and
+    // the puffs lie in rows of the same clouds (user snapshot 2026-10-04, 9.6 N 134.6 W: the equator always holds
+    // the z axis, and there the drifted frame's x axis too). It is read in a rotation of the tile chosen by the CPU
+    // at the observer, clear of such alignments (a pure function of position and time; a change of frame reshapes
+    // the lobes, never where the clouds are). Tried: a per-sample warp breaking the lattice (Perlin or analytic)
+    // flipped this function to ~220 registers (+5-9 ms); a cross-fade between two frames cost 0.7 ms while idle.
+    vec3  rSA = mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz) * rS;
+    vec4  s   = textureLod(cv2ShapeTex, cv2.anchorShapeA.xyz + rSA * cv2.anchorShape.w,
+                           cv2Lod(fpM, cv2.anchorShape.w));
     // Deep convection's lobes are storm.x times larger: at the cumulus scale a 12 km storm was a
     // pile of small bubbles, a "mountain" rather than towers.
     if (deep > 0.02) {
-        vec4 s2 = textureLod(cv2ShapeTex, cv2.anchorStorm.xyz + rS * cv2.anchorStorm.w,
+        vec4 s2 = textureLod(cv2ShapeTex, cv2.anchorStormA.xyz + rSA * cv2.anchorStorm.w,
                              cv2Lod(fpM, cv2.anchorStorm.w));
         s = mix(s, s2, deep);
     }

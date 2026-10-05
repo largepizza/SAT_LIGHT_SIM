@@ -3,7 +3,7 @@ layout(local_size_x = 16, local_size_y = 16) in;
 // ── glare_find.comp — find the bright glints on satellite MESHES (2026-09-24) ─────────────────
 // A satellite drawn as a sprite gets its glare from glare.vert. A mesh has no point to draw one at:
 // its light is wherever its surfaces glint. mesh_bloom.frag writes that light into the flare source
-// buffer's alpha in effectFlare units (satellite sprites leave alpha 0), and this pass, run on that
+// buffer's alpha as log2(1 + effectFlare) (satellite sprites leave alpha 0), and this pass, run on that
 // buffer before it is blurred, lists every local maximum bright enough to glare:
 //   - a 5x5 local maximum of alpha (ties broken by texel index, so one texel wins);
 //   - its 5x5 light is its effectFlare, given the same threshold as a sprite's glare.
@@ -11,7 +11,8 @@ layout(local_size_x = 16, local_size_y = 16) in;
 // mesh that is still point-like keeps its sprite's glare at its centre instead (glare.vert, 2026-09-25). That replaced a "concentration" test here (≥ half the
 // 5x5 light in the 3x3), which passed every thin bright edge and rejected the Sun's disc in a mirror
 // once it spanned a few texels.
-// Position: the light-weighted centroid of the 3x3, so the glare moves smoothly, not a texel at a time.
+// Position: the centroid of the near-peak light (within 10% of it) over a 9x9 window, so the glare moves
+// smoothly, not a texel at a time, and sits mid-plateau on a flat-topped glint.
 // glintPos.w carries pc.rangeM (the nearest drawn mesh's range) so glare_mesh.vert can size a near
 // mesh's glare wider (glare.glsl's glareNearScale).
 
@@ -31,9 +32,10 @@ void main()
     ivec2 size = imageSize(flareSrc);
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
     if (c.x >= size.x || c.y >= size.y) return;
+    // Alpha is log2(1 + effectFlare) (mesh_bloom.frag): compared as stored (monotonic), summed decoded.
     float a = imageLoad(flareSrc, c).a;
-    // Its 5x5 sum is at most 25a if it is the local maximum.
-    if (a <= 0.0 || a * 25.0 < pc.minFlare) return;
+    // Its 5x5 sum is at most 25 x its own light if it is the local maximum.
+    if (a <= 0.0 || (exp2(a) - 1.0) * 25.0 < pc.minFlare) return;
 
     int myIdx = c.y * size.x + c.x;
     float e3 = 0.0, e5 = 0.0;
@@ -44,18 +46,39 @@ void main()
             ivec2 q = c + ivec2(x, y);
             if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y) continue;
             vec4 v = imageLoad(flareSrc, q);
-            e5 += v.a;
+            float f = exp2(v.a) - 1.0;
+            e5 += f;
             if (x != 0 || y != 0) {
                 int qi = q.y * size.x + q.x;
                 if (v.a > a || (v.a == a && qi < myIdx)) return; // not the maximum
             }
             if (abs(x) <= 1 && abs(y) <= 1) {
-                e3 += v.a;
-                cen += v.a * vec2(q);
+                e3 += f;
+                cen += f * vec2(q);
                 col += min(v.rgb, vec3(6.0e4)); // the half-float target can hold inf
             }
         }
     if (e5 < pc.minFlare) return;
+
+    // On a flat-topped glint � the Sun's image in a mirror is a streak across it at nearly one brightness � the
+    // index tie-break above picks the plateau's FIRST texel (its top), and the 3x3 centroid cannot pull the
+    // glare back to the middle: it sat on a Reflect mirror's top edge, ~10 px from the Sun's image, while the
+    // mirror was 15-35 px tall (2026-10-04). Place it at the centroid of the light within 10% of the peak over a
+    // 9x9 window instead. Only listed maxima pay for it.
+    {
+        float fa = exp2(a) - 1.0, sw = 0.0;
+        vec2  cp = vec2(0.0);
+        for (int y = -4; y <= 4; ++y)
+            for (int x = -4; x <= 4; ++x) {
+                ivec2 q = c + ivec2(x, y);
+                if (q.x < 0 || q.y < 0 || q.x >= size.x || q.y >= size.y) continue;
+                float w = max(exp2(imageLoad(flareSrc, q).a) - 1.0 - 0.9 * fa, 0.0);
+                sw += w;
+                cp += w * vec2(q);
+            }
+        if (sw > 0.0)
+            cen = cp / sw * e3;   // replaces the 3x3 centroid (cen / e3 below)
+    }
 
     uint i = atomicAdd(glints.count, 1u);
     if (i >= kMaxGlints) return;

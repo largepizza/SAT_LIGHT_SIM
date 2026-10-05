@@ -621,8 +621,9 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
 void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
 {
     VkDevice dev = ctx.device;
-    cv2HalfW = (ctx.swapExtent.width + 1) / 2;
-    cv2HalfH = (ctx.swapExtent.height + 1) / 2;
+    const VkExtent2D halfE = computeHalfExtent(ctx);
+    cv2HalfW = halfE.width;
+    cv2HalfH = halfE.height;
     cv2QuarterW = (cv2HalfW + 1) / 2;
     cv2QuarterH = (cv2HalfH + 1) / 2;
 
@@ -639,9 +640,9 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
     make(cv2HalfW, cv2HalfH, VK_FORMAT_R16G16B16A16_SFLOAT,
          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, // copied from; cleared at creation
          cv2ResolvedImg, cv2ResolvedMem, cv2ResolvedView);
-    make(cv2HalfW, cv2HalfH, VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+    make(cv2HalfW, cv2HalfH, VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
          cv2ResolvedDepthImg, cv2ResolvedDepthMem, cv2ResolvedDepthView);
-    make(cv2HalfW, cv2HalfH, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+    make(cv2HalfW, cv2HalfH, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
          cv2HistoryImg, cv2HistoryMem, cv2HistoryView);
     make(cv2HalfW, cv2HalfH, VK_FORMAT_R16G16B16A16_SFLOAT, 0, cv2FullImg, cv2FullMem, cv2FullView);
     make(cv2HalfW, cv2HalfH, VK_FORMAT_R32G32_SFLOAT, 0, cv2FullDepthImg, cv2FullDepthMem, cv2FullDepthView);
@@ -992,7 +993,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.obsDelta = glm::vec4(glm::vec3(rotD(eye, cDD, sDD) - cv2PrevEye + windShift), cv2PrevAspect);
     // What is left unreprojected: the volumes' relative slide (detail 1.6, cluster 0.6 of the wind).
     p.motion = glm::vec4((float)std::abs((double)cv2WindMps * 0.7 * dSimT), std::clamp(cv2HistoryWeightMoving, 0.05f, 0.5f),
-                         std::clamp(cv2CbHeadLobes, 0.0f, 1.5f), 0.0f);
+                         std::clamp(cv2CbHeadLobes, 0.0f, 1.5f),
+                         // w: the noise LOD's pixel = the 100%-scale one (computeHalfExtent follows the render
+                         // scale): at 50% the coarser pixel filtered the cumulus texture away.
+                         (float)cv2HalfH / (float)std::max(1u, (ctx.swapExtent.height + 1) / 2));
 
     // Noise anchors: the observer's SEA-LEVEL point (what the shaders measure from), turned into
     // the drifted frame, plus a small wind, in periods, reduced in double. Each volume moves at its
@@ -1028,6 +1032,56 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     const double stormScale = std::clamp((double)cv2StormScale, 0.25, 16.0);
     p.anchorStorm = anchor(cv2ShapePeriodM * stormScale, 1.0);
     p.anchorStormDetail = anchor(cv2DetailPeriodM * stormScale, 1.6);
+    // The low shape volume's frame (2026-10-04): the volume tiles, and where the local horizontal plane holds a short
+    // lattice direction of the tile the clouds repeat in rows (clouds_v2.glsl). Four fixed rotations (the identity and
+    // three chosen offline so that one of them is always clear): the identity where it is clear enough at the
+    // observer's (drifted) up (so most places look as before), else the clearest. A pure function of position and
+    // time; a switch reshapes the lobes (the history eases it), never where the clouds are.
+    {
+        static const double kFrames[4][3][3] = {
+            {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}},
+            {{0.45358556, -0.17302729, 0.87425494}, {0.71791067, 0.65220034, -0.24339062}, {-0.52807615, 0.73803541, 0.42004679}},
+            {{0.24436528, -0.52796272, 0.81335169}, {-0.93912632, -0.33776453, 0.06290365}, {0.24151057, -0.77921145, -0.57836161}},
+            {{-0.68377617, -0.54298685, -0.48745814}, {0.66749276, -0.73533171, -0.11722071}, {-0.29479412, -0.40552751, 0.86524209}}};
+        auto mulF = [&](int f, const glm::dvec3 &v)
+        {
+            const auto &R = kFrames[f];
+            return glm::dvec3(R[0][0] * v.x + R[0][1] * v.y + R[0][2] * v.z, R[1][0] * v.x + R[1][1] * v.y + R[1][2] * v.z,
+                              R[2][0] * v.x + R[2][1] * v.y + R[2][2] * v.z);
+        };
+        // How far the tile's short lattice directions are from the horizontal plane: min |u . v| over the axes, face
+        // and body diagonals, the longer (longer-period, less visible) ones counted a little less.
+        auto clearance = [](const glm::dvec3 &u)
+        {
+            double m = 1.0;
+            for (int x = -1; x <= 1; ++x)
+                for (int y = -1; y <= 1; ++y)
+                    for (int z = 0; z <= 1; ++z)
+                    {
+                        if (z == 0 && (y < 0 || (y == 0 && x <= 0))) continue;   // one of each +-v pair
+                        const glm::dvec3 v(x, y, z);
+                        const double n = glm::length(v);
+                        m = std::min(m, std::abs(glm::dot(u, v)) / n * (n > 1.5 ? 1.6 : n > 1.2 ? 1.3 : 1.0));
+                    }
+            return m;
+        };
+        const glm::dvec3 u = glm::normalize(sea);
+        double m[4];
+        for (int f = 0; f < 4; ++f) m[f] = clearance(mulF(f, u));
+        int f1 = 0;
+        if (m[0] < 0.05)
+            for (int f = 1; f < 4; ++f) if (m[f] > m[f1]) f1 = f;
+        for (int c = 0; c < 3; ++c)
+            p.shapeRotA[c] = glm::vec4((float)kFrames[f1][0][c], (float)kFrames[f1][1][c], (float)kFrames[f1][2][c], 0.0f);
+        auto anchorF = [&](int f, double periodM, double windMul)
+        {
+            const glm::dvec3 a = mulF(f, sea + windDir * ((double)cv2WindMps * windMul * simT)) / periodM;
+            return glm::vec4((float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z), (float)(1.0 / periodM));
+        };
+        p.anchorShapeA = anchorF(f1, cv2ShapePeriodM, 1.0);
+        p.anchorStormA = anchorF(f1, cv2ShapePeriodM * stormScale, 1.0);
+        cv2ShapeFrame = f1;
+    }
     p.storm = glm::vec4((float)stormScale, cv2StormDetail, cv2Anvil, cv2BaseRoughness);
     // The high layer's streak coordinates: along the wind = the drifted longitude x R, with a period
     // that divides the equator an integer number of times (no seam at the antimeridian), stretched;

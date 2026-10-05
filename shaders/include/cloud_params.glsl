@@ -49,7 +49,8 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     float airglowRedGain;
     float airglowSodiumGain;
     float groundPatternFootM;   // review 8: "Ground pattern range (m/px)" (was v1's unread shadowMaxDistM)
-    float maxRenderDistM;
+    float skyLodScreenH;      // the sky pass's pixel for its detail LOD (rows): the OUTPUT height while the TAA
+                              // upscales, else skyScreenH (2026-10-04; was v1's unread maxRenderDistM)
     float viewSamplesMin;
     float lightSamples;
     float oceanSeaOctaves;
@@ -457,4 +458,14 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // octaves are filtered away, sat_sky.frag), y "Sea warp" and z "Sea warp detail" (the wave field's 2D warp, in
     // octave-0 cells, at 24 and 8 cells), w "Far sea ripple size (px)" (the ripple cell in along-view pixel footprints).
     vec4  seaTune;
+    // -- The auroral oval (864 -> 928, 2026-10-03; include/aurora_oval.glsl, src/simulations/SpaceWeather.cpp):
+    // auroraMidnight xyz toward magnetic midnight in the magnetic equatorial plane (ECEF), w the activity (Kp);
+    // auroraOval the colatitudes (deg) of the equatorward edge at midnight / noon and the poleward edge at
+    // midnight / noon; auroraSub the substorm's intensity, cos / sin of its MLT angle, 1 / half-width^2;
+    // auroraOval2 x the brightness from activity, y the largest colatitude lit, z the edge ripple (deg),
+    // w the substorm's poleward push (deg).
+    vec4  auroraMidnight;
+    vec4  auroraOval;
+    vec4  auroraSub;
+    vec4  auroraOval2;
 } cloud;

@@ -1,0 +1,55 @@
+# 2026-10-03 the auroral oval (include/aurora_oval.glsl) + space-weather activity (SpaceWeather.cpp)
+preset High
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+set clouds_v2.auto_exposure 0
+time set 2036-12-21T06:00:00Z
+time pause
+# Over the geomagnetic pole from 9000 km: the ring at quiet / active / storm / severe activity
+observer lat=80.7 lon=-72.7 alt=9000000
+camera az=0 el=-90 fov=70
+aurora kp 1
+wait settle
+capture o_kp1
+aurora kp 3
+wait settle
+capture o_kp3
+state o_kp3
+aurora kp 6
+wait settle
+capture o_kp6
+aurora kp 9
+wait settle
+capture o_kp9
+# A substorm's bulge at Kp 3
+aurora kp 3
+aurora substorm
+wait settle
+capture o_substorm
+state o_substorm
+# From the ground: Fairbanks at Kp 3 local midnight, then a mid-latitude site at Kp 8
+aurora kp 3
+observer lat=64.84 lon=-147.72 agl=2
+time sun midnight
+camera az=0 el=25 fov=90
+wait settle
+capture g_fairbanks_kp3
+perf frames=60 name=fairbanks_kp3
+observer lat=44.5 lon=-89.5 agl=2
+time sun midnight
+camera az=0 el=15 fov=90
+aurora kp 8
+wait settle
+capture g_wisconsin_kp8
+aurora kp 3
+wait settle
+capture g_wisconsin_kp3
+# Auto: the next G3+ storm
+aurora auto
+aurora next 7
+state auto_storm
+observer lat=80.7 lon=-72.7 alt=9000000
+camera az=0 el=-90 fov=70
+wait settle
+capture o_auto_storm
+quit

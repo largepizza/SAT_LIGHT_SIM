@@ -402,15 +402,11 @@ void SatelliteSim::computeAmbienceContext(float dt)
         a.set(ambD_.musicGap, ambMusicGap);
     }
 
-    // Auroral oval under the camera: sat_sky's band (kGeomagPoleECEF, colatitude 20 deg + storm
-    // expansion), without the curtain/coverage noise — a hum wants a smooth region, not patches.
+    // Auroral oval under the camera: the shaders' oval (aurora_oval.glsl, its CPU mirror) without the
+    // curtain/coverage noise — a hum wants a smooth region, not patches. Clamped to 1 (a storm's band is
+    // brighter than that).
     {
-        const glm::dvec3 pole = glm::normalize(glm::dvec3(0.0481, -0.1543, 0.9868));
-        const glm::dvec3 pd = glm::dot(up, pole) > 0.0 ? pole : -pole;
-        const float colat = (float)glm::degrees(std::acos(std::clamp(glm::dot(up, pd), -1.0, 1.0)));
-        const float centre = 20.0f + stormStrength * 8.0f;
-        const float width = 6.0f * (1.0f + stormStrength * 1.5f);
-        const float band = smoothstepf(width * 2.0f, width * 0.5f, std::fabs(colat - centre));
+        const float band = std::min(auroraOvalWeightCpu(auroraGpu_, up), 1.0f);
         a.set(ambD_.aurora, auroraGain > 0.0f ? band : 0.0f);
     }
 

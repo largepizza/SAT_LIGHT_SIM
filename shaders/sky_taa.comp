@@ -12,6 +12,11 @@
 //     moves on its own — waves, clouds, beams, twinkling lights — cannot ghost
 // The resolved frame is blitted into the swapchain; the main pass restores the depth from the R32F copy
 // (taa_depth_restore.frag), so stars, planets and satellites are drawn over it sharp and occluded.
+// TEMPORAL UPSCALING (2026-10-04): below render scale 100% the input is the top-left input extent
+// (c2e2.w x e2p0.w) of the input images and the output is full size: this frame's estimate at an output
+// pixel is a Gaussian (sigma 0.6 OUTPUT px) of the 3x3 input samples at their jittered positions
+// (c2e0.w, c2e1.w, input px), and its blend weight scales with how close the nearest sample landed, so
+// over the 16 jitter phases every output pixel converges to its own value. At 100% the path is unchanged.
 layout(local_size_x = 16, local_size_y = 16) in;
 
 layout(set = 0, binding = 0) uniform sampler2D curColor;    // this frame, jittered
@@ -22,8 +27,8 @@ layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D outColor;
 layout(set = 0, binding = 5, r32f)    uniform writeonly image2D outDepth;
 
 layout(push_constant) uniform PC {
-    vec4 c2e0, c2e1, c2e2;   // camera -> ENU (this frame), rows
-    vec4 e2p0, e2p1, e2p2;   // this frame's ENU -> last frame's camera, rows
+    vec4 c2e0, c2e1, c2e2;   // camera -> ENU (this frame), rows; w: jitter x, jitter y (input px), input width
+    vec4 e2p0, e2p1, e2p2;   // this frame's ENU -> last frame's camera, rows; e2p0.w input height
     vec4 eyeDelta;           // xyz: this eye - last eye, in this frame's ENU (m); w: 1 = history valid
     vec4 cam;                // x tan(fovY/2), y aspect, z new-sample weight when still, w weight in motion
 } pc;
@@ -63,19 +68,44 @@ vec3 sampleHistory(vec2 uv, vec2 size) {
 }
 
 void main() {
-    ivec2 sz = textureSize(curColor, 0);
+    ivec2 sz = imageSize(outColor);
     ivec2 p  = ivec2(gl_GlobalInvocationID.xy);
     if (p.x >= sz.x || p.y >= sz.y) return;
     vec2  size = vec2(sz);
-    vec3  cur  = texelFetch(curColor, p, 0).rgb;
-    float d    = texelFetch(curDepth, p, 0).r;
-
-    // The neighbourhood of this frame's samples (YCoCg mean and deviation).
+    ivec2 isz  = ivec2(pc.c2e2.w + 0.5, pc.e2p0.w + 0.5);
+    bool  up   = isz != sz;            // uniform: temporal upscaling
+    vec3  cur;
+    float d;
+    float conf = 1.0;                  // how close this frame's nearest sample landed (upscaling)
     vec3 m1 = vec3(0.0), m2 = vec3(0.0);
-    for (int k = 0; k < 9; ++k) {
-        ivec2 q = clamp(p + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), sz - 1);
-        vec3  y = toYCoCg(texelFetch(curColor, q, 0).rgb);
-        m1 += y; m2 += y * y;
+    if (!up) {
+        cur = texelFetch(curColor, p, 0).rgb;
+        d   = texelFetch(curDepth, p, 0).r;
+        // The neighbourhood of this frame's samples (YCoCg mean and deviation).
+        for (int k = 0; k < 9; ++k) {
+            ivec2 q = clamp(p + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), sz - 1);
+            vec3  y = toYCoCg(texelFetch(curColor, q, 0).rgb);
+            m1 += y; m2 += y * y;
+        }
+    } else {
+        vec2  k2o = size / vec2(isz);                         // output px per input px
+        vec2  ip  = (vec2(p) + 0.5) / k2o;                    // this pixel's centre in input px
+        ivec2 c   = clamp(ivec2(floor(ip)), ivec2(0), isz - 1);
+        vec2  jit = vec2(pc.c2e0.w, pc.c2e1.w);
+        vec3  acc = vec3(0.0);
+        float ws  = 0.0, wMax = 0.0;
+        for (int k = 0; k < 9; ++k) {
+            ivec2 q  = clamp(c + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), isz - 1);
+            vec3  cq = texelFetch(curColor, q, 0).rgb;
+            vec2  dO = (vec2(q) + 0.5 + jit - ip) * k2o;      // sample -> pixel, OUTPUT px
+            float w  = exp(-dot(dO, dO) * (1.0 / (2.0 * 0.6 * 0.6)));
+            acc += cq * w; ws += w; wMax = max(wMax, w);
+            vec3  y = toYCoCg(cq);
+            m1 += y; m2 += y * y;
+        }
+        cur  = acc / max(ws, 1e-6);
+        conf = wMax;
+        d    = texelFetch(curDepth, c, 0).r;
     }
     m1 /= 9.0; m2 /= 9.0;
     vec3 sd = sqrt(max(m2 - m1 * m1, vec3(0.0)));
@@ -122,6 +152,7 @@ void main() {
             // take the new frame at once — at weight 0.1 a flash lasting a few frames came out ~10x dimmer.
             // Jitter alternating across an edge leaves the 3x3 mean where it was, so edges still accumulate.
             w = max(w, smoothstep(0.3, 1.2, (m1.x - h.x) / max(h.x, 0.02)));
+            w *= conf;   // upscaling: a sample far from this pixel moves it less (1 at 100%)
             res = fromYCoCg(mix(h, toYCoCg(cur), w));
         }
     }

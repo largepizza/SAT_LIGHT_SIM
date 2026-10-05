@@ -174,6 +174,7 @@ layout(set = 0, binding = 8) uniform sampler3D cloudNoiseTex;
 // hand-copied here; see cloud_params.glsl for why that was a standing hazard.
 #define CLOUD_PARAMS_BINDING 9
 #include "cloud_params.glsl"
+#include "aurora_oval.glsl"
 
 // ── Perf knockout toggles (profiling-only) ──────────────────────────────────────
 // Lets the Display settings tab measure the isolated GPU cost of individual blocks of this shader
@@ -1843,14 +1844,11 @@ float airglowCoverageMask(vec3 dirECEF, float t, vec3 seedOffset) {
 // CLAUDE.md uses. North geomagnetic pole ≈ 80.7°N, 72.7°W (current epoch; drift ~0.05-0.1°/yr is
 // negligible at sim epoch 2036).
 const vec3  kGeomagPoleECEF      = vec3(0.0481, -0.1543, 0.9868);
-const float kAuroraOvalColatDeg  = 20.0;     // oval centerline, degrees from the geomagnetic pole
-const float kAuroraOvalWidthDeg  = 6.0;      // base half-width before storm expansion
 const float kAuroraShellInnerM   = 95000.0;  // curtain base altitude (m)
 const float kAuroraShellOuterM   = 300000.0; // red-fringe top altitude (m)
 const vec3  kAuroraBaseColor     = vec3(0.15, 1.0, 0.35);  // green O I 557.7nm — matches airglow green family
 const vec3  kAuroraTopColor      = vec3(0.65, 0.15, 0.45); // red/magenta upper fringe
 const float kAuroraRingWarpFreq  = 3.0;   // oval-edge ripple spatial frequency (around the ring)
-const float kAuroraOvalWarpDeg   = 4.0;   // oval-edge ripple amplitude, degrees of colatitude
 const float kAuroraOvalDriftRate = 0.003; // wall-clock rad/s ripple drift (pc.waveTime) — 10x slower
                                            // than first pass per user feedback (evolution read as
                                            // too fast/frantic for something the size of a continent)
@@ -1927,38 +1925,23 @@ float auroraCoverage(float colat, float az, float t, float storm) {
     return smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
 }
 
-// Ripple-displaces the oval's centerline colatitude as a function of azimuth + time, so the
-// band isn't a perfect circle. Sampled on (cos az, sin az) rather than az directly — avoids a
-// seam at az=±π, same reason cloudWarpOffset feeds a 3D point into warpPerlin3 instead of a
-// raw angle. stormStrength widens the band and pushes it equatorward (larger colatitude),
-// matching real substorm behavior. Multiplied by auroraCoverage so the band itself is patchy,
-// not just internally textured — this is the "erosion" that turns a solid ring into broken arcs.
-float auroraOvalMask(float colat, float az, float t, float storm) {
-    // Perf: cheap conservative pre-filter before the two warpPerlin3 calls below (ripple +
-    // auroraCoverage's own internal one) — auroraSampleAt calls this once per march step, so
-    // these 2 evaluations are paid by every sample whose colatitude is even plausibly near the
-    // oval, which is the majority of samples along a long oblique ray (the reason the aurora
-    // march dominated frame cost — see this session's profiling). centerDeg's worst-case range
-    // is [20-6, 20+6+8] = [14,34] (ripple bounded generously at ±1.5*kAuroraOvalWarpDeg=±6°,
-    // storm*8.0 up to +8° at storm's slider-enforced max of 1.0); the fade zone reaches
-    // widthDeg*2, worst case 2*(6*(1+1.5))=30° at storm=1. So no parameter combination can light
-    // any colatitude beyond 34+30=64°, worst case — 70° below is that bound plus margin, kept as
-    // a plain arithmetic comparison (no noise, no branches inside a loop already paid for) so it
-    // costs nothing on the samples that DO need the real calculation.
-    if (degrees(colat) > 70.0)
+// The oval (include/aurora_oval.glsl, 2026-10-03): a RING fixed relative to the Sun — widest and furthest
+// equatorward near magnetic midnight, thin near noon, a dark polar cap inside — whose edges follow the
+// activity index and a substorm's bulge (src/simulations/SpaceWeather.cpp). Its edges are rippled by a slow
+// noise around the ring (cloud.auroraOval2.z degrees), and the coverage gate breaks it into arcs; a
+// substorm's bulge fills in (a lower threshold). Same as cloud_march.comp's copy.
+// It replaced a band at 20 deg colatitude (+8 deg x storm) that faded out over twice its width: at the
+// default storm level it was lit from ~5 deg off the pole outward, a cap rather than a ring.
+float auroraOvalMask(AuroraGeom g, float colat, float az, float t, float storm) {
+    float cd = degrees(colat);
+    float rip = 1.5 * cloud.auroraOval2.z;  // the ripple's reach (warpPerlin3 stays well inside +-1.5)
+    if (cd > cloud.auroraOval2.y || cd < g.polDeg - 0.8 - rip || cd > g.eqDeg + 3.5 + rip)
         return 0.0;
     vec2  ringP  = vec2(cos(az), sin(az)) * kAuroraRingWarpFreq;
-    float ripple = warpPerlin3(vec3(ringP, t * kAuroraOvalDriftRate)) * kAuroraOvalWarpDeg;
-    float centerDeg = kAuroraOvalColatDeg + ripple + storm * 8.0;
-    float widthDeg  = kAuroraOvalWidthDeg * (1.0 + storm * 1.5);
-    // Full brightness out to half of widthDeg, then a WIDE gradual fade out to 2x widthDeg —
-    // previously the whole 0..widthDeg span was the falloff, which hit exactly zero right at the
-    // oval's nominal edge. Airglow (green/sodium, similar altitude) has no such cutoff at all, so
-    // that hard zero read as a visible seam where the aurora clipped against it. Widening the fade
-    // zone (without changing the bright "core" size) blends the two smoothly instead.
-    float distDeg = abs(degrees(colat) - centerDeg);
-    float band = smoothstep(widthDeg * 2.0, widthDeg * 0.5, distDeg);
-    return band * auroraCoverage(colat, az, t, storm);
+    float ripple = warpPerlin3(vec3(ringP, t * kAuroraOvalDriftRate)) * cloud.auroraOval2.z;
+    float band = auroraOvalBand(g, cd, ripple);
+    if (band <= 0.0) return 0.0;
+    return band * auroraCoverage(colat, az, t, clamp(storm + 0.6 * g.boost, 0.0, 1.0));
 }
 
 // Curtain fold structure: many thin vertical sheets standing up off the surface, distributed
@@ -2045,7 +2028,7 @@ vec3 auroraSampleAt(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirECEF, f
     vec3 poleDir  = (dot(pDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
     float colat, az; vec3 radialT, tangentT;
     auroraFrame(pDirECEF, poleDir, colat, az, radialT, tangentT);
-    float oval = auroraOvalMask(colat, az, t, storm);
+    float oval = auroraOvalMask(auroraOvalGeom(pDirECEF), colat, az, t, storm);
     if (oval <= 0.001) return vec3(0.0); // cheap early-out before the pricier fold noise below
     float altM = length(rp) - R_EARTH;
     // Inner/outer edges kept as SEPARATE terms (not pre-multiplied into one `vert`) so both the
@@ -2153,7 +2136,7 @@ vec3 auroraGlowAt(vec3 posDirECEF, vec3 sunDirECEF, float t, float storm) {
     vec3 poleDir  = (dot(posDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
     float colat, az; vec3 radialT, tangentT;
     auroraFrame(posDirECEF, poleDir, colat, az, radialT, tangentT);
-    float oval = auroraOvalMask(colat, az, t, storm);
+    float oval = auroraOvalMask(auroraOvalGeom(posDirECEF), colat, az, t, storm);
     if (oval <= 0.001) return vec3(0.0);
     float fold = auroraCurtainNoise(colat, az, kAuroraGroundGlowAltM, t, storm);
     return kAuroraBaseColor * oval * fold * night;
@@ -3103,7 +3086,7 @@ void main() {
     float    tmFade        = 0.0;
     vec3     terrainQ      = vec3(0.0); // hit, observer-relative (terrain_detail.glsl's q)
     vec3     terrainUpE    = vec3(0.0, 0.0, 1.0);
-    float    pixAngle      = pc.fovYRad / max(cloud.skyScreenH, 1.0);
+    float    pixAngle      = pc.fovYRad / max(cloud.skyLodScreenH, 1.0); // the output pixel while upscaling
     const int kTerrainMaxSteps = 224;
 
     if (!dbgSkipTerrain() && dir.z < 0.7 && tShell.y > 0.0) {
@@ -4309,7 +4292,13 @@ void main() {
         bool  cityFar    = false;
         float cFoot      = 1e9;
         vec3  cQ         = vec3(0.0);
-        if (cityLand && cloud.cityLightsStrength > 0.0 && cityLum > 1e-5 && tdEnabled()) {
+        // Not gated on the terrain detail (2026-10-04): Low and Planetarium (SKY_LITE) draw the same city lights
+        // as Medium. Without the pattern their cities were the night map's 5-km blobs; the pattern costs ~1 ms.
+#ifdef SKY_ENV
+        if (false) {
+#else
+        if (cityLand && cloud.cityLightsStrength > 0.0 && cityLum > 1e-5) {
+#endif
             float cT = tHit > 0.0 ? tHit : tSeaLvl;
             cQ    = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
             cFoot = pixAngle * cT / max(abs(dot(dir, shadingN)), 0.2);
