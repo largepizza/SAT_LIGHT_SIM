@@ -139,6 +139,8 @@ A failing command is recorded with its reason and the script continues; the run'
 | `track [on\|off]` | the selection panel's Track button: the camera stays locked on the selected satellite while the observer and zoom stay free. Released by `select none`, `select planet`, `follow` and any explicit aim |
 | `beams [list]`, `beams go [rank=1] [dist_km=0] [bearing=270] [agl=2\|alt=] [look=site\|up\|none]` | where the Reflect Orbital beams land now (from the last readback; only satellites above the observer's horizon make beams, so stand in the region first). `go` puts the observer near the rank-th busiest site and aims at it or up the beams. Frame beams this way rather than by a guessed time and place |
 | `eclipse <solar\|lunar>` | the next eclipse after the current time: sets greatest eclipse, puts the observer under the Moon or where the shadow axis meets the Earth, aims at the Moon |
+| `aurora`, `aurora next [<kp>] [days=1100]`, `aurora substorm [min=0.4]`, `aurora kp <v>`, `aurora auto` | the aurora's activity, which is a pure function of sim time. Bare: report it. `next` jumps sim time to the peak of the next storm reaching that Kp (default 7; automatic activity). `substorm` jumps to 10 minutes after the next substorm onset stronger than `min`. `kp <v>` fixes the activity by hand (substorms still run); `auto` returns to the computed space weather. Test from a dark site: a city's skyglow hides the aurora |
+| `bookmark add [name]`, `bookmark go\|update\|delete <n>`, `bookmark rename <n> <name>`, `bookmark list` | the Bookmarks window's actions, numbered from 1 as listed. The thumbnail is captured a few frames later, so `wait 3` after `add` or `update` before looking at the window |
 | `snapshot <profile_log.jsonl> [index=-1] [settings=on\|off] [drift=intro\|default]` | reproduce a perf snapshot a user saved ([Snapshots](#snapshots)) |
 
 ### Settings and rendering
@@ -147,13 +149,14 @@ A failing command is recorded with its reason and the script continues; the run'
 |---|---|
 | `get [section[.key]]` | any persisted setting; `get` alone lists them all (the keys are `settings.json`'s) |
 | `set <section.key> <value>` (or several `key=value`) | change settings through the same code path `settings.json` loads through ([Controls and settings](controls-and-settings.md#one-read-path-one-write-path)); unknown keys and wrong types are errors; the preset label is unchanged |
-| `expect <key\|cine.<path>> <value> [tol=1e-4]` | fail unless a setting (or the open cinematic's JSON) equals the value |
+| `expect <key\|cine.<path>\|state.<path>> <value> [tol=1e-4]` | fail unless the value matches: a setting (`clouds_v2.coverage`), the open cinematic's JSON (`cine.shots.0.keys.1.t`) or the `state` JSON (`state.observer.lat_deg`, `state.time.utc`). Numbers compare within `tol` (relative above 1), booleans accept `true`/`1`/`on`, anything else compares as text |
 | `preset <Planetarium\|Low\|Medium\|High\|Ultra\|Potato\|Custom>` | apply a graphics preset (overwrites knockouts and quality sliders) |
 | `knockout none\|<mask>\|+key\|-key\|key ...`, `knockout list` | knockout bits by stable key ([Profiling](profiling.md#knockout-bits)), plus `potato_sky` and `lite_sky`; sets the preset to Custom |
 | `debugview <name\|off>` | replace terrain, sea or cloud-composite pixels with a debug channel (below) |
 | `probe <x> <y>` | what the terrain march does for one pixel's ray, in the capture's pixel coordinates: the seed from the shared depth, the seeded march and a march from the eye (distance, steps), the heights at the hit, and a 64-sample profile along the ray |
 | `viewer [aim=free\|observer\|toward\|sun] [light=live\|studio] [glare=on\|off] [shadows=on\|off] [dist=<radii>]` | the satellite 3D view's controls, for a `ui open viewer` or `ui open info` capture; reports the observer's flare per unit intensity, the glints and the photometry lines |
-| `lightning` | the lightning flashes in progress and the thunder queue; with time paused a flash stays frozen, so `time add 0.25` steps through one |
+| `lightning` | the lightning flashes in progress (id, kind, intensity, age, distance, cloud base and top, segment count), the built channel trees, the drawn flash and segment counts, and the thunder queue. With time paused a flash stays frozen, so `time add 0.25` steps through one |
+| `lightning spawn kind=cg\|ic\|spider\|sprite dist_km=10 az=<camera az> [seed=] [base_m=1500] [top_m=10000] [ground_km=4] [ground_az=] [dur=]` | place a flash by hand: cloud-to-ground (default), in-cloud, spider or red sprite, at that distance and azimuth, with the cloud's base and top above the eye's ground and, for a ground stroke, its strike point `ground_km` aside. It runs through the same channel, glow and thunder code as the storms' own flashes. For thunder, `wait` a few frames, `time add` the sound's travel time (distance / 343 m/s), then `audio record` |
 | `shaders reload [march=<spv>] [wg=<X>x<Y>]` | rebuild the cloud pipelines from the SPIR-V on disk and report the driver's register count, binary size and spill memory ([Profiling](profiling.md#ab-testing-a-shader-change)) |
 
 Debug views (`debugview`): `normals`, `detail`, `steps` (march steps, blue few to red the budget), `albedo`,
@@ -172,7 +175,7 @@ term views write linear radiance (x100) straight into the frame, bypassing expos
 |---|---|
 | `capture <name> [ui=on] [crop=x,y,w,h] [scale=s]` | PNG of the frame (no UI unless `ui=on`), cropped then scaled: `scale<1` box-filters down, `scale>1` enlarges with nearest neighbour for pixel inspection. Writes the state sidecar |
 | `photo <name> [scale=1-4] [frames=N]` | the HQ photo: rendered at `scale` x the window offscreen, clouds at full rate, time paused, settled over `frames` frames; no UI, no sidecar |
-| `state [name]` | the full state (time, observer, camera, selection, clouds, satellites, Moon, exposure, ambience...) as the result, and a file if named |
+| `state [name]` | the full state (time, observer, camera, selection, clouds, satellites, Moon, aurora, exposure, ambience...) as the result, and a file if named. The `aurora` block has `kp`, `g_scale`, the drivers (`quiet`, `hss`, `cme`), the oval's edges (`oval_mlat_deg`), any `substorm`, and the observer's magnetic latitude, magnetic local time and the oval's brightness overhead |
 | `perf [frames=60] [name=]` | average raw GPU timestamp buckets and CPU buckets over N frames, with GPU total and wall frame-time distributions; `name=` also appends to the run's perf log |
 | `sweep` | the automated knockout sweep (about 15 s); returns the whole record |
 
@@ -181,8 +184,8 @@ term views write linear radiance (x100) straight into the frame, bypassing expos
 | Command | What it does |
 |---|---|
 | `ui show\|hide`, `ui scale <0.75-2>` | HUD visibility and UI scale |
-| `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|console\|cine>`, `ui close <name\|all>` | windows (`info`, `viewer` and `trace` need a selected satellite); an advanced tab turns on advanced settings |
-| `ui click <ElementId>[:index] [fx=0.5] [hold=N]` | move a scripted pointer onto the element's centre (last frame's layout) and click through the real hover and click path; fails if the element is scrolled out of view |
+| `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|bookmarks\|cine\|console>`, `ui close <name\|all>` | windows (`info`, `viewer` and `trace` need a selected satellite); an advanced tab (Performance included) turns on advanced settings |
+| `ui click <ElementId>[:index] [fx=0.5] [hold=N]` | move a scripted pointer onto the element's centre (last frame's layout) and click through the real hover and click path; fails if the element is scrolled out of view. A UI-kit element is addressed as `Key:index` (`ui click ReplayIntroBtn:0`, `ui click InfoSectHdr:2`). The click lands on the frame the pointer arrives, which the sky picker can also take as a click on empty sky: re-`select` before opening a window that needs the selection |
 | `ui type <text>`, `ui key <enter\|esc\|tab\|backspace\|delete\|left\|right\|home\|end\|w>` | keyboard input into the focused text field, else the game |
 | `ui dump [name]` | every drawn rectangle, text and image with its box and element id, plus checks for clipped, off-window and overlapping text |
 | `pad <a\|b\|x\|y\|lb\|rb\|start\|view\|ls\|rs\|up\|down\|left\|right>` | a gamepad press without a controller, through the context meaning first, else the binding |
@@ -246,7 +249,7 @@ agree on `state.time.utc`.
 
 ## Snapshots
 
-A user hands over a location by pressing *Save Snapshot* (F9, or Settings, Display) in the app, which appends
+A user hands over a location by pressing *Save snapshot* (F9, or Settings → Performance) in the app, which appends
 a record to `perf_profiles/profile_log.jsonl` in their user data folder. `snapshot <file> [index=-1]` restores
 it: the record's settings, sim time (paused), the exact observer direction and height, the camera and the cloud
 map's drift phase (session state that latitude, longitude and time alone do not reproduce: the same place and
@@ -307,7 +310,8 @@ the validation layer (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`, messages
 or device loss; `perf` with features toggled to attribute cost.
 
 **UI check:** `ui scale 2.0; ui open settings tab=Controls; wait 3; ui dump controls; capture controls ui=on`,
-then read the dump's text-overlap checks before the picture.
+then read the dump's text-overlap checks before the picture. `tools/harness/scripts/ui_windows.satcmd` walks the
+info, trace and Bookmarks windows and the HUD's typed fields this way, checking each result with `expect state.`.
 
 ## Gotchas
 
@@ -380,5 +384,5 @@ minutes with launch spacing.
 | `src/simulations/SatelliteSimHarness.cpp` | `harnessInit()`, `harnessTick()`, `harnessExec()`, `harnessStateJson()`, `kHelp` |
 | `tools/harness/run.py`, `live.py`, `launchgate.py` | drivers and launch spacing |
 | `tools/harness/imgtools.py`, `tstab.py`, `flicker.py`, `climb.py`, `lightscan.py`, `frames2video.py`, `gc.py`, `selftest.py` | analysis and maintenance |
-| `tools/harness/scripts/` | worked scripts (`smoke`, `determinism`, `terrain_views`, `ambience_tour`, `tour`, `track`, `text_fields`, ...) |
+| `tools/harness/scripts/` | worked scripts (`smoke`, `determinism`, `terrain_views`, `ambience_tour`, `tour`, `track`, `text_fields`, `ui_windows`, `tutorial`, ...) |
 | `docs/HARNESS.md` | the older reference this page restructures |

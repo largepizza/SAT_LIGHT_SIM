@@ -1,6 +1,6 @@
 # The cloud march
 
-`shaders/cloud_v2_march.comp` ray-marches the [cloud field](field.md) at half the window's resolution and
+`shaders/cloud_v2_march.comp` ray-marches the [cloud field](field.md) at half the render resolution and
 lights every sample: the Sun or Moon through a short light march, sky light through the cloud above, light
 bounced from the ground, city light and Reflect-beam light at night, and the halos and rainbows of ice and
 rain. It also marches fog and dust, and integrates the Reflect beams' shafts through clear air. This page
@@ -37,6 +37,16 @@ clear sky beside it share one atmosphere (see [Atmosphere and sky](../atmosphere
   `scene_depth.comp`), in the observer's local east-north-up (ENU) frame centred on the Earth.
 - **Direction.** Each visit of a pixel moves the ray within its texel (see [Jitter](#jitter)).
 - **Scene depth.** `tScene` is read 1:1 from the half-resolution shared depth (terrain, sea, meshes).
+- **Resolution.** The march targets, the scene depth and every clouds v2 screen image are half of the
+  *scaled* window (`computeHalfExtent()`), so at a render scale of 50 percent the march covers a quarter of the
+  pixels of 100 percent. "Clouds follow render scale" (`display.clouds_follow_render_scale`, on by default)
+  turns this off and keeps them at half the window. The noise level of detail stays at the 100 percent pixel:
+  `cv2.motion.w`, the ratio of the current half-res height to the 100 percent one, scales the footprint back.
+  The clouds therefore keep their texture, only softer; read at the coarser pixel, the storm cumulus texture
+  would filter away. A change
+  of scale recreates the images (`recreateComputeScaledTargets()`, checked at the start of
+  `recordCompute()` before anything is recorded) and blits the temporal history across, so the clouds do not
+  restart.
 - **Shell segments.** `cv2ShellSegments()` intersects the ray with the shell between the lowest cloud base and
   the highest top and removes what lies inside the inner sphere, giving 0 to 2 segments. No special cases are
   needed for an eye below, inside or above the shell.
@@ -75,7 +85,11 @@ fade start" (13 km). After more than 5 consecutive empty fine samples the march 
 
 **Cheap samples.** A coarse sample that is almost all high-layer ice (`thin > 0.9`) or rain shaft
 (`rain > 0.9`) is shaded on the spot and never enters fine mode; ice and rain are nearly uniform media with
-weak structure. It stands for two steps where the pixel spans more than 60 m (ice) or always (rain).
+weak structure. An ice sample stands for two steps where the pixel spans more than 60 m; closer, it is one step,
+because two-step samples near the eye catch the fibres on some frames and miss them on others. A rain-only
+sample stands for **four** steps: each runs a light march whose steps evaluate the whole field, towers included,
+so under a storm the shafts would otherwise dominate the march. A shaft's edge reads slightly brighter, because
+a step carries its density a little past the edge.
 
 **Termination and budget.** The loop ends when transmittance falls below 0.01, at the end of the segments, or
 when the iteration budget (`misc.x`, "March budget") runs out. The unmarched remainder, including whole
@@ -227,7 +241,8 @@ Ice samples skip the transmission term (`ambVis = 1`).
 
 `S_bounce = C_key · max(û·l̂, 0) · 0.15 · "Ground bounce" · (1 − hf)²` ("Ground bounce", 2.2). High ice
 also receives the light reflected by the cloud under it, scaled by the coverage there (mip 2): cirrus over
-white cloud is lit from below.
+white cloud is lit from below. The coverage is read along the flowed direction the field sample has already
+computed (`gCv2FlowD`), so it costs one texture read rather than another evaluation of the eight-wave flow.
 
 ### Night: city light and Reflect beams
 
@@ -281,7 +296,8 @@ The march records `tHalf`, where \(T\) first falls below 0.5, and checkpoints `t
 shafts and god rays.
 
 **Fog and dust** are then marched separately and composited by distance around the clouds' mean depth (see
-[Weather](weather.md#fog-dust-and-ice-fog)).
+[Weather](weather.md#fog-dust-and-ice-fog)). From above their band, a ray whose cloud transmittance has fallen
+below 0.01 skips that march: nothing beneath an opaque cloud shows, and dust above it is faint seen from above.
 
 **Air in front.** The result is multiplied by the Rayleigh and Mie transmittance from the atmosphere entry to
 the cloud's mean distance \( d_\text{acc}/w_\text{acc} \) (a 12-step integral starting at the atmosphere's edge,
@@ -390,8 +406,8 @@ Clouds tab, "Quality / performance" (the march's rows; the rate rows are on the 
 | Max distance (km) | `max_dist_km` | 600 |
 | Detail fade start (m) | `detail_lod_start_m` | 13000 |
 
-Graphics presets set three of these: March budget / Light steps / Step growth are 200 / 3 / 0.02 at Low,
-300 / 6 / 0.015 at Medium, 400 / 6 / 0.01 at High and 640 / 8 / 0.008 at Ultra.
+Graphics presets set three of these: March budget / Light steps / Step growth are 300 / 6 / 0.015 at Low and
+Medium (which differ in render scale, 50 and 67 percent), 400 / 6 / 0.01 at High and 640 / 8 / 0.008 at Ultra.
 
 Beams tab (keys under `clouds_v2`): "Beam shafts (0 = drawn line)" `beam_shafts` 1.0, "Beam haze / dust"
 `beam_haze` 1.6, "Beam light on cloud" `beam_light` 32, "Beam lines (per beam)" `beam_lines` 0.25.

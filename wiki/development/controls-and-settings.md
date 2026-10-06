@@ -1,7 +1,7 @@
 # Controls and settings plumbing
 
-How input bindings, the gamepad, `settings.json`, the settings window's sliders and the graphics presets are
-wired, and the checklists for adding a control or a setting. The player-facing control list is on
+How input bindings, the gamepad, `settings.json`, the settings window (its tabs, its UI kit and its sliders) and
+the graphics presets are wired, and the checklists for adding a control or a setting. The player-facing control list is on
 [Controls](../using/controls.md); the presets as a player sees them are on
 [Graphics settings](../using/graphics-settings.md).
 
@@ -100,7 +100,8 @@ The harness's `pad <button>` presses a button without a controller, through the 
 otherwise `%APPDATA%\SatLightSim` (Windows), `$XDG_DATA_HOME/SatLightSim` or `~/.local/share/SatLightSim`
 (Linux), `~/Library/Application Support/SatLightSim` (macOS). It is read once during `init()` and written when
 the settings window closes and when the app exits. With no file (a first run), every compiled-in default is
-used and the graphics preset is seeded from the device type: Medium for a discrete GPU, Low otherwise.
+used and the graphics preset is seeded from the device type (`seedGraphicsPresetFromDevice()`): Medium for a
+discrete GPU, Planetarium for an integrated, CPU or virtual one.
 
 The `SatLightSimFresh` build target never reads or writes the file, so every launch is a first run.
 
@@ -132,8 +133,9 @@ version only when stored graphics values would not make sense against the curren
 
 ## Slider slots
 
-Most tuning sliders (the Clouds, Weather, Atmosphere, Terrain, Night lights, Ocean, Beams tabs and the Sound
-tab's advanced mix) are rows built by `buildCloudSliderRows()` from `CloudSlider` entries:
+Most tuning sliders (the Clouds, Weather, Atmosphere, Terrain, Night lights, Ocean and Beams tabs, the Sound
+tab's ambience mix, the Controls tab's move speed and the Display tab's HQ photo rows) are rows built by
+`buildCloudSliderRows()` from `CloudSlider` entries:
 
 ```cpp
 struct CloudSlider { const char *label; float *val; float vmin, vmax, step; const char *fmt; int idx; };
@@ -151,19 +153,67 @@ struct CloudSlider { const char *label; float *val; float vmin, vmax, step; cons
 A slider's slot and its settings key are independent of which tab shows it, so a slider can move between tabs
 without touching anything else. The Photometry tab has its own smaller set of arrays (`hovPhotoMinus`,
 `hovPhotoPlus`, `draggingPhoto`), sized for its rows. Editing a slider on any tab except Sound switches the
-graphics preset label to Custom (`marksPreset`).
+graphics preset label to Custom unless the row passes `marksPreset = false` (the Sound, Controls and Display
+rows do).
 
 ## Settings tabs and sections
 
 The tab names are `kSettingsTabNames[]` in `SatelliteSimUI.cpp`. A tab's **index** is persisted
-(`display.active_tab`) and indexes the tab hover array, so a new tab is **appended** to the array; the order
-on screen is a separate list, `kSettingsTabOrder[]`. `settingsTabIsAdvanced()` is the single test for "shown
-only with Show advanced settings" (used by the UI, the toggle and the harness), and
-`settingsTabIndexByName()` finds a tab by name (it also accepts "Aurora" for the Atmosphere tab).
+(`display.active_tab`) and indexes the tab hover array, so a new tab is **appended** to the array. The strip on
+screen is a separate list, `kSettingsStrip[]`: tab indices in display order, with a negative entry standing for a
+heading (`-1 - i` is `kSettingsStripHeadings[i]`: GENERAL, SKY, RENDERING, ABOUT). The strip is its own vertical
+scroll view, so a long strip never stretches a short window.
+
+| Index | Tab | Heading | Advanced |
+|---|---|---|---|
+| 4 | Display | GENERAL | |
+| 2 | Controls | GENERAL | |
+| 1 | Sound | GENERAL | |
+| 0 | Constellations | SKY | |
+| 5 | Photometry | SKY | |
+| 6 | Clouds | RENDERING | yes |
+| 12 | Weather | RENDERING | yes |
+| 9 | Atmosphere | RENDERING | yes |
+| 8 | Terrain | RENDERING | yes |
+| 13 | Night lights | RENDERING | yes |
+| 7 | Ocean | RENDERING | yes |
+| 10 | Beams | RENDERING | yes |
+| 14 | Performance | RENDERING | yes |
+| 11 | Attributions | ABOUT | |
+
+Index 3 ("Camera") has no button: its content is the Controls tab's *Mouse* section, and a saved
+`active_tab` of 3 opens Controls. `settingsTabIsAdvanced()` is the single test for "shown only with Show advanced
+settings" (used by the UI, the toggle and the harness); a heading is drawn only when a tab under it is visible.
+`settingsTabIndexByName()` finds a tab by name, case-blind (it also accepts "Aurora" for the Atmosphere tab).
 
 Long tabs group their sliders into collapsible sections with `buildCloudSliderSections(..., base)`. Each tab
 owns a range of section slots (`cloudSectionOpen[]`, sized `kCloudSectionSlots`): Clouds 0 to 11, Weather 12
 to 23, Atmosphere 24 to 29, Terrain 30 to 35. Section open state is session state and starts collapsed.
+
+## The UI kit
+
+The settings tabs other than the slider tabs, and the info, trace and Bookmarks windows, are built from a small
+set of member functions in `SatelliteSimUI.cpp` (section "UI kit"). Use them for any new window or settings row,
+so every window looks and behaves the same:
+
+| Function | Draws |
+|---|---|
+| `uiSection(key, idx, title)` | a section heading in small capitals over a 1-px rule |
+| `uiKV(key, idx, label, value, labelW)` | a readout: a fixed-width label column and a value column |
+| `uiStatTile(key, idx, label, value, colour)` | a label over a large value in a dark inset (the info and trace windows' tiles) |
+| `uiButton(inp, ui, key, idx, label, tip, on, enabled, grow)` | a 20-px pill button; returns true on click |
+| `uiToggleRow(inp, ui, key, idx, label, v, tip, onWord, offWord)` | a label and an On / Off pill (the knockouts use the words Skip / On) |
+| `uiChoiceRow(inp, ui, key, idx, label, labels, n, current, tip)` | a label and a row of segmented pills; returns the picked index or -1 |
+
+Element ids are `CLAY_SIDI(key, idx)`, so a harness script clicks a kit element as `Key:index`
+(`ui click ReplayIntroBtn:0`). The previous frame's hover state lives in one map (`uiHov_`), so a kit row needs no
+hover member of its own. Formatted labels go through `uiKitStr()`, a per-frame ring of buffers: Clay keeps the
+string pointers until the frame is recorded, so a label must not live on the stack.
+
+!!! warning "Invariant"
+    Never `return` or `break` inside a `CLAY(...)` block. The macro is a loop that closes the element when it
+    ends; leaving it early leaves the element open and corrupts the whole layout. Set a flag and act after the
+    block.
 
 ## Graphics presets
 
@@ -180,9 +230,11 @@ integer, which is why Potato comes after Custom: appending kept every existing i
 | `viewSamplesMin/Max`, `lightSamples` | the atmosphere march |
 | `oceanSeaOctaves`, `oceanDetailOctaves`, `oceanReflSamples` | sea quality |
 | `terrainDistFadeStartM/EndM`, `cloudDistFadeStartM/EndM` | reach of terrain and clouds |
-| terrain detail, shadow, material and close-up texture strengths | on for Medium, High and Ultra only |
+| terrain detail, shadow, material and close-up texture strengths | on for Low, Medium, High and Ultra |
 
-Everything outside this list belongs to the user and is never touched by a preset. Satellite part occlusion,
+Low and Medium share every value but the render scale (50% and 67%); Planetarium and Potato are the tiers that
+switch effects off. Everything outside this list belongs to the user and is never touched by a preset, including
+the automatic render scale, which only moves `renderScale` while it is switched on. Satellite part occlusion,
 in particular, is opt-in and no preset or first run turns it on: it multiplies the cost of the orbit pass
 several times over at millions of satellites.
 
@@ -215,5 +267,5 @@ ground. While a text field is focused or a cinematic is playing, movement keys a
 |---|---|
 | `src/simulations/SatelliteSim.h` | `KeyBinding`, `KB`, `GraphicsPreset`, `CloudSlider`, slot constants, every setting's member and default |
 | `src/simulations/SatelliteSim.cpp` | the `keybindings` initializer, `dispatchKeyAction()`, `onKey()`, `pollGamepad()`, `padContextButton()`, `padBack()` |
-| `src/simulations/SatelliteSimUI.cpp` | `loadSettings()`, `applySettingsJson()`, `buildSettingsJson()`, `saveSettings()`, `applyGraphicsPreset()`, `seedGraphicsPresetFromDevice()`, `buildCloudSliderRows()`, `buildCloudSliderSections()`, the tab tables |
+| `src/simulations/SatelliteSimUI.cpp` | `loadSettings()`, `applySettingsJson()`, `buildSettingsJson()`, `saveSettings()`, `applyGraphicsPreset()`, `seedGraphicsPresetFromDevice()`, `buildCloudSliderRows()`, `buildCloudSliderSections()`, the tab tables (`kSettingsTabNames`, `kSettingsStrip`), the UI kit |
 | `tools/settings_defaults_diff.py` | defaults diff |

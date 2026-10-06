@@ -61,6 +61,7 @@ been changed yet.
 | A dark line where an overcast's far underside meets the sea horizon (not the sea shading). | [The sea](../rendering/sea.md) | 2026-10-01 (review 21) |
 | Descending through a deck shows history lag (tstab `fall` 3.8 vs `rise` 1.8) and a band from the sky TAA as the eye's height changes. | [Temporal resolve](../rendering/clouds/temporal.md) | 2026-10-02 (review 22) |
 | Fog and dust are not in the light march, the ground shadow or beam occlusion; wind-driven dust storms need a wind field. | [Weather, rain, lightning, fog](../rendering/clouds/weather.md) | 2026-09-29 |
+| The cloud volume still marches the rain within the drop particles' reach (optical depth ~0.02-0.05), a slight double count. | [Weather, rain, lightning, fog](../rendering/clouds/weather.md) | 2026-10-04 |
 | God rays are experimental and off by default; the effect is subtle and unjudged. Real shafts would need a dedicated jittered sub-march. | [Weather, rain, lightning, fog](../rendering/clouds/weather.md) | 2026-09-29 |
 | A harness `knockout +fog_layer` changed nothing visible in one test, which was not understood. | [Automation harness](../development/harness.md) | 2026-10-01 (review 21) |
 
@@ -82,6 +83,7 @@ been changed yet.
 | The Sun and Moon are of date while stars, the Milky Way and planets are J2000, about 0.5 deg of precession apart in 2037. | [Sun, Moon and planets](../simulation/sun-moon-planets.md) | 2026-10-03 |
 | Environment probes use the main observer's Moon position, so the Moon's face in reflections is approximate. | [Moon and eclipses](../rendering/moon-and-eclipses.md) | 2026-10-03 |
 | Bloom and corona exist for satellites and the Sun only, not stars and planets. | [Points, bloom and glare](../rendering/points-bloom-glare.md) | 2026-09-23 |
+| Aurora: a storm seen from orbit is a filled ring of concentric bands; the curtain noise's azimuth is Earth-fixed while the oval is Sun-fixed; no dawn-side omega bands or pulsating aurora; the dipole axis is fixed (no IGRF). | [Aurora and airglow](../rendering/aurora-airglow.md) | 2026-10-03 |
 | Saturn's ring brightness is omitted from its magnitude; the Moon's near-disc sky halo is not modelled; star day suppression uses an older formula than satellites'. | [Sun, Moon and planets](../simulation/sun-moon-planets.md) | 2026-07-30 |
 | UI text is one baked bitmap scaled to every size; large captions at high UI scale look blocky. An SDF font would fix it. | [UI (Clay)](../development/ui.md) | 2026-08 |
 

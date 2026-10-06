@@ -42,15 +42,17 @@ the satellites themselves.
 |            [selection panel next to the selected object]           |
 |                                                                    |
 | [time bar: UTC time, speed,     ]          [lat | lon | alt  MSL  ]|
-| [ < || > R  camera photo film * ]          [              gear    ]|
+| [ < || > R   camera photo trails]          [bookmark film gear    ]|
 +--------------------------------------------------------------------+
 ```
 
 - The **time bar** (bottom left) shows the simulated UTC time and the time speed, with buttons for slower,
-  pause, faster, reverse, screenshot, HQ photo, the cinematics window and star trails.
+  pause, faster, reverse, and the picture buttons: screenshot, HQ photo and star trails. Click the clock to
+  type a time.
 - The **position readout** (bottom right) shows the observer's latitude, longitude and altitude. Hover any of
-  them and scroll to change it. The small button beside the altitude switches between height above sea level
-  (MSL) and above the ground (AGL). The gear opens Settings.
+  them and scroll to change it, or click to type a value. The small button beside the altitude switches between
+  height above sea level (MSL) and above the ground (AGL). The panel ends in the menu buttons: Bookmarks,
+  Cinematics and Settings (the gear).
 - **Tab** hides and shows the whole interface.
 
 !!! tip

@@ -64,21 +64,26 @@ details are on [Building and releasing](../development/building.md).
    roster are prepared. A cold start compiles every shader; later launches reuse a pipeline cache and start in a
    few seconds.
 2. **Graphics preset.** With no saved settings, the program picks a starting preset from the GPU type: a
-   discrete GPU starts on **Medium**, anything else on **Low**.
+   discrete GPU starts on **Medium**, anything else (integrated graphics, a software or virtual device) on
+   **Planetarium**, the tier with no volumetric clouds and the simplest terrain, sky and sea.
 3. **The intro.** A short cinematic plays, set to the first music track, from the California coast at dusk
-   looking at the orbital data-centre disk and the mirrors aimed at a nearby solar farm. Press **Space** (or
-   **Start** on a gamepad) to skip it. The intro also measures the GPU frame time. If it plays to the end on
-   the Potato, Planetarium, Low or Medium preset, the preset moves one step down when frames are slow (more
-   than about 18 ms) or one step up when they are fast (under about 5 ms), never above High, and a notice says
-   which preset is now active. A skipped intro changes nothing.
+   looking at the orbital data-centre satellites and the mirrors aimed at a nearby solar farm. Press **Space** (or
+   **Start** on a gamepad) to skip it. The intro also measures the GPU frame time. If it plays to the end, the
+   preset moves one step when the measurement calls for it: down when frames are slow (more than about 18 ms:
+   Medium to Low, Low to Planetarium, Planetarium to Potato), up when they are fast (under about 5 ms: Potato to
+   Planetarium, Low to Medium, Medium to High). A notice then says which preset is active. A skipped intro changes
+   nothing.
 4. **The tutorial.** After the intro, a card at the bottom of the screen walks through looking around, moving,
-   climbing, boosting and selecting a satellite. Each step finishes when you do it. Later cards point at the
-   selection buttons, the time controls, the picture buttons and the settings gear. **Skip** ends it; with a
-   gamepad, **Start** goes to the next card and **View** skips. It runs once; Settings → Display → **Replay
-   Tutorial** runs it again.
+   climbing, boosting and selecting a satellite. Each of these steps finishes when you do it, and a picture of the
+   keyboard, mouse or gamepad lights the input to use. Later cards outline the selection buttons, the time
+   controls, the picture buttons and the menu buttons (Bookmarks, Cinematics, Settings) on the screen. When the
+   program is on Planetarium or Potato, a last **Graphics** card says that there are no clouds and that **Low**
+   (Settings → Display → Preset) brings them and every other effect back at half resolution. **Skip** ends the
+   tutorial; with a gamepad, **Start** goes to the next card and **View** skips. It runs once; Settings →
+   Display → **Replay tutorial** runs it again.
 
 Whether the intro plays at every launch is the **Play intro on startup** setting (Display tab; on for a new
-install). **Replay Intro** plays it once on demand.
+install). **Replay intro** plays it once on demand.
 
 !!! note "Crash recovery"
     If the previous session did not exit cleanly (the program keeps a `session.lock` file while it runs), the
@@ -108,7 +113,8 @@ What is in it:
 | `cinematics/` | Saved cinematics, one JSON file each |
 | `traces/` | Magnitude traces exported as CSV |
 | `exports/` | Bulk brightness exports (CSV) |
-| `perf_profiles/profile_log.jsonl` | Performance snapshots (F9, or Display → Save Snapshot) |
+| `perf_profiles/profile_log.jsonl` | Performance snapshots (F9, or Settings → Performance → Save snapshot) |
+| `bookmarks/` | Saved bookmarks (`bookmarks.json`) and their thumbnails |
 | `satellite_types_resolved.json` | The loaded satellite types in explicit form; see [Modding](../modding/index.md) |
 | `satellite_models_debug/` | A 3D shape (OBJ) of every satellite model, for checking a mod |
 | `music_analysis/` | A cache of the soundtrack's key analysis |
@@ -122,7 +128,7 @@ cannot be created):
 | HQ photo (F8) | `screenshots/satlight_hq_<date>_<time>.png` |
 | Cinematic export | `screenshots/cinematics/<name>_<stamp>/` (one PNG per frame; `_hq` suffix for an HQ export) |
 
-**Resetting.** Settings → Display → **Reset to Defaults** deletes the saved settings; the next launch starts
+**Resetting.** Settings → Display → **Reset to defaults** deletes the saved settings; the next launch starts
 from the defaults as a first run. Deleting `settings.json` by hand does the same.
 
 !!! warning "Settings from an older version"
@@ -135,7 +141,7 @@ from the defaults as a first run. Deleting `settings.json` by hand does the same
 - **The window stays white or the program exits at start.** Read `satlight_log.txt`: every start-up step is
   logged before it runs, so the last line names the step that failed. The log also names the GPU and any Vulkan
   limit the GPU is short of.
-- **It runs, but slowly.** Pick a lower preset in Settings → Display; see
-  [Graphics settings](graphics-settings.md).
+- **It runs, but slowly.** Pick a lower preset in Settings → Display, or turn on **Automatic render scale**
+  there; see [Graphics settings](graphics-settings.md).
 - **A modded roster does not show.** See the troubleshooting table in
   [Constellations](../modding/constellations.md#troubleshooting).

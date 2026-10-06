@@ -59,7 +59,8 @@ second.
 
 **Scrolling over the position readout.** Hover the latitude, longitude or altitude at the bottom right and scroll
 to change it: 5 degrees per notch for latitude and longitude, 5% of the altitude (at least 10 m) per notch for
-altitude. Hold the boost key for five times the step, or the fine key for a fifth of it.
+altitude. Hold the boost key for five times the step, or the fine key for a fifth of it. Clicking one of them, or
+the clock at the bottom left, lets you type a value instead (see [Typing values](#typing-values)).
 
 ## Gamepad
 
@@ -97,7 +98,7 @@ around and A does not select at the centre.
 **Intro and tutorial.** During the intro, Menu (Start) skips it. While the tutorial card is up, Menu (Start)
 goes to the next card and View skips the tutorial.
 
-**Inverting the look axes.** Settings → Controls → *Invert look axes* has separate switches for the mouse and
+**Inverting the look axes.** Settings → Controls → *Invert look* has separate switches for the mouse and
 the controller, horizontal and vertical.
 
 ## Movement speed follows your height
@@ -143,10 +144,11 @@ holds the camera. Press **Track** again, select something else, or press **Go to
 
 ## Rebinding
 
-Settings → **Controls** lists every rebindable action with its key and gamepad button.
+Settings → **Controls** → *Bindings* lists every rebindable action in three columns: the action, its keyboard key
+and its gamepad button.
 
 - **Rebind**, then press the new key. Esc cancels.
-- **Bind Pad**, then press the new controller button. A button already held when you click is ignored until
+- **Bind**, then press the new controller button. A button already held when you click is ignored until
   released.
 
 Climb and descend on the gamepad are the analog triggers and are not part of the button bindings; binding a button
@@ -156,13 +158,17 @@ to *Raise* or *Lower Elevation* adds it as a full-speed alternative. Bindings ar
     Esc also quits the program, and cancelling a rebind with Esc currently does both. Cancel a rebind by pressing
     the key you want instead, or by pressing the old key again.
 
-The Controls tab also has a **Quick-reference overlay** button that opens a small window listing the current
-bindings, in keyboard or gamepad order depending on which you used last.
+The rest of the Controls tab holds *Movement* (the move speed below), *Mouse* (a reminder that the right button
+drag looks around, the wheel zooms and a left click selects), *Invert look* (mouse and controller, each axis) and
+*Help*, whose **Controls overlay** switch opens a small window listing the current bindings, in keyboard or
+gamepad order depending on which you used last.
 
 ## Typing values
 
-Every slider value in the settings, the Photometry rows, the volumes and the fields in the cinematics window can
-be typed. Click the number and it becomes a text box.
+Every slider value in the settings, the Photometry rows, the volumes, the fields in the cinematics and bookmarks
+windows, and the clock, latitude, longitude and altitude on screen can be typed. Click the value and it becomes a
+text box. The formats the clock and the position fields accept are on
+[Features tour](features.md#the-screen).
 
 | Key | Action |
 |---|---|
@@ -172,15 +178,16 @@ be typed. Click the number and it becomes a text box.
 | Backspace / Delete | Delete |
 | Ctrl+A, Ctrl+C, Ctrl+V | Select all, copy, paste |
 
-A typed number is clamped to the slider's range. While a field has the keyboard, movement keys and Esc's quit are
-off, so you can type `w` or `q` safely.
+A typed number is clamped to the slider's range; a clock, position or altitude that does not parse shows an
+amber notice and changes nothing. While a field has the keyboard, movement keys and Esc's quit are off, so you can
+type `w` or `q` safely.
 
 ## Where in the code
 
 - `src/simulations/SatelliteSim.cpp`: the `keybindings` table in `init()`, `dispatchKeyAction()`, `onKey()`,
   `pollGamepad()`, `padContextButton()`, ground movement in `recordCompute()`, follow movement in `updateFollow()`.
 - `src/simulations/SatelliteSim.h`: the `KB` enum.
-- `src/simulations/SatelliteSimUI.cpp`: the Controls tab, mouse look and picking in `buildUI()`, the text fields
-  (`textField()`, `textEditKey()`).
+- `src/simulations/SatelliteSimUI.cpp`: the Controls tab (`buildSettingsControlsTab()`), mouse look and picking in
+  `buildUI()`, the text fields (`textField()`, `numberField()`, `inlineTextField()`, `textEditKey()`).
 - `src/App.cpp`: the Esc-to-quit handler.
 - The plumbing behind all of this is on [Controls and settings plumbing](../development/controls-and-settings.md).

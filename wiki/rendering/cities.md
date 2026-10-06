@@ -146,6 +146,8 @@ draws a world-fixed lattice of points at every distance past the lamp posts:
 - the spread is **anisotropic**: along the view's ground direction it uses the stretched footprint, across it
   the plain pixel footprint (`gCityViewE`, `gCityFootX`). A round point of the stretched size would draw far
   towns as wide horizontal smears; this keeps them dots on screen;
+- under the temporal upscale (render scale below 100%) the footprint is that of the rendered (input) pixel,
+  so every point is at least an input sample wide and every jitter phase sees it;
 - a slow scintillation past 15-80 m per pixel, at "City light twinkle rate";
 - below 4-16 m per pixel up to 14% of points (x the style's sign multiplier) are coloured signage.
 
@@ -201,8 +203,16 @@ no pipeline of their own.
   with the air along the slant path from an 8 km scale height (40 km sea-level visibility), capped at 8 so no
   sprite reaches glare. Lamp colours only, warmer than the ground's mix.
 - **Fades**: by night only (civil twilight), and with eye altitude over 100-150 km.
-- **Records**: slot index `0xFFFFFFFF` (picking skips it) and `meshPx = -1` (the trail pass skips it), drawn at
-  99.5% of the range. Up to 131072 extra slots in the visible list.
+- **Records**: slot index `0xFFFFFFFF` (picking skips it) and `meshPx = -1` (the trail pass skips it), recorded
+  at 99.5% of the range. Up to 131072 extra slots in the visible list.
+- **Depth**: the point draws (`sat_point.vert`) test a city light at 0.95 of its recorded range, both in the
+  hardware depth and in the manual test against the half-resolution scene depth. A light stands only a few
+  metres above the ground it lies on, and the ground's depth moves with the temporal AA's sub-pixel jitter,
+  so at its true range the sprite would z-fight it.
+- **Where they sit**: on the DEM plus the water map (the terrain detail is left out). With the terrain
+  knocked out (knockout bit 1, set by Planetarium) the ground is drawn as the sea-level sphere, and the
+  lights sit on it. They are not drawn under Potato: their eye height comes from the terrain frame the depth
+  pass writes, which Potato skips.
 
 Where sprites carry the lights, the ground keeps "Ground glitter under sprites" of its glitter: a point's display
 saturates, so sprites alone cannot carry a dense city's light per area.
@@ -210,6 +220,32 @@ saturates, so sprites alone cannot carry a dense city's light per area.
 !!! note "Fog hides the sprites"
     Point sources are occluded by the cloud composite, and radiation fog over a city counts as opaque to
     points while the ground glitter still shows through it. Test sprites with `clouds_v2.fog_amount 0`.
+
+## Presets and temporal anti-aliasing
+
+The procedural city lights and the city day layout run in the full sky shader and in its `SKY_LITE` variant,
+so every preset except Potato draws them, independent of the procedural terrain detail switch. Potato's sky
+shader (`sat_sky_minimal.frag`) draws the night map and the legacy city detail textures, and the environment
+probes and mirror reflections (`SKY_ENV`) take the night map alone. Farms and beaches belong to the terrain
+detail (`tdEnabled()`), so they need "Terrain detail" above 0 (Terrain tab) and the full sky shader. See
+[Weak-hardware tiers](hardware-tiers.md).
+
+Under the [sky TAA](atmosphere-and-sky.md#sky-taa) a light smaller than a pixel would be caught by only some
+of the sub-pixel jitter positions. Three rules keep distant city lights steady:
+
+- **Unjittered inputs.** Where the view meets the ground at more than about 12 deg (\( |\cos| > 0.2 \) between
+  the unjittered ray and the local up), the city lights read the night map, the terrain contour of
+  `cityTerrainLimit()` and their own pattern (layout, lamp lines, glitter) at the pixel's **unjittered**
+  point: the jittered hit moved back along the hit's tangent plane (`uvTaa0`, `taaDn`). Those inputs switch a
+  light on or off (the map minus its blue base crosses zero at a city's fringe, the contour cuts over 120 m
+  of height, and the glitter concentrates a sparse fringe's light into a few bright points), so a jittered
+  read would light a point in only some phases. Toward a grazing horizon the tangent-plane point slides
+  kilometres for half a pixel and is wrong over hills, so the jittered point is kept there.
+- **Still history.** When nothing moved in a frame (the eye moved less than 1 cm, the view did not turn, and
+  sim time runs at no more than 1.5x), `sky_taa.comp` keeps its history unclipped and its flash rule uses the
+  neighbourhood's mean without its brightest sample. A light caught by one phase in 16 then averages over all
+  the phases instead of blinking, and a lone glint does not flash.
+- **Sprite depth** at 0.95 of the range (see [City light sprites](#city-light-sprites)).
 
 ## The day side
 
@@ -336,7 +372,8 @@ Night lights tab unless noted; all under `clouds` in `settings.json`.
 
 Measured on an RTX 3070 Ti with the harness, the city pattern costs about +1.1 ms over Los Angeles from 10 km by
 night (pattern 0.9 ms, roads 0.2 ms) and +0.8 ms by day; farmland about +0.35-0.5 ms; solar parks within noise;
-city sprites about 0.
+city sprites about 0. On the lighter presets the pattern costs about +0.7 ms on Low and +2.4 ms on
+Planetarium over Los Angeles from 1.5 km.
 
 ## Where in the code
 

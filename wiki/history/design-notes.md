@@ -126,6 +126,14 @@ New entries arrive through wiki passes (see [History](index.md)).
 - **2026-10-03** — Sim time became real UTC: the Earth rotation angle is GMST, not `kOmegaEarth t` alone, which
   was self-consistent but put every place's sky ~5.3 h off. The start time and cloud phase moved by the same
   shift so the intro is unchanged. [Time and frames](../simulation/time-and-frames.md)
+- **2026-10-04** — A mirror's beam ignored the Earth's shadow: mirrors past the terminator kept beaming at full
+  strength (~400 beams on an Antarctic polar night in a user snapshot). The beam takes the satellite's shadow
+  factor. [Reflectors](../simulation/reflectors.md)
+- **2026-10-06** — The Starmind orbital data centers fly the shells of SpaceX's FCC letter (two roster entries,
+  "Shells" distribution, rings of 8). They replaced one 1M-satellite dawn-dusk disk that predated the filing. The
+  first cut flew lines of 10, 1 km apart; with tight nodes, shells 1.6-1.8 km apart slid through each other
+  (~13,000 cross-cluster pairs within 1 km), so the X-ring's planes spread over +-10 deg (26 pairs).
+  [Orbits](../simulation/orbits.md)
 
 ## Beams and clouds (Reflect Orbital)
 
@@ -281,6 +289,26 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
   first cut overwrote the profile's end after a full march and darkened everything near the Sun line.
 - **2026-10-02 (review 25)** — That darkening was applied only for samples in front of the eye, drawing a
   straight line across the sky 90 deg from the Sun; behind the eye the distance is to the eye.
+- **2026-10-04** — Rain, snow and diamond dust at the eye became instanced particles drawn after the sky TAA. The
+  old per-pixel lattice inside the half-res composite (a few hundred fat streaks, smeared by the TAA, no bow
+  optics) is gone; the cloud march got ~1 ms cheaper. **2026-10-05**: drop motion is integrated over sim time on
+  the CPU, so fall speed and wind can change smoothly. [Weather](../rendering/clouds/weather.md)
+- **2026-10-04** — Rain-only samples stand for four coarse steps: a snowing storm at night went 40.6 to 27.2 ms of
+  cloud march. The fog/dust march is skipped under opaque cloud seen from above (-2.8 ms in an orbit storm view; its
+  "~0" cost had held only at ground-level benchmarks). Cirrus bounce light reuses the field's flow (~1-2 ms inside
+  the high layer, which is ~11 of 32 ms there). [The march](../rendering/clouds/march.md)
+- **2026-10-04** — Rows of identical puffs converged to the horizon at 9.6 N 134.6 W, where the shape tile's x axis
+  lay in the horizontal plane. Per-sample warps hit the register cliff (+5-9 ms), so the CPU picks one of four
+  tile rotations per frame. [The cloud field](../rendering/clouds/field.md)
+- **2026-10-04** — Render scale shrank only the sky pass, so 50% bought ~10 FPS; the clouds and depth pass follow
+  it now (orbit storm 32.4 / 20.6 / 11.9 ms at 100 / 75 / 50%). Without keeping the 100% noise footprint the
+  storm cumulus texture vanished at 50%.
+- **2026-10-05** — Lightning rebuilt: only dominant anvil-reaching towers had flashed (a map-typed storm without
+  them had none), and the 14-vertex channel inside the half-res composite was pudgy and smeared. Flashes come from
+  towers and a fixed storm-region lattice; channels are host-built geometry drawn at true width. The first region
+  lattice grew with altitude (descending reshuffled every flash) and put flashes in clear air above capped cumulus.
+  Thunder became the channel's own arrival envelope instead of a synth roll with random peals.
+  [Weather](../rendering/clouds/weather.md)
 
 ## Terrain
 
@@ -400,6 +428,11 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
 - **2026-09-30 (review 10e)** — Measured against Artemis II photographs, sunlit cloud is ~10x the sea; the sim
   showed ~2.5x. The cause was exposure and tonemap, not scattering gains (which changed nothing at 70 000 km).
   Auto exposure spot-meters the lit Earth, and an orbit grade applies on the sunlit side only (review 11).
+- **2026-10-03** — The auroral oval became a Sun-fixed ring in magnetic local time driven by a Kp index from a
+  space-weather model. It had been a band at 20 deg colatitude (+8 x "Storm strength") fading over twice its
+  width, lit from ~5 deg off the pole (a cap from orbit) and fixed to the ground. Calibration over 2030-2041:
+  936 / 501 / 174 / 103 / 9 three-hour intervals per cycle at G1-G5 against NOAA's 1700 / 600 / 200 / 100 / 4.
+  [Aurora and airglow](../rendering/aurora-airglow.md)
 
 ## Moon and eclipses
 
@@ -466,6 +499,15 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
 - **2026-10-02** — The driver's capped Vulkan pipeline cache had filled and stopped storing; every launch recompiled
   changed shaders (30-40 s to start). The app keeps its own cache: 4.6 s on a warm cache.
   [Code architecture](../development/architecture.md)
+- **2026-10-04** — Presets reshuffled: Medium renders at 67% and Low at 50% with every effect on; Planetarium is the
+  all-off tier, and integrated GPUs start there. Below 100% the sky TAA became a temporal upscaler, and an
+  automatic render scale was added. [Graphics settings](../using/graphics-settings.md)
+- **2026-10-04** — Distant city lights blinked under the sky TAA: sprites z-fought the jittered ground depth, and
+  ground points were hit or missed by the jitter and clipped from history. Several fixes decided "still" per pixel;
+  climbing over clouds they left trails (climb benchmark 1.60 to 3.87) and were reverted. The final version relaxes
+  the history rules only when the whole camera is stationary and reads the lights at the unjittered pixel on steep
+  views (still-view flicker 2.31 / 0.58 / 1.07 / 0.94% to 0.57 / 0.04 / 0.13 / 0.04%).
+  [Cities](../rendering/cities.md)
 
 ## Sound
 
@@ -501,6 +543,11 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
   and Esc-to-stop were added. Follow-shot keys kept only the offset, so framing was lost on playback.
 - **2026-10-03** — The intro's controls beat and the post-intro hint were replaced by a first-run tutorial. Clip
   regions now nest; a nested clip's end had reset to the full screen.
+- **2026-10-03** — UI review: every window and settings tab built from one UI kit (sections, label/value rows, stat
+  tiles, pills); a Performance tab took the profiling tools out of Display; the Camera tab folded into Controls;
+  bookmarks were added. The HUD altitude readout had added the terrain to an offset that is already above sea
+  level. The typed time checked the day only against 31, so "2036-11-31" rolled over to December 1.
+  [Features](../using/features.md)
 
 ## Tooling and harness
 

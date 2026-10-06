@@ -141,18 +141,19 @@ observer, the mirror's current reflected direction \( \hat{\mathbf{d}} =
 The power the mirror sends down, in the beam's own units:
 
 \[
-P = S\, A\, F_0\, (\hat{\mathbf{n}}\cdot\hat{\mathbf{s}})_+\, g,
+P = S\, A\, F_0\, (\hat{\mathbf{n}}\cdot\hat{\mathbf{s}})_+\, g\, \ell,
 \]
 
-with \( S = 1361 \) W m⁻² the solar constant, \( A \) the mirror area, \( F_0 \) its reflectance and
-\( g \) the "Beam gain" setting. For a geometry model, \( A \) and \( F_0 \) are the total area and
-area-weighted Fresnel reflectance of the lobes facing along the site-aimed axis; a model with no such face
-emits no beams.
+with \( S = 1361 \) W m⁻² the solar constant, \( A \) the mirror area, \( F_0 \) its reflectance,
+\( g \) the "Beam gain" setting and \( \ell \) the satellite's **Earth-shadow factor**: the same soft
+umbra/penumbra cone (`litFactor`) that dims the satellite's own brightness, 1 in sunlight and 0 in the
+umbra. For a geometry model, \( A \) and \( F_0 \) are the total area and area-weighted Fresnel reflectance
+of the lobes facing along the site-aimed axis; a model with no such face emits no beams.
 
-!!! note
-    The beam's power is not multiplied by the satellite's Earth-shadow factor: a mirror inside the
-    Earth's shadow but still facing the Sun's direction keeps emitting. For terminator-aligned
-    (dawn-dusk) mirror orbits the satellites are almost always sunlit, so this rarely matters.
+A mirror beams only while it is sunlit. In the penumbra its beam dims with \( \ell \); in the umbra
+\( P = 0 \), so no beam is appended and no ground spot, cloud light, shaft or beam sound comes from it,
+even when the mirror still faces the Sun's direction and its target is eligible. Dawn-dusk mirror orbits
+are almost always sunlit; mirrors on other orbits go dark as they pass into the Earth's shadow.
 
 ### Footprint: an image of the Sun
 

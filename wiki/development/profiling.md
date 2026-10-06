@@ -27,8 +27,9 @@ resolves the previous frame's queries right after its fence wait, with no stall.
 `updateGpuTimingStats()` turns the slots into eight buckets: `scene_depth`, `beam_cloud_block` (the vestigial
 slot-2 bucket, about 0), `orbit_compute`, `cloud_march`, `flare_compute`, `sky_background_draw`,
 `satellite_star_draw`, `ui_overlay`, plus the total. `gpuMsRaw[]` holds the last frame's raw values and
-`gpuMsSmoothed[]` an exponential moving average (factor 0.1) for display in Settings, Display, *GPU frame
-breakdown*. A pass skipped in a frame writes its slot anyway, so its bucket reads 0 rather than stale data. The
+`gpuMsSmoothed[]` an exponential moving average (factor 0.1) for display in Settings → **Performance** →
+*GPU frame (ms)*. The Performance tab is one of the advanced tabs, shown once *Show advanced settings* (Display
+tab) is on; it holds every instrument on this page that has a UI. A pass skipped in a frame writes its slot anyway, so its bucket reads 0 rather than stale data. The
 slot table in `VulkanContext.h`, `updateGpuTimingStats()`, the UI labels and the snapshot's JSON keys must change
 together.
 
@@ -40,7 +41,7 @@ show up as a higher frame rate.
 
 ## CPU frame buckets
 
-The CPU counterpart, in Settings, Display, *CPU frame breakdown*:
+The CPU counterpart, in Settings → Performance → *CPU frame (ms)*:
 
 | Bucket | Covers |
 |---|---|
@@ -67,8 +68,8 @@ the shader already produces for sky). With mask 0 rendering is unchanged. The ma
 uniform block (`cloud.dbgDisableMask`) and, for the satellite point shader, in its push constants.
 
 The table is `kDebugToggles[]` at the top of `SatelliteSimUI.cpp`: one row per bit with a display label and a
-stable JSON key, which is also the harness's `knockout` key. A row there adds a checkbox in Settings, Display,
-*Knockout profiling* and a step in the sweep. `kDebugToggleSlots` in `SatelliteSim.h` must equal the row count
+stable JSON key, which is also the harness's `knockout` key. A row there adds a switch in Settings →
+Performance → *Knockouts* (it reads **Skip** while the bit is set, **On** otherwise) and a step in the sweep. `kDebugToggleSlots` in `SatelliteSim.h` must equal the row count
 (a `static_assert` enforces it).
 
 | Bit | Key | Switches off |
@@ -105,16 +106,19 @@ cloud march), which is why a cost can come out negative.
 
 ## The automated knockout sweep
 
-Settings, Display, *Run knockout sweep* (or the harness's `sweep`) walks the whole table: a baseline at mask 0,
-then one step per bit. Each step holds its mask for 6 discarded frames (`kSweepSettleFrames`) and then averages
-the **raw** GPU buckets over 24 frames (`kSweepSampleFrames`). It takes about 15 s and appends one record with
-`"record_kind": "knockout_sweep"` to the snapshot log, holding every step's full bucket breakdown and its
-`cost_ms` against the baseline.
+Settings → Performance → *Run knockout sweep* (or the harness's `sweep`) walks the table. It measures a baseline
+at the **current** mask, then one step per bit that the current mask still renders (a bit the preset already
+sets is listed under `already_disabled` and skipped), then the baseline once more. Each step holds its mask for 6
+discarded frames (`kSweepSettleFrames`) and then averages the **raw** GPU buckets over 24 frames
+(`kSweepSampleFrames`). It takes about 15 s and appends one record with `"record_kind": "knockout_sweep"` to the
+snapshot log, holding every step's full bucket breakdown and its `cost_ms` against the baseline, plus
+`baseline_end` and `baseline_drift_ms`: when the closing baseline differs materially from the opening one, the
+scene moved during the sweep and every cost carries that drift, so retake it.
 
 Two choices make it trustworthy where a hand measurement is not:
 
 - It reads raw values, not the smoothed ones. The display average takes about 40 frames to settle, so a reading
-  taken soon after flipping a checkbox blends two configurations.
+  taken soon after flipping a switch blends two configurations.
 - It **pauses sim time** for its duration (restoring the previous state afterwards), so every step measures the
   same scene. Otherwise satellites move, beams re-target and clouds drift during the sweep, and the per-bit
   differences mix cost with scene change. The user's own mask is also saved and restored.
@@ -123,7 +127,7 @@ Two choices make it trustworthy where a hand measurement is not:
 
 ## Perf snapshots and `analyze_profile.py`
 
-*Save Snapshot* (Settings, Display, or F9) appends one JSON record (`"record_kind": "snapshot"`) to
+*Save snapshot* (Settings → Performance → *Record*, or F9) appends one JSON record (`"record_kind": "snapshot"`) to
 `perf_profiles/profile_log.jsonl` in the user data folder: the GPU buckets, the CPU buckets, resolution,
 observer position and altitude, sim time, the knockout mask, the GPU name, the quality settings and preset, a
 `beams` block (active beams, ground spots, whether the beam rays are drawn), the full settings and the view
@@ -191,6 +195,6 @@ The first launch after shader changes recompiles pipelines and is slow; never re
 |---|---|
 | `src/VulkanContext.h/.cpp` | the slot table, `resetTimestamps()`, `writeTimestamp()`, `resolveTimestamps()` |
 | `src/simulations/SatelliteSim.cpp` | `updateGpuTimingStats()`, `beginCpuFrameTiming()`, the timestamp writes |
-| `src/simulations/SatelliteSimUI.cpp` | `kDebugToggles[]`, the breakdown panels, `savePerfSnapshot()`, `buildPerfSnapshotJson()`, `startKnockoutSweep()`, `updateKnockoutSweep()` |
+| `src/simulations/SatelliteSimUI.cpp` | `kDebugToggles[]`, the Performance tab (`buildSettingsPerformanceTab()`), `savePerfSnapshot()`, `buildPerfSnapshotJson()`, `startKnockoutSweep()`, `updateKnockoutSweep()` |
 | `src/simulations/SatelliteSimHarness.cpp` | `perf`, `sweep`, `shaders reload`, `knockout` |
 | `tools/perf_analysis/` | `analyze_profile.py`, `live_perf_table.py` |

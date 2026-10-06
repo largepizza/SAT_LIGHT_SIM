@@ -215,7 +215,9 @@ range \(H\) is \( \sigma \pi (H^2 - \Delta r^2) \), and the nearest is about
 \( \sqrt{\Delta r^2 + (0.5/\sqrt{\sigma})^2} \). A disk constellation (concentric rings in one orbital plane)
 uses the plane of the ring nearest the camera's radius, because each sun-synchronous ring's inclination
 follows its own altitude and across a deep disk the outer rings are tilted hundreds of kilometres from the
-inner ones.
+inner ones. A Shells constellation is taken one filed group at a time: a Walker group is one inclined shell
+spanning its altitude range, and a sun-synchronous group contributes one band per plane (each node of the
+X-ring), oriented by the shell nearest the camera's radius.
 
 ## Fades
 
@@ -248,7 +250,7 @@ classes taken from the music's own key.
 | `pad` | the glare chorus ([below](#the-beam-sounds)) | `level f0_hz scale_mask chord_mask tension_mask voices hollow bright detune_cents warp_cents warp_rate glide_s attack_s release_s bloom bloom_s shimmer cutoff_hz reverb reverb_s spread hp_hz` |
 | `bass` | the beam-site pedal ([below](#the-beam-sounds)) | `level f0_hz fifth sub bright hollow beat_hz throb throb_rate bend_cents bend_rate drive cutoff_hz width hp_hz` |
 | `rain` | a band-passed hiss, a low rumble for heavy rain, a Poisson stream of drop ticks each with its own resonance, level and pan | `level intensity drops hiss_hz rumble width` |
-| `thunder` | one roll per trigger ([below](#rain-and-thunder)) | `level trigger distance_km energy pan` |
+| `thunder` | rolls shaped by envelopes from the lightning channels, pushed as events ([below](#rain-and-thunder)) | `level trigger distance_km energy pan` |
 | `beeps` | FSK data bursts (unused by the shipped table) | `level rate carrier_hz spread tone_ms tones_min tones_max gap_ms doppler width bright_hz symbols` |
 | `disk` | seek clicks and fan noise (unused) | `level activity whine whine_hz fan fan_hz click_hz seek_ms clicks width` |
 | `chorus` | procedural VLF chorus, whistlers and sferics, flanged (unused; a recorded loop is used instead) | `level hiss chorus_rate chorus_hz chorus_rise chorus_ms cluster whistler_rate crackle width flange flange_rate flange_ms flange_fb` |
@@ -302,14 +304,27 @@ screen and a passing shaft is heard as it arrives. It is multiplied by the liqui
 the eye's temperature (snow is silent) and is 0 above 6 km. The `rain` layer's `intensity` follows the rate:
 a drizzle is a thin hiss with a few ticks, a cumulonimbus core a roar.
 
-**Thunder.** The lightning pass writes a list of the flashes in progress. Each frame, `updateThunder()` reads
-it for flashes not seen before. Each flash within 30 km (red sprites excluded) is queued to arrive its
-distance / 343 m/s after the flash, measured in sim time: paused, nothing arrives; under time warp it rolls in
-almost at once. When a flash arrives, the `thunder` voice gets its distance, energy (about 1 for a ground
-strike, 0.55 in cloud) and pan from the bearing relative to the camera, and a trigger counter change starts a
-roll. One roll starts per frame; a crowd of arrivals queues. Distance shapes the roll as it does outdoors: it
-lowers the cutoff, slows the onset, lengthens the roll and lowers the level, and a close strike opens with a
-crack. Reversing or jumping time drops the queue.
+**Thunder.** Thunder is computed from the lightning channel itself. When a flash first appears, the host
+builds its channel as geometry (see [Weather: lightning](../rendering/clouds/weather.md#lightning)) and, for a
+flash whose origin is within 35 km (red sprites excluded), `queueThunder()` turns that geometry into the roll's
+envelope. The sound of each segment of the main channel and its branches reaches the listener at its distance
+/ 343 m/s, weighted by the segment's length and brightness, by 1/r, and by how far it lies across the line of
+sight (a tortuous channel radiates most perpendicular to itself); branches count half. The arrivals are binned
+at 50 ms from the first one and normalised to the loudest bin: that envelope is the roll. A channel running
+away from the listener rumbles long and low; one lying across the sky claps.
+
+The roll is queued to start at the flash's start + 50 ms (the stepped leader) + the first arrival, in sim
+time: paused, nothing arrives; under time warp it rolls in almost at once. Each frame `updateThunder()` hands
+every roll that has arrived to the `thunder` voice through `AmbientSynth::pushEvent()`, a lock-free queue of up
+to 8 events carrying the distance, energy (1 for a ground strike, 0.5 in cloud), pan (from the bearing relative
+to the camera) and the envelope. The synth plays brown noise under that envelope, with a ~10 Hz flicker (the
+arrivals within a bin are not smooth). The noise is low-passed by the distance the sound has come, and that
+distance grows through the roll (\(d + 0.343\,t\) km), so the later rumble, from further up the channel, is
+duller. A strike closer than about 3 km opens with a ripping crack whose crackle follows the envelope's first
+second. Up to 8 rolls sound at once. Reversing or jumping time drops the queue.
+
+If the queue is full, the voice falls back to its trigger parameters: a change of the `trigger` counter starts
+a generic roll from `distance_km`, `energy` and `pan` (a Poisson stream of peals thinning out over the roll).
 
 ## Samples
 
@@ -398,6 +413,7 @@ wrong layer from a wrong mix while flying around.
 |---|---|
 | `src/simulations/Ambience.h/.cpp` | `Ambience::load()`, `evalTarget()`, `update()`, `tickEvents()`, `stateJson()` |
 | `src/simulations/SatelliteSimAmbience.cpp` | `initAmbience()` (registers the drivers), `computeAmbienceContext()`, `updateAmbience()`, `updateThunder()` |
+| `src/simulations/SatelliteSimLightning.cpp` | `queueThunder()` (the roll's envelope from the channel) |
 | `src/AmbientSynth.h/.cpp` | `AmbientSynth::create()`, one class per kind |
 | `src/AudioSystem.h/.cpp` | `addAmbienceLoop()`, `addAmbienceSynth()`, `playAmbienceOneShot()`, `renderWav()` |
 | `tools/make_ambience.py` | the samples and `CREDITS.txt` |

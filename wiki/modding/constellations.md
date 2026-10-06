@@ -189,7 +189,8 @@ group) is logged and the type falls back to a single nadir-pointing group.
 
 ## Constellations
 
-Each entry is one shell: one type, at one altitude, in one pattern.
+Each entry is one constellation of one type. Most entries are one shell (one altitude, one pattern); a `Shells`
+entry carries a whole filed table of shells (below).
 
 ```json
 {
@@ -208,25 +209,32 @@ Each entry is one shell: one type, at one altitude, in one pattern.
 |---|---|---|---|
 | `name` | string | required | Shown in the Constellations tab; also the key under which its on/off state is saved |
 | `type` | string | required | A `satellite_types` name, exactly. An unknown name skips the shell |
-| `alt_km` | number > 0 | required | Altitude above the Earth's mean radius (6371 km) |
-| `num_planes` | integer ≥ 1 | required | Walker: number of planes. Other distributions: only a factor of the total |
-| `per_plane` | integer ≥ 1 | required | Satellites per plane. **Total = `num_planes` × `per_plane`** for every distribution |
+| `alt_km` | number > 0 | required (not for Shells) | Altitude above the Earth's mean radius (6371 km) |
+| `num_planes` | integer ≥ 1 | required (not for Shells) | Walker: number of planes. Other distributions: only a factor of the total |
+| `per_plane` | integer ≥ 1 | required (not for Shells) | Satellites per plane. **Total = `num_planes` × `per_plane`** for Walker, RandomShell and Disk |
 | `incl_deg` | 0 to 180 | 0 | Inclination. Above 90 is retrograde. RandomShell: the maximum |
 | `enabled` | boolean | true | Whether the shell is shown (see the note on saved settings below) |
-| `distribution` | `Walker`, `RandomShell`, `Disk` | `Walker` | How the orbits are generated. Any other value is treated as `Walker` |
+| `distribution` | `Walker`, `RandomShell`, `Disk`, `Shells` | `Walker` | How the orbits are generated. Any other value is treated as `Walker` |
 | `alt_jitter_km` | number ≥ 0 | 0 | RandomShell and Disk: each satellite's altitude is offset by a uniform random amount within ±this |
 | `raan_deg` | number | 0 | Disk: the plane's right ascension of the ascending node |
 | `align_terminator` | boolean | false | Disk: put the plane on the day-night terminator, sun-synchronous (overrides `incl_deg` and `raan_deg`) |
 | `num_rings` | integer ≥ 1 | 1 | Disk: number of concentric rings |
 | `ring_spacing_km` | number ≥ 0 | 0 | Disk: altitude step between rings |
+| `groups` | list of shell groups | none | Shells: the shell table (see [Shells](#shells)). Required for Shells |
+| `cluster_size` | integer ≥ 1 | 1 | Walker, Disk and Shells: satellites per formation cluster. 1 = no clusters |
+| `cluster_shape` | `line` or `ring` | `line` | How a cluster's members are arranged (see [Formation clusters](#formation-clusters)) |
+| `cluster_spacing_km` | number > 0 | 1 | `line`: along-track distance between neighbouring members |
+| `cluster_radius_km` | number > 0 | 0.2 | `ring`: radius of the polygon |
+| `raan_spread_deg` | 0 to 90 | 0 | Shells, sun-synchronous groups only: each plane's node is offset from its terminator node by up to ±this |
+| `raan_spread` | `even` or `random` | `even` | How the offsets of `raan_spread_deg` are chosen |
 
 All orbits are circular.
 
-### The three distributions
+### The distributions {#the-three-distributions}
 
 **Walker.** `num_planes` planes at inclination `incl_deg`, their ascending nodes evenly spread over 360°, each
 with `per_plane` satellites. Each satellite's position along its orbit is random, so the planes are not phased
-against each other.
+against each other (with clusters, the clusters are evenly spaced from a random start instead).
 
 **RandomShell.** `num_planes` × `per_plane` satellites, each with a random node, a random inclination between 0
 and `incl_deg`, a random position along the orbit, and an altitude jittered by `alt_jitter_km`. Each also gets a
@@ -242,9 +250,73 @@ Within a ring the satellites are evenly spaced. With `align_terminator: true`:
 - the node is set so that the plane lies along the terminator at the start of the simulation, and it then
   precesses one turn per year, keeping that relation to the Sun.
 
+**Shells.** A table of shell groups, such as the Table 1 of a filing with the US Federal Communications
+Commission (FCC). Each group puts `shells` shells evenly over an altitude range, each with `planes_per_shell`
+planes of `per_plane` satellites; a group is either sun-synchronous or a Walker set. See [Shells](#shells).
+
 !!! warning "Tumbling types need RandomShell"
     Only RandomShell gives each satellite a tumble axis and rate. A type whose attitude is `tumble` (or the legacy
-    `Tumbling`) flown in a Walker or Disk shell does not spin: every copy holds the same fixed orientation.
+    `Tumbling`) flown in a Walker, Disk or Shells entry does not spin: every copy holds the same fixed orientation.
+
+### Shells
+
+A `Shells` entry has no `alt_km`, `num_planes`, `per_plane` or `incl_deg`; it has a `groups` list instead. Each
+group is one row of a shell table:
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `alt_min_km` | number > 0 | required | Altitude of the lowest shell |
+| `alt_max_km` | number > 0 | `alt_min_km` | Altitude of the highest shell |
+| `shells` | integer ≥ 1 | required | Number of shells, spread evenly from `alt_min_km` to `alt_max_km` (a single shell sits at the middle of the range) |
+| `planes_per_shell` | integer ≥ 1 | required | Orbital planes in each shell |
+| `per_plane` | integer ≥ 0 | required | Satellites in each plane |
+| `sun_synchronous` | boolean | false | Make every shell of the group sun-synchronous |
+| `incl_deg` | 0 to 180 | 0 | Inclination of every shell (shorthand for equal minimum and maximum) |
+| `incl_min_deg` / `incl_max_deg` | 0 to 180 | `incl_deg` | Inclination of the lowest / highest shell; the shells between run linearly from one to the other |
+
+A group holds `shells` × `planes_per_shell` × `per_plane` satellites. Without clusters, the satellites of a plane
+are evenly spaced around it from a random starting phase.
+
+**Walker groups** (`sun_synchronous` false) spread their planes' nodes evenly over 360°, and stagger each shell
+by a fraction 1/`shells` of the gap between planes, so the planes of neighbouring shells do not coincide.
+
+**Sun-synchronous groups** ignore the inclination fields: each shell takes the sun-synchronous inclination for
+its own altitude, and its node precesses once a year with the Sun, as a terminator-aligned Disk does. The planes
+start at the **dusk node**, the node at 18:00 local time (LTAN 18:00), and are spread evenly in right ascension
+from there. Two planes per shell therefore give the 18:00 and 06:00 planes: two near-polar rings along the
+terminator that cross at the equator, an "X-ring" seen from the Sun.
+
+**Node spread.** `raan_spread_deg` shifts each sun-synchronous plane's node by up to ± that many degrees from its
+terminator node (15° is one hour of local time). With `raan_spread` set to `even`, the shifts follow a
+golden-ratio sequence over the entry's planes, which covers the range evenly; `random` draws them uniformly,
+which clumps. Without a spread, every shell of a group shares the same two planes, and shells only a couple of
+kilometres apart, flying clusters a few kilometres across, pass through each other; see
+[Orbits](../simulation/orbits.md#node-spread). Walker groups ignore the spread.
+
+The derived values the rest of the program needs are filled in from the table: the total satellite count, and an
+`alt_km` equal to the satellite-weighted mean altitude (where the 3D model view places the satellite). An entry
+whose groups hold no satellites is skipped, with a line in `satlight_log.txt`.
+
+!!! tip "Keep one filed table in one entry"
+    The enable and highlight switches reach the GPU as two 32-bit masks, one bit per entry. An entry at position
+    33 or later in the file has no bit of its own and cannot be switched on and off or highlighted reliably. A
+    filing with dozens of shells therefore goes in one `Shells` entry rather than one entry per shell; the shipped
+    roster has 29 entries.
+
+### Formation clusters
+
+With `cluster_size` above 1, the satellites of each plane (or each Disk ring) fly in clusters of that many
+members, the clusters evenly spaced around the orbit. If the plane's count is not a multiple of `cluster_size`,
+the last cluster is short.
+
+- **`line`**: the members in a row along the track, `cluster_spacing_km` apart, centred on the cluster's
+  position.
+- **`ring`**: a regular polygon of `cluster_radius_km` radius in the orbit plane, spanned by the along-track and
+  radial directions. Member *m* of *C* sits at angle 360° × *m* / *C* from the along-track direction toward the
+  zenith, so the ring is as tall as it is long. Each member orbits at its own radius but at the cluster centre's
+  angular rate, so the ring holds its shape: a station-kept formation, not a free one.
+
+The clusters of a Walker or Shells plane start from a random phase; those of a Disk ring start at phase 0.
 
 ### Saved on/off state
 
@@ -290,6 +362,35 @@ The shipped Reflect Orbital shell: 5000 mirrors in three rings 10 km apart aroun
 }
 ```
 
+### A filed shell table in formation
+
+A sun-synchronous X-ring and a set of Walker shells, flown in rings of eight satellites, 2 km in radius. The two
+groups are the first group of each of the two shipped Starmind entries, combined here into one entry:
+
+```json
+{
+  "name": "My orbital data centres",
+  "type": "SpaceX Starmind AI1",
+  "distribution": "Shells",
+  "cluster_size": 8,
+  "cluster_shape": "ring",
+  "cluster_radius_km": 2.0,
+  "raan_spread_deg": 10.0,
+  "groups": [
+    { "alt_min_km": 565.0, "alt_max_km": 585.0, "sun_synchronous": true,
+      "shells": 10, "planes_per_shell": 2, "per_plane": 4168 },
+    { "alt_min_km": 550.0, "alt_max_km": 568.0, "incl_min_deg": 26.0, "incl_max_deg": 32.0,
+      "shells": 10, "planes_per_shell": 30, "per_plane": 272 }
+  ]
+}
+```
+
+The first group is ten sun-synchronous shells 2.2 km apart, each with an 18:00 and a 06:00 plane of 4168
+satellites (521 rings), the planes' nodes spread over ±10°. The second is ten Walker shells of 30 planes, the
+inclination rising from 26° in the lowest shell to 32° in the highest; `raan_spread_deg` does not touch them.
+Together: 83 360 + 81 600 = 164 960 satellites. Keep `per_plane` a multiple of `cluster_size` so that no cluster
+is short.
+
 ### A debris cloud
 
 ```json
@@ -329,16 +430,19 @@ model type with parts and materials, start from a shipped model; see [Satellite 
 
 ## The shipped roster
 
-`data/constellations.json` carries 24 types (23 geometry models and one legacy comparison type) flown by 28 shells,
-about 1.38 million satellites. All shells are enabled except the legacy comparison shell. The largest is the
-orbital data-centre disk: one million satellites in 2000 rings 0.7 km apart around 1250 km.
+`data/constellations.json` carries 24 types (23 geometry models and one legacy comparison type) flown by 29
+entries, about 1.37 million satellites. All entries are enabled except the legacy comparison shell. The largest
+are SpaceX's Starmind orbital data centres: two `Shells` entries transcribed from SpaceX's filing with the FCC,
+988 672 satellites in rings of eight (the sun-synchronous X-ring 499 072, the 30° shells 489 600); see
+[Orbits](../simulation/orbits.md#the-starmind-roster) for how the table was derived.
 
 ## Limits
 
 | Limit | Value | Notes |
 |---|---|---|
 | Satellites in all shells | 10 000 000 | Beyond this the roster is cut. GPU memory is about 100 bytes per satellite actually loaded |
-| Shells with a button in the Constellations tab | 256 | Every shell loads and renders; only the first 256 can be toggled |
+| Entries with a button in the Constellations tab | 256 | Every entry loads and renders; only the first 256 have a button |
+| Entries that can be switched and highlighted | 32 | The enable and highlight masks are 32 bits; put a large filed table in one `Shells` entry |
 | Attitude groups | 4 per type | Parents before children in model files |
 | Lobes per model type | 48, or 256 for types flown by at most 10 000 satellites | |
 
@@ -351,14 +455,17 @@ orbital data-centre disk: one million satellites in 2000 rings 0.7 km apart arou
 | A change to `enabled` has no effect | The saved setting for that shell name wins; toggle it in the tab |
 | A model type is faint, featureless or has no 3D view | Its model failed to load and it fell back to legacy fields; read `satlight_log.txt` |
 | Editing `cross_section_m2` or `primary` changes nothing | Correct for a model type: those fields are ignored. Edit the model file |
-| A tumbling type does not tumble | It is in a Walker or Disk shell; use RandomShell |
+| A tumbling type does not tumble | It is in a Walker, Disk or Shells entry; use RandomShell |
+| A `Shells` entry is missing, with a log line | Its groups hold no satellites (`per_plane` 0 or missing) |
+| A shell's ON/OFF switch does nothing, or switches another one | The entry is 33rd or later in the file; merge shells into a `Shells` entry |
+| Clusters in neighbouring shells pass through each other | Sun-synchronous shells share their planes; set `raan_spread_deg` |
 | A mirror never casts beams | The model has no face along its site-aimed axis, or `reflector_targets.json` has no reachable site |
 | An edit has no effect at all | The copy trap: see [Modding](index.md#how-changes-are-picked-up) |
 
 ## Where in the code
 
 - `src/simulations/SatelliteSim.cpp`: `loadDefinitions()` (this file), `parseSurfaceSpec()`,
-  `legacyAttitudeGroup()` and `resolveAttitude()` (legacy conversion), `buildOrbits()` (the distributions),
+  `legacyAttitudeGroup()` and `resolveAttitude()` (legacy conversion), `buildOrbits()` (the distributions and the formation clusters),
   `computeSSOInclination()`, `writeResolvedSatTypes()`, `loadHardcoded()` (the built-in roster).
 - `src/simulations/SatModel.cpp`: `parseAttitudeGroupJson()`, `validateAttitudeGroups()`.
 - `data/constellations.schema.json`: the schema.
