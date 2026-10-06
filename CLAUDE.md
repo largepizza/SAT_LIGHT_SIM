@@ -2459,7 +2459,12 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   - **Render-only parts and open lattices (2026-09-24).** A component with `"render_only": true` is
     drawn and nothing else: no facets, lobes, occluder or `sources` entry — greebles cost only render
     triangles. `loadSatModel` moves them after every photometric component, so occluder i is still
-    component i. A material's `"coverage"` (0..1, the `truss` preset: 0.3, pitch `"truss_pitch"`)
+    component i. **Their light seeds no bloom and no glare (2026-10-06):** the component buffer's w carries
+    +100 for a render-only part (`instCompRenderOnly`, sat_mesh_common.glsl) and `sat_mesh.frag` writes it
+    a photometric share of 0. The bloom/glare seed is normalised by the MODEL's intensity, which has no
+    greebles in it, so a sunlit aluminium fitting on a Starmind satellite (model intensity toward the
+    camera ~0, its arrays seen from behind) seeded white bloom discs ~250 px wide (user snapshot,
+    profile_log 2026-10-06 index 2). A material's `"coverage"` (0..1, the `truss` preset: 0.3, pitch `"truss_pitch"`)
     makes an open lattice: facets count coverage × area, a closed primitive adds its inner faces at
     coverage·(1 − coverage), and the part never shadows (`satComponentOccludes`; its occluder is
     kept with `SatOccluder::blocks = false`, kind 0xFF in the renderer). `sat_mesh.frag` cuts the

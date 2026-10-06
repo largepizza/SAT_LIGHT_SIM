@@ -96,11 +96,22 @@ mat3 instGroupRot(MeshInstance inst, uint g)
 
 // A component turned about its own pivot by its group's joint: its posed position gains
 // (R_parent − R_group)·pivot (satPivotOffset, SatModel.cpp).
+// components[].w = the parent group (-1 = root), + 100 for a RENDER-ONLY part (SatMeshRenderer::setTypeModels).
 vec3 instPivotOffset(MeshInstance inst, uint g, uint comp)
 {
     vec4 c = components[inst.firstComponent + comp];
-    if (c.w < 0.0 || c.xyz == vec3(0.0)) return vec3(0.0);
-    return (instGroupRot(inst, uint(c.w)) - instGroupRot(inst, g)) * c.xyz;
+    float parent = c.w >= 50.0 ? c.w - 100.0 : c.w;
+    if (parent < 0.0 || c.xyz == vec3(0.0)) return vec3(0.0);
+    return (instGroupRot(inst, uint(parent)) - instGroupRot(inst, g)) * c.xyz;
+}
+
+// A render-only part (greebles: trusses, gimbals, fittings, terminals) is drawn but absent from the
+// photometric model, so none of its light may seed the bloom or the glare, which are normalised by that
+// model's intensity (2026-10-06: a sunlit aluminium fitting on a Starmind satellite seeded bloom discs
+// hundreds of pixels wide — its light had no share of the model's flux to be scaled against).
+bool instCompRenderOnly(MeshInstance inst, uint comp)
+{
+    return components[inst.firstComponent + comp].w >= 50.0;
 }
 
 #endif // SATLIGHTSIM_SAT_MESH_COMMON_GLSL

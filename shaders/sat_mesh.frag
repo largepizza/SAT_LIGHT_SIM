@@ -480,7 +480,9 @@ void main()
         // a = instance slot + 1, plus (fraction) the share of this pixel's light that is photometric
         // (Lphot) — mesh_bloom.frag seeds only that share.
         const vec3 kLum = vec3(0.2126, 0.7152, 0.0722);
-        float photFrac = clamp(dot(Lphot, kLum) / max(dot(L, kLum), 1e-12), 0.0, 0.999);
+        // A render-only part has no share (instCompRenderOnly): its light is not in the model.
+        float photFrac = instCompRenderOnly(inst, vComponent)
+                       ? 0.0 : clamp(dot(Lphot, kLum) / max(dot(L, kLum), 1e-12), 0.0, 0.999);
         outColor = vec4(L * inst.origin.w, float(vInstance + 1u) + photFrac);
         outDist  = length(vWorld - frame.camPos.xyz);
         return;
