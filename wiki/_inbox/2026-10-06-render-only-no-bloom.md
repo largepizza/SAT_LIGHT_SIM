@@ -1,5 +1,5 @@
 ---
-pages: [modding/satellite-models.md, rendering/points-and-meshes.md]
+pages: [modding/satellite-models.md, rendering/points-bloom-glare.md, rendering/satellite-meshes.md]
 code: [shaders/sat_mesh.frag, shaders/include/sat_mesh_common.glsl, src/simulations/SatMeshRenderer.cpp]
 ---
 ## Now
