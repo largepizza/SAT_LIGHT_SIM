@@ -6,8 +6,13 @@ code: [shaders/cloud_v2_lightning.comp, src/simulations/SatelliteSimLightning.cp
 Whole storms produce lightning. The GPU schedules flashes from two sources:
 
 - the Cb towers ("Lightning (flashes/min/tower)");
-- a lattice of ~20 km storm cells over every deep-convective, raining region of the weather map ("Storm lightning
-  (flashes/min/cell)", `clouds_v2.lightning_storm_rate`, default 2).
+- every deep-convective, raining region of the weather map ("Lightning rate: storms (/min per 20 km)",
+  `clouds_v2.lightning_storm_rate_per_area`, default 0.5 flashes a minute per 400 km^2 at full strength). The
+  candidates come from a fixed lattice of ~156 km regions on the cube faces, the same at any altitude, and are kept
+  in proportion to the storm's activity at their point.
+
+Each flash sits in the cloud actually drawn: its column is probed for the cloud's base and top, and where there is
+no cloud at least 1.5 km deep there is no flash.
 
 Flashes come in four kinds: cloud-to-ground (about 30% where the storm is strong), in-cloud, spider lightning just
 under the cloud base, and red sprites. The schedule is deterministic in sim time: a 50 ms stepped leader, then 1–4
@@ -42,5 +47,9 @@ This replaced `cloud_march.comp`'s `lightningCS`, which had three problems:
 - The glow and bolt saturated.
 
 Thunder used to be a synth roll with random peals.
+
+The first cut of the storm lattice used ~20-km cells that grew with the eye's altitude above 333 km (descending with
+time paused reshuffled every flash), placed flashes at the Cb type's heights (bolts above the capped cumulus away
+from the towers), and defaulted to 2 flashes a minute per cell (far too frequent).
 
 A harness command, `lightning spawn`, places flashes by hand for review.

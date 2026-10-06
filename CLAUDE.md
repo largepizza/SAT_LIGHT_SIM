@@ -794,10 +794,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - **Lightning + thunder (rebuilt 2026-10-05; `cloud_v2_lightning.comp`, `SatelliteSimLightning.cpp`,
   `lightning.vert/.frag`, `include/lightning_draw.glsl`):** WHICH flashes happen is the GPU's: one workgroup walks two
   lattices around the observer out to the cloud tops' horizon — the Cb TOWERS (dominant, anvil-reaching: "Lightning
-  (flashes/min/tower)" `lightning_rate`) and a STORM-CELL lattice over every deep-convective, raining region of the
-  weather cube ("Storm lightning (flashes/min/cell)" `lightning_storm_rate` 2, slot 267, `cv2.lightning2.x`; cells
-  20 km, 6% of the eye's altitude from orbit, rate scaled by area; up to 3 flashes per cell per 2-s slot) — so whole
-  storms flash, not only their towers. Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
+  (flashes/min/tower)" `lightning_rate`) and STORM REGIONS over every deep-convective, raining region of the weather
+  cube ("Lightning rate: storms (/min per 20 km)" `lightning_storm_rate_per_area` 0.5, slot 267, `cv2.lightning2.x`) —
+  so whole storms flash, not only their towers. The regions are a FIXED 64 x 64 equal-angle lattice on all six cube
+  faces (~156 km, the same at any eye altitude: the first cut's cells grew with altitude, so descending with time
+  paused reshuffled every flash); each draws candidates at the full rate at random points and keeps each with the
+  storm's activity there (thinning: only live candidates read the weather). **Every live flash probes its column**
+  (16 `cv2Field` samples, ground to tropopause + 1.5 km, cloud without rain or the thin high layer > 4e-4/m) and takes
+  the DRAWN cloud's base and top; none, or under 1.5 km deep, and it does not flash — the Cb type's heights put
+  flashes in clear air above the capped cumulus away from towers (user snap 1). Measured: snap 1 (9.9 km) 27 flashes
+  a minute out to ~360 km; snap 2 (609 km) ~10/s over the visible disc. Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
   1-4 return strokes ~35 ms over a continuing current; in-cloud flashes 2-6 softer pulses). Record (`CV2Flash`, 64 B,
   `kCv2FlashMax` 128): origin, ground point, KIND (0 in cloud, 1 cloud-to-ground ~30% where strong, 2 red sprite, 3
   spider lightning just under the base), seed, age, the cloud's base/top, strength, duration. Ground strokes leave the

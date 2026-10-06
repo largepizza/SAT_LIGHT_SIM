@@ -4996,10 +4996,10 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
     };
 
     CloudSlider secLightning[] = {
-        {"Lightning (flashes/min/tower)", &cv2LightningRate, 0.0f, 30.0f, 0.5f, "%.1f", 179},
+        {"Lightning rate: storms (/min per 20 km)", &cv2LightningStormRate, 0.0f, 10.0f, 0.05f, "%.2f", 267},
+        {"Lightning rate: Cb towers (/min each)", &cv2LightningRate, 0.0f, 30.0f, 0.1f, "%.1f", 179},
         {"Lightning glow", &cv2LightningGlow, 0.0f, 5.0f, 0.05f, "%.2f", 180},
         {"Lightning bolts", &cv2LightningBolt, 0.0f, 5.0f, 0.05f, "%.2f", 181},
-        {"Storm lightning (flashes/min/cell)", &cv2LightningStormRate, 0.0f, 30.0f, 0.25f, "%.2f", 267},
         {"Lightning tendrils", &cv2LightningTendrils, 0.0f, 4.0f, 0.05f, "%.2f", 268},
         {"Lightning sprites (chance)", &cv2LightningSprites, 0.0f, 1.0f, 0.02f, "%.2f", 191},
     };
@@ -7403,7 +7403,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2RainParticlesK = c.value("rain_particles_k", cv2RainParticlesK);
         cv2RainShutterMs = c.value("rain_shutter_ms", cv2RainShutterMs);
         cv2RainFallSpeed = c.value("rain_fall_speed", cv2RainFallSpeed);
-        cv2LightningStormRate = c.value("lightning_storm_rate", cv2LightningStormRate);
+        cv2LightningStormRate = c.value("lightning_storm_rate_per_area", cv2LightningStormRate);
         cv2LightningTendrils = c.value("lightning_tendrils", cv2LightningTendrils);
         cv2RainWindGain = c.value("rain_wind_gain", cv2RainWindGain);
         cv2RainStormWind = c.value("rain_storm_wind_mps", cv2RainStormWind);
@@ -7939,7 +7939,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"rain_particles_k", cv2RainParticlesK},
         {"rain_shutter_ms", cv2RainShutterMs},
         {"rain_fall_speed", cv2RainFallSpeed},
-        {"lightning_storm_rate", cv2LightningStormRate},
+        {"lightning_storm_rate_per_area", cv2LightningStormRate},
         {"lightning_tendrils", cv2LightningTendrils},
         {"rain_wind_gain", cv2RainWindGain},
         {"rain_storm_wind_mps", cv2RainStormWind},

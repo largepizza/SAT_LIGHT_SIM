@@ -3089,7 +3089,7 @@ private:
     float cv2DropDistM = 32.0f;        // the rain particles' reach (m; each doubling is one more level, at most 64)
     float cv2RainParticlesK = 16.0f;   // drops in the nearest box, thousands (each farther level holds twice as many)
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
-    float cv2LightningStormRate = 2.0f;   // flashes / min of a ~20 km storm cell at full strength (whole storms flash)
+    float cv2LightningStormRate = 0.5f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
     float cv2LightningTendrils = 1.0f;    // the channels' branching (x the branch and tendril counts)
     float cv2RainFallSpeed = 1.3f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
     float cv2RainWindGain = 1.5f;      // x the ground wind on the drops (0.4 x the wind aloft)

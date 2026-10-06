@@ -132,7 +132,8 @@ void main()
         vec3  enuZ = normalize(pc.obsECEFDir.xyz);
         vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
         vec3  enuY = cross(enuZ, enuX);
-        mat3  ecefToEnu = transpose(mat3(enuX, enuY, enuZ));
+        mat3  enuToEcef = mat3(enuX, enuY, enuZ);
+        mat3  ecefToEnu = transpose(enuToEcef);
         float eyeH = terrainFrame.x + 2.0;
         vec3  eye  = vec3(0.0, 0.0, R_EARTH + eyeH);
         float reachH = sqrt(2.0 * R_EARTH * max(eyeH, 0.0)) + sqrt(2.0 * R_EARTH * 12000.0);
@@ -157,81 +158,130 @@ void main()
         int   KT     = int(clamp(ceil(reachH / cellT), 2.0, 40.0));
         int   sideT  = 2 * KT + 1;
         bool  towersOn = cv2.lightning.x > 0.0 && cv2.column.z > 0.0;
-        // Lattice 1: storm cells.
-        float cellS  = max(20000.0, 0.06 * eyeH), cellSA = cellS / R_EARTH;
-        int   KS     = int(clamp(ceil(reachH / cellS), 2.0, 70.0));
-        int   sideS  = 2 * KS + 1;
-        bool  cellsOn = cv2.lightning2.x > 0.0;
+        // Lattice 1: storm REGIONS, a FIXED equal-angle lattice on all six cube faces of the drifted sphere (64 x 64
+        // per face, ~156 km), the same whatever the eye's altitude: only how far out it reaches changes. Each region
+        // draws candidate flashes at the most active rate (nM tries of probability lambda / nM) at random points
+        // inside it, and keeps each with the storm's activity at its point (thinning): the rate per area follows the
+        // weather, and only the few candidates live this frame read it. (The first cut's 20-km cells grew with the
+        // eye's altitude above 333 km, so descending with time paused reshuffled every flash: user snap 2.)
+        const int   kNR = 64;
+        const float cR  = 1.5707963 / float(kNR);
+        bool  cellsOn  = cv2.lightning2.x > 0.0;
+        float cosReach = cos(min(reachH / R_EARTH + cR, PI));
         int   nT = towersOn ? sideT * sideT : 0;
-        int   nS = cellsOn ? sideS * sideS : 0;
+        int   nR = cellsOn ? 6 * kNR * kNR : 0;
 
-        for (int idx = int(li); idx < nT + nS; idx += 256) {
+        for (int idx = int(li); idx < nT + nR; idx += 256) {
             bool  tower = idx < nT;
-            int   j     = tower ? idx : idx - nT;
-            int   K     = tower ? KT : KS;
-            int   side  = tower ? sideT : sideS;
-            float cA    = tower ? cellTA : cellSA;
-            ivec2 ci = ivec2(floor(aO / cA)) + ivec2(j % side - K, j / side - K);
-            uvec3 hv = cv2Pcg3(uvec3(uvec2(ci + 8192), faceId + (tower ? 0u : 101u)));
-            if (tower && cv2CbRole(ci, faceId) < 1.0) continue;          // only the dominant tower reaches the anvil
-            vec2  ca = (vec2(ci) + 0.15 + 0.7 * vec2(hv.xy & 0xFFFFu) / 65535.0) * cA;
-            float edgeM = (0.7853982 - max(abs(ca.x), abs(ca.y))) * R_EARTH;
-            if (tower && edgeM < limE) continue;
-            if (!tower && edgeM < 0.5 * cellS) continue;
-            vec3  cDir = normalize(ax + tan(ca.x) * e1 + tan(ca.y) * e2);
-            if (acos(clamp(dot(cDir, wdO), -1.0, 1.0)) * R_EARTH > reachH) continue;
-            vec3  wdF  = cv2FlowWeatherDir(cDir, cv2FlowDisp(cDir, cDir));
-            vec4  wk   = cv2WeatherBilinear(wdF, tower ? 3.0 : 2.0);
-            float ck   = clamp((wk.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
-            float str, act, pSlot;
+            vec3  up, rAx = vec3(0.0), rE1 = vec3(0.0), rE2 = vec3(0.0);
+            vec2  rA0 = vec2(0.0);
+            float str = 0.0, act = 0.0, spread = 0.0, pSlot;
+            uint  cellH;
+            int   nM;
             if (tower) {
+                ivec2 ci = ivec2(floor(aO / cellTA)) + ivec2(idx % sideT - KT, idx / sideT - KT);
+                uvec3 hv = cv2Pcg3(uvec3(uvec2(ci + 8192), faceId));
+                if (cv2CbRole(ci, faceId) < 1.0) continue;          // only the dominant tower reaches the anvil
+                vec2  ca = (vec2(ci) + 0.15 + 0.7 * vec2(hv.xy & 0xFFFFu) / 65535.0) * cellTA;
+                float edgeM = (0.7853982 - max(abs(ca.x), abs(ca.y))) * R_EARTH;
+                if (edgeM < limE) continue;
+                up = normalize(ax + tan(ca.x) * e1 + tan(ca.y) * e2);
+                if (acos(clamp(dot(up, wdO), -1.0, 1.0)) * R_EARTH > reachH) continue;
+                vec4  wk   = cv2WeatherBilinear(cv2FlowWeatherDir(up, cv2FlowDisp(up, up)), 3.0);
+                float ck   = clamp((wk.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
                 float strW = smoothstep(0.6, 0.8, wk.g) * smoothstep(0.15, 0.45, ck);
                 float hP   = float(hv.z & 0xFFFFu) / 65535.0;
-                str  = strW * smoothstep(0.0, 0.25, strW - cv2.anvil2.z * hP) * smoothstep(limE, 1.3 * limE, edgeM);
-                act  = smoothstep(0.35, 0.75, str);
-                pSlot = cv2.lightning.x / 60.0 * kCv2FlashSlot * act;
+                str   = strW * smoothstep(0.0, 0.25, strW - cv2.anvil2.z * hP) * smoothstep(limE, 1.3 * limE, edgeM);
+                act   = smoothstep(0.35, 0.75, str);
+                if (act <= 0.0) continue;
+                pSlot  = cv2.lightning.x / 60.0 * kCv2FlashSlot * act;
+                nM     = 3;                                          // a busy tower can flash up to 3 times a slot
+                spread = Rb * mix(0.7, 1.3, float(hv.x >> 16u) / 65535.0);
+                cellH  = hv.x ^ (hv.y * 0x9E3779B9u) ^ (hv.z * 0x85EBCA6Bu);
             } else {
-                // A deep-convective, raining region: the storm's own cells (the type at ~20 km, its cover, the rain).
-                str  = smoothstep(0.55, 0.8, wk.g) * smoothstep(0.1, 0.4, ck) * (0.3 + 0.7 * smoothstep(0.1, 0.6, wk.b));
-                act  = smoothstep(0.05, 0.5, str);
-                pSlot = cv2.lightning2.x / 60.0 * kCv2FlashSlot * act * (cellS * cellS) / (20000.0 * 20000.0);
+                int   j  = idx - nT;
+                int   f  = j / (kNR * kNR);
+                int   r  = j - f * kNR * kNR;
+                ivec2 ri = ivec2(r % kNR, r / kNR);
+                int   a  = f >> 1;
+                float sg = ((f & 1) == 0) ? 1.0 : -1.0;
+                rAx = (a == 0) ? vec3(sg, 0.0, 0.0) : ((a == 1) ? vec3(0.0, sg, 0.0) : vec3(0.0, 0.0, sg));
+                rE1 = (a == 0) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+                rE2 = (a == 2) ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
+                rA0 = (vec2(ri) - 0.5 * float(kNR)) * cR;
+                vec2  tc = tan(rA0 + 0.5 * cR);
+                up = normalize(rAx + tc.x * rE1 + tc.y * rE2);
+                if (dot(up, wdO) < cosReach) continue;
+                // The region's area (the equal-angle map's Jacobian) in 20-km cells: the rate is per area.
+                float s2  = 1.0 + tc.x * tc.x + tc.y * tc.y;
+                float J   = (1.0 + tc.x * tc.x) * (1.0 + tc.y * tc.y) / (s2 * sqrt(s2));
+                float lam = cv2.lightning2.x / 60.0 * kCv2FlashSlot * J * (cR * R_EARTH) * (cR * R_EARTH) / (20000.0 * 20000.0);
+                nM    = int(clamp(ceil(2.0 * lam + 2.0), 3.0, 48.0));
+                pSlot = lam / float(nM);
+                uvec3 hv = cv2Pcg3(uvec3(uvec2(ri) + 8192u, uint(f) + 101u));
+                cellH = hv.x ^ (hv.y * 0x9E3779B9u) ^ (hv.z * 0x85EBCA6Bu);
             }
-            if (act <= 0.0) continue;
-            uint  cellH = hv.x ^ (hv.y * 0x9E3779B9u) ^ (hv.z * 0x85EBCA6Bu);
-            vec3  up = cDir;
-            vec3  t1 = normalize(cross(up, abs(up.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
-            vec3  t2 = cross(up, t1);
-            float gndC = cv2Ground(cv2UndriftL(cDir));
-            float base = cv2.types[4].alt.x + gndC * 0.9;
-            float top  = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(cDir) - 250.0;
-            float topC = base + (top - 300.0 - base) * smoothstep(0.02, 0.6, max(str, 0.3));
-            float spread = tower ? Rb * mix(0.7, 1.3, float(hv.x >> 16u) / 65535.0) : 0.45 * cellS;
-            // A busy cell can flash more than once in a slot (up to 3, each its own hash).
             for (int ds = 0; ds <= 1; ++ds) {
                 float sl = sNow - float(ds);
-                for (int m = 0; m < 3; ++m) {
+                for (int m = 0; m < nM; ++m) {
                     uvec3 fh = cv2Pcg3(uvec3(cellH + uint(m) * 0x632BE5ABu, uint(int(sl) + 1000000), 0x7F4A7C15u));
-                    if (float(fh.x & 0xFFFFu) / 65535.0 >= pSlot - float(m)) continue;
+                    float u  = float(fh.x & 0xFFFFu) / 65535.0;
+                    if (u >= (tower ? pSlot - float(m) : pSlot)) continue;
                     float start = (sl + float(fh.x >> 16u) / 65535.0) * kCv2FlashSlot;
                     float age   = tNow - start;
-                    uvec3 ph    = cv2Pcg3(fh ^ uvec3(0x51ED27u, 0xB5297A4Du, 0x68E31DA4u));
+                    if (age < 0.0 || age > 1.45 + kCv2LeaderS) continue;   // past any flash's duration + its 0.3-s tail
+                    vec3  fUp = up;
+                    float fStr = str, fAct = act;
+                    if (!tower) {
+                        // The candidate's point in the region, and the storm there: a deep-convective, raining
+                        // region of the weather map (the type at ~20 km, its cover, the rain).
+                        uvec3 qh = cv2Pcg3(fh ^ uvec3(0x2F6B1C3Du, 0x9A1E5B77u, 0x4C8E2D19u));
+                        vec2  tp = tan(rA0 + cR * vec2(qh.xy & 0xFFFFu) / 65535.0);
+                        fUp = normalize(rAx + tp.x * rE1 + tp.y * rE2);
+                        if (acos(clamp(dot(fUp, wdO), -1.0, 1.0)) * R_EARTH > reachH) continue;
+                        vec4  wk = cv2WeatherBilinear(cv2FlowWeatherDir(fUp, cv2FlowDisp(fUp, fUp)), 2.0);
+                        float ck = clamp((wk.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
+                        fStr = smoothstep(0.55, 0.8, wk.g) * smoothstep(0.1, 0.4, ck) * (0.3 + 0.7 * smoothstep(0.1, 0.6, wk.b));
+                        fAct = smoothstep(0.05, 0.5, fStr);
+                        if (float(qh.z & 0xFFFFu) / 65535.0 >= fAct) continue;
+                    }
+                    uvec3 ph = cv2Pcg3(fh ^ uvec3(0x51ED27u, 0xB5297A4Du, 0x68E31DA4u));
                     // The kind: cloud-to-ground ~30% where the storm is strong; the rest in the cloud, a share of them
                     // spreading out just under its base (spider lightning, anvil crawlers), the others hidden in it.
                     float kr   = float(ph.z & 0xFFFFu) / 65535.0;
-                    bool  cg   = kr < 0.3 * smoothstep(0.3, 0.6, str);
+                    bool  cg   = kr < 0.3 * smoothstep(0.3, 0.6, fStr);
                     bool  low  = !cg && kr > 0.6;
                     float dur  = cg ? 0.25 + 0.6 * float(fh.y & 0xFFFFu) / 65535.0
                                     : 0.35 + 0.8 * float(fh.y & 0xFFFFu) / 65535.0;
-                    if (age < 0.0 || age > dur + kCv2LeaderS + 0.3) continue;
-                    float I = cv2FlashIntensity(age, dur, fh, cg) * mix(0.6, 1.0, act);
+                    if (age > dur + kCv2LeaderS + 0.3) continue;
+                    float I = cv2FlashIntensity(age, dur, fh, cg) * mix(0.6, 1.0, fAct);
                     if (I < 0.01 && age > kCv2LeaderS) continue;
+                    vec3  t1 = normalize(cross(fUp, abs(fUp.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
+                    vec3  t2 = cross(fUp, t1);
                     vec2  jv = vec2(float(ph.x & 0xFFFFu), float(ph.x >> 16u)) / 65535.0 - 0.5;
                     vec2  jg = vec2(float(ph.y & 0xFFFFu), float((ph.y >> 16u) & 0xFFu) * 257.0) / 65535.0 - 0.5;
-                    vec3  oD = normalize(up + (t1 * jv.x + t2 * jv.y) * (spread / R_EARTH));
+                    vec3  oD = normalize(fUp + (t1 * jv.x + t2 * jv.y) * (spread / R_EARTH));
+                    vec3  oE = ecefToEnu * cv2UndriftL(oD);
+                    // The cloud that is DRAWN there (2026-10-05, user snap 1): the column's lowest and highest cloud
+                    // (not rain, not the thin high layer) in 16 samples from the ground to above the tropopause.
+                    // The type's base and top put storm-cell flashes kilometres above the cumulus drawn away from the
+                    // towers: bolts on top of the weather. No deep cloud there, no flash.
+                    float gnd  = cv2Ground(cv2UndriftL(oD));
+                    float hHi  = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(oD) + 1500.0;
+                    float base = -1.0, topC = -1.0;
+                    [[dont_unroll]] for (int k = 0; k < 16; ++k) {
+                        float h  = mix(gnd + 150.0, hHi, (float(k) + 0.5) / 16.0);
+                        CV2Field cf = cv2Field(cv2Pos(oE * (R_EARTH + h) - eye, eyeH, enuToEcef), -1.0, 400.0);
+                        if (cf.sigma * max(1.0 - cf.thin - cf.rain, 0.0) > 4e-4) {
+                            if (base < 0.0) base = h;
+                            topC = h;
+                        }
+                    }
+                    if (base < 0.0 || topC - base < 1500.0) continue;
                     float oAlt = cg ? base + (topC - base) * (0.25 + 0.2 * (jg.x + 0.5))
                                : low ? base - 150.0
                                      : base + (topC - base) * (0.3 + 0.45 * (jg.y + 0.5));
-                    vec3  aPos = (ecefToEnu * cv2UndriftL(oD)) * (R_EARTH + oAlt);
+                    vec3  aPos = oE * (R_EARTH + oAlt);
                     vec3  bPos = aPos;
                     if (cg) {
                         // The ground point: 1.5-9 km aside from the origin: a stroke leaves the cloud's flank and
@@ -247,7 +297,7 @@ void main()
                         cv2Flashes[slot].b = vec4(bPos, cg ? 1.0 : (low ? 3.0 : 0.0));
                         cv2Flashes[slot].c = vec4(uintBitsToFloat(cellH ^ (uint(int(sl) + 1000000) * 0x2545F491u) ^ (uint(m) * 0x9E3779B9u)),
                                                   uintBitsToFloat(ph.z ^ fh.z), age, length(aPos - eye));
-                        cv2Flashes[slot].d = vec4(base, topC, str, dur);
+                        cv2Flashes[slot].d = vec4(base, topC, fStr, dur);
                     }
                     // Now and then a strong ground stroke sets off a RED SPRITE ~75 km up a few ms later (kind 2; silent).
                     if (cg && cv2.misc2.x > 0.0) {
@@ -256,7 +306,7 @@ void main()
                         if (float(sh.x & 0xFFFFu) / 65535.0 < cv2.misc2.x && sAge >= 0.0 && sAge < 0.3) {
                             float Is  = smoothstep(0.0, 0.012, sAge) * exp(-sAge / 0.07);
                             vec2  sj  = vec2(float(sh.y & 0xFFFFu), float(sh.y >> 16u)) / 65535.0 - 0.5;
-                            vec3  sD  = normalize(up + (t1 * sj.x + t2 * sj.y) * (30000.0 / R_EARTH));
+                            vec3  sD  = normalize(fUp + (t1 * sj.x + t2 * sj.y) * (30000.0 / R_EARTH));
                             vec3  sP  = (ecefToEnu * cv2UndriftL(sD)) * (R_EARTH + 75000.0);
                             uint  s2  = atomicAdd(sFlashN, 1u);
                             if (s2 < kCv2FlashMax) {
