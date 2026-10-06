@@ -32,6 +32,7 @@ struct BenchRunConfig
     double sunAltMaxDeg = -6.0;
     std::string periodStartFallback = "2020-01-01"; // used when the benchmark's period has no start
     bool censor = true;            // apply the paper's "not seen" rule at visual sites
+    double flareTiltRad = 0.0;     // global flare-mitigation tilt (FlareMitigationTilt joints); 0 in every benchmark
     std::string label = "base";
 };
 
@@ -64,7 +65,7 @@ struct BenchSample
 bool benchEvalSample(const std::vector<AttitudeGroup> &groups, const std::vector<GpuSatLobe> &lobes,
                      const SatOcclusion *occ, const SatOrbitElems &orbit, double tJ2000, glm::dvec3 obsEci,
                      glm::dvec3 sunDirEci, double minElevationDeg, double extinctionK, BenchSample &out,
-                     const SatGroundSiteAim *aim = nullptr, uint32_t satIndex = 0);
+                     const SatGroundSiteAim *aim = nullptr, uint32_t satIndex = 0, double flareTiltRad = 0.0);
 
 // CSV format "sat-light-sim-samples/1": '#'-prefixed "key: value" header lines (the caller's
 // provenance, in order), the column header, one row per sample. Magnitude fields are empty when

@@ -1,0 +1,35 @@
+# Starmind (SpaceX orbital data centers): the filed shells of the 29 May 2026 FCC letter, Table 1.
+# s10: from 30,000 km over the dusk terminator, the sun-synchronous X-ring alone (two terminator
+#      rings, LTAN 18:00 and 06:00, crossing at the equator) — highlighted so the night side shows too.
+# s20: the 30 deg shells alone from the same spot (a band to +-30 deg latitude).
+# s30: both. s40: the evening sky from 35 N, 30 min after sunset, looking west.
+# s50: one cluster up close (10 satellites, 1 km apart along track).
+preset High
+const list
+time set 2037-03-20T00:00:00Z
+time pause
+observer lat=0 lon=-90 alt=30000000
+camera az=90 el=-90 fov=50
+const all off
+const "SpaceX Starmind - sun-synchronous X-ring" on highlight=on
+wait settle
+capture s10_xring scale=0.5
+const all off
+const "SpaceX Starmind - 30 deg shells" on highlight=on
+wait settle
+capture s20_30deg scale=0.5
+const "SpaceX Starmind - sun-synchronous X-ring" on highlight=on
+wait settle
+capture s30_both scale=0.5
+const all on
+observer lat=35 lon=-100 agl=2
+time sun -7 setting
+camera az=270 el=20 fov=90
+wait settle
+capture s40_evening scale=0.5
+state s40_evening
+select const "SpaceX Starmind - 30 deg shells"
+camera look sel
+camera fov=1.5
+wait settle
+capture s50_cluster scale=0.5

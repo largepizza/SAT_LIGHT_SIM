@@ -96,7 +96,11 @@
         },
         {
             "name": "Starlink Gen2 (legacy)",
-            "base_color": [0.8, 0.87, 1.0],
+            "base_color": [
+                0.8,
+                0.87,
+                1.0
+            ],
             "cross_section_m2": 10.0,
             "primary": {
                 "attitude": "KnifeEdge",
@@ -324,19 +328,76 @@
             "distribution": "Walker"
         },
         {
-            "name": "SpaceX AI Satellites",
+            "name": "SpaceX Starmind - sun-synchronous X-ring",
             "type": "SpaceX Starmind AI1",
-            "alt_km": 1250.0,
-            "incl_deg": 0.0,
-            "num_planes": 1000,
-            "per_plane": 1000,
             "enabled": true,
-            "distribution": "Disk",
-            "alt_jitter_km": 0.05,
-            "raan_deg": 0.0,
-            "align_terminator": true,
-            "num_rings": 2000,
-            "ring_spacing_km": 0.7
+            "distribution": "Shells",
+            "cluster_size": 8,
+            "cluster_shape": "ring",
+            "cluster_radius_km": 2.0,
+            "raan_spread_deg": 10.0,
+            "groups": [
+                {
+                    "alt_min_km": 565.0,
+                    "alt_max_km": 585.0,
+                    "sun_synchronous": true,
+                    "shells": 10,
+                    "planes_per_shell": 2,
+                    "per_plane": 4168
+                },
+                {
+                    "alt_min_km": 707.0,
+                    "alt_max_km": 744.0,
+                    "sun_synchronous": true,
+                    "shells": 22,
+                    "planes_per_shell": 2,
+                    "per_plane": 4640
+                },
+                {
+                    "alt_min_km": 967.0,
+                    "alt_max_km": 1002.0,
+                    "sun_synchronous": true,
+                    "shells": 22,
+                    "planes_per_shell": 2,
+                    "per_plane": 4808
+                }
+            ]
+        },
+        {
+            "name": "SpaceX Starmind - 30 deg shells",
+            "type": "SpaceX Starmind AI1",
+            "enabled": true,
+            "distribution": "Shells",
+            "cluster_size": 8,
+            "cluster_shape": "ring",
+            "cluster_radius_km": 2.0,
+            "groups": [
+                {
+                    "alt_min_km": 550.0,
+                    "alt_max_km": 568.0,
+                    "incl_min_deg": 26.0,
+                    "incl_max_deg": 32.0,
+                    "shells": 10,
+                    "planes_per_shell": 30,
+                    "per_plane": 272
+                },
+                {
+                    "alt_min_km": 686.0,
+                    "alt_max_km": 718.0,
+                    "incl_deg": 30.0,
+                    "shells": 25,
+                    "planes_per_shell": 30,
+                    "per_plane": 272
+                },
+                {
+                    "alt_min_km": 946.0,
+                    "alt_max_km": 978.0,
+                    "incl_deg": 30.0,
+                    "shells": 25,
+                    "planes_per_shell": 30,
+                    "per_plane": 272
+                }
+            ]
         },
         {
             "name": "Reflect Orbital",

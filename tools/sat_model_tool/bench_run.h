@@ -18,6 +18,7 @@ struct BenchRunOptions
     // calibration scans. Fields: diffuse_albedo, specular_f0, roughness, distribution (ggx|beckmann).
     // Without a model id it applies to every model that has the material. Echoed into the report.
     std::vector<std::string> overrides;
+    double flareTiltDeg = 0.0;     // --flare-tilt: the app's "Flare mitigation tilt" slider (benchmarks: 0)
 };
 
 // Returns true when every compared metric is within tolerance (informational metrics excluded).

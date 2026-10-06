@@ -1,6 +1,6 @@
 {
     "name": "SpaceX Starmind AI1 orbital data center satellite",
-    "note": "Parity model for the v1.1 'SpaceX AI Satellites' type (Starmind AI1, a million-satellite dawn-dusk disk). Body frame: +Z nadir, +X (the bus's long axis) as close to the Sun as it can be, +Y along the span. A flat 10 x 3 x 0.6 m bus (it stacks PEZ-style) with its 3 x 0.6 m end to the Sun; two white radiators, 10 m long, standing up from its zenith face and hanging from its nadir face (20 m top to bottom), edge-on to the Sun; two wings of three 3.2 m strips spanning 70 m, each on one truss to a pivot at its root, turning about the span axis to face the Sun. 10 lobes: a million satellites fly it. Trusses, gimbals, spars, fittings and terminals are render-only detail.",
+    "note": "Parity model for the v1.1 'SpaceX AI Satellites' type (Starmind AI1: up to a million satellites in sun-synchronous X-ring and 30 deg shells, FCC Table 1 of 29 May 2026). Body frame: +Z nadir, +X (the bus's long axis) as close to the Sun as it can be, +Y along the span. A flat 10 x 3 x 0.6 m bus (it stacks PEZ-style) with its 3 x 0.6 m end to the Sun; two white radiators, 10 m long, standing up from its zenith face and hanging from its nadir face (20 m top to bottom), edge-on to the Sun; two wings of three 3.2 m strips spanning 70 m, each on one truss to a pivot at its root, turning about the span axis to face the Sun. 10 lobes: a million satellites fly it. Trusses, gimbals, spars, fittings and terminals are render-only detail.",
     "materials": [
         {
             "name": "bus_metal",

@@ -165,6 +165,22 @@ enum class OrbitDistribution
     RandomShell, // randomly distributed: random RAAN, random incl in [0, incl], jittered alt
     Disk,        // ring or concentric disk in a fixed orbital plane (incl + raan)
                  // Set alignTerminator=true to auto-derive the plane from sunDirECI
+    Shells,      // a filed table of shell groups (ShellGroup), e.g. Starmind's FCC Table 1:
+                 // each group = shells over an altitude range x planes x satellites per plane
+};
+
+// One row of a "Shells" constellation: `shells` shells evenly spread over [altMin, altMax], each
+// with `planes` planes of `perPlane` satellites. Non-SSO groups are Walker shells (RAAN evenly
+// spread, each shell's planes staggered by 1/shells of a plane gap), the inclination running
+// linearly from inclMin to inclMax across the shells. SSO groups take each shell's J2
+// sun-synchronous inclination and put their planes about the dusk terminator node (LTAN 18:00):
+// two planes = the 18:00 + 06:00 "X-ring".
+struct ShellGroup
+{
+    float altMinM = 0.0f, altMaxM = 0.0f;
+    float inclMin = 0.0f, inclMax = 0.0f; // radians; ignored when sso
+    int shells = 1, planes = 1, perPlane = 1;
+    bool sso = false;
 };
 
 // Data-driven attitude types (AttTarget, AttLaw, JointMode, AttitudeGroup, GpuAttGroup) live in
@@ -234,6 +250,19 @@ struct ConstellationConfig
     bool alignTerminator = false; // Disk: derive incl+raan from sunDirECI at init time
     int numRings = 1;             // Disk: number of concentric rings (1 = single ring)
     float ringSpacingM = 0.0f;    // Disk: altitude step between consecutive rings (meters)
+    std::vector<ShellGroup> groups; // Shells: the filed groups (numPlanes = their total, perPlane = 1)
+    // Formation clusters (Walker, Disk, Shells): each plane's/ring's satellites fly in clusters of
+    // clusterSize, the clusters evenly spaced. 1 = no clusters. Line: clusterSpacingM apart along
+    // track. Ring: a regular polygon of radius clusterRadiusM in the orbit plane (along-track x radial).
+    int clusterSize = 1;
+    float clusterSpacingM = 1000.0f;
+    bool clusterRing = false;
+    float clusterRadiusM = 200.0f;
+    // Shells, sun-synchronous groups: each plane's node is offset from its terminator node (LTAN
+    // 18:00 / 06:00) by up to +-raanSpread (the filed RAAN tolerance; 15 deg = 1 h of LTAN). Even: a
+    // golden-ratio sequence over the entry's SSO planes (no clumps); random: uniform. 0 = tight nodes.
+    float raanSpreadRad = 0.0f;
+    bool raanSpreadRandom = false;
     bool highlight = false;       // highlight mode: every above-horizon sat at least the census dot
     // Populated by initConstellation():
     uint32_t orbitStart = 0; // first index into satOrbits[]
@@ -1764,9 +1793,13 @@ struct SatOrbit
     glm::vec3 tumbleAxis; // fixed body tumble axis (unit vector in ECI)
     bool alignTerminator; // if true, incl/raan are recomputed from sunDirECI each frame
     float targetTerminatorAngle = 0.0f;
+    // Formation ring member (cluster_shape "ring"): metres above (+) / below the cluster centre at
+    // altM. R_sat includes it, meanMot does NOT (it is the centre's), so the member keeps station on
+    // the ring instead of drifting off at its own Keplerian rate.
+    float radialOffsetM = 0.0f;
     // ── Precomputed frame-invariant constants (set once in buildOrbits) ────────
-    float R_sat = 0.0f;    // kEarthRadius + altM
-    float meanMot = 0.0f;  // sqrt(kGM / R_sat^3)
+    float R_sat = 0.0f;    // kEarthRadius + altM + radialOffsetM
+    float meanMot = 0.0f;  // sqrt(kGM / (kEarthRadius + altM)^3)
     float cosI = 0.0f;     // cos(incl)
     float sinI = 0.0f;     // sin(incl)
     float cosRaan = 0.0f;  // cos(raan) — valid when !alignTerminator

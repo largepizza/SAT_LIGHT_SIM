@@ -2693,6 +2693,31 @@ Types and constellations are loaded from `constellations.json` next to the exe. 
 - **Walker** — `numPlanes × perPlane` satellites, evenly spaced RAAN, random phase per plane
 - **RandomShell** — random RAAN, random incl in [0, c.incl], jittered altitude, random tumble axis
 - **Disk** — concentric rings in a single orbital plane (incl + raan). `alignTerminator=true` derives incl/raan from sunDirECI at J2000 epoch and precesses RAAN at SSO rate (kSSOPrecRate = 2π/year)
+- **Shells** (2026-10-06) — a filed shell table in ONE roster entry (`groups`: alt range, incl range or
+  `sun_synchronous`, shells, planes per shell, satellites per plane; `ShellGroup`). Non-SSO groups are Walker
+  shells (each shell's planes staggered); SSO groups take each shell's J2 inclination and spread their planes
+  from the dusk node (LTAN 18:00), so 2 planes per shell = the 18:00 + 06:00 **X-ring** crossing at the
+  equator. One entry rather than one per group because `enabledMask`/`highlightMask` (`SatOrbitPC`) are
+  32-bit: the roster is at 29 entries, and an entry index >= 32 has no mask bit.
+- **Clusters** (`cluster_size`; Walker, Disk, Shells): each plane's satellites fly in formation clusters,
+  evenly spaced. 1 = off (Walker keeps random phases). `cluster_shape` "line": `cluster_spacing_km` apart along
+  track; "ring": a regular polygon of radius `cluster_radius_km` in the ORBIT plane (along track x radial). A
+  ring member's radius is the centre's + `SatOrbit::radialOffsetM`, but its mean motion is the centre's: R_sat
+  and meanMot are separate fields on the GPU and in `satOrbitStateAt`, so the formation holds instead of
+  drifting ~3 pi x the offset per orbit (it is station-kept, not a free Keplerian formation).
+- **Starmind** (SpaceX orbital data centers) follows the 29 May 2026 letter to the FCC, Table 1
+  (SAT-LOA-20260108-00016; transcribed in github.com/sdross0/orbital-datacenter-brightness ASSUMPTIONS.md
+  rev. 2): SSO 565-585 km (10 shells), 707-744 (22), 967-1002 (22), 2 planes each; 30 deg at 550-568 km
+  (10 shells, 26-32 deg), 686-718 (25), 946-978 (25), 30 planes x 333. The rows are per-group MAXIMA summing to
+  1,198,120 against a 1,000,000 cap, so `per_plane` is scaled by 1e6 / 1,198,120 and rounded down to whole
+  clusters (988,672 flown). Rings of 8, 200 m radius, in the orbit plane (the user's reading of SpaceX's
+  visualization; SpaceX's text says "10-ish satellites" per cluster). Filed RAAN tolerance +-30 deg: modelled
+  per plane via `raan_spread_deg` (10 in the roster; `raan_spread` even = golden-ratio sequence | random). It
+  replaced a single 1M-satellite dawn-dusk Disk (575-1925 km, 2000 rings). **Why the spread matters:** with
+  tight nodes every shell of a node family shares ONE plane, and shells 1.6-1.8 km apart with 2-km rings
+  interpenetrate, sliding through each other at their different rates — 13,000 pairs of satellites from
+  different clusters within 1 km at any instant (scratch rebuild of the same orbits, KD-tree, 12 instants); +-10
+  even: 26; +-30 even: 12 (random +-30: 25, it clumps); the 30 deg shells (stagger only): 30.
 
 ### ConstellationConfig field order
 ```cpp

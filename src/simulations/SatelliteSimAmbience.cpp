@@ -495,6 +495,54 @@ void SatelliteSim::computeAmbienceContext(float dt)
         const double H = grp.hearingM;
         double count = 0.0, nearest = 1e9;
         bool followedInGroup = false;
+        // N satellites spread over the annulus [R0, R1] of the plane with normal nrm.
+        auto planeBand = [&](const glm::dvec3 &nrm, double R0, double R1, double N)
+        {
+            const double z = glm::dot(cam, nrm);
+            const double rho = glm::length(cam - nrm * z);
+            const double sigma = N / (glm::pi<double>() * std::max(R1 * R1 - R0 * R0, 1.0));
+            const double outside = std::max({0.0, R0 - rho, rho - R1});
+            const double a2 = H * H - z * z;
+            if (a2 > 0.0)
+            {
+                const double ar = std::sqrt(a2);
+                const double frac = std::clamp((std::min(rho + ar, R1) - std::max(rho - ar, R0)) / (2.0 * ar), 0.0, 1.0);
+                count += sigma * glm::pi<double>() * a2 * frac;
+            }
+            const double spacing = 0.5 / std::sqrt(sigma);
+            nearest = std::min(nearest, std::sqrt(z * z + (outside + spacing) * (outside + spacing)));
+        };
+        // N satellites on a shell of radius R (+- halfM) at inclination incl; Walker or random.
+        auto inclinedShell = [&](double R, double halfM, double incl, double N, bool random)
+        {
+            double iEff = incl;
+            if (iEff > glm::half_pi<double>())
+                iEff = glm::pi<double>() - iEff;
+            const double absLat = std::fabs(camLat);
+            const double reach = std::clamp((iEff + 0.05 - absLat) / 0.1, 0.0, 1.0);
+            double sigma = 0.0;
+            if (reach > 0.0)
+            {
+                if (random)
+                    sigma = N / (4.0 * glm::pi<double>() * R * R * std::max(std::sin(iEff), 0.05));
+                else
+                {
+                    const double si = std::sin(iEff), sp = std::sin(absLat);
+                    const double eps = std::max(2.0 * si * std::cos(iEff) * 0.035, 0.004);
+                    sigma = N / (2.0 * glm::pi<double>() * glm::pi<double>() * R * R * std::sqrt(std::max(si * si - sp * sp, eps)));
+                }
+                sigma *= reach * reach * (3.0 - 2.0 * reach);
+            }
+            const double dr = std::max(0.0, std::fabs(camR - R) - halfM);
+            if (sigma > 0.0)
+            {
+                const double a2 = H * H - dr * dr;
+                if (a2 > 0.0)
+                    count += sigma * glm::pi<double>() * a2;
+                const double spacing = 0.5 / std::sqrt(sigma);
+                nearest = std::min(nearest, std::sqrt(dr * dr + spacing * spacing));
+            }
+        };
         for (int ci : ambGroupConsts_[g])
         {
             const ConstellationConfig &c = constellations[ci];
@@ -518,52 +566,43 @@ void SatelliteSim::computeAmbienceContext(float dt)
                 const uint32_t first = c.orbitStart + std::min((uint32_t)k * perRing, c.orbitCount - 1);
                 const SatOrbitState st = satOrbitStateAt(orbitElemsOf(satOrbits[first]), t);
                 const glm::dvec3 nrm = glm::normalize(glm::cross(st.posEci, st.velocity));
-                const double z = glm::dot(cam, nrm);
-                const double rho = glm::length(cam - nrm * z);
                 const double half = 0.5 * (nr - 1) * spacingM + c.altJitterM;
-                const double R0 = Rc - half - 0.5 * spacingM, R1 = Rc + half + 0.5 * spacingM;
-                const double sigma = N / (glm::pi<double>() * (R1 * R1 - R0 * R0));
-                const double outside = std::max({0.0, R0 - rho, rho - R1});
-                const double a2 = H * H - z * z;
-                if (a2 > 0.0)
+                planeBand(nrm, Rc - half - 0.5 * spacingM, Rc + half + 0.5 * spacingM, N);
+            }
+            else if (c.distribution == OrbitDistribution::Shells)
+            {
+                // Per filed group, in initConstellation()'s order (shell, plane, satellite). An SSO
+                // group's planes are bands of their own (each node of the X-ring), oriented by the
+                // shell nearest the camera's radius; a Walker group is one inclined shell.
+                uint32_t gStart = c.orbitStart;
+                for (const ShellGroup &sg : c.groups)
                 {
-                    const double ar = std::sqrt(a2);
-                    const double frac = std::clamp((std::min(rho + ar, R1) - std::max(rho - ar, R0)) / (2.0 * ar), 0.0, 1.0);
-                    count += sigma * glm::pi<double>() * a2 * frac;
+                    const uint32_t perShell = (uint32_t)(sg.planes * sg.perPlane);
+                    const uint32_t gCount = (uint32_t)sg.shells * perShell;
+                    if (gCount == 0 || gStart + gCount > c.orbitStart + c.orbitCount)
+                        break;
+                    const double R0 = kReM + sg.altMinM, R1 = kReM + sg.altMaxM;
+                    const double gap = sg.shells > 1 ? (R1 - R0) / (sg.shells - 1) : 1000.0;
+                    if (sg.sso)
+                    {
+                        const int k = std::clamp((int)std::lround((camR - R0) / std::max(gap, 1.0)), 0, sg.shells - 1);
+                        for (int p = 0; p < sg.planes; ++p)
+                        {
+                            const uint32_t first = gStart + (uint32_t)k * perShell + (uint32_t)p * (uint32_t)sg.perPlane;
+                            const SatOrbitState st = satOrbitStateAt(orbitElemsOf(satOrbits[first]), t);
+                            const glm::dvec3 nrm = glm::normalize(glm::cross(st.posEci, st.velocity));
+                            planeBand(nrm, R0 - 0.5 * gap, R1 + 0.5 * gap, (double)sg.shells * sg.perPlane);
+                        }
+                    }
+                    else
+                        inclinedShell(0.5 * (R0 + R1), 0.5 * (R1 - R0), 0.5 * ((double)sg.inclMin + sg.inclMax), (double)gCount, false);
+                    gStart += gCount;
                 }
-                const double spacing = 0.5 / std::sqrt(sigma);
-                nearest = std::min(nearest, std::sqrt(z * z + (outside + spacing) * (outside + spacing)));
             }
             else
             {
-                const double R = kReM + c.altM;
-                double iEff = c.incl;
-                if (iEff > glm::half_pi<double>())
-                    iEff = glm::pi<double>() - iEff;
-                const double absLat = std::fabs(camLat);
-                const double reach = std::clamp((iEff + 0.05 - absLat) / 0.1, 0.0, 1.0);
-                double sigma = 0.0;
-                if (reach > 0.0)
-                {
-                    if (c.distribution == OrbitDistribution::RandomShell)
-                        sigma = N / (4.0 * glm::pi<double>() * R * R * std::max(std::sin(iEff), 0.05));
-                    else
-                    {
-                        const double si = std::sin(iEff), sp = std::sin(absLat);
-                        const double eps = std::max(2.0 * si * std::cos(iEff) * 0.035, 0.004);
-                        sigma = N / (2.0 * glm::pi<double>() * glm::pi<double>() * R * R * std::sqrt(std::max(si * si - sp * sp, eps)));
-                    }
-                    sigma *= reach * reach * (3.0 - 2.0 * reach);
-                }
-                const double dr = std::max(0.0, std::fabs(camR - R) - (double)c.altJitterM);
-                if (sigma > 0.0)
-                {
-                    const double a2 = H * H - dr * dr;
-                    if (a2 > 0.0)
-                        count += sigma * glm::pi<double>() * a2;
-                    const double spacing = 0.5 / std::sqrt(sigma);
-                    nearest = std::min(nearest, std::sqrt(dr * dr + spacing * spacing));
-                }
+                inclinedShell(kReM + c.altM, (double)c.altJitterM, c.incl, N,
+                              c.distribution == OrbitDistribution::RandomShell);
             }
         }
         if (followedInGroup)

@@ -73,7 +73,10 @@
       "description": "List of constellation shells. Each shell generates a set of orbits on startup.",
       "items": {
         "type": "object",
-        "required": ["name", "type", "alt_km", "num_planes", "per_plane"],
+        "required": ["name", "type"],
+        "if": { "properties": { "distribution": { "const": "Shells" } }, "required": ["distribution"] },
+        "then": { "required": ["groups"] },
+        "else": { "required": ["alt_km", "num_planes", "per_plane"] },
         "properties": {
           "name": {
             "type": "string",
@@ -112,8 +115,8 @@
           },
           "distribution": {
             "type": "string",
-            "description": "Orbit generation algorithm. Walker: regular grid. RandomShell: random RAAN + incl. Disk: concentric rings in a fixed plane.",
-            "enum": ["Walker", "RandomShell", "Disk"],
+            "description": "Orbit generation algorithm. Walker: regular grid. RandomShell: random RAAN + incl. Disk: concentric rings in a fixed plane. Shells: a table of shell groups (see groups); alt_km, num_planes and per_plane are derived from it.",
+            "enum": ["Walker", "RandomShell", "Disk", "Shells"],
             "default": "Walker"
           },
           "alt_jitter_km": {
@@ -143,6 +146,63 @@
             "description": "Disk only: altitude step between consecutive rings in kilometres. Total altitude range = (num_rings - 1) × ring_spacing_km, centred on alt_km.",
             "minimum": 0,
             "default": 0
+          },
+          "cluster_size": {
+            "type": "integer",
+            "description": "Walker, Disk and Shells: satellites per formation cluster. Each plane's (or ring's) satellites fly in clusters of this size, the clusters evenly spaced around the orbit. 1 = no clusters (Walker: random phases; Disk/Shells: evenly spaced).",
+            "minimum": 1,
+            "default": 1
+          },
+          "cluster_spacing_km": {
+            "type": "number",
+            "description": "cluster_shape line: along-track distance between neighbouring satellites of a cluster, in kilometres.",
+            "exclusiveMinimum": 0,
+            "default": 1
+          },
+          "cluster_shape": {
+            "type": "string",
+            "description": "line: the members in a row along track. ring: a regular polygon of cluster_size members, radius cluster_radius_km, in the orbit plane (along track x radial); each member keeps the cluster centre's orbital rate, so the ring holds its shape.",
+            "enum": ["line", "ring"],
+            "default": "line"
+          },
+          "raan_spread_deg": {
+            "type": "number",
+            "description": "Shells, sun-synchronous groups only: each plane's node is offset from its terminator node (LTAN 18:00 / 06:00) by up to +-this many degrees (15 deg = 1 h of local time). 0 = every plane exactly on the terminator.",
+            "minimum": 0,
+            "maximum": 90,
+            "default": 0
+          },
+          "raan_spread": {
+            "type": "string",
+            "description": "How raan_spread_deg is filled: even (a golden-ratio sequence over the planes: evenly covered, no clumps) or random (uniform).",
+            "enum": ["even", "random"],
+            "default": "even"
+          },
+          "cluster_radius_km": {
+            "type": "number",
+            "description": "cluster_shape ring: radius of the polygon, in kilometres.",
+            "exclusiveMinimum": 0,
+            "default": 0.2
+          },
+          "groups": {
+            "type": "array",
+            "description": "Shells only: the filed shell groups (e.g. an FCC Table 1). Each group = `shells` shells evenly spread over [alt_min_km, alt_max_km], each with `planes_per_shell` planes of `per_plane` satellites. A sun-synchronous group takes each shell's J2 sun-synchronous inclination and puts its planes about the dusk terminator node (LTAN 18:00), evenly spread in RAAN: 2 planes = the 18:00 + 06:00 'X-ring'. Other groups are Walker shells (RAAN evenly spread, staggered between shells), the inclination running from incl_min_deg to incl_max_deg across the shells.",
+            "items": {
+              "type": "object",
+              "required": ["alt_min_km", "shells", "planes_per_shell", "per_plane"],
+              "properties": {
+                "alt_min_km": { "type": "number", "exclusiveMinimum": 0 },
+                "alt_max_km": { "type": "number", "exclusiveMinimum": 0, "description": "Defaults to alt_min_km." },
+                "incl_deg": { "type": "number", "minimum": 0, "maximum": 180, "description": "Shorthand for incl_min_deg = incl_max_deg." },
+                "incl_min_deg": { "type": "number", "minimum": 0, "maximum": 180 },
+                "incl_max_deg": { "type": "number", "minimum": 0, "maximum": 180 },
+                "sun_synchronous": { "type": "boolean", "default": false },
+                "shells": { "type": "integer", "minimum": 1 },
+                "planes_per_shell": { "type": "integer", "minimum": 1 },
+                "per_plane": { "type": "integer", "minimum": 0 }
+              },
+              "additionalProperties": false
+            }
           }
         },
         "additionalProperties": false

@@ -44,7 +44,7 @@ glm::dvec3 siteEcef(const BenchSite &s)
 bool benchEvalSample(const std::vector<AttitudeGroup> &groups, const std::vector<GpuSatLobe> &lobes,
                      const SatOcclusion *occ, const SatOrbitElems &orbit, double t, glm::dvec3 obs, glm::dvec3 sun,
                      double minElevationDeg, double extinctionK, BenchSample &s, const SatGroundSiteAim *aim,
-                     uint32_t satIndex)
+                     uint32_t satIndex, double flareTiltRad)
 {
     const glm::dvec3 up = glm::normalize(obs);
     // Cheap elevation pre-check before the full evaluation.
@@ -55,6 +55,7 @@ bool benchEvalSample(const std::vector<AttitudeGroup> &groups, const std::vector
     SatPhotInputs in;
     in.sunDirEci = sun;
     in.obsEci = obs;
+    in.flareTiltRad = flareTiltRad;
     if (aim)
     {
         in.hasSiteIdeal = true;
@@ -362,7 +363,8 @@ bool runDistributionBenchmark(const Benchmark &b, const SatModel &m, const std::
             const double u = rng.uniform() * 2.0 * kPi;
             e.u0 = std::fmod(u - std::fmod(n * t, 2.0 * kPi) + 4.0 * kPi, 2.0 * kPi);
             BenchSample s;
-            if (!benchEvalSample(m.groups, lobes, occ, e, t, obs, sun, cfg.minElevationDeg, 0.0, s))
+            if (!benchEvalSample(m.groups, lobes, occ, e, t, obs, sun, cfg.minElevationDeg, 0.0, s, nullptr, 0,
+                                 cfg.flareTiltRad))
                 continue;
             s.site = (int)si;
             // The paper's censoring rule: too faint to see -> an assigned apparent magnitude.

@@ -1,0 +1,26 @@
+# Starmind formation rings: 8 satellites on a 200 m polygon in the orbit plane (cluster_shape "ring").
+# r10: face-on, from 800 m cross-track of member 0 (the ring's along-track end), aimed at the satellite.
+# r20: the same 120 s later — the ring must hold its shape (members share the centre's mean motion).
+# r30: edge-on from below (1.5 km under the cluster): reads as a line along track.
+preset High
+time set 2037-03-20T00:00:00Z
+time pause
+observer lat=35 lon=-100 agl=2
+select const "SpaceX Starmind - sun-synchronous X-ring" n=0
+follow offset=200,900,0
+camera look sel
+camera fov=60
+wait settle
+capture r10_faceon scale=0.5
+state r10
+time add 120
+follow offset=200,900,0
+camera look sel
+camera fov=60
+wait settle
+capture r20_later scale=0.5
+follow offset=200,0,-1500
+camera look sel
+camera fov=40
+wait settle
+capture r30_below scale=0.5

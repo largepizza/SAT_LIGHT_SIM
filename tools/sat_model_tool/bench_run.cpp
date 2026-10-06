@@ -172,7 +172,8 @@ json configJson(const BenchRunConfig &c)
             {"min_elevation_deg", c.minElevationDeg},
             {"sun_alt_window_deg", {c.sunAltMinDeg, c.sunAltMaxDeg}},
             {"period_start_fallback", c.periodStartFallback},
-            {"censor", c.censor}};
+            {"censor", c.censor},
+            {"flare_tilt_deg", c.flareTiltRad * 180.0 / 3.14159265358979323846}};
 }
 
 json resultJson(const BenchRunResult &r)
@@ -298,6 +299,7 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
     BenchRunConfig cfg;
     cfg.samples = opt.samples;
     cfg.seed = opt.seed;
+    cfg.flareTiltRad = opt.flareTiltDeg * 3.14159265358979323846 / 180.0;
     const SatOcclusion *occ = opt.occlusion ? &lm.occlusion : nullptr;
     const std::string occDesc =
         opt.occlusion ? "primitive ray tests, " + std::to_string(lm.occlusion.occluders.size()) + " occluders, <= " +

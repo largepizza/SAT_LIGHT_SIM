@@ -1271,6 +1271,8 @@ int main(int argc, char **argv)
             runOpt.sensitivity = true;
         else if (a == "--no-occlusion")
             runOpt.occlusion = false;
+        else if (a == "--flare-tilt" && i + 1 < argc)
+            runOpt.flareTiltDeg = std::atof(argv[++i]);
         else if (a == "--set" && i + 1 < argc)
             runOpt.overrides.push_back(argv[++i]);
         else if (a == "--out" && i + 1 < argc)
@@ -1292,7 +1294,7 @@ int main(int argc, char **argv)
         std::printf("usage: SatModelTool <model.json> [...] [--out <dir>] [--budget <lobes>] [--shadow-study <N>]\n"
                     "                    [--selftest <N>] [--benchmark <file.json>]...\n"
                     "                    [--run-benchmark <file.json>]... [--samples <N>] [--seed <S>]\n"
-                    "                    [--sensitivity] [--no-occlusion] [--report-dir <dir>] [--models-dir <dir>]\n"
+                    "                    [--sensitivity] [--no-occlusion] [--flare-tilt <deg>] [--report-dir <dir>] [--models-dir <dir>]\n"
                     "                    [--set [<model>/]<material>.<field>=<value>]...\n"
                     "                    [--replay-trace <trace.csv>]... [--summarize-samples <samples.csv>]...\n");
         return 2;

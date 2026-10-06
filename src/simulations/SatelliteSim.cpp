@@ -13877,9 +13877,9 @@ void SatelliteSim::loadDefinitions()
     {
         ConstellationConfig c;
         c.name = jc["name"].get<std::string>();
-        c.numPlanes = jc["num_planes"].get<int>();
-        c.perPlane = jc["per_plane"].get<int>();
-        c.altM = jc["alt_km"].get<float>() * 1000.0f;
+        c.numPlanes = jc.value("num_planes", 0);
+        c.perPlane = jc.value("per_plane", 0);
+        c.altM = jc.value("alt_km", 0.0f) * 1000.0f;
         c.incl = glm::radians(jc.value("incl_deg", 0.0f));
         c.enabled = jc.value("enabled", true);
 
@@ -13907,6 +13907,53 @@ void SatelliteSim::loadDefinitions()
         c.alignTerminator = jc.value("align_terminator", false);
         c.numRings = jc.value("num_rings", 1);
         c.ringSpacingM = jc.value("ring_spacing_km", 0.0f) * 1000.0f;
+        c.clusterSize = std::max(1, jc.value("cluster_size", 1));
+        c.clusterSpacingM = jc.value("cluster_spacing_km", 1.0f) * 1000.0f;
+        c.clusterRing = jc.value("cluster_shape", std::string("line")) == "ring";
+        c.clusterRadiusM = jc.value("cluster_radius_km", 0.2f) * 1000.0f;
+        c.raanSpreadRad = glm::radians(jc.value("raan_spread_deg", 0.0f));
+        c.raanSpreadRandom = jc.value("raan_spread", std::string("even")) == "random";
+
+        if (dist == "Shells")
+        {
+            // A filed shell table. num_planes / per_plane / alt_km are derived from the groups
+            // (numPlanes = the total, perPlane = 1, so every "total = numPlanes x perPlane" sum
+            // holds); alt_km is their satellite-weighted mean (the model viewer places it there).
+            c.distribution = OrbitDistribution::Shells;
+            double altSum = 0.0;
+            long long total = 0;
+            for (const auto &jg : jc.value("groups", nlohmann::json::array()))
+            {
+                ShellGroup g;
+                g.altMinM = jg.value("alt_min_km", 0.0f) * 1000.0f;
+                g.altMaxM = jg.value("alt_max_km", jg.value("alt_min_km", 0.0f)) * 1000.0f;
+                g.inclMin = glm::radians(jg.value("incl_min_deg", jg.value("incl_deg", 0.0f)));
+                g.inclMax = glm::radians(jg.value("incl_max_deg", jg.value("incl_deg", 0.0f)));
+                g.shells = std::max(1, jg.value("shells", 1));
+                g.planes = std::max(1, jg.value("planes_per_shell", 1));
+                g.perPlane = std::max(0, jg.value("per_plane", 0));
+                g.sso = jg.value("sun_synchronous", false);
+                const long long n = (long long)g.shells * g.planes * g.perPlane;
+                total += n;
+                altSum += 0.5 * ((double)g.altMinM + g.altMaxM) * (double)n;
+                c.groups.push_back(g);
+            }
+            if (total <= 0)
+            {
+                Log::line("constellations.json: '" + c.name + "' is a Shells constellation with no satellites in its groups; skipping.");
+                continue;
+            }
+            c.numPlanes = (int)std::min<long long>(total, 0x7fffffff);
+            c.perPlane = 1;
+            c.altM = (float)(altSum / (double)total);
+            c.incl = c.groups[0].sso ? computeSSOInclination(c.groups[0].altMinM) : c.groups[0].inclMin;
+            c.alignTerminator = false; // per group: the orbits carry it
+        }
+        else if (!jc.contains("num_planes") || !jc.contains("per_plane") || !jc.contains("alt_km"))
+        {
+            Log::line("constellations.json: '" + c.name + "' needs num_planes, per_plane and alt_km; skipping.");
+            continue;
+        }
 
         constellations.push_back(std::move(c));
     }
@@ -14208,6 +14255,26 @@ void SatelliteSim::buildOrbits()
             total += (size_t)std::max(c.numPlanes, 0) * (size_t)std::max(c.perPlane, 0);
         satOrbits.reserve(total);
     }
+    // Satellite s of n in one plane flown in formation clusters (c.clusterSize > 1): the clusters
+    // evenly spaced from phase0 at radius R. Line: members spacingM apart along track. Ring: a regular
+    // polygon of radius clusterRadiusM in the orbit plane, member m at angle 2 pi m / C from the
+    // along-track direction toward zenith. Returns the argument of latitude; dr = the radial offset.
+    auto clusterPhase = [](const ConstellationConfig &c, int s, int n, float R, float phase0, float &dr)
+    {
+        const int C = c.clusterSize;
+        const int K = (n + C - 1) / C;
+        const int k = s / C, m = s % C;
+        const int inK = std::min(C, n - k * C); // the last cluster may be short
+        const float centre = phase0 + (float)k / (float)K * glm::two_pi<float>();
+        if (c.clusterRing && inK > 1)
+        {
+            const float th = (float)m / (float)inK * glm::two_pi<float>();
+            dr = c.clusterRadiusM * sinf(th);
+            return centre + c.clusterRadiusM * cosf(th) / R;
+        }
+        dr = 0.0f;
+        return centre + ((float)m - 0.5f * (float)(inK - 1)) * c.clusterSpacingM / R;
+    };
     for (ConstellationConfig &c : constellations)
     {
         c.orbitStart = (uint32_t)satOrbits.size();
@@ -14217,10 +14284,56 @@ void SatelliteSim::buildOrbits()
             for (int p = 0; p < c.numPlanes; ++p)
             {
                 float raan = (float)p / c.numPlanes * glm::two_pi<float>();
+                const float phase0 = c.clusterSize > 1 ? (float)rand() / (float)RAND_MAX * glm::two_pi<float>() : 0.0f;
                 for (int s = 0; s < c.perPlane; ++s)
                 {
-                    float u0 = (float)rand() / (float)RAND_MAX * glm::two_pi<float>();
+                    float dr = 0.0f;
+                    float u0 = c.clusterSize > 1
+                                   ? clusterPhase(c, s, c.perPlane, kEarthRadius + c.altM, phase0, dr)
+                                   : (float)rand() / (float)RAND_MAX * glm::two_pi<float>();
                     satOrbits.push_back({raan, c.incl, u0, c.typeIdx, c.altM, 0.0f, 0.0f, {0.0f, 0.0f, 1.0f}, false});
+                    satOrbits.back().radialOffsetM = dr;
+                }
+            }
+        }
+        else if (c.distribution == OrbitDistribution::Shells)
+        {
+            // Dusk terminator node (LTAN 18:00): 90 deg east of the Sun in right ascension, anchored
+            // at sim start like the Disk's below (see there for why).
+            const float raanDusk = atan2f(sunDirECI.x, -sunDirECI.y);
+            int ssoPlane = 0; // counts the entry's SSO planes for the node spread
+            for (const ShellGroup &g : c.groups)
+            {
+                for (int k = 0; k < g.shells; ++k)
+                {
+                    const float f = g.shells > 1 ? (float)k / (float)(g.shells - 1) : 0.5f;
+                    const float alt = glm::mix(g.altMinM, g.altMaxM, f);
+                    const float incl = g.sso ? computeSSOInclination(alt) : glm::mix(g.inclMin, g.inclMax, f);
+                    for (int p = 0; p < g.planes; ++p)
+                    {
+                        // SSO: planes spread evenly from the dusk node (2 = dusk + dawn, the X-ring).
+                        // Walker: evenly spread, each shell staggered by 1/shells of the plane gap.
+                        float raan = g.sso ? raanDusk + (float)p / g.planes * glm::two_pi<float>()
+                                           : ((float)p + (float)k / g.shells) / g.planes * glm::two_pi<float>();
+                        if (g.sso && c.raanSpreadRad > 0.0f)
+                        {
+                            const float f = c.raanSpreadRandom ? (float)rand() / (float)RAND_MAX
+                                                               : glm::fract(0.5f + 0.618034f * (float)ssoPlane);
+                            raan += c.raanSpreadRad * (2.0f * f - 1.0f);
+                        }
+                        if (g.sso)
+                            ++ssoPlane;
+                        const float phase0 = (float)rand() / (float)RAND_MAX * glm::two_pi<float>();
+                        for (int s = 0; s < g.perPlane; ++s)
+                        {
+                            float dr = 0.0f;
+                            const float u0 = c.clusterSize > 1
+                                                 ? clusterPhase(c, s, g.perPlane, kEarthRadius + alt, phase0, dr)
+                                                 : phase0 + (float)s / g.perPlane * glm::two_pi<float>();
+                            satOrbits.push_back({raan, incl, u0, c.typeIdx, alt, 0.0f, 0.0f, {0.0f, 0.0f, 1.0f}, g.sso});
+                            satOrbits.back().radialOffsetM = dr;
+                        }
+                    }
                 }
             }
         }
@@ -14286,10 +14399,14 @@ void SatelliteSim::buildOrbits()
 
                 for (int s = 0; s < satsInThisRing; ++s)
                 {
-                    // Evenly spaced around the ring + optional small jitter.
-                    float u0 = (float)s / satsInThisRing * glm::two_pi<float>();
+                    // Evenly spaced around the ring (or in clusters) + optional small jitter.
+                    float dr = 0.0f;
+                    float u0 = c.clusterSize > 1
+                                   ? clusterPhase(c, s, satsInThisRing, kEarthRadius + ringAlt, 0.0f, dr)
+                                   : (float)s / satsInThisRing * glm::two_pi<float>();
                     float jitter = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * c.altJitterM;
                     satOrbits.push_back({raan_d, ringIncl, u0, c.typeIdx, ringAlt + jitter, 0.0f, 0.0f, {0.0f, 0.0f, 1.0f}, c.alignTerminator});
+                    satOrbits.back().radialOffsetM = dr;
                 }
             }
         }
@@ -14322,8 +14439,9 @@ void SatelliteSim::buildOrbits()
     // doesn't recompute them every frame (saves sqrt + 4 trig calls per satellite).
     for (SatOrbit &orb : satOrbits)
     {
-        orb.R_sat = kEarthRadius + orb.altM;
-        orb.meanMot = (float)sqrt(kGM / ((double)orb.R_sat * orb.R_sat * orb.R_sat));
+        const double rCentre = (double)kEarthRadius + orb.altM; // a ring member keeps its centre's rate
+        orb.R_sat = (float)(rCentre + orb.radialOffsetM);
+        orb.meanMot = (float)sqrt(kGM / (rCentre * rCentre * rCentre));
         orb.cosI = cosf(orb.incl);
         orb.sinI = sinf(orb.incl);
         if (!orb.alignTerminator)
