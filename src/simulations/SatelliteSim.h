@@ -1873,7 +1873,7 @@ public:
     void updatePhoto(VulkanContext &ctx);
     void endPhoto();
     uint32_t photoScaleRequest() const override { return photoScaleActive; }
-    float photoScaleSetting = 2.0f;   // display.photo_scale: the photo's resolution in window sizes (1-4)
+    float photoScaleSetting = 1.0f;   // display.photo_scale: the photo's resolution in window sizes (1-4)
     float photoSettleFrames = 48.0f;  // display.photo_frames: frames accumulated before the capture
     uint32_t photoScaleActive = 0;
     int   photoState = 0;             // 0 idle, 1 settling, 2 captured (restoring once read back)
@@ -2511,7 +2511,7 @@ private:
     // Automatic render scale (2026-10-04, Settings > Display "Automatic render scale"): moves renderScale
     // in 5% steps between dynResMinScale and 1 to keep the GPU frame under the target frame rate's budget
     // (x 0.9). Keys display.dynamic_resolution / dynamic_target_fps / dynamic_min_scale.
-    bool dynResEnabled = false;
+    bool dynResEnabled = true;
     float dynResTargetFps = 60.0f;
     float dynResMinScale = 0.5f;
     float dynResGpuMs = 0.0f;       // eased GPU frame (ms)
@@ -3071,10 +3071,10 @@ private:
     float cv2LightSteps = 6.0f;
     float cv2LightLodFootprintM = 40.0f;  // past this pixel footprint (m) a 2-step light march; 0 = off
     float cv2EyeTempC = 15.0f;            // the air temperature at the eye (deg C; rain / sleet / snow), per frame
-    float cv2LightningRate = 0.53f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
+    float cv2LightningRate = 0.4f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
     float cv2LightningGlow = 0.088f;      // the flash's light in the cloud
-    float cv2LightningBolt = 1.0f;        // the cloud-to-ground channels
-    float cv2LightningSprites = 0.05f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
+    float cv2LightningBolt = 1.25f;        // the cloud-to-ground channels
+    float cv2LightningSprites = 0.01f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
     float cv2EvoWindMps = 8.0f;           // the weather map's evolution: its advecting wind (m/s); 0 = static
     float cv2EvoGrowth = 0.12f;           // ... and how much its coverage grows and decays (0 = none)
     float cv2EvoWindowH = 3.0f;           // ... each advected copy's window (h): the displacement's bound
@@ -3114,20 +3114,20 @@ private:
                                        // ~cluster scale: splotches)
     float cv2CirrusFlow = 1.5f;        // the flow warp at cirrus level, x the low cloud's (the jet bends more)
     float cv2CirrusWindMps = 30.0f;    // the jet: cirrus moves this fast eastward over the map
-    float cv2RainAmount = 1.0f;        // rain shafts under precipitating cloud, 0 = none
+    float cv2RainAmount = 0.71f;        // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
-    float cv2RainStreaks = 1.0f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
+    float cv2RainStreaks = 2.63f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
     float moveSpeedPerHeight = 1.0f;   // WASD: this many times the height above the ground per second (capped
                                        // at the old fixed 0.08 rad/s, ~510 km/s): slow near the surface
-    float cv2DropDistM = 32.0f;        // the rain particles' reach (m; each doubling is one more level, at most 64)
+    float cv2DropDistM = 33.0f;        // the rain particles' reach (m; each doubling is one more level, at most 64)
     float cv2RainParticlesK = 16.0f;   // drops in the nearest box, thousands (each farther level holds twice as many)
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
-    float cv2LightningStormRate = 0.5f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
-    float cv2LightningTendrils = 1.0f;    // the channels' branching (x the branch and tendril counts)
-    float cv2RainFallSpeed = 1.3f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
-    float cv2RainWindGain = 1.5f;      // x the ground wind on the drops (0.4 x the wind aloft)
-    float cv2RainStormWind = 14.0f;    // the outflow from a heavy shower (m/s at rain rate 1), away from its core
-    float cv2RainGusts = 1.0f;         // the wind's gustiness (x; stronger in heavy rain)
+    float cv2LightningStormRate = 0.31f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
+    float cv2LightningTendrils = 1.23f;    // the channels' branching (x the branch and tendril counts)
+    float cv2RainFallSpeed = 3.0f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
+    float cv2RainWindGain = 0.4f;      // x the ground wind on the drops (0.4 x the wind aloft)
+    float cv2RainStormWind = 11.0f;    // the outflow from a heavy shower (m/s at rain rate 1), away from its core
+    float cv2RainGusts = 1.38f;         // the wind's gustiness (x; stronger in heavy rain)
     float cv2SnowWind = 1.0f;          // snow's drift x this (blizzards: flakes driven sideways, streaking)
     float cv2ExposureEV = 0.0f;        // exposure compensation (stops) on the sky's auto exposure
     float cv2HighlightRolloff = 0.5f;  // 0 = the old tonemap; 1 = a long highlight shoulder
@@ -3639,10 +3639,10 @@ private:
     bool uiVisible = true;
     bool iconsLoaded = false;
     float uiScale = 1.5f;    // text/UI size multiplier (0.75 – 2.0)
-    float masterVol_ = 0.8f; // mirrors AudioSystem default (display fallback)
-    float musicVol_ = 0.6f;
+    float masterVol_ = 0.4f; // mirrors AudioSystem default (display fallback)
+    float musicVol_ = 0.7f;
     float sfxVol_ = 1.0f;
-    float ambienceVol_ = 0.8f;
+    float ambienceVol_ = 0.7f;
     // Sound tab (advanced) — persisted under "audio". Defaults are the user's own settings.json
     // (2026-09-26), rounded to 2 s.f. per the cloud/photometry rule: fades 0.27/0.32, root 41 Hz,
     // group gains (Ambience::groupNames() order) 0.93 / 1.0 / 1.0 / 1.6 / 1.2 / 2.0.
@@ -3733,11 +3733,11 @@ private:
     // guesses — re-synced 2026-08-10 (extinctionCoeff, lightPollutionGain, and the Milky Way
     // pollution-response block moved noticeably; the rest were already current), then rounded to
     // 2 significant figures 2026-08-15 (see the cloud block's note below — same pass, same rule).
-    float brightnessScale = 0.93f;
+    float brightnessScale = 1.01f;
     float daySuppression = 570.0f;
     float mirrorBoost = 1000.0f;
     float visThresh = 0.0001f;
-    float highlightFlare = 0.014f;
+    float highlightFlare = 0.01f;
     float moonSuppression = 6.6f;    // sky background suppression from moonlight (mirrors daySuppression,
                                      // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
     float lightPollutionGain = 25.0f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
@@ -3875,7 +3875,7 @@ private:
     // is derived from this and the actual angle to cover. The window-crossfade-only version
     // shipped earlier the same day only covered one of several transition cases and wasn't tied to
     // real angular distance, which read as satellites snapping to target.
-    float mirrorMaxRateDegPerSec = 0.11f;
+    float mirrorMaxRateDegPerSec = 0.001f;
     // S1 follow-up (RELEASE_v1_1_PLAN.md): minimum acceptable local elevation angle of the
     // satellite as seen FROM a candidate ground target, in degrees. Below this, a target is
     // rejected outright by sat_orbit.comp's TargetedReflector selection (grazing beams suffer
