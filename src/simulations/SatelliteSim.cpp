@@ -3003,7 +3003,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         hdr.occlusionOn = satOcclusionActive() ? 1u : 0u;
         hdr.deltaTLo = orbitDeltaTLo;
         // Phase 4d mesh candidates: pixel angle, or 0 when meshes are off (knockout / Potato sky).
-        hdr.meshPixelAngle = (debugDisableMask & (kDebugBitMeshes | 262144u)) != 0u || !meshRendererInit
+        hdr.meshPixelAngle = (debugDisableMask & kNoMeshBits) != 0u || !meshRendererInit
                                  ? 0.0f
                                  : 2.0f * tanf(glm::radians(camera.fovYDeg) * 0.5f) /
                                        (float)std::max(1u, ctx.swapExtent.height);
@@ -4302,9 +4302,9 @@ void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
 // SatelliteSim.h for how probes are shared out and scheduled.
 bool SatelliteSim::envActive() const
 {
-    // Not under Potato (the weak-hardware tier) or with the mesh pass knocked out.
+    // Not under Potato or Planetarium (the weak-hardware tiers) or with the mesh pass knocked out.
     return envReflections && meshRendererInit && envProbes.ready() &&
-           (debugDisableMask & (262144u | kDebugBitMeshes)) == 0u;
+           (debugDisableMask & kNoMeshBits) == 0u;
 }
 
 SatDrawPC SatelliteSim::envSkyPC(const glm::dvec3 &posEcef, const glm::dmat3 &camToEcef, float fovYRad,
@@ -4585,7 +4585,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         bool baseFade = false;      // the followed satellite keeps the base fade-in size, however many others
     };
     std::vector<Job> jobs;
-    const bool skip = (debugDisableMask & (kDebugBitMeshes | 262144u)) != 0u; // knockout / Potato sky
+    const bool skip = (debugDisableMask & kNoMeshBits) != 0u; // knockout / Potato / Planetarium sky
     if (!skip)
     {
         if (followActive)

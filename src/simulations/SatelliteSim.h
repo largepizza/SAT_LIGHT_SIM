@@ -2730,6 +2730,9 @@ private:
     uint32_t debugDisableMask = 0;
     static constexpr uint32_t kDebugBitSatOcclusion = 1048576u;
     static constexpr uint32_t kDebugBitMeshes = 2097152u; // Phase 4c: no satellite meshes in the scene
+    // No meshes, env probes or sharp reflections: the knockout, Potato (262144) and Planetarium / SKY_LITE (524288,
+    // whose sky shader has the mesh composite compiled out).
+    static constexpr uint32_t kNoMeshBits = kDebugBitMeshes | 262144u | 524288u;
     // Occlusion between satellite parts is OFF by default (Photometry tab "Satellite part
     // occlusion", persisted as photometry.sat_part_occlusion): it costs ~10x the orbit dispatch at
     // 10M satellites for a subtle effect, so no preset or first run turns it on. The knockout bit
