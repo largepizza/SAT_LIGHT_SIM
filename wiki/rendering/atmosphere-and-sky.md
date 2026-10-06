@@ -25,7 +25,8 @@ pages; here they appear only where the sky pass consumes them.
 | 26 | `scene_depth.comp` | `terrainFrame.x`, the eye's detailed ground height |
 | 29 | `cloud_v2_far.comp` | the far cloud layer, full res (`imageLoad`) |
 
-The sampled-image bindings sit exactly at the Vulkan per-stage minimum of 16 (see
+"½ res" means half of the render-scaled extent (see [Resolution scaling](#resolution-scaling)). The
+sampled-image bindings sit exactly at the Vulkan per-stage minimum of 16 (see
 [Weak-hardware tiers](hardware-tiers.md#the-hardware-floor)), which is why the newer full-resolution inputs are
 storage images read with `imageLoad`.
 
@@ -303,9 +304,10 @@ the rule it serves are on the [Rendering overview](index.md#two-depth-representa
 ## Sky TAA
 
 Temporal anti-aliasing of the whole background (terrain silhouettes, detail normals, far textures, city
-glitter, the sea), all of which alias because the sky pass shades one ray per pixel. It runs when
-`skyTaaWanted()` holds: TAA enabled, render scale 1, the swapchain supports transfer-destination use, and
-neither weak-hardware sky tier is selected.
+glitter, the sea), all of which alias because the sky pass shades one ray per pixel. Below 100 % render scale
+the same pass is a **temporal upscaler** (see [Resolution scaling](#resolution-scaling)). It runs when
+`skyTaaWanted()` holds: "Temporal anti-aliasing" on, the swapchain supports transfer-destination use, and
+neither weak-hardware sky tier is selected. The render scale does not enter the test.
 
 ```mermaid
 flowchart LR
@@ -315,10 +317,17 @@ flowchart LR
   D --> E["points, stars, planets<br/>drawn unjittered"]
 ```
 
-1. **Render.** The background renders offscreen with an 8-sample Halton (2, 3) sub-pixel jitter
-   (`cloud.taaJitter.xy`, pixels) into an RGBA16F colour target and an R32F copy of its depth.
-2. **Resolve** (`sky_taa.comp`, 16 × 16 workgroups):
-    - **Neighbourhood**: the 3 × 3 YCoCg mean and standard deviation of this frame's samples.
+1. **Render.** The background renders offscreen with a Halton (2, 3) sub-pixel jitter (`cloud.taaJitter.xy`,
+   in input pixels) into an RGBA16F colour target and an R32F copy of its depth. The cycle is 8 phases at 100 %
+   and 16 when upscaling, since each output pixel then needs more input positions. The input images are
+   full-size; below 100 % the pass draws only their top-left `skyTaaInExtent()` through a dynamic viewport, so a
+   change of scale recreates nothing.
+2. **Resolve** (`sky_taa.comp`, 16 × 16 workgroups, one thread per **output** pixel):
+    - **This frame's estimate and neighbourhood.** At 100 % the estimate is the pixel's own sample. When
+      upscaling it is a Gaussian (σ = 0.6 output pixels) of the 3 × 3 input samples around the pixel, each at
+      its jittered position. Either way the 3 × 3 samples give the YCoCg mean and standard deviation, and the
+      mean luma **without the brightest sample** for the flash rule below. Non-finite samples are dropped (read
+      as black): one NaN would otherwise spread through the history's Catmull-Rom taps into a growing block.
     - **Reprojection**, exact for a static world: the pixel's *unjittered* ray, its distance from the depth,
       the eye's motion and last frame's camera, all computed on the CPU in double in this frame's ENU. Sky
       pixels (depth 1) reproject by rotation alone.
@@ -328,19 +337,49 @@ flowchart LR
       anti-alias nothing.
     - **History**: a 9-tap Catmull-Rom read (bilinear alone blurs a little more every frame).
     - **Variance clip** toward the mean, a box of 1.25 σ, so anything that moves on its own (waves, clouds,
-      beams, twinkling lights) cannot ghost.
-    - **Weight**: the new sample's weight goes from "still" to "moving" over 0.5-4 px of reprojection motion.
-      When the whole neighbourhood brightens past the history (lightning, a glint) the new frame is taken at
-      once; at weight 0.1 a flash a few frames long would come out about ten times dimmer.
+      beams, twinkling lights) cannot ghost. It is skipped when nothing moved (below).
+    - **Weight**: the new sample's weight goes from "still" (0.1) to "moving" (0.35) over 0.5-4 px of
+      reprojection motion. When the neighbourhood's mean brightens past the history (lightning, a sprite) the
+      new frame is taken at once; at weight 0.1 a flash a few frames long would come out about ten times
+      dimmer. When upscaling, the weight is then multiplied by the Gaussian weight of the nearest input sample:
+      a sample that landed far from the pixel moves it little, and over the 16 phases every output pixel
+      converges to its own value.
     - **Validity**: history is dropped on a change of field of view or aspect, an eye jump over 20 km, a
       cinematic cut, or a frame that did not use TAA.
-3. **Blit** the resolved image into the swapchain.
+3. **Blit** the resolved, full-size image into the swapchain.
 4. **Depth restore.** The main pass (`renderPassLoad`) opens with `taa_depth_restore.frag`, which writes the
-   resolved frame's depth back with colour writes off. Stars, planets and satellites then draw unjittered,
-   sharp and depth-tested over the anti-aliased background.
+   resolve's full-resolution depth back with colour writes off. Stars, planets and satellites then draw
+   unjittered, sharp and depth-tested over the anti-aliased background, at any render scale.
+
+**When nothing moved.** The CPU tells the resolve through `eyeDelta.w` whether the whole camera is stationary:
+the eye moved less than 1 cm, the view did not turn, and sim time is paused or runs at no more than about 1.5×
+(w = 2, or 3 when time is paused; 1 otherwise, 0 without history). Then the history is **not clipped**, and the
+flash rule compares against the mean without the brightest sample. A light smaller than a pixel is caught by only
+some jitter phases; clipped against an otherwise dark 3 × 3 box, its accumulated light would be thrown away in the
+other phases and it would blink on the jitter cycle. A lone glint on a wave facet does not raise the robust mean,
+so it does not count as a flash. The decision is per frame, not per pixel: judged from each pixel's own
+reprojection motion, slowly moving distant clouds would count as still while the camera climbs, and leave
+trails. In motion the resolve behaves as in the steps above.
+
+**The sea.** `sat_sky.frag` marks sea pixels in the colour target's alpha (0.5 × (1 − trail share); 1 elsewhere).
+The waves move while the camera is still, so the sea keeps its clip when nothing moved and drops it only while
+sim time is **paused** (w = 3), when the waves are frozen too. On a stormy sea the **trail share** ("Storm sea
+trails" × a ramp on the sea state, × the share not covered by cloud in front) deliberately keeps an unclipped
+history: the clip is blended toward none, the weight is held at the still weight however the view moves, and in
+motion the flash rule leans toward the robust mean. The crests then smear into trails like blown spray. "Storm
+sea trails" at 0 turns this off.
+
+**Unjittered city lights.** City lights are pixel-sized points that their inputs switch on and off (the night map
+near zero at a city's fringe, the terrain contour, the glitter pattern), so under the jitter a light could be lit
+in only one or two phases. Where the unjittered ray meets the ground at more than about 12° (\(|\cos| > 0.2\)),
+the city lights read the night map, the terrain contour and their own pattern at the **unjittered** pixel's point
+on the hit's tangent plane (`uvTaa0`, `taaDn`). Toward a grazing horizon that point slides kilometres for half a
+pixel, so there the lights stay jittered. When upscaling, glitter points are at least one input pixel wide, so
+every jitter phase sees each point.
 
 The half-resolution cloud composite is inside this image, so cloud edges are averaged on screen too. Measured
-cost: about +1.1 ms still and +0.8 ms panning at 1600 × 900.
+cost at 100 %: about +1.1 ms still and +0.8 ms panning at 1600 × 900. The upscaler costs about 1 ms more than a
+plain stretch.
 
 !!! warning "Invariant"
     The main render pass's three variants (clear, load, boot) share one dependency list
@@ -350,21 +389,30 @@ cost: about +1.1 ms still and +0.8 ms panning at 1600 × 900.
 
 ## Resolution scaling
 
-"Render scale" (50 %-100 %, Display tab) shrinks only the sky pass. Below 100 %, `recordPrePass()` renders the
-background into an offscreen target of the scaled size and blits it (filter chosen per format by
-`VulkanContext::bestBlitFilter()`, since linear blit filtering is an optional feature) into the swapchain before
-the main pass, which then uses `renderPassLoad` so the blit survives. Satellites, stars and UI always render at
-native resolution.
+"Render scale" (50 %-100 %, Display tab) shrinks the background, not the point sources: satellites, stars,
+planets, city light sprites, satellite meshes and the UI always render at native resolution. What it scales,
+how the presets set it, the measured gains and the **automatic render scale** (`updateDynamicResolution()`,
+off by default: 5 % steps that keep the GPU frame under 0.9 × the target frame time) are on
+[Weak-hardware tiers](hardware-tiers.md#render-scale). For the sky pass:
 
-- **Depth is not blitted** (depth-format blits are not guaranteed). The point draws do a manual test against
-  the half-res `sceneDepthImg` instead, so occlusion by terrain is half-resolution on this path.
-- **Sky TAA is off** below 100 %.
+- **The compute passes follow it.** With "Clouds follow render scale" on (the default), `scene_depth.comp`,
+  the cloud march targets and the clouds' screen images are sized by `computeHalfExtent()`, half of the
+  **scaled** extent, and rebuilt by `recreateComputeScaledTargets()` when it changes. The cloud march keeps
+  filtering its noise at the 100 % pixel, so the clouds keep their texture, only softer. The sky pass reads these
+  targets by UV or by their own size, so it needs nothing extra.
+- **With the sky TAA** the background is upscaled temporally ([Sky TAA](#sky-taa)). `cloud.skyScreenW/H` is the
+  input extent the pass renders into, while its detail level (terrain detail and textures, city patterns, the
+  pixel footprint) follows the **output** pixel, `cloud.skyLodScreenH`, so most of the full-resolution detail
+  survives.
+- **Without it** (TAA switched off, or SKY_LITE and Potato), `recordPrePass()` renders the background into an
+  offscreen target of the scaled size and blits it (filter chosen per format by
+  `VulkanContext::bestBlitFilter()`, since linear blit filtering is an optional feature) into the swapchain
+  before the main pass, which then uses `renderPassLoad` so the blit survives. Depth is not blitted
+  (depth-format blits are not guaranteed), so the point draws do a manual test against the half-res
+  `sceneDepthImg` (`PointDrawPC::manualTerrainTest`) and occlusion by terrain is half-resolution on this path.
 - **`gl_FragCoord` is relative to the current target.** Any normalised UV in `sat_sky.frag` derived from
   `gl_FragCoord` divides by `cloud.skyScreenW/H` (the size of whatever target this draw renders into), never
   by an assumed full-resolution constant.
-- **The gain is small.** `scene_depth.comp` and the cloud passes stay at half the swap extent, so at 1920 ×
-  1009 dropping to 50 % removes about 1.5 Mpx of sky work while about 1 Mpx of compute stays. Prefer 100 %, which
-  also gets exact hardware-depth occlusion and TAA.
 
 ## Shader variants
 
@@ -372,8 +420,8 @@ native resolution.
 
 | SPIR-V | Defines | Use |
 |---|---|---|
-| `sat_sky.frag.spv` | none | the main view without TAA, and the render-scale prepass |
-| `sat_sky_taa.frag.spv` | `SKY_TAA` | the main view with temporal AA: jittered, and writes the R32F depth copy |
+| `sat_sky.frag.spv` | none | the main view without TAA, and the plain low-res prepass below 100 % render scale |
+| `sat_sky_taa.frag.spv` | `SKY_TAA` | the main view with temporal AA or upscaling: jittered, and writes the R32F depth copy |
 | `sat_sky_lite.frag.spv` | `SKY_LITE` | the Planetarium tier: see [Weak-hardware tiers](hardware-tiers.md) |
 | `sat_sky_env.frag.spv` | `SKY_ENV` | environment-probe cube faces and the model viewer's background, rendered from a satellite's position |
 | `sat_sky_refl.frag.spv` | `SKY_ENV SKY_REFL` | sharp mirror reflections, per mesh instance |
@@ -409,12 +457,15 @@ mirror-smooth pixel of the current instance; its view direction is the reflected
 | Auto exposure (day) (Clouds) | `clouds_v2.auto_exposure` | 1.0 |
 | White balance (Clouds) | `clouds_v2.white_balance` | 0.6 |
 | Extinction (Photometry) | `photometry.extinction_coeff` | 0.079 |
-| Temporal AA (terrain, sky, sea) (Display) | `display.sky_taa` | on |
+| Temporal anti-aliasing (Display) | `display.sky_taa` | on |
 | (no UI) | `display.sky_taa_weight` / `display.sky_taa_weight_moving` | 0.1 / 0.35 |
-| Render scale (Display) | `display.render_scale` | 1.0 |
+| Render scale (Display) | `display.render_scale` | 1.0 (the preset sets it) |
+| Clouds follow render scale (Display) | `display.clouds_follow_render_scale` | on |
+| Storm sea trails (Ocean) | `clouds.ocean_storm_trails` | 1.0 |
 
 The graphics presets override the sample counts and render scale; see
-[Graphics settings](../using/graphics-settings.md).
+[Graphics settings](../using/graphics-settings.md). The automatic render scale's settings are listed on
+[Weak-hardware tiers](hardware-tiers.md#settings).
 
 ## Where in the code
 
@@ -423,5 +474,6 @@ The graphics presets override the sample counts and render scale; see
 - `shaders/sky_taa.comp`, `shaders/taa_depth_restore.frag`, `shaders/taa_fullscreen.vert`.
 - `shaders/include/darksky.glsl`, `shaders/include/atmosphere.glsl`, `shaders/include/common.glsl`.
 - `src/simulations/SatelliteSim.cpp`: `buildSkyDrawPC()`, the `CloudParams` fill in `recordCompute()`,
-  `recordPrePass()`, `recordSkyTaa()`, `skyTaaWanted()`, `readExposureMeter()`, `skyExposure()`,
+  `recordPrePass()`, `recordSkyTaa()`, `skyTaaWanted()`, `skyTaaInExtent()`, `computeHalfExtent()`,
+  `recreateComputeScaledTargets()`, `updateDynamicResolution()`, `readExposureMeter()`, `skyExposure()`,
   `recordScreenshotCopy()`.

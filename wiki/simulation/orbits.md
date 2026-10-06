@@ -1,6 +1,7 @@
 # Orbits and constellations
 
-The orbit model, the three ways a constellation is laid out, sun-synchronous precession, and how the GPU
+The orbit model, the four ways a constellation is laid out, formation clusters, sun-synchronous precession,
+the shipped roster, and how the GPU
 evaluates millions of orbits per frame without losing precision. How a constellation is declared in
 `constellations.json` is on [Constellations](../modding/constellations.md).
 
@@ -43,10 +44,10 @@ the inputs to every attitude law (see [Attitude](attitude.md)).
 | Effect | Size in LEO | Status |
 |---|---|---|
 | Eccentricity | operational shells are near-circular (\( e < 0.001 \), under 7 km) | not modelled |
-| J2 node regression for non-SSO shells | several deg/day | not modelled; only SSO disks precess |
+| J2 node regression for non-SSO shells | several deg/day | not modelled; only sun-synchronous orbits precess |
 | J2 apsidal and along-track effects | km per day | not modelled |
 | Drag, solar radiation pressure, third bodies | decay over months | not modelled |
-| Station-keeping, real phasing | n/a | phases are synthetic |
+| Station-keeping, real phasing | n/a | phases are synthetic; formation rings are held by construction (below) |
 
 The positions are therefore **statistically** right for a shell (the right altitudes, planes and
 density), not a prediction of where a particular real satellite is. For brightness statistics, which is
@@ -54,15 +55,17 @@ what the [benchmarks](../accuracy/benchmarks.md) compare, the shell geometry is 
 
 ## Constellation layouts
 
-A constellation entry produces `numPlanes × perPlane` satellites in one of three distributions
-(`OrbitDistribution` in `src/simulations/SatelliteSim.h`, built by `buildOrbits()`).
+A constellation entry produces its satellites in one of four distributions (`OrbitDistribution` in
+`src/simulations/SatelliteSim.h`, built by `buildOrbits()`). Walker, RandomShell and Disk produce
+`numPlanes × perPlane`; Shells produces the sum over its table.
 
 ### Walker
 
 `numPlanes` planes with ascending nodes evenly spaced over 360 deg, all at the constellation's
 inclination and altitude, `perPlane` satellites in each. Each satellite's \( u_0 \) is drawn uniformly at
 random. This is not a Walker-delta phasing pattern with a fixed inter-plane phase offset: the planes are
-regular, the satellites within a plane are not.
+regular, the satellites within a plane are not. With formation clusters, the clusters are evenly spaced
+around each plane from a random start.
 
 ### RandomShell
 
@@ -84,6 +87,77 @@ Concentric rings in **one** orbital plane: `numRings` rings centred on the const
 spaced `ringSpacingM` apart, the satellites shared out between them (ceiling division, so the last ring
 may hold fewer), evenly spaced around each ring with an optional altitude jitter. With
 `alignTerminator` set, the plane is a dawn-dusk sun-synchronous plane, below.
+
+### Shells
+
+A shell table, as an operator files it: a list of **groups**, each with an altitude range, a number of
+shells spread evenly over that range (a single shell sits at its middle), a number of planes per shell and
+a number of satellites per plane. Without clusters, each plane's satellites are evenly spaced from a random
+starting phase. A group is one of two kinds.
+
+- **Walker group.** The inclination runs linearly from the group's minimum in the lowest shell to its
+  maximum in the highest. Each shell's planes have nodes evenly spaced over 360 deg, and shell \( k \) of
+  \( K \) is rotated by \( k/K \) of the gap between planes:
+  \( \Omega_{k,p} = 2\pi\,(p + k/K)/P \) for plane \( p \) of \( P \). Neighbouring shells therefore never
+  share a plane. The nodes are fixed, like a Walker entry's.
+- **Sun-synchronous group.** Each shell takes the sun-synchronous inclination for its own altitude, and
+  its nodes precess with the Sun (below). The planes start at the **dusk node**, \( \Omega_\text{dusk} \),
+  where the ascending node is 90 deg of right ascension east of the Sun, i.e. at 18:00 local solar time
+  (LTAN 18:00), and are spread evenly in right ascension from it: \( \Omega_p = \Omega_\text{dusk} + 2\pi p/P \).
+  With two planes per shell these are the 18:00 and the 06:00 plane.
+
+**The X-ring.** The 18:00 and 06:00 planes have their nodes 180 deg apart and the same inclination \( i \),
+so they intersect along their common line of nodes, which lies on the terminator in the equatorial plane,
+and the angle between them is \( 2i - 180 \) deg: 15.3 deg at 565 km (\( i = 97.64 \) deg), 19.0 deg at
+1002 km (\( i = 99.48 \) deg). Seen from the Sun, each shell is two near-polar rings along the day-night
+line forming a narrow X that crosses over the equator.
+
+#### Node spread
+
+`raanSpreadRad` offsets each sun-synchronous plane's node by up to \( \pm \Delta \) from its terminator
+node (Walker groups are not touched). The offset of the entry's \( j \)-th sun-synchronous plane is
+\( \Delta\,(2f_j - 1) \) with either \( f_j = \operatorname{frac}(0.5 + 0.618034\,j) \), a golden-ratio
+sequence that covers the range evenly ("even"), or \( f_j \) uniform at random ("random").
+
+The spread matters because of clusters. Without it, every shell of a sun-synchronous group shares the same
+two planes, and shells only 1.7 to 2.2 km apart in altitude, carrying formation rings 2 km in radius, overlap
+radially. Shells at different heights also move at different rates, so their rings slide through each
+other along the shared plane. Counted on the shipped Starmind roster (a separate rebuild of the same orbits,
+neighbour search at 12 instants), the number of pairs of satellites from **different** clusters within
+1 km of each other at one instant is:
+
+| Layout | Close pairs |
+|---|---|
+| Sun-synchronous shells, nodes exactly on the terminator | about 13 000 |
+| ± 10 deg, even (the shipped value) | 26 |
+| ± 30 deg, even (the filed tolerance) | 12 |
+| ± 30 deg, random | 25 |
+| The 30 deg Walker shells (stagger only, for comparison) | 30 |
+
+A spread of a few degrees puts each shell on its own plane; an even sequence clumps less than random draws
+at the same width.
+
+### Formation clusters
+
+Walker, Disk and Shells planes can fly their satellites in **clusters** of \( C \) members, the clusters
+evenly spaced around the plane (a short last cluster takes the remainder). A cluster is either a **line**,
+members a fixed distance apart along the track, or a **ring**: a regular \( C \)-gon of radius \( \rho \) in
+the orbit plane, spanned by the along-track and radial directions. Member \( m \) sits at angle
+\( \theta_m = 2\pi m / C \) from the along-track direction toward the zenith, which gives it a phase offset
+and a radial offset
+
+\[
+u_m = u_c + \frac{\rho \cos\theta_m}{a_c}, \qquad \delta r_m = \rho \sin\theta_m,
+\]
+
+with \( u_c \) and \( a_c \) the cluster centre's argument of latitude and orbit radius. The member's
+position uses the radius \( a_c + \delta r_m \) (`R_sat`), but its mean motion is the **centre's**,
+\( n_c = \sqrt{GM/a_c^3} \) (`meanMot`); `SatOrbit::radialOffsetM` carries \( \delta r_m \) and the two are
+separate fields both on the GPU (`sat_orbit.comp`) and in the CPU evaluator (`satOrbitStateAt()`). A free
+Keplerian orbit at \( a_c + \delta r \) would drift along the track by about \( 3\pi\,\delta r \) per orbit
+relative to the centre, so a ring of free orbits would shear apart within a few revolutions. Sharing the
+mean motion keeps the polygon rigid: this is a station-kept formation, not a natural one, and it is exact by
+construction.
 
 ### Randomness
 
@@ -122,8 +196,10 @@ kilometres is not biased by its centre altitude:
 The formula uses the mean radius 6371 km for \( R \) rather than the equatorial radius 6378 km that
 defines \( J_2 \), which raises the computed inclination by about 0.02 deg at 500 km.
 
-For an `alignTerminator` disk the node is anchored at the sim's start instant to put the plane along the
-terminator:
+A sun-synchronous Shells group likewise takes the inclination for each shell's own altitude.
+
+For an `alignTerminator` disk, and for the dusk node of a sun-synchronous Shells group, the node is
+anchored at the sim's start instant to put the plane along the terminator:
 
 \[
 \Omega_0 = \operatorname{atan2}(s_x,\ -s_y),
@@ -253,17 +329,46 @@ time warps (1 week/s and above) it runs every few frames.
 
 ## Rosters
 
-The shipped roster `data/constellations.json` enables about 1.38 million satellites:
+The shipped roster `data/constellations.json` has 29 entries and enables about 1.37 million satellites:
 
 | Group | Satellites | Notes |
 |---|---|---|
 | Starlink Gen1, Gen2, Gen3 Broadband, Gen3 Direct-to-Cell | 54 872 | Walker, 326 to 550 km |
 | OneWeb, Amazon Leo (3 shells), Guowang (3 shells) | 16 722 | Walker, 572 to 1200 km |
-| ISS, Tiangong, seven commercial stations, three Starship depots | 12 | single-satellite Walker shells |
-| SpaceX AI satellites | 1 000 000 | Disk, 2000 rings 0.7 km apart about 1250 km, terminator-aligned |
+| ISS, Tiangong, seven commercial stations, Starship depots | 12 | small Walker shells |
+| SpaceX Starmind, sun-synchronous X-ring | 499 072 | Shells, 54 shells at 565 to 1002 km, rings of 8 |
+| SpaceX Starmind, 30 deg shells | 489 600 | Shells, 60 shells at 550 to 978 km, rings of 8 |
 | Reflect Orbital | 5 000 | Disk, 3 rings about 500 km, terminator-aligned |
 | Space junk | 300 000 | RandomShell, 1000 ± 500 km, inclination 0 to 180 deg |
 | Hubble, 2020 Starlink benchmark shells | 3 169 | Walker |
+
+The legacy Gen2 comparison shell (1584 satellites) is in the file but disabled.
+
+### The Starmind roster
+
+SpaceX's Starmind orbital data centres follow Table 1 of SpaceX's letter to the US Federal Communications
+Commission (FCC) in application SAT-LOA-20260108-00016, filed 29 May 2026. <!-- history-ok -->
+
+| Entry | Group | Altitudes | Shells | Inclination | Planes per shell | Per plane |
+|---|---|---|---|---|---|---|
+| X-ring | 1 | 565 to 585 km | 10 | sun-synchronous | 2 | 4168 |
+| X-ring | 2 | 707 to 744 km | 22 | sun-synchronous | 2 | 4640 |
+| X-ring | 3 | 967 to 1002 km | 22 | sun-synchronous | 2 | 4808 |
+| 30 deg | 1 | 550 to 568 km | 10 | 26 to 32 deg | 30 | 272 |
+| 30 deg | 2 | 686 to 718 km | 25 | 30 deg | 30 | 272 |
+| 30 deg | 3 | 946 to 978 km | 25 | 30 deg | 30 | 272 |
+
+The filed rows are per-group **maxima**: they sum to 1 198 120 satellites, against a requested total of
+1 000 000. The roster scales each row's satellites per plane by \( 10^6 / 1\,198\,120 \approx 0.8346 \) and
+rounds down to whole clusters of 8, which flies 988 672 satellites. Each cluster is a ring of 8 in the orbit
+plane with a radius of 2 km (`cluster_radius_km` 2.0 in the roster; the field defaults to 0.2 km when absent), and the X-ring's planes spread their nodes over ± 10 deg of the terminator ("even"), inside the
+± 30 deg node tolerance in the filing; each plane keeps its offset from the terminator node. The
+sun-synchronous and the 30 deg groups are two entries, each a whole filed table: the enable and highlight
+masks have one bit per entry and only 32 bits, so a table is never split into one entry per shell.
+
+!!! note "Modelling choice"
+    The ring of 8 in the orbit plane follows SpaceX's published visualization; the filing's text speaks of
+    clusters of about ten satellites.
 
 The hard cap is `MAX_SATELLITES` = 10 000 000; GPU buffers are sized to the loaded roster, about
 100 bytes per satellite. Larger stress rosters live in `data/custom/`.
@@ -278,7 +383,7 @@ The constellation list, each constellation's enabled flag and highlight flag are
 
 | File | Function / symbol |
 |---|---|
-| `src/simulations/SatelliteSim.cpp` | `buildOrbits()`, `computeSSOInclination()`, `uploadSatOrbits()`, the rebake check and `deltaT` split in `recordCompute()` |
+| `src/simulations/SatelliteSim.cpp` | `loadDefinitions()` (the `Shells` groups and cluster fields), `buildOrbits()` (distributions, `clusterPhase`, node spread), `computeSSOInclination()`, `uploadSatOrbits()`, the rebake check and `deltaT` split in `recordCompute()` |
 | `src/simulations/SatelliteSim.h` | `GpuSatOrbit`, `GpuSatTypeHeader`, `GpuSatListHeader`, `kOrbitRebakeDays` |
 | `src/simulations/SatPhotometry.cpp` | `satOrbitStateAt()` (CPU double mirror) |
 | `shaders/sat_orbit.comp` | `orbitPhase()`, `satEciAt()`, `processSatellite()`, `main()` (workgroup append) |

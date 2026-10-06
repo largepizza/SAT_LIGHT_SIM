@@ -31,7 +31,7 @@ flowchart LR
   F --> V[view march + light march]
   F --> G[ground shadow]
   F --> B[Reflect-beam occlusion]
-  F --> L[lightning pass:<br/>eye rain map, Sun march]
+  F --> L[lightning pass:<br/>flash column probe, eye rain map,<br/>Sun march, column above the eye]
   F --> LV[light volume]
   F -.2D copy.-> FAR[far cloud layer<br/>cv2FarColumn]
 ```
@@ -44,7 +44,8 @@ flowchart LR
 | Light march (other steps), sky probe, beam steps | same | 0 (mean erosion) | the view sample's |
 | Ground shadow | `cloud_march.comp`, `cloudGroundShadowV2()` | 0 | the shadow step's length |
 | Reflect-beam occlusion | `beam_self_march.comp` | 0 | 60 m |
-| Eye rain map, eye Sun march | `cloud_v2_lightning.comp` | −1 / 0 | 40 m / half the step |
+| Eye rain map; flash column probe | `cloud_v2_lightning.comp` | −1 | 40 m; 400 m |
+| Eye Sun march, column above the eye | same | 0 | half the step |
 | Light volume (god rays) | `cloud_v2_lightvol.comp` | 0 | half the step |
 | Far cloud layer | `cloud_v2_far.comp` | 2D column only (`cv2FarColumn()`) | pixel ground footprint |
 
@@ -212,6 +213,22 @@ are, the shape and detail volumes decide their 3D form.
 !!! note "The baked Perlin is narrow"
     The meso volume's Perlin channel is 0.50 ± 0.057 (1 to 99 percent: 0.37 to 0.63). Every threshold on it
     is set against that spread; a threshold chosen for a 0..1 range draws nothing.
+
+**The rotated shape frame.** A tiling volume sliced by the sphere repeats wherever the local horizontal plane
+contains a short lattice direction of the tile (an axis, a face diagonal or a body diagonal): the same lobes
+then recur in rows that converge on the horizon. On the equator the tile's z axis always lies in that plane,
+and as the map drifts the meridians every 45 deg hold x, y or a diagonal. The low layer's shape reads (the lobes
+and the storm-scale lobes) therefore go through one of four fixed rotations of the tile, chosen once per frame on
+the CPU from the observer's drifted up vector \(\hat u\). The clearance of a frame is the smallest
+\(|\hat u \cdot \hat v|\) over the tile's axes and diagonals \(\hat v\) in that frame, with face diagonals
+counted ×1.3 and body diagonals ×1.6 (their longer periods show less). The identity is kept wherever its clearance
+is at least 0.05, so most places use the unrotated tile; elsewhere the clearest of three fixed rotations, picked
+offline so that one is always clear, is used. The rotation and its own anchors (`shapeRotA`,
+`anchorShapeA`, `anchorStormA` in the UBO) are a pure function of position and time. A switch of frame reshapes
+the lobes, which the history eases, and never moves where the clouds are; harness `state` reports it as
+`clouds_v2.shape_frame`. Warping each sample would also break up the rows, but every per-sample warp pushes the
+march over its register budget (see [design constraints](march.md#design-constraints)). The detail erosion, the
+cells, the mid layer and the other reads still tile in the drifted frame.
 
 **Level of detail.** `cv2Lod(footprint, 1/period) = max(0, log2(footprint · 128 / period))` is the mip whose
 texel equals the footprint.

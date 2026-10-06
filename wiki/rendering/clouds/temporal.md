@@ -38,6 +38,11 @@ flowchart TD
 | light volume | R16F 128 × 128 × 32 | — |
 | weather cube | RGBA8, 1024² × 6, 8 mips | — |
 
+"Half res" is half of the window scaled by the render scale, unless "Clouds follow render scale" is off (see
+[The cloud march](march.md#ray-setup)). "Full res" is the window. When the render scale changes, the images are
+recreated and the history and resolved images are blitted into the new size, so the accumulation carries on
+instead of restarting.
+
 All clouds screen images live in `VK_IMAGE_LAYOUT_GENERAL`; passes are separated by memory barriers only. The
 two post-pass targets `cloudMarchTargetA/B` are the exception: they move between general and shader-read layouts
 each frame for `sat_sky.frag`.
@@ -197,17 +202,21 @@ them with everything else that lives at half resolution. In order:
    caught on some frames flicker otherwise.
 5. **Depth fill.** A cloudy texel with no distance takes its neighbours' opacity-weighted distance.
 6. **Far-layer fade.** Radiance × (1 − far blend), transmittance toward 1.
-7. **Lightning** (glow, bolts, red sprites) and **rain, snow and diamond dust at the eye**, drawn here, after the
-   resolve, because a flash lasts a few frames and the history would swallow it. See [Weather](weather.md).
-8. **Aurora and red airglow**, added to the radiance (see [Aurora and airglow](../aurora-airglow.md)).
-9. **Beam pointing rays**: each beam's drawn line, cut by the scene depth, the beam's own cloud block altitude
+7. **Aurora and red airglow**, added to the radiance (see [Aurora and airglow](../aurora-airglow.md)).
+8. **Beam pointing rays**: each beam's drawn line, cut by the scene depth, the beam's own cloud block altitude
    and the view ray's opaque cloud.
-10. **Ground shadow** (below).
-11. **Write the targets.**
+9. **Ground shadow** (below).
+10. **Write the targets.**
+
+Lightning and the rain, snow and diamond dust at the eye are not part of this pass. A flash lasts a few frames
+and a drop is smaller than a half-res texel, so both would be swallowed or smeared by the cloud history and the
+sky's temporal AA. They are drawn in the main render pass after the sky TAA, at full resolution, over the
+tonemapped frame (lightning channels and glow first, then the drops), and read this pass's targets only to be
+hidden by the cloud in front. See [Weather](weather.md#precipitation-at-the-eye).
 
 | Target | rgb | a |
 |---|---|---|
-| `cloudMarchTargetA` | radiance: clouds, cirrus, aurora, red airglow, lightning, drops, beam lines and shafts | signed occlusion distance in **km** |
+| `cloudMarchTargetA` | radiance: clouds, cirrus, aurora, red airglow, beam lines and shafts | signed occlusion distance in **km** |
 | `cloudMarchTargetB` | transmittance, per channel | ground shadow: Sun transmittance from the surface point |
 
 The alpha of target A encodes occlusion: \( \ge 0 \) is an opaque cloud (the ray's transmittance fell below
@@ -308,7 +317,7 @@ towers, no rain and no ground shadow.
 
 | View | Shows |
 |---|---|
-| 6 | rain at the eye: red the rate, green the drop mask, blue the snow share (drawn by `cloud_march.comp`) |
+| 6 | rain at the eye: red the rate in the eye rain map (bursts included), green the map's maximum (drawn by `cloud_march.comp`) |
 | 11 | adaptive full-rate tiles tinted red (drawn by the resolve; the march then sees view 0) |
 
 Harness `state` reports the current rate under `clouds_v2.rate` (sparse, full, half or adaptive) and
