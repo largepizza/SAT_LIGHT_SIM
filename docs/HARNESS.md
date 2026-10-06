@@ -505,8 +505,11 @@ the space. Pin a run you will want to compare against later before it ages out.
 Launching the app has frozen the whole development machine, most recently when one run was relaunched
 right after another exited (docs/FREEZES.md). So:
 
-- `run.py` and `live.py start` wait **30 s after the last app exit** before launching
-  (`tools/harness/launchgate.py`; `run.py --cooldown S` overrides it, never set it to 0 by habit).
+- `run.py` and `live.py start` wait **30 s after the last app exit and after the last launch**, and until
+  fewer than **2 app processes** are running on the machine (`tools/harness/launchgate.py`; `run.py
+  --cooldown S` overrides the spacing, never set it to 0 by habit; `SATLIGHT_HARNESS_MAX_APPS` the cap).
+  The gate's state is machine-wide (`%LOCALAPPDATA%/SatLightSimHarness`), so agents in separate git
+  worktrees share it, and the running count comes from the process list (the user's own app counts).
 - For many small batches, start **one** app with `live.py start` and `send` to it; don't loop `run.py`.
 - Batch your checks into one script where you can. Every launch is a risk; plan them.
 
