@@ -171,10 +171,11 @@ PART 2 — CREATIVE ASSETS
 ====================================================================
 
 --------------------------------------------------------------------
-Earth day/night/cloud/specular/normal maps
+Earth day/night/cloud/specular (water mask) maps
 --------------------------------------------------------------------
 Files:   8k_earth_daymap.jpg, 8k_earth_nightmap.jpg, 8k_earth_clouds.jpg,
-         8k_earth_specular.jpg, 8k_earth_normal.jpg
+         8k_earth_specular_map.png (and 8k_earth_specular_map.r8, the same
+         pixels pre-decoded by tools/make_raw_textures.py)
 Source:  Solar System Scope (https://www.solarsystemscope.com/textures/)
 License: Creative Commons Attribution 4.0 International (CC BY 4.0)
 Terms:   Free for personal and commercial use with attribution.
@@ -191,7 +192,8 @@ License: Creative Commons Attribution 4.0 International (CC BY 4.0)
 --------------------------------------------------------------------
 Earth elevation map
 --------------------------------------------------------------------
-File:    earth_elevation.png
+Files:   earth_elevation.png (and earth_elevation_0.r8 / earth_elevation_1.r8,
+         the same pixels pre-decoded and split by tools/make_raw_textures.py)
 Source:  Solar System Scope (https://www.solarsystemscope.com/textures/)
 License: Creative Commons Attribution 4.0 International (CC BY 4.0)
 
@@ -200,11 +202,14 @@ Full moon texture
 --------------------------------------------------------------------
 File:    full_moon.png
 Source:  papereater
+License: TODO (project owner): state the license / permission under which
+         this texture is distributed.
 
 --------------------------------------------------------------------
 City lights detail textures (day/night)
 --------------------------------------------------------------------
-Files:   city_day_detail.png, city_night_detail.png
+Files:   city_day_detail.jpg, city_night_detail.jpg (the app loads the .jpg;
+         the .png originals are kept in the source tree)
 Source:  Derived from the Kerbal Space Program visual mod "RSSVE"
          (Real Solar System Visual Enhancements), which edits NASA Visible
          Earth imagery. Edited by contributor "Theysen."
@@ -243,14 +248,19 @@ License: Public domain
 Water map (lake levels + shoreline distance)
 --------------------------------------------------------------------
 Files:   earth_water_sdf.r8, earth_water_level.r8 (baked by
-         tools/make_water_map.py from 8k_earth_specular_map.png and
-         earth_elevation.png — see those entries)
+         tools/make_water_map.py)
+Source:  Shorelines between 60 S and 72 N from Natural Earth, 1:10m Physical
+         Vectors, Land and Lakes (https://www.naturalearthdata.com, public
+         domain); elsewhere and for lake levels, 8k_earth_specular_map.png
+         and earth_elevation.png (see those entries).
 
 --------------------------------------------------------------------
 Music
 --------------------------------------------------------------------
-Files:   assets/sound/music/*
+Files:   assets/sound/music/* (tracks and their *_upwell stems)
 Source:  papereater
+License: TODO (project owner): state the license / permission under which
+         the music is distributed.
 
 --------------------------------------------------------------------
 Ambient sound recordings
@@ -259,8 +269,9 @@ Files:   assets/sound/ambience/*.flac
 Source:  freesound.org, all CC0 1.0 (public domain dedication); each
          recording and its author is credited in
          assets/sound/ambience/CREDITS.txt (tools/make_ambience.py).
-         The wind, surf, hum, beep, disk and VLF sounds are synthesised
-         in code (src/AmbientSynth.cpp).
+         vlf_earth.flac and firmament.flac are original to this project.
+         The wind, surf, hum, drone, pad, bass, rain and thunder sounds are
+         synthesised in code (src/AmbientSynth.cpp).
 
 --------------------------------------------------------------------
 Noise texture
