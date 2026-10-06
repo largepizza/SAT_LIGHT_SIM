@@ -5637,6 +5637,11 @@ void main() {
 
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
     float dayness  = clamp((sunDirENU.w + 0.2) / 1.2, 0.0, 1.0);
+#ifndef SKY_ENV
+    // A solar eclipse: the eye adapts to the sky light that is left, exactly as SatelliteSim::skyExposure() (the
+    // probes, the bloom and every post-tonemap term use that one). moonMisc.y = 1 + that light while possible.
+    if (cloud.moonMisc.y > 0.5) dayness *= clamp(cloud.moonMisc.y - 1.0, 0.0, 1.0);
+#endif
     float exposure = mix(EXPOSURE_NIGHT, EXPOSURE_DAY, pow(dayness, 0.4));
 #ifndef SKY_ENV
     exposure *= cloud.exposureScale;              // "Exposure (EV)"; SatelliteSim::skyExposure() mirrors it

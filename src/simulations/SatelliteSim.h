@@ -2589,6 +2589,9 @@ private:
     glm::vec3 obsFacing = {1, 0, 0};                  // unit tangent (forward direction, north)
     float obsLatDeg = -67.0f;                         // display cache — derived from obsDir
     float obsLonDeg = -67.0f;                         // display cache — derived from obsDir
+    bool cloudMarchTargetsClear = false;              // cloudMarchTargetA/B hold "no cloud" (Potato skips cloud_march.comp)
+    bool satFlareIdleCleared = false;                 // glowBuf/oceanGlintBuf emptied while no satellite is active
+    bool sceneDepthHoldsNoSurface = true;             // sceneDepthImg/QImg hold kNoSurfaceT (created so; knockout 1024)
     float obsTerrainH = 0.0f;                         // terrain elevation at observer lat/lon (m)
     float obsHeightOffset = 0.0f;                     // user-controlled height above terrain (m, Q/E/Z)
     // The eye's distance from the Earth's centre, as the shaders place it: max(ground, height offset)
@@ -3297,8 +3300,17 @@ private:
     float cv2FarLowSun = 0.38f;   // slot 255: the far layer's key light goes as mu0^(1 / (1 + this)) (0 = a flat slab)
     float cv2FarKeyGain = 4.1f, cv2FarSkyGain = 0.6f;   // review 24b: the user's tuning (was 10 / 0.3)   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 8900.0f;   // review 24b: the user's tuning (was 1500)
+    // The volumetric clouds are off (knockout 32768: Planetarium, Potato, or the Performance tab). Then nothing of
+    // clouds v2 runs on the GPU — march, resolve, far layer, lightning, rain map — and every host consumer of
+    // their outputs (lightning bolts, rain particles, thunder, the rain ambience, the Sun's cloud transmittance)
+    // treats them as absent rather than reading the last frame they were written.
+    bool cloudsV2Off() const { return (debugDisableMask & 32768u) != 0u; }
+    // The lightning pass (and so the rain map, the flash list and the Sun profile in cv2FlashBuf) runs this frame.
+    bool cloudsV2LightningActive() const { return !cloudsV2Off() && cloudFarBlend() < 0.999f; }
     float cloudFarBlend() const
     {
+        if (cloudsV2Off())
+            return 0.0f;   // the far layer is clouds too: off with them
         const double h = (double)obsEyeRadiusM() - satphot::kEarthRadiusM;
         const double a = (double)cv2FarLayerFromKm * 1000.0, b = std::max((double)cv2FarLayerFullKm * 1000.0, a + 1000.0);
         const double x = std::clamp((h - a) / (b - a), 0.0, 1.0);

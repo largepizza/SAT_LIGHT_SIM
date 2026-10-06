@@ -284,6 +284,16 @@ vec3 lensFlare(vec2 uv, vec2 pos, float intens, float bokehMult) {
     return max(c, vec3(0.0));
 }
 
+// The eye's ground as v1.1's Potato shader had it: the DEM at the observer, sea level on water (the water map's
+// R > 0.5). terrain.glsl's observerEffHeight now also places lakes at their level and banks shores — code this
+// tier does not need (the flat Earth here draws water at sea level anyway).
+float minimalEyeHeight(vec4 obsECEFDir) {
+    vec2  uv = dirToUV(normalize(obsECEFDir.xyz));
+    float g  = (textureLod(earthSpecTex, uv, 0.0).r > 0.5)
+             ? 0.0 : max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange - kElevOffset);
+    return max(g, max(0.0, obsECEFDir.w));
+}
+
 void main() {
     vec3 dir = normalize(enuDir);
 
@@ -292,7 +302,7 @@ void main() {
     vec3 dirECEF    = dir.x * enuX + dir.y * enuY + dir.z * enuZ;
     vec3 sunDirECEF = sunDirENU.x * enuX + sunDirENU.y * enuY + sunDirENU.z * enuZ;
 
-    float obsEffH = observerEffHeight(earthElevTex, earthSpecTex, pc.obsECEFDir);
+    float obsEffH = minimalEyeHeight(pc.obsECEFDir);
     vec3  obsPos  = observerPos(obsEffH);                                  // ENU
     vec3  obsECEF = obsPos.x * enuX + obsPos.y * enuY + obsPos.z * enuZ;   // ECEF
 

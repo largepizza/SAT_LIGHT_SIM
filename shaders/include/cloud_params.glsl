@@ -443,8 +443,8 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     vec4  taaJitter;
     // -- The Moon as a body (784 -> 816, 2026-09-30): xyz its centre from the Earth's centre in the observer's
     // ENU (km), w its topocentric angular radius (rad, x "Moon size"); moonMisc x the fraction of the Sun's
-    // disc the observer sees past the Moon, y 1 = a solar eclipse is possible (the Moon within 2 deg of the
-    // Sun), z 1 = a lunar eclipse is possible (near the antisolar point), w the Moon's distance (km).
+    // disc the observer sees past the Moon, y > 0.5 = a solar eclipse is possible (the Moon within 2 deg of the
+    // Sun; its value is then 1 + the observer's eclipse sky light, the exposure's factor), z 1 = a lunar eclipse is possible (near the antisolar point), w the Moon's distance (km).
     vec4  moonCenter;
     vec4  moonMisc;
     // -- City light LOD (816 -> 848, 2026-09-30, review 13; Night lights tab): the ground footprints (m per

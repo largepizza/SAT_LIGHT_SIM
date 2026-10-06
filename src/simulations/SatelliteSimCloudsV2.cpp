@@ -1401,10 +1401,21 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
 
 void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc)
 {
-    fillCloudsV2Params(ctx, cpc);
+    fillCloudsV2Params(ctx, cpc);   // cloud_march.comp reads the v2 UBO (beams, debug views) either way
+    // The weather cube keeps evolving with the clouds off: the flat stand-ins (sat_sky.frag's flat layers,
+    // SKY_LITE, Potato's deck, reflections and probes) read it.
     recordWeatherEvolution(cmd);
     if (!cv2MarchPipeline)
         return;
+    // Knockout 32768 (Planetarium, Potato): nothing else of clouds v2 is recorded — no march, resolve, far layer,
+    // lightning (so no bolts, rain particles, thunder or rain sound: they key on cv2LightningRanThisFrame /
+    // cloudsV2LightningActive()), no tiles, and no barriers (each one restarts the compute encoder on MoltenVK).
+    // cloud_march.comp ignores the stale resolved images under the same bit, and the history restarts after.
+    if (cloudsV2Off())
+    {
+        cv2HistoryValid = false;
+        return;
+    }
 
     // scene_depth.comp wrote terrainFrameBuf (the eye height) this frame.
     memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
