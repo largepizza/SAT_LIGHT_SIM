@@ -1,241 +1,167 @@
 # Changelog
 
-## 1.2.0 (unreleased — internal version, not tagged)
+## 1.2.0 (release date TBD)
 
-> DRAFT, summarised from `git log v1.1.1..HEAD` (43 commits, 2026-09-10 .. 2026-09-24). Trim, split or
-> re-word before tagging. The internal version is 1.2.0 (`VERSION`) as of 2026-09-26.
-> Per-subsystem detail lives in `CLAUDE.md`; accepted photometric error lives in
-> `data/benchmarks/KNOWN_RESIDUALS.md`.
+The biggest update yet: a new weather system, a living Earth from the ground to orbit, satellites you can fly up
+to and inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photometric error is listed in
+`data/benchmarks/KNOWN_RESIDUALS.md`; the full reference is the project wiki (`wiki/`).
 
-### Added
-- **A tutorial for the controls.** After the intro, a short walk-through teaches looking around, moving,
-  climbing, boosting and selecting a satellite. A keyboard, mouse or gamepad picture lights up the keys to
-  press, and each step moves on once you've done it. It then points out the satellite's buttons, the time
-  controls, the picture buttons and the settings. Skip it at any time, or replay it from Settings > Display.
-  The intro no longer shows the controls itself, and the separate "Click to select any satellite" hint is gone.
-- **Better controller play.** With a satellite selected, the D-pad's left and right move between its buttons
-  (Info, Go to, Trace, Track), A presses one and B steps back (closes the window, leaves Go to, deselects), with no
-  cursor needed. Time moved to the D-pad's up and down, pause to X and reverse to Y; the right stick's click resets
-  the zoom. Controller bindings saved by older versions are reset to this layout once.
-- **Type values instead of dragging.** Every settings slider's value (Clouds, Weather, Terrain, Ocean, Photometry
-  and the rest), the volumes and the Cinematics window's fields are text boxes on click: type a number, Enter
-  applies, Esc cancels. Cinematics get a name field (the file is saved under it), shot names, typed key times and
-  a timeline you can scrub and drag keys on, plus Duplicate shot and Delete for saved files.
-- **HQ cinematic exports show their progress.** An HQ export can take tens of minutes; the window now shows the
-  frames as they render, a progress bar with the time left and a Stop button, and Esc stops it. The window
-  estimates the export's length before you start.
-- **Real eclipses, at their real times.** The Moon's position now follows the standard lunar series (it was a
-  plain ellipse, off by up to a couple of degrees and hours), and the Earth turns by real sidereal time, so the
-  sim's clock is real UTC: the total lunar eclipse of 31 January 2037 and the total solar eclipse of 13 July 2037
-  happen over Australia when they really do. Near the Sun the Moon is drawn at its true size, the Sun's size
-  follows its distance (total vs annular), and at totality the land, sky light, dust and the Sun's bloom and
-  lens flare all go dark, leaving the horizon glow. Saved times show a different local time of day than before
-  (5 h 15 min earlier); the start time moved so the intro is unchanged.
-- **Totality looks like totality.** The Moon's shadow now falls on everything from its real geometry, point by point:
-  the air, the ground, every cloud and the dust. Inside the umbra the sky turns deep blue with a ring of orange all
-  around the horizon, clouds go dark, and your eyes adapt as at twilight (stars and planets come out). From space the
-  shadow is a sharp black core in a wide soft penumbra, on the clouds as well as the land. The corona is fibrous,
-  following the Sun's magnetic field lines out into streamers, with pink prominences at the limb.
-- **Solar parks on the ground.** Reflector targets now say what they are for (`"kind"`: solar, agriculture,
-  daylight). Solar sites are drawn as PV parks sized by their capacity: plots of panel blocks and service
-  roads, rows of single-axis trackers (the Americas, India, Australia) or fixed-tilt tables facing the
-  equator, dark from orbit. The glass reflects the sky, glints the Sun, and at night mirrors the Reflect
-  beams: trackers turn toward the beams, and from the right angle the park shows a glitter band.
-- **Cinematics.** A camera-path editor (the film button in the time bar): shots of keyframes played as smooth
-  splines, eased in and out, with their own sim-time rate, stored look (clouds, lighting, constellations, render
-  settings) and an optional ride-along with a satellite; play them, scrub them, save and load them, and export
-  them frame by frame — a quick preview, or every frame a settled, supersampled HQ photo with optional motion
-  blur. The automation harness drives the same paths (`cine`, `path`); `tools/harness/scripts/tour.satcmd` is an
-  application tour built with it.
-- **HQ photo** (F8, or the sparkle-camera button): a supersampled, settled screenshot at up to 4x the window.
-- **Night horizon.** Dust is lit by city light and the night sky: from low altitude at night a near-black band no
-  longer runs along the horizon, and distant clouds no longer show through it as pale blocks.
-- **Sunset cloud shadows** are long streaks toward the Sun instead of chains of separate discs.
-- **Clouds from high orbit** are white like the detailed clouds below them, not bluish ("Far cloud layer sunlight" 10,
-  "sky light" 0.3 — a saved settings file keeps its old values).
-- **The sea keeps its waves much further out** ("Sea wave range (km)", "Sea wave sharpness"), the far sea is no longer
-  dimmed with distance, and the bright bands at the left and right edges of the sea at the horizon are gone.
-- **No more blocky cloud edges in motion**: bright blue-white blocks along cloud edges inside the Reflect beams, and
-  dark blocks along distant cloud edges at night, are gone; the distant horizon cloud band is smooth.
-- **Clouds while climbing or descending slowly** keep their shape instead of softening and smearing vertically.
-- **Far cloud layer.** From high orbit (fading in from 600 km, full at 1500 km) the low clouds are a full-resolution
-  layer shaded from the same cloud field and the satellite-imagery morphology, with the mid and high layers over it,
-  instead of the half-resolution volumetric march: real-imagery detail down to the pixel, no temporal flicker, and
-  ~6x cheaper there. Settings: "Far cloud layer from / full at (km)", "sunlight", "sky light".
-- **Cloud morphology.** Closed and open convective cells, cloud streets and clustered cumulus shape the clouds
-  seen from orbit and the mid-level cloud, from four real MODIS scenes (NASA GIBS), made tileable
-  (`tools/make_cloud_morph.py`). From orbit the clouds take their fraction from the map over ~20 km and their
-  shape and thickness from the imagery: broken edges, translucent thin cloud. "Morphology from (m/px)" sets
-  where that takes over.
-- **Ambient sound.** A location- and context-aware ambience bus under the music (Settings → Sound →
-  "Ambience"): wind for plains, deserts, mountains and ice sheets; surf and gulls at the coast, the
-  open sea offshore; crickets at night (silent inside a Reflect Orbital beam), forest birds and a
-  dawn chorus, jungle day and night; city traffic day and night; the jet stream, the thin
-  stratosphere; a cabin hum in orbit, a warm hum over the aurora at night, a low phased drone
-  among the broadband shells, a fridge-like hum inside the AI datacenter disk, real VLF whistlers
-  in medium Earth orbit and the "Firmament" pad rising toward high orbit (both original, made in FL
-  Studio). Procedural voices (`src/AmbientSynth.cpp`) plus CC0 field recordings
-  (`tools/make_ambience.py`), mixed by a moddable layer table
-  (`assets/sound/ambience/ambience.json`). Reflect Orbital light has its own sound: bright flares
-  on screen become a hollow chord in the music's key (one glint is an open fifth; a sky full of
-  mirrors deepens and crowds into clusters, its voices drifting out of tune), over a deep, slowly
-  sagging hum wherever beams concentrate on the ground near you. While music plays, the glare is
-  answered by the music itself instead: every track has an "upwell" stem (`<track>_upwell.mp3`) that
-  rises over it, sample-locked, as flares fill the screen; the beam sounds swell in and out across
-  the silence between tracks. The automation harness renders and
-  checks it (`audio state/record/expect/force/music/tonality`, `ambience_beams.satcmd`,
-  `imgtools.py audio`). In orbit, low phased drones and soft status tones, all in one key.
-  Advanced Sound settings: fade speeds, the tonal root, per-group gains (wind, water, nature, city,
-  space, machines).
-- **The ambience plays in the music's key.** Each soundtrack file is analysed on first launch (key,
-  pitch set, chords, and its tuning over time — `src/MusicAnalysis.cpp`, cached per track), so the
-  ambience's root follows the playing track, bends with it (Gravity Wave's piano drifts by about
-  ±30 cents), and glides to the next track's key in the silence between them. Tracks added to
-  `assets/sound/music/` are analysed automatically. Settings → Sound shows the current key and
-  chord; "Key follows the music" (advanced) switches back to the fixed Tonal root. `SoundTool`
-  (`tools/sound_tool/`) runs the analysis and renders synth voices offline.
-- **Music player.** Settings → Sound shows the current track and its position, with previous /
-  pause / next. A 30 s gap between tracks (adjustable) lets the ambience breathe. Gravity Wave always
-  plays first; any mp3/flac/wav added to `assets/sound/music/` joins the playlist. New track: LEO
-  Motif, a short piece written to sit with the ambience, and BIOS. The music fades out as you climb: half
-  volume in medium Earth orbit, silent from geostationary altitude up, leaving high orbit to the
-  ambience.
-- **Satellite lighting overhaul (Phases 1-3).** Data-driven rigid attitude groups (`attitude_groups`
-  in `constellations.json`) replace the `AttitudeMode` enum — legacy modes are converted at load and
-  verified against the old surface normals. Geometry models (`"model": "<id>"` →
-  `satellite_models/<id>.json`) describe a type as primitives, materials and a kinematic tree with
-  hinges and per-component pivots. Photometry is now physical: GGX/Beckmann · Schlick · Smith lobes,
-  earthshine from the whole lit Earth cap, diffuse transmission for backlit arrays, and occlusion
-  between a satellite's own parts on both CPU and GPU.
-- **SatModelTool** (`tools/sat_model_tool/`, `cmake --build build --target SatModelTool`) — load,
-  bake, validate and OBJ-export models; `--selftest`, `--benchmark`, `--run-benchmark`,
-  `--sensitivity`, `--replay-trace`, `--set` material overrides, bulk export.
-- **Benchmarking.** 9 published photometry datasets with provenance in `data/benchmarks/`, the
-  `SatBench` campaign runner, `sat-light-sim-trace/1` CSV export/replay, a GPU parity check for the
-  selected satellite (mismatches are logged), and the photometric accuracy gate (`cmake/AccuracyGate.cmake`, M11) which runs
-  those selftests and benchmarks in CI.
-- **In-app satellite renderer + model viewer (Phases 4a-4f).** Any satellite that is big enough on
-  screen is drawn as a 3D mesh, composited as a surface of the scene (clouds in front occlude it,
-  the atmosphere scatters over it, points and stars behind it are hidden); energy-matched bloom and
-  mesh-glint glare across the sprite → mesh hand-off; environment probes give meshes reflections of
-  the Earth and an ambient term; procedural surface detail (solar cells, MLI, panel seams);
-  model-viewer window with Studio/Live lighting, sunlit/rest pose, a photometric check and camera
-  presets; follow mode; telescope zoom whose aperture grows with magnification.
-- **Real-satellite geometry roster** — ISS, Tiangong, Starlab, Axiom, Haven-1/2, Hubble, Ross,
-  Orbital Reef, the Starship HLS depot, Starlink v1.0 / v1.5 / v2 Mini / v3 / VisorSat, OneWeb,
-  Guowang, Amazon LEO, the SpaceX AI satellite, Reflect Orbital mirrors, Starmind AI1 and debris
-  fragments — plus render-only parts (free greebles) and open lattice trusses.
-- **UI**: trace window with axis ticks, live magnitude and reasons; model viewer; UI scaling.
-- **Sharp mirror reflections** (Photometry, on by default): mirror-smooth surfaces of the four largest
-  such satellites in view reflect the full sky renderer per pixel instead of a reflection map.
-- **Stars in reflections and in the model viewer's sky**, drawn from the catalogue by the same point
-  model as the main view.
-- **Satellite glints on the water are tunable (Ocean tab, 2026-09-26).** A flare reaches the water
-  twice: the sprite/bloom/glare you see directly, and the specular hit reflected on the sea. Only the
-  first had controls, so "a mild satellite lights up the water" could only be answered by dimming the
-  whole satellite. Two sliders now: **Ocean flare refl** (gain on the reflected glint, 0 = none) and
-  **Flare refl floor** (reflections fainter than this are skipped before any per-pixel work — the
-  surgical fix for mild satellites is the floor, not the gain).
+### New in the sky
 
-### Changed
-- **The ocean-glint pair ships at the tuned values, not at the constants it replaced** (2026-09-26).
-  `ocean_glint_gain` / `ocean_glint_min_flux` now default to `0.020175438` / `37.894737` (the UI shows
-  0.02 / 37.9) — copied float32-exact from the tuned `settings.json`, so a first run and the
-  `SatelliteSimFresh` build reproduce the tuned look. Files that already carry both keys are
-  unaffected; older ones (neither key present) now get the tuned look instead of the old hardcoded one.
-- **The ground wind bed follows the weather (2026-09-26).** `wind_ground` was the loudest thing on the
-  ambience bus wherever the camera was low, in every place and every season. It now reads the 2D
-  coverage map the clouds are drawn from — a new `cloud` driver, bilinear over a 1024×512 CPU copy
-  taken at boot from the map already decoded for the GPU, drifted by the same `cloudPhase` the
-  surface overlay uses and eased over 1.5 s — so it is a full bed under an overcast and a light breeze
-  under a clear sky, and it varies from place to place as you fly. Its gain also drops 0.25 → 0.15
-  (it used to drown everything else). The curve lives in the layer table, so it stays moddable: level
-  0.4 → 1.0 across coverage 0.2 → 0.75 in `assets/sound/ambience/ambience.json`. The jet stream and
-  the alpine, desert, ice and sea winds are untouched — they keep the noise-field `wind` driver.
-- **Glare scales with proximity (2026-09-26).** A satellite's glare sprite is up to 3× wider where the
-  camera is right on top of it and untouched at 400 km and beyond, so a resolved model — in the 3D
-  viewer, or drawn as a mesh in the main view — spreads a far wider flare than the same satellite 400
-  km off, while a point sprite's glare from the ground is exactly the shape it was tuned to. The range
-  is one the frame already had, so the cost is a couple of ALU ops. Settings → Photometry gained
-  "Glare near gain" and "Glare near range (km)" (`photometry.glare_near_gain` = 3.0,
-  `photometry.glare_near_range_km` = 400; gain 1 = off). The glare's own defaults are now the
-  distance-tuned values a release build shipped in its `settings.json` (gain 0.684, size 29.79 px,
-  threshold 1.765, falloff 4.678) instead of the earlier untuned 1.0 / 48 / 0.3 / 2.5.
-- Unified scene depth: one encoding (log2 of the true ray distance, 1 cm to 1e9 m) written by
-  terrain, ocean, opaque cloud, meshes, points and stars, replacing the 150 km cap and its manual
-  occlusion tests. Satellites in front of the distant Earth (or a mountain, or a cloud) now occult
-  correctly, and bloom survives at every range.
-- One magnitude-to-sprite model shared by satellites, stars and planets.
-- Line-of-sight atmospheric extinction now computed for every observer altitude, not just the
-  surface.
-- The satellite roster is model-first: `data/constellations.json` ships the modelled types, and lobe
-  budgets scale with roster size.
-- **UI layout pass, round 2 (2026-09-24).** The satellite UI is now ONE window with an on-demand
-  pop-out: the info window carries a **fixed 4:3 render** of the subject with the **view-preset chips**
-  floating over it (Select, Go to, Spin, Observer, Studio, Maximize — icon-only, tooltip = the button's
-  name, accent fill for the active preset), and a **scrollable list of collapsible sections** below
-  (Satellite / Orbit / Photometry open by default; Observer / Camera / Render / Check collapsed) — the
-  Clouds settings tab's form. **Maximize** pops the 3D view out into its own 900x640 resizable window;
-  one offscreen render serves both views, each sampling a centred sub-rect of its own aspect, so the 4:3
-  band and the wide pop-out both stay unstretched. **Select / Go to** are title-bar icons again (they act
-  on the subject, not the view — the chips are Spin / Observer / Studio / Maximize, and Spin is a plain
-  toggle: free camera = nothing lit). The observer readouts, the "you" marker and the
-  Observer preset now use the parked ground telescope rather than the camera (in follow mode the camera
-  IS the observer, which is what made the marker line flip and flicker in space).
-- **UI icons are generated, not hand-drawn** — `python tools/make_icons.py` rebuilds every new icon in
-  `assets/icons/ui/` from geometry declared in that file and prints 48 px + 16 px previews (the size
-  they are actually drawn at), replacing the ad-hoc shell rasterising those four glyphs started as.
-- **Runtime files now re-sync next to the exe whenever they change** (`sat_sync_runtime_sources` in
-  `CMakeLists.txt`): the POST_BUILD copies only ran when the target relinked, so a regenerated icon (or
-  an edited `constellations.json`) could sit stale beside the exe forever with nothing reporting it.
-  The satellite window's section list also draws a scroll thumb (`ui.scrollbar`), so it reads as
-  scrollable instead of just ending at the window edge.
+- **Volumetric clouds, rebuilt (clouds v2).** One 3D cloud field from the ground to orbit, driven by a weather
+  map: cumulus with lobed, cauliflower sides and flatter bases, stratus decks with textured undersides,
+  altocumulus and altostratus, cirrus streaks, veils and cirrocumulus, all lit by the Sun or the Moon through
+  the clouds above them, with sunset colours, silver linings and soft cloud shadows on the ground (long streaks
+  at sunset).
+- **Storms.** Cumulonimbus towers grouped into storm cells (a dominant tower and a flanking line), flared anvil
+  heads under the tropopause, overshooting domes, rain shafts under the towers, cumulus that rises around storms.
+- **The weather moves and evolves.** The cloud map drifts, is advected by a slow wind, and storms grow and decay
+  over hours; over land, afternoon convection builds storms that die back after dark.
+- **Rain, snow, sleet and diamond dust.** Precipitation at your eye is drawn as real particles: drops sized and
+  falling like real rain, flakes that flutter, blown by the wind, gusts and a storm's outflow, lit by the sky
+  around you. The precipitation type follows the air temperature.
+- **Lightning and thunder.** Whole storms flash: cloud-to-ground strokes with branches and tendrils, in-cloud
+  flashes, spider lightning under the cloud base and rare red sprites high above. Clouds glow around each flash,
+  and thunder rolls in from the channel's own shape, delayed by distance (a crack when it's close).
+- **Rainbows, halos and ice optics.** Rainbows at storms with the Sun behind you, 22-degree halos, sundogs, the
+  circumzenithal arc, sun pillars and glints off ice crystals, for the Sun or the Moon.
+- **Fog, dust and ice fog.** Radiation fog pooling in valleys at night and burning off in the morning, sea fog
+  on the coast, dust plumes over dry land, diamond-dust ice fog over Antarctica and Greenland.
+- **Clouds from orbit.** Real satellite-imagery morphology (closed and open convective cells, cloud streets,
+  popcorn cumulus from MODIS scenes) shapes clouds seen from space, and from high orbit the low clouds become a
+  full-resolution far layer: sharper, steadier and several times cheaper. The clouds stay the same clouds as
+  you climb.
+- **Aurora driven by space weather.** The auroral oval is a ring fixed to the Sun, widest near local midnight,
+  dark inside. Its size and brightness follow a Kp index from a space-weather model of the solar cycle,
+  recurrent solar-wind streams, CME storms and substorms; a big storm brings the aurora to mid-latitudes. The
+  curtains are thin folded sheets with sharp lower borders, rays and red tops. An "AURORA NOW" readout shows
+  the current activity; Kp can also be set by hand.
+- **Real time, real eclipses.** The sim clock is real UTC (the Earth turns by Greenwich sidereal time), and the
+  Moon follows the standard lunar series: its true position, size, phase and orientation (tidally locked).
+  Solar and lunar eclipses happen when and where they really do (total lunar eclipse 31 Jan 2037, total solar
+  eclipse 13 Jul 2037 over Australia). At totality the Moon's shadow darkens the air, ground, clouds and dust
+  point by point, leaving an orange ring around the horizon, the stars come out, and a fibrous corona with
+  pink prominences appears. Moonlight follows the phase law.
 
-### Fixed
-- **Cinematics following a satellite play back the framing the keys were taken with** (they always aimed at
-  the satellite), keys taken before Follow was switched on no longer put the camera inside it, and a key whose
-  heading crossed due south no longer spins the camera a full turn.
-- Windows with scrolled content no longer draw part of it outside the window after a text box or clipped row.
-- Reflect beams on high ground light the site itself: the ground spot was traced to sea level and landed
-  kilometres past a mountain-top or plateau site.
-- **Clouds stay the same clouds as you climb.** Up close and from orbit the low clouds are placed by one rule (the cells
-  and the weather map, with the satellite imagery at a fixed share, "Imagery share"); review 18 switched to a different
-  placement as the pixels grew, and climbing over one spot the clouds were replaced between ~35 and 450 km. Cloud
-  shadows, beam occlusion and lightning use the same placement.
-- Small clouds no longer smear into streaks and fade while moving low over them.
-- A light-blue disc on the sea under the observer at dusk (seen looking down).
-- Flickering scattered clouds seen from medium orbit (the far field is filtered to twice the pixel footprint,
-  and the history weight of a still view falls with altitude).
-- **The jungle day bed is a different recording.** "jungle forest 02" (rucisko) carried people talking
-  under the insects; `jungle_day` is now an Amazon rainforest morning by felix.blume, and the night side
-  gained its own `jungle_night` species chorus (night frogs and toads at a caiman pond, French Guiana) —
-  both CC0, both from the same recordist, both normalised like the rest (`tools/make_ambience.py`,
-  `CREDITS.txt`). The equatorial night stop of `ambience_tour.satcmd` now expects crickets, tropical
-  night and jungle night together and still sits at the mix's ~10 dB under the music.
-- **Meshes and flares no longer fight in dense constellations (2026-09-25).** Only 64 satellites could be
-  meshes, picked in random GPU order, so in the AI ring neighbours flickered between model and flare
-  every frame. Up to 256 are now drawn, largest first, and the size at which a satellite turns into a
-  model rises while more than that are in range.
-- A distant satellite's glare no longer jumps between texels of its small model: it stays the flare's,
-  at its centre, until the model is resolved.
-- Environment probes follow their satellite: at high time rates they no longer drop to the fallback
-  lighting every frame (the ambient light of every model flickered). The model viewer no longer
-  re-renders its whole probe every frame at those rates either.
-- Model viewer: exposure follows the sky's rule at the satellite (it was ~5x too dark over twilight);
-  marker lines are drawn over the model with their own depth and clipped to the view (they flickered
-  when orbiting close); the dots are always on top and labelled "You" / "Target".
-- Reflections dim the Milky Way and zodiacal light near the Sun and under sun glare as the direct
-  view does, at the viewer's exposure.
-- Scene meshes could render as a red bloom-only ghost; the model viewer's first cut came up all-black
-  (Clay draws an element's own background over its custom content); a satellite that went dark while
-  selected could drop out of view; and a click on the trace window fell through to the camera.
-- Bloom: seeding it from a mesh's own over-white pixels exploded when looking edge-on to the Sun —
-  it now seeds from photometric light only. Per-texel overflow in the flare source also made a
-  mirror's glint position NaN, so the Sun in a Reflect Orbital mirror never glared.
+### New on the ground and sea
+
+- **Terrain detail.** A true 3D surface with metre-scale relief and branching erosion gullies, soft terrain
+  shadows, snow, rock and close-up ground textures (grass, forest floor, rock, snow, sand, dirt).
+- **Lakes and coasts.** Lakes sit at their own level (Titicaca, Baikal, the Great Lakes), shorelines come from
+  Natural Earth's 10 m coastlines, beaches have dry and wet sand.
+- **Night lighting.** The night side is lit by the Moon and the night sky; only real city lights glow.
+- **The sea.** Waves that stay seamless however far you travel, a sea state that follows the weather (calm
+  seas to storm swell), whitecaps and foam, breaking surf and shoaling on the shore, a physically based Sun
+  glitter path, sharp sky and cloud reflections close up and a rougher, darker sea toward the horizon.
+- **Procedural cities.** Street grids, lamp posts in sodium and LED colours, signs and traffic lights, real
+  major roads from Natural Earth, rooftops, yards and tree crowns by day, and nine regional styles (North
+  American grids, European courtyard blocks, Soviet slab rows, East Asian plans and more). From altitude and
+  the horizon, distant cities glitter as fields of crisp points instead of blurred blobs. Cities stop at the
+  foot of the mountains.
+- **Farmland.** Rectangular fields that follow regional styles: mile sections and centre pivots, strip fields,
+  rice paddies that reflect the sky.
+- **Solar parks.** Reflector target sites are drawn as solar PV parks sized by their capacity, with single-axis
+  trackers or fixed-tilt tables; the glass glints the Sun and, at night, the Reflect Orbital beams. Rooftop
+  solar appears where a park overlaps a city. Mirrors only beam while they are in sunlight.
+
+### Satellites
+
+- **Satellites as real 3D models.** Every satellite type has a geometry model (ISS, Tiangong, Hubble, Starlink
+  v1.0 / VisorSat / v1.5 / v2 Mini / Direct-to-Cell / v3, OneWeb, Amazon LEO, Guowang, Starmind AI1, Reflect
+  Orbital mirrors, the Starship depot, commercial stations, debris). Any satellite big enough on screen is drawn
+  as a mesh in the scene, reflecting the full sky and Earth, with a seamless hand-off from its point of light.
+- **Physical brightness.** Magnitudes come from the models: microfacet reflection per surface, earthshine from
+  the whole lit Earth, backlit translucent arrays, optional shadowing between parts, and validated against
+  published observation campaigns.
+- **Info window and 3D view.** Select a satellite for its orbit, brightness, sky position and a live 3D view
+  (free, from you or toward you; live or studio light), which pops out into its own window. A photometric
+  check compares the render with the model.
+- **Trace pass.** Plot a satellite's magnitude over its current or next pass, with peak, length and live values,
+  and export it as CSV.
+- **Go to, Follow and Track.** Fly to a satellite along your line of sight to it and ride with it; Track locks
+  the camera onto a satellite as it crosses your sky while you stay on the ground.
+- **SpaceX Starmind orbital data centers.** The roster follows SpaceX's May 2026 FCC filing: sun-synchronous
+  shells whose planes cross at the equator (the "X-ring") and 30-degree shells, about 990,000 satellites flying
+  in formation rings of eight.
+- **Bulk export** of simulated observations for a satellite or a whole constellation (Settings > Photometry).
+- **Satellite glints on the sea** have their own gain and floor (Ocean tab).
+
+### Camera, capture and UI
+
+- **Bookmarks.** Save a view (place, camera, time and the weather) with a thumbnail and jump back to it.
+- **Cinematics.** A camera-path editor: shots of keyframes on smooth splines, follow shots that ride with a
+  satellite, a timeline, saved files, and frame-by-frame export (quick preview or supersampled HQ frames with
+  motion blur), with a progress display.
+- **HQ photo** (F8 or the camera-sparkle button): a settled, supersampled screenshot at up to 4x the window.
+- **First-run tutorial** for looking, moving, climbing, boosting and selecting (keyboard, mouse or gamepad),
+  then the HUD's buttons. Replay it from Settings > Display.
+- **Loading screen** with progress instead of a white window; much faster startup on repeat launches.
+- **Type instead of drag.** Slider values, the clock, latitude, longitude and altitude are text fields.
+- **A cleaner UI.** Every window and settings tab shares one style; settings tabs are grouped (General, Sky,
+  Rendering behind "Show advanced settings", About); a Performance tab holds the frame timings and knockouts;
+  new filled pixel icons; the bottom-right panel ends in the Bookmarks, Cinematics and Settings buttons.
+- **Gamepad layout 2.** D-pad left/right move between a selected satellite's buttons, A presses, B steps back;
+  time on D-pad up/down, pause on X, reverse on Y. Saved pad bindings are reset to this layout once.
+- **Movement scales with height**, so walking near the ground is walking pace and orbit is still fast.
+
+### Sound
+
+- **Ambient sound.** Location-aware ambience under the music: winds, surf and gulls, crickets and birds,
+  jungle day and night, city traffic, rain, thunder, and drones and pads in orbit, all in the music's key.
+- **Music.** A player with previous / pause / next and a gap between tracks; new tracks LEO Motif and BIOS.
+  Each track has an "upwell" stem that rises over it when Reflect Orbital flares fill the screen. The music
+  fades out toward geostationary altitude.
+
+### Graphics and performance
+
+- **Temporal anti-aliasing** of the terrain, sky and sea, which becomes a **temporal upscaler** below 100%
+  render scale, keeping most of full-resolution detail.
+- **Render scale now scales the clouds too**, so lower scales give real frame-rate gains ("Clouds follow
+  render scale"), and an optional **automatic render scale** holds a target frame rate.
+- **Presets reshuffled.** Potato and Planetarium for weak hardware (Planetarium has no volumetric clouds),
+  Low (50% render scale, every effect on), Medium (67%), High and Ultra. Integrated GPUs start on Planetarium, with a
+  tutorial card pointing at the presets.
+- Large performance work across the cloud march (adaptive sampling, tile culling, LODs), the sky pass, terrain
+  depth pyramid and the satellite pipeline (about 1.37 million satellites in the default roster).
+
+### Changed defaults and behaviour
+
+- Saved times now show a different local time of day (the clock is real UTC; about 5 h 15 min earlier for the
+  same timestamp). The start time moved so the intro is unchanged.
+- "Storm strength" for the aurora is replaced by Kp (automatic by default).
+- Glare defaults are the distance-tuned values; glare grows when the camera is close to a satellite.
+- The cinematics, bookmarks and settings buttons moved from the time bar to the bottom-right panel; the
+  Camera settings tab is now the Controls tab's Mouse section.
+
+### Technical and modding
+
+- **Satellite types as data.** Rigid attitude groups (`attitude_groups`) replace the attitude enum (legacy
+  modes are converted at load); geometry models (`satellite_models/<id>.json`) with primitives, materials,
+  kinematic trees with hinges and pivots, render-only parts, open lattices, provenance blocks. See
+  `docs/CONSTELLATION_MODDING.md`.
+- **New roster features.** `"distribution": "Shells"` with a `groups` table (Walker or sun-synchronous groups),
+  formation clusters (`cluster_size`, `cluster_shape` line or ring), and per-plane node spread
+  (`raan_spread_deg`, `raan_spread`).
+- **Reflector targets** carry a `"kind"` (`solar`, `agriculture`, `daylight`); solar sites become parks.
+- **SatModelTool** (`tools/sat_model_tool/`): bake, validate, OBJ export, self-tests, benchmark runs
+  (SatBench), trace replay, material overrides. Nine published photometry datasets in `data/benchmarks/`,
+  and a photometric accuracy gate in CI (`cmake --build <dir> --target accuracy-gate`).
+- **Automation harness** (`tools/harness/`, `docs/HARNESS.md`): scripted and live runs, captures with state
+  sidecars, perf and knockout sweeps, UI layout dumps, camera paths, temporal-stability and climb benchmarks,
+  offline audio rendering. Launches are spaced and capped machine-wide.
+- **Project wiki** (`wiki/`, MkDocs) as the maintained reference; `docs/rendering/` describes the rendering
+  architecture.
+- Unified log-distance scene depth written by every surface; one magnitude-to-sprite model for satellites,
+  stars and planets; line-of-sight Chapman extinction at any altitude; exact GPU orbit phase.
+- Large textures ship pre-decoded (`.r8`, `tools/make_raw_textures.py`); the app keeps its own pipeline cache.
+- Tools: `make_icons.py`, `make_ambience.py`, `make_water_map.py`, `make_city_roads.py`,
+  `make_terrain_materials.py`, `make_cloud_morph.py`, `SoundTool`, `cloud_stats.py`.
 
 ### Build / packaging
-- `SatModelTool` target, the `linux-accuracy-gate` preset and the M11 CI gate; `PackageRelease.cmake`
-  now also ships `satellite_models/`.
+
+- `SatModelTool` target, the `linux-accuracy-gate` preset and the accuracy gate in CI; `PackageRelease.cmake`
+  ships `satellite_models/`. Runtime files re-sync next to the exe when they change, and user screenshots live
+  outside the build tree.
 
 ## v1.1.1 — 2026-09-08
 
