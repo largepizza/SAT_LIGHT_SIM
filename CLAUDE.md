@@ -4220,8 +4220,9 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
     along-view point size from the true footprint (cos floor 0.03, gCityFootA) — r35 0.31 -> 0.51%, city rise
     2.93 -> 3.10; a half-input-pixel upscale kernel — softer at 50% (detail -32%) for little.
   - **Vertical motion (2026-10-06, user snapshot: Glasgow at night, "smears moving up and down over city
-    terrain"):** while the EYE moves, the resolve's moving-weight ramp runs over 0.1 -> 1 px of reprojection (it was
-    0.5 -> 4 px for every kind of motion; turns and pans keep that). Climbing, the ground's reprojection is 0.1-0.5 px
+    terrain"):** the resolve's moving weight also ramps with the PARALLAX — the reprojection's offset from where a
+    pure rotation would put the pixel — over 0.1 -> 1 px (the total motion keeps its 0.5 -> 4 px ramp, so turns, pans
+    and the far ground in a slow drift are unchanged). Climbing, the ground's reprojection is 0.1-0.5 px
     a frame, so the history sat at the still weight and was resampled at a fractional offset every frame — about ten
     frames of resampling blur stacked on the 1-px lights. tstab (Glasgow, 60 m/s, 20 deg down, motion vs settled):
     render scale 75% rise/fall 2.08/2.05 -> 1.67/1.66, 50% 2.74/2.73 -> 2.46/2.43; climb set p37 1.63/1.64 -> 1.55/1.62,

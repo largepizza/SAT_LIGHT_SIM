@@ -185,13 +185,21 @@ void main() {
             if (mx > 1.0 && !noClip) h = mix(c + v / mx, h, trail);
             // Motion (in pixels) raises the new sample's weight: a moving view keeps its detail.
             float mv = length((uvP - (vec2(p) + 0.5) / size) * size);
-            // While the EYE moves the ramp runs 0.1 -> 1 px (2026-10-06): every frame resamples
-            // the history at a fractional offset, and at the still weight (0.1) ~10 frames of that resampling stacked
-            // up. Climbing over a city at night (Q, ~60 m/s, looking 20 deg down) the reprojection is 0.1-0.5 px a frame
-            // and the 1-px city lights smeared into blotches (user snapshot, Glasgow; tstab rise 5.4). A turn or a pan
-            // keeps the old ramp (0.5 -> 4 px).
-            const bool  eyeMoves = dot(pc.eyeDelta.xyz, pc.eyeDelta.xyz) > 1e-4;
-            const float ramp = eyeMoves ? smoothstep(0.1, 1.0, mv) : smoothstep(0.5, 4.0, mv);
+            // The PARALLAX (the eye's own move, past the rotation) ramps the weight from 0.1 px (2026-10-06): every frame
+            // resamples the history at a fractional offset, and at the still weight (0.1) ~10 frames of that resampling
+            // stacked up. Climbing over a city at night (Q, ~60 m/s, looking 20 deg down) the ground's reprojection is
+            // 0.1-0.5 px a frame and the 1-px city lights smeared into blotches (user snapshot, Glasgow; tstab rise 5.4).
+            // Rotation alone keeps the old ramp (0.5 -> 4 px): it reprojects exactly, and the far ground in a slow
+            // drift (the release cinematic's LA shot) would otherwise trade the history for jittered sub-pixel lights.
+            float par = 0.0;
+            {
+                vec3 pI = vec3(dot(pc.e2p0.xyz, dir), dot(pc.e2p1.xyz, dir), dot(pc.e2p2.xyz, dir));
+                if (pI.z < -1e-6) {
+                    vec2 uvI = vec2(pI.x / (-pI.z * pc.cam.x * pc.cam.y), -pI.y / (-pI.z * pc.cam.x)) * 0.5 + 0.5;
+                    par = length((uvP - uvI) * size);
+                }
+            }
+            const float ramp = max(smoothstep(0.5, 4.0, mv), smoothstep(0.1, 1.0, par));
             float w  = mix(pc.cam.z, pc.cam.w, ramp * (1.0 - trail));
             // A flash (lightning, a sprite, a glint): when the whole NEIGHBOURHOOD brightens past the history,
             // take the new frame at once — at weight 0.1 a flash lasting a few frames came out ~10x dimmer.
