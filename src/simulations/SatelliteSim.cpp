@@ -625,10 +625,11 @@ void SatelliteSim::init(VulkanContext &ctx)
     if (crashDetected)
     {
         crashRecoveryMode = true;
-        applyGraphicsPreset(GraphicsPreset::Planetarium);
+        const GraphicsPreset from = graphicsPreset, to = crashRecoveryPreset(graphicsPreset);
+        applyGraphicsPreset(to);
         crashRecoveryNoticeTimer = 8.0f;
-        fprintf(stderr, "[SatelliteSim] Previous session did not exit cleanly — forcing "
-                        "Planetarium preset.\n");
+        Log::line(std::string("graphics: previous session did not exit cleanly: preset ") +
+                  kGraphicsPresetNames[(int)from] + " -> " + kGraphicsPresetNames[(int)to]);
     }
 
     harnessInit(); // docs/HARNESS.md — no-op unless launched with harness flags

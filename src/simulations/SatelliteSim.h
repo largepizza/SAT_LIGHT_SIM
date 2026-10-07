@@ -4305,9 +4305,10 @@ private:
     // ── NEW-3: crash-safe mode ──────────────────────────────────────────────
     // A sentinel file is created at the top of init() and deleted at the bottom of cleanup()
     // (the clean-exit path). If it's already present at the NEXT launch, the previous run never
-    // reached cleanup() — crash, hang + force-kill, power loss — so this run forces the
-    // Planetarium preset and shows a one-line notice, converting "launch -> crash -> uninstall"
+    // reached cleanup() — crash, hang + force-kill, power loss — so this run steps the preset down one
+    // tier (crashRecoveryPreset: full -> Planetarium -> Potato) and shows a one-line notice, converting "launch -> crash -> uninstall"
     // into a recoverable outcome. See applySettings-adjacent logic in init()/cleanup().
+    char crashNoticeBuf[192] = {};          // its text (Clay keeps the pointer until record)
     float crashRecoveryNoticeTimer = 0.0f; // seconds remaining to show the notice banner; see buildCrashRecoveryNotice
     bool crashRecoveryMode = false;        // mirrors the crashDetected local in init(); read by finishIntro()
                                            // so a crash-recovery launch never runs the UC1 benchmark promote/
@@ -5235,10 +5236,15 @@ private:
     // (no-op data-wise for Custom — see GraphicsPreset comment). Recreates the render-scale
     // offscreen target since presets can change renderScale.
     void applyGraphicsPreset(GraphicsPreset p);
-    // UC1 first-run seed: VkPhysicalDeviceProperties::deviceType -> Low (integrated/CPU/virtual)
-    // or Medium (discrete). Coarse on purpose — see RELEASE_v1_1_PLAN.md UC1, "do not build a
-    // GPU-name lookup table." Only called once, from init(), when no persisted preset exists.
+    // The tier a device should start on: Potato for MoltenVK on non-Apple GPUs (the 2015 MacBook Pro's GCN 1.0),
+    // Planetarium for integrated / CPU / virtual GPUs and discrete ones with <= 2 GB of VRAM, else Medium.
+    // Static and needs no SatelliteSim, so the startup graphics chooser can pre-select it before init; `why`
+    // gets a one-line reason with the device's name, type and memory.
+    static GraphicsPreset recommendedPresetForDevice(VkPhysicalDevice pd, std::string *why = nullptr);
+    // UC1 first-run seed: recommendedPresetForDevice, logged. Only called when no persisted preset exists.
     GraphicsPreset seedGraphicsPresetFromDevice(VulkanContext &ctx) const;
+    // Crash recovery steps the tier DOWN one: a full tier (Low .. Ultra, Custom) -> Planetarium -> Potato.
+    static GraphicsPreset crashRecoveryPreset(GraphicsPreset current);
     void savePerfSnapshot(float cpuDt);                // appends one profiling record to perf_profiles/profile_log.jsonl
     nlohmann::json buildPerfSnapshotJson(float cpuDt); // the shared body of the above and of the sweep record
     void appendPerfRecord(const nlohmann::json &j);    // one JSONL line into perf_profiles/profile_log.jsonl
