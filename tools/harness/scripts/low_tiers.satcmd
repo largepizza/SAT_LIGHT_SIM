@@ -1,0 +1,103 @@
+# The weak-hardware tiers (Potato, Planetarium) and Low at four views: day, a night city, orbit, a storm.
+# perf + a capture per view. Run it once with the validation layer to check the low tiers' bindings and
+# barriers (2026-10-06):
+#   VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation python tools/harness/run.py tools/harness/scripts/low_tiers.satcmd
+# (the messages land in the run's app_stdout.txt; perf numbers are not meaningful with the layer on).
+# Under Potato and Planetarium nothing of clouds v2 may run: the storm view's `lightning` must report no
+# flashes and `state` clouds_v2.rain no particles.
+time set 2036-06-21T12:00:00Z
+time pause
+
+# ── Potato ──────────────────────────────────────────────────────────────────────────
+preset Potato
+observer lat=46.55 lon=7.98 agl=50
+time sun 35 rising
+camera az=200 el=5 fov=60
+wait settle
+perf frames=90 name=potato_day
+capture potato_day
+observer lat=34.05 lon=-118.35 agl=2000
+time sun midnight
+camera az=90 el=-15 fov=60
+wait settle
+perf frames=90 name=potato_city
+capture potato_city
+observer lat=48 lon=10 alt=420000
+time sun 30 rising
+camera az=0 el=-60 fov=60
+wait settle
+wait 30
+perf frames=90 name=potato_orbit
+capture potato_orbit
+observer lat=5 lon=-90 agl=2
+time sun 20 rising
+set clouds_v2.coverage 1.6
+camera az=90 el=10 fov=70
+wait settle
+perf frames=90 name=potato_storm
+capture potato_storm
+lightning
+state potato_storm
+
+# ── Planetarium (SKY_LITE) ──────────────────────────────────────────────────────────
+preset Planetarium
+set clouds_v2.coverage 1.6
+wait settle
+perf frames=90 name=planetarium_storm
+capture planetarium_storm
+lightning
+state planetarium_storm
+observer lat=46.55 lon=7.98 agl=50
+time sun 35 rising
+camera az=200 el=5 fov=60
+wait settle
+perf frames=90 name=planetarium_day
+capture planetarium_day
+observer lat=34.05 lon=-118.35 agl=2000
+time sun midnight
+camera az=90 el=-15 fov=60
+wait settle
+perf frames=90 name=planetarium_city
+capture planetarium_city
+observer lat=48 lon=10 alt=420000
+time sun 30 rising
+camera az=0 el=-60 fov=60
+wait settle
+wait 30
+perf frames=90 name=planetarium_orbit
+capture planetarium_orbit
+
+# ── Low (the full shader at 50%) ────────────────────────────────────────────────────
+preset Low
+wait settle
+wait 90
+perf frames=90 name=low_orbit
+capture low_orbit
+observer lat=34.05 lon=-118.35 agl=2000
+time sun midnight
+camera az=90 el=-15 fov=60
+wait settle
+perf frames=90 name=low_city
+capture low_city
+observer lat=46.55 lon=7.98 agl=50
+time sun 35 rising
+camera az=200 el=5 fov=60
+wait settle
+perf frames=90 name=low_day
+capture low_day
+observer lat=5 lon=-90 agl=2
+time sun 20 rising
+set clouds_v2.coverage 1.6
+camera az=90 el=10 fov=70
+wait settle
+wait 30
+perf frames=90 name=low_storm
+capture low_storm
+lightning
+
+# ── Back to Potato from a full tier: no stale clouds, bolts or rain may survive the switch ──
+preset Potato
+wait 5
+capture potato_after_low
+lightning
+quit
