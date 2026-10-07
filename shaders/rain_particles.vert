@@ -63,6 +63,25 @@ vec3 rainToEnu(vec3 r, vec3 eX, vec3 eY, vec3 eZ)
     return vec3(dot(e, eX), dot(e, eY), dot(e, eZ));
 }
 
+// A particle's phase toward the eye for light arriving along L (toward the light). kind 0 a rain drop (the march's rain
+// phase: the forward diffraction spike, the broad refracted lobe and the bows), 1 a snowflake (the march's snow phase:
+// broad lobes and a little of the ice optics, + its plate glint), 2 diamond dust (a tumbling plate's glint only: a lobe
+// about the mirror's half vector, the normal sweeping ~3 deg over the exposure, F ~0.05: phase pi F D).
+vec3 dropPhase(uint kind, vec3 vdir, vec3 L, vec3 nPl, float og)
+{
+    vec3  hv = normalize(L - vdir);
+    float cosK = dot(vdir, L);
+    if (kind == 2u)
+        return vec3(exp(-(1.0 - abs(dot(nPl, hv))) / 1e-3) * (0.05 / 2e-3) * og);
+    if (kind == 1u) {
+        vec4 habSnow = vec4(0.2, 0.35, 0.0, 0.0);
+        return vec3(0.3 * cv2HG(cosK, 0.97) + 0.55 * cv2HG(cosK, 0.35))
+             + og * (0.25 * cv2IceOptics(vdir, L, habSnow) + 0.15 * cv2PillarOptics(vdir, L))
+             + vec3(exp(-(1.0 - abs(dot(nPl, hv))) / 6e-4) * (0.05 / 6e-4) * 0.5 * og);
+    }
+    return vec3(0.3 * cv2HG(cosK, 0.97) + 0.55 * cv2HG(cosK, 0.35)) + og * 0.5 * cv2RainOptics(vdir, L);
+}
+
 void main()
 {
     uint N0 = uint(pc.params.x);
@@ -94,9 +113,10 @@ void main()
     // The fall and the wind are integrated over sim time on the CPU (updateRainMotion): a drop's fall offset is its
     // terminal speed x the fall phase, quantised to 1/64 m/s so the phase can be handed over wrapped (q x (G mod L)).
     float qv   = max(floor(v * 64.0 + 0.5), 1.0);
-    float vq   = qv / 64.0 * cv2.rainMotion.y;                   // its fall speed now (x "Rain fall speed")
-    float fall = fract(qv * mod(cv2.rainMotion.x, L) / L) * L;
     bool  snowW = flake && !dust;
+    vec2  fallM = flake ? cv2.snowMotion.xy : cv2.rainMotion.xy;  // ice (flakes, diamond dust) has its own slower fall
+    float vq   = qv / 64.0 * fallM.y;                            // its fall speed now (x "Rain fall speed")
+    float fall = fract(qv * mod(fallM.x, L) / L) * L;
     vec2  drift = mod(snowW ? cv2.rainWind.zw : cv2.rainMotion.zw, L);
     vec2  windNow = cv2.rainWind.xy * (snowW ? cv2.precip.z : 1.0);
     vec2  flut = vec2(0.0), flutV = vec2(0.0);
@@ -172,36 +192,25 @@ void main()
 
     // ── Its light: the rain sample at the eye, through the drop's phase toward the eye ──
     vec3  vdir = normalize(p);
-    vec3  kDir = cv2RainKeyDir.xyz;
-    float cosK = dot(vdir, kDir);
     float og   = cv2.rain.y;
-    vec3  ph;
-    vec3  Lr;
+    // A plate's normal (flakes: near level, tilted up to ~12 deg, turning as they flutter; diamond dust: every
+    // orientation, tumbling) for its glint.
+    vec3  nPl;
     if (dust) {
-        // A plate of every orientation, tumbling: its glint is a lobe about the mirror's half vector, the
-        // normal sweeping ~3 deg over the exposure (sigma^2 2e-3), F ~0.05: phase pi F D.
         vec3  n0 = h1 * 2.0 - 1.0;
         float tp = t * (0.5 + 1.5 * h2.x) + 6.2831853 * h2.y;
-        vec3  n  = normalize(vec3(n0.x * cos(tp) - n0.y * sin(tp), n0.x * sin(tp) + n0.y * cos(tp), n0.z) + 1e-4);
-        vec3  hv = normalize(kDir - vdir);
-        float gl = exp(-(1.0 - abs(dot(n, hv))) / 1e-3) * (0.05 / 2e-3) * og;
-        Lr = cv2RainKey.xyz * gl;
-    } else if (flake) {
-        // Snow (the march's snow phase: broad lobes, a little of the ice optics) + this flake's plate glint: near
-        // level, tilted up to ~12 deg, turning as it flutters.
-        vec4  habSnow = vec4(0.2, 0.35, 0.0, 0.0);
-        ph = vec3(0.3 * cv2HG(cosK, 0.97) + 0.55 * cv2HG(cosK, 0.35))
-           + og * (0.25 * cv2IceOptics(vdir, kDir, habSnow) + 0.15 * cv2PillarOptics(vdir, kDir));
-        float tp = t * (0.7 + 1.3 * h2.x) + 6.2831853 * h2.y;
-        vec3  n  = normalize(vec3(0.21 * h1.z * vec2(cos(tp), sin(tp)), 1.0));
-        vec3  hv = normalize(kDir - vdir);
-        ph += vec3(exp(-(1.0 - abs(dot(n, hv))) / 6e-4) * (0.05 / 6e-4) * 0.5 * og);
-        Lr = cv2RainKey.xyz * ph + cv2RainAmb.xyz;
+        nPl = normalize(vec3(n0.x * cos(tp) - n0.y * sin(tp), n0.x * sin(tp) + n0.y * cos(tp), n0.z) + 1e-4);
     } else {
-        // The march's rain phase: the forward diffraction spike, the broad refracted lobe and the bows.
-        ph = vec3(0.3 * cv2HG(cosK, 0.97) + 0.55 * cv2HG(cosK, 0.35)) + og * 0.5 * cv2RainOptics(vdir, kDir);
-        Lr = cv2RainKey.xyz * ph + cv2RainAmb.xyz;
+        float tp = t * (0.7 + 1.3 * h2.x) + 6.2831853 * h2.y;
+        nPl = normalize(vec3(0.21 * h1.z * vec2(cos(tp), sin(tp)), 1.0));
     }
+    uint kind = dust ? 2u : (flake ? 1u : 0u);
+    vec3 Lr = cv2RainKey.xyz * dropPhase(kind, vdir, cv2RainKeyDir.xyz, nPl, og) + (dust ? vec3(0.0) : cv2RainAmb.xyz);
+    // The Reflect beams' light at the eye (2026-10-06; CPU, from the cloud-light list): standing in a beam, its drops
+    // show the bow opposite the satellites, its flakes and ice crystals glint and halo around them.
+    if (cv2.beamEye.x > 0.0)
+        Lr += (cv2.beamEye.x * cv2.beamEye.y * SUN_INTENSITY) * vec3(1.0, 0.97, 0.92)
+            * dropPhase(kind, vdir, cv2.beamEyeDir.xyz, nPl, og);
 
     // ── The quad: the streak from P0 to P1, widened by the drawn width and a pixel of antialiasing ──
     vec2  ax = (Lpx > 1e-3) ? (P1 - P0) / Lpx : vec2(1.0, 0.0);

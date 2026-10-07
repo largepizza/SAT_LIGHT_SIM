@@ -742,6 +742,13 @@ struct GpuCloudV2Params
                            // zw the rain's wind drift (rain frame E/N, m, mod 1024)
     glm::vec4 rainWind;    // xy the wind now (m/s, rain frame), zw the snow's wind drift (m, mod 1024)
     glm::vec4 lightning2;  // 2026-10-05: x "Storm lightning (flashes/min/cell)", yzw spare
+    // 2026-10-06: the Reflect beams' light at the eye, for the rain / snow particles (rain_particles.vert; CPU, from the
+    // cloud-light list in SatelliteSim.cpp). beamEye x the beams' irradiance there (Suns) x "Beam light on cloud",
+    // y 1 - dayness; beamEyeDir xyz the irradiance-weighted direction to the satellites (ENU at the eye).
+    glm::vec4 beamEye, beamEyeDir;
+    // 2026-10-06: the snow's own fall (SatelliteSimRain.cpp): x its phase (as rainMotion.x), y its reference speed now.
+    // Flakes took "Rain fall speed" (x5): at 4-7 m/s they streaked like rain. zw spare.
+    glm::vec4 snowMotion;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -755,7 +762,8 @@ static_assert(offsetof(GpuCloudV2Params, farLight) == 288 + 48 * kCloudV2Types +
 static_assert(offsetof(GpuCloudV2Params, farTune) == 288 + 48 * kCloudV2Types + 528, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, shapeRotA) == 288 + 48 * kCloudV2Types + 560, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, rainMotion) == 288 + 48 * kCloudV2Types + 640, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 688, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, beamEye) == 288 + 48 * kCloudV2Types + 688, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 736, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -3081,9 +3089,12 @@ private:
     float cv2HistoryWeightMoving = 0.4f; // the same weight once the view moves (parallax past ~2 half-res px)
     float cv2HistoryWeight = 0.05f;     // weight of a new sample over its reprojected history (still view;
                                        // the resolve raises it toward 0.35 with motion)
+    float cv2BeamEyeIrr = 0.0f;           // the Reflect beams' irradiance at the eye (Suns), per frame (rain particles)
+    glm::vec3 cv2BeamEyeDir{0.0f, 0.0f, 1.0f};   // its weighted direction to the satellites (ENU)
     float cv2LightLenM = 2500.0f;      // light-march length
     float cv2LightSteps = 6.0f;
     float cv2LightLodFootprintM = 40.0f;  // past this pixel footprint (m) a 2-step light march; 0 = off
+    float cv2ShaftTempC = 15.0f;          // the air 500 m over the ground under the eye (deg C): the shafts' rain / snow
     float cv2EyeTempC = 15.0f;            // the air temperature at the eye (deg C; rain / sleet / snow), per frame
     float cv2LightningRate = 0.4f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
     float cv2LightningGlow = 0.088f;      // the flash's light in the cloud
@@ -3128,7 +3139,7 @@ private:
                                        // ~cluster scale: splotches)
     float cv2CirrusFlow = 1.5f;        // the flow warp at cirrus level, x the low cloud's (the jet bends more)
     float cv2CirrusWindMps = 30.0f;    // the jet: cirrus moves this fast eastward over the map
-    float cv2RainAmount = 0.71f;        // rain shafts under precipitating cloud, 0 = none
+    float cv2RainAmount = 3.0f;         // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
     float cv2RainStreaks = 2.63f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
     float moveSpeedPerHeight = 1.0f;   // WASD: this many times the height above the ground per second (capped
@@ -3138,7 +3149,7 @@ private:
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
     float cv2LightningStormRate = 0.31f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
     float cv2LightningTendrils = 1.23f;    // the channels' branching (x the branch and tendril counts)
-    float cv2RainFallSpeed = 3.0f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
+    float cv2RainFallSpeed = 5.0f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
     float cv2RainWindGain = 0.4f;      // x the ground wind on the drops (0.4 x the wind aloft)
     float cv2RainStormWind = 11.0f;    // the outflow from a heavy shower (m/s at rain rate 1), away from its core
     float cv2RainGusts = 1.38f;         // the wind's gustiness (x; stronger in heavy rain)
@@ -5222,6 +5233,7 @@ private:
     bool rainPrevSimTValid = false;
     double rainFallPhase = 0.0;                  // integral of the reference fall speed (m)
     glm::dvec2 rainDrift{0.0}, snowDrift{0.0};   // integral of the wind (m, rain frame E/N)
+    double snowFallPhase = 0.0;                 // the snow's fall phase (integral of its reference speed, m)
     glm::vec2 rainWindNow{0.0f};                 // eased wind (m/s)
     float rainRateEased = 0.0f;
     float rainFallRefNow = 1.0f;

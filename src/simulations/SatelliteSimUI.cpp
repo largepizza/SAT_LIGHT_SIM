@@ -5014,7 +5014,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Drop reach (m)", &cv2DropDistM, 4.0f, 64.0f, 4.0f, "%.0f", 208},
         {"Drop particles (x1000, nearest box)", &cv2RainParticlesK, 0.5f, 64.0f, 0.5f, "%.1f", 261},
         {"Drop shutter (ms)", &cv2RainShutterMs, 1.0f, 100.0f, 1.0f, "%.0f", 262},
-        {"Rain fall speed (x)", &cv2RainFallSpeed, 0.3f, 3.0f, 0.05f, "%.2f", 263},
+        {"Rain fall speed (x)", &cv2RainFallSpeed, 0.3f, 10.0f, 0.05f, "%.2f", 263},
         {"Rain wind (x ground wind)", &cv2RainWindGain, 0.0f, 5.0f, 0.1f, "%.1f", 264},
         {"Storm wind (m/s)", &cv2RainStormWind, 0.0f, 40.0f, 0.5f, "%.1f", 265},
         {"Wind gusts", &cv2RainGusts, 0.0f, 3.0f, 0.05f, "%.2f", 266},

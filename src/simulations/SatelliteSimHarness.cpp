@@ -478,7 +478,12 @@ json SatelliteSim::harnessStateJson()
     // pass wrote (the previous frame's).
     {
         json rn = {{"mode", rainModeLastFrame == 1 ? "rain" : rainModeLastFrame == 2 ? "diamond_dust" : "none"},
-                   {"instances", rainInstancesLastFrame}, {"levels", rainLevelsLastFrame}};
+                   {"instances", rainInstancesLastFrame}, {"levels", rainLevelsLastFrame},
+                   // the temperature model (SatelliteSimCloudsV2.cpp): at the eye (the particles) and 500 m over the
+                   // ground under it (the shafts seen at a distance); the beams' light at the eye (Suns)
+                   {"eye_temp_c", cv2EyeTempC}, {"shaft_temp_c", cv2ShaftTempC},
+                   {"beam_eye_irr_suns", cv2BeamEyeIrr},
+                   {"beam_eye_dir_enu", {cv2BeamEyeDir.x, cv2BeamEyeDir.y, cv2BeamEyeDir.z}}};
         if (cv2FlashMapped)
         {
             const char *base = (const char *)cv2FlashMapped;
