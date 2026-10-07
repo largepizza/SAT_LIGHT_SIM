@@ -134,6 +134,12 @@ New entries arrive through wiki passes (see [History](index.md)).
   first cut flew lines of 10, 1 km apart; with tight nodes, shells 1.6-1.8 km apart slid through each other
   (~13,000 cross-cluster pairs within 1 km), so the X-ring's planes spread over +-10 deg (26 pairs).
   [Orbits](../simulation/orbits.md)
+- **2026-10-06** — Starmind's ring formations fly Clohessy-Wiltshire relative orbits about their cluster
+  centres, 350 m in radius, with a per-cluster scatter. The first cut drew each ring as a rigid 2 km polygon in the
+  orbit plane, held together by giving every member its centre's mean motion at its own radius; at 2 km each
+  cluster resolved into a small ring of points from the ground, and the user asked for the real dynamics,
+  sub-750 m formations and irregularity so the constellation stops drawing perfect lattices.
+  [Orbits](../simulation/orbits.md#formation-clusters)
 
 ## Beams and clouds (Reflect Orbital)
 
@@ -309,6 +315,14 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
   lattice grew with altitude (descending reshuffled every flash) and put flashes in clear air above capped cumulus.
   Thunder became the channel's own arrival envelope instead of a synth roll with random peals.
   [Weather](../rendering/clouds/weather.md)
+- **2026-10-06** — The Reflect beams lit every precipitation shaft with the rain phase whatever the temperature (the
+  Sun and Moon already switched to snow below freezing), so the user's "Satbow over Antarctica" bookmark at McMurdo
+  (-23 C) showed a rainbow opposite the satellites. The beams now follow the shafts' liquid share; the bookmark
+  became "Beam-lit Snow over Antarctica". The same day the rain/snow particles at the eye got the beams' light,
+  rain defaults rose (Rain 3.0, fall speed 5) and snow got its own capped fall phase.
+  [Weather](../rendering/clouds/weather.md)
+- **2026-10-06** — Dust seen from above fades to 8 % by 60 km (was a quarter by 80 km): from orbit at night its
+  city-lit glow drew tan blobs round desert cities in the release cinematic's pull-out.
 
 ## Terrain
 
@@ -403,6 +417,11 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
 - **2026-10-06** — Far city lights still "z-fought" at low angles: sprites just behind a crest were hidden or drawn
   by turns with the TAA jitter (~240 / ~37 levels a frame). They are depth-tested against the unjittered half-res
   scene depth instead of the restored hardware depth (still-view flicker 0.57% to 0.31% of pixels).
+- **2026-10-06** — The city lights under cloud are no longer blurred. The blur mixed them toward the night map at
+  mip 8.1 (~1000 km per texel) by the cloud's opacity in front, so from orbit every city under thin cloud was a grey
+  wash with the cloud's outline ("blobby" cities in the release cinematic). The "City light blur LOD" slider went
+  with it. The air's city glow takes a height-following mip from 800-3000 km up; applied from 30 km it drew 10-20 km
+  texels as squares round towns from 400 km. [Cities](../rendering/cities.md#under-clouds)
 
 ## Sky, atmosphere and aurora
 
@@ -439,6 +458,10 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
   width, lit from ~5 deg off the pole (a cap from orbit) and fixed to the ground. Calibration over 2030-2041:
   936 / 501 / 174 / 103 / 9 three-hour intervals per cycle at G1-G5 against NOAA's 1700 / 600 / 200 / 100 / 4.
   [Aurora and airglow](../rendering/aurora-airglow.md)
+- **2026-10-06** — The sky TAA's weight ramps on parallax (0.1-1 px) as well as total motion: climbing over a
+  city at night (Glasgow, 60 m/s) the ground moved 0.1-0.5 px a frame, ten frames of fractional resampling stacked
+  up at the still weight, and the lights smeared (tstab 2.08 to 1.67 at 75 % render scale).
+  [Atmosphere and sky](../rendering/atmosphere-and-sky.md#sky-taa)
 
 ## Moon and eclipses
 
@@ -486,6 +509,11 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
   no longer jumps when the mesh's own glints take over.
 - **2026-10-06** — A sunlit render-only aluminium fitting on a Starmind satellite seeded white bloom discs ~250 px wide
   while the model's own intensity toward the camera was ~0; render-only parts carry no photometric share.
+- **2026-10-06** — Mesh glints are placed to a fraction of a texel. The list held quarter-res texel centres, so in
+  the release cinematic's mirror shot (500 to 160 m dolly) the glare held still, jumped 4 px and held again; after,
+  steps of 0.1-2 px within ~1 px of the Sun's image. The CPU's sprite placement clamped the Sun's image to a circle
+  of half the side (25 px off at 500 m); a square along the body axes leaves 11 px.
+  [Points, bloom and glare](../rendering/points-bloom-glare.md#mesh-glints)
 
 ## Performance and hardware
 
@@ -573,6 +601,12 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
 - **2026-10-06** — Nine default bookmarks ship with the sim. The rainbow one was the user's snapshot at rain 3.0;
   at the shipped rain amount (0.71) the bow barely shows, and its storm changes within ~10 minutes, so it opens
   paused. [Features](../using/features.md)
+- **2026-10-06** — Exposure, auto exposure, highlight roll-off, white balance and the Moon's size moved to the
+  Photometry tab's EXPOSURE AND MOON section (keys unchanged). The startup chooser's first cut had its own soft
+  blue theme; it uses the HUD palette. The default bookmarks became six: Reflect Orbital over Anchorage, AI
+  Satellites at Twilight, Los Angeles by Night, Sunset from Orbit and Blood Moon over Alice Springs were dropped,
+  Blood Moon from Anchorage and Beam-lit Snow over Antarctica added, two renamed.
+  [Features](../using/features.md)
 
 ## Tooling and harness
 

@@ -250,7 +250,7 @@ atmospheric refraction.
 
 | UI label | `settings.json` key | Default |
 |---|---|---|
-| Moon size (x real) (Atmosphere tab) | `clouds.moon_size` | 2.5 |
+| Moon size (x real) (Photometry tab) | `clouds.moon_size` | 2.5 |
 | Planets on/off, per planet (Constellations tab) | `planets.show_planets`, `planets.list` | on |
 
 ## Where in the code

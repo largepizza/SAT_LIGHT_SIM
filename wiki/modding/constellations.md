@@ -224,7 +224,12 @@ entry carries a whole filed table of shells (below).
 | `cluster_size` | integer ≥ 1 | 1 | Walker, Disk and Shells: satellites per formation cluster. 1 = no clusters |
 | `cluster_shape` | `line` or `ring` | `line` | How a cluster's members are arranged (see [Formation clusters](#formation-clusters)) |
 | `cluster_spacing_km` | number > 0 | 1 | `line`: along-track distance between neighbouring members |
-| `cluster_radius_km` | number > 0 | 0.2 | `ring`: radius of the polygon |
+| `cluster_radius_km` | number > 0 | 0.2 | `ring`: the formation's size ρ, its along-track semi-axis (the radial amplitude is ρ/2) |
+| `cluster_relative_orbit` | `circular`, `projected_circular`, `in_plane` | `circular` | `ring`: the shape of the relative orbit (see [Formation clusters](#formation-clusters)). An unknown value logs a line and uses `circular` |
+| `cluster_alt_jitter_km` | number ≥ 0 | 0 | Shells: each cluster's altitude is offset by up to ±this |
+| `cluster_phase_jitter` | number ≥ 0 | 0 | Shells: each cluster's position along the orbit is offset by up to ±this fraction of the gap between clusters |
+| `cluster_raan_jitter_deg` | number ≥ 0 | 0 | Shells: each cluster's node is offset by up to ±this |
+| `cluster_incl_jitter_deg` | number ≥ 0 | 0 | Shells: each cluster's inclination is offset by up to ±this |
 | `raan_spread_deg` | 0 to 90 | 0 | Shells, sun-synchronous groups only: each plane's node is offset from its terminator node by up to ±this |
 | `raan_spread` | `even` or `random` | `even` | How the offsets of `raan_spread_deg` are chosen |
 
@@ -290,7 +295,7 @@ terminator that cross at the equator, an "X-ring" seen from the Sun.
 terminator node (15° is one hour of local time). With `raan_spread` set to `even`, the shifts follow a
 golden-ratio sequence over the entry's planes, which covers the range evenly; `random` draws them uniformly,
 which clumps. Without a spread, every shell of a group shares the same two planes, and shells only a couple of
-kilometres apart, flying clusters a few kilometres across, pass through each other; see
+kilometres apart, flying clusters hundreds of metres to kilometres across, pass through each other; see
 [Orbits](../simulation/orbits.md#node-spread). Walker groups ignore the spread.
 
 The derived values the rest of the program needs are filled in from the table: the total satellite count, and an
@@ -311,12 +316,25 @@ the last cluster is short.
 
 - **`line`**: the members in a row along the track, `cluster_spacing_km` apart, centred on the cluster's
   position.
-- **`ring`**: a regular polygon of `cluster_radius_km` radius in the orbit plane, spanned by the along-track and
-  radial directions. Member *m* of *C* sits at angle 360° × *m* / *C* from the along-track direction toward the
-  zenith, so the ring is as tall as it is long. Each member orbits at its own radius but at the cluster centre's
-  angular rate, so the ring holds its shape: a station-kept formation, not a free one.
+- **`ring`**: a passive formation. Every member flies the cluster centre's circular orbit plus a bounded,
+  drift-free relative orbit about it (the Clohessy-Wiltshire solution; equations on
+  [Orbits](../simulation/orbits.md#formation-clusters)), the members evenly spaced around it from a random start.
+  A member below the centre runs ahead and one above falls behind, so the formation turns once per orbit, with
+  no thrust. `cluster_radius_km` is its size ρ, and `cluster_relative_orbit` its shape:
+    - `circular` (default): a circle of radius ρ tilted 60° out of the orbit plane. Every member stays ρ from
+      the centre, so neighbours keep the same distance.
+    - `projected_circular`: a circle when seen from directly above (the cross-track amplitude is ρ, the radial
+      ρ/2).
+    - `in_plane`: a 2:1 ellipse in the orbit plane, ρ along the track and ρ/2 up and down.
 
 The clusters of a Walker or Shells plane start from a random phase; those of a Disk ring start at phase 0.
+
+**Scatter.** In a Shells entry, the four `cluster_*_jitter` fields offset each cluster (each satellite, without
+clusters) by a different amount within ± the given value, so a constellation of millions does not draw perfect
+lattices across the sky. The offsets are deterministic: the same file gives the same layout on every launch and
+every platform, whatever else is in the roster. A ring's members share their cluster's offsets, so the
+formation stays whole. Keep the altitude scatter below the spacing of the shells if their clusters should not
+interleave.
 
 ### Saved on/off state
 
@@ -364,8 +382,9 @@ The shipped Reflect Orbital shell: 5000 mirrors in three rings 10 km apart aroun
 
 ### A filed shell table in formation
 
-A sun-synchronous X-ring and a set of Walker shells, flown in rings of eight satellites, 2 km in radius. The two
-groups are the first group of each of the two shipped Starmind entries, combined here into one entry:
+A sun-synchronous X-ring and a set of Walker shells, flown in ring formations of eight satellites 350 m in
+radius, with a little scatter. The two groups are the first group of each of the two shipped Starmind entries,
+combined here into one entry:
 
 ```json
 {
@@ -374,7 +393,12 @@ groups are the first group of each of the two shipped Starmind entries, combined
   "distribution": "Shells",
   "cluster_size": 8,
   "cluster_shape": "ring",
-  "cluster_radius_km": 2.0,
+  "cluster_radius_km": 0.35,
+  "cluster_relative_orbit": "circular",
+  "cluster_alt_jitter_km": 0.25,
+  "cluster_phase_jitter": 0.25,
+  "cluster_raan_jitter_deg": 0.15,
+  "cluster_incl_jitter_deg": 0.03,
   "raan_spread_deg": 10.0,
   "groups": [
     { "alt_min_km": 565.0, "alt_max_km": 585.0, "sun_synchronous": true,

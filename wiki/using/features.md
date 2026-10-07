@@ -160,22 +160,19 @@ thumbnails as PNG files beside it.
 
 ### The bookmarks that ship with the sim
 
-A first run, with no `bookmarks.json` yet, starts with nine bookmarks. Deleting all of them leaves an empty list,
+A first run, with no `bookmarks.json` yet, starts with six bookmarks. Deleting all of them leaves an empty list,
 which stays empty; **Restore defaults** brings them back.
 
 | Bookmark | What it shows |
 |---|---|
-| Venezuela Rainbow | Sunrise behind a storm over northern Venezuela (9.97 N 68.27 W). Starts paused, since the storm changes within minutes |
 | Great Australian Eclipse | The total solar eclipse of 13 July 2037 at greatest eclipse (21.75 S 138.31 E): the corona in a 15° field <!-- history-ok --> |
-| Blood Moon over Alice Springs | The total lunar eclipse of 31 January 2037 <!-- history-ok --> |
-| Aurora from Orbit | A strong geomagnetic storm (Kp about 6.8) seen from 420 km over Siberia |
-| Reflect Orbital over Anchorage | The line of Reflect Orbital mirrors above the city |
-| AI Satellites at Twilight | The intro's vantage on the Big Sur coast |
-| Los Angeles by Night | The city lights from 10 km |
+| Blood Moon from Anchorage | The total lunar eclipse of 31 January 2037, 14:10 UTC, with the reddened Moon about 29° up in the west-southwest over the city <!-- history-ok --> |
+| Solar Storm | A strong geomagnetic storm (Kp about 6.8) seen from 420 km over Siberia |
+| Beam-lit Snow over Antarctica | McMurdo in mid-April twilight at about −23 °C, standing in the converging Reflect Orbital beams: the snow glints and haloes around the satellites. Starts paused |
+| Rainbow over Venezuela | Sunrise behind a storm over northern Venezuela (9.97 N 68.27 W). Starts paused, since the storm changes within minutes |
 | Starmind Formation Rings | Beside one of Starmind's eight-satellite formation rings at 565 km. Starts paused |
-| Sunset from Orbit | The Earth's limb at sunset from 420 km |
 
-A bookmark may also set the clock when you go to it: the shipped ones run at 1x, and the two marked above start
+A bookmark may also set the clock when you go to it: the shipped ones run at 1x, and the three marked above start
 paused. The shipped files live in `default_bookmarks/` next to the program.
 
 ## Pictures
@@ -242,7 +239,7 @@ advanced settings** (Display tab) is on.
 | | Controls | *Movement* (move speed), *Bindings* (each action's key and gamepad button, with Rebind and Bind), *Mouse* (look, zoom, select), *Invert look*, *Help* (the controls overlay); see [Controls](controls.md) |
 | | Sound | Volume, music, ambience and the ambience mix; see [Sound](../sound/index.md) |
 | SKY | Constellations | Every shell with ON/OFF, **HLT** (highlight: draw every satellite of the shell at least faintly, to see its pattern) and **VIEW** (select its highest satellite in your sky and open its 3D view); the planets |
-| | Photometry | *Brightness*, *Sky dimming*, *Point sources*, *Bloom and glare*, *Dark sky* (Milky Way and zodiacal light), *Star trails*, *Satellite models* (part occlusion, reflections), *Bulk export* |
+| | Photometry | *Exposure and Moon* (exposure, auto exposure, highlight roll-off, white balance, the Moon's drawn size), *Brightness*, *Sky dimming*, *Point sources*, *Bloom and glare*, *Dark sky* (Milky Way and zodiacal light), *Star trails*, *Satellite models* (part occlusion, reflections), *Bulk export* |
 | RENDERING *(advanced)* | Clouds | The volumetric clouds: shape, lighting, quality |
 | | Weather | Storms, lightning, rain and snow, weather evolution, fog, dust, ice fog |
 | | Atmosphere | Scattering, airglow, zodiacal light, aurora (with a live readout of the current space weather) |

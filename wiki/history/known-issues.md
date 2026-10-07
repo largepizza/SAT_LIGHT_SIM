@@ -103,7 +103,9 @@ Recorded in the October 2026 pass; the first three re-checked 2026-10-03 and sti
 - The `envelope` mode of `terrainMarchDetailed` has no caller.
 - Timestamp slot 2 ("Beam cloud block (retired)") measures two buffer fills.
 - Several `GpuCloudParams` fields are unread since the v1 clouds were deleted (marchSteps, lightSteps, hgG,
-  shadowMaxDistM, maxRenderDistM and others); some have been reused under new names.
+  shadowMaxDistM, maxRenderDistM and others); some have been reused under new names. `cityLightBlurLod` joined
+  them on 2026-10-06 (written as 0, read nowhere; its cloud slider slot 62 is free).
+- The Reflect beams' light pillars (ice plates over the lit ground spots, in snow) are not modelled (2026-10-06).
 
 ## Documentation drift
 

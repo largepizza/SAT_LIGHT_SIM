@@ -274,7 +274,9 @@ The tier a launch starts on is decided before anything heavy loads.
 
 **The startup graphics chooser.** Before `init()` loads textures, models or pipelines, `App::runBootChooser()`
 shows a choice on the loading screen: *Full graphics*, *Planetarium* or *Potato (very old hardware)*. It takes the
-mouse, the keyboard (arrows, Enter) and a gamepad (D-pad, A), and never continues on its own. The sim's half is
+mouse, the keyboard (arrows, Enter) and a gamepad (D-pad, A), and never continues on its own. It is drawn in
+the HUD's palette (`UIPalette.h`): near-black cards with the faint border, the red accent for the selection, the
+checkbox and Start, and the amber note on the highlight row colour. The sim's half is
 `SatelliteSimBootChooser.cpp`: `prepareBootChooser()` reads `settings.json` and the crash sentinel without touching
 the GPU and pre-selects the last session's tier, or on a first run the device's recommendation. `applyBootChoice()`
 applies the pick after `loadSettings()`: Planetarium and Potato apply their presets; *Full graphics* keeps a full

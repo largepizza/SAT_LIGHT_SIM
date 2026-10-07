@@ -257,8 +257,10 @@ When the sample is on the night side (`dayness < 0.9`):
   times the beam's mean irradiance in Suns, \( A_\text{mirror} / (\pi R^2) \), cut where the beam is blocked
   above. The lights are summed first; occlusion is then marched **once**, along their mean direction (the
   three beam steps of the light march), because beams converging on one site come from within a few degrees of
-  each other. `beamFinish()` lights the sum like the Moon: cloud, ice and rain phases, multiple-scattering
-  octaves. "Beam light on cloud" (32) scales the physical irradiance up to sit beside the night view's Moon.
+  each other. `beamFinish()` lights the sum like the Moon: cloud, ice and precipitation phases, multiple-scattering
+  octaves. Precipitation takes the rain phase with its bows where the shafts' air is above freezing, and the
+  snow phase (broad lobes, a faint halo and sundogs, no bow) where it is below, by the liquid share
+  `cv2.precip.w` ([Weather: rain shafts](weather.md#rain-shafts)). "Beam light on cloud" (32) scales the physical irradiance up to sit beside the night view's Moon.
 
 ## Atmospheric optics
 
@@ -392,8 +394,8 @@ Clouds tab, "Lighting" (keys under `clouds_v2`):
 | Light steps | `light_steps` | 6 |
 | Light LOD footprint (m) | `light_lod_footprint_m` | 40 |
 
-The same section also holds the scene-wide tonemap controls (Exposure, Highlight roll-off, Auto exposure, White
-balance), described in [Atmosphere and sky](../atmosphere-and-sky.md).
+The scene-wide tonemap controls (Exposure, Highlight roll-off, Auto exposure, White balance) are in the
+Photometry tab's EXPOSURE AND MOON section, described in [Atmosphere and sky](../atmosphere-and-sky.md).
 
 Clouds tab, "Quality / performance" (the march's rows; the rate rows are on the [temporal page](temporal.md#settings)):
 

@@ -141,6 +141,9 @@ It lowers the scale in 5% steps when the GPU frame runs over 90% of the target f
 at a time when there is clearly room, never below **Lowest render scale**. A step does not restart the clouds:
 their history is resampled to the new size.
 
+Moving costs more than standing still, so the scale tends to drop while you move. Temporal upscaling recovers
+the lost detail only when the view is still, so at a lower scale the picture looks softer in motion.
+
 | Setting | `settings.json` key | Default |
 |---|---|---|
 | Render scale | `display.render_scale` | 100% (or the preset's) |

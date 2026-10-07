@@ -129,7 +129,10 @@ for a frame.
 
 While handing over, a meshed satellite's sprite is placed **on its glint**: at the Sun's image in its dominant
 lobe, weighted by that lobe's specular share, rather than at the model's centre, so the flare does not jump
-when the mesh's own glints take over. It is drawn at 98 % of its range so its own mesh does not depth-hide it.
+when the mesh's own glints take over. The image point (where the mirror direction from the camera meets the
+lobe's plane, computed on the CPU in double) is clamped to the lobe's extent as a **square** of the lobe's area,
+along the group's own in-plane body axes. A circle of half the side would cut off the corners: a 55 m Reflect
+mirror seen a few degrees off its beam axis has the Sun's image about 35 m from its centre, toward a corner. It is drawn at 98 % of its range so its own mesh does not depth-hide it.
 
 **Energy-matched bloom.** Each instance's `bloomScale` is the bloom seed its sprite would have put down,
 \(b(\text{effectFlare}) \times\) the point disc area, per unit of rendered flux \(\sum L\,\Omega\,r^2/\pi = I\),
