@@ -2697,7 +2697,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.terrainErosion = glm::vec4(terrainErosionStrength, terrainErosionBranch, terrainNightSkyLight, terrainSkyLight);
         }
         cp.cloudOpacityScale = cloudOpacityScale;
-        cp.cityLightBlurLod = cityLightBlurLod;
+        cp.cityLightBlurLod = 0.0f; // unread since 2026-10-06 (the blur under cloud was removed)
         cp.cloudWarpStrength = cloudWarpStrength;
         cp.cloudWarpFreq = cloudWarpFreq;
         cp.cloudSurfaceCarve = cloudSurfaceCarve;
@@ -3779,6 +3779,22 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         VkBufferCopy region{0, 0, sizeof(GpuOceanGlintBuf)};
         vkCmdCopyBuffer(cmd, oceanGlintBuf, glareReadBuf, 1, &region);
     }
+    // The mesh glint list's host copy, for the harness (`state` -> selection.glints): 2 KB, only on frames
+    // glare_find.comp ran.
+    glintReadValid = meshGlareListed && glintReadBuf != VK_NULL_HANDLE;
+    if (glintReadValid)
+    {
+        VkBufferMemoryBarrier gb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        gb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        gb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        gb.srcQueueFamilyIndex = gb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        gb.buffer = glintBuf;
+        gb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1,
+                             &gb, 0, nullptr);
+        VkBufferCopy region{0, 0, sizeof(GpuGlintList)};
+        vkCmdCopyBuffer(cmd, glintBuf, glintReadBuf, 1, &region);
+    }
     recordModelViewer(cmd, dt); // Phase 4 model viewer (offscreen; its own render pass)
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
 }
@@ -4788,10 +4804,20 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
                 const double tPlane = std::abs(dn) > 1e-6 ? glm::dot(Q - obsEcef, n) / dn : -1.0;
                 glm::dvec3 off = (tPlane > 0.0 ? obsEcef + d * tPlane : obsEcef + d * glm::dot(Q - obsEcef, d)) - Q;
                 off -= glm::dot(off, n) * n;
+                // Clamped to the lobe's extent as a SQUARE of its area along the group's own in-plane body axes
+                // (2026-10-06). It was a circle of radius half the side: a Reflect mirror (55 m square) seen ~3 deg
+                // off its beam axis has the Sun's image ~35 m from its centre, toward a corner, and the sprite sat
+                // 25 px from the image the mesh draws (the release cinematic's mirror shot, from 500 m).
                 const double rl = 0.5 * std::sqrt(std::max((double)L.area, 0.0));
-                const double ol = glm::length(off);
-                if (ol > rl)
-                    off *= rl / ol;
+                const glm::dmat3 &Rg = poses[L.group].R;
+                int ax = 0;
+                for (int k = 1; k < 3; ++k)
+                    if (std::abs(glm::dot(Rg[k], n)) < std::abs(glm::dot(Rg[ax], n)))
+                        ax = k;
+                glm::dvec3 t1 = Rg[ax] - glm::dot(Rg[ax], n) * n;
+                t1 = glm::length(t1) > 1e-9 ? glm::normalize(t1) : glm::normalize(glm::cross(n, glm::dvec3(0.0, 0.0, 1.0)));
+                const glm::dvec3 t2 = glm::cross(n, t1);
+                off = std::clamp(glm::dot(off, t1), -rl, rl) * t1 + std::clamp(glm::dot(off, t2), -rl, rl) * t2;
                 const glm::dvec3 G = satEcef + w * (Q + off - satEcef);
                 const glm::vec3 dirEnu = glm::normalize(ecefToEnu * glm::vec3(G - obsEcef));
                 // Octahedral encoding (16 bits per axis: ~0.003 deg).
@@ -6722,6 +6748,8 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyDescriptorSetLayout(device, glareMeshDescLayout, nullptr);
     vkDestroyBuffer(device, glintBuf, nullptr);
     vkFreeMemory(device, glintMem, nullptr);
+    vkDestroyBuffer(device, glintReadBuf, nullptr);
+    vkFreeMemory(device, glintReadMem, nullptr);
     vkDestroyPipelineLayout(device, flareCompositePipeLayout, nullptr);
     vkDestroyDescriptorPool(device, flareCompositeDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, flareCompositeDescLayout, nullptr);
@@ -12357,8 +12385,13 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
     {
         ctx.createBuffer(sizeof(GpuGlintList),
                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, glintBuf, glintMem);
+        ctx.createBuffer(sizeof(GpuGlintList), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, glintReadBuf,
+                         glintReadMem);
+        vkMapMemory(ctx.device, glintReadMem, 0, sizeof(GpuGlintList), 0, &glintReadMapped);
+        memset(glintReadMapped, 0, sizeof(GpuGlintList));
         VkDescriptorSetLayoutBinding fb[2] = {
             {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
             {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};

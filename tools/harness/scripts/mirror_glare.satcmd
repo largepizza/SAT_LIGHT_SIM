@@ -1,0 +1,126 @@
+# The release cinematic's mirror shot (shot 6): a Reflect Orbital mirror seen from inside its beam, dolly 500 -> 160 m.
+# The glare should sit on the Sun's image (state selection.mesh.sprite_px). Captures every 0.25 s of the shot.
+preset High
+set display.render_scale 1
+set clouds_v2.auto_exposure 0
+set clouds_v2.light_steps 8
+set clouds_v2.exposure_ev 0
+time pause
+follow off
+cine new mirror_test
+cine shot add mirror
+time set 2036-11-22T02:30:00Z
+observer lat=35.38 lon=-120.05 agl=2
+wait settle 10
+beams go dist_km=0 agl=2 look=up
+select const "Reflect Orbital"
+cine shot simnow
+cine shot simrate 1
+cine shot follow sel
+cine shot look
+follow toward=observer dist=500 side=2.5 lift=1.5
+camera fov=34
+cine key t=0
+follow toward=observer dist=160 side=0.3 lift=0.2
+camera fov=30
+cine key t=8
+path goto 0.0
+wait 3
+capture m_00
+path goto 0.25
+wait 3
+capture m_01
+path goto 0.5
+wait 3
+capture m_02
+path goto 0.75
+wait 3
+capture m_03
+path goto 1.0
+wait 3
+capture m_04
+path goto 1.25
+wait 3
+capture m_05
+path goto 1.5
+wait 3
+capture m_06
+path goto 1.75
+wait 3
+capture m_07
+path goto 2.0
+wait 3
+capture m_08
+path goto 2.25
+wait 3
+capture m_09
+path goto 2.5
+wait 3
+capture m_10
+path goto 2.75
+wait 3
+capture m_11
+path goto 3.0
+wait 3
+capture m_12
+path goto 3.25
+wait 3
+capture m_13
+path goto 3.5
+wait 3
+capture m_14
+path goto 3.75
+wait 3
+capture m_15
+path goto 4.0
+wait 3
+capture m_16
+path goto 4.25
+wait 3
+capture m_17
+path goto 4.5
+wait 3
+capture m_18
+path goto 4.75
+wait 3
+capture m_19
+path goto 5.0
+wait 3
+capture m_20
+path goto 5.25
+wait 3
+capture m_21
+path goto 5.5
+wait 3
+capture m_22
+path goto 5.75
+wait 3
+capture m_23
+path goto 6.0
+wait 3
+capture m_24
+path goto 6.25
+wait 3
+capture m_25
+path goto 6.5
+wait 3
+capture m_26
+path goto 6.75
+wait 3
+capture m_27
+path goto 7.0
+wait 3
+capture m_28
+path goto 7.25
+wait 3
+capture m_29
+path goto 7.5
+wait 3
+capture m_30
+path goto 7.75
+wait 3
+capture m_31
+path goto 8.0
+wait 3
+capture m_32
+path play fps=30 record=mrec

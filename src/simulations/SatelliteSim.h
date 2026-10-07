@@ -3507,6 +3507,14 @@ private:
     // in the flare source's alpha; glare_mesh.vert/.frag draws them like glare.vert's sprites.
     VkBuffer glintBuf = VK_NULL_HANDLE;
     VkDeviceMemory glintMem = VK_NULL_HANDLE;
+    // Its host copy (2026-10-06): the harness reports the main view's glints (`state` -> glints), so a
+    // glare's position can be checked against where the Sun's image is (the mirror shot of the release
+    // cinematic). Copied at the end of recordCompute when glare_find ran; glintReadValid says whether the
+    // copy is this frame's.
+    VkBuffer glintReadBuf = VK_NULL_HANDLE;
+    VkDeviceMemory glintReadMem = VK_NULL_HANDLE;
+    void *glintReadMapped = nullptr;
+    bool glintReadValid = false;
     VkDescriptorSetLayout glareFindDescLayout = VK_NULL_HANDLE, glareMeshDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool glintDescPool = VK_NULL_HANDLE;
     VkDescriptorSet glareFindDescSet = VK_NULL_HANDLE, glareMeshDescSet = VK_NULL_HANDLE;
@@ -4147,10 +4155,8 @@ private:
     // does. The 2026-08-15 2-s.f. rounding pass took the residual 1.014 to exactly neutral — the
     // knob is still live if it's ever needed.
     float cloudOpacityScale = 0.46f;
-    // City-lights blur-through-cloud (see GpuCloudParams::cityLightBlurLod) — mip LOD
-    // earthNightTex/cityNightDetailTex blend toward under full local cloud opacity, so light
-    // diffused through haze reads as a soft glow instead of a sharp copy of the raw texture.
-    float cityLightBlurLod = 8.1f;
+    // (cityLightBlurLod, the city lights' blur under cloud, was removed 2026-10-06: from orbit it drew every
+    // city under thin cloud as a ~1000-km grey blob. GpuCloudParams::cityLightBlurLod is unread, written 0.)
     // Atmospheric scattering strength gains (see GpuCloudParams::atmosRayleighGain/atmosMieGain
     // and common.glsl's BETA_R_BASE/BETA_M_BASE) — 1.0 reproduces the original hardcoded physical
     // constants exactly. Rayleigh gain controls how much red/orange the sky and horizon clouds

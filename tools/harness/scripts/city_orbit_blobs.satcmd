@@ -1,0 +1,66 @@
+# City lights from orbit (2026-10-06, the release cinematic's "halo" shot: blobby cities over the night side).
+# Europe and the US East at night from 400 / 3000 / 10000 km, nadir, plus the ground / aircraft references
+# (Los Angeles from 10 km, a city under cloud from the ground). Run with
+#   python tools/harness/run.py tools/harness/scripts/city_orbit_blobs.satcmd --window 1600x900
+# Optional A/B: `set clouds_v2.dust_amount 0` (the city blur under cloud, clouds.city_light_blur_lod, is gone).
+preset High
+set display.render_scale 1
+set clouds_v2.auto_exposure 1
+time pause
+time set 2036-11-22T02:06:22Z
+
+observer lat=48 lon=8 alt=400000
+camera az=0 el=-89 fov=60
+wait settle 40
+wait 90
+capture eu_400
+observer lat=48 lon=8 alt=3000000
+camera az=0 el=-89 fov=60
+wait settle 40
+wait 60
+capture eu_3000
+observer lat=45 lon=0 alt=10000000
+camera az=0 el=-89 fov=40
+wait settle 40
+wait 60
+capture eu_10000
+observer lat=39 lon=-77 alt=400000
+camera az=0 el=-89 fov=60
+wait settle 40
+wait 90
+capture use_400
+observer lat=39 lon=-77 alt=3000000
+camera az=0 el=-89 fov=60
+wait settle 40
+wait 60
+capture use_3000
+
+# The halo shot's first pose.
+observer lat=20 lon=-31.5 alt=3000000
+camera az=0 el=-89 fov=90
+wait settle 40
+wait 60
+capture halo_3000
+observer lat=20 lon=-31.5 alt=9000000
+camera az=0 el=-89 fov=70
+wait settle 40
+wait 60
+capture halo_9000
+observer lat=20 lon=-31.5 alt=20000000
+camera az=0 el=-89 fov=50
+wait settle 40
+wait 60
+capture halo_20000
+
+# Ground and aircraft (must not regress).
+set clouds_v2.auto_exposure 0
+time set 2036-06-21T12:00:00Z
+observer lat=33.95 lon=-118.45 alt=10000
+time sun midnight
+camera az=60 el=-12 fov=58
+wait settle 60
+capture la_10km
+observer lat=34.05 lon=-118.25 agl=300
+camera az=200 el=-6 fov=60
+wait settle 60
+capture la_300m

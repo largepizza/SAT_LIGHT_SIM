@@ -936,7 +936,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   as distinct blobs; the ice fog's Antarctic term needs land, it covered the Southern Ocean) dust is patchy by REGION
   (`cv2DirNoise`, an analytic value noise on the direction at ~300-1000 km: a dust event covers a region,
   the next stays clear; the whole dry continent sat at one level) with a lower plume floor, and fades
-  seen from above (x0.25 by 80 km of eye altitude: mostly terrestrial). Its exponential height profile
+  seen from above (x0.08 by 60 km of eye altitude since 2026-10-06, was x0.25 by 80 km: from orbit at night its
+  city-lit glow drew soft tan blobs round desert and Mediterranean cities; mostly terrestrial). Its exponential height profile
   (and the ice fog's) is integrated EXACTLY over each march step (a sample at one height per step drew
   the step pattern as rings on the ground from 70 km), steps crowd at the far (ground) end when the eye
   is above the band, and the 150-km cap keeps the ground end from above. **Ice fog / diamond dust**
@@ -1005,7 +1006,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sample): a 22 deg halo in ~1/3 of cirrus, sundogs less, the CZA/parhelic circle rarely, 46 deg very rarely.
   The sun path to every cloud sample is the Chapman column (`sunTransmit`, include/atmosphere.glsl) plus
   ozone: a 12-step midpoint rule along a grazing path misses the tangent point's dense air.
-- **Tonemap controls** (Clouds tab, lighting section; `clouds_v2.exposure_ev / highlight_rolloff /
+- **Tonemap controls** (Photometry tab, EXPOSURE AND MOON section since 2026-10-06 — they were deep in the Clouds
+  tab's lighting section; slots 158-160/163 and the keys unchanged; `clouds_v2.exposure_ev / highlight_rolloff /
   white_balance / auto_exposure`, UBO `exposureScale / highlightRolloff / whiteBalance`, the old cloudsV2
   pads): **one GLOBAL exposure** (`globalExposureEV()` = Exposure (EV) + the metered auto offset) scales the
   sky's radiance, the point sources (the point style's ref/limit magnitudes shift by `exposureGainMag()`,
@@ -1436,7 +1438,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   wherever the range was. It is computed from the footprint everywhere now; "Sea wave range fade" (slot 257,
   `ocean_wave_range_fade` 0.4, UBO `cityLod2.z`) is the share of the range the waves fade over. **Mesh flares sit on
   their glint:** a meshed satellite's sprite (point, bloom, the point-like glare) is placed at the Sun's image in its
-  dominant lobe (d = s - 2 (s.n) n from the camera, clamped to the lobe's half-side, weighted by its specular share;
+  dominant lobe (d = s - 2 (s.n) n from the camera, clamped to the lobe as a square of its area along the group's in-plane body axes (2026-10-06; a circle of half the
+  side put it 25 px off a Reflect mirror's Sun image from 500 m), weighted by its specular share;
   CPU double, `GpuMeshKeepList` entry w, octahedral), not its centre, so the flare no longer jumps when the mesh's own
   glints take the glare (12-36 px). Benchmark: Reflect Orbital #2700 from Fairbanks — the observer is 1.26 deg off its
   beam axis (it sees the mirror lobe's GGX tail), so up close the Sun's image is a FIXED point in the sky 1.26 deg from
@@ -1696,6 +1699,10 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   warm-up, the median of the next 10 wall-clock frames (or of at least 3 once they add up to 5 s); above 250 ms it steps one tier down (a full tier ->
   Planetarium, Planetarium -> Potato), once per launch, with a 12-s banner (`graphicsAutoNoticeText`). Off in a
   harness run unless `SATLIGHTSIM_BOOT_SAFETY_MS` (run.py `--boot-safety-ms`) sets the threshold.
+- **Look**: the HUD palette (`UIPalette.h` `Pal` / `Style`, included by App.cpp): near-black `panelSolid` cards with
+  the faint `Style::borderColor` rule, the red accent (`btnAccent`) for the selection border, the checkbox and
+  Start, `Style::windowCornerRadius`, the amber note on `rowHighlight`. The first cut had a soft blue theme of its own
+  (2026-10-06, the user: "no soft blue UI windows").
 - **Harness**: skipped (a run never waits for input) unless `SATLIGHTSIM_BOOT_CHOOSER=pick=N` (run.py
   `--boot-chooser N`), which scripts it in four frames; `--boot-capture` captures them. `state` -> `render.boot_choice
   / full_sky_deferred / full_sky_pipeline / ask_graphics_mode`; `tools/harness/scripts/boot_chooser.satcmd`.
@@ -3642,7 +3649,11 @@ an aliased centre) and a blue anamorphic streak the sun doesn't have; both are g
   bright satellite's flux) and filled the 64 slots with ~400 px sprites, a large part of the close-up
   frame-rate drop. `glare_find.comp` lists every 5×5 local maximum past the threshold into `glintBuf`
   (`GpuGlintList`, `include/glint_list.glsl`, 64 max, its own indirect args); `glare_mesh.vert/.frag`
-  draws them with the same profile.
+  draws them with the same profile. **Sub-texel position (2026-10-06):** a parabola through the log light of the
+  peak texel and its axis neighbours (exact for a Gaussian lobe), blended toward the 9x9 near-peak centroid by how
+  much light besides the peak's is in it (flat tops). At texel centres the glare moved in 4-px jumps with holds —
+  the "wandering" glare of the release cinematic's mirror shot (`scripts/mirror_glare.satcmd`,
+  `tools/harness/glare_track.py`: the glint list is in `state` -> `selection.glints`, host copy `glintReadBuf`).
 - **Proximity (2026-09-26, `glareNearGain` / `glareNearRangeKm`):** sprite radius =
   `glareSizePx` × (0.6 + s) × `glareNearScale(range)`, which ramps 1 → `glareNearGain` over
   `glareNearRangeKm` → 0, smoothstepped — exactly 1.0 at or beyond that range, for a range of 0
@@ -3843,7 +3854,8 @@ struct GpuGlowBuf {
 `updatePositions` computes the Moon's geocentric ECI position (`satphot::moonGeoEciAt`: Meeus ch. 47's main
 periodic terms — 14 in longitude, 7 in latitude, 10 in distance; ~0.05 deg, eclipse times within minutes) and
 from it, per frame: the TOPOCENTRIC direction (`moonDirENU`, up to ~1 deg of parallax from the ground, far
-more in deep space), the true angular radius x "Moon size (x real)" (`moonSizeScale`, slot 220, key
+more in deep space), the true angular radius x "Moon size (x real)" (`moonSizeScale`, slot 220, Photometry tab's
+EXPOSURE AND MOON section since 2026-10-06, key
 `clouds.moon_size`; the old disc was a fixed 3x at infinity), the Earth-centred position in the observer's ENU
 (km) and the eclipse state — all into `cloud.moonCenter` / `cloud.moonMisc` (UBO 784 -> 816).
 - **Tidally locked**: the texture frame's z axis points at the EARTH'S CENTRE (it pointed at the observer, so
@@ -5119,6 +5131,14 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   front (west of Phoenix, the grid "turned on" with the eye inside the cloud). The user's tuned LOD values are the
   defaults (posts 27, grid 380, roads 1300, layout 2000 m/px, street share 0 near / 0.13 far, sprite gain 4,
   ground glitter under sprites 1).
+  **The blur under cloud was REMOVED (2026-10-06):** at mip 8.1 (~1000 km of map per texel) by the cloud's opacity,
+  from orbit every city under thin or broken cloud became a grey wash with the cloud's outline (the release
+  cinematic's pull-out: "blobby" cities). The lights are attenuated by the cloud composite only; the slider and
+  `clouds.city_light_blur_lod` are gone (slot 62 free; `GpuCloudParams::cityLightBlurLod` unread, written 0). The
+  **air's city glow** (sat_sky.frag atmosphere loop, `accumCity`) reads the night map at mip 4 below 800 km of eye
+  altitude and blends to a mip following the sample's height (log2(3 h / 4.9 km)) by 3000 km: mip 4 drew every
+  town as a ~150-km disc from high orbit. Applied from 30 km up it drew 10-20 km texels as squares round towns
+  from 400 km (bilinear). `scripts/city_orbit_blobs.satcmd`.
 - **Regional city styles (2026-09-30, sat_sky.frag `cityStyleWeights`, `kCs*` tables).** Nine styles by
   soft continental boxes with wobbled borders: 0 North America + Oceania, 1 Latin America, 2 Mediterranean
   Europe, 3 Northern Europe, 4 Middle East / N Africa / Central Asia, 5 Sub-Saharan Africa, 6 South + SE Asia,

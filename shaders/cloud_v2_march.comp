@@ -973,8 +973,10 @@ void main()
             // the bottom — concentric bands around the nadir (user snapshot 8).
             bool  above = tbS.x > 0.0;
             // Dust is mostly a terrestrial effect: seen from above it fades (user snapshot 1: a dusty veil
-            // over the whole view from 290 km).
-            float dustEye = mix(1.0, 0.25, smoothstep(15000.0, 80000.0, eyeH));
+            // over the whole view from 290 km). 2026-10-06: to 8% by 60 km (was 25% by 80 km): from orbit at
+            // night its city-lit glow (the night map at ~40-80 km) drew soft tan blobs round every desert and
+            // Mediterranean city (the release cinematic's pull-out). Aircraft heights are unchanged.
+            float dustEye = mix(1.0, 0.08, smoothstep(15000.0, 60000.0, eyeH));
             float dH = max(cv2.fog2.x, 1.0);
             [[dont_unroll]] for (int i = 0; i < kFog; ++i) {
                 float u0 = float(i) / float(kFog), u1 = float(i + 1) / float(kFog);
