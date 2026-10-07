@@ -65,6 +65,21 @@ void App::run() {
             bootCapture = harness::active() && e[0] == '1' && ctx.screenshotSupported;
         ui.init(ctx, window, ctx.renderPassBoot);
         bootFrame(); // title + version, before any loading starts
+        // The startup graphics chooser: before init() loads anything (CLAUDE.md "Startup graphics
+        // chooser"). Closing the window while it is up quits without ever initialising the sim.
+        if (!runBootChooser()) {
+            vkDeviceWaitIdle(ctx.device);
+            if (bootCapBuf != VK_NULL_HANDLE) {
+                vkDestroyBuffer(ctx.device, bootCapBuf, nullptr);
+                vkFreeMemory(ctx.device, bootCapMem, nullptr);
+                bootCapBuf = VK_NULL_HANDLE;
+            }
+            ui.cleanup(ctx.device);
+            ctx.cleanup();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return;
+        }
         sim->setBootStatus([this](const char *line) { bootStatus(line); });
     }
 
@@ -265,8 +280,16 @@ void App::bootFrame() {
 
     int ww = 0, wh = 0;
     glfwGetWindowSize(window, &ww, &wh);
-    // No sim is running: no cursor, no clicks, dt 0 (nothing on this screen is time-driven).
-    ui.beginFrame((float)ww, (float)wh, -1.0f, -1.0f, false, false, 0.0f, 0.0f, 0.0f);
+    // No sim is running: no cursor, no clicks, dt 0 (nothing on this screen is time-driven) — except
+    // while the graphics chooser is up, which takes the mouse.
+    if (chooserActive) {
+        double mx = 0.0, my = 0.0;
+        glfwGetCursorPos(window, &mx, &my);
+        const bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        ui.beginFrame((float)ww, (float)wh, (float)mx, (float)my, lmb, false, 0.0f, 0.0f, 0.0f);
+    } else {
+        ui.beginFrame((float)ww, (float)wh, -1.0f, -1.0f, false, false, 0.0f, 0.0f, 0.0f);
+    }
     scrollX = scrollY = 0.0f;
     buildBootUI();
 
@@ -372,6 +395,212 @@ void App::bootCaptureWrite(uint32_t w, uint32_t h) {
     stbi_write_png((dir / name).string().c_str(), (int)w, (int)h, 4, px.data(), (int)w * 4);
 }
 
+// ─── Startup graphics chooser (2026-10-06) ─────────────────────────────────────
+// Shown on the loading screen before sim->init(): only the UI pipeline exists, so it costs nothing on
+// any GPU, and the mode picked is applied before init() creates the expensive pipelines. No timeout:
+// it never continues into Full graphics on its own. A harness run skips it unless
+// SATLIGHTSIM_BOOT_CHOOSER asks for it, and then it is scripted ("pick=N"): it never waits for input.
+void App::chooserMove(int d) {
+    const int n = (int)chooserSpec.options.size();
+    if (n > 0) chooserSel = ((chooserSel + d) % n + n) % n;
+}
+
+void App::pollChooserGamepad() {
+    for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST && jid < 16; ++jid) {
+        GLFWgamepadstate st{};
+        if (!glfwJoystickIsGamepad(jid) || !glfwGetGamepadState(jid, &st)) continue;
+        auto pressed = [&](int b) { return st.buttons[b] == GLFW_PRESS && chooserPadPrev[jid][b] != GLFW_PRESS; };
+        if (pressed(GLFW_GAMEPAD_BUTTON_DPAD_LEFT) || pressed(GLFW_GAMEPAD_BUTTON_DPAD_UP)) chooserMove(-1);
+        if (pressed(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT) || pressed(GLFW_GAMEPAD_BUTTON_DPAD_DOWN)) chooserMove(+1);
+        if (pressed(GLFW_GAMEPAD_BUTTON_X) || pressed(GLFW_GAMEPAD_BUTTON_Y)) chooserAsk = !chooserAsk;
+        if (pressed(GLFW_GAMEPAD_BUTTON_A) || pressed(GLFW_GAMEPAD_BUTTON_START)) chooserDone = true;
+        // The left stick, as a d-pad (edge at half deflection).
+        const float ax = st.axes[GLFW_GAMEPAD_AXIS_LEFT_X] + st.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
+        const float prev = chooserPadAxisPrev[jid];
+        if (ax > 0.5f && prev <= 0.5f) chooserMove(+1);
+        if (ax < -0.5f && prev >= -0.5f) chooserMove(-1);
+        chooserPadAxisPrev[jid] = ax;
+        for (int b = 0; b < 15; ++b) chooserPadPrev[jid][b] = st.buttons[b];
+    }
+}
+
+bool App::runBootChooser() {
+    // SATLIGHTSIM_BOOT_CHOOSER: "0"/"off" never shows it; "1"/"show" shows it whatever the setting
+    // says; "pick=N" (harness) shows it, moves to option N after two frames and starts after four.
+    std::string mode;
+    if (const char *e = std::getenv("SATLIGHTSIM_BOOT_CHOOSER")) {
+        mode = e;
+        for (char &c : mode) c = (char)std::tolower((unsigned char)c);
+    }
+    if (mode == "0" || mode == "off" || mode == "false" || mode == "no") return true;
+    int autoPick = -1;
+    if (mode.rfind("pick=", 0) == 0) autoPick = std::max(0, std::atoi(mode.c_str() + 5));
+    const bool forced = autoPick >= 0 || mode == "1" || mode == "show" || mode == "on";
+    // A harness run never waits on a person: only a scripted pick may show it there.
+    if (harness::active() && autoPick < 0) return true;
+
+    chooserSpec = Simulation::BootChooserSpec{};
+    const bool wanted = sim->prepareBootChooser(ctx, chooserSpec);
+    if ((!wanted && !forced) || chooserSpec.options.empty()) return true;
+
+    const int n = (int)chooserSpec.options.size();
+    chooserSel = std::clamp(chooserSpec.defaultIdx, 0, n - 1);
+    chooserAsk = chooserSpec.askAgain;
+    chooserHovOpt.assign((size_t)n, false);
+    chooserDone = false;
+    chooserActive = true;
+    {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(ctx.physicalDevice, &props);
+        std::snprintf(chooserGpuLine, sizeof(chooserGpuLine), "Graphics card: %s", props.deviceName);
+    }
+    Log::line("boot chooser: shown (default " + chooserSpec.options[(size_t)chooserSel].label + ")");
+
+    int frame = 0;
+    while (!chooserDone) {
+        if (glfwWindowShouldClose(window)) {
+            chooserActive = false;
+            Log::line("boot chooser: window closed");
+            return false;
+        }
+        pollChooserGamepad();
+        if (autoPick >= 0) {
+            if (frame == 2) chooserSel = std::min(autoPick, n - 1);
+            if (frame >= 4) chooserDone = true;
+        }
+        bootFrame(); // pumps events; draws buildBootChooserUI, which also handles the clicks
+        ++frame;
+        // FIFO presentation paces this already; the sleep keeps an IMMEDIATE/MAILBOX swapchain from spinning.
+        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    }
+    chooserActive = false;
+    Log::line("boot chooser: picked " + chooserSpec.options[(size_t)chooserSel].label +
+              (chooserAsk ? " (ask again)" : " (do not ask again)"));
+    sim->setBootChoice(chooserSel, chooserAsk);
+    return true;
+}
+
+// The chooser's look follows the loading screen's (black, the title centred) with a row of option
+// cards — the small ones (Potato) on a line of their own below — the "ask on every startup" box and a
+// Start button. Clicks are read here from this frame's hover flags (Clay_Hovered inside each body).
+void App::buildBootChooserUI(float s, int wh) {
+    const bool lmb = ui.input().lmbDown;
+    const bool click = chooserLmbPrev && !lmb; // on release
+    chooserLmbPrev = lmb;
+    const auto fsz = [&](float px) { return (uint16_t)std::max(16.0f, px * s); };
+    Clay_String titleStr{false, (int32_t)std::strlen(sim->name()), sim->name()};
+    const auto str = [](const std::string &t) { return Clay_String{false, (int32_t)t.size(), t.c_str()}; };
+    const Clay_Color accent{90, 170, 255, 255}, cardBg{10, 12, 17, 255}, cardHov{18, 22, 30, 255};
+    const Clay_Color textMain{235, 238, 245, 255}, textDim{150, 158, 172, 255};
+    const int n = (int)chooserSpec.options.size();
+
+    CLAY(CLAY_ID("BootRoot"), {
+        .layout = {
+            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+            .padding = {0, 0, (uint16_t)(wh * 0.16f), 0},
+            .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_TOP},
+            .layoutDirection = CLAY_TOP_TO_BOTTOM},
+        .backgroundColor = {0, 0, 0, 255}})
+    {
+        CLAY_TEXT(titleStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = (uint16_t)(34 * s)}));
+        CLAY(CLAY_ID("ChooserGap0"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(14 * s)}}}) {}
+        CLAY_TEXT(str(chooserSpec.title), CLAY_TEXT_CONFIG({.textColor = textMain, .fontSize = fsz(22)}));
+        CLAY(CLAY_ID("ChooserGap1"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(6 * s)}}}) {}
+        if (!chooserSpec.subtitle.empty())
+            CLAY_TEXT(str(chooserSpec.subtitle), CLAY_TEXT_CONFIG({.textColor = textDim, .fontSize = fsz(16)}));
+        CLAY_TEXT(Clay_String({false, (int32_t)std::strlen(chooserGpuLine), chooserGpuLine}),
+                  CLAY_TEXT_CONFIG({.textColor = textDim, .fontSize = fsz(16)}));
+        if (!chooserSpec.note.empty()) {
+            CLAY(CLAY_ID("ChooserGapN"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(10 * s)}}}) {}
+            CLAY(CLAY_ID("ChooserNote"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                                     .padding = {(uint16_t)(14 * s), (uint16_t)(14 * s), (uint16_t)(8 * s), (uint16_t)(8 * s)}},
+                                          .backgroundColor = {70, 46, 12, 255},
+                                          .cornerRadius = CLAY_CORNER_RADIUS(6)})
+            {
+                CLAY_TEXT(str(chooserSpec.note), CLAY_TEXT_CONFIG({.textColor = {255, 214, 150, 255}, .fontSize = fsz(16)}));
+            }
+        }
+        CLAY(CLAY_ID("ChooserGap2"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(22 * s)}}}) {}
+
+        // One card; `small` cards are a single line.
+        auto card = [&](int i) {
+            const auto &o = chooserSpec.options[(size_t)i];
+            const bool sel = i == chooserSel, hov = chooserHovOpt[(size_t)i];
+            const float w = o.small ? 656.0f * s : 320.0f * s;
+            const uint16_t bw = (uint16_t)(sel ? 3 : 1);
+            CLAY(CLAY_IDI("ChooserOpt", i), {
+                .layout = {.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIT(o.small ? 0.0f : 150.0f * s)},
+                           .padding = {(uint16_t)(18 * s), (uint16_t)(18 * s), (uint16_t)((o.small ? 10 : 16) * s), (uint16_t)((o.small ? 10 : 16) * s)},
+                           .childGap = (uint16_t)((o.small ? 14 : 8) * s),
+                           .childAlignment = {.y = o.small ? CLAY_ALIGN_Y_CENTER : CLAY_ALIGN_Y_TOP},
+                           .layoutDirection = o.small ? CLAY_LEFT_TO_RIGHT : CLAY_TOP_TO_BOTTOM},
+                .backgroundColor = hov ? cardHov : cardBg,
+                .cornerRadius = CLAY_CORNER_RADIUS(8),
+                .border = {.color = sel ? accent : Clay_Color{60, 66, 80, 255}, .width = {bw, bw, bw, bw, 0}}}) // not CLAY_BORDER_ALL: that also rules between children
+            {
+                chooserHovOpt[(size_t)i] = Clay_Hovered();
+                if (chooserHovOpt[(size_t)i] && click) chooserSel = i;
+                CLAY_TEXT(str(o.label), CLAY_TEXT_CONFIG({.textColor = sel ? Clay_Color{255, 255, 255, 255} : textMain,
+                                                          .fontSize = fsz(o.small ? 17.0f : 22.0f)}));
+                if (i == chooserSpec.recommendedIdx)
+                    CLAY_TEXT(CLAY_STRING("Recommended for this computer"), CLAY_TEXT_CONFIG({.textColor = accent, .fontSize = fsz(16)}));
+                CLAY_TEXT(str(o.detail), CLAY_TEXT_CONFIG({.textColor = textDim, .fontSize = fsz(16)}));
+            }
+        };
+        CLAY(CLAY_ID("ChooserRow"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                                .childGap = (uint16_t)(16 * s),
+                                                .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            for (int i = 0; i < n; ++i)
+                if (!chooserSpec.options[(size_t)i].small) card(i);
+        }
+        for (int i = 0; i < n; ++i) {
+            if (!chooserSpec.options[(size_t)i].small) continue;
+            CLAY(CLAY_IDI("ChooserGapS", i), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(12 * s)}}}) {}
+            card(i);
+        }
+
+        CLAY(CLAY_ID("ChooserGap3"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(22 * s)}}}) {}
+        CLAY(CLAY_ID("ChooserFooter"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                                   .childGap = (uint16_t)(24 * s),
+                                                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                   .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+        {
+            CLAY(CLAY_ID("ChooserAsk"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                                    .padding = {(uint16_t)(6 * s), (uint16_t)(6 * s), (uint16_t)(4 * s), (uint16_t)(4 * s)},
+                                                    .childGap = (uint16_t)(10 * s),
+                                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                         .backgroundColor = chooserHovAsk ? Clay_Color{24, 28, 36, 255} : Clay_Color{0, 0, 0, 255},
+                                         .cornerRadius = CLAY_CORNER_RADIUS(4)})
+            {
+                chooserHovAsk = Clay_Hovered();
+                if (chooserHovAsk && click) chooserAsk = !chooserAsk;
+                CLAY(CLAY_ID("ChooserAskBox"), {.layout = {.sizing = {CLAY_SIZING_FIXED(18 * s), CLAY_SIZING_FIXED(18 * s)}},
+                                                .backgroundColor = chooserAsk ? accent : Clay_Color{0, 0, 0, 255},
+                                                .cornerRadius = CLAY_CORNER_RADIUS(3),
+                                                .border = {.color = {150, 158, 172, 255}, .width = CLAY_BORDER_ALL(2)}}) {}
+                CLAY_TEXT(CLAY_STRING("Ask on every startup"), CLAY_TEXT_CONFIG({.textColor = textMain, .fontSize = fsz(16)}));
+            }
+            CLAY(CLAY_ID("ChooserGo"), {.layout = {.sizing = {CLAY_SIZING_FIT(140.0f * s), CLAY_SIZING_FIT(0)},
+                                                   .padding = {(uint16_t)(22 * s), (uint16_t)(22 * s), (uint16_t)(9 * s), (uint16_t)(9 * s)},
+                                                   .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
+                                        .backgroundColor = chooserHovGo ? Clay_Color{120, 190, 255, 255} : accent,
+                                        .cornerRadius = CLAY_CORNER_RADIUS(6)})
+            {
+                chooserHovGo = Clay_Hovered();
+                if (chooserHovGo && click) chooserDone = true;
+                CLAY_TEXT(CLAY_STRING("Start"), CLAY_TEXT_CONFIG({.textColor = {8, 14, 24, 255}, .fontSize = fsz(18)}));
+            }
+        }
+        CLAY(CLAY_ID("ChooserGap4"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(14 * s)}}}) {}
+        std::snprintf(chooserHint, sizeof(chooserHint),
+                      "Arrow keys or d-pad to choose, Enter or A to start. Change it later in Settings > Display.");
+        CLAY_TEXT(Clay_String({false, (int32_t)std::strlen(chooserHint), chooserHint}),
+                  CLAY_TEXT_CONFIG({.textColor = {110, 116, 128, 255}, .fontSize = fsz(16)}));
+    }
+}
+
 // The look: black, the title and version centred, and the loading steps under them — the newest
 // at the top in full white, each older one pushed down a row and fainter until it is gone. The
 // intro's typography (white, the UI font, the title at 34 px), so the handover into the intro
@@ -396,6 +625,11 @@ void App::buildBootUI() {
     // says (alpha 22 of 255 still showed at ~40 % grey).
     constexpr int kShown = 6;
     static const float kPerceived[kShown] = { 1.0f, 0.60f, 0.38f, 0.23f, 0.13f, 0.06f };
+
+    if (chooserActive) {
+        buildBootChooserUI(s, wh);
+        return;
+    }
 
     CLAY(CLAY_ID("BootRoot"), {
         .layout = {
@@ -668,6 +902,15 @@ void App::cbKey(GLFWwindow* w, int key, int, int action, int) {
     // it to finish (Esc still closes the window, and mainLoop() then exits straight away).
     if (!app->simInited) {
         if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) glfwSetWindowShouldClose(w, GLFW_TRUE);
+        // The startup graphics chooser: arrows / Tab move, 1-9 pick, Enter or Space start.
+        if (app->chooserActive && !app->chooserDone && (action == GLFW_PRESS || action == GLFW_REPEAT)) {
+            const int n = (int)app->chooserSpec.options.size();
+            if (key == GLFW_KEY_LEFT || key == GLFW_KEY_UP) app->chooserMove(-1);
+            else if (key == GLFW_KEY_RIGHT || key == GLFW_KEY_DOWN || key == GLFW_KEY_TAB) app->chooserMove(+1);
+            else if (key >= GLFW_KEY_1 && key < GLFW_KEY_1 + n) app->chooserSel = key - GLFW_KEY_1;
+            else if ((key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_SPACE) && action == GLFW_PRESS)
+                app->chooserDone = true;
+        }
         return;
     }
     // Esc quits — unless a text field (the harness console) has the keyboard; it closes that instead.

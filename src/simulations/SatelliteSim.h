@@ -1818,6 +1818,10 @@ public:
 
     void init(VulkanContext &ctx) override;
     void onResize(VulkanContext &ctx) override;
+    // Startup graphics chooser (2026-10-06, SatelliteSimBootChooser.cpp; CLAUDE.md "Startup graphics
+    // chooser"): App asks before init(); options 0 Full graphics, 1 Planetarium, 2 Potato.
+    bool prepareBootChooser(VulkanContext &ctx, BootChooserSpec &spec) override;
+    void setBootChoice(int option, bool askAgain) override;
     void recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float dt) override;
     SatDrawPC buildSkyDrawPC(VulkanContext &ctx);     // sky background (recordPrePass + recordDraw Pass 1)
     PointDrawPC buildPointDrawPC(VulkanContext &ctx); // satellite / star / planet / trail point draws
@@ -4323,7 +4327,7 @@ private:
     // silently re-decide) — same dismissible-banner pattern as buildCrashRecoveryNotice, separate
     // timer/text since the two can in principle be showing different things.
     float graphicsAutoNoticeTimer = 0.0f;
-    char graphicsAutoNoticeText[128] = {};
+    char graphicsAutoNoticeText[192] = {};
 
     // ── UC6: screenshots ────────────────────────────────────────────────────────
     // See Simulation.h's wantsCleanScreenshot/recordScreenshotCopy/finalizeScreenshot doc
@@ -5013,6 +5017,33 @@ private:
     // a cinematic that didn't exist in their version — see loadSettings().
     bool playIntroOnStartup = true;
     bool hovPlayIntroStartup = false;
+
+    // ── Startup graphics chooser (2026-10-06, SatelliteSimBootChooser.cpp) ──────────────────────
+    // display.ask_graphics_mode: show the chooser on the loading screen before init() (absent = true).
+    bool askGraphicsModeOnStartup = true;
+    int bootChoiceMode = -1;      // the option picked this launch: 0 Full, 1 Planetarium, 2 Potato; -1 none shown
+    bool bootChoiceAsk = true;    // the chooser's "ask on every startup" box (applied after loadSettings)
+    // A cheap look at settings.json + the crash sentinel BEFORE init (peekBootSettings): what the chooser
+    // pre-selects, and which tier init() should build pipelines for.
+    bool bootPeekDone = false, bootPeekHasFile = false, bootPeekCrash = false, bootPeekAsk = true;
+    int bootPeekPreset = -1;      // display.graphics_preset as saved (-1 = none)
+    uint32_t bootPeekMask = 0;    // display.debug_disable_mask as saved
+    // Tier pipeline deferral: on a light tier (Planetarium / Potato) the three FULL sat_sky.frag
+    // pipelines (the inline sky, the low-res prepass, the SKY_TAA pass) are not created at init or on a
+    // resize; ensureFullSkyPipelines() creates them the first frame anything needs them.
+    bool fullSkyDeferred = false;
+    // The safety net: the first seconds of frames after loading, wall clock (updateBootSafetyNet).
+    bool bootSafetyDone = false;
+    double bootSafetyT0 = 0.0, bootSafetyPrevT = 0.0;
+    int bootSafetyWarm = 0;
+    std::vector<float> bootSafetyMs;
+    void peekBootSettings();
+    int deviceRecommendedBootMode(VulkanContext &ctx) const; // 0 Full / 1 Planetarium — see the .cpp
+    GraphicsPreset recommendedFullPreset(VulkanContext &ctx) const;
+    void applyBootChoice(VulkanContext &ctx, bool crashDetected);
+    bool fullSkyNeeded() const;
+    void ensureFullSkyPipelines(VulkanContext &ctx);
+    void updateBootSafetyNet();
     bool hovRootFollowMusic = false;
     bool hovSatOcclusionChk = false, hovEnvReflChk = false, hovSharpReflChk = false;
 

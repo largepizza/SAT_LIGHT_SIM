@@ -1,0 +1,9 @@
+# The boot safety net (CLAUDE.md "Startup graphics chooser"), forced to fire: pick Full graphics on the
+# chooser and arm the net at 1 ms, so the first frames after loading "fail" and it steps down to Planetarium.
+#   python tools/harness/run.py tools/harness/scripts/boot_safety.satcmd --boot-chooser 0 --boot-safety-ms 1
+expect state.render.boot_choice 0
+expect state.render.full_sky_deferred false
+wait 400   # frames: `wait seconds` holds one frame, and the net needs frames
+state stepped
+expect state.render.preset Planetarium
+capture banner ui=on scale=0.5

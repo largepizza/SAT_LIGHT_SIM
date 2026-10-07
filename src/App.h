@@ -40,6 +40,26 @@ private:
     VkBuffer                 bootCapBuf = VK_NULL_HANDLE;
     VkDeviceMemory           bootCapMem = VK_NULL_HANDLE;
     VkDeviceSize             bootCapSize = 0;
+    // Startup graphics chooser (2026-10-06): shown on the loading screen BEFORE sim->init(), so a weak
+    // machine can pick a light mode before any texture, model or simulation pipeline is loaded. While
+    // chooserActive the boot frames draw it (buildBootChooserUI) with live mouse input, and cbKey /
+    // the gamepad poll move chooserSel. See CLAUDE.md "Startup graphics chooser".
+    bool                     chooserActive = false;
+    bool                     chooserDone   = false;
+    int                      chooserSel    = 0;
+    bool                     chooserAsk    = true;
+    Simulation::BootChooserSpec chooserSpec;
+    std::vector<bool>        chooserHovOpt;          // last frame's hover per option card
+    bool                     chooserHovAsk = false, chooserHovGo = false;
+    bool                     chooserLmbPrev = false;
+    unsigned char            chooserPadPrev[16][15] = {}; // gamepad buttons, last poll (edge detection)
+    float                    chooserPadAxisPrev[16] = {};
+    char                     chooserGpuLine[320] = {};
+    char                     chooserHint[200] = {};
+    bool runBootChooser();               // false = the window was closed while it was up
+    void chooserMove(int d);
+    void pollChooserGamepad();
+    void buildBootChooserUI(float s, int wh);
     VulkanContext            ctx;
     std::unique_ptr<Simulation> sim;
     UIRenderer               ui;

@@ -563,6 +563,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // writes into the accumulator this call resets.
     beginCpuFrameTiming();
     CpuTimer _tUI(cpuAccumMs[CPU_BUILD_UI]);
+    updateBootSafetyNet(); // the first seconds after loading: > 250 ms frames step one tier down
     // Automation harness (docs/HARNESS.md): run this frame's commands before anything reads the
     // camera/observer/settings they change. A no-op outside a harness run.
     harnessUi_ = &ui;
@@ -3678,6 +3679,9 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // Turning the intro off does not move the observer: the observer and camera are restored from settings.json.
     uiSection("DispSec", 3, "STARTUP");
     uiToggleRow(inp, ui, "PlayIntro", 0, "Play intro on startup", playIntroOnStartup);
+    // The startup graphics chooser (SatelliteSimBootChooser.cpp): asked on the loading screen, before
+    // anything heavy loads. A crashed last session shows it regardless.
+    uiToggleRow(inp, ui, "AskGfxMode", 0, "Ask for graphics mode on startup", askGraphicsModeOnStartup);
     CLAY(CLAY_ID("DispStartupBtns"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                  .padding = {2, 2, 4, 2},
                                                  .childGap = 6,
@@ -7167,6 +7171,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         // Absent (every settings.json before 2026-10-03) = not done: the tutorial is new, and the
         // players it is for are exactly the ones who already never found the controls.
         tutorialDone = d.value("tutorial_done", isPatch ? tutorialDone : false);
+        // The startup graphics chooser. Absent = ask (it is the safety net for a machine that cannot run
+        // the full renderer, so an upgrading player sees it once and can untick it there).
+        askGraphicsModeOnStartup = d.value("ask_graphics_mode", isPatch ? askGraphicsModeOnStartup : true);
     }
 
     // Left/right HUD panels are corner-anchored, not persisted (see buildLeftHudPanel/
@@ -7686,6 +7693,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
         {"play_intro_on_startup", playIntroOnStartup},
         {"tutorial_done", tutorialDone},
+        {"ask_graphics_mode", askGraphicsModeOnStartup},
         {"photo_scale", photoScaleSetting},
         {"photo_frames", photoSettleFrames},
         {"trail_enabled", trailEnabled}};
