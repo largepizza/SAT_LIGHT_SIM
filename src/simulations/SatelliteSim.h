@@ -253,11 +253,23 @@ struct ConstellationConfig
     std::vector<ShellGroup> groups; // Shells: the filed groups (numPlanes = their total, perPlane = 1)
     // Formation clusters (Walker, Disk, Shells): each plane's/ring's satellites fly in clusters of
     // clusterSize, the clusters evenly spaced. 1 = no clusters. Line: clusterSpacingM apart along
-    // track. Ring: a regular polygon of radius clusterRadiusM in the orbit plane (along-track x radial).
+    // track. Ring: a passive Clohessy-Wiltshire relative orbit about the cluster centre (see
+    // SatOrbit::formP), members evenly spaced in its phase; clusterRadiusM = its along-track
+    // semi-axis (rho), clusterCrossK = cross-track / radial amplitude (sqrt 3 = a circle of radius
+    // rho tilted 60 deg out of the orbit plane, 2 = circular in projection on the local horizontal,
+    // 0 = the in-plane 2:1 ellipse).
     int clusterSize = 1;
     float clusterSpacingM = 1000.0f;
     bool clusterRing = false;
     float clusterRadiusM = 200.0f;
+    float clusterCrossK = 1.7320508f;
+    // Shells only: per-cluster scatter (uniform +-, deterministic per cluster) so a managed
+    // constellation does not draw perfect lattices: altitude (m), along-track phase (fraction of the
+    // gap between neighbouring clusters), node and inclination (rad). 0 = none.
+    float clusterAltJitterM = 0.0f;
+    float clusterPhaseJitter = 0.0f;
+    float clusterRaanJitterRad = 0.0f;
+    float clusterInclJitterRad = 0.0f;
     // Shells, sun-synchronous groups: each plane's node is offset from its terminator node (LTAN
     // 18:00 / 06:00) by up to +-raanSpread (the filed RAAN tolerance; 15 deg = 1 h of LTAN). Even: a
     // golden-ratio sequence over the entry's SSO planes (no clumps); random: uniform. 0 = tight nodes.
@@ -1120,16 +1132,20 @@ struct GpuSatOrbit
 
     float tumbleRate;  // rotation rate (rad/s); 0 if not tumbling
     float tumblePhase; // epoch-baked angle: fmod(phase + rate*epochT0, 2π)
-    float tumbleAxisX;
-    float tumbleAxisY;
+    float tumbleAxisX; // formation member (constIdx & kGpuFormationBit): formP (m)
+    float tumbleAxisY; // formation member: formQ (m)
 
-    float tumbleAxisZ;
+    float tumbleAxisZ;     // formation member: formK (cross-track / radial)
     float alignTerminator; // 1.0 = SSO (RAAN precesses); 0.0 = fixed RAAN
     uint32_t typeIdx;      // index into satTypeBuf's GpuSatType array
-    uint32_t constIdx;     // constellation index for enabled/highlight masks
+    uint32_t constIdx;     // constellation index (low 5 bits) for enabled/highlight masks;
+                           // kGpuFormationBit = formation ring member (tumble* hold formP/Q/K)
     // Total: 64 bytes
 };
 static_assert(sizeof(GpuSatOrbit) == 64, "GpuSatOrbit layout mismatch");
+static_assert(offsetof(GpuSatOrbit, tumbleAxisX) == 40 && offsetof(GpuSatOrbit, constIdx) == 60,
+              "GpuSatOrbit layout mismatch (sat_orbit.comp reads the formation fields by position)");
+constexpr uint32_t kGpuFormationBit = 0x80000000u; // GpuSatOrbit::constIdx flag, sat_orbit.comp mirror
 
 // GpuReflectorTarget / the per-frame CPU-compacted night-side buffer it described were removed
 // 2026-08-06: sat_orbit.comp now reads the static per-target ECEF buffer directly (the same one
@@ -1793,13 +1809,20 @@ struct SatOrbit
     glm::vec3 tumbleAxis; // fixed body tumble axis (unit vector in ECI)
     bool alignTerminator; // if true, incl/raan are recomputed from sunDirECI each frame
     float targetTerminatorAngle = 0.0f;
-    // Formation ring member (cluster_shape "ring"): metres above (+) / below the cluster centre at
-    // altM. R_sat includes it, meanMot does NOT (it is the centre's), so the member keeps station on
-    // the ring instead of drifting off at its own Keplerian rate.
-    float radialOffsetM = 0.0f;
+    // Formation ring member (cluster_shape "ring"). raan/incl/u0/altM are the CLUSTER CENTRE's
+    // circular orbit; the member flies the bounded Clohessy-Wiltshire (Hill) relative orbit about it,
+    // in the centre's radial / along-track / cross-track frame, with theta = u + delta:
+    //   x (radial)      =     a cos(theta)        =  P cos u - Q sin u
+    //   y (along-track) = -2 a sin(theta)        = -2 (P sin u + Q cos u)
+    //   z (cross-track) =  k a cos(theta)        =  k x
+    // P = a cos delta, Q = a sin delta. Drift-free (x'' - 2n y' - 3n^2 x = 0, y'' + 2n x' = 0,
+    // z'' + n^2 z = 0): a member below the centre runs ahead, one above falls behind, and the whole
+    // formation turns once per orbit. Mirrored in sat_orbit.comp and satOrbitStateAt().
+    bool formation = false;
+    float formP = 0.0f, formQ = 0.0f, formK = 0.0f;
     // ── Precomputed frame-invariant constants (set once in buildOrbits) ────────
-    float R_sat = 0.0f;    // kEarthRadius + altM + radialOffsetM
-    float meanMot = 0.0f;  // sqrt(kGM / (kEarthRadius + altM)^3)
+    float R_sat = 0.0f;    // kEarthRadius + altM
+    float meanMot = 0.0f;  // sqrt(kGM / R_sat^3)
     float cosI = 0.0f;     // cos(incl)
     float sinI = 0.0f;     // sin(incl)
     float cosRaan = 0.0f;  // cos(raan) — valid when !alignTerminator
@@ -1978,6 +2001,8 @@ private:
     static constexpr int kSelPhotLines = 1;
     char selPhotLine[kSelPhotLines][48] = {}; // rebuilt every frame
     bool selParityWarn = false;               // parity gap above kParityWarnMag (drives the log's severity)
+    bool selParityValid = false;              // the last check's numbers (harness `state` selection.parity)
+    double selParityDmag = 0.0, selParityRangeGpuM = 0.0, selParityRangeCpuM = 0.0;
     static constexpr double kParityWarnMag = 0.02;
     int parityLogCooldown = 0;                // frames until the next mismatch may be logged
     void updateSelectedPhotometry();

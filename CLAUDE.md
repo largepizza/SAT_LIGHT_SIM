@@ -2768,20 +2768,34 @@ Types and constellations are loaded from `constellations.json` next to the exe. 
   32-bit: the roster is at 29 entries, and an entry index >= 32 has no mask bit.
 - **Clusters** (`cluster_size`; Walker, Disk, Shells): each plane's satellites fly in formation clusters,
   evenly spaced. 1 = off (Walker keeps random phases). `cluster_shape` "line": `cluster_spacing_km` apart along
-  track; "ring": a regular polygon of radius `cluster_radius_km` in the ORBIT plane (along track x radial). A
-  ring member's radius is the centre's + `SatOrbit::radialOffsetM`, but its mean motion is the centre's: R_sat
-  and meanMot are separate fields on the GPU and in `satOrbitStateAt`, so the formation holds instead of
-  drifting ~3 pi x the offset per orbit (it is station-kept, not a free Keplerian formation).
+  track; "ring" (2026-10-06 rework): a PASSIVE formation — every member takes the cluster CENTRE's circular
+  orbit (raan/incl/u0/altM; R_sat and meanMot are the centre's) plus the bounded, drift-free Clohessy-Wiltshire
+  (Hill) relative orbit about it, in the centre's radial / along-track / cross-track frame, theta = u + delta:
+  x = a cos theta, y = -2a sin theta, z = k x (a = rho/2, rho = `cluster_radius_km`; k from
+  `cluster_relative_orbit`: circular sqrt 3 = a circle of radius rho tilted 60 deg out of the orbit plane about
+  the along-track axis, every member rho from the centre — the default; projected_circular 2; in_plane 0 = the
+  2:1 ellipse). Members are evenly spaced in delta from a per-cluster start. A member below the centre runs ahead,
+  one above falls behind, and the formation turns once per orbit (the user's "ring rotating on axis"). Stored as
+  `SatOrbit::formation/formP/formQ/formK` (P = a cos delta, Q = a sin delta, so x = P cos u - Q sin u and
+  y = -2 (P sin u + Q cos u): no trig per satellite), baked into GpuSatOrbit's tumble slots with
+  `kGpuFormationBit` in constIdx (see the layout below); `formationOffset()` in sat_orbit.comp, mirrored in
+  `satOrbitStateAt()` (elems `formation/formP/formQ/formK`, traces `orbit_formation[_pqk]`). The centre's phase
+  keeps `orbitPhase`'s exact two-float product; the offset is added after it. Velocity (attitude) stays the
+  centre's (the relative speed is ~n rho < 1 m/s). The first cut (until 2026-10-06) was a rigid polygon held
+  together by giving each member its centre's mean motion at its own radius ("magic").
 - **Starmind** (SpaceX orbital data centers) follows the 29 May 2026 letter to the FCC, Table 1
   (SAT-LOA-20260108-00016; transcribed in github.com/sdross0/orbital-datacenter-brightness ASSUMPTIONS.md
   rev. 2): SSO 565-585 km (10 shells), 707-744 (22), 967-1002 (22), 2 planes each; 30 deg at 550-568 km
   (10 shells, 26-32 deg), 686-718 (25), 946-978 (25), 30 planes x 333. The rows are per-group MAXIMA summing to
   1,198,120 against a 1,000,000 cap, so `per_plane` is scaled by 1e6 / 1,198,120 and rounded down to whole
-  clusters (988,672 flown). Rings of 8 in the orbit plane, `cluster_radius_km` 2.0 in the roster (the schema's
-  default and the first cut: 200 m; the user's reading of SpaceX's visualization; SpaceX's text says "10-ish
-  satellites" per cluster). At 2 km a ring spans ~0.1-0.2 deg from the ground, so each cluster RESOLVES into a
-  small ring (or, edge-on, a short line) of points at a normal FOV — not a rendering bug (reported 2026-10-06 as
-  "stars drawn as hollow rings"); at 200 m a cluster is one point. Filed RAAN tolerance +-30 deg: modelled
+  clusters (988,672 flown). Rings of 8 (the user's reading of SpaceX's visualization; SpaceX's text says "10-ish
+  satellites" per cluster), circular relative orbits of rho = 0.35 km (700 m across: the formations are
+  reportedly under 750 m; neighbours 268 m apart). It was 2 km in the first cut, where each cluster RESOLVED into
+  a small ring of points from the ground ("stars drawn as hollow rings"); at 350 m a cluster is about one point
+  at a normal FOV. **Per-cluster jitter** (Shells only, `cluster_alt_jitter_km` 0.25, `cluster_phase_jitter`
+  0.25 of the gap between clusters (~80 km), `cluster_raan_jitter_deg` 0.15, `cluster_incl_jitter_deg` 0.03;
+  deterministic hash of (entry, cluster), not rand()) breaks the perfectly even strings of clusters along each
+  plane. Filed RAAN tolerance +-30 deg: modelled
   per plane via `raan_spread_deg` (10 in the roster; `raan_spread` even = golden-ratio sequence | random). It
   replaced a single 1M-satellite dawn-dusk Disk (575-1925 km, 2000 rings). **Why the spread matters:** with
   tight nodes every shell of a node family shares ONE plane, and shells 1.6-1.8 km apart with 2-km rings
@@ -2939,6 +2953,10 @@ anything that is constant per type goes in `GpuSatType`.
 [48] tumbleAxisZ, alignTerminator, typeIdx (uint), constIdx (uint)
 ```
 `static_assert(sizeof(GpuSatOrbit) == 64)` — do not change field order without updating both structs.
+**Formation ring members** (2026-10-06): `constIdx` carries `kGpuFormationBit` (0x80000000; the shader masks
+the index with 31 for the enabled/highlight masks), the tumble slots hold the Clohessy-Wiltshire coefficients
+(tumbleAxisX/Y/Z = formP, formQ, formK; tumbleRate/Phase 0), and the Tumble attitude law reads +Z for them —
+the CPU's `SatOrbit` keeps its own (unused) tumble fields. `offsetof` asserts pin the slot positions.
 
 ### GpuSatType layout (416 bytes, std430) — `satTypeBuf`
 One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, at `kSatTypeArrayOffset`: after a

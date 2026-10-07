@@ -116,6 +116,11 @@ struct SatOrbitElems
     double tumbleRate = 0.0; // rad/s
     double tumblePhase = 0.0;
     glm::dvec3 tumbleAxis{0.0, 0.0, 1.0};
+    // Formation ring member: the elements above are the CLUSTER CENTRE's; the member adds the
+    // Clohessy-Wiltshire offset x = P cos u - Q sin u (radial), y = -2 (P sin u + Q cos u)
+    // (along-track), z = K x (cross-track). See SatOrbit::formP (SatelliteSim.h).
+    bool formation = false;
+    double formP = 0.0, formQ = 0.0, formK = 0.0;
 };
 
 struct SatOrbitState

@@ -1,0 +1,142 @@
+# Starmind formations (2026-10-06 rework): each ring of 8 is a passive Clohessy-Wiltshire relative orbit
+# about its cluster centre (cluster_relative_orbit circular, rho 350 m), and the Shells clusters carry a
+# per-cluster jitter. Follows X-ring member 0 through one orbit (~96 min at 565 km) in 12 steps of 480 s,
+# the camera held 3 km from it in the satellite's frame on the sunward (+cross-track) side, other
+# constellations off:
+#   oNN_plane: from cross-track (the orbit plane face-on, along-track horizontal): the 2:1 ellipse,
+#              members below the centre running ahead, the whole formation turning once per orbit.
+#   oNN_ring:  along the ring's normal (cross 0.5, radial -0.87, from below): the circle turning.
+# At the equinox the cluster stays sunlit. Then the ground at twilight (Big Sur)
+# and the shells from 1500 km, for the jitter; `state` carries the selection's GPU-vs-CPU parity
+# (selection.parity). Before/after: run the same script with --exe of an older build.
+preset High
+time set 2037-03-20T00:00:00Z
+time pause
+observer lat=36.27 lon=-121.81 agl=2
+const all off
+const "SpaceX Starmind - sun-synchronous X-ring" on
+select const "SpaceX Starmind - sun-synchronous X-ring" n=0
+camera fov=30
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o00_plane
+state o00
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o00_ring
+time add 480
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o01_plane
+state o01
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o01_ring
+time add 480
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o02_plane
+state o02
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o02_ring
+time add 480
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o03_plane
+state o03
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o03_ring
+time add 480
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o04_plane
+state o04
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o04_ring
+time add 480
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o05_plane
+state o05
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o05_ring
+time add 480
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o06_plane
+state o06
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o06_ring
+time add 480
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o07_plane
+state o07
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o07_ring
+time add 480
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o08_plane
+state o08
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o08_ring
+time add 480
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o09_plane
+state o09
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o09_ring
+time add 480
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o10_plane
+state o10
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o10_ring
+time add 480
+follow offset=0,3000,0 aim=sat
+wait settle
+capture o11_plane
+state o11
+follow offset=0,1500,-2598 aim=sat
+wait settle
+capture o11_ring
+follow off
+const all on
+# The ground at twilight: Big Sur, looking west and south over the X-ring and the 30 deg shells.
+time set 2036-11-22T02:10:00Z
+observer lat=36.27 lon=-121.81 agl=2
+camera az=250 el=25 fov=90
+wait settle
+capture g10_west scale=0.5
+camera az=180 el=35 fov=90
+wait settle
+capture g20_south scale=0.5
+select const "SpaceX Starmind - 30 deg shells"
+camera look sel
+camera fov=3
+wait settle
+capture g30_cluster scale=0.5
+state g30
+# The shells from 1500 km over the terminator, both families highlighted.
+observer lat=20 lon=-110 alt=1500000
+camera az=270 el=-60 fov=70
+const all off
+const "SpaceX Starmind - sun-synchronous X-ring" on highlight=on
+const "SpaceX Starmind - 30 deg shells" on highlight=on
+wait settle
+capture s10_shells scale=0.5
+camera az=270 el=-20 fov=20
+wait settle
+capture s20_shells_zoom scale=0.5

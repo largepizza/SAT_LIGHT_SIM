@@ -88,6 +88,18 @@ SatOrbitState satOrbitStateAt(const SatOrbitElems &e, double tJ2000)
     st.velocity = glm::dvec3(-sinU * cosR - cosU * cosI * sinR,
                              -sinU * sinR + cosU * cosI * cosR,
                              cosU * sinI);
+    if (e.formation)
+    {
+        // Clohessy-Wiltshire relative orbit about the centre (sat_orbit.comp formationOffset). The
+        // velocity stays the centre's along-track unit vector, as on the GPU (the relative speed is
+        // ~n x rho, < 1 m/s: 1e-4 rad of attitude).
+        const glm::dvec3 rHat = st.posEci / e.rSatM;
+        const glm::dvec3 hHat(sinI * sinR, -sinI * cosR, cosI);
+        const double x = e.formP * cosU - e.formQ * sinU;
+        const double y = -2.0 * (e.formP * sinU + e.formQ * cosU);
+        st.posEci += x * rHat + y * st.velocity + (e.formK * x) * hHat;
+        st.nadir = -glm::normalize(st.posEci);
+    }
     st.tumbleAngle = e.tumblePhase + e.tumbleRate * tJ2000;
     return st;
 }
