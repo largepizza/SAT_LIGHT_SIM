@@ -4648,6 +4648,10 @@ private:
         bool thumbTried = false; // its PNG was looked for (loaded lazily, a few per frame)
         UIImage img;             // the thumbnail's sub-rect (Clay keeps a pointer: lives in the vector)
         char meta[2][64] = {};   // "2036-11-22 02:06 UTC", "34.05 N 118.24 W  1.2 km"
+        // Optional "look" (the shipped defaults, 2026-10-06): the clock a Go sets, so an event bookmark (an eclipse,
+        // a flash of lightning) is not flown past at a fast time scale. -1 = leave the clock alone (user bookmarks).
+        int lookTimeScaleIdx = -1;
+        int lookPaused = -1;
     };
     std::vector<Bookmark> bookmarks_;
     bool bookmarksLoaded_ = false;
@@ -4662,6 +4666,7 @@ private:
     std::string bmDeleteArmed_, bmStatus_;
     int bmDeletePending_ = -1;            // the window's Delete / Add, applied by the next bookmarkTick (before any
     bool bmAddPending_ = false;           // layout: Clay keeps pointers into bookmarks_ until the frame is recorded)
+    bool bmRestorePending_ = false;       // "Restore default bookmarks", applied the same way (it grows the vector)
     // The atlas: one image, registered once with the UI.
     VkImage bmAtlasImg = VK_NULL_HANDLE;
     VkDeviceMemory bmAtlasMem = VK_NULL_HANDLE;
@@ -4671,6 +4676,11 @@ private:
     std::string bookmarkDir() const;
     void bookmarksLoad();
     void bookmarksSave();
+    // The shipped defaults (data/bookmarks -> <exe dir>/default_bookmarks: bookmarks.json + <id>.png). They seed the
+    // list when the user has no bookmarks.json yet; bookmarkRestoreDefaults re-adds any default whose id is missing
+    // (copying its thumbnail) and returns how many it added, leaving the user's own bookmarks alone.
+    static constexpr const char *kBmDefaultsDir = "default_bookmarks";
+    int  bookmarkRestoreDefaults();
     int  bookmarkAdd(const std::string &name);           // the current view; returns its index
     void bookmarkUpdate(int i);                          // replace a bookmark's view (and thumbnail) with the current one
     void bookmarkGo(int i);

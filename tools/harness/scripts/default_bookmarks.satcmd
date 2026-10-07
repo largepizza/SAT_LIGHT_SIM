@@ -1,0 +1,112 @@
+# The default bookmarks that ship with the sim (data/bookmarks -> <exe dir>/default_bookmarks), rebuilt from scratch.
+#   python tools/harness/run.py tools/harness/scripts/default_bookmarks.satcmd --out harness_runs/default_bookmarks
+#   then copy harness_runs/default_bookmarks/bookmarks/* over data/bookmarks/ (bookmarks.json + one <id>.png each)
+# A harness run starts from the compiled-in defaults (the shipped look), in its own user-data folder, so the list
+# begins as the current defaults: `bookmark add ... id=` replaces each one. scale= / paused= are the bookmark's
+# optional "look" (the clock a Go sets: 0 = 1x). Each view is settled before it is added; the thumbnail is the
+# next clean frame (wait 5). Every bookmark stores the cloud map's drift: only the Venezuela storm needs a set
+# phase; the rest are framed with the compiled-in offset (`drift default`).
+window 1600x900
+time pause
+
+# 1. The rainbow (the user's snapshot, profile_log record 40, 2026-10-04): sunrise behind a storm near
+#    Valencia, Venezuela. Needs the storm's drift phase. Paused: the storm moves on within minutes.
+time j2000 1164408248.06
+drift phase=5.2360808643282795 rate=0.0000065
+observer lat=9.9665 lon=-68.2745 alt=865
+camera az=-61.25 el=15.5 fov=54
+wait settle
+wait 30
+bookmark add Venezuela Rainbow id=default_rainbow_venezuela scale=0 paused=1
+wait 5
+# Back to a fresh session's cloud map for everything else (with the storm's offset Anchorage is overcast).
+drift default
+
+# 2. The 2037-07-13 total solar eclipse at greatest eclipse (the shadow axis, 21.75 S 138.31 E): the corona
+#    and the darkened sky, at a 15-degree field.
+time set 2037-07-10T00:00:00Z
+eclipse solar
+camera look sun
+camera fov=15
+wait settle
+wait 30
+bookmark add Great Australian Eclipse id=default_eclipse_solar_2037 scale=0 paused=0
+wait 5
+
+# 3. The 2037-01-31 total lunar eclipse from Alice Springs.
+observer lat=-23.70 lon=133.88 agl=0
+time set 2037-01-31T14:01:00Z
+camera look moon
+camera fov=8
+wait settle
+wait 30
+bookmark add Blood Moon over Alice Springs id=default_eclipse_lunar_2037 scale=0 paused=0
+wait 5
+
+# 4. A G2 storm (Kp 6.8, `aurora next 6` from 2036-12-01) seen from 420 km over Siberia: the oval and its red tops.
+time set 2037-01-12T18:00:00Z
+observer lat=62 lon=90 alt=420000
+camera az=0 el=-18 fov=80
+wait settle
+wait 90
+bookmark add Aurora from Orbit id=default_aurora_orbit scale=0 paused=0
+wait 5
+
+# 5. The Reflect Orbital mirrors converging on a site at night (beams go: the busiest site from Big Sur's sky -
+#    Anchorage at this moment): the line of mirrors in the sky above the city, the beams' glow.
+observer lat=35.869 lon=-121.402 agl=2
+time set 2036-11-22T02:40:00Z
+wait 20
+beams go rank=1 dist_km=5 agl=2 look=up
+camera el=30 fov=80
+wait settle
+wait 30
+bookmark add Reflect Orbital over Anchorage id=default_reflect_beams scale=0 paused=0
+wait 5
+
+# 6. The intro's vantage: the AI datacenter satellites flaring in a line at twilight over Big Sur.
+observer lat=35.869 lon=-121.402 agl=2
+time set 2036-11-22T02:06:22Z
+camera az=-75 el=16 fov=70
+wait settle
+wait 30
+bookmark add AI Satellites at Twilight id=default_ai_twilight scale=0 paused=0
+wait 5
+
+# 7. Los Angeles at night from 10 km: street lamps, the road network, the far city as glittering points.
+time set 2036-06-21T12:00:00Z
+observer lat=33.95 lon=-118.45 alt=10000
+time sun midnight
+camera az=60 el=-25 fov=60
+wait settle
+wait 30
+bookmark add Los Angeles by Night id=default_la_night scale=0 paused=0
+wait 5
+
+# 8. Inside the Starmind shells beside an 8-satellite formation ring (follow mode; the bookmark keeps the camera's
+#    place, paused so the ring is still there).
+time set 2037-03-20T00:00:00Z
+observer lat=35 lon=-100 agl=2
+select const "SpaceX Starmind - sun-synchronous X-ring" n=0
+follow offset=200,900,0
+camera look sel
+camera fov=60
+wait settle
+wait 20
+bookmark add Starmind Formation Rings id=default_starmind_rings scale=0 paused=1
+wait 5
+follow off
+select none
+
+# 9. Sunset on the limb from 420 km over the Southern Ocean.
+observer lat=-45 lon=40 alt=420000
+time sun 3 setting
+camera look sun
+camera el=-12 fov=80
+wait settle
+wait 90
+bookmark add Sunset from Orbit id=default_limb_orbit scale=0 paused=0
+wait 5
+
+bookmark list
+quit

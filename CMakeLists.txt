@@ -394,6 +394,16 @@ function(sat_copy_runtime_files tgt)
                 COMMENT "Copying satellite models next to ${tgt}"
             )
         endif()
+        # The default bookmarks (bookmarks.json + <id>.png thumbnails), loaded from <exe dir>/default_bookmarks:
+        # they seed a first run's list and the Bookmarks window's "Restore defaults".
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/bookmarks")
+            add_custom_command(TARGET ${tgt} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/data/bookmarks"
+                    "$<TARGET_FILE_DIR:${tgt}>/default_bookmarks"
+                COMMENT "Copying default bookmarks next to ${tgt}"
+            )
+        endif()
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
         add_custom_command(TARGET ${tgt} POST_BUILD
@@ -442,6 +452,14 @@ function(sat_sync_runtime_sources tgt)
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/satellite_models"
                 "$<TARGET_FILE_DIR:${tgt}>/satellite_models")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/bookmarks")
+        file(GLOB_RECURSE _bookmarks CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/bookmarks/*")
+        list(APPEND sync_files ${_bookmarks})
+        list(APPEND sync_copies
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/bookmarks"
+                "$<TARGET_FILE_DIR:${tgt}>/default_bookmarks")
     endif()
     foreach(f data/constellations.json data/constellations.schema.json data/reflector_targets.json
               THIRD_PARTY_NOTICES.txt)

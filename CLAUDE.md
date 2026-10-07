@@ -1588,8 +1588,21 @@ follow mode is a free camera at the camera's place.
   shrinking the vector after the layout would leave them dangling. Go / Update / a rename change no address.
 - The window: a name field + "Add current view", then cards in as many columns as fit (Clay has no wrapping rows:
   the column count comes from the list's last laid-out width) — thumbnail (click = Go), the name (a text field),
-  when / where, Go / Update / Delete (two clicks). Harness: `bookmark add [name] | go <n> | update <n> |
-  rename <n> <name> | delete <n> | list`, `ui open bookmarks`.
+  when / where, Go / Update / Delete (two clicks). Harness: `bookmark add [name] [id=] [scale=] [paused=] | go <n> |
+  update <n> | rename <n> <name> | delete <n> | restore | list`, `ui open bookmarks`.
+- **Shipped defaults (2026-10-06):** `data/bookmarks/` (bookmarks.json + `<id>.png`, ids `default_*`) is copied to
+  `<exe dir>/default_bookmarks/` by `sat_copy_runtime_files` / `sat_sync_runtime_sources` and packaged by
+  `cmake/PackageRelease.cmake` (the folder is named apart from the user's `bookmarks/` in case the user data folder IS
+  the exe folder). `bookmarksLoad` seeds the list from it only when the user has NO bookmarks.json (an emptied list is
+  an empty file, never re-seeded); "Restore defaults" (`bmRestorePending_`, deferred like Add) re-adds every default
+  whose id is missing and copies its thumbnail, leaving the user's own alone. An optional per-bookmark **`look`**
+  (`time_scale_idx`, `paused`; -1 = absent, so user bookmarks never touch the clock) sets the clock on Go — event
+  bookmarks start at 1x, and the rainbow and Starmind ring start paused (the storm and the formation move on). It holds
+  no rendering settings on purpose: a Go must never rewrite the user's settings.json. **Rebuild them with
+  `tools/harness/scripts/default_bookmarks.satcmd`** (header: the run.py line and the copy into data/bookmarks); the
+  storm phase comes from harness `drift phase=` (`drift default` = the compiled-in offset), and `bookmark add id=`
+  replaces a seeded default. The Venezuela rainbow is framed from the user's snapshot (record 40, 2026-10-04, then at
+  rain 3.0): at the shipped `rain_amount` 0.71 the bow barely shows (~1.5 needed).
 
 ## Loading screen (2026-09-26)
 
