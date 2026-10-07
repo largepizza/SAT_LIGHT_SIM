@@ -5130,6 +5130,12 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
   screen) is x `ovcK` = mix(0.35, 1, the sea point's cloud shadow) where the reflection has cloud or is off screen;
   the on/off-screen fade spans 30% past the edge (8% drew dark wedges in the sea's lower corners under a sunset-lit
   deck). Snap 5's sea had been brighter than the overcast over it (debug view 50: full shadow, 0.48 clear march).
+- **The sea's "white static" (2026-10-06):** `ovcK` read the RAW centre tap of the cloud shadow (`cloudBCenter.a`),
+  which carries cloud_march.comp's 2x2 ordered march offsets — only the [1 2 1] tent (`cloudShadowT`) averages them
+  out. Under broken cloud the sea's reflection took a fixed grid of period 2 half-res texels: white dots over the
+  bright sea that shimmered as the waves moved under them. It reads `cloudShadowT` now (so does debug view 50).
+  Measured at Big Sur, 20 m, Sun 4 deg: the period-4-px energy was 4.4x its neighbours' (5.0x with the TAA), now
+  1.0x. **Anything that reads the cloud shadow must read `cloudShadowT`, never `cloudB.a` / `cloudBCenter.a`.**
 
 ### Satellite ocean-glint gain / floor (2026-09-26) — `sat_sky.frag`, `OceanGlintBuf`
 

@@ -5127,8 +5127,13 @@ void main() {
                 // sky off screen, but under an overcast that air and that sky are the deck's shadowed underside: the
                 // sea under a storm mirrored half a sunlit clear sky and was brighter than the sky over it (user snap 5:
                 // debug view 50 read full cloud shadow and a 0.48 clear-march weight). Where the sea is in cloud shadow
-                // (cloudBCenter.a, the shadow at this point) that share drops toward the light under a deck (~25%).
-                float ovcK = mix(0.35, 1.0, clamp(cloudBCenter.a, 0.0, 1.0));
+                // (the shadow at this point) that share drops toward the light under a deck (~25%).
+                // 2026-10-06: the FILTERED shadow (cloudShadowT). It read the raw centre tap, cloudBCenter.a, which carries
+                // cloud_march.comp's 2x2 ordered march offsets (only the [1 2 1] tent above averages them out): under broken
+                // cloud the sea's reflection took a grid of period 2 half-res texels, white dots over the bright sea that
+                // shimmered as the waves moved under them — the "white static" (user report; Big Sur, 20 m, Sun 4 deg: the
+                // period-4-px energy 4.4x its neighbours' without the TAA, 5.0x with it, gone with the cloud shadow off).
+                float ovcK = mix(0.35, 1.0, clamp(cloudShadowT, 0.0, 1.0));
                 vec3  clearRefl = reflColor;
                 reflColor *= ovcK;   // off screen / behind the camera: the deck's underside, not the clear sky
 #ifndef SKY_ENV
@@ -5394,7 +5399,7 @@ void main() {
                     else if (dvo == 42) dbg = vec3(seaState * 0.5, max(waveCrest, 0.0), waveBlend);
                     else if (dvo == 43) dbg = surfColor;
                     else if (dvo == 44) dbg = waveN * 0.5 + 0.5;
-                    else if (dvo == 50) dbg = vec3(cloudBCenter.a, dbgReflUV.z, 0.0);
+                    else if (dvo == 50) dbg = vec3(cloudShadowT, dbgReflUV.z, 0.0);
                     else                dbg = vec3(clamp(-dShore / 100.0, 0.0, 1.0), clamp(dShore / 100.0, 0.0, 1.0), 0.0);
                     terrainDebugColor  = dbg;
                     terrainDebugActive = true;
