@@ -1,0 +1,14 @@
+{
+  "rise": "Dusk, Big Sur ridge. X-ring line enters on the lower-left third out of the sea horizon (lower third), rises to the upper-right third; ridge as a dark wedge on the left; tilt-up pan x40 time-lapse.",
+  "eight": "Telephoto push 16 -> 0.9 deg tracking one point of the line: it resolves into a ring of 8 datacenter satellites (ring sits near the lower third at the end).",
+  "ring": "Follow mode around that ring: face-on ring of 8 over the night limb (limb on the lower third) arcing to along-track, the next rings receding to a vanishing point.",
+  "opposition": "Dawn over the sea: cluster grid on the upper-right third, sea horizon near the lower third; clusters near the anti-solar point brighten (x2 time).",
+  "observer_line": "Same sim seconds from the satellite side on the observer's line of sight: the Sun-facing arrays read white (opposition glint), dolly 3 km -> 350 m.",
+  "mirror": "Reflect Orbital mirror from inside its beam: the Sun reflected in the mirror, glare spikes; dolly 500 -> 160 m.",
+  "down_beam": "From the mirror down the beam to the lit spot on Topaz: city lights, the spot and its blue haze centred (sim frozen), dolly 300 m -> 1530 km.",
+  "totality": "2037-07-13 totality: orange 360-degree horizon on the lower third, corona near the top -> push-in to the corona on the left third.",
+  "anvil": "Storm top at sunset from 16 km: tilt-up reveal from the dome to the horizon on the upper third.",
+  "aurora": "Kp 6 aurora over the Brooks Range: ridge on the lower third, pan from the rayed curtains toward the zenith (x20).",
+  "city": "Los Angeles at night from 10 km: city glitter, horizon on the upper third, slow drift east.",
+  "halo": "Pull-out over the night side: sunlit StarMind shells halo the dark Earth, Milky Way on the left (x30)."
+}

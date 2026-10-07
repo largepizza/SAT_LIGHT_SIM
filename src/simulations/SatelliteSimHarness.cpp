@@ -32,6 +32,8 @@ namespace fs = std::filesystem;
 using harness::Status;
 using nlohmann::json;
 
+void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate); // SatelliteSim.cpp
+
 namespace
 {
 [[noreturn]] void fail(const std::string &msg) { throw std::runtime_error(msg); }
@@ -1315,6 +1317,57 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             followOffset = glm::dvec3(x, y, z);
             updateFollow(0.0f);
         }
+        // toward=observer|sun [dist=<m>] [side=<deg>] [lift=<deg>]: put the camera `dist` metres from the satellite
+        // on its line to the parked ground observer (the side, and the flare, the observer sees) or to the Sun,
+        // rotated `side` degrees about the radial and `lift` degrees toward the radial, and aim at the satellite.
+        if (c.has("toward"))
+        {
+            const std::string w = lower(c.str("toward"));
+            const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const double th = earthRotationAngle(tNow), ct = std::cos(th), st = std::sin(th);
+            auto toEcef = [&](glm::dvec3 v) { return glm::dvec3(ct * v.x + st * v.y, -st * v.x + ct * v.y, v.z); };
+            const SatOrbitState so = satOrbitStateAt(orbitElemsOf(satOrbits[followSatIndex]), tNow);
+            const glm::dvec3 P = toEcef(so.posEci), Rh = glm::normalize(P);
+            glm::dvec3 Th = toEcef(so.velocity);
+            const glm::dvec3 Nh = glm::normalize(glm::cross(Rh, Th));
+            Th = glm::cross(Nh, Rh);
+            glm::dvec3 d;
+            if (w == "observer")
+                d = glm::normalize(followHomeEcef() - P);
+            else if (w == "sun")
+                d = glm::normalize(toEcef(glm::dvec3(sunDirECI)));
+            else
+                fail("follow: toward=observer|sun");
+            glm::dvec3 o(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
+            const double side = glm::radians(c.num("side", 0.0)), lift = glm::radians(c.num("lift", 0.0));
+            o = glm::dvec3(std::cos(side) * o.x - std::sin(side) * o.y, std::sin(side) * o.x + std::cos(side) * o.y, o.z);
+            const double hl = std::sqrt(o.x * o.x + o.y * o.y);
+            const double el = std::atan2(o.z, hl) + lift;
+            const glm::dvec3 hd = hl > 1e-9 ? glm::dvec3(o.x / hl, o.y / hl, 0.0) : glm::dvec3(1.0, 0.0, 0.0);
+            o = std::cos(el) * hd + glm::dvec3(0.0, 0.0, std::sin(el));
+            followOffset = o * c.num("dist", 300.0);
+            followAimLock = true;
+            updateFollow(0.0f);
+            followAimLock = false;
+            if (lower(c.str("look")) == "observer")
+            {
+                // Look away from the satellite, at the parked ground observer (down a Reflect beam to its site).
+                const glm::dvec3 d = glm::normalize(followHomeEcef() - followObsEcef);
+                const glm::dvec3 up = glm::dvec3(obsDir);
+                const glm::dvec3 h = d - glm::dot(d, up) * up;
+                if (glm::length(h) > 1e-9)
+                    obsFacing = glm::vec3(glm::normalize(h));
+                camera.elDeg = (float)glm::degrees(std::asin(std::clamp(glm::dot(d, up), -1.0, 1.0)));
+                camera.elDeg = std::clamp(camera.elDeg, -89.0f, 89.0f);
+                updateFollow(0.0f);
+            }
+        }
+        else if (c.has("aim") && lower(c.str("aim")) == "sat")
+        {
+            followAimLock = true; // look at the satellite once, then free (the view holds in its frame)
+            updateFollow(0.0f);
+            followAimLock = false;
+        }
         r["sat"] = followSatIndex;
         r["offset_m"] = {followOffset.x, followOffset.y, followOffset.z};
         r["message"] = followLabel;
@@ -1331,9 +1384,118 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     // aim=observer is the Observer chip: the satellite from the ground observer's direction, where the
     // glare (2026-09-26) shows the glints of the flare the observer sees. aim=sun (harness only) looks from
     // the Sun's side, where a Sun-facing array glints. dist is in model radii.
+    // ── flares (release cinematic scouting) ─────────────────────────────────────────────────────────
+    // `flares "<constellation>" [window=600] [step=5] [minel=10] [top=10] [maxmag=]`: the CPU photometry
+    // (evalSatTraceRow, the trace window's evaluator) over every member of a constellation that is above
+    // `minel` at some step in the next `window` seconds of sim time, for the ground observer; returns the
+    // `top` brightest peaks (refined to 0.1 s) with time, magnitude after extinction, az/el, phase and the
+    // dominant lobe. Model types only. For finding a satellite flare to frame.
+    if (n == "flares")
+    {
+        int ci = -1;
+        for (int i = 0; i < (int)constellations.size(); ++i)
+            if (ieq(constellations[i].name, pos(0).c_str()))
+                ci = i;
+        if (ci < 0)
+            fail("flares: no constellation '" + pos(0) + "' (see `const list`)");
+        if (followActive)
+            fail("flares: not in follow mode (the observer must be on the ground)");
+        const ConstellationConfig &cc = constellations[ci];
+        if (cc.typeIdx >= satTypes.size())
+            fail("flares: bad type");
+        const SatelliteType &type = satTypes[cc.typeIdx];
+        if (const char *why = photometryUnsupportedReason(type))
+            fail(std::string("flares: ") + why);
+        const double window = c.num("window", 600.0), step = std::max(0.2, c.num("step", 5.0));
+        const double minEl = c.num("minel", 10.0);
+        const int top = (int)c.num("top", 10.0);
+        const double t0 = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        SatTraceSetup s;
+        s.lobeBudget = type.lobeBudget;
+        s.occlusion = false;
+        s.obsDirEcef = glm::dvec3(obsDir);
+        s.obsRadiusM = (double)obsEyeRadiusM();
+        s.flareTiltRad = (double)glm::radians(flareMitigationTiltDeg);
+        s.extinctionK = extinctionCoeff;
+        s.groundSite = attUsesGroundSite(type.groups);
+        if (s.groundSite)
+            s.groundAim = groundSiteAim();
+        struct Peak { int sat; double t, mag, el, az, phase, range; int lobe; double contrast = 0.0; };
+        std::vector<Peak> peaks;
+        const int nSteps = (int)std::ceil(window / step);
+        const bool azFilter = c.has("az");
+        const double azC = c.num("az", 0.0), azW = c.num("azw", 30.0);
+        auto azOk = [&](double az) { return !azFilter || std::abs(std::remainder(az - azC, 360.0)) <= azW; };
+        const double sinMin = std::sin(glm::radians(minEl));
+        for (uint32_t k = 0; k < cc.orbitCount; ++k)
+        {
+            const int si = (int)cc.orbitStart + (int)k;
+            s.orbit = orbitElemsOf(satOrbits[si]);
+            s.satelliteIndex = si;
+            // Cheap elevation prefilter on the orbit alone.
+            bool any = false;
+            for (int i = 0; i <= nSteps && !any; i += 4)
+            {
+                const double t = t0 + std::min(window, i * step);
+                const glm::dvec3 o = observerEciAt(s.obsDirEcef, s.obsRadiusM, t);
+                const glm::dvec3 d = satOrbitStateAt(s.orbit, t).posEci - o;
+                any = glm::dot(d, glm::normalize(o)) > (sinMin - 0.15) * glm::length(d);
+            }
+            if (!any)
+                continue;
+            Peak best{si, 0.0, INFINITY, 0, 0, 0, 0, -1, 0.0};
+            for (int i = 0; i <= nSteps; ++i)
+            {
+                const SatTraceRow rw = evalSatTraceRow(s, type.groups, type.lobes, nullptr, t0 + std::min(window, i * step));
+                if (rw.elevationDeg >= minEl && azOk(rw.azimuthDeg) && std::isfinite(rw.magApparent) && rw.magApparent < best.mag)
+                    best = {si, rw.tJ2000, rw.magApparent, rw.elevationDeg, rw.azimuthDeg, rw.phaseDeg, rw.rangeM, rw.dominantLobe, 0.0};
+            }
+            if (!std::isfinite(best.mag))
+                continue;
+            for (double t = best.t - step; t <= best.t + step; t += 0.1) // refine
+            {
+                if (t < t0 || t > t0 + window)
+                    continue;
+                const SatTraceRow rw = evalSatTraceRow(s, type.groups, type.lobes, nullptr, t);
+                if (rw.elevationDeg >= minEl && azOk(rw.azimuthDeg) && std::isfinite(rw.magApparent) && rw.magApparent < best.mag)
+                    best = {si, rw.tJ2000, rw.magApparent, rw.elevationDeg, rw.azimuthDeg, rw.phaseDeg, rw.rangeM, rw.dominantLobe, 0.0};
+            }
+            // Contrast: how much fainter it is `half` seconds either side (a flare's rise and fall).
+            const double half = c.num("half", 15.0);
+            double side = INFINITY;
+            for (double dt : {-half, half})
+            {
+                const SatTraceRow rw = evalSatTraceRow(s, type.groups, type.lobes, nullptr, best.t + dt);
+                side = std::min(side, std::isfinite(rw.magApparent) ? rw.magApparent : 99.0);
+            }
+            best.contrast = side - best.mag;
+            if (best.t - t0 < half || t0 + window - best.t < half)
+                best.contrast = 0.0; // at the window's edge: not a peak
+            peaks.push_back(best);
+        }
+        const bool byContrast = lower(c.str("sort")) == "contrast";
+        std::sort(peaks.begin(), peaks.end(), [&](const Peak &a, const Peak &b) {
+            return byContrast ? a.mag - a.contrast < b.mag - b.contrast : a.mag < b.mag;
+        });
+        nlohmann::json arr = nlohmann::json::array();
+        for (int i = 0; i < (int)peaks.size() && i < top; ++i)
+        {
+            const Peak &p = peaks[i];
+            char tb[32];
+            formatSimClock(p.t, tb, sizeof(tb), false);
+            arr.push_back({{"sat", p.sat}, {"n", p.sat - (int)cc.orbitStart}, {"t_from_now_s", p.t - t0}, {"utc_hms", tb},
+                           {"j2000_s", p.t}, {"mag", p.mag}, {"el_deg", p.el}, {"az_deg", p.az}, {"phase_deg", p.phase},
+                           {"range_km", p.range / 1000.0}, {"lobe", p.lobe}, {"contrast_mag", p.contrast}});
+        }
+        r["peaks"] = arr;
+        r["candidates"] = (int)peaks.size();
+        r["message"] = std::to_string(peaks.size()) + " satellites above " + std::to_string((int)minEl) + " deg; brightest " +
+                       (peaks.empty() ? std::string("-") : std::to_string(peaks[0].mag));
+        return Status::Done;
+    }
     if (n == "viewer")
     {
-        auto onOff = [&](const char *key, bool &v) {
+        auto onOff =[&](const char *key, bool &v) {
             if (!c.has(key))
                 return;
             const std::string s = lower(c.str(key));
