@@ -152,9 +152,31 @@ clouds drift, so the place and time alone would show different weather).
   twice to confirm).
 - **Go** ends follow mode and Track and jumps straight there. A bookmark taken while following a satellite comes
   back as a free camera at the camera's place.
+- **Restore defaults** adds back any of the bookmarks that ship with the sim that are missing from the list. It
+  leaves your own bookmarks alone.
 
 Up to 112 bookmarks fit. They are stored in `bookmarks/bookmarks.json` in the user data folder, with the
 thumbnails as PNG files beside it.
+
+### The bookmarks that ship with the sim
+
+A first run, with no `bookmarks.json` yet, starts with nine bookmarks. Deleting all of them leaves an empty list,
+which stays empty; **Restore defaults** brings them back.
+
+| Bookmark | What it shows |
+|---|---|
+| Venezuela Rainbow | Sunrise behind a storm over northern Venezuela (9.97 N 68.27 W). Starts paused, since the storm changes within minutes |
+| Great Australian Eclipse | The total solar eclipse of 13 July 2037 at greatest eclipse (21.75 S 138.31 E): the corona in a 15° field <!-- history-ok --> |
+| Blood Moon over Alice Springs | The total lunar eclipse of 31 January 2037 <!-- history-ok --> |
+| Aurora from Orbit | A strong geomagnetic storm (Kp about 6.8) seen from 420 km over Siberia |
+| Reflect Orbital over Anchorage | The line of Reflect Orbital mirrors above the city |
+| AI Satellites at Twilight | The intro's vantage on the Big Sur coast |
+| Los Angeles by Night | The city lights from 10 km |
+| Starmind Formation Rings | Beside one of Starmind's eight-satellite formation rings at 565 km. Starts paused |
+| Sunset from Orbit | The Earth's limb at sunset from 420 km |
+
+A bookmark may also set the clock when you go to it: the shipped ones run at 1x, and the two marked above start
+paused. The shipped files live in `default_bookmarks/` next to the program.
 
 ## Pictures
 
@@ -167,11 +189,12 @@ thumbnails as PNG files beside it.
 **HQ photo** pauses time, renders the scene offscreen at a multiple of the window size and lets it settle for a
 number of frames before saving, so the clouds and other temporally accumulated effects are fully converged. All
 the detail that depends on pixel size (terrain, city lights) follows the finer pixels, so a photo shows more
-detail than the window, not just more pixels. A 3200 × 1800 photo takes a couple of seconds.
+detail than the window, not just more pixels. At 2× a 1600 × 900 window (a 3200 × 1800 photo) it takes a
+couple of seconds.
 
 | Setting (Display tab, *HQ photo*) | `settings.json` key | Default |
 |---|---|---|
-| Resolution (x window) | `display.photo_scale` | 2 (1 to 4) |
+| Resolution (x window) | `display.photo_scale` | 1 (1 to 4) |
 | Settle frames | `display.photo_frames` | 48 |
 
 Star trails' decay and brightness are the **Trail decay (s)** and **Trail gain** sliders on the Photometry tab.
@@ -215,7 +238,7 @@ advanced settings** (Display tab) is on.
 
 | Heading | Tab | What it holds |
 |---|---|---|
-| GENERAL | Display | *Graphics*: preset, render scale, automatic render scale, clouds following the render scale, temporal anti-aliasing, frame limiter, beam pointing rays. *Window*: window mode, text scale, units. *HQ photo*. *Startup*: play the intro on startup, replay the intro or the tutorial. *Settings*: show advanced settings, reset to defaults |
+| GENERAL | Display | *Graphics*: preset, render scale, automatic render scale, clouds following the render scale, temporal anti-aliasing, frame limiter, beam pointing rays. *Window*: window mode, text scale, units. *HQ photo*. *Startup*: play the intro on startup, ask for the graphics mode on startup, replay the intro or the tutorial. *Settings*: show advanced settings, reset to defaults |
 | | Controls | *Movement* (move speed), *Bindings* (each action's key and gamepad button, with Rebind and Bind), *Mouse* (look, zoom, select), *Invert look*, *Help* (the controls overlay); see [Controls](controls.md) |
 | | Sound | Volume, music, ambience and the ambience mix; see [Sound](../sound/index.md) |
 | SKY | Constellations | Every shell with ON/OFF, **HLT** (highlight: draw every satellite of the shell at least faintly, to see its pattern) and **VIEW** (select its highest satellite in your sky and open its 3D view); the planets |

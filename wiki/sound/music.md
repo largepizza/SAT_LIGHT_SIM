@@ -177,8 +177,8 @@ The Sound tab shows the result on one line: `Key: <key>, <chord> | root <Hz> | <
 
 | UI label (Sound tab) | `settings.json` key | Default |
 |---|---|---|
-| Master vol | `audio.master_vol` | 0.8 |
-| Music vol | `audio.music_vol` | 0.6 |
+| Master vol | `audio.master_vol` | 0.4 |
+| Music vol | `audio.music_vol` | 0.7 |
 | SFX vol | `audio.sfx_vol` | 1.0 |
 | Music gap (s) (advanced) | `audio.music_gap_s` | 30 |
 | Key follows the music (advanced) | `audio.ambience_root_follow_music` | on |

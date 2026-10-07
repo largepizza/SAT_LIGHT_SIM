@@ -39,8 +39,9 @@ In the march a rain sample is cheap (no fine steps, one sample standing for four
 sub-degree diffraction spike plus a broad refracted lobe, with the primary and secondary rainbows
 ([The cloud march: atmospheric optics](march.md#atmospheric-optics)). Lit through the cloud above, a shaft is dark
 under a Cb and bright at its sunlit edge, which is where rainbows show: at storms near the terminator, with a low
-Sun behind the observer. Where the shafts' air is below freezing they are snow, which shows faint ice optics and
-no bow.
+Sun behind the observer. A clear bow needs dense shafts: at the default "Rain" (0.71) it barely shows, and it
+reads well from about 1.5 up. Where the shafts' air is below freezing they are snow, which shows faint ice optics
+and no bow.
 
 ## Precipitation at the eye
 
@@ -87,7 +88,7 @@ position in it is computed in double and wrapped to 1024 m, which every box size
 side \( L = 4\ \text{m} \times 2^k \) holding \( N_0 \times 2^k \) drops, where \(N_0\) is "Drop particles
 (x1000, nearest box)" (16 000). Each drop wraps within its box as it falls and drifts, so the box always
 surrounds the eye. Level k is drawn over distances \([L/4, L/2]\) from the eye (level 0 from the eye itself,
-fading in from 8 to 25 cm), cross-faded with the next level over \([0.4, 0.5]\,L\). "Drop reach (m)" (32, at
+fading in from 8 to 25 cm), cross-faded with the next level over \([0.4, 0.5]\,L\). "Drop reach (m)" (33, at
 most 64) sets the number of levels, the last one ending at the reach: 5 levels and 496 000 instances at the
 defaults, most of them culled in the vertex shader where there is no rain.
 
@@ -111,13 +112,13 @@ box exactly. Integrating rather than evaluating \( v\,t \) is what lets the spee
 with \( v\,t \) every change of v or of the wind would move every drop at once. Pausing stops the rain;
 reversing time runs it backwards.
 
-- **Fall.** "Rain fall speed (x)" (1.3) × each drop's terminal velocity, × up to 1.35 in heavy rain (rate 0.6
+- **Fall.** "Rain fall speed (x)" (3.0) × each drop's terminal velocity, × up to 1.35 in heavy rain (rate 0.6
   and up).
-- **Wind.** "Rain wind (x ground wind)" (1.5) × 0.4 × the wind aloft ("Wind"), toward the east, plus a
-  shower's **outflow**: "Storm wind (m/s)" (14) at rain rate 0.6 and above, blowing away from the rain map's
+- **Wind.** "Rain wind (x ground wind)" (0.4) × 0.4 × the wind aloft ("Wind"), toward the east, plus a
+  shower's **outflow**: "Storm wind (m/s)" (11) at rain rate 0.6 and above, blowing away from the rain map's
   rain-weighted centre (the shower's core; when the core is within about 40 m of the eye the outflow takes the
   ambient wind's direction).
-- **Gusts.** "Wind gusts" (1.0) modulates the wind by a smooth noise over about 4 s and 1.5 s of sim time:
+- **Gusts.** "Wind gusts" (1.38) modulates the wind by a smooth noise over about 4 s and 1.5 s of sim time:
   ±20 percent in light rain to ±60 percent in heavy rain, turning it by up to ±15 deg. The wind and the rate are
   eased over about 0.6 s.
 - **Snow** drifts with the same wind × "Snow wind (blizzard)" (1.0), integrated separately; flakes flutter on
@@ -141,7 +142,7 @@ Summed along a ray, the particles' coverage is the rain's optical depth. The sha
 Where one particle would carry so much coverage that it draws as a bright dot (far away, heavy rain: alpha 0.12
 to 0.35) it fades out, and the rain volume carries that distance alone; real rain there is a haze, not grains. A
 streak that would need more than 0.8 coverage widens instead of becoming opaque. "Drops at the eye
-(visibility)" (1.0, up to 10) multiplies the alpha: 1 is physical.
+(visibility)" (2.63, up to 10) multiplies the alpha: 1 is physical.
 
 ### Light
 
@@ -212,12 +213,12 @@ Workgroup 0 of the lightning pass (256 threads) walks two lattices around the ob
 12 km cloud tops:
 
 - **Cb towers.** The same lattice, roles and fill as the field's towers (`cv2CbRole()`); only **dominant**,
-  anvil-reaching towers flash. Their rate is "Lightning rate: Cb towers (/min each)" (0.53) × the tower's
+  anvil-reaching towers flash. Their rate is "Lightning rate: Cb towers (/min each)" (0.4) × the tower's
   activity (its strength from 0.35 to 0.75), with up to three flashes per tower per slot.
 - **Storm regions.** A fixed equal-angle lattice of 64 × 64 regions on each of the six cube faces of the drifted
   sphere, about 156 km across, the same at any eye altitude (only how far out it is walked changes, so climbing
   or descending never reshuffles the flashes). Each region draws candidate flashes at the most active rate,
-  "Lightning rate: storms (/min per 20 km)" (0.5 flashes a minute per 20 × 20 km of full-strength storm, scaled by
+  "Lightning rate: storms (/min per 20 km)" (0.31 flashes a minute per 20 × 20 km of full-strength storm, scaled by
   the region's true area), at random points inside it. Each candidate reads the weather cube at its point (mip
   2: the deep-convective type, the coverage and the rain) and is kept with probability equal to the storm's
   activity there. This thinning makes the rate per area follow the weather while only the few candidates alive
@@ -240,7 +241,7 @@ the capped cumulus away from the towers.
 | cloud-to-ground (1) | up to 30 percent, where the storm is strong | origin at 25 to 45 percent of the cloud's depth; ground point 1.5 to 9 km aside |
 | spider lightning (3) | about 40 percent | 150 m under the cloud base, spreading near-level |
 | in cloud (0) | the remainder | 30 to 75 percent of the cloud's depth |
-| red sprite (2) | "Lightning sprites (chance)" (0.05) per ground stroke | about 75 km up, within about 15 km of the stroke |
+| red sprite (2) | "Lightning sprites (chance)" (0.01) per ground stroke | about 75 km up, within about 15 km of the stroke |
 
 **Timing** (`cv2FlashIntensity()`, `include/cloud_lightning.glsl`): a 50 ms stepped leader with no brightness of
 its own, then for a ground stroke 1 to 4 return strokes (sharp pulses decaying over 35 ms) over a fading
@@ -255,7 +256,7 @@ shape seed, age, distance, the cloud's base and top, strength, duration.
 list would hang on screen), together with the observer direction it was written in. For each new flash
 `buildBoltTree()` builds the channel **once** as geometry, a fractal tree grown from the flash's seed by midpoint
 displacement down to pieces about 3 pixels long at the flash's distance (4 m to 2.5 km), and caches it by id until
-the flash has ended. "Lightning tendrils" (1.0) scales the branch and tendril counts.
+the flash has ended. "Lightning tendrils" (1.23) scales the branch and tendril counts.
 
 - **Cloud-to-ground.** The main channel wanders inside the cloud from the charge region, leaves the cloud's flank
   or base, and comes down **slanted** to the ground point, covering most of the sideways distance on the way.
@@ -297,7 +298,7 @@ sprite's tendrils (red, the tips leaning violet). A channel thinner than a pixel
 energy scaled by its true width, so a far stroke is a fine dim line and never fatter than it is. A halo of the
 light scattered by rain and air (70 m about the main channel, 22 m about branches, 1.5 to 22 px) widens it.
 Terrain hides a channel through the depth test, and the cloud and rain in front of it through
-`cloudPointVisibilityAt()`; inside a cloud only its glow shows. × "Lightning bolts" (1.0).
+`cloudPointVisibilityAt()`; inside a cloud only its glow shows. × "Lightning bolts" (1.25).
 
 **Air.** Channels and glow are dimmed by the air **column** between the eye and the point (`boltAir()`: 8 km scale
 height, an optical depth of about 0.15 per scale height), so a flash seen from orbit crosses only the air below
@@ -419,6 +420,15 @@ the atmosphere's exit) and scales the output transmittance by
 Subtracting a radiance instead would use the march's own air model, which does not match the sky pass's.
 Surfaces are excluded because terrain and sea already carry their own cloud shadow.
 
+## With the volumetric clouds off
+
+Everything on this page is driven by the volumetric clouds, so it all stops when their march is knocked out
+(bit 32768, set by the Planetarium and Potato presets). `recordCloudsV2()` then records nothing of the clouds
+except the weather cube's evolution, which the flat stand-in cloud layers still read: no march, resolve or far
+layer, and no lightning pass. Without the lightning pass there are no flashes, no rain particles, no thunder and
+no rain sound, since all of them key on that pass having run this frame. Fog, dust and ice fog are part of the
+march and go with it.
+
 ## Settings
 
 Weather tab (keys under `clouds_v2`):
@@ -427,26 +437,26 @@ Weather tab (keys under `clouds_v2`):
 
 | Label | Key | Default |
 |---|---|---|
-| Lightning rate: storms (/min per 20 km) | `lightning_storm_rate_per_area` | 0.5 (0 = off) |
-| Lightning rate: Cb towers (/min each) | `lightning_rate` | 0.53 (0 = off) |
+| Lightning rate: storms (/min per 20 km) | `lightning_storm_rate_per_area` | 0.31 (0 = off) |
+| Lightning rate: Cb towers (/min each) | `lightning_rate` | 0.4 (0 = off) |
 | Lightning glow | `lightning_glow` | 0.088 |
-| Lightning bolts | `lightning_bolt` | 1.0 |
-| Lightning tendrils | `lightning_tendrils` | 1.0 |
-| Lightning sprites (chance) | `lightning_sprites` | 0.05 |
+| Lightning bolts | `lightning_bolt` | 1.25 |
+| Lightning tendrils | `lightning_tendrils` | 1.23 |
+| Lightning sprites (chance) | `lightning_sprites` | 0.01 |
 
 **Rain & snow**
 
 | Label | Key | Default |
 |---|---|---|
-| Rain | `rain_amount` | 1.0 (0 = no shafts, no drops) |
-| Drops at the eye (visibility) | `rain_streaks` | 1.0 (1 = physical, up to 10) |
-| Drop reach (m) | `drop_reach_m` | 32 (4 to 64) |
+| Rain | `rain_amount` | 0.71 (0 = no shafts, no drops) |
+| Drops at the eye (visibility) | `rain_streaks` | 2.63 (1 = physical, up to 10) |
+| Drop reach (m) | `drop_reach_m` | 33 (4 to 64) |
 | Drop particles (x1000, nearest box) | `rain_particles_k` | 16 |
 | Drop shutter (ms) | `rain_shutter_ms` | 33 |
-| Rain fall speed (x) | `rain_fall_speed` | 1.3 |
-| Rain wind (x ground wind) | `rain_wind_gain` | 1.5 |
-| Storm wind (m/s) | `rain_storm_wind_mps` | 14 |
-| Wind gusts | `rain_gusts` | 1.0 |
+| Rain fall speed (x) | `rain_fall_speed` | 3.0 |
+| Rain wind (x ground wind) | `rain_wind_gain` | 0.4 |
+| Storm wind (m/s) | `rain_storm_wind_mps` | 11 |
+| Wind gusts | `rain_gusts` | 1.38 |
 | Snow wind (blizzard) | `snow_wind` | 1.0 |
 
 **Fog, dust & ice fog**

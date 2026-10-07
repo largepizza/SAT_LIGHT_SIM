@@ -100,8 +100,7 @@ The harness's `pad <button>` presses a button without a controller, through the 
 otherwise `%APPDATA%\SatLightSim` (Windows), `$XDG_DATA_HOME/SatLightSim` or `~/.local/share/SatLightSim`
 (Linux), `~/Library/Application Support/SatLightSim` (macOS). It is read once during `init()` and written when
 the settings window closes and when the app exits. With no file (a first run), every compiled-in default is
-used and the graphics preset is seeded from the device type (`seedGraphicsPresetFromDevice()`): Medium for a
-discrete GPU, Planetarium for an integrated, CPU or virtual one.
+used and the graphics preset is seeded from the device ([First run and startup](#first-run-and-startup)).
 
 The `SatLightSimFresh` build target never reads or writes the file, so every launch is a first run.
 
@@ -241,6 +240,73 @@ several times over at millions of satellites.
 **High is the compiled-in defaults.** Its row repeats the member defaults from `SatelliteSim.h`. Change a
 default that appears in `PresetValues` and the High row in the same edit.
 
+### Keeping the light tiers light
+
+Planetarium and Potato draw the sky with their own fragment shaders (`sat_sky_lite.frag.spv`, which is
+`sat_sky.frag` compiled with `-DSKY_LITE`, and `sat_sky_minimal.frag`), and on the old GPUs they exist for, the
+compiled size of that shader is what limits occupancy ([Hardware tiers](../rendering/hardware-tiers.md)). The
+build therefore fails when either passes its SPIR-V budget: 225 KB for SKY_LITE and 46 KB for the minimal sky
+(`SKY_LITE_MAX_BYTES` and `SKY_MINIMAL_MAX_BYTES` in `CMakeLists.txt`, checked by `cmake/CheckSpvSize.cmake`,
+which deletes the oversized file so the next build checks it again). A runtime knockout or an `if (false)` still
+compiles every call into the variant: a new feature must be left out of SKY_LITE with `#ifndef SKY_LITE` (and
+out of `sat_sky_minimal.frag`), and its CPU work skipped for those presets. Raise a budget only with a measurement
+on the target hardware.
+
+Device limits get the same treatment at startup: `VulkanContext::logDeviceLimits()` logs every limit the app sits
+near and refuses to run, naming the limit, on a GPU below one. Per-stage storage images are one of them, at the
+guaranteed minimum of 4 (`sat_sky.frag` and `cloud_v2_march.comp` each bind 4), so a fifth storage image in either
+needs a merge, not a higher requirement.
+
+## First run and startup
+
+The tier a launch starts on is decided before anything heavy loads.
+
+**The device's recommendation** is `recommendedPresetForDevice()`, deliberately coarse (no table of GPU names):
+
+| Device | Preset |
+|---|---|
+| MoltenVK (macOS) on a GPU not made by Apple | Potato |
+| a discrete GPU with at most about 2 GB (2.25 GiB) of device-local memory | Planetarium |
+| any other discrete GPU | Medium |
+| an integrated, CPU or virtual GPU (Apple silicon included) | Planetarium |
+
+`seedGraphicsPresetFromDevice()` logs that recommendation and applies it when there is no `settings.json`.
+
+**The startup graphics chooser.** Before `init()` loads textures, models or pipelines, `App::runBootChooser()`
+shows a choice on the loading screen: *Full graphics*, *Planetarium* or *Potato (very old hardware)*. It takes the
+mouse, the keyboard (arrows, Enter) and a gamepad (D-pad, A), and never continues on its own. The sim's half is
+`SatelliteSimBootChooser.cpp`: `prepareBootChooser()` reads `settings.json` and the crash sentinel without touching
+the GPU and pre-selects the last session's tier, or on a first run the device's recommendation. `applyBootChoice()`
+applies the pick after `loadSettings()`: Planetarium and Potato apply their presets; *Full graphics* keeps a full
+preset already loaded (Low, Medium, High, Ultra, or a Custom that draws the full sky), else applies the device's
+recommendation when that is a full tier and Low when it is not. When the chooser was shown, the intro's
+frame-time benchmark does not change the preset afterwards.
+
+The chooser is shown when *Ask for graphics mode on startup* is on (Display tab, STARTUP, and the chooser's own
+*Ask on every startup* box; `display.ask_graphics_mode`, default on, also on when the key is absent), and always
+after a session that did not exit cleanly.
+
+**After an unclean exit** (the previous session's `session.lock` sentinel is still in the user data folder) the
+preset steps down one tier (`crashRecoveryPreset()`): a full tier to Planetarium, Planetarium or Potato to Potato.
+With the chooser up, that tier is the pre-selection and the chooser says why; with it off, it is applied with a
+notice. Either way that launch skips the intro benchmark.
+
+**On a light tier the full sky is never compiled at startup.** `init()` defers the three full `sat_sky.frag`
+pipelines (the inline sky, the low-resolution prepass and the sky TAA) when the launch starts on Planetarium or
+Potato; `ensureFullSkyPipelines()` builds them at the top of the first frame that needs them, that is a full preset
+or a render scale below 100%.
+
+**The boot safety net** (`updateBootSafetyNet()`): after about 2 s of warm-up, if the median of the next 10 frame
+times (or of at least 3, once they add up to 5 s) is over 250 ms, the preset drops one tier (a full tier to
+Planetarium, Planetarium to Potato), once per launch, with a banner pointing at Settings > Display.
+
+A harness run skips the chooser and the safety net; `run.py --boot-chooser N` and `--boot-safety-ms MS` script them
+([Harness](harness.md#the-loading-screen-in-a-run)).
+
+| UI label | Key | Default |
+|---|---|---|
+| Ask for graphics mode on startup | `display.ask_graphics_mode` | on |
+
 ## Defaults
 
 The compiled-in member initialisers in `SatelliteSim.h` are the out-of-box look. Tuned defaults are written to
@@ -267,5 +333,8 @@ ground. While a text field is focused or a cinematic is playing, movement keys a
 |---|---|
 | `src/simulations/SatelliteSim.h` | `KeyBinding`, `KB`, `GraphicsPreset`, `CloudSlider`, slot constants, every setting's member and default |
 | `src/simulations/SatelliteSim.cpp` | the `keybindings` initializer, `dispatchKeyAction()`, `onKey()`, `pollGamepad()`, `padContextButton()`, `padBack()` |
-| `src/simulations/SatelliteSimUI.cpp` | `loadSettings()`, `applySettingsJson()`, `buildSettingsJson()`, `saveSettings()`, `applyGraphicsPreset()`, `seedGraphicsPresetFromDevice()`, `buildCloudSliderRows()`, `buildCloudSliderSections()`, the tab tables (`kSettingsTabNames`, `kSettingsStrip`), the UI kit |
+| `src/simulations/SatelliteSimUI.cpp` | `loadSettings()`, `applySettingsJson()`, `buildSettingsJson()`, `saveSettings()`, `applyGraphicsPreset()`, `recommendedPresetForDevice()`, `seedGraphicsPresetFromDevice()`, `crashRecoveryPreset()`, `buildCloudSliderRows()`, `buildCloudSliderSections()`, the tab tables (`kSettingsTabNames`, `kSettingsStrip`), the UI kit |
+| `src/simulations/SatelliteSimBootChooser.cpp` | `prepareBootChooser()`, `applyBootChoice()`, `ensureFullSkyPipelines()`, `updateBootSafetyNet()` |
+| `src/App.cpp` | `runBootChooser()`, `buildBootChooserUI()`: the chooser on the loading screen |
+| `src/VulkanContext.cpp`, `cmake/CheckSpvSize.cmake` | `logDeviceLimits()`; the light-tier SPIR-V budget check |
 | `tools/settings_defaults_diff.py` | defaults diff |

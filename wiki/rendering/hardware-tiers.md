@@ -1,14 +1,15 @@
 # Weak-hardware tiers
 
 How SAT LIGHT SIM scales down to old and integrated GPUs: why the full sky shader cannot run there, the two
-stand-in sky tiers (Potato and SKY_LITE) and what each drops, how the graphics presets select them, render scale
+stand-in sky tiers (Potato and SKY_LITE) and what each drops, the build's size guard on them, how the graphics
+presets select them (including the first-run choice and the step down after a crash), render scale
 and its temporal upscaler, the automatic render scale, and the Vulkan limits the app needs compared with what
 the specification guarantees. Player-facing preset advice is on
 [Graphics settings](../using/graphics-settings.md).
 
 ## Why the full sky shader is too big
 
-`shaders/sat_sky.frag` is about 6000 lines and compiles to one very large fragment function. The reference
+`shaders/sat_sky.frag` is about 6200 lines and compiles to one very large fragment function. The reference
 weak machine is a 2015 MacBook Pro (AMD Radeon R9 M370X, GCN 1.0) running macOS 12 through MoltenVK, where
 the full shader alone measured about 490 ms per frame: the whole frame.
 
@@ -33,11 +34,12 @@ selected in `recordDraw()` by a `debugDisableMask` bit, as pipeline swaps rather
 
 | Tier | Bit | Pipeline | Shader |
 |---|---|---|---|
-| **Potato** | 262144 | `skyBgMinimalPipeline` | `shaders/sat_sky_minimal.frag`, its own file, about 450 lines |
+| **Potato** | 262144 | `skyBgMinimalPipeline` | `shaders/sat_sky_minimal.frag`, its own file, about 460 lines |
 | **SKY_LITE** | 524288 | `skyBgLitePipeline` | `sat_sky.frag` compiled with `-DSKY_LITE` → `sat_sky_lite.frag.spv` |
 
 Bit 262144 wins if both are set. A log line in `satlight_log.txt` reports `MINIMAL`, `LITE (SKY_LITE)` or
-`FULL sat_sky.frag` whenever the choice changes.
+`FULL sat_sky.frag` whenever the choice changes. On a light tier the full sky pipelines are not built at startup;
+they are created the first time a full tier is selected, so a weak machine never compiles them just to start.
 
 ### Potato (`sat_sky_minimal.frag`)
 
@@ -49,9 +51,13 @@ A different renderer, not a cut-down one:
   space (a thin wash over the sunlit disc, a bright limb, black away from the Earth). Rayleigh and Mie phases
   against the Sun; one 32-tap arithmetic loop. The Sun path's airmass explodes past the horizon, so day,
   twilight and night need no special case.
+- **The eye's height** is the DEM at the observer, or sea level where the water map says water
+  (`minimalEyeHeight()`), raised to the observer's height offset. It does not use the full shader's
+  `observerEffHeight()`, whose lake levels and shore banking this flat Earth does not need, and it does not read
+  the depth pass's ground (Potato skips that pass).
 - **Ground**: the day and night Earth textures across the terminator plus aerial perspective, and the city
-  detail textures. There are no procedural city lights and no city light sprites (the sprites take their eye
-  height from the depth pass, which Potato skips).
+  detail textures near the observer. There are no procedural city lights and no city light sprites (the sprites
+  take their eye height from the depth pass).
 - **Clouds**: one flat drifting shell at 3 km with terminator lighting, read from the same weather cube the
   volumetric clouds use.
 - **Ocean**: one noise tap for the slope, Fresnel and a Blinn sun glint.
@@ -62,25 +68,58 @@ The Milky Way does not fit this tier: a textured panorama drops the reference ma
 trig-free procedural band looks poor. The discrete star catalogue (point sprites) covers the night sky instead.
 Measured on the reference machine: about 60 FPS.
 
+Potato also skips the half-resolution composite pass (`cloud_march.comp`): the minimal shader does not read it,
+and every layer it would draw is knocked out. Its two targets are cleared once to "no cloud" (transmittance 1,
+the no-cloud occlusion marker), because the point draws still read them for cloud occlusion.
+
 ### SKY_LITE (Planetarium)
 
-The full shader with `#ifdef SKY_LITE` cuts. Everything not listed stays, including terrain, the sea, the
-Reflect beams' ground spots and the procedural [city lights](cities.md#presets-and-temporal-anti-aliasing):
+Planetarium is the flat textured Earth: the full shader's atmosphere and sky over the day and night maps, with
+everything that gives the ground relief or procedural detail removed by `#ifdef SKY_LITE` at compile time, so
+none of its code is in the variant at all.
 
-| Cut | Why it matters |
+| Removed | Notes |
 |---|---|
+| the terrain march | `dbgSkipTerrain()` is constant true: the ground is the sea-level sphere with the textures on it |
+| procedural terrain detail, close-up materials, terrain sun shadows | `tdEnabled()` is false; the eye height is the DEM's alone |
+| the procedural city: street layout, glitter, roads, farms, beaches, rooftop PV, solar parks | cities are the night map plus the tiled city detail textures |
+| the sea's sky-reflection march and the shoreline | the sea reflects a constant fallback colour |
+| Reflect-beam ground spots | |
+| satellite meshes and environment probes | the tier's bit is in `kNoMeshBits`, so the CPU draws none either |
 | Milky Way, and its reflection in the sea | the equirect projection and panorama fetch |
-| zodiacal light and gegenschein | new post-tonemap sky terms default to being cut here |
+| zodiacal light and gegenschein | new post-tonemap sky terms are cut here by default |
 | the 64-bin satellite sky-glow loop | 64 iterations with an `acos` on every pixel |
 | flat cloud layers 2-3 (cirrus and high decks); only layers 0-1 | |
 | the cloud target's joint-bilateral read | single bilinear tap |
 | green and sodium airglow in the atmosphere loop | two noise-based coverage masks per step: the dominant cost |
 | city-glow upwelling past the first 3 atmosphere steps | the air density makes later steps negligible |
-| the zenith sky-ambient integration halved (`N_ZT` 4 → 2) | |
-| terrain sun shadows | |
-| the procedural terrain detail, and with it farms and beaches | `tdEnabled()` is false in this variant |
+| half of the terrain's zenith sky-ambient integration (`N_ZT` 4 → 2) | |
 
-On the reference machine SKY_LITE takes the frame from about 2 FPS (full shader) to tens of FPS.
+City light sprites stay: the CPU still appends them, placed on the sea-level sphere the ground is drawn as.
+On the reference machine SKY_LITE takes the frame from about 2 FPS (full shader) to about 20 FPS.
+
+### What the build enforces
+
+A feature reaches a light tier through its compiled size, not only through what executes, so a runtime knockout
+or an `if (false)` is not enough to keep it out: the call is still compiled into the variant. A new feature must
+be `#ifndef SKY_LITE` in `sat_sky.frag`, left out of `sat_sky_minimal.frag`, and its CPU work skipped for those
+presets. `cmake/CheckSpvSize.cmake` runs after each of the two compiles and fails the build (deleting the
+`.spv`, so the next build checks again) when a variant passes its SPIR-V budget:
+
+| Variant | Budget (`CMakeLists.txt`) |
+|---|---|
+| `sat_sky_lite.frag.spv` (Planetarium) | `SKY_LITE_MAX_BYTES`, 225 KB |
+| `sat_sky_minimal.frag.spv` (Potato) | `SKY_MINIMAL_MAX_BYTES`, 46 KB |
+
+The budgets sit about 10 % above the variants' sizes (about 199 KB and 41 KB). Raise one only with a
+measurement on the target hardware.
+
+### The clouds on the light tiers
+
+Both tiers knock out the volumetric march (bit 32768), and with it nothing of the volumetric clouds runs:
+`recordCloudsV2()` records only the weather cube's evolution, which the flat cloud layers read. There is no
+march, resolve or far cloud layer, and no lightning pass, so no flashes, rain particles, thunder or rain sound
+(see [Weather](clouds/weather.md#with-the-volumetric-clouds-off)).
 
 ## Presets
 
@@ -93,10 +132,11 @@ quality sliders. From the bottom up:
 | render scale | 1.0 | 1.0 | 0.5 | 0.67 | 1.0 | 1.0 |
 | volumetric clouds | off | off | on | on | on | on |
 | aurora, red airglow, Reflect beams, fog and dust, cloud shadow, ocean reflection | off | off | on | on | on | on |
-| terrain relief (bit 1) | off | off | on | on | on | on |
-| procedural terrain detail, shadows, materials, textures | off | off | on | on | on | on |
-| procedural city lights | no | yes | yes | yes | yes | yes |
+| terrain relief | no | no | yes | yes | yes | yes |
+| procedural terrain detail, shadows, materials, textures | no | no | yes | yes | yes | yes |
+| procedural city lights | no | no | yes | yes | yes | yes |
 | city light sprites | no | yes, on the sea-level sphere | yes | yes | yes | yes |
+| satellite meshes | no | no | yes | yes | yes | yes |
 | sky TAA | off | off | on, upscaling | on, upscaling | on | on |
 | atmosphere view samples (min / max) | 6 / 20 | 4 / 10 | 6 / 96 | 6 / 96 | 6.5 / 160 | 16 / 256 |
 
@@ -107,18 +147,33 @@ volumetric cloud and cirrus marches (32768, 16384) and SKY_LITE (524288), with c
 the scene depth pass (1024), the beam ray loop (8192) and the sky-glow loop (65536), and swaps SKY_LITE for its
 own shader.
 
-Atmosphere scattering (bit 2) stays on even on Potato and Planetarium: on the reference machine it costs a few milliseconds, and
-without it there is no sky gradient at all.
+Atmosphere scattering (bit 2) stays on even on Potato and Planetarium: on the reference machine it costs a few
+milliseconds, and without it there is no sky gradient at all.
 
 **Render scale stays 1.0 on Potato and Planetarium.** Below 1 the background takes an extra offscreen render
 pass and a `vkCmdBlitImage` every frame. On MoltenVK each is another command-encoder boundary, which costs more
 than the pixels it saves. The render-scale prepass therefore has no Lite or Minimal variant. Sky TAA is off on
 both tiers (`skyTaaWanted()` excludes them).
 
-**First run.** With no settings file, `seedGraphicsPresetFromDevice()` picks the preset from the Vulkan device
-type: Medium on a discrete GPU, Planetarium on an integrated GPU, a CPU or a virtual device. The first-run
-tutorial then ends with a Graphics card (shown only when it starts on Planetarium or Potato) saying there are no
-clouds and suggesting Low under Settings > Display > Preset if the machine runs smoothly.
+**First run.** With no settings file, `recommendedPresetForDevice()` picks the preset from the Vulkan device:
+
+| Device | Preset |
+|---|---|
+| MoltenVK on a non-Apple GPU (a Mac of the 2015 era: GCN 1.0 or Intel) | Potato |
+| a discrete GPU with at most about 2 GB of device-local memory (2.25 GiB) | Planetarium |
+| any other discrete GPU | Medium |
+| an integrated GPU, a CPU or a virtual device (Apple silicon included) | Planetarium |
+
+The reference machine's R9 M370X is a discrete 2 GB part, which is why MoltenVK is tested first. The choice and
+its reason are logged. The startup graphics chooser, when it is shown, offers Full graphics, Planetarium and
+Potato with this recommendation marked. The first-run tutorial ends with a Graphics card (shown only when it
+starts on Planetarium or Potato) saying there are no clouds and suggesting Low under Settings > Display > Preset
+if the machine runs smoothly.
+
+**After an unclean exit.** A `session.lock` file in the user data folder is created at startup and removed on a
+clean exit. If it is still there at the next launch, the previous session crashed or was killed, and the preset
+steps down one tier (`crashRecoveryPreset()`): any full tier to Planetarium, Planetarium or Potato to Potato. A
+short notice says so. When the startup chooser is shown, it pre-selects the next lighter mode instead.
 
 ## Render scale
 
@@ -185,14 +240,15 @@ short, so a report from a machine nobody has access to is answerable from its lo
 | `maxComputeSharedMemorySize` | 16 KB | 6 KB (checked) | tile-cull lists |
 | `maxPerStageDescriptorSampledImages` / `Samplers` | 16 | **16** | `sat_sky.frag` binds 16 combined image samplers: at the floor |
 | `maxPerStageDescriptorStorageBuffers` | 4 | **11** | `sat_orbit.comp`'s set |
-| `maxPerStageDescriptorStorageImages` | 4 | 4 (not checked) | the sky set declares four fragment storage images (mesh radiance, mesh distance, reflection G-buffer, far cloud layer) |
+| `maxPerStageDescriptorStorageImages` | 4 | **4** | the sky set's four fragment storage images (mesh radiance, mesh distance, reflection G-buffer, far cloud layer), and `cloud_v2_march.comp`'s colour and depth outputs at sparse and full rate |
 | `pointSizeRange[1]` | 64 (with `largePoints`) | up to 1024 | glare sprites clamp to it, so they are smaller on hardware with a low limit |
 
 !!! warning "Invariant: the sky set is at its sampler floor"
     `sat_sky.frag` already uses all 16 sampled images the specification guarantees per stage. A new texture for
-    the sky shader must merge into an existing one (an array layer, a channel of another texture) or be read as
-    a storage image. The newer full-resolution inputs (meshes, far cloud layer) are storage images read with
-    `imageLoad` for this reason, and that budget is now also at its floor of 4.
+    the sky shader must merge into an existing one (an array layer, a channel of another texture). The
+    full-resolution inputs (meshes, far cloud layer) are storage images read with `imageLoad` for this reason,
+    and that budget is at its floor of 4 too, in the sky set and in `cloud_v2_march.comp`: a fifth storage
+    image in either needs a merge as well.
 
 The storage-buffer limit is the realistic one to hit under MoltenVK, which maps storage buffers, uniform
 buffers and vertex buffers into Metal's 31 per-stage buffer slots.
@@ -234,10 +290,11 @@ loaded roster, about 100 bytes per satellite: on the order of 130 MB for the def
 ## Where in the code
 
 - `shaders/sat_sky_minimal.frag`; the `SKY_LITE` blocks in `shaders/sat_sky.frag`; `CMakeLists.txt` (the
-  `SKY_LITE` compile).
-- `src/simulations/SatelliteSimUI.cpp`: `applyGraphicsPreset()`, `seedGraphicsPresetFromDevice()`, the Display
-  tab's render-scale rows.
-- `src/simulations/SatelliteSim.cpp`: the sky pipeline choice in `recordDraw()`, `skyTaaWanted()`,
+  `SKY_LITE` compile and the SPIR-V budgets); `cmake/CheckSpvSize.cmake`.
+- `src/simulations/SatelliteSimUI.cpp`: `applyGraphicsPreset()`, `recommendedPresetForDevice()`,
+  `seedGraphicsPresetFromDevice()`, `crashRecoveryPreset()`, the Display tab's render-scale rows.
+- `src/simulations/SatelliteSimBootChooser.cpp`: the startup graphics chooser.
+- `src/simulations/SatelliteSim.cpp`: the crash sentinel in `init()`, the sky pipeline choice in `recordDraw()`, `skyTaaWanted()`,
   `skyTaaInExtent()`, `recordPrePass()`, `recordSkyTaa()`, `computeHalfExtent()`,
   `recreateComputeScaledTargets()`, `updateDynamicResolution()`.
 - `shaders/sky_taa.comp`: the TAA resolve and the upscaling reconstruction.

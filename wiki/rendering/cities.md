@@ -205,10 +205,13 @@ no pipeline of their own.
 - **Fades**: by night only (civil twilight), and with eye altitude over 100-150 km.
 - **Records**: slot index `0xFFFFFFFF` (picking skips it) and `meshPx = -1` (the trail pass skips it), recorded
   at 99.5% of the range. Up to 131072 extra slots in the visible list.
-- **Depth**: the point draws (`sat_point.vert`) test a city light at 0.95 of its recorded range, both in the
-  hardware depth and in the manual test against the half-resolution scene depth. A light stands only a few
-  metres above the ground it lies on, and the ground's depth moves with the temporal AA's sub-pixel jitter,
-  so at its true range the sprite would z-fight it.
+- **Depth**: a city light skips the hardware depth test (`sat_point.vert` gives it depth 0) and is tested in
+  the fragment shader (`sat_point.frag`) against the unjittered half-resolution scene depth, at 0.95 of its
+  recorded range. Under the sky TAA the hardware depth is restored from this frame's jittered sample, and at a
+  crest seen at a low angle a pixel's sample hits the ridge in some jitter phases and the ground beyond in
+  others: a light just behind the crest would be hidden and drawn by turns. The 5% margin keeps the half-res,
+  filtered ground around a light (which stands only a few metres above it) from hiding it; only real relief in
+  front does.
 - **Where they sit**: on the DEM plus the water map (the terrain detail is left out). With the terrain
   knocked out (knockout bit 1, set by Planetarium) the ground is drawn as the sea-level sphere, and the
   lights sit on it. They are not drawn under Potato: their eye height comes from the terrain frame the depth
@@ -242,10 +245,12 @@ of the sub-pixel jitter positions. Three rules keep distant city lights steady:
   read would light a point in only some phases. Toward a grazing horizon the tangent-plane point slides
   kilometres for half a pixel and is wrong over hills, so the jittered point is kept there.
 - **Still history.** When nothing moved in a frame (the eye moved less than 1 cm, the view did not turn, and
-  sim time runs at no more than 1.5x), `sky_taa.comp` keeps its history unclipped and its flash rule uses the
-  neighbourhood's mean without its brightest sample. A light caught by one phase in 16 then averages over all
-  the phases instead of blinking, and a lone glint does not flash.
-- **Sprite depth** at 0.95 of the range (see [City light sprites](#city-light-sprites)).
+  sim time advanced by at most 1.5 times the frame step since the last resolve), `sky_taa.comp` keeps its
+  history unclipped and its flash rule uses the neighbourhood's mean without its brightest sample. A light
+  caught by one phase in 16 then averages over all the phases instead of blinking, and a lone glint does not
+  flash.
+- **Sprite depth** tested against the unjittered half-res scene depth at 0.95 of the range (see
+  [City light sprites](#city-light-sprites)).
 
 ## The day side
 

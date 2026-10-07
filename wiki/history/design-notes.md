@@ -373,6 +373,9 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
 - **2026-10-02 (review 24-28)** — The far band past the wave octaves was a mirror; a far-sea ripple was added,
   then smoothed (blocks at 3 footprints), then made one pattern per level (rings in motion). A hard line at
   the wave range was the lost-slope roughness dropping to 0 in a pixel.
+- **2026-10-06** — "White static" on the ocean was the cloud shadow's 2x2 ordered march grid read raw by the
+  reflection; it reads the filtered shadow. Cinematic playback over the sea counted as frozen (the pause flag was
+  held), so moving waves trailed under an unclipped history; still/frozen come from the sim time.
 
 ## Cities, farms and solar parks
 
@@ -397,6 +400,9 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
 - **2026-09-30 (review 14)** — Blurring the map the pattern reads (for cloud in front) spread street grids into
   the desert; the blur applies to the finished light.
 - **2026-10-02/03** — Solar PV parks at `solar` reflector targets, and rooftop PV where a park overlaps a city.
+- **2026-10-06** — Far city lights still "z-fought" at low angles: sprites just behind a crest were hidden or drawn
+  by turns with the TAA jitter (~240 / ~37 levels a frame). They are depth-tested against the unjittered half-res
+  scene depth instead of the restored hardware depth (still-view flicker 0.57% to 0.31% of pixels).
 
 ## Sky, atmosphere and aurora
 
@@ -478,6 +484,8 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
 - **2026-09-26** — Glare scales with proximity; the glare defaults became the distance-tuned release values.
 - **2026-10-02 (review 28)** — A meshed satellite's flare sprite sits on the Sun's image in its dominant lobe, so it
   no longer jumps when the mesh's own glints take over.
+- **2026-10-06** — A sunlit render-only aluminium fitting on a Starmind satellite seeded white bloom discs ~250 px wide
+  while the model's own intensity toward the camera was ~0; render-only parts carry no photometric share.
 
 ## Performance and hardware
 
@@ -508,6 +516,20 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
   the history rules only when the whole camera is stationary and reads the lights at the unjittered pixel on steep
   views (still-view flicker 2.31 / 0.58 / 1.07 / 0.94% to 0.57 / 0.04 / 0.13 / 0.04%).
   [Cities](../rendering/cities.md)
+- **2026-10-06** — SKY_LITE had grown from 142 KB (v1.1.0) to 567 KB of SPIR-V, because new features were gated by
+  runtime knockouts that still compile every call; v1.2 ground features are compiled out of it (the 10-04 choice to
+  draw the procedural city on Planetarium was reverted for that), and the build fails past a size budget. Crash
+  recovery stepped straight to Planetarium; it steps one tier. During totality the sky pass used the day exposure
+  while every C++ consumer of `skyExposure()` used the eclipse-adapted one. [Weak-hardware tiers](../rendering/hardware-tiers.md)
+- **2026-10-06** — A startup graphics chooser replaced first-run device seeding plus the intro benchmark, which
+  adjusted the preset only after everything (the full sky shader included, on every tier) had loaded.
+  [Graphics settings](../using/graphics-settings.md)
+- **2026-10-04 .. 10-06** — Fixed from the October documentation pass's suspected bugs: the rain particles' barrier
+  after the lightning pass also orders it before the march (the Sun-path profile hazard); a mirror in the Earth's
+  shadow no longer beams (`litFactor`); with no active satellite the bloom composite is skipped and the glow and
+  ocean-glint lists emptied; the lightning is drawn from a list written this frame only (its old in-composite
+  `lightningCS` is gone); the sky pass's eclipse exposure matches `skyExposure()`; knockout 1024 clears the depth
+  images to "no surface" when switched on.
 
 ## Sound
 
@@ -548,6 +570,9 @@ compute pass. Clouds v2 replaced it on 2026-09-27; v1 was deleted the same day.
   bookmarks were added. The HUD altitude readout had added the terrain to an offset that is already above sea
   level. The typed time checked the day only against 31, so "2036-11-31" rolled over to December 1.
   [Features](../using/features.md)
+- **2026-10-06** — Nine default bookmarks ship with the sim. The rainbow one was the user's snapshot at rain 3.0;
+  at the shipped rain amount (0.71) the bow barely shows, and its storm changes within ~10 minutes, so it opens
+  paused. [Features](../using/features.md)
 
 ## Tooling and harness
 

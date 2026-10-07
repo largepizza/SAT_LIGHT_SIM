@@ -172,10 +172,13 @@ A mesh has no single point to glare from; its light is wherever its surfaces gli
 
 1. `mesh_bloom.frag` writes each quarter-res texel's mesh light into the flare source's **alpha**, in effectFlare
    units (instance `glareNorm` = the sprite's effectFlare per unit of bloom seed). Satellite sprites write
-   alpha 0. Only **Sun-like** surface brightness counts, ramped in between 150 and 1500 in the mesh units
-   (π × radiance / irradiance): the Sun in a mirror reaches about 4 × 10⁴, an OSR radiator about 2000, while a
-   rough-metal edge glint stays below about 50. Each texel is capped at 10⁴ so the half-float target stays
-   finite.
+   alpha 0. Like the bloom seed, it takes only the pixel's photometric share of the light, so render-only
+   components (which are not in the photometric model) neither bloom nor glare. Only **Sun-like** surface
+   brightness counts, ramped in between 150 and 1500 in the mesh units (π × radiance / irradiance): the Sun in a
+   mirror reaches about 4 × 10⁴, an OSR radiator about 2000, while a rough-metal edge glint stays below about 50.
+   The value is stored as \( \log_2(1 + \text{effectFlare}) \): the half-float target overflows past 65 504,
+   and a linear cap would turn a close mirror into a plateau of equal texels whose maximum is picked by texel
+   order rather than at the Sun's image.
 2. `glare_find.comp` (only in frames that drew meshes, before the blur) lists every 5 × 5 local maximum of the
    alpha whose 5 × 5 sum passes the threshold, at most 64 (`GpuGlintList`, `include/glint_list.glsl`). The
    position is the light-weighted centroid of the 3 × 3, so the glare moves smoothly rather than a texel at a

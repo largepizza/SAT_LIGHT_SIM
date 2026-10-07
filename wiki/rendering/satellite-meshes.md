@@ -53,9 +53,12 @@ parts (trusses) never shadow (their occluder kind is 0xFF). The ray test in `ray
 
 **What the bloom counts.** Only sunlight, transmission and the photometric earthshine are part of the lobe
 model. The pixel's alpha carries that **photometric share** of its light alongside the instance slot, and the
-bloom seeds only that share. Reflections and moonlight are drawn but not counted: feeding them to a bloom
-normalised by the model's intensity would make a satellite edge-on to the Sun (model intensity near zero,
-reflections bright) explode into glow.
+bloom and the mesh glare seed only that share. Reflections and moonlight are drawn but not counted: feeding them
+to a bloom normalised by the model's intensity would make a satellite edge-on to the Sun (model intensity near
+zero, reflections bright) explode into glow. Render-only components (`render_only` in the model file) have a share
+of 0 on every pixel (`instCompRenderOnly()`, from a +100 flag on the component's parent index in the components
+buffer): they are not in the photometric model at all, so a sunlit fitting on a satellite seen from behind its
+arrays would otherwise seed a glow far brighter than the satellite itself.
 
 ### Procedural surface detail
 

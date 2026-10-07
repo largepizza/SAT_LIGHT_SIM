@@ -89,6 +89,9 @@ to and inspect as real 3D models, and a sim clock that runs on real UTC. Accepte
 ### Camera, capture and UI
 
 - **Bookmarks.** Save a view (place, camera, time and the weather) with a thumbnail and jump back to it.
+- **Nine default bookmarks** ship with the sim (a rainbow at dawn, the 2037 total solar and lunar eclipses, an
+  aurora storm from orbit, Reflect Orbital over Anchorage, AI satellites at twilight, Los Angeles by night, a
+  Starmind formation ring, sunset from orbit); "Restore defaults" brings back any you deleted.
 - **Cinematics.** A camera-path editor: shots of keyframes on smooth splines, follow shots that ride with a
   satellite, a timeline, saved files, and frame-by-frame export (quick preview or supersampled HQ frames with
   motion blur), with a progress display.
@@ -121,17 +124,36 @@ to and inspect as real 3D models, and a sim clock that runs on real UTC. Accepte
 - **Presets reshuffled.** Potato and Planetarium for weak hardware (Planetarium has no volumetric clouds),
   Low (50% render scale, every effect on), Medium (67%), High and Ultra. Integrated GPUs start on Planetarium, with a
   tutorial card pointing at the presets.
+- **Startup graphics chooser.** Before anything heavy loads, the loading screen asks for Full graphics,
+  Planetarium (no clouds) or Potato (very old hardware), pre-selecting the last choice, the device's recommendation
+  on a first run, or one tier lighter after a crash. If the first frames are very slow it steps down one tier once.
+  "Ask for graphics mode on startup" (Display tab) turns the question off.
+- **Planetarium and Potato are the light v1.1 skies again**: the 1.2 ground features (terrain detail, the
+  procedural city, sea reflections, satellite meshes) are compiled out of them and nothing of the volumetric
+  clouds runs, so they start fast and run on the hardware they were made for. After a crash the preset steps
+  down one tier instead of always to Planetarium.
 - Large performance work across the cloud march (adaptive sampling, tile culling, LODs), the sky pass, terrain
   depth pyramid and the satellite pipeline (about 1.37 million satellites in the default roster).
 
 ### Changed defaults and behaviour
 
+- Defaults are the author's tuned settings (volumes, rain and lightning, brightness, automatic render scale on,
+  HQ photos at 1x the window).
 - Saved times now show a different local time of day (the clock is real UTC; about 5 h 15 min earlier for the
   same timestamp). The start time moved so the intro is unchanged.
 - "Storm strength" for the aurora is replaced by Kp (automatic by default).
 - Glare defaults are the distance-tuned values; glare grows when the camera is close to a satellite.
 - The cinematics, bookmarks and settings buttons moved from the time bar to the bottom-right panel; the
   Camera settings tab is now the Controls tab's Mouse section.
+
+### Fixed
+
+- Far city lights no longer blink at low angles under temporal AA; the sea no longer shows a fine white static
+  under broken cloud; waves no longer leave trails in cinematic playback.
+- Render-only satellite parts (fittings, trusses) no longer seed bloom or glare.
+- A mirror in the Earth's shadow no longer beams; stale bloom, lightning and depth no longer show after
+  switching satellites, clouds or the depth pass off; the sky's exposure follows a total eclipse.
+- The Attributions tab lists every bundled asset (terrain textures, Natural Earth data, ambience recordings).
 
 ### Technical and modding
 

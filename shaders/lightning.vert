@@ -1,5 +1,6 @@
 #version 450
-// ── Lightning: channels (mode 0, one quad per segment) and the cloud's glow (mode 1, one quad per emitter) ──
+// ── Lightning: channels (mode 0, one quad per segment) and the cloud's glow (mode 1: ONE full-screen triangle;
+// lightning.frag loops over the flashes' emitters per pixel) ──
 // (SatelliteSimLightning.cpp, 2026-10-05.) A channel is drawn at its TRUE luminous width (a few metres for a
 // return stroke's main channel, less for branches and tendrils, hundreds of metres for a sprite's tendrils);
 // thinner than a pixel it is drawn a pixel wide with its energy kept (dimmer, never fatter), so a far stroke is

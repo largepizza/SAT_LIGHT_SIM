@@ -108,7 +108,8 @@ Parts activityParts(double t, double rateScale) {
         }
     }
 
-    // CME storms: one chance per day; ~1.7 a month at maximum (x the equinox bias).
+    // CME storms: one chance per day, 0.15 at solar maximum: ~4.5 a month (x the equinox bias), most of them
+    // minor (cmePeakKp).
     const int64_t b0 = (int64_t)std::floor(d);
     const double pDay = 0.15 * sc * rm * rateScale;
     for (int64_t b = b0 - 5; b <= b0; ++b) {

@@ -85,8 +85,9 @@ One component is one primitive in one material, attached to one group.
 
 **Render-only parts.** A component with `render_only: true` is drawn in the 3D view and does nothing else: no
 lobes, no shadowing, no provenance entry needed. Use it for greebles (antennas, trusses, thrusters) whose
-photometric effect is negligible: they cost render triangles, not per-frame brightness work. A model made only of
-render-only parts is rejected.
+photometric effect is negligible: they cost render triangles, not per-frame brightness work. Its light also seeds
+neither the bloom nor the glare: those are scaled by the photometric model's intensity, which has no render-only
+parts in it, so a sunlit fitting cannot flare on its own. A model made only of render-only parts is rejected.
 
 **Pivots: one joint, several axes.** On a component of a child group, `pivot` moves the axis it turns about: the
 joint turns it about the line parallel to the hinge axis through hinge + `pivot`, instead of through the hinge.

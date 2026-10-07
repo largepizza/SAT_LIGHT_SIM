@@ -5467,8 +5467,36 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
 }
 
 // ─── buildSettingsAttributionsTab ───────────────────────────────────────────
+// Mirrors THIRD_PARTY_NOTICES.txt (which carries the full license texts): keep the two in step when an
+// asset or library is added. Every line is a string literal, so Clay's stored pointers stay valid.
 void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &ui)
 {
+    (void)inp;
+    (void)ui;
+    auto lit = [](const char *s) { return Clay_String{false, (int32_t)strlen(s), s}; };
+    auto divider = [](int i) {
+        CLAY(CLAY_IDI("AttrDiv", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
+                                                 .padding = {0, 0, 2, 2}},
+                                      .backgroundColor = {30, 30, 32, 255}}) {}
+    };
+    // One credit: a title, up to two dim lines and a hint line (source / license).
+    auto entry = [&](int i, const char *title, const char *line1, const char *line2, const char *hint) {
+        CLAY(CLAY_IDI("Attr", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                              .padding = {6, 6, 5, 5},
+                                              .childGap = 4,
+                                              .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+        {
+            CLAY_TEXT(lit(title), CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
+            if (line1)
+                CLAY_TEXT(lit(line1), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+            if (line2)
+                CLAY_TEXT(lit(line2), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+            if (hint)
+                CLAY_TEXT(lit(hint), CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
+        }
+        divider(i);
+    };
+
     CLAY(CLAY_ID("AttrAbout"), {.layout = {
                                     .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                     .padding = {6, 6, 5, 5},
@@ -5488,224 +5516,54 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
         CLAY_TEXT(CLAY_STRING("This simulator uses AI generated code. There's an irony there."),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
     }
+    divider(100);
 
-    CLAY(CLAY_ID("AttrDivAbout"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                              .padding = {0, 0, 2, 2}},
-                                   .backgroundColor = {30, 30, 32, 255}}) {}
+    int i = 0;
+    entry(i++, "Satellite constellation data", "Jonathan McDowell", nullptr,
+          "planet4589.org/space/con/conlist.html");
+    entry(i++, "Earth day, night, cloud, water-mask and elevation maps", "Solar System Scope", nullptr,
+          "solarsystemscope.com/textures (CC BY 4.0)");
+    entry(i++, "Milky Way skybox", "\"The Milky Way panorama\" (eso0932a) - ESO/S. Brunier", nullptr,
+          "European Southern Observatory - eso.org (CC BY 4.0)");
+    entry(i++, "Full moon texture", "papereater", nullptr, nullptr);
+    entry(i++, "City lights detail textures",
+          "From KSP mod RSSVE, NASA Visible Earth imagery, edited by Theysen", nullptr,
+          "CC BY-NC-SA 4.0 - Sat Light Sim is distributed as free software");
+    entry(i++, "Cloud morphology textures",
+          "MODIS imagery from NASA's Global Imagery Browse Services (GIBS),",
+          "part of NASA's Earth Science Data and Information System (ESDIS)", "NASA open data");
+    entry(i++, "Terrain material textures",
+          "ambientCG: Grass004, Ground037, Rock051, Snow010A, Ground054, Ground109", nullptr,
+          "ambientcg.com (CC0 1.0)");
+    entry(i++, "Major roads and shorelines", "Natural Earth 1:10m: Roads; Land and Lakes", nullptr,
+          "naturalearthdata.com (public domain)");
+    entry(i++, "Music", "papereater", nullptr, nullptr);
+    entry(i++, "Ambient sound recordings",
+          "freesound.org: sengjinn, Mrthenoronha, priesjensen, SamsterBirdies, felix.blume,",
+          "jmbphilmes, janbezouska, Noted451, Soojay",
+          "CC0 1.0 - per-recording credits in assets/sound/ambience/CREDITS.txt");
+    entry(i++, "Noise texture", "Default RGBA noise texture, shadertoy.com", nullptr, nullptr);
+    entry(i++, "Lens flare shader (modified)", "\"Lens Flare Example\" by peterekepeter", nullptr,
+          "shadertoy.com/view/4sX3Rs");
+    entry(i++, "Ocean shader (heavy inspiration, modified)",
+          "\"Seascape\" by Alexander Alekseev aka TDM - 2014", nullptr,
+          "shadertoy.com/view/Ms2SD1 (CC BY-NC-SA 3.0)");
+    entry(i++, "Star catalogue", "Yale Bright Star Catalogue (Hoffleit & Warren 1991, CDS V/50)", nullptr,
+          nullptr);
+    entry(i++, "Icons", "HackerNoon's Pixel Icon Library", nullptr,
+          "github.com/hackernoon/pixel-icon-library (MIT)");
 
-    CLAY(CLAY_ID("Attr0"), {.layout = {
-                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                .padding = {6, 6, 5, 5},
-                                .childGap = 4,
-                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("Satellite constellation data"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("planet4589.org/space/con/conlist.html"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDiv0"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                          .padding = {0, 0, 2, 2}},
-                               .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("Attr1"), {.layout = {
-                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                .padding = {6, 6, 5, 5},
-                                .childGap = 4,
-                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("Lens Flare shader (modified)"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("\"Lens Flare Example\" by peterekepeter"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("shadertoy.com/view/4sX3Rs"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDiv1"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                          .padding = {0, 0, 2, 2}},
-                               .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("Attr2"), {.layout = {
-                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                .padding = {6, 6, 5, 5},
-                                .childGap = 4,
-                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("Earth day/night/cloud/specular/normal/elevation maps"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("Solar System Scope — solarsystemscope.com/textures (CC BY 4.0)"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDiv2"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                          .padding = {0, 0, 2, 2}},
-                               .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("AttrMilkyWay"), {.layout = {
-                                       .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                       .padding = {6, 6, 5, 5},
-                                       .childGap = 4,
-                                       .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("Milky Way skybox"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("\"The Milky Way panorama\" (eso0932a) — ESO/S. Brunier"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("European Southern Observatory — eso.org (CC BY 4.0)"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDivMilkyWay"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                                 .padding = {0, 0, 2, 2}},
-                                      .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("Attr3"), {.layout = {
-                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                .padding = {6, 6, 5, 5},
-                                .childGap = 4,
-                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("Full moon texture"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("papereater"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDiv3"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                          .padding = {0, 0, 2, 2}},
-                               .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("Attr4"), {.layout = {
-                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                .padding = {6, 6, 5, 5},
-                                .childGap = 4,
-                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("City lights detail textures"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("From KSP mod RSSVE, NASA Visible Earth imagery, edited by Theysen"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("CC BY-NC-SA 4.0 — Sat Light Sim is distributed as free software"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDiv4b"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                           .padding = {0, 0, 2, 2}},
-                                .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("Attr4b"), {.layout = {
-                                 .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                 .padding = {6, 6, 5, 5},
-                                 .childGap = 4,
-                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("Cloud morphology textures"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("MODIS imagery from NASA's Global Imagery Browse Services (GIBS), part of NASA's ESDIS"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDiv4"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                          .padding = {0, 0, 2, 2}},
-                               .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("Attr5"), {.layout = {
-                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                .padding = {6, 6, 5, 5},
-                                .childGap = 4,
-                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("Music"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("papereater"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDiv5"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                          .padding = {0, 0, 2, 2}},
-                               .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("Attr6"), {.layout = {
-                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                .padding = {6, 6, 5, 5},
-                                .childGap = 4,
-                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("Noise texture"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("Default RGBA noise texture, shadertoy.com"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDiv6"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                          .padding = {0, 0, 2, 2}},
-                               .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("Attr7"), {.layout = {
-                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                .padding = {6, 6, 5, 5},
-                                .childGap = 4,
-                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("Ocean shader (heavy inspiration, modified)"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("\"Seascape\" by Alexander Alekseev aka TDM — 2014"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("shadertoy.com/view/Ms2SD1 (CC BY-NC-SA 3.0)"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDiv7"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                          .padding = {0, 0, 2, 2}},
-                               .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("Attr8"), {.layout = {
-                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                .padding = {6, 6, 5, 5},
-                                .childGap = 4,
-                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("Star catalogue"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("Yale Bright Star Catalogue (Hoffleit & Warren 1991, CDS V/50)"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDiv8"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                          .padding = {0, 0, 2, 2}},
-                               .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("Attr9"), {.layout = {
-                                .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                .padding = {6, 6, 5, 5},
-                                .childGap = 4,
-                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-    {
-        CLAY_TEXT(CLAY_STRING("Icons"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("\"HackerNoon's Pixel Icon Library"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("https://github.com/hackernoon/pixel-icon-library"),
-                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
-    }
-
-    CLAY(CLAY_ID("AttrDiv9"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
-                                          .padding = {0, 0, 2, 2}},
-                               .backgroundColor = {30, 30, 32, 255}}) {}
-
-    CLAY(CLAY_ID("Attr10"), {.layout = {
-                                 .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                 .padding = {6, 6, 5, 5},
-                                 .childGap = 4,
-                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+    CLAY(CLAY_ID("AttrLibs"), {.layout = {
+                                   .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                   .padding = {6, 6, 5, 5},
+                                   .childGap = 4,
+                                   .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
         CLAY_TEXT(CLAY_STRING("Software libraries"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("GLFW (zlib), glm (MIT), Clay (zlib), stb (MIT), miniaudio (MIT),"),
+        CLAY_TEXT(CLAY_STRING("GLFW (zlib), glm (MIT), Clay (zlib), stb (MIT), miniaudio (MIT-0),"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("nlohmann/json (MIT) — full license texts in THIRD_PARTY_NOTICES.txt"),
+        CLAY_TEXT(CLAY_STRING("nlohmann/json (MIT) - full license texts in THIRD_PARTY_NOTICES.txt"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
         CLAY_TEXT(CLAY_STRING("next to the executable"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));

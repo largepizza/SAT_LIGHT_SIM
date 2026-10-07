@@ -249,7 +249,8 @@ sim->recordCompute(cmd)  → WASD movement; simTime advance;
                                                mesh (two mesh draws: the depth pre-pass, then the
                                                scene pass with depth EQUAL; then, for mirror pixels,
                                                the SKY_REFL sharp-reflection pass + mesh_refl_add)
-                           dispatch 1: scene_depth.comp   (half-res shared terrain/ocean/MESH depth —
+                           dispatch 1: scene_depth.comp   (twice: a quarter-res seed pass, then the
+                                                            half-res shared terrain/ocean/MESH depth —
                                                             the detailed terrain march, terrain_detail.glsl;
                                                             also writes the observer's ground height into
                                                             terrainFrameBuf for sat_sky.frag; then the
@@ -263,12 +264,15 @@ sim->recordCompute(cmd)  → WASD movement; simTime advance;
                                                             201-target version 2026-08-09, see
                                                             "Subsystem: Reflect-Orbital Beam Cloud
                                                             Occlusion" below)
-                           dispatch 4: cloud_march.comp   (half-res clouds/cirrus/aurora/airglow-red/
-                                                            beam pointing ray + volumetric glow +
-                                                            per-pixel cloud shadow)
+                           dispatch 4: the cloud bucket   (recordCloudsV2: weather evolution, lightning,
+                                                            v2 march (+ adaptive tiles / pass B), resolve,
+                                                            far layer, as needed; then cloud_march.comp:
+                                                            half-res composite + aurora/airglow-red +
+                                                            beam rays + per-pixel cloud ground shadow)
                            dispatch 5: sat_flare.comp     (INDIRECT; photometry in place on the
                                                             compact list: sky/extinction/pollution +
                                                             visibility culling + sprite size)
+                           city_sprites.comp              (far city lights APPENDED to the same list)
                            flare-source pass (graphics, its own render pass): satellite sprites +
                            the sun's virtual point, then mesh_bloom.frag's mesh over-white energy
                            dispatch 6: glare_find.comp     (only when meshes drew this frame: 5×5
@@ -279,14 +283,17 @@ sim->recordCompute(cmd)  → WASD movement; simTime advance;
                            splat draws into trailAccumImg
                            recordModelViewer() — Phase 4b model-viewer window (offscreen, own pass)
                            barriers between each (see recordCompute for exact stage/access pairs)
-sim->recordPrePass(cmd)  → renderScale < 1.0 only: low-res sky → vkCmdBlitImage into swapchain
+sim->recordPrePass(cmd)  → the sky TAA (jittered sky pass → sky_taa.comp resolve, also the temporal
+                           upscaler below 100%) → blit into the swapchain; or, TAA off / SKY_LITE below
+                           100%, the low-res sky → vkCmdBlitImage. Nothing at 100% with TAA off
 vkCmdBeginRenderPass     → owned by App
 sim->recordDraw(cmd)     → sky/ground background (the mesh is a surface in it, Phase 4c) →
                            satellite points → stars → planets → flare composite → glare
                            (satellite sprites + mesh glints) → trail composite
 ui.record(cmd)           → Clay → Vulkan quads/text/icons on top
 vkCmdEndRenderPass       → owned by App
-sim->recordScreenshotCopy() → UC6 screenshot blit after the pass — no-op unless a shot is pending
+sim->recordScreenshotCopy() → the auto-exposure meter's 64x36 blit (every frame while auto exposure is on), + the UC6
+                           screenshot / bookmark-thumbnail copy when one is pending
 ```
 
 ### Unified scene depth (Phase 4, 2026-09-23)
@@ -2770,8 +2777,11 @@ Types and constellations are loaded from `constellations.json` next to the exe. 
   rev. 2): SSO 565-585 km (10 shells), 707-744 (22), 967-1002 (22), 2 planes each; 30 deg at 550-568 km
   (10 shells, 26-32 deg), 686-718 (25), 946-978 (25), 30 planes x 333. The rows are per-group MAXIMA summing to
   1,198,120 against a 1,000,000 cap, so `per_plane` is scaled by 1e6 / 1,198,120 and rounded down to whole
-  clusters (988,672 flown). Rings of 8, 200 m radius, in the orbit plane (the user's reading of SpaceX's
-  visualization; SpaceX's text says "10-ish satellites" per cluster). Filed RAAN tolerance +-30 deg: modelled
+  clusters (988,672 flown). Rings of 8 in the orbit plane, `cluster_radius_km` 2.0 in the roster (the schema's
+  default and the first cut: 200 m; the user's reading of SpaceX's visualization; SpaceX's text says "10-ish
+  satellites" per cluster). At 2 km a ring spans ~0.1-0.2 deg from the ground, so each cluster RESOLVES into a
+  small ring (or, edge-on, a short line) of points at a normal FOV — not a rendering bug (reported 2026-10-06 as
+  "stars drawn as hollow rings"); at 200 m a cluster is one point. Filed RAAN tolerance +-30 deg: modelled
   per plane via `raan_spread_deg` (10 in the roster; `raan_spread` even = golden-ratio sequence | random). It
   replaced a single 1M-satellite dawn-dusk Disk (575-1925 km, 2000 rings). **Why the spread matters:** with
   tight nodes every shell of a node family shares ONE plane, and shells 1.6-1.8 km apart with 2-km rings
@@ -4134,8 +4144,9 @@ half-res texels can map to ground points kilometres apart at grazing angles.
 ## Subsystem: Sky TAA — temporal anti-aliasing of the background (2026-09-30)
 
 The user asked for terrain anti-aliasing; silhouettes, detail normals, far textures and city glitter all
-aliased because the sky pass shades one ray per pixel. At renderScale 1 with the full sky shader
-(`skyTaaWanted`; Potato/Lite and renderScale < 1 keep their paths), `recordPrePass` → `recordSkyTaa`:
+aliased because the sky pass shades one ray per pixel. With the full sky shader at ANY render scale
+(`skyTaaWanted`; Potato and SKY_LITE keep their own paths; below 100% it is also the temporal upscaler,
+see the last bullets), `recordPrePass` → `recordSkyTaa`:
 1. `sat_sky.frag -DSKY_TAA` (`sat_sky_taa.frag.spv`) renders the background offscreen with a Halton (2,3)
    sub-pixel jitter (`cloud.taaJitter.xy`, applied to the ray via the interpolated direction's screen
    derivatives) into RGBA16F + its unified depth as an R32F colour (no depth attachment).
@@ -4239,22 +4250,18 @@ satellites, stars, and UI always render at native resolution, no exceptions — 
 goal, given the earlier-session concern about losing tiny satellite point fidelity to a whole-
 frame downscale.
 
-**At the default (`renderScale==1.0`) this is a no-op — the code path is identical to before the
-feature existed.** Below 100%, `SatelliteSim::recordPrePass` (a new `Simulation` interface hook,
-default no-op, so the other simulations needed zero changes) renders the background into a low-res
-offscreen target and blits it (`vkCmdBlitImage`, linear filter) directly into the swapchain image
-*before* the main render pass opens. The main render pass then uses `ctx.renderPassLoad` instead of
-`ctx.renderPass` — a second render pass object (`Simulation::activeRenderPass`, another new hook,
-default `ctx.renderPass`) with the SAME attachment formats (so it stays compatible with the same
-`ctx.framebuffers` — render-pass compatibility only requires matching format/sample-count, not
-matching load/store ops) but LOAD instead of CLEAR for color, so the pre-pass's blit survives into
-the frame instead of being cleared away.
-
-**Depth is deliberately not blitted** — depth-format blit support isn't spec-guaranteed the way
-color-format blit support effectively always is, a real portability risk specifically on the
-lower-end hardware this feature targets. Consequence, accepted: satellites/stars are not occluded
-by terrain while `renderScale<1.0` (a satellite that should hide behind a mountain may show
-through). Only applies below 100%.
+**Two paths below 100%** (both run from `SatelliteSim::recordPrePass`, a `Simulation` hook, before the main
+render pass opens; the main pass then uses `ctx.renderPassLoad`, which LOADs colour so the prepass's result
+survives — same attachment formats, so the same `ctx.framebuffers` stay compatible):
+- **Temporal upscaling (the default, sky TAA on with the full sky shader):** the sky pass renders jittered into the
+  top-left `skyTaaInExtent()` of the TAA's input images and `sky_taa.comp` resolves to the full output size — see
+  "Sky TAA" above. The depth is restored at full resolution from the resolve (`taa_depth_restore.frag`), so
+  satellites, stars and planets are depth-tested by hardware exactly as at 100%.
+- **Plain upscale (TAA off, or SKY_LITE):** the background renders into a low-res offscreen target and is blitted
+  (`vkCmdBlitImage`, linear) into the swapchain. **Depth is not blitted** (depth-format blits are not
+  spec-guaranteed, and this path exists for weak hardware), so the point draws test terrain manually against the
+  half-res `sceneDepthTex` (`PointDrawPC::manualTerrainTest` = 1).
+At exactly 100% with TAA off the prepass does nothing and the code path is the original one.
 
 **`gl_FragCoord` gotcha — read this before adding any new `gl_FragCoord`-based lookup to
 `sat_sky.frag`.** `gl_FragCoord.xy` is relative to whatever framebuffer the CURRENT draw call
@@ -4288,14 +4295,7 @@ recordCompute's check before anything is recorded when the extent changes). Ever
 100% pixel x `fp`): with the coarser footprint the storm cumulus texture filtered away. Measured (RTX 3070 Ti,
 1600x900, user snapshots, full-rate march): orbit storm total 32.4 / 20.6 / 11.9 ms at 100 / 75 / 50% (fixed-size
 clouds at 50%: 28.0), Dushanbe snow 28.3 / 17.4 / 10.9 (22.6), Arizona anvils 34.0 / 21.8 / 14.0 (28.1). Rain/snow
-drops (drawn in the half-res composite) get softer and larger below 100%. The paragraph below predates this.
-
-**Its value has shrunk since the pipeline unification.** `scene_depth.comp` and the cloud targets
-are fixed at half the SWAP extent and do not scale, so at 1920x1009 dropping to 50% removes only
-~1.46 Mpx of sky-pass work while ~0.96 Mpx of compute stays. With the sky pass now much cheaper
-(beam occlusion gone, layers clamped at march time), 100% and 50% measure comparably in practice —
-and 100% additionally gets exact hardware-depth occlusion for satellites/stars. Prefer 100%. If
-render scale needs to matter again, the fix is making those two compute passes scale with it.
+drops (drawn in the half-res composite) get softer and larger below 100%.
 
 ---
 
@@ -4611,7 +4611,7 @@ Read it at the start of any terrain-related session before making changes.
   under "Subsystem: GPU Orbital Pipeline → Push constants" and the "Push-constant relief" block in
   `GpuCloudParams`. Both point pipeline layouts (`drawPipeLayout`, `starPipeLayout`) use
   `sizeof(PointDrawPC)`; `skyBgPipeLayout` uses `sizeof(SatDrawPC)`.
-- Sky descriptor set has 29 bindings (0-28; 28 = the major-roads storage buffer for the city lights; 27 = the terrain material array, terrain v2 P3; 26 = terrainFrameBuf, the observer's detailed ground height
+- Sky descriptor set has 30 bindings (0-29; 29 = the far cloud layer `cloudFarImg`, a storage image read with imageLoad, review 18; 28 = the major-roads storage buffer for the city lights; 27 = the terrain material array, terrain v2 P3; 26 = terrainFrameBuf, the observer's detailed ground height
   from scene_depth.comp, 2026-09-25). Before that it had 26 (0-25; 22/23 the mesh targets, 24 the env star grid, 25 the
   sharp-reflection G-buffer — the last two read only by the SKY_ENV / SKY_REFL variants). The original 22 (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec (the R8G8 water map since terrain v2 P2), earthClouds (since 2026-09-29 the v2 weather CUBE), cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)

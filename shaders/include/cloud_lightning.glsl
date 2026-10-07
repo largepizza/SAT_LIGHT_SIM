@@ -4,9 +4,9 @@
 // cloud_v2_lightning.comp writes it once per frame (one workgroup, before the march): the flashes in
 // progress at the Cb towers around the observer, each on a schedule hashed from its tower's lattice
 // cell and a 2 s time slot of SIM time — deterministic, so a harness run, a replay and reversed time
-// all see the same flashes. cloud_march.comp draws them after the temporal resolve (a flash lasts a
-// few frames and the history would swallow it): the cloud lit from inside around each flash, and the
-// channel of a cloud-to-ground stroke. The host reads the list back for thunder (SatelliteSimAmbience).
+// all see the same flashes. The host reads the list back (SatelliteSimLightning.cpp: updateLightningBolts) and
+// draws each flash as geometry after the sky TAA (lightning.vert/.frag: the channel tree and the cloud lit
+// around it), and builds the thunder from the channel.
 //
 // Define CV2_FLASH_BINDING (and CV2_FLASH_WRITE for the writer) before including.
 const uint kCv2FlashMax = 128u;
@@ -43,7 +43,7 @@ readonly
 #endif
 buffer CV2FlashBuf {
     uint     cv2FlashCount;
-    // Written by the same pass for the drops at the eye (cloud_march.comp rainDrops, review 4): the Sun's
+    // Written by the same pass for the rain at the eye (review 4; read by the rain particles): the Sun's
     // transmittance through the clouds from the eye (float bits), and the ice fog's extinction at the eye
     // (1/m, float bits: diamond dust sparkles when it is > 0 and the Sun is out). cv2FlashPad2 (review 22): the
     // Sun DISC's transmittance from the eye (not gated by the horizon), read back by the host.
@@ -90,18 +90,5 @@ float cv2RainMapAt(vec2 en)
     }
     return s;
 }
-
-// The cloud's glow around a flash, per unit intensity, at distance r (m) from it. Inside a storm the
-// light diffuses (multiple scattering over a mean free path of tens of metres): a flash in a tower
-// lights the whole tower and the anvil over it — from orbit a storm top blinks across 10-20 km —
-// fading with the inverse square past a few km.
-float cv2FlashGlow(float r)
-{
-    return exp(-r / 5000.0) / (1.0 + r * r * (1.0 / 6.25e6));
-}
-
-// A cloud-to-ground channel's main stroke has kCv2BoltSeg segments (cloud_march.comp lightningCS builds
-// the whole branching tree: main channel, branches, twigs).
-const int kCv2BoltSeg = 14;
 
 #endif

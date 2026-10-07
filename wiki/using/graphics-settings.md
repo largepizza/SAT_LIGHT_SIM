@@ -12,9 +12,47 @@ Settings → **Display** → *Graphics* → *Preset* has six buttons: **Potato**
 quality sliders of the advanced tabs. A seventh state, **Custom**, has no button: the row reads *Preset (custom)*
 when you have changed any slider on an advanced tab by hand, and means "keep what is set".
 
-On a first launch the program picks **Medium** for a discrete GPU and **Planetarium** for anything else
-(integrated graphics, a software or virtual device). It then adjusts one step after the intro if the intro plays
-through (see [Getting started](getting-started.md#the-first-launch)). After a crash it starts on Planetarium.
+The preset a launch starts on is chosen on the loading screen, before anything heavy loads (next section).
+
+### Choosing a graphics mode at startup
+
+Before textures, satellite models and shaders load, the loading screen offers three modes: **Full graphics**,
+**Planetarium** (no clouds) and, on a smaller line below, **Potato (very old hardware)**. It also names the GPU.
+Pick a mode with the mouse, the arrow keys (or Tab, or the number keys) and Enter, or the d-pad and **A**, then
+**Start**. The screen never continues on its own; closing the window there quits.
+
+| Mode | Preset it starts on |
+|---|---|
+| Full graphics | The saved preset when it is already a full tier (Low and up, or a Custom set that draws the full sky). Otherwise the device's recommendation: Medium on a discrete GPU, Low (every effect at a 50% render scale) on hardware recommended a lighter mode |
+| Planetarium | Planetarium |
+| Potato (very old hardware) | Potato |
+
+Which mode is pre-selected:
+
+- **First run:** the device's recommendation, also marked *Recommended for this computer*. A discrete GPU with
+  more than about 2 GB of memory gets Full graphics; a smaller discrete GPU, integrated graphics, or a software
+  or virtual device gets Planetarium; a non-Apple GPU running through MoltenVK on macOS gets Potato. The
+  recommendation comes from the device type and memory size only, never from a list of GPU names.
+- **Later launches:** the mode of the preset saved last time.
+- **After a session that did not close cleanly:** one tier lighter than that, with a note saying so. The screen
+  appears in this case even when the question is switched off.
+
+On Planetarium and Potato the full sky shader is not compiled at startup at all; it is built the first time
+something needs it (a full preset, or a render scale below 100%), which causes a short pause then.
+
+**Safety net.** After loading, the program times the first frames (after about 2 s of warm-up). If their median
+is over 250 ms (over 10 frames, or over at least 3 once those add up to 5 s), it drops one tier once (a full
+preset to Planetarium, Planetarium to Potato) and shows a notice. This catches a machine that the chosen mode
+would otherwise freeze.
+
+When the question is switched off and the launch is clean, the saved preset is used as is. In that case, if the
+intro plays to the end, its frame-time measurement may then move the preset one step (see
+[Getting started](getting-started.md#the-first-launch)); a mode picked on the startup screen is never second-guessed
+that way.
+
+| Setting | `settings.json` key | Default |
+|---|---|---|
+| Ask for graphics mode on startup (Display tab, *Startup*; also the screen's **Ask on every startup** box) | `display.ask_graphics_mode` | on |
 
 ### What each tier turns off
 
@@ -98,7 +136,7 @@ every scale.
 
 ### Automatic render scale
 
-**Automatic render scale** (Display tab, off by default) changes the render scale by itself to hold a frame rate.
+**Automatic render scale** (Display tab, on by default) changes the render scale by itself to hold a frame rate.
 It lowers the scale in 5% steps when the GPU frame runs over 90% of the target frame time, and raises it one step
 at a time when there is clearly room, never below **Lowest render scale**. A step does not restart the clouds:
 their history is resampled to the new size.
@@ -107,7 +145,7 @@ their history is resampled to the new size.
 |---|---|---|
 | Render scale | `display.render_scale` | 100% (or the preset's) |
 | Clouds follow render scale | `display.clouds_follow_render_scale` | on |
-| Automatic render scale | `display.dynamic_resolution` | off |
+| Automatic render scale | `display.dynamic_resolution` | on |
 | Target frame rate | `display.dynamic_target_fps` | 60 (30 to 144) |
 | Lowest render scale | `display.dynamic_min_scale` | 50% |
 
@@ -195,7 +233,10 @@ Some photometry options are expensive at the scale of a million satellites:
 ## Where in the code
 
 - `src/simulations/SatelliteSimUI.cpp`: `applyGraphicsPreset()` (the preset table),
-  `seedGraphicsPresetFromDevice()`, `buildSettingsDisplayTab()`.
+  `recommendedPresetForDevice()`, `seedGraphicsPresetFromDevice()`, `buildSettingsDisplayTab()`.
+- `src/App.cpp`: `runBootChooser()` and `buildBootChooserUI()` (the startup screen and its input).
+- `src/simulations/SatelliteSimBootChooser.cpp`: `prepareBootChooser()` (what is offered and pre-selected),
+  `applyBootChoice()`, `ensureFullSkyPipelines()` (the deferred full sky shader), `updateBootSafetyNet()`.
 - `src/simulations/SatelliteSim.cpp`: the post-intro adjustment in `finishIntro()`, `skyTaaWanted()`,
   `updateDynamicResolution()`, `computeHalfExtent()` and `recreateComputeScaledTargets()` (the clouds following
   the render scale).

@@ -186,15 +186,15 @@ E = \operatorname{mix}(10,\ 1.8,\ \text{dayness}^{0.4}) \cdot 2^{\,\text{EV}},
 \qquad \text{EV} = \text{"Exposure (EV)"} + \text{EV}_\text{auto}
 \]
 
-with dayness \(= \operatorname{clamp}((\sin \text{el}_\odot + 0.2)/1.2)\). The factor \(2^{\text{EV}}\) is the
+with dayness \(= \operatorname{clamp}((\sin \text{el}_\odot + 0.2)/1.2)\). During a solar eclipse dayness is
+also multiplied by the share of sky light left at the observer (`moonEclipseSkyObs`, carried as
+`cloud.moonMisc.y` = 1 + that share while an eclipse is possible), so the eye adapts as it does at twilight:
+totality is shown at about twilight's exposure and the stars come out. The factor \(2^{\text{EV}}\) is the
 **global exposure** (`globalExposureEV()`, uploaded as `cloud.exposureScale`). It also scales the point sources
 (their reference and limit magnitudes shift by \(2.5 \log_{10} 2^{\text{EV}}\), so stars and satellites dim with
-the sky) and every display-space term below. `SatelliteSim::skyExposure()` is the CPU mirror, used by the mesh
-bloom threshold and the environment probes; during a solar eclipse it also scales dayness by the sky light left
-at the observer.
-
-The sky pass's own `dayness` ramp does not include that eclipse term, so during totality the sky shader and
-the CPU consumers of `skyExposure()` use different exposures.
+the sky) and every display-space term below. `SatelliteSim::skyExposure()` is the CPU mirror, eclipse term
+included, used by the mesh bloom threshold, the environment probes and the post-tonemap terms, so the sky pass
+and every other consumer agree on the exposure in and out of an eclipse.
 
 **Auto exposure** (`readExposureMeter()`) is a closed loop on the **displayed** frame:
 
@@ -334,7 +334,11 @@ flowchart LR
     - **Disocclusion**: the depth the point should have had must lie within the **range** of the 2 × 2
       history depths around its old position, ± 0.004. At a silhouette the jittered samples alternate between
       sky and ground, so a test against a single texel would reject every edge pixel every frame and
-      anti-alias nothing.
+      anti-alias nothing. When nothing moved this frame (below) the range also takes in this frame's 3 × 3
+      depths, which hold both surfaces of an edge: a pixel on a crest seen at a low angle hits the ridge in some
+      jitter phases and whatever lies beyond it in others, and last frame's 2 × 2 need not hold the depth this
+      phase hit. In motion the range is the history's alone; widened by the current spread it would let history
+      ghost through cloud edges while climbing.
     - **History**: a 9-tap Catmull-Rom read (bilinear alone blurs a little more every frame).
     - **Variance clip** toward the mean, a box of 1.25 σ, so anything that moves on its own (waves, clouds,
       beams, twinkling lights) cannot ghost. It is skipped when nothing moved (below).
@@ -352,9 +356,12 @@ flowchart LR
    unjittered, sharp and depth-tested over the anti-aliased background, at any render scale.
 
 **When nothing moved.** The CPU tells the resolve through `eyeDelta.w` whether the whole camera is stationary:
-the eye moved less than 1 cm, the view did not turn, and sim time is paused or runs at no more than about 1.5×
-(w = 2, or 3 when time is paused; 1 otherwise, 0 without history). Then the history is **not clipped**, and the
-flash rule compares against the mean without the brightest sample. A light smaller than a pixel is caught by only
+the eye moved less than 1 cm, the view did not turn, and sim time has advanced by at most 1.5 times the frame's
+duration since the last resolve (w = 2, or 3 when sim time has not changed at all; 1 otherwise, 0 without
+history). Both tests read the sim time itself rather than the pause flag or the time scale: a cinematic or a
+harness `path play` holds the pause flag while it sets the sim time every frame, and that is motion. When still,
+the history is **not clipped**, the disocclusion range takes in this frame's depths, and the flash rule compares
+against the mean without the brightest sample. A light smaller than a pixel is caught by only
 some jitter phases; clipped against an otherwise dark 3 × 3 box, its accumulated light would be thrown away in the
 other phases and it would blink on the jitter cycle. A lone glint on a wave facet does not raise the robust mean,
 so it does not count as a flash. The decision is per frame, not per pixel: judged from each pixel's own
@@ -362,8 +369,8 @@ reprojection motion, slowly moving distant clouds would count as still while the
 trails. In motion the resolve behaves as in the steps above.
 
 **The sea.** `sat_sky.frag` marks sea pixels in the colour target's alpha (0.5 × (1 − trail share); 1 elsewhere).
-The waves move while the camera is still, so the sea keeps its clip when nothing moved and drops it only while
-sim time is **paused** (w = 3), when the waves are frozen too. On a stormy sea the **trail share** ("Storm sea
+The waves move while the camera is still, so the sea keeps its clip when nothing moved and drops it only when
+sim time has not changed since the last resolve (w = 3), when the waves are frozen too. On a stormy sea the **trail share** ("Storm sea
 trails" × a ramp on the sea state, × the share not covered by cloud in front) deliberately keeps an unclipped
 history: the clip is blended toward none, the weight is held at the still weight however the view moves, and in
 motion the flash rule leans toward the robust mean. The crests then smear into trails like blown spray. "Storm

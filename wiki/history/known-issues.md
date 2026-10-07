@@ -13,26 +13,20 @@ carries the date it was recorded and the page it affects. This is a maintained l
 
 ## Suspected bugs
 
-Found while reading the code for the October 2026 documentation pass (`docs/rendering/FINDINGS.md`). None has
-been changed yet.
+Found while reading the code for the October 2026 documentation pass (`docs/rendering/FINDINGS.md`); the ones
+fixed since are in [Design notes](design-notes.md).
 
 | Issue | Affects | Status |
 |---|---|---|
-| No barrier between `cloud_v2_lightning.comp` and the v2 march. The lightning pass writes the Sun-path profile `cv2SunProf` and the rain map into `cv2FlashBuf`; the march reads the profile through binding 12. A barrier is recorded only when the light volume (god rays, off by default) or the adaptive tile pass runs between them, so an ordinary ground view has a write-to-read hazard. | [The cloud march](../rendering/clouds/march.md) | verified 2026-10-03 |
 | The cloud shell top (about 15.2 km, from the type table) includes neither the towers' overshoot (+0.8 km) nor the terrain lift of low tops, so an overshooting dome or lifted top can be clipped by `cv2ShellSegments`. Not observed at runtime. | [The cloud field](../rendering/clouds/field.md) | formula verified 2026-10-03 |
 | Beam light on thin (ice) samples applies the delta-scaling factor `1 - 0.45 thin` twice in `beamFinish`; the key light applies it once. | [Weather, rain, lightning, fog](../rendering/clouds/weather.md) | verified 2026-10-03 |
 | Mesh bloom and mesh glints (`mesh_bloom.frag`, `glare_mesh.frag`) are not occlusion-tested (deliberately, per the header), while sprite bloom and glare are. A mesh hidden by terrain or opaque cloud still seeds bloom and glints. | [Satellite meshes](../rendering/satellite-meshes.md) | verified 2026-10-03 |
 | Stars test cloud with the filtered cloud alpha, not the per-texel `cloudPointVisibilityAt` that satellites, flare sources and glare use; at cloud outlines the filtered alpha mixes a distance with the no-cloud sentinel. | [Points, bloom and glare](../rendering/points-bloom-glare.md) | verified 2026-10-03 |
-| With no active satellites, `recordCompute` returns before the flare-source pass and blur, but `recordDraw` still composites `flareSourceImg`, which then holds stale contents. | [Points, bloom and glare](../rendering/points-bloom-glare.md) | recorded open 2026-10-03 |
-| At full far-layer blend the lightning pass is not dispatched, but `lightningCS` still runs on the previous flash list; ground strokes from a stale list could draw. | [Weather, rain, lightning, fog](../rendering/clouds/weather.md) | recorded open 2026-10-03 |
-| During a solar eclipse, C++ `skyExposure()` scales dayness by the eclipse sky light but `sat_sky.frag`'s own `dayness` does not, so the sky pass and the C++ consumers of `skyExposure()` (probes, post-tonemap terms) disagree at totality. | [Moon and eclipses](../rendering/moon-and-eclipses.md) | recorded open 2026-10-03 |
-| Knockout bit 1024 skips the scene-depth dispatches on the CPU, so the shader's "write no surface" branch is dead; toggled at runtime, `sceneDepthImg` keeps the last real frame's depth. | [Profiling](../development/profiling.md) | recorded open 2026-10-03 |
 | Esc while a key binding is listening for input quits the app: `App::cbKey` closes the window on Esc before the sim can cancel the rebind (`capturesKeyboard()` does not cover rebind listening). | [Controls](../using/controls.md) | verified 2026-10-03 |
 | A named graphics preset is re-applied at every launch, overwriting a changed render scale and the four terrain-detail strengths (changing render scale does not switch the preset to Custom). | [Graphics settings](../using/graphics-settings.md) | verified 2026-10-03 |
 | HQ photos and HQ cinematic exports set `full_rate_above_km` 0 and `sparse_when_still` 0, but with `adaptive_rate` on (the default) `fillCloudsV2Params()` turns full rate into adaptive whenever history is valid and the eye is still. No tile votes, so the photo is the sparse grid converged through history. | [Temporal resolve](../rendering/clouds/temporal.md) | verified 2026-10-03 |
 | `cloud_v2_weather.comp` reads `earthSpecTex.r` as a 0/1 ocean fraction, but the binding is the signed-distance water map (0.5 at the shore), so the bake's ocean term (type classification, afternoon convection) is approximate at coasts. | [The cloud field](../rendering/clouds/field.md) | verified 2026-10-03 |
 | Moonlight on ground and clouds is not dimmed during a lunar eclipse (`moonDirENU.w` comes from the phase alone). | [Moon and eclipses](../rendering/moon-and-eclipses.md) | verified 2026-10-03 |
-| Beam power in `sat_orbit.comp` does not take the Earth-shadow `litFactor`: a mirror in the Earth's shadow still emits a beam. | [Reflectors and beams](../simulation/reflectors.md) | verified 2026-10-03 |
 | `satEciAt()` at lock-window start instants uses the plain float phase product, not `orbitPhase()`: a few hundred metres of position error in target selection. | [Reflectors and beams](../simulation/reflectors.md) | verified 2026-10-03 |
 | `beam_self_march.comp` traces beams to the sea-level sphere while ground spots land on the target's own radius. | [Reflectors and beams](../simulation/reflectors.md) | verified 2026-10-03 |
 | Only RandomShell assigns tumble axis, rate and phase: a `tumble`-law type flown in a Walker or Disk shell never spins. | [Attitude](../simulation/attitude.md) | verified 2026-10-03 |
@@ -120,7 +114,6 @@ sources still get wrong, so they can be corrected. Later passes append here.
 
 | Section | Says | Code |
 |---|---|---|
-| Frame Loop Order | `recordPrePass` runs only at render scale < 1; the screenshot copy is a no-op unless a shot is pending; cloud march is one dispatch | the prepass is also the sky TAA path; the exposure meter blits every frame; the cloud bucket is about nine passes; the quarter-res depth pass, probes, sharp reflections and city sprites are missing |
 | GPU Performance Profiling | SatelliteSim writes slots 1-3 in `recordCompute`, 4 in `recordDraw` | slots 1-5 in `recordCompute`, 6 in the prepass or `recordDraw` |
 | Unified scene depth | satellite points write their own range | points test at their range; no point pipeline writes depth |
 | GpuSatVisible layout | fourth field is a pad | it is `meshPx`, which becomes `glareFlare` after `sat_flare.comp` |
@@ -137,7 +130,6 @@ sources still get wrong, so they can be corrected. Later passes append here.
 | Clouds v2 sub-texel jitter | off in fast flight | off whenever the eye moves more than 1 m a frame |
 | Clouds v2 beam shafts | integrated inside the march | a closed-form per-ray pass after the march loop |
 | Terrain v2 P1 | night sky light 0.25 of the full Moon | default 0.2 |
-| Sky descriptor set | 29 bindings | 30; binding 29 is the far cloud layer |
 
 ### Shader comments (recorded 2026-10-03)
 
