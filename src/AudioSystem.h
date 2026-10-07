@@ -175,11 +175,11 @@ private:
     bool offline_    = false;
     bool musicDecoded_ = false; // offline: music loaded fully decoded (see loadTrack)
 
-    float masterVol_ = 0.8f;
-    float musicVol_  = 0.6f;
+    float masterVol_ = 0.4f;
+    float musicVol_  = 0.7f;
     float musicFade_ = 1.0f;
     float sfxVol_    = 1.0f;
-    float ambienceVol_ = 0.8f;
+    float ambienceVol_ = 0.7f;
     float ambienceFade_ = 1.0f;
     void applyAmbienceVolume();
 };

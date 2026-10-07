@@ -198,11 +198,11 @@ json patchFor(const std::string &dotted, const json &value)
 const char *kHelp =
     "wait <frames> | wait seconds <s> | wait settle [frames]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
-    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [drift=intro|default]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [drift=intro|default]; drift [default] [phase=] [rate=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; bookmark add [name]|go <n>|update <n>|rename <n> <name>|delete <n>|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -799,6 +799,30 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         char buf[128];
         snprintf(buf, sizeof(buf), "%.4f, %.4f  alt %.0f m, agl %.0f m  (terrain %.0f m)", obsLatDeg, obsLonDeg,
                  eyeAsl, eyeAsl - obsTerrainH, obsTerrainH);
+        r["message"] = buf;
+        return Status::Done;
+    }
+
+    // ── drift ───────────────────────────────────────────────────────────────────
+    // `drift [default] [phase=<rad>] [rate=<rad/s>]`: the cloud map's drift (session state, what a bookmark or snapshot
+    // stores). phase= sets the offset that gives that phase at the CURRENT sim time (set the time first); bare,
+    // it reports the phase and rate. tools/harness/scripts/default_bookmarks.satcmd frames its storms with it.
+    if (n == "drift")
+    {
+        if (c.has("rate"))
+            cloudDriftRate = (float)c.num("rate", (double)cloudDriftRate);
+        if (lower(pos(0)) == "default")
+            cloudDriftPhaseOffset = kCloudDriftPhaseDefault; // the compiled-in offset (a fresh session's map)
+        else if (c.has("phase"))
+        {
+            const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            cloudDriftPhaseOffset = std::fmod(c.num("phase", 0.0) - (double)cloudDriftRate * (t - kCloudDriftEpochS),
+                                              glm::two_pi<double>());
+        }
+        r["cloud_drift_phase"] = cloudDriftPhase();
+        r["cloud_drift_rate"] = cloudDriftRate;
+        char buf[96];
+        snprintf(buf, sizeof(buf), "cloud drift phase %.6f rad, rate %.3g rad/s", cloudDriftPhase(), (double)cloudDriftRate);
         r["message"] = buf;
         return Status::Done;
     }
@@ -1446,7 +1470,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
     if (n == "bookmark" || n == "bookmarks")
     {
-        // bookmark add [name] | go <n> | update <n> | rename <n> <name> | delete <n> | list   (n from 1, as listed)
+        // bookmark add [name] [id=] [scale=] [paused=] | go <n> | update <n> | rename <n> <name> | delete <n> | restore | list
         // The Bookmarks window's actions (SatelliteSimBookmarks.cpp). A thumbnail is captured on a later frame:
         // `wait 3` after add / update before looking at the window.
         if (!bookmarksLoaded_)
@@ -1465,9 +1489,31 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             std::string name;
             for (size_t k = 1; !pos(k).empty(); ++k)
                 name += (name.empty() ? "" : " ") + pos(k);
+            // id= replaces a bookmark with that id (a rerun of the defaults recipe over seeded defaults)
+            if (!c.str("id", "").empty())
+                for (int k = 0; k < (int)bookmarks_.size(); ++k)
+                    if (bookmarks_[k].id == c.str("id", ""))
+                    {
+                        bookmarkDelete(k);
+                        break;
+                    }
             const int i = bookmarkAdd(name);
             if (i < 0)
                 fail("bookmark add: " + bmStatus_);
+            // id= fixes the id (the shipped defaults: tools/harness/scripts/default_bookmarks.satcmd); the
+            // thumbnail request follows it. scale= / paused= store the optional look (the clock a Go sets).
+            const std::string want = c.str("id", "");
+            if (!want.empty())
+            {
+                if (bmPendingThumb_ == bookmarks_[i].id)
+                    bmPendingThumb_ = want;
+                bookmarks_[i].id = want;
+            }
+            if (c.has("scale"))
+                bookmarks_[i].lookTimeScaleIdx = (int)c.num("scale", 0.0);
+            if (c.has("paused"))
+                bookmarks_[i].lookPaused = c.str("paused", "0") != "0" ? 1 : 0;
+            bookmarksSave();
             msg = "added " + std::to_string(i + 1) + ": " + bookmarks_[i].name;
         }
         else if (sub == "go")
@@ -1498,8 +1544,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             bookmarkDelete(i);
             msg = "deleted " + std::to_string(i + 1);
         }
+        else if (sub == "restore")
+        {
+            const int k = bookmarkRestoreDefaults();
+            msg = "restored " + std::to_string(k) + " default bookmarks";
+        }
         else if (!sub.empty() && sub != "list")
-            fail("bookmark: add [name] | go <n> | update <n> | rename <n> <name> | delete <n> | list");
+            fail("bookmark: add [name] [id=] [scale=] [paused=] | go <n> | update <n> | rename <n> <name> | delete <n> | restore | list");
         json list = json::array();
         for (const Bookmark &b : bookmarks_)
             list.push_back({{"name", b.name}, {"id", b.id}, {"when", b.meta[0]}, {"where", b.meta[1]}, {"thumbnail", b.slot >= 0}});

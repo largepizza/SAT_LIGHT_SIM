@@ -3,7 +3,8 @@
 // A bookmark is the observer (its ECEF direction and height), the camera (az / el / fov), the sim time and the
 // cloud map's drift — the drift is session state, so without it a storm bookmark would come back to clear sky
 // (the same reason harness snapshots carry it). Stored in <user data>/bookmarks/bookmarks.json, the thumbnails as
-// <id>.png beside it.
+// <id>.png beside it. The defaults that ship with the sim live in <exe dir>/default_bookmarks (source data/bookmarks,
+// rebuilt by tools/harness/scripts/default_bookmarks.satcmd): they seed a first run and "Restore defaults" re-adds them.
 //
 // The thumbnail is the next CLEAN frame after Add / Update (the screenshot path with the UI left out: the copy is
 // recorded by recordScreenshotCopy, and finalizeScreenshot hands its pixels here instead of writing a screenshot),
@@ -20,6 +21,7 @@
 #include "stb_image_write.h" // the implementation lives in UIRenderer.cpp
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -34,40 +36,111 @@ std::string SatelliteSim::bookmarkDir() const
 }
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
+namespace
+{
+    // One bookmarks.json (the user's or the shipped defaults') into a list. Returns false when the file is not
+    // readable; entries without an id or an observer are skipped.
+    template <class BM>
+    bool readBookmarkFile(const fs::path &file, std::vector<BM> &out, float defaultRate, size_t maxCount)
+    {
+        std::ifstream f(file);
+        if (!f)
+            return false;
+        const nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
+        if (j.is_discarded() || !j.contains("bookmarks") || !j["bookmarks"].is_array())
+            return false;
+        for (const auto &e : j["bookmarks"])
+        {
+            if (out.size() >= maxCount)
+                break;
+            BM b;
+            b.id = e.value("id", std::string());
+            b.name = e.value("name", std::string("Bookmark"));
+            if (b.id.empty() || !e.contains("obs_dir") || !e["obs_dir"].is_array() || e["obs_dir"].size() != 3)
+                continue;
+            b.simT = e.value("sim_t_j2000", 0.0);
+            b.obsDir = glm::normalize(glm::dvec3(e["obs_dir"][0].get<double>(), e["obs_dir"][1].get<double>(), e["obs_dir"][2].get<double>()));
+            b.heightM = e.value("height_m", 0.0f);
+            b.az = e.value("az_deg", 0.0f);
+            b.el = e.value("el_deg", 10.0f);
+            b.fov = e.value("fov_y_deg", 60.0f);
+            b.hasDrift = e.contains("cloud_drift_phase");
+            b.driftPhase = e.value("cloud_drift_phase", 0.0);
+            b.driftRate = e.value("cloud_drift_rate", defaultRate);
+            if (e.contains("look") && e["look"].is_object())
+            {
+                const auto &l = e["look"];
+                b.lookTimeScaleIdx = l.value("time_scale_idx", -1);
+                if (l.contains("paused") && l["paused"].is_boolean())
+                    b.lookPaused = l["paused"].get<bool>() ? 1 : 0;
+            }
+            out.push_back(std::move(b));
+        }
+        return true;
+    }
+
+    // Copy a default bookmark's thumbnail into the user's folder (never over one the user already has).
+    void copyDefaultThumb(const std::string &id, const char *defaultsDir, const std::string &userDir)
+    {
+        std::error_code ec;
+        const fs::path src = fs::path(defaultsDir) / (id + ".png");
+        const fs::path dst = fs::path(userDir) / (id + ".png");
+        if (fs::exists(src, ec) && !fs::exists(dst, ec))
+        {
+            fs::create_directories(userDir, ec);
+            fs::copy_file(src, dst, ec);
+        }
+    }
+}
+
 void SatelliteSim::bookmarksLoad()
 {
     bookmarksLoaded_ = true;
     bookmarks_.clear();
-    std::ifstream f(fs::path(bookmarkDir()) / "bookmarks.json");
-    if (!f)
-        return;
-    const nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
-    if (j.is_discarded() || !j.contains("bookmarks") || !j["bookmarks"].is_array())
+    const fs::path file = fs::path(bookmarkDir()) / "bookmarks.json";
+    std::error_code ec;
+    if (!fs::exists(file, ec))
     {
-        Log::line("bookmarks: bookmarks.json is not readable; starting empty");
+        // First run (no list yet, not even an empty one): start from the shipped defaults. A user who deletes
+        // every bookmark keeps an empty bookmarks.json, so this never re-seeds behind their back.
+        const int n = bookmarkRestoreDefaults();
+        if (n > 0)
+            Log::line("bookmarks: seeded " + std::to_string(n) + " default bookmarks");
         return;
     }
-    for (const auto &e : j["bookmarks"])
+    if (!readBookmarkFile(file, bookmarks_, cloudDriftRate, (size_t)kBmMax))
+    {
+        Log::line("bookmarks: bookmarks.json is not readable; starting empty");
+        bookmarks_.clear();
+        return;
+    }
+    for (Bookmark &b : bookmarks_)
+        bookmarkFormatMeta(b);
+}
+
+int SatelliteSim::bookmarkRestoreDefaults()
+{
+    std::vector<Bookmark> defs;
+    if (!readBookmarkFile(fs::path(kBmDefaultsDir) / "bookmarks.json", defs, cloudDriftRate, (size_t)kBmMax))
+    {
+        Log::line(std::string("bookmarks: no default bookmarks (") + kBmDefaultsDir + "/bookmarks.json)");
+        return 0;
+    }
+    int added = 0;
+    for (Bookmark &d : defs)
     {
         if ((int)bookmarks_.size() >= kBmMax)
             break;
-        Bookmark b;
-        b.id = e.value("id", std::string());
-        b.name = e.value("name", std::string("Bookmark"));
-        if (b.id.empty() || !e.contains("obs_dir") || !e["obs_dir"].is_array() || e["obs_dir"].size() != 3)
+        if (std::any_of(bookmarks_.begin(), bookmarks_.end(), [&](const Bookmark &o) { return o.id == d.id; }))
             continue;
-        b.simT = e.value("sim_t_j2000", 0.0);
-        b.obsDir = glm::normalize(glm::dvec3(e["obs_dir"][0].get<double>(), e["obs_dir"][1].get<double>(), e["obs_dir"][2].get<double>()));
-        b.heightM = e.value("height_m", 0.0f);
-        b.az = e.value("az_deg", 0.0f);
-        b.el = e.value("el_deg", 10.0f);
-        b.fov = e.value("fov_y_deg", 60.0f);
-        b.hasDrift = e.contains("cloud_drift_phase");
-        b.driftPhase = e.value("cloud_drift_phase", 0.0);
-        b.driftRate = e.value("cloud_drift_rate", cloudDriftRate);
-        bookmarkFormatMeta(b);
-        bookmarks_.push_back(std::move(b));
+        copyDefaultThumb(d.id, kBmDefaultsDir, bookmarkDir());
+        bookmarkFormatMeta(d);
+        bookmarks_.push_back(std::move(d));
+        ++added;
     }
+    if (added > 0)
+        bookmarksSave();
+    return added;
 }
 
 void SatelliteSim::bookmarksSave()
@@ -87,6 +160,15 @@ void SatelliteSim::bookmarksSave()
         {
             e["cloud_drift_phase"] = b.driftPhase;
             e["cloud_drift_rate"] = b.driftRate;
+        }
+        if (b.lookTimeScaleIdx >= 0 || b.lookPaused >= 0)
+        {
+            nlohmann::json l = nlohmann::json::object();
+            if (b.lookTimeScaleIdx >= 0)
+                l["time_scale_idx"] = b.lookTimeScaleIdx;
+            if (b.lookPaused >= 0)
+                l["paused"] = b.lookPaused == 1;
+            e["look"] = l;
         }
         arr.push_back(e);
     }
@@ -210,6 +292,14 @@ void SatelliteSim::bookmarkGo(int i)
         cloudDriftRate = b.driftRate;
         cloudDriftPhaseOffset = std::fmod(b.driftPhase - (double)cloudDriftRate * (b.simT - kCloudDriftEpochS), glm::two_pi<double>());
     }
+    // The optional look (the shipped event bookmarks): the clock, forward.
+    if (b.lookTimeScaleIdx >= 0)
+    {
+        timeScaleIdx = std::clamp(b.lookTimeScaleIdx, 0, (int)(sizeof(kTimeScales) / sizeof(kTimeScales[0])) - 1);
+        timeDir = 1.0f;
+    }
+    if (b.lookPaused >= 0)
+        timePaused = b.lookPaused == 1;
     obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
     updatePositions(b.simT, 0.0f);
     trailClearPending = true;
@@ -399,6 +489,13 @@ void SatelliteSim::bookmarkTick(UIRenderer &ui)
         bookmarkDelete(bmDeletePending_);
         bmDeletePending_ = -1;
     }
+    if (bmRestorePending_)
+    {
+        bmRestorePending_ = false;
+        const int n = bookmarkRestoreDefaults();
+        bmStatus_ = n > 0 ? "Restored " + std::to_string(n) + (n == 1 ? " default bookmark" : " default bookmarks")
+                          : std::string("Every default bookmark is already in the list");
+    }
     if (bmAddPending_)
     {
         bmAddPending_ = false;
@@ -491,7 +588,7 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
         CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}), CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs((int)size), .wrapMode = CLAY_TEXT_WRAP_NONE}));
     };
     int goIdx = -1, updIdx = -1, delIdx = -1, renamed = -1;
-    bool add = false;
+    bool add = false, restore = false;
     static char titleBuf[48];
     snprintf(titleBuf, sizeof(titleBuf), "Bookmarks (%d)", (int)bookmarks_.size());
 
@@ -519,6 +616,10 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                     if (uiButton(inp, ui, "BmAdd", 0, "Add current view", "Save this place, camera and moment, with a thumbnail",
                                  false, (int)bookmarks_.size() < kBmMax))
                         add = true;
+                    if (uiButton(inp, ui, "BmRestore", 0, "Restore defaults",
+                                 "Add back any of the bookmarks that ship with the sim (your own are kept)", false,
+                                 (int)bookmarks_.size() < kBmMax))
+                        restore = true;
                 }
                 if (!bmStatus_.empty())
                     text(bmStatus_.c_str(), {230, 190, 120, 255}, 11);
@@ -636,4 +737,6 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
         bookmarkUpdate(updIdx);
     if (add)
         bmAddPending_ = true;
+    if (restore)
+        bmRestorePending_ = true;
 }
