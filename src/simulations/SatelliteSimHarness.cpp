@@ -465,6 +465,18 @@ json SatelliteSim::harnessStateJson()
                 sel["mesh"] = m;
             }
         }
+        // The main view's mesh glints (glare_find.comp's list, last frame's copy): where each mesh glare is drawn,
+        // in px, with its light (effectFlare). The release cinematic's mirror shot checks the glare against
+        // sprite_px (the Sun's image) above (tools/harness/glare_track.py).
+        if (ctx_ && glintReadValid && glintReadMapped)
+        {
+            const float W = (float)ctx_->swapExtent.width, H = (float)ctx_->swapExtent.height;
+            const GpuGlintList &gl = *static_cast<const GpuGlintList *>(glintReadMapped);
+            json arr = json::array();
+            for (uint32_t i = 0; i < std::min(gl.count, kMaxGlints); ++i)
+                arr.push_back({{"px", {gl.pos[i].x * W, gl.pos[i].y * H}}, {"flare", gl.pos[i].z}});
+            sel["glints"] = arr;
+        }
     }
     if (selectedPlanetIndex >= 0)
         sel["planet"] = kPlanetNames[selectedPlanetIndex];
