@@ -47,6 +47,7 @@ perf frames=90 name=planetarium_storm
 capture planetarium_storm
 lightning
 state planetarium_storm
+set clouds_v2.coverage 0.84
 observer lat=46.55 lon=7.98 agl=50
 time sun 35 rising
 camera az=200 el=5 fov=60
@@ -93,6 +94,7 @@ wait settle
 wait 30
 perf frames=90 name=low_storm
 capture low_storm
+set clouds_v2.coverage 0.84
 lightning
 
 # ── Back to Potato from a full tier: no stale clouds, bolts or rain may survive the switch ──

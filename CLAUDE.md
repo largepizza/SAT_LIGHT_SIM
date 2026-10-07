@@ -4247,7 +4247,9 @@ The build enforces it: `cmake/CheckSpvSize.cmake` runs after both compiles and f
 (225 KB) / `SKY_MINIMAL_MAX_BYTES` (46 KB) in CMakeLists.txt — ~10% over the trimmed 199 / 41 KB (glslc versions
 differ by a few percent). Raise a budget only with a measurement on the target hardware.
 `tools/harness/scripts/low_tiers.satcmd` is the check: Potato / Planetarium / Low at a day, night-city, orbit and
-storm view, perf + captures, and run once with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`.
+storm view, perf + captures, and run once with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`. First run
+(RTX 3070 Ti, 1600x900, GPU frame): Potato 0.8-1.0 ms, Planetarium 1.4-3.0 ms, Low 4.8-6.7 ms (coverage forced
+1.6 in its views); no validation errors (3 pre-existing `ShaderOutputNotConsumed` warnings at pipeline creation).
 
 **The CPU side of the tiers (2026-10-06).** Knockout 32768 (both tiers set it) switches off ALL of clouds v2
 host-side: `recordCloudsV2` records only the weather evolution (the flat decks read the cube) — no march,
