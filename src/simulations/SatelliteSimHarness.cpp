@@ -1394,6 +1394,23 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 updateFollow(0.0f);
             }
         }
+        else if (c.has("aimat"))
+        {
+            // aimat=<along>,<cross>,<radial>: look at that point of the satellite's frame (m from the satellite),
+            // e.g. a formation's centroid from `cluster`.
+            double x, y, z;
+            if (sscanf(c.str("aimat").c_str(), "%lf,%lf,%lf", &x, &y, &z) != 3)
+                fail("follow: aimat=<along>,<cross>,<radial> in metres");
+            updateFollow(0.0f);
+            const glm::dvec3 tgt = followLastP + x * followBasisT + y * followBasisN + z * followBasisR;
+            const glm::dvec3 d = glm::normalize(tgt - followObsEcef);
+            const glm::dvec3 up = glm::dvec3(obsDir);
+            const glm::dvec3 h = d - glm::dot(d, up) * up;
+            if (glm::length(h) > 1e-9)
+                obsFacing = glm::vec3(glm::normalize(h));
+            camera.elDeg = std::clamp((float)glm::degrees(std::asin(std::clamp(glm::dot(d, up), -1.0, 1.0))), -89.0f, 89.0f);
+            updateFollow(0.0f);
+        }
         else if (c.has("aim") && lower(c.str("aim")) == "sat")
         {
             followAimLock = true; // look at the satellite once, then free (the view holds in its frame)
@@ -1422,6 +1439,40 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     // `minel` at some step in the next `window` seconds of sim time, for the ground observer; returns the
     // `top` brightest peaks (refined to 0.1 s) with time, magnitude after extinction, az/el, phase and the
     // dominant lobe. Model types only. For finding a satellite flare to frame.
+    // `cluster [sat=<i>]`: the formation cluster of a satellite (default: the selection) at the current sim time —
+    // each member's offset from the given satellite in its along-track / cross-track / radial frame (m, CPU double)
+    // and their centroid. For framing follow shots on a formation's centre (the release cinematic).
+    if (n == "cluster")
+    {
+        const int idx = c.has("sat") ? (int)c.num("sat", -1) : selectedSatIndex;
+        if (idx < 0 || idx >= (int)satOrbits.size())
+            fail("cluster: select a satellite first (or sat=<i>)");
+        const ConstellationConfig &cc = constellations[satOrbits[idx].constIdx];
+        const int C = std::max(1, cc.clusterSize);
+        const int first = (int)cc.orbitStart + ((idx - (int)cc.orbitStart) / C) * C;
+        const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const SatOrbitState s0 = satOrbitStateAt(orbitElemsOf(satOrbits[idx]), tNow);
+        const glm::dvec3 Rh = glm::normalize(s0.posEci);
+        const glm::dvec3 Nh = glm::normalize(glm::cross(Rh, s0.velocity));
+        const glm::dvec3 Th = glm::cross(Nh, Rh);
+        json mem = json::array();
+        glm::dvec3 sum(0.0);
+        int cnt = 0;
+        for (int k = first; k < first + C && k < (int)cc.orbitStart + (int)cc.orbitCount; ++k)
+        {
+            const glm::dvec3 d = satOrbitStateAt(orbitElemsOf(satOrbits[k]), tNow).posEci - s0.posEci;
+            const glm::dvec3 o(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
+            mem.push_back({{"sat", k}, {"offset_m", {o.x, o.y, o.z}}});
+            sum += o;
+            ++cnt;
+        }
+        const glm::dvec3 cen = sum / (double)std::max(1, cnt);
+        r["members"] = mem;
+        r["centroid_m"] = {cen.x, cen.y, cen.z};
+        r["first"] = first;
+        r["message"] = "cluster of " + std::to_string(cnt) + " from sat " + std::to_string(first);
+        return Status::Done;
+    }
     if (n == "flares")
     {
         int ci = -1;

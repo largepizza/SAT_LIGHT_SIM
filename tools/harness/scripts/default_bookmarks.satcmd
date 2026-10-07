@@ -70,13 +70,14 @@ wait 5
 drift default
 
 # 6. Inside the Starmind shells beside an 8-satellite formation ring (follow mode; the bookmark keeps the camera's
-#    place, paused so the ring is still there).
+#    place, paused so the ring is still there). Since the Clohessy-Wiltshire formations (350 m rings tilted 60 deg,
+#    2026-10-06) the camera sits 1.1 km from the ring's centroid along its normal, below it, looking up at the
+#    whole ring against the stars (`cluster` gives the centroid: 269, 194, 112 m from member 0 at this time).
 time set 2037-03-20T00:00:00Z
 observer lat=35 lon=-100 agl=2
 select const "SpaceX Starmind - sun-synchronous X-ring" n=0
-follow offset=200,900,0
-camera look sel
-camera fov=60
+follow offset=484.8,732.8,-822.2 aimat=269.2,193.8,111.8
+camera fov=48
 wait settle
 wait 20
 bookmark add Starmind Formation Rings id=default_starmind_rings scale=0 paused=1
