@@ -18,6 +18,7 @@ layout(location = 0) in vec3  fragColor;
 layout(location = 1) in float fragIntensity;
 layout(location = 2) in float fragAngSize;
 layout(location = 3) in float fragRangeM;
+layout(location = 4) flat in float fragManualDepth; // a city light: manual depth test always (sat_point.vert)
 
 layout(location = 0) out vec4 outColor;
 
@@ -98,7 +99,7 @@ void main() {
     // it is nearer than the satellite's own range. (Until Phase 4 both used a 150 km cap instead,
     // so that from orbit the distant Earth did not swallow the satellites in front of it.)
     float terrainVis = 1.0;
-    if (pc.manualTerrainTest >= 0.5) {
+    if (pc.manualTerrainTest >= 0.5 || fragManualDepth > 0.5) {
         vec2 depthUV = gl_FragCoord.xy / pc.screenSizePx;
         terrainVis = (texture(sceneDepthTex, depthUV).r < fragRangeM) ? 0.0 : 1.0;
     }

@@ -84,6 +84,7 @@ void main() {
     float yMax = 0.0;
     float seaA = 1.0;                  // sat_sky.frag's sea marker: 1 not sea, else 0.5 x (1 - storm trail share)
     vec3 m1 = vec3(0.0), m2 = vec3(0.0);
+    float dLo3 = 1.0, dHi3 = 0.0;      // this frame's 3x3 depth range (the still-view disocclusion test)
     if (!up) {
         vec4 c4 = texelFetch(curColor, p, 0);
         cur  = fin(c4.rgb);
@@ -94,6 +95,8 @@ void main() {
             ivec2 q = clamp(p + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), sz - 1);
             vec3  y = toYCoCg(fin(texelFetch(curColor, q, 0).rgb));
             m1 += y; m2 += y * y; yMax = max(yMax, y.x);
+            float dq = texelFetch(curDepth, q, 0).r;
+            dLo3 = min(dLo3, dq); dHi3 = max(dHi3, dq);
         }
     } else {
         vec2  k2o = size / vec2(isz);                         // output px per input px
@@ -110,6 +113,8 @@ void main() {
             acc += cq * w; ws += w; wMax = max(wMax, w);
             vec3  y = toYCoCg(cq);
             m1 += y; m2 += y * y; yMax = max(yMax, y.x);
+            float dq = texelFetch(curDepth, q, 0).r;
+            dLo3 = min(dLo3, dq); dHi3 = max(dHi3, dq);
         }
         cur  = acc / max(ws, 1e-6);
         conf = wMax;
@@ -147,6 +152,15 @@ void main() {
             vec4  dH  = textureGather(histDepth, uvP, 0);
             float dE  = sky ? 1.0 : depthFromDistance(length(P));
             float lo4 = min(min(dH.x, dH.y), min(dH.z, dH.w)), hi4 = max(max(dH.x, dH.y), max(dH.z, dH.w));
+            // Nothing moved this frame (eyeDelta.w >= 2): no surface can have been uncovered, and the 2x2 of LAST
+            // frame's jittered depths need not hold the depth THIS phase's sample hit. A pixel on a crest seen at a
+            // low angle (a ridge in front of a far city) hits the ridge in some of the 16 phases and the city in
+            // others; the test rejected the history on every switch, so the pixel showed its raw samples,
+            // alternating ~240 / ~37 levels frame to frame — the "z-fighting" of far city lights at low angles
+            // (user report, 2026-10-06; Irvine horizon r35: the worst pixels' series). Still, the range also takes
+            // this frame's 3x3 depths, which hold both surfaces of an edge. ONLY when still: widening it by the 3x3
+            // spread in motion (2026-10-04) let history ghost through cloud edges while climbing.
+            if (pc.eyeDelta.w > 1.5) { lo4 = min(lo4, dLo3); hi4 = max(hi4, dHi3); }
             if (dE < lo4 - 0.004 || dE > hi4 + 0.004) ok = false;
         }
         if (ok) {

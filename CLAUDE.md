@@ -4123,7 +4123,7 @@ aliased because the sky pass shades one ray per pixel. At renderScale 1 with the
     degrees (`uvTaa0` / `taaDn`, gated on |cos| > 0.2 of the unjittered ray): the night map, the terrain contour, the
     land test and the pattern's point. Glitter points are at least an input pixel wide under the upscale, the
     glitter's presence ramps over a band of the hash, the steep-ground cut fades past a 400-1200 m footprint, `cFoot`
-    takes the sphere's slope past ~100-400 m; city sprites take their hardware depth at 0.95 of their range.
+    takes the sphere's slope past ~100-400 m; city sprites are tested at 0.95 of their range (since 2026-10-06 against the unjittered half-res scene depth, below).
   - **Tried and REVERTED, each made rendering less stable** (the user: "over-optimizing the bugfix ... made rendering
     a lot more unstable"; trails climbing over clouds): (1) the unjitter at every view angle — the tangent-plane point
     slides kilometres toward a grazing horizon (Irvine 2.3% -> 4.6%); (2) a PER-PIXEL "still" (reprojection < 0.1 px)
@@ -4132,6 +4132,19 @@ aliased because the sky pass shades one ray per pixel. At renderScale 1 with the
     longer agreed); (3) the flash rule against the history's neighbourhood; (4) restoring the 3x3 farthest depth with
     a wider disocclusion tolerance; (5) the disocclusion tolerance widened by the 3x3 depth spread; (6) the
     footprint's |cos| floor 0.2 -> 0.03. Most of these measured well on the still views alone.
+  - **2026-10-06 (user: "z-fighting-like flicker at low angles, far away"):** the r35 view's worst pixels alternated
+    ~240 / ~37 levels frame to frame on the 16-phase jitter cycle. Two causes, both at crests seen at a low angle (a
+    ridge in front of the far city): (a) **city sprites against the restored depth** — it is this frame's JITTERED
+    sample, so a light just behind a crest was hidden or drawn whole by turns. City sprites now take depth 0 (points
+    write none) and are tested in `sat_point.frag` against the UNJITTERED half-res `sceneDepthImg` at 0.95 of their
+    range (`fragManualDepth`), the renderScale < 1 path's test. Dilating the restored depth (3x3 nearest) only moved
+    the flicker one pixel over; a grazing-dependent depth margin (up to half the range) changed nothing on r35 and
+    worsened the Edmonton boost-climb 0.73 -> 1.11 — both dropped. (b) **the resolve's disocclusion test when STILL**:
+    last frame's 2x2 jittered depths need not hold this phase's depth at an edge, so the history was rejected on
+    every switch. When nothing moved (`eyeDelta.w` >= 2) the accepted range also takes this frame's 3x3 depths —
+    item (5) above, but ONLY when still, so climbing is untouched (p37 1.65 / e38 rise 1.08, boost 0.68). Still
+    flicker r35 0.57 -> 0.31% (worst pixel std 103 -> 34), others unchanged; time-averaged image |diff| 0.13/255.
+    What is left on r35 is the EMA sawtooth of glitter points caught by one jitter phase in 16.
   Debugging notes: print the worst pixels' value series (lit in 1 of 8 or 16 frames = the jitter; any other period is
   something else) and A/B with the history off (`set display.sky_taa_weight 1`); `Copy-Item` keeps a file's old
   timestamp, so restoring a shader from a backup does NOT rebuild it (touch it) — identical-to-the-digit results

@@ -37,6 +37,7 @@ layout(location = 0) out vec3  fragColor;
 layout(location = 1) out float fragIntensity;
 layout(location = 2) out float fragAngSize;  // sprite size in pixels, for abs-pixel glow
 layout(location = 3) out float fragRangeM;   // for the manual scene-depth test (trails, renderScale<1)
+layout(location = 4) flat out float fragManualDepth; // 1: a city light, tested in the fragment shader only
 
 void main() {
     SatVisible sat = satellites[gl_VertexIndex];
@@ -55,6 +56,7 @@ void main() {
         fragIntensity = 0.0;
         fragAngSize   = 0.001;
         fragRangeM    = 0.0;
+        fragManualDepth = 0.0;
         return;
     }
 
@@ -66,6 +68,7 @@ void main() {
         fragIntensity = 0.0;
         fragAngSize   = 0.001;
         fragRangeM    = 0.0;
+        fragManualDepth = 0.0;
         return;
     }
 
@@ -83,7 +86,16 @@ void main() {
     // the manual test below does. With the sky TAA the restored ground depth is the jittered sample's, and at
     // grazing angles a sub-pixel jitter moves it by ~0.5-2% of the distance: the lights z-fought it, blinking
     // from frame to frame (user snapshots 1-2, 2026-10-04).
-    gl_Position  = vec4(ndcX, ndcY, sceneDepthFromDistance(sat.meshPx < -0.5 ? 0.95 * sat.rangeM : sat.rangeM), 1.0);
+    // 2026-10-06: a city light is NOT tested against the hardware depth at all. Under the sky TAA that depth is
+    // restored from this frame's JITTERED sample, and at a crest seen at a low angle (a ridge in front of a far
+    // city) a pixel's sample hit the ridge in some of the 16 jitter phases and the ground beyond in others: a
+    // light just behind the crest was hidden or drawn whole by turns, ~240 vs ~37 levels every frame (the r35
+    // Irvine horizon's worst pixels were all sprites; dilating the restored depth only moved them). It takes
+    // depth 0 (always passes; points write no depth) and the fragment shader tests it against the unjittered
+    // half-res scene depth instead, as the renderScale < 1 path always did.
+    const bool cityLight = sat.meshPx < -0.5;
+    gl_Position  = vec4(ndcX, ndcY, cityLight ? 0.0 : sceneDepthFromDistance(sat.rangeM), 1.0);
+    fragManualDepth = cityLight ? 1.0 : 0.0;
     gl_PointSize = sat.angularSize;  // sized by compute shader already
 
     fragColor     = unpackUnorm4x8(sat.color).rgb;
