@@ -1,6 +1,6 @@
 // eclipse.glsl — the Moon's shadow in a solar eclipse, per point (2026-10-03).
 // Needs cloud_params.glsl first (cloud.moonCenter: the Moon's centre, Earth-centred in the observer's ENU, km;
-// cloud.moonMisc.y: 1 = an eclipse is possible this frame; cloud.taaJitter.w: the Sun's true angular radius).
+// cloud.moonMisc.y: > 0.5 = an eclipse is possible this frame (1 + the observer's eclipse sky light); cloud.taaJitter.w: the Sun's true angular radius).
 //
 // Every sunlit term gates its call on cloud.moonMisc.y > 0.5 (uniform), so outside an eclipse this costs a branch.
 // Shared by sat_sky.frag (ground, air, sky light), cloud_v2_march.comp and cloud_v2_far.comp (clouds), so the shadow

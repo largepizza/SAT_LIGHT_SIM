@@ -2589,6 +2589,9 @@ private:
     glm::vec3 obsFacing = {1, 0, 0};                  // unit tangent (forward direction, north)
     float obsLatDeg = -67.0f;                         // display cache — derived from obsDir
     float obsLonDeg = -67.0f;                         // display cache — derived from obsDir
+    bool cloudMarchTargetsClear = false;              // cloudMarchTargetA/B hold "no cloud" (Potato skips cloud_march.comp)
+    bool satFlareIdleCleared = false;                 // glowBuf/oceanGlintBuf emptied while no satellite is active
+    bool sceneDepthHoldsNoSurface = true;             // sceneDepthImg/QImg hold kNoSurfaceT (created so; knockout 1024)
     float obsTerrainH = 0.0f;                         // terrain elevation at observer lat/lon (m)
     float obsHeightOffset = 0.0f;                     // user-controlled height above terrain (m, Q/E/Z)
     // The eye's distance from the Earth's centre, as the shaders place it: max(ground, height offset)
@@ -2727,6 +2730,9 @@ private:
     uint32_t debugDisableMask = 0;
     static constexpr uint32_t kDebugBitSatOcclusion = 1048576u;
     static constexpr uint32_t kDebugBitMeshes = 2097152u; // Phase 4c: no satellite meshes in the scene
+    // No meshes, env probes or sharp reflections: the knockout, Potato (262144) and Planetarium / SKY_LITE (524288,
+    // whose sky shader has the mesh composite compiled out).
+    static constexpr uint32_t kNoMeshBits = kDebugBitMeshes | 262144u | 524288u;
     // Occlusion between satellite parts is OFF by default (Photometry tab "Satellite part
     // occlusion", persisted as photometry.sat_part_occlusion): it costs ~10x the orbit dispatch at
     // 10M satellites for a subtle effect, so no preset or first run turns it on. The knockout bit
@@ -3297,8 +3303,17 @@ private:
     float cv2FarLowSun = 0.38f;   // slot 255: the far layer's key light goes as mu0^(1 / (1 + this)) (0 = a flat slab)
     float cv2FarKeyGain = 4.1f, cv2FarSkyGain = 0.6f;   // review 24b: the user's tuning (was 10 / 0.3)   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 8900.0f;   // review 24b: the user's tuning (was 1500)
+    // The volumetric clouds are off (knockout 32768: Planetarium, Potato, or the Performance tab). Then nothing of
+    // clouds v2 runs on the GPU — march, resolve, far layer, lightning, rain map — and every host consumer of
+    // their outputs (lightning bolts, rain particles, thunder, the rain ambience, the Sun's cloud transmittance)
+    // treats them as absent rather than reading the last frame they were written.
+    bool cloudsV2Off() const { return (debugDisableMask & 32768u) != 0u; }
+    // The lightning pass (and so the rain map, the flash list and the Sun profile in cv2FlashBuf) runs this frame.
+    bool cloudsV2LightningActive() const { return !cloudsV2Off() && cloudFarBlend() < 0.999f; }
     float cloudFarBlend() const
     {
+        if (cloudsV2Off())
+            return 0.0f;   // the far layer is clouds too: off with them
         const double h = (double)obsEyeRadiusM() - satphot::kEarthRadiusM;
         const double a = (double)cv2FarLayerFromKm * 1000.0, b = std::max((double)cv2FarLayerFullKm * 1000.0, a + 1000.0);
         const double x = std::clamp((h - a) / (b - a), 0.0, 1.0);
@@ -4290,9 +4305,10 @@ private:
     // ── NEW-3: crash-safe mode ──────────────────────────────────────────────
     // A sentinel file is created at the top of init() and deleted at the bottom of cleanup()
     // (the clean-exit path). If it's already present at the NEXT launch, the previous run never
-    // reached cleanup() — crash, hang + force-kill, power loss — so this run forces the
-    // Planetarium preset and shows a one-line notice, converting "launch -> crash -> uninstall"
+    // reached cleanup() — crash, hang + force-kill, power loss — so this run steps the preset down one
+    // tier (crashRecoveryPreset: full -> Planetarium -> Potato) and shows a one-line notice, converting "launch -> crash -> uninstall"
     // into a recoverable outcome. See applySettings-adjacent logic in init()/cleanup().
+    char crashNoticeBuf[192] = {};          // its text (Clay keeps the pointer until record)
     float crashRecoveryNoticeTimer = 0.0f; // seconds remaining to show the notice banner; see buildCrashRecoveryNotice
     bool crashRecoveryMode = false;        // mirrors the crashDetected local in init(); read by finishIntro()
                                            // so a crash-recovery launch never runs the UC1 benchmark promote/
@@ -5220,10 +5236,15 @@ private:
     // (no-op data-wise for Custom — see GraphicsPreset comment). Recreates the render-scale
     // offscreen target since presets can change renderScale.
     void applyGraphicsPreset(GraphicsPreset p);
-    // UC1 first-run seed: VkPhysicalDeviceProperties::deviceType -> Low (integrated/CPU/virtual)
-    // or Medium (discrete). Coarse on purpose — see RELEASE_v1_1_PLAN.md UC1, "do not build a
-    // GPU-name lookup table." Only called once, from init(), when no persisted preset exists.
+    // The tier a device should start on: Potato for MoltenVK on non-Apple GPUs (the 2015 MacBook Pro's GCN 1.0),
+    // Planetarium for integrated / CPU / virtual GPUs and discrete ones with <= 2 GB of VRAM, else Medium.
+    // Static and needs no SatelliteSim, so the startup graphics chooser can pre-select it before init; `why`
+    // gets a one-line reason with the device's name, type and memory.
+    static GraphicsPreset recommendedPresetForDevice(VkPhysicalDevice pd, std::string *why = nullptr);
+    // UC1 first-run seed: recommendedPresetForDevice, logged. Only called when no persisted preset exists.
     GraphicsPreset seedGraphicsPresetFromDevice(VulkanContext &ctx) const;
+    // Crash recovery steps the tier DOWN one: a full tier (Low .. Ultra, Custom) -> Planetarium -> Potato.
+    static GraphicsPreset crashRecoveryPreset(GraphicsPreset current);
     void savePerfSnapshot(float cpuDt);                // appends one profiling record to perf_profiles/profile_log.jsonl
     nlohmann::json buildPerfSnapshotJson(float cpuDt); // the shared body of the above and of the sweep record
     void appendPerfRecord(const nlohmann::json &j);    // one JSONL line into perf_profiles/profile_log.jsonl

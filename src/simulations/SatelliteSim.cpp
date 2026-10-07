@@ -625,10 +625,11 @@ void SatelliteSim::init(VulkanContext &ctx)
     if (crashDetected)
     {
         crashRecoveryMode = true;
-        applyGraphicsPreset(GraphicsPreset::Planetarium);
+        const GraphicsPreset from = graphicsPreset, to = crashRecoveryPreset(graphicsPreset);
+        applyGraphicsPreset(to);
         crashRecoveryNoticeTimer = 8.0f;
-        fprintf(stderr, "[SatelliteSim] Previous session did not exit cleanly — forcing "
-                        "Planetarium preset.\n");
+        Log::line(std::string("graphics: previous session did not exit cleanly: preset ") +
+                  kGraphicsPresetNames[(int)from] + " -> " + kGraphicsPresetNames[(int)to]);
     }
 
     harnessInit(); // docs/HARNESS.md — no-op unless launched with harness flags
@@ -2465,7 +2466,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // word 3), eased over ~0.15 s. 1 when the march is not running (the far layer at full blend).
         {
             float target = 1.0f;
-            if (cv2FlashMapped && cloudFarBlend() < 0.999f && (debugDisableMask & 32768u) == 0u)
+            if (cv2FlashMapped && cloudsV2LightningActive())
             {
                 float v;
                 std::memcpy(&v, (const char *)cv2FlashMapped + 12, 4);
@@ -2570,7 +2571,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         cp.auroraSheets = glm::vec4(auroraSheetGain, auroraSheetSpacingDeg, auroraSheetCrisp, auroraSheetFold);
         cp.moonCenter = glm::vec4(moonCenterENUkm, moonAngR);
-        cp.moonMisc = glm::vec4(moonEclipseSolarObs, moonEclipseSolarPossible ? 1.0f : 0.0f,
+        // y: 0 = no solar eclipse possible, else 1 + the observer's eclipse sky light (0..1), which sat_sky.frag's
+        // exposure applies exactly as skyExposure() does (every `y > 0.5` test still reads it as the flag).
+        cp.moonMisc = glm::vec4(moonEclipseSolarObs,
+                                moonEclipseSolarPossible ? 1.0f + std::clamp(moonEclipseSkyObs, 0.0f, 1.0f) : 0.0f,
                                 moonEclipseLunarPossible ? 1.0f : 0.0f, (float)(moonDistM * 1e-3));
         {
             // Sky TAA jitter: Halton (2, 3), 8 samples, in pixels about the centre. Only the -DSKY_TAA
@@ -2810,6 +2814,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // shader early-return; the dispatch + barriers still ran every frame.)
     if ((debugDisableMask & 1024u) == 0u)
     {
+        sceneDepthHoldsNoSurface = false;
         SceneDepthPC dpc{};
         dpc.skyView = camera.viewMatrix();
         dpc.fovYRad = glm::radians(camera.fovYDeg);
@@ -2898,6 +2903,49 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         recordTerrainProbe(cmd, ctx); // harness `probe`: no-op unless requested this frame
     }
+    else
+    {
+        // Switched off at runtime: the images still hold the last real frame's depth. Clear them once to
+        // "no surface" (what the knockout promises), not every frame.
+        if (!sceneDepthHoldsNoSurface)
+        {
+            VkClearColorValue noSurface{};
+            noSurface.float32[0] = noSurface.float32[1] = noSurface.float32[2] = noSurface.float32[3] = 1e30f;
+            const VkImageSubresourceRange full{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            for (VkImage img : {sceneDepthImg, sceneDepthQImg})
+            {
+                ctx.imageBarrier(cmd, img, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT);
+                vkCmdClearColorImage(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &noSurface, 1, &full);
+                ctx.imageBarrier(cmd, img, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+            }
+            sceneDepthHoldsNoSurface = true;
+        }
+    }
+    if ((debugDisableMask & 1024u) != 0u && (debugDisableMask & 262144u) == 0u)
+    {
+        // The depth pass is skipped, so nothing writes terrainFrameBuf: give its GPU readers (the city sprites,
+        // the clouds' far layer and lightning pass) the CPU's DEM ground instead of a stale or never-written
+        // value. Not under Potato, where none of them runs (and every barrier restarts the encoder on MoltenVK).
+        const float tf[4] = {std::max(obsTerrainH, obsHeightOffset), obsTerrainH, 0.0f, 0.0f};
+        vkCmdUpdateBuffer(cmd, terrainFrameBuf, 0, sizeof(tf), tf);
+        VkBufferMemoryBarrier fb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        fb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        fb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        fb.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        fb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        fb.buffer = terrainFrameBuf;
+        fb.offset = 0;
+        fb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                             nullptr, 1, &fb, 0, nullptr);
+    }
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
 
     // Zero reflectBeamsBuf so this frame's orbit dispatch starts with an empty sector
@@ -2956,7 +3004,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         hdr.occlusionOn = satOcclusionActive() ? 1u : 0u;
         hdr.deltaTLo = orbitDeltaTLo;
         // Phase 4d mesh candidates: pixel angle, or 0 when meshes are off (knockout / Potato sky).
-        hdr.meshPixelAngle = (debugDisableMask & (kDebugBitMeshes | 262144u)) != 0u || !meshRendererInit
+        hdr.meshPixelAngle = (debugDisableMask & kNoMeshBits) != 0u || !meshRendererInit
                                  ? 0.0f
                                  : 2.0f * tanf(glm::radians(camera.fovYDeg) * 0.5f) /
                                        (float)std::max(1u, ctx.swapExtent.height);
@@ -3120,8 +3168,44 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // ── Dispatch: cloud_march.comp — half-resolution cloud/cirrus march (C15-perf) ──────────
     // Runs at half ctx.swapExtent, writing cloudMarchTargetA/B; sat_sky.frag samples them
     // (skyDescSet bindings 10/11) in place of the old inline cirrusMarch()/cloudMarch() calls.
-    if (!dbgEnv("SATLIGHTSIM_SKIP_CLOUDMARCH"))
+    // Potato: sat_sky_minimal.frag does not read the composite, and every layer cloud_march.comp would draw is
+    // knocked out (clouds, cirrus, aurora, airglow, beams, cloud shadow). Skip it and its four layout barriers;
+    // the point passes still read the targets (cloud occlusion), so they are cleared ONCE to "no cloud".
+    const bool potatoSky = (debugDisableMask & 262144u) != 0u;
+    if (potatoSky)
     {
+        if (!cloudMarchTargetsClear)
+        {
+            VkClearColorValue a{}, b{};
+            a.float32[3] = -60000.0f;   // the no-cloud occlusion marker (include/cloud_occlusion.glsl)
+            b.float32[0] = b.float32[1] = b.float32[2] = b.float32[3] = 1.0f;   // transmittance 1, ground lit
+            const VkImageSubresourceRange full{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            const VkImage imgs[2] = {cloudMarchTargetAImg, cloudMarchTargetBImg};
+            const VkClearColorValue *vals[2] = {&a, &b};
+            for (int k = 0; k < 2; ++k)
+            {
+                ctx.imageBarrier(cmd, imgs[k], VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT);
+                vkCmdClearColorImage(cmd, imgs[k], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vals[k], 1, &full);
+                ctx.imageBarrier(cmd, imgs[k], VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+            }
+            cloudMarchTargetsClear = true;
+        }
+        // The flash list is not refreshed: no bolts from a stale one (the rain keys on the lightning pass too).
+        updateLightningBolts();
+        // Potato's flat deck reads the weather cube: it keeps evolving (a dispatch only when a face is due).
+        recordWeatherEvolution(cmd);
+    }
+    else if (!dbgEnv("SATLIGHTSIM_SKIP_CLOUDMARCH"))
+    {
+        cloudMarchTargetsClear = false;
         CloudMarchPC cpc{};
         cpc.skyView = camera.viewMatrix();
         cpc.fovYRad = glm::radians(camera.fovYDeg);
@@ -3198,8 +3282,23 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // flare slot needs a placeholder here. See C12 follow-up #22 for why sat_orbit.comp now
         // runs before this check at all (it used to run after it, alongside flare).
         ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
+        // The sky glow bins and the ocean-glint list are read by sat_sky.frag: empty them once (the last
+        // frame's satellites would glow on in the sky and on the sea). recordDraw skips the bloom composite.
+        if (!satFlareIdleCleared)
+        {
+            vkCmdFillBuffer(cmd, glowBuf, 0, sizeof(GpuGlowBuf), 0);
+            vkCmdFillBuffer(cmd, oceanGlintBuf, 0, sizeof(GpuOceanGlintBuf), 0);
+            VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_HOST_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0,
+                                 nullptr, 0, nullptr);
+            satFlareIdleCleared = true;
+        }
         return;
     }
+    satFlareIdleCleared = false;
 
     // Zero all glow bins so this frame's flare shader starts with an empty histogram.
     // floatBitsToUint(0.0) == 0u, so filling with 0 correctly marks every bin empty.
@@ -4204,9 +4303,9 @@ void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
 // SatelliteSim.h for how probes are shared out and scheduled.
 bool SatelliteSim::envActive() const
 {
-    // Not under Potato (the weak-hardware tier) or with the mesh pass knocked out.
+    // Not under Potato or Planetarium (the weak-hardware tiers) or with the mesh pass knocked out.
     return envReflections && meshRendererInit && envProbes.ready() &&
-           (debugDisableMask & (262144u | kDebugBitMeshes)) == 0u;
+           (debugDisableMask & kNoMeshBits) == 0u;
 }
 
 SatDrawPC SatelliteSim::envSkyPC(const glm::dvec3 &posEcef, const glm::dmat3 &camToEcef, float fovYRad,
@@ -4487,7 +4586,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         bool baseFade = false;      // the followed satellite keeps the base fade-in size, however many others
     };
     std::vector<Job> jobs;
-    const bool skip = (debugDisableMask & (kDebugBitMeshes | 262144u)) != 0u; // knockout / Potato sky
+    const bool skip = (debugDisableMask & kNoMeshBits) != 0u; // knockout / Potato / Planetarium sky
     if (!skip)
     {
         if (followActive)
@@ -6278,14 +6377,19 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
         float flareDarkness = glm::clamp(-sunDirENU.w * 5.0f, 0.0f, 1.0f);
         float flareEyeAdaptGain = glm::mix(kFlareDayFloor, 1.0f, flareDarkness);
 
-        FlareCompositePC cpc{};
-        cpc.gain = flareGlowGain * flareEyeAdaptGain;
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flareCompositePipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                flareCompositePipeLayout, 0, 1, &flareCompositeDescSet, 0, nullptr);
-        vkCmdPushConstants(cmd, flareCompositePipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0, sizeof(cpc), &cpc);
-        vkCmdDraw(cmd, 3, 1, 0, 0);
+        // With no satellite enabled recordCompute returns before the flare-source pass and the blur, so
+        // flareSourceImg still holds an old frame's glow: draw nothing rather than that.
+        if (activeSatCount > 0)
+        {
+            FlareCompositePC cpc{};
+            cpc.gain = flareGlowGain * flareEyeAdaptGain;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flareCompositePipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    flareCompositePipeLayout, 0, 1, &flareCompositeDescSet, 0, nullptr);
+            vkCmdPushConstants(cmd, flareCompositePipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(cpc), &cpc);
+            vkCmdDraw(cmd, 3, 1, 0, 0);
+        }
 
         // Glare sprites for the bright ones (glare.vert/.frag): the sharp rays the broad bloom
         // above cannot draw at quarter resolution.
@@ -8911,7 +9015,7 @@ void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
     auto createTarget = [&](VkImage &img, VkDeviceMemory &mem, VkImageView &view)
     {
         ctx.createImage(w, h, VK_FORMAT_R16G16B16A16_SFLOAT,
-                        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                         img, mem);
         VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         vci.image = img;
@@ -8922,6 +9026,7 @@ void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
     };
     createTarget(cloudMarchTargetAImg, cloudMarchTargetAMem, cloudMarchTargetAView);
     createTarget(cloudMarchTargetBImg, cloudMarchTargetBMem, cloudMarchTargetBView);
+    cloudMarchTargetsClear = false;   // undefined contents until the first dispatch (or the Potato clear)
 
     // Bilinear, clamp-to-edge — resolution-independent, created once and reused across resizes.
     if (!cloudMarchSampler)
@@ -9128,7 +9233,7 @@ void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
 {
     if (!terrainFrameBuf) // resolution-independent: created once, survives resizes
     {
-        ctx.createBuffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        ctx.createBuffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, terrainFrameBuf, terrainFrameMem);
         ctx.createBuffer(16, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -9137,6 +9242,10 @@ void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
         vkMapMemory(ctx.device, terrainFrameReadMem, 0, 16, 0, &p);
         std::memset(p, 0, 16);
         terrainFrameMapped = static_cast<const float *>(p);
+        // Defined contents before the first depth pass (or forever, under knockout 1024 / Potato).
+        VkCommandBuffer c = ctx.beginOneTimeCommands();
+        vkCmdFillBuffer(c, terrainFrameBuf, 0, 16, 0);
+        ctx.endOneTimeCommands(c);
     }
     const VkExtent2D halfE = computeHalfExtent(ctx);
     uint32_t w = halfE.width;

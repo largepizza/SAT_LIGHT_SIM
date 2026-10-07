@@ -1,0 +1,25 @@
+# The sky pass's exposure during a solar eclipse (2026-10-06): sat_sky.frag must adapt to the eclipse sky light
+# exactly as SatelliteSim::skyExposure() does (the probes, the bloom and the post-tonemap terms use that one).
+# state's moon block reports sky_light_frac and sky_exposure. The 2037-07-13 totality over central Australia.
+preset High
+set clouds_v2.fog_amount 0
+set clouds_v2.coverage 0
+set clouds_v2.auto_exposure 0
+time pause
+time set 2037-07-10T00:00:00Z
+eclipse solar
+camera look sun
+camera fov=90 el=20
+wait settle
+capture ecl_tot_sunward
+state ecl_tot
+camera az=183 el=10 fov=90
+wait settle
+capture ecl_tot_away
+time add -1500
+camera look sun
+camera fov=90 el=20
+wait settle
+capture ecl_partial
+state ecl_partial
+quit

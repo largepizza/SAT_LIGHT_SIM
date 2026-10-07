@@ -264,7 +264,7 @@ void SatelliteSim::updateRainMotion(GpuCloudV2Params &p)
     // The previous frame's rain map (cloud_lightning.glsl): the rate at the eye and the rain-weighted centre.
     float rate = 0.0f;
     glm::vec2 centre(0.0f);
-    if (cv2FlashMapped)
+    if (cv2FlashMapped && cloudsV2LightningActive())
     {
         const float *map = (const float *)((const char *)cv2FlashMapped + kCv2RainMapOffset);
         const int n = 32, c = n / 2;

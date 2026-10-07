@@ -182,10 +182,20 @@ layout(set = 0, binding = 8) uniform sampler3D cloudNoiseTex;
 // (mask 0) is bit-identical to normal rendering. The mask moved from the push constant into the
 // CloudParams UBO (cloud.dbgDisableMask) so this shader's push-constant range fits 128 bytes —
 // hence these helpers sit after the #include above, where `cloud` is in scope.
+// SKY_LITE (Planetarium) is the flat textured Earth: the terrain march and the sea's sky reflection are compiled
+// out (Planetarium sets their knockouts anyway), so their code is not in the variant at all.
+#ifdef SKY_LITE
+bool dbgSkipTerrain()    { return true; }
+#else
 bool dbgSkipTerrain()    { return (cloud.dbgDisableMask & 1u) != 0u; }
+#endif
 bool dbgSkipAtmosphere() { return (cloud.dbgDisableMask & 2u) != 0u; }
 bool dbgSkipSunOD()      { return (cloud.dbgDisableMask & 4u) != 0u; }
+#ifdef SKY_LITE
+bool dbgSkipOceanRefl()  { return true; }
+#else
 bool dbgSkipOceanRefl()  { return (cloud.dbgDisableMask & 8u) != 0u; }
+#endif
 
 // Half-resolution cloud march output (written by cloud_march.comp, see the "velvet-rolling-
 // squirrel" plan / TERRAIN_PLAN.md session 23 log). Replaces the old inline cirrusMarch()/
@@ -3059,9 +3069,15 @@ void main() {
 #else
     // The observer's ground with terrain detail — scene_depth.comp computed it once this frame,
     // unless knockout bit 1024 skipped that pass (then the buffer is stale: compute it here).
+#ifdef SKY_LITE   // no terrain detail there: the DEM alone
+    float obsEffH = ((cloud.dbgDisableMask & 1024u) != 0u)
+                  ? observerEffHeight(earthElevTex, earthSpecTex, pc.obsECEFDir)
+                  : terrainFrame.x;
+#else
     float obsEffH = ((cloud.dbgDisableMask & 1024u) != 0u)
                   ? observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir)
                   : terrainFrame.x;
+#endif
 #endif
 
     // Observer position: +2 m eye height above ground.
@@ -3114,6 +3130,7 @@ void main() {
     float    pixAngle      = pc.fovYRad / max(cloud.skyLodScreenH, 1.0); // the output pixel while upscaling
     const int kTerrainMaxSteps = 224;
 
+#ifndef SKY_LITE   // Planetarium: no relief (the flat textured Earth); the march is not compiled in
     if (!dbgSkipTerrain() && dir.z < 0.7 && tShell.y > 0.0) {
         float tExit = (tBase.x > 0.0) ? tBase.x
                     : (tShell.y > 0.0  ? tShell.y : 0.0);
@@ -3326,8 +3343,9 @@ void main() {
             }
         }
     }
+#endif // SKY_LITE
 
-#ifndef SKY_ENV
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
     // Past the march's range (no march: waterPx -1) land sat on the SEA-LEVEL sphere, so its air column
     // was the whole atmosphere down to 0 m: from orbit the Tibetan plateau inside the march range was
     // clear and the same plateau past it was buried under 4-5 km more of the densest air — a hazy white
@@ -3358,7 +3376,8 @@ void main() {
     // every term gated on tSurface — sun and moon discs, Milky Way, stars via depth — is hidden
     // behind it, exactly as behind terrain. Indexed through normalized screen UV so the renderScale
     // prepass (a smaller target) reads the same texel.
-#ifdef SKY_ENV
+#if defined(SKY_ENV) || defined(SKY_LITE)
+    // The mesh targets are the main view's (a probe sees no meshes); Planetarium draws none (kNoMeshBits).
     const bool meshHit = false; // the mesh targets are the main view's; a probe sees no meshes
     const float tMesh  = 0.0;
     const ivec2 meshPx = ivec2(0);
@@ -4157,11 +4176,18 @@ void main() {
         // tNight), not to the map the pattern reads: the blurred map spread a city's light over the desert
         // beside it and the pattern drew street grids there whenever a cloud was in front (user snapshots
         // 1-2, west of Phoenix: the grid "turned on" with the eye inside the cloud).
+        // SKY_LITE (Planetarium): the v1.1 city look — the night map + the tiled city detail textures, none of the
+        // procedural city pattern, roads, farms, beaches, solar parks or close-up materials (compiled out below).
+#ifdef SKY_LITE
+        const float cityPatStrength = 0.0;
+#else
+        float cityPatStrength = cloud.cityLightsStrength;
+#endif
         vec3  nightBlurLights = vec3(0.0);
         float nightBlurK      = 0.0;
         if (cloud.cityLightBlurLod > 0.01 && localCloudOpacity > 0.001) {
             vec3 nightColorBlur = textureLod(earthNightTex, uvTaa0, cloud.cityLightBlurLod).rgb;
-            if (cloud.cityLightsStrength > 0.0) {
+            if (cityPatStrength > 0.0) {
                 nightBlurK      = localCloudOpacity;
                 nightBlurLights = max(nightColorBlur - vec3(0.006, 0.006, 0.0132), vec3(0.0));
             } else
@@ -4284,9 +4310,9 @@ void main() {
                     // map's smooth 5-km texels — the procedural pattern averages to them by design (user:
                     // "the day textures cut off early"; at 40 km over Beijing the cities were invisible).
                     float dFoot  = pixAngle * tSurface / max(abs(dot(dir, shadingN)), 0.2);
-                    float dayTex = 1.0 - cloud.cityLightsStrength * (1.0 - smoothstep(30.0, 120.0, dFoot));
+                    float dayTex = 1.0 - cityPatStrength * (1.0 - smoothstep(30.0, 120.0, dFoot));
                     dayColor   = mix(dayColor,   dayDetail,   cityMask * clamp(dayTex, 0.0, 1.0));
-                    nightColor = mix(nightColor, nightDetail, cityMask * (1.0 - cloud.cityLightsStrength));
+                    nightColor = mix(nightColor, nightDetail, cityMask * (1.0 - cityPatStrength));
                 }
             }
         }
@@ -4322,7 +4348,7 @@ void main() {
         // panels go on the roofs (gCityPvK -> cityDayGrid) instead of in ground rows, block by block.
         float solarUrbanK = smoothstep(0.004, 0.02, cityLum) * (cloud.cityLightsStrength > 0.0 ? 1.0 : 0.0);
         float solarRoofK  = 0.0;
-#ifndef SKY_ENV   // the site list is in the MAIN observer's ENU frame
+#if !defined(SKY_ENV) && !defined(SKY_LITE)   // the site list is in the MAIN observer's ENU frame
         if (cityLand && solarSiteCount > 0u) {
             vec3  sQ  = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
             float sT  = tHit > 0.0 ? tHit : tSeaLvl;
@@ -4351,11 +4377,8 @@ void main() {
         vec3  cQ         = vec3(0.0);
         // Not gated on the terrain detail (2026-10-04): Low and Planetarium (SKY_LITE) draw the same city lights
         // as Medium. Without the pattern their cities were the night map's 5-km blobs; the pattern costs ~1 ms.
-#ifdef SKY_ENV
-        if (false) {
-#else
+#if !defined(SKY_ENV) && !defined(SKY_LITE)   // env / Planetarium: no procedural city
         if (cityLand && cloud.cityLightsStrength > 0.0 && cityLum > 1e-5) {
-#endif
             float cT = tHit > 0.0 ? tHit : tSeaLvl;
             cQ    = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
             cQ   -= taaDn;   // the pattern (layout, lamp lines, glitter) at the unjittered pixel (uvTaa0)
@@ -4389,9 +4412,11 @@ void main() {
                 dayColor *= mix(vec3(1.0), cityDayFar(cQ, enuX, enuY, enuZ, cFoot, cityLum, 0.6), presence * wFar);
             }
         }
+#endif
 
         float farmWet = 0.0;   // flooded paddies' open water (review 8): a sky reflection + sun glint below
         // ── Farmland (rural, where the day map is cultivated: not forest, desert, snow, steep, city) ──
+#if !defined(SKY_ENV) && !defined(SKY_LITE)   // tdEnabled() is false there: no farms, roof PV or beaches
         if (cityLand && cloud.cityLightsStrength > 0.0 && tdEnabled()) {
             float fT    = tHit > 0.0 ? tHit : tSeaLvl;
             float fFoot = pixAngle * fT / max(abs(dot(dir, shadingN)), 0.2);
@@ -4457,6 +4482,7 @@ void main() {
             }
             solarCov = max(solarCov, covR);
         }
+#endif
         // Solar PV parks (above, before the farms, which give way to them): dark glass over graded ground.
         if (solarBlockK > 0.0) {
             // Cells under AR glass from the front; from behind, the white backsheets, rails and frames.
@@ -4468,6 +4494,7 @@ void main() {
         }
 
         // ── Beaches: sand on low, gentle shores (beachAt) — dry sand, wet near the water ─────────
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
         if (cityLand && cloud.terrainMaterialStrength > 0.0 && tdEnabled()) {
             float bT    = tHit > 0.0 ? tHit : tSeaLvl;
             float bFoot = pixAngle * bT / max(abs(dot(dir, shadingN)), 0.2);
@@ -4485,6 +4512,7 @@ void main() {
                 }
             }
         }
+#endif
 
         // ── Procedural terrain material (terrain_detail.glsl, 2026-09-25) ──────────
         // The day map is ~4.9 km/texel: from the ground it is one flat colour per hillside. The
@@ -4496,6 +4524,7 @@ void main() {
         // day map alone. (A latitude snowline was tried first: it painted the Tibetan plateau white.)
         float terrainAO = 1.0;
         float terrainMatSteep = 0.0, terrainMatSnow = 0.0;
+#ifndef SKY_LITE   // no terrain hits there
         if (tHit > 0.0 && cloud.terrainMaterialStrength > 0.0) {
             float foot = pixAngle * tHit;
             float ms   = cloud.terrainMaterialStrength * (1.0 - smoothstep(60.0, 400.0, foot));
@@ -4520,6 +4549,7 @@ void main() {
                 terrainAO = mix(1.0, 0.68 + 0.32 * smoothstep(-0.9, 0.6, dn), ms * terrainDet.rough);
             }
         }
+#endif
         // Close-up material textures (terrain v2 P3, computed with the shading normal above).
         if (tmFade > 0.0) {
             dayColor  *= mix(vec3(1.0), clamp(tmRatio, vec3(0.0), vec3(3.0)), tmFade);
@@ -4700,6 +4730,7 @@ void main() {
             // blue base is not uniform, so its subtraction leaves pure-blue (or red) residue at a city's
             // faint fringe, and the fringe's sparse glitter multiplies each point ~25x: vivid blue and red
             // dots around every town from orbit (user review 2, snapshot 2).
+#if !defined(SKY_ENV) && !defined(SKY_LITE)   // the procedural city (none there: cityLOk / cityFar stay false)
             if (cityLOk || cityFar) {
                 gCityViewE = enuX * dir.x + enuY * dir.y + enuZ * dir.z;
                 gCityFootX = pixAngle * (tHit > 0.0 ? tHit : tSeaLvl)
@@ -4720,6 +4751,7 @@ void main() {
                 vec3 pat = cityLightFar(cQ, enuX, enuY, enuZ, cFootG, cityLum, cNUp);
                 cityLights *= mix(vec3(1.0), pat, cloud.cityLightsStrength);
             }
+#endif
             // Where the city light sprites carry the lights (city_sprites.comp, cloud.cityParams.z = their
             // reach), the ground keeps only a share of its glitter (cityParams.y): the sprites are the
             // points, the ground the glow under them. Only past the sprites' start footprint (cityParams.w,
@@ -4752,6 +4784,7 @@ void main() {
                         + auroraContribTerrain;
         // Flooded paddies (review 8): open water between the rice reflects the sky (Schlick, n = 1.33) and
         // glints the Sun, like the sea's sky reflection and glint, on the ground's own up vector.
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
         if (farmWet > 0.001) {
             float cV   = max(dot(-dir, hitUp), 0.0);
             float fres = 0.02 + 0.98 * pow(1.0 - cV, 5.0);
@@ -4769,8 +4802,10 @@ void main() {
                                    + sunSpecTint * sunTransMax * solarGlint(solarN, -dir, sunDir, solarS2)
                                      * cloudShadowT * dayFrac * sunDiscVis * terrainShadow);
         }
+#endif
 
         // Terrain debug views (harness `debugview`, cloud.terrainDebugView) — override the pixel.
+#ifndef SKY_LITE   // terrain debug views: no terrain hits there
         if (cloud.terrainDebugView > 0.5 && cloud.terrainDebugView < 39.5 && tHit > 0.0) {
             int dv = int(cloud.terrainDebugView + 0.5);
             vec3 dbg = vec3(0.0);
@@ -4828,6 +4863,7 @@ void main() {
             terrainDebugColor  = dbg;
             terrainDebugActive = true;
         }
+#endif
 
         // ── Ocean wave material (sea-level hits only, not terrain) ─────────────
         // ShaderToy "Seascape" by TDM adapted to Earth ENU/ECEF space.
@@ -4875,11 +4911,13 @@ void main() {
             // above a beach that rises 0.25 m/m, a hard seam seen from the water), surf lines roll in, and the
             // waterline is anti-aliased against wet sand over a pixel footprint (land does the other half).
             float dShore = 1e9;
+#ifndef SKY_LITE   // tdEnabled() is false there
             if (tdEnabled() && dist < 20000.0) {
                 vec2 wmS;
                 dShore = shoreSignedDist(vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir, enuX, enuY, enuZ, uvSurf, wmS);
                 if (dShore < 1e8) gSeaAmp *= mix(0.4, 1.0, smoothstep(0.0, 150.0, dShore));
             }
+#endif
 
             // ── heightMapTracing (low altitude only) ──────────────────────────
             // Bracket: ±2.5 m vertical around the sea-sphere intersection.
@@ -5069,6 +5107,7 @@ void main() {
             // Review 19: not gated on reflStr. Looking down (Fresnel ~0 within ~34 deg of the nadir) the march was
             // skipped and reflColor kept the constant fallback above — and the foam and surf take reflColor as their
             // sky light whatever the Fresnel: at dusk a hard light-blue disc on the sea under the observer.
+#ifndef SKY_LITE   // Planetarium: no sky reflection march (knockout 8): the constant fallback colour
             if (!dbgSkipOceanRefl() && dot(reflDir, surfUp) > 0.0) {
                 vec2 tAR = raySphere(hitPt, reflDir, R_ATMOS);
                 if (tAR.y > 0.0) {
@@ -5288,6 +5327,7 @@ void main() {
                 }
 #endif
             }
+#endif // SKY_LITE
 
             reflColor *= reflWaterK;
 
@@ -5463,7 +5503,7 @@ void main() {
         // see, just a lit patch of ground).
         // (Kept in SKY_LITE — the ground-spot loop is bounded by groundBeamCount and measured
         // cheap; beams are a wanted feature and run fine at the Planetarium tier.)
-#ifndef SKY_ENV   // the ground-beam list is in the MAIN observer's ENU frame
+#if !defined(SKY_ENV) && !defined(SKY_LITE)   // the MAIN observer's ENU frame; Planetarium has no beams (bit 128)
         if ((cloud.dbgDisableMask & 128u) == 0u) {
             const float kBeamGroundScale = 4e-8;
             // Normalized against the slider's default (0.05, see SatelliteSim.h) so existing
@@ -5637,6 +5677,11 @@ void main() {
 
     // ── Auto-exposure tone mapping ─────────────────────────────────────────────
     float dayness  = clamp((sunDirENU.w + 0.2) / 1.2, 0.0, 1.0);
+#ifndef SKY_ENV
+    // A solar eclipse: the eye adapts to the sky light that is left, exactly as SatelliteSim::skyExposure() (the
+    // probes, the bloom and every post-tonemap term use that one). moonMisc.y = 1 + that light while possible.
+    if (cloud.moonMisc.y > 0.5) dayness *= clamp(cloud.moonMisc.y - 1.0, 0.0, 1.0);
+#endif
     float exposure = mix(EXPOSURE_NIGHT, EXPOSURE_DAY, pow(dayness, 0.4));
 #ifndef SKY_ENV
     exposure *= cloud.exposureScale;              // "Exposure (EV)"; SatelliteSim::skyExposure() mirrors it

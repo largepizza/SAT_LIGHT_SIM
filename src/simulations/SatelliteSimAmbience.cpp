@@ -465,7 +465,7 @@ void SatelliteSim::computeAmbienceContext(float dt)
         float raw = 0.0f;
         // (Only below 6 km: the map is refreshed by the lightning pass, which is not dispatched once the far
         // cloud layer takes over from orbit — a jump there would otherwise keep the last rain audible.)
-        if (cv2FlashMapped && (double)obsEyeRadiusM() - satphot::kEarthRadiusM < 6000.0)
+        if (cv2FlashMapped && cloudsV2LightningActive() && (double)obsEyeRadiusM() - satphot::kEarthRadiusM < 6000.0)
         {
             const float *map = (const float *)((const char *)cv2FlashMapped + kCv2RainMapOffset);
             float sum = 0.0f;
