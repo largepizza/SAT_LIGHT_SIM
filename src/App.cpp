@@ -21,34 +21,46 @@
 // 60 frames. Pins down whether the frame is lost in vkWaitForFences (GPU busy), vkQueueSubmit
 // (MoltenVK synchronous encode+submit), vkQueuePresentKHR (compositor/vsync stall), or the
 // command recording itself.
-namespace {
-bool frameTraceEnabled() {
-    static int v = -1;
-    if (v < 0) { const char *e = std::getenv("SATLIGHTSIM_FRAME_TRACE"); v = (e && e[0] == '1') ? 1 : 0; }
-    return v == 1;
-}
-
-// The loading screen is on by default, harness runs included: its frames all come before init()
-// returns, i.e. before a script's first command, so a script's timing does not change and the
-// harness sees what a player sees. SATLIGHTSIM_BOOT_SCREEN=0/off turns it off (run.py
-// --boot-screen off): the old white-window launch, for comparison.
-bool bootScreenEnabled() {
-    static int v = -1;
-    if (v < 0) {
-        v = 1;
-        if (const char *e = std::getenv("SATLIGHTSIM_BOOT_SCREEN")) {
-            std::string s(e);
-            for (char &c : s) c = (char)std::tolower((unsigned char)c);
-            if (s == "0" || s == "off" || s == "false" || s == "no") v = 0;
+namespace
+{
+    bool frameTraceEnabled()
+    {
+        static int v = -1;
+        if (v < 0)
+        {
+            const char *e = std::getenv("SATLIGHTSIM_FRAME_TRACE");
+            v = (e && e[0] == '1') ? 1 : 0;
         }
+        return v == 1;
     }
-    return v == 1;
-}
+
+    // The loading screen is on by default, harness runs included: its frames all come before init()
+    // returns, i.e. before a script's first command, so a script's timing does not change and the
+    // harness sees what a player sees. SATLIGHTSIM_BOOT_SCREEN=0/off turns it off (run.py
+    // --boot-screen off): the old white-window launch, for comparison.
+    bool bootScreenEnabled()
+    {
+        static int v = -1;
+        if (v < 0)
+        {
+            v = 1;
+            if (const char *e = std::getenv("SATLIGHTSIM_BOOT_SCREEN"))
+            {
+                std::string s(e);
+                for (char &c : s)
+                    c = (char)std::tolower((unsigned char)c);
+                if (s == "0" || s == "off" || s == "false" || s == "no")
+                    v = 0;
+            }
+        }
+        return v == 1;
+    }
 }
 
 App::App(std::unique_ptr<Simulation> s) : sim(std::move(s)) {}
 
-void App::run() {
+void App::run()
+{
     initWindow();
     ctx.init(window);
     bootT0 = glfwGetTime();
@@ -60,16 +72,19 @@ void App::run() {
     // rebuildPipeline() re-points the UI at ctx.renderPass for the real frames. With the screen off
     // the old ordering is unchanged.
     const bool bootScreen = bootScreenEnabled();
-    if (bootScreen) {
+    if (bootScreen)
+    {
         if (const char *e = std::getenv("SATLIGHTSIM_BOOT_CAPTURE"))
             bootCapture = harness::active() && e[0] == '1' && ctx.screenshotSupported;
         ui.init(ctx, window, ctx.renderPassBoot);
         bootFrame(); // title + version, before any loading starts
         // The startup graphics chooser: before init() loads anything (CLAUDE.md "Startup graphics
         // chooser"). Closing the window while it is up quits without ever initialising the sim.
-        if (!runBootChooser()) {
+        if (!runBootChooser())
+        {
             vkDeviceWaitIdle(ctx.device);
-            if (bootCapBuf != VK_NULL_HANDLE) {
+            if (bootCapBuf != VK_NULL_HANDLE)
+            {
                 vkDestroyBuffer(ctx.device, bootCapBuf, nullptr);
                 vkFreeMemory(ctx.device, bootCapMem, nullptr);
                 bootCapBuf = VK_NULL_HANDLE;
@@ -80,22 +95,24 @@ void App::run() {
             glfwTerminate();
             return;
         }
-        sim->setBootStatus([this](const char *line) { bootStatus(line); });
+        sim->setBootStatus([this](const char *line)
+                           { bootStatus(line); });
     }
 
     sim->init(ctx);
     sim->setBootStatus(nullptr);
-    ctx.savePipelineCache();   // now, not only at exit: a crash or a killed run keeps what init compiled
+    ctx.savePipelineCache(); // now, not only at exit: a crash or a killed run keeps what init compiled
     simInited = true;
     if (bootResizeDuringInit) // the window changed size mid-init: rebuild what init sized
         sim->onResize(ctx);
-    sim->setWindow(window);  // give sim access to window handle (e.g. fullscreen toggle)
+    sim->setWindow(window); // give sim access to window handle (e.g. fullscreen toggle)
     // A muted harness run gets an engine with no device: silent, and its mix is still there for
     // `audio record` to render (docs/HARNESS.md).
     audio.init(harness::active() && harness::options().mute);
-    sim->setAudio(&audio);  // let the simulation configure its playlist
+    sim->setAudio(&audio); // let the simulation configure its playlist
 
-    if (bootScreen) {
+    if (bootScreen)
+    {
         // What init() does not cover is the first drawFrame's own work (the lazy icon atlas, the
         // first-frame pipeline compiles); this last line holds the screen until then, and its log
         // line times the whole init.
@@ -104,14 +121,17 @@ void App::run() {
         // (and maybe the capture buffer): destroying a pipeline a pending command buffer uses is
         // undefined, and here it lost the device on the first real frame's vkQueueSubmit.
         vkDeviceWaitIdle(ctx.device);
-        if (bootCapBuf != VK_NULL_HANDLE) {
+        if (bootCapBuf != VK_NULL_HANDLE)
+        {
             vkDestroyBuffer(ctx.device, bootCapBuf, nullptr);
             vkFreeMemory(ctx.device, bootCapMem, nullptr);
             bootCapBuf = VK_NULL_HANDLE;
             bootCapMem = VK_NULL_HANDLE;
         }
         ui.rebuildPipeline(ctx, ctx.renderPass);
-    } else {
+    }
+    else
+    {
         ui.init(ctx, window);
     }
     mainLoop();
@@ -125,7 +145,8 @@ void App::run() {
     glfwTerminate();
 }
 
-void App::initWindow() {
+void App::initWindow()
+{
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     // Boot maximized (windowed, not exclusive fullscreen) rather than at the fixed WIN_W x WIN_H
@@ -156,9 +177,11 @@ void App::initWindow() {
     glfwSetCharCallback(window, cbChar);
 }
 
-void App::mainLoop() {
+void App::mainLoop()
+{
     lastTime = glfwGetTime();
-    while (!glfwWindowShouldClose(window) && !sim->wantsQuit()) {
+    while (!glfwWindowShouldClose(window) && !sim->wantsQuit())
+    {
         double frameStart = glfwGetTime();
         glfwPollEvents();
         drawFrame();
@@ -166,7 +189,8 @@ void App::mainLoop() {
         // NEW-7: manual pacing for numeric FPS caps (see Simulation::targetFpsCap comment —
         // FIFO/V-Sync already paces itself, this only fires for the 30/60/120 caps).
         float capHz = sim->targetFpsCap();
-        if (capHz > 0.0f) {
+        if (capHz > 0.0f)
+        {
             double budget = 1.0 / (double)capHz;
             double remaining = budget - (glfwGetTime() - frameStart);
             if (remaining > 0.0)
@@ -182,7 +206,8 @@ void App::mainLoop() {
 // synchronization), ctx.renderPassBoot instead of the sim's pass, and nothing that touches the GPU
 // timestamp slots — resolving a half-written boot frame at the next fence wait would put a bogus
 // number in the first real --frame-trace output, which is also why submittedOnce is left alone.
-void App::bootStatus(const char* line) {
+void App::bootStatus(const char *line)
+{
     bootLines.emplace_back(line ? line : "");
     // One fsynced line per step, with the time since launch: the per-step cost of the launch.
     char msg[224];
@@ -192,7 +217,8 @@ void App::bootStatus(const char* line) {
     bootFrame();
 }
 
-void App::photoProgressFrame() {
+void App::photoProgressFrame()
+{
     // The photo frame just submitted must be done before its image is read and the command buffer reused.
     vkWaitForFences(ctx.device, 1, &ctx.fenceFrame, VK_TRUE, UINT64_MAX);
     uint32_t idx = 0;
@@ -257,7 +283,8 @@ void App::photoProgressFrame() {
     vkQueuePresentKHR(ctx.graphicsQueue, &pi);
 }
 
-void App::bootFrame() {
+void App::bootFrame()
+{
     // The window is up: keep the message pump fed (Esc/close work; the sim's input handlers are
     // held back until init() returns — see the callbacks at the bottom of this file).
     glfwPollEvents();
@@ -266,12 +293,16 @@ void App::bootFrame() {
 
     uint32_t imgIdx;
     VkResult res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain, UINT64_MAX,
-                                          ctx.semImageAvailable, VK_NULL_HANDLE, &imgIdx);
-    if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+                                         ctx.semImageAvailable, VK_NULL_HANDLE, &imgIdx);
+    if (res == VK_ERROR_OUT_OF_DATE_KHR)
+    {
         // The window is resizable while it boots. Same recovery as drawFrame(), except that
         // sim->onResize() waits until init() has created what it rebuilds (bootResizeDuringInit).
         ctx.recreateSwapchain(window);
-        if (simInited) sim->onResize(ctx); else bootResizeDuringInit = true;
+        if (simInited)
+            sim->onResize(ctx);
+        else
+            bootResizeDuringInit = true;
         ui.onResize(ctx);
         return;
     }
@@ -282,12 +313,15 @@ void App::bootFrame() {
     glfwGetWindowSize(window, &ww, &wh);
     // No sim is running: no cursor, no clicks, dt 0 (nothing on this screen is time-driven) — except
     // while the graphics chooser is up, which takes the mouse.
-    if (chooserActive) {
+    if (chooserActive)
+    {
         double mx = 0.0, my = 0.0;
         glfwGetCursorPos(window, &mx, &my);
         const bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         ui.beginFrame((float)ww, (float)wh, (float)mx, (float)my, lmb, false, 0.0f, 0.0f, 0.0f);
-    } else {
+    }
+    else
+    {
         ui.beginFrame((float)ww, (float)wh, -1.0f, -1.0f, false, false, 0.0f, 0.0f, 0.0f);
     }
     scrollX = scrollY = 0.0f;
@@ -302,11 +336,11 @@ void App::bootFrame() {
     clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}}; // black, like buildBootUI's root
     clearValues[1].depthStencil = {1.0f, 0};
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    rbi.renderPass      = ctx.renderPassBoot;
-    rbi.framebuffer     = ctx.framebuffers[imgIdx]; // renderPassBoot is compatible with these
-    rbi.renderArea      = {{0, 0}, ctx.swapExtent};
+    rbi.renderPass = ctx.renderPassBoot;
+    rbi.framebuffer = ctx.framebuffers[imgIdx]; // renderPassBoot is compatible with these
+    rbi.renderArea = {{0, 0}, ctx.swapExtent};
     rbi.clearValueCount = 2;
-    rbi.pClearValues    = clearValues;
+    rbi.pClearValues = clearValues;
     vkCmdBeginRenderPass(ctx.commandBuffer, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     ui.record(ctx.commandBuffer, ctx);
     vkCmdEndRenderPass(ctx.commandBuffer);
@@ -314,10 +348,13 @@ void App::bootFrame() {
     // Harness capture of this frame: the same PRESENT_SRC -> TRANSFER_SRC -> copy -> back sequence
     // SatelliteSim::recordScreenshotCopy uses, into a host buffer read once the fence says so.
     const uint32_t capW = ctx.swapExtent.width, capH = ctx.swapExtent.height;
-    if (bootCapture) {
+    if (bootCapture)
+    {
         const VkDeviceSize need = (VkDeviceSize)capW * capH * 4;
-        if (bootCapSize != need) {
-            if (bootCapBuf != VK_NULL_HANDLE) {
+        if (bootCapSize != need)
+        {
+            if (bootCapBuf != VK_NULL_HANDLE)
+            {
                 vkDestroyBuffer(ctx.device, bootCapBuf, nullptr);
                 vkFreeMemory(ctx.device, bootCapMem, nullptr);
             }
@@ -342,38 +379,44 @@ void App::bootFrame() {
 
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    si.waitSemaphoreCount   = 1;
-    si.pWaitSemaphores      = &ctx.semImageAvailable;
-    si.pWaitDstStageMask    = &waitStage;
-    si.commandBufferCount   = 1;
-    si.pCommandBuffers      = &ctx.commandBuffer;
+    si.waitSemaphoreCount = 1;
+    si.pWaitSemaphores = &ctx.semImageAvailable;
+    si.pWaitDstStageMask = &waitStage;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &ctx.commandBuffer;
     si.signalSemaphoreCount = 1;
-    si.pSignalSemaphores    = &ctx.semRenderDone[imgIdx];
+    si.pSignalSemaphores = &ctx.semRenderDone[imgIdx];
     if (vkQueueSubmit(ctx.graphicsQueue, 1, &si, ctx.fenceFrame) != VK_SUCCESS)
         throw std::runtime_error("vkQueueSubmit failed.");
 
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores    = &ctx.semRenderDone[imgIdx];
-    pi.swapchainCount     = 1;
-    pi.pSwapchains        = &ctx.swapchain;
-    pi.pImageIndices      = &imgIdx;
+    pi.pWaitSemaphores = &ctx.semRenderDone[imgIdx];
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &ctx.swapchain;
+    pi.pImageIndices = &imgIdx;
     res = vkQueuePresentKHR(ctx.graphicsQueue, &pi);
 
-    if (bootCapture) {
+    if (bootCapture)
+    {
         vkWaitForFences(ctx.device, 1, &ctx.fenceFrame, VK_TRUE, UINT64_MAX);
         bootCaptureWrite(capW, capH);
     }
 
-    if (res == VK_ERROR_OUT_OF_DATE_KHR || resized) {
+    if (res == VK_ERROR_OUT_OF_DATE_KHR || resized)
+    {
         resized = false;
         ctx.recreateSwapchain(window);
-        if (simInited) sim->onResize(ctx); else bootResizeDuringInit = true;
+        if (simInited)
+            sim->onResize(ctx);
+        else
+            bootResizeDuringInit = true;
         ui.onResize(ctx);
     }
 }
 
-void App::bootCaptureWrite(uint32_t w, uint32_t h) {
+void App::bootCaptureWrite(uint32_t w, uint32_t h)
+{
     void *mapped = nullptr;
     if (vkMapMemory(ctx.device, bootCapMem, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS || !mapped)
         return;
@@ -382,8 +425,10 @@ void App::bootCaptureWrite(uint32_t w, uint32_t h) {
     std::memcpy(px.data(), mapped, count * 4);
     vkUnmapMemory(ctx.device, bootCapMem);
     const bool bgra = ctx.swapFormat == VK_FORMAT_B8G8R8A8_SRGB || ctx.swapFormat == VK_FORMAT_B8G8R8A8_UNORM;
-    for (size_t i = 0; i < count; ++i) {
-        if (bgra) std::swap(px[i * 4 + 0], px[i * 4 + 2]);
+    for (size_t i = 0; i < count; ++i)
+    {
+        if (bgra)
+            std::swap(px[i * 4 + 0], px[i * 4 + 2]);
         px[i * 4 + 3] = 255;
     }
     const std::filesystem::path dir = std::filesystem::path(harness::options().outDir) / "captures";
@@ -400,48 +445,68 @@ void App::bootCaptureWrite(uint32_t w, uint32_t h) {
 // any GPU, and the mode picked is applied before init() creates the expensive pipelines. No timeout:
 // it never continues into Full graphics on its own. A harness run skips it unless
 // SATLIGHTSIM_BOOT_CHOOSER asks for it, and then it is scripted ("pick=N"): it never waits for input.
-void App::chooserMove(int d) {
+void App::chooserMove(int d)
+{
     const int n = (int)chooserSpec.options.size();
-    if (n > 0) chooserSel = ((chooserSel + d) % n + n) % n;
+    if (n > 0)
+        chooserSel = ((chooserSel + d) % n + n) % n;
 }
 
-void App::pollChooserGamepad() {
-    for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST && jid < 16; ++jid) {
+void App::pollChooserGamepad()
+{
+    for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST && jid < 16; ++jid)
+    {
         GLFWgamepadstate st{};
-        if (!glfwJoystickIsGamepad(jid) || !glfwGetGamepadState(jid, &st)) continue;
-        auto pressed = [&](int b) { return st.buttons[b] == GLFW_PRESS && chooserPadPrev[jid][b] != GLFW_PRESS; };
-        if (pressed(GLFW_GAMEPAD_BUTTON_DPAD_LEFT) || pressed(GLFW_GAMEPAD_BUTTON_DPAD_UP)) chooserMove(-1);
-        if (pressed(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT) || pressed(GLFW_GAMEPAD_BUTTON_DPAD_DOWN)) chooserMove(+1);
-        if (pressed(GLFW_GAMEPAD_BUTTON_X) || pressed(GLFW_GAMEPAD_BUTTON_Y)) chooserAsk = !chooserAsk;
-        if (pressed(GLFW_GAMEPAD_BUTTON_A) || pressed(GLFW_GAMEPAD_BUTTON_START)) chooserDone = true;
+        if (!glfwJoystickIsGamepad(jid) || !glfwGetGamepadState(jid, &st))
+            continue;
+        auto pressed = [&](int b)
+        { return st.buttons[b] == GLFW_PRESS && chooserPadPrev[jid][b] != GLFW_PRESS; };
+        if (pressed(GLFW_GAMEPAD_BUTTON_DPAD_LEFT) || pressed(GLFW_GAMEPAD_BUTTON_DPAD_UP))
+            chooserMove(-1);
+        if (pressed(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT) || pressed(GLFW_GAMEPAD_BUTTON_DPAD_DOWN))
+            chooserMove(+1);
+        if (pressed(GLFW_GAMEPAD_BUTTON_X) || pressed(GLFW_GAMEPAD_BUTTON_Y))
+            chooserAsk = !chooserAsk;
+        if (pressed(GLFW_GAMEPAD_BUTTON_A) || pressed(GLFW_GAMEPAD_BUTTON_START))
+            chooserDone = true;
         // The left stick, as a d-pad (edge at half deflection).
         const float ax = st.axes[GLFW_GAMEPAD_AXIS_LEFT_X] + st.axes[GLFW_GAMEPAD_AXIS_LEFT_Y];
         const float prev = chooserPadAxisPrev[jid];
-        if (ax > 0.5f && prev <= 0.5f) chooserMove(+1);
-        if (ax < -0.5f && prev >= -0.5f) chooserMove(-1);
+        if (ax > 0.5f && prev <= 0.5f)
+            chooserMove(+1);
+        if (ax < -0.5f && prev >= -0.5f)
+            chooserMove(-1);
         chooserPadAxisPrev[jid] = ax;
-        for (int b = 0; b < 15; ++b) chooserPadPrev[jid][b] = st.buttons[b];
+        for (int b = 0; b < 15; ++b)
+            chooserPadPrev[jid][b] = st.buttons[b];
     }
 }
 
-bool App::runBootChooser() {
+bool App::runBootChooser()
+{
     // SATLIGHTSIM_BOOT_CHOOSER: "0"/"off" never shows it; "1"/"show" shows it whatever the setting
     // says; "pick=N" (harness) shows it, moves to option N after two frames and starts after four.
     std::string mode;
-    if (const char *e = std::getenv("SATLIGHTSIM_BOOT_CHOOSER")) {
+    if (const char *e = std::getenv("SATLIGHTSIM_BOOT_CHOOSER"))
+    {
         mode = e;
-        for (char &c : mode) c = (char)std::tolower((unsigned char)c);
+        for (char &c : mode)
+            c = (char)std::tolower((unsigned char)c);
     }
-    if (mode == "0" || mode == "off" || mode == "false" || mode == "no") return true;
+    if (mode == "0" || mode == "off" || mode == "false" || mode == "no")
+        return true;
     int autoPick = -1;
-    if (mode.rfind("pick=", 0) == 0) autoPick = std::max(0, std::atoi(mode.c_str() + 5));
+    if (mode.rfind("pick=", 0) == 0)
+        autoPick = std::max(0, std::atoi(mode.c_str() + 5));
     const bool forced = autoPick >= 0 || mode == "1" || mode == "show" || mode == "on";
     // A harness run never waits on a person: only a scripted pick may show it there.
-    if (harness::active() && autoPick < 0) return true;
+    if (harness::active() && autoPick < 0)
+        return true;
 
     chooserSpec = Simulation::BootChooserSpec{};
     const bool wanted = sim->prepareBootChooser(ctx, chooserSpec);
-    if ((!wanted && !forced) || chooserSpec.options.empty()) return true;
+    if ((!wanted && !forced) || chooserSpec.options.empty())
+        return true;
 
     const int n = (int)chooserSpec.options.size();
     chooserSel = std::clamp(chooserSpec.defaultIdx, 0, n - 1);
@@ -457,16 +522,21 @@ bool App::runBootChooser() {
     Log::line("boot chooser: shown (default " + chooserSpec.options[(size_t)chooserSel].label + ")");
 
     int frame = 0;
-    while (!chooserDone) {
-        if (glfwWindowShouldClose(window)) {
+    while (!chooserDone)
+    {
+        if (glfwWindowShouldClose(window))
+        {
             chooserActive = false;
             Log::line("boot chooser: window closed");
             return false;
         }
         pollChooserGamepad();
-        if (autoPick >= 0) {
-            if (frame == 2) chooserSel = std::min(autoPick, n - 1);
-            if (frame >= 4) chooserDone = true;
+        if (autoPick >= 0)
+        {
+            if (frame == 2)
+                chooserSel = std::min(autoPick, n - 1);
+            if (frame >= 4)
+                chooserDone = true;
         }
         bootFrame(); // pumps events; draws buildBootChooserUI, which also handles the clicks
         ++frame;
@@ -483,24 +553,26 @@ bool App::runBootChooser() {
 // The chooser's look follows the loading screen's (black, the title centred) with a row of option
 // cards — the small ones (Potato) on a line of their own below — the "ask on every startup" box and a
 // Start button. Clicks are read here from this frame's hover flags (Clay_Hovered inside each body).
-void App::buildBootChooserUI(float s, int wh) {
+void App::buildBootChooserUI(float s, int wh)
+{
     const bool lmb = ui.input().lmbDown;
     const bool click = chooserLmbPrev && !lmb; // on release
     chooserLmbPrev = lmb;
-    const auto fsz = [&](float px) { return (uint16_t)std::max(16.0f, px * s); };
+    const auto fsz = [&](float px)
+    { return (uint16_t)std::max(16.0f, px * s); };
     Clay_String titleStr{false, (int32_t)std::strlen(sim->name()), sim->name()};
-    const auto str = [](const std::string &t) { return Clay_String{false, (int32_t)t.size(), t.c_str()}; };
+    const auto str = [](const std::string &t)
+    { return Clay_String{false, (int32_t)t.size(), t.c_str()}; };
     const Clay_Color accent{90, 170, 255, 255}, cardBg{10, 12, 17, 255}, cardHov{18, 22, 30, 255};
     const Clay_Color textMain{235, 238, 245, 255}, textDim{150, 158, 172, 255};
     const int n = (int)chooserSpec.options.size();
 
-    CLAY(CLAY_ID("BootRoot"), {
-        .layout = {
-            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
-            .padding = {0, 0, (uint16_t)(wh * 0.16f), 0},
-            .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_TOP},
-            .layoutDirection = CLAY_TOP_TO_BOTTOM},
-        .backgroundColor = {0, 0, 0, 255}})
+    CLAY(CLAY_ID("BootRoot"), {.layout = {
+                                   .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                   .padding = {0, 0, (uint16_t)(wh * 0.16f), 0},
+                                   .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_TOP},
+                                   .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                               .backgroundColor = {0, 0, 0, 255}})
     {
         CLAY_TEXT(titleStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = (uint16_t)(34 * s)}));
         CLAY(CLAY_ID("ChooserGap0"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(14 * s)}}}) {}
@@ -510,7 +582,8 @@ void App::buildBootChooserUI(float s, int wh) {
             CLAY_TEXT(str(chooserSpec.subtitle), CLAY_TEXT_CONFIG({.textColor = textDim, .fontSize = fsz(16)}));
         CLAY_TEXT(Clay_String({false, (int32_t)std::strlen(chooserGpuLine), chooserGpuLine}),
                   CLAY_TEXT_CONFIG({.textColor = textDim, .fontSize = fsz(16)}));
-        if (!chooserSpec.note.empty()) {
+        if (!chooserSpec.note.empty())
+        {
             CLAY(CLAY_ID("ChooserGapN"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(10 * s)}}}) {}
             CLAY(CLAY_ID("ChooserNote"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                      .padding = {(uint16_t)(14 * s), (uint16_t)(14 * s), (uint16_t)(8 * s), (uint16_t)(8 * s)}},
@@ -523,23 +596,24 @@ void App::buildBootChooserUI(float s, int wh) {
         CLAY(CLAY_ID("ChooserGap2"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(22 * s)}}}) {}
 
         // One card; `small` cards are a single line.
-        auto card = [&](int i) {
+        auto card = [&](int i)
+        {
             const auto &o = chooserSpec.options[(size_t)i];
             const bool sel = i == chooserSel, hov = chooserHovOpt[(size_t)i];
             const float w = o.small ? 656.0f * s : 320.0f * s;
             const uint16_t bw = (uint16_t)(sel ? 3 : 1);
-            CLAY(CLAY_IDI("ChooserOpt", i), {
-                .layout = {.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIT(o.small ? 0.0f : 150.0f * s)},
-                           .padding = {(uint16_t)(18 * s), (uint16_t)(18 * s), (uint16_t)((o.small ? 10 : 16) * s), (uint16_t)((o.small ? 10 : 16) * s)},
-                           .childGap = (uint16_t)((o.small ? 14 : 8) * s),
-                           .childAlignment = {.y = o.small ? CLAY_ALIGN_Y_CENTER : CLAY_ALIGN_Y_TOP},
-                           .layoutDirection = o.small ? CLAY_LEFT_TO_RIGHT : CLAY_TOP_TO_BOTTOM},
-                .backgroundColor = hov ? cardHov : cardBg,
-                .cornerRadius = CLAY_CORNER_RADIUS(8),
-                .border = {.color = sel ? accent : Clay_Color{60, 66, 80, 255}, .width = {bw, bw, bw, bw, 0}}}) // not CLAY_BORDER_ALL: that also rules between children
+            CLAY(CLAY_IDI("ChooserOpt", i), {.layout = {.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIT(o.small ? 0.0f : 150.0f * s)},
+                                                        .padding = {(uint16_t)(18 * s), (uint16_t)(18 * s), (uint16_t)((o.small ? 10 : 16) * s), (uint16_t)((o.small ? 10 : 16) * s)},
+                                                        .childGap = (uint16_t)((o.small ? 14 : 8) * s),
+                                                        .childAlignment = {.y = o.small ? CLAY_ALIGN_Y_CENTER : CLAY_ALIGN_Y_TOP},
+                                                        .layoutDirection = o.small ? CLAY_LEFT_TO_RIGHT : CLAY_TOP_TO_BOTTOM},
+                                             .backgroundColor = hov ? cardHov : cardBg,
+                                             .cornerRadius = CLAY_CORNER_RADIUS(8),
+                                             .border = {.color = sel ? accent : Clay_Color{60, 66, 80, 255}, .width = {bw, bw, bw, bw, 0}}}) // not CLAY_BORDER_ALL: that also rules between children
             {
                 chooserHovOpt[(size_t)i] = Clay_Hovered();
-                if (chooserHovOpt[(size_t)i] && click) chooserSel = i;
+                if (chooserHovOpt[(size_t)i] && click)
+                    chooserSel = i;
                 CLAY_TEXT(str(o.label), CLAY_TEXT_CONFIG({.textColor = sel ? Clay_Color{255, 255, 255, 255} : textMain,
                                                           .fontSize = fsz(o.small ? 17.0f : 22.0f)}));
                 if (i == chooserSpec.recommendedIdx)
@@ -552,10 +626,13 @@ void App::buildBootChooserUI(float s, int wh) {
                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
             for (int i = 0; i < n; ++i)
-                if (!chooserSpec.options[(size_t)i].small) card(i);
+                if (!chooserSpec.options[(size_t)i].small)
+                    card(i);
         }
-        for (int i = 0; i < n; ++i) {
-            if (!chooserSpec.options[(size_t)i].small) continue;
+        for (int i = 0; i < n; ++i)
+        {
+            if (!chooserSpec.options[(size_t)i].small)
+                continue;
             CLAY(CLAY_IDI("ChooserGapS", i), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(12 * s)}}}) {}
             card(i);
         }
@@ -575,7 +652,8 @@ void App::buildBootChooserUI(float s, int wh) {
                                          .cornerRadius = CLAY_CORNER_RADIUS(4)})
             {
                 chooserHovAsk = Clay_Hovered();
-                if (chooserHovAsk && click) chooserAsk = !chooserAsk;
+                if (chooserHovAsk && click)
+                    chooserAsk = !chooserAsk;
                 CLAY(CLAY_ID("ChooserAskBox"), {.layout = {.sizing = {CLAY_SIZING_FIXED(18 * s), CLAY_SIZING_FIXED(18 * s)}},
                                                 .backgroundColor = chooserAsk ? accent : Clay_Color{0, 0, 0, 255},
                                                 .cornerRadius = CLAY_CORNER_RADIUS(3),
@@ -589,13 +667,14 @@ void App::buildBootChooserUI(float s, int wh) {
                                         .cornerRadius = CLAY_CORNER_RADIUS(6)})
             {
                 chooserHovGo = Clay_Hovered();
-                if (chooserHovGo && click) chooserDone = true;
+                if (chooserHovGo && click)
+                    chooserDone = true;
                 CLAY_TEXT(CLAY_STRING("Start"), CLAY_TEXT_CONFIG({.textColor = {8, 14, 24, 255}, .fontSize = fsz(18)}));
             }
         }
         CLAY(CLAY_ID("ChooserGap4"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(14 * s)}}}) {}
         std::snprintf(chooserHint, sizeof(chooserHint),
-                      "Arrow keys or d-pad to choose, Enter or A to start. Change it later in Settings > Display.");
+                      "");
         CLAY_TEXT(Clay_String({false, (int32_t)std::strlen(chooserHint), chooserHint}),
                   CLAY_TEXT_CONFIG({.textColor = {110, 116, 128, 255}, .fontSize = fsz(16)}));
     }
@@ -606,7 +685,8 @@ void App::buildBootChooserUI(float s, int wh) {
 // intro's typography (white, the UI font, the title at 34 px), so the handover into the intro
 // reads as one piece. Sizes follow the window height rather than uiScale: that setting is loaded
 // inside init(), after the first loading frame is already on screen.
-void App::buildBootUI() {
+void App::buildBootUI()
+{
     int ww = 0, wh = 0;
     glfwGetWindowSize(window, &ww, &wh);
     // Never below 1: the font is one baked bitmap, and scaled much under ~16 px its thin strokes
@@ -617,56 +697,59 @@ void App::buildBootUI() {
     // storage (and bootLines' own strings, untouched until the next frame) is enough.
     static char version[32];
     std::snprintf(version, sizeof(version), "v%s", APP_VERSION);
-    Clay_String titleStr  { false, (int32_t)std::strlen(sim->name()), sim->name() };
-    Clay_String versionStr{ false, (int32_t)std::strlen(version), version };
+    Clay_String titleStr{false, (int32_t)std::strlen(sim->name()), sim->name()};
+    Clay_String versionStr{false, (int32_t)std::strlen(version), version};
 
     // The fade is set in PERCEIVED brightness (1 -> 0.06 over six rows) and raised to 2.2: the UI
     // blends linearly into an sRGB swapchain, so a linear alpha step reads far brighter than it
     // says (alpha 22 of 255 still showed at ~40 % grey).
     constexpr int kShown = 6;
-    static const float kPerceived[kShown] = { 1.0f, 0.60f, 0.38f, 0.23f, 0.13f, 0.06f };
+    static const float kPerceived[kShown] = {1.0f, 0.60f, 0.38f, 0.23f, 0.13f, 0.06f};
 
-    if (chooserActive) {
+    if (chooserActive)
+    {
         buildBootChooserUI(s, wh);
         return;
     }
 
-    CLAY(CLAY_ID("BootRoot"), {
-        .layout = {
-            .sizing = { CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0) },
-            .padding = { 0, 0, (uint16_t)(wh * 0.34f), 0 },
-            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_TOP },
-            .layoutDirection = CLAY_TOP_TO_BOTTOM },
-        .backgroundColor = { 0, 0, 0, 255 } })
+    CLAY(CLAY_ID("BootRoot"), {.layout = {
+                                   .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                   .padding = {0, 0, (uint16_t)(wh * 0.34f), 0},
+                                   .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_TOP},
+                                   .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                               .backgroundColor = {0, 0, 0, 255}})
     {
-        CLAY_TEXT(titleStr, CLAY_TEXT_CONFIG({ .textColor = { 255, 255, 255, 255 },
-                                               .fontSize = (uint16_t)(34 * s) }));
-        CLAY(CLAY_ID("BootGapVersion"), { .layout = { .sizing = { CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(8 * s) } } }) {}
-        CLAY_TEXT(versionStr, CLAY_TEXT_CONFIG({ .textColor = { 120, 126, 138, 255 },
-                                                 .fontSize = (uint16_t)(14 * s) }));
-        CLAY(CLAY_ID("BootGapList"), { .layout = { .sizing = { CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(36 * s) } } }) {}
+        CLAY_TEXT(titleStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255},
+                                              .fontSize = (uint16_t)(34 * s)}));
+        CLAY(CLAY_ID("BootGapVersion"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(8 * s)}}}) {}
+        CLAY_TEXT(versionStr, CLAY_TEXT_CONFIG({.textColor = {120, 126, 138, 255},
+                                                .fontSize = (uint16_t)(14 * s)}));
+        CLAY(CLAY_ID("BootGapList"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(36 * s)}}}) {}
         const int n = (int)bootLines.size();
-        for (int k = 0; k < kShown && k < n; ++k) {
+        for (int k = 0; k < kShown && k < n; ++k)
+        {
             const std::string &l = bootLines[(size_t)(n - 1 - k)];
-            Clay_String str{ false, (int32_t)l.size(), l.c_str() };
-            CLAY(CLAY_IDI("BootLine", k), {
-                .layout = { .sizing = { CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(24 * s) },
-                            .childAlignment = { .x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER } } })
+            Clay_String str{false, (int32_t)l.size(), l.c_str()};
+            CLAY(CLAY_IDI("BootLine", k), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(24 * s)},
+                                                      .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}}})
             {
-                CLAY_TEXT(str, CLAY_TEXT_CONFIG({ .textColor = { 225, 229, 238, 255.0f * std::pow(kPerceived[k], 2.2f) },
-                                                  .fontSize = (uint16_t)(16 * s) }));
+                CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = {225, 229, 238, 255.0f * std::pow(kPerceived[k], 2.2f)},
+                                                 .fontSize = (uint16_t)(16 * s)}));
             }
         }
     }
 }
 
-void App::drawFrame() {
+void App::drawFrame()
+{
     const bool ft = frameTraceEnabled();
     static uint64_t ftFrame = 0;
     const bool ftPrint = ft && (ftFrame % 60 == 0);
     double ftT0 = ft ? glfwGetTime() : 0.0, ftPrev = ftT0;
-    auto ftMark = [&](const char *name) {
-        if (!ftPrint) return;
+    auto ftMark = [&](const char *name)
+    {
+        if (!ftPrint)
+            return;
         double now = glfwGetTime();
         std::printf("  %-14s %7.1f ms\n", name, (now - ftPrev) * 1000.0);
         ftPrev = now;
@@ -679,7 +762,8 @@ void App::drawFrame() {
     // Resolve last frame's GPU timestamp queries now that the fence proves the GPU
     // is done with them. Skipped on the very first call: the fence starts pre-signaled
     // so nothing has actually been submitted yet, and there'd be no query data to read.
-    if (submittedOnce) {
+    if (submittedOnce)
+    {
         ctx.resolveTimestamps();
         // UC6: same reasoning — a screenshot copy recorded last frame is only safe to read back
         // once this fence wait proves the GPU has finished writing it.
@@ -689,10 +773,13 @@ void App::drawFrame() {
     // HQ photo (review 13): switch to / from the offscreen photo target between frames.
     {
         const uint32_t ps = sim->photoScaleRequest();
-        if (ps > 0 && !ctx.photoActive) {
+        if (ps > 0 && !ctx.photoActive)
+        {
             ctx.beginPhotoTarget(ctx.swapExtent.width * ps, ctx.swapExtent.height * ps);
             sim->onResize(ctx);
-        } else if (ps == 0 && ctx.photoActive) {
+        }
+        else if (ps == 0 && ctx.photoActive)
+        {
             ctx.endPhotoTarget();
             sim->onResize(ctx);
         }
@@ -705,11 +792,16 @@ void App::drawFrame() {
         res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain, UINT64_MAX,
                                     ctx.semImageAvailable, VK_NULL_HANDLE, &imgIdx);
     ftMark("acquire");
-    if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+    if (res == VK_ERROR_OUT_OF_DATE_KHR)
+    {
         ctx.recreateSwapchain(window);
         sim->onResize(ctx);
         ui.onResize(ctx);
-        if (ft) { ++ftFrame; std::printf("[frame-trace] acquire OUT_OF_DATE -> full swapchain recreate\n"); }
+        if (ft)
+        {
+            ++ftFrame;
+            std::printf("[frame-trace] acquire OUT_OF_DATE -> full swapchain recreate\n");
+        }
         return;
     }
     if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
@@ -722,16 +814,16 @@ void App::drawFrame() {
     // still bounds a pathological stall while letting true frame times through even on very
     // slow setups (MoltenVK translation on old GPUs can genuinely land here).
     double now = glfwGetTime();
-    float  dt  = std::min((float)(now - lastTime), 1.0f);
-    lastTime   = now;
+    float dt = std::min((float)(now - lastTime), 1.0f);
+    lastTime = now;
     dt = sim->frameDt(dt); // harness: fixed step (docs/HARNESS.md)
 
     // Get current mouse state
     double mx, my;
     glfwGetCursorPos(window, &mx, &my);
-    bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT)  == GLFW_PRESS;
+    bool lmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
     bool rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
-    int  ww, wh;
+    int ww, wh;
     glfwGetWindowSize(window, &ww, &wh);
 
     // While the camera has the cursor captured (GLFW_CURSOR_DISABLED, used for
@@ -740,10 +832,13 @@ void App::drawFrame() {
     // Clay's hit-testing register phantom hovers/clicks (rollover blips, accidental
     // keybind rebinds) on whatever always-visible panel the drifted coordinate landed
     // on. Freeze the UI-facing cursor at its last known on-screen position instead.
-    if (glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_DISABLED) {
+    if (glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_DISABLED)
+    {
         mx = uiMouseX;
         my = uiMouseY;
-    } else {
+    }
+    else
+    {
         uiMouseX = mx;
         uiMouseY = my;
     }
@@ -751,10 +846,11 @@ void App::drawFrame() {
     // UC4: gamepad virtual cursor — when active, overrides the real mouse position/click state
     // for this frame's UI pass so every existing Clay_Hovered()/click handler works unmodified.
     float vx, vy;
-    bool  vClick;
-    if (sim->virtualCursor(vx, vy, vClick)) {
-        mx  = vx;
-        my  = vy;
+    bool vClick;
+    if (sim->virtualCursor(vx, vy, vClick))
+    {
+        mx = vx;
+        my = vy;
         lmb = vClick;
     }
 
@@ -798,14 +894,14 @@ void App::drawFrame() {
     // 2. Begin render pass — App now owns this
     VkClearValue clearValues[2];
     clearValues[0] = sim->clearColor();
-    clearValues[1].depthStencil = {1.0f, 0};   // far depth = 1.0
+    clearValues[1].depthStencil = {1.0f, 0}; // far depth = 1.0
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-    rbi.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rbi.renderPass      = sim->activeRenderPass(ctx);
-    rbi.framebuffer     = ctx.framebuffers[imgIdx];
-    rbi.renderArea      = {{0, 0}, ctx.swapExtent};
+    rbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rbi.renderPass = sim->activeRenderPass(ctx);
+    rbi.framebuffer = ctx.framebuffers[imgIdx];
+    rbi.renderArea = {{0, 0}, ctx.swapExtent};
     rbi.clearValueCount = 2;
-    rbi.pClearValues    = clearValues;
+    rbi.pClearValues = clearValues;
     vkCmdBeginRenderPass(ctx.commandBuffer, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 
     // 3. Simulation draw calls (render pass is already open)
@@ -836,22 +932,25 @@ void App::drawFrame() {
     // image, the same guarantee the render pass itself already got from this semaphore.
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    si.waitSemaphoreCount   = photo ? 0 : 1;
-    si.pWaitSemaphores      = &ctx.semImageAvailable;
-    si.pWaitDstStageMask    = &waitStage;
-    si.commandBufferCount   = 1;
-    si.pCommandBuffers      = &ctx.commandBuffer;
+    si.waitSemaphoreCount = photo ? 0 : 1;
+    si.pWaitSemaphores = &ctx.semImageAvailable;
+    si.pWaitDstStageMask = &waitStage;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &ctx.commandBuffer;
     si.signalSemaphoreCount = photo ? 0 : 1;
-    si.pSignalSemaphores    = photo ? nullptr : &ctx.semRenderDone[imgIdx];
+    si.pSignalSemaphores = photo ? nullptr : &ctx.semRenderDone[imgIdx];
     if (vkQueueSubmit(ctx.graphicsQueue, 1, &si, ctx.fenceFrame) != VK_SUCCESS)
         throw std::runtime_error("vkQueueSubmit failed.");
     submittedOnce = true;
     ftMark("queueSubmit");
     // A photo frame is not presented; a resize waits for the photo to end (resized stays set). A few times a
     // second the window gets a progress frame instead (photoProgressFrame).
-    if (photo) {
-        if (ft) ++ftFrame;
-        if (now - photoPresentT >= 0.25) {
+    if (photo)
+    {
+        if (ft)
+            ++ftFrame;
+        if (now - photoPresentT >= 0.25)
+        {
             photoPresentT = now;
             photoProgressFrame();
         }
@@ -861,10 +960,10 @@ void App::drawFrame() {
     // Present
     VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pi.waitSemaphoreCount = 1;
-    pi.pWaitSemaphores    = &ctx.semRenderDone[imgIdx];
-    pi.swapchainCount     = 1;
-    pi.pSwapchains        = &ctx.swapchain;
-    pi.pImageIndices      = &imgIdx;
+    pi.pWaitSemaphores = &ctx.semRenderDone[imgIdx];
+    pi.swapchainCount = 1;
+    pi.pSwapchains = &ctx.swapchain;
+    pi.pImageIndices = &imgIdx;
     res = vkQueuePresentKHR(ctx.graphicsQueue, &pi);
     ftMark("queuePresent");
     // NOTE: VK_SUBOPTIMAL_KHR is deliberately NOT a trigger here. MoltenVK returns it on almost
@@ -874,7 +973,8 @@ void App::drawFrame() {
     // frame pinned the whole app at a few fps. SUBOPTIMAL still presents correctly; only a real
     // size change (resized flag) or OUT_OF_DATE actually needs a rebuild. The acquire path above
     // already ignores SUBOPTIMAL for the same reason.
-    if (res == VK_ERROR_OUT_OF_DATE_KHR || resized || sim->consumeSwapchainRebuildRequest()) {
+    if (res == VK_ERROR_OUT_OF_DATE_KHR || resized || sim->consumeSwapchainRebuildRequest())
+    {
         resized = false;
         ctx.recreateSwapchain(window);
         sim->onResize(ctx);
@@ -883,31 +983,41 @@ void App::drawFrame() {
     }
     ftMark("post-present");
 
-    if (ftPrint) {
+    if (ftPrint)
+    {
         std::printf("[frame-trace] frame %llu  present_res=%d  recreated=%d  TOTAL %.1f ms\n\n",
                     (unsigned long long)ftFrame, (int)res, ftRecreated,
                     (glfwGetTime() - ftT0) * 1000.0);
         std::fflush(stdout);
     }
-    if (ft) ++ftFrame;
+    if (ft)
+        ++ftFrame;
 }
 
-void App::cbResize(GLFWwindow* w, int, int) {
-    reinterpret_cast<App*>(glfwGetWindowUserPointer(w))->resized = true;
+void App::cbResize(GLFWwindow *w, int, int)
+{
+    reinterpret_cast<App *>(glfwGetWindowUserPointer(w))->resized = true;
 }
 
-void App::cbKey(GLFWwindow* w, int key, int, int action, int) {
-    auto* app = reinterpret_cast<App*>(glfwGetWindowUserPointer(w));
+void App::cbKey(GLFWwindow *w, int key, int, int action, int)
+{
+    auto *app = reinterpret_cast<App *>(glfwGetWindowUserPointer(w));
     // The loading screen pumps events while init() is still running; the sim's handlers wait for
     // it to finish (Esc still closes the window, and mainLoop() then exits straight away).
-    if (!app->simInited) {
-        if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) glfwSetWindowShouldClose(w, GLFW_TRUE);
+    if (!app->simInited)
+    {
+        if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+            glfwSetWindowShouldClose(w, GLFW_TRUE);
         // The startup graphics chooser: arrows / Tab move, 1-9 pick, Enter or Space start.
-        if (app->chooserActive && !app->chooserDone && (action == GLFW_PRESS || action == GLFW_REPEAT)) {
+        if (app->chooserActive && !app->chooserDone && (action == GLFW_PRESS || action == GLFW_REPEAT))
+        {
             const int n = (int)app->chooserSpec.options.size();
-            if (key == GLFW_KEY_LEFT || key == GLFW_KEY_UP) app->chooserMove(-1);
-            else if (key == GLFW_KEY_RIGHT || key == GLFW_KEY_DOWN || key == GLFW_KEY_TAB) app->chooserMove(+1);
-            else if (key >= GLFW_KEY_1 && key < GLFW_KEY_1 + n) app->chooserSel = key - GLFW_KEY_1;
+            if (key == GLFW_KEY_LEFT || key == GLFW_KEY_UP)
+                app->chooserMove(-1);
+            else if (key == GLFW_KEY_RIGHT || key == GLFW_KEY_DOWN || key == GLFW_KEY_TAB)
+                app->chooserMove(+1);
+            else if (key >= GLFW_KEY_1 && key < GLFW_KEY_1 + n)
+                app->chooserSel = key - GLFW_KEY_1;
             else if ((key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_SPACE) && action == GLFW_PRESS)
                 app->chooserDone = true;
         }
@@ -919,18 +1029,23 @@ void App::cbKey(GLFWwindow* w, int key, int, int action, int) {
     app->sim->onKey(w, key, action);
 }
 
-void App::cbChar(GLFWwindow* w, unsigned int codepoint) {
-    auto* app = reinterpret_cast<App*>(glfwGetWindowUserPointer(w));
-    if (app->simInited) app->sim->onChar(w, codepoint);
+void App::cbChar(GLFWwindow *w, unsigned int codepoint)
+{
+    auto *app = reinterpret_cast<App *>(glfwGetWindowUserPointer(w));
+    if (app->simInited)
+        app->sim->onChar(w, codepoint);
 }
 
-void App::cbCursorPos(GLFWwindow* w, double x, double y) {
-    auto* app = reinterpret_cast<App*>(glfwGetWindowUserPointer(w));
-    if (app->simInited) app->sim->onCursorPos(w, x, y);
+void App::cbCursorPos(GLFWwindow *w, double x, double y)
+{
+    auto *app = reinterpret_cast<App *>(glfwGetWindowUserPointer(w));
+    if (app->simInited)
+        app->sim->onCursorPos(w, x, y);
 }
 
-void App::cbScroll(GLFWwindow* w, double dx, double dy) {
-    auto* app = reinterpret_cast<App*>(glfwGetWindowUserPointer(w));
+void App::cbScroll(GLFWwindow *w, double dx, double dy)
+{
+    auto *app = reinterpret_cast<App *>(glfwGetWindowUserPointer(w));
     app->scrollX += (float)dx;
     app->scrollY += (float)dy;
 }

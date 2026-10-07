@@ -24,36 +24,41 @@
 
 namespace
 {
-constexpr uint32_t kBitMinimalSkyB = 262144u, kBitLiteSkyB = 524288u;
-// The chooser's options (App shows them in this order).
-enum BootMode : int
-{
-    kBootFull = 0,
-    kBootPlanetarium = 1,
-    kBootPotato = 2
-};
-int bootModeOf(int preset, uint32_t mask)
-{
-    if (preset == (int)GraphicsPreset::Potato) return kBootPotato;
-    if (preset == (int)GraphicsPreset::Planetarium) return kBootPlanetarium;
-    if (preset == (int)GraphicsPreset::Custom || preset < 0)
-    { // a hand-tuned Custom: whichever sky its knockout mask draws
-        if (mask & kBitMinimalSkyB) return kBootPotato;
-        if (mask & kBitLiteSkyB) return kBootPlanetarium;
+    constexpr uint32_t kBitMinimalSkyB = 262144u, kBitLiteSkyB = 524288u;
+    // The chooser's options (App shows them in this order).
+    enum BootMode : int
+    {
+        kBootFull = 0,
+        kBootPlanetarium = 1,
+        kBootPotato = 2
+    };
+    int bootModeOf(int preset, uint32_t mask)
+    {
+        if (preset == (int)GraphicsPreset::Potato)
+            return kBootPotato;
+        if (preset == (int)GraphicsPreset::Planetarium)
+            return kBootPlanetarium;
+        if (preset == (int)GraphicsPreset::Custom || preset < 0)
+        { // a hand-tuned Custom: whichever sky its knockout mask draws
+            if (mask & kBitMinimalSkyB)
+                return kBootPotato;
+            if (mask & kBitLiteSkyB)
+                return kBootPlanetarium;
+        }
+        return kBootFull;
     }
-    return kBootFull;
-}
-double steadyNowS()
-{
-    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
+    double steadyNowS()
+    {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
 } // namespace
 
 // settings.json and the crash sentinel, read before init(): nothing here touches the GPU, and it must run
 // before init() recreates the sentinel (session.lock) for this run.
 void SatelliteSim::peekBootSettings()
 {
-    if (bootPeekDone) return;
+    if (bootPeekDone)
+        return;
     bootPeekDone = true;
     const std::filesystem::path dir = Paths::userDataDir();
     std::error_code ec;
@@ -62,7 +67,8 @@ void SatelliteSim::peekBootSettings()
     return; // every launch is a first run
 #endif
     std::ifstream f(dir / "settings.json");
-    if (!f.is_open()) return;
+    if (!f.is_open())
+        return;
     try
     {
         nlohmann::json j;
@@ -87,7 +93,8 @@ void SatelliteSim::peekBootSettings()
 int SatelliteSim::deviceRecommendedBootMode(VulkanContext &ctx) const
 {
     const GraphicsPreset p = seedGraphicsPresetFromDevice(ctx);
-    return p == GraphicsPreset::Potato ? kBootPotato : p == GraphicsPreset::Planetarium ? kBootPlanetarium : kBootFull;
+    return p == GraphicsPreset::Potato ? kBootPotato : p == GraphicsPreset::Planetarium ? kBootPlanetarium
+                                                                                        : kBootFull;
 }
 
 // "Full graphics" when the saved preset is a light one (or there is none): the device seed if it is a full
@@ -95,7 +102,8 @@ int SatelliteSim::deviceRecommendedBootMode(VulkanContext &ctx) const
 GraphicsPreset SatelliteSim::recommendedFullPreset(VulkanContext &ctx) const
 {
     const GraphicsPreset seed = seedGraphicsPresetFromDevice(ctx);
-    if (seed == GraphicsPreset::Planetarium || seed == GraphicsPreset::Potato) return GraphicsPreset::Low;
+    if (seed == GraphicsPreset::Planetarium || seed == GraphicsPreset::Potato)
+        return GraphicsPreset::Low;
     return seed;
 }
 
@@ -103,11 +111,11 @@ bool SatelliteSim::prepareBootChooser(VulkanContext &ctx, BootChooserSpec &spec)
 {
     peekBootSettings();
     spec.title = "Choose a graphics mode";
-    spec.subtitle = "Nothing heavy has loaded yet. If this computer is old or has integrated graphics, pick a lighter mode.";
+    spec.subtitle = "";
     spec.options = {
-        {"Full graphics", "Volumetric clouds and weather, detailed terrain, aurora and the full sky. For a dedicated graphics card.", false},
-        {"Planetarium", "The Earth and its atmosphere, the stars and every satellite, without clouds. For laptops and integrated graphics.", false},
-        {"Potato (very old hardware)", "The simplest sky, for machines that struggle with Planetarium.", true},
+        {"Full graphics", "Volumetric clouds and weather, detailed terrain, aurora and the full sky.", false},
+        {"Planetarium", "For those who only want to see satellites", false},
+        {"Potato (very old hardware)", "For machines that struggle with Planetarium.", true},
     };
     const int rec = deviceRecommendedBootMode(ctx);
     spec.recommendedIdx = rec;
@@ -133,9 +141,11 @@ void SatelliteSim::setBootChoice(int option, bool askAgain)
 // After loadSettings (and in place of the crash path's forced Planetarium: the player has just chosen).
 void SatelliteSim::applyBootChoice(VulkanContext &ctx, bool crashDetected)
 {
-    if (bootChoiceMode < 0) return;
+    if (bootChoiceMode < 0)
+        return;
     askGraphicsModeOnStartup = bootChoiceAsk;
-    if (crashDetected) crashRecoveryMode = true; // still no intro benchmark this launch
+    if (crashDetected)
+        crashRecoveryMode = true; // still no intro benchmark this launch
     const int now = bootModeOf((int)graphicsPreset, debugDisableMask);
     if (bootChoiceMode == kBootPlanetarium && graphicsPreset != GraphicsPreset::Planetarium)
         applyGraphicsPreset(GraphicsPreset::Planetarium);
@@ -157,7 +167,8 @@ bool SatelliteSim::fullSkyNeeded() const
 // frame in flight, fence waited), so the pipelines can be rebuilt the way onResize does.
 void SatelliteSim::ensureFullSkyPipelines(VulkanContext &ctx)
 {
-    if (!fullSkyDeferred || !fullSkyNeeded()) return;
+    if (!fullSkyDeferred || !fullSkyNeeded())
+        return;
     fullSkyDeferred = false;
     const double t0 = steadyNowS();
     vkDestroyPipeline(ctx.device, skyBgPipeline, nullptr);
@@ -182,7 +193,8 @@ void SatelliteSim::ensureFullSkyPipelines(VulkanContext &ctx)
 // SATLIGHTSIM_BOOT_SAFETY_MS sets the threshold (to test it).
 void SatelliteSim::updateBootSafetyNet()
 {
-    if (bootSafetyDone) return;
+    if (bootSafetyDone)
+        return;
     float thresholdMs = 250.0f;
     if (const char *e = std::getenv("SATLIGHTSIM_BOOT_SAFETY_MS"))
         thresholdMs = (float)std::atof(e);
@@ -210,8 +222,10 @@ void SatelliteSim::updateBootSafetyNet()
         return;
     bootSafetyMs.push_back(ms);
     float sampledMs = 0.0f;
-    for (float x : bootSafetyMs) sampledMs += x;
-    if (bootSafetyMs.size() < 10 && !(bootSafetyMs.size() >= 3 && sampledMs > 5000.0f)) return;
+    for (float x : bootSafetyMs)
+        sampledMs += x;
+    if (bootSafetyMs.size() < 10 && !(bootSafetyMs.size() >= 3 && sampledMs > 5000.0f))
+        return;
     bootSafetyDone = true;
     std::vector<float> v = bootSafetyMs;
     std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
@@ -220,9 +234,10 @@ void SatelliteSim::updateBootSafetyNet()
     std::snprintf(msg, sizeof(msg), "boot safety net: median %.0f ms over %zu frames on %s (threshold %.0f)", median,
                   v.size(), kGraphicsPresetNames[(int)graphicsPreset], thresholdMs);
     Log::line(msg);
-    if (median <= thresholdMs || graphicsPreset == GraphicsPreset::Potato) return;
+    if (median <= thresholdMs || graphicsPreset == GraphicsPreset::Potato)
+        return;
     const GraphicsPreset to = bootModeOf((int)graphicsPreset, debugDisableMask) == kBootFull ? GraphicsPreset::Planetarium
-                                                                                            : GraphicsPreset::Potato;
+                                                                                             : GraphicsPreset::Potato;
     applyGraphicsPreset(to);
     snprintf(graphicsAutoNoticeText, sizeof(graphicsAutoNoticeText),
              "Frames took %.0f ms: switched to %s to keep this computer responsive. Change it in Settings > Display.",
