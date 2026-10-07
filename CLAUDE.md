@@ -4219,6 +4219,17 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
     pixels past 8 levels 15.6% -> 4.5% at Big Sur in that mode). Tried the same day and dropped: the glitter's
     along-view point size from the true footprint (cos floor 0.03, gCityFootA) — r35 0.31 -> 0.51%, city rise
     2.93 -> 3.10; a half-input-pixel upscale kernel — softer at 50% (detail -32%) for little.
+  - **Vertical motion (2026-10-06, user snapshot: Glasgow at night, "smears moving up and down over city
+    terrain"):** while the EYE moves, the resolve's moving-weight ramp runs over 0.1 -> 1 px of reprojection (it was
+    0.5 -> 4 px for every kind of motion; turns and pans keep that). Climbing, the ground's reprojection is 0.1-0.5 px
+    a frame, so the history sat at the still weight and was resampled at a fractional offset every frame — about ten
+    frames of resampling blur stacked on the 1-px lights. tstab (Glasgow, 60 m/s, 20 deg down, motion vs settled):
+    render scale 75% rise/fall 2.08/2.05 -> 1.67/1.66, 50% 2.74/2.73 -> 2.46/2.43; climb set p37 1.63/1.64 -> 1.55/1.62,
+    e38 1.20/0.72 -> 1.04/0.66, Irvine rise 2.88 -> 2.80; still set unchanged. **Measure motion with
+    `display.dynamic_resolution false`:** the user's settings have it on, and in a harness run (a GPU shared with other
+    apps) it dropped the scale mid-path — the same up path scored 2.3 and 5.4 in two runs. In the app it also drops
+    while moving (the moving cloud march costs more), and a lower scale is softer in motion: temporal upscaling only
+    recovers its detail when still (sharpness 4.7 settled vs 3.1 moving at 50%).
   Debugging notes: print the worst pixels' value series (lit in 1 of 8 or 16 frames = the jitter; any other period is
   something else) and A/B with the history off (`set display.sky_taa_weight 1`); `Copy-Item` keeps a file's old
   timestamp, so restoring a shader from a backup does NOT rebuild it (touch it) — identical-to-the-digit results

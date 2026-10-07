@@ -185,7 +185,14 @@ void main() {
             if (mx > 1.0 && !noClip) h = mix(c + v / mx, h, trail);
             // Motion (in pixels) raises the new sample's weight: a moving view keeps its detail.
             float mv = length((uvP - (vec2(p) + 0.5) / size) * size);
-            float w  = mix(pc.cam.z, pc.cam.w, smoothstep(0.5, 4.0, mv) * (1.0 - trail));
+            // While the EYE moves the ramp runs 0.1 -> 1 px (2026-10-06): every frame resamples
+            // the history at a fractional offset, and at the still weight (0.1) ~10 frames of that resampling stacked
+            // up. Climbing over a city at night (Q, ~60 m/s, looking 20 deg down) the reprojection is 0.1-0.5 px a frame
+            // and the 1-px city lights smeared into blotches (user snapshot, Glasgow; tstab rise 5.4). A turn or a pan
+            // keeps the old ramp (0.5 -> 4 px).
+            const bool  eyeMoves = dot(pc.eyeDelta.xyz, pc.eyeDelta.xyz) > 1e-4;
+            const float ramp = eyeMoves ? smoothstep(0.1, 1.0, mv) : smoothstep(0.5, 4.0, mv);
+            float w  = mix(pc.cam.z, pc.cam.w, ramp * (1.0 - trail));
             // A flash (lightning, a sprite, a glint): when the whole NEIGHBOURHOOD brightens past the history,
             // take the new frame at once — at weight 0.1 a flash lasting a few frames came out ~10x dimmer.
             // Jitter alternating across an edge leaves the 3x3 mean where it was, so edges still accumulate.
