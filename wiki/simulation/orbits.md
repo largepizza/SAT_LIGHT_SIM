@@ -47,7 +47,7 @@ the inputs to every attitude law (see [Attitude](attitude.md)).
 | J2 node regression for non-SSO shells | several deg/day | not modelled; only sun-synchronous orbits precess |
 | J2 apsidal and along-track effects | km per day | not modelled |
 | Drag, solar radiation pressure, third bodies | decay over months | not modelled |
-| Station-keeping, real phasing | n/a | phases are synthetic; formation rings are held by construction (below) |
+| Station-keeping, real phasing | n/a | phases are synthetic; formation rings fly passive relative orbits about their centres (below) |
 
 The positions are therefore **statistically** right for a shell (the right altitudes, planes and
 density), not a prediction of where a particular real satellite is. For brightness statistics, which is
@@ -120,16 +120,16 @@ node (Walker groups are not touched). The offset of the entry's \( j \)-th sun-s
 sequence that covers the range evenly ("even"), or \( f_j \) uniform at random ("random").
 
 The spread matters because of clusters. Without it, every shell of a sun-synchronous group shares the same
-two planes, and shells only 1.7 to 2.2 km apart in altitude, carrying formation rings 2 km in radius, overlap
-radially. Shells at different heights also move at different rates, so their rings slide through each
-other along the shared plane. Counted on the shipped Starmind roster (a separate rebuild of the same orbits,
-neighbour search at 12 instants), the number of pairs of satellites from **different** clusters within
-1 km of each other at one instant is:
+two planes, and shells only 1.7 to 2.2 km apart in altitude, carrying formation rings a few kilometres across,
+overlap radially. Shells at different heights also move at different rates, so their rings slide through each
+other along the shared plane. Counted on the Starmind shells flying rings 2 km in radius (a separate rebuild of
+the same orbits, neighbour search at 12 instants, without the per-cluster scatter), the number of pairs of
+satellites from **different** clusters within 1 km of each other at one instant is:
 
 | Layout | Close pairs |
 |---|---|
 | Sun-synchronous shells, nodes exactly on the terminator | about 13 000 |
-| ± 10 deg, even (the shipped value) | 26 |
+| ± 10 deg, even (the shipped spread) | 26 |
 | ± 30 deg, even (the filed tolerance) | 12 |
 | ± 30 deg, random | 25 |
 | The 30 deg Walker shells (stagger only, for comparison) | 30 |
@@ -141,23 +141,44 @@ at the same width.
 
 Walker, Disk and Shells planes can fly their satellites in **clusters** of \( C \) members, the clusters
 evenly spaced around the plane (a short last cluster takes the remainder). A cluster is either a **line**,
-members a fixed distance apart along the track, or a **ring**: a regular \( C \)-gon of radius \( \rho \) in
-the orbit plane, spanned by the along-track and radial directions. Member \( m \) sits at angle
-\( \theta_m = 2\pi m / C \) from the along-track direction toward the zenith, which gives it a phase offset
-and a radial offset
+members a fixed distance apart along the track at the plane's radius, or a **ring**: a passive formation in
+which every member flies the cluster centre's circular orbit plus a bounded relative orbit about it.
+
+**Ring formations.** Relative to a circular reference orbit, a nearby free orbit follows the
+Clohessy-Wiltshire (Hill) equations. Their bounded, drift-free solutions, written in the centre's radial
+(\( x \)), along-track (\( y \)) and cross-track (\( z \)) frame with \( \theta = u_c + \delta \), are
 
 \[
-u_m = u_c + \frac{\rho \cos\theta_m}{a_c}, \qquad \delta r_m = \rho \sin\theta_m,
+x = \tfrac{\rho}{2}\cos\theta, \qquad y = -\rho\sin\theta, \qquad z = k\,x,
 \]
 
-with \( u_c \) and \( a_c \) the cluster centre's argument of latitude and orbit radius. The member's
-position uses the radius \( a_c + \delta r_m \) (`R_sat`), but its mean motion is the **centre's**,
-\( n_c = \sqrt{GM/a_c^3} \) (`meanMot`); `SatOrbit::radialOffsetM` carries \( \delta r_m \) and the two are
-separate fields both on the GPU (`sat_orbit.comp`) and in the CPU evaluator (`satOrbitStateAt()`). A free
-Keplerian orbit at \( a_c + \delta r \) would drift along the track by about \( 3\pi\,\delta r \) per orbit
-relative to the centre, so a ring of free orbits would shear apart within a few revolutions. Sharing the
-mean motion keeps the polygon rigid: this is a station-kept formation, not a natural one, and it is exact by
-construction.
+with \( u_c \) the centre's argument of latitude and \( \rho \) = `cluster_radius_km`, the along-track
+semi-axis (the radial amplitude is \( \rho/2 \)). Member \( m \) of \( C \) takes the phase
+\( \delta_m = \delta_0 + 2\pi m / C \) from a per-cluster start \( \delta_0 \). The physics shows: a member
+below the centre moves faster and runs ahead, one above falls behind, and the whole formation turns once per
+orbit. The cross-track ratio \( k \) chooses the shape (`cluster_relative_orbit`):
+
+| Shape | \( k \) | The relative orbit |
+|---|---|---|
+| `circular` (default) | \( \sqrt 3 \) | a circle of radius \( \rho \) tilted 60 deg out of the orbit plane about the along-track axis: every member stays \( \rho \) from the centre, so the spacing never changes |
+| `projected_circular` | 2 | a circle seen from above, on the local horizontal |
+| `in_plane` | 0 | the 2:1 ellipse in the orbit plane |
+
+The offset is a closed-form function of \( u_c \), so it is exact at any sim time and reversible like the rest
+of the orbit. A formation member never tumbles, so `GpuSatOrbit` carries the three coefficients
+\( P = \tfrac{\rho}{2}\cos\delta \), \( Q = \tfrac{\rho}{2}\sin\delta \) and \( k \) in its tumble slots, flagged by
+`kGpuFormationBit` in `constIdx` (masked off where the index selects the enable and highlight bits), and the
+record stays 64 bytes. `sat_orbit.comp` adds `formationOffset()` after the exact `orbitPhase()`;
+`satOrbitStateAt()` mirrors it in double, and magnitude traces carry it (`orbit_formation`,
+`orbit_formation_pqk`).
+
+**Per-cluster scatter.** A Shells entry can scatter its clusters so the constellation does not draw perfect
+lattices: each cluster (or each satellite, without clusters) takes a deterministic offset, uniform within ±
+the given amount, in altitude (`cluster_alt_jitter_km`), along-track phase (`cluster_phase_jitter`, a fraction
+of the gap between clusters), node (`cluster_raan_jitter_deg`) and inclination (`cluster_incl_jitter_deg`).
+The offsets come from an integer hash of the entry and cluster index, not from `rand()`, so the order of other
+constellations in the file does not move them. The members of a ring share their cluster's offsets: the
+formation stays intact. A Disk's ring formations take one `alt_jitter_km` draw per cluster for the same reason.
 
 ### Randomness
 
@@ -244,7 +265,8 @@ without padding). Only genuinely per-satellite data lives here; anything constan
 | 48 | `tumbleAxisZ`, `alignTerminator`, `typeIdx`, `constIdx` |
 
 `constIdx` lets the shader skip a satellite whose constellation is disabled (a 32-bit mask, so at most
-32 constellations can be toggled individually).
+32 constellations can be toggled individually). Its top bit flags a formation-ring member, whose tumble slots
+then hold the relative orbit's \( P, Q, k \) ([Formation clusters](#formation-clusters)).
 
 ### Horizon cull and the compact list
 
@@ -360,15 +382,17 @@ Commission (FCC) in application SAT-LOA-20260108-00016, filed 29 May 2026. <!-- 
 
 The filed rows are per-group **maxima**: they sum to 1 198 120 satellites, against a requested total of
 1 000 000. The roster scales each row's satellites per plane by \( 10^6 / 1\,198\,120 \approx 0.8346 \) and
-rounds down to whole clusters of 8, which flies 988 672 satellites. Each cluster is a ring of 8 in the orbit
-plane with a radius of 2 km (`cluster_radius_km` 2.0 in the roster; the field defaults to 0.2 km when absent), and the X-ring's planes spread their nodes over ± 10 deg of the terminator ("even"), inside the
+rounds down to whole clusters of 8, which flies 988 672 satellites. Each cluster is a `circular` ring formation
+of 8 with \( \rho \) = 0.35 km (700 m across, neighbours 268 m apart; the formations are reported to be under
+750 m), scattered by 0.25 km in altitude, 0.25 of the gap in phase, 0.15 deg in node and 0.03 deg in
+inclination. The X-ring's planes spread their nodes over ± 10 deg of the terminator ("even"), inside the
 ± 30 deg node tolerance in the filing; each plane keeps its offset from the terminator node. The
 sun-synchronous and the 30 deg groups are two entries, each a whole filed table: the enable and highlight
 masks have one bit per entry and only 32 bits, so a table is never split into one entry per shell.
 
 !!! note "Modelling choice"
-    The ring of 8 in the orbit plane follows SpaceX's published visualization; the filing's text speaks of
-    clusters of about ten satellites.
+    The ring of 8 follows SpaceX's published visualization; the filing's text speaks of clusters of about
+    ten satellites. The relative orbit and the scatter are this model's choices, not filed values.
 
 The hard cap is `MAX_SATELLITES` = 10 000 000; GPU buffers are sized to the loaded roster, about
 100 bytes per satellite. Larger stress rosters live in `data/custom/`.
@@ -383,7 +407,7 @@ The constellation list, each constellation's enabled flag and highlight flag are
 
 | File | Function / symbol |
 |---|---|
-| `src/simulations/SatelliteSim.cpp` | `loadDefinitions()` (the `Shells` groups and cluster fields), `buildOrbits()` (distributions, `clusterPhase`, node spread), `computeSSOInclination()`, `uploadSatOrbits()`, the rebake check and `deltaT` split in `recordCompute()` |
+| `src/simulations/SatelliteSim.cpp` | `loadDefinitions()` (the `Shells` groups and cluster fields), `buildOrbits()` (distributions, `clusterPhase`, `setFormation`, the per-cluster scatter, node spread), `computeSSOInclination()`, `uploadSatOrbits()`, the rebake check and `deltaT` split in `recordCompute()` |
 | `src/simulations/SatelliteSim.h` | `GpuSatOrbit`, `GpuSatTypeHeader`, `GpuSatListHeader`, `kOrbitRebakeDays` |
-| `src/simulations/SatPhotometry.cpp` | `satOrbitStateAt()` (CPU double mirror) |
-| `shaders/sat_orbit.comp` | `orbitPhase()`, `satEciAt()`, `processSatellite()`, `main()` (workgroup append) |
+| `src/simulations/SatPhotometry.cpp` | `satOrbitStateAt()` (CPU double mirror, formation offset included) |
+| `shaders/sat_orbit.comp` | `orbitPhase()`, `formationOffset()`, `satEciAt()`, `processSatellite()`, `main()` (workgroup append) |

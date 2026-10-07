@@ -181,8 +181,13 @@ A mesh has no single point to glare from; its light is wherever its surfaces gli
    order rather than at the Sun's image.
 2. `glare_find.comp` (only in frames that drew meshes, before the blur) lists every 5 × 5 local maximum of the
    alpha whose 5 × 5 sum passes the threshold, at most 64 (`GpuGlintList`, `include/glint_list.glsl`). The
-   position is the light-weighted centroid of the 3 × 3, so the glare moves smoothly rather than a texel at a
-   time.
+   position is found to a fraction of a texel, since a texel of this quarter-res target is 4 screen pixels and a
+   glare placed on texel centres would hold still and then jump. The Sun's image is close to a Gaussian lobe,
+   whose logarithm is a parabola, so a parabola through the log light of the peak texel and its two neighbours
+   on each axis gives the true peak. On a flat-topped glint (the Sun's image in a mirror can be a streak at
+   nearly one brightness) the peak is blended toward the centroid of the light within 10 % of the peak over a
+   9 × 9 window, by how much such light there is besides the peak texel's own, so the glare sits mid-plateau
+   rather than on its first texel, and a lone peak keeps its parabola position.
 3. `glare_mesh.vert/.frag` draw them with the same profile, through their own indirect arguments.
 
 **Point-like meshes.** While a mesh is still small on screen (below `kGlarePointPx` = 12 px, fully resolved by

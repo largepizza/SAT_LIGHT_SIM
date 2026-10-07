@@ -39,9 +39,15 @@ In the march a rain sample is cheap (no fine steps, one sample standing for four
 sub-degree diffraction spike plus a broad refracted lobe, with the primary and secondary rainbows
 ([The cloud march: atmospheric optics](march.md#atmospheric-optics)). Lit through the cloud above, a shaft is dark
 under a Cb and bright at its sunlit edge, which is where rainbows show: at storms near the terminator, with a low
-Sun behind the observer. A clear bow needs dense shafts: at the default "Rain" (0.71) it barely shows, and it
-reads well from about 1.5 up. Where the shafts' air is below freezing they are snow, which shows faint ice optics
-and no bow.
+Sun behind the observer. A clear bow needs dense shafts: below a "Rain" of about 1.5 it barely shows, so the
+default is 3.0. Where the shafts' air is below freezing they are snow, which shows faint ice optics and no bow.
+
+The Reflect beams light the shafts at night by the same rule (`beamFinish()`, see
+[The cloud march](march.md#night-city-light-and-reflect-beams)). Their phase follows the temperature of the
+shafts' air, 500 m above the ground under the eye (`cv2.precip.w` is its liquid share): liquid rain shows the bow
+opposite the satellites; snow takes the snow phase, broad lobes with a faint 22 deg halo and sundogs around the
+satellites and no bow. Light pillars rising from the beams' ground spots (ice plates reflecting the lit snow
+below) are not modelled.
 
 ## Precipitation at the eye
 
@@ -112,8 +118,10 @@ box exactly. Integrating rather than evaluating \( v\,t \) is what lets the spee
 with \( v\,t \) every change of v or of the wind would move every drop at once. Pausing stops the rain;
 reversing time runs it backwards.
 
-- **Fall.** "Rain fall speed (x)" (3.0) × each drop's terminal velocity, × up to 1.35 in heavy rain (rate 0.6
-  and up).
+- **Fall.** "Rain fall speed (x)" (5.0) × each drop's terminal velocity, × up to 1.35 in heavy rain (rate 0.6
+  and up). Ice particles (snowflakes, diamond dust) fall on a phase of their own (`cv2.snowMotion`) at that factor
+  capped at 1.5, and not faster in heavy precipitation, so snow still drifts down at about 1-2 m/s instead of
+  streaking like rain.
 - **Wind.** "Rain wind (x ground wind)" (0.4) × 0.4 × the wind aloft ("Wind"), toward the east, plus a
   shower's **outflow**: "Storm wind (m/s)" (11) at rain rate 0.6 and above, blowing away from the rain map's
   rain-weighted centre (the shower's core; when the core is within about 40 m of the eye the outflow takes the
@@ -156,6 +164,11 @@ them agree. Thread 1 of the lightning pass computes the terms once per frame:
   at night, and the light of every lightning flash at its distance, so a close strike in a downpour lights every
   drop.
 - `cv2RainKeyDir`: the direction to the key light, and the liquid share.
+- `cv2.beamEye`, `cv2.beamEyeDir` (computed on the CPU, in double, from the cloud-light list): the Reflect beams'
+  irradiance at the eye in Suns × "Beam light on cloud" × the night share, and its irradiance-weighted direction
+  toward the satellites. It is the march's `beamGather()` evaluated at the eye: the beam's disk profile, its mean
+  irradiance and the cloud above the eye. Standing in a beam, the drops show the bow opposite the satellites and
+  flakes and ice crystals glint around them, through the particles' own phase like the key light.
 
 Copies of the march's `sunTransmit`, `sunColorAt` and `skyZenithAt` live in `cloud_v2_lightning.comp` for this
 and must be kept in step. The terms are divided by the frame's white balance, because the particles are drawn
@@ -344,7 +357,8 @@ Over dry land: the map clear over about 100 km, not sea, not rain. Dust varies g
 the direction at roughly 400 to 1300 km) and in plumes on the coarse cluster field, and falls off exponentially
 with height (scale "Dust height", 1500 m). Its ground extinction in a full plume is "Dust density"
 (0.00025 /m, about 15 km visibility) × "Dust amount" (0.5). Dust is mostly a terrestrial effect, so seen from
-above it fades to a quarter between 15 and 80 km of eye altitude.
+above it fades to 8 % between 15 and 60 km of eye altitude; aircraft heights see all of it. From orbit at night
+the city-lit dust would otherwise draw a soft tan blob round every desert city.
 
 ### Ice fog and diamond dust
 
@@ -376,7 +390,7 @@ dropped; from above, the near end, keeping the dense part.
   \( L = L_\text{near} + T_\text{near}(L_\text{cloud} + T_\text{cloud} L_\text{far}) \).
 - **Skipped under opaque cloud.** When the eye is above the band and the ray's cloud transmittance has fallen
   below 0.01, the fog march does not run: everything beneath an opaque cloud is hidden, and the dust above it is
-  faint (a quarter seen from above). In an orbit view of a storm this saves a few ms.
+  faint (8 % seen from orbit). In an orbit view of a storm this saves a few ms.
 
 Knockout bit 2048 switches all three off; the Planetarium and Potato presets set it.
 
@@ -448,12 +462,12 @@ Weather tab (keys under `clouds_v2`):
 
 | Label | Key | Default |
 |---|---|---|
-| Rain | `rain_amount` | 0.71 (0 = no shafts, no drops) |
+| Rain | `rain_amount` | 3.0 (0 = no shafts, no drops) |
 | Drops at the eye (visibility) | `rain_streaks` | 2.63 (1 = physical, up to 10) |
 | Drop reach (m) | `drop_reach_m` | 33 (4 to 64) |
 | Drop particles (x1000, nearest box) | `rain_particles_k` | 16 |
 | Drop shutter (ms) | `rain_shutter_ms` | 33 |
-| Rain fall speed (x) | `rain_fall_speed` | 3.0 |
+| Rain fall speed (x) | `rain_fall_speed` | 5.0 (0.3 to 10; snow at most 1.5) |
 | Rain wind (x ground wind) | `rain_wind_gain` | 0.4 |
 | Storm wind (m/s) | `rain_storm_wind_mps` | 11 |
 | Wind gusts | `rain_gusts` | 1.38 |

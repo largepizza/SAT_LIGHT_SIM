@@ -284,6 +284,14 @@ Motion and consistency tools, each with `gen` (write a script), a run with `run.
 | `tools/harness/flicker.py` | **still-view flicker**: per-pixel temporal statistics of a recorded still sequence (mean and p99 per-pixel standard deviation, the share of pixels past 8 levels, an optional heat map) |
 | `tools/harness/climb.py` | **climb consistency**: climbs straight up from a snapshot through 15 altitudes (8 to 2500 km) and correlates the cloud detail of each frame, reprojected and filtered, with the next and with fixed references. Every level of detail should be a filtered version of the one below it, not a different placement |
 
+`tools/harness/glare_track.py <captures dir> <prefix> [--plot out.png]` follows a mesh glare over a sequence of
+captures and compares it with where the CPU puts the Sun's image in the selected satellite's mirror. The glare's
+position comes from the sidecar's `selection.glints` (the main view's mesh glint list: each glint's position in
+pixels and its effectFlare) when present, else from the point the glare's spikes radiate from in the image; the
+Sun's image is `selection.mesh.sprite_px`. A glare that sits on its glint follows the predicted track. Its
+scenes are `scripts/mirror_glare.satcmd`, a Reflect mirror dollied in from 500 m, and
+`scripts/city_orbit_blobs.satcmd` checks the night side's cities from high orbit.
+
 `tools/harness/find_cloud_spots.py [ISO time]` lists cloudy benchmark locations for a fixed sim time (the cloud
 map drifts, so a spot is tied to a time). `tools/harness/lightscan.py` decodes the terrain lighting debug views.
 `tools/perf_analysis/live_perf_table.py` tabulates `perf name=` results.

@@ -118,7 +118,12 @@ Per step, with \(\tau_\text{cam}\) the column back to the eye:
   (`skyZenithSky()`), faded over the first few degrees of Sun depression there. Single scattering alone leaves
   the air beyond the terminator black, and the horizon facing away from a just-set Sun would read as a dark
   band. Off from orbit, where the terminator gate owns the twilight air.
-- **City glow**: the night map under the sample, attenuated toward the eye.
+- **City glow**: the night map under the sample, attenuated toward the eye. From the ground and aircraft the
+  map is read at mip 4 (about 80 km texels): a horizon glow gathers the light of a whole region. Air at height
+  h is lit by the cities within a few h, so seen from high orbit (blended in over 800-3000 km of eye altitude)
+  the mip follows the sample's height, \( \log_2(3h / 4.9\ \text{km}) \) clamped to 0-4 (about 1.5 at the
+  8 km scale height): a town's glow is a halo the shape of the town rather than a disc some 150 km wide. Below
+  800 km a 10-20 km texel spans tens of pixels, and bilinear filtering would draw it as squares.
 - **Airglow**: the green (96 km) and sodium (90 km) bands, gated by the sample's own geographic night. The red
   band is marched at half resolution in `cloud_march.comp`. See [Aurora and airglow](aurora-airglow.md).
 - **Front copies**: the share of each step in front of `tAirFrontM` also goes to separate "front"
@@ -342,8 +347,13 @@ flowchart LR
     - **History**: a 9-tap Catmull-Rom read (bilinear alone blurs a little more every frame).
     - **Variance clip** toward the mean, a box of 1.25 σ, so anything that moves on its own (waves, clouds,
       beams, twinkling lights) cannot ghost. It is skipped when nothing moved (below).
-    - **Weight**: the new sample's weight goes from "still" (0.1) to "moving" (0.35) over 0.5-4 px of
-      reprojection motion. When the neighbourhood's mean brightens past the history (lightning, a sprite) the
+    - **Weight**: the new sample's weight goes from "still" (0.1) to "moving" (0.35) by the larger of two
+      ramps: the total reprojection motion over 0.5-4 px, and the **parallax** over 0.1-1 px. Parallax is the
+      reprojection's offset from where a pure rotation would put the pixel, i.e. the eye's own movement. A
+      rotation reprojects exactly, so it can keep the long history; but every frame of eye motion resamples
+      the history at a fractional offset, and at the still weight about ten frames of that resampling stack
+      up. Climbing or descending over a city at night the ground moves only 0.1-0.5 px a frame, and without
+      the parallax ramp the pixel-sized lights smear into blotches. When the neighbourhood's mean brightens past the history (lightning, a sprite) the
       new frame is taken at once; at weight 0.1 a flash a few frames long would come out about ten times
       dimmer. When upscaling, the weight is then multiplied by the Gaussian weight of the nearest input sample:
       a sample that landed far from the pixel moves it little, and over the 16 phases every output pixel
@@ -399,7 +409,7 @@ plain stretch.
 "Render scale" (50 %-100 %, Display tab) shrinks the background, not the point sources: satellites, stars,
 planets, city light sprites, satellite meshes and the UI always render at native resolution. What it scales,
 how the presets set it, the measured gains and the **automatic render scale** (`updateDynamicResolution()`,
-off by default: 5 % steps that keep the GPU frame under 0.9 × the target frame time) are on
+on by default: 5 % steps that keep the GPU frame under 0.9 × the target frame time) are on
 [Weak-hardware tiers](hardware-tiers.md#render-scale). For the sky pass:
 
 - **The compute passes follow it.** With "Clouds follow render scale" on (the default), `scene_depth.comp`,
@@ -459,10 +469,10 @@ mirror-smooth pixel of the current instance; its view direction is the reflected
 | Zodiacal gain (Atmosphere) | `clouds.zodiacal_gain` | 0.01 |
 | Zodiacal width (deg) (Atmosphere) | `clouds.zodiacal_width_deg` | 10 |
 | Orbit colour grade (Atmosphere) | `clouds.orbit_grade` | 1.0 |
-| Exposure (EV) (Clouds) | `clouds_v2.exposure_ev` | 0 |
-| Highlight roll-off (Clouds) | `clouds_v2.highlight_rolloff` | 0.5 |
-| Auto exposure (day) (Clouds) | `clouds_v2.auto_exposure` | 1.0 |
-| White balance (Clouds) | `clouds_v2.white_balance` | 0.6 |
+| Exposure (EV) (Photometry) | `clouds_v2.exposure_ev` | 0 |
+| Highlight roll-off (Photometry) | `clouds_v2.highlight_rolloff` | 0.5 |
+| Auto exposure (day) (Photometry) | `clouds_v2.auto_exposure` | 1.0 |
+| White balance (Photometry) | `clouds_v2.white_balance` | 0.6 |
 | Extinction (Photometry) | `photometry.extinction_coeff` | 0.079 |
 | Temporal anti-aliasing (Display) | `display.sky_taa` | on |
 | (no UI) | `display.sky_taa_weight` / `display.sky_taa_weight_moving` | 0.1 / 0.35 |

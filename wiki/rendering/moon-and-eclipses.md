@@ -194,7 +194,7 @@ only near totality and within 9 solar radii of the Sun (`kCoronaMaxR`), and scal
 
 | UI label (tab) | `settings.json` key | Default |
 |---|---|---|
-| Moon size (x real) (Atmosphere) | `clouds.moon_size` | 2.5 |
+| Moon size (x real) (Photometry) | `clouds.moon_size` | 2.5 |
 | Moon gain (Terrain): the moonlight's brightness on terrain and clouds | `clouds.moon_gain` | 0.0053 |
 
 The eclipse model has no settings; its constants (`kEclipseSkyBlurKm` 180, `kEclipseSideKm` 80,

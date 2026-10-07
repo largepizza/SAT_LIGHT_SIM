@@ -178,9 +178,11 @@ The night layers end at ground footprints set on the Night lights tab, each fadi
 
 ### Under clouds
 
-Seen through cloud, the **finished** light is blurred toward the map's mean at mip "City light blur LOD", by the
-cloud's opacity in front, and the pools fade. Blurring the map the pattern reads instead would spread a city's
-light onto the desert beside it and draw street grids there.
+Seen through cloud, the city lights are not blurred: they are attenuated by the cloud composite like everything
+else behind a cloud, and the clouds carry the cities' glow themselves ("City light on clouds", the march's city
+upwelling). Light that really diffuses through a deck spreads over about the deck's thickness, a few km, which is
+less than one texel of the night map. Mixing the lights toward a coarse mip of the map by the cloud's opacity
+would turn every city under thin or broken cloud, seen from orbit, into a grey wash with the cloud's outline.
 
 ## City light sprites
 
@@ -368,7 +370,6 @@ Night lights tab unless noted; all under `clouds` in `settings.json`.
 | Street light share (near) | `city_street_share_near` | 0 | streets vs glitter close up |
 | Street light share (far) | `city_street_share_far` | 0.13 | streets vs glitter as the grid fades |
 | City light on clouds | `ambient_gain` | 1 | the clouds' city glow ([Clouds](clouds/march.md)) |
-| City light blur LOD | `city_light_blur_lod` | 8.1 | blur of the lights seen through cloud |
 | Night sky light | `terrain_night_sky_light` | 0.2 | see [Terrain](terrain.md#lighting) |
 | Ground pattern range (m/px), Terrain tab | `ground_pattern_range_m` | 800 | where farms end |
 | (none) | `solar_arrays` | true | solar PV parks |

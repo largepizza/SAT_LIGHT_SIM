@@ -83,7 +83,10 @@ to and inspect as real 3D models, and a sim clock that runs on real UTC. Accepte
   the camera onto a satellite as it crosses your sky while you stay on the ground.
 - **SpaceX Starmind orbital data centers.** The roster follows SpaceX's May 2026 FCC filing: sun-synchronous
   shells whose planes cross at the equator (the "X-ring") and 30-degree shells, about 990,000 satellites flying
-  in formation rings of eight.
+  in formation rings of eight, 350 m in radius. Each ring is a real passive formation (a Clohessy-Wiltshire
+  relative orbit about its centre): the lower members run ahead, the higher fall behind, and the ring turns once
+  per orbit. Clusters are scattered a little in altitude, phase, node and inclination, so the constellation does
+  not draw perfect lattices.
 - **Bulk export** of simulated observations for a satellite or a whole constellation (Settings > Photometry).
 - **Satellite glints on the sea** have their own gain and floor (Ocean tab).
 
@@ -146,11 +149,20 @@ to and inspect as real 3D models, and a sim clock that runs on real UTC. Accepte
 - Glare defaults are the distance-tuned values; glare grows when the camera is close to a satellite.
 - The cinematics, bookmarks and settings buttons moved from the time bar to the bottom-right panel; the
   Camera settings tab is now the Controls tab's Mouse section.
+- Exposure, auto exposure, highlight roll-off, white balance and the Moon's size are in a new **Exposure and
+  Moon** section of the Photometry tab (settings keys unchanged). The "City light blur LOD" slider is gone.
 
 ### Fixed
 
 - Far city lights no longer blink at low angles under temporal AA; the sea no longer shows a fine white static
   under broken cloud; waves no longer leave trails in cinematic playback.
+- Climbing or descending over a city at night no longer smears the lights (temporal AA under slow vertical
+  motion).
+- Cities on the night side seen from orbit are no longer grey, cloud-shaped blobs: the lights under cloud are
+  not blurred any more, the air's city glow from high orbit follows each town's shape, and dust fades out from
+  orbit.
+- The glare on a mirror's glint follows the Sun's image in it smoothly (sub-texel placement) instead of moving in
+  4-pixel jumps.
 - Render-only satellite parts (fittings, trusses) no longer seed bloom or glare.
 - Beam-lit snow shafts no longer show a rainbow (the beams lit every precipitation shaft as rain); snowflakes no
   longer fall at the rain's speed.
@@ -165,8 +177,9 @@ to and inspect as real 3D models, and a sim clock that runs on real UTC. Accepte
   kinematic trees with hinges and pivots, render-only parts, open lattices, provenance blocks. See
   `docs/CONSTELLATION_MODDING.md`.
 - **New roster features.** `"distribution": "Shells"` with a `groups` table (Walker or sun-synchronous groups),
-  formation clusters (`cluster_size`, `cluster_shape` line or ring), and per-plane node spread
-  (`raan_spread_deg`, `raan_spread`).
+  formation clusters (`cluster_size`, `cluster_shape` line or ring, `cluster_relative_orbit` for rings), per-cluster
+  scatter (`cluster_alt_jitter_km`, `cluster_phase_jitter`, `cluster_raan_jitter_deg`, `cluster_incl_jitter_deg`),
+  and per-plane node spread (`raan_spread_deg`, `raan_spread`).
 - **Reflector targets** carry a `"kind"` (`solar`, `agriculture`, `daylight`); solar sites become parks.
 - **SatModelTool** (`tools/sat_model_tool/`): bake, validate, OBJ export, self-tests, benchmark runs
   (SatBench), trace replay, material overrides. Nine published photometry datasets in `data/benchmarks/`,

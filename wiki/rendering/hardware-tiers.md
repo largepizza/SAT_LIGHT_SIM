@@ -207,19 +207,23 @@ storm views: Low 10-14 ms, Medium 14-18 ms.
 
 ### Automatic render scale
 
-"Automatic render scale" (`updateDynamicResolution()`, off by default) keeps the GPU frame under 90% of the
+"Automatic render scale" (`updateDynamicResolution()`, on by default) keeps the GPU frame under 90% of the
 target frame rate's frame time; the CPU's share comes on top. It models the frame as 30% fixed cost plus 70%
 that scales with the square of the render scale. When the smoothed GPU frame runs over budget it steps down as
 far as the model says in one go (to a 5% step, no lower than "Lowest render scale"), then waits 0.75 s. It
 steps up one 5% step at a time, at least 1.5 s apart, and only when the step is predicted to stay under 85% of
 the budget, so it settles instead of oscillating. It pauses while an HQ photo is being rendered.
 
+A moving view costs more than a still one (the cloud march leaves its sparse grid for full rate), so the scale
+drops while the camera moves, and the temporal upscaler recovers the detail only once the view is still: a lower
+scale reads softer in motion than in a still frame.
+
 ### Settings
 
 | UI label (Display tab) | `settings.json` key | Default |
 |---|---|---|
 | Render scale | `display.render_scale` | 1.0 (the preset sets it) |
-| Automatic render scale | `display.dynamic_resolution` | off |
+| Automatic render scale | `display.dynamic_resolution` | on |
 | Target frame rate | `display.dynamic_target_fps` | 60 |
 | Lowest render scale | `display.dynamic_min_scale` | 0.5 |
 | Clouds follow render scale | `display.clouds_follow_render_scale` | on |

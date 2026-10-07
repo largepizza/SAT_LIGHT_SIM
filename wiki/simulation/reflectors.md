@@ -181,6 +181,12 @@ The irradiance does not fall with range for a fixed spot area, but the spot grow
     the physical disk with a limb-darkened, 2%-wide edge: a real mirror's figure and the air blur the edge.
     See [Weather, rain, lightning, fog](../rendering/clouds/weather.md).
 
+The same irradiance lights what is in the beam's air: cloud, rain and snow shafts (with the bow opposite the
+satellites in rain and ice optics around them in snow), and the rain and snow particles around an observer
+standing in a beam, for which the CPU sums the beams' irradiance at the eye. See
+[Weather: rain shafts](../rendering/clouds/weather.md#rain-shafts) and
+[Precipitation at the eye](../rendering/clouds/weather.md#light).
+
 ## Cloud occlusion of a beam
 
 `beam_self_march.comp` runs right after the orbit pass, one thread per beam. It traces the beam's
