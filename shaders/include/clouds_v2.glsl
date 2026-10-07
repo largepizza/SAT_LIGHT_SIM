@@ -109,7 +109,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
                           // adaptive-tile overlay; the march then sees view 0), w free
     vec4  sunE;           // xyz the Sun's direction, Earth-fixed (fog's burn-off), w free
     vec4  rainE, rainN, rainU;  // the rain lattice's frame: xyz its axes (ECEF), w the eye in it (m, mod 1024)
-    vec4  precip;         // x the air temperature at the eye (deg C): rain / sleet / snow; y sim time mod 600 s
+    vec4  precip;         // x the air temperature at the eye (deg C): rain / sleet / snow; y sim time mod 600 s; w the shafts' liquid share (500 m over the ground)
     vec4  anchorMorph;    // review 17: the morphology texture's anchor (xyz frac(anchor / period), w 1 / period)
     vec4  morph;          // x its share of the placement (vs the cluster Perlin), y "Imagery share" (review 19), z "Foveated full rate (radius)" (review 22, cloud_v2_tiles.comp), w 2^-"Far-field sharpness"
     vec4  farLight;       // review 18: the far cloud layer's key-light and sky-light gains (cloud_v2_far.comp);
@@ -128,6 +128,11 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  rainMotion, rainWind;
     // 2026-10-05: lightning from whole storms. x "Storm lightning (flashes/min/cell)" (cells of ~20 km), yzw spare.
     vec4  lightning2;
+    // 2026-10-06: the Reflect beams' light at the eye (CPU, SatelliteSim.cpp), for the rain / snow particles: beamEye x the
+    // irradiance (Suns) x "Beam light on cloud", y 1 - dayness; beamEyeDir xyz the direction to the satellites (ENU).
+    vec4  beamEye, beamEyeDir;
+    // 2026-10-06: the snow's own fall: x its phase (as rainMotion.x), y its reference speed now (flakes are not "Rain fall speed").
+    vec4  snowMotion;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

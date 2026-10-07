@@ -527,7 +527,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (`updateRainMotion`, 2026-10-05; `cv2.rainMotion` / `rainWind`, wrapped to 1024 m): the fall phase (a drop's
   offset = its terminal speed, quantised to 1/64 m/s, x the phase) and the wind drift of rain and of snow, so speed
   and wind change smoothly (the first cut used v x t with t up to 600 s: both had to be constants). Fall = "Rain
-  fall speed (x)" (`rain_fall_speed` 1.3, slot 263) x 1.35 at rain rate 0.6+. Wind = "Rain wind (x ground wind)"
+  fall speed (x)" (`rain_fall_speed` 5, 0.3-10, slot 263) x 1.35 at rain rate 0.6+; ICE (flakes, diamond dust) has
+  its own phase (`cv2.snowMotion`, 2026-10-06) at that factor capped at 1.5 (at 5x the flakes streaked like rain).
+  Wind = "Rain wind (x ground wind)"
   (`rain_wind_gain` 1.5, slot 264) x 0.4 x the wind aloft, toward the east, + a shower's OUTFLOW "Storm wind (m/s)"
   (`rain_storm_wind_mps` 14, slot 265, full at rate 0.6) away from the rain map's rain-weighted centre, in gusts
   ("Wind gusts" `rain_gusts` 1, slot 266: ~4 s noise, +-20-60%, +-15 deg). The user's storm snapshot (profile_log
@@ -553,7 +555,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   into a shaft with time PAUSED: the clouds drift ~40 m/s and outran a timed walk). Cost ~0.35 ms at the
   defaults (496k instances, mostly culled in the vertex shader), +0.45 at 64 m; the cloud march lost ~1 ms
   without the old drops. Not modelled: the volume still marches the rain within the particles' reach (tau
-  ~0.02-0.05, a slight double count); lightning does not light the drops. **Precipitation type**:
+  ~0.02-0.05, a slight double count). Lightning lights the drops (thread 1 adds each flash to `cv2RainAmb`), and so
+  do the **Reflect beams the eye stands in** (2026-10-06): the CPU evaluates beamGather at the eye from the
+  cloud-light list (`cv2BeamEyeIrr` / `cv2BeamEyeDir`, SatelliteSim.cpp after the emit; disk profile, Suns, the
+  beam's block altitude/opacity) into `cv2.beamEye` (x irradiance x "Beam light on cloud", y 1 - dayness) /
+  `beamEyeDir`, and rain_particles.vert lights every particle by it through the same phase (`dropPhase`: drops show
+  the bow opposite the satellites, flakes and ice crystals glint and halo around them). Harness `state` ->
+  `clouds_v2.rain.eye_temp_c / shaft_temp_c / beam_eye_irr_suns / beam_eye_dir_enu`. **Precipitation type**:
   `cv2.precip.x` = the air temperature at the eye (`SatelliteSimCloudsV2.cpp`: -18 + 45 cos(lat)^1.5 at sea
   level, + the season swing, - 6.5 C/km); snow below ~-1 C, rain above ~2.5 C, sleet between. Only the eye's
   precipitation changes type. The `rain` ambience driver takes the liquid share (`cv2EyeTempC`) and the rain
@@ -566,6 +574,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   swing is 0.25 x |lat|, at most 15 C — 0.35 x |lat| made the Antarctic plateau rain in November) (cloud_v2_march.comp, per ray): below freezing ~500 m up (the eye's temperature,
   6.5 C/km), the rain phase's bows give way to faint ice optics (sundogs, a weak 22 degree halo, a pillar
   under a low Sun) — a snow shower's big aggregates scatter broadly; only its few plates make optics.
+  **The beams' light follows the same rule** (2026-10-06, `beamFinish`; `cv2.precip.w` = the shafts' liquid share,
+  CPU, from the same temperature): until then every beam-lit shaft took the rain phase, and the user's McMurdo
+  view (mid-April twilight, -23 C at 384 m and in the shafts' air) showed a bright "satbow" opposite the Reflect
+  satellites in a snow shower. Snow gives the snow phase (no bow; a faint halo and sundogs around the satellites).
+  `cv2PillarOptics` gives nothing for a source above ~25 deg, so beams make no pillar; a real light PILLAR from a
+  beam's ground spot (plates reflecting the lit snow below) would need the spots as light sources in the fog/snow
+  march — not built.
 - **Per-layer scales (pass 10):** the shape period ("Shape period (m) - low cloud") no longer sets the
   cirrus fibres (`cv2CirrusPeriodM`, "Cirrus period") or the altocumulus (`anchorMid`, "Mid layer
   period"); the mid layer has its own density (`atmo.z`) and the anvils only "Anvils" (neither reads
@@ -1608,8 +1623,14 @@ follow mode is a free camera at the camera's place.
   no rendering settings on purpose: a Go must never rewrite the user's settings.json. **Rebuild them with
   `tools/harness/scripts/default_bookmarks.satcmd`** (header: the run.py line and the copy into data/bookmarks); the
   storm phase comes from harness `drift phase=` (`drift default` = the compiled-in offset), and `bookmark add id=`
-  replaces a seeded default. The Venezuela rainbow is framed from the user's snapshot (record 40, 2026-10-04, then at
-  rain 3.0): at the shipped `rain_amount` 0.71 the bow barely shows (~1.5 needed).
+  replaces a seeded default. The Venezuela rainbow is framed from the user's snapshot (record 40, 2026-10-04, at
+  rain 3.0 — the shipped `rain_amount` since 2026-10-06). **The list (2026-10-06, the user's picks): Great
+  Australian Eclipse, Blood Moon from Anchorage (14:10 UTC, the Moon ~29 deg up in the WSW over the city, 60 m up),
+  Solar Storm (the old "Aurora from Orbit"), Beam-lit Snow over Antarctica (the user's "Satbow over Antartica" at
+  McMurdo: the bow was the beams lighting snow as rain, fixed the same day), Rainbow over Venezuela, Starmind
+  Formation Rings.** Removed: Reflect Orbital over Anchorage, AI Satellites at Twilight, Los Angeles by Night,
+  Sunset from Orbit, Blood Moon over Alice Springs (Restore no longer re-adds them; a user list that has them keeps
+  them).
 
 ## Loading screen (2026-09-26)
 

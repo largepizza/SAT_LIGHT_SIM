@@ -2378,6 +2378,37 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         lastClusterLightCount = easeAndEmit(trackedClusters, kMaxClusterCloudLights);
         lastIndividualLightCount = easeAndEmit(trackedIndividuals, kMaxIndividualCloudLights);
 
+        // The beams' light AT THE EYE (2026-10-06), for the rain / snow particles drawn there (rain_particles.vert):
+        // cloud_v2_march.comp's beamGather evaluated at the eye itself (posENU is eye-relative, so the eye is at
+        // -posENU from each ground point): the disk profile, the mean irradiance in Suns, the cloud above the eye.
+        {
+            const double invW = beamGain > 0.0f ? 1.0 / (1361.0 * (double)beamGain) : 0.0;
+            const double hEye = (double)obsPosLocalForLights.z - 6371000.0;
+            const double cut = 1.15;   // == kBeamDiskCut (beam_cloud_lights.glsl)
+            double Es = 0.0;
+            glm::dvec3 dS(0.0);
+            for (uint32_t i = 0; i < cloudLights.count; ++i)
+            {
+                const GpuBeamCloudLight &e = cloudLights.entries[i];
+                const glm::dvec3 s(e.dirToSource);
+                const glm::dvec3 toP = -glm::dvec3(e.posENU);
+                const glm::dvec3 perp = toP - s * glm::dot(toP, s);
+                const double R = std::max((double)e.footprintRadM, 100.0);
+                const double d2 = glm::dot(perp, perp);
+                if (d2 > R * R * cut * cut || glm::dot(toP, s) < -200.0) continue;   // outside it, or under its ground point
+                const double x = std::clamp((std::sqrt(d2) - 0.25 * R) / (0.9 * R), 0.0, 1.0);
+                const double disk = (1.0 - x * x * (3.0 - 2.0 * x)) * 1.885;
+                const double b = std::clamp((hEye - ((double)e.blockAltM - 500.0)) / 500.0, 0.0, 1.0);
+                const double block = 1.0 + ((b * b * (3.0 - 2.0 * b)) - 1.0) * (double)e.blockOpacity;
+                const double E = (double)e.intensity * invW / (3.14159265358979 * R * R) * disk * block;
+                if (E <= 0.0) continue;
+                Es += E;
+                dS += E * s;
+            }
+            cv2BeamEyeIrr = (float)Es;
+            cv2BeamEyeDir = glm::length(dS) > 1e-30 ? glm::vec3(glm::normalize(dS)) : glm::vec3(0.0f, 0.0f, 1.0f);
+        }
+
         fillSolarSites(groundBeams, solarBeamHits, dt);
         std::memcpy(groundBeamsMapped, &groundBeams, sizeof(GpuGroundBeams));
         std::memcpy(beamCloudLightMapped, &cloudLights, sizeof(GpuBeamCloudLights));

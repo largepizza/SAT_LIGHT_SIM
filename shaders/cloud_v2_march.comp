@@ -286,8 +286,17 @@ vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og,
     vec3  ph   = vec3(phSum / Esum);
     if (f.thin > 0.0)   // ice, delta-scaled (see the march)
         ph = mix(ph, vec3(cv2HG(cosB, 0.3)) + og * cv2IceOptics(dir, dirS, hab) / 0.55, f.thin);
-    if (f.rain > 0.0)
-        ph = mix(ph, vec3(0.3 * cv2HG(cosB, 0.97) + 0.55 * cv2HG(cosB, 0.35)) + og * 0.5 * cv2RainOptics(dir, dirS), f.rain);
+    // Precipitation: rain (the bows opposite the satellites) or, where the shafts' air is below freezing (cv2.precip.w,
+    // the march's liqR for the Sun and Moon), snow: broad lobes, a faint halo and sundogs around the satellites, no bow.
+    // Until 2026-10-06 the beams lit every shaft as rain: a "satbow" in Antarctic snow at -23 C.
+    if (f.rain > 0.0) {
+        float liq = cv2.precip.w;
+        vec3  phR = vec3(0.3 * cv2HG(cosB, 0.97) + 0.55 * cv2HG(cosB, 0.35));
+        if (liq > 0.0) phR += og * liq * 0.5 * cv2RainOptics(dir, dirS);
+        if (liq < 1.0) phR += og * (1.0 - liq) * (0.25 * cv2IceOptics(dir, dirS, vec4(0.2, 0.35, 0.0, 0.0))
+                                                  + vec3(0.15 * cv2PillarOptics(dir, dirS)));
+        ph = mix(ph, phR, f.rain);
+    }
     float pMS = 0.85 * cv2HG(cosB, 0.2) + 0.15 * cv2HG(cosB, -0.4);
     return Esum * (ph * exp(-od) + pMS * msOctaves(od) * f.msBright)
          * SUN_INTENSITY * cv2.beam.z * vec3(1.0, 0.97, 0.92) * (1.0 - dayness);

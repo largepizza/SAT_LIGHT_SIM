@@ -305,10 +305,15 @@ void SatelliteSim::updateRainMotion(GpuCloudV2Params &p)
 
     rainFallRefNow = std::max(cv2RainFallSpeed, 0.05f) * (1.0f + 0.35f * rN);
     rainFallPhase += rainFallRefNow * dts;
+    // Snow falls at its own speed: "Rain fall speed" up to 1.5x only (flakes ~1 m/s; at the rain's 5x they streaked
+    // like rain, 2026-10-06), and no faster in heavy precipitation.
+    const float snowFallRef = std::clamp(cv2RainFallSpeed, 0.05f, 1.5f);
+    snowFallPhase += snowFallRef * dts;
     rainDrift += glm::dvec2(rainWindNow) * dts;
     snowDrift += glm::dvec2(rainWindNow) * (double)std::clamp(cv2SnowWind, 0.0f, 8.0f) * dts;
 
     auto wrap = [](double v) { v = std::fmod(v, 1024.0); return (float)(v < 0.0 ? v + 1024.0 : v); };
     p.rainMotion = glm::vec4(wrap(rainFallPhase / 64.0), rainFallRefNow, wrap(rainDrift.x), wrap(rainDrift.y));
     p.rainWind = glm::vec4(rainWindNow, wrap(snowDrift.x), wrap(snowDrift.y));
+    p.snowMotion = glm::vec4(wrap(snowFallPhase / 64.0), snowFallRef, 0.0f, 0.0f);
 }
