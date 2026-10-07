@@ -4,25 +4,13 @@
 # A harness run starts from the compiled-in defaults (the shipped look), in its own user-data folder, so the list
 # begins as the current defaults: `bookmark add ... id=` replaces each one. scale= / paused= are the bookmark's
 # optional "look" (the clock a Go sets: 0 = 1x). Each view is settled before it is added; the thumbnail is the
-# next clean frame (wait 5). Every bookmark stores the cloud map's drift: only the Venezuela storm needs a set
-# phase; the rest are framed with the compiled-in offset (`drift default`).
+# next clean frame (wait 5). Every bookmark stores the cloud map's drift: the Venezuela storm and the Antarctic
+# snow need a set phase; the rest are framed with the compiled-in offset (`drift default`).
+# The list (2026-10-06, the user's picks after playing the release candidate): six bookmarks, in this order.
 window 1600x900
 time pause
 
-# 1. The rainbow (the user's snapshot, profile_log record 40, 2026-10-04): sunrise behind a storm near
-#    Valencia, Venezuela. Needs the storm's drift phase. Paused: the storm moves on within minutes.
-time j2000 1164408248.06
-drift phase=5.2360808643282795 rate=0.0000065
-observer lat=9.9665 lon=-68.2745 alt=865
-camera az=-61.25 el=15.5 fov=54
-wait settle
-wait 30
-bookmark add Venezuela Rainbow id=default_rainbow_venezuela scale=0 paused=1
-wait 5
-# Back to a fresh session's cloud map for everything else (with the storm's offset Anchorage is overcast).
-drift default
-
-# 2. The 2037-07-13 total solar eclipse at greatest eclipse (the shadow axis, 21.75 S 138.31 E): the corona
+# 1. The 2037-07-13 total solar eclipse at greatest eclipse (the shadow axis, 21.75 S 138.31 E): the corona
 #    and the darkened sky, at a 15-degree field.
 time set 2037-07-10T00:00:00Z
 eclipse solar
@@ -33,57 +21,55 @@ wait 30
 bookmark add Great Australian Eclipse id=default_eclipse_solar_2037 scale=0 paused=0
 wait 5
 
-# 3. The 2037-01-31 total lunar eclipse from Alice Springs.
-observer lat=-23.70 lon=133.88 agl=0
-time set 2037-01-31T14:01:00Z
+# 2. The 2037-01-31 total lunar eclipse (greatest ~13:59:48 UTC; totality ends ~14:32) from Anchorage, 60 m over
+#    the city at 05:10 local time: the red Moon ~29 degrees up in the west-southwest over the city lights (the
+#    user's framing: their "Blood Moon" bookmark from Fairbanks, az -116 el 21).
+drift default
+time set 2037-01-31T14:10:00Z
+observer lat=61.22 lon=-149.9 agl=60
 camera look moon
-camera fov=8
+camera el=17 fov=45
 wait settle
 wait 30
-bookmark add Blood Moon over Alice Springs id=default_eclipse_lunar_2037 scale=0 paused=0
+bookmark add Blood Moon from Anchorage id=default_blood_moon_anchorage scale=0 paused=0
 wait 5
 
-# 4. A G2 storm (Kp 6.8, `aurora next 6` from 2036-12-01) seen from 420 km over Siberia: the oval and its red tops.
+# 3. Solar Storm: a G2 storm (Kp 6.8, `aurora next 6` from 2036-12-01) seen from 420 km over Siberia: the oval and
+#    its red tops.
 time set 2037-01-12T18:00:00Z
 observer lat=62 lon=90 alt=420000
 camera az=0 el=-18 fov=80
 wait settle
 wait 90
-bookmark add Aurora from Orbit id=default_aurora_orbit scale=0 paused=0
+bookmark add Solar Storm id=default_aurora_orbit scale=0 paused=0
 wait 5
 
-# 5. The Reflect Orbital mirrors converging on a site at night (beams go: the busiest site from Big Sur's sky -
-#    Anchorage at this moment): the line of mirrors in the sky above the city, the beams' glow.
-observer lat=35.869 lon=-121.402 agl=2
-time set 2036-11-22T02:40:00Z
-wait 20
-beams go rank=1 dist_km=5 agl=2 look=up
-camera el=30 fov=80
+# 4. McMurdo Station in mid-April twilight (the user's "Satbow over Antartica", 2026-10-06), standing in the Reflect
+#    Orbital beams converging on the station under a snow shower at -23 C: the flakes glitter in the beams' light
+#    around the line of mirrors. (The user saw a "satbow" behind the camera: the beams lit the snow shafts as RAIN,
+#    fixed the same day - snow gives no bow.) Needs the snow's drift phase. Paused: the shower moves on.
+time j2000 1176665048.767463
+drift phase=1.5633554565141452 rate=0.000006499999926745659
+observer lat=-77.8455147244164 lon=166.6428994442907 alt=383.67
+camera az=22.38 el=10.86 fov=83.48
+wait settle
+wait 40
+bookmark add Beam-lit Snow over Antarctica id=default_beam_snow_antarctica scale=0 paused=1
+wait 5
+
+# 5. The rainbow (the user's snapshot, profile_log record 40, 2026-10-04): sunrise behind a storm near
+#    Valencia, Venezuela. Needs the storm's drift phase. Paused: the storm moves on within minutes.
+time j2000 1164408248.06
+drift phase=5.2360808643282795 rate=0.0000065
+observer lat=9.9665 lon=-68.2745 alt=865
+camera az=-61.25 el=15.5 fov=54
 wait settle
 wait 30
-bookmark add Reflect Orbital over Anchorage id=default_reflect_beams scale=0 paused=0
+bookmark add Rainbow over Venezuela id=default_rainbow_venezuela scale=0 paused=1
 wait 5
+drift default
 
-# 6. The intro's vantage: the AI datacenter satellites flaring in a line at twilight over Big Sur.
-observer lat=35.869 lon=-121.402 agl=2
-time set 2036-11-22T02:06:22Z
-camera az=-75 el=16 fov=70
-wait settle
-wait 30
-bookmark add AI Satellites at Twilight id=default_ai_twilight scale=0 paused=0
-wait 5
-
-# 7. Los Angeles at night from 10 km: street lamps, the road network, the far city as glittering points.
-time set 2036-06-21T12:00:00Z
-observer lat=33.95 lon=-118.45 alt=10000
-time sun midnight
-camera az=60 el=-25 fov=60
-wait settle
-wait 30
-bookmark add Los Angeles by Night id=default_la_night scale=0 paused=0
-wait 5
-
-# 8. Inside the Starmind shells beside an 8-satellite formation ring (follow mode; the bookmark keeps the camera's
+# 6. Inside the Starmind shells beside an 8-satellite formation ring (follow mode; the bookmark keeps the camera's
 #    place, paused so the ring is still there).
 time set 2037-03-20T00:00:00Z
 observer lat=35 lon=-100 agl=2
@@ -97,16 +83,6 @@ bookmark add Starmind Formation Rings id=default_starmind_rings scale=0 paused=1
 wait 5
 follow off
 select none
-
-# 9. Sunset on the limb from 420 km over the Southern Ocean.
-observer lat=-45 lon=40 alt=420000
-time sun 3 setting
-camera look sun
-camera el=-12 fov=80
-wait settle
-wait 90
-bookmark add Sunset from Orbit id=default_limb_orbit scale=0 paused=0
-wait 5
 
 bookmark list
 quit
