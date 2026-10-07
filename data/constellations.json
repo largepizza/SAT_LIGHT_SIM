@@ -334,7 +334,12 @@
             "distribution": "Shells",
             "cluster_size": 8,
             "cluster_shape": "ring",
-            "cluster_radius_km": 2.0,
+            "cluster_radius_km": 0.35,
+            "cluster_relative_orbit": "circular",
+            "cluster_alt_jitter_km": 0.25,
+            "cluster_phase_jitter": 0.25,
+            "cluster_raan_jitter_deg": 0.15,
+            "cluster_incl_jitter_deg": 0.03,
             "raan_spread_deg": 10.0,
             "groups": [
                 {
@@ -370,7 +375,12 @@
             "distribution": "Shells",
             "cluster_size": 8,
             "cluster_shape": "ring",
-            "cluster_radius_km": 2.0,
+            "cluster_radius_km": 0.35,
+            "cluster_relative_orbit": "circular",
+            "cluster_alt_jitter_km": 0.25,
+            "cluster_phase_jitter": 0.25,
+            "cluster_raan_jitter_deg": 0.15,
+            "cluster_incl_jitter_deg": 0.03,
             "groups": [
                 {
                     "alt_min_km": 550.0,

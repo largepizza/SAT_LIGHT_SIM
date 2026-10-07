@@ -2378,6 +2378,37 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         lastClusterLightCount = easeAndEmit(trackedClusters, kMaxClusterCloudLights);
         lastIndividualLightCount = easeAndEmit(trackedIndividuals, kMaxIndividualCloudLights);
 
+        // The beams' light AT THE EYE (2026-10-06), for the rain / snow particles drawn there (rain_particles.vert):
+        // cloud_v2_march.comp's beamGather evaluated at the eye itself (posENU is eye-relative, so the eye is at
+        // -posENU from each ground point): the disk profile, the mean irradiance in Suns, the cloud above the eye.
+        {
+            const double invW = beamGain > 0.0f ? 1.0 / (1361.0 * (double)beamGain) : 0.0;
+            const double hEye = (double)obsPosLocalForLights.z - 6371000.0;
+            const double cut = 1.15;   // == kBeamDiskCut (beam_cloud_lights.glsl)
+            double Es = 0.0;
+            glm::dvec3 dS(0.0);
+            for (uint32_t i = 0; i < cloudLights.count; ++i)
+            {
+                const GpuBeamCloudLight &e = cloudLights.entries[i];
+                const glm::dvec3 s(e.dirToSource);
+                const glm::dvec3 toP = -glm::dvec3(e.posENU);
+                const glm::dvec3 perp = toP - s * glm::dot(toP, s);
+                const double R = std::max((double)e.footprintRadM, 100.0);
+                const double d2 = glm::dot(perp, perp);
+                if (d2 > R * R * cut * cut || glm::dot(toP, s) < -200.0) continue;   // outside it, or under its ground point
+                const double x = std::clamp((std::sqrt(d2) - 0.25 * R) / (0.9 * R), 0.0, 1.0);
+                const double disk = (1.0 - x * x * (3.0 - 2.0 * x)) * 1.885;
+                const double b = std::clamp((hEye - ((double)e.blockAltM - 500.0)) / 500.0, 0.0, 1.0);
+                const double block = 1.0 + ((b * b * (3.0 - 2.0 * b)) - 1.0) * (double)e.blockOpacity;
+                const double E = (double)e.intensity * invW / (3.14159265358979 * R * R) * disk * block;
+                if (E <= 0.0) continue;
+                Es += E;
+                dS += E * s;
+            }
+            cv2BeamEyeIrr = (float)Es;
+            cv2BeamEyeDir = glm::length(dS) > 1e-30 ? glm::vec3(glm::normalize(dS)) : glm::vec3(0.0f, 0.0f, 1.0f);
+        }
+
         fillSolarSites(groundBeams, solarBeamHits, dt);
         std::memcpy(groundBeamsMapped, &groundBeams, sizeof(GpuGroundBeams));
         std::memcpy(beamCloudLightMapped, &cloudLights, sizeof(GpuBeamCloudLights));
@@ -2666,7 +2697,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.terrainErosion = glm::vec4(terrainErosionStrength, terrainErosionBranch, terrainNightSkyLight, terrainSkyLight);
         }
         cp.cloudOpacityScale = cloudOpacityScale;
-        cp.cityLightBlurLod = cityLightBlurLod;
+        cp.cityLightBlurLod = 0.0f; // unread since 2026-10-06 (the blur under cloud was removed)
         cp.cloudWarpStrength = cloudWarpStrength;
         cp.cloudWarpFreq = cloudWarpFreq;
         cp.cloudSurfaceCarve = cloudSurfaceCarve;
@@ -3748,6 +3779,22 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         VkBufferCopy region{0, 0, sizeof(GpuOceanGlintBuf)};
         vkCmdCopyBuffer(cmd, oceanGlintBuf, glareReadBuf, 1, &region);
     }
+    // The mesh glint list's host copy, for the harness (`state` -> selection.glints): 2 KB, only on frames
+    // glare_find.comp ran.
+    glintReadValid = meshGlareListed && glintReadBuf != VK_NULL_HANDLE;
+    if (glintReadValid)
+    {
+        VkBufferMemoryBarrier gb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        gb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        gb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        gb.srcQueueFamilyIndex = gb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        gb.buffer = glintBuf;
+        gb.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 1,
+                             &gb, 0, nullptr);
+        VkBufferCopy region{0, 0, sizeof(GpuGlintList)};
+        vkCmdCopyBuffer(cmd, glintBuf, glintReadBuf, 1, &region);
+    }
     recordModelViewer(cmd, dt); // Phase 4 model viewer (offscreen; its own render pass)
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
 }
@@ -4757,10 +4804,20 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
                 const double tPlane = std::abs(dn) > 1e-6 ? glm::dot(Q - obsEcef, n) / dn : -1.0;
                 glm::dvec3 off = (tPlane > 0.0 ? obsEcef + d * tPlane : obsEcef + d * glm::dot(Q - obsEcef, d)) - Q;
                 off -= glm::dot(off, n) * n;
+                // Clamped to the lobe's extent as a SQUARE of its area along the group's own in-plane body axes
+                // (2026-10-06). It was a circle of radius half the side: a Reflect mirror (55 m square) seen ~3 deg
+                // off its beam axis has the Sun's image ~35 m from its centre, toward a corner, and the sprite sat
+                // 25 px from the image the mesh draws (the release cinematic's mirror shot, from 500 m).
                 const double rl = 0.5 * std::sqrt(std::max((double)L.area, 0.0));
-                const double ol = glm::length(off);
-                if (ol > rl)
-                    off *= rl / ol;
+                const glm::dmat3 &Rg = poses[L.group].R;
+                int ax = 0;
+                for (int k = 1; k < 3; ++k)
+                    if (std::abs(glm::dot(Rg[k], n)) < std::abs(glm::dot(Rg[ax], n)))
+                        ax = k;
+                glm::dvec3 t1 = Rg[ax] - glm::dot(Rg[ax], n) * n;
+                t1 = glm::length(t1) > 1e-9 ? glm::normalize(t1) : glm::normalize(glm::cross(n, glm::dvec3(0.0, 0.0, 1.0)));
+                const glm::dvec3 t2 = glm::cross(n, t1);
+                off = std::clamp(glm::dot(off, t1), -rl, rl) * t1 + std::clamp(glm::dot(off, t2), -rl, rl) * t2;
                 const glm::dvec3 G = satEcef + w * (Q + off - satEcef);
                 const glm::vec3 dirEnu = glm::normalize(ecefToEnu * glm::vec3(G - obsEcef));
                 // Octahedral encoding (16 bits per axis: ~0.003 deg).
@@ -5652,6 +5709,10 @@ SatOrbitElems SatelliteSim::orbitElemsOf(const SatOrbit &orb) const
     e.tumbleRate = orb.tumbleRate;
     e.tumblePhase = orb.tumblePhase;
     e.tumbleAxis = glm::dvec3(orb.tumbleAxis);
+    e.formation = orb.formation;
+    e.formP = orb.formP;
+    e.formQ = orb.formQ;
+    e.formK = orb.formK;
     return e;
 }
 
@@ -6062,6 +6123,7 @@ void SatelliteSim::updateSelectedPhotometry()
     for (auto &line : selPhotLine)
         line[0] = '\0';
     selParityWarn = false;
+    selParityValid = false;
     if (parityLogCooldown > 0)
         --parityLogCooldown;
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
@@ -6137,6 +6199,10 @@ void SatelliteSim::updateSelectedPhotometry()
     double dmag = (gpu > 0.0 && cpu > 0.0) ? -2.5 * std::log10(gpu / cpu)
                                            : (gpu > cpu ? -99.0 : 99.0); // one side dark: gross mismatch
     selParityWarn = std::abs(dmag) > kParityWarnMag;
+    selParityValid = true;
+    selParityDmag = dmag;
+    selParityRangeGpuM = (double)hdr->selectedRangeM;
+    selParityRangeCpuM = r.rangeM;
     if (selParityWarn && parityLogCooldown == 0)
     {
         char buf[256];
@@ -6682,6 +6748,8 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyDescriptorSetLayout(device, glareMeshDescLayout, nullptr);
     vkDestroyBuffer(device, glintBuf, nullptr);
     vkFreeMemory(device, glintMem, nullptr);
+    vkDestroyBuffer(device, glintReadBuf, nullptr);
+    vkFreeMemory(device, glintReadMem, nullptr);
     vkDestroyPipelineLayout(device, flareCompositePipeLayout, nullptr);
     vkDestroyDescriptorPool(device, flareCompositeDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, flareCompositeDescLayout, nullptr);
@@ -8589,6 +8657,17 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
             dst.alignTerminator = src.alignTerminator ? 1.0f : 0.0f;
             dst.typeIdx = src.typeIdx;
             dst.constIdx = src.constIdx;
+            if (src.formation)
+            {
+                // Formation ring member: the tumble slots carry the Clohessy-Wiltshire offset
+                // (a member never tumbles; sat_orbit.comp's Tumble law reads +Z for it, as the CPU's).
+                dst.tumbleRate = 0.0f;
+                dst.tumblePhase = 0.0f;
+                dst.tumbleAxisX = src.formP;
+                dst.tumbleAxisY = src.formQ;
+                dst.tumbleAxisZ = src.formK;
+                dst.constIdx |= kGpuFormationBit;
+            }
             chunk[k] = dst;
         }
 
@@ -12306,8 +12385,13 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
     {
         ctx.createBuffer(sizeof(GpuGlintList),
                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                             VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, glintBuf, glintMem);
+        ctx.createBuffer(sizeof(GpuGlintList), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, glintReadBuf,
+                         glintReadMem);
+        vkMapMemory(ctx.device, glintReadMem, 0, sizeof(GpuGlintList), 0, &glintReadMapped);
+        memset(glintReadMapped, 0, sizeof(GpuGlintList));
         VkDescriptorSetLayoutBinding fb[2] = {
             {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
             {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
@@ -14060,6 +14144,17 @@ void SatelliteSim::loadDefinitions()
         c.clusterSpacingM = jc.value("cluster_spacing_km", 1.0f) * 1000.0f;
         c.clusterRing = jc.value("cluster_shape", std::string("line")) == "ring";
         c.clusterRadiusM = jc.value("cluster_radius_km", 0.2f) * 1000.0f;
+        {
+            const std::string ro = jc.value("cluster_relative_orbit", std::string("circular"));
+            c.clusterCrossK = ro == "in_plane" ? 0.0f : ro == "projected_circular" ? 2.0f : 1.7320508f;
+            if (ro != "in_plane" && ro != "projected_circular" && ro != "circular")
+                Log::line("constellations.json: '" + c.name + "': unknown cluster_relative_orbit '" + ro +
+                          "', using circular.");
+        }
+        c.clusterAltJitterM = jc.value("cluster_alt_jitter_km", 0.0f) * 1000.0f;
+        c.clusterPhaseJitter = jc.value("cluster_phase_jitter", 0.0f);
+        c.clusterRaanJitterRad = glm::radians(jc.value("cluster_raan_jitter_deg", 0.0f));
+        c.clusterInclJitterRad = glm::radians(jc.value("cluster_incl_jitter_deg", 0.0f));
         c.raanSpreadRad = glm::radians(jc.value("raan_spread_deg", 0.0f));
         c.raanSpreadRandom = jc.value("raan_spread", std::string("even")) == "random";
 
@@ -14405,24 +14500,50 @@ void SatelliteSim::buildOrbits()
         satOrbits.reserve(total);
     }
     // Satellite s of n in one plane flown in formation clusters (c.clusterSize > 1): the clusters
-    // evenly spaced from phase0 at radius R. Line: members spacingM apart along track. Ring: a regular
-    // polygon of radius clusterRadiusM in the orbit plane, member m at angle 2 pi m / C from the
-    // along-track direction toward zenith. Returns the argument of latitude; dr = the radial offset.
-    auto clusterPhase = [](const ConstellationConfig &c, int s, int n, float R, float phase0, float &dr)
+    // evenly spaced from phase0 (+ dPhase of the cluster's own, in units of the gap between clusters).
+    // Line: members spacingM apart along track at radius R; returns their argument of latitude.
+    // Ring: every member takes the cluster CENTRE's argument of latitude (returned) and a
+    // Clohessy-Wiltshire relative orbit about it (setFormation), members evenly spaced in its phase
+    // from a per-cluster start (rot). The radial amplitude is rho / 2, so the along-track semi-axis
+    // is rho; with k = sqrt 3 every member stays rho from the centre.
+    auto clusterPhase = [](const ConstellationConfig &c, int s, int n, float R, float phase0, float dPhase)
     {
         const int C = c.clusterSize;
         const int K = (n + C - 1) / C;
         const int k = s / C, m = s % C;
         const int inK = std::min(C, n - k * C); // the last cluster may be short
-        const float centre = phase0 + (float)k / (float)K * glm::two_pi<float>();
+        const float centre = phase0 + ((float)k + dPhase) / (float)K * glm::two_pi<float>();
         if (c.clusterRing && inK > 1)
-        {
-            const float th = (float)m / (float)inK * glm::two_pi<float>();
-            dr = c.clusterRadiusM * sinf(th);
-            return centre + c.clusterRadiusM * cosf(th) / R;
-        }
-        dr = 0.0f;
+            return centre;
         return centre + ((float)m - 0.5f * (float)(inK - 1)) * c.clusterSpacingM / R;
+    };
+    auto setFormation = [](const ConstellationConfig &c, SatOrbit &o, int s, int n, float rot)
+    {
+        const int C = c.clusterSize;
+        if (!c.clusterRing || C <= 1)
+            return;
+        const int k = s / C, m = s % C;
+        const int inK = std::min(C, n - k * C);
+        if (inK <= 1)
+            return;
+        const double delta = (double)rot + (double)m / (double)inK * glm::two_pi<double>();
+        const double a = 0.5 * (double)c.clusterRadiusM;
+        o.formation = true;
+        o.formP = (float)(a * std::cos(delta));
+        o.formQ = (float)(a * std::sin(delta));
+        o.formK = c.clusterCrossK;
+    };
+    // Deterministic uniform [0, 1) from (constellation, cluster, channel): the jitter must not
+    // depend on rand()'s state (the roster order of other constellations would move it).
+    auto hash01 = [](uint32_t a, uint32_t b, uint32_t ch)
+    {
+        uint64_t h = 0x9E3779B97F4A7C15ull ^ ((uint64_t)a << 40) ^ ((uint64_t)b << 8) ^ ch;
+        h ^= h >> 33;
+        h *= 0xff51afd7ed558ccdull;
+        h ^= h >> 33;
+        h *= 0xc4ceb9fe1a85ec53ull;
+        h ^= h >> 33;
+        return (float)((double)(h >> 11) * (1.0 / 9007199254740992.0));
     };
     for (ConstellationConfig &c : constellations)
     {
@@ -14434,14 +14555,16 @@ void SatelliteSim::buildOrbits()
             {
                 float raan = (float)p / c.numPlanes * glm::two_pi<float>();
                 const float phase0 = c.clusterSize > 1 ? (float)rand() / (float)RAND_MAX * glm::two_pi<float>() : 0.0f;
+                float rot = 0.0f;
                 for (int s = 0; s < c.perPlane; ++s)
                 {
-                    float dr = 0.0f;
+                    if (c.clusterSize > 1 && c.clusterRing && s % c.clusterSize == 0)
+                        rot = (float)rand() / (float)RAND_MAX * glm::two_pi<float>();
                     float u0 = c.clusterSize > 1
-                                   ? clusterPhase(c, s, c.perPlane, kEarthRadius + c.altM, phase0, dr)
+                                   ? clusterPhase(c, s, c.perPlane, kEarthRadius + c.altM, phase0, 0.0f)
                                    : (float)rand() / (float)RAND_MAX * glm::two_pi<float>();
                     satOrbits.push_back({raan, c.incl, u0, c.typeIdx, c.altM, 0.0f, 0.0f, {0.0f, 0.0f, 1.0f}, false});
-                    satOrbits.back().radialOffsetM = dr;
+                    setFormation(c, satOrbits.back(), s, c.perPlane, rot);
                 }
             }
         }
@@ -14451,6 +14574,7 @@ void SatelliteSim::buildOrbits()
             // at sim start like the Disk's below (see there for why).
             const float raanDusk = atan2f(sunDirECI.x, -sunDirECI.y);
             int ssoPlane = 0; // counts the entry's SSO planes for the node spread
+            uint32_t clusterSerial = 0; // keys the per-cluster jitter
             for (const ShellGroup &g : c.groups)
             {
                 for (int k = 0; k < g.shells; ++k)
@@ -14473,14 +14597,28 @@ void SatelliteSim::buildOrbits()
                         if (g.sso)
                             ++ssoPlane;
                         const float phase0 = (float)rand() / (float)RAND_MAX * glm::two_pi<float>();
+                        // Per-cluster scatter (a satellite is its own cluster without clusters).
+                        const int C = std::max(1, c.clusterSize);
+                        const uint32_t ci = (uint32_t)(&c - constellations.data());
+                        float jAlt = 0.0f, jPhase = 0.0f, jRaan = 0.0f, jIncl = 0.0f, rot = 0.0f;
                         for (int s = 0; s < g.perPlane; ++s)
                         {
-                            float dr = 0.0f;
+                            if (s % C == 0)
+                            {
+                                const uint32_t key = clusterSerial++;
+                                jAlt = c.clusterAltJitterM * (2.0f * hash01(ci, key, 1) - 1.0f);
+                                jPhase = c.clusterPhaseJitter * (2.0f * hash01(ci, key, 2) - 1.0f);
+                                jRaan = c.clusterRaanJitterRad * (2.0f * hash01(ci, key, 3) - 1.0f);
+                                jIncl = c.clusterInclJitterRad * (2.0f * hash01(ci, key, 4) - 1.0f);
+                                rot = hash01(ci, key, 5) * glm::two_pi<float>();
+                            }
+                            const float altS = alt + jAlt;
                             const float u0 = c.clusterSize > 1
-                                                 ? clusterPhase(c, s, g.perPlane, kEarthRadius + alt, phase0, dr)
-                                                 : phase0 + (float)s / g.perPlane * glm::two_pi<float>();
-                            satOrbits.push_back({raan, incl, u0, c.typeIdx, alt, 0.0f, 0.0f, {0.0f, 0.0f, 1.0f}, g.sso});
-                            satOrbits.back().radialOffsetM = dr;
+                                                 ? clusterPhase(c, s, g.perPlane, kEarthRadius + altS, phase0, jPhase)
+                                                 : phase0 + ((float)s + jPhase) / g.perPlane * glm::two_pi<float>();
+                            satOrbits.push_back({raan + jRaan, incl + jIncl, u0, c.typeIdx, altS, 0.0f, 0.0f,
+                                                 {0.0f, 0.0f, 1.0f}, g.sso});
+                            setFormation(c, satOrbits.back(), s, g.perPlane, rot);
                         }
                     }
                 }
@@ -14546,16 +14684,23 @@ void SatelliteSim::buildOrbits()
                 // Model incomplete constellation, vary number of sats per ring to fill totalSats without exceeding it.
                 int satsInThisRing = glm::min(perRing, totalSats - r * perRing);
 
+                const bool ringForm = c.clusterSize > 1 && c.clusterRing;
+                float rot = 0.0f, cJitter = 0.0f;
                 for (int s = 0; s < satsInThisRing; ++s)
                 {
-                    // Evenly spaced around the ring (or in clusters) + optional small jitter.
-                    float dr = 0.0f;
+                    // Evenly spaced around the ring (or in clusters) + optional small jitter (one per
+                    // cluster for ring formations: the members share the centre's orbit).
+                    if (ringForm && s % c.clusterSize == 0)
+                    {
+                        rot = (float)rand() / (float)RAND_MAX * glm::two_pi<float>();
+                        cJitter = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * c.altJitterM;
+                    }
                     float u0 = c.clusterSize > 1
-                                   ? clusterPhase(c, s, satsInThisRing, kEarthRadius + ringAlt, 0.0f, dr)
+                                   ? clusterPhase(c, s, satsInThisRing, kEarthRadius + ringAlt, 0.0f, 0.0f)
                                    : (float)s / satsInThisRing * glm::two_pi<float>();
-                    float jitter = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * c.altJitterM;
+                    float jitter = ringForm ? cJitter : ((float)rand() / RAND_MAX * 2.0f - 1.0f) * c.altJitterM;
                     satOrbits.push_back({raan_d, ringIncl, u0, c.typeIdx, ringAlt + jitter, 0.0f, 0.0f, {0.0f, 0.0f, 1.0f}, c.alignTerminator});
-                    satOrbits.back().radialOffsetM = dr;
+                    setFormation(c, satOrbits.back(), s, satsInThisRing, rot);
                 }
             }
         }
@@ -14588,8 +14733,8 @@ void SatelliteSim::buildOrbits()
     // doesn't recompute them every frame (saves sqrt + 4 trig calls per satellite).
     for (SatOrbit &orb : satOrbits)
     {
-        const double rCentre = (double)kEarthRadius + orb.altM; // a ring member keeps its centre's rate
-        orb.R_sat = (float)(rCentre + orb.radialOffsetM);
+        const double rCentre = (double)kEarthRadius + orb.altM; // a ring member's is its cluster centre's
+        orb.R_sat = (float)rCentre;
         orb.meanMot = (float)sqrt(kGM / (rCentre * rCentre * rCentre));
         orb.cosI = cosf(orb.incl);
         orb.sinI = sinf(orb.incl);

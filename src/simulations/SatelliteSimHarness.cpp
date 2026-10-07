@@ -445,6 +445,21 @@ json SatelliteSim::harnessStateJson()
         sel["el_deg"] = elDegOf(selSkyDirCpu);
         sel["above_earth"] = selAboveEarth;
         sel["track"] = trackActive; // the camera lock below `camera.tracking`, on the satellite it follows
+        if (o.formation) // formation ring member: where it is relative to its cluster centre, now
+        {
+            const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            SatOrbitElems ce = orbitElemsOf(o);
+            ce.formation = false;
+            const SatOrbitState m = satOrbitStateAt(orbitElemsOf(o), t), c = satOrbitStateAt(ce, t);
+            const glm::dvec3 d = m.posEci - c.posEci, rH = -c.nadir, vH = c.velocity;
+            const glm::dvec3 hH = glm::normalize(glm::cross(rH, vH));
+            sel["formation"] = {{"offset_m", {glm::dot(d, vH), glm::dot(d, hH), glm::dot(d, rH)}}, // along, cross, radial
+                                {"dist_m", glm::length(d)}};
+        }
+        if (selParityValid) // the GPU-vs-CPU check (updateSelectedPhotometry): magnitude gap and both ranges
+            sel["parity"] = {{"dmag", selParityDmag},
+                             {"range_gpu_m", selParityRangeGpuM},
+                             {"range_cpu_m", selParityRangeCpuM}};
         // Its screen position (px, top-left origin) and, when its mesh is drawn, the hand-off: the mesh fade, the
         // sprite's keep (1 - spriteGone), the glare keep, its size in px, and where the sprite (point, bloom,
         // point-like glare) is placed — the Sun's image in its dominant lobe, weighted by the lobe's specular share.
@@ -465,6 +480,18 @@ json SatelliteSim::harnessStateJson()
                 sel["mesh"] = m;
             }
         }
+        // The main view's mesh glints (glare_find.comp's list, last frame's copy): where each mesh glare is drawn,
+        // in px, with its light (effectFlare). The release cinematic's mirror shot checks the glare against
+        // sprite_px (the Sun's image) above (tools/harness/glare_track.py).
+        if (ctx_ && glintReadValid && glintReadMapped)
+        {
+            const float W = (float)ctx_->swapExtent.width, H = (float)ctx_->swapExtent.height;
+            const GpuGlintList &gl = *static_cast<const GpuGlintList *>(glintReadMapped);
+            json arr = json::array();
+            for (uint32_t i = 0; i < std::min(gl.count, kMaxGlints); ++i)
+                arr.push_back({{"px", {gl.pos[i].x * W, gl.pos[i].y * H}}, {"flare", gl.pos[i].z}});
+            sel["glints"] = arr;
+        }
     }
     if (selectedPlanetIndex >= 0)
         sel["planet"] = kPlanetNames[selectedPlanetIndex];
@@ -478,7 +505,12 @@ json SatelliteSim::harnessStateJson()
     // pass wrote (the previous frame's).
     {
         json rn = {{"mode", rainModeLastFrame == 1 ? "rain" : rainModeLastFrame == 2 ? "diamond_dust" : "none"},
-                   {"instances", rainInstancesLastFrame}, {"levels", rainLevelsLastFrame}};
+                   {"instances", rainInstancesLastFrame}, {"levels", rainLevelsLastFrame},
+                   // the temperature model (SatelliteSimCloudsV2.cpp): at the eye (the particles) and 500 m over the
+                   // ground under it (the shafts seen at a distance); the beams' light at the eye (Suns)
+                   {"eye_temp_c", cv2EyeTempC}, {"shaft_temp_c", cv2ShaftTempC},
+                   {"beam_eye_irr_suns", cv2BeamEyeIrr},
+                   {"beam_eye_dir_enu", {cv2BeamEyeDir.x, cv2BeamEyeDir.y, cv2BeamEyeDir.z}}};
         if (cv2FlashMapped)
         {
             const char *base = (const char *)cv2FlashMapped;

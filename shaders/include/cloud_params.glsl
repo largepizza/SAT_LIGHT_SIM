@@ -141,6 +141,7 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // sharp copy of the raw city-lights texture cutting through partially-transmissive cloud —
     // even a fully correct opacity value still looks wrong if what leaks through is pixel-sharp.
     // This is the mip LOD used at full (opacity=1) blur strength; 0 disables the effect.
+    // UNREAD since 2026-10-06: the blur was removed (from orbit it drew cities under thin cloud as blobs).
     float cityLightBlurLod;
     // Atmospheric scattering strength gains: scale the physical Rayleigh/Mie coefficients
     // (BETA_R_BASE/BETA_M_BASE, common.glsl) uniformly across every consumer that shadows them

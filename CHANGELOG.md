@@ -19,7 +19,8 @@ to and inspect as real 3D models, and a sim clock that runs on real UTC. Accepte
   over hours; over land, afternoon convection builds storms that die back after dark.
 - **Rain, snow, sleet and diamond dust.** Precipitation at your eye is drawn as real particles: drops sized and
   falling like real rain, flakes that flutter, blown by the wind, gusts and a storm's outflow, lit by the sky
-  around you. The precipitation type follows the air temperature.
+  around you, by lightning and by the Reflect Orbital beams you stand in. The precipitation type follows the air
+  temperature.
 - **Lightning and thunder.** Whole storms flash: cloud-to-ground strokes with branches and tendrils, in-cloud
   flashes, spider lightning under the cloud base and rare red sprites high above. Clouds glow around each flash,
   and thunder rolls in from the channel's own shape, delayed by distance (a crack when it's close).
@@ -89,9 +90,9 @@ to and inspect as real 3D models, and a sim clock that runs on real UTC. Accepte
 ### Camera, capture and UI
 
 - **Bookmarks.** Save a view (place, camera, time and the weather) with a thumbnail and jump back to it.
-- **Nine default bookmarks** ship with the sim (a rainbow at dawn, the 2037 total solar and lunar eclipses, an
-  aurora storm from orbit, Reflect Orbital over Anchorage, AI satellites at twilight, Los Angeles by night, a
-  Starmind formation ring, sunset from orbit); "Restore defaults" brings back any you deleted.
+- **Six default bookmarks** ship with the sim (the 2037 total solar eclipse over Australia, the 2037 blood moon
+  from Anchorage, a solar storm's aurora from orbit, snow glittering in the Reflect Orbital beams at McMurdo, a
+  rainbow over Venezuela, a Starmind formation ring); "Restore defaults" brings back any you deleted.
 - **Cinematics.** A camera-path editor: shots of keyframes on smooth splines, follow shots that ride with a
   satellite, a timeline, saved files, and frame-by-frame export (quick preview or supersampled HQ frames with
   motion blur), with a progress display.
@@ -138,7 +139,7 @@ to and inspect as real 3D models, and a sim clock that runs on real UTC. Accepte
 ### Changed defaults and behaviour
 
 - Defaults are the author's tuned settings (volumes, rain and lightning, brightness, automatic render scale on,
-  HQ photos at 1x the window).
+  HQ photos at 1x the window). Rain amount 3, rain fall speed 5x (the slider reaches 10x).
 - Saved times now show a different local time of day (the clock is real UTC; about 5 h 15 min earlier for the
   same timestamp). The start time moved so the intro is unchanged.
 - "Storm strength" for the aurora is replaced by Kp (automatic by default).
@@ -151,6 +152,8 @@ to and inspect as real 3D models, and a sim clock that runs on real UTC. Accepte
 - Far city lights no longer blink at low angles under temporal AA; the sea no longer shows a fine white static
   under broken cloud; waves no longer leave trails in cinematic playback.
 - Render-only satellite parts (fittings, trusses) no longer seed bloom or glare.
+- Beam-lit snow shafts no longer show a rainbow (the beams lit every precipitation shaft as rain); snowflakes no
+  longer fall at the rain's speed.
 - A mirror in the Earth's shadow no longer beams; stale bloom, lightning and depth no longer show after
   switching satellites, clouds or the depth pass off; the sky's exposure follows a total eclipse.
 - The Attributions tab lists every bundled asset (terrain textures, Natural Earth data, ambience recordings).

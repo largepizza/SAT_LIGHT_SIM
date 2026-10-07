@@ -1221,9 +1221,20 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                         - 0.0065 * eyeAsl;
         // y: sim time wrapped to 600 s in double (the drops' fall; a float time of day steps every 8 ms).
         // z "Snow wind" (x the flakes' drift: blizzards), w "Drop distance" (m: the lattice's last layer).
+        // w (2026-10-06; was the old drop lattice's distance, unread): the precipitation SHAFTS' liquid share, from the
+        // air 500 m over the ground under the eye (the march's liqR for the Sun and Moon). The beams' light on a shaft
+        // (beamFinish) took the rain phase whatever the temperature: a "satbow" in Antarctic snow.
+        const double tShaft = tC + 0.0065 * (eyeAsl - (double)ground - 500.0);
+        const double xl = std::clamp((tShaft + 1.0) / 4.0, 0.0, 1.0);
         p.precip = glm::vec4((float)tC, (float)std::fmod(simSecInDay, 600.0), std::clamp(cv2SnowWind, 0.0f, 8.0f),
-                             std::clamp(cv2DropDistM, 8.0f, 512.0f));
+                             (float)(xl * xl * (3.0 - 2.0 * xl)));
         cv2EyeTempC = (float)tC;
+        cv2ShaftTempC = (float)tShaft;
+        // The beams' light at the eye (SatelliteSim.cpp, from the cloud-light list) for the rain / snow particles.
+        const float sunUpE = glm::dot(glm::vec3(p.sunE), glm::vec3(up));
+        p.beamEye = glm::vec4(cv2BeamEyeIrr * std::max(cv2BeamLight, 0.0f),
+                              1.0f - std::clamp((sunUpE + 0.2f) / 0.5f, 0.0f, 1.0f), 0.0f, 0.0f);
+        p.beamEyeDir = glm::vec4(cv2BeamEyeDir, 0.0f);
         updateRainMotion(p);   // the rain particles' fall and wind (SatelliteSimRain.cpp)
     }
     const bool lowFloor = cv2RainAmount > 0.0f || p.fog.x > 0.0f || p.fog.w > 0.0f || p.fog2.w > 0.0f;   // they reach the ground

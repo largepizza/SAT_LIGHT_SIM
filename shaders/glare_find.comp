@@ -11,8 +11,9 @@ layout(local_size_x = 16, local_size_y = 16) in;
 // mesh that is still point-like keeps its sprite's glare at its centre instead (glare.vert, 2026-09-25). That replaced a "concentration" test here (â‰¥ half the
 // 5x5 light in the 3x3), which passed every thin bright edge and rejected the Sun's disc in a mirror
 // once it spanned a few texels.
-// Position: the centroid of the near-peak light (within 10% of it) over a 9x9 window, so the glare moves
-// smoothly, not a texel at a time, and sits mid-plateau on a flat-topped glint.
+// Position: the peak to a fraction of a texel (a parabola through the log light of the peak and its
+// neighbours), so the glare moves smoothly, not a texel (4 screen px) at a time; on a flat-topped glint, the
+// centroid of the near-peak light (within 10% of it) over a 9x9 window, so it sits mid-plateau.
 // glintPos.w carries pc.rangeM (the nearest drawn mesh's range) so glare_mesh.vert can size a near
 // mesh's glare wider (glare.glsl's glareNearScale).
 
@@ -60,11 +61,30 @@ void main()
         }
     if (e5 < pc.minFlare) return;
 
-    // On a flat-topped glint — the Sun's image in a mirror is a streak across it at nearly one brightness — the
+    // Sub-texel position (2026-10-06). The glint target is a quarter of the screen, so a glare placed at a texel
+    // moves in 4-pixel jumps: in the release cinematic's mirror shot (a Reflect mirror dollied from 500 to 160 m)
+    // it held still for several frames, jumped 4 px, held again - "odd movements" while the Sun's image in the
+    // mirror slides smoothly. The stored alpha is log2(1 + flare); the Sun's image is a near-Gaussian lobe, whose
+    // log is a parabola, so a parabola through the peak and its two neighbours on each axis finds the true peak
+    // to a fraction of a texel. The 9x9 plateau centroid below takes over where the top is flat.
+    vec2 sub = vec2(0.0);
+    {
+        float l0 = log2(max(exp2(a) - 1.0, 1e-30));
+        float lx0 = log2(max(exp2(imageLoad(flareSrc, clamp(c - ivec2(1, 0), ivec2(0), size - 1)).a) - 1.0, 1e-30));
+        float lx1 = log2(max(exp2(imageLoad(flareSrc, clamp(c + ivec2(1, 0), ivec2(0), size - 1)).a) - 1.0, 1e-30));
+        float ly0 = log2(max(exp2(imageLoad(flareSrc, clamp(c - ivec2(0, 1), ivec2(0), size - 1)).a) - 1.0, 1e-30));
+        float ly1 = log2(max(exp2(imageLoad(flareSrc, clamp(c + ivec2(0, 1), ivec2(0), size - 1)).a) - 1.0, 1e-30));
+        float dx = lx0 - 2.0 * l0 + lx1, dy = ly0 - 2.0 * l0 + ly1;   // curvature (< 0 at a peak)
+        if (dx < -1e-3) sub.x = clamp(0.5 * (lx0 - lx1) / dx, -0.5, 0.5);
+        if (dy < -1e-3) sub.y = clamp(0.5 * (ly0 - ly1) / dy, -0.5, 0.5);
+    }
+
+    // On a flat-topped glint - the Sun's image in a mirror is a streak across it at nearly one brightness - the
     // index tie-break above picks the plateau's FIRST texel (its top), and the 3x3 centroid cannot pull the
     // glare back to the middle: it sat on a Reflect mirror's top edge, ~10 px from the Sun's image, while the
-    // mirror was 15-35 px tall (2026-10-04). Place it at the centroid of the light within 10% of the peak over a
-    // 9x9 window instead. Only listed maxima pay for it.
+    // mirror was 15-35 px tall (2026-10-04). There the glare goes to the centroid of the light within 10% of the
+    // peak over a 9x9 window; blended in by how much light besides the peak texel's own is in it (0 for a lone
+    // peak, so the two placements meet without a jump). Only listed maxima pay for it.
     {
         float fa = exp2(a) - 1.0, sw = 0.0;
         vec2  cp = vec2(0.0);
@@ -76,8 +96,10 @@ void main()
                 sw += w;
                 cp += w * vec2(q);
             }
-        if (sw > 0.0)
-            cen = cp / sw * e3;   // replaces the 3x3 centroid (cen / e3 below)
+        vec2  pPeak = vec2(c) + sub;
+        float k     = sw > 0.0 ? clamp((sw - 0.1 * fa) / max(0.1 * fa, 1e-30), 0.0, 1.0) : 0.0;
+        vec2  p     = sw > 0.0 ? mix(pPeak, cp / sw, k) : pPeak;
+        cen = p * e3;   // replaces the 3x3 centroid (cen / e3 below)
     }
 
     uint i = atomicAdd(glints.count, 1u);

@@ -3547,6 +3547,14 @@ void main() {
     vec3  accumR  = vec3(0.0);
     float accumM  = 0.0;
     float accumCity = 0.0;
+    // The city glow's map LOD (2026-10-06). The night map at mip 4 (~80 km texels) is the right blur for the
+    // dome seen from the ground (a horizon glow gathers the light of a whole region), but from high orbit it drew
+    // the air over every town as a round, even blob ~150 km wide — the release cinematic's pull-out (3000-20000
+    // km) showed the Canaries and the West African coast as soft discs. Air at height h is lit by the cities
+    // within a few h, so from there the LOD follows the sample's height (mip ~1.5 at the 8-km scale height: a
+    // halo the shape of the city). Only from 800-3000 km up: lower, a 10-20 km texel spans tens of pixels and
+    // bilinear filtering draws it as squares (tried from 30 km: blocky halos round every town from 400 km).
+    float cityGlowOrbitK = smoothstep(800000.0, 3000000.0, obsEffH);
     // The city glow's share IN FRONT of the clouds (review 5): the composite multiplies the whole
     // sky by the cloud's transmittance, and the cloud march's own airlight has no city glow, so at
     // night every cloud erased the glowing air between it and the eye — the clouds along the horizon
@@ -3679,7 +3687,8 @@ void main() {
             float spLat     = asin(clamp(spDirECEF.z, -1.0, 1.0));
             float spLon     = atan(spDirECEF.y, spDirECEF.x);
             vec2  spUV      = vec2((spLon + PI) / (2.0 * PI), (0.5 * PI - spLat) / PI);
-            float spLum     = dot(textureLod(earthNightTex, spUV, 4.0).rgb, vec3(0.2126, 0.7152, 0.0722));
+            float spLod     = mix(4.0, clamp(log2(max(length(sp) - R_EARTH, 1500.0) * (3.0 / 4900.0)), 0.0, 4.0), cityGlowOrbitK);
+            float spLum     = dot(textureLod(earthNightTex, spUV, spLod).rgb, vec3(0.2126, 0.7152, 0.0722));
             vec3  attnCam   = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             accumCity += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0));
             accumCityFront += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0))
@@ -3693,7 +3702,8 @@ void main() {
             float spLat     = asin(clamp(spDirECEF.z, -1.0, 1.0));
             float spLon     = atan(spDirECEF.y, spDirECEF.x);
             vec2  spUV      = vec2((spLon + PI) / (2.0*PI), (0.5*PI - spLat) / PI);
-            float spLum     = dot(textureLod(earthNightTex, spUV, 4.0).rgb, vec3(0.2126, 0.7152, 0.0722));
+            float spLod     = mix(4.0, clamp(log2(max(length(sp) - R_EARTH, 1500.0) * (3.0 / 4900.0)), 0.0, 4.0), cityGlowOrbitK);
+            float spLum     = dot(textureLod(earthNightTex, spUV, spLod).rgb, vec3(0.2126, 0.7152, 0.0722));
             vec3  attnCam   = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             accumCity += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0));
             accumCityFront += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0))
@@ -4165,17 +4175,13 @@ void main() {
         if (uvd_dy.x < -0.5) uvd_dy.x += 1.0;
         vec3 dayColor   = textureGrad(earthDayTex,   uvSurf, uvd_dx, uvd_dy).rgb;
         vec3 nightColor = textureGrad(earthNightTex, uvTaa0, uvd_dx, uvd_dy).rgb;
-        // Blur city lights toward a coarser mip under cloud (see localCloudOpacity above and
-        // cloud.cityLightBlurLod) — real light passing through cloud droplets is diffused, not a
-        // clean pass-through of whatever's behind it, so a sharp copy of earthNightTex's city
-        // silhouette bleeding through a hazy/thin cloud reads as an artifact even when the
-        // OPACITY itself is physically reasonable. Skipped below the horizon (dayFrac path has no
-        // night lights anyway) is unnecessary — nightColor is cheap and already computed for the
-        // dayFrac mix regardless of whether it's actually night at this point.
-        // Review 14: with the procedural lights on, the blur is applied to the FINISHED light (below, before
-        // tNight), not to the map the pattern reads: the blurred map spread a city's light over the desert
-        // beside it and the pattern drew street grids there whenever a cloud was in front (user snapshots
-        // 1-2, west of Phoenix: the grid "turned on" with the eye inside the cloud).
+        // No blur of the city lights under cloud any more (2026-10-06). It mixed the lights toward the night
+        // map at mip ~8 (cloud.cityLightBlurLod 8.1: ~1000 km of map per texel) by the cloud's opacity in
+        // front, so from orbit every city under thin or broken cloud became a grey wash with the cloud's
+        // outline — the "blobby" night side of the release cinematic's pull-out (user). The light that
+        // really diffuses through a deck spreads over about its thickness (a few km, under one map texel),
+        // and the clouds carry the cities' glow themselves (the march's city upwelling). The lights are
+        // attenuated by the cloud composite like everything behind it. cloud.cityLightBlurLod is unread.
         // SKY_LITE (Planetarium): the v1.1 city look — the night map + the tiled city detail textures, none of the
         // procedural city pattern, roads, farms, beaches, solar parks or close-up materials (compiled out below).
 #ifdef SKY_LITE
@@ -4183,16 +4189,6 @@ void main() {
 #else
         float cityPatStrength = cloud.cityLightsStrength;
 #endif
-        vec3  nightBlurLights = vec3(0.0);
-        float nightBlurK      = 0.0;
-        if (cloud.cityLightBlurLod > 0.01 && localCloudOpacity > 0.001) {
-            vec3 nightColorBlur = textureLod(earthNightTex, uvTaa0, cloud.cityLightBlurLod).rgb;
-            if (cityPatStrength > 0.0) {
-                nightBlurK      = localCloudOpacity;
-                nightBlurLights = max(nightColorBlur - vec3(0.006, 0.006, 0.0132), vec3(0.0));
-            } else
-                nightColor = mix(nightColor, nightColorBlur, localCloudOpacity);
-        }
 
         // ── City detail texture blend ───────────────────────────────────────────
         // Fades in a tileable high-frequency detail texture over bright earthNightTex pixels
@@ -4296,13 +4292,6 @@ void main() {
                     vec2 duv_dy = dFdy(detailUV);
                     vec3 dayDetail   = textureGrad(cityDayDetailTex,   detailUV, duv_dx, duv_dy).rgb;
                     vec3 nightDetail = textureGrad(cityNightDetailTex, detailUV, duv_dx, duv_dy).rgb;
-                    // Same blur-through-cloud treatment as the base nightColor sample above —
-                    // this is the HIGHER-frequency of the two textures, so left sharp it would be
-                    // the more visible half of the "sharp texture cutting through cloud" artifact.
-                    if (cloud.cityLightBlurLod > 0.01 && localCloudOpacity > 0.001) {
-                        vec3 nightDetailBlur = textureLod(cityNightDetailTex, detailUV, cloud.cityLightBlurLod).rgb;
-                        nightDetail = mix(nightDetail, nightDetailBlur, localCloudOpacity);
-                    }
                     // Review 7: the day side keeps the texture where the procedural streets no longer resolve
                     // (lots average out below ~20 m a pixel, streets by ~100 m: over 30-120 m). Switched off
                     // at every distance whenever
@@ -4767,10 +4756,6 @@ void main() {
         // the lamps', and the map's green made whole suburbs glow green at night (user snapshot 10).
         vec3  poolAlb  = vec3(clamp(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)) / 0.12, 0.0, 4.0));
         float poolLamb = pow(clamp(dot(shadingN, normalize(hitPt)), 0.0, 1.0), 1.5);
-        if (nightBlurK > 0.0) {   // seen through cloud: the diffuse glow of the map, not the pattern's points
-            cityLights = mix(cityLights, vec3(dot(nightBlurLights, vec3(0.2126, 0.7152, 0.0722))), nightBlurK);
-            cityPool  *= 1.0 - nightBlurK;
-        }
         vec3 tNight     = (cityLights + cityPool * poolAlb * poolLamb * terrainAO) * (0.12 * (1.0 - twilightFrac));
         // Night light ON the albedo (terrain v2 P1): the moonlit sky (moonlight scattered by the air —
         // ~0.15 of the direct Moon on a flat face, like the Sun's diffuse share) and the moonless
@@ -5297,8 +5282,7 @@ void main() {
                     // noise-perturbed wave normal, so neighbouring pixels sample points far apart
                     // on a high-contrast panorama and the band scintillates. Sampling a blurred
                     // level is also the physically right answer — a rough surface reflects a
-                    // blurred image, which is why the ocean already blurs city lights through
-                    // cloud.cityLightBlurLod.
+                    // blurred image.
                     const float kOceanMwReflLod = 3.0;
                     float mwReflLod = kOceanMwReflLod + 4.0 * seaRough;   // a rough sea blurs the band (review 16)
                     vec3 rDirGal = vec3(dot(reflDir, cloud.mwBasisRow0.xyz),

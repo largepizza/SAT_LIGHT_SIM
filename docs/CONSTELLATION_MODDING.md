@@ -389,12 +389,19 @@ Each entry in `constellations` is one shell: one type, one altitude, one pattern
 | `num_planes` | Walker/Disk: number of planes. RandomShell: not a plane count — it only contributes to the total. |
 | `per_plane` | Satellites per plane (Walker/Disk) or per unit (RandomShell). |
 | `enabled` | Whether the shell is on at startup; toggleable in Settings at runtime. Default `true`. |
-| `distribution` | `Walker` (default), `RandomShell`, or `Disk`. |
+| `distribution` | `Walker` (default), `RandomShell`, `Disk`, or `Shells`. |
 | `alt_jitter_km` | Per-satellite altitude scatter ±km. RandomShell and Disk only; Walker ignores it. |
 | `raan_deg` | Disk: the plane's Right Ascension of the Ascending Node. |
 | `align_terminator` | Disk: override `incl_deg` and `raan_deg` to put the plane on the Earth–Sun terminator and precess it at the SSO rate. |
 | `num_rings` | Disk: concentric rings, centred on `alt_km`. Default 1 (a single ring). |
 | `ring_spacing_km` | Disk: altitude step between rings. The total span is `(num_rings − 1) × ring_spacing_km`. |
+| `groups` | Shells: the filed shell table — each group `{alt_min_km, alt_max_km, incl_deg` or `incl_min_deg/incl_max_deg` or `sun_synchronous, shells, planes_per_shell, per_plane}`. Replaces `num_planes` / `per_plane` / `alt_km`. |
+| `raan_spread_deg`, `raan_spread` | Shells, sun-synchronous groups: each plane's node is offset from its terminator node by up to ±this (`even` golden-ratio sequence or `random`). |
+| `cluster_size` | Walker, Disk, Shells: satellites per formation cluster (1 = no clusters). |
+| `cluster_shape` | `line` (members in a row along track, `cluster_spacing_km` apart) or `ring` (a passive formation, below). |
+| `cluster_radius_km` | `ring`: the relative orbit's along-track semi-axis ρ (radial amplitude ρ/2). Default 0.2. |
+| `cluster_relative_orbit` | `ring`: `circular` (default — a circle of radius ρ tilted 60° out of the orbit plane, constant spacing), `projected_circular` (a circle seen from above), or `in_plane` (a 2:1 ellipse in the orbit plane). |
+| `cluster_alt_jitter_km`, `cluster_phase_jitter`, `cluster_raan_jitter_deg`, `cluster_incl_jitter_deg` | Shells: per-cluster scatter (uniform ±, deterministic) in altitude, along-track position (fraction of the gap between clusters), node and inclination, so a managed constellation does not draw perfect lattices. Default 0. |
 
 **Total satellites = `num_planes` × `per_plane`, for every distribution.**
 
@@ -403,6 +410,13 @@ Each entry in `constellations` is one shell: one type, one altitude, one pattern
 | `Walker` | A regular Walker constellation: `num_planes` planes evenly spread in RAAN, `per_plane` satellites phased within each plane. | `incl_deg`, `num_planes`, `per_plane` |
 | `RandomShell` | Random RAAN and random inclination up to `incl_deg`, plus `alt_jitter_km`. | Debris fields, mixed-inclination shells |
 | `Disk` | Concentric rings of satellites in one plane — the flat "starlink disk" look from orbit. | `raan_deg` (or `align_terminator`), `num_rings`, `ring_spacing_km` |
+| `Shells` | A filed table of shell groups in one entry (e.g. an FCC Table 1); sun-synchronous groups put their planes on the dusk/dawn terminator. | `groups`, `cluster_*` |
+
+**Ring formations are real orbital dynamics, not a rigid shape.** Each member flies the bounded
+Clohessy-Wiltshire (Hill) relative orbit about its cluster's centre: radial `x = (ρ/2) cos θ`, along-track
+`y = −ρ sin θ`, cross-track `z = k x` (k = √3 circular, 2 projected circular, 0 in plane), with θ advancing at
+the orbit rate. A member below the centre moves faster and runs ahead, one above falls behind, so the whole
+formation turns once per orbit while it holds together without thrust (to first order).
 
 `align_terminator: true` computes the sun-synchronous inclination from the J2 formula *at that shell's
 altitude*, anchors the RAAN to the dawn–dusk terminator and precesses it at roughly one revolution per

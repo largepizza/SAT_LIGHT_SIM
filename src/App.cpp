@@ -2,6 +2,7 @@
 #include "Harness.h"
 #include "Log.h"
 #include "version.h"
+#include "simulations/UIPalette.h" // the HUD palette, for the startup chooser
 #include "clay.h" // the boot screen's Clay tree (buildBootUI) — CLAY_IMPLEMENTATION lives in UIRenderer.cpp
 #include <stdexcept>
 #include <algorithm>
@@ -563,8 +564,12 @@ void App::buildBootChooserUI(float s, int wh)
     Clay_String titleStr{false, (int32_t)std::strlen(sim->name()), sim->name()};
     const auto str = [](const std::string &t)
     { return Clay_String{false, (int32_t)t.size(), t.c_str()}; };
-    const Clay_Color accent{90, 170, 255, 255}, cardBg{10, 12, 17, 255}, cardHov{18, 22, 30, 255};
-    const Clay_Color textMain{235, 238, 245, 255}, textDim{150, 158, 172, 255};
+    // The HUD's palette (UIPalette.h: the settings windows, the tutorial card) — the red accent, near-black
+    // panels with the faint white border. The first cut had its own soft blue theme.
+    const Clay_Color accent = Pal::btnAccent, accentHv = Pal::btnAccentHv;
+    const Clay_Color cardBg = Pal::panelSolid, cardHov = Pal::btnIdle;
+    const Clay_Color textMain = Pal::textPrimary, textDim = Pal::textDim;
+    const Clay_Color amber = Pal::btnHighlight; // the HUD's amber (warnings, HLT)
     const int n = (int)chooserSpec.options.size();
 
     CLAY(CLAY_ID("BootRoot"), {.layout = {
@@ -587,10 +592,11 @@ void App::buildBootChooserUI(float s, int wh)
             CLAY(CLAY_ID("ChooserGapN"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(10 * s)}}}) {}
             CLAY(CLAY_ID("ChooserNote"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                      .padding = {(uint16_t)(14 * s), (uint16_t)(14 * s), (uint16_t)(8 * s), (uint16_t)(8 * s)}},
-                                          .backgroundColor = {70, 46, 12, 255},
-                                          .cornerRadius = CLAY_CORNER_RADIUS(6)})
+                                          .backgroundColor = Pal::rowHighlight,
+                                          .cornerRadius = CLAY_CORNER_RADIUS(Style::windowCornerRadius),
+                                          .border = {.color = amber, .width = {1, 1, 1, 1, 0}}})
             {
-                CLAY_TEXT(str(chooserSpec.note), CLAY_TEXT_CONFIG({.textColor = {255, 214, 150, 255}, .fontSize = fsz(16)}));
+                CLAY_TEXT(str(chooserSpec.note), CLAY_TEXT_CONFIG({.textColor = Pal::reticule, .fontSize = fsz(16)}));
             }
         }
         CLAY(CLAY_ID("ChooserGap2"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(22 * s)}}}) {}
@@ -608,16 +614,16 @@ void App::buildBootChooserUI(float s, int wh)
                                                         .childAlignment = {.y = o.small ? CLAY_ALIGN_Y_CENTER : CLAY_ALIGN_Y_TOP},
                                                         .layoutDirection = o.small ? CLAY_LEFT_TO_RIGHT : CLAY_TOP_TO_BOTTOM},
                                              .backgroundColor = hov ? cardHov : cardBg,
-                                             .cornerRadius = CLAY_CORNER_RADIUS(8),
-                                             .border = {.color = sel ? accent : Clay_Color{60, 66, 80, 255}, .width = {bw, bw, bw, bw, 0}}}) // not CLAY_BORDER_ALL: that also rules between children
+                                             .cornerRadius = CLAY_CORNER_RADIUS(Style::windowCornerRadius),
+                                             .border = {.color = sel ? Clay_Color{200, 40, 40, 255} : Style::borderColor, .width = {bw, bw, bw, bw, 0}}}) // not CLAY_BORDER_ALL: that also rules between children
             {
                 chooserHovOpt[(size_t)i] = Clay_Hovered();
                 if (chooserHovOpt[(size_t)i] && click)
                     chooserSel = i;
-                CLAY_TEXT(str(o.label), CLAY_TEXT_CONFIG({.textColor = sel ? Clay_Color{255, 255, 255, 255} : textMain,
+                CLAY_TEXT(str(o.label), CLAY_TEXT_CONFIG({.textColor = sel ? Pal::volValue : textMain,
                                                           .fontSize = fsz(o.small ? 17.0f : 22.0f)}));
                 if (i == chooserSpec.recommendedIdx)
-                    CLAY_TEXT(CLAY_STRING("Recommended for this computer"), CLAY_TEXT_CONFIG({.textColor = accent, .fontSize = fsz(16)}));
+                    CLAY_TEXT(CLAY_STRING("Recommended for this computer"), CLAY_TEXT_CONFIG({.textColor = Pal::speedFwd, .fontSize = fsz(16)}));
                 CLAY_TEXT(str(o.detail), CLAY_TEXT_CONFIG({.textColor = textDim, .fontSize = fsz(16)}));
             }
         };
@@ -648,35 +654,35 @@ void App::buildBootChooserUI(float s, int wh)
                                                     .childGap = (uint16_t)(10 * s),
                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                         .backgroundColor = chooserHovAsk ? Clay_Color{24, 28, 36, 255} : Clay_Color{0, 0, 0, 255},
-                                         .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                                         .backgroundColor = chooserHovAsk ? Pal::btnIdle : Clay_Color{0, 0, 0, 255},
+                                         .cornerRadius = CLAY_CORNER_RADIUS(Style::windowCornerRadius)})
             {
                 chooserHovAsk = Clay_Hovered();
                 if (chooserHovAsk && click)
                     chooserAsk = !chooserAsk;
                 CLAY(CLAY_ID("ChooserAskBox"), {.layout = {.sizing = {CLAY_SIZING_FIXED(18 * s), CLAY_SIZING_FIXED(18 * s)}},
                                                 .backgroundColor = chooserAsk ? accent : Clay_Color{0, 0, 0, 255},
-                                                .cornerRadius = CLAY_CORNER_RADIUS(3),
-                                                .border = {.color = {150, 158, 172, 255}, .width = CLAY_BORDER_ALL(2)}}) {}
+                                                .cornerRadius = CLAY_CORNER_RADIUS(Style::windowCornerRadius),
+                                                .border = {.color = Pal::textDim, .width = CLAY_BORDER_ALL(2)}}) {}
                 CLAY_TEXT(CLAY_STRING("Ask on every startup"), CLAY_TEXT_CONFIG({.textColor = textMain, .fontSize = fsz(16)}));
             }
             CLAY(CLAY_ID("ChooserGo"), {.layout = {.sizing = {CLAY_SIZING_FIT(140.0f * s), CLAY_SIZING_FIT(0)},
                                                    .padding = {(uint16_t)(22 * s), (uint16_t)(22 * s), (uint16_t)(9 * s), (uint16_t)(9 * s)},
                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
-                                        .backgroundColor = chooserHovGo ? Clay_Color{120, 190, 255, 255} : accent,
-                                        .cornerRadius = CLAY_CORNER_RADIUS(6)})
+                                        .backgroundColor = chooserHovGo ? accentHv : accent,
+                                        .cornerRadius = CLAY_CORNER_RADIUS(4)})
             {
                 chooserHovGo = Clay_Hovered();
                 if (chooserHovGo && click)
                     chooserDone = true;
-                CLAY_TEXT(CLAY_STRING("Start"), CLAY_TEXT_CONFIG({.textColor = {8, 14, 24, 255}, .fontSize = fsz(18)}));
+                CLAY_TEXT(CLAY_STRING("Start"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fsz(18)}));
             }
         }
         CLAY(CLAY_ID("ChooserGap4"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(14 * s)}}}) {}
         std::snprintf(chooserHint, sizeof(chooserHint),
                       "");
         CLAY_TEXT(Clay_String({false, (int32_t)std::strlen(chooserHint), chooserHint}),
-                  CLAY_TEXT_CONFIG({.textColor = {110, 116, 128, 255}, .fontSize = fsz(16)}));
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fsz(16)}));
     }
 }
 

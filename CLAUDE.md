@@ -527,7 +527,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (`updateRainMotion`, 2026-10-05; `cv2.rainMotion` / `rainWind`, wrapped to 1024 m): the fall phase (a drop's
   offset = its terminal speed, quantised to 1/64 m/s, x the phase) and the wind drift of rain and of snow, so speed
   and wind change smoothly (the first cut used v x t with t up to 600 s: both had to be constants). Fall = "Rain
-  fall speed (x)" (`rain_fall_speed` 1.3, slot 263) x 1.35 at rain rate 0.6+. Wind = "Rain wind (x ground wind)"
+  fall speed (x)" (`rain_fall_speed` 5, 0.3-10, slot 263) x 1.35 at rain rate 0.6+; ICE (flakes, diamond dust) has
+  its own phase (`cv2.snowMotion`, 2026-10-06) at that factor capped at 1.5 (at 5x the flakes streaked like rain).
+  Wind = "Rain wind (x ground wind)"
   (`rain_wind_gain` 1.5, slot 264) x 0.4 x the wind aloft, toward the east, + a shower's OUTFLOW "Storm wind (m/s)"
   (`rain_storm_wind_mps` 14, slot 265, full at rate 0.6) away from the rain map's rain-weighted centre, in gusts
   ("Wind gusts" `rain_gusts` 1, slot 266: ~4 s noise, +-20-60%, +-15 deg). The user's storm snapshot (profile_log
@@ -553,7 +555,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   into a shaft with time PAUSED: the clouds drift ~40 m/s and outran a timed walk). Cost ~0.35 ms at the
   defaults (496k instances, mostly culled in the vertex shader), +0.45 at 64 m; the cloud march lost ~1 ms
   without the old drops. Not modelled: the volume still marches the rain within the particles' reach (tau
-  ~0.02-0.05, a slight double count); lightning does not light the drops. **Precipitation type**:
+  ~0.02-0.05, a slight double count). Lightning lights the drops (thread 1 adds each flash to `cv2RainAmb`), and so
+  do the **Reflect beams the eye stands in** (2026-10-06): the CPU evaluates beamGather at the eye from the
+  cloud-light list (`cv2BeamEyeIrr` / `cv2BeamEyeDir`, SatelliteSim.cpp after the emit; disk profile, Suns, the
+  beam's block altitude/opacity) into `cv2.beamEye` (x irradiance x "Beam light on cloud", y 1 - dayness) /
+  `beamEyeDir`, and rain_particles.vert lights every particle by it through the same phase (`dropPhase`: drops show
+  the bow opposite the satellites, flakes and ice crystals glint and halo around them). Harness `state` ->
+  `clouds_v2.rain.eye_temp_c / shaft_temp_c / beam_eye_irr_suns / beam_eye_dir_enu`. **Precipitation type**:
   `cv2.precip.x` = the air temperature at the eye (`SatelliteSimCloudsV2.cpp`: -18 + 45 cos(lat)^1.5 at sea
   level, + the season swing, - 6.5 C/km); snow below ~-1 C, rain above ~2.5 C, sleet between. Only the eye's
   precipitation changes type. The `rain` ambience driver takes the liquid share (`cv2EyeTempC`) and the rain
@@ -566,6 +574,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   swing is 0.25 x |lat|, at most 15 C — 0.35 x |lat| made the Antarctic plateau rain in November) (cloud_v2_march.comp, per ray): below freezing ~500 m up (the eye's temperature,
   6.5 C/km), the rain phase's bows give way to faint ice optics (sundogs, a weak 22 degree halo, a pillar
   under a low Sun) — a snow shower's big aggregates scatter broadly; only its few plates make optics.
+  **The beams' light follows the same rule** (2026-10-06, `beamFinish`; `cv2.precip.w` = the shafts' liquid share,
+  CPU, from the same temperature): until then every beam-lit shaft took the rain phase, and the user's McMurdo
+  view (mid-April twilight, -23 C at 384 m and in the shafts' air) showed a bright "satbow" opposite the Reflect
+  satellites in a snow shower. Snow gives the snow phase (no bow; a faint halo and sundogs around the satellites).
+  `cv2PillarOptics` gives nothing for a source above ~25 deg, so beams make no pillar; a real light PILLAR from a
+  beam's ground spot (plates reflecting the lit snow below) would need the spots as light sources in the fog/snow
+  march — not built.
 - **Per-layer scales (pass 10):** the shape period ("Shape period (m) - low cloud") no longer sets the
   cirrus fibres (`cv2CirrusPeriodM`, "Cirrus period") or the altocumulus (`anchorMid`, "Mid layer
   period"); the mid layer has its own density (`atmo.z`) and the anvils only "Anvils" (neither reads
@@ -921,7 +936,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   as distinct blobs; the ice fog's Antarctic term needs land, it covered the Southern Ocean) dust is patchy by REGION
   (`cv2DirNoise`, an analytic value noise on the direction at ~300-1000 km: a dust event covers a region,
   the next stays clear; the whole dry continent sat at one level) with a lower plume floor, and fades
-  seen from above (x0.25 by 80 km of eye altitude: mostly terrestrial). Its exponential height profile
+  seen from above (x0.08 by 60 km of eye altitude since 2026-10-06, was x0.25 by 80 km: from orbit at night its
+  city-lit glow drew soft tan blobs round desert and Mediterranean cities; mostly terrestrial). Its exponential height profile
   (and the ice fog's) is integrated EXACTLY over each march step (a sample at one height per step drew
   the step pattern as rings on the ground from 70 km), steps crowd at the far (ground) end when the eye
   is above the band, and the 150-km cap keeps the ground end from above. **Ice fog / diamond dust**
@@ -990,7 +1006,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sample): a 22 deg halo in ~1/3 of cirrus, sundogs less, the CZA/parhelic circle rarely, 46 deg very rarely.
   The sun path to every cloud sample is the Chapman column (`sunTransmit`, include/atmosphere.glsl) plus
   ozone: a 12-step midpoint rule along a grazing path misses the tangent point's dense air.
-- **Tonemap controls** (Clouds tab, lighting section; `clouds_v2.exposure_ev / highlight_rolloff /
+- **Tonemap controls** (Photometry tab, EXPOSURE AND MOON section since 2026-10-06 — they were deep in the Clouds
+  tab's lighting section; slots 158-160/163 and the keys unchanged; `clouds_v2.exposure_ev / highlight_rolloff /
   white_balance / auto_exposure`, UBO `exposureScale / highlightRolloff / whiteBalance`, the old cloudsV2
   pads): **one GLOBAL exposure** (`globalExposureEV()` = Exposure (EV) + the metered auto offset) scales the
   sky's radiance, the point sources (the point style's ref/limit magnitudes shift by `exposureGainMag()`,
@@ -1421,7 +1438,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   wherever the range was. It is computed from the footprint everywhere now; "Sea wave range fade" (slot 257,
   `ocean_wave_range_fade` 0.4, UBO `cityLod2.z`) is the share of the range the waves fade over. **Mesh flares sit on
   their glint:** a meshed satellite's sprite (point, bloom, the point-like glare) is placed at the Sun's image in its
-  dominant lobe (d = s - 2 (s.n) n from the camera, clamped to the lobe's half-side, weighted by its specular share;
+  dominant lobe (d = s - 2 (s.n) n from the camera, clamped to the lobe as a square of its area along the group's in-plane body axes (2026-10-06; a circle of half the
+  side put it 25 px off a Reflect mirror's Sun image from 500 m), weighted by its specular share;
   CPU double, `GpuMeshKeepList` entry w, octahedral), not its centre, so the flare no longer jumps when the mesh's own
   glints take the glare (12-36 px). Benchmark: Reflect Orbital #2700 from Fairbanks — the observer is 1.26 deg off its
   beam axis (it sees the mirror lobe's GGX tail), so up close the Sun's image is a FIXED point in the sky 1.26 deg from
@@ -1608,8 +1626,14 @@ follow mode is a free camera at the camera's place.
   no rendering settings on purpose: a Go must never rewrite the user's settings.json. **Rebuild them with
   `tools/harness/scripts/default_bookmarks.satcmd`** (header: the run.py line and the copy into data/bookmarks); the
   storm phase comes from harness `drift phase=` (`drift default` = the compiled-in offset), and `bookmark add id=`
-  replaces a seeded default. The Venezuela rainbow is framed from the user's snapshot (record 40, 2026-10-04, then at
-  rain 3.0): at the shipped `rain_amount` 0.71 the bow barely shows (~1.5 needed).
+  replaces a seeded default. The Venezuela rainbow is framed from the user's snapshot (record 40, 2026-10-04, at
+  rain 3.0 — the shipped `rain_amount` since 2026-10-06). **The list (2026-10-06, the user's picks): Great
+  Australian Eclipse, Blood Moon from Anchorage (14:10 UTC, the Moon ~29 deg up in the WSW over the city, 60 m up),
+  Solar Storm (the old "Aurora from Orbit"), Beam-lit Snow over Antarctica (the user's "Satbow over Antartica" at
+  McMurdo: the bow was the beams lighting snow as rain, fixed the same day), Rainbow over Venezuela, Starmind
+  Formation Rings.** Removed: Reflect Orbital over Anchorage, AI Satellites at Twilight, Los Angeles by Night,
+  Sunset from Orbit, Blood Moon over Alice Springs (Restore no longer re-adds them; a user list that has them keeps
+  them).
 
 ## Loading screen (2026-09-26)
 
@@ -1675,6 +1699,10 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   warm-up, the median of the next 10 wall-clock frames (or of at least 3 once they add up to 5 s); above 250 ms it steps one tier down (a full tier ->
   Planetarium, Planetarium -> Potato), once per launch, with a 12-s banner (`graphicsAutoNoticeText`). Off in a
   harness run unless `SATLIGHTSIM_BOOT_SAFETY_MS` (run.py `--boot-safety-ms`) sets the threshold.
+- **Look**: the HUD palette (`UIPalette.h` `Pal` / `Style`, included by App.cpp): near-black `panelSolid` cards with
+  the faint `Style::borderColor` rule, the red accent (`btnAccent`) for the selection border, the checkbox and
+  Start, `Style::windowCornerRadius`, the amber note on `rowHighlight`. The first cut had a soft blue theme of its own
+  (2026-10-06, the user: "no soft blue UI windows").
 - **Harness**: skipped (a run never waits for input) unless `SATLIGHTSIM_BOOT_CHOOSER=pick=N` (run.py
   `--boot-chooser N`), which scripts it in four frames; `--boot-capture` captures them. `state` -> `render.boot_choice
   / full_sky_deferred / full_sky_pipeline / ask_graphics_mode`; `tools/harness/scripts/boot_chooser.satcmd`.
@@ -2768,20 +2796,34 @@ Types and constellations are loaded from `constellations.json` next to the exe. 
   32-bit: the roster is at 29 entries, and an entry index >= 32 has no mask bit.
 - **Clusters** (`cluster_size`; Walker, Disk, Shells): each plane's satellites fly in formation clusters,
   evenly spaced. 1 = off (Walker keeps random phases). `cluster_shape` "line": `cluster_spacing_km` apart along
-  track; "ring": a regular polygon of radius `cluster_radius_km` in the ORBIT plane (along track x radial). A
-  ring member's radius is the centre's + `SatOrbit::radialOffsetM`, but its mean motion is the centre's: R_sat
-  and meanMot are separate fields on the GPU and in `satOrbitStateAt`, so the formation holds instead of
-  drifting ~3 pi x the offset per orbit (it is station-kept, not a free Keplerian formation).
+  track; "ring" (2026-10-06 rework): a PASSIVE formation — every member takes the cluster CENTRE's circular
+  orbit (raan/incl/u0/altM; R_sat and meanMot are the centre's) plus the bounded, drift-free Clohessy-Wiltshire
+  (Hill) relative orbit about it, in the centre's radial / along-track / cross-track frame, theta = u + delta:
+  x = a cos theta, y = -2a sin theta, z = k x (a = rho/2, rho = `cluster_radius_km`; k from
+  `cluster_relative_orbit`: circular sqrt 3 = a circle of radius rho tilted 60 deg out of the orbit plane about
+  the along-track axis, every member rho from the centre — the default; projected_circular 2; in_plane 0 = the
+  2:1 ellipse). Members are evenly spaced in delta from a per-cluster start. A member below the centre runs ahead,
+  one above falls behind, and the formation turns once per orbit (the user's "ring rotating on axis"). Stored as
+  `SatOrbit::formation/formP/formQ/formK` (P = a cos delta, Q = a sin delta, so x = P cos u - Q sin u and
+  y = -2 (P sin u + Q cos u): no trig per satellite), baked into GpuSatOrbit's tumble slots with
+  `kGpuFormationBit` in constIdx (see the layout below); `formationOffset()` in sat_orbit.comp, mirrored in
+  `satOrbitStateAt()` (elems `formation/formP/formQ/formK`, traces `orbit_formation[_pqk]`). The centre's phase
+  keeps `orbitPhase`'s exact two-float product; the offset is added after it. Velocity (attitude) stays the
+  centre's (the relative speed is ~n rho < 1 m/s). The first cut (until 2026-10-06) was a rigid polygon held
+  together by giving each member its centre's mean motion at its own radius ("magic").
 - **Starmind** (SpaceX orbital data centers) follows the 29 May 2026 letter to the FCC, Table 1
   (SAT-LOA-20260108-00016; transcribed in github.com/sdross0/orbital-datacenter-brightness ASSUMPTIONS.md
   rev. 2): SSO 565-585 km (10 shells), 707-744 (22), 967-1002 (22), 2 planes each; 30 deg at 550-568 km
   (10 shells, 26-32 deg), 686-718 (25), 946-978 (25), 30 planes x 333. The rows are per-group MAXIMA summing to
   1,198,120 against a 1,000,000 cap, so `per_plane` is scaled by 1e6 / 1,198,120 and rounded down to whole
-  clusters (988,672 flown). Rings of 8 in the orbit plane, `cluster_radius_km` 2.0 in the roster (the schema's
-  default and the first cut: 200 m; the user's reading of SpaceX's visualization; SpaceX's text says "10-ish
-  satellites" per cluster). At 2 km a ring spans ~0.1-0.2 deg from the ground, so each cluster RESOLVES into a
-  small ring (or, edge-on, a short line) of points at a normal FOV — not a rendering bug (reported 2026-10-06 as
-  "stars drawn as hollow rings"); at 200 m a cluster is one point. Filed RAAN tolerance +-30 deg: modelled
+  clusters (988,672 flown). Rings of 8 (the user's reading of SpaceX's visualization; SpaceX's text says "10-ish
+  satellites" per cluster), circular relative orbits of rho = 0.35 km (700 m across: the formations are
+  reportedly under 750 m; neighbours 268 m apart). It was 2 km in the first cut, where each cluster RESOLVED into
+  a small ring of points from the ground ("stars drawn as hollow rings"); at 350 m a cluster is about one point
+  at a normal FOV. **Per-cluster jitter** (Shells only, `cluster_alt_jitter_km` 0.25, `cluster_phase_jitter`
+  0.25 of the gap between clusters (~80 km), `cluster_raan_jitter_deg` 0.15, `cluster_incl_jitter_deg` 0.03;
+  deterministic hash of (entry, cluster), not rand()) breaks the perfectly even strings of clusters along each
+  plane. Filed RAAN tolerance +-30 deg: modelled
   per plane via `raan_spread_deg` (10 in the roster; `raan_spread` even = golden-ratio sequence | random). It
   replaced a single 1M-satellite dawn-dusk Disk (575-1925 km, 2000 rings). **Why the spread matters:** with
   tight nodes every shell of a node family shares ONE plane, and shells 1.6-1.8 km apart with 2-km rings
@@ -2939,6 +2981,10 @@ anything that is constant per type goes in `GpuSatType`.
 [48] tumbleAxisZ, alignTerminator, typeIdx (uint), constIdx (uint)
 ```
 `static_assert(sizeof(GpuSatOrbit) == 64)` — do not change field order without updating both structs.
+**Formation ring members** (2026-10-06): `constIdx` carries `kGpuFormationBit` (0x80000000; the shader masks
+the index with 31 for the enabled/highlight masks), the tumble slots hold the Clohessy-Wiltshire coefficients
+(tumbleAxisX/Y/Z = formP, formQ, formK; tumbleRate/Phase 0), and the Tumble attitude law reads +Z for them —
+the CPU's `SatOrbit` keeps its own (unused) tumble fields. `offsetof` asserts pin the slot positions.
 
 ### GpuSatType layout (416 bytes, std430) — `satTypeBuf`
 One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, at `kSatTypeArrayOffset`: after a
@@ -3603,7 +3649,11 @@ an aliased centre) and a blue anamorphic streak the sun doesn't have; both are g
   bright satellite's flux) and filled the 64 slots with ~400 px sprites, a large part of the close-up
   frame-rate drop. `glare_find.comp` lists every 5×5 local maximum past the threshold into `glintBuf`
   (`GpuGlintList`, `include/glint_list.glsl`, 64 max, its own indirect args); `glare_mesh.vert/.frag`
-  draws them with the same profile.
+  draws them with the same profile. **Sub-texel position (2026-10-06):** a parabola through the log light of the
+  peak texel and its axis neighbours (exact for a Gaussian lobe), blended toward the 9x9 near-peak centroid by how
+  much light besides the peak's is in it (flat tops). At texel centres the glare moved in 4-px jumps with holds —
+  the "wandering" glare of the release cinematic's mirror shot (`scripts/mirror_glare.satcmd`,
+  `tools/harness/glare_track.py`: the glint list is in `state` -> `selection.glints`, host copy `glintReadBuf`).
 - **Proximity (2026-09-26, `glareNearGain` / `glareNearRangeKm`):** sprite radius =
   `glareSizePx` × (0.6 + s) × `glareNearScale(range)`, which ramps 1 → `glareNearGain` over
   `glareNearRangeKm` → 0, smoothstepped — exactly 1.0 at or beyond that range, for a range of 0
@@ -3804,7 +3854,8 @@ struct GpuGlowBuf {
 `updatePositions` computes the Moon's geocentric ECI position (`satphot::moonGeoEciAt`: Meeus ch. 47's main
 periodic terms — 14 in longitude, 7 in latitude, 10 in distance; ~0.05 deg, eclipse times within minutes) and
 from it, per frame: the TOPOCENTRIC direction (`moonDirENU`, up to ~1 deg of parallax from the ground, far
-more in deep space), the true angular radius x "Moon size (x real)" (`moonSizeScale`, slot 220, key
+more in deep space), the true angular radius x "Moon size (x real)" (`moonSizeScale`, slot 220, Photometry tab's
+EXPOSURE AND MOON section since 2026-10-06, key
 `clouds.moon_size`; the old disc was a fixed 3x at infinity), the Earth-centred position in the observer's ENU
 (km) and the eclipse state — all into `cloud.moonCenter` / `cloud.moonMisc` (UBO 784 -> 816).
 - **Tidally locked**: the texture frame's z axis points at the EARTH'S CENTRE (it pointed at the observer, so
@@ -5092,6 +5143,14 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   front (west of Phoenix, the grid "turned on" with the eye inside the cloud). The user's tuned LOD values are the
   defaults (posts 27, grid 380, roads 1300, layout 2000 m/px, street share 0 near / 0.13 far, sprite gain 4,
   ground glitter under sprites 1).
+  **The blur under cloud was REMOVED (2026-10-06):** at mip 8.1 (~1000 km of map per texel) by the cloud's opacity,
+  from orbit every city under thin or broken cloud became a grey wash with the cloud's outline (the release
+  cinematic's pull-out: "blobby" cities). The lights are attenuated by the cloud composite only; the slider and
+  `clouds.city_light_blur_lod` are gone (slot 62 free; `GpuCloudParams::cityLightBlurLod` unread, written 0). The
+  **air's city glow** (sat_sky.frag atmosphere loop, `accumCity`) reads the night map at mip 4 below 800 km of eye
+  altitude and blends to a mip following the sample's height (log2(3 h / 4.9 km)) by 3000 km: mip 4 drew every
+  town as a ~150-km disc from high orbit. Applied from 30 km up it drew 10-20 km texels as squares round towns
+  from 400 km (bilinear). `scripts/city_orbit_blobs.satcmd`.
 - **Regional city styles (2026-09-30, sat_sky.frag `cityStyleWeights`, `kCs*` tables).** Nine styles by
   soft continental boxes with wobbled borders: 0 North America + Oceania, 1 Latin America, 2 Mediterranean
   Europe, 3 Northern Europe, 4 Middle East / N Africa / Central Asia, 5 Sub-Saharan Africa, 6 South + SE Asia,

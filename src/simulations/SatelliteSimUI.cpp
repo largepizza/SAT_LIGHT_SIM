@@ -4009,6 +4009,22 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
             }
         }
     };
+    // 2026-10-06: the scene-wide exposure (the sky's tonemap: every point source, the Milky Way, clouds) and
+    // the Moon's drawn size, moved here from the Clouds / Atmosphere tabs. They keep their cloud slider slots
+    // (CloudVal:158 etc.) and settings keys (clouds_v2.exposure_ev ..., clouds.moon_size).
+    {
+        CloudSlider secExposure[] = {
+            {"Exposure (EV)", &cv2ExposureEV, -3.0f, 3.0f, 0.05f, "%+.2f", 158},
+            {"Auto exposure (day)", &cv2AutoExposure, 0.0f, 1.0f, 0.05f, "%.2f", 163},
+            {"Highlight roll-off", &cv2HighlightRolloff, 0.0f, 1.0f, 0.05f, "%.2f", 159},
+            {"White balance", &cv2WhiteBalance, 0.0f, 1.0f, 0.05f, "%.2f", 160},
+            // The Moon is a body at its true distance; 1 = its real size (within a few degrees of the Sun
+            // it is always drawn at its true size, so eclipses are right).
+            {"Moon size (x real)", &moonSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 220},
+        };
+        uiSection("PhotoSec", 11, "EXPOSURE AND MOON");
+        buildCloudSliderRows(inp, ui, secExposure, (int)(sizeof(secExposure) / sizeof(secExposure[0])));
+    }
     // 2026-10-03: grouped by what they act on (each row keeps its idx: PhotoVal:<idx> etc.).
     struct PhotoGroup
     {
@@ -4848,11 +4864,8 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
     };
 
     CloudSlider secLighting[] = {
-        // Scene-wide (the sky's tonemap), here beside the cloud lighting they are tuned against.
-        {"Exposure (EV)", &cv2ExposureEV, -3.0f, 3.0f, 0.05f, "%+.2f", 158},
-        {"Highlight roll-off", &cv2HighlightRolloff, 0.0f, 1.0f, 0.05f, "%.2f", 159},
-        {"Auto exposure (day)", &cv2AutoExposure, 0.0f, 1.0f, 0.05f, "%.2f", 163},
-        {"White balance", &cv2WhiteBalance, 0.0f, 1.0f, 0.05f, "%.2f", 160},
+        // Exposure, highlight roll-off, auto exposure and white balance (scene-wide: the sky's tonemap)
+        // moved to the Photometry tab's EXPOSURE AND MOON section (2026-10-06); slots and keys unchanged.
         {"Cloud sunlight Rayleigh", &cv2CloudSunRayleigh, 0.0f, 3.0f, 0.05f, "%.2f", 9},
         {"Twilight sky light", &cv2TwilightSky, 0.0f, 8.0f, 0.1f, "%.1f", 16},
         {"Sun gain", &cv2SunGain, 0.0f, 4.0f, 0.05f, "%.2f", 124},
@@ -5014,7 +5027,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Drop reach (m)", &cv2DropDistM, 4.0f, 64.0f, 4.0f, "%.0f", 208},
         {"Drop particles (x1000, nearest box)", &cv2RainParticlesK, 0.5f, 64.0f, 0.5f, "%.1f", 261},
         {"Drop shutter (ms)", &cv2RainShutterMs, 1.0f, 100.0f, 1.0f, "%.0f", 262},
-        {"Rain fall speed (x)", &cv2RainFallSpeed, 0.3f, 3.0f, 0.05f, "%.2f", 263},
+        {"Rain fall speed (x)", &cv2RainFallSpeed, 0.3f, 10.0f, 0.05f, "%.2f", 263},
         {"Rain wind (x ground wind)", &cv2RainWindGain, 0.0f, 5.0f, 0.1f, "%.1f", 264},
         {"Storm wind (m/s)", &cv2RainStormWind, 0.0f, 40.0f, 0.5f, "%.1f", 265},
         {"Wind gusts", &cv2RainGusts, 0.0f, 3.0f, 0.05f, "%.2f", 266},
@@ -5176,11 +5189,8 @@ void SatelliteSim::buildSettingsNightLightsTab(const UIInput &inp, UIRenderer &u
         {"Street light share (near)", &cityStreetShareNear, 0.0f, 1.0f, 0.01f, "%.2f", 225},
         {"Street light share (far)", &cityStreetShareFar, 0.0f, 1.0f, 0.01f, "%.2f", 226},
         {"City light on clouds", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
-        // A correct opacity value still looks wrong if what leaks through a hazy/thin cloud is a
-        // pixel-sharp copy of the raw city-lights texture — real light diffuses through cloud
-        // droplets. Blends earthNightTex/cityNightDetailTex toward this mip LOD as local cloud
-        // opacity rises (0 = no blur, higher = softer glow). See sat_sky.frag's terrain branch.
-        {"City light blur LOD", &cityLightBlurLod, 0.0f, 20.0f, 0.5f, "%.1f", 62},
+        // "City light blur LOD" (slot 62, clouds.city_light_blur_lod) was removed 2026-10-06: the blur under
+        // cloud drew every city under thin cloud as a grey blob from orbit (sat_sky.frag). Slot 62 is free.
         {"Night sky light", &terrainNightSkyLight, 0.0f, 0.5f, 0.005f, "%.3f", 56},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
@@ -5427,8 +5437,7 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         {"Sheet folds", &auroraSheetFold, 0.0f, 2.0f, 0.05f, "%.2f", 218},
         // 2026-09-30: the look of the Earth from space, fitted to the Artemis II photographs.
         {"Orbit colour grade", &orbitGrade, 0.0f, 1.0f, 0.05f, "%.2f", 219},
-        // 2026-09-30: the Moon is a body at its true distance; 1 = its real size (the old disc was 3x).
-        {"Moon size (x real)", &moonSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 220},
+        // "Moon size (x real)" (slot 220) moved to the Photometry tab's EXPOSURE AND MOON section (2026-10-06).
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
@@ -7496,7 +7505,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         beamClusterDirThresholdDeg = c.value("beam_cluster_dir_threshold_deg", beamClusterDirThresholdDeg);
         beamClusterFadeInS = c.value("beam_cluster_fade_in_s", beamClusterFadeInS);
         beamClusterFadeOutS = c.value("beam_cluster_fade_out_s", beamClusterFadeOutS);
-        cityLightBlurLod = c.value("city_light_blur_lod", cityLightBlurLod);
+        // city_light_blur_lod: no longer read (the blur under cloud was removed 2026-10-06).
         cloudWarpStrength = c.value("cloud_warp_strength", cloudWarpStrength);
         cloudWarpFreq = c.value("cloud_warp_freq", cloudWarpFreq);
         cloudSurfaceCarve = c.value("cloud_surface_carve", cloudSurfaceCarve);
@@ -7766,7 +7775,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"beam_cluster_dir_threshold_deg", beamClusterDirThresholdDeg},
         {"beam_cluster_fade_in_s", beamClusterFadeInS},
         {"beam_cluster_fade_out_s", beamClusterFadeOutS},
-        {"city_light_blur_lod", cityLightBlurLod},
         {"cloud_warp_strength", cloudWarpStrength},
         {"cloud_warp_freq", cloudWarpFreq},
         {"cloud_surface_carve", cloudSurfaceCarve},

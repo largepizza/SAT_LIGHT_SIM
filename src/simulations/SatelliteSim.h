@@ -253,11 +253,23 @@ struct ConstellationConfig
     std::vector<ShellGroup> groups; // Shells: the filed groups (numPlanes = their total, perPlane = 1)
     // Formation clusters (Walker, Disk, Shells): each plane's/ring's satellites fly in clusters of
     // clusterSize, the clusters evenly spaced. 1 = no clusters. Line: clusterSpacingM apart along
-    // track. Ring: a regular polygon of radius clusterRadiusM in the orbit plane (along-track x radial).
+    // track. Ring: a passive Clohessy-Wiltshire relative orbit about the cluster centre (see
+    // SatOrbit::formP), members evenly spaced in its phase; clusterRadiusM = its along-track
+    // semi-axis (rho), clusterCrossK = cross-track / radial amplitude (sqrt 3 = a circle of radius
+    // rho tilted 60 deg out of the orbit plane, 2 = circular in projection on the local horizontal,
+    // 0 = the in-plane 2:1 ellipse).
     int clusterSize = 1;
     float clusterSpacingM = 1000.0f;
     bool clusterRing = false;
     float clusterRadiusM = 200.0f;
+    float clusterCrossK = 1.7320508f;
+    // Shells only: per-cluster scatter (uniform +-, deterministic per cluster) so a managed
+    // constellation does not draw perfect lattices: altitude (m), along-track phase (fraction of the
+    // gap between neighbouring clusters), node and inclination (rad). 0 = none.
+    float clusterAltJitterM = 0.0f;
+    float clusterPhaseJitter = 0.0f;
+    float clusterRaanJitterRad = 0.0f;
+    float clusterInclJitterRad = 0.0f;
     // Shells, sun-synchronous groups: each plane's node is offset from its terminator node (LTAN
     // 18:00 / 06:00) by up to +-raanSpread (the filed RAAN tolerance; 15 deg = 1 h of LTAN). Even: a
     // golden-ratio sequence over the entry's SSO planes (no clumps); random: uniform. 0 = tight nodes.
@@ -742,6 +754,13 @@ struct GpuCloudV2Params
                            // zw the rain's wind drift (rain frame E/N, m, mod 1024)
     glm::vec4 rainWind;    // xy the wind now (m/s, rain frame), zw the snow's wind drift (m, mod 1024)
     glm::vec4 lightning2;  // 2026-10-05: x "Storm lightning (flashes/min/cell)", yzw spare
+    // 2026-10-06: the Reflect beams' light at the eye, for the rain / snow particles (rain_particles.vert; CPU, from the
+    // cloud-light list in SatelliteSim.cpp). beamEye x the beams' irradiance there (Suns) x "Beam light on cloud",
+    // y 1 - dayness; beamEyeDir xyz the irradiance-weighted direction to the satellites (ENU at the eye).
+    glm::vec4 beamEye, beamEyeDir;
+    // 2026-10-06: the snow's own fall (SatelliteSimRain.cpp): x its phase (as rainMotion.x), y its reference speed now.
+    // Flakes took "Rain fall speed" (x5): at 4-7 m/s they streaked like rain. zw spare.
+    glm::vec4 snowMotion;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -755,7 +774,8 @@ static_assert(offsetof(GpuCloudV2Params, farLight) == 288 + 48 * kCloudV2Types +
 static_assert(offsetof(GpuCloudV2Params, farTune) == 288 + 48 * kCloudV2Types + 528, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, shapeRotA) == 288 + 48 * kCloudV2Types + 560, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, rainMotion) == 288 + 48 * kCloudV2Types + 640, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 688, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, beamEye) == 288 + 48 * kCloudV2Types + 688, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 736, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -1120,16 +1140,20 @@ struct GpuSatOrbit
 
     float tumbleRate;  // rotation rate (rad/s); 0 if not tumbling
     float tumblePhase; // epoch-baked angle: fmod(phase + rate*epochT0, 2π)
-    float tumbleAxisX;
-    float tumbleAxisY;
+    float tumbleAxisX; // formation member (constIdx & kGpuFormationBit): formP (m)
+    float tumbleAxisY; // formation member: formQ (m)
 
-    float tumbleAxisZ;
+    float tumbleAxisZ;     // formation member: formK (cross-track / radial)
     float alignTerminator; // 1.0 = SSO (RAAN precesses); 0.0 = fixed RAAN
     uint32_t typeIdx;      // index into satTypeBuf's GpuSatType array
-    uint32_t constIdx;     // constellation index for enabled/highlight masks
+    uint32_t constIdx;     // constellation index (low 5 bits) for enabled/highlight masks;
+                           // kGpuFormationBit = formation ring member (tumble* hold formP/Q/K)
     // Total: 64 bytes
 };
 static_assert(sizeof(GpuSatOrbit) == 64, "GpuSatOrbit layout mismatch");
+static_assert(offsetof(GpuSatOrbit, tumbleAxisX) == 40 && offsetof(GpuSatOrbit, constIdx) == 60,
+              "GpuSatOrbit layout mismatch (sat_orbit.comp reads the formation fields by position)");
+constexpr uint32_t kGpuFormationBit = 0x80000000u; // GpuSatOrbit::constIdx flag, sat_orbit.comp mirror
 
 // GpuReflectorTarget / the per-frame CPU-compacted night-side buffer it described were removed
 // 2026-08-06: sat_orbit.comp now reads the static per-target ECEF buffer directly (the same one
@@ -1793,13 +1817,20 @@ struct SatOrbit
     glm::vec3 tumbleAxis; // fixed body tumble axis (unit vector in ECI)
     bool alignTerminator; // if true, incl/raan are recomputed from sunDirECI each frame
     float targetTerminatorAngle = 0.0f;
-    // Formation ring member (cluster_shape "ring"): metres above (+) / below the cluster centre at
-    // altM. R_sat includes it, meanMot does NOT (it is the centre's), so the member keeps station on
-    // the ring instead of drifting off at its own Keplerian rate.
-    float radialOffsetM = 0.0f;
+    // Formation ring member (cluster_shape "ring"). raan/incl/u0/altM are the CLUSTER CENTRE's
+    // circular orbit; the member flies the bounded Clohessy-Wiltshire (Hill) relative orbit about it,
+    // in the centre's radial / along-track / cross-track frame, with theta = u + delta:
+    //   x (radial)      =     a cos(theta)        =  P cos u - Q sin u
+    //   y (along-track) = -2 a sin(theta)        = -2 (P sin u + Q cos u)
+    //   z (cross-track) =  k a cos(theta)        =  k x
+    // P = a cos delta, Q = a sin delta. Drift-free (x'' - 2n y' - 3n^2 x = 0, y'' + 2n x' = 0,
+    // z'' + n^2 z = 0): a member below the centre runs ahead, one above falls behind, and the whole
+    // formation turns once per orbit. Mirrored in sat_orbit.comp and satOrbitStateAt().
+    bool formation = false;
+    float formP = 0.0f, formQ = 0.0f, formK = 0.0f;
     // ── Precomputed frame-invariant constants (set once in buildOrbits) ────────
-    float R_sat = 0.0f;    // kEarthRadius + altM + radialOffsetM
-    float meanMot = 0.0f;  // sqrt(kGM / (kEarthRadius + altM)^3)
+    float R_sat = 0.0f;    // kEarthRadius + altM
+    float meanMot = 0.0f;  // sqrt(kGM / R_sat^3)
     float cosI = 0.0f;     // cos(incl)
     float sinI = 0.0f;     // sin(incl)
     float cosRaan = 0.0f;  // cos(raan) — valid when !alignTerminator
@@ -1978,6 +2009,8 @@ private:
     static constexpr int kSelPhotLines = 1;
     char selPhotLine[kSelPhotLines][48] = {}; // rebuilt every frame
     bool selParityWarn = false;               // parity gap above kParityWarnMag (drives the log's severity)
+    bool selParityValid = false;              // the last check's numbers (harness `state` selection.parity)
+    double selParityDmag = 0.0, selParityRangeGpuM = 0.0, selParityRangeCpuM = 0.0;
     static constexpr double kParityWarnMag = 0.02;
     int parityLogCooldown = 0;                // frames until the next mismatch may be logged
     void updateSelectedPhotometry();
@@ -3081,9 +3114,12 @@ private:
     float cv2HistoryWeightMoving = 0.4f; // the same weight once the view moves (parallax past ~2 half-res px)
     float cv2HistoryWeight = 0.05f;     // weight of a new sample over its reprojected history (still view;
                                        // the resolve raises it toward 0.35 with motion)
+    float cv2BeamEyeIrr = 0.0f;           // the Reflect beams' irradiance at the eye (Suns), per frame (rain particles)
+    glm::vec3 cv2BeamEyeDir{0.0f, 0.0f, 1.0f};   // its weighted direction to the satellites (ENU)
     float cv2LightLenM = 2500.0f;      // light-march length
     float cv2LightSteps = 6.0f;
     float cv2LightLodFootprintM = 40.0f;  // past this pixel footprint (m) a 2-step light march; 0 = off
+    float cv2ShaftTempC = 15.0f;          // the air 500 m over the ground under the eye (deg C): the shafts' rain / snow
     float cv2EyeTempC = 15.0f;            // the air temperature at the eye (deg C; rain / sleet / snow), per frame
     float cv2LightningRate = 0.4f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
     float cv2LightningGlow = 0.088f;      // the flash's light in the cloud
@@ -3128,7 +3164,7 @@ private:
                                        // ~cluster scale: splotches)
     float cv2CirrusFlow = 1.5f;        // the flow warp at cirrus level, x the low cloud's (the jet bends more)
     float cv2CirrusWindMps = 30.0f;    // the jet: cirrus moves this fast eastward over the map
-    float cv2RainAmount = 0.71f;        // rain shafts under precipitating cloud, 0 = none
+    float cv2RainAmount = 3.0f;         // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
     float cv2RainStreaks = 2.63f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
     float moveSpeedPerHeight = 1.0f;   // WASD: this many times the height above the ground per second (capped
@@ -3138,7 +3174,7 @@ private:
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
     float cv2LightningStormRate = 0.31f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
     float cv2LightningTendrils = 1.23f;    // the channels' branching (x the branch and tendril counts)
-    float cv2RainFallSpeed = 3.0f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
+    float cv2RainFallSpeed = 5.0f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
     float cv2RainWindGain = 0.4f;      // x the ground wind on the drops (0.4 x the wind aloft)
     float cv2RainStormWind = 11.0f;    // the outflow from a heavy shower (m/s at rain rate 1), away from its core
     float cv2RainGusts = 1.38f;         // the wind's gustiness (x; stronger in heavy rain)
@@ -3471,6 +3507,14 @@ private:
     // in the flare source's alpha; glare_mesh.vert/.frag draws them like glare.vert's sprites.
     VkBuffer glintBuf = VK_NULL_HANDLE;
     VkDeviceMemory glintMem = VK_NULL_HANDLE;
+    // Its host copy (2026-10-06): the harness reports the main view's glints (`state` -> glints), so a
+    // glare's position can be checked against where the Sun's image is (the mirror shot of the release
+    // cinematic). Copied at the end of recordCompute when glare_find ran; glintReadValid says whether the
+    // copy is this frame's.
+    VkBuffer glintReadBuf = VK_NULL_HANDLE;
+    VkDeviceMemory glintReadMem = VK_NULL_HANDLE;
+    void *glintReadMapped = nullptr;
+    bool glintReadValid = false;
     VkDescriptorSetLayout glareFindDescLayout = VK_NULL_HANDLE, glareMeshDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool glintDescPool = VK_NULL_HANDLE;
     VkDescriptorSet glareFindDescSet = VK_NULL_HANDLE, glareMeshDescSet = VK_NULL_HANDLE;
@@ -4111,10 +4155,8 @@ private:
     // does. The 2026-08-15 2-s.f. rounding pass took the residual 1.014 to exactly neutral — the
     // knob is still live if it's ever needed.
     float cloudOpacityScale = 0.46f;
-    // City-lights blur-through-cloud (see GpuCloudParams::cityLightBlurLod) — mip LOD
-    // earthNightTex/cityNightDetailTex blend toward under full local cloud opacity, so light
-    // diffused through haze reads as a soft glow instead of a sharp copy of the raw texture.
-    float cityLightBlurLod = 8.1f;
+    // (cityLightBlurLod, the city lights' blur under cloud, was removed 2026-10-06: from orbit it drew every
+    // city under thin cloud as a ~1000-km grey blob. GpuCloudParams::cityLightBlurLod is unread, written 0.)
     // Atmospheric scattering strength gains (see GpuCloudParams::atmosRayleighGain/atmosMieGain
     // and common.glsl's BETA_R_BASE/BETA_M_BASE) — 1.0 reproduces the original hardcoded physical
     // constants exactly. Rayleigh gain controls how much red/orange the sky and horizon clouds
@@ -5222,6 +5264,7 @@ private:
     bool rainPrevSimTValid = false;
     double rainFallPhase = 0.0;                  // integral of the reference fall speed (m)
     glm::dvec2 rainDrift{0.0}, snowDrift{0.0};   // integral of the wind (m, rain frame E/N)
+    double snowFallPhase = 0.0;                 // the snow's fall phase (integral of its reference speed, m)
     glm::vec2 rainWindNow{0.0f};                 // eased wind (m/s)
     float rainRateEased = 0.0f;
     float rainFallRefNow = 1.0f;

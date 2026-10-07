@@ -70,14 +70,40 @@ struct SatOrbit {
 
     float tumbleRate;         // rotation rate (rad/s); 0 = not tumbling
     float tumblePhase;        // epoch-baked tumble angle: fmod(phase + rate*epochT0, 2π)
-    float tumbleAxisX;        // tumble axis unit vector x
-    float tumbleAxisY;        // tumble axis unit vector y
+    float tumbleAxisX;        // tumble axis unit vector x  (formation member: formP, m)
+    float tumbleAxisY;        // tumble axis unit vector y  (formation member: formQ, m)
 
-    float tumbleAxisZ;        // tumble axis unit vector z
+    float tumbleAxisZ;        // tumble axis unit vector z  (formation member: formK)
     float alignTerminator;    // 1.0 = SSO (RAAN precesses); 0.0 = fixed RAAN
     uint  typeIdx;            // index into types[] (SatTypeBuf)
-    uint  constIdx;           // constellation index (for enabledMask/highlightMask)
+    uint  constIdx;           // constellation index (low 5 bits, for enabledMask/highlightMask)
+                              // | FORMATION_BIT for a formation ring member
 };
+// GpuSatOrbit::constIdx flag (kGpuFormationBit in SatelliteSim.h): a formation ring member flies a
+// Clohessy-Wiltshire relative orbit about its cluster centre, whose elements the record holds; the
+// tumble slots carry P, Q, K (it never tumbles). See SatOrbit::formP / formationOffset().
+const uint FORMATION_BIT = 0x80000000u;
+const uint CONST_IDX_MASK = 31u;
+
+// Clohessy-Wiltshire (Hill) offset of a formation member from its cluster centre at argument of
+// latitude u: x = P cos u - Q sin u (radial), y = -2 (P sin u + Q cos u) (along-track), z = K x
+// (cross-track). Bounded and drift-free: the member circles the centre once per orbit, those below
+// it running ahead. rHat/vHat/hHat = the centre's radial, along-track, orbit-normal unit vectors.
+// Mirrored in satOrbitStateAt() (SatPhotometry.cpp).
+vec3 formationOffset(SatOrbit orb, float cosU, float sinU, vec3 rHat, vec3 vHat, vec3 hHat)
+{
+    float x = orb.tumbleAxisX * cosU - orb.tumbleAxisY * sinU;
+    float y = -2.0 * (orb.tumbleAxisX * sinU + orb.tumbleAxisY * cosU);
+    return x * rHat + y * vHat + (orb.tumbleAxisZ * x) * hHat;
+}
+vec3 formationOffsetAt(SatOrbit orb, float cosU, float sinU, float cosR, float sinR, vec3 rHat)
+{
+    vec3 vHat = vec3(-sinU * cosR - cosU * orb.cosI * sinR,
+                     -sinU * sinR + cosU * orb.cosI * cosR,
+                      cosU * orb.sinI);
+    vec3 hHat = vec3(orb.sinI * sinR, -orb.sinI * cosR, orb.cosI);
+    return formationOffset(orb, cosU, sinU, rHat, vHat, hHat);
+}
 
 layout(set = 0, binding = 0) readonly buffer SatOrbitBuf {
     SatOrbit orbits[];
@@ -468,7 +494,9 @@ mat3 groupFrame(AttGroup g, mat3 parentF, SatOrbit orb, vec3 nadir, vec3 vel, ve
         // Uncontrolled spin about this satellite's own axis (GpuSatOrbit tumble*). t1 sweeps the
         // plane perpendicular to the axis — exactly the legacy Tumbling normal for body +X.
         float angle = orb.tumblePhase + orb.tumbleRate * pc.deltaT;
-        vec3  ax    = vec3(orb.tumbleAxisX, orb.tumbleAxisY, orb.tumbleAxisZ);
+        vec3  ax    = (orb.constIdx & FORMATION_BIT) != 0u
+                    ? vec3(0.0, 0.0, 1.0) // formation member: the slots hold P, Q, K (CPU: +Z, rate 0)
+                    : vec3(orb.tumbleAxisX, orb.tumbleAxisY, orb.tumbleAxisZ);
         vec3  ref   = (abs(ax.z) < 0.9) ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
         vec3  axA   = normalize(cross(ax, ref));
         vec3  axB   = cross(ax, axA); // already unit length
@@ -580,7 +608,10 @@ vec3 satEciAt(SatOrbit orb, float evalDeltaT)
     float ex = cosR * cosU - sinR * sinU * orb.cosI;
     float ey = sinR * cosU + cosR * sinU * orb.cosI;
     float ez = sinU * orb.sinI;
-    return vec3(ex, ey, ez) * orb.R_sat;
+    vec3 p = vec3(ex, ey, ez) * orb.R_sat;
+    if ((orb.constIdx & FORMATION_BIT) != 0u)
+        p += formationOffsetAt(orb, cosU, sinU, cosR, sinR, vec3(ex, ey, ez));
+    return p;
 }
 
 // Rotates a unit ECEF direction to ECI by Earth's rotation angle gmst (rad). Length-preserving.
@@ -1100,7 +1131,7 @@ bool processSatellite(uint i, out SatVisible rec)
     SatType  ty  = types[orb.typeIdx];
 
     // ── Disabled constellation: not appended ──────────────────────────────────
-    if (((pc.enabledMask >> orb.constIdx) & 1u) == 0u)
+    if (((pc.enabledMask >> (orb.constIdx & CONST_IDX_MASK)) & 1u) == 0u)
         return false;
 
     // ── Orbital phase (epoch-delta trick + a two-float product, see orbitPhase) ─
@@ -1125,6 +1156,8 @@ bool processSatellite(uint i, out SatVisible rec)
     float ey = sinR * cosU + cosR * sinU * orb.cosI;
     float ez = sinU * orb.sinI;
     vec3 satECI = vec3(ex, ey, ez) * orb.R_sat;
+    if ((orb.constIdx & FORMATION_BIT) != 0u)
+        satECI += formationOffsetAt(orb, cosU, sinU, cosR, sinR, vec3(ex, ey, ez));
     vec3 relPos = satECI - pc.obsECI;
 
     // ── Earth occultation cull ────────────────────────────────────────────────
@@ -1471,7 +1504,7 @@ bool processSatellite(uint i, out SatVisible rec)
     // size (unset until sat_flare.comp), which raises it to at least the fixed census dot. It used to
     // skip the lighting and draw EVERY highlighted satellite at that dot (~mag 5.4), so highlighting
     // a sunlit ISS at mag -2 made it far fainter and harder to find.
-    const float highlightFlag = bool((pc.highlightMask >> orb.constIdx) & 1u) ? -1.0 : 0.0;
+    const float highlightFlag = bool((pc.highlightMask >> (orb.constIdx & CONST_IDX_MASK)) & 1u) ? -1.0 : 0.0;
     rec = SatVisible(skyDir, flare, packUnorm4x8(vec4(outBaseColor, 1.0)), highlightFlag, range, meshPx);
     return true;
 }

@@ -199,6 +199,8 @@ bool writeSatTraceCsv(const std::string &path, const SatTraceSetup &s, const std
       << "# orbit_tumble_rate: " << fmtG(o.tumbleRate) << "\n"
       << "# orbit_tumble_phase: " << fmtG(o.tumblePhase) << "\n"
       << "# orbit_tumble_axis: " << fmtVec(o.tumbleAxis) << "\n"
+      << "# orbit_formation: " << (o.formation ? 1 : 0) << "\n"
+      << "# orbit_formation_pqk: " << fmtVec(glm::dvec3(o.formP, o.formQ, o.formK)) << "\n"
       << "# observer_dir_ecef: " << fmtVec(s.obsDirEcef) << "\n"
       << "# observer_radius_m: " << fmtG(s.obsRadiusM) << "\n"
       << "# flare_tilt_rad: " << fmtG(s.flareTiltRad) << "\n"
@@ -270,6 +272,15 @@ bool readSatTraceCsv(const std::string &path, SatTraceSetup &s, std::vector<SatT
             else if (key == "orbit_tumble_rate") s.orbit.tumbleRate = d;
             else if (key == "orbit_tumble_phase") s.orbit.tumblePhase = d;
             else if (key == "orbit_tumble_axis") ok = parseVec(v, s.orbit.tumbleAxis);
+            else if (key == "orbit_formation") s.orbit.formation = d != 0.0;
+            else if (key == "orbit_formation_pqk")
+            {
+                glm::dvec3 f(0.0);
+                ok = parseVec(v, f);
+                s.orbit.formP = f.x;
+                s.orbit.formQ = f.y;
+                s.orbit.formK = f.z;
+            }
             else if (key == "observer_dir_ecef") ok = parseVec(v, s.obsDirEcef);
             else if (key == "observer_radius_m") s.obsRadiusM = d;
             else if (key == "flare_tilt_rad") s.flareTiltRad = d;
