@@ -427,7 +427,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     {
         int mode = bootChoiceMode;
         if (mode < 0 && crashDetected)
-            mode = 1; // the crash path below forces Planetarium
+            mode = 1; // the crash path below steps down at least to a light tier (crashRecoveryPreset)
         else if (mode < 0 && bootPeekHasFile)
             mode = bootPeekPreset == (int)GraphicsPreset::Potato || (bootPeekMask & 262144u)        ? 2
                    : bootPeekPreset == (int)GraphicsPreset::Planetarium || (bootPeekMask & 524288u) ? 1

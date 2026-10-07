@@ -82,12 +82,12 @@ void SatelliteSim::peekBootSettings()
     }
 }
 
-// The device's recommendation between the chooser's two main modes. A thin wrapper over the first-run seed
-// (seedGraphicsPresetFromDevice: integrated / CPU / virtual GPU -> Planetarium, discrete -> Medium), so a
-// better device heuristic there reaches the chooser too.
+// The device's recommendation among the chooser's modes: the first-run seed (recommendedPresetForDevice:
+// MoltenVK on a non-Apple GPU -> Potato, integrated / CPU / virtual or <= 2.25 GiB -> Planetarium, else Medium).
 int SatelliteSim::deviceRecommendedBootMode(VulkanContext &ctx) const
 {
-    return seedGraphicsPresetFromDevice(ctx) == GraphicsPreset::Planetarium ? kBootPlanetarium : kBootFull;
+    const GraphicsPreset p = seedGraphicsPresetFromDevice(ctx);
+    return p == GraphicsPreset::Potato ? kBootPotato : p == GraphicsPreset::Planetarium ? kBootPlanetarium : kBootFull;
 }
 
 // "Full graphics" when the saved preset is a light one (or there is none): the device seed if it is a full

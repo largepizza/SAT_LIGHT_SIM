@@ -5054,7 +5054,7 @@ private:
     int bootSafetyWarm = 0;
     std::vector<float> bootSafetyMs;
     void peekBootSettings();
-    int deviceRecommendedBootMode(VulkanContext &ctx) const; // 0 Full / 1 Planetarium — see the .cpp
+    int deviceRecommendedBootMode(VulkanContext &ctx) const; // 0 Full / 1 Planetarium / 2 Potato — see the .cpp
     GraphicsPreset recommendedFullPreset(VulkanContext &ctx) const;
     void applyBootChoice(VulkanContext &ctx, bool crashDetected);
     bool fullSkyNeeded() const;
