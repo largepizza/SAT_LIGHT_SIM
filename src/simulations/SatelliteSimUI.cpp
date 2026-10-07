@@ -563,6 +563,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // writes into the accumulator this call resets.
     beginCpuFrameTiming();
     CpuTimer _tUI(cpuAccumMs[CPU_BUILD_UI]);
+    updateBootSafetyNet(); // the first seconds after loading: > 250 ms frames step one tier down
     // Automation harness (docs/HARNESS.md): run this frame's commands before anything reads the
     // camera/observer/settings they change. A no-op outside a harness run.
     harnessUi_ = &ui;
@@ -3678,6 +3679,9 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // Turning the intro off does not move the observer: the observer and camera are restored from settings.json.
     uiSection("DispSec", 3, "STARTUP");
     uiToggleRow(inp, ui, "PlayIntro", 0, "Play intro on startup", playIntroOnStartup);
+    // The startup graphics chooser (SatelliteSimBootChooser.cpp): asked on the loading screen, before
+    // anything heavy loads. A crashed last session shows it regardless.
+    uiToggleRow(inp, ui, "AskGfxMode", 0, "Ask for graphics mode on startup", askGraphicsModeOnStartup);
     CLAY(CLAY_ID("DispStartupBtns"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                  .padding = {2, 2, 4, 2},
                                                  .childGap = 6,
@@ -5860,8 +5864,10 @@ void SatelliteSim::buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRend
                                   .cornerRadius = CLAY_CORNER_RADIUS(6),
                                   .floating = {.offset = {0, 16}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
-        CLAY_TEXT(CLAY_STRING("Recovered from an unexpected exit last time — graphics reset to Planetarium. "
-                              "Change it in Settings > Display."),
+        std::snprintf(crashNoticeBuf, sizeof(crashNoticeBuf),
+                      "Recovered from an unexpected exit last time - graphics stepped down to %s. "
+                      "Change it in Settings > Display.", kGraphicsPresetNames[(int)graphicsPreset]);
+        CLAY_TEXT((Clay_String{false, (int32_t)std::strlen(crashNoticeBuf), crashNoticeBuf}),
                   CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
     }
 }
@@ -6801,23 +6807,87 @@ void SatelliteSim::buildHarnessOverlays(const UIInput &inp, UIRenderer &ui)
 // GPU-name lookup table — deviceType is the only signal guaranteed never catastrophically wrong.
 // Mechanism 2 (an in-app benchmark during the UC3 intro cinematic) is a later phase; mechanism 3
 // (tell the user, never silently re-decide) is the fprintf + one-shot-ness in loadSettings below.
-GraphicsPreset SatelliteSim::seedGraphicsPresetFromDevice(VulkanContext &ctx) const
+// The tier a device should start on (2026-10-06). The startup chooser pre-selects it; a first run with no
+// settings.json applies it (seedGraphicsPresetFromDevice). Coarse on purpose (RELEASE_v1_1_PLAN.md UC1: no
+// GPU-name table):
+//   - MoltenVK (macOS) on anything but Apple's own GPUs: Potato. The 2015 MacBook Pro's R9 M370X (GCN 1.0,
+//     2 GB, a DISCRETE GPU) ran the full sky at ~490 ms a frame and SKY_LITE at ~20 FPS; the Intel Iris parts
+//     of that era are slower still. Apple silicon follows the integrated rule.
+//   - a discrete GPU with at most ~2 GB of device-local memory (the shipped textures alone are ~500 MB, and
+//     the full tiers' cloud and mesh targets more): Planetarium.
+//   - other discrete GPUs: Medium; integrated / CPU / virtual: Planetarium.
+GraphicsPreset SatelliteSim::recommendedPresetForDevice(VkPhysicalDevice pd, std::string *why)
 {
     VkPhysicalDeviceProperties props{};
-    vkGetPhysicalDeviceProperties(ctx.physicalDevice, &props);
-    switch (props.deviceType)
+    vkGetPhysicalDeviceProperties(pd, &props);
+    bool moltenVk = false;
+#ifdef __APPLE__
+    moltenVk = true;   // the only Vulkan there is
+#endif
+    if (props.apiVersion >= VK_API_VERSION_1_2)
     {
-    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
-        return GraphicsPreset::Medium;
-    // Planetarium, the "everything off" tier (no volumetric clouds), since 2026-10-04: Low became Medium's
-    // effects at a 50% render scale, too heavy to start an unknown laptop on. The tutorial's graphics card
-    // says so and points at the preset (TutStep::Graphics).
-    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
-    case VK_PHYSICAL_DEVICE_TYPE_CPU:
-    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+        VkPhysicalDeviceDriverProperties drv{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &drv;
+        vkGetPhysicalDeviceProperties2(pd, &p2);
+        moltenVk = moltenVk || drv.driverID == VK_DRIVER_ID_MOLTENVK;
+    }
+    VkPhysicalDeviceMemoryProperties mem{};
+    vkGetPhysicalDeviceMemoryProperties(pd, &mem);
+    VkDeviceSize vram = 0;
+    for (uint32_t i = 0; i < mem.memoryHeapCount; ++i)
+        if (mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+            vram = std::max(vram, mem.memoryHeaps[i].size);
+    const double vramGiB = (double)vram / (1024.0 * 1024.0 * 1024.0);
+    const bool apple = props.vendorID == 0x106B;
+    const bool smallVram = vram > 0 && vramGiB <= 2.25;   // "2 GB" parts report a little under or over 2 GiB
+
+    GraphicsPreset p;
+    const char *reason;
+    if (moltenVk && !apple)
+    {
+        p = GraphicsPreset::Potato;
+        reason = "MoltenVK on a non-Apple GPU (2015-era Mac: GCN 1.0 / Intel)";
+    }
+    else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+    {
+        p = smallVram ? GraphicsPreset::Planetarium : GraphicsPreset::Medium;
+        reason = smallVram ? "discrete GPU with <= 2 GB of VRAM" : "discrete GPU";
+    }
+    else
+    {
+        // Planetarium, the "everything off" tier (no volumetric clouds), since 2026-10-04: Low became Medium's
+        // effects at a 50% render scale, too heavy to start an unknown laptop on. The tutorial's graphics card
+        // says so and points at the preset (TutStep::Graphics).
+        p = GraphicsPreset::Planetarium;
+        reason = "integrated / CPU / virtual GPU";
+    }
+    char buf[320];
+    std::snprintf(buf, sizeof(buf), "%s (%s, vendor 0x%04X, type %d, %.2f GiB device-local%s)", reason,
+                  props.deviceName, props.vendorID, (int)props.deviceType, vramGiB, moltenVk ? ", MoltenVK" : "");
+    if (why)
+        *why = buf;
+    return p;
+}
+
+GraphicsPreset SatelliteSim::crashRecoveryPreset(GraphicsPreset current)
+{
+    switch (current)
+    {
+    case GraphicsPreset::Potato:
+    case GraphicsPreset::Planetarium:
+        return GraphicsPreset::Potato;
     default:
         return GraphicsPreset::Planetarium;
     }
+}
+
+GraphicsPreset SatelliteSim::seedGraphicsPresetFromDevice(VulkanContext &ctx) const
+{
+    std::string why;
+    const GraphicsPreset p = recommendedPresetForDevice(ctx.physicalDevice, &why);
+    Log::line(std::string("graphics: recommended preset ") + kGraphicsPresetNames[(int)p] + ": " + why);
+    return p;
 }
 
 // ─── applyGraphicsPreset ─────────────────────────────────────────────────────
@@ -7167,6 +7237,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         // Absent (every settings.json before 2026-10-03) = not done: the tutorial is new, and the
         // players it is for are exactly the ones who already never found the controls.
         tutorialDone = d.value("tutorial_done", isPatch ? tutorialDone : false);
+        // The startup graphics chooser. Absent = ask (it is the safety net for a machine that cannot run
+        // the full renderer, so an upgrading player sees it once and can untick it there).
+        askGraphicsModeOnStartup = d.value("ask_graphics_mode", isPatch ? askGraphicsModeOnStartup : true);
     }
 
     // Left/right HUD panels are corner-anchored, not persisted (see buildLeftHudPanel/
@@ -7686,6 +7759,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
         {"play_intro_on_startup", playIntroOnStartup},
         {"tutorial_done", tutorialDone},
+        {"ask_graphics_mode", askGraphicsModeOnStartup},
         {"photo_scale", photoScaleSetting},
         {"photo_frames", photoSettleFrames},
         {"trail_enabled", trailEnabled}};

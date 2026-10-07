@@ -1,0 +1,185 @@
+{
+  "bookmarks": [
+    {
+      "az_deg": -61.250003814697266,
+      "cloud_drift_phase": 5.2360808643282795,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": 15.5,
+      "fov_y_deg": 54.0,
+      "height_m": 865.0,
+      "id": "default_rainbow_venezuela",
+      "look": {
+        "paused": true,
+        "time_scale_idx": 0
+      },
+      "name": "Venezuela Rainbow",
+      "obs_dir": [
+        0.3645742555556669,
+        -0.9149489452877257,
+        0.17307235395322262
+      ],
+      "sim_t_j2000": 1164408248.06
+    },
+    {
+      "az_deg": 3.2409398555755615,
+      "cloud_drift_phase": 1.1706038375104626,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": 46.40089797973633,
+      "fov_y_deg": 15.0,
+      "height_m": 2.0,
+      "id": "default_eclipse_solar_2037",
+      "look": {
+        "paused": false,
+        "time_scale_idx": 0
+      },
+      "name": "Great Australian Eclipse",
+      "obs_dir": [
+        -0.6935992414443948,
+        0.6177027380043303,
+        -0.3706257137999382
+      ],
+      "sim_t_j2000": 1184337776.6752312
+    },
+    {
+      "az_deg": 26.308992385864258,
+      "cloud_drift_phase": 4.1420260848766475,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": 43.88897705078125,
+      "fov_y_deg": 8.0,
+      "height_m": 0.0,
+      "id": "default_eclipse_lunar_2037",
+      "look": {
+        "paused": false,
+        "time_scale_idx": 0
+      },
+      "name": "Blood Moon over Alice Springs",
+      "obs_dir": [
+        -0.6346917691294027,
+        0.6600032985378427,
+        -0.4019477629226917
+      ],
+      "sim_t_j2000": 1170295260.0
+    },
+    {
+      "az_deg": 0.0,
+      "cloud_drift_phase": 6.131206818439679,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": -18.0,
+      "fov_y_deg": 80.0,
+      "height_m": 420000.0,
+      "id": "default_aurora_orbit",
+      "look": {
+        "paused": false,
+        "time_scale_idx": 0
+      },
+      "name": "Aurora from Orbit",
+      "obs_dir": [
+        -2.052125593287835e-08,
+        0.4694716065400785,
+        0.8829475695944109
+      ],
+      "sim_t_j2000": 1168668000.0
+    },
+    {
+      "az_deg": 155.30807495117188,
+      "cloud_drift_phase": 2.263548373989593,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": 30.0,
+      "fov_y_deg": 80.0,
+      "height_m": 71.39611053466797,
+      "id": "default_reflect_beams",
+      "look": {
+        "paused": false,
+        "time_scale_idx": 0
+      },
+      "name": "Reflect Orbital over Anchorage",
+      "obs_dir": [
+        -0.416918596251861,
+        -0.24077222703432352,
+        0.8764745397262318
+      ],
+      "sim_t_j2000": 1164206400.0
+    },
+    {
+      "az_deg": -74.99999237060547,
+      "cloud_drift_phase": 2.2504313741374204,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": 16.0,
+      "fov_y_deg": 70.0,
+      "height_m": 1053.716552734375,
+      "id": "default_ai_twilight",
+      "look": {
+        "paused": false,
+        "time_scale_idx": 0
+      },
+      "name": "AI Satellites at Twilight",
+      "obs_dir": [
+        -0.42222882500938375,
+        -0.6916677061486441,
+        0.5859339583965654
+      ],
+      "sim_t_j2000": 1164204382.0
+    },
+    {
+      "az_deg": 60.000003814697266,
+      "cloud_drift_phase": 3.864983647807856,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": -25.0,
+      "fov_y_deg": 60.0,
+      "height_m": 10000.0,
+      "id": "default_la_night",
+      "look": {
+        "paused": false,
+        "time_scale_idx": 0
+      },
+      "name": "Los Angeles by Night",
+      "obs_dir": [
+        -0.39517891603185257,
+        -0.7293461001362311,
+        0.5584692386693832
+      ],
+      "sim_t_j2000": 1150919760.0
+    },
+    {
+      "az_deg": -69.2570571899414,
+      "cloud_drift_phase": 5.6380945560543125,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": -0.007604988757520914,
+      "fov_y_deg": 60.0,
+      "height_m": 565000.0625,
+      "id": "default_starmind_rings",
+      "look": {
+        "paused": true,
+        "time_scale_idx": 0
+      },
+      "name": "Starmind Formation Rings",
+      "obs_dir": [
+        0.007183109513004294,
+        0.930879487020952,
+        0.36525577829971834
+      ],
+      "sim_t_j2000": 1174392000.0
+    },
+    {
+      "az_deg": -87.35588073730469,
+      "cloud_drift_phase": 5.432039338978996,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": -12.0,
+      "fov_y_deg": 80.0,
+      "height_m": 420000.0,
+      "id": "default_limb_orbit",
+      "look": {
+        "paused": false,
+        "time_scale_idx": 0
+      },
+      "name": "Sunset from Orbit",
+      "obs_dir": [
+        0.541675224341112,
+        0.45451946269890986,
+        -0.7071067878071178
+      ],
+      "sim_t_j2000": 1174360299.1970158
+    }
+  ],
+  "format": "sat-light-sim-bookmarks/1"
+}

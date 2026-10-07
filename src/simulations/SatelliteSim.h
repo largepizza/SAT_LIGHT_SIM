@@ -1818,6 +1818,10 @@ public:
 
     void init(VulkanContext &ctx) override;
     void onResize(VulkanContext &ctx) override;
+    // Startup graphics chooser (2026-10-06, SatelliteSimBootChooser.cpp; CLAUDE.md "Startup graphics
+    // chooser"): App asks before init(); options 0 Full graphics, 1 Planetarium, 2 Potato.
+    bool prepareBootChooser(VulkanContext &ctx, BootChooserSpec &spec) override;
+    void setBootChoice(int option, bool askAgain) override;
     void recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float dt) override;
     SatDrawPC buildSkyDrawPC(VulkanContext &ctx);     // sky background (recordPrePass + recordDraw Pass 1)
     PointDrawPC buildPointDrawPC(VulkanContext &ctx); // satellite / star / planet / trail point draws
@@ -1873,7 +1877,7 @@ public:
     void updatePhoto(VulkanContext &ctx);
     void endPhoto();
     uint32_t photoScaleRequest() const override { return photoScaleActive; }
-    float photoScaleSetting = 2.0f;   // display.photo_scale: the photo's resolution in window sizes (1-4)
+    float photoScaleSetting = 1.0f;   // display.photo_scale: the photo's resolution in window sizes (1-4)
     float photoSettleFrames = 48.0f;  // display.photo_frames: frames accumulated before the capture
     uint32_t photoScaleActive = 0;
     int   photoState = 0;             // 0 idle, 1 settling, 2 captured (restoring once read back)
@@ -2511,7 +2515,7 @@ private:
     // Automatic render scale (2026-10-04, Settings > Display "Automatic render scale"): moves renderScale
     // in 5% steps between dynResMinScale and 1 to keep the GPU frame under the target frame rate's budget
     // (x 0.9). Keys display.dynamic_resolution / dynamic_target_fps / dynamic_min_scale.
-    bool dynResEnabled = false;
+    bool dynResEnabled = true;
     float dynResTargetFps = 60.0f;
     float dynResMinScale = 0.5f;
     float dynResGpuMs = 0.0f;       // eased GPU frame (ms)
@@ -2589,6 +2593,9 @@ private:
     glm::vec3 obsFacing = {1, 0, 0};                  // unit tangent (forward direction, north)
     float obsLatDeg = -67.0f;                         // display cache — derived from obsDir
     float obsLonDeg = -67.0f;                         // display cache — derived from obsDir
+    bool cloudMarchTargetsClear = false;              // cloudMarchTargetA/B hold "no cloud" (Potato skips cloud_march.comp)
+    bool satFlareIdleCleared = false;                 // glowBuf/oceanGlintBuf emptied while no satellite is active
+    bool sceneDepthHoldsNoSurface = true;             // sceneDepthImg/QImg hold kNoSurfaceT (created so; knockout 1024)
     float obsTerrainH = 0.0f;                         // terrain elevation at observer lat/lon (m)
     float obsHeightOffset = 0.0f;                     // user-controlled height above terrain (m, Q/E/Z)
     // The eye's distance from the Earth's centre, as the shaders place it: max(ground, height offset)
@@ -2727,6 +2734,9 @@ private:
     uint32_t debugDisableMask = 0;
     static constexpr uint32_t kDebugBitSatOcclusion = 1048576u;
     static constexpr uint32_t kDebugBitMeshes = 2097152u; // Phase 4c: no satellite meshes in the scene
+    // No meshes, env probes or sharp reflections: the knockout, Potato (262144) and Planetarium / SKY_LITE (524288,
+    // whose sky shader has the mesh composite compiled out).
+    static constexpr uint32_t kNoMeshBits = kDebugBitMeshes | 262144u | 524288u;
     // Occlusion between satellite parts is OFF by default (Photometry tab "Satellite part
     // occlusion", persisted as photometry.sat_part_occlusion): it costs ~10x the orbit dispatch at
     // 10M satellites for a subtle effect, so no preset or first run turns it on. The knockout bit
@@ -3075,10 +3085,10 @@ private:
     float cv2LightSteps = 6.0f;
     float cv2LightLodFootprintM = 40.0f;  // past this pixel footprint (m) a 2-step light march; 0 = off
     float cv2EyeTempC = 15.0f;            // the air temperature at the eye (deg C; rain / sleet / snow), per frame
-    float cv2LightningRate = 0.53f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
+    float cv2LightningRate = 0.4f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
     float cv2LightningGlow = 0.088f;      // the flash's light in the cloud
-    float cv2LightningBolt = 1.0f;        // the cloud-to-ground channels
-    float cv2LightningSprites = 0.05f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
+    float cv2LightningBolt = 1.25f;        // the cloud-to-ground channels
+    float cv2LightningSprites = 0.01f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
     float cv2EvoWindMps = 8.0f;           // the weather map's evolution: its advecting wind (m/s); 0 = static
     float cv2EvoGrowth = 0.12f;           // ... and how much its coverage grows and decays (0 = none)
     float cv2EvoWindowH = 3.0f;           // ... each advected copy's window (h): the displacement's bound
@@ -3118,20 +3128,20 @@ private:
                                        // ~cluster scale: splotches)
     float cv2CirrusFlow = 1.5f;        // the flow warp at cirrus level, x the low cloud's (the jet bends more)
     float cv2CirrusWindMps = 30.0f;    // the jet: cirrus moves this fast eastward over the map
-    float cv2RainAmount = 1.0f;        // rain shafts under precipitating cloud, 0 = none
+    float cv2RainAmount = 0.71f;        // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
-    float cv2RainStreaks = 1.0f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
+    float cv2RainStreaks = 2.63f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
     float moveSpeedPerHeight = 1.0f;   // WASD: this many times the height above the ground per second (capped
                                        // at the old fixed 0.08 rad/s, ~510 km/s): slow near the surface
-    float cv2DropDistM = 32.0f;        // the rain particles' reach (m; each doubling is one more level, at most 64)
+    float cv2DropDistM = 33.0f;        // the rain particles' reach (m; each doubling is one more level, at most 64)
     float cv2RainParticlesK = 16.0f;   // drops in the nearest box, thousands (each farther level holds twice as many)
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
-    float cv2LightningStormRate = 0.5f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
-    float cv2LightningTendrils = 1.0f;    // the channels' branching (x the branch and tendril counts)
-    float cv2RainFallSpeed = 1.3f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
-    float cv2RainWindGain = 1.5f;      // x the ground wind on the drops (0.4 x the wind aloft)
-    float cv2RainStormWind = 14.0f;    // the outflow from a heavy shower (m/s at rain rate 1), away from its core
-    float cv2RainGusts = 1.0f;         // the wind's gustiness (x; stronger in heavy rain)
+    float cv2LightningStormRate = 0.31f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
+    float cv2LightningTendrils = 1.23f;    // the channels' branching (x the branch and tendril counts)
+    float cv2RainFallSpeed = 3.0f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
+    float cv2RainWindGain = 0.4f;      // x the ground wind on the drops (0.4 x the wind aloft)
+    float cv2RainStormWind = 11.0f;    // the outflow from a heavy shower (m/s at rain rate 1), away from its core
+    float cv2RainGusts = 1.38f;         // the wind's gustiness (x; stronger in heavy rain)
     float cv2SnowWind = 1.0f;          // snow's drift x this (blizzards: flakes driven sideways, streaking)
     float cv2ExposureEV = 0.0f;        // exposure compensation (stops) on the sky's auto exposure
     float cv2HighlightRolloff = 0.5f;  // 0 = the old tonemap; 1 = a long highlight shoulder
@@ -3301,8 +3311,17 @@ private:
     float cv2FarLowSun = 0.38f;   // slot 255: the far layer's key light goes as mu0^(1 / (1 + this)) (0 = a flat slab)
     float cv2FarKeyGain = 4.1f, cv2FarSkyGain = 0.6f;   // review 24b: the user's tuning (was 10 / 0.3)   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 8900.0f;   // review 24b: the user's tuning (was 1500)
+    // The volumetric clouds are off (knockout 32768: Planetarium, Potato, or the Performance tab). Then nothing of
+    // clouds v2 runs on the GPU — march, resolve, far layer, lightning, rain map — and every host consumer of
+    // their outputs (lightning bolts, rain particles, thunder, the rain ambience, the Sun's cloud transmittance)
+    // treats them as absent rather than reading the last frame they were written.
+    bool cloudsV2Off() const { return (debugDisableMask & 32768u) != 0u; }
+    // The lightning pass (and so the rain map, the flash list and the Sun profile in cv2FlashBuf) runs this frame.
+    bool cloudsV2LightningActive() const { return !cloudsV2Off() && cloudFarBlend() < 0.999f; }
     float cloudFarBlend() const
     {
+        if (cloudsV2Off())
+            return 0.0f;   // the far layer is clouds too: off with them
         const double h = (double)obsEyeRadiusM() - satphot::kEarthRadiusM;
         const double a = (double)cv2FarLayerFromKm * 1000.0, b = std::max((double)cv2FarLayerFullKm * 1000.0, a + 1000.0);
         const double x = std::clamp((h - a) / (b - a), 0.0, 1.0);
@@ -3643,10 +3662,10 @@ private:
     bool uiVisible = true;
     bool iconsLoaded = false;
     float uiScale = 1.5f;    // text/UI size multiplier (0.75 – 2.0)
-    float masterVol_ = 0.8f; // mirrors AudioSystem default (display fallback)
-    float musicVol_ = 0.6f;
+    float masterVol_ = 0.4f; // mirrors AudioSystem default (display fallback)
+    float musicVol_ = 0.7f;
     float sfxVol_ = 1.0f;
-    float ambienceVol_ = 0.8f;
+    float ambienceVol_ = 0.7f;
     // Sound tab (advanced) — persisted under "audio". Defaults are the user's own settings.json
     // (2026-09-26), rounded to 2 s.f. per the cloud/photometry rule: fades 0.27/0.32, root 41 Hz,
     // group gains (Ambience::groupNames() order) 0.93 / 1.0 / 1.0 / 1.6 / 1.2 / 2.0.
@@ -3737,11 +3756,11 @@ private:
     // guesses — re-synced 2026-08-10 (extinctionCoeff, lightPollutionGain, and the Milky Way
     // pollution-response block moved noticeably; the rest were already current), then rounded to
     // 2 significant figures 2026-08-15 (see the cloud block's note below — same pass, same rule).
-    float brightnessScale = 0.93f;
+    float brightnessScale = 1.01f;
     float daySuppression = 570.0f;
     float mirrorBoost = 1000.0f;
     float visThresh = 0.0001f;
-    float highlightFlare = 0.014f;
+    float highlightFlare = 0.01f;
     float moonSuppression = 6.6f;    // sky background suppression from moonlight (mirrors daySuppression,
                                      // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
     float lightPollutionGain = 25.0f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
@@ -3879,7 +3898,7 @@ private:
     // is derived from this and the actual angle to cover. The window-crossfade-only version
     // shipped earlier the same day only covered one of several transition cases and wasn't tied to
     // real angular distance, which read as satellites snapping to target.
-    float mirrorMaxRateDegPerSec = 0.11f;
+    float mirrorMaxRateDegPerSec = 0.001f;
     // S1 follow-up (RELEASE_v1_1_PLAN.md): minimum acceptable local elevation angle of the
     // satellite as seen FROM a candidate ground target, in degrees. Below this, a target is
     // rejected outright by sat_orbit.comp's TargetedReflector selection (grazing beams suffer
@@ -4294,9 +4313,10 @@ private:
     // ── NEW-3: crash-safe mode ──────────────────────────────────────────────
     // A sentinel file is created at the top of init() and deleted at the bottom of cleanup()
     // (the clean-exit path). If it's already present at the NEXT launch, the previous run never
-    // reached cleanup() — crash, hang + force-kill, power loss — so this run forces the
-    // Planetarium preset and shows a one-line notice, converting "launch -> crash -> uninstall"
+    // reached cleanup() — crash, hang + force-kill, power loss — so this run steps the preset down one
+    // tier (crashRecoveryPreset: full -> Planetarium -> Potato) and shows a one-line notice, converting "launch -> crash -> uninstall"
     // into a recoverable outcome. See applySettings-adjacent logic in init()/cleanup().
+    char crashNoticeBuf[192] = {};          // its text (Clay keeps the pointer until record)
     float crashRecoveryNoticeTimer = 0.0f; // seconds remaining to show the notice banner; see buildCrashRecoveryNotice
     bool crashRecoveryMode = false;        // mirrors the crashDetected local in init(); read by finishIntro()
                                            // so a crash-recovery launch never runs the UC1 benchmark promote/
@@ -4327,7 +4347,7 @@ private:
     // silently re-decide) — same dismissible-banner pattern as buildCrashRecoveryNotice, separate
     // timer/text since the two can in principle be showing different things.
     float graphicsAutoNoticeTimer = 0.0f;
-    char graphicsAutoNoticeText[128] = {};
+    char graphicsAutoNoticeText[192] = {};
 
     // ── UC6: screenshots ────────────────────────────────────────────────────────
     // See Simulation.h's wantsCleanScreenshot/recordScreenshotCopy/finalizeScreenshot doc
@@ -4652,6 +4672,10 @@ private:
         bool thumbTried = false; // its PNG was looked for (loaded lazily, a few per frame)
         UIImage img;             // the thumbnail's sub-rect (Clay keeps a pointer: lives in the vector)
         char meta[2][64] = {};   // "2036-11-22 02:06 UTC", "34.05 N 118.24 W  1.2 km"
+        // Optional "look" (the shipped defaults, 2026-10-06): the clock a Go sets, so an event bookmark (an eclipse,
+        // a flash of lightning) is not flown past at a fast time scale. -1 = leave the clock alone (user bookmarks).
+        int lookTimeScaleIdx = -1;
+        int lookPaused = -1;
     };
     std::vector<Bookmark> bookmarks_;
     bool bookmarksLoaded_ = false;
@@ -4666,6 +4690,7 @@ private:
     std::string bmDeleteArmed_, bmStatus_;
     int bmDeletePending_ = -1;            // the window's Delete / Add, applied by the next bookmarkTick (before any
     bool bmAddPending_ = false;           // layout: Clay keeps pointers into bookmarks_ until the frame is recorded)
+    bool bmRestorePending_ = false;       // "Restore default bookmarks", applied the same way (it grows the vector)
     // The atlas: one image, registered once with the UI.
     VkImage bmAtlasImg = VK_NULL_HANDLE;
     VkDeviceMemory bmAtlasMem = VK_NULL_HANDLE;
@@ -4675,6 +4700,11 @@ private:
     std::string bookmarkDir() const;
     void bookmarksLoad();
     void bookmarksSave();
+    // The shipped defaults (data/bookmarks -> <exe dir>/default_bookmarks: bookmarks.json + <id>.png). They seed the
+    // list when the user has no bookmarks.json yet; bookmarkRestoreDefaults re-adds any default whose id is missing
+    // (copying its thumbnail) and returns how many it added, leaving the user's own bookmarks alone.
+    static constexpr const char *kBmDefaultsDir = "default_bookmarks";
+    int  bookmarkRestoreDefaults();
     int  bookmarkAdd(const std::string &name);           // the current view; returns its index
     void bookmarkUpdate(int i);                          // replace a bookmark's view (and thumbnail) with the current one
     void bookmarkGo(int i);
@@ -5017,6 +5047,33 @@ private:
     // a cinematic that didn't exist in their version — see loadSettings().
     bool playIntroOnStartup = true;
     bool hovPlayIntroStartup = false;
+
+    // ── Startup graphics chooser (2026-10-06, SatelliteSimBootChooser.cpp) ──────────────────────
+    // display.ask_graphics_mode: show the chooser on the loading screen before init() (absent = true).
+    bool askGraphicsModeOnStartup = true;
+    int bootChoiceMode = -1;      // the option picked this launch: 0 Full, 1 Planetarium, 2 Potato; -1 none shown
+    bool bootChoiceAsk = true;    // the chooser's "ask on every startup" box (applied after loadSettings)
+    // A cheap look at settings.json + the crash sentinel BEFORE init (peekBootSettings): what the chooser
+    // pre-selects, and which tier init() should build pipelines for.
+    bool bootPeekDone = false, bootPeekHasFile = false, bootPeekCrash = false, bootPeekAsk = true;
+    int bootPeekPreset = -1;      // display.graphics_preset as saved (-1 = none)
+    uint32_t bootPeekMask = 0;    // display.debug_disable_mask as saved
+    // Tier pipeline deferral: on a light tier (Planetarium / Potato) the three FULL sat_sky.frag
+    // pipelines (the inline sky, the low-res prepass, the SKY_TAA pass) are not created at init or on a
+    // resize; ensureFullSkyPipelines() creates them the first frame anything needs them.
+    bool fullSkyDeferred = false;
+    // The safety net: the first seconds of frames after loading, wall clock (updateBootSafetyNet).
+    bool bootSafetyDone = false;
+    double bootSafetyT0 = 0.0, bootSafetyPrevT = 0.0;
+    int bootSafetyWarm = 0;
+    std::vector<float> bootSafetyMs;
+    void peekBootSettings();
+    int deviceRecommendedBootMode(VulkanContext &ctx) const; // 0 Full / 1 Planetarium / 2 Potato — see the .cpp
+    GraphicsPreset recommendedFullPreset(VulkanContext &ctx) const;
+    void applyBootChoice(VulkanContext &ctx, bool crashDetected);
+    bool fullSkyNeeded() const;
+    void ensureFullSkyPipelines(VulkanContext &ctx);
+    void updateBootSafetyNet();
     bool hovRootFollowMusic = false;
     bool hovSatOcclusionChk = false, hovEnvReflChk = false, hovSharpReflChk = false;
 
@@ -5224,10 +5281,15 @@ private:
     // (no-op data-wise for Custom — see GraphicsPreset comment). Recreates the render-scale
     // offscreen target since presets can change renderScale.
     void applyGraphicsPreset(GraphicsPreset p);
-    // UC1 first-run seed: VkPhysicalDeviceProperties::deviceType -> Low (integrated/CPU/virtual)
-    // or Medium (discrete). Coarse on purpose — see RELEASE_v1_1_PLAN.md UC1, "do not build a
-    // GPU-name lookup table." Only called once, from init(), when no persisted preset exists.
+    // The tier a device should start on: Potato for MoltenVK on non-Apple GPUs (the 2015 MacBook Pro's GCN 1.0),
+    // Planetarium for integrated / CPU / virtual GPUs and discrete ones with <= 2 GB of VRAM, else Medium.
+    // Static and needs no SatelliteSim, so the startup graphics chooser can pre-select it before init; `why`
+    // gets a one-line reason with the device's name, type and memory.
+    static GraphicsPreset recommendedPresetForDevice(VkPhysicalDevice pd, std::string *why = nullptr);
+    // UC1 first-run seed: recommendedPresetForDevice, logged. Only called when no persisted preset exists.
     GraphicsPreset seedGraphicsPresetFromDevice(VulkanContext &ctx) const;
+    // Crash recovery steps the tier DOWN one: a full tier (Low .. Ultra, Custom) -> Planetarium -> Potato.
+    static GraphicsPreset crashRecoveryPreset(GraphicsPreset current);
     void savePerfSnapshot(float cpuDt);                // appends one profiling record to perf_profiles/profile_log.jsonl
     nlohmann::json buildPerfSnapshotJson(float cpuDt); // the shared body of the above and of the sweep record
     void appendPerfRecord(const nlohmann::json &j);    // one JSONL line into perf_profiles/profile_log.jsonl

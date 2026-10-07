@@ -245,13 +245,24 @@ file(GLOB SHADERS CONFIGURE_DEPENDS
 # translation unit. Naming a header .comp, or leaving it in shaders/, breaks the build.
 file(GLOB SHADER_HEADERS CONFIGURE_DEPENDS "${SHADER_INC_DIR}/*.glsl")
 
+# The weak-hardware sky tiers' SPIR-V budgets (cmake/CheckSpvSize.cmake; CLAUDE.md "Weak-Hardware Sky Tiers"):
+# ~10% above the trimmed sizes of 2026-10-06 (lite 199 KB, minimal 41 KB with glslc from SDK 1.4.341 — other
+# glslc versions differ by a few percent). The build fails past them.
+set(SKY_LITE_MAX_BYTES 230400)     # 225 KB
+set(SKY_MINIMAL_MAX_BYTES 47104)   # 46 KB
 set(SPV_FILES "")
 foreach(SHADER ${SHADERS})
     get_filename_component(SHADER_NAME ${SHADER} NAME)
     set(SPV "${SHADER_OUT_DIR}/${SHADER_NAME}.spv")
+    set(SPV_CHECK "")
+    if(SHADER_NAME STREQUAL "sat_sky_minimal.frag")
+        set(SPV_CHECK COMMAND ${CMAKE_COMMAND} -DSPV=${SPV} -DMAX_BYTES=${SKY_MINIMAL_MAX_BYTES} -DTIER=Potato
+                      -P "${CMAKE_SOURCE_DIR}/cmake/CheckSpvSize.cmake")
+    endif()
     add_custom_command(
         OUTPUT ${SPV}
         COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" ${SHADER} -o ${SPV}
+        ${SPV_CHECK}
         # Every shader depends on ALL headers, not just the ones it includes. Coarse — touching
         # one header recompiles all ~28 shaders — but glslc takes seconds even on the two big
         # ones, and it is correct on every generator. The precise alternative (glslc -MD +
@@ -267,13 +278,16 @@ endforeach()
 
 # Second compile of sat_sky.frag with -DSKY_LITE — a Planetarium-tier variant that #ifdef's out
 # the heaviest subsystems (Milky Way, 64-bin sky-glow loop, beam ground-spot, cirrus/high cloud
-# layers) for GPUs where the full shader collapses fragment-shader occupancy. Selected at runtime
+# layers, and every v1.2 ground feature: terrain march, procedural city, sea reflection march, meshes)
+# for GPUs where the full shader collapses fragment-shader occupancy. Size-checked (SKY_LITE_MAX_BYTES). Selected at runtime
 # by a debugDisableMask bit, exactly like sat_sky_minimal.frag. See SKY_OPTIMIZATION_PLAN.md.
 set(SKY_LITE_SPV "${SHADER_OUT_DIR}/sat_sky_lite.frag.spv")
 add_custom_command(
     OUTPUT ${SKY_LITE_SPV}
     COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" -DSKY_LITE "${SHADER_SRC_DIR}/sat_sky.frag" -o ${SKY_LITE_SPV}
-    DEPENDS "${SHADER_SRC_DIR}/sat_sky.frag" ${SHADER_HEADERS}
+    COMMAND ${CMAKE_COMMAND} -DSPV=${SKY_LITE_SPV} -DMAX_BYTES=${SKY_LITE_MAX_BYTES} -DTIER=Planetarium
+            -P "${CMAKE_SOURCE_DIR}/cmake/CheckSpvSize.cmake"
+    DEPENDS "${SHADER_SRC_DIR}/sat_sky.frag" ${SHADER_HEADERS} "${CMAKE_SOURCE_DIR}/cmake/CheckSpvSize.cmake"
     COMMENT "Compiling shader: sat_sky.frag (SKY_LITE variant)"
     VERBATIM
 )
@@ -394,6 +408,16 @@ function(sat_copy_runtime_files tgt)
                 COMMENT "Copying satellite models next to ${tgt}"
             )
         endif()
+        # The default bookmarks (bookmarks.json + <id>.png thumbnails), loaded from <exe dir>/default_bookmarks:
+        # they seed a first run's list and the Bookmarks window's "Restore defaults".
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/bookmarks")
+            add_custom_command(TARGET ${tgt} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/data/bookmarks"
+                    "$<TARGET_FILE_DIR:${tgt}>/default_bookmarks"
+                COMMENT "Copying default bookmarks next to ${tgt}"
+            )
+        endif()
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
         add_custom_command(TARGET ${tgt} POST_BUILD
@@ -442,6 +466,14 @@ function(sat_sync_runtime_sources tgt)
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/satellite_models"
                 "$<TARGET_FILE_DIR:${tgt}>/satellite_models")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/bookmarks")
+        file(GLOB_RECURSE _bookmarks CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/bookmarks/*")
+        list(APPEND sync_files ${_bookmarks})
+        list(APPEND sync_copies
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/bookmarks"
+                "$<TARGET_FILE_DIR:${tgt}>/default_bookmarks")
     endif()
     foreach(f data/constellations.json data/constellations.schema.json data/reflector_targets.json
               THIRD_PARTY_NOTICES.txt)

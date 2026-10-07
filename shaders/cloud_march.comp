@@ -1466,8 +1466,10 @@ void main() {
 
     // The volumetric clouds: cloud_v2_march.comp + cloud_v2_resolve.comp, already resolved to this
     // grid (radiance, transmittance; mean distance, occlusion distance).
-    vec4  rc = texelFetch(cv2ResolvedTex, coord, 0);
-    vec2  rd = texelFetch(cv2ResolvedDepthTex, coord, 0).xy;
+    // Knockout 32768 (Planetarium, Potato): the v2 passes are not dispatched and their images are stale.
+    const bool cv2Off = (cloud.dbgDisableMask & 32768u) != 0u;
+    vec4  rc = cv2Off ? vec4(0.0, 0.0, 0.0, 1.0) : texelFetch(cv2ResolvedTex, coord, 0);
+    vec2  rd = cv2Off ? vec2(0.0, -1.0) : texelFetch(cv2ResolvedDepthTex, coord, 0).xy;
     // Review 9: an ISOLATED cloud texel (at most one of its 8 neighbours holds comparable cloud) is a
     // sub-pixel wisp or a shaded cloud side the sparse march catches on some frames: along far cloud edges
     // over the sea they were dark 2x2 specks that flickered (user snapshot). Replaced by its 3x3 tent — a

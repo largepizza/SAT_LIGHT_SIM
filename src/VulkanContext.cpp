@@ -469,8 +469,9 @@ void VulkanContext::logDeviceLimits(const VkPhysicalDeviceLimits &lim)
     // cloud_march.comp / scene_depth.comp / flare_blur.comp all dispatch local_size 16x16 = 256
     // invocations. Guaranteed minimum is 128.
     constexpr uint32_t kNeededWorkgroupInvocations = 256;
-    // cloud_march.comp's two tile-cull lists: 384 beams x 3 arrays + 128 light indices + counters.
-    constexpr uint32_t kNeededSharedMemory = 6 * 1024;
+    // The largest workgroup shared block: env_probe_sh.comp's `vec3 part[64][9]` (6.9 KB packed, 9 KB if
+    // the driver pads vec3 to 16 bytes). cloud_march.comp's beam tile list is ~4.6 KB. Guaranteed minimum 16 KB.
+    constexpr uint32_t kNeededSharedMemory = 9 * 1024;
 
     {
         std::ostringstream oss;
@@ -481,6 +482,7 @@ void VulkanContext::logDeviceLimits(const VkPhysicalDeviceLimits &lim)
             << " maxPerStageDescriptorSampledImages=" << lim.maxPerStageDescriptorSampledImages
             << " maxPerStageDescriptorStorageBuffers=" << lim.maxPerStageDescriptorStorageBuffers
             << " maxPerStageDescriptorUniformBuffers=" << lim.maxPerStageDescriptorUniformBuffers
+            << " maxPerStageDescriptorStorageImages=" << lim.maxPerStageDescriptorStorageImages
             << " maxPushConstantsSize=" << lim.maxPushConstantsSize;
         Log::line(oss.str());
     }
@@ -496,7 +498,7 @@ void VulkanContext::logDeviceLimits(const VkPhysicalDeviceLimits &lim)
         {"3D texture size (aurora noise volume is 1024 wide)", kNeeded3D, lim.maxImageDimension3D},
         {"compute workgroup invocations (shaders use local_size 16x16)",
          kNeededWorkgroupInvocations, lim.maxComputeWorkGroupInvocations},
-        {"compute shared memory (cloud_march.comp tile culling)",
+        {"compute shared memory (env_probe_sh.comp's SH partial sums)",
          kNeededSharedMemory, lim.maxComputeSharedMemorySize},
         // sat_sky.frag's descriptor set binds 16 combined image samplers in one stage — exactly the
         // guaranteed minimum 16, for both the sampled images and the samplers (terrain v2 P3's
@@ -511,6 +513,11 @@ void VulkanContext::logDeviceLimits(const VkPhysicalDeviceLimits &lim)
          lim.maxPerStageDescriptorSamplers},
         {"per-stage storage buffers (sat_orbit.comp binds 11)", 11,
          lim.maxPerStageDescriptorStorageBuffers},
+        // AT the guaranteed minimum of 4: sat_sky.frag's set (the mesh colour and distance targets, the
+        // sharp-reflection G-buffer, the far cloud layer) and cloud_v2_march.comp (its colour and depth outputs
+        // at sparse and full rate). A fifth storage image in either needs a merge, not a bigger number here.
+        {"per-stage storage images (sat_sky.frag and cloud_v2_march.comp bind 4)", 4,
+         lim.maxPerStageDescriptorStorageImages},
     };
 
     std::ostringstream fail;

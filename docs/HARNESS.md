@@ -43,7 +43,7 @@ Exe flags: `--script <file>`, `--live <dir>`, `--out <dir>`, `--window WxH` (def
 time), `--timeout <s>` (watchdog), `--stay` (keep running after the script), `--sound` (a real audio
 device; without it the engine has none — silent, but `audio record` can still render the mix).
 
-`run.py` adds `--exe`, `--config`, `--quiet`, `--boot-screen on|off`, `--boot-capture` (see "The
+`run.py` adds `--exe`, `--config`, `--quiet`, `--boot-screen on|off`, `--boot-capture`, `--boot-chooser N`, `--boot-safety-ms MS` (see "The
 loading screen") and `--forensics` (see "Freeze forensics").
 
 The console, used outside a harness run, writes to `harness_runs/console_<time>/` next to the exe,
@@ -131,7 +131,8 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `sweep` | the automated knockout sweep (≈15 s); returns the whole record |
 | `ui show\|hide`, `ui scale <0.75-2>` | HUD visibility and UI scale |
 | `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|cine\|bookmarks\|console>`, `ui close <name\|all>` | windows (`info`/`viewer`/`trace` need a selected satellite). An advanced tab (incl. Performance) turns on "show advanced settings". A UI kit row is clicked as `Key:index` (`ui click ReplayIntroBtn:0`, `ui click InfoSectHdr:2`). A `ui click` presses on the frame the pointer arrives, which the sky picker can take for a click on empty sky: re-`select` before a window that needs the selection |
-| `bookmark add [name]\|go <n>\|update <n>\|rename <n> <name>\|delete <n>\|list` | the Bookmarks window's actions (n from 1). The thumbnail is captured a few frames later (`wait 3`); results list each bookmark (`thumbnail` true once it has one). `scripts/ui_windows.satcmd` |
+| `bookmark add [name] [id=] [scale=] [paused=]\|go <n>\|update <n>\|rename <n> <name>\|delete <n>\|restore\|list` | the Bookmarks window's actions (n from 1). The thumbnail is captured a few frames later (`wait 3`); results list each bookmark (`thumbnail` true once it has one). `id=` fixes the id (replacing a bookmark that has it), `scale=` / `paused=` store the optional look (the clock a Go sets: time scale index, 0 = 1x). `restore` = the window's "Restore defaults". `scripts/ui_windows.satcmd`; the shipped defaults: `scripts/default_bookmarks.satcmd` |
+| `drift [default] [phase=<rad>] [rate=<rad/s>]` | the cloud map's drift (session state a bookmark or snapshot stores): `phase=` sets the offset giving that phase at the CURRENT sim time (set the time first), `default` the compiled-in offset (a fresh session's map); bare, reports it |
 | `tutorial start [step] [pad=1]`, `tutorial step <n\|name>`, `tutorial next\|back\|skip\|state` | the first-run tutorial (never started on its own in a harness run). Steps 1-9 or look/move/altitude/boost/select/actions/time/capture/settings; its action steps finish on real input, so `next` moves past them. `pad=1` shows the gamepad graphics. Results carry `step`, `progress`, `done_showing`, `tutorial_done`. `scripts/tutorial.satcmd` |
 | `pad <a\|b\|x\|y\|lb\|rb\|start\|view\|ls\|rs\|up\|down\|left\|right>` | a gamepad button press as `pollGamepad` handles it, no controller needed: its context meaning first (the tutorial card's Start/View, the selection's D-pad focus / A / B), else its binding. Marks the pad as the last input. Results carry `action`, `pad_focus`. `scripts/gamepad_nav.satcmd` |
 | `ui open cine` | the Cinematics window (see "Cinematics") |
@@ -490,6 +491,14 @@ script's first command, so scripts are unaffected.
 - `satlight_log.txt` has one `boot: <step> (<ms since launch>)` line per step: the launch's cost
   per step.
 - `run.py --boot-screen off` is the old white-window launch, for comparison.
+- **The startup graphics chooser** (CLAUDE.md "Startup graphics chooser") is skipped in a harness run
+  — a run never waits for input. `run.py --boot-chooser N` shows it scripted (env
+  `SATLIGHTSIM_BOOT_CHOOSER=pick=N`): two frames on the default, two on option N (0 Full, 1
+  Planetarium, 2 Potato), then it starts; with `--boot-capture` those frames are `boot_NN.png` too.
+  `state` reports `render.boot_choice`, `full_sky_deferred`, `full_sky_pipeline`, `ask_graphics_mode`.
+  `tools/harness/scripts/boot_chooser.satcmd` checks the pick and the deferred pipelines.
+- The boot safety net (> 250 ms frames right after loading step one tier down) is off in a harness
+  run; `run.py --boot-safety-ms MS` arms it at that threshold (e.g. 1, to watch it fire).
 
 ## Cleaning up run folders
 

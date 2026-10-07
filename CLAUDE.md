@@ -34,7 +34,7 @@ launching the app: only through the harness) · *Presets and release packaging* 
 `package-release`) · *macOS release architecture* · *Old / low-end hardware floor* (the
 guaranteed-minimum table and the push-constant gate).
 
-**Architecture** — *Frame Loop Order* (the canonical pass order) · *Loading screen* (frames presented while init runs) · *Unified scene depth* (one
+**Architecture** — *Frame Loop Order* (the canonical pass order) · *Loading screen* (frames presented while init runs) · *Startup graphics chooser* (the mode picked before init; light tiers defer the full sky pipelines) · *Unified scene depth* (one
 log-distance encoding, written by every surface) · *Occlusion: one shared depth buffer* (why
 `sceneDepthImg` is half-res R32F, and what it replaced) · *Shader `#include`* (the header table, the
 `CloudParams` mirror and `check_cloud_params.py`).
@@ -200,10 +200,10 @@ has access to is answerable. Current margins:
 | `maxImageDimension3D` | 256 | **1024** | `aurora_noise.comp` bakes a 1024×16×256 volume |
 | `maxComputeWorkGroupInvocations` | 128 | **256** | `local_size 16×16` in cloud_march / scene_depth / flare_blur |
 | `pointSizeRange[1]` | 64 (with `largePoints`) | up to 1024 | glare sprites (`glare.vert`) clamp to it — smaller on weak parts |
-| `maxComputeSharedMemorySize` | 16 KB | ~5.2 KB | tile-cull lists — comfortable |
+| `maxComputeSharedMemorySize` | 16 KB | ~9 KB | `env_probe_sh.comp`'s SH partial sums (`vec3 part[64][9]`, 6.9 KB packed, 9 KB with vec3 padded); the cloud tile-cull lists ~4.6 KB |
 | `maxPerStageDescriptorStorageBuffers` | 4 | **11** | `sat_orbit.comp`'s set (the check said 6, for `sat_sky.frag`, long after this set passed it — corrected 2026-09-23 with the occlusion buffers); MoltenVK is the realistic place to hit it, since it maps SSBOs + UBOs + vertex buffers into Metal's 31 per-stage buffer slots |
 | `maxPerStageDescriptorSampledImages` / `Samplers` | 16 | **16** | `sat_sky.frag` — AT the floor since terrain v2 P3's material array (binding 27, 2026-09-29): a new sky texture must merge into an existing one (e.g. the two city detail maps into an array) |
-| `maxPerStageDescriptorStorageImages` | 4 | 2 | `sat_sky.frag`'s Phase 4c mesh targets (imageLoad) — added as storage images precisely because the sampled-image budget above had one slot left |
+| `maxPerStageDescriptorStorageImages` | 4 | **4** | AT the floor (checked since 2026-10-06): `sat_sky.frag`'s mesh colour + distance targets (22/23), the sharp-reflection G-buffer (25) and the far cloud layer (29) — added as storage images because the sampled-image budget was full; `cloud_v2_march.comp`'s sparse + full-rate colour/depth outputs. A fifth needs a merge |
 
 **The push-constant gate in `pickPhysicalDevice()` read 144 until 2026-09-08** — the pre-trim
 `SatDrawPC` size — so it rejected precisely the hardware the trim was performed for. Keep that
@@ -1588,8 +1588,21 @@ follow mode is a free camera at the camera's place.
   shrinking the vector after the layout would leave them dangling. Go / Update / a rename change no address.
 - The window: a name field + "Add current view", then cards in as many columns as fit (Clay has no wrapping rows:
   the column count comes from the list's last laid-out width) — thumbnail (click = Go), the name (a text field),
-  when / where, Go / Update / Delete (two clicks). Harness: `bookmark add [name] | go <n> | update <n> |
-  rename <n> <name> | delete <n> | list`, `ui open bookmarks`.
+  when / where, Go / Update / Delete (two clicks). Harness: `bookmark add [name] [id=] [scale=] [paused=] | go <n> |
+  update <n> | rename <n> <name> | delete <n> | restore | list`, `ui open bookmarks`.
+- **Shipped defaults (2026-10-06):** `data/bookmarks/` (bookmarks.json + `<id>.png`, ids `default_*`) is copied to
+  `<exe dir>/default_bookmarks/` by `sat_copy_runtime_files` / `sat_sync_runtime_sources` and packaged by
+  `cmake/PackageRelease.cmake` (the folder is named apart from the user's `bookmarks/` in case the user data folder IS
+  the exe folder). `bookmarksLoad` seeds the list from it only when the user has NO bookmarks.json (an emptied list is
+  an empty file, never re-seeded); "Restore defaults" (`bmRestorePending_`, deferred like Add) re-adds every default
+  whose id is missing and copies its thumbnail, leaving the user's own alone. An optional per-bookmark **`look`**
+  (`time_scale_idx`, `paused`; -1 = absent, so user bookmarks never touch the clock) sets the clock on Go — event
+  bookmarks start at 1x, and the rainbow and Starmind ring start paused (the storm and the formation move on). It holds
+  no rendering settings on purpose: a Go must never rewrite the user's settings.json. **Rebuild them with
+  `tools/harness/scripts/default_bookmarks.satcmd`** (header: the run.py line and the copy into data/bookmarks); the
+  storm phase comes from harness `drift phase=` (`drift default` = the compiled-in offset), and `bookmark add id=`
+  replaces a seeded default. The Venezuela rainbow is framed from the user's snapshot (record 40, 2026-10-04, then at
+  rain 3.0): at the shipped `rain_amount` 0.71 the bow barely shows (~1.5 needed).
 
 ## Loading screen (2026-09-26)
 
@@ -1619,6 +1632,48 @@ Invariants:
   `shaders reload` (`ctx.capturePipelineStats`). Look at the `boot:` lines of satlight_log.txt when startup slows.
 - **Music analysis cache key = a content hash** (kAnalysisVersion 2): the write time changed with every build's copy of
   the music, so every launch after a rebuild re-analysed all tracks (~10 s).
+
+## Startup graphics chooser (2026-10-06)
+
+The user: a window to choose Planetarium or Full graphics "before even loading in shaders, sat shapes", toggleable
+like the intro, "so we do not just freeze up someone's PC on bootup", and Potato if Planetarium is too much.
+`App::runBootChooser` (App.cpp) draws it on the loading screen right after the title frame and BEFORE
+`sim->init()`: only the UI pipeline (built against `renderPassBoot`) exists, so it is cheap on any GPU. The sim's half
+is `SatelliteSimBootChooser.cpp` through two `Simulation` hooks: `prepareBootChooser(ctx, spec)` (what to offer and
+pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
+- **Options**: 0 Full graphics, 1 Planetarium, 2 Potato (a smaller card below). Pre-selected: the saved preset's mode
+  for a returning player, else the device recommendation (`deviceRecommendedBootMode`, a wrapper over
+  `seedGraphicsPresetFromDevice`: integrated / CPU / virtual GPU -> Planetarium) — one tier lighter after a crash
+  (the `session.lock` sentinel), with a note. "Full" keeps a full tier (or Custom) already saved, else
+  `recommendedFullPreset` (the device seed, or Low on an integrated GPU). Mouse, keys (arrows / Tab / 1-3, Enter or
+  Space) and gamepad (d-pad / left stick, A or Start; X toggles "ask again"). **No timeout**: it never continues
+  into Full on its own. Closing the window there quits without initialising the sim.
+- **Persisted** as `display.ask_graphics_mode` (absent = true, so first runs and upgrading players see it once; the
+  chooser's "Ask on every startup" box and the Display tab's STARTUP toggle set it). A crashed last session shows
+  it regardless. Shown only with the loading screen on.
+- **Read before init**: `peekBootSettings()` parses settings.json (`display.ask_graphics_mode`, `graphics_preset`,
+  `debug_disable_mask`) and checks the crash sentinel BEFORE init recreates it. The pick is applied after
+  `loadSettings` (`applyBootChoice`) and replaces the crash path's forced Planetarium; the intro's UC1 benchmark
+  does not re-decide a launch where the player picked.
+- **Tier pipeline deferral (`fullSkyDeferred`)**: init knows the tier at its first line (the pick, else the saved
+  preset, else the crash path / device seed). On a light tier `createSkyBgPipeline`, `createSkyLowResResources`
+  and `createSkyTaaResources` skip the three FULL `sat_sky.frag` pipelines (inline sky, low-res prepass, SKY_TAA)
+  — at init and on every resize. `ensureFullSkyPipelines()` (top of `recordCompute`, after the fence: same
+  destroy+create as `onResize`) builds them the first frame `fullSkyNeeded()` — no light-sky knockout bit, or a
+  render scale below 100% (the low-res prepass has no lite variant). **Not deferred** (still built for every tier):
+  the SKY_ENV / SKY_REFL variants (env probes, mesh sharp reflections), the cloud v1/v2 march compute pipelines and
+  their noise / weather bakes, the textures and satellite models. Any new pipeline built from the full
+  `sat_sky.frag` must follow the same flag or the light tiers compile it again.
+- **Safety net** (`updateBootSafetyNet`, first thing in buildUI after the CPU timer): after ~2 s and 5 frames of
+  warm-up, the median of the next 10 wall-clock frames (or of at least 3 once they add up to 5 s); above 250 ms it steps one tier down (a full tier ->
+  Planetarium, Planetarium -> Potato), once per launch, with a 12-s banner (`graphicsAutoNoticeText`). Off in a
+  harness run unless `SATLIGHTSIM_BOOT_SAFETY_MS` (run.py `--boot-safety-ms`) sets the threshold.
+- **Harness**: skipped (a run never waits for input) unless `SATLIGHTSIM_BOOT_CHOOSER=pick=N` (run.py
+  `--boot-chooser N`), which scripts it in four frames; `--boot-capture` captures them. `state` -> `render.boot_choice
+  / full_sky_deferred / full_sky_pipeline / ask_graphics_mode`; `tools/harness/scripts/boot_chooser.satcmd`.
+  `SATLIGHTSIM_BOOT_CHOOSER=0` hides it, `=1` shows it whatever the setting.
+- The tutorial's Graphics card (`TUT_GRAPHICS`) still appears on Planetarium / Potato: it explains there are no
+  clouds and where the preset is.
 
 ---
 
@@ -3983,7 +4038,8 @@ architecture to pre-unification occlusion behaviour), 2048=fog + dust (clouds v2
 cloud occlusion (`sat_point.frag` — added 2026-08-09 to isolate a reported perf question, see
 `BEAM_CLOUD_PLAN.md`; ruled out as the cause, kept as a real diagnostic),
 8192=Reflect-Orbital beam POINTING-RAY loop (`cloud_march.comp`'s per-pixel loop in `main()`),
-16384=`cirrusMarchCS`, 32768=`cloudMarchCS` (the volumetric low/mid march itself),
+16384=`cirrusMarchCS`, 32768=the volumetric clouds (clouds v2: since 2026-10-06 nothing of them is dispatched —
+march, resolve, far layer, lightning/rain map, tiles — see "Weak-Hardware Sky Tiers"),
 65536=`sat_sky.frag`'s 64-bin satellite sky-glow loop, 131072=**beam tile cull OFF** (not a feature
 knockout — an optimization A/B; see "Beam pointing-ray tile culling" below), 1048576=satellite
 part occlusion (`sat_orbit.comp`, geometry-model types; via `GpuSatTypeHeader::occlusionOn`),
@@ -4160,8 +4216,11 @@ aliased because the sky pass shades one ray per pixel. At renderScale 1 with the
 - **Presets (2026-10-04, the user):** Medium renders at 67%, Low is Medium's settings at 50% with every effect on
   (aurora, beams, fog, terrain detail); Planetarium is the "everything off" tier. Measured (RTX 3070 Ti, 1600x900, the
   user's snapshots): Low 12.3 / 13.8 / 9.9 / 7.9 ms, Medium 17.8 / 18.2 / 13.8 / 11.2 (orbit storm, anvils, Dushanbe,
-  Dallas night). First runs on integrated GPUs (and CPU / virtual devices) seed **Planetarium**
-  (`seedGraphicsPresetFromDevice`; discrete GPUs Medium), and the tutorial then ends with a "Graphics" card
+  Dallas night). First runs seed `SatelliteSim::recommendedPresetForDevice` (2026-10-06; static, so the
+  startup chooser can call it before init): **Potato** for MoltenVK on a non-Apple GPU (the 2015 MacBook Pro's
+  R9 M370X is DISCRETE, 2 GB), **Planetarium** for integrated / CPU / virtual GPUs and discrete ones with
+  <= ~2 GB of VRAM, else Medium — logged as `graphics: recommended preset ...`. Crash recovery steps the preset
+  down one tier (`crashRecoveryPreset`: full -> Planetarium -> Potato; it always forced Planetarium). The tutorial then ends with a "Graphics" card
   (`TUT_GRAPHICS`, shown only when it starts on Planetarium or Potato) saying there are no clouds and pointing at
   Settings > Display > Preset.
 - **Automatic render scale (2026-10-04, `updateDynamicResolution`, Display "Automatic render scale", keys
@@ -4256,8 +4315,31 @@ Two stand-in fragment shaders, both bound through **`skyBgPipeLayout` / `skyDesc
 
 | Tier | Bit | Pipeline | Shader | Notes |
 |---|---|---|---|---|
-| **Potato** | `262144` | `skyBgMinimalPipeline` | `shaders/sat_sky_minimal.frag` (own file, ~370 lines) | closed-form analytic atmosphere (Kasten-Young airmass, one 32-tap arithmetic loop — no raymarch), day/night + city-detail textures, one flat drifting cloud shell w/ terminator lighting, cheap ocean (1 noise-tap slope + Fresnel + Blinn glint), textured moon, verbatim `lensFlare()`. **~60 FPS.** No Milky Way / volumetric clouds / aurora / airglow / real ocean waves — those don't fit the GCN1 occupancy ceiling (~31–32 KB SPV; the Milky Way's `atan2`/`asin` + panorama fetch is the specific thing that broke it). |
-| **SKY_LITE** | `524288` | `skyBgLitePipeline` | `sat_sky.frag` **recompiled with `-DSKY_LITE`** → `sat_sky_lite.frag.spv` (2nd `add_custom_command` in CMakeLists) | `#ifdef SKY_LITE` cuts inside the real shader: Milky Way block, 64-bin satellite sky-glow loop, cloud layer loop `3→0` becomes `1→0`, the 3×3 `cloudTargetA/B` rgb blur → single tap, aurora surface glow (`auroraGlowAt` on terrain+ocean), zenith-ambient `N_ZT` 4→2, and the per-atmosphere-step **green/sodium airglow** (two `warpPerlin3` masks/step — the dominant cost) — city-glow upwelling KEPT but only on the first 3 march steps. **2 FPS → ~55 FPS** on the target. |
+| **Potato** | `262144` | `skyBgMinimalPipeline` | `shaders/sat_sky_minimal.frag` (own file, ~370 lines; the Sept-2026 shader + only what today's bindings and depth require: the weather cube at binding 7, the unified depth, and its own DEM-only eye height, `minimalEyeHeight`) | closed-form analytic atmosphere (Kasten-Young airmass, one 32-tap arithmetic loop — no raymarch), day/night + city-detail textures, one flat drifting cloud shell w/ terminator lighting, cheap ocean (1 noise-tap slope + Fresnel + Blinn glint), textured moon, verbatim `lensFlare()`. **~60 FPS.** No Milky Way / volumetric clouds / aurora / airglow / real ocean waves — those don't fit the GCN1 occupancy ceiling (~31–32 KB SPV; the Milky Way's `atan2`/`asin` + panorama fetch is the specific thing that broke it). |
+| **SKY_LITE** | `524288` | `skyBgLitePipeline` | `sat_sky.frag` **recompiled with `-DSKY_LITE`** → `sat_sky_lite.frag.spv` (2nd `add_custom_command` in CMakeLists) | `#ifdef SKY_LITE` cuts inside the real shader: (2026-10-06) every v1.2 ground feature — the terrain march (`dbgSkipTerrain()` is constant true), close-up materials and terrain debug views, the sea's sky-reflection march (`dbgSkipOceanRefl()` constant true) and shore, the beam ground spots, the whole procedural city (layout, glitter, roads, farms, beaches, roof PV, solar parks: the night map + the tiled city detail textures carry the cities, as in v1.1) and the mesh composite (the CPU draws no meshes or env probes there, `kNoMeshBits`); and since 2026-09: Milky Way block, 64-bin satellite sky-glow loop, cloud layer loop `3→0` becomes `1→0`, the 3×3 `cloudTargetA/B` rgb blur → single tap, aurora surface glow (`auroraGlowAt` on terrain+ocean), zenith-ambient `N_ZT` 4→2, and the per-atmosphere-step **green/sodium airglow** (two `warpPerlin3` masks/step — the dominant cost) — city-glow upwelling KEPT but only on the first 3 march steps. **2 FPS → ~55 FPS** on the target. |
+
+**Keep these tiers protected (2026-10-06).** `sat_sky_lite.frag.spv` had grown 142 KB (v1.1.0) → 567 KB and
+the minimal shader had taken on terrain v2's water code, unnoticed, because each new feature was gated by a
+RUNTIME knockout or `if (false)` — glslc (no `-O`) still compiles every call, and the driver must allocate
+registers for the largest path. The rule: a new feature in `sat_sky.frag` is `#if`'d out of SKY_LITE (not just
+gated on a uniform), nothing new goes into `sat_sky_minimal.frag`, and its CPU work is skipped for those presets.
+The build enforces it: `cmake/CheckSpvSize.cmake` runs after both compiles and fails past `SKY_LITE_MAX_BYTES`
+(225 KB) / `SKY_MINIMAL_MAX_BYTES` (46 KB) in CMakeLists.txt — ~10% over the trimmed 199 / 41 KB (glslc versions
+differ by a few percent). Raise a budget only with a measurement on the target hardware.
+`tools/harness/scripts/low_tiers.satcmd` is the check: Potato / Planetarium / Low at a day, night-city, orbit and
+storm view, perf + captures, and run once with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`. First run
+(RTX 3070 Ti, 1600x900, GPU frame): Potato 0.8-1.0 ms, Planetarium 1.4-3.0 ms, Low 4.8-6.7 ms (coverage forced
+1.6 in its views); no validation errors (3 pre-existing `ShaderOutputNotConsumed` warnings at pipeline creation).
+
+**The CPU side of the tiers (2026-10-06).** Knockout 32768 (both tiers set it) switches off ALL of clouds v2
+host-side: `recordCloudsV2` records only the weather evolution (the flat decks read the cube) — no march,
+resolve, far layer (`cloudFarBlend()` is 0), lightning pass or tiles, and none of their barriers (each restarts
+the encoder on MoltenVK); bolts, rain particles, thunder, the rain ambience and the Sun's cloud transmittance key on
+`cloudsV2LightningActive()` / `cv2LightningRanThisFrame`, and `cloud_march.comp` ignores the stale resolved
+images. Potato also skips `cloud_march.comp` itself (the minimal sky never reads its targets) after clearing them
+once to "no cloud" for the point passes (`cloudMarchTargetsClear`). Knockout 1024 (Potato) clears the depth images
+to `kNoSurfaceT` once when it is switched on (they kept the last frame) and, outside Potato, fills
+`terrainFrameBuf` from the CPU ground for its GPU readers (city sprites, far layer, lightning).
 
 262144 wins if both bits are set. The always-on `Log::line` breadcrumb in `recordDraw` reports
 `MINIMAL` / `LITE (SKY_LITE)` / `FULL sat_sky.frag` on any change (into `satlight_log.txt`) — this
@@ -4853,7 +4935,9 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   Cost +0.8 ms over LA from 10 km (in-app A/B). Harness: `scripts/city_lights.satcmd`.
   **Not gated on terrain detail (2026-10-04):** Low and Planetarium (SKY_LITE) draw the full pattern too (it was
   `tdEnabled()`-gated, so those tiers showed the night map's blobs): +0.7 ms on Low, +2.4 ms on Planetarium over LA
-  from 1.5 km (RTX 3070 Ti). Farmland and beaches still follow the terrain detail.
+  from 1.5 km (RTX 3070 Ti). Farmland and beaches still follow the terrain detail. **Planetarium no longer does
+  (2026-10-06):** the pattern is compiled out of SKY_LITE with the rest of the v1.2 ground features (the tier is
+  for GPUs where the compiled size is the cost); its cities are the night map + the tiled detail textures again.
   **Day side (phase 2, 2026-09-29):** the same layout (`cityLayout()`, a `CityLayout` struct computed
   ONCE per pixel before the material block and reused by the night) drives `cityDayAlbedo()`: asphalt
   streets (12 m, arterials 24 m, exact box-filter coverage `cityBoxCover`), each base block split into
