@@ -445,6 +445,21 @@ json SatelliteSim::harnessStateJson()
         sel["el_deg"] = elDegOf(selSkyDirCpu);
         sel["above_earth"] = selAboveEarth;
         sel["track"] = trackActive; // the camera lock below `camera.tracking`, on the satellite it follows
+        if (o.formation) // formation ring member: where it is relative to its cluster centre, now
+        {
+            const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            SatOrbitElems ce = orbitElemsOf(o);
+            ce.formation = false;
+            const SatOrbitState m = satOrbitStateAt(orbitElemsOf(o), t), c = satOrbitStateAt(ce, t);
+            const glm::dvec3 d = m.posEci - c.posEci, rH = -c.nadir, vH = c.velocity;
+            const glm::dvec3 hH = glm::normalize(glm::cross(rH, vH));
+            sel["formation"] = {{"offset_m", {glm::dot(d, vH), glm::dot(d, hH), glm::dot(d, rH)}}, // along, cross, radial
+                                {"dist_m", glm::length(d)}};
+        }
+        if (selParityValid) // the GPU-vs-CPU check (updateSelectedPhotometry): magnitude gap and both ranges
+            sel["parity"] = {{"dmag", selParityDmag},
+                             {"range_gpu_m", selParityRangeGpuM},
+                             {"range_cpu_m", selParityRangeCpuM}};
         // Its screen position (px, top-left origin) and, when its mesh is drawn, the hand-off: the mesh fade, the
         // sprite's keep (1 - spriteGone), the glare keep, its size in px, and where the sprite (point, bloom,
         // point-like glare) is placed — the Sun's image in its dominant lobe, weighted by the lobe's specular share.

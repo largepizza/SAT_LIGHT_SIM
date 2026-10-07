@@ -1,7 +1,9 @@
-# Starmind formation rings: 8 satellites on a 200 m polygon in the orbit plane (cluster_shape "ring").
-# r10: face-on, from 800 m cross-track of member 0 (the ring's along-track end), aimed at the satellite.
-# r20: the same 120 s later — the ring must hold its shape (members share the centre's mean motion).
-# r30: edge-on from below (1.5 km under the cluster): reads as a line along track.
+# Starmind formations: 8 satellites on a passive Clohessy-Wiltshire relative orbit about the cluster
+# centre (cluster_shape "ring", circular, rho 350 m; 2026-10-06). The full one-orbit sequence is
+# starmind_formation.satcmd.
+# r10: from 900 m cross-track of member 0: the orbit plane face-on (a 2:1 ellipse).
+# r20: the same 120 s later — the formation has turned ~7.5 deg (once per orbit).
+# r30: from 1.5 km below the cluster.
 preset High
 time set 2037-03-20T00:00:00Z
 time pause

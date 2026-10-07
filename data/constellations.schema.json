@@ -161,7 +161,7 @@
           },
           "cluster_shape": {
             "type": "string",
-            "description": "line: the members in a row along track. ring: a regular polygon of cluster_size members, radius cluster_radius_km, in the orbit plane (along track x radial); each member keeps the cluster centre's orbital rate, so the ring holds its shape.",
+            "description": "line: the members in a row along track. ring: a passive formation - each member flies the bounded Clohessy-Wiltshire (Hill) relative orbit about the cluster centre (members evenly spaced in its phase), so members below the centre run ahead, those above fall behind, and the whole formation turns once per orbit. Size: cluster_radius_km; shape: cluster_relative_orbit.",
             "enum": ["line", "ring"],
             "default": "line"
           },
@@ -180,9 +180,40 @@
           },
           "cluster_radius_km": {
             "type": "number",
-            "description": "cluster_shape ring: radius of the polygon, in kilometres.",
+            "description": "cluster_shape ring: the relative orbit's along-track semi-axis rho, in kilometres (the radial amplitude is rho / 2). With cluster_relative_orbit circular every member stays rho from the centre; neighbours of n members are 2 rho sin(180/n deg) apart.",
             "exclusiveMinimum": 0,
             "default": 0.2
+          },
+          "cluster_relative_orbit": {
+            "type": "string",
+            "description": "cluster_shape ring: the cross-track part of the relative orbit. circular: cross-track = sqrt(3) x radial, a circle of radius rho tilted 60 deg out of the orbit plane about the along-track axis (constant spacing). projected_circular: cross-track = 2 x radial, a circle as seen from above. in_plane: no cross-track motion, a 2:1 ellipse (along-track x radial) in the orbit plane.",
+            "enum": ["circular", "projected_circular", "in_plane"],
+            "default": "circular"
+          },
+          "cluster_alt_jitter_km": {
+            "type": "number",
+            "description": "Shells only: each cluster's (or, without clusters, each satellite's) altitude is offset by a uniform amount within +-this, in kilometres. Deterministic per cluster.",
+            "minimum": 0,
+            "default": 0
+          },
+          "cluster_phase_jitter": {
+            "type": "number",
+            "description": "Shells only: each cluster's position along its orbit is offset by up to +-this fraction of the gap between neighbouring clusters.",
+            "minimum": 0,
+            "maximum": 0.5,
+            "default": 0
+          },
+          "cluster_raan_jitter_deg": {
+            "type": "number",
+            "description": "Shells only: each cluster's node (RAAN) is offset by up to +-this many degrees.",
+            "minimum": 0,
+            "default": 0
+          },
+          "cluster_incl_jitter_deg": {
+            "type": "number",
+            "description": "Shells only: each cluster's inclination is offset by up to +-this many degrees.",
+            "minimum": 0,
+            "default": 0
           },
           "groups": {
             "type": "array",
