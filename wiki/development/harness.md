@@ -59,8 +59,9 @@ normal user data folder instead of the run folder), `--fixed-dt <s>` (default 1/
 `--timeout <s>` (watchdog), `--stay` (keep running after the script), `--sound` (a real audio device). Unknown
 flags are an error, so a typo never silently runs the normal app.
 
-`run.py` adds `--exe`, `--config` (default Release), `--quiet`, `--cooldown`, `--boot-screen on|off` and
-`--boot-capture`. It runs the **freshest** `build/<config>/SAT_LIGHT_SIM_V_*.exe`; a build in another tree
+`run.py` adds `--exe`, `--config` (default Release), `--quiet`, `--cooldown`, `--boot-screen on|off`,
+`--boot-capture`, `--boot-chooser N` and `--boot-safety-ms MS` (the last three are described under
+[The loading screen in a run](#the-loading-screen-in-a-run)). It runs the **freshest** `build/<config>/SAT_LIGHT_SIM_V_*.exe`; a build in another tree
 (`build-win-release/`) is invisible to it unless passed with `--exe`.
 
 Live mode: `live.py start` launches the app with `--live harness_live/`. Each `send` writes one file to
@@ -140,7 +141,8 @@ A failing command is recorded with its reason and the script continues; the run'
 | `beams [list]`, `beams go [rank=1] [dist_km=0] [bearing=270] [agl=2\|alt=] [look=site\|up\|none]` | where the Reflect Orbital beams land now (from the last readback; only satellites above the observer's horizon make beams, so stand in the region first). `go` puts the observer near the rank-th busiest site and aims at it or up the beams. Frame beams this way rather than by a guessed time and place |
 | `eclipse <solar\|lunar>` | the next eclipse after the current time: sets greatest eclipse, puts the observer under the Moon or where the shadow axis meets the Earth, aims at the Moon |
 | `aurora`, `aurora next [<kp>] [days=1100]`, `aurora substorm [min=0.4]`, `aurora kp <v>`, `aurora auto` | the aurora's activity, which is a pure function of sim time. Bare: report it. `next` jumps sim time to the peak of the next storm reaching that Kp (default 7; automatic activity). `substorm` jumps to 10 minutes after the next substorm onset stronger than `min`. `kp <v>` fixes the activity by hand (substorms still run); `auto` returns to the computed space weather. Test from a dark site: a city's skyglow hides the aurora |
-| `bookmark add [name]`, `bookmark go\|update\|delete <n>`, `bookmark rename <n> <name>`, `bookmark list` | the Bookmarks window's actions, numbered from 1 as listed. The thumbnail is captured a few frames later, so `wait 3` after `add` or `update` before looking at the window |
+| `bookmark add [name] [id=] [scale=] [paused=]`, `bookmark go\|update\|delete <n>`, `bookmark rename <n> <name>`, `bookmark restore`, `bookmark list` | the Bookmarks window's actions, numbered from 1 as listed. The thumbnail is captured a few frames later, so `wait 3` after `add` or `update` before looking at the window. `id=` fixes the bookmark's id and replaces any bookmark that already has it; `scale=` (a time-scale index, 0 = 1x) and `paused=` store the bookmark's optional look, the clock a Go sets. `restore` is the window's *Restore defaults*: it re-adds any shipped bookmark that is missing. A run's list starts as the shipped defaults, since its user data folder has no `bookmarks.json` |
+| `drift [default] [phase=<rad>] [rate=<rad/s>]` | the cloud map's drift, the session state a bookmark or snapshot stores. `phase=` sets the offset that gives that phase at the current sim time (set the time first); `default` restores the compiled-in offset of a fresh session; `rate=` sets the drift rate. Bare, it reports the phase and rate |
 | `snapshot <profile_log.jsonl> [index=-1] [settings=on\|off] [drift=intro\|default]` | reproduce a perf snapshot a user saved ([Snapshots](#snapshots)) |
 
 ### Settings and rendering
@@ -313,6 +315,13 @@ or device loss; `perf` with features toggled to attribute cost.
 then read the dump's text-overlap checks before the picture. `tools/harness/scripts/ui_windows.satcmd` walks the
 info, trace and Bookmarks windows and the HUD's typed fields this way, checking each result with `expect state.`.
 
+**Rebuilding the shipped bookmarks:** the bookmarks that ship with the sim (`data/bookmarks/`, copied next to the
+executable as `default_bookmarks/`) are produced by `tools/harness/scripts/default_bookmarks.satcmd`. Each view is
+set up, settled and added with `bookmark add <name> id=<fixed id> scale= paused=`, which replaces the shipped
+bookmark of that id; storm views set the cloud map with `drift phase= rate=` first, the rest use `drift default`.
+Run it with `--out harness_runs/default_bookmarks`, then copy that run's `bookmarks/` folder (`bookmarks.json` and
+one `<id>.png` per bookmark) over `data/bookmarks/`.
+
 ## Gotchas
 
 - **Build Release.** A Debug build takes tens of seconds to encode each 1600 x 900 PNG.
@@ -330,6 +339,18 @@ Every launch, harness runs included, shows the loading screen. Its frames all co
 before the script's first command, so scripts are unaffected. `run.py --boot-capture` writes each loading frame
 to `captures/boot_NN.png`, `--boot-screen off` launches without it, and `satlight_log.txt` has a
 `boot: <step> (<ms since launch>)` line per step.
+
+The **startup graphics chooser** (the loading screen's choice between Full graphics, Planetarium and Potato,
+described on [Controls and settings](controls-and-settings.md#first-run-and-startup)) is skipped in a harness
+run, because a run never waits for input. `run.py --boot-chooser N` shows it scripted (it sets
+`SATLIGHTSIM_BOOT_CHOOSER=pick=N`): two frames on the pre-selected option, two on option N (0 Full,
+1 Planetarium, 2 Potato), then it starts. With `--boot-capture` those frames are captured too. `state` reports
+the pick and whether the full sky pipelines were deferred (`render.boot_choice`, `full_sky_deferred`,
+`full_sky_pipeline`, `ask_graphics_mode`); `tools/harness/scripts/boot_chooser.satcmd` checks them.
+
+The **boot safety net** (one tier down when the first frames after loading take over 250 ms each) is off in a
+harness run. `run.py --boot-safety-ms MS` arms it at that threshold, for example 1 ms to watch it fire
+(`tools/harness/scripts/boot_safety.satcmd`).
 
 ## Architecture
 
@@ -363,7 +384,8 @@ once, so a `state` or sidecar in the same frame is not one frame stale.
   with no per-setting code.
 
 Outside a harness run (and before the console's first use) the runner is null and every hook is a no-op. In a
-run, the intro, the first-run tutorial, first-run notices and the preset seed notice are suppressed, the music
+run, the startup graphics chooser, the boot safety net, the intro, the first-run tutorial, first-run notices and
+the preset seed notice are suppressed (the first two can be switched back on from `run.py`), the music
 is started on a device-less engine, and the soundtrack analysis runs synchronously.
 
 **Adding a command:** match on `c.name` in `harnessExec()`, read `c.pos` and `c.kv` (`c.num()`, `c.flag()`,
@@ -384,5 +406,5 @@ minutes with launch spacing.
 | `src/simulations/SatelliteSimHarness.cpp` | `harnessInit()`, `harnessTick()`, `harnessExec()`, `harnessStateJson()`, `kHelp` |
 | `tools/harness/run.py`, `live.py`, `launchgate.py` | drivers and launch spacing |
 | `tools/harness/imgtools.py`, `tstab.py`, `flicker.py`, `climb.py`, `lightscan.py`, `frames2video.py`, `gc.py`, `selftest.py` | analysis and maintenance |
-| `tools/harness/scripts/` | worked scripts (`smoke`, `determinism`, `terrain_views`, `ambience_tour`, `tour`, `track`, `text_fields`, `ui_windows`, `tutorial`, ...) |
+| `tools/harness/scripts/` | worked scripts (`smoke`, `determinism`, `terrain_views`, `ambience_tour`, `tour`, `track`, `text_fields`, `ui_windows`, `tutorial`, `boot_chooser`, `boot_safety`, `low_tiers`, `default_bookmarks`, ...) |
 | `docs/HARNESS.md` | the older reference this page restructures |

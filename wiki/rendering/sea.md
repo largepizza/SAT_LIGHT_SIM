@@ -154,7 +154,10 @@ direction's projection (not in environment probes):
 - faded over 30% past the frame edge, so the fade lies outside the frame;
 - leaning back toward the clear-sky march with roughness and past 3-30 km;
 - **under an overcast**, the clear-sky share is darkened by the sea point's own cloud shadow
-  (`mix(0.35, 1, cloudShadow)`), so the sea is not brighter than the cloud deck over it.
+  (`mix(0.35, 1, cloudShadow)`), so the sea is not brighter than the cloud deck over it. It reads the
+  filtered shadow (the [1 2 1] tent over the half-res cloud target): the raw tap carries the cloud march's
+  2 × 2 ordered shadow offsets, which under broken cloud would print a grid of white dots on the reflection
+  that shimmers as the waves move.
 
 The Milky Way and the aurora are reflected too ([Aurora and airglow](aurora-airglow.md)): the Milky Way at
 mip \( 3 + 4\,\text{seaRough} \), scaled by "Ocean MW refl" (Atmosphere tab); the aurora by a 6-step march along

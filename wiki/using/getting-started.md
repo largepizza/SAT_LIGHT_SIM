@@ -60,19 +60,24 @@ details are on [Building and releasing](../development/building.md).
 
 ## The first launch
 
-1. **Loading screen.** A list of start-up steps appears while textures, noise volumes, satellite models and the
+1. **Graphics mode.** Before anything heavy loads, the loading screen asks for a graphics mode (see
+   [Choosing a graphics mode at startup](graphics-settings.md#choosing-a-graphics-mode-at-startup)): **Full
+   graphics**, **Planetarium** (no clouds) or **Potato (very old hardware)**. On a first run the choice the GPU
+   suits is pre-selected and marked *Recommended for this computer*: Full graphics for a discrete GPU with
+   more than about 2 GB of memory, Planetarium for a smaller discrete GPU, integrated graphics or a software or
+   virtual device, and Potato for a non-Apple GPU on macOS. Later launches pre-select the mode you ran last. Pick one with the mouse, the arrow keys
+   and Enter, or the d-pad and **A**; the screen waits until you do.
+2. **Loading screen.** A list of start-up steps appears while textures, noise volumes, satellite models and the
    roster are prepared. A cold start compiles every shader; later launches reuse a pipeline cache and start in a
-   few seconds.
-2. **Graphics preset.** With no saved settings, the program picks a starting preset from the GPU type: a
-   discrete GPU starts on **Medium**, anything else (integrated graphics, a software or virtual device) on
-   **Planetarium**, the tier with no volumetric clouds and the simplest terrain, sky and sea.
+   few seconds. If the first frames after loading are very slow (over 250 ms each), the program drops one tier
+   (Full to Planetarium, Planetarium to Potato) and says so.
 3. **The intro.** A short cinematic plays, set to the first music track, from the California coast at dusk
    looking at the orbital data-centre satellites and the mirrors aimed at a nearby solar farm. Press **Space** (or
-   **Start** on a gamepad) to skip it. The intro also measures the GPU frame time. If it plays to the end, the
-   preset moves one step when the measurement calls for it: down when frames are slow (more than about 18 ms:
-   Medium to Low, Low to Planetarium, Planetarium to Potato), up when they are fast (under about 5 ms: Potato to
-   Planetarium, Low to Medium, Medium to High). A notice then says which preset is active. A skipped intro changes
-   nothing.
+   **Start** on a gamepad) to skip it. When the graphics mode was not picked on the startup screen (the question
+   is switched off), the intro also measures the GPU frame time, and if it plays to the end the preset moves one
+   step when the measurement calls for it: down when frames are slow (more than about 18 ms: Medium to Low, Low
+   to Planetarium, Planetarium to Potato), up when they are fast (under about 5 ms: Potato to Planetarium, Low to
+   Medium, Medium to High). A notice then says which preset is active. A skipped intro changes nothing.
 4. **The tutorial.** After the intro, a card at the bottom of the screen walks through looking around, moving,
    climbing, boosting and selecting a satellite. Each of these steps finishes when you do it, and a picture of the
    keyboard, mouse or gamepad lights the input to use. Later cards outline the selection buttons, the time
@@ -86,9 +91,9 @@ Whether the intro plays at every launch is the **Play intro on startup** setting
 install). **Replay intro** plays it once on demand.
 
 !!! note "Crash recovery"
-    If the previous session did not exit cleanly (the program keeps a `session.lock` file while it runs), the
-    next launch starts on the **Planetarium** preset and shows a notice. Pick your preset again in Settings →
-    Display once you know the cause.
+    The program keeps a `session.lock` file while it runs. If it is still there at the next launch, the previous
+    session did not exit cleanly: the graphics-mode screen then appears even when the question is switched off,
+    with the mode one tier lighter than last time pre-selected and a note saying why.
 
 ## Where files live
 
@@ -114,7 +119,7 @@ What is in it:
 | `traces/` | Magnitude traces exported as CSV |
 | `exports/` | Bulk brightness exports (CSV) |
 | `perf_profiles/profile_log.jsonl` | Performance snapshots (F9, or Settings → Performance → Save snapshot) |
-| `bookmarks/` | Saved bookmarks (`bookmarks.json`) and their thumbnails |
+| `bookmarks/` | Saved bookmarks (`bookmarks.json`) and their thumbnails. A first run fills it with the [bookmarks that ship with the sim](features.md#the-bookmarks-that-ship-with-the-sim) |
 | `satellite_types_resolved.json` | The loaded satellite types in explicit form; see [Modding](../modding/index.md) |
 | `satellite_models_debug/` | A 3D shape (OBJ) of every satellite model, for checking a mod |
 | `music_analysis/` | A cache of the soundtrack's key analysis |
