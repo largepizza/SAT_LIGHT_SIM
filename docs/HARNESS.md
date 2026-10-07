@@ -43,7 +43,7 @@ Exe flags: `--script <file>`, `--live <dir>`, `--out <dir>`, `--window WxH` (def
 time), `--timeout <s>` (watchdog), `--stay` (keep running after the script), `--sound` (a real audio
 device; without it the engine has none — silent, but `audio record` can still render the mix).
 
-`run.py` adds `--exe`, `--config`, `--quiet`, `--boot-screen on|off`, `--boot-capture` (see "The
+`run.py` adds `--exe`, `--config`, `--quiet`, `--boot-screen on|off`, `--boot-capture`, `--boot-chooser N`, `--boot-safety-ms MS` (see "The
 loading screen") and `--forensics` (see "Freeze forensics").
 
 The console, used outside a harness run, writes to `harness_runs/console_<time>/` next to the exe,
@@ -490,6 +490,14 @@ script's first command, so scripts are unaffected.
 - `satlight_log.txt` has one `boot: <step> (<ms since launch>)` line per step: the launch's cost
   per step.
 - `run.py --boot-screen off` is the old white-window launch, for comparison.
+- **The startup graphics chooser** (CLAUDE.md "Startup graphics chooser") is skipped in a harness run
+  — a run never waits for input. `run.py --boot-chooser N` shows it scripted (env
+  `SATLIGHTSIM_BOOT_CHOOSER=pick=N`): two frames on the default, two on option N (0 Full, 1
+  Planetarium, 2 Potato), then it starts; with `--boot-capture` those frames are `boot_NN.png` too.
+  `state` reports `render.boot_choice`, `full_sky_deferred`, `full_sky_pipeline`, `ask_graphics_mode`.
+  `tools/harness/scripts/boot_chooser.satcmd` checks the pick and the deferred pipelines.
+- The boot safety net (> 250 ms frames right after loading step one tier down) is off in a harness
+  run; `run.py --boot-safety-ms MS` arms it at that threshold (e.g. 1, to watch it fire).
 
 ## Cleaning up run folders
 

@@ -100,6 +100,12 @@ def main():
                          "white-window launch")
     ap.add_argument("--boot-capture", action="store_true",
                     help="also write every loading-screen frame to captures/boot_NN.png (implies --boot-screen on)")
+    ap.add_argument("--boot-chooser", type=int, default=None, metavar="N",
+                    help="show the startup graphics chooser (normally skipped in a harness run), scripted: it "
+                         "moves to option N (0 Full, 1 Planetarium, 2 Potato) and starts; implies --boot-screen on. "
+                         "With --boot-capture its frames are captured too")
+    ap.add_argument("--boot-safety-ms", type=float, default=None, metavar="MS",
+                    help="arm the boot safety net (off in harness runs) at this frame-time threshold, to test it")
     a = ap.parse_args()
 
     if not a.script and not a.commands:
@@ -128,6 +134,13 @@ def main():
     if a.boot_capture:
         env["SATLIGHTSIM_BOOT_SCREEN"] = "1"
         env["SATLIGHTSIM_BOOT_CAPTURE"] = "1"
+    if a.boot_chooser is not None:
+        env["SATLIGHTSIM_BOOT_SCREEN"] = "1"
+        env["SATLIGHTSIM_BOOT_CHOOSER"] = f"pick={a.boot_chooser}"
+    else:
+        env.pop("SATLIGHTSIM_BOOT_CHOOSER", None)
+    if a.boot_safety_ms is not None:
+        env["SATLIGHTSIM_BOOT_SAFETY_MS"] = str(a.boot_safety_ms)
     if a.forensics:
         warn = crash_preflight()
         if warn:

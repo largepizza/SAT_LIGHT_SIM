@@ -1,0 +1,27 @@
+# The startup graphics chooser (CLAUDE.md "Startup graphics chooser"). Run with the chooser scripted to
+# Planetarium and its frames captured:
+#   python tools/harness/run.py tools/harness/scripts/boot_chooser.satcmd --boot-chooser 1 --boot-capture
+# captures/boot_NN.png are the chooser (default, then option 1) and the loading screen after it.
+# Checks: the pick is applied, the full sky pipelines are deferred on the light tier, and a switch to a
+# full preset builds them on demand.
+state picked
+expect state.render.boot_choice 1
+expect state.render.preset Planetarium
+expect state.render.full_sky_deferred true
+expect state.render.full_sky_pipeline false
+time set 2036-06-21T08:45:01Z
+time pause
+observer lat=37.77 lon=-122.42 agl=2
+camera az=250 el=8 fov=70
+wait settle
+capture planetarium
+preset Medium
+wait 5
+state medium
+expect state.render.full_sky_deferred false
+expect state.render.full_sky_pipeline true
+wait settle
+capture medium
+preset Potato
+wait settle
+capture potato

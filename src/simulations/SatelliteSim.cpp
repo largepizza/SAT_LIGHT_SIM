@@ -419,6 +419,25 @@ void SatelliteSim::init(VulkanContext &ctx)
     // whatever preset that load would otherwise have chosen.
     auto crashSentinelPath = std::filesystem::path(userDataDir_) / "session.lock";
     bool crashDetected = std::filesystem::exists(crashSentinelPath);
+    // Startup graphics chooser (SatelliteSimBootChooser.cpp): the tier this launch starts on is known
+    // now — the chooser's pick, else the saved preset (or the crash path's forced Planetarium). On a light
+    // tier the FULL sat_sky.frag pipelines are never built at init (ensureFullSkyPipelines builds them
+    // the first frame they are needed), so a weak machine never compiles them just to start.
+    peekBootSettings();
+    {
+        int mode = bootChoiceMode;
+        if (mode < 0 && crashDetected)
+            mode = 1; // the crash path below forces Planetarium
+        else if (mode < 0 && bootPeekHasFile)
+            mode = bootPeekPreset == (int)GraphicsPreset::Potato || (bootPeekMask & 262144u)        ? 2
+                   : bootPeekPreset == (int)GraphicsPreset::Planetarium || (bootPeekMask & 524288u) ? 1
+                                                                                                   : 0;
+        else if (mode < 0)
+            mode = deviceRecommendedBootMode(ctx); // a first run seeds from the device
+        fullSkyDeferred = mode >= 1;
+        if (fullSkyDeferred)
+            Log::line("init: light tier — full sky pipelines deferred");
+    }
     {
         std::ofstream sentinelOut(crashSentinelPath, std::ios::trunc);
     }
@@ -622,7 +641,9 @@ void SatelliteSim::init(VulkanContext &ctx)
     // inside it) so it wins over whatever preset the previous session had — the whole point is
     // that the very next launch after a bad exit comes up in the cheapest, least-likely-to-repeat-
     // the-crash configuration, not back in the settings that may have caused it.
-    if (crashDetected)
+    if (bootChoiceMode >= 0)
+        applyBootChoice(ctx, crashDetected); // the player chose on the startup chooser: that wins
+    else if (crashDetected)
     {
         crashRecoveryMode = true;
         const GraphicsPreset from = graphicsPreset, to = crashRecoveryPreset(graphicsPreset);
@@ -1414,6 +1435,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pollGamepad(dt);
 
     updateDynamicResolution();
+    // A light tier deferred the full sky pipelines (startup graphics chooser): build them the first frame
+    // a preset, the render scale or a knockout change needs them — before recordPrePass / recordDraw.
+    ensureFullSkyPipelines(ctx);
     // The half-res compute targets follow the render scale (computeHalfExtent): recreate them when the
     // slider, a preset, the harness, the settings load or the automatic scale moved it. Before anything is
     // recorded, so no set it patches is bound yet; single frame in flight, so the GPU is done with the old
@@ -7267,7 +7291,8 @@ void SatelliteSim::finishIntro(bool wasSkipped)
     // UC1 mechanisms 2+3: only decide anything when the intro played to completion (a skip
     // means no representative frame-time average was collected) and never during crash recovery
     // (that launch already forced Planetarium for an unrelated reason — see init()).
-    if (!wasSkipped && !crashRecoveryMode && !introIsReplay && introBenchFrames > 0)
+    // Not after an explicit pick on the startup graphics chooser either: the player has just decided.
+    if (!wasSkipped && !crashRecoveryMode && !introIsReplay && introBenchFrames > 0 && bootChoiceMode < 0)
     {
         float avgMs = introBenchMsSum / (float)introBenchFrames;
         constexpr float kTargetMs = 12.0f; // ~3 tiers of headroom, per RELEASE_v1_1_PLAN.md UC1
@@ -11162,7 +11187,9 @@ void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
     ci.renderPass = ctx.renderPass;
     ci.subpass = 0;
 
-    if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &skyBgPipeline) != VK_SUCCESS)
+    // On a light tier (startup graphics chooser) the FULL sky is deferred: ensureFullSkyPipelines.
+    if (!fullSkyDeferred &&
+        vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &skyBgPipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create sky background pipeline");
 
     // Minimal variant — identical state, same layout/render pass, cheap fragment module. Used by
@@ -11308,7 +11335,9 @@ void SatelliteSim::createSkyLowResResources(VulkanContext &ctx)
     ci.renderPass = skyLowResRenderPass;
     ci.subpass = 0;
 
-    if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &skyLowResPipeline) != VK_SUCCESS)
+    // The full sat_sky.frag: deferred on a light tier (ensureFullSkyPipelines builds it when needed).
+    if (!fullSkyDeferred &&
+        vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &skyLowResPipeline) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create skyLowRes pipeline");
 
     vkDestroyShaderModule(ctx.device, vert, nullptr);
@@ -11476,6 +11505,8 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
     // ── The sky pass (SKY_TAA variant) ──────────────────────────────────────────────────────────
+    // Deferred on a light tier like the other full-sky pipelines; a null skyTaaPipeline is "TAA off".
+    if (!fullSkyDeferred)
     {
         VkShaderModule vert = ctx.loadShader("shaders/sat_sky.vert.spv");
         VkShaderModule frag = ctx.loadShader("shaders/sat_sky_taa.frag.spv");

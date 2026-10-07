@@ -4,6 +4,8 @@
 #include <GLFW/glfw3.h>
 #include "VulkanContext.h"
 #include <functional>
+#include <string>
+#include <vector>
 
 class UIRenderer;   // forward declare — simulations include UIRenderer.h in their .cpp
 class AudioSystem;  // forward declare — simulations include AudioSystem.h in their .cpp
@@ -92,6 +94,24 @@ public:
     // with a short line ("Earth day map", "Satellite model: iss") BEFORE each step; App appends it to
     // the screen and presents one frame, so the screen always names the step that is running. Null
     // (a no-op) when the screen is off and after init() returns.
+    // ── Startup graphics chooser (2026-10-06) ───────────────────────────────────────────────
+    // Before init() — i.e. before any texture, satellite model or simulation pipeline exists — App
+    // asks the simulation whether to show a mode chooser on the loading screen (only the UI pipeline
+    // is up at that point, so the chooser itself is cheap on any GPU). Return true and fill `spec` to
+    // show it; App then calls setBootChoice() with the option picked (an index into spec.options) and
+    // the "ask again" checkbox before calling init(). Never called in a harness run unless the run
+    // asks for it (SATLIGHTSIM_BOOT_CHOOSER, docs/HARNESS.md), and never with the loading screen off.
+    struct BootChooserSpec {
+        struct Option { std::string label, detail; bool small = false; };
+        std::string title, subtitle, note; // note: e.g. "the last session did not close properly"
+        std::vector<Option> options;
+        int  defaultIdx = 0;               // pre-selected (the recommendation)
+        int  recommendedIdx = 0;           // marked "recommended"
+        bool askAgain = true;              // the checkbox's initial state
+    };
+    virtual bool prepareBootChooser(VulkanContext& /*ctx*/, BootChooserSpec& /*spec*/) { return false; }
+    virtual void setBootChoice(int /*option*/, bool /*askAgain*/) {}
+
     void setBootStatus(std::function<void(const char*)> fn) { bootStatus_ = std::move(fn); }
 protected:
     void bootStatus(const char* line) { if (bootStatus_) bootStatus_(line); }

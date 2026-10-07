@@ -34,7 +34,7 @@ launching the app: only through the harness) · *Presets and release packaging* 
 `package-release`) · *macOS release architecture* · *Old / low-end hardware floor* (the
 guaranteed-minimum table and the push-constant gate).
 
-**Architecture** — *Frame Loop Order* (the canonical pass order) · *Loading screen* (frames presented while init runs) · *Unified scene depth* (one
+**Architecture** — *Frame Loop Order* (the canonical pass order) · *Loading screen* (frames presented while init runs) · *Startup graphics chooser* (the mode picked before init; light tiers defer the full sky pipelines) · *Unified scene depth* (one
 log-distance encoding, written by every surface) · *Occlusion: one shared depth buffer* (why
 `sceneDepthImg` is half-res R32F, and what it replaced) · *Shader `#include`* (the header table, the
 `CloudParams` mirror and `check_cloud_params.py`).
@@ -1619,6 +1619,48 @@ Invariants:
   `shaders reload` (`ctx.capturePipelineStats`). Look at the `boot:` lines of satlight_log.txt when startup slows.
 - **Music analysis cache key = a content hash** (kAnalysisVersion 2): the write time changed with every build's copy of
   the music, so every launch after a rebuild re-analysed all tracks (~10 s).
+
+## Startup graphics chooser (2026-10-06)
+
+The user: a window to choose Planetarium or Full graphics "before even loading in shaders, sat shapes", toggleable
+like the intro, "so we do not just freeze up someone's PC on bootup", and Potato if Planetarium is too much.
+`App::runBootChooser` (App.cpp) draws it on the loading screen right after the title frame and BEFORE
+`sim->init()`: only the UI pipeline (built against `renderPassBoot`) exists, so it is cheap on any GPU. The sim's half
+is `SatelliteSimBootChooser.cpp` through two `Simulation` hooks: `prepareBootChooser(ctx, spec)` (what to offer and
+pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
+- **Options**: 0 Full graphics, 1 Planetarium, 2 Potato (a smaller card below). Pre-selected: the saved preset's mode
+  for a returning player, else the device recommendation (`deviceRecommendedBootMode`, a wrapper over
+  `seedGraphicsPresetFromDevice`: integrated / CPU / virtual GPU -> Planetarium) — one tier lighter after a crash
+  (the `session.lock` sentinel), with a note. "Full" keeps a full tier (or Custom) already saved, else
+  `recommendedFullPreset` (the device seed, or Low on an integrated GPU). Mouse, keys (arrows / Tab / 1-3, Enter or
+  Space) and gamepad (d-pad / left stick, A or Start; X toggles "ask again"). **No timeout**: it never continues
+  into Full on its own. Closing the window there quits without initialising the sim.
+- **Persisted** as `display.ask_graphics_mode` (absent = true, so first runs and upgrading players see it once; the
+  chooser's "Ask on every startup" box and the Display tab's STARTUP toggle set it). A crashed last session shows
+  it regardless. Shown only with the loading screen on.
+- **Read before init**: `peekBootSettings()` parses settings.json (`display.ask_graphics_mode`, `graphics_preset`,
+  `debug_disable_mask`) and checks the crash sentinel BEFORE init recreates it. The pick is applied after
+  `loadSettings` (`applyBootChoice`) and replaces the crash path's forced Planetarium; the intro's UC1 benchmark
+  does not re-decide a launch where the player picked.
+- **Tier pipeline deferral (`fullSkyDeferred`)**: init knows the tier at its first line (the pick, else the saved
+  preset, else the crash path / device seed). On a light tier `createSkyBgPipeline`, `createSkyLowResResources`
+  and `createSkyTaaResources` skip the three FULL `sat_sky.frag` pipelines (inline sky, low-res prepass, SKY_TAA)
+  — at init and on every resize. `ensureFullSkyPipelines()` (top of `recordCompute`, after the fence: same
+  destroy+create as `onResize`) builds them the first frame `fullSkyNeeded()` — no light-sky knockout bit, or a
+  render scale below 100% (the low-res prepass has no lite variant). **Not deferred** (still built for every tier):
+  the SKY_ENV / SKY_REFL variants (env probes, mesh sharp reflections), the cloud v1/v2 march compute pipelines and
+  their noise / weather bakes, the textures and satellite models. Any new pipeline built from the full
+  `sat_sky.frag` must follow the same flag or the light tiers compile it again.
+- **Safety net** (`updateBootSafetyNet`, first thing in buildUI after the CPU timer): after ~2 s and 5 frames of
+  warm-up, the median of the next 10 wall-clock frames (or of at least 3 once they add up to 5 s); above 250 ms it steps one tier down (a full tier ->
+  Planetarium, Planetarium -> Potato), once per launch, with a 12-s banner (`graphicsAutoNoticeText`). Off in a
+  harness run unless `SATLIGHTSIM_BOOT_SAFETY_MS` (run.py `--boot-safety-ms`) sets the threshold.
+- **Harness**: skipped (a run never waits for input) unless `SATLIGHTSIM_BOOT_CHOOSER=pick=N` (run.py
+  `--boot-chooser N`), which scripts it in four frames; `--boot-capture` captures them. `state` -> `render.boot_choice
+  / full_sky_deferred / full_sky_pipeline / ask_graphics_mode`; `tools/harness/scripts/boot_chooser.satcmd`.
+  `SATLIGHTSIM_BOOT_CHOOSER=0` hides it, `=1` shows it whatever the setting.
+- The tutorial's Graphics card (`TUT_GRAPHICS`) still appears on Planetarium / Potato: it explains there are no
+  clouds and where the preset is.
 
 ---
 
