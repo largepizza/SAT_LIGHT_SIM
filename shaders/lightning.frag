@@ -1,7 +1,7 @@
 #version 450
 // Lightning (lightning.vert): a channel's antialiased core + halo, hidden by the cloud in front of it; or the cloud
 // lit around a flash (the resolved cloud composite's distance and opacity: in-cloud diffusion ~5 km, then the
-// inverse square — cloud_lightning.glsl's cv2FlashGlow), or a red sprite's head glowing in the thin air.
+// inverse square — lightning_draw.glsl's boltGlow), or a red sprite's head glowing in the thin air.
 #include "lightning_draw.glsl"
 #include "cloud_occlusion.glsl"
 

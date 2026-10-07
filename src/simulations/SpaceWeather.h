@@ -51,8 +51,9 @@ AuroraOvalBounds auroraOvalBounds(double kp);
 struct AuroraGpu {
     glm::vec4 midnight; // xyz unit vector toward magnetic midnight in the magnetic equatorial plane (ECEF), w kp
     glm::vec4 oval;     // AuroraOvalBounds
-    glm::vec4 sub;      // x intensity, y MLT angle (rad), z half-width (rad), w poleward push (deg)
-    glm::vec4 oval2;    // x brightness from activity, y max lit colatitude (deg), z ripple (deg), w storm 0..1
+    glm::vec4 sub;      // substorm: x intensity, y cos / z sin of its MLT angle, w 1 / half-width^2 (rad^-2)
+    glm::vec4 oval2;    // x brightness from activity, y max lit colatitude (deg), z ripple (deg), w the substorm's
+                        // poleward push (deg)
 };
 AuroraGpu auroraGpuParams(const SpaceWeather &sw, const glm::dvec3 &sunEcef);
 
