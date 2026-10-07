@@ -4145,6 +4145,13 @@ aliased because the sky pass shades one ray per pixel. At renderScale 1 with the
     item (5) above, but ONLY when still, so climbing is untouched (p37 1.65 / e38 rise 1.08, boost 0.68). Still
     flicker r35 0.57 -> 0.31% (worst pixel std 103 -> 34), others unchanged; time-averaged image |diff| 0.13/255.
     What is left on r35 is the EMA sawtooth of glitter points caught by one jitter phase in 16.
+  - **"Still" / "frozen" come from the sim time itself (2026-10-06, `skyTaaPrevSimT`):** frozen (`eyeDelta.w` 3) =
+    sim time did not change since the last resolve, still (2) = it moved at most 1.5x the frame step. They read
+    `timePaused` and the time scale, but a cinematic holds `timePaused` while it sets sim time every frame (so does
+    the harness's `path play`): the sea dropped its clip while the waves moved — grey crest trails (still-view
+    pixels past 8 levels 15.6% -> 4.5% at Big Sur in that mode). Tried the same day and dropped: the glitter's
+    along-view point size from the true footprint (cos floor 0.03, gCityFootA) — r35 0.31 -> 0.51%, city rise
+    2.93 -> 3.10; a half-input-pixel upscale kernel — softer at 50% (detail -32%) for little.
   Debugging notes: print the worst pixels' value series (lit in 1 of 8 or 16 frames = the jitter; any other period is
   something else) and A/B with the history off (`set display.sky_taa_weight 1`); `Copy-Item` keeps a file's old
   timestamp, so restoring a shader from a backup does NOT rebuild it (touch it) — identical-to-the-digit results

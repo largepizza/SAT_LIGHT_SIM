@@ -2923,6 +2923,10 @@ private:
     glm::mat4 skyTaaPrevView{1.0f};
     glm::dvec3 skyTaaPrevObsDir{0.0, 0.0, 1.0};
     double skyTaaPrevEyeR = 0.0;
+    // The sim time the last resolve ran at, and this frame's step (recordCompute): the still flags follow what sim
+    // time DID, not the pause flag (a cinematic or a harness path moves it while paused).
+    double skyTaaPrevSimT = -1.0;
+    float skyTaaFrameDt = 0.0f;
     float skyTaaPrevTanHF = 0.0f, skyTaaPrevAspect = 0.0f;
     VkImage skyTaaColorImg = VK_NULL_HANDLE, skyTaaDepthImg = VK_NULL_HANDLE;
     VkDeviceMemory skyTaaColorMem = VK_NULL_HANDLE, skyTaaDepthMem = VK_NULL_HANDLE;

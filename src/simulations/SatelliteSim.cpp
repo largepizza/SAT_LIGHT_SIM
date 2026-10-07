@@ -1405,6 +1405,7 @@ struct TopK
 
 void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
 {
+    skyTaaFrameDt = dt;
     updateGpuTimingStats(ctx);
     updatePhoto(ctx);
     // Immediately after, so the sweep accumulates THIS frame's freshly-resolved gpuMsRaw[] and any
@@ -11661,9 +11662,16 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     for (int c = 0; c < 4 && camStill; ++c)
         for (int r = 0; r < 4; ++r)
             camStill = camStill && std::abs(pc.skyView[c][r] - skyTaaPrevView[c][r]) < 1e-6f;
-    const bool timeStill = timePaused || std::abs(kTimeScales[timeScaleIdx]) <= 1.5;
-    // 3 = also paused: the waves (sim time) are frozen too, so the sea may skip the clip like everything else.
-    tp.eyeDelta = glm::vec4(glm::vec3(dEnu), valid ? (camStill && timeStill ? (timePaused ? 3.0f : 2.0f) : 1.0f) : 0.0f);
+    // From the sim time itself (2026-10-06), not timePaused / the time scale: a cinematic holds timePaused while it sets
+    // sim time every frame, and so does the harness's `path play`. The resolve then took the frame as FROZEN (3) and
+    // dropped the sea's colour clip while the waves moved: white static over the bright sea — 500-2900 isolated
+    // white pixels a frame against ~0 with time simply running (Big Sur, 20 m, Sun 4 deg, user report).
+    const double simNowS = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double dSimS = skyTaaPrevSimT < 0.0 ? 1e9 : std::abs(simNowS - skyTaaPrevSimT);
+    const bool timeFrozen = dSimS < 1e-6;
+    const bool timeStill = timeFrozen || dSimS <= 1.5 * (double)skyTaaFrameDt + 1e-4;
+    // 3 = also frozen: the waves (sim time) do not move, so the sea may skip the clip like everything else.
+    tp.eyeDelta = glm::vec4(glm::vec3(dEnu), valid ? (camStill && timeStill ? (timeFrozen ? 3.0f : 2.0f) : 1.0f) : 0.0f);
     // The spare w's: this frame's jitter (input px) and the input extent (render scale < 1 = upscale).
     tp.c2e[0].w = skyTaaJitterNow.x;
     tp.c2e[1].w = skyTaaJitterNow.y;
@@ -11704,6 +11712,7 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     skyTaaPrevView = pc.skyView;
     skyTaaPrevObsDir = up;
     skyTaaPrevEyeR = eyeR;
+    skyTaaPrevSimT = simNowS;
     skyTaaPrevTanHF = tanHF;
     skyTaaPrevAspect = pc.aspect;
     skyTaaHistValid = true;
