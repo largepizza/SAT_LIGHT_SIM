@@ -1974,11 +1974,15 @@ private:
 // channel is kilometres long, so the sound arrives smeared), lengthens the roll and lowers the level.
 // Params (all snap): trigger (a counter: any change starts a roll), distance_km, energy (a ground
 // strike ~1, in cloud ~0.5), pan.
-// pushEvent (2026-10-05): a roll with its ENVELOPE from the lightning channel's own geometry ([distance km,
-// energy, pan, bin s, bins...]: SatelliteSimLightning.cpp queueThunder — each segment's sound arriving at its
-// distance / 343 m/s). The envelope sets the peals; the noise is low-passed by the distance the sound has come,
-// which grows through the roll (the later rumble is from further up the channel: duller). A close strike opens
-// with a ripping crack whose grain follows the envelope's first second.
+// pushEvent (2026-10-10): STREAMED voices, one per sounding flash. The sim (SatelliteSimAmbience.cpp thunderStep)
+// follows each flash's expanding sound shell against the listener every frame and sends [voice, level, distance
+// km, pan]: the level is the channel length whose sound reaches the listener now (power, 1/r^2, per second), so
+// the roll's shape is the channel's own geometry AS HEARD FROM WHERE THE LISTENER IS NOW — it stays right while
+// the listener moves (even faster than sound) or time is warped. A voice is noise under that level (eased: the
+// updates come at the frame rate), low-passed by the distance, with a ripping crackle within ~4 km; all voices
+// feed a slow low rumble (the echoes off ground and cloud), which joins the peals into one roll. A voice with no
+// update for 0.25 s falls silent. (It replaced a whole envelope precomputed at the flash for where the listener
+// stood then.) `trigger` still starts a generic roll (SoundTool).
 const AmbientSynth::ParamDef kThunderParams[] = {
     {"level", 1.0f}, {"trigger", 0.0f, true}, {"distance_km", 5.0f, true}, {"energy", 1.0f, true}, {"pan", 0.0f, true},
 };
@@ -2000,18 +2004,27 @@ public:
     }
 
 protected:
-    static constexpr int kRolls = 8;
-    static constexpr int kEnvMax = 320;
+    static constexpr int kRolls = 4;
+    static constexpr int kVoices = 8;
     struct Roll
     {
         bool on = false;
-        int envN = 0;                 // > 0: shaped by env (pushEvent)
-        float envBin = 0.05f, dist = 5.0f, flick = 1.0f, flickT = 0.0f;
-        float env[kEnvMax];
         float t = 0.0f, dur = 0.0f, rise = 0.0f, gain = 0.0f, gl = 0.0f, gr = 0.0f;
         float crack = 0.0f, peal = 0.0f, pealTarget = 0.0f, pealRate = 0.0f, pealDecay = 0.0f, base = 0.0f;
         Svf lpL, lpR, crHp;
         Brown brL, brR;
+    };
+    struct Voice
+    {
+        bool on = false;
+        float target = 0.0f, lv = 0.0f, dist = 5.0f, pan = 0.0f, since = 1e9f;
+        float gl = 0.707f, gr = 0.707f, tgl = 0.707f, tgr = 0.707f;
+        float att = 0.001f, rel = 0.0002f, crack = 0.0f;
+        float flick = 1.0f, flickTarget = 1.0f, flickT = 0.0f;
+        float peal = 1.0f, pealTarget = 1.0f, pealT = 0.0f;
+        Svf lpL, lpR, crHp;
+        Brown brL, brR;
+        Pink pkL, pkR;
     };
 
     void start()
@@ -2025,7 +2038,7 @@ protected:
         r.dur = std::min(4.0f + 0.9f * d + 2.0f * uni(), 18.0f);
         r.rise = 0.02f + 0.07f * d;
         r.gain = e * 1.6f / (1.0f + d / 2.5f);
-        const float fc = std::clamp(3000.0f / (1.0f + d / 0.7f), 70.0f, 3000.0f);
+        const float fc = distCutoff(d);
         r.lpL.set(fc, 0.6f, sr_);
         r.lpR.set(fc * 1.04f, 0.6f, sr_);
         r.crHp.set(900.0f, 0.7f, sr_);
@@ -2036,45 +2049,27 @@ protected:
         attack_ = 1.0f - expf(-1.0f / (sr_ * 0.05f));
         panGains(std::clamp(p_[kTPan], -1.0f, 1.0f) * 0.8f, r.gl, r.gr);
     }
+    // The air takes the highs: ~3 kHz at 1 km, ~1.1 kHz at 5, ~650 Hz at 10, ~350 Hz at 20. (Until 2026-10-10 it
+    // was 360 Hz at 5 km and 100 Hz at 20: nothing but sub-bass from any storm not overhead — inaudible on small
+    // speakers, the user's "displays as playing, but I don't really hear it".)
+    static float distCutoff(float dKm) { return std::clamp(5000.0f / (1.0f + dKm / 1.5f), 110.0f, 5000.0f); }
 
 public:
+    // [voice 0..7, level, distance km, pan]
     bool pushEvent(const float *data, int n) override
     {
-        if (n < 5)
+        if (n < 4)
             return false;
         const uint32_t w = qW_.load(std::memory_order_relaxed);
         if (w - qR_.load(std::memory_order_acquire) >= kQ)
             return false;
         Ev &e = q_[w % kQ];
-        e.n = std::min(n, kEnvMax + 4);
-        std::copy(data, data + e.n, e.d);
+        std::copy(data, data + 4, e.d);
         qW_.store(w + 1, std::memory_order_release);
         return true;
     }
 
 protected:
-    void startEnv(const float *d, int n)
-    {
-        Roll &r = rolls_[next_];
-        next_ = (next_ + 1) % kRolls;
-        const float dist = std::clamp(d[0], 0.1f, 40.0f);
-        const float e = std::clamp(d[1], 0.0f, 2.0f);
-        r = Roll{};
-        r.on = true;
-        r.envN = std::min(n - 4, (int)kEnvMax);
-        r.envBin = std::max(d[3], 0.005f);
-        std::copy(d + 4, d + 4 + r.envN, r.env);
-        r.dist = dist;
-        r.dur = r.envN * r.envBin + 1.5f;
-        r.rise = 0.01f + 0.02f * dist;
-        r.gain = e * 1.6f / (1.0f + dist / 2.5f);
-        r.crack = e * std::clamp(1.0f - dist / 3.0f, 0.0f, 1.0f);
-        r.crHp.set(1200.0f, 0.7f, sr_);
-        r.base = 0.0f;
-        attack_ = 1.0f - expf(-1.0f / (sr_ * 0.03f));
-        panGains(std::clamp(d[2], -1.0f, 1.0f) * 0.8f, r.gl, r.gr);
-    }
-
     void block(float *out, uint32_t n) override
     {
         if (p_[kTTrigger] != lastTrig_)
@@ -2085,23 +2080,91 @@ protected:
         while (qR_.load(std::memory_order_relaxed) != qW_.load(std::memory_order_acquire))
         {
             const uint32_t rI = qR_.load(std::memory_order_relaxed);
-            startEnv(q_[rI % kQ].d, q_[rI % kQ].n);
+            const float *d = q_[rI % kQ].d;
+            Voice &v = voices_[std::clamp((int)d[0], 0, kVoices - 1)];
+            v.target = std::clamp(d[1], 0.0f, 8.0f);
+            v.dist = std::clamp(d[2], 0.03f, 60.0f);
+            v.pan = std::clamp(d[3], -1.0f, 1.0f);
+            v.since = 0.0f;
             qR_.store(rI + 1, std::memory_order_release);
         }
-        // The shaped rolls' filters follow the distance their sound has come (once a block).
-        for (Roll &r : rolls_)
-            if (r.on && r.envN > 0)
-            {
-                const float dEff = r.dist + 0.343f * r.t;
-                const float fc = std::clamp(2600.0f / (1.0f + dEff / 0.8f), 60.0f, 2600.0f);
-                r.lpL.set(fc, 0.6f, sr_);
-                r.lpR.set(fc * 1.04f, 0.6f, sr_);
-            }
+        const float bt = (float)n / sr_;
+        for (Voice &v : voices_)
+        {
+            v.since += bt;
+            if (v.since > 0.25f)
+                v.target = 0.0f;
+            v.on = v.target > 0.0f || v.lv > 1e-5f;
+            if (!v.on)
+                continue;
+            const float fc = distCutoff(v.dist);
+            v.lpL.set(fc, 0.6f, sr_);
+            v.lpR.set(fc * 1.04f, 0.6f, sr_);
+            v.crHp.set(1500.0f, 0.7f, sr_);
+            // A near clap snaps, a far one swells (and the level arrives in frame-rate steps: never faster).
+            v.att = 1.0f - expf(-1.0f / (sr_ * std::min(0.012f + 0.004f * v.dist, 0.08f)));
+            v.rel = 1.0f - expf(-1.0f / (sr_ * std::min(0.09f + 0.012f * v.dist, 0.4f)));
+            v.crack = std::clamp(1.0f - v.dist / 4.0f, 0.0f, 1.0f);
+            panGains(v.pan * 0.8f, v.tgl, v.tgr);
+        }
+        rumL_.set(150.0f, 0.6f, sr_);
+        rumR_.set(165.0f, 0.6f, sr_);
+        const float rumAtt = 1.0f - expf(-1.0f / (sr_ * 0.25f)), rumRel = 1.0f - expf(-1.0f / (sr_ * 2.2f));
         const float lvl = p_[kTLevel];
         const float dt = 1.0f / sr_;
         for (uint32_t i = 0; i < n; ++i)
         {
-            float l = 0.0f, rr = 0.0f;
+            float l = 0.0f, rr = 0.0f, feed = 0.0f;
+            for (Voice &v : voices_)
+            {
+                if (!v.on)
+                    continue;
+                v.lv += (v.target - v.lv) * (v.target > v.lv ? v.att : v.rel);
+                v.gl += (v.tgl - v.gl) * 0.002f;
+                v.gr += (v.tgr - v.gr) * 0.002f;
+                // A flicker (~10 Hz: the arrivals within a frame are not smooth) on slower peals (0.3-1.2 s: the
+                // channel's sound comes past hills and through cloud in swells, never as an even hiss).
+                v.flickT -= dt;
+                if (v.flickT <= 0.0f)
+                {
+                    v.flickT = 0.05f + 0.1f * uni();
+                    v.flickTarget = 0.55f + 0.9f * uni();
+                }
+                v.flick += (v.flickTarget - v.flick) * 0.0015f;
+                v.pealT -= dt;
+                if (v.pealT <= 0.0f)
+                {
+                    v.pealT = 0.3f + 0.9f * uni();
+                    v.pealTarget = 0.4f + 1.2f * uni() * uni();
+                }
+                v.peal += (v.pealTarget - v.peal) * 0.00025f;
+                // Pink for the body (100-800 Hz: what carries on small speakers), brown for the weight.
+                const float wl = bip(), wr = bip();
+                v.lpL.tick(v.pkL.tick(wl) * 2.2f + v.brL.tick(wl) * 0.9f);
+                v.lpR.tick(v.pkR.tick(wr) * 2.2f + v.brR.tick(wr) * 0.9f);
+                float o = 0.0f;
+                if (v.crack > 0.0f)
+                {
+                    // The rip: crackling impulses, denser the more of the channel is arriving.
+                    const float a = std::min(v.lv, 3.0f);
+                    v.crHp.tick(uni() < a * 0.03f ? bip() * 4.0f : bip() * 0.15f);
+                    o = v.crHp.hp * v.crack * a * 0.06f;
+                }
+                const float e = v.lv * v.flick * v.peal * 0.24f;
+                l += (v.lpL.lp * e + o) * v.gl * 1.41f;
+                rr += (v.lpR.lp * e + o) * v.gr * 1.41f;
+                feed += v.lv;
+            }
+            // The rumble under the peals: fast up, ~2 s down.
+            feed *= 0.45f;
+            rumEnv_ += (feed - rumEnv_) * (feed > rumEnv_ ? rumAtt : rumRel);
+            if (rumEnv_ > 1e-5f)
+            {
+                rumL_.tick(rumBrL_.tick(bip()) * 2.0f);
+                rumR_.tick(rumBrR_.tick(bip()) * 2.0f);
+                l += rumL_.lp * rumEnv_ * 0.3f;
+                rr += rumR_.lp * rumEnv_ * 0.3f;
+            }
             for (Roll &r : rolls_)
             {
                 if (!r.on)
@@ -2110,38 +2173,6 @@ protected:
                 if (r.t > r.dur)
                 {
                     r.on = false;
-                    continue;
-                }
-                if (r.envN > 0)
-                {
-                    // The channel's envelope, linear between its bins, with a flicker (~10 Hz: the arrivals
-                    // within a bin are not smooth), eased so a bin edge does not click.
-                    const float x = r.t / r.envBin;
-                    const int b = (int)x;
-                    const float ev = (b + 1 < r.envN) ? r.env[b] + (r.env[b + 1] - r.env[b]) * (x - (float)b)
-                                                       : (b < r.envN ? r.env[b] * (1.0f - (x - (float)b)) : 0.0f);
-                    r.flickT -= dt;
-                    if (r.flickT <= 0.0f)
-                    {
-                        r.flickT = 0.05f + 0.1f * uni();
-                        r.pealTarget = 0.55f + 0.9f * uni();
-                    }
-                    r.peal += (r.pealTarget * ev - r.peal) * attack_;
-                    const float onset = std::min(r.t / r.rise, 1.0f);
-                    const float tail = 1.0f - smooth01((r.t - (r.dur - 1.5f)) / 1.5f);
-                    const float env = (r.peal * 1.4f + 0.12f * ev) * onset * tail;
-                    const float wl = bip(), wr = bip();
-                    r.lpL.tick(r.brL.tick(wl) * 2.0f + wl * 0.3f);
-                    r.lpR.tick(r.brR.tick(wr) * 2.0f + wr * 0.3f);
-                    float o = 0.0f;
-                    if (r.crack > 0.0f && r.t < 1.0f)
-                    {
-                        // The rip: crackling impulses whose rate follows the envelope (the channel's near part).
-                        r.crHp.tick(uni() < ev * 0.15f ? bip() * 4.0f : bip() * 0.15f);
-                        o = r.crHp.hp * r.crack * ev * expf(-r.t / 0.6f);
-                    }
-                    l += (r.lpL.lp * env * 0.24f + o * 0.06f) * r.gain * r.gl;
-                    rr += (r.lpR.lp * env * 0.24f + o * 0.06f) * r.gain * r.gr;
                     continue;
                 }
                 // Peals: a Poisson stream thinning out over the roll, each a swell (~50 ms attack: an
@@ -2163,7 +2194,6 @@ protected:
                     r.crHp.tick(bip());
                     o = r.crHp.hp * r.crack * expf(-r.t / 0.05f) * 1.5f;
                 }
-                // Scaled so a strike 1 km away rolls at ~-24 LUFS (the ambience convention), -35 at 15 km.
                 l += (r.lpL.lp * env * 0.24f + o * 0.07f) * r.gain * r.gl;
                 rr += (r.lpR.lp * env * 0.24f + o * 0.07f) * r.gain * r.gr;
             }
@@ -2180,16 +2210,19 @@ protected:
     static float softLimit(float x) { return x / (1.0f + fabsf(x) * 0.5f); }
 
 private:
-    static constexpr uint32_t kQ = 8;
+    static constexpr uint32_t kQ = 256;
     struct Ev
     {
-        int n = 0;
-        float d[kEnvMax + 4];
+        float d[4];
     };
     Ev q_[kQ];
     std::atomic<uint32_t> qW_{0}, qR_{0};
-    float attack_ = 0.0005f;   // the peals' swell (set from the rate in start())
+    float attack_ = 0.0005f;   // the generic roll's peal swell (set from the rate in start())
     Roll rolls_[kRolls];
+    Voice voices_[kVoices];
+    Svf rumL_, rumR_;
+    Brown rumBrL_, rumBrR_;
+    float rumEnv_ = 0.0f;
     int next_ = 0;
     float lastTrig_ = 0.0f;
 };

@@ -1702,6 +1702,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 maxFlare = std::max(maxFlare, f);
             }
         }
+        maxFlare *= powf(10.0f, -0.4f * satDisplayGainMag()); // the bins hold the DISPLAYED effectFlare
         peakMagnitude = (maxFlare > 0.0f)
                             ? kMagRef - 2.5f * std::log10(maxFlare / kMagRefFlare)
                             : 99.0f;
@@ -3064,6 +3065,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                  ? 0.0f
                                  : 2.0f * tanf(glm::radians(camera.fovYDeg) * 0.5f) /
                                        (float)std::max(1u, ctx.swapExtent.height);
+        hdr.pixelAngle = 2.0f * tanf(glm::radians(camera.fovYDeg) * 0.5f) / (float)std::max(1u, ctx.swapExtent.height);
+        hdr.formationMerge = glm::clamp(formationMergeStrength, 0.0f, 1.0f);
         memcpy(satTypeMapped, &hdr, sizeof(hdr));
         uploadPointStyle(); // sat_flare.comp and the point draws read it this frame
     }
@@ -3848,7 +3851,49 @@ void SatelliteSim::selectSatellite(int idx)
 // it is in the parked ground observer's sky) and the PHOTOMETRY lines (phase, brightness above the air
 // and after the line of sight's extinction).
 const char *const SatelliteSim::kViewerPhotLabels[SatelliteSim::kViewerPhotRows] = {
-    "Magnitude", "Above the air", "Extinction", "At 1000 km", "Phase angle"};
+    "Magnitude", "Above the air", "Extinction", "At 1000 km", "Phase angle", "Formation"};
+
+double SatelliteSim::formationMergeFactor(const SatOrbit &o, int satIdx, double rangeM) const
+{
+    if (!o.formation || formationMergeStrength <= 0.0f || o.constIdx >= constellations.size() || !ctx_)
+        return 1.0;
+    const ConstellationConfig &cc = constellations[o.constIdx];
+    const int C = std::clamp(cc.clusterSize, 1, 255);
+    if (C <= 1)
+        return 1.0;
+    // sat_orbit.comp's formation merge, in double.
+    const double pixA = 2.0 * std::tan(glm::radians((double)camera.fovYDeg) * 0.5) / (double)std::max(1u, ctx_->swapExtent.height);
+    const double a = std::hypot((double)o.formP, (double)o.formQ);
+    const double diam = 2.0 * a * std::max(2.0, std::sqrt(1.0 + (double)o.formK * o.formK));
+    const double u = (1.0 - glm::smoothstep(1.0, 3.0, diam / (std::max(rangeM, 1.0) * pixA))) *
+                     glm::clamp((double)formationMergeStrength, 0.0, 1.0);
+    const int slot = (satIdx - (int)cc.orbitStart) % C;
+    return slot == 0 ? 1.0 + (C - 1) * u : 1.0 - u;
+}
+
+double SatelliteSim::formationMagnitude(int satIdx, const SatPhotInputs &in, double tJ2000, int &count) const
+{
+    count = 0;
+    if (satIdx < 0 || satIdx >= (int)satOrbits.size() || !satOrbits[satIdx].formation)
+        return std::numeric_limits<double>::infinity();
+    const SatOrbit &o = satOrbits[satIdx];
+    if (o.constIdx >= constellations.size() || o.typeIdx >= satTypes.size() || !satTypes[o.typeIdx].isModel())
+        return std::numeric_limits<double>::infinity();
+    const ConstellationConfig &cc = constellations[o.constIdx];
+    const int C = std::max(1, cc.clusterSize);
+    const int first = (int)cc.orbitStart + ((satIdx - (int)cc.orbitStart) / C) * C;
+    const int end = std::min(first + C, (int)(cc.orbitStart + cc.orbitCount));
+    double flux = 0.0;
+    for (int k = first; k < end; ++k)
+    {
+        const SatelliteType &type = satTypes[satOrbits[k].typeIdx];
+        const SatPhotResult r = evalSatPhotometry(type.groups, type.lobes, orbitElemsOf(satOrbits[k]), tJ2000, in);
+        ++count;
+        if (std::isfinite(r.magnitude))
+            flux += std::pow(10.0, -0.4 * r.magnitude);
+    }
+    return flux > 0.0 ? -2.5 * std::log10(flux) : std::numeric_limits<double>::infinity();
+}
 
 void SatelliteSim::updateViewerObserverInfo()
 {
@@ -3946,6 +3991,7 @@ void SatelliteSim::updateViewerObserverInfo()
         return;
     }
     snprintf(viewerPhotValue[1], sizeof(viewerPhotValue[1]), "%.2f", r.magnitude);
+    double formExt = 0.0;
     // The viewer's glare (recordViewerGlare): effectFlare per unit of intensity per unit irradiance as
     // the ground observer receives it — sat_orbit.comp's K_FLUX·I/r²·brightnessScale, dimmed by the line
     // of sight's extinction. Below the horizon, above the air (the glints are still the ones that would
@@ -3957,9 +4003,18 @@ void SatelliteSim::updateViewerObserverInfo()
         viewerFlarePerI *= std::pow(10.0, -0.4 * ext);
         snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "%.2f", r.magnitude + ext);
         snprintf(viewerPhotValue[2], sizeof(viewerPhotValue[2]), "%.2f mag", ext);
+        formExt = ext;
     }
     else
         snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "Below horizon");
+    // FORMATION: a StarMind-style cluster's members together, as one point while it is unresolved.
+    if (orb.formation)
+    {
+        int n = 0;
+        const double fm = formationMagnitude(viewerSatIndex, in, t, n);
+        if (std::isfinite(fm))
+            snprintf(viewerPhotValue[5], sizeof(viewerPhotValue[5]), "%.2f (%d sats)", fm + formExt, n);
+    }
 }
 
 int SatelliteSim::pickViewerSatellite(int constIdx) const
@@ -4656,6 +4711,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         int sat;
         float effectFlare, angSize; // < 0: unknown (the followed satellite), estimated from the evaluator
         bool baseFade = false;      // the followed satellite keeps the base fade-in size, however many others
+        float kept = 1.0f;          // the share of the unresolved point's displayed flux its sprite kept
     };
     std::vector<Job> jobs;
     const bool skip = (debugDisableMask & kNoMeshBits) != 0u; // knockout / Potato / Planetarium sky
@@ -4668,7 +4724,10 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
             if ((int)jobs.size() >= kMaxMeshInstances || c.meshPx < fadeIn * 0.9) // sorted: the rest are smaller
                 break;
             if (!(followActive && (int)c.sat == followSatIndex))
-                jobs.push_back({(int)c.sat, c.effectFlare, c.angSize});
+            {
+                const glm::vec2 sk = glm::unpackHalf2x16(c.sizeKept);
+                jobs.push_back({(int)c.sat, c.effectFlare, sk.x, false, exp2f(std::min(sk.y, 0.0f))}); // y = log2(kept)
+            }
         }
     }
     const SatGroundSiteAim aim = groundSiteAim();
@@ -4682,7 +4741,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         GpuMeshInstance inst{};
         int type = -1;
         glm::dvec3 satEcef{0.0};
-        float fade = 0.0f, keep = 1.0f, glareKeep = 1.0f;
+        float fade = 0.0f, keep = 1.0f, glareKeep = 1.0f, glintShare = 0.0f, adaptLight = 0.0f;
         uint32_t glintDir = 0u; // review 28: the sprite's direction (octahedral snorm2x16, ENU), 0 = its centre
         glm::vec3 spriteEnu{0.0f}; // the same, unencoded (harness)
         float glintW = 0.0f, px = 0.0f;
@@ -4753,30 +4812,74 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         // Bloom scale: the sprite's seed S = b·(disc integral)·s² (flare_source.vert/.frag: b the log
         // response of effectFlare, s its point size in the 1/4-res flare target, a Gaussian of σ 0.28
         // of the disc → 0.3926·s²) per unit of rendered flux, Σ L·Ω·r²/π = I (per unit irradiance).
-        float effectFlare = job.effectFlare, angSize = job.angSize;
+        // DISPLAYED values (sat_flare.comp): x the exposure / adaptation gain, x the resolved-object factor.
+        float effectFlare = job.effectFlare, angSize = job.angSize, kept = job.kept;
         if (effectFlare < 0.0f)
         {
-            effectFlare = (float)(r.flareUnits * brightnessScale); // above the air: no sky dimming
-            angSize = pointSpriteSizePx(pointPsf(6.0f - 2.5f * log10f(std::max(effectFlare, 1e-30f) / 0.008f)).y);
+            const float gainMag = satDisplayGainMag();
+            effectFlare = (float)(r.flareUnits * brightnessScale) * powf(10.0f, 0.4f * gainMag); // above the air
+            angSize = pointSpriteSizePx(pointPsf(6.0f - 2.5f * log10f(std::max(effectFlare, 1e-30f) / 0.008f) + gainMag).y);
+            kept = 1.0f;
         }
-        const double bResp = glm::clamp(std::log2(std::max((double)effectFlare, 1.0)) * 0.5, 0.0, 4.0);
-        const double sPx = std::max((double)angSize * flareResScale, 1.0);
-        const double seed = bResp * 0.3926 * sPx * sPx;
+        // The resolved-satellite adaptation (satAdaptLum): its light in the sky exposure's units, x its fade.
+        out.adaptLight = (float)(r.flareUnits * brightnessScale) * fade;
+        auto spriteSeed = [&](double flare, double size) {
+            const double b = glm::clamp(std::log2(std::max(flare, 1.0)) * 0.5, 0.0, 4.0);
+            const double sp = std::max(size * flareResScale, 1.0);
+            return b * 0.3926 * sp * sp;
+        };
+        // Two seeds (2026-10-07): the sprite's as drawn (displayed, resolved-reduced: the bloom the mesh carries on)
+        // and the UNRESOLVED point's (the glints' glare normalisation: a sun glint is not the object's mean surface
+        // brightness). mesh_bloom.frag's glare light is bloomScale x glareNorm, so normalising on the unresolved seed
+        // and scaling the bloom by their ratio keeps a glint's glare when a resolved object's bloom seed falls to 0.
+        const double flareU = (double)effectFlare / (double)kept;
+        const double gainMagU = (double)satDisplayGainMag();
+        const double sizeU = pointSpriteSizePx(pointPsf((float)(6.0 - 2.5 * std::log10(std::max(flareU, 1e-30) / 0.008) + gainMagU)).y);
+        const double seed = spriteSeed((double)effectFlare, (double)angSize);
+        const double seedU = std::max(spriteSeed(flareU, sizeU), seed);
+        const double q = seedU > 0.0 ? std::max(seed / seedU, 1e-6) : 1.0;
         // The mesh carries the part of the sprite's bloom the sprite no longer does (spriteGone), and
         // its radiance is already × fade — so divide that back out.
         inst.bloomScale = r.intensity > 0.0
-                              ? (float)(seed * pixSolidAngle * range * range / (glm::pi<double>() * r.intensity) *
+                              ? (float)(seedU * q * pixSolidAngle * range * range / (glm::pi<double>() * r.intensity) *
                                         spriteGone / fade)
                               : 0.0f;
-        // Glare on its glints (mesh_bloom.frag -> glare_find.comp): the sprite's effectFlare per unit of
-        // its seed, so a glint carrying all the mesh's seed glares as the sprite did.
-        inst.glareNorm = seed > 0.0 ? (float)((double)effectFlare / seed) : 0.0f;
+        // Glare on its glints (mesh_bloom.frag -> glare_find.comp): the unresolved sprite's effectFlare per unit of its
+        // seed, so a glint carrying all the mesh's light glares as the unresolved sprite did.
+        inst.glareNorm = seedU > 0.0 ? (float)(flareU / seedU / q) : 0.0f;
         // While the mesh is still point-like its glare is the SPRITE's, at its centre (the glare keep, to
         // sat_flare.comp / glare.vert); resolved, only sun-like reflections glare (mesh_bloom.frag), or
         // every edge and vertex of a close-up satellite, holding a sliver of a very bright satellite's
         // flux, flared.
         const float glarePoint = 1.0f - (float)glm::smoothstep((double)kGlarePointPx, 3.0 * kGlarePointPx, px);
         inst.glarePoint = glarePoint;
+        // Which of its light may keep the SPRITE's glare once the mesh resolves (2026-10-07): only the share that is a
+        // sun-like glint, mesh_bloom.frag's own test (π × the lobe's mean radiance per unit irradiance, 150 → 1500)
+        // applied to each lobe's sunlight. Diffuse, glossy and Earth light glares only while the satellite is a point
+        // (the mesh's fade-in, fadeIn → fadeFull). The whole flux used to keep its glare to 12-36 px, so a StarMind
+        // 17 px wide, backlit and earthlit (mag -4.5 at 4.7 km, its mesh near black), drew as a full-size starburst,
+        // x7 by the near gain (user snapshots, profile_log 2026-10-07 5-8).
+        float glintShare = 0.0f;
+        if (glarePoint > 0.0f && r.intensity > 0.0 && r.litFactor > 0.0)
+        {
+            const glm::dvec3 s = geo.sun, o = -rel / range;
+            double glint = 0.0;
+            for (int li = 0; li < (int)type.lobes.size(); ++li)
+            {
+                const GpuSatLobe &L = type.lobes[li];
+                const glm::dvec3 n = satLobeNormalPosed(type.lobes, type.groups, poses, li);
+                const double no = glm::dot(n, o);
+                if (no <= 0.0 || glm::dot(n, s) <= 0.0)
+                    continue;
+                const double I = satLobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0,
+                                                  L.alpha2Mat + (double)kSunAlpha * kSunAlpha, L.distribution != 0, s, o, 0.0);
+                const double piL = glm::pi<double>() * I / std::max((double)L.area * no, 1e-9);
+                glint += I * glm::smoothstep(150.0, 1500.0, piL);
+            }
+            glintShare = (float)glm::clamp(glint * r.litFactor / r.intensity, 0.0, 1.0);
+        }
+        const float diffuseGlare = 1.0f - (float)glm::smoothstep(fi, fadeFull * fadeScale, px);
+        const float glareKeep = glintShare * glarePoint + (1.0f - glintShare) * std::min(diffuseGlare, glarePoint);
         // Review 28: the sprite (point, bloom, glare) sits on the satellite's GLINT, not its centre. A flat lobe shows
         // the Sun at one point: where the camera's ray along the Sun's mirror image (d = s - 2 (s.n) n) meets it,
         // clamped to the lobe's extent (off it, the brightest part of the lobe's tail is its nearest edge), weighted by
@@ -4840,7 +4943,8 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         out.rangeM = (float)range;
         out.px = (float)px;
         out.keep = 1.0f - spriteGone;
-        out.glareKeep = glarePoint;
+        out.glareKeep = glareKeep;
+        out.glintShare = glintShare;
         out.drawn = {sat, glm::normalize(glm::vec3(ecefToEnu * glm::vec3(rel))),
                      (float)(std::max(0.1, (double)tm->boundsRadius) / range / pixAngle)};
     };
@@ -4872,6 +4976,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
             selMeshDbg.fade = r.fade;
             selMeshDbg.keep = r.keep;
             selMeshDbg.glareKeep = r.glareKeep;
+            selMeshDbg.glintShare = r.glintShare;
             selMeshDbg.px = r.px;
             selMeshDbg.glintW = r.glintW;
             selMeshDbg.centreEnu = r.drawn.enuDir;
@@ -4895,6 +5000,42 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         }
     }
     meshesDrawnThisFrame = !insts.empty();
+
+    // ── Satellite adaptation (2026-10-07) ─────────────────────────────────────────────────────────
+    // The resolved satellites' light in view, as a share of the frame in the sky exposure's units (a sunlit white
+    // face filling the frame at the night exposure ~10): sat_flare.comp's satPhysK x raw flux = the sum of its
+    // model's pixels before the tonemap. The points lose 2.5 log10(1 + S / 0.003) magnitudes (0.75 at S 0.003, 3.8
+    // at 0.1: a sunlit StarMind 500 m away), as an eye or camera adapts — fast toward the light, slowly back.
+    {
+        const double pixA = 2.0 * std::tan(glm::radians((double)camera.fovYDeg) * 0.5) / (double)std::max(1u, ctx.swapExtent.height);
+        const double physK = glm::pi<double>() * (double)skyExposure() /
+                             (satphot::kFluxToFlare * std::max((double)brightnessScale, 1e-6) * pixA * pixA);
+        const float W = (float)ctx.swapExtent.width, H = (float)ctx.swapExtent.height;
+        double light = 0.0;
+        for (size_t i = 0; i < results.size(); ++i)
+        {
+            const InstResult &r = results[i];
+            float sx, sy;
+            if (r.ok && projectSkyDirToScreen(r.drawn.enuDir, W, H, sx, sy) && sx > -r.drawn.radiusPx &&
+                sy > -r.drawn.radiusPx && sx < W + r.drawn.radiusPx && sy < H + r.drawn.radiusPx)
+                light += (double)r.adaptLight;
+        }
+        satAdaptLum = (float)(physK * light / ((double)W * (double)H));
+        // Above the air, the frame itself (the exposure meter's mean of the DISPLAYED frame, 0..1): there is no sky
+        // to suppress points, and with the lit Earth or a sunlit cluster correctly exposed in view an eye or camera
+        // does not see mag-5 points (ISS photographs of the day side show no stars). 2.5 log10(1 + M / 0.01): the
+        // lit Antarctic limb of the user's snapshot (M 0.12) 2.8 mag, a dark-side view (M ~0.01) 0.75. The ground
+        // keeps its own day / moon / light-pollution suppression (sat_flare.comp, updateStars), which this would
+        // double. Needs the meter (auto exposure on).
+        const double altM = followActive ? followRadiusM - 6371000.0 : (double)obsHeightOffset;
+        const float aboveAir = glm::smoothstep(40000.0f, 100000.0f, (float)altM);
+        const float frameM = cv2AutoExposure > 0.0f ? meterMeanLum : 0.0f;
+        satAdaptFrameMag = aboveAir * 2.5f * log10f(1.0f + frameM / 0.01f);
+        const float want = glm::clamp(satAdaptationStrength, 0.0f, 2.0f) *
+                           std::min(std::max(2.5f * log10f(1.0f + satAdaptLum / 0.003f), satAdaptFrameMag), 8.0f);
+        const float tau = want > satAdaptMag ? 0.25f : 2.5f;
+        satAdaptMag += (want - satAdaptMag) * (1.0f - expf(-std::max(dt, 0.0f) / tau));
+    }
 
     // Environment probes: each instance takes (or shares) one; the scheduled ones are rendered now,
     // before the mesh pass reads them. An instance whose own probe is not rendered yet borrows the
@@ -6182,6 +6323,14 @@ void SatelliteSim::updateSelectedPhotometry()
         snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.2f  (1000 km %.2f)", r.magnitude, r.magnitude1000);
     else
         snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: dark (Earth's shadow)");
+    // A formation's members drawn as one point while it is unresolved (sat_orbit.comp): its combined magnitude.
+    if (r.supported && !r.legacy && orb.formation)
+    {
+        int n = 0;
+        const double fm = formationMagnitude(selectedSatIndex, in, pin.tAbs, n);
+        if (std::isfinite(fm))
+            snprintf(selPhotLine[1], sizeof(selPhotLine[1]), "Formation of %d: mag %.2f", n, fm);
+    }
 
     // ── GPU parity: check + log only, no readout line (the range/phase line this used to follow is the
     // info window's OBSERVER box now). ──────────────────────────────────────────────────────
@@ -7555,6 +7704,9 @@ void SatelliteSim::readExposureMeter()
 
     // Daylight at the observer (the sky's own dayness ramp): full control above ~6 deg of Sun.
     float day = glm::smoothstep(-0.03f, 0.1f, sunDirENU.w);
+    // A bright resolved satellite in view (2026-10-07, satAdaptLum): the camera may stop down at night too — only
+    // as far as the clipping asks (the frame mean of dark space never wants darker).
+    day = std::max(day, glm::smoothstep(0.02f, 0.2f, satAdaptLum));
     constexpr float kTarget = 0.32f;   // linear mean of the displayed frame (~0.6 in sRGB)
     float err = log2f(kTarget / std::max(meterMeanLum, 1e-3f)) - 4.0f * std::max(meterClipFrac - 0.04f, 0.0f);
     float lo = -3.0f * std::clamp(cv2AutoExposure, 0.0f, 1.0f);
@@ -8375,6 +8527,17 @@ void SatelliteSim::uploadPointStyle()
     ps.limitMag = pointEffLimitMag();
     ps.sigmaPx = pointSigmaPx;
     ps.sigmaMaxPx = std::max(pointSigmaMaxPx, pointSigmaPx);
+    ps.satGainMag = satDisplayGainMag();
+    // A model's pixel (sat_mesh.frag: pi x radiance per unit solar irradiance, x the sky exposure before the
+    // tonemap) summed over the object is pi I / (r^2 Omega_pix), and the raw flux is kFluxToFlare x brightnessScale
+    // x I / r^2: so its mean pixel is satPhysK x raw flux / its area in pixels.
+    {
+        const double pixAngle = 2.0 * std::tan(glm::radians((double)camera.fovYDeg) * 0.5) /
+                                (double)std::max(1u, ctx_ ? ctx_->swapExtent.height : 1u);
+        ps.satPhysK = (float)(glm::pi<double>() * (double)skyExposure() /
+                              (satphot::kFluxToFlare * std::max((double)brightnessScale, 1e-6) * pixAngle * pixAngle));
+    }
+    ps.satResolved = glm::clamp(satResolvedStrength, 0.0f, 1.0f);
     memcpy(pointStyleMapped, &ps, sizeof(ps));
     uploadStarEnvHeader();
 }
@@ -8586,6 +8749,7 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
             dst.firstOccluder = firstOccluder;
             dst.occluderCount = (uint32_t)occ.occluders.size();
             dst.meshRadius = type.meshRadiusM; // Phase 4d (0 for legacy types)
+            dst.meshFill = type.meshFill;
             if (!occ.occluders.empty())
                 memcpy(static_cast<GpuSatOccluder *>(satOccluderMapped) + firstOccluder, occ.occluders.data(),
                        occ.occluders.size() * sizeof(GpuSatOccluder));
@@ -8667,6 +8831,11 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
                 dst.tumbleAxisY = src.formQ;
                 dst.tumbleAxisZ = src.formK;
                 dst.constIdx |= kGpuFormationBit;
+                // Its cluster's size and its slot in it (bits 8-15, 16-23): sat_orbit.comp's formation merge.
+                const ConstellationConfig &cc = constellations[src.constIdx];
+                const uint32_t C = (uint32_t)std::clamp(cc.clusterSize, 1, 255);
+                const uint32_t slot = ((first + k) - cc.orbitStart) % C;
+                dst.constIdx |= (C << 8) | (slot << 16);
             }
             chunk[k] = dst;
         }
@@ -13874,6 +14043,14 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
             for (const glm::dvec3 &p : tr.p)
                 r = std::max(r, glm::length(p - c));
         t.meshRadiusM = (float)r;
+        // Its mean projected area over all directions (Cauchy: a quarter of the surface area, both sides of a
+        // plate) as a share of the bounding disc: sat_flare.comp's size for a resolved satellite's sprite.
+        double areaSum = 0.0;
+        for (const SatTri &tr : tris)
+            areaSum += tr.area;
+        t.meshFill = r > 0.0 ? (float)glm::clamp(0.25 * areaSum / (glm::pi<double>() * r * r), 0.01, 1.0) : 0.0f;
+        Log::line("model '" + t.modelId + "': bounding radius " + std::to_string(r) + " m, area fill " +
+                  std::to_string(t.meshFill));
     }
 
     const std::string objDir = (std::filesystem::path(userDataDir_) / "satellite_models_debug").string();

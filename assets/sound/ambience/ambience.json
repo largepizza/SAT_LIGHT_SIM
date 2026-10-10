@@ -75,8 +75,8 @@
       "gain": 0.9,
       "fade_in_s": 0.5,
       "fade_out_s": 3.0,
-      "_note": "Thunder: silent until the sim triggers a roll, at each lightning flash within 30 km, its distance / 343 m/s after the flash (SatelliteSimAmbience.cpp updateThunder, from the flash list cloud_v2_lightning.comp writes). Not heard from high altitude.",
-      "when": { "agl_m": [25000, 12000] }
+      "_note": "Thunder: the sim streams each flash's sound to the synth as its shell (343 m/s, sim time) crosses the listener, wherever the listener is by then (SatelliteSimAmbience.cpp thunderStep). Driver `thunder` is 1 while a roll is arriving, about to (~2 s) or just ended, so the layer is listed only when there is thunder to hear. Not heard from high altitude.",
+      "when": { "agl_m": [25000, 12000], "thunder": [0.0, 0.5] }
     },
     {
       "id": "wind_desert",

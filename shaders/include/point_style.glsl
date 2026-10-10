@@ -19,7 +19,13 @@ layout(set = 0, binding = POINT_STYLE_BINDING) uniform PointStyleUBO {
     float limitMag;   // faintest magnitude drawn
     float sigmaPx;    // base PSF sigma, pixels
     float sigmaMaxPx; // widest PSF sigma, pixels
-    float psPad0, psPad1, psPad2;
+    // Satellites only (sat_flare.comp / sat_point.frag, 2026-10-07): sat_flare.comp writes a DISPLAYED
+    // effectFlare — physical x 10^(0.4 satGainMag) x the resolved-object factor — so the bloom, glare, sky glow
+    // and ocean glints follow the exposure, the adaptation and an object's size. refMag/limitMag above already
+    // carry the same shift for stars and planets, so a satellite's point is drawn at pointPsf(mag + satGainMag).
+    float satGainMag;  // exposure gain - satellite adaptation, magnitudes (SatelliteSim::satDisplayGainMag)
+    float satPhysK;    // a model's mean pixel value before the tonemap = satPhysK x raw flux / its area in pixels
+    float satResolved; // 0..1: how far a resolved satellite's sprite takes its model's surface brightness
 } pointStyle;
 
 // Satellites carry effectFlare (0.008 = mag 6, see sat_flare.comp); stars/planets 10^(-0.4 m).
@@ -40,7 +46,25 @@ vec2 pointPsf(float mag)
     return vec2(d * s0 * s0 / (s * s), s);
 }
 
+// The resolved-object factor (sat_flare.comp): the displayed effectFlare whose point, spread over a Gaussian of
+// sigma^2 = sigmaPx^2 + nPx / 2pi, has the peak a model of nPx pixels shows: 1 - exp(-satPhysK x rawFlux / nPx),
+// its mean pixel through the sky exposure and tonemap. In the frame of pointPsf with the shifted reference
+// magnitude undone (it is a displayed value). Returns x = that effectFlare, y = sigma^2.
+vec2 resolvedSatFlare(float rawFlux, float nPx)
+{
+    const float k = 1.3287712; // 0.4 · log2(10)
+    float s0 = pointStyle.sigmaPx;
+    float sig2 = s0 * s0 + nPx / 6.2831853;
+    float peak = 1.0 - exp(-pointStyle.satPhysK * rawFlux / max(nPx, 1e-3));
+    float d  = peak * sig2 / (s0 * s0);
+    float dl = exp2(-k * pointStyle.gamma * (pointStyle.limitMag - pointStyle.refMag));
+    float refU = pointStyle.refMag - pointStyle.satGainMag;
+    float m = refU - log2(max(d + dl, 1e-30)) / (k * pointStyle.gamma);
+    return vec2(0.008 * exp2(k * (6.0 - m)), sig2);
+}
+
 // Point-sprite edge length that holds the PSF out to 3 sigma, plus a pixel of margin each side.
 float pointSpriteSizePx(float sigma) { return 2.0 * (3.0 * sigma + 1.0); }
+float pointSpriteSigmaPx(float sizePx) { return (0.5 * sizePx - 1.0) / 3.0; } // its inverse
 
 #endif

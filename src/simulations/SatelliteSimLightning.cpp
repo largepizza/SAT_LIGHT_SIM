@@ -467,7 +467,7 @@ void SatelliteSim::updateLightningBolts()
             t.groundLocal = glm::vec3((float)glm::dot(g, t.t1), (float)glm::dot(g, t.t2), (float)glm::dot(g, t.up));
             buildBoltTree(t, seed, (float)glm::length(t.originEcef - eye));
             if (kind != 2)
-                queueThunder(t, eye, now - (double)age);
+                addThunderSource(t, now - (double)age);
             it = boltTrees_.emplace(id, std::move(t)).first;
         }
         BoltTree &t = it->second;
@@ -619,73 +619,39 @@ void SatelliteSim::recordLightning(VkCommandBuffer cmd, VulkanContext &ctx)
 }
 
 // ── Thunder from the channel ──────────────────────────────────────────────────────────────────────────
-// The sound of each segment reaches the listener at its distance / 343 m/s, louder for a longer segment, a
-// nearer one (1/r) and one lying across the line of sight (a tortuous channel radiates most perpendicular to
-// itself), quieter for a twig. Binned at 50 ms from the first arrival: that envelope IS the roll — a channel
-// running away from the listener rumbles long and low, one across the sky claps. The synth shapes noise by it
-// (AmbientSynth thunder, pushEvent), low-passed by the distance.
-void SatelliteSim::queueThunder(const BoltTree &t, const glm::dvec3 &eye, double flashStartS)
+// A flash's channel as a sound source (2026-10-10): every piece (main channel, branches, twigs) with its place,
+// direction and length, in Earth-fixed axes about the flash's origin. Nothing about the listener is decided here:
+// thunderStep (SatelliteSimAmbience.cpp) meets the expanding shell of each piece with the listener every frame.
+// (Until then the whole roll was an envelope computed here, for where the listener stood at the flash: flying
+// on — the player moves at many times the speed of sound — it arrived at the wrong time from the wrong side.)
+void SatelliteSim::addThunderSource(const BoltTree &t, double flashStartS)
 {
-    const glm::dvec3 rel0 = t.originEcef - eye;
-    if (glm::length(rel0) > 35000.0)
-        return;
-    constexpr int kBins = 300;
-    constexpr float kBinS = 0.05f;
-    std::vector<float> env(kBins, 0.0f);
-    double tMin = 1e30;
-    struct A { double ta; float a; };
-    std::vector<A> arr;
-    arr.reserve(t.segs.size());
-    for (const GpuBoltSeg &s : t.segs)
+    ThunderSource s;
+    s.id = t.id;
+    s.t0 = flashStartS + 0.05;   // the return stroke, after the leader (kCv2LeaderS)
+    s.origin = t.originEcef;
+    s.energy = t.kind == 1 ? 1.0f : 0.6f;   // a ground stroke; in cloud
+    s.pts.reserve(t.segs.size());
+    s.dirh.reserve(t.segs.size());
+    for (const GpuBoltSeg &g : t.segs)
     {
-        const uint32_t order = (s.packed >> 7) & 3u;
+        const uint32_t order = (g.packed >> 7) & 3u;
         if (order >= 3)
             continue;
-        const glm::vec3 m = 0.5f * (s.p0 + s.p1);
-        const glm::dvec3 w = rel0 + t.t1 * (double)m.x + t.t2 * (double)m.y + t.up * (double)m.z;
-        const double r = std::max(glm::length(w), 30.0);
-        const glm::vec3 d = s.p1 - s.p0;
+        const glm::vec3 d = g.p1 - g.p0;
         const float l = glm::length(d);
         if (l < 1e-3f)
             continue;
-        const glm::dvec3 dE = glm::normalize(t.t1 * (double)d.x + t.t2 * (double)d.y + t.up * (double)d.z);
-        const double c = glm::dot(dE, w / r);
-        const float a = l * s.w * (order == 0 ? 1.0f : 0.5f) * (float)((0.25 + 0.75 * (1.0 - c * c)) / r);
-        const double ta = r / 343.0;
-        tMin = std::min(tMin, ta);
-        arr.push_back({ta, a});
+        const glm::vec3 m = 0.5f * (g.p0 + g.p1);
+        const glm::vec3 mE = glm::vec3(t.t1 * (double)m.x + t.t2 * (double)m.y + t.up * (double)m.z);
+        const glm::vec3 dE = glm::vec3(glm::normalize(t.t1 * (double)d.x + t.t2 * (double)d.y + t.up * (double)d.z));
+        s.pts.push_back(glm::vec4(mE, l * g.w * (order == 0 ? 1.0f : 0.5f)));
+        s.dirh.push_back(glm::vec4(dE, 0.5f * l));
+        s.extentM = std::max(s.extentM, glm::length(mE) + 0.5f * l);
     }
-    if (arr.empty())
+    if (s.pts.empty())
         return;
-    for (const A &x : arr)
-    {
-        const int b = (int)((x.ta - tMin) / kBinS);
-        if (b < kBins)
-            env[b] += x.a;
-    }
-    float peak = 0.0f;
-    for (float v : env)
-        peak = std::max(peak, v);
-    if (peak <= 0.0f)
-        return;
-    int last = 0;
-    for (int i = 0; i < kBins; ++i)
-    {
-        env[i] /= peak;
-        if (env[i] > 0.02f)
-            last = i;
-    }
-    env.resize(last + 1);
-    ThunderEvent ev;
-    ev.arriveS = flashStartS + 0.05 + tMin;
-    ev.distKm = (float)(tMin * 343.0 / 1000.0);
-    ev.energy = t.kind == 1 ? 1.0f : 0.5f;
-    const glm::dvec3 upE = glm::normalize(eye);
-    const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), upE));
-    const glm::dvec3 nE = glm::cross(upE, eE);
-    const float bearing = (float)std::atan2(glm::dot(rel0, eE), glm::dot(rel0, nE));
-    ev.pan = std::sin(bearing - glm::radians(camera.azDeg));
-    ev.env = std::move(env);
-    ev.binS = kBinS;
-    thunderPending_.push_back(std::move(ev));
+    if (thunderSources_.size() >= 48)
+        thunderSources_.erase(thunderSources_.begin());
+    thunderSources_.push_back(std::move(s));
 }

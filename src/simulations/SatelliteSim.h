@@ -229,6 +229,7 @@ struct SatelliteType
     // The loaded model itself (components, materials) — the mesh renderer draws it (Phase 4).
     std::shared_ptr<const SatModel> model = {};
     float meshRadiusM = 0.0f; // bounding radius of its triangles about their AABB centre (Phase 4d)
+    float meshFill = 0.0f;    // mean projected area (surface / 4) over the bounding disc's (2026-10-07)
     bool isModel() const { return !lobes.empty(); }
 };
 
@@ -324,7 +325,7 @@ struct GpuSatType
     uint32_t firstOccluder;                // first entry in satOccluderBuf
     uint32_t occluderCount;
     float meshRadius; // Phase 4d: bounding radius of the model's mesh (m); 0 = no model
-    uint32_t occPad1;
+    float meshFill;   // mean projected area / bounding disc area (sat_flare.comp's resolved size; 0 = legacy)
 };
 static_assert(sizeof(GpuSatType) == 416, "GpuSatType layout mismatch");
 static_assert(offsetof(GpuSatType, surfNormalT0) == 48, "GpuSatType std430 offset");
@@ -352,7 +353,8 @@ struct GpuSatTypeHeader
     // bounding radius into its on-screen size (GpuSatVisible::meshPx). 0 = meshes off (knockout /
     // Potato), so no satellite becomes a mesh candidate and no sprite fades.
     float meshPixelAngle;
-    float pad[2];
+    float pixelAngle;     // radians per screen pixel, always (the formation merge's cluster size)
+    float formationMerge; // 0..1: an unresolved formation drawn as one point (photometry.formation_merge)
 };
 static_assert(sizeof(GpuSatTypeHeader) == 32, "GpuSatTypeHeader layout mismatch");
 
@@ -366,7 +368,9 @@ struct GpuPointStyle
     float limitMag;   // faintest magnitude drawn
     float sigmaPx;    // base PSF sigma, pixels
     float sigmaMaxPx; // widest PSF sigma, pixels
-    float pad0, pad1, pad2;
+    float satGainMag;  // satellites: exposure gain - adaptation (mag); sat_flare.comp writes DISPLAYED effectFlare
+    float satPhysK;    // a model's mean pixel value pre-tonemap = satPhysK x raw flux / its area (px)
+    float satResolved; // 0..1: a resolved satellite's sprite takes its model's surface brightness
 };
 static_assert(sizeof(GpuPointStyle) == 32, "GpuPointStyle layout mismatch");
 
@@ -442,8 +446,9 @@ struct GpuSatListHeader
     {
         uint32_t sat;      // satellite index
         float meshPx;      // its mesh diameter on screen (GPU float; the CPU recomputes in double)
-        float effectFlare; // its sprite's final flux before the fade (bloom seed matching)
-        float angSize;     // its sprite's size (px) before the fade
+        float effectFlare; // its sprite's final DISPLAYED flux before the fade (bloom seed matching)
+        uint32_t sizeKept; // packHalf2x16(its sprite's size (px) before the fade, log2 of the share of the unresolved
+                           // point's displayed flux it kept: sat_flare.comp's resolved-object factor)
     } meshCand[1024];
 };
 // The GPU's candidate list, and how many of them the CPU draws as meshes. Until 2026-09-25 both were
@@ -2006,7 +2011,7 @@ private:
     // three lines (magnitude / range+phase / the GPU-vs-CPU parity text) — the range and phase moved
     // to the info window's OBSERVER box, and the parity LINE was dropped from the UI (2026-09-24) with
     // the whole selector-window readout; the parity CHECK and its mismatch log below stay.
-    static constexpr int kSelPhotLines = 1;
+    static constexpr int kSelPhotLines = 2; // magnitude; its formation's combined magnitude
     char selPhotLine[kSelPhotLines][48] = {}; // rebuilt every frame
     bool selParityWarn = false;               // parity gap above kParityWarnMag (drives the log's severity)
     bool selParityValid = false;              // the last check's numbers (harness `state` selection.parity)
@@ -2175,7 +2180,7 @@ private:
     char viewerObsValue[kViewerObsRows][40] = {};
     // BRIGHTNESS section: the CPU evaluator on the viewed satellite — magnitude as seen (after extinction), above
     // the air, the extinction, the 1000 km magnitude, the phase angle. "-" where it does not apply.
-    static constexpr int kViewerPhotRows = 5;
+    static constexpr int kViewerPhotRows = 6;
     char viewerPhotValue[kViewerPhotRows][40] = {};
     static const char *const kViewerPhotLabels[kViewerPhotRows];
     double viewerObsNextWall = 0.0;
@@ -3531,7 +3536,7 @@ private:
     struct SelMeshDbg
     {
         bool  drawn = false;
-        float fade = 0.0f, keep = 1.0f, glareKeep = 1.0f, px = 0.0f, glintW = 0.0f;
+        float fade = 0.0f, keep = 1.0f, glareKeep = 1.0f, px = 0.0f, glintW = 0.0f, glintShare = 0.0f;
         glm::vec3 centreEnu{0.0f}, spriteEnu{0.0f};
     } selMeshDbg;
     // Ocean-glint list (see GpuOceanGlintBuf) — device-local, zeroed every frame like glowBuf.
@@ -3723,20 +3728,41 @@ private:
     // The sim's side: the context drivers, computed each frame from the CAMERA (in follow mode the
     // camera, not the parked telescope — ambience is what the listener hears).
     Ambience *ambience_ = nullptr;
-    // Thunder (updateThunder): each lightning flash within 30 km of the listener, heard at its distance
-    // / 343 m/s after it (sim time), as a roll of the "thunder" layer's synth.
-    struct ThunderEvent { double arriveS; float distKm, energy, pan; std::vector<float> env; float binS = 0.05f; };
-    std::vector<ThunderEvent> thunderPending_;
-    std::vector<std::pair<uint32_t, double>> thunderSeen_;   // flash id, sim time first seen
-    double thunderLastSimS_ = 0.0;
-    float thunderTrigger_ = 0.0f;
-    uint32_t thunderRolls_ = 0;                               // triggered so far (harness `lightning`)
-    void updateThunder();
+    // Thunder (thunderStep, 2026-10-10): every flash's channel is a SOUND SOURCE whose shell expands at 343 m/s
+    // in sim time; each frame the pieces of channel the shell carries across the listener — where the listener
+    // is NOW — are what is heard, streamed to the "thunder" layer's synth. So the roll follows the listener's
+    // motion (flying toward a storm it comes sooner and compressed; outrunning the sound, it never comes) and
+    // the time scale; paused, nothing arrives.
+    struct ThunderSource
+    {
+        uint32_t id = 0;
+        double t0 = 0.0;                 // sim time the return stroke sounded
+        glm::dvec3 origin{0.0};          // ECEF, m
+        float extentM = 0.0f, energy = 1.0f;
+        std::vector<glm::vec4> pts;      // xyz a channel piece's midpoint from the origin (ECEF axes, m), w its power weight
+        std::vector<glm::vec4> dirh;     // xyz its direction, w its half-length (m)
+        bool heard = false;
+    };
+    static constexpr int kThunderVoices = 8;      // == ThunderSynth::kVoices
+    std::vector<ThunderSource> thunderSources_;
+    struct ThunderVoice { uint32_t id = 0; bool used = false; float level = 0.0f; double lastSoundT = 0.0; } thunderVoice_[kThunderVoices];
+    double thunderPrevS_ = 0.0, thunderRealT_ = 0.0;
+    glm::dvec3 thunderPrevEye_{0.0};
+    bool thunderPrevValid_ = false;
+    float thunderHoldS_ = 0.0f;                   // the `thunder` driver: arriving or sounding within the last seconds
+    float thunderLevelNow_ = 0.0f;                // the loudest voice's level this frame (harness `lightning`)
+    uint32_t thunderRolls_ = 0;                   // flashes heard so far (harness `lightning`)
+    void updateThunder(float dt);
+    void thunderStep(double nowS, const glm::dvec3 &eye, float realDt);
+    void thunderRecordTick(float dt);             // harness `audio record`: the render's own clock carries the sound
+    double thunderRecordS_ = 0.0;
+    bool thunderRecording_ = false;
     struct AmbienceDrivers
     {
         int altM = -1, aglM = -1, groundM = -1, latDeg = -1, lonDeg = -1, sunElDeg = -1, oceanNear = -1, oceanWide = -1,
             urban = -1, beam = -1, aurora = -1, wind = -1, cloud = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
-            forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, glareN = -1, glareSum = -1, beamSite = -1, musicGap = -1, rain = -1;
+            forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, glareN = -1, glareSum = -1, beamSite = -1, musicGap = -1, rain = -1,
+            thunder = -1;
     } ambD_;
     glm::dvec3 ambPrevCamEcef{0.0}; // wind rush: the camera's last position (ECEF, m)
     bool ambPrevValid = false;
@@ -3841,8 +3867,27 @@ private:
         float d = std::min(kEyePupilMm * zoomMagnification(), std::max(zoomApertureMaxMm, kEyePupilMm));
         return 5.0f * log10f(d / kEyePupilMm);
     }
-    float pointEffRefMag() const { return pointRefMag + opticsGainMag() + exposureGainMag(); }
-    float pointEffLimitMag() const { return pointLimitMag + opticsGainMag() + exposureGainMag(); }
+    float pointEffRefMag() const { return pointRefMag + opticsGainMag() + exposureGainMag() - satAdaptMag; }
+    float pointEffLimitMag() const { return pointLimitMag + opticsGainMag() + exposureGainMag() - satAdaptMag; }
+    // ── Satellite display (2026-10-07) ──────────────────────────────────────────────────────────
+    // sat_flare.comp writes a DISPLAYED effectFlare (point_style.glsl): x 10^(0.4 satDisplayGainMag()) — the
+    // exposure and the adaptation below, which the points' reference magnitude also carries — and, for a satellite
+    // whose model resolves, faded into the model's own surface brightness (satResolvedStrength).
+    float satResolvedStrength = 1.0f; // "Resolved satellites look like their model" (photometry.sat_resolved)
+    // Adaptation: bright RESOLVED satellites in view (the meshes' light in the sky exposure's units, as a share of
+    // the frame) raise the points' limiting magnitude, as an eye or camera adapts to a sunlit object: a StarMind
+    // cluster 500 m away hides the mag-5 satellites behind it. "Satellite adaptation" (photometry.sat_adaptation).
+    float satAdaptationStrength = 1.0f;
+    float satAdaptMag = 0.0f;        // eased (magnitudes the points lose)
+    float satAdaptLum = 0.0f;        // last frame's resolved-satellite light / frame (harness)
+    float satAdaptFrameMag = 0.0f;   // above the air: the frame's own displayed luminance's share (harness)
+    float formationMergeStrength = 1.0f; // "Merge unresolved formations" (photometry.formation_merge)
+    float satDisplayGainMag() const { return exposureGainMag() - satAdaptMag; }
+    // sat_orbit.comp's formation merge for one member (the GPU-parity check): flux factor.
+    double formationMergeFactor(const SatOrbit &o, int satIdx, double rangeM) const;
+    // A formation member's whole cluster, above the air (CPU photometry of every member, summed): +inf when dark
+    // or not in a formation; count = its members.
+    double formationMagnitude(int satIdx, const SatPhotInputs &in, double tJ2000, int &count) const;
     // CPU mirror of point_style.glsl's pointPsf(): x = peak, y = sigma (px).
     glm::vec2 pointPsf(float mag) const
     {
@@ -5022,9 +5067,10 @@ private:
     // idx map: 0-10 the original photometry params + Trail decay/gain, 11-18 dark-sky mags + MW
     // fades, 19/20 trail sliders, 21 flare-mitigation tilt, 22-26 the point model, 27 zoom
     // aperture, 28-32 glare, 33/34 glare near.
-    bool hovPhotoMinus[35] = {};
-    bool hovPhotoPlus[35] = {};
-    bool draggingPhoto[35] = {};
+    // [38] since 2026-10-07 (35-37: resolved satellites, satellite adaptation, formation merge; photoBufs too).
+    bool hovPhotoMinus[38] = {};
+    bool hovPhotoPlus[38] = {};
+    bool draggingPhoto[38] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
     static constexpr int kCloudSliderSlots = 269;   // 261-266 rain particles (count, shutter, fall speed, wind, storm wind, gusts)
@@ -5227,7 +5273,7 @@ private:
     void updateLightningBolts();
     void recordLightning(VkCommandBuffer cmd, VulkanContext &ctx);
     void buildBoltTree(BoltTree &t, uint32_t seed, float distM);
-    void queueThunder(const BoltTree &t, const glm::dvec3 &eye, double flashStartS);
+    void addThunderSource(const BoltTree &t, double flashStartS);
     std::unordered_map<uint32_t, BoltTree> boltTrees_;
     VkBuffer boltFlashBuf = VK_NULL_HANDLE, boltSegBuf = VK_NULL_HANDLE;
     VkDeviceMemory boltFlashMem = VK_NULL_HANDLE, boltSegMem = VK_NULL_HANDLE;

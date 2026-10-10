@@ -160,7 +160,7 @@ struct SatType {
     uint  firstOccluder;      // first entry in occluders[]
     uint  occluderCount;
     float meshRadius;         // Phase 4d: mesh bounding radius (m), 0 = no model
-    uint  occPad1;
+    float meshFill;           // its mean projected area / the bounding disc's (sat_flare.comp's resolved size)
 };
 // Earthshine table axes — must equal satphot::kEarthLut* (SatPhotometry.h).
 const int   EARTH_LUT_L = 64;           // rows: visible cap half-angle, degrees
@@ -176,7 +176,8 @@ layout(set = 0, binding = 5) readonly buffer SatTypeBuf {
     uint    occlusionOn;      // 0 = knockout bit 1048576
     float   deltaTLo;         // (simTime - epochT0) - pc.deltaT: the low half of deltaT (orbitPhase)
     float   meshPixelAngle;   // Phase 4d: rad per screen pixel; 0 = meshes off
-    float   hdrPad1, hdrPad2;
+    float   pixelAngle;       // rad per screen pixel, always (formation merge)
+    float   formationMerge;   // 0..1: an unresolved formation's light carried by its member 0
     // Earthshine table (satphot::earthshineLut(), written once by createSatBuffers): per (visible
     // cap half-angle, cos of the Sun's zenith at the sub-satellite point) the ln irradiance and the
     // tilt of its effective direction from nadir toward the Sun.
@@ -1505,7 +1506,28 @@ bool processSatellite(uint i, out SatVisible rec)
     // skip the lighting and draw EVERY highlighted satellite at that dot (~mag 5.4), so highlighting
     // a sunlit ISS at mag -2 made it far fainter and harder to find.
     const float highlightFlag = bool((pc.highlightMask >> (orb.constIdx & CONST_IDX_MASK)) & 1u) ? -1.0 : 0.0;
-    rec = SatVisible(skyDir, flare, packUnorm4x8(vec4(outBaseColor, 1.0)), highlightFlag, range, meshPx);
+    // An UNRESOLVED formation (2026-10-07): its member 0 carries the whole cluster's light and the others fade
+    // out, over a cluster 3 -> 1 px wide. The members' points overlapped and summed on screen, but the point
+    // style's display response is flux^0.8, so eight mag-5 points read ~0.45 mag brighter than one of their
+    // combined mag 2.7, and none glared where the cluster would. The members share one attitude law and lie
+    // within ~1 km, so N x member 0's flux is the cluster's. constIdx bits 8-15 = cluster size, 16-23 = slot.
+    // CPU mirror: SatelliteSim::formationMergeFactor (harness `state`).
+    // The factor is the DRAWN point's only: the flux stays physical (the sky glow and ocean glints are the members'
+    // scattered light, and a max per glow bin of 8x a member brightened the whole night sky), so it rides to
+    // sat_flare.comp in the pre-photometry sprite size: |angularSize| = 1 + factor, negative = highlighted.
+    float mergeF = 1.0;
+    if ((orb.constIdx & FORMATION_BIT) != 0u && formationMerge > 0.0 && pixelAngle > 0.0) {
+        uint C = (orb.constIdx >> 8) & 255u;
+        if (C > 1u) {
+            float a    = length(vec2(orb.tumbleAxisX, orb.tumbleAxisY));
+            float diam = 2.0 * a * max(2.0, sqrt(1.0 + orb.tumbleAxisZ * orb.tumbleAxisZ));
+            float u    = (1.0 - smoothstep(1.0, 3.0, diam / (range * pixelAngle))) * formationMerge;
+            mergeF = (((orb.constIdx >> 16) & 255u) == 0u) ? 1.0 + float(C - 1u) * u : 1.0 - u;
+        }
+    }
+    // The colour's alpha carries the type's area fill (sat_flare.comp, the resolved-object size).
+    rec = SatVisible(skyDir, flare, packUnorm4x8(vec4(outBaseColor, ty.meshFill)),
+                     (highlightFlag < 0.0 ? -1.0 : 1.0) * (1.0 + mergeF), range, meshPx);
     return true;
 }
 

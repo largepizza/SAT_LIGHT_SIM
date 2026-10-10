@@ -389,6 +389,7 @@ json SatelliteSim::harnessStateJson()
     // The global exposure (SatelliteSim.h): the user's EV, the metered auto offset and the meter's
     // last reading of the displayed frame (linear mean, fraction clipped white).
     j["exposure"] = {{"ev", cv2ExposureEV}, {"auto_ev", autoExposureEV}, {"global_ev", globalExposureEV()},
+                     {"sat_adapt_mag", satAdaptMag}, {"sat_adapt_lum", satAdaptLum}, {"sat_adapt_frame_mag", satAdaptFrameMag}, {"sat_gain_mag", satDisplayGainMag()},
                      {"meter_mean", meterMeanLum}, {"meter_clip", meterClipFrac}};
     j["moon"] = {{"az_deg", azDegOf(moon)}, {"el_deg", elDegOf(moon)}, {"illum", moonIllumFrac}, {"brightness_vs_full", moonDirENU.w},
                  {"dist_km", moonDistM * 1e-3},
@@ -413,7 +414,10 @@ json SatelliteSim::harnessStateJson()
         ko.push_back("lite_sky");
     // The compact visible list's length (last frame's header): satellites + stars' share + city light
     // sprites (city_sprites.comp appends after sat_flare.comp).
-    j["satellites"] = {{"visible_count", visibleCount}, {"active_count", activeSatCount}};
+    j["satellites"] = {{"visible_count", visibleCount}, {"active_count", activeSatCount},
+                       // the mesh hand-off: the fade-in size (raised past the kMaxMeshInstances largest) and how many
+                       // satellites were mesh-sized candidates last frame
+                       {"mesh_fade_px", meshFadePx}, {"mesh_candidates", meshCandTotal}};
     j["render"] = {{"preset", kGraphicsPresetNames[(int)graphicsPreset]},
                    {"knockout_mask", debugDisableMask},
                    {"knockouts", ko},
@@ -456,6 +460,72 @@ json SatelliteSim::harnessStateJson()
             sel["formation"] = {{"offset_m", {glm::dot(d, vH), glm::dot(d, hH), glm::dot(d, rH)}}, // along, cross, radial
                                 {"dist_m", glm::length(d)}};
         }
+        // The CPU photometry NOW from the camera (the eye, in follow mode too): magnitude, phase, and each lit lobe's
+        // share — which surface makes the flare.
+        if (o.typeIdx < satTypes.size() && satTypes[o.typeIdx].isModel())
+        {
+            const SatelliteType &type = satTypes[o.typeIdx];
+            const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const double th = earthRotationAngle(t), ct = std::cos(th), st = std::sin(th);
+            const glm::dvec3 obsEcef = followActive ? followObsEcef : glm::normalize(glm::dvec3(obsDir)) * (double)obsEyeRadiusM();
+            SatPhotInputs in;
+            in.sunDirEci = glm::dvec3(sunDirECI);
+            in.obsEci = glm::dvec3(ct * obsEcef.x - st * obsEcef.y, st * obsEcef.x + ct * obsEcef.y, obsEcef.z);
+            in.flareTiltRad = glm::radians((double)flareMitigationTiltDeg);
+            const SatOrbitElems e = orbitElemsOf(o);
+            if (attUsesGroundSite(type.groups))
+            {
+                in.hasSiteIdeal = true;
+                in.siteIdeal = satGroundSiteIdeal(groundSiteAim(), e, (uint32_t)selectedSatIndex, t, in.sunDirEci).ideal;
+            }
+            const SatPhotResult pr = evalSatPhotometry(type.groups, type.lobes, e, t, in);
+            json p = {{"mag", std::isfinite(pr.magnitude) ? pr.magnitude : 99.0},
+                      {"range_m", pr.rangeM},
+                      {"phase_deg", glm::degrees(pr.phaseAngleRad)},
+                      {"lit", pr.litFactor},
+                      {"i_sun", pr.intensitySun},
+                      {"i_earth", pr.intensityEarth},
+                      {"dominant_lobe", pr.dominantLobe},
+                      {"flare_units", pr.flareUnits * brightnessScale}};
+            AttGeometry geo;
+            geo.nadir = pr.orbit.nadir;
+            geo.velocity = pr.orbit.velocity;
+            geo.sun = in.sunDirEci;
+            geo.siteIdeal = in.hasSiteIdeal ? in.siteIdeal : geo.nadir;
+            geo.tumbleAngle = pr.orbit.tumbleAngle;
+            geo.tumbleAxis = e.tumbleAxis;
+            geo.flareTiltRad = in.flareTiltRad;
+            const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, false);
+            const glm::dvec3 s = in.sunDirEci, ob = glm::normalize(in.obsEci - pr.orbit.posEci);
+            const double sh = glm::dot(s, glm::normalize(s + ob));
+            p["s_dot_h"] = sh;
+            json lobes = json::array();
+            for (int li = 0; li < (int)type.lobes.size(); ++li)
+            {
+                const GpuSatLobe &L = type.lobes[li];
+                const glm::dvec3 n = satLobeNormalPosed(type.lobes, type.groups, poses, li);
+                const double a2 = L.alpha2Mat + (double)kSunAlpha * kSunAlpha;
+                const double I = satLobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, a2, L.distribution != 0, s, ob, L.transmission);
+                const double ns = glm::dot(n, s), no = glm::dot(n, ob);
+                const double Id = no <= 0.0 ? 0.0
+                                  : ns > 0.0 ? L.albedoD / glm::pi<double>() * L.diffArea * ns * no
+                                             : L.transmission / glm::pi<double>() * L.diffArea * (-ns) * no;
+                if (I <= 0.0)
+                    continue;
+                lobes.push_back({{"i", li}, {"I", I}, {"I_diffuse", Id}, {"area", L.area}, {"f0", L.f0},
+                                 {"alpha", std::sqrt(L.alpha2Mat)}, {"group", L.group},
+                                 {"n_s", glm::dot(n, s)}, {"n_o", glm::dot(n, ob)}});
+            }
+            p["lobes"] = lobes;
+            if (o.formation)
+            {
+                int fn = 0;
+                const double fm = formationMagnitude(selectedSatIndex, in, t, fn);
+                p["formation"] = {{"mag", std::isfinite(fm) ? fm : 99.0}, {"members", fn},
+                                  {"merge_factor", formationMergeFactor(o, selectedSatIndex, pr.rangeM)}};
+            }
+            sel["photometry"] = p;
+        }
         if (selParityValid) // the GPU-vs-CPU check (updateSelectedPhotometry): magnitude gap and both ranges
             sel["parity"] = {{"dmag", selParityDmag},
                              {"range_gpu_m", selParityRangeGpuM},
@@ -472,7 +542,8 @@ json SatelliteSim::harnessStateJson()
             if (selMeshDbg.drawn)
             {
                 json m = {{"fade", selMeshDbg.fade}, {"keep", selMeshDbg.keep}, {"glare_keep", selMeshDbg.glareKeep},
-                          {"px", selMeshDbg.px}, {"glint_w", selMeshDbg.glintW}};
+                          {"px", selMeshDbg.px}, {"glint_w", selMeshDbg.glintW},
+                          {"glint_share", selMeshDbg.glintShare}};
                 if (projectSkyDirToScreen(selMeshDbg.centreEnu, W, H, sx, sy))
                     m["centre_px"] = {sx, sy};
                 if (projectSkyDirToScreen(selMeshDbg.spriteEnu, W, H, sx, sy))
@@ -1272,6 +1343,18 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const int idx = (int)parseNum(pos(1), "select sat");
             if (idx < 0 || idx >= (int)satOrbits.size())
                 fail("select sat: index out of range (0.." + std::to_string(satOrbits.size() - 1) + ")");
+            selectSatellite(idx);
+        }
+        else if (sub == "at")
+        {
+            // select at <x> <y>: the click pick (meshes on their bounding circle, else the nearest sprite), px from
+            // the top-left of the frame.
+            if (!ctx_)
+                fail("select at: no device");
+            const float W = (float)ctx_->swapExtent.width, H = (float)ctx_->swapExtent.height;
+            const int idx = pickSatelliteAt((float)parseNum(pos(1), "select at x"), (float)parseNum(pos(2), "select at y"), W, H);
+            if (idx < 0)
+                fail("select at: no satellite there");
             selectSatellite(idx);
         }
         else if (sub == "const" || sub == "constellation")
@@ -2685,7 +2768,23 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         }
         r["count"] = cnt;
         r["flashes"] = list;
-        r["thunder_pending"] = thunderPending_.size();
+        {
+            // The sound sources (thunderStep): each flash's shell against the listener now.
+            const double nowS = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const glm::dvec3 eye = thunderPrevValid_ ? thunderPrevEye_ : glm::dvec3(0.0);
+            json src = json::array();
+            size_t pending = 0;
+            for (const ThunderSource &s : thunderSources_)
+            {
+                pending += s.heard ? 0 : 1;
+                const double d = glm::length(s.origin - eye);
+                src.push_back({{"id", s.id}, {"age_s", nowS - s.t0}, {"dist_km", d / 1000.0}, {"extent_km", s.extentM / 1000.0f},
+                               {"arrives_in_s", (d - s.extentM) / 343.0 - (nowS - s.t0)}, {"pieces", s.pts.size()}, {"heard", s.heard}});
+            }
+            r["thunder_sources"] = src;
+            r["thunder_pending"] = pending;
+            r["thunder_level"] = thunderLevelNow_;
+        }
         r["thunder_rolls"] = thunderRolls_;
         json trees = json::array();
         for (const auto &kv : boltTrees_)
@@ -3254,8 +3353,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const std::string path = harnessRunner_->capturePath(name, ".wav");
             AudioSystem::RenderStats st;
             std::string err;
-            if (!audio_->renderWav(path, seconds, mask, solo, [this](float dt) { ambience_->tickEvents(dt, audio_); },
-                                   st, err))
+            // Thunder is streamed per frame from the sound shells: the render's own clock carries them on (sim time
+            // itself stands still during a render), so a flash spawned before the record is heard arriving in it.
+            thunderRecording_ = false;
+            const bool ok = audio_->renderWav(path, seconds, mask, solo,
+                                              [this](float dt) { ambience_->tickEvents(dt, audio_); thunderRecordTick(dt); }, st, err);
+            thunderRecording_ = false;
+            thunderPrevValid_ = false;   // the next real frame starts from its own time: no reversed replay
+            if (!ok)
             {
                 a.error = err;
                 return Status::Error;

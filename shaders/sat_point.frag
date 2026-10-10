@@ -105,9 +105,14 @@ void main() {
     }
 
     // ── Point spread from the apparent magnitude (point_style.glsl) ──────────────
-    vec2  psf  = pointPsf(satFlareToMag(fragIntensity));
+    // A satellite's record is a DISPLAYED effectFlare (sat_flare.comp: x 10^(0.4 satGainMag), which the shifted
+    // reference magnitude already applies — undone here); a city light (city_sprites.comp) is not.
+    float gainMag = fragManualDepth > 0.5 ? 0.0 : pointStyle.satGainMag;
+    vec2  psf  = pointPsf(satFlareToMag(fragIntensity) + gainMag);
+    // A resolved satellite's sprite is wider than its point (sat_flare.comp: the object's size): same drawn flux.
+    float sig  = max(psf.y, pointSpriteSigmaPx(fragAngSize));
     float pixD = d * fragAngSize;
-    float core = psf.x * exp(-pixD * pixD / (2.0 * psf.y * psf.y));
+    float core = psf.x * (psf.y * psf.y) / (sig * sig) * exp(-pixD * pixD / (2.0 * sig * sig));
 
     float brightness = core * cloudVis * terrainVis;
     outColor = vec4(fragColor * brightness, brightness);

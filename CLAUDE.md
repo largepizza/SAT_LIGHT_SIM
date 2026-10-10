@@ -847,11 +847,18 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the flashes in ONE full-screen pass looping over the emitters (per texel of the half-res composite, `boltGlow`: a
   ~4-km diffusion core floored at ~3.5 km and a faint 15-km tail, windowed to 45 km — from orbit a flash is a soft
   10-20 km patch). The lightning pass's thread 1 adds the flashes' light to the rain at the eye (`cv2RainAmb`): drops
-  light up in a close strike. **Thunder from the channel** (`queueThunder`, within 35 km): each segment's sound arrives
-  at its distance / 343 m/s, weighted by length, 1/r and how far it lies across the line of sight; binned at 50 ms that
-  envelope IS the roll, handed to the `thunder` synth through `AmbientSynth::pushEvent` (a lock-free queue; the noise
-  low-passed by the distance the sound has come, which grows through the roll; a ripping crack under ~3 km).
-  `updateThunder` only plays the queue. Harness: `lightning` (flashes with kind / segments, `trees`, drawn counts,
+  light up in a close strike. **Thunder is streamed from sound shells (2026-10-10, `addThunderSource` / `thunderStep`,
+  SatelliteSimAmbience.cpp):** each flash's channel is kept as a source (pieces in Earth-fixed axes, 48 flashes, 150 s);
+  its sound travels at 343 m/s in sim time, and each frame the pieces whose g = distance - 343 (t - t0) changed sign
+  between the last frame's listener/time and this one's are what arrives: level = 270 x sqrt(length x weight / r^2 per
+  second) per flash, with mean distance and pan, pushed to one of the synth's 8 voices (`pushEvent`, [voice, level, km,
+  pan]; pink + brown noise, cutoff 5000 / (1 + km / 1.5) Hz, crackle within 4 km, a shared ~2-s rumble). So it follows
+  the listener (toward a storm: sooner, compressed at most 3x; outrun: never; paused: nothing; a > 5 km or > 20 s jump:
+  silent) and time warp. Driver `thunder` (arriving within ~2 s, sounding, or within 4 s after) gates the layer, so it
+  is listed only when there is thunder. It replaced an envelope precomputed at the flash for the listener's position
+  then (`queueThunder`), whose brown noise under a 100-360 Hz cutoff was sub-bass only and whose layer was always
+  "playing" (user: "displays as playing, but I don't really hear it"; at that snapshot the nearest flash was 27 km off).
+  `audio record` advances the shells on its own clock (`thunderRecordTick`). Harness: `lightning` (flashes with kind / segments, `trees`, drawn counts,
   thunder queue), `lightning spawn kind=cg|ic|spider|sprite dist_km= az= [seed=] [base_m=] [top_m=] [ground_km=]`
   (heights above the eye's ground; injected flashes run the same channels, glow and thunder), scripts in
   harness_runs/lightning (spawn2: a clear desert night; t5: orbit + aircraft at 5 N 90 W). Cost ~0.3 ms for the
@@ -2984,7 +2991,8 @@ anything that is constant per type goes in `GpuSatType`.
 **Formation ring members** (2026-10-06): `constIdx` carries `kGpuFormationBit` (0x80000000; the shader masks
 the index with 31 for the enabled/highlight masks), the tumble slots hold the Clohessy-Wiltshire coefficients
 (tumbleAxisX/Y/Z = formP, formQ, formK; tumbleRate/Phase 0), and the Tumble attitude law reads +Z for them —
-the CPU's `SatOrbit` keeps its own (unused) tumble fields. `offsetof` asserts pin the slot positions.
+the CPU's `SatOrbit` keeps its own (unused) tumble fields. `offsetof` asserts pin the slot positions. Since 2026-10-07 `constIdx`
+bits 8-15 are the member's cluster size and 16-23 its slot in it (the formation merge, below).
 
 ### GpuSatType layout (416 bytes, std430) — `satTypeBuf`
 One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, at `kSatTypeArrayOffset`: after a
@@ -3020,8 +3028,9 @@ by `sat_point.vert`, `flare_source.vert` and the trail splat pass via indirect d
 [16] color (uint, packUnorm4x8), angularSize (float, sprite px), rangeM (float), pad
 ```
 Between the two dispatches it is a **pre-photometry** record (culled satellites are not in the
-list at all): each carries the raw flux, with `color` already eclipse-tinted and `angularSize` = -1
-for a highlighted constellation (else 0). Highlight mode lights satellites normally and raises them to
+list at all): each carries the raw flux, with `color` already eclipse-tinted (its ALPHA = the type's area fill,
+`GpuSatType::meshFill`) and `angularSize` = +-(1 + the formation merge factor), negative for a highlighted
+constellation (2026-10-07; it was -1 / 0). Highlight mode lights satellites normally and raises them to
 at least `highlightFlare`; until 2026-09-24 it skipped the lighting and drew every one at that
 ~mag 5.4 dot, so highlighting a sunlit ISS made it FAINTER. After `sat_flare.comp`, a satellite below
 `visThresh` stays in the list as a zero record. Stars and planets use the same record
@@ -3618,6 +3627,33 @@ log-sized sprite with a range term) and stars (sqrt core, sqrt-sized sprite) had
 curves: a mag-3 satellite drew about as bright as a mag −2 star (Jupiter), a mag-5 satellite ~13× a
 mag-5 star. Not unified yet: the bloom/corona (`flare_source`) exists for satellites and the Sun only.
 
+**Satellite display (2026-10-07) — the record holds a DISPLAYED effectFlare.** `sat_flare.comp` writes physical
+effectFlare x 10^(0.4 `satGainMag`) (exposure gain minus the satellite adaptation; `GpuPointStyle`'s former pads)
+x the resolved-object factor x the formation merge, so the point, bloom, glare (which ignored the exposure before)
+and the HUD's peak magnitude (corrected back by the gain) follow one value; `sat_point.frag` adds `satGainMag` back
+to the magnitude (the UBO's reference magnitude already carries the shift for stars, planets and city lights).
+- **Resolved satellites** ("Resolved satellites" `photometry.sat_resolved` 1): a model satellite's sprite fades
+  from the point into its model's mean surface brightness (`resolvedSatFlare`, point_style.glsl: 1 - exp(-satPhysK
+  x raw flux x extinction / its area in px), `satPhysK` = pi x skyExposure / (kFluxToFlare x brightnessScale x
+  Omega_pix), exactly a model's mean pixel) over an effective diameter meshPx x sqrt(fill) of 0.8 -> 2.5 px, spread
+  over that size (sigma from the sprite size; drawn flux kept). The point style is white at ~mag 1.5, a model's
+  pixel at ~mag -7.5: a StarMind 2-10 px wide was a blazing point handing over to a grey model. Never brighter
+  than the point.
+- **Adaptation** ("Satellite adaptation" `photometry.sat_adaptation` 1): points (satellites, stars, planets) lose
+  max(2.5 log10(1 + S / 0.003), above the air 2.5 log10(1 + M / 0.01)) magnitudes, eased 0.25 s up / 2.5 s down,
+  capped at 8: S = the drawn meshes' light on screen per frame pixel in the sky exposure's units, M = the exposure
+  meter's displayed mean (auto exposure on). The ground keeps its day/moon/pollution suppression (the M term is
+  gated above 40-100 km). User snapshot (Antarctic limb from 583 km) 2.7 mag; a Reflect mirror reflecting the Sun
+  from 4 km, the cap. S past 0.02-0.2 also lets the auto exposure stop down at night (only as clipping asks).
+- **Formation merge** ("Merge formations" `photometry.formation_merge` 1, sat_orbit.comp): over a cluster 3 -> 1
+  px wide its slot-0 member draws N x its light and the others fade; the point's display response (flux^0.8) read
+  eight overlapping members ~0.45 mag too bright and none glared. Drawn point, bloom and glare only: the sky glow
+  bins and ocean glints keep the members' own light (a merged leader's 8x in a per-bin MAX brightened the whole
+  night sky from the ground). Selection panel / info window: the formation's combined magnitude.
+- The mesh candidates carry the displayed flux and log2 of the share the resolved factor kept; the mesh's bloom
+  follows the displayed sprite, its glints' glare (glareNorm) the unresolved one (a sun glint is not the mean
+  surface brightness), normalised so bloomScale x glareNorm is unchanged.
+
 **Bloom and glare (2026-09-24).** The bloom (`flare_source` → `flare_blur` → `flare_composite`) is a
 quarter-resolution BROAD glow: a narrow separable Gaussian plus a wide one (σ 10 texels, "Flare
 streak" scales it), exactly round, final result back in `flareSourceImg` (four dispatches — see
@@ -3644,7 +3680,11 @@ an aliased centre) and a blue anamorphic streak the sun doesn't have; both are g
   effectFlare × it into the visible record's last field (the pre-photometry mesh size, free by then),
   and `glare.vert` glares on max(flareIntensity, that) (2026-09-25). Until then mesh_bloom counted all
   of a point-like mesh's light, so its one glare sat on whichever few texels of the small mesh were
-  brightest and jumped about until the satellite was close. The first cut let
+  brightest and jumped about until the satellite was close. **Only the sun-like share of the light keeps that glare** (2026-10-07,
+  `glintShare`: each lobe's sunlight x smoothstep(150, 1500, pi x its mean radiance), mesh_bloom's test): the rest
+  (diffuse, glossy, earthshine) glares only while the mesh fades in (fadeIn -> fadeFull, 1.5 -> 3 px). Keeping all
+  of it to 12-36 px drew a backlit, earthlit StarMind 17 px wide (mag -4.5 at 4.7 km, its mesh near black) as a
+  full starburst, x7 by the near gain. A Reflect mirror's glint share is 1 (unchanged). The first cut let
   all of it glare: every edge and vertex of a close-up satellite flared (each a sliver of a very
   bright satellite's flux) and filled the 64 slots with ~400 px sprites, a large part of the close-up
   frame-rate drop. `glare_find.comp` lists every 5×5 local maximum past the threshold into `glintBuf`
@@ -5131,6 +5171,11 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   Fresnel sky reflection and sun glint in the terrain lighting). Replaced a stretched Voronoi patchwork.
   "Ground pattern range (m/px)" (`clouds.ground_pattern_range_m` 800, slot 212, UBO `groundPatternFootM`
   = v1's unread shadowMaxDistM renamed): the farms fade over 0.55-0.9 of it (was a fixed 400).
+- **City lights under cloud (2026-10-10, `gCityFlat`):** the procedural pattern (glitter, posts, road dots) gives way to
+  its own local mean (`meanC` / `cityLampMean`) as the cloud + fog transmittance in front of the ground falls from 0.35
+  to 0.02. A glitter point is hundreds of times the map's value, so points stayed crisp through thick cloud once the
+  map blur was removed (user snapshot, Anchorage from 3 km). Not a blur of the map; same total light. A peak cap was
+  tried first (dots at 1x the map on dark ground still read as points).
 - **City light LOD settings (review 13, Night lights tab, UBO `cityLod` / `cityLod2`, slots 221-226):** the ground
   footprints (m per pixel) where each layer ends — "Lamp posts to" `clouds.city_posts_footprint_m` 10, "Street grid
   to" `city_grid_footprint_m` 150, "Major roads to" `city_roads_footprint_m` 350 (capped by the layout), "Street

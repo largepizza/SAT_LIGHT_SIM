@@ -907,6 +907,8 @@ vec3 cityNightGrid(CityGrid g, CityLayout L, float foot, float ledP, vec3 meanC,
     return eG;
 }
 
+// Cloud in front of the ground (set by main before the pattern): 1 = the lights as their local mean, no points.
+float gCityFlat = 0.0;
 // The night pattern: the lights at the layout, the pixel footprint (m) and the ground's up-facing
 // (nUp). Returns an RGB multiplier for the night map's lights (mean ~1 in luminance).
 vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poolM) {
@@ -960,8 +962,8 @@ vec3 cityLightPattern(CityLayout L, vec2 uv, float foot, float nUp, out vec3 poo
     // pixel, ~470 m, or orbit views changed).
     e *= mix(0.12, 1.0, smoothstep(0.1 * cloud.cityLod.w, 0.875 * cloud.cityLod.w, foot));
     // No fade to the map any more: the glitter continues at every distance (cityLightFar past 400 m).
-    poolM *= e;
-    return e * eC;
+    poolM *= e * (1.0 - gCityFlat);
+    return e * mix(eC, meanC, gCityFlat);
 }
 
 // Past a 400-m footprint (high altitude, orbit): the glitter alone on the frame — no street layout —
@@ -986,7 +988,7 @@ vec3 cityLightFar(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float foot, float lum
     // out the terrain contour limit (cityTerrainLimit) keeps the lights off the mountains.
     float steepK = mix(0.04, 1.0, smoothstep(0.86, 0.96, nUp));
     steepK = mix(steepK, 1.0, smoothstep(400.0, 1200.0, foot));
-    return cityGlitter(p2, dAnc, f, foot, ledP, lum / 0.25) * steepK;
+    return mix(cityGlitter(p2, dAnc, f, foot, ledP, lum / 0.25), cityLampMean(ledP), gCityFlat) * steepK;
 }
 
 // Review 7: the DAY side past the street layout (the user: "night lights reach the horizon, the day
@@ -4727,6 +4729,13 @@ void main() {
             }
             if (cityLOk || cityFar)
                 cityLights = mix(cityLights, vec3(dot(cityLights, vec3(0.2126, 0.7152, 0.0722))), cloud.cityLightsStrength);
+            // Under cloud a lamp is no longer a point (2026-10-10): the pattern puts a cell's whole light in one
+            // pixel (hundreds of times the map's value), so the composite's direct transmittance alone left crisp
+            // glitter and road dots showing through a deck (user snapshot, Anchorage from 3 km). The light a cloud
+            // passes is scattered: the points give way to the pattern's own local mean as the cloud (and fog) in
+            // front thickens — all mean at T <= 0.02, all points from T 0.35. Not a blur of the MAP (the 2026-10-06
+            // grey wash from orbit), and the same total light.
+            gCityFlat = 1.0 - smoothstep(0.02, 0.35, dot(cloudB.rgb, vec3(1.0 / 3.0)));
             if (cityLOk) {
                 vec3 poolM;
                 vec3 pat = cityLightPattern(cityL, uvSurf, cFoot, cNUp, poolM);

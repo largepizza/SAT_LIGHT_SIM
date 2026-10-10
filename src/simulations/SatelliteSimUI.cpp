@@ -1559,11 +1559,12 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
             // Magnitude only. The range/phase line moved to the info window's OBSERVER box, and the
             // GPU-parity Δmag readout was dropped entirely (2026-09-24) — it was a development
             // instrument in a panel the player reads, and the check still logs a mismatch.
-            if (selPhotLine[0][0])
-            {
-                Clay_String lineStr{false, (int32_t)strlen(selPhotLine[0]), selPhotLine[0]};
-                CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
-            }
+            for (int li = 0; li < kSelPhotLines; ++li)
+                if (selPhotLine[li][0])
+                {
+                    Clay_String lineStr{false, (int32_t)strlen(selPhotLine[li]), selPhotLine[li]};
+                    CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                }
             CLAY(CLAY_ID("SelSatButtons"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                        .childGap = 6,
                                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
@@ -3856,7 +3857,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[35][12];
+    static char photoBufs[38][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -3926,6 +3927,12 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         // point sprite from the ground, hundreds of km off, keeps the look tuned on "Glare size (px)".
         {"Glare near gain", &glareNearGain, 1.0f, 8.0f, 0.25f, "%.2f", 33},
         {"Glare near range (km)", &glareNearRangeKm, 1.0f, 20000.0f, 10.0f, "%.0f", 34},
+        // Satellite display (2026-10-07, point_style.glsl / sat_flare.comp): a satellite whose model resolves takes
+        // its model's surface brightness (0 = the old bright point to the hand-off); bright resolved satellites in view
+        // hide faint points, as an eye adapts (0 = off); an unresolved formation is drawn as one point (0 = each member).
+        {"Resolved satellites", &satResolvedStrength, 0.0f, 1.0f, 0.05f, "%.2f", 35},
+        {"Satellite adaptation", &satAdaptationStrength, 0.0f, 2.0f, 0.05f, "%.2f", 36},
+        {"Merge formations", &formationMergeStrength, 0.0f, 1.0f, 0.05f, "%.2f", 37},
     };
     auto photoRow = [&](PhotoParam &pp)
     {
@@ -7033,6 +7040,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         glareSpikes = p.value("glare_spikes", glareSpikes);
         glareNearGain = p.value("glare_near_gain", glareNearGain);
         glareNearRangeKm = p.value("glare_near_range_km", glareNearRangeKm);
+        satResolvedStrength = p.value("sat_resolved", satResolvedStrength);
+        satAdaptationStrength = p.value("sat_adaptation", satAdaptationStrength);
+        formationMergeStrength = p.value("formation_merge", formationMergeStrength);
         mwPollutionThresholdLo = p.value("mw_pollution_threshold_lo", mwPollutionThresholdLo);
         mwPollutionThresholdHi = p.value("mw_pollution_threshold_hi", mwPollutionThresholdHi);
         darkSkyCityMag = p.value("dark_sky_city_mag", darkSkyCityMag);
@@ -7593,6 +7603,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"glare_spikes", glareSpikes},
         {"glare_near_gain", glareNearGain},
         {"glare_near_range_km", glareNearRangeKm},
+        {"sat_resolved", satResolvedStrength},
+        {"sat_adaptation", satAdaptationStrength},
+        {"formation_merge", formationMergeStrength},
         {"mw_pollution_threshold_lo", mwPollutionThresholdLo},
         {"mw_pollution_threshold_hi", mwPollutionThresholdHi},
         {"dark_sky_city_mag", darkSkyCityMag},
