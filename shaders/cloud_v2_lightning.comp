@@ -95,6 +95,61 @@ void main()
     // cell, from the same field and the same formula as the march's rate at the eye, so the drops in each depth
     // layer (the rain particles, rain_particles.vert) follow the rain volume — walking toward a shaft, its drops appear in
     // the far layers first. They used to come from the rate at the eye alone: none until inside, then all.
+    // The Sun's shadow VOLUME about the eye's line to it (2026-10-10; cloud_lightning.glsl, cv2SunGrid): workgroups
+    // 5-8 march a 32 x 32 grid of parallel rays toward the Sun, 250 m apart across it, and store the Sun's
+    // transmittance BEYOND each of 17 points. The cloud march shadows a sample by the rays around it, so the shadow
+    // has the blocker's own outline. Each ray is the mean of four sub-rays over its cell: one ray per cell hits or
+    // misses a cloud top at a grazing Sun, and the shadows came out as straight-edged squares that flipped with
+    // 100 m of eye altitude (user snapshot, a sunset over a deck). It was ONE ray (thread 1's, below) applied within
+    // ~2 km of it: the Sun going behind a cloud's tip darkened every cloud near the eye.
+    if (gl_WorkGroupID.x > 4u) {
+        vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+        vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+        mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
+        float eyeH = terrainFrame.x + 2.0;
+        vec3  sunENU = transpose(enuToEcef) * cv2.sunE.xyz;
+        int   ri = int((gl_WorkGroupID.x - 5u) * 256u + li);
+        float Tk[17];
+        float odMax = 0.0;
+        for (int k = 0; k <= 16; ++k) Tk[k] = 0.0;
+        if (sunENU.z > -0.1 && eyeH < cv2.shell.y) {
+            float L = cv2SunGridLen(sunENU, cv2.shell.y);
+            vec3  ga, gb;
+            cv2SunGridAxes(sunENU, ga, gb);
+            vec2  gc = vec2(float(ri % kCv2SunGridN), float(ri / kCv2SunGridN)) - 0.5 * float(kCv2SunGridN - 1);
+            [[dont_unroll]] for (int sr = 0; sr < 4; ++sr) {
+                vec2  gp = (gc + vec2((sr & 1) != 0 ? 0.25 : -0.25, (sr >> 1) != 0 ? 0.25 : -0.25)) * kCv2SunGridM;
+                vec3  o  = ga * gp.x + gb * gp.y;
+                float odK[17];
+                float od = 0.0;
+                odK[0] = 0.0;
+                // 48 steps, each sub-ray's samples at its own phase of the step (192 depths per cell): at the far
+                // end a step is ~15 km, and a ray grazing the cloud tops hit or missed them with 100 m of eye height.
+                for (int i = 0; i < 48; ++i) {
+                    float u0 = float(i) / 48.0, u1 = float(i + 1) / 48.0;
+                    float um = mix(u0, u1, (float(sr) + 0.5) * 0.25);
+                    float dt = L * (u1 * u1 - u0 * u0);
+                    CV2Field gf = cv2Field(cv2Pos(o + sunENU * (L * um * um), eyeH, enuToEcef), 0.0, max(60.0, dt * 0.5));
+                    od += gf.sigma * (1.0 - 0.8 * gf.thin) * dt;   // ice as the light march's shadow
+                    if (i % 3 == 2) odK[(i + 1) / 3] = od;
+                }
+                for (int k = 0; k <= 16; ++k) Tk[k] += 0.25 * exp(-(od - odK[k]));
+                odMax = max(odMax, od);
+            }
+        } else {
+            for (int k = 0; k <= 16; ++k) Tk[k] = 1.0;
+        }
+        if (ri < kCv2SunGridN * kCv2SunGridN)
+            for (int k = 0; k <= 16; ++k) cv2SunGrid[ri * 17 + k] = Tk[k];
+        sRainMax[li] = odMax;
+        barrier();
+        for (uint s = 128u; s > 0u; s >>= 1u) {
+            if (li < s) sRainMax[li] = max(sRainMax[li], sRainMax[li + s]);
+            barrier();
+        }
+        if (li == 0u && gl_WorkGroupID.x <= 8u) cv2SunWgMax[gl_WorkGroupID.x - 5u] = sRainMax[0];
+        return;
+    }
     if (gl_WorkGroupID.x > 0u) {
         uint  cell = (gl_WorkGroupID.x - 1u) * 256u + li;
         float rr = 0.0;
@@ -341,21 +396,19 @@ void main()
         float sunT = 0.0, discT = 1.0;
         cv2SunProf[0] = 0.0;
         if (sunENU.z > -0.1 && eyeH < cv2.shell.y) {
-            float L  = min(max(cv2.shell.y - eyeH, 0.0) / max(sunENU.z, 0.03), 400000.0);
+            float L  = cv2SunGridLen(sunENU, cv2.shell.y);
             float od = 0.0;
+            vec3  ga, gb;
+            cv2SunGridAxes(sunENU, ga, gb);
             cv2SunProf[0] = L;
-            cv2SunProf[1] = 0.0;
-            int i = 0;
-            for (; i < 32 && od < 8.0; ++i) {
+            cv2SunProf[2] = ga.x; cv2SunProf[3] = ga.y; cv2SunProf[4] = ga.z;
+            cv2SunProf[5] = gb.x; cv2SunProf[6] = gb.y; cv2SunProf[7] = gb.z;
+            for (int i = 0; i < 32 && od < 8.0; ++i) {
                 float u0 = float(i) / 32.0, u1 = float(i + 1) / 32.0;
                 float t  = L * (0.5 * (u0 + u1)) * (0.5 * (u0 + u1));
                 float dt = L * (u1 * u1 - u0 * u0);
                 od += cv2Field(cv2Pos(sunENU * t, eyeH, enuToEcef), 0.0, max(30.0, dt * 0.5)).sigma * dt;
-                if ((i & 1) == 1) cv2SunProf[1 + (i + 1) / 2] = od;
             }
-            if (i < 32)                                 // an early out (opaque): the rest is the depth reached
-                for (int k = (i + 1) / 2; k <= 16; ++k)
-                    cv2SunProf[1 + k] = od;
             discT = exp(-od);
         }
         if (sunENU.z > -0.02) sunT = discT * smoothstep(-0.02, 0.03, sunENU.z);

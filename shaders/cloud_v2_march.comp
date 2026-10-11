@@ -58,7 +58,7 @@ layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
 layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define BEAM_CLOUD_LIGHTS_BINDING 9
 #include "beam_cloud_lights.glsl"
-// Review 22b: the eye's Sun-path profile (cv2SunProf), written by cloud_v2_lightning.comp before this pass.
+// The Sun's shadow about the eye's line to it (cv2SunProf, cv2SunGrid), written by cloud_v2_lightning.comp before this pass.
 #define CV2_FLASH_BINDING 12
 #include "cloud_lightning.glsl"
 layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D outColor;
@@ -581,6 +581,10 @@ void main()
         if (iters >= kMaxIters) { remLen += tEnd - t; continue; }
         bool fine = false;
         int  empty = 0;
+        // Surface refinement (2026-10-10, below): the last fine sample that was not opaque over a step, the
+        // opaque one found after it, and the bisections left (-1 = accept the next sample).
+        float tLo = -1.0, tHi = 0.0;
+        int   refN = 0;
         // Review 22: over the whole COARSE interval (two steps). Over one step the coarse lattice, two steps apart
         // (up to 400 m of altitude), took only half its phases: a thin deck seen from above was skipped at some
         // and found at others — concentric rings in the clouds round the nadir that moved with the eye's height
@@ -635,7 +639,7 @@ void main()
                 // lattice from the eye — contour rings of the cloud base looking up through rain (review 3,
                 // snapshot 5).
                 if (f.sigma > 0.0) {
-                    fine = true; empty = 0;
+                    fine = true; empty = 0; tLo = -1.0; refN = 0;
                     float tb = t - (2.0 - fract(jitter * 1.6180340 + 0.5)) * stepF;
                     t = tb > seg[si].x ? tb : seg[si].x + jitter * cv2.march.x;
                     continue;
@@ -652,6 +656,31 @@ void main()
             float rK = (coarseThin && f.rain > 0.9) ? 4.0 : 2.0;
             if (coarseThin) pathLen += rK * stepF;
             else {
+                // Surface refinement (2026-10-10): far from the eye a step is hundreds of metres (1.2% of the
+                // distance) and a dense cloud's lit skin tens: the first sample inside a tower landed at a random
+                // depth under its surface, so each ray came back sunlit or self-shadowed by chance -- the grain
+                // "grid" on distant anvils that the history never averaged out, and ~17% too dark on average
+                // against a 25-m-step reference (user snaps 3-4). When a sample is opaque over its step (sigma x
+                // step >= 1) and the one before it was not, the crossing is bisected three times (unlit field
+                // reads, to 1/8 step ~ a pixel's footprint) and the sample shaded is the bracket's inner end.
+                // Only where a step is well past the base step (from ~7-14 km at the defaults, dithered so the
+                // switch is no line): near the eye the steps are already skin-sized, and refining every lump of
+                // a close cumulus field cost 3.4 ms looking down into one for no visible gain.
+                // Tried: two bisections for the shorter steps (a hard-edged darker oval on the tower where they
+                // gave way to three), and shading where the view ray's optical depth reaches ~0.7 from the
+                // density's slope across the bracket (corduroy stripes, and 222 registers).
+                float tauS = f.sigma * stepF;
+                if (refN > 0) {
+                    if (tauS >= 1.0) tHi = t; else tLo = t;
+                    if (--refN > 0) { t = 0.5 * (tLo + tHi); continue; }
+                    if (tauS < 1.0) { refN = -1; t = tHi; continue; }
+                } else if (refN < 0) {
+                    refN = 0;
+                } else if (tauS >= 1.0 && tLo >= 0.0 && T > 0.1 && stepF > (2.0 + 1.5 * jitter) * cv2.march.x) {
+                    tHi = t; refN = 3; t = 0.5 * (tLo + tHi);
+                    continue;
+                }
+                tLo = (tauS < 1.0) ? t : -1.0;
                 pathLen += stepF;
                 if (f.sigma <= 0.0) {
                     if (++empty > 5) fine = false;
@@ -728,23 +757,35 @@ void main()
                 // A solar eclipse: the Moon's shadow on THIS sample's sunlight (eclipse.glsl; 2026-10-03). It was the
                 // Sun the eye saw, on every cloud in view: no lit clouds beyond the umbra, no orange horizon.
                 if (cloud.moonMisc.y > 0.5) keyCol *= eclipseSunVis((eye + rel) * 1e-3, sunDir, 0.0);
-                // Review 22b: near the eye's line to the Sun a sample's sunlight crosses what the eye's own 400-km march
-                // toward it found BEYOND the sample (cv2SunProf: optical depth from the eye along that line), faded by
-                // the sample's distance from the line (~2 km). The light march (a few km) cannot see a storm between
-                // a low Sun and the clouds in front of it: their forward lobe glowed like the Sun through miles of
-                // cloud (user). Clouds beyond the blocker keep their light (sunset silver linings).
-                // Review 25: the distance to the eye's Sun RAY: behind the eye (cosSun < 0) it is the distance to the eye,
-                // which meets the in-front value at 90 deg. Skipping cosSun <= 0 cut the darkening off along the great
-                // circle 90 deg from the Sun: from under or inside a cloud (samples within ~2 km) a straight line
-                // across the sky, dark clouds on one side and lit on the other (user snaps 2-3).
-                if (cv2SunProf[0] > 0.0 && cloud.sunCloudT < 0.98) {
-                    float dP = (cosSun > 0.0 ? t * sqrt(max(1.0 - cosSun * cosSun, 0.0)) : t) / 2000.0;
-                    float w  = exp(-dP * dP);   // (8 km darkened a sunset-lit deck 3 km above the eye's line)
-                    if (w > 0.01) {
-                        float uu = sqrt(clamp(t * cosSun / cv2SunProf[0], 0.0, 1.0)) * 16.0;
+                // The Sun's shadow about the eye's line to it (review 22b; reworked 2026-10-10): the light march
+                // (~2 x cv2.light.x) cannot see a storm between a low Sun and the clouds in front of it, whose forward
+                // lobe then glowed like the Sun through miles of cloud. The lightning pass marches a 32 x 32 grid of
+                // parallel rays toward the Sun about the eye (cv2SunGrid: the transmittance BEYOND each point); a
+                // sample takes the four rays around it, at the point where its own light march ENDS, fading out over
+                // 3-3.9 km from the eye's line. It was one ray applied within ~2 km of it, from the sample's own
+                // point: a cloud's tip in front of the Sun darkened every cloud near the eye (hard-edged shadows on
+                // clouds it could not shade), and the blocking cloud counted its own depth twice — the place the Sun
+                // stood behind was the darkest of it (user snapshots). Behind the eye the lateral offset is as
+                // continuous as in front of it (review 25's great-circle line).
+                if (cv2SunWgMax[0] + cv2SunWgMax[1] + cv2SunWgMax[2] + cv2SunWgMax[3] > 0.0) {
+                    vec2  gs = vec2(dot(rel, vec3(cv2SunProf[2], cv2SunProf[3], cv2SunProf[4])),
+                                    dot(rel, vec3(cv2SunProf[5], cv2SunProf[6], cv2SunProf[7]))) / kCv2SunGridM;
+                    float hN = 0.5 * float(kCv2SunGridN - 1);
+                    float w  = 1.0 - smoothstep(hN - 3.5, hN, length(gs));
+                    if (w > 0.0) {
+                        float uu = sqrt(clamp((t * cosSun + 2.0 * cv2.light.x * (1.0 - f.thin)) / cv2SunProf[0],
+                                              0.0, 1.0)) * 16.0;
                         int   k0 = min(int(uu), 15);
-                        float odB = mix(cv2SunProf[1 + k0], cv2SunProf[2 + k0], uu - float(k0));
-                        keyCol *= mix(1.0, exp(-max(cv2SunProf[17] - odB, 0.0)), w);
+                        vec2  gg = gs + hN;
+                        ivec2 g0 = clamp(ivec2(gg), ivec2(0), ivec2(kCv2SunGridN - 2));
+                        vec2  gf = gg - vec2(g0);
+                        float Tb = 0.0;
+                        [[dont_unroll]] for (int c = 0; c < 4; ++c) {
+                            int ri = ((g0.y + (c >> 1)) * kCv2SunGridN + g0.x + (c & 1)) * 17 + k0;
+                            Tb += mix(cv2SunGrid[ri], cv2SunGrid[ri + 1], uu - float(k0))
+                                * ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
+                        }
+                        keyCol *= mix(1.0, Tb, w);
                     }
                 }
             } else if (nightK > 0.0) {

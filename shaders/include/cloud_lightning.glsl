@@ -53,8 +53,9 @@ buffer CV2FlashBuf {
     // at its height (ENU east x north, cell (i, j) centred at ((i, j) - N/2 + 0.5) x the cell), filled by the
     // lightning pass's extra workgroups; and each of those workgroups' maximum (0 = no rain near the eye).
     float    cv2RainWgMax[4];
-    // Review 22b: the eye's march toward the Sun as a PROFILE: [0] its length L (0 = none), [1 + k] the optical depth
-    // from the eye to L x (k / 16)^2, k = 0..16 (the march's own quadratic steps); [18..19] pad.
+    // The Sun's shadow about the eye's line to it (review 22b; a grid of rays since 2026-10-10): [0] the rays' length
+    // L (0 = none), [2..4] / [5..7] the grid's
+    // two axes across the Sun's direction (observer ENU); the rest pad.
     float    cv2SunProf[20];
     float    cv2RainMap[1024];
     // Rain particles (2026-10-04, rain_particles.vert): the light on a drop at the eye, written by the lightning
@@ -64,7 +65,28 @@ buffer CV2FlashBuf {
     vec4     cv2RainKeyDir;   // xyz the direction TO the key light (ENU at the eye), w the liquid share (1 rain .. 0 snow)
     vec4     cv2RainAmb;      // xyz the ambient (the sky through the cloud above + the ground), w the column's optical depth
     vec4     cv2RainMisc;     // spare
+    // kCv2SunGridN^2 parallel rays from about the eye toward the Sun, kCv2SunGridM apart along the two axes (ray
+    // r = iy * N + ix at ((ix, iy) - (N - 1) / 2) x the spacing): [r * 17 + k] = the Sun's transmittance through the
+    // cloud along ray r BEYOND its point at L x (k / 16)^2, k = 0..16 (the mean over the ray's cell). cv2SunWgMax:
+    // the largest optical depth each of the four workgroups' rays found (all 0 = nothing to shadow).
+    float    cv2SunWgMax[4];
+    float    cv2SunGrid[17408];
 };
+const int   kCv2SunGridN = 32;
+const float kCv2SunGridM = 250.0;
+
+// The grid's axes across the Sun's direction s, and its rays' length (the shell's depth along the Sun's direction, at most 400 km).
+void cv2SunGridAxes(vec3 s, out vec3 a, out vec3 b)
+{
+    a = normalize(cross(s, abs(s.z) > 0.99 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0)));
+    b = cross(s, a);
+}
+// NOT a function of the eye's height: the rays' sample depths scale with it, and with a length that shrank as the
+// eye rose every sample slid along its ray, so the far shadows (10-km steps) changed with 100 m of climb.
+float cv2SunGridLen(vec3 s, float shellTop)
+{
+    return min(shellTop / max(s.z, 0.03), 400000.0);
+}
 const int   kCv2RainMapN  = 32;
 const float kCv2RainCellM = 40.0;
 

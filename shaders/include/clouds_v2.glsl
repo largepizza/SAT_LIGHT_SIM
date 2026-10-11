@@ -85,8 +85,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
                           // atmosRayleighGain), y twilight sky light, z mid-layer density, w beam lines
     vec4  anchorFlow;     // the mesoscale volume at the flow period (the large swirls that bend the noise)
     vec4  flow;           // x flow displacement (m per unit of the normalised field), y layer spread
-    vec4  anchorCol;      // the Cb column lattice: xyz frac(sea point / period), w 1 / period (period =
-                          // 64 lattice cells, so a cell id mod 64 is stable as the observer moves)
+    vec4  anchorCol;      // the Cb towers' lobe noise (2026-10-10): xyz the storm shape anchor WITHOUT the wind's
+                          // slide (period = anchorStorm.w), w the phase 0..1 of the towers' flow (cv2ColumnSigma)
     vec4  column;         // x Cb column amount (0 = the pass-14 deep cores in the low layer), y lattice
                           // cell (m), z column base radius (m), w the low layer's top in storm regions (m)
     vec4  column2;        // x waist (x the base radius), y head flare (x the base radius), z head drift
@@ -126,7 +126,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (x a drop's terminal speed), zw the rain's wind drift (rain frame E/N, m, mod 1024); rainWind xy the wind now
     // (m/s), zw the snow's wind drift (x "Snow wind", m, mod 1024).
     vec4  rainMotion, rainWind;
-    // 2026-10-05: lightning from whole storms. x "Storm lightning (flashes/min/cell)" (cells of ~20 km), yzw spare.
+    // 2026-10-05: lightning from whole storms. x "Storm lightning (flashes/min/cell)" (cells of ~20 km); yzw the
+    // storm DETAIL anchor without the wind's slide (2026-10-10, the towers' erosion; period = anchorStormDetail.w).
     vec4  lightning2;
     // 2026-10-06: the Reflect beams' light at the eye (CPU, SatelliteSim.cpp), for the rain / snow particles: beamEye x the
     // irradiance (Suns) x "Beam light on cloud", y 1 - dayness; beamEyeDir xyz the direction to the satellites (ENU).
@@ -1178,6 +1179,7 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
 // present where the weather at the centre is cumulonimbus and covered. Jitter within the middle half
 // of a cell keeps the 2 x 2 x 2 neighbourhood exact out to 0.75 of a cell.
 float cv2SqC(float x) { return x * x; }
+const float kCv2ColFlowSpan = 0.35;   // the towers' lobe flow per cycle, in periods of the storm volume (= the CPU's)
 uvec3 cv2Pcg3(uvec3 v)
 {
     v = v * 1664525u + 1013904223u;
@@ -1305,6 +1307,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     float osM    = cv2.anvil2.w;                         // overshooting top above the lid (m)
     bool  inAnvil = q.h > lid - cv2.anvil2.x * 1.2 - 600.0 - cv2.anvil2.y;   // where the hang can reach
     float best = -1e9, bestZeta = 0.0, bestTop = 0.0, bestCap = 0.0, bestRc = 1.0;
+    float bestAng = 0.0;                                 // the point's bearing about its tower's axis (from downwind)
     float near = 0.0, prox = 0.0, bestFull = 0.0;
     float cuReach = cv2.column3.x;                       // "Storm cumulus reach" beyond a tower's edge (m)
     for (int k = 0; k < nK; ++k) {
@@ -1391,9 +1394,10 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // Not a cylinder (review 4: "smokestacks"): the outline bulges into a few turrets whose places
         // turn with height, so the tower reads as a heaped cumulus mass. Low angular orders only, and
         // within ~23% so the lattice search still covers every tower.
+        float ang;
         {
             vec3  nW  = cross(wd, eastW);
-            float ang = atan(dot(dhz, nW), dot(dhz, eastW));
+            ang = atan(dot(dhz, nW), dot(dhz, eastW));
             r *= 1.0 + 0.15 * sin(3.0 * ang + 6.2832 * hS + 2.5 * zeta) + 0.08 * sin(5.0 * ang + 6.2832 * hO - 4.0 * zeta);
         }
         float cap  = smoothstep(0.0, 1.0, zo);
@@ -1402,7 +1406,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // anvil sample in a dome's footprint was shaded as if under the whole dome (dark craters with
         // bright rims from orbit, user snap 3, pass 17; lid + osM for every tower made dark pits).
         float topL = max(topC, (full > 0.0) ? (apex - 1000.0) + 1000.0 * sqrt(max(1.0 - cv2SqC(d / max(0.35 * Rc, 1.0)), 0.0)) : 0.0);
-        if (mC > best) { best = mC; bestZeta = zeta; bestTop = topL; bestCap = cap; bestRc = Rc; bestFull = full; }   // ITS top: lid + osM shaded every tower's patch of anvil as if under 800 m more cloud (dark pits)
+        if (mC > best) { best = mC; bestZeta = zeta; bestTop = topL; bestCap = cap; bestRc = Rc; bestFull = full; bestAng = ang; }   // ITS top: lid + osM shaded every tower's patch of anvil as if under 800 m more cloud (dark pits)
         // Under the head: the anvil thickens toward the column (a wide, downwind-stretched footprint),
         // tapered to zero before the search's limit (or it too would be cut along the lattice).
         if (inAnvil) {
@@ -1434,9 +1438,25 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // Before the fetches: the lobes add at most ~0.75 x 2A in practice (the low layer's bound). A fixed
     // -0.6 fetched the storm noise through a shell 0.6 radii deep around every tower (7 km at 12 km).
     if (best + A * 1.5 <= 0.0) return o;
-    vec4  s  = cv2ShapeSmooth(cv2.anchorStorm.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w,
-                              cv2Lod(fpM, cv2.anchorStorm.w));
-    float lobes = (s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47;
+    // The lobes FLOW with the tower (2026-10-10): up its stalk and, in an anvil-reaching tower's head, outward
+    // from its axis -- the updraft spreading under the lid. The noise is read displaced against the flow by
+    // up to kCv2ColFlowSpan of its period, at two phases half a cycle apart, cross-faded (the flow-map trick
+    // the weather evolution uses: a displacement that only ever grew would shear the volume without bound,
+    // and one that wrapped would pop), the blend's lost contrast put back. Until then the towers read the
+    // storm volume at the wind's anchor, a slide along ONE direction of the drifted ECEF frame through towers
+    // that stand still in it: wherever that direction points down, the lobes sank down the columns.
+    vec3  colX  = cv2.anchorCol.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w;
+    vec3  colF  = normalize(mix(wd, cos(bestAng) * eastW + sin(bestAng) * cross(wd, eastW), smoothstep(0.5, 0.85, bestZeta) * bestFull)) * kCv2ColFlowSpan;
+    float colPh = cv2.anchorCol.w;
+    float colW  = 1.0 - abs(2.0 * colPh - 1.0);
+    float colL  = cv2Lod(fpM, cv2.anchorStorm.w);
+    // (The outward direction is rebuilt from ONE carried float, its bearing: carrying the vector out of the tower
+    // loop, like a second inlined copy of the smooth fetch, flipped the march to 222 registers.)
+    // (One fetch site in a loop: a second inlined copy of the smooth fetch flipped the march to 222 registers.)
+    vec4  s  = vec4(0.0);
+    [[dont_unroll]] for (int k = 0; k < 2; ++k)
+        s += cv2ShapeSmooth(colX - colF * fract(colPh + 0.5 * float(k)), colL) * ((k == 0) ? colW : 1.0 - colW);
+    float lobes = ((s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47) * inversesqrt(colW * colW + (1.0 - colW) * (1.0 - colW));
     float m  = best + A * lobes * 2.0;
     // The surface ramps in over ~300 m whatever the tower's size (x the radius, 0.2 of it: 2.4 km of
     // thin fog around a 12 km tower, which every ray marched through lit sample by sample before it
@@ -1448,7 +1468,8 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         float df = 0.45;
 #ifdef CV2_DETAIL_BINDING
         if (detailAmt > 0.0) {
-            vec4 dd = textureLod(cv2DetailTex, cv2.anchorStormDetail.xyz + cv2Drift(q.rSeaE) * cv2.anchorStormDetail.w,
+            // (Without the wind's slide, like the lobes: the cracks stay with the tower and the lobes rise through them.)
+            vec4 dd = textureLod(cv2DetailTex, cv2.lightning2.yzw + cv2Drift(q.rSeaE) * cv2.anchorStormDetail.w,
                                  cv2Lod(fpM, cv2.anchorStormDetail.w));
             df = mix(0.45, dd.r * 0.75 + dd.g * 0.25, detailAmt);
         }

@@ -726,7 +726,7 @@ struct GpuCloudV2Params
     glm::vec4 atmo;          // x cloud sunlight Rayleigh gain, y twilight sky light, z mid-layer density, w beam lines
     glm::vec4 anchorFlow;    // the mesoscale volume at the flow period (the large swirls that bend the noise)
     glm::vec4 flow;          // x flow warp (m of displacement per unit of the normalised field), y layer spread
-    glm::vec4 anchorCol;     // the Cb column lattice: xyz frac(sea point / period), w 1 / period (64 cells)
+    glm::vec4 anchorCol;     // the Cb towers' lobe noise: xyz the storm shape anchor without wind, w their flow's phase
     glm::vec4 column;        // x Cb column amount, y lattice cell (m), z base radius (m), w storm cumulus top (m)
     glm::vec4 column2;       // x waist, y head flare (x base radius), z head drift (m), w lobe strength
     glm::vec4 anvil2;        // x anvil thickness (m), y anvil hang (m), z tower sparsity, w overshoot above the lid (m)
@@ -3421,7 +3421,7 @@ private:
     // + review 22's rain map (cloud_lightning.glsl): 4 workgroup maxima and 32 x 32 rain rates after the flashes.
     static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * 64 + 16 + 80;   // + review 22b's Sun profile
     static constexpr VkDeviceSize kCv2RainLightOffset = kCv2RainMapOffset + 1024 * 4;   // cv2RainKey .. cv2RainMisc
-    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2RainLightOffset + 4 * 16;
+    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2RainLightOffset + 4 * 16 + 16 + 17408 * 4;   // + cv2SunWgMax, cv2SunGrid (32 x 32 rays x 17)
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;

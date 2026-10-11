@@ -1433,9 +1433,62 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - **Review 25 (2026-10-02, records 10-12):** **a straight line across the sky in the clouds** (from under / inside a deck
   at 65 S) was review 22b's Sun-path darkening, applied only for cosSun > 0: with samples within ~2 km it was full on one
   side of the great circle 90 deg from the Sun and off on the other (debug view cloudrad stepped; transmittance and the
-  air split were smooth). Behind the eye the distance to the eye's Sun RAY is the distance to the eye (continuous at
+  air split were smooth). (The one-ray profile is gone since 2026-10-10: see the Sun shadow grid below.) Behind the eye the distance to the eye's Sun RAY is the distance to the eye (continuous at
   90 deg); sat_sky.frag's near-air dimming doubled it there (also fixed). **Far-sea ripple cells are 5 along-view
   footprints** (3 drew value-noise blocks ~3 px tall: "pixelated") plus a component on the 45-deg lattice.
+- **The Sun shadow grid (2026-10-10, replaces review 22b's profile; user snapshots = profile_log records 10-12,
+  harness_runs/sunshadow/snaps.jsonl, snaps2.jsonl):** cloud_v2_lightning.comp's workgroups 5-8 (the dispatch is 9)
+  march a 32 x 32 grid of parallel rays toward the Sun, 250 m apart across it about the eye, and store the Sun's
+  TRANSMITTANCE beyond 17 points of each ray (`cv2SunGrid`, appended to the flash buffer with `cv2SunWgMax`: each
+  workgroup's largest optical depth, all 0 = the march skips the block; ice at the light march's 0.2; `cv2SunProf`
+  now holds only the rays' length [0] and the two axes [2..7]). A cloud sample takes the four rays around it
+  (bilinear) at the point where its own light march ENDS (2 x `cv2.light.x` further along; 0 for thin ice, which
+  has no light march), fading out 3-3.9 km from the eye's line. The profile was ONE ray applied within a 2-km
+  Gaussian of it, from the sample's own point: (a) the Sun slipping behind a cloud's tip darkened every cloud within
+  ~2 km of the eye's Sun line — 340 m of walking turned the whole overhead cloud dark blue-grey; (b) the blocking
+  cloud took its own depth twice (light march + profile), so the spot the Sun stood behind was the darkest. Thread
+  1's own ray still gives the Sun DISC's transmittance (`sunCloudT`). With the offset at 0 the grid draws each near
+  cloud's self-shadow as hard radial wedges converging on the Sun: the offset is what keeps them out.
+  **Three things keep it from aliasing** (the first cut, 7 x 7 rays 500 m apart, drew straight-edged SQUARES of light
+  and shadow on a sunset deck that flipped with ~100 m of climb; user record 12, Afghanistan, 7.7 km): each ray is
+  the mean transmittance of four sub-rays over its cell; 48 steps per sub-ray, each sub-ray at its own phase of the
+  step (the far steps are ~15 km: one ray hits or misses the cloud tops); and the rays' length is NOT a function of
+  the eye's height (`cv2SunGridLen`: with (shell top - eye) / sin(el), every sample slid along its ray as the eye
+  rose, and the far shadows changed with it). Test it with a FINE climb (120-m steps from the snapshot: the first
+  check, at 2-4 km steps, showed nothing). 128 registers; cost within noise (14.9 ms vs 15.2 at record 12). Not
+  re-verified: a low Sun behind a DISTANT storm with cumulus in front (the case 22b was built for).
+- **Anvil pass (2026-10-10, user snapshots = profile_log records 13-17, harness_runs/anvil/snaps.jsonl; 25 N 134 W, Sun 0.6 deg):**
+  - **Surface refinement in the view march** (`cloud_v2_march.comp`, `tLo/tHi/refN`): a fine step is 1.2% of the distance
+    (~460 m at 40 km) and a tower's lit skin tens of metres, so the first sample inside dense cloud sat at a random depth
+    under the surface: each ray came back sunlit or self-shadowed by chance. That was the "grid" on distant anvils (grain
+    at the sparse grid's 4-px scale that the history never averaged out) and a ~17% dark bias against a 25-m-step
+    reference (`set clouds_v2.step_growth 0; step_base_m 25; max_iters 6000`). When a sample is opaque over its step
+    (sigma x step >= 1), the one before it was not, T > 0.1 and the step is past (2 + 1.5 x jitter) base steps (~7-14 km,
+    dithered), the crossing is bisected three times with unlit field reads at the SAME call site (`continue`) and the
+    bracket's inner end is shaded. Distant towers are brighter and smooth; snap 4's high-pass noise 8.3 -> 2.6 levels,
+    still-view flicker std 1.25 -> 0.78, tstab 2.03 -> 1.79; +0.4-1.1 ms still, +1.0-1.3 ms moving; 128 registers.
+    Tried: no distance gate (+3.4 ms looking down into near cumulus, no gain there); two bisections for shorter steps (a
+    hard-edged darker oval where they gave way to three: the brightness follows the bracket's width); shading where the
+    view ray's optical depth reaches ~0.7 from the density slope across the bracket (corduroy stripes, 222 registers).
+    Open, visible now the grain is gone: hatching in the towers' self-shadow penumbrae and faint contour arcs on the
+    heads (the light march's long jittered steps; the light LOD's second step is ~2.4 km).
+  - **The towers' lobes flow up and out** (`cv2ColumnSigma`, `kCv2ColFlowSpan` 0.35): every noise anchor slides along ONE
+    direction of the drifted ECEF frame (`windDir`), and the towers stand still in that frame, so the storm lobes crossed
+    them at whatever angle that direction makes with the local vertical — at these snapshots 56% of the wind straight
+    DOWN ("clouds falling down their columns"). The towers now read the storm shape volume at a wind-free anchor
+    (`anchorCol.xyz`, the unused 3D-lattice anchor's slot) displaced against a flow — up the stalk, and in an
+    anvil-reaching tower's head outward from its axis — at two phases half a cycle apart, cross-faded and renormalised
+    (`anchorCol.w` = the phase, 1.5 x "Wind" over 0.35 of a period: ~11 min a cycle at the user's 22.8-km storm period).
+    The erosion detail reads a wind-free anchor too (`lightning2.yzw`). A paused view's lobes differ from before (another
+    part of the volume). **Register notes:** carrying the outward VECTOR out of the tower loop, or a second inlined
+    `cv2ShapeSmooth`, each gave 222 registers; one carried float (the bearing, `bestAng`) and a 2-iteration fetch loop keep
+    128. Not changed: the low layer's lobes (storm cumulus, every cumulus) still slide along `windDir`, so they sink or
+    rise by place; the map-fed shield (`cv2AnvilSigmaP`, off by default) still reads the wind anchor.
+  - **Long-range cloud shadows exist only near the eye** (answer to "the shadow pops in as I get closer"): a cloud sample's
+    own light march reaches ~2 x `light_len_m` (5 km); beyond that only the Sun shadow grid sees blockers, and it covers
+    3-3.9 km about the eye's line to the Sun. A tower 20 km off is lit as if nothing stood between it and a 0.6-deg Sun;
+    fly to it and the storm 100+ km sunward shadows it. Not fixed here: it needs a Sun-space shadow volume over the whole
+    view (a coarse world-anchored cascade of the same grid), which would also feed godrays and far ground shadows.
 - **Review 27 (records 13-14):** the far-sea ripple's level blend drew RINGS round the observer (worst in motion): a level
   took a different offset as the incoming and the outgoing one (`seaRippleLevel(k)` is now one function of k), and the
   mix of two independent levels dipped to 0.71 contrast mid-way (renormalised). "Far sea ripple size (px)" (slot 256,

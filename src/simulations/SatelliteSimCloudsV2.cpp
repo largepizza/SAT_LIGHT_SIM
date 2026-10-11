@@ -1125,7 +1125,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // The Cb column lattice: 64 cells per period, so a cell's id mod 64 (its hash) is stable as the
         // observer moves; carried with the cells (0.85 of the wind), like the field they rise from.
         const double cellM = std::clamp((double)cv2CbSpacingKm, 8.0, 120.0) * 1000.0;
-        p.anchorCol = anchor(cellM * 64.0, 0.85);
+        // The towers' own lobe noise (2026-10-10; the 3D lattice anchorCol held is gone since pass 16): the storm
+        // shape volume WITHOUT the wind's slide, and in w the phase of the towers' flow (clouds_v2.glsl
+        // cv2ColumnSigma: the lobes rise up a tower and spread out in its head, over kColFlowSpan of a period per
+        // cycle, at 1.5 x "Wind"). The wind is one fixed direction in the drifted ECEF frame, so at a given place
+        // the noise slid through the (stationary) towers at whatever angle that makes with the local vertical: at
+        // 25 N 134 W, 56% of it straight DOWN -- the user's "clouds falling down their columns".
+        const double kColFlowSpan = 0.35;   // = kCv2ColFlowSpan
+        const double stormP = cv2ShapePeriodM * stormScale;
+        p.anchorCol = anchor(stormP, 0.0);
+        p.anchorCol.w = (float)fracPos(1.5 * (double)cv2WindMps * simT / (kColFlowSpan * stormP));
         p.column = glm::vec4(std::max(cv2CbColumns, 0.0f), (float)cellM,
                              std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f,
                              std::clamp(cv2CbCumulusTopKm, 2.0f, 12.0f) * 1000.0f);
@@ -1154,7 +1163,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                         glm::length(eye - cv2PrevEye) > 1.0 ? 1.0f : 0.0f, 0.0f);
     p.lightning = glm::vec4(std::max(cv2LightningRate, 0.0f), std::max(cv2LightningGlow, 0.0f),
                             std::max(cv2LightningBolt, 0.0f), (float)std::fmod((double)simDayJ2000 * 86400.0 + simSecInDay, 100000.0));
-    p.lightning2 = glm::vec4(std::max(cv2LightningStormRate, 0.0f), 0.0f, 0.0f, 0.0f);
+    {
+        // yzw: the storm detail volume without the wind's slide (the towers' erosion; see anchorCol).
+        const glm::vec4 ad = anchor(cv2DetailPeriodM * stormScale, 0.0);
+        p.lightning2 = glm::vec4(std::max(cv2LightningStormRate, 0.0f), ad.x, ad.y, ad.z);
+    }
 
     static const int kOffsets[4][2] = {{0, 0}, {1, 1}, {1, 0}, {0, 1}};
     const int *o = kOffsets[cv2Frame & 3u];
@@ -1457,7 +1470,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     if (cv2LightningPipeline)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightningPipeline);
-        vkCmdDispatch(cmd, 5, 1, 1);   // + 4 workgroups for the rain map around the eye (review 22)
+        vkCmdDispatch(cmd, 9, 1, 1);   // + 4 workgroups for the rain map (review 22), + 4 for the Sun shadow grid
         // The rain particles (main pass, vertex stage) read the rain map and the light at the eye it just wrote.
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
