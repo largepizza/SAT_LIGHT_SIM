@@ -281,6 +281,18 @@ layout(location = 1) out float outDepthCopy;
 #include "atmosphere.glsl" // line-of-sight extinction (atmExtinctionMag)
 #include "darksky.glsl"   // dark-sky exposure gate (Milky Way / zodiacal)
 #include "depth.glsl"
+// The Sun shadow cascade (2026-10-10): the clouds' shadows on the AIR, from the same lattice the cloud march
+// lights its samples by (cloud_lightning.glsl cv2SunCasc, the cv2 UBO's sunCasc0-2). Not in the light tiers
+// or the probes (their eye is a satellite's).
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+#define SKY_SUN_SHADOW
+#define CV2_PARAMS_BINDING 31
+#define CV2_PARAMS_ONLY
+#include "clouds_v2.glsl"
+#define CV2_FLASH_BINDING 30
+#define CV2_SUN_CASC_FN
+#include "cloud_lightning.glsl"
+#endif
 #include "eclipse.glsl"  // the Moon's shadow per point (solar eclipses)     // unified scene depth (gl_FragDepth)
 
 // ── Close-up terrain materials (terrain v2 P3, binding 27) ─────────────────────────────────────
@@ -3543,6 +3555,14 @@ void main() {
                  : int(clamp(ceil((tEnd - tStart) / targetStepLen), viewSamplesMin, viewSamplesMax));
     float segLen = (tEnd - tStart) / float(N_VIEW);
     float cosA   = dot(dir, sunDir);
+#ifdef SKY_SUN_SHADOW
+    // "God rays" (cv2.lightVol.w, 0..1): how much of the clouds' shadow the air takes; 0 while the cascade is off.
+    float sunShK = (cv2.sunCasc2.x > 0.0) ? clamp(cv2.lightVol.w, 0.0, 1.0) : 0.0;
+    // The shaft samples' phase along the ray: per pixel (interleaved gradient noise), and per frame with the sky TAA.
+    float shaftJit = fract(52.9829189 * fract(dot(gl_FragCoord.xy + 5.588238 * cloud.taaJitter.xy * 16.0, vec2(0.06711056, 0.00583715))));
+#else
+    const float sunShK = 0.0;
+#endif
     float pR     = phaseR(cosA);
     float pM     = phaseM(cosA);
 
@@ -3656,6 +3676,18 @@ void main() {
         // densR/densM = density × step length = optical depth contribution of this step alone.
         float densR = exp(-h / H_R) * segLen;   // Rayleigh: peaks at sea level, scale height H_R
         float densM = exp(-h / H_M) * segLen;   // Mie: concentrated near surface, scale height H_M
+        // Haze near clouds (2026-10-10, "Haze near clouds" = cv2.sunCasc2.w): humid air under and around the weather
+        // systems carries more aerosol (the weather cube over ~40 km: cover, + rain), 2.5-km scale height, added to
+        // the Mie column of this step. Aerosol is what scatters FORWARD: with it a sunlit stretch between cloud
+        // shadows glows toward the Sun (a ray), where clean air only shows the shadows as darker bands.
+#ifdef SKY_SUN_SHADOW
+        if (cv2.sunCasc2.w > 0.0 && h < 12000.0) {
+            vec3  dS  = normalize(sp.x * enuX + sp.y * enuY + sp.z * enuZ);
+            float dph = cloud.cloudPhase * cloud.layers[0].driftMult;
+            vec4  wx  = textureLod(earthCloudsCube, vec3(dS.x * cos(dph) - dS.y * sin(dph), dS.x * sin(dph) + dS.y * cos(dph), dS.z), 3.0);
+            densM += cv2.sunCasc2.w * (0.25 + 0.75 * smoothstep(0.05, 0.4, wx.r) + 0.6 * wx.b) * exp(-h / 2500.0) * (1.0 - smoothstep(7000.0, 12000.0, h)) * segLen;
+        }
+#endif
         odR_cam += densR;
         odM_cam += densM;
 
@@ -3794,8 +3826,53 @@ void main() {
             float tS = tStart + (float(i) + 0.5) * segLen;
             float dPerp = cosA < 0.0 ? tS : tS * sqrt(max(1.0 - cosA * cosA, 0.0));   // review 25: continuous at 90 deg (it doubled there)
             atmTermW8 *= mix(1.0, cloud.sunCloudT, (1.0 - smoothstep(8000.0, 14000.0, h))
-                                                  * exp(-tS / 50000.0 - dPerp / 3000.0));
+                                                  * exp(-tS / 50000.0 - dPerp / 3000.0) * (1.0 - sunShK));
         }
+        // The clouds' shadows on the air (2026-10-10, "God rays" = sunShK): this step's sunlight x the Sun shadow
+        // cascade's transmittance, the mean of three points along the step (a step is 10+ km and a storm's shadow a
+        // slab a few km deep: one read per step drew its edge as bands). The shadowed share is lit by the sky like
+        // the air in the Earth's shadow (shR / shM below), or a storm's shadow would be a black wedge. One light for
+        // the clouds and the air between them: the cloud march reads the same lattice for its key light.
+#ifdef SKY_SUN_SHADOW
+        if (sunShK > 0.0) {
+            float Tc = 0.0;
+            [[dont_unroll]] for (int k = 0; k < 3; ++k) {
+                float tk = tStart + (float(i) + (float(k) + 0.5) / 3.0) * segLen;
+                Tc += cv2SunCascT(dir * tk, tk * cosA + 0.5 * cv2.sunCasc2.y);
+            }
+            Tc *= 1.0 / 3.0;
+            // Near the eye, the SHAFT lattice (cv2SunShaftT: 250-m cells): the step's first kCv2ShaftRangeM sampled
+            // 24 times, so the gaps between single clouds draw their own rays (the cascade's 3-km cells and three
+            // reads a step blur them away). Reads are weighted as the haze thins with height along the ray, and the
+            // stretch's share of the step likewise.
+            float tA = tStart + float(i) * segLen;
+            if (cv2.sunCasc4.w > 0.0 && tA < kCv2ShaftRangeM) {
+                float tN  = min(segLen, kCv2ShaftRangeM - tA);
+                float zK  = dir.z / 3000.0;
+                float acc = 0.0, wS = 0.0;
+                [[dont_unroll]] for (int k = 0; k < 24; ++k) {
+                    float tr = tN * (float(k) + shaftJit) / 24.0;
+                    vec2  sh = cv2SunShaftT(dir * (tA + tr), (tA + tr) * cosA);
+                    float wk = exp(-clamp(zK * tr, -8.0, 30.0));
+                    acc += wk * mix(Tc, sh.x, sh.y);
+                    wS  += wk;
+                }
+                float eN = clamp(zK * tN, -8.0, 30.0), eS = clamp(zK * segLen, -8.0, 30.0);
+                float fN = (abs(eS) < 1e-3) ? tN / segLen : (1.0 - exp(-eN)) / (1.0 - exp(-eS));
+                Tc = mix(Tc, acc / wS, clamp(fN, 0.0, 1.0));
+            }
+            float shK = sunShK * (1.0 - Tc);
+            if (shK > 0.001) {
+                vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+                shR += aC * densR * shK; shM += dot(aC, vec3(1.0 / 3.0)) * densM * shK;
+                float fwS = clamp((tAirFrontM - tStart - float(i) * segLen) / segLen, 0.0, 1.0);
+                shRF += aC * densR * shK * fwS; shMF += dot(aC, vec3(1.0 / 3.0)) * densM * shK * fwS;
+                shT += densR * shK * (tStart + (float(i) + 0.5) * segLen);
+                shD += densR * shK;
+                attn *= 1.0 - shK;
+            }
+        }
+#endif
         // A solar eclipse (2026-10-03): the Moon's shadow on THIS sample's sunlight, plus the light scattered in from
         // the sunlit air around it. The whole sky used to be dimmed by the Sun the EYE saw: from inside the umbra the
         // horizon was as dark as the zenith (no orange ring), and from space the air over the shadow stayed blue-lit,

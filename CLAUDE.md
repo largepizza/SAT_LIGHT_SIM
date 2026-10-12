@@ -1484,11 +1484,116 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     `cv2ShapeSmooth`, each gave 222 registers; one carried float (the bearing, `bestAng`) and a 2-iteration fetch loop keep
     128. Not changed: the low layer's lobes (storm cumulus, every cumulus) still slide along `windDir`, so they sink or
     rise by place; the map-fed shield (`cv2AnvilSigmaP`, off by default) still reads the wind anchor.
-  - **Long-range cloud shadows exist only near the eye** (answer to "the shadow pops in as I get closer"): a cloud sample's
-    own light march reaches ~2 x `light_len_m` (5 km); beyond that only the Sun shadow grid sees blockers, and it covers
-    3-3.9 km about the eye's line to the Sun. A tower 20 km off is lit as if nothing stood between it and a 0.6-deg Sun;
-    fly to it and the storm 100+ km sunward shadows it. Not fixed here: it needs a Sun-space shadow volume over the whole
-    view (a coarse world-anchored cascade of the same grid), which would also feed godrays and far ground shadows.
+  - **The Sun shadow CASCADE** (`cv2SunCasc` in the flash buffer, `cv2.sunCasc0-2`, "Far cloud shadows (0/1)" slot 269,
+    `clouds_v2.sun_cascade`, default on). A sample's light march reaches ~5 km and the fine Sun shadow grid covers
+    3-3.9 km about the eye's line to the Sun, so a tower 20 km off stood sunlit behind a storm that shaded it and the
+    shadow popped in on flying up to it (user snaps 1-2; `harness_runs/anvil`: the approach test). The cascade is the
+    same thing over the view: 128 x 32 parallel rays across the Sun's direction (the fine grid's axes: a horizontal,
+    3.2-km cells, +-205 km; b the other, cells = (205 km x |sin el| + (mid-shell + 2 km) x cos el) / 16: 0.8 km at
+    sunset, ~10 km at 45 deg), the window centred at mid-shell under the eye, 49 knots along the Sun (40 uniform
+    intervals through the window, ~10 km at sunset, 8 stretched sunward by shell top / sin el, at most 500 km), each
+    knot = the transmittance BEYOND it.
+    - **The lattice rides with the clouds and is stored toroidally.** The CPU integrates the eye's motion relative to
+      the clouds (the resolve's `Rz(dDrift) eye - prevEye`) along a and b into the eye's lattice coordinate
+      (`cv2CascLatA/B`, double; never an absolute coordinate: a change of axes or cell size then pivots the lattice about
+      the eye and moves no ray by more than metres between refreshes); ray (I, J) lives at [(J mod 32) x 128 + (I mod 128)].
+      A ray keeps its slot while the eye flies, so a bake up to 32 frames old is still in the right place.
+    - **Same bake cost as the fine grid alone:** with the cascade on, odd frames bake 2048 cascade rays (workgroups 5-12,
+      2 sub-rays x 48 steps) and the fine grid refreshes on even frames only: the same field reads per frame as before.
+      The dispatch is 13 workgroups. A reset (`!valid`: a teleport, a time jump, a settings change; Sun below -6 deg; eye
+      above 60 km) zeroes its weight for 33 frames, then eases it in over 8 (`sunCasc2.x`). **Harness: `wait settle 160`
+      after anything that resets it** (the default 40 frames captures it empty).
+    - **Lookup** (cloud_v2_march.comp, after the fine grid's): four rays bilinear, two knots, read ONE KNOT SUNWARD of
+      where the sample's light march ends (`sunCasc2.y`): a knot interval holds the sample's own cloud, and without the
+      bias every sunlit face is shadowed by the body behind it. Final shadow = mix(cascade, fine grid, the fine grid's
+      weight). 128 registers.
+    - **Measured** (RTX 3070 Ti, 1920x1009, on vs off): still views' cloud march 0.3-0.8 ms LOWER with it on (shadowed
+      samples end their rays' work sooner), moving (tstab paths) total 16.6 / 18.1 / 19.1 vs 16.6 / 17.6 / 20.1 ms;
+      tstab pitch 1.14 -> 0.86, rise 1.27 -> 1.19, walk 2.94 -> 2.58. No new validation messages.
+    - **Limits:** blockers 5-15 km sunward of a sample fall in the bias (the light march sees the first 5 km); above a
+      ~15 deg Sun a knot plus the bias is several km of HEIGHT, so an anvil's shadow on the cumulus under it is mostly
+      missed (it would need knots by height); no shadow beyond +-205 km; a paused harness view must settle 90 frames.
+      Not yet read by anything else: godrays (the air's in-scatter along the view ray x this transmittance) and far
+      ground shadows are the next consumers.
+  - **Cascade round 2 (2026-10-10, user snaps = profile_log records 18-20, harness_runs/anvil/snaps2.jsonl; "insanely
+    blocky and positionally unstable"):**
+    - **Both bakes jitter their sub-rays per bake and keep a RUNNING MEAN** (`cv2.sunCasc3.zw` = the new bake's weight:
+      1 / bakes since a reset, at least 1/8; an R2 offset in the cell and a golden-ratio step phase from each ray's
+      hash). With fixed sub-rays a ray knew a cloud top's height to a quarter cell (62 m fine, 380 m cascade), and at a
+      0.5-deg Sun that is 7-40 km along the ground: shadow edges were stairs. The stored value is now the cell's mean.
+      **Harness: `wait settle 160`** after a reset (33 frames to fill + ~32 for the mean).
+    - **The fine grid's lattice rides with the clouds and is toroidal too** (`cv2GridLatA/B`, `sunCasc3.xy`): it bakes
+      on even frames only while the cascade is on, and an eye-centred grid a frame old sat a cell off at the player's
+      speed. With the cascade up it is used only within 3-6 km of the eye (`w *= 1 - smoothstep(3 km, 6 km, t)`): as a
+      tube along the whole line to the Sun it drew its own answer through the cascade's on whatever stood down-Sun.
+    - **Thin ice casts no shadow in either bake** (`od += sigma x (1 - thin)`): along a grazing ray the high layer
+      shadowed itself over tens of km. Thin samples read the cascade at the MIDDLE of their layer (`f.topH`, `f.hf`):
+      at a jittered height in it the shadow speckled.
+    - **The lookup is `cv2SunCascT(rl, sAlong)`**, one function for the cloud samples' key light and the godrays (128
+      registers with both call sites).
+    - **God rays = the sky pass shadowing its own air by the cascade** (sat_sky.frag `SKY_SUN_SHADOW`: every variant
+      but SKY_LITE and the SKY_ENV probes). Each N_VIEW step's sunlight is x the mean of three `cv2SunCascT` reads
+      along the step (half a knot sunward; one read per 10+ km step drew a shadow's edge as bands), and the shadowed
+      share is lit by the sky like the air in the Earth's shadow (`shR` / `shM`: or a storm's shadow is a black wedge).
+      `airFront` takes it too, so the haze in front of a cloud is shadowed with the sky beside it. The cloud samples'
+      key light reads the same lattice: one Sun shadow for the clouds and the air between them. "God rays"
+      (`clouds_v2.godrays`, slot 187, `cv2.lightVol.w`) is now 0..1 = how much of the shadow the air takes, default
+      1 (a saved 3 loads as 1); section renamed "Cloud shadows & god rays". Review 22's `sunCloudT` dimming of the air
+      near the eye's line to the Sun gives way to it (x (1 - sunShK)).
+      - **Bindings:** the sky set grew to 32: 30 = the clouds' flash buffer (its 10th storage buffer; the device check
+        asks for 11), 31 = the clouds v2 UBO (`clouds_v2.glsl` with `CV2_PARAMS_ONLY`). `cv2SunCascT` lives in
+        `cloud_lightning.glsl` behind `CV2_SUN_CASC_FN` (it needs the cv2 UBO).
+      - **It replaced the march-side godrays** (and `cloud_v2_lightvol.comp` is no longer dispatched: `bakeLightVol`
+        false; the volume and its bindings remain). The march could only scale a pixel's transmittance, and the sky
+        pass (since review 8b) dims only the air BEHIND a pixel's cloud distance: a clear pixel was never dimmed and
+        one with the faintest veil was, by all of it. The user's "pixelated shadow on the cirrus" (snap 2, "God rays"
+        3) was that sheet, with the stair-stepped outline of "any cloud found" (`debugview cloudtrans` smooth,
+        `cloudairsplit` blue = no distance in the hole) - the same edge whichever volume it read. Tried and reverted
+        while chasing it: a wider footprint for the air split's distance, and the mean cloud distance taken in
+        airlight space (1 - exp(-t / 40 km)).
+      - **Measured** (1920x1009, sky_taa off as the user runs): sky pass +0.7-1.0 ms, GPU frame 19.55 vs 18.80 ms
+        looking at the Sun; still-view flicker std 0.12-0.17 levels (0.04 off); no new validation messages. Looking
+        down-Sun at sunset the shadows converge on the antisolar point (anticrepuscular rays).
+    - **Near-field shafts + haze (2026-10-11, in progress, unjudged):** a third lattice, `cv2SunShaft` (flash buffer,
+      128 x 128 rays at 250 m across the Sun, 32 toroidal knots along it spaced so +-16 reach ~5 km of height,
+      `cv2.sunCasc4/5`, CPU `cv2ShaftLatA/B/S`), baked by lightning workgroups 13-14 (512 rays a frame, all in 32;
+      each starts from the cascade at the window's sunward end; dispatch 15). The sky pass samples it 24 times over
+      a step's first 14 km (`cv2SunShaftT`, haze-weighted). "Haze near clouds" (`clouds_v2.haze_aloft` 1, slot 188,
+      the old "God ray range"; `cv2.sunCasc2.w`) adds Mie with a 2.5-km scale height, 0.25 + 0.75 x the weather
+      cube's cover (+ rain), so lit shafts glow toward the Sun. The fog/dust march's sunlight reads the cascade (one
+      dithered ray, `sunC`; NOT gated by "God rays" yet). Cost: sky pass 4.5 vs 2.7 ms with god rays off (cumulus
+      view, haze 3). **Register note:** removing the old march-side godray block left `godT` the constant 1.0 and the
+      march went to 220 registers; `godT = (cv2.lightVol.w > 1.5) ? 0.0 : 1.0` brings 128 back.
+    - **Cloud tuning pass (2026-10-11, the user's snapshots = profile_log records 21-29, harness_runs/r11):** the
+      compiled clouds_v2 defaults are the user's tuned settings (High's march budget 430 / light steps 7 / growth 0.014
+      follow). New, slots 270-282 (`kCloudSliderSlots` 283), UBO `tune / mid2 / mid3 / samp` (appended):
+      "Small cumulus" (`small_cumulus` 0.06: the low field lifted at the coverage threshold, `max(xe, min(xe + d,
+      d + 2/3 xe))`), "Erosion / Lobe variation" (one regional value `rV` from cl4.a), "Erosion size" / "Lobe size"
+      (the detail / shape periods, moved to Shape), the mid layer's "Altostratus density", thickness, field size, cover
+      bias and "Mid layer shadow" (`CV2Field.soft` = the mid layer's share; the light march and the Sun shadow bakes
+      count 1 - mid2.z x soft of it: a sheet crossed at a grazing Sun drew a hard horizontal shadow line across every
+      cumulus rising through it), "Cirrus direction warp" (five whole-count waves on the across-wind coordinate + the
+      bundles broken into patches), "Far cloud shadow range (km)" (the cascade's half width, was a fixed 205).
+      **Resolve: per-pixel AGE** (`cv2AgeImg` / `cv2AgeHistImg`, R32F, resolve bindings 9 / 10, copied with the
+      history): weight max(w, 1 / (age + 1)), young pixels lean on the neighbourhood estimate, clamp rejection lowers
+      the age ("Accumulation", "New pixel smoothing", "Motion clamp (sd)"). tstab at record 27: pan 2.19 -> 1.90,
+      pitch 1.72 -> 1.36, walk 3.81 -> 3.54. **Register notes:** a second regional value (cl16.a) carried to the
+      erosion block, and a smoothstep form of the small-cumulus lift, each gave 222. **Benchmark trap:** records
+      28-29 were saved with `detail` 0; `snapshot` restores a record's settings, so compare with `settings=off` and
+      the user's settings.json when judging the current look. With detail 0 the sub-pixel cover (presFar) shows
+      20-30% cloud from 450 km where the resolved field has ~1-2% below 300 km; with detail 0.77 the erosion removes
+      those marginal puffs at every distance. Open: the mid layer's shadow still has an edge; cirrus bundles from
+      orbit are still wavy bands; "Small cumulus" at 0.15 visibly fills gaps in near views.
+    - **The Sun shadow grids are not reset with the SCREEN history** (`lightValid`, `cv2FieldHash`,
+      `cv2ScreenResetOnly`): they live in the clouds' space, so recreating the screen images (the HQ photo's target, a
+      render-scale step) or changing the march rate (`cv2FullRateAboveKm`, hashed after `hField`) keeps them. Tied to
+      `valid`, the HQ photo's first ~40 frames had no far cloud shadows and no god rays, and they dropped out again
+      for ~0.7 s in the window after it (user report). A teleport, time jump or field setting still resets them.
+    - **A lightning flash in a paused snapshot lights the shadowed cloud** (snap 1's "grey slab" was the flash's glow on
+      the shadowed stalk): `time add 5` before judging cloud lighting.
+    - **Measured** (snap 18, 1920x1009, on vs off): cloud march 13.0 vs 14.9 ms still; moving (tstab paths) total
+      16.8 / 17.4 / 19.0 vs 18.4 / 18.4 / 21.2 ms; tstab pitch 0.81 -> 0.49, rise 1.52 -> 1.32, walk 1.73 -> 1.56; a
+      10-km strafe returns to the same image (0.57 levels mean difference).
 - **Review 27 (records 13-14):** the far-sea ripple's level blend drew RINGS round the observer (worst in motion): a level
   took a different offset as the incoming and the outgoing one (`seaRippleLevel(k)` is now one function of k), and the
   mix of two independent levels dipped to 0.71 contrast mid-way (renormalised). "Far sea ripple size (px)" (slot 256,
@@ -1535,7 +1640,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
-- The Clouds tab's slider slots: `kCloudSliderSlots` (269 since 2026-10-05: 261-266 rain particles, 267-268 storm lightning / tendrils; 258 since review 28: 257 sea wave range fade; 257 since review 27: 256 far sea ripple size; 256 since review 24: 248-250 far sea ripple, sea warp x2, 251-255 far cloud layer tunables; 248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
+- The Clouds tab's slider slots: `kCloudSliderSlots` (270 since 2026-10-10: 269 far cloud shadows; 269 since 2026-10-05: 261-266 rain particles, 267-268 storm lightning / tendrils; 258 since review 28: 257 sea wave range fade; 257 since review 27: 256 far sea ripple size; 256 since review 24: 248-250 far sea ripple, sea warp x2, 251-255 far cloud layer tunables; 248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
   `cloudBufs` (212 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
   moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind; 210 move speed (Controls tab), 211 erosion size); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
@@ -4767,7 +4872,7 @@ Read it at the start of any terrain-related session before making changes.
   under "Subsystem: GPU Orbital Pipeline → Push constants" and the "Push-constant relief" block in
   `GpuCloudParams`. Both point pipeline layouts (`drawPipeLayout`, `starPipeLayout`) use
   `sizeof(PointDrawPC)`; `skyBgPipeLayout` uses `sizeof(SatDrawPC)`.
-- Sky descriptor set has 30 bindings (0-29; 29 = the far cloud layer `cloudFarImg`, a storage image read with imageLoad, review 18; 28 = the major-roads storage buffer for the city lights; 27 = the terrain material array, terrain v2 P3; 26 = terrainFrameBuf, the observer's detailed ground height
+- Sky descriptor set has 32 bindings (0-31; 30 = the clouds' flash buffer and 31 = the clouds v2 UBO, for the clouds' shadows on the air, 2026-10-10; 29 = the far cloud layer `cloudFarImg`, a storage image read with imageLoad, review 18; 28 = the major-roads storage buffer for the city lights; 27 = the terrain material array, terrain v2 P3; 26 = terrainFrameBuf, the observer's detailed ground height
   from scene_depth.comp, 2026-09-25). Before that it had 26 (0-25; 22/23 the mesh targets, 24 the env star grid, 25 the
   sharp-reflection G-buffer — the last two read only by the SKY_ENV / SKY_REFL variants). The original 22 (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec (the R8G8 water map since terrain v2 P2), earthClouds (since 2026-09-29 the v2 weather CUBE), cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)

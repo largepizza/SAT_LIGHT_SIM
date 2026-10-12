@@ -71,7 +71,44 @@ buffer CV2FlashBuf {
     // the largest optical depth each of the four workgroups' rays found (all 0 = nothing to shadow).
     float    cv2SunWgMax[4];
     float    cv2SunGrid[17408];
+    // The Sun shadow CASCADE (2026-10-10): the same thing over the whole view. kCv2CascNA x kCv2CascNB parallel rays
+    // on a lattice across the Sun's direction (the fine grid's axes), a = horizontal, b = the other; the lattice
+    // RIDES WITH THE CLOUDS (the CPU integrates the eye's motion relative to them into its lattice coordinate,
+    // cv2.sunCasc0.xy) and is stored toroidally: ray (I, J) at [(J mod NB) * NA + (I mod NA)], so a ray keeps its
+    // slot while the eye moves and only the window's edge changes hands. [ray * (K + 1) + k] = the Sun's
+    // transmittance through the cloud BEYOND knot k of that ray (cv2CascKnotS).
+    float    cv2SunCasc[200704];
+    // The SHAFT lattice (2026-10-10): the Sun's shadow near the eye at the scale of single clouds, for the god rays
+    // (the sky pass samples it densely over its first kCv2ShaftRangeM). kCv2ShaftN^2 parallel rays kCv2ShaftCellM
+    // apart across the Sun (the same axes), kCv2ShaftK knots cv2.sunCasc5.y apart ALONG it; it rides with the clouds
+    // in all three coordinates (cv2.sunCasc4.xyz = the eye on it) and is toroidal in all three: ray (I, J), knot n at
+    // [((J mod N) * N + (I mod N)) * K + (n mod K)] = the Sun's transmittance BEYOND that knot (the cascade's value
+    // at the window's sunward end x the cloud between). 512 rays are baked a frame (all in 32).
+    float    cv2SunShaft[524288];
 };
+const int   kCv2ShaftN      = 128;
+const int   kCv2ShaftK      = 32;
+const float kCv2ShaftCellM  = 250.0;
+const float kCv2ShaftRangeM = 14000.0;   // from the eye: inside the lattice's +-16 km and its +-16 knots
+const int   kCv2CascNA = 128;
+const int   kCv2CascNB = 32;
+const int   kCv2CascK  = 48;     // knot intervals: kCv2CascKU uniform ones through the window, the rest stretched sunward
+const int   kCv2CascKU = 40;
+
+// Knot k's distance along the Sun from the window's anti-Sun end (m). x = the uniform part's half depth, y = the stretch.
+float cv2CascKnotS(float k, vec2 zs)
+{
+    float q = max(k - float(kCv2CascKU), 0.0) / float(kCv2CascK - kCv2CascKU);
+    return min(k, float(kCv2CascKU)) * (2.0 * zs.x / float(kCv2CascKU)) + zs.y * q * q;
+}
+// ...and back: the (fractional) knot at that distance.
+float cv2CascKnotAt(float s, vec2 zs)
+{
+    float u = s * (float(kCv2CascKU) / (2.0 * zs.x));
+    if (u > float(kCv2CascKU))
+        u = float(kCv2CascKU) + float(kCv2CascK - kCv2CascKU) * sqrt(clamp((s - 2.0 * zs.x) / zs.y, 0.0, 1.0));
+    return clamp(u, 0.0, float(kCv2CascK));
+}
 const int   kCv2SunGridN = 32;
 const float kCv2SunGridM = 250.0;
 
@@ -87,6 +124,63 @@ float cv2SunGridLen(vec3 s, float shellTop)
 {
     return min(shellTop / max(s.z, 0.03), 400000.0);
 }
+#ifdef CV2_SUN_CASC_FN
+// The Sun shadow CASCADE's transmittance (cloud_lightning.glsl cv2SunCasc) at a point rl (from the eye, observer
+// ENU) and a distance sAlong along the Sun from the eye (the caller adds its bias): four rays bilinear on the toroidal
+// lattice, two knots. 1 outside the window and while the cascade fills. Read by the cloud samples' key light
+// (cloud_v2_march.comp) and by the sky's air samples (sat_sky.frag). Define CV2_SUN_CASC_FN (it needs the cv2 UBO).
+float cv2SunCascT(vec3 rl, float sAlong)
+{
+    vec3  ga = vec3(cv2SunProf[2], cv2SunProf[3], cv2SunProf[4]);
+    vec3  gb = vec3(cv2SunProf[5], cv2SunProf[6], cv2SunProf[7]);
+    vec2  ce = vec2(dot(rl, ga) / cv2.sunCasc1.x, dot(rl, gb) / cv2.sunCasc1.y);     // cells from the eye
+    vec2  cc = abs(ce - vec2(0.0, cv2.sunCasc0.z));                                   // ... from the centre
+    // (The a edge fades over the window's last fifth: over 3.5 cells the far shadows ended on a visible line.)
+    float wC = (1.0 - smoothstep(0.4 * float(kCv2CascNA), 0.5 * float(kCv2CascNA) - 1.5, cc.x))
+             * (1.0 - smoothstep(0.5 * float(kCv2CascNB) - 3.5, 0.5 * float(kCv2CascNB) - 1.5, cc.y))
+             * cv2.sunCasc2.x;
+    if (wC <= 0.0) return 1.0;
+    float uu = cv2CascKnotAt(sAlong - cv2.sunCasc0.w + cv2.sunCasc1.z, cv2.sunCasc1.zw);
+    int   k0 = min(int(uu), kCv2CascK - 1);
+    vec2  gg = ce + cv2.sunCasc0.xy + vec2(float(kCv2CascNA), float(kCv2CascNB)) * 8.0;
+    ivec2 g0 = ivec2(gg);
+    vec2  gf = gg - vec2(g0);
+    float Tb = 0.0;
+    [[dont_unroll]] for (int c = 0; c < 4; ++c) {
+        int ri = ((((g0.y + (c >> 1)) & (kCv2CascNB - 1)) * kCv2CascNA + ((g0.x + (c & 1)) & (kCv2CascNA - 1)))
+                  * (kCv2CascK + 1)) + k0;
+        Tb += mix(cv2SunCasc[ri], cv2SunCasc[ri + 1], uu - float(k0))
+            * ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
+    }
+    return mix(1.0, Tb, wC);
+}
+// The SHAFT lattice at a point rl (from the eye, observer ENU), sAlong = dot(rl, the Sun's direction): x the Sun's
+// transmittance, y the lattice's weight there (0 outside its window or while it fills: use the cascade).
+vec2 cv2SunShaftT(vec3 rl, float sAlong)
+{
+    if (cv2.sunCasc4.w <= 0.0) return vec2(1.0, 0.0);
+    vec3  ga = vec3(cv2SunProf[2], cv2SunProf[3], cv2SunProf[4]);
+    vec3  gb = vec3(cv2SunProf[5], cv2SunProf[6], cv2SunProf[7]);
+    vec2  ce = vec2(dot(rl, ga), dot(rl, gb)) / kCv2ShaftCellM;
+    float ks = sAlong / cv2.sunCasc5.y;
+    float w  = (1.0 - smoothstep(56.0, 62.0, max(abs(ce.x), abs(ce.y)))) * (1.0 - smoothstep(12.0, 14.5, abs(ks)))
+             * cv2.sunCasc4.w;
+    if (w <= 0.0) return vec2(1.0, 0.0);
+    vec2  gg = ce + cv2.sunCasc4.xy + float(kCv2ShaftN) * 8.0;
+    ivec2 g0 = ivec2(gg);
+    vec2  gf = gg - vec2(g0);
+    float kk = ks + cv2.sunCasc4.z + float(kCv2ShaftK) * 8.0;
+    int   k0 = int(kk);
+    float kf = kk - float(k0);
+    float Tb = 0.0;
+    [[dont_unroll]] for (int c = 0; c < 4; ++c) {
+        int ri = (((g0.y + (c >> 1)) & (kCv2ShaftN - 1)) * kCv2ShaftN + ((g0.x + (c & 1)) & (kCv2ShaftN - 1))) * kCv2ShaftK;
+        Tb += mix(cv2SunShaft[ri + (k0 & (kCv2ShaftK - 1))], cv2SunShaft[ri + ((k0 + 1) & (kCv2ShaftK - 1))], kf)
+            * ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
+    }
+    return vec2(Tb, w);
+}
+#endif
 const int   kCv2RainMapN  = 32;
 const float kCv2RainCellM = 40.0;
 

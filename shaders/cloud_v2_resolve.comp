@@ -41,6 +41,13 @@ layout(set = 0, binding = 5, rg32f)   uniform image2D outDepth;   // read back a
 // at full rate into these (pass B); the rest are the sparse grid, which pass B also kept complete.
 layout(set = 0, binding = 6) uniform sampler2D fullColorTex;
 layout(set = 0, binding = 7) uniform sampler2D fullDepthTex;
+// 2026-10-11: each pixel's AGE, the number of samples its history holds (reprojected with it). A pixel whose history
+// is young (uncovered by a pan, disoccluded, rejected by the clamp) takes the running mean 1 / (age + 1) instead of
+// the fixed history weight, and its first samples are the smooth estimate of its neighbourhood, not single rays:
+// at the still weight (0.04-0.05, one visit in four frames on the sparse grid) a newly shown cloud kept its first
+// noisy, mostly self-shadowed rays for seconds (the user: "dark pixelation on newly exposed clouds before they settle").
+layout(set = 0, binding = 9, r32f) uniform writeonly image2D outAge;
+layout(set = 0, binding = 10) uniform sampler2D histAgeTex;
 layout(std430, set = 0, binding = 8) readonly buffer TileBuf { uint tPad, tDispX, tDispY, tDispZ; uint tList[4096]; uint tFlag[4096]; };
 
 ivec2 gHalf, gQs;
@@ -250,6 +257,7 @@ void main()
     valid = valid && all(greaterThanEqual(uvPrev, vec2(0.0))) && all(lessThanEqual(uvPrev, vec2(1.0)));
 
     vec4 outC;
+    float ageOut = isNew ? 1.0 : 0.5;
     float motionPx = 1e9;
     // The texel's whole move since last frame, rotation included (motionPx below is PARALLAX only).
     float shiftPx = valid ? length((uvPrev - (vec2(c) + 0.5) / vec2(halfSize)) * vec2(halfSize)) : 1e9;
@@ -290,8 +298,8 @@ void main()
         // In motion the box is the neighbourhood's mean +- 1.25 sd (variance clipping), inside min/max:
         // a small cloud next to clear sky made a min/max box spanning both, so its ghost passed.
         float mv  = smoothstep(0.1, 1.5, motionPx);
-        vec4  bLo = mix(mn - slack, max(mn, m1 - 1.25 * sdBox), mv);
-        vec4  bHi = mix(mx + slack, min(mx, m1 + 1.25 * sdBox + vec4(1e-4)), mv);
+        vec4  bLo = mix(mn - slack, max(mn, m1 - cv2.samp.z * sdBox), mv);
+        vec4  bHi = mix(mx + slack, min(mx, m1 + cv2.samp.z * sdBox + vec4(1e-4)), mv);
         vec4 hc = cv2FromMean(clamp(cv2ToMean(hist), bLo, bHi));
         // Review 20b: and never brighter (or darker) than the new samples' own RADIANCE box. The mean colour divides
         // by the opacity (floor 0.02): a near-clear pixel carrying light of its own — a beam shaft's air, seen from
@@ -315,6 +323,17 @@ void main()
         float w     = isNew ? wNew : wNew * mix(0.15, 0.85, mk);
         // Past ~16 px of parallax a frame the history is someone else's cloud: lean on this frame,
         // filtered (the corduroy otherwise, see blur).
+        if (cv2.samp.x > 0.0) {
+            // What the clamps took out of the history is not this pixel's: that share of its age goes too.
+            float hAge = textureLod(histAgeTex, uvPrev, 0.0).r;
+            float rej  = clamp(2.0 * length(hist.rgb - hc.rgb) / (dot(hist.rgb + hc.rgb, vec3(0.5)) + 1e-3)
+                               + 3.0 * abs(hist.a - hc.a), 0.0, 1.0);
+            hAge *= 1.0 - rej;
+            float young = 1.0 - smoothstep(2.0, 10.0, hAge);
+            fresh  = mix(fresh, (full || tFull) ? blur : spatial, cv2.samp.y * young);
+            w      = max(w, 1.0 / (hAge + 1.0));
+            ageOut = min(hAge + (isNew ? 1.0 : 0.5), cv2.samp.x);
+        }
         float mf = smoothstep(6.0, 24.0, motionPx);
         // Review 7: a full-rate pixel in motion leans on the tent by how much of this frame it takes (the
         // single ray's jitter grain; blur is the pixel itself on the sparse grid, where the axial mix does it).
@@ -330,6 +349,7 @@ void main()
     // reads into a growing block (black squares at the Earth's limb, user snapshot 2026-10-04): no cloud.
     if (any(isnan(outC)) || any(isinf(outC))) outC = vec4(0.0, 0.0, 0.0, 1.0);
     imageStore(outColor, c, outC);
+    imageStore(outAge, c, vec4(ageOut, 0.0, 0.0, 0.0));
     // Review 12: the DISTANCE gets a history too, in a still view: it was this frame's sample's (a sparse
     // block takes its one sample's distance, and the sample moves through the block every frame), and the sky
     // pass splits the air in front of the cloud at it — from orbit, where that air is a large share near the

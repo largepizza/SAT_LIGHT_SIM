@@ -534,9 +534,10 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                                              TEX, IMG, IMG, SSBO, TEX, IMG});
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
     // 6/7 the full-rate tiles' color/depth, 8 the tile list
-    cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO});
+    // 9 / 10 the sample ages (out, history)
+    cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO, IMG, TEX});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 14}, {SSBO, 6}, {IMG, 8}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 15}, {SSBO, 6}, {IMG, 9}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -647,10 +648,14 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
     make(cv2HalfW, cv2HalfH, VK_FORMAT_R16G16B16A16_SFLOAT, 0, cv2FullImg, cv2FullMem, cv2FullView);
     make(cv2HalfW, cv2HalfH, VK_FORMAT_R32G32_SFLOAT, 0, cv2FullDepthImg, cv2FullDepthMem, cv2FullDepthView);
     make(ctx.swapExtent.width, ctx.swapExtent.height, VK_FORMAT_R16G16B16A16_SFLOAT, 0, cv2FarImg, cv2FarMem, cv2FarView);
+    make(cv2HalfW, cv2HalfH, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+         cv2AgeImg, cv2AgeMem, cv2AgeView);
+    make(cv2HalfW, cv2HalfH, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+         cv2AgeHistImg, cv2AgeHistMem, cv2AgeHistView);
 
     VkCommandBuffer cmd = ctx.beginOneTimeCommands();
     for (VkImage img : {cv2NewImg, cv2NewDepthImg, cv2ResolvedImg, cv2ResolvedDepthImg, cv2HistoryImg, cv2FullImg, cv2FullDepthImg,
-                        cv2FarImg})
+                        cv2FarImg, cv2AgeImg, cv2AgeHistImg})
         ctx.imageBarrier(cmd, img, 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -662,6 +667,11 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
     vkCmdClearColorImage(cmd, cv2ResolvedImg, VK_IMAGE_LAYOUT_GENERAL, &clr, 1, &rng);
     VkClearColorValue zero{};
     vkCmdClearColorImage(cmd, cv2ResolvedDepthImg, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rng);
+    // The ages start settled: a history carried across a resize (blitted) is as old as it was.
+    VkClearColorValue old{};
+    old.float32[0] = 64.0f;
+    vkCmdClearColorImage(cmd, cv2AgeImg, VK_IMAGE_LAYOUT_GENERAL, &old, 1, &rng);
+    vkCmdClearColorImage(cmd, cv2AgeHistImg, VK_IMAGE_LAYOUT_GENERAL, &old, 1, &rng);
     ctx.endOneTimeCommands(cmd);
 
     VkDescriptorImageInfo depthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -678,6 +688,8 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
     VkDescriptorImageInfo fullIn{cv2ClampSampler, cv2FullView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo fullDepthIn{cv2ClampSampler, cv2FullDepthView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo farOut{VK_NULL_HANDLE, cv2FarView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo ageOut{VK_NULL_HANDLE, cv2AgeView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo ageIn{cv2ClampSampler, cv2AgeHistView, VK_IMAGE_LAYOUT_GENERAL};
     const VkDescriptorType TEX = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, IMG = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     VkWriteDescriptorSet w[] = {
         imageWrite(cv2MarchDescSet, 6, TEX, &depthInfo),
@@ -693,20 +705,23 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
         imageWrite(cv2MarchDescSet, 18, IMG, &fullDepthOut),
         imageWrite(cv2ResolveDescSet, 6, TEX, &fullIn),
         imageWrite(cv2ResolveDescSet, 7, TEX, &fullDepthIn),
-        imageWrite(cv2MarchDescSet, 21, IMG, &farOut)};
+        imageWrite(cv2MarchDescSet, 21, IMG, &farOut),
+        imageWrite(cv2ResolveDescSet, 9, IMG, &ageOut),
+        imageWrite(cv2ResolveDescSet, 10, TEX, &ageIn)};
     vkUpdateDescriptorSets(dev, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
+    cv2ScreenResetOnly = cv2ScreenResetOnly || cv2HistoryValid;   // the Sun shadow grids keep (recordCloudsV2 params)
     cv2HistoryValid = false;
 }
 
 void SatelliteSim::destroyCloudsV2Targets(VkDevice device)
 {
     VkImageView *views[] = {&cv2NewView, &cv2NewDepthView, &cv2ResolvedView, &cv2ResolvedDepthView, &cv2HistoryView,
-                            &cv2FullView, &cv2FullDepthView, &cv2FarView};
+                            &cv2FullView, &cv2FullDepthView, &cv2FarView, &cv2AgeView, &cv2AgeHistView};
     VkImage *imgs[] = {&cv2NewImg, &cv2NewDepthImg, &cv2ResolvedImg, &cv2ResolvedDepthImg, &cv2HistoryImg,
-                       &cv2FullImg, &cv2FullDepthImg, &cv2FarImg};
+                       &cv2FullImg, &cv2FullDepthImg, &cv2FarImg, &cv2AgeImg, &cv2AgeHistImg};
     VkDeviceMemory *mems[] = {&cv2NewMem, &cv2NewDepthMem, &cv2ResolvedMem, &cv2ResolvedDepthMem, &cv2HistoryMem,
-                              &cv2FullMem, &cv2FullDepthMem, &cv2FarMem};
-    for (int i = 0; i < 8; ++i)
+                              &cv2FullMem, &cv2FullDepthMem, &cv2FarMem, &cv2AgeMem, &cv2AgeHistMem};
+    for (int i = 0; i < 10; ++i)
     {
         if (*views[i]) vkDestroyImageView(device, *views[i], nullptr);
         if (*imgs[i]) vkDestroyImage(device, *imgs[i], nullptr);
@@ -897,6 +912,8 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
     VkWriteDescriptorSet w[] = {
         imageWrite(skyDescSet, 7, TEX, &weatherCube),
         imageWrite(skyDescSet, 29, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &farLayer),
+        bufferWrite(skyDescSet, 30, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &flashes),   // the Sun shadow cascade
+        bufferWrite(skyDescSet, 31, UBO, &v2Info),
         bufferWrite(cloudMarchDescSet, 21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &flashes),
         bufferWrite(cloudMarchDescSet, 15, UBO, &v2Info),
         imageWrite(cloudMarchDescSet, 16, TEX, &weather),
@@ -945,14 +962,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2Powder, cv2MsExtinction, cv2MsStrength, cv2PhaseG, cv2LightLenM, cv2LightSteps,
                     cv2StepBaseM, cv2StepGrowth, cv2StepMaxM, cv2MaxIters, cv2MaxDistKm, cv2ShapePeriodM,
                     cv2DetailPeriodM, cv2CellPeriodM, cv2ClusterPeriodM, (float)cv2DebugView, cv2EdgeSharpness,
-                    cv2WeatherWarpKm, cv2FullRateAboveKm, cv2MidAmount, cv2StormScale, cv2StormDetail,
+                    cv2WeatherWarpKm, cv2MidAmount, cv2StormScale, cv2StormDetail,
                     cv2Anvil, cv2BaseRoughness, cv2HighAmount, cv2HighDensity, cv2CirrusStretch,
                     cv2RainAmount, cv2OpticsGain, cv2CirrusPeriodM, cv2MidPeriodM, cv2MidDensity,
                     cv2CloudSunRayleigh, cv2TwilightSky, cv2FlowWarp, cv2FlowPeriodKm, cv2LayerSpread,
                     cv2TopHeavy, cv2TowerTop, cv2CirrusFieldKm, cv2CirrusFlow, cv2BaseFlatness, cv2CuLobesBottom, cv2CuLobesTop,
                     cv2CbColumns, cv2CbSpacingKm, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbWaist, cv2CbFlare,
                     cv2CbHeadDriftKm, cv2CbLobes, cv2CbHeadLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
-                    cv2DustHeightM, cv2DustDensity, (float)(debugDisableMask & 2048u)})
+                    cv2DustHeightM, cv2DustDensity, (float)(debugDisableMask & 2048u),
+                    cv2SmallCumulus, cv2ErosionVar, cv2LobeVar, cv2CirrusDirWarp, cv2AsDensity, cv2MidThick, cv2MidShadow,
+                    cv2MidFieldKm, cv2MidCover, cv2SunCascadeRangeKm})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -962,8 +981,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             mix(t.look[k]);
         }
 
-    bool valid = cv2HistoryValid && h == cv2SettingsHash &&
-                 glm::length(eye - cv2PrevEye) < 20000.0 && std::abs(simT - cv2PrevSimT) < 600.0;
+    const uint64_t hField = h;      // what the clouds ARE; the rate below only changes how the screen is marched
+    mix(cv2FullRateAboveKm);
+
+    const bool nearPrev = glm::length(eye - cv2PrevEye) < 20000.0 && std::abs(simT - cv2PrevSimT) < 600.0;
+    bool valid = cv2HistoryValid && h == cv2SettingsHash && nearPrev;
+    // The Sun shadow grids (below) survive what only drops the SCREEN history: the HQ photo recreates the screen
+    // images and switches the march to full rate, and with the grids reset by that the photo's first ~40 frames
+    // had no far cloud shadows and no god rays (user report, 2026-10-10).
+    const bool lightValid = (cv2HistoryValid || cv2ScreenResetOnly) && hField == cv2FieldHash && nearPrev;
+    cv2ScreenResetOnly = false;
 
     // The map's longitude drift: the same angle v1's flat layer (layer 0, driftMult 1) and the
     // ambience's cloud driver read, so the volumetric clouds sit where the map puts them. EVERY part
@@ -1206,6 +1233,85 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                                                                -si.x * std::sin(g) + si.y * std::cos(g), si.z))),
                            std::max(cv2IceFogDensity, 0.0f));   // w: the ice fog's extinction
     }
+    {
+        // The Sun shadow cascade's lattice (2026-10-10; cloud_lightning.glsl cv2SunCasc): axes a (horizontal) and b
+        // across the Sun's direction, as the fine grid's. The eye's lattice coordinate is INTEGRATED from its motion
+        // relative to the clouds (the drift turned out, as the resolve's obsDelta), so a ray baked up to 32 frames
+        // ago still stands where its clouds are while the eye flies (7 km/s at 7 km up) and under time warp; a
+        // change of the axes or of the cells (the Sun moving, the eye's vertical turning) pivots the lattice
+        // about the eye, which moves no ray by more than metres between its refreshes.
+        // The window: +-kRh across (128 cells of 3.2 km); in b, the same disc and the shell's height seen along
+        // the Sun (0.8 km cells at sunset, ~10 km at 45 deg); centred at mid-shell under (or over) the eye.
+        const double kRh = 1000.0 * std::clamp((double)cv2SunCascadeRangeKm, 50.0, 1500.0);
+        const glm::dvec3 s = glm::normalize(glm::dvec3(p.sunE));
+        const double sinE = glm::dot(s, up), cosE = std::sqrt(std::max(1.0 - sinE * sinE, 0.0));
+        const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), up));
+        const glm::dvec3 ga = glm::normalize(glm::cross(s, std::abs(sinE) > 0.99 ? east : up));   // = cv2SunGridAxes
+        const glm::dvec3 gb = glm::cross(s, ga);
+        const double hMid = 0.5 * (double)hi, hPad = hMid + 2000.0;
+        const double da = 2.0 * kRh / 128.0;
+        const double db = 2.0 * (kRh * std::abs(sinE) + hPad * cosE) / 32.0;
+        const double sHalf = kRh * cosE + hPad * std::abs(sinE);
+        const double sExt = std::min((double)hi / std::max(std::abs(sinE), 0.03), 500000.0);
+        const bool on = cv2SunCascade > 0.5f && sinE > -0.1 && eyeH < 60000.0;
+        cv2GridFrames = lightValid ? std::min(cv2GridFrames + 1, 100000) : 0;
+        if (lightValid)
+        {
+            // The fine grid's lattice (250 m cells, 32 x 32) rides the same way, cascade or not.
+            const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
+            cv2GridLatA = std::fmod(cv2GridLatA + glm::dot(dEye, ga) / 250.0, 32.0 * 1024.0);
+            cv2GridLatB = std::fmod(cv2GridLatB + glm::dot(dEye, gb) / 250.0, 32.0 * 1024.0);
+        }
+        if (!on || !lightValid)
+        {
+            cv2CascFrames = 0;
+        }
+        else
+        {
+            const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
+            cv2CascLatA = std::fmod(cv2CascLatA + glm::dot(dEye, ga) / da, 128.0 * 1024.0);
+            cv2CascLatB = std::fmod(cv2CascLatB + glm::dot(dEye, gb) / db, 32.0 * 1024.0);
+            ++cv2CascFrames;
+        }
+        auto modP = [](double v, double m) { v = std::fmod(v, m); return (float)(v < 0.0 ? v + m : v); };
+        p.sunCasc0 = glm::vec4(modP(cv2CascLatA, 128.0), modP(cv2CascLatB, 32.0),
+                               (float)((hMid - eyeH) * glm::dot(up, gb) / db), (float)((hMid - eyeH) * sinE));
+        p.sunCasc1 = glm::vec4((float)da, (float)db, (float)sHalf, (float)sExt);
+        // zw: the weight of a new bake in each ray's running mean: 1 / (bakes so far), at least 1/8 (the fine grid is
+        // baked every frame, or every other one with the cascade on; a cascade ray every fourth frame).
+        const int nGrid = cv2GridFrames / (on ? 2 : 1), nCasc = std::max(cv2CascFrames - 1, 0) / 4;
+        p.sunCasc3 = glm::vec4(modP(cv2GridLatA, 32.0), modP(cv2GridLatB, 32.0),
+                               std::max(1.0f / (float)(nGrid + 1), 0.125f), std::max(1.0f / (float)(nCasc + 1), 0.125f));
+        // x: nothing until every ray has been baked once (32 frames: 2048 rays on every other frame), then in over 8.
+        // The SHAFT lattice (cloud_lightning.glsl cv2SunShaft): 250-m cells across the Sun, knots along it spaced so
+        // its +-16 knots reach ~5 km above and below the eye's level whatever the Sun's height (1-3 km); the eye's
+        // coordinate integrated in all three, as above. Baked only for the god rays.
+        const double dsS = std::clamp(5000.0 / std::max(std::abs(sinE), 0.02), 16000.0, 48000.0) / 16.0;
+        const bool shaftOn = on && cv2Godrays > 0.0f;
+        if (!shaftOn || !lightValid)
+            cv2ShaftFrames = 0;
+        else
+        {
+            const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
+            cv2ShaftLatA = std::fmod(cv2ShaftLatA + glm::dot(dEye, ga) / 250.0, 128.0 * 1024.0);
+            cv2ShaftLatB = std::fmod(cv2ShaftLatB + glm::dot(dEye, gb) / 250.0, 128.0 * 1024.0);
+            cv2ShaftLatS = std::fmod(cv2ShaftLatS + glm::dot(dEye, s) / dsS, 32.0 * 1024.0);
+            ++cv2ShaftFrames;
+        }
+        p.sunCasc4 = glm::vec4(modP(cv2ShaftLatA, 128.0), modP(cv2ShaftLatB, 128.0), modP(cv2ShaftLatS, 32.0),
+                               shaftOn ? std::clamp(((float)cv2ShaftFrames - 33.0f) / 8.0f, 0.0f, 1.0f) : 0.0f);
+        p.sunCasc5 = glm::vec4(shaftOn ? std::max(1.0f / (float)(std::max(cv2ShaftFrames - 1, 0) / 32 + 1), 0.25f) : 0.0f,
+                               (float)dsS, 0.0f, 0.0f);
+        p.tune = glm::vec4(std::clamp(cv2SmallCumulus, 0.0f, 0.5f), std::max(cv2ErosionVar, 0.0f), std::max(cv2LobeVar, 0.0f),
+                           std::clamp(cv2CirrusDirWarp, 0.0f, 1.3f));
+        p.mid2 = glm::vec4(std::max(cv2AsDensity, 0.0f), std::clamp(cv2MidThick, 0.1f, 4.0f),
+                           1.0f - std::clamp(cv2MidShadow, 0.0f, 1.0f), 0.057f * cv2MidCover);
+        p.mid3 = glm::vec4(cv2MidFieldKm > 1.0f ? 1.0f / (1000.0f * cv2MidFieldKm) : 0.0f, 0.0f, 0.0f, 0.0f);
+        p.samp = glm::vec4(std::clamp(cv2SampAccum, 0.0f, 256.0f), std::clamp(cv2SampNewSmooth, 0.0f, 1.0f),
+                           std::clamp(cv2SampClampSd, 0.25f, 8.0f), 0.0f);
+        p.sunCasc2 = glm::vec4(on ? std::clamp(((float)cv2CascFrames - 33.0f) / 8.0f, 0.0f, 1.0f) : 0.0f,
+                               (float)(2.0 * sHalf / 40.0), on ? 1.0f : 0.0f, std::max(cv2HazeAloft, 0.0f));
+    }
     {   // Rain / snow at the eye: a local frame fixed to the nearest 0.25-degree point (so the drops are
         // world-fixed: walking moves through them), the eye's position in it in double, wrapped to 1024 m
         // (every lattice cell divides it); and the air temperature at the eye — sea-level climate by
@@ -1319,6 +1425,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         cv2PrevSimT = simT;
         cv2PrevDrift = drift;
         cv2SettingsHash = h;
+        cv2FieldHash = hField;
         cv2HistoryValid = true;
         ++cv2Frame;
     }
@@ -1438,6 +1545,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     if (cloudsV2Off())
     {
         cv2HistoryValid = false;
+        cv2ScreenResetOnly = false;   // the Sun shadow grids are not baked meanwhile
         return;
     }
 
@@ -1464,13 +1572,15 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     if (farBlend >= 0.999f)
     {
         cv2HistoryValid = false;
+        cv2ScreenResetOnly = false;   // the Sun shadow grids are not baked meanwhile
         return;
     }
     // This frame's lightning flashes (one workgroup): cloud_march.comp draws them after the resolve.
     if (cv2LightningPipeline)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightningPipeline);
-        vkCmdDispatch(cmd, 9, 1, 1);   // + 4 workgroups for the rain map (review 22), + 4 for the Sun shadow grid
+        vkCmdDispatch(cmd, 15, 1, 1);   // + 4 workgroups for the rain map (review 22), + 4 for the Sun shadow grid, + 4 more
+                                        // on the frames that bake the cascade (returning at once on the others)
         // The rain particles (main pass, vertex stage) read the rain map and the light at the eye it just wrote.
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
@@ -1479,7 +1589,9 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         cv2LightningObsDirValid = true;
     }
     // Four levels of the light volume (the godrays read it in the march, after this barrier).
-    if (cv2LightVolPipeline && cv2Godrays > 0.0f)
+    // (Not baked since 2026-10-10: the godrays read the Sun shadow cascade. The volume and its pass are kept for now.)
+    const bool bakeLightVol = false;
+    if (bakeLightVol && cv2LightVolPipeline && cv2Godrays > 0.0f)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightVolPipeline);
         vkCmdDispatch(cmd, kCv2LightVolXY / 8, kCv2LightVolXY / 8, kCv2LightVolLevelsPerFrame / 4);
@@ -1531,6 +1643,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.extent = {cv2HalfW, cv2HalfH, 1};
     vkCmdCopyImage(cmd, cv2ResolvedImg, VK_IMAGE_LAYOUT_GENERAL, cv2HistoryImg, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    vkCmdCopyImage(cmd, cv2AgeImg, VK_IMAGE_LAYOUT_GENERAL, cv2AgeHistImg, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
     memoryBarrier(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 }

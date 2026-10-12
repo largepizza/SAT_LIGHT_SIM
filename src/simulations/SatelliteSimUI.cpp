@@ -3723,6 +3723,10 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
             if (!showAdvancedSettings && settingsTabIsAdvanced(settingsActiveTab))
                 settingsActiveTab = 4; // Display
         }
+        if (showAdvancedSettings)
+            uiToggleRow(inp, ui, "DevUnboundedToggle", 0, "Dev mode: unbounded values", devUnboundedValues,
+                        "A number typed into a settings slider's value is taken as typed, outside the slider's range. "
+                        "Out-of-range values show in amber and can break rendering.");
     }
     // Deletes settings.json from the user data directory and asks for a restart (a live in-place reset would need
     // a third hand-kept copy of the settings field list).
@@ -3981,7 +3985,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
             }
 
             (void)valStr;
-            numberField(inp, ui, CLAY_IDI("PhotoVal", pi), *pp.val, pp.vmin, pp.vmax, pp.fmt, 58.0f, 12, Pal::volValue);
+            numberField(inp, ui, CLAY_IDI("PhotoVal", pi), *pp.val, pp.vmin, pp.vmax, pp.fmt, 58.0f, 12, Pal::volValue, true);
 
             Clay_Color cMinus = hovPhotoMinus[pi] ? Pal::btnHover : Pal::btnIdle;
             CLAY(CLAY_IDI("PhotoMinus", pi), {.layout = {
@@ -3995,7 +3999,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
                 sndClick(n, inp.lmbPressed);
                 hovPhotoMinus[pi] = n;
                 if (hovPhotoMinus[pi] && inp.lmbPressed)
-                    *pp.val = glm::clamp(*pp.val - pp.step, pp.vmin, pp.vmax);
+                    *pp.val = sliderStep(*pp.val, -pp.step, pp.vmin, pp.vmax);
                 CLAY_TEXT(CLAY_STRING("-"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
             }
 
@@ -4011,7 +4015,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
                 sndClick(n, inp.lmbPressed);
                 hovPhotoPlus[pi] = n;
                 if (hovPhotoPlus[pi] && inp.lmbPressed)
-                    *pp.val = glm::clamp(*pp.val + pp.step, pp.vmin, pp.vmax);
+                    *pp.val = sliderStep(*pp.val, pp.step, pp.vmin, pp.vmax);
                 CLAY_TEXT(CLAY_STRING("+"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(12)}));
             }
         }
@@ -4589,10 +4593,12 @@ bool SatelliteSim::textField(const UIInput &inp, UIRenderer &ui, Clay_ElementId 
 }
 
 // A number: plain text until clicked (a slider's value label), then a text box. Accepts anything strtod reads
-// ("2", "-0.5", "1e-3"); a value outside [vmin, vmax] is clamped, text that is not a number is ignored.
+// ("2", "-0.5", "1e-3"); a value outside [vmin, vmax] is clamped (not in dev mode, for a field that allows it),
+// text that is not a number is ignored.
 bool SatelliteSim::numberFieldD(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, double &v, double vmin, double vmax,
-                                const char *fmt, float width, float fontPx, Clay_Color color)
+                                const char *fmt, float width, float fontPx, Clay_Color color, bool devUnbound)
 {
+    const bool unbound = devUnbound && devUnboundedValues;
     bool committed = false;
     if (textEdit_.doneId == id.id)
     {
@@ -4602,7 +4608,7 @@ bool SatelliteSim::numberFieldD(const UIInput &inp, UIRenderer &ui, Clay_Element
         const double nv = std::strtod(s.c_str(), &end);
         if (end != s.c_str() && std::isfinite(nv))
         {
-            const double cv = std::clamp(nv, vmin, vmax);
+            const double cv = unbound ? nv : std::clamp(nv, vmin, vmax);
             committed = cv != v;
             v = cv;
         }
@@ -4624,10 +4630,12 @@ bool SatelliteSim::numberFieldD(const UIInput &inp, UIRenderer &ui, Clay_Element
               .border = {.color = hovPrev ? Clay_Color{90, 90, 96, 255} : Clay_Color{0, 0, 0, 0}, .width = CLAY_BORDER_ALL(1)}})
     {
         const bool hov = Clay_Hovered();
-        ui.tooltip(inp, hov, "Click to type a value", fs(11));
+        ui.tooltip(inp, hov, unbound ? "Click to type a value (dev mode: any value)" : "Click to type a value", fs(11));
         const char *s = textFieldStr(shown);
+        // Amber while the value sits outside its slider's range.
+        const bool outside = unbound && (v < vmin || v > vmax);
         CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}),
-                  CLAY_TEXT_CONFIG({.textColor = color, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                  CLAY_TEXT_CONFIG({.textColor = outside ? Clay_Color{255, 190, 70, 255} : color, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
         if (hov && inp.lmbPressed)
         {
             // The text to edit: the shown value without padding.
@@ -4641,11 +4649,11 @@ bool SatelliteSim::numberFieldD(const UIInput &inp, UIRenderer &ui, Clay_Element
 }
 
 bool SatelliteSim::numberField(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, float &v, float vmin, float vmax,
-                               const char *fmt, float width, float fontPx, Clay_Color color)
+                               const char *fmt, float width, float fontPx, Clay_Color color, bool devUnbound)
 {
     double d = v;
     // fmt is a float format; a double prints the same through varargs.
-    if (!numberFieldD(inp, ui, id, d, vmin, vmax, fmt, width, fontPx, color))
+    if (!numberFieldD(inp, ui, id, d, vmin, vmax, fmt, width, fontPx, color, devUnbound))
         return false;
     v = (float)d;
     return true;
@@ -4723,7 +4731,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
 
             // 2026-10-03: the value is a text box on click (type an exact value; Enter applies, Esc cancels).
             (void)valStr;
-            if (numberField(inp, ui, CLAY_IDI("CloudVal", ci), *cs.val, cs.vmin, cs.vmax, cs.fmt, 58.0f, 12, Pal::volValue) &&
+            if (numberField(inp, ui, CLAY_IDI("CloudVal", ci), *cs.val, cs.vmin, cs.vmax, cs.fmt, 58.0f, 12, Pal::volValue, true) &&
                 marksPreset)
                 graphicsPreset = GraphicsPreset::Custom;
 
@@ -4740,7 +4748,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
                 hovCloudMinus[ci] = n;
                 if (hovCloudMinus[ci] && inp.lmbPressed)
                 {
-                    *cs.val = glm::clamp(*cs.val - cs.step, cs.vmin, cs.vmax);
+                    *cs.val = sliderStep(*cs.val, -cs.step, cs.vmin, cs.vmax);
                     if (marksPreset)
                         graphicsPreset = GraphicsPreset::Custom;
                 }
@@ -4760,7 +4768,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
                 hovCloudPlus[ci] = n;
                 if (hovCloudPlus[ci] && inp.lmbPressed)
                 {
-                    *cs.val = glm::clamp(*cs.val + cs.step, cs.vmin, cs.vmax);
+                    *cs.val = sliderStep(*cs.val, cs.step, cs.vmin, cs.vmax);
                     if (marksPreset)
                         graphicsPreset = GraphicsPreset::Custom;
                 }
@@ -4842,7 +4850,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
     // the beam light in clouds to Beams. Slot ids and settings keys unchanged.
     CloudSlider secCoverage[] = {
         {"Map coverage gain", &cv2Coverage, 0.0f, 2.0f, 0.05f, "%.2f", 112},
-        {"Map clear below", &cv2CoverClear, 0.0f, 0.6f, 0.01f, "%.2f", 113},
+        {"Map clear below", &cv2CoverClear, 0.0f, 0.6f, 0.002f, "%.3f", 113},
         {"Map overcast above", &cv2CoverFull, 0.1f, 1.0f, 0.01f, "%.2f", 114},
         {"Density", &cv2Density, 0.1f, 4.0f, 0.05f, "%.2f", 115},
         {"Weather warp (km)", &cv2WeatherWarpKm, 0.0f, 30.0f, 0.5f, "%.1f", 116},
@@ -4851,6 +4859,15 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Layer spread (mid/high)", &cv2LayerSpread, 0.0f, 1.0f, 0.05f, "%.2f", 71},
         {"Mid layer (Ac/As)", &cv2MidAmount, 0.0f, 2.0f, 0.05f, "%.2f", 146},
         {"Mid layer density", &cv2MidDensity, 0.0f, 4.0f, 0.05f, "%.2f", 8},
+        // 2026-10-11: the altostratus sheets' own density, the layer's thickness, how large its sheets are, how much
+        // of the sky they take, and how hard a shadow it casts on the clouds that rise through it.
+        {"Altostratus density (x)", &cv2AsDensity, 0.0f, 12.0f, 0.1f, "%.1f", 273},
+        {"Mid layer thickness (x)", &cv2MidThick, 0.25f, 3.0f, 0.05f, "%.2f", 274},
+        {"Mid layer field size (km, 0 = patches)", &cv2MidFieldKm, 0.0f, 3000.0f, 50.0f, "%.0f", 276},
+        {"Mid layer cover bias", &cv2MidCover, -2.0f, 4.0f, 0.1f, "%.1f", 277},
+        {"Mid layer shadow", &cv2MidShadow, 0.0f, 1.0f, 0.05f, "%.2f", 275},
+        // The near field's low puffs under the coverage threshold (what the view from orbit shows as scattered cloud).
+        {"Small cumulus", &cv2SmallCumulus, 0.0f, 0.3f, 0.01f, "%.2f", 270},
         {"Map drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
         {"Wind (m/s)", &cv2WindMps, 0.0f, 40.0f, 0.5f, "%.1f", 117},
     };
@@ -4862,6 +4879,11 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Tower lean", &cv2Lean, 0.0f, 1.0f, 0.01f, "%.2f", 121},
         {"Surface hardness", &cv2ColumnEdge, 0.5f, 16.0f, 0.25f, "%.2f", 122},
         {"Interior erosion", &cv2InteriorErosion, 0.0f, 1.0f, 0.05f, "%.2f", 123},
+        // The erosion's size (the detail volume's period: also under Noise scales) and its variation by region.
+        {"Erosion size (m)", &cv2DetailPeriodM, 200.0f, 8000.0f, 50.0f, "%.0f", 142},
+        {"Erosion variation", &cv2ErosionVar, 0.0f, 1.5f, 0.05f, "%.2f", 271},
+        {"Lobe size (m)", &cv2ShapePeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 141},
+        {"Lobe variation", &cv2LobeVar, 0.0f, 1.0f, 0.05f, "%.2f", 272},
         {"Base roughness", &cv2BaseRoughness, 0.0f, 3.0f, 0.05f, "%.2f", 150},
         {"Top-heavy (cumulus)", &cv2TopHeavy, 0.0f, 2.0f, 0.05f, "%.2f", 72},
         {"Tower top (0 = old cones)", &cv2TowerTop, 0.0f, 0.95f, 0.01f, "%.2f", 73},
@@ -4884,7 +4906,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Multi-scatter strength", &cv2MsStrength, 0.0f, 1.0f, 0.01f, "%.2f", 130},
         {"Optics (halos, rainbows)", &cv2OpticsGain, 0.0f, 3.0f, 0.05f, "%.2f", 156},
         {"Forward scatter g", &cv2PhaseG, 0.0f, 0.95f, 0.01f, "%.2f", 131},
-        {"Light march (m)", &cv2LightLenM, 250.0f, 8000.0f, 50.0f, "%.0f", 132},
+        {"Light march (m)", &cv2LightLenM, 250.0f, 16000.0f, 50.0f, "%.0f", 132},
         {"Light steps", &cv2LightSteps, 1.0f, 12.0f, 1.0f, "%.0f", 133},
         {"Light LOD footprint (m)", &cv2LightLodFootprintM, 0.0f, 200.0f, 5.0f, "%.0f", 178},
     };
@@ -4895,6 +4917,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Cirrus field size (km)", &cv2CirrusFieldKm, 100.0f, 5000.0f, 50.0f, "%.0f", 74},
         {"Cirrus flow (x low flow)", &cv2CirrusFlow, 0.0f, 4.0f, 0.05f, "%.2f", 75},
         {"Cirrus stretch", &cv2CirrusStretch, 1.0f, 30.0f, 0.5f, "%.1f", 153},
+        {"Cirrus direction warp", &cv2CirrusDirWarp, 0.0f, 1.2f, 0.05f, "%.2f", 278},
         {"Cirrus wind (m/s)", &cv2CirrusWindMps, 0.0f, 80.0f, 1.0f, "%.0f", 154},
         {"Cirrus fibre period (m)", &cv2CirrusPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 2},
     };
@@ -4913,6 +4936,12 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         // The new-sample weight once the view moves (parallax): high, so small clouds don't ghost; the
         // still weight above stays low, so a still view has no checkerboard flicker.
         {"History weight moving", &cv2HistoryWeightMoving, 0.05f, 0.5f, 0.01f, "%.2f", 203},
+        // 2026-10-11, the resolve's sampler: each pixel counts the samples in its history and takes their running
+        // mean until this many (0 = the fixed weights alone); a young pixel leans on its neighbours' estimate; and
+        // how far (sd of the new samples around) a moving view's history may differ before it is clamped.
+        {"Accumulation (samples, 0 = off)", &cv2SampAccum, 0.0f, 128.0f, 1.0f, "%.0f", 279},
+        {"New pixel smoothing", &cv2SampNewSmooth, 0.0f, 1.0f, 0.05f, "%.2f", 280},
+        {"Motion clamp (sd)", &cv2SampClampSd, 0.5f, 4.0f, 0.05f, "%.2f", 281},
         {"Full rate above (km)", &cv2FullRateAboveKm, 0.0f, 400.0f, 1.0f, "%.0f", 145},
         {"Sparse when still (0/1)", &cv2SparseWhenStill, 0.0f, 1.0f, 1.0f, "%.0f", 176},
         {"Half rate while moving (0/1)", &cv2HalfRateMoving, 0.0f, 1.0f, 1.0f, "%.0f", 186},
@@ -4923,9 +4952,8 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
     };
 
     CloudSlider secNoise[] = {
-        {"Shape period (m) - low cloud", &cv2ShapePeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 141},
+        // (The low cloud's shape period and the detail period are in Shape: "Lobe size", "Erosion size".)
         {"Mid layer period (m)", &cv2MidPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 7},
-        {"Detail period (m)", &cv2DetailPeriodM, 200.0f, 8000.0f, 50.0f, "%.0f", 142},
         {"Cell period (m)", &cv2CellPeriodM, 4000.0f, 128000.0f, 1000.0f, "%.0f", 143},
         {"Cluster period (m)", &cv2ClusterPeriodM, 32000.0f, 1024000.0f, 8000.0f, "%.0f", 144},
         {"Morphology (orbit)", &cv2MorphOrbit, 0.0f, 1.0f, 0.05f, "%.2f", 234},
@@ -4999,7 +5027,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
 {
     CloudSlider secStorms[] = {
         {"Cb fill (share of cells)", &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
-        {"Cb columns (0 = old cores)", &cv2CbColumns, 0.0f, 2.0f, 0.05f, "%.2f", 164},
+        {"Cb columns (0 = old cores)", &cv2CbColumns, 0.0f, 4.0f, 0.05f, "%.2f", 164},
         {"Cb spacing (km)", &cv2CbSpacingKm, 8.0f, 120.0f, 1.0f, "%.0f", 165},
         {"Cb tower radius (km)", &cv2CbRadiusKm, 1.0f, 20.0f, 0.25f, "%.2f", 166},
         {"Cb waist (x radius)", &cv2CbWaist, 0.2f, 1.5f, 0.05f, "%.2f", 168},
@@ -5034,7 +5062,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Drop reach (m)", &cv2DropDistM, 4.0f, 64.0f, 4.0f, "%.0f", 208},
         {"Drop particles (x1000, nearest box)", &cv2RainParticlesK, 0.5f, 64.0f, 0.5f, "%.1f", 261},
         {"Drop shutter (ms)", &cv2RainShutterMs, 1.0f, 100.0f, 1.0f, "%.0f", 262},
-        {"Rain fall speed (x)", &cv2RainFallSpeed, 0.3f, 10.0f, 0.05f, "%.2f", 263},
+        {"Rain fall speed (x)", &cv2RainFallSpeed, 0.3f, 20.0f, 0.05f, "%.2f", 263},
         {"Rain wind (x ground wind)", &cv2RainWindGain, 0.0f, 5.0f, 0.1f, "%.1f", 264},
         {"Storm wind (m/s)", &cv2RainStormWind, 0.0f, 40.0f, 0.5f, "%.1f", 265},
         {"Wind gusts", &cv2RainGusts, 0.0f, 3.0f, 0.05f, "%.2f", 266},
@@ -5044,7 +5072,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
     CloudSlider secEvo[] = {
         {"Weather evolution wind (m/s)", &cv2EvoWindMps, 0.0f, 40.0f, 0.5f, "%.1f", 182},
         {"Weather growth / decay", &cv2EvoGrowth, 0.0f, 0.5f, 0.01f, "%.2f", 183},
-        {"Weather evolution window (h)", &cv2EvoWindowH, 0.25f, 24.0f, 0.25f, "%.2f", 184},
+        {"Weather evolution window (h)", &cv2EvoWindowH, 0.1f, 24.0f, 0.05f, "%.2f", 184},
         {"Afternoon land convection", &cv2EvoDiurnal, 0.0f, 1.5f, 0.05f, "%.2f", 185},
     };
 
@@ -5057,12 +5085,14 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Dust density (1/m)", &cv2DustDensity, 0.0f, 0.002f, 0.00001f, "%.5f", 199},
         // Diamond dust over the ice sheets, with the ice optics (halos, sundogs, pillars).
         {"Ice fog amount", &cv2IceFogAmount, 0.0f, 3.0f, 0.05f, "%.2f", 204},
-        {"Ice fog density (1/m)", &cv2IceFogDensity, 0.0f, 0.003f, 0.00001f, "%.5f", 205},
+        {"Ice fog density (1/m)", &cv2IceFogDensity, 0.0f, 0.003f, 0.000005f, "%.6f", 205},
     };
 
     CloudSlider secGod[] = {
-        {"God rays", &cv2Godrays, 0.0f, 3.0f, 0.05f, "%.2f", 187},
-        {"God ray range (km)", &cv2GodrayRangeKm, 50.0f, 1500.0f, 10.0f, "%.0f", 188},
+        {"Far cloud shadows (0/1)", &cv2SunCascade, 0.0f, 1.0f, 1.0f, "%.0f", 269},
+        {"Far cloud shadow range (km)", &cv2SunCascadeRangeKm, 100.0f, 800.0f, 5.0f, "%.0f", 282},
+        {"God rays", &cv2Godrays, 0.0f, 1.0f, 0.05f, "%.2f", 187},
+        {"Haze near clouds", &cv2HazeAloft, 0.0f, 20.0f, 0.1f, "%.1f", 188},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
@@ -5071,7 +5101,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         CLOUD_SEC("Rain & snow", secRain),
         CLOUD_SEC("Weather evolution", secEvo),
         CLOUD_SEC("Fog, dust & ice fog", secFog),
-        CLOUD_SEC("God rays (experimental)", secGod),
+        CLOUD_SEC("Cloud shadows & god rays", secGod),
     };
 #undef CLOUD_SEC
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 12);
@@ -6890,7 +6920,7 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // cloud-fade distances below moved with them). If you change a default in
         // SatelliteSim.h that appears in PresetValues, change it here in the same edit.
         v = {0u,
-             1.0f, 1.0f, 400.0f, 6.0f, 0.01f, 6.5f, 160.0f, 2.4f, 3.0f, 5.0f, 6.0f,
+             1.0f, 1.0f, 430.0f, 7.0f, 0.014f, 6.5f, 160.0f, 2.4f, 3.0f, 5.0f, 6.0f,
              50000.0f, 900000.0f, 150000.0f, 400000.0f};
         break;
     case GraphicsPreset::Ultra:
@@ -7085,6 +7115,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
                                  ? (GraphicsPreset)presetVal
                                  : GraphicsPreset::Custom;
             showAdvancedSettings = d.value("show_advanced_settings", showAdvancedSettings);
+            devUnboundedValues = d.value("dev_unbounded_values", devUnboundedValues);
             debugDisableMask = (uint32_t)d.value("debug_disable_mask", (int64_t)debugDisableMask);
         }
         settingsChrome.x = d.value("win_x", settingsChrome.x);
@@ -7294,8 +7325,23 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2IceFogAmount = c.value("ice_fog_amount", cv2IceFogAmount);
         cv2IceFogDensity = c.value("ice_fog_density", cv2IceFogDensity);
         cv2AdaptiveParallaxPx = c.value("adaptive_parallax_px", cv2AdaptiveParallaxPx);
-        cv2Godrays = c.value("godrays", cv2Godrays);
+        cv2Godrays = std::clamp(c.value("godrays", cv2Godrays), 0.0f, 1.0f);   // (it ran to 3 while it scaled the old light volume)
+        cv2SunCascade = c.value("sun_cascade", cv2SunCascade);
+        cv2SunCascadeRangeKm = c.value("sun_cascade_range_km", cv2SunCascadeRangeKm);
+        cv2SmallCumulus = c.value("small_cumulus", cv2SmallCumulus);
+        cv2ErosionVar = c.value("erosion_variation", cv2ErosionVar);
+        cv2LobeVar = c.value("lobe_variation", cv2LobeVar);
+        cv2CirrusDirWarp = c.value("cirrus_direction_warp", cv2CirrusDirWarp);
+        cv2AsDensity = c.value("altostratus_density", cv2AsDensity);
+        cv2MidThick = c.value("mid_thickness", cv2MidThick);
+        cv2MidShadow = c.value("mid_shadow", cv2MidShadow);
+        cv2MidFieldKm = c.value("mid_field_km", cv2MidFieldKm);
+        cv2MidCover = c.value("mid_cover_bias", cv2MidCover);
+        cv2SampAccum = c.value("sampler_accumulation", cv2SampAccum);
+        cv2SampNewSmooth = c.value("sampler_new_smoothing", cv2SampNewSmooth);
+        cv2SampClampSd = c.value("sampler_motion_clamp_sd", cv2SampClampSd);
         cv2GodrayRangeKm = c.value("godray_range_km", cv2GodrayRangeKm);
+        cv2HazeAloft = std::clamp(c.value("haze_aloft", cv2HazeAloft), 0.0f, 20.0f);
         cv2StepBaseM = c.value("step_base_m", cv2StepBaseM);
         cv2StepGrowth = c.value("step_growth", cv2StepGrowth);
         cv2StepMaxM = c.value("step_max_m", cv2StepMaxM);
@@ -7634,6 +7680,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"fps_cap_mode", (int)fpsCapMode},
         {"graphics_preset", (int)graphicsPreset},
         {"show_advanced_settings", showAdvancedSettings},
+        {"dev_unbounded_values", devUnboundedValues},
         {"debug_disable_mask", debugDisableMask},
         {"active_tab", settingsActiveTab},
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
@@ -7836,7 +7883,22 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ice_fog_density", cv2IceFogDensity},
         {"adaptive_parallax_px", cv2AdaptiveParallaxPx},
         {"godrays", cv2Godrays},
+        {"sun_cascade", cv2SunCascade},
+        {"sun_cascade_range_km", cv2SunCascadeRangeKm},
+        {"small_cumulus", cv2SmallCumulus},
+        {"erosion_variation", cv2ErosionVar},
+        {"lobe_variation", cv2LobeVar},
+        {"cirrus_direction_warp", cv2CirrusDirWarp},
+        {"altostratus_density", cv2AsDensity},
+        {"mid_thickness", cv2MidThick},
+        {"mid_shadow", cv2MidShadow},
+        {"mid_field_km", cv2MidFieldKm},
+        {"mid_cover_bias", cv2MidCover},
+        {"sampler_accumulation", cv2SampAccum},
+        {"sampler_new_smoothing", cv2SampNewSmooth},
+        {"sampler_motion_clamp_sd", cv2SampClampSd},
         {"godray_range_km", cv2GodrayRangeKm},
+        {"haze_aloft", cv2HazeAloft},
         {"step_base_m", cv2StepBaseM},
         {"step_growth", cv2StepGrowth},
         {"step_max_m", cv2StepMaxM},
