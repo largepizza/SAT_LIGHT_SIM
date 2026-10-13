@@ -813,6 +813,54 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   conservative per-column ceiling (tropopause top + overshoot, ground-lifted low tops) — 0% (the
   steps are inside the cloud, not above it); a vertical step cap growing with the footprint (200 -> up
   to 500 m) — -0.4%. An orbit LOD needs a cheaper field (an impostor), not fewer steps.
+- **Perf pass (2026-10-13, `harness_runs/perf13/`: `mkvar.py` builds text-substituted march variants, `ab.py`
+  times them interleaved in one live app, `tab2.py` tabulates).** Cloud bucket at 1920x1009, the user's settings
+  (430 iterations, 7 light steps, full rate above 30 km, sparse below), before -> after: orbit storm 388 km
+  78 -> 38 ms (limb 41 -> 21), 130-145 km 22-28 -> 14-17, 58 km 38-48 -> 22, anvils at sunset 17 -> 9.2, cumulus
+  from 6 km 16.3 -> 9.2, under storms 10-13 -> 6-10.5; a climb over the anvils 14.1 -> 9.2 ms mean. All at 128
+  registers, images within run-to-run noise except where noted.
+  - **THE COST MODEL: a group of rays (32) runs in lockstep, so every iteration costs what its most expensive
+    ray costs.** A lit sample is ten field evaluations (view + 7 light steps + far + sky probe); an empty step is
+    one. In one loop, rays in empty air waited out their neighbours' light marches: time = (the longest ray's
+    steps) x (a lit sample's cost). Everything below follows from it, and so do the failures: early termination
+    of opaque rays (T < 0.02-0.05, tail filled) gained 1-4% (the group runs as long as its longest ray), and
+    skipping work on alternating samples gains nothing unless every ray skips together.
+  - **Density first, then light, in batches** (`kBatch` 32, `bF/bT/bTr/bCov/bW`): the march loop walks the ray on
+    the field alone (coarse steps, fine lattice, refinement, transmittance and every depth statistic) and keeps
+    the samples with cloud; a second loop lights the batch (`L += bW[bj] * S`). Same samples, order, weights. In
+    the lighting loop `t`, `T`, `f`, `covB`, `rel`, `p`, `fp`, `detailAmt` are locals SHADOWING the march's —
+    anything the lighting needs from the density loop must be buffered. Batches of 4 gained nothing from orbit,
+    16 most, 24-64 the same. -14% .. -40% everywhere. Tried on the way: one sample per batch ("search, then
+    light": +13-35% on overcast, every lit ray waited on the slowest search), a bounded search (233 registers),
+    thin-ice samples at the batch's far end (noise).
+  - **The Sun / sky colour table** (`cloud_v2_sunlut.comp`, `include/cv2_sunlut.glsl`, march bindings 13 storage /
+    14 sampled, a 256 x 76 x 2 RGBA16F array: layer 0 the Sun's colour, 1 the zenith sky's): both are functions of
+    height and Sun zenith cosine alone (x = cube root of the cosine, y = 800 m levels, so linear filtering IS the
+    old interpolation between levels). Baked when `cloud_sun_rayleigh` / the sky's Rayleigh or Mie gain change
+    (`cv2SunLutKey`) and after `shaders reload`. It replaced a per-ray cache recomputed at every level crossed
+    (a 12-step zenith integral with Chapman columns; one ray refreshing stalled its group): -16..-18% from orbit,
+    -6% at 58 km, ~-3% near the ground; old vs new at the noise floor at eight views incl. an eclipse and
+    twilight. `sunTransmit` / `sunColorAt` / `skyZenithAt` now live in the bake (copies remain in
+    cloud_v2_far.comp and cloud_v2_lightning.comp: keep in step). The march's fog pass reads the table too.
+  - **Light steps merge in pairs under large pixels** (`lodN` in `lightAmbOD`: fp > 2 x the first light step,
+    i.e. from ~100 km up): 7 steps -> 4 samples of the same lengths. Orbit -19%, nothing below ~60 km. Day
+    cumulus identical; anvil lids at a grazing Sun read ~2 levels lighter — as they do with a 25-m view step,
+    while 12 light steps read darker: a lid's brightness there is the light march's discretisation whichever is
+    used. Its sample length must be written out at both uses (hoisted into one variable: 220 registers).
+  - **Ground shadow gate** (cloud_march.comp): no `cloudGroundShadowV2` march where the texel and its eight
+    neighbours have resolved cloud transmittance < 1% (the tent's reach). 0.5-1.3 ms near the ground, 2.6 ms
+    from 58 km. That march runs for every half-res ground pixel every frame (32-72 field samples): it is still
+    ~0.6-1.5 ms where the ground shows.
+  - **Dead ends, measured:** a view-step floor at 0.2 x the pixel footprint (-17% from orbit, but faint contour
+    rings on anvil lids; its dithered forms: 231 registers); the tower search rewritten by storm-cell blocks
+    (4 hashes instead of 18: 255 registers, +20-40%), with a fake cheap role (220), or skipped in light samples
+    (215) — every edit INSIDE `cv2ColumnSigma` flips the register count, edits in the march file mostly do not;
+    `DontInline` patched into the SPIR-V for the field functions (honoured by the driver: 3-4x slower).
+  - **What is left** (same views): near the ground the bucket is ~9 ms of which ~5 is not the march (composite
+    ~2-3, resolve, the lattice bakes, ground shadow); the SKY PASS is now the larger item there (10-18 ms: its
+    atmosphere loop ~9.5, the god rays 2-4 of that). From orbit: full rate vs sparse 38 vs 14 ms, Cb columns
+    -30% (content as much as search), step base 120 m -15%, light steps 2 -14%, high layer -13%. The user's
+    `shadow_ring1_cell_m` 100 (default 250) costs ~0.5 ms; `fovea_radius` does nothing with the adaptive rate off.
 - **Lightning + thunder (rebuilt 2026-10-05; `cloud_v2_lightning.comp`, `SatelliteSimLightning.cpp`,
   `lightning.vert/.frag`, `include/lightning_draw.glsl`):** WHICH flashes happen is the GPU's: one workgroup walks two
   lattices around the observer out to the cloud tops' horizon — the Cb TOWERS (dominant, anvil-reaching: "Lightning
@@ -980,7 +1028,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (was "fog layer"; the Low / Planetarium / Potato presets set it) switches both off. Harness scenes:
   harness_runs/fogdust (Po valley at sunrise from 2.5 km is the reference look). Not yet: fog in the light
   march / ground shadow / beams, wind-driven dust storms (needs a wind field).
-- **Light volume + godrays (2026-09-29, EXPERIMENTAL, off by default):** `cloud_v2_lightvol.comp` bakes a
+- **Light volume + godrays (2026-09-29; DELETED 2026-10-13 — `cloud_v2_lightvol.comp`, its image and pass are gone, march bindings 13/14 are the Sun / sky colour table; kept here for the reasoning):** `cloud_v2_lightvol.comp` bakes a
   camera-centred 128 x 128 x 32 R16F volume of sun transmittance (march set bindings 13 storage / 14
   sampled; +-"God ray range" `godray_range_km` 400 about the eye, sea level to 16 km, gnomonic columns; 4 of
   its 32 levels per frame, each voxel 16 growing steps toward the Sun, ~127 km) — the plan's phase-3 light
