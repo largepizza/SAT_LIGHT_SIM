@@ -1,0 +1,99 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── Clouds v2: the Sun / sky colour table (2026-10-13; include/cv2_sunlut.glsl) ─────────────────────
+// The Sun's colour and the zenith sky's radiance at a point of the atmosphere, tabulated by the point's
+// height and the Sun's zenith cosine: the two lights every cloud sample takes. They depend on nothing
+// else but the scattering gains, so the table is baked when those change (SatelliteSim::recordCloudsV2),
+// never per frame.
+// Until it, the march evaluated both per RAY, at the two 800 m levels around its sample, again at every
+// level it crossed and every 25 km (a 12-step zenith integral with a Chapman column per step). A group of
+// rays runs in lockstep, so one ray crossing a level stalled all of them: 15% of an orbit storm view's
+// march (65 -> 55 ms at 388 km, 1920x1009), 9% from 58 km, ~3% near the ground.
+// Same descriptor set as the march (0 CloudParams, 1 CloudV2Params, 13 the table as a storage image).
+layout(local_size_x = 8, local_size_y = 4) in;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING 1
+#define CV2_PARAMS_ONLY
+#include "clouds_v2.glsl"
+#include "atmosphere.glsl"
+#include "cv2_sunlut.glsl"
+layout(rgba16f, set = 0, binding = 13) uniform writeonly image2DArray sunLutOut;
+
+// (Copies of these live in cloud_v2_far.comp and cloud_v2_lightning.comp: keep them in step.)
+// Transmittance of the sunlight reaching p along d (assumed not blocked by the Earth): Rayleigh and
+// Mie columns by the Chapman function (include/atmosphere.glsl), which handles the tangent point
+// exactly, plus ozone. A 12-step midpoint rule along a grazing path (~1000 km) stepped over the dense
+// air at the tangent point and found it nearly clear: cloud lit by the setting Sun stayed bright
+// orange hundreds of km past the terminator (seen from orbit). Ozone (the Chappuis band) takes the
+// orange and yellow out of long paths; without it twilight light is too orange, where real twilight
+// cloud goes pink.
+vec3 sunTransmit(vec3 p, vec3 d, vec3 BETA_R, float BETA_M) {
+    float r = length(p), c = dot(p, d) / r;
+    float odR = atmColumnInf(r, c, H_R) * H_R;
+    float odM = atmColumnInf(r, c, H_M) * H_M;
+    // Ozone as a thin shell at 25 km: vertical optical depth (680/550/440 nm, 300 DU) times the
+    // secant where the ray crosses the shell.
+    const float rO = R_EARTH + 25000.0;
+    float sin2 = (r / rO) * (r / rO) * (1.0 - c * c);
+    float sec  = inversesqrt(max(1.0 - sin2, 1e-3));
+    float nX   = (r <= rO) ? 1.0 : ((c < 0.0 && sin2 < 1.0) ? 2.0 : 0.0);   // above it: 0 or 2 crossings
+    vec3  odO  = vec3(0.019, 0.027, 0.0016) * min(sec, 30.0) * nX;
+    return exp(-(BETA_R * odR + BETA_M * 1.1 * odM + odO));
+}
+
+// The Sun's colour arriving at a point, through the atmosphere, 0 in the Earth's shadow.
+vec3 sunColorAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
+    vec2 tSE = raySphere(p, sunDir, R_EARTH);
+    if (tSE.x > 0.0 && tSE.y > 0.0) return vec3(0.0);
+    return SUN_INTENSITY * sunTransmit(p, sunDir, BETA_R, BETA_M);
+}
+
+// Zenith sky radiance at a point: v1's skyAmbientBase (single-scattering integral up the local
+// vertical). Unlike v1 it is used by DAY as well — v1 applied it only in twilight, so daytime
+// clouds had no sky light at all and their shadowed sides came out sun-coloured white.
+vec3 skyZenithAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
+    vec3 zen = normalize(p);
+    vec2 tSA = raySphere(p, zen, R_ATMOS);
+    if (tSA.y <= 0.0) return vec3(0.0);
+    // 12 steps (2026-10-12; was 6). At six, ONE sample at ~8 km stood for the whole troposphere (deep red
+    // under a grazing Sun) and the next, at 25 km, for the stratosphere (blue), with nothing between them
+    // carrying green: from about +1 to -3 deg of Sun the sky light on every cloud was magenta (R/G 1.5,
+    // B/G 1.7 at -1.7 deg; the converged integral 1.0 / 1.3), under a sky that was not. Twelve are within a
+    // few percent of it from +10 to -5 deg (harness_runs/purple/zen.py).
+    const int N_Z = 12;
+    float seg = tSA.y / float(N_Z);
+    float cosUp = dot(zen, sunDir);
+    float odR = 0.0, odM = 0.0, accM = 0.0;
+    vec3  accR = vec3(0.0);
+    [[dont_unroll]] for (int i = 0; i < N_Z; ++i) {
+        vec3  sp = p + zen * ((float(i) + 0.5) * seg);
+        float h  = max(0.0, length(sp) - R_EARTH);
+        float dR = exp(-h / H_R) * seg, dM = exp(-h / H_M) * seg;
+        odR += dR; odM += dM;
+        vec2 tSE = raySphere(sp, sunDir, R_EARTH);
+        if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+        vec3 att  = exp(-(BETA_R * odR + BETA_M * 1.1 * odM)) * sunTransmit(sp, sunDir, BETA_R, BETA_M);
+        accR += att * dR;
+        accM += dot(att, vec3(1.0 / 3.0)) * dM;
+    }
+    return SUN_INTENSITY * (phaseR(cosUp) * BETA_R * accR + vec3(phaseM(cosUp) * BETA_M * accM));
+}
+
+void main()
+{
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= int(kCv2SunLutW) || px.y >= int(kCv2SunLutH)) return;
+    float mu = cv2SunLutMu((float(px.x) + 0.5) / kCv2SunLutW);
+    vec3  p  = vec3(0.0, 0.0, R_EARTH + float(px.y) * kCv2SunLutStepM);
+    vec3  sd = vec3(sqrt(max(1.0 - mu * mu, 0.0)), 0.0, mu);
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+    // The key light's own Rayleigh (cv2.atmo.x x physical), the sky's with the sky's gain: as the march had them.
+    vec3 sun = sunColorAt(p, sd, BETA_R_BASE * cv2.atmo.x, BETA_M);
+    vec3 sky = skyZenithAt(p, sd, BETA_R, BETA_M);
+    imageStore(sunLutOut, ivec3(px, 0), vec4(sun, 1.0));
+    imageStore(sunLutOut, ivec3(px, 1), vec4(sky, 1.0));
+}

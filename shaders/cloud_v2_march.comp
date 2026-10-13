@@ -50,6 +50,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #include "clouds_v2.glsl"
 #include "atmosphere.glsl"
 #include "eclipse.glsl"
+#include "cv2_sunlut.glsl"
 
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // half-res, metres (kNoSurfaceT = sky)
 layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
@@ -74,7 +75,7 @@ layout(set = 0, binding = 17, rgba16f) uniform writeonly image2D outFullColor;
 layout(set = 0, binding = 18, rg32f)   uniform writeonly image2D outFullDepth;
 layout(std430, set = 0, binding = 19) buffer TileBuf { uint tPad, tDispX, tDispY, tDispZ; uint tList[4096]; uint tFlag[4096]; };
 layout(std430, set = 0, binding = 15) readonly buffer BlueNoise { uint cv2BlueNoise[1024]; };   // 64x64, 8-bit ranks
-layout(set = 0, binding = 14) uniform sampler3D lightVolTex;   // sun transmittance (cloud_v2_lightvol.comp)
+layout(set = 0, binding = 14) uniform sampler2DArray cv2SunLutTex;   // layer 0 the Sun's colour, 1 the zenith sky's
 layout(set = 0, binding = 11, rg32f)   uniform writeonly image2D outDepth;
 
 const int N_LIGHT = 12;
@@ -102,64 +103,8 @@ vec3 rayDirAt(vec2 texel, ivec2 size, float tanHalfFov, mat3 camToENU) {
 
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 
-// Transmittance of the sunlight reaching p along d (assumed not blocked by the Earth): Rayleigh and
-// Mie columns by the Chapman function (include/atmosphere.glsl), which handles the tangent point
-// exactly, plus ozone. A 12-step midpoint rule along a grazing path (~1000 km) stepped over the dense
-// air at the tangent point and found it nearly clear: cloud lit by the setting Sun stayed bright
-// orange hundreds of km past the terminator (seen from orbit). Ozone (the Chappuis band) takes the
-// orange and yellow out of long paths; without it twilight light is too orange, where real twilight
-// cloud goes pink.
-vec3 sunTransmit(vec3 p, vec3 d, vec3 BETA_R, float BETA_M) {
-    float r = length(p), c = dot(p, d) / r;
-    float odR = atmColumnInf(r, c, H_R) * H_R;
-    float odM = atmColumnInf(r, c, H_M) * H_M;
-    // Ozone as a thin shell at 25 km: vertical optical depth (680/550/440 nm, 300 DU) times the
-    // secant where the ray crosses the shell.
-    const float rO = R_EARTH + 25000.0;
-    float sin2 = (r / rO) * (r / rO) * (1.0 - c * c);
-    float sec  = inversesqrt(max(1.0 - sin2, 1e-3));
-    float nX   = (r <= rO) ? 1.0 : ((c < 0.0 && sin2 < 1.0) ? 2.0 : 0.0);   // above it: 0 or 2 crossings
-    vec3  odO  = vec3(0.019, 0.027, 0.0016) * min(sec, 30.0) * nX;
-    return exp(-(BETA_R * odR + BETA_M * 1.1 * odM + odO));
-}
-
-// The Sun's colour arriving at a point, through the atmosphere, 0 in the Earth's shadow.
-vec3 sunColorAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
-    vec2 tSE = raySphere(p, sunDir, R_EARTH);
-    if (tSE.x > 0.0 && tSE.y > 0.0) return vec3(0.0);
-    return SUN_INTENSITY * sunTransmit(p, sunDir, BETA_R, BETA_M);
-}
-
-// Zenith sky radiance at a point: v1's skyAmbientBase (single-scattering integral up the local
-// vertical). Unlike v1 it is used by DAY as well — v1 applied it only in twilight, so daytime
-// clouds had no sky light at all and their shadowed sides came out sun-coloured white.
-vec3 skyZenithAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
-    vec3 zen = normalize(p);
-    vec2 tSA = raySphere(p, zen, R_ATMOS);
-    if (tSA.y <= 0.0) return vec3(0.0);
-    // 12 steps (2026-10-12; was 6). At six, ONE sample at ~8 km stood for the whole troposphere (deep red
-    // under a grazing Sun) and the next, at 25 km, for the stratosphere (blue), with nothing between them
-    // carrying green: from about +1 to -3 deg of Sun the sky light on every cloud was magenta (R/G 1.5,
-    // B/G 1.7 at -1.7 deg; the converged integral 1.0 / 1.3), under a sky that was not. Twelve are within a
-    // few percent of it from +10 to -5 deg (harness_runs/purple/zen.py).
-    const int N_Z = 12;
-    float seg = tSA.y / float(N_Z);
-    float cosUp = dot(zen, sunDir);
-    float odR = 0.0, odM = 0.0, accM = 0.0;
-    vec3  accR = vec3(0.0);
-    [[dont_unroll]] for (int i = 0; i < N_Z; ++i) {
-        vec3  sp = p + zen * ((float(i) + 0.5) * seg);
-        float h  = max(0.0, length(sp) - R_EARTH);
-        float dR = exp(-h / H_R) * seg, dM = exp(-h / H_M) * seg;
-        odR += dR; odM += dM;
-        vec2 tSE = raySphere(sp, sunDir, R_EARTH);
-        if (tSE.x > 0.0 && tSE.y > 0.0) continue;
-        vec3 att  = exp(-(BETA_R * odR + BETA_M * 1.1 * odM)) * sunTransmit(sp, sunDir, BETA_R, BETA_M);
-        accR += att * dR;
-        accM += dot(att, vec3(1.0 / 3.0)) * dM;
-    }
-    return SUN_INTENSITY * (phaseR(cosUp) * BETA_R * accR + vec3(phaseM(cosUp) * BETA_M * accM));
-}
+// The Sun's colour arriving at a point and the zenith sky's radiance there come from a table (cv2SunLutTex,
+// include/cv2_sunlut.glsl, baked by cloud_v2_sunlut.comp where sunColorAt / skyZenithAt now live).
 
 // Light-march geometry: a geometric series of nL steps summing to light.x.
 const float kLightRatio = 1.6;
@@ -183,12 +128,22 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
     // frame-to-frame std 0.93 -> 0.6 levels, pixels past 4 levels 3.6% -> 0.3%, same mean). ONE footprint for every
     // call: a per-step one (the step's own length) put the march at 221-224 registers.
     float fpFar = max(fp, cv2.light.x * cv2.samp.w);
+    // Light steps shorter than the pixel merge in PAIRS (2026-10-13): where the view sample's footprint is past
+    // twice the first light step (from ~100 km of eye altitude at the defaults: a 1.1-km pixel at 388 km against
+    // steps of 186 / 298 / 477 m ...), the field is read at that footprint's mip, and two steps inside it resample
+    // the same texels. One sample then stands for each pair (7 steps -> 4 samples, the same lengths): orbit storm
+    // 79 -> 65 ms at full rate, nothing below ~60 km, day cumulus within run-to-run noise. Anvil lids under a
+    // grazing Sun read ~2 levels lighter, as they do with a 25-m view step; twelve light steps read darker
+    // (harness_runs/perf13: the lid's brightness is the light march's own discretisation either way).
+    // Not the old "Light LOD" (above): that put ONE sample on the last 7.5 km and drew grain.
+    bool  lodN  = !lod && fp > 2.0 * lSeg0;
     for (int k = wantLight ? 0 : nL + 1; k <= (wantBeam ? nL + 4 : nL + 1); ++k) {
         // Jittered over the WHOLE segment: at +-25% of it the optical depth to the light came in
         // steps across a smooth surface, and the big smooth storm domes showed contour ripples (pass 13).
         // Light LOD: two steps spanning the same length (the loop's bounds stay uniform).
         if (lod && k >= 2 && k < nL) continue;
-        vec3  off = (k < nL) ? ldir * (s + lSeg * jitter)
+        if (lodN && k < nL && (k & 1) == 1) continue;
+        vec3  off = (k < nL) ? ldir * (s + ((lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg) * jitter)
                   : (k == nL) ? ldir * (cv2.light.x * 1.6)
                   : (k == nL + 1) ? up * 250.0 : bdir * (sb + sg * 0.5);
         // The view sample's footprint, not the step's: a longer footprint would turn the gaps
@@ -198,8 +153,11 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
             // Ice delta-scaled, and harder for the SHADOW (2026-09-30): what reaches a cloud below through a
             // cirrus veil includes the light its ice scatters within a few degrees (g ~0.8), so the direct
             // beam loses ~tau (1 - g), not tau (1 - 0.45). Real cirrus barely dims the clouds under it.
-            od += lf.sigma * (1.0 - 0.8 * lf.thin - cv2.mid2.z * lf.soft) * lSeg;
-            s += lSeg; lSeg = (lod && k == 0) ? cv2.light.x - lSeg : lSeg * kLightRatio;
+            // (This sample's length, a pair's under lodN. Written out at both uses: hoisted into one variable above the
+            // field call, the march went to 220 registers.)
+            float lS = (lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg;
+            od += lf.sigma * (1.0 - 0.8 * lf.thin - cv2.mid2.z * lf.soft) * lS;
+            s += lS; lSeg = (lod && k == 0) ? cv2.light.x - lSeg : lSeg * (lodN ? kLightRatio * kLightRatio : kLightRatio);
         } else if (k == nL) {
             od += lf.sigma * (1.0 - cv2.mid2.z * lf.soft) * cv2.light.x * 0.8;
         } else if (k == nL + 1) {
@@ -592,11 +550,7 @@ void main()
     vec4  odLayer = vec4(0.0);                        // debug view 7: low, mid, anvil, high
     bool  dbgLayers = int(cv2.shell.z + 0.5) == 7;
 
-    // Per-ray lighting caches, refreshed every 25 km along the ray (the Sun's elevation and the
-    // sky's colour change across a long horizon ray).
     vec3  sunCol = vec3(0.0), skyZen = vec3(0.0);
-    vec3  sunColA = vec3(0.0), sunColB = vec3(0.0), skyZenA = vec3(0.0), skyZenB = vec3(0.0);
-    float cacheT = -1e30, cacheLvl = -1e30;
 
     int   iters = 0;
     int   kMaxIters = int(cv2.misc.x);
@@ -740,37 +694,20 @@ void main()
             vec3  pW   = eye + rel;                        // world point, ENU about the observer
             vec3  up   = normalize(pW);
             float sunUp = dot(up, sunDir);
-            // ...and on a change of altitude: the Sun's colour depends on the air column above the sample.
-            // Refreshed by distance alone, a ray from inside the anvil (12 km, near-white sunlight) lit
-            // the cumulus 10 km below it with that colour — the same clouds went from gold to white as the
-            // observer climbed 1 km into the anvil at sunset (user snaps 9-10, pass 13).
-            // Cached at FIXED 800 m altitude levels and interpolated between the two around the sample:
-            // refreshed by distance from the last refresh instead, the colour stepped at a different
-            // depth on every ray, and looking down through the anvil drew rings around the nadir
-            // (user snap 1, pass 15).
-            float hLvl = floor(clamp(p.h, 0.0, 60000.0) / 800.0);
-            if (t - cacheT > 25000.0 || hLvl != cacheLvl) {
-                // The key light's own Rayleigh (cv2.atmo.x x physical): the sky's gain, turned up for
-                // the ground view's sunsets, reddened every low-Sun cloud with it (from orbit, where no
-                // white balance applies, the whole terminator band read dark yellow-orange).
-                vec3 upW = normalize(pW);
-                // One inlined copy of each (a loop over the two levels): code size is this shader's cost.
-                [[dont_unroll]] for (int lv = 0; lv < 2; ++lv) {
-                    vec3 pL  = upW * (R_EARTH + hLvl * 800.0 + float(lv) * 800.0);
-                    vec3 sc  = sunColorAt(pL, sunDir, BETA_R_BASE * cv2.atmo.x, BETA_M);
-                    vec3 sz  = skyZenithAt(pL, sunDir, BETA_R, BETA_M);
-                    // A solar eclipse: the sky light here, from the sunlit air around the point (eclipse.glsl).
-                    if (cloud.moonMisc.y > 0.5) sz *= eclipseSkyLight(pL * 1e-3, sunDir, length(pL) - R_EARTH);
-                    if (lv == 0) { sunColA = sc; skyZenA = sz; } else { sunColB = sc; skyZenB = sz; }
-                }
-                cacheT = t; cacheLvl = hLvl;
-            }
+            // The Sun's colour and the zenith sky's light at THIS sample, from the table (2026-10-13). They were a
+            // per-ray cache at the two 800 m levels around the sample, recomputed at every level crossed and every
+            // 25 km (pass 14: by distance alone a ray from inside the anvil lit the cumulus 10 km below with the
+            // 12 km sunlight; pass 16: at fixed levels, or the colour stepped at another depth on every ray and
+            // drew rings round the nadir). The table's rows are those levels.
             {
-                float fh = clamp(clamp(p.h, 0.0, 60000.0) / 800.0 - hLvl, 0.0, 1.0);
-                sunCol = mix(sunColA, sunColB, fh);
-                skyZen = mix(skyZenA, skyZenB, fh);
+                vec3 uvL = vec3(cv2SunLutUV(sunUp, p.h), 0.0);
+                sunCol = textureLod(cv2SunLutTex, uvL, 0.0).rgb;
+                uvL.z  = 1.0;
+                skyZen = textureLod(cv2SunLutTex, uvL, 0.0).rgb;
+                // A solar eclipse: the sky light here, from the sunlit air around the point (eclipse.glsl).
+                if (cloud.moonMisc.y > 0.5) skyZen *= eclipseSkyLight(pW * 1e-3, sunDir, p.h);
             }
-            // Earth's shadow at THIS sample (the cached colour is for a point up to 25 km back).
+            // Earth's shadow at THIS sample.
             float rP     = R_EARTH + p.h;
             float horizS = -sqrt(max(1.0 - (R_EARTH / rP) * (R_EARTH / rP), 0.0));
             float sunVis = smoothstep(horizS - 0.004, horizS + 0.004, sunUp);
@@ -1067,9 +1004,11 @@ void main()
             float sUpF = dot(normalize(pm), sunDir);
             float rPm  = length(pm);
             float hzF  = -sqrt(max(1.0 - (R_EARTH / rPm) * (R_EARTH / rPm), 0.0));
-            vec3  sunF = sunColorAt(pm, sunDir, BETA_R_BASE * cv2.atmo.x, BETA_M) * cv2.look2.y
+            vec3  uvF  = vec3(cv2SunLutUV(sUpF, rPm - R_EARTH), 0.0);
+            vec3  sunF = textureLod(cv2SunLutTex, uvF, 0.0).rgb * cv2.look2.y
                        * smoothstep(hzF - 0.004, hzF + 0.004, sUpF);
-            vec3  skyF = skyZenithAt(pm, sunDir, BETA_R, BETA_M) * cv2.look.w
+            uvF.z = 1.0;
+            vec3  skyF = textureLod(cv2SunLutTex, uvF, 0.0).rgb * cv2.look.w
                        * smoothstep(hzF - 0.09, hzF + 0.04, sUpF);
             // A solar eclipse: the fog and dust see the Sun and sky the eye does (2026-10-03: the desert dust
             // stayed sunlit at totality, a bright tan sky over central Australia).

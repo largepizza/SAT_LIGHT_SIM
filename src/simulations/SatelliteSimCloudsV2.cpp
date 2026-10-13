@@ -477,40 +477,40 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     }
     {
         VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-        ci.imageType = VK_IMAGE_TYPE_3D;
-        ci.format = VK_FORMAT_R16_SFLOAT;
-        ci.extent = {kCv2LightVolXY, kCv2LightVolXY, kCv2LightVolZ};
+        // The Sun / sky colour table (cloud_v2_sunlut.comp): layer 0 the Sun's colour, 1 the zenith sky's.
+        ci.imageType = VK_IMAGE_TYPE_2D;
+        ci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        ci.extent = {kCv2SunLutW, kCv2SunLutH, 1};
         ci.mipLevels = 1;
-        ci.arrayLayers = 1;
+        ci.arrayLayers = 2;
         ci.samples = VK_SAMPLE_COUNT_1_BIT;
         ci.tiling = VK_IMAGE_TILING_OPTIMAL;
         ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (vkCreateImage(dev, &ci, nullptr, &cv2LightVolImg) != VK_SUCCESS)
-            throw std::runtime_error("clouds v2: light volume vkCreateImage failed");
+        if (vkCreateImage(dev, &ci, nullptr, &cv2SunLutImg) != VK_SUCCESS)
+            throw std::runtime_error("clouds v2: sun table vkCreateImage failed");
         VkMemoryRequirements req;
-        vkGetImageMemoryRequirements(dev, cv2LightVolImg, &req);
+        vkGetImageMemoryRequirements(dev, cv2SunLutImg, &req);
         VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         mai.allocationSize = req.size;
         mai.memoryTypeIndex = ctx.findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        vkAllocateMemory(dev, &mai, nullptr, &cv2LightVolMem);
-        vkBindImageMemory(dev, cv2LightVolImg, cv2LightVolMem, 0);
-        cv2LightVolView = makeView(dev, cv2LightVolImg, VK_IMAGE_VIEW_TYPE_3D, VK_FORMAT_R16_SFLOAT, 0, 1, 1);
-        // GENERAL for good (written by the bake, sampled by the march), cleared to full transmittance so
-        // the levels not yet baked shadow nothing.
+        vkAllocateMemory(dev, &mai, nullptr, &cv2SunLutMem);
+        vkBindImageMemory(dev, cv2SunLutImg, cv2SunLutMem, 0);
+        cv2SunLutView = makeView(dev, cv2SunLutImg, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R16G16B16A16_SFLOAT, 0, 1, 2);
+        // GENERAL for good (written by the bake, sampled by the march); cleared, and baked on the first frame
+        // the clouds are recorded (cv2SunLutKey).
         VkCommandBuffer cmd = ctx.beginOneTimeCommands();
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.image = cv2LightVolImg;
-        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        b.image = cv2SunLutImg;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 2};
         b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
                              0, nullptr, 1, &b);
         VkClearColorValue one{};
-        one.float32[0] = 1.0f;
-        vkCmdClearColorImage(cmd, cv2LightVolImg, VK_IMAGE_LAYOUT_GENERAL, &one, 1, &b.subresourceRange);
+        vkCmdClearColorImage(cmd, cv2SunLutImg, VK_IMAGE_LAYOUT_GENERAL, &one, 1, &b.subresourceRange);
         b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
@@ -525,8 +525,8 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             SSBO = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, IMG = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     // cloud_v2_march.comp: 0 CloudParams, 1 CloudV2Params, 2 weather, 3 shape, 4 detail, 5 meso,
     // 6 sceneDepth, 7 earthNight, 8 terrainFrame, 9 beamCloudLights, 10 outColor, 11 outDepth,
-    // 12 the lightning flash list (cloud_v2_lightning.comp, same set), 13 the light volume (storage: the
-    // bake, cloud_v2_lightvol.comp), 14 the light volume (sampled: the march's godrays), 15 the blue-noise
+    // 12 the lightning flash list (cloud_v2_lightning.comp, same set), 13 the Sun / sky colour table (storage:
+    // the bake, cloud_v2_sunlut.comp), 14 the same table (sampled: the march), 15 the blue-noise
     // tile (the ray jitter in fast flight); the adaptive rate: 16 last frame's resolved depth, 17/18 pass B's full-rate
     // targets, 19 the tile list
     // 20 the cloud morphology texture (review 17), 21 the far cloud layer (review 18, cloud_v2_far.comp)
@@ -571,7 +571,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     cv2TilesPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout);
     cv2ResolvePipeline = makeComputePipeline(ctx, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout);
     cv2LightningPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout);
-    cv2LightVolPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightvol.comp.spv", cv2MarchPipeLayout);
+    cv2SunLutPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout);
     cv2FarPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout);
 
     // Static descriptors of the march set (the screen-sized ones are written by the targets).
@@ -591,8 +591,8 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkDescriptorBufferInfo flashes{cv2FlashBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo blueNoise{cv2BlueNoiseBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo tiles{cv2TileBuf, 0, VK_WHOLE_SIZE};
-        VkDescriptorImageInfo lvOut{VK_NULL_HANDLE, cv2LightVolView, VK_IMAGE_LAYOUT_GENERAL};
-        VkDescriptorImageInfo lvIn{cv2ClampSampler, cv2LightVolView, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo lvOut{VK_NULL_HANDLE, cv2SunLutView, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo lvIn{cv2ClampSampler, cv2SunLutView, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w[] = {
             bufferWrite(cv2MarchDescSet, 15, SSBO, &blueNoise),
             bufferWrite(cv2MarchDescSet, 19, SSBO, &tiles),
@@ -814,7 +814,8 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     swap(cv2ResolvePipeline, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout, nullptr);
     swap(cv2TilesPipeline, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cv2LightningPipeline, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout, nullptr);
-    swap(cv2LightVolPipeline, "shaders/cloud_v2_lightvol.comp.spv", cv2MarchPipeLayout, nullptr);
+    swap(cv2SunLutPipeline, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout, nullptr);
+    cv2SunLutKey[0] = -1.0f;   // bake it again with the new shader
     swap(cv2FarPipeline, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cloudMarchPipeline, "shaders/cloud_march.comp.spv", cloudMarchPipeLayout, nullptr);   // the composite
     cv2HistoryValid = false;
@@ -835,14 +836,14 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     if (cv2TileBuf) vkDestroyBuffer(device, cv2TileBuf, nullptr);
     if (cv2TileMem) vkFreeMemory(device, cv2TileMem, nullptr);
     cv2TileBuf = VK_NULL_HANDLE; cv2TileMem = VK_NULL_HANDLE;
-    if (cv2LightVolPipeline) vkDestroyPipeline(device, cv2LightVolPipeline, nullptr);
-    cv2LightVolPipeline = VK_NULL_HANDLE;
+    if (cv2SunLutPipeline) vkDestroyPipeline(device, cv2SunLutPipeline, nullptr);
+    cv2SunLutPipeline = VK_NULL_HANDLE;
     if (cv2FarPipeline) vkDestroyPipeline(device, cv2FarPipeline, nullptr);
     cv2FarPipeline = VK_NULL_HANDLE;
-    if (cv2LightVolView) vkDestroyImageView(device, cv2LightVolView, nullptr);
-    if (cv2LightVolImg) vkDestroyImage(device, cv2LightVolImg, nullptr);
-    if (cv2LightVolMem) vkFreeMemory(device, cv2LightVolMem, nullptr);
-    cv2LightVolView = VK_NULL_HANDLE; cv2LightVolImg = VK_NULL_HANDLE; cv2LightVolMem = VK_NULL_HANDLE;
+    if (cv2SunLutView) vkDestroyImageView(device, cv2SunLutView, nullptr);
+    if (cv2SunLutImg) vkDestroyImage(device, cv2SunLutImg, nullptr);
+    if (cv2SunLutMem) vkFreeMemory(device, cv2SunLutMem, nullptr);
+    cv2SunLutView = VK_NULL_HANDLE; cv2SunLutImg = VK_NULL_HANDLE; cv2SunLutMem = VK_NULL_HANDLE;
     for (VkImageView v : cv2WxMipViews)
         vkDestroyImageView(device, v, nullptr);
     cv2WxMipViews.clear();
@@ -1184,8 +1185,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // resolves ~10 ms (a flash in progress at the wrap is cut; once per ~28 h of sim time).
     // The light volume: +-"God ray range" about the eye (a low Sun's shafts come from storms hundreds of
     // km away), sea level to 16 km, four of its 32 levels per frame.
-    p.lightVol = glm::vec4((float)((cv2Frame % (kCv2LightVolZ / kCv2LightVolLevelsPerFrame)) * kCv2LightVolLevelsPerFrame),
-                           std::clamp(cv2GodrayRangeKm, 50.0f, 1500.0f) * 1000.0f, 16000.0f, std::max(cv2Godrays, 0.0f));
+    // (xyz were the light volume's, deleted 2026-10-13; w is read: "God rays".)
+    p.lightVol = glm::vec4(0.0f, std::clamp(cv2GodrayRangeKm, 50.0f, 1500.0f) * 1000.0f, 16000.0f, std::max(cv2Godrays, 0.0f));
     // z: the eye moved (over 1 m since the last frame): the march switches its ray jitter from IGN to
     // blue noise (cloud_v2_march.comp). It was over 150 m (fast flight) until review 7: at a walking or
     // hover speed the moving history weight (0.7, the user's 1.0) let IGN's regular structure through as
@@ -1588,6 +1589,19 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
 
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeLayout, 0, 1, &cv2MarchDescSet, 0, nullptr);
     vkCmdPushConstants(cmd, cv2MarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
+    // The Sun / sky colour table: a function of the scattering gains alone, baked when one changes (and on the
+    // first frame). The march, below, samples it.
+    if (cv2SunLutPipeline &&
+        (cv2SunLutKey[0] != cv2CloudSunRayleigh || cv2SunLutKey[1] != atmosRayleighGain || cv2SunLutKey[2] != atmosMieGain))
+    {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2SunLutPipeline);
+        vkCmdDispatch(cmd, (kCv2SunLutW + 7) / 8, (kCv2SunLutH + 3) / 4, 1);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        cv2SunLutKey[0] = cv2CloudSunRayleigh;
+        cv2SunLutKey[1] = atmosRayleighGain;
+        cv2SunLutKey[2] = atmosMieGain;
+    }
     // The far cloud layer (review 18): full resolution, read by sat_sky.frag (imageLoad) this frame, after
     // the previous frame's fragment reads of it.
     const float farBlend = cloudFarBlend();
@@ -1620,16 +1634,6 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         cv2LightningRanThisFrame = true;
         cv2LightningObsDir = glm::dvec3(cpc.obsECEFDir);   // the frame its flash list is in (updateLightningBolts)
         cv2LightningObsDirValid = true;
-    }
-    // Four levels of the light volume (the godrays read it in the march, after this barrier).
-    // (Not baked since 2026-10-10: the godrays read the Sun shadow cascade. The volume and its pass are kept for now.)
-    const bool bakeLightVol = false;
-    if (bakeLightVol && cv2LightVolPipeline && cv2Godrays > 0.0f)
-    {
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightVolPipeline);
-        vkCmdDispatch(cmd, kCv2LightVolXY / 8, kCv2LightVolXY / 8, kCv2LightVolLevelsPerFrame / 4);
-        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     }
     if (cv2AdaptiveNow)
     {

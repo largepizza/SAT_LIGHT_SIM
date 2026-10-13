@@ -3463,13 +3463,17 @@ private:
     // into cv2FlashBuf (host-visible: the host reads them back next frame for thunder), bound as
     // binding 12 of the march set and 21 of cloud_march's.
     VkPipeline cv2LightningPipeline = VK_NULL_HANDLE;
-    // The LIGHT VOLUME (cloud_v2_lightvol.comp): sun transmittance about the eye, 128 x 128 x 32, four
-    // levels baked per frame; march set bindings 13 (storage, the bake) and 14 (sampled, the godrays).
-    VkPipeline cv2LightVolPipeline = VK_NULL_HANDLE;
-    VkImage cv2LightVolImg = VK_NULL_HANDLE;
-    VkDeviceMemory cv2LightVolMem = VK_NULL_HANDLE;
-    VkImageView cv2LightVolView = VK_NULL_HANDLE;
-    static constexpr uint32_t kCv2LightVolXY = 128, kCv2LightVolZ = 32, kCv2LightVolLevelsPerFrame = 4;
+    // The Sun / sky colour table (cloud_v2_sunlut.comp, include/cv2_sunlut.glsl): the Sun's colour and the zenith
+    // sky's radiance by height and Sun cosine, a 2-layer array baked when the scattering gains change
+    // (cv2SunLutKey); march set bindings 13 (storage, the bake) and 14 (sampled, the march). It took the
+    // bindings of the light volume (cloud_v2_lightvol.comp, 2026-09-29: unbaked since the god rays moved to
+    // the Sun shadow cascade, deleted 2026-10-13).
+    VkPipeline cv2SunLutPipeline = VK_NULL_HANDLE;
+    VkImage cv2SunLutImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2SunLutMem = VK_NULL_HANDLE;
+    VkImageView cv2SunLutView = VK_NULL_HANDLE;
+    static constexpr uint32_t kCv2SunLutW = 256, kCv2SunLutH = 76;   // == cv2_sunlut.glsl
+    float cv2SunLutKey[3] = {-1.0f, -1.0f, -1.0f};                    // the gains it was baked with
     VkBuffer cv2FlashBuf = VK_NULL_HANDLE;
     VkDeviceMemory cv2FlashMem = VK_NULL_HANDLE;
     void *cv2FlashMapped = nullptr;
