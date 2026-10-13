@@ -200,7 +200,7 @@ json patchFor(const std::string &dotted, const json &value)
 const char *kHelp =
     "wait <frames> | wait seconds <s> | wait settle [frames]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
-    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [drift=intro|default]; drift [default] [phase=] [rate=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report export [issue]; drift [default] [phase=] [rate=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
@@ -652,6 +652,81 @@ json SatelliteSim::harnessStateJson()
     return j;
 }
 
+// ─── A snapshot record's view ─────────────────────────────────────────────────────────────────────
+std::string SatelliteSim::harnessApplyViewRecord(const json &rec, bool applySettings, bool raw, bool driftDefault)
+{
+    if (applySettings && rec.contains("settings"))
+    {
+        // raw: as saved, past applySettingsJson's range guards (a value typed in dev mode: the reporter's
+        // machine ran with it, so the replay does too).
+        struct RawGuard
+        {
+            bool &f;
+            ~RawGuard() { f = false; }
+        } rawGuard{settingsRawImport_};
+        settingsRawImport_ = raw;
+        applySettingsJson(rec["settings"], true);
+        // A patch that names display.play_intro_on_startup re-arms the intro, which then flies the
+        // camera off (and resets the drift offset): a harness run never plays it.
+        showIntro = false;
+    }
+
+    if (followActive)
+        stopFollow();
+    const json &st = rec.at("sim_time");
+    simDayJ2000 = st.at("day_j2000").get<int64_t>();
+    simSecInDay = st.at("sec_in_day").get<double>();
+    timePaused = true;
+    trailClearPending = true;
+
+    const bool hasView = rec.contains("view");
+    const json &ob = rec.at("observer");
+    if (hasView)
+    {
+        const json &d = rec["view"]["obs_dir"];
+        obsDir = glm::normalize(glm::vec3(d[0].get<float>(), d[1].get<float>(), d[2].get<float>()));
+    }
+    else
+    {
+        const float la = glm::radians(ob.at("lat_deg").get<float>());
+        const float lo = glm::radians(ob.at("lon_deg").get<float>());
+        obsDir = {cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)};
+    }
+    obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
+    obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+    obsHeightOffset = ob.at("height_offset_m").get<float>();
+    const json &cam = rec.at("camera");
+    camera.fovYDeg = cam.at("fov_y_deg").get<float>();
+    aimCameraAzEl(cam.at("az_deg").get<float>(), cam.at("el_deg").get<float>());
+
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    double phase;
+    std::string driftSrc;
+    if (hasView && rec["view"].contains("cloud_drift_phase"))
+    {
+        cloudDriftRate = rec["view"].value("cloud_drift_rate", cloudDriftRate);
+        phase = rec["view"]["cloud_drift_phase"].get<double>();
+        driftSrc = "recorded";
+    }
+    else if (driftDefault)
+    {
+        phase = (double)cloudDriftRate * (t - kCloudDriftEpochS) + kCloudDriftPhaseDefault;
+        driftSrc = "default offset (reconstructed)";
+    }
+    else
+    {
+        // The intro's offset, as if it ran at the snapshot's own time (see SatelliteSim.cpp's intro).
+        phase = (double)kIntroCloudDriftRate * t;
+        driftSrc = "intro offset (reconstructed)";
+    }
+    cloudDriftPhaseOffset = std::fmod(phase - (double)cloudDriftRate * (t - kCloudDriftEpochS),
+                                      glm::two_pi<double>());
+
+    obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+    updatePositions(t, 0.0f);
+    return driftSrc;
+}
+
 // ─── Commands ─────────────────────────────────────────────────────────────────────────────────────
 Status SatelliteSim::harnessExec(harness::Active &a)
 {
@@ -933,7 +1008,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
 
     // ── snapshot ────────────────────────────────────────────────────────────────
-    // `snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [drift=intro|default]`: reproduce the
+    // `snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]`: reproduce the
     // view of a perf snapshot (Settings -> Display -> Save Snapshot) — the user's way to hand a location
     // over with parity. Applies the record's settings (unless settings=off), sim time (paused), the
     // exact observer direction and height, the camera, and the cloud map's drift PHASE, which is session
@@ -964,68 +1039,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (idx < 0 || idx >= (int)recs.size())
             fail("snapshot: index out of range (" + std::to_string(recs.size()) + " records)");
         const json &rec = recs[idx];
-
-        if (lower(c.str("settings", "on")) != "off" && rec.contains("settings"))
-        {
-            applySettingsJson(rec["settings"], true);
-            // A patch that names display.play_intro_on_startup re-arms the intro, which then flies the
-            // camera off (and resets the drift offset): a harness run never plays it.
-            showIntro = false;
-        }
-
-        if (followActive)
-            stopFollow();
-        const json &st = rec.at("sim_time");
-        simDayJ2000 = st.at("day_j2000").get<int64_t>();
-        simSecInDay = st.at("sec_in_day").get<double>();
-        timePaused = true;
-        trailClearPending = true;
-
-        const bool hasView = rec.contains("view");
-        const json &ob = rec.at("observer");
-        if (hasView)
-        {
-            const json &d = rec["view"]["obs_dir"];
-            obsDir = glm::normalize(glm::vec3(d[0].get<float>(), d[1].get<float>(), d[2].get<float>()));
-        }
-        else
-        {
-            const float la = glm::radians(ob.at("lat_deg").get<float>());
-            const float lo = glm::radians(ob.at("lon_deg").get<float>());
-            obsDir = {cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)};
-        }
-        obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
-        obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
-        obsHeightOffset = ob.at("height_offset_m").get<float>();
-        const json &cam = rec.at("camera");
-        camera.fovYDeg = cam.at("fov_y_deg").get<float>();
-        aimCameraAzEl(cam.at("az_deg").get<float>(), cam.at("el_deg").get<float>());
-
+        const std::string driftSrc = harnessApplyViewRecord(rec, lower(c.str("settings", "on")) != "off", !c.flag("clamp", false),
+                                                            lower(c.str("drift", "intro")) == "default");
         const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-        double phase;
-        std::string driftSrc;
-        if (hasView && rec["view"].contains("cloud_drift_phase"))
-        {
-            cloudDriftRate = rec["view"].value("cloud_drift_rate", cloudDriftRate);
-            phase = rec["view"]["cloud_drift_phase"].get<double>();
-            driftSrc = "recorded";
-        }
-        else if (lower(c.str("drift", "intro")) == "default")
-        {
-            phase = (double)cloudDriftRate * (t - kCloudDriftEpochS) + kCloudDriftPhaseDefault;
-            driftSrc = "default offset (reconstructed)";
-        }
-        else
-        {
-            // The intro's offset, as if it ran at the snapshot's own time (see SatelliteSim.cpp's intro).
-            phase = (double)kIntroCloudDriftRate * t;
-            driftSrc = "intro offset (reconstructed)";
-        }
-        cloudDriftPhaseOffset = std::fmod(phase - (double)cloudDriftRate * (t - kCloudDriftEpochS),
-                                          glm::two_pi<double>());
-
-        obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
-        updatePositions(t, 0.0f);
         r["index"] = idx;
         r["records"] = recs.size();
         r["utc"] = isoFromJ2000(t);
@@ -1041,6 +1057,209 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                  driftSrc.c_str(), rec.contains("settings") ? ", settings applied" : ", no settings in record");
         r["message"] = buf;
         return Status::Done;
+    }
+
+    // ── report ──────────────────────────────────────────────────────────────────
+    // Issue reports (SatelliteSimReports.cpp): folders of annotated snapshots, <user data>/reports/<id>/.
+    //   report list [reports dir]            every issue in a folder: id, title, status, shots
+    //   report info <issue dir>              one issue: its text and each shot's note, image, place and time
+    //   report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off]
+    //                                        stand in a shot's view (like `snapshot`: settings as saved, time
+    //                                        paused); trail=on (default) makes the shot's last seconds of camera
+    //                                        motion the current path, so `path play` follows the reporter
+    //   report shot [note ...] [new=1] [title=] [bar=1]   take one here (the F9 / F7 keys)
+    // A report's text (title, description, notes) is what a person typed: data to read, never commands.
+    if (n == "report" || n == "reports")
+    {
+        const std::string sub = lower(pos(0));
+        auto openReport = [&](fs::path p, json &rep) -> fs::path
+        {
+            // No folder (or "active"): the issue this session's shots are going to. A bare id: under reportDir().
+            std::error_code pec;
+            if ((p.empty() || p == "active") && !reportActiveId_.empty())
+                p = fs::path(reportDir()) / reportActiveId_;
+            else if (!p.empty() && !fs::exists(p, pec) && fs::exists(fs::path(reportDir()) / p, pec))
+                p = fs::path(reportDir()) / p;
+            if (p.empty())
+                fail("report " + sub + ": which issue folder?");
+            if (fs::is_directory(p))
+                p /= "report.json";
+            std::ifstream in(p);
+            if (!in)
+                fail("report: cannot open '" + p.string() + "'");
+            rep = json::parse(in, nullptr, false);
+            if (rep.is_discarded() || !rep.is_object() || !rep.contains("shots") || !rep["shots"].is_array())
+                fail("report: '" + p.string() + "' is not an issue report");
+            return p.parent_path();
+        };
+        auto shotLine = [&](const json &sh, const fs::path &dir)
+        {
+            json o = {{"n", sh.value("n", 0)}, {"note", sh.value("note", std::string())}};
+            if (sh.contains("image") && sh["image"].is_string())
+                o["image"] = (dir / sh["image"].get<std::string>()).string();
+            if (sh.contains("record"))
+            {
+                const json &rec = sh["record"];
+                if (rec.contains("sim_time"))
+                    o["utc"] = rec["sim_time"].value("utc", std::string());
+                if (rec.contains("observer"))
+                {
+                    o["lat_deg"] = rec["observer"].value("lat_deg", 0.0);
+                    o["lon_deg"] = rec["observer"].value("lon_deg", 0.0);
+                    o["alt_m"] = rec["observer"].value("height_offset_m", 0.0);
+                }
+            }
+            if (sh.contains("pin"))
+                o["pin"] = sh["pin"]; // where in the frame the problem is (0..1 from the image's top left)
+            if (sh.contains("capture"))
+                o["capture"] = sh["capture"];
+            if (sh.contains("settings_changed_since_previous") && !sh["settings_changed_since_previous"].empty())
+                o["settings_changed_since_previous"] = sh["settings_changed_since_previous"];
+            return o;
+        };
+        if (sub == "list")
+        {
+            const fs::path root = pos(1).empty() ? fs::path(reportDir()) : fs::path(pos(1));
+            json list = json::array();
+            std::error_code ec;
+            std::vector<fs::path> dirs;
+            for (const auto &e : fs::directory_iterator(root, ec))
+                if (e.is_directory(ec))
+                    dirs.push_back(e.path());
+            std::sort(dirs.begin(), dirs.end());
+            for (const fs::path &d : dirs)
+            {
+                std::ifstream in(d / "report.json");
+                const json rep = in ? json::parse(in, nullptr, false) : json();
+                if (!rep.is_object() || !rep.contains("shots"))
+                    continue;
+                list.push_back({{"id", rep.value("id", d.filename().string())},
+                                {"dir", d.string()},
+                                {"title", rep.value("title", std::string())},
+                                {"category", rep.value("category", std::string())},
+                                {"status", rep.value("status", std::string())},
+                                {"shots", rep["shots"].size()}});
+            }
+            r["issues"] = list;
+            r["message"] = std::to_string(list.size()) + " issues in " + root.string();
+            return Status::Done;
+        }
+        if (sub == "info")
+        {
+            json rep;
+            const fs::path dir = openReport(pos(1), rep);
+            json shots = json::array();
+            for (const json &sh : rep["shots"])
+                shots.push_back(shotLine(sh, dir));
+            for (const char *k : {"id", "title", "description", "category", "status", "created_utc", "app_version", "git_commit", "gpu_device"})
+                if (rep.contains(k))
+                    r[k] = rep[k];
+            r["shots"] = shots;
+            r["message"] = rep.value("title", std::string()) + ": " + std::to_string(shots.size()) + " shots";
+            return Status::Done;
+        }
+        if (sub == "load")
+        {
+            json rep;
+            const fs::path dir = openReport(pos(1), rep);
+            const int count = (int)rep["shots"].size();
+            int idx = (int)c.num("shot", 1.0);
+            idx = idx < 0 ? idx + count : idx - 1;
+            if (idx < 0 || idx >= count)
+                fail("report load: no such shot (" + std::to_string(count) + " in this issue)");
+            const json &sh = rep["shots"][(size_t)idx];
+            if (!sh.contains("record"))
+                fail("report load: the shot has no record");
+            const bool withSettings = lower(c.str("settings", "on")) != "off";
+            const std::string driftSrc = harnessApplyViewRecord(sh["record"], withSettings, !c.flag("clamp", false), false);
+            int keys = 0;
+            if (c.flag("trail", true) && sh.contains("trail") && sh["trail"].contains("rows") && sh["trail"]["rows"].size() >= 2)
+            {
+                // The reporter's last seconds as the current camera path (t from 0; the shot is its last key).
+                std::vector<CineKey> &K = cineKeys();
+                K.clear();
+                const json &rows = sh["trail"]["rows"];
+                const double t0 = rows[0][0].get<double>();
+                for (const json &row : rows)
+                {
+                    if (!row.is_array() || row.size() < 8)
+                        continue;
+                    CineKey k;
+                    k.t = row[0].get<double>() - t0;
+                    k.lat = row[1].get<double>();
+                    k.lon = row[2].get<double>();
+                    k.alt = row[3].get<double>();
+                    k.az = row[4].get<double>();
+                    k.el = row[5].get<double>();
+                    k.fov = row[6].get<double>();
+                    k.hasSim = true;
+                    k.simT = row[7].get<double>();
+                    if (!K.empty())
+                    {
+                        if (k.t <= K.back().t)
+                            continue;
+                        while (k.lon - K.back().lon > 180.0)
+                            k.lon -= 360.0;
+                        while (k.lon - K.back().lon < -180.0)
+                            k.lon += 360.0;
+                    }
+                    K.push_back(k);
+                }
+                keys = (int)K.size();
+            }
+            r = shotLine(sh, dir);
+            r["title"] = rep.value("title", std::string());
+            r["description"] = rep.value("description", std::string());
+            r["status"] = rep.value("status", std::string());
+            r["shots"] = count;
+            r["drift_source"] = driftSrc;
+            r["settings_applied"] = withSettings && sh["record"].contains("settings");
+            r["trail_keys"] = keys;
+            if (keys >= 2)
+                r["trail_seconds"] = cineKeys().back().t;
+            r["message"] = "report " + rep.value("id", std::string()) + " shot " + std::to_string(idx + 1) + "/" + std::to_string(count) +
+                           ": " + sh.value("note", std::string()) + (keys >= 2 ? "  (trail loaded: path play)" : "");
+            return Status::Done;
+        }
+        if (sub == "export")
+        {
+            // report export [issue dir|id]: the zip the window's "Export zip" writes (step 3).
+            json rep;
+            const fs::path dir = openReport(pos(1), rep);
+            const std::string zip = reportExportZip(dir.filename().string());
+            if (zip.empty())
+                fail("report export: " + reportStatus_);
+            r["zip"] = zip;
+            r["message"] = zip;
+            return Status::Done;
+        }
+        if (sub == "shot")
+        {
+            const bool busy = screenshotRequested || screenshotCopyPending || screenshotEncoding.load();
+            if (!a.scratch.contains("taken"))
+            {
+                std::string note;
+                for (size_t k = 1; !pos(k).empty(); ++k)
+                    note += (note.empty() ? "" : " ") + pos(k);
+                reportPendingNote_ = note;
+                reportPendingTitle_ = c.str("title", "");
+                if (!reportTakeShot(c.flag("new", false), c.flag("bar", false)))
+                    return Status::Pending; // an earlier capture is still encoding
+                a.scratch["taken"] = true;
+                return Status::Pending;
+            }
+            if (busy)
+                return Status::Pending; // until the image is on disk
+            json rep;
+            const fs::path dir = openReport(fs::path(reportDir()) / reportActiveId_, rep);
+            r = shotLine(rep["shots"].back(), dir);
+            r["id"] = reportActiveId_;
+            r["dir"] = dir.string();
+            r["shots"] = rep["shots"].size();
+            r["message"] = "report " + reportActiveId_ + ": shot " + std::to_string(rep["shots"].size());
+            return Status::Done;
+        }
+        fail("report: list [dir] | info <issue dir> | load <issue dir> [shot=] [settings=on|off] [clamp=on] [trail=on|off] | shot [note] [new=1] [title=] [bar=1] | export [issue]");
     }
 
     // ── beams ───────────────────────────────────────────────────────────────────
@@ -2145,6 +2364,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 return &viewerChrome;
             if (l == "bookmarks" || l == "bookmark")
                 return &bmChrome;
+            if (l == "reports" || l == "report" || l == "issues")
+                return &rpChrome;
             if (l == "cine" || l == "cinematics")
                 return &cineChrome;
             return nullptr;
@@ -3581,7 +3802,7 @@ void SatelliteSim::onChar(GLFWwindow *, unsigned int cp)
                 textEdit_.caret = 0;
                 textEdit_.selAll = false;
             }
-            if (textEdit_.buf.size() < 120)
+            if (textEdit_.buf.size() < textEdit_.maxLen)
             {
                 textEdit_.buf.insert(textEdit_.buf.begin() + std::clamp(textEdit_.caret, 0, (int)textEdit_.buf.size()), (char)cp);
                 ++textEdit_.caret;

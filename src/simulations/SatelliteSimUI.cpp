@@ -47,6 +47,7 @@ static constexpr int kIconMaximize = 15;  // pixel--maximize.png — pop the 3D 
 static constexpr int kIconTrack = 16;     // pixel--track.png — "Track": lock the camera onto the satellite
 static constexpr int kIconPhoto = 17;    // pixel--photo.png — HQ photo (supersampled screenshot)
 static constexpr int kIconFilm = 18;     // pixel--film.png — the Cinematics window (review 17)
+static constexpr int kIconReport = 20;   // pixel--report.png — the Issue reports window (2026-10-12)
 static constexpr int kIconBookmark = 19; // pixel--bookmark.png — the Bookmarks window (2026-10-03)
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
@@ -569,14 +570,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     harnessUi_ = &ui;
     harnessTick();
     cineTick(dt); // review 17: a playing / exporting cinematic owns the camera and the clock
-    if (snapshotKeyPending)
-    { // KB_SAVE_SNAPSHOT (default F9)
-        snapshotKeyPending = false;
-        savePerfSnapshot(ui.input().dt);
-        snprintf(screenshotToastText, sizeof(screenshotToastText), "Snapshot saved (perf_profiles/profile_log.jsonl)");
-        screenshotToastTimer = 2.5f;
-        screenshotToastWarn = false;
-    }
+    reportTick(ui.input().dt); // KB_SAVE_SNAPSHOT / KB_REPORT_NEW: a shot into an issue report (SatelliteSimReports.cpp)
 
     // Track (the selection panel's toggle) re-aims at the selection here, before the look block below:
     // it reads obsFacing/obsDir, and that block is where this frame's look input is dropped while the
@@ -760,6 +754,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--photo.png",
             "assets/icons/ui/pixel--film.png",
             "assets/icons/ui/pixel--bookmark.png",
+            "assets/icons/ui/pixel--report.png",
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -823,6 +818,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildHarnessOverlays(inp, ui); // harness `overlay` titles/labels, likewise (docs/HARNESS.md)
     buildCineHud(inp, ui);         // a playing / exporting cinematic's progress and Stop, likewise
     bookmarkTick(ui);              // bookmarks: the list, thumbnail captures and uploads (window open or not)
+    buildReportBar(inp, ui);       // the note bar after an issue snapshot, likewise
 
     // ── Tab: skip all UI when hidden ─────────────────────────────────────────
     if (!uiVisible)
@@ -835,6 +831,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildTraceWindow(inp, ui);
     buildCinematicWindow(inp, ui);
     buildBookmarksWindow(inp, ui);
+    buildReportsWindow(inp, ui);
     updateViewerView(inp, ui); // the satellite windows' shared prologue (target, drag, readouts)
     buildInfoWindow(inp, ui);
     buildViewPopoutWindow(inp, ui);
@@ -866,6 +863,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         ui.addMouseCaptureRect(traceChrome.x, traceChrome.y, traceChrome.w, traceChrome.h);
     if (bmChrome.open)
         ui.addMouseCaptureRect(bmChrome.x, bmChrome.y, bmChrome.w, bmChrome.h);
+    if (rpChrome.open)
+        ui.addMouseCaptureRect(rpChrome.x, rpChrome.y, rpChrome.w, rpChrome.h);
     // The satellite windows: without these a drag on a render also clicked the sky behind the window
     // and re-selected (or deselected) whatever satellite was under it.
     if (infoChrome.open && meshRendererInit)
@@ -1347,6 +1346,13 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             }
         };
         bool toggled = false;
+        menuBtn(CLAY_ID("TimeReportBtn"), CLAY_ID("TimeReportIcon"), kIconReport, hovTimeReport, Pal::btnAccent, rpChrome.open,
+                "Issue reports", toggled);
+        if (toggled)
+        {
+            rpChrome.open = !rpChrome.open;
+            reportsDirty_ = true;
+        }
         menuBtn(CLAY_ID("TimeBookmarkBtn"), CLAY_ID("TimeBookmarkIcon"), kIconBookmark, hovTimeBookmark, Pal::btnAccent,
                 bmChrome.open, "Bookmarks", toggled);
         if (toggled)
@@ -4404,6 +4410,8 @@ void SatelliteSim::textEditFocus(uint32_t id, const std::string &text)
     textEdit_.caret = (int)text.size();
     textEdit_.selAll = true;
     textEdit_.t0 = glfwGetTime();
+    textEdit_.multiline = false;
+    textEdit_.maxLen = 120;
 }
 
 void SatelliteSim::textEditCommit()
@@ -4442,6 +4450,14 @@ bool SatelliteSim::textEditKey(int key, int action)
     {
     case GLFW_KEY_ENTER:
     case GLFW_KEY_KP_ENTER:
+        if (e.multiline && !ctrl)
+        {
+            dropSel();
+            if (e.buf.size() < e.maxLen)
+                e.buf.insert(e.buf.begin() + e.caret++, '\n');
+            break;
+        }
+        [[fallthrough]];
     case GLFW_KEY_TAB:
         if (action == GLFW_PRESS)
             textEditCommit();
@@ -4470,11 +4486,23 @@ bool SatelliteSim::textEditKey(int key, int action)
         e.selAll = false;
         break;
     case GLFW_KEY_HOME:
-        e.caret = 0;
+        if (e.multiline && !e.selAll && !ctrl && e.caret > 0)
+        { // the start of this line
+            const size_t br = e.buf.rfind('\n', (size_t)e.caret - 1);
+            e.caret = br == std::string::npos ? 0 : (int)br + 1;
+        }
+        else
+            e.caret = 0;
         e.selAll = false;
         break;
     case GLFW_KEY_END:
-        e.caret = (int)e.buf.size();
+        if (e.multiline && !e.selAll && !ctrl)
+        { // the end of this line
+            const size_t br = e.buf.find('\n', (size_t)e.caret);
+            e.caret = br == std::string::npos ? (int)e.buf.size() : (int)br;
+        }
+        else
+            e.caret = (int)e.buf.size();
         e.selAll = false;
         break;
     case GLFW_KEY_A:
@@ -4491,8 +4519,8 @@ bool SatelliteSim::textEditKey(int key, int action)
             {
                 dropSel();
                 std::string add;
-                for (const char *p = clip; *p && e.buf.size() + add.size() < 120; ++p)
-                    if (*p >= 32 && *p < 127)
+                for (const char *p = clip; *p && e.buf.size() + add.size() < e.maxLen; ++p)
+                    if ((*p >= 32 && *p < 127) || (e.multiline && *p == '\n'))
                         add += *p;
                 e.buf.insert((size_t)e.caret, add);
                 e.caret += (int)add.size();
@@ -4520,6 +4548,62 @@ void SatelliteSim::textEditEndFrame(const UIInput &inp)
     textEdit_.drawn = textEdit_.hovered = false;
     if (textEdit_.doneId != 0 && ++textEdit_.doneAge > 2)
         textEdit_.doneId = 0; // its field was not drawn again
+}
+
+bool SatelliteSim::textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width,
+                            int minLines, float fontPx, const char *placeholder, size_t maxLen)
+{
+    bool committed = false;
+    if (textEdit_.doneId == id.id)
+    {
+        std::string v = textEdit_.doneBuf.substr(0, maxLen);
+        while (!v.empty() && (v.back() == '\n' || v.back() == ' '))
+            v.pop_back();
+        textEdit_.doneId = 0;
+        committed = v != value;
+        value = v;
+    }
+    const bool focused = textEdit_.id == id.id;
+    const uint16_t f = fs((int)fontPx);
+    const bool hovPrev = Clay_PointerOver(id);
+    CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(width), CLAY_SIZING_FIT((float)minLines * ((float)f + 4.0f) + 10.0f)},
+                         .padding = {6, 6, 5, 5},
+                         .layoutDirection = CLAY_TOP_TO_BOTTOM},
+              .backgroundColor = focused ? Clay_Color{6, 6, 8, 255} : Clay_Color{20, 20, 23, 235},
+              .cornerRadius = CLAY_CORNER_RADIUS(3),
+              .border = {.color = focused ? Pal::btnAccent : (hovPrev ? Clay_Color{90, 90, 96, 255} : Clay_Color{48, 48, 52, 255}),
+                         .width = CLAY_BORDER_ALL(1)}})
+    {
+        const bool hov = Clay_Hovered();
+        if (hov && inp.lmbPressed && !focused)
+        {
+            textEditFocus(id.id, value);
+            textEdit_.selAll = false; // (a first key that replaced a whole description would be a trap)
+            textEdit_.multiline = true;
+            textEdit_.maxLen = maxLen;
+        }
+        std::string &b = textAreaBufs_[textAreaBufN_++ % 4];
+        Clay_Color col = Pal::textPrimary;
+        if (textEdit_.id == id.id)
+        {
+            textEdit_.drawn = true;
+            textEdit_.hovered = textEdit_.hovered || hov;
+            const int c = std::clamp(textEdit_.caret, 0, (int)textEdit_.buf.size());
+            b = textEdit_.buf.substr(0, (size_t)c) + "|" + textEdit_.buf.substr((size_t)c);
+            col = {240, 240, 245, 255};
+        }
+        else if (value.empty())
+        {
+            b = placeholder ? placeholder : "";
+            col = Pal::textHint;
+        }
+        else
+            b = value;
+        if (!b.empty())
+            CLAY_TEXT((Clay_String{false, (int32_t)b.size(), b.c_str()}),
+                      CLAY_TEXT_CONFIG({.textColor = col, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_WORDS}));
+    }
+    return committed;
 }
 
 bool SatelliteSim::textField(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width,
@@ -5095,6 +5179,10 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
     CloudSlider secGod[] = {
         {"Far cloud shadows (0/1)", &cv2SunCascade, 0.0f, 1.0f, 1.0f, "%.0f", 269},
         {"Far cloud shadow range (km)", &cv2SunCascadeRangeKm, 100.0f, 800.0f, 5.0f, "%.0f", 282},
+        // The 250-m shadow lattice's two rings: a ring reaches 56 x its cell from the eye (14 km at 250 m).
+        {"Cloud shadow ring 1 cell (m)", &cv2ShadowRing1CellM, 100.0f, 1000.0f, 10.0f, "%.0f", 286},
+        {"Cloud shadow ring 2 cell (m, 0 = off)", &cv2ShadowRing2CellM, 0.0f, 4000.0f, 50.0f, "%.0f", 287},
+        {"Cloud shadow ring 2 depth (x)", &cv2ShadowRing2KnotK, 0.1f, 2.0f, 0.05f, "%.2f", 288},
         {"God rays", &cv2Godrays, 0.0f, 1.0f, 0.05f, "%.2f", 187},
         {"Haze near clouds", &cv2HazeAloft, 0.0f, 20.0f, 0.1f, "%.1f", 188},
     };
@@ -5191,7 +5279,7 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {"Terrain shadows", &terrainShadowStrength, 0.0f, 1.0f, 0.05f, "%.2f", 95},
         // Terrain v2 P1 lighting: the sky dome's light on the ground (x the zenith integral's 0.4) and
         // the moonless night sky's (a fraction of the full Moon overhead) on the day albedo.
-        {"Terrain sky light", &terrainSkyLight, 0.0f, 4.0f, 0.05f, "%.2f", 55},
+        {"Terrain sky light", &terrainSkyLight, 0.0f, 20.0f, 0.25f, "%.2f", 55},
         {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
         {"Cloud shadow range (m)", &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
     };
@@ -5672,6 +5760,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {keybindings[KB_SCREENSHOT].action, KB_SCREENSHOT},
         {keybindings[KB_PHOTO].action, KB_PHOTO},
         {keybindings[KB_SAVE_SNAPSHOT].action, KB_SAVE_SNAPSHOT},
+        {keybindings[KB_REPORT_NEW].action, KB_REPORT_NEW},
         {keybindings[KB_TOGGLE_CURSOR].action, KB_TOGGLE_CURSOR},
     };
     struct AnalogRow
@@ -7102,11 +7191,11 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             renderScale = d.value("render_scale", renderScale);
             computeFollowsRenderScale = d.value("clouds_follow_render_scale", computeFollowsRenderScale);
             dynResEnabled = d.value("dynamic_resolution", dynResEnabled);
-            dynResTargetFps = std::clamp(d.value("dynamic_target_fps", dynResTargetFps), 20.0f, 240.0f);
-            dynResMinScale = std::clamp(d.value("dynamic_min_scale", dynResMinScale), 0.5f, 1.0f);
+            dynResTargetFps = settingClamp(d.value("dynamic_target_fps", dynResTargetFps), 20.0f, 240.0f);
+            dynResMinScale = settingClamp(d.value("dynamic_min_scale", dynResMinScale), 0.5f, 1.0f);
             skyTaaEnabled = d.value("sky_taa", skyTaaEnabled);
-            skyTaaWeightStill = std::clamp(d.value("sky_taa_weight", skyTaaWeightStill), 0.02f, 1.0f);
-            skyTaaWeightMoving = std::clamp(d.value("sky_taa_weight_moving", skyTaaWeightMoving), 0.02f, 1.0f);
+            skyTaaWeightStill = settingClamp(d.value("sky_taa_weight", skyTaaWeightStill), 0.02f, 1.0f);
+            skyTaaWeightMoving = settingClamp(d.value("sky_taa_weight_moving", skyTaaWeightMoving), 0.02f, 1.0f);
             int fpsCapVal = d.value("fps_cap_mode", (int)fpsCapMode);
             fpsCapMode = (fpsCapVal >= 0 && fpsCapVal <= 4) ? (FpsCapMode)fpsCapVal : FpsCapMode::VSync;
             // UC1: default to Custom (NOT a device-seeded preset) when the key is simply absent —
@@ -7301,10 +7390,10 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SunGain = c.value("sun_gain", cv2SunGain);
         cv2BounceGain = c.value("bounce_gain", cv2BounceGain);
         cv2Powder = c.value("powder", cv2Powder);
-        cv2HistoryWeight = std::clamp(c.value("history_weight", cv2HistoryWeight), 0.02f, 0.15f);
+        cv2HistoryWeight = settingClamp(c.value("history_weight", cv2HistoryWeight), 0.02f, 0.15f);
         // Capped at 0.5 (review 8): at 1.0 a moving view showed this frame's quarter-grid rays raw (2x2 blocks,
         // "wood grain"); at most half of this frame keeps a temporal smear the clamp box bounds.
-        cv2HistoryWeightMoving = std::clamp(c.value("history_weight_moving", cv2HistoryWeightMoving), 0.05f, 0.5f);
+        cv2HistoryWeightMoving = settingClamp(c.value("history_weight_moving", cv2HistoryWeightMoving), 0.05f, 0.5f);
         cv2LightLenM = c.value("light_len_m", cv2LightLenM);
         cv2LightSteps = c.value("light_steps", cv2LightSteps);
         cv2LightLodFootprintM = c.value("light_lod_footprint_m", cv2LightLodFootprintM);
@@ -7329,9 +7418,12 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2IceFogAmount = c.value("ice_fog_amount", cv2IceFogAmount);
         cv2IceFogDensity = c.value("ice_fog_density", cv2IceFogDensity);
         cv2AdaptiveParallaxPx = c.value("adaptive_parallax_px", cv2AdaptiveParallaxPx);
-        cv2Godrays = std::clamp(c.value("godrays", cv2Godrays), 0.0f, 1.0f);   // (it ran to 3 while it scaled the old light volume)
+        cv2Godrays = settingClamp(c.value("godrays", cv2Godrays), 0.0f, 1.0f);   // (it ran to 3 while it scaled the old light volume)
         cv2SunCascade = c.value("sun_cascade", cv2SunCascade);
         cv2SunCascadeRangeKm = c.value("sun_cascade_range_km", cv2SunCascadeRangeKm);
+        cv2ShadowRing1CellM = c.value("shadow_ring1_cell_m", cv2ShadowRing1CellM);
+        cv2ShadowRing2CellM = c.value("shadow_ring2_cell_m", cv2ShadowRing2CellM);
+        cv2ShadowRing2KnotK = c.value("shadow_ring2_depth", cv2ShadowRing2KnotK);
         cv2SmallCumulus = c.value("small_cumulus", cv2SmallCumulus);
         cv2ErosionVar = c.value("erosion_variation", cv2ErosionVar);
         cv2LobeVar = c.value("lobe_variation", cv2LobeVar);
@@ -7348,7 +7440,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SampNewSmooth = c.value("sampler_new_smoothing", cv2SampNewSmooth);
         cv2SampClampSd = c.value("sampler_motion_clamp_sd", cv2SampClampSd);
         cv2GodrayRangeKm = c.value("godray_range_km", cv2GodrayRangeKm);
-        cv2HazeAloft = std::clamp(c.value("haze_aloft", cv2HazeAloft), 0.0f, 20.0f);
+        cv2HazeAloft = settingClamp(c.value("haze_aloft", cv2HazeAloft), 0.0f, 20.0f);
         cv2StepBaseM = c.value("step_base_m", cv2StepBaseM);
         cv2StepGrowth = c.value("step_growth", cv2StepGrowth);
         cv2StepMaxM = c.value("step_max_m", cv2StepMaxM);
@@ -7359,7 +7451,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CellPeriodM = c.value("cell_period_m", cv2CellPeriodM);
         cv2ClusterPeriodM = c.value("cluster_period_m", cv2ClusterPeriodM);
         cv2MorphOrbit = c.value("morph_orbit", cv2MorphOrbit);
-        cv2ImageryShare = std::clamp(c.value("imagery_share", cv2ImageryShare), 0.0f, 1.0f);
+        cv2ImageryShare = settingClamp(c.value("imagery_share", cv2ImageryShare), 0.0f, 1.0f);
         cv2MorphPeriodKm = c.value("morph_period_km", cv2MorphPeriodKm);
         cv2MorphBreakup = c.value("far_sharpness", cv2MorphBreakup);
         cv2FarLayerFromKm = c.value("far_layer_from_km", cv2FarLayerFromKm);
@@ -7402,7 +7494,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2RainStreaks = c.value("rain_streaks", cv2RainStreaks);
         // "drop_reach_m": the rain particles' reach (2026-10-04). The old "drop_distance_m" was the per-pixel lattice's
         // last layer (to 512 m, default 128) and is not read: it would have put every saved setting at the 64-m maximum.
-        cv2DropDistM = std::clamp(c.value("drop_reach_m", cv2DropDistM), 4.0f, 64.0f);
+        cv2DropDistM = settingClamp(c.value("drop_reach_m", cv2DropDistM), 4.0f, 64.0f);
         cv2RainParticlesK = c.value("rain_particles_k", cv2RainParticlesK);
         cv2RainShutterMs = c.value("rain_shutter_ms", cv2RainShutterMs);
         cv2RainFallSpeed = c.value("rain_fall_speed", cv2RainFallSpeed);
@@ -7515,12 +7607,12 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         auroraSheetCrisp = c.value("aurora_sheet_crisp", auroraSheetCrisp);
         auroraSheetFold = c.value("aurora_sheet_fold", auroraSheetFold);
         oceanWhitecapGain = c.value("ocean_whitecaps", oceanWhitecapGain);
-        oceanWaveRangeKm = std::clamp(c.value("ocean_wave_range_km", oceanWaveRangeKm), 5.0f, 200.0f);
-        oceanWaveSharpness = std::clamp(c.value("ocean_wave_sharpness", oceanWaveSharpness), 0.1f, 1.0f);
+        oceanWaveRangeKm = settingClamp(c.value("ocean_wave_range_km", oceanWaveRangeKm), 5.0f, 200.0f);
+        oceanWaveSharpness = settingClamp(c.value("ocean_wave_sharpness", oceanWaveSharpness), 0.1f, 1.0f);
         oceanFarRipple = c.value("ocean_far_ripple", oceanFarRipple);
         oceanFarRippleSize = c.value("ocean_far_ripple_size", oceanFarRippleSize);
-        oceanWaveRangeFade = std::clamp(c.value("ocean_wave_range_fade", oceanWaveRangeFade), 0.05f, 1.0f);
-        oceanStormTrails = std::clamp(c.value("ocean_storm_trails", oceanStormTrails), 0.0f, 1.0f);
+        oceanWaveRangeFade = settingClamp(c.value("ocean_wave_range_fade", oceanWaveRangeFade), 0.05f, 1.0f);
+        oceanStormTrails = settingClamp(c.value("ocean_storm_trails", oceanStormTrails), 0.0f, 1.0f);
         oceanWarp = c.value("ocean_warp", oceanWarp);
         oceanWarpDetail = c.value("ocean_warp_detail", oceanWarpDetail);
         oceanGlintMinFlux = c.value("ocean_glint_min_flux", oceanGlintMinFlux);
@@ -7543,8 +7635,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         oceanReflSamples = c.value("ocean_refl_samples", oceanReflSamples);
         moonGain = c.value("moon_gain", moonGain);
         auroraActivityAuto = c.value("aurora_activity_auto", auroraActivityAuto) >= 0.5f ? 1.0f : 0.0f;
-        auroraKpManual = std::clamp(c.value("aurora_kp_manual", auroraKpManual), 0.0f, 11.0f);
-        auroraStormRate = std::clamp(c.value("aurora_storm_rate", auroraStormRate), 0.0f, 5.0f);
+        auroraKpManual = settingClamp(c.value("aurora_kp_manual", auroraKpManual), 0.0f, 11.0f);
+        auroraStormRate = settingClamp(c.value("aurora_storm_rate", auroraStormRate), 0.0f, 5.0f);
         auroraGain = c.value("aurora_gain", auroraGain);
         auroraGroundGain = c.value("aurora_ground_gain", auroraGroundGain);
         auroraCoverageFreq = c.value("aurora_coverage_freq", auroraCoverageFreq);
@@ -7892,6 +7984,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"godrays", cv2Godrays},
         {"sun_cascade", cv2SunCascade},
         {"sun_cascade_range_km", cv2SunCascadeRangeKm},
+        {"shadow_ring1_cell_m", cv2ShadowRing1CellM},
+        {"shadow_ring2_cell_m", cv2ShadowRing2CellM},
+        {"shadow_ring2_depth", cv2ShadowRing2KnotK},
         {"small_cumulus", cv2SmallCumulus},
         {"erosion_variation", cv2ErosionVar},
         {"lobe_variation", cv2LobeVar},

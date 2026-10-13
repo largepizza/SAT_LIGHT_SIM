@@ -137,7 +137,12 @@ vec3 skyZenithAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
     vec3 zen = normalize(p);
     vec2 tSA = raySphere(p, zen, R_ATMOS);
     if (tSA.y <= 0.0) return vec3(0.0);
-    const int N_Z = 6;
+    // 12 steps (2026-10-12; was 6). At six, ONE sample at ~8 km stood for the whole troposphere (deep red
+    // under a grazing Sun) and the next, at 25 km, for the stratosphere (blue), with nothing between them
+    // carrying green: from about +1 to -3 deg of Sun the sky light on every cloud was magenta (R/G 1.5,
+    // B/G 1.7 at -1.7 deg; the converged integral 1.0 / 1.3), under a sky that was not. Twelve are within a
+    // few percent of it from +10 to -5 deg (harness_runs/purple/zen.py).
+    const int N_Z = 12;
     float seg = tSA.y / float(N_Z);
     float cosUp = dot(zen, sunDir);
     float odR = 0.0, odM = 0.0, accM = 0.0;
@@ -818,7 +823,16 @@ void main()
                     // height, and the cirrus in a storm's shadow came out speckled (user snaps).
                     float hT = (f.thin > 0.5) ? (f.topH - p.h) * (1.0 - 0.5 / max(1.0 - f.hf, 0.15)) : 0.0;
                     vec3  rl = rel + up * hT;
-                    sunT1 = cv2SunCascT(rl, dot(rl, sunDir) + 2.0 * cv2.light.x * (1.0 - f.thin) + cv2.sunCasc2.y);
+                    float sL = dot(rl, sunDir) + 2.0 * cv2.light.x * (1.0 - f.thin);
+                    sunT1 = cv2SunCascT(rl, sL + cv2.sunCasc2.y);
+                    // Within ~14 km of the eye across the Sun, the SHAFT lattice (cv2SunShaftT: 250-m rays, baked for
+                    // the god rays, the cascade's value at its sunward end x the cloud between) in the cascade's
+                    // place (2026-10-12). The cascade's rays are 3-12 km apart and read a knot (10-40 km) sunward, so
+                    // a cloud shaded by its neighbour was shadowed only by the fine grid, i.e. within 3-6 km of the
+                    // eye: the shadow's edge was an arc that followed the eye (user issue 20261012_202341).
+                    // Two rings of it (cv2SunShaftRings): 250-m cells to ~14 km, 1000-m cells to ~56 km (settings).
+                    vec2 sh = cv2SunShaftRings(rl, sL);
+                    sunT1 = mix(sunT1, sh.x, sh.y);
                 }
                 keyCol *= mix(sunT1, sunT0, sunW0);
             } else if (nightK > 0.0) {
@@ -894,9 +908,13 @@ void main()
             if (!thin) {
                 float tauUp = max(sigUp * 250.0, 0.6 * f.sigma * max(f.topH - p.h, 0.0));
                 ambVis = mix(0.7, 1.0, f.hf) / (1.0 + 0.11 * tauUp) * mix(1.0, exp(-f.sigma * 150.0), 0.3);
-                ambLow = 0.35 * (1.0 - f.hf);
+                // The light from below is the GROUND's (and the horizon haze's), and the ground under a cloud is
+                // lit through that cloud: 30% from the open country around (gaps, the horizon), the rest x the
+                // column's diffuse transmission. Unshaded and in the zenith's colour (until 2026-10-12), the base
+                // of an overcast glowed as blue and nearly as bright as clear sky, and any modulation of the
+                // ambient (the lobe occlusion) drew sky-coloured blobs on it (user record 41).
+                ambLow = 0.35 * (1.0 - f.hf) * (0.3 + 0.7 / (1.0 + 0.11 * tauUp));
             }
-            ambVis += ambLow;
             // The night sky: the moonlit sky's share of the moon, for the cloud's shaded side.
             // Twilight (cv2.atmo.y): with the Sun low or just set at the sample, the zenith alone badly
             // under-counts the sky that lights a cloud (the bright dome toward the Sun, the whole lit
@@ -918,10 +936,12 @@ void main()
             // than the ground under them (review 5, snapshot 6). Ungated, like the terrain's (negligible by
             // day): gated by night it missed the twilight gap, where the sky light has faded (skyDusk)
             // and the night has not begun.
-            vec3  skyAmb = skyZen * skyDusk * cv2.look.w * (1.0 + cv2.atmo.y * twi)
-                         + moonKey * nightK * 0.03 * max(dot(up, moonDir), 0.0)
+            vec3  skyDay = skyZen * skyDusk * cv2.look.w * (1.0 + cv2.atmo.y * twi);
+            vec3  skyNgt = moonKey * nightK * 0.03 * max(dot(up, moonDir), 0.0)
                          + kMoonColor * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z);
-            vec3  ambS   = skyAmb * ambVis * f.ambient;
+            // From below, the day's light is mostly neutral (ground albedo, horizon haze): 30% of the sky's hue.
+            vec3  ambS   = (skyDay * (ambVis + ambLow * 0.3) + vec3(dot(skyDay, vec3(0.2126, 0.7152, 0.0722)) * 0.7 * ambLow)
+                         + skyNgt * (ambVis + ambLow)) * f.ambient;
 
             // ── Ground bounce from below: the key light, reflected by the ground under the cloud ──
             vec3 bounceS = keyCol * max(dot(up, keyDir), 0.0) * 0.15 * cv2.look2.x

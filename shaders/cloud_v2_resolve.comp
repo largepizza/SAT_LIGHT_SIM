@@ -295,6 +295,31 @@ void main()
         // this pixel, not its own rays) pulled every far pixel toward its neighbours: blocky 2x2
         // squares. So the box widens when the reprojection barely moves, and is tight in motion.
         vec4 slack = (mx - mn) * mix(1.0, 0.1, smoothstep(0.05, 1.0, motionPx)) + vec4(1e-4);
+        // A still view takes the box over 7x7 new samples, not 3x3 (2026-10-12). Where the samples are
+        // all-or-nothing (a point sample lit or self-shadowed under a grazing Sun), a frame whose nine samples AGREE
+        // has a box of zero width, and the history's mean of both was clamped to that one value. Which frames agree
+        // is a function of the blue-noise tile around the pixel, so the tile itself was drawn over every
+        // half-shadowed surface: the same glyph every 128 px, 9 levels of grain, and 16 levels darker than the
+        // mean (user issue 20261012_202341). Forty-nine blue-noise samples nearly always hold both: 0.4 levels of
+        // grain, as with no clamp at all (5x5: 1.8); cost within noise. The clamp stays, for light that changes in
+        // a still view (a beam's shaft moving on).
+        float stillW = 1.0 - smoothstep(0.05, 0.5, motionPx);
+        if (stillW > 0.0) {
+            vec4 mnW = mn, mxW = mx; vec3 rMnW = rMn, rMxW = rMx;
+            [[dont_unroll]] for (int dy = -3; dy <= 3; ++dy)
+            [[dont_unroll]] for (int dx = -3; dx <= 3; ++dx) {
+                if (abs(dx) < 2 && abs(dy) < 2) continue;
+                ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
+                if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
+                vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
+                rMnW = min(rMnW, s.rgb); rMxW = max(rMxW, s.rgb);
+                s = cv2ToMean(s);
+                mnW = min(mnW, s); mxW = max(mxW, s);
+            }
+            mn = mix(mn, mnW, stillW); mx = mix(mx, mxW, stillW);
+            rMn = mix(rMn, rMnW, stillW); rMx = mix(rMx, rMxW, stillW);
+            slack = max(slack, (mx - mn) * stillW);
+        }
         // In motion the box is the neighbourhood's mean +- 1.25 sd (variance clipping), inside min/max:
         // a small cloud next to clear sky made a min/max box spanning both, so its ghost passed.
         float mv  = smoothstep(0.1, 1.5, motionPx);

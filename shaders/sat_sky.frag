@@ -3841,13 +3841,14 @@ void main() {
                 Tc += cv2SunCascT(dir * tk, tk * cosA + 0.5 * cv2.sunCasc2.y);
             }
             Tc *= 1.0 / 3.0;
-            // Near the eye, the SHAFT lattice (cv2SunShaftT: 250-m cells): the step's first kCv2ShaftRangeM sampled
+            // Near the eye, the SHAFT lattice's inner ring (cv2SunShaftT: 250-m cells): the step's first ~14 km sampled
             // 24 times, so the gaps between single clouds draw their own rays (the cascade's 3-km cells and three
             // reads a step blur them away). Reads are weighted as the haze thins with height along the ray, and the
             // stretch's share of the step likewise.
             float tA = tStart + float(i) * segLen;
-            if (cv2.sunCasc4.w > 0.0 && tA < kCv2ShaftRangeM) {
-                float tN  = min(segLen, kCv2ShaftRangeM - tA);
+            float shaftR = kCv2ShaftRangeCells * cv2.sunCasc7.z;
+            if (cv2.sunCasc4.w > 0.0 && tA < shaftR) {
+                float tN  = min(segLen, shaftR - tA);
                 float zK  = dir.z / 3000.0;
                 float acc = 0.0, wS = 0.0;
                 [[dont_unroll]] for (int k = 0; k < 24; ++k) {

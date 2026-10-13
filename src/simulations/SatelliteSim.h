@@ -770,6 +770,7 @@ struct GpuCloudV2Params
     glm::vec4 sunCasc0, sunCasc1, sunCasc2, sunCasc3;
     glm::vec4 sunCasc4, sunCasc5;   // the shaft lattice (clouds_v2.glsl)
     glm::vec4 tune, mid2, mid3, samp;   // 2026-10-11 (clouds_v2.glsl)
+    glm::vec4 sunCasc6, sunCasc7;       // 2026-10-12: the shaft lattice's second ring + both rings' cells
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -785,7 +786,8 @@ static_assert(offsetof(GpuCloudV2Params, shapeRotA) == 288 + 48 * kCloudV2Types 
 static_assert(offsetof(GpuCloudV2Params, rainMotion) == 288 + 48 * kCloudV2Types + 640, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, beamEye) == 288 + 48 * kCloudV2Types + 688, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, sunCasc0) == 288 + 48 * kCloudV2Types + 736, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 896, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, sunCasc6) == 288 + 48 * kCloudV2Types + 896, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 928, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -1936,7 +1938,7 @@ public:
     void onChar(GLFWwindow *w, unsigned int codepoint) override;
     // The console, a focused text field (Esc cancels the edit) and a playing / exporting cinematic (Esc stops it)
     // keep Esc from quitting the app.
-    bool capturesKeyboard() const override { return consoleOpen_ || textEdit_.id != 0 || cineActive(); }
+    bool capturesKeyboard() const override { return consoleOpen_ || textEdit_.id != 0 || cineActive() || reportBarOpen_; } // (Esc closes the report bar)
 
 private:
     // ── SSBOs ─────────────────────────────────────────────────────────────────
@@ -3158,6 +3160,9 @@ private:
     int    cv2GridFrames = 0;                      // ... since the fine grid's history was
     double cv2ShaftLatA = 0.0, cv2ShaftLatB = 0.0, cv2ShaftLatS = 0.0;   // the eye on the shaft lattice (cells, cells, knots)
     int    cv2ShaftFrames = 0;                     // frames since the shaft lattice was reset (it fills over 32)
+    double cv2Shaft2LatA = 0.0, cv2Shaft2LatB = 0.0, cv2Shaft2LatS = 0.0;   // ... and on its second ring
+    int    cv2Shaft2Frames = 0;
+    float  cv2ShaftCellUsed[2] = {0.0f, 0.0f};     // the cells the rings were last baked with (a change refills them)
     // 2026-10-11 (clouds_v2.glsl tune / mid2 / mid3 / samp; slots 270-282).
     float cv2SmallCumulus = 0.06f;        // the near field makes low puffs this far under the coverage threshold (field units)
     float cv2ErosionVar = 0.6f;           // erosion strength and grain vary by region (0 = uniform)
@@ -3175,6 +3180,11 @@ private:
     float cv2LightFootprint = 0.08f;      // the light march's samples read the field at this x its length (0 = point samples: all-or-nothing shadows, grain)
     float cv2SampClampSd = 1.25f;         // the history clamp in motion (sd of the new samples around)
     float cv2SunCascadeRangeKm = 205.0f;  // "Far cloud shadow range": the cascade's half width across the Sun (128 cells)
+    // The shaft lattice's two rings (2026-10-12): 128 x 128 rays each, so a ring reaches ~56 cells from the eye
+    // across the Sun (14 km at 250 m, 56 km at 1000 m). Ring 2 at 0 = off (the cascade beyond ring 1).
+    float cv2ShadowRing1CellM = 250.0f;   // "Cloud shadow ring 1 cell (m)"
+    float cv2ShadowRing2CellM = 1000.0f;  // "Cloud shadow ring 2 cell (m)"
+    float cv2ShadowRing2KnotK = 0.5f;     // "Cloud shadow ring 2 depth (x)": its knot spacing along the Sun / (ring 1's x the cells' ratio)
     float cv2Godrays = 1.0f;              // "God rays": how much of the clouds' shadow the AIR takes (the sky pass reads the Sun shadow cascade), 0..1
     float cv2HazeAloft = 1.9f;            // "Haze near clouds": extra aerosol in the sky pass where the weather is (x sea-level Mie)
     float cv2GodrayRangeKm = 400.0f;      // the light volume's half-extent about the eye (km)
@@ -3461,7 +3471,7 @@ private:
     static constexpr VkDeviceSize kCv2RainLightOffset = kCv2RainMapOffset + 1024 * 4;   // cv2RainKey .. cv2RainMisc
     static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2RainLightOffset + 4 * 16 + 16 + 17408 * 4    // + cv2SunWgMax, cv2SunGrid (32 x 32 rays x 17)
                                                       + 200704 * 4                               // + cv2SunCasc (128 x 32 rays x 49)
-                                                      + 524288 * 4;                              // + cv2SunShaft (128 x 128 rays x 32)
+                                                      + 2 * 524288 * 4;                          // + cv2SunShaft (2 rings x 128 x 128 rays x 32)
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;
@@ -4193,7 +4203,7 @@ private:
     float groundPatternRangeM = 800.0f;  // review 8: farm fields stop past this pixel footprint (m); was a fixed 400
     float terrainErosionSize = 1.0f;     // ... x their cell size (512/256 m); powers of two: 0.5, 1, 2, 4
     float terrainErosionBranch = 1.0f;   // how much each erosion octave follows the gullies before it
-    float terrainSkyLight = 1.0f;        // x the terrain's sky ambient (zenith integral x 0.4) — terrain v2 P1
+    float terrainSkyLight = 8.0f;        // x the terrain's sky ambient (zenith integral x 0.4) — terrain v2 P1
     float terrainTextureStrength = 1.0f; // close-up material textures (terrain v2 P3)
     float cityLightsStrength = 1.0f;     // procedural city street lights (.plans/CITIES_PLAN.md)
     float cityRoadsStrength = 2.0f;      // the major roads' share of them
@@ -4594,6 +4604,10 @@ private:
     nlohmann::json cineLookSettings();    // the settings a shot stores: clouds, photometry, rosters, render
     HarnessCamKey harnessEvalPath(double t) const;
     void harnessApplyCam(const HarnessCamKey &k);
+    // `snapshot` / `report load`: put the sim in a perf snapshot record's view (settings unless told not to,
+    // sim time paused, observer, camera, cloud drift phase). raw = settings as saved, past their range guards.
+    // Returns where the drift phase came from.
+    std::string harnessApplyViewRecord(const nlohmann::json &rec, bool applySettings, bool raw, bool driftDefault);
     // `overlay`: screen text and labels that follow a sky target, drawn even with the HUD hidden (so
     // `ui hide` + `capture ui=on` gives a clean titled frame for videos).
     struct HarnessOverlay
@@ -4695,9 +4709,10 @@ private:
         KB_TOGGLE_CURSOR = 16, // event — UC5: gamepad virtual-cursor mode toggle (default: Menu/Start)
         KB_TOGGLE_TRAILS = 17, // event — long-exposure trail on/off (default: F; Select Satellite
                                // moved off F to T to free this up — see keybindings init)
-        KB_SAVE_SNAPSHOT = 18, // event — Settings -> Display "Save Snapshot" (perf_profiles/profile_log.jsonl)
+        KB_SAVE_SNAPSHOT = 18, // event — a shot into the active issue report (+ a line in perf_profiles/profile_log.jsonl)
         KB_PHOTO = 19,         // event — HQ photo: a supersampled, settled screenshot (requestPhoto)
-        KB_COUNT = 20,
+        KB_REPORT_NEW = 20,    // event — a snapshot that starts a NEW issue report (KB_SAVE_SNAPSHOT adds to the active one)
+        KB_COUNT = 21,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -4734,6 +4749,8 @@ private:
         std::string doneBuf;
         int  doneAge = 0;
         double t0 = 0.0;              // caret blink phase
+        bool multiline = false;       // a textArea: Enter is a new line (Ctrl+Enter / Tab / a click elsewhere commit)
+        size_t maxLen = 120;
     } textEdit_;
     bool textEditing() const { return textEdit_.id != 0; }
     void textEditFocus(uint32_t id, const std::string &text);
@@ -4765,6 +4782,13 @@ private:
     char textFieldBufs_[256][128] = {};    // per-frame display strings (Clay keeps raw pointers until record)
     int  textFieldBufN_ = 0;
     const char *textFieldStr(const std::string &s);
+    // A multi-line text box (2026-10-12: an issue report's description): the text wraps to `width`, Enter adds a
+    // line, Ctrl+Enter / Tab / a click elsewhere commit, Esc cancels. The caret is drawn as a '|' in the text
+    // (so the wrapping is Clay's own) and moves with Left / Right / Home / End; a click focuses at the end.
+    bool textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width, int minLines,
+                  float fontPx, const char *placeholder, size_t maxLen = 2000);
+    std::string textAreaBufs_[4];          // per-frame display strings (Clay keeps the pointers until record)
+    int  textAreaBufN_ = 0;
 
     // ── UI kit (2026-10-03, SatelliteSimUI.cpp "UI kit") ───────────────────────────────────────────────────
     // The blocks every window and settings tab is built from, in the Cinematics window's style: a section is a
@@ -4855,6 +4879,121 @@ private:
     int  bookmarkFreeSlot() const;
     void bookmarksDestroy(VkDevice device);
     void buildBookmarksWindow(const UIInput &inp, UIRenderer &ui);
+
+    // ── Issue reports (2026-10-12, SatelliteSimReports.cpp) ────────────────────────────────────────────────
+    // An ISSUE is a folder <user data>/reports/<id>/ holding report.json (title, description, status, shots)
+    // and one full-resolution PNG per SHOT. A shot is the perf snapshot record + the harness state + the
+    // camera's last seconds (the trail) + a one-line note, and its image is the frame presented right after
+    // the key press: nothing is paused, settled or reset for it. Save Snapshot (F9) adds a shot to the active
+    // issue, New Issue Snapshot (F7) starts another; harness `report` replays one.
+    struct ReportPose
+    {
+        double t, lat, lon, alt, az, el, fov, simT; // t: seconds on the report clock (frame dt summed)
+    };
+    static constexpr double kReportTrailSeconds = 12.0;
+    static constexpr double kReportTrailStepS = 1.0 / 30.0;
+    std::vector<ReportPose> reportTrail_;
+    double reportClock_ = 0.0;
+    float  reportFrameMs_[240] = {};      // the last frames' wall dt (a ring)
+    int    reportFrameN_ = 0;
+    std::string reportActiveId_;          // the issue new shots go to ("" = the next shot starts one)
+    int    reportShotPending_ = 0;        // 1 = a shot into the active issue, 2 = into a new issue
+    bool   reportNewKeyPending = false;   // KB_REPORT_NEW
+    bool   reportPendingBar_ = true;      // open the note bar for the pending shot (the harness may not)
+    std::string reportPendingNote_, reportPendingTitle_;
+    // The note bar shown after a shot (title + this shot's note; Enter saves, Esc closes).
+    bool   reportBarOpen_ = false, reportBarFocusPending_ = false;
+    int    reportBarShot_ = 0;            // 1-based shot the note field edits
+    std::string reportBarTitle_, reportBarNote_;
+    std::string reportDir() const;
+    ReportPose reportPoseNow() const;
+    void reportTick(float dt);                            // buildUI: the trail, the keys, a pending shot
+    bool reportTakeShot(bool newIssue, bool openBar);     // false = the screenshot path is busy (try next frame)
+    void reportSetField(const std::string &id, int shot, const char *key, const std::string &value); // shot 0 = the issue
+    void buildReportBar(const UIInput &inp, UIRenderer &ui);
+    // The bar must never trap the player: it opens unfocused when a movement key or the look button is held,
+    // gives the keyboard back on a right-click (look) as on a click elsewhere, and stays up unfocused for
+    // reportBarTimer_ seconds (Enter or a click focuses the note). onKey asks reportBarKey first.
+    float  reportBarTimer_ = 0.0f;
+    bool   reportBarCloseOnCommit_ = false;   // Enter / Esc in a field: close the bar, not just the edit
+    bool   reportBarKey(int key, int action);  // true = consumed
+
+    // ── The outbox (step 2): the Issue reports window ──────────────────────────────────────────────────────
+    // The list is a light copy of every report.json under reportDir() (texts, shot notes, pins: never the
+    // records). It is reloaded in reportTick, BEFORE any layout, whenever reportsDirty_ is set: Clay keeps
+    // pointers into it (thumbnail UIImages, strings) until the frame is recorded, so nothing may grow or shrink
+    // it later in the frame — the window's New / Delete are queued in reportOp_ for the next tick.
+    struct ReportShotInfo
+    {
+        int n = 0;
+        std::string note, image;
+        char meta[2][64] = {};         // "2036-11-22 02:06 UTC", "34.05 N 118.24 W  1.2 km"
+        bool hasPin = false;
+        float pinX = 0.0f, pinY = 0.0f; // 0..1 across the image, from its top left
+        int imgW = 0, imgH = 0;
+        int cell = -1;                 // thumbnail cell in the atlas, -1 = none yet
+        bool thumbTried = false;
+        UIImage img;
+    };
+    struct ReportIssueInfo
+    {
+        std::string id, title, description, category, status, resolution;
+        char resLine[160] = {};        // "Resolved in 1a2b3c4 by <who>, 2026-10-13 04:00" (tools/harness/reports.py resolve)
+        std::vector<ReportShotInfo> shots;
+        char line[96] = {};            // "3 shots   clouds   open"
+    };
+    std::vector<ReportIssueInfo> reportIssues_;
+    bool reportsLoaded_ = false, reportsDirty_ = false;
+    WindowChrome rpChrome;
+    bool hovRpClose = false, hovTimeReport = false;
+    std::string reportViewId_;          // the issue the window shows ("" = the list)
+    int  reportViewShot_ = 0;           // its shot in the large preview (n)
+    std::string reportPreviewKey_;      // "<id>/<n>" the atlas's preview region holds
+    bool reportPreviewOk_ = false;
+    UIImage reportPreviewImg_;
+    std::string reportDeleteArmed_, reportStatus_;
+    struct ReportOp
+    {
+        int kind = 0;                   // 1 delete issue, 2 delete shot, 3 new issue from this view
+        std::string id;
+        int shot = 0;
+    } reportOp_;
+    std::string reportThumbPath_;       // finalizeScreenshot: also write this frame's thumbnail here
+    // One atlas, registered once with the UI: a 1024 x 576 preview at its top left, thumbnail cells in the rest.
+    static constexpr int kRpAtlas = 2048, kRpPrevW = 1024, kRpPrevH = 576, kRpThumbW = 256, kRpThumbH = 144;
+    static constexpr int kRpCells = 16 + 80; // 4 x 4 right of the preview, 8 x 10 below it
+    struct ReportCell
+    {
+        std::string key;                // "<id>/<n>"
+        uint64_t used = 0;              // reportCellClock_ when last drawn
+    } reportCells_[kRpCells];
+    uint64_t reportCellClock_ = 0;
+    VkImage rpAtlasImg = VK_NULL_HANDLE;
+    VkDeviceMemory rpAtlasMem = VK_NULL_HANDLE;
+    VkImageView rpAtlasView = VK_NULL_HANDLE;
+    VkSampler rpAtlasSampler = VK_NULL_HANDLE;
+    uint32_t rpAtlasUiId = 0;
+    void reportsLoad();
+    ReportIssueInfo *reportFind(const std::string &id);
+    void reportWriteThumb(const std::vector<uint8_t> &rgba, uint32_t w, uint32_t h); // finalizeScreenshot
+    bool reportEnsureAtlas(UIRenderer &ui);
+    void reportUpload(int x, int y, int w, int h, const uint8_t *rgba);
+    void reportThumbTick(UIRenderer &ui);                 // lazy thumbnails + the preview, a file per frame
+    void reportGo(const std::string &id, int shot, bool withSettings);
+    void reportSetPin(const std::string &id, int shot, bool set, float x, float y);
+    void reportDeleteIssue(const std::string &id);
+    void reportDeleteShot(const std::string &id, int shot);
+    void reportsDestroy(VkDevice device);
+    // Step 3: one file to send. <user data>/report_exports/<id>.zip (stored, not compressed: the PNGs already
+    // are) = the issue's folder + log_tail.txt (the session log's end, the exe / user folders redacted).
+    // Returns the zip's path, "" on failure (reportStatus_ says why). An open issue becomes "sent".
+    std::string reportExportZip(const std::string &id);
+    void buildReportsWindow(const UIInput &inp, UIRenderer &ui);
+    // applySettingsJson's range guards. A report replay sets settingsRawImport_, so a value typed past its
+    // range in dev mode (devUnboundedValues) comes back as it was saved.
+    bool settingsRawImport_ = false;
+    template <class T>
+    T settingClamp(T v, T lo, T hi) const { return settingsRawImport_ ? v : std::clamp(v, lo, hi); }
 
     // ── HUD text entry (2026-10-03): the time bar's UTC clock, latitude, longitude and altitude ────────────
     bool setSimTimeFromText(const std::string &text);    // "2036-11-22 02:06", "02:06:30" (today), ISO; false = unparsed
@@ -5122,7 +5261,7 @@ private:
     bool draggingPhoto[38] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 286;   // 270-282 (2026-10-11): small cumulus, erosion / lobe variation, mid layer x5, cirrus warp, sampler x3, far shadow range
+    static constexpr int kCloudSliderSlots = 289;   // 286-288 (2026-10-12): cloud shadow rings; 270-282 (2026-10-11): small cumulus, erosion / lobe variation, mid layer x5, cirrus warp, sampler x3, far shadow range
     // (was 270:)   // 261-266 rain particles (count, shutter, fall speed, wind, storm wind, gusts)
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),

@@ -84,12 +84,13 @@ buffer CV2FlashBuf {
     // in all three coordinates (cv2.sunCasc4.xyz = the eye on it) and is toroidal in all three: ray (I, J), knot n at
     // [((J mod N) * N + (I mod N)) * K + (n mod K)] = the Sun's transmittance BEYOND that knot (the cascade's value
     // at the window's sunward end x the cloud between). 512 rays are baked a frame (all in 32).
-    float    cv2SunShaft[524288];
+    // Two RINGS of it (2026-10-12), ring r at [r * kCv2ShaftN^2 * kCv2ShaftK + ...]: ring 0 with cells of
+    // cv2.sunCasc7.z (250 m), ring 1 of cv2.sunCasc7.w (1000 m; lattice cv2.sunCasc6, knots cv2.sunCasc7.y apart).
+    float    cv2SunShaft[1048576];
 };
 const int   kCv2ShaftN      = 128;
 const int   kCv2ShaftK      = 32;
-const float kCv2ShaftCellM  = 250.0;
-const float kCv2ShaftRangeM = 14000.0;   // from the eye: inside the lattice's +-16 km and its +-16 knots
+const float kCv2ShaftRangeCells = 56.0;  // a ring's reach from the eye across the Sun, in its cells (inside its +-64)
 const int   kCv2CascNA = 128;
 const int   kCv2CascNB = 32;
 const int   kCv2CascK  = 48;     // knot intervals: kCv2CascKU uniform ones through the window, the rest stretched sunward
@@ -154,31 +155,49 @@ float cv2SunCascT(vec3 rl, float sAlong)
     }
     return mix(1.0, Tb, wC);
 }
-// The SHAFT lattice at a point rl (from the eye, observer ENU), sAlong = dot(rl, the Sun's direction): x the Sun's
-// transmittance, y the lattice's weight there (0 outside its window or while it fills: use the cascade).
-vec2 cv2SunShaftT(vec3 rl, float sAlong)
+// The SHAFT lattice's ring `ring` at a point rl (from the eye, observer ENU), sAlong = dot(rl, the Sun's direction)
+// (+ the caller's offset): x the Sun's transmittance, y the ring's weight there (0 outside its window or while it
+// fills: use the next ring out, then the cascade).
+vec2 cv2SunShaftT(vec3 rl, float sAlong, int ring)
 {
-    if (cv2.sunCasc4.w <= 0.0) return vec2(1.0, 0.0);
+    vec4  la   = (ring == 0) ? cv2.sunCasc4 : cv2.sunCasc6;
+    if (la.w <= 0.0) return vec2(1.0, 0.0);
+    float cell = (ring == 0) ? cv2.sunCasc7.z : cv2.sunCasc7.w;
     vec3  ga = vec3(cv2SunProf[2], cv2SunProf[3], cv2SunProf[4]);
     vec3  gb = vec3(cv2SunProf[5], cv2SunProf[6], cv2SunProf[7]);
-    vec2  ce = vec2(dot(rl, ga), dot(rl, gb)) / kCv2ShaftCellM;
-    float ks = sAlong / cv2.sunCasc5.y;
-    float w  = (1.0 - smoothstep(56.0, 62.0, max(abs(ce.x), abs(ce.y)))) * (1.0 - smoothstep(12.0, 14.5, abs(ks)))
-             * cv2.sunCasc4.w;
+    vec2  ce = vec2(dot(rl, ga), dot(rl, gb)) / cell;
+    float ks = sAlong / ((ring == 0) ? cv2.sunCasc5.y : cv2.sunCasc7.y);
+    float w  = (1.0 - smoothstep(kCv2ShaftRangeCells, 62.0, max(abs(ce.x), abs(ce.y)))) * (1.0 - smoothstep(12.0, 14.5, abs(ks)))
+             * la.w;
     if (w <= 0.0) return vec2(1.0, 0.0);
-    vec2  gg = ce + cv2.sunCasc4.xy + float(kCv2ShaftN) * 8.0;
+    vec2  gg = ce + la.xy + float(kCv2ShaftN) * 8.0;
     ivec2 g0 = ivec2(gg);
     vec2  gf = gg - vec2(g0);
-    float kk = ks + cv2.sunCasc4.z + float(kCv2ShaftK) * 8.0;
+    float kk = ks + la.z + float(kCv2ShaftK) * 8.0;
     int   k0 = int(kk);
     float kf = kk - float(k0);
     float Tb = 0.0;
+    int   rb = ring * kCv2ShaftN * kCv2ShaftN * kCv2ShaftK;
     [[dont_unroll]] for (int c = 0; c < 4; ++c) {
-        int ri = (((g0.y + (c >> 1)) & (kCv2ShaftN - 1)) * kCv2ShaftN + ((g0.x + (c & 1)) & (kCv2ShaftN - 1))) * kCv2ShaftK;
+        int ri = rb + (((g0.y + (c >> 1)) & (kCv2ShaftN - 1)) * kCv2ShaftN + ((g0.x + (c & 1)) & (kCv2ShaftN - 1))) * kCv2ShaftK;
         Tb += mix(cv2SunShaft[ri + (k0 & (kCv2ShaftK - 1))], cv2SunShaft[ri + ((k0 + 1) & (kCv2ShaftK - 1))], kf)
             * ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
     }
     return vec2(Tb, w);
+}
+// Ring 0 alone (the sky's god rays, within kCv2ShaftRangeCells x its cell of the eye).
+vec2 cv2SunShaftT(vec3 rl, float sAlong) { return cv2SunShaftT(rl, sAlong, 0); }
+// Both rings, the inner one where it reaches: x the transmittance, y their combined weight over the cascade.
+// (One call site of the lookup: the cloud march inlines it per sample.)
+vec2 cv2SunShaftRings(vec3 rl, float sAlong)
+{
+    float acc = 0.0, keep = 1.0;
+    [[dont_unroll]] for (int ring = 1; ring >= 0; --ring) {
+        vec2 s = cv2SunShaftT(rl, sAlong, ring);
+        acc  = acc * (1.0 - s.y) + s.x * s.y;
+        keep *= 1.0 - s.y;
+    }
+    return vec2(acc / max(1.0 - keep, 1e-5), 1.0 - keep);
 }
 #endif
 const int   kCv2RainMapN  = 32;

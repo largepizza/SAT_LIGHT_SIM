@@ -62,7 +62,7 @@ vec3 rlSkyZenithAt(vec3 p, vec3 sunDir, vec3 betaR, float betaM) {
     vec3 zen = normalize(p);
     vec2 tSA = raySphere(p, zen, R_ATMOS);
     if (tSA.y <= 0.0) return vec3(0.0);
-    const int N_Z = 6;
+    const int N_Z = 12;   // as cloud_v2_march.comp (6 was magenta at twilight)
     float seg = tSA.y / float(N_Z);
     float cosUp = dot(zen, sunDir);
     float odR = 0.0, odM = 0.0, accM = 0.0;
@@ -109,45 +109,69 @@ void main()
         mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
         float eyeH = terrainFrame.x + 2.0;
         vec3  sunENU = transpose(enuToEcef) * cv2.sunE.xyz;
-        // The SHAFT lattice (2026-10-10; cloud_lightning.glsl cv2SunShaft): workgroups 13-14 bake 512 of its 16384
-        // rays a frame. A ray starts at the window's sunward end with the cascade's transmittance there and steps
-        // down its knots (one field read per interval, 2 sub-rays at their own place in the cell and phase of the
-        // step, a running mean of the bakes: as the cascade).
+        // The SHAFT lattice (2026-10-10; cloud_lightning.glsl cv2SunShaft): workgroups 13-14 bake 512 of ring 0's
+        // 16384 rays a frame, 15-16 of ring 1's (2026-10-12: the same lattice with coarser cells, further out). A
+        // ray steps down its knots toward the eye and beyond (one field read per interval, 2 sub-rays at their own
+        // place in the cell and phase of the step, a running mean of the bakes: as the cascade).
         if (gl_WorkGroupID.x > 12u) {
-            if (cv2.sunCasc5.x <= 0.0) return;
-            int   r  = int(((uint(cv2.frame.x) & 31u) * 2u + (gl_WorkGroupID.x - 13u)) * 256u + li);
+            int   ring  = gl_WorkGroupID.x > 14u ? 1 : 0;
+            vec4  la    = (ring == 0) ? cv2.sunCasc4 : cv2.sunCasc6;
+            float bakeW = (ring == 0) ? cv2.sunCasc5.x : cv2.sunCasc7.x;
+            float cellM = (ring == 0) ? cv2.sunCasc7.z : cv2.sunCasc7.w;
+            if (bakeW <= 0.0) return;
+            int   r  = int(((uint(cv2.frame.x) & 31u) * 2u + ((gl_WorkGroupID.x - 13u) & 1u)) * 256u + li);
             vec3  ga, gb;
             cv2SunGridAxes(sunENU, ga, gb);
-            vec2  gc = vec2(float(r % kCv2ShaftN), float(r / kCv2ShaftN)) - cv2.sunCasc4.xy;
+            vec2  gc = vec2(float(r % kCv2ShaftN), float(r / kCv2ShaftN)) - la.xy;
             gc -= float(kCv2ShaftN) * round(gc / float(kCv2ShaftN));
-            float ds = cv2.sunCasc5.y;
-            int   base = int(ceil(cv2.sunCasc4.z - 0.5 * float(kCv2ShaftK)));   // the window's knots: base .. base + K - 1
+            float ds = (ring == 0) ? cv2.sunCasc5.y : cv2.sunCasc7.y;
+            float fpM = max(150.0, 0.25 * cellM);   // the field's footprint: a quarter of the cell the ray stands for
+            int   base = int(ceil(la.z - 0.5 * float(kCv2ShaftK)));   // the window's knots: base .. base + K - 1
             float Tk[kCv2ShaftK];
             for (int k = 0; k < kCv2ShaftK; ++k) Tk[k] = 0.0;
-            uvec3 jh = cv2Pcg3(uvec3(uint(r), 733u, 5u));
+            uvec3 jh = cv2Pcg3(uvec3(uint(r), 733u + uint(ring), 5u));
             float jn = float((uint(cv2.frame.x) >> 5u) & 255u);
             vec2  jo = fract(vec2(jh.xy & 0xFFFFu) / 65536.0 + jn * vec2(0.7548777, 0.5698403));
             float jp = fract(float(jh.z & 0xFFFFu) / 65536.0 + jn * 0.6180340);
             [[dont_unroll]] for (int sr = 0; sr < 2; ++sr) {
-                vec2  gp = (gc + fract(jo + 0.5 * float(sr)) - 0.5) * kCv2ShaftCellM;
+                vec2  gp = (gc + fract(jo + 0.5 * float(sr)) - 0.5) * cellM;
                 vec3  o  = ga * gp.x + gb * gp.y;
-                float sTop = (float(base + kCv2ShaftK - 1) - cv2.sunCasc4.z) * ds;
-                float T0 = 0.5 * cv2SunCascT(o + sunENU * sTop, sTop + 0.5 * cv2.sunCasc2.y);
+                float sTop = (float(base + kCv2ShaftK - 1) - la.z) * ds;
+                // Beyond the window's sunward end the ray marches on to where the fine grid's rays end (kShaftFar
+                // steps, quadratic), in the same loop (ONE cv2Field call site). It took the CASCADE's value there
+                // (2026-10-12): at a grazing Sun a far cloud top's shadow is a layer a few hundred metres deep, the
+                // cascade's cells are 0.8-1.4 km in that direction, and it read lit where the fine grid (250 m,
+                // marched) read full shadow -- so a cloud was shadowed only inside the fine grid, within 3-6 km of
+                // the eye (user issues 20261012_195811 / _202341: "the user has to move too close to see them").
+                const int kShaftFar = 16;
+                float sFar = max(cv2SunGridLen(sunENU, cv2.shell.y), sTop);
                 float od = 0.0;
-                Tk[(base + kCv2ShaftK - 1 + 8 * kCv2ShaftK) & (kCv2ShaftK - 1)] += T0;
-                for (int m = kCv2ShaftK - 2; m >= 0; --m) {
-                    float sM = (float(base + m) + fract(jp + 0.5 * float(sr)) - cv2.sunCasc4.z) * ds;
-                    CV2Pos q = cv2Pos(o + sunENU * sM, eyeH, enuToEcef);
-                    if (q.h > -300.0 && q.h < cv2.shell.y + 2500.0) {
-                        CV2Field gf = cv2Field(q, 0.0, 150.0);
-                        od += gf.sigma * (1.0 - gf.thin - cv2.mid2.z * gf.soft) * ds;
+                for (int m = kCv2ShaftK - 2 + kShaftFar; m >= 0; --m) {
+                    float sM, dsM;
+                    if (m >= kCv2ShaftK - 1) {
+                        float u0 = float(m - (kCv2ShaftK - 1)) / float(kShaftFar);
+                        float u1 = float(m - (kCv2ShaftK - 2)) / float(kShaftFar);
+                        float s0 = sTop + (sFar - sTop) * u0 * u0;
+                        dsM = (sFar - sTop) * (u1 * u1 - u0 * u0);
+                        sM  = s0 + dsM * fract(jp + 0.5 * float(sr) + 0.6180340 * float(m));
+                    } else {
+                        dsM = ds;
+                        sM  = (float(base + m) + fract(jp + 0.5 * float(sr)) - la.z) * ds;
                     }
-                    Tk[(base + m + 8 * kCv2ShaftK) & (kCv2ShaftK - 1)] += T0 * exp(-od);
+                    CV2Pos q = cv2Pos(o + sunENU * sM, eyeH, enuToEcef);
+                    if (dsM > 1.0 && q.h > -300.0 && q.h < cv2.shell.y + 2500.0) {
+                        CV2Field gf = cv2Field(q, 0.0, fpM);
+                        od += gf.sigma * (1.0 - gf.thin - cv2.mid2.z * gf.soft) * dsM;
+                    }
+                    if (m <= kCv2ShaftK - 1)
+                        Tk[(base + m + 8 * kCv2ShaftK) & (kCv2ShaftK - 1)] += 0.5 * exp(-od);
                 }
             }
-            if (r < kCv2ShaftN * kCv2ShaftN)
+            if (r < kCv2ShaftN * kCv2ShaftN) {
+                int rb = (ring * kCv2ShaftN * kCv2ShaftN + r) * kCv2ShaftK;
                 for (int k = 0; k < kCv2ShaftK; ++k)
-                    cv2SunShaft[r * kCv2ShaftK + k] = mix(cv2SunShaft[r * kCv2ShaftK + k], Tk[k], cv2.sunCasc5.x);
+                    cv2SunShaft[rb + k] = mix(cv2SunShaft[rb + k], Tk[k], bakeW);
+            }
             return;
         }
         // The CASCADE (2026-10-10; cloud_lightning.glsl cv2SunCasc): on odd frames these workgroups (and four more)

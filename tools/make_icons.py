@@ -234,7 +234,17 @@ def build_bookmark():
     return [cut(ribbon, sparkle(24.0, 18.0, 8.0, 0.8))]
 
 
+def build_report():
+    """Issue reports: a solid flag on its pole with an exclamation mark punched out of it — "something
+    is wrong here", the Issue reports window (2026-10-12)."""
+    pole = rect(8.0, 5.0, 13.0, 44.0)
+    banner = rect(13.0, 7.0, 42.0, 29.0)
+    bang = lambda px, py: (25.0 <= px <= 30.0) and (10.0 <= py <= 19.0 or 22.0 <= py <= 26.0)
+    return [pole, cut(banner, bang)]
+
+
 ICONS = {
+    "report": build_report,
     "bookmark": build_bookmark,
     "film": build_film,
     "photo": build_photo,
@@ -248,7 +258,7 @@ ICONS = {
 # Drawn in the HUD's "pixel" style: solid silhouettes with hard edges on a 24-px grid, doubled to 48 —
 # the look of the gear, the camera, play / pause, the crosshair and the eye. Soft-edged thin strokes
 # beside them read as another icon family (the user, 2026-10-03).
-PIXEL_STYLE = {"bookmark", "film", "photo", "maximize", "observer", "spin", "studio"}
+PIXEL_STYLE = {"report", "bookmark", "film", "photo", "maximize", "observer", "spin", "studio"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

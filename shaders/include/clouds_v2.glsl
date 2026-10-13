@@ -154,6 +154,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // field), y the multiple-scattering octaves (march), z "Lobe occlusion", w spare. samp (cloud_v2_resolve.comp): x the accumulation's cap (samples; 0 = off), y new-pixel
     // smoothing, z the motion clamp (sd), w spare.
     vec4  tune, mid2, mid3, samp;
+    // 2026-10-12: the shaft lattice's SECOND ring (coarser cells, the same rays x knots; cloud_lightning.glsl).
+    // sunCasc6: as sunCasc4 for it. sunCasc7: x the weight of a new bake in its rays' running mean (0 = off),
+    // y its knot spacing along the Sun (m), z ring 1's cell (m), w ring 2's cell (m).
+    vec4  sunCasc6, sunCasc7;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

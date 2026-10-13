@@ -1288,19 +1288,43 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // x: nothing until every ray has been baked once (32 frames: 2048 rays on every other frame), then in over 8.
         // The SHAFT lattice (cloud_lightning.glsl cv2SunShaft): 250-m cells across the Sun, knots along it spaced so
         // its +-16 knots reach ~5 km above and below the eye's level whatever the Sun's height (1-3 km); the eye's
-        // coordinate integrated in all three, as above. Baked only for the god rays.
+        // coordinate integrated in all three, as above. Baked with the cascade: the cloud samples within ~14 km read
+        // it too (2026-10-12; it was baked only for the god rays).
         const double dsS = std::clamp(5000.0 / std::max(std::abs(sinE), 0.02), 16000.0, 48000.0) / 16.0;
-        const bool shaftOn = on && cv2Godrays > 0.0f;
+        const bool shaftOn = on;
+        // The rings' cells ("Cloud shadow ring 1 / 2 cell"): a ring reaches 56 cells from the eye. Ring 2's knots
+        // along the Sun are ring 1's x the cells' ratio x "ring 2 depth", so its window along the Sun covers its
+        // reach across it. A changed cell refills that ring (its lattice coordinate is in cells).
+        const double cell1 = std::clamp((double)cv2ShadowRing1CellM, 50.0, 2000.0);
+        const double cell2 = std::clamp((double)cv2ShadowRing2CellM, cell1, 8000.0);
+        const bool ring2On = shaftOn && cv2ShadowRing2CellM > 0.0f;
+        const double dsS2 = dsS * std::max(cell2 / cell1 * std::clamp((double)cv2ShadowRing2KnotK, 0.1, 4.0), 1.0);
+        if (cv2ShaftCellUsed[0] != (float)cell1) { cv2ShaftCellUsed[0] = (float)cell1; cv2ShaftFrames = 0; cv2Shaft2Frames = 0; }
+        if (cv2ShaftCellUsed[1] != (float)dsS2 + (float)cell2) { cv2ShaftCellUsed[1] = (float)dsS2 + (float)cell2; cv2Shaft2Frames = 0; }
         if (!shaftOn || !lightValid)
             cv2ShaftFrames = 0;
         else
         {
             const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
-            cv2ShaftLatA = std::fmod(cv2ShaftLatA + glm::dot(dEye, ga) / 250.0, 128.0 * 1024.0);
-            cv2ShaftLatB = std::fmod(cv2ShaftLatB + glm::dot(dEye, gb) / 250.0, 128.0 * 1024.0);
+            cv2ShaftLatA = std::fmod(cv2ShaftLatA + glm::dot(dEye, ga) / cell1, 128.0 * 1024.0);
+            cv2ShaftLatB = std::fmod(cv2ShaftLatB + glm::dot(dEye, gb) / cell1, 128.0 * 1024.0);
             cv2ShaftLatS = std::fmod(cv2ShaftLatS + glm::dot(dEye, s) / dsS, 32.0 * 1024.0);
             ++cv2ShaftFrames;
         }
+        if (!ring2On || !lightValid)
+            cv2Shaft2Frames = 0;
+        else
+        {
+            const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
+            cv2Shaft2LatA = std::fmod(cv2Shaft2LatA + glm::dot(dEye, ga) / cell2, 128.0 * 1024.0);
+            cv2Shaft2LatB = std::fmod(cv2Shaft2LatB + glm::dot(dEye, gb) / cell2, 128.0 * 1024.0);
+            cv2Shaft2LatS = std::fmod(cv2Shaft2LatS + glm::dot(dEye, s) / dsS2, 32.0 * 1024.0);
+            ++cv2Shaft2Frames;
+        }
+        p.sunCasc6 = glm::vec4(modP(cv2Shaft2LatA, 128.0), modP(cv2Shaft2LatB, 128.0), modP(cv2Shaft2LatS, 32.0),
+                               ring2On ? std::clamp(((float)cv2Shaft2Frames - 33.0f) / 8.0f, 0.0f, 1.0f) : 0.0f);
+        p.sunCasc7 = glm::vec4(ring2On ? std::max(1.0f / (float)(std::max(cv2Shaft2Frames - 1, 0) / 32 + 1), 0.25f) : 0.0f,
+                               (float)dsS2, (float)cell1, (float)cell2);
         p.sunCasc4 = glm::vec4(modP(cv2ShaftLatA, 128.0), modP(cv2ShaftLatB, 128.0), modP(cv2ShaftLatS, 32.0),
                                shaftOn ? std::clamp(((float)cv2ShaftFrames - 33.0f) / 8.0f, 0.0f, 1.0f) : 0.0f);
         p.sunCasc5 = glm::vec4(shaftOn ? std::max(1.0f / (float)(std::max(cv2ShaftFrames - 1, 0) / 32 + 1), 0.25f) : 0.0f,
@@ -1583,7 +1607,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     if (cv2LightningPipeline)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightningPipeline);
-        vkCmdDispatch(cmd, 15, 1, 1);   // + 4 workgroups for the rain map (review 22), + 4 for the Sun shadow grid, + 4 more
+        vkCmdDispatch(cmd, 17, 1, 1);   // + 4 workgroups for the rain map (review 22), + 4 for the Sun shadow grid, + 4 more
                                         // on the frames that bake the cascade (returning at once on the others)
         // The rain particles (main pass, vertex stage) read the rain map and the light at the eye it just wrote.
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,

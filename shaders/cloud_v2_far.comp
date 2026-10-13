@@ -72,7 +72,7 @@ vec3 skyZenithAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
     vec3 zen = normalize(p);
     vec2 tSA = raySphere(p, zen, R_ATMOS);
     if (tSA.y <= 0.0) return vec3(0.0);
-    const int N_Z = 6;
+    const int N_Z = 12;   // as cloud_v2_march.comp (6 was magenta at twilight)
     float seg = tSA.y / float(N_Z);
     float cosUp = dot(zen, sunDir);
     float odR = 0.0, odM = 0.0, accM = 0.0;

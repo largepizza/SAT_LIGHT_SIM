@@ -482,8 +482,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Star Trails", GLFW_KEY_F, -1, false, false},                                       // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off (X went to Pause, pad layout 2)
         {"Save Snapshot", GLFW_KEY_F9, -1, false, false},                                    // KB_SAVE_SNAPSHOT (event) — how the user hands over a location
         {"HQ Photo", GLFW_KEY_F8, -1, false, false},                                         // KB_PHOTO (event) — supersampled screenshot (requestPhoto)
+        {"New Issue Snapshot", GLFW_KEY_F7, -1, false, false},                               // KB_REPORT_NEW (event) — a snapshot that starts a new issue report
     };
-    static_assert(KB_COUNT == 20, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 21, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -6874,6 +6875,7 @@ void SatelliteSim::cleanup(VkDevice device)
     destroySkyLowResResources(device);
     destroySkyTaaResources(device);
     bookmarksDestroy(device); // the bookmark thumbnails' atlas (SatelliteSimBookmarks.cpp)
+    reportsDestroy(device);   // the issue reports window's atlas (SatelliteSimReportsWindow.cpp)
     vkDestroyPipeline(device, drawPipeline, nullptr);
     vkDestroyPipelineLayout(device, compPipeLayout, nullptr);
     vkDestroyPipelineLayout(device, skyBgPipeLayout, nullptr);
@@ -7773,6 +7775,9 @@ void SatelliteSim::finalizeScreenshot()
             std::swap(pixels[i * 4 + 0], pixels[i * 4 + 2]);
         pixels[i * 4 + 3] = 255;
     }
+    // An issue report's shot (SatelliteSimReports.cpp): its card thumbnail, from this same frame.
+    if (!reportThumbPath_.empty())
+        reportWriteThumb(pixels, screenshotW, screenshotH);
     // A bookmark's thumbnail (SatelliteSimBookmarks.cpp): this frame was asked for by bookmarkTick, not as a
     // screenshot — hand it over and write nothing.
     if (!bmCaptureFor_.empty())
@@ -8091,6 +8096,9 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
     case KB_SAVE_SNAPSHOT:
         snapshotKeyPending = true;
         break;
+    case KB_REPORT_NEW:
+        reportNewKeyPending = true;
+        break;
     case KB_TOGGLE_CURSOR:
         // UC5: effective activation also requires uiVisible && !showIntro (see pollGamepad's
         // cursorActive computation) — this just flips the player-facing on/off state.
@@ -8112,6 +8120,8 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
 void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
 {
     win = w;
+    if (reportBarKey(key, action)) // the issue-report note bar: the snapshot keys work while it is focused
+        return;
     if (textEditKey(key, action)) // a focused text field owns the keyboard (SatelliteSimUI.cpp "Text fields")
         return;
     if (consoleKey(key, action)) // the ~ console (docs/HARNESS.md) owns the keyboard while open
