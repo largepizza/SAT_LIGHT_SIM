@@ -970,8 +970,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CbColumns, cv2CbSpacingKm, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbWaist, cv2CbFlare,
                     cv2CbHeadDriftKm, cv2CbLobes, cv2CbHeadLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
                     cv2DustHeightM, cv2DustDensity, (float)(debugDisableMask & 2048u),
-                    cv2SmallCumulus, cv2ErosionVar, cv2LobeVar, cv2CirrusDirWarp, cv2AsDensity, cv2MidThick, cv2MidShadow,
-                    cv2MidFieldKm, cv2MidCover, cv2SunCascadeRangeKm})
+                    cv2LightFootprint, cv2SmallCumulus, cv2ErosionVar, cv2LobeVar, cv2CirrusDirWarp, cv2AsDensity, cv2MidThick, cv2MidShadow,
+                    cv2MidFieldKm, cv2MidCover, cv2SunCascadeRangeKm, cv2MsOctaves, cv2LobeOcclusion})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -1175,7 +1175,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         p.column3 = glm::vec4(std::clamp(cv2CbCumulusReachKm, 0.0f, 60.0f) * 1000.0f,
                               0.0f, std::clamp(cv2CbCumulusVar, 0.0f, 0.8f), std::clamp(cv2CbFill, 0.02f, 1.0f));
     }
-    p.column3.y = std::max(cv2LightLodFootprintM, 0.0f);   // light LOD (cloud_v2_march.comp)
+    // Light LOD (cloud_v2_march.comp), only for a light march up to 3 km: its second step is one sample over the
+    // rest of the march, and at 8 km that is a 7.5-km all-or-nothing sample (the grain of 2026-10-11; a saved
+    // settings.json still carries the old 16 m).
+    p.column3.y = cv2LightLenM <= 3000.0f ? std::max(cv2LightLodFootprintM, 0.0f) : 0.0f;
     // Lightning: its schedule runs on SIM time (deterministic, reversible), wrapped where a float still
     // resolves ~10 ms (a flash in progress at the wrap is cut; once per ~28 h of sim time).
     // The light volume: +-"God ray range" about the eye (a low Sun's shafts come from storms hundreds of
@@ -1306,9 +1309,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                            std::clamp(cv2CirrusDirWarp, 0.0f, 1.3f));
         p.mid2 = glm::vec4(std::max(cv2AsDensity, 0.0f), std::clamp(cv2MidThick, 0.1f, 4.0f),
                            1.0f - std::clamp(cv2MidShadow, 0.0f, 1.0f), 0.057f * cv2MidCover);
-        p.mid3 = glm::vec4(cv2MidFieldKm > 1.0f ? 1.0f / (1000.0f * cv2MidFieldKm) : 0.0f, 0.0f, 0.0f, 0.0f);
+        p.mid3 = glm::vec4(cv2MidFieldKm > 1.0f ? 1.0f / (1000.0f * cv2MidFieldKm) : 0.0f,
+                       std::round(std::clamp(cv2MsOctaves, 1.0f, 8.0f)), std::clamp(cv2LobeOcclusion, 0.0f, 1.0f), 0.0f);
         p.samp = glm::vec4(std::clamp(cv2SampAccum, 0.0f, 256.0f), std::clamp(cv2SampNewSmooth, 0.0f, 1.0f),
-                           std::clamp(cv2SampClampSd, 0.25f, 8.0f), 0.0f);
+                           std::clamp(cv2SampClampSd, 0.25f, 8.0f), std::clamp(cv2LightFootprint, 0.0f, 0.5f));
         p.sunCasc2 = glm::vec4(on ? std::clamp(((float)cv2CascFrames - 33.0f) / 8.0f, 0.0f, 1.0f) : 0.0f,
                                (float)(2.0 * sHalf / 40.0), on ? 1.0f : 0.0f, std::max(cv2HazeAloft, 0.0f));
     }

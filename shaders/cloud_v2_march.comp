@@ -172,6 +172,12 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
 {
     od = 0.0; sigUp = 0.0; odBeam = 0.0;
     float s = 0.0, lSeg = lSeg0, sb = 0.0, sg = 150.0;
+    // The light samples read the field at a footprint of samp.w x the march's length ("Light march footprint",
+    // 0.04 = 320 m of an 8-km march): a POINT sample standing for kilometres of path is in a cloud or in a gap, so
+    // each view sample came back sunlit or black by chance, the grain on every lit / shadowed boundary (raw
+    // frame-to-frame std 0.93 -> 0.6 levels, pixels past 4 levels 3.6% -> 0.3%, same mean). ONE footprint for every
+    // call: a per-step one (the step's own length) put the march at 221-224 registers.
+    float fpFar = max(fp, cv2.light.x * cv2.samp.w);
     for (int k = wantLight ? 0 : nL + 1; k <= (wantBeam ? nL + 4 : nL + 1); ++k) {
         // Jittered over the WHOLE segment: at +-25% of it the optical depth to the light came in
         // steps across a smooth surface, and the big smooth storm domes showed contour ripples (pass 13).
@@ -182,7 +188,7 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
                   : (k == nL + 1) ? up * 250.0 : bdir * (sb + sg * 0.5);
         // The view sample's footprint, not the step's: a longer footprint would turn the gaps
         // between cells into haze and shadow everything.
-        CV2Field lf = cv2Field(cv2Pos(rel + off, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fp);
+        CV2Field lf = cv2Field(cv2Pos(rel + off, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fpFar);
         if (k < nL) {
             // Ice delta-scaled, and harder for the SHADOW (2026-09-30): what reaches a cloud below through a
             // cirrus veil includes the light its ice scatters within a few degrees (g ~0.8), so the direct
@@ -203,8 +209,12 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
 // Multiple scattering (Wrenninge octaves): each octave sees a fraction of the optical depth.
 float msOctaves(float od)
 {
+    // "Multi-scatter octaves" (mid3.y, 2-8): with two, the light inside a cloud has two depths (od ~1 / a and
+    // ~1 / a^2) and nothing between: raised until a grazing-lit top was bright, the second octave lit the whole
+    // interior and the lobes' relief went flat white. A series at a = b ~ 0.5 falls off about as 1 / od.
     float ms = 0.0, a = 1.0, b = 1.0;
-    for (int k = 1; k <= 2; ++k) { a *= cv2.light.z; b *= cv2.light.w; ms += b * exp(-od * a); }
+    int   n  = int(cv2.mid3.y);
+    [[dont_unroll]] for (int k = 0; k < n; ++k) { a *= cv2.light.z; b *= cv2.light.w; ms += b * exp(-od * a); }
     return ms;
 }
 

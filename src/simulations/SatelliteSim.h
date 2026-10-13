@@ -3128,7 +3128,8 @@ private:
     glm::vec3 cv2BeamEyeDir{0.0f, 0.0f, 1.0f};   // its weighted direction to the satellites (ENU)
     float cv2LightLenM = 8000.0f;      // light-march length
     float cv2LightSteps = 7.0f;
-    float cv2LightLodFootprintM = 16.0f;  // past this pixel footprint (m) a 2-step light march; 0 = off
+    float cv2LightLodFootprintM = 0.0f;   // past this pixel footprint (m) a 2-step light march; 0 = off (the default since 2026-10-11:
+                                          // at a long light march its second step is one sample for kilometres - the main source of grain)
     float cv2ShaftTempC = 15.0f;          // the air 500 m over the ground under the eye (deg C): the shafts' rain / snow
     float cv2EyeTempC = 15.0f;            // the air temperature at the eye (deg C; rain / sleet / snow), per frame
     float cv2LightningRate = 2.1f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
@@ -3169,6 +3170,9 @@ private:
     float cv2MidCover = 0.0f;             // mid layer cover bias (sd of its regime noise; + = more sheet)
     float cv2SampAccum = 32.0f;           // the resolve's per-pixel accumulation: the sample count it caps at (0 = off)
     float cv2SampNewSmooth = 0.8f;        // how much a young pixel leans on its neighbourhood's estimate
+    float cv2MsOctaves = 2.0f;            // multiple-scattering octaves (2-8): strength^k x exp(-od x extinction^k)
+    float cv2LobeOcclusion = 0.0f;        // sky light darker in the creases between lobes, brighter on their tips
+    float cv2LightFootprint = 0.08f;      // the light march's samples read the field at this x its length (0 = point samples: all-or-nothing shadows, grain)
     float cv2SampClampSd = 1.25f;         // the history clamp in motion (sd of the new samples around)
     float cv2SunCascadeRangeKm = 205.0f;  // "Far cloud shadow range": the cascade's half width across the Sun (128 cells)
     float cv2Godrays = 1.0f;              // "God rays": how much of the clouds' shadow the AIR takes (the sky pass reads the Sun shadow cascade), 0..1
@@ -5118,7 +5122,7 @@ private:
     bool draggingPhoto[38] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 283;   // 270-282 (2026-10-11): small cumulus, erosion / lobe variation, mid layer x5, cirrus warp, sampler x3, far shadow range
+    static constexpr int kCloudSliderSlots = 286;   // 270-282 (2026-10-11): small cumulus, erosion / lobe variation, mid layer x5, cirrus warp, sampler x3, far shadow range
     // (was 270:)   // 261-266 rain particles (count, shutter, fall speed, wind, storm wind, gusts)
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),

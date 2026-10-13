@@ -151,7 +151,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // z "Lobe variation", w "Cirrus direction warp" (the streaks' slope). mid2: x altostratus density (x),
     // y the mid layer's thickness (x), z the share of its extinction left OUT of the shadow it casts
     // (1 - "Mid layer shadow"), w its regime bias (noise units). mid3: x 1 / its field size (m^-1; 0 = the cluster
-    // field), yzw spare. samp (cloud_v2_resolve.comp): x the accumulation's cap (samples; 0 = off), y new-pixel
+    // field), y the multiple-scattering octaves (march), z "Lobe occlusion", w spare. samp (cloud_v2_resolve.comp): x the accumulation's cap (samples; 0 = off), y new-pixel
     // smoothing, z the motion clamp (sd), w spare.
     vec4  tune, mid2, mid3, samp;
 } cv2;
@@ -931,7 +931,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     f.sigma    = d * ty.shape.x * cv2.look.y;
     f.hf       = hf;
     f.msBright = ty.look.x;
-    f.ambient  = ty.look.y;
+    // "Lobe occlusion" (mid3.z): the sky light by where the sample sits in the lobe noise: the creases between
+    // lobes (low) see a narrow cone of sky, the tips (high) most of it; mean ~1. The probe 250 m up and the depth
+    // under the column's top cannot tell a crease from a tip. Faded with the lobes themselves (A / lobeK).
+    f.ambient  = ty.look.y * (1.0 - cv2.mid3.z * clamp(-4.0 * lobes, -0.6, 1.0) * fpFade);
     f.deck     = strat * smoothstep(0.6, 1.0, e);
     // The deck's upper envelope (a lumpy top reaches ~zTop): the grazing-light shadow measures the
     // depth below it, and a mean top made every trough between the lumps black at sunrise.

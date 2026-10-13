@@ -3397,7 +3397,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pc.moonSuppression = moonSuppression;
     pc.moonDirECI = moonDirECI; // computed in updatePositions(), called earlier this frame
     pc.extinctionCoeff = extinctionCoeff;
-    pc.sunRefIntensity = sunFlareRefIntensity * sunCloudTEased; // S3: soft ceiling reference; review 22: x the Sun's cloud transmittance
+    // S3: soft ceiling reference. NOT x sunCloudTEased / the eclipse factor (those dim the Sun's own bloom seed,
+    // FlareSourcePC below): here it is every satellite's ceiling, and with the Sun behind cloud a ceiling of ~0
+    // zeroed every satellite in the sky.
+    pc.sunRefIntensity = sunFlareRefIntensity;
     pc.selectedSatIdx = (selectedSatIndex >= 0) ? (uint32_t)selectedSatIndex : UINT32_MAX;
     pc.meshSatIdx = -1.0f; // Phase 4d: sprite weights come through MeshKeepBuf (binding 12) now
     pc.meshSpriteKeep = 1.0f;

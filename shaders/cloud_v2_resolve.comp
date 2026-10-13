@@ -328,6 +328,7 @@ void main()
             float hAge = textureLod(histAgeTex, uvPrev, 0.0).r;
             float rej  = clamp(2.0 * length(hist.rgb - hc.rgb) / (dot(hist.rgb + hc.rgb, vec3(0.5)) + 1e-3)
                                + 3.0 * abs(hist.a - hc.a), 0.0, 1.0);
+            // (Still views too: without it a pixel's first unlucky samples stayed frozen in its mean as a speck.)
             hAge *= 1.0 - rej;
             float young = 1.0 - smoothstep(2.0, 10.0, hAge);
             fresh  = mix(fresh, (full || tFull) ? blur : spatial, cv2.samp.y * young);

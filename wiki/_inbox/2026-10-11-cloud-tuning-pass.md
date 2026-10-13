@@ -39,7 +39,26 @@ neighbourhood's estimate; history removed by the clamp lowers the age. Settings 
 (`sampler_new_smoothing`, 0.8), "Motion clamp (sd)" (`sampler_motion_clamp_sd`, 1.25).
 Slider slots 270-282; `kCloudSliderSlots` is 283.
 
+**Light march sampling.** "Light LOD footprint (m)" (`light_lod_footprint_m`) defaults to 0 (off) and is ignored for a light march longer than 3 km.
+"Light march footprint (x length)" (`light_sample_footprint`, 0.08, 0-0.2) is the footprint every light sample reads the
+cloud field at, as a fraction of the light march's length. Slider slot 283; `kCloudSliderSlots` is 284.
+
+**Multiple scattering and lobe occlusion.** "Multi-scatter octaves" (`ms_octaves`, 2, 1-8): the key light's
+multiple-scattering term is the sum over k of strength^k x exp(-optical depth x extinction^k). With 6 octaves at
+extinction 0.7 / strength 0.5 it falls off gradually with depth, so a top lit at a grazing Sun is bright and the
+lobes keep their relief. "Lobe occlusion (sky light)" (`lobe_occlusion`, 0, 0-1) scales the sky light by the lobe
+noise at the sample: darker in the creases between lobes, brighter on their tips, mean about 1. Slots 284-285;
+`kCloudSliderSlots` is 286.
+
 ## History
+- Blue-grey cloud tops under a 10-12 degree Sun (user records 35-36): with "Multi-scatter strength" at 0.026 the
+  Sun's light was single scattering only (the top few metres of a flat top) and the sky light dominated. Shadows
+  were not involved (cascade, light footprint, mid / high layers, light march length: no change). Top mean
+  163/177/206 -> 202/207/223 at 6 octaves, 0.7 / 0.5, relief 2.04 -> 2.08 levels.
+- Grain on lit / shadowed cloud (user records 30-33): the light LOD's second step was one point sample for ~7.5 km
+  of an 8-km light march, so samples came back sunlit or black. Raw frame-to-frame std 3.69 -> 0.93 levels with
+  the LOD off, 0.6 with the 0.04 footprint; settled dark specks 2728 -> 193 at record 32; +2.5-3 ms GPU. The LOD
+  was also brighter than the full march (crop mean 173 vs 117), a brightness switch ~5 km from the eye.
 - Hard horizontal shadow line across cumulus (user snapshots 23-24): the mid layer's sheet, crossed at a grazing
   Sun over the 8-km light march (optical depth ~38 along the path), shadowed everything at its altitude. Gone
   with the layer off; with "Mid layer shadow" 0.3 the band is lighter but still has an edge.

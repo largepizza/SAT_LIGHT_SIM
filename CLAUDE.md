@@ -1584,6 +1584,33 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       20-30% cloud from 450 km where the resolved field has ~1-2% below 300 km; with detail 0.77 the erosion removes
       those marginal puffs at every distance. Open: the mid layer's shadow still has an edge; cirrus bundles from
       orbit are still wavy bands; "Small cumulus" at 0.15 visibly fills gaps in near views.
+    - **Grain root cause (2026-10-11b, records 30-33, harness_runs/r11/snaps2.jsonl): the LIGHT LOD.** With the user's
+      8-km light march and "Light LOD footprint" 16 m (so everything past ~5 km, and every sample behind T < 0.5),
+      the 2-step light march's second step is ONE jittered point sample standing for ~7.5 km: in a cloud or in a gap,
+      so each view sample came back sunlit or black. Raw frame-to-frame std (full rate, history 0.15, no TAA, a
+      520x320 crop) 3.69 levels with it, 0.93 without; it is also far BRIGHTER than the 7-step march (crop mean 173
+      vs 117), a lit / shadowed switch at a fixed distance from the eye (the "observer-centric" shadows). The default
+      is now 0, and the CPU ignores the setting for a light march over 3 km (record 34 was still saved with 16 m and looked the same as before) (+2.5-3 ms GPU at those views, full frame ~30 -> ~32 ms). **"Light march footprint (x length)"**
+      (`light_sample_footprint` 0.08, slot 283, `samp.w`; `kCloudSliderSlots` 284): every light sample reads the field at
+      that x the march's length (640 m of 8 km; 0.04 left ~150 specks in record 34's lit top, 0.08-0.1 a handful, +~5% brightness): std 0.93 -> 0.6, pixels past 4 levels 3.6% -> 0.3%, same mean.
+      It must be ONE footprint for all of lightAmbOD's calls: a per-step one gave 221-224 registers three ways.
+      Settled view at record 32, old -> new: dark specks (5x5 median high-pass < -10) 2728 -> 193, temporal std
+      0.229 -> 0.090. The specks were mostly the SAME pixels frame after frame: a running mean of ~100
+      all-or-nothing samples still differs by several levels between neighbours. The resolve's age drop on clamp
+      rejection is kept in still views too (without it 313 specks instead of 193). A saved settings.json keeps its
+      own `light_lod_footprint_m`: set it to 0 there. Debug note: `debugview cloudrad` showed the specks in the
+      march's radiance while cloudairsplit / cloudalpha / cloudtrans were smooth.
+    - **Dark, blue cloud tops under a low Sun (2026-10-11c, records 35-36, harness_runs/r11/snaps4.jsonl; Sun 10-12 deg):**
+      not the shadows (cascade off, light footprint 0, mid / high layers off, light march 2.5 km: all within 1 level).
+      The user's "Multi-scatter strength" was 0.026 (from 0.52), so the key light was single scattering alone: at a
+      grazing Sun that is the top few metres of a flat top, and the sky light (blue) carried the rest. Two octaves
+      could not give both brightness and relief (raised, the second octave lights the whole interior: flat white).
+      **"Multi-scatter octaves"** (`ms_octaves` 2, 1-8, slot 284, `mid3.y`; a runtime `[[dont_unroll]]` loop in
+      `msOctaves`, 128 registers, cost within noise): at 6 octaves, extinction 0.7, strength 0.5 the top's mean went
+      163/177/206 -> 202/207/223 with the lobes' relief kept (41-px high-pass std 2.04 -> 2.08; 0.5 / 0.5 gave 1.22).
+      **"Lobe occlusion (sky light)"** (`lobe_occlusion` 0, slot 285, `mid3.z`): `f.ambient` x (1 - k clamp(-4 lobes,
+      -0.6, 1)), the lobe noise's own value (creases low, tips high): no extra field read. Subtle at 0.6.
+      `kCloudSliderSlots` 286. Defaults unchanged (the user's to judge).
     - **The Sun shadow grids are not reset with the SCREEN history** (`lightValid`, `cv2FieldHash`,
       `cv2ScreenResetOnly`): they live in the clouds' space, so recreating the screen images (the HQ photo's target, a
       render-scale step) or changing the march rate (`cv2FullRateAboveKm`, hashed after `hField`) keeps them. Tied to

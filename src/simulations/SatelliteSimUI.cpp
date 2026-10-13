@@ -4908,7 +4908,11 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Forward scatter g", &cv2PhaseG, 0.0f, 0.95f, 0.01f, "%.2f", 131},
         {"Light march (m)", &cv2LightLenM, 250.0f, 16000.0f, 50.0f, "%.0f", 132},
         {"Light steps", &cv2LightSteps, 1.0f, 12.0f, 1.0f, "%.0f", 133},
+        // 0 = off (the default): the 2-step light march is noisy and brighter than the full one at a long light march.
         {"Light LOD footprint (m)", &cv2LightLodFootprintM, 0.0f, 200.0f, 5.0f, "%.0f", 178},
+        {"Light march footprint (x length)", &cv2LightFootprint, 0.0f, 0.2f, 0.005f, "%.3f", 283},
+        {"Multi-scatter octaves", &cv2MsOctaves, 1.0f, 8.0f, 1.0f, "%.0f", 284},
+        {"Lobe occlusion (sky light)", &cv2LobeOcclusion, 0.0f, 1.0f, 0.05f, "%.2f", 285},
     };
 
     CloudSlider secHigh[] = {
@@ -7338,6 +7342,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2MidFieldKm = c.value("mid_field_km", cv2MidFieldKm);
         cv2MidCover = c.value("mid_cover_bias", cv2MidCover);
         cv2SampAccum = c.value("sampler_accumulation", cv2SampAccum);
+        cv2LightFootprint = c.value("light_sample_footprint", cv2LightFootprint);
+        cv2MsOctaves = c.value("ms_octaves", cv2MsOctaves);
+        cv2LobeOcclusion = c.value("lobe_occlusion", cv2LobeOcclusion);
         cv2SampNewSmooth = c.value("sampler_new_smoothing", cv2SampNewSmooth);
         cv2SampClampSd = c.value("sampler_motion_clamp_sd", cv2SampClampSd);
         cv2GodrayRangeKm = c.value("godray_range_km", cv2GodrayRangeKm);
@@ -7895,6 +7902,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"mid_field_km", cv2MidFieldKm},
         {"mid_cover_bias", cv2MidCover},
         {"sampler_accumulation", cv2SampAccum},
+        {"light_sample_footprint", cv2LightFootprint},
+        {"ms_octaves", cv2MsOctaves},
+        {"lobe_occlusion", cv2LobeOcclusion},
         {"sampler_new_smoothing", cv2SampNewSmooth},
         {"sampler_motion_clamp_sd", cv2SampClampSd},
         {"godray_range_km", cv2GodrayRangeKm},
