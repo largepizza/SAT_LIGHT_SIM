@@ -1862,6 +1862,20 @@ void main() {
     float terrainSunT = 1.0;
     if (tScene < kNoSurfaceT && (cloud.dbgDisableMask & 256u) == 0u) {
         float shadowFade = 1.0 - smoothstep(cloud.cloudShadowRangeM * 0.6, cloud.cloudShadowRangeM, tScene);
+        // Ground the clouds hide needs no shadow (2026-10-13): where this texel and its eight neighbours (the reach
+        // of sat_sky.frag's shadow tent and its bilinear read) are all behind cloud that passes under 1%, the
+        // 32-72 field samples below bought nothing. Flying over a cloud field that is most of the ground in view,
+        // and the march runs for EVERY half-res pixel every frame (the view march is one in four): 2-2.8 ms of
+        // the cloud bucket at 1920x1009 before the gate.
+        if (shadowFade > 0.001 && !cv2Off && rc.a < 0.01) {
+            ivec2 rsz = textureSize(cv2ResolvedTex, 0);
+            float tMaxN = 0.0;
+            [[dont_unroll]] for (int k = 0; k < 9; ++k) {
+                if (k == 4) continue;
+                tMaxN = max(tMaxN, texelFetch(cv2ResolvedTex, clamp(coord + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), rsz - 1), 0).a);
+            }
+            if (tMaxN < 0.01) shadowFade = 0.0;
+        }
         if (shadowFade > 0.001) {
             vec3  hitENU  = obsPos + tScene * dir;
             vec3  hitECEF = hitENU.x * enuX + hitENU.y * enuY + hitENU.z * enuZ;

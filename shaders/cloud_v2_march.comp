@@ -553,6 +553,12 @@ void main()
     vec3  sunCol = vec3(0.0), skyZen = vec3(0.0);
 
     int   iters = 0;
+    // The batch (below): each kept sample's field, distance, the transmittance in front of it, the map's cover
+    // under thin ice and its weight in the ray's light.
+    const int kBatch = 32;
+    int   nB = 0;
+    CV2Field bF[kBatch];
+    float bT[kBatch], bTr[kBatch], bCov[kBatch], bW[kBatch];
     int   kMaxIters = int(cv2.misc.x);
     float pathLen = 0.0, odPath = 0.0, remLen = 0.0;   // for filling what the budget leaves
     // The distance limit is measured from where the ray enters the shell, not from the eye: from
@@ -574,7 +580,23 @@ void main()
         // and found at others — concentric rings in the clouds round the nadir that moved with the eye's height
         // (user snap 8). Steps grow linearly with distance, so the offset keeps its share of the spacing.
         t += 2.0 * (cv2.march.x + cv2.march.y * (t - seg[0].x)) * jitter;
-        while (t < tEnd && iters < kMaxIters && T > 0.01) {
+        // DENSITY FIRST, THEN LIGHT, in batches of kBatch samples (2026-10-13). The loop below walks the ray on the
+        // field alone (coarse steps, the fine lattice, the surface refinement, the transmittance) and keeps each
+        // sample that has cloud; the loop after it lights the kept samples (the light march: nine more field
+        // evaluations each). The samples, their order and their weights are what they were: the image is the same
+        // within run-to-run noise at ten views (harness_runs/perf13).
+        // WHY: a group of rays (32 on this GPU) executes in lockstep, so an iteration costs what its most
+        // expensive ray costs. In one loop, a ray stepping through empty air (one field evaluation) waited out
+        // the light march of every neighbour that was in cloud, and advanced ONE step per ~ten evaluations: the
+        // march's time was (the longest ray's steps) x (a lit sample's cost), whatever the others did. Now the
+        // empty steps cost one evaluation each for the whole group, and the light march runs only for samples
+        // that need it. Cloud march at 1920x1009: cumulus from 6 km 15.1 -> 9.3 ms, anvils at sunset 13.9 -> 9.1,
+        // 58 km 32.6 -> 21.7, orbit storm 54.3 -> 38.7, under a snowing storm 13.0 -> 10.5; 128 registers.
+        // Batches of 4 gained nothing from orbit, 16 most of it, 24-64 the same: 32. (One sample per batch --
+        // "search, then light" -- was slower on overcast: every lit ray waited on the slowest search each time.)
+        do {
+        nB = 0;
+        [[dont_unroll]] while (t < tEnd && iters < kMaxIters && T > 0.01 && nB < kBatch) {
             ++iters;
             // Steps grow with distance (the noise is read at the pixel footprint there anyway, so
             // shorter steps would only resample the same mip). 0.6% growth ran a horizon ray out of
@@ -691,6 +713,35 @@ void main()
             odRain += f.sigma * f.rain * stepF;
             if (dbgLayers) odLayer += gCv2Dbg * stepF * T;   // low, mid, anvil + Cb columns, high
 
+            // Thin ice (the cirrus veil): one sample stands for two steps — where a pixel spans > 60 m (the
+            // perf win is from altitude). Near the eye, inside or just above the layer (review 9: 9 km at
+            // 62 N), two-step samples caught its fibres on some frames and missed them on others: crisp
+            // flickering specks over the low clouds' edges.
+            float stepW = ((f.thin > 0.9 && fp > 60.0) || (f.rain > 0.9 && !fine)) ? rK * stepF : stepF;
+            float Tstep = exp(-f.sigma * stepW);
+            float w     = T * (1.0 - Tstep);
+            // Its light is added in the batch's second half, below.
+            bF[nB] = f; bT[nB] = t; bTr[nB] = T; bCov[nB] = covB; bW[nB] = w; ++nB;
+            wAcc += w;
+            dAcc += w * t;
+            T    *= Tstep;
+            if (tHalf < 0.0 && T < 0.5) tHalf = t;
+            if (tq.x > 1e29 && T < 0.8)  tq.x = t;
+            if (tq.y > 1e29 && T < 0.5)  tq.y = t;
+            if (tq.z > 1e29 && T < 0.2)  tq.z = t;
+            if (tq.w > 1e29 && T < 0.05) tq.w = t;
+            t += stepW;
+        }
+        // The batch's light.
+        [[dont_unroll]] for (int bj = 0; bj < nB; ++bj) {
+            float t = bT[bj];                               // (these shadow the march's own: this sample's)
+            float T = bTr[bj];
+            CV2Field f = bF[bj];
+            float covB = bCov[bj];
+            vec3  rel = dir * t;
+            CV2Pos p  = cv2Pos(rel, eyeH, enuToEcef);
+            float fp  = t * pixAng * cv2.motion.w;
+            float detailAmt = 1.0 - smoothstep(cv2.shell.w, cv2.shell.w * 4.0, t);
             vec3  pW   = eye + rel;                        // world point, ENU about the observer
             vec3  up   = normalize(pW);
             float sunUp = dot(up, sunDir);
@@ -938,24 +989,9 @@ void main()
             }
 
             vec3  S     = keyS + ambS + bounceS + nightS;
-            // Thin ice (the cirrus veil): one sample stands for two steps — where a pixel spans > 60 m (the
-            // perf win is from altitude). Near the eye, inside or just above the layer (review 9: 9 km at
-            // 62 N), two-step samples caught its fibres on some frames and missed them on others: crisp
-            // flickering specks over the low clouds' edges.
-            float stepW = ((f.thin > 0.9 && fp > 60.0) || (f.rain > 0.9 && !fine)) ? rK * stepF : stepF;
-            float Tstep = exp(-f.sigma * stepW);
-            float w     = T * (1.0 - Tstep);
-            L    += w * S;
-            wAcc += w;
-            dAcc += w * t;
-            T    *= Tstep;
-            if (tHalf < 0.0 && T < 0.5) tHalf = t;
-            if (tq.x > 1e29 && T < 0.8)  tq.x = t;
-            if (tq.y > 1e29 && T < 0.5)  tq.y = t;
-            if (tq.z > 1e29 && T < 0.2)  tq.z = t;
-            if (tq.w > 1e29 && T < 0.05) tq.w = t;
-            t += stepW;
+            L += bW[bj] * S;
         }
+        } while (nB >= kBatch);
         if (iters >= kMaxIters && t < tEnd) remLen += tEnd - t;
     }
 
