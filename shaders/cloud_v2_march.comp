@@ -470,7 +470,7 @@ void main()
     vec2  subPx = vec2(0.5);
     if (cv2.misc2.z <= 0.5) {
         float vj = full ? cv2.frame.x : floor(cv2.frame.x * (halfR ? 0.5 : 0.25));
-        vec2  h  = fract(vec2(ign(vec2(pix)), ign(vec2(pix) + vec2(47.0, 17.0))) + vj * vec2(0.7548777, 0.5698403));
+        vec2  h  = fract(vec2(ign(vec2(pix)), ign(vec2(pix) + vec2(47.0, 17.0))) + vj * vec2(0.8566749, 0.7338919));   // R4 with the two march jitters below
         subPx = h;
     }
     vec3  dir    = rayDirAt(vec2(pix) + subPx, halfSize, tanHalfFov, camToENU);
@@ -486,12 +486,20 @@ void main()
     if ((cloud.dbgDisableMask & 32768u) != 0u || cv2.look.x <= 0.0) nSeg = 0;
 
     float cosSun = dot(dir, sunDir);
+    // "Silver lining" (cu2.z): the droplets' narrow forward peak (Mie; g ~0.92, 12% of the phase function at 1), on
+    // single scattering only. It shows where little cloud lies between the sample and the Sun AND the view is within
+    // ~15 degrees of it: the thin rim of a cloud in front of the Sun, lit far brighter than its shaded body. The two
+    // broad lobes alone (the user's g is 0.28) gave a backlit cloud a rim no brighter than its sunlit side.
+    // (Water cloud only: on the mid layer's sheets and the ice veils, which lie across the Sun over tens of degrees,
+    // it was a blown-out glare many times the Sun's own.)
+    float phSilvS = cv2.cu2.z * 0.12 * cv2HG(cosSun, 0.92);
     float phSS   = cv2.phase.y * cv2HG(cosSun, cv2.phase.x) + cv2.phase.w * cv2HG(cosSun, cv2.phase.z);
     float phMS   = 0.85 * cv2HG(cosSun, 0.2) + 0.15 * cv2HG(cosSun, -0.4);
     vec3  moonDir  = normalize(pc.moonDirENU.xyz);
     float cosMoon  = dot(dir, moonDir);
     float phMoonSS = cv2.phase.y * cv2HG(cosMoon, cv2.phase.x) + cv2.phase.w * cv2HG(cosMoon, cv2.phase.z);
     float phMoonMS = 0.85 * cv2HG(cosMoon, 0.2) + 0.15 * cv2HG(cosMoon, -0.4);
+    float phSilvM  = cv2.cu2.z * 0.12 * cv2HG(cosMoon, 0.92);
     // Per-ray phases of ice (the high layer: a forward lobe + halos, sundogs, parhelic circle,
     // circumzenithal arc) and rain (a forward lobe + the bows), for either key light. Per RAY, so
     // the optics are as sharp as a pixel. (.plans/ATMOS_OPTICS_AND_STORMS.md)
@@ -546,7 +554,7 @@ void main()
     // block sat on its own two clusters of offsets for hundreds of frames. Each slot kept its own
     // sampling bias, and far clouds (long steps) broke into 2x2 squares.
     float visit  = full ? cv2.frame.x : floor(cv2.frame.x * (halfR ? 0.5 : 0.25));
-    float jitter = fract(ign(vec2(pix)) + 0.6180340 * visit);
+    float jitter = fract(ign(vec2(pix)) + 0.6287067 * visit);
     // Any eye motion (> 1 m a frame; > 150 m until review 7, when a slow strafe's moving history weight
     // showed IGN as a dotted honeycomb on lit tops). Fast flight: no history to average IGN's
     // structure away, and its smooth diagonal gradient kept neighbouring rays in step, so the march's
@@ -558,7 +566,13 @@ void main()
     {
         uint  bi = uint(pix.x & 63) + 64u * uint(pix.y & 63);
         float bn = (float((cv2BlueNoise[bi >> 2u] >> (8u * (bi & 3u))) & 0xFFu) + 0.5) / 256.0;
-        jitter = fract(bn + 0.6180340 * (cv2.misc2.z > 0.5 ? cv2.frame.x : visit));
+        // 2026-10-13: the four per-visit offsets (the ray's sub-texel point x 2, this start jitter, the light march's jL)
+        // step by the four R4 constants (1 / phi4^k, phi4 = 1.16730398). They were (0.7549, 0.5698), 0.618 and 0.7549:
+        // the light jitter and the sub-texel x advanced by the SAME step, i.e. stayed locked together for ever, and
+        // on a sloping surface the sub-texel point is the surface's depth phase. The light a smooth, dense surface
+        // received then depended on its slope in every pixel the same way (part of the fringes on anvil heads; the
+        // rings themselves were the coarse lattice, below).
+        jitter = fract(bn + 0.6287067 * (cv2.misc2.z > 0.5 ? cv2.frame.x : visit));
     }
     // Review 22: the fine lattice's own jitter, decorrelated from the coarse one (fract(1.618 jitter + 0.5)). The fine
     // lattice restarts a fraction of a step behind where the coarse lattice found cloud, and the coarse lattice is
@@ -660,8 +674,15 @@ void main()
                     t = tb > seg[si].x ? tb : seg[si].x + jitter * cv2.march.x;
                     continue;
                 }
-                t += 2.0 * stepF;
-                pathLen += 2.0 * stepF;
+                // Each coarse stride is 1.5-2.5 steps (2 on average), by a per-step golden sequence off the ray's
+                // jitter (2026-10-13). On a lattice offset once at the segment's start, the depth at which a ray's
+                // first samples met a smooth, dense surface still followed the surface's height with the lattice's
+                // period -- whatever the start jitter's sequence, white noise included -- and so did the light
+                // they got: evenly spaced contour rings on every anvil head and tower wall (the "wood grain", open
+                // since pass 14; user issue 20261012_235712 shot 6). A stride of its own length per step turns the
+                // lattice into a random walk within a few steps of the entry.
+                { float cj = 2.0 * stepF * (0.75 + 0.5 * fract(jitter + 0.6180340 * float(iters)));
+                  t += cj; pathLen += cj; }
                 continue;
             }
             // Rain alone (a shaft below a base) stands for FOUR steps (2026-10-04): each rain sample runs a light march,
@@ -870,7 +891,7 @@ void main()
                 uint  bj = uint((pix.x + 32) & 63) + 64u * uint((pix.y + 21) & 63);
                 float vL = full ? cv2.frame.x : floor(cv2.frame.x * (halfR ? 0.5 : 0.25));
                 jL = fract((float((cv2BlueNoise[bj >> 2u] >> (8u * (bj & 3u))) & 0xFFu) + 0.5) / 256.0
-                           + 0.7548777 * (cv2.misc2.z > 0.5 ? cv2.frame.x : vL));
+                           + 0.5385973 * (cv2.misc2.z > 0.5 ? cv2.frame.x : vL));
             }
             if (!thin)
                 lightAmbOD(rel, keyDir, up, eyeH, enuToEcef, nL, lSeg0,
@@ -891,6 +912,7 @@ void main()
                     pSSv = mix(pSSv, moonIsKey ? phIceMoon : phIceSun, f.thin);
                     pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);
                 }
+                pSSv += (moonIsKey ? phSilvM : phSilvS) * (1.0 - f.thin) * (1.0 - f.rain) * (1.0 - f.soft);
                 keyS = keyCol * powder * (pSSv * exp(-od) + pMS * msOctaves(od) * f.msBright);
             }
 
@@ -904,9 +926,16 @@ void main()
             // surface went black and the bases of every large cloud were one flat dark grey, cut off
             // from the sky-lit tops by a hard line (worst near sunset, when the key light is gone from
             // the bases and the twilight boost lifts only the tops).
-            float ambVis = 1.0, ambLow = 0.0;
+            float ambVis = 1.0, ambLow = 0.0, ambHue = 1.0;
             if (!thin) {
                 float tauUp = max(sigUp * 250.0, 0.6 * f.sigma * max(f.topH - p.h, 0.0));
+                // Sky light that has diffused down through thick cloud arrives mixed with everything else that
+                // entered the cloud (the Sun on its top and sides, which this term does not carry): white, not the
+                // zenith's blue. Its hue is kept by the share that got through unscattered-ish (the diffuse
+                // transmission). With the zenith's colour all the way down, the underside of an overcast was
+                // sky-blue wherever the ambient was strongest and warm in the creases between (the lobe
+                // occlusion): a sky-coloured noise pattern on cloud bottoms (issue 20261012_235159).
+                ambHue = 1.0 / (1.0 + 0.11 * tauUp);
                 ambVis = mix(0.7, 1.0, f.hf) / (1.0 + 0.11 * tauUp) * mix(1.0, exp(-f.sigma * 150.0), 0.3);
                 // The light from below is the GROUND's (and the horizon haze's), and the ground under a cloud is
                 // lit through that cloud: 30% from the open country around (gaps, the horizon), the rest x the
@@ -940,7 +969,9 @@ void main()
             vec3  skyNgt = moonKey * nightK * 0.03 * max(dot(up, moonDir), 0.0)
                          + kMoonColor * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z);
             // From below, the day's light is mostly neutral (ground albedo, horizon haze): 30% of the sky's hue.
-            vec3  ambS   = (skyDay * (ambVis + ambLow * 0.3) + vec3(dot(skyDay, vec3(0.2126, 0.7152, 0.0722)) * 0.7 * ambLow)
+            float skyLum = dot(skyDay, vec3(0.2126, 0.7152, 0.0722));
+            vec3  ambS   = (mix(vec3(skyLum), skyDay, ambHue) * ambVis + skyDay * (ambLow * 0.3 * ambHue)
+                         + vec3(skyLum * ambLow * (1.0 - 0.3 * ambHue))
                          + skyNgt * (ambVis + ambLow)) * f.ambient;
 
             // ── Ground bounce from below: the key light, reflected by the ground under the cloud ──

@@ -4970,10 +4970,18 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Lobe variation", &cv2LobeVar, 0.0f, 1.0f, 0.05f, "%.2f", 272},
         {"Base roughness", &cv2BaseRoughness, 0.0f, 3.0f, 0.05f, "%.2f", 150},
         {"Top-heavy (cumulus)", &cv2TopHeavy, 0.0f, 2.0f, 0.05f, "%.2f", 72},
-        {"Tower top (0 = old cones)", &cv2TowerTop, 0.0f, 0.95f, 0.01f, "%.2f", 73},
+        {"Tower top", &cv2TowerTop, 0.3f, 0.95f, 0.01f, "%.2f", 73},   // (0 = the pass-11 cones until 2026-10-13: removed)
         {"Base flatness (cumulus)", &cv2BaseFlatness, 0.0f, 1.0f, 0.05f, "%.2f", 76},
         {"Cumulus lobes (bottom)", &cv2CuLobesBottom, 0.0f, 1.0f, 0.01f, "%.2f", 244},
         {"Cumulus lobes (top)", &cv2CuLobesTop, 0.0f, 1.0f, 0.01f, "%.2f", 245},
+        // 2026-10-13 (issue 20261012_235712): tops of different heights, sheets broken into puffs, no flat ceilings,
+        // small lobes on the storm-scale ones, frayed edges.
+        {"Cumulus height variation", &cv2CuHeightVar, 0.0f, 1.0f, 0.05f, "%.2f", 289},
+        {"Cumulus break-up", &cv2CuBreakup, 0.0f, 1.0f, 0.05f, "%.2f", 290},
+        {"Cumulus top headroom", &cv2CuHeadroom, 0.0f, 2.0f, 0.05f, "%.2f", 291},
+        {"Storm cumulus fine lobes", &cv2CuFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 292},
+        {"Cb tower fine lobes", &cv2CbFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 293},
+        {"Cumulus wisps", &cv2CuWisps, 0.0f, 1.0f, 0.05f, "%.2f", 294},
     };
 
     CloudSlider secLighting[] = {
@@ -4997,6 +5005,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Light march footprint (x length)", &cv2LightFootprint, 0.0f, 0.2f, 0.005f, "%.3f", 283},
         {"Multi-scatter octaves", &cv2MsOctaves, 1.0f, 8.0f, 1.0f, "%.0f", 284},
         {"Lobe occlusion (sky light)", &cv2LobeOcclusion, 0.0f, 1.0f, 0.05f, "%.2f", 285},
+        {"Silver lining", &cv2SilverLining, 0.0f, 4.0f, 0.05f, "%.2f", 295},
     };
 
     CloudSlider secHigh[] = {
@@ -7427,6 +7436,13 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SmallCumulus = c.value("small_cumulus", cv2SmallCumulus);
         cv2ErosionVar = c.value("erosion_variation", cv2ErosionVar);
         cv2LobeVar = c.value("lobe_variation", cv2LobeVar);
+        cv2CuHeightVar = c.value("cumulus_height_variation", cv2CuHeightVar);
+        cv2CuBreakup = c.value("cumulus_breakup", cv2CuBreakup);
+        cv2CuHeadroom = c.value("cumulus_top_headroom", cv2CuHeadroom);
+        cv2CuFineLobes = c.value("storm_cumulus_fine_lobes", cv2CuFineLobes);
+        cv2CbFineLobes = c.value("cb_fine_lobes", cv2CbFineLobes);
+        cv2CuWisps = c.value("cumulus_wisps", cv2CuWisps);
+        cv2SilverLining = c.value("silver_lining", cv2SilverLining);
         cv2CirrusDirWarp = c.value("cirrus_direction_warp", cv2CirrusDirWarp);
         cv2AsDensity = c.value("altostratus_density", cv2AsDensity);
         cv2MidThick = c.value("mid_thickness", cv2MidThick);
@@ -7990,6 +8006,13 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"small_cumulus", cv2SmallCumulus},
         {"erosion_variation", cv2ErosionVar},
         {"lobe_variation", cv2LobeVar},
+        {"cumulus_height_variation", cv2CuHeightVar},
+        {"cumulus_breakup", cv2CuBreakup},
+        {"cumulus_top_headroom", cv2CuHeadroom},
+        {"storm_cumulus_fine_lobes", cv2CuFineLobes},
+        {"cb_fine_lobes", cv2CbFineLobes},
+        {"cumulus_wisps", cv2CuWisps},
+        {"silver_lining", cv2SilverLining},
         {"cirrus_direction_warp", cv2CirrusDirWarp},
         {"altostratus_density", cv2AsDensity},
         {"mid_thickness", cv2MidThick},

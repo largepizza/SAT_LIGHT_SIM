@@ -1638,6 +1638,74 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sky, and the user's "Lobe occlusion (sky light)" 1 broke it into sky-blue blobs between warm seams (ambient gain 0
   removed them; sun gain 0 left them pure blue). Bright patches' linear B/R 1.31 -> 1.18. The lobe occlusion still mottles
   the base in grey at 1 (0 = a smooth base). 128 registers, cost within noise. The far layer and the rain light have no such term.
+- **Cumulus shape pass (2026-10-13, user issues 20261012_235712 (9 shots) / _235159; `harness_runs/iss13/`, reference
+  photos in `refs/` there, not committed).** What was wrong, in `cv2FieldLow`, and what replaced it (slots 289-295,
+  `kCloudSliderSlots` 296, UBO `cu` / `cu2` appended, 928 -> 960; keys `cumulus_height_variation` 0.6,
+  `cumulus_breakup` 0.6, `cumulus_top_headroom` 0.5, `storm_cumulus_fine_lobes` 0.5, `cb_fine_lobes` 0.5,
+  `cumulus_wisps` 0.5, `silver_lining` 0.5):
+  - **Pancakes** = (a) the lobes were damped to 5-30% at the base and reached full strength 700 m up, so a cloud
+    thinner than that had none; (b) T (a cell's top) had a 0.25 floor and came from the coarse cells, one value per
+    neighbourhood; (c) a stratiform TYPE at low coverage stayed a deck: a lens km wide, a few hundred metres thick.
+    Now: `hVar` (the top varies by region, cl16, and by fine cell on shallow types; floor 0.12); `lowCov` / `flatK`
+    (a deck type other than stratus is shaped as cells where covT < 0.25-0.65: placement unchanged); the lobes are
+    read at `lobeRef` above the base (extruded down: puffs with flat bottoms) and `AshK` carves a shallow cloud in
+    proportion to its own strength.
+  - **Flat mesas ("blocky layers")**: the profile's requirement at the cell's top is 1 + 0.5 x headroom, past what a
+    column has, so tops are shaped by field + lobes instead of cut at zeta = 1.
+  - **No cauliflower ("gumdrops", "lobeless")**: as a margin the lobes moved a dome's top by tens of metres (the
+    profile is steep there). `liftK`: to first order they LIFT the upper surface by `kCv2LobeLiftM` (900 m) x their
+    strength, at most 0.7 of the cell's own thickness (uncapped, 300 m puffs took 300 m bumps and a clean cumulus
+    field broke into shreds). Deep convection read ONLY the storm-scale volume (12x at the user's settings: 10 km
+    lobes): now BIG lobes = the storm volume read at 2x its coordinates (5 / 2.6 / 1.3 km at 12x; an anchored
+    coordinate may only be multiplied by an INTEGER, or the tile jumps when the observer crosses a period), x2.5, PLUS
+    the cumulus-scale lobes on their crowns (`cu.w`); `bigL` gives the same to any convective cloud thicker than
+    ~1.2-3.5 km at 0.7 (a tall cumulus was a cone stuck with equal 0.5-km balls: the cumulus volume's strongest octave
+    is one size). Tried: the storm scale itself on thick cumulus (smooth blobs); a third, 4x finer fetch and a
+    per-cell height variation for deep types by the cell volume's Perlin channel (219 registers each). The Cb towers (`cv2ColumnSigma`) take the same fine volume as a third pass of their one fetch
+    site (`Af`, `kCv2ColFineM` 500 m x `cu2.x`; the storm coordinates x round(storm.x), no flow).
+  - **Out-of-focus near clouds**: a weak cell never left the foot of the one density ramp (`form.w`). `phK` / `phP`:
+    the ramp steepens with 1 / the cell's strength ABOUT the level the erosion cuts at (steepened about zero, every
+    small cloud grew by the margin the erosion removes and a broken field closed into a sheet); the edge sharpening
+    is x3 by an 8-m footprint (from 80 m) and the detail's fine octave gets +0.35 share there.
+  - **Wisps** (`cu2.y`): erosion x1.7 and the sharpening released on weak cells (e < 0.05-0.3) and on the parts of
+    a formed cloud the shape volume's Perlin channel picks. x2.5 erased most of a fair-weather field.
+  - **Silver lining** (`cu2.z`, march): + 0.12 x HG(g 0.92) on single scattering, water cloud only (x (1 - thin)
+    (1 - rain) (1 - soft): on the mid layer's sheets across the Sun it was a blown-out glare).
+  - **Contour rings on anvil heads and tower walls** (the "wood grain", open since pass 14; shot 6's "odd texturing,
+    a different material"): evenly spaced bands of light following the surface's height, a few per km. NOT the lobes
+    (lobes 0 kept them), the shadow lattices, the light jitter, the sub-texel jitter, the density terms or the
+    coarse-to-fine hand-off (each tested as a march variant, `harness_runs/iss13/m_*.comp`): they survived even a
+    white-noise start jitter, vanished at 15-m view steps or with "Light march footprint" 0.08 (the user runs 0), and
+    grew with more light steps. What removed them: **each coarse stride is 1.5-2.5 steps** (2 on average), by a
+    per-step golden sequence off the ray's jitter (`cj` in the march's coarse branch), so the lattice is a random walk
+    a few steps past the entry instead of one lattice offset once. Why the start jitter alone left a height-periodic
+    bias was not explained. Also: the four per-visit offsets (sub-texel x 2, start jitter, light jitter) now step by
+    the four R4 constants (the light jitter and the sub-texel x shared 0.7549: locked together for ever). With the
+    high layer over a head a finer moire remains at 12 light steps (the cirrus fibres' shadow), faint at 7.
+    cv2ShapeSmooth's terraces (zero slope at texel centres) were suspected and are NOT the cause (a two-tap
+    half-texel average changed nothing: reverted).
+  - **Decks:** the lobe lift applies to a deck's top too (up to ~100 m), and stratocumulus (a deck type that is half
+    convective) takes x2.4 on "Lobes (3D)": its tops were smooth mounds.
+  - **Registers:** with the shape terms the march went to 222 whatever was folded, reordered or switched off one at a
+    time (31 partial-fold variants, six one-feature variants: all 220-224). What brought 128 back was REMOVING code:
+    the pass-14 deep cores (`deepCol`, drawn only with "Cb columns" 0) and the pass-11 "old cones" (`legacy`, Tower
+    top 0). Both are gone ("Tower top" is 0.3-0.95; with the columns off a storm is tall congestus). The 128 state is
+    the one under MORE allocation pressure (its binary is ~306 KB against ~300 KB): folding post-fetch maths into
+    pre-fetch scalars did not help. `harness_runs/iss13/regs.py` + `var.py` build text-substituted variants of
+    clouds_v2.glsl and print each one's Register Count in one live batch.
+  - **Cloud bottoms (issue _235159):** the "sky-coloured noise pattern" under an overcast at a low Sun was the lobe
+    occlusion modulating ONLY the sky ambient (blue lobes, Sun-coloured creases). (1) the occlusion also dims the
+    multiple-scattering sunlight toward the base (`f.msBright *= mix(min(occL, 1), 1, hf)`: on sunlit tops the creases
+    went dirty grey); (2) `ambHue`: sky light that came down through
+    thick cloud keeps its hue by the diffuse transmission 1 / (1 + 0.11 tauUp), the rest arrives white.
+  - **Measured** (RTX 3070 Ti, 1600x900, the nine shots, GPU total): 19.8-22.5 ms after vs 21.2-24.8 before, 128
+    registers. tstab at shot 5 (walk 6.4 km/s, pitch, rise; motion vs settled): 1.45 -> 1.88 (walk 1.79 -> 2.57, rise 1.84 -> 2.07,
+    pitch 0.71 -> 1.00, floor 0.31 -> 0.47; the near-field edge tightening at x4 was 0.5 of the walk's loss, hence x3): more relief is more to get wrong while moving; no single slider recovers it (wisps, break-up, fine
+    lobes, height variation off: 2.77-2.92; edge sharpness 1.5: 2.51). Looking down from 3 km .. 1500 km the placement
+    is the same; from ~40 km a broken field shows more small cloud than before (weak cells are now opaque).
+  - Open: a tower's flared head and the map-fed anvil are still smooth (their lobes are the user's "Cb head lobes");
+    stratus at full coverage seen edge-on is still a slab; near clouds have nothing finer than the detail volume's
+    24-m cells.
 - **The blue-noise tile drawn over half-shadowed cloud, and shadows only near the eye (2026-10-12, user issues
   20261012_202341 / _195811; Sun 0.1-0.9 deg, light footprint 0, accumulation 0, history weight 0.02):**
   - **The resolve's still-view clamp box is 7x7 new samples** (`cloud_v2_resolve.comp`, `stillW`, motionPx < 0.05-0.5),
@@ -4625,6 +4693,11 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
     item (5) above, but ONLY when still, so climbing is untouched (p37 1.65 / e38 rise 1.08, boost 0.68). Still
     flicker r35 0.57 -> 0.31% (worst pixel std 103 -> 34), others unchanged; time-averaged image |diff| 0.13/255.
     What is left on r35 is the EMA sawtooth of glitter points caught by one jitter phase in 16.
+  - **Storm sea trails need RAIN and a slow eye (2026-10-13, issue 20261012_235712 shot 7):** the trail share
+    (sat_sky.frag `gTaaSeaTrail`) is x smoothstep(0.1, 0.4, `gSeaRain`) — the map's rain over that point of the sea,
+    the march's own rule, set by `oceanSeaState` — and the resolve fades it over 1-4 px of parallax. On any stormy
+    sea, unclipped and held at the still weight "moving or not", the history was whatever stood over the water a
+    frame ago: boosting at 22 km/s the clouds were dragged across the sea in stepped copies.
   - **"Still" / "frozen" come from the sim time itself (2026-10-06, `skyTaaPrevSimT`):** frozen (`eyeDelta.w` 3) =
     sim time did not change since the last resolve, still (2) = it moved at most 1.5x the frame step. They read
     `timePaused` and the time scale, but a cinematic holds `timePaused` while it sets sim time every frame (so does

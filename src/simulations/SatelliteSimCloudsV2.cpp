@@ -971,7 +971,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CbHeadDriftKm, cv2CbLobes, cv2CbHeadLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
                     cv2DustHeightM, cv2DustDensity, (float)(debugDisableMask & 2048u),
                     cv2LightFootprint, cv2SmallCumulus, cv2ErosionVar, cv2LobeVar, cv2CirrusDirWarp, cv2AsDensity, cv2MidThick, cv2MidShadow,
-                    cv2MidFieldKm, cv2MidCover, cv2SunCascadeRangeKm, cv2MsOctaves, cv2LobeOcclusion})
+                    cv2MidFieldKm, cv2MidCover, cv2SunCascadeRangeKm, cv2MsOctaves, cv2LobeOcclusion,
+                    cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -1145,7 +1146,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                                  (float)(1.0 / flowP));
         p.flow = glm::vec4((float)(std::clamp((double)cv2FlowWarp, 0.0, 0.1) * flowP),
                            std::clamp(cv2LayerSpread, 0.0f, 1.0f),
-                           std::clamp(cv2TopHeavy, 0.0f, 2.0f), (cv2TowerTop <= 0.0f ? 0.0f : std::clamp(cv2TowerTop, 0.3f, 0.95f)));
+                           std::clamp(cv2TopHeavy, 0.0f, 2.0f), std::clamp(cv2TowerTop, 0.3f, 0.95f));
     }
 
     {
@@ -1335,6 +1336,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                            1.0f - std::clamp(cv2MidShadow, 0.0f, 1.0f), 0.057f * cv2MidCover);
         p.mid3 = glm::vec4(cv2MidFieldKm > 1.0f ? 1.0f / (1000.0f * cv2MidFieldKm) : 0.0f,
                        std::round(std::clamp(cv2MsOctaves, 1.0f, 8.0f)), std::clamp(cv2LobeOcclusion, 0.0f, 1.0f), 0.0f);
+        p.cu  = glm::vec4(std::clamp(cv2CuHeightVar, 0.0f, 1.0f), std::clamp(cv2CuBreakup, 0.0f, 1.0f),
+                          std::clamp(cv2CuHeadroom, 0.0f, 2.0f), std::clamp(cv2CuFineLobes, 0.0f, 2.0f));
+        p.cu2 = glm::vec4(std::clamp(cv2CbFineLobes, 0.0f, 2.0f), std::clamp(cv2CuWisps, 0.0f, 1.0f),
+                          std::clamp(cv2SilverLining, 0.0f, 4.0f), 0.0f);
         p.samp = glm::vec4(std::clamp(cv2SampAccum, 0.0f, 256.0f), std::clamp(cv2SampNewSmooth, 0.0f, 1.0f),
                            std::clamp(cv2SampClampSd, 0.25f, 8.0f), std::clamp(cv2LightFootprint, 0.0f, 0.5f));
         p.sunCasc2 = glm::vec4(on ? std::clamp(((float)cv2CascFrames - 33.0f) / 8.0f, 0.0f, 1.0f) : 0.0f,

@@ -771,6 +771,7 @@ struct GpuCloudV2Params
     glm::vec4 sunCasc4, sunCasc5;   // the shaft lattice (clouds_v2.glsl)
     glm::vec4 tune, mid2, mid3, samp;   // 2026-10-11 (clouds_v2.glsl)
     glm::vec4 sunCasc6, sunCasc7;       // 2026-10-12: the shaft lattice's second ring + both rings' cells
+    glm::vec4 cu, cu2;                  // 2026-10-13: the cumulus shape (clouds_v2.glsl)
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -787,7 +788,8 @@ static_assert(offsetof(GpuCloudV2Params, rainMotion) == 288 + 48 * kCloudV2Types
 static_assert(offsetof(GpuCloudV2Params, beamEye) == 288 + 48 * kCloudV2Types + 688, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, sunCasc0) == 288 + 48 * kCloudV2Types + 736, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, sunCasc6) == 288 + 48 * kCloudV2Types + 896, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 928, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, cu) == 288 + 48 * kCloudV2Types + 928, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 960, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -3164,6 +3166,14 @@ private:
     int    cv2Shaft2Frames = 0;
     float  cv2ShaftCellUsed[2] = {0.0f, 0.0f};     // the cells the rings were last baked with (a change refills them)
     // 2026-10-11 (clouds_v2.glsl tune / mid2 / mid3 / samp; slots 270-282).
+    // 2026-10-13 (issue 20261012_235712, slots 289-295, UBO cu / cu2): the cumulus shape.
+    float cv2CuHeightVar = 0.6f;          // "Cumulus height variation": each cloud's top varies by this (x) across a field
+    float cv2CuBreakup = 0.6f;            // "Cumulus break-up": the lobes' strength at the base (shallow sheets break into puffs)
+    float cv2CuHeadroom = 0.5f;           // "Cumulus top headroom": how far the tops stay under the type's ceiling (0 = cut flat at it)
+    float cv2CuFineLobes = 0.5f;          // "Storm cumulus fine lobes": the cumulus-scale lobes kept on deep convection's storm-scale ones
+    float cv2CbFineLobes = 0.5f;          // "Cb tower fine lobes": the same on the towers
+    float cv2CuWisps = 0.5f;              // "Cumulus wisps": erosion concentrated at the cloud's edge (frayed edges, solid cores)
+    float cv2SilverLining = 0.5f;         // "Silver lining": the narrow forward lobe on thin edges toward the Sun
     float cv2SmallCumulus = 0.06f;        // the near field makes low puffs this far under the coverage threshold (field units)
     float cv2ErosionVar = 0.6f;           // erosion strength and grain vary by region (0 = uniform)
     float cv2LobeVar = 0.5f;              // the lobes' strength varies by region (0 = uniform)
@@ -5261,7 +5271,8 @@ private:
     bool draggingPhoto[38] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 289;   // 286-288 (2026-10-12): cloud shadow rings; 270-282 (2026-10-11): small cumulus, erosion / lobe variation, mid layer x5, cirrus warp, sampler x3, far shadow range
+    static constexpr int kCloudSliderSlots = 296;   // 289-295 (2026-10-13): the cumulus shape
+    // was 289:   // 286-288 (2026-10-12): cloud shadow rings; 270-282 (2026-10-11): small cumulus, erosion / lobe variation, mid layer x5, cirrus warp, sampler x3, far shadow range
     // (was 270:)   // 261-266 rain particles (count, shutter, fall speed, wind, storm wind, gusts)
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
                                  // idx 90 the ocean Milky Way reflection gain (2026-09-08),

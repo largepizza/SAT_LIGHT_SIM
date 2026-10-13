@@ -2499,13 +2499,17 @@ float seaMapDetail(vec2 posM, float pHeight, float seaTime) {
 // the weather cube over ~40 km (storms: cover x convective type, and rain), the westerly belts (the roaring
 // forties/fifties) and a slow regional wind. dE = the point's ECEF direction. Scaled by "Sea state from
 // weather" (cloud.oceanState.z: 0 = always 1).
+// The map's rain over this point of the sea (~40 km, the march's own rain rule): the sky TAA's storm trails.
+float gSeaRain = 0.0;
 float oceanSeaState(vec3 dE) {
     float g = cloud.oceanState.z;
+    gSeaRain = 0.0;
     if (g <= 0.0) return 1.0;
     float dph  = cloud.cloudPhase * cloud.layers[0].driftMult;
     vec3  dMap = vec3(dE.x * cos(dph) - dE.y * sin(dph), dE.x * sin(dph) + dE.y * cos(dph), dE.z);
     vec4  w    = textureLod(earthCloudsCube, dMap, 3.0);
     float storm = smoothstep(0.45, 0.85, w.r) * (0.35 + 0.65 * smoothstep(0.35, 0.8, w.g)) + 0.6 * w.b;
+    gSeaRain = max(w.b, smoothstep(0.75, 1.0, w.r) * (0.3 + 0.7 * smoothstep(0.55, 0.9, w.g)));
     float latA  = abs(dE.z);                                   // sin |lat|
     float belt  = smoothstep(0.5, 0.71, latA) * (1.0 - smoothstep(0.87, 0.94, latA));   // ~30-45 .. 60-70 deg
     float wind  = 0.5 + 0.28 * sin(3.1 * dE.x + 5.0 * dE.y + 1.3) + 0.22 * sin(4.7 * dE.z - 2.3 * dE.x + 0.4);
@@ -4977,7 +4981,9 @@ void main() {
             gSeaAmp    = seaState;
             gSeaChoppy = clamp((seaState - 1.0) * 1.2, -1.2, 2.0);
             // Rough seas: the westerly belts reach ~1.4-1.55 (a light touch here), storms 2-4 (full; oceanSeaState).
-            gTaaSeaTrail = cloud.cityLod2.w * smoothstep(1.3, 1.9, seaState) * altFadeW;
+            // Only where it RAINS (issue 20261012_235712 shot 7): on every stormy sea the kept history dragged the
+            // clouds above it across the water whenever the eye moved.
+            gTaaSeaTrail = cloud.cityLod2.w * smoothstep(1.3, 1.9, seaState) * smoothstep(0.1, 0.4, gSeaRain) * altFadeW;
             // Shore (2026-09-30): the distance to the height function's waterline, near a shore and near the
             // observer. The waves shoal (damped over the last ~200 m: at full chop their crests stood metres
             // above a beach that rises 0.25 m/m, a hard seam seen from the water), surf lines roll in, and the

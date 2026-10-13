@@ -23,6 +23,8 @@
 // and the sea-level projection are formed without cancellation (see cv2Pos). This is the terrain
 // detail's scheme, and the reason nothing swims or pixelates far from the origin.
 
+const float kCv2ColFineM  = 500.0;   // the Cb towers' fine lobes: their displacement of the wall (m) at "Cb tower fine lobes" 1
+const float kCv2LobeLiftM = 900.0;   // the lobes' lift of a convective cloud's top (m per unit of lobe strength)
 const int CV2_NUM_TYPES = 5;   // stratus, stratocumulus, cumulus, congestus, cumulonimbus
 
 struct CV2Type {
@@ -87,7 +89,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  flow;           // x flow displacement (m per unit of the normalised field), y layer spread
     vec4  anchorCol;      // the Cb towers' lobe noise (2026-10-10): xyz the storm shape anchor WITHOUT the wind's
                           // slide (period = anchorStorm.w), w the phase 0..1 of the towers' flow (cv2ColumnSigma)
-    vec4  column;         // x Cb column amount (0 = the pass-14 deep cores in the low layer), y lattice
+    vec4  column;         // x Cb column amount (0 = no towers: a storm is tall congestus), y lattice
                           // cell (m), z column base radius (m), w the low layer's top in storm regions (m)
     vec4  column2;        // x waist (x the base radius), y head flare (x the base radius), z head drift
                           // downwind (m), w lobe strength (fraction of the radius)
@@ -158,6 +160,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // sunCasc6: as sunCasc4 for it. sunCasc7: x the weight of a new bake in its rays' running mean (0 = off),
     // y its knot spacing along the Sun (m), z ring 1's cell (m), w ring 2's cell (m).
     vec4  sunCasc6, sunCasc7;
+    // 2026-10-13 (issue 20261012_235712), the cumulus shape. cu: x "Cumulus height variation", y "Cumulus break-up"
+    // (the lobes' strength at the base), z "Cumulus top headroom", w "Storm cumulus fine lobes". cu2: x "Cb tower fine
+    // lobes", y "Cumulus wisps", z "Silver lining" (march), w spare.
+    vec4  cu, cu2;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -743,16 +749,21 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     //         it keeps a turret over each cell.
     // (Deep towers were tried with straighter walls, 0.9 z^1.8: that extruded the 2D field into
     // vertical flutes. They are wide via the coarse cells; the profile shapes them.)
-    // flow.w (Tower top) 0 = the pass-11 shape (cones: g = z^1.2, each column its own top), for A/B.
-    bool  legacy = cv2.flow.w <= 0.0;
-    float T      = legacy ? max(pow(e, 0.83), 0.05)
-                          : cv2.flow.w * clamp(max(pow(eB, 0.83), 0.6 * pow(e, 0.83)), 0.25, 1.0);
-    // Deep convection runs the full span, up to the anvil (cv2AnvilSigma sits under the same top):
-    // capped at "Tower top" the anvil floated free of its column (user, pass 12).
-    // Only strong cores: every deep cell at full height filled the storm with cloud (56 ms frames
-    // inside a Cb field, 15 before).
-    float deepCol = (legacy || colOn) ? 0.0 : deep * smoothstep(0.5, 0.9, eB);
-    T = mix(T, 1.0, deepCol);
+    // "Cumulus height variation" (cu.x, issue 20261012_235712): a field's clouds are not all one height. The top
+    // varies by region (~1/16 of the cluster period) and by cell (each fine cell a turret of its own height), and
+    // the floor falls from 0.25 to 0.12 of the span, so a weak cell is a small puff. With one T per neighbourhood
+    // and a 0.25 floor, a region of low coverage was sheets of one thickness: "pancakes".
+    // (By cell on shallow types only: deep convection's coarse cells drew the towers out into fins.)
+    float hVar   = 1.0 + cv2.cu.x * (0.5 * clamp((cl16.a - 0.5) * 9.0, -1.0, 1.0) + 0.9 * (cells - 0.55) * (1.0 - deep));
+    // A deck is a deck only where the sky is mostly covered: a stratiform type at low coverage is patches of
+    // shallow cumulus (humilis, the broken edge of a stratocumulus sheet), shaped as cells with lobes like any
+    // other. Kept flat, a region of low coverage was smooth lens-shaped sheets kilometres wide and a few
+    // hundred metres thick ("pancakes", issue 20261012_235712 shot 1). Placement is unchanged.
+    // (Not stratus: its thin, torn sheets are right as they are; as cells they came out as smooth blobs.)
+    float lowCov = (1.0 - smoothstep(0.25, 0.65, covT)) * cv2.cu.y * smoothstep(0.1, 0.5, ty.look.z);
+    float flatK  = ty.alt.z * (1.0 - lowCov);
+    float T      = max(cv2.flow.w, 0.05) * clamp(max(pow(eB, 0.83), 0.6 * pow(e, 0.83)) * max(hVar, 0.3),
+                                               mix(0.25, 0.12, cv2.cu.x), 1.0);
     float zeta   = z / T;
     // (A smooth min: min() creased the surface where the two cross, and sqrt(cells) is a cliff at
     // each blob's rim — both drew flat, rock-like facets.)
@@ -769,65 +780,121 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     float req0   = reqMin + cv2.flow.z * mix(0.15, 0.3, deep) * smoothstep(0.05, 0.4, eB) * tallC;
     float uC     = min(zeta / zmC, 1.0) - 1.0;                  // -1 at the base .. 0 at zm
     float vC     = max(zeta - zmC, 0.0) / (1.0 - zmC);          // 0 at zm .. 1 at the top
-    float reqC   = legacy ? pow(z, 1.2)
-                          : reqMin + (req0 - reqMin) * uC * uC + (1.0 - reqMin) * vC * vC;
-    // A cumulonimbus is concave: wide at the base (the inflow), narrowing to a waist through the
-    // middle, flaring out again under the tropopause into the anvil, flat-lidded at the top. The
-    // waist's requirement is where only the core stands; the flare's is low, so the column's upper
-    // part spreads toward the anvil's extent. "Top-heavy" scales the waist.
-    if (deepCol > 0.0) {
-        float rWaist = 0.55 + 0.2 * cv2.flow.z;
-        float reqD   = 0.12 + (rWaist - 0.12) * smoothstep(0.0, 0.45, zeta)
-                     - (rWaist - 0.25) * smoothstep(0.62, 0.9, zeta)
-                     + 4.0 * max(zeta - 0.97, 0.0) / 0.03;
-        reqC = mix(reqC, reqD, deepCol);
-        // The HEAD (pass 13, the user's mushroom reference): above the waist the column is compared
-        // against a much wider strength (the cells ~6 mips coarse, ~the storm's extent) read up to
-        // 15 km upwind, i.e. displaced downwind: the requirement falls from the waist to the flare as
-        // it rises, so the head widens upward past its own column and overhangs downwind — a curved
-        // underside sloping up and out. Against the column's own field the flare could not spread
-        // beyond its cell, and the storms were towers without heads.
-        float headW = smoothstep(0.55, 0.8, zeta) * deepCol;
-        if (headW > 0.0) {
-            vec3  mh  = mp - eastW * (15000.0 * smoothstep(0.55, 1.0, zeta));
-            float cW  = cv2MesoSmoothG(cv2.anchorCell.xyz + mh * cv2.anchorCell.w, max(lodCell, 5.0));
-            float eW  = clamp((0.15 + 0.85 * sqrt(min(cW * 2.2, 1.0)) * mix(0.6, 1.0, cl.r) - (1.0 - cov)) / 0.55,
-                              0.0, 1.0);
-            eS = mix(eS, max(eS, eW), headW);
-        }
-    }
+    // The lobes LIFT the cloud's upper surface by a height in metres (kCv2LobeLiftM x their strength), whatever
+    // the cell's size: to first order, the profile's slope there x the lift. As a margin alone they moved a
+    // dome's top by a few tens of metres (the profile is steep near the top), and every cumulus seen from a
+    // distance was a smooth mound ("gumdrops", no cauliflower: issue 20261012_235712).
+    // (At most 0.7 of the cell's own thickness per unit: a small cloud has small lobes. Uncapped, a 300 m puff took
+    // 300 m bumps and a field of clean cumulus broke up into scattered shreds.)
+    float thickM = T * max(topMax - base, 1.0);
+    float liftK  = 2.0 * (1.0 + 0.5 * cv2.cu.z - reqMin) * min(vC, 1.3) / (1.0 - zmC) * min(kCv2LobeLiftM / thickM, 0.7)
+                                * (1.0 - flatK);
+    float reqC   = reqMin + (req0 - reqMin) * uC * uC + (1.0 + 0.5 * cv2.cu.z - reqMin) * vC * vC;
+    // ("Cumulus top headroom", cu.z: the strength needed AT the cell's top is past what a column has, so the top is
+    // shaped by the field and the lobes all the way up. At 1.0 every strong column reached zeta = 1 and the tops of
+    // a dense field were cut flat at one level: mesas, "blocky layers".)
+    // (2026-10-13: the pass-14 deep CORES of this layer, the towers drawn here while "Cb columns" was 0 -- a full-span
+    // column with a waist and a head read from the cells -- are gone, with the pass-11 "old cones" (Tower top 0). Both
+    // were A/B relics, and their code kept the march on the slow side of its register cliff once this pass's shape
+    // terms were added: 222 registers with them, 128 without. With the column layer off a storm is tall congestus.)
     // A deck's top, in its span: thin parts glow from below, thick parts go dark (from below an
     // overcast is seen by the light it transmits, so its thickness IS its texture).
     float zTop   = clamp(0.75 + 0.3 * deckVar, 0.4, 1.0);
     float gStrat = 1.2 * smoothstep(0.3, 1.0, z / zTop);
+    // A deck's top is lifted by the lobes too (up to ~100 m: stratocumulus tops are lumpy, not a lens's skin).
+    {
+        float uD = clamp((z / zTop - 0.3) / 0.7, 0.0, 1.0);
+        liftK += flatK * 7.2 * uD * (1.0 - uD) / (0.7 * zTop) * min(600.0 / max(topMax - base, 1.0), 0.6);
+    }
     // In e units (the stratiform margin keeps the raw strength: a deck's thickness follows it).
-    float m0     = mix((legacy ? e : eS) - reqC, e - gStrat, ty.alt.z);
+    float m0     = mix(eS - reqC, e - gStrat, flatK);
     float fpFade = mix(1.0, 0.3, smoothstep(100.0, 800.0, fpM));   // sub-pixel lobes average away
     // Convective lobes are 2.5x stronger with the profile: the reference's shapes come from its 3D
     // noise thresholded by a soft coverage, and here the 2D field's steep edge dominated — the lobes
     // moved a cell's side by ~100 m, so every cloud was its 2D outline extruded (flat faces).
     // Review 22: on convective types the lobes TAPER up the cell, "Cumulus lobes (bottom)" to "(top)"
     // (form.x units): strong bulges low, a smoother head. Until then they grew 0.8 -> 1.25x upward.
-    float convW  = legacy ? 0.0 : ty.look.z * (1.0 - ty.alt.z);
+    float convW  = mix(ty.look.z, 1.0, lowCov) * (1.0 - flatK);
     float lobeH  = mix(cv2.farLight.z, cv2.farLight.w, smoothstep(0.2, 0.9, zeta));
     // "Lobe variation" / "Erosion variation" (tune.z / .y): by region (the cluster Perlin at ~1/4 of its
     // period, +-2 sd -> +-1), some clouds are smooth and big-lobed, others small-lobed and finely broken (ONE value: a second,
     // carried down to the erosion, put the march at 222 registers): one lobe size and one
     // erosion everywhere made every cloud the same popcorn.
     float rV     = clamp((cl4.a - 0.5) * 9.0, -1.0, 1.0);
-    float lobeK  = mix(cv2.form.x, lobeH, convW) * mix(0.5, 1.0, ty.look.z) * fpFade
-                 * (legacy ? 1.0 : mix(1.0, 2.5, convW)) * max(1.0 + cv2.tune.z * rV, 0.1);
+    // (Stratocumulus, a deck type that is half convective: x2.4 on the deck's own lobes. Its tops were smooth mounds.)
+    float lobeK  = mix(cv2.form.x * (1.0 + 4.0 * ty.look.z * flatK), lobeH, convW) * mix(0.5, 1.0, max(ty.look.z, lowCov)) * fpFade
+                 * mix(1.0, 2.5, convW) * max(1.0 + cv2.tune.z * rV, 0.1);
     // Sub-pixel cells: thresholding the mip-averaged field would erase them (the average sits
     // below the threshold), so where a cell is smaller than the footprint the presence becomes the
     // fraction of area covered — a haze of the right opacity instead of nothing, or aliasing dots.
     // Starts at a 2x footprint (it began at 3x: from orbit the barely resolved cells read as salt).
     float subPix = smoothstep(1.0, 3.0, cv2Lod(fpM, cv2.anchorCell.w)) * ty.look.z;
+    // Everything the shape fetch does not change is folded into a few scalars BEFORE it: what stays alive across
+    // the fetches decides the march's register allotment (128 or ~222, the second 20-60% slower; the first cut of
+    // this pass, with the same maths written after the fetch, was at 223).
+    // BIG lobes with the cumulus-scale ones on their crowns, for deep convection and (at 0.7) for any convective
+    // cloud thicker than ~1.2-3.5 km: the storm volume read 2x finer. A tall cumulus read only the cumulus-scale
+    // volume, whose strongest octave is ONE size of ball: a cone stuck all over with equal ~0.5 km balls ("popcorn";
+    // shots 5, 8). Thin clouds keep the small lobes alone ("not so many lobes for smaller clouds").
+    float bigL   = max(deep, 0.7 * smoothstep(1200.0, 3500.0, thickM) * convW);
+    float aBase  = max(mix(0.3, 0.05, cv2.high2.w), cv2.cu.y * max(convW, 0.5 * flatK));
+    float aRamp  = mix(clamp(1.2 * thickM, 150.0, 700.0), 250.0, flatK);
+    float lobeKL = lobeK * mix(mix(0.4, 1.0, smoothstep(0.0, 0.25, e)), 1.0, flatK) * (1.0 + liftK);
+    // A SHALLOW cloud is carved by the lobes in proportion to its own strength (cu.y): troughs cut it through to
+    // the base, crests stand as puffs about as wide as they are tall. An additive lobe moves a sheet's top by a few
+    // metres and its edge by a few tens: the sheet stayed a smooth lens. (A deck's thin margin, where its strength
+    // runs out, frays the same way: it tapered to a knife edge.)
+    float AshK   = cv2.cu.y * 1.5 * min(eS, e) * fpFade * max(convW, flatK * ty.look.z)
+                                * mix(1.0 - smoothstep(300.0, 1200.0, thickM), 1.0 - smoothstep(0.2, 0.6, e), flatK);
+    // "Cumulus break-up" (cu.y): in the cloud's lowest part the lobes are read at one height (lobeRef above the
+    // base), i.e. extruded straight down to the base: they can cut a shallow cloud through to its base, into puffs
+    // with flat bottoms, where lobes that vary with height would dimple the base. Until then the lobes were damped
+    // to 5-30% at the base and reached full strength 700 m up, so a cloud thinner than that had none at all.
+    float lobeRef = clamp(0.35 * thickM, 60.0, 400.0) * convW * cv2.cu.y;
+    // The sub-pixel cells' haze, in the mesoscale presence's patches (their mean is still ~cov).
+    // Review 19: the share of the pixel the unresolved cells cover — the field (its cells now at their mip:
+    // ~their mean) against the threshold, spread by the variance the mip averaged away (~0.2 of field units
+    // for fully sub-pixel cells). It replaced a Perlin/morphology presence of its own (a second placement).
+    float sigU    = 0.03 + 0.2 * smoothstep(0.0, 3.0, lodCell);
+    float presFar = clamp(0.5 + (xe + cv2.tune.x * (1.0 - smoothstep(0.0, 3.0, lodCell))) / (2.5 * sigU), 0.0, 1.0);
+    float PhSub = presFar * 0.8 * clamp((mix(0.2 + 0.4 * covT, 1.0, flatK) - z) * cv2.form.w, 0.0, 1.0)
+                * smoothstep(0.0, 150.0, hb);
+    // Height within THIS column (for the lighting terms and billowing): the column's own top.
+    // (Convective: the CELL's top T, so hf runs 0..1 up the cloud, not up each column's own cone.)
+    float hf     = clamp(z / max(mix(T, zTop * 0.85, flatK), 0.05), 0.0, 1.0);
+    f.hf       = hf;
+    f.msBright = ty.look.x;
+    f.ambient  = ty.look.y;
+    f.deck     = strat * smoothstep(0.6, 1.0, e);
+    // The deck's upper envelope (a lumpy top reaches ~zTop): the grazing-light shadow measures the
+    // depth below it, and a mean top made every trough between the lumps black at sunrise.
+    f.topH     = base + mix(T * 1.1, zTop, flatK) * (topMax - base);
+    // Erosion: base = bite the lumps (torn, wispy); higher up = bite the cracks, keep the lumps (billows). Deep
+    // convection keeps storm.y of it and bites far fewer cracks (dark veins over every storm otherwise).
+    float billow = ty.shape.z * smoothstep(0.05, 0.4, hf) * (1.0 - 0.7 * deep);
+    float erK    = ty.shape.y * cv2.look.z * mix(1.0, cv2.storm.y, deep) * max(1.0 - 0.6 * cv2.tune.y * rV, 0.1);
+    float erBase = mix(1.0, 1.0 - 0.7 * cv2.high2.w, ty.look.z);
+    // "Cumulus wisps" (cu2.y): where a cloud is evaporating its edge is ragged and soft, where it grows it is hard.
+    // Small, weak clouds (fractus) are wispy all round; a formed cloud on the parts the shape volume's Perlin
+    // channel picks (hundreds of metres to a km: one flank, a trailing shelf). There the erosion is 1.7x and the
+    // edge sharpening is let go, so the detail noise tears the surface into shreds instead of dimpling it.
+    float wispE  = cv2.cu2.y * (1.0 - smoothstep(0.05, 0.3, e)) * (1.0 - deep);
+    // The surface's softness scales with the cloud: a small cell (low strength) reaches full density over its own
+    // smaller margin. With one ramp for all (form.w), a small cumulus never left the ramp's foot: a translucent,
+    // fuzzy blob whatever the edge sharpness, where a real one is as white and hard-edged as a large one.
+    // The ramp steepens ABOUT the level the erosion cuts at (~half its strength), so the cloud's outline stays where
+    // it was: steepened about zero, every small cloud grew by the margin the erosion used to remove, and a field of
+    // separate cumulus closed up into a sheet.
+    float phK     = cv2.form.w / mix(1.0, clamp(eS, 0.3, 1.0), convW);
+    float phP     = 0.5 * erK * (1.0 - phK / cv2.form.w);
+    // Denser upward (cloud water grows with height); precipitation loads the base.
+    float sigK   = mix(0.6, 1.0, smoothstep(0.0, 0.4, hf)) * (1.0 + w.b * ty.look.w * (1.0 - hf)) * ty.shape.x * cv2.look.y;
     {
         // Before the shape fetch, bounded as if the base bumps lifted this point all the way (the
         // gBase and the lobe damping only fall with height): the lobes add at most ~0.6 x 1.25 lobeK.
         float hbMax = hb + 2.2 * baseAmp;
         float gB    = 0.3 * (1.0 - smoothstep(0.0, 350.0, hbMax));
-        if (m0 - gB * gB / 0.3 + lobeK * (legacy ? 0.6 : 0.75) <= 0.0 && subPix <= 0.0) return f;
+        if (m0 - gB * gB / 0.3 + lobeK * 0.75 * (1.0 + (1.5 + 0.4 * cv2.cu.w) * bigL) * (1.0 + liftK) + cv2.cu.y * 1.2 <= 0.0 && subPix <= 0.0) return f;
     }
 
     // The shape volume tiles, and a sphere slices it: wherever the local horizontal plane holds a short lattice
@@ -837,19 +904,29 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // at the observer, clear of such alignments (a pure function of position and time; a change of frame reshapes
     // the lobes, never where the clouds are). Tried: a per-sample warp breaking the lattice (Perlin or analytic)
     // flipped this function to ~220 registers (+5-9 ms); a cross-fade between two frames cost 0.7 ms while idle.
-    vec3  rSA = mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz) * rS;
+    vec3  rSA = mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz) * (rS + wd * max(lobeRef - hb, 0.0));
     vec4  s   = textureLod(cv2ShapeTex, cv2.anchorShapeA.xyz + rSA * cv2.anchorShape.w,
                            cv2Lod(fpM, cv2.anchorShape.w));
+    float lobes = (s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47;
     // Deep convection's lobes are storm.x times larger: at the cumulus scale a 12 km storm was a
     // pile of small bubbles, a "mountain" rather than towers.
-    if (deep > 0.02) {
-        vec4 s2 = textureLod(cv2ShapeTex, cv2.anchorStormA.xyz + rSA * cv2.anchorStorm.w,
-                             cv2Lod(fpM, cv2.anchorStorm.w));
+    if (bigL > 0.02) {
+        // (x2 of the storm anchor -- an integer, so the tile stays in register: lobes of 5, 2.6 and 1.3 km at 12x.)
+        vec4 s2 = textureLod(cv2ShapeTex, (cv2.anchorStormA.xyz + rSA * cv2.anchorStorm.w) * 2.0,
+                             cv2Lod(fpM, cv2.anchorStorm.w * 2.0));
+        // "Storm cumulus fine lobes" (cu.w): the cumulus-scale lobes stay ON the storm-scale ones, strongest on
+        // their crowns (big lobes carrying small ones). With the storm-scale noise alone (storm.x, 12x at the user's
+        // settings: 10 km lobes) deep convection was smooth, lobeless mounds and pillars.
+        // Read at 2x the storm coordinates (period / 8, 16, 32 of the storm scale: 5, 2.6 and 1.3 km at 12x), the
+        // lobes a few km across that a congestus mass is made of. Amplitude follows size (x2.5 on them): at the
+        // cumulus lobes' strength a 5 km lobe moved the surface by a few hundred metres, i.e. not at all.
+        // (Tried: the storm scale itself on thick cumulus, smooth blobs; a third fetch 4x finer, 219 registers.)
+        float lobS = (s2.g * 0.6 + s2.b * 0.25 + s2.a * 0.15) - 0.47;
+        lobes = mix(lobes, 2.5 * lobS + cv2.cu.w * lobes * (0.35 + 1.3 * clamp(lobS + 0.12, 0.0, 0.5)), bigL);
         s = mix(s, s2, deep);
     }
     // Inverted Worley at 4/8/16 cells (G: 1.75 km, 875 m, 440 m lobes for the 7 km period) and
     // 8/16/32 (B), with a little Perlin (A) so the lobes are not all spheres. ~zero mean.
-    float lobes = (s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47;
     float hbE   = hb + baseAmp * lobes * 4.0;          // height above the bumped base
     if (hbE <= 0.0 && subPix <= 0.0) return f;
     float gBase = 0.3 * (1.0 - smoothstep(0.0, 350.0, hbE));
@@ -860,24 +937,11 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // clear gaps between cells.)
     // "Base flatness" (high2.w): how little of the lobes survives at the base (0.3 of them at 0; at
     // the default 0.8, 0.1 — the lobes are 2.5x on convection, and the bases read as mammatus).
-    float A     = lobeK * mix(legacy ? 0.3 : mix(0.3, 0.05, cv2.high2.w), 1.0, smoothstep(0.0, legacy ? 500.0 : 700.0, hbE))
-                * (legacy ? 1.0 : mix(mix(0.4, 1.0, smoothstep(0.0, 0.25, e)), 1.0, ty.alt.z));
-    float m     = m0 + A * lobes * 2.0 - gBase * gBase / 0.3;
-    float Ph    = clamp(m * cv2.form.w, 0.0, 1.0) * smoothstep(0.0, 60.0, hbE);
-    // The sub-pixel cells' haze, in the mesoscale presence's patches (their mean is still ~cov).
-    // Review 19: the share of the pixel the unresolved cells cover — the field (its cells now at their mip:
-    // ~their mean) against the threshold, spread by the variance the mip averaged away (~0.2 of field units
-    // for fully sub-pixel cells). It replaced a Perlin/morphology presence of its own (a second placement).
-    float sigU    = 0.03 + 0.2 * smoothstep(0.0, 3.0, lodCell);
-    float presFar = clamp(0.5 + (xe + cv2.tune.x * (1.0 - smoothstep(0.0, 3.0, lodCell))) / (2.5 * sigU), 0.0, 1.0);
-    float PhSub = presFar * 0.8 * clamp((mix(0.2 + 0.4 * covT, 1.0, ty.alt.z) - z) * cv2.form.w, 0.0, 1.0)
-                * smoothstep(0.0, 150.0, hb);
+    float A     = lobeKL * mix(aBase, 1.0, smoothstep(0.0, aRamp, hbE));
+    float m     = m0 + (A + AshK) * lobes * 2.0 - gBase * gBase / 0.3;
+    float Ph    = clamp(m * phK + phP, 0.0, 1.0) * smoothstep(0.0, 60.0, hbE);
     Ph = mix(Ph, PhSub, subPix);
     if (Ph <= 0.0) return f;
-    // Height within THIS column (for the lighting terms and billowing): the column's own top.
-    // (Convective: the CELL's top T, so hf runs 0..1 up the cloud, not up each column's own cone.)
-    float Htop = mix(T, zTop * 0.85, ty.alt.z);
-    float hf   = clamp(z / max(Htop, 0.05), 0.0, 1.0);
 
     // Inside, a little of the macro noise for density variation (the surface is the margin).
     float d = Ph * mix(0.75, 1.0, s.r);
@@ -901,24 +965,19 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
             // strength. It used to fade the erosion itself toward none, then switch to the mean at
             // full strength where detailAmt reached 0: a band of uneroded, denser cloud just inside
             // that distance, seen from above as a ring (~220 km out, 143 km up).
-            float fS = clamp(0.25 - 0.35 * cv2.tune.y * rV, 0.0, 0.7);   // the fine octave's share, by region
+            float fS = clamp(0.25 - 0.35 * cv2.tune.y * rV + 0.35 * (1.0 - smoothstep(8.0, 80.0, fpM)), 0.0, 0.7);   // the fine octave's share, by region; more of it up close
             df = mix(0.45, dn.r * (1.0 - fS) + dn.g * fS, detailAmt);
         }
 #endif
-        // Base: bite the lumps (torn, wispy). Higher up: bite the cracks, keep the lumps (billows).
-        // Deep convection keeps storm.y of it: its large towers read best with little erosion.
-        // Deep convection bites far fewer cracks: a Cb top is bubbly domes, and the crack network the
-        // billow term carves read as dark veins over every storm (with storm erosion turned up).
-        float billow = ty.shape.z * smoothstep(0.05, 0.4, hf) * (1.0 - 0.7 * deep);
-        float erode  = mix(df, 1.0 - df, billow) * ty.shape.y * cv2.look.z * mix(1.0, cv2.storm.y, deep)
-                     * max(1.0 - 0.6 * cv2.tune.y * rV, 0.1);
+        float wz     = max(wispE, cv2.cu2.y * smoothstep(0.45, 0.62, s.a) * (1.0 - 0.6 * billow));
+        float erode  = min(mix(df, 1.0 - df, billow) * erK * (1.0 + 0.7 * wz), 0.92);
         // Erosion shapes the SURFACE. Deep inside (d high) only form.z of it applies: at full
         // strength it punched holes through the interior, and from inside a cloud the sky showed.
         erode *= mix(1.0, cv2.form.z, smoothstep(0.35, 0.85, d));
         // A cumulus base is the condensation level: flat. The base erosion ("bite the lumps") dimpled
         // every underside, and a field seen from below read as mammatus (user snap 1, pass 13; the
         // pass-11 shape too). "Base flatness" keeps 1 - 0.7 x it of the erosion in the lowest ~400 m.
-        if (!legacy) erode *= mix(mix(1.0, 1.0 - 0.7 * cv2.high2.w, ty.look.z), 1.0, smoothstep(0.0, 400.0, hbE));
+        erode *= mix(erBase, 1.0, smoothstep(0.0, 400.0, hbE));
         d = clamp((d - erode) / max(1.0 - erode, 1e-3), 0.0, 1.0);
         if (d <= 0.0) return f;
     }
@@ -928,21 +987,23 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // the eroded lumps are what gets sharpened, and clamped so the interior saturates.
     // Relaxed toward 1 as the footprint grows: a surface a pixel cannot resolve should not be a
     // hard cut-out edge (orbit views read as paper cut-outs otherwise).
-    d = min(d * mix(cv2.extra.x, 1.0, smoothstep(150.0, 1500.0, fpM)), 1.0);
+    // ... and tightened as it shrinks below ~80 m (x3 by 8 m; x4 cost another 0.2 of tstab's walk score at shot 5): the margin's slope across a weak cell's edge is gentle, so
+    // its density ramps in over ~100 m whatever the sharpness — sub-pixel from afar, but a cloud a kilometre or two
+    // from the eye was an out-of-focus blob (issue 20261012_235712: "muddy", "no fine detail").
+    d = min(d * mix(cv2.extra.x * (1.0 + 2.0 * (1.0 - smoothstep(8.0, 80.0, fpM))), 1.0,
+                    max(smoothstep(150.0, 1500.0, fpM), 0.8 * wispE)), 1.0);
 
-    // Denser upward (cloud water grows with height); precipitation loads the base.
-    d *= mix(0.6, 1.0, smoothstep(0.0, 0.4, hf)) * (1.0 + w.b * ty.look.w * (1.0 - hf));
-    f.sigma    = d * ty.shape.x * cv2.look.y;
-    f.hf       = hf;
-    f.msBright = ty.look.x;
+    f.sigma    = d * sigK;
     // "Lobe occlusion" (mid3.z): the sky light by where the sample sits in the lobe noise: the creases between
     // lobes (low) see a narrow cone of sky, the tips (high) most of it; mean ~1. The probe 250 m up and the depth
-    // under the column's top cannot tell a crease from a tip. Faded with the lobes themselves (A / lobeK).
-    f.ambient  = ty.look.y * (1.0 - cv2.mid3.z * clamp(-4.0 * lobes, -0.6, 1.0) * fpFade);
-    f.deck     = strat * smoothstep(0.6, 1.0, e);
-    // The deck's upper envelope (a lumpy top reaches ~zTop): the grazing-light shadow measures the
-    // depth below it, and a mean top made every trough between the lumps black at sunrise.
-    f.topH     = base + mix(legacy ? T : T * 1.1, zTop, ty.alt.z) * (topMax - base);
+    // under the column's top cannot tell a crease from a tip.
+    // The creases dim the DIFFUSE sunlight as well (the multiple-scattering term; never brightened): occluding the sky
+    // light alone left the creases in the Sun's colour and the lobes in the sky's, a two-colour noise pattern on the
+    // underside of an overcast at a low Sun (issue 20261012_235159).
+    float occL = 1.0 - cv2.mid3.z * clamp(-4.0 * lobes, -0.6, 1.0) * fpFade;
+    f.ambient  *= occL;
+    // (Toward the base only: on a sunlit top the creases went dirty grey, and the direct light there is not diffuse.)
+    f.msBright *= mix(min(occL, 1.0), 1.0, f.hf);
     return f;
 }
 
@@ -1495,7 +1556,13 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
              * (1.0 - 0.85 * headTop);
     // Before the fetches: the lobes add at most ~0.75 x 2A in practice (the low layer's bound). A fixed
     // -0.6 fetched the storm noise through a shell 0.6 radii deep around every tower (7 km at 12 km).
-    if (best + A * 1.5 <= 0.0) return o;
+    // "Cb tower fine lobes" (cu2.x): the cumulus-scale lobes ON the storm-scale ones, as a displacement in metres
+    // (kCv2ColFineM x the setting), strongest on the big lobes' crowns; they fade out under the anvil's lid with the
+    // rest. With the storm-scale volume alone (lobes of 2.5-10 km at the user's 12x) a tower's wall was one smooth
+    // surface, "a different material" from the cumulus around it (issue 20261012_235712 shots 4, 6, 8).
+    float Af = cv2.cu2.x * (kCv2ColFineM / bestRc) * mix(1.0, 0.3, smoothstep(100.0, 800.0, fpM))
+             * mix(0.25, 1.0, smoothstep(0.0, 0.12, bestZeta)) * (1.0 - 0.85 * headTop);
+    if (best + A * 1.5 + Af * 0.8 <= 0.0) return o;
     // The lobes FLOW with the tower (2026-10-10): up its stalk and, in an anvil-reaching tower's head, outward
     // from its axis -- the updraft spreading under the lid. The noise is read displaced against the flow by
     // up to kCv2ColFlowSpan of its period, at two phases half a cycle apart, cross-faded (the flow-map trick
@@ -1511,11 +1578,19 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // (The outward direction is rebuilt from ONE carried float, its bearing: carrying the vector out of the tower
     // loop, like a second inlined copy of the smooth fetch, flipped the march to 222 registers.)
     // (One fetch site in a loop: a second inlined copy of the smooth fetch flipped the march to 222 registers.)
-    vec4  s  = vec4(0.0);
-    [[dont_unroll]] for (int k = 0; k < 2; ++k)
-        s += cv2ShapeSmooth(colX - colF * fract(colPh + 0.5 * float(k)), colL) * ((k == 0) ? colW : 1.0 - colW);
-    float lobes = ((s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47) * inversesqrt(colW * colW + (1.0 - colW) * (1.0 - colW));
-    float m  = best + A * lobes * 2.0;
+    // (The third pass of the same fetch site is the fine volume: the storm coordinates x the storm scale ROUNDED --
+    // an anchored coordinate may only be multiplied by an integer, or the lobes jump when the observer crosses a
+    // period of the storm volume -- without the flow: the small lobes stay put on the big ones that carry them.)
+    vec4  s  = vec4(0.0), sF = vec4(0.0);
+    [[dont_unroll]] for (int k = 0; k < 3; ++k) {
+        vec4 sk = cv2ShapeSmooth((k < 2) ? colX - colF * fract(colPh + 0.5 * float(k)) : colX * floor(cv2.storm.x + 0.5) + vec3(0.31, 0.57, 0.13),
+                                 (k < 2) ? colL : cv2Lod(fpM, cv2.anchorStorm.w * floor(cv2.storm.x + 0.5)));
+        if (k < 2) s += sk * ((k == 0) ? colW : 1.0 - colW); else sF = sk;
+    }
+    // (Leaning on the finer Worley set, B: lobes of 1.3-5 km at 12x, the turrets a tower is built of.)
+    float lobes = ((s.g * 0.3 + s.b * 0.55 + s.a * 0.15) - 0.47) * inversesqrt(colW * colW + (1.0 - colW) * (1.0 - colW));
+    float lobF  = (sF.g * 0.6 + sF.b * 0.25 + sF.a * 0.15) - 0.47;
+    float m  = best + A * lobes * 2.0 + Af * lobF * 2.0 * (0.5 + 1.3 * clamp(lobes + 0.12, 0.0, 0.5));
     // The surface ramps in over ~300 m whatever the tower's size (x the radius, 0.2 of it: 2.4 km of
     // thin fog around a 12 km tower, which every ray marched through lit sample by sample before it
     // turned opaque — the towers cost ~20 ms inside a storm, and at any density).

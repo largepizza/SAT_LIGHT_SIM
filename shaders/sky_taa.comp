@@ -178,11 +178,6 @@ void main() {
             // the crests smeared into long trails until the camera moved. On a stormy sea the user liked that
             // look, so it is kept there on purpose ("Storm sea trails", sat_sky.frag's marker): the history is
             // blended toward unclipped by the trail share and held at the still weight, moving or not.
-            const bool  sea    = seaA < 0.75;
-            const float trail  = sea ? clamp(1.0 - 2.0 * seaA, 0.0, 1.0) : 0.0;
-            const bool  still  = pc.eyeDelta.w > 1.5;
-            const bool  noClip = still && (!sea || pc.eyeDelta.w > 2.5);   // paused: the waves are frozen too
-            if (mx > 1.0 && !noClip) h = mix(c + v / mx, h, trail);
             // Motion (in pixels) raises the new sample's weight: a moving view keeps its detail.
             float mv = length((uvP - (vec2(p) + 0.5) / size) * size);
             // The PARALLAX (the eye's own move, past the rotation) ramps the weight from 0.1 px (2026-10-06): every frame
@@ -199,6 +194,14 @@ void main() {
                     par = length((uvP - uvI) * size);
                 }
             }
+            // The trails are for a view that moves little: flying (parallax past ~1-4 px a frame) the unclipped history
+            // was whatever stood over this water a frame ago, and clouds were dragged across the sea in stepped copies
+            // (issue 20261012_235712 shot 7, boosting at 22 km/s over a storm).
+            const bool  sea    = seaA < 0.75;
+            const float trail  = sea ? clamp(1.0 - 2.0 * seaA, 0.0, 1.0) * (1.0 - smoothstep(1.0, 4.0, par)) : 0.0;
+            const bool  still  = pc.eyeDelta.w > 1.5;
+            const bool  noClip = still && (!sea || pc.eyeDelta.w > 2.5);   // paused: the waves are frozen too
+            if (mx > 1.0 && !noClip) h = mix(c + v / mx, h, trail);
             const float ramp = max(smoothstep(0.5, 4.0, mv), smoothstep(0.1, 1.0, par));
             float w  = mix(pc.cam.z, pc.cam.w, ramp * (1.0 - trail));
             // A flash (lightning, a sprite, a glint): when the whole NEIGHBOURHOOD brightens past the history,
