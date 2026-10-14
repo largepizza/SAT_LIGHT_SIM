@@ -253,7 +253,7 @@ python tools/harness/reports.py import player_report.zip         # into the repo
 ```
 
 `<issue>` is a folder or a unique part of an id / title; `--dir <reports folder>` goes BEFORE the subcommand
-(default: `build-win-release/Release/reports`, else `build/Release/reports`).
+(default: `user_data/reports`, else `build-win-release/Release/reports`, else `build/Release/reports`).
 
 Working one:
 1. **Read the shot images first** (`show` prints their paths). Each is the frame the reporter saw, taken

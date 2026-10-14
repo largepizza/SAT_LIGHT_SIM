@@ -77,6 +77,27 @@ namespace Paths
         std::filesystem::path dir;
         std::error_code ec;
 
+        // Dev build trees: the build writes <exe dir>/user_data_dir.txt (cmake/EnsureUserDataDir.cmake)
+        // naming a folder OUTSIDE the build tree, so settings, reports, perf logs and bookmarks
+        // survive a wiped tree (release.bat) and are shared by every tree's exe. The file is not in
+        // the release package's whitelist, so a shipped copy never has one.
+        {
+            std::ifstream redirect(std::filesystem::path(exeDir()) / "user_data_dir.txt");
+            std::string line;
+            if (redirect.is_open() && std::getline(redirect, line))
+            {
+                const size_t a = line.find_first_not_of(" \t\r\n");
+                const size_t b = line.find_last_not_of(" \t\r\n");
+                if (a != std::string::npos)
+                {
+                    const std::filesystem::path target = line.substr(a, b - a + 1);
+                    std::filesystem::create_directories(target, ec);
+                    if (isDirWritable(target))
+                        return target.string();
+                }
+            }
+        }
+
         // Portable by default: prefer exeDir() whenever it's actually writable, so a normal
         // zip-and-run/dev build keeps settings/logs/perf-snapshots self-contained next to the
         // exe. Falls through to the OS per-user directory below only if exeDir() isn't

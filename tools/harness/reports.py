@@ -14,8 +14,8 @@ snapshot keys and the Issue reports window (CLAUDE.md "Issue reports"). This too
     reports.py import <file.zip> [...]        a zip a player sent (the window's "Export zip")
 
 <issue> is a folder path, or an id / unique part of an id or title under --dir. --dir defaults to the first
-of build-win-release/Release/reports and build/Release/reports that exists (the app's user data folder is
-its exe folder unless that is read-only).
+of user_data/reports, build-win-release/Release/reports and build/Release/reports that exists (dev builds
+keep their user data in <repo>/user_data, cmake/EnsureUserDataDir.cmake; otherwise it is the exe folder).
 
 `resolve` is what closes the loop: the Issue reports window shows the text and the commit under RESOLUTION
 and lists the issue as "fixed" until the reporter looks (Go on a shot) and sets Closed, or Open again.
@@ -38,7 +38,7 @@ import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_DIRS = [REPO / "build-win-release" / "Release" / "reports", REPO / "build" / "Release" / "reports"]
+DEFAULT_DIRS = [REPO / "user_data" / "reports", REPO / "build-win-release" / "Release" / "reports", REPO / "build" / "Release" / "reports"]
 FORMAT = "sat-light-sim-report/1"
 
 

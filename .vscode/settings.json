@@ -19,8 +19,10 @@
     // Configure the project automatically when you open the folder
     "cmake.configureOnOpen": true,
 
-    // Always build before launching (so F5 = build + run)
-    "cmake.buildBeforeRun": true,
+    // The status bar's launch button starts the exe that is already built, without building
+    // (it used to rebuild first: minutes of compiling when sources had changed since that tree's
+    // last build). The F5 debug configurations still build, through their preLaunchTask.
+    "cmake.buildBeforeRun": false,
 
     // Pick the active target via the status bar (bottom of VS Code window)
     "cmake.defaultVariants": {

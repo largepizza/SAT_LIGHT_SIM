@@ -220,7 +220,8 @@ def main() -> None:
     if len(sys.argv) > 1:
         target = Path(sys.argv[1])
     else:
-        candidates = [ROOT / "build-win-release" / "Release" / "settings.json",
+        candidates = [ROOT / "user_data" / "settings.json",
+                      ROOT / "build-win-release" / "Release" / "settings.json",
                       ROOT / "build" / "Release" / "settings.json",
                       ROOT / "build" / "Debug" / "settings.json"]
         target = next((c for c in candidates if c.is_file()), candidates[0])

@@ -42,6 +42,9 @@ echo.
 
 :: ── Windows Release ──────────────────────────────────────────────────────────
 if %DO_WIN%==1 (
+    :: Safe to wipe: the app's user data (settings.json, reports, perf_profiles, bookmarks) lives in
+    :: user_data\ and screenshots in screenshots\, both outside the build tree — the build writes a
+    :: redirect/link next to the exe (cmake\EnsureUserDataDir.cmake, EnsureScreenshotDir.cmake).
     echo [Windows] Clearing build cache...
     if exist "%PROJ%\build-win-release" rmdir /s /q "%PROJ%\build-win-release"
 

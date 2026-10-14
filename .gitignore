@@ -66,5 +66,9 @@ satlight_log.txt
 # docs/screenshots/ (README) are separate and stay tracked.
 /screenshots/
 
+# The app's user data in dev builds (settings.json, reports/, perf_profiles/, bookmarks/): kept here,
+# outside the build trees, by cmake/EnsureUserDataDir.cmake.
+/user_data/
+
 # ── Wiki (mkdocs.yml) ─────────────────────────────────────────────────────────
 /build-wiki/

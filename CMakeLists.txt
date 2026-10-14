@@ -521,9 +521,32 @@ function(sat_ensure_screenshot_dir tgt)
     add_dependencies(${tgt} ${tgt}_screenshots)
 endfunction()
 
+# ── User data outlives the build tree ─────────────────────────────────────────────────────────
+# Same problem as the screenshots, for everything else the app writes next to its exe: settings.json,
+# reports/, perf_profiles/, bookmarks/, cinematics/. An always-run target writes
+# <exe dir>/user_data_dir.txt naming SAT_DEV_USER_DATA_DIR, which Paths::userDataDir() then uses, so
+# every build tree shares one user data folder and release.bat's wipe loses nothing. Not packaged
+# (cmake/PackageRelease.cmake is a whitelist). Set it to an empty string to keep user data next to
+# the exe. cmake/EnsureUserDataDir.cmake has the migration rule.
+set(SAT_DEV_USER_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/user_data" CACHE PATH
+    "Dev builds keep the app's user data (settings, reports, perf logs) here instead of next to the exe; empty = next to the exe")
+function(sat_ensure_user_data_dir tgt)
+    if(SAT_DEV_USER_DATA_DIR STREQUAL "")
+        return()
+    endif()
+    add_custom_target(${tgt}_userdata
+        COMMAND ${CMAKE_COMMAND}
+            -DRUNTIME_DIR=$<TARGET_FILE_DIR:${tgt}>
+            -DDATA_DIR=${SAT_DEV_USER_DATA_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/EnsureUserDataDir.cmake
+        VERBATIM)
+    add_dependencies(${tgt} ${tgt}_userdata)
+endfunction()
+
 sat_copy_runtime_files(SatLightSim)
 sat_sync_runtime_sources(SatLightSim)
 sat_ensure_screenshot_dir(SatLightSim)
+sat_ensure_user_data_dir(SatLightSim)
 if(SAT_BUILD_FRESH_TARGET)
     sat_copy_runtime_files(SatLightSimFresh)
     sat_sync_runtime_sources(SatLightSimFresh)

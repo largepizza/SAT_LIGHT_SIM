@@ -11,6 +11,15 @@
             "presentation": { "reveal": "always" }
         },
         {
+            // Start the newest exe that already exists (build-win-release/ or build/), no build.
+            // Every dev tree shares user_data/, so the settings are the same either way.
+            "label": "Run latest build (no build)",
+            "type": "shell",
+            "command": "python tools/run_latest.py",
+            "problemMatcher": [],
+            "presentation": { "reveal": "silent" }
+        },
+        {
             // Fresh-settings variant: same binary compiled with SAT_FRESH_SETTINGS, so it never
             // reads or writes settings.json. EXCLUDE_FROM_ALL, so it is only built by this task
             // (or by launching the "FRESH" debug configs, which run it as their preLaunchTask).
