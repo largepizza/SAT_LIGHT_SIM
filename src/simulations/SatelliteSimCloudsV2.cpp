@@ -778,8 +778,12 @@ static std::string pipelineStatsLine(VulkanContext &ctx, VkPipeline p)
 // marchSpv overrides the march's file (an A/B against another build in one batch); stats receives the
 // driver's statistics for the new march pipeline.
 std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
-                                                uint32_t wgX, uint32_t wgY)
+                                                uint32_t wgX, uint32_t wgY, const std::string &resolveSpv,
+                                                const std::string &lightningSpv, const std::string &compositeSpv)
 {
+    // Each override (harness `shaders reload march= resolve= lightning= composite=`) loads another SPV, so several
+    // experiments can share one live app without overwriting the shipped SPVs; an empty one loads the shipped file.
+    auto pick = [](const std::string &o, const char *def) { return o.empty() ? def : o.c_str(); };
     if (wgX && wgY) { cv2MarchWg[0] = wgX; cv2MarchWg[1] = wgY; }
     vkDeviceWaitIdle(ctx.device);
     std::string err;
@@ -811,13 +815,13 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
             err += std::string(e.what()) + "; ";
         }
     }
-    swap(cv2ResolvePipeline, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout, nullptr);
+    swap(cv2ResolvePipeline, pick(resolveSpv, "shaders/cloud_v2_resolve.comp.spv"), cv2ResolvePipeLayout, nullptr);
     swap(cv2TilesPipeline, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout, nullptr);
-    swap(cv2LightningPipeline, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout, nullptr);
+    swap(cv2LightningPipeline, pick(lightningSpv, "shaders/cloud_v2_lightning.comp.spv"), cv2MarchPipeLayout, nullptr);
     swap(cv2SunLutPipeline, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout, nullptr);
     cv2SunLutKey[0] = -1.0f;   // bake it again with the new shader
     swap(cv2FarPipeline, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout, nullptr);
-    swap(cloudMarchPipeline, "shaders/cloud_march.comp.spv", cloudMarchPipeLayout, nullptr);   // the composite
+    swap(cloudMarchPipeline, pick(compositeSpv, "shaders/cloud_march.comp.spv"), cloudMarchPipeLayout, nullptr);   // the composite
     cv2HistoryValid = false;
     stats = pipelineStatsLine(ctx, cv2MarchPipeline);
     return err;

@@ -5453,7 +5453,8 @@ private:
     void destroyCloudsV2(VkDevice device);
     // harness `shaders reload [march=<spv>]`; "" = ok, stats = the driver's statistics for the march
     std::string reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
-                                      uint32_t wgX = 0, uint32_t wgY = 0);
+                                      uint32_t wgX = 0, uint32_t wgY = 0, const std::string &resolveSpv = {},
+                                      const std::string &lightningSpv = {}, const std::string &compositeSpv = {});
     // The march's workgroup size (specialization constants): it bounds the driver's registers per
     // thread (65536 / the group's threads), i.e. the march's occupancy. Harness `shaders reload wg=`.
     uint32_t cv2MarchWg[2] = {16, 16};

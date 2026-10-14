@@ -3090,7 +3090,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (!wg.empty() && sscanf(wg.c_str(), "%ux%u", &wgX, &wgY) != 2)
             fail("shaders reload: wg=<X>x<Y>");
         ctx_->capturePipelineStats = true;   // the statistics below need it; startup does not ask for it
-        const std::string err = reloadCloudsV2Shaders(*ctx_, c.str("march"), stats, wgX, wgY);
+        const std::string err = reloadCloudsV2Shaders(*ctx_, c.str("march"), stats, wgX, wgY, c.str("resolve"), c.str("lightning"),
+                                                        c.str("composite"));
         ctx_->capturePipelineStats = false;
         if (!err.empty())
             fail("shaders reload: " + err);
