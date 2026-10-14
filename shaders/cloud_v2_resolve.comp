@@ -310,7 +310,17 @@ void main()
         // the band 2-6 pixels behind a cloud's trailing edge, the wide box (which holds the cloud) passed the cloud
         // the pixel showed a frame ago at the still weight: every cloud dragged a granulated copy of its edge behind
         // it over the sea, in blocks of the sparse grid (user issue 20261013_184710, 2.5 km/s low over cumulus).
-        float stillW = 1.0 - smoothstep(0.05, 0.5, motionPx);
+        // Issue 20261013_202117 (climbing / descending at ~700 m/s over cumulus, low Sun): the still box (and the slack
+        // and variance clipping below) follow the parallax of the NEAREST cloud in the neighbourhood (3x3 dNear, 7x7
+        // dWide), not this pixel's own, scaled by the history's memory (1 / the still weight). A far horizon cloud
+        // moves ~0.1 px a frame climbing at 700 m/s: "still" by its own parallax, so it kept the wide 7x7 box and the
+        // still weight (0.02: a 50-frame memory, i.e. ~5 px of lag): the horizon smeared into vertical blocks and a
+        // stale rectangle hung over it; and where a near cloud's edge swept over far ones, the far pixels' history
+        // (the near cloud) passed the wide box: ghosts of the near cloud over the background. A truly still eye has
+        // eyePx 0, so still views are unchanged.
+        float lagK   = 1.0 / max(cv2.look2.w, 0.01);
+        float mNb    = max(motionPx, (eyePx / min(min(dNear, ndR > 0.0 ? ndR : 1e30), 50000.0)) * lagK);
+        float stillW = 1.0 - smoothstep(0.05, 0.5, mNb);
         if (stillW > 0.0) {
             vec4 mnW = mn, mxW = mx; vec3 rMnW = rMn, rMxW = rMx;
             float dWide = 1e30;
@@ -320,7 +330,7 @@ void main()
                 ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
                 if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
                 vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
-                if (ndR <= 0.0) {
+                {
                     float dq = tFull ? texelFetch(fullDepthTex, clamp(c + ivec2(dx, dy), ivec2(0), gHalf - 1), 0).x
                                      : texelFetch(newDepthTex, pq, 0).x;
                     if (dq > 0.0) dWide = min(dWide, dq);
@@ -330,18 +340,19 @@ void main()
                 mnW = min(mnW, s); mxW = max(mxW, s);
             }
             if (dWide < 1e29) {
-                motionPx = max(motionPx, eyePx / min(dWide, 50000.0));
-                stillW   = 1.0 - smoothstep(0.05, 0.5, motionPx);
+                if (ndR <= 0.0) motionPx = max(motionPx, eyePx / min(dWide, 50000.0));
+                mNb    = max(mNb, max(motionPx, (eyePx / min(dWide, 50000.0)) * lagK));
+                stillW = 1.0 - smoothstep(0.05, 0.5, mNb);
             }
             mn = mix(mn, mnW, stillW); mx = mix(mx, mxW, stillW);
             rMn = mix(rMn, rMnW, stillW); rMx = mix(rMx, rMxW, stillW);
         }
         float wNew  = mix(cv2.look2.w, max(cv2.look2.w, cv2.motion.y), smoothstep(0.05, 1.0, motionPx));
-        vec4  slack = box3 * mix(1.0, 0.1, smoothstep(0.05, 1.0, motionPx)) + vec4(1e-4);
+        vec4  slack = box3 * mix(1.0, 0.1, smoothstep(0.05, 1.0, mNb)) + vec4(1e-4);
         slack = max(slack, (mx - mn) * stillW);
         // In motion the box is the neighbourhood's mean +- 1.25 sd (variance clipping), inside min/max:
         // a small cloud next to clear sky made a min/max box spanning both, so its ghost passed.
-        float mv  = smoothstep(0.1, 1.5, motionPx);
+        float mv  = smoothstep(0.1, 1.5, mNb);
         vec4  bLo = mix(mn - slack, max(mn, m1 - cv2.samp.z * sdBox), mv);
         vec4  bHi = mix(mx + slack, min(mx, m1 + cv2.samp.z * sdBox + vec4(1e-4)), mv);
         vec4 hc = cv2FromMean(clamp(cv2ToMean(hist), bLo, bHi));
@@ -350,7 +361,7 @@ void main()
         // inside the Reflect beams — is x50 there, and a cloud-edge history texel clamped up to it and multiplied back
         // by its own opacity came out as bright blue-white 2x2 blocks along every cloud edge in motion (user snapshot,
         // 5 km over the Anchorage beam site: "chunkiness" and "bluish effects").
-        vec3 rSl = (rMx - rMn) * mix(1.0, 0.1, smoothstep(0.05, 1.0, motionPx)) + vec3(1e-4);
+        vec3 rSl = (rMx - rMn) * mix(1.0, 0.1, smoothstep(0.05, 1.0, mNb)) + vec3(1e-4);
         hc.rgb = clamp(hc.rgb, rMn - rSl, rMx + rSl);
         // The other three pixels of the block also take a share of the interpolated new samples.
         // Without it the one pixel refreshed each frame stood out from the three that were not,

@@ -12082,7 +12082,25 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     tp.c2e[1].w = skyTaaJitterNow.y;
     tp.c2e[2].w = (float)inE.width;
     tp.e2p[0].w = (float)inE.height;
-    tp.cam = glm::vec4(tanHF, pc.aspect, skyTaaWeightStill, skyTaaWeightMoving);
+    // Clouds move on their own under time warp (the map's drift + the shape wind), and the resolve reprojects only the
+    // CAMERA: with the eye still the history of a moving cloud stays where it was, held at the still weight (0.1), and
+    // the 3x3 colour clip cannot remove it over the sea (its glitter and reflected-cloud specks make the box wide) —
+    // every cloud dragged a speckled copy of its trailing edge over the water (issue 20261013_193400 shot 2: 10x,
+    // camera still, 1.45 km over cumulus; sky_taa_weight 0.03 widened the fringe, 0.3 removed it). So the still weight
+    // rises toward the moving one by the clouds' own motion on screen at the nearest distance clouds can be (the
+    // eye's height above the ground, at least 1.5 km): ~2.7 px a frame there at 10x, ~0.3 at 1x (unchanged).
+    float taaStillW = skyTaaWeightStill;
+    if (valid && dSimS < 600.0)
+    {
+        const double cloudMoveM = std::abs((double)cloudDriftRate) * dSimS * eyeR * std::hypot(up.x, up.y) +
+                                  0.9 * std::abs((double)cv2WindMps) * dSimS;
+        const double nearCloudM = std::max(1500.0, eyeR - satphot::kEarthRadiusM - (double)obsTerrainH);
+        const double pixAng = 2.0 * (double)tanHF / (double)std::max(1u, ctx.swapExtent.height);
+        const float cloudPx = (float)(cloudMoveM / (nearCloudM * pixAng));
+        taaStillW = glm::mix(skyTaaWeightStill, std::max(skyTaaWeightStill, skyTaaWeightMoving),
+                             glm::smoothstep(0.25f, 1.5f, cloudPx));
+    }
+    tp.cam = glm::vec4(tanHF, pc.aspect, taaStillW, skyTaaWeightMoving);
 
     const int k = skyTaaHist;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skyTaaResolvePipeline);

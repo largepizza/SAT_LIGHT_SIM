@@ -899,7 +899,30 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   - **"Cloud tops too dark" (issue 20261013_193122) is the multiple-scattering setting at a 4-10 deg Sun**: no layer,
     lattice, tower or light-march toggle moved it; `ms_octaves` 4 / `ms_strength` 0.42 (the user ran 2.6 / 0.30)
     whitens the tops and keeps the relief; 6 / 0.5 is flat white. Defaults unchanged.
-  - Open: with time RUNNING (still camera) cloud edges keep a speckled fringe (issue 20261013_193400 shot 2).
+  - **Round 3 (2026-10-13c, five agents sharing one live app; briefs and diffs in `harness_runs/fb15/<agent>/`; harness
+    `shaders reload` gained `resolve=` / `lightning=` / `composite=` so each batch names its own SPVs):**
+    - **Sunlit tops grey (193122) was the DECK term** (`odDeck`, cloud_v2_march.comp): sigma x the path to the layer's
+      nominal top, which sits hundreds of metres above a lumpy top's real surface — x 1/sin(4 deg) = km of cloud (od ~15
+      where the light march found ~1). It now counts only the path beyond 2 x the light march's length. Not the
+      multi-scatter settings (those only hid it).
+    - **The time-warp fringe (193400 shot 2) is the SKY TAA**, not the cloud resolve: with the eye still it holds the
+      still weight while clouds move on their own (drift + wind), and its 3x3 clip cannot reject over the sea (glitter
+      widens the box). recordSkyTaa raises the still weight toward the moving one by the clouds' own screen motion at
+      max(1.5 km, eye AGL): ~2.7 px a frame at 10x, unchanged at 1x and paused.
+    - **Horizon smears climbing (202117)**: a far cloud's own parallax (~0.1 px a frame at 700 m/s) called it still: wide
+      7x7 box at the still weight, and near clouds' edges left their history on far pixels. The still box, slack and
+      variance-clip ramp follow `mNb` = the NEAREST cloud's parallax in the 3x3 / 7x7 x (1 / still weight); the weight
+      itself keeps the pixel's own motionPx. Horizon band vs settled 3.99 -> 2.85 levels, near band unchanged.
+    - **The cirrus wedge (192258 shot 3)** was the mid layer's shadow in the fine grid, a 400-km tube along the Sun when
+      the cascade is off; fixed by d0ebf6e (the user's exe predated it).
+    - **Sunset grain in motion (201800) is NOT fixed.** It is the far light steps (k >= 3 of 7: 0.5-3 km each, one point
+      sample: lit or black by chance). Reading them at a 2 km footprint cut the moving grain 8.1 -> 2.2 levels but
+      ERASED large clouds' far shadows (a Cb anvil's shadow over a cumulus field: mean +11 levels) — coarse field reads
+      lose cumulus / tower optical depth, the same non-conservation as "Light march footprint". Reverted. Needs an
+      unbiased estimator (several stratified point samples, or the shadow lattices' baked means for the far steps).
+    - Plan for layer shadows: `.plans/LAYER_SHADOW_MAP_PLAN.md` (coarse reads: altocumulus ~2x too thick at 2-8 km,
+      cirrus 0.33x; altostratus fine).
+
   - The user's settings.json was lost to release.bat's wipe on 2026-10-13; a copy from that morning is
     `harness_runs/perf13/user_settings.json`.
 - **Lightning + thunder (rebuilt 2026-10-05; `cloud_v2_lightning.comp`, `SatelliteSimLightning.cpp`,
