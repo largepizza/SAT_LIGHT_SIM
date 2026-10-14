@@ -250,7 +250,7 @@ void main()
                     // (The lattice's b range is padded and its far ends leave the shell: no field read there.)
                     if (q.h > -300.0 && q.h < cv2.shell.y + 2500.0) {
                         CV2Field gf = cv2Field(q, 0.0, clamp(0.5 * (s1 - s0), 60.0, 1500.0));
-                        od += gf.sigma * (1.0 - gf.thin - cv2.mid2.z * gf.soft) * (s1 - s0);   // (no shadow from the thin ice: see the fine grid)
+                        od += gf.sigma * (1.0 - gf.thin - (cv2.layN.w > 0.0 ? 1.0 : cv2.mid2.z) * gf.soft) * (s1 - s0);   // (no thin ice; no mid layer while the layer map carries it)
                     }
                     odK[i + 1] = od;
                 }

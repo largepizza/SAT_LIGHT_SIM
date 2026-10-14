@@ -165,6 +165,12 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (the lobes' strength at the base), z "Cumulus top headroom", w "Storm cumulus fine lobes". cu2: x "Cb tower fine
     // lobes", y "Cumulus wisps", z "Silver lining" (march), w spare.
     vec4  cu, cu2;
+    // 2026-10-14, the LAYER SHADOW MAP (include/cv2_layer_map.glsl): layA / layE / layN the anchor's axes (observer ENU),
+    // layA.w level 0's cell (m), layE.w level 1's, layN.w the map's weight (0 = off: no bake, no lookup); layEye the eye's
+    // cell coordinate on level 0 (xy) and 1 (zw); layRef x / y the mid / high layer's reference height (m), z / w the share of
+    // their extinction their shadow takes; layBake x the bake round, y the running mean's least weight, z the anchor's
+    // epoch, w "Cirrus self-shadow".
+    vec4  layA, layE, layN, layEye, layRef, layBake;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

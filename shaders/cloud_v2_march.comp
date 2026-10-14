@@ -63,6 +63,10 @@ layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define CV2_FLASH_BINDING 12
 #define CV2_SUN_CASC_FN       // cv2SunCascT (needs the cv2 UBO)
 #include "cloud_lightning.glsl"
+// The mid / high layers' shadow at any distance (2026-10-14), baked by cloud_v2_layers.comp before this pass.
+#define CV2_LAYER_BINDING 22
+#define CV2_LAYER_LOOKUP
+#include "cv2_layer_map.glsl"
 layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D outColor;
 // Adaptive rate (misc.z = 3): pass A (this shader, kPassB = 0) marches the sparse grid, skipping the
 // 32x32 tiles cloud_v2_tiles.comp listed in TileBuf (parallax past misc2.w px a frame, or history from off
@@ -856,7 +860,11 @@ void main()
                     vec2 sh = cv2SunShaftRings(rl, sL);
                     sunT1 = mix(sunT1, sh.x, sh.y);
                 }
-                keyCol *= mix(sunT1, sunT0, sunW0);
+                // The mid and high layers beyond where the light march ends (the layer shadow map, cv2_layer_map.glsl):
+                // the lattices above carry no layer shadow, so a sheet's shadow is the same at any distance from the eye.
+                float lL = 2.0 * cv2.light.x * (1.0 - f.thin);
+                keyCol *= mix(sunT1, sunT0, sunW0)
+                        * cv2LayerShadowT(rel + sunDir * lL, p.h + dot(up, sunDir) * lL, sunDir, eyeH, cv2.layBake.w);
             } else if (nightK > 0.0) {
                 float moonUp = dot(up, moonDir);
                 keyCol = moonKey * nightK * smoothstep(-0.05, 0.1, moonUp);
@@ -909,10 +917,12 @@ void main()
                 // hundred metres above a lumpy top's actual surface became kilometres of cloud under a low
                 // Sun (x 1 / sin 4 deg = 13.5): od ~15 where the march found ~1, every sunlit top grey-brown
                 // (issue 20261013_193122: "There is direct sunlight on these clouds. They should be white").
-                if (f.deck > 0.0) {
+                // (The mid layer's own sheet is the layer shadow map's while it is on: its share leaves the term.)
+                float deckK = f.deck * ((cv2.layN.w > 0.0) ? 1.0 - f.soft : 1.0);
+                if (deckK > 0.0) {
                     float odDeck = f.sigma * max(max(f.topH - p.h, 0.0) / max(dot(up, keyDir), 0.03)
                                                  - 2.0 * cv2.light.x, 0.0);
-                    od = max(od, odDeck * f.deck * 0.5);
+                    od = max(od, odDeck * deckK * 0.5);
                 }
                 float powder = 1.0 - cv2.look2.z * exp(-f.sigma * 300.0) * (0.5 - 0.5 * cosK);
                 vec3 pSSv = vec3(pSS);

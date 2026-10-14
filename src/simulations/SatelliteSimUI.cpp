@@ -5541,6 +5541,9 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Cloud shadow ring 1 cell (m)", &cv2ShadowRing1CellM, 100.0f, 1000.0f, 10.0f, "%.0f", 286},
         {"Cloud shadow ring 2 cell (m, 0 = off)", &cv2ShadowRing2CellM, 0.0f, 4000.0f, 50.0f, "%.0f", 287},
         {"Cloud shadow ring 2 depth (x)", &cv2ShadowRing2KnotK, 0.1f, 2.0f, 0.05f, "%.2f", 288},
+        // The mid / high layers' shadow on everything under them, at any distance (the layer shadow map, 2026-10-14).
+        {"Layer shadows (mid / high)", &cv2LayerShadows, 0.0f, 1.0f, 0.05f, "%.2f", 296},
+        {"Cirrus self-shadow", &cv2CirrusSelfShadow, 0.0f, 1.0f, 0.05f, "%.2f", 297},
         {"God rays", &cv2Godrays, 0.0f, 1.0f, 0.05f, "%.2f", 187},
         {"Haze near clouds", &cv2HazeAloft, 0.0f, 20.0f, 0.1f, "%.1f", 188},
     };
@@ -7782,6 +7785,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2ShadowRing1CellM = c.value("shadow_ring1_cell_m", cv2ShadowRing1CellM);
         cv2ShadowRing2CellM = c.value("shadow_ring2_cell_m", cv2ShadowRing2CellM);
         cv2ShadowRing2KnotK = c.value("shadow_ring2_depth", cv2ShadowRing2KnotK);
+        cv2LayerShadows = c.value("layer_shadows", cv2LayerShadows);
+        cv2CirrusSelfShadow = c.value("cirrus_self_shadow", cv2CirrusSelfShadow);
         cv2SmallCumulus = c.value("small_cumulus", cv2SmallCumulus);
         cv2ErosionVar = c.value("erosion_variation", cv2ErosionVar);
         cv2LobeVar = c.value("lobe_variation", cv2LobeVar);
@@ -8352,6 +8357,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"shadow_ring1_cell_m", cv2ShadowRing1CellM},
         {"shadow_ring2_cell_m", cv2ShadowRing2CellM},
         {"shadow_ring2_depth", cv2ShadowRing2KnotK},
+        {"layer_shadows", cv2LayerShadows},
+        {"cirrus_self_shadow", cv2CirrusSelfShadow},
         {"small_cumulus", cv2SmallCumulus},
         {"erosion_variation", cv2ErosionVar},
         {"lobe_variation", cv2LobeVar},

@@ -997,6 +997,39 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       `harness_runs/fb17/back.py` (backwards flight at 1 / 5 km/s vs settled poses: ~3% of pixels, mostly the clouds'
       history, not shadows) and the hop batches there; compare a hop against its OWN late frame (two fresh loads of one
       pose differ by ~1.8 levels: the settled shadows depend a little on the lattice's phase).
+    - **Layer shadow map (2026-10-14, `include/cv2_layer_map.glsl`, `cloud_v2_layers.comp`; `.plans/LAYER_SHADOW_MAP_PLAN.md`):**
+      the mid and high layers' shadow on everything under them, at any distance. A 2D map on a gnomonic plane tangent at an
+      ANCHOR fixed in the drifted cloud frame (CPU `cv2LayAnchor`, re-anchored past 1500 km: a refill), two levels of 256 x 256
+      toroidal cells (1 km; 6 km doubling to 48 km with the eye's height so it covers what can be seen from orbit), every value
+      stamped (window wrap + epoch, a cleared buffer reads invalid). Device-local buffer, march set binding 22 (6 MB).
+      - **Columns** (mode 0, 32 workgroups a frame, each cell every 16 frames): per cell a running mean of each layer's
+        VERTICAL tau, tau^2 and tau-weighted height moments, from jittered points read at a 100-m footprint (coarse reads do
+        not conserve the layers' optical depth, plan F2). `cv2MidColumn` / `cv2HighColumn` are HAND-KEPT COPIES of
+        `cv2MidSigma` / `cv2HighSigma` (2D terms once per column, kLayK = 6 stratified heights; keep in step), with
+        cv2Field's two suppressions (mid under Cb storms, cirrus under anvils). 4 points a bake on a cell's first bakes, then
+        1; the mean converges (1 / bakes, 64 at most) and moves only as fast as sim time moves the layers (`layBake.y` = the sim
+        time between bakes / 60 s: 0 paused). Re-jittered every bake with a 1/8 floor it never stopped moving, and the history
+        took seconds to settle after a hop.
+      - **Slant** (mode 1, a quarter of the cells a frame): per cell X on the layer's reference sphere (5 / 9.5 km), the Sun's
+        transmittance through that layer along the whole Sun ray through X: 16 FIXED taps from where the ray rises out of the
+        band's floor to its top, each tap the overlap of its height stretch with that column's band (its centroid +- the
+        uniform-slab thickness), gamma model E[exp(-m tau)] from mean + variance, x the shadow share ("Mid layer shadow";
+        cirrus 0.2, delta-scaled ice). First cut took the FAR root of the band floor (the ray's lowest point, 670 km back and
+        underground at 6 deg): slant tau 0.16 where the columns said ~8.
+      - **Lookup** (`cv2LayerShadowT`, one call site in the march's key light, 128 registers): where the sample's light march
+        ends, the Sun ray's crossing of each reference sphere (the root on the Sun's side of the ray's lowest point), four slant
+        cells bilinear (near level, the far one where it is not baked or reached), T^(share of the band above the point). The
+        light march counts what it saw; the map the rest. At a 35 deg Sun it changes nothing (+0.09 levels).
+      - With the map on, the cascade drops the mid layer too (all layer shadow from one place: the cascade's mid shadow on the
+        AIR drew shot 3's fake sunbeam wedges; the air under a sheet is now unshadowed by it, god rays from the map are a
+        follow-up), and the deck term leaves the mid layer's share to the map.
+      - Validated against a brute-force march of the field along the Sun ray (`harness_runs/fb18/l_dbg4.comp`): T at 0 / -10 /
+        -20 km from the eye under the shot-2 altostratus 0.85 / 0.27 / 0.006 vs 0.95 / 0.02 / 0 (the map softens the sheet's
+        edge). Issue 192258: shot 2 deck -5 levels mean (the sheet ends ~35 km sunward, so the deck under the eye is lit from
+        under its edge at 6 deg), sideways -8.5; no edge following the eye; none from 300 km. Hop 45 km at 30 km/s: >16 levels
+        at 10 / 40 / 160 frames 0.60 / 0.02 / 0% (off 0.35 / 0.03 / 0%). Cost +0.2 ms GPU. Settings "Layer shadows (mid / high)"
+        `clouds_v2.layer_shadows` 1, "Cirrus self-shadow" `cirrus_self_shadow` 0 (slots 296-297). Harness `state` ->
+        `clouds_v2.layer_map` (the probe at 1.5 km under the eye: columns, slant T and tau where its Sun ray crosses).
 
   - The user's settings.json was lost to release.bat's wipe on 2026-10-13; a copy from that morning is
     `harness_runs/perf13/user_settings.json`.

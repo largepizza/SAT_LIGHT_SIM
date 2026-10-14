@@ -772,6 +772,7 @@ struct GpuCloudV2Params
     glm::vec4 tune, mid2, mid3, samp;   // 2026-10-11 (clouds_v2.glsl)
     glm::vec4 sunCasc6, sunCasc7;       // 2026-10-12: the shaft lattice's second ring + both rings' cells
     glm::vec4 cu, cu2;                  // 2026-10-13: the cumulus shape (clouds_v2.glsl)
+    glm::vec4 layA, layE, layN, layEye, layRef, layBake;   // 2026-10-14: the layer shadow map (clouds_v2.glsl)
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -789,7 +790,8 @@ static_assert(offsetof(GpuCloudV2Params, beamEye) == 288 + 48 * kCloudV2Types + 
 static_assert(offsetof(GpuCloudV2Params, sunCasc0) == 288 + 48 * kCloudV2Types + 736, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, sunCasc6) == 288 + 48 * kCloudV2Types + 896, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, cu) == 288 + 48 * kCloudV2Types + 928, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 960, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, layA) == 288 + 48 * kCloudV2Types + 960, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1056, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -3167,6 +3169,14 @@ private:
     float  cv2ShaftCellUsed[2] = {0.0f, 0.0f};     // the cells the rings were last baked with (a change refills them)
     double cv2Shaft2KnotUsed = 0.0;                // ring 2's knot spacing at its last refill (> 10% off refills it)
     int    cv2ShaftBoost = 0;                      // frames left of ring 0's second bake (catching up after motion)
+    // The layer shadow map (2026-10-14, include/cv2_layer_map.glsl): its anchor (a unit vector in the DRIFTED frame),
+    // the anchor's epoch (stamps values; a new anchor invalidates every cell), frames since its last reset, the bake round.
+    glm::dvec3 cv2LayAnchor{0.0, 0.0, 1.0};
+    bool     cv2LayAnchorSet = false;
+    int      cv2LayEpoch = 0;
+    int      cv2LayFrames = 0;
+    uint32_t cv2LayRound = 0;
+    double   cv2LayFarCell = 6000.0;      // level 1's cell (m): grows with the eye's altitude
     // 2026-10-11 (clouds_v2.glsl tune / mid2 / mid3 / samp; slots 270-282).
     // 2026-10-13 (issue 20261012_235712, slots 289-295, UBO cu / cu2): the cumulus shape.
     float cv2CuHeightVar = 0.6f;          // "Cumulus height variation": each cloud's top varies by this (x) across a field
@@ -3196,6 +3206,8 @@ private:
     // across the Sun (14 km at 250 m, 56 km at 1000 m). Ring 2 at 0 = off (the cascade beyond ring 1).
     float cv2ShadowRing1CellM = 250.0f;   // "Cloud shadow ring 1 cell (m)"
     float cv2ShadowRing2CellM = 1000.0f;  // "Cloud shadow ring 2 cell (m)"
+    float cv2LayerShadows = 1.0f;         // "Layer shadows (mid / high)": the layer shadow map's weight (0 = off)
+    float cv2CirrusSelfShadow = 0.0f;     // "Cirrus self-shadow": how much of the high layer's map shadow cirrus takes itself
     float cv2ShadowRing2KnotK = 0.5f;     // "Cloud shadow ring 2 depth (x)": its knot spacing along the Sun / (ring 1's x the cells' ratio)
     float cv2Godrays = 1.0f;              // "God rays": how much of the clouds' shadow the AIR takes (the sky pass reads the Sun shadow cascade), 0..1
     float cv2HazeAloft = 1.9f;            // "Haze near clouds": extra aerosol in the sky pass where the weather is (x sea-level Mie)
@@ -3477,6 +3489,11 @@ private:
     static constexpr uint32_t kCv2SunLutW = 256, kCv2SunLutH = 76;   // == cv2_sunlut.glsl
     float cv2SunLutKey[3] = {-1.0f, -1.0f, -1.0f};                    // the gains it was baked with
     VkBuffer cv2FlashBuf = VK_NULL_HANDLE;
+    // The layer shadow map (cv2_layer_map.glsl, march set binding 22): device-local, columns then slant cells.
+    VkBuffer cv2LayerBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cv2LayerMem = VK_NULL_HANDLE;
+    VkPipeline cv2LayerColPipeline = VK_NULL_HANDLE, cv2LayerSlantPipeline = VK_NULL_HANDLE;
+    static constexpr VkDeviceSize kCv2LayerBufBytes = 2ull * 65536 * 2 * 16 + 2ull * 65536 * 16;
     VkDeviceMemory cv2FlashMem = VK_NULL_HANDLE;
     void *cv2FlashMapped = nullptr;
     VkBuffer cv2BlueNoiseBuf = VK_NULL_HANDLE;   // 64x64 blue-noise tile (march binding 15)
@@ -5315,7 +5332,8 @@ private:
     bool draggingPhoto[38] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 296;   // 289-295 (2026-10-13): the cumulus shape
+    static constexpr int kCloudSliderSlots = 298;   // 296-297 (2026-10-14): layer shadows, cirrus self-shadow
+    // was 296:   // 289-295 (2026-10-13): the cumulus shape
     // was 289:   // 286-288 (2026-10-12): cloud shadow rings; 270-282 (2026-10-11): small cumulus, erosion / lobe variation, mid layer x5, cirrus warp, sampler x3, far shadow range
     // (was 270:)   // 261-266 rain particles (count, shutter, fall speed, wind, storm wind, gusts)
     bool hovCloudMinus[kCloudSliderSlots] = {}; // was [88] — idx 88/89 are the zodiacal light gain/width sliders,
@@ -5457,7 +5475,8 @@ private:
     // harness `shaders reload [march=<spv>]`; "" = ok, stats = the driver's statistics for the march
     std::string reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
                                       uint32_t wgX = 0, uint32_t wgY = 0, const std::string &resolveSpv = {},
-                                      const std::string &lightningSpv = {}, const std::string &compositeSpv = {});
+                                      const std::string &lightningSpv = {}, const std::string &compositeSpv = {},
+                                      const std::string &layersSpv = {});
     // The march's workgroup size (specialization constants): it bounds the driver's registers per
     // thread (65536 / the group's threads), i.e. the march's occupancy. Harness `shaders reload wg=`.
     uint32_t cv2MarchWg[2] = {16, 16};

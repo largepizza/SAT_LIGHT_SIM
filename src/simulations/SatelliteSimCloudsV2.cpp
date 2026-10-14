@@ -462,6 +462,11 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                      cv2FlashBuf, cv2FlashMem);
     vkMapMemory(dev, cv2FlashMem, 0, kCv2FlashBufBytes, 0, &cv2FlashMapped);
     std::memset(cv2FlashMapped, 0, kCv2FlashBufBytes);
+    // The layer shadow map (cv2_layer_map.glsl): device-local, read per lit sample by the march. Cleared on its first
+    // use and on every reset (recordCloudsV2: a 0 stamp reads as invalid).
+    ctx.createBuffer(kCv2LayerBufBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, cv2LayerBuf, cv2LayerMem);
+    cv2LayFrames = 0;
     ctx.createBuffer(16 + 8 * kCv2MaxTiles, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT
                                                  | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, cv2TileBuf, cv2TileMem);
@@ -530,14 +535,15 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // tile (the ray jitter in fast flight); the adaptive rate: 16 last frame's resolved depth, 17/18 pass B's full-rate
     // targets, 19 the tile list
     // 20 the cloud morphology texture (review 17), 21 the far cloud layer (review 18, cloud_v2_far.comp)
+    // 22 the layer shadow map (2026-10-14, cv2_layer_map.glsl; cloud_v2_layers.comp writes it)
     cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX, SSBO,
-                                             TEX, IMG, IMG, SSBO, TEX, IMG});
+                                             TEX, IMG, IMG, SSBO, TEX, IMG, SSBO});
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
     // 6/7 the full-rate tiles' color/depth, 8 the tile list
     // 9 / 10 the sample ages (out, history)
     cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO, IMG, TEX});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 15}, {SSBO, 6}, {IMG, 9}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 15}, {SSBO, 7}, {IMG, 9}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -573,6 +579,11 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     cv2LightningPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout);
     cv2SunLutPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout);
     cv2FarPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout);
+    {   // The layer shadow map's two passes: specialization constant 2 = 0 columns, 1 slant.
+        const uint32_t spec0[3] = {0u, 0u, 0u}, spec1[3] = {0u, 0u, 1u};
+        cv2LayerColPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_layers.comp.spv", cv2MarchPipeLayout, spec0, 3);
+        cv2LayerSlantPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_layers.comp.spv", cv2MarchPipeLayout, spec1, 3);
+    }
 
     // Static descriptors of the march set (the screen-sized ones are written by the targets).
     {
@@ -591,11 +602,13 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkDescriptorBufferInfo flashes{cv2FlashBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo blueNoise{cv2BlueNoiseBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo tiles{cv2TileBuf, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo layers{cv2LayerBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorImageInfo lvOut{VK_NULL_HANDLE, cv2SunLutView, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo lvIn{cv2ClampSampler, cv2SunLutView, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w[] = {
             bufferWrite(cv2MarchDescSet, 15, SSBO, &blueNoise),
             bufferWrite(cv2MarchDescSet, 19, SSBO, &tiles),
+            bufferWrite(cv2MarchDescSet, 22, SSBO, &layers),
             bufferWrite(cv2ResolveDescSet, 8, SSBO, &tiles),
             imageWrite(cv2MarchDescSet, 13, IMG, &lvOut),
             imageWrite(cv2MarchDescSet, 14, TEX, &lvIn),
@@ -779,7 +792,8 @@ static std::string pipelineStatsLine(VulkanContext &ctx, VkPipeline p)
 // driver's statistics for the new march pipeline.
 std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
                                                 uint32_t wgX, uint32_t wgY, const std::string &resolveSpv,
-                                                const std::string &lightningSpv, const std::string &compositeSpv)
+                                                const std::string &lightningSpv, const std::string &compositeSpv,
+                                                const std::string &layersSpv)
 {
     // Each override (harness `shaders reload march= resolve= lightning= composite=`) loads another SPV, so several
     // experiments can share one live app without overwriting the shipped SPVs; an empty one loads the shipped file.
@@ -821,6 +835,22 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     swap(cv2SunLutPipeline, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout, nullptr);
     cv2SunLutKey[0] = -1.0f;   // bake it again with the new shader
     swap(cv2FarPipeline, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout, nullptr);
+    for (int m = 0; m < 2; ++m)
+    {
+        const uint32_t spec[3] = {0u, 0u, (uint32_t)m};
+        VkPipeline &lp = m == 0 ? cv2LayerColPipeline : cv2LayerSlantPipeline;
+        try
+        {
+            VkPipeline np = makeComputePipeline(ctx, pick(layersSpv, "shaders/cloud_v2_layers.comp.spv"), cv2MarchPipeLayout, spec, 3);
+            if (lp) vkDestroyPipeline(ctx.device, lp, nullptr);
+            lp = np;
+        }
+        catch (const std::exception &e)
+        {
+            err += std::string(e.what()) + "; ";
+        }
+    }
+    cv2LayFrames = 0;   // rebake the layer shadow map with the new shader
     swap(cloudMarchPipeline, pick(compositeSpv, "shaders/cloud_march.comp.spv"), cloudMarchPipeLayout, nullptr);   // the composite
     cv2HistoryValid = false;
     stats = pipelineStatsLine(ctx, cv2MarchPipeline);
@@ -844,6 +874,12 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2SunLutPipeline = VK_NULL_HANDLE;
     if (cv2FarPipeline) vkDestroyPipeline(device, cv2FarPipeline, nullptr);
     cv2FarPipeline = VK_NULL_HANDLE;
+    if (cv2LayerColPipeline) vkDestroyPipeline(device, cv2LayerColPipeline, nullptr);
+    if (cv2LayerSlantPipeline) vkDestroyPipeline(device, cv2LayerSlantPipeline, nullptr);
+    cv2LayerColPipeline = cv2LayerSlantPipeline = VK_NULL_HANDLE;
+    if (cv2LayerBuf) vkDestroyBuffer(device, cv2LayerBuf, nullptr);
+    if (cv2LayerMem) vkFreeMemory(device, cv2LayerMem, nullptr);
+    cv2LayerBuf = VK_NULL_HANDLE; cv2LayerMem = VK_NULL_HANDLE;
     if (cv2SunLutView) vkDestroyImageView(device, cv2SunLutView, nullptr);
     if (cv2SunLutImg) vkDestroyImage(device, cv2SunLutImg, nullptr);
     if (cv2SunLutMem) vkFreeMemory(device, cv2SunLutMem, nullptr);
@@ -1397,6 +1433,56 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                            std::clamp(cv2SampClampSd, 0.25f, 8.0f), std::clamp(cv2LightFootprint, 0.0f, 0.5f));
         p.sunCasc2 = glm::vec4(on ? std::clamp(((float)cv2CascFrames - 4.0f) / 8.0f, 0.0f, 1.0f) : 0.0f,   // every ray baked by frame 4
                                (float)(2.0 * sHalf / 40.0), on ? 1.0f : 0.0f, std::max(cv2HazeAloft, 0.0f));
+
+        // The LAYER SHADOW MAP (2026-10-14, include/cv2_layer_map.glsl): the mid and high layers' shadow at any distance.
+        // Its lattice is a gnomonic plane tangent at an anchor fixed in the DRIFTED frame (the clouds stand still in it), so
+        // nothing is integrated: the eye's coordinate is a projection. A new anchor (> 1500 km away, or a reset) clears it.
+        const bool layOn = cv2LayerShadows > 0.0f && sinE > -0.1 && cloudFarBlend() < 0.999f && (cv2MidAmount > 0.0f || cv2HighAmount > 0.0f);
+        const glm::dvec3 eyeD = rotD(up, cD, sD);
+        if (!cv2LayAnchorSet || glm::dot(eyeD, cv2LayAnchor) < std::cos(1500000.0 / R))
+        {
+            cv2LayAnchor = eyeD;
+            cv2LayAnchorSet = true;
+            cv2LayEpoch = (cv2LayEpoch + 1) & 15;
+            cv2LayFrames = 0;
+        }
+        // Level 1's cells cover what the eye can see of the cloud tops (+ 300 km for a grazing Sun's offset) in its
+        // 124-cell reach: 6 km near the ground, doubling up to 48 km from orbit (a change refills the map).
+        const double reachM = std::sqrt(2.0 * R * std::max(eyeH, 0.0)) + std::sqrt(2.0 * R * 14000.0) + 300000.0;
+        double cellF = 6000.0;
+        while (cellF * 124.0 < reachM && cellF < 48000.0) cellF *= 2.0;
+        if (cellF != cv2LayFarCell) { cv2LayFarCell = cellF; cv2LayFrames = 0; }
+        if (!lightValid || !layOn)
+            cv2LayFrames = 0;
+        ++cv2LayFrames;   // 1 on a reset frame: recordCloudsV2 clears the map then
+        ++cv2LayRound;
+        {
+            const glm::dvec3 A = cv2LayAnchor;
+            const glm::dvec3 Ed = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), std::abs(A.z) > 0.999 ? glm::dvec3(1.0, 0.0, 0.0) : A));
+            const glm::dvec3 Nd = glm::cross(A, Ed);
+            // ... into the observer's ENU frame: undrift (Earth-fixed ECEF), then onto east / north / up.
+            const glm::dvec3 ex = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), up)), ey = glm::cross(up, ex);
+            auto toEnu = [&](const glm::dvec3 &vd)
+            {
+                const glm::dvec3 v = rotD(vd, cD, -sD);
+                return glm::vec3((float)glm::dot(v, ex), (float)glm::dot(v, ey), (float)glm::dot(v, up));
+            };
+            const double cellN = 1000.0;
+            const double ue = R * glm::dot(eyeD, Ed) / glm::dot(eyeD, A), ve = R * glm::dot(eyeD, Nd) / glm::dot(eyeD, A);
+            p.layA = glm::vec4(toEnu(A), (float)cellN);
+            p.layE = glm::vec4(toEnu(Ed), (float)cellF);
+            // w: in once the columns have all been baked (16 frames) and the slant cells twice (8 more), over 16.
+            p.layN = glm::vec4(toEnu(Nd), layOn ? std::clamp(cv2LayerShadows, 0.0f, 1.0f)
+                                                    * std::clamp(((float)cv2LayFrames - 24.0f) / 16.0f, 0.0f, 1.0f) : 0.0f);
+            p.layEye = glm::vec4((float)(ue / cellN), (float)(ve / cellN), (float)(ue / cellF), (float)(ve / cellF));
+            // The reference heights the slant cells lie at; the share of each layer's extinction its shadow takes: the mid
+            // layer's "Mid layer shadow" (as the light march), cirrus 0.2 (delta-scaled ice, as the light march).
+            p.layRef = glm::vec4(5000.0f, 9500.0f, std::clamp(cv2MidShadow, 0.0f, 1.0f), 0.2f);
+            // y: a bake's least weight in a column's running mean: the sim time between two bakes of a cell (16 frames) over
+            // the ~60 s the layers take to change at a cell's scale (cloudlets slide ~30 m/s); 0 while paused.
+            p.layBake = glm::vec4((float)(cv2LayRound & 0xFFFFFu), (float)std::clamp(std::abs(dSimT) * 16.0 / 60.0, 0.0, 1.0),
+                                  (float)cv2LayEpoch, std::clamp(cv2CirrusSelfShadow, 0.0f, 1.0f));
+        }
     }
     {   // Rain / snow at the eye: a local frame fixed to the nearest 0.25-degree point (so the drops are
         // world-fixed: walking moves through them), the eye's position in it in double, wrapped to 1024 m
@@ -1686,6 +1772,25 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         cv2LightningRanThisFrame = true;
         cv2LightningObsDir = glm::dvec3(cpc.obsECEFDir);   // the frame its flash list is in (updateLightningBolts)
         cv2LightningObsDirValid = true;
+    }
+    // The layer shadow map (cv2_layer_map.glsl): cleared on a reset (stamps 0 read as invalid), then this frame's columns,
+    // then a quarter of the slant cells from them; the march reads the slant cells.
+    if (cv2LayerColPipeline && cv2LayerSlantPipeline && cv2LayerBuf)
+    {
+        if (cv2LayFrames <= 1)
+        {
+            vkCmdFillBuffer(cmd, cv2LayerBuf, 0, VK_WHOLE_SIZE, 0);
+            memoryBarrier(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        }
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LayerColPipeline);
+        vkCmdDispatch(cmd, 32, 1, 1);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LayerSlantPipeline);
+        vkCmdDispatch(cmd, 128, 1, 1);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     }
     if (cv2AdaptiveNow)
     {

@@ -607,6 +607,18 @@ json SatelliteSim::harnessStateJson()
         }
         j["clouds_v2"]["rain"] = rn;
     }
+    // The layer shadow map (cv2_layer_map.glsl), probed by cloud_v2_layers.comp at 1.5 km above sea level under the eye
+    // (the previous frame's): the lookup there, the columns over it, and the slant cells where its Sun ray crosses each
+    // layer's reference sphere (T, the mid layer's slant optical depth with its shadow share).
+    if (cv2FlashMapped)
+    {
+        const float *pr = (const float *)((const char *)cv2FlashMapped + kCv2RainMapOffset - 80) + 8;
+        j["clouds_v2"]["layer_map"] = {{"frames", cv2LayFrames}, {"epoch", cv2LayEpoch}, {"T_below_eye", pr[0]},
+                                       {"mid_tau", pr[1]}, {"mid_tau_var", pr[2]}, {"mid_band_km", {pr[3], pr[4]}},
+                                       {"high_tau", pr[5]}, {"high_band_km", {pr[6], pr[7]}},
+                                       {"mid_slant_T", pr[8]}, {"mid_slant_tau", pr[9]}, {"high_slant_T", pr[10]},
+                                       {"sun_sin_at_X", pr[11]}};
+    }
 
     static const char *kBucketKeys[8] = {"scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
                                          "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};
@@ -3091,7 +3103,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             fail("shaders reload: wg=<X>x<Y>");
         ctx_->capturePipelineStats = true;   // the statistics below need it; startup does not ask for it
         const std::string err = reloadCloudsV2Shaders(*ctx_, c.str("march"), stats, wgX, wgY, c.str("resolve"), c.str("lightning"),
-                                                        c.str("composite"));
+                                                        c.str("composite"), c.str("layers"));
         ctx_->capturePipelineStats = false;
         if (!err.empty())
             fail("shaders reload: " + err);
