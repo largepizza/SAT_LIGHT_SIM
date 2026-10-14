@@ -25,3 +25,9 @@ visible at render scale 0.65, where a sparse block is 6 screen pixels.
 The light march footprint at 0.08 (640 m of an 8 km march) removed a cumulus's self-shadow: a backlit cloud was a
 flat glowing shape cut by a straight far-shadow line. At 0 the same cloud has a shaded body and lit rims. The old
 silver lining (the narrow lobe alone, at full extinction) moved a backlit rim by about 6 levels between 0 and 3.
+
+## Now (addendum, issue 20261013_192258)
+The near Sun-shadow lattices (the two shaft rings and the fine grid) carry the shadow of the low cloud, towers and
+anvils only: the high layer and the mid layer's sheets cast none there. The cascade and each sample's own light
+march still count the mid layer at "Mid layer shadow". Before, clouds within a ring's reach of the eye were grey
+under altocumulus and white beyond it, a boundary that moved with the observer.

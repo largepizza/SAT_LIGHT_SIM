@@ -161,7 +161,7 @@ void main()
                     CV2Pos q = cv2Pos(o + sunENU * sM, eyeH, enuToEcef);
                     if (dsM > 1.0 && q.h > -300.0 && q.h < cv2.shell.y + 2500.0) {
                         CV2Field gf = cv2Field(q, 0.0, fpM);
-                        od += gf.sigma * (1.0 - gf.thin - cv2.mid2.z * gf.soft) * dsM;
+                        od += gf.sigma * max(1.0 - gf.thin - gf.soft, 0.0) * dsM;   // no thin layers here: see the fine grid
                     }
                     if (m <= kCv2ShaftK - 1)
                         Tk[(base + m + 8 * kCv2ShaftK) & (kCv2ShaftK - 1)] += 0.5 * exp(-od);
@@ -255,7 +255,7 @@ void main()
                     CV2Field gf = cv2Field(cv2Pos(o + sunENU * (L * um * um), eyeH, enuToEcef), 0.0, max(60.0, dt * 0.5));
                     // The thin ice (the high layer) casts no shadow here: along a grazing Sun's ray it shadowed
                     // ITSELF over tens of km, and every sunset's cirrus went dark and speckled (user snaps).
-                    od += gf.sigma * (1.0 - gf.thin - cv2.mid2.z * gf.soft) * dt;
+                    od += gf.sigma * max(1.0 - gf.thin - gf.soft, 0.0) * dt;
                     if (i % 3 == 2) odK[(i + 1) / 3] = od;
                 }
                 for (int k = 0; k <= 16; ++k) Tk[k] += 0.25 * exp(-(od - odK[k]));
