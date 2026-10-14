@@ -982,6 +982,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       of its knot spacing (`cv2Shaft2KnotUsed`). Shot 5 (20.8 km) running: 0.88% -> 0.00002% of pixels past 8 levels a
       frame; load fill > 16 levels at frame 20 / 40: 1.0% / 0.04%. **2026-10-14 02:33 the PC rebooted with two live
       harness apps running in parallel** (freezes not fixed after all): one app at a time.
+    - **Shadow settle after fast moves (2026-10-14, the user's shot 7: "move backwards: cloud shadows fade in"):** after a
+      30 km/s hop from shot 7 the clouds' own history settles in ~10 frames and the shadows took ~160 (pixels past 16
+      levels at 10 / 40 frames: 2.4 / 1.5% with far shadows, 0.1 / 0.01% without). Ring 0 is the culprit (at 2-km cells
+      the same hop settles to 0.27 / 0.01%): a 45-km hop moves the user's 159-m ring ~280 cells, so the whole ring changed
+      hands and refilled over 32-frame rounds and four more bakes of its running means. Now: workgroups 17-18 (dispatch
+      19) bake ring 0 a second time while it catches up (`cu2.w`, CPU `cv2ShaftBoost`: moving > 0.5 cell a frame, the 128
+      frames after, its first fill): 4 more leading-edge columns moving, a second round half a round out of phase still;
+      and a LEADING-EDGE bake (a slot's first) takes 4 sub-rays instead of 2. Interleaved A/B over the hop: frame 10
+      1.6% -> 0.4-1.2%, frame 40 0.45-1.05 -> 0.1-0.5%; +0.2-0.35 ms of cloud time while moving fast, none still. The
+      CASCADE got the rings' wrap stamp too (its last knot, always 1, carries 3+3 bits of wrap and a bake count; the CPU
+      passes its lattice coordinate mod 1024 / 256): a slot that changed hands is rebaked whole instead of blending the far
+      side's shadow out at 1/8 a bake. Neutral in this test (the motion barely wraps the visible cascade). Benchmarks:
+      `harness_runs/fb17/back.py` (backwards flight at 1 / 5 km/s vs settled poses: ~3% of pixels, mostly the clouds'
+      history, not shadows) and the hop batches there; compare a hop against its OWN late frame (two fresh loads of one
+      pose differ by ~1.8 levels: the settled shadows depend a little on the lattice's phase).
 
   - The user's settings.json was lost to release.bat's wipe on 2026-10-13; a copy from that morning is
     `harness_runs/perf13/user_settings.json`.

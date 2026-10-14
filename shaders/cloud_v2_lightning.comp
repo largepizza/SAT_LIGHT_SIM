@@ -114,8 +114,14 @@ void main()
         // ray steps down its knots toward the eye and beyond (one field read per interval, 2 sub-rays at their own
         // place in the cell and phase of the step, a running mean of the bakes: as the cascade).
         if (gl_WorkGroupID.x > 12u) {
-            int   ring  = gl_WorkGroupID.x > 14u ? 1 : 0;
-            int   wg    = int(gl_WorkGroupID.x - 13u) & 1;
+            // Workgroups 17-18 (2026-10-14, issue 20261013_220718: "move backwards: cloud shadows fade in") bake ring 0
+            // AGAIN while it catches up (cu2.w, CPU: moving > 0.5 of its cells a frame, the 128 frames after, and its
+            // first fill): 4 more leading-edge columns while moving, a second round half a round out of phase when
+            // still. After a 30-km/s hop the whole ring had changed hands and took two rounds (64 frames) and its
+            // running means two more to settle: the near shadows faded in over 1-2 s. Otherwise they return at once.
+            int   ring  = (gl_WorkGroupID.x > 14u && gl_WorkGroupID.x < 17u) ? 1 : 0;
+            int   wg    = gl_WorkGroupID.x > 16u ? int(gl_WorkGroupID.x - 15u) : int(gl_WorkGroupID.x - 13u) & 1;
+            if (wg >= 2 && cv2.cu2.w <= 0.0) return;
             float cellM = (ring == 0) ? cv2.sunCasc7.z : cv2.sunCasc7.w;
             vec4  la    = cv2ShaftLat(ring);
             vec2  vel   = cv2ShaftVel() * ((ring == 0) ? 1.0 : cv2.sunCasc7.z / cv2.sunCasc7.w);
@@ -131,16 +137,17 @@ void main()
             bool  mov  = sp > 0.02;
             bool  fast = sp > 2.0;
             int   r;
-            if (mov && (wg == 1 || fast)) {
+            bool  lead = mov && (wg == 1 || fast || wg >= 2);
+            if (lead) {
                 int   ax  = (abs(vel.x) >= abs(vel.y)) ? 0 : 1;
                 float sg  = ((ax == 0) ? vel.x : vel.y) >= 0.0 ? 1.0 : -1.0;
-                int   jj  = (fast ? 2 * wg : 0) + int(li >> 7u);
+                int   jj  = ((fast || wg >= 2) ? 2 * wg : 0) + int(li >> 7u);
                 int   sAx = int(floor(((ax == 0) ? la.x : la.y) + sg * (61.0 - float(jj)) + 4096.0)) & (kCv2ShaftN - 1);
                 int   row = int(li & 127u);
                 r = (ax == 0) ? row * kCv2ShaftN + sAx : sAx * kCv2ShaftN + row;
             } else {
                 r = mov ? int((uint(cv2.frame.x) & 63u) * 256u + li)
-                        : int(((uint(cv2.frame.x) & 31u) * 2u + uint(wg)) * 256u + li);
+                        : int((((uint(cv2.frame.x) + (wg >= 2 ? 16u : 0u)) & 31u) * 2u + uint(wg & 1)) * 256u + li);
             }
             vec3  ga, gb;
             cv2SunGridAxes(sunENU, ga, gb);
@@ -156,8 +163,10 @@ void main()
             float jn = float(uint(cv2.frame.x) & 1023u);
             vec2  jo = fract(vec2(jh.xy & 0xFFFFu) / 65536.0 + jn * vec2(0.7548777, 0.5698403));
             float jp = fract(float(jh.z & 0xFFFFu) / 65536.0 + jn * 0.6180340);
-            [[dont_unroll]] for (int sr = 0; sr < 2; ++sr) {
-                vec2  gp = (gc + fract(jo + 0.5 * float(sr)) - 0.5) * cellM;
+            int   nSr = lead ? 4 : 2;   // a leading-edge bake is a slot's FIRST: twice the sub-rays
+            float wSr = 1.0 / float(nSr);
+            [[dont_unroll]] for (int sr = 0; sr < nSr; ++sr) {
+                vec2  gp = (gc + fract(jo + vec2(wSr * float(sr), fract(0.6180340 * float(sr) + 0.5 * float(sr & 1)))) - 0.5) * cellM;
                 vec3  o  = ga * gp.x + gb * gp.y;
                 float sTop = (float(base + kCv2ShaftK - 1) - la.z) * ds;
                 // Beyond the window's sunward end the ray marches on to where the fine grid's rays end (kShaftFar
@@ -176,10 +185,10 @@ void main()
                         float u1 = float(m - (kCv2ShaftK - 2)) / float(kShaftFar);
                         float s0 = sTop + (sFar - sTop) * u0 * u0;
                         dsM = (sFar - sTop) * (u1 * u1 - u0 * u0);
-                        sM  = s0 + dsM * fract(jp + 0.5 * float(sr) + 0.6180340 * float(m));
+                        sM  = s0 + dsM * fract(jp + wSr * float(sr) + 0.6180340 * float(m));
                     } else {
                         dsM = ds;
-                        sM  = (float(base + m) + fract(jp + 0.5 * float(sr)) - la.z) * ds;
+                        sM  = (float(base + m) + fract(jp + wSr * float(sr)) - la.z) * ds;
                     }
                     CV2Pos q = cv2Pos(o + sunENU * sM, eyeH, enuToEcef);
                     if (dsM > 1.0 && q.h > -300.0 && q.h < cv2.shell.y + 2500.0) {
@@ -187,7 +196,7 @@ void main()
                         od += gf.sigma * max(1.0 - gf.thin - gf.soft, 0.0) * dsM;   // no thin layers here: see the fine grid
                     }
                     if (m <= kCv2ShaftK - 1)
-                        Tk[(base + m + 8 * kCv2ShaftK) & (kCv2ShaftK - 1)] += 0.5 * exp(-od);
+                        Tk[(base + m + 8 * kCv2ShaftK) & (kCv2ShaftK - 1)] += wSr * exp(-od);
                 }
             }
             if (r < kCv2ShaftN * kCv2ShaftN) {
@@ -247,9 +256,24 @@ void main()
                 }
                 for (int k = 0; k <= kCv2CascK; ++k) Tc[k] += 0.5 * exp(-(od - odK[k]));
             }
-            if (r < kCv2CascNA * kCv2CascNB)
-                for (int k = 0; k <= kCv2CascK; ++k)
-                    cv2SunCasc[r * (kCv2CascK + 1) + k] = mix(cv2SunCasc[r * (kCv2CascK + 1) + k], Tc[k], cv2.sunCasc3.w);
+            if (r < kCv2CascNA * kCv2CascNB) {
+                // The ray's last knot is always 1 (nothing beyond it), so it carries a STAMP (2026-10-14, issue
+                // 20261013_220718): which of 8 wraps of the toroidal lattice this slot holds (the CPU passes the eye's
+                // coordinate mod 8 windows) and how many bakes its running mean has. A slot that changed hands as the
+                // eye moved takes the new bake whole; it used to keep the shadow from the far side of the window and
+                // blend it out at 1/8 a bake (~30 frames), so after a fast move the far shadows faded in over seconds.
+                ivec2 ia  = ivec2(round(cv2.sunCasc0.xy + vec2(0.0, cv2.sunCasc0.z) + d))
+                          & ivec2(8 * kCv2CascNA - 1, 8 * kCv2CascNB - 1);
+                uint  st  = uint(ia.x / kCv2CascNA) | (uint(ia.y / kCv2CascNB) << 3u);
+                int   rb  = r * (kCv2CascK + 1);
+                uint  sb  = floatBitsToUint(cv2SunCasc[rb + kCv2CascK]);
+                bool  ok  = (sb & 0xFFFFFE00u) == 0x3F800000u && (sb & 63u) == st;
+                uint  cnt = ok ? (sb >> 6u) & 7u : 0u;
+                float w   = ok ? max(cv2.sunCasc3.w, 1.0 / float(cnt + 2u)) : 1.0;
+                for (int k = 0; k < kCv2CascK; ++k)
+                    cv2SunCasc[rb + k] = mix(cv2SunCasc[rb + k], Tc[k], w);
+                cv2SunCasc[rb + kCv2CascK] = uintBitsToFloat(0x3F800000u | (min(cnt + 1u, 6u) << 6u) | st);
+            }
             return;
         }
         if (gl_WorkGroupID.x > 8u) return;

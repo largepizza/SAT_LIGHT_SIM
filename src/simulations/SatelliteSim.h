@@ -3166,6 +3166,7 @@ private:
     int    cv2Shaft2Frames = 0;
     float  cv2ShaftCellUsed[2] = {0.0f, 0.0f};     // the cells the rings were last baked with (a change refills them)
     double cv2Shaft2KnotUsed = 0.0;                // ring 2's knot spacing at its last refill (> 10% off refills it)
+    int    cv2ShaftBoost = 0;                      // frames left of ring 0's second bake (catching up after motion)
     // 2026-10-11 (clouds_v2.glsl tune / mid2 / mid3 / samp; slots 270-282).
     // 2026-10-13 (issue 20261012_235712, slots 289-295, UBO cu / cu2): the cumulus shape.
     float cv2CuHeightVar = 0.6f;          // "Cumulus height variation": each cloud's top varies by this (x) across a field

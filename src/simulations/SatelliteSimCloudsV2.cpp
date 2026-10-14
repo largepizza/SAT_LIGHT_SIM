@@ -1287,7 +1287,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             ++cv2CascFrames;
         }
         auto modP = [](double v, double m) { v = std::fmod(v, m); return (float)(v < 0.0 ? v + m : v); };
-        p.sunCasc0 = glm::vec4(modP(cv2CascLatA, 128.0), modP(cv2CascLatB, 32.0),
+        // xy mod 8 windows (1024 x 256 cells): each ray's last knot stamps which wrap of its slot it was baked for
+        // (cloud_v2_lightning.comp), so a slot that changed hands as the eye moved is rebaked whole.
+        p.sunCasc0 = glm::vec4(modP(cv2CascLatA, 1024.0), modP(cv2CascLatB, 256.0),
                                (float)((hMid - eyeH) * glm::dot(up, gb) / db), (float)((hMid - eyeH) * sinE));
         p.sunCasc1 = glm::vec4((float)da, (float)db, (float)sHalf, (float)sExt);
         // zw: the weight of a new bake in each ray's running mean: 1 / (bakes so far), at least 1/8 (the fine grid is
@@ -1386,8 +1388,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                        std::clamp(((float)lightFill - 64.0f) / 32.0f, 0.0f, 1.0f));
         p.cu  = glm::vec4(std::clamp(cv2CuHeightVar, 0.0f, 1.0f), std::clamp(cv2CuBreakup, 0.0f, 1.0f),
                           std::clamp(cv2CuHeadroom, 0.0f, 2.0f), std::clamp(cv2CuFineLobes, 0.0f, 2.0f));
+        // w: ring 0 is catching up (cloud_v2_lightning.comp workgroups 17-18 bake it a second time): moving more than
+        // half a cell a frame, the 128 frames after that, and its first 64 frames after a refill.
+        cv2ShaftBoost = (glm::length(shaftVel) > 0.5f || (shaftOn && cv2ShaftFrames < 64)) ? 128 : std::max(cv2ShaftBoost - 1, 0);
         p.cu2 = glm::vec4(std::clamp(cv2CbFineLobes, 0.0f, 2.0f), std::clamp(cv2CuWisps, 0.0f, 1.0f),
-                          std::clamp(cv2SilverLining, 0.0f, 4.0f), 0.0f);
+                          std::clamp(cv2SilverLining, 0.0f, 4.0f), (shaftOn && cv2ShaftBoost > 0) ? 1.0f : 0.0f);
         p.samp = glm::vec4(std::clamp(cv2SampAccum, 0.0f, 256.0f), std::clamp(cv2SampNewSmooth, 0.0f, 1.0f),
                            std::clamp(cv2SampClampSd, 0.25f, 8.0f), std::clamp(cv2LightFootprint, 0.0f, 0.5f));
         p.sunCasc2 = glm::vec4(on ? std::clamp(((float)cv2CascFrames - 4.0f) / 8.0f, 0.0f, 1.0f) : 0.0f,   // every ray baked by frame 4
@@ -1673,7 +1678,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     if (cv2LightningPipeline)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightningPipeline);
-        vkCmdDispatch(cmd, 17, 1, 1);   // + 4 workgroups for the rain map (review 22), + 4 for the Sun shadow grid, + 4 more
+        vkCmdDispatch(cmd, 19, 1, 1);   // (+ 2 for ring 0's catch-up bake, 2026-10-14) + 4 workgroups for the rain map (review 22), + 4 for the Sun shadow grid, + 4 more
                                         // on the frames that bake the cascade (returning at once on the others)
         // The rain particles (main pass, vertex stage) read the rain map and the light at the eye it just wrote.
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,

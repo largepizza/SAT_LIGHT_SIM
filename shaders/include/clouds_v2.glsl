@@ -137,7 +137,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // 2026-10-06: the snow's own fall: x its phase (as rainMotion.x), y its reference speed now (flakes are not "Rain fall speed").
     vec4  snowMotion;
     // 2026-10-10: the Sun shadow CASCADE (cloud_lightning.glsl cv2SunCasc; CPU, SatelliteSimCloudsV2.cpp).
-    // sunCasc0: xy the eye's lattice coordinate (cells; a mod 128, b mod 32), z the window centre's b offset from
+    // sunCasc0: xy the eye's lattice coordinate (cells; a mod 1024, b mod 256 = 8 windows: the slots' wrap stamps), z the window centre's b offset from
     //           the eye (cells), w its offset along the Sun (m). sunCasc1: x, y the cell (m) along a / b, z the half
     //           depth of the uniform knots (m), w the stretch beyond them toward the Sun (m).
     // sunCasc2: x the cascade's weight (0 while it fills after a reset), y the lookup's bias toward the Sun (m),
