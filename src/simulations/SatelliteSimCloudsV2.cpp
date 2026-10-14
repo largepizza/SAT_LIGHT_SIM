@@ -1313,7 +1313,17 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const bool ring2On = shaftOn && cv2ShadowRing2CellM > 0.0f;
         const double dsS2 = dsS * std::max(cell2 / cell1 * std::clamp((double)cv2ShadowRing2KnotK, 0.1, 4.0), 1.0);
         if (cv2ShaftCellUsed[0] != (float)cell1) { cv2ShaftCellUsed[0] = (float)cell1; cv2ShaftFrames = 0; cv2Shaft2Frames = 0; }
-        if (cv2ShaftCellUsed[1] != (float)dsS2 + (float)cell2) { cv2ShaftCellUsed[1] = (float)dsS2 + (float)cell2; cv2Shaft2Frames = 0; }
+        // Ring 2 refills on a new cell, or when its knot spacing along the Sun has moved > 10% since its last refill. It
+        // compared dsS2 + cell2 EXACTLY, and dsS2 follows the Sun's elevation (5000 m / sin el, between 6 and 18 deg): with
+        // time running ring 2 was cleared every frame and never drew a shadow there (2026-10-14, issue 20261013_214939
+        // shot 5 at a ~10 deg Sun: the clamp gate below never opened). A ray is rebaked at the current spacing every
+        // round, so a slowly changing spacing needs no refill.
+        if (cv2ShaftCellUsed[1] != (float)cell2 || std::abs(dsS2 / std::max(cv2Shaft2KnotUsed, 1e-3) - 1.0) > 0.1)
+        {
+            cv2ShaftCellUsed[1] = (float)cell2;
+            cv2Shaft2KnotUsed = dsS2;
+            cv2Shaft2Frames = 0;
+        }
         // A ring starting to fill (a reset, a new cell size, the cascade switched on) is cleared to 0 first: every
         // slot then reads as INVALID (cloud_lightning.glsl cv2ShaftStampOk) until it is baked, so the lookup falls back
         // to the next ring / the cascade there instead of showing what the slot held before (another place, another
@@ -1364,8 +1374,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                            std::clamp(cv2CirrusDirWarp, 0.0f, 1.3f));
         p.mid2 = glm::vec4(std::max(cv2AsDensity, 0.0f), std::clamp(cv2MidThick, 0.1f, 4.0f),
                            1.0f - std::clamp(cv2MidShadow, 0.0f, 1.0f), 0.057f * cv2MidCover);
+        // w: how far the resolve may take a still view's history unclamped (cloud_v2_resolve.comp `uK`). Not while the
+        // Sun shadow lattices are filling after a reset: their shadows arrive over ~40 frames, and unclamped at the still
+        // weight the clouds took seconds to darken under them (load: 18% of pixels past 16 levels at frame 20, was 0.7%).
+        int lightFill = cv2GridFrames;
+        if (on) lightFill = std::min(lightFill, cv2CascFrames);
+        if (shaftOn) lightFill = std::min(lightFill, cv2ShaftFrames);
+        if (ring2On) lightFill = std::min(lightFill, cv2Shaft2Frames);
         p.mid3 = glm::vec4(cv2MidFieldKm > 1.0f ? 1.0f / (1000.0f * cv2MidFieldKm) : 0.0f,
-                       std::round(std::clamp(cv2MsOctaves, 1.0f, 8.0f)), std::clamp(cv2LobeOcclusion, 0.0f, 1.0f), 0.0f);
+                       std::round(std::clamp(cv2MsOctaves, 1.0f, 8.0f)), std::clamp(cv2LobeOcclusion, 0.0f, 1.0f),
+                       std::clamp(((float)lightFill - 64.0f) / 32.0f, 0.0f, 1.0f));
         p.cu  = glm::vec4(std::clamp(cv2CuHeightVar, 0.0f, 1.0f), std::clamp(cv2CuBreakup, 0.0f, 1.0f),
                           std::clamp(cv2CuHeadroom, 0.0f, 2.0f), std::clamp(cv2CuFineLobes, 0.0f, 2.0f));
         p.cu2 = glm::vec4(std::clamp(cv2CbFineLobes, 0.0f, 2.0f), std::clamp(cv2CuWisps, 0.0f, 1.0f),

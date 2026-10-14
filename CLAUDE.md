@@ -975,6 +975,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       `skyAmbientTerrain` and the sea's sky-reflection march (`earthShadowSpan` / `earthShadowLit`); offline replicas
       52% -> 2.5% max step per 0.01 deg of Sun. Root of the class: `optDepth`'s 2 Sun-path samples (the user's light
       samples 2.4) under-count a grazing path; `sunTransmit` (Chapman) there would remove it (look change, not done).
+    - **Follow-up (2026-10-14):** the unclamp is gated by `mid3.w` (CPU: 0 until the Sun shadow lattices have filled
+      for 64-96 frames after a reset): unclamped at the still weight, shadows arriving after a load darkened the clouds
+      over seconds. And **ring 2 was cleared EVERY FRAME with time running at a 6-18 deg Sun**: its refill test compared
+      `dsS2 + cell2` exactly, and dsS2 (5000 m / sin el) follows the Sun. It now refills on a new cell or a > 10% change
+      of its knot spacing (`cv2Shaft2KnotUsed`). Shot 5 (20.8 km) running: 0.88% -> 0.00002% of pixels past 8 levels a
+      frame; load fill > 16 levels at frame 20 / 40: 1.0% / 0.04%. **2026-10-14 02:33 the PC rebooted with two live
+      harness apps running in parallel** (freezes not fixed after all): one app at a time.
 
   - The user's settings.json was lost to release.bat's wipe on 2026-10-13; a copy from that morning is
     `harness_runs/perf13/user_settings.json`.
