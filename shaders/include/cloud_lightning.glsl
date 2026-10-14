@@ -125,33 +125,32 @@ float cv2SunGridLen(vec3 s, float shellTop)
 {
     return min(shellTop / max(s.z, 0.03), 400000.0);
 }
-// The shaft rings' values carry a STAMP (2026-10-13, issue 20261013_220718): the lattice is toroidal, so when the eye
-// moves a slot at the window's trailing edge becomes a cell at its leading edge, 128 cells (or 32 knots) away, and kept
-// the other side's shadow until its next bake (each ray every 32 frames) and then blended it out at 1/4 a bake: after a
-// 6-km hop a band of the near shadows read lit for ~4 s. A value is a float in [1, 2): 10 bits of transmittance and,
-// above them, the slot's offset from the eye when it was baked, in bins (4 cells across, 4 knots along): a slot that
-// changed hands has moved ~a window (32 bins) since, one that did not by its share of the eye's motion. 0 (cleared) and
-// any value outside [1, 2) read as invalid.
-uint cv2ShaftStampOf(vec2 gc, float relK)
+// The shaft rings' values carry a STAMP (2026-10-13, issue 20261013_220718; exact since round 5): the lattice is
+// toroidal (128 x 128 rays, 32 knots), so when the eye moves a slot at the window's trailing edge becomes a cell at its
+// leading edge and keeps the other side's shadow until it is baked again. The CPU integrates the eye's lattice
+// coordinate modulo 1024 cells (256 knots), i.e. 8 wraps of the window, and a value records WHICH wrap of its slot it
+// was baked for (3 bits per axis): a slot that changed hands reads as invalid until it is baked, at any speed up to
+// 8 windows between two bakes of a slot. A value is a float in [1, 2): 10 bits of transmittance, 9 of wraps and 2 of
+// the slot's bake count (its running mean: 1, 1/2, 1/3, then 1/4 a bake). 0 (cleared) reads as invalid.
+uint cv2ShaftStampOf(int ia, int ib, int ik)      // absolute cell (mod 1024) / knot (mod 256)
 {
-    uvec2 b = uvec2(clamp(floor((gc + 64.0) * 0.25), 0.0, 31.0));
-    uint  k = uint(clamp(floor((relK + 16.0) * 0.25), 0.0, 7.0));
-    return b.x | (b.y << 5u) | (k << 10u);
+    return uint((ia >> 7) & 7) | (uint((ib >> 7) & 7) << 3u) | (uint((ik >> 5) & 7) << 6u);
 }
 bool cv2ShaftStampOk(uint bits, uint want)
 {
-    if ((bits & 0xFF800000u) != 0x3F800000u) return false;
-    uint  s = (bits >> 10u) & 8191u;
-    ivec3 d = abs(ivec3(int(s & 31u), int((s >> 5u) & 31u), int(s >> 10u))
-                - ivec3(int(want & 31u), int((want >> 5u) & 31u), int(want >> 10u)));
-    return d.x < 16 && d.y < 16 && d.z < 4;
+    return (bits & 0xFFE00000u) == 0x3F800000u && ((bits >> 10u) & 511u) == want;
 }
 float cv2ShaftT(uint bits) { return float(bits & 1023u) * (1.0 / 1023.0); }
-float cv2ShaftPack(float T, uint stamp)
+uint  cv2ShaftCount(uint bits) { return (bits >> 19u) & 3u; }
+float cv2ShaftPack(float T, uint stamp, uint cnt)
 {
-    return uintBitsToFloat(0x3F800000u | (stamp << 10u) | uint(clamp(T, 0.0, 1.0) * 1023.0 + 0.5));
+    return uintBitsToFloat(0x3F800000u | (min(cnt, 3u) << 19u) | (stamp << 10u) | uint(clamp(T, 0.0, 1.0) * 1023.0 + 0.5));
 }
 #ifdef CV2_SUN_CASC_FN
+// A ring's lattice: xy the eye's coordinate across the Sun (cells, mod 1024), z along it (knots, mod 256), w its fill
+// weight; and the eye's motion this frame across the Sun in ring 0's cells (the bake follows it to the leading edge).
+vec4 cv2ShaftLat(int ring) { return (ring == 0) ? cv2.sunCasc4 : cv2.sunCasc6; }
+vec2 cv2ShaftVel() { return cv2.sunCasc5.zw; }
 // The Sun shadow CASCADE's transmittance (cloud_lightning.glsl cv2SunCasc) at a point rl (from the eye, observer
 // ENU) and a distance sAlong along the Sun from the eye (the caller adds its bias): four rays bilinear on the toroidal
 // lattice, two knots. 1 outside the window and while the cascade fills. Read by the cloud samples' key light
@@ -186,7 +185,7 @@ float cv2SunCascT(vec3 rl, float sAlong)
 // fills: use the next ring out, then the cascade).
 vec2 cv2SunShaftT(vec3 rl, float sAlong, int ring)
 {
-    vec4  la   = (ring == 0) ? cv2.sunCasc4 : cv2.sunCasc6;
+    vec4  la   = cv2ShaftLat(ring);
     if (la.w <= 0.0) return vec2(1.0, 0.0);
     float cell = (ring == 0) ? cv2.sunCasc7.z : cv2.sunCasc7.w;
     vec3  ga = vec3(cv2SunProf[2], cv2SunProf[3], cv2SunProf[4]);
@@ -196,32 +195,28 @@ vec2 cv2SunShaftT(vec3 rl, float sAlong, int ring)
     float w  = (1.0 - smoothstep(kCv2ShaftRangeCells, 62.0, max(abs(ce.x), abs(ce.y)))) * (1.0 - smoothstep(12.0, 14.5, abs(ks)))
              * la.w;
     if (w <= 0.0) return vec2(1.0, 0.0);
-    vec2  gg = ce + la.xy + float(kCv2ShaftN) * 8.0;
+    // Absolute cells (mod 1024) and knots (mod 256): the offsets keep them positive.
+    vec2  gg = ce + la.xy + 4096.0;
     ivec2 g0 = ivec2(gg);
     vec2  gf = gg - vec2(g0);
-    float kk = ks + la.z + float(kCv2ShaftK) * 8.0;
+    float kk = ks + la.z + 1024.0;
     int   k0 = int(kk);
     float kf = kk - float(k0);
     float Tb = 0.0, wv = 0.0;
     int   rb = ring * kCv2ShaftN * kCv2ShaftN * kCv2ShaftK;
-    // The knot's offset from the eye's knot (the stamp's third field): k0 is ks - kf from it.
-    float relK = ks - kf;
     [[dont_unroll]] for (int c = 0; c < 4; ++c) {
         ivec2 sc = ivec2(g0.x + (c & 1), g0.y + (c >> 1));
         int ri = rb + ((sc.y & (kCv2ShaftN - 1)) * kCv2ShaftN + (sc.x & (kCv2ShaftN - 1))) * kCv2ShaftK;
-        // The slot's offset from the eye now (cells), as the bake computes it for the same slot.
-        vec2 gcN = vec2(sc) - (la.xy + float(kCv2ShaftN) * 8.0);
-        gcN -= float(kCv2ShaftN) * round(gcN / float(kCv2ShaftN));
-        uint s0 = cv2ShaftStampOf(gcN, relK), s1 = cv2ShaftStampOf(gcN, relK + 1.0);
         uint b0 = floatBitsToUint(cv2SunShaft[ri + (k0 & (kCv2ShaftK - 1))]);
         uint b1 = floatBitsToUint(cv2SunShaft[ri + ((k0 + 1) & (kCv2ShaftK - 1))]);
         float bw = ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
-        bw *= (cv2ShaftStampOk(b0, s0) && cv2ShaftStampOk(b1, s1)) ? 1.0 : 0.0;
+        bw *= (cv2ShaftStampOk(b0, cv2ShaftStampOf(sc.x, sc.y, k0)) && cv2ShaftStampOk(b1, cv2ShaftStampOf(sc.x, sc.y, k0 + 1)))
+            ? 1.0 : 0.0;
         Tb += mix(cv2ShaftT(b0), cv2ShaftT(b1), kf) * bw;
         wv += bw;
     }
-    // Slots that changed hands since their last bake (the toroidal window's leading edge after a move) are left out:
-    // the next ring out / the cascade stands in for them until they are baked.
+    // Slots not baked since they changed hands (the toroidal window's leading edge after a move) are left out: the
+    // next ring out / the cascade stands in for them until they are baked.
     return vec2(Tb / max(wv, 1e-4), w * wv);
 }
 // Ring 0 alone (the sky's god rays, within kCv2ShaftRangeCells x its cell of the eye).

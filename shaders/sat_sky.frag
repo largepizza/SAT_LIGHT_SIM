@@ -1787,6 +1787,39 @@ vec2 optDepth(vec3 p, vec3 d, float segTotal) {
     return vec2(odR, odM) * sLen;  // summed densities x step length -> optical depth units
 }
 
+// The Earth's shadow along a ray, EXACTLY (2026-10-13): the shadow of a sphere lit from infinity is the cylinder
+// |p - (p.s) s| < R_EARTH on the anti-Sun side (p.s < 0), so the ray ro + t rd is in it over one interval
+// [x, y] (x > y: never). The same test as raySphere(p, s, R_EARTH) having two positive roots, for points above the
+// ground. The main atmosphere loop has its own inline copy (tShA / tShB in main()).
+vec2 earthShadowSpan(vec3 ro, vec3 rd, vec3 s) {
+    vec3  op = ro - dot(ro, s) * s;
+    vec3  dp = rd - dot(rd, s) * s;
+    float qa = dot(dp, dp);
+    float qb = dot(op, dp);
+    float lo = length(op);
+    float qd = qb * qb - qa * (lo - R_EARTH) * (lo + R_EARTH);   // raySphere's cancellation-free c
+    if (qa <= 1e-12 || qd <= 0.0) return vec2(1e30, -1e30);
+    float q  = sqrt(qd);
+    vec2  t  = vec2(-qb - q, -qb + q) / qa;
+    float os = dot(ro, s), ds = dot(rd, s);                       // clip to the anti-Sun half-space
+    if (abs(ds) > 1e-9) {
+        float tc = -os / ds;
+        if (ds > 0.0) t.y = min(t.y, tc); else t.x = max(t.x, tc);
+    } else if (os >= 0.0) t = vec2(1e30, -1e30);
+    return t;
+}
+// The step [t0, t1] against that span: x = its sunlit share, y = the middle of its lit part (the step's middle when
+// it is all lit). The sky-light integrals below tested only each step's MIDPOINT: with this pass's 2-sample optDepth
+// (light_samples) a grazing sun path just outside the shadow is far from black, so a whole step's light switched
+// on or off at the Sun elevation where its midpoint crossed the shadow — a contour line across the terrain's sky
+// light, the shadowed air's sky light and the sea's reflected sky (zenmodel.py: up to 50% in 0.01 deg).
+vec2 earthShadowLit(vec2 sh, float t0, float t1) {
+    float ov = max(0.0, min(t1, sh.y) - max(t0, sh.x));
+    float tL = 0.5 * (t0 + t1);
+    if (ov > 0.0) tL = (sh.x <= t0) ? 0.5 * (sh.y + t1) : 0.5 * (t0 + sh.x);
+    return vec2(clamp(1.0 - ov / max(t1 - t0, 1e-3), 0.0, 1.0), tL);
+}
+
 // Zenith sky radiance at a point (review 7): the light that reaches air in the Earth's shadow — the
 // march's skyZenithAt, with this pass's optDepth for the sun path. Four steps: it lights the shadowed
 // stretch of a ray, whose total is small.
@@ -1797,13 +1830,19 @@ vec3 skyZenithSky(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
     float seg = tSA.y * 0.25;
     float odR = 0.0, odM = 0.0, accM = 0.0;
     vec3  accR = vec3(0.0);
+    vec2  shS = earthShadowSpan(p, zen, sunDir);
     for (int i = 0; i < 4; ++i) {
         vec3  sp = p + zen * ((float(i) + 0.5) * seg);
         float h  = max(0.0, length(sp) - R_EARTH);
         float dR = exp(-h / H_R) * seg, dM = exp(-h / H_M) * seg;
         odR += dR; odM += dM;
-        vec2 tSE = raySphere(sp, sunDir, R_EARTH);
-        if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+        vec2 lit = earthShadowLit(shS, float(i) * seg, float(i + 1) * seg);
+        if (lit.x <= 0.0) continue;
+        if (lit.x < 1.0) {   // the lit part: its own middle's air and sun path (the midpoint may be in the shadow)
+            sp = p + zen * lit.y;
+            float hl = max(0.0, length(sp) - R_EARTH);
+            dR = exp(-hl / H_R) * seg * lit.x; dM = exp(-hl / H_M) * seg * lit.x;
+        }
         vec2 tS  = raySphere(sp, sunDir, R_ATMOS);
         vec2 so  = (tS.y > 0.0) ? optDepth(sp, sunDir, tS.y) : vec2(0.0);
         vec3 att = exp(-(BETA_R * (odR + so.x) + BETA_M * 1.1 * (odM + so.y)));
@@ -2713,14 +2752,21 @@ void evalCloudLayer(
                 float pR_up  = 0.75 * (1.0 + cosAUp * cosAUp);
                 float odR_z = 0.0, odM_z = 0.0;
                 float skyAmbientBaseM = 0.0;
+                vec2  shZ = earthShadowSpan(p0, zenith, sunDirECEF);
                 for (int zi = 0; zi < N_Z; ++zi) {
                     vec3  sp = p0 + zenith * ((float(zi) + 0.5) * zSeg);
                     float h  = max(0.0, length(sp) - R_EARTH);
                     float dR = exp(-h / H_R) * zSeg;
                     float dM = exp(-h / H_M) * zSeg;
                     odR_z += dR;  odM_z += dM;
-                    vec2 tSE = raySphere(sp, sunDirECEF, R_EARTH);
-                    if (tSE.x > 0.0 && tSE.y > 0.0) continue;   // this step is in Earth's shadow
+                    // The step's sunlit share (earthShadowLit; it was the midpoint's all-or-nothing test).
+                    vec2 lit = earthShadowLit(shZ, float(zi) * zSeg, float(zi + 1) * zSeg);
+                    if (lit.x <= 0.0) continue;   // this step is in Earth's shadow
+                    if (lit.x < 1.0) {
+                        sp = p0 + zenith * lit.y;
+                        float hl = max(0.0, length(sp) - R_EARTH);
+                        dR = exp(-hl / H_R) * zSeg * lit.x; dM = exp(-hl / H_M) * zSeg * lit.x;
+                    }
                     vec2 tSun  = raySphere(sp, sunDirECEF, R_ATMOS);
                     vec2 sunOD = (tSun.y > 0.0) ? optDepth(sp, sunDirECEF, tSun.y) : vec2(0.0);
                     vec3 tau      = BETA_R * (odR_z + sunOD.x) + BETA_M * 1.1 * (odM_z + sunOD.y);
@@ -4739,14 +4785,21 @@ void main() {
                 float pM_upT   = phaseM(cosAT);
                 float odR_zt = 0.0, odM_zt = 0.0;
                 float skyAmbTM = 0.0;
+                vec2  shT = earthShadowSpan(hitPt, zenT, sunDir);
                 for (int zi = 0; zi < N_ZT; ++zi) {
                     vec3  sp = hitPt + zenT * ((float(zi) + 0.5) * zSegT);
                     float h  = max(0.0, length(sp) - R_EARTH);
                     float dR = exp(-h / H_R) * zSegT;
                     float dM = exp(-h / H_M) * zSegT;
                     odR_zt += dR;  odM_zt += dM;
-                    vec2 tSE  = raySphere(sp, sunDir, R_EARTH);
-                    if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+                    // The step's sunlit share (earthShadowLit; the midpoint test drew contour lines on the ground).
+                    vec2 lit = earthShadowLit(shT, float(zi) * zSegT, float(zi + 1) * zSegT);
+                    if (lit.x <= 0.0) continue;
+                    if (lit.x < 1.0) {
+                        sp = hitPt + zenT * lit.y;
+                        float hl = max(0.0, length(sp) - R_EARTH);
+                        dR = exp(-hl / H_R) * zSegT * lit.x; dM = exp(-hl / H_M) * zSegT * lit.x;
+                    }
                     vec2 tSun = raySphere(sp, sunDir, R_ATMOS);
                     vec2 sunOD = (tSun.y > 0.0) ? optDepth(sp, sunDir, tSun.y) : vec2(0.0);
                     vec3 tau      = BETA_R * (odR_zt + sunOD.x) + BETA_M * 1.1 * (odM_zt + sunOD.y);
@@ -5248,6 +5301,7 @@ void main() {
                     // the top of the air) let each of the 6 samples stand for ~170 km of sea-level air: the extinction
                     // was far too high and the reflected horizon came out tan (streaks on every steep wave face).
                     float rLen = tAR.y - rStart;
+                    vec2  shR2 = earthShadowSpan(hitPt, reflDir, sunDir);
                     for (int ri = 0; ri < N_REFL; ++ri) {
                         float u0   = float(ri) / float(N_REFL), u1 = float(ri + 1) / float(N_REFL);
                         float um   = 0.5 * (u0 + u1);
@@ -5257,8 +5311,16 @@ void main() {
                         float rdR  = exp(-rh / H_R) * rSegI;
                         float rdM  = exp(-rh / H_M) * rSegI;
                         rodR += rdR; rodM += rdM;
-                        vec2 tSE  = raySphere(rp, sunDir, R_EARTH);
-                        if (tSE.x > 0.0 && tSE.y > 0.0) continue;
+                        // The step's sunlit share (earthShadowLit; it was the sample's all-or-nothing test, which drew
+                        // the sky loop's band above the sunset horizon into the sea's reflection as well).
+                        vec2 lit = earthShadowLit(shR2, rStart + rLen * u0 * u0, rStart + rLen * u1 * u1);
+                        if (lit.x <= 0.0) continue;
+                        if (lit.x < 1.0) {
+                            rp  = hitPt + reflDir * lit.y;
+                            rh  = max(0.0, length(rp) - R_EARTH);
+                            rdR = exp(-rh / H_R) * rSegI * lit.x;
+                            rdM = exp(-rh / H_M) * rSegI * lit.x;
+                        }
                         vec2 tSun = raySphere(rp, sunDir, R_ATMOS);
                         vec2 sOD  = (tSun.y > 0.0) ? optDepth(rp, sunDir, tSun.y) : vec2(0.0);
                         vec3 rtau  = BETA_R * (rodR + sOD.x) + BETA_M * 1.1 * (rodM + sOD.y);

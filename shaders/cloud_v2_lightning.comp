@@ -115,22 +115,45 @@ void main()
         // place in the cell and phase of the step, a running mean of the bakes: as the cascade).
         if (gl_WorkGroupID.x > 12u) {
             int   ring  = gl_WorkGroupID.x > 14u ? 1 : 0;
-            vec4  la    = (ring == 0) ? cv2.sunCasc4 : cv2.sunCasc6;
-            float bakeW = (ring == 0) ? cv2.sunCasc5.x : cv2.sunCasc7.x;
+            int   wg    = int(gl_WorkGroupID.x - 13u) & 1;
             float cellM = (ring == 0) ? cv2.sunCasc7.z : cv2.sunCasc7.w;
+            vec4  la    = cv2ShaftLat(ring);
+            vec2  vel   = cv2ShaftVel() * ((ring == 0) ? 1.0 : cv2.sunCasc7.z / cv2.sunCasc7.w);
+            float bakeW = (ring == 0) ? cv2.sunCasc5.x : cv2.sunCasc7.x;
             if (bakeW <= 0.0) return;
-            int   r  = int(((uint(cv2.frame.x) & 31u) * 2u + ((gl_WorkGroupID.x - 13u) & 1u)) * 256u + li);
+            // Which rays this frame (round 5, issue 20261013_220718): still, both workgroups take the lattice in
+            // order (all 16384 rays in 32 frames). Moving, one of them bakes the two COLUMNS just inside the window's
+            // leading edge (61 and 60 cells ahead along the axis the eye moves along most), so a cell entering the
+            // ring is baked as it comes into reach, at up to 2 cells a frame (both workgroups, 4 columns, past that),
+            // and the other keeps the round (64 frames). The ring used to be baked only in order: at 11 km/s a ring
+            // of 159-m cells moved ~55 cells per 32-frame round, and its whole leading half was unbaked.
+            float sp   = max(abs(vel.x), abs(vel.y));
+            bool  mov  = sp > 0.02;
+            bool  fast = sp > 2.0;
+            int   r;
+            if (mov && (wg == 1 || fast)) {
+                int   ax  = (abs(vel.x) >= abs(vel.y)) ? 0 : 1;
+                float sg  = ((ax == 0) ? vel.x : vel.y) >= 0.0 ? 1.0 : -1.0;
+                int   jj  = (fast ? 2 * wg : 0) + int(li >> 7u);
+                int   sAx = int(floor(((ax == 0) ? la.x : la.y) + sg * (61.0 - float(jj)) + 4096.0)) & (kCv2ShaftN - 1);
+                int   row = int(li & 127u);
+                r = (ax == 0) ? row * kCv2ShaftN + sAx : sAx * kCv2ShaftN + row;
+            } else {
+                r = mov ? int((uint(cv2.frame.x) & 63u) * 256u + li)
+                        : int(((uint(cv2.frame.x) & 31u) * 2u + uint(wg)) * 256u + li);
+            }
             vec3  ga, gb;
             cv2SunGridAxes(sunENU, ga, gb);
             vec2  gc = vec2(float(r % kCv2ShaftN), float(r / kCv2ShaftN)) - la.xy;
             gc -= float(kCv2ShaftN) * round(gc / float(kCv2ShaftN));
+            ivec2 ia = ivec2(round(la.xy + gc)) + 4096;              // the slot's absolute cell (mod 1024)
             float ds = (ring == 0) ? cv2.sunCasc5.y : cv2.sunCasc7.y;
             float fpM = max(150.0, 0.25 * cellM);   // the field's footprint: a quarter of the cell the ray stands for
             int   base = int(ceil(la.z - 0.5 * float(kCv2ShaftK)));   // the window's knots: base .. base + K - 1
             float Tk[kCv2ShaftK];
             for (int k = 0; k < kCv2ShaftK; ++k) Tk[k] = 0.0;
             uvec3 jh = cv2Pcg3(uvec3(uint(r), 733u + uint(ring), 5u));
-            float jn = float((uint(cv2.frame.x) >> 5u) & 255u);
+            float jn = float(uint(cv2.frame.x) & 1023u);
             vec2  jo = fract(vec2(jh.xy & 0xFFFFu) / 65536.0 + jn * vec2(0.7548777, 0.5698403));
             float jp = fract(float(jh.z & 0xFFFFu) / 65536.0 + jn * 0.6180340);
             [[dont_unroll]] for (int sr = 0; sr < 2; ++sr) {
@@ -169,14 +192,16 @@ void main()
             }
             if (r < kCv2ShaftN * kCv2ShaftN) {
                 int rb = (ring * kCv2ShaftN * kCv2ShaftN + r) * kCv2ShaftK;
-                // Slot k holds absolute knot n = base + ((k - base) mod K); a slot whose stamp says it held another
-                // cell / knot (it changed hands as the eye moved) takes the new bake whole.
+                // Slot k holds absolute knot n = base + ((k - base) mod K); a slot whose stamp names another wrap (it
+                // changed hands as the eye moved) takes the new bake whole; otherwise the slot's own running mean.
                 for (int k = 0; k < kCv2ShaftK; ++k) {
-                    float relK  = float(base + ((k - base) & (kCv2ShaftK - 1))) - la.z;
-                    uint  want  = cv2ShaftStampOf(gc, relK);
-                    uint  bits  = floatBitsToUint(cv2SunShaft[rb + k]);
-                    float T     = cv2ShaftStampOk(bits, want) ? mix(cv2ShaftT(bits), Tk[k], bakeW) : Tk[k];
-                    cv2SunShaft[rb + k] = cv2ShaftPack(T, want);
+                    int   n    = base + ((k - base) & (kCv2ShaftK - 1)) + 1024;
+                    uint  want = cv2ShaftStampOf(ia.x, ia.y, n);
+                    uint  bits = floatBitsToUint(cv2SunShaft[rb + k]);
+                    bool  ok   = cv2ShaftStampOk(bits, want);
+                    uint  c    = cv2ShaftCount(bits);
+                    float T    = ok ? mix(cv2ShaftT(bits), Tk[k], 1.0 / float(min(c + 2u, 4u))) : Tk[k];
+                    cv2SunShaft[rb + k] = cv2ShaftPack(T, want, ok ? c + 1u : 0u);
                 }
             }
             return;
@@ -271,8 +296,22 @@ void main()
         } else {
             for (int k = 0; k <= 16; ++k) Tk[k] = 1.0;
         }
-        if (ri < kCv2SunGridN * kCv2SunGridN)
-            for (int k = 0; k <= 16; ++k) cv2SunGrid[ri * 17 + k] = mix(cv2SunGrid[ri * 17 + k], Tk[k], cv2.sunCasc3.z);
+        if (ri < kCv2SunGridN * kCv2SunGridN) {
+            // Knot 16 (the transmittance beyond the ray's end: always 1) carries a STAMP (round 5): the slot's offset
+            // from the eye when it was baked (cells, 5 bits an axis) in the low mantissa bits of a float in [1, 1.0002).
+            // The lattice is toroidal: a slot leaving the trailing edge comes back at the leading one, ~32 cells off,
+            // and its running mean (1/8 a bake) kept 7/8 of the other side's shadow; now such a slot takes the new
+            // bake whole. A slot that kept its cell has moved by the eye's motion since its last bake (2 frames).
+            vec2  gc0 = vec2(float(ri % kCv2SunGridN), float(ri / kCv2SunGridN)) - cv2.sunCasc3.xy;
+            gc0 -= float(kCv2SunGridN) * round(gc0 / float(kCv2SunGridN));
+            uvec2 gq  = uvec2(clamp(floor(gc0 + 16.0), 0.0, 31.0));
+            uint  sb  = floatBitsToUint(cv2SunGrid[ri * 17 + 16]);
+            bool  same = (sb & 0xFFFFFC00u) == 0x3F800000u
+                      && abs(int(sb & 31u) - int(gq.x)) < 8 && abs(int((sb >> 5u) & 31u) - int(gq.y)) < 8;
+            float wB  = same ? cv2.sunCasc3.z : 1.0;
+            for (int k = 0; k < 16; ++k) cv2SunGrid[ri * 17 + k] = mix(cv2SunGrid[ri * 17 + k], Tk[k], wB);
+            cv2SunGrid[ri * 17 + 16] = uintBitsToFloat(0x3F800000u | gq.x | (gq.y << 5u));
+        }
         sRainMax[li] = odMax;
         barrier();
         for (uint s = 128u; s > 0u; s >>= 1u) {

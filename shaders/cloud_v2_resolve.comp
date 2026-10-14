@@ -266,6 +266,9 @@ void main()
     // The texel's whole move since last frame, rotation included (motionPx below is PARALLAX only).
     float shiftPx = valid ? length((uvPrev - (vec2(c) + 0.5) / vec2(halfSize)) * vec2(halfSize)) : 1e9;
     if (valid) {
+        // The eye-parallax floor's distance cap: 50 km near the ground, the eye's height x 2 above it (from orbit no
+        // cloud is within 50 km, and the floor called a view with time running "moving").
+        float capD = max(50000.0, 2.0 * pc.obsEffH);
         vec4 hist = sampleHistory(uvPrev, vec2(halfSize));
         // New-sample weight: look2.w for a still view (low: an exponential blend at weight a keeps
         // sqrt(a / (2 - a)) of the per-sample noise — 38% at 0.25, which showed as grain on
@@ -289,7 +292,7 @@ void main()
             vec3  od    = cv2.obsDelta.xyz;
             float perp  = length(od - vE0 * dot(od, vE0));
             eyePx    = perp / (2.0 * tanHalf / float(halfSize.y));
-            motionPx = max(motionPx, eyePx / min(ndR > 0.0 ? ndR : 1e9, 50000.0));
+            motionPx = max(motionPx, eyePx / min(ndR > 0.0 ? ndR : 1e9, capD));
         }
         // Still: look2.w ("History weight", low: the history averages the quarter grid's noise away —
         // at 1 each pixel alternated between its own ray and its neighbours' estimate, a checkerboard
@@ -322,8 +325,9 @@ void main()
         // stale rectangle hung over it; and where a near cloud's edge swept over far ones, the far pixels' history
         // (the near cloud) passed the wide box: ghosts of the near cloud over the background. A truly still eye has
         // eyePx 0, so still views are unchanged.
+        float motTrue = motionPx;   // the reprojection's own parallax + the volumes' slide (no eye floor)
         float lagK   = 1.0 / max(cv2.look2.w, 0.01);
-        float mNb    = max(motionPx, (eyePx / min(min(dNear, ndR > 0.0 ? ndR : 1e30), 50000.0)) * lagK);
+        float mNb    = max(motionPx, (eyePx / min(min(dNear, ndR > 0.0 ? ndR : 1e30), capD)) * lagK);
         float stillW = 1.0 - smoothstep(0.05, 0.5, mNb);
         // The wide neighbourhood is read in motion too (2026-10-13, issue 20261013_214939: the colour box below).
         vec3 cMn = mn.rgb, cMx = mx.rgb, rMnC = rMn, rMxC = rMx;
@@ -349,8 +353,8 @@ void main()
                 mnW = min(mnW, s); mxW = max(mxW, s);
             }
             if (stillW > 0.0 && dWide < 1e29) {
-                if (ndR <= 0.0) motionPx = max(motionPx, eyePx / min(dWide, 50000.0));
-                mNb    = max(mNb, max(motionPx, (eyePx / min(dWide, 50000.0)) * lagK));
+                if (ndR <= 0.0) motionPx = max(motionPx, eyePx / min(dWide, capD));
+                mNb    = max(mNb, max(motionPx, (eyePx / min(dWide, capD)) * lagK));
                 stillW = 1.0 - smoothstep(0.05, 0.5, mNb);
             }
             mn = mix(mn, mnW, stillW); mx = mix(mx, mxW, stillW);
@@ -377,16 +381,25 @@ void main()
         // clouds smear (issue 20261013_202117's path). Shot 1's walk, 1 s after stopping: mean error vs settled
         // 7.6 -> 2.5 levels, pixels past 16 levels 13.7% -> 0.2%; the still view is unchanged.
         float wideK = 1.0 - smoothstep(kWideColorPx0, kWideColorPx1,
-                                       max(motionPx, eyePx / min(min(dNear, dWide), 50000.0)));
+                                       max(motionPx, eyePx / min(min(dNear, dWide), capD)));
         bLo.rgb = mix(bLo.rgb, min(bLo.rgb, cMn), wideK); bHi.rgb = mix(bHi.rgb, max(bHi.rgb, cMx), wideK);
+        // A view that is STILL in fact (the reprojection's own parallax, the volumes' slide and the eye's move at the
+        // nearest cloud all under ~0.05 px a frame: no x lagK) takes its history unclamped (2026-10-14, issue
+        // 20261013_214939 shots 4-5). With time running the clouds' drift moves the eye ~0.7 m a frame relative to them,
+        // and from 20-160 km the tight motion box clipped every sub-pixel puff and wispy edge to the new samples, which
+        // a jittered ray hits or misses: those pixels flipped between sky and cloud each frame (158 km: 0.085% -> 0.0002%
+        // of pixels past 8 levels a frame; 20.8 km: 0.88% -> 0.000005%). Paused, the sky TAA's frozen mode had hidden it.
+        // A reprojection this small has nothing to reject; the still weight follows the clouds' evolution in ~1 s.
+        float uK = 1.0 - smoothstep(0.05, 0.15, max(motTrue, eyePx / min(min(min(dNear, dWide), ndR > 0.0 ? ndR : 1e30), capD)));
         vec4 hc = cv2FromMean(clamp(cv2ToMean(hist), bLo, bHi));
+        hc = mix(hc, hist, uK);
         // Review 20b: and never brighter (or darker) than the new samples' own RADIANCE box. The mean colour divides
         // by the opacity (floor 0.02): a near-clear pixel carrying light of its own — a beam shaft's air, seen from
         // inside the Reflect beams — is x50 there, and a cloud-edge history texel clamped up to it and multiplied back
         // by its own opacity came out as bright blue-white 2x2 blocks along every cloud edge in motion (user snapshot,
         // 5 km over the Anchorage beam site: "chunkiness" and "bluish effects").
         vec3 rSl = (rMx - rMn) * mix(1.0, 0.1, smoothstep(0.05, 1.0, mNb)) + vec3(1e-4);
-        hc.rgb = clamp(hc.rgb, mix(rMn, min(rMn, rMnC), wideK) - rSl, mix(rMx, max(rMx, rMxC), wideK) + rSl);
+        hc.rgb = mix(clamp(hc.rgb, mix(rMn, min(rMn, rMnC), wideK) - rSl, mix(rMx, max(rMx, rMxC), wideK) + rSl), hist.rgb, uK);
         // The other three pixels of the block also take a share of the interpolated new samples.
         // Without it the one pixel refreshed each frame stood out from the three that were not,
         // and noisy (shaded, grazing) surfaces showed a 2x2 dot grid. In motion the shares

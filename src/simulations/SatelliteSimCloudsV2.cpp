@@ -1262,7 +1262,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const double db = 2.0 * (kRh * std::abs(sinE) + hPad * cosE) / 32.0;
         const double sHalf = kRh * cosE + hPad * std::abs(sinE);
         const double sExt = std::min((double)hi / std::max(std::abs(sinE), 0.03), 500000.0);
-        const bool on = cv2SunCascade > 0.5f && sinE > -0.1 && eyeH < 60000.0;
+        // On while the march draws clouds (until the far cloud layer has taken over: the bake runs in the lightning
+        // pass, which stops there too). It stopped at 60 km of eye altitude, and the far shadows of a storm seen from
+        // 52 km (9% of the frame) vanished at 60 km; above it they cost +0.3-0.45 ms (100-600 km, round 5). Its window
+        // and rays do not depend on the eye's height (mid-shell under the eye), the rings do: they stay below 60 km.
+        const bool on = cv2SunCascade > 0.5f && sinE > -0.1 && cloudFarBlend() < 0.999f;
         cv2GridFrames = lightValid ? std::min(cv2GridFrames + 1, 100000) : 0;
         if (lightValid)
         {
@@ -1298,7 +1302,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // coordinate integrated in all three, as above. Baked with the cascade: the cloud samples within ~14 km read
         // it too (2026-10-12; it was baked only for the god rays).
         const double dsS = std::clamp(5000.0 / std::max(std::abs(sinE), 0.02), 16000.0, 48000.0) / 16.0;
-        const bool shaftOn = on;
+        const bool shaftOn = on && eyeH < 60000.0;   // eye-centred: from higher up the cloud layer is outside them
+        // ...and the sky's air keeps no cloud shadow up there (the god rays read the cascade: not measured from orbit).
+        if (eyeH >= 60000.0) p.lightVol.w = 0.0f;
         // The rings' cells ("Cloud shadow ring 1 / 2 cell"): a ring reaches 56 cells from the eye. Ring 2's knots
         // along the Sun are ring 1's x the cells' ratio x "ring 2 depth", so its window along the Sun covers its
         // reach across it. A changed cell refills that ring (its lattice coordinate is in cells).
@@ -1318,12 +1324,14 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             std::memset(static_cast<char *>(cv2FlashMapped) + kCv2SunShaftOffset + (VkDeviceSize)ring * kCv2SunShaftRingBytes, 0,
                         kCv2SunShaftRingBytes);
         };
+        glm::vec2 shaftVel(0.0f);   // the eye's motion this frame across the Sun, in ring 1's cells
         if (!shaftOn || !lightValid)
             cv2ShaftFrames = 0;
         else
         {
             if (cv2ShaftFrames == 0) clearRing(0);
             const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
+            shaftVel = glm::vec2((float)(glm::dot(dEye, ga) / cell1), (float)(glm::dot(dEye, gb) / cell1));
             cv2ShaftLatA = std::fmod(cv2ShaftLatA + glm::dot(dEye, ga) / cell1, 128.0 * 1024.0);
             cv2ShaftLatB = std::fmod(cv2ShaftLatB + glm::dot(dEye, gb) / cell1, 128.0 * 1024.0);
             cv2ShaftLatS = std::fmod(cv2ShaftLatS + glm::dot(dEye, s) / dsS, 32.0 * 1024.0);
@@ -1340,14 +1348,18 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             cv2Shaft2LatS = std::fmod(cv2Shaft2LatS + glm::dot(dEye, s) / dsS2, 32.0 * 1024.0);
             ++cv2Shaft2Frames;
         }
-        p.sunCasc6 = glm::vec4(modP(cv2Shaft2LatA, 128.0), modP(cv2Shaft2LatB, 128.0), modP(cv2Shaft2LatS, 32.0),
+        // The rings' coordinates go to the GPU modulo 8 windows (1024 cells, 256 knots): a ring value records which of
+        // the 8 wraps of its slot it was baked for (cloud_lightning.glsl cv2ShaftStampOf), so a slot that changed hands
+        // reads as invalid until it is baked again at any speed short of 8 windows between two bakes of it (round 5,
+        // issue 20261013_220718; the offset stamp it replaced was exact to ~half a window: ~12 km/s at 40 fps for
+        // 159-m cells). Each ray keeps its own running mean (2 bits of bake count in its values); x only says "baked".
+        p.sunCasc6 = glm::vec4(modP(cv2Shaft2LatA, 1024.0), modP(cv2Shaft2LatB, 1024.0), modP(cv2Shaft2LatS, 256.0),
                                ring2On ? std::clamp((float)cv2Shaft2Frames / 16.0f, 0.0f, 1.0f) : 0.0f);
-        p.sunCasc7 = glm::vec4(ring2On ? std::max(1.0f / (float)(std::max(cv2Shaft2Frames - 1, 0) / 32 + 1), 0.25f) : 0.0f,
-                               (float)dsS2, (float)cell1, (float)cell2);
-        p.sunCasc4 = glm::vec4(modP(cv2ShaftLatA, 128.0), modP(cv2ShaftLatB, 128.0), modP(cv2ShaftLatS, 32.0),
+        p.sunCasc7 = glm::vec4(ring2On ? 1.0f : 0.0f, (float)dsS2, (float)cell1, (float)cell2);
+        p.sunCasc4 = glm::vec4(modP(cv2ShaftLatA, 1024.0), modP(cv2ShaftLatB, 1024.0), modP(cv2ShaftLatS, 256.0),
                                shaftOn ? std::clamp((float)cv2ShaftFrames / 16.0f, 0.0f, 1.0f) : 0.0f);
-        p.sunCasc5 = glm::vec4(shaftOn ? std::max(1.0f / (float)(std::max(cv2ShaftFrames - 1, 0) / 32 + 1), 0.25f) : 0.0f,
-                               (float)dsS, 0.0f, 0.0f);
+        // zw: the eye's motion this frame (ring 1's cells): moving, the bake takes the window's leading edge first.
+        p.sunCasc5 = glm::vec4(shaftOn ? 1.0f : 0.0f, (float)dsS, shaftVel.x, shaftVel.y);
         p.tune = glm::vec4(std::clamp(cv2SmallCumulus, 0.0f, 0.5f), std::max(cv2ErosionVar, 0.0f), std::max(cv2LobeVar, 0.0f),
                            std::clamp(cv2CirrusDirWarp, 0.0f, 1.3f));
         p.mid2 = glm::vec4(std::max(cv2AsDensity, 0.0f), std::clamp(cv2MidThick, 0.1f, 4.0f),

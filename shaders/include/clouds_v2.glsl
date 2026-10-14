@@ -146,8 +146,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     //           weight of a new bake in the fine grid's / the cascade's running mean (1 on the first after a reset).
     vec4  sunCasc0, sunCasc1, sunCasc2, sunCasc3;
     // The SHAFT lattice (cloud_lightning.glsl cv2SunShaft). sunCasc4: xyz the eye's coordinate on it (a, b cells mod
-    // kCv2ShaftN; knots along the Sun mod kCv2ShaftK), w its weight (0 while it fills). sunCasc5: x the weight of a
-    // new bake in a ray's running mean (0 = not baked), y the knot spacing along the Sun (m), zw spare.
+    // 8 kCv2ShaftN = 1024; knots along the Sun mod 8 kCv2ShaftK = 256: the stamps hold which of 8 wraps a slot holds),
+    // w its weight (0 while it fills). sunCasc5: x > 0 = baked, y the knot spacing along the Sun (m), zw the eye's
+    // motion across the Sun this frame in ring 1's cells (a, b; the bake follows it to the window's leading edge).
     vec4  sunCasc4, sunCasc5;
     // 2026-10-11. tune: x "Small cumulus" (the near field's threshold bias, field units), y "Erosion variation",
     // z "Lobe variation", w "Cirrus direction warp" (the streaks' slope). mid2: x altostratus density (x),
@@ -157,7 +158,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // smoothing, z the motion clamp (sd), w spare.
     vec4  tune, mid2, mid3, samp;
     // 2026-10-12: the shaft lattice's SECOND ring (coarser cells, the same rays x knots; cloud_lightning.glsl).
-    // sunCasc6: as sunCasc4 for it. sunCasc7: x the weight of a new bake in its rays' running mean (0 = off),
+    // sunCasc6: as sunCasc4 for it. sunCasc7: x > 0 = baked (0 = off),
     // y its knot spacing along the Sun (m), z ring 1's cell (m), w ring 2's cell (m).
     vec4  sunCasc6, sunCasc7;
     // 2026-10-13 (issue 20261012_235712), the cumulus shape. cu: x "Cumulus height variation", y "Cumulus break-up"

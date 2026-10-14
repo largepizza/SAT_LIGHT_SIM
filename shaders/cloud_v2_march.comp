@@ -106,8 +106,16 @@ float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00
 // The Sun's colour arriving at a point and the zenith sky's radiance there come from a table (cv2SunLutTex,
 // include/cv2_sunlut.glsl, baked by cloud_v2_sunlut.comp where sunColorAt / skyZenithAt now live).
 
-// Light-march geometry: a geometric series of nL steps summing to light.x.
-const float kLightRatio = 1.6;
+// Light-march geometry: nL EQUAL steps summing to light.x (2026-10-14; kLightRatio 1 = uniform). It was a geometric
+// series at ratio 1.6: at 7 steps over 8 km, 186 m .. 3.1 km, and the last three steps (1.2 / 2.0 / 3.1 km) were each
+// ONE point sample standing for kilometres of cloud. exp(-od) of such a sample is either ~1 (a gap) or ~0, and the
+// history converges on the MEAN of exp(-od), which is far brighter than exp(-mean od) (Jensen): under a low Sun the
+// clouds in another cloud's shadow settled 30-60 levels too bright against a 128-step reference
+// (harness_runs/fb17/jitter: issue 20261013_214939 shot 1, 201800), and every frame's raw sample was the noise the
+// history then had to average (raw std 26.5 -> 9.0 levels). Equal steps give the same 7 field reads the least
+// variance; same cost, 128 registers. The near surface's self-shadow is read at 1.1 km steps instead of 186 m: no
+// visible loss at the high-Sun view (bias vs the reference +0.4 levels).
+const float kLightRatio = 1.0;
 const vec3  kMoonColor  = vec3(0.92, 0.95, 1.0);
 
 // Optical depth from a cloud sample toward a light: the light march (the first two samples with
@@ -136,14 +144,18 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
     // grazing Sun read ~2 levels lighter, as they do with a 25-m view step; twelve light steps read darker
     // (harness_runs/perf13: the lid's brightness is the light march's own discretisation either way).
     // Not the old "Light LOD" (above): that put ONE sample on the last 7.5 km and drew grain.
-    bool  lodN  = !lod && fp > 2.0 * lSeg0;
+    // (The threshold is the old geometric series' first step, 2 x 186 m at 7 steps over 8 km: with equal steps, 2 x
+    // lSeg0 would keep orbit views from merging at all.)
+    bool  lodN  = !lod && fp > 2.0 * cv2.light.x * 0.6 / max(pow(1.6, float(nL)) - 1.0, 1e-4);
     for (int k = wantLight ? 0 : nL + 1; k <= (wantBeam ? nL + 4 : nL + 1); ++k) {
         // Jittered over the WHOLE segment: at +-25% of it the optical depth to the light came in
         // steps across a smooth surface, and the big smooth storm domes showed contour ripples (pass 13).
         // Light LOD: two steps spanning the same length (the loop's bounds stay uniform).
         if (lod && k >= 2 && k < nL) continue;
         if (lodN && k < nL && (k & 1) == 1) continue;
-        vec3  off = (k < nL) ? ldir * (s + ((lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg) * jitter)
+        // Each step at its OWN offset (golden-ratio steps from the shared jitter, 2026-10-14): one offset for all of them
+        // moved every sample forward or back together, and their errors added (raw std 26.5 -> 18.8 levels alone).
+        vec3  off = (k < nL) ? ldir * (s + ((lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg) * fract(jitter + 0.6180340 * float(k)))
                   : (k == nL) ? ldir * (cv2.light.x * 1.6)
                   : (k == nL + 1) ? up * 250.0 : bdir * (sb + sg * 0.5);
         // The view sample's footprint, not the step's: a longer footprint would turn the gaps
@@ -504,7 +516,7 @@ void main()
     vec3  moonKey  = kMoonColor * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y;
 
     int   nL    = int(cv2.light.y);
-    float lSeg0 = cv2.light.x * (kLightRatio - 1.0) / max(pow(kLightRatio, float(nL)) - 1.0, 1e-4);
+    float lSeg0 = cv2.light.x / float(max(nL, 1));   // equal steps (kLightRatio 1)
 
     // Spatially IGN, temporally a golden-ratio sequence per pixel: IGN alone, read on one pixel of
     // each 2x2 block per frame, is correlated between neighbours and left a screen-door pattern.
