@@ -1,4 +1,4 @@
-# ── Build output ──────────────────────────────────────────────────────────────
+# â”€â”€ Build output â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 build/
 build-linux/
 out/
@@ -11,22 +11,22 @@ build-macos-release/
 .refs/
 
 # Per-developer CMake configuration (SDK paths, generator choice, toolchain overrides).
-# This is where machine-specific values belong — CMakePresets.json is committed and must
+# This is where machine-specific values belong â€” CMakePresets.json is committed and must
 # stay path-free; CMakeUserPresets.json is not and can hold anything local.
 CMakeUserPresets.json
 
 
-# ── Compiled shaders (generated at build time from shaders/) ─────────────────
+# â”€â”€ Compiled shaders (generated at build time from shaders/) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 *.spv
 
-# ── VS Code local state (workspace config is kept, local state is not) ────────
+# â”€â”€ VS Code local state (workspace config is kept, local state is not) â”€â”€â”€â”€â”€â”€â”€â”€
 .vscode/*.log
 
-# ── OS artifacts ─────────────────────────────────────────────────────────────
+# â”€â”€ OS artifacts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 .DS_Store
 Thumbs.db
 
-# ── Compiler artifacts ────────────────────────────────────────────────────────
+# â”€â”€ Compiler artifacts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 *.obj
 *.ilk
 *.pdb
@@ -40,13 +40,13 @@ Thumbs.db
 !.claude/skills/
 .plans
 
-# ── GPU capture / benchmark scratch (kept in-repo, never committed) ───────────
+# â”€â”€ GPU capture / benchmark scratch (kept in-repo, never committed) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Anchored to the repo root: data/benchmarks/ (published photometry datasets) IS tracked.
 /benchmarks/
 # SatModelTool --run-benchmark reports (default --report-dir); results worth keeping go in the design page log.
 /benchmark_runs/
 
-# ── Python tooling (tools/perf_analysis, etc.) ─────────────────────────────────
+# â”€â”€ Python tooling (tools/perf_analysis, etc.) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 .venv/
 __pycache__/
 *.pyc
@@ -54,15 +54,15 @@ __pycache__/
 ft_slow.log
 satlight_log.txt
 
-# ── Automation harness output (docs/HARNESS.md) ───────────────────────────────
+# â”€â”€ Automation harness output (docs/HARNESS.md) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /harness_runs/
-/harness_live/
+/harness_live*/
 /tools/harness/iclg/
 
-# ── User screenshots ──────────────────────────────────────────────────────────
+# â”€â”€ User screenshots â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # The app writes user screenshots next to the exe; the build keeps that path a link to this
-# directory (cmake/EnsureScreenshotDir.cmake) so wiping the build tree — release.bat does
-# `rmdir /s /q build-win-release` — no longer takes the images with it. The published images in
+# directory (cmake/EnsureScreenshotDir.cmake) so wiping the build tree â€” release.bat does
+# `rmdir /s /q build-win-release` â€” no longer takes the images with it. The published images in
 # docs/screenshots/ (README) are separate and stay tracked.
 /screenshots/
 
@@ -70,5 +70,5 @@ satlight_log.txt
 # outside the build trees, by cmake/EnsureUserDataDir.cmake.
 /user_data/
 
-# ── Wiki (mkdocs.yml) ─────────────────────────────────────────────────────────
+# â”€â”€ Wiki (mkdocs.yml) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /build-wiki/
