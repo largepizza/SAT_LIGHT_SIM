@@ -1291,7 +1291,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const int nGrid = cv2GridFrames / (on ? 2 : 1), nCasc = std::max(cv2CascFrames - 1, 0) / 4;
         p.sunCasc3 = glm::vec4(modP(cv2GridLatA, 32.0), modP(cv2GridLatB, 32.0),
                                std::max(1.0f / (float)(nGrid + 1), 0.125f), std::max(1.0f / (float)(nCasc + 1), 0.125f));
-        // x: nothing until every ray has been baked once (32 frames: 2048 rays on every other frame), then in over 8.
+        // x: nothing until every ray has been baked once (4 frames: 2048 of the 4096 rays on every other frame), then in
+        // over 8 (it waited 33 frames, from when the comment's 32 was true; issue 20261013_220718).
         // The SHAFT lattice (cloud_lightning.glsl cv2SunShaft): 250-m cells across the Sun, knots along it spaced so
         // its +-16 knots reach ~5 km above and below the eye's level whatever the Sun's height (1-3 km); the eye's
         // coordinate integrated in all three, as above. Baked with the cascade: the cloud samples within ~14 km read
@@ -1307,10 +1308,21 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const double dsS2 = dsS * std::max(cell2 / cell1 * std::clamp((double)cv2ShadowRing2KnotK, 0.1, 4.0), 1.0);
         if (cv2ShaftCellUsed[0] != (float)cell1) { cv2ShaftCellUsed[0] = (float)cell1; cv2ShaftFrames = 0; cv2Shaft2Frames = 0; }
         if (cv2ShaftCellUsed[1] != (float)dsS2 + (float)cell2) { cv2ShaftCellUsed[1] = (float)dsS2 + (float)cell2; cv2Shaft2Frames = 0; }
+        // A ring starting to fill (a reset, a new cell size, the cascade switched on) is cleared to 0 first: every
+        // slot then reads as INVALID (cloud_lightning.glsl cv2ShaftStampOk) until it is baked, so the lookup falls back
+        // to the next ring / the cascade there instead of showing what the slot held before (another place, another
+        // setting). That is what lets the ring come in as its slots are baked instead of after a 33-frame wait.
+        // Host-visible and coherent, and the previous frame's work is complete here (single frame in flight).
+        auto clearRing = [&](int ring)
+        {
+            std::memset(static_cast<char *>(cv2FlashMapped) + kCv2SunShaftOffset + (VkDeviceSize)ring * kCv2SunShaftRingBytes, 0,
+                        kCv2SunShaftRingBytes);
+        };
         if (!shaftOn || !lightValid)
             cv2ShaftFrames = 0;
         else
         {
+            if (cv2ShaftFrames == 0) clearRing(0);
             const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
             cv2ShaftLatA = std::fmod(cv2ShaftLatA + glm::dot(dEye, ga) / cell1, 128.0 * 1024.0);
             cv2ShaftLatB = std::fmod(cv2ShaftLatB + glm::dot(dEye, gb) / cell1, 128.0 * 1024.0);
@@ -1321,6 +1333,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             cv2Shaft2Frames = 0;
         else
         {
+            if (cv2Shaft2Frames == 0) clearRing(1);
             const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
             cv2Shaft2LatA = std::fmod(cv2Shaft2LatA + glm::dot(dEye, ga) / cell2, 128.0 * 1024.0);
             cv2Shaft2LatB = std::fmod(cv2Shaft2LatB + glm::dot(dEye, gb) / cell2, 128.0 * 1024.0);
@@ -1328,11 +1341,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             ++cv2Shaft2Frames;
         }
         p.sunCasc6 = glm::vec4(modP(cv2Shaft2LatA, 128.0), modP(cv2Shaft2LatB, 128.0), modP(cv2Shaft2LatS, 32.0),
-                               ring2On ? std::clamp(((float)cv2Shaft2Frames - 33.0f) / 8.0f, 0.0f, 1.0f) : 0.0f);
+                               ring2On ? std::clamp((float)cv2Shaft2Frames / 16.0f, 0.0f, 1.0f) : 0.0f);
         p.sunCasc7 = glm::vec4(ring2On ? std::max(1.0f / (float)(std::max(cv2Shaft2Frames - 1, 0) / 32 + 1), 0.25f) : 0.0f,
                                (float)dsS2, (float)cell1, (float)cell2);
         p.sunCasc4 = glm::vec4(modP(cv2ShaftLatA, 128.0), modP(cv2ShaftLatB, 128.0), modP(cv2ShaftLatS, 32.0),
-                               shaftOn ? std::clamp(((float)cv2ShaftFrames - 33.0f) / 8.0f, 0.0f, 1.0f) : 0.0f);
+                               shaftOn ? std::clamp((float)cv2ShaftFrames / 16.0f, 0.0f, 1.0f) : 0.0f);
         p.sunCasc5 = glm::vec4(shaftOn ? std::max(1.0f / (float)(std::max(cv2ShaftFrames - 1, 0) / 32 + 1), 0.25f) : 0.0f,
                                (float)dsS, 0.0f, 0.0f);
         p.tune = glm::vec4(std::clamp(cv2SmallCumulus, 0.0f, 0.5f), std::max(cv2ErosionVar, 0.0f), std::max(cv2LobeVar, 0.0f),
@@ -1347,7 +1360,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                           std::clamp(cv2SilverLining, 0.0f, 4.0f), 0.0f);
         p.samp = glm::vec4(std::clamp(cv2SampAccum, 0.0f, 256.0f), std::clamp(cv2SampNewSmooth, 0.0f, 1.0f),
                            std::clamp(cv2SampClampSd, 0.25f, 8.0f), std::clamp(cv2LightFootprint, 0.0f, 0.5f));
-        p.sunCasc2 = glm::vec4(on ? std::clamp(((float)cv2CascFrames - 33.0f) / 8.0f, 0.0f, 1.0f) : 0.0f,
+        p.sunCasc2 = glm::vec4(on ? std::clamp(((float)cv2CascFrames - 4.0f) / 8.0f, 0.0f, 1.0f) : 0.0f,   // every ray baked by frame 4
                                (float)(2.0 * sHalf / 40.0), on ? 1.0f : 0.0f, std::max(cv2HazeAloft, 0.0f));
     }
     {   // Rain / snow at the eye: a local frame fixed to the nearest 0.25-degree point (so the drops are

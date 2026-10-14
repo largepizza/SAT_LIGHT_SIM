@@ -922,6 +922,33 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       unbiased estimator (several stratified point samples, or the shadow lattices' baked means for the far steps).
     - Plan for layer shadows: `.plans/LAYER_SHADOW_MAP_PLAN.md` (coarse reads: altocumulus ~2x too thick at 2-8 km,
       cirrus 0.33x; altostratus fine).
+  - **Round 4 (2026-10-13d, three agents, `harness_runs/fb16/<agent>/`, verify batch `harness_runs/fb16/verify.satcmd`):**
+    - **The horizon band ("since forever", issue 215856) was the sky pass's Earth-shadow test** (sat_sky.frag N_VIEW
+      loop): each ~15-km step was lit or shadowed by its MIDPOINT, and near the horizon the first step holds almost all the
+      haze (H_M 1.2 km, "Haze near clouds"' 2.5 km), so it flipped as a block at the elevation where its midpoint left the
+      shadow (4.3 deg at a -0.84 deg Sun; the 2nd/3rd steps at ~1 / 0.4 deg): a hard brightness/colour step, and below it
+      the grey sky-lit air laid over every cloud past ~15 km through `airFront` at the half-res cloud distances — the
+      blurred, blocky "ghost" band. Now the ray's interval in the shadow cylinder is solved once per pixel and each step
+      takes its sunlit SHARE (`tShA/tShB`, `litF`). Row luminance across the old edge 186.1 -> 177.7 before, smooth now;
+      within 2.9 levels of 40 view samples. Same midpoint test still in the sea-reflection marches, `skyZenithSky` and
+      the flat layers' twilight block (not changed). A resolve that outputs flags (fb15 fringe `v_DBG2.comp`) is how it
+      was found: cloud shapes showed through a resolve that drew none (the air split's distances).
+    - **Grain on moving clouds (214939) is the light march's shared jitter `jL`** (raw per-sample std 23.5 levels at the
+      user's settings; view jitter, sub-texel, far sample, IGN vs blue noise: no change), let through by the resolve's
+      motion clamp: all-or-nothing samples make the 3x3 box collapse and clip the history's mean to one value (blocky
+      speckle). In motion the COLOUR boxes (mean colour, radiance) widen to the 5x5 new samples within +-25% of the
+      pixel's distance, fading out over 1-3 px of the neighbourhood's parallax (no `lagK`); opacity keeps the 3x3 clip.
+      Walk grain 3.66 -> 2.16, 1 s after stopping > 16 levels 13.1% -> 0.4%, still view unchanged. Not changed: the
+      shared `jL` itself (per-step `fract(jL + 0.618 k)`: std 23.8 -> 17.2 but the settled image ~18 levels darker,
+      i.e. less Jensen bias — the user's call); the orbit flicker (small puffs, shot 4).
+    - **Far shadows broke when moving (220718): the shaft rings are toroidal**, so slots at the trailing edge became the
+      leading edge holding the shadow from ~a window away until their bake (every 32 frames), then blended out at 1/4.
+      Ring values now carry a STAMP (`cv2ShaftPack`: 10 bits of T + the slot's offset from the eye in bins); a lookup
+      drops slots that changed hands (the next ring / the cascade stands in) and a bake takes them whole. Rings are
+      cleared on a fill start (`kCv2SunShaftOffset`), fade in over 16 frames (was 33 + 8), the cascade from frame 4.
+      Fill: > 16 levels 41.8% -> 0.7% by frame 20 (was 130 frames to the floor); a 6-km hop 15% -> 1%; +0.3 ms. Exact up
+      to ~60 ring cells per 32 frames (~12 km/s at 40 fps at 159-m cells); a wrap count via modP 256/64 would make it
+      exact to ~50 km/s. The cascade is gated off above 60 km eye altitude (could go to ~600 km with the range scaled).
 
   - The user's settings.json was lost to release.bat's wipe on 2026-10-13; a copy from that morning is
     `harness_runs/perf13/user_settings.json`.

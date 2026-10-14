@@ -125,6 +125,32 @@ float cv2SunGridLen(vec3 s, float shellTop)
 {
     return min(shellTop / max(s.z, 0.03), 400000.0);
 }
+// The shaft rings' values carry a STAMP (2026-10-13, issue 20261013_220718): the lattice is toroidal, so when the eye
+// moves a slot at the window's trailing edge becomes a cell at its leading edge, 128 cells (or 32 knots) away, and kept
+// the other side's shadow until its next bake (each ray every 32 frames) and then blended it out at 1/4 a bake: after a
+// 6-km hop a band of the near shadows read lit for ~4 s. A value is a float in [1, 2): 10 bits of transmittance and,
+// above them, the slot's offset from the eye when it was baked, in bins (4 cells across, 4 knots along): a slot that
+// changed hands has moved ~a window (32 bins) since, one that did not by its share of the eye's motion. 0 (cleared) and
+// any value outside [1, 2) read as invalid.
+uint cv2ShaftStampOf(vec2 gc, float relK)
+{
+    uvec2 b = uvec2(clamp(floor((gc + 64.0) * 0.25), 0.0, 31.0));
+    uint  k = uint(clamp(floor((relK + 16.0) * 0.25), 0.0, 7.0));
+    return b.x | (b.y << 5u) | (k << 10u);
+}
+bool cv2ShaftStampOk(uint bits, uint want)
+{
+    if ((bits & 0xFF800000u) != 0x3F800000u) return false;
+    uint  s = (bits >> 10u) & 8191u;
+    ivec3 d = abs(ivec3(int(s & 31u), int((s >> 5u) & 31u), int(s >> 10u))
+                - ivec3(int(want & 31u), int((want >> 5u) & 31u), int(want >> 10u)));
+    return d.x < 16 && d.y < 16 && d.z < 4;
+}
+float cv2ShaftT(uint bits) { return float(bits & 1023u) * (1.0 / 1023.0); }
+float cv2ShaftPack(float T, uint stamp)
+{
+    return uintBitsToFloat(0x3F800000u | (stamp << 10u) | uint(clamp(T, 0.0, 1.0) * 1023.0 + 0.5));
+}
 #ifdef CV2_SUN_CASC_FN
 // The Sun shadow CASCADE's transmittance (cloud_lightning.glsl cv2SunCasc) at a point rl (from the eye, observer
 // ENU) and a distance sAlong along the Sun from the eye (the caller adds its bias): four rays bilinear on the toroidal
@@ -176,14 +202,27 @@ vec2 cv2SunShaftT(vec3 rl, float sAlong, int ring)
     float kk = ks + la.z + float(kCv2ShaftK) * 8.0;
     int   k0 = int(kk);
     float kf = kk - float(k0);
-    float Tb = 0.0;
+    float Tb = 0.0, wv = 0.0;
     int   rb = ring * kCv2ShaftN * kCv2ShaftN * kCv2ShaftK;
+    // The knot's offset from the eye's knot (the stamp's third field): k0 is ks - kf from it.
+    float relK = ks - kf;
     [[dont_unroll]] for (int c = 0; c < 4; ++c) {
-        int ri = rb + (((g0.y + (c >> 1)) & (kCv2ShaftN - 1)) * kCv2ShaftN + ((g0.x + (c & 1)) & (kCv2ShaftN - 1))) * kCv2ShaftK;
-        Tb += mix(cv2SunShaft[ri + (k0 & (kCv2ShaftK - 1))], cv2SunShaft[ri + ((k0 + 1) & (kCv2ShaftK - 1))], kf)
-            * ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
+        ivec2 sc = ivec2(g0.x + (c & 1), g0.y + (c >> 1));
+        int ri = rb + ((sc.y & (kCv2ShaftN - 1)) * kCv2ShaftN + (sc.x & (kCv2ShaftN - 1))) * kCv2ShaftK;
+        // The slot's offset from the eye now (cells), as the bake computes it for the same slot.
+        vec2 gcN = vec2(sc) - (la.xy + float(kCv2ShaftN) * 8.0);
+        gcN -= float(kCv2ShaftN) * round(gcN / float(kCv2ShaftN));
+        uint s0 = cv2ShaftStampOf(gcN, relK), s1 = cv2ShaftStampOf(gcN, relK + 1.0);
+        uint b0 = floatBitsToUint(cv2SunShaft[ri + (k0 & (kCv2ShaftK - 1))]);
+        uint b1 = floatBitsToUint(cv2SunShaft[ri + ((k0 + 1) & (kCv2ShaftK - 1))]);
+        float bw = ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
+        bw *= (cv2ShaftStampOk(b0, s0) && cv2ShaftStampOk(b1, s1)) ? 1.0 : 0.0;
+        Tb += mix(cv2ShaftT(b0), cv2ShaftT(b1), kf) * bw;
+        wv += bw;
     }
-    return vec2(Tb, w);
+    // Slots that changed hands since their last bake (the toroidal window's leading edge after a move) are left out:
+    // the next ring out / the cascade stands in for them until they are baked.
+    return vec2(Tb / max(wv, 1e-4), w * wv);
 }
 // Ring 0 alone (the sky's god rays, within kCv2ShaftRangeCells x its cell of the eye).
 vec2 cv2SunShaftT(vec3 rl, float sAlong) { return cv2SunShaftT(rl, sAlong, 0); }

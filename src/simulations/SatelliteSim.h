@@ -3483,9 +3483,10 @@ private:
     // + review 22's rain map (cloud_lightning.glsl): 4 workgroup maxima and 32 x 32 rain rates after the flashes.
     static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * 64 + 16 + 80;   // + review 22b's Sun profile
     static constexpr VkDeviceSize kCv2RainLightOffset = kCv2RainMapOffset + 1024 * 4;   // cv2RainKey .. cv2RainMisc
-    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2RainLightOffset + 4 * 16 + 16 + 17408 * 4    // + cv2SunWgMax, cv2SunGrid (32 x 32 rays x 17)
-                                                      + 200704 * 4                               // + cv2SunCasc (128 x 32 rays x 49)
-                                                      + 2 * 524288 * 4;                          // + cv2SunShaft (2 rings x 128 x 128 rays x 32)
+    static constexpr VkDeviceSize kCv2SunShaftOffset = kCv2RainLightOffset + 4 * 16 + 16 + 17408 * 4   // + cv2SunWgMax, cv2SunGrid (32 x 32 rays x 17)
+                                                       + 200704 * 4;                              // + cv2SunCasc (128 x 32 rays x 49)
+    static constexpr VkDeviceSize kCv2SunShaftRingBytes = 524288 * 4;                             // one ring: 128 x 128 rays x 32 knots
+    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2SunShaftOffset + 2 * kCv2SunShaftRingBytes;  // + cv2SunShaft (2 rings)
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;

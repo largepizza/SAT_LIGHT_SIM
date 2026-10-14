@@ -3662,6 +3662,37 @@ void main() {
                        * clamp(cloud.atmosTermStrength, 0.0, 1.0);
     float atmTermW     = max(1e-4, cloud.atmosTermWidth);
 
+    // The Earth's shadow along this ray, EXACTLY (2026-10-13, issue "Odd sky band"): the shadow of a sphere lit from
+    // infinity is the cylinder |p - (p.s) s| < R_EARTH on the anti-Sun side (p.s < 0), so the ray is in it over one
+    // interval [tShA, tShB] (a quadratic, once per pixel). Each step below takes the share of its length that is
+    // sunlit. It tested only the step's MIDPOINT: with ~15-km steps near the horizon, the dense low air of the whole
+    // first step (H_M 1.2 km, the haze aloft's 2.5 km) was lit or not as one block, and which one switched at the view
+    // elevation where that midpoint left the shadow — ~4.3 deg in the user's sunset view (Sun -0.84 deg): a hard
+    // horizontal band above the horizon, a second one at ~1 deg for the second step's midpoint, and the clouds inside
+    // it veiled by the air split's grey sky-lit air (see airFront). Same test as raySphere(sp, sunDir, R_EARTH) for
+    // points above the ground.
+    float tShA = 1e30, tShB = -1e30;
+    {
+        vec3  op = obsPos - dot(obsPos, sunDir) * sunDir;
+        vec3  dp = dir    - dot(dir,    sunDir) * sunDir;
+        float qa = dot(dp, dp);
+        float qb = dot(op, dp);
+        // c = |op|^2 - R^2 in the cancellation-free form (raySphere's note: the naive form loses it at R_EARTH scale).
+        float lo = length(op);
+        float qc = (lo - R_EARTH) * (lo + R_EARTH);
+        float qd = qb * qb - qa * qc;
+        if (qa > 1e-12 && qd > 0.0) {
+            float q = sqrt(qd);
+            tShA = (-qb - q) / qa;
+            tShB = (-qb + q) / qa;
+            float os = dot(obsPos, sunDir), ds = dot(dir, sunDir);   // clip to the anti-Sun half-space
+            if (abs(ds) > 1e-9) {
+                float tc = -os / ds;
+                if (ds > 0.0) tShB = min(tShB, tc); else tShA = max(tShA, tc);
+            } else if (os >= 0.0) { tShA = 1e30; tShB = -1e30; }
+        }
+    }
+
     // ── Single-scattering atmosphere integration (Rayleigh + Mie) ────────────
     // N_VIEW uniform steps from the observer toward the atmosphere exit (or truncated at
     // the surface).  At each step the scattered sunlight is accumulated using:
@@ -3781,21 +3812,36 @@ void main() {
         // Shadow test: skip samples in Earth's shadow.
         // If the sun-ray from this point has TWO positive intersections with R_EARTH, the sun
         // is behind Earth from here → no direct sunlight → no in-scatter contribution.
-        vec2 tSunEarth = raySphere(sp, sunDir, R_EARTH);
-        if (tSunEarth.x > 0.0 && tSunEarth.y > 0.0) {
+        // The step's share in the Earth's shadow (tShA/tShB above; it was the midpoint's all-or-nothing test).
+        float tS0  = tStart + float(i) * segLen;
+        float ovSh = max(0.0, min(tS0 + segLen, tShB) - max(tS0, tShA));
+        float litF = clamp(1.0 - ovSh / segLen, 0.0, 1.0);
+        if (litF < 1.0) {
             // Review 7: shadowed air, lit by the twilight sky below (see shadowSky after the loop).
+            float shF = 1.0 - litF;
             vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
-            shR += aC * densR; shM += dot(aC, vec3(1.0 / 3.0)) * densM;
-            float fwS = clamp((tAirFrontM - tStart - float(i) * segLen) / segLen, 0.0, 1.0);   // share of the step in front
-            shRF += aC * densR * fwS; shMF += dot(aC, vec3(1.0 / 3.0)) * densM * fwS;
-            shT += densR * (tStart + (float(i) + 0.5) * segLen);
-            shD += densR;
-            continue;
+            shR += aC * densR * shF; shM += dot(aC, vec3(1.0 / 3.0)) * densM * shF;
+            float fwS = clamp((tAirFrontM - tS0) / segLen, 0.0, 1.0);   // share of the step in front
+            shRF += aC * densR * shF * fwS; shMF += dot(aC, vec3(1.0 / 3.0)) * densM * shF * fwS;
+            shT += densR * shF * (tS0 + 0.5 * segLen);
+            shD += densR * shF;
+            if (litF <= 0.0) continue;
         }
+        // The lit part's own middle for the Sun path (the midpoint may be in the shadow); the step's in-scatter below
+        // takes its lit share (densR / densM; the camera-side depths above keep the whole step).
+        vec3 spL = sp;
+        if (litF < 1.0) {
+            float tL = (tShA <= tS0) ? 0.5 * (tShB + tS0 + segLen) : 0.5 * (tS0 + tShA);
+            spL = obsPos + dir * tL;
+            float lenL = length(spL);
+            if (lenL < R_EARTH) spL *= R_EARTH / lenL;
+        }
+        densR *= litF;
+        densM *= litF;
 
         // Compute sun-side optical depth from this sample to the atmosphere boundary.
-        vec2 tSun  = raySphere(sp, sunDir, R_ATMOS);
-        vec2 sunOD = (tSun.y > 0.0) ? optDepth(sp, sunDir, tSun.y) : vec2(0.0);
+        vec2 tSun  = raySphere(spL, sunDir, R_ATMOS);
+        vec2 sunOD = (tSun.y > 0.0) ? optDepth(spL, sunDir, tSun.y) : vec2(0.0);
 
         // Combined transmittance τ = BETA × (cam_depth + sun_depth):
         //   cam_depth: how much atmosphere light must traverse from here to the camera.

@@ -169,8 +169,15 @@ void main()
             }
             if (r < kCv2ShaftN * kCv2ShaftN) {
                 int rb = (ring * kCv2ShaftN * kCv2ShaftN + r) * kCv2ShaftK;
-                for (int k = 0; k < kCv2ShaftK; ++k)
-                    cv2SunShaft[rb + k] = mix(cv2SunShaft[rb + k], Tk[k], bakeW);
+                // Slot k holds absolute knot n = base + ((k - base) mod K); a slot whose stamp says it held another
+                // cell / knot (it changed hands as the eye moved) takes the new bake whole.
+                for (int k = 0; k < kCv2ShaftK; ++k) {
+                    float relK  = float(base + ((k - base) & (kCv2ShaftK - 1))) - la.z;
+                    uint  want  = cv2ShaftStampOf(gc, relK);
+                    uint  bits  = floatBitsToUint(cv2SunShaft[rb + k]);
+                    float T     = cv2ShaftStampOk(bits, want) ? mix(cv2ShaftT(bits), Tk[k], bakeW) : Tk[k];
+                    cv2SunShaft[rb + k] = cv2ShaftPack(T, want);
+                }
             }
             return;
         }

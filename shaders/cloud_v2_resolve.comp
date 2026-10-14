@@ -51,6 +51,10 @@ layout(set = 0, binding = 10) uniform sampler2D histAgeTex;
 layout(std430, set = 0, binding = 8) readonly buffer TileBuf { uint tPad, tDispX, tDispY, tDispZ; uint tList[4096]; uint tFlag[4096]; };
 
 ivec2 gHalf, gQs;
+const int   kWideColorRadius   = 2;      // the motion colour box: 5x5 new samples ...
+const float kWideColorDepthTol = 0.25;   // ... at this pixel's distance +-25%
+const float kWideColorPx0      = 1.0;    // ... faded out over 1-3 px a frame of the neighbourhood's parallax
+const float kWideColorPx1      = 3.0;
 bool  gAdaptive = false;
 // Review 20: the history is read Catmull-Rom (9 bilinear taps, sky_taa.comp's form), not bilinear. Rising or
 // sliding slowly, far clouds move a fraction of a pixel a frame and keep the still weight (95% history), and a
@@ -321,25 +325,30 @@ void main()
         float lagK   = 1.0 / max(cv2.look2.w, 0.01);
         float mNb    = max(motionPx, (eyePx / min(min(dNear, ndR > 0.0 ? ndR : 1e30), 50000.0)) * lagK);
         float stillW = 1.0 - smoothstep(0.05, 0.5, mNb);
-        if (stillW > 0.0) {
+        // The wide neighbourhood is read in motion too (2026-10-13, issue 20261013_214939: the colour box below).
+        vec3 cMn = mn.rgb, cMx = mx.rgb, rMnC = rMn, rMxC = rMx;
+        float dRef = ndR > 0.0 ? ndR : -1.0;
+        float dWide = 1e30;
+        {
             vec4 mnW = mn, mxW = mx; vec3 rMnW = rMn, rMxW = rMx;
-            float dWide = 1e30;
             [[dont_unroll]] for (int dy = -3; dy <= 3; ++dy)
             [[dont_unroll]] for (int dx = -3; dx <= 3; ++dx) {
                 if (abs(dx) < 2 && abs(dy) < 2) continue;
                 ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
                 if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
                 vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
-                {
-                    float dq = tFull ? texelFetch(fullDepthTex, clamp(c + ivec2(dx, dy), ivec2(0), gHalf - 1), 0).x
-                                     : texelFetch(newDepthTex, pq, 0).x;
-                    if (dq > 0.0) dWide = min(dWide, dq);
-                }
+                float dq = tFull ? texelFetch(fullDepthTex, clamp(c + ivec2(dx, dy), ivec2(0), gHalf - 1), 0).x
+                                 : texelFetch(newDepthTex, pq, 0).x;
+                if (dq > 0.0) dWide = min(dWide, dq);
+                bool sameD = (dRef > 0.0) ? (dq > 0.0 && abs(dq - dRef) < kWideColorDepthTol * dRef) : (dq <= 0.0);
+                bool inC   = sameD && max(abs(dx), abs(dy)) <= kWideColorRadius;
+                if (inC) { rMnC = min(rMnC, s.rgb); rMxC = max(rMxC, s.rgb); }
                 rMnW = min(rMnW, s.rgb); rMxW = max(rMxW, s.rgb);
                 s = cv2ToMean(s);
+                if (inC) { cMn = min(cMn, s.rgb); cMx = max(cMx, s.rgb); }
                 mnW = min(mnW, s); mxW = max(mxW, s);
             }
-            if (dWide < 1e29) {
+            if (stillW > 0.0 && dWide < 1e29) {
                 if (ndR <= 0.0) motionPx = max(motionPx, eyePx / min(dWide, 50000.0));
                 mNb    = max(mNb, max(motionPx, (eyePx / min(dWide, 50000.0)) * lagK));
                 stillW = 1.0 - smoothstep(0.05, 0.5, mNb);
@@ -355,6 +364,21 @@ void main()
         float mv  = smoothstep(0.1, 1.5, mNb);
         vec4  bLo = mix(mn - slack, max(mn, m1 - cv2.samp.z * sdBox), mv);
         vec4  bHi = mix(mx + slack, min(mx, m1 + cv2.samp.z * sdBox + vec4(1e-4)), mv);
+        // Issue 20261013_214939 ("noise on moving clouds"): in motion the box above is the 3x3 of new samples, and a new
+        // sample's KEY LIGHT is all-or-nothing (the light march's far steps are point samples standing for 0.5-3 km:
+        // lit or self-shadowed by its jitter; raw per-sample std ~24 levels at the user's 8-km light march). Nine of
+        // them often agree, the box collapses onto one of the two values and the history's mean is clipped to it:
+        // every lit cumulus turned to a blocky speckle of the sparse grid with dark L-shaped fragments whenever the
+        // eye or the view moved, and the speckle took the still weight's ~50 frames to fade after stopping.
+        // So the box's COLOUR (the mean colour; opacity keeps the tight box, which is what rejects a ghost of another
+        // cloud or of clear sky) also spans the 5x5 samples at this pixel's distance (+-25%: a near cloud's samples
+        // never widen a far pixel's box), while the neighbourhood's parallax (dNear / dWide, not x lagK) is under
+        // ~1-3 px a frame: past that the history is replaced quickly anyway, and a wide colour box let a climb's near
+        // clouds smear (issue 20261013_202117's path). Shot 1's walk, 1 s after stopping: mean error vs settled
+        // 7.6 -> 2.5 levels, pixels past 16 levels 13.7% -> 0.2%; the still view is unchanged.
+        float wideK = 1.0 - smoothstep(kWideColorPx0, kWideColorPx1,
+                                       max(motionPx, eyePx / min(min(dNear, dWide), 50000.0)));
+        bLo.rgb = mix(bLo.rgb, min(bLo.rgb, cMn), wideK); bHi.rgb = mix(bHi.rgb, max(bHi.rgb, cMx), wideK);
         vec4 hc = cv2FromMean(clamp(cv2ToMean(hist), bLo, bHi));
         // Review 20b: and never brighter (or darker) than the new samples' own RADIANCE box. The mean colour divides
         // by the opacity (floor 0.02): a near-clear pixel carrying light of its own — a beam shaft's air, seen from
@@ -362,7 +386,7 @@ void main()
         // by its own opacity came out as bright blue-white 2x2 blocks along every cloud edge in motion (user snapshot,
         // 5 km over the Anchorage beam site: "chunkiness" and "bluish effects").
         vec3 rSl = (rMx - rMn) * mix(1.0, 0.1, smoothstep(0.05, 1.0, mNb)) + vec3(1e-4);
-        hc.rgb = clamp(hc.rgb, rMn - rSl, rMx + rSl);
+        hc.rgb = clamp(hc.rgb, mix(rMn, min(rMn, rMnC), wideK) - rSl, mix(rMx, max(rMx, rMxC), wideK) + rSl);
         // The other three pixels of the block also take a share of the interpolated new samples.
         // Without it the one pixel refreshed each frame stood out from the three that were not,
         // and noisy (shaded, grazing) surfaces showed a 2x2 dot grid. In motion the shares
