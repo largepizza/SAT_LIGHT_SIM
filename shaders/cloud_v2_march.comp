@@ -891,8 +891,15 @@ void main()
                 // beyond the light march: the path to the deck's top along the light. Without it
                 // a deck's interior was lit through a few km of cloud, and the whole band along the
                 // terminator glowed red from orbit instead of fading to black.
+                // Only the part of that path BEYOND the light march (which reads the real field over its
+                // first ~2 x its length: the steps, then the far sample at 1.6x): within it the march has
+                // already counted what is there. Taken over the whole path, the layer's nominal top a few
+                // hundred metres above a lumpy top's actual surface became kilometres of cloud under a low
+                // Sun (x 1 / sin 4 deg = 13.5): od ~15 where the march found ~1, every sunlit top grey-brown
+                // (issue 20261013_193122: "There is direct sunlight on these clouds. They should be white").
                 if (f.deck > 0.0) {
-                    float odDeck = f.sigma * max(f.topH - p.h, 0.0) / max(dot(up, keyDir), 0.03);
+                    float odDeck = f.sigma * max(max(f.topH - p.h, 0.0) / max(dot(up, keyDir), 0.03)
+                                                 - 2.0 * cv2.light.x, 0.0);
                     od = max(od, odDeck * f.deck * 0.5);
                 }
                 float powder = 1.0 - cv2.look2.z * exp(-f.sigma * 300.0) * (0.5 - 0.5 * cosK);
