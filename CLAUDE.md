@@ -861,6 +861,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     atmosphere loop ~9.5, the god rays 2-4 of that). From orbit: full rate vs sparse 38 vs 14 ms, Cb columns
     -30% (content as much as search), step base 120 m -15%, light steps 2 -14%, high layer -13%. The user's
     `shadow_ring1_cell_m` 100 (default 250) costs ~0.5 ms; `fovea_radius` does nothing with the adaptive rate off.
+- **Issue round (2026-10-13b, issues 20261013_184710 / _181252, `harness_runs/fb14`):**
+  - **Edge trails in motion** (cloud_v2_resolve.comp, `dWide` / `eyePx`): a clear pixel with no cloud in its 3x3 new
+    samples but cloud in the 7x7 takes that cloud's distance for its eye-parallax floor. It was floored at 50 km
+    ("still" at any flying speed), so 2-6 texels behind a cloud's trailing edge the still view's 7x7 box (which holds
+    the cloud) passed last frame's cloud at the still weight: granulated copies of every edge, in sparse-grid blocks
+    (2.5 km/s at 2.5 km over cumulus; render scale 0.65 makes a block 6 screen px). Not from the batched march (the
+    pre-batching shader shows it). Replay: `report load` + `path play fps=60 record=`.
+  - **"Light march footprint" defaults to 0** (was 0.08): at 640 m the light march no longer saw a cumulus's own
+    body — a backlit cloud was flat and glowing above a straight far-shadow line. The footprint read does not
+    conserve optical depth for cumulus since the shape pass; do not raise it without fixing that.
+  - **"Silver lining" is forward-scattered TRANSMISSION**: 0.12 HG(0.92) + 0.5 HG(0.8), x exp(-0.3 od), beside the
+    single scattering's exp(-od). The narrow lobe alone at full extinction moved a backlit rim ~6 levels from 0 to 3.
+    128 registers, cost within noise; five other views change < 1 level mean at 0.5.
+  - **"Fast-flight cloud LOD" defaults to off** (the user: it looks terrible). Adaptive rate's default is unchanged.
+  - The user's settings.json was lost to release.bat's wipe on 2026-10-13; a copy from that morning is
+    `harness_runs/perf13/user_settings.json`.
 - **Lightning + thunder (rebuilt 2026-10-05; `cloud_v2_lightning.comp`, `SatelliteSimLightning.cpp`,
   `lightning.vert/.frag`, `include/lightning_draw.glsl`):** WHICH flashes happen is the GPU's: one workgroup walks two
   lattices around the observer out to the cloud tops' horizon — the Cb TOWERS (dominant, anvil-reaching: "Lightning

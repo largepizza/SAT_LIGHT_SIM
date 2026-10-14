@@ -3173,7 +3173,7 @@ private:
     float cv2CuFineLobes = 0.5f;          // "Storm cumulus fine lobes": the cumulus-scale lobes kept on deep convection's storm-scale ones
     float cv2CbFineLobes = 0.5f;          // "Cb tower fine lobes": the same on the towers
     float cv2CuWisps = 0.5f;              // "Cumulus wisps": erosion concentrated at the cloud's edge (frayed edges, solid cores)
-    float cv2SilverLining = 0.5f;         // "Silver lining": the narrow forward lobe on thin edges toward the Sun
+    float cv2SilverLining = 0.5f;         // "Silver lining": forward-scattered sunlight leaking through thin cloud toward the Sun
     float cv2SmallCumulus = 0.06f;        // the near field makes low puffs this far under the coverage threshold (field units)
     float cv2ErosionVar = 0.6f;           // erosion strength and grain vary by region (0 = uniform)
     float cv2LobeVar = 0.5f;              // the lobes' strength varies by region (0 = uniform)
@@ -3187,7 +3187,7 @@ private:
     float cv2SampNewSmooth = 0.8f;        // how much a young pixel leans on its neighbourhood's estimate
     float cv2MsOctaves = 2.0f;            // multiple-scattering octaves (2-8): strength^k x exp(-od x extinction^k)
     float cv2LobeOcclusion = 0.0f;        // sky light darker in the creases between lobes, brighter on their tips
-    float cv2LightFootprint = 0.08f;      // the light march's samples read the field at this x its length (0 = point samples: all-or-nothing shadows, grain)
+    float cv2LightFootprint = 0.0f;       // the light march's samples read the field at this x its length (0 = point samples). 0.08 hid grain but a cumulus lost its self-shadow: flat, glowing (issue 20261013_181252)
     float cv2SampClampSd = 1.25f;         // the history clamp in motion (sd of the new samples around)
     float cv2SunCascadeRangeKm = 205.0f;  // "Far cloud shadow range": the cascade's half width across the Sun (128 cells)
     // The shaft lattice's two rings (2026-10-12): 128 x 128 rays each, so a ring reaches ~56 cells from the eye
@@ -3288,7 +3288,7 @@ private:
     // Review 22: "Fast-flight cloud LOD" (slot 246, clouds_v2.fast_flight_lod): while boost is held and the eye
     // moves, or the eye moves > 150 m a frame, the march takes <= 2 light steps, 60% of its iteration budget and
     // a 1.5x base step (boosting up through cloud is the most expensive frame there is, and the history is useless).
-    float cv2FastFlightLod = 1.0f;
+    float cv2FastFlightLod = 0.0f;
     // Review 22 (experiment): "Foveated full rate (radius)" (slot 247, clouds_v2.fovea_radius, 0 = off): while the
     // adaptive rate runs (the view moves), tiles within this radius of the centre (x the half height) march at
     // full rate whatever their parallax.

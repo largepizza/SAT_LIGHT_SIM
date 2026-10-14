@@ -444,20 +444,21 @@ void main()
     if ((cloud.dbgDisableMask & 32768u) != 0u || cv2.look.x <= 0.0) nSeg = 0;
 
     float cosSun = dot(dir, sunDir);
-    // "Silver lining" (cu2.z): the droplets' narrow forward peak (Mie; g ~0.92, 12% of the phase function at 1), on
-    // single scattering only. It shows where little cloud lies between the sample and the Sun AND the view is within
-    // ~15 degrees of it: the thin rim of a cloud in front of the Sun, lit far brighter than its shaded body. The two
-    // broad lobes alone (the user's g is 0.28) gave a backlit cloud a rim no brighter than its sunlit side.
+    // "Silver lining" (cu2.z): sunlight scattered FORWARD through thin cloud: the droplets' narrow peak (g ~0.92) plus
+    // a wider lobe (g 0.8: a few forward scatterings), attenuated at 0.3 of the optical depth toward the Sun (forward
+    // scattering is not loss). The rim of a cloud in front of the Sun glows, and light leaks through its thin parts.
+    // The first cut was the narrow peak alone at full extinction: 0 -> 3 moved a backlit rim by ~6 levels (the
+    // user: "does nothing", issue 20261013_181252).
     // (Water cloud only: on the mid layer's sheets and the ice veils, which lie across the Sun over tens of degrees,
     // it was a blown-out glare many times the Sun's own.)
-    float phSilvS = cv2.cu2.z * 0.12 * cv2HG(cosSun, 0.92);
+    float phSilvS = cv2.cu2.z * (0.12 * cv2HG(cosSun, 0.92) + 0.5 * cv2HG(cosSun, 0.8));
     float phSS   = cv2.phase.y * cv2HG(cosSun, cv2.phase.x) + cv2.phase.w * cv2HG(cosSun, cv2.phase.z);
     float phMS   = 0.85 * cv2HG(cosSun, 0.2) + 0.15 * cv2HG(cosSun, -0.4);
     vec3  moonDir  = normalize(pc.moonDirENU.xyz);
     float cosMoon  = dot(dir, moonDir);
     float phMoonSS = cv2.phase.y * cv2HG(cosMoon, cv2.phase.x) + cv2.phase.w * cv2HG(cosMoon, cv2.phase.z);
     float phMoonMS = 0.85 * cv2HG(cosMoon, 0.2) + 0.15 * cv2HG(cosMoon, -0.4);
-    float phSilvM  = cv2.cu2.z * 0.12 * cv2HG(cosMoon, 0.92);
+    float phSilvM  = cv2.cu2.z * (0.12 * cv2HG(cosMoon, 0.92) + 0.5 * cv2HG(cosMoon, 0.8));
     // Per-ray phases of ice (the high layer: a forward lobe + halos, sundogs, parhelic circle,
     // circumzenithal arc) and rain (a forward lobe + the bows), for either key light. Per RAY, so
     // the optics are as sharp as a pixel. (.plans/ATMOS_OPTICS_AND_STORMS.md)
@@ -900,8 +901,8 @@ void main()
                     pSSv = mix(pSSv, moonIsKey ? phIceMoon : phIceSun, f.thin);
                     pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);
                 }
-                pSSv += (moonIsKey ? phSilvM : phSilvS) * (1.0 - f.thin) * (1.0 - f.rain) * (1.0 - f.soft);
-                keyS = keyCol * powder * (pSSv * exp(-od) + pMS * msOctaves(od) * f.msBright);
+                float pSilv = (moonIsKey ? phSilvM : phSilvS) * (1.0 - f.thin) * (1.0 - f.rain) * (1.0 - f.soft);
+                keyS = keyCol * powder * (pSSv * exp(-od) + pSilv * exp(-0.3 * od) + pMS * msOctaves(od) * f.msBright);
             }
 
             // ── Sky light from above, through the cloud above the sample, plus light from below. ──

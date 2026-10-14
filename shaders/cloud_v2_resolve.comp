@@ -280,21 +280,23 @@ void main()
         // the opacity-weighted mean of what it shows; a near beam shaft (or haze) in front of a far deck
         // reprojected at the deck's distance kept the still view's weight and wide box, and the shaft left
         // ghost copies behind it climbing or descending (user, a 10-25 km strafe up and down).
+        float eyePx;   // the eye's move across this ray, in pixels per metre of distance
         {
             vec3  od    = cv2.obsDelta.xyz;
             float perp  = length(od - vE0 * dot(od, vE0));
-            motionPx = max(motionPx, perp / (min(ndR > 0.0 ? ndR : 1e9, 50000.0) * 2.0 * tanHalf / float(halfSize.y)));
+            eyePx    = perp / (2.0 * tanHalf / float(halfSize.y));
+            motionPx = max(motionPx, eyePx / min(ndR > 0.0 ? ndR : 1e9, 50000.0));
         }
         // Still: look2.w ("History weight", low: the history averages the quarter grid's noise away —
         // at 1 each pixel alternated between its own ray and its neighbours' estimate, a checkerboard
         // flicker). Moving: motion.y ("History weight moving"), reached from a quarter pixel of parallax:
         // a fixed 0.35 from 0.5-4 px left small clouds ghosting behind themselves (user snapshot 4).
-        float wNew     = mix(cv2.look2.w, max(cv2.look2.w, cv2.motion.y), smoothstep(0.05, 1.0, motionPx));
+        // (The weight and the slack are set after the wide box below, which may raise motionPx.)
         // A little slack on the box: the clamp is against samples up to two pixels away.
         // A still view has nothing to reject, and the box (from the quarter-grid samples around
         // this pixel, not its own rays) pulled every far pixel toward its neighbours: blocky 2x2
         // squares. So the box widens when the reprojection barely moves, and is tight in motion.
-        vec4 slack = (mx - mn) * mix(1.0, 0.1, smoothstep(0.05, 1.0, motionPx)) + vec4(1e-4);
+        vec4 box3 = mx - mn;
         // A still view takes the box over 7x7 new samples, not 3x3 (2026-10-12). Where the samples are
         // all-or-nothing (a point sample lit or self-shadowed under a grazing Sun), a frame whose nine samples AGREE
         // has a box of zero width, and the history's mean of both was clamped to that one value. Which frames agree
@@ -303,23 +305,40 @@ void main()
         // mean (user issue 20261012_202341). Forty-nine blue-noise samples nearly always hold both: 0.4 levels of
         // grain, as with no clamp at all (5x5: 1.8); cost within noise. The clamp stays, for light that changes in
         // a still view (a beam's shaft moving on).
+        // 2026-10-13: a pixel with no cloud in its 3x3 (reprojected at infinity, its parallax floored at 50 km: "still"
+        // at any flying speed) but with cloud in the 7x7 takes that cloud's distance for its parallax. Otherwise, in
+        // the band 2-6 pixels behind a cloud's trailing edge, the wide box (which holds the cloud) passed the cloud
+        // the pixel showed a frame ago at the still weight: every cloud dragged a granulated copy of its edge behind
+        // it over the sea, in blocks of the sparse grid (user issue 20261013_184710, 2.5 km/s low over cumulus).
         float stillW = 1.0 - smoothstep(0.05, 0.5, motionPx);
         if (stillW > 0.0) {
             vec4 mnW = mn, mxW = mx; vec3 rMnW = rMn, rMxW = rMx;
+            float dWide = 1e30;
             [[dont_unroll]] for (int dy = -3; dy <= 3; ++dy)
             [[dont_unroll]] for (int dx = -3; dx <= 3; ++dx) {
                 if (abs(dx) < 2 && abs(dy) < 2) continue;
                 ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
                 if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
                 vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
+                if (ndR <= 0.0) {
+                    float dq = tFull ? texelFetch(fullDepthTex, clamp(c + ivec2(dx, dy), ivec2(0), gHalf - 1), 0).x
+                                     : texelFetch(newDepthTex, pq, 0).x;
+                    if (dq > 0.0) dWide = min(dWide, dq);
+                }
                 rMnW = min(rMnW, s.rgb); rMxW = max(rMxW, s.rgb);
                 s = cv2ToMean(s);
                 mnW = min(mnW, s); mxW = max(mxW, s);
             }
+            if (dWide < 1e29) {
+                motionPx = max(motionPx, eyePx / min(dWide, 50000.0));
+                stillW   = 1.0 - smoothstep(0.05, 0.5, motionPx);
+            }
             mn = mix(mn, mnW, stillW); mx = mix(mx, mxW, stillW);
             rMn = mix(rMn, rMnW, stillW); rMx = mix(rMx, rMxW, stillW);
-            slack = max(slack, (mx - mn) * stillW);
         }
+        float wNew  = mix(cv2.look2.w, max(cv2.look2.w, cv2.motion.y), smoothstep(0.05, 1.0, motionPx));
+        vec4  slack = box3 * mix(1.0, 0.1, smoothstep(0.05, 1.0, motionPx)) + vec4(1e-4);
+        slack = max(slack, (mx - mn) * stillW);
         // In motion the box is the neighbourhood's mean +- 1.25 sd (variance clipping), inside min/max:
         // a small cloud next to clear sky made a min/max box spanning both, so its ghost passed.
         float mv  = smoothstep(0.1, 1.5, motionPx);
