@@ -120,8 +120,32 @@ struct UIImage {
     float u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
 };
 
+// ── Text block (Clay custom element) ─────────────────────────────────────────
+// Lines of text and solid quads placed by the CALLER, relative to the element's box: a multi-line text box's
+// wrapped lines, selection and caret, or marks drawn over an image. Clay measures none of it — a long text that
+// changes with every key press otherwise fills Clay's text-measurement cache (each distinct string is an entry
+// holding one item per word). The block, its arrays and the strings must stay alive until record().
+struct UITextRun  { const char* text = nullptr; int len = 0; float x = 0.0f, y = 0.0f; };
+struct UITextQuad { float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f; glm::vec4 color{1.0f}; };
+struct UITextBlock {
+    static constexpr uint32_t kMagic = 0x54585442u; // 'TXTB'
+    uint32_t magic = kMagic;
+    const UITextRun*  runs = nullptr;
+    int               runCount = 0;
+    const UITextQuad* quads = nullptr;  // drawn first (under the text)
+    int               quadCount = 0;
+    float             fontSize = 12.0f;
+    glm::vec4         color{1.0f};
+};
+
 class UIRenderer {
 public:
+    // The width pushText gives `len` characters at `fontSize`, and the height of a line (for callers that lay
+    // text out themselves: UITextBlock).
+    float textAdvance(const char* text, int len, float fontSize) const;
+    // Call every frame a widget owns a mouse drag (a text selection, a rubber band): the scroll view under the
+    // pointer is not dragged along with it on the next frame.
+    void holdDragScroll() { holdDragScroll_ = true; }
     // Call after VulkanContext is initialized. `window` is used only to set OS resize
     // cursors while hovering/dragging a window edge (see updateWindowChrome). `pass` is the render
     // pass the UI pipeline is built against; VK_NULL_HANDLE (the default, so every pre-existing
@@ -296,6 +320,7 @@ private:
     void applyCursor(); // called once at the end of record()
 
     // ── GPU geometry buffers (persistently mapped host-visible) ───────────
+    bool holdDragScroll_ = false;
     static constexpr uint32_t MAX_VERTS   = 65536;
     static constexpr uint32_t MAX_INDICES = MAX_VERTS * 3;
 

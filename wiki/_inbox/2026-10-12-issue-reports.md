@@ -42,3 +42,24 @@ is what a player sends. On the development side `tools/harness/reports.py` lists
 for whoever takes one, imports a received zip, and writes a resolution back (`resolve`: text, commit, images,
 status fixed). The window shows the resolution, lists fixed issues in green, and the reporter closes or reopens
 them after looking (Refresh re-reads the files).
+
+## Now (2026-10-13: longer texts, areas)
+Text limits: title 120, a shot's note 4000, the description 20000 characters. The description and every shot's
+note are multi-line boxes that wrap, grow (description 5 to 16 lines, a note 3 to 9, the note bar 2 to 6) and
+then scroll with a thumb on their right edge. In them a click places the caret, a drag or Shift+arrows select,
+a double click takes a word; Up / Down move by line, Ctrl+Left / Right by word, Ctrl+A / C / X / V work. Enter
+is a new line and Ctrl+Enter, Tab or a click elsewhere save; in the note bar Enter saves and Shift+Enter is the
+new line.
+
+Starting a new issue (F7, or "New issue from this view") opens the Issue reports window on it instead of the
+note bar; later shots of the issue open the bar.
+
+On a shot's frame a click sets the pin and a DRAG marks an area (`rect` {x, y, w, h}, 0..1 from the image's top
+left, one per shot). The area is also written as `shot_NN_crop.png` (the shot's `crop`), at the shot's full
+resolution, and travels in the exported zip. `reports.py show` prints the area in pixels and the crop's path;
+harness `report mark [issue] shot=N [pin=x,y|off] [rect=x,y,w,h|off]` sets both.
+
+## History
+The first description box was one wrapped Clay text element with a '|' as its caret: each key press was a new
+string for Clay's text-measurement cache, and a long description exhausted it ("Clay ran out of capacity while
+attempting to measure text elements"). The boxes now wrap and draw their own visible lines.

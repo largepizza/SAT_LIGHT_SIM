@@ -1975,8 +1975,13 @@ its record there with a `report` {id, shot} key (tools/perf_analysis and `snapsh
   and gives the keyboard back; unfocused it stays up 10 s (`reportBarTimer_`; Enter or a click focuses the
   note, Esc closes it — `capturesKeyboard` includes `reportBarOpen_` so that Esc does not quit). Enter saves
   and closes. `reportBarKey` runs ahead of `textEditKey` in `onKey`, so F9 / F7 take their shot while a field
-  is focused; text still in the box goes to the shot it was typed for. One line, 120 chars (the multi-line
-  description is step 2's outbox window).
+  is focused; text still in the box goes to the shot it was typed for. The note is a `textArea` (2 lines growing
+  to 6, then scrolling; `kReportNoteMax` 4000): Enter saves, Shift+Enter is a new line.
+- **A NEW issue opens the Issue reports window on it** (`reportTakeShot`, when the bar would have opened and the
+  HUD is visible) instead of the bar: title, description and the shot's note are all there, and nothing is
+  focused, so movement keys keep working. Later shots of the issue open the bar.
+- **Text limits** (`kReportTitleMax` 120, `kReportNoteMax` 4000, `kReportDescMax` 20000): `reportSetField` cuts
+  whatever it is handed, `reportsLoad` cuts what a file holds, the text boxes stop typing and pasting there.
 - `report.json` is rewritten whole through `report.json.tmp` + rename (a crash mid-write keeps the old shots).
 - **Replay is unclamped:** harness `report load` and `snapshot` set `settingsRawImport_`, which turns
   `settingClamp` (the range guards in `applySettingsJson`) into a pass-through, so a value typed past its range
@@ -1988,9 +1993,13 @@ its record there with a `report` {id, shot} key (tools/perf_analysis and `snapsh
   (`TimeReportBtn`, `pixel--report.png`, window id 7, `rpChrome`; harness `ui open reports`). A grid of issue
   cards (first shot's thumbnail, title, shots / category / status; Open, Make active, Delete with a second
   click) and, per issue: title, category (clouds terrain sea sky lighting satellites performance ui other),
-  status (open sent fixed closed), a multi-line description, the selected shot's frame, then the shots (note,
-  Go, Go + settings, Delete). **A click on the frame sets the shot's PIN** (`pin` {x, y}, 0..1 from the image's
-  top left; one per shot): where the problem is — `probe` / debug views go there.
+  status (open sent fixed closed), a multi-line description, the selected shot's frame, then the shots (a
+  multi-line note, Go, Go + settings, Delete). **A click on the frame sets the shot's PIN** (`pin` {x, y}, 0..1
+  from the image's top left; one per shot): where the problem is — `probe` / debug views go there. **A drag
+  sets its AREA** (`rect` {x, y, w, h}, one per shot; `reportSetRect`), and writes that area of the shot's PNG at
+  full resolution beside it (`shot_NN_crop.png`, named by the shot's `crop`; not while a capture is in flight):
+  the image a reader or an agent looks at first. Pin, area and the drag's rubber band are quads in ONE custom
+  element over the image (`rpMarks_`, a `UITextBlock`), so they scroll and clip with it. Harness `report mark`.
   - It works from `reportIssues_`, a light copy of the report.json files reloaded in `reportTick` BEFORE any
     layout (`reportsDirty_`): Clay keeps pointers into it until the frame is recorded, so New / Delete are
     queued (`reportOp_`) for the next tick; field edits go through `reportSetField` (file + copy, no element
@@ -2004,11 +2013,24 @@ its record there with a `report` {id, shot} key (tools/perf_analysis and `snapsh
   - **Go** = `harnessApplyViewRecord` without settings (place, camera, moment paused, drift; histories reset).
     **Go + settings** applies the shot's settings as saved — they replace the user's and are what is saved on
     exit, hence its own button.
-  - **`textArea`** (SatelliteSimUI.cpp): the multi-line text box. `TextEdit::multiline` makes Enter a new
-    line (Ctrl+Enter / Tab / a click elsewhere commit); the caret is a '|' inserted in the wrapped text (so
-    wrapping is Clay's own), moved by Left / Right / Home / End; a click focuses at the END and never selects
-    all (a first key replacing a whole description would be a trap). `TextEdit::maxLen` (120, 2000 here)
-    replaced the fixed 120 in onChar / paste.
+  - **`textArea`** (SatelliteSimUI.cpp, rebuilt 2026-10-13): the multi-line text box. It wraps the text itself
+    (`textWrapLines`, `UIRenderer::textAdvance`) and draws only the visible lines, the selection and the caret
+    through a **`UITextBlock`** custom element — **nothing the user edits goes through Clay's text measurement**.
+    The first cut was one wrapped `CLAY_TEXT` with a '|' for the caret: every key press made a new string, each
+    distinct string is a cache entry holding one item per word until a later lookup happens to walk its hash
+    bucket, and a long description filled the cache within a minute ("Clay ran out of capacity while attempting
+    to measure text elements"; it also could not place the caret by a click). The box grows from `minLines` to
+    `maxLines`, then becomes a Clay scroll container (only while it overflows, so the window still scrolls under
+    a short one): wheel, `ui.scrollbar` thumb, and it follows the caret (`TextEdit::ensureCaret`). A click puts
+    the caret there (never selects all: a first key replacing a whole description would be a trap), a drag or
+    Shift+move selects (`TextEdit::anchor`; `textEditSel` / `textEditDropSel`), a double click takes a word;
+    Up / Down by wrapped line, Ctrl+Left / Right by word, Ctrl+A / C / X / V. Enter is a new line and
+    Ctrl+Enter / Tab / a click elsewhere commit; `enterCommits` (the note bar) swaps Enter and Shift+Enter.
+    `readOnlyColor` shows a long text (the RESOLUTION) the same way without a frame. `TextEdit::maxLen` is
+    enforced in onChar, paste and Enter.
+  - **Drags inside a scroll view call `ui.holdDragScroll()` every frame** (text selection, the area's rubber
+    band): Clay's drag scrolling is on (`Clay_UpdateScrollContainers(true, ...)`), so without it the view under
+    the pointer is dragged along.
   - Verified in the harness (`harness_runs/outbox1|2.satcmd`): list, open, description, category / status,
     pin, Go, New from the window, delete issue. Deleting a single shot was not exercised (its button was
     scrolled out of reach of `ui click`).
@@ -2187,6 +2209,9 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   loses focus. Display strings live in `textFieldBufs_` (Clay keeps the pointers until record). Typed numbers are
   clamped to the slider's range. Harness: `ui click` / `ui type` / `ui key` / `expect`
   (`tools/harness/scripts/text_fields.satcmd`).
+- **Long or user-edited text is a `UITextBlock`, not a `CLAY_TEXT` (2026-10-13):** see `textArea` under *Issue
+  reports*. Clay's measurement cache is 65536 words (`Clay_SetMaxMeasureTextCacheWordCount`, 4x the default, the
+  arena sized by `Clay_MinMemorySize`), and the error handler prints each kind of Clay error once.
 - **Clips nest (2026-10-03):** `UIRenderer::record` keeps a scissor stack — a clip inside a clipped scroll view is
   intersected with it and its end restores the parent's. SCISSOR_END used to reset to the full screen, so anything
   drawn after a nested clip (a text box, a horizontally clipped row) escaped its window's scroll view. `ui dump`'s

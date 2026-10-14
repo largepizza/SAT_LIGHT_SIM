@@ -93,6 +93,12 @@ namespace
         resampleBox(src, w, h, (w - cw) / 2, (h - ch) / 2, cw, ch, out.data(), tw, th);
     }
 
+    std::string cropName(const std::string &image)
+    {
+        const size_t dot = image.rfind('.');
+        return (dot == std::string::npos ? image : image.substr(0, dot)) + "_crop.png";
+    }
+
     std::string thumbName(const std::string &image)
     {
         const size_t dot = image.rfind('.');
@@ -153,11 +159,12 @@ void SatelliteSim::reportsLoad()
             continue;
         ReportIssueInfo is;
         is.id = d.filename().string();
-        is.title = rep.value("title", std::string());
-        is.description = rep.value("description", std::string());
+        // (A report may come from anyone: its texts are cut to what the app itself would keep.)
+        is.title = rep.value("title", std::string()).substr(0, kReportTitleMax);
+        is.description = rep.value("description", std::string()).substr(0, kReportDescMax);
         is.category = rep.value("category", std::string());
         is.status = rep.value("status", std::string("open"));
-        is.resolution = rep.contains("resolution") && rep["resolution"].is_string() ? rep["resolution"].get<std::string>() : std::string();
+        is.resolution = rep.contains("resolution") && rep["resolution"].is_string() ? rep["resolution"].get<std::string>().substr(0, kReportDescMax) : std::string();
         {
             auto str = [&](const char *k) { return rep.contains(k) && rep[k].is_string() ? rep[k].get<std::string>() : std::string(); };
             const std::string commit = str("resolution_commit"), by = str("resolved_by"), when = str("resolved_utc"), claim = str("claimed_by");
@@ -171,7 +178,7 @@ void SatelliteSim::reportsLoad()
         {
             ReportShotInfo sh;
             sh.n = s.value("n", 0);
-            sh.note = s.value("note", std::string());
+            sh.note = s.value("note", std::string()).substr(0, kReportNoteMax);
             if (s.contains("image") && s["image"].is_string())
                 sh.image = s["image"].get<std::string>();
             if (s.contains("capture"))
@@ -184,6 +191,14 @@ void SatelliteSim::reportsLoad()
                 sh.hasPin = true;
                 sh.pinX = s["pin"].value("x", 0.5f);
                 sh.pinY = s["pin"].value("y", 0.5f);
+            }
+            if (s.contains("rect") && s["rect"].is_object())
+            {
+                sh.hasRect = true;
+                sh.rectX = std::clamp(s["rect"].value("x", 0.0f), 0.0f, 1.0f);
+                sh.rectY = std::clamp(s["rect"].value("y", 0.0f), 0.0f, 1.0f);
+                sh.rectW = std::clamp(s["rect"].value("w", 0.0f), 0.0f, 1.0f - sh.rectX);
+                sh.rectH = std::clamp(s["rect"].value("h", 0.0f), 0.0f, 1.0f - sh.rectY);
             }
             if (s.contains("record"))
             {
@@ -499,6 +514,68 @@ void SatelliteSim::reportSetPin(const std::string &id, int shot, bool set, float
             }
 }
 
+// The area of the frame the problem is in, and that area cut out of the shot's PNG at full resolution
+// (shot_NN_crop.png, named by the shot's "crop"): what a reader of the report, or an agent, looks at first.
+void SatelliteSim::reportSetRect(const std::string &id, int shot, bool set, float x, float y, float w, float h)
+{
+    const fs::path dir = fs::path(reportDir()) / id;
+    json rep;
+    if (!satreport::read(dir, rep))
+        return;
+    std::string img;
+    for (const json &s : rep["shots"])
+        if (s.value("n", 0) == shot && s.contains("image") && s["image"].is_string())
+            img = s["image"].get<std::string>();
+    x = std::clamp(x, 0.0f, 1.0f);
+    y = std::clamp(y, 0.0f, 1.0f);
+    w = std::clamp(w, 0.0f, 1.0f - x);
+    h = std::clamp(h, 0.0f, 1.0f - y);
+    std::string crop;
+    if (!img.empty() && img.find_first_of("/\\") == std::string::npos)
+    {
+        std::error_code ec;
+        fs::remove(dir / cropName(img), ec);
+        // The PNG is written by the screenshot thread: never read one while a capture is in flight.
+        if (set && (screenshotEncoding.load() || screenshotCopyPending || screenshotRequested))
+            reportStatus_ = "Area marked. Its crop was not written (a shot is still being saved): mark it again in a moment";
+        else if (set)
+        {
+            int iw = 0, ih = 0, n = 0;
+            if (stbi_uc *px = stbi_load((dir / img).string().c_str(), &iw, &ih, &n, 4))
+            {
+                const int x0 = std::clamp((int)(x * (float)iw), 0, iw - 1), y0 = std::clamp((int)(y * (float)ih), 0, ih - 1);
+                const int cw = std::clamp((int)(w * (float)iw + 0.5f), 1, iw - x0), ch = std::clamp((int)(h * (float)ih + 0.5f), 1, ih - y0);
+                if (stbi_write_png((dir / cropName(img)).string().c_str(), cw, ch, 4, px + ((size_t)y0 * iw + x0) * 4, iw * 4))
+                    crop = cropName(img);
+                stbi_image_free(px);
+            }
+        }
+    }
+    for (json &s : rep["shots"])
+        if (s.value("n", 0) == shot)
+        {
+            s.erase("rect");
+            s.erase("crop");
+            if (set)
+            {
+                s["rect"] = {{"x", x}, {"y", y}, {"w", w}, {"h", h}};
+                if (!crop.empty())
+                    s["crop"] = crop;
+            }
+        }
+    satreport::write(dir, rep);
+    if (ReportIssueInfo *is = reportFind(id))
+        for (ReportShotInfo &s : is->shots)
+            if (s.n == shot)
+            {
+                s.hasRect = set;
+                s.rectX = x;
+                s.rectY = y;
+                s.rectW = w;
+                s.rectH = h;
+            }
+}
+
 void SatelliteSim::reportDeleteIssue(const std::string &id)
 {
     const fs::path dir = fs::path(reportDir()) / id;
@@ -542,6 +619,7 @@ void SatelliteSim::reportDeleteShot(const std::string &id, int shot)
             {
                 fs::remove(dir / img, ec);
                 fs::remove(dir / thumbName(img), ec);
+                fs::remove(dir / cropName(img), ec);
             }
         }
     }
@@ -718,6 +796,8 @@ std::string SatelliteSim::reportExportZip(const std::string &id)
 // ─── The window ──────────────────────────────────────────────────────────────
 void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
 {
+    if (!inp.lmbDown && !inp.lmbReleased)
+        rpMarkDrag_ = false; // (a mark's drag that ended while the window was not drawn)
     if (!rpChrome.open)
         return;
     if (rpChrome.w <= 0.0f)
@@ -740,6 +820,8 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
     int goShot = 0, delShot = 0, selShot = 0;
     bool goSettings = false, back = false, newIssue = false, clearPin = false, setPin = false, delClicked = false;
     float pinX = 0.0f, pinY = 0.0f;
+    bool setRect = false, clearRect = false;
+    float rectX = 0.0f, rectY = 0.0f, rectW = 0.0f, rectH = 0.0f;
 
     static char titleBuf[64];
     snprintf(titleBuf, sizeof(titleBuf), view ? "Issue report" : "Issue reports (%d)", (int)reportIssues_.size());
@@ -913,7 +995,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                         {
                             text("Title", Pal::textDim, 11);
                             std::string t = is.title;
-                            if (textField(inp, ui, CLAY_ID("RpTitle"), t, bodyW - (float)fs(11) * 4.0f, 13, "The issue in a few words", 64))
+                            if (textField(inp, ui, CLAY_ID("RpTitle"), t, bodyW - (float)fs(11) * 4.0f, 13, "The issue in a few words", kReportTitleMax))
                                 reportSetField(is.id, 0, "title", t);
                         }
                         int cur = -1;
@@ -939,14 +1021,20 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                             if (is.resLine[0])
                                 text(is.resLine, Pal::textDim, 11);
                             if (!is.resolution.empty())
-                                text(is.resolution.c_str(), Pal::volValue, 12, true);
+                            {
+                                // (Read-only, through the text box: it wraps, scrolls past 14 lines, and a long
+                                // one costs Clay nothing.)
+                                std::string r = is.resolution;
+                                textArea(inp, ui, CLAY_ID("RpResText"), r, bodyW, 1, 12, nullptr, kReportDescMax, 14, false, &Pal::volValue);
+                            }
                         }
 
                         uiSection("RpSec", 0, "DESCRIPTION");
                         {
                             std::string d = is.description;
-                            if (textArea(inp, ui, CLAY_ID("RpDesc"), d, bodyW, 4, 12,
-                                         "What is wrong, what you expected to see, and how to see it (click to type; Ctrl+Enter saves)"))
+                            if (textArea(inp, ui, CLAY_ID("RpDesc"), d, bodyW, 5, 12,
+                                         "What is wrong, what you expected to see, and how to see it (click to type; Ctrl+Enter or a click elsewhere saves)",
+                                         kReportDescMax, 16))
                                 reportSetField(is.id, 0, "description", d);
                         }
 
@@ -962,10 +1050,39 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                             const float aspect = selS->imgW > 0 && selS->imgH > 0 ? (float)selS->imgH / (float)selS->imgW : 9.0f / 16.0f;
                             const float pw = bodyW, ph = std::floor(pw * aspect);
                             // The black backing is on the parent; the image is the inner element's own custom draw,
-                            // and the pin a child placed by that element's padding (so it scrolls and clips with it).
-                            const float ring = 26.0f;
-                            const uint16_t padL = (uint16_t)std::clamp(selS->pinX * pw - ring * 0.5f, 0.0f, pw - ring);
-                            const uint16_t padT = (uint16_t)std::clamp(selS->pinY * ph - ring * 0.5f, 0.0f, ph - ring);
+                            // and the marks (pin, area, the rubber band of a drag) one custom element over it, so
+                            // they scroll and clip with it.
+                            const Clay_ElementId pid = CLAY_ID("RpPrev");
+                            const Clay_ElementData pd = Clay_GetElementData(pid);
+                            const bool pdOk = pd.found && pd.boundingBox.width > 1.0f && pd.boundingBox.height > 1.0f;
+                            const float mx = pdOk ? std::clamp((inp.mouseX - pd.boundingBox.x) / pd.boundingBox.width, 0.0f, 1.0f) : 0.0f;
+                            const float my = pdOk ? std::clamp((inp.mouseY - pd.boundingBox.y) / pd.boundingBox.height, 0.0f, 1.0f) : 0.0f;
+                            rpMarks_.quads.clear();
+                            auto outline = [&](float x, float y, float w, float h, float t, glm::vec4 c)
+                            {
+                                rpMarks_.quads.push_back({x, y, w, t, c});
+                                rpMarks_.quads.push_back({x, y + h - t, w, t, c});
+                                rpMarks_.quads.push_back({x, y + t, t, h - 2.0f * t, c});
+                                rpMarks_.quads.push_back({x + w - t, y + t, t, h - 2.0f * t, c});
+                            };
+                            const glm::vec4 markCol{1.0f, 0.24f, 0.2f, 1.0f};
+                            if (selS->hasRect)
+                                outline(selS->rectX * pw, selS->rectY * ph, std::max(6.0f, selS->rectW * pw), std::max(6.0f, selS->rectH * ph), 2.0f, markCol);
+                            if (selS->hasPin)
+                            {
+                                const float px = selS->pinX * pw, py = selS->pinY * ph;
+                                outline(px - 12.0f, py - 12.0f, 24.0f, 24.0f, 3.0f, markCol);
+                                rpMarks_.quads.push_back({px - 1.0f, py - 1.0f, 2.0f, 2.0f, glm::vec4(1.0f)});
+                            }
+                            if (rpMarkDrag_ && inp.lmbDown)
+                            {
+                                const float x0 = std::min(rpMarkX0_, mx) * pw, y0 = std::min(rpMarkY0_, my) * ph;
+                                const float bw = std::abs(mx - rpMarkX0_) * pw, bh = std::abs(my - rpMarkY0_) * ph;
+                                if (bw >= 6.0f && bh >= 6.0f)
+                                    outline(x0, y0, bw, bh, 1.5f, glm::vec4(1.0f));
+                            }
+                            rpMarks_.block.quads = rpMarks_.quads.data();
+                            rpMarks_.block.quadCount = (int)rpMarks_.quads.size();
                             CLAY(CLAY_ID("RpPrevBack"), {.layout = {.sizing = {CLAY_SIZING_FIXED(pw), CLAY_SIZING_FIXED(ph)},
                                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                                          .backgroundColor = {4, 4, 5, 255}})
@@ -975,33 +1092,43 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                          Pal::textHint, 11);
                                 else
                                 {
-                                    const Clay_ElementId pid = CLAY_ID("RpPrev");
-                                    CLAY(pid, {.layout = {.sizing = {CLAY_SIZING_FIXED(pw), CLAY_SIZING_FIXED(ph)},
-                                                          .padding = {padL, 0, padT, 0}},
+                                    CLAY(pid, {.layout = {.sizing = {CLAY_SIZING_FIXED(pw), CLAY_SIZING_FIXED(ph)}},
                                                .custom = {.customData = &reportPreviewImg_}})
                                     {
-                                        const bool n = Clay_Hovered();
-                                        if (n && inp.lmbPressed)
+                                        // A press starts a mark: released where it began it is the pin, dragged it
+                                        // is the area.
+                                        if (Clay_Hovered() && inp.lmbPressed && pdOk)
                                         {
-                                            const Clay_ElementData pd = Clay_GetElementData(pid);
-                                            if (pd.found && pd.boundingBox.width > 1.0f && pd.boundingBox.height > 1.0f)
-                                            {
-                                                setPin = true;
-                                                pinX = std::clamp((inp.mouseX - pd.boundingBox.x) / pd.boundingBox.width, 0.0f, 1.0f);
-                                                pinY = std::clamp((inp.mouseY - pd.boundingBox.y) / pd.boundingBox.height, 0.0f, 1.0f);
-                                            }
+                                            rpMarkDrag_ = true;
+                                            rpMarkX0_ = mx;
+                                            rpMarkY0_ = my;
                                         }
-                                        if (selS->hasPin)
-                                        {
-                                            CLAY(CLAY_ID("RpPin"), {.layout = {.sizing = {CLAY_SIZING_FIXED(ring), CLAY_SIZING_FIXED(ring)},
-                                                                               .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                                                    .cornerRadius = CLAY_CORNER_RADIUS(ring * 0.5f),
-                                                                    .border = {.color = {255, 60, 50, 255}, .width = CLAY_BORDER_ALL(3)}})
-                                            {
-                                                CLAY(CLAY_ID("RpPinDot"), {.layout = {.sizing = {CLAY_SIZING_FIXED(2), CLAY_SIZING_FIXED(2)}},
-                                                                           .backgroundColor = {255, 255, 255, 255}}) {}
-                                            }
-                                        }
+                                        CLAY(CLAY_ID("RpMarks"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
+                                                                  .custom = {.customData = &rpMarks_.block}}) {}
+                                    }
+                                }
+                            }
+                            if (rpMarkDrag_ && inp.lmbDown)
+                                ui.holdDragScroll(); // (the view must not be dragged along)
+                            else if (rpMarkDrag_)
+                            {
+                                rpMarkDrag_ = false;
+                                if (pdOk && have)
+                                {
+                                    const float dx = std::abs(mx - rpMarkX0_) * pd.boundingBox.width, dy = std::abs(my - rpMarkY0_) * pd.boundingBox.height;
+                                    if (dx < 6.0f && dy < 6.0f)
+                                    {
+                                        setPin = true;
+                                        pinX = rpMarkX0_;
+                                        pinY = rpMarkY0_;
+                                    }
+                                    else if (dx >= 6.0f && dy >= 6.0f)
+                                    {
+                                        setRect = true;
+                                        rectX = std::min(rpMarkX0_, mx);
+                                        rectY = std::min(rpMarkY0_, my);
+                                        rectW = std::abs(mx - rpMarkX0_);
+                                        rectH = std::abs(my - rpMarkY0_);
                                     }
                                 }
                             }
@@ -1010,11 +1137,19 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                                   .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                             {
-                                text(selS->hasPin ? uiKitStr("Pin at %.0f%%, %.0f%% of the frame. Click the image to move it.", selS->pinX * 100.0f, selS->pinY * 100.0f)
-                                                  : "Click the image to mark where the problem is.",
-                                     Pal::textHint, 11);
-                                if (selS->hasPin && uiButton(inp, ui, "RpPinClear", 0, "Clear pin", "Remove the mark"))
+                                text("Click the image to pin a point, drag to mark an area.", Pal::textHint, 11);
+                                if (selS->hasPin && uiButton(inp, ui, "RpPinClear", 0, "Clear pin", "Remove the point"))
                                     clearPin = true;
+                                if (selS->hasRect && uiButton(inp, ui, "RpRectClear", 0, "Clear area", "Remove the area and its crop"))
+                                    clearRect = true;
+                            }
+                            if (selS->hasPin || selS->hasRect)
+                            {
+                                const char *a = selS->hasPin ? uiKitStr("Pin at %.0f%%, %.0f%%.", selS->pinX * 100.0f, selS->pinY * 100.0f) : "";
+                                const char *b = selS->hasRect ? uiKitStr("Area %.0f%% x %.0f%% of the frame at %.0f%%, %.0f%% (saved as its own crop image).",
+                                                                         selS->rectW * 100.0f, selS->rectH * 100.0f, selS->rectX * 100.0f, selS->rectY * 100.0f)
+                                                              : "";
+                                text(uiKitStr("%s%s%s", a, *a && *b ? "  " : "", b), Pal::textHint, 11);
                             }
                         }
 
@@ -1056,10 +1191,11 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                                            .childGap = 4,
                                                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
                                 {
-                                    text(uiKitStr("Shot %d    %s    %s%s", s.n, s.meta[0], s.meta[1], s.hasPin ? "    pinned" : ""), Pal::volValue, 11);
+                                    text(uiKitStr("Shot %d    %s    %s%s", s.n, s.meta[0], s.meta[1], s.hasPin || s.hasRect ? "    marked" : ""), Pal::volValue, 11);
                                     std::string note = s.note;
-                                    if (textField(inp, ui, CLAY_IDI("RpShotNote", i), note, std::max(120.0f, bodyW - tW - 36.0f), 12,
-                                                  "What this shot shows", 120))
+                                    // Three lines that grow to nine, then scroll.
+                                    if (textArea(inp, ui, CLAY_IDI("RpShotNote", i), note, std::max(120.0f, bodyW - tW - 36.0f), 3, 12,
+                                                 "What this shot shows (click to type)", kReportNoteMax, 9))
                                         reportSetField(is.id, s.n, "note", note);
                                     CLAY(CLAY_IDI("RpShotBtns", i), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                                                 .childGap = 4,
@@ -1133,6 +1269,10 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
         reportSetPin(view->id, reportViewShot_, true, pinX, pinY);
     if (view && clearPin)
         reportSetPin(view->id, reportViewShot_, false, 0.0f, 0.0f);
+    if (view && setRect)
+        reportSetRect(view->id, reportViewShot_, true, rectX, rectY, rectW, rectH);
+    if (view && clearRect)
+        reportSetRect(view->id, reportViewShot_, false, 0.0f, 0.0f, 0.0f, 0.0f);
     if (!delIssue.empty())
     {
         reportDeleteArmed_.clear();

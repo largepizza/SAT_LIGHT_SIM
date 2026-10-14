@@ -695,6 +695,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // Text fields (2026-10-03): their per-frame strings, and the end-of-frame commit / lost-focus check on every
     // return path below.
     textFieldBufN_ = 0;
+    textAreaDrawN_ = 0;
     uiKitBufN_ = 0;
     struct TextEditFrameEnd
     {
@@ -4409,9 +4410,13 @@ void SatelliteSim::textEditFocus(uint32_t id, const std::string &text)
     textEdit_.buf = text;
     textEdit_.caret = (int)text.size();
     textEdit_.selAll = true;
+    textEdit_.anchor = -1;
     textEdit_.t0 = glfwGetTime();
     textEdit_.multiline = false;
+    textEdit_.enterCommits = false;
+    textEdit_.ensureCaret = true;
     textEdit_.maxLen = 120;
+    taDragging_ = false;
 }
 
 void SatelliteSim::textEditCommit()
@@ -4423,6 +4428,90 @@ void SatelliteSim::textEditCommit()
     textEdit_.doneAge = 0;
     textEdit_.id = 0;
     textEdit_.selAll = false;
+    textEdit_.anchor = -1;
+    taDragging_ = false;
+}
+
+bool SatelliteSim::textEditSel(int &lo, int &hi) const
+{
+    const TextEdit &e = textEdit_;
+    const int n = (int)e.buf.size();
+    lo = hi = std::clamp(e.caret, 0, n);
+    if (e.selAll)
+    {
+        lo = 0;
+        hi = n;
+        return n > 0;
+    }
+    if (e.anchor < 0 || e.anchor == e.caret)
+        return false;
+    lo = std::clamp(std::min(e.anchor, e.caret), 0, n);
+    hi = std::clamp(std::max(e.anchor, e.caret), 0, n);
+    return hi > lo;
+}
+
+bool SatelliteSim::textEditDropSel()
+{
+    TextEdit &e = textEdit_;
+    int lo, hi;
+    const bool had = textEditSel(lo, hi);
+    const bool all = e.selAll; // (an empty field with "all" selected still counts: Backspace then does nothing more)
+    if (had)
+    {
+        e.buf.erase((size_t)lo, (size_t)(hi - lo));
+        e.caret = lo;
+    }
+    e.selAll = false;
+    e.anchor = -1;
+    return had || all;
+}
+
+// A text's lines at a wrap width: [first, last) each, the next starting at `last` (after a soft wrap) or one past
+// it (after a line break). A word longer than the width is cut where it must be; a space never starts a wrap.
+void SatelliteSim::textWrapLines(const UIRenderer &ui, const std::string &s, float fontPx, float maxW,
+                                 std::vector<std::pair<int, int>> &lines)
+{
+    lines.clear();
+    const int n = (int)s.size();
+    int a = 0, lastBreak = -1;
+    float w = 0.0f;
+    for (int i = 0; i <= n; ++i)
+    {
+        if (i == n)
+        {
+            lines.emplace_back(a, n);
+            break;
+        }
+        const char ch = s[(size_t)i];
+        if (ch == '\n')
+        {
+            lines.emplace_back(a, i);
+            a = i + 1;
+            w = 0.0f;
+            lastBreak = -1;
+            continue;
+        }
+        const float adv = ui.textAdvance(&s[(size_t)i], 1, fontPx);
+        if (w + adv > maxW && ch != ' ' && i > a)
+        {
+            if (lastBreak > a)
+            {
+                lines.emplace_back(a, lastBreak);
+                a = lastBreak;
+                w = ui.textAdvance(&s[(size_t)a], i - a, fontPx);
+            }
+            else
+            {
+                lines.emplace_back(a, i);
+                a = i;
+                w = 0.0f;
+            }
+            lastBreak = -1;
+        }
+        w += adv;
+        if (ch == ' ')
+            lastBreak = i + 1;
+    }
 }
 
 bool SatelliteSim::textEditKey(int key, int action)
@@ -4432,27 +4521,38 @@ bool SatelliteSim::textEditKey(int key, int action)
     if (action != GLFW_PRESS && action != GLFW_REPEAT)
         return true; // releases of keys pressed while typing must not reach the game
     TextEdit &e = textEdit_;
-    const bool ctrl = win && (glfwGetKey(win, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(win, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS);
-    e.caret = std::clamp(e.caret, 0, (int)e.buf.size());
+    auto down = [&](int k) { return win && glfwGetKey(win, k) == GLFW_PRESS; };
+    const bool ctrl = down(GLFW_KEY_LEFT_CONTROL) || down(GLFW_KEY_RIGHT_CONTROL);
+    const bool shift = down(GLFW_KEY_LEFT_SHIFT) || down(GLFW_KEY_RIGHT_SHIFT);
+    const int n = (int)e.buf.size();
+    e.caret = std::clamp(e.caret, 0, n);
     e.t0 = glfwGetTime();
-    auto dropSel = [&]()
+    e.ensureCaret = true;
+    // A caret move: Shift extends the selection from where the caret was, without it the selection ends.
+    auto moveTo = [&](int c)
     {
-        if (e.selAll)
+        if (shift)
         {
-            e.buf.clear();
-            e.caret = 0;
-            e.selAll = false;
-            return true;
+            if (e.selAll)
+                e.anchor = 0;
+            else if (e.anchor < 0)
+                e.anchor = e.caret;
         }
-        return false;
+        else
+            e.anchor = -1;
+        e.selAll = false;
+        e.caret = std::clamp(c, 0, (int)e.buf.size());
     };
+    auto isWord = [&](int i) { return e.buf[(size_t)i] != ' ' && e.buf[(size_t)i] != '\n'; };
+    int lo, hi;
+    const bool hasSel = textEditSel(lo, hi);
     switch (key)
     {
     case GLFW_KEY_ENTER:
     case GLFW_KEY_KP_ENTER:
-        if (e.multiline && !ctrl)
+        if (e.multiline && (e.enterCommits ? shift : !ctrl))
         {
-            dropSel();
+            textEditDropSel();
             if (e.buf.size() < e.maxLen)
                 e.buf.insert(e.buf.begin() + e.caret++, '\n');
             break;
@@ -4467,61 +4567,128 @@ bool SatelliteSim::textEditKey(int key, int action)
         {
             e.id = 0;
             e.selAll = false;
+            e.anchor = -1;
+            taDragging_ = false;
         }
         break;
     case GLFW_KEY_BACKSPACE:
-        if (!dropSel() && e.caret > 0)
+        if (!textEditDropSel() && e.caret > 0)
             e.buf.erase(e.buf.begin() + --e.caret);
         break;
     case GLFW_KEY_DELETE:
-        if (!dropSel() && e.caret < (int)e.buf.size())
+        if (!textEditDropSel() && e.caret < (int)e.buf.size())
             e.buf.erase(e.buf.begin() + e.caret);
         break;
     case GLFW_KEY_LEFT:
-        e.caret = e.selAll ? 0 : std::max(0, e.caret - 1);
-        e.selAll = false;
+        if (hasSel && !shift)
+            moveTo(lo);
+        else if (ctrl)
+        {
+            int c = e.caret;
+            while (c > 0 && !isWord(c - 1))
+                --c;
+            while (c > 0 && isWord(c - 1))
+                --c;
+            moveTo(c);
+        }
+        else
+            moveTo(e.caret - 1);
         break;
     case GLFW_KEY_RIGHT:
-        e.caret = e.selAll ? (int)e.buf.size() : std::min((int)e.buf.size(), e.caret + 1);
-        e.selAll = false;
+        if (hasSel && !shift)
+            moveTo(hi);
+        else if (ctrl)
+        {
+            int c = e.caret;
+            while (c < n && isWord(c))
+                ++c;
+            while (c < n && !isWord(c))
+                ++c;
+            moveTo(c);
+        }
+        else
+            moveTo(e.caret + 1);
+        break;
+    case GLFW_KEY_UP:
+    case GLFW_KEY_DOWN:
+        if (e.multiline && taUi_ && taWrapW_ > 0.0f)
+        {
+            // The same column (by width) on the wrapped line above / below.
+            std::vector<std::pair<int, int>> lines;
+            textWrapLines(*taUi_, e.buf, taFontPx_, taWrapW_, lines);
+            int li = 0;
+            for (int k = 0; k < (int)lines.size(); ++k)
+                if (lines[(size_t)k].first <= e.caret)
+                    li = k;
+            const int to = li + (key == GLFW_KEY_UP ? -1 : 1);
+            if (to < 0)
+                moveTo(0);
+            else if (to >= (int)lines.size())
+                moveTo(n);
+            else
+            {
+                const float x = taUi_->textAdvance(e.buf.data() + lines[(size_t)li].first, e.caret - lines[(size_t)li].first, taFontPx_);
+                int c = lines[(size_t)to].first;
+                float acc = 0.0f;
+                for (; c < lines[(size_t)to].second; ++c)
+                {
+                    const float adv = taUi_->textAdvance(e.buf.data() + c, 1, taFontPx_);
+                    if (x < acc + adv * 0.5f)
+                        break;
+                    acc += adv;
+                }
+                moveTo(c);
+            }
+        }
         break;
     case GLFW_KEY_HOME:
         if (e.multiline && !e.selAll && !ctrl && e.caret > 0)
         { // the start of this line
             const size_t br = e.buf.rfind('\n', (size_t)e.caret - 1);
-            e.caret = br == std::string::npos ? 0 : (int)br + 1;
+            moveTo(br == std::string::npos ? 0 : (int)br + 1);
         }
         else
-            e.caret = 0;
-        e.selAll = false;
+            moveTo(0);
         break;
     case GLFW_KEY_END:
         if (e.multiline && !e.selAll && !ctrl)
         { // the end of this line
             const size_t br = e.buf.find('\n', (size_t)e.caret);
-            e.caret = br == std::string::npos ? (int)e.buf.size() : (int)br;
+            moveTo(br == std::string::npos ? n : (int)br);
         }
         else
-            e.caret = (int)e.buf.size();
-        e.selAll = false;
+            moveTo(n);
         break;
     case GLFW_KEY_A:
         if (ctrl)
+        {
             e.selAll = true;
+            e.anchor = -1;
+        }
         break;
     case GLFW_KEY_C:
+    case GLFW_KEY_X:
         if (ctrl && win)
-            glfwSetClipboardString(win, e.buf.c_str());
+        {
+            // The selection, or the whole text when nothing is selected (a copy only).
+            glfwSetClipboardString(win, hasSel ? e.buf.substr((size_t)lo, (size_t)(hi - lo)).c_str() : e.buf.c_str());
+            if (key == GLFW_KEY_X && hasSel)
+                textEditDropSel();
+        }
         break;
     case GLFW_KEY_V:
         if (ctrl && win)
             if (const char *clip = glfwGetClipboardString(win))
             {
-                dropSel();
+                textEditDropSel();
                 std::string add;
                 for (const char *p = clip; *p && e.buf.size() + add.size() < e.maxLen; ++p)
+                {
                     if ((*p >= 32 && *p < 127) || (e.multiline && *p == '\n'))
                         add += *p;
+                    else if (*p == '\t')
+                        add += ' ';
+                }
                 e.buf.insert((size_t)e.caret, add);
                 e.caret += (int)add.size();
             }
@@ -4541,20 +4708,25 @@ void SatelliteSim::textEditEndFrame(const UIInput &inp)
             // The field is gone (its window closed, its section collapsed): nothing left to apply it to.
             textEdit_.id = 0;
             textEdit_.selAll = false;
+            textEdit_.anchor = -1;
         }
         else if (inp.lmbPressed && !textEdit_.hovered)
             textEditCommit(); // a click elsewhere
     }
+    if (textEdit_.id == 0 || !inp.lmbDown)
+        taDragging_ = false;
     textEdit_.drawn = textEdit_.hovered = false;
     if (textEdit_.doneId != 0 && ++textEdit_.doneAge > 2)
         textEdit_.doneId = 0; // its field was not drawn again
 }
 
 bool SatelliteSim::textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width,
-                            int minLines, float fontPx, const char *placeholder, size_t maxLen)
+                            int minLines, float fontPx, const char *placeholder, size_t maxLen, int maxLines,
+                            bool enterCommits, const Clay_Color *readOnlyColor)
 {
+    const bool ro = readOnlyColor != nullptr;
     bool committed = false;
-    if (textEdit_.doneId == id.id)
+    if (!ro && textEdit_.doneId == id.id)
     {
         std::string v = textEdit_.doneBuf.substr(0, maxLen);
         while (!v.empty() && (v.back() == '\n' || v.back() == ' '))
@@ -4563,46 +4735,223 @@ bool SatelliteSim::textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId i
         committed = v != value;
         value = v;
     }
-    const bool focused = textEdit_.id == id.id;
-    const uint16_t f = fs((int)fontPx);
-    const bool hovPrev = Clay_PointerOver(id);
-    CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(width), CLAY_SIZING_FIT((float)minLines * ((float)f + 4.0f) + 10.0f)},
-                         .padding = {6, 6, 5, 5},
+    bool focused = !ro && textEdit_.id == id.id;
+    const float f = (float)fs((int)fontPx);
+    const float lineH = f + 4.0f, padX = ro ? 0.0f : 6.0f, padY = ro ? 0.0f : 5.0f, gutter = 8.0f;
+    const float wrapW = std::max(40.0f, width - 2.0f * padX - gutter);
+
+    if ((int)textAreaDraws_.size() <= textAreaDrawN_)
+        textAreaDraws_.push_back(std::make_unique<TextAreaDraw>());
+    TextAreaDraw &d = *textAreaDraws_[(size_t)textAreaDrawN_++];
+    d.runs.clear();
+    d.quads.clear();
+    Clay_Color col = ro ? *readOnlyColor : Pal::textPrimary;
+    const bool hint = !focused && value.empty();
+    if (focused)
+    {
+        TextEdit &e = textEdit_;
+        e.drawn = true;
+        e.multiline = true;
+        e.maxLen = maxLen;
+        e.enterCommits = enterCommits;
+        if (e.buf.size() > maxLen)
+            e.buf.resize(maxLen);
+        if (e.selAll)
+        { // (shown, and replaced by the next key, as a range)
+            e.selAll = false;
+            e.anchor = 0;
+            e.caret = (int)e.buf.size();
+        }
+        e.caret = std::clamp(e.caret, 0, (int)e.buf.size());
+        d.text = e.buf;
+        col = {240, 240, 245, 255};
+        taUi_ = &ui;
+        taWrapW_ = wrapW;
+        taFontPx_ = f;
+    }
+    else if (hint)
+    {
+        d.text = placeholder ? placeholder : "";
+        col = Pal::textHint;
+    }
+    else
+        d.text = value;
+    // A text from a file can be longer than the box would ever keep: only that much is laid out.
+    if (d.text.size() > maxLen)
+        d.text.resize(maxLen);
+
+    std::vector<std::pair<int, int>> &lines = taLines_;
+    textWrapLines(ui, d.text, f, wrapW, lines);
+    const int nLines = (int)lines.size();
+    const int vis = std::clamp(nLines, std::max(1, minLines), std::max(std::max(1, minLines), maxLines));
+    const float viewH = (float)vis * lineH, contentH = (float)nLines * lineH;
+    const bool overflow = nLines > vis;
+    auto lineOf = [&](int c)
+    {
+        int li = 0;
+        for (int k = 0; k < nLines; ++k)
+            if (lines[(size_t)k].first <= c)
+                li = k;
+        return li;
+    };
+
+    // The scroll position is Clay's (the box is a scroll container while it overflows): read it, keep the caret
+    // in view after a key, and write it back before the element opens.
+    const Clay_ElementId cid = CLAY_IDI("TaContent", (int)(id.id & 0x7fffffff));
+    Clay_ScrollContainerData sd{};
+    if (overflow)
+        sd = Clay_GetScrollContainerData(id);
+    const bool haveScroll = overflow && sd.found && sd.scrollPosition;
+    const float maxScroll = std::max(0.0f, contentH - viewH);
+    float scroll = haveScroll ? std::clamp(-sd.scrollPosition->y, 0.0f, maxScroll) : 0.0f;
+    if (focused && textEdit_.ensureCaret)
+    {
+        if (haveScroll)
+        {
+            const float top = (float)lineOf(textEdit_.caret) * lineH;
+            if (top < scroll)
+                scroll = top;
+            else if (top + lineH > scroll + viewH)
+                scroll = top + lineH - viewH;
+        }
+        if (haveScroll || !overflow)
+            textEdit_.ensureCaret = false; // (a box that only now overflows scrolls on its next frame)
+    }
+    const Clay_ElementData cd = Clay_GetElementData(cid), bd = Clay_GetElementData(id);
+    // The character under a point (last frame's layout, which is what the pointer is over).
+    auto indexAt = [&](float mx, float my) -> int
+    {
+        if (!cd.found || hint)
+            return 0;
+        const int li = std::clamp((int)std::floor((my - cd.boundingBox.y) / lineH), 0, nLines - 1);
+        const int a = lines[(size_t)li].first, b = lines[(size_t)li].second;
+        const float x = mx - cd.boundingBox.x;
+        float acc = 0.0f;
+        int i = a;
+        for (; i < b; ++i)
+        {
+            const float adv = ui.textAdvance(&d.text[(size_t)i], 1, f);
+            if (x < acc + adv * 0.5f)
+                break;
+            acc += adv;
+        }
+        return i;
+    };
+    if (focused && taDragging_ && inp.lmbDown && !inp.lmbPressed)
+    {
+        // A drag selects; past the top or bottom edge it scrolls.
+        ui.holdDragScroll();
+        textEdit_.caret = std::clamp(indexAt(inp.mouseX, inp.mouseY), 0, (int)textEdit_.buf.size());
+        if (haveScroll && bd.found)
+        {
+            if (inp.mouseY < bd.boundingBox.y)
+                scroll -= lineH * 0.5f;
+            else if (inp.mouseY > bd.boundingBox.y + bd.boundingBox.height)
+                scroll += lineH * 0.5f;
+        }
+    }
+    scroll = std::clamp(scroll, 0.0f, maxScroll);
+    if (haveScroll)
+        sd.scrollPosition->y = -scroll;
+
+    const bool hovPrev = !ro && Clay_PointerOver(id);
+    const Clay_Color border = ro ? Clay_Color{0, 0, 0, 0}
+                                 : (focused ? Pal::btnAccent : (hovPrev ? Clay_Color{90, 90, 96, 255} : Clay_Color{48, 48, 52, 255}));
+    CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(width), CLAY_SIZING_FIXED(viewH + 2.0f * padY)},
+                         .padding = {(uint16_t)padX, (uint16_t)(padX + gutter), (uint16_t)padY, (uint16_t)padY},
                          .layoutDirection = CLAY_TOP_TO_BOTTOM},
-              .backgroundColor = focused ? Clay_Color{6, 6, 8, 255} : Clay_Color{20, 20, 23, 235},
+              .backgroundColor = ro ? Clay_Color{0, 0, 0, 0} : (focused ? Clay_Color{6, 6, 8, 255} : Clay_Color{20, 20, 23, 235}),
               .cornerRadius = CLAY_CORNER_RADIUS(3),
-              .border = {.color = focused ? Pal::btnAccent : (hovPrev ? Clay_Color{90, 90, 96, 255} : Clay_Color{48, 48, 52, 255}),
-                         .width = CLAY_BORDER_ALL(1)}})
+              .clip = overflow ? Clay_ClipElementConfig{.vertical = true, .childOffset = Clay_GetScrollOffset()} : Clay_ClipElementConfig{},
+              .border = {.color = border, .width = CLAY_BORDER_ALL((uint16_t)(ro ? 0 : 1))}})
     {
         const bool hov = Clay_Hovered();
-        if (hov && inp.lmbPressed && !focused)
+        if (!ro && hov && inp.lmbPressed)
         {
-            textEditFocus(id.id, value);
-            textEdit_.selAll = false; // (a first key that replaced a whole description would be a trap)
-            textEdit_.multiline = true;
-            textEdit_.maxLen = maxLen;
+            const int idx = indexAt(inp.mouseX, inp.mouseY);
+            const bool shift = win && (glfwGetKey(win, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(win, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
+            const bool was = focused;
+            if (!focused)
+            {
+                textEditFocus(id.id, value.substr(0, maxLen));
+                textEdit_.selAll = false; // (a first key that replaced a whole description would be a trap)
+                textEdit_.multiline = true;
+                textEdit_.maxLen = maxLen;
+                textEdit_.enterCommits = enterCommits;
+                textEdit_.drawn = true;
+                focused = true;
+                taUi_ = &ui;
+                taWrapW_ = wrapW;
+                taFontPx_ = f;
+            }
+            TextEdit &e = textEdit_;
+            const int ci = std::clamp(idx, 0, (int)e.buf.size());
+            const double now = glfwGetTime();
+            if (was && now - taClickT_ < 0.35 && std::abs(ci - taClickIdx_) <= 1)
+            {
+                // A double click: the word.
+                int a = ci, b = ci;
+                auto word = [&](int i) { return e.buf[(size_t)i] != ' ' && e.buf[(size_t)i] != '\n'; };
+                while (a > 0 && word(a - 1))
+                    --a;
+                while (b < (int)e.buf.size() && word(b))
+                    ++b;
+                e.anchor = a;
+                e.caret = b;
+                taDragging_ = false;
+            }
+            else
+            {
+                e.anchor = (shift && was) ? (e.anchor >= 0 ? e.anchor : e.caret) : ci;
+                e.caret = ci;
+                taDragging_ = true;
+                ui.holdDragScroll();
+            }
+            taClickT_ = now;
+            taClickIdx_ = ci;
+            e.t0 = now;
+            e.ensureCaret = false;
         }
-        std::string &b = textAreaBufs_[textAreaBufN_++ % 4];
-        Clay_Color col = Pal::textPrimary;
-        if (textEdit_.id == id.id)
-        {
-            textEdit_.drawn = true;
+        if (focused)
             textEdit_.hovered = textEdit_.hovered || hov;
-            const int c = std::clamp(textEdit_.caret, 0, (int)textEdit_.buf.size());
-            b = textEdit_.buf.substr(0, (size_t)c) + "|" + textEdit_.buf.substr((size_t)c);
-            col = {240, 240, 245, 255};
-        }
-        else if (value.empty())
+
+        // The visible lines, the selection behind them and the caret.
+        const int l0 = std::clamp((int)std::floor(scroll / lineH), 0, nLines - 1);
+        const int l1 = std::clamp((int)std::ceil((scroll + viewH) / lineH) + 1, l0 + 1, nLines);
+        int selLo = 0, selHi = 0;
+        const bool sel = focused && textEditSel(selLo, selHi);
+        for (int li = l0; li < l1; ++li)
         {
-            b = placeholder ? placeholder : "";
-            col = Pal::textHint;
+            const int a = lines[(size_t)li].first, b = lines[(size_t)li].second;
+            const float y = (float)li * lineH;
+            if (sel && selLo <= b && selHi > a)
+            {
+                const int s0 = std::max(selLo, a), s1 = std::min(selHi, b);
+                const float x0 = ui.textAdvance(d.text.data() + a, s0 - a, f);
+                const float x1 = ui.textAdvance(d.text.data() + a, s1 - a, f) + (selHi > b ? 5.0f : 0.0f); // (the line's end)
+                if (x1 > x0)
+                    d.quads.push_back({x0, y, x1 - x0, lineH, {0.47f, 0.12f, 0.12f, 1.0f}});
+            }
+            if (b > a)
+                d.runs.push_back({d.text.data() + a, b - a, 0.0f, y + 2.0f});
         }
-        else
-            b = value;
-        if (!b.empty())
-            CLAY_TEXT((Clay_String{false, (int32_t)b.size(), b.c_str()}),
-                      CLAY_TEXT_CONFIG({.textColor = col, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_WORDS}));
+        if (focused && std::fmod(glfwGetTime() - textEdit_.t0, 1.0) < 0.6)
+        {
+            const int c = std::clamp(textEdit_.caret, 0, (int)d.text.size());
+            const int li = lineOf(c);
+            const float x = ui.textAdvance(d.text.data() + lines[(size_t)li].first, c - lines[(size_t)li].first, f);
+            d.quads.push_back({x, (float)li * lineH + 1.0f, 1.5f, lineH - 2.0f, {0.94f, 0.94f, 0.96f, 1.0f}});
+        }
+        d.block.runs = d.runs.data();
+        d.block.runCount = (int)d.runs.size();
+        d.block.quads = d.quads.data();
+        d.block.quadCount = (int)d.quads.size();
+        d.block.fontSize = f;
+        d.block.color = {col.r / 255.0f, col.g / 255.0f, col.b / 255.0f, col.a / 255.0f};
+        CLAY(cid, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(contentH)}}, .custom = {.customData = &d.block}}) {}
     }
+    if (overflow)
+        ui.scrollbar(id); // the thumb on the right edge: there is more than the box shows
     return committed;
 }
 

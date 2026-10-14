@@ -366,7 +366,19 @@ bool SatelliteSim::reportTakeShot(bool newIssue, bool openBar)
     Log::line("report: " + reportActiveId_ + " shot " + std::to_string(n) + (isNew ? " (new issue)" : ""));
     reportsDirty_ = true;
 
-    if (openBar && !showIntro)
+    // A NEW issue opens the Issue reports window on it: its title, description and the shot's note are all
+    // there (nothing is focused, so movement keys keep working). With the HUD hidden the bar stands in.
+    const bool openWindow = isNew && openBar && !showIntro && uiVisible;
+    if (openWindow)
+    {
+        rpChrome.open = true;
+        reportViewId_ = reportActiveId_;
+        reportViewShot_ = n;
+        reportStatus_.clear();
+        reportBarOpen_ = false;
+        reportsLoad(); // (reportTick runs before any layout)
+    }
+    if (openBar && !showIntro && !openWindow)
     {
         // Moving or looking when the key was pressed: the bar opens WITHOUT the keyboard (the held W would
         // type into it and movement would stop). Enter or a click focuses the note.
@@ -392,10 +404,14 @@ bool SatelliteSim::reportTakeShot(bool newIssue, bool openBar)
 }
 
 // One text field of an issue (shot 0) or of one of its shots (1-based), rewritten in report.json.
-void SatelliteSim::reportSetField(const std::string &id, int shot, const char *key, const std::string &value)
+void SatelliteSim::reportSetField(const std::string &id, int shot, const char *key, const std::string &valueIn)
 {
     if (id.empty())
         return;
+    // Whatever the caller holds, a field never grows past its limit.
+    const std::string k0 = key;
+    const size_t cap = k0 == "title" ? kReportTitleMax : k0 == "note" ? kReportNoteMax : k0 == "description" ? kReportDescMax : 64;
+    const std::string value = valueIn.substr(0, cap);
     const fs::path dir = fs::path(reportDir()) / id;
     json rep;
     if (!readReport(dir, rep))
@@ -455,7 +471,10 @@ bool SatelliteSim::reportBarKey(int key, int action)
             reportNewKeyPending = true;
             return true;
         }
-        if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_ESCAPE)
+        // (Shift+Enter in the note is a new line, not the end of the edit.)
+        const bool shift = win && (glfwGetKey(win, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS || glfwGetKey(win, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
+        const bool newLine = shift && textEdit_.id == CLAY_ID("ReportBarNote").id && key != GLFW_KEY_ESCAPE;
+        if ((key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER || key == GLFW_KEY_ESCAPE) && !newLine)
             reportBarCloseOnCommit_ = true; // textEditKey commits / cancels next
         return false;
     }
@@ -484,6 +503,7 @@ void SatelliteSim::buildReportBar(const UIInput &inp, UIRenderer &ui)
     {
         reportBarFocusPending_ = false;
         textEditFocus(noteId.id, reportBarNote_);
+        textEdit_.selAll = false; // (the caret at the end: a first key must not replace a note already there)
     }
     auto text = [&](const char *s, Clay_Color c, float size)
     {
@@ -491,7 +511,7 @@ void SatelliteSim::buildReportBar(const UIInput &inp, UIRenderer &ui)
     };
     const float w = std::min(640.0f * std::max(1.0f, uiScale), inp.screenW - 40.0f);
     const float labelW = (float)fs(11) * 3.2f, fieldW = w - 24.0f - labelW - 8.0f;
-    static char shotBuf[32], hintBuf[160];
+    static char shotBuf[32], hintBuf[224];
     snprintf(shotBuf, sizeof(shotBuf), "shot %d", reportBarShot_);
     {
         char k1[24], k2[24]; // keyDisplayName's letters rotate through a small pool: copy
@@ -499,7 +519,7 @@ void SatelliteSim::buildReportBar(const UIInput &inp, UIRenderer &ui)
         snprintf(k2, sizeof(k2), "%s", keyDisplayName(keybindings[KB_REPORT_NEW].key));
         const bool typing = textEdit_.id == noteId.id || textEdit_.id == titleId.id || reportBarFocusPending_;
         snprintf(hintBuf, sizeof(hintBuf), "%s  %s: another shot of this issue.  %s: a new issue.",
-                 typing ? "Enter saves, Esc closes, right-click to keep moving." : "Enter or click to type a note.", k1, k2);
+                 typing ? "Enter saves, Shift+Enter adds a line, Esc closes, right-click to keep moving." : "Enter or click to type a note.", k1, k2);
     }
     CLAY(CLAY_ID("ReportBar"), {.layout = {.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIT(0)},
                                            .padding = {12, 12, 8, 8},
@@ -516,17 +536,17 @@ void SatelliteSim::buildReportBar(const UIInput &inp, UIRenderer &ui)
                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
             CLAY(CLAY_ID("ReportBarL1"), {.layout = {.sizing = {CLAY_SIZING_FIXED(labelW), CLAY_SIZING_FIT(0)}}}) { text("Issue", Pal::textDim, 11); }
-            if (textField(inp, ui, titleId, reportBarTitle_, fieldW - (float)fs(11) * 5.0f, 12, "The issue's title (shared by its shots)", 64))
+            if (textField(inp, ui, titleId, reportBarTitle_, fieldW - (float)fs(11) * 5.0f, 12, "The issue's title (shared by its shots)", kReportTitleMax))
                 reportSetField(reportActiveId_, 0, "title", reportBarTitle_);
             text(shotBuf, Pal::volValue, 11);
         }
         CLAY(CLAY_ID("ReportBarRow2"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                    .childGap = 8,
-                                                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY(CLAY_ID("ReportBarL2"), {.layout = {.sizing = {CLAY_SIZING_FIXED(labelW), CLAY_SIZING_FIT(0)}}}) { text("Note", Pal::textDim, 11); }
-            if (textField(inp, ui, noteId, reportBarNote_, fieldW, 12, "What this shot shows", 120))
+            CLAY(CLAY_ID("ReportBarL2"), {.layout = {.sizing = {CLAY_SIZING_FIXED(labelW), CLAY_SIZING_FIT(0)}, .padding = {0, 0, 5, 0}}}) { text("Note", Pal::textDim, 11); }
+            // Two lines that grow to six, then scroll; Enter saves (Shift+Enter: a new line).
+            if (textArea(inp, ui, noteId, reportBarNote_, fieldW, 2, 12, "What this shot shows", kReportNoteMax, 6, true))
                 reportSetField(reportActiveId_, reportBarShot_, "note", reportBarNote_);
         }
         text(hintBuf, Pal::textHint, 11);

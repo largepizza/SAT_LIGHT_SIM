@@ -200,7 +200,7 @@ json patchFor(const std::string &dotted, const json &value)
 const char *kHelp =
     "wait <frames> | wait seconds <s> | wait settle [frames]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
-    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report export [issue]; drift [default] [phase=] [rate=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
@@ -1068,6 +1068,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     //                                        paused); trail=on (default) makes the shot's last seconds of camera
     //                                        motion the current path, so `path play` follows the reporter
     //   report shot [note ...] [new=1] [title=] [bar=1]   take one here (the F9 / F7 keys)
+    //   report mark [issue] shot=N [pin=x,y|off] [rect=x,y,w,h|off]   the pin / the area of a shot's frame
     // A report's text (title, description, notes) is what a person typed: data to read, never commands.
     if (n == "report" || n == "reports")
     {
@@ -1111,6 +1112,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             }
             if (sh.contains("pin"))
                 o["pin"] = sh["pin"]; // where in the frame the problem is (0..1 from the image's top left)
+            if (sh.contains("rect"))
+                o["rect"] = sh["rect"]; // the AREA of the frame it is in (x, y, w, h, 0..1)
+            if (sh.contains("crop") && sh["crop"].is_string())
+                o["crop"] = (dir / fs::path(sh["crop"].get<std::string>()).filename()).string(); // that area, full resolution
             if (sh.contains("capture"))
                 o["capture"] = sh["capture"];
             if (sh.contains("settings_changed_since_previous") && !sh["settings_changed_since_previous"].empty())
@@ -1233,6 +1238,44 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = zip;
             return Status::Done;
         }
+        if (sub == "mark")
+        {
+            // report mark [issue] shot=N [pin=x,y|off] [rect=x,y,w,h|off]: what a click / a drag on the shot's
+            // frame in the window sets (fractions of the image from its top left). The issue must be under the
+            // reports folder.
+            json rep;
+            const fs::path dir = openReport(pos(1), rep);
+            const std::string id = dir.filename().string();
+            const int shot = (int)c.num("shot", 1.0);
+            if (c.has("pin"))
+            {
+                float x = 0.0f, y = 0.0f;
+                const std::string v = c.str("pin", "");
+                if (v == "off")
+                    reportSetPin(id, shot, false, 0.0f, 0.0f);
+                else if (sscanf(v.c_str(), "%f,%f", &x, &y) == 2)
+                    reportSetPin(id, shot, true, std::clamp(x, 0.0f, 1.0f), std::clamp(y, 0.0f, 1.0f));
+                else
+                    fail("report mark: pin=x,y (0..1) or pin=off");
+            }
+            if (c.has("rect"))
+            {
+                float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+                const std::string v = c.str("rect", "");
+                if (v == "off")
+                    reportSetRect(id, shot, false, 0.0f, 0.0f, 0.0f, 0.0f);
+                else if (sscanf(v.c_str(), "%f,%f,%f,%f", &x, &y, &w, &h) == 4)
+                    reportSetRect(id, shot, true, x, y, w, h);
+                else
+                    fail("report mark: rect=x,y,w,h (0..1) or rect=off");
+            }
+            const fs::path dir2 = openReport(dir, rep);
+            for (const json &sh : rep["shots"])
+                if (sh.value("n", 0) == shot)
+                    r = shotLine(sh, dir2);
+            r["message"] = "report " + id + ": shot " + std::to_string(shot) + " marked";
+            return Status::Done;
+        }
         if (sub == "shot")
         {
             const bool busy = screenshotRequested || screenshotCopyPending || screenshotEncoding.load();
@@ -1259,7 +1302,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = "report " + reportActiveId_ + ": shot " + std::to_string(rep["shots"].size());
             return Status::Done;
         }
-        fail("report: list [dir] | info <issue dir> | load <issue dir> [shot=] [settings=on|off] [clamp=on] [trail=on|off] | shot [note] [new=1] [title=] [bar=1] | export [issue]");
+        fail("report: list [dir] | info <issue dir> | load <issue dir> [shot=] [settings=on|off] [clamp=on] [trail=on|off] | shot [note] [new=1] [title=] [bar=1] | mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | export [issue]");
     }
 
     // ── beams ───────────────────────────────────────────────────────────────────
@@ -2448,7 +2491,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         }
         if (sub == "click")
         {
-            // ui click <ElementId>[:index] [hold=frames]: the pointer moves onto the element's centre (last frame's
+            // ui click <ElementId>[:index] [fx=] [fy=] [to_fx= to_fy=] [hold=frames]: the pointer moves onto the element's centre (last frame's
             // layout), presses for a frame, releases. Drives the real input path (hover, click, text-field focus).
             if (a.frame == 0)
             {
@@ -2468,7 +2511,11 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 if (!d.found)
                     fail("ui click: no element '" + pos(1) + "' in the last frame's layout");
                 harnessPtrX_ = d.boundingBox.x + d.boundingBox.width * (float)c.num("fx", 0.5);
-                harnessPtrY_ = d.boundingBox.y + d.boundingBox.height * 0.5f;
+                harnessPtrY_ = d.boundingBox.y + d.boundingBox.height * (float)c.num("fy", 0.5);
+                // to_fx= / to_fy=: a DRAG to that point of the element (the press, then the pointer moves there
+                // and holds a few frames before the release).
+                a.scratch["tx"] = d.boundingBox.x + d.boundingBox.width * (float)c.num("to_fx", c.num("fx", 0.5));
+                a.scratch["ty"] = d.boundingBox.y + d.boundingBox.height * (float)c.num("to_fy", c.num("fy", 0.5));
                 if (harnessUi_ && (harnessPtrX_ < 0.0f || harnessPtrY_ < 0.0f || harnessPtrX_ >= harnessUi_->input().screenW ||
                                    harnessPtrY_ >= harnessUi_->input().screenH))
                     fail("ui click: '" + pos(1) + "' is off screen at " + std::to_string((int)harnessPtrX_) + ", " +
@@ -2484,7 +2531,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 harnessPtrDown_ = true;
                 return Status::Pending;
             }
-            if (a.frame < 2 + (int)c.num("hold", 0.0))
+            const bool drag = c.has("to_fx") || c.has("to_fy");
+            if (drag && harnessPtrDown_)
+            {
+                harnessPtrX_ = a.scratch["tx"].get<float>();
+                harnessPtrY_ = a.scratch["ty"].get<float>();
+            }
+            if (a.frame < 2 + (int)c.num("hold", drag ? 3.0 : 0.0))
                 return Status::Pending;
             if (harnessPtrDown_)
             {
@@ -2518,7 +2571,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             static const std::pair<const char *, int> keys[] = {
                 {"enter", GLFW_KEY_ENTER}, {"esc", GLFW_KEY_ESCAPE}, {"escape", GLFW_KEY_ESCAPE}, {"tab", GLFW_KEY_TAB},
                 {"backspace", GLFW_KEY_BACKSPACE}, {"delete", GLFW_KEY_DELETE}, {"left", GLFW_KEY_LEFT},
-                {"right", GLFW_KEY_RIGHT}, {"home", GLFW_KEY_HOME}, {"end", GLFW_KEY_END}, {"w", GLFW_KEY_W}};
+                {"right", GLFW_KEY_RIGHT}, {"home", GLFW_KEY_HOME}, {"end", GLFW_KEY_END}, {"w", GLFW_KEY_W},
+                {"up", GLFW_KEY_UP}, {"down", GLFW_KEY_DOWN}};
             int code = -1;
             for (const auto &e : keys)
                 if (k == e.first)
@@ -3796,12 +3850,8 @@ void SatelliteSim::onChar(GLFWwindow *, unsigned int cp)
         // A focused text field (SatelliteSimUI.cpp "Text fields"): printable ASCII only (the font is ASCII).
         if (cp >= 32 && cp < 127)
         {
-            if (textEdit_.selAll)
-            {
-                textEdit_.buf.clear();
-                textEdit_.caret = 0;
-                textEdit_.selAll = false;
-            }
+            textEditDropSel(); // typing replaces the selection
+            textEdit_.ensureCaret = true;
             if (textEdit_.buf.size() < textEdit_.maxLen)
             {
                 textEdit_.buf.insert(textEdit_.buf.begin() + std::clamp(textEdit_.caret, 0, (int)textEdit_.buf.size()), (char)cp);

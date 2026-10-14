@@ -43,13 +43,22 @@ void UIRenderer::init(VulkanContext& ctx, GLFWwindow* window, VkRenderPass pass)
     cursorNESW = glfwCreateStandardCursor(GLFW_RESIZE_NESW_CURSOR);
 
     // ── Clay memory ──────────────────────────────────────────────────────────
-    clayMemorySize = 8 * 1024 * 1024; // 8 MB
+    // Four times the default text-measurement cache (16384 words): every distinct string Clay lays out holds an
+    // entry until a later lookup happens to walk its hash bucket. Text the user edits never goes through it
+    // (UITextBlock); this is headroom for everything else.
+    Clay_SetMaxMeasureTextCacheWordCount(65536);
+    clayMemorySize = std::max<uint32_t>(8u * 1024u * 1024u, Clay_MinMemorySize() + 1024u * 1024u);
     clayMemory     = new uint8_t[clayMemorySize];
 
     Clay_Arena arena = Clay_CreateArenaWithCapacityAndMemory(clayMemorySize, clayMemory);
 
     Clay_ErrorHandler errHandler{};
     errHandler.errorHandlerFunction = [](Clay_ErrorData errorData) {
+        // Each kind once: Clay repeats a capacity error every frame it holds.
+        static uint32_t seen = 0;
+        const uint32_t bit = 1u << ((uint32_t)errorData.errorType & 31u);
+        if (seen & bit) return;
+        seen |= bit;
         fprintf(stderr, "[Clay] error %d: %.*s\n",
                 (int)errorData.errorType,
                 errorData.errorText.length, errorData.errorText.chars);
@@ -813,7 +822,9 @@ void UIRenderer::beginFrame(float width, float height,
 
     Clay_SetLayoutDimensions(Clay_Dimensions{ width, height });
     Clay_SetPointerState(Clay_Vector2{ mouseX, mouseY }, lmbDown);
-    Clay_UpdateScrollContainers(true,
+    const bool dragScroll = !holdDragScroll_;
+    holdDragScroll_ = false;
+    Clay_UpdateScrollContainers(dragScroll,
                                 Clay_Vector2{ scrollDeltaX, scrollDeltaY },
                                 dt);
     Clay_BeginLayout();
@@ -1161,6 +1172,19 @@ void UIRenderer::pushText(float x, float y, const char* text, int len,
     }
 }
 
+float UIRenderer::textAdvance(const char* text, int len, float fontSize) const {
+    if (!text || len <= 0 || font.charData.empty()) return 0.0f;
+    const stbtt_bakedchar* bc = reinterpret_cast<const stbtt_bakedchar*>(font.charData.data());
+    const float renderScale = fontSize / font.bakedSize;
+    float w = 0.0f;
+    for (int i = 0; i < len; ++i) {
+        const unsigned char c = (unsigned char)text[i];
+        if (c < 32 || c > 126) continue;
+        w += bc[c - 32].xadvance * renderScale;
+    }
+    return w;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // flushBatch — upload geometry and issue the indexed draw call
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1423,6 +1447,16 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
             const uint32_t magic = data ? *static_cast<const uint32_t*>(data) : 0u;
             if (magic == UIPlot::kMagic) {
                 pushPlot(bb.x, bb.y, bb.width, bb.height, *static_cast<const UIPlot*>(data));
+            } else if (magic == UITextBlock::kMagic) {
+                const UITextBlock* tb = static_cast<const UITextBlock*>(data);
+                for (int q = 0; q < tb->quadCount; ++q) {
+                    const UITextQuad& tq = tb->quads[q];
+                    pushQuad(bb.x + tq.x, bb.y + tq.y, tq.w, tq.h, 0.0f, 0.0f, 1.0f, 1.0f, tq.color, 0.0f);
+                }
+                for (int t = 0; t < tb->runCount; ++t) {
+                    const UITextRun& tr = tb->runs[t];
+                    pushText(bb.x + tr.x, bb.y + tr.y, tr.text, tr.len, tb->fontSize, tb->color);
+                }
             } else if (magic == UIImage::kMagic) {
                 const UIImage* img = static_cast<const UIImage*>(data);
                 if (img->imageId > 0 && (int)img->imageId <= extCount) {

@@ -4758,6 +4758,9 @@ private:
         std::string buf;
         int  caret = 0;
         bool selAll = false;          // the whole text is selected: the first key replaces it
+        int  anchor = -1;             // the other end of a selection (Shift+move, a mouse drag); -1 = none
+        bool enterCommits = false;    // multiline: Enter commits and Shift+Enter is the new line (the note bar)
+        bool ensureCaret = false;     // a key moved the caret: its text box scrolls it into view when next drawn
         bool drawn = false, hovered = false;   // the focused field this frame
         uint32_t doneId = 0;          // a field whose edit was committed: it applies doneBuf when next drawn
         std::string doneBuf;
@@ -4770,6 +4773,8 @@ private:
     void textEditFocus(uint32_t id, const std::string &text);
     void textEditCommit();
     bool textEditKey(int key, int action);  // onKey: true = consumed
+    bool textEditSel(int &lo, int &hi) const; // the selected range [lo, hi), false = none
+    bool textEditDropSel();                 // erase it (the caret lands at its start): true = there was one
     void textEditEndFrame(const UIInput &inp);
     // A one-line text box: true (and value set) on the frame an edit is committed.
     bool textField(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width, float fontPx,
@@ -4796,13 +4801,35 @@ private:
     char textFieldBufs_[256][128] = {};    // per-frame display strings (Clay keeps raw pointers until record)
     int  textFieldBufN_ = 0;
     const char *textFieldStr(const std::string &s);
-    // A multi-line text box (2026-10-12: an issue report's description): the text wraps to `width`, Enter adds a
-    // line, Ctrl+Enter / Tab / a click elsewhere commit, Esc cancels. The caret is drawn as a '|' in the text
-    // (so the wrapping is Clay's own) and moves with Left / Right / Home / End; a click focuses at the end.
+    // A multi-line text box (2026-10-12; rebuilt 2026-10-13): the text wraps to `width`, the box grows from
+    // minLines to maxLines and then scrolls (wheel, a thumb on its right edge, and it follows the caret). A click
+    // puts the caret there, a drag or Shift+arrows select, a double click takes a word; Left / Right / Up / Down
+    // (Ctrl: by word), Home / End, Ctrl+A / C / X / V. Enter adds a line and Ctrl+Enter / Tab / a click elsewhere
+    // commit (`enterCommits`: Enter commits, Shift+Enter adds the line); Esc cancels. `readOnlyColor`: no editing,
+    // no frame — a long text shown in that colour.
+    // It wraps and draws its own lines (UITextBlock) and only the visible ones: nothing here goes through Clay's
+    // text measurement, whose cache a long text that changes with every key press filled within a minute
+    // ("Clay ran out of capacity while attempting to measure text elements").
     bool textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width, int minLines,
-                  float fontPx, const char *placeholder, size_t maxLen = 2000);
-    std::string textAreaBufs_[4];          // per-frame display strings (Clay keeps the pointers until record)
-    int  textAreaBufN_ = 0;
+                  float fontPx, const char *placeholder, size_t maxLen = 4000, int maxLines = 10, bool enterCommits = false,
+                  const Clay_Color *readOnlyColor = nullptr);
+    struct TextAreaDraw
+    {
+        UITextBlock block;
+        std::vector<UITextRun> runs;
+        std::vector<UITextQuad> quads;
+        std::string text;                  // what the runs point into (Clay keeps the block until record)
+    };
+    std::vector<std::unique_ptr<TextAreaDraw>> textAreaDraws_; // one per text box drawn this frame (addresses stable)
+    int  textAreaDrawN_ = 0;
+    std::vector<std::pair<int, int>> taLines_;                 // scratch: wrapped lines [first, last) of a text
+    static void textWrapLines(const UIRenderer &ui, const std::string &s, float fontPx, float maxW,
+                              std::vector<std::pair<int, int>> &lines);
+    const UIRenderer *taUi_ = nullptr;     // the focused box's wrap, for Up / Down (set when it is drawn)
+    float taWrapW_ = 0.0f, taFontPx_ = 12.0f;
+    bool  taDragging_ = false;             // a mouse selection in the focused box
+    double taClickT_ = 0.0;
+    int   taClickIdx_ = -1;
 
     // ── UI kit (2026-10-03, SatelliteSimUI.cpp "UI kit") ───────────────────────────────────────────────────
     // The blocks every window and settings tab is built from, in the Cinematics window's style: a section is a
@@ -4920,6 +4947,8 @@ private:
     int    reportBarShot_ = 0;            // 1-based shot the note field edits
     std::string reportBarTitle_, reportBarNote_;
     std::string reportDir() const;
+    // What a report's texts may hold (typed, pasted or read from a file: reportSetField and reportsLoad cut to it).
+    static constexpr size_t kReportTitleMax = 120, kReportNoteMax = 4000, kReportDescMax = 20000;
     ReportPose reportPoseNow() const;
     void reportTick(float dt);                            // buildUI: the trail, the keys, a pending shot
     bool reportTakeShot(bool newIssue, bool openBar);     // false = the screenshot path is busy (try next frame)
@@ -4944,6 +4973,8 @@ private:
         char meta[2][64] = {};         // "2036-11-22 02:06 UTC", "34.05 N 118.24 W  1.2 km"
         bool hasPin = false;
         float pinX = 0.0f, pinY = 0.0f; // 0..1 across the image, from its top left
+        bool hasRect = false;          // an area of the frame (drag on the image): shot_NN_crop.png holds it
+        float rectX = 0.0f, rectY = 0.0f, rectW = 0.0f, rectH = 0.0f;
         int imgW = 0, imgH = 0;
         int cell = -1;                 // thumbnail cell in the atlas, -1 = none yet
         bool thumbTried = false;
@@ -4995,6 +5026,12 @@ private:
     void reportThumbTick(UIRenderer &ui);                 // lazy thumbnails + the preview, a file per frame
     void reportGo(const std::string &id, int shot, bool withSettings);
     void reportSetPin(const std::string &id, int shot, bool set, float x, float y);
+    // The area of a shot's frame the problem is in (0..1 from the image's top left), and its full-resolution
+    // crop beside the shot's PNG (shot_NN_crop.png: what a reader of the report looks at first).
+    void reportSetRect(const std::string &id, int shot, bool set, float x, float y, float w, float h);
+    bool  rpMarkDrag_ = false;          // a press on the shot's frame: a click = the pin, a drag = the area
+    float rpMarkX0_ = 0.0f, rpMarkY0_ = 0.0f;
+    TextAreaDraw rpMarks_;              // the pin, the area and the rubber band, drawn over the frame
     void reportDeleteIssue(const std::string &id);
     void reportDeleteShot(const std::string &id, int shot);
     void reportsDestroy(VkDevice device);

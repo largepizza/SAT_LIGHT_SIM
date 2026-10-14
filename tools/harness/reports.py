@@ -121,6 +121,13 @@ def shot_lines(folder: Path, rep: dict) -> list[str]:
         if isinstance(s.get("pin"), dict) and cap.get("image_width"):
             px, py = s["pin"].get("x", 0.5) * cap["image_width"], s["pin"].get("y", 0.5) * cap["image_height"]
             lines.append(f"    pin      x={px:.0f} y={py:.0f} px of {cap['image_width']}x{cap['image_height']} (the problem is HERE in the image)")
+        if isinstance(s.get("rect"), dict) and cap.get("image_width"):
+            r, iw, ih = s["rect"], cap["image_width"], cap["image_height"]
+            lines.append(f"    area     x={r.get('x', 0) * iw:.0f} y={r.get('y', 0) * ih:.0f} w={r.get('w', 0) * iw:.0f} h={r.get('h', 0) * ih:.0f} px"
+                         f" (the problem is in THIS part of the image)")
+            crop = folder / Path(str(s.get("crop") or "")).name
+            if s.get("crop") and crop.is_file():
+                lines.append(f"    crop     {crop}  (that area at full resolution: read it first)")
         lines.append(f"    where    {ob.get('lat_deg', 0):.4f}, {ob.get('lon_deg', 0):.4f}  alt {ob.get('height_offset_m', 0):.0f} m"
                      f"   sim {rec.get('sim_time', {}).get('utc', '?')} UTC")
         if cap:
@@ -194,7 +201,8 @@ ITS SHOTS
 
 HOW TO WORK ON IT
 1. Look at each shot's image FIRST. It is the frame the reporter saw, captured unsettled on purpose (no
-   pause, no temporal settle). A pin marks where in the frame the problem is. Notes on later shots often
+   pause, no temporal settle). A pin marks where in the frame the problem is, an area the part
+   of the frame it is in (its `crop` image is that part at full resolution: read it before the whole frame). Notes on later shots often
    say how they relate to the first ("same spot from below", "after advancing").
 2. Reproduce through the harness (docs/HARNESS.md), in ONE live app or one batched run (launch spacing):
    the `replay` line above stands in the shot's view with its settings as saved. For a shot taken while
