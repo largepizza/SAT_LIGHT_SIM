@@ -927,7 +927,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       loop): each ~15-km step was lit or shadowed by its MIDPOINT, and near the horizon the first step holds almost all the
       haze (H_M 1.2 km, "Haze near clouds"' 2.5 km), so it flipped as a block at the elevation where its midpoint left the
       shadow (4.3 deg at a -0.84 deg Sun; the 2nd/3rd steps at ~1 / 0.4 deg): a hard brightness/colour step, and below it
-      the grey sky-lit air laid over every cloud past ~15 km through `airFront` at the half-res cloud distances � the
+      the grey sky-lit air laid over every cloud past ~15 km through `airFront` at the half-res cloud distances — the
       blurred, blocky "ghost" band. Now the ray's interval in the shadow cylinder is solved once per pixel and each step
       takes its sunlit SHARE (`tShA/tShB`, `litF`). Row luminance across the old edge 186.1 -> 177.7 before, smooth now;
       within 2.9 levels of 40 view samples. Same midpoint test still in the sea-reflection marches, `skyZenithSky` and
@@ -940,7 +940,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       pixel's distance, fading out over 1-3 px of the neighbourhood's parallax (no `lagK`); opacity keeps the 3x3 clip.
       Walk grain 3.66 -> 2.16, 1 s after stopping > 16 levels 13.1% -> 0.4%, still view unchanged. Not changed: the
       shared `jL` itself (per-step `fract(jL + 0.618 k)`: std 23.8 -> 17.2 but the settled image ~18 levels darker,
-      i.e. less Jensen bias � the user's call); the orbit flicker (small puffs, shot 4).
+      i.e. less Jensen bias — the user's call); the orbit flicker (small puffs, shot 4).
     - **Far shadows broke when moving (220718): the shaft rings are toroidal**, so slots at the trailing edge became the
       leading edge holding the shadow from ~a window away until their bake (every 32 frames), then blended out at 1/4.
       Ring values now carry a STAMP (`cv2ShaftPack`: 10 bits of T + the slot's offset from the eye in bins); a lookup
@@ -949,6 +949,32 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       Fill: > 16 levels 41.8% -> 0.7% by frame 20 (was 130 frames to the floor); a 6-km hop 15% -> 1%; +0.3 ms. Exact up
       to ~60 ring cells per 32 frames (~12 km/s at 40 fps at 159-m cells); a wrap count via modP 256/64 would make it
       exact to ~50 km/s. The cascade is gated off above 60 km eye altitude (could go to ~600 km with the range scaled).
+  - **Round 5 (2026-10-14, `harness_runs/fb17/<agent>/`; two live apps in parallel — fine while not timing fps):**
+    - **Orbit / high flicker (214939 shots 4-5) was the resolve's motion clamp under TIME, not the camera.** With time
+      running the drift moves the eye ~0.7 m a frame relative to the clouds; the eye-parallax floor capped the distance
+      at 50 km and Round 4's lagK (x 1 / still weight = 50) turned that into "moving": tight box + variance clip, and every
+      sub-pixel puff / wispy edge (hit or missed by the jittered ray) flipped between sky and cloud each frame, its age
+      reset by the rejection. Paused, the sky TAA's FROZEN mode hid it (sky TAA off: paused flickers too). Now the cap
+      is max(50 km, 2 x eye height) and a view whose TRUE parallax (no lagK) is under 0.05-0.15 px takes its history
+      unclamped (`uK`). Per-frame pixels past 8 levels: 158 km 0.10% -> 0.0002%, 20.8 km 1.14% -> 0.00002%; tstab at
+      shot 1 (paused and live time) and 184710 within the base-vs-base floor. **Harness trap:** `path play` with time
+      paused holds sim time (`simRate` = 0) — `time play` first or the path measures a frozen sky; `report load` pauses.
+    - **Light march: EQUAL steps, each its own jitter** (`kLightRatio` 1, `fract(jitter + 0.618 k)`; merge threshold kept
+      at the old first step). The 1.6 geometric series made the far steps single point samples for 1-3 km, and the
+      history converges on the mean of exp(-od) (Jensen): under a low Sun, clouds in another's shadow were 30-60 levels
+      too bright vs a 128-step reference; now +8-10 (raw std 26.5 -> 9). Look: shadowed sides darker (shot 1 -7.6, the
+      201800 sunset -11.2 levels mean), high Sun / orbit unchanged; GPU within noise; 128 registers.
+    - **Far shadows at any speed:** ring coordinates go to the GPU mod 1024 cells / 256 knots so a stamp records which
+      of 8 wraps a slot holds (exact to ~8 windows between bakes); 2 bits per value count bakes (per-slot mean 1, 1/2,
+      1/3, 1/4); moving, one workgroup per ring bakes the 2-4 columns at the leading edge (`sunCasc5.zw` = the eye's
+      motion in ring 1 cells) while the other keeps a 64-frame round; the fine grid stamps knot 16; the cascade stays on
+      while the march draws clouds (was cut at 60 km: a pop), rings and god rays still stop at 60 km. 4.5 km at 30 km/s,
+      pixels past 16 levels after 10 / 40 frames: emulated HEAD 6.0 / 2.5% -> built 2.6 / 2.3% (the rest is the user's
+      0.02 history weight: 3.4% at 160 frames with the previous resolve, 2.4% now).
+    - **Earth-shadow midpoint tests** (Round 4's band) also fixed in `skyZenithSky`, the flat layers' twilight zenith,
+      `skyAmbientTerrain` and the sea's sky-reflection march (`earthShadowSpan` / `earthShadowLit`); offline replicas
+      52% -> 2.5% max step per 0.01 deg of Sun. Root of the class: `optDepth`'s 2 Sun-path samples (the user's light
+      samples 2.4) under-count a grazing path; `sunTransmit` (Chapman) there would remove it (look change, not done).
 
   - The user's settings.json was lost to release.bat's wipe on 2026-10-13; a copy from that morning is
     `harness_runs/perf13/user_settings.json`.
