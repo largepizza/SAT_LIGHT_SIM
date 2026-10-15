@@ -615,7 +615,7 @@ void App::buildBootChooserUI(float s, int wh)
                                                         .layoutDirection = o.small ? CLAY_LEFT_TO_RIGHT : CLAY_TOP_TO_BOTTOM},
                                              .backgroundColor = hov ? cardHov : cardBg,
                                              .cornerRadius = CLAY_CORNER_RADIUS(Style::windowCornerRadius),
-                                             .border = {.color = sel ? Clay_Color{200, 40, 40, 255} : Style::borderColor, .width = {bw, bw, bw, bw, 0}}}) // not CLAY_BORDER_ALL: that also rules between children
+                                             .border = {.color = sel ? Pal::tutHot : Style::borderColor, .width = {bw, bw, bw, bw, 0}}}) // not CLAY_BORDER_ALL: that also rules between children
             {
                 chooserHovOpt[(size_t)i] = Clay_Hovered();
                 if (chooserHovOpt[(size_t)i] && click)

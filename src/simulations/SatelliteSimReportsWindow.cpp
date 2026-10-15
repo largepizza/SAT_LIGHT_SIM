@@ -886,7 +886,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                                             .padding = {6, 6, 6, 6},
                                                                             .childGap = 4,
                                                                             .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                                                 .backgroundColor = {14, 14, 16, 220},
+                                                                 .backgroundColor = Pal::cardBg,
                                                                  .cornerRadius = CLAY_CORNER_RADIUS(4),
                                                                  .border = {.color = active ? Pal::btnAccent : Clay_Color{0, 0, 0, 0}, .width = CLAY_BORDER_ALL(1)}})
                                     {
@@ -894,8 +894,8 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                         const bool hovT = Clay_PointerOver(tid);
                                         CLAY(tid, {.layout = {.sizing = {CLAY_SIZING_FIXED(imgW), CLAY_SIZING_FIXED(imgH)},
                                                               .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                                   .backgroundColor = {4, 4, 5, 255},
-                                                   .border = {.color = hovT ? Pal::btnAccent : Clay_Color{40, 40, 44, 255}, .width = CLAY_BORDER_ALL(1)}})
+                                                   .backgroundColor = Pal::insetBg,
+                                                   .border = {.color = hovT ? Pal::btnAccent : Pal::cardBorder, .width = CLAY_BORDER_ALL(1)}})
                                         {
                                             const bool n = Clay_Hovered();
                                             uiHovRoll(tid.id, n);
@@ -918,7 +918,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                             text(is.title.empty() ? "(untitled)" : is.title.c_str(), Pal::textPrimary, 12);
                                         }
                                         // "fixed" = resolved and waiting for the reporter to verify: stands out.
-                                        text(is.line, is.status == "fixed" ? Clay_Color{120, 220, 140, 255} : (active ? Pal::volValue : Pal::textDim), 11);
+                                        text(is.line, is.status == "fixed" ? Pal::textOk : (active ? Pal::volValue : Pal::textDim), 11);
                                         CLAY(CLAY_IDI("RpCardBtns", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                                                     .childGap = 4,
                                                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
@@ -1085,7 +1085,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                             rpMarks_.block.quadCount = (int)rpMarks_.quads.size();
                             CLAY(CLAY_ID("RpPrevBack"), {.layout = {.sizing = {CLAY_SIZING_FIXED(pw), CLAY_SIZING_FIXED(ph)},
                                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                                         .backgroundColor = {4, 4, 5, 255}})
+                                                         .backgroundColor = Pal::insetBg})
                             {
                                 if (!have)
                                     text(selS->image.empty() ? "This shot has no image" : (reportPreviewKey_.empty() ? "..." : "The image could not be read"),
@@ -1163,15 +1163,15 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                                     .padding = {6, 6, 6, 6},
                                                                     .childGap = 8,
                                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                                         .backgroundColor = sel ? Clay_Color{22, 22, 26, 230} : Clay_Color{14, 14, 16, 220},
+                                                         .backgroundColor = sel ? Pal::cardBgSel : Pal::cardBg,
                                                          .cornerRadius = CLAY_CORNER_RADIUS(4)})
                             {
                                 const Clay_ElementId tid = CLAY_IDI("RpShotThumb", i);
                                 const bool hovT = Clay_PointerOver(tid);
                                 CLAY(tid, {.layout = {.sizing = {CLAY_SIZING_FIXED(tW), CLAY_SIZING_FIXED(tH)},
                                                       .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                           .backgroundColor = {4, 4, 5, 255},
-                                           .border = {.color = (sel || hovT) ? Pal::btnAccent : Clay_Color{40, 40, 44, 255}, .width = CLAY_BORDER_ALL(1)}})
+                                           .backgroundColor = Pal::insetBg,
+                                           .border = {.color = (sel || hovT) ? Pal::btnAccent : Pal::cardBorder, .width = CLAY_BORDER_ALL(1)}})
                                 {
                                     const bool n = Clay_Hovered();
                                     uiHovRoll(tid.id, n);

@@ -140,6 +140,10 @@ struct UITextBlock {
 
 class UIRenderer {
 public:
+    // Night-vision UI (UIPalette.h, theme "Night red"): pushQuad maps every colour to red. Static: the
+    // boot screen and the sim set it without holding the renderer.
+    static void setColorFilter(bool nightRed) { s_nightFilter = nightRed; }
+    static bool colorFilter() { return s_nightFilter; }
     // The width pushText gives `len` characters at `fontSize`, and the height of a line (for callers that lay
     // text out themselves: UITextBlock).
     float textAdvance(const char* text, int len, float fontSize) const;
@@ -263,6 +267,7 @@ public:
     const std::vector<LayoutItem> &layoutDump() const { return layoutDump_; }
 
 private:
+    static inline bool s_nightFilter = false;
     bool layoutDumpPending_ = false;
     bool layoutDumpReady_ = false;
     std::vector<LayoutItem> layoutDump_;

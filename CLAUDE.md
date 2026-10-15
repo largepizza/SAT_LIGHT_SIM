@@ -2388,6 +2388,15 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   intersected with it and its end restores the parent's. SCISSOR_END used to reset to the full screen, so anything
   drawn after a nested clip (a text box, a horizontally clipped row) escaped its window's scroll view. `ui dump`'s
   clip boxes follow the same rule.
+- **UI themes (2026-10-14, `UIPalette.h`):** every colour is a row of the `UI_PALETTE` X-macro with four columns
+  (Default, Navy, Night red, Midnight = Default's colours on darker, more opaque backgrounds); `Pal::` names are runtime globals `applyUiTheme()` rewrites, `Style::borderColor` follows
+  `Pal::windowBorder`. Night red also sets `UIRenderer::setColorFilter` (pushQuad maps every colour, icons and images
+  included, to red at its brightest channel). `display.ui_theme` ("default" / "navy" / "night" / "midnight"), Display tab "UI theme";
+  `syncUiTheme()` (buildUI, after the harness) applies a change; `peekBootSettings` applies it before the boot chooser.
+  **A new colour goes in the table, never as a `Clay_Color{...}` literal at the call site**, or it ignores the theme
+  (the remaining literals are intro captions, image backings, scrims and the harness console). The swapchain is sRGB:
+  a palette value of 12 shows as ~61, so dark tints get much bluer/redder on screen than the numbers suggest.
+  Harness: `state` -> `render.ui_theme`; `harness_runs/ui_theme/themes.satcmd`.
 - **Never `return` or `break` inside a `CLAY(...)` block**: the macro is a for loop that closes the element at its
   end; leaving it early leaves the element open and corrupts the layout. Set a flag and act after the block.
 - **UI kit (2026-10-03, SatelliteSimUI.cpp "UI kit"): build windows and settings rows from it.** `uiSection` (small

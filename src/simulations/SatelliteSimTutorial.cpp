@@ -29,9 +29,11 @@ const char *gamepadButtonDisplayName(int button);
 namespace
 {
 // The HUD's palette (UIPalette.h): grey panels, the red accent for "this one" and "held".
-constexpr Clay_Color kKeyTargetBorder = {215, 45, 45, 255}; // scaled by the pulse below
-constexpr Clay_Color kKeyHeld = {190, 32, 32, 250};
-constexpr Clay_Color kGraphicBody = {20, 20, 22, 235};
+// Its colours follow the UI theme: Pal::tutHot / tutHeld / tutTargetDim..Lit, the graphics' body Pal::fieldBg.
+Clay_Color mixColor(Clay_Color a, Clay_Color b, float t)
+{
+    return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t};
+}
 
 constexpr int16_t kZCard = 40;      // above the notices (25) and the selection panel (6)
 constexpr float kDoneHoldS = 1.1f;  // a finished step's "Done" before the next card
@@ -51,11 +53,11 @@ Clay_String clayStr(const char *s) { return Clay_String{false, (int32_t)strlen(s
 void tutCap(Clay_ElementId id, float w, float h, Clay_CornerRadius rad, const char *label, uint16_t fsz,
             bool target, bool down, float pulse, const Clay_FloatingElementConfig *fl = nullptr)
 {
-    const Clay_Color bg = down     ? kKeyHeld
-                          : target ? Clay_Color{70.0f + 50.0f * pulse, 22, 22, 235}
+    const Clay_Color bg = down     ? Pal::tutHeld
+                          : target ? mixColor(Pal::tutTargetDim, Pal::tutTargetLit, pulse)
                                    : Pal::btnIdle;
-    const Clay_Color bc = (target || down) ? Clay_Color{kKeyTargetBorder.r, kKeyTargetBorder.g, kKeyTargetBorder.b, 140.0f + 115.0f * pulse}
-                                           : Clay_Color{255, 255, 255, 40};
+    const Clay_Color bc = (target || down) ? Clay_Color{Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 140.0f + 115.0f * pulse}
+                                           : Clay_Color{Pal::textPrimary.r, Pal::textPrimary.g, Pal::textPrimary.b, 40};
     const uint16_t bw = target ? 2 : 1;
     Clay_ElementDeclaration d{};
     d.layout.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIXED(h)};
@@ -323,7 +325,7 @@ void SatelliteSim::buildTutGamepad(int step)
             tutCap(CLAY_ID("TutPadRT"), u * 2.8f, u * 1.5f, top, "RT", fsz, step == TUT_ALTITUDE, gpElevRaise > 0.0f, pulse);
         }
         CLAY(CLAY_ID("TutPadBody"), {.layout = {.sizing = {CLAY_SIZING_FIXED(W), CLAY_SIZING_FIXED(H)}},
-                                     .backgroundColor = kGraphicBody,
+                                     .backgroundColor = Pal::fieldBg,
                                      .cornerRadius = CLAY_CORNER_RADIUS(u * 3.0f),
                                      .border = {.color = Style::borderColor, .width = {1, 1, 1, 1, 0}}})
         {
@@ -426,13 +428,13 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         const float m = 4.0f;
         // PASSTHROUGH: it sits over the buttons it points at (CLAUDE.md, the pointer-capture rule).
         CLAY(CLAY_ID("TutOutline"), {.layout = {.sizing = {CLAY_SIZING_FIXED(box.width + 2.0f * m), CLAY_SIZING_FIXED(box.height + 2.0f * m)}},
-                                     .backgroundColor = {200, 30, 30, 20.0f + 25.0f * pulse},
+                                     .backgroundColor = {Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 20.0f + 25.0f * pulse},
                                      .cornerRadius = CLAY_CORNER_RADIUS(6),
                                      .floating = {.offset = {box.x - m, box.y - m},
                                                   .zIndex = kZCard + 2,
                                                   .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
                                                   .attachTo = CLAY_ATTACH_TO_ROOT},
-                                     .border = {.color = {kKeyTargetBorder.r, kKeyTargetBorder.g, kKeyTargetBorder.b, 140.0f + 115.0f * pulse}, .width = {2, 2, 2, 2, 0}}}) {}
+                                     .border = {.color = {Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 140.0f + 115.0f * pulse}, .width = {2, 2, 2, 2, 0}}}) {}
     }
 
     // ── The text, from the live bindings ──

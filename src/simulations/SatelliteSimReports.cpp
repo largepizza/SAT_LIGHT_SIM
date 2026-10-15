@@ -525,10 +525,10 @@ void SatelliteSim::buildReportBar(const UIInput &inp, UIRenderer &ui)
                                            .padding = {12, 12, 8, 8},
                                            .childGap = 5,
                                            .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                .backgroundColor = {10, 10, 12, 235},
+                                .backgroundColor = Pal::popupBg,
                                 .cornerRadius = CLAY_CORNER_RADIUS(6),
                                 .floating = {.offset = {0, 56}, .zIndex = 44, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT},
-                                .border = {.color = {60, 60, 66, 255}, .width = CLAY_BORDER_ALL(1)}})
+                                .border = {.color = Pal::popupBorder, .width = CLAY_BORDER_ALL(1)}})
     {
         CLAY(CLAY_ID("ReportBarRow1"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                    .childGap = 8,

@@ -14,6 +14,8 @@
 #include "../Harness.h"
 #include "../Log.h"
 #include "../Paths.h"
+#include "../UIRenderer.h"
+#include "UIPalette.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
@@ -80,6 +82,13 @@ void SatelliteSim::peekBootSettings()
             bootPeekAsk = d.value("ask_graphics_mode", true);
             bootPeekPreset = d.value("graphics_preset", -1);
             bootPeekMask = (uint32_t)d.value("debug_disable_mask", (int64_t)0);
+            // The UI theme too, so the chooser and the loading screen already use it (Night red: no
+            // bright screen before the sim is up).
+            if (d.contains("ui_theme") && d["ui_theme"].is_string())
+            {
+                uiTheme = (int)uiThemeFromKey(d["ui_theme"].get<std::string>().c_str());
+                syncUiTheme();
+            }
         }
     }
     catch (...)

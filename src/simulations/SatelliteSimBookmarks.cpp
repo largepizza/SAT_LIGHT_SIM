@@ -654,7 +654,7 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                                                         .padding = {6, 6, 6, 6},
                                                                         .childGap = 4,
                                                                         .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                                             .backgroundColor = {14, 14, 16, 220},
+                                                             .backgroundColor = Pal::cardBg,
                                                              .cornerRadius = CLAY_CORNER_RADIUS(4)})
                                 {
                                     // The thumbnail: click to go there. The black backing is on this parent (a
@@ -663,8 +663,8 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                     const bool hovT = Clay_PointerOver(tid);
                                     CLAY(tid, {.layout = {.sizing = {CLAY_SIZING_FIXED(imgW), CLAY_SIZING_FIXED(imgH)},
                                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                               .backgroundColor = {4, 4, 5, 255},
-                                               .border = {.color = hovT ? Pal::btnAccent : Clay_Color{40, 40, 44, 255}, .width = CLAY_BORDER_ALL(1)}})
+                                               .backgroundColor = Pal::insetBg,
+                                               .border = {.color = hovT ? Pal::btnAccent : Pal::cardBorder, .width = CLAY_BORDER_ALL(1)}})
                                     {
                                         const bool n = Clay_Hovered();
                                         uiHovRoll(tid.id, n);

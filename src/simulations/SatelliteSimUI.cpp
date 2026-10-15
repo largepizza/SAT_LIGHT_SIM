@@ -555,6 +555,16 @@ static void formatAltitude(char *buf, size_t bufSize, float meters, UnitSystem u
 }
 
 // ─── buildUI ──────────────────────────────────────────────────────────────────
+void SatelliteSim::syncUiTheme()
+{
+    uiTheme = std::clamp(uiTheme, 0, (int)UiTheme::Count - 1);
+    const bool night = uiTheme == (int)UiTheme::Night;
+    if ((int)Pal::current != uiTheme)
+        applyUiTheme((UiTheme)uiTheme);
+    if (UIRenderer::colorFilter() != night)
+        UIRenderer::setColorFilter(night);
+}
+
 void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 {
     // First sim entry point of the frame — publish the previous (complete) frame's CPU bucket
@@ -571,6 +581,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     harnessTick();
     cineTick(dt); // review 17: a playing / exporting cinematic owns the camera and the clock
     reportTick(ui.input().dt); // KB_SAVE_SNAPSHOT / KB_REPORT_NEW: a shot into an issue report (SatelliteSimReports.cpp)
+    syncUiTheme(); // after the harness: a `set display.ui_theme` shows in the frame it ran in
 
     // Track (the selection panel's toggle) re-aims at the selection here, before the look block below:
     // it reads obsFacing/obsDir, and that block is where this frame's look input is dropped while the
@@ -1734,7 +1745,7 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                                             .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
                 if (status)
-                    text(status, traceValid ? Clay_Color{230, 190, 120, 255} : Pal::listenKey, 11);
+                    text(status, traceValid ? Pal::textWarn : Pal::listenKey, 11);
                 tileRow(0, [&]()
                         {
                             uiStatTile("TraceTile", 0, "PEAK MAG", traceTileBuf[0], Pal::textPrimary);
@@ -1773,7 +1784,7 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                         CLAY(CLAY_ID("TraceGutterL"), {.layout = {.sizing = {CLAY_SIZING_FIXED(34), CLAY_SIZING_GROW(0)}}}) {}
                         CLAY(CLAY_ID("TracePlotFrame"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
                                                                     .padding = {1, 1, 1, 1}},
-                                                         .backgroundColor = {12, 14, 18, 255},
+                                                         .backgroundColor = Pal::plotBg,
                                                          .border = {.color = Style::borderColor, .width = CLAY_BORDER_ALL(1)}})
                         {
                             CLAY(plotId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
@@ -1815,7 +1826,7 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                 else
                 {
                     CLAY(CLAY_ID("TraceEmpty"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
-                                                 .backgroundColor = {12, 14, 18, 255},
+                                                 .backgroundColor = Pal::plotBg,
                                                  .border = {.color = Style::borderColor, .width = CLAY_BORDER_ALL(1)}}) {}
                 }
                 CLAY(CLAY_ID("TraceButtons"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -2547,7 +2558,7 @@ bool SatelliteSim::buildSelActionButton(const UIInput &inp, UIRenderer &ui, int 
                      .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
           .backgroundColor = (hov || focused) ? (on ? Pal::btnAccentHv : Pal::btnHover) : (on ? Pal::btnAccent : Pal::btnIdle),
           .cornerRadius = CLAY_CORNER_RADIUS(4),
-          .border = {.color = {230, 60, 60, 255}, .width = {ring, ring, ring, ring, 0}}})
+          .border = {.color = Pal::listenKey, .width = {ring, ring, ring, ring, 0}}})
     {
         bool n = Clay_Hovered();
         sndRollover(n, hov);
@@ -3454,7 +3465,7 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
         KeyBinding &kb = keybindings[ki];
         snprintf(kbKeyBuf[ki], sizeof(kbKeyBuf[ki]), "%s", keyDisplayName(kb.key));
         snprintf(kbPadBuf[ki], sizeof(kbPadBuf[ki]), "%s", kb.gpButton >= 0 ? gamepadButtonDisplayName(kb.gpButton) : "-");
-        const Clay_Color rowBg = (kb.listening || kb.listeningPad) ? Pal::listenRow : (ki % 2 ? Clay_Color{255, 255, 255, 6} : Clay_Color{0, 0, 0, 0});
+        const Clay_Color rowBg = (kb.listening || kb.listeningPad) ? Pal::listenRow : (ki % 2 ? Pal::rowStripe : Clay_Color{0, 0, 0, 0});
         CLAY(CLAY_IDI("KbRow", ki), {.layout = {
                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26 * cs)},
                                          .padding = {4, 4, 2, 2},
@@ -3672,6 +3683,10 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         if (int c = uiChoiceRow(inp, ui, "Units", 0, "Units", kUnits, 2, unitSystem == UnitSystem::Metric ? 0 : 1); c >= 0)
             unitSystem = c == 0 ? UnitSystem::Metric : UnitSystem::Imperial;
     }
+    if (int c = uiChoiceRow(inp, ui, "UiTheme", 0, "UI theme", kUiThemeNames, (int)UiTheme::Count, uiTheme,
+                            "Panel colours. Night red keeps the whole interface dim red, to save dark adaptation");
+        c >= 0)
+        uiTheme = c; // applied next frame (syncUiTheme)
 
     // ── HQ PHOTO (requestPhoto) ────────────────────────────────────────────────────────────────────────────
     uiSection("DispSec", 2, "HQ PHOTO");
@@ -3969,7 +3984,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
                                                    .sizing = {CLAY_SIZING_FIXED(kSliderW), CLAY_SIZING_FIXED(16)},
                                                    .childGap = 0,
                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                               .backgroundColor = {22, 22, 24, 255},
+                                               .backgroundColor = Pal::trackBg,
                                                .cornerRadius = CLAY_CORNER_RADIUS(4)})
             {
                 bool hov = Clay_Hovered();
@@ -4367,9 +4382,9 @@ bool SatelliteSim::inlineTextField(const UIInput &inp, UIRenderer &ui, Clay_Elem
     CLAY(id, {.layout = {.sizing = {width > 0.0f ? CLAY_SIZING_FIXED(width) : CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)f + 8.0f)},
                          .padding = {4, 4, 0, 0},
                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-              .backgroundColor = hovPrev ? Clay_Color{40, 40, 44, 230} : Clay_Color{0, 0, 0, 0},
+              .backgroundColor = hovPrev ? Pal::ghostHover : Clay_Color{0, 0, 0, 0},
               .cornerRadius = CLAY_CORNER_RADIUS(3),
-              .border = {.color = hovPrev ? Clay_Color{90, 90, 96, 255} : Clay_Color{0, 0, 0, 0}, .width = CLAY_BORDER_ALL(1)}})
+              .border = {.color = hovPrev ? Pal::fieldBorderHv : Clay_Color{0, 0, 0, 0}, .width = CLAY_BORDER_ALL(1)}})
     {
         const bool hov = Clay_Hovered();
         if (tip)
@@ -4856,11 +4871,11 @@ bool SatelliteSim::textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId i
 
     const bool hovPrev = !ro && Clay_PointerOver(id);
     const Clay_Color border = ro ? Clay_Color{0, 0, 0, 0}
-                                 : (focused ? Pal::btnAccent : (hovPrev ? Clay_Color{90, 90, 96, 255} : Clay_Color{48, 48, 52, 255}));
+                                 : (focused ? Pal::btnAccent : (hovPrev ? Pal::fieldBorderHv : Pal::fieldBorder));
     CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(width), CLAY_SIZING_FIXED(viewH + 2.0f * padY)},
                          .padding = {(uint16_t)padX, (uint16_t)(padX + gutter), (uint16_t)padY, (uint16_t)padY},
                          .layoutDirection = CLAY_TOP_TO_BOTTOM},
-              .backgroundColor = ro ? Clay_Color{0, 0, 0, 0} : (focused ? Clay_Color{6, 6, 8, 255} : Clay_Color{20, 20, 23, 235}),
+              .backgroundColor = ro ? Clay_Color{0, 0, 0, 0} : (focused ? Pal::fieldBgFocus : Pal::fieldBg),
               .cornerRadius = CLAY_CORNER_RADIUS(3),
               .clip = overflow ? Clay_ClipElementConfig{.vertical = true, .childOffset = Clay_GetScrollOffset()} : Clay_ClipElementConfig{},
               .border = {.color = border, .width = CLAY_BORDER_ALL((uint16_t)(ro ? 0 : 1))}})
@@ -4973,10 +4988,10 @@ bool SatelliteSim::textField(const UIInput &inp, UIRenderer &ui, Clay_ElementId 
                          .padding = {6, 6, 0, 0},
                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                          .layoutDirection = CLAY_LEFT_TO_RIGHT},
-              .backgroundColor = focused ? Clay_Color{6, 6, 8, 255} : Clay_Color{20, 20, 23, 235},
+              .backgroundColor = focused ? Pal::fieldBgFocus : Pal::fieldBg,
               .cornerRadius = CLAY_CORNER_RADIUS(3),
               .clip = {.horizontal = true},
-              .border = {.color = focused ? Pal::btnAccent : (hovPrev ? Clay_Color{90, 90, 96, 255} : Clay_Color{48, 48, 52, 255}),
+              .border = {.color = focused ? Pal::btnAccent : (hovPrev ? Pal::fieldBorderHv : Pal::fieldBorder),
                          .width = CLAY_BORDER_ALL(1)}})
     {
         const bool hov = Clay_Hovered();
@@ -4994,11 +5009,11 @@ bool SatelliteSim::textField(const UIInput &inp, UIRenderer &ui, Clay_ElementId 
             if (e.selAll && !e.buf.empty())
             {
                 CLAY(CLAY_IDI("TfSel", (int)(id.id & 0x7fffffff)), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}},
-                                                                     .backgroundColor = {120, 30, 30, 255}})
+                                                                     .backgroundColor = Pal::textSelBg})
                 {
                     const char *s = textFieldStr(e.buf);
                     CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}),
-                              CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                              CLAY_TEXT_CONFIG({.textColor = Pal::textBright, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
                 }
             }
             else
@@ -5007,12 +5022,12 @@ bool SatelliteSim::textField(const UIInput &inp, UIRenderer &ui, Clay_ElementId 
                 const char *b = textFieldStr(e.buf.substr((size_t)c));
                 if (*a)
                     CLAY_TEXT((Clay_String{false, (int32_t)strlen(a), a}),
-                              CLAY_TEXT_CONFIG({.textColor = {240, 240, 245, 255}, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                              CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
                 CLAY(CLAY_IDI("TfCaret", (int)(id.id & 0x7fffffff)), {.layout = {.sizing = {CLAY_SIZING_FIXED(1.5f), CLAY_SIZING_FIXED((float)f)}},
-                                                                       .backgroundColor = blinkOn ? Clay_Color{240, 240, 245, 255} : Clay_Color{0, 0, 0, 0}}) {}
+                                                                       .backgroundColor = blinkOn ? Pal::caret : Clay_Color{0, 0, 0, 0}}) {}
                 if (*b)
                     CLAY_TEXT((Clay_String{false, (int32_t)strlen(b), b}),
-                              CLAY_TEXT_CONFIG({.textColor = {240, 240, 245, 255}, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                              CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
             }
         }
         else
@@ -5058,9 +5073,9 @@ bool SatelliteSim::numberFieldD(const UIInput &inp, UIRenderer &ui, Clay_Element
     const bool hovPrev = Clay_PointerOver(id);
     CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(width), CLAY_SIZING_FIXED((float)f + 8.0f)},
                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-              .backgroundColor = hovPrev ? Clay_Color{40, 40, 44, 230} : Clay_Color{0, 0, 0, 0},
+              .backgroundColor = hovPrev ? Pal::ghostHover : Clay_Color{0, 0, 0, 0},
               .cornerRadius = CLAY_CORNER_RADIUS(3),
-              .border = {.color = hovPrev ? Clay_Color{90, 90, 96, 255} : Clay_Color{0, 0, 0, 0}, .width = CLAY_BORDER_ALL(1)}})
+              .border = {.color = hovPrev ? Pal::fieldBorderHv : Clay_Color{0, 0, 0, 0}, .width = CLAY_BORDER_ALL(1)}})
     {
         const bool hov = Clay_Hovered();
         ui.tooltip(inp, hov, unbound ? "Click to type a value (dev mode: any value)" : "Click to type a value", fs(11));
@@ -5068,7 +5083,7 @@ bool SatelliteSim::numberFieldD(const UIInput &inp, UIRenderer &ui, Clay_Element
         // Amber while the value sits outside its slider's range.
         const bool outside = unbound && (v < vmin || v > vmax);
         CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}),
-                  CLAY_TEXT_CONFIG({.textColor = outside ? Clay_Color{255, 190, 70, 255} : color, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                  CLAY_TEXT_CONFIG({.textColor = outside ? Pal::textWarn : color, .fontSize = f, .wrapMode = CLAY_TEXT_WRAP_NONE}));
         if (hov && inp.lmbPressed)
         {
             // The text to edit: the shown value without padding.
@@ -5138,7 +5153,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
                                                    .sizing = {CLAY_SIZING_FIXED(kSliderW), CLAY_SIZING_FIXED(16)},
                                                    .childGap = 0,
                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                               .backgroundColor = {22, 22, 24, 255},
+                                               .backgroundColor = Pal::trackBg,
                                                .cornerRadius = CLAY_CORNER_RADIUS(4)})
             {
                 bool hov = Clay_Hovered();
@@ -5982,7 +5997,7 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
     auto divider = [](int i) {
         CLAY(CLAY_IDI("AttrDiv", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
                                                  .padding = {0, 0, 2, 2}},
-                                      .backgroundColor = {30, 30, 32, 255}}) {}
+                                      .backgroundColor = Pal::divider}) {}
     };
     // One credit: a title, up to two dim lines and a hint line (source / license).
     auto entry = [&](int i, const char *title, const char *line1, const char *line2, const char *hint) {
@@ -6189,7 +6204,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
 
         CLAY(CLAY_ID("AnalogDiv"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
                                                .padding = {0, 0, 4, 4}},
-                                    .backgroundColor = {40, 40, 44, 255}}) {}
+                                    .backgroundColor = Pal::divider}) {}
         CLAY_TEXT(CLAY_STRING("ANALOG (not rebindable)"),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10)}));
         for (auto &row : analogRows)
@@ -6224,7 +6239,7 @@ void SatelliteSim::buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRend
                                       .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                       .padding = {16, 16, 10, 10},
                                       .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
-                                  .backgroundColor = {70, 46, 12, 235},
+                                  .backgroundColor = Pal::toastWarn,
                                   .cornerRadius = CLAY_CORNER_RADIUS(6),
                                   .floating = {.offset = {0, 16}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
@@ -6232,7 +6247,7 @@ void SatelliteSim::buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRend
                       "Recovered from an unexpected exit last time - graphics stepped down to %s. "
                       "Change it in Settings > Display.", kGraphicsPresetNames[(int)graphicsPreset]);
         CLAY_TEXT((Clay_String{false, (int32_t)std::strlen(crashNoticeBuf), crashNoticeBuf}),
-                  CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textBright, .fontSize = fs(13)}));
     }
 }
 
@@ -6350,11 +6365,11 @@ void SatelliteSim::buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRende
                                              .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                              .padding = {16, 16, 10, 10},
                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
-                                         .backgroundColor = {20, 40, 70, 235},
+                                         .backgroundColor = Pal::toastInfo,
                                          .cornerRadius = CLAY_CORNER_RADIUS(6),
                                          .floating = {.offset = {0, 16}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
-        CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
+        CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = Pal::textBright, .fontSize = fs(13)}));
     }
 }
 
@@ -6391,7 +6406,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
     auto btnH = [&](Clay_ElementId id, const char *label, bool &hov, const char *tip, bool on = false, bool enabled = true)
     {
         bool clicked = false;
-        const Clay_Color bg = !enabled ? Clay_Color{24, 24, 25, 160}
+        const Clay_Color bg = !enabled ? Pal::btnDisabled
                                        : on ? (hov ? Pal::btnAccentHv : Pal::btnAccent) : (hov ? Pal::btnHover : Pal::btnIdle);
         CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(20))},
                              .padding = {8, 8, 0, 0},
@@ -6481,12 +6496,12 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                 text(sliderLab[id], Pal::textDim, 11);
             }
             CLAY(tid, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED((float)fs(10))}},
-                       .backgroundColor = {30, 30, 33, 230},
+                       .backgroundColor = Pal::trackBg,
                        .cornerRadius = CLAY_CORNER_RADIUS(3)})
             {
                 const float f = vmax > vmin ? std::clamp((v - vmin) / (vmax - vmin), 0.0f, 1.0f) : 0.0f;
                 CLAY(CLAY_IDI("CineSliderFill", id), {.layout = {.sizing = {CLAY_SIZING_PERCENT(f), CLAY_SIZING_GROW(0)}},
-                                                      .backgroundColor = {150, 40, 40, 220},
+                                                      .backgroundColor = Pal::btnAccent,
                                                       .cornerRadius = CLAY_CORNER_RADIUS(3)}) {}
             }
             if (numberField(inp, ui, CLAY_IDI("CineSliderVal", id), v, vmin, vmax, fmt, (float)fs(56), 11, Pal::textPrimary))
@@ -6651,7 +6666,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     const bool on = followActive && followSatIndex == S.followSat;
                     snprintf(followBuf, sizeof(followBuf), "Follows %s #%d%s", satTypes[satOrbits[S.followSat].typeIdx].name.c_str(),
                              S.followSat, on ? "" : "  -  not following it now: Go to it before taking keys");
-                    text(followBuf, on ? Pal::textDim : Clay_Color{230, 190, 120, 255}, 11);
+                    text(followBuf, on ? Pal::textDim : Pal::textWarn, 11);
                 }
                 else if (followActive)
                     text("You are following a satellite: switch Follow on to ride with it in this shot", {230, 190, 120, 255}, 11);
@@ -6716,9 +6731,9 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     CLAY(tlId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED((float)fs(26))},
                                            .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                            .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                .backgroundColor = {14, 14, 16, 230},
+                                .backgroundColor = Pal::cardBg,
                                 .cornerRadius = CLAY_CORNER_RADIUS(4),
-                                .border = {.color = {48, 48, 52, 255}, .width = CLAY_BORDER_ALL(1)}})
+                                .border = {.color = Pal::fieldBorder, .width = CLAY_BORDER_ALL(1)}})
                     {
                         hovCineTimeline_ = Clay_Hovered();
                         float x = 0.0f;
@@ -6729,8 +6744,8 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                             const float left = std::max(0.0f, m.x - w * 0.5f - x);
                             CLAY(CLAY_IDI("CineTlGap", gi++), {.layout = {.sizing = {CLAY_SIZING_FIXED(left), CLAY_SIZING_FIXED(1)}}}) {}
                             const bool hot = m.kind == 0 && (cineTimelineDrag_ == m.key);
-                            const Clay_Color c = m.kind == 1 ? Clay_Color{240, 240, 245, 255}
-                                                 : hot      ? Clay_Color{255, 120, 120, 255}
+                            const Clay_Color c = m.kind == 1 ? Pal::caret
+                                                 : hot      ? Pal::listenKey
                                                             : Pal::btnAccent;
                             const float mh = m.kind == 1 ? (float)fs(24) : (float)fs(14);
                             const float mr = m.kind == 1 ? 1.0f : 2.0f;
@@ -6750,7 +6765,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                                                       .padding = {4, 4, 4, 4},
                                                       .childGap = 3,
                                                       .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                           .backgroundColor = {14, 14, 16, 200},
+                                           .backgroundColor = Pal::cardBg,
                                            .cornerRadius = CLAY_CORNER_RADIUS(4)})
                 {
                     if (K.empty())
@@ -6772,7 +6787,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                                                                     .childGap = 4,
                                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                                         .backgroundColor = atHead ? Clay_Color{60, 20, 20, 160} : Clay_Color{0, 0, 0, 0},
+                                                         .backgroundColor = atHead ? Pal::rowEnabled : Clay_Color{0, 0, 0, 0},
                                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
                         {
                             static char idxBuf[24][8];
@@ -6800,7 +6815,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                                                               .clip = {.horizontal = true}})
                             {
                                 Clay_String cs{false, (int32_t)strlen(cineKeyBuf_[i]), cineKeyBuf_[i]};
-                                CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = (S.followSat >= 0 && !k.hasOffset) ? Clay_Color{230, 190, 120, 255} : Pal::textPrimary,
+                                CLAY_TEXT(cs, CLAY_TEXT_CONFIG({.textColor = (S.followSat >= 0 && !k.hasOffset) ? Pal::textWarn : Pal::textPrimary,
                                                                 .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
                             }
                             if (btnH(CLAY_IDI("CineKeyGo", i), "Go", hovCineKey[i][0], "Jump to this key's view", false, !cineActive()))
@@ -6886,7 +6901,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     snprintf(estBuf, sizeof(estBuf), "HQ: %.0f frames at %.0fx%.0f, about %.0f %s (estimated from the current frame rate)",
                              frames, s * inp.screenW, s * inp.screenH, est >= 120.0 ? est / 60.0 : est,
                              est >= 120.0 ? "min" : "s");
-                    wrapText(estBuf, est > 600.0 ? Clay_Color{230, 190, 120, 255} : Pal::textDim, 11);
+                    wrapText(estBuf, est > 600.0 ? Pal::textWarn : Pal::textDim, 11);
                 }
                 row(3, [&]()
                     {
@@ -7006,10 +7021,10 @@ void SatelliteSim::buildCineHud(const UIInput &inp, UIRenderer &ui)
                                          .padding = {12, 12, 8, 8},
                                          .childGap = 5,
                                          .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                              .backgroundColor = {10, 10, 12, 225},
+                              .backgroundColor = Pal::popupBg,
                               .cornerRadius = CLAY_CORNER_RADIUS(6),
                               .floating = {.offset = {0, 12}, .zIndex = 45, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT},
-                              .border = {.color = {60, 60, 66, 255}, .width = CLAY_BORDER_ALL(1)}})
+                              .border = {.color = Pal::popupBorder, .width = CLAY_BORDER_ALL(1)}})
     {
         CLAY(CLAY_ID("CineHudRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                 .childGap = 8,
@@ -7037,7 +7052,7 @@ void SatelliteSim::buildCineHud(const UIInput &inp, UIRenderer &ui)
             }
         }
         CLAY(CLAY_ID("CineHudBar"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(6)}},
-                                     .backgroundColor = {30, 30, 33, 255},
+                                     .backgroundColor = Pal::trackBg,
                                      .cornerRadius = CLAY_CORNER_RADIUS(3)})
         {
             CLAY(CLAY_ID("CineHudFill"), {.layout = {.sizing = {CLAY_SIZING_PERCENT(frac), CLAY_SIZING_GROW(0)}},
@@ -7065,12 +7080,12 @@ void SatelliteSim::buildScreenshotToast(float dt, const UIInput &inp, UIRenderer
                                           .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                           .padding = {14, 14, 8, 8},
                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
-                                      .backgroundColor = screenshotToastWarn ? Clay_Color{70, 45, 12, 235} : Clay_Color{20, 60, 30, 235},
+                                      .backgroundColor = screenshotToastWarn ? Pal::toastWarn : Pal::toastOk,
                                       .cornerRadius = CLAY_CORNER_RADIUS(6),
                                       // Above the bottom HUD panels (a long message at bottom centre ran into the right one).
                                       .floating = {.offset = {0, -64}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_BOTTOM, .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
-        CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, 255}, .fontSize = fs(13)}));
+        CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = Pal::textBright, .fontSize = fs(13)}));
     }
 }
 
@@ -7583,6 +7598,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         settingsChrome.w = d.value("win_w", settingsChrome.w);
         settingsChrome.h = d.value("win_h", settingsChrome.h);
         settingsActiveTab = std::clamp(d.value("active_tab", settingsActiveTab), 0, kSettingsTabCount - 1);
+        if (d.contains("ui_theme") && d["ui_theme"].is_string())
+            uiTheme = (int)uiThemeFromKey(d["ui_theme"].get<std::string>().c_str());
         int unitVal = d.value("unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0);
         unitSystem = unitVal == 1 ? UnitSystem::Imperial : UnitSystem::Metric;
         // Feature preference, not a graphics-tuning value — unconditional, not gated behind
@@ -8163,6 +8180,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"debug_disable_mask", debugDisableMask},
         {"active_tab", settingsActiveTab},
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
+        {"ui_theme", kUiThemeKeys[std::clamp(uiTheme, 0, (int)UiTheme::Count - 1)]},
         {"play_intro_on_startup", playIntroOnStartup},
         {"tutorial_done", tutorialDone},
         {"ask_graphics_mode", askGraphicsModeOnStartup},

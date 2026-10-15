@@ -1106,6 +1106,11 @@ void UIRenderer::pushQuad(float x, float y, float w, float h,
 
     uint32_t base = (uint32_t)vertices.size();
 
+    // Night-vision theme: every colour (text, panels, icon and image tints) becomes red at its
+    // brightest channel, so nothing the UI draws carries green or blue (UIPalette.h).
+    if (s_nightFilter)
+        color = glm::vec4(std::max(color.r, std::max(color.g, color.b)), 0.0f, 0.0f, color.a);
+
     glm::vec2 halfSize = { w * 0.5f, h * 0.5f };
     glm::vec2 center   = { x + halfSize.x, y + halfSize.y };
     glm::vec2 tl = glm::vec2(x,     y    ) - center;

@@ -6,6 +6,7 @@
 // Everything here runs at the top of buildUI (harnessTick), i.e. before this frame's camera
 // derivation, recordCompute and draws: a command's effect is in the very frame it ran in, and a
 // `capture` issued after it records that frame.
+#include "UIPalette.h"
 #include "SatelliteSim.h"
 #include "SatPhotometry.h"
 #include "Ambience.h"
@@ -428,6 +429,8 @@ json SatelliteSim::harnessStateJson()
                        {"mesh_fade_px", meshFadePx}, {"mesh_candidates", meshCandTotal}};
     j["render"] = {{"preset", kGraphicsPresetNames[(int)graphicsPreset]},
                    {"knockout_mask", debugDisableMask},
+                   {"ui_theme", kUiThemeKeys[(int)Pal::current]},
+                   {"ui_night_filter", UIRenderer::colorFilter()},
                    {"knockouts", ko},
                    {"render_scale", renderScale},
                    {"dynamic_resolution", dynResEnabled},

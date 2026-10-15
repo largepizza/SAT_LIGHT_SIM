@@ -3797,6 +3797,10 @@ private:
     bool uiVisible = true;
     bool iconsLoaded = false;
     float uiScale = 1.5f;    // text/UI size multiplier (0.75 – 2.0)
+    // UI colour theme (UIPalette.h: 0 Default, 1 Navy, 2 Night red, 3 Midnight), display.ui_theme. buildUI applies it
+    // (applyUiTheme + the renderer's night filter) whenever it differs from what is applied.
+    int uiTheme = 0;
+    void syncUiTheme();
     float masterVol_ = 0.4f; // mirrors AudioSystem default (display fallback)
     float musicVol_ = 0.7f;
     float sfxVol_ = 1.0f;
