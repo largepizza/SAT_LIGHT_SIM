@@ -3132,6 +3132,8 @@ private:
     float cv2HistoryWeightMoving = 0.05f; // the same weight once the view moves (parallax past ~2 half-res px)
     float cv2HistoryWeight = 0.04f;     // weight of a new sample over its reprojected history (still view;
                                        // the resolve raises it toward 0.35 with motion)
+    float cv2HqHistWeight = 0.0f;       // HQ cinematic export only (cineTick): replaces the still weight per settle frame
+                                       // with a running mean's 1/n (and lifts the accumulation cap); 0 = off
     float cv2BeamEyeIrr = 0.0f;           // the Reflect beams' irradiance at the eye (Suns), per frame (rain particles)
     glm::vec3 cv2BeamEyeDir{0.0f, 0.0f, 1.0f};   // its weighted direction to the satellites (ENU)
     float cv2LightLenM = 8000.0f;      // light-march length
@@ -4605,6 +4607,7 @@ private:
     bool   cinePlayOneShot_ = false;      // play / export only the current shot
     double cineT_ = 0.0;                  // global time into the cinematic (or the shot)
     int    cineFrame_ = 0, cineFrames_ = 0, cineSettle_ = 0, cineLastShot_ = -1, cinePrerollShot_ = -1;
+    int    cineHqShot_ = -2, cineHqPrior_ = 0;   // the HQ export's running-mean prior (cineTick)
     double cineShotSim_ = 0.0;            // the shot's sim time at its start (when no key sets it)
     float  cineFixedDt_ = 0.0f;           // > 0 while exporting: 1 / fps (frameDt)
     bool   cineSavedPaused_ = false;

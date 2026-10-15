@@ -1,0 +1,334 @@
+# v2 (2026-10-15): the same shots rebuilt on the current sim with the user's settings (no preset, no
+# quality overrides; clear-sky shots restore coverage 0.96 / fog 0.26 after them). Original: release_tour.satcmd
+# v1.2.0 release cinematic ("release_tour"): satellites first, then the sim's showcase moments.
+# Builds the cinematic with the harness `cine` commands, saves it as <run>/cinematics/release_tour.json (the
+# committed copy is tools/cinematics/release_tour.json: copy it to <user data>/cinematics/ to open it in the
+# Cinematics window), then exports it at 1x. Run (one launch, ~50 min at 30 fps):
+#   python tools/harness/run.py tools/harness/scripts/release_tour.satcmd --window 1920x1080 --out harness_runs/release_tour --timeout 7200
+#   python tools/harness/frames2video.py harness_runs/release_tour/captures/cine_release_tour/frame -o release_tour.mp4 --fps 30
+# Shots (durations in s):
+#   1 rise 12      StarMind X-ring rising out of the sea at dusk, Big Sur ridge (time-lapse x40, tilt-up pan)
+#   2 eight 9      telephoto zoom on one point of light: a formation of eight datacenter satellites (350 m ring)
+#   3 ring 12      follow the formation's centroid over the day side, x200: the ring turns (once per orbit)
+#   4 opposition 12  dawn, Big Sur coast: X-ring clusters brighten crossing the anti-solar point (x2)
+#   5 observer_line 12  the same seconds from the satellite's side, ON the observer's line: the arrays blaze
+#   6 mirror 8     a Reflect Orbital mirror from inside its beam: the Sun in the mirror (Topaz, CA)
+#   7 pullback 14  back along that beam to its site, facing the mirror: one glare becomes the convergent array
+#   8 totality 10  2037-07-13 total solar eclipse, Australia: wide orange horizon -> corona (push-in)
+#   9 anvil 8      a storm top at sunset from 16 km
+#  10 aurora 10    a Kp 6 aurora over the Brooks Range (Coldfoot, AK), time-lapse x20
+#  11 city 9       Los Angeles at night from 10 km, drifting east
+#  12 halo 12     pull-out over the night side: the sunlit StarMind shells halo the dark Earth (x30, Kp 1)
+# Keys of the tracking shots (2, 4) were computed from the ring members' az/el (harness `select sat`), shot 3's from
+# the formation centroid (harness `cluster`); a formation is 8 consecutive roster indices from the constellation's
+# orbitStart. Round 2 (2026-10-06): Clohessy-Wiltshire formations, shot 7 replaced; the anvil keeps its snapshot's look
+# (with settings=off the storm vanished) with the new rain defaults on top.
+set clouds_v2.coverage 0.96
+set clouds_v2.fog_amount 0.26
+set clouds_v2.auto_exposure 0
+time pause
+follow off
+cine new release_tour_v2
+cine shot add rise
+
+# ── 1. rise ──────────────────────────────────────────────────────────────────────────────────────────
+set clouds_v2.exposure_ev 1.5
+time set 2036-11-22T02:01:04.5Z
+observer lat=35.869 lon=-121.402 agl=2
+camera az=203 el=8 fov=58
+wait settle 40
+cine shot simnow
+cine shot simrate 40
+cine shot look
+cine key t=0
+camera az=212 el=15 fov=54
+cine key t=6
+camera az=222 el=23 fov=50
+cine key t=12
+
+# ── 2. eight: telephoto on the ring 80798-80805 (the members' mean az/el) held on the lower-right third, zoom 16 -> 0.9 deg ─────
+cine shot add eight
+time j2000 1164204844.505
+cine shot simnow
+cine shot simrate 1
+cine shot ease 0
+cine shot look
+camera az=-123.6841 el=41.1028 fov=16
+cine key t=0
+camera az=-122.6948 el=41.0485 fov=15
+cine key t=1
+camera az=-121.0931 el=40.7244 fov=12.4
+cine key t=2
+camera az=-119.1424 el=40.2469 fov=8.9
+cine key t=3
+camera az=-117.2594 el=39.7994 fov=5.6
+cine key t=4
+camera az=-115.7495 el=39.5152 fov=3.3
+cine key t=5
+camera az=-114.5763 el=39.3774 fov=1.9
+cine key t=6
+camera az=-113.6459 el=39.3444 fov=1.15
+cine key t=7
+camera az=-112.8447 el=39.3659 fov=0.75
+cine key t=8
+camera az=-112.1353 el=39.4255 fov=0.6
+cine key t=9
+
+# ── 3. ring: follow the formation's CENTROID (keys from `cluster`), above its plane: a 200x time-lapse over the day
+#    side, the 350 m ring turning ~145 deg of its once-per-orbit rotation; dolly 2.6 -> 1.5 km ───────────────────────
+cine shot add ring
+time j2000 1164207254
+cine shot simnow
+cine shot simrate 200
+cine shot ease 0
+select sat 80798
+cine shot follow sel
+set clouds_v2.exposure_ev 0
+set clouds_v2.auto_exposure 1
+cine shot look
+follow offset=960.7,-937.0,2292.7 aimat=101.8,290.0,167.4
+camera fov=34.00
+cine key t=0
+follow offset=876.5,-911.6,2276.8 aimat=26.8,302.2,174.5
+camera fov=33.92
+cine key t=1
+follow offset=775.1,-878.0,2213.6 aimat=-49.5,300.1,173.2
+camera fov=33.69
+cine key t=2
+follow offset=664.8,-842.3,2114.0 aimat=-123.4,283.6,163.7
+camera fov=33.34
+cine key t=3
+follow offset=553.3,-810.2,1989.3 aimat=-191.5,253.7,146.5
+camera fov=32.91
+cine key t=4
+follow offset=448.0,-786.0,1850.3 aimat=-250.4,211.7,122.2
+camera fov=32.44
+cine key t=5
+follow offset=354.9,-772.3,1706.4 aimat=-297.5,159.7,92.2
+camera fov=31.94
+cine key t=6
+follow offset=279.1,-770.6,1565.7 aimat=-330.4,100.1,57.8
+camera fov=31.45
+cine key t=7
+follow offset=223.9,-780.7,1434.6 aimat=-347.6,35.7,20.6
+camera fov=30.99
+cine key t=8
+follow offset=191.8,-801.9,1318.5 aimat=-348.2,-30.4,-17.6
+camera fov=30.59
+cine key t=9
+follow offset=183.8,-832.4,1222.2 aimat=-332.3,-95.1,-54.9
+camera fov=30.28
+cine key t=10
+follow offset=200.3,-870.8,1149.8 aimat=-300.6,-155.2,-89.6
+camera fov=30.07
+cine key t=11
+follow offset=240.9,-915.8,1106.0 aimat=-254.6,-207.9,-120.1
+camera fov=30.00
+cine key t=12
+follow off
+set clouds_v2.auto_exposure 0
+
+# ── 4. opposition: dawn over the sea, the X-ring clusters crossing the anti-solar point ──────────────
+cine shot add opposition
+set clouds_v2.exposure_ev 1
+time set 2036-11-22T14:07:35Z
+observer lat=36.25 lon=-121.79 agl=120
+wait settle 40
+cine shot simnow
+cine shot simrate 2
+cine shot ease 0
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+cine shot look
+camera az=-85.41 el=7.40 fov=30
+cine key t=0
+camera az=-82.18 el=7.81 fov=26
+cine key t=4
+camera az=-78.99 el=8.18 fov=22
+cine key t=8
+camera az=-75.85 el=8.54 fov=18
+cine key t=12
+
+# ── 5. observer_line: the same seconds, from the satellite's side on the observer's line ─────────────
+cine shot add observer_line
+time set 2036-11-22T14:07:35Z
+cine shot simnow
+cine shot simrate 2
+select sat 77854
+cine shot follow sel
+cine shot look
+follow toward=observer dist=2200 side=4 lift=3
+camera fov=38
+cine key t=0
+time add 12
+follow toward=observer dist=500 side=2 lift=1.5
+camera fov=36
+cine key t=6
+time add 12
+follow toward=observer dist=150 side=1 lift=0.5
+camera fov=34
+cine key t=12
+follow off
+
+# ── 6. mirror: a Reflect Orbital mirror from inside its beam (Topaz Solar Farm, CA) ───────────────────
+cine shot add mirror
+set clouds_v2.coverage 0.96
+set clouds_v2.fog_amount 0.26
+set clouds_v2.auto_exposure 0
+set clouds_v2.exposure_ev 0
+time set 2036-11-22T02:30:00Z
+observer lat=35.38 lon=-120.05 agl=2
+wait settle 10
+beams go dist_km=0 agl=2 look=up
+select const "Reflect Orbital"
+cine shot simnow
+cine shot simrate 1
+cine shot follow sel
+cine shot look
+follow toward=observer dist=500 side=2.5 lift=1.5
+camera fov=34
+cine key t=0
+time add 8
+follow toward=observer dist=160 side=0.3 lift=0.2
+camera fov=30
+cine key t=8
+
+# ── 7. pullback: from shot 6's framing, back ALONG the beam to its site, still facing the mirror: the one glare
+#    becomes the whole convergent array (sim frozen; a second mirror pairs with it at ~3 km, the array at ~600 km)
+cine shot add pullback
+cine shot simnow
+cine shot simrate 0
+cine shot follow sel
+set clouds_v2.exposure_ev -0.7
+cine shot look
+follow toward=observer dist=160 side=0.3 lift=0.2
+camera fov=30
+cine key t=0
+follow toward=observer dist=1500 side=0.1
+camera fov=30
+cine key t=2
+follow toward=observer dist=15000
+camera fov=31
+cine key t=4
+follow toward=observer dist=100000
+camera fov=34
+cine key t=6
+follow toward=observer dist=450000
+camera fov=40
+cine key t=8
+follow toward=observer dist=1100000
+camera fov=50
+cine key t=10
+follow toward=observer dist=1500000
+camera fov=62
+cine key t=12
+follow toward=observer dist=1596000
+camera fov=70
+cine key t=14
+follow off
+select none
+
+# ── 8. totality: 2037-07-13, the shadow axis in Australia ────────────────────────────────────────────
+cine shot add totality
+set clouds_v2.exposure_ev 0
+time set 2037-07-01T00:00:00Z
+eclipse solar
+wait settle 40
+cine shot simnow
+cine shot simrate 1
+cine shot look
+camera az=3 el=15 fov=92
+cine key t=0
+camera az=4.5 el=40 fov=28
+cine key t=5
+camera az=4.95 el=46.4 fov=4
+cine key t=10
+
+# ── 9. anvil: a storm top at sunset from 16 km (the user's snapshot; +18901 s = its pre-GMST view) ───
+cine shot add anvil
+snapshot ../../tools/harness/scripts/tour_snaps.jsonl index=0 settings=off
+set clouds_v2.auto_exposure 0
+set clouds_v2.rain_amount 3
+set clouds_v2.rain_streaks 2.63
+set clouds_v2.rain_fall_speed 5
+time add 18901
+drift phase=3.911310571441909
+wait settle 60
+cine shot simnow
+cine shot simrate 0
+cine shot look
+camera az=63 el=-45 fov=70
+cine key t=0
+camera az=70 el=-22 fov=64
+cine key t=8
+
+# ── 10. aurora: Brooks Range, December midnight, Kp 6 ────────────────────────────────────────────────
+cine shot add aurora
+set clouds_v2.coverage 0.96
+set clouds_v2.fog_amount 0.26
+set clouds_v2.auto_exposure 0
+set clouds_v2.exposure_ev 0
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+time set 2036-12-21T12:00:00Z
+observer lat=67.25 lon=-150.18 agl=2
+time sun midnight
+aurora kp 6
+wait settle 60
+cine shot simnow
+cine shot simrate 20
+cine shot look
+camera az=-72 el=18 fov=82
+cine key t=0
+camera az=-20 el=30 fov=88
+cine key t=10
+
+# ── 11. city: Los Angeles at night from 10 km ────────────────────────────────────────────────────────
+cine shot add city
+set clouds_v2.coverage 0.96
+set clouds_v2.fog_amount 0.26
+set clouds_v2.auto_exposure 0
+set clouds_v2.coverage 0.3
+set clouds.city_twinkle_rate 1
+time set 2036-06-21T12:00:00Z
+observer lat=33.95 lon=-118.45 alt=10000
+time sun midnight
+camera az=60 el=-33 fov=44
+wait settle 60
+cine shot simnow
+cine shot simrate 1
+cine shot look
+cine key t=0
+observer lat=34.02 lon=-118.20 alt=8500
+camera az=72 el=-30 fov=40
+cine key t=9
+
+# ── 12. halo: pull out over the night side, the sunlit shells around the dark Earth ─────────────────
+cine shot add halo
+set clouds_v2.coverage 0.96
+set clouds_v2.fog_amount 0.26
+set clouds_v2.auto_exposure 1
+set clouds.city_twinkle_rate 4
+aurora kp 1
+time set 2036-11-22T02:06:22Z
+observer lat=20 lon=-31.5 alt=3000000
+camera az=0 el=-89 fov=90
+wait settle 40
+cine shot simnow
+cine shot simrate 30
+cine shot look
+cine key t=0
+observer lat=20 lon=-31.5 alt=9000000
+camera fov=70
+cine key t=6
+observer lat=20 lon=-31.5 alt=20000000
+camera fov=50
+cine key t=12
+
+cine shot 1
+cine shot del
+cine shot 1
+cine save release_tour_v2
+cine state
+cine export preview fps=30
+quit

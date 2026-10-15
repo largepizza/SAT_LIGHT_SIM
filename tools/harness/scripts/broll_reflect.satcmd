@@ -1,0 +1,229 @@
+# B-roll: Reflect Orbital (2026-10-15). Builds and saves cinematic "broll_reflect" from the user's settings
+# (user_data/settings.json; no preset is applied). Every shot stores its look.
+#   python tools/harness/run.py tools/harness/scripts/broll_reflect.satcmd --settings user_data/settings.json --window 1920x1080 --timeout 7200
+# Shots:
+#   1 turn_on        follow one mirror on the observer's line as its beam sweeps onto Topaz: dark panel -> the Sun in it
+#   2 beam_pullback  frozen at the flare, back down the beam 1340 km to the site: one mirror becomes the arc
+#   3 turn_on_ground from the site, telephoto on the same mirror; it lights, then a zoom out to the whole arc
+#   4 spot_clouds    aerial over the lit Topaz spot, broken cumulus casting beam shadows on the ground
+#   5 spot_circle    low arc around the spot at cloud level
+#   6 arc_cumulus    from the ground south of Topaz: the arc of mirrors behind passing cumulus, targets switching (x6)
+#   7 ridge_switch   a ridge near Ivanpah, 01:45: the arc over broken cloud, mirrors switching on and off (x8)
+#   8 arc_desert     14 km over the Mojave, 02:00-02:06: the handoff of the beams to Topaz (x30)
+#   9 anchorage_city an arc around Anchorage at dusk: 225 beams converge on the city lights (x2)
+#  10 two_arcs       12 km over Cook Inlet: the arcs serving Anchorage and Fairbanks (x10)
+#  11 fairbanks_clouds from the ground at Fairbanks: broken cloud lit by the beams, the mirror arc in the gaps (x4)
+time pause
+follow off
+cine new broll_reflect
+cine shot add turn_on
+
+# ── 1. turn_on: follow mirror 1061414, which sweeps its beam onto Topaz at 01:50:54 (t=8) ─────────────────────
+set clouds_v2.auto_exposure 0
+set clouds_v2.exposure_ev 0
+observer lat=35.38 lon=-120.05 agl=2
+drift phase=1.0
+time set 2036-11-22T01:50:46Z
+select sat 1061414
+cine shot simnow
+cine shot simrate 1
+cine shot ease 0.3
+cine shot follow sel
+cine shot look
+follow toward=observer dist=700 side=5 lift=3
+camera fov=38
+cine key t=0
+time set 2036-11-22T01:50:52Z
+follow toward=observer dist=480 side=4 lift=2.5
+camera fov=38
+cine key t=6
+time set 2036-11-22T01:50:58Z
+follow toward=observer dist=330 side=3 lift=2
+camera fov=38
+cine key t=12
+follow off
+
+# ── 2. beam_pullback: frozen at 01:50:55, back down the beam to the site, still facing the mirror ─────────────
+cine shot add beam_pullback
+observer lat=35.38 lon=-120.05 agl=2
+time set 2036-11-22T01:50:55Z
+select sat 1061414
+cine shot simnow
+cine shot simrate 0
+cine shot ease 0.5
+cine shot follow sel
+set clouds_v2.exposure_ev -0.5
+cine shot look
+follow toward=observer dist=330 side=3 lift=2
+camera fov=38
+cine key t=0
+follow toward=observer dist=2500 side=1
+camera fov=36
+cine key t=2
+follow toward=observer dist=20000
+camera fov=36
+cine key t=4
+follow toward=observer dist=150000
+camera fov=40
+cine key t=6
+follow toward=observer dist=600000
+camera fov=48
+cine key t=8
+follow toward=observer dist=1150000
+camera fov=60
+cine key t=10
+follow toward=observer dist=1320000
+camera fov=72
+cine key t=12
+follow toward=observer dist=1336000
+camera fov=80
+cine key t=14
+follow off
+
+# ── 3. turn_on_ground: from the site, telephoto on the mirror (keys = its az/el), it lights at t=8, zoom out ─────
+cine shot add turn_on_ground
+set clouds_v2.exposure_ev 0
+observer lat=35.38 lon=-120.05 agl=2
+time set 2036-11-22T01:50:46Z
+cine shot simnow
+cine shot simrate 1
+cine shot ease 0
+cine shot look
+camera az=-158.600 el=14.815 fov=1.2
+cine key t=0
+camera az=-157.920 el=15.301 fov=1.2
+cine key t=4
+camera az=-157.213 el=15.796 fov=1.2
+cine key t=8
+camera az=-156.478 el=16.301 fov=1.5
+cine key t=12
+camera az=-155.713 el=16.815 fov=6
+cine key t=16
+camera az=-154.700 el=21 fov=30
+cine key t=19
+camera az=-153.000 el=33 fov=72
+cine key t=22
+
+# ── 4. spot_clouds: aerial over the lit Topaz spot (02:30, 151 beams), broken cumulus (drift 1.0) ───────────────
+cine shot add spot_clouds
+set clouds_v2.exposure_ev 0
+time set 2036-11-22T02:30:00Z
+drift phase=1.0
+observer lat=35.27858 lon=-120.09521 alt=5000
+camera az=19.974 el=-18.631 fov=60
+wait settle 20
+cine shot simnow
+cine shot simrate 2
+cine shot ease 0.3
+cine shot look
+observer lat=35.27858 lon=-120.09521 alt=5000; camera az=19.974 el=-18.631 fov=60.00; cine key t=0.00
+observer lat=35.28962 lon=-120.09929 alt=4750; camera az=23.971 el=-19.029 fov=58.50; cine key t=3.50
+observer lat=35.30058 lon=-120.10173 alt=4500; camera az=27.970 el=-19.506 fov=57.00; cine key t=7.00
+observer lat=35.31135 lon=-120.10256 alt=4250; camera az=31.970 el=-20.085 fov=55.50; cine key t=10.50
+observer lat=35.32178 lon=-120.10183 alt=4000; camera az=35.970 el=-20.804 fov=54.00; cine key t=14.00
+
+# ── 5. spot_circle: an arc around the spot at cloud level (drift 0.5: more cumulus) ─────────────────────────────
+cine shot add spot_circle
+time set 2036-11-22T02:30:00Z
+drift phase=0.5
+cine shot simnow
+cine shot simrate 2
+cine shot ease 0.3
+cine shot look
+observer lat=35.33355 lon=-120.13127 alt=2300; camera az=54.953 el=-0.476 fov=70.00; cine key t=0.00
+observer lat=35.34576 lon=-120.13993 alt=2380; camera az=64.948 el=-0.973 fov=70.00; cine key t=2.80
+observer lat=35.35901 lon=-120.14586 alt=2460; camera az=74.945 el=-1.469 fov=70.00; cine key t=5.60
+observer lat=35.37291 lon=-120.14888 alt=2540; camera az=84.943 el=-1.964 fov=70.00; cine key t=8.40
+observer lat=35.38701 lon=-120.14890 alt=2620; camera az=94.943 el=-2.457 fov=70.00; cine key t=11.20
+observer lat=35.40091 lon=-120.14591 alt=2700; camera az=104.944 el=-2.949 fov=70.00; cine key t=14.00
+
+# ── 6. arc_cumulus: south of Topaz on the ground-ish at 1.5 km, looking up at the arc behind cumulus (02:00) ─────
+cine shot add arc_cumulus
+time set 2036-11-22T02:00:00Z
+drift phase=1.0
+cine shot simnow
+cine shot simrate 6
+cine shot ease 0.3
+cine shot look
+observer lat=35.344 lon=-120.05 alt=1500
+camera az=-84 el=9 fov=80
+cine key t=0
+camera az=-74 el=12 fov=74
+cine key t=14
+
+# ── 7. ridge_switch: a ridge near Ivanpah at 01:45 ─────────────────────────────────────────────────────────────
+cine shot add ridge_switch
+time set 2036-11-22T01:45:00Z
+drift phase=1.0
+set clouds_v2.exposure_ev 0.5
+cine shot simnow
+cine shot simrate 8
+cine shot ease 0.3
+cine shot look
+observer lat=35.67 lon=-115.22 alt=1500
+camera az=276 el=11 fov=88
+cine key t=0
+camera az=258 el=13 fov=84
+cine key t=14
+
+# ── 8. arc_desert: 14 km over the Mojave, the beams handing off to Topaz (x30, 02:00-02:07) ─────────────────────
+cine shot add arc_desert
+time set 2036-11-22T02:00:00Z
+drift phase=1.0
+set clouds_v2.exposure_ev 1
+cine shot simnow
+cine shot simrate 30
+cine shot ease 0.3
+cine shot look
+observer lat=34.5 lon=-117.3 alt=14000
+camera az=288 el=-5 fov=72
+cine key t=0
+observer lat=34.56 lon=-117.42 alt=14500
+camera az=294 el=-3.5 fov=68
+cine key t=14
+
+# ── 9. anchorage_city: 02:30, 225 beams converge on Anchorage at dusk; an arc around the city from 4.5 km ────────
+cine shot add anchorage_city
+time set 2036-11-22T02:30:00Z
+drift default
+set clouds_v2.exposure_ev 0
+cine shot simnow
+cine shot simrate 2
+cine shot ease 0.3
+cine shot look
+observer lat=61.09952 lon=-150.12413 alt=4500; camera az=41.804 el=-13.963 fov=65.00; cine key t=0.00
+observer lat=61.11145 lon=-150.14901 alt=4375; camera az=47.782 el=-13.587 fov=63.75; cine key t=3.50
+observer lat=61.12458 lon=-150.17120 alt=4250; camera az=53.762 el=-13.211 fov=62.50; cine key t=7.00
+observer lat=61.13875 lon=-150.19044 alt=4125; camera az=59.746 el=-12.833 fov=61.25; cine key t=10.50
+observer lat=61.15381 lon=-150.20652 alt=4000; camera az=65.731 el=-12.454 fov=60.00; cine key t=14.00
+
+# ── 10. two_arcs: from 12 km over Cook Inlet, the arcs serving Anchorage and Fairbanks (x10) ─────────────────────
+cine shot add two_arcs
+time set 2036-11-22T02:30:00Z
+cine shot simnow
+cine shot simrate 10
+cine shot ease 0.3
+cine shot look
+observer lat=60.89361 lon=-150.21254 alt=12000; camera az=24.726 el=-10.8 fov=60.00; cine key t=0.00
+observer lat=60.90796 lon=-150.26993 alt=12000; camera az=29.676 el=-10.8 fov=59.00; cine key t=7.00
+observer lat=60.92466 lon=-150.32459 alt=12000; camera az=34.628 el=-10.8 fov=58.00; cine key t=14.00
+
+# ── 11. fairbanks_clouds: 3 km south of the Fairbanks site, broken cloud lit by 229 beams, the arc in the gaps (x4)
+cine shot add fairbanks_clouds
+time set 2036-11-22T02:30:00Z
+cine shot simnow
+cine shot simrate 4
+cine shot ease 0.3
+cine shot look
+observer lat=64.81302 lon=-147.72 alt=248
+camera az=-20 el=40 fov=92
+cine key t=0
+camera az=-6 el=50 fov=90
+cine key t=14
+
+cine shot 1
+cine shot del
+cine shot 1
+cine save broll_reflect
+cine export preview fps=30
+quit

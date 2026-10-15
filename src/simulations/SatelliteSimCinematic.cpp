@@ -358,6 +358,9 @@ void SatelliteSim::cineStop(const char *why)
     }
     const bool exported = cineRun_ == CineRun::ExportPreview || cineRun_ == CineRun::ExportHQ;
     cineRun_ = CineRun::Idle;
+    cv2HqHistWeight = 0.0f;   // back to the still weight
+    cineHqShot_ = -2;
+    cineHqPrior_ = 0;
     cineAccumSubs_ = 0;   // finalizeScreenshot back to plain screenshots
     cineAccum_.clear();
     cineFixedDt_ = 0.0f;
@@ -408,9 +411,24 @@ void SatelliteSim::cineTick(float dt)
     const double t = (cineFrame_ + (subs > 1 ? 0.5 * ((cineSub_ + 0.5) / subs - 0.5) : 0.0)) / cine_.fps;
     cineApplyAt(std::clamp(t, 0.0, dur), false);
     cineScrub_ = (float)t;
-    if (cineRun_ == CineRun::ExportHQ &&
-        ++cineSettle_ < std::max(subs > 1 ? 4 : 1, (int)std::lround(photoSettleFrames / (float)subs)))
-        return; // settle at this pose (its sim time held: timePaused); the subframes share the settle budget
+    if (cineRun_ == CineRun::ExportHQ)
+    {
+        // The clouds' history over a pose's settle frames is a RUNNING MEAN (weight 1 / n), seeded by the previous
+        // pose's result as a prior worth one pose of samples (none after a cut). At the still weight (~0.05) the
+        // full-rate march's history remembers ~20 frames, so 48 settle frames made every exported frame an
+        // independent draw keeping ~15% of the per-sample noise: grain on wispy cloud edges that changed every frame
+        // (more settle frames made it worse). Real time escapes it: the sparse grid refreshes a pixel every 4th frame.
+        const int settleN = std::max(subs > 1 ? 4 : 1, (int)std::lround(photoSettleFrames / (float)subs));
+        if (cineLastShot_ != cineHqShot_)
+        {
+            cineHqShot_ = cineLastShot_;
+            cineHqPrior_ = 0;
+        }
+        cv2HqHistWeight = 1.0f / (float)(cineHqPrior_ + cineSettle_ + 1);
+        if (++cineSettle_ < settleN)
+            return; // settle at this pose (its sim time held: timePaused); the subframes share the settle budget
+        cineHqPrior_ = settleN;
+    }
     // Preview: a shot's first frame has no history (the cut reset it) — pre-roll 16 frames at that pose so
     // it is not a grain of single samples.
     if (cineRun_ == CineRun::ExportPreview && cineLastShot_ != cinePrerollShot_ && ++cineSettle_ < 16)

@@ -1253,7 +1253,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // whose small clouds it hits or misses: at 0.05 the history kept that as flicker on the scattered
     // puffs (MEO, the user's report).
     const float hwAlt = 1.0f - 0.6f * (float)std::clamp((std::log10(std::max(eyeH, 1.0)) - 5.477) / 1.0, 0.0, 1.0);
-    p.look2 = glm::vec4(cv2BounceGain, cv2SunGain, cv2Powder, cv2HistoryWeight * hwAlt);
+    p.look2 = glm::vec4(cv2BounceGain, cv2SunGain, cv2Powder,
+                        cv2HqHistWeight > 0.0f ? cv2HqHistWeight : cv2HistoryWeight * hwAlt);
     p.phase = glm::vec4(cv2PhaseG, 0.6f, -0.25f, 0.4f);
 
     float lo = 1e9f, hi = 0.0f;
@@ -1429,7 +1430,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         cv2ShaftBoost = (glm::length(shaftVel) > 0.5f || (shaftOn && cv2ShaftFrames < 64)) ? 128 : std::max(cv2ShaftBoost - 1, 0);
         p.cu2 = glm::vec4(std::clamp(cv2CbFineLobes, 0.0f, 2.0f), std::clamp(cv2CuWisps, 0.0f, 1.0f),
                           std::clamp(cv2SilverLining, 0.0f, 4.0f), (shaftOn && cv2ShaftBoost > 0) ? 1.0f : 0.0f);
-        p.samp = glm::vec4(std::clamp(cv2SampAccum, 0.0f, 256.0f), std::clamp(cv2SampNewSmooth, 0.0f, 1.0f),
+        // An HQ export's running mean must not be floored at 1 / (the accumulation cap): the cap goes to 256 there.
+        p.samp = glm::vec4(cv2HqHistWeight > 0.0f && cv2SampAccum > 0.0f ? 256.0f : std::clamp(cv2SampAccum, 0.0f, 256.0f),
+                           std::clamp(cv2SampNewSmooth, 0.0f, 1.0f),
                            std::clamp(cv2SampClampSd, 0.25f, 8.0f), std::clamp(cv2LightFootprint, 0.0f, 0.5f));
         p.sunCasc2 = glm::vec4(on ? std::clamp(((float)cv2CascFrames - 4.0f) / 8.0f, 0.0f, 1.0f) : 0.0f,   // every ray baked by frame 4
                                (float)(2.0 * sHalf / 40.0), on ? 1.0f : 0.0f, std::max(cv2HazeAloft, 0.0f));

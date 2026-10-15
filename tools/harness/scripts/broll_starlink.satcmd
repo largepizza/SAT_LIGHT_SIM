@@ -1,0 +1,119 @@
+# B-roll: Starlink (2026-10-15). Builds and saves cinematic "broll_starlink" from the user's settings.
+#   python tools/harness/run.py tools/harness/scripts/broll_starlink.satcmd --settings user_data/settings.json --window 1920x1080 --timeout 7200
+# The ground shots switch the two StarMind constellations off in their look (their 1M points bury a Starlink glint).
+#   1 flare_spot     Monument Valley after dusk: one Direct-to-Cell plane, each satellite glinting at the same spot (x12)
+#   2 flare_tele     telephoto tracking DTC #47567 through its glint (peak mag 0.1 at t=8), slow push-in
+#   3 flare_close    the same seconds from 120 -> 50 m on the observer's line: the array lights, Milky Way behind
+#   4 silhouette     day side: a V2 Mini (black arrays) drifting over broken cloud
+#   5 into_night     the same satellite crossing the terminator (x20): sunset limb, then city lights
+time pause
+follow off
+cine new broll_starlink
+cine shot add flare_spot
+
+# ── 1. flare_spot ─────────────────────────────────────────────────────────────────────────────────────────────
+set clouds_v2.auto_exposure 0
+set clouds_v2.exposure_ev 0
+const "SpaceX Starmind - sun-synchronous X-ring" off
+const "SpaceX Starmind - 30 deg shells" off
+observer lat=36.98 lon=-110.1 agl=2
+drift default
+time set 2036-11-22T02:02:00Z
+cine shot simnow
+cine shot simrate 12
+cine shot ease 0.3
+cine shot look
+camera az=-102 el=19 fov=44
+cine key t=0
+camera az=-96 el=18 fov=40
+cine key t=14
+
+# ── 2. flare_tele: keys = #47567's az/el every 4 s from 02:04:14 ─────────────────────────────────────────────────
+cine shot add flare_tele
+time set 2036-11-22T02:04:14Z
+cine shot simnow
+cine shot simrate 1
+cine shot ease 0
+cine shot look
+camera az=-95.701 el=12.074 fov=2.5
+cine key t=0
+camera az=-97.025 el=12.376 fov=1.8
+cine key t=4
+camera az=-98.388 el=12.673 fov=1.2
+cine key t=8
+camera az=-99.790 el=12.963 fov=0.9
+cine key t=12
+camera az=-101.230 el=13.246 fov=0.8
+cine key t=16
+
+# ── 3. flare_close ────────────────────────────────────────────────────────────────────────────────────────────
+cine shot add flare_close
+time set 2036-11-22T02:04:14Z
+select sat 47567
+cine shot simnow
+cine shot simrate 1
+cine shot ease 0.3
+cine shot follow sel
+cine shot look
+follow toward=observer dist=130 side=6 lift=3
+camera fov=40
+cine key t=0
+time set 2036-11-22T02:04:22Z
+follow toward=observer dist=85 side=4 lift=2
+camera fov=40
+cine key t=8
+time set 2036-11-22T02:04:30Z
+follow toward=observer dist=55 side=3 lift=1.5
+camera fov=40
+cine key t=16
+follow off
+const "SpaceX Starmind - sun-synchronous X-ring" on
+const "SpaceX Starmind - 30 deg shells" on
+
+# ── 4. silhouette: V2 Mini #21926 over broken cloud, day side ─────────────────────────────────────────────────────
+cine shot add silhouette
+set clouds_v2.auto_exposure 1
+set clouds_v2.exposure_ev 0
+observer lat=46.62 lon=8.03 agl=40
+time set 2036-11-22T17:09:15Z
+select sat 21926
+cine shot simnow
+cine shot simrate 1
+cine shot ease 0.4
+cine shot follow sel
+cine shot look
+follow offset=-48,12,34 aimat=0,0,0
+camera fov=60
+cine key t=0
+follow offset=-30,28,30 aimat=0,0,0
+camera fov=56
+cine key t=7
+follow offset=-12,40,24 aimat=0,0,0
+camera fov=52
+cine key t=14
+follow off
+
+# ── 5. into_night: the same satellite across the terminator (x15) ───────────────────────────────────────────────
+cine shot add into_night
+observer lat=46.62 lon=8.03 agl=40
+time set 2036-11-22T17:19:00Z
+select sat 21926
+cine shot simnow
+cine shot simrate 20
+cine shot ease 0.3
+cine shot follow sel
+cine shot look
+follow offset=-75,12,28 aimat=0,0,0
+camera fov=62
+cine key t=0
+follow offset=-62,-14,30 aimat=0,0,0
+camera fov=62
+cine key t=14
+follow off
+
+cine shot 1
+cine shot del
+cine shot 1
+cine save broll_starlink
+cine export preview fps=30
+quit

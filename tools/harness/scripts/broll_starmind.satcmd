@@ -1,0 +1,97 @@
+# B-roll: SpaceX StarMind formations (2026-10-15). Builds and saves cinematic "broll_starmind" from the user's settings.
+#   python tools/harness/run.py tools/harness/scripts/broll_starmind.satcmd --settings user_data/settings.json --window 1920x1080 --timeout 7200
+#   1 formation_mideast  a 30-deg-shell formation over the Middle East at night, lit, the Red Sea below (x2)
+#   2 shells_converge    from beside it: the shells converge on the horizon, other formations drifting by (x2)
+#   3 zenith_converge    16 km over the Pacific after dusk: the X-ring streams converge overhead (x15)
+#   4 dawn_formation     an X-ring formation over the Big Sur coast at dawn, sunlit, the sea below (x3)
+time pause
+follow off
+cine new broll_starmind
+cine shot add formation_mideast
+
+# ── 1. formation_mideast (observer: Cairo at Sun -12) ──────────────────────────────────────────────────────────
+set clouds_v2.auto_exposure 1
+set clouds_v2.exposure_ev 0
+drift default
+observer lat=30.04 lon=31.24 agl=50
+time set 2036-11-22T12:00:00Z
+time sun -12 setting
+select const "SpaceX Starmind - 30 deg shells"
+cine shot simnow
+cine shot simrate 2
+cine shot ease 0.4
+cine shot follow sel
+cine shot look
+follow offset=-560,280,320 aimat=0,0,-200
+camera fov=56
+cine key t=0
+time add 14
+follow offset=-470,230,280 aimat=0,0,-180
+camera fov=54
+cine key t=7
+time add 14
+follow offset=-390,190,240 aimat=0,0,-160
+camera fov=52
+cine key t=14
+follow off
+
+# ── 2. shells_converge ────────────────────────────────────────────────────────────────────────────────────────
+cine shot add shells_converge
+time sun -12 setting
+select const "SpaceX Starmind - 30 deg shells"
+cine shot simnow
+cine shot simrate 2
+cine shot ease 0.4
+cine shot follow sel
+cine shot look
+follow offset=-300,-500,250 aimat=0,0,-150
+camera fov=55
+cine key t=0
+time add 28
+follow offset=-220,-560,230 aimat=0,0,-120
+camera fov=55
+cine key t=14
+follow off
+
+# ── 3. zenith_converge (the release anvil's place, an hour after sunset) ─────────────────────────────────────────
+cine shot add zenith_converge
+set clouds_v2.auto_exposure 0
+set clouds_v2.exposure_ev 1
+time set 2036-11-22T03:17:17Z
+observer lat=26.2891 lon=-135.5815 alt=16289
+cine shot simnow
+cine shot simrate 15
+cine shot ease 0.3
+cine shot look
+camera az=63 el=8 fov=85
+cine key t=0
+camera az=70 el=18 fov=88
+cine key t=14
+
+# ── 4. dawn_formation: Big Sur dawn (release shot 4's moment), an X-ring formation from 600 m ──────────────────────
+cine shot add dawn_formation
+set clouds_v2.auto_exposure 1
+set clouds_v2.exposure_ev 0
+observer lat=36.25 lon=-121.79 agl=120
+time set 2036-11-22T14:07:35Z
+select const "SpaceX Starmind - sun-synchronous X-ring"
+cine shot simnow
+cine shot simrate 3
+cine shot ease 0.4
+cine shot follow sel
+cine shot look
+follow offset=-560,260,220 aimat=0,0,0
+camera fov=52
+cine key t=0
+time add 42
+follow offset=-430,210,160 aimat=0,0,0
+camera fov=50
+cine key t=14
+follow off
+
+cine shot 1
+cine shot del
+cine shot 1
+cine save broll_starmind
+cine export preview fps=30
+quit

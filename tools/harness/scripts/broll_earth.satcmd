@@ -1,0 +1,136 @@
+# B-roll: Earth + satellites (2026-10-15). Builds and saves cinematic "broll_earth" from the user's settings.
+#   python tools/harness/run.py tools/harness/scripts/broll_earth.satcmd --settings user_data/settings.json --window 1920x1080 --timeout 7200
+# Cloud views come from the user's issue reports (user_data/reports, loaded with settings=off: the current look).
+#   1 golden_cumulus   sunset among towering cumulus, mid-Pacific (report 181252 shot 1), slow push (x1)
+#   2 dusk_climb       the same place 10 min later from 8.5 km: the glow fades, the X-ring arc comes out (x40)
+#   3 cloud_canyon     towering cumulus over the sea at a low Sun (report 220718 shot 7), drifting back (x3)
+#   4 high_cloudscape  cloud bands from the stratosphere at a low Sun (report 220718 shot 6) (x20)
+#   5 iss_nyc          follow the sunlit ISS over New York before dawn (2036-11-22 10:12Z), city lights below
+#   6 iss_limb         the ISS from the ground observer's line: Milky Way and the dawn limb
+#   7 iss_pass_ground  the same pass from 900 m over Manhattan, wide, the station crossing the light-polluted sky (x2)
+time pause
+follow off
+cine new broll_earth
+cine shot add golden_cumulus
+
+# ── 1. golden_cumulus ─────────────────────────────────────────────────────────────────────────────────────────
+report load C:/Code/Shader_Fun/user_data/reports/issue_20261013_181252 shot=1 settings=off trail=off
+set clouds_v2.auto_exposure 1
+set clouds_v2.exposure_ev 0
+wait settle 20
+cine shot simnow
+cine shot simrate 1
+cine shot ease 0.4
+cine shot look
+camera az=-108.6 el=-3.7 fov=70.4
+cine key t=0
+camera az=-105.5 el=-2.6 fov=64
+cine key t=12
+
+# ── 2. dusk_climb ─────────────────────────────────────────────────────────────────────────────────────────────
+cine shot add dusk_climb
+time add 600
+cine shot simnow
+cine shot simrate 40
+cine shot ease 0.3
+cine shot look
+observer lat=4.5443 lon=-127.40 alt=8500
+camera az=-110 el=-1 fov=72
+cine key t=0
+observer lat=4.5443 lon=-127.40 alt=9200
+camera az=-112 el=9 fov=78
+cine key t=14
+
+# ── 3. cloud_canyon ───────────────────────────────────────────────────────────────────────────────────────────
+cine shot add cloud_canyon
+report load C:/Code/Shader_Fun/user_data/reports/issue_20261013_220718 shot=7 settings=off trail=off
+set clouds_v2.auto_exposure 1
+set clouds_v2.exposure_ev 0
+wait settle 20
+cine shot simnow
+cine shot simrate 3
+cine shot ease 0.4
+cine shot look
+observer lat=-22.51033 lon=41.01228 alt=4560
+camera az=179.02 el=-30.27 fov=90
+cine key t=0
+observer lat=-22.48 lon=41.01228 alt=4900
+camera az=178 el=-26 fov=92
+cine key t=14
+
+# ── 4. high_cloudscape ────────────────────────────────────────────────────────────────────────────────────────
+cine shot add high_cloudscape
+cine shot simnow
+cine shot simrate 20
+cine shot ease 0.4
+cine shot look
+observer lat=-22.03040 lon=39.83532 alt=52662
+camera az=-175 el=-50 fov=100
+cine key t=0
+observer lat=-22.25 lon=39.86 alt=50000
+camera az=-172 el=-42 fov=100
+cine key t=14
+
+# ── 5. iss_nyc: the ISS pass over New York, 12 s before its culmination ───────────────────────────────────────
+cine shot add iss_nyc
+observer lat=40.7 lon=-74.0 agl=100
+set clouds_v2.auto_exposure 1
+time j2000 1164233557.6
+drift phase=2.5
+select const "International Space Station"
+cine shot simnow
+cine shot simrate 1
+cine shot ease 0.4
+cine shot follow sel
+cine shot look
+follow offset=-190,95,70 aimat=0,0,0
+camera fov=55
+cine key t=0
+time add 7
+follow offset=-160,20,95 aimat=0,0,-20
+camera fov=55
+cine key t=7
+time add 7
+follow offset=-125,-60,110 aimat=0,0,-40
+camera fov=55
+cine key t=14
+follow off
+
+# ── 6. iss_limb ───────────────────────────────────────────────────────────────────────────────────────────────
+cine shot add iss_limb
+observer lat=40.7 lon=-74.0 agl=100
+time j2000 1164233569.6
+select const "International Space Station"
+cine shot simnow
+cine shot simrate 1
+cine shot ease 0.4
+cine shot follow sel
+cine shot look
+follow toward=observer dist=320 side=8 lift=5
+camera fov=50
+cine key t=0
+time add 12
+follow toward=observer dist=190 side=5 lift=3
+camera fov=48
+cine key t=12
+follow off
+
+# ── 7. iss_pass_ground: from 900 m over Manhattan, x2 from 24 s before culmination ───────────────────────────────
+cine shot add iss_pass_ground
+time j2000 1164233545.6
+cine shot simnow
+cine shot simrate 2
+cine shot ease 0.3
+cine shot look
+observer lat=40.70 lon=-74.0 alt=900
+camera az=-118 el=38 fov=92
+cine key t=0
+camera az=-136 el=42 fov=90
+cine key t=14
+
+cine shot 1
+cine shot del
+cine shot 1
+cine save broll_earth
+cine export preview fps=30
+quit

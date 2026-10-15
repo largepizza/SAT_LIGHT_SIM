@@ -12102,6 +12102,10 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
         taaStillW = glm::mix(skyTaaWeightStill, std::max(skyTaaWeightStill, skyTaaWeightMoving),
                              glm::smoothstep(0.25f, 1.5f, cloudPx));
     }
+    // An HQ cinematic export settles each pose as a running mean (cineTick; the clouds' resolve takes the same weight):
+    // at 0.1 the history remembered ~10 frames, so every exported frame was an independent draw of the jitter.
+    if (cv2HqHistWeight > 0.0f)
+        taaStillW = cv2HqHistWeight;
     tp.cam = glm::vec4(tanHF, pc.aspect, taaStillW, skyTaaWeightMoving);
 
     const int k = skyTaaHist;

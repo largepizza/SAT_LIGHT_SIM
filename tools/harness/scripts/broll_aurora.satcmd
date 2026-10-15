@@ -1,0 +1,103 @@
+# B-roll: StarMind + aurora (2026-10-15). Builds and saves cinematic "broll_aurora" from the user's settings.
+#   python tools/harness/run.py tools/harness/scripts/broll_aurora.satcmd --settings user_data/settings.json --window 1920x1080 --timeout 7200
+# Every shot: a Kp 7 storm (manual Kp in the look), 2036-11-22 over Alaska.
+#   1 formation_limb   a StarMind X-ring formation (sat 146138's cluster) silhouetted on the sunset limb, Milky Way (x3)
+#   2 streams_aurora   420 km over Alaska at dusk: two X-ring streams plunge toward the auroral limb (x8)
+#   3 oval_orbit       400 km at local midnight: red pillars and green curtains under the shells (x10)
+#   4 ground_xring     Coldfoot, clear sky, 06:30Z looking north: curtains and the sunlit X-ring stream (x20)
+#   5 ground_midnight  Coldfoot at local midnight, looking south over the Brooks Range (x15)
+time pause
+follow off
+cine new broll_aurora
+cine shot add formation_limb
+
+# ── 1. formation_limb ─────────────────────────────────────────────────────────────────────────────────────────
+set clouds_v2.auto_exposure 0
+set clouds_v2.exposure_ev 0
+aurora kp 7
+observer lat=67.25 lon=-150.18 agl=2
+drift default
+time set 2036-11-22T04:00:00Z
+select sat 146138
+cine shot simnow
+cine shot simrate 3
+cine shot ease 0.4
+cine shot follow sel
+cine shot look
+follow offset=-520,260,210 aimat=0,0,0
+camera fov=52
+cine key t=0
+time add 21
+follow offset=-470,240,180 aimat=0,0,0
+camera fov=50
+cine key t=7
+time add 21
+follow offset=-420,220,150 aimat=0,0,0
+camera fov=48
+cine key t=14
+follow off
+
+# ── 2. streams_aurora ─────────────────────────────────────────────────────────────────────────────────────────
+cine shot add streams_aurora
+time set 2036-11-22T04:00:00Z
+cine shot simnow
+cine shot simrate 8
+cine shot ease 0.3
+cine shot look
+observer lat=62.5 lon=-150 alt=420000
+camera az=10 el=-28 fov=75
+cine key t=0
+observer lat=64.0 lon=-150 alt=420000
+camera az=14 el=-25 fov=72
+cine key t=14
+
+# ── 3. oval_orbit ─────────────────────────────────────────────────────────────────────────────────────────────
+cine shot add oval_orbit
+time set 2036-11-22T09:00:00Z
+cine shot simnow
+cine shot simrate 10
+cine shot ease 0.3
+cine shot look
+observer lat=63.5 lon=-147 alt=400000
+camera az=-4 el=-32 fov=72
+cine key t=0
+observer lat=65.5 lon=-147 alt=390000
+camera az=4 el=-28 fov=70
+cine key t=14
+
+# ── 4. ground_xring: clear sky (coverage 0, fog 0 in this look) ───────────────────────────────────────────────
+cine shot add ground_xring
+set clouds_v2.coverage 0
+set clouds_v2.fog_amount 0
+time set 2036-11-22T06:30:00Z
+cine shot simnow
+cine shot simrate 20
+cine shot ease 0.3
+cine shot look
+observer lat=67.25 lon=-150.18 agl=2
+camera az=345 el=30 fov=92
+cine key t=0
+camera az=15 el=36 fov=90
+cine key t=14
+
+# ── 5. ground_midnight ────────────────────────────────────────────────────────────────────────────────────────
+cine shot add ground_midnight
+time set 2036-11-22T09:00:00Z
+cine shot simnow
+cine shot simrate 15
+cine shot ease 0.3
+cine shot look
+observer lat=67.25 lon=-150.18 agl=2
+camera az=170 el=30 fov=95
+cine key t=0
+camera az=200 el=38 fov=95
+cine key t=14
+set clouds_v2.coverage 0.96
+set clouds_v2.fog_amount 0.26
+
+cine shot 1
+cine shot del
+cine shot 1
+cine save broll_aurora
+cine export preview fps=30
+quit
