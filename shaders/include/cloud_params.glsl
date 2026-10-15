@@ -470,4 +470,12 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     vec4  auroraOval;
     vec4  auroraSub;
     vec4  auroraOval2;
+    // -- Aurora storms (928 -> 944, 2026-10-14, cloud_march.comp): x "Storm features" (tall red-topped rayed
+    // curtains and magenta lower borders above Kp ~5), y "Blue rays (chance)" (rare giant rays whose sunlit tops
+    // glow N2+ blue), z "Arc systems" (0 = every sheet alike, the old even rings; 1 = sheets grouped into a few
+    // bright arc systems), w "Storm red glow" (the 630-nm red equatorward of the oval in storms).
+    vec4  auroraStorm;
+    // -- Aurora sky (944 -> 960, 2026-10-14): x = 1 / "Pollution gain", which turns lightDome[] (gained) back into
+    // the raw city brightness the aurora's linear sky model reads (darksky.glsl darkSkySkyMagLinear); yzw unused.
+    vec4  auroraSky;
 } cloud;

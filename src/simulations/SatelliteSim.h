@@ -1693,8 +1693,10 @@ struct GpuCloudParams
     glm::vec4 auroraOval;     // colatitudes (deg): equatorward midnight / noon, poleward midnight / noon
     glm::vec4 auroraSub;      // substorm: intensity, cos / sin MLT angle, 1 / half-width^2
     glm::vec4 auroraOval2;    // x brightness, y max lit colatitude, z ripple (deg), w substorm poleward push (deg)
+    glm::vec4 auroraStorm;    // x storm features, y blue ray chance, z arc systems, w storm red glow (928 -> 944)
+    glm::vec4 auroraSky;      // x 1 / lightPollutionGain (the aurora's linear sky model), yzw unused (944 -> 960)
 };
-static_assert(sizeof(GpuCloudParams) == 928, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 960, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -4443,6 +4445,11 @@ private:
     float auroraSheetSpacingDeg = 0.3f;     // colatitude between sheets
     float auroraSheetCrisp = 0.5f;          // share of crisp (thin) sheets
     float auroraSheetFold = 1.0f;           // curls / spirals
+    // Aurora storms (Atmosphere tab, slots 298-301, 2026-10-14; cloud_params.glsl auroraStorm).
+    float auroraStormFeatures = 1.0f;       // tall red-topped curtains + magenta borders above Kp ~5
+    float auroraBlueRayChance = 0.012f;     // rare giant rayed bands with sunlit blue tops (per ~220-km sheet stretch)
+    float auroraArcSystems = 1.0f;          // sheets grouped into a few bright arc systems (0 = all alike)
+    float auroraStormRedGain = 1.0f;        // storm-time 630-nm red equatorward of the oval
     float oceanSeaStateGain = 1.0f;          // waves follow the weather (Ocean tab, slot 213; 0 = fixed sea)
     float oceanWhitecapGain = 1.0f;          // whitecap foam gain (Ocean tab, slot 214)
     float oceanWaveRangeKm = 100.0f;         // review 21: waves fade to flat from 0.6x this (was a fixed 3-8 km; slot 237)
@@ -5332,7 +5339,7 @@ private:
     bool draggingPhoto[38] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 298;   // 296-297 (2026-10-14): layer shadows, cirrus self-shadow
+    static constexpr int kCloudSliderSlots = 302;   // 296-297 (2026-10-14): layer shadows, cirrus self-shadow; 298-301 aurora storms
     // was 296:   // 289-295 (2026-10-13): the cumulus shape
     // was 289:   // 286-288 (2026-10-12): cloud shadow rings; 270-282 (2026-10-11): small cumulus, erosion / lobe variation, mid layer x5, cirrus warp, sampler x3, far shadow range
     // (was 270:)   // 261-266 rain particles (count, shutter, fall speed, wind, storm wind, gusts)

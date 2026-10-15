@@ -390,7 +390,9 @@ void auroraFrame(vec3 dirECEF, vec3 poleDir, out float colat, out float az,
 float auroraCoverage(float colat, float az, float t, float storm) {
     vec2  azWarp = vec2(cos(az), sin(az)) * cloud.auroraCoverageAzFreq + t * cloud.auroraCoverageDriftRate;
     float n = warpPerlin3(vec3(azWarp, degrees(colat) * cloud.auroraCoverageFreq));
-    float threshold = mix(0.2, -0.6, clamp(storm, 0.0, 1.0));
+    // With arc systems on (auroraStorm.z) a storm no longer fills the whole oval (-0.6: a uniform donut from
+    // orbit, issue 20261014_193231); it keeps gaps. Same in sat_sky.frag's copy.
+    float threshold = mix(0.2, mix(-0.6, -0.35, cloud.auroraStorm.z), clamp(storm, 0.0, 1.0));
     return smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
 }
 
@@ -433,8 +435,43 @@ float auroraCurtainNoise(float colat, float az, float altM, float t, float storm
 // Outputs for the sheets (auroraSheetsAdd): the point's frame (colat, az), altitude, and the oval mask x
 // night side (0 where this sample returned early).
 float gAurColat = 0.0, gAurAz = 0.0, gAurAlt = 0.0, gAurOvalN = 0.0, gAurCentre = 20.0;
+// The storm-time red light of this sample (auroraStormRed), kept apart from the return so the march does not
+// weight it by the arc systems.
+vec3 gAurRed = vec3(0.0);
+// The march's top this frame (auroraMarchCS: 410 km, up to 700 km in storms); emission fades out below it.
+float gAurTopM = 410000.0;
+
+// How far into a big storm the activity is (2026-10-14): 0 below Kp 5, 1 from Kp 8.5. Drives the storm look
+// (red tops, magenta borders, the red glow equatorward, blue rays) and how high the march reaches.
+float auroraStormHi() { return smoothstep(5.0, 8.5, cloud.auroraMidnight.w); }
+
+// Storm-time red aurora equatorward of the oval (2026-10-14, issue 20261014_193231 shot 6): in a great storm
+// the oval's equatorward edge is a broad 630-nm glow at 250-450 km (low-energy electrons, long-lived O(1D)),
+// reaching several degrees past the green aurora; from mid latitudes it is the red glow low in the north
+// (May 2024, Kp 9: seen from Arizona and Mexico). Dim per unit length (a few kR), visible because a ray
+// toward the horizon crosses hundreds of km of it.
+vec3 auroraStormRed(AuroraGeom g, float cd, float az, float altM) {
+    float k = auroraStormHi() * cloud.auroraStorm.w;
+    if (k <= 0.0) return vec3(0.0);
+    float ext = 7.0 * auroraStormHi();                         // reach past the equatorward edge (deg)
+    float x   = (cd - g.eqDeg) / max(ext, 0.5);                // 0 at the green edge, 1 at the red edge
+    if (x < -1.5 || x > 1.2) return vec3(0.0);
+    float lat = smoothstep(-1.5, -0.2, x) * (1.0 - smoothstep(0.55, 1.15, x));
+    // Higher toward its equatorward end (the electrons are softer there).
+    float hc  = mix(290000.0, 380000.0, clamp(x, 0.0, 1.0));
+    float dh  = (altM - hc) / 75000.0;
+    float alt = exp(-dh * dh);
+    float mlt = mix(0.25, 1.0, smoothstep(-0.4, 0.7, g.cosMlt));
+    // Patchy along the oval (~1000-km structure), from the baked noise's column channel: no extra noise call.
+    float p   = textureLod(auroraNoiseTex, vec3(fract(az * 0.31831 + 0.17 * x), 0.5, 0.35), 0.0).g;
+    // 0.12: from orbit (looking down through ~150 km of it) a faint red skirt; from 41 deg magnetic latitude
+    // at Kp 9 a dim red glow across the northern sky. 0.45 drew a solid red donut from orbit.
+    return kAirglowRedColor * (0.12 * k * lat * alt * mlt * (0.15 + 1.7 * p * p) * cloud.auroraOval2.x);
+}
+
 vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirECEF, float t, float storm) {
     gAurOvalN = 0.0;
+    gAurRed = vec3(0.0);
     vec3 pDirECEF = normalize(rp.x * enuX + rp.y * enuY + rp.z * enuZ);
     float altM = length(rp) - R_EARTH;
     gAurAlt = altM;
@@ -448,6 +485,7 @@ vec3 auroraCurtainSample(vec3 rp, vec3 enuX, vec3 enuY, vec3 enuZ, vec3 sunDirEC
     float dayness = clamp((dot(pDirECEF, sunDirECEF) + 0.15) / 0.3, 0.0, 1.0);
     float night   = 1.0 - dayness;
     if (night <= 0.001) return vec3(0.0);
+    gAurRed = auroraStormRed(ag, degrees(colat), az, altM) * night;
     float oval = auroraOvalMask(ag, colat, az, t, storm);
     gAurOvalN = oval * night * auroraDiscreteShare(ag, degrees(colat));
     if (oval <= 0.001) return vec3(0.0);
@@ -512,21 +550,81 @@ float auroraSheetIndex(float colat, float az, float t, float centreDeg) {
              + 0.08 * sin(71.0 * az + 0.6 * y + 0.5 * T + 2.9);   // not x fo: finer folds than the steps alias
     return y + W;
 }
+// ARC SYSTEMS (2026-10-14, issue 20261014_193231: "less bands of larger, intense aurora"; from orbit the oval
+// was ~50 even rings of equal strength). Sheets come in groups of kAurArcGroup; a group is an arc system or
+// nothing, and a system is bright over a stretch of the oval thousands of km long and fades out along it. The
+// weight at sheet index s is the two nearest groups' weights blended (continuous in s, so the diffuse volume
+// can take it too). Mean ~1, so the total light is about what it was; the bright stretches are ~3-6x.
+const float kAurArcGroup = 5.0;
+float auroraArcGroupW(float g, float az, float t) {
+    vec3  h = tdRandCM(g * 13.0 + 5003.0);
+    // A first cut (55% of groups, 1-3 stretches, along-oval duty ~35%) left a Kp 9 sky over Coldfoot nearly
+    // empty: fewer bands, but not that few.
+    float present = smoothstep(0.0, 0.3, 0.5 * h.x + 0.5 - 0.3);            // ~70% of groups are systems
+    float k  = 1.0 + floor(1.99 * (0.5 * h.y + 0.5));                       // 1-2 bright stretches round the oval
+    float along = smoothstep(-0.6, 0.6, sin(az * k + 6.2832 * h.z + 0.004 * t * h.y));
+    float str = 0.4 + 1.6 * (0.5 * h.z + 0.5) * (0.5 * h.z + 0.5);
+    return present * along * str * 3.0;
+}
+float auroraArcWeight(float s, float az, float t) {
+    float gs = s / kAurArcGroup - 0.5;
+    float g0 = floor(gs);
+    float w  = mix(auroraArcGroupW(g0, az, t), auroraArcGroupW(g0 + 1.0, az, t), smoothstep(0.15, 0.85, gs - g0));
+    return mix(1.0, w, clamp(cloud.auroraStorm.z, 0.0, 1.0));
+}
+
 // The light of sheet n at a crossing (altitude h, az), per unit path length, x the oval/night mask.
-vec3 auroraSheetLight(float n, float h, float az, float t, float ovalN) {
+// sunlit: the crossing point is out of the Earth's shadow (1) or in it (0); stormK: auroraStormHi x "Storm
+// features".
+vec3 auroraSheetLight(float n, float h, float az, float t, float ovalN, float sunlit, float stormK) {
     vec3  hs = tdRandCM(n);
+    // Storms (2026-10-14): a share of the sheets, rising with the storm, are TALL (red-topped rayed curtains
+    // reaching 300-500 km: the "red pillars" of May 2024), and the bright ones get a deep magenta lower border
+    // (harder electrons reach ~90 km: N2 first positive + N2+ first negative, red + violet).
+    float tall = stormK * smoothstep(0.55, 0.15, 0.5 * hs.y + 0.5 - 0.25 * stormK);
+    float mag  = min(stormK, 1.0) * smoothstep(-0.2, 0.6, hs.x);
     // A sharp lower border (the green line's bottom, ~100 km, bumpy along the sheet), then a decay with
-    // height; the top reddens (630 nm) past ~180 km. A thin pink edge under strong storms (N2).
-    float hb  = 100000.0 + 8000.0 * hs.x + 6000.0 * sin(az * 23.0 + n * 1.7);
+    // height; the top reddens (630 nm) past ~180 km (lower and stronger in tall sheets).
+    float hb  = 100000.0 + 8000.0 * hs.x + 6000.0 * sin(az * 23.0 + n * 1.7) - 9000.0 * mag;
     float up  = h - hb;
-    float prof = (up < 0.0) ? exp(up / 2500.0) : exp(-up / mix(35000.0, 70000.0, hs.y * 0.5 + 0.5));
-    // Rays: vertical striations along the sheet (~2-5 km apart), drifting; brighter sheets more rayed.
+    float sc  = mix(mix(35000.0, 70000.0, hs.y * 0.5 + 0.5), 190000.0, clamp(tall, 0.0, 1.0));
+    float prof = (up < 0.0) ? exp(up / 2500.0) : exp(-up / sc);
+    // Rays: vertical striations along the sheet (~2-5 km apart), drifting; brighter sheets more rayed, tall
+    // sheets the most (pillars).
     float rz  = az * (170.0 + 90.0 * hs.z) + 2.5 * sin(az * 37.0 + t * 0.07 + n);
-    float ray = 0.35 + 0.65 * pow(0.5 + 0.5 * sin(rz), 3.0);
-    vec3  col = mix(vec3(0.9, 0.25, 0.55), kAuroraGroundColor, smoothstep(-1500.0, 3000.0, up));
-    col = mix(col, kAirglowRedColor * 1.4, smoothstep(80000.0, 150000.0, up));
-    float bright = 0.25 + 1.5 * (0.5 + 0.5 * hs.x) * (0.5 + 0.5 * hs.x);
-    return col * (prof * ray * bright * ovalN);
+    float ray = mix(0.35, 0.12, clamp(tall, 0.0, 1.0)) + 0.65 * pow(0.5 + 0.5 * sin(rz), mix(3.0, 5.0, clamp(tall, 0.0, 1.0)));
+    vec3  pink = mix(vec3(0.9, 0.25, 0.55), vec3(0.95, 0.18, 0.8), mag);
+    vec3  col = mix(pink, kAuroraGroundColor, smoothstep(-1500.0, mix(3000.0, 11000.0, mag), up));
+    float redLo = mix(80000.0, 35000.0, clamp(tall, 0.0, 1.0));
+    col = mix(col, kAirglowRedColor * (1.4 + 0.8 * clamp(tall, 0.0, 1.0)), smoothstep(redLo, redLo + 70000.0, up));
+    // Between the green and the red of a storm curtain, magenta (630 red over N2+ violet).
+    col = mix(col, vec3(0.9, 0.2, 0.75), 0.55 * mag * smoothstep(8000.0, 45000.0, up) * (1.0 - smoothstep(90000.0, 180000.0, up)));
+    // Sunlit tops: N2+ resonant scattering of sunlight (427.8 / 391.4 nm) turns them blue-violet.
+    col += vec3(0.25, 0.35, 1.0) * (0.6 * sunlit * stormK * smoothstep(150000.0, 300000.0, h));
+    float bright = (0.25 + 1.5 * (0.5 + 0.5 * hs.x) * (0.5 + 0.5 * hs.x)) * (1.0 + 0.4 * mag);
+    vec3 L = col * (prof * ray * bright);
+    // GIANT BLUE RAYS (rare, like the red sprites): a ~100-km stretch of one sheet whose own rays stand to
+    // 350-650 km, soft at both ends and fading at the top; where the Sun reaches them (dusk / dawn, above the
+    // Earth's shadow) the N2+ glow turns them blue, below it they are the sheet's dim red. The first cut was ONE
+    // ~10-km ray with a flat profile, magenta when unlit: from orbit an isolated straight line (issue
+    // 20261014_193231 shots 7, 9).
+    float pr = cloud.auroraStorm.y * smoothstep(4.0, 7.0, cloud.auroraMidnight.w);
+    if (pr > 0.0) {
+        float ca = az * 10.0 + 7.0 * hs.z;                    // ~220-km cells along the sheet at the oval
+        vec3  hr = tdRand3(ivec3(int(n), int(floor(ca)), 9907));
+        if (0.5 * hr.x + 0.5 < pr) {
+            float u    = fract(ca);
+            float env  = smoothstep(0.05, 0.4, u) * (1.0 - smoothstep(0.6, 0.95, u));
+            float rays = 0.15 + 0.85 * pow(0.5 + 0.5 * sin(rz), 6.0);
+            float top  = mix(350000.0, 650000.0, 0.5 * hr.z + 0.5);
+            float rp   = smoothstep(-4000.0, 25000.0, up) * exp(-up / (0.45 * top)) * (1.0 - smoothstep(0.5 * top, top, up));
+            vec3  rc   = mix(kAirglowRedColor * 0.3, vec3(0.3, 0.42, 1.0) * 2.0, sunlit);
+            L += rc * (env * rays * rp * (1.2 + 1.2 * (0.5 * hr.y + 0.5)));
+        }
+    }
+    // Faded out below the march's top (gAurTopM): a tall storm curtain seen from orbit ended on a hard ceiling where
+    // the lines of sight left the 700-km shell (shot 8).
+    return L * (ovalN * (1.0 - smoothstep(gAurTopM - 0.35 * (gAurTopM - 100000.0), gAurTopM - 10000.0, h)));
 }
 
 // The sheet index at a point (ray-relative position rp), with its altitude and azimuth.
@@ -564,13 +662,19 @@ vec3 auroraMarchSegment(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     bool  wantS  = cloud.auroraSheets.x > 0.0;
     float sPrev = 0.0, azPrev = 0.0, hPrev = 0.0, oPrev = 0.0;
     bool  havePrev = false;
+    float stormK = auroraStormHi() * cloud.auroraStorm.x;
+    bool  wantArc = cloud.auroraStorm.z > 0.0;
     for (int i = 0; i < N; ++i) {
         vec3 ap = obsPos + dir * (segEnter + (float(i) + gAurJitter) * step);
-        accum += auroraCurtainSample(ap, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
-        if (!wantS) continue;
+        vec3 v  = auroraCurtainSample(ap, enuX, enuY, enuZ, sunDirECEF, pc.waveTime, cloud.stormStrength);
+        accum += gAurRed;
+        if (!wantS && !wantArc) { accum += v; continue; }
         // The index is carried across every sample (dropping it where the mask is 0 cut the sheets in
         // whole-step chunks along the oval's edge: a staircase); the mask fades linearly across a crossing.
         float S = auroraSheetIndex(gAurColat, gAurAz, pc.waveTime, gAurCentre);
+        // The diffuse volume follows the arc systems too, half as strongly (it is the diffuse aurora around them).
+        accum += (wantArc && v.r + v.g + v.b > 0.0) ? v * mix(1.0, auroraArcWeight(S, gAurAz, pc.waveTime), 0.6) : v;
+        if (!wantS) continue;
         if (havePrev && max(oPrev, gAurOvalN) > 0.001) {
             // Each sheet n is integrated EXACTLY over this step with S linear in t (review 11): the path length
             // through a Gaussian sheet over [S0, S1] is step / |dS| x sigma sqrt(pi/2) |erf(b) - erf(a)|, which
@@ -626,7 +730,15 @@ vec3 auroraMarchSegment(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
                     Lp = step * exp(-a * a);
                 Lp *= 1.0 - smoothstep(0.6 * kReach, kReach, dOut);
                 if (Lp < 1e-4 * step) continue;
-                sheets += auroraSheetLight(n, h, az, pc.waveTime, oN) * Lp * (1.0 + extra / 4.0);
+                float aw = wantArc ? auroraArcWeight(n, az, pc.waveTime) : 1.0;
+                if (aw < 0.01) continue;
+                // Out of the Earth's shadow? (Sunlit tops glow blue; the shadow's edge is softened over the
+                // dense lower atmosphere, 60-140 km above the surface.)
+                vec3  pc3 = obsPos + dir * (tPrevS + f * step);
+                vec3  pE  = pc3.x * enuX + pc3.y * enuY + pc3.z * enuZ;
+                float sA  = dot(pE, sunDirECEF);
+                float lit = (sA > 0.0) ? 1.0 : smoothstep(R_EARTH + 60000.0, R_EARTH + 140000.0, length(pE - sA * sunDirECEF));
+                sheets += auroraSheetLight(n, h, az, pc.waveTime, oN, lit, stormK) * (Lp * aw * (1.0 + extra / 4.0));
             }
         }
         sPrev = S; azPrev = gAurAz; hPrev = gAurAlt; oPrev = gAurOvalN;
@@ -646,7 +758,11 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
                     float tScene)  // shared scene depth — see cloudMarchCS
 {
     const float kAuroraMarchInnerM = kAuroraShellInnerM - 55000.0;
-    const float kAuroraMarchOuterM = kAuroraShellOuterM + 110000.0;
+    // Storms reach higher (2026-10-14): tall red-topped curtains and the red glow equatorward reach 450 km, a
+    // blue ray 700 km. Only while the storm features are on; quiet nights march exactly as before.
+    float stormReach = auroraStormHi() * step(0.001, max(cloud.auroraStorm.x, max(cloud.auroraStorm.y, cloud.auroraStorm.w)));
+    float kAuroraMarchOuterM = kAuroraShellOuterM + 110000.0 + 290000.0 * stormReach;
+    gAurTopM = kAuroraMarchOuterM;
     vec2 tAuroraFar = raySphere(obsPos, dir, R_EARTH + kAuroraMarchOuterM);
     vec2 tAuroraIn  = raySphere(obsPos, dir, R_EARTH + kAuroraMarchInnerM);
 
@@ -773,11 +889,23 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     // zodiacal's from its known peak gain); accumAurora's typical magnitude can only be read off
     // in-app. If aurora reads too faint under light pollution, lower kAuroraRefLum; too strong,
     // raise it.
-    float auroraSkyBgMag = darkSkySkyMag(dir, pc.sunDirENU);
+    //
+    // 2026-10-14 (issue 20261014_193231: a Kp 9 storm invisible from an Iowa farm and from Arizona, and cut off
+    // by a hard edge toward a town): the aurora takes a PHYSICAL sky model, not the Milky Way's artistic one.
+    // (1) The dome's bright end is a real inner-city zenith (~18 mag/arcsec^2, Bortle 8-9), not the 13 the
+    // Milky Way is tuned to wash out at: with 13 and the dome's log ramp from 1e-6, a farm's sky read ~16.5,
+    // brighter than a real city, and only remote sites showed an aurora. (2) The aurora's brightness scale is the
+    // physical 2.5 mag per decade (the IBC scale: 1 kR at the limit of sight, 100 kR a storm's bright arcs), so a
+    // bright storm arc is several magnitudes brighter than its faint parts and survives a suburban sky, as the
+    // May 2024 storm did; with 0.85 every part of it sat within a magnitude of every other and all of it went
+    // at once (the hard edge where the dome stepped up toward a town). The gate is still 1 under a pristine sky.
+    // (3) The pollution itself is LINEAR in the dome's city brightness (darkSkySkyMagLinear), not the log ramp
+    // the Milky Way fades on: that ramp made a faint glow 83% "city" beside a 0% sector (the hard edge).
+    float auroraSkyBgMag = darkSkySkyMagLinear(dir, pc.sunDirENU);
 
     const float kAuroraRefLum    = 0.02;
     const float kAuroraRefMag    = 19.5;
-    const float kAuroraMagSpread = 0.85;
+    const float kAuroraMagSpread = 2.5;
     vec3  auroraScaled = accumAurora * kAuroraScale * cloud.auroraGain;
     float auroraLum    = dot(auroraScaled, vec3(0.2126, 0.7152, 0.0722));
     float auroraObjMag = darkSkySurfMag(auroraLum, kAuroraRefLum, kAuroraRefMag, kAuroraMagSpread);

@@ -219,7 +219,11 @@ AuroraGpu auroraGpuParams(const SpaceWeather &sw, const glm::dvec3 &sunEcef) {
     // Brightness from activity: 1 at Kp 3 (the look the curtain was tuned at), dim when quiet.
     const double bright = std::clamp(0.4 + 0.2 * sw.kp, 0.25, 2.6);
     const double ripple = 1.5;
-    const double maxColat = b.eqMid + 0.8 * std::max(sw.subI, 0.0) + 3.5 + ripple + 1.0;
+    // + the storm-time red glow equatorward of the oval (cloud_march.comp auroraStormRed: 7 deg x
+    // smoothstep(5, 8.5, Kp) past the equatorward edge).
+    const double st = std::clamp((sw.kp - 5.0) / 3.5, 0.0, 1.0);
+    const double redExt = 7.0 * st * st * (3.0 - 2.0 * st);
+    const double maxColat = b.eqMid + 0.8 * std::max(sw.subI, 0.0) + std::max(3.5 + ripple, redExt + 2.0) + 1.0;
     g.oval2 = glm::vec4((float)bright, (float)maxColat, (float)ripple, (float)sw.subPoleDeg);
     return g;
 }

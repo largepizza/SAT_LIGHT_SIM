@@ -1,11 +1,10 @@
-"""Start the newest existing build of the app, without building anything.
+"""Start the existing build/Release exe (the tree the harness builds), without building anything.
 
     python tools/run_latest.py [--no-gate] [-- app args...]
 
-Looks in build-win-release/Release, build/Release and the single-config release trees and runs the
-exe with the latest write time (so after harness work, which builds build/, that one). All dev trees
-share one user data folder (user_data/, see cmake/EnsureUserDataDir.cmake), so settings are the same
-whichever exe starts. This is a normal interactive launch: your settings, sound, no script.
+Runs the newest SAT_LIGHT_SIM_V_* in build/Release (build/ on single-config generators); old
+versioned exes linger there, hence "newest". Every dev tree shares one user data folder (user_data/,
+see cmake/EnsureUserDataDir.cmake). This is a normal interactive launch: your settings, sound, no script.
 
 It goes through the harness's launch gate (tools/harness/launchgate.py: 30 s after the last app
 launch or exit, docs/FREEZES.md) and records the exit, so harness runs space themselves after it.
@@ -19,7 +18,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "tools", "harness"))
 import launchgate  # noqa: E402
 
-TREES = ["build-win-release/Release", "build/Release", "build-linux-release", "build-macos-release", "build"]
+TREES = ["build/Release", "build"]
 
 
 def main():

@@ -11,13 +11,20 @@
             "presentation": { "reveal": "always" }
         },
         {
-            // Start the newest exe that already exists (build-win-release/ or build/), no build.
+            // Start the exe already in build/Release (the tree the harness builds), no build.
             // Every dev tree shares user_data/, so the settings are the same either way.
-            "label": "Run latest build (no build)",
+            "label": "Run build/Release (no build)",
             "type": "shell",
             "command": "python tools/run_latest.py",
             "problemMatcher": [],
             "presentation": { "reveal": "silent" }
+        },
+        {
+            // Build build/Release, then start it.
+            "label": "Build Release + run",
+            "dependsOn": ["CMake: Build Release", "Run build/Release (no build)"],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
         },
         {
             // Fresh-settings variant: same binary compiled with SAT_FRESH_SETTINGS, so it never

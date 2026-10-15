@@ -113,14 +113,17 @@ const float kVisKnee      = -0.60;
 //
 // Scaled by t so a pristine sky has no elevation gradient at all: with no city there is no city
 // glow to fall off with elevation.
-float darkSkyPollutionMag(float domeT, float dirZ) {
+float darkSkyPollutionMagC(float domeT, float dirZ, float cityMag) {
     float elevFalloff = 0.35 / (max(dirZ, 0.0) + 0.35); // 1.0 at horizon, ~0.26 at zenith
     const float kIsotropicFrac = 0.4;
     float elevTerm = kIsotropicFrac + (1.0 - kIsotropicFrac) * elevFalloff;
     float t = clamp(domeT, 0.0, 1.0);
     // -2.5*log10(elevTerm) — positive, since elevTerm <= 1. GLSL has no log10.
     float elevMag = -(2.5 / log(10.0)) * log(max(elevTerm, 1e-4));
-    return mix(kSkyMagPristine, cloud.darkSkyCityMag, t) + elevMag * t;
+    return mix(kSkyMagPristine, cityMag, t) + elevMag * t;
+}
+float darkSkyPollutionMag(float domeT, float dirZ) {
+    return darkSkyPollutionMagC(domeT, dirZ, cloud.darkSkyCityMag);
 }
 
 // ── Twilight ─────────────────────────────────────────────────────────────────
@@ -177,8 +180,43 @@ float darkSkyDomeT(vec3 dir) {
     return mix(lightDomeEased[sec0w], lightDomeEased[sec1w], secFrac);
 }
 
+// cityMag: the sky at the dome's bright end. The Milky Way and zodiacal light take the artistic
+// cloud.darkSkyCityMag (13, far brighter than any real city, so they wash out); the aurora takes a
+// physical one (cloud_march.comp, 2026-10-14): a storm display is seen from suburbs and cities.
+float darkSkySkyMagC(vec3 dir, vec4 sunDirENU, float cityMag) {
+    float a = darkSkyPollutionMagC(darkSkyDomeT(dir), dir.z, cityMag);
+    float b = darkSkyTwilightMag(dir, sunDirENU.xyz, sunDirENU.w);
+    const float kM = 0.4 * 2.302585093;
+    return -(1.0 / kM) * log(exp(-kM * a) + exp(-kM * b));
+}
 float darkSkySkyMag(vec3 dir, vec4 sunDirENU) {
-    float a = darkSkyPollutionMag(darkSkyDomeT(dir), dir.z);
+    return darkSkySkyMagC(dir, sunDirENU, cloud.darkSkyCityMag);
+}
+
+// A PHYSICAL sky background (2026-10-14, the aurora; cloud_march.comp): skyglow is light ADDED to the natural
+// sky, so the sky is pristine x (1 + raw / ref), with raw the dome's linear city brightness in this direction
+// (lightDome[] / "Pollution gain", the 0..1 compressed signal of updateLightPollutionDome, x the same elevation
+// term) and ref set so a downtown core (raw ~0.9) reads ~18 mag/arcsec^2, a real Bortle 8-9 zenith. The log
+// ramp the Milky Way reads (darkSkyDomeT, from 1e-6) is fine as an artistic fade but useless as a brightness:
+// a raw of 0.01 is already 83% of the way to the city end, so a faint glow beside a dark sector cut the aurora
+// off at a hard azimuth (issue 20261014_193231 shot 1), and populated farmland read as downtown in every
+// direction (shot 5). Needs `float lightDome[16]` in the LightDomeBuf block (both consumers declare it).
+float darkSkySkyMagLinear(vec3 dir, vec4 sunDirENU) {
+    float az      = mod(atan(dir.x, dir.y) + 6.283185307, 6.283185307);
+    float secF    = az * (16.0 / 6.283185307) - 0.5;
+    int   sec0    = int(floor(secF));
+    float secFrac = secF - float(sec0);
+    int   sec0w   = ((sec0 % 16) + 16) % 16;
+    int   sec1w   = (sec0w + 1) % 16;
+    float raw     = mix(lightDome[sec0w], lightDome[sec1w], secFrac) * cloud.auroraSky.x;
+    // The dome stores d / (d + 0.08) (kCityCompressK, updateLightPollutionDome): undo it, so the glow is
+    // linear in the night map's weighted city light d. Read as linear, the compressed value put rural Arizona
+    // (0.22) and Iowa farmland at a suburban 19.6-20.3; undone they read ~21.3 (Bortle 3-4), Fairbanks ~20.
+    float d = max(raw, 0.0) * 0.08 / max(1.0 - raw, 0.02);
+    float elevFalloff = 0.35 / (max(dir.z, 0.0) + 0.35);
+    float elevTerm    = 0.4 + 0.6 * elevFalloff;               // = darkSkyPollutionMag's kIsotropicFrac 0.4
+    const float kDRef = 0.0241;                                // a downtown core (d ~0.94) -> x40 -> 18 mag
+    float a = kSkyMagPristine - 2.5 * log(1.0 + d * elevTerm / kDRef) / log(10.0);
     float b = darkSkyTwilightMag(dir, sunDirENU.xyz, sunDirENU.w);
     const float kM = 0.4 * 2.302585093;
     return -(1.0 / kM) * log(exp(-kM * a) + exp(-kM * b));

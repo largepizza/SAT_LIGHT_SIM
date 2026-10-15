@@ -128,8 +128,8 @@ there. So **the user's settings.json is `user_data/settings.json`**, shared by `
 `build-win-release/`; the first time a tree gets its redirect, newer user files next to that exe are
 copied over. A harness run's own override still wins, and the file is not in `PackageRelease.cmake`'s
 whitelist, so a shipped copy stays portable. `pipeline_cache.bin` and the log's fallback stay per tree.
-`python tools/run_latest.py` (VS Code task "Run latest build (no build)") starts the newest existing
-exe of either tree through the launch gate — for the user, not for agents; `cmake.buildBeforeRun` is
+`python tools/run_latest.py` (VS Code task "Run build/Release (no build)") starts the existing
+`build/Release` exe (the harness's tree) through the launch gate — for the user, not for agents; `cmake.buildBeforeRun` is
 false, so the CMake Tools launch button no longer builds first (F5 debug still does).
 
 **Launch the app only through the automation harness** (`tools/harness/run.py` / `live.py`,
@@ -5472,6 +5472,34 @@ Read it at the start of any terrain-related session before making changes.
   (`auroraOvalWeightCpu`). Harness `aurora` (docs/HARNESS.md). Open: a storm from orbit is a filled ring of
   concentric bands (the coverage noise varies with colatitude by design); the noise azimuth is still Earth-fixed
   while the oval is Sun-fixed; no dawn-side omega bands / pulsating aurora; the dipole axis is fixed (no IGRF).
+- **Aurora storms + a physical sky gate (2026-10-14, issue 20261014_193231; `cloud_march.comp`, `include/darksky.glsl`,
+  UBO `auroraStorm` / `auroraSky`, 928 -> 960; Atmosphere tab slots 298-301, keys `clouds.aurora_storm_features` 1 /
+  `aurora_blue_rays` 0.012 / `aurora_arc_systems` 1 / `aurora_storm_red` 1).**
+  - **The gate (the bug):** a Kp 9 storm was invisible from an Iowa farm and from Arizona and was cut off along a hard
+    azimuth toward a town. The aurora read the Milky Way's dark-sky dome: a LOG ramp from 1e-6 (a raw glow of 0.01 is
+    already 83% "city"; a sector of 0 beside one of 0.83 = the hard edge; populated farmland = 1.0 in every sector,
+    harness `state` -> `light_dome`) toward an artistic 13 mag/arcsec^2. It now takes `darkSkySkyMagLinear`: skyglow is
+    ADDED light, sky = pristine x (1 + d / 0.0241) with d the dome's compression undone (d / (d + 0.08) ->
+    d), so a downtown core reads ~18 (Bortle 8-9), rural Arizona / Iowa ~21.3, Fairbanks ~20; and the aurora's
+    brightness scale is the physical 2.5 mag per decade (was 0.85: every part of a display went at once). Still 1 under
+    a pristine sky. The Milky Way and zodiacal light keep their own gate (`darkSkySkyMag`, unchanged).
+  - **Arc systems** (`auroraArcWeight`): sheets in groups of 5, ~70% of groups an arc system bright over 1-2 stretches
+    of the oval (thousands of km), mean ~1, bright parts ~6x; the diffuse volume follows at 0.6. The storm coverage
+    no longer fills the oval (-0.35 instead of -0.6 at "Arc systems" 1; both copies of `auroraCoverage`). A first cut
+    (55% of groups, shorter stretches, coverage -0.2) left a Kp 9 sky over Coldfoot almost empty.
+  - **Storm look** (`auroraStormHi` = smoothstep(Kp 5, 8.5)): a share of sheets rising with the storm are TALL (decay
+    190 km, red from ~35-105 km above the border, stronger rays: red pillars), bright sheets get a magenta lower border
+    9 km lower and magenta between green and red; sunlit tops add N2+ blue. **Storm red** (`auroraStormRed`): 630-nm
+    glow 290-380 km up, up to 7 deg equatorward of the green edge (CPU `auroraGpuParams` widens `auroraOval2.y`), patchy,
+    faint from orbit, a red northern sky from 41 deg MLAT at Kp 9. **Blue rays** (rare, like sprites): a ~100-km stretch of a
+    sheet (one per ~220-km cell at the chance x smoothstep(Kp 4, 7)) whose own rays stand to 350-650 km, soft-ended,
+    tapering, blue where sunlit, the sheet's dim red otherwise. A first cut (one ~10-km flat ray, magenta unlit) drew
+    isolated straight lines from orbit (shots 7, 9). The march's top rises 410 -> 700 km with the storm while any of
+    these is on, and every sheet fades out over the top 35% of the march's reach above 100 km (`gAurTopM`): from
+    590 km the red pillars ended on a hard ceiling where lines of sight left the 700-km shell (shot 8).
+  - Cost: within noise (Kp 9 at Coldfoot 13.79 vs 13.85 ms with all four off). Harness scenes: `harness_runs/aur14`.
+    Open: from orbit the oval still shows the volume's concentric fold rings; blue rays are untested in sunlight
+    (no dusk view framed one yet); how it looks is the user's to judge.
 - **Next:** C14 (Anvil) remains not started — deferred repeatedly in favor of C15/C16 per the
   2026-07-12 session — and can be picked up whenever; it has no dependency on C15/C16. Otherwise
   Phase E is complete (C13, C15, C16 done); C9/C11/C12 and noise-repetition cleanup are next in

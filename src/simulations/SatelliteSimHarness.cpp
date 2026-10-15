@@ -399,6 +399,14 @@ json SatelliteSim::harnessStateJson()
                  {"lunar_possible", moonEclipseLunarPossible}};
 
     j["aurora"] = auroraStateJson();
+    {
+        // The light-pollution dome, 16 sectors of 22.5 deg clockwise from north (sector i centred on
+        // (i + 0.5) x 22.5): `gained` the linear dome satellites and stars dim by, `dark_sky` the eased
+        // 0..1 pristine -> city value the Milky Way, zodiacal light and aurora gates read (darksky.glsl).
+        json g = json::array(), e = json::array();
+        for (int i = 0; i < kNumLightSectors; ++i) { g.push_back(lightDomeAz[i]); e.push_back(lightDomeEasedAz[i]); }
+        j["light_dome"] = {{"gained", g}, {"dark_sky", e}};
+    }
 
     json ko = json::array();
     for (int i = 0; i < debugToggleTableSize(); ++i)

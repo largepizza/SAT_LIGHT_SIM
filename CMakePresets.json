@@ -75,6 +75,8 @@
 
     "buildPresets": [
         { "name": "windows",       "configurePreset": "windows",       "configuration": "Debug" },
+        { "name": "windows-dev-release", "displayName": "Release (build/Release, the harness's tree)",
+          "configurePreset": "windows", "configuration": "Release" },
         { "name": "windows-release","configurePreset": "windows-release","configuration": "Release" },
         { "name": "windows-package","configurePreset": "windows-release","configuration": "Release", "targets": ["package-release"] },
 

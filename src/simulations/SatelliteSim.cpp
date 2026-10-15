@@ -2628,6 +2628,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                       oceanSeaStateGain, oceanWhitecapGain);
         }
         cp.auroraSheets = glm::vec4(auroraSheetGain, auroraSheetSpacingDeg, auroraSheetCrisp, auroraSheetFold);
+        cp.auroraStorm = glm::vec4(auroraStormFeatures, auroraBlueRayChance, auroraArcSystems, auroraStormRedGain);
+        cp.auroraSky = glm::vec4(1.0f / std::max(lightPollutionGain, 1e-4f), 0.0f, 0.0f, 0.0f);
         cp.moonCenter = glm::vec4(moonCenterENUkm, moonAngR);
         // y: 0 = no solar eclipse possible, else 1 + the observer's eclipse sky light (0..1), which sat_sky.frag's
         // exposure applies exactly as skyExposure() does (every `y > 0.5` test still reads it as the flag).

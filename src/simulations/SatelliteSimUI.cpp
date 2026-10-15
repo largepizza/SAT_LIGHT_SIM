@@ -5925,6 +5925,12 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         {"Sheet spacing (deg)", &auroraSheetSpacingDeg, 0.05f, 1.5f, 0.01f, "%.2f", 216},
         {"Crisp sheets (share)", &auroraSheetCrisp, 0.0f, 1.0f, 0.05f, "%.2f", 217},
         {"Sheet folds", &auroraSheetFold, 0.0f, 2.0f, 0.05f, "%.2f", 218},
+        // 2026-10-14: the storm look (issue 20261014_193231): few bright arc systems, red tops, magenta borders,
+        // the red glow equatorward of the oval, rare blue rays.
+        {"Arc systems", &auroraArcSystems, 0.0f, 1.0f, 0.05f, "%.2f", 300},
+        {"Storm features (red / magenta)", &auroraStormFeatures, 0.0f, 2.0f, 0.05f, "%.2f", 298},
+        {"Storm red glow", &auroraStormRedGain, 0.0f, 3.0f, 0.05f, "%.2f", 301},
+        {"Blue rays (chance)", &auroraBlueRayChance, 0.0f, 0.05f, 0.001f, "%.3f", 299},
         // 2026-09-30: the look of the Earth from space, fitted to the Artemis II photographs.
         {"Orbit colour grade", &orbitGrade, 0.0f, 1.0f, 0.05f, "%.2f", 219},
         // "Moon size (x real)" (slot 220) moved to the Photometry tab's EXPOSURE AND MOON section (2026-10-06).
@@ -7976,6 +7982,10 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         auroraSheetSpacingDeg = c.value("aurora_sheet_spacing_deg", auroraSheetSpacingDeg);
         auroraSheetCrisp = c.value("aurora_sheet_crisp", auroraSheetCrisp);
         auroraSheetFold = c.value("aurora_sheet_fold", auroraSheetFold);
+        auroraStormFeatures = c.value("aurora_storm_features", auroraStormFeatures);
+        auroraBlueRayChance = c.value("aurora_blue_rays", auroraBlueRayChance);
+        auroraArcSystems = c.value("aurora_arc_systems", auroraArcSystems);
+        auroraStormRedGain = c.value("aurora_storm_red", auroraStormRedGain);
         oceanWhitecapGain = c.value("ocean_whitecaps", oceanWhitecapGain);
         oceanWaveRangeKm = settingClamp(c.value("ocean_wave_range_km", oceanWaveRangeKm), 5.0f, 200.0f);
         oceanWaveSharpness = settingClamp(c.value("ocean_wave_sharpness", oceanWaveSharpness), 0.1f, 1.0f);
@@ -8265,6 +8275,10 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"aurora_sheet_spacing_deg", auroraSheetSpacingDeg},
         {"aurora_sheet_crisp", auroraSheetCrisp},
         {"aurora_sheet_fold", auroraSheetFold},
+        {"aurora_storm_features", auroraStormFeatures},
+        {"aurora_blue_rays", auroraBlueRayChance},
+        {"aurora_arc_systems", auroraArcSystems},
+        {"aurora_storm_red", auroraStormRedGain},
         {"ocean_whitecaps", oceanWhitecapGain},
         {"ocean_wave_range_km", oceanWaveRangeKm},
         {"ocean_wave_sharpness", oceanWaveSharpness},
