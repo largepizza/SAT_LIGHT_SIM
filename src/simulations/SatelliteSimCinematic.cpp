@@ -336,6 +336,7 @@ void SatelliteSim::cineStart(CineRun mode, bool oneShot)
         glareSizePx *= s;
         photoScaleActive = (uint32_t)s;
     }
+    cineLastShot_ = -1;   // a start is a cut: its first shot's look and drift apply even if that shot index was the last one shown
     cineApplyAt(0.0, true);
     cineExportT0_ = glfwGetTime();
     cineStatus_ = mode == CineRun::Play ? "Playing" : "Exporting";
