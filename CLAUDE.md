@@ -2389,9 +2389,10 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   drawn after a nested clip (a text box, a horizontally clipped row) escaped its window's scroll view. `ui dump`'s
   clip boxes follow the same rule.
 - **UI themes (2026-10-14, `UIPalette.h`):** every colour is a row of the `UI_PALETTE` X-macro with four columns
-  (Default, Navy, Night red, Midnight = Default's colours on darker, more opaque backgrounds); `Pal::` names are runtime globals `applyUiTheme()` rewrites, `Style::borderColor` follows
+  (Classic [enum Default], Navy, Night red, Midnight = Classic's colours on darker, more opaque backgrounds — the
+  default theme since 2026-10-15: `Pal::` starts from the Midnight column, `uiTheme` = 3); `Pal::` names are runtime globals `applyUiTheme()` rewrites, `Style::borderColor` follows
   `Pal::windowBorder`. Night red also sets `UIRenderer::setColorFilter` (pushQuad maps every colour, icons and images
-  included, to red at its brightest channel). `display.ui_theme` ("default" / "navy" / "night" / "midnight"), Display tab "UI theme";
+  included, to red at its brightest channel). `display.ui_theme` ("classic" / "navy" / "night" / "midnight"; an old "default" reads as classic), Display tab "UI theme";
   `syncUiTheme()` (buildUI, after the harness) applies a change; `peekBootSettings` applies it before the boot chooser.
   **A new colour goes in the table, never as a `Clay_Color{...}` literal at the call site**, or it ignores the theme
   (the remaining literals are intro captions, image backings, scrims and the harness console). The swapchain is sRGB:

@@ -3,8 +3,9 @@
 // the sim instead of keeping its own palette.
 //
 // UI THEMES (2026-10-14): every colour is one row of UI_PALETTE below, with a column per theme —
-// Default (near-black, red accent), Navy (blue-black, azure accent), Night (night-vision red: dim
-// reds only, so the screen does not spoil dark adaptation) and Midnight (Default, darker). The Pal:: names are ordinary globals that
+// Classic (enum Default: near-black, red accent — the look before themes), Navy (blue-black, azure
+// accent), Night (night-vision red: dim reds only, so the screen does not spoil dark adaptation) and
+// Midnight (Classic's colours on darker, more opaque panels — the default theme since 2026-10-15). The Pal:: names are ordinary globals that
 // applyUiTheme() rewrites, so call sites read `Pal::btnAccent` as before. Night also asks the UI
 // renderer to map EVERY colour to red (UIRenderer::setColorFilter: icons, images, any literal colour a
 // call site still uses), so the Night column only has to order things by brightness. Persisted as
@@ -20,11 +21,11 @@ enum class UiTheme : int
     Default = 0,
     Navy = 1,
     Night = 2,
-    Midnight = 3, // Default's colours on darker, more opaque near-black panels
+    Midnight = 3, // Default's colours on darker, more opaque near-black panels — THE DEFAULT (2026-10-15)
     Count
 };
-inline constexpr const char *kUiThemeNames[] = {"Default", "Navy", "Night red", "Midnight"};
-inline constexpr const char *kUiThemeKeys[] = {"default", "navy", "night", "midnight"}; // settings.json values
+inline constexpr const char *kUiThemeNames[] = {"Classic", "Navy", "Night red", "Midnight"};
+inline constexpr const char *kUiThemeKeys[] = {"classic", "navy", "night", "midnight"}; // settings.json values
 
 #define UIC(r, g, b, a) Clay_Color{r, g, b, a}
 // X(name, Default, Navy, Night, Midnight) — Midnight repeats Default except for the backgrounds
@@ -104,10 +105,10 @@ inline constexpr const char *kUiThemeKeys[] = {"default", "navy", "night", "midn
 
 namespace Pal
 {
-#define UI_PAL_DECL(n, d, nv, nt, mb) inline Clay_Color n = d;
+#define UI_PAL_DECL(n, d, nv, nt, mb) inline Clay_Color n = mb; // Midnight is the default theme
 UI_PALETTE(UI_PAL_DECL)
 #undef UI_PAL_DECL
-    inline UiTheme current = UiTheme::Default;
+    inline UiTheme current = UiTheme::Midnight;
 }
 
 // ── Global styling parameters ─────────────────────────────────────────────────
@@ -133,7 +134,7 @@ inline void applyUiTheme(UiTheme t)
 #define UI_PAL_SET(n, d, nv, nt, mb) Pal::n = i == 1 ? nv : i == 2 ? nt : i == 3 ? mb : d;
     UI_PALETTE(UI_PAL_SET)
 #undef UI_PAL_SET
-    Pal::current = (i >= 0 && i < (int)UiTheme::Count) ? t : UiTheme::Default;
+    Pal::current = (i >= 0 && i < (int)UiTheme::Count) ? t : UiTheme::Midnight;
 }
 
 inline UiTheme uiThemeFromKey(const char *k)
@@ -141,5 +142,7 @@ inline UiTheme uiThemeFromKey(const char *k)
     for (int i = 0; i < (int)UiTheme::Count; ++i)
         if (std::strcmp(k, kUiThemeKeys[i]) == 0)
             return (UiTheme)i;
-    return UiTheme::Default;
+    if (std::strcmp(k, "default") == 0) // its key until 2026-10-15, when Midnight became the default
+        return UiTheme::Default;
+    return UiTheme::Midnight;
 }
