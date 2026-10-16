@@ -1152,6 +1152,23 @@ vec3 poolTumbleAxis(uint j)
     return vec3(r * cos(ph), r * sin(ph), z);
 }
 
+// A dead formation member's along-track drift in turns (CPU mirror kessler::formationDriftTurns): 0.5 k tau^2 with
+// k = +-j 2^-47 turns/s^2, j 1..3 from the index, mod one turn in exact integer arithmetic (tau whole seconds dead,
+// f the second's fraction).
+float formationDrift(uint sat, uint tau, float f)
+{
+    uint h = hashU(sat * 0x51ED27F1u + 0x3C6EF372u);
+    uint j = 1u + (h % 3u);
+    float sgn = (h & 0x100u) != 0u ? -1.0 : 1.0;
+    uint hi, lo, h2, l2;
+    umulExtended(tau, tau, hi, lo);
+    umulExtended(lo, j, h2, l2);
+    uint top = (hi * j + h2) & 0xFFFFu;
+    float turns = float(top) * (1.0 / 65536.0) + float(l2) * (1.0 / 281474976710656.0);
+    turns += float(j) * (2.0 * float(tau) * f + f * f) * (1.0 / 281474976710656.0);
+    return sgn * fract(turns);
+}
+
 bool processSatellite(uint i, out SatVisible rec)
 {
     // ── Kessler pool (2026-10-16): indices from poolBase are Keplerian records ──────────────────
@@ -1220,6 +1237,8 @@ bool processSatellite(uint i, out SatVisible rec)
     // ── Orbital phase (epoch-delta trick + a two-float product, see orbitPhase) ─
     // orb.u0 = fmod(original_u0 + meanMot*epochT0, 2π), so phase = u0 + meanMot*deltaT.
     float u    = orbitPhase(orb.u0, orb.meanMot, pc.deltaT, deltaTLo);
+    if (deadNow && (orb.constIdx & FORMATION_BIT) != 0u)
+        u += TWO_PI * formationDrift(i, uint(scenNowSec - int(kw[2u * i])), fract(pc.deltaT));
     float cosU = cos(u);
     float sinU = sin(u);
 
@@ -1607,6 +1626,9 @@ bool processSatellite(uint i, out SatVisible rec)
     // skip the lighting and draw EVERY highlighted satellite at that dot (~mag 5.4), so highlighting
     // a sunlit ISS at mag -2 made it far fainter and harder to find.
     const float highlightFlag = bool((pc.highlightMask >> (orb.constIdx & CONST_IDX_MASK)) & 1u) ? -1.0 : 0.0;
+    // Highlighted debris (Kessler fragments) is tinted, so the census view tells it apart from the satellites.
+    if (isPool && highlightFlag < 0.0)
+        outBaseColor = vec3(1.0, 0.42, 0.22);
     // An UNRESOLVED formation (2026-10-07): its member 0 carries the whole cluster's light and the others fade
     // out, over a cluster 3 -> 1 px wide. The members' points overlapped and summed on screen, but the point
     // style's display response is flux^0.8, so eight mag-5 points read ~0.45 mag brighter than one of their
@@ -1627,8 +1649,10 @@ bool processSatellite(uint i, out SatVisible rec)
         }
     }
     // The colour's alpha carries the type's area fill (sat_flare.comp, the resolved-object size).
+    // Highlighted debris: |angularSize| + 100 (sat_flare.comp gives it a brighter census dot than satellites).
+    float hlDebris = (isPool && highlightFlag < 0.0) ? 100.0 : 0.0;
     rec = SatVisible(skyDir, flare, packUnorm4x8(vec4(outBaseColor, ty.meshFill)),
-                     (highlightFlag < 0.0 ? -1.0 : 1.0) * (1.0 + mergeF), range, meshPx);
+                     (highlightFlag < 0.0 ? -1.0 : 1.0) * (1.0 + mergeF + hlDebris), range, meshPx);
     return true;
 }
 

@@ -3985,7 +3985,8 @@ less; hash-chosen, `stormSeedEvents`); dead formation members bump their neighbo
 each bump kills with p 1/2 and may chain); then the cube-method engine carries the collisions forward. **Before
 the epoch nothing differs from the plain sky** (every term is gated on the scenario's seconds). Settings >
 Constellations > THE SUN'S FURY: the toggle (`kessler.enabled`, default on), collision rate (`rate_multiplier`,
-x1 = physical), avoidance (`avoidance`, 0.9), horizon (`horizon_years`, 20), "Highlight the debris", live counts.
+x1 = physical), avoidance (`avoidance`, 0.9), horizon (`horizon_years`, 20), dust cloud brightness
+(`dust_gain`, x100), live counts.
 Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night, 1x).
 
 - **Everything is a pure function of sim time:** an append-only EVENT LOG (`kessler::Event`: kill, bump,
@@ -3998,51 +3999,101 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   one period from the scenario's whole seconds, exact at any date; CPU mirror in `orbitElemsOf`, which therefore
   depends on the current sim time for roster satellites), never manoeuvre (engine: passive), and drag sets their
   end (re-entry). The first cut made each dead satellite a pool record: the pool passed 2M records by day 120.
-- **Pool records are fragments only** (`kessler::PoolRec`, 64-B `GpuKepOrbit` in kesslerBuf from `poolWord0`,
-  satellite indices from `activeSatCount` on; appended to the CPU's `satOrbits` with `poolSlot`, so every
-  index-based path works). Keplerian with **relative J2**: a child keeps its parent's rates plus the J2 DIFFERENCE
-  between them (`recordFromState`), so a cloud spreads around its parent's plane without the roster needing J2 of
-  its own. Drag (`decayTime`, Vallado's exponential atmosphere x the storm's heating, `stormDensityGain` 7) sets
-  only the death second; orbits do not visibly decay (keeps the GPU exact). `sat_rebake.comp` re-bakes the pool's
-  phases with the same exact fixed-point turns as the roster.
-- **Breakups: NASA Standard Breakup Model** (`breakupCollision` / `breakupExplosion`): catastrophic above
-  40 J/g, N(>Lc) = 0.1 M^0.75 Lc^-1.71 (explosion 6 Lc^-1.6), Lc >= 10 cm, bimodal A/m, lognormal dv. Records
-  are REPRESENTATIVE particles: up to 64 per breakup at an empty pool, (1 - fill)^3 of it as the pool fills
-  (cratering hits an eighth), each carrying `weight` real fragments; the pool is capped at 750k records. A hit
-  that changes nothing (no records, a surviving weighted projectile, no kill) is not recorded.
+  **A dead formation member drifts out of its ring** (round 2): no station keeping, so along-track by 0.5 k tau^2
+  (k = +-1..3 x 2^-47 turns/s^2 from the index: ~1-4 km after a day, ~100-400 km after ten), taken mod one turn in
+  exact integer arithmetic (`formationDrift` in sat_orbit.comp with `umulExtended`, `kessler::formationDriftTurns`
+  on the CPU, also in `World::stateOf`; GPU vs CPU ~1 m).
+- **Only what can be seen is a record (round 2, the user: "optimise for what is visible").** Pool records are the
+  LARGE pieces, Lc >= 1 m (`WorldSettings::LcRecord`), weight 1 (beyond `maxRecordsPerEvent` 96, tapering as the
+  750k pool fills, each stands for several); the largest is 0.15 x the larger object's bounding diameter (<= 25 m:
+  a 72-m Starmind leaves ~11-m pieces; it was <= 4 m for everything), and their mass never exceeds 60% of the
+  parents'. When a satellite over 20 m shatters, its **appendages shear off whole** (`addStructuralPieces`: 2-6
+  array sections and 1-2 radiator sections of up to 0.15 x its size, 10-50 m/s), which the size distribution
+  (made for compact bodies) leaves out. Each piece is drawn with the **debris kit** (`tools/make_debris_models.py`
+  -> `data/satellite_models/debris_{panel,radiator,chunk}_{s,m,l}.json`: a torn, folded array section with a spar
+  stub; a radiator section, white paint + OSR tiles, with its manifold; a piece of bus with MLI and fittings),
+  appended as types at load (`kDebrisKit`, 16-lobe budget). The kind follows the parent's surface
+  (`SatelliteType::debrisArrayShare / debrisRadiatorShare` from its facets' material presets), the class the
+  fragment's area, and the area is SNAPPED to the class's mean area (`meanAreaM2`), so its flux scale is 1: it is
+  drawn as a mesh close up and Go to works. Large pieces tumble slowly (seconds to minutes a turn: long glints).
+- **The small fragments (0.1-1 m) are a density field** (`kessler::DebrisGrid`): each breakup's small population
+  is 16 statistical orbits (stratified in size, weight N/16, their own drag deaths) spread over their whole orbit
+  into 20 km x 2 deg x 45-deg-heading cells (ECI longitude averaged), fixed-point counts so adding and removing in
+  any order is exact. The engine tests every object against it: rate = sum over headings of n x vRel (from the
+  heading difference, + 300 m/s) x pi (r + 0.15)^2 x dt, and a hit's projectile size is drawn from the power law
+  (most are 10-cm, tens-of-gram pieces: with the cell's mean mass nearly every hit was catastrophic, 1.1M of them
+  by day 60). Small-small collisions are not modelled. They replaced 750k representative records of 10-cm
+  fragments, invisible (magnitude 13-17) and mostly colliding with each other.
+- **Breakups: NASA Standard Breakup Model** (`breakupCollision` / `breakupExplosion`, `BreakupSizes`):
+  catastrophic above 40 J/g, N(>Lc) = 0.1 M^0.75 Lc^-1.71 (explosion 6 Lc^-1.6), Lc >= 10 cm, bimodal A/m,
+  lognormal dv. A hit that changes nothing visible (no large piece, a surviving projectile, no kill) is not
+  recorded. A catastrophic breakup of a formation member damages each cluster neighbour (p 0.6, `damageCluster`:
+  the cloud sweeps the ring within minutes, slowly, so they die and tumble). A cratering hit kills a satellite
+  with p 1/2.
+- **Pool records** (`kessler::PoolRec`, 64-B `GpuKepOrbit` in kesslerBuf from `poolWord0`, satellite indices
+  from `activeSatCount` on; appended to the CPU's `satOrbits` with `poolSlot`, so every index-based path works).
+  Keplerian with **relative J2**: a child keeps its parent's rates plus the J2 DIFFERENCE between them
+  (`recordFromState`), so a cloud spreads around its parent's plane without the roster needing J2 of its own.
+  Drag (`decayTime`, Vallado's exponential atmosphere x the storm's heating, `stormDensityGain` 7) sets only the
+  death second; orbits do not visibly decay (keeps the GPU exact). From 12 days after the CME (the storm's density
+  factor is exactly 0) lifetimes come from a lazily filled table (`World::lifetime`: height x log cdAm, log
+  interpolated; a breakup makes ~110 of them: apply time 10.7 -> 3.5 s over 30 days). `sat_rebake.comp` re-bakes
+  the pool's phases with the same exact fixed-point turns as the roster.
+- **The dust clouds** (round 2, `kesslerFillDust`, `cloud_march.comp` `dustCloudsCS`, binding 23): every breakup of
+  the last 3 h with dust (`Event::dustKg` = 5% of the broken-up mass, 30% of it for cratering) is a sunlit cloud
+  following its parent's orbit (`Event::pos/vel`), expanding at the small fragments' rms spread (`dvSmall`,
+  80-500 m/s) radially / cross-track (saturating after 1/n) and shearing along-track (x3 after 1/n), split into up
+  to 12 Gaussians along the arc once it curves, the 24 brightest as a core + 5 uneven lumps; at most 256 Gaussians a
+  frame, chosen by brightness / range^2, never narrower than a half-res pixel. The optical depth through a Gaussian
+  is closed form (erf), single-scattered (0.6 HG(0.7) + 0.4 isotropic, albedo 0.25), Earth-shadowed at the ray's
+  closest approach, extinguished, hidden by cloud from below like the aurora. **Units:** physical radiance through
+  the point sources' scale (`toSky`: a cloud of magnitude m carries the on-screen energy of a star of magnitude m;
+  kFluxToFlare x pixel solid angle / (the point style's reference flare x 1.27 px^2 x the sky exposure without its
+  EV)). The sky's own radiance is not physical at night (the night exposure is only 5.5x the day's), so a physical
+  value in sky units is invisible at any gain. "Dust cloud brightness" (`kessler.dust_gain`, x1 .. x1000, default
+  x100): physically a cloud fades below the dark sky within minutes.
 - **The engine** (`engineSample`, cube method, Liou 2006): every 6 h of sim time one sample at the step's middle,
-  20-km cubes, P = vRel x pi (rA + rB)^2 x dt / V x weights x rate multiplier, x (1 - avoidance) when one is a
-  working satellite, active pairs skipped (coordinated constellations), active satellites subsampled at 0.25
-  (weight 4). **Measured physics:** with the shipped roster the cascade runs away: ~80 collisions on day 1, ~600k
-  live fragment records (far more real) and 126k dead satellites by day 200 — expected for ~1M satellites in
-  narrow shells (cf. the "CRASH clock" estimates of days between collisions without manoeuvres).
+  20-km cubes among the roster and the large pieces (sorted in parallel: keys are unique, so the order is the
+  same), P = vRel x pi (rA + rB)^2 x dt / V x weights x rate multiplier, x (1 - avoidance) when one is a working
+  satellite, active pairs skipped, active satellites subsampled at 0.25 (weight 4); plus every object against the
+  grid. **Measured** (round 2, shipped roster, x1): ~150k catastrophic collisions, 314k dead and 155k destroyed
+  satellites and ~640k large pieces by day 60 (100k of them L class at day 30) — a runaway, as expected for ~1M
+  satellites in narrow shells where each catastrophic Starmind collision makes ~1800 pieces over 10 cm. 30 days in
+  14 s (refs 1.2, states + grid 5.4, pairs 2.7, apply 3.5; the worker logs `kessler: engine time`).
 - **The worker is lazy** (`KesslerWorker`, below-normal priority, half the cores minus one for position
   sampling): it simulates a minute of the current time warp ahead of sim time (at least 2 days; always the
   storm's first two days at launch) and idles otherwise. **Sim time HOLDS at the simulated frontier** (never
-  rewinds: a restart pulls the frontier back to the epoch) with a banner, "Computing the debris cascade". Speed:
-  ~1 sim-day per second early, 200 days in ~160 s with a full pool.
+  rewinds: a restart pulls the frontier back to the epoch) with a banner, "Computing the debris cascade".
+  Rendering is not the cost: at day 60 with a full pool the orbit pass is +0.2 ms GPU and the frame holds vsync
+  (harness_runs/kessler2/pw1); what slows a player down is the hold while warping past the frontier.
 - **The main thread mirrors** the worker's batches (`kesslerSync`: records, roster changes, events) and uploads
   them (`kesslerRecordUploads`, a persistent 16-MB staging buffer, at most 16k new records a frame, roster words
   in budget-sized pieces — a whole-roster run that did not fit the budget was re-sorted every frame and never
-  uploaded: 8.7 ms a frame). GPU pool buffers grow by doubling up to the cap (83 MB at 750k records).
+  uploaded: 8.7 ms a frame). GPU pool buffers grow by doubling up to the cap (83 MB at 750k records). The
+  settings tab reads the counts through `kesslerStateCached` (4 Hz: a full count walks the roster and the pool).
 - **Player breakups** (info window BREAKUP: Explode / ASAT strike; harness `kessler breakup|collide`) are user
   events: the world restarts, replaying everything before them (engine events kept up to the step before),
   re-simulating after. Allowed from the epoch on, up to the frontier.
 - **Cache**: the engine's events + frontier in `<user data>/kessler/suns_fury_<hash>.bin` (the hash covers the
-  roster, types, settings and `kCacheVersion`), written longer only, never while the player has breakups; a launch
-  replays it (lazily) instead of re-sampling. Not shipped: 1.2M events (~60 MB) by day 200.
+  roster, types, settings, the kit and `kCacheVersion`), written longer only, never while the player has
+  breakups; a launch replays it (lazily) instead of re-sampling. Not shipped.
 - **Roster rebuilds and determinism** (also needed by the cache): `buildOrbits()` draws from `SatRng` (MSVC's
   rand() LCG, one stream per constellation, recorded on the first build — the shipped layout is bit-identical on
   Windows and now the same everywhere), the cluster jitter is keyed by load order (`defIndex`), terminator planes
   by the first build's Sun. `rebuildRoster()` (harness `roster list|remove|add`) restarts the scenario.
 - Fragments belong to the "Collision debris" pseudo-constellation (appended at load, no roster satellites, the
-  debris type): Show / Hlt work as for any constellation. Labels: "<constellation> #<n> (dead)", "Debris <event>.<k>".
+  debris type): Show / Hlt work as for any constellation; **highlighted debris is tinted orange and its census
+  dot is 8x the satellites'** (`|angularSize| + 100` from sat_orbit.comp to sat_flare.comp: the census dot,
+  photometry.highlight_flare 0.01, sits near the eye's limit and barely showed). The separate "Highlight the
+  debris" toggle is gone. Labels: "<constellation> #<n> (dead)", "Debris <event>.<k>".
 - `GpuSatTypeHeader` grew to 48 B (poolBase, poolCount, scenNowSec, poolWord0); `sat_orbit.comp` binds 12 storage
   buffers (binding 11 = kesslerBuf; the device check asks for 12). CPU bucket `kessler` (harness `perf`).
-- Harness: `kessler state | wait [days=] [done] | breakup <sat> [kind=explosion|asat] | collide <a> <b> | select
-  [k=] | select dead [k=]`; `state` carries `kessler` (counts at the current time). Scripts in harness_runs/kessler.
-- Not modelled: orbits shrinking under drag (only the re-entry time), debris-driven ambience, fragments as meshes
-  (the debris model is drawn at its own size, so fragments never become meshes), the flare's own light.
+- Harness: `kessler state | wait [days=] [done] | breakup <sat|sel> [kind=explosion|asat] | collide <a> <b> |
+  select [k=] | select dead [k=] [formation=1]`; `state` carries `kessler` (counts now, `pieces_by_class`,
+  `dust_clouds_drawn`). Scripts in harness_runs/kessler, harness_runs/kessler2 (round 2: `r2_asat`, `r2_dust_orbit`,
+  `r2_long`, `r2_sky`, `r2_check`, `r2_pieces`).
+- Not modelled: orbits shrinking under drag (only the re-entry time), debris-driven ambience, re-entry fireballs,
+  the impact flash, small-small collisions, the dust past 3 h (a ring around the orbit: physically invisible).
 
 ## Subsystem: Reflect-Orbital Beam Cloud Occlusion
 

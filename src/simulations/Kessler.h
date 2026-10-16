@@ -59,21 +59,35 @@ struct Fragment
     double weight = 1.0;    // real fragments this record stands for (representative particles)
     glm::dvec3 dv{0.0};     // ejection velocity relative to its parent (m/s)
     int side = 0;           // 0 = from the target / exploding object, 1 = from the projectile
+    int kind = -1;          // a structural piece's kind (0 array, 1 radiator, 2 structure); -1 = by the parent's surface
 };
 
 struct BreakupResult
 {
     bool catastrophic = false;
     double nReal = 0.0;     // fragments >= LcMin the model predicts
-    std::vector<Fragment> fragments;
+    double nLarge = 0.0;    // of them >= LcRecord (the visible pieces)
+    double massKg = 0.0;    // the mass the model breaks up (catastrophic: both objects; else the ejecta)
+    std::vector<Fragment> fragments; // the LARGE pieces (Lc >= LcRecord): weight 1 unless capped
+    std::vector<Fragment> small;     // statistical samples of the small population (their weights sum to it)
+};
+
+// Where a breakup's fragments are cut (round 2: only what can be seen becomes a record).
+struct BreakupSizes
+{
+    double LcMin = 0.1;     // smallest fragment counted (m)
+    double LcRecord = 1.0;  // from here up a fragment is a record of its own
+    double LcMax = 4.0;     // the largest piece (a fraction of the parent's size: its arrays, radiators, bus)
+    int maxLarge = 96;      // records per breakup (more: each stands for several)
+    double maxLargeMass = 1e30; // the large pieces' total mass never exceeds this (part of the parent's)
+    int nSmallSamples = 16; // statistical orbits for the small population
 };
 
 // A collision between a target of mass mT and a projectile of mass mP at relative speed vRel (m/s):
-// catastrophic above 40 J/g of specific energy. At most maxRecords records are made; each stands for
-// nReal / records fragments (weight).
-BreakupResult breakupCollision(double mT, double mP, double vRel, double LcMin, int maxRecords, uint64_t seed);
+// catastrophic above 40 J/g of specific energy.
+BreakupResult breakupCollision(double mT, double mP, double vRel, const BreakupSizes &sz, uint64_t seed);
 // An explosion (scale factor S = 1) of an object of mass m.
-BreakupResult breakupExplosion(double m, double LcMin, int maxRecords, uint64_t seed);
+BreakupResult breakupExplosion(double m, const BreakupSizes &sz, uint64_t seed);
 
 // ── Drag ──────────────────────────────────────────────────────────────────────────────────────────
 // Atmospheric density (kg/m^3) at altitude h (m) for moderate solar activity (piecewise exponential).
@@ -119,6 +133,7 @@ std::vector<EngineCollision> engineSample(const std::vector<EngineObject> &objs,
 // Object references: a roster satellite's index, or kPoolBit | a pool record's index.
 constexpr uint32_t kPoolBit = 0x80000000u;
 constexpr uint32_t kNoRef = 0xFFFFFFFFu;
+constexpr uint32_t kSmallRef = 0xFFFFFFFEu; // the projectile was one of the small fragments (the density grid)
 constexpr int32_t kNever = 0x7FFFFFFF;
 
 // A roster satellite as the world needs it (a compact copy of SatOrbit: the world runs on a worker).
@@ -137,6 +152,9 @@ struct TypeInfo
     double massKg = 260.0;
     double areaM2 = 10.0;   // mean projected area (collision cross-section, drag)
     double radiusM = 1.8;   // sqrt(area / pi)
+    double sizeM = 3.0;     // bounding diameter (the largest piece a breakup leaves scales with it)
+    double arrayShare = 0.0, radiatorShare = 0.0; // of its surface: which kinds of large pieces it leaves
+    int kitKind = -1;       // a debris kit type: the kind it is (0 array, 1 radiator, 2 structure), else -1
     bool passive = false;   // never manoeuvres (debris)
 };
 
@@ -161,6 +179,11 @@ constexpr uint8_t kRecDead = 1, kRecFragment = 2;
 // A dead roster satellite's tumble: an integer period (s) and a phase from its index, so the GPU can take
 // the angle mod one period exactly at any date (sat_orbit.comp deadTumble).
 void deadTumble(uint32_t sat, uint32_t &periodS, double &phase0);
+// A dead formation member's along-track drift (no station keeping, differential drag): turns of argument of
+// latitude after tauSec whole seconds (+ frac) dead. 0.5 k tau^2 with k = +-j x 2^-47 turns/s^2 (j 1..3 from the
+// index: ~1-4 km after a day, ~100-400 km after ten), taken mod one turn in exact integer arithmetic so the GPU
+// (sat_orbit.comp formationDrift) matches at any age.
+double formationDriftTurns(uint32_t sat, uint32_t tauSec, double frac);
 
 enum EventKind : uint8_t
 {
@@ -185,6 +208,39 @@ struct Event
     uint32_t seed = 0;
     float vRel = 0.0f, nReal = 0.0f;
     uint32_t firstRec = 0, nRec = 0; // pool records it made (filled by apply)
+    float mProj = 0.0f;              // b == kSmallRef: the small fragment's mass (kg; set by the engine)
+    float dustKg = 0.0f;             // fine dust it made: the drawn dust cloud (filled by apply)
+    float nSmall = 0.0f;             // small fragments (LcMin .. LcRecord) it added to the density grid
+    float dvSmall = 0.0f;            // their rms spread (m/s): the dust cloud's expansion
+    float pos[3] = {0, 0, 0};        // where (ECI, m) and how fast (m/s) the breakup happened (filled by apply)
+    float vel[3] = {0, 0, 0};
+};
+
+// The small fragments as a density field: S statistical orbits per breakup, each spread over its whole orbit
+// (orbit-averaged; ECI longitude averaged) into altitude x latitude x heading cells. Counts are fixed point, so
+// adding and removing in any order is exact: the engine's draws, and so the history, never depend on order.
+struct DebrisGrid
+{
+    static constexpr int NR = 110, NL = 90, NH = 8, NS = 64; // 20 km x 2 deg x 45 deg cells; 64 samples per orbit
+    static constexpr double kRMin = kRMean + 150000.0, kDR = 20000.0;
+    static constexpr double kFix = 4096.0;   // count units per fragment
+    std::vector<int64_t> cnt;                // [r][lat][heading]
+    std::vector<int64_t> massG;              // [r][lat]: count-weighted mass (grams x kFix)
+    void clear();
+    void deposit(double a, double e, double incl, double argp, double weight, double massKg, uint64_t seed, int sign);
+    // Collision rate per m^2 of cross-section (1/s per m^2) for an object at r moving at v. `pick` (0..1) chooses
+    // the heading bin a hit came from (by its share of the rate); vRelOut / massOut are its speed and the cell's
+    // mean fragment mass.
+    double rate(const glm::dvec3 &r, const glm::dvec3 &v, double pick, double &vRelOut, double &massOut) const;
+    double total() const; // fragments in the grid
+};
+
+struct StatParticle
+{
+    double a = 0.0, e = 0.0, incl = 0.0, argp = 0.0;
+    double weight = 0.0, massKg = 0.1;
+    double deathT = 0.0;
+    uint64_t seed = 0;
 };
 
 struct WorldSettings
@@ -194,7 +250,12 @@ struct WorldSettings
     double horizonS = 50.0 * 365.25 * 86400.0;
     double stepS = 6.0 * 3600.0;
     double LcMin = 0.1;
-    int maxRecordsPerEvent = 64;  // a breakup's records at an empty pool, tapering as it fills
+    int maxRecordsPerEvent = 96;  // a breakup's large-piece records at an empty pool, tapering as it fills
+    double LcRecord = 1.0;        // fragments from here up are records (visible); smaller ones are the grid
+    double dustShare = 0.05;      // of the broken-up mass, fine dust (the drawn cloud)
+    double clusterHitP = 0.6;     // a catastrophic breakup of a formation member damages each neighbour with this
+    int kitType[3][3] = {{-1, -1, -1}, {-1, -1, -1}, {-1, -1, -1}}; // debris kit types [kind][S, M, L]
+    double kitArea[3][3] = {};    // their mean areas (a large piece's area snaps to its class: flux 1)
     uint32_t poolCapacity = 750000;
     double activeSample = 0.25;  // share of active satellites in each engine sample (weight 1 / it)
     double stormDensityGain = 7.0; // thermosphere density x (1 + gain x scriptedStormShape)
@@ -215,8 +276,12 @@ public:
     std::vector<int32_t> rosterEnd;   // end second: destroyed or re-entered (kNever)
     std::vector<PoolRec> pool;
     std::vector<Event> events;        // applied, in time order
+    DebrisGrid grid;                  // the small fragments
+    std::vector<StatParticle> particles;
+    std::vector<std::pair<double, uint32_t>> deathHeap; // (death time, particle), a min-heap: leave the grid then
     double frontier = 0.0;            // simulated up to here (J2000 s)
     uint64_t sampleCount = 0;
+    double profState = 0.0, profPairs = 0.0, profApply = 0.0, profRefs = 0.0; // seconds spent (the worker logs them)
 
     // Change notifications since the last take (the main thread mirrors pool and rosterEnd).
     std::vector<std::pair<uint32_t, int32_t>> poolDeaths;   // (record, death second)
@@ -239,8 +304,19 @@ private:
     void killRoster(uint32_t ref, double t, uint32_t eventIdx);
     void spawnFragments(const BreakupResult &br, uint32_t refA, uint32_t refB, const State &sa, const State &sb,
                         double t, uint32_t eventIdx, uint32_t seed);
+    void spawnSmall(const BreakupResult &br, const State &st, double t, uint32_t seed, Event &ev);
+    void retireParticles(double t);
+    BreakupSizes sizesFor(uint32_t refA, uint32_t refB, int maxLarge) const;
+    int kindOf(uint32_t ref, double h) const;
+    void addStructuralPieces(BreakupResult &br, uint32_t ref, int side, uint32_t seed) const;
+    void damageCluster(uint32_t ref, double t, uint32_t eventIdx, uint32_t seed);
     PoolRec recordFromState(const State &st, double t, uint32_t parentRef, const glm::dvec3 &dv) const;
     double deathTime(const PoolRec &r, double t) const;
+    // Seconds until (a, e) with ballistic coefficient cdAm decays, from time t. Once the scripted storm is over
+    // (its density factor is exactly 0 from 12 days on) it depends on the orbit and cdAm alone: a lazily filled
+    // table (perigee-weighted height x log cdAm, log-interpolated), since a breakup makes up to ~110 of these.
+    double lifetime(double t, double a, double e, double cdAm) const;
+    mutable std::vector<float> lifeTab; // log(seconds); NaN = not yet computed
 };
 
 // The orbit elements the CPU mirror (satOrbitStateAt) takes for a roster object / a pool record.

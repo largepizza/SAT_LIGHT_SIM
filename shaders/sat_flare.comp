@@ -240,7 +240,11 @@ void main() {
     const bool highlighted = sat.angularSize < 0.0;
     // sat_orbit.comp's formation merge (|angularSize| = 1 + it): an unresolved formation's member 0 draws the
     // cluster's light, the others nothing. Its point, bloom and glare only (below).
-    const float mergeF = abs(sat.angularSize) > 0.5 ? abs(sat.angularSize) - 1.0 : 1.0;
+    // Highlighted Kessler debris: |angularSize| + 100 (sat_orbit.comp). Its census dot is 8x the satellites' (most
+    // fragments are magnitude 8-10, and the satellites' census dot sits near the eye's limit).
+    const bool  hlDebris = abs(sat.angularSize) > 50.0;
+    const float aSize = abs(sat.angularSize) - (hlDebris ? 100.0 : 0.0);
+    const float mergeF = aSize > 0.5 ? aSize - 1.0 : 1.0;
 
     float flare = sat.flareIntensity;
 
@@ -340,7 +344,7 @@ void main() {
     // sunRefIntensity, effectFlare' ≈ effectFlare, so ordinary Starlink-class flares are unaffected.
     effectFlare = pc.sunRefIntensity * effectFlare / (effectFlare + pc.sunRefIntensity);
     if (highlighted)
-        effectFlare = max(effectFlare, pc.highlightFlare);
+        effectFlare = max(effectFlare, pc.highlightFlare * (hlDebris ? 8.0 : 1.0));
 
     // ── Cull if below visibility threshold ────────────────────────────────────
     // The entry stays in the list as an invisible record — sat_point.vert discards it.

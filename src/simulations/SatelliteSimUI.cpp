@@ -3058,7 +3058,7 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
         ConstellationConfig &c = constellations[ci];
         snprintf(constCntBuf[ci], sizeof(constCntBuf[ci]), "%u", c.orbitCount);
         if (ci == kDebrisConst) // Kessler fragments: none in the roster; the live count of drawn records
-            snprintf(constCntBuf[ci], sizeof(constCntBuf[ci]), "%d", kesslerStateJson()["now"]["fragments"].get<int>());
+            snprintf(constCntBuf[ci], sizeof(constCntBuf[ci]), "%d", kesslerStateCached()["now"]["fragments"].get<int>());
 
         bool hov = ci < (int)hovConst.size() && hovConst[ci];
         bool hovHlt = ci < (int)hovHighlightConst.size() && hovHighlightConst[ci];
@@ -7768,6 +7768,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         kesslerRateMult = settingClamp(kj.value("rate_multiplier", kesslerRateMult), 0.0f, 1000.0f);
         kesslerAvoidance = settingClamp(kj.value("avoidance", kesslerAvoidance), 0.0f, 1.0f);
         kesslerHorizonYears = settingClamp(kj.value("horizon_years", kesslerHorizonYears), 1.0f, 200.0f);
+        kesslerDustGain = settingClamp(kj.value("dust_gain", kesslerDustGain), 0.0f, 100000.0f);
         // Applied at launch; a later change (a harness `set`, a snapshot's settings) re-simulates next frame.
         if (kInitDone && (e0 != kesslerEnabled || r0 != kesslerRateMult || a0 != kesslerAvoidance || h0 != kesslerHorizonYears))
             kRestartPending = true;
@@ -8572,7 +8573,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     j["kessler"] = {{"enabled", kesslerEnabled},
                     {"rate_multiplier", kesslerRateMult},
                     {"avoidance", kesslerAvoidance},
-                    {"horizon_years", kesslerHorizonYears}};
+                    {"horizon_years", kesslerHorizonYears},
+                    {"dust_gain", kesslerDustGain}};
     return j;
 }
 

@@ -3,6 +3,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <execution>
+#include <limits>
 #include <thread>
 
 #ifdef _WIN32
@@ -129,51 +132,87 @@ static double sampleChi(double Lc, uint64_t seed, uint64_t idx)
     return first ? mu1 + s1 * z : mu2 + s2 * z;
 }
 
-static void fillFragments(BreakupResult &res, double nReal, double LcMin, double LcMax, int maxRecords,
-                          bool collision, double sideBShare, uint64_t seed)
+// One fragment of size Lc: its area, mass (from the bimodal A/m) and ejection velocity.
+static Fragment makeFragment(double Lc, bool collision, double sideBShare, uint64_t seed, uint64_t k)
+{
+    Fragment f;
+    f.Lc = Lc;
+    const double chi = sampleChi(f.Lc, seed, k);
+    const double am = std::pow(10.0, chi);
+    f.areaM2 = 0.556945 * std::pow(f.Lc, 2.0047077);
+    f.massKg = f.areaM2 / am;
+    const double nu = (collision ? 0.9 * chi + 2.9 : 0.2 * chi + 1.85) + 0.4 * hashNormal(seed, k, 5);
+    const double dvm = std::pow(10.0, nu);
+    const double z = 2.0 * hash01(seed, k, 6) - 1.0;
+    const double ph = kTwoPi * hash01(seed, k, 7);
+    const double rxy = std::sqrt(std::max(0.0, 1.0 - z * z));
+    f.dv = dvm * glm::dvec3(rxy * std::cos(ph), rxy * std::sin(ph), z);
+    f.side = hash01(seed, k, 8) < sideBShare ? 1 : 0;
+    return f;
+}
+
+// The size distribution N(>Lc) ~ Lc^-b, truncated to [LcMin, LcMax], cut at LcRecord: the large pieces as
+// records (weight 1 up to maxLarge, and never more mass than maxLargeMass), the small ones as nSmallSamples
+// statistical samples carrying the rest.
+static void fillFragments(BreakupResult &res, double nReal, const BreakupSizes &sz, bool collision, double sideBShare,
+                          uint64_t seed)
 {
     res.nReal = nReal;
-    if (nReal <= 0.0 || maxRecords <= 0)
+    if (nReal <= 0.0)
         return;
-    int K;
-    double w;
-    if (nReal <= (double)maxRecords)
-    {
-        K = (int)std::floor(nReal);
-        if (hash01(seed, 0xFFFFFFFFull, 9) < nReal - (double)K)
-            ++K;
-        w = 1.0;
-    }
-    else
-    {
-        K = maxRecords;
-        w = nReal / (double)K;
-    }
     const double b = collision ? 1.71 : 1.6;
-    const double tail = std::pow(LcMax / LcMin, -b); // the truncated power law's CDF floor
-    res.fragments.reserve((size_t)K);
-    for (int k = 0; k < K; ++k)
+    const double LcMax = std::max(sz.LcMax, sz.LcMin * 1.5);
+    const double LcRec = std::min(sz.LcRecord, LcMax);
+    // Complementary CDF of the truncated power law.
+    auto ccdf = [&](double L) {
+        return (std::pow(L, -b) - std::pow(LcMax, -b)) / (std::pow(sz.LcMin, -b) - std::pow(LcMax, -b));
+    };
+    auto sampleIn = [&](double lo, double hi, double u) { // inverse CDF on [lo, hi]
+        const double a = std::pow(lo, -b), c = std::pow(hi, -b);
+        return std::pow(a - u * (a - c), -1.0 / b);
+    };
+    res.nLarge = LcRec < LcMax ? nReal * ccdf(LcRec) : 0.0;
+    // Large: real pieces.
+    if (res.nLarge > 0.0 && sz.maxLarge > 0)
     {
-        Fragment f;
-        const double u = hash01(seed, (uint64_t)k, 1);
-        f.Lc = LcMin * std::pow(1.0 - u * (1.0 - tail), -1.0 / b);
-        const double chi = sampleChi(f.Lc, seed, (uint64_t)k);
-        const double am = std::pow(10.0, chi);
-        f.areaM2 = 0.556945 * std::pow(f.Lc, 2.0047077);
-        f.massKg = f.areaM2 / am;
-        const double nu = (collision ? 0.9 * chi + 2.9 : 0.2 * chi + 1.85) + 0.4 * hashNormal(seed, (uint64_t)k, 5);
-        const double dvm = std::pow(10.0, nu);
-        const double z = 2.0 * hash01(seed, (uint64_t)k, 6) - 1.0;
-        const double ph = kTwoPi * hash01(seed, (uint64_t)k, 7);
-        const double rxy = std::sqrt(std::max(0.0, 1.0 - z * z));
-        f.dv = dvm * glm::dvec3(rxy * std::cos(ph), rxy * std::sin(ph), z);
-        f.side = hash01(seed, (uint64_t)k, 8) < sideBShare ? 1 : 0;
-        f.weight = w;
-        res.fragments.push_back(f);
+        int K = (int)std::floor(res.nLarge);
+        if (hash01(seed, 0xFFFFFFFFull, 9) < res.nLarge - (double)K)
+            ++K;
+        double w = 1.0;
+        if (K > sz.maxLarge)
+        {
+            w = res.nLarge / (double)sz.maxLarge;
+            K = sz.maxLarge;
+        }
+        double mass = 0.0;
+        for (int k = 0; k < K; ++k)
+        {
+            Fragment f = makeFragment(sampleIn(LcRec, LcMax, hash01(seed, (uint64_t)k, 1)), collision, sideBShare, seed,
+                                      (uint64_t)k);
+            if (mass + f.massKg * w > sz.maxLargeMass)
+                continue; // the parent has no more mass to give
+            mass += f.massKg * w;
+            f.weight = w;
+            res.fragments.push_back(f);
+        }
+    }
+    // Small: statistical samples.
+    const double nSmall = nReal - res.nLarge;
+    if (nSmall > 0.0 && sz.nSmallSamples > 0)
+    {
+        const int S = sz.nSmallSamples;
+        for (int k = 0; k < S; ++k)
+        {
+            // Stratified in the size distribution so 16 samples cover it.
+            const double u = ((double)k + hash01(seed, (uint64_t)k + 1000, 1)) / (double)S;
+            Fragment f = makeFragment(sampleIn(sz.LcMin, LcRec, u), collision, sideBShare, seed, (uint64_t)k + 1000);
+            f.weight = nSmall / (double)S;
+            res.small.push_back(f);
+        }
     }
 }
 
-BreakupResult breakupCollision(double mT, double mP, double vRel, double LcMin, int maxRecords, uint64_t seed)
+BreakupResult breakupCollision(double mT, double mP, double vRel, const BreakupSizes &sz, uint64_t seed)
 {
     BreakupResult res;
     if (mP > mT)
@@ -181,20 +220,22 @@ BreakupResult breakupCollision(double mT, double mP, double vRel, double LcMin, 
     const double emr = 0.5 * mP * vRel * vRel / std::max(mT, 1e-3); // J/kg
     res.catastrophic = emr >= 40000.0;
     const double M = res.catastrophic ? (mT + mP) : mP * (vRel * 1e-3) * (vRel * 1e-3);
-    const double nReal = 0.1 * std::pow(M, 0.75) * std::pow(LcMin, -1.71);
-    // Largest fragments: about the size of the larger object (a few metres at most).
-    const double LcMax = std::max(LcMin * 1.5, std::min(4.0, 0.8 * std::cbrt(mT / 50.0)));
-    fillFragments(res, nReal, LcMin, LcMax, maxRecords, true, res.catastrophic ? mP / (mT + mP) : 0.0, seed);
+    res.massKg = res.catastrophic ? M : std::min(M, mT);
+    const double nReal = 0.1 * std::pow(M, 0.75) * std::pow(sz.LcMin, -1.71);
+    BreakupSizes s = sz;
+    if (!res.catastrophic)
+        s.maxLargeMass = std::min(s.maxLargeMass, res.massKg); // cratering: only the ejected mass
+    fillFragments(res, nReal, s, true, res.catastrophic ? mP / (mT + mP) : 0.0, seed);
     return res;
 }
 
-BreakupResult breakupExplosion(double m, double LcMin, int maxRecords, uint64_t seed)
+BreakupResult breakupExplosion(double m, const BreakupSizes &sz, uint64_t seed)
 {
     BreakupResult res;
     res.catastrophic = true;
-    const double nReal = 6.0 * std::pow(LcMin, -1.6);
-    const double LcMax = std::max(LcMin * 1.5, std::min(4.0, 0.8 * std::cbrt(m / 50.0)));
-    fillFragments(res, nReal, LcMin, LcMax, maxRecords, false, 0.0, seed);
+    res.massKg = m;
+    const double nReal = 6.0 * std::pow(sz.LcMin, -1.6);
+    fillFragments(res, nReal, sz, false, 0.0, seed);
     return res;
 }
 
@@ -276,7 +317,9 @@ std::vector<EngineCollision> engineSample(const std::vector<EngineObject> &objs,
                       z = (int64_t)std::floor(r.z * inv) & 0x1FFFFF;
         keys[i] = {(x << 42) | (y << 21) | z, (uint32_t)i};
     }
-    std::sort(keys.begin(), keys.end(), [](const Key &a, const Key &b) { return a.k != b.k ? a.k < b.k : a.i < b.i; });
+    // Keys are unique (k, i): the order is the same however the sort runs, so it may run in parallel.
+    std::sort(std::execution::par, keys.begin(), keys.end(),
+              [](const Key &a, const Key &b) { return a.k != b.k ? a.k < b.k : a.i < b.i; });
     const double V = p.cubeM * p.cubeM * p.cubeM;
     for (size_t s = 0; s < keys.size();)
     {
@@ -416,6 +459,124 @@ void deadTumble(uint32_t sat, uint32_t &periodS, double &phase0)
     phase0 = kTwoPi * (double)(float)((hashU32(h) >> 8) * (1.0 / 16777216.0));
 }
 
+double formationDriftTurns(uint32_t sat, uint32_t tauSec, double frac)
+{
+    // sat_orbit.comp formationDrift: the same hash, the same integer arithmetic.
+    const uint32_t h = hashU32(sat * 0x51ED27F1u + 0x3C6EF372u);
+    const uint64_t j = 1u + (h % 3u);
+    const double sign = (h & 0x100u) ? -1.0 : 1.0;
+    const uint64_t t2 = (uint64_t)tauSec * (uint64_t)tauSec;
+    const uint64_t m = (t2 * j) & ((1ull << 48) - 1ull);
+    double turns = (double)m * (1.0 / 281474976710656.0);
+    turns += (double)j * (2.0 * (double)tauSec * frac + frac * frac) * (1.0 / 281474976710656.0);
+    return sign * turns;
+}
+
+// ── The small fragments' density grid ─────────────────────────────────────────────────────────────
+void DebrisGrid::clear()
+{
+    cnt.assign((size_t)NR * NL * NH, 0);
+    massG.assign((size_t)NR * NL, 0);
+}
+
+void DebrisGrid::deposit(double a, double e, double incl, double argp, double weight, double massKg, uint64_t seed,
+                         int sign)
+{
+    if (cnt.empty())
+        clear();
+    const int64_t q = (int64_t)std::llround(weight * kFix / NS);
+    const int64_t mq = (int64_t)std::llround(weight * massKg * 1000.0 * kFix / NS);
+    if (q == 0)
+        return;
+    const double ph = hash01(seed, 0, 77);
+    const double ci = std::cos(incl), si = std::sin(incl);
+    for (int k = 0; k < NS; ++k)
+    {
+        // Argument of latitude: uniform in time (near-circular), the radius from the eccentricity.
+        const double u = kTwoPi * ((double)k + ph) / NS;
+        const double r = a * (1.0 - e * std::cos(u - argp));
+        const int ir = (int)std::floor((r - kRMin) / kDR);
+        if (ir < 0 || ir >= NR)
+            continue;
+        const double lat = std::asin(std::clamp(si * std::sin(u), -1.0, 1.0));
+        const int il = std::clamp((int)std::floor((lat + 0.5 * kPi) / (kPi / NL)), 0, NL - 1);
+        double psi = std::atan2(ci, si * std::cos(u)); // heading: east = cos i, north = sin i cos u
+        if (psi < 0.0)
+            psi += kTwoPi;
+        const int ih = std::min((int)(psi / (kTwoPi / NH)), NH - 1);
+        cnt[((size_t)ir * NL + il) * NH + ih] += sign * q;
+        massG[(size_t)ir * NL + il] += sign * mq;
+    }
+}
+
+double DebrisGrid::rate(const glm::dvec3 &r, const glm::dvec3 &v, double pick, double &vRelOut, double &massOut) const
+{
+    vRelOut = 0.0;
+    massOut = 0.1;
+    if (cnt.empty())
+        return 0.0;
+    const double rm = glm::length(r);
+    const int ir = (int)std::floor((rm - kRMin) / kDR);
+    if (ir < 0 || ir >= NR)
+        return 0.0;
+    const double sinLat = std::clamp(r.z / rm, -1.0, 1.0);
+    const double lat = std::asin(sinLat);
+    const int il = std::clamp((int)std::floor((lat + 0.5 * kPi) / (kPi / NL)), 0, NL - 1);
+    const size_t cell = (size_t)ir * NL + il;
+    const int64_t *c = &cnt[cell * NH];
+    int64_t sum = 0;
+    for (int k = 0; k < NH; ++k)
+        sum += std::max<int64_t>(c[k], 0);
+    if (sum <= 0)
+        return 0.0;
+    const glm::dvec3 up = r / rm;
+    glm::dvec3 east = glm::cross(glm::dvec3(0.0, 0.0, 1.0), up);
+    const double el = glm::length(east);
+    east = el > 1e-9 ? east / el : glm::dvec3(1.0, 0.0, 0.0);
+    const glm::dvec3 north = glm::cross(up, east);
+    const double psiT = std::atan2(glm::dot(v, east), glm::dot(v, north));
+    const double speed = glm::length(v);
+    // The cell is a latitude band of a spherical shell: all longitudes (orbit-averaged).
+    const double r1 = kRMin + ir * kDR, r2 = r1 + kDR;
+    const double lat1 = -0.5 * kPi + il * (kPi / NL), lat2 = lat1 + kPi / NL;
+    const double V = kTwoPi / 3.0 * (r2 * r2 * r2 - r1 * r1 * r1) * (std::sin(lat2) - std::sin(lat1));
+    double contrib[NH], tot = 0.0;
+    for (int k = 0; k < NH; ++k)
+    {
+        contrib[k] = 0.0;
+        if (c[k] <= 0)
+            continue;
+        const double n = (double)c[k] / kFix / V;
+        const double dpsi = psiT - ((double)k + 0.5) * (kTwoPi / NH);
+        const double vh = 2.0 * speed * std::abs(std::sin(0.5 * dpsi));
+        const double vrel = std::sqrt(vh * vh + 300.0 * 300.0); // + the eccentricities' radial speeds
+        contrib[k] = n * vrel;
+        tot += contrib[k];
+    }
+    double acc = 0.0;
+    for (int k = 0; k < NH; ++k)
+    {
+        acc += contrib[k];
+        if (contrib[k] > 0.0 && acc >= pick * tot)
+        {
+            const double dpsi = psiT - ((double)k + 0.5) * (kTwoPi / NH);
+            const double vh = 2.0 * speed * std::abs(std::sin(0.5 * dpsi));
+            vRelOut = std::sqrt(vh * vh + 300.0 * 300.0);
+            break;
+        }
+    }
+    massOut = std::max(1e-3, (double)massG[cell] / 1000.0 / (double)sum);
+    return tot;
+}
+
+double DebrisGrid::total() const
+{
+    int64_t s = 0;
+    for (int64_t x : cnt)
+        s += x;
+    return (double)s / kFix;
+}
+
 void World::reset()
 {
     rosterDead.assign(roster.size(), kNever);
@@ -424,6 +585,9 @@ void World::reset()
     events.clear();
     poolDeaths.clear();
     rosterChanged.clear();
+    grid.clear();
+    particles.clear();
+    deathHeap.clear();
     frontier = s.epoch;
     sampleCount = 0;
 }
@@ -443,7 +607,20 @@ State World::stateOf(uint32_t ref, double t) const
         st = satOrbitStateAt(poolOrbitElems(pool[j], j), t);
     }
     else
-        st = satOrbitStateAt(rosterOrbitElems(roster[ref], s.raanAnchorT), t);
+    {
+        SatOrbitElems e = rosterOrbitElems(roster[ref], s.raanAnchorT);
+        // A dead formation member drifts along-track (sat_orbit.comp formationDrift).
+        if (roster[ref].formation && ref < rosterDead.size() && rosterDead[ref] != kNever)
+        {
+            const double tau = t - s.epoch - (double)rosterDead[ref];
+            if (tau > 0.0)
+            {
+                const double whole = std::floor(tau);
+                e.u0 += kTwoPi * formationDriftTurns(ref, (uint32_t)std::min(whole, 4294967295.0), tau - whole);
+            }
+        }
+        st = satOrbitStateAt(e, t);
+    }
     return {st.posEci, st.velEci};
 }
 
@@ -477,10 +654,42 @@ double World::deathTime(const PoolRec &r, double t) const
 {
     if (r.e >= 0.99 || r.a <= 0.0)
         return t;
+    return t + lifetime(t, r.a, r.e, r.cdAm);
+}
+
+double World::lifetime(double t, double a, double e, double cdAm) const
+{
     const double gain = s.stormDensityGain;
-    const double dt = decayTime(t, r.a, r.e, r.cdAm, s.horizonS,
-                                [gain](double tt) { return 1.0 + gain * scriptedStormShape(tt); });
-    return t + dt;
+    auto exact = [&](double aa, double ee, double cc, double tt) {
+        return decayTime(tt, aa, ee, cc, s.horizonS, [gain](double x) { return 1.0 + gain * scriptedStormShape(x); });
+    };
+    if (t < s.epoch + 12.0 * 86400.0 || e > 0.2)
+        return exact(a, e, cdAm, t);
+    // The table: height (km) 100..2100 in 10-km steps x log10(cdAm) -4..1 in 0.1 steps, circular orbits at the
+    // height h = perigee + 0.3 (apogee - perigee) (an eccentric orbit loses its apogee first; drag acts near perigee).
+    constexpr int NH = 201, NC = 51;
+    if (lifeTab.empty())
+        lifeTab.assign((size_t)NH * NC, std::numeric_limits<float>::quiet_NaN());
+    const double hp = a * (1.0 - e) - kRMean, ha = a * (1.0 + e) - kRMean;
+    const double h = (hp + 0.3 * (ha - hp)) * 1e-3;
+    const double x = std::clamp((h - 100.0) / 10.0, 0.0, (double)(NH - 1) - 1e-9);
+    const double y = std::clamp((std::log10(std::max(cdAm, 1e-6)) + 4.0) / 0.1, 0.0, (double)(NC - 1) - 1e-9);
+    const int ix = (int)x, iy = (int)y;
+    const double fx = x - ix, fy = y - iy;
+    auto cell = [&](int i, int j) {
+        float &v = lifeTab[(size_t)i * NC + j];
+        if (std::isnan(v))
+        {
+            // Evaluated after the storm (a fixed time past the epoch): only the orbit and cdAm matter.
+            const double T = exact(kRMean + (100.0 + 10.0 * i) * 1e3, 0.0, std::pow(10.0, -4.0 + 0.1 * j),
+                                   s.epoch + 13.0 * 86400.0);
+            v = (float)std::log(std::max(T, 1.0));
+        }
+        return (double)v;
+    };
+    const double L = (1 - fx) * (1 - fy) * cell(ix, iy) + fx * (1 - fy) * cell(ix + 1, iy) +
+                     (1 - fx) * fy * cell(ix, iy + 1) + fx * fy * cell(ix + 1, iy + 1);
+    return std::exp(L);
 }
 
 PoolRec World::recordFromState(const State &st, double t, uint32_t parentRef, const glm::dvec3 &dv) const
@@ -543,41 +752,209 @@ void World::killRoster(uint32_t ref, double t, uint32_t eventIdx)
     rosterDead[ref] = sec;
     // No longer flying against drag: it re-enters when its (circular) orbit decays.
     const double cdAm = 2.2 * ty.areaM2 / std::max(ty.massKg, 1.0);
-    const double gain = s.stormDensityGain;
-    const double td = t + decayTime(t, (double)o.R, 0.0, cdAm, s.horizonS,
-                                    [gain](double tt) { return 1.0 + gain * scriptedStormShape(tt); });
+    const double td = t + lifetime(t, (double)o.R, 0.0, cdAm);
     if (td < s.epoch + s.horizonS * 1.5)
         rosterEnd[ref] = std::min(rosterEnd[ref], std::max(sec, secOf(td)));
     rosterChanged.push_back(ref);
 }
 
+// The kind of large piece a breakup of `ref` leaves: by its surface (arrays, radiators, the rest); a kit piece
+// breaks into more of its own kind.
+int World::kindOf(uint32_t ref, double h) const
+{
+    if (ref == kNoRef || ref == kSmallRef)
+        return 2;
+    const TypeInfo &ty = types[(ref & kPoolBit) ? pool[ref & ~kPoolBit].type : roster[ref].type];
+    if (ty.kitKind >= 0)
+        return ty.kitKind;
+    if (h < ty.arrayShare)
+        return 0;
+    if (h < ty.arrayShare + ty.radiatorShare)
+        return 1;
+    return 2;
+}
+
+// Where a breakup between refA and refB is cut: the largest piece is a fraction of the larger object's size (a
+// 70-m Starmind leaves array sections metres long; a 30-cm fragment nothing over a metre), and the large pieces
+// never carry more than 60% of the mass.
+BreakupSizes World::sizesFor(uint32_t refA, uint32_t refB, int maxLarge) const
+{
+    auto sizeOf = [&](uint32_t ref) {
+        if (ref == kNoRef || ref == kSmallRef)
+            return 0.0;
+        if (ref & kPoolBit)
+            return 2.0 * (double)pool[ref & ~kPoolBit].radiusM;
+        return types[roster[ref].type].sizeM;
+    };
+    auto massOfRef = [&](uint32_t ref) {
+        if (ref == kNoRef || ref == kSmallRef)
+            return 0.0;
+        if (ref & kPoolBit)
+            return (double)pool[ref & ~kPoolBit].massKg;
+        return types[roster[ref].type].massKg;
+    };
+    BreakupSizes sz;
+    sz.LcMin = s.LcMin;
+    sz.LcRecord = s.LcRecord;
+    sz.LcMax = std::clamp(0.15 * std::max(sizeOf(refA), sizeOf(refB)), sz.LcMin * 1.5, 25.0);
+    sz.maxLarge = maxLarge;
+    sz.maxLargeMass = 0.6 * (massOfRef(refA) + massOfRef(refB));
+    sz.nSmallSamples = 16;
+    return sz;
+}
+
 void World::spawnFragments(const BreakupResult &br, uint32_t refA, uint32_t refB, const State &sa, const State &sb,
                            double t, uint32_t eventIdx, uint32_t seed)
 {
+    const bool haveB = refB != kNoRef && refB != kSmallRef;
     for (size_t k = 0; k < br.fragments.size(); ++k)
     {
         const Fragment &f = br.fragments[k];
-        const bool sideB = f.side == 1 && refB != kNoRef;
-        PoolRec r = recordFromState(sideB ? sb : sa, t, sideB ? refB : refA, f.dv);
+        const bool sideB = f.side == 1 && haveB;
+        const uint32_t parent = sideB ? refB : refA;
+        PoolRec r = recordFromState(sideB ? sb : sa, t, parent, f.dv);
+        double area = f.areaM2, mass = f.massKg;
         r.type = (uint16_t)s.debrisType;
+        r.flux = (float)std::clamp(area / std::max(s.debrisModelArea, 1e-6), 1e-4, 1e3);
+        // A kit piece of the parent's kind, its area snapped to the nearest size class (flux 1: it can be drawn
+        // as a mesh; the A/m, and so the drag, is the fragment's).
+        const int kind = f.kind >= 0 ? f.kind : kindOf(parent, hash01(seed, k, 35));
+        int best = -1;
+        double bestD = 1e30;
+        for (int c = 0; c < 3; ++c)
+            if (s.kitType[kind][c] >= 0 && s.kitArea[kind][c] > 0.0)
+            {
+                const double d = std::abs(std::log(area / s.kitArea[kind][c]));
+                if (d < bestD)
+                {
+                    bestD = d;
+                    best = c;
+                }
+            }
+        if (best >= 0)
+        {
+            mass *= s.kitArea[kind][best] / area;
+            area = s.kitArea[kind][best];
+            r.type = (uint16_t)s.kitType[kind][best];
+            r.flux = 1.0f;
+        }
         r.constIdx = s.debrisConst;
         r.flags = kRecFragment;
-        r.flux = (float)std::clamp(f.areaM2 / std::max(s.debrisModelArea, 1e-6), 1e-4, 1e3);
-        r.massKg = (float)f.massKg;
-        r.radiusM = (float)std::sqrt(f.areaM2 / kPi);
-        r.cdAm = (float)std::clamp(2.2 * f.areaM2 / std::max(f.massKg, 1e-6), 1e-4, 10.0);
+        r.massKg = (float)mass;
+        r.radiusM = (float)std::sqrt(area / kPi);
+        r.cdAm = (float)std::clamp(2.2 * area / std::max(mass, 1e-6), 1e-4, 10.0);
         r.weight = (float)f.weight;
-        r.tumbleRate = (float)(0.2 + 2.5 * hash01(seed, k, 33));
+        // Large pieces tumble slowly (seconds to a couple of minutes a turn): their glints are long flashes.
+        r.tumbleRate = (float)((0.05 + 0.75 * hash01(seed, k, 33)) / std::sqrt(std::max(f.Lc, 1.0)));
         r.tumble0 = (float)wrap2Pi(kTwoPi * hash01(seed, k, 34) - (double)r.tumbleRate * t);
         r.event = eventIdx;
         const double td = deathTime(r, t);
         r.deathSec = std::max(r.bornSec, td >= s.epoch + s.horizonS * 1.5 ? kNever : secOf(td));
-        addRecord(r);
+        if (pool.size() < s.poolCapacity)
+            addRecord(r);
     }
+}
+
+// A large satellite's appendages shear off whole when it shatters: array sections (2-6) and radiator sections (1-2)
+// many metres long, which the size distribution (made for compact bodies) leaves out. Slow (10-50 m/s: they tear off
+// rather than being blasted), so they stay near the parent's orbit and tumble: the brightest flashes in the debris.
+void World::addStructuralPieces(BreakupResult &br, uint32_t ref, int side, uint32_t seed) const
+{
+    if (ref == kNoRef || ref == kSmallRef || (ref & kPoolBit))
+        return;
+    const TypeInfo &ty = types[roster[ref].type];
+    if (ty.sizeM < 20.0)
+        return;
+    auto add = [&](int kind, double Lc, uint64_t k) {
+        Fragment f;
+        f.Lc = Lc;
+        f.areaM2 = 0.556945 * std::pow(Lc, 2.0047077);
+        f.massKg = f.areaM2 / 0.15;
+        const double dvm = 10.0 + 40.0 * hash01(seed, k, 71);
+        const double z = 2.0 * hash01(seed, k, 72) - 1.0, ph = kTwoPi * hash01(seed, k, 73);
+        const double rxy = std::sqrt(std::max(0.0, 1.0 - z * z));
+        f.dv = dvm * glm::dvec3(rxy * std::cos(ph), rxy * std::sin(ph), z);
+        f.side = side;
+        f.kind = kind;
+        f.weight = 1.0;
+        br.fragments.push_back(f);
+    };
+    const double big = std::min(0.15 * ty.sizeM, 12.0);
+    if (ty.arrayShare > 0.2)
+    {
+        const int n = 2 + (int)(5.0 * hash01(seed, 900, 74));
+        for (int k = 0; k < n; ++k)
+            add(0, big * (0.6 + 0.4 * hash01(seed, 910 + k, 75)), 910 + k);
+    }
+    if (ty.radiatorShare > 0.05)
+    {
+        const int n = 1 + (int)(2.0 * hash01(seed, 920, 76));
+        for (int k = 0; k < n; ++k)
+            add(1, big * (0.5 + 0.4 * hash01(seed, 930 + k, 77)), 930 + k);
+    }
+}
+
+// The small fragments: each statistical sample's orbit joins the density grid until drag brings it down.
+void World::spawnSmall(const BreakupResult &br, const State &st, double t, uint32_t seed, Event &ev)
+{
+    double n = 0.0, dv2 = 0.0;
+    for (size_t k = 0; k < br.small.size(); ++k)
+    {
+        const Fragment &f = br.small[k];
+        n += f.weight;
+        dv2 += f.weight * glm::dot(f.dv, f.dv);
+        const Elems el = elemsFromState({st.r, st.v + f.dv});
+        if (el.e >= 0.99 || el.a <= 0.0 || el.a * (1.0 - el.e) <= kRMean + 120000.0)
+            continue;
+        StatParticle p;
+        p.a = el.a;
+        p.e = el.e;
+        p.incl = el.i;
+        p.argp = el.argp;
+        p.weight = f.weight;
+        p.massKg = f.massKg;
+        p.seed = ((uint64_t)seed << 8) ^ (uint64_t)k ^ ((uint64_t)events.size() << 32);
+        const double cdAm = std::clamp(2.2 * f.areaM2 / std::max(f.massKg, 1e-6), 1e-4, 10.0);
+        p.deathT = t + lifetime(t, el.a, el.e, cdAm);
+        grid.deposit(p.a, p.e, p.incl, p.argp, p.weight, p.massKg, p.seed, +1);
+        particles.push_back(p);
+        deathHeap.push_back({p.deathT, (uint32_t)particles.size() - 1});
+        std::push_heap(deathHeap.begin(), deathHeap.end(), std::greater<>());
+    }
+    ev.nSmall = (float)n;
+    ev.dvSmall = n > 0.0 ? (float)std::sqrt(dv2 / n) : 0.0f;
+}
+
+void World::retireParticles(double t)
+{
+    while (!deathHeap.empty() && deathHeap.front().first <= t)
+    {
+        std::pop_heap(deathHeap.begin(), deathHeap.end(), std::greater<>());
+        const StatParticle &p = particles[deathHeap.back().second];
+        grid.deposit(p.a, p.e, p.incl, p.argp, p.weight, p.massKg, p.seed, -1);
+        deathHeap.pop_back();
+    }
+}
+
+// A formation member broke up: the cloud sweeps through its cluster within minutes. Each neighbour is hit with
+// clusterHitP: slow fragments (the cloud's own spread, ~100 m/s), so damaged and tumbling, not shattered.
+void World::damageCluster(uint32_t ref, double t, uint32_t eventIdx, uint32_t seed)
+{
+    if ((ref & kPoolBit) || ref >= roster.size())
+        return;
+    const RosterObj &o = roster[ref];
+    if (!o.formation || o.clusterSize < 2)
+        return;
+    const uint32_t first = ref - o.clusterSlot;
+    for (uint32_t m = first; m < first + o.clusterSize && m < roster.size(); ++m)
+        if (m != ref && hash01(seed, m, 51) < s.clusterHitP)
+            killRoster(m, t, eventIdx);
 }
 
 static void endObject(World &w, uint32_t ref, double t, bool keepWeighted)
 {
+    if (ref == kNoRef || ref == kSmallRef)
+        return;
     const int32_t sec = w.secOf(t);
     if (ref & kPoolBit)
     {
@@ -609,12 +986,17 @@ bool World::apply(Event ev)
     const uint32_t idx = (uint32_t)events.size();
     ev.firstRec = (uint32_t)pool.size();
     const double fill = (double)pool.size() / std::max<double>(s.poolCapacity, 1.0);
-    // Representative records: up to maxRecordsPerEvent at an empty pool, (1 - fill)^3 of it as the pool
-    // fills, at least one while there is room (each record then stands for more real fragments).
-    const double room = 1.0 - fill;
+    // Large-piece records: up to maxRecordsPerEvent, fewer as the pool fills (beyond: each stands for several).
     const int maxRec = fill >= 1.0 ? 0
-                                   : std::clamp((int)std::ceil(s.maxRecordsPerEvent * room * room * room), 1,
+                                   : std::clamp((int)std::ceil(s.maxRecordsPerEvent * (1.0 - fill)), 1,
                                                 std::max(s.maxRecordsPerEvent, 1));
+    auto setWhere = [&](const State &st) {
+        for (int k = 0; k < 3; ++k)
+        {
+            ev.pos[k] = (float)st.r[k];
+            ev.vel[k] = (float)st.v[k];
+        }
+    };
     switch (ev.kind)
     {
     case EV_KILL:
@@ -631,37 +1013,70 @@ bool World::apply(Event ev)
         break;
     case EV_COLLISION:
     {
-        if (!alive(ev.a, ev.t) || !alive(ev.b, ev.t))
+        const bool fromGrid = ev.b == kSmallRef;
+        if (!alive(ev.a, ev.t) || (!fromGrid && !alive(ev.b, ev.t)))
             return false;
         uint32_t tgt = ev.a, prj = ev.b;
-        if (massOf(*this, prj) > massOf(*this, tgt))
-            std::swap(tgt, prj);
-        const State st = stateOf(tgt, ev.t), sp = stateOf(prj, ev.t);
-        const double v = glm::length(st.v - sp.v);
-        // Cratering (non-catastrophic) hits are the vast majority once fragments abound: they get an eighth
-        // of the record budget (their fragments are few and small).
-        const double emr = 0.5 * std::min(massOf(*this, tgt), massOf(*this, prj)) * v * v /
-                           std::max(std::max(massOf(*this, tgt), massOf(*this, prj)), 1e-3);
-        const int rec = emr >= 40000.0 ? maxRec : (maxRec > 0 ? std::max(1, maxRec / 8) : 0);
-        const BreakupResult br = breakupCollision(massOf(*this, tgt), massOf(*this, prj), v, s.LcMin, rec, ev.seed);
-        // A hit that changes nothing is not an event: a cratering hit that makes no records, by a representative
-        // record that survives it, on a target that is already dead or that it does not kill (millions of these
-        // once the pool is full; recording them would only grow the log).
-        if (!br.catastrophic && br.fragments.empty())
+        double mT, mP, v;
+        State st, sp;
+        if (fromGrid)
         {
-            const bool prjSurvives = (prj & kPoolBit) && pool[prj & ~kPoolBit].weight > 1.5f;
-            const bool kills = !(tgt & kPoolBit) && !dead(tgt, ev.t) && hash01(ev.seed, 7, 41) < 0.5;
-            if (prjSurvives && !kills)
+            mT = massOf(*this, tgt);
+            mP = std::max((double)ev.mProj, 1e-3);
+            st = stateOf(tgt, ev.t);
+            sp = st;
+            v = ev.vRel;
+            if (mP > mT)
+            {
+                std::swap(mT, mP); // a small fragment heavier than the target (a piece of a piece): it breaks
+            }
+        }
+        else
+        {
+            if (massOf(*this, prj) > massOf(*this, tgt))
+                std::swap(tgt, prj);
+            mT = massOf(*this, tgt);
+            mP = massOf(*this, prj);
+            st = stateOf(tgt, ev.t);
+            sp = stateOf(prj, ev.t);
+            v = glm::length(st.v - sp.v);
+        }
+        const double emr = 0.5 * std::min(mT, mP) * v * v / std::max(std::max(mT, mP), 1e-3);
+        const int rec = emr >= 40000.0 ? maxRec : (maxRec > 0 ? std::max(1, maxRec / 8) : 0);
+        BreakupResult br = breakupCollision(mT, mP, v, sizesFor(tgt, prj, rec), ev.seed);
+        if (br.catastrophic && rec > 0)
+        {
+            addStructuralPieces(br, tgt, 0, ev.seed);
+            if (!fromGrid)
+                addStructuralPieces(br, prj, 1, ev.seed ^ 0x77u);
+        }
+        // A hit that changes nothing visible is not an event: a cratering hit that leaves no large piece, by a
+        // projectile that survives it (a small fragment, a representative record), on a target it does not kill
+        // (millions of these once the debris abounds; recording them would only grow the log).
+        const bool kills = !br.catastrophic && !(tgt & kPoolBit) && !dead(tgt, ev.t) && hash01(ev.seed, 7, 41) < 0.5;
+        if (!br.catastrophic && br.fragments.empty() && !kills)
+        {
+            const bool prjSurvives = fromGrid || ((prj & kPoolBit) && pool[prj & ~kPoolBit].weight > 1.5f);
+            if (prjSurvives)
                 return false;
         }
         ev.vRel = (float)v;
         ev.nReal = (float)br.nReal;
         ev.catastrophic = br.catastrophic ? 1 : 0;
-        spawnFragments(br, tgt, prj, st, sp, ev.t, idx, ev.seed);
-        endObject(*this, prj, ev.t, true);
+        ev.dustKg = (float)(s.dustShare * br.massKg * (br.catastrophic ? 1.0 : 0.3));
+        setWhere(st);
+        spawnFragments(br, tgt, fromGrid ? kSmallRef : prj, st, sp, ev.t, idx, ev.seed);
+        spawnSmall(br, st, ev.t, ev.seed, ev);
+        if (!fromGrid)
+            endObject(*this, prj, ev.t, true);
         if (br.catastrophic)
+        {
             endObject(*this, tgt, ev.t, true);
-        else if (!(tgt & kPoolBit) && hash01(ev.seed, 7, 41) < 0.5)
+            damageCluster(tgt, ev.t, idx, ev.seed);
+            if (!fromGrid)
+                damageCluster(prj, ev.t, idx, ev.seed ^ 0x5A5Au);
+        }
+        else if (kills)
             killRoster(tgt, ev.t, idx); // damaged: the target dies and tumbles (its fragments came off it)
         break;
     }
@@ -672,13 +1087,20 @@ bool World::apply(Event ev)
             return false;
         const State st = stateOf(ev.a, ev.t);
         const double m = massOf(*this, ev.a);
-        const BreakupResult br = ev.kind == EV_ASAT ? breakupCollision(m, 20.0, 9000.0, s.LcMin, maxRec, ev.seed)
-                                                    : breakupExplosion(m, s.LcMin, maxRec, ev.seed);
+        const BreakupSizes sz = sizesFor(ev.a, kNoRef, maxRec);
+        BreakupResult br = ev.kind == EV_ASAT ? breakupCollision(m, 20.0, 9000.0, sz, ev.seed)
+                                              : breakupExplosion(m, sz, ev.seed);
+        if (maxRec > 0)
+            addStructuralPieces(br, ev.a, 0, ev.seed);
         ev.vRel = ev.kind == EV_ASAT ? 9000.0f : 0.0f;
         ev.nReal = (float)br.nReal;
         ev.catastrophic = br.catastrophic ? 1 : 0;
+        ev.dustKg = (float)(s.dustShare * br.massKg);
+        setWhere(st);
         spawnFragments(br, ev.a, kNoRef, st, st, ev.t, idx, ev.seed);
+        spawnSmall(br, st, ev.t, ev.seed, ev);
         endObject(*this, ev.a, ev.t, false);
+        damageCluster(ev.a, ev.t, idx, ev.seed);
         break;
     }
     default:
@@ -693,6 +1115,7 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
 {
     std::vector<uint32_t> refs;
     std::vector<EngineObject> objs;
+    std::vector<float> hitV, hitM;
     while (frontier < tEnd && !(stop && *stop))
     {
         const double t0 = frontier, t1 = std::min(frontier + s.stepS, tEnd);
@@ -700,8 +1123,11 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
             apply(pending[pendingNext++]);
         if (t1 > s.epoch)
         {
-            const double ts = 0.5 * (t0 + t1);
+            const double ts = 0.5 * (t0 + t1), dt = t1 - t0;
             const int32_t sec = secOf(ts);
+            auto clk = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
+            double c0 = clk();
+            retireParticles(ts);
             refs.clear();
             for (uint32_t i = 0; i < (uint32_t)roster.size(); ++i)
             {
@@ -714,7 +1140,13 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
             for (uint32_t j = 0; j < (uint32_t)pool.size(); ++j)
                 if (sec >= pool[j].bornSec && sec < pool[j].deathSec)
                     refs.push_back(j | kPoolBit);
+            double c1 = clk();
+            profRefs += c1 - c0;
             objs.resize(refs.size());
+            hitV.assign(refs.size(), 0.0f);
+            hitM.assign(refs.size(), 0.0f);
+            const bool gridOn = grid.total() > 0.0;
+            const uint64_t gseed = mix64(0x6121D5ull ^ sampleCount);
             parallelChunks(refs.size(), [&](size_t a, size_t b) {
                 for (size_t k = a; k < b; ++k)
                 {
@@ -738,12 +1170,41 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
                         o.active = !ty.passive && sec < rosterDead[ref];
                         o.weight = o.active ? (float)(1.0 / s.activeSample) : 1.0f;
                     }
+                    // The small fragments (the grid): expected hits = flux x cross-section x time.
+                    if (gridOn)
+                    {
+                        double vr = 0.0, mp = 0.0;
+                        const double rate = grid.rate(o.r, o.v, hash01(gseed, ref, 14), vr, mp);
+                        if (rate > 0.0)
+                        {
+                            const double rr = (double)o.radiusM + 0.15;
+                            double P = rate * kPi * rr * rr * dt * (double)o.weight * s.engine.rateMultiplier;
+                            if (o.active)
+                                P *= (1.0 - s.engine.avoidance);
+                            if (hash01(gseed, ref, 13) < std::min(P, 1.0))
+                            {
+                                // The projectile is drawn from the small population's size distribution (most
+                                // hits are by ~10-cm, tens-of-gram pieces), not the cell's mean mass: with the
+                                // mean (~0.5 kg) nearly every hit on a satellite was catastrophic.
+                                (void)mp;
+                                const double b = 1.71, lo = s.LcMin, hi = std::max(s.LcRecord, lo * 1.5);
+                                const double u = hash01(gseed, ref, 15);
+                                const double Lc = std::pow(std::pow(lo, -b) - u * (std::pow(lo, -b) - std::pow(hi, -b)), -1.0 / b);
+                                const double chi = sampleChi(Lc, gseed ^ (uint64_t)ref, 16);
+                                hitV[k] = (float)vr;
+                                hitM[k] = (float)(0.556945 * std::pow(Lc, 2.0047077) / std::pow(10.0, chi));
+                            }
+                        }
+                    }
                 }
             });
-            std::vector<EngineCollision> col = engineSample(objs, t1 - t0, s.engine, mix64(0xC0111DEull ^ sampleCount));
-            std::sort(col.begin(), col.end(), [](const EngineCollision &x, const EngineCollision &y) {
-                return x.a != y.a ? x.a < y.a : x.b < y.b;
-            });
+            double c2 = clk();
+            profState += c2 - c1;
+            std::vector<EngineCollision> col = engineSample(objs, dt, s.engine, mix64(0xC0111DEull ^ sampleCount));
+            double c3 = clk();
+            profPairs += c3 - c2;
+            std::vector<Event> evs;
+            evs.reserve(col.size());
             for (const EngineCollision &c : col)
             {
                 Event ev;
@@ -753,8 +1214,28 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
                 ev.kind = EV_COLLISION;
                 ev.origin = ORIGIN_ENGINE;
                 ev.seed = (uint32_t)mix64(((uint64_t)c.a << 32 | c.b) ^ (sampleCount * 0x9E3779B97F4A7C15ull));
-                apply(ev);
+                evs.push_back(ev);
             }
+            for (size_t k = 0; k < refs.size(); ++k)
+                if (hitV[k] > 0.0f)
+                {
+                    Event ev;
+                    ev.t = ts;
+                    ev.a = refs[k];
+                    ev.b = kSmallRef;
+                    ev.kind = EV_COLLISION;
+                    ev.origin = ORIGIN_ENGINE;
+                    ev.vRel = hitV[k];
+                    ev.mProj = hitM[k];
+                    ev.seed = (uint32_t)mix64(((uint64_t)refs[k] << 32 | kSmallRef) ^ (sampleCount * 0x9E3779B97F4A7C15ull));
+                    evs.push_back(ev);
+                }
+            std::sort(evs.begin(), evs.end(), [](const Event &x, const Event &y) {
+                return x.a != y.a ? x.a < y.a : x.b < y.b;
+            });
+            for (const Event &ev : evs)
+                apply(ev);
+            profApply += clk() - c3;
             ++sampleCount;
         }
         frontier = t1;

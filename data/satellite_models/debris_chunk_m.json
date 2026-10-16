@@ -1,0 +1,145 @@
+{
+    "name": "Debris: structure (M)",
+    "note": "Kessler debris kit (tools/make_debris_models.py): a piece of a satellite's bus with its MLI.",
+    "materials": [
+        {
+            "name": "bus",
+            "preset": "aluminum",
+            "roughness": 0.25,
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "mli",
+            "preset": "mli_foil"
+        },
+        {
+            "name": "metal",
+            "preset": "aluminum",
+            "roughness": 0.35
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "fragment",
+            "law": "tumble"
+        }
+    ],
+    "components": [
+        {
+            "name": "bus",
+            "type": "box",
+            "group": "fragment",
+            "size": [
+                1.6,
+                1.2,
+                0.6
+            ],
+            "position": [
+                0,
+                0,
+                0
+            ],
+            "rotation_deg": [
+                0,
+                0,
+                0
+            ],
+            "material": "bus"
+        },
+        {
+            "name": "mli",
+            "type": "plane",
+            "group": "fragment",
+            "size": [
+                1.28,
+                0.72
+            ],
+            "position": [
+                0.24,
+                0.42,
+                0.444
+            ],
+            "rotation_deg": [
+                32,
+                -12,
+                0
+            ],
+            "material": "mli",
+            "back_material": "mli"
+        },
+        {
+            "name": "fitting",
+            "type": "box",
+            "group": "fragment",
+            "size": [
+                0.4,
+                0.144,
+                0.144
+            ],
+            "position": [
+                -0.72,
+                -0.648,
+                0.06
+            ],
+            "rotation_deg": [
+                0,
+                0,
+                20
+            ],
+            "material": "metal"
+        },
+        {
+            "name": "stub",
+            "type": "cylinder",
+            "group": "fragment",
+            "radius": 0.072,
+            "height": 0.6,
+            "position": [
+                0.48,
+                -0.24,
+                -0.6
+            ],
+            "rotation_deg": [
+                0,
+                0,
+                0
+            ],
+            "material": "metal"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "attitude",
+            "status": "sourced",
+            "value": "uncontrolled tumble",
+            "source": "Fragments are uncontrolled; the tumble law uses the record's random axis, rate and phase."
+        },
+        {
+            "subject": "fragment",
+            "status": "estimate",
+            "value": "one rigid tumbling body",
+            "source": "As 'attitude'."
+        },
+        {
+            "subjects": [
+                "bus",
+                "mli",
+                "fitting",
+                "stub"
+            ],
+            "status": "estimate",
+            "value": "a 1.6 x 1.2 x 0.6 m piece of bus with MLI and fittings",
+            "source": "Representative of structural breakup fragments."
+        },
+        {
+            "subjects": [
+                "bus",
+                "mli",
+                "metal"
+            ],
+            "status": "estimate",
+            "value": "aluminium and MLI presets",
+            "source": "Representative."
+        }
+    ]
+}

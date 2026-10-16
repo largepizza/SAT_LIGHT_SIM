@@ -232,6 +232,10 @@ struct SatelliteType
     float meshRadiusM = 0.0f; // bounding radius of its triangles about their AABB centre (Phase 4d)
     float meshFill = 0.0f;    // mean projected area (surface / 4) over the bounding disc's (2026-10-07)
     float massKg = 0.0f;      // "mass_kg" (Kessler: collisions, drag); 0 = a default by model (kesslerTypeMass)
+    // Kessler (round 2): what a breakup of this type leaves. Shares of its surface that are solar array /
+    // radiator (the rest is structure), its mean projected area (surface / 4) and its bounding diameter.
+    float debrisArrayShare = 0.0f, debrisRadiatorShare = 0.0f;
+    float meanAreaM2 = 0.0f, sizeM = 0.0f;
     bool isModel() const { return !lobes.empty(); }
 };
 
@@ -2523,6 +2527,7 @@ private:
     float kesslerRateMult = 1.0f;     // kessler.rate_multiplier: collision probability x (1 = physical)
     float kesslerAvoidance = 0.9f;    // kessler.avoidance: share of active-vs-debris encounters dodged
     float kesslerHorizonYears = 20.0f; // kessler.horizon_years: how far the cascade is simulated
+    float kesslerDustGain = 100.0f;    // kessler.dust_gain: the drawn dust clouds' brightness (x the physical estimate)
     struct KesslerWorker;             // the World + its thread (SatelliteSimKessler.cpp)
     struct KesslerWorkerDelete        // (an incomplete type here: deleted where it is defined)
     {
@@ -2538,6 +2543,7 @@ private:
     uint64_t kHash = 0;                   // the world's inputs (cache key)
     int kDebrisConst = -1;                // the "Collision debris" pseudo-constellation (fragments)
     uint32_t kDebrisType = 0;
+    int kDebrisKit[3][3] = {{-1, -1, -1}, {-1, -1, -1}, {-1, -1, -1}}; // [kind: array, radiator, structure][S, M, L]
     // GPU: kesslerBuf = roster dead / end seconds + pool records (sat_orbit.comp binding 11, rebake 2),
     // kPoolBaseBuf = the records' J2000 phases (rebake 3). Sized for kPoolCap records; grown on demand.
     VkBuffer kesslerBuf = VK_NULL_HANDLE;
@@ -2547,6 +2553,22 @@ private:
     VkBuffer kStageBuf = VK_NULL_HANDLE; // persistent upload staging (per-frame copies)
     VkDeviceMemory kStageMem = VK_NULL_HANDLE;
     void *kStageMapped = nullptr;
+    // The dust clouds (round 2): up to kMaxDustClouds Gaussian ellipsoids a frame, built on the CPU from the recent
+    // breakups (kesslerFillDust) and integrated in closed form by cloud_march.comp (binding 23).
+    static constexpr uint32_t kMaxDustClouds = 256;
+    struct GpuDustCloud
+    {
+        glm::vec4 c;   // centre relative to the eye (m, ENU axes); w = cross-section x albedo x gain (m^2)
+        glm::vec4 ia;  // inverse covariance xx, yy, zz; w = 1 / ((2 pi)^1.5 sqrt(det))
+        glm::vec4 ib;  // inverse covariance xy, xz, yz; w unused
+        glm::vec4 col; // tint; w unused
+    };
+    static_assert(sizeof(GpuDustCloud) == 64);
+    VkBuffer kDustBuf = VK_NULL_HANDLE;
+    VkDeviceMemory kDustMem = VK_NULL_HANDLE;
+    void *kDustMapped = nullptr;
+    uint32_t kDustCount = 0; // drawn this frame (harness state)
+    void kesslerFillDust(float pixelAngle);
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
     uint32_t kPoolCap = 16384;            // records the GPU buffers hold
     uint32_t kPoolWord0 = 0;              // first pool word (after the roster's dead / end seconds)
@@ -2569,6 +2591,11 @@ private:
     std::vector<kessler::Event> kUserEvents; // breakups the player (or a script) caused
     uint32_t kesslerRefOfSat(uint32_t sat) const; // satellite index -> world reference (or kNoRef)
     nlohmann::json kesslerStateJson() const;
+    // The same, recomputed at most 4 times a second (the settings tab reads it every frame; a full count walks the
+    // roster and the pool).
+    const nlohmann::json &kesslerStateCached() const;
+    mutable nlohmann::json kStateCache;
+    mutable double kStateCacheWall = -1.0;
     std::string kesslerStatusLine() const; // the HUD line while the frontier holds time back
     // A satellite's display name: "<constellation> #<n>"; a dead one "... #<n> (dead)" (its roster number),
     // a fragment "Debris <event>.<k>".

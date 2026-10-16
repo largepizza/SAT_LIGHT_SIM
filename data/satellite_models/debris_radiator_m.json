@@ -1,0 +1,122 @@
+{
+    "name": "Debris: radiator section (M)",
+    "note": "Kessler debris kit (tools/make_debris_models.py): a torn radiator section. Its OSR tiles flash like mirrors.",
+    "materials": [
+        {
+            "name": "white",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.85
+        },
+        {
+            "name": "osr",
+            "preset": "osr_radiator"
+        },
+        {
+            "name": "pipe",
+            "preset": "aluminum",
+            "roughness": 0.25
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "fragment",
+            "law": "tumble"
+        }
+    ],
+    "components": [
+        {
+            "name": "panel",
+            "type": "plane",
+            "group": "fragment",
+            "size": [
+                2.6,
+                1.4
+            ],
+            "position": [
+                0,
+                -0.3,
+                0
+            ],
+            "rotation_deg": [
+                0,
+                0,
+                0
+            ],
+            "material": "white",
+            "back_material": "white"
+        },
+        {
+            "name": "bent",
+            "type": "plane",
+            "group": "fragment",
+            "size": [
+                2.08,
+                0.64
+            ],
+            "position": [
+                -0.208,
+                0.69,
+                0.16
+            ],
+            "rotation_deg": [
+                -24,
+                0,
+                0
+            ],
+            "material": "osr",
+            "back_material": "white"
+        },
+        {
+            "name": "manifold",
+            "type": "cylinder",
+            "group": "fragment",
+            "radius": 0.064,
+            "height": 2.47,
+            "position": [
+                0,
+                -1.0,
+                0.02
+            ],
+            "rotation_deg": [
+                0,
+                90,
+                0
+            ],
+            "material": "pipe"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "attitude",
+            "status": "sourced",
+            "value": "uncontrolled tumble",
+            "source": "Fragments are uncontrolled; the tumble law uses the record's random axis, rate and phase."
+        },
+        {
+            "subject": "fragment",
+            "status": "estimate",
+            "value": "one rigid tumbling body",
+            "source": "As 'attitude'."
+        },
+        {
+            "subjects": [
+                "panel",
+                "bent",
+                "manifold"
+            ],
+            "status": "estimate",
+            "value": "a 2.6 x 2.0 m radiator section with its manifold, the end bent",
+            "source": "Representative of a torn deployable radiator (white paint, OSR mirror tiles)."
+        },
+        {
+            "subjects": [
+                "white",
+                "osr",
+                "pipe"
+            ],
+            "status": "estimate",
+            "value": "the radiator presets",
+            "source": "White paint as the Starmind radiators; OSR tiles mirror the Sun."
+        }
+    ]
+}

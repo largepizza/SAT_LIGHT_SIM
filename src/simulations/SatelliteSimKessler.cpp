@@ -27,7 +27,7 @@ constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 3; // bump whenever the world's logic changes
+constexpr uint32_t kCacheVersion = 6; // bump whenever the world's logic changes (4: round 2, large pieces + grid)
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
 {
@@ -130,6 +130,9 @@ struct SatelliteSim::KesslerWorker
         snprintf(msg, sizeof(msg), "kessler: worker %s at %.0f days after the CME: %zu events, %zu records, %.1f s",
                  stop ? "stopped" : "done", (w.frontier - w.s.epoch) / 86400.0, w.events.size(), w.pool.size(), s);
         Log::line(msg);
+        snprintf(msg, sizeof(msg), "kessler: engine time: refs %.1f s, states + grid %.1f s, pairs %.1f s, apply %.1f s",
+                 w.profRefs, w.profState, w.profPairs, w.profApply);
+        Log::line(msg);
         done = !stop;
     }
 
@@ -169,7 +172,8 @@ uint32_t SatelliteSim::kesslerRefOfSat(uint32_t sat) const
 static void buildWorld(const SatelliteSim &sim, kessler::World &w, const std::vector<SatOrbit> &orbits,
                        uint32_t rosterCount, const std::vector<ConstellationConfig> &consts,
                        const std::vector<SatelliteType> &types, double raanAnchorT, double epoch, float rateMult,
-                       float avoidance, float horizonYears, uint32_t debrisType, int debrisConst)
+                       float avoidance, float horizonYears, uint32_t debrisType, int debrisConst,
+                       const int (&kit)[3][3])
 {
     (void)sim;
     w.s = kessler::WorldSettings{};
@@ -191,7 +195,21 @@ static void buildWorld(const SatelliteSim &sim, kessler::World &w, const std::ve
                         : std::max(0.01f, ty.crossSectionM2);
         ti.radiusM = std::sqrt(ti.areaM2 / glm::pi<double>());
         ti.passive = ty.modelId == "debris_fragment" || ty.name.find("Debris") != std::string::npos;
+        ti.sizeM = ty.sizeM > 0.0f ? (double)ty.sizeM : 2.0 * ti.radiusM;
+        ti.arrayShare = ty.debrisArrayShare;
+        ti.radiatorShare = ty.debrisRadiatorShare;
     }
+    // The debris kit: which types the large pieces are drawn with, and the area each class snaps to.
+    for (int k = 0; k < 3; ++k)
+        for (int c = 0; c < 3; ++c)
+        {
+            const int t = kit[k][c];
+            if (t < 0 || t >= (int)types.size() || types[t].meanAreaM2 <= 0.0f)
+                continue;
+            w.s.kitType[k][c] = t;
+            w.s.kitArea[k][c] = types[t].meanAreaM2;
+            w.types[t].kitKind = k;
+        }
     w.s.debrisModelArea = w.types.empty() ? 0.03 : w.types[debrisType].areaM2;
     w.roster.resize(rosterCount);
     for (uint32_t i = 0; i < rosterCount; ++i)
@@ -240,6 +258,11 @@ static uint64_t worldHash(const kessler::World &w)
     h = fnvv(h, w.s.engine.cubeM);
     h = fnvv(h, w.s.engine.avoidance);
     h = fnvv(h, w.s.engine.rateMultiplier);
+    h = fnvv(h, w.s.LcRecord);
+    h = fnvv(h, w.s.dustShare);
+    h = fnvv(h, w.s.clusterHitP);
+    h = fnv(h, w.s.kitType, sizeof(w.s.kitType));
+    h = fnv(h, w.s.kitArea, sizeof(w.s.kitArea));
     h = fnvv(h, kFuryArriveT);
     h = fnvv(h, kFuryPeakKp);
     for (const kessler::TypeInfo &t : w.types)
@@ -247,6 +270,10 @@ static uint64_t worldHash(const kessler::World &w)
         h = fnvv(h, t.massKg);
         h = fnvv(h, t.areaM2);
         h = fnvv(h, t.passive);
+        h = fnvv(h, t.sizeM);
+        h = fnvv(h, t.arrayShare);
+        h = fnvv(h, t.radiatorShare);
+        h = fnvv(h, t.kitKind);
     }
     if (!w.roster.empty())
         h = fnv(h, w.roster.data(), w.roster.size() * sizeof(kessler::RosterObj));
@@ -391,7 +418,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     std::unique_ptr<KesslerWorker, KesslerWorkerDelete> wk(new KesslerWorker());
     const double raanAnchorT = (double)simInitDayJ2000 * 86400.0 + simInitSecInDay;
     buildWorld(*this, wk->w, satOrbits, activeSatCount, constellations, satTypes, raanAnchorT, kFuryArriveT,
-               kesslerRateMult, kesslerAvoidance, kesslerHorizonYears, kDebrisType, kDebrisConst);
+               kesslerRateMult, kesslerAvoidance, kesslerHorizonYears, kDebrisType, kDebrisConst, kDebrisKit);
     kHash = worldHash(wk->w);
     wk->tEnd = kFuryArriveT + wk->w.s.horizonS;
 
@@ -765,6 +792,153 @@ bool SatelliteSim::kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, 
     return true;
 }
 
+
+// ── The dust clouds (round 2) ───────────────────────────────────────────────────────────────────
+// Each breakup of the last few hours leaves a cloud of fine dust and small fragments that follows its parent's
+// orbit, expands at the fragments' spread speed and shears along-track (a fragment thrown forward climbs and falls
+// behind, 3 x its kick per unit time). Drawn as Gaussian ellipsoids in the parent's radial / along-track /
+// cross-track frame; once it is long enough to curve, as several along the arc. cloud_march.comp integrates them.
+//
+// Brightness: a physical estimate (dustShare of the broken-up mass as ~100 um grains, 5.6 m^2/kg, plus the small
+// fragments' area, albedo 0.25) x "Dust cloud brightness". Physically a cloud fades below the dark sky within
+// minutes (it expands at hundreds of m/s); the default gain keeps it visible for an hour or so.
+void SatelliteSim::kesslerFillDust(float pixelAngle)
+{
+    kDustCount = 0;
+    if (!kDustMapped)
+        return;
+    uint32_t *hdr = static_cast<uint32_t *>(kDustMapped);
+    hdr[0] = 0;
+    if (!kesslerEnabled || kEvents.empty() || kesslerDustGain <= 0.0f)
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    constexpr double kLife = 3.0 * 3600.0;
+    if (t < kFuryArriveT)
+        return;
+    // Events are in time order to within one engine step (6 h): start the scan that far before the window.
+    const double tFrom = t - kLife - 6.0 * 3600.0;
+    size_t i0 = (size_t)(std::lower_bound(kEvents.begin(), kEvents.end(), tFrom,
+                                          [](const kessler::Event &e, double x) { return e.t < x; }) -
+                         kEvents.begin());
+    struct Cand
+    {
+        double pri;
+        size_t ev;
+        glm::dvec3 r, v;
+        double amp, age;
+    };
+    std::vector<Cand> cands;
+    const glm::dvec3 eye = glm::dvec3(obsECI);
+    for (size_t k = i0; k < kEvents.size(); ++k)
+    {
+        const kessler::Event &e = kEvents[k];
+        const double age = t - e.t;
+        if (age < 0.0 || age > kLife || (e.dustKg <= 0.5f && e.nSmall < 50.0f))
+            continue;
+        const double amp = 0.25 * (5.6 * (double)e.dustKg + 0.02 * (double)e.nSmall) * (double)kesslerDustGain;
+        kessler::State s0{{e.pos[0], e.pos[1], e.pos[2]}, {e.vel[0], e.vel[1], e.vel[2]}};
+        if (glm::length(s0.r) < 1.0)
+            continue;
+        kessler::Elems el = kessler::elemsFromState(s0);
+        if (el.a <= 0.0 || el.e >= 0.99)
+            continue;
+        el.M += std::sqrt(kessler::kGM / (el.a * el.a * el.a)) * age;
+        const kessler::State sc = kessler::stateFromElems(el);
+        const double range = std::max(glm::length(sc.r - eye), 1000.0);
+        cands.push_back({amp / (range * range), k, sc.r, sc.v, amp, age});
+    }
+    if (cands.empty())
+        return;
+    std::sort(cands.begin(), cands.end(), [](const Cand &a, const Cand &b) { return a.pri > b.pri; });
+    const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
+    auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
+    GpuDustCloud *out = reinterpret_cast<GpuDustCloud *>(static_cast<char *>(kDustMapped) + 16);
+    uint32_t n = 0;
+    // Physical radiance (per unit solar irradiance, 1/sr) -> the sky's units, through the point sources' scale: a
+    // cloud of magnitude m carries the on-screen energy of a star of magnitude m. Per full-res pixel of solid angle
+    // Omega its light is effectFlare = kFluxToFlare x brightnessScale x L x Omega; the point style shows a flare of
+    // flareRef (pointRefMag) as a peak of 1 over a Gaussian of ~1.27 px^2; the sky is shown x skyExposure (whose
+    // global EV the point style takes as the same gain).
+    const double pixFull = 0.5 * (double)pixelAngle;
+    const double flareRef = 0.008 * std::pow(10.0, 0.4 * (6.0 - (double)pointRefMag));
+    const double baseExp = (double)skyExposure() / std::exp2((double)globalExposureEV());
+    const double toSky = satphot::kFluxToFlare * (double)brightnessScale * pixFull * pixFull /
+                         (flareRef * 1.27 * std::max(baseExp, 1e-3));
+    int rank = 0;
+    for (const Cand &c : cands)
+    {
+        if (n >= kMaxDustClouds)
+            break;
+        const kessler::Event &e = kEvents[c.ev];
+        const bool lumpy = rank++ < 24; // the brightest clouds: a core and uneven lumps, not one smooth ball
+        const double rm = glm::length(c.r);
+        const double nMot = std::sqrt(kessler::kGM / (rm * rm * rm));
+        const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
+        const double nt = nMot * c.age;
+        double sR = sv * std::min(c.age, 1.0 / nMot) + 30.0;
+        double sW = sR;
+        const double sS = sv * c.age * (1.0 + 2.0 * std::min(nt, 1.0)) + 30.0;
+        // Unresolved: never narrower than a half-res pixel at its range (the light is kept, not aliased).
+        const double sMin = 0.6 * glm::length(c.r - eye) * (double)pixelAngle;
+        sR = std::max(sR, sMin);
+        sW = std::max(sW, sMin);
+        const glm::dvec3 R = c.r / rm;
+        const glm::dvec3 W = glm::normalize(glm::cross(c.r, c.v));
+        const int K = (int)std::clamp(std::ceil(4.0 * sS / 1.5e6), 1.0, 12.0);
+        double wsum = 0.0;
+        for (int k = 0; k < K; ++k)
+        {
+            const double off = K == 1 ? 0.0 : (-2.0 + 4.0 * ((double)k + 0.5) / K);
+            wsum += std::exp(-0.5 * off * off);
+        }
+        const int L = lumpy ? 6 : 1; // per piece: a core + 5 lumps
+        for (int k = 0; k < K * L && n < kMaxDustClouds; ++k)
+        {
+            const int kp = k / L, lj = k % L;
+            const double off = K == 1 ? 0.0 : (-2.0 + 4.0 * ((double)kp + 0.5) / K);
+            double w = std::exp(-0.5 * off * off) / wsum;
+            double sSk = std::max(K == 1 ? sS : 0.55 * 4.0 * sS / K, sMin);
+            double sRk = sR, sWk = sW;
+            const double sSp = sSk; // the piece's own along-track sigma (lumps are placed in its units)
+            glm::dvec3 lumpOff(0.0); // in (R, S, W) units of the piece's own sigmas
+            if (L > 1)
+            {
+                const uint64_t hs = (uint64_t)e.seed * 131ull + (uint64_t)k;
+                if (lj == 0)
+                    w *= 0.4; // the smooth core
+                else
+                {
+                    w *= 0.6 * (0.5 + kessler::hash01(hs, 1, 61)) / 5.0;
+                    lumpOff = glm::dvec3(kessler::hashNormal(hs, 2, 62), kessler::hashNormal(hs, 3, 63),
+                                         kessler::hashNormal(hs, 4, 64)) * 0.6;
+                    const double f = 0.3 + 0.35 * kessler::hash01(hs, 5, 65);
+                    sRk = std::max(sR * f * (0.7 + 0.6 * kessler::hash01(hs, 6, 66)), sMin);
+                    sWk = std::max(sW * f * (0.7 + 0.6 * kessler::hash01(hs, 7, 67)), sMin);
+                    sSk = std::max(sSk * f * (0.7 + 0.9 * kessler::hash01(hs, 8, 68)), sMin);
+                }
+            }
+            // Along the arc: rotate about the orbit normal by off x sS / r.
+            const double ang = off * sS / rm;
+            const double ca = std::cos(ang), sa = std::sin(ang);
+            const glm::dvec3 S0 = glm::cross(W, R);
+            const glm::dvec3 Rk = ca * R + sa * S0, Sk = ca * S0 - sa * R;
+            const glm::dvec3 ctr = rm * Rk + lumpOff.x * sR * Rk + lumpOff.y * sSp * Sk + lumpOff.z * sW * W;
+            const glm::dvec3 a = toEnu(Rk), b = toEnu(Sk), cw = toEnu(W);
+            const double iR = 1.0 / (sRk * sRk), iS = 1.0 / (sSk * sSk), iW = 1.0 / (sWk * sWk);
+            auto M = [&](int p, int q) { return iR * a[p] * a[q] + iS * b[p] * b[q] + iW * cw[p] * cw[q]; };
+            GpuDustCloud &d = out[n++];
+            const glm::dvec3 rel = toEnu(ctr - eye);
+            d.c = glm::vec4(glm::vec3(rel), (float)(c.amp * w * toSky));
+            d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
+                             (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sRk * sSk * sWk)));
+            d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
+            d.col = glm::vec4(0.96f, 0.92f, 0.86f, 0.0f);
+        }
+    }
+    hdr[0] = n;
+    kDustCount = n;
+}
+
 // ── Readouts ────────────────────────────────────────────────────────────────────────────────────
 std::string SatelliteSim::satLabel(int idx) const
 {
@@ -809,6 +983,17 @@ std::string SatelliteSim::kesslerStatusLine() const
     return b;
 }
 
+const nlohmann::json &SatelliteSim::kesslerStateCached() const
+{
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (kStateCacheWall < 0.0 || now - kStateCacheWall > 0.25)
+    {
+        kStateCache = kesslerStateJson();
+        kStateCacheWall = now;
+    }
+    return kStateCache;
+}
+
 nlohmann::json SatelliteSim::kesslerStateJson() const
 {
     nlohmann::json j;
@@ -825,14 +1010,21 @@ nlohmann::json SatelliteSim::kesslerStateJson() const
     j["records_gpu"] = kPoolGpu;
     j["capacity"] = kPoolCap;
     j["hash"] = cacheName(kHash);
+    j["dust_clouds_drawn"] = kDustCount;
+    j["dust_gain"] = kesslerDustGain;
     // Counts at the current time.
     const int32_t sec = (int32_t)std::clamp(std::floor(t - kFuryArriveT), -2147483000.0, 2147483000.0);
     size_t dead = 0, frag = 0, fragReal = 0, rosterGone = 0;
+    size_t byClass[3] = {0, 0, 0};
     for (const kessler::PoolRec &r : kPool)
         if (sec >= r.bornSec && sec < r.deathSec)
         {
             ++frag;
             fragReal += (size_t)std::llround(r.weight);
+            for (int kk = 0; kk < 3; ++kk)
+                for (int cc = 0; cc < 3; ++cc)
+                    if ((int)r.type == kDebrisKit[kk][cc])
+                        ++byClass[cc];
         }
     for (size_t i = 0; 2 * i + 1 < kRosterWords.size(); ++i)
     {
@@ -842,10 +1034,12 @@ nlohmann::json SatelliteSim::kesslerStateJson() const
             ++dead;
     }
     size_t kills = 0, bumps = 0, col = 0, cat = 0, user = 0;
+    double smallMade = 0.0;
     for (const kessler::Event &e : kEvents)
     {
         if (e.t > t)
             continue;
+        smallMade += e.nSmall;
         if (e.origin == kessler::ORIGIN_USER)
             ++user;
         switch (e.kind)
@@ -856,10 +1050,11 @@ nlohmann::json SatelliteSim::kesslerStateJson() const
         default: break;
         }
     }
+    j["pieces_by_class"] = {{"S", byClass[0]}, {"M", byClass[1]}, {"L", byClass[2]}};
     j["now"] = {{"dead_satellites", dead},  {"fragments", frag},     {"fragments_real", fragReal},
                 {"roster_gone", rosterGone}, {"storm_kills", kills}, {"bumps", bumps},
                 {"collisions", col},        {"catastrophic", cat},   {"user_events", user},
-                {"kp", spaceWeather_.kp}};
+                {"kp", spaceWeather_.kp},   {"small_fragments_made", (double)std::llround(smallMade)}};
     return j;
 }
 
@@ -942,17 +1137,21 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
         if (ctx_)
             kesslerRestart(*ctx_, kUserEvents, -1.0);
     }
+    static const char *kDust[] = {"x1", "x10", "x30", "x100", "x1000"};
+    static const float kDustV[] = {1.0f, 10.0f, 30.0f, 100.0f, 1000.0f};
+    int dSel = 3;
+    for (int i = 0; i < 5; ++i)
+        if (std::abs(kesslerDustGain - kDustV[i]) < 1e-3f * kDustV[i])
+            dSel = i;
+    const int dg = uiChoiceRow(inp, ui, "KesslerDust", 0, "Dust cloud brightness", kDust, 5, dSel,
+                               "Each breakup's dust and small fragments as a glowing cloud that spreads along its orbit. x1 is "
+                               "the physical estimate (a few % of the mass as fine dust): it fades below the dark sky within "
+                               "minutes. Higher keeps the clouds visible longer.");
+    if (dg >= 0 && dg != dSel)
+        kesslerDustGain = kDustV[dg];
     if (!kesslerEnabled)
         return;
-    if (kDebrisConst >= 0 && kDebrisConst < (int)constellations.size())
-    {
-        bool hl = constellations[kDebrisConst].highlight;
-        if (uiToggleRow(inp, ui, "KesslerHl", 0, "Highlight the debris", hl,
-                        "Fragments of 10 cm are magnitude 13-17: invisible to the eye. Highlighted, every one is drawn "
-                        "as a census dot (the Collision debris constellation's Hlt)."))
-            constellations[kDebrisConst].highlight = hl;
-    }
-    const nlohmann::json j = kesslerStateJson();
+    const nlohmann::json &j = kesslerStateCached();
     const nlohmann::json &n = j["now"];
     const float lw = (float)fs(170);
     const double days = j["days_since_cme"].get<double>();
@@ -960,7 +1159,8 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
     uiKV("KesslerKV", 1, "Simulated to", uiKitStr("day %.1f%s", j["frontier_days"].get<double>(), kWorkerDone ? " (done)" : ""), lw);
     uiKV("KesslerKV", 2, "Dead satellites (tumbling)", uiKitStr("%d", n["dead_satellites"].get<int>()), lw);
     uiKV("KesslerKV", 3, "Destroyed / re-entered", uiKitStr("%d", n["roster_gone"].get<int>()), lw);
-    uiKV("KesslerKV", 4, "Fragments >= 10 cm", uiKitStr("%d drawn of ~%d", n["fragments"].get<int>(), n["fragments_real"].get<int>()), lw);
+    uiKV("KesslerKV", 4, "Large pieces (>= 1 m)", uiKitStr("%d drawn of ~%d", n["fragments"].get<int>(), n["fragments_real"].get<int>()), lw);
+    uiKV("KesslerKV", 8, "Fragments 10 cm - 1 m made", uiKitStr("~%.0f (a density field)", n["small_fragments_made"].get<double>()), lw);
     uiKV("KesslerKV", 5, "Collisions", uiKitStr("%d (%d catastrophic)", n["collisions"].get<int>(), n["catastrophic"].get<int>()), lw);
     if (!kUserEvents.empty())
     {

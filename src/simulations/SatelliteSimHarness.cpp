@@ -2225,7 +2225,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         const std::string sub = lower(pos(0));
         if (sub == "breakup" || sub == "collide")
         {
-            const uint32_t a0 = (uint32_t)parseNum(pos(1), "kessler sat");
+            // "sel" = the selected satellite.
+            const uint32_t a0 = lower(pos(1)) == "sel" ? (uint32_t)std::max(selectedSatIndex, 0)
+                                                        : (uint32_t)parseNum(pos(1), "kessler sat");
             uint8_t kind = kessler::EV_EXPLOSION;
             uint32_t b0 = 0xFFFFFFFFu;
             if (sub == "collide")
@@ -2251,13 +2253,16 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         }
         else if (sub == "select" && lower(pos(1)) == "dead")
         {
-            // kessler select dead [k=<n>]: the n-th roster satellite dead (tumbling) at the current time.
+            // kessler select dead [k=<n>] [formation=1]: the n-th roster satellite dead (tumbling) at the current time
+            // (formation=1: only formation members, which drift along-track once dead).
             const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
             const int32_t sec = (int32_t)std::floor(t - kesslerEpoch());
             uint32_t want = (uint32_t)c.num("k", 0.0), seen = 0;
+            const bool formOnly = c.num("formation", 0.0) > 0.5;
             int found = -1;
             for (uint32_t i = 0; i < activeSatCount && 2ull * i + 1 < kRosterWords.size(); ++i)
-                if (sec >= kRosterWords[2ull * i] && sec < kRosterWords[2ull * i + 1] && seen++ == want)
+                if (sec >= kRosterWords[2ull * i] && sec < kRosterWords[2ull * i + 1] &&
+                    (!formOnly || satOrbits[i].formation) && seen++ == want)
                 {
                     found = (int)i;
                     break;

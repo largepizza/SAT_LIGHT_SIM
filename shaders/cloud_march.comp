@@ -127,6 +127,69 @@ layout(set = 0, binding = 20) uniform sampler2D cv2ResolvedDepthTex;  // x mean 
 #define CV2_FLASH_BINDING 21
 #include "cloud_lightning.glsl"
 
+// ── Kessler dust clouds (round 2, 2026-10-16) ───────────────────────────────────────────────────────
+// Each recent breakup's dust and small fragments as a few Gaussian ellipsoids (SatelliteSim::kesslerFillDust: the
+// cloud follows its parent's orbit, expands and shears along-track; split along the arc once it curves). The optical
+// depth along a ray through a Gaussian is closed form (erf), so a cloud is exact at any size and costs a few dozen
+// flops per pixel. Sunlit by single scattering (forward-peaked dust), shadowed by the Earth at the ray's closest
+// approach to the cloud's centre.
+struct DustCloud
+{
+    vec4 c;   // centre relative to the eye (m, ENU); w = cross-section x albedo x gain (m^2)
+    vec4 ia;  // inverse covariance xx, yy, zz; w = 1 / ((2 pi)^1.5 sqrt(det))
+    vec4 ib;  // inverse covariance xy, xz, yz
+    vec4 col; // tint
+};
+layout(set = 0, binding = 23) readonly buffer DustBuf { uint dustCount; uint dustPad0, dustPad1, dustPad2; DustCloud dust[]; };
+
+float dustErf(float x)
+{
+    float x2 = x * x;
+    const float a = 0.147;
+    float t = 1.0 - exp(-x2 * (1.2732395 + a * x2) / (1.0 + a * x2));
+    return sign(x) * sqrt(max(t, 0.0));
+}
+
+vec3 dustMul(DustCloud d, vec3 v)
+{
+    return vec3(d.ia.x * v.x + d.ib.x * v.y + d.ib.y * v.z,
+                d.ib.x * v.x + d.ia.y * v.y + d.ib.z * v.z,
+                d.ib.y * v.x + d.ib.z * v.y + d.ia.z * v.z);
+}
+
+vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene)
+{
+    uint n = min(dustCount, 256u);
+    if (n == 0u)
+        return vec3(0.0);
+    float cosT = dot(dir, sunDir);
+    const float g = 0.7;
+    float hg = (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5);
+    float phase = (0.6 * hg + 0.4) * (1.0 / (4.0 * PI)); // per steradian, integrates to 1
+    float T = min(tScene, 2.0e7);
+    vec3 L = vec3(0.0);
+    for (uint i = 0u; i < n; ++i) {
+        DustCloud d = dust[i];
+        vec3 o = -d.c.xyz;
+        float q = dot(dir, dustMul(d, dir));
+        if (q <= 0.0)
+            continue;
+        float tc = -dot(dir, dustMul(d, o)) / q;   // closest approach (Mahalanobis) along the ray
+        vec3  r  = o + tc * dir;
+        float e  = dot(r, dustMul(d, r));
+        if (e > 60.0)
+            continue;
+        float sq = sqrt(0.5 * q);
+        float I  = exp(-0.5 * e) * sqrt(PI / (2.0 * q)) * (dustErf(sq * (T - tc)) - dustErf(-sq * tc));
+        float tau = d.ia.w * d.c.w * max(I, 0.0);
+        vec3  P  = obsPos + clamp(tc, 0.0, T) * dir;
+        float sp = dot(P, sunDir);
+        float lit = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.995, R_EARTH * 1.01, length(P - sp * sunDir));
+        L += d.col.rgb * (tau * lit);
+    }
+    return L * phase;
+}
+
 // Lightning (channels, the cloud lit around each flash, red sprites) is drawn after the sky TAA at full resolution
 // (lightning.vert/.frag, SatelliteSimLightning.cpp, 2026-10-05); it was lightningCS / spriteCS here, per pixel in
 // the half-res composite.
@@ -1682,6 +1745,16 @@ void main() {
             ? pow(clamp(cloudBlockLocal, 0.0, 1.0), kAuroraCloudSuppressPower)
             : 1.0;
         B_total += auroraContrib * auroraCloudSuppress;
+    }
+
+    // Kessler dust clouds: above the weather, so seen from below the clouds hide them as they hide the aurora.
+    if (dustCount > 0u) {
+        vec3 dc = dustCloudsCS(obsPos, dir, sunDir, tScene);
+        if (dot(dc, dc) > 0.0) {
+            float ext = pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, 0.0, cloud.extinctionCoeff));
+            float sup = obsEffH < kAuroraShellInnerM ? pow(clamp(dot(A_total, vec3(1.0 / 3.0)), 0.0, 1.0), 3.0) : 1.0;
+            B_total += dc * (ext * sup);
+        }
     }
 
     // Airglow red band (moved here this session — perf). No cloud-suppression term — the

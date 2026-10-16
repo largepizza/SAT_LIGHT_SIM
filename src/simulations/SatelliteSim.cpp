@@ -3323,6 +3323,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // resolve, whose result this dispatch composites. Inside this timestamp bucket, so the
         // "cloud_march" figure is the clouds plus everything else here (cirrus, fog, aurora, beams).
         updateLightningBolts();   // the previous frame's flash list -> channels (SatelliteSimLightning.cpp)
+        kesslerFillDust(glm::radians(camera.fovYDeg) / (float)std::max<uint32_t>(halfH, 1)); // the breakups' dust clouds (binding 23)
         recordCloudsV2(cmd, ctx, cpc);
 
         // Pre-dispatch: both targets are left in SHADER_READ_ONLY_OPTIMAL after the previous
@@ -5901,6 +5902,15 @@ SatOrbitElems SatelliteSim::orbitElemsOf(const SatOrbit &orb) const
             e.tumbleRate = glm::two_pi<double>() / (double)P;
             e.tumblePhase = ph0 - e.tumbleRate * kesslerEpoch();
             e.tumbleAxis = kessler::poolTumbleAxis((uint32_t)idx | 0x40000000u);
+            // A dead formation member drifts along-track (sat_orbit.comp formationDrift).
+            if (orb.formation)
+            {
+                const double tau = t - kesslerEpoch() - (double)kRosterWords[2 * (size_t)idx];
+                const double whole = std::floor(std::max(tau, 0.0));
+                e.u0 += glm::two_pi<double>() *
+                        kessler::formationDriftTurns((uint32_t)idx, (uint32_t)std::min(whole, 4294967295.0),
+                                                     std::max(tau, 0.0) - whole);
+            }
         }
     }
     return e;
@@ -6915,6 +6925,13 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyPipelineLayout(device, cloudMarchPipeLayout, nullptr);
     vkDestroyDescriptorPool(device, cloudMarchDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, cloudMarchDescLayout, nullptr);
+    if (kDustBuf != VK_NULL_HANDLE)
+    {
+        vkDestroyBuffer(device, kDustBuf, nullptr);
+        vkFreeMemory(device, kDustMem, nullptr);
+        kDustBuf = VK_NULL_HANDLE;
+        kDustMapped = nullptr;
+    }
     // ── Scene depth pipeline (pipeline unification) ────────────────────────────
     vkDestroyPipeline(device, sceneDepthPipeline, nullptr);
     vkDestroyPipelineLayout(device, sceneDepthPipeLayout, nullptr);
@@ -9722,7 +9739,7 @@ void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
 // textures) — see init() ordering.
 void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[23] = {};
+    VkDescriptorSetLayoutBinding bindings[24] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -9751,9 +9768,11 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     bindings[21] = {21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     // 22: the cloud morphology (review 19: the ground shadow places the clouds as the view march does).
     bindings[22] = {22, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    // 23: the Kessler dust clouds (kesslerFillDust, host-visible, rewritten every frame).
+    bindings[23] = {23, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 23;
+    li.bindingCount = 24;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &cloudMarchDescLayout);
 
@@ -9761,12 +9780,19 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 15},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}};
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 4;
     pi.pPoolSizes = ps;
     pi.maxSets = 1;
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &cloudMarchDescPool);
+    if (kDustBuf == VK_NULL_HANDLE)
+    {
+        ctx.createBuffer(16 + sizeof(GpuDustCloud) * kMaxDustClouds, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, kDustBuf, kDustMem);
+        vkMapMemory(ctx.device, kDustMem, 0, VK_WHOLE_SIZE, 0, &kDustMapped);
+        memset(kDustMapped, 0, 16 + sizeof(GpuDustCloud) * kMaxDustClouds);
+    }
 
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ai.descriptorPool = cloudMarchDescPool;
@@ -9797,7 +9823,8 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo sceneDepthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo beamCloudLightInfo{beamCloudLightBuf, 0, VK_WHOLE_SIZE};
 
-    VkWriteDescriptorSet writes[15] = {};
+    VkDescriptorBufferInfo dustInfo{kDustBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet writes[16] = {};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 0, 0, 1,
                  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsInfo, nullptr, nullptr};
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 1, 0, 1,
@@ -9828,7 +9855,9 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
                   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &sceneDepthInfo, nullptr, nullptr};
     writes[14] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 14, 0, 1,
                   VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &beamCloudLightInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 15, writes, 0, nullptr);
+    writes[15] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cloudMarchDescSet, 23, 0, 1,
+                  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &dustInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 16, writes, 0, nullptr);
 }
 
 // ─── createCloudMarchPipeline ──────────────────────────────────────────────────
@@ -14443,6 +14472,24 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
         for (const SatTri &tr : tris)
             areaSum += tr.area;
         t.meshFill = r > 0.0 ? (float)glm::clamp(0.25 * areaSum / (glm::pi<double>() * r * r), 0.01, 1.0) : 0.0f;
+        t.meanAreaM2 = (float)(0.25 * areaSum);
+        t.sizeM = (float)(2.0 * r);
+        // Kessler: which kinds of large fragments a breakup leaves (by surface: arrays, radiators, the rest).
+        double arr = 0.0, rad = 0.0;
+        for (const SatTri &tr : tris)
+        {
+            if (tr.material < 0 || tr.material >= (int)model.materials.size())
+                continue;
+            const SatMaterial &m = model.materials[tr.material];
+            const std::string &pre = m.preset;
+            if (pre.rfind("solar_cell", 0) == 0 || pre.rfind("solar_array", 0) == 0 || pre == "array_backsheet_dark" ||
+                pre.rfind("dielectric_mirror", 0) == 0 || pre == "mirror")
+                arr += tr.area;
+            else if (pre == "osr_radiator" || m.name.find("radiator") != std::string::npos)
+                rad += tr.area;
+        }
+        t.debrisArrayShare = areaSum > 0.0 ? (float)(arr / areaSum) : 0.0f;
+        t.debrisRadiatorShare = areaSum > 0.0 ? (float)(rad / areaSum) : 0.0f;
         Log::line("model '" + t.modelId + "': bounding radius " + std::to_string(r) + " m, area fill " +
                   std::to_string(t.meshFill));
     }
@@ -14795,6 +14842,43 @@ void SatelliteSim::loadDefinitions()
         constellations.push_back(std::move(c));
     }
 
+    // ── Kessler debris kit (round 2): the large pieces a breakup leaves ─────────
+    // Not roster types (no constellation flies them): appended here so a custom constellations.json gets
+    // them too. Kinds: 0 array section, 1 radiator section, 2 structure; classes S / M / L.
+    {
+        static const char *kKind[3] = {"panel", "radiator", "chunk"};
+        static const char *kCls[3] = {"s", "m", "l"};
+        for (int k = 0; k < 3; ++k)
+            for (int c = 0; c < 3; ++c)
+            {
+                kDebrisKit[k][c] = -1;
+                SatelliteType t;
+                t.modelId = std::string("debris_") + kKind[k] + "_" + kCls[c];
+                bool have = false;
+                for (size_t ti = 0; ti < satTypes.size() && !have; ++ti)
+                    if (satTypes[ti].modelId == t.modelId)
+                    {
+                        kDebrisKit[k][c] = (int)ti;
+                        have = true;
+                    }
+                if (have)
+                    continue;
+                t.name = "Debris kit: " + t.modelId.substr(7);
+                t.baseColor = glm::vec3(0.95f, 0.95f, 1.0f);
+                t.crossSectionM2 = 1.0f;
+                t.primary = SurfaceSpec{AttitudeMode::Tumbling, 0.0f, 1.0f};
+                t.secondary = SurfaceSpec{AttitudeMode::Perpendicular, 0.0f, 0.0f};
+                t.diffuse = 0.02f;
+                t.mirrorFrac = 0.0f;
+                SatModel model;
+                if (!loadModelType(t, model))
+                    continue;
+                kDebrisKit[k][c] = (int)satTypes.size();
+                pendingModels.emplace_back(satTypes.size(), std::move(model));
+                satTypes.push_back(std::move(t));
+            }
+    }
+
     // ── Bake geometry models, budget by roster size ────────────────────────────
     // GPU cost is (visible satellites of the type) × (its lobes), so a type flown by few
     // satellites (a station, a telescope, a depot) can afford far more lobes — enough to stay
@@ -14805,7 +14889,9 @@ void SatelliteSim::loadDefinitions()
         for (const ConstellationConfig &c : constellations)
             if (c.typeIdx == ti)
                 count += (size_t)std::max(c.numPlanes, 0) * (size_t)std::max(c.perPlane, 0);
-        const int budget = count <= kSatLobeSmallRoster ? kSatLobeBudgetSmall : kSatLobeBudget;
+        int budget = count <= kSatLobeSmallRoster ? kSatLobeBudgetSmall : kSatLobeBudget;
+        if (satTypes[ti].modelId.rfind("debris_", 0) == 0)
+            budget = 16; // fragments: up to a pool's worth visible at once, each a few simple parts
         bakeModelType(satTypes[ti], model, budget, count);
     }
 

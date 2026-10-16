@@ -1,0 +1,146 @@
+{
+    "name": "Debris: array section (L)",
+    "note": "Kessler debris kit (tools/make_debris_models.py): a torn solar array section. Its cover glass glints as it tumbles.",
+    "materials": [
+        {
+            "name": "cells",
+            "preset": "solar_cell"
+        },
+        {
+            "name": "back",
+            "preset": "solar_array_back"
+        },
+        {
+            "name": "spar",
+            "preset": "aluminum",
+            "roughness": 0.3
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "fragment",
+            "law": "tumble"
+        }
+    ],
+    "components": [
+        {
+            "name": "sheet",
+            "type": "plane",
+            "group": "fragment",
+            "size": [
+                1.984,
+                9.6
+            ],
+            "position": [
+                -0.608,
+                0,
+                0
+            ],
+            "rotation_deg": [
+                0,
+                0,
+                0
+            ],
+            "material": "cells",
+            "back_material": "back"
+        },
+        {
+            "name": "flap",
+            "type": "plane",
+            "group": "fragment",
+            "size": [
+                1.216,
+                7.872
+            ],
+            "position": [
+                1.012,
+                -0.576,
+                0.192
+            ],
+            "rotation_deg": [
+                0,
+                -28,
+                3
+            ],
+            "material": "cells",
+            "back_material": "back"
+        },
+        {
+            "name": "strip",
+            "type": "plane",
+            "group": "fragment",
+            "size": [
+                0.512,
+                4.32
+            ],
+            "position": [
+                -1.088,
+                6.336,
+                -0.48
+            ],
+            "rotation_deg": [
+                -35,
+                0,
+                8
+            ],
+            "material": "cells",
+            "back_material": "back"
+        },
+        {
+            "name": "spar",
+            "type": "box",
+            "group": "fragment",
+            "size": [
+                0.092,
+                8.64,
+                0.082
+            ],
+            "position": [
+                -1.664,
+                0,
+                0.04
+            ],
+            "rotation_deg": [
+                0,
+                0,
+                0
+            ],
+            "material": "spar"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "attitude",
+            "status": "sourced",
+            "value": "uncontrolled tumble",
+            "source": "Fragments are uncontrolled; the tumble law uses the record's random axis, rate and phase."
+        },
+        {
+            "subject": "fragment",
+            "status": "estimate",
+            "value": "one rigid tumbling body",
+            "source": "As 'attitude'."
+        },
+        {
+            "subjects": [
+                "sheet",
+                "flap",
+                "strip",
+                "spar"
+            ],
+            "status": "estimate",
+            "value": "a 3.2 x 9.6 m array section, folded, with a strip and a spar stub",
+            "source": "Representative of a torn solar array (NASA SBM large fragments are panels and structure)."
+        },
+        {
+            "subjects": [
+                "cells",
+                "back",
+                "spar"
+            ],
+            "status": "estimate",
+            "value": "the array presets",
+            "source": "Same materials as the arrays they came from."
+        }
+    ]
+}
