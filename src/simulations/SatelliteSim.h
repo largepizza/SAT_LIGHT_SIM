@@ -1171,6 +1171,27 @@ static_assert(offsetof(GpuSatOrbit, tumbleAxisX) == 40 && offsetof(GpuSatOrbit, 
               "GpuSatOrbit layout mismatch (sat_orbit.comp reads the formation fields by position)");
 constexpr uint32_t kGpuFormationBit = 0x80000000u; // GpuSatOrbit::constIdx flag, sat_orbit.comp mirror
 
+// The epoch-free phases sat_rebake.comp re-bakes GpuSatOrbit's u0 / tumblePhase / raan from
+// (2026-10-15, branch kessler). Written once with the full upload; 12 B per satellite.
+struct GpuSatPhaseBase
+{
+    float u0;          // SatOrbit::u0 (argument of latitude at J2000 + its own n·t, see orbitElemsOf)
+    float tumblePhase; // SatOrbit::tumblePhase (0 for a formation member)
+    float raan;        // SatOrbit::raan (SSO: the value at the sim-start anchor)
+};
+static_assert(sizeof(GpuSatPhaseBase) == 12, "GpuSatPhaseBase must match sat_rebake.comp");
+
+// sat_rebake.comp: the orbit epoch in whole seconds since J2000 (int64 as two words) and the SSO
+// precession since the anchor at that epoch.
+struct SatRebakePC
+{
+    uint32_t epochLo;
+    int32_t epochHi;
+    float raanOff;   // fmod(kSSOPrecRate·(epoch − sim start), 2π)
+    uint32_t satCount;
+};
+static_assert(sizeof(SatRebakePC) == 16, "SatRebakePC must match sat_rebake.comp");
+
 // GpuReflectorTarget / the per-frame CPU-compacted night-side buffer it described were removed
 // 2026-08-06: sat_orbit.comp now reads the static per-target ECEF buffer directly (the same one
 // beam_cloud_block.comp already used) and rotates to live ECI itself via SatOrbitPC::gmstNow — see
@@ -2438,6 +2459,16 @@ private:
     // ── Orbit pipeline buffers ────────────────────────────────────────────────
     VkBuffer satOrbitBuf = VK_NULL_HANDLE; // device-local, uploaded once at init
     VkDeviceMemory satOrbitMem = VK_NULL_HANDLE;
+    // The 7-sim-day rebake runs on the GPU (sat_rebake.comp, 2026-10-15): it rewrites satOrbitBuf's
+    // u0 / tumblePhase / raan from these per-satellite bases in exact fixed-point turns. The CPU bake +
+    // full upload it replaced cost ~27 ms per rebake (13.7 ms a frame at 1 yr/s, 1.38M satellites).
+    VkBuffer satPhaseBaseBuf = VK_NULL_HANDLE;
+    VkDeviceMemory satPhaseBaseMem = VK_NULL_HANDLE;
+    VkDescriptorSetLayout satRebakeDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool satRebakeDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet satRebakeDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout satRebakePipeLayout = VK_NULL_HANDLE;
+    VkPipeline satRebakePipeline = VK_NULL_HANDLE;
     // mirrorNormalsBuf (persistent mirror lock/slew state) and reflectorTargetsBuf (the per-frame
     // CPU-compacted night-side ECI buffer) were removed 2026-08-06 — see CLAUDE.md's
     // TargetedReflector section. sat_orbit.comp now derives everything it needs (live AND
@@ -2731,6 +2762,7 @@ private:
         CPU_UPDATE_STARS,     // per-star ENU + suppression chain over the catalogue
         CPU_LIGHT_DOME,       // updateLightPollutionDome's 16 sectors x 4 radii
         CPU_UPDATE_PLANETS,   // 6 planets, render-ready entries
+        CPU_ORBIT_REBAKE,     // uploadSatOrbits(): the 7-sim-day orbit rebake (every ~2 frames at 1 yr/s)
         CPU_COUNT,
     };
     float cpuAccumMs[CPU_COUNT] = {};    // accumulating, current (incomplete) frame
@@ -5474,6 +5506,8 @@ private:
     void createOrbitDescriptors(VulkanContext &ctx);
     void createOrbitPipeline(VulkanContext &ctx);
     void uploadSatOrbits(VulkanContext &ctx);
+    void createSatRebake(VulkanContext &ctx);                 // sat_rebake.comp pipeline + set (after createSatBuffers)
+    void recordSatRebake(VkCommandBuffer cmd);                // moves the orbit epoch to now on the GPU
     void createCloudNoisePipeline(VulkanContext &ctx);
     void createCloudWarpNoisePipeline(VulkanContext &ctx);
     void createAuroraNoisePipeline(VulkanContext &ctx);

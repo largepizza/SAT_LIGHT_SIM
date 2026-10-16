@@ -547,6 +547,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     }
     bootStatus("Satellite orbits");
     uploadSatOrbits(ctx); // bake + upload GpuSatOrbit/GpuSatType data after orbits are built
+    createSatRebake(ctx); // the GPU rebake of those orbits as sim time moves on
     Log::line("satellite orbits uploaded");
     Log::line("init: pipelines");
     bootStatus("Pipelines");
@@ -1597,7 +1598,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // Auto-rebake orbit buffer if the epoch has drifted more than kOrbitRebakeDays.
     // Keeps float deltaT < kOrbitRebakeDays*86400 s (float ULP ≈ 0.07 s at 7 days).
     if (std::abs(simDayJ2000 - orbitEpochDay) >= kOrbitRebakeDays)
-        uploadSatOrbits(ctx);
+    {
+        CpuTimer _t(cpuAccumMs[CPU_ORBIT_REBAKE]);
+        recordSatRebake(cmd); // GPU: one dispatch, no upload (sat_rebake.comp)
+    }
 
     if (followActive)
         updateFollow(dt); // Phase 4e: ride along with the followed satellite at this sim time
@@ -7313,6 +7317,12 @@ void SatelliteSim::cleanup(VkDevice device)
     vkFreeMemory(device, lightDomeMem, nullptr);
     vkDestroyBuffer(device, satOrbitBuf, nullptr);
     vkFreeMemory(device, satOrbitMem, nullptr);
+    vkDestroyBuffer(device, satPhaseBaseBuf, nullptr);
+    vkFreeMemory(device, satPhaseBaseMem, nullptr);
+    vkDestroyPipeline(device, satRebakePipeline, nullptr);
+    vkDestroyPipelineLayout(device, satRebakePipeLayout, nullptr);
+    vkDestroyDescriptorPool(device, satRebakeDescPool, nullptr);
+    vkDestroyDescriptorSetLayout(device, satRebakeDescLayout, nullptr);
     if (reflectorTargetsECEFMapped)
         vkUnmapMemory(device, reflectorTargetsECEFMem);
     vkDestroyBuffer(device, reflectorTargetsECEFBuf, nullptr);
@@ -8341,6 +8351,12 @@ void SatelliteSim::createSatBuffers(VulkanContext &ctx)
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                      satOrbitBuf, satOrbitMem);
 
+    // satPhaseBaseBuf: the epoch-free phases sat_rebake.comp re-bakes satOrbitBuf from (written once).
+    ctx.createBuffer(sizeof(GpuSatPhaseBase) * satN,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                     satPhaseBaseBuf, satPhaseBaseMem);
+
     // satTypeBuf: host-visible + coherent. GpuSatTypeHeader (rewritten every frame in
     // recordCompute), the 64 KB earthshine table (written here, once), then one GpuSatType per
     // satTypes[] entry (written by uploadSatOrbits). Shared by every satellite, so it stays cached.
@@ -8782,7 +8798,7 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
     // fresh from the rebaked orbits and the current sim time regardless.
 
     orbitEpochDay = simDayJ2000;
-    orbitEpochSec = simSecInDay;
+    orbitEpochSec = std::floor(simSecInDay); // whole seconds: sat_rebake.comp's integer epoch
     const double orbitEpochT0 = (double)orbitEpochDay * 86400.0 + orbitEpochSec;
     // SSO RAAN is anchored at sim-start, so bake only the precession since then.
     const double t_start = (double)simInitDayJ2000 * 86400.0 + simInitSecInDay;
@@ -8867,6 +8883,124 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
     vkUnmapMemory(ctx.device, stagingMem);
     vkDestroyBuffer(ctx.device, staging, nullptr);
     vkFreeMemory(ctx.device, stagingMem, nullptr);
+
+    // The epoch-free bases sat_rebake.comp re-bakes from (12 B per satellite).
+    {
+        const VkDeviceSize baseSize = (VkDeviceSize)activeSatCount * sizeof(GpuSatPhaseBase);
+        VkBuffer bStaging;
+        VkDeviceMemory bStagingMem;
+        ctx.createBuffer(baseSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         bStaging, bStagingMem);
+        void *bm;
+        vkMapMemory(ctx.device, bStagingMem, 0, baseSize, 0, &bm);
+        GpuSatPhaseBase *base = static_cast<GpuSatPhaseBase *>(bm);
+        for (uint32_t i = 0; i < activeSatCount; ++i)
+        {
+            const SatOrbit &src = satOrbits[i];
+            base[i] = {src.u0, src.formation ? 0.0f : src.tumblePhase, src.raan};
+        }
+        vkUnmapMemory(ctx.device, bStagingMem);
+        VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+        VkBufferCopy region{0, 0, baseSize};
+        vkCmdCopyBuffer(cmd, bStaging, satPhaseBaseBuf, 1, &region);
+        ctx.endOneTimeCommands(cmd);
+        vkDestroyBuffer(ctx.device, bStaging, nullptr);
+        vkFreeMemory(ctx.device, bStagingMem, nullptr);
+    }
+}
+
+// ─── Orbit rebake on the GPU (sat_rebake.comp, 2026-10-15) ─────────────────────
+void SatelliteSim::createSatRebake(VulkanContext &ctx)
+{
+    VkDescriptorSetLayoutBinding b[2] = {
+        {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 2;
+    li.pBindings = b;
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &satRebakeDescLayout);
+
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.poolSizeCount = 1;
+    pi.pPoolSizes = &ps;
+    pi.maxSets = 1;
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &satRebakeDescPool);
+
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = satRebakeDescPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &satRebakeDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &satRebakeDescSet);
+
+    VkDescriptorBufferInfo orbitInfo{satOrbitBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo baseInfo{satPhaseBaseBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet w[2] = {};
+    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, satRebakeDescSet, 0, 0, 1,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &orbitInfo, nullptr};
+    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, satRebakeDescSet, 1, 0, 1,
+            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &baseInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 2, w, 0, nullptr);
+
+    VkShaderModule mod = ctx.loadShader("shaders/sat_rebake.comp.spv");
+    VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = mod;
+    stage.pName = "main";
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SatRebakePC)};
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &satRebakeDescLayout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    vkCreatePipelineLayout(ctx.device, &pli, nullptr, &satRebakePipeLayout);
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage = stage;
+    ci.layout = satRebakePipeLayout;
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &satRebakePipeline) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create sat_rebake compute pipeline");
+    vkDestroyShaderModule(ctx.device, mod, nullptr);
+}
+
+// Moves satOrbitBuf's epoch to the current sim time, rounded down to a whole second. Recorded into
+// the frame's command buffer ahead of sat_orbit.comp (single frame in flight: the previous frame's
+// reads are done). The per-type table never changes after the full upload, so only the three phases
+// are rewritten.
+void SatelliteSim::recordSatRebake(VkCommandBuffer cmd)
+{
+    if (activeSatCount == 0 || satRebakePipeline == VK_NULL_HANDLE)
+        return;
+    orbitEpochDay = simDayJ2000;
+    orbitEpochSec = std::floor(simSecInDay);
+    const int64_t epochS = orbitEpochDay * 86400 + (int64_t)orbitEpochSec;
+    const double tStart = (double)simInitDayJ2000 * 86400.0 + simInitSecInDay;
+
+    SatRebakePC pc{};
+    pc.epochLo = (uint32_t)((uint64_t)epochS & 0xFFFFFFFFu);
+    pc.epochHi = (int32_t)(epochS >> 32);
+    double off = std::fmod(kSSOPrecRate * ((double)epochS - tStart), glm::two_pi<double>());
+    if (off < 0.0)
+        off += glm::two_pi<double>();
+    pc.raanOff = (float)off;
+    pc.satCount = activeSatCount;
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, satRebakePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, satRebakePipeLayout, 0, 1, &satRebakeDescSet, 0,
+                            nullptr);
+    vkCmdPushConstants(cmd, satRebakePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdDispatch(cmd, (activeSatCount + 63) / 64, 1, 1);
+
+    VkBufferMemoryBarrier bar{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+    bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    bar.buffer = satOrbitBuf;
+    bar.offset = 0;
+    bar.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                         nullptr, 1, &bar, 0, nullptr);
 }
 
 // ─── createCloudNoisePipeline ────────────────────────────────────────────────

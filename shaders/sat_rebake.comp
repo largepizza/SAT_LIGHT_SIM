@@ -1,0 +1,121 @@
+#version 450
+// sat_rebake.comp — moves the orbit buffer's epoch to a new instant (2026-10-15, branch kessler).
+//
+// sat_orbit.comp evaluates u = u0 + n·deltaT with deltaT the (two-float) time since the orbit epoch,
+// so every satellite's epoch phases have to be re-baked as sim time moves on (kOrbitRebakeDays). The
+// CPU used to do it — a loop over every satellite in double + a full upload of satOrbitBuf, ~27 ms at
+// 1.38M satellites, every other frame at 1 yr/s. Here it is one thread per satellite rewriting three
+// fields from the epoch-free bases (GpuSatPhaseBase), EXACTLY:
+//
+//   phase(T) = frac((x + r·T) / 2π) for the float x (u0, tumble phase), the float rate r (meanMot,
+//   tumbleRate) and the integer epoch T (seconds since J2000, int64 — the epoch is kept on whole
+//   seconds). Each float is turned into a 64-bit fixed-point number of TURNS from its own bits (its
+//   24-bit mantissa × floor(2^64 / 2π), shifted by its exponent), and r·T is taken mod one turn as a
+//   64 x 64 -> low-64 integer product. Only the fractional turns survive, so no magnitude is ever lost:
+//   the result is the CPU's double fmod(x + r·T, 2π) to the float rounding of the output (offline
+//   emulation: within 4 m of the old CPU bake in LEO for any epoch within +-200 years).
+//
+// SSO RAAN precesses at one rate for everyone, so its offset since the anchor comes from the CPU.
+
+layout(local_size_x = 64) in;
+
+struct SatOrbit {
+    float raan;
+    float u0;
+    float R_sat;
+    float meanMot;
+    float cosI;
+    float sinI;
+    float cosRaan;
+    float sinRaan;
+    float tumbleRate;
+    float tumblePhase;
+    float tumbleAxisX;
+    float tumbleAxisY;
+    float tumbleAxisZ;
+    float alignTerminator;
+    uint  typeIdx;
+    uint  constIdx;
+};
+layout(std430, binding = 0) buffer OrbitBuf { SatOrbit orbits[]; };
+
+struct PhaseBase { float u0; float tumblePhase; float raan; };
+layout(std430, binding = 1) readonly buffer BaseBuf { PhaseBase bases[]; };
+
+layout(push_constant) uniform PC {
+    uint  epochLo;  // whole seconds since J2000, int64 two's complement
+    int   epochHi;
+    float raanOff;  // SSO precession since the sim-start anchor, mod 2π
+    uint  satCount;
+} pc;
+
+const float TWO_PI = 6.28318530717958647692;
+const uint  K_HI = 0x28BE60DBu; // floor(2^64 / 2π) = 0x28BE60DB9391054A
+const uint  K_LO = 0x9391054Au;
+
+// 64-bit two's complement helpers on uvec2(hi, lo).
+uvec2 neg64(uvec2 a) { uint lo = ~a.y + 1u; return uvec2(~a.x + (lo == 0u ? 1u : 0u), lo); }
+uvec2 add64(uvec2 a, uvec2 b) { uint lo = a.y + b.y; return uvec2(a.x + b.x + (lo < a.y ? 1u : 0u), lo); }
+uvec2 mul64(uvec2 a, uvec2 b) // low 64 bits of a·b
+{
+    uint h, l;
+    umulExtended(a.y, b.y, h, l);
+    return uvec2(h + a.x * b.y + a.y * b.x, l);
+}
+
+// A float in radians (or rad/s) -> 64-bit fixed-point turns mod 1, exact (|x| < 2^24).
+uvec2 radToTurns(float x)
+{
+    uint bits = floatBitsToUint(x);
+    uint ex = (bits >> 23) & 0xFFu;
+    if (ex == 0u)
+        return uvec2(0u); // zero / denormal
+    uint mant = (bits & 0x7FFFFFu) | 0x800000u;
+    int s = 150 - int(ex); // x = mant · 2^-s
+    if (s < 0 || s >= 96)
+        return uvec2(0u);
+    // P = mant · K, 88 bits in three words.
+    uint h1, l1, h2, l2;
+    umulExtended(mant, K_LO, h1, l1);
+    umulExtended(mant, K_HI, h2, l2);
+    uint w0 = l1;
+    uint w1 = h1 + l2;
+    uint w2 = h2 + (w1 < h1 ? 1u : 0u);
+    // (P >> s), low 64 bits.
+    uint q = uint(s) >> 5, r = uint(s) & 31u;
+    uint a = q == 0u ? w0 : (q == 1u ? w1 : w2);
+    uint b = q == 0u ? w1 : (q == 1u ? w2 : 0u);
+    uint c = q == 0u ? w2 : 0u;
+    uint lo = r == 0u ? a : ((a >> r) | (b << (32u - r)));
+    uint hi = r == 0u ? b : ((b >> r) | (c << (32u - r)));
+    uvec2 v = uvec2(hi, lo);
+    return (bits >> 31) != 0u ? neg64(v) : v;
+}
+
+// frac((x + rate·T) / 2π) · 2π for the epoch in the push constants.
+float phaseAt(float x, float rate, uvec2 absT, bool negT)
+{
+    uvec2 p = mul64(radToTurns(rate), absT);
+    if (negT)
+        p = neg64(p);
+    uvec2 tot = add64(add64(radToTurns(x), p), uvec2(0u, 0x80000000u)); // round to 2^-32 turn
+    return float(tot.x) * (TWO_PI / 4294967296.0);
+}
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.satCount)
+        return;
+    bool negT = pc.epochHi < 0;
+    uvec2 T = uvec2(uint(pc.epochHi), pc.epochLo);
+    uvec2 absT = negT ? neg64(T) : T;
+
+    PhaseBase b = bases[i];
+    float n = orbits[i].meanMot;
+    float tr = orbits[i].tumbleRate;
+    orbits[i].u0 = phaseAt(b.u0, n, absT, negT);
+    orbits[i].tumblePhase = phaseAt(b.tumblePhase, tr, absT, negT);
+    if (orbits[i].alignTerminator > 0.5)
+        orbits[i].raan = mod(b.raan + pc.raanOff, TWO_PI);
+}

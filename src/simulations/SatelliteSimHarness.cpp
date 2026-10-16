@@ -3693,7 +3693,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         static const char *kBucketKeys[8] = {"scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
                                              "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};
         static const char *kCpuKeys[CPU_COUNT] = {"build_ui", "update_positions", "beam_readback", "update_stars",
-                                                  "light_pollution_dome", "update_planets"};
+                                                  "light_pollution_dome", "update_planets", "orbit_rebake"};
         constexpr int kWarmup = 3; // gpuMsRaw lags a frame; skip the frames around the command itself
         const int frames = (int)c.num("frames", pos(0).empty() ? 60.0 : parseNum(pos(0), "perf"));
         if (a.frame == 0)
