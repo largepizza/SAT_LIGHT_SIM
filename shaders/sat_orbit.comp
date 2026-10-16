@@ -323,8 +323,8 @@ layout(set = 0, binding = 2) readonly buffer TargetECEFBuf {
 // TERRAIN_PLAN.md C12 follow-up #9. Zeroed every frame by vkCmdFillBuffer (resets beamCount to 0
 // too). Must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h exactly.
 #include "reflect_beam.glsl"   // ReflectBeam + BEAM_MAX_ACTIVE
-// Kessler (2026-10-16, SatelliteSimKessler.cpp): words [0, poolBase) = each roster satellite's END second
-// since the scenario epoch (INT_MAX = never; from then on its pool record, if any, draws it); from
+// Kessler (2026-10-16, SatelliteSimKessler.cpp): words [2i, 2i + 1] = roster satellite i's DEAD second (it
+// tumbles from then on) and END second (destroyed or re-entered), since the scenario epoch (INT_MAX = never); from
 // poolWord0, 16 words per pool record (GpuKepOrbit): 0 M, 1 argp, 2 raan (at the orbit epoch, rebaked by
 // sat_rebake.comp), 3 n (mean anomaly rate), 4 a, 5 e, 6 cos i, 7 sin i, 8 argp rate, 9 raan rate,
 // 10 tumble rate, 11 tumble phase (epoch), 12 flux scale, 13 born second, 14 death second, 15 type
@@ -1159,11 +1159,15 @@ bool processSatellite(uint i, out SatVisible rec)
     float poolFlux = 1.0;
     SatOrbit orb;
     vec3  satECI, velHat;
+    bool deadNow = false;
     if (!isPool) {
         orb = orbits[i];
-        // Destroyed or dead (its pool record, if any, takes over). Before the scenario epoch nothing is.
-        if (scenNowSec >= 0 && int(kw[i]) <= scenNowSec)
-            return false;
+        // Destroyed / re-entered, or dead (tumbling). Before the scenario epoch nothing is.
+        if (scenNowSec >= 0) {
+            if (int(kw[2u * i + 1u]) <= scenNowSec)
+                return false;
+            deadNow = int(kw[2u * i]) <= scenNowSec;
+        }
     } else {
         uint j = i - poolBase;
         uint w = poolWord0 + j * 16u;
@@ -1244,6 +1248,22 @@ bool processSatellite(uint i, out SatVisible rec)
         -sinU * sinR + cosU * orb.cosI * cosR,
          cosU * orb.sinI
     );
+    if (deadNow) {
+        // A dead satellite tumbles (Kessler; CPU mirror orbitElemsOf + kessler::deadTumble): an integer period
+        // from its index, the angle taken mod one period from the scenario's whole seconds (exact at any date;
+        // the orbit epoch is a whole second, so fract(deltaT) is the sub-second part).
+        uint h = hashU(i * 0x2C1B3C6Du + 0x297A2D39u);
+        uint Pd = 40u + (h % 560u);
+        float ph0 = TWO_PI * (float(hashU(h) >> 8) * (1.0 / 16777216.0));
+        vec3 ax = poolTumbleAxis(i | 0x40000000u);
+        orb.tumbleAxisX = ax.x;
+        orb.tumbleAxisY = ax.y;
+        orb.tumbleAxisZ = ax.z;
+        orb.tumbleRate = 0.0;
+        orb.tumblePhase = ph0 + TWO_PI * (float(uint(scenNowSec) % Pd) + fract(pc.deltaT)) / float(Pd);
+        orb.constIdx &= ~FORMATION_BIT;              // its tumble slots now hold the tumble, not the formation
+        orb.alignTerminator += 2.0;                  // forced tumble (SSO precession still reads > 0.5)
+    }
     }
     vec3 relPos = satECI - pc.obsECI;
 
@@ -1301,7 +1321,7 @@ bool processSatellite(uint i, out SatVisible rec)
     vec3  siteIdeal   = satNadir;
     int   bestIdx     = -1; // resolved ground-target ORIGINAL index; -1 = no beam-quality target
     float aimErrorRad = 0.0;
-    bool  usesSite    = !isPool && typeUsesGroundSite(orb.typeIdx); // a dead mirror aims at nothing
+    bool  usesSite    = !isPool && !deadNow && typeUsesGroundSite(orb.typeIdx); // a dead mirror aims at nothing
     if (usesSite) {
         // 2026-08-06 reversibility rework, refined same day — see this file's header comment and
         // CLAUDE.md's TargetedReflector section for the full design. Summary: target IDENTITY is

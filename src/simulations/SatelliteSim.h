@@ -2102,6 +2102,7 @@ private:
     // The selected satellite's orbit exactly as uploadSatOrbits() bakes it (floats promoted, SSO
     // RAAN anchored at sim start) — what the parity readout and the trace evaluate.
     SatOrbitElems orbitElemsOf(const SatOrbit &orb) const;
+    SatOrbitElems rosterElemsOf(const SatOrbit &orb) const; // the plain roster orbit (no Kessler state)
     // The ground-site mirror aim as sat_orbit.comp sees it (the loaded reflector targets + the lock
     // window / slew / elevation settings), for the CPU evaluator: satGroundSiteIdeal().
     SatGroundSiteAim groundSiteAim() const;
@@ -2529,14 +2530,15 @@ private:
     };
     std::unique_ptr<KesslerWorker, KesslerWorkerDelete> kWorker;
     std::vector<kessler::PoolRec> kPool;  // the main thread's mirror of the world's pool
-    std::vector<int32_t> kRosterEnd;      // ... of each roster satellite's end second
+    std::vector<int32_t> kRosterWords;    // ... of each roster satellite's dead and end seconds (2 per satellite)
     std::vector<kessler::Event> kEvents;  // ... of the applied events
     double kFrontier = 0.0;               // simulated up to here (J2000 s)
+    double kCacheFrontier = 0.0;          // the loaded cache's frontier: a cache is only ever rewritten longer
     bool kWorkerDone = false;
     uint64_t kHash = 0;                   // the world's inputs (cache key)
     int kDebrisConst = -1;                // the "Collision debris" pseudo-constellation (fragments)
     uint32_t kDebrisType = 0;
-    // GPU: kesslerBuf = roster end seconds + pool records (sat_orbit.comp binding 11, rebake 2),
+    // GPU: kesslerBuf = roster dead / end seconds + pool records (sat_orbit.comp binding 11, rebake 2),
     // kPoolBaseBuf = the records' J2000 phases (rebake 3). Sized for kPoolCap records; grown on demand.
     VkBuffer kesslerBuf = VK_NULL_HANDLE;
     VkDeviceMemory kesslerMem = VK_NULL_HANDLE;
@@ -2547,9 +2549,9 @@ private:
     void *kStageMapped = nullptr;
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
     uint32_t kPoolCap = 16384;            // records the GPU buffers hold
-    uint32_t kPoolWord0 = 0;              // first pool word (after the roster's end seconds)
+    uint32_t kPoolWord0 = 0;              // first pool word (after the roster's dead / end seconds)
     uint32_t kPoolGpu = 0;                // records uploaded (drawn)
-    std::vector<uint32_t> kDirtyRoster;   // roster end words to upload
+    std::vector<uint32_t> kDirtyRoster;   // roster satellites whose two words to upload
     std::vector<uint32_t> kDirtyPool;     // uploaded records whose death changed
     bool kRosterFullUpload = false;
     double kesslerEpoch() const;          // the scenario epoch (the CME's arrival), J2000 s
@@ -2557,6 +2559,7 @@ private:
     void kesslerShutdown();               // stop the worker, write the cache
     void kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents, double keepEngineBefore);
     void kesslerSync(VulkanContext &ctx);  // per frame: take the worker's new events / records / deaths
+    void kesslerWant(double tJ2000);       // ask the (lazy) worker to simulate at least this far
     void kesslerRecordUploads(VkCommandBuffer cmd); // per frame: copy them to the GPU
     void kesslerEnsureCapacity(VulkanContext &ctx, size_t records);
     void kesslerUploadAllSync(VulkanContext &ctx); // after (re)allocating: roster ends now, records progressively

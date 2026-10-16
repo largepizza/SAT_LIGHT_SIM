@@ -158,9 +158,13 @@ struct PoolRec
 };
 constexpr uint8_t kRecDead = 1, kRecFragment = 2;
 
+// A dead roster satellite's tumble: an integer period (s) and a phase from its index, so the GPU can take
+// the angle mod one period exactly at any date (sat_orbit.comp deadTumble).
+void deadTumble(uint32_t sat, uint32_t &periodS, double &phase0);
+
 enum EventKind : uint8_t
 {
-    EV_KILL = 0,      // a satellite dies (the storm, a bump, damage): becomes a tumbling pool record
+    EV_KILL = 0,      // a satellite dies (the storm, damage): it tumbles on its orbit until drag brings it down
     EV_BUMP = 1,      // a dead formation member drifts into its neighbour (gentle: may kill it)
     EV_COLLISION = 2, // hypervelocity collision (NASA SBM)
     EV_EXPLOSION = 3,
@@ -191,7 +195,7 @@ struct WorldSettings
     double stepS = 6.0 * 3600.0;
     double LcMin = 0.1;
     int maxRecordsPerEvent = 64;  // a breakup's records at an empty pool, tapering as it fills
-    uint32_t poolCapacity = 1000000;
+    uint32_t poolCapacity = 750000;
     double activeSample = 0.25;  // share of active satellites in each engine sample (weight 1 / it)
     double stormDensityGain = 7.0; // thermosphere density x (1 + gain x scriptedStormShape)
     uint32_t debrisType = 0;
@@ -206,8 +210,9 @@ public:
     WorldSettings s;
     std::vector<RosterObj> roster;
     std::vector<TypeInfo> types;
-    std::vector<int32_t> rosterEnd;   // end second per roster satellite (kNever)
-    std::vector<uint32_t> rosterCorpse; // its pool record once dead (kNoRef)
+    std::vector<int32_t> rosterDead;  // second each roster satellite died (kNever): from then on it tumbles,
+                                      // never manoeuvres, and drag lowers nothing but its end second
+    std::vector<int32_t> rosterEnd;   // end second: destroyed or re-entered (kNever)
     std::vector<PoolRec> pool;
     std::vector<Event> events;        // applied, in time order
     double frontier = 0.0;            // simulated up to here (J2000 s)
@@ -215,11 +220,12 @@ public:
 
     // Change notifications since the last take (the main thread mirrors pool and rosterEnd).
     std::vector<std::pair<uint32_t, int32_t>> poolDeaths;   // (record, death second)
-    std::vector<std::pair<uint32_t, int32_t>> rosterDeaths; // (satellite, end second)
+    std::vector<uint32_t> rosterChanged;                    // satellites whose dead / end second changed
 
     void reset();
     State stateOf(uint32_t ref, double t) const;
-    bool alive(uint32_t ref, double t) const;
+    bool alive(uint32_t ref, double t) const; // exists (a dead satellite still does: it can be hit)
+    bool dead(uint32_t ref, double t) const;  // a roster satellite past its death (or any pool record)
     int32_t secOf(double t) const;
     // Applies one event (fills its record range and pushes it to `events`). Returns false (and does
     // nothing) when an object it names is no longer alive at its time.
@@ -230,7 +236,7 @@ public:
 
 private:
     uint32_t addRecord(const PoolRec &r);
-    void killAsCorpse(uint32_t ref, double t, uint32_t eventIdx);
+    void killRoster(uint32_t ref, double t, uint32_t eventIdx);
     void spawnFragments(const BreakupResult &br, uint32_t refA, uint32_t refB, const State &sa, const State &sb,
                         double t, uint32_t eventIdx, uint32_t seed);
     PoolRec recordFromState(const State &st, double t, uint32_t parentRef, const glm::dvec3 &dv) const;

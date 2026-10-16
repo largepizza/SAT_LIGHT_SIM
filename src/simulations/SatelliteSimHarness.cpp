@@ -2244,9 +2244,27 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // Until the worker has simulated `days` past the CME (or finished, with `done`).
             const bool all = lower(pos(1)) == "done" || c.has("done");
             const double days = c.num("days", 0.0);
+            kesslerWant(all ? 1e18 : kesslerEpoch() + days * 86400.0);
             const bool ok = kWorkerDone || (!all && kFrontier >= kesslerEpoch() + days * 86400.0);
             if (!ok)
                 return Status::Pending;
+        }
+        else if (sub == "select" && lower(pos(1)) == "dead")
+        {
+            // kessler select dead [k=<n>]: the n-th roster satellite dead (tumbling) at the current time.
+            const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const int32_t sec = (int32_t)std::floor(t - kesslerEpoch());
+            uint32_t want = (uint32_t)c.num("k", 0.0), seen = 0;
+            int found = -1;
+            for (uint32_t i = 0; i < activeSatCount && 2ull * i + 1 < kRosterWords.size(); ++i)
+                if (sec >= kRosterWords[2ull * i] && sec < kRosterWords[2ull * i + 1] && seen++ == want)
+                {
+                    found = (int)i;
+                    break;
+                }
+            if (found < 0)
+                fail("kessler select dead: only " + std::to_string(seen) + " dead satellites now");
+            selectSatellite(found);
         }
         else if (sub == "select")
         {

@@ -24,7 +24,7 @@ constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 1;
+constexpr uint32_t kCacheVersion = 2; // bump whenever the world's logic changes
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
 {
@@ -67,6 +67,7 @@ struct SatelliteSim::KesslerWorker
     size_t pendingNext = 0;
     double replayUntil = 0.0; // engine sampling resumes here (the cache's frontier)
     double tEnd = 0.0;
+    std::atomic<double> wantUntil{0.0}; // lazy: simulate only this far (the main thread moves it with sim time)
     std::thread th;
     std::mutex mx;
     bool stop = false;
@@ -75,7 +76,13 @@ struct SatelliteSim::KesslerWorker
     size_t pubPool = 0, pubEvents = 0;
     std::vector<kessler::PoolRec> outPool;
     std::vector<kessler::Event> outEvents;
-    std::vector<std::pair<uint32_t, int32_t>> outPoolDeaths, outRosterDeaths;
+    std::vector<std::pair<uint32_t, int32_t>> outPoolDeaths;
+    struct RosterChange
+    {
+        uint32_t sat;
+        int32_t dead, end;
+    };
+    std::vector<RosterChange> outRoster;
     double outFrontier = 0.0;
 
     void publish()
@@ -86,9 +93,10 @@ struct SatelliteSim::KesslerWorker
         outEvents.insert(outEvents.end(), w.events.begin() + (ptrdiff_t)pubEvents, w.events.end());
         pubEvents = w.events.size();
         outPoolDeaths.insert(outPoolDeaths.end(), w.poolDeaths.begin(), w.poolDeaths.end());
-        outRosterDeaths.insert(outRosterDeaths.end(), w.rosterDeaths.begin(), w.rosterDeaths.end());
+        for (uint32_t i : w.rosterChanged)
+            outRoster.push_back({i, w.rosterDead[i], w.rosterEnd[i]});
         w.poolDeaths.clear();
-        w.rosterDeaths.clear();
+        w.rosterChanged.clear();
         outFrontier = w.frontier;
     }
 
@@ -99,9 +107,15 @@ struct SatelliteSim::KesslerWorker
         // published after each.
         while (!stop && w.frontier < tEnd)
         {
+            const double want = std::min(wantUntil.load(), tEnd);
+            if (w.frontier >= want)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                continue;
+            }
             const bool sampling = w.frontier >= replayUntil;
             const double chunk = sampling ? 86400.0 : 30.0 * 86400.0;
-            double to = std::min(w.frontier + chunk, tEnd);
+            double to = std::min({w.frontier + chunk, tEnd, std::max(want, w.frontier + w.s.stepS)});
             if (!sampling)
                 to = std::min(to, replayUntil);
             simulateChunk(to, sampling);
@@ -276,13 +290,18 @@ static void writeCache(const std::filesystem::path &p, uint64_t hash, const std:
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
         if (!f)
+        {
+            Log::line("kessler: cannot write " + tmp.string());
             return;
+        }
         const uint64_t n = eng.size();
         f.write((const char *)&kCacheMagic, 4).write((const char *)&kCacheVersion, 4).write((const char *)&hash, 8);
         f.write((const char *)&frontier, 8).write((const char *)&n, 8);
         f.write((const char *)eng.data(), (std::streamsize)(n * sizeof(kessler::Event)));
     }
     std::filesystem::rename(tmp, p, ec);
+    Log::line("kessler: cache " + p.filename().string() + (ec ? " NOT written: " + ec.message() : " written") + ", " +
+              std::to_string(eng.size()) + " engine events, day " + std::to_string((int)((frontier - kFuryArriveT) / 86400.0)));
 }
 
 // ── Start / stop ────────────────────────────────────────────────────────────────────────────────
@@ -303,7 +322,7 @@ void SatelliteSim::kesslerShutdown()
     if (kWorker->th.joinable())
         kWorker->th.join();
     // Cache what was simulated (only while the player has caused nothing: their breakups are session state).
-    if (kUserEvents.empty() && kWorker->w.frontier > kFuryArriveT)
+    if (kUserEvents.empty() && kWorker->w.frontier > kCacheFrontier + 1.0)
         writeCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / cacheName(kHash), kHash,
                    kWorker->w.events, kWorker->w.frontier);
     kWorker.reset();
@@ -336,7 +355,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     // The main thread's mirror starts empty; the pool tail of satOrbits goes with it.
     kPool.clear();
     kEvents.clear();
-    kRosterEnd.assign(activeSatCount, kessler::kNever);
+    kRosterWords.assign(2ull * activeSatCount, kessler::kNever);
     satOrbits.resize(activeSatCount);
     kPoolGpu = 0;
     kDirtyPool.clear();
@@ -393,6 +412,8 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     std::stable_sort(pend.begin(), pend.end(), [](const kessler::Event &a, const kessler::Event &b) { return a.t < b.t; });
     wk->pending = std::move(pend);
     wk->replayUntil = replayUntil;
+    kCacheFrontier = keepEngineBefore >= 0.0 ? kFuryArriveT : replayUntil;
+    wk->wantUntil = std::max(kFuryArriveT + 2.0 * 86400.0, (double)simDayJ2000 * 86400.0 + simSecInDay + 86400.0);
     {
         char msg[200];
         snprintf(msg, sizeof(msg), "kessler: world %016llx: %u satellites, %zu pending events (replay to day %.1f)",
@@ -406,25 +427,41 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
 }
 
 // ── Per frame ───────────────────────────────────────────────────────────────────────────────────
+void SatelliteSim::kesslerWant(double tJ2000)
+{
+    if (kWorker && tJ2000 > kWorker->wantUntil.load())
+        kWorker->wantUntil = tJ2000;
+}
+
 void SatelliteSim::kesslerSync(VulkanContext &ctx)
 {
     if (!kWorker)
         return;
+    {
+        // Lazy: keep the world a minute of the current time warp ahead of sim time (at least two days, and
+        // always the storm's first two days), not the whole horizon at once.
+        const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const double ahead = std::clamp(60.0 * (double)kTimeScales[timeScaleIdx], 2.0 * 86400.0, 400.0 * 86400.0);
+        const double want = std::max(kFuryArriveT + 2.0 * 86400.0, t + ahead);
+        if (want > kWorker->wantUntil.load())
+            kWorker->wantUntil = want;
+    }
     std::vector<kessler::PoolRec> nPool;
     std::vector<kessler::Event> nEv;
-    std::vector<std::pair<uint32_t, int32_t>> pd, rd;
+    std::vector<std::pair<uint32_t, int32_t>> pd;
+    std::vector<KesslerWorker::RosterChange> rd;
     {
         std::lock_guard<std::mutex> lk(kWorker->mx);
         nPool.swap(kWorker->outPool);
         nEv.swap(kWorker->outEvents);
         pd.swap(kWorker->outPoolDeaths);
-        rd.swap(kWorker->outRosterDeaths);
+        rd.swap(kWorker->outRoster);
         kFrontier = kWorker->outFrontier > 0.0 ? kWorker->outFrontier : kFrontier;
     }
     if (kWorker->done && !kWorkerDone)
     {
         kWorkerDone = true;
-        if (kUserEvents.empty())
+        if (kUserEvents.empty() && kWorker->w.frontier > kCacheFrontier + 1.0)
             writeCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / cacheName(kHash), kHash,
                        kWorker->w.events, kWorker->w.frontier);
     }
@@ -459,10 +496,11 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
                 kDirtyPool.push_back(d.first);
         }
     for (const auto &d : rd)
-        if (d.first < kRosterEnd.size())
+        if (2ull * d.sat + 1 < kRosterWords.size())
         {
-            kRosterEnd[d.first] = d.second;
-            kDirtyRoster.push_back(d.first);
+            kRosterWords[2 * d.sat] = d.dead;
+            kRosterWords[2 * d.sat + 1] = d.end;
+            kDirtyRoster.push_back(d.sat);
         }
     kEvents.insert(kEvents.end(), nEv.begin(), nEv.end());
 }
@@ -489,7 +527,7 @@ void SatelliteSim::kesslerEnsureCapacity(VulkanContext &ctx, size_t records)
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, satVisibleBuf, satVisibleMem);
     ctx.createBuffer(sizeof(uint32_t) * slots, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, satVisibleIdxBuf, satVisibleIdxMem);
-    kPoolWord0 = (std::max<uint32_t>(activeSatCount, 1) + 3u) & ~3u;
+    kPoolWord0 = (2u * std::max<uint32_t>(activeSatCount, 1) + 3u) & ~3u;
     ctx.createBuffer(4ull * ((VkDeviceSize)kPoolWord0 + 16ull * kPoolCap),
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, kesslerBuf, kesslerMem);
@@ -511,9 +549,9 @@ void SatelliteSim::kesslerUploadAllSync(VulkanContext &ctx)
     kDirtyPool.clear();
     kDirtyRoster.clear();
     kRosterFullUpload = false;
-    if (kRosterEnd.size() < activeSatCount)
-        kRosterEnd.resize(activeSatCount, kessler::kNever);
-    const VkDeviceSize bytes = 4ull * std::max<uint32_t>(activeSatCount, 1);
+    if (kRosterWords.size() < 2ull * activeSatCount)
+        kRosterWords.resize(2ull * activeSatCount, kessler::kNever);
+    const VkDeviceSize bytes = 8ull * std::max<uint32_t>(activeSatCount, 1);
     VkBuffer st;
     VkDeviceMemory sm;
     ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -521,7 +559,7 @@ void SatelliteSim::kesslerUploadAllSync(VulkanContext &ctx)
     void *m = nullptr;
     vkMapMemory(ctx.device, sm, 0, bytes, 0, &m);
     if (activeSatCount > 0)
-        memcpy(m, kRosterEnd.data(), 4ull * activeSatCount);
+        memcpy(m, kRosterWords.data(), 8ull * activeSatCount);
     else
         memset(m, 0x7F, bytes);
     vkUnmapMemory(ctx.device, sm);
@@ -566,11 +604,11 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
         size_t e = k + 1;
         while (e < kDirtyRoster.size() && kDirtyRoster[e] == kDirtyRoster[e - 1] + 1)
             ++e;
-        const VkDeviceSize bytes = 4ull * (e - k);
+        const VkDeviceSize bytes = 8ull * (e - k);
         if (off + bytes > kStageBytes / 4)
             break;
-        memcpy(stage + off, &kRosterEnd[kDirtyRoster[k]], (size_t)bytes);
-        toK.push_back({off, 4ull * kDirtyRoster[k], bytes});
+        memcpy(stage + off, &kRosterWords[2ull * kDirtyRoster[k]], (size_t)bytes);
+        toK.push_back({off, 8ull * kDirtyRoster[k], bytes});
         off += bytes;
         takenRoster = e;
         k = e;
@@ -710,13 +748,16 @@ std::string SatelliteSim::satLabel(int idx) const
         return std::string(b);
     };
     if (idx < (int)activeSatCount)
-        return rosterName((uint32_t)idx);
+    {
+        const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const int32_t sec = (int32_t)std::clamp(std::floor(t - kFuryArriveT), -2147483000.0, 2147483000.0);
+        const bool isDead = 2ull * idx + 1 < kRosterWords.size() && sec >= kRosterWords[2ull * idx];
+        return rosterName((uint32_t)idx) + (isDead ? " (dead)" : "");
+    }
     const uint32_t j = (uint32_t)idx - activeSatCount;
     if (j >= kPool.size())
         return "?";
     const kessler::PoolRec &r = kPool[j];
-    if ((r.flags & kessler::kRecDead) && r.parent < activeSatCount)
-        return rosterName(r.parent) + " (dead)";
     const uint32_t k = (r.event < kEvents.size()) ? j - kEvents[r.event].firstRec : j;
     snprintf(b, sizeof(b), "Debris %u.%u", r.event, k);
     return b;
@@ -757,17 +798,16 @@ nlohmann::json SatelliteSim::kesslerStateJson() const
     for (const kessler::PoolRec &r : kPool)
         if (sec >= r.bornSec && sec < r.deathSec)
         {
-            if (r.flags & kessler::kRecDead)
-                ++dead;
-            else
-            {
-                ++frag;
-                fragReal += (size_t)std::llround(r.weight);
-            }
+            ++frag;
+            fragReal += (size_t)std::llround(r.weight);
         }
-    for (int32_t e : kRosterEnd)
-        if (sec >= e)
+    for (size_t i = 0; 2 * i + 1 < kRosterWords.size(); ++i)
+    {
+        if (sec >= kRosterWords[2 * i + 1])
             ++rosterGone;
+        else if (sec >= kRosterWords[2 * i])
+            ++dead;
+    }
     size_t kills = 0, bumps = 0, col = 0, cat = 0, user = 0;
     for (const kessler::Event &e : kEvents)
     {

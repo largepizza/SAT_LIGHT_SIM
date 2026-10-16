@@ -5882,6 +5882,29 @@ SatOrbitElems SatelliteSim::orbitElemsOf(const SatOrbit &orb) const
 {
     if (orb.poolSlot >= 0 && (size_t)orb.poolSlot < kPool.size())
         return kessler::poolOrbitElems(kPool[(size_t)orb.poolSlot], (uint32_t)orb.poolSlot);
+    SatOrbitElems e = rosterElemsOf(orb);
+    // Kessler: a roster satellite dead at the current sim time tumbles (sat_orbit.comp's deadTumble).
+    const ptrdiff_t idx = &orb - satOrbits.data();
+    if (idx >= 0 && idx < (ptrdiff_t)activeSatCount && 2ull * (size_t)idx + 1 < kRosterWords.size())
+    {
+        const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const int32_t sec = (int32_t)std::clamp(std::floor(t - kesslerEpoch()), -2147483000.0, 2147483000.0);
+        if (sec >= kRosterWords[2 * (size_t)idx])
+        {
+            uint32_t P;
+            double ph0;
+            kessler::deadTumble((uint32_t)idx, P, ph0);
+            e.forceTumble = true;
+            e.tumbleRate = glm::two_pi<double>() / (double)P;
+            e.tumblePhase = ph0 - e.tumbleRate * kesslerEpoch();
+            e.tumbleAxis = kessler::poolTumbleAxis((uint32_t)idx | 0x40000000u);
+        }
+    }
+    return e;
+}
+
+SatOrbitElems SatelliteSim::rosterElemsOf(const SatOrbit &orb) const
+{
     SatOrbitElems e;
     e.raan = orb.raan;
     e.incl = orb.incl;
@@ -9032,7 +9055,7 @@ void SatelliteSim::createSatRosterBuffers(VulkanContext &ctx)
     // The visible list (satVisibleBuf / satVisibleIdxBuf: every roster satellite, the Kessler pool's capacity
     // and kCitySpriteMax city lights) and the Kessler buffers are made by kesslerEnsureCapacity, which also
     // grows them with the pool.
-    kRosterEnd.assign(activeSatCount, kessler::kNever);
+    kRosterWords.assign(2ull * activeSatCount, kessler::kNever);
     // satOrbitBuf: device-local, uploaded once (rebaked on the GPU, sat_rebake.comp). sat_orbit.comp
     // reads it every frame.
     ctx.createBuffer(sizeof(GpuSatOrbit) * satN, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,

@@ -390,14 +390,21 @@ static void parallelChunks(size_t n, const std::function<void(size_t, size_t)> &
         t.join();
 }
 
+void deadTumble(uint32_t sat, uint32_t &periodS, double &phase0)
+{
+    const uint32_t h = hashU32(sat * 0x2C1B3C6Du + 0x297A2D39u);
+    periodS = 40u + (h % 560u);                                    // 40 s .. 10 min a turn
+    phase0 = kTwoPi * (double)(float)((hashU32(h) >> 8) * (1.0 / 16777216.0));
+}
+
 void World::reset()
 {
+    rosterDead.assign(roster.size(), kNever);
     rosterEnd.assign(roster.size(), kNever);
-    rosterCorpse.assign(roster.size(), kNoRef);
     pool.clear();
     events.clear();
     poolDeaths.clear();
-    rosterDeaths.clear();
+    rosterChanged.clear();
     frontier = s.epoch;
     sampleCount = 0;
 }
@@ -419,6 +426,13 @@ State World::stateOf(uint32_t ref, double t) const
     else
         st = satOrbitStateAt(rosterOrbitElems(roster[ref], s.raanAnchorT), t);
     return {st.posEci, st.velEci};
+}
+
+bool World::dead(uint32_t ref, double t) const
+{
+    if (ref & kPoolBit)
+        return true;
+    return ref < roster.size() && secOf(t) >= rosterDead[ref];
 }
 
 bool World::alive(uint32_t ref, double t) const
@@ -499,30 +513,23 @@ PoolRec World::recordFromState(const State &st, double t, uint32_t parentRef, co
     return r;
 }
 
-void World::killAsCorpse(uint32_t ref, double t, uint32_t eventIdx)
+void World::killRoster(uint32_t ref, double t, uint32_t eventIdx)
 {
-    if ((ref & kPoolBit) || !alive(ref, t))
+    (void)eventIdx;
+    if ((ref & kPoolBit) || !alive(ref, t) || dead(ref, t))
         return;
     const RosterObj &o = roster[ref];
     const TypeInfo &ty = types[o.type];
-    PoolRec r = recordFromState(stateOf(ref, t), t, ref, glm::dvec3(0.0));
-    r.type = o.type;
-    r.constIdx = o.constIdx;
-    r.flags = kRecDead;
-    r.flux = 1.0f;
-    r.massKg = (float)ty.massKg;
-    r.radiusM = (float)ty.radiusM;
-    r.cdAm = (float)(2.2 * ty.areaM2 / std::max(ty.massKg, 1.0));
-    r.weight = 1.0f;
-    r.tumbleRate = (float)(0.01 + 0.15 * hash01(eventIdx, ref, 31));
-    r.tumble0 = (float)wrap2Pi(kTwoPi * hash01(eventIdx, ref, 32) - (double)r.tumbleRate * t);
-    r.event = eventIdx;
-    const double td = deathTime(r, t);
-    r.deathSec = std::max(r.bornSec, td >= s.epoch + s.horizonS * 1.5 ? kNever : secOf(td));
-    const uint32_t j = addRecord(r);
-    rosterEnd[ref] = r.bornSec;
-    rosterCorpse[ref] = j;
-    rosterDeaths.push_back({ref, r.bornSec});
+    const int32_t sec = secOf(t);
+    rosterDead[ref] = sec;
+    // No longer flying against drag: it re-enters when its (circular) orbit decays.
+    const double cdAm = 2.2 * ty.areaM2 / std::max(ty.massKg, 1.0);
+    const double gain = s.stormDensityGain;
+    const double td = t + decayTime(t, (double)o.R, 0.0, cdAm, s.horizonS,
+                                    [gain](double tt) { return 1.0 + gain * scriptedStormShape(tt); });
+    if (td < s.epoch + s.horizonS * 1.5)
+        rosterEnd[ref] = std::min(rosterEnd[ref], std::max(sec, secOf(td)));
+    rosterChanged.push_back(ref);
 }
 
 void World::spawnFragments(const BreakupResult &br, uint32_t refA, uint32_t refB, const State &sa, const State &sb,
@@ -567,7 +574,7 @@ static void endObject(World &w, uint32_t ref, double t, bool keepWeighted)
     else if (sec < w.rosterEnd[ref])
     {
         w.rosterEnd[ref] = sec;
-        w.rosterDeaths.push_back({ref, sec});
+        w.rosterChanged.push_back(ref);
     }
 }
 
@@ -592,16 +599,16 @@ bool World::apply(Event ev)
     switch (ev.kind)
     {
     case EV_KILL:
-        if (!alive(ev.a, ev.t))
+        if (!alive(ev.a, ev.t) || dead(ev.a, ev.t))
             return false;
-        killAsCorpse(ev.a, ev.t, idx);
+        killRoster(ev.a, ev.t, idx);
         break;
     case EV_BUMP:
         // a: the dead member drifting in; b: its neighbour, killed when the seed said so (catastrophic).
-        if (!alive(ev.b, ev.t))
+        if (!alive(ev.b, ev.t) || dead(ev.b, ev.t))
             return false;
         if (ev.catastrophic)
-            killAsCorpse(ev.b, ev.t, idx);
+            killRoster(ev.b, ev.t, idx);
         break;
     case EV_COLLISION:
     {
@@ -612,7 +619,12 @@ bool World::apply(Event ev)
             std::swap(tgt, prj);
         const State st = stateOf(tgt, ev.t), sp = stateOf(prj, ev.t);
         const double v = glm::length(st.v - sp.v);
-        const BreakupResult br = breakupCollision(massOf(*this, tgt), massOf(*this, prj), v, s.LcMin, maxRec, ev.seed);
+        // Cratering (non-catastrophic) hits are the vast majority once fragments abound: they get an eighth
+        // of the record budget (their fragments are few and small).
+        const double emr = 0.5 * std::min(massOf(*this, tgt), massOf(*this, prj)) * v * v /
+                           std::max(std::max(massOf(*this, tgt), massOf(*this, prj)), 1e-3);
+        const int rec = emr >= 40000.0 ? maxRec : (maxRec > 0 ? std::max(1, maxRec / 8) : 0);
+        const BreakupResult br = breakupCollision(massOf(*this, tgt), massOf(*this, prj), v, s.LcMin, rec, ev.seed);
         ev.vRel = (float)v;
         ev.nReal = (float)br.nReal;
         ev.catastrophic = br.catastrophic ? 1 : 0;
@@ -621,7 +633,7 @@ bool World::apply(Event ev)
         if (br.catastrophic)
             endObject(*this, tgt, ev.t, true);
         else if (!(tgt & kPoolBit) && hash01(ev.seed, 7, 41) < 0.5)
-            killAsCorpse(tgt, ev.t, idx); // damaged: the target dies and tumbles (its fragments came off it)
+            killRoster(tgt, ev.t, idx); // damaged: the target dies and tumbles (its fragments came off it)
         break;
     }
     case EV_EXPLOSION:
@@ -666,7 +678,7 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
             {
                 if (sec >= rosterEnd[i])
                     continue;
-                if (!types[roster[i].type].passive && hash01(sampleCount, i, 21) >= s.activeSample)
+                if (!types[roster[i].type].passive && sec < rosterDead[i] && hash01(sampleCount, i, 21) >= s.activeSample)
                     continue;
                 refs.push_back(i);
             }
@@ -694,7 +706,7 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
                     {
                         const TypeInfo &ty = types[roster[ref].type];
                         o.radiusM = (float)ty.radiusM;
-                        o.active = !ty.passive;
+                        o.active = !ty.passive && sec < rosterDead[ref];
                         o.weight = o.active ? (float)(1.0 / s.activeSample) : 1.0f;
                     }
                 }
