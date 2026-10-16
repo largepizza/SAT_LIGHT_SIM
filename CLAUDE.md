@@ -43,7 +43,8 @@ log-distance encoding, written by every surface) · *Occlusion: one shared depth
 **Geometry models** — SatModel, materials, lobes, earthshine, transmission, render-only parts,
 lattices, patterns — legacy attitude modes, `typeIdx`, adding a type) · *Orbital Mechanics /
 Constellations* · *GPU Orbital Pipeline* (two-dispatch pattern, buffers, `Gpu*` layouts, push
-constants) · *TargetedReflector / Mirror Ground Targets* · *Reflect-Orbital Beam Cloud Occlusion* ·
+constants) · *TargetedReflector / Mirror Ground Targets* · *Kessler syndrome — "The Sun's Fury"* (the
+scripted storm, dead satellites, debris pool, cascade engine, event log) · *Reflect-Orbital Beam Cloud Occlusion* ·
 *GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22).
 
 **Rendering** — *UIRenderer / Clay* (icon atlas, the fixed-bitmap font, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
@@ -215,7 +216,7 @@ has access to is answerable. Current margins:
 | `maxComputeWorkGroupInvocations` | 128 | **256** | `local_size 16×16` in cloud_march / scene_depth / flare_blur |
 | `pointSizeRange[1]` | 64 (with `largePoints`) | up to 1024 | glare sprites (`glare.vert`) clamp to it — smaller on weak parts |
 | `maxComputeSharedMemorySize` | 16 KB | ~9 KB | `env_probe_sh.comp`'s SH partial sums (`vec3 part[64][9]`, 6.9 KB packed, 9 KB with vec3 padded); the cloud tile-cull lists ~4.6 KB |
-| `maxPerStageDescriptorStorageBuffers` | 4 | **11** | `sat_orbit.comp`'s set (the check said 6, for `sat_sky.frag`, long after this set passed it — corrected 2026-09-23 with the occlusion buffers); MoltenVK is the realistic place to hit it, since it maps SSBOs + UBOs + vertex buffers into Metal's 31 per-stage buffer slots |
+| `maxPerStageDescriptorStorageBuffers` | 4 | **12** | `sat_orbit.comp`'s set (binding 11 = the Kessler buffer since 2026-10-16; the check said 6, for `sat_sky.frag`, long after this set passed it — corrected 2026-09-23 with the occlusion buffers); MoltenVK is the realistic place to hit it, since it maps SSBOs + UBOs + vertex buffers into Metal's 31 per-stage buffer slots |
 | `maxPerStageDescriptorSampledImages` / `Samplers` | 16 | **16** | `sat_sky.frag` — AT the floor since terrain v2 P3's material array (binding 27, 2026-09-29): a new sky texture must merge into an existing one (e.g. the two city detail maps into an array) |
 | `maxPerStageDescriptorStorageImages` | 4 | **4** | AT the floor (checked since 2026-10-06): `sat_sky.frag`'s mesh colour + distance targets (22/23), the sharp-reflection G-buffer (25) and the far cloud layer (29) — added as storage images because the sampled-image budget was full; `cloud_v2_march.comp`'s sparse + full-rate colour/depth outputs. A fifth needs a merge |
 
@@ -3969,6 +3970,79 @@ differently depending on playback direction, even though the visual result now h
 physically-motivated slew rate.
 
 ---
+
+## Subsystem: Kessler syndrome — "The Sun's Fury" (2026-10-16, branch kessler)
+
+Plan, design log and measurements: `.plans/KESSLER_PLAN.md`. Code: `Kessler.h/.cpp` (app-independent: orbit
+maths, the breakup model, the engine, the deterministic `kessler::World`), `SatelliteSimKessler.cpp` (the sim
+side: worker thread, mirror, GPU uploads, cache, UI, labels), `shaders/sat_orbit.comp` (pool records, dead
+satellites), `shaders/sat_rebake.comp`, `SpaceWeather.cpp` (the scripted storm).
+
+**It is not a mode: it happens in sim time.** A Carrington-class CME (flare 2037-07-14 09:30 UTC, arrival
+2037-07-15 03:00 UTC = the scenario EPOCH, Kp ~11 for ~half a day; `spaceWeatherSetScriptedStorm`, the aurora
+follows with no other code) kills a share of the satellites (by altitude and inclination, crewed stations 10x
+less; hash-chosen, `stormSeedEvents`); dead formation members bump their neighbours (lognormal median 4 days,
+each bump kills with p 1/2 and may chain); then the cube-method engine carries the collisions forward. **Before
+the epoch nothing differs from the plain sky** (every term is gated on the scenario's seconds). Settings >
+Constellations > THE SUN'S FURY: the toggle (`kessler.enabled`, default on), collision rate (`rate_multiplier`,
+x1 = physical), avoidance (`avoidance`, 0.9), horizon (`horizon_years`, 20), "Highlight the debris", live counts.
+Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night, 1x).
+
+- **Everything is a pure function of sim time:** an append-only EVENT LOG (`kessler::Event`: kill, bump,
+  collision, explosion, ASAT; origin engine / seed / user) with born / dead / end SECONDS since the epoch. Going
+  back before an event just stops drawing its debris and brings the satellites back. Random numbers come from
+  hashes of (seed, ids), never a shared stream, so results do not depend on threads or order. **Bump
+  `kCacheVersion` (SatelliteSimKessler.cpp) whenever the world's logic changes**: the cache key does not see code.
+- **Dead satellites stay roster records** (kesslerBuf words 2i / 2i+1 = dead second, end second): they keep
+  their orbit and TUMBLE (`deadTumble`: an integer period 40-600 s and a phase from the index, the angle taken mod
+  one period from the scenario's whole seconds, exact at any date; CPU mirror in `orbitElemsOf`, which therefore
+  depends on the current sim time for roster satellites), never manoeuvre (engine: passive), and drag sets their
+  end (re-entry). The first cut made each dead satellite a pool record: the pool passed 2M records by day 120.
+- **Pool records are fragments only** (`kessler::PoolRec`, 64-B `GpuKepOrbit` in kesslerBuf from `poolWord0`,
+  satellite indices from `activeSatCount` on; appended to the CPU's `satOrbits` with `poolSlot`, so every
+  index-based path works). Keplerian with **relative J2**: a child keeps its parent's rates plus the J2 DIFFERENCE
+  between them (`recordFromState`), so a cloud spreads around its parent's plane without the roster needing J2 of
+  its own. Drag (`decayTime`, Vallado's exponential atmosphere x the storm's heating, `stormDensityGain` 7) sets
+  only the death second; orbits do not visibly decay (keeps the GPU exact). `sat_rebake.comp` re-bakes the pool's
+  phases with the same exact fixed-point turns as the roster.
+- **Breakups: NASA Standard Breakup Model** (`breakupCollision` / `breakupExplosion`): catastrophic above
+  40 J/g, N(>Lc) = 0.1 M^0.75 Lc^-1.71 (explosion 6 Lc^-1.6), Lc >= 10 cm, bimodal A/m, lognormal dv. Records
+  are REPRESENTATIVE particles: up to 64 per breakup at an empty pool, (1 - fill)^3 of it as the pool fills
+  (cratering hits an eighth), each carrying `weight` real fragments; the pool is capped at 750k records. A hit
+  that changes nothing (no records, a surviving weighted projectile, no kill) is not recorded.
+- **The engine** (`engineSample`, cube method, Liou 2006): every 6 h of sim time one sample at the step's middle,
+  20-km cubes, P = vRel x pi (rA + rB)^2 x dt / V x weights x rate multiplier, x (1 - avoidance) when one is a
+  working satellite, active pairs skipped (coordinated constellations), active satellites subsampled at 0.25
+  (weight 4). **Measured physics:** with the shipped roster the cascade runs away: ~80 collisions on day 1, ~600k
+  live fragment records (far more real) and 126k dead satellites by day 200 — expected for ~1M satellites in
+  narrow shells (cf. the "CRASH clock" estimates of days between collisions without manoeuvres).
+- **The worker is lazy** (`KesslerWorker`, below-normal priority, half the cores minus one for position
+  sampling): it simulates a minute of the current time warp ahead of sim time (at least 2 days; always the
+  storm's first two days at launch) and idles otherwise. **Sim time HOLDS at the simulated frontier** (never
+  rewinds: a restart pulls the frontier back to the epoch) with a banner, "Computing the debris cascade". Speed:
+  ~1 sim-day per second early, 200 days in ~160 s with a full pool.
+- **The main thread mirrors** the worker's batches (`kesslerSync`: records, roster changes, events) and uploads
+  them (`kesslerRecordUploads`, a persistent 16-MB staging buffer, at most 16k new records a frame, roster words
+  in budget-sized pieces — a whole-roster run that did not fit the budget was re-sorted every frame and never
+  uploaded: 8.7 ms a frame). GPU pool buffers grow by doubling up to the cap (83 MB at 750k records).
+- **Player breakups** (info window BREAKUP: Explode / ASAT strike; harness `kessler breakup|collide`) are user
+  events: the world restarts, replaying everything before them (engine events kept up to the step before),
+  re-simulating after. Allowed from the epoch on, up to the frontier.
+- **Cache**: the engine's events + frontier in `<user data>/kessler/suns_fury_<hash>.bin` (the hash covers the
+  roster, types, settings and `kCacheVersion`), written longer only, never while the player has breakups; a launch
+  replays it (lazily) instead of re-sampling. Not shipped: 1.2M events (~60 MB) by day 200.
+- **Roster rebuilds and determinism** (also needed by the cache): `buildOrbits()` draws from `SatRng` (MSVC's
+  rand() LCG, one stream per constellation, recorded on the first build — the shipped layout is bit-identical on
+  Windows and now the same everywhere), the cluster jitter is keyed by load order (`defIndex`), terminator planes
+  by the first build's Sun. `rebuildRoster()` (harness `roster list|remove|add`) restarts the scenario.
+- Fragments belong to the "Collision debris" pseudo-constellation (appended at load, no roster satellites, the
+  debris type): Show / Hlt work as for any constellation. Labels: "<constellation> #<n> (dead)", "Debris <event>.<k>".
+- `GpuSatTypeHeader` grew to 48 B (poolBase, poolCount, scenNowSec, poolWord0); `sat_orbit.comp` binds 12 storage
+  buffers (binding 11 = kesslerBuf; the device check asks for 12). CPU bucket `kessler` (harness `perf`).
+- Harness: `kessler state | wait [days=] [done] | breakup <sat> [kind=explosion|asat] | collide <a> <b> | select
+  [k=] | select dead [k=]`; `state` carries `kessler` (counts at the current time). Scripts in harness_runs/kessler.
+- Not modelled: orbits shrinking under drag (only the re-entry time), debris-driven ambience, fragments as meshes
+  (the debris model is drawn at its own size, so fragments never become meshes), the flare's own light.
 
 ## Subsystem: Reflect-Orbital Beam Cloud Occlusion
 
