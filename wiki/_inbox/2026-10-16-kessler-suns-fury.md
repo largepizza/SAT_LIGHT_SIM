@@ -31,6 +31,22 @@ Its brightness is a physical estimate (5% of the mass as fine dust) put on the s
 times "Dust cloud brightness" (`kessler.dust_gain`, default x100; at x1 it fades below the dark sky within minutes).
 The Collision debris row's Hlt tints the pieces orange and draws them as bright census dots.
 
+Everything that drag brings down re-enters as a fireball, drawn at the second its lifetime runs out, under where its
+orbit puts it then. It follows what re-entry observations describe (Starlink re-entries over North America, ATV-1,
+Hayabusa): the object glows from ~100 km and brightens; its main breakup comes at 75-80 km with a flash; then a
+train of many orange fragments (3 to 80, by mass), some leading the main body and some trailing it, each with its own
+glowing trail, flickering as they tumble, a few flaring once; light pieces slow and fall behind; nothing glows below
+~45 km or under ~2 km/s. A 2.5-t Starmind's main body peaks near magnitude -7.5 from 100 km, a 100-kg piece -4. Heads
+are point sprites (bloom, glare), trails and the main body's fading train emissive streaks in the dust renderer.
+Settings > THE SUN'S FURY > "Watch the next re-entry" (harness `kessler reentry`) jumps to the next one over a dark sky,
+25 s before breakup, from 120 km beside its track.
+
+The debris pool holds up to 5 million LIVE pieces (about 580 MB of GPU memory when full): a piece's slot is reused
+5 minutes after it re-enters or is destroyed, so re-entry is the garbage collection, and time still runs both ways
+exactly (recent reuses are kept to play backwards over; further back, the world is replayed from its event log).
+On an RTX 3070 Ti one simulated year of the cascade computes in about 8.5 minutes (~3 s per day at its busiest,
+~1.2 s later) in about 4 GB of memory.
+
 The history is an event log, so time runs both ways exactly. The cascade is computed lazily in the background,
 a minute of the current time warp ahead. Sim time holds at the computed frontier, with a banner: "Computing the
 debris cascade".
@@ -49,8 +65,8 @@ Settings > Constellations > THE SUN'S FURY holds:
 The default bookmark "The Sun's Fury" lands on the storm's first night over Monument Valley. Results are cached
 in `<user data>/kessler/`.
 
-With the shipped roster the cascade runs away: by day 60, ~150k catastrophic collisions, 314k dead and 155k
-destroyed satellites and ~640k pieces over 1 m. The engine computes 30 days in about 14 s.
+With the shipped roster the cascade runs away: by day 100, 934k satellites are destroyed and 3.6M pieces over 1 m
+are in orbit; by day 365, 1.07M destroyed, the pieces down to 1.4M as they shatter and re-enter.
 
 That is expected for ~1M satellites in narrow shells.
 

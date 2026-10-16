@@ -51,6 +51,7 @@ bool settingsTabIsAdvanced(int i);   // behind Display > "Show advanced settings
 
 #include <string>
 #include <vector>
+#include <map>
 #include <unordered_map>
 #include <cstdint>
 #include <cstddef> // offsetof — GpuSatListHeader's layout asserts
@@ -2536,6 +2537,56 @@ private:
     std::unique_ptr<KesslerWorker, KesslerWorkerDelete> kWorker;
     std::vector<kessler::PoolRec> kPool;  // the main thread's mirror of the world's pool
     std::vector<int32_t> kRosterWords;    // ... of each roster satellite's dead and end seconds (2 per satellite)
+    std::vector<int32_t> kRosterDecay;    // ... and its drag re-entry second (an end AT it is a re-entry)
+    // Re-entries by the hour of their second (since the epoch): satellite indices (roster, or activeSatCount + record).
+    // Entries are checked against the current death when used (a later collision may have ended the object first).
+    std::unordered_map<int32_t, std::vector<std::pair<uint32_t, int32_t>>> kReentries; // (satellite, its re-entry second)
+    // Garbage collection (round 3): pool slots are reused once their record is gone (kessler::World::addRecord), so a
+    // slot holds several records over time (generations). kPool[j] is the generation SHOWN at the current time;
+    // kPoolHist keeps every generation of a reused slot from the last kHistKeepS of sim time, oldest first, so playing
+    // time backwards over a reuse shows the earlier record again (kGenBounds: each later generation's birth second ->
+    // slot, the moments a slot changes hands). Going back past what was pruned replays the world (kReplayPending).
+    std::vector<uint32_t> kPoolGen;
+    struct KGen
+    {
+        uint32_t gen;
+        kessler::PoolRec rec;
+    };
+    std::unordered_map<uint32_t, std::vector<KGen>> kPoolHist;
+    std::multimap<int32_t, uint32_t> kGenBounds;
+    static constexpr int32_t kHistKeepS = 7 * 86400;
+    int32_t kShownSec = INT32_MIN, kHistPrunedUntil = INT32_MIN, kHistPrunedAt = INT32_MIN;
+    bool kReplayPending = false;
+    void kesslerSetPoolOrbit(uint32_t j);
+    void kesslerShowGen(uint32_t j, int32_t sec);
+    const kessler::PoolRec *kesslerPoolGenWithDecay(uint32_t j, int32_t decaySec) const;
+    void kesslerIndexReentry(uint32_t sat, int32_t sec);
+    // The fireballs (round 3): heads as point sprites appended to the visible list by kessler_fireballs.comp
+    // (CPU-built, host-visible kFireBuf), trails as emissive Gaussians in the dust buffer.
+    static constexpr uint32_t kFireballMax = 8192;
+    struct GpuFireball
+    {
+        glm::vec4 dirFlare; // ENU direction from the eye; w = effectFlare
+        glm::vec4 colRange; // rgb; w = range (m)
+    };
+    VkBuffer kFireBuf = VK_NULL_HANDLE;
+    VkDeviceMemory kFireMem = VK_NULL_HANDLE;
+    void *kFireMapped = nullptr;
+    uint32_t kFireCount = 0, kFireTrails = 0, kReentriesNow = 0; // this frame (harness state)
+    VkDescriptorSetLayout kFireDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool kFireDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet kFireDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout kFirePipeLayout = VK_NULL_HANDLE;
+    VkPipeline kFirePipeline = VK_NULL_HANDLE;
+    void kesslerCreateFireballPass(VulkanContext &ctx);
+    void kesslerRecordFireballs(VkCommandBuffer cmd, VulkanContext &ctx);
+    void kesslerDestroyFireballPass(VkDevice device);
+    // The next re-entry after the current time whose breakup is in darkness (sun below -8 deg there) and, preferring
+    // dead satellites, the heaviest in the next 6 h: returns its satellite index, second and breakup point (ECI m).
+    bool kesslerNextReentry(uint32_t &sat, double &tJ2000, glm::dvec3 &breakupEci, glm::dvec3 &velEci) const;
+    // Sets the clock 25 s before that re-entry's breakup (1x, running) and the observer ~120 km to the side of its
+    // track, looking at the breakup point. False (and why in msg) when none is due in the next 6 h.
+    bool kesslerGoToNextReentry(std::string &msg);
     std::vector<kessler::Event> kEvents;  // ... of the applied events
     double kFrontier = 0.0;               // simulated up to here (J2000 s)
     double kCacheFrontier = 0.0;          // the loaded cache's frontier: a cache is only ever rewritten longer
@@ -2555,7 +2606,7 @@ private:
     void *kStageMapped = nullptr;
     // The dust clouds (round 2): up to kMaxDustClouds Gaussian ellipsoids a frame, built on the CPU from the recent
     // breakups (kesslerFillDust) and integrated in closed form by cloud_march.comp (binding 23).
-    static constexpr uint32_t kMaxDustClouds = 256;
+    static constexpr uint32_t kMaxDustClouds = 512;
     struct GpuDustCloud
     {
         glm::vec4 c;   // centre relative to the eye (m, ENU axes); w = cross-section x albedo x gain (m^2)
@@ -2569,6 +2620,8 @@ private:
     void *kDustMapped = nullptr;
     uint32_t kDustCount = 0; // drawn this frame (harness state)
     void kesslerFillDust(float pixelAngle);
+    // Fills the fireballs for the current time into kFireBuf and appends their trails to the dust list (out, n).
+    void kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
     uint32_t kPoolCap = 16384;            // records the GPU buffers hold
     uint32_t kPoolWord0 = 0;              // first pool word (after the roster's dead / end seconds)

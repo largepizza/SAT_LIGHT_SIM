@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -168,13 +169,14 @@ struct PoolRec
     float flux = 1.0f;      // flux scale against its type's model
     float massKg = 1.0f, radiusM = 0.1f, cdAm = 0.01f, weight = 1.0f;
     int32_t bornSec = 0, deathSec = kNever; // seconds since the scenario epoch
+    int32_t decaySec = kNever;              // when drag brings it down: a death AT this second is a re-entry
     uint16_t type = 0;
     uint8_t constIdx = 0;
     uint8_t flags = 0;      // 1 = forced tumble (a dead satellite), 2 = fragment
     uint32_t event = 0;     // the event that made it
     uint32_t parent = kNoRef;
 };
-constexpr uint8_t kRecDead = 1, kRecFragment = 2;
+constexpr uint8_t kRecDead = 1, kRecFragment = 2, kRecFree = 4; // 4: its slot has been released
 
 // A dead roster satellite's tumble: an integer period (s) and a phase from its index, so the GPU can take
 // the angle mod one period exactly at any date (sat_orbit.comp deadTumble).
@@ -207,7 +209,7 @@ struct Event
     uint8_t kind = EV_KILL, origin = ORIGIN_ENGINE, catastrophic = 0, pad = 0;
     uint32_t seed = 0;
     float vRel = 0.0f, nReal = 0.0f;
-    uint32_t firstRec = 0, nRec = 0; // pool records it made (filled by apply)
+    uint32_t firstRec = 0, nRec = 0; // nRec: pool records it made (filled by apply); firstRec unused (slots recycle)
     float mProj = 0.0f;              // b == kSmallRef: the small fragment's mass (kg; set by the engine)
     float dustKg = 0.0f;             // fine dust it made: the drawn dust cloud (filled by apply)
     float nSmall = 0.0f;             // small fragments (LcMin .. LcRecord) it added to the density grid
@@ -221,13 +223,16 @@ struct Event
 // adding and removing in any order is exact: the engine's draws, and so the history, never depend on order.
 struct DebrisGrid
 {
-    static constexpr int NR = 110, NL = 90, NH = 8, NS = 64; // 20 km x 2 deg x 45 deg cells; 64 samples per orbit
+    static constexpr int NR = 110, NL = 90, NH = 8, NS = 32; // 20 km x equal-area latitude bands x 45 deg; 32 samples
     static constexpr double kRMin = kRMean + 150000.0, kDR = 20000.0;
     static constexpr double kFix = 4096.0;   // count units per fragment
     std::vector<int64_t> cnt;                // [r][lat][heading]
     std::vector<int64_t> massG;              // [r][lat]: count-weighted mass (grams x kFix)
     void clear();
     void deposit(double a, double e, double incl, double argp, double weight, double massKg, uint64_t seed, int sign);
+    // The same deposit into other arrays (a death bucket): adding a bucket to / subtracting it from the grid is exact.
+    void depositInto(std::vector<int64_t> &c, std::vector<int64_t> &m, double a, double e, double incl, double argp,
+                     double weight, double massKg, uint64_t seed) const;
     // Collision rate per m^2 of cross-section (1/s per m^2) for an object at r moving at v. `pick` (0..1) chooses
     // the heading bin a hit came from (by its share of the rate); vRelOut / massOut are its speed and the cell's
     // mean fragment mass.
@@ -235,12 +240,12 @@ struct DebrisGrid
     double total() const; // fragments in the grid
 };
 
-struct StatParticle
+// The small fragments that drag brings down in one window of time (30 days): their deposits summed, subtracted from
+// the grid when the window ends (deaths are thus up to 30 days late). Bounded memory however many fragments there are:
+// at most one ~0.7-MB pair of arrays per window ahead (a per-fragment record reached 66M records and ~5 GB by day 150).
+struct DeathBucket
 {
-    double a = 0.0, e = 0.0, incl = 0.0, argp = 0.0;
-    double weight = 0.0, massKg = 0.1;
-    double deathT = 0.0;
-    uint64_t seed = 0;
+    std::vector<int64_t> cnt, massG;
 };
 
 struct WorldSettings
@@ -256,7 +261,7 @@ struct WorldSettings
     double clusterHitP = 0.6;     // a catastrophic breakup of a formation member damages each neighbour with this
     int kitType[3][3] = {{-1, -1, -1}, {-1, -1, -1}, {-1, -1, -1}}; // debris kit types [kind][S, M, L]
     double kitArea[3][3] = {};    // their mean areas (a large piece's area snaps to its class: flux 1)
-    uint32_t poolCapacity = 750000;
+    uint32_t poolCapacity = 5000000; // LIVE records (slots recycle; GPU ~116 B each with the visible list: ~580 MB full)
     double activeSample = 0.25;  // share of active satellites in each engine sample (weight 1 / it)
     double stormDensityGain = 7.0; // thermosphere density x (1 + gain x scriptedStormShape)
     uint32_t debrisType = 0;
@@ -274,17 +279,42 @@ public:
     std::vector<int32_t> rosterDead;  // second each roster satellite died (kNever): from then on it tumbles,
                                       // never manoeuvres, and drag lowers nothing but its end second
     std::vector<int32_t> rosterEnd;   // end second: destroyed or re-entered (kNever)
+    std::vector<int32_t> rosterDecay; // its drag re-entry second once dead (kNever): an end AT it is a re-entry
     std::vector<PoolRec> pool;
     std::vector<Event> events;        // applied, in time order
     DebrisGrid grid;                  // the small fragments
-    std::vector<StatParticle> particles;
-    std::vector<std::pair<double, uint32_t>> deathHeap; // (death time, particle), a min-heap: leave the grid then
+    std::map<int32_t, DeathBucket> deathBuckets; // by window index (30 days from the epoch): leave the grid at its end
+    static constexpr double kDeathBucketS = 30.0 * 86400.0;
+    uint64_t smallAlive = 0;          // statistical orbits in the grid (the benchmark's count)
     double frontier = 0.0;            // simulated up to here (J2000 s)
     uint64_t sampleCount = 0;
     double profState = 0.0, profPairs = 0.0, profApply = 0.0, profRefs = 0.0; // seconds spent (the worker logs them)
 
-    // Change notifications since the last take (the main thread mirrors pool and rosterEnd).
-    std::vector<std::pair<uint32_t, int32_t>> poolDeaths;   // (record, death second)
+    // Garbage collection (round 3): a slot is freed kReleaseDelayS after its record's death (re-entry or destruction;
+    // the delay lets a fireball finish) and reused by the next record born after that, so the capacity counts LIVE
+    // pieces. Each reuse is a new generation of the slot. Deterministic (a LIFO free list fed in time order), so a
+    // replay reassigns every slot identically and the event log's references stay valid.
+    static constexpr int32_t kReleaseDelayS = 300;
+    std::vector<uint32_t> poolGen;   // generation of each slot's current record
+    std::vector<uint32_t> poolFree;  // slots whose record is gone, reusable
+    struct Release
+    {
+        int32_t sec;
+        uint32_t slot, gen;
+        bool operator>(const Release &o) const { return sec != o.sec ? sec > o.sec : slot > o.slot; }
+    };
+    std::vector<Release> releaseHeap; // a min-heap of pending releases (stale ones are skipped)
+    uint64_t recAdded = 0;            // records ever added
+    // Change notifications since the last take, in order (the main thread mirrors the pool): a record placed in a
+    // slot (its generation) or a record's death changed.
+    struct PoolChange
+    {
+        uint32_t slot, gen;
+        int32_t deathSec;
+        uint8_t isRecord;
+        PoolRec rec; // isRecord: the record as placed (a later change to it is its own entry)
+    };
+    std::vector<PoolChange> poolChanges;
     std::vector<uint32_t> rosterChanged;                    // satellites whose dead / end second changed
 
     void reset();

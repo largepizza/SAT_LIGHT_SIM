@@ -2251,6 +2251,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             if (!ok)
                 return Status::Pending;
         }
+        else if (sub == "reentry")
+        {
+            // kessler reentry: the next re-entry over a dark sky (the settings' "Watch the next re-entry").
+            std::string msg;
+            if (!kesslerGoToNextReentry(msg))
+                fail("kessler reentry: " + msg);
+            r["reentry"] = msg;
+        }
         else if (sub == "select" && lower(pos(1)) == "dead")
         {
             // kessler select dead [k=<n>] [formation=1]: the n-th roster satellite dead (tumbling) at the current time
@@ -2291,7 +2299,18 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const uint32_t k = (uint32_t)c.num("k", 0.0);
             if (k >= ev->nRec)
                 fail("kessler select: that breakup made " + std::to_string(ev->nRec) + " records");
-            selectSatellite((int)(activeSatCount + ev->firstRec + k));
+            const uint32_t evIdx = (uint32_t)(ev - kEvents.data());
+            uint32_t seen = 0;
+            int found = -1;
+            for (uint32_t j = 0; j < (uint32_t)kPool.size(); ++j)
+                if (kPool[j].event == evIdx && seen++ == k)
+                {
+                    found = (int)j;
+                    break;
+                }
+            if (found < 0)
+                return Status::Pending; // not mirrored yet
+            selectSatellite((int)activeSatCount + found);
         }
         else if (!sub.empty() && sub != "state")
             fail("kessler: state | breakup <sat> [kind=explosion|asat] | collide <a> <b> | wait [days=] [done] | select [k=]");

@@ -200,7 +200,7 @@ static void fillFragments(BreakupResult &res, double nReal, const BreakupSizes &
     const double nSmall = nReal - res.nLarge;
     if (nSmall > 0.0 && sz.nSmallSamples > 0)
     {
-        const int S = sz.nSmallSamples;
+        const int S = std::clamp((int)std::ceil(nSmall / 50.0), std::min(4, sz.nSmallSamples), sz.nSmallSamples); // a few for a handful of fragments
         for (int k = 0; k < S; ++k)
         {
             // Stratified in the size distribution so 16 samples cover it.
@@ -479,34 +479,58 @@ void DebrisGrid::clear()
     massG.assign((size_t)NR * NL, 0);
 }
 
+// The heading bin (8 x 45 deg, clockwise from north) of a horizontal direction (east, north): octant tests, no atan2.
+static int headingBin(double e, double nn)
+{
+    const double ae = std::abs(e), an = std::abs(nn);
+    if (e >= 0.0)
+        return nn >= 0.0 ? (ae < an ? 0 : 1) : (ae > an ? 2 : 3);
+    return nn < 0.0 ? (ae < an ? 4 : 5) : (ae > an ? 6 : 7);
+}
+
+void DebrisGrid::depositInto(std::vector<int64_t> &c, std::vector<int64_t> &m, double a, double e, double incl,
+                             double argp, double weight, double massKg, uint64_t seed) const
+{
+    if (c.empty())
+    {
+        c.assign((size_t)NR * NL * NH, 0);
+        m.assign((size_t)NR * NL, 0);
+    }
+    const int64_t q = (int64_t)std::llround(weight * kFix / NS);
+    const int64_t mq = (int64_t)std::llround(weight * massKg * 1000.0 * kFix / NS);
+    if (q == 0)
+        return;
+    const double ci = std::cos(incl), si = std::sin(incl);
+    const double ca = std::cos(argp), sa = std::sin(argp);
+    // Argument of latitude u uniform in time (near-circular): NS samples by a rotation recurrence (no trig per sample).
+    const double du = kTwoPi / NS, u0 = du * hash01(seed, 0, 77);
+    double cu = std::cos(u0), su = std::sin(u0);
+    const double cd = std::cos(du), sd = std::sin(du);
+    for (int k = 0; k < NS; ++k)
+    {
+        const double r = a * (1.0 - e * (cu * ca + su * sa)); // radius at true anomaly u - argp
+        const int ir = (int)std::floor((r - kRMin) / kDR);
+        if (ir >= 0 && ir < NR)
+        {
+            // Equal-area latitude bands (uniform in sin lat); heading: east = cos i, north = sin i cos u.
+            const int il = std::clamp((int)std::floor((si * su + 1.0) * 0.5 * NL), 0, NL - 1);
+            const int ih = headingBin(ci, si * cu);
+            c[((size_t)ir * NL + il) * NH + ih] += q;
+            m[(size_t)ir * NL + il] += mq;
+        }
+        const double c2 = cu * cd - su * sd;
+        su = su * cd + cu * sd;
+        cu = c2;
+    }
+}
+
 void DebrisGrid::deposit(double a, double e, double incl, double argp, double weight, double massKg, uint64_t seed,
                          int sign)
 {
     if (cnt.empty())
         clear();
-    const int64_t q = (int64_t)std::llround(weight * kFix / NS);
-    const int64_t mq = (int64_t)std::llround(weight * massKg * 1000.0 * kFix / NS);
-    if (q == 0)
-        return;
-    const double ph = hash01(seed, 0, 77);
-    const double ci = std::cos(incl), si = std::sin(incl);
-    for (int k = 0; k < NS; ++k)
-    {
-        // Argument of latitude: uniform in time (near-circular), the radius from the eccentricity.
-        const double u = kTwoPi * ((double)k + ph) / NS;
-        const double r = a * (1.0 - e * std::cos(u - argp));
-        const int ir = (int)std::floor((r - kRMin) / kDR);
-        if (ir < 0 || ir >= NR)
-            continue;
-        const double lat = std::asin(std::clamp(si * std::sin(u), -1.0, 1.0));
-        const int il = std::clamp((int)std::floor((lat + 0.5 * kPi) / (kPi / NL)), 0, NL - 1);
-        double psi = std::atan2(ci, si * std::cos(u)); // heading: east = cos i, north = sin i cos u
-        if (psi < 0.0)
-            psi += kTwoPi;
-        const int ih = std::min((int)(psi / (kTwoPi / NH)), NH - 1);
-        cnt[((size_t)ir * NL + il) * NH + ih] += sign * q;
-        massG[(size_t)ir * NL + il] += sign * mq;
-    }
+    (void)sign; // removal goes through the death buckets (World::retireParticles)
+    depositInto(cnt, massG, a, e, incl, argp, weight, massKg, seed);
 }
 
 double DebrisGrid::rate(const glm::dvec3 &r, const glm::dvec3 &v, double pick, double &vRelOut, double &massOut) const
@@ -520,8 +544,7 @@ double DebrisGrid::rate(const glm::dvec3 &r, const glm::dvec3 &v, double pick, d
     if (ir < 0 || ir >= NR)
         return 0.0;
     const double sinLat = std::clamp(r.z / rm, -1.0, 1.0);
-    const double lat = std::asin(sinLat);
-    const int il = std::clamp((int)std::floor((lat + 0.5 * kPi) / (kPi / NL)), 0, NL - 1);
+    const int il = std::clamp((int)std::floor((sinLat + 1.0) * 0.5 * NL), 0, NL - 1);
     const size_t cell = (size_t)ir * NL + il;
     const int64_t *c = &cnt[cell * NH];
     int64_t sum = 0;
@@ -538,8 +561,7 @@ double DebrisGrid::rate(const glm::dvec3 &r, const glm::dvec3 &v, double pick, d
     const double speed = glm::length(v);
     // The cell is a latitude band of a spherical shell: all longitudes (orbit-averaged).
     const double r1 = kRMin + ir * kDR, r2 = r1 + kDR;
-    const double lat1 = -0.5 * kPi + il * (kPi / NL), lat2 = lat1 + kPi / NL;
-    const double V = kTwoPi / 3.0 * (r2 * r2 * r2 - r1 * r1 * r1) * (std::sin(lat2) - std::sin(lat1));
+    const double V = kTwoPi / 3.0 * (r2 * r2 * r2 - r1 * r1 * r1) * (2.0 / NL); // equal-area band
     double contrib[NH], tot = 0.0;
     for (int k = 0; k < NH; ++k)
     {
@@ -581,13 +603,18 @@ void World::reset()
 {
     rosterDead.assign(roster.size(), kNever);
     rosterEnd.assign(roster.size(), kNever);
+    rosterDecay.assign(roster.size(), kNever);
     pool.clear();
     events.clear();
-    poolDeaths.clear();
+    poolChanges.clear();
+    poolGen.clear();
+    poolFree.clear();
+    releaseHeap.clear();
+    recAdded = 0;
     rosterChanged.clear();
     grid.clear();
-    particles.clear();
-    deathHeap.clear();
+    deathBuckets.clear();
+    smallAlive = 0;
     frontier = s.epoch;
     sampleCount = 0;
 }
@@ -603,8 +630,30 @@ State World::stateOf(uint32_t ref, double t) const
     SatOrbitState st;
     if (ref & kPoolBit)
     {
-        const uint32_t j = ref & ~kPoolBit;
-        st = satOrbitStateAt(poolOrbitElems(pool[j], j), t);
+        // The pool's Kepler orbit directly (satOrbitStateAt's keplerStateAt without the attitude terms the engine
+        // never reads, and with Newton stopping once converged: the engine's largest cost is these positions).
+        const PoolRec &r = pool[ref & ~kPoolBit];
+        const double M = std::fmod((double)r.M0 + (double)r.n * t, kTwoPi);
+        const double w = std::fmod((double)r.argp0 + (double)r.argpDot * t, kTwoPi);
+        const double O = std::fmod((double)r.raan0 + (double)r.raanDot * t, kTwoPi);
+        const double ecc = r.e;
+        double E = M + ecc * std::sin(M);
+        for (int it = 0; it < 8; ++it)
+        {
+            const double dE = (E - ecc * std::sin(E) - M) / (1.0 - ecc * std::cos(E));
+            E -= dE;
+            if (std::abs(dE) < 1e-12)
+                break;
+        }
+        const double cE = std::cos(E), sE = std::sin(E), sq = std::sqrt(std::max(0.0, 1.0 - ecc * ecc));
+        const double a = r.a;
+        const double x = a * (cE - ecc), y = a * sq * sE;
+        const double kk = a * std::sqrt(kGM / (a * a * a)) / (1.0 - ecc * cE);
+        const double cO = std::cos(O), sO = std::sin(O), cw = std::cos(w), sw = std::sin(w);
+        const double ci = std::cos(r.incl), si = std::sin(r.incl);
+        const glm::dvec3 P(cw * cO - sw * sO * ci, cw * sO + sw * cO * ci, sw * si);
+        const glm::dvec3 Q(-sw * cO - cw * sO * ci, -sw * sO + cw * cO * ci, cw * si);
+        return {x * P + y * Q, (-kk * sE) * P + (kk * sq * cE) * Q};
     }
     else
     {
@@ -646,8 +695,44 @@ bool World::alive(uint32_t ref, double t) const
 
 uint32_t World::addRecord(const PoolRec &r)
 {
-    pool.push_back(r);
-    return (uint32_t)pool.size() - 1;
+    // Slots whose record has been gone kReleaseDelayS by this one's birth are free (a stale entry: the slot moved on
+    // to a later generation, or its record's death changed and a newer entry was pushed).
+    while (!releaseHeap.empty() && releaseHeap.front().sec <= r.bornSec)
+    {
+        std::pop_heap(releaseHeap.begin(), releaseHeap.end(), std::greater<>());
+        const Release rel = releaseHeap.back();
+        releaseHeap.pop_back();
+        if (rel.slot < pool.size() && poolGen[rel.slot] == rel.gen && pool[rel.slot].deathSec != kNever &&
+            pool[rel.slot].deathSec + kReleaseDelayS == rel.sec && !(pool[rel.slot].flags & kRecFree))
+        {
+            pool[rel.slot].flags |= kRecFree;
+            poolFree.push_back(rel.slot);
+        }
+    }
+    uint32_t slot;
+    if (!poolFree.empty())
+    {
+        slot = poolFree.back();
+        poolFree.pop_back();
+        pool[slot] = r;
+        ++poolGen[slot];
+    }
+    else if (pool.size() < s.poolCapacity)
+    {
+        slot = (uint32_t)pool.size();
+        pool.push_back(r);
+        poolGen.push_back(0);
+    }
+    else
+        return kNoRef; // full of live pieces
+    ++recAdded;
+    if (r.deathSec != kNever)
+    {
+        releaseHeap.push_back({r.deathSec + kReleaseDelayS, slot, poolGen[slot]});
+        std::push_heap(releaseHeap.begin(), releaseHeap.end(), std::greater<>());
+    }
+    poolChanges.push_back({slot, poolGen[slot], r.deathSec, 1, r});
+    return slot;
 }
 
 double World::deathTime(const PoolRec &r, double t) const
@@ -754,7 +839,10 @@ void World::killRoster(uint32_t ref, double t, uint32_t eventIdx)
     const double cdAm = 2.2 * ty.areaM2 / std::max(ty.massKg, 1.0);
     const double td = t + lifetime(t, (double)o.R, 0.0, cdAm);
     if (td < s.epoch + s.horizonS * 1.5)
-        rosterEnd[ref] = std::min(rosterEnd[ref], std::max(sec, secOf(td)));
+    {
+        rosterDecay[ref] = std::max(sec, secOf(td));
+        rosterEnd[ref] = std::min(rosterEnd[ref], rosterDecay[ref]);
+    }
     rosterChanged.push_back(ref);
 }
 
@@ -850,8 +938,8 @@ void World::spawnFragments(const BreakupResult &br, uint32_t refA, uint32_t refB
         r.event = eventIdx;
         const double td = deathTime(r, t);
         r.deathSec = std::max(r.bornSec, td >= s.epoch + s.horizonS * 1.5 ? kNever : secOf(td));
-        if (pool.size() < s.poolCapacity)
-            addRecord(r);
+        r.decaySec = r.deathSec;
+        addRecord(r);
     }
 }
 
@@ -906,20 +994,16 @@ void World::spawnSmall(const BreakupResult &br, const State &st, double t, uint3
         const Elems el = elemsFromState({st.r, st.v + f.dv});
         if (el.e >= 0.99 || el.a <= 0.0 || el.a * (1.0 - el.e) <= kRMean + 120000.0)
             continue;
-        StatParticle p;
-        p.a = el.a;
-        p.e = el.e;
-        p.incl = el.i;
-        p.argp = el.argp;
-        p.weight = f.weight;
-        p.massKg = f.massKg;
-        p.seed = ((uint64_t)seed << 8) ^ (uint64_t)k ^ ((uint64_t)events.size() << 32);
+        const uint64_t pseed = ((uint64_t)seed << 8) ^ (uint64_t)k ^ ((uint64_t)events.size() << 32);
         const double cdAm = std::clamp(2.2 * f.areaM2 / std::max(f.massKg, 1e-6), 1e-4, 10.0);
-        p.deathT = t + lifetime(t, el.a, el.e, cdAm);
-        grid.deposit(p.a, p.e, p.incl, p.argp, p.weight, p.massKg, p.seed, +1);
-        particles.push_back(p);
-        deathHeap.push_back({p.deathT, (uint32_t)particles.size() - 1});
-        std::push_heap(deathHeap.begin(), deathHeap.end(), std::greater<>());
+        const double deathT = t + lifetime(t, el.a, el.e, cdAm);
+        grid.deposit(el.a, el.e, el.i, el.argp, f.weight, f.massKg, pseed, +1);
+        ++smallAlive;
+        if (deathT < s.epoch + s.horizonS * 1.5)
+        {
+            DeathBucket &bk = deathBuckets[(int32_t)std::floor((deathT - s.epoch) / kDeathBucketS)];
+            grid.depositInto(bk.cnt, bk.massG, el.a, el.e, el.i, el.argp, f.weight, f.massKg, pseed);
+        }
     }
     ev.nSmall = (float)n;
     ev.dvSmall = n > 0.0 ? (float)std::sqrt(dv2 / n) : 0.0f;
@@ -927,12 +1011,18 @@ void World::spawnSmall(const BreakupResult &br, const State &st, double t, uint3
 
 void World::retireParticles(double t)
 {
-    while (!deathHeap.empty() && deathHeap.front().first <= t)
+    // Every window that has ended leaves the grid (exact: the same integer deposits, subtracted).
+    while (!deathBuckets.empty() && s.epoch + (deathBuckets.begin()->first + 1) * kDeathBucketS <= t)
     {
-        std::pop_heap(deathHeap.begin(), deathHeap.end(), std::greater<>());
-        const StatParticle &p = particles[deathHeap.back().second];
-        grid.deposit(p.a, p.e, p.incl, p.argp, p.weight, p.massKg, p.seed, -1);
-        deathHeap.pop_back();
+        const DeathBucket &bk = deathBuckets.begin()->second;
+        if (!grid.cnt.empty() && !bk.cnt.empty())
+        {
+            for (size_t i = 0; i < grid.cnt.size(); ++i)
+                grid.cnt[i] -= bk.cnt[i];
+            for (size_t i = 0; i < grid.massG.size(); ++i)
+                grid.massG[i] -= bk.massG[i];
+        }
+        deathBuckets.erase(deathBuckets.begin());
     }
 }
 
@@ -963,8 +1053,11 @@ static void endObject(World &w, uint32_t ref, double t, bool keepWeighted)
             return; // a representative record: one of its many members was lost
         if (sec < r.deathSec)
         {
+            const uint32_t slot = ref & ~kPoolBit;
             r.deathSec = std::max(sec, r.bornSec);
-            w.poolDeaths.push_back({ref & ~kPoolBit, r.deathSec});
+            w.poolChanges.push_back({slot, w.poolGen[slot], r.deathSec, 0, {}});
+            w.releaseHeap.push_back({r.deathSec + World::kReleaseDelayS, slot, w.poolGen[slot]});
+            std::push_heap(w.releaseHeap.begin(), w.releaseHeap.end(), std::greater<>());
         }
     }
     else if (sec < w.rosterEnd[ref])
@@ -984,8 +1077,10 @@ static double massOf(const World &w, uint32_t ref)
 bool World::apply(Event ev)
 {
     const uint32_t idx = (uint32_t)events.size();
-    ev.firstRec = (uint32_t)pool.size();
-    const double fill = (double)pool.size() / std::max<double>(s.poolCapacity, 1.0);
+    const uint64_t added0 = recAdded;
+    ev.firstRec = 0;
+    // Occupancy: live pieces (and the dead ones not yet released) over the capacity.
+    const double fill = (double)(pool.size() - poolFree.size()) / std::max<double>(s.poolCapacity, 1.0);
     // Large-piece records: up to maxRecordsPerEvent, fewer as the pool fills (beyond: each stands for several).
     const int maxRec = fill >= 1.0 ? 0
                                    : std::clamp((int)std::ceil(s.maxRecordsPerEvent * (1.0 - fill)), 1,
@@ -1106,7 +1201,7 @@ bool World::apply(Event ev)
     default:
         return false;
     }
-    ev.nRec = (uint32_t)pool.size() - ev.firstRec;
+    ev.nRec = (uint32_t)(recAdded - added0);
     events.push_back(ev);
     return true;
 }
@@ -1230,8 +1325,12 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
                     ev.seed = (uint32_t)mix64(((uint64_t)refs[k] << 32 | kSmallRef) ^ (sampleCount * 0x9E3779B97F4A7C15ull));
                     evs.push_back(ev);
                 }
+            // Each at its own time within the step (all at the midpoint, every collision of 6 h happened in the same
+            // second: dust clouds and re-entries in bursts), applied in time order.
+            for (Event &ev : evs)
+                ev.t = t0 + dt * hash01(ev.seed, 0x7135ull, 91);
             std::sort(evs.begin(), evs.end(), [](const Event &x, const Event &y) {
-                return x.a != y.a ? x.a < y.a : x.b < y.b;
+                return x.t != y.t ? x.t < y.t : (x.a != y.a ? x.a < y.a : x.b < y.b);
             });
             for (const Event &ev : evs)
                 apply(ev);

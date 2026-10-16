@@ -17,6 +17,12 @@
 
 #include <cstring>
 #include <filesystem>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <psapi.h>
+#endif
 #include <fstream>
 
 namespace
@@ -27,7 +33,7 @@ constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 6; // bump whenever the world's logic changes (4: round 2, large pieces + grid)
+constexpr uint32_t kCacheVersion = 11; // bump whenever the world's logic changes (4: round 2, large pieces + grid)
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
 {
@@ -62,6 +68,17 @@ double defaultMassKg(const std::string &model, const std::string &name)
 }
 } // namespace
 
+// The process's working set (the benchmark's memory figure).
+static double kesslerWorkingSetMB()
+{
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+        return (double)pmc.WorkingSetSize / (1024.0 * 1024.0);
+#endif
+    return 0.0;
+}
+
 // ── The worker ───────────────────────────────────────────────────────────────────────────────────
 struct SatelliteSim::KesslerWorker
 {
@@ -76,14 +93,21 @@ struct SatelliteSim::KesslerWorker
     bool stop = false;
     std::atomic<bool> done{false};
     // The outbox (under mx): what the main thread has not taken yet.
-    size_t pubPool = 0, pubEvents = 0;
-    std::vector<kessler::PoolRec> outPool;
+    size_t pubEvents = 0;
+    // Pool changes in order: a record placed in a slot (with its generation) or a record's death changed.
+    struct OutPoolChange
+    {
+        uint32_t slot, gen;
+        int32_t deathSec;
+        uint8_t isRecord;
+        kessler::PoolRec rec;
+    };
+    std::vector<OutPoolChange> outPool;
     std::vector<kessler::Event> outEvents;
-    std::vector<std::pair<uint32_t, int32_t>> outPoolDeaths;
     struct RosterChange
     {
         uint32_t sat;
-        int32_t dead, end;
+        int32_t dead, end, decay;
     };
     std::vector<RosterChange> outRoster;
     double outFrontier = 0.0;
@@ -91,14 +115,17 @@ struct SatelliteSim::KesslerWorker
     void publish()
     {
         std::lock_guard<std::mutex> lk(mx);
-        outPool.insert(outPool.end(), w.pool.begin() + (ptrdiff_t)pubPool, w.pool.end());
-        pubPool = w.pool.size();
+        for (const kessler::World::PoolChange &c : w.poolChanges)
+        {
+            // Every generation goes, in order (one that lived and was replaced between two publishes too: its
+            // fireball and its stretch of the timeline need it).
+            outPool.push_back({c.slot, c.gen, c.deathSec, c.isRecord, c.rec});
+        }
+        w.poolChanges.clear();
         outEvents.insert(outEvents.end(), w.events.begin() + (ptrdiff_t)pubEvents, w.events.end());
         pubEvents = w.events.size();
-        outPoolDeaths.insert(outPoolDeaths.end(), w.poolDeaths.begin(), w.poolDeaths.end());
         for (uint32_t i : w.rosterChanged)
-            outRoster.push_back({i, w.rosterDead[i], w.rosterEnd[i]});
-        w.poolDeaths.clear();
+            outRoster.push_back({i, w.rosterDead[i], w.rosterEnd[i], w.rosterDecay[i]});
         w.rosterChanged.clear();
         outFrontier = w.frontier;
     }
@@ -107,6 +134,7 @@ struct SatelliteSim::KesslerWorker
     {
         kessler::lowerThreadPriority();
         const auto t0 = std::chrono::steady_clock::now();
+        double lastLog = w.frontier;
         // Replay (no sampling) up to the cache's frontier, then simulate. A day of sim time per chunk,
         // published after each.
         while (!stop && w.frontier < tEnd)
@@ -124,6 +152,24 @@ struct SatelliteSim::KesslerWorker
                 to = std::min(to, replayUntil);
             simulateChunk(to, sampling);
             publish();
+            // Throughput log every 10 simulated days (the benchmark reads these).
+            if (w.frontier - lastLog >= 10.0 * 86400.0)
+            {
+                lastLog = w.frontier;
+                size_t live = 0;
+                const int32_t sec = w.secOf(w.frontier);
+                for (const kessler::PoolRec &r : w.pool)
+                    live += (sec >= r.bornSec && sec < r.deathSec);
+                char m[300];
+                snprintf(m, sizeof(m),
+                         "kessler: bench day %.0f wall %.1f s: %zu events, %zu records (%zu live), %zu death buckets, "
+                         "%.3g small fragments, %.0f MB working set; engine refs %.1f states %.1f pairs %.1f apply %.1f",
+                         (w.frontier - w.s.epoch) / 86400.0,
+                         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), w.events.size(),
+                         w.pool.size(), live, (size_t)w.deathBuckets.size(), w.grid.total(), kesslerWorkingSetMB(), w.profRefs,
+                         w.profState, w.profPairs, w.profApply);
+                Log::line(m);
+            }
         }
         const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         char msg[200];
@@ -348,6 +394,13 @@ static void writeCache(const std::filesystem::path &p, uint64_t hash, const std:
 // ── Start / stop ────────────────────────────────────────────────────────────────────────────────
 void SatelliteSim::kesslerInit(VulkanContext &ctx)
 {
+    if (kFireBuf == VK_NULL_HANDLE)
+    {
+        ctx.createBuffer(16 + sizeof(GpuFireball) * kFireballMax, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, kFireBuf, kFireMem);
+        vkMapMemory(ctx.device, kFireMem, 0, VK_WHOLE_SIZE, 0, &kFireMapped);
+        memset(kFireMapped, 0, 16);
+    }
     spaceWeatherSetScriptedStorm(kesslerEnabled, kFuryArriveT, kFuryPeakKp);
     kesslerRestart(ctx, kUserEvents, -1.0);
     kInitDone = true;
@@ -398,6 +451,13 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     kPool.clear();
     kEvents.clear();
     kRosterWords.assign(2ull * activeSatCount, kessler::kNever);
+    kRosterDecay.assign(activeSatCount, kessler::kNever);
+    kReentries.clear();
+    kPoolGen.clear();
+    kPoolHist.clear();
+    kGenBounds.clear();
+    kShownSec = kHistPrunedUntil = kHistPrunedAt = INT32_MIN;
+    kReplayPending = false;
     satOrbits.resize(activeSatCount);
     kPoolGpu = 0;
     kDirtyPool.clear();
@@ -483,6 +543,14 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
         spaceWeatherSetScriptedStorm(kesslerEnabled, kFuryArriveT, kFuryPeakKp);
         kesslerRestart(ctx, kUserEvents, -1.0);
     }
+    if (kReplayPending && kWorker)
+    {
+        // Back past the retained generations of reused slots: rebuild the world by replaying its events (no sampling)
+        // up to the current time.
+        kReplayPending = false;
+        Log::line("kessler: time went back past the kept history of reused slots: replaying the cascade");
+        kesslerRestart(ctx, kUserEvents, kFrontier);
+    }
     if (!kWorker)
         return;
     {
@@ -494,15 +562,13 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
         if (want > kWorker->wantUntil.load())
             kWorker->wantUntil = want;
     }
-    std::vector<kessler::PoolRec> nPool;
+    std::vector<KesslerWorker::OutPoolChange> nPool;
     std::vector<kessler::Event> nEv;
-    std::vector<std::pair<uint32_t, int32_t>> pd;
     std::vector<KesslerWorker::RosterChange> rd;
     {
         std::lock_guard<std::mutex> lk(kWorker->mx);
         nPool.swap(kWorker->outPool);
         nEv.swap(kWorker->outEvents);
-        pd.swap(kWorker->outPoolDeaths);
         rd.swap(kWorker->outRoster);
         kFrontier = kWorker->outFrontier > 0.0 ? kWorker->outFrontier : kFrontier;
     }
@@ -513,41 +579,127 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
             writeCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / cacheName(kHash), kHash,
                        kWorker->w.events, kWorker->w.frontier);
     }
-    if (!nPool.empty())
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const int32_t nowSec = (int32_t)std::clamp(std::floor(tNow - kFuryArriveT), -2147483000.0, 2147483000.0);
+    bool grew = false;
+    for (const KesslerWorker::OutPoolChange &c : nPool)
     {
-        const size_t base = kPool.size();
-        kPool.insert(kPool.end(), nPool.begin(), nPool.end());
-        satOrbits.reserve(activeSatCount + kPool.size());
-        for (size_t j = base; j < kPool.size(); ++j)
+        const uint32_t j = c.slot;
+        if (c.isRecord)
         {
-            const kessler::PoolRec &r = kPool[j];
-            SatOrbit o{};
-            o.typeIdx = r.type;
-            o.constIdx = r.constIdx;
-            o.incl = (float)r.incl;
-            o.altM = (float)(r.a - satphot::kEarthRadiusM);
-            o.R_sat = (float)r.a;
-            o.meanMot = r.n;
-            o.tumbleRate = r.tumbleRate;
-            o.tumblePhase = r.tumble0;
-            o.tumbleAxis = glm::vec3(kessler::poolTumbleAxis((uint32_t)j));
-            o.poolSlot = (int32_t)j;
-            satOrbits.push_back(o);
+            if (j >= kPool.size() || kPoolGen[j] == UINT32_MAX)
+            {
+                // A new slot (or one skipped past earlier in this batch: a slot filled and reused before the next new
+                // one was appended). Slots in between stay empty (never alive) until their record arrives.
+                if (j >= kPool.size())
+                {
+                    kessler::PoolRec empty{};
+                    empty.bornSec = kessler::kNever;
+                    empty.deathSec = kessler::kNever;
+                    empty.decaySec = kessler::kNever;
+                    const size_t old = kPool.size();
+                    kPool.resize(j + 1, empty);
+                    kPoolGen.resize(j + 1, UINT32_MAX);
+                    satOrbits.resize(activeSatCount + j + 1);
+                    for (size_t q = old; q < j; ++q)
+                        kesslerSetPoolOrbit((uint32_t)q);
+                }
+                kPool[j] = c.rec;
+                kPoolGen[j] = c.gen;
+                kesslerSetPoolOrbit(j);
+                if (j < kPoolGpu)
+                    kDirtyPool.push_back(j);
+                grew = true;
+            }
+            else
+            {
+                // A reused slot: a later generation. Keep the earlier ones (the window) and show the right one now.
+                std::vector<KGen> &hist = kPoolHist[j];
+                if (hist.empty())
+                    hist.push_back({kPoolGen[j], kPool[j]}); // without history the shown record is the latest
+                hist.push_back({c.gen, c.rec});
+                kGenBounds.insert({c.rec.bornSec, j});
+                if (selectedSatIndex == (int)(activeSatCount + j) && c.rec.bornSec <= nowSec)
+                    selectedSatIndex = -1; // that piece is gone; its slot holds another now
+                kesslerShowGen(j, nowSec);
+            }
+            if (c.rec.decaySec != kessler::kNever)
+                kesslerIndexReentry(activeSatCount + j, c.rec.decaySec);
         }
+        else if (j < kPool.size())
+        {
+            // A death: of the shown generation, or of one kept in the history.
+            auto it = kPoolHist.find(j);
+            if (it != kPoolHist.end())
+                for (KGen &g : it->second)
+                    if (g.gen == c.gen)
+                        g.rec.deathSec = c.deathSec;
+            if (kPoolGen[j] == c.gen)
+            {
+                kPool[j].deathSec = c.deathSec;
+                if (j < kPoolGpu)
+                    kDirtyPool.push_back(j);
+            }
+        }
+    }
+    if (grew)
+    {
+        satOrbits.reserve(activeSatCount + kPool.size());
         kesslerEnsureCapacity(ctx, kPool.size());
     }
-    for (const auto &d : pd)
-        if (d.first < kPool.size())
+    // Sim time moved: slots whose hands changed between the shown second and now show the other generation.
+    if (nowSec != kShownSec)
+    {
+        if (kShownSec != INT32_MIN)
         {
-            kPool[d.first].deathSec = d.second;
-            if (d.first < kPoolGpu)
-                kDirtyPool.push_back(d.first);
+            const int32_t lo = std::min(kShownSec, nowSec), hi = std::max(kShownSec, nowSec);
+            for (auto it = kGenBounds.upper_bound(lo); it != kGenBounds.end() && it->first <= hi; ++it)
+                kesslerShowGen(it->second, nowSec);
         }
+        kShownSec = nowSec;
+        if (nowSec < kHistPrunedUntil)
+            kReplayPending = true;
+        // Once a simulated day: drop generations that ended more than kHistKeepS ago (a reversal beyond replays).
+        if ((int64_t)nowSec - (int64_t)kHistPrunedAt > 86400)
+        {
+            kHistPrunedAt = nowSec;
+            for (auto it = kPoolHist.begin(); it != kPoolHist.end();)
+            {
+                std::vector<KGen> &hist = it->second;
+                size_t drop = 0;
+                while (drop + 1 < hist.size() && hist[drop].rec.deathSec < nowSec - kHistKeepS &&
+                       hist[drop + 1].rec.bornSec < nowSec - kHistKeepS)
+                    ++drop;
+                for (size_t d = 1; d <= drop; ++d)
+                {
+                    // hist[d] has no earlier generation any more: before its birth this slot cannot be shown.
+                    kHistPrunedUntil = std::max(kHistPrunedUntil, hist[d].rec.bornSec);
+                    auto range = kGenBounds.equal_range(hist[d].rec.bornSec);
+                    for (auto b2 = range.first; b2 != range.second; ++b2)
+                        if (b2->second == it->first)
+                        {
+                            kGenBounds.erase(b2);
+                            break;
+                        }
+                }
+                if (drop > 0)
+                    hist.erase(hist.begin(), hist.begin() + (ptrdiff_t)drop);
+                if (hist.size() <= 1)
+                    it = kPoolHist.erase(it);
+                else
+                    ++it;
+            }
+        }
+    }
     for (const auto &d : rd)
         if (2ull * d.sat + 1 < kRosterWords.size())
         {
             kRosterWords[2 * d.sat] = d.dead;
             kRosterWords[2 * d.sat + 1] = d.end;
+            if (d.sat < kRosterDecay.size())
+                kRosterDecay[d.sat] = d.decay;
+            if (d.decay != kessler::kNever)
+                kesslerIndexReentry(d.sat, d.decay);
             kDirtyRoster.push_back(d.sat);
         }
     kEvents.insert(kEvents.end(), nEv.begin(), nEv.end());
@@ -809,6 +961,34 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         return;
     uint32_t *hdr = static_cast<uint32_t *>(kDustMapped);
     hdr[0] = 0;
+    GpuDustCloud *out = reinterpret_cast<GpuDustCloud *>(static_cast<char *>(kDustMapped) + 16);
+    uint32_t n = 0;
+    // Physical radiance (per unit solar irradiance, 1/sr) -> the sky's units, through the point sources' scale: a
+    // cloud of magnitude m carries the on-screen energy of a star of magnitude m. Per full-res pixel of solid angle
+    // Omega its light is effectFlare = kFluxToFlare x brightnessScale x L x Omega; the point style shows a flare of
+    // flareRef (pointRefMag) as a peak of 1 over a Gaussian of ~1.27 px^2; the sky is shown x skyExposure (whose
+    // global EV the point style takes as the same gain).
+    const double pixFull = 0.5 * (double)pixelAngle;
+    const double flareRef = 0.008 * std::pow(10.0, 0.4 * (6.0 - (double)pointRefMag));
+    const double baseExp = (double)skyExposure() / std::exp2((double)globalExposureEV());
+    const double toSky = satphot::kFluxToFlare * (double)brightnessScale * pixFull * pixFull /
+                         (flareRef * 1.27 * std::max(baseExp, 1e-3));
+    // The re-entry fireballs' trails go in the same list, after the dust (which keeps at most 3/4 of it), on every
+    // return path.
+    struct Finish
+    {
+        SatelliteSim *s;
+        GpuDustCloud *out;
+        uint32_t &n;
+        uint32_t *hdr;
+        double toSky, pixFull;
+        ~Finish()
+        {
+            s->kesslerFillFireballs(out, n, toSky, pixFull);
+            hdr[0] = n;
+            s->kDustCount = n;
+        }
+    } finish{this, out, n, hdr, toSky, pixFull};
     if (!kesslerEnabled || kEvents.empty() || kesslerDustGain <= 0.0f)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -852,22 +1032,11 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     std::sort(cands.begin(), cands.end(), [](const Cand &a, const Cand &b) { return a.pri > b.pri; });
     const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
     auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
-    GpuDustCloud *out = reinterpret_cast<GpuDustCloud *>(static_cast<char *>(kDustMapped) + 16);
-    uint32_t n = 0;
-    // Physical radiance (per unit solar irradiance, 1/sr) -> the sky's units, through the point sources' scale: a
-    // cloud of magnitude m carries the on-screen energy of a star of magnitude m. Per full-res pixel of solid angle
-    // Omega its light is effectFlare = kFluxToFlare x brightnessScale x L x Omega; the point style shows a flare of
-    // flareRef (pointRefMag) as a peak of 1 over a Gaussian of ~1.27 px^2; the sky is shown x skyExposure (whose
-    // global EV the point style takes as the same gain).
-    const double pixFull = 0.5 * (double)pixelAngle;
-    const double flareRef = 0.008 * std::pow(10.0, 0.4 * (6.0 - (double)pointRefMag));
-    const double baseExp = (double)skyExposure() / std::exp2((double)globalExposureEV());
-    const double toSky = satphot::kFluxToFlare * (double)brightnessScale * pixFull * pixFull /
-                         (flareRef * 1.27 * std::max(baseExp, 1e-3));
+    const uint32_t dustMax = kMaxDustClouds * 3 / 4;
     int rank = 0;
     for (const Cand &c : cands)
     {
-        if (n >= kMaxDustClouds)
+        if (n >= dustMax)
             break;
         const kessler::Event &e = kEvents[c.ev];
         const bool lumpy = rank++ < 24; // the brightest clouds: a core and uneven lumps, not one smooth ball
@@ -892,7 +1061,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             wsum += std::exp(-0.5 * off * off);
         }
         const int L = lumpy ? 6 : 1; // per piece: a core + 5 lumps
-        for (int k = 0; k < K * L && n < kMaxDustClouds; ++k)
+        for (int k = 0; k < K * L && n < dustMax; ++k)
         {
             const int kp = k / L, lj = k % L;
             const double off = K == 1 ? 0.0 : (-2.0 + 4.0 * ((double)kp + 0.5) / K);
@@ -935,8 +1104,541 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             d.col = glm::vec4(0.96f, 0.92f, 0.86f, 0.0f);
         }
     }
-    hdr[0] = n;
-    kDustCount = n;
+}
+
+
+// ── Re-entry fireballs (round 3) ────────────────────────────────────────────────────────────────
+// What a re-entry looks like (observations of Starlink, ATV-1, Hayabusa re-entries; ESA's re-entry campaigns): the
+// object glows from ~100 km, brightening as the air thickens; its main breakup comes almost always at 75-80 km, a
+// flash and then a train of many orange fragments, "some pieces leading the main body and others trailing it", each
+// with its own glowing trail, flickering as they tumble, a few flaring as tanks or batteries burst; light pieces slow
+// first and fall behind and below; nothing glows past ~45-50 km. Seen from the ground a pass crosses the sky in
+// 20-60 s. Drawn at the second drag brings the object down (its re-entry), under where its orbit puts it then.
+//
+// The trajectory is in the frame of that point: up U0, along-track A (its horizontal velocity), cross C. Heads are
+// point sprites (kessler_fireballs.comp appends them to the visible list: bloom and glare like any satellite), each
+// fragment's trail and the main body's fading train emissive Gaussians in the dust list (cloud_march.comp).
+namespace
+{
+constexpr double kFbV0 = 7600.0;      // entry speed (m/s)
+constexpr double kFbH0 = 100000.0;    // glow starts (m)
+constexpr double kFbHb = 78000.0;     // main breakup (m)
+constexpr double kFbDur = 200.0;      // the whole event (s)
+double fbBreakupT() { return (-150.0 + std::sqrt(150.0 * 150.0 + 4.0 * 1.5 * (kFbH0 - kFbHb))) / 3.0; } // ~81 s
+
+struct FbFrag
+{
+    double s, h, lat;   // along-track distance (m), altitude (m), cross-track (m)
+    double v;           // speed (m/s)
+    double I;           // light relative to the main body at breakup (0 = dark)
+    glm::vec3 col;
+};
+
+// The main body (k < 0) or fragment k at tau seconds after the glow starts.
+FbFrag fbFrag(uint64_t seed, int k, int N, double tau)
+{
+    FbFrag f{};
+    const double tb = fbBreakupT();
+    if (k < 0 || tau < tb)
+    {
+        // Before the breakup: one body, brightening as it descends.
+        const double t = std::min(tau, tb);
+        f.s = kFbV0 * t - 2.0 * t * t;
+        f.h = kFbH0 - 150.0 * t - 1.5 * t * t;
+        f.v = kFbV0 - 4.0 * t;
+        f.I = std::pow(10.0, -0.4 * 6.0 * (f.h - kFbHb) / (kFbH0 - kFbHb)); // 6 mag fainter at 100 km
+        f.col = glm::vec3(1.0f, 0.86f, 0.62f);
+        if (tau >= tb && k < 0)
+            f.I = 0.0;
+        return f;
+    }
+    const double tp = tau - tb;
+    const double s0 = kFbV0 * tb - 2.0 * tb * tb;
+    auto H = [&](int c) { return kessler::hash01(seed, (uint64_t)k * 16 + 7, (uint32_t)c); };
+    // The remnant (k = 0) keeps its speed longest; light pieces slow within seconds.
+    const double T = k == 0 ? 160.0 : 15.0 + 100.0 * H(1) * H(1);
+    double dvA = (H(2) - 0.5) * 160.0;
+    if (k > 0 && H(3) < 0.12)
+        dvA += 150.0 + 200.0 * H(4); // a few lead the main body
+    const double dvC = kessler::hashNormal(seed, (uint64_t)k * 16 + 7, 5) * 110.0;
+    const double dvU = kessler::hashNormal(seed, (uint64_t)k * 16 + 7, 6) * 35.0;
+    f.v = kFbV0 / (1.0 + tp / T);
+    f.s = s0 + kFbV0 * T * std::log(1.0 + tp / T) + dvA * tp;
+    f.h = kFbHb - 220.0 * tp - 1.5 * tp * tp - 400.0 * tp * (1.0 - f.v / kFbV0) + dvU * tp;
+    f.lat = dvC * tp;
+    // Its share of the light: the remnant 35%, the rest lognormal.
+    // Together the fragments shine about as the body did (more surface, each ablating on its own).
+    double w = k == 0 ? 0.35 : 1.0 / std::max(N - 1, 1) * std::exp(0.9 * kessler::hashNormal(seed, (uint64_t)k * 16 + 7, 8)) * 0.67;
+    const double vr = f.v / kFbV0;
+    const double dens = std::min(std::exp(-(f.h - kFbHb) / 7000.0), 3.0);
+    double I = w * vr * vr * dens;
+    const double sm1 = std::clamp((f.v - 1800.0) / 1500.0, 0.0, 1.0), sm2 = std::clamp((f.h - 42000.0) / 8000.0, 0.0, 1.0);
+    I *= sm1 * sm1 * (3.0 - 2.0 * sm1) * sm2 * sm2 * (3.0 - 2.0 * sm2);
+    // Tumbling flicker, and a quarter of them flare once (a tank, a battery).
+    I *= 1.0 + 0.35 * std::sin(kessler::kTwoPi * (0.5 + 3.5 * H(9)) * tau + kessler::kTwoPi * H(10));
+    if (H(11) < 0.25)
+    {
+        const double tf = 2.0 + 23.0 * H(12);
+        I *= 1.0 + 4.0 * std::exp(-(tp - tf) * (tp - tf) / 0.15);
+    }
+    // The breakup flash.
+    if (k == 0)
+        I += 4.0 * std::exp(-tp / 0.5);
+    f.I = std::max(I, 0.0);
+    // Hot and fast: yellow-white; slowing: orange, then deep red-orange.
+    const glm::vec3 hot(1.0f, 0.85f, 0.58f), orange(1.0f, 0.52f, 0.18f), red(1.0f, 0.33f, 0.10f);
+    const float tv = (float)std::clamp(vr, 0.0, 1.0);
+    f.col = tv > 0.7f ? glm::mix(orange, hot, (tv - 0.7f) / 0.3f) : glm::mix(red, orange, tv / 0.7f);
+    if (H(13) < 0.2)
+        f.col = glm::mix(f.col, hot, 0.5f);
+    return f;
+}
+} // namespace
+
+void SatelliteSim::kesslerIndexReentry(uint32_t sat, int32_t sec)
+{
+    if (sec == kessler::kNever || sec < 0)
+        return;
+    kReentries[sec / 3600].push_back({sat, sec});
+}
+
+// The CPU's SatOrbit for pool slot j (the shown generation).
+void SatelliteSim::kesslerSetPoolOrbit(uint32_t j)
+{
+    const kessler::PoolRec &r = kPool[j];
+    SatOrbit o{};
+    o.typeIdx = r.type;
+    o.constIdx = r.constIdx;
+    o.incl = (float)r.incl;
+    o.altM = (float)(r.a - satphot::kEarthRadiusM);
+    o.R_sat = (float)r.a;
+    o.meanMot = r.n;
+    o.tumbleRate = r.tumbleRate;
+    o.tumblePhase = r.tumble0;
+    o.tumbleAxis = glm::vec3(kessler::poolTumbleAxis(j));
+    o.poolSlot = (int32_t)j;
+    satOrbits[activeSatCount + j] = o;
+}
+
+// Shows slot j's generation for second sec: the latest born by then (else its earliest, not yet born: hidden).
+void SatelliteSim::kesslerShowGen(uint32_t j, int32_t sec)
+{
+    auto it = kPoolHist.find(j);
+    if (it == kPoolHist.end() || it->second.empty())
+        return;
+    const KGen *pick = &it->second.front();
+    for (const KGen &g : it->second)
+        if (g.rec.bornSec <= sec)
+            pick = &g;
+    if (pick->gen == kPoolGen[j])
+        return;
+    kPool[j] = pick->rec;
+    kPoolGen[j] = pick->gen;
+    kesslerSetPoolOrbit(j);
+    if (j < kPoolGpu)
+        kDirtyPool.push_back(j);
+}
+
+// Slot j's generation that re-enters at decaySec (shown or kept), or null.
+const kessler::PoolRec *SatelliteSim::kesslerPoolGenWithDecay(uint32_t j, int32_t decaySec) const
+{
+    if (j >= kPool.size())
+        return nullptr;
+    if (kPool[j].decaySec == decaySec)
+        return &kPool[j];
+    auto it = kPoolHist.find(j);
+    if (it != kPoolHist.end())
+        for (const KGen &g : it->second)
+            if (g.rec.decaySec == decaySec)
+                return &g.rec;
+    return nullptr;
+}
+
+void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull)
+{
+    kFireCount = 0;
+    kFireTrails = 0;
+    kReentriesNow = 0;
+    if (!kFireMapped)
+        return;
+    uint32_t *fh = static_cast<uint32_t *>(kFireMapped);
+    fh[0] = 0;
+    if (!kesslerEnabled || kReentries.empty())
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const int32_t nowSec = (int32_t)std::floor(t - kFuryArriveT);
+    if (nowSec < 0)
+        return;
+    GpuFireball *fo = reinterpret_cast<GpuFireball *>(static_cast<char *>(kFireMapped) + 16);
+    const glm::dvec3 eye = glm::dvec3(obsECI);
+    const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
+    auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
+    const double R = satphot::kEarthRadiusM;
+    const double dayness = glm::clamp(((double)sunDirENU.w + 0.1) / 0.3, 0.0, 1.0);
+    const double K = satphot::kFluxToFlare * (double)brightnessScale;
+    std::vector<uint32_t> seen;
+    for (int32_t hr = (nowSec - (int32_t)kFbDur) / 3600; hr <= nowSec / 3600; ++hr)
+    {
+        auto it = kReentries.find(hr);
+        if (it == kReentries.end())
+            continue;
+        for (const auto &entry : it->second)
+        {
+            // Still a re-entry (a later collision may have ended it first), and now.
+            const uint32_t sat = entry.first;
+            int32_t dsec;
+            double mass;
+            const kessler::PoolRec *pr = nullptr;
+            if (sat < activeSatCount)
+            {
+                if (2ull * sat + 1 >= kRosterWords.size() || sat >= kRosterDecay.size() ||
+                    kRosterWords[2ull * sat + 1] != kRosterDecay[sat])
+                    continue;
+                dsec = kRosterDecay[sat];
+                const SatOrbit &o = satOrbits[sat];
+                mass = 800.0;
+                if (o.typeIdx < satTypes.size())
+                    mass = satTypes[o.typeIdx].massKg > 0.0f ? (double)satTypes[o.typeIdx].massKg
+                                                             : defaultMassKg(satTypes[o.typeIdx].modelId, satTypes[o.typeIdx].name);
+            }
+            else
+            {
+                pr = kesslerPoolGenWithDecay(sat - activeSatCount, entry.second);
+                if (!pr || pr->deathSec != pr->decaySec)
+                    continue;
+                dsec = pr->decaySec;
+                mass = pr->massKg;
+            }
+            const double tau = t - (kFuryArriveT + (double)dsec);
+            if (tau < 0.0 || tau > kFbDur)
+                continue;
+            if (std::find(seen.begin(), seen.end(), sat) != seen.end())
+                continue;
+            seen.push_back(sat);
+            const SatOrbitElems oe = pr ? kessler::poolOrbitElems(*pr, sat - activeSatCount) : orbitElemsOf(satOrbits[sat]);
+            ++kReentriesNow;
+            // Where: under the orbit at the re-entry second.
+            const SatOrbitState so = satOrbitStateAt(oe, kFuryArriveT + (double)dsec);
+            const glm::dvec3 U0 = glm::normalize(so.posEci);
+            if (glm::length(R * U0 - eye) > 3.0e6)
+                continue; // well over the horizon
+            glm::dvec3 A = so.velEci - glm::dot(so.velEci, U0) * U0;
+            A = glm::length(A) > 1.0 ? glm::normalize(A) : glm::dvec3(1.0, 0.0, 0.0);
+            const glm::dvec3 C = glm::cross(A, U0);
+            auto place = [&](const FbFrag &f) {
+                const double a = f.s / R;
+                return (R + f.h) * (std::cos(a) * U0 + std::sin(a) * A) + f.lat * C;
+            };
+            // Brightness: the main body at breakup is magnitude m0 at 100 km (-7.5 for a 2.5-t Starmind, -4 for a
+            // 100-kg piece: satellite re-entries are reported at -3 to -6 from a few hundred km). Fragments: 3 +
+            // sqrt(mass) scaled, up to 80.
+            const double m0 = -4.0 - 2.5 * std::log10(std::max(mass, 1.0) / 100.0);
+            const int N = (int)std::clamp(3.0 + 40.0 * std::sqrt(std::max(mass, 1.0) / 2500.0), 3.0, 80.0);
+            const uint64_t seed = (uint64_t)sat * 0x9E3779B97F4A7C15ull ^ (uint64_t)(uint32_t)dsec;
+            const bool broken = tau >= fbBreakupT();
+            for (int k = broken ? 0 : -1; k < (broken ? N : 0); ++k)
+            {
+                const FbFrag f = fbFrag(seed, k, N, tau);
+                if (f.I <= 1e-4)
+                    continue;
+                const glm::dvec3 P = place(f);
+                const glm::dvec3 rel = P - eye;
+                const double range = glm::length(rel);
+                // The Earth in the way?
+                const double b = glm::dot(eye, rel / range), c = glm::dot(eye, eye) - R * R;
+                const double disc = b * b - c;
+                if (disc > 0.0 && (-b - std::sqrt(disc)) > 0.0 && (-b - std::sqrt(disc)) < range)
+                    continue;
+                // Magnitude at the eye: + distance, + the air along the line of sight (a crude airmass), x daylight.
+                const glm::dvec3 dirE = toEnu(rel) / range;
+                const double sinEl = std::max(dirE.z, 0.03);
+                const double m = m0 - 2.5 * std::log10(f.I) + 5.0 * std::log10(range / 1.0e5) + 0.25 / sinEl;
+                double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
+                if (flare < 2e-4)
+                    continue;
+                if (kFireCount < kFireballMax)
+                    fo[kFireCount++] = {glm::vec4(glm::vec3(dirE), (float)flare), glm::vec4(f.col, (float)range)};
+                // Its trail: the path over the last 1.5 s (shorter as it slows), an emissive Gaussian along it.
+                if (n < kMaxDustClouds && flare > 5e-3)
+                {
+                    const FbFrag fp = fbFrag(seed, k, N, std::max(tau - 1.5, 0.0));
+                    const glm::dvec3 Pp = place(fp);
+                    const glm::dvec3 axis = P - Pp;
+                    const double L = glm::length(axis);
+                    if (L > 1.0)
+                    {
+                        const glm::dvec3 a = toEnu(axis / L);
+                        glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
+                        b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
+                        const glm::dvec3 c2 = glm::cross(a, b2);
+                        const double sMin = 0.6 * range * 2.0 * pixFull;
+                        const double sA = std::max(0.45 * L, sMin), sP = std::max(150.0, sMin);
+                        const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
+                        auto M = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
+                        // Intensity (photometry units) from the flare: flare = K J / r^2.
+                        const double J = 0.7 * flare * range * range / K;
+                        GpuDustCloud &d = out[n++];
+                        d.c = glm::vec4(glm::vec3(toEnu(0.5 * (P + Pp) - eye)), (float)(J * toSky));
+                        d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
+                                         (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
+                        d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
+                        d.col = glm::vec4(glm::mix(f.col, glm::vec3(1.0f, 0.35f, 0.12f), 0.5f), 1.0f); // emissive
+                        ++kFireTrails;
+                    }
+                }
+            }
+            // The main body's train: its glowing path, fading over ~10 s and spreading.
+            for (int j = 1; j <= 6 && n < kMaxDustClouds; ++j)
+            {
+                const double tj = std::min(tau, fbBreakupT()) - 3.0 * j;
+                if (tj <= 0.0)
+                    break;
+                const double age = tau - tj;
+                const FbFrag a0 = fbFrag(seed, -1, N, tj), a1 = fbFrag(seed, -1, N, tj + 3.0);
+                const glm::dvec3 P0 = place(a0), P1 = place(a1);
+                const glm::dvec3 rel = 0.5 * (P0 + P1) - eye;
+                const double range = glm::length(rel);
+                const double mT = m0 - 2.5 * std::log10(std::max(a0.I, 1e-6)) + 5.0 * std::log10(range / 1.0e5) + 2.5;
+                const double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - mT)) * std::exp(-age / 8.0) * (1.0 - 0.95 * dayness);
+                if (flare < 1e-3)
+                    continue;
+                const glm::dvec3 axis = P1 - P0;
+                const double L = glm::length(axis);
+                const glm::dvec3 a = toEnu(axis / std::max(L, 1.0));
+                glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
+                b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
+                const glm::dvec3 c2 = glm::cross(a, b2);
+                const double sMin = 0.6 * range * 2.0 * pixFull;
+                const double sA = std::max(0.45 * L, sMin), sP = std::max(200.0 + 40.0 * age, sMin);
+                const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
+                auto M = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
+                const double J = flare * range * range / K;
+                GpuDustCloud &d = out[n++];
+                d.c = glm::vec4(glm::vec3(toEnu(rel)), (float)(J * toSky));
+                d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
+                                 (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
+                d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
+                d.col = glm::vec4(1.0f, 0.55f, 0.25f, 1.0f);
+                ++kFireTrails;
+            }
+        }
+    }
+    fh[0] = kFireCount;
+}
+
+// The next re-entry after now (within 6 h) whose breakup is in darkness, the heaviest (dead satellites first).
+bool SatelliteSim::kesslerNextReentry(uint32_t &satOut, double &tOut, glm::dvec3 &breakupEci, glm::dvec3 &velEci) const
+{
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const int32_t nowSec = (int32_t)std::floor(t - kFuryArriveT);
+    double best = -1.0;
+    // Dead satellites (the spectacle) over the next 48 h, else the heaviest piece over the next 6.
+    for (int32_t hr = std::max(nowSec, 0) / 3600; hr <= std::max(nowSec, 0) / 3600 + 48; ++hr)
+    {
+        if (best >= 1.0e6 && hr > std::max(nowSec, 0) / 3600 + 6)
+            break;
+        auto it = kReentries.find(hr);
+        if (it == kReentries.end())
+            continue;
+        for (const auto &entry : it->second)
+        {
+            const uint32_t sat = entry.first;
+            int32_t dsec;
+            double mass;
+            const kessler::PoolRec *pr = nullptr;
+            if (sat < activeSatCount)
+            {
+                if (2ull * sat + 1 >= kRosterWords.size() || sat >= kRosterDecay.size() ||
+                    kRosterWords[2ull * sat + 1] != kRosterDecay[sat])
+                    continue;
+                dsec = kRosterDecay[sat];
+                mass = 1.0e6; // a satellite beats any piece
+            }
+            else
+            {
+                if (hr > std::max(nowSec, 0) / 3600 + 6)
+                    continue;
+                pr = kesslerPoolGenWithDecay(sat - activeSatCount, entry.second);
+                if (!pr || pr->deathSec != pr->decaySec)
+                    continue;
+                dsec = pr->decaySec;
+                mass = pr->massKg;
+            }
+            if (dsec <= nowSec + 30)
+                continue;
+            const double td = kFuryArriveT + (double)dsec;
+            const SatOrbitState so = satOrbitStateAt(pr ? kessler::poolOrbitElems(*pr, sat - activeSatCount)
+                                                        : orbitElemsOf(satOrbits[sat]), td);
+            const glm::dvec3 U0 = glm::normalize(so.posEci);
+            if (glm::dot(U0, sunDirEciAt(td + fbBreakupT())) > -0.14) // sun above -8 deg there
+                continue;
+            const double score = mass - 1e-3 * (double)(dsec - nowSec); // the heaviest, then the soonest
+            if (score > best)
+            {
+                best = score;
+                satOut = sat;
+                tOut = td;
+                glm::dvec3 A = so.velEci - glm::dot(so.velEci, U0) * U0;
+                A = glm::normalize(A);
+                const double tb = fbBreakupT();
+                const double sb = kFbV0 * tb - 2.0 * tb * tb, a = sb / satphot::kEarthRadiusM;
+                breakupEci = (satphot::kEarthRadiusM + kFbHb) * (std::cos(a) * U0 + std::sin(a) * A);
+                velEci = A;
+            }
+        }
+    }
+    return best >= 0.0;
+}
+
+// ── The fireball pass: kessler_fireballs.comp appends the heads to the finished visible list ─────────────────────
+void SatelliteSim::kesslerCreateFireballPass(VulkanContext &ctx)
+{
+    VkDescriptorSetLayoutBinding b[5] = {
+        {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 5;
+    li.pBindings = b;
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &kFireDescLayout);
+    VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.poolSizeCount = 2;
+    pi.pPoolSizes = ps;
+    pi.maxSets = 1;
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &kFireDescPool);
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = kFireDescPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &kFireDescLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &kFireDescSet);
+    VkDescriptorBufferInfo vis{satVisibleBuf, 0, VK_WHOLE_SIZE}, idx{satVisibleIdxBuf, 0, VK_WHOLE_SIZE},
+        lst{satListBuf, 0, VK_WHOLE_SIZE}, pst{pointStyleBuf, 0, VK_WHOLE_SIZE}, fire{kFireBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet w[5] = {};
+    const VkDescriptorBufferInfo *infos[5] = {&vis, &idx, &lst, &pst, &fire};
+    for (uint32_t i = 0; i < 5; ++i)
+        w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, kFireDescSet, i, 0, 1,
+                i == 3 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, infos[i], nullptr};
+    vkUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &kFireDescLayout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    vkCreatePipelineLayout(ctx.device, &pli, nullptr, &kFirePipeLayout);
+    VkShaderModule mod = ctx.loadShader("shaders/kessler_fireballs.comp.spv");
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod, "main", nullptr};
+    ci.layout = kFirePipeLayout;
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &kFirePipeline) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create kessler_fireballs pipeline");
+    vkDestroyShaderModule(ctx.device, mod, nullptr);
+}
+
+void SatelliteSim::kesslerRecordFireballs(VkCommandBuffer cmd, VulkanContext &ctx)
+{
+    if (kFireCount == 0)
+        return;
+    if (kFirePipeline == VK_NULL_HANDLE)
+        kesslerCreateFireballPass(ctx);
+    VkBufferMemoryBarrier cb[2] = {};
+    for (int i = 0; i < 2; ++i)
+    {
+        cb[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        cb[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        cb[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        cb[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        cb[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        cb[i].size = VK_WHOLE_SIZE;
+    }
+    cb[0].buffer = satVisibleBuf;
+    cb[1].buffer = satListBuf;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 2,
+                         cb, 0, nullptr);
+    const uint32_t pc[4] = {std::max<uint32_t>(activeSatCount, 1u) + kPoolCap + kCitySpriteMax, kFireCount, 0, 0};
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, kFirePipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, kFirePipeLayout, 0, 1, &kFireDescSet, 0, nullptr);
+    vkCmdPushConstants(cmd, kFirePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc);
+    vkCmdDispatch(cmd, (kFireCount + 63) / 64, 1, 1);
+}
+
+void SatelliteSim::kesslerDestroyFireballPass(VkDevice device)
+{
+    if (kFirePipeline)
+        vkDestroyPipeline(device, kFirePipeline, nullptr);
+    if (kFirePipeLayout)
+        vkDestroyPipelineLayout(device, kFirePipeLayout, nullptr);
+    if (kFireDescPool)
+        vkDestroyDescriptorPool(device, kFireDescPool, nullptr);
+    if (kFireDescLayout)
+        vkDestroyDescriptorSetLayout(device, kFireDescLayout, nullptr);
+    if (kFireBuf)
+    {
+        vkDestroyBuffer(device, kFireBuf, nullptr);
+        vkFreeMemory(device, kFireMem, nullptr);
+    }
+    kFirePipeline = VK_NULL_HANDLE;
+    kFirePipeLayout = VK_NULL_HANDLE;
+    kFireDescPool = VK_NULL_HANDLE;
+    kFireDescLayout = VK_NULL_HANDLE;
+    kFireDescSet = VK_NULL_HANDLE;
+    kFireBuf = VK_NULL_HANDLE;
+    kFireMapped = nullptr;
+}
+
+bool SatelliteSim::kesslerGoToNextReentry(std::string &msg)
+{
+    uint32_t sat = 0;
+    double td = 0.0;
+    glm::dvec3 B(0.0), A(0.0);
+    if (!kesslerEnabled || !kesslerNextReentry(sat, td, B, A))
+    {
+        msg = "no re-entry over a dark sky soon (satellites: 48 h, pieces: 6 h; the cascade may not be computed that far yet)";
+        return false;
+    }
+    if (followActive)
+        stopFollow();
+    if (trackActive)
+        stopTrack();
+    const double tb = td + fbBreakupT();
+    const double t0 = tb - 25.0;
+    const double days = std::floor(t0 / 86400.0);
+    simDayJ2000 = (int64_t)days;
+    simSecInDay = t0 - days * 86400.0;
+    trailClearPending = true;
+    timePaused = false;
+    timeScaleIdx = 0;
+    timeDir = 1.0f;
+    // The observer: 120 km to the side of the track and 80 km back along it (the train crosses the sky ~30 deg up).
+    const double R = satphot::kEarthRadiusM;
+    const glm::dvec3 U = glm::normalize(B);
+    const glm::dvec3 C = glm::normalize(glm::cross(A, U));
+    const glm::dvec3 G = glm::normalize(U * R + C * 120000.0 - A * 80000.0);
+    auto toEcef = [](const glm::dvec3 &v, double t) {
+        const double era = earthRotationAngle(t), c = std::cos(era), s = std::sin(era);
+        return glm::dvec3(v.x * c + v.y * s, -v.x * s + v.y * c, v.z);
+    };
+    const glm::dvec3 g = toEcef(G, t0);
+    setObserverLatLon(glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), glm::degrees(std::atan2(g.y, g.x)));
+    // Look at the breakup point (Earth-fixed at the breakup).
+    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    const glm::dvec3 rel = toEcef(B, tb) - up * R;
+    glm::dvec3 east = glm::cross(glm::dvec3(0, 0, 1), up);
+    east = glm::length(east) > 1e-9 ? glm::normalize(east) : glm::dvec3(1, 0, 0);
+    const glm::dvec3 north = glm::cross(up, east);
+    const glm::dvec3 rn = glm::normalize(rel);
+    aimCameraAzEl((float)glm::degrees(std::atan2(glm::dot(rn, east), glm::dot(rn, north))),
+                  (float)glm::degrees(std::asin(glm::clamp(glm::dot(rn, up), -1.0, 1.0))));
+    camera.fovYDeg = 80.0f;
+    updatePositions(t0);
+    char b[200];
+    snprintf(b, sizeof(b), "%s re-enters: breakup in 25 s, %.0f km away", satLabel((int)sat).c_str(),
+             glm::length(rel) / 1000.0);
+    msg = b;
+    return true;
 }
 
 // ── Readouts ────────────────────────────────────────────────────────────────────────────────────
@@ -965,8 +1667,7 @@ std::string SatelliteSim::satLabel(int idx) const
     if (j >= kPool.size())
         return "?";
     const kessler::PoolRec &r = kPool[j];
-    const uint32_t k = (r.event < kEvents.size()) ? j - kEvents[r.event].firstRec : j;
-    snprintf(b, sizeof(b), "Debris %u.%u", r.event, k);
+    snprintf(b, sizeof(b), "Debris %u (breakup %u)", j, r.event);
     return b;
 }
 
@@ -1011,6 +1712,57 @@ nlohmann::json SatelliteSim::kesslerStateJson() const
     j["capacity"] = kPoolCap;
     j["hash"] = cacheName(kHash);
     j["dust_clouds_drawn"] = kDustCount;
+    j["reentries_now"] = kReentriesNow;
+    {
+        // Diagnostics: re-entries due in the next 24 h (roster / pieces), and how long the pieces live.
+        const int32_t s0 = (int32_t)std::floor((double)simDayJ2000 * 86400.0 + simSecInDay - kFuryArriveT);
+        size_t nr = 0, np = 0;
+        for (int32_t hr = std::max(s0, 0) / 3600; hr < std::max(s0, 0) / 3600 + 24; ++hr)
+        {
+            auto it = kReentries.find(hr);
+            if (it == kReentries.end())
+                continue;
+            for (const auto &entry : it->second)
+                (entry.first < activeSatCount ? nr : np)++;
+        }
+        j["reentries_next_24h"] = {{"satellites", nr}, {"pieces", np}};
+        size_t lt[5] = {0, 0, 0, 0, 0}; // < 1 d, < 10 d, < 100 d, < 1000 d, longer
+        double hpSum = 0.0;
+        size_t hpN = 0;
+        for (const kessler::PoolRec &r : kPool)
+        {
+            const double life = r.decaySec == kessler::kNever ? 1e12 : (double)(r.decaySec - r.bornSec);
+            lt[life < 86400.0 ? 0 : life < 864000.0 ? 1 : life < 8640000.0 ? 2 : life < 86400000.0 ? 3 : 4]++;
+            if (life < 864000.0)
+            {
+                hpSum += r.a * (1.0 - r.e) - satphot::kEarthRadiusM;
+                ++hpN;
+            }
+        }
+        j["piece_lifetimes"] = {{"lt_1d", lt[0]}, {"lt_10d", lt[1]}, {"lt_100d", lt[2]}, {"lt_1000d", lt[3]}, {"longer", lt[4]},
+                                {"short_mean_perigee_km", hpN ? hpSum / hpN / 1000.0 : 0.0}};
+    }
+    j["fireball_heads"] = kFireCount;
+    j["fireball_trails"] = kFireTrails;
+    if (kFireMapped && kFireCount > 0)
+    {
+        // The brightest heads now: azimuth / elevation (deg), magnitude, range (km).
+        const GpuFireball *fo = reinterpret_cast<const GpuFireball *>(static_cast<const char *>(kFireMapped) + 16);
+        std::vector<uint32_t> ord(kFireCount);
+        for (uint32_t i = 0; i < kFireCount; ++i)
+            ord[i] = i;
+        std::sort(ord.begin(), ord.end(), [&](uint32_t a, uint32_t b) { return fo[a].dirFlare.w > fo[b].dirFlare.w; });
+        nlohmann::json arr = nlohmann::json::array();
+        for (uint32_t q = 0; q < std::min<uint32_t>(kFireCount, 8); ++q)
+        {
+            const GpuFireball &f = fo[ord[q]];
+            arr.push_back({std::round(glm::degrees(std::atan2(f.dirFlare.x, f.dirFlare.y)) * 10.0) / 10.0,
+                           std::round(glm::degrees(std::asin(std::clamp(f.dirFlare.z, -1.0f, 1.0f))) * 10.0) / 10.0,
+                           std::round((6.0 - 2.5 * std::log10(std::max(f.dirFlare.w, 1e-9f) / 0.008f)) * 10.0) / 10.0,
+                           std::round(f.colRange.w / 100.0) / 10.0});
+        }
+        j["fireballs_az_el_mag_km"] = arr;
+    }
     j["dust_gain"] = kesslerDustGain;
     // Counts at the current time.
     const int32_t sec = (int32_t)std::clamp(std::floor(t - kFuryArriveT), -2147483000.0, 2147483000.0);
@@ -1149,6 +1901,14 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
                                "minutes. Higher keeps the clouds visible longer.");
     if (dg >= 0 && dg != dSel)
         kesslerDustGain = kDustV[dg];
+    if (kesslerEnabled && uiButton(inp, ui, "KesslerReentry", 0, "Watch the next re-entry",
+                                   "Jumps to the next satellite or large piece coming down over a dark sky: 25 s before it "
+                                   "breaks up, from beside its track."))
+    {
+        std::string why;
+        kesslerGoToNextReentry(why);
+        snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
+    }
     if (!kesslerEnabled)
         return;
     const nlohmann::json &j = kesslerStateCached();

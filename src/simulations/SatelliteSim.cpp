@@ -3450,6 +3450,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // Phase 1b: one invocation per VISIBLE satellite — sat_orbit.comp wrote the group count.
     vkCmdDispatchIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, dispatchX));
 
+    // Kessler re-entry fireballs (kessler_fireballs.comp): appended to the finished list before the city lights.
+    kesslerRecordFireballs(cmd, ctx);
+
     // City lights as satellite point sprites (city_sprites.comp): appended to the finished list.
     // Not under Potato (bit 262144): it skips the depth pass that writes the observer's ground and the terrain
     // frame the sprites are placed in, so they stayed where the first frame put them, locked to the observer.
@@ -6925,6 +6928,7 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyPipelineLayout(device, cloudMarchPipeLayout, nullptr);
     vkDestroyDescriptorPool(device, cloudMarchDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, cloudMarchDescLayout, nullptr);
+    kesslerDestroyFireballPass(device);
     if (kDustBuf != VK_NULL_HANDLE)
     {
         vkDestroyBuffer(device, kDustBuf, nullptr);
@@ -9129,6 +9133,8 @@ void SatelliteSim::writeSatRosterDescriptors(VulkanContext &ctx)
     add(satRebakeDescSet, 3, &kbase);
     add(citySpriteDescSet, 0, &vis);
     add(citySpriteDescSet, 1, &idx);
+    add(kFireDescSet, 0, &vis);
+    add(kFireDescSet, 1, &idx);
     vkUpdateDescriptorSets(ctx.device, (uint32_t)w.size(), w.data(), 0, nullptr);
 }
 

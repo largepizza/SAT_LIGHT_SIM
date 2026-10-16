@@ -1,0 +1,53 @@
+#version 450
+// ── kessler_fireballs.comp — re-entry fireball fragments as point sprites (Kessler round 3) ─────────────────────
+// SatelliteSim::kesslerFillFireballs builds each glowing fragment's head on the CPU (direction, effectFlare, colour,
+// range: SatelliteSimKessler.cpp); this appends them to the finished compact visible list after sat_flare.comp, as
+// city_sprites.comp does, so the satellite point / bloom / glare draws show them with no pipeline of their own.
+// Tagged as city lights are (meshPx -1: the trail pass skips them, the manual depth test hides them behind terrain;
+// slot index 0xFFFFFFFF: picking skips them).
+layout(local_size_x = 64) in;
+
+struct SatVisible {
+    vec3  skyDir;
+    float flareIntensity;
+    uint  color;
+    float angularSize;
+    float rangeM;
+    float meshPx;
+};
+layout(set = 0, binding = 0) buffer SatVisibleBuf { SatVisible satellites[]; };
+layout(set = 0, binding = 1) buffer SatVisibleIdxBuf { uint visibleSatIdx[]; };
+layout(set = 0, binding = 2) buffer SatListBuf {
+    uint listCount;
+    uint dispatchX, dispatchY, dispatchZ;
+    uint drawVertexCount, drawInstanceCount, drawFirstVertex, drawFirstInstance;
+};
+#define POINT_STYLE_BINDING 3
+#include "point_style.glsl"
+struct Fireball { vec4 dirFlare; vec4 colRange; };
+layout(set = 0, binding = 4) readonly buffer FireBuf { uint fireCount; uint fp0, fp1, fp2; Fireball fire[]; };
+
+layout(push_constant) uniform PC {
+    uint capacity;   // satVisibleBuf's length
+    uint count;      // fireballs this frame
+    uint pad0, pad1;
+} pc;
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count || i >= fireCount)
+        return;
+    Fireball f = fire[i];
+    float flare = f.dirFlare.w;
+    vec2 psf = pointPsf(satFlareToMag(flare));
+    if (psf.x <= 0.0)
+        return;
+    uint slot = atomicAdd(listCount, 1u);
+    if (slot >= pc.capacity)
+        return;
+    satellites[slot] = SatVisible(normalize(f.dirFlare.xyz), flare, packUnorm4x8(vec4(f.colRange.rgb, 1.0)),
+                                  pointSpriteSizePx(psf.y), f.colRange.w * 0.995, -1.0);
+    visibleSatIdx[slot] = 0xFFFFFFFFu;
+    atomicMax(drawVertexCount, slot + 1u);
+}

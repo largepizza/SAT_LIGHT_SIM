@@ -3986,7 +3986,7 @@ each bump kills with p 1/2 and may chain); then the cube-method engine carries t
 the epoch nothing differs from the plain sky** (every term is gated on the scenario's seconds). Settings >
 Constellations > THE SUN'S FURY: the toggle (`kessler.enabled`, default on), collision rate (`rate_multiplier`,
 x1 = physical), avoidance (`avoidance`, 0.9), horizon (`horizon_years`, 20), dust cloud brightness
-(`dust_gain`, x100), live counts.
+(`dust_gain`, x100), "Watch the next re-entry", live counts.
 Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night, 1x).
 
 - **Everything is a pure function of sim time:** an append-only EVENT LOG (`kessler::Event`: kill, bump,
@@ -4092,8 +4092,55 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   select [k=] | select dead [k=] [formation=1]`; `state` carries `kessler` (counts now, `pieces_by_class`,
   `dust_clouds_drawn`). Scripts in harness_runs/kessler, harness_runs/kessler2 (round 2: `r2_asat`, `r2_dust_orbit`,
   `r2_long`, `r2_sky`, `r2_check`, `r2_pieces`).
-- Not modelled: orbits shrinking under drag (only the re-entry time), debris-driven ambience, re-entry fireballs,
-  the impact flash, small-small collisions, the dust past 3 h (a ring around the orbit: physically invisible).
+- **Re-entry fireballs** (round 3, `kesslerFillFireballs` + `kessler_fireballs.comp`, SatelliteSimKessler.cpp): every
+  re-entry (a death AT the drag decay second: `PoolRec::decaySec`, `World::rosterDecay`; a destruction is not one)
+  is indexed by hour (`kReentries`, (satellite, second)) and drawn for 200 s from that second, under where its orbit
+  puts it then (the orbit itself never decays: the object vanishes from its altitude and the fireball appears below).
+  From re-entry observations (Starlink re-entries over North America, ATV-1, Hayabusa): glow from 100 km,
+  brightening; main breakup at 78 km (~81 s) with a flash; 3-80 fragments by mass (`fbFrag`): the remnant keeps its
+  speed longest, others slow on 15-115 s timescales (light ones fall behind and below), a few lead the main body
+  (+150-350 m/s), cross-track spread ~110 m/s, glow ~ v^2 x the air's density, out below ~2 km/s or 45 km, tumbling
+  flicker, a quarter flare once; colour from yellow-white (fast) to orange and red-orange (slowing). Brightness: the
+  main body at breakup -4 - 2.5 log10(mass / 100 kg) at 100 km (-7.5 for a 2.5-t Starmind), fragments together about
+  as bright as the body; + distance, a crude airmass and daylight. Heads are point sprites appended to the finished
+  visible list after sat_flare.comp (`kessler_fireballs.comp`, host-visible `kFireBuf` of up to 8192, tagged as city
+  lights: meshPx -1, slot index 0xFFFFFFFF; bloom and glare like any satellite); each bright fragment's trail (its
+  last 1.5 s of path) and the main body's train (6 segments over ~18 s, fading over 8 s, spreading) are EMISSIVE
+  Gaussians in the dust list (`col.w` = 1: no phase, no shadow; the dust keeps at most 3/4 of the 512). "Watch the
+  next re-entry" (settings, harness `kessler reentry`, `kesslerGoToNextReentry`): dead satellites over a dark sky
+  (Sun below -8 deg there) within 48 h, else the heaviest piece within 6 h; 25 s before breakup, 1x, from 120 km
+  beside the track and 80 km back. State: `reentries_now`, `fireball_heads`, `fireball_trails`,
+  `fireballs_az_el_mag_km`, `reentries_next_24h`, `piece_lifetimes`.
+- **Garbage collection: slots recycle** (round 3, `World::addRecord`). A record's slot is released 300 s after its
+  death (re-entry or destruction: the fireball finishes) and reused by the next record born after that (LIFO free
+  list fed in time order: deterministic, so a replay reassigns every slot identically and the event log's references
+  stay valid; a generation counter per slot). `poolCapacity` (5,000,000) therefore counts LIVE pieces. The worker's
+  change log carries a copy of every record as placed (`World::PoolChange`; sending only a slot's latest record lost
+  pieces that lived and were replaced between two publishes, and their fireballs). The main thread shows, per slot,
+  the generation alive at the current second (`kPool` = shown, `kPoolHist` = the generations of reused slots from
+  the last 7 days, `kGenBounds` = the seconds slots change hands, re-checked when sim time crosses them, either way);
+  going back past what was pruned restarts the world keeping its events (`kReplayPending`: a replay, no sampling).
+  Checked: day 60 -> 58 -> 60 identical counts, and a jump back to day 20 (a replay) identical to the first pass.
+  `kessler select k=` scans the pool for the breakup's records (they are no longer contiguous); labels are
+  "Debris <slot> (breakup <event>)".
+- **Engine speed and memory at scale** (round 3, benchmark `harness_runs/kessler2/bench_year.satcmd`, the worker logs
+  `kessler: bench day N` every 10 days). The small fragments leave the grid through **death buckets**
+  (`DeathBucket`, one dense delta grid per 30-day window of deaths, subtracted when it ends: exact, bounded): one
+  stored record per statistical orbit reached 66M records and ~5 GB by day 150. Deposits use 32 samples by a
+  rotation recurrence, equal-area latitude bands and octant heading bins (no trig per sample), 4-16 statistical
+  orbits by fragment count; `World::stateOf` has a direct Kepler path for pool records (no attitude terms, Newton
+  stops when converged); engine events are spread through their 6-h step (`hash01`) and applied in time order (all
+  at the midpoint, every collision of a step happened in the same second: dust clouds and re-entries in bursts).
+  **Measured** (RTX 3070 Ti, shipped roster, x1, `harness_runs/kessler2/b4`): one simulated year in 507 s (before
+  these: 670 s and 13.3 GB); days 0-50 in 28 s, the busiest stretch (days 60-100: millions of collisions) ~3 s per
+  sim-day, days 100-365 ~1.2 s per sim-day; working set 1.9 GB at day 50, 3.2 GB at 100, 4.3 GB at 351 (still growing
+  ~0.2 GB per 50 days: the event log, 10.9M events by day 368). The 5M slots are full from ~day 80; live pieces then
+  fall as the cascade grinds everything down (3.6M at day 100, 1.4M at day 365); by day 100 934k satellites are
+  destroyed and by day 365 1.07M. Frame at 1 h/s: 19.5 ms at day 100 (GPU 13.5; the orbit pass 2.2 ms with 5M slots;
+  the rest is the engine's threads competing while it computes the busiest stretch), 17.2 ms at day 365.
+- Not modelled: orbits shrinking under drag (only the re-entry time), debris-driven ambience, the impact flash,
+  small-small collisions, the dust past 3 h (a ring around the orbit: physically invisible), re-entry smoke trails
+  lit by the Sun after dusk.
 
 ## Subsystem: Reflect-Orbital Beam Cloud Occlusion
 
