@@ -15,6 +15,7 @@
 #include "SatPhotometry.h" // earthshine table axes (satTypeBuf layout)
 #include "SatTrace.h"      // magnitude trace + CSV export (benchmarking M9)
 #include "SpaceWeather.h"  // aurora activity over sim time + the oval (2026-10-03)
+#include "Kessler.h"       // Kessler syndrome: breakups, the debris pool, the cascade (2026-10-16)
 #include "SatBench.h"      // shared sample schema + bulk export (benchmarking M10)
 #include "SatMeshRenderer.h"
 #include "SatEnvProbes.h" // Phase 4: satellite meshes (model viewer; scene pass in 4c)
@@ -230,6 +231,7 @@ struct SatelliteType
     std::shared_ptr<const SatModel> model = {};
     float meshRadiusM = 0.0f; // bounding radius of its triangles about their AABB centre (Phase 4d)
     float meshFill = 0.0f;    // mean projected area (surface / 4) over the bounding disc's (2026-10-07)
+    float massKg = 0.0f;      // "mass_kg" (Kessler: collisions, drag); 0 = a default by model (kesslerTypeMass)
     bool isModel() const { return !lobes.empty(); }
 };
 
@@ -378,8 +380,25 @@ struct GpuSatTypeHeader
     float meshPixelAngle;
     float pixelAngle;     // radians per screen pixel, always (the formation merge's cluster size)
     float formationMerge; // 0..1: an unresolved formation drawn as one point (photometry.formation_merge)
+    // Kessler (2026-10-16): satellites from poolBase on are the pool's Keplerian records (kesslerBuf).
+    uint32_t poolBase;    // = activeSatCount
+    uint32_t poolCount;   // records on the GPU
+    int32_t scenNowSec;   // whole seconds since the scenario epoch (negative before it)
+    uint32_t poolWord0;   // kesslerBuf word of the first record
 };
-static_assert(sizeof(GpuSatTypeHeader) == 32, "GpuSatTypeHeader layout mismatch");
+static_assert(sizeof(GpuSatTypeHeader) == 48, "GpuSatTypeHeader layout mismatch");
+
+// A Kessler pool record as sat_orbit.comp reads it (16 words in kesslerBuf; see the shader's KesslerBuf).
+struct GpuKepOrbit
+{
+    float M, argp, raan; // at the orbit epoch (sat_rebake.comp rewrites them)
+    float n, a, e, cosI, sinI;
+    float argpDot, raanDot, tumbleRate, tumblePhase;
+    float flux;
+    int32_t bornSec, deathSec;
+    uint32_t typeConst; // type | constellation << 16 | flags << 24
+};
+static_assert(sizeof(GpuKepOrbit) == 64, "GpuKepOrbit must match sat_orbit.comp");
 
 // The shared point-source model (shaders/include/point_style.glsl): apparent magnitude → point
 // spread, for satellites, stars and planets alike. std140, rewritten every frame from the
@@ -1212,8 +1231,11 @@ struct SatRebakePC
     int32_t epochHi;
     float raanOff;   // fmod(kSSOPrecRate·(epoch − sim start), 2π)
     uint32_t satCount;
+    uint32_t poolCount; // Kessler pool records on the GPU (re-baked after the roster)
+    uint32_t poolWord0;
+    uint32_t pad0, pad1;
 };
-static_assert(sizeof(SatRebakePC) == 16, "SatRebakePC must match sat_rebake.comp");
+static_assert(sizeof(SatRebakePC) == 32, "SatRebakePC must match sat_rebake.comp");
 
 // GpuReflectorTarget / the per-frame CPU-compacted night-side buffer it described were removed
 // 2026-08-06: sat_orbit.comp now reads the static per-target ECEF buffer directly (the same one
@@ -1901,6 +1923,7 @@ struct SatOrbit
                            // that selects the ground target this mirror aims at.
                            // Terminator basis: t1=cross(sunDir,ref), t2=cross(sunDir,t1).
                            // Target = kEarthRadius × (cos(angle)×t1 + sin(angle)×t2).
+    int32_t poolSlot = -1; // >= 0: a Kessler pool record (kPool[poolSlot]); its orbit lives there
 };
 
 // ── SatelliteSim ──────────────────────────────────────────────────────────────
@@ -2487,6 +2510,64 @@ private:
     // full upload it replaced cost ~27 ms per rebake (13.7 ms a frame at 1 yr/s, 1.38M satellites).
     VkBuffer satPhaseBaseBuf = VK_NULL_HANDLE;
     VkDeviceMemory satPhaseBaseMem = VK_NULL_HANDLE;
+
+    // ── Kessler syndrome: "The Sun's Fury" (SatelliteSimKessler.cpp, 2026-10-16) ─────────────────
+    // A scripted Carrington-class CME arrives after the 2037-07-13 eclipse; it kills a share of the
+    // satellites (they tumble), dead formation members bump their neighbours, and a statistical
+    // collision engine (cube method, kessler::World on a worker thread) carries the cascade forward:
+    // every breakup a NASA-SBM debris cloud of Keplerian pool records. Everything is a pure function of
+    // sim time (an event log; born / end seconds), so playback in either direction is exact. Before the
+    // CME nothing differs from the plain sky. Plan and design notes: .plans/KESSLER_PLAN.md.
+    bool kesslerEnabled = true;       // settings kessler.enabled (applied at launch)
+    float kesslerRateMult = 1.0f;     // kessler.rate_multiplier: collision probability x (1 = physical)
+    float kesslerAvoidance = 0.9f;    // kessler.avoidance: share of active-vs-debris encounters dodged
+    float kesslerHorizonYears = 20.0f; // kessler.horizon_years: how far the cascade is simulated
+    struct KesslerWorker;             // the World + its thread (SatelliteSimKessler.cpp)
+    struct KesslerWorkerDelete        // (an incomplete type here: deleted where it is defined)
+    {
+        void operator()(KesslerWorker *w) const;
+    };
+    std::unique_ptr<KesslerWorker, KesslerWorkerDelete> kWorker;
+    std::vector<kessler::PoolRec> kPool;  // the main thread's mirror of the world's pool
+    std::vector<int32_t> kRosterEnd;      // ... of each roster satellite's end second
+    std::vector<kessler::Event> kEvents;  // ... of the applied events
+    double kFrontier = 0.0;               // simulated up to here (J2000 s)
+    bool kWorkerDone = false;
+    uint64_t kHash = 0;                   // the world's inputs (cache key)
+    int kDebrisConst = -1;                // the "Collision debris" pseudo-constellation (fragments)
+    uint32_t kDebrisType = 0;
+    // GPU: kesslerBuf = roster end seconds + pool records (sat_orbit.comp binding 11, rebake 2),
+    // kPoolBaseBuf = the records' J2000 phases (rebake 3). Sized for kPoolCap records; grown on demand.
+    VkBuffer kesslerBuf = VK_NULL_HANDLE;
+    VkDeviceMemory kesslerMem = VK_NULL_HANDLE;
+    VkBuffer kPoolBaseBuf = VK_NULL_HANDLE;
+    VkDeviceMemory kPoolBaseMem = VK_NULL_HANDLE;
+    VkBuffer kStageBuf = VK_NULL_HANDLE; // persistent upload staging (per-frame copies)
+    VkDeviceMemory kStageMem = VK_NULL_HANDLE;
+    void *kStageMapped = nullptr;
+    static constexpr VkDeviceSize kStageBytes = 16ull << 20;
+    uint32_t kPoolCap = 16384;            // records the GPU buffers hold
+    uint32_t kPoolWord0 = 0;              // first pool word (after the roster's end seconds)
+    uint32_t kPoolGpu = 0;                // records uploaded (drawn)
+    std::vector<uint32_t> kDirtyRoster;   // roster end words to upload
+    std::vector<uint32_t> kDirtyPool;     // uploaded records whose death changed
+    bool kRosterFullUpload = false;
+    double kesslerEpoch() const;          // the scenario epoch (the CME's arrival), J2000 s
+    void kesslerInit(VulkanContext &ctx); // after the roster's buffers exist: storm, world, cache, worker
+    void kesslerShutdown();               // stop the worker, write the cache
+    void kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents, double keepEngineBefore);
+    void kesslerSync(VulkanContext &ctx);  // per frame: take the worker's new events / records / deaths
+    void kesslerRecordUploads(VkCommandBuffer cmd); // per frame: copy them to the GPU
+    void kesslerEnsureCapacity(VulkanContext &ctx, size_t records);
+    void kesslerUploadAllSync(VulkanContext &ctx); // after (re)allocating: roster ends now, records progressively
+    bool kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, std::string *why);
+    std::vector<kessler::Event> kUserEvents; // breakups the player (or a script) caused
+    uint32_t kesslerRefOfSat(uint32_t sat) const; // satellite index -> world reference (or kNoRef)
+    nlohmann::json kesslerStateJson() const;
+    std::string kesslerStatusLine() const; // the HUD line while the frontier holds time back
+    // A satellite's display name: "<constellation> #<n>"; a dead one "... #<n> (dead)" (its roster number),
+    // a fragment "Debris <event>.<k>".
+    std::string satLabel(int idx) const;
     VkDescriptorSetLayout satRebakeDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool satRebakeDescPool = VK_NULL_HANDLE;
     VkDescriptorSet satRebakeDescSet = VK_NULL_HANDLE;
@@ -5534,7 +5615,7 @@ private:
     // Runtime roster changes (2026-10-15): every constellation loaded at startup, in load order, with its
     // random stream recorded — what rosterAdd() can put back.
     std::vector<ConstellationConfig> constellationDefs;
-    void createSatRosterBuffers(VulkanContext &ctx);   // the per-satellite GPU buffers (sized by the roster)
+    void createSatRosterBuffers(VulkanContext &ctx);   // the per-satellite GPU buffers (roster + Kessler pool)
     void destroySatRosterBuffers(VkDevice device);
     void writeSatRosterDescriptors(VulkanContext &ctx); // every set binding one of them
     void rebuildRoster(VulkanContext &ctx);             // after `constellations` changed (drops index-keyed state)

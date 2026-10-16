@@ -178,6 +178,12 @@ layout(set = 0, binding = 5) readonly buffer SatTypeBuf {
     float   meshPixelAngle;   // Phase 4d: rad per screen pixel; 0 = meshes off
     float   pixelAngle;       // rad per screen pixel, always (formation merge)
     float   formationMerge;   // 0..1: an unresolved formation's light carried by its member 0
+    // Kessler (2026-10-16): satellites from poolBase on are Keplerian pool records (dead satellites,
+    // fragments) in KesslerBuf; scenNowSec = whole seconds since the scenario epoch (the CME's arrival).
+    uint    poolBase;         // = the roster's satellite count
+    uint    poolCount;
+    int     scenNowSec;
+    uint    poolWord0;        // KesslerBuf word of the first pool record (16 words each)
     // Earthshine table (satphot::earthshineLut(), written once by createSatBuffers): per (visible
     // cap half-angle, cos of the Sun's zenith at the sub-satellite point) the ln irradiance and the
     // tilt of its effective direction from nadir toward the Sun.
@@ -317,6 +323,14 @@ layout(set = 0, binding = 2) readonly buffer TargetECEFBuf {
 // TERRAIN_PLAN.md C12 follow-up #9. Zeroed every frame by vkCmdFillBuffer (resets beamCount to 0
 // too). Must match GpuReflectBeam/GpuReflectBeams in SatelliteSim.h exactly.
 #include "reflect_beam.glsl"   // ReflectBeam + BEAM_MAX_ACTIVE
+// Kessler (2026-10-16, SatelliteSimKessler.cpp): words [0, poolBase) = each roster satellite's END second
+// since the scenario epoch (INT_MAX = never; from then on its pool record, if any, draws it); from
+// poolWord0, 16 words per pool record (GpuKepOrbit): 0 M, 1 argp, 2 raan (at the orbit epoch, rebaked by
+// sat_rebake.comp), 3 n (mean anomaly rate), 4 a, 5 e, 6 cos i, 7 sin i, 8 argp rate, 9 raan rate,
+// 10 tumble rate, 11 tumble phase (epoch), 12 flux scale, 13 born second, 14 death second, 15 type
+// (bits 0-15) | constellation (16-23) | flags (24-31: 1 = forced tumble).
+layout(set = 0, binding = 11) readonly buffer KesslerBuf { uint kw[]; };
+
 layout(set = 0, binding = 3) buffer ReflectBeamsBuf {
     uint         beamCount; // atomicAdd counter — may exceed BEAM_MAX_ACTIVE
     uint         beamPad0, beamPad1, beamPad2; // std430 alignment padding, see SatelliteSim.h
@@ -491,7 +505,8 @@ mat3 groupFrame(AttGroup g, mat3 parentF, SatOrbit orb, vec3 nadir, vec3 vel, ve
     mat3 F;
     if (g.parent != ATT_NO_PARENT) {
         F = parentF;
-    } else if (g.law == ATT_LAW_TUMBLE) {
+    } else if (g.law == ATT_LAW_TUMBLE || orb.alignTerminator > 1.5) {
+        // (alignTerminator 2: a dead satellite from the Kessler pool — its root tumbles whatever its law.)
         // Uncontrolled spin about this satellite's own axis (GpuSatOrbit tumble*). t1 sweeps the
         // plane perpendicular to the axis — exactly the legacy Tumbling normal for body +X.
         float angle = orb.tumblePhase + orb.tumbleRate * pc.deltaT;
@@ -1126,15 +1141,78 @@ float orbitPhase(float u0, float n, float dtHi, float dtLo)
 // Everything per-satellite. Returns false when the satellite is culled (nothing is appended);
 // otherwise fills `rec` with its pre-photometry record. A function rather than main()'s body so
 // main() can reach its workgroup barriers in uniform control flow — the early exits live here.
+// A pool record's tumble axis: a uniform direction from its slot (CPU mirror kesslerTumbleAxis()).
+vec3 poolTumbleAxis(uint j)
+{
+    uint h1 = hashU(j * 0x9E3779B9u + 0x7F4A7C15u);
+    uint h2 = hashU(h1 ^ 0x85EBCA6Bu);
+    float z = 1.0 - 2.0 * (float(h1) * (1.0 / 4294967296.0));
+    float ph = TWO_PI * (float(h2) * (1.0 / 4294967296.0));
+    float r = sqrt(max(0.0, 1.0 - z * z));
+    return vec3(r * cos(ph), r * sin(ph), z);
+}
+
 bool processSatellite(uint i, out SatVisible rec)
 {
-    SatOrbit orb = orbits[i];
-    SatType  ty  = types[orb.typeIdx];
+    // ── Kessler pool (2026-10-16): indices from poolBase are Keplerian records ──────────────────
+    bool  isPool   = i >= poolBase;
+    float poolFlux = 1.0;
+    SatOrbit orb;
+    vec3  satECI, velHat;
+    if (!isPool) {
+        orb = orbits[i];
+        // Destroyed or dead (its pool record, if any, takes over). Before the scenario epoch nothing is.
+        if (scenNowSec >= 0 && int(kw[i]) <= scenNowSec)
+            return false;
+    } else {
+        uint j = i - poolBase;
+        uint w = poolWord0 + j * 16u;
+        int born = int(kw[w + 13u]), death = int(kw[w + 14u]);
+        if (scenNowSec < born || scenNowSec >= death)
+            return false;
+        uint tc = kw[w + 15u];
+        orb.typeIdx = tc & 0xFFFFu;
+        orb.constIdx = (tc >> 16) & 0xFFu;
+        orb.alignTerminator = ((tc >> 24) & 1u) != 0u ? 2.0 : 0.0; // forced tumble (groupFrame)
+        orb.tumbleRate = uintBitsToFloat(kw[w + 10u]);
+        orb.tumblePhase = uintBitsToFloat(kw[w + 11u]);
+        vec3 ax = poolTumbleAxis(j);
+        orb.tumbleAxisX = ax.x;
+        orb.tumbleAxisY = ax.y;
+        orb.tumbleAxisZ = ax.z;
+        poolFlux = uintBitsToFloat(kw[w + 12u]);
+        // Kepler: M = M_epoch + n·deltaT (exact two-float product), argp and raan linear in time.
+        float n = uintBitsToFloat(kw[w + 3u]);
+        float M = orbitPhase(uintBitsToFloat(kw[w + 0u]), n, pc.deltaT, deltaTLo);
+        float argp = uintBitsToFloat(kw[w + 1u]) + uintBitsToFloat(kw[w + 8u]) * pc.deltaT;
+        float raan = uintBitsToFloat(kw[w + 2u]) + uintBitsToFloat(kw[w + 9u]) * pc.deltaT;
+        float a = uintBitsToFloat(kw[w + 4u]), e = uintBitsToFloat(kw[w + 5u]);
+        float ci = uintBitsToFloat(kw[w + 6u]), si = uintBitsToFloat(kw[w + 7u]);
+        float E = M + e * sin(M);
+        for (int k = 0; k < 5; ++k)
+            E -= (E - e * sin(E) - M) / (1.0 - e * cos(E));
+        float cE = cos(E), sE = sin(E), sq = sqrt(max(0.0, 1.0 - e * e));
+        float cO = cos(raan), sO = sin(raan), cw = cos(argp), sw = sin(argp);
+        vec3 P = vec3(cw * cO - sw * sO * ci, cw * sO + sw * cO * ci, sw * si);
+        vec3 Q = vec3(-sw * cO - cw * sO * ci, -sw * sO + cw * cO * ci, cw * si);
+        satECI = (a * (cE - e)) * P + (a * sq * sE) * Q;
+        velHat = normalize(-sE * P + sq * cE * Q);
+        orb.R_sat = length(satECI);
+        orb.meanMot = n;
+        orb.raan = raan;
+        orb.u0 = M;
+        orb.cosI = ci;
+        orb.sinI = si;
+        orb.cosRaan = cO;
+        orb.sinRaan = sO;
+    }
+    SatType ty = types[orb.typeIdx];
 
     // ── Disabled constellation: not appended ──────────────────────────────────
     if (((pc.enabledMask >> (orb.constIdx & CONST_IDX_MASK)) & 1u) == 0u)
         return false;
 
+    if (!isPool) {
     // ── Orbital phase (epoch-delta trick + a two-float product, see orbitPhase) ─
     // orb.u0 = fmod(original_u0 + meanMot*epochT0, 2π), so phase = u0 + meanMot*deltaT.
     float u    = orbitPhase(orb.u0, orb.meanMot, pc.deltaT, deltaTLo);
@@ -1156,9 +1234,17 @@ bool processSatellite(uint i, out SatVisible rec)
     float ex = cosR * cosU - sinR * sinU * orb.cosI;
     float ey = sinR * cosU + cosR * sinU * orb.cosI;
     float ez = sinU * orb.sinI;
-    vec3 satECI = vec3(ex, ey, ez) * orb.R_sat;
+    satECI = vec3(ex, ey, ez) * orb.R_sat;
     if ((orb.constIdx & FORMATION_BIT) != 0u)
         satECI += formationOffsetAt(orb, cosU, sinU, cosR, sinR, vec3(ex, ey, ez));
+    // Along-track velocity direction — derivative of ECI position w.r.t. mean anomaly.
+    // Already unit length for circular orbits; used by KnifeEdge attitude.
+    velHat = vec3(
+        -sinU * cosR - cosU * orb.cosI * sinR,
+        -sinU * sinR + cosU * orb.cosI * cosR,
+         cosU * orb.sinI
+    );
+    }
     vec3 relPos = satECI - pc.obsECI;
 
     // ── Earth occultation cull ────────────────────────────────────────────────
@@ -1208,14 +1294,6 @@ bool processSatellite(uint i, out SatVisible rec)
     float litFactor = (proj > 0.0)
         ? smoothstep(rUmbra, rPenumbra, perpLen)
         : 1.0;
-    // Along-track velocity direction — derivative of ECI position w.r.t. mean anomaly.
-    // Already unit length for circular orbits; used by KnifeEdge attitude.
-    vec3 velHat = vec3(
-        -sinU * cosR - cosU * orb.cosI * sinR,
-        -sinU * sinR + cosU * orb.cosI * cosR,
-         cosU * orb.sinI
-    );
-
     // ── Ground-site mirror aim (TargetedReflector machinery) ──────────────────
     // Produces siteIdeal — the mirror normal that reflects sunlight onto this satellite's chosen
     // ground site — for any type with a group targeting ATT_T_SUN_REFLECT_SITE. The surface
@@ -1223,7 +1301,7 @@ bool processSatellite(uint i, out SatVisible rec)
     vec3  siteIdeal   = satNadir;
     int   bestIdx     = -1; // resolved ground-target ORIGINAL index; -1 = no beam-quality target
     float aimErrorRad = 0.0;
-    bool  usesSite    = typeUsesGroundSite(orb.typeIdx);
+    bool  usesSite    = !isPool && typeUsesGroundSite(orb.typeIdx); // a dead mirror aims at nothing
     if (usesSite) {
         // 2026-08-06 reversibility rework, refined same day — see this file's header comment and
         // CLAUDE.md's TargetedReflector section for the full design. Summary: target IDENTITY is
@@ -1488,6 +1566,7 @@ bool processSatellite(uint i, out SatVisible rec)
         ? modelFlux(orb.typeIdx, F0, F1, F2, F3, satNadir, satToObs, litFactor, range, cosEta)
         : legacyFlux(surfN0, surfN1, satNadir, satToObs, litFactor, earthIrr, distFactor,
                      ty.specExp0, ty.specExp1, ty.w1, ty.diffuse, ty.mirrorFrac, ty.crossSection);
+    flare *= poolFlux; // a fragment: its share of the debris model's area (1 for everything else)
 
     // ── Eclipse reddening ──────────────────────────────────────────────────────
     // Sunlight reaching a satellite deep in the penumbra grazes Earth's atmosphere along a long
@@ -1501,6 +1580,8 @@ bool processSatellite(uint i, out SatVisible rec)
     // visibility cull and the sprite size.
     // Phase 4d: the model's on-screen diameter (px), for sat_flare.comp's mesh candidates.
     float meshPx = (ty.meshRadius > 0.0 && meshPixelAngle > 0.0) ? 2.0 * ty.meshRadius / (range * meshPixelAngle) : 0.0;
+    if (poolFlux != 1.0)
+        meshPx = 0.0; // fragments never become meshes (the debris model is drawn at its own size)
     // Highlight mode (a census view of a constellation): lit normally, flagged by a negative sprite
     // size (unset until sat_flare.comp), which raises it to at least the fixed census dot. It used to
     // skip the lighting and draw EVERY highlighted satellite at that dot (~mag 5.4), so highlighting

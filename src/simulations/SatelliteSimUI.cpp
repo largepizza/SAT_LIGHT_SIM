@@ -7743,6 +7743,15 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         }
     }
 
+    if (j.contains("kessler") && j["kessler"].is_object())
+    {
+        const auto &kj = j["kessler"];
+        kesslerEnabled = kj.value("enabled", kesslerEnabled);
+        kesslerRateMult = settingClamp(kj.value("rate_multiplier", kesslerRateMult), 0.0f, 1000.0f);
+        kesslerAvoidance = settingClamp(kj.value("avoidance", kesslerAvoidance), 0.0f, 1.0f);
+        kesslerHorizonYears = settingClamp(kj.value("horizon_years", kesslerHorizonYears), 1.0f, 200.0f);
+    }
+
     if (j.contains("planets"))
     {
         auto &pj = j["planets"];
@@ -8538,6 +8547,11 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     for (int pi = 0; pi < kPlanetCount; ++pi)
         planetArr.push_back({{"name", kPlanetNames[pi]}, {"enabled", planetEnabled[pi]}});
     j["planets"] = {{"show_planets", showPlanets}, {"list", planetArr}};
+    // Kessler ("The Sun's Fury"): applied at launch (the world is built once the roster is).
+    j["kessler"] = {{"enabled", kesslerEnabled},
+                    {"rate_multiplier", kesslerRateMult},
+                    {"avoidance", kesslerAvoidance},
+                    {"horizon_years", kesslerHorizonYears}};
     return j;
 }
 

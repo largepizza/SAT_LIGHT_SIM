@@ -77,6 +77,18 @@ double cmePeakKp(double u) {
 
 struct Parts { double quiet, hss, cme, cmePeak, cmeHours, cycle; };
 
+bool gScriptedOn = false;
+double gScriptedArrive = 0.0, gScriptedPeak = 11.0;
+
+// The scripted storm (days since arrival -> 0..1): a sudden commencement to 60% within half an hour, the
+// main phase over ~3 h, ~10 h near the peak, a 20-h recovery. Mirrors the procedural CME shape.
+double scriptedShape(double x) {
+    if (x < 0.0 || x > 12.0) return 0.0;
+    const double ramp = std::max(0.6 * smooth01(0.0, 0.02, x), smooth01(0.0, 0.12, x));
+    const double decay = (x > 0.55) ? std::exp(-(x - 0.55) / 0.85) : 1.0;
+    return ramp * decay;
+}
+
 Parts activityParts(double t, double rateScale) {
     Parts P{};
     const double d = t / kDay;
@@ -135,6 +147,19 @@ Parts activityParts(double t, double rateScale) {
             P.cmeHours = x * 24.0;
         }
     }
+    if (gScriptedOn) {
+        const double x = (t - gScriptedArrive) / kDay;
+        const double s = scriptedShape(x);
+        if (s > 0.0) {
+            const double flick = 0.6 * (vnoise(d * 16.0, 777) - 0.5);
+            const double v = std::max(gScriptedPeak * s + flick * std::min(s * 3.0, 1.0), 0.0);
+            if (v > P.cme) {
+                P.cme = v;
+                P.cmePeak = gScriptedPeak;
+                P.cmeHours = x * 24.0;
+            }
+        }
+    }
     return P;
 }
 
@@ -149,6 +174,14 @@ double combine(const Parts &P) {
 } // namespace
 
 double spaceWeatherKp(double t, double rateScale) { return combine(activityParts(t, rateScale)); }
+
+void spaceWeatherSetScriptedStorm(bool enabled, double arriveT, double peakKp) {
+    gScriptedOn = enabled;
+    gScriptedArrive = arriveT;
+    gScriptedPeak = peakKp;
+}
+
+double scriptedStormShape(double t) { return gScriptedOn ? scriptedShape((t - gScriptedArrive) / kDay) : 0.0; }
 
 SpaceWeather spaceWeatherAt(double t, double rateScale, double kpOverride) {
     SpaceWeather sw;

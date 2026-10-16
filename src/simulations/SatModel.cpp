@@ -304,7 +304,7 @@ std::vector<GroupPose> evalGroupPoses(const std::vector<AttitudeGroup> &groups, 
         if (g.parent < 0)
         {
             glm::dmat3 W;
-            if (g.law == AttLaw::Tumble)
+            if (g.law == AttLaw::Tumble || geo.forceTumble)
             {
                 glm::dvec3 ax = glm::normalize(geo.tumbleAxis);
                 glm::dvec3 ref = std::abs(ax.z) < 0.9 ? glm::dvec3(0, 0, 1) : glm::dvec3(1, 0, 0);

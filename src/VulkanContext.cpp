@@ -511,7 +511,7 @@ void VulkanContext::logDeviceLimits(const VkPhysicalDeviceLimits &lim)
          lim.maxPerStageDescriptorSampledImages},
         {"per-stage samplers (sat_sky.frag binds 16)", 16,
          lim.maxPerStageDescriptorSamplers},
-        {"per-stage storage buffers (sat_orbit.comp binds 11)", 11,
+        {"per-stage storage buffers (sat_orbit.comp binds 12)", 12,
          lim.maxPerStageDescriptorStorageBuffers},
         // AT the guaranteed minimum of 4: sat_sky.frag's set (the mesh colour and distance targets, the
         // sharp-reflection G-buffer, the far cloud layer) and cloud_v2_march.comp (its colour and depth outputs

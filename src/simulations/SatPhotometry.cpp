@@ -69,8 +69,38 @@ glm::dvec3 observerEciAt(glm::dvec3 obsDirEcef, double radiusM, double tJ2000)
 }
 
 // ── Orbit (mirror of sat_orbit.comp's satEciAt / processSatellite orbit block) ────────────────
+// Keplerian pool record (sat_orbit.comp keplerState): M = M0 + n t, argp and raan linear in t.
+static SatOrbitState keplerStateAt(const SatOrbitElems &e, double tJ2000)
+{
+    const double twoPi = 2.0 * kPi;
+    const double M = std::fmod(e.u0 + e.meanMot * tJ2000, twoPi);
+    const double w = std::fmod(e.argp + e.argpDot * tJ2000, twoPi);
+    const double O = std::fmod(e.raan + e.raanDot * tJ2000, twoPi);
+    double E = M + e.ecc * std::sin(M);
+    for (int k = 0; k < 8; ++k)
+        E -= (E - e.ecc * std::sin(E) - M) / (1.0 - e.ecc * std::cos(E));
+    const double cE = std::cos(E), sE = std::sin(E), sq = std::sqrt(std::max(0.0, 1.0 - e.ecc * e.ecc));
+    const double a = e.rSatM;
+    const double x = a * (cE - e.ecc), y = a * sq * sE;
+    const double n0 = std::sqrt(kGM / (a * a * a));
+    const double k = a * n0 / (1.0 - e.ecc * cE);
+    const double cO = std::cos(O), sO = std::sin(O), cw = std::cos(w), sw = std::sin(w);
+    const double ci = std::cos(e.incl), si = std::sin(e.incl);
+    const glm::dvec3 P(cw * cO - sw * sO * ci, cw * sO + sw * cO * ci, sw * si);
+    const glm::dvec3 Q(-sw * cO - cw * sO * ci, -sw * sO + cw * cO * ci, cw * si);
+    SatOrbitState st;
+    st.posEci = x * P + y * Q;
+    st.velEci = (-k * sE) * P + (k * sq * cE) * Q;
+    st.nadir = -glm::normalize(st.posEci);
+    st.velocity = glm::normalize(st.velEci);
+    st.tumbleAngle = e.tumblePhase + e.tumbleRate * tJ2000;
+    return st;
+}
+
 SatOrbitState satOrbitStateAt(const SatOrbitElems &e, double tJ2000)
 {
+    if (e.kepler)
+        return keplerStateAt(e, tJ2000);
     const double twoPi = 2.0 * kPi;
     double n = e.meanMot > 0.0 ? e.meanMot : std::sqrt(kGM / (e.rSatM * e.rSatM * e.rSatM));
     double u = std::fmod(e.u0 + n * tJ2000, twoPi);
@@ -88,6 +118,7 @@ SatOrbitState satOrbitStateAt(const SatOrbitElems &e, double tJ2000)
     st.velocity = glm::dvec3(-sinU * cosR - cosU * cosI * sinR,
                              -sinU * sinR + cosU * cosI * cosR,
                              cosU * sinI);
+    st.velEci = st.velocity * (n * e.rSatM);
     if (e.formation)
     {
         // Clohessy-Wiltshire relative orbit about the centre (sat_orbit.comp formationOffset). The
@@ -99,6 +130,10 @@ SatOrbitState satOrbitStateAt(const SatOrbitElems &e, double tJ2000)
         const double y = -2.0 * (e.formP * sinU + e.formQ * cosU);
         st.posEci += x * rHat + y * st.velocity + (e.formK * x) * hHat;
         st.nadir = -glm::normalize(st.posEci);
+        // d/dt of the offset (theta' = n): the member's own relative velocity, cm/s to m/s.
+        const double xd = -n * (e.formP * sinU + e.formQ * cosU);
+        const double yd = -2.0 * n * (e.formP * cosU - e.formQ * sinU);
+        st.velEci += xd * rHat + yd * st.velocity + (e.formK * xd) * hHat;
     }
     st.tumbleAngle = e.tumblePhase + e.tumbleRate * tJ2000;
     return st;
@@ -569,7 +604,7 @@ SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const 
     r.earthDir = r.earth.dir;
 
     // ── Attitude ────────────────────────────────────────────────────────────────────────────
-    if (usesGroundSite(groups) && !in.hasSiteIdeal)
+    if (usesGroundSite(groups) && !in.hasSiteIdeal && !orbit.forceTumble)
     {
         r.supported = false;
         return r;
@@ -581,6 +616,7 @@ SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const 
     geo.siteIdeal = in.hasSiteIdeal ? in.siteIdeal : nadir;
     geo.tumbleAngle = r.orbit.tumbleAngle;
     geo.tumbleAxis = orbit.tumbleAxis;
+    geo.forceTumble = orbit.forceTumble;
     geo.flareTiltRad = in.flareTiltRad;
     std::vector<GroupPose> poses = evalGroupPoses(groups, geo, false);
 
@@ -607,6 +643,8 @@ SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const 
     const double a2Sun = (double)kSunAlpha * kSunAlpha;
     r.intensitySun = evalSatLobesPosed(lobes, groups, poses, sun, o, a2Sun, &r.dominantLobe, occ, true);
     r.intensityEarth = r.earth.E > 0.0 ? evalSatLobesEarthPosed(lobes, groups, poses, r.earth, o, occ) : 0.0;
+    r.intensitySun *= orbit.areaScale; // a fragment: its share of the debris model's area
+    r.intensityEarth *= orbit.areaScale;
     r.intensity = r.intensitySun * r.litFactor + r.intensityEarth;
     if (r.litFactor <= 0.0)
         r.dominantLobe = -1;

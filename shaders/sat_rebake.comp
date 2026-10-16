@@ -41,12 +41,19 @@ layout(std430, binding = 0) buffer OrbitBuf { SatOrbit orbits[]; };
 
 struct PhaseBase { float u0; float tumblePhase; float raan; };
 layout(std430, binding = 1) readonly buffer BaseBuf { PhaseBase bases[]; };
+// Kessler pool (2026-10-16): the records in KesslerBuf (see sat_orbit.comp) and their J2000 phases
+// (M, argp, raan, tumble) — every one linear in time, so the same exact re-bake.
+layout(std430, binding = 2) buffer KesslerBuf { uint kw[]; };
+layout(std430, binding = 3) readonly buffer PoolBaseBuf { vec4 poolBases[]; };
 
 layout(push_constant) uniform PC {
     uint  epochLo;  // whole seconds since J2000, int64 two's complement
     int   epochHi;
     float raanOff;  // SSO precession since the sim-start anchor, mod 2π
-    uint  satCount;
+    uint  satCount; // roster satellites
+    uint  poolCount;
+    uint  poolWord0;
+    uint  pad0, pad1;
 } pc;
 
 const float TWO_PI = 6.28318530717958647692;
@@ -105,11 +112,21 @@ float phaseAt(float x, float rate, uvec2 absT, bool negT)
 void main()
 {
     uint i = gl_GlobalInvocationID.x;
-    if (i >= pc.satCount)
+    if (i >= pc.satCount + pc.poolCount)
         return;
     bool negT = pc.epochHi < 0;
     uvec2 T = uvec2(uint(pc.epochHi), pc.epochLo);
     uvec2 absT = negT ? neg64(T) : T;
+    if (i >= pc.satCount) {
+        uint j = i - pc.satCount;
+        uint w = pc.poolWord0 + j * 16u;
+        vec4 b = poolBases[j];
+        kw[w + 0u] = floatBitsToUint(phaseAt(b.x, uintBitsToFloat(kw[w + 3u]), absT, negT));
+        kw[w + 1u] = floatBitsToUint(phaseAt(b.y, uintBitsToFloat(kw[w + 8u]), absT, negT));
+        kw[w + 2u] = floatBitsToUint(phaseAt(b.z, uintBitsToFloat(kw[w + 9u]), absT, negT));
+        kw[w + 11u] = floatBitsToUint(phaseAt(b.w, uintBitsToFloat(kw[w + 10u]), absT, negT));
+        return;
+    }
 
     PhaseBase b = bases[i];
     float n = orbits[i].meanMot;

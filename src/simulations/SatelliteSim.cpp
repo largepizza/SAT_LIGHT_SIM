@@ -626,6 +626,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     viewControlsChrome.h = 340.0f;
 
     loadSettings(); // override defaults with any previously saved values
+    kesslerInit(ctx); // the scenario's storm, world and cascade worker (needs kessler.* from the settings)
 
     // renderScale (just loaded above) may differ from the 1.0 default createSkyLowResResources
     // used a few lines earlier in this function — recreate at the correct persisted size now.
@@ -1578,6 +1579,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     }
 
     float simDt = timePaused ? 0.0f : fabsf(dt * kTimeScales[timeScaleIdx]);
+    const double tBeforeAdvance = (double)simDayJ2000 * 86400.0 + simSecInDay; // Kessler frontier hold
     if (!timePaused)
     {
         simSecInDay += (double)dt * kTimeScales[timeScaleIdx] * timeDir;
@@ -1597,6 +1599,25 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
     // Auto-rebake orbit buffer if the epoch has drifted more than kOrbitRebakeDays.
     // Keeps float deltaT < kOrbitRebakeDays*86400 s (float ULP ≈ 0.07 s at 7 days).
+    // Kessler: the worker's new records / deaths, copied to kesslerBuf before anything reads it.
+    kesslerSync(ctx);
+    {
+        // Time may not ADVANCE past what the worker has simulated (after the CME): it holds there. It is
+        // never moved back (a restart pulls the frontier back to the CME; a jump may land past it).
+        const double tNowK = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const double holdAt = std::max(std::max(kFrontier, kesslerEpoch()), tBeforeAdvance);
+        if (kesslerEnabled && !kWorkerDone && tNowK > holdAt)
+        {
+            const double back = tNowK - holdAt;
+            simSecInDay -= back;
+            while (simSecInDay < 0.0)
+            {
+                simSecInDay += 86400.0;
+                --simDayJ2000;
+            }
+        }
+    }
+    kesslerRecordUploads(cmd);
     if (std::abs(simDayJ2000 - orbitEpochDay) >= kOrbitRebakeDays)
     {
         CpuTimer _t(cpuAccumMs[CPU_ORBIT_REBAKE]);
@@ -2817,7 +2838,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     orbitPc.deltaT = (float)deltaTD;
     orbitDeltaTLo = (float)(deltaTD - (double)orbitPc.deltaT); // → GpuSatTypeHeader::deltaTLo
     orbitPc.obsECI = obsECI;
-    orbitPc.satCount = activeSatCount;
+    orbitPc.satCount = activeSatCount + kPoolGpu; // the roster, then the Kessler pool
     orbitPc.highlightMask = highlightMask;
     orbitPc.enabledMask = enabledMask;
     orbitPc.simDt = simDt;
@@ -3074,6 +3095,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                        (float)std::max(1u, ctx.swapExtent.height);
         hdr.pixelAngle = 2.0f * tanf(glm::radians(camera.fovYDeg) * 0.5f) / (float)std::max(1u, ctx.swapExtent.height);
         hdr.formationMerge = glm::clamp(formationMergeStrength, 0.0f, 1.0f);
+        hdr.poolBase = activeSatCount;
+        hdr.poolCount = kPoolGpu;
+        hdr.poolWord0 = kPoolWord0;
+        hdr.scenNowSec = (int32_t)std::clamp(std::floor((double)simDayJ2000 * 86400.0 + simSecInDay - kesslerEpoch()),
+                                             -2147483000.0, 2147483000.0);
         memcpy(satTypeMapped, &hdr, sizeof(hdr));
         uploadPointStyle(); // sat_flare.comp and the point draws read it this frame
     }
@@ -3106,7 +3132,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                             orbitPipeLayout, 0, 1, &orbitDescSet, 0, nullptr);
     vkCmdPushConstants(cmd, orbitPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(orbitPc), &orbitPc);
-    vkCmdDispatch(cmd, (activeSatCount + 63) / 64, 1, 1);
+    vkCmdDispatch(cmd, (activeSatCount + kPoolGpu + 63) / 64, 1, 1);
 
     // Barrier: sat_orbit.comp appended the compact visible list (records + slot→satellite index +
     // header/indirect args) → sat_flare.comp finishes the records in place (READ|WRITE), and the
@@ -3448,7 +3474,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // (from orbit the ground's own glitter carries the cities).
         cpc.gain = citySpriteGainAt();
         cpc.nightF = 1.0f - glm::smoothstep(-0.105f, 0.02f, sunDirENU.w);
-        cpc.capacity = std::max<uint32_t>(activeSatCount, 1u) + kCitySpriteMax;
+        cpc.capacity = std::max<uint32_t>(activeSatCount, 1u) + kPoolCap + kCitySpriteMax;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, citySpritePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, citySpritePipeLayout, 0, 1, &citySpriteDescSet, 0,
                                 nullptr);
@@ -3828,7 +3854,8 @@ void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM, i
     if (satIndex >= 0 && satIndex < (int)satOrbits.size() && satOrbits[satIndex].constIdx < constellations.size())
     {
         const ConstellationConfig &c = constellations[satOrbits[satIndex].constIdx];
-        snprintf(viewerTitle, sizeof(viewerTitle), "%s #%d", c.name.c_str(), satIndex - (int)c.orbitStart);
+        (void)c;
+        snprintf(viewerTitle, sizeof(viewerTitle), "%s", satLabel(satIndex).c_str());
     }
     else
         snprintf(viewerTitle, sizeof(viewerTitle), "%s", label);
@@ -4097,6 +4124,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
         geo.velocity = glm::normalize(eciToEcef(st.velocity));
         geo.tumbleAngle = st.tumbleAngle;
         geo.tumbleAxis = eciToEcef(e.tumbleAxis);
+        geo.forceTumble = e.forceTumble;
     }
     else
         P = glm::normalize(glm::dvec3(obsDir)) * (satphot::kEarthRadiusM + (double)viewerAltM);
@@ -4795,6 +4823,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         geo.siteIdeal = in.hasSiteIdeal ? eciToEcef(in.siteIdeal) : geo.nadir;
         geo.tumbleAngle = r.orbit.tumbleAngle;
         geo.tumbleAxis = eciToEcef(e.tumbleAxis);
+        geo.forceTumble = e.forceTumble;
         geo.flareTiltRad = in.flareTiltRad;
         const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, false);
         GpuMeshInstance &inst = out.inst;
@@ -5666,7 +5695,7 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
     VulkanContext &ctx = *ctx_;
     const uint32_t listCount = std::min(
         static_cast<const GpuSatListHeader *>(pickedVisibleMapped)->count,
-        std::max<uint32_t>(activeSatCount, 1u) + kCitySpriteMax);
+        std::max<uint32_t>(activeSatCount, 1u) + kPoolCap + kCitySpriteMax);
     if (listCount == 0)
         return -1;
     const VkDeviceSize recBytes = (VkDeviceSize)listCount * sizeof(GpuSatVisible);
@@ -5820,7 +5849,9 @@ void SatelliteSim::formatSelectedSatInfo()
     float inclDeg = glm::degrees(orb.incl);
     float periodMin = (orb.meanMot > 0.0f) ? (2.0f * glm::pi<float>() / orb.meanMot) / 60.0f : 0.0f;
 
-    snprintf(selInfoLine[0], sizeof(selInfoLine[0]), "%s #%d", constName, localId);
+    (void)localId;
+    (void)constName;
+    snprintf(selInfoLine[0], sizeof(selInfoLine[0]), "%s", satLabel(selectedSatIndex).c_str());
     snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s", typeName);
     snprintf(selInfoLine[2], sizeof(selInfoLine[2]), "Alt: %.0f km", altKm);
     snprintf(selInfoLine[3], sizeof(selInfoLine[3]), "Incl: %.1f deg", inclDeg);
@@ -5849,6 +5880,8 @@ void SatelliteSim::formatSelectedSatInfo()
 
 SatOrbitElems SatelliteSim::orbitElemsOf(const SatOrbit &orb) const
 {
+    if (orb.poolSlot >= 0 && (size_t)orb.poolSlot < kPool.size())
+        return kessler::poolOrbitElems(kPool[(size_t)orb.poolSlot], (uint32_t)orb.poolSlot);
     SatOrbitElems e;
     e.raan = orb.raan;
     e.incl = orb.incl;
@@ -5956,8 +5989,7 @@ void SatelliteSim::computeSelectedTrace()
     const SatelliteType &type = satTypes[orb.typeIdx];
     // Named as the selection panel and the info window name it: constellation + its number within it.
     if (orb.constIdx < constellations.size())
-        snprintf(traceTitle, sizeof(traceTitle), "%s #%d", constellations[orb.constIdx].name.c_str(),
-                 selectedSatIndex - (int)constellations[orb.constIdx].orbitStart);
+        snprintf(traceTitle, sizeof(traceTitle), "%s", satLabel(selectedSatIndex).c_str());
     else
         snprintf(traceTitle, sizeof(traceTitle), "%s #%d", type.name.c_str(), selectedSatIndex);
     if (const char *why = photometryUnsupportedReason(type))
@@ -6792,6 +6824,7 @@ void SatelliteSim::setAudio(AudioSystem *audio)
 // ─── cleanup ──────────────────────────────────────────────────────────────────
 void SatelliteSim::cleanup(VkDevice device)
 {
+    kesslerShutdown(); // join the cascade worker (it reads nothing of the GPU's) and write its cache
     // UC6: join any in-flight screenshot encode thread before anything below (including this
     // object's own eventual destruction) can happen — it captures `this` for the result-handoff
     // members, so letting it outlive the object would be a use-after-free.
@@ -7321,6 +7354,14 @@ void SatelliteSim::cleanup(VkDevice device)
     satOrbitMem = VK_NULL_HANDLE;
     vkDestroyBuffer(device, satPhaseBaseBuf, nullptr);
     vkFreeMemory(device, satPhaseBaseMem, nullptr);
+    vkDestroyBuffer(device, kesslerBuf, nullptr);
+    vkFreeMemory(device, kesslerMem, nullptr);
+    vkDestroyBuffer(device, kPoolBaseBuf, nullptr);
+    vkFreeMemory(device, kPoolBaseMem, nullptr);
+    if (kStageMapped)
+        vkUnmapMemory(device, kStageMem);
+    vkDestroyBuffer(device, kStageBuf, nullptr);
+    vkFreeMemory(device, kStageMem, nullptr);
     vkDestroyPipeline(device, satRebakePipeline, nullptr);
     vkDestroyPipelineLayout(device, satRebakePipeLayout, nullptr);
     vkDestroyDescriptorPool(device, satRebakeDescPool, nullptr);
@@ -8599,7 +8640,8 @@ void SatelliteSim::createComputePipeline(VulkanContext &ctx)
 // dispatch; this shader no longer reads or writes those two fields at all.
 void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[11] = {};
+    VkDescriptorSetLayoutBinding bindings[12] = {};
+    bindings[11] = {11, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // Kessler
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -8613,11 +8655,11 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
     bindings[10] = {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 11;
+    li.bindingCount = 12;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &orbitDescLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 12};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &ps;
@@ -8666,6 +8708,7 @@ void SatelliteSim::createOrbitDescriptors(VulkanContext &ctx)
     writes[10] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, orbitDescSet, 10, 0, 1,
                   VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &sampleInfo, nullptr};
     vkUpdateDescriptorSets(ctx.device, 11, writes, 0, nullptr);
+    writeSatRosterDescriptors(ctx); // binding 11 (kesslerBuf), with the other per-satellite ones
 }
 
 // ─── createOrbitPipeline ──────────────────────────────────────────────────────
@@ -8888,15 +8931,17 @@ void SatelliteSim::uploadSatOrbits(VulkanContext &ctx)
 // ─── Orbit rebake on the GPU (sat_rebake.comp, 2026-10-15) ─────────────────────
 void SatelliteSim::createSatRebake(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding b[2] = {
+    VkDescriptorSetLayoutBinding b[4] = {
         {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},  // Kessler records
+        {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}}; // their J2000 phases
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 2;
+    li.bindingCount = 4;
     li.pBindings = b;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &satRebakeDescLayout);
 
-    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2};
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 1;
     pi.pPoolSizes = &ps;
@@ -8909,14 +8954,7 @@ void SatelliteSim::createSatRebake(VulkanContext &ctx)
     ai.pSetLayouts = &satRebakeDescLayout;
     vkAllocateDescriptorSets(ctx.device, &ai, &satRebakeDescSet);
 
-    VkDescriptorBufferInfo orbitInfo{satOrbitBuf, 0, VK_WHOLE_SIZE};
-    VkDescriptorBufferInfo baseInfo{satPhaseBaseBuf, 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet w[2] = {};
-    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, satRebakeDescSet, 0, 0, 1,
-            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &orbitInfo, nullptr};
-    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, satRebakeDescSet, 1, 0, 1,
-            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &baseInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 2, w, 0, nullptr);
+    writeSatRosterDescriptors(ctx); // bindings 0-3
 
     VkShaderModule mod = ctx.loadShader("shaders/sat_rebake.comp.spv");
     VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
@@ -8959,13 +8997,20 @@ void SatelliteSim::recordSatRebake(VkCommandBuffer cmd)
         off += glm::two_pi<double>();
     pc.raanOff = (float)off;
     pc.satCount = activeSatCount;
+    pc.poolCount = kPoolGpu;
+    pc.poolWord0 = kPoolWord0;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, satRebakePipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, satRebakePipeLayout, 0, 1, &satRebakeDescSet, 0,
                             nullptr);
     vkCmdPushConstants(cmd, satRebakePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
-    vkCmdDispatch(cmd, (activeSatCount + 63) / 64, 1, 1);
+    vkCmdDispatch(cmd, (activeSatCount + kPoolGpu + 63) / 64, 1, 1);
 
+    VkMemoryBarrier kbar{VK_STRUCTURE_TYPE_MEMORY_BARRIER}; // kesslerBuf's records too
+    kbar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    kbar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &kbar,
+                         0, nullptr, 0, nullptr);
     VkBufferMemoryBarrier bar{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
     bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -8984,17 +9029,10 @@ void SatelliteSim::recordSatRebake(VkCommandBuffer cmd)
 void SatelliteSim::createSatRosterBuffers(VulkanContext &ctx)
 {
     const VkDeviceSize satN = std::max<VkDeviceSize>(activeSatCount, 1);
-    // satVisibleBuf: device-local compact visible list. sat_orbit.comp appends pre-photometry
-    // records, sat_flare.comp finishes them in place, the point/flare/trail vertex shaders read
-    // them. Sized for the worst case (every satellite visible), though typically ~5-10% is used.
-    // + kCitySpriteMax: city_sprites.comp appends city lights after the satellites.
-    ctx.createBuffer(sizeof(GpuSatVisible) * (satN + kCitySpriteMax),
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, satVisibleBuf, satVisibleMem);
-    // satVisibleIdxBuf: satellite index of each compact slot (picking + selection tracking).
-    ctx.createBuffer(sizeof(uint32_t) * (satN + kCitySpriteMax),
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, satVisibleIdxBuf, satVisibleIdxMem);
+    // The visible list (satVisibleBuf / satVisibleIdxBuf: every roster satellite, the Kessler pool's capacity
+    // and kCitySpriteMax city lights) and the Kessler buffers are made by kesslerEnsureCapacity, which also
+    // grows them with the pool.
+    kRosterEnd.assign(activeSatCount, kessler::kNever);
     // satOrbitBuf: device-local, uploaded once (rebaked on the GPU, sat_rebake.comp). sat_orbit.comp
     // reads it every frame.
     ctx.createBuffer(sizeof(GpuSatOrbit) * satN, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -9003,13 +9041,17 @@ void SatelliteSim::createSatRosterBuffers(VulkanContext &ctx)
     ctx.createBuffer(sizeof(GpuSatPhaseBase) * satN,
                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, satPhaseBaseBuf, satPhaseBaseMem);
+    satVisibleBuf = satVisibleIdxBuf = kesslerBuf = kPoolBaseBuf = VK_NULL_HANDLE;
+    satVisibleMem = satVisibleIdxMem = kesslerMem = kPoolBaseMem = VK_NULL_HANDLE;
+    kesslerEnsureCapacity(ctx, kPoolCap);
 }
 
 void SatelliteSim::destroySatRosterBuffers(VkDevice device)
 {
-    VkBuffer *bufs[] = {&satVisibleBuf, &satVisibleIdxBuf, &satOrbitBuf, &satPhaseBaseBuf};
-    VkDeviceMemory *mems[] = {&satVisibleMem, &satVisibleIdxMem, &satOrbitMem, &satPhaseBaseMem};
-    for (int i = 0; i < 4; ++i)
+    VkBuffer *bufs[] = {&satVisibleBuf, &satVisibleIdxBuf, &satOrbitBuf, &satPhaseBaseBuf, &kesslerBuf, &kPoolBaseBuf};
+    VkDeviceMemory *mems[] = {&satVisibleMem, &satVisibleIdxMem, &satOrbitMem, &satPhaseBaseMem, &kesslerMem,
+                              &kPoolBaseMem};
+    for (int i = 0; i < 6; ++i)
     {
         vkDestroyBuffer(device, *bufs[i], nullptr);
         vkFreeMemory(device, *mems[i], nullptr);
@@ -9024,7 +9066,8 @@ void SatelliteSim::destroySatRosterBuffers(VkDevice device)
 void SatelliteSim::writeSatRosterDescriptors(VulkanContext &ctx)
 {
     VkDescriptorBufferInfo vis{satVisibleBuf, 0, VK_WHOLE_SIZE}, idx{satVisibleIdxBuf, 0, VK_WHOLE_SIZE},
-        orb{satOrbitBuf, 0, VK_WHOLE_SIZE}, base{satPhaseBaseBuf, 0, VK_WHOLE_SIZE};
+        orb{satOrbitBuf, 0, VK_WHOLE_SIZE}, base{satPhaseBaseBuf, 0, VK_WHOLE_SIZE},
+        kes{kesslerBuf, 0, VK_WHOLE_SIZE}, kbase{kPoolBaseBuf, 0, VK_WHOLE_SIZE};
     std::vector<VkWriteDescriptorSet> w;
     auto add = [&](VkDescriptorSet set, uint32_t binding, const VkDescriptorBufferInfo *info) {
         if (set != VK_NULL_HANDLE)
@@ -9036,8 +9079,11 @@ void SatelliteSim::writeSatRosterDescriptors(VulkanContext &ctx)
     add(orbitDescSet, 0, &orb);
     add(orbitDescSet, 1, &vis);
     add(orbitDescSet, 6, &idx);
+    add(orbitDescSet, 11, &kes);
     add(satRebakeDescSet, 0, &orb);
     add(satRebakeDescSet, 1, &base);
+    add(satRebakeDescSet, 2, &kes);
+    add(satRebakeDescSet, 3, &kbase);
     add(citySpriteDescSet, 0, &vis);
     add(citySpriteDescSet, 1, &idx);
     vkUpdateDescriptorSets(ctx.device, (uint32_t)w.size(), w.data(), 0, nullptr);
@@ -9077,11 +9123,15 @@ void SatelliteSim::rebuildRoster(VulkanContext &ctx)
     if (pickedVisibleMapped)
         memset(pickedVisibleMapped, 0, sizeof(GpuSatListHeader));
 
+    kesslerShutdown(); // its world indexes the old roster
+    kUserEvents.clear();
+    kPool.clear();
     buildOrbits();
     destroySatRosterBuffers(ctx.device);
     createSatRosterBuffers(ctx);
     uploadSatOrbits(ctx);
     writeSatRosterDescriptors(ctx);
+    kesslerRestart(ctx, kUserEvents, -1.0);
 
     char msg[160];
     snprintf(msg, sizeof(msg), "roster rebuilt: %u satellites in %zu constellations", activeSatCount,
@@ -14437,6 +14487,27 @@ void SatelliteSim::initConstellation()
     for (SatelliteType &t : satTypes)
         resolveAttitude(t);
     writeResolvedSatTypes();
+    // Kessler: fragments belong to one pseudo-constellation with no roster satellites of its own, so they
+    // can be hidden or highlighted like any other (the enabled / highlight masks are per constellation).
+    kDebrisType = 0;
+    for (size_t t = 0; t < satTypes.size(); ++t)
+        if (satTypes[t].modelId == "debris_fragment" || satTypes[t].name.find("Debris") != std::string::npos)
+        {
+            kDebrisType = (uint32_t)t;
+            break;
+        }
+    kDebrisConst = -1;
+    if (constellations.size() < 32 && !satTypes.empty())
+    {
+        ConstellationConfig dc{};
+        dc.name = "Collision debris";
+        dc.typeIdx = kDebrisType;
+        dc.enabled = true;
+        dc.numPlanes = 0;
+        dc.perPlane = 0;
+        kDebrisConst = (int)constellations.size();
+        constellations.push_back(dc);
+    }
     buildOrbits();
 }
 
@@ -14551,6 +14622,7 @@ void SatelliteSim::loadDefinitions()
             t.baseColor = {col[0].get<float>(), col[1].get<float>(), col[2].get<float>()};
         }
         t.crossSectionM2 = jt.value("cross_section_m2", 10.0f);
+        t.massKg = jt.value("mass_kg", 0.0f);
         t.primary = SurfaceSpec{AttitudeMode::NadirPointing, 0.0f, 1.0f};
         t.secondary = SurfaceSpec{AttitudeMode::Perpendicular, 0.0f, 0.0f};
         t.diffuse = jt.value("diffuse", 0.02f);

@@ -39,6 +39,13 @@ SpaceWeather spaceWeatherAt(double tJ2000s, double rateScale, double kpOverride 
 // Just the index (no substorm), cheap enough to call in a search loop.
 double spaceWeatherKp(double tJ2000s, double rateScale);
 
+// A scripted storm on top of the procedural ones (Kessler: "The Sun's Fury", 2026-10-16): a CME arriving at
+// arriveT (s since J2000) with the given peak Kp-equivalent. enabled false = none. Process-wide (it is part
+// of the sim's fixed history, like the procedural storms).
+void spaceWeatherSetScriptedStorm(bool enabled, double arriveT, double peakKp);
+// That storm's shape alone, 0..1 (0 before arrival and when disabled): the thermosphere's heating follows it.
+double scriptedStormShape(double tJ2000s);
+
 // The oval's boundaries for an activity index, as COLATITUDES from the geomagnetic pole (degrees), at
 // magnetic midnight and noon (Feldstein-Starkov-like: quiet midnight 66.5-72.5 MLAT, noon 76.5-79;
 // the equatorward edge at midnight moves ~2.1 deg per Kp — Kp 9 overhead near 47 MLAT).

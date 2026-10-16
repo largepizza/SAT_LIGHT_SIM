@@ -121,6 +121,16 @@ struct SatOrbitElems
     // (along-track), z = K x (cross-track). See SatOrbit::formP (SatelliteSim.h).
     bool formation = false;
     double formP = 0.0, formQ = 0.0, formK = 0.0;
+    // A Keplerian pool record (Kessler: a dead satellite or a fragment, 2026-10-16): eccentric, with
+    // secular rates. u0 is then the MEAN ANOMALY, raan / argp the values at t = 0 (J2000) extrapolated
+    // backwards, meanMot the mean anomaly rate and rSatM the semi-major axis. Mirrors sat_orbit.comp's
+    // keplerState(); the rates and angles are the record's floats, promoted, as the GPU sees them.
+    bool kepler = false;
+    double ecc = 0.0;
+    double argp = 0.0;
+    double argpDot = 0.0, raanDot = 0.0;
+    bool forceTumble = false; // a dead satellite: the root group tumbles whatever its law
+    double areaScale = 1.0;   // flux multiplier (a fragment against its type's model)
 };
 
 struct SatOrbitState
@@ -129,6 +139,7 @@ struct SatOrbitState
     glm::dvec3 nadir{0.0, 0.0, -1.0};
     glm::dvec3 velocity{1.0, 0.0, 0.0}; // unit along-track
     double tumbleAngle = 0.0;
+    glm::dvec3 velEci{0.0};  // m/s, the full velocity (Kessler: collisions, breakups)
 };
 SatOrbitState satOrbitStateAt(const SatOrbitElems &e, double tJ2000);
 

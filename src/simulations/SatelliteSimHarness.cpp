@@ -423,6 +423,7 @@ json SatelliteSim::harnessStateJson()
         ko.push_back("lite_sky");
     // The compact visible list's length (last frame's header): satellites + stars' share + city light
     // sprites (city_sprites.comp appends after sat_flare.comp).
+    j["kessler"] = kesslerStateJson();
     j["satellites"] = {{"visible_count", visibleCount}, {"active_count", activeSatCount},
                        // the mesh hand-off: the fade-in size (raised past the kMaxMeshInstances largest) and how many
                        // satellites were mesh-sized candidates last frame
@@ -505,6 +506,7 @@ json SatelliteSim::harnessStateJson()
             geo.siteIdeal = in.hasSiteIdeal ? in.siteIdeal : geo.nadir;
             geo.tumbleAngle = pr.orbit.tumbleAngle;
             geo.tumbleAxis = e.tumbleAxis;
+            geo.forceTumble = e.forceTumble;
             geo.flareTiltRad = in.flareTiltRad;
             const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, false);
             const glm::dvec3 s = in.sunDirEci, ob = glm::normalize(in.obsEci - pr.orbit.posEci);
@@ -2216,6 +2218,70 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                                  : std::string("tutorial off");
         return Status::Done;
     }
+    if (n == "kessler")
+    {
+        // kessler [state] | breakup <sat> [kind=explosion|asat] | collide <a> <b> | wait [days=<d>] [done]
+        // (2026-10-16, "The Sun's Fury"; SatelliteSimKessler.cpp).
+        const std::string sub = lower(pos(0));
+        if (sub == "breakup" || sub == "collide")
+        {
+            const uint32_t a0 = (uint32_t)parseNum(pos(1), "kessler sat");
+            uint8_t kind = kessler::EV_EXPLOSION;
+            uint32_t b0 = 0xFFFFFFFFu;
+            if (sub == "collide")
+            {
+                kind = kessler::EV_COLLISION;
+                b0 = (uint32_t)parseNum(pos(2), "kessler collide b");
+            }
+            else if (lower(c.str("kind", "explosion")) == "asat")
+                kind = kessler::EV_ASAT;
+            std::string why;
+            if (!kesslerUserEvent(kind, a0, b0, &why))
+                fail("kessler " + sub + ": " + why);
+        }
+        else if (sub == "wait")
+        {
+            // Until the worker has simulated `days` past the CME (or finished, with `done`).
+            const bool all = lower(pos(1)) == "done" || c.has("done");
+            const double days = c.num("days", 0.0);
+            const bool ok = kWorkerDone || (!all && kFrontier >= kesslerEpoch() + days * 86400.0);
+            if (!ok)
+                return Status::Pending;
+        }
+        else if (sub == "select")
+        {
+            // kessler select [k=<n>]: the n-th record (default 0) of the newest player breakup, once the
+            // worker has replayed it (Pending until then).
+            const kessler::Event *ev = nullptr;
+            for (size_t e = kEvents.size(); e-- > 0;)
+                if (kEvents[e].origin == kessler::ORIGIN_USER)
+                {
+                    ev = &kEvents[e];
+                    break;
+                }
+            if (!ev)
+            {
+                if (kUserEvents.empty())
+                    fail("kessler select: no player breakup yet");
+                return Status::Pending;
+            }
+            const uint32_t k = (uint32_t)c.num("k", 0.0);
+            if (k >= ev->nRec)
+                fail("kessler select: that breakup made " + std::to_string(ev->nRec) + " records");
+            selectSatellite((int)(activeSatCount + ev->firstRec + k));
+        }
+        else if (!sub.empty() && sub != "state")
+            fail("kessler: state | breakup <sat> [kind=explosion|asat] | collide <a> <b> | wait [days=] [done] | select [k=]");
+        r["kessler"] = kesslerStateJson();
+        const nlohmann::json &kj = r["kessler"];
+        char msg[200];
+        snprintf(msg, sizeof(msg), "frontier day %.1f%s, %zu events, %zu records; now: %d dead, %d fragments",
+                 kj["frontier_days"].get<double>(), kWorkerDone ? " (done)" : "", kEvents.size(), kPool.size(),
+                 kj["now"]["dead_satellites"].get<int>(), kj["now"]["fragments"].get<int>());
+        r["message"] = msg;
+        return Status::Done;
+    }
+
     if (n == "roster")
     {
         // roster list | remove "<name>" | add "<name>" (2026-10-15): change the roster at runtime. Removed
