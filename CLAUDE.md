@@ -4062,7 +4062,11 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   14 s (refs 1.2, states + grid 5.4, pairs 2.7, apply 3.5; the worker logs `kessler: engine time`).
 - **The worker is lazy** (`KesslerWorker`, below-normal priority, half the cores minus one for position
   sampling): it simulates a minute of the current time warp ahead of sim time (at least 2 days; always the
-  storm's first two days at launch) and idles otherwise. **Sim time HOLDS at the simulated frontier** (never
+  storm's first two days at launch) and idles otherwise. The target follows the warp DOWN as well (`wantUntil` is
+  set each frame; harness waits are a floor, `kWantFloor`): it only grew until 2026-10-16, so one burst at 1 week/s
+  left the worker computing up to 400 days at full tilt after the player was back at 1x (issue 20261016_155342:
+  frontier day 342 at sim day 165). `kesslerFillDust` stops its event scan 6 h past now (it scanned to the end of
+  the log every frame: millions of future events, 15-25 ms, unbucketed); it is timed in the `kessler` CPU bucket. **Sim time HOLDS at the simulated frontier** (never
   rewinds: a restart pulls the frontier back to the epoch) with a banner, "Computing the debris cascade".
   Rendering is not the cost: at day 60 with a full pool the orbit pass is +0.2 ms GPU and the frame holds vsync
   (harness_runs/kessler2/pw1); what slows a player down is the hold while warping past the frontier.
@@ -4070,7 +4074,11 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   them (`kesslerRecordUploads`, a persistent 16-MB staging buffer, at most 16k new records a frame, roster words
   in budget-sized pieces — a whole-roster run that did not fit the budget was re-sorted every frame and never
   uploaded: 8.7 ms a frame). GPU pool buffers grow by doubling up to the cap (83 MB at 750k records). The
-  settings tab reads the counts through `kesslerStateCached` (4 Hz: a full count walks the roster and the pool).
+  settings tab reads the counts through `kesslerStateCached`: cheap fields at 4 Hz, the counts from a walk spread over
+  frames (`kesslerCountsTick`, 150k records + 150k roster + 600k events a frame, only while the tab reads them; a pass
+  counts at the second it began). Until 2026-10-16 it walked 5M pieces, the roster and ~10M events four times a second
+  on the main thread: 50-180 ms spikes late in the cascade (issue 20261016_155342). Harness `state` keeps the exact
+  walk (`kesslerStateJson`); the piece-lifetime diagnostic is harness-only.
 - **Player breakups** (info window BREAKUP: Explode / ASAT strike; harness `kessler breakup|collide`) are user
   events: the world restarts, replaying everything before them (engine events kept up to the step before),
   re-simulating after. Allowed from the epoch on, up to the frontier.
@@ -4102,7 +4110,12 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   (+150-350 m/s), cross-track spread ~110 m/s, glow ~ v^2 x the air's density, out below ~2 km/s or 45 km, tumbling
   flicker, a quarter flare once; colour from yellow-white (fast) to orange and red-orange (slowing). Brightness: the
   main body at breakup -4 - 2.5 log10(mass / 100 kg) at 100 km (-7.5 for a 2.5-t Starmind), fragments together about
-  as bright as the body; + distance, a crude airmass and daylight. Heads are point sprites appended to the finished
+  as bright as the body; + distance, the extinction along the eye-to-fireball segment (`atmExtinctionMag`) and
+  daylight. (A 1 / sin(el) airmass clamped at 0.03 added ~8 mag to every fireball seen from ABOVE: issue
+  20261016_154921.) The trails' Gaussians carry that extinction already; in cloud_march.comp they are not extinguished
+  again, scattered dust is extinguished to its own (brightness-weighted) distance, not to infinity (looking down, that
+  path ran into the ground), and clouds hide both only from an eye below 20 km (the aurora's 95-km test hid trails
+  behind the clouds under them from 60-95 km). Heads are point sprites appended to the finished
   visible list after sat_flare.comp (`kessler_fireballs.comp`, host-visible `kFireBuf` of up to 8192, tagged as city
   lights: meshPx -1, slot index 0xFFFFFFFF; bloom and glare like any satellite); each bright fragment's trail (its
   last 1.5 s of path) and the main body's train (6 segments over ~18 s, fading over 8 s, spreading) are EMISSIVE

@@ -2637,18 +2637,46 @@ private:
     void kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents, double keepEngineBefore);
     void kesslerSync(VulkanContext &ctx);  // per frame: take the worker's new events / records / deaths
     void kesslerWant(double tJ2000);       // ask the (lazy) worker to simulate at least this far
+    double kWantFloor = 0.0;               // the furthest explicit kesslerWant (harness waits); the warp's target may drop
     void kesslerRecordUploads(VkCommandBuffer cmd); // per frame: copy them to the GPU
     void kesslerEnsureCapacity(VulkanContext &ctx, size_t records);
     void kesslerUploadAllSync(VulkanContext &ctx); // after (re)allocating: roster ends now, records progressively
     bool kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, std::string *why);
     std::vector<kessler::Event> kUserEvents; // breakups the player (or a script) caused
     uint32_t kesslerRefOfSat(uint32_t sat) const; // satellite index -> world reference (or kNoRef)
-    nlohmann::json kesslerStateJson() const;
-    // The same, recomputed at most 4 times a second (the settings tab reads it every frame; a full count walks the
-    // roster and the pool).
+    nlohmann::json kesslerStateJson() const; // exact, now (walks everything: the harness's state)
+    nlohmann::json kesslerStateJsonImpl(bool full) const;
+    // Live counts at one second: dead / gone satellites, live pieces, events by kind.
+    struct KCounts
+    {
+        size_t dead = 0, frag = 0, fragReal = 0, rosterGone = 0, kills = 0, bumps = 0, col = 0, cat = 0, user = 0;
+        size_t byClass[3] = {0, 0, 0};
+        double smallMade = 0.0;
+    };
+    struct KCountsWalk
+    {
+        KCounts acc;
+        int32_t sec = 0;
+        double t = 0.0;
+        size_t pool = 0, roster = 0, ev = 0;
+        bool active = false;
+    };
+    // Walks up to `budget` pool records, roster entries and events (x4) from the cursors; true when all are done.
+    bool kesslerCountsWalk(KCountsWalk &w, size_t budget) const;
+    nlohmann::json kesslerCountsJson(const KCounts &c) const;
+    // For the settings tab, which reads it every frame: the cheap fields at most 4 times a second, the counts from a
+    // walk spread over frames (kesslerCountsTick, ~150k records a frame while the tab reads it). A full walk of 5M
+    // pieces, the roster and ~10M events took 50-180 ms on the main thread, four times a second: the late-cascade
+    // stutter (issue 20261016_155342).
     const nlohmann::json &kesslerStateCached() const;
+    void kesslerCountsTick();
     mutable nlohmann::json kStateCache;
     mutable double kStateCacheWall = -1.0;
+    mutable double kCountsWantedWall = -1.0;
+    KCountsWalk kCountsWalkState;
+    KCounts kCountsLive;
+    bool kCountsLiveValid = false;
+    mutable std::vector<int8_t> kTypeClass; // satellite type -> debris kit class (0 S, 1 M, 2 L) or -1
     std::string kesslerStatusLine() const; // the HUD line while the frontier holds time back
     // A satellite's display name: "<constellation> #<n>"; a dead one "... #<n> (dead)" (its roster number),
     // a fragment "Debris <event>.<k>".

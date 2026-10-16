@@ -1603,6 +1603,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
     CpuTimer kesslerTimer(cpuAccumMs[CPU_KESSLER]);
     kesslerSync(ctx);
+    kesslerCountsTick();
     {
         // Time may not ADVANCE past what the worker has simulated (after the CME): it holds there. It is
         // never moved back (a restart pulls the frontier back to the CME; a jump may land past it).
@@ -3323,7 +3324,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // resolve, whose result this dispatch composites. Inside this timestamp bucket, so the
         // "cloud_march" figure is the clouds plus everything else here (cirrus, fog, aurora, beams).
         updateLightningBolts();   // the previous frame's flash list -> channels (SatelliteSimLightning.cpp)
-        kesslerFillDust(glm::radians(camera.fovYDeg) / (float)std::max<uint32_t>(halfH, 1)); // the breakups' dust clouds (binding 23)
+        {
+            CpuTimer kesslerDustTimer(cpuAccumMs[CPU_KESSLER]);
+            kesslerFillDust(glm::radians(camera.fovYDeg) / (float)std::max<uint32_t>(halfH, 1)); // the breakups' dust clouds (binding 23)
+        }
         recordCloudsV2(cmd, ctx, cpc);
 
         // Pre-dispatch: both targets are left in SHADER_READ_ONLY_OPTIMAL after the previous

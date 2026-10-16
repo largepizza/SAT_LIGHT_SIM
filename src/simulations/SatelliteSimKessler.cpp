@@ -531,6 +531,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
 // ── Per frame ───────────────────────────────────────────────────────────────────────────────────
 void SatelliteSim::kesslerWant(double tJ2000)
 {
+    kWantFloor = std::max(kWantFloor, tJ2000);
     if (kWorker && tJ2000 > kWorker->wantUntil.load())
         kWorker->wantUntil = tJ2000;
 }
@@ -554,13 +555,15 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
     if (!kWorker)
         return;
     {
-        // Lazy: keep the world a minute of the current time warp ahead of sim time (at least two days, and
-        // always the storm's first two days), not the whole horizon at once.
+        // Lazy: keep the world a minute of the CURRENT time warp ahead of sim time (at least two days, and always the
+        // storm's first two days), not the whole horizon at once. The target follows the warp DOWN too: it only grew,
+        // so one burst at a fast warp (60 s x 1 week/s, capped at 400 days) left the worker computing hundreds of days
+        // at full tilt long after the player was back at 1x — the late-cascade lag (issue 20261016_155342: frontier
+        // day 342 at sim day 165). Explicit asks (harness waits) stay as a floor.
         const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
         const double ahead = std::clamp(60.0 * (double)kTimeScales[timeScaleIdx], 2.0 * 86400.0, 400.0 * 86400.0);
-        const double want = std::max(kFuryArriveT + 2.0 * 86400.0, t + ahead);
-        if (want > kWorker->wantUntil.load())
-            kWorker->wantUntil = want;
+        const double want = std::max({kFuryArriveT + 2.0 * 86400.0, t + ahead, kWantFloor});
+        kWorker->wantUntil = want;
     }
     std::vector<KesslerWorker::OutPoolChange> nPool;
     std::vector<kessler::Event> nEv;
@@ -1012,6 +1015,10 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     for (size_t k = i0; k < kEvents.size(); ++k)
     {
         const kessler::Event &e = kEvents[k];
+        // Stop past the window (+ the step's slack). The scan ran to the END of the log every frame: with the worker
+        // 100+ days ahead, millions of future events a frame, 15-25 ms (issue 20261016_154921's "other").
+        if (e.t > t + 6.0 * 3600.0)
+            break;
         const double age = t - e.t;
         if (age < 0.0 || age > kLife || (e.dustKg <= 0.5f && e.nSmall < 50.0f))
             continue;
@@ -1349,10 +1356,11 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
                 const double disc = b * b - c;
                 if (disc > 0.0 && (-b - std::sqrt(disc)) > 0.0 && (-b - std::sqrt(disc)) < range)
                     continue;
-                // Magnitude at the eye: + distance, + the air along the line of sight (a crude airmass), x daylight.
+                // Magnitude at the eye: + distance, + the air between the eye and the fireball, x daylight. (A
+                // 1 / sin(elevation) airmass clamped at 0.03 added 8 magnitudes to every fireball seen from above.)
                 const glm::dvec3 dirE = toEnu(rel) / range;
-                const double sinEl = std::max(dirE.z, 0.03);
-                const double m = m0 - 2.5 * std::log10(f.I) + 5.0 * std::log10(range / 1.0e5) + 0.25 / sinEl;
+                const double m = m0 - 2.5 * std::log10(f.I) + 5.0 * std::log10(range / 1.0e5) +
+                                 atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
                 double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
                 if (flare < 2e-4)
                     continue;
@@ -1398,7 +1406,8 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
                 const glm::dvec3 P0 = place(a0), P1 = place(a1);
                 const glm::dvec3 rel = 0.5 * (P0 + P1) - eye;
                 const double range = glm::length(rel);
-                const double mT = m0 - 2.5 * std::log10(std::max(a0.I, 1e-6)) + 5.0 * std::log10(range / 1.0e5) + 2.5;
+                const double mT = m0 - 2.5 * std::log10(std::max(a0.I, 1e-6)) + 5.0 * std::log10(range / 1.0e5) + 2.5 +
+                                  atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
                 const double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - mT)) * std::exp(-age / 8.0) * (1.0 - 0.95 * dayness);
                 if (flare < 1e-3)
                     continue;
@@ -1689,13 +1698,16 @@ const nlohmann::json &SatelliteSim::kesslerStateCached() const
     const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (kStateCacheWall < 0.0 || now - kStateCacheWall > 0.25)
     {
-        kStateCache = kesslerStateJson();
+        kStateCache = kesslerStateJsonImpl(false);
         kStateCacheWall = now;
     }
+    kCountsWantedWall = now;
     return kStateCache;
 }
 
-nlohmann::json SatelliteSim::kesslerStateJson() const
+nlohmann::json SatelliteSim::kesslerStateJson() const { return kesslerStateJsonImpl(true); }
+
+nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
 {
     nlohmann::json j;
     j["enabled"] = kesslerEnabled;
@@ -1726,6 +1738,9 @@ nlohmann::json SatelliteSim::kesslerStateJson() const
                 (entry.first < activeSatCount ? nr : np)++;
         }
         j["reentries_next_24h"] = {{"satellites", nr}, {"pieces", np}};
+    }
+    if (full)
+    {
         size_t lt[5] = {0, 0, 0, 0, 0}; // < 1 d, < 10 d, < 100 d, < 1000 d, longer
         double hpSum = 0.0;
         size_t hpN = 0;
@@ -1764,50 +1779,105 @@ nlohmann::json SatelliteSim::kesslerStateJson() const
         j["fireballs_az_el_mag_km"] = arr;
     }
     j["dust_gain"] = kesslerDustGain;
-    // Counts at the current time.
-    const int32_t sec = (int32_t)std::clamp(std::floor(t - kFuryArriveT), -2147483000.0, 2147483000.0);
-    size_t dead = 0, frag = 0, fragReal = 0, rosterGone = 0;
-    size_t byClass[3] = {0, 0, 0};
-    for (const kessler::PoolRec &r : kPool)
+    // Counts at the current time: exact (one walk of everything), or the settings tab's from the walk spread over
+    // frames.
+    KCountsWalk w;
+    if (full)
+    {
+        w.t = t;
+        w.sec = (int32_t)std::clamp(std::floor(t - kFuryArriveT), -2147483000.0, 2147483000.0);
+        kesslerCountsWalk(w, SIZE_MAX / 8);
+    }
+    const nlohmann::json c = kesslerCountsJson(full ? w.acc : kCountsLive);
+    j["pieces_by_class"] = c["pieces_by_class"];
+    j["now"] = c["now"];
+    return j;
+}
+
+bool SatelliteSim::kesslerCountsWalk(KCountsWalk &w, size_t budget) const
+{
+    if (kTypeClass.size() != satTypes.size())
+    {
+        kTypeClass.assign(satTypes.size(), (int8_t)-1);
+        for (int kk = 0; kk < 3; ++kk)
+            for (int cc = 0; cc < 3; ++cc)
+                if (kDebrisKit[kk][cc] >= 0 && (size_t)kDebrisKit[kk][cc] < kTypeClass.size())
+                    kTypeClass[(size_t)kDebrisKit[kk][cc]] = (int8_t)cc;
+    }
+    KCounts &a = w.acc;
+    const int32_t sec = w.sec;
+    for (const size_t end = std::min(kPool.size(), w.pool + budget); w.pool < end; ++w.pool)
+    {
+        const kessler::PoolRec &r = kPool[w.pool];
         if (sec >= r.bornSec && sec < r.deathSec)
         {
-            ++frag;
-            fragReal += (size_t)std::llround(r.weight);
-            for (int kk = 0; kk < 3; ++kk)
-                for (int cc = 0; cc < 3; ++cc)
-                    if ((int)r.type == kDebrisKit[kk][cc])
-                        ++byClass[cc];
+            ++a.frag;
+            a.fragReal += (size_t)std::llround(r.weight);
+            if (r.type < kTypeClass.size() && kTypeClass[r.type] >= 0)
+                ++a.byClass[kTypeClass[r.type]];
         }
-    for (size_t i = 0; 2 * i + 1 < kRosterWords.size(); ++i)
-    {
-        if (sec >= kRosterWords[2 * i + 1])
-            ++rosterGone;
-        else if (sec >= kRosterWords[2 * i])
-            ++dead;
     }
-    size_t kills = 0, bumps = 0, col = 0, cat = 0, user = 0;
-    double smallMade = 0.0;
-    for (const kessler::Event &e : kEvents)
+    const size_t nRoster = kRosterWords.size() / 2;
+    for (const size_t end = std::min(nRoster, w.roster + budget); w.roster < end; ++w.roster)
     {
-        if (e.t > t)
+        const size_t i = w.roster;
+        if (sec >= kRosterWords[2 * i + 1])
+            ++a.rosterGone;
+        else if (sec >= kRosterWords[2 * i])
+            ++a.dead;
+    }
+    for (const size_t end = std::min(kEvents.size(), w.ev + 4 * budget); w.ev < end; ++w.ev)
+    {
+        const kessler::Event &e = kEvents[w.ev];
+        if (e.t > w.t)
             continue;
-        smallMade += e.nSmall;
+        a.smallMade += e.nSmall;
         if (e.origin == kessler::ORIGIN_USER)
-            ++user;
+            ++a.user;
         switch (e.kind)
         {
-        case kessler::EV_KILL: ++kills; break;
-        case kessler::EV_BUMP: ++bumps; break;
-        case kessler::EV_COLLISION: ++col; cat += e.catastrophic; break;
+        case kessler::EV_KILL: ++a.kills; break;
+        case kessler::EV_BUMP: ++a.bumps; break;
+        case kessler::EV_COLLISION: ++a.col; a.cat += e.catastrophic; break;
         default: break;
         }
     }
-    j["pieces_by_class"] = {{"S", byClass[0]}, {"M", byClass[1]}, {"L", byClass[2]}};
-    j["now"] = {{"dead_satellites", dead},  {"fragments", frag},     {"fragments_real", fragReal},
-                {"roster_gone", rosterGone}, {"storm_kills", kills}, {"bumps", bumps},
-                {"collisions", col},        {"catastrophic", cat},   {"user_events", user},
-                {"kp", spaceWeather_.kp},   {"small_fragments_made", (double)std::llround(smallMade)}};
+    return w.pool >= kPool.size() && w.roster >= nRoster && w.ev >= kEvents.size();
+}
+
+nlohmann::json SatelliteSim::kesslerCountsJson(const KCounts &c) const
+{
+    nlohmann::json j;
+    j["pieces_by_class"] = {{"S", c.byClass[0]}, {"M", c.byClass[1]}, {"L", c.byClass[2]}};
+    j["now"] = {{"dead_satellites", c.dead},  {"fragments", c.frag},     {"fragments_real", c.fragReal},
+                {"roster_gone", c.rosterGone}, {"storm_kills", c.kills}, {"bumps", c.bumps},
+                {"collisions", c.col},        {"catastrophic", c.cat},   {"user_events", c.user},
+                {"kp", spaceWeather_.kp},     {"small_fragments_made", (double)std::llround(c.smallMade)}};
     return j;
+}
+
+// Per frame, only while the settings tab reads the counts (kCountsWantedWall): one slice of the walk. A pass counts
+// at the second it started (a second or so stale at 1x).
+void SatelliteSim::kesslerCountsTick()
+{
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (kCountsWantedWall < 0.0 || now - kCountsWantedWall > 1.0)
+        return;
+    KCountsWalk &w = kCountsWalkState;
+    if (!w.active)
+    {
+        w = KCountsWalk{};
+        w.t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        w.sec = (int32_t)std::clamp(std::floor(w.t - kFuryArriveT), -2147483000.0, 2147483000.0);
+        w.active = true;
+    }
+    if (kesslerCountsWalk(w, 150000))
+    {
+        kCountsLive = w.acc;
+        kCountsLiveValid = true;
+        w.active = false;
+        kStateCacheWall = -1.0; // publish with the next read
+    }
 }
 
 // ── UI ──────────────────────────────────────────────────────────────────────────────────────────

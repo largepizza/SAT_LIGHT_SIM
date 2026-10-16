@@ -91,3 +91,15 @@ fragments a density field, the dust clouds were added. The first grid cut gave e
 mass (~0.5 kg), so nearly every hit was catastrophic (1.1M by day 60); projectile sizes are now drawn from the power
 law. The dust's first cut used the sky's radiance units directly and was invisible even at 100000x: the night
 exposure is not physical, so the clouds are calibrated through the point-source magnitude scale.
+
+## Now (fixes, 2026-10-16 evening: issues 20261016_154921 / _155342)
+Re-entry fireballs are dimmed by the real air between the eye and the fireball, so they show from above (from a
+high-altitude aircraft or orbit) as well as from the ground; their trails are no longer hidden by clouds below them.
+The cascade's worker simulates only a minute of the CURRENT time warp ahead: after a fast warp it stops instead of
+computing hundreds of days in the background, and the settings tab's live counts are gathered over about a second of
+frames instead of in one main-thread walk four times a second.
+
+## History
+Fireballs from above were ~8 magnitudes too faint (an airmass clamped at 1/0.03); late in the cascade the game
+stuttered (50-180 ms spikes from the counts, 15-25 ms a frame from the dust code scanning the whole future event log,
+and the worker running 100+ days ahead).
