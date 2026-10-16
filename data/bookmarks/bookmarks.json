@@ -119,6 +119,26 @@
         -0.20347739452259264
       ],
       "sim_t_j2000": 1174392000.0
+    },
+    {
+      "az_deg": 0.0,
+      "cloud_drift_phase": 2.3823554348512275,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": 32.0,
+      "fov_y_deg": 80.0,
+      "height_m": 2336.928955078125,
+      "id": "default_suns_fury",
+      "look": {
+        "paused": false,
+        "time_scale_idx": 0
+      },
+      "name": "The Sun's Fury",
+      "obs_dir": [
+        -0.27445882795077464,
+        -0.7499940459914896,
+        0.6018149904557067
+      ],
+      "sim_t_j2000": 1184524200.0
     }
   ],
   "format": "sat-light-sim-bookmarks/1"

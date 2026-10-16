@@ -85,5 +85,19 @@ wait 5
 follow off
 select none
 
+# 7. The Sun's Fury (2026-10-16, branch kessler): the scripted Carrington-class storm's first night, 3.5 h after the
+#    CME's arrival (2037-07-15 03:00 UTC; Kp ~11 from ~06:00) over Monument Valley: red aurora to the zenith at
+#    37 N while the satellites it kills start to tumble. 1x, so they go on dying while you watch. The cascade's
+#    first two days are simulated at launch (`kessler wait`), so the bookmark lands on a computed sky.
+time set 2037-07-15T06:30:00Z
+observer lat=37.0 lon=-110.1 agl=2
+camera az=0 el=32 fov=80
+kessler wait days=0.5
+time set 2037-07-15T06:30:00Z
+wait settle
+wait 30
+bookmark add The Sun's Fury id=default_suns_fury scale=0 paused=0
+wait 5
+
 bookmark list
 quit
