@@ -2216,6 +2216,43 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                                  : std::string("tutorial off");
         return Status::Done;
     }
+    if (n == "roster")
+    {
+        // roster list | remove "<name>" | add "<name>" (2026-10-15): change the roster at runtime. Removed
+        // constellations stay available to add back (same satellites: each keeps its random stream).
+        const std::string sub = lower(pos(0));
+        if (sub == "remove" || sub == "add")
+        {
+            if (!ctx_)
+                fail("roster: no device");
+            const std::string name = pos(1);
+            if (sub == "remove" && !rosterRemove(*ctx_, name))
+                fail("roster remove: no constellation '" + name + "' in the roster (see `roster list`)");
+            std::string why;
+            if (sub == "add" && !rosterAdd(*ctx_, name, &why))
+                fail("roster add: " + why);
+        }
+        else if (!sub.empty() && sub != "list")
+            fail("roster: list | remove <name> | add <name>");
+        json in = json::array(), out = json::array();
+        for (const auto &cc : constellations)
+            in.push_back({{"name", cc.name}, {"count", cc.orbitCount}, {"first", cc.orbitStart}});
+        for (const auto &d : constellationDefs)
+        {
+            bool present = false;
+            for (const auto &cc : constellations)
+                present = present || cc.name == d.name;
+            if (!present)
+                out.push_back(d.name);
+        }
+        r["roster"] = in;
+        r["available"] = out;
+        r["satellites"] = activeSatCount;
+        r["message"] = std::to_string(constellations.size()) + " constellations, " + std::to_string(activeSatCount) +
+                       " satellites, " + std::to_string(out.size()) + " removed";
+        return Status::Done;
+    }
+
     if (n == "const")
     {
         const std::string name = pos(0);

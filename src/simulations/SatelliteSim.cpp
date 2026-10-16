@@ -7317,6 +7317,8 @@ void SatelliteSim::cleanup(VkDevice device)
     vkFreeMemory(device, lightDomeMem, nullptr);
     vkDestroyBuffer(device, satOrbitBuf, nullptr);
     vkFreeMemory(device, satOrbitMem, nullptr);
+    satOrbitBuf = VK_NULL_HANDLE;
+    satOrbitMem = VK_NULL_HANDLE;
     vkDestroyBuffer(device, satPhaseBaseBuf, nullptr);
     vkFreeMemory(device, satPhaseBaseMem, nullptr);
     vkDestroyPipeline(device, satRebakePipeline, nullptr);
@@ -8319,22 +8321,7 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
 // buffer valid (Vulkan forbids size 0) for an empty roster.
 void SatelliteSim::createSatBuffers(VulkanContext &ctx)
 {
-    const VkDeviceSize satN = std::max<VkDeviceSize>(activeSatCount, 1);
-
-    // satVisibleBuf: device-local compact visible list. sat_orbit.comp appends pre-photometry
-    // records, sat_flare.comp finishes them in place, the point/flare/trail vertex shaders read
-    // them. Sized for the worst case (every satellite visible), though typically ~5-10% is used.
-    // + kCitySpriteMax: city_sprites.comp appends city lights after the satellites.
-    ctx.createBuffer(sizeof(GpuSatVisible) * (satN + kCitySpriteMax),
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                     satVisibleBuf, satVisibleMem);
-
-    // satVisibleIdxBuf: satellite index of each compact slot (picking + selection tracking).
-    ctx.createBuffer(sizeof(uint32_t) * (satN + kCitySpriteMax),
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                     satVisibleIdxBuf, satVisibleIdxMem);
+    createSatRosterBuffers(ctx); // the per-satellite ones (rebuildRoster() recreates them)
 
     // satListBuf: the list header — append counter, the indirect dispatch/draw args every
     // downstream satellite pass runs from, and the selected satellite's record. Reset each frame
@@ -8344,18 +8331,6 @@ void SatelliteSim::createSatBuffers(VulkanContext &ctx)
                          VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                      satListBuf, satListMem);
-
-    // satOrbitBuf: device-local, uploaded once (and on each rebake). sat_orbit.comp reads every frame.
-    ctx.createBuffer(sizeof(GpuSatOrbit) * satN,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                     satOrbitBuf, satOrbitMem);
-
-    // satPhaseBaseBuf: the epoch-free phases sat_rebake.comp re-bakes satOrbitBuf from (written once).
-    ctx.createBuffer(sizeof(GpuSatPhaseBase) * satN,
-                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                     satPhaseBaseBuf, satPhaseBaseMem);
 
     // satTypeBuf: host-visible + coherent. GpuSatTypeHeader (rewritten every frame in
     // recordCompute), the 64 KB earthshine table (written here, once), then one GpuSatType per
@@ -9001,6 +8976,174 @@ void SatelliteSim::recordSatRebake(VkCommandBuffer cmd)
     bar.size = VK_WHOLE_SIZE;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
                          nullptr, 1, &bar, 0, nullptr);
+}
+
+// ─── Runtime roster changes (2026-10-15, branch kessler) ───────────────────────
+// The per-satellite GPU buffers — everything sized by the roster. createSatBuffers() makes them at
+// init (with the per-type ones); rebuildRoster() destroys and recreates them.
+void SatelliteSim::createSatRosterBuffers(VulkanContext &ctx)
+{
+    const VkDeviceSize satN = std::max<VkDeviceSize>(activeSatCount, 1);
+    // satVisibleBuf: device-local compact visible list. sat_orbit.comp appends pre-photometry
+    // records, sat_flare.comp finishes them in place, the point/flare/trail vertex shaders read
+    // them. Sized for the worst case (every satellite visible), though typically ~5-10% is used.
+    // + kCitySpriteMax: city_sprites.comp appends city lights after the satellites.
+    ctx.createBuffer(sizeof(GpuSatVisible) * (satN + kCitySpriteMax),
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, satVisibleBuf, satVisibleMem);
+    // satVisibleIdxBuf: satellite index of each compact slot (picking + selection tracking).
+    ctx.createBuffer(sizeof(uint32_t) * (satN + kCitySpriteMax),
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, satVisibleIdxBuf, satVisibleIdxMem);
+    // satOrbitBuf: device-local, uploaded once (rebaked on the GPU, sat_rebake.comp). sat_orbit.comp
+    // reads it every frame.
+    ctx.createBuffer(sizeof(GpuSatOrbit) * satN, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, satOrbitBuf, satOrbitMem);
+    // satPhaseBaseBuf: the epoch-free phases sat_rebake.comp re-bakes satOrbitBuf from (written once).
+    ctx.createBuffer(sizeof(GpuSatPhaseBase) * satN,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, satPhaseBaseBuf, satPhaseBaseMem);
+}
+
+void SatelliteSim::destroySatRosterBuffers(VkDevice device)
+{
+    VkBuffer *bufs[] = {&satVisibleBuf, &satVisibleIdxBuf, &satOrbitBuf, &satPhaseBaseBuf};
+    VkDeviceMemory *mems[] = {&satVisibleMem, &satVisibleIdxMem, &satOrbitMem, &satPhaseBaseMem};
+    for (int i = 0; i < 4; ++i)
+    {
+        vkDestroyBuffer(device, *bufs[i], nullptr);
+        vkFreeMemory(device, *mems[i], nullptr);
+        *bufs[i] = VK_NULL_HANDLE;
+        *mems[i] = VK_NULL_HANDLE;
+    }
+}
+
+// Points every descriptor set that binds a per-satellite buffer at the current ones: descSet 1 / 9
+// (sat_flare, the point / flare-source / trail / glare draws), the orbit set 0 / 1 / 6, the rebake
+// set 0 / 1, the city-sprite set 0 / 1 (created lazily on the first frame).
+void SatelliteSim::writeSatRosterDescriptors(VulkanContext &ctx)
+{
+    VkDescriptorBufferInfo vis{satVisibleBuf, 0, VK_WHOLE_SIZE}, idx{satVisibleIdxBuf, 0, VK_WHOLE_SIZE},
+        orb{satOrbitBuf, 0, VK_WHOLE_SIZE}, base{satPhaseBaseBuf, 0, VK_WHOLE_SIZE};
+    std::vector<VkWriteDescriptorSet> w;
+    auto add = [&](VkDescriptorSet set, uint32_t binding, const VkDescriptorBufferInfo *info) {
+        if (set != VK_NULL_HANDLE)
+            w.push_back({VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, binding, 0, 1,
+                         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, info, nullptr});
+    };
+    add(descSet, 1, &vis);
+    add(descSet, 9, &idx);
+    add(orbitDescSet, 0, &orb);
+    add(orbitDescSet, 1, &vis);
+    add(orbitDescSet, 6, &idx);
+    add(satRebakeDescSet, 0, &orb);
+    add(satRebakeDescSet, 1, &base);
+    add(citySpriteDescSet, 0, &vis);
+    add(citySpriteDescSet, 1, &idx);
+    vkUpdateDescriptorSets(ctx.device, (uint32_t)w.size(), w.data(), 0, nullptr);
+}
+
+// Rebuilds every satellite from `constellations` (after entries were added, removed or edited) and
+// swaps the per-satellite GPU buffers. Each constellation keeps its own random stream
+// (ConstellationConfig::rngSeed), so the ones left in the roster keep their satellites; only their
+// INDICES move, so everything keyed by a satellite index is dropped. The types (and their lobe
+// budgets, which depend on the roster's size at load) are not rebaked.
+void SatelliteSim::rebuildRoster(VulkanContext &ctx)
+{
+    vkDeviceWaitIdle(ctx.device);
+
+    if (followActive)
+        stopFollow();
+    if (trackActive)
+        stopTrack();
+    selectedSatIndex = -1;
+    viewerSatIndex = -1;
+    viewerLastSelected = -1;
+    viewerProbeSat = -1;
+    followSatIndex = -1;
+    meshSceneSatIdx = -1;
+    padFocusSat = -1;
+    parityPending = ParityInputs{};
+    selParityValid = false;
+    for (EnvProbeSlot &s : envSlots)
+        s = EnvProbeSlot{};
+    for (TrackedBeamLight &l : trackedClusters)
+        l = TrackedBeamLight{};
+    for (TrackedBeamLight &l : trackedIndividuals)
+        l = TrackedBeamLight{};
+    // Last frame's list header names satellites by their old indices (mesh candidates, the selection).
+    meshCandidates.clear();
+    meshCandTotal = 0;
+    if (pickedVisibleMapped)
+        memset(pickedVisibleMapped, 0, sizeof(GpuSatListHeader));
+
+    buildOrbits();
+    destroySatRosterBuffers(ctx.device);
+    createSatRosterBuffers(ctx);
+    uploadSatOrbits(ctx);
+    writeSatRosterDescriptors(ctx);
+
+    char msg[160];
+    snprintf(msg, sizeof(msg), "roster rebuilt: %u satellites in %zu constellations", activeSatCount,
+             constellations.size());
+    Log::line(msg);
+}
+
+// The constellation definitions the roster can draw from: every entry loaded at startup, in load order,
+// with its random stream recorded (captured after the first buildOrbits()).
+bool SatelliteSim::rosterRemove(VulkanContext &ctx, const std::string &name)
+{
+    for (size_t i = 0; i < constellations.size(); ++i)
+        if (constellations[i].name == name)
+        {
+            constellations.erase(constellations.begin() + (ptrdiff_t)i);
+            rebuildRoster(ctx);
+            return true;
+        }
+    return false;
+}
+
+// Adds a startup definition back, at its load-order position. The enabled/highlight masks are 32 bits.
+bool SatelliteSim::rosterAdd(VulkanContext &ctx, const std::string &name, std::string *why)
+{
+    for (const ConstellationConfig &c : constellations)
+        if (c.name == name)
+        {
+            if (why)
+                *why = "already in the roster";
+            return false;
+        }
+    if (constellations.size() >= 32)
+    {
+        if (why)
+            *why = "the roster holds at most 32 constellations (enabled/highlight masks)";
+        return false;
+    }
+    std::vector<ConstellationConfig> next;
+    bool found = false;
+    for (const ConstellationConfig &def : constellationDefs)
+    {
+        bool present = def.name == name;
+        found = found || present;
+        for (const ConstellationConfig &c : constellations)
+            if (c.name == def.name)
+            {
+                next.push_back(c); // keep its live state (enabled, highlight)
+                present = false;
+                break;
+            }
+        if (present)
+            next.push_back(def);
+    }
+    if (!found)
+    {
+        if (why)
+            *why = "no such constellation among the loaded definitions";
+        return false;
+    }
+    constellations = std::move(next);
+    rebuildRoster(ctx);
+    return true;
 }
 
 // ─── createCloudNoisePipeline ────────────────────────────────────────────────
@@ -14897,24 +15040,51 @@ void SatelliteSim::buildOrbits()
         h ^= h >> 33;
         return (float)((double)(h >> 11) * (1.0 / 9007199254740992.0));
     };
+    // One random stream per constellation (see ConstellationConfig::rngSeed). On the first build the
+    // stream runs through the roster from seed 1, so the shipped layout is the one the CRT's rand()
+    // drew on Windows (and now the same on every platform).
+    uint32_t firstBuildStream = 1u;
+    // Terminator-aligned planes are anchored to the Sun at the sim's start (orbitElemsOf's raanAnchorT);
+    // a rebuild later in the session must use that Sun, not today's.
+    if (!orbitsBuiltOnce)
+        orbitAnchorSunDirECI = sunDirECI;
     for (ConstellationConfig &c : constellations)
     {
         c.orbitStart = (uint32_t)satOrbits.size();
+        if (!orbitsBuiltOnce)
+            c.defIndex = (uint32_t)(&c - constellations.data());
+        if (!c.rngSeeded)
+        {
+            uint32_t h = 2166136261u; // FNV-1a of the name, for a constellation added after the first build
+            for (unsigned char ch : c.name)
+                h = (h ^ ch) * 16777619u;
+            c.rngSeed = orbitsBuiltOnce ? h : firstBuildStream;
+            c.rngSeeded = true;
+        }
+        SatRng rng{c.rngSeed};
+        // The next constellation's first-build start: wherever this one leaves the stream, whichever
+        // way its body exits.
+        struct StreamOut
+        {
+            SatRng &r;
+            uint32_t &out;
+            ~StreamOut() { out = r.s; }
+        } streamOut{rng, firstBuildStream};
 
         if (c.distribution == OrbitDistribution::Walker)
         {
             for (int p = 0; p < c.numPlanes; ++p)
             {
                 float raan = (float)p / c.numPlanes * glm::two_pi<float>();
-                const float phase0 = c.clusterSize > 1 ? (float)rand() / (float)RAND_MAX * glm::two_pi<float>() : 0.0f;
+                const float phase0 = c.clusterSize > 1 ? (float)rng.next() / SatRng::kMax * glm::two_pi<float>() : 0.0f;
                 float rot = 0.0f;
                 for (int s = 0; s < c.perPlane; ++s)
                 {
                     if (c.clusterSize > 1 && c.clusterRing && s % c.clusterSize == 0)
-                        rot = (float)rand() / (float)RAND_MAX * glm::two_pi<float>();
+                        rot = (float)rng.next() / SatRng::kMax * glm::two_pi<float>();
                     float u0 = c.clusterSize > 1
                                    ? clusterPhase(c, s, c.perPlane, kEarthRadius + c.altM, phase0, 0.0f)
-                                   : (float)rand() / (float)RAND_MAX * glm::two_pi<float>();
+                                   : (float)rng.next() / SatRng::kMax * glm::two_pi<float>();
                     satOrbits.push_back({raan, c.incl, u0, c.typeIdx, c.altM, 0.0f, 0.0f, {0.0f, 0.0f, 1.0f}, false});
                     setFormation(c, satOrbits.back(), s, c.perPlane, rot);
                 }
@@ -14924,7 +15094,7 @@ void SatelliteSim::buildOrbits()
         {
             // Dusk terminator node (LTAN 18:00): 90 deg east of the Sun in right ascension, anchored
             // at sim start like the Disk's below (see there for why).
-            const float raanDusk = atan2f(sunDirECI.x, -sunDirECI.y);
+            const float raanDusk = atan2f(orbitAnchorSunDirECI.x, -orbitAnchorSunDirECI.y);
             int ssoPlane = 0; // counts the entry's SSO planes for the node spread
             uint32_t clusterSerial = 0; // keys the per-cluster jitter
             for (const ShellGroup &g : c.groups)
@@ -14942,16 +15112,16 @@ void SatelliteSim::buildOrbits()
                                            : ((float)p + (float)k / g.shells) / g.planes * glm::two_pi<float>();
                         if (g.sso && c.raanSpreadRad > 0.0f)
                         {
-                            const float f = c.raanSpreadRandom ? (float)rand() / (float)RAND_MAX
+                            const float f = c.raanSpreadRandom ? (float)rng.next() / SatRng::kMax
                                                                : glm::fract(0.5f + 0.618034f * (float)ssoPlane);
                             raan += c.raanSpreadRad * (2.0f * f - 1.0f);
                         }
                         if (g.sso)
                             ++ssoPlane;
-                        const float phase0 = (float)rand() / (float)RAND_MAX * glm::two_pi<float>();
+                        const float phase0 = (float)rng.next() / SatRng::kMax * glm::two_pi<float>();
                         // Per-cluster scatter (a satellite is its own cluster without clusters).
                         const int C = std::max(1, c.clusterSize);
-                        const uint32_t ci = (uint32_t)(&c - constellations.data());
+                        const uint32_t ci = c.defIndex; // load order: stable across rebuilds
                         float jAlt = 0.0f, jPhase = 0.0f, jRaan = 0.0f, jIncl = 0.0f, rot = 0.0f;
                         for (int s = 0; s < g.perPlane; ++s)
                         {
@@ -14981,21 +15151,21 @@ void SatelliteSim::buildOrbits()
             int total = c.numPlanes * c.perPlane;
             for (int i = 0; i < total; ++i)
             {
-                float raan = (float)rand() / RAND_MAX * glm::two_pi<float>();
-                float incl = (float)rand() / RAND_MAX * c.incl;
-                float u0 = (float)rand() / RAND_MAX * glm::two_pi<float>();
-                float jitter = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * c.altJitterM;
+                float raan = (float)rng.next() / SatRng::kMax * glm::two_pi<float>();
+                float incl = (float)rng.next() / SatRng::kMax * c.incl;
+                float u0 = (float)rng.next() / SatRng::kMax * glm::two_pi<float>();
+                float jitter = ((float)rng.next() / SatRng::kMax * 2.0f - 1.0f) * c.altJitterM;
                 float altM = c.altM + jitter;
 
-                float phi = (float)rand() / RAND_MAX * glm::two_pi<float>();
-                float cosTheta = (float)rand() / RAND_MAX * 2.0f - 1.0f;
+                float phi = (float)rng.next() / SatRng::kMax * glm::two_pi<float>();
+                float cosTheta = (float)rng.next() / SatRng::kMax * 2.0f - 1.0f;
                 float sinTheta = sqrtf(1.0f - cosTheta * cosTheta);
                 glm::vec3 axis{sinTheta * cosf(phi), sinTheta * sinf(phi), cosTheta};
 
                 // Randomise rotation rate 0..2π rad/s (0..1 Hz) so debris
                 // objects tumble independently rather than blinking in unison.
-                float tumbleRate = (float)rand() / (float)RAND_MAX * glm::two_pi<float>() * 0.001;
-                float tumblePhase = (float)rand() / RAND_MAX * glm::two_pi<float>();
+                float tumbleRate = (float)rng.next() / SatRng::kMax * glm::two_pi<float>() * 0.001;
+                float tumblePhase = (float)rng.next() / SatRng::kMax * glm::two_pi<float>();
 
                 satOrbits.push_back({raan, incl, u0, c.typeIdx, altM,
                                      tumbleRate, tumblePhase, axis, false});
@@ -15015,7 +15185,7 @@ void SatelliteSim::buildOrbits()
                 // kSSOPrecRate*(simTime - t_start).  Anchoring here rather than at J2000
                 // eliminates the ~3° obliquity-driven phase error that accumulates when
                 // extrapolating 36+ years with a constant precession rate.
-                raan_d = atan2f(sunDirECI.x, -sunDirECI.y);
+                raan_d = atan2f(orbitAnchorSunDirECI.x, -orbitAnchorSunDirECI.y);
             }
 
             // Distribute satellites across numRings concentric rings.
@@ -15044,13 +15214,13 @@ void SatelliteSim::buildOrbits()
                     // cluster for ring formations: the members share the centre's orbit).
                     if (ringForm && s % c.clusterSize == 0)
                     {
-                        rot = (float)rand() / (float)RAND_MAX * glm::two_pi<float>();
-                        cJitter = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * c.altJitterM;
+                        rot = (float)rng.next() / SatRng::kMax * glm::two_pi<float>();
+                        cJitter = ((float)rng.next() / SatRng::kMax * 2.0f - 1.0f) * c.altJitterM;
                     }
                     float u0 = c.clusterSize > 1
                                    ? clusterPhase(c, s, satsInThisRing, kEarthRadius + ringAlt, 0.0f, 0.0f)
                                    : (float)s / satsInThisRing * glm::two_pi<float>();
-                    float jitter = ringForm ? cJitter : ((float)rand() / RAND_MAX * 2.0f - 1.0f) * c.altJitterM;
+                    float jitter = ringForm ? cJitter : ((float)rng.next() / SatRng::kMax * 2.0f - 1.0f) * c.altJitterM;
                     satOrbits.push_back({raan_d, ringIncl, u0, c.typeIdx, ringAlt + jitter, 0.0f, 0.0f, {0.0f, 0.0f, 1.0f}, c.alignTerminator});
                     setFormation(c, satOrbits.back(), s, satsInThisRing, rot);
                 }
@@ -15098,6 +15268,9 @@ void SatelliteSim::buildOrbits()
     }
 
     activeSatCount = (uint32_t)satOrbits.size();
+    if (!orbitsBuiltOnce)
+        constellationDefs = constellations; // with each one's random stream recorded (rosterAdd)
+    orbitsBuiltOnce = true;
 }
 
 // ─── computeReflectorTargetElevationRadius ───────────────────────────────────

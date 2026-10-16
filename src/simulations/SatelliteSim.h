@@ -236,6 +236,19 @@ struct SatelliteType
 // ── Constellation descriptor ───────────────────────────────────────────────────
 // One entry per shell. Multiple shells can share the same SatelliteType.
 // orbitStart/Count are filled by initConstellation() — do not set manually.
+// buildOrbits()' random numbers: the MSVC CRT rand() LCG (RAND_MAX 0x7FFF), one stream per
+// constellation. Bit-identical to the rand() calls it replaced on Windows.
+struct SatRng
+{
+    uint32_t s;
+    static constexpr float kMax = 32767.0f;
+    int next()
+    {
+        s = s * 214013u + 2531011u;
+        return (int)((s >> 16) & 0x7FFFu);
+    }
+};
+
 struct ConstellationConfig
 {
     std::string name;
@@ -280,6 +293,16 @@ struct ConstellationConfig
     // Populated by initConstellation():
     uint32_t orbitStart = 0; // first index into satOrbits[]
     uint32_t orbitCount = 0; // number of orbits belonging to this constellation
+    // Start state of this constellation's random stream in buildOrbits() (SatRng, an emulation of
+    // MSVC's rand()). Recorded on the first build — the stream runs through the roster in order from
+    // seed 1, exactly as the CRT rand() it replaced — so a rebuild after adding or removing another
+    // constellation gives this one the same satellites. A constellation added later starts from a hash
+    // of its name.
+    uint32_t rngSeed = 0;
+    bool rngSeeded = false;
+    // Load-order index (set on the first build): the per-cluster jitter hash's key, so a rebuild after
+    // removing an earlier entry leaves this one's clusters where they were.
+    uint32_t defIndex = 0;
 };
 
 // ── GPU data structures ───────────────────────────────────────────────────────
@@ -5506,6 +5529,17 @@ private:
     void createOrbitDescriptors(VulkanContext &ctx);
     void createOrbitPipeline(VulkanContext &ctx);
     void uploadSatOrbits(VulkanContext &ctx);
+    bool orbitsBuiltOnce = false; // buildOrbits() has run: later constellations seed from their name
+    glm::vec3 orbitAnchorSunDirECI{1.0f, 0.0f, 0.0f}; // sunDirECI at the first build (terminator planes)
+    // Runtime roster changes (2026-10-15): every constellation loaded at startup, in load order, with its
+    // random stream recorded — what rosterAdd() can put back.
+    std::vector<ConstellationConfig> constellationDefs;
+    void createSatRosterBuffers(VulkanContext &ctx);   // the per-satellite GPU buffers (sized by the roster)
+    void destroySatRosterBuffers(VkDevice device);
+    void writeSatRosterDescriptors(VulkanContext &ctx); // every set binding one of them
+    void rebuildRoster(VulkanContext &ctx);             // after `constellations` changed (drops index-keyed state)
+    bool rosterRemove(VulkanContext &ctx, const std::string &name);
+    bool rosterAdd(VulkanContext &ctx, const std::string &name, std::string *why = nullptr);
     void createSatRebake(VulkanContext &ctx);                 // sat_rebake.comp pipeline + set (after createSatBuffers)
     void recordSatRebake(VkCommandBuffer cmd);                // moves the orbit epoch to now on the GPU
     void createCloudNoisePipeline(VulkanContext &ctx);
