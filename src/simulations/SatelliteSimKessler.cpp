@@ -927,6 +927,14 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
     }
     if (!kesslerEnabled)
         return;
+    if (kDebrisConst >= 0 && kDebrisConst < (int)constellations.size())
+    {
+        bool hl = constellations[kDebrisConst].highlight;
+        if (uiToggleRow(inp, ui, "KesslerHl", 0, "Highlight the debris", hl,
+                        "Fragments of 10 cm are magnitude 13-17: invisible to the eye. Highlighted, every one is drawn "
+                        "as a census dot (the Collision debris constellation's Hlt)."))
+            constellations[kDebrisConst].highlight = hl;
+    }
     const nlohmann::json j = kesslerStateJson();
     const nlohmann::json &n = j["now"];
     const float lw = (float)fs(170);
