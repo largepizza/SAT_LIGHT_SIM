@@ -1723,15 +1723,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         const GpuGlowBuf *gb = static_cast<const GpuGlowBuf *>(glowMapped);
         float maxFlare = 0.0f;
-        for (int i = 0; i < kGlowBins; ++i)
-        {
-            if (gb->bins[i] != 0u)
-            {
-                float f;
-                memcpy(&f, &gb->bins[i], sizeof(float));
-                maxFlare = std::max(maxFlare, f);
-            }
-        }
+        if (gb->peak != 0u)
+            memcpy(&maxFlare, &gb->peak, sizeof(float));
         maxFlare *= powf(10.0f, -0.4f * satDisplayGainMag()); // the bins hold the DISPLAYED effectFlare
         peakMagnitude = (maxFlare > 0.0f)
                             ? kMagRef - 2.5f * std::log10(maxFlare / kMagRefFlare)

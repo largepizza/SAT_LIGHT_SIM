@@ -58,7 +58,8 @@ layout(location = 2) in flat vec4 moonDirENU;   // moon dir + phase pass-through
 // satellite corona/godray effect now comes from a render-to-texture + blur/streak pipeline
 // composited once per frame in flare_composite.frag instead.)
 layout(std430, set = 0, binding = 0) readonly buffer GlowBuf {
-    uint  bins[64]; // sky glow: floatBitsToUint(max effectFlare) per bin
+    uint  bins[64]; // sky glow: the summed effectFlare of the bin's bright flares (uint)
+    uint  peak;
 } glowBuf;
 
 // Ocean-glint list (flare architecture overhaul) — matches GpuOceanGlintBuf exactly. Same buffer
@@ -4186,7 +4187,7 @@ void main() {
         for (int gi = 0; gi < 64; ++gi) {
             uint fluxBits = glowBuf.bins[gi];
             if (fluxBits == 0u) continue;
-            float flux   = uintBitsToFloat(fluxBits);
+            float flux   = float(fluxBits);
             // Derive bin-centre ENU direction from bin index.
             // azBin=0 is North, increasing toward East (matches atan(x,y) convention).
             float az     = (float(gi / 8) + 0.5) * (TWO_PI / 8.0);
@@ -4197,7 +4198,11 @@ void main() {
             float angle  = acos(clamp(dot(dir, fd), -1.0, 1.0));
             float glow   = exp(-angle * angle / (2.0 * kSig * kSig)) * 0.01;
             float gElev  = smoothstep(-0.08, 0.02, fd.z);
-            float intens = clamp(log2(max(flux, 1.0)) / 4.0, 0.0, 1.5);
+            // Starts at a summed flux of kGlowRef (~magnitude -4.4 together) and saturates 64x past it: a Reflect site's
+            // ~150 mirrors at ~-3 in one bin (summed ~6000: 1.08), not one tumbling piece of debris (-4 = 80: 0). It was
+            // log2(the brightest flare) / 4, full at a single magnitude -3.5 (issue 20261016_162337).
+            const float kGlowRef = 300.0;
+            float intens = clamp(log2(max(flux / kGlowRef, 1.0)) / 4.0, 0.0, 1.5);
             float atmosW = 1.0 - exp(-odR_cam / 5000.0);
             // ...and by the air between the eye and the SATELLITE (review 6): the glow is its light
             // scattered forward by that air. Weighted by the pixel's ray alone, from 40+ km up every ray

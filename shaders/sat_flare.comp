@@ -82,8 +82,10 @@ layout(set = 0, binding = 10) buffer SatListBuf {
 };
 
 // ── Glow buffer — matches GpuGlowBuf ──────────────────────────────────────────
-//   bins[64] sky glow histogram: floatBitsToUint(max effectFlare) per bin. Unrelated to, and
-//   unaffected by, the flare architecture overhaul below.
+//   bins[64] sky glow histogram: the SUMMED effectFlare (uint, units of 1) of the bin's flares past GLOW_THRESH;
+//   peak = floatBitsToUint(the brightest effectFlare), for the HUD's peak magnitude.
+//   Until 2026-10-16 each bin held its brightest satellite, so ONE -4 tumbling debris glint lit a 51-degree patch of
+//   sky as much as a whole Reflect ring (issue 20261016_162337, the sky flickering with debris).
 // Zeroed each frame by vkCmdFillBuffer(sizeof(GpuGlowBuf)).
 //
 // (flareCount/flareEntries[FLARE_MAX] lived here — a capped atomic-append list of "bright"
@@ -94,9 +96,10 @@ layout(set = 0, binding = 10) buffer SatListBuf {
 // offscreen texture (flare_source.vert/.frag), blurred/streaked by flare_blur.comp — see
 // FlareSourcePC's comment in SatelliteSim.h for the full design. flare_source.vert reads this
 // shader's output the exact same way sat_point.vert always has.)
-const float GLOW_THRESH  = 1.0;
+const float GLOW_THRESH  = 20.0; // ~magnitude -0.8: fainter flares never add to the sky glow
 layout(set = 0, binding = 2) buffer GlowBuf {
     uint  bins[64];
+    uint  glowPeak;
 };
 
 // ── Ocean-glint list — matches GpuOceanGlintBuf (flare architecture overhaul) ────────────────
@@ -441,12 +444,14 @@ void main() {
     float angSize = pointSpriteSizePx(sqrt(sig2));
 
     // ── Sky glow: bin this satellite (stable, no flicker) ────────────────────
+    if (glowFlare > 0.0)
+        atomicMax(glowPeak, floatBitsToUint(glowFlare));
     if (glowFlare >= GLOW_THRESH) {
         const float TWO_PI = 6.28318530718;
         float az   = mod(atan(skyDir.x, skyDir.y) + TWO_PI, TWO_PI);
         uint azBin = uint(az * (8.0 / TWO_PI)) & 7u;
         uint elBin = min(uint(max(skyDir.z, 0.0) * 8.0), 7u);
-        atomicMax(bins[azBin * 8u + elBin], floatBitsToUint(glowFlare));
+        atomicAdd(bins[azBin * 8u + elBin], uint(min(glowFlare, 1.0e6))); // 4000+ capped flares per bin to overflow
     }
 
     // ── Ocean-glint list: capped atomic-append, no arbitration ──────────────

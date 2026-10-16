@@ -1051,9 +1051,10 @@ static_assert(sizeof(SceneDepthPC) == 96, "SceneDepthPC layout mismatch");
 static constexpr int kGlowBins = 64;
 struct GpuGlowBuf
 {
-    uint32_t bins[kGlowBins];
+    uint32_t bins[kGlowBins]; // the SUMMED displayed effectFlare of the bin's flares past GLOW_THRESH (uint, units of 1)
+    uint32_t peak;            // floatBitsToUint(the brightest effectFlare): the HUD's peak magnitude
 };
-static_assert(sizeof(GpuGlowBuf) == kGlowBins * 4, "GpuGlowBuf layout mismatch");
+static_assert(sizeof(GpuGlowBuf) == kGlowBins * 4 + 4, "GpuGlowBuf layout mismatch");
 
 // ── Ocean satellite-glint list (flare architecture overhaul) ─────────────────────────────────
 // A small, INDEPENDENT capped atomic-append list — same pattern the old flareEntries used, just

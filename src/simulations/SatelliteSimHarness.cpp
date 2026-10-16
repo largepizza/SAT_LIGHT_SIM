@@ -427,7 +427,21 @@ json SatelliteSim::harnessStateJson()
     j["satellites"] = {{"visible_count", visibleCount}, {"active_count", activeSatCount},
                        // the mesh hand-off: the fade-in size (raised past the kMaxMeshInstances largest) and how many
                        // satellites were mesh-sized candidates last frame
-                       {"mesh_fade_px", meshFadePx}, {"mesh_candidates", meshCandTotal}};
+                       {"mesh_fade_px", meshFadePx}, {"mesh_candidates", meshCandTotal},
+                       {"peak_magnitude", peakMagnitude}};
+    if (glowMapped)
+    {
+        // The sky glow: the strongest bin's summed flux (displayed effectFlare; the glow starts at 300).
+        const GpuGlowBuf *gb = static_cast<const GpuGlowBuf *>(glowMapped);
+        uint32_t mx = 0, lit = 0;
+        for (int i = 0; i < kGlowBins; ++i)
+        {
+            mx = std::max(mx, gb->bins[i]);
+            lit += gb->bins[i] > 300u;
+        }
+        j["satellites"]["sky_glow_max_bin_flux"] = mx;
+        j["satellites"]["sky_glow_bins_lit"] = lit;
+    }
     j["render"] = {{"preset", kGraphicsPresetNames[(int)graphicsPreset]},
                    {"knockout_mask", debugDisableMask},
                    {"ui_theme", kUiThemeKeys[(int)Pal::current]},

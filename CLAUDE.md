@@ -4700,6 +4700,14 @@ the pixel-ray weight alone lit the whole limb around every glaring satellite. Un
 
 `sat_flare.comp` writes a spatial histogram + per-satellite flare list each frame → `sat_sky.frag` reads them.
 
+**The bins SUM, since 2026-10-16** (issue 20261016_162337, the sky flickering with Kessler debris): each bin is the
+summed displayed effectFlare (uint, `atomicAdd`, each flare capped at 1e6) of the flares past `GLOW_THRESH` 20
+(~mag -0.8), and the glow's response is log2(sum / 300) / 4, clamped 0..1.5 (`kGlowRef`). It held the bin's brightest
+satellite with log2(max) / 4, full at a single mag -3.5, so one tumbling -4 piece of debris lit a 51-degree patch of
+sky as much as a whole Reflect site. A Reflect site (~150 mirrors at ~-3 in a bin, summed ~6000) gives ~1.1; a single
+-4 glint 0. `GpuGlowBuf::peak` (floatBitsToUint max) feeds the HUD's peak magnitude. Harness `state` ->
+`satellites.peak_magnitude / sky_glow_max_bin_flux / sky_glow_bins_lit`.
+
 ### GpuGlowBuf layout (std430)
 ```cpp
 static constexpr int kGlowBins  = 64;   // 8 azimuth × 8 elevation cells (45° × 11.25°)
