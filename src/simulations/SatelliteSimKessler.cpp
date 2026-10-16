@@ -27,7 +27,7 @@ constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 2; // bump whenever the world's logic changes
+constexpr uint32_t kCacheVersion = 3; // bump whenever the world's logic changes
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
 {
@@ -105,6 +105,7 @@ struct SatelliteSim::KesslerWorker
 
     void run()
     {
+        kessler::lowerThreadPriority();
         const auto t0 = std::chrono::steady_clock::now();
         // Replay (no sampling) up to the cache's frontier, then simulate. A day of sim time per chunk,
         // published after each.
@@ -512,9 +513,13 @@ void SatelliteSim::kesslerEnsureCapacity(VulkanContext &ctx, size_t records)
 {
     if (records <= kPoolCap && kesslerBuf != VK_NULL_HANDLE)
         return;
+    // Grow by doubling, but never past the world's cap (records beyond it are never made).
+    const uint32_t maxCap = kessler::WorldSettings{}.poolCapacity;
     uint32_t cap = kPoolCap;
     while (cap < records)
         cap = (uint32_t)std::min<uint64_t>((uint64_t)cap * 2, 0x7FFFFFF0ull);
+    if (records <= maxCap)
+        cap = std::min(cap, maxCap);
     vkDeviceWaitIdle(ctx.device);
     // The visible list holds every satellite: it grows with the pool. Its contents are per frame.
     VkBuffer bufs[] = {satVisibleBuf, satVisibleIdxBuf, kesslerBuf, kPoolBaseBuf};
@@ -598,23 +603,30 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
     char *stage = static_cast<char *>(kStageMapped);
     VkDeviceSize off = 0;
     std::vector<VkBufferCopy> toK, toB;
-    // Roster end seconds: runs of consecutive words.
-    std::sort(kDirtyRoster.begin(), kDirtyRoster.end());
+    // Roster dead / end seconds: runs of consecutive satellites, a quarter of the staging a frame (a long run,
+    // e.g. the whole roster after a restart, goes up in pieces over several frames).
+    if (!std::is_sorted(kDirtyRoster.begin(), kDirtyRoster.end()))
+        std::sort(kDirtyRoster.begin(), kDirtyRoster.end());
     kDirtyRoster.erase(std::unique(kDirtyRoster.begin(), kDirtyRoster.end()), kDirtyRoster.end());
     size_t takenRoster = 0;
+    const VkDeviceSize rosterBudget = kStageBytes / 4;
     for (size_t k = 0; k < kDirtyRoster.size();)
     {
         size_t e = k + 1;
         while (e < kDirtyRoster.size() && kDirtyRoster[e] == kDirtyRoster[e - 1] + 1)
             ++e;
-        const VkDeviceSize bytes = 8ull * (e - k);
-        if (off + bytes > kStageBytes / 4)
+        const size_t avail = (size_t)((rosterBudget - off) / 8);
+        const size_t take = std::min(e - k, avail);
+        if (take == 0)
             break;
+        const VkDeviceSize bytes = 8ull * take;
         memcpy(stage + off, &kRosterWords[2ull * kDirtyRoster[k]], (size_t)bytes);
         toK.push_back({off, 8ull * kDirtyRoster[k], bytes});
         off += bytes;
-        takenRoster = e;
-        k = e;
+        k += take;
+        takenRoster = k;
+        if (k < e)
+            break; // the budget ran out inside this run
     }
     kDirtyRoster.erase(kDirtyRoster.begin(), kDirtyRoster.begin() + (ptrdiff_t)takenRoster);
     // A record as the GPU reads it, its phases at the CURRENT orbit epoch (as sat_rebake.comp would make them).
@@ -658,8 +670,9 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
     }
     kDirtyPool.erase(kDirtyPool.begin(), kDirtyPool.begin() + (ptrdiff_t)takenPool);
     // New records (and their J2000 phases), as many as the staging holds.
+    // At most 16k new records a frame (~1 ms): building one costs a few fmods and a sin / cos.
     const size_t room = (size_t)((kStageBytes - off) / 80);
-    const size_t n = std::min({newRecs, room, (size_t)(kPoolCap - kPoolGpu)});
+    const size_t n = std::min({newRecs, room, (size_t)(kPoolCap - kPoolGpu), (size_t)16384});
     if (n > 0)
     {
         const VkDeviceSize recOff = off;

@@ -249,6 +249,9 @@ SatOrbitElems poolOrbitElems(const PoolRec &r, uint32_t poolIndex);
 // A pool record's tumble axis (sat_orbit.comp poolTumbleAxis: a uniform direction from its index).
 glm::dvec3 poolTumbleAxis(uint32_t poolIndex);
 
+// Lowers the calling thread's priority (the engine runs beside the frame loop). No-op off Windows.
+void lowerThreadPriority();
+
 // The storm's scripted history: which satellites the Carrington-class storm kills (by altitude and
 // inclination), when, and the dead formation members bumping their neighbours. Deterministic.
 std::vector<Event> stormSeedEvents(const World &w, double arriveT, uint64_t seed);

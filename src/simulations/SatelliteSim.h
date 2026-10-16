@@ -2875,6 +2875,7 @@ private:
         CPU_LIGHT_DOME,       // updateLightPollutionDome's 16 sectors x 4 radii
         CPU_UPDATE_PLANETS,   // 6 planets, render-ready entries
         CPU_ORBIT_REBAKE,     // uploadSatOrbits(): the 7-sim-day orbit rebake (every ~2 frames at 1 yr/s)
+        CPU_KESSLER,          // the cascade's main-thread side: taking the worker's batches, the uploads
         CPU_COUNT,
     };
     float cpuAccumMs[CPU_COUNT] = {};    // accumulating, current (incomplete) frame

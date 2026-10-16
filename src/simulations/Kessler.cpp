@@ -5,6 +5,12 @@
 #include <cmath>
 #include <thread>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 #include "SpaceWeather.h"
 
 namespace kessler
@@ -369,10 +375,18 @@ SatOrbitElems poolOrbitElems(const PoolRec &r, uint32_t j)
     return e;
 }
 
+// The engine's threads run below normal priority: the frame loop wins any contention.
+void lowerThreadPriority()
+{
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
+}
+
 static void parallelChunks(size_t n, const std::function<void(size_t, size_t)> &fn)
 {
     // Half the cores: the cascade runs beside the app on its worker thread.
-    const size_t hw = std::max<size_t>(1, std::min<size_t>(std::thread::hardware_concurrency() / 2, 16));
+    const size_t hw = std::max<size_t>(1, std::min<size_t>(std::thread::hardware_concurrency() / 2 - 1, 12));
     if (n < 20000 || hw == 1)
     {
         fn(0, n);
@@ -384,7 +398,12 @@ static void parallelChunks(size_t n, const std::function<void(size_t, size_t)> &
     {
         const size_t a = k * chunk, b = std::min(n, a + chunk);
         if (a < b)
-            th.emplace_back(fn, a, b);
+        {
+            th.emplace_back([&fn, a, b] {
+                lowerThreadPriority();
+                fn(a, b);
+            });
+        }
     }
     for (std::thread &t : th)
         t.join();
@@ -625,6 +644,16 @@ bool World::apply(Event ev)
                            std::max(std::max(massOf(*this, tgt), massOf(*this, prj)), 1e-3);
         const int rec = emr >= 40000.0 ? maxRec : (maxRec > 0 ? std::max(1, maxRec / 8) : 0);
         const BreakupResult br = breakupCollision(massOf(*this, tgt), massOf(*this, prj), v, s.LcMin, rec, ev.seed);
+        // A hit that changes nothing is not an event: a cratering hit that makes no records, by a representative
+        // record that survives it, on a target that is already dead or that it does not kill (millions of these
+        // once the pool is full; recording them would only grow the log).
+        if (!br.catastrophic && br.fragments.empty())
+        {
+            const bool prjSurvives = (prj & kPoolBit) && pool[prj & ~kPoolBit].weight > 1.5f;
+            const bool kills = !(tgt & kPoolBit) && !dead(tgt, ev.t) && hash01(ev.seed, 7, 41) < 0.5;
+            if (prjSurvives && !kills)
+                return false;
+        }
         ev.vRel = (float)v;
         ev.nReal = (float)br.nReal;
         ev.catastrophic = br.catastrophic ? 1 : 0;

@@ -1600,6 +1600,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // Auto-rebake orbit buffer if the epoch has drifted more than kOrbitRebakeDays.
     // Keeps float deltaT < kOrbitRebakeDays*86400 s (float ULP ≈ 0.07 s at 7 days).
     // Kessler: the worker's new records / deaths, copied to kesslerBuf before anything reads it.
+    {
+    CpuTimer kesslerTimer(cpuAccumMs[CPU_KESSLER]);
     kesslerSync(ctx);
     {
         // Time may not ADVANCE past what the worker has simulated (after the CME): it holds there. It is
@@ -1618,6 +1620,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
     }
     kesslerRecordUploads(cmd);
+    }
     if (std::abs(simDayJ2000 - orbitEpochDay) >= kOrbitRebakeDays)
     {
         CpuTimer _t(cpuAccumMs[CPU_ORBIT_REBAKE]);
