@@ -2247,8 +2247,8 @@ private:
     // like the Clouds tab's section state (buildCloudSliderSections), not a preference.
     // 2026-10-03: SATELLITE, ORBIT, BRIGHTNESS, SKY POSITION, VIEW (camera + render), CHECK; the stat tiles over
     // them carry the four numbers a player looks for first.
-    static constexpr int kInfoSectionCount = 6;
-    bool infoSectionOpen[kInfoSectionCount] = {true, true, false, false, false, false};
+    static constexpr int kInfoSectionCount = 7;
+    bool infoSectionOpen[kInfoSectionCount] = {true, true, false, false, false, false, false};
     bool hovInfoSection[kInfoSectionCount] = {};
     // ORBIT section rows: altitude, inclination, RAAN, period, then the flare-mitigation power readout
     // (only for types whose primary surface uses the tilt, so the count is usually 4).
@@ -2571,6 +2571,11 @@ private:
     // A satellite's display name: "<constellation> #<n>"; a dead one "... #<n> (dead)" (its roster number),
     // a fragment "Debris <event>.<k>".
     std::string satLabel(int idx) const;
+    void buildKesslerBanner(UIRenderer &ui);
+    void buildKesslerSettingsSection(const UIInput &inp, UIRenderer &ui);
+    void kesslerBreakupFromUi(int sat, uint8_t kind);
+    char kBannerBuf[160] = {};
+    char kUiMsg[200] = {};
     VkDescriptorSetLayout satRebakeDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool satRebakeDescPool = VK_NULL_HANDLE;
     VkDescriptorSet satRebakeDescSet = VK_NULL_HANDLE;

@@ -886,6 +886,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
     buildCrashRecoveryNotice(dt, inp, ui);
     buildGraphicsAutoNotice(dt, inp, ui);
+    buildKesslerBanner(ui);
     buildScreenshotToast(dt, inp, ui);
     buildTutorial(inp, ui); // after every panel it points at: their boxes are last frame's layout
 
@@ -2247,7 +2248,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
     const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size();
     const bool isSelected = tracked && selectedSatIndex == viewerSatIndex;
 
-    static const char *kInfoSectionNames[kInfoSectionCount] = {"SATELLITE", "ORBIT", "BRIGHTNESS", "SKY POSITION", "VIEW", "CHECK"};
+    static const char *kInfoSectionNames[kInfoSectionCount] = {"SATELLITE", "ORBIT", "BRIGHTNESS", "SKY POSITION", "VIEW", "CHECK", "BREAKUP"};
     static const char *kSatLabels[kViewerSatRows] = {"Type", "Model", "Size", "Mesh"};
     static const char *kOrbitLabels[kViewerOrbitRows] = {"Altitude", "Inclination", "RAAN", "Period", "Power"};
     static const char *kObsLabels[kViewerObsRows] = {"Visibility", "Elevation", "Azimuth", "Range"};
@@ -2450,6 +2451,18 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                                   if (uiButton(inp, ui, "InfoCheckBtn", 0, "Run check",
                                                                "Integrate a sun-only render from this direction and compare it with the photometric model (magnitudes at 1000 km)"))
                                                       viewerCheckRequested = true; }); });
+                    // ── BREAKUP: the Kessler scenario's player breakups (SatelliteSimKessler.cpp) ────────
+                    infoSection(6, [&]()
+                                {
+                                    uiKV("InfoKesKV", 0, "", "From the storm on (2037-07-15): break it up; its debris joins the cascade.", lw, &Pal::textDim);
+                                    buttonRow(3, [&]()
+                                              {
+                                                  if (uiButton(inp, ui, "InfoKesBtn", 0, "Explode", "A breakup from inside (NASA explosion model)"))
+                                                      kesslerBreakupFromUi(viewerSatIndex, kessler::EV_EXPLOSION);
+                                                  if (uiButton(inp, ui, "InfoKesBtn", 1, "ASAT strike", "A 20-kg kinetic interceptor at 9 km/s"))
+                                                      kesslerBreakupFromUi(viewerSatIndex, kessler::EV_ASAT); });
+                                    if (kUiMsg[0])
+                                        uiKV("InfoKesKV", 1, "", kUiMsg, lw, &Pal::textDim); });
                 }
                 // A visible thumb on the section list: without it nothing says the list continues
                 // below the window's edge.
@@ -3044,6 +3057,8 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     {
         ConstellationConfig &c = constellations[ci];
         snprintf(constCntBuf[ci], sizeof(constCntBuf[ci]), "%u", c.orbitCount);
+        if (ci == kDebrisConst) // Kessler fragments: none in the roster; the live count of drawn records
+            snprintf(constCntBuf[ci], sizeof(constCntBuf[ci]), "%d", kesslerStateJson()["now"]["fragments"].get<int>());
 
         bool hov = ci < (int)hovConst.size() && hovConst[ci];
         bool hovHlt = ci < (int)hovHighlightConst.size() && hovHighlightConst[ci];
@@ -3152,6 +3167,7 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
             }
         }
     }
+    buildKesslerSettingsSection(inp, ui);
 
     // ── Planets ────────────────────────────────────────────────────────────
     // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern

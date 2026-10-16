@@ -9,6 +9,9 @@
 #include "../Log.h"
 #include "../Paths.h"
 #include "../VulkanContext.h"
+#include "../UIRenderer.h"
+#include "UIPalette.h"
+#include "clay.h"
 
 #include <nlohmann/json.hpp>
 
@@ -828,4 +831,122 @@ nlohmann::json SatelliteSim::kesslerStateJson() const
                 {"collisions", col},        {"catastrophic", cat},   {"user_events", user},
                 {"kp", spaceWeather_.kp}};
     return j;
+}
+
+// ── UI ──────────────────────────────────────────────────────────────────────────────────────────
+// The banner while sim time is held at the simulated frontier (top centre, under the HUD's notices).
+void SatelliteSim::buildKesslerBanner(UIRenderer &ui)
+{
+    (void)ui;
+    const std::string s = kesslerStatusLine();
+    if (s.empty())
+        return;
+    snprintf(kBannerBuf, sizeof(kBannerBuf), "%s", s.c_str());
+    Clay_String str{false, (int32_t)strlen(kBannerBuf), kBannerBuf};
+    CLAY(CLAY_ID("KesslerBanner"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                               .padding = {14, 14, 8, 8},
+                                               .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
+                                    .backgroundColor = Pal::toastInfo,
+                                    .cornerRadius = CLAY_CORNER_RADIUS(6),
+                                    .floating = {.offset = {0, 60},
+                                                 .zIndex = 24,
+                                                 .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP,
+                                                                  .parent = CLAY_ATTACH_POINT_CENTER_TOP},
+                                                 .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+                                                 .attachTo = CLAY_ATTACH_TO_ROOT}})
+    {
+        CLAY_TEXT(str, CLAY_TEXT_CONFIG({.textColor = Pal::textBright, .fontSize = fs(13)}));
+    }
+}
+
+// Settings > Constellations: the scenario, its tunables (a change re-simulates from the storm) and what
+// it has done by the current sim time.
+void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &ui)
+{
+    uiSection("ConstSec", 2, "THE SUN'S FURY");
+    bool on = kesslerEnabled;
+    if (uiToggleRow(inp, ui, "KesslerOn", 0, "Scenario (a storm on 2037-07-15)", on,
+                    "A Carrington-class solar storm arrives two days after the Great Australian Eclipse. Satellites it "
+                    "kills tumble, dead ones collide, and every collision is a debris cloud (NASA breakup model). "
+                    "Nothing differs before it."))
+    {
+        kesslerEnabled = on;
+        spaceWeatherSetScriptedStorm(kesslerEnabled, kFuryArriveT, kFuryPeakKp);
+        if (ctx_)
+            kesslerRestart(*ctx_, kUserEvents, -1.0);
+    }
+    static const char *kRate[] = {"x0.1", "x1", "x10", "x100"};
+    static const float kRateV[] = {0.1f, 1.0f, 10.0f, 100.0f};
+    int rateSel = 1;
+    for (int i = 0; i < 4; ++i)
+        if (std::abs(kesslerRateMult - kRateV[i]) < 1e-3f * kRateV[i])
+            rateSel = i;
+    const int r = uiChoiceRow(inp, ui, "KesslerRate", 0, "Collision rate", kRate, 4, rateSel,
+                              "x1 is physical (the cube method: relative speed x cross-section x time / volume). "
+                              "Higher is faster, not realistic. Re-simulates from the storm.");
+    static const char *kAvoid[] = {"0%", "50%", "90%", "99%"};
+    static const float kAvoidV[] = {0.0f, 0.5f, 0.9f, 0.99f};
+    int avoidSel = 2;
+    for (int i = 0; i < 4; ++i)
+        if (std::abs(kesslerAvoidance - kAvoidV[i]) < 1e-3f)
+            avoidSel = i;
+    const int a = uiChoiceRow(inp, ui, "KesslerAvoid", 0, "Collision avoidance", kAvoid, 4, avoidSel,
+                              "The share of encounters between a working satellite and a tracked object (a dead satellite, a "
+                              "fragment) that it dodges. Dead satellites dodge nothing. Re-simulates from the storm.");
+    static const char *kYears[] = {"5 y", "20 y", "50 y"};
+    static const float kYearsV[] = {5.0f, 20.0f, 50.0f};
+    int ySel = 1;
+    for (int i = 0; i < 3; ++i)
+        if (std::abs(kesslerHorizonYears - kYearsV[i]) < 0.01f)
+            ySel = i;
+    const int y = uiChoiceRow(inp, ui, "KesslerYears", 0, "Simulate up to", kYears, 3, ySel,
+                              "How far after the storm the cascade is simulated (it is computed as sim time gets there).");
+    if ((r >= 0 && r != rateSel) || (a >= 0 && a != avoidSel) || (y >= 0 && y != ySel))
+    {
+        if (r >= 0)
+            kesslerRateMult = kRateV[r];
+        if (a >= 0)
+            kesslerAvoidance = kAvoidV[a];
+        if (y >= 0)
+            kesslerHorizonYears = kYearsV[y];
+        if (ctx_)
+            kesslerRestart(*ctx_, kUserEvents, -1.0);
+    }
+    if (!kesslerEnabled)
+        return;
+    const nlohmann::json j = kesslerStateJson();
+    const nlohmann::json &n = j["now"];
+    const float lw = (float)fs(170);
+    const double days = j["days_since_cme"].get<double>();
+    uiKV("KesslerKV", 0, "Since the storm", days < 0.0 ? uiKitStr("in %.1f days", -days) : uiKitStr("%.1f days", days), lw);
+    uiKV("KesslerKV", 1, "Simulated to", uiKitStr("day %.1f%s", j["frontier_days"].get<double>(), kWorkerDone ? " (done)" : ""), lw);
+    uiKV("KesslerKV", 2, "Dead satellites (tumbling)", uiKitStr("%d", n["dead_satellites"].get<int>()), lw);
+    uiKV("KesslerKV", 3, "Destroyed / re-entered", uiKitStr("%d", n["roster_gone"].get<int>()), lw);
+    uiKV("KesslerKV", 4, "Fragments >= 10 cm", uiKitStr("%d drawn of ~%d", n["fragments"].get<int>(), n["fragments_real"].get<int>()), lw);
+    uiKV("KesslerKV", 5, "Collisions", uiKitStr("%d (%d catastrophic)", n["collisions"].get<int>(), n["catastrophic"].get<int>()), lw);
+    if (!kUserEvents.empty())
+    {
+        uiKV("KesslerKV", 6, "Your breakups", uiKitStr("%d", (int)kUserEvents.size()), lw);
+        if (uiButton(inp, ui, "KesslerClear", 0, "Undo my breakups", "Re-simulate without them"))
+        {
+            kUserEvents.clear();
+            if (ctx_)
+                kesslerRestart(*ctx_, kUserEvents, -1.0);
+        }
+    }
+    if (kUiMsg[0])
+        uiKV("KesslerKV", 7, "", kUiMsg, lw, &Pal::textDim);
+}
+
+// A player breakup from the info window (the viewed satellite).
+void SatelliteSim::kesslerBreakupFromUi(int sat, uint8_t kind)
+{
+    std::string why;
+    if (sat < 0)
+        snprintf(kUiMsg, sizeof(kUiMsg), "No satellite to break up");
+    else if (kesslerUserEvent(kind, (uint32_t)sat, 0xFFFFFFFFu, &why))
+        snprintf(kUiMsg, sizeof(kUiMsg), "%s: %s", kind == kessler::EV_ASAT ? "ASAT strike" : "Explosion",
+                 satLabel(sat).c_str());
+    else
+        snprintf(kUiMsg, sizeof(kUiMsg), "Not now: %s", why.c_str());
 }
