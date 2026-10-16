@@ -2554,6 +2554,8 @@ private:
     std::vector<uint32_t> kDirtyRoster;   // roster satellites whose two words to upload
     std::vector<uint32_t> kDirtyPool;     // uploaded records whose death changed
     bool kRosterFullUpload = false;
+    bool kRestartPending = false;
+    bool kInitDone = false;               // kesslerInit has run (settings loaded before it apply directly)         // a kessler.* setting changed after launch: re-simulate next frame
     double kesslerEpoch() const;          // the scenario epoch (the CME's arrival), J2000 s
     void kesslerInit(VulkanContext &ctx); // after the roster's buffers exist: storm, world, cache, worker
     void kesslerShutdown();               // stop the worker, write the cache

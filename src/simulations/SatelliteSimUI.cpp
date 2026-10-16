@@ -7762,10 +7762,15 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
     if (j.contains("kessler") && j["kessler"].is_object())
     {
         const auto &kj = j["kessler"];
+        const bool e0 = kesslerEnabled;
+        const float r0 = kesslerRateMult, a0 = kesslerAvoidance, h0 = kesslerHorizonYears;
         kesslerEnabled = kj.value("enabled", kesslerEnabled);
         kesslerRateMult = settingClamp(kj.value("rate_multiplier", kesslerRateMult), 0.0f, 1000.0f);
         kesslerAvoidance = settingClamp(kj.value("avoidance", kesslerAvoidance), 0.0f, 1.0f);
         kesslerHorizonYears = settingClamp(kj.value("horizon_years", kesslerHorizonYears), 1.0f, 200.0f);
+        // Applied at launch; a later change (a harness `set`, a snapshot's settings) re-simulates next frame.
+        if (kInitDone && (e0 != kesslerEnabled || r0 != kesslerRateMult || a0 != kesslerAvoidance || h0 != kesslerHorizonYears))
+            kRestartPending = true;
     }
 
     if (j.contains("planets"))

@@ -304,6 +304,16 @@ static void writeCache(const std::filesystem::path &p, uint64_t hash, const std:
         f.write((const char *)eng.data(), (std::streamsize)(n * sizeof(kessler::Event)));
     }
     std::filesystem::rename(tmp, p, ec);
+    // Keep the three newest caches (each set of settings has its own; one can be tens of MB).
+    {
+        std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> all;
+        for (const auto &de : std::filesystem::directory_iterator(p.parent_path(), ec))
+            if (de.path().extension() == ".bin" && de.path().filename().string().rfind("suns_fury_", 0) == 0)
+                all.push_back({de.last_write_time(ec), de.path()});
+        std::sort(all.begin(), all.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+        for (size_t k = 3; k < all.size(); ++k)
+            std::filesystem::remove(all[k].second, ec);
+    }
     Log::line("kessler: cache " + p.filename().string() + (ec ? " NOT written: " + ec.message() : " written") + ", " +
               std::to_string(eng.size()) + " engine events, day " + std::to_string((int)((frontier - kFuryArriveT) / 86400.0)));
 }
@@ -313,6 +323,7 @@ void SatelliteSim::kesslerInit(VulkanContext &ctx)
 {
     spaceWeatherSetScriptedStorm(kesslerEnabled, kFuryArriveT, kFuryPeakKp);
     kesslerRestart(ctx, kUserEvents, -1.0);
+    kInitDone = true;
 }
 
 void SatelliteSim::kesslerShutdown()
@@ -439,6 +450,12 @@ void SatelliteSim::kesslerWant(double tJ2000)
 
 void SatelliteSim::kesslerSync(VulkanContext &ctx)
 {
+    if (kRestartPending)
+    {
+        kRestartPending = false;
+        spaceWeatherSetScriptedStorm(kesslerEnabled, kFuryArriveT, kFuryPeakKp);
+        kesslerRestart(ctx, kUserEvents, -1.0);
+    }
     if (!kWorker)
         return;
     {
