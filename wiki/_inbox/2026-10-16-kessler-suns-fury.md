@@ -103,3 +103,10 @@ frames instead of in one main-thread walk four times a second.
 Fireballs from above were ~8 magnitudes too faint (an airmass clamped at 1/0.03); late in the cascade the game
 stuttered (50-180 ms spikes from the counts, 15-25 ms a frame from the dust code scanning the whole future event log,
 and the worker running 100+ days ahead).
+
+## Now (small-fragment re-entries)
+The 10 cm - 1 m fragments re-enter too, as short meteor-like fireballs: by day 100 of the shipped cascade about 80-90
+thousand an hour worldwide (the large pieces and satellites: about 50). Each breakup's small fragments come down over a
+window around their drag lifetime, spread along their orbit, a pure function of sim time. Setting "Small re-entry
+brightness" (`kessler.small_reentry_gain`, Off / x1 / x3 / x10 / x30 / x100, default x30): x1 is physical, about
+magnitude +1 from 100 km for a typical 0.1-kg piece. From the ground they are obvious streaks; from orbit, moving dots.

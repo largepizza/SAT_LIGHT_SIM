@@ -4124,6 +4124,22 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   (Sun below -8 deg there) within 48 h, else the heaviest piece within 6 h; 25 s before breakup, 1x, from 120 km
   beside the track and 80 km back. State: `reentries_now`, `fireball_heads`, `fireball_trails`,
   `fireballs_az_el_mag_km`, `reentries_next_24h`, `piece_lifetimes`.
+- **Small-fragment re-entries** (round 4, 2026-10-16). Each breakup's small statistical orbits that re-enter inside
+  the horizon become at most 4 `kessler::SmallStream`s (merged by decay time; 24 bytes: decay and breakup seconds, a
+  window of 15% of the lifetime + the merged spread, 1 h .. 5 days, plane, J2 RAAN rate, count, log mass), published
+  by the worker like events (`World::smallStreams` -> `outStreams` -> `kSmallStreams`, by the day their window opens;
+  a replay makes them again). The main thread expands them per HOUR (`kesslerSmallReHour`: each overlapping stream
+  puts count x overlap / width re-entries in the hour, the fraction rounded by a hash; each at a hashed second, point
+  of the orbit and RAAN spread growing over 30 days; sorted by second) — a pure function of the hour, so time runs both
+  ways — and `kesslerFillFireballs` draws those within 200 s through the same fragment model as the large ones
+  (`drawReentry`: 1-3 pieces, m0 = -1.5 - 2.5 log10(mass kg) at 100 km, minus 2.5 log10 of "Small re-entry brightness"
+  `kessler.small_reentry_gain`, Off / x1 / x3 / x10 / x30 / x100, default x30; x1 is physical, meteor-faint: a 0.1-kg
+  piece ~+1 from 100 km, matching a kinetic-energy x luminous-efficiency estimate). Not past 1 h/s of warp. Measured
+  (shipped roster, x1 cascade, day 100): ~80-90k small re-entries an hour, ~4400 glowing at once worldwide (vs ~50 large
+  re-entries an hour); median fragment 0.07 kg, p90 0.27-0.43 kg; 6.4M streams (~155 MB on the main thread; 9.8M /
+  350 MB before the merge and packing); +0.4 ms CPU a frame. From the ground they are obvious streaks; from orbit
+  moving magnitude 0-3 dots (they are 400-2000 km away). State: `small_reentries` {now, this_hour, streams, gain,
+  mass_p50_kg, mass_p90_kg}.
 - **Garbage collection: slots recycle** (round 3, `World::addRecord`). A record's slot is released 300 s after its
   death (re-entry or destruction: the fireball finishes) and reused by the next record born after that (LIFO free
   list fed in time order: deterministic, so a replay reassigns every slot identically and the event log's references

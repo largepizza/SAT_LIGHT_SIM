@@ -104,6 +104,7 @@ struct SatelliteSim::KesslerWorker
     };
     std::vector<OutPoolChange> outPool;
     std::vector<kessler::Event> outEvents;
+    std::vector<kessler::SmallStream> outStreams;
     struct RosterChange
     {
         uint32_t sat;
@@ -124,6 +125,8 @@ struct SatelliteSim::KesslerWorker
         w.poolChanges.clear();
         outEvents.insert(outEvents.end(), w.events.begin() + (ptrdiff_t)pubEvents, w.events.end());
         pubEvents = w.events.size();
+        outStreams.insert(outStreams.end(), w.smallStreams.begin(), w.smallStreams.end());
+        w.smallStreams.clear();
         for (uint32_t i : w.rosterChanged)
             outRoster.push_back({i, w.rosterDead[i], w.rosterEnd[i], w.rosterDecay[i]});
         w.rosterChanged.clear();
@@ -160,13 +163,15 @@ struct SatelliteSim::KesslerWorker
                 const int32_t sec = w.secOf(w.frontier);
                 for (const kessler::PoolRec &r : w.pool)
                     live += (sec >= r.bornSec && sec < r.deathSec);
-                char m[300];
+                char m[420];
                 snprintf(m, sizeof(m),
                          "kessler: bench day %.0f wall %.1f s: %zu events, %zu records (%zu live), %zu death buckets, "
-                         "%.3g small fragments, %.0f MB working set; engine refs %.1f states %.1f pairs %.1f apply %.1f",
+                         "%.3g small fragments (%llu re-entry streams), %.0f MB working set; engine refs %.1f states %.1f pairs %.1f "
+                         "apply %.1f",
                          (w.frontier - w.s.epoch) / 86400.0,
                          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), w.events.size(),
-                         w.pool.size(), live, (size_t)w.deathBuckets.size(), w.grid.total(), kesslerWorkingSetMB(), w.profRefs,
+                         w.pool.size(), live, (size_t)w.deathBuckets.size(), w.grid.total(), (unsigned long long)w.smallStreamsMade,
+                         kesslerWorkingSetMB(), w.profRefs,
                          w.profState, w.profPairs, w.profApply);
                 Log::line(m);
             }
@@ -453,6 +458,9 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     kRosterWords.assign(2ull * activeSatCount, kessler::kNever);
     kRosterDecay.assign(activeSatCount, kessler::kNever);
     kReentries.clear();
+    kSmallStreams.clear();
+    kSmallStreamCount = 0;
+    kSmallReHours.clear();
     kPoolGen.clear();
     kPoolHist.clear();
     kGenBounds.clear();
@@ -568,10 +576,12 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
     std::vector<KesslerWorker::OutPoolChange> nPool;
     std::vector<kessler::Event> nEv;
     std::vector<KesslerWorker::RosterChange> rd;
+    std::vector<kessler::SmallStream> nStreams;
     {
         std::lock_guard<std::mutex> lk(kWorker->mx);
         nPool.swap(kWorker->outPool);
         nEv.swap(kWorker->outEvents);
+        nStreams.swap(kWorker->outStreams);
         rd.swap(kWorker->outRoster);
         kFrontier = kWorker->outFrontier > 0.0 ? kWorker->outFrontier : kFrontier;
     }
@@ -706,6 +716,72 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
             kDirtyRoster.push_back(d.sat);
         }
     kEvents.insert(kEvents.end(), nEv.begin(), nEv.end());
+    if (!nStreams.empty())
+        kesslerAddStreams(nStreams);
+}
+
+// ── Small fragments coming down (round 4) ──────────────────────────────────────────────────────────
+void SatelliteSim::kesslerAddStreams(const std::vector<kessler::SmallStream> &v)
+{
+    for (const kessler::SmallStream &ss : v)
+    {
+        const int32_t w0 = ss.deathSec - ss.halfS();
+        kSmallStreams[(w0 >= 0 ? w0 : w0 - 86399) / 86400].push_back(ss);
+        // An hour already expanded that this stream reaches is out of date.
+        for (auto it = kSmallReHours.begin(); it != kSmallReHours.end();)
+            if ((int64_t)(it->first + 1) * 3600 > w0 && (int64_t)it->first * 3600 < (int64_t)ss.deathSec + ss.halfS())
+                it = kSmallReHours.erase(it);
+            else
+                ++it;
+    }
+    kSmallStreamCount += v.size();
+}
+
+// The small re-entries in hour hr (seconds from the epoch): each stream overlapping it spreads its fragments evenly over
+// its window, so the hour holds count x overlap / width of them (the fraction rounded by a hash), each at a hashed
+// second, point of its orbit and RAAN spread (the fragments' planes drift apart under differential J2 over ~a month).
+const std::vector<SatelliteSim::KSmallRe> &SatelliteSim::kesslerSmallReHour(int32_t hr)
+{
+    auto found = kSmallReHours.find(hr);
+    if (found != kSmallReHours.end())
+        return found->second;
+    std::vector<KSmallRe> &out = kSmallReHours[hr];
+    const int64_t h0 = (int64_t)hr * 3600, h1 = h0 + 3600;
+    const int32_t dLast = (int32_t)((h1 >= 0 ? h1 : h1 - 86399) / 86400);
+    for (int32_t d = dLast - 11; d <= dLast; ++d) // windows are at most 10 days wide
+    {
+        auto it = kSmallStreams.find(d);
+        if (it == kSmallStreams.end())
+            continue;
+        for (const kessler::SmallStream &ss : it->second)
+        {
+            const int64_t w0 = (int64_t)ss.deathSec - ss.halfS(), w1 = (int64_t)ss.deathSec + ss.halfS();
+            const int64_t o0 = std::max(w0, h0), o1 = std::min(w1, h1);
+            if (o1 <= o0)
+                continue;
+            const double lambda = (double)ss.count * (double)(o1 - o0) / (double)(w1 - w0);
+            const uint64_t sd = ((uint64_t)ss.seed() << 32) ^ (uint64_t)(uint32_t)hr;
+            const int n = (int)std::min(std::floor(lambda + kessler::hash01(sd, 0, 1)), 4000.0);
+            for (int i = 0; i < n; ++i)
+            {
+                KSmallRe r;
+                r.sec = (int32_t)(o0 + (int64_t)std::floor(kessler::hash01(sd, (uint64_t)i + 1, 2) * (double)(o1 - o0)));
+                const double age = std::max((double)(r.sec - ss.bornSec), 0.0);
+                const double spread = kessler::kTwoPi * std::min(age / (30.0 * 86400.0), 1.0);
+                r.raan = (float)std::fmod(ss.raan() + (double)ss.raanDot * age +
+                                              spread * (kessler::hash01(sd, (uint64_t)i + 1, 3) - 0.5),
+                                          kessler::kTwoPi);
+                r.incl = (float)ss.incl();
+                r.u = (float)(kessler::kTwoPi * kessler::hash01(sd, (uint64_t)i + 1, 4));
+                r.massKg = (float)(ss.massKg() * std::exp(0.5 * kessler::hashNormal(sd, (uint64_t)i + 1, 5)));
+                r.seed = (uint32_t)(sd * 0x9E3779B97F4A7C15ull >> 32) ^ (uint32_t)i * 0x85EBCA6Bu;
+                out.push_back(r);
+            }
+        }
+    }
+    // By second: a frame takes its 200-s window by binary search (tens of thousands an hour late in the cascade).
+    std::sort(out.begin(), out.end(), [](const KSmallRe &x, const KSmallRe &y) { return x.sec < y.sec || (x.sec == y.sec && x.seed < y.seed); });
+    return out;
 }
 
 void SatelliteSim::kesslerEnsureCapacity(VulkanContext &ctx, size_t records)
@@ -1283,6 +1359,103 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
     const double R = satphot::kEarthRadiusM;
     const double dayness = glm::clamp(((double)sunDirENU.w + 0.1) / 0.3, 0.0, 1.0);
     const double K = satphot::kFluxToFlare * (double)brightnessScale;
+    // One re-entry: the trajectory frame (up U0, along-track A), the main body's magnitude at breakup (m0, at 100 km),
+    // its fragment count and seed, tau seconds into the glow.
+    auto drawReentry = [&](const glm::dvec3 &U0, const glm::dvec3 &A, double m0, int N, uint64_t seed, double tau) {
+        const glm::dvec3 C = glm::cross(A, U0);
+        auto place = [&](const FbFrag &f) {
+            const double a = f.s / R;
+            return (R + f.h) * (std::cos(a) * U0 + std::sin(a) * A) + f.lat * C;
+        };
+        const bool broken = tau >= fbBreakupT();
+        for (int k = broken ? 0 : -1; k < (broken ? N : 0); ++k)
+        {
+            const FbFrag f = fbFrag(seed, k, N, tau);
+            if (f.I <= 1e-4)
+                continue;
+            const glm::dvec3 P = place(f);
+            const glm::dvec3 rel = P - eye;
+            const double range = glm::length(rel);
+            // The Earth in the way?
+            const double b = glm::dot(eye, rel / range), c = glm::dot(eye, eye) - R * R;
+            const double disc = b * b - c;
+            if (disc > 0.0 && (-b - std::sqrt(disc)) > 0.0 && (-b - std::sqrt(disc)) < range)
+                continue;
+            // Magnitude at the eye: + distance, + the air between the eye and the fireball, x daylight. (A
+            // 1 / sin(elevation) airmass clamped at 0.03 added 8 magnitudes to every fireball seen from above.)
+            const glm::dvec3 dirE = toEnu(rel) / range;
+            const double m = m0 - 2.5 * std::log10(f.I) + 5.0 * std::log10(range / 1.0e5) +
+                             atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
+            double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
+            if (flare < 2e-4)
+                continue;
+            if (kFireCount < kFireballMax)
+                fo[kFireCount++] = {glm::vec4(glm::vec3(dirE), (float)flare), glm::vec4(f.col, (float)range)};
+            // Its trail: the path over the last 1.5 s (shorter as it slows), an emissive Gaussian along it.
+            if (n < kMaxDustClouds && flare > 5e-3)
+            {
+                const FbFrag fp = fbFrag(seed, k, N, std::max(tau - 1.5, 0.0));
+                const glm::dvec3 Pp = place(fp);
+                const glm::dvec3 axis = P - Pp;
+                const double L = glm::length(axis);
+                if (L > 1.0)
+                {
+                    const glm::dvec3 a = toEnu(axis / L);
+                    glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
+                    b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
+                    const glm::dvec3 c2 = glm::cross(a, b2);
+                    const double sMin = 0.6 * range * 2.0 * pixFull;
+                    const double sA = std::max(0.45 * L, sMin), sP = std::max(150.0, sMin);
+                    const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
+                    auto M = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
+                    // Intensity (photometry units) from the flare: flare = K J / r^2.
+                    const double J = 0.7 * flare * range * range / K;
+                    GpuDustCloud &d = out[n++];
+                    d.c = glm::vec4(glm::vec3(toEnu(0.5 * (P + Pp) - eye)), (float)(J * toSky));
+                    d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
+                                     (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
+                    d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
+                    d.col = glm::vec4(glm::mix(f.col, glm::vec3(1.0f, 0.35f, 0.12f), 0.5f), 1.0f); // emissive
+                    ++kFireTrails;
+                }
+            }
+        }
+        // The main body's train: its glowing path, fading over ~10 s and spreading.
+        for (int j = 1; j <= 6 && n < kMaxDustClouds; ++j)
+        {
+            const double tj = std::min(tau, fbBreakupT()) - 3.0 * j;
+            if (tj <= 0.0)
+                break;
+            const double age = tau - tj;
+            const FbFrag a0 = fbFrag(seed, -1, N, tj), a1 = fbFrag(seed, -1, N, tj + 3.0);
+            const glm::dvec3 P0 = place(a0), P1 = place(a1);
+            const glm::dvec3 rel = 0.5 * (P0 + P1) - eye;
+            const double range = glm::length(rel);
+            const double mT = m0 - 2.5 * std::log10(std::max(a0.I, 1e-6)) + 5.0 * std::log10(range / 1.0e5) + 2.5 +
+                              atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
+            const double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - mT)) * std::exp(-age / 8.0) * (1.0 - 0.95 * dayness);
+            if (flare < 1e-3)
+                continue;
+            const glm::dvec3 axis = P1 - P0;
+            const double L = glm::length(axis);
+            const glm::dvec3 a = toEnu(axis / std::max(L, 1.0));
+            glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
+            b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
+            const glm::dvec3 c2 = glm::cross(a, b2);
+            const double sMin = 0.6 * range * 2.0 * pixFull;
+            const double sA = std::max(0.45 * L, sMin), sP = std::max(200.0 + 40.0 * age, sMin);
+            const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
+            auto M = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
+            const double J = flare * range * range / K;
+            GpuDustCloud &d = out[n++];
+            d.c = glm::vec4(glm::vec3(toEnu(rel)), (float)(J * toSky));
+            d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
+                             (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
+            d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
+            d.col = glm::vec4(1.0f, 0.55f, 0.25f, 1.0f);
+            ++kFireTrails;
+        }
+    };
     std::vector<uint32_t> seen;
     for (int32_t hr = (nowSec - (int32_t)kFbDur) / 3600; hr <= nowSec / 3600; ++hr)
     {
@@ -1331,104 +1504,48 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
                 continue; // well over the horizon
             glm::dvec3 A = so.velEci - glm::dot(so.velEci, U0) * U0;
             A = glm::length(A) > 1.0 ? glm::normalize(A) : glm::dvec3(1.0, 0.0, 0.0);
-            const glm::dvec3 C = glm::cross(A, U0);
-            auto place = [&](const FbFrag &f) {
-                const double a = f.s / R;
-                return (R + f.h) * (std::cos(a) * U0 + std::sin(a) * A) + f.lat * C;
-            };
             // Brightness: the main body at breakup is magnitude m0 at 100 km (-7.5 for a 2.5-t Starmind, -4 for a
             // 100-kg piece: satellite re-entries are reported at -3 to -6 from a few hundred km). Fragments: 3 +
             // sqrt(mass) scaled, up to 80.
             const double m0 = -4.0 - 2.5 * std::log10(std::max(mass, 1.0) / 100.0);
             const int N = (int)std::clamp(3.0 + 40.0 * std::sqrt(std::max(mass, 1.0) / 2500.0), 3.0, 80.0);
             const uint64_t seed = (uint64_t)sat * 0x9E3779B97F4A7C15ull ^ (uint64_t)(uint32_t)dsec;
-            const bool broken = tau >= fbBreakupT();
-            for (int k = broken ? 0 : -1; k < (broken ? N : 0); ++k)
+            drawReentry(U0, A, m0, N, seed, tau);
+        }
+    }
+    // The small fragments (10 cm - 1 m) coming down: meteor-like, 1-3 pieces, magnitude -1.5 for 1 kg at 100 km (a
+    // 10-cm, 0.1-kg piece +1). Not past 1 h/s of warp (a fireball lasts a frame there, and each hour costs a scan).
+    kSmallReNow = 0;
+    kSmallReHourCount = 0;
+    if (kesslerSmallReGain > 0.0f && (kTimeScales[timeScaleIdx] <= 3600.0f || timePaused))
+    {
+        const int32_t hr0 = (int32_t)std::floor((nowSec - kFbDur) / 3600.0), hr1 = nowSec / 3600;
+        for (auto it = kSmallReHours.begin(); it != kSmallReHours.end();)
+            it = (it->first < hr0 - 1 || it->first > hr1 + 1) ? kSmallReHours.erase(it) : std::next(it);
+        kSmallReHourCount = (uint32_t)kesslerSmallReHour(hr1).size();
+        const double secNow = t - kFuryArriveT;
+        for (int32_t hr = hr0; hr <= hr1; ++hr)
+        {
+            const std::vector<KSmallRe> &hv = kesslerSmallReHour(hr);
+            auto first = std::lower_bound(hv.begin(), hv.end(), secNow - kFbDur - 1.0,
+                                          [](const KSmallRe &x, double v) { return (double)x.sec < v; });
+            for (auto itR = first; itR != hv.end() && (double)itR->sec <= secNow; ++itR)
             {
-                const FbFrag f = fbFrag(seed, k, N, tau);
-                if (f.I <= 1e-4)
+                const KSmallRe &r = *itR;
+                const double tau = t - (kFuryArriveT + (double)r.sec);
+                if (tau < 0.0 || tau > kFbDur)
                     continue;
-                const glm::dvec3 P = place(f);
-                const glm::dvec3 rel = P - eye;
-                const double range = glm::length(rel);
-                // The Earth in the way?
-                const double b = glm::dot(eye, rel / range), c = glm::dot(eye, eye) - R * R;
-                const double disc = b * b - c;
-                if (disc > 0.0 && (-b - std::sqrt(disc)) > 0.0 && (-b - std::sqrt(disc)) < range)
+                ++kSmallReNow;
+                const double cu = std::cos(r.u), su = std::sin(r.u), cO = std::cos(r.raan), sO = std::sin(r.raan);
+                const double ci = std::cos(r.incl), si = std::sin(r.incl);
+                const glm::dvec3 U0(cu * cO - su * ci * sO, cu * sO + su * ci * cO, su * si);
+                if (glm::length(R * U0 - eye) > 3.0e6)
                     continue;
-                // Magnitude at the eye: + distance, + the air between the eye and the fireball, x daylight. (A
-                // 1 / sin(elevation) airmass clamped at 0.03 added 8 magnitudes to every fireball seen from above.)
-                const glm::dvec3 dirE = toEnu(rel) / range;
-                const double m = m0 - 2.5 * std::log10(f.I) + 5.0 * std::log10(range / 1.0e5) +
-                                 atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
-                double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
-                if (flare < 2e-4)
-                    continue;
-                if (kFireCount < kFireballMax)
-                    fo[kFireCount++] = {glm::vec4(glm::vec3(dirE), (float)flare), glm::vec4(f.col, (float)range)};
-                // Its trail: the path over the last 1.5 s (shorter as it slows), an emissive Gaussian along it.
-                if (n < kMaxDustClouds && flare > 5e-3)
-                {
-                    const FbFrag fp = fbFrag(seed, k, N, std::max(tau - 1.5, 0.0));
-                    const glm::dvec3 Pp = place(fp);
-                    const glm::dvec3 axis = P - Pp;
-                    const double L = glm::length(axis);
-                    if (L > 1.0)
-                    {
-                        const glm::dvec3 a = toEnu(axis / L);
-                        glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
-                        b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
-                        const glm::dvec3 c2 = glm::cross(a, b2);
-                        const double sMin = 0.6 * range * 2.0 * pixFull;
-                        const double sA = std::max(0.45 * L, sMin), sP = std::max(150.0, sMin);
-                        const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
-                        auto M = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
-                        // Intensity (photometry units) from the flare: flare = K J / r^2.
-                        const double J = 0.7 * flare * range * range / K;
-                        GpuDustCloud &d = out[n++];
-                        d.c = glm::vec4(glm::vec3(toEnu(0.5 * (P + Pp) - eye)), (float)(J * toSky));
-                        d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
-                                         (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
-                        d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
-                        d.col = glm::vec4(glm::mix(f.col, glm::vec3(1.0f, 0.35f, 0.12f), 0.5f), 1.0f); // emissive
-                        ++kFireTrails;
-                    }
-                }
-            }
-            // The main body's train: its glowing path, fading over ~10 s and spreading.
-            for (int j = 1; j <= 6 && n < kMaxDustClouds; ++j)
-            {
-                const double tj = std::min(tau, fbBreakupT()) - 3.0 * j;
-                if (tj <= 0.0)
-                    break;
-                const double age = tau - tj;
-                const FbFrag a0 = fbFrag(seed, -1, N, tj), a1 = fbFrag(seed, -1, N, tj + 3.0);
-                const glm::dvec3 P0 = place(a0), P1 = place(a1);
-                const glm::dvec3 rel = 0.5 * (P0 + P1) - eye;
-                const double range = glm::length(rel);
-                const double mT = m0 - 2.5 * std::log10(std::max(a0.I, 1e-6)) + 5.0 * std::log10(range / 1.0e5) + 2.5 +
-                                  atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
-                const double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - mT)) * std::exp(-age / 8.0) * (1.0 - 0.95 * dayness);
-                if (flare < 1e-3)
-                    continue;
-                const glm::dvec3 axis = P1 - P0;
-                const double L = glm::length(axis);
-                const glm::dvec3 a = toEnu(axis / std::max(L, 1.0));
-                glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
-                b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
-                const glm::dvec3 c2 = glm::cross(a, b2);
-                const double sMin = 0.6 * range * 2.0 * pixFull;
-                const double sA = std::max(0.45 * L, sMin), sP = std::max(200.0 + 40.0 * age, sMin);
-                const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
-                auto M = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
-                const double J = flare * range * range / K;
-                GpuDustCloud &d = out[n++];
-                d.c = glm::vec4(glm::vec3(toEnu(rel)), (float)(J * toSky));
-                d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
-                                 (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
-                d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
-                d.col = glm::vec4(1.0f, 0.55f, 0.25f, 1.0f);
-                ++kFireTrails;
+                const glm::dvec3 A(-su * cO - cu * ci * sO, -su * sO + cu * ci * cO, cu * si); // prograde
+                const double mass = std::max((double)r.massKg, 1e-3);
+                const double m0 = -1.5 - 2.5 * std::log10(mass) - 2.5 * std::log10((double)kesslerSmallReGain);
+                const int N = mass > 3.0 ? 3 : mass > 0.5 ? 2 : 1;
+                drawReentry(U0, A, m0, N, (uint64_t)r.seed * 0x9E3779B97F4A7C15ull + 0x51ull, tau);
             }
         }
     }
@@ -1725,6 +1842,23 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
     j["hash"] = cacheName(kHash);
     j["dust_clouds_drawn"] = kDustCount;
     j["reentries_now"] = kReentriesNow;
+    j["small_reentries"] = {{"now", kSmallReNow}, {"this_hour", kSmallReHourCount}, {"streams", kSmallStreamCount},
+                            {"gain", kesslerSmallReGain}};
+    {
+        // This hour's fragment masses (median, 90th percentile, kg).
+        const int32_t hrNow = (int32_t)std::floor(((double)simDayJ2000 * 86400.0 + simSecInDay - kFuryArriveT) / 3600.0);
+        auto it = kSmallReHours.find(hrNow);
+        if (it != kSmallReHours.end() && !it->second.empty())
+        {
+            std::vector<float> m;
+            m.reserve(it->second.size());
+            for (const KSmallRe &r : it->second)
+                m.push_back(r.massKg);
+            std::sort(m.begin(), m.end());
+            j["small_reentries"]["mass_p50_kg"] = m[m.size() / 2];
+            j["small_reentries"]["mass_p90_kg"] = m[m.size() * 9 / 10];
+        }
+    }
     {
         // Diagnostics: re-entries due in the next 24 h (roster / pieces), and how long the pieces live.
         const int32_t s0 = (int32_t)std::floor((double)simDayJ2000 * 86400.0 + simSecInDay - kFuryArriveT);
@@ -1971,6 +2105,18 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
                                "minutes. Higher keeps the clouds visible longer.");
     if (dg >= 0 && dg != dSel)
         kesslerDustGain = kDustV[dg];
+    static const char *kSmallRe[] = {"Off", "x1", "x3", "x10", "x30", "x100"};
+    static const float kSmallReV[] = {0.0f, 1.0f, 3.0f, 10.0f, 30.0f, 100.0f};
+    int sSel = 4;
+    for (int i = 0; i < 6; ++i)
+        if (std::abs(kesslerSmallReGain - kSmallReV[i]) <= 1e-3f * std::max(kSmallReV[i], 1.0f))
+            sSel = i;
+    const int sg = uiChoiceRow(inp, ui, "KesslerSmallRe", 0, "Small re-entry brightness", kSmallRe, 6, sSel,
+                               "The 10 cm - 1 m fragments coming down: thousands an hour once the cascade runs, each a short "
+                               "meteor-like streak. x1 is physical: about magnitude +1 from 100 km for a 0.1-kg piece, so "
+                               "faint from orbit. Higher makes them easier to spot.");
+    if (sg >= 0 && sg != sSel)
+        kesslerSmallReGain = kSmallReV[sg];
     if (kesslerEnabled && uiButton(inp, ui, "KesslerReentry", 0, "Watch the next re-entry",
                                    "Jumps to the next satellite or large piece coming down over a dark sky: 25 s before it "
                                    "breaks up, from beside its track."))

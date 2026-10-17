@@ -7,6 +7,7 @@
 // Everything is deterministic: random numbers come from hashes of (seed, index), never from a
 // shared stream, so results do not depend on thread count or evaluation order.
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -248,6 +249,36 @@ struct DeathBucket
     std::vector<int64_t> cnt, massG;
 };
 
+// Small fragments coming down (round 4): one stream per statistical orbit of the density grid that re-enters inside
+// the horizon. Its fragments' re-entries are spread over a window about its decay second (a population of one size in
+// one orbit still comes down over days: the atmosphere varies, the orbits spread); the main thread expands a stream
+// into individual fireballs, by the hour, as a pure function of time.
+// Packed to 24 bytes (tens of millions of them late in a cascade); a breakup's statistical orbits are merged into at
+// most kMaxStreamsPerBreakup streams by decay time.
+struct SmallStream
+{
+    int32_t deathSec = 0;   // its decay second (the window's centre), from the epoch
+    int32_t bornSec = 0;    // the breakup
+    uint16_t halfMin = 60;  // the window's half width (min): 15% of its lifetime (+ the merged spread), 1 h .. 5 days
+    uint16_t inclQ = 0, raanQ = 0; // its plane at the breakup (x 2 pi / 65536)
+    uint16_t massQ = 0;     // each fragment's mass: 2^(massQ / 2048 - 16) kg
+    float count = 0.0f;     // fragments
+    float raanDot = 0.0f;   // rad/s
+    static constexpr int kMaxStreamsPerBreakup = 4;
+    int32_t halfS() const { return (int32_t)halfMin * 60; }
+    double incl() const { return inclQ * (6.283185307179586 / 65536.0); }
+    double raan() const { return raanQ * (6.283185307179586 / 65536.0); }
+    double massKg() const { return std::exp2(massQ / 2048.0 - 16.0); }
+    uint32_t seed() const
+    {
+        uint64_t h = (uint64_t)(uint32_t)deathSec * 0x9E3779B97F4A7C15ull ^ (uint64_t)(uint32_t)bornSec * 0xC2B2AE3D27D4EB4Full ^
+                     ((uint64_t)raanQ << 16 | massQ) * 0x165667B19E3779F9ull;
+        h ^= h >> 29;
+        return (uint32_t)(h ^ (h >> 32));
+    }
+};
+static_assert(sizeof(SmallStream) == 24, "SmallStream packing");
+
 struct WorldSettings
 {
     double epoch = 0.0;          // the scenario epoch (J2000 s): born / death seconds count from here
@@ -286,6 +317,8 @@ public:
     std::map<int32_t, DeathBucket> deathBuckets; // by window index (30 days from the epoch): leave the grid at its end
     static constexpr double kDeathBucketS = 30.0 * 86400.0;
     uint64_t smallAlive = 0;          // statistical orbits in the grid (the benchmark's count)
+    std::vector<SmallStream> smallStreams; // new since the last take (the worker publishes and clears them)
+    uint64_t smallStreamsMade = 0;
     double frontier = 0.0;            // simulated up to here (J2000 s)
     uint64_t sampleCount = 0;
     double profState = 0.0, profPairs = 0.0, profApply = 0.0, profRefs = 0.0; // seconds spent (the worker logs them)

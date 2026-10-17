@@ -615,6 +615,8 @@ void World::reset()
     grid.clear();
     deathBuckets.clear();
     smallAlive = 0;
+    smallStreams.clear();
+    smallStreamsMade = 0;
     frontier = s.epoch;
     sampleCount = 0;
 }
@@ -986,6 +988,12 @@ void World::addStructuralPieces(BreakupResult &br, uint32_t ref, int side, uint3
 void World::spawnSmall(const BreakupResult &br, const State &st, double t, uint32_t seed, Event &ev)
 {
     double n = 0.0, dv2 = 0.0;
+    struct Cand
+    {
+        double deathT, half, w, m;
+        Elems el;
+    };
+    std::vector<Cand> cands;
     for (size_t k = 0; k < br.small.size(); ++k)
     {
         const Fragment &f = br.small[k];
@@ -1004,6 +1012,43 @@ void World::spawnSmall(const BreakupResult &br, const State &st, double t, uint3
             DeathBucket &bk = deathBuckets[(int32_t)std::floor((deathT - s.epoch) / kDeathBucketS)];
             grid.depositInto(bk.cnt, bk.massG, el.a, el.e, el.i, el.argp, f.weight, f.massKg, pseed);
         }
+        if (deathT < s.epoch + s.horizonS)
+            cands.push_back({deathT, std::clamp(0.15 * (deathT - t), 3600.0, 5.0 * 86400.0), f.weight, f.massKg, el});
+    }
+    // The re-entry streams: merged by decay time into at most kMaxStreamsPerBreakup (count-weighted means; the window
+    // covers the merged ones' windows, up to 5 days).
+    std::sort(cands.begin(), cands.end(), [](const Cand &x, const Cand &y) { return x.deathT < y.deathT; });
+    const size_t G = std::min<size_t>(cands.size(), SmallStream::kMaxStreamsPerBreakup);
+    for (size_t g = 0; g < G; ++g)
+    {
+        const size_t b0 = g * cands.size() / G, b1 = (g + 1) * cands.size() / G;
+        double w = 0.0, dT = 0.0, lm = 0.0, lo = 1e300, hi = -1e300, rd = 0.0;
+        for (size_t q = b0; q < b1; ++q)
+        {
+            const Cand &c = cands[q];
+            w += c.w;
+            dT += c.w * c.deathT;
+            lm += c.w * std::log2(std::max(c.m, 1e-4));
+            lo = std::min(lo, c.deathT - c.half);
+            hi = std::max(hi, c.deathT + c.half);
+            rd += c.w * secularJ2(c.el.a, std::min(c.el.e, 0.99), c.el.i).raanDot;
+        }
+        if (w <= 0.0)
+            continue;
+        dT /= w;
+        const Elems &el0 = cands[b0].el;
+        SmallStream ss;
+        ss.deathSec = secOf(dT);
+        ss.bornSec = secOf(t);
+        ss.halfMin = (uint16_t)std::clamp(std::max(dT - lo, hi - dT) / 60.0, 60.0, 7200.0);
+        const double tp = kTwoPi;
+        ss.inclQ = (uint16_t)std::clamp(el0.i / tp * 65536.0, 0.0, 65535.0);
+        ss.raanQ = (uint16_t)((uint32_t)std::llround(std::fmod(el0.raan + 2.0 * tp, tp) / tp * 65536.0) & 0xFFFFu);
+        ss.massQ = (uint16_t)std::clamp((lm / w + 16.0) * 2048.0, 0.0, 65535.0);
+        ss.count = (float)w;
+        ss.raanDot = (float)(rd / w);
+        smallStreams.push_back(ss);
+        ++smallStreamsMade;
     }
     ev.nSmall = (float)n;
     ev.dvSmall = n > 0.0 ? (float)std::sqrt(dv2 / n) : 0.0f;

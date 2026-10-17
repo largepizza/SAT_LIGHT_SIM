@@ -2530,6 +2530,7 @@ private:
     float kesslerAvoidance = 0.9f;    // kessler.avoidance: share of active-vs-debris encounters dodged
     float kesslerHorizonYears = 20.0f; // kessler.horizon_years: how far the cascade is simulated
     float kesslerDustGain = 100.0f;    // kessler.dust_gain: the drawn dust clouds' brightness (x the physical estimate)
+    float kesslerSmallReGain = 30.0f;  // kessler.small_reentry_gain: small fragments' fireballs (x physical: meteor-faint)
     struct KesslerWorker;             // the World + its thread (SatelliteSimKessler.cpp)
     struct KesslerWorkerDelete        // (an incomplete type here: deleted where it is defined)
     {
@@ -2574,6 +2575,20 @@ private:
     VkDeviceMemory kFireMem = VK_NULL_HANDLE;
     void *kFireMapped = nullptr;
     uint32_t kFireCount = 0, kFireTrails = 0, kReentriesNow = 0; // this frame (harness state)
+    // Small fragments coming down (round 4): the worker's streams, by the day their window opens, and the individual
+    // re-entries they make, expanded per hour (a pure function of the hour) for the hours a fireball can be drawn in.
+    struct KSmallRe
+    {
+        int32_t sec;
+        float incl, raan, u, massKg;
+        uint32_t seed;
+    };
+    std::map<int32_t, std::vector<kessler::SmallStream>> kSmallStreams;
+    size_t kSmallStreamCount = 0;
+    std::map<int32_t, std::vector<KSmallRe>> kSmallReHours;
+    uint32_t kSmallReNow = 0, kSmallReHourCount = 0;
+    void kesslerAddStreams(const std::vector<kessler::SmallStream> &v);
+    const std::vector<KSmallRe> &kesslerSmallReHour(int32_t hr);
     VkDescriptorSetLayout kFireDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool kFireDescPool = VK_NULL_HANDLE;
     VkDescriptorSet kFireDescSet = VK_NULL_HANDLE;
