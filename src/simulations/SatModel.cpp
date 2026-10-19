@@ -331,7 +331,7 @@ std::vector<GroupPose> evalGroupPoses(const std::vector<AttitudeGroup> &groups, 
         }
 
         GroupPose pose = pre;
-        if (!jointsAtZero && g.jointMode != JointMode::None)
+        if (!jointsAtZero && !geo.jointsRest && g.jointMode != JointMode::None)
         {
             glm::dvec3 k = glm::normalize(pre.R * glm::dvec3(g.jointAxis));
             double theta = 0.0;

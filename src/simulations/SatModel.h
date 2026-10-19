@@ -164,6 +164,7 @@ struct AttGeometry
     glm::dvec3 tumbleAxis{0.0, 0.0, 1.0};
     double flareTiltRad = 0.0;
     bool forceTumble = false; // a dead satellite (Kessler): the root tumbles whatever its law
+    bool jointsRest = false;  // "open book" (a train raising, launches): every joint at its rest angle
 };
 // Rigid transform per group: posed = R * rest + t (rest = the model's body frame with every
 // joint at 0; world = the frame AttGeometry's directions are given in).

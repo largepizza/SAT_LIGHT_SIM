@@ -139,11 +139,11 @@ def booster_parts(b, v, z0=0.0, side=False):
     top = z0 + v["b_len"]
     b.cone("engines", 0.92 * r, 0.6 * r, z0 - 1.2, z0, "nozzle", ro=True)
     band = v.get("band")
+    b.cyl("core", r, z0, top, v["b_mat"])
     if band:
-        b.cyl("core", r, z0, top - band[0], v["b_mat"])
-        b.cyl("interstage", r, top - band[0], top, band[1], caps=False)
-    else:
-        b.cyl("core", r, z0, top, v["b_mat"])
+        # A sleeve just outside the core, render-only: a separate photometric cylinder sitting on the core's top
+        # cap made coincident surfaces, which break the occlusion samples (the accuracy gate's selftest).
+        b.cyl("interstage", 1.006 * r, top - band[0], top, band[1], caps=False, ro=True)
     fins = v.get("fins")
     if fins:
         for k in range(4):

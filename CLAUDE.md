@@ -4236,8 +4236,36 @@ launches follow per-program cadences (no real manifest).
   slowly spreading ice (30 m/s, 2000 m^2/kg), each parcel a stretch of the 700 m/s jet, never decimated: seen from
   below, a dump spiral like the 2009 Norway one (harness `launch vent`). A returning stage (Starship's ship) re-enters
   whole 40 min after deploying: an 8-min plasma glow (`shipEntry`: ~7.4 km/s to ~65 km, slowing to 1.2 km/s by 45 km,
-  magnitude ~-4 at 100 km near 70 km up) and is not followed to landing (harness `launch ship`). No meshes, no
-  droneships.
+  magnitude ~-4 at 100 km near 70 km up) and is not followed to landing (harness `launch ship`). No droneships.
+- **Rocket meshes** (2026-10-19): `tools/make_rocket_models.py` writes `rocket_<vehicle>_{stack,booster,upper}.json`
+  (13 vehicles; +Z toward the nose, origin at the aft end = the track point; one group, +Z on the "velocity"
+  target, -Y (the ship's heat shield) toward nadir; grid fins, legs, flaps, heat shield, engine bells and
+  interstage sleeves render-only: a separate interstage cylinder on the core's cap was a coincident surface that
+  broke the occlusion samples). Loaded at startup as extra types like the debris kit (`rocketTypes`; the accuracy
+  gate only loads and validates them, `cmake/AccuracyGate.cmake`: their selftest took ~2.5 min). Each listed rocket
+  transient carries its stage's type and its BODY AXIS (`SelTransient::axis`): the Earth-fixed velocity on the
+  track (in ECI the pad's rotation tilts a rising rocket), up on the pad, engines first for a booster after
+  staging and an upper stage in its deorbit burn, belly first for the ship's entry (60 deg above the velocity).
+  The axis rides in `SatOrbitElems::fixAxis`, which `satOrbitStateAt` returns as the attitude's "velocity".
+  Rockets past ~1.4 px go through `recordMeshScene` (`launchMeshJobs`: up to `kRocketMeshSlots` 7 slots of the
+  reserved last chunk, bound to their keys) with the evaluator's photometry; the flame Gaussians follow the axis (a
+  landing burn's flame points down), a coasting sunlit point fades into its mesh, and the exhaust's glow Gaussian
+  is a night effect (x (1 - 0.95 dayness): up close by day it was a white ellipse hundreds of metres across). A
+  selected rocket takes its type in the selection slot, so Info / Go to / Track work (Go to rides the fixed state).
+- **Raising trains fly "open book"** (2026-10-19): a train member's record (kind 0, until arrival) carries bit 25 of
+  `typeConst` (sat_orbit.comp: `alignTerminator` -1, every joint at rest) and `SatOrbitElems::restJoints` /
+  `AttGeometry::jointsRest` on the CPU: the arrays flat with the bus, edge into the flow, the low-drag
+  configuration that makes fresh trains bright (SpaceX's description; the operating "shark fin" is the roster
+  satellite on station). Models whose rest pose is flat (Starlink V2 Mini / V3 / DTC, Guowang, Qianfan, OneWeb,
+  Starmind) show it; V1.5 and Amazon Leo rest as a vertical fin. CPU/GPU parity holds (dmag ~1e-5).
+- **International launches** (2026-10-19): Qianfan (Spacesail) is in the roster as one Shells entry (phase 1 as
+  flown: 72 x 18 at ~1070 km, 89 deg; two ESTIMATED shells toward the ~14,000 planned, 11,664 in all; model
+  `qianfan.json`, estimates) with its own program (Long March 6A / 8A, Zhuque-3, Tianlong-3, Pallas-1). Zhuque-3
+  (LandSpace, Jiuquan LC-96B), Tianlong-3 (Space Pioneer) and Pallas-1 (Galactic Energy) fly from the Jiuquan
+  commercial pads and the Hainan commercial launch site (pad coordinates approximate); Guowang also flies
+  Zhuque-3 / Tianlong-3, Amazon Leo Falcon 9. A plane is refreshed in one burst per design life, so a
+  constellation's cadence follows its plane count: Qianfan ~6 launches a month, Guowang ~4, Starmind ~10 a day.
+  Harness `launch why [hours=]` counts the cached batches by program and reason.
 - **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1.5-2.5 s of each burn, integrated once per
   launch (only for launches within ~4500 km of the eye and not past 1 h/s of warp) with entrainment: the gas expands
   at ~2 km/s while it outweighs the air it has taken in, then diffuses (above ~80 km the coupling to the air falls to
@@ -4290,9 +4318,10 @@ launches follow per-program cadences (no real manifest).
 - CPU bucket `launches` (harness `perf`, Performance tab "Launches"; the visuals run inside the dust fill and are moved
   out of `kessler`).
 - Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; Settings > Constellations > LAUNCHES; harness
-  `launch ...` (docs/HARNESS.md); default bookmark "Twilight Starship Launch"
+  `launch ...` (docs/HARNESS.md: `launch next vehicle=`, `launch select kind=rocket|booster|upper|...`); default
+  bookmark "Twilight Starship Launch"
   (`tools/harness/scripts/default_bookmarks.satcmd` #8).
-- Not built: rocket and droneship meshes, the trains' raising attitude ("open book"), J2 drift into the target plane
+- Not built: droneship meshes, the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
   (trains launch into it), stations' crew and cargo flights, hole-punching through cloud decks, sonic booms.
 
 ## Subsystem: Reflect-Orbital Beam Cloud Occlusion

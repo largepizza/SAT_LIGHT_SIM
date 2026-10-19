@@ -1153,7 +1153,9 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         g.flux = 1.0f;
         g.bornSec = (int32_t)0x80000001;
         g.deathSec = kessler::kNever;
-        g.typeConst = (uint32_t)so.typeIdx | ((so.constIdx & 0xFFu) << 16);
+        // A train raising flies "open book" (bit 25: every joint at rest, arrays flat with the bus, edge into the
+        // flow): the low-drag configuration that makes fresh trains bright. On station it is the roster satellite.
+        g.typeConst = (uint32_t)so.typeIdx | ((so.constIdx & 0xFFu) << 16) | (kind == 0 ? (1u << 25) : 0u);
         if (!putRecord(slot, g))
             return;
         SlotInfo &si = L.slots[slot];
@@ -1170,6 +1172,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         ce.rSatM = el.a;
         ce.ecc = el.e;
         ce.incl = el.i;
+        ce.restJoints = kind == 0;
         SatOrbit &o = satOrbits[activeSatCount + slot];
         o.typeIdx = so.typeIdx;
         o.constIdx = so.constIdx;

@@ -631,6 +631,7 @@ SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const 
     geo.tumbleAngle = r.orbit.tumbleAngle;
     geo.tumbleAxis = orbit.tumbleAxis;
     geo.forceTumble = orbit.forceTumble;
+    geo.jointsRest = orbit.restJoints;
     geo.flareTiltRad = in.flareTiltRad;
     std::vector<GroupPose> poses = evalGroupPoses(groups, geo, false);
 

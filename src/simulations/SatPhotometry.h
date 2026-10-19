@@ -130,6 +130,7 @@ struct SatOrbitElems
     double argp = 0.0;
     double argpDot = 0.0, raanDot = 0.0;
     bool forceTumble = false; // a dead satellite: the root group tumbles whatever its law
+    bool restJoints = false;  // a train raising in the "open book" configuration (launches): joints at rest
     double areaScale = 1.0;   // flux multiplier (a fragment against its type's model)
     // A transient object picked on screen (a rocket stage, a re-entry fireball: SatelliteSim's selTransient):
     // position, velocity and acceleration at fixT0, extrapolated quadratically. Rewritten every frame.

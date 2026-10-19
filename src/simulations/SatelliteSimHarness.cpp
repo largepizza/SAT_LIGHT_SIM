@@ -526,6 +526,7 @@ json SatelliteSim::harnessStateJson()
             geo.tumbleAngle = pr.orbit.tumbleAngle;
             geo.tumbleAxis = e.tumbleAxis;
             geo.forceTumble = e.forceTumble;
+        geo.jointsRest = e.restJoints;
             geo.flareTiltRad = in.flareTiltRad;
             const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, false);
             const glm::dvec3 s = in.sunDirEci, ob = glm::normalize(in.obsEci - pr.orbit.posEci);

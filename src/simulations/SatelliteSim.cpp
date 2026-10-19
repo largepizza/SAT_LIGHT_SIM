@@ -4135,6 +4135,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
         geo.tumbleAngle = st.tumbleAngle;
         geo.tumbleAxis = eciToEcef(e.tumbleAxis);
         geo.forceTumble = e.forceTumble;
+        geo.jointsRest = e.restJoints;
     }
     else
         P = glm::normalize(glm::dvec3(obsDir)) * (satphot::kEarthRadiusM + (double)viewerAltM);
@@ -4837,6 +4838,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         geo.tumbleAngle = r.orbit.tumbleAngle;
         geo.tumbleAxis = eciToEcef(e.tumbleAxis);
         geo.forceTumble = e.forceTumble;
+        geo.jointsRest = e.restJoints;
         geo.flareTiltRad = in.flareTiltRad;
         const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, false);
         GpuMeshInstance &inst = out.inst;

@@ -39,6 +39,12 @@ if(NOT EXISTS "${TOOL}")
 endif()
 
 file(GLOB MODELS "${SRC_DIR}/data/satellite_models/*.json")
+# Launch vehicles (tools/make_rocket_models.py) are render models no benchmark reads: they are loaded and validated
+# (the lobe bake vs the per-triangle evaluation, ~1.5 s for all), not self-tested (the occlusion reference took
+# 20 s for a full stack with strap-on boosters, ~2.5 min for the 39).
+file(GLOB ROCKET_MODELS "${SRC_DIR}/data/satellite_models/rocket_*.json")
+list(REMOVE_ITEM MODELS ${ROCKET_MODELS})
+list(SORT ROCKET_MODELS)
 file(GLOB BENCHMARKS "${SRC_DIR}/data/benchmarks/*.json")
 list(SORT MODELS)
 list(SORT BENCHMARKS)
@@ -58,6 +64,9 @@ function(gate_step name)
 endfunction()
 
 gate_step("model selftests" ${MODELS} --selftest ${SELFTEST_N} --out "${OUT_DIR}/obj")
+if(ROCKET_MODELS)
+    gate_step("rocket models load" ${ROCKET_MODELS} --out "${OUT_DIR}/obj")
+endif()
 foreach(b IN LISTS BENCHMARKS)
     get_filename_component(id "${b}" NAME_WE)
     gate_step("transcription ${id}" --benchmark "${b}")

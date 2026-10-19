@@ -531,7 +531,7 @@ mat3 groupFrame(AttGroup g, mat3 parentF, SatOrbit orb, vec3 nadir, vec3 vel, ve
         vec3 t2 = c / len;
         F = mat3(t1, t2, cross(t1, t2));
     }
-    if (g.jointMode == JOINT_NONE) return F;
+    if (g.jointMode == JOINT_NONE || orb.alignTerminator < -0.5) return F;
 
     // ── 1-DOF joint: rotate the whole frame about the joint/hinge axis k ────
     vec3  k = normalize(F * g.jointAxisT);
@@ -1202,6 +1202,8 @@ bool processSatellite(uint i, out SatVisible rec)
         orb.typeIdx = tc & 0xFFFFu;
         orb.constIdx = (tc >> 16) & 0xFFu;
         orb.alignTerminator = ((tc >> 24) & 1u) != 0u ? 2.0 : 0.0; // forced tumble (groupFrame)
+        if (((tc >> 25) & 1u) != 0u && orb.alignTerminator < 0.5)
+            orb.alignTerminator = -1.0; // "open book" (a train raising): every joint at rest (groupFrame)
         orb.tumbleRate = uintBitsToFloat(kw[w + 10u]);
         orb.tumblePhase = uintBitsToFloat(kw[w + 11u]);
         vec3 ax = poolTumbleAxis(j);
