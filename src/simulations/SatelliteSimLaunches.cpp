@@ -143,7 +143,7 @@ struct SatelliteSim::LaunchState
     VkBuffer stage = VK_NULL_HANDLE;
     VkDeviceMemory stageMem = VK_NULL_HANDLE;
     void *stageMapped = nullptr;
-    static constexpr uint32_t kStageRecs = 8192;
+    static constexpr uint32_t kStageRecs = 16384;
     uint32_t gpuGen = UINT32_MAX;
     bool clearGpu = true;         // zero the GPU block before anything is written (a reset)
     float lifeScale = -1.0f;      // the planes were built for this "life_scale"
@@ -928,6 +928,8 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             s.shown = false;
             s.tw = -1e300;
         }
+        for (auto &kv : L.batches)
+            kv.second.tw[0] = kv.second.tw[1] = -1e300; // every batch due again
     }
     // A new design-life scale reshuffles every refresh: start over.
     if (L.planesBuilt && L.lifeScale != launchLifeScale)
@@ -952,6 +954,8 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                              0, nullptr);
         for (SlotInfo &si : L.slots)
             si.shown = false;
+        for (auto &kv : L.batches)
+            kv.second.tw[0] = kv.second.tw[1] = -1e300;
     }
     const bool on = launchesEnabled && L.loaded;
     if (on && !L.planesBuilt)
@@ -1053,7 +1057,8 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 continue;
             const bool need = on && B.touched == L.frame && B.valid &&
                               (kind == 0 ? (t >= B.tD && t < B.tA) : (t >= B.tA && t < B.tA + 400.0 * kDay));
-            if (!need)
+            // (Only while the staging can take every hide: a freed slot whose record stayed up would be a ghost.)
+            if (!need && nStage + kChunk * (uint32_t)B.chunks[kind].size() <= LaunchState::kStageRecs)
             {
                 releaseChunks(B.chunks[kind]);
                 B.tw[kind] = -1e300;
@@ -1609,6 +1614,7 @@ nlohmann::json SatelliteSim::launchStateJson() const
     j["reentries_now"] = L.nReentries;
     j["records_written"] = L.nWrites;
     j["free_chunks"] = L.freeChunks.size();
+    j["slots_shown"] = std::count_if(L.slots.begin(), L.slots.end(), [](const SlotInfo &x) { return x.shown; });
     j["life_scale"] = launchLifeScale;
     {
         const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
