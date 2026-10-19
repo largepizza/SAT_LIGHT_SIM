@@ -117,7 +117,8 @@ struct Parcel
     std::vector<glm::dvec3> c;   // centre (Earth-fixed, m from the Earth's centre)
     std::vector<float> sig;      // radius (m, 1 sigma)
     std::vector<float> cond;     // condensed share (0..1): vapour turns to ice as it expands and cools
-    bool at(double a, glm::dvec3 &cOut, double &sOut, double &condOut) const;
+    std::vector<float> sweep;    // air taken in / exhaust mass: past ~1 the gas piles up at its rim (a shell)
+    bool at(double a, glm::dvec3 &cOut, double &sOut, double &condOut, double *sweepOut = nullptr) const;
     float maxAge() const { return age.empty() ? 0.0f : age.back(); }
 };
 

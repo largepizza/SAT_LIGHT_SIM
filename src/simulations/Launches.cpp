@@ -364,7 +364,7 @@ double rampPhase(double a0, double a1, double T, double tau)
 }
 
 // ── Parcels ──────────────────────────────────────────────────────────────────────────────────────
-bool Parcel::at(double a, glm::dvec3 &cOut, double &sOut, double &condOut) const
+bool Parcel::at(double a, glm::dvec3 &cOut, double &sOut, double &condOut, double *sweepOut) const
 {
     if (age.empty() || a < 0.0 || a > (double)age.back())
         return false;
@@ -378,6 +378,8 @@ bool Parcel::at(double a, glm::dvec3 &cOut, double &sOut, double &condOut) const
     cOut = glm::mix(c[i - 1], c[i], f);
     sOut = glm::mix((double)sig[i - 1], (double)sig[i], f);
     condOut = glm::mix((double)cond[i - 1], (double)cond[i], f);
+    if (sweepOut)
+        *sweepOut = glm::mix((double)sweep[i - 1], (double)sweep[i], f);
     return true;
 }
 
@@ -404,6 +406,7 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         pc.c.push_back(p);
         pc.sig.push_back((float)sig);
         pc.cond.push_back((float)std::exp(-age / tauEvap));
+        pc.sweep.push_back((float)(Me / m));
     };
     record();
     nextRec = 0.25;

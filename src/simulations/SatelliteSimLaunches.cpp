@@ -1445,8 +1445,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         {
             const double age = tau - pc.t0;
             glm::dvec3 cE;
-            double sig, cond;
-            if (age < 0.0 || !pc.at(age, cE, sig, cond))
+            double sig, cond, sweep = 0.0;
+            if (age < 0.0 || !pc.at(age, cE, sig, cond, &sweep))
                 continue;
             const double Sigma = pc.kappa * pc.m * cond * (double)launchPlumeGain;
             if (Sigma < 1.0)
@@ -1491,6 +1491,43 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             d.col = glm::vec4(glm::vec3(tr * pc.albedo * nightBoost), 2.0f);
             d.cone = coneOf(toEnu(rel), 5.5 * std::max(sA, sP));
             plumes.push_back(c);
+            // High up, once the expanding exhaust has swept up about its own mass of air it piles up at its rim: a shell,
+            // limb-brightened (the jellyfish's bell). Drawn as the core plus a ring of Gaussians across the line of sight.
+            const double shellK = (h > 60000.0 && sig > 2000.0) ? 0.65 * glm::smoothstep(0.3, 2.0, sweep) : 0.0;
+            if (shellK > 0.02)
+            {
+                const double coreShare = 1.0 - shellK;
+                plumes.back().d.c.w = (float)(Sigma * coreShare);
+                plumes.back().pri *= coreShare;
+                const glm::dvec3 vE = toEnu(rel) / range; // the line of sight
+                glm::dvec3 r1 = glm::cross(vE, glm::dvec3(0, 0, 1));
+                r1 = glm::length(r1) > 1e-6 ? glm::normalize(r1) : glm::dvec3(1, 0, 0);
+                const glm::dvec3 r2 = glm::cross(vE, r1);
+                const int K = 7;
+                const double rr = 0.9 * sig, sr = std::max(0.42 * sig, sMin);
+                for (int k = 0; k < K; ++k)
+                {
+                    const double ang = glm::two_pi<double>() * ((double)k + h01(B.seed ^ (uint64_t)(pc.t0 * 10.0), (uint64_t)k, 31)) / K;
+                    const glm::dvec3 off = rr * (std::cos(ang) * r1 + std::sin(ang) * r2);
+                    // Each piece is stretched along the rim (the tangent) and the line of sight.
+                    const glm::dvec3 tg = -std::sin(ang) * r1 + std::cos(ang) * r2;
+                    const double sT = std::max(0.9 * sig, sMin), sN = sr;
+                    const glm::dvec3 nrm = glm::normalize(off);
+                    const double iT = 1.0 / (sT * sT), iN = 1.0 / (sN * sN), iV = 1.0 / (sig * sig);
+                    auto Mr = [&](int p, int q) { return iT * tg[p] * tg[q] + iN * nrm[p] * nrm[q] + iV * vE[p] * vE[q]; };
+                    Cand cr;
+                    cr.pri = pri * shellK / K;
+                    GpuDustCloud &dr = cr.d;
+                    const glm::dvec3 ce = toEnu(rel) + off;
+                    dr.c = glm::vec4(glm::vec3(ce), (float)(Sigma * shellK / K));
+                    dr.ia = glm::vec4((float)Mr(0, 0), (float)Mr(1, 1), (float)Mr(2, 2),
+                                      (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sT * sN * sig)));
+                    dr.ib = glm::vec4((float)Mr(0, 1), (float)Mr(0, 2), (float)Mr(1, 2), (float)amb);
+                    dr.col = d.col;
+                    dr.cone = coneOf(ce, 5.5 * std::max(sT, sig));
+                    plumes.push_back(cr);
+                }
+            }
             if (L.plumeDbg.size() < 4000)
                 L.plumeDbg.push_back({range / 1000.0, h / 1000.0, sig / 1000.0, Sigma, tauPeak, age, tr * pc.albedo, amb});
         }
