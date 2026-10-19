@@ -3168,6 +3168,7 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
         }
     }
     buildKesslerSettingsSection(inp, ui);
+    buildLaunchSettingsSection(inp, ui);
 
     // ── Planets ────────────────────────────────────────────────────────────
     // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern

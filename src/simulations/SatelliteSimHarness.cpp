@@ -2353,7 +2353,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (sub == "next")
         {
             std::string msg;
-            if (!launchGoToNext(msg, c.num("twilight", 0.0) > 0.5))
+            const std::string when = lower(c.str("when", c.num("twilight", 0.0) > 0.5 ? "twilight" : "any"));
+            if (!launchGoToNextWhen(msg, when == "twilight" ? 1 : when == "day" ? 2 : when == "night" ? 3 : 0))
                 fail("launch next: " + msg);
             r["message"] = msg;
             return Status::Done;

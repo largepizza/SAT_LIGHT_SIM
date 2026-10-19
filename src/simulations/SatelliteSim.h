@@ -2673,6 +2673,7 @@ private:
     nlohmann::json launchStateJson() const;
     nlohmann::json launchListJson(double hours) const;
     bool launchGoToNext(std::string &msg, bool twilight);
+    bool launchGoToNextWhen(std::string &msg, int when);
     bool launchLook(int stage, std::string &msg);
     nlohmann::json launchCheckJson() const;
     bool launchSelect(int kind, std::string &msg);

@@ -185,6 +185,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
     float T = min(tScene, 2.0e7);
     vec3 L = vec3(0.0);
     float wT = 0.0;
+    float Ls = 0.0;
     for (uint i = 0u; i < n; ++i) {
         if (dot(dir, dust[i].cone.xyz) < dust[i].cone.w)
             continue;
@@ -211,7 +212,8 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
         if (d.col.w > 1.5) {   // a plume: sunlit by its tint (the Sun's colour there x albedo), sky-lit by ib.w
             // (a sharper shadow edge than the dust's: the bell's lit edge is where the Earth's shadow cuts it)
             float litP = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, dS);
-            Lp   += tau * (d.col.rgb * (litP * phaseP) + d.ib.w * vec3(0.55, 0.68, 1.0) * (0.25 / PI));
+            Lp   += tau * d.col.rgb * litP;          // the sunlight it scatters (the phase is applied below)
+            Ls   += tau * d.ib.w;                     // the sky light on it
             tauP += tau;
             tP   += tau * clamp(tc, 0.0, T);
             continue;
@@ -224,7 +226,11 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
     tScat = wT > 0.0 ? tScat / wT : 0.0;
     if (tauP > 0.0) {
         tP /= tauP;
-        Lp = Lp / tauP * (1.0 - exp(-tauP));
+        // Per unit optical depth: single scattering by the phase, and as the trail thickens multiple scattering
+        // takes over (a thick sunlit trail is a white cloud: ~albedo / pi, not the phase's 0.05); the sky light on
+        // it diffusely. Then the trail's opacity.
+        float ms = 0.075 * (1.0 - exp(-0.6 * tauP));
+        Lp = (Lp * (phaseP + ms) + Ls * vec3(0.55, 0.68, 1.0) * 0.08) / tauP * (1.0 - exp(-tauP));
     }
     return L * phase;
 }

@@ -128,6 +128,14 @@ struct SatelliteSim::LaunchState
     std::vector<Track> booster; // per vehicle
     std::map<std::pair<int, int>, Track> upper; // (vehicle, park km)
     std::unordered_map<uint64_t, LBatch> batches;
+    // A batch's launch before pad deconfliction (vehicle, site, the plane's next pass over it), cached by batch key.
+    struct Cand
+    {
+        int veh = -1, site = -1;
+        double tL = -1.0, az = 0.0;
+    };
+    std::unordered_map<uint64_t, Cand> cands;
+    std::vector<std::vector<int>> planesBySite; // the planes that may launch from each site
     std::vector<uint32_t> freeChunks;
     std::vector<SlotInfo> slots;
     std::vector<SatOrbitElems> elems;
@@ -142,6 +150,10 @@ struct SatelliteSim::LaunchState
     bool active = false; // anything up on the GPU
     std::vector<uint64_t> live; // batch keys touched this frame (in a stable order)
     size_t cursor = 0;
+    // The settings section's readouts (refreshed every few seconds).
+    double uiListAt = -1e300, uiListSim = -1e300;
+    std::string uiNext;
+    int uiCount24 = 0;
     // Readouts (this frame)
     struct PlumeDbg
     {
@@ -183,6 +195,8 @@ void SatelliteSim::launchInitBlock()
     L.planesBuilt = false;
     L.planes.clear();
     L.batches.clear();
+    L.cands.clear();
+    L.planesBySite.clear();
     L.slots.assign(kLaunchCap, SlotInfo{});
     L.elems.assign(kLaunchCap, SatOrbitElems{});
     L.freeChunks.clear();
@@ -291,6 +305,18 @@ static void buildPlanes(SatelliteSim::LaunchState &L, const std::vector<SatOrbit
             L.planes.push_back(std::move(pl));
         }
     }
+    L.planesBySite.assign(L.cat.sites.size(), {});
+    for (size_t pi = 0; pi < L.planes.size(); ++pi)
+    {
+        std::vector<bool> seen(L.cat.sites.size(), false);
+        for (int v : L.cat.programs[L.planes[pi].prog].vehicles)
+            for (int st : L.cat.vehicles[v].sites)
+                if (!seen[st])
+                {
+                    seen[st] = true;
+                    L.planesBySite[st].push_back((int)pi);
+                }
+    }
     L.planesBuilt = true;
     L.lifeScale = lifeScale;
     char m[160];
@@ -365,12 +391,78 @@ static double nextCrossing(const launch::Site &site, const std::function<glm::dv
 // ── Batches ─────────────────────────────────────────────────────────────────────────────────────
 static double secOfKessler(const SatelliteSim &s, double t) { return std::floor(t - s.kesslerEpoch()); }
 
+static uint64_t batchSeed(const LPlane &pl, int64_t k, int b)
+{
+    return pl.seed ^ ((uint64_t)(k + 77) * 0x2545F4914F6CDD1Dull) ^ ((uint64_t)b * 0x9E3779B97F4A7C15ull);
+}
+
+// The plane's normal at t (from the batch's first member's slot).
+static glm::dvec3 planeNormal(const SatelliteSim &sim, const LPlane &pl, int b, int payload, double t)
+{
+    const size_t m0 = std::min(pl.sats.size() - 1, (size_t)b * (size_t)payload);
+    const SatOrbitState st = satOrbitStateAt(sim.rosterElemsOf(sim.satOrbits[pl.sats[m0]]), t);
+    return glm::normalize(glm::cross(st.posEci, st.velEci));
+}
+
+static int payloadOf(const SatelliteSim &sim, const SatelliteSim::LaunchState &L, const LPlane &pl)
+{
+    const launch::Program &pg = L.cat.programs[pl.prog];
+    const int cluster = std::max(1, sim.constellations[pl.constIdx].clusterSize);
+    return std::max(cluster, pg.payload / cluster * cluster);
+}
+
+// A batch's launch before deconfliction: a hashed vehicle and site, the first the plane passes over after the nominal
+// time (arrival - raise - the flight to deployment). Cached.
+static SatelliteSim::LaunchState::Cand candidate(const SatelliteSim &sim, SatelliteSim::LaunchState &L, int plane,
+                                                 int64_t k, int b)
+{
+    const uint64_t key = batchKey(plane, k, b);
+    auto it = L.cands.find(key);
+    if (it != L.cands.end())
+        return it->second;
+    SatelliteSim::LaunchState::Cand c;
+    const LPlane &pl = L.planes[plane];
+    const launch::Program &pg = L.cat.programs[pl.prog];
+    const double lifeS = std::max(0.25, pg.lifeYears * (double)sim.launchLifeScale) * kYear;
+    const uint64_t seed = batchSeed(pl, k, b);
+    const double tA = (k + pl.phase) * lifeS + b * pl.gap;
+    const double raise = (pg.raiseDays[0] + (pg.raiseDays[1] - pg.raiseDays[0]) * h01(seed, 2, 1)) * kDay;
+    const double tNom = tA - raise;
+    const int payload = payloadOf(sim, L, pl);
+    auto normalAt = [&](double t) { return planeNormal(sim, pl, b, payload, t); };
+    const size_t nv = pg.vehicles.size();
+    for (size_t vi = 0; vi < nv && c.tL < 0.0; ++vi)
+    {
+        const int veh = pg.vehicles[(vi + (size_t)(h01(seed, 3, 1) * nv)) % nv];
+        const launch::Vehicle &vh = L.cat.vehicles[veh];
+        const double lead = vh.t2 + vh.deployAfter;
+        const size_t ns = vh.sites.size();
+        for (size_t si = 0; si < ns && c.tL < 0.0; ++si)
+        {
+            const int site = vh.sites[(si + (size_t)(h01(seed, 4, 1) * ns)) % ns];
+            double a = 0.0;
+            const double t = nextCrossing(L.cat.sites[site], normalAt, tNom - lead, a);
+            if (t >= 0.0)
+            {
+                c.tL = t;
+                c.az = a;
+                c.veh = veh;
+                c.site = site;
+            }
+        }
+    }
+    if (L.cands.size() > 200000)
+        L.cands.clear();
+    L.cands.emplace(key, c);
+    return c;
+}
+
 // Builds a batch: where and when it launches, its trajectory frame, each member's climb and its predecessor's fall.
 static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &B, const LPlane &pl, double lifeS)
 {
     const launch::Program &pg = L.cat.programs[pl.prog];
     B.prog = pl.prog;
-    B.seed = pl.seed ^ ((uint64_t)(B.k + 77) * 0x2545F4914F6CDD1Dull) ^ ((uint64_t)B.b * 0x9E3779B97F4A7C15ull);
+    B.seed = batchSeed(pl, B.k, B.b);
     B.tA = (B.k + pl.phase) * lifeS + B.b * pl.gap;
     const double raise = (pg.raiseDays[0] + (pg.raiseDays[1] - pg.raiseDays[0]) * h01(B.seed, 2, 1)) * kDay;
     // Members: a contiguous run of the plane's slots.
@@ -387,34 +479,62 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
         const SatOrbitState st = satOrbitStateAt(e0, t);
         return glm::normalize(glm::cross(st.posEci, st.velEci));
     };
-    // Vehicle and site: a hashed start, the first that reaches the plane.
-    const size_t nv = pg.vehicles.size();
-    const double tNom = B.tA - raise;
-    double tL = -1.0, az = 0.0;
-    for (size_t vi = 0; vi < nv && tL < 0.0; ++vi)
-    {
-        const int veh = pg.vehicles[(vi + (size_t)(h01(B.seed, 3, 1) * nv)) % nv];
-        const launch::Vehicle &vh = L.cat.vehicles[veh];
-        const double lead = vh.t2 + vh.deployAfter;
-        const size_t ns = vh.sites.size();
-        for (size_t si = 0; si < ns && tL < 0.0; ++si)
-        {
-            const int site = vh.sites[(si + (size_t)(h01(B.seed, 4, 1) * ns)) % ns];
-            double a = 0.0;
-            const double t = nextCrossing(L.cat.sites[site], normalAt, tNom - lead, a);
-            if (t >= 0.0)
-            {
-                tL = t;
-                az = a;
-                B.veh = veh;
-                B.site = site;
-            }
-        }
-    }
-    if (tL < 0.0)
+    // Vehicle, site and time: the candidate (the plane's first pass over a site its vehicle flies from), then pad
+    // deconfliction: a launch whose pad another launch (of higher priority, by hash) takes within 90 min takes the
+    // plane's next pass instead. The others' times are their candidates, never their deconflicted times: no recursion,
+    // still a pure function of time.
+    const SatelliteSim::LaunchState::Cand c0 = candidate(sim, L, B.plane, B.k, B.b);
+    if (c0.tL < 0.0)
     {
         B.why = "no site reaches the plane";
         return;
+    }
+    B.veh = c0.veh;
+    B.site = c0.site;
+    double tL = c0.tL, az = c0.az;
+    {
+        const uint64_t self = batchKey(B.plane, B.k, B.b);
+        const double myPri = h01(self, 9, 9);
+        for (int iter = 0; iter < 4; ++iter)
+        {
+            bool conflict = false;
+            for (int q : L.planesBySite[B.site])
+            {
+                const LPlane &pq = L.planes[q];
+                const launch::Program &gq = L.cat.programs[pq.prog];
+                const double lifeQ = std::max(0.25, gq.lifeYears * (double)sim.launchLifeScale) * kYear;
+                const double lo = tL + (gq.raiseDays[0] - 1.0) * kDay, hi = tL + (gq.raiseDays[1] + 3.0) * kDay;
+                const int64_t k0 = (int64_t)std::floor((lo - (pq.nb - 1) * pq.gap) / lifeQ - pq.phase);
+                const int64_t k1 = (int64_t)std::floor(hi / lifeQ - pq.phase);
+                for (int64_t k = k0; k <= k1 && !conflict; ++k)
+                {
+                    const double base = (k + pq.phase) * lifeQ;
+                    const int b0 = std::max(0, (int)std::ceil((lo - base) / pq.gap));
+                    const int b1 = std::min(pq.nb - 1, (int)std::floor((hi - base) / pq.gap));
+                    for (int b = b0; b <= b1 && !conflict; ++b)
+                    {
+                        const uint64_t other = batchKey(q, k, b);
+                        if (other == self || h01(other, 9, 9) < myPri)
+                            continue;
+                        const SatelliteSim::LaunchState::Cand co = candidate(sim, L, q, k, b);
+                        conflict = co.site == B.site && std::abs(co.tL - tL) < 5400.0;
+                    }
+                }
+                if (conflict)
+                    break;
+            }
+            if (!conflict)
+                break;
+            double a2 = 0.0;
+            const double t2 = nextCrossing(L.cat.sites[B.site], normalAt, tL + 5400.0, a2);
+            if (t2 < 0.0)
+            {
+                B.why = "pad taken";
+                return;
+            }
+            tL = t2;
+            az = a2;
+        }
     }
     // Kessler: no launches for three weeks after the storm (the infrastructure, the debris).
     if (sim.kesslerEnabled && tL >= sim.kesslerEpoch() && tL < sim.kesslerEpoch() + 21.0 * kDay)
@@ -1289,6 +1409,22 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), 0.0f);
                 d.col = glm::vec4(col, 1.0f);
                 d.cone = coneOf(toEnu(P - 0.5 * Lf * vdir - eye), 5.5 * std::max(sA, sP));
+                // The exhaust the flame lights (at night an orange glow round the engines, longer behind them; high up
+                // the expanding plume around the stage glows over kilometres).
+                if (n < kMaxDustClouds)
+                {
+                    const double Rg = 250.0 + 2500.0 * hiK;
+                    const double gA = std::max(1.6 * Rg, sMin), gP = std::max(Rg, sMin);
+                    const double jA = 1.0 / (gA * gA), jP = 1.0 / (gP * gP);
+                    auto Mg = [&](int p, int q) { return jA * a[p] * a[q] + jP * (b2[p] * b2[q] + c2[p] * c2[q]); };
+                    GpuDustCloud &g = out[n++];
+                    g.c = glm::vec4(glm::vec3(toEnu(P - 1.2 * Rg * vdir - eye)), (float)(0.25 * J * toSky));
+                    g.ia = glm::vec4((float)Mg(0, 0), (float)Mg(1, 1), (float)Mg(2, 2),
+                                     (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * gA * gP * gP)));
+                    g.ib = glm::vec4((float)Mg(0, 1), (float)Mg(0, 2), (float)Mg(1, 2), 0.0f);
+                    g.col = glm::vec4(glm::mix(col, glm::vec3(1.0f, 0.5f, 0.2f), 0.5f), 1.0f);
+                    g.cone = coneOf(toEnu(P - 1.2 * Rg * vdir - eye), 5.5 * gA);
+                }
             }
         }
         // Plumes: built (once) only for launches that can be seen from here, and not past 1 h/s of warp (a plume lasts
@@ -1347,7 +1483,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             for (int ch = 0; ch < 3; ++ch)
                 tr[ch] = std::pow(10.0, -0.4 * std::min(atmExtinctionMag(C, sunD, 0.0, kc[ch]), 30.0));
             const double sinE = glm::dot(glm::normalize(C), sunD);
-            const double amb = 0.35 * glm::smoothstep(-0.1, 0.25, sinE) * std::exp(-std::max(h, 0.0) / 15000.0);
+            // The sky's light on it, relative (1 = a clear daytime sky), fading with the air above it.
+            const double amb = glm::smoothstep(-0.1, 0.25, sinE) * std::exp(-std::max(h, 0.0) / 15000.0);
             d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), (float)amb);
             // At night the sky's exposure is not physical (only ~5.5x the day's: see the Kessler dust), so a sunlit
             // plume against the dark sky reads far dimmer than it is; its sunlight is raised as the eye's sky darkens.
@@ -1503,8 +1640,12 @@ nlohmann::json SatelliteSim::launchListJson(double hours) const
 
 // Puts the observer near the next launch: twilight (the Sun 5-16 deg below the pad's horizon) within a week if asked,
 // else the next. Time 30 s before lift-off at 1x, the camera on the climb.
-bool SatelliteSim::launchGoToNext(std::string &msg, bool twilight)
+bool SatelliteSim::launchGoToNext(std::string &msg, bool twilight) { return launchGoToNextWhen(msg, twilight ? 1 : 0); }
+
+// when: 0 the next, 1 twilight (the Sun 5-16 deg down at the pad), 2 day (above 15 deg), 3 night (below -20 deg).
+bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when)
 {
+    const bool twilight = when != 0;
     if (launchState)
         LaunchImpl::ensureCatalog(*launchState);
     if (!launchState || !launchState->loaded || !launchesEnabled)
@@ -1520,7 +1661,7 @@ bool SatelliteSim::launchGoToNext(std::string &msg, bool twilight)
         if (o["in_hours"].get<double>() < 0.02)
             continue;
         const double se = o["sun_elev_deg"].get<double>();
-        if (!twilight || (se < -5.0 && se > -16.0))
+        if (when == 0 || (when == 1 && se < -5.0 && se > -16.0) || (when == 2 && se > 15.0) || (when == 3 && se < -20.0))
         {
             pick = &o;
             break;
@@ -1528,7 +1669,7 @@ bool SatelliteSim::launchGoToNext(std::string &msg, bool twilight)
     }
     if (!pick)
     {
-        msg = twilight ? "no twilight launch in the next week" : "no launch in the next 48 h";
+        msg = twilight ? "no such launch in the next week" : "no launch in the next 48 h";
         return false;
     }
     // Find its batch again.
@@ -1592,7 +1733,7 @@ bool SatelliteSim::launchLook(int stage, std::string &msg)
     const LaunchState &L = *launchState;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const glm::dvec3 eye = glm::dvec3(obsECI);
-    double best = 1e30;
+    double best = 1e30, bestTau = 0.0;
     glm::dvec3 bestP(0.0);
     for (const auto &kv : L.batches)
     {
@@ -1607,6 +1748,7 @@ bool SatelliteSim::launchLook(int stage, std::string &msg)
         {
             best = d;
             bestP = P;
+            bestTau = t - B.tL;
         }
     }
     if (best > 1e29)
@@ -1619,8 +1761,8 @@ bool SatelliteSim::launchLook(int stage, std::string &msg)
                        glm::dot(rel, glm::dvec3(eci2enuZ)));
     aimCameraAzEl((float)glm::degrees(std::atan2(e.x, e.y)), (float)glm::degrees(std::asin(glm::clamp(e.z, -1.0, 1.0))));
     char b[160];
-    snprintf(b, sizeof(b), "stage %d at %.0f km, az %.1f el %.1f", stage, best / 1000.0, glm::degrees(std::atan2(e.x, e.y)),
-             glm::degrees(std::asin(glm::clamp(e.z, -1.0, 1.0))));
+    snprintf(b, sizeof(b), "stage %d at T%+.0f s, %.0f km, az %.1f el %.1f", stage, bestTau, best / 1000.0,
+             glm::degrees(std::atan2(e.x, e.y)), glm::degrees(std::asin(glm::clamp(e.z, -1.0, 1.0))));
     msg = b;
     return true;
 }
@@ -1791,4 +1933,85 @@ bool SatelliteSim::launchGoToNextReentry(std::string &msg)
     snprintf(b, sizeof(b), "%s (retired) re-enters: breakup in 25 s", satLabel((int)bestSat).c_str());
     msg = b;
     return true;
+}
+
+// ── Settings: Constellations tab, LAUNCHES ──────────────────────────────────────────────────────
+void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui)
+{
+    uiSection("ConstSec", 3, "LAUNCHES");
+    bool on = launchesEnabled;
+    if (uiToggleRow(inp, ui, "LaunchOn", 0, "Launches and retirements", on,
+                    "Every constellation is kept flying: each orbital plane is refreshed once per design life by a "
+                    "launch from a site under it. The train climbs to its slots, the satellites it replaces deorbit "
+                    "and re-enter. Sites, rockets and programs: launches.json next to the exe."))
+        launchesEnabled = on;
+    if (!launchesEnabled)
+        return;
+    static const char *kLife[] = {"x0.5", "x1", "x2", "x4"};
+    static const float kLifeV[] = {0.5f, 1.0f, 2.0f, 4.0f};
+    int lSel = 1;
+    for (int i = 0; i < 4; ++i)
+        if (std::abs(launchLifeScale - kLifeV[i]) < 1e-3f)
+            lSel = i;
+    const int l = uiChoiceRow(inp, ui, "LaunchLife", 0, "Satellite design life", kLife, 4, lSel,
+                              "x1 = each program's life (5-7 years). Shorter: more launches and re-entries (Starmind at "
+                              "x1 is already ~13 Starship launches a day). Reshuffles the schedule.");
+    if (l >= 0 && l != lSel)
+        launchLifeScale = kLifeV[l];
+    static const char *kPlume[] = {"Off", "x0.3", "x1", "x3"};
+    static const float kPlumeV[] = {0.0f, 0.3f, 1.0f, 3.0f};
+    int pSel = 2;
+    for (int i = 0; i < 4; ++i)
+        if (std::abs(launchPlumeGain - kPlumeV[i]) < 1e-3f)
+            pSel = i;
+    const int pg = uiChoiceRow(inp, ui, "LaunchPlume", 0, "Exhaust plumes", kPlume, 4, pSel,
+                               "The rockets' exhaust: the trail near the ground, and at twilight the sunlit bell high up "
+                               "(the 'jellyfish'), lit while the ground below is dark.");
+    if (pg >= 0 && pg != pSel)
+        launchPlumeGain = kPlumeV[pg];
+    std::string why;
+    if (uiButton(inp, ui, "LaunchNext", 0, "Watch the next launch", "Jumps to 30 s before the next lift-off, beside the pad."))
+    {
+        launchGoToNextWhen(why, 0);
+        snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
+    }
+    if (uiButton(inp, ui, "LaunchNext", 1, "Watch a twilight launch",
+                 "The next lift-off within a week with the Sun 5-16 degrees below the pad's horizon: its exhaust high up "
+                 "catches the sunlight."))
+    {
+        launchGoToNextWhen(why, 1);
+        snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
+    }
+    if (uiButton(inp, ui, "LaunchReentry", 0, "Watch a retired satellite re-enter",
+                 "The next retiree coming down over a dark sky (48 h): 25 s before it breaks up."))
+    {
+        launchGoToNextReentry(why);
+        snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
+    }
+    if (!launchState)
+        return;
+    LaunchState &L = *launchState;
+    // The next launch, refreshed every few seconds (it walks the schedule).
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (now - L.uiListAt > 3.0 || std::abs(((double)simDayJ2000 * 86400.0 + simSecInDay) - L.uiListSim) > 600.0)
+    {
+        L.uiListAt = now;
+        L.uiListSim = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const nlohmann::json list = launchListJson(24.0);
+        L.uiNext.clear();
+        L.uiCount24 = (int)list.size();
+        if (!list.empty())
+        {
+            const nlohmann::json &o = list[0];
+            char b[200];
+            snprintf(b, sizeof(b), "%s, %s, in %.1f h", o["vehicle"].get<std::string>().c_str(),
+                     o["site"].get<std::string>().c_str(), o["in_hours"].get<double>());
+            L.uiNext = b;
+        }
+    }
+    const float lw = (float)fs(170);
+    uiKV("LaunchKV", 0, "Next launch", L.uiNext.empty() ? "none in 24 h" : L.uiNext.c_str(), lw);
+    uiKV("LaunchKV", 1, "Launches in the next 24 h", uiKitStr("%d", L.uiCount24), lw);
+    uiKV("LaunchKV", 2, "Trains climbing", uiKitStr("%u satellites", L.nTrain), lw);
+    uiKV("LaunchKV", 3, "Retired, deorbiting", uiKitStr("%u satellites", L.nRetire), lw);
 }
