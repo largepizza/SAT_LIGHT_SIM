@@ -100,6 +100,7 @@ struct LBatch
     bool parcelsBuilt = false;
     std::vector<launch::Parcel> parcels;
     double tVisEnd = 0.0;
+    int shifts = 0, rivals = 0; // pad deconfliction: passes skipped, candidates checked
 };
 
 struct SlotInfo
@@ -492,47 +493,78 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     B.site = c0.site;
     double tL = c0.tL, az = c0.az;
     {
+        // The launches competing for this pad around this pass (their candidates): this one waits as many passes as
+        // there are rivals of higher priority (a hash), so the cluster goes out on successive passes (~a day apart).
         const uint64_t self = batchKey(B.plane, B.k, B.b);
         const double myPri = h01(self, 9, 9);
-        for (int iter = 0; iter < 4; ++iter)
+        int rank = 0;
+        for (int q : L.planesBySite[B.site])
         {
-            bool conflict = false;
-            for (int q : L.planesBySite[B.site])
+            const LPlane &pq = L.planes[q];
+            const launch::Program &gq = L.cat.programs[pq.prog];
+            const double lifeQ = std::max(0.25, gq.lifeYears * (double)sim.launchLifeScale) * kYear;
+            const double lo = tL + (gq.raiseDays[0] - 1.0) * kDay, hi = tL + (gq.raiseDays[1] + 3.0) * kDay;
+            const int64_t k0 = (int64_t)std::floor((lo - (pq.nb - 1) * pq.gap) / lifeQ - pq.phase);
+            const int64_t k1 = (int64_t)std::floor(hi / lifeQ - pq.phase);
+            for (int64_t k = k0; k <= k1; ++k)
             {
-                const LPlane &pq = L.planes[q];
-                const launch::Program &gq = L.cat.programs[pq.prog];
-                const double lifeQ = std::max(0.25, gq.lifeYears * (double)sim.launchLifeScale) * kYear;
-                const double lo = tL + (gq.raiseDays[0] - 1.0) * kDay, hi = tL + (gq.raiseDays[1] + 3.0) * kDay;
-                const int64_t k0 = (int64_t)std::floor((lo - (pq.nb - 1) * pq.gap) / lifeQ - pq.phase);
-                const int64_t k1 = (int64_t)std::floor(hi / lifeQ - pq.phase);
-                for (int64_t k = k0; k <= k1 && !conflict; ++k)
+                const double base = (k + pq.phase) * lifeQ;
+                const int b0 = std::max(0, (int)std::ceil((lo - base) / pq.gap));
+                const int b1 = std::min(pq.nb - 1, (int)std::floor((hi - base) / pq.gap));
+                for (int b = b0; b <= b1; ++b)
                 {
-                    const double base = (k + pq.phase) * lifeQ;
-                    const int b0 = std::max(0, (int)std::ceil((lo - base) / pq.gap));
-                    const int b1 = std::min(pq.nb - 1, (int)std::floor((hi - base) / pq.gap));
-                    for (int b = b0; b <= b1 && !conflict; ++b)
-                    {
-                        const uint64_t other = batchKey(q, k, b);
-                        if (other == self || h01(other, 9, 9) < myPri)
-                            continue;
-                        const SatelliteSim::LaunchState::Cand co = candidate(sim, L, q, k, b);
-                        conflict = co.site == B.site && std::abs(co.tL - tL) < 5400.0;
-                    }
+                    const uint64_t other = batchKey(q, k, b);
+                    if (other == self)
+                        continue;
+                    const SatelliteSim::LaunchState::Cand co = candidate(sim, L, q, k, b);
+                    ++B.rivals;
+                    if (co.site != B.site)
+                        continue;
+                    if (std::abs(co.tL - c0.tL) < 5400.0 && h01(other, 9, 9) > myPri)
+                        ++rank;
                 }
-                if (conflict)
-                    break;
             }
-            if (!conflict)
-                break;
-            double a2 = 0.0;
-            const double t2 = nextCrossing(L.cat.sites[B.site], normalAt, tL + 5400.0, a2);
-            if (t2 < 0.0)
+        }
+        // A rank first moves the launch to the vehicle's next pad that reaches the plane, then (past the pads) to
+        // later passes.
+        if (rank > 0)
+        {
+            const launch::Vehicle &vh0 = L.cat.vehicles[B.veh];
+            const double lead = vh0.t2 + vh0.deployAfter;
+            const double tNom = B.tA - (pg.raiseDays[0] + (pg.raiseDays[1] - pg.raiseDays[0]) * h01(B.seed, 2, 1)) * kDay;
+            std::vector<std::pair<int, double>> pads; // (site, its first pass), the candidate's pad first
+            std::vector<double> pAz;
+            pads.push_back({B.site, c0.tL});
+            pAz.push_back(c0.az);
+            for (int st : vh0.sites)
             {
-                B.why = "pad taken";
-                return;
+                if (st == B.site)
+                    continue;
+                double a2 = 0.0;
+                const double t2 = nextCrossing(L.cat.sites[st], normalAt, tNom - lead, a2);
+                if (t2 >= 0.0)
+                {
+                    pads.push_back({st, t2});
+                    pAz.push_back(a2);
+                }
             }
-            tL = t2;
-            az = a2;
+            const int np = (int)pads.size();
+            B.site = pads[rank % np].first;
+            tL = pads[rank % np].second;
+            az = pAz[rank % np];
+            for (int r = 0; r < rank / np; ++r)
+            {
+                double a2 = 0.0;
+                const double t2 = nextCrossing(L.cat.sites[B.site], normalAt, tL + 5400.0, a2);
+                if (t2 < 0.0)
+                {
+                    B.why = "pad taken";
+                    return;
+                }
+                tL = t2;
+                az = a2;
+            }
+            B.shifts = rank;
         }
     }
     // Kessler: no launches for three weeks after the storm (the infrastructure, the debris).
@@ -1676,6 +1708,11 @@ nlohmann::json SatelliteSim::launchListJson(double hours) const
         o["payload"] = B.mem.size();
         o["incl_deg"] = glm::degrees(pl.inclRad);
         o["arrival_days"] = (B.tA - B.tL) / kDay;
+        o["plane"] = B.plane;
+        o["batch"] = B.b;
+        o["refresh"] = B.k;
+        o["pad_shifts"] = B.shifts;
+        o["pad_rivals"] = B.rivals;
         // The Sun at the pad at lift-off (twilight launches make the jellyfish).
         const glm::dvec3 sun = sunDirEciAt(B.tL);
         o["sun_elev_deg"] = glm::degrees(std::asin(glm::clamp(glm::dot(sun, ecefToEci(L.cat.sites[B.site].ecef, B.tL)), -1.0, 1.0)));

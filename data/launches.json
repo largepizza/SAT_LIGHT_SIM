@@ -2,8 +2,8 @@
   "_comment": "Launches (SatelliteSimLaunches.cpp; plan .plans/LAUNCHES_PLAN.md). Each program keeps the constellations whose names contain one of its 'match' strings flying: every orbital plane is refreshed once per 'life_years', in launches of 'payload' satellites a 'batch_gap_days' apart. A launch flies from one of its vehicle's sites (one whose latitude and azimuth range reach the plane) at the moment the plane passes over it, deploys a train at 'park_km' that climbs to its slots over 'raise_days', and the satellites it replaces deorbit and re-enter over 'deorbit_days'. Vehicle figures are public approximations (2036 is a guess). Sites: azimuth = [min, max] degrees clockwise from north, allowed by range safety (wraps through 360).",
   "sites": [
     {"id": "starbase",        "name": "Starbase, Texas",                 "lat": 25.997,  "lon": -97.155,  "azimuth": [70, 115]},
-    {"id": "ksc_39a",         "name": "Kennedy LC-39A, Florida",         "lat": 28.608,  "lon": -80.604,  "azimuth": [35, 120]},
-    {"id": "ccsfs_slc37",     "name": "Cape Canaveral SLC-37, Florida",  "lat": 28.531,  "lon": -80.567,  "azimuth": [35, 120]},
+    {"id": "ksc_39a",         "name": "Kennedy LC-39A, Florida",         "lat": 28.608,  "lon": -80.604,  "azimuth": [35, 200]},
+    {"id": "ccsfs_slc37",     "name": "Cape Canaveral SLC-37, Florida",  "lat": 28.531,  "lon": -80.567,  "azimuth": [35, 200]},
     {"id": "ccsfs_slc40",     "name": "Cape Canaveral SLC-40, Florida",  "lat": 28.562,  "lon": -80.577,  "azimuth": [35, 200]},
     {"id": "ccsfs_slc41",     "name": "Cape Canaveral SLC-41, Florida",  "lat": 28.583,  "lon": -80.583,  "azimuth": [35, 120]},
     {"id": "ccsfs_lc36",      "name": "Cape Canaveral LC-36, Florida",   "lat": 28.472,  "lon": -80.538,  "azimuth": [35, 120]},
@@ -24,7 +24,7 @@
     {"id": "saxavord",        "name": "SaxaVord, Shetland",              "lat": 60.814,  "lon": -0.765,   "azimuth": [-20, 30]}
   ],
   "vehicles": [
-    {"id": "starship", "name": "Starship", "sites": ["starbase", "ksc_39a", "ccsfs_slc37", "vandenberg_slc6"],
+    {"id": "starship", "name": "Starship", "sites": ["starbase", "ksc_39a", "ccsfs_slc37", "vandenberg_slc6", "vandenberg_slc4e"],
      "meco_s": 160, "meco_alt_km": 70, "meco_downrange_km": 75, "seco_s": 500, "deploy_after_seco_s": 1200,
      "flow1_kg_s": 21000, "flow2_kg_s": 4100, "exhaust1_m_s": 3200, "exhaust2_m_s": 3600,
      "booster": "tower", "flame1_mag_100km": -6.0, "flame2_mag_100km": -4.0,
