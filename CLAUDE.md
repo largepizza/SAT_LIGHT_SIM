@@ -4231,11 +4231,14 @@ launches follow per-program cadences (no real manifest).
   makes a spiral. No meshes, no droneships.
 - **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1.5-5 s of each burn, integrated once per
   launch (only for launches within ~4500 km of the eye and not past 1 h/s of warp) with entrainment: the gas expands
-  at ~1.3 km/s while it outweighs the air it has taken in, then diffuses; momentum mixes with the swept air (exact for
+  at ~2 km/s while it outweighs the air it has taken in, then diffuses (above ~80 km the coupling to the air falls to
+  3%: the exhaust largely passes through air whose mean free path is ~1 km, and the bell grows to hundreds of km); momentum mixes with the swept air (exact for
   any step), gravity acts on the exhaust's share, Coriolis and centrifugal in the Earth-fixed frame, a hashed wind by
   altitude. Low down a narrow trail the wind carries, high up a bell that expands for tens of km and falls back into
-  the thicker air. Cross-section `kappa`: 10 m^2/kg low (condensation, soot) to 300 m^2/kg above ~90 km (sub-micron
-  ice); albedo from `soot`. Once a high parcel has swept up about its own mass of air it is drawn as a core + a ring of
+  the thicker air. Cross-section `kappa`: 10 m^2/kg low (condensation, soot) to 1000 m^2/kg above ~90 km (the exhaust's water as
+  sub-micron ice: an upper estimate, ~2000 if all of it froze; 300 left the bell's wide part invisible); albedo from
+  `soot`. Parcels past 2 / 10 min are drawn every 2nd / 4th (they overlap), plumes at most 320 Gaussians a frame
+  (wide ones cover the screen: ~3 ms at 1000). Once a high parcel has swept up about its own mass of air it is drawn as a core + a ring of
   7 Gaussians across the line of sight (the limb-brightened bell). They go into the dust list as `col.w = 2`
   (`kMaxDustClouds` 1024: the Kessler dust takes at most `kDustMax`, the fireball trails up to `kFireTrailMax`, plumes
   and flames the rest, brightest per pixel first); cloud_march.comp sums their optical depth, averages their light per
@@ -4250,8 +4253,8 @@ launches follow per-program cadences (no real manifest).
 - **Kessler** (L6, partial): no launches from the CME for three weeks; a slot dead before its swap gets no replacement
   and no retiree. Trains and retirees are NOT engine objects (they do not collide); a slot killed by the cascade is not
   refilled.
-- **Cost** (RTX 3070 Ti, 1600x900, a Vandenberg twilight launch in view): cloud_march +0.3 ms, CPU 0.3 ms at 1x, 0.6 ms
-  at 1 d/s. ~2600 planes, ~1200 live batches, ~15k train and ~18k retiring satellites at the default lives.
+- **Cost** (RTX 3070 Ti, 1600x900, a Vandenberg twilight launch's bell filling the view): cloud_march +0.9 ms, CPU
+  0.3 ms at 1x, 0.6 ms at 1 d/s. ~2600 planes, ~1200 live batches, ~15k train and ~18k retiring satellites at the default lives.
 - Settings `launches.enabled / life_scale / plume_gain / rocket_gain`; Settings > Constellations > LAUNCHES; harness
   `launch ...` (docs/HARNESS.md); default bookmark "Twilight Launch from Vandenberg"
   (`tools/harness/scripts/default_bookmarks.satcmd` #8).

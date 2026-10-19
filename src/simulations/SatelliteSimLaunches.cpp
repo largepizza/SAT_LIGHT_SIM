@@ -819,7 +819,7 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     // Scattering cross-section per kg of exhaust: low down the visible trail (condensing vapour and soot: an opaque
     // column ~50-100 m wide near the pad); high up the exhaust's water freezes into sub-micron ice as it expands
     // (~3000 m^2/kg of ice, ~10% of the exhaust condensing): the bright, sunlit bell seen at twilight.
-    auto kappaAt = [&](double h) { return glm::mix(10.0, 300.0, glm::smoothstep(25000.0, 90000.0, h)); };
+    auto kappaAt = [&](double h) { return glm::mix(10.0, 1000.0, glm::smoothstep(25000.0, 90000.0, h)); };
     auto albedoAt = [&](double h) { return glm::mix(0.95 - 0.55 * vh.soot, 0.98, glm::smoothstep(15000.0, 40000.0, h)); };
     auto emit = [&](int stage, double tau, double dtE, double flow, double vex, int mode) {
         bool ok0, ok1;
@@ -1472,14 +1472,20 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             LaunchImpl::buildParcels(L, B);
         }
         const double era = earthRotationAngle(t);
-        for (const launch::Parcel &pc : B.parcels)
+        for (size_t pi = 0; pi < B.parcels.size(); ++pi)
         {
+            const launch::Parcel &pc = B.parcels[pi];
             const double age = tau - pc.t0;
+            // Old parcels are wide and overlap their neighbours: every 2nd stands for two past 2 min, every 4th for
+            // four past 10 min (the budget then reaches the whole bell, not just its young part).
+            const int dec = age > 600.0 ? 4 : age > 120.0 ? 2 : 1;
+            if (pi % (size_t)dec != 0)
+                continue;
             glm::dvec3 cE;
             double sig, cond, sweep = 0.0;
             if (age < 0.0 || !pc.at(age, cE, sig, cond, &sweep))
                 continue;
-            const double Sigma = pc.kappa * pc.m * cond * (double)launchPlumeGain;
+            const double Sigma = pc.kappa * pc.m * cond * (double)launchPlumeGain * (double)dec;
             if (Sigma < 1.0)
                 continue;
             const glm::dvec3 C = rotZ(cE, era);
@@ -1567,9 +1573,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     if (!plumes.empty())
     {
         std::sort(plumes.begin(), plumes.end(), [](const Cand &a, const Cand &b) { return a.pri > b.pri; });
+        // At most 320 plume Gaussians: a wide one covers much of the screen and costs every pixel it covers
+        // (cloud_march.comp's loop), ~3 ms at 1000.
+        const uint32_t nMax = std::min<uint32_t>(kMaxDustClouds, n + 320u);
         for (const Cand &c : plumes)
         {
-            if (n >= kMaxDustClouds)
+            if (n >= nMax)
                 break;
             out[n++] = c.d;
             ++L.nPlumes;

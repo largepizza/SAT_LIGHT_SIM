@@ -427,9 +427,12 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         const glm::dvec3 vr = v - w;
         // Expansion: the gas's own (km/s into vacuum) while it outweighs the air it has taken in, then diffusion.
         const double Kd = hk < 15.0 ? 25.0 : hk < 60.0 ? 8.0 : 400.0;
-        const double sigDot = 1300.0 * (m / M) + Kd / sig;
-        // Entrainment: the air swept by the growing surface and the parcel's motion through the air.
-        const double dMe = rho * 12.566 * sig * sig * (sigDot + 0.25 * glm::length(vr));
+        const double sigDot = 2000.0 * (m / M) + Kd / sig;
+        // Entrainment: the air swept by the growing surface and the parcel's motion through the air. High up the
+        // air is so thin (mean free path ~1 km at 200 km) that the exhaust largely passes through it: the coupling
+        // weakens, and the bell grows to hundreds of km as seen in twilight launches.
+        const double couple = glm::mix(1.0, 0.03, glm::smoothstep(80000.0, 160000.0, h));
+        const double dMe = couple * rho * 12.566 * sig * sig * (sigDot + 0.25 * glm::length(vr));
         // Step: a bounded change of radius and of mass, growing with age.
         double dt = std::max(1e-3, 0.03 * age);
         dt = std::min(dt, 0.15 * sig / std::max(sigDot, 1e-6));
