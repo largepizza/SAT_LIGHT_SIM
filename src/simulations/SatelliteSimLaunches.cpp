@@ -1519,7 +1519,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), (float)amb);
             // At night the sky's exposure is not physical (only ~5.5x the day's: see the Kessler dust), so a sunlit
             // plume against the dark sky reads far dimmer than it is; its sunlight is raised as the eye's sky darkens.
-            d.col = glm::vec4(glm::vec3(tr * pc.albedo * nightBoost), 2.0f);
+            d.col = glm::vec4(glm::vec3(tr * pc.albedo * nightBoost), (float)(2.0 + pc.albedo));
             d.cone = coneOf(toEnu(rel), 5.5 * std::max(sA, sP));
             plumes.push_back(c);
             // High up, once the expanding exhaust has swept up about its own mass of air it piles up at its rim: a shell,

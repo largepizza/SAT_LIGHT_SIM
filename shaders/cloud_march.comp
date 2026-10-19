@@ -164,13 +164,14 @@ vec3 dustMul(DustCloud d, vec3 v)
 // (tauP), their light per unit optical depth averaged (Lp / tauP), so a thick trail saturates and hides what is
 // behind it (the caller composites 1 - exp(-tauP)); tP = their optical-depth-weighted distance.
 vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le, out float tScat,
-                  out vec3 Lp, out float tauP, out float tP)
+                  out vec3 Lp, out float tauP, out float tP, out float aP)
 {
     Le = vec3(0.0);
     tScat = 0.0;
     Lp = vec3(0.0);
     tauP = 0.0;
     tP = 0.0;
+    aP = 0.0;
     uint n = min(dustCount, 1024u);
     if (n == 0u)
         return vec3(0.0);
@@ -213,7 +214,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
             // (a sharper shadow edge than the dust's: the bell's lit edge is where the Earth's shadow cuts it)
             float litP = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, dS);
             Lp   += tau * d.col.rgb * litP;          // the sunlight it scatters (the phase is applied below)
-            Ls   += tau * d.ib.w;                     // the sky light on it
+            Ls   += tau * (d.col.w - 2.0);            // its albedo (col.w = 2 + albedo)
             tauP += tau;
             tP   += tau * clamp(tc, 0.0, T);
             continue;
@@ -230,7 +231,8 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
         // takes over (a thick sunlit trail is a white cloud: ~albedo / pi, not the phase's 0.05); the sky light on
         // it diffusely. Then the trail's opacity.
         float ms = 0.075 * (1.0 - exp(-0.6 * tauP));
-        Lp = (Lp * (phaseP + ms) + Ls * vec3(0.55, 0.68, 1.0) * 0.08) / tauP * (1.0 - exp(-tauP));
+        Lp = Lp * (phaseP + ms) / tauP * (1.0 - exp(-tauP));
+        aP = Ls / tauP;
     }
     return L * phase;
 }
@@ -1797,13 +1799,15 @@ void main() {
         // Extinction to the cloud, not to infinity: looking down from above the air, the path to infinity ends in
         // the ground through the whole atmosphere, and every cloud and fireball trail below the eye went dark.
         vec3  dLe, pL;
-        float dT, pTau, pT;
-        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, dLe, dT, pL, pTau, pT);
+        float dT, pTau, pT, pA;
+        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, dLe, dT, pL, pTau, pT, pA);
         // Rocket plumes: in front of the clouds (nearer than their mean distance) they cover them, behind they are
         // seen through them; either way they dim what lies behind them (the sky, the stars) by exp(-tau).
         if (pTau > 1e-6) {
             float pExt = pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, max(pT, 1.0), cloud.extinctionCoeff));
-            float pTr  = exp(-pTau);
+            // What it hides behind it, less the sky's light it scatters back toward the eye (lit by the same sky as
+            // the background: a bright plume barely dims the sky, a sooty one silhouettes against it).
+            float pTr  = exp(-pTau) + 0.85 * pA * (1.0 - exp(-pTau));
             if (pT < tCloudMeanT) {
                 B_total = B_total * pTr + pL * pExt;
             } else {

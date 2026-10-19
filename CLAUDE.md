@@ -4201,9 +4201,12 @@ launches follow per-program cadences (no real manifest).
   degree of node apart (Starmind's per-cluster jitter).
 - **Everything is a pure function of sim time**: no history. A batch's state is built from hashes and closed forms when
   first needed and cached (`LaunchState::batches`); time warp, reverse playback and bookmarks see the same sky.
-- **Pad deconfliction** without recursion: a launch checks the other launches' UNDECONFLICTED candidates
-  (`LaunchState::cands`) at its site within +-90 min and yields to higher-priority ones (by hash) by taking the plane's
-  next pass. (Two Starships left Starbase 7 minutes apart before it.)
+- **Pad deconfliction** without recursion: a launch counts the higher-priority (by hash) rivals among the other
+  launches' UNDECONFLICTED candidates (`LaunchState::cands`) for its pad within +-90 min; that rank moves it to its
+  vehicle's next pad that reaches the plane, then to later passes. Starmind's sun-synchronous planes all pass over
+  Vandenberg at nearly the same two times a day, so Starship also uses SLC-4E and the Cape's polar corridor (azimuth to
+  200). Residual: ~3 same-pad pairs within 90 min a week of ~66 launches. (Two Starships left Starbase 7 minutes apart
+  before it; "yield to the rivals' candidates" stacked the yielders on one later day.)
 - **The phasing** (`buildBatch`, `memberState`): a member waits in the parking orbit, then its radius ramps linearly to
   the slot's; the phase lag to its slot is the closed-form integral of the mean motion over that ramp
   (`launch::rampPhase`), and the wait is solved so the climb ends exactly on the slot (an unsolvable remainder `eps` is
@@ -4236,8 +4239,10 @@ launches follow per-program cadences (no real manifest).
   7 Gaussians across the line of sight (the limb-brightened bell). They go into the dust list as `col.w = 2`
   (`kMaxDustClouds` 1024: the Kessler dust takes at most `kDustMax`, the fireball trails up to `kFireTrailMax`, plumes
   and flames the rest, brightest per pixel first); cloud_march.comp sums their optical depth, averages their light per
-  unit of it (single scattering by an ice phase g 0.8, multiple scattering growing with the optical depth, the sky's
-  light), composites `1 - exp(-tau)` in front of or behind the clouds by their mean distance and dims what is behind.
+  unit of it (single scattering by an ice phase g 0.8, multiple scattering growing with the optical depth), composites
+  `1 - exp(-tau)` in front of or behind the clouds by their mean distance, and dims what is behind by
+  `exp(-tau) + 0.85 albedo (1 - exp(-tau))` (the sky's light it scatters back; `col.w = 2 + albedo`): a clean plume in
+  the dark barely dims the sky, a sooty trail silhouettes (as pure absorbers they were dark smudges at night).
   Each Gaussian carries a view cone (80-B `GpuDustCloud`): the shader skips it with one dot product. At night the
   plumes' sunlight is raised up to 10x as the eye's sky darkens (the night exposure is not physical: see the dust).
 - **Sound**: each burning rocket within 150 km on a thunder voice (`launchSounds`, called from `thunderStep`): the
