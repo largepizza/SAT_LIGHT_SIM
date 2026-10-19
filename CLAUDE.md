@@ -4051,7 +4051,10 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   kFluxToFlare x pixel solid angle / (the point style's reference flare x 1.27 px^2 x the sky exposure without its
   EV)). The sky's own radiance is not physical at night (the night exposure is only 5.5x the day's), so a physical
   value in sky units is invisible at any gain. "Dust cloud brightness" (`kessler.dust_gain`, x1 .. x1000, default
-  x100): physically a cloud fades below the dark sky within minutes.
+  x100): physically a cloud fades below the dark sky within minutes. **No pops** (issue 20261018_211013, day 81 at
+  x1000: the budget was full and clouds near the cut snapped in and out as the view moved, and every cloud vanished
+  at 3 h still bright): a cloud fades over the last 40% of its 3 h, lumps are only for the 24 brightest that are
+  resolved (sR > 8 px), and clouds near the budget's cut fade by priority between the cut and 3x it.
 - **The engine** (`engineSample`, cube method, Liou 2006): every 6 h of sim time one sample at the step's middle,
   20-km cubes among the roster and the large pieces (sorted in parallel: keys are unique, so the order is the
   same), P = vRel x pi (rA + rB)^2 x dt / V x weights x rate multiplier, x (1 - avoidance) when one is a working
@@ -4115,7 +4118,14 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   20261016_154921.) The trails' Gaussians carry that extinction already; in cloud_march.comp they are not extinguished
   again, scattered dust is extinguished to its own (brightness-weighted) distance, not to infinity (looking down, that
   path ran into the ground), and clouds hide both only from an eye below 20 km (the aurora's 95-km test hid trails
-  behind the clouds under them from 60-95 km). Heads are point sprites appended to the finished
+  behind the clouds under them from 60-95 km). A fragment's trail is centred 0.55 L behind its head with sigma
+  0.28 L (L its last 1.5 s of path), the train's segments sigma 0.3 L: a Gaussian about the path's midpoint with
+  sigma 0.45 L reached ~0.4 L AHEAD of the head (issue 20261018_205438). **Material colours** ("Fireball material
+  colours" `kessler.fireball_colors`, Off / Subtle 0.4 / Vivid 0.8, default 0.8; `fbFrag`'s matK): each fragment
+  hashes a material that tints its temperature colour — steel / soot / composites 38% (no tint), aluminium 25%
+  white (AlO bands), copper 12% green (wiring, motors), titanium / magnesium 8% blue-white, sodium 10% yellow-orange,
+  lithium cells 7% crimson, strongest while they flare; a big object's remnant (k 0) keeps the hull's temperature
+  colour, a small re-entry's (N <= 3) takes one too. Heads are point sprites appended to the finished
   visible list after sat_flare.comp (`kessler_fireballs.comp`, host-visible `kFireBuf` of up to 8192, tagged as city
   lights: meshPx -1, slot index 0xFFFFFFFF; bloom and glare like any satellite); each bright fragment's trail (its
   last 1.5 s of path) and the main body's train (6 segments over ~18 s, fading over 8 s, spreading) are EMISSIVE

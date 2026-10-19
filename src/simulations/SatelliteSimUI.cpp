@@ -7770,6 +7770,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         kesslerHorizonYears = settingClamp(kj.value("horizon_years", kesslerHorizonYears), 1.0f, 200.0f);
         kesslerDustGain = settingClamp(kj.value("dust_gain", kesslerDustGain), 0.0f, 100000.0f);
         kesslerSmallReGain = settingClamp(kj.value("small_reentry_gain", kesslerSmallReGain), 0.0f, 10000.0f);
+        kesslerFireColor = settingClamp(kj.value("fireball_colors", kesslerFireColor), 0.0f, 1.0f);
         // Applied at launch; a later change (a harness `set`, a snapshot's settings) re-simulates next frame.
         if (kInitDone && (e0 != kesslerEnabled || r0 != kesslerRateMult || a0 != kesslerAvoidance || h0 != kesslerHorizonYears))
             kRestartPending = true;
@@ -8576,7 +8577,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                     {"avoidance", kesslerAvoidance},
                     {"horizon_years", kesslerHorizonYears},
                     {"dust_gain", kesslerDustGain},
-                    {"small_reentry_gain", kesslerSmallReGain}};
+                    {"small_reentry_gain", kesslerSmallReGain},
+                    {"fireball_colors", kesslerFireColor}};
     return j;
 }
 

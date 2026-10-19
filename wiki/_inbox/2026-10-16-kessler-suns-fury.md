@@ -110,3 +110,14 @@ thousand an hour worldwide (the large pieces and satellites: about 50). Each bre
 window around their drag lifetime, spread along their orbit, a pure function of sim time. Setting "Small re-entry
 brightness" (`kessler.small_reentry_gain`, Off / x1 / x3 / x10 / x30 / x100, default x30): x1 is physical, about
 magnitude +1 from 100 km for a typical 0.1-kg piece. From the ground they are obvious streaks; from orbit, moving dots.
+
+## Now (fireball colours, trail and dust fixes, 2026-10-18)
+Re-entry fragments are tinted by what burns ("Fireball material colours", `kessler.fireball_colors`, Off / Subtle /
+Vivid, default Vivid): aluminium white, copper green, titanium blue-white, sodium yellow-orange, lithium cells crimson
+(strongest as they flare), steel and composites the orange-red of their temperature. Trails end at their heads. Dust
+clouds fade out over the end of their 3-hour life and near the drawing budget instead of popping in and out.
+
+## History
+Trails were symmetric Gaussians about the midpoint of the last 1.5 s of path, so they reached well ahead of the
+fireball (issue 20261018_205438). Dust clouds popped as the view moved once the 384-Gaussian budget was full, and
+vanished at exactly 3 h (issue 20261018_211013).

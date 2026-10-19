@@ -2530,6 +2530,7 @@ private:
     float kesslerAvoidance = 0.9f;    // kessler.avoidance: share of active-vs-debris encounters dodged
     float kesslerHorizonYears = 20.0f; // kessler.horizon_years: how far the cascade is simulated
     float kesslerDustGain = 100.0f;    // kessler.dust_gain: the drawn dust clouds' brightness (x the physical estimate)
+    float kesslerFireColor = 0.8f;     // kessler.fireball_colors: fragments tinted by material (0 = temperature only)
     float kesslerSmallReGain = 30.0f;  // kessler.small_reentry_gain: small fragments' fireballs (x physical: meteor-faint)
     struct KesslerWorker;             // the World + its thread (SatelliteSimKessler.cpp)
     struct KesslerWorkerDelete        // (an incomplete type here: deleted where it is defined)

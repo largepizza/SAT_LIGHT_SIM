@@ -1098,7 +1098,9 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         const double age = t - e.t;
         if (age < 0.0 || age > kLife || (e.dustKg <= 0.5f && e.nSmall < 50.0f))
             continue;
-        const double amp = 0.25 * (5.6 * (double)e.dustKg + 0.02 * (double)e.nSmall) * (double)kesslerDustGain;
+        // Fades out over the last 40% of its life (it vanished at 3 h, still bright at a high gain).
+        const double ageK = 1.0 - glm::smoothstep(0.6 * kLife, kLife, age);
+        const double amp = 0.25 * (5.6 * (double)e.dustKg + 0.02 * (double)e.nSmall) * (double)kesslerDustGain * ageK;
         kessler::State s0{{e.pos[0], e.pos[1], e.pos[2]}, {e.vel[0], e.vel[1], e.vel[2]}};
         if (glm::length(s0.r) < 1.0)
             continue;
@@ -1116,13 +1118,48 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
     auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
     const uint32_t dustMax = kMaxDustClouds * 3 / 4;
+    // Each cloud's Gaussians: pieces along the arc (K, once it curves) x a core + 5 lumps (L) for the brightest that
+    // are resolved. The budget runs out somewhere down the ranking; clouds near that cut fade (by priority between
+    // the cut and 3x it) instead of popping in and out as the view moves (issue 20261018_211013).
+    auto pieces = [&](const Cand &c, int rnk, int &K, int &L) {
+        const double rm = glm::length(c.r);
+        const double nMot = std::sqrt(kessler::kGM / (rm * rm * rm));
+        const kessler::Event &e = kEvents[c.ev];
+        const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
+        const double sS = sv * c.age * (1.0 + 2.0 * std::min(nMot * c.age, 1.0)) + 30.0;
+        const double sR = sv * std::min(c.age, 1.0 / nMot) + 30.0;
+        const double px = glm::length(c.r - eye) * (double)pixelAngle;
+        K = (int)std::clamp(std::ceil(4.0 * sS / 1.5e6), 1.0, 12.0);
+        L = (rnk < 24 && sR > 8.0 * px) ? 6 : 1;
+    };
+    double priCut = 0.0;
+    {
+        uint32_t used = 0;
+        for (size_t q = 0; q < cands.size(); ++q)
+        {
+            int K, L;
+            pieces(cands[q], (int)q, K, L);
+            used += (uint32_t)(K * L);
+            if (used > dustMax)
+            {
+                priCut = cands[q].pri;
+                break;
+            }
+        }
+    }
     int rank = 0;
     for (const Cand &c : cands)
     {
         if (n >= dustMax)
             break;
         const kessler::Event &e = kEvents[c.ev];
-        const bool lumpy = rank++ < 24; // the brightest clouds: a core and uneven lumps, not one smooth ball
+        int Kc, Lc;
+        pieces(c, rank, Kc, Lc);
+        const bool lumpy = Lc > 1; // the brightest resolved clouds: a core and uneven lumps, not one smooth ball
+        ++rank;
+        const double cutK = priCut > 0.0 ? glm::smoothstep(priCut, 3.0 * priCut, c.pri) : 1.0;
+        if (cutK <= 0.0)
+            break;
         const double rm = glm::length(c.r);
         const double nMot = std::sqrt(kessler::kGM / (rm * rm * rm));
         const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
@@ -1180,7 +1217,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             auto M = [&](int p, int q) { return iR * a[p] * a[q] + iS * b[p] * b[q] + iW * cw[p] * cw[q]; };
             GpuDustCloud &d = out[n++];
             const glm::dvec3 rel = toEnu(ctr - eye);
-            d.c = glm::vec4(glm::vec3(rel), (float)(c.amp * w * toSky));
+            d.c = glm::vec4(glm::vec3(rel), (float)(c.amp * cutK * w * toSky));
             d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
                              (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sRk * sSk * sWk)));
             d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
@@ -1218,7 +1255,10 @@ struct FbFrag
 };
 
 // The main body (k < 0) or fragment k at tau seconds after the glow starts.
-FbFrag fbFrag(uint64_t seed, int k, int N, double tau)
+// Fragment materials (each fragment hashes one): the temperature colour is tinted by what burns. Steel, soot and
+// composites stay orange-red; aluminium burns bright white (AlO bands); copper (wiring, motors) green; titanium and
+// magnesium blue-white sparks; sodium yellow-orange; lithium cells flare crimson. matK = the tint's strength.
+FbFrag fbFrag(uint64_t seed, int k, int N, double tau, float matK = 0.0f)
 {
     FbFrag f{};
     const double tb = fbBreakupT();
@@ -1274,6 +1314,30 @@ FbFrag fbFrag(uint64_t seed, int k, int N, double tau)
     f.col = tv > 0.7f ? glm::mix(orange, hot, (tv - 0.7f) / 0.3f) : glm::mix(red, orange, tv / 0.7f);
     if (H(13) < 0.2)
         f.col = glm::mix(f.col, hot, 0.5f);
+    if (matK > 0.0f && (k > 0 || N <= 3)) // a big object's remnant (k 0) is the hull: temperature colour
+    {
+        const double m = H(14);
+        glm::vec3 mc = f.col;
+        float share = 0.75f;
+        if (m < 0.38) // steel, soot, composites: the temperature colour
+            share = 0.0f;
+        else if (m < 0.63)
+            mc = glm::vec3(1.0f, 0.96f, 0.88f); // aluminium
+        else if (m < 0.75)
+            mc = glm::vec3(0.42f, 1.0f, 0.52f); // copper
+        else if (m < 0.83)
+            mc = glm::vec3(0.78f, 0.88f, 1.0f); // titanium, magnesium
+        else if (m < 0.93)
+            mc = glm::vec3(1.0f, 0.74f, 0.28f); // sodium
+        else
+        {
+            // A lithium cell: crimson, strongest while it flares.
+            mc = glm::vec3(1.0f, 0.16f, 0.2f);
+            const double base = std::max(w * vr * vr * dens, 1e-9);
+            share = 0.55f + 0.4f * (float)std::clamp((f.I / base - 1.0) / 2.0, 0.0, 1.0);
+        }
+        f.col = glm::mix(f.col, mc, share * matK);
+    }
     return f;
 }
 } // namespace
@@ -1370,7 +1434,7 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
         const bool broken = tau >= fbBreakupT();
         for (int k = broken ? 0 : -1; k < (broken ? N : 0); ++k)
         {
-            const FbFrag f = fbFrag(seed, k, N, tau);
+            const FbFrag f = fbFrag(seed, k, N, tau, kesslerFireColor);
             if (f.I <= 1e-4)
                 continue;
             const glm::dvec3 P = place(f);
@@ -1394,7 +1458,7 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
             // Its trail: the path over the last 1.5 s (shorter as it slows), an emissive Gaussian along it.
             if (n < kMaxDustClouds && flare > 5e-3)
             {
-                const FbFrag fp = fbFrag(seed, k, N, std::max(tau - 1.5, 0.0));
+                const FbFrag fp = fbFrag(seed, k, N, std::max(tau - 1.5, 0.0), kesslerFireColor);
                 const glm::dvec3 Pp = place(fp);
                 const glm::dvec3 axis = P - Pp;
                 const double L = glm::length(axis);
@@ -1405,17 +1469,19 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
                     b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
                     const glm::dvec3 c2 = glm::cross(a, b2);
                     const double sMin = 0.6 * range * 2.0 * pixFull;
-                    const double sA = std::max(0.45 * L, sMin), sP = std::max(150.0, sMin);
+                    // Centred 0.55 L behind the head with sigma 0.28 L, so it ends AT the head (a Gaussian about the
+                    // path's midpoint with sigma 0.45 L reached ~0.4 L ahead of it: issue 20261018_205438).
+                    const double sA = std::max(0.28 * L, sMin), sP = std::max(150.0, sMin);
                     const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
                     auto M = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
                     // Intensity (photometry units) from the flare: flare = K J / r^2.
                     const double J = 0.7 * flare * range * range / K;
                     GpuDustCloud &d = out[n++];
-                    d.c = glm::vec4(glm::vec3(toEnu(0.5 * (P + Pp) - eye)), (float)(J * toSky));
+                    d.c = glm::vec4(glm::vec3(toEnu(P - 0.55 * axis - eye)), (float)(J * toSky));
                     d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
                                      (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
                     d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
-                    d.col = glm::vec4(glm::mix(f.col, glm::vec3(1.0f, 0.35f, 0.12f), 0.5f), 1.0f); // emissive
+                    d.col = glm::vec4(glm::mix(f.col, glm::vec3(1.0f, 0.35f, 0.12f), 0.25f), 1.0f); // emissive, the material's tint
                     ++kFireTrails;
                 }
             }
@@ -1443,7 +1509,7 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
             b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
             const glm::dvec3 c2 = glm::cross(a, b2);
             const double sMin = 0.6 * range * 2.0 * pixFull;
-            const double sA = std::max(0.45 * L, sMin), sP = std::max(200.0 + 40.0 * age, sMin);
+            const double sA = std::max(0.3 * L, sMin), sP = std::max(200.0 + 40.0 * age, sMin);
             const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
             auto M = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
             const double J = flare * range * range / K;
@@ -2105,6 +2171,17 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
                                "minutes. Higher keeps the clouds visible longer.");
     if (dg >= 0 && dg != dSel)
         kesslerDustGain = kDustV[dg];
+    static const char *kFireCol[] = {"Off", "Subtle", "Vivid"};
+    static const float kFireColV[] = {0.0f, 0.4f, 0.8f};
+    int fSel = 2;
+    for (int i = 0; i < 3; ++i)
+        if (std::abs(kesslerFireColor - kFireColV[i]) < 0.05f)
+            fSel = i;
+    const int fc = uiChoiceRow(inp, ui, "KesslerFireCol", 0, "Fireball material colours", kFireCol, 3, fSel,
+                               "Re-entry fragments tinted by what burns: aluminium white, copper wiring green, titanium "
+                               "blue-white, sodium yellow, lithium cells crimson; steel and composites stay orange-red.");
+    if (fc >= 0 && fc != fSel)
+        kesslerFireColor = kFireColV[fc];
     static const char *kSmallRe[] = {"Off", "x1", "x3", "x10", "x30", "x100"};
     static const float kSmallReV[] = {0.0f, 1.0f, 3.0f, 10.0f, 30.0f, 100.0f};
     int sSel = 4;
