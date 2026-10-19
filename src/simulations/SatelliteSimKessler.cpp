@@ -1070,6 +1070,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         double toSky, pixFull;
         ~Finish()
         {
+            s->selTransients.clear();
             s->kesslerFillFireballs(out, n, toSky, pixFull);
             {
                 // Booked as launches, not as the cascade (this runs inside the dust fill's kessler timer).
@@ -1079,6 +1080,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
                 s->cpuAccumMs[CPU_LAUNCHES] += ms;
                 s->cpuAccumMs[CPU_KESSLER] -= ms;
             }
+            s->selTransientUpdate();
             hdr[0] = n;
             s->kDustCount = n;
         }
@@ -1421,7 +1423,8 @@ const kessler::PoolRec *SatelliteSim::kesslerPoolGenWithDecay(uint32_t j, int32_
 // its fragment count and seed, tau seconds into the glow. Heads go to kFireBuf, trails to the dust list (out, n).
 // Shared by the Kessler re-entries and the launches' (retirees, upper stages: SatelliteSimLaunches.cpp).
 void SatelliteSim::fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, double m0, int N, uint64_t seed, double tau,
-                                 GpuDustCloud *out, uint32_t &n, double toSky, double pixFull)
+                                 GpuDustCloud *out, uint32_t &n, double toSky, double pixFull, uint8_t tagKind,
+                                 uint64_t tagA)
 {
     if (!kFireMapped)
         return;
@@ -1461,6 +1464,25 @@ void SatelliteSim::fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, doub
             continue;
         if (kFireCount < kFireballMax)
             fo[kFireCount++] = {glm::vec4(glm::vec3(dirE), (float)flare), glm::vec4(f.col, (float)range)};
+        // The main body (the remnant once broken up) can be picked.
+        if (tagKind && k == (broken ? 0 : -1))
+        {
+            SelTransient st;
+            st.key = seed * 0x9E3779B97F4A7C15ull + tagKind;
+            st.kind = tagKind;
+            st.a = tagA;
+            st.tau = tau;
+            const glm::dvec3 P1 = place(fbFrag(seed, k, N, std::max(tau - 0.5, 0.0), kesslerFireColor));
+            const glm::dvec3 P2 = place(fbFrag(seed, k, N, std::max(tau - 1.0, 0.0), kesslerFireColor));
+            st.pos = P;
+            st.vel = (P - P1) / 0.5;
+            st.acc = (P - 2.0 * P1 + P2) / 0.25;
+            if (tau < 1.0)
+                st.acc = glm::dvec3(0.0);
+            st.dirEnu = glm::vec3(dirE);
+            st.flare = (float)flare;
+            addSelTransient(st);
+        }
         // Its trail: the path over the last 1.5 s (shorter as it slows), an emissive Gaussian along it.
         if (n < kFireTrailMax && flare > 5e-3)
         {
@@ -1553,8 +1575,9 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
     const double R = satphot::kEarthRadiusM;
     const double dayness = glm::clamp(((double)sunDirENU.w + 0.1) / 0.3, 0.0, 1.0);
     const double K = satphot::kFluxToFlare * (double)brightnessScale;
-    auto drawReentry = [&](const glm::dvec3 &U0, const glm::dvec3 &A, double m0, int N, uint64_t seed, double tau) {
-        fbDrawReentry(U0, A, m0, N, seed, tau, out, n, toSky, pixFull);
+    auto drawReentry = [&](const glm::dvec3 &U0, const glm::dvec3 &A, double m0, int N, uint64_t seed, double tau,
+                           uint8_t kind = 6, uint64_t a = 0) {
+        fbDrawReentry(U0, A, m0, N, seed, tau, out, n, toSky, pixFull, kind, a);
     };
     std::vector<uint32_t> seen;
     for (int32_t hr = (nowSec - (int32_t)kFbDur) / 3600; hr <= nowSec / 3600; ++hr)
@@ -1610,7 +1633,7 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
             const double m0 = -4.0 - 2.5 * std::log10(std::max(mass, 1.0) / 100.0);
             const int N = (int)std::clamp(3.0 + 40.0 * std::sqrt(std::max(mass, 1.0) / 2500.0), 3.0, 80.0);
             const uint64_t seed = (uint64_t)sat * 0x9E3779B97F4A7C15ull ^ (uint64_t)(uint32_t)dsec;
-            drawReentry(U0, A, m0, N, seed, tau);
+            drawReentry(U0, A, m0, N, seed, tau, 5, sat);
         }
     }
     // The small fragments (10 cm - 1 m) coming down: meteor-like, 1-3 pieces, magnitude -1.5 for 1 kg at 100 km (a

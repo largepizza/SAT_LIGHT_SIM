@@ -465,7 +465,11 @@ json SatelliteSim::harnessStateJson()
     {
         const SatOrbit &o = satOrbits[selectedSatIndex];
         sel["sat"] = selectedSatIndex;
-        sel["type"] = satTypes[o.typeIdx].name;
+        sel["type"] = o.typeIdx < satTypes.size() ? satTypes[o.typeIdx].name : std::string("transient");
+        if (selIsTransient())
+            sel["transient"] = {{"kind", (int)selTransientCur.kind}, {"label", transientLabel()},
+                                {"alt_km", (glm::length(selTransientCur.pos) - satphot::kEarthRadiusM) / 1000.0},
+                                {"speed_kms", glm::length(selTransientCur.vel) / 1000.0}};
         if (o.constIdx < constellations.size())
         {
             sel["constellation"] = constellations[o.constIdx].name;
@@ -2386,7 +2390,21 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (sub == "select")
         {
             std::string msg;
-            if (!launchSelect(lower(c.str("kind", "train")) == "retiree" ? 1 : 0, msg))
+            const std::string kind = lower(c.str("kind", "train"));
+            // Drawn objects (this frame's heads): rocket stages, the ship coming home, re-entry fireballs.
+            static const std::pair<const char *, int> kTr[] = {{"rocket", 1}, {"ship", 2}, {"fireball", 0},
+                                                               {"retiree_reentry", 3}, {"stage_reentry", 4},
+                                                               {"kessler_reentry", 5}, {"fragment", 6}};
+            int trKind = -1;
+            for (const auto &k : kTr)
+                if (kind == k.first)
+                    trKind = k.second;
+            if (trKind >= 0)
+            {
+                if (!selectTransient(trKind, msg))
+                    fail("launch select: " + msg);
+            }
+            else if (!launchSelect(kind == "retiree" ? 1 : 0, msg))
                 fail("launch select: " + msg);
             r["message"] = msg;
             return Status::Done;

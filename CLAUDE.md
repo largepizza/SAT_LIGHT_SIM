@@ -4206,7 +4206,11 @@ launches follow per-program cadences (no real manifest).
   vehicle's next pad that reaches the plane, then to later passes. Starmind's sun-synchronous planes all pass over
   Vandenberg at nearly the same two times a day, so Starship also uses SLC-4E and the Cape's polar corridor (azimuth to
   200). Residual: ~3 same-pad pairs within 90 min a week of ~66 launches. (Two Starships left Starbase 7 minutes apart
-  before it; "yield to the rivals' candidates" stacked the yielders on one later day.)
+  before it; "yield to the rivals' candidates" stacked the yielders on one later day.) **Starbase Louisiana**
+  (2026-10-19; SpaceX's Aug 2026 plan: five complexes of two pads south of Pecan Island, Vermilion Parish, first launch
+  ~2029) is ten Starship sites `louisiana_a1` .. `e2`, azimuth 95-200 over the Gulf (east, the 53/30-deg descending
+  azimuths, sun-synchronous south); it now takes most Starship launches. Any change to the sites or vehicles reshuffles
+  the schedule: re-check the default launch bookmark (it pins a sim time).
 - **The phasing** (`buildBatch`, `memberState`): a member waits in the parking orbit, then its radius ramps linearly to
   the slot's; the phase lag to its slot is the closed-form integral of the mean motion over that ramp
   (`launch::rampPhase`), and the wait is solved so the climb ends exactly on the slot (an unsolvable remainder `eps` is
@@ -4234,7 +4238,7 @@ launches follow per-program cadences (no real manifest).
   whole 40 min after deploying: an 8-min plasma glow (`shipEntry`: ~7.4 km/s to ~65 km, slowing to 1.2 km/s by 45 km,
   magnitude ~-4 at 100 km near 70 km up) and is not followed to landing (harness `launch ship`). No meshes, no
   droneships.
-- **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1.5-5 s of each burn, integrated once per
+- **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1.5-2.5 s of each burn, integrated once per
   launch (only for launches within ~4500 km of the eye and not past 1 h/s of warp) with entrainment: the gas expands
   at ~2 km/s while it outweighs the air it has taken in, then diffuses (above ~80 km the coupling to the air falls to
   3%: the exhaust largely passes through air whose mean free path is ~1 km, and the bell grows to hundreds of km); momentum mixes with the swept air (exact for
@@ -4242,9 +4246,18 @@ launches follow per-program cadences (no real manifest).
   altitude. Low down a narrow trail the wind carries, high up a bell that expands for tens of km and falls back into
   the thicker air. Cross-section `kappa`: 10 m^2/kg low (condensation, soot) to 1000 m^2/kg above ~90 km (the exhaust's water as
   sub-micron ice: an upper estimate, ~2000 if all of it froze; 300 left the bell's wide part invisible); albedo from
-  `soot`. Parcels past 2 / 10 min are drawn every 2nd / 4th (they overlap), plumes at most 320 Gaussians a frame
-  (wide ones cover the screen: ~3 ms at 1000). Once a high parcel has swept up about its own mass of air it is drawn as a core + a ring of
-  7 Gaussians across the line of sight (the limb-brightened bell). They go into the dust list as `col.w = 2`
+  `soot`. Parcels past 2 / 10 min are drawn every 2nd / 4th once they are 2x / 4x wider than their spacing (thinned
+  earlier, a trail showed gaps), plumes at most 384 Gaussians a frame (wide ones cover the screen: ~3 ms at 1000). Once
+  a high parcel has swept up about its own mass of air it is drawn as a core + its limb-brightened rim: across a
+  near-round parcel a ring of 7 Gaussians round the line of sight, across one drawn out along the trail (projected
+  length > 1.6x its width) two Gaussians beside it, as long as the parcel, so neighbours join into the tube's two edges.
+  (Rings on every parcel, 5 s = 10-35 km apart on the upper stage, drew its insertion burn as a pulsing string of
+  circles: the user's "oscillating" second-stage trail.) **Colour:** the Sun's light at the parcel through the air
+  (grey-ish k per channel), x the ozone shell's Chappuis absorption along the Sun's path (cloud_v2_sunlut.comp's model:
+  vertical 0.019 / 0.027 / 0.0016 at 680 / 550 / 440 nm x the crossing secant, up to 30; a grazing path takes green and
+  orange out), x the sub-micron ice's spectral scattering (Angstrom 1.5, luminance kept) blended in from 25 to 90 km:
+  why twilight plumes, like noctilucent cloud, are off-white to blue (harness `launch state` -> `plume_high[].sun_col`
+  ~(0.73, 1.0, 1.4) above 100 km). They go into the dust list as `col.w = 2`
   (`kMaxDustClouds` 1024: the Kessler dust takes at most `kDustMax`, the fireball trails up to `kFireTrailMax`, plumes
   and flames the rest, brightest per pixel first); cloud_march.comp sums their optical depth, averages their light per
   unit of it (single scattering by an ice phase g 0.8, multiple scattering growing with the optical depth), composites
@@ -4255,15 +4268,29 @@ launches follow per-program cadences (no real manifest).
   plumes' sunlight is raised up to 10x as the eye's sky darkens (the night exposure is not physical: see the dust).
 - **Sound**: each burning rocket within 150 km on a thunder voice (`launchSounds`, called from `thunderStep`): the
   retarded time, Earth-fixed (the air carries it), level ~ sqrt(flow) / distance, thinning with the air at the rocket.
-- **Kessler** (L6, partial): no launches from the CME for three weeks; a slot dead before its swap gets no replacement
-  and no retiree. Trains and retirees are NOT engine objects (they do not collide); a slot killed by the cascade is not
+- **Selectable** (2026-10-19): rocket stages, Starship's ship coming home and every re-entry fireball (retirees, upper
+  stages, the Kessler re-entries, small fragments) are TRANSIENTS, not records: the code that draws their heads lists
+  them each frame (`SelTransient`, `addSelTransient`: a stable key, ECI position / velocity / acceleration, the ENU
+  direction, the drawn flare; a rocket is listed even coasting unlit so a tracked one stays selected, pickable only
+  once drawn). A click picks the nearest within 10 px (`pickSatelliteAt`, before the GPU list's nearer satellites);
+  the selection is the reserved LAST launch slot (`transientSatIdx()`, its chunk kept out of the allocator,
+  `typeIdx = UINT32_MAX`: no model, so Info / Go to / Trace hide and `selActionAvailMask` = Track), whose elements are
+  `SatOrbitElems::fixedState` (quadratic extrapolation from the frame's state, clamped to 30 s), rewritten each frame
+  (`selTransientUpdate`, after the visuals). Label from `transientLabel()` (vehicle, stage, burn, T+, altitude, speed;
+  "Re-entry: <satellite>"), magnitude from the drawn flare. Not drawn for 2 s of sim time: deselected. Harness
+  `launch select kind=rocket|ship|fireball|retiree_reentry|stage_reentry|kessler_reentry|fragment`, `state` ->
+  `selection.transient`. Go to (follow) is not offered: it needs a mesh.
+- **Kessler** (L6): launches stand down at the CME; by default for good ("After the Sun's Fury": Stand down /
+  Resume, `launches.after_storm` 0 / 1; Resume = three weeks later). The trains would not die anyway (they are not
+  engine objects), but nobody launches replacements into shells being ground into debris. A slot dead before its swap
+  gets no replacement and no retiree. Trains and retirees are NOT engine objects (they do not collide); a slot killed by the cascade is not
   refilled.
-- **Cost** (RTX 3070 Ti, 1600x900, a Vandenberg twilight launch's bell filling the view): cloud_march +0.9 ms, CPU
+- **Cost** (RTX 3070 Ti, 1600x900, a Vandenberg twilight launch's bell filling the view, 320 Gaussians): cloud_march +0.9 ms, CPU
   0.3 ms at 1x, 0.6 ms at 1 d/s. ~2600 planes, ~1200 live batches, ~15k train and ~18k retiring satellites at the default lives.
 - CPU bucket `launches` (harness `perf`, Performance tab "Launches"; the visuals run inside the dust fill and are moved
   out of `kessler`).
-- Settings `launches.enabled / life_scale / plume_gain / rocket_gain`; Settings > Constellations > LAUNCHES; harness
-  `launch ...` (docs/HARNESS.md); default bookmark "Twilight Launch from Vandenberg"
+- Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; Settings > Constellations > LAUNCHES; harness
+  `launch ...` (docs/HARNESS.md); default bookmark "Twilight Starship Launch"
   (`tools/harness/scripts/default_bookmarks.satcmd` #8).
 - Not built: rocket and droneship meshes, the trains' raising attitude ("open book"), J2 drift into the target plane
   (trains launch into it), stations' crew and cargo flights, hole-punching through cloud decks, sonic booms.

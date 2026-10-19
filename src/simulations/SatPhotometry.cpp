@@ -101,6 +101,18 @@ SatOrbitState satOrbitStateAt(const SatOrbitElems &e, double tJ2000)
 {
     if (e.kepler)
         return keplerStateAt(e, tJ2000);
+    if (e.fixedState)
+    {
+        // Clamped: a stale record must not fly off along its last tangent.
+        const double dt = std::clamp(tJ2000 - e.fixT0, -30.0, 30.0);
+        SatOrbitState st;
+        st.posEci = e.fixPos + e.fixVel * dt + 0.5 * e.fixAcc * dt * dt;
+        st.velEci = e.fixVel + e.fixAcc * dt;
+        st.nadir = -glm::normalize(st.posEci);
+        const double vl = glm::length(st.velEci);
+        st.velocity = vl > 1e-6 ? st.velEci / vl : glm::dvec3(1.0, 0.0, 0.0);
+        return st;
+    }
     const double twoPi = 2.0 * kPi;
     double n = e.meanMot > 0.0 ? e.meanMot : std::sqrt(kGM / (e.rSatM * e.rSatM * e.rSatM));
     double u = std::fmod(e.u0 + n * tJ2000, twoPi);

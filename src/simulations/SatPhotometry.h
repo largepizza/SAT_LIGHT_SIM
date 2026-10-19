@@ -131,6 +131,11 @@ struct SatOrbitElems
     double argpDot = 0.0, raanDot = 0.0;
     bool forceTumble = false; // a dead satellite: the root group tumbles whatever its law
     double areaScale = 1.0;   // flux multiplier (a fragment against its type's model)
+    // A transient object picked on screen (a rocket stage, a re-entry fireball: SatelliteSim's selTransient):
+    // position, velocity and acceleration at fixT0, extrapolated quadratically. Rewritten every frame.
+    bool fixedState = false;
+    glm::dvec3 fixPos{0.0}, fixVel{0.0}, fixAcc{0.0};
+    double fixT0 = 0.0;
 };
 
 struct SatOrbitState

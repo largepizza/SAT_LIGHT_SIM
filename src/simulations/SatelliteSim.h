@@ -2645,8 +2645,40 @@ private:
     void kesslerFillDust(float pixelAngle);
     // Fills the fireballs for the current time into kFireBuf and appends their trails to the dust list (out, n).
     void kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
+    // tagKind / tagA: what the fireball is, for picking (SelTransient: 3 a launch retiree, 4 an upper stage, 5 a Kessler
+    // re-entry, 6 a small fragment).
     void fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, double m0, int N, uint64_t seed, double tau,
-                       GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
+                       GpuDustCloud *out, uint32_t &n, double toSky, double pixFull, uint8_t tagKind = 0,
+                       uint64_t tagA = 0);
+
+    // ── Transient selection (2026-10-19): rocket stages, Starship's ship coming home and re-entry fireballs are not
+    // records; each frame the code that draws their heads lists them here, and one reserved launch slot (the last,
+    // transientSatIdx()) carries the selected one's live position (SatOrbitElems::fixedState), so the selection
+    // panel, Track and the harness treat it as a satellite. Gone for 2 s of sim time: deselected.
+    struct SelTransient
+    {
+        uint64_t key = 0;   // stable over the object's life
+        uint8_t kind = 0;   // 1 rocket stage, 2 ship entry, 3 retiree re-entry, 4 upper-stage re-entry, 5 Kessler
+                            // re-entry, 6 small fragment
+        uint8_t stage = 0;  // rockets: 0 booster, 1 upper; burn in burn
+        uint8_t burn = 0;
+        uint64_t a = 0;     // the batch key (1, 2, 4), the satellite (3, 5)
+        double tau = 0.0;   // seconds since lift-off (1) / entry (2) / the glow's start (3-6)
+        glm::dvec3 pos{0.0}, vel{0.0}, acc{0.0}; // ECI, at the frame's time
+        glm::vec3 dirEnu{0.0f, 0.0f, 1.0f};
+        float flare = 0.0f;
+    };
+    std::vector<SelTransient> selTransients; // this frame's
+    SelTransient selTransientCur;            // the selected one, as last seen
+    uint64_t selTransientKey = 0;
+    double selTransientSeenT = 0.0;
+    uint32_t transientSatIdx() const { return activeSatCount + kLaunchCap - 1; }
+    bool selIsTransient() const { return selectedSatIndex >= 0 && (uint32_t)selectedSatIndex == transientSatIdx(); }
+    void addSelTransient(const SelTransient &s);
+    void selTransientUpdate();                // after the frame's visuals: the reserved slot's state, the label
+    void selTransientTake(const SelTransient &s); // make it the selection's object (the caller selects the index)
+    std::string transientLabel() const;
+    bool selectTransient(int kind, std::string &msg); // harness: the brightest of a kind (0 = any)
 
     // ── Launches (SatelliteSimLaunches.cpp, 2026-10-18; .plans/LAUNCHES_PLAN.md) ─────────────────────
     // Every plane of a constellation a program in data/launches.json keeps flying is refreshed once per design life:
@@ -2665,6 +2697,7 @@ private:
     float launchLifeScale = 1.0f;    // launches.life_scale: x every program's design life (fewer launches above 1)
     float launchPlumeGain = 1.0f;    // launches.plume_gain: the plumes' optical depth x
     float launchRocketGain = 1.0f;   // launches.rocket_gain: the flames' brightness x
+    int launchAfterStorm = 0;        // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
     void launchInitBlock();          // the launch block's satOrbits entries (empty) and the launch state (reset)
     void launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd); // per frame: schedule, records, uploads
     void launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // rockets, plumes, re-entries

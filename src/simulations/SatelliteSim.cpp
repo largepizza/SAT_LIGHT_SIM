@@ -5702,12 +5702,36 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
             return bestMesh;
     }
 
+    // Rockets and re-entry fireballs (not records: this frame's heads, selTransients). The nearest within 10 px;
+    // a satellite nearer to the click wins below.
+    int bestTr = -1;
+    float bestTrDist = 0.0f;
+    for (size_t i = 0; i < selTransients.size(); ++i)
+    {
+        if (selTransients[i].flare <= 0.0f)
+            continue; // listed (a tracked rocket coasting in the dark), not drawn
+        float sx, sy;
+        if (!projectSkyDirToScreen(selTransients[i].dirEnu, screenW, screenH, sx, sy))
+            continue;
+        const float dx = sx - clickX, dy = sy - clickY;
+        const float dist = sqrtf(dx * dx + dy * dy);
+        if (dist <= 10.0f && (bestTr < 0 || dist < bestTrDist))
+        {
+            bestTr = (int)i;
+            bestTrDist = dist;
+        }
+    }
+    auto takeTransient = [&]() {
+        selTransientTake(selTransients[(size_t)bestTr]);
+        return (int)transientSatIdx();
+    };
+
     VulkanContext &ctx = *ctx_;
     const uint32_t listCount = std::min(
         static_cast<const GpuSatListHeader *>(pickedVisibleMapped)->count,
         visibleCapacity());
     if (listCount == 0)
-        return -1;
+        return bestTr >= 0 ? takeTransient() : -1;
     const VkDeviceSize recBytes = (VkDeviceSize)listCount * sizeof(GpuSatVisible);
     const VkDeviceSize idxBytes = (VkDeviceSize)listCount * sizeof(uint32_t);
     VkDeviceSize copySize = recBytes + idxBytes;
@@ -5757,6 +5781,8 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
     vkDestroyBuffer(ctx.device, stagingBuf, nullptr);
     vkFreeMemory(ctx.device, stagingMem, nullptr);
 
+    if (bestTr >= 0 && (best < 0 || bestTrDist < bestDist))
+        return takeTransient();
     return best;
 }
 
@@ -5990,6 +6016,8 @@ bool SatelliteSim::traceStale() const
     if (tNow > traceT1 || tNow < traceT0)
         return true; // the pass is over (or time ran backwards past it)
     const float obsRadius = obsEyeRadiusM();
+    if (satOrbits[selectedSatIndex].typeIdx >= satTypes.size())
+        return false;
     const SatelliteType &type = satTypes[satOrbits[selectedSatIndex].typeIdx];
     return glm::length(glm::dvec3(obsDir) - traceSetup.obsDirEcef) > 1e-7 ||
            std::abs((double)obsRadius - traceSetup.obsRadiusM) > 1.0 ||
@@ -6212,6 +6240,11 @@ void SatelliteSim::startBulkExport()
             snprintf(bulkStatus, sizeof(bulkStatus), "Select a satellite first, or pick a constellation as the source.");
             return;
         }
+        if (satOrbits[selectedSatIndex].typeIdx >= satTypes.size())
+        {
+            snprintf(bulkStatus, sizeof(bulkStatus), "The selection is not a satellite.");
+            return;
+        }
         typeIdx = (int)satOrbits[selectedSatIndex].typeIdx;
         job->sats.push_back({orbitElemsOf(satOrbits[selectedSatIndex]), selectedSatIndex});
         sourceName = "satellite " + std::to_string(selectedSatIndex);
@@ -6355,6 +6388,13 @@ void SatelliteSim::updateSelectedPhotometry()
         --parityLogCooldown;
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
         return;
+    if (selIsTransient())
+    {
+        // A rocket or a fireball: its magnitude as drawn (no model to evaluate).
+        const double f = std::max((double)selTransientCur.flare, 1e-9);
+        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.1f", 6.0 - 2.5 * std::log10(f / 0.008));
+        return;
+    }
     const ParityInputs &pin = parityPending;
     if (!pin.valid || pin.satIdx != selectedSatIndex)
     {

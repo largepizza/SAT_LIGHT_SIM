@@ -147,6 +147,7 @@ struct SatelliteSim::LaunchState
     uint32_t gpuGen = UINT32_MAX;
     bool clearGpu = true;         // zero the GPU block before anything is written (a reset)
     float lifeScale = -1.0f;      // the planes were built for this "life_scale"
+    int afterStorm = -1;          // ... and this "after_storm"
     uint32_t frame = 0;
     bool active = false; // anything up on the GPU
     std::vector<uint64_t> live; // batch keys touched this frame (in a stable order)
@@ -201,8 +202,15 @@ void SatelliteSim::launchInitBlock()
     L.slots.assign(kLaunchCap, SlotInfo{});
     L.elems.assign(kLaunchCap, SatOrbitElems{});
     L.freeChunks.clear();
-    for (uint32_t c = kNumChunks; c-- > 0;)
+    for (uint32_t c = kNumChunks - 1; c-- > 0;) // the last chunk holds the transient selection's slot
         L.freeChunks.push_back(c);
+    if (activeSatCount + kLaunchCap - 1 < satOrbits.size())
+        satOrbits[activeSatCount + kLaunchCap - 1].typeIdx = UINT32_MAX; // no model: Track only
+    if (selIsTransient())
+    {
+        selectedSatIndex = -1;
+        selTransientKey = 0;
+    }
     L.gpuGen = UINT32_MAX;
     L.clearGpu = true; // whatever the GPU block holds goes (records of the state just dropped)
     L.active = false;
@@ -567,10 +575,14 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
             B.shifts = rank;
         }
     }
-    // Kessler: no launches for three weeks after the storm (the infrastructure, the debris).
-    if (sim.kesslerEnabled && tL >= sim.kesslerEpoch() && tL < sim.kesslerEpoch() + 21.0 * kDay)
+    // Kessler: launches stand down at the storm. By default for good: the cascade's shells are being ground into
+    // debris, and no operator would send replacements into them (a slot the storm or the cascade kills is not refilled
+    // either way). "After the storm: resume" brings them back three weeks on (the trains are not engine objects: they
+    // do not collide, whatever the debris).
+    if (sim.kesslerEnabled && tL >= sim.kesslerEpoch() &&
+        (sim.launchAfterStorm == 0 || tL < sim.kesslerEpoch() + 21.0 * kDay))
     {
-        B.why = "stand-down after the storm";
+        B.why = sim.launchAfterStorm == 0 ? "stood down since the storm" : "stand-down after the storm";
         return;
     }
     const launch::Vehicle &vh = L.cat.vehicles[B.veh];
@@ -912,10 +924,10 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         B.parcels.push_back(launch::makeParcel(1.0 + 0.8 * k, p, 120.0 * dir + 20.0 * B.G0, vh.flow1 * 2.0,
                                                kappaAt(0.0), 0.95, dir, 60.0, kPlumeAgeLow, windDir, windGain));
     }
-    // The booster: ascent (every 1.5 s low, 3 s above 20 km), then its burns.
+    // The booster: ascent (every 1.5 s low, 2 s above ~20 km), then its burns.
     for (double tau = 1.0; tau < vh.t1; )
     {
-        const double dtE = tau < 60.0 ? 1.5 : 3.0;
+        const double dtE = tau < 60.0 ? 1.5 : 2.0;
         emit(0, tau, dtE, vh.flow1, vh.vex1, 0);
         tau += dtE;
     }
@@ -926,9 +938,9 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         if (b == launch::BURN_BOOSTBACK || b == launch::BURN_ENTRY || b == launch::BURN_LANDING)
             emit(0, tau, 2.0, vh.flow1 * (b == launch::BURN_LANDING ? 0.12 : 0.35), vh.vex1, 1);
     }
-    // The upper stage to orbit.
-    for (double tau = vh.t1 + 5.0; tau < B.t2; tau += 5.0)
-        emit(1, tau, 5.0, vh.flow2, vh.vex2, 0);
+    // The upper stage to orbit: every 2.5 s (at 5 s the young parcels, 10-35 km apart, drew the trail as beads).
+    for (double tau = vh.t1 + 2.5; tau < B.t2; tau += 2.5)
+        emit(1, tau, 2.5, vh.flow2, vh.vex2, 0);
     // Its deorbit burn, and maybe a spinning vent of what is left (the spirals seen from Norway, New Zealand...).
     if (vh.upperDeorbit)
     {
@@ -976,11 +988,12 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             kv.second.tw[0] = kv.second.tw[1] = -1e300; // every batch due again
     }
     // A new design-life scale reshuffles every refresh: start over.
-    if (L.planesBuilt && L.lifeScale != launchLifeScale)
+    if (L.planesBuilt && (L.lifeScale != launchLifeScale || (L.afterStorm >= 0 && L.afterStorm != launchAfterStorm)))
     {
         launchInitBlock();
         L.gpuGen = kesslerBufGen;
     }
+    L.afterStorm = launchAfterStorm;
     if (L.clearGpu)
     {
         L.clearGpu = false;
@@ -1285,6 +1298,8 @@ SatOrbitElems SatelliteSim::launchOrbitElems(uint32_t slot) const
 
 std::string SatelliteSim::launchLabel(uint32_t slot) const
 {
+    if (slot == kLaunchCap - 1)
+        return transientLabel();
     if (!launchState || slot >= launchState->slots.size() || launchState->slots[slot].owner == 0)
         return "?";
     const LaunchState &L = *launchState;
@@ -1395,7 +1410,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 const double mass = so.typeIdx < satTypes.size() ? LaunchImpl::launchTypeMass(satTypes[so.typeIdx]) : 600.0;
                 const double m0 = -4.0 - 2.5 * std::log10(std::max(mass, 1.0) / 100.0);
                 const int N = (int)std::clamp(3.0 + 40.0 * std::sqrt(std::max(mass, 1.0) / 2500.0), 3.0, 80.0);
-                fbDrawReentry(U0, A, m0, N, B.seed ^ ((uint64_t)mb.sat * 0x9E3779B97F4A7C15ull), tau, out, n, toSky, pixFull);
+                fbDrawReentry(U0, A, m0, N, B.seed ^ ((uint64_t)mb.sat * 0x9E3779B97F4A7C15ull), tau, out, n, toSky, pixFull,
+                              3, mb.sat);
                 ++L.nReentries;
             }
         if (t < B.tL - 600.0 || t > B.tVisEnd)
@@ -1414,7 +1430,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     glm::dvec3 A = -std::sin(th) * B.U0 + std::cos(th) * B.A0;
                     const double m0 = -4.0 - 2.5 * std::log10(vh.upperMassKg / 100.0);
                     fbDrawReentry(U0, A, m0, (int)std::clamp(3.0 + 40.0 * std::sqrt(vh.upperMassKg / 2500.0), 3.0, 80.0),
-                                  B.seed ^ 0x51A6E5ull, t - B.tStageRE, out, n, toSky, pixFull);
+                                  B.seed ^ 0x51A6E5ull, t - B.tStageRE, out, n, toSky, pixFull, 4, key);
                     ++L.nReentries;
                 }
             }
@@ -1440,6 +1456,21 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                                                (float)glm::clamp(v / 7500.0, 0.0, 1.0));
                 if (flare > 2e-4 && kFireCount < kFireballMax)
                     fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(rel) / range), (float)flare), glm::vec4(col, (float)range)};
+                if (flare > 2e-4)
+                {
+                    SelTransient st;
+                    st.key = (key << 3) ^ 0x2ull ^ 0xC0FFEEull;
+                    st.kind = 2;
+                    st.a = key;
+                    st.tau = te;
+                    const glm::dvec3 P2 = shipAt(te - 12.0);
+                    st.pos = P;
+                    st.vel = (P - Pp) / 6.0;
+                    st.acc = (P - 2.0 * Pp + P2) / 36.0;
+                    st.dirEnu = glm::vec3(toEnu(rel) / range);
+                    st.flare = (float)flare;
+                    addSelTransient(st);
+                }
                 // Its glowing wake: the last 6 s of path, an emissive Gaussian.
                 if (flare > 5e-3 && n < kMaxDustClouds)
                 {
@@ -1480,6 +1511,31 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 continue;
             const glm::dvec3 rel = P - eye;
             const double range = std::max(glm::length(rel), 1.0);
+            // Listed for the selection whether drawn or not (a booster coasting in the dark, behind the Earth: a
+            // tracked rocket stays selected); pickable only once drawn (flare > 0).
+            size_t trIdx = SIZE_MAX;
+            if (tau >= 0.0 && glm::length(P - eye) < 4.0e6)
+            {
+                SelTransient st;
+                st.key = (key << 3) ^ (uint64_t)(stage + 1);
+                st.kind = 1;
+                st.stage = (uint8_t)stage;
+                st.burn = burn;
+                st.a = key;
+                st.tau = tau;
+                glm::dvec3 P1, P2;
+                if (!LaunchImpl::rocketPos(L, B, stage, tau - 0.5, P1))
+                    P1 = P;
+                if (!LaunchImpl::rocketPos(L, B, stage, tau - 1.0, P2))
+                    P2 = P1;
+                st.pos = P;
+                st.vel = (P - P1) / 0.5;
+                st.acc = (P - 2.0 * P1 + P2) / 0.25;
+                st.dirEnu = glm::vec3(toEnu(rel) / range);
+                st.flare = 0.0f;
+                trIdx = selTransients.size();
+                addSelTransient(st);
+            }
             if (earthBlocks(P))
                 continue;
             ++L.nRockets;
@@ -1510,6 +1566,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 continue;
             if (kFireCount < kFireballMax)
                 fo[kFireCount++] = {glm::vec4(glm::vec3(dirE), (float)flare), glm::vec4(col, (float)range)};
+            if (trIdx < selTransients.size())
+                selTransients[trIdx].flare = (float)flare; // drawn: pickable
             // The flame as a shape (seen close it is long: the exhaust glows behind the engines, and high up the
             // expanding plume around it).
             if (burning && n < kMaxDustClouds && flare > 2e-3)
@@ -1581,12 +1639,15 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             const double age = tau - pc.t0;
             // Old parcels are wide and overlap their neighbours: every 2nd stands for two past 2 min, every 4th for
             // four past 10 min (the budget then reaches the whole bell, not just its young part).
-            const int dec = pc.thin ? 1 : age > 600.0 ? 4 : age > 120.0 ? 2 : 1;
-            if (pi % (size_t)dec != 0)
+            if (age < 0.0)
                 continue;
             glm::dvec3 cE;
             double sig, cond, sweep = 0.0;
-            if (age < 0.0 || !pc.at(age, cE, sig, cond, &sweep))
+            if (!pc.at(age, cE, sig, cond, &sweep))
+                continue;
+            // ... but only once they are wide against the spacing (pc.len): thinned earlier, a trail showed gaps.
+            const int dec = pc.thin ? 1 : (age > 600.0 && sig > 4.0 * pc.len) ? 4 : (age > 120.0 && sig > 2.0 * pc.len) ? 2 : 1;
+            if (pi % (size_t)dec != 0)
                 continue;
             const double Sigma = pc.kappa * pc.m * cond * (double)launchPlumeGain * (double)dec;
             if (Sigma < 1.0)
@@ -1622,6 +1683,26 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             const double kc[3] = {0.11, 0.2, 0.42};
             for (int ch = 0; ch < 3; ++ch)
                 tr[ch] = std::pow(10.0, -0.4 * std::min(atmExtinctionMag(C, sunD, 0.0, kc[ch]), 30.0));
+            // Why twilight plumes are off-white to blue (the jellyfish, like noctilucent cloud):
+            // (1) the Sun's grazing path crosses the ozone layer, whose Chappuis band takes green and orange out
+            //     (cloud_v2_sunlut.comp's thin shell at 25 km: vertical optical depth 0.019 / 0.027 / 0.0016 at
+            //     680 / 550 / 440 nm, x the secant where the ray crosses it, twice from above when it dips through);
+            {
+                const double rO = kR + 25000.0, r = glm::length(C), cz = glm::dot(C, sunD) / r;
+                const double sin2 = (r / rO) * (r / rO) * (1.0 - cz * cz);
+                const double sec = 1.0 / std::sqrt(std::max(1.0 - sin2, 1e-3));
+                const double nX = r <= rO ? 1.0 : ((cz < 0.0 && sin2 < 1.0) ? 2.0 : 0.0);
+                const double odO[3] = {0.019, 0.027, 0.0016};
+                for (int ch = 0; ch < 3; ++ch)
+                    tr[ch] *= std::exp(-odO[ch] * std::min(sec, 30.0) * nX);
+            }
+            // (2) high up the exhaust's ice is sub-micron: it scatters blue more than red (Angstrom exponent ~1.5,
+            //     680 / 550 / 440 nm), normalised to keep the luminance; low down the droplets and soot are grey.
+            {
+                const double ice = glm::smoothstep(25000.0, 90000.0, h);
+                const glm::dvec3 sp(0.727 / 0.9707, 1.0 / 0.9707, 1.398 / 0.9707);
+                tr *= glm::mix(glm::dvec3(1.0), sp, ice);
+            }
             const double sinE = glm::dot(glm::normalize(C), sunD);
             // The sky's light on it, relative (1 = a clear daytime sky), fading with the air above it.
             const double amb = glm::smoothstep(-0.1, 0.25, sinE) * std::exp(-std::max(h, 0.0) / 15000.0);
@@ -1632,7 +1713,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             d.cone = coneOf(toEnu(rel), 5.5 * std::max(sA, sP));
             plumes.push_back(c);
             // High up, once the expanding exhaust has swept up about its own mass of air it piles up at its rim: a shell,
-            // limb-brightened (the jellyfish's bell). Drawn as the core plus a ring of Gaussians across the line of sight.
+            // limb-brightened (the jellyfish's bell). Seen across a near-round parcel the rim is a ring (7 Gaussians
+            // round the line of sight); across a parcel drawn out along the trail it is a tube, whose limb is two lines
+            // beside the trail (2 Gaussians, as long as the parcel, so neighbours join: rings on every parcel drew the
+            // young trail as a string of circles).
             const double shellK = (h > 60000.0 && sig > 2000.0) ? 0.65 * glm::smoothstep(0.3, 2.0, sweep) : 0.0;
             if (shellK > 0.02)
             {
@@ -1640,19 +1724,45 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 plumes.back().d.c.w = (float)(Sigma * coreShare);
                 plumes.back().pri *= coreShare;
                 const glm::dvec3 vE = toEnu(rel) / range; // the line of sight
-                glm::dvec3 r1 = glm::cross(vE, glm::dvec3(0, 0, 1));
-                r1 = glm::length(r1) > 1e-6 ? glm::normalize(r1) : glm::dvec3(1, 0, 0);
-                const glm::dvec3 r2 = glm::cross(vE, r1);
-                const int K = 7;
+                // The trail's direction across the line of sight, and how drawn out the parcel is along it.
+                glm::dvec3 aP = a - glm::dot(a, vE) * vE;
+                const double aPl = glm::length(aP);
+                const double elong = aPl > 1e-3 ? (sA * aPl) / sP : 1.0;
+                const bool tube = elong > 1.6;
+                glm::dvec3 r1, r2;
+                if (tube)
+                {
+                    r1 = aP / aPl;
+                    r2 = glm::cross(vE, r1);
+                }
+                else
+                {
+                    r1 = glm::cross(vE, glm::dvec3(0, 0, 1));
+                    r1 = glm::length(r1) > 1e-6 ? glm::normalize(r1) : glm::dvec3(1, 0, 0);
+                    r2 = glm::cross(vE, r1);
+                }
+                const int K = tube ? 2 : 7;
                 const double rr = 0.9 * sig, sr = std::max(0.42 * sig, sMin);
                 for (int k = 0; k < K; ++k)
                 {
-                    const double ang = glm::two_pi<double>() * ((double)k + h01(B.seed ^ (uint64_t)(pc.t0 * 10.0), (uint64_t)k, 31)) / K;
-                    const glm::dvec3 off = rr * (std::cos(ang) * r1 + std::sin(ang) * r2);
+                    glm::dvec3 nrm, tg;
+                    double sT;
+                    if (tube)
+                    {
+                        nrm = k == 0 ? r2 : -r2;
+                        tg = r1;
+                        sT = std::max(std::sqrt(sig * sig + 0.25 * pc.len * pc.len * aPl * aPl), sMin);
+                    }
+                    else
+                    {
+                        const double ang = glm::two_pi<double>() * ((double)k + h01(B.seed ^ (uint64_t)(pc.t0 * 10.0), (uint64_t)k, 31)) / K;
+                        nrm = std::cos(ang) * r1 + std::sin(ang) * r2;
+                        tg = -std::sin(ang) * r1 + std::cos(ang) * r2;
+                        sT = std::max(0.9 * sig, sMin);
+                    }
+                    const glm::dvec3 off = rr * nrm;
                     // Each piece is stretched along the rim (the tangent) and the line of sight.
-                    const glm::dvec3 tg = -std::sin(ang) * r1 + std::cos(ang) * r2;
-                    const double sT = std::max(0.9 * sig, sMin), sN = sr;
-                    const glm::dvec3 nrm = glm::normalize(off);
+                    const double sN = sr;
                     const double iT = 1.0 / (sT * sT), iN = 1.0 / (sN * sN), iV = 1.0 / (sig * sig);
                     auto Mr = [&](int p, int q) { return iT * tg[p] * tg[q] + iN * nrm[p] * nrm[q] + iV * vE[p] * vE[q]; };
                     Cand cr;
@@ -1676,9 +1786,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     if (!plumes.empty())
     {
         std::sort(plumes.begin(), plumes.end(), [](const Cand &a, const Cand &b) { return a.pri > b.pri; });
-        // At most 320 plume Gaussians: a wide one covers much of the screen and costs every pixel it covers
+        // At most 384 plume Gaussians: a wide one covers much of the screen and costs every pixel it covers
         // (cloud_march.comp's loop), ~3 ms at 1000.
-        const uint32_t nMax = std::min<uint32_t>(kMaxDustClouds, n + 320u);
+        const uint32_t nMax = std::min<uint32_t>(kMaxDustClouds, n + 384u);
         for (const Cand &c : plumes)
         {
             if (n >= nMax)
@@ -2165,6 +2275,16 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
                                "(the 'jellyfish'), lit while the ground below is dark.");
     if (pg >= 0 && pg != pSel)
         launchPlumeGain = kPlumeV[pg];
+    if (kesslerEnabled)
+    {
+        static const char *kAfter[] = {"Stand down", "Resume"};
+        const int as = uiChoiceRow(inp, ui, "LaunchAfterStorm", 0, "After the Sun's Fury", kAfter, 2, launchAfterStorm,
+                                   "Stand down: no launches from the storm on (the shells are filling with debris; no "
+                                   "replacements, no retirements). Resume: launches return three weeks after it (the new "
+                                   "satellites do not collide with the debris: they are not part of the cascade).");
+        if (as >= 0 && as != launchAfterStorm)
+            launchAfterStorm = as;
+    }
     std::string why;
     if (uiButton(inp, ui, "LaunchNext", 0, "Watch the next launch", "Jumps to 30 s before the next lift-off, beside the pad."))
     {
@@ -2357,4 +2477,129 @@ bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev)
     msg = ev == 0 ? "no venting stage sunlit over a dark ground in the next 30 days"
                   : "no returning stage re-entering over a dark ground in the next 30 days";
     return false;
+}
+
+// ── Transient selection: rockets, the ship coming home, re-entry fireballs ───────────────────────────
+// Their heads are listed each frame (addSelTransient) by the code that draws them; the selected one's state goes into
+// the reserved last launch slot (transientSatIdx()) as SatOrbitElems::fixedState, so the panel, Track and the
+// harness see a satellite there. Nothing else ever owns that slot (launchInitBlock keeps its chunk out of the pool).
+void SatelliteSim::addSelTransient(const SelTransient &s)
+{
+    if (selTransients.size() < 16384)
+        selTransients.push_back(s);
+}
+
+void SatelliteSim::selTransientUpdate()
+{
+    if (!selIsTransient() || !launchState)
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const SelTransient *f = nullptr;
+    for (const SelTransient &s : selTransients)
+        if (s.key == selTransientKey)
+        {
+            f = &s;
+            break;
+        }
+    if (!f)
+    {
+        // Out of view this frame (behind the Earth, below the brightness cut) or over: gone for good after 2 s.
+        if (std::abs(t - selTransientSeenT) > 2.0)
+        {
+            stopTrack();
+            selectedSatIndex = -1;
+            selTransientKey = 0;
+            formatSelectedSatInfo();
+        }
+        return;
+    }
+    selTransientTake(*f);
+    formatSelectedSatInfo(); // the label carries altitude and speed
+}
+
+void SatelliteSim::selTransientTake(const SelTransient &s)
+{
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    selTransientKey = s.key;
+    selTransientCur = s;
+    selTransientSeenT = t;
+    if (!launchState)
+        return;
+    SatOrbitElems &e = launchState->elems[kLaunchCap - 1];
+    e = SatOrbitElems{};
+    e.fixedState = true;
+    e.fixPos = s.pos;
+    e.fixVel = s.vel;
+    e.fixAcc = s.acc;
+    e.fixT0 = t;
+}
+
+std::string SatelliteSim::transientLabel() const
+{
+    if (!launchState)
+        return "?";
+    const LaunchState &L = *launchState;
+    const SelTransient &s = selTransientCur;
+    const double hKm = (glm::length(s.pos) - kR) / 1000.0;
+    // Speed over the ground for a rocket near the pad reads better Earth-fixed; inertial elsewhere (orbit).
+    const double vKms = glm::length(s.vel) / 1000.0;
+    char b[200];
+    const LBatch *B = nullptr;
+    if (s.kind <= 2 || s.kind == 4)
+    {
+        auto it = L.batches.find(s.a);
+        if (it != L.batches.end())
+            B = &it->second;
+    }
+    const char *veh = B && B->veh >= 0 ? L.cat.vehicles[B->veh].name.c_str() : "Rocket";
+    switch (s.kind)
+    {
+    case 1:
+    {
+        static const char *kBurn[] = {"coasting", "ascent burn", "boostback burn", "entry burn", "landing burn",
+                                      "upper-stage burn"};
+        const char *what = s.stage == 0 ? " booster" : " upper stage";
+        if (B && s.stage == 0 && s.tau < L.cat.vehicles[B->veh].t1)
+            what = ""; // still one vehicle
+        snprintf(b, sizeof(b), "%s%s (%s), T+%.0f s, %.0f km up, %.2f km/s", veh, what, kBurn[std::min<int>(s.burn, 5)],
+                 s.tau, hKm, vKms);
+        break;
+    }
+    case 2:
+        snprintf(b, sizeof(b), "%s ship re-entering, %.0f km up, %.2f km/s", veh, hKm, vKms);
+        break;
+    case 3:
+        snprintf(b, sizeof(b), "Re-entry: %s (retired), %.0f km up", satLabel((int)s.a).c_str(), hKm);
+        break;
+    case 4:
+        snprintf(b, sizeof(b), "Re-entry: %s upper stage, %.0f km up", veh, hKm);
+        break;
+    case 5:
+        snprintf(b, sizeof(b), "Re-entry: %s, %.0f km up", satLabel((int)s.a).c_str(), hKm);
+        break;
+    default:
+        snprintf(b, sizeof(b), "Re-entry: debris fragment, %.0f km up", hKm);
+        break;
+    }
+    return b;
+}
+
+bool SatelliteSim::selectTransient(int kind, std::string &msg)
+{
+    const SelTransient *best = nullptr;
+    for (const SelTransient &s : selTransients)
+        if (s.flare > 0.0f && (kind == 0 || s.kind == kind) && (!best || s.flare > best->flare))
+            best = &s;
+    if (!best)
+    {
+        msg = "nothing of that kind drawn this frame";
+        return false;
+    }
+    selTransientTake(*best);
+    selectedPlanetIndex = -1;
+    selectedSatIndex = (int)transientSatIdx();
+    formatSelectedSatInfo();
+    updateSelectedSkyDir();
+    msg = transientLabel();
+    return true;
 }

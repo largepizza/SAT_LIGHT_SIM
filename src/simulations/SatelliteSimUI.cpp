@@ -2591,6 +2591,8 @@ uint32_t SatelliteSim::selActionAvailMask() const
 {
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
         return 0u;
+    if (selIsTransient())
+        return 0x8u; // a rocket or a fireball: Track only
     const bool model = meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx) != nullptr;
     return (model ? 0x3u : 0u) | 0xCu; // Info and Go to need a geometry model; Trace and Track do not
 }
@@ -7784,6 +7786,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         launchLifeScale = settingClamp(lj.value("life_scale", launchLifeScale), 0.1f, 20.0f);
         launchPlumeGain = settingClamp(lj.value("plume_gain", launchPlumeGain), 0.0f, 100.0f);
         launchRocketGain = settingClamp(lj.value("rocket_gain", launchRocketGain), 0.0f, 100.0f);
+        launchAfterStorm = settingClamp(lj.value("after_storm", launchAfterStorm), 0, 1);
     }
 
     if (j.contains("planets"))
@@ -8593,7 +8596,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     j["launches"] = {{"enabled", launchesEnabled},
                      {"life_scale", launchLifeScale},
                      {"plume_gain", launchPlumeGain},
-                     {"rocket_gain", launchRocketGain}};
+                     {"rocket_gain", launchRocketGain},
+                     {"after_storm", launchAfterStorm}};
     return j;
 }
 

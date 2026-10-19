@@ -2,6 +2,16 @@
   "_comment": "Launches (SatelliteSimLaunches.cpp; plan .plans/LAUNCHES_PLAN.md). Each program keeps the constellations whose names contain one of its 'match' strings flying: every orbital plane is refreshed once per 'life_years', in launches of 'payload' satellites a 'batch_gap_days' apart. A launch flies from one of its vehicle's sites (one whose latitude and azimuth range reach the plane) at the moment the plane passes over it, deploys a train at 'park_km' that climbs to its slots over 'raise_days', and the satellites it replaces deorbit and re-enter over 'deorbit_days'. Vehicle figures are public approximations (2036 is a guess). Sites: azimuth = [min, max] degrees clockwise from north, allowed by range safety (wraps through 360).",
   "sites": [
     {"id": "starbase",        "name": "Starbase, Texas",                 "lat": 25.997,  "lon": -97.155,  "azimuth": [70, 115]},
+    {"id": "louisiana_a1", "name": "Starbase Louisiana A-1",        "lat": 29.575,  "lon": -92.475,  "azimuth": [95, 200]},
+    {"id": "louisiana_a2", "name": "Starbase Louisiana A-2",        "lat": 29.571,  "lon": -92.469,  "azimuth": [95, 200]},
+    {"id": "louisiana_b1", "name": "Starbase Louisiana B-1",        "lat": 29.575,  "lon": -92.445,  "azimuth": [95, 200]},
+    {"id": "louisiana_b2", "name": "Starbase Louisiana B-2",        "lat": 29.571,  "lon": -92.439,  "azimuth": [95, 200]},
+    {"id": "louisiana_c1", "name": "Starbase Louisiana C-1",        "lat": 29.575,  "lon": -92.415,  "azimuth": [95, 200]},
+    {"id": "louisiana_c2", "name": "Starbase Louisiana C-2",        "lat": 29.571,  "lon": -92.409,  "azimuth": [95, 200]},
+    {"id": "louisiana_d1", "name": "Starbase Louisiana D-1",        "lat": 29.575,  "lon": -92.385,  "azimuth": [95, 200]},
+    {"id": "louisiana_d2", "name": "Starbase Louisiana D-2",        "lat": 29.571,  "lon": -92.379,  "azimuth": [95, 200]},
+    {"id": "louisiana_e1", "name": "Starbase Louisiana E-1",        "lat": 29.575,  "lon": -92.355,  "azimuth": [95, 200]},
+    {"id": "louisiana_e2", "name": "Starbase Louisiana E-2",        "lat": 29.571,  "lon": -92.349,  "azimuth": [95, 200]},
     {"id": "ksc_39a",         "name": "Kennedy LC-39A, Florida",         "lat": 28.608,  "lon": -80.604,  "azimuth": [35, 200]},
     {"id": "ccsfs_slc37",     "name": "Cape Canaveral SLC-37, Florida",  "lat": 28.531,  "lon": -80.567,  "azimuth": [35, 200]},
     {"id": "ccsfs_slc40",     "name": "Cape Canaveral SLC-40, Florida",  "lat": 28.562,  "lon": -80.577,  "azimuth": [35, 200]},
@@ -24,7 +34,7 @@
     {"id": "saxavord",        "name": "SaxaVord, Shetland",              "lat": 60.814,  "lon": -0.765,   "azimuth": [-20, 30]}
   ],
   "vehicles": [
-    {"id": "starship", "name": "Starship", "sites": ["starbase", "ksc_39a", "ccsfs_slc37", "vandenberg_slc6", "vandenberg_slc4e"],
+    {"id": "starship", "name": "Starship", "sites": ["starbase", "louisiana_a1", "louisiana_a2", "louisiana_b1", "louisiana_b2", "louisiana_c1", "louisiana_c2", "louisiana_d1", "louisiana_d2", "louisiana_e1", "louisiana_e2", "ksc_39a", "ccsfs_slc37", "vandenberg_slc6", "vandenberg_slc4e"],
      "meco_s": 160, "meco_alt_km": 70, "meco_downrange_km": 75, "seco_s": 500, "deploy_after_seco_s": 1200,
      "flow1_kg_s": 21000, "flow2_kg_s": 4100, "exhaust1_m_s": 3200, "exhaust2_m_s": 3600,
      "booster": "tower", "flame1_mag_100km": -6.0, "flame2_mag_100km": -4.0,
