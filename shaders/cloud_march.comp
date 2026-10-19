@@ -139,6 +139,7 @@ struct DustCloud
     vec4 ia;  // inverse covariance xx, yy, zz; w = 1 / ((2 pi)^1.5 sqrt(det))
     vec4 ib;  // inverse covariance xy, xz, yz; w = (plumes) the sky light on it, relative to the Sun's
     vec4 col; // tint; w = 1: emissive (a re-entry fireball's trail, a rocket's flame); 2: a rocket's plume
+    vec4 cone; // the directions it can reach (xyz unit, w = cos of the half-angle; all 0 = everywhere): one dot to skip
 };
 layout(set = 0, binding = 23) readonly buffer DustBuf { uint dustCount; uint dustPad0, dustPad1, dustPad2; DustCloud dust[]; };
 
@@ -185,6 +186,8 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
     vec3 L = vec3(0.0);
     float wT = 0.0;
     for (uint i = 0u; i < n; ++i) {
+        if (dot(dir, dust[i].cone.xyz) < dust[i].cone.w)
+            continue;
         DustCloud d = dust[i];
         vec3 o = -d.c.xyz;
         float q = dot(dir, dustMul(d, dir));

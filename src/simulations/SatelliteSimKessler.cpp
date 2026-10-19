@@ -1224,6 +1224,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             const double iR = 1.0 / (sRk * sRk), iS = 1.0 / (sSk * sSk), iW = 1.0 / (sWk * sWk);
             auto M = [&](int p, int q) { return iR * a[p] * a[q] + iS * b[p] * b[q] + iW * cw[p] * cw[q]; };
             GpuDustCloud &d = out[n++];
+            d.cone = glm::vec4(0.0f); // no view cone: tested everywhere
             const glm::dvec3 rel = toEnu(ctr - eye);
             d.c = glm::vec4(glm::vec3(rel), (float)(c.amp * cutK * w * toSky));
             d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
@@ -1475,6 +1476,7 @@ void SatelliteSim::fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, doub
                 // Intensity (photometry units) from the flare: flare = K J / r^2.
                 const double J = 0.7 * flare * range * range / K;
                 GpuDustCloud &d = out[n++];
+            d.cone = glm::vec4(0.0f); // no view cone: tested everywhere
                 d.c = glm::vec4(glm::vec3(toEnu(P - 0.55 * axis - eye)), (float)(J * toSky));
                 d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
                                  (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
@@ -1512,6 +1514,7 @@ void SatelliteSim::fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, doub
         auto M = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
         const double J = flare * range * range / K;
         GpuDustCloud &d = out[n++];
+            d.cone = glm::vec4(0.0f); // no view cone: tested everywhere
         d.c = glm::vec4(glm::vec3(toEnu(rel)), (float)(J * toSky));
         d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
                          (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));

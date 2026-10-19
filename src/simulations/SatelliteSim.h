@@ -2634,9 +2634,10 @@ private:
         glm::vec4 c;   // centre relative to the eye (m, ENU axes); w = cross-section x albedo x gain (m^2)
         glm::vec4 ia;  // inverse covariance xx, yy, zz; w = 1 / ((2 pi)^1.5 sqrt(det))
         glm::vec4 ib;  // inverse covariance xy, xz, yz; w unused
-        glm::vec4 col; // tint; w unused
+        glm::vec4 col; // tint; w: 0 scattering dust, 1 emissive, 2 a rocket plume
+        glm::vec4 cone; // the directions it can touch: xyz unit (ENU), w = cos of the half-angle; 0 = everywhere
     };
-    static_assert(sizeof(GpuDustCloud) == 64);
+    static_assert(sizeof(GpuDustCloud) == 80); // cloud_march.comp DustCloud
     VkBuffer kDustBuf = VK_NULL_HANDLE;
     VkDeviceMemory kDustMem = VK_NULL_HANDLE;
     void *kDustMapped = nullptr;
@@ -2673,6 +2674,9 @@ private:
     nlohmann::json launchListJson(double hours) const;
     bool launchGoToNext(std::string &msg, bool twilight);
     bool launchLook(int stage, std::string &msg);
+    nlohmann::json launchCheckJson() const;
+    bool launchSelect(int kind, std::string &msg);
+    bool launchGoToNextReentry(std::string &msg);
     void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
     void launchDestroy(VkDevice device);
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;

@@ -2358,6 +2358,28 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = msg;
             return Status::Done;
         }
+        if (sub == "reentry")
+        {
+            std::string msg;
+            if (!launchGoToNextReentry(msg))
+                fail("launch reentry: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
+        if (sub == "select")
+        {
+            std::string msg;
+            if (!launchSelect(lower(c.str("kind", "train")) == "retiree" ? 1 : 0, msg))
+                fail("launch select: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
+        if (sub == "check")
+        {
+            r["check"] = launchCheckJson();
+            r["message"] = r["check"].dump();
+            return Status::Done;
+        }
         if (sub == "look")
         {
             std::string msg;
