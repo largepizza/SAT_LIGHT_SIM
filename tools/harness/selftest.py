@@ -412,6 +412,8 @@ launch state
     states = [r["result"]["launches"] for r in res if r["cmd"] == "launch state"]
     assert states[0]["train_satellites"] > 1000 and states[0]["retiring_satellites"] > 1000, states[0]
     assert states[0]["train_satellites"] == states[1]["train_satellites"], (states[0], states[1])
+    for st in states:  # every satellite up has its record on the GPU (no ghosts, none missing)
+        assert st["slots_shown"] == st["train_satellites"] + st["retiring_satellites"], st
 
 
 @test
