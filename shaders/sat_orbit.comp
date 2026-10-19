@@ -180,7 +180,7 @@ layout(set = 0, binding = 5) readonly buffer SatTypeBuf {
     float   formationMerge;   // 0..1: an unresolved formation's light carried by its member 0
     // Kessler (2026-10-16): satellites from poolBase on are Keplerian pool records (dead satellites,
     // fragments) in KesslerBuf; scenNowSec = whole seconds since the scenario epoch (the CME's arrival).
-    uint    poolBase;         // = the roster's satellite count
+    uint    poolBase;         // = the roster's satellite count + LAUNCH_CAP (the launch records)
     uint    poolCount;
     int     scenNowSec;
     uint    poolWord0;        // KesslerBuf word of the first pool record (16 words each)
@@ -1169,10 +1169,16 @@ float formationDrift(uint sat, uint tau, float f)
     return sgn * fract(turns);
 }
 
+// Launch records (2026-10-18, SatelliteSimLaunches.cpp): the LAUNCH_CAP indices before poolBase, their words before
+// poolWord0 — trains raising and retirees deorbiting, Keplerian records the CPU rewrites as they move (born / death
+// say only whether a record is live: born = death = 0 hides it). Keep in step with SatelliteSim::kLaunchCap.
+const uint LAUNCH_CAP = 131072u;
+
 bool processSatellite(uint i, out SatVisible rec)
 {
     // ── Kessler pool (2026-10-16): indices from poolBase are Keplerian records ──────────────────
-    bool  isPool   = i >= poolBase;
+    // (and the launch records before it: the same record format)
+    bool  isPool   = i >= poolBase - LAUNCH_CAP;
     float poolFlux = 1.0;
     SatOrbit orb;
     vec3  satECI, velHat;
@@ -1186,8 +1192,9 @@ bool processSatellite(uint i, out SatVisible rec)
             deadNow = int(kw[2u * i]) <= scenNowSec;
         }
     } else {
-        uint j = i - poolBase;
-        uint w = poolWord0 + j * 16u;
+        bool isLaunch = i < poolBase;
+        uint j = isLaunch ? (i - (poolBase - LAUNCH_CAP)) | 0x20000000u : i - poolBase; // (the tumble axis hash)
+        uint w = isLaunch ? poolWord0 - 16u * LAUNCH_CAP + (i - (poolBase - LAUNCH_CAP)) * 16u : poolWord0 + j * 16u;
         int born = int(kw[w + 13u]), death = int(kw[w + 14u]);
         if (scenNowSec < born || scenNowSec >= death)
             return false;
@@ -1627,7 +1634,7 @@ bool processSatellite(uint i, out SatVisible rec)
     // a sunlit ISS at mag -2 made it far fainter and harder to find.
     const float highlightFlag = bool((pc.highlightMask >> (orb.constIdx & CONST_IDX_MASK)) & 1u) ? -1.0 : 0.0;
     // Highlighted debris (Kessler fragments) is tinted, so the census view tells it apart from the satellites.
-    if (isPool && highlightFlag < 0.0)
+    if (i >= poolBase && highlightFlag < 0.0)   // (not the launch records: satellites)
         outBaseColor = vec3(1.0, 0.42, 0.22);
     // An UNRESOLVED formation (2026-10-07): its member 0 carries the whole cluster's light and the others fade
     // out, over a cluster 3 -> 1 px wide. The members' points overlapped and summed on screen, but the point
@@ -1650,7 +1657,7 @@ bool processSatellite(uint i, out SatVisible rec)
     }
     // The colour's alpha carries the type's area fill (sat_flare.comp, the resolved-object size).
     // Highlighted debris: |angularSize| + 100 (sat_flare.comp gives it a brighter census dot than satellites).
-    float hlDebris = (isPool && highlightFlag < 0.0) ? 100.0 : 0.0;
+    float hlDebris = (i >= poolBase && highlightFlag < 0.0) ? 100.0 : 0.0;
     rec = SatVisible(skyDir, flare, packUnorm4x8(vec4(outBaseColor, ty.meshFill)),
                      (highlightFlag < 0.0 ? -1.0 : 1.0) * (1.0 + mergeF + hlDebris), range, meshPx);
     return true;

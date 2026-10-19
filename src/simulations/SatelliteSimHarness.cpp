@@ -205,7 +205,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; launch [state]|list [hours=]|next [twilight=1]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -424,6 +424,7 @@ json SatelliteSim::harnessStateJson()
     // The compact visible list's length (last frame's header): satellites + stars' share + city light
     // sprites (city_sprites.comp appends after sat_flare.comp).
     j["kessler"] = kesslerStateJson();
+    j["launches"] = launchStateJson();
     j["satellites"] = {{"visible_count", visibleCount}, {"active_count", activeSatCount},
                        // the mesh hand-off: the fade-in size (raised past the kMaxMeshInstances largest) and how many
                        // satellites were mesh-sized candidates last frame
@@ -2324,7 +2325,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 }
             if (found < 0)
                 return Status::Pending; // not mirrored yet
-            selectSatellite((int)activeSatCount + found);
+            selectSatellite((int)poolIdx0() + found);
         }
         else if (!sub.empty() && sub != "state")
             fail("kessler: state | breakup <sat> [kind=explosion|asat] | collide <a> <b> | wait [days=] [done] | select [k=]");
@@ -2335,6 +2336,40 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                  kj["frontier_days"].get<double>(), kWorkerDone ? " (done)" : "", kEvents.size(), kPool.size(),
                  kj["now"]["dead_satellites"].get<int>(), kj["now"]["fragments"].get<int>());
         r["message"] = msg;
+        return Status::Done;
+    }
+
+    if (n == "launch")
+    {
+        // launch [state] | list [hours=48] | next [twilight=0|1] (2026-10-18, SatelliteSimLaunches.cpp).
+        const std::string sub = lower(pos(0));
+        if (sub == "list")
+        {
+            const nlohmann::json l = launchListJson(c.num("hours", 48.0));
+            r["launches"] = l;
+            r["message"] = std::to_string(l.size()) + " launches";
+            return Status::Done;
+        }
+        if (sub == "next")
+        {
+            std::string msg;
+            if (!launchGoToNext(msg, c.num("twilight", 0.0) > 0.5))
+                fail("launch next: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
+        if (sub == "look")
+        {
+            std::string msg;
+            if (!launchLook((int)c.num("stage", 1.0), msg))
+                fail("launch look: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
+        if (!sub.empty() && sub != "state")
+            fail("launch: state | list [hours=48] | next [twilight=0|1] | look [stage=0|1]");
+        r["launches"] = launchStateJson();
+        r["message"] = r["launches"].dump();
         return Status::Done;
     }
 

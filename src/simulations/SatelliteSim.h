@@ -1930,6 +1930,7 @@ struct SatOrbit
                            // Terminator basis: t1=cross(sunDir,ref), t2=cross(sunDir,t1).
                            // Target = kEarthRadius × (cos(angle)×t1 + sin(angle)×t2).
     int32_t poolSlot = -1; // >= 0: a Kessler pool record (kPool[poolSlot]); its orbit lives there
+    int32_t launchSlot = -1; // >= 0: a launch record (a train raising, a retiree deorbiting; SatelliteSimLaunches.cpp)
 };
 
 // ── SatelliteSim ──────────────────────────────────────────────────────────────
@@ -2623,7 +2624,11 @@ private:
     void *kStageMapped = nullptr;
     // The dust clouds (round 2): up to kMaxDustClouds Gaussian ellipsoids a frame, built on the CPU from the recent
     // breakups (kesslerFillDust) and integrated in closed form by cloud_march.comp (binding 23).
-    static constexpr uint32_t kMaxDustClouds = 512;
+    // 1024 since the launches (2026-10-18): the Kessler dust takes at most kDustMax, the fireball trails run up to
+    // kFireTrailMax, the rocket plumes and flames take the rest (SatelliteSimLaunches.cpp).
+    static constexpr uint32_t kMaxDustClouds = 1024;
+    static constexpr uint32_t kDustMax = 384;
+    static constexpr uint32_t kFireTrailMax = 704;
     struct GpuDustCloud
     {
         glm::vec4 c;   // centre relative to the eye (m, ENU axes); w = cross-section x albedo x gain (m^2)
@@ -2639,8 +2644,47 @@ private:
     void kesslerFillDust(float pixelAngle);
     // Fills the fireballs for the current time into kFireBuf and appends their trails to the dust list (out, n).
     void kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
+    void fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, double m0, int N, uint64_t seed, double tau,
+                       GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
+
+    // ── Launches (SatelliteSimLaunches.cpp, 2026-10-18; .plans/LAUNCHES_PLAN.md) ─────────────────────
+    // Every plane of a constellation a program in data/launches.json keeps flying is refreshed once per design life:
+    // a rocket from a site under the plane deploys a train low, the train climbs to its slots, and the satellites it
+    // replaces deorbit and re-enter. All a pure function of sim time. Trains and retirees are Keplerian records in the
+    // launch block of kesslerBuf (satellites [activeSatCount, poolIdx0())); rockets are point sprites (kFireBuf),
+    // their flames emissive and their plumes scattering Gaussians in the dust list.
+    struct LaunchState;
+    friend struct LaunchImpl; // SatelliteSimLaunches.cpp's helpers
+    struct LaunchStateDelete
+    {
+        void operator()(LaunchState *s) const;
+    };
+    std::unique_ptr<LaunchState, LaunchStateDelete> launchState;
+    bool launchesEnabled = true;     // launches.enabled
+    float launchLifeScale = 1.0f;    // launches.life_scale: x every program's design life (fewer launches above 1)
+    float launchPlumeGain = 1.0f;    // launches.plume_gain: the plumes' optical depth x
+    float launchRocketGain = 1.0f;   // launches.rocket_gain: the flames' brightness x
+    void launchInitBlock();          // the launch block's satOrbits entries (empty) and the launch state (reset)
+    void launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd); // per frame: schedule, records, uploads
+    void launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // rockets, plumes, re-entries
+    SatOrbitElems launchOrbitElems(uint32_t slot) const;
+    std::string launchLabel(uint32_t slot) const;
+    nlohmann::json launchStateJson() const;
+    nlohmann::json launchListJson(double hours) const;
+    bool launchGoToNext(std::string &msg, bool twilight);
+    bool launchLook(int stage, std::string &msg);
+    void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
+    void launchDestroy(VkDevice device);
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
     uint32_t kPoolCap = 16384;            // records the GPU buffers hold
+    // Satellite indices: [0, activeSatCount) the roster, then kLaunchCap launch records (trains raising, retirees
+    // deorbiting: SatelliteSimLaunches.cpp), then the Kessler pool from poolIdx0(). kesslerBuf's words: the roster's
+    // dead / end seconds, the launch records from kLaunchWord0, the pool from kPoolWord0 (sat_orbit.comp LAUNCH_CAP).
+    static constexpr uint32_t kLaunchCap = 131072;
+    uint32_t poolIdx0() const { return activeSatCount + kLaunchCap; }
+    uint32_t visibleCapacity() const { return std::max<uint32_t>(activeSatCount, 1u) + kLaunchCap + kPoolCap + kCitySpriteMax; }
+    uint32_t kLaunchWord0 = 0;            // first launch-record word
+    uint32_t kesslerBufGen = 0;           // bumped whenever kesslerBuf is (re)created (the launch records are re-sent)
     uint32_t kPoolWord0 = 0;              // first pool word (after the roster's dead / end seconds)
     uint32_t kPoolGpu = 0;                // records uploaded (drawn)
     std::vector<uint32_t> kDirtyRoster;   // roster satellites whose two words to upload

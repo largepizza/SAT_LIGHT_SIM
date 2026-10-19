@@ -60,6 +60,7 @@ endforeach()
 foreach(f data/constellations.json
           data/constellations.schema.json
           data/reflector_targets.json
+          data/launches.json
           THIRD_PARTY_NOTICES.txt)
     if(NOT EXISTS "${SRC_DIR}/${f}")
         message(FATAL_ERROR "PackageRelease.cmake: required file missing: ${SRC_DIR}/${f}")

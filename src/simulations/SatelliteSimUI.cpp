@@ -7776,6 +7776,15 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             kRestartPending = true;
     }
 
+    if (j.contains("launches") && j["launches"].is_object())
+    {
+        const auto &lj = j["launches"];
+        launchesEnabled = lj.value("enabled", launchesEnabled);
+        launchLifeScale = settingClamp(lj.value("life_scale", launchLifeScale), 0.1f, 20.0f);
+        launchPlumeGain = settingClamp(lj.value("plume_gain", launchPlumeGain), 0.0f, 100.0f);
+        launchRocketGain = settingClamp(lj.value("rocket_gain", launchRocketGain), 0.0f, 100.0f);
+    }
+
     if (j.contains("planets"))
     {
         auto &pj = j["planets"];
@@ -8579,6 +8588,11 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                     {"dust_gain", kesslerDustGain},
                     {"small_reentry_gain", kesslerSmallReGain},
                     {"fireball_colors", kesslerFireColor}};
+    // Launches (SatelliteSimLaunches.cpp).
+    j["launches"] = {{"enabled", launchesEnabled},
+                     {"life_scale", launchLifeScale},
+                     {"plume_gain", launchPlumeGain},
+                     {"rocket_gain", launchRocketGain}};
     return j;
 }
 

@@ -137,8 +137,8 @@ struct DustCloud
 {
     vec4 c;   // centre relative to the eye (m, ENU); w = cross-section x albedo x gain (m^2)
     vec4 ia;  // inverse covariance xx, yy, zz; w = 1 / ((2 pi)^1.5 sqrt(det))
-    vec4 ib;  // inverse covariance xy, xz, yz
-    vec4 col; // tint; w = 1: emissive (a re-entry fireball's trail)
+    vec4 ib;  // inverse covariance xy, xz, yz; w = (plumes) the sky light on it, relative to the Sun's
+    vec4 col; // tint; w = 1: emissive (a re-entry fireball's trail, a rocket's flame); 2: a rocket's plume
 };
 layout(set = 0, binding = 23) readonly buffer DustBuf { uint dustCount; uint dustPad0, dustPad1, dustPad2; DustCloud dust[]; };
 
@@ -159,17 +159,28 @@ vec3 dustMul(DustCloud d, vec3 v)
 
 // Returns the scattered light (extinguished by the caller to tScat, its brightness-weighted distance) and, in Le,
 // the emissive trails' light (already extinguished on the CPU, along the eye-to-fireball path).
-vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le, out float tScat)
+// Rocket plumes (launches, 2026-10-18: SatelliteSimLaunches.cpp) are real clouds: their optical depth is summed
+// (tauP), their light per unit optical depth averaged (Lp / tauP), so a thick trail saturates and hides what is
+// behind it (the caller composites 1 - exp(-tauP)); tP = their optical-depth-weighted distance.
+vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le, out float tScat,
+                  out vec3 Lp, out float tauP, out float tP)
 {
     Le = vec3(0.0);
     tScat = 0.0;
-    uint n = min(dustCount, 512u);
+    Lp = vec3(0.0);
+    tauP = 0.0;
+    tP = 0.0;
+    uint n = min(dustCount, 1024u);
     if (n == 0u)
         return vec3(0.0);
     float cosT = dot(dir, sunDir);
     const float g = 0.7;
     float hg = (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5);
     float phase = (0.6 * hg + 0.4) * (1.0 / (4.0 * PI)); // per steradian, integrates to 1
+    // Water / ice exhaust: forward-peaked, with a broad part (multiple scattering in a thick trail).
+    const float gP = 0.8;
+    float hgP = (1.0 - gP * gP) / pow(max(1.0 + gP * gP - 2.0 * gP * cosT, 1e-4), 1.5);
+    float phaseP = (0.45 * hgP + 0.55) * (1.0 / (4.0 * PI));
     float T = min(tScene, 2.0e7);
     vec3 L = vec3(0.0);
     float wT = 0.0;
@@ -187,18 +198,31 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
         float sq = sqrt(0.5 * q);
         float I  = exp(-0.5 * e) * sqrt(PI / (2.0 * q)) * (dustErf(sq * (T - tc)) - dustErf(-sq * tc));
         float tau = d.ia.w * d.c.w * max(I, 0.0);
-        if (d.col.w > 0.5) {   // emissive (a re-entry fireball's trail): no phase, no shadow
+        if (d.col.w > 0.5 && d.col.w < 1.5) {   // emissive (a re-entry fireball's trail): no phase, no shadow
             Le += d.col.rgb * tau;
             continue;
         }
         vec3  P  = obsPos + clamp(tc, 0.0, T) * dir;
         float sp = dot(P, sunDir);
-        float lit = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.995, R_EARTH * 1.01, length(P - sp * sunDir));
+        float dS  = length(P - sp * sunDir);
+        if (d.col.w > 1.5) {   // a plume: sunlit by its tint (the Sun's colour there x albedo), sky-lit by ib.w
+            // (a sharper shadow edge than the dust's: the bell's lit edge is where the Earth's shadow cuts it)
+            float litP = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, dS);
+            Lp   += tau * (d.col.rgb * (litP * phaseP) + d.ib.w * vec3(0.55, 0.68, 1.0) * (0.25 / PI));
+            tauP += tau;
+            tP   += tau * clamp(tc, 0.0, T);
+            continue;
+        }
+        float lit = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.995, R_EARTH * 1.01, dS);
         L += d.col.rgb * (tau * lit);
         wT += tau * lit;
         tScat += tau * lit * clamp(tc, 0.0, T);
     }
     tScat = wT > 0.0 ? tScat / wT : 0.0;
+    if (tauP > 0.0) {
+        tP /= tauP;
+        Lp = Lp / tauP * (1.0 - exp(-tauP));
+    }
     return L * phase;
 }
 
@@ -1763,9 +1787,21 @@ void main() {
     if (dustCount > 0u) {
         // Extinction to the cloud, not to infinity: looking down from above the air, the path to infinity ends in
         // the ground through the whole atmosphere, and every cloud and fireball trail below the eye went dark.
-        vec3  dLe;
-        float dT;
-        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, dLe, dT);
+        vec3  dLe, pL;
+        float dT, pTau, pT;
+        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, dLe, dT, pL, pTau, pT);
+        // Rocket plumes: in front of the clouds (nearer than their mean distance) they cover them, behind they are
+        // seen through them; either way they dim what lies behind them (the sky, the stars) by exp(-tau).
+        if (pTau > 1e-6) {
+            float pExt = pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, max(pT, 1.0), cloud.extinctionCoeff));
+            float pTr  = exp(-pTau);
+            if (pT < tCloudMeanT) {
+                B_total = B_total * pTr + pL * pExt;
+            } else {
+                B_total += pL * pExt * A_total;
+            }
+            A_total *= pTr;
+        }
         if (dot(dc, dc) + dot(dLe, dLe) > 0.0) {
             float ext = dot(dc, dc) > 0.0 ? pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, max(dT, 1.0), cloud.extinctionCoeff)) : 0.0;
             // Clouds hide them only from below the weather (they are all above 45 km): the aurora's 95-km test hid

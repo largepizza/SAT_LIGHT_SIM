@@ -1627,6 +1627,12 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         CpuTimer _t(cpuAccumMs[CPU_ORBIT_REBAKE]);
         recordSatRebake(cmd); // GPU: one dispatch, no upload (sat_rebake.comp)
     }
+    // Launches (SatelliteSimLaunches.cpp): the trains and retirees' records for this frame, after the rebake (their
+    // phases are written at the current orbit epoch).
+    {
+        CpuTimer launchTimer(cpuAccumMs[CPU_KESSLER]);
+        launchUpdate(ctx, cmd);
+    }
 
     if (followActive)
         updateFollow(dt); // Phase 4e: ride along with the followed satellite at this sim time
@@ -2835,7 +2841,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     orbitPc.deltaT = (float)deltaTD;
     orbitDeltaTLo = (float)(deltaTD - (double)orbitPc.deltaT); // → GpuSatTypeHeader::deltaTLo
     orbitPc.obsECI = obsECI;
-    orbitPc.satCount = activeSatCount + kPoolGpu; // the roster, then the Kessler pool
+    orbitPc.satCount = poolIdx0() + kPoolGpu; // the roster, the launch records, then the Kessler pool
     orbitPc.highlightMask = highlightMask;
     orbitPc.enabledMask = enabledMask;
     orbitPc.simDt = simDt;
@@ -3092,7 +3098,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                        (float)std::max(1u, ctx.swapExtent.height);
         hdr.pixelAngle = 2.0f * tanf(glm::radians(camera.fovYDeg) * 0.5f) / (float)std::max(1u, ctx.swapExtent.height);
         hdr.formationMerge = glm::clamp(formationMergeStrength, 0.0f, 1.0f);
-        hdr.poolBase = activeSatCount;
+        hdr.poolBase = poolIdx0(); // the launch records are the kLaunchCap indices before it (LAUNCH_CAP)
         hdr.poolCount = kPoolGpu;
         hdr.poolWord0 = kPoolWord0;
         hdr.scenNowSec = (int32_t)std::clamp(std::floor((double)simDayJ2000 * 86400.0 + simSecInDay - kesslerEpoch()),
@@ -3129,7 +3135,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                             orbitPipeLayout, 0, 1, &orbitDescSet, 0, nullptr);
     vkCmdPushConstants(cmd, orbitPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(orbitPc), &orbitPc);
-    vkCmdDispatch(cmd, (activeSatCount + kPoolGpu + 63) / 64, 1, 1);
+    vkCmdDispatch(cmd, (poolIdx0() + kPoolGpu + 63) / 64, 1, 1);
 
     // Barrier: sat_orbit.comp appended the compact visible list (records + slot→satellite index +
     // header/indirect args) → sat_flare.comp finishes the records in place (READ|WRITE), and the
@@ -3478,7 +3484,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // (from orbit the ground's own glitter carries the cities).
         cpc.gain = citySpriteGainAt();
         cpc.nightF = 1.0f - glm::smoothstep(-0.105f, 0.02f, sunDirENU.w);
-        cpc.capacity = std::max<uint32_t>(activeSatCount, 1u) + kPoolCap + kCitySpriteMax;
+        cpc.capacity = visibleCapacity();
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, citySpritePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, citySpritePipeLayout, 0, 1, &citySpriteDescSet, 0,
                                 nullptr);
@@ -4072,7 +4078,7 @@ int SatelliteSim::pickViewerSatellite(int constIdx) const
     // Members of the constellation (stride through the big ones: a million-satellite disk needs no
     // more than ~40k candidates to find one high in the sky).
     std::vector<int> members;
-    for (int i = 0; i < (int)satOrbits.size(); ++i)
+    for (int i = 0; i < (int)activeSatCount; ++i)
         if ((int)satOrbits[i].constIdx == constIdx)
             members.push_back(i);
     if (members.empty())
@@ -5699,7 +5705,7 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
     VulkanContext &ctx = *ctx_;
     const uint32_t listCount = std::min(
         static_cast<const GpuSatListHeader *>(pickedVisibleMapped)->count,
-        std::max<uint32_t>(activeSatCount, 1u) + kPoolCap + kCitySpriteMax);
+        visibleCapacity());
     if (listCount == 0)
         return -1;
     const VkDeviceSize recBytes = (VkDeviceSize)listCount * sizeof(GpuSatVisible);
@@ -5886,6 +5892,8 @@ SatOrbitElems SatelliteSim::orbitElemsOf(const SatOrbit &orb) const
 {
     if (orb.poolSlot >= 0 && (size_t)orb.poolSlot < kPool.size())
         return kessler::poolOrbitElems(kPool[(size_t)orb.poolSlot], (uint32_t)orb.poolSlot);
+    if (orb.launchSlot >= 0)
+        return launchOrbitElems((uint32_t)orb.launchSlot);
     SatOrbitElems e = rosterElemsOf(orb);
     // Kessler: a roster satellite dead at the current sim time tumbles (sat_orbit.comp's deadTumble).
     const ptrdiff_t idx = &orb - satOrbits.data();
@@ -6213,7 +6221,7 @@ void SatelliteSim::startBulkExport()
         if (bulkSource >= (int)constellations.size())
             return;
         typeIdx = (int)constellations[bulkSource].typeIdx;
-        for (size_t i = 0; i < satOrbits.size(); ++i)
+        for (size_t i = 0; i < activeSatCount; ++i)
             if ((int)satOrbits[i].constIdx == bulkSource)
                 job->sats.push_back({orbitElemsOf(satOrbits[i]), (int)i});
         sourceName = constellations[bulkSource].name;
@@ -6926,6 +6934,7 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyDescriptorPool(device, cloudMarchDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, cloudMarchDescLayout, nullptr);
     kesslerDestroyFireballPass(device);
+    launchDestroy(device);
     if (kDustBuf != VK_NULL_HANDLE)
     {
         vkDestroyBuffer(device, kDustBuf, nullptr);
