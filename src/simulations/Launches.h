@@ -108,6 +108,7 @@ inline double meanMotion(double a) { return std::sqrt(kGM / (a * a * a)); }
 struct Parcel
 {
     double t0 = 0.0;             // emission (s after lift-off)
+    bool thin = false;           // a vent's jet (never decimated: its arms are thin)
     double m = 0.0;              // kg
     double kappa = 1.0;          // scattering cross-section per kg (m^2/kg)
     double albedo = 0.9;
@@ -124,8 +125,11 @@ struct Parcel
 
 double airDensity(double hM); // kg/m^3
 // Integrates a parcel to maxAge (s). wind(h) = the wind at altitude h (m/s, Earth-fixed axes) for the launch.
+// vExp: how fast the parcel spreads while it outweighs the air it has taken in (exhaust gas ~2 km/s into vacuum;
+// vented propellant, droplets freezing to ice, ~100 m/s).
 Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double m, double kappa, double albedo,
-                  const glm::dvec3 &axis, double len, double maxAge, const glm::dvec3 &windDir, double windGain);
+                  const glm::dvec3 &axis, double len, double maxAge, const glm::dvec3 &windDir, double windGain,
+                  double vExp = 2000.0);
 
 double hash01(uint64_t seed, uint64_t index, uint32_t channel);
 } // namespace launch

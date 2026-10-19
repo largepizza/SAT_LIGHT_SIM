@@ -2684,6 +2684,7 @@ private:
     nlohmann::json launchCheckJson() const;
     bool launchSelect(int kind, std::string &msg);
     bool launchGoToNextReentry(std::string &msg);
+    bool launchGoToVent(std::string &msg);
     void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
     void launchDestroy(VkDevice device);
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;

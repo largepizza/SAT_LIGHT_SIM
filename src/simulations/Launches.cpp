@@ -384,7 +384,8 @@ bool Parcel::at(double a, glm::dvec3 &cOut, double &sOut, double &condOut, doubl
 }
 
 Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double m, double kappa, double albedo,
-                  const glm::dvec3 &axis, double len, double maxAge, const glm::dvec3 &windDir, double windGain)
+                  const glm::dvec3 &axis, double len, double maxAge, const glm::dvec3 &windDir, double windGain,
+                  double vExp)
 {
     Parcel pc;
     pc.t0 = t0;
@@ -427,7 +428,7 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         const glm::dvec3 vr = v - w;
         // Expansion: the gas's own (km/s into vacuum) while it outweighs the air it has taken in, then diffusion.
         const double Kd = hk < 15.0 ? 25.0 : hk < 60.0 ? 8.0 : 400.0;
-        const double sigDot = 2000.0 * (m / M) + Kd / sig;
+        const double sigDot = vExp * (m / M) + Kd / sig;
         // Entrainment: the air swept by the growing surface and the parcel's motion through the air. High up the
         // air is so thin (mean free path ~1 km at 200 km) that the exhaust largely passes through it: the coupling
         // weakens, and the bell grows to hundreds of km as seen in twilight launches.

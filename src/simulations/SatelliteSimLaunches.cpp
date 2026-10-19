@@ -804,6 +804,13 @@ static glm::dvec3 rocketEcef(const SatelliteSim::LaunchState &L, const LBatch &B
     return ok ? eciToEcef(P, B.tL + std::max(tau, 0.0)) : glm::dvec3(0.0);
 }
 
+// When the upper stage vents what is left, spinning (after its deorbit burn, or 10 min after deploying for a stage
+// that returns).
+static double ventStart(const SatelliteSim::LaunchState &L, const LBatch &B)
+{
+    return L.cat.vehicles[B.veh].upperDeorbit ? B.tDeorbBurn + 50.0 : B.tD + 600.0;
+}
+
 // The exhaust's parcels, from the whole flight (built once, when the launch first matters to the view).
 static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
 {
@@ -859,8 +866,13 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         const double m = flow * dtE;
         const double len = std::max(spd * dtE, 10.0);
         const double maxAge = h > 40000.0 ? kPlumeAgeHigh : kPlumeAgeLow;
-        B.parcels.push_back(launch::makeParcel(tau, p, vel + vex * ex, m, kappaAt(h), albedoAt(h),
-                                               spd > 5.0 ? vel / spd : up, len, maxAge, windDir, windGain));
+        // Vented propellant: droplets freezing to ice, a large cross-section, spreading slowly (the dump spirals).
+        const bool vent = mode == 3;
+        // (A vent's parcel is a stretch of its jet, not of the stage's path: the stage carries the jet with it.)
+        B.parcels.push_back(launch::makeParcel(tau, p, vel + vex * ex, m, vent ? 2000.0 : kappaAt(h), albedoAt(h),
+                                               vent ? ex : (spd > 5.0 ? vel / spd : up), vent ? vex * dtE : len,
+                                               maxAge, windDir, windGain, vent ? 30.0 : 2000.0));
+        B.parcels.back().thin = vent;
     };
     // The pad's ground cloud: exhaust and the deluge's steam rolling out along the ground in the first seconds.
     for (int k = 0; k < 6; ++k)
@@ -894,9 +906,12 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         const double tb = B.tDeorbBurn - B.tL;
         for (double tau = tb; tau < tb + 40.0; tau += 5.0)
             emit(1, tau, 5.0, vh.flow2 * 0.6, vh.vex2, 2);
-        if (B.vents)
-            for (double tau = tb + 50.0; tau < tb + 170.0; tau += 1.5)
-                emit(1, tau, 1.5, 6.0, 300.0, 3);
+    }
+    if (B.vents)
+    {
+        const double tv = ventStart(L, B) - B.tL;
+        for (double tau = tv; tau < tv + 120.0; tau += 0.5)
+            emit(1, tau, 0.5, 80.0, 700.0, 3); // ~10 t of residual propellant over two minutes
     }
 }
 
@@ -1475,7 +1490,11 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             const bool fast = !timePaused && kTimeScales[timeScaleIdx] > 3600.0f;
             const glm::dvec3 padNow = ecefToEci(B.G0, t) * kR;
             const double eyeAlt = glm::length(eye) - kR;
-            if (fast || glm::length(padNow - eye) > 4.5e6 + 2.0 * eyeAlt)
+            double dNear = glm::length(padNow - eye);
+            glm::dvec3 Pst;
+            if (LaunchImpl::rocketPos(L, B, 1, tau, Pst))
+                dNear = std::min(dNear, glm::length(Pst - eye)); // (a stage venting half an orbit downrange)
+            if (fast || dNear > 4.5e6 + 2.0 * eyeAlt)
                 continue;
             LaunchImpl::buildParcels(L, B);
         }
@@ -1486,7 +1505,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             const double age = tau - pc.t0;
             // Old parcels are wide and overlap their neighbours: every 2nd stands for two past 2 min, every 4th for
             // four past 10 min (the budget then reaches the whole bell, not just its young part).
-            const int dec = age > 600.0 ? 4 : age > 120.0 ? 2 : 1;
+            const int dec = pc.thin ? 1 : age > 600.0 ? 4 : age > 120.0 ? 2 : 1;
             if (pi % (size_t)dec != 0)
                 continue;
             glm::dvec3 cE;
@@ -2185,4 +2204,69 @@ std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, co
         }
     }
     return out;
+}
+
+// The next stage venting while sunlit over a dark ground (within 30 days; harness `launch vent`): the observer 250 km
+// to the side of the stage's track, 20 s before the vent, looking at it.
+bool SatelliteSim::launchGoToVent(std::string &msg)
+{
+    if (!launchState)
+        return false;
+    LaunchImpl::ensureCatalog(*launchState);
+    LaunchState &L = *launchState;
+    const nlohmann::json list = launchListJson(24.0 * 30.0);
+    const double t0 = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    for (const nlohmann::json &o : list)
+    {
+        const double tl = t0 + o["in_hours"].get<double>() * 3600.0;
+        const LBatch *B = nullptr;
+        for (const auto &kv : L.batches)
+            if (kv.second.valid && std::abs(kv.second.tL - tl) < 1.0)
+                B = &kv.second;
+        if (!B || !B->vents)
+            continue;
+        const double tv = LaunchImpl::ventStart(L, *B) + 30.0;
+        glm::dvec3 P;
+        if (!LaunchImpl::rocketPos(L, *B, 1, tv - B->tL, P))
+            continue;
+        const glm::dvec3 sun = sunDirEciAt(tv);
+        const glm::dvec3 U = glm::normalize(P);
+        const double sp = glm::dot(P, sun);
+        const bool lit = sp > 0.0 || glm::length(P - sp * sun) > kR + 20000.0;
+        if (!lit || glm::dot(U, sun) > -0.12)
+            continue; // the stage must be sunlit, the ground under it dark
+        if (followActive)
+            stopFollow();
+        if (trackActive)
+            stopTrack();
+        const double tS = tv - 50.0;
+        const double days = std::floor(tS / 86400.0);
+        simDayJ2000 = (int64_t)days;
+        simSecInDay = tS - days * 86400.0;
+        trailClearPending = true;
+        timePaused = false;
+        timeScaleIdx = 0;
+        timeDir = 1.0f;
+        const glm::dvec3 Cn = glm::normalize(B->N);
+        const glm::dvec3 G = glm::normalize(U * kR + Cn * 250000.0);
+        const glm::dvec3 g = eciToEcef(G, tS);
+        setObserverLatLon(glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), glm::degrees(std::atan2(g.y, g.x)));
+        const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+        const glm::dvec3 rel = eciToEcef(P, tv) - up * kR;
+        glm::dvec3 east = glm::cross(glm::dvec3(0, 0, 1), up);
+        east = glm::length(east) > 1e-9 ? glm::normalize(east) : glm::dvec3(1, 0, 0);
+        const glm::dvec3 north = glm::cross(up, east);
+        const glm::dvec3 rn = glm::normalize(rel);
+        aimCameraAzEl((float)glm::degrees(std::atan2(glm::dot(rn, east), glm::dot(rn, north))),
+                      (float)glm::degrees(std::asin(glm::clamp(glm::dot(rn, up), -1.0, 1.0))));
+        camera.fovYDeg = 60.0f;
+        updatePositions(tS);
+        char b[240];
+        snprintf(b, sizeof(b), "%s upper stage from %s vents in 20 s, %.0f km away", o["vehicle"].get<std::string>().c_str(),
+                 o["site"].get<std::string>().c_str(), glm::length(rel) / 1000.0);
+        msg = b;
+        return true;
+    }
+    msg = "no venting stage sunlit over a dark ground in the next 30 days";
+    return false;
 }

@@ -2359,6 +2359,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = msg;
             return Status::Done;
         }
+        if (sub == "vent")
+        {
+            std::string msg;
+            if (!launchGoToVent(msg))
+                fail("launch vent: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
         if (sub == "reentry")
         {
             std::string msg;

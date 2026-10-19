@@ -4227,8 +4227,10 @@ launches follow per-program cadences (no real manifest).
   `booster: return`), entry and landing burns); the upper stage blends from that ground track into the inertial plane
   by SECO and then flies the parking orbit (`thIns`). Drawn as point sprites in kFireBuf (the flame's magnitude at
   100 km per stage; a coasting stage sunlit), an emissive Gaussian flame and a dim orange glow of the exhaust it lights.
-  Expendable upper stages burn to deorbit and re-enter as fireballs; a spinning vent after the burn (`vent_chance`)
-  makes a spiral. No meshes, no droneships.
+  Expendable upper stages burn to deorbit and re-enter as fireballs. A stage may vent what is left, spinning
+  (`vent_chance`; after its deorbit burn, or 10 min after deploying for a returning stage): ~10 t over two minutes as
+  slowly spreading ice (30 m/s, 2000 m^2/kg), each parcel a stretch of the 700 m/s jet, never decimated: seen from
+  below, a dump spiral like the 2009 Norway one (harness `launch vent`). No meshes, no droneships.
 - **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1.5-5 s of each burn, integrated once per
   launch (only for launches within ~4500 km of the eye and not past 1 h/s of warp) with entrainment: the gas expands
   at ~2 km/s while it outweighs the air it has taken in, then diffuses (above ~80 km the coupling to the air falls to
