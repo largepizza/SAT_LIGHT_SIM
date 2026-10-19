@@ -847,6 +847,44 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
             syn->pushEvent(ev, 4);
         }
     }
+    // Launches (SatelliteSimLaunches.cpp): each audible rocket's roar, as it left the rocket a few seconds ago (the
+    // retarded time), on a voice of its own like a roll of thunder.
+    for (const LaunchSound &ls : launchSounds(now, eye, camAz))
+    {
+        int v = -1;
+        for (int k = 0; k < kThunderVoices; ++k)
+            if (thunderVoice_[k].used && thunderVoice_[k].id == ls.id)
+                v = k;
+        if (v < 0)
+        {
+            for (int k = 0; k < kThunderVoices; ++k)
+            {
+                if (sounded[k])
+                    continue;
+                if (!thunderVoice_[k].used)
+                {
+                    v = k;
+                    break;
+                }
+                if (v < 0 || thunderVoice_[k].lastSoundT < thunderVoice_[v].lastSoundT)
+                    v = k;
+            }
+            if (v < 0)
+                continue;
+            thunderVoice_[v] = ThunderVoice{};
+            thunderVoice_[v].id = ls.id;
+            thunderVoice_[v].used = true;
+        }
+        sounded[v] = true;
+        thunderVoice_[v].level = ls.level;
+        thunderVoice_[v].lastSoundT = thunderRealT_;
+        thunderLevelNow_ = std::max(thunderLevelNow_, ls.level);
+        if (syn)
+        {
+            const float ev[4] = {(float)v, ls.level, ls.km, ls.pan};
+            syn->pushEvent(ev, 4);
+        }
+    }
     // A voice whose flash had nothing arrive this frame is told so (the gaps between pieces are the roll's
     // texture); it is free again after 2 s of that.
     for (int k = 0; k < kThunderVoices; ++k)

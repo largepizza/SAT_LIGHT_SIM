@@ -1567,6 +1567,16 @@ nlohmann::json SatelliteSim::launchStateJson() const
     j["records_written"] = L.nWrites;
     j["free_chunks"] = L.freeChunks.size();
     j["life_scale"] = launchLifeScale;
+    {
+        const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const glm::dvec3 eyeE = glm::normalize(glm::dvec3(obsDir)) * (kR + std::max((double)obsTerrainH + 2.0, (double)obsHeightOffset));
+        const std::vector<LaunchSound> ls = launchSounds(now, eyeE, glm::radians(camera.azDeg));
+        nlohmann::json sa = nlohmann::json::array();
+        for (const LaunchSound &x : ls)
+            sa.push_back({{"level", x.level}, {"km", x.km}, {"pan", x.pan}});
+        j["sounds"] = sa;
+        j["thunder_level_now"] = thunderLevelNow_;
+    }
     j["plume_gain"] = launchPlumeGain;
     // The plume parcels drawn: a sample (the largest optical depths first).
     std::vector<LaunchState::PlumeDbg> pd = L.plumeDbg;
@@ -2051,4 +2061,74 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
     uiKV("LaunchKV", 1, "Launches in the next 24 h", uiKitStr("%d", L.uiCount24), lw);
     uiKV("LaunchKV", 2, "Trains climbing", uiKitStr("%u satellites", L.nTrain), lw);
     uiKV("LaunchKV", 3, "Retired, deorbiting", uiKitStr("%u satellites", L.nRetire), lw);
+}
+
+// The rockets' roar at the listener (eye: ECI-like Earth-centred position the thunder uses, Earth-fixed axes): for
+// each burning rocket within 150 km, the sound arriving now left it at the retarded time tau (tau + r(tau) / c = now);
+// loudness as the flow's square root over the distance, thinning with the air at the rocket. Pure function of time.
+std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, const glm::dvec3 &eyeEcef, float camAz) const
+{
+    std::vector<LaunchSound> out;
+    if (!launchState || !launchesEnabled)
+        return out;
+    const LaunchState &L = *launchState;
+    if (!L.loaded)
+        return out;
+    constexpr double kC = 343.0;
+    const glm::dvec3 upE = glm::normalize(eyeEcef);
+    const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), upE));
+    const glm::dvec3 nE = glm::cross(upE, eE);
+    for (uint64_t key : L.live)
+    {
+        auto it = L.batches.find(key);
+        if (it == L.batches.end())
+            continue;
+        const LBatch &B = it->second;
+        if (now < B.tL || now > B.tL + 1200.0)
+            continue;
+        const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+        for (int stage = 0; stage < 2; ++stage)
+        {
+            // The retarded time (Earth-fixed positions: the air carries the sound).
+            double tau = now - B.tL;
+            glm::dvec3 P(0.0);
+            bool ok = false;
+            for (int i = 0; i < 10; ++i)
+            {
+                glm::dvec3 Pe;
+                ok = LaunchImpl::rocketPos(L, B, stage, tau, Pe);
+                if (!ok)
+                    break;
+                P = eciToEcef(Pe, B.tL + tau);
+                tau = std::max(0.0, now - B.tL - glm::length(P - eyeEcef) / kC);
+            }
+            // Not arrived yet (the lift-off's sound is still on its way), or the stage gone.
+            if (!ok || now - B.tL - glm::length(P - eyeEcef) / kC < 0.0)
+                continue;
+            glm::dvec3 Pe;
+            uint8_t burn = 0;
+            if (!LaunchImpl::rocketPos(L, B, stage, tau, Pe, &burn) || burn == launch::BURN_NONE)
+                continue;
+            if (stage == 1 && tau < vh.t1)
+                continue; // one vehicle before staging (the booster carries the roar)
+            const double r = std::max(glm::length(P - eyeEcef), 200.0);
+            if (r > 150000.0)
+                continue;
+            const double h = glm::length(P) - kR;
+            const double flow = stage == 0 ? vh.flow1 * (burn == launch::BURN_ASCENT ? 1.0 : 0.3) : vh.flow2;
+            const double lvl = 9.0 * std::sqrt(flow / 2500.0) * (1000.0 / r) * std::exp(-std::max(h, 0.0) / 20000.0) *
+                               (1.0 - glm::smoothstep(80000.0, 150000.0, r));
+            if (lvl < 1e-3)
+                continue;
+            const glm::dvec3 dir = (P - eyeEcef) / r;
+            const double hE = glm::dot(dir, eE), hN = glm::dot(dir, nE);
+            LaunchSound s;
+            s.id = 0xA0000000u | (uint32_t)((key * 2 + (uint64_t)stage) & 0x0FFFFFFFu);
+            s.level = (float)std::min(lvl, 8.0);
+            s.km = (float)(r / 1000.0);
+            s.pan = (float)(std::sin(std::atan2(hE, hN) - (double)camAz) * std::sqrt(hE * hE + hN * hN));
+            out.push_back(s);
+        }
+    }
+    return out;
 }

@@ -2675,6 +2675,12 @@ private:
     bool launchGoToNext(std::string &msg, bool twilight);
     bool launchGoToNextWhen(std::string &msg, int when);
     bool launchLook(int stage, std::string &msg);
+    struct LaunchSound
+    {
+        uint32_t id;
+        float level, km, pan; // the thunder synth's event (SatelliteSimAmbience.cpp thunderStep)
+    };
+    std::vector<LaunchSound> launchSounds(double now, const glm::dvec3 &eye, float camAz) const;
     nlohmann::json launchCheckJson() const;
     bool launchSelect(int kind, std::string &msg);
     bool launchGoToNextReentry(std::string &msg);
