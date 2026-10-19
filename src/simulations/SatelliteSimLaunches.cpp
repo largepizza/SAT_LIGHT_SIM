@@ -1248,11 +1248,14 @@ std::string SatelliteSim::launchLabel(uint32_t slot) const
     const SatOrbit &o = satOrbits[sat];
     char b[200];
     const char *cn = o.constIdx < constellations.size() ? constellations[o.constIdx].name.c_str() : "Satellite";
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     if (si.owner % 2 == 0)
-        snprintf(b, sizeof(b), "%s #%d (raising, %s)", cn, (int)sat - (int)constellations[o.constIdx].orbitStart,
-                 L.cat.vehicles[B.veh].name.c_str());
+        snprintf(b, sizeof(b), "%s #%d (new, raising; %s, arrives in %.1f d)", cn,
+                 (int)sat - (int)constellations[o.constIdx].orbitStart, L.cat.vehicles[B.veh].name.c_str(),
+                 (B.tA - t) / kDay);
     else
-        snprintf(b, sizeof(b), "%s #%d (retired, deorbiting)", cn, (int)sat - (int)constellations[o.constIdx].orbitStart);
+        snprintf(b, sizeof(b), "%s #%d (retired, re-enters in %.1f d)", cn,
+                 (int)sat - (int)constellations[o.constIdx].orbitStart, (B.mem[si.m].tEnd - t) / kDay);
     return b;
 }
 
