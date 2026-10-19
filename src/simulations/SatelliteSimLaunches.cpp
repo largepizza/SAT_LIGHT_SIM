@@ -645,7 +645,8 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     B.tStageGone = vh.upperDeorbit ? B.tStageRE : B.tD + 2400.0;
     B.vents = h01(B.seed, 8, 1) < vh.ventChance;
     const double boosterEnd = tL + L.booster[B.veh].tEnd;
-    B.tVisEnd = std::max({boosterEnd + kPlumeAgeLow, B.tStageGone + kPlumeAgeHigh, tL + B.t2 + kPlumeAgeHigh});
+    B.tVisEnd = std::max({boosterEnd + kPlumeAgeLow, B.tStageGone + kPlumeAgeHigh, tL + B.t2 + kPlumeAgeHigh,
+                          B.tStageGone + 480.0});
     B.ends.clear();
     for (const LMember &mb : B.mem)
         B.ends.push_back(mb.tEnd);
@@ -802,6 +803,34 @@ static glm::dvec3 rocketEcef(const SatelliteSim::LaunchState &L, const LBatch &B
     glm::dvec3 P;
     ok = rocketPos(L, B, stage, tau, P);
     return ok ? eciToEcef(P, B.tL + std::max(tau, 0.0)) : glm::dvec3(0.0);
+}
+
+// A returning stage's entry, te s after the entry interface (B.tStageGone): ~7.4 km/s down to ~65 km, then slowing to
+// ~1.2 km/s by 45 km over 8 minutes, along its orbit's plane. Position ECI; speed and altitude out.
+static glm::dvec3 shipEntry(const LBatch &B, double te, double *vOut, double *hOut)
+{
+    te = std::clamp(te, 0.0, 480.0);
+    auto vAt = [](double u) { const double s = glm::clamp((u - 0.35) / 0.65, 0.0, 1.0); return 7400.0 - 6200.0 * s * s * (3.0 - 2.0 * s); };
+    auto hAt = [](double u) {
+        const double a = glm::clamp(u / 0.45, 0.0, 1.0), b = glm::clamp((u - 0.45) / 0.55, 0.0, 1.0);
+        return 100000.0 - 35000.0 * a * a * (3.0 - 2.0 * a) - 20000.0 * b * b * (3.0 - 2.0 * b);
+    };
+    // Along-track distance: the speed integrated (Simpson, 16 intervals).
+    double sAlong = 0.0;
+    const int N = 16;
+    for (int i = 0; i <= N; ++i)
+    {
+        const double w = (i == 0 || i == N) ? 1.0 : (i % 2 ? 4.0 : 2.0);
+        sAlong += w * vAt(te * i / N / 480.0);
+    }
+    sAlong *= te / (3.0 * N);
+    const double u = te / 480.0;
+    if (vOut)
+        *vOut = vAt(u);
+    if (hOut)
+        *hOut = hAt(u);
+    const double th = B.thIns + B.nPark * (B.tStageGone - B.tL - B.t2) + sAlong / kR;
+    return (kR + hAt(u)) * (std::cos(th) * B.U0 + std::sin(th) * B.A0);
 }
 
 // When the upper stage vents what is left, spinning (after its deorbit burn, or 10 min after deploying for a stage
@@ -1388,6 +1417,53 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                                   B.seed ^ 0x51A6E5ull, t - B.tStageRE, out, n, toSky, pixFull);
                     ++L.nReentries;
                 }
+            }
+        }
+        // A returning upper stage (Starship's ship) re-enters whole: an ~8-min plasma glow along its orbit, descending
+        // from 100 to ~45 km and slowing from 7.5 to ~1.2 km/s, brightest near 70 km. (It is not followed to landing.)
+        if (!vh.upperDeorbit && t >= B.tStageGone && t < B.tStageGone + 480.0)
+        {
+            auto shipAt = [&](double te) { return LaunchImpl::shipEntry(B, te, nullptr, nullptr); };
+            const double te = t - B.tStageGone;
+            double v = 0.0, h = 0.0;
+            const glm::dvec3 P = LaunchImpl::shipEntry(B, te, &v, &h), Pp = shipAt(te - 6.0);
+            const double I = std::min(std::pow(v / 7500.0, 3.0) * std::exp(-(h - 70000.0) / 8000.0), 3.0) *
+                             glm::smoothstep(0.0, 30.0, te) * (1.0 - glm::smoothstep(420.0, 480.0, te));
+            const glm::dvec3 rel = P - eye;
+            const double range = std::max(glm::length(rel), 1.0);
+            if (I > 1e-3 && !earthBlocks(P))
+            {
+                const double m = -4.0 - 2.5 * std::log10(I) + 5.0 * std::log10(range / 1.0e5) +
+                                 atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
+                const double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
+                const glm::vec3 col = glm::mix(glm::vec3(1.0f, 0.62f, 0.38f), glm::vec3(1.0f, 0.55f, 0.75f),
+                                               (float)glm::clamp(v / 7500.0, 0.0, 1.0));
+                if (flare > 2e-4 && kFireCount < kFireballMax)
+                    fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(rel) / range), (float)flare), glm::vec4(col, (float)range)};
+                // Its glowing wake: the last 6 s of path, an emissive Gaussian.
+                if (flare > 5e-3 && n < kMaxDustClouds)
+                {
+                    const glm::dvec3 axis = P - Pp;
+                    const double Lw = glm::length(axis);
+                    const glm::dvec3 a = toEnu(axis / std::max(Lw, 1.0));
+                    glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
+                    b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
+                    const glm::dvec3 c2 = glm::cross(a, b2);
+                    const double sMin = 0.6 * range * 2.0 * pixFull;
+                    const double sA = std::max(0.28 * Lw, sMin), sP = std::max(300.0, sMin);
+                    const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
+                    auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
+                    const double J = 0.7 * flare * range * range / K;
+                    const glm::dvec3 ce = toEnu(P - 0.55 * axis - eye);
+                    GpuDustCloud &d = out[n++];
+                    d.c = glm::vec4(glm::vec3(ce), (float)(J * toSky));
+                    d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2),
+                                     (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
+                    d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), 0.0f);
+                    d.col = glm::vec4(col, 1.0f);
+                    d.cone = coneOf(ce, 5.5 * std::max(sA, sP));
+                }
+                ++L.nReentries;
             }
         }
         // Rockets: the flame (a point and, close up, an emissive Gaussian) or, coasting, the sunlit body.
@@ -2208,7 +2284,11 @@ std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, co
 
 // The next stage venting while sunlit over a dark ground (within 30 days; harness `launch vent`): the observer 250 km
 // to the side of the stage's track, 20 s before the vent, looking at it.
-bool SatelliteSim::launchGoToVent(std::string &msg)
+bool SatelliteSim::launchGoToVent(std::string &msg) { return launchGoToStageEvent(msg, 0); }
+bool SatelliteSim::launchGoToShipEntry(std::string &msg) { return launchGoToStageEvent(msg, 1); }
+
+// ev 0: a stage venting (sunlit, over a dark ground); 1: a returning stage's re-entry glow (over a dark ground).
+bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev)
 {
     if (!launchState)
         return false;
@@ -2223,18 +2303,25 @@ bool SatelliteSim::launchGoToVent(std::string &msg)
         for (const auto &kv : L.batches)
             if (kv.second.valid && std::abs(kv.second.tL - tl) < 1.0)
                 B = &kv.second;
-        if (!B || !B->vents)
+        if (!B || (ev == 0 && !B->vents) || (ev == 1 && L.cat.vehicles[B->veh].upperDeorbit))
             continue;
-        const double tv = LaunchImpl::ventStart(L, *B) + 30.0;
+        const double tv = ev == 0 ? LaunchImpl::ventStart(L, *B) + 30.0 : B->tStageGone + 230.0;
         glm::dvec3 P;
-        if (!LaunchImpl::rocketPos(L, *B, 1, tv - B->tL, P))
-            continue;
+        if (ev == 0)
+        {
+            if (!LaunchImpl::rocketPos(L, *B, 1, tv - B->tL, P))
+                continue;
+        }
+        else
+        {
+            P = LaunchImpl::shipEntry(*B, 230.0, nullptr, nullptr); // near the glow's brightest
+        }
         const glm::dvec3 sun = sunDirEciAt(tv);
         const glm::dvec3 U = glm::normalize(P);
         const double sp = glm::dot(P, sun);
         const bool lit = sp > 0.0 || glm::length(P - sp * sun) > kR + 20000.0;
-        if (!lit || glm::dot(U, sun) > -0.12)
-            continue; // the stage must be sunlit, the ground under it dark
+        if ((ev == 0 && !lit) || glm::dot(U, sun) > -0.12)
+            continue; // a vent must be sunlit; both over a dark ground
         if (followActive)
             stopFollow();
         if (trackActive)
@@ -2262,11 +2349,12 @@ bool SatelliteSim::launchGoToVent(std::string &msg)
         camera.fovYDeg = 60.0f;
         updatePositions(tS);
         char b[240];
-        snprintf(b, sizeof(b), "%s upper stage from %s vents in 20 s, %.0f km away", o["vehicle"].get<std::string>().c_str(),
-                 o["site"].get<std::string>().c_str(), glm::length(rel) / 1000.0);
+        snprintf(b, sizeof(b), "%s upper stage from %s %s in 20 s, %.0f km away", o["vehicle"].get<std::string>().c_str(),
+                 o["site"].get<std::string>().c_str(), ev == 0 ? "vents" : "re-entry glow peaks", glm::length(rel) / 1000.0);
         msg = b;
         return true;
     }
-    msg = "no venting stage sunlit over a dark ground in the next 30 days";
+    msg = ev == 0 ? "no venting stage sunlit over a dark ground in the next 30 days"
+                  : "no returning stage re-entering over a dark ground in the next 30 days";
     return false;
 }

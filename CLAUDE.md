@@ -4230,7 +4230,10 @@ launches follow per-program cadences (no real manifest).
   Expendable upper stages burn to deorbit and re-enter as fireballs. A stage may vent what is left, spinning
   (`vent_chance`; after its deorbit burn, or 10 min after deploying for a returning stage): ~10 t over two minutes as
   slowly spreading ice (30 m/s, 2000 m^2/kg), each parcel a stretch of the 700 m/s jet, never decimated: seen from
-  below, a dump spiral like the 2009 Norway one (harness `launch vent`). No meshes, no droneships.
+  below, a dump spiral like the 2009 Norway one (harness `launch vent`). A returning stage (Starship's ship) re-enters
+  whole 30 min after deploying: an 8-min plasma glow (`shipEntry`: ~7.4 km/s to ~65 km, slowing to 1.2 km/s by 45 km,
+  magnitude ~-4 at 100 km near 70 km up) and is not followed to landing (harness `launch ship`). No meshes, no
+  droneships.
 - **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1.5-5 s of each burn, integrated once per
   launch (only for launches within ~4500 km of the eye and not past 1 h/s of warp) with entrainment: the gas expands
   at ~2 km/s while it outweighs the air it has taken in, then diffuses (above ~80 km the coupling to the air falls to
