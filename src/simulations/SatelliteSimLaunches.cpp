@@ -951,7 +951,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                     if (it == L.batches.end())
                     {
                         // At most a few hundred new batches a frame (the first frame finds every train in the sky).
-                        if (++builds > 400)
+                        if (++builds > 200)
                             continue;
                         LBatch nb;
                         nb.plane = (int)pi;

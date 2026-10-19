@@ -101,3 +101,18 @@ wait 5
 
 bookmark list
 quit
+
+# 8. A twilight Starship launch from Vandenberg (2026-10-18, launches): the Sun 9.6 degrees down at the pad, the
+#    upper stage's exhaust lit high over the dark Pacific (the "jellyfish"), a raising Starmind train beside it.
+drift default
+launch next twilight=1
+time add 330
+launch look stage=1
+camera fov=75
+camera el=24
+time add -40
+wait settle
+wait 30
+bookmark add Twilight Launch from Vandenberg id=default_launch_twilight scale=0 paused=0
+wait 5
+

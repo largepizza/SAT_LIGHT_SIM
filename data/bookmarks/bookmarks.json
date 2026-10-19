@@ -139,6 +139,26 @@
         0.6018149904557067
       ],
       "sim_t_j2000": 1184524200.0
+    },
+    {
+      "az_deg": -154.99411010742188,
+      "cloud_drift_phase": 2.529516786570639,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": 24.0,
+      "fov_y_deg": 75.0,
+      "height_m": 0.0,
+      "id": "default_launch_twilight",
+      "look": {
+        "paused": false,
+        "time_scale_idx": 0
+      },
+      "name": "Twilight Launch from Vandenberg",
+      "obs_dir": [
+        -0.40895567806852723,
+        -0.7095401619813881,
+        0.5738536502549553
+      ],
+      "sim_t_j2000": 1164247318.2177813
     }
   ],
   "format": "sat-light-sim-bookmarks/1"
