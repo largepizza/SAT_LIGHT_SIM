@@ -44,7 +44,8 @@ log-distance encoding, written by every surface) · *Occlusion: one shared depth
 lattices, patterns — legacy attitude modes, `typeIdx`, adding a type) · *Orbital Mechanics /
 Constellations* · *GPU Orbital Pipeline* (two-dispatch pattern, buffers, `Gpu*` layouts, push
 constants) · *TargetedReflector / Mirror Ground Targets* · *Kessler syndrome — "The Sun's Fury"* (the
-scripted storm, dead satellites, debris pool, cascade engine, event log) · *Reflect-Orbital Beam Cloud Occlusion* ·
+scripted storm, dead satellites, debris pool, cascade engine, event log) · *Launches* (trains, retirements,
+rockets, plumes: the roster's slots refreshed on a schedule) · *Reflect-Orbital Beam Cloud Occlusion* ·
 *GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22).
 
 **Rendering** — *UIRenderer / Clay* (icon atlas, the fixed-bitmap font, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
@@ -4180,6 +4181,77 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
 - Not modelled: orbits shrinking under drag (only the re-entry time), debris-driven ambience, the impact flash,
   small-small collisions, the dust past 3 h (a ring around the orbit: physically invisible), re-entry smoke trails
   lit by the Sun after dusk.
+
+## Subsystem: Launches — trains, retirements, rockets and plumes (2026-10-18, branch kessler)
+
+Plan and progress log: `.plans/LAUNCHES_PLAN.md`. Code: `Launches.h/.cpp` (app-independent: the catalog, the booster
+and upper-stage tracks, the orbit-raising phase law, exhaust parcels), `SatelliteSimLaunches.cpp` (planes, batches,
+records, visuals, sound, UI, harness), `data/launches.json` (sites, vehicles, programs; copied next to the exe and
+packaged). The user's decisions: the roster's size stays constant (launches balanced one for one by re-entries) and
+launches follow per-program cadences (no real manifest).
+
+- **A roster satellite is a POSITION; its occupant changes.** Each orbital plane of a constellation a program matches
+  (`match`: name substrings) is refreshed once per design life (`life_years` x "Satellite design life"): batch b of
+  refresh k arrives at `t_A = (k + phase_p) L + b gap` (phase hashed per plane; a batch = `payload` consecutive slots
+  by argument of latitude, a whole number of formation clusters). The rocket lifts off at the plane's next pass over
+  one of its vehicle's sites after `t_A - raise - (SECO + deploy)`, the train is deployed low (`park_km`), climbs and
+  arrives on its slots exactly at `t_A`, and the satellites it replaces deorbit from there (linear to 200 km over
+  `deorbit_days`) and re-enter (Kessler's fireballs, `fbDrawReentry`). The roster record itself never changes. Planes
+  are grouped from the roster by (RAAN 1 deg, inclination 0.25 deg, altitude 5 km): a "plane" can hold members up to a
+  degree of node apart (Starmind's per-cluster jitter).
+- **Everything is a pure function of sim time**: no history. A batch's state is built from hashes and closed forms when
+  first needed and cached (`LaunchState::batches`); time warp, reverse playback and bookmarks see the same sky.
+- **Pad deconfliction** without recursion: a launch checks the other launches' UNDECONFLICTED candidates
+  (`LaunchState::cands`) at its site within +-90 min and yields to higher-priority ones (by hash) by taking the plane's
+  next pass. (Two Starships left Starbase 7 minutes apart before it.)
+- **The phasing** (`buildBatch`, `memberState`): a member waits in the parking orbit, then its radius ramps linearly to
+  the slot's; the phase lag to its slot is the closed-form integral of the mean motion over that ramp
+  (`launch::rampPhase`), and the wait is solved so the climb ends exactly on the slot (an unsolvable remainder `eps` is
+  spread over the raise as a slow drift). At deployment each member starts at the stage (an offset in its own orbital
+  frame, eased out over two days), released 120 m apart. Harness `launch check`: arrival 7 m (= 1 ms of flight),
+  deployment 0 (+ the release spacing), retiree start 0.
+- **Satellite indices**: roster `[0, activeSatCount)`, then `kLaunchCap` (131072) launch records, then the Kessler pool
+  from `poolIdx0()`. Launch records are `GpuKepOrbit`s in kesslerBuf from `kLaunchWord0` (sat_orbit.comp `LAUNCH_CAP`:
+  the indices before `poolBase`, the words before `poolWord0`), born/death only "live or not". They hold the member's
+  OSCULATING elements at the write time (phases at the current orbit epoch, so they are written after the rebake), and
+  a batch rewrites them together every 20 s of sim time or when a retiree's re-entry passes (1200 writes a frame,
+  round-robin); the GPU carries them on as Kepler orbits meanwhile (the climb's drift in 20 s is under a metre).
+  `SatOrbit::launchSlot` -> `launchOrbitElems` for the CPU mirror (parity 0.8 m). 8-slot chunks per batch and kind.
+  **Never assume `satOrbits.size() == activeSatCount + kPool.size()`** or that indices past the roster are debris:
+  per-constellation scans run over `activeSatCount`; empty launch entries have `constIdx = UINT32_MAX`.
+- **Rockets** (`rocketPos`): the booster's whole flight is a 2D track (downrange along the ground azimuth, altitude:
+  the ascent's closed form to MECO, then gravity + drag + boostback (secant-solved to land on the pad for
+  `booster: return`), entry and landing burns); the upper stage blends from that ground track into the inertial plane
+  by SECO and then flies the parking orbit (`thIns`). Drawn as point sprites in kFireBuf (the flame's magnitude at
+  100 km per stage; a coasting stage sunlit), an emissive Gaussian flame and a dim orange glow of the exhaust it lights.
+  Expendable upper stages burn to deorbit and re-enter as fireballs; a spinning vent after the burn (`vent_chance`)
+  makes a spiral. No meshes, no droneships.
+- **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1.5-5 s of each burn, integrated once per
+  launch (only for launches within ~4500 km of the eye and not past 1 h/s of warp) with entrainment: the gas expands
+  at ~1.3 km/s while it outweighs the air it has taken in, then diffuses; momentum mixes with the swept air (exact for
+  any step), gravity acts on the exhaust's share, Coriolis and centrifugal in the Earth-fixed frame, a hashed wind by
+  altitude. Low down a narrow trail the wind carries, high up a bell that expands for tens of km and falls back into
+  the thicker air. Cross-section `kappa`: 10 m^2/kg low (condensation, soot) to 300 m^2/kg above ~90 km (sub-micron
+  ice); albedo from `soot`. Once a high parcel has swept up about its own mass of air it is drawn as a core + a ring of
+  7 Gaussians across the line of sight (the limb-brightened bell). They go into the dust list as `col.w = 2`
+  (`kMaxDustClouds` 1024: the Kessler dust takes at most `kDustMax`, the fireball trails up to `kFireTrailMax`, plumes
+  and flames the rest, brightest per pixel first); cloud_march.comp sums their optical depth, averages their light per
+  unit of it (single scattering by an ice phase g 0.8, multiple scattering growing with the optical depth, the sky's
+  light), composites `1 - exp(-tau)` in front of or behind the clouds by their mean distance and dims what is behind.
+  Each Gaussian carries a view cone (80-B `GpuDustCloud`): the shader skips it with one dot product. At night the
+  plumes' sunlight is raised up to 10x as the eye's sky darkens (the night exposure is not physical: see the dust).
+- **Sound**: each burning rocket within 150 km on a thunder voice (`launchSounds`, called from `thunderStep`): the
+  retarded time, Earth-fixed (the air carries it), level ~ sqrt(flow) / distance, thinning with the air at the rocket.
+- **Kessler** (L6, partial): no launches from the CME for three weeks; a slot dead before its swap gets no replacement
+  and no retiree. Trains and retirees are NOT engine objects (they do not collide); a slot killed by the cascade is not
+  refilled.
+- **Cost** (RTX 3070 Ti, 1600x900, a Vandenberg twilight launch in view): cloud_march +0.3 ms, CPU 0.3 ms at 1x, 0.6 ms
+  at 1 d/s. ~2600 planes, ~1200 live batches, ~15k train and ~18k retiring satellites at the default lives.
+- Settings `launches.enabled / life_scale / plume_gain / rocket_gain`; Settings > Constellations > LAUNCHES; harness
+  `launch ...` (docs/HARNESS.md); default bookmark "Twilight Launch from Vandenberg"
+  (`tools/harness/scripts/default_bookmarks.satcmd` #8).
+- Not built: rocket and droneship meshes, the trains' raising attitude ("open book"), J2 drift into the target plane
+  (trains launch into it), stations' crew and cargo flights, hole-punching through cloud decks, sonic booms.
 
 ## Subsystem: Reflect-Orbital Beam Cloud Occlusion
 
