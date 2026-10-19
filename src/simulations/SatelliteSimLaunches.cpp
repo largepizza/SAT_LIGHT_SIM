@@ -464,7 +464,6 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     B.prog = pl.prog;
     B.seed = batchSeed(pl, B.k, B.b);
     B.tA = (B.k + pl.phase) * lifeS + B.b * pl.gap;
-    const double raise = (pg.raiseDays[0] + (pg.raiseDays[1] - pg.raiseDays[0]) * h01(B.seed, 2, 1)) * kDay;
     // Members: a contiguous run of the plane's slots.
     const int cluster = std::max(1, sim.constellations[pl.constIdx].clusterSize);
     const int payload = std::max(cluster, pg.payload / cluster * cluster);
