@@ -4260,6 +4260,8 @@ launches follow per-program cadences (no real manifest).
   refilled.
 - **Cost** (RTX 3070 Ti, 1600x900, a Vandenberg twilight launch's bell filling the view): cloud_march +0.9 ms, CPU
   0.3 ms at 1x, 0.6 ms at 1 d/s. ~2600 planes, ~1200 live batches, ~15k train and ~18k retiring satellites at the default lives.
+- CPU bucket `launches` (harness `perf`, Performance tab "Launches"; the visuals run inside the dust fill and are moved
+  out of `kessler`).
 - Settings `launches.enabled / life_scale / plume_gain / rocket_gain`; Settings > Constellations > LAUNCHES; harness
   `launch ...` (docs/HARNESS.md); default bookmark "Twilight Launch from Vandenberg"
   (`tools/harness/scripts/default_bookmarks.satcmd` #8).

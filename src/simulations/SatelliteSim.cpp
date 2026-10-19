@@ -1630,7 +1630,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // Launches (SatelliteSimLaunches.cpp): the trains and retirees' records for this frame, after the rebake (their
     // phases are written at the current orbit epoch).
     {
-        CpuTimer launchTimer(cpuAccumMs[CPU_KESSLER]);
+        CpuTimer launchTimer(cpuAccumMs[CPU_LAUNCHES]);
         launchUpdate(ctx, cmd);
     }
 

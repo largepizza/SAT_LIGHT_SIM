@@ -1071,7 +1071,14 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         ~Finish()
         {
             s->kesslerFillFireballs(out, n, toSky, pixFull);
-            s->launchFillVisuals(out, n, toSky, pixFull); // rockets, flames, plumes, the retirees' re-entries
+            {
+                // Booked as launches, not as the cascade (this runs inside the dust fill's kessler timer).
+                const auto l0 = std::chrono::steady_clock::now();
+                s->launchFillVisuals(out, n, toSky, pixFull); // rockets, flames, plumes, the retirees' re-entries
+                const float ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l0).count();
+                s->cpuAccumMs[CPU_LAUNCHES] += ms;
+                s->cpuAccumMs[CPU_KESSLER] -= ms;
+            }
             hdr[0] = n;
             s->kDustCount = n;
         }

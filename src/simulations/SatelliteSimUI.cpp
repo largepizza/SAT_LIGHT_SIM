@@ -3807,7 +3807,7 @@ void SatelliteSim::buildSettingsPerformanceTab(const UIInput &inp, UIRenderer &u
     {
         static const char *kCpuLabels[CPU_COUNT] = {
             "Build UI (Clay)", "Update positions", "Beam readback + cluster",
-            "Update stars", "Light pollution dome", "Update planets", "Orbit rebake", "Debris cascade"};
+            "Update stars", "Light pollution dome", "Update planets", "Orbit rebake", "Debris cascade", "Launches"};
         float measured = 0.0f;
         for (int ci = 0; ci < CPU_COUNT; ++ci)
         {
@@ -8774,7 +8774,7 @@ nlohmann::json SatelliteSim::buildPerfSnapshotJson(float cpuDt)
     {
         static const char *kKeys[CPU_COUNT] = {
             "build_ui", "update_positions", "beam_readback", "update_stars",
-            "light_pollution_dome", "update_planets", "orbit_rebake", "kessler"};
+            "light_pollution_dome", "update_planets", "orbit_rebake", "kessler", "launches"};
         nlohmann::json c;
         float measured = 0.0f;
         for (int i = 0; i < CPU_COUNT; ++i)
@@ -8955,7 +8955,7 @@ void SatelliteSim::updateKnockoutSweep(float cpuDt)
     // Order must match the CpuBucket enum in SatelliteSim.h.
     static const char *kCpuBucketKeys[CPU_COUNT] = {
         "build_ui", "update_positions", "beam_readback", "update_stars",
-        "light_pollution_dome", "update_planets", "orbit_rebake", "kessler"};
+        "light_pollution_dome", "update_planets", "orbit_rebake", "kessler", "launches"};
     auto bucketsOf = [&](int step)
     {
         nlohmann::json o;
