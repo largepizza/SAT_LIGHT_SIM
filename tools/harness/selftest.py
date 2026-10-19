@@ -384,6 +384,37 @@ track on
 
 
 @test
+def launches_schedule_and_phasing():
+    # Launches (2026-10-18): the schedule finds lift-offs, the phasing lands every train member on its slot and
+    # starts every retiree on its own, and the schedule is a pure function of time (a day forward and back again).
+    # (Batches are built at most 200 a frame: the waits let the whole window build.)
+    out, res, _ = run("launches", """
+wait 30
+launch list hours=24
+launch check
+launch state
+time add 86400
+wait 30
+time add -86400
+wait 30
+launch list hours=24
+launch state
+""")
+    lists = [r["result"]["launches"] for r in res if r["cmd"].startswith("launch list")]
+    assert len(lists[0]) >= 3, f"only {len(lists[0])} launches in 24 h"
+    key = lambda l: [(o["utc"], o["site"], o["vehicle"], o["payload"]) for o in l]
+    assert key(lists[0]) == key(lists[1]), "the schedule changed after a day forward and back"
+    chk = result(res, "launch check")["result"]["check"]
+    assert chk["members"] > 1000, chk
+    assert chk["arrival_err_m_max"] < 50.0, chk          # 7.5 m = the 1 ms the check evaluates before arrival
+    assert chk["retiree_start_err_m_max"] < 1.0, chk
+    assert chk["deploy_err_km_max"] < 8.0, chk           # the 120 m release spacing along a 60-satellite train
+    states = [r["result"]["launches"] for r in res if r["cmd"] == "launch state"]
+    assert states[0]["train_satellites"] > 1000 and states[0]["retiring_satellites"] > 1000, states[0]
+    assert states[0]["train_satellites"] == states[1]["train_satellites"], (states[0], states[1])
+
+
+@test
 def probe_and_debugview():
     out, res, _ = run("probe", SCENE + """
 observer lat=46.55 lon=7.98 alt=6000
