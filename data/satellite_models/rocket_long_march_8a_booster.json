@@ -1,0 +1,135 @@
+{
+    "name": "long_march_8a booster",
+    "note": "Launch vehicle render model (tools/make_rocket_models.py), long_march_8a: booster. Body frame: +Z toward the nose, origin at the aft end. Sizes are public figures rounded; liveries broad strokes; detail render-only.",
+    "materials": [
+        {
+            "name": "white",
+            "preset": "white_paint",
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "black",
+            "preset": "black_paint"
+        },
+        {
+            "name": "steel",
+            "preset": "stainless_steel",
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "tan",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.45,
+            "color": [
+                0.86,
+                0.56,
+                0.33
+            ]
+        },
+        {
+            "name": "nozzle",
+            "preset": "aluminum",
+            "diffuse_albedo": 0.08,
+            "roughness": 0.3,
+            "color": [
+                0.4,
+                0.37,
+                0.35
+            ]
+        },
+        {
+            "name": "tiles",
+            "preset": "black_paint",
+            "roughness": 0.6
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "body",
+            "primary": {
+                "axis": [
+                    0,
+                    0,
+                    1
+                ],
+                "target": "velocity"
+            },
+            "secondary": {
+                "axis": [
+                    0,
+                    -1,
+                    0
+                ],
+                "target": "nadir"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "engines_0",
+            "type": "cone",
+            "radius_bottom": 1.541,
+            "radius_top": 1.005,
+            "height": 1.2,
+            "position": [
+                0.0,
+                0.0,
+                -0.6
+            ],
+            "caps": true,
+            "material": "nozzle",
+            "group": "body",
+            "render_only": true
+        },
+        {
+            "name": "core_1",
+            "type": "cylinder",
+            "radius": 1.675,
+            "height": 29.0,
+            "position": [
+                0,
+                0,
+                14.5
+            ],
+            "caps": true,
+            "material": "white",
+            "group": "body"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "attitude",
+            "status": "estimate",
+            "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+            "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+        },
+        {
+            "subject": "body",
+            "status": "estimate",
+            "value": "one rigid group",
+            "source": "Render model; no moving parts."
+        },
+        {
+            "subjects": [
+                "engines_0",
+                "core_1"
+            ],
+            "status": "estimate",
+            "value": "rounded public dimensions (Wikipedia / operator pages), broad liveries",
+            "source": "tools/make_rocket_models.py VEHICLES table."
+        },
+        {
+            "subjects": [
+                "white",
+                "black",
+                "steel",
+                "tan",
+                "nozzle",
+                "tiles"
+            ],
+            "status": "estimate",
+            "value": "presets: white paint, black paint, stainless, tan foam, dark nozzles, black tiles",
+            "source": "Liveries from photographs; reflectance from the presets."
+        }
+    ]
+}

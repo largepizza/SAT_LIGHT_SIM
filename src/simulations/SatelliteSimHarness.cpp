@@ -2354,11 +2354,17 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = std::to_string(l.size()) + " launches";
             return Status::Done;
         }
+        if (sub == "why")
+        {
+            r["why"] = launchWhyJson(c.num("hours", 720.0));
+            return Status::Done;
+        }
         if (sub == "next")
         {
             std::string msg;
             const std::string when = lower(c.str("when", c.num("twilight", 0.0) > 0.5 ? "twilight" : "any"));
-            if (!launchGoToNextWhen(msg, when == "twilight" ? 1 : when == "day" ? 2 : when == "night" ? 3 : 0))
+            if (!launchGoToNextWhen(msg, when == "twilight" ? 1 : when == "day" ? 2 : when == "night" ? 3 : 0,
+                                    c.str("vehicle", "")))
                 fail("launch next: " + msg);
             r["message"] = msg;
             return Status::Done;
@@ -2392,7 +2398,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             std::string msg;
             const std::string kind = lower(c.str("kind", "train"));
             // Drawn objects (this frame's heads): rocket stages, the ship coming home, re-entry fireballs.
-            static const std::pair<const char *, int> kTr[] = {{"rocket", 1}, {"ship", 2}, {"fireball", 0},
+            static const std::pair<const char *, int> kTr[] = {{"rocket", 1}, {"booster", 11}, {"upper", 12},
+                                                               {"ship", 2}, {"fireball", 0},
                                                                {"retiree_reentry", 3}, {"stage_reentry", 4},
                                                                {"kessler_reentry", 5}, {"fragment", 6}};
             int trKind = -1;
@@ -2401,7 +2408,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     trKind = k.second;
             if (trKind >= 0)
             {
-                if (!selectTransient(trKind, msg))
+                if (!selectTransient(trKind > 10 ? 1 : trKind, msg, trKind > 10 ? trKind - 11 : -1))
                     fail("launch select: " + msg);
             }
             else if (!launchSelect(kind == "retiree" ? 1 : 0, msg))

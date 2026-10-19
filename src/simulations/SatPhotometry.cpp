@@ -111,6 +111,8 @@ SatOrbitState satOrbitStateAt(const SatOrbitElems &e, double tJ2000)
         st.nadir = -glm::normalize(st.posEci);
         const double vl = glm::length(st.velEci);
         st.velocity = vl > 1e-6 ? st.velEci / vl : glm::dvec3(1.0, 0.0, 0.0);
+        if (glm::length(e.fixAxis) > 0.5)
+            st.velocity = glm::normalize(e.fixAxis);
         return st;
     }
     const double twoPi = 2.0 * kPi;

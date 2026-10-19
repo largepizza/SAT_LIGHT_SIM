@@ -2591,9 +2591,9 @@ uint32_t SatelliteSim::selActionAvailMask() const
 {
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
         return 0u;
-    if (selIsTransient())
-        return 0x8u; // a rocket or a fireball: Track only
     const bool model = meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx) != nullptr;
+    if (selIsTransient())
+        return (model ? 0x3u : 0u) | 0x8u; // a rocket: Info, Go to, Track; a fireball: Track (no pass to trace)
     return (model ? 0x3u : 0u) | 0xCu; // Info and Go to need a geometry model; Trace and Track do not
 }
 
@@ -2741,8 +2741,8 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
 // window says why.
 void SatelliteSim::buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx)
 {
-    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
-        return;
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size() || selIsTransient())
+        return; // a rocket or a fireball has no pass to trace
     if (buildSelActionButton(inp, ui, idx * 4 + 2, "Trace pass", kIconTrace, false, hovSelTraceBtn))
         computeSelectedTrace();
 }

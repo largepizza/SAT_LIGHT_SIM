@@ -4767,6 +4767,9 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     {
         if (followActive)
             jobs.push_back({followSatIndex, -1.0f, -1.0f, true}); // always, even in Earth's shadow (never listed)
+        // Rockets up close (launches: their stages as meshes; they are not in the GPU's list).
+        for (int s : launchMeshJobs(pixAngle, obsEci))
+            jobs.push_back({s, -1.0f, -1.0f, true});
         for (const GpuSatListHeader::MeshCandidate &c : cands)
         {
             if ((int)jobs.size() >= kMaxMeshInstances || c.meshPx < fadeIn * 0.9) // sorted: the rest are smaller
@@ -14931,6 +14934,40 @@ void SatelliteSim::loadDefinitions()
             }
     }
 
+    // ── Launch vehicles (2026-10-19): rocket_<vehicle>_{stack,booster,upper}.json (tools/make_rocket_models.py) ──
+    // Not roster types either: the rockets drawn as meshes up close (SatelliteSimLaunches.cpp, launchMeshSlots).
+    rocketTypes.clear();
+    {
+        std::error_code ec;
+        const std::filesystem::path dir = std::filesystem::path(exeDir_) / "satellite_models";
+        std::vector<std::string> ids;
+        for (const auto &de : std::filesystem::directory_iterator(dir, ec))
+        {
+            const std::string fn = de.path().filename().string();
+            if (fn.rfind("rocket_", 0) == 0 && de.path().extension() == ".json")
+                ids.push_back(de.path().stem().string());
+        }
+        std::sort(ids.begin(), ids.end()); // a stable type order
+        for (const std::string &id : ids)
+        {
+            SatelliteType t;
+            t.modelId = id;
+            t.name = "Rocket: " + id.substr(7);
+            t.baseColor = glm::vec3(0.95f, 0.95f, 1.0f);
+            t.crossSectionM2 = 1.0f;
+            t.primary = SurfaceSpec{AttitudeMode::NadirPointing, 0.0f, 1.0f};
+            t.secondary = SurfaceSpec{AttitudeMode::Perpendicular, 0.0f, 0.0f};
+            t.diffuse = 0.02f;
+            t.mirrorFrac = 0.0f;
+            SatModel model;
+            if (!loadModelType(t, model))
+                continue;
+            rocketTypes[id] = (int)satTypes.size();
+            pendingModels.emplace_back(satTypes.size(), std::move(model));
+            satTypes.push_back(std::move(t));
+        }
+    }
+
     // ── Bake geometry models, budget by roster size ────────────────────────────
     // GPU cost is (visible satellites of the type) × (its lobes), so a type flown by few
     // satellites (a station, a telescope, a depot) can afford far more lobes — enough to stay
@@ -14944,6 +14981,8 @@ void SatelliteSim::loadDefinitions()
         int budget = count <= kSatLobeSmallRoster ? kSatLobeBudgetSmall : kSatLobeBudget;
         if (satTypes[ti].modelId.rfind("debris_", 0) == 0)
             budget = 16; // fragments: up to a pool's worth visible at once, each a few simple parts
+        else if (satTypes[ti].modelId.rfind("rocket_", 0) == 0)
+            budget = 24; // a few rockets at a time, CPU-evaluated only
         bakeModelType(satTypes[ti], model, budget, count);
     }
 

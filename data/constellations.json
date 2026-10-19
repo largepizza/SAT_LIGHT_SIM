@@ -31,6 +31,10 @@
             "model": "guowang"
         },
         {
+            "name": "Qianfan",
+            "model": "qianfan"
+        },
+        {
             "name": "ISS",
             "model": "iss"
         },
@@ -474,6 +478,18 @@
             "per_plane": 22,
             "enabled": false,
             "distribution": "Walker"
+        },
+        {
+            "name": "Qianfan (Spacesail)",
+            "note": "Phase 1 as flown: 18 satellites per Long March 6A into near-polar planes, raised to ~1070 km (89 deg). The later shells are ESTIMATES toward the ~14,000-satellite plan of the 2030s (their altitudes and inclinations are unpublished).",
+            "type": "Qianfan",
+            "enabled": true,
+            "distribution": "Shells",
+            "groups": [
+                {"alt_min_km": 1070.0, "alt_max_km": 1070.0, "incl_deg": 89.0, "shells": 1, "planes_per_shell": 72, "per_plane": 18},
+                {"alt_min_km": 1160.0, "alt_max_km": 1160.0, "incl_deg": 89.0, "shells": 1, "planes_per_shell": 144, "per_plane": 36},
+                {"alt_min_km": 1100.0, "alt_max_km": 1100.0, "incl_deg": 55.0, "shells": 1, "planes_per_shell": 144, "per_plane": 36}
+            ]
         }
     ]
 }

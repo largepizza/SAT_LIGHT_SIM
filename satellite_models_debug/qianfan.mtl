@@ -1,0 +1,20 @@
+newmtl qf_body
+Kd 0.95 0.78 0.4
+Ks 0.6 0.6 0.6
+Ns 14.3265
+
+newmtl qf_nadir
+Kd 0.25 0.25 0.28
+Ks 0.04 0.04 0.04
+Ns 198
+
+newmtl solar_cell
+Kd 0.2 0.25 0.55
+Ks 0.04 0.04 0.04
+Ns 798
+
+newmtl solar_array_back
+Kd 0.85 0.82 0.7
+Ks 0.04 0.04 0.04
+Ns 20.2222
+

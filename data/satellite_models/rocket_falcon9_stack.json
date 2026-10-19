@@ -1,0 +1,416 @@
+{
+    "name": "falcon9 stack",
+    "note": "Launch vehicle render model (tools/make_rocket_models.py), falcon9: stack. Body frame: +Z toward the nose, origin at the aft end. Sizes are public figures rounded; liveries broad strokes; detail render-only.",
+    "materials": [
+        {
+            "name": "white",
+            "preset": "white_paint",
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "black",
+            "preset": "black_paint"
+        },
+        {
+            "name": "steel",
+            "preset": "stainless_steel",
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "tan",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.45,
+            "color": [
+                0.86,
+                0.56,
+                0.33
+            ]
+        },
+        {
+            "name": "nozzle",
+            "preset": "aluminum",
+            "diffuse_albedo": 0.08,
+            "roughness": 0.3,
+            "color": [
+                0.4,
+                0.37,
+                0.35
+            ]
+        },
+        {
+            "name": "tiles",
+            "preset": "black_paint",
+            "roughness": 0.6
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "body",
+            "primary": {
+                "axis": [
+                    0,
+                    0,
+                    1
+                ],
+                "target": "velocity"
+            },
+            "secondary": {
+                "axis": [
+                    0,
+                    -1,
+                    0
+                ],
+                "target": "nadir"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "engines_0",
+            "type": "cone",
+            "radius_bottom": 1.6836,
+            "radius_top": 1.098,
+            "height": 1.2,
+            "position": [
+                0.0,
+                0.0,
+                -0.6
+            ],
+            "caps": true,
+            "material": "nozzle",
+            "group": "body",
+            "render_only": true
+        },
+        {
+            "name": "core_1",
+            "type": "cylinder",
+            "radius": 1.83,
+            "height": 29.2,
+            "position": [
+                0,
+                0,
+                14.6
+            ],
+            "caps": true,
+            "material": "white",
+            "group": "body"
+        },
+        {
+            "name": "interstage_2",
+            "type": "cylinder",
+            "radius": 1.83,
+            "height": 6.0,
+            "position": [
+                0,
+                0,
+                32.2
+            ],
+            "caps": false,
+            "material": "black",
+            "group": "body"
+        },
+        {
+            "name": "grid_fin_3",
+            "type": "box",
+            "size": [
+                1.1,
+                1.4,
+                0.15
+            ],
+            "position": [
+                1.6829,
+                1.6829,
+                34.08
+            ],
+            "rotation_quat": [
+                0.92388,
+                0.0,
+                0.0,
+                0.382683
+            ],
+            "material": "nozzle",
+            "group": "body",
+            "render_only": true
+        },
+        {
+            "name": "grid_fin_4",
+            "type": "box",
+            "size": [
+                1.1,
+                1.4,
+                0.15
+            ],
+            "position": [
+                -1.6829,
+                1.6829,
+                34.08
+            ],
+            "rotation_quat": [
+                0.382683,
+                0.0,
+                0.0,
+                0.92388
+            ],
+            "material": "nozzle",
+            "group": "body",
+            "render_only": true
+        },
+        {
+            "name": "grid_fin_5",
+            "type": "box",
+            "size": [
+                1.1,
+                1.4,
+                0.15
+            ],
+            "position": [
+                -1.6829,
+                -1.6829,
+                34.08
+            ],
+            "rotation_quat": [
+                -0.382683,
+                0.0,
+                0.0,
+                0.92388
+            ],
+            "material": "nozzle",
+            "group": "body",
+            "render_only": true
+        },
+        {
+            "name": "grid_fin_6",
+            "type": "box",
+            "size": [
+                1.1,
+                1.4,
+                0.15
+            ],
+            "position": [
+                1.6829,
+                -1.6829,
+                34.08
+            ],
+            "rotation_quat": [
+                0.92388,
+                0.0,
+                0.0,
+                -0.382683
+            ],
+            "material": "nozzle",
+            "group": "body",
+            "render_only": true
+        },
+        {
+            "name": "leg_7",
+            "type": "plane",
+            "size": [
+                0.6405,
+                9.856
+            ],
+            "position": [
+                1.86,
+                0.0,
+                5.228
+            ],
+            "rotation_quat": [
+                0.5,
+                0.5,
+                0.5,
+                0.5
+            ],
+            "material": "black",
+            "group": "body",
+            "render_only": true
+        },
+        {
+            "name": "leg_8",
+            "type": "plane",
+            "size": [
+                0.6405,
+                9.856
+            ],
+            "position": [
+                0.0,
+                1.86,
+                5.228
+            ],
+            "rotation_quat": [
+                0.0,
+                0.0,
+                0.707107,
+                0.707107
+            ],
+            "material": "black",
+            "group": "body",
+            "render_only": true
+        },
+        {
+            "name": "leg_9",
+            "type": "plane",
+            "size": [
+                0.6405,
+                9.856
+            ],
+            "position": [
+                -1.86,
+                0.0,
+                5.228
+            ],
+            "rotation_quat": [
+                -0.5,
+                -0.5,
+                0.5,
+                0.5
+            ],
+            "material": "black",
+            "group": "body",
+            "render_only": true
+        },
+        {
+            "name": "leg_10",
+            "type": "plane",
+            "size": [
+                0.6405,
+                9.856
+            ],
+            "position": [
+                -0.0,
+                -1.86,
+                5.228
+            ],
+            "rotation_quat": [
+                0.707107,
+                0.707107,
+                -0.0,
+                -0.0
+            ],
+            "material": "black",
+            "group": "body",
+            "render_only": true
+        },
+        {
+            "name": "upper_nozzle_11",
+            "type": "cone",
+            "radius_bottom": 1.3725,
+            "radius_top": 0.4575,
+            "height": 3.0,
+            "position": [
+                0.0,
+                0.0,
+                34.0
+            ],
+            "caps": true,
+            "material": "nozzle",
+            "group": "body"
+        },
+        {
+            "name": "upper_tank_12",
+            "type": "cylinder",
+            "radius": 1.83,
+            "height": 9.4,
+            "position": [
+                0,
+                0,
+                40.2
+            ],
+            "caps": true,
+            "material": "white",
+            "group": "body"
+        },
+        {
+            "name": "fairing_boattail_13",
+            "type": "cone",
+            "radius_bottom": 1.83,
+            "radius_top": 2.6,
+            "height": 0.916,
+            "position": [
+                0.0,
+                0.0,
+                45.358
+            ],
+            "caps": true,
+            "material": "white",
+            "group": "body"
+        },
+        {
+            "name": "fairing_14",
+            "type": "cylinder",
+            "radius": 2.6,
+            "height": 6.7,
+            "position": [
+                0,
+                0,
+                49.166
+            ],
+            "caps": false,
+            "material": "white",
+            "group": "body"
+        },
+        {
+            "name": "fairing_nose_15",
+            "type": "cone",
+            "radius_bottom": 2.6,
+            "radius_top": 0.3,
+            "height": 6.4,
+            "position": [
+                0.0,
+                0.0,
+                55.716
+            ],
+            "caps": true,
+            "material": "white",
+            "group": "body"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "attitude",
+            "status": "estimate",
+            "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+            "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+        },
+        {
+            "subject": "body",
+            "status": "estimate",
+            "value": "one rigid group",
+            "source": "Render model; no moving parts."
+        },
+        {
+            "subjects": [
+                "engines_0",
+                "core_1",
+                "interstage_2",
+                "grid_fin_3",
+                "grid_fin_4",
+                "grid_fin_5",
+                "grid_fin_6",
+                "leg_7",
+                "leg_8",
+                "leg_9",
+                "leg_10",
+                "upper_nozzle_11",
+                "upper_tank_12",
+                "fairing_boattail_13",
+                "fairing_14",
+                "fairing_nose_15"
+            ],
+            "status": "estimate",
+            "value": "rounded public dimensions (Wikipedia / operator pages), broad liveries",
+            "source": "tools/make_rocket_models.py VEHICLES table."
+        },
+        {
+            "subjects": [
+                "white",
+                "black",
+                "steel",
+                "tan",
+                "nozzle",
+                "tiles"
+            ],
+            "status": "estimate",
+            "value": "presets: white paint, black paint, stainless, tan foam, dark nozzles, black tiles",
+            "source": "Liveries from photographs; reflectance from the presets."
+        }
+    ]
+}

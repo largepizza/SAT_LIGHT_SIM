@@ -1,0 +1,20 @@
+newmtl nozzle
+Kd 0.4 0.37 0.35
+Ks 0.9 0.9 0.9
+Ns 20.2222
+
+newmtl steel
+Kd 0.76 0.76 0.75
+Ks 0.55 0.55 0.55
+Ns 136.889
+
+newmtl black
+Kd 0.08 0.08 0.08
+Ks 0.04 0.04 0.04
+Ns 10.5
+
+newmtl white
+Kd 0.95 0.95 0.95
+Ks 0.04 0.04 0.04
+Ns 6
+

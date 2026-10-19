@@ -1,0 +1,150 @@
+{
+    "name": "Qianfan (Spacesail) broadband satellite",
+    "note": "Body frame: +Z nadir, +X velocity. A flat-panel bus (Qianfan satellites are flat panels stacked 18 to a Long March 6A) with one Sun-tracking array along +Y. Sizes and materials are ESTIMATES: the satellites' dimensions are unpublished; the array area is scaled from Starlink V1.5-class flat panels.",
+    "materials": [
+        {
+            "name": "qf_body",
+            "preset": "mli_foil"
+        },
+        {
+            "name": "qf_nadir",
+            "preset": "antenna_panel"
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "bus",
+            "primary": {
+                "axis": [
+                    0,
+                    0,
+                    1
+                ],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [
+                    1,
+                    0,
+                    0
+                ],
+                "target": "velocity"
+            }
+        },
+        {
+            "name": "wings",
+            "parent": "bus",
+            "hinge": {
+                "position": [
+                    0,
+                    0,
+                    -0.5
+                ],
+                "axis": [
+                    0,
+                    1,
+                    0
+                ]
+            },
+            "joint": {
+                "mode": "track",
+                "vector": [
+                    0,
+                    0,
+                    -1
+                ],
+                "target": "sun"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "bus",
+            "type": "box",
+            "group": "bus",
+            "size": [
+                2.8,
+                1.4,
+                0.3
+            ],
+            "material": "qf_body"
+        },
+        {
+            "name": "nadir_face",
+            "type": "plane",
+            "group": "bus",
+            "size": [
+                2.7,
+                1.35
+            ],
+            "position": [
+                0,
+                0,
+                0.16
+            ],
+            "rotation_deg": [
+                0,
+                0,
+                0
+            ],
+            "material": "qf_nadir",
+            "single_sided": true
+        },
+        {
+            "name": "array",
+            "type": "plane",
+            "group": "wings",
+            "size": [
+                2.6,
+                8.0
+            ],
+            "position": [
+                0,
+                4.9,
+                0
+            ],
+            "rotation_deg": [
+                180,
+                0,
+                0
+            ],
+            "material": "solar_cell",
+            "back_material": "solar_array_back"
+        }
+    ],
+    "sources": [
+        {
+            "subject": "bus",
+            "status": "estimate",
+            "value": "2.8 x 1.4 x 0.3 m flat panel",
+            "source": "Qianfan launches stack 18 flat-panel satellites per Long March 6A (Wikipedia, 'Qianfan'); dimensions unpublished, estimated from the fairing (4.2 m)."
+        },
+        {
+            "subject": "nadir_face",
+            "status": "estimate",
+            "value": "antenna panel on the nadir face",
+            "source": "Broadband phased array, as Starlink-class flat panels."
+        },
+        {
+            "subject": "array",
+            "status": "estimate",
+            "value": "one 2.6 x 8 m Sun-tracking array",
+            "source": "Unpublished; scaled from Starlink V1.5-class flat panels."
+        },
+        {
+            "subject": "wings",
+            "status": "estimate",
+            "value": "array tracks the Sun about the cross-track axis",
+            "source": "As the Guowang model (no published attitude)."
+        },
+        {
+            "subjects": [
+                "qf_body",
+                "qf_nadir"
+            ],
+            "status": "estimate",
+            "value": "MLI body, dark antenna face",
+            "source": "Presets."
+        }
+    ]
+}

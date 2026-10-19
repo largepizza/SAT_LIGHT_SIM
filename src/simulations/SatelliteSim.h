@@ -2613,6 +2613,7 @@ private:
     int kDebrisConst = -1;                // the "Collision debris" pseudo-constellation (fragments)
     uint32_t kDebrisType = 0;
     int kDebrisKit[3][3] = {{-1, -1, -1}, {-1, -1, -1}, {-1, -1, -1}}; // [kind: array, radiator, structure][S, M, L]
+    std::map<std::string, int> rocketTypes; // "rocket_<vehicle>_<stack|booster|upper>" -> its type index
     // GPU: kesslerBuf = roster dead / end seconds + pool records (sat_orbit.comp binding 11, rebake 2),
     // kPoolBaseBuf = the records' J2000 phases (rebake 3). Sized for kPoolCap records; grown on demand.
     VkBuffer kesslerBuf = VK_NULL_HANDLE;
@@ -2665,6 +2666,8 @@ private:
         uint64_t a = 0;     // the batch key (1, 2, 4), the satellite (3, 5)
         double tau = 0.0;   // seconds since lift-off (1) / entry (2) / the glow's start (3-6)
         glm::dvec3 pos{0.0}, vel{0.0}, acc{0.0}; // ECI, at the frame's time
+        glm::dvec3 axis{0.0};                    // rockets: the body axis toward the nose (ECI); 0 = none
+        int type = -1;                           // rockets: its model type (rocketTypes), -1 = none
         glm::vec3 dirEnu{0.0f, 0.0f, 1.0f};
         float flare = 0.0f;
     };
@@ -2672,13 +2675,20 @@ private:
     SelTransient selTransientCur;            // the selected one, as last seen
     uint64_t selTransientKey = 0;
     double selTransientSeenT = 0.0;
+    double selTransientsT = 0.0;             // the sim time selTransients was made at
     uint32_t transientSatIdx() const { return activeSatCount + kLaunchCap - 1; }
     bool selIsTransient() const { return selectedSatIndex >= 0 && (uint32_t)selectedSatIndex == transientSatIdx(); }
     void addSelTransient(const SelTransient &s);
     void selTransientUpdate();                // after the frame's visuals: the reserved slot's state, the label
     void selTransientTake(const SelTransient &s); // make it the selection's object (the caller selects the index)
     std::string transientLabel() const;
-    bool selectTransient(int kind, std::string &msg); // harness: the brightest of a kind (0 = any)
+    bool selectTransient(int kind, std::string &msg, int stage = -1); // harness: the brightest of a kind (0 = any)
+    // Rockets near enough to draw as meshes: up to kRocketMeshSlots of the reserved chunk's slots, bound to the
+    // drawn rockets' keys (stable while they stay meshed). Returns their satellite indices (recordMeshScene).
+    static constexpr int kRocketMeshSlots = 7;
+    uint64_t rocketMeshKey[kRocketMeshSlots] = {};
+    std::vector<int> launchMeshJobs(double pixAngle, const glm::dvec3 &obsEci);
+    double rocketMeshPx(const SelTransient &s, double pixAngle, const glm::dvec3 &obsEci) const;
 
     // ── Launches (SatelliteSimLaunches.cpp, 2026-10-18; .plans/LAUNCHES_PLAN.md) ─────────────────────
     // Every plane of a constellation a program in data/launches.json keeps flying is refreshed once per design life:
@@ -2705,8 +2715,9 @@ private:
     std::string launchLabel(uint32_t slot) const;
     nlohmann::json launchStateJson() const;
     nlohmann::json launchListJson(double hours) const;
+    nlohmann::json launchWhyJson(double hours) const;
     bool launchGoToNext(std::string &msg, bool twilight);
-    bool launchGoToNextWhen(std::string &msg, int when);
+    bool launchGoToNextWhen(std::string &msg, int when, const std::string &vehicle = std::string());
     bool launchLook(int stage, std::string &msg);
     struct LaunchSound
     {

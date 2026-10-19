@@ -135,6 +135,7 @@ struct SatOrbitElems
     // position, velocity and acceleration at fixT0, extrapolated quadratically. Rewritten every frame.
     bool fixedState = false;
     glm::dvec3 fixPos{0.0}, fixVel{0.0}, fixAcc{0.0};
+    glm::dvec3 fixAxis{0.0}; // nonzero: the body axis the attitude's "velocity" target takes (a rocket's thrust axis)
     double fixT0 = 0.0;
 };
 

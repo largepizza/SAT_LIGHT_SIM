@@ -1377,6 +1377,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     };
     std::vector<Cand> plumes;
     const double nightBoost = 1.0 + 9.0 * (1.0 - dayness);
+    const double pixA = ctx_ ? 2.0 * std::tan(0.5 * glm::radians((double)camera.fovYDeg)) /
+                                   (double)std::max(1u, ctx_->swapExtent.height)
+                             : 1e-3;
     for (uint64_t key : L.live)
     {
         auto bit = L.batches.find(key);
@@ -1447,6 +1450,31 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                              glm::smoothstep(0.0, 30.0, te) * (1.0 - glm::smoothstep(420.0, 480.0, te));
             const glm::dvec3 rel = P - eye;
             const double range = std::max(glm::length(rel), 1.0);
+            // Listed for the selection (and its mesh) whether glowing or not; pickable once drawn.
+            size_t shipIdx = SIZE_MAX;
+            if (range < 4.0e6)
+            {
+                SelTransient st;
+                st.key = (key << 3) ^ 0x2ull ^ 0xC0FFEEull;
+                st.kind = 2;
+                st.a = key;
+                st.tau = te;
+                const glm::dvec3 P2 = shipAt(te - 12.0);
+                st.pos = P;
+                st.vel = (P - Pp) / 6.0;
+                st.acc = (P - 2.0 * Pp + P2) / 36.0;
+                // Belly first: the nose pitched ~60 degrees above the velocity, the heat shield into the flow.
+                const glm::dvec3 vh1 = glm::normalize(P - Pp), up = glm::normalize(P);
+                glm::dvec3 upp = up - glm::dot(up, vh1) * vh1;
+                upp = glm::length(upp) > 1e-6 ? glm::normalize(upp) : up;
+                st.axis = glm::normalize(0.5 * vh1 + 0.866 * upp);
+                auto ti = rocketTypes.find("rocket_" + vh.id + "_upper");
+                st.type = ti != rocketTypes.end() ? ti->second : -1;
+                st.dirEnu = glm::vec3(toEnu(rel) / range);
+                st.flare = 0.0f;
+                shipIdx = selTransients.size();
+                addSelTransient(st);
+            }
             if (I > 1e-3 && !earthBlocks(P))
             {
                 const double m = -4.0 - 2.5 * std::log10(I) + 5.0 * std::log10(range / 1.0e5) +
@@ -1456,21 +1484,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                                                (float)glm::clamp(v / 7500.0, 0.0, 1.0));
                 if (flare > 2e-4 && kFireCount < kFireballMax)
                     fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(rel) / range), (float)flare), glm::vec4(col, (float)range)};
-                if (flare > 2e-4)
-                {
-                    SelTransient st;
-                    st.key = (key << 3) ^ 0x2ull ^ 0xC0FFEEull;
-                    st.kind = 2;
-                    st.a = key;
-                    st.tau = te;
-                    const glm::dvec3 P2 = shipAt(te - 12.0);
-                    st.pos = P;
-                    st.vel = (P - Pp) / 6.0;
-                    st.acc = (P - 2.0 * Pp + P2) / 36.0;
-                    st.dirEnu = glm::vec3(toEnu(rel) / range);
-                    st.flare = (float)flare;
-                    addSelTransient(st);
-                }
+                if (flare > 2e-4 && shipIdx < selTransients.size())
+                    selTransients[shipIdx].flare = (float)flare;
                 // Its glowing wake: the last 6 s of path, an emissive Gaussian.
                 if (flare > 5e-3 && n < kMaxDustClouds)
                 {
@@ -1514,10 +1529,39 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // Listed for the selection whether drawn or not (a booster coasting in the dark, behind the Earth: a
             // tracked rocket stays selected); pickable only once drawn (flare > 0).
             size_t trIdx = SIZE_MAX;
-            if (tau >= 0.0 && glm::length(P - eye) < 4.0e6)
+            if (glm::length(P - eye) < 4.0e6)
             {
                 SelTransient st;
                 st.key = (key << 3) ^ (uint64_t)(stage + 1);
+                // The body axis (nose): the Earth-fixed velocity on the track (in ECI the pad's ~400 m/s of rotation
+                // would tilt a rising rocket), straight up on the pad; a booster after staging and an upper stage
+                // in its deorbit burn fly engines first. In orbit, the inertial velocity.
+                {
+                    glm::dvec3 ax;
+                    if (stage == 0 || tau < B.t2)
+                    {
+                        bool o1 = false, o0 = false;
+                        const glm::dvec3 E1 = LaunchImpl::rocketEcef(L, B, stage, tau, o1);
+                        const glm::dvec3 E0 = LaunchImpl::rocketEcef(L, B, stage, tau - 1.0, o0);
+                        const glm::dvec3 vE = (o1 && o0 && tau > 0.5) ? E1 - E0 : glm::dvec3(0.0);
+                        ax = glm::length(vE) > 0.5 ? glm::normalize(vE) : glm::normalize(E1);
+                        ax = ecefToEci(ax, t);
+                    }
+                    else
+                    {
+                        glm::dvec3 P1;
+                        if (!LaunchImpl::rocketPos(L, B, stage, tau - 1.0, P1))
+                            P1 = P - glm::dvec3(0, 0, 1);
+                        ax = glm::normalize(P - P1);
+                    }
+                    if ((stage == 0 && tau > vh.t1 + 2.0) ||
+                        (stage == 1 && vh.upperDeorbit && t >= B.tDeorbBurn && t < B.tDeorbBurn + 40.0))
+                        ax = -ax;
+                    st.axis = ax;
+                    const std::string mid = "rocket_" + vh.id + (stage == 1 ? "_upper" : tau < vh.t1 ? "_stack" : "_booster");
+                    auto ti = rocketTypes.find(mid);
+                    st.type = ti != rocketTypes.end() ? ti->second : -1;
+                }
                 st.kind = 1;
                 st.stage = (uint8_t)stage;
                 st.burn = burn;
@@ -1560,6 +1604,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     continue; // on the pad, or dark: nothing to see from afar
                 m = (stage == 0 ? 3.0 : 3.8) + 5.0 * std::log10(range / 1.0e6) + ext;
                 col = glm::vec3(0.95f, 0.95f, 0.98f);
+                // The sunlit body gives way to its mesh as that resolves (a burning stage keeps its flame's point).
+                if (trIdx < selTransients.size())
+                {
+                    const double px = rocketMeshPx(selTransients[trIdx], pixA, eye);
+                    m -= 2.5 * std::log10(std::max(1.0 - glm::smoothstep(2.0, 8.0, px), 1e-4));
+                }
             }
             double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - (burning ? 0.8 : 0.97) * dayness);
             if (flare < 2e-4)
@@ -1578,6 +1628,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     Pb = P;
                 glm::dvec3 vdir = P - Pb;
                 vdir = glm::length(vdir) > 1e-3 ? glm::normalize(vdir) : glm::normalize(P);
+                if (trIdx < selTransients.size() && glm::length(selTransients[trIdx].axis) > 0.5)
+                    vdir = selTransients[trIdx].axis; // out of the engines: a landing burn's flame points down
                 const double h = glm::length(P) - kR;
                 const double hiK = glm::smoothstep(20000.0, 90000.0, h);
                 const double Lf = 50.0 + 900.0 * hiK, Wf = 6.0 + 120.0 * hiK;
@@ -1606,7 +1658,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     const double jA = 1.0 / (gA * gA), jP = 1.0 / (gP * gP);
                     auto Mg = [&](int p, int q) { return jA * a[p] * a[q] + jP * (b2[p] * b2[q] + c2[p] * c2[q]); };
                     GpuDustCloud &g = out[n++];
-                    g.c = glm::vec4(glm::vec3(toEnu(P - 1.2 * Rg * vdir - eye)), (float)(0.25 * J * toSky));
+                    // A night effect: by day the lit exhaust is lost in the sky (up close it drew a white ellipse
+                    // hundreds of metres across over the rocket).
+                    g.c = glm::vec4(glm::vec3(toEnu(P - 1.2 * Rg * vdir - eye)),
+                                    (float)(0.25 * J * toSky * (1.0 - 0.95 * dayness)));
                     g.ia = glm::vec4((float)Mg(0, 0), (float)Mg(1, 1), (float)Mg(2, 2),
                                      (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * gA * gP * gP)));
                     g.ib = glm::vec4((float)Mg(0, 1), (float)Mg(0, 2), (float)Mg(1, 2), 0.0f);
@@ -1944,12 +1999,34 @@ nlohmann::json SatelliteSim::launchListJson(double hours) const
     return arr;
 }
 
+// Why batches did not fly: every batch the cache holds after listing `hours`, counted by program and reason.
+nlohmann::json SatelliteSim::launchWhyJson(double hours) const
+{
+    (void)launchListJson(hours);
+    nlohmann::json j = nlohmann::json::object();
+    if (!launchState)
+        return j;
+    const LaunchState &L = *launchState;
+    for (const auto &kv : L.batches)
+    {
+        const LBatch &B = kv.second;
+        if (B.prog < 0)
+            continue;
+        const std::string pn = L.cat.programs[B.prog].name;
+        const std::string w = B.valid ? std::string("ok") : B.why;
+        if (!j.contains(pn))
+            j[pn] = nlohmann::json::object();
+        j[pn][w] = j[pn].value(w, 0) + 1;
+    }
+    return j;
+}
+
 // Puts the observer near the next launch: twilight (the Sun 5-16 deg below the pad's horizon) within a week if asked,
 // else the next. Time 30 s before lift-off at 1x, the camera on the climb.
 bool SatelliteSim::launchGoToNext(std::string &msg, bool twilight) { return launchGoToNextWhen(msg, twilight ? 1 : 0); }
 
 // when: 0 the next, 1 twilight (the Sun 5-16 deg down at the pad), 2 day (above 15 deg), 3 night (below -20 deg).
-bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when)
+bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when, const std::string &vehicle)
 {
     const bool twilight = when != 0;
     if (launchState)
@@ -1960,12 +2037,32 @@ bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when)
         return false;
     }
     LaunchState &L = *launchState;
-    const nlohmann::json list = launchListJson(twilight ? 24.0 * 7.0 : 48.0);
+    const nlohmann::json list = launchListJson(!vehicle.empty() ? 24.0 * 30.0 : twilight ? 24.0 * 7.0 : 48.0);
     const nlohmann::json *pick = nullptr;
     for (const nlohmann::json &o : list)
     {
         if (o["in_hours"].get<double>() < 0.02)
             continue;
+        if (!vehicle.empty())
+        {
+            // A vehicle id or a part of its name, case-blind.
+            std::string nm = o.value("vehicle", std::string());
+            std::string q = vehicle;
+            for (auto &ch : nm)
+                ch = (char)std::tolower((unsigned char)ch);
+            for (auto &ch : q)
+                ch = (char)std::tolower((unsigned char)ch);
+            std::string nmc;
+            for (char ch : nm)
+                if (std::isalnum((unsigned char)ch))
+                    nmc += ch;
+            std::string qc;
+            for (char ch : q)
+                if (std::isalnum((unsigned char)ch))
+                    qc += ch;
+            if (nmc.find(qc) == std::string::npos)
+                continue;
+        }
         const double se = o["sun_elev_deg"].get<double>();
         if (when == 0 || (when == 1 && se < -5.0 && se > -16.0) || (when == 2 && se > 15.0) || (when == 3 && se < -20.0))
         {
@@ -1975,7 +2072,8 @@ bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when)
     }
     if (!pick)
     {
-        msg = twilight ? "no such launch in the next week" : "no launch in the next 48 h";
+        msg = !vehicle.empty() ? "no such launch in the next 30 days" : twilight ? "no such launch in the next week"
+                                                                                : "no launch in the next 48 h";
         return false;
     }
     // Find its batch again.
@@ -2491,6 +2589,7 @@ void SatelliteSim::addSelTransient(const SelTransient &s)
 
 void SatelliteSim::selTransientUpdate()
 {
+    selTransientsT = (double)simDayJ2000 * 86400.0 + simSecInDay; // the time the list was made at
     if (!selIsTransient() || !launchState)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -2506,6 +2605,8 @@ void SatelliteSim::selTransientUpdate()
         // Out of view this frame (behind the Earth, below the brightness cut) or over: gone for good after 2 s.
         if (std::abs(t - selTransientSeenT) > 2.0)
         {
+            if (followActive && followSatIndex == selectedSatIndex)
+                stopFollow(false);
             stopTrack();
             selectedSatIndex = -1;
             selTransientKey = 0;
@@ -2525,13 +2626,128 @@ void SatelliteSim::selTransientTake(const SelTransient &s)
     selTransientSeenT = t;
     if (!launchState)
         return;
+    // The list's state is at the time the list was made (the visuals fill), possibly a frame ago.
+    const double t0 = selTransientsT > 0.0 ? selTransientsT : t;
     SatOrbitElems &e = launchState->elems[kLaunchCap - 1];
     e = SatOrbitElems{};
     e.fixedState = true;
     e.fixPos = s.pos;
     e.fixVel = s.vel;
     e.fixAcc = s.acc;
-    e.fixT0 = t;
+    e.fixAxis = s.axis;
+    e.fixT0 = t0;
+    // A rocket has a model (Info, Go to, its mesh); a fireball none (Track only). The orbit rows read the state.
+    const uint32_t idx = transientSatIdx();
+    if (idx < satOrbits.size())
+    {
+        SatOrbit &o = satOrbits[idx];
+        o.typeIdx = s.type >= 0 ? (uint32_t)s.type : UINT32_MAX;
+        o.altM = (float)(glm::length(s.pos) - kR);
+        const glm::dvec3 h = glm::cross(s.pos, s.vel);
+        o.incl = glm::length(h) > 1.0 ? (float)std::acos(glm::clamp(h.z / glm::length(h), -1.0, 1.0)) : 0.0f;
+        o.raan = 0.0f;
+        o.meanMot = 0.0f;
+    }
+}
+
+double SatelliteSim::rocketMeshPx(const SelTransient &s, double pixAngle, const glm::dvec3 &obsEci) const
+{
+    const SatMeshRenderer::TypeMesh *tm = s.type >= 0 ? meshRenderer.typeMesh(s.type) : nullptr;
+    if (!tm || pixAngle <= 0.0)
+        return 0.0;
+    return 2.0 * std::max(0.1, (double)tm->boundsRadius) / std::max(glm::length(s.pos - obsEci), 1.0) / pixAngle;
+}
+
+// The rockets near enough to draw as meshes (recordMeshScene): the largest on screen past ~1.4 px, up to
+// kRocketMeshSlots, each in a slot of the reserved chunk it keeps while it stays meshed; the selected rocket rides in
+// the selection's own slot. Their elements are the frame's state (fixedState), so evalInstance poses them like any
+// satellite. Uses the transients the last frame listed (the visuals fill after this pass): one frame of extrapolation.
+std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 &obsEci)
+{
+    std::vector<int> jobs;
+    if (!launchState || !launchesEnabled)
+        return jobs;
+    LaunchState &L = *launchState;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    struct C
+    {
+        double px;
+        size_t i;
+    };
+    std::vector<C> cs;
+    for (size_t i = 0; i < selTransients.size(); ++i)
+    {
+        const SelTransient &s = selTransients[i];
+        if (s.type < 0)
+            continue;
+        const double px = rocketMeshPx(s, pixAngle, obsEci);
+        if (px > 1.4)
+            cs.push_back({px, i});
+    }
+    std::sort(cs.begin(), cs.end(), [](const C &a, const C &b) { return a.px > b.px; });
+    const uint32_t base = activeSatCount + kLaunchCap - 1 - kRocketMeshSlots; // slots base .. base + 6
+    bool used[kRocketMeshSlots] = {};
+    std::vector<size_t> want;
+    for (const C &c : cs)
+    {
+        const SelTransient &s = selTransients[c.i];
+        if (selIsTransient() && s.key == selTransientKey)
+        {
+            // The selection's slot (already written by selTransientTake); the followed one is drawn by follow mode.
+            if (!(followActive && followSatIndex == selectedSatIndex))
+                jobs.push_back((int)transientSatIdx());
+            continue;
+        }
+        if (want.size() < (size_t)kRocketMeshSlots)
+            want.push_back(c.i);
+    }
+    // Keep each rocket in the slot it had; give the rest the free ones.
+    int slotOf[kRocketMeshSlots];
+    for (int k = 0; k < kRocketMeshSlots; ++k)
+        slotOf[k] = -1;
+    for (size_t w = 0; w < want.size(); ++w)
+        for (int k = 0; k < kRocketMeshSlots; ++k)
+            if (!used[k] && rocketMeshKey[k] == selTransients[want[w]].key)
+            {
+                used[k] = true;
+                slotOf[w] = k;
+                break;
+            }
+    for (size_t w = 0; w < want.size(); ++w)
+        if (slotOf[w] < 0)
+            for (int k = 0; k < kRocketMeshSlots; ++k)
+                if (!used[k])
+                {
+                    used[k] = true;
+                    slotOf[w] = k;
+                    break;
+                }
+    for (int k = 0; k < kRocketMeshSlots; ++k)
+        if (!used[k])
+            rocketMeshKey[k] = 0;
+    for (size_t w = 0; w < want.size(); ++w)
+    {
+        const SelTransient &s = selTransients[want[w]];
+        const int k = slotOf[w];
+        rocketMeshKey[k] = s.key;
+        const uint32_t slot = kLaunchCap - 1 - kRocketMeshSlots + (uint32_t)k;
+        const uint32_t idx = base + (uint32_t)k;
+        if (idx >= satOrbits.size() || slot >= L.elems.size())
+            continue;
+        SatOrbitElems &e = L.elems[slot];
+        e = SatOrbitElems{};
+        e.fixedState = true;
+        e.fixPos = s.pos;
+        e.fixVel = s.vel;
+        e.fixAcc = s.acc;
+        e.fixAxis = s.axis;
+        // The transients are the last frame's: their time is the last fill's.
+        e.fixT0 = selTransientsT;
+        (void)t;
+        satOrbits[idx].typeIdx = (uint32_t)s.type;
+        jobs.push_back((int)idx);
+    }
+    return jobs;
 }
 
 std::string SatelliteSim::transientLabel() const
@@ -2584,11 +2800,12 @@ std::string SatelliteSim::transientLabel() const
     return b;
 }
 
-bool SatelliteSim::selectTransient(int kind, std::string &msg)
+bool SatelliteSim::selectTransient(int kind, std::string &msg, int stage)
 {
     const SelTransient *best = nullptr;
     for (const SelTransient &s : selTransients)
-        if (s.flare > 0.0f && (kind == 0 || s.kind == kind) && (!best || s.flare > best->flare))
+        if (s.flare > 0.0f && (kind == 0 || s.kind == kind) && (stage < 0 || s.stage == stage) &&
+            (!best || s.flare > best->flare))
             best = &s;
     if (!best)
     {
