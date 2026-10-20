@@ -1047,7 +1047,7 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     if (sim.kesslerEnabled && tL >= sim.kesslerEpoch() &&
         (sim.launchAfterStorm == 0 || tL < sim.kesslerEpoch() + 21.0 * kDay))
     {
-        B.why = sim.launchAfterStorm == 0 ? "stood down since the storm" : "stand-down after the storm";
+        B.why = sim.launchAfterStorm == 0 ? "launches stand down at the Sun's Fury" : "the stand-down after the Sun's Fury";
         return;
     }
     // A crewed station the cascade or the player killed (dead, destroyed or re-entered) before lift-off gets no more
@@ -6179,7 +6179,13 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
     const LaunchState &L = *launchState;
     const double hKm = (glm::length(s.pos) - kR) / 1000.0;
     // Speed over the ground for a rocket near the pad reads better Earth-fixed; inertial elsewhere (orbit).
-    const double vKms = glm::length(s.vel) / 1000.0;
+    // (2026-10-20, QA: it was inertial everywhere, so a stack on the pad, a ship in the tower and a booster on its
+    // deck read 0.4 km/s, the Earth's rotation. Earth-fixed below 80 km, inertial above 150 km, blended between.)
+    double vKms = glm::length(s.vel) / 1000.0;
+    {
+        const glm::dvec3 vRot = s.vel - glm::dvec3(-satphot::kOmegaEarth * s.pos.y, satphot::kOmegaEarth * s.pos.x, 0.0);
+        vKms = glm::mix(glm::length(vRot), glm::length(s.vel), glm::smoothstep(80.0, 150.0, hKm)) / 1000.0;
+    }
     char b[200];
     const LBatch *B = nullptr;
     if (s.kind <= 2 || s.kind == 4 || s.kind == 7)
@@ -6199,10 +6205,19 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
         if (B && s.stage == 0 && s.tau < L.cat.vehicles[B->veh].t1)
             what = ""; // still one vehicle
         const char *doing = kBurn[std::min<int>(s.burn, 5)];
+        if (s.tau < 0.0)
+            doing = "on the pad";
         if (B && s.stage == 1 && s.tau > B->t2)
         {
             const double t = B->tL + s.tau;
-            if (s.burn != launch::BURN_NONE)
+            // (2026-10-20, QA: after its entry a returning ship read "falling toward entry" through its descent and
+            // "deorbit burn" through its landing burn and in the tower)
+            if (B->shipLands && t >= B->tShipDesc)
+                doing = t < B->tShipFlip   ? "belly-flop descent"
+                        : t < B->tShipCatch ? "flip and landing burn"
+                        : B->landPad >= 0   ? "caught by the tower"
+                                            : "splashed down";
+            else if (s.burn != launch::BURN_NONE)
                 doing = "deorbit burn";
             else if (t < B->tD)
                 doing = "coasting to deployment";
@@ -6229,7 +6244,8 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
                          s.tau);
             break;
         }
-        snprintf(b, sizeof(b), "%s%s (%s), T+%.0f s, %.0f km up, %.2f km/s", veh, what, doing, s.tau, hKm, vKms);
+        snprintf(b, sizeof(b), "%s%s (%s), T%s%.0f s, %.0f km up, %.2f km/s", veh, what, doing, s.tau < 0.0 ? "-" : "+",
+                 std::abs(s.tau), hKm, vKms);
         break;
     }
     case 2:

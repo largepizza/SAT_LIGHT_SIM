@@ -2301,7 +2301,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         const std::string sub = lower(pos(0));
         if (sub == "breakup" || sub == "collide")
         {
-            // "sel" = the selected satellite.
+            // "sel" = the selected satellite (2026-10-20, QA: with nothing selected it broke up satellite 0).
+            if (lower(pos(1)) == "sel" && (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size()))
+                fail("kessler " + sub + " sel: nothing selected");
             const uint32_t a0 = lower(pos(1)) == "sel" ? (uint32_t)std::max(selectedSatIndex, 0)
                                                         : (uint32_t)parseNum(pos(1), "kessler sat");
             uint8_t kind = kessler::EV_EXPLOSION;

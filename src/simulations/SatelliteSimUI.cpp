@@ -2310,7 +2310,13 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
     // A rocket stage, Starship's ship or a re-entry fireball (SelTransient): no orbit, no pass, no breakup.
     const bool viewTransient = tracked && (uint32_t)viewerSatIndex == transientSatIdx();
     // Actions on a transient only while it is still the selection (its reserved slot follows the selection).
-    const bool actOk = tracked && (!viewTransient || selIsTransient());
+    // A roster satellite the player or the cascade destroyed, or that re-entered (2026-10-20, QA: the window kept
+    // showing an exploded satellite as "Operational" with Explode, Go to and Track live).
+    double infoGoneT = 0.0;
+    const int infoFate = tracked && !viewTransient && (uint32_t)viewerSatIndex < activeSatCount
+                             ? rosterFateAt((uint32_t)viewerSatIndex, (double)simDayJ2000 * 86400.0 + simSecInDay, &infoGoneT)
+                             : 0;
+    const bool actOk = tracked && (!viewTransient || selIsTransient()) && infoFate < 2;
     const bool hasMesh = tracked && meshRenderer.typeMesh((int)satOrbits[viewerSatIndex].typeIdx) != nullptr;
     // STATUS rows (every frame: a rocket's T+, height and speed move).
     infoStatusCount = 0;
@@ -2331,8 +2337,13 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
         // The title: the label up to its first comma ("Starship (ascent burn)"), not the model id openModelViewer had.
         snprintf(viewerTitle, sizeof(viewerTitle), "%s", tl.substr(0, tl.find(',')).c_str());
         statusRow("Altitude", "%.1f km", (glm::length(st.pos) - satphot::kEarthRadiusM) / 1000.0);
-        statusRow("Speed", "%.2f km/s", glm::length(st.vel) / 1000.0);
-        statusRow(st.kind == 1 ? "Since lift-off" : "Glowing for", "%.0f s", st.tau);
+        {
+            // Over the ground low down, inertial in orbit (as the label: on the pad it read the Earth's 0.4 km/s).
+            const double hKm = (glm::length(st.pos) - satphot::kEarthRadiusM) / 1000.0;
+            const glm::dvec3 vRot = st.vel - glm::dvec3(-satphot::kOmegaEarth * st.pos.y, satphot::kOmegaEarth * st.pos.x, 0.0);
+            statusRow("Speed", "%.2f km/s", glm::mix(glm::length(vRot), glm::length(st.vel), glm::smoothstep(80.0, 150.0, hKm)) / 1000.0);
+        }
+        statusRow(st.kind == 1 ? (st.tau < 0.0 ? "Lift-off in" : "Since lift-off") : "Glowing for", "%.0f s", std::abs(st.tau));
     }
     else if (tracked)
     {
@@ -2345,7 +2356,9 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
             statusRow("Satellite", "%s", satTypes[o.typeIdx].name.c_str());
         const bool dead = lab.size() > 7 && lab.compare(lab.size() - 7, 7, " (dead)") == 0;
         if ((uint32_t)viewerSatIndex < activeSatCount)
-            statusRow("Status", "%s", dead ? "Dead: tumbling, no station keeping" : "Operational");
+            statusRow("Status", "%s", infoFate >= 2 ? (infoFate == 3 ? "Re-entered" : "Destroyed")
+                                      : dead          ? "Dead: tumbling, no station keeping"
+                                                      : "Operational");
         else if ((uint32_t)viewerSatIndex < poolIdx0())
             statusRow("Status", "%s", "Launch: raising to its slot, or retiring");
         else
@@ -2521,7 +2534,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                   // model) is gone from the UI; the harness keeps kind=asat for testing.
                                   const char *tip = viewTransient ? "Only a satellite or a piece of debris can be broken up"
                                                                   : "Break it up (NASA breakup model): its debris starts the Kessler cascade";
-                                  if (uiDangerButton(inp, ui, "InfoBreakBtn", 0, "Explode", tip, false, !viewTransient, true))
+                                  if (uiDangerButton(inp, ui, "InfoBreakBtn", 0, "Explode", tip, false, !viewTransient && infoFate < 2, true))
                                       infoExplodeSelected(kessler::EV_EXPLOSION); });
                 }
                 // ── The sections: only these scroll ──────────────────────────────────────────────
@@ -2952,6 +2965,10 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
     if (!followActive)
     {
         // After leaving Go to: a chip to follow the last object again (30 s; the key works for the session).
+        // (2026-10-20, QA: after a milestone or launch jump a day on, the chip still offered "Go to Starship booster
+        // (landing burn), T+423 s, 1 km up ... again" for a booster long since caught: dropped on a sim jump.)
+        if (std::abs((double)simDayJ2000 * 86400.0 + simSecInDay - followAgainSimT) > 600.0)
+            followAgainUntil = 0.0;
         if (followAgainUntil <= glfwGetTime() || cineActive() || showIntro || (followLastIdx < 0 && !followLastIsTr))
             return;
         static char againBuf[200], againTip[96];

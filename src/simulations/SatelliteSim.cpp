@@ -4153,6 +4153,26 @@ void SatelliteSim::updateViewerObserverInfo()
     }
     if (std::isfinite(r.magnitude1000))
         snprintf(viewerPhotValue[3], sizeof(viewerPhotValue[3]), "%.2f", r.magnitude1000);
+    // A burning rocket stage (2026-10-20, QA: the Info window read "Dark" for a Super Heavy at T+10 s at night, its
+    // model in the Earth's shadow): its brightness is its flame's. The drawn flare is the camera's (1 / r^2 from the
+    // eye, its path's extinction); carried to the ground observer, with that observer's extinction.
+    if (selIsTransient() && viewerSatIndex == selectedSatIndex && selTransientCur.burn != 0 && selTransientCur.flare > 0.0f)
+    {
+        const double rCam = std::max(glm::length(selTransientCur.pos - glm::dvec3(obsECI)), 1.0);
+        const double fObs = (double)selTransientCur.flare * (rCam / std::max(range, 1.0)) * (rCam / std::max(range, 1.0));
+        const double mAir = 6.0 - 2.5 * std::log10(std::max(fObs, 1e-30) / 0.008);
+        snprintf(viewerPhotValue[1], sizeof(viewerPhotValue[1]), "%.2f (flame)", mAir);
+        snprintf(viewerPhotValue[3], sizeof(viewerPhotValue[3]), "%.2f", mAir + 5.0 * std::log10(1.0e6 / std::max(range, 1.0)));
+        if (!hidden)
+        {
+            const double ext = atmExtinctionMag(obs, d, range, (double)extinctionCoeff);
+            snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "%.2f", mAir + ext);
+            snprintf(viewerPhotValue[2], sizeof(viewerPhotValue[2]), "%.2f mag", ext);
+        }
+        else
+            snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "Below horizon");
+        return;
+    }
     if (!std::isfinite(r.magnitude))
     {
         snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "In Earth's shadow");
@@ -5521,6 +5541,7 @@ void SatelliteSim::stopFollow(bool fly)
     }
     followRemember();
     followAgainUntil = glfwGetTime() + 30.0;
+    followAgainSimT = (double)simDayJ2000 * 86400.0 + simSecInDay;
     followFlight = 0;
     followFlightRel = false;
     followActive = false;
@@ -5543,6 +5564,7 @@ void SatelliteSim::stopFollowHere(const char *why)
         return;
     followRemember();
     followAgainUntil = glfwGetTime() + 30.0;
+    followAgainSimT = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const glm::dvec3 eye = followObsEcef;
     const double r = glm::length(eye);
     followFlight = 0;

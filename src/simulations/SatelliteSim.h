@@ -2519,6 +2519,7 @@ private:
     uint16_t   followLastM = 0;
     uint32_t   followLastPoolGen = 0;
     char       followLastLabel[128] = {};
+    double     followAgainSimT = 0.0;     // the sim time it was left (a jump of more than 10 min drops the chip: its label is stale)
     double     followAgainUntil = 0.0;    // the "Go to <last> again" chip shows until this glfwGetTime() after leaving
     void followRemember();                // store the current follow target as the last one
     bool followReturn(std::string *msg = nullptr);
