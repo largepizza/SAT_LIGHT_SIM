@@ -4664,7 +4664,10 @@ bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when, const std::str
     const LBatch *B = nullptr;
     for (const auto &kv : L.batches)
         if (kv.second.valid && std::abs(kv.second.tL - t0) < 1.0)
+        {
             B = &kv.second;
+            launchFocusKey = kv.first;
+        }
     if (!B)
     {
         msg = "launch not found";
@@ -5666,6 +5669,7 @@ bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::str
                       (float)glm::degrees(std::asin(glm::clamp(glm::dot(rn, up), -1.0, 1.0))));
         camera.fovYDeg = 60.0f;
         updatePositions(tS);
+        launchFocusKey = bkey;
         if (ev >= 2)
             launchWantSelKey = (bkey << 3) ^ 2ull; // its upper stage, selected once listed (selTransientUpdate)
         char b[240];
@@ -6691,12 +6695,63 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
     return b;
 }
 
+bool SatelliteSim::launchFocusListed() const
+{
+    // A list made before the jump (another time) does not count: its stages carry the old T-.
+    if (std::fabs(selTransientsT - ((double)simDayJ2000 * 86400.0 + simSecInDay)) > 1.0)
+        return false;
+    for (const SelTransient &s : selTransients)
+        if (s.kind == 1 && s.a == launchFocusKey && launchFocusKey != 0)
+            return true;
+    return false;
+}
+
 bool SatelliteSim::selectTransient(int kind, std::string &msg, int stage, bool nearest)
 {
     const SelTransient *best = nullptr;
     const glm::dvec3 eye(obsECI);
+    // Rockets (2026-10-20): the launch the last jump framed (`launch next`, `launch deploy`, a Missions row's Go) comes
+    // first, drawn or not (on the pad before lift-off its stack is not drawn). Without a stage, the stage that flies on:
+    // the stack / booster until staging, then the upper stage while it burns or is drawn, else the brighter.
+    if (kind == 1 && launchFocusKey != 0)
+    {
+        for (const SelTransient &s : selTransients)
+        {
+            if (s.kind != 1 || s.a != launchFocusKey || !(stage < 0 || s.stage == stage) || !(s.type >= 0 || s.flare > 0.0f))
+                continue;
+            if (!best)
+            {
+                best = &s;
+                continue;
+            }
+            if (stage < 0)
+            {
+                // Prefer the upper stage once it exists (it is listed only after staging), unless the booster is the
+                // one drawn and the upper stage is not.
+                const bool sUp = s.stage == 1, bUp = best->stage == 1;
+                if (sUp != bUp)
+                {
+                    const SelTransient &up = sUp ? s : *best, &lo = sUp ? *best : s;
+                    best = (up.flare > 0.0f || up.burn != 0 || lo.flare <= 0.0f) ? &up : &lo;
+                }
+            }
+        }
+    }
+    // Otherwise: never a booster standing on its pad or a ship after its flight (with nearest=1 another launch's landed
+    // booster beside the eye won over the one about to fly). Landed = over its stage time, < 2 km up, < 20 m/s over
+    // the ground, engines off.
+    auto landed = [&](const SelTransient &s) {
+        if (s.kind != 1 || s.tau < 60.0 || s.burn != 0 || glm::length(s.pos) - kR > 2000.0)
+            return false;
+        const glm::dvec3 vg = s.vel - glm::cross(glm::dvec3(0.0, 0.0, satphot::kOmegaEarth), s.pos);
+        return glm::length(vg) < 20.0;
+    };
     for (const SelTransient &s : selTransients)
     {
+        if (best && kind == 1 && launchFocusKey != 0 && best->a == launchFocusKey)
+            break;
+        if (kind == 1 && landed(s))
+            continue;
         // nearest (2026-10-20, harness `launch select ... nearest=1`): any listed one with a model, drawn or not.
         const bool ok = nearest ? (s.type >= 0 || s.flare > 0.0f) : s.flare > 0.0f;
         if (!ok || !(kind == 0 || s.kind == kind) || !(stage < 0 || s.stage == stage))
@@ -6838,6 +6893,7 @@ bool SatelliteSim::launchGoToKey(uint64_t key, bool moveObserver, double leadS, 
     }
     if (!L.planesBuilt)
         LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    launchFocusKey = key;
     auto it = L.batches.find(key);
     if (it == L.batches.end())
     {
@@ -7598,6 +7654,7 @@ bool SatelliteSim::launchGoToLanding(int which, double leadS, double distM, std:
         {
             bestT = tc;
             best = &B;
+            launchFocusKey = m.key;
         }
     }
     if (!best)
@@ -7971,6 +8028,7 @@ bool SatelliteSim::launchGoToShipLanding(double leadS, double distM, double azDe
         }
         bestT = B.tLand;
         best = &B;
+        launchFocusKey = m.key;
     }
     if (!best)
     {
