@@ -65,7 +65,7 @@ code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
 `imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
-validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_icons.py` (regenerates the
+validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
 offline synth renders) · `tools/benchmarks/` ·
@@ -3346,6 +3346,35 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     lat / lon only (the observer's height has never been persisted: a relaunch lands on the ground below). "Exit"
     still flies home. Measured: ISS followed and left paused, the ISS stays within 0.4 px of the screen centre (the
     float `obsDir`), the altitude within 2 m.
+  - **Floor, Return, Go to -> Go to (2026-10-20, issues 20261019_223321 / _223437 / _223726):**
+    - **The camera never goes underground** (`followFloorM`, end of `updateFollow`): floor = max(the CPU DEM at the
+      camera, the GPU ground under last frame's eye `terrainFrameMapped[1]` eased 0.2 s as `followGpuFloorM`, only
+      within 20 km of it, 0 = the sea) + 3 m. A camera under it is pushed out radially and, while riding, the offset is
+      rewritten from the result (it slides on the ground). The report: a Starship stack at T+73 s with the offset
+      -20 km along / -18 km radial, the camera 3.9 km under Louisiana.
+    - **A flight in the object's frame** (`followFlightRel`, `followFlightRelA/B`, TNR): the direction slerps
+      (opposite sides go over the radial axis) and the distance changes geometrically. Used by (a) `startFollow` from
+      another follow (`fromFollow`): the start is the camera NOW (`followObsEcef - followLastP` + the old object at this
+      frame's time, `followTargetEcef`; `followObsEcef` alone is an update behind: ~120 m at 1x, km in warp) and B is
+      A's direction at the follow distance; it was the observer's line-of-sight flight, whose start distance along that
+      line clamped at 1 m whenever the camera was on the far side, so the camera dove through the new satellite
+      (train members 120 m apart). Falls back to the arc / line when the Earth is in the way (> 50 km). (b) **Return**.
+    - **Return** (`followReturn`, HUD "Return", `KB_FOLLOW_RETURN` H "Go To: Return", harness `follow return`):
+      following, fly to the default offset (-4r, 0, 1.5r); on the way home, turn back. Not following: follow the LAST
+      object again (`followRemember` in startFollow / stopFollow / stopFollowHere: index + launch owner/member + pool
+      generation, or the transient continued to now by `transientContinue`); a "Go to <name> again" chip
+      (`FollowAgainBtn`) shows 30 s after leaving. `state` -> `observer.follow_last`, `observer.follow.camera_asl_m /
+      dist_to_target_m / flight_rel`.
+  - **Selecting by name, not by brightness (2026-10-20, issue 20261019_224758).** Picking in the sky is the GPU's
+    visible list (above the horizon, effectFlare past the point style's limit: `sat_flare.comp` writes zero records
+    for the rest, which no click can find) — that stays. Everything NAMED goes by index or key: `selectSatellite(idx)`
+    never needed the list (roster, train members, retirees, pool pieces; the panel shows the off-screen chip), but
+    rockets are transients listed only by the code that draws them (within 4000 km, or already selected), so Missions'
+    rocket Select was greyed "Not drawn from here". Now `launchRocketTransient(key, t)` builds the stack / upper stage /
+    ship from the launch model, `launchSelectRocketOf` uses it when the list lacks the rocket, and `selTransientUpdate`
+    keeps a selected rocket the list misses (transientContinue places it) instead of dropping it after 2 s. Missions
+    Ongoing rows: Select always, plus Go to on rockets, trains (nearest member) and retirees (`missionsOngoingAct`,
+    harness `missions ongoing <row> [go=1]`).
   - **Follow ends gracefully** (`followCheckTarget` before `updateFollow`, `followTransientUpdate` after the frame's
     transient list): a followed object that ends hands over to what continues it, the camera easing across the jump
     (`followHandD`, ECEF, decays with a 0.6-s time constant) — a raising train member to its roster slot at
@@ -3378,7 +3407,8 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   below the Earth's limb), `starlink_v2_mini_dtc` (+ a 25 m2 nadir phased array) and `starlink_v3`,
   then `oneweb`, `amazon_leo`, `guowang`, seven commercial stations (`haven1`, `haven2`,
   `axiom_station`, `orbital_reef`, `ross`, `bharatiya_station`, `starlab` - low confidence, render-level
-  sizes) and `debris_fragment` (tumbling) - the parity models; sources and estimates in each file,
+  sizes; since the 2026-10-20 art pass GENERATED by `tools/make_station_models.py`, see "Station models" below)
+  and `debris_fragment` (tumbling) - the parity models; sources and estimates in each file,
   magnitudes in `KNOWN_RESIDUALS.md`. Presets added for them: `stainless_steel`,
   `dielectric_mirror_gen1/_gen2` (Beckmann: GGX's tail made the film forward-scatter grazing sunlight),
   `array_backsheet_dark` - and the M4 benchmark references `starlink_v1_0.json`
@@ -3388,6 +3418,28 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   McDowell's size table; roster: the primary `data/constellations.json` (the working set). The visor's
   real shape is unpublished (derived from Cole's 23 deg full-shade constraint), and the visor only
   dims anything through occlusion — so the VisorSat differential needs Phase 3b.
+- **Station models (art pass 2026-10-20, issue 20261019_225545, `tools/make_station_models.py`).** The seven
+  future stations are written by the generator (edit it, never the JSON); it also appends render-only `gb_*`
+  detail to the hand-made `iss.json` / `tiangong.json` (re-running replaces the old `gb_*` parts and their
+  material source entry, so it is idempotent). Layouts from the operators' concept art and published figures
+  (cited per model): Haven-1 (cone-nosed 10.1 m hull, aft wings on yokes, a docked Dragon), Haven-2 (a 7 m core
+  standing nadir-zenith, four 16 m modules docked radially in a horizontal cross, a wing pair per module, four
+  radiator fins on the core), Axiom (11 m modules with a curved body-mounted array over the zenith half: a
+  profile `arc_material`, PPTM with ISS-style Kapton wings, edge-on radiators, the glass Earth Observatory), Orbital
+  Reef (7 x 28 m core, two LIFE inflatables off its sides, an aft truss of four 10 x 13 m wings, forward
+  radiators), ROS (the Dec 2025 plan: Nauka + UUM + NEM + ShM + base module + two target modules), BAS (BAS-01/02/05
+  in line, 03/04 on BAS-05's side ports, all 3.8 m) and Starlab (8 m domed metal habitat, four wings in a 45-deg
+  cross on the service module, each turning about its own long axis: two diagonal-axis groups). Rules it keeps:
+  (1) **every wing turns about its OWN long axis** (`arrays_y` / `arrays_x` / diagonal groups, per-component
+  pivots on the axis), and a render-only yoke / mast joins it to its module (the old models' wings floated);
+  (2) **photometric hulls are split into one profile per meridian segment** (`Station.hull`): a whole domed
+  profile's occluder is the frustum through its two END radii (a cone for a LIFE habitat) and the occlusion
+  self-test failed (Orbital Reef p95 0.30 vs the 0.25 gate); (3) detail (ports, rings, dishes, windows, RCS
+  pods, bands, arms, visiting Dragon / Soyuz / Shenzhou / Tianzhou) is render-only and kept to a few dozen parts.
+  Render-mesh triangles before -> after: ISS 5304 -> 8296 (+48 parts: SAW masts and blanket boxes, PMA-2 + Dragon,
+  Soyuz, Progress, Canadarm2, ELCs, AMS, Ku dish, cupola glass, bands), Tiangong 2920 -> 4864 (wing masts, Shenzhou,
+  Tianzhou, arm, radiators), Haven-1 200 -> 1996, Haven-2 584 -> 4880, Axiom 968 -> 4080, Orbital Reef 584 ->
+  5804, ROS 584 -> 5292, BAS 584 -> 2392, Starlab 392 -> 4216. m1000 in KNOWN_RESIDUALS.md.
 - **Occlusion between parts (Phase 3b / benchmarking M7).**
   `buildSatOcclusion()` makes one occluder per component (plane, box, capped cylinder — a cone uses
   its larger radius, conservative — sphere; `kMaxOccluders` 64, a 64-bit mask per lobe) and

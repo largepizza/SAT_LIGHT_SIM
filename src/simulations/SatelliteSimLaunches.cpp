@@ -4259,7 +4259,14 @@ void SatelliteSim::selTransientUpdate()
         // show it (as Go to does: followWantUntil), or the selection and the Info window were dropped at the handover.
         SelTransient cw = selTransientCur;
         uint8_t wantFb = 0;
-        transientContinue(cw, t, wantFb);
+        if (transientContinue(cw, t, wantFb))
+        {
+            // (2026-10-20) A rocket or the ship the list does not hold this frame (not drawn, out of the list's reach,
+            // its visuals skipped): the launch model places it, so the selection stays, by its batch key.
+            selTransientTake(cw);
+            formatSelectedSatInfo();
+            return;
+        }
         if (std::abs(t - selTransientSeenT) > transientGraceS() + (wantFb ? 5.0 : 0.0))
         {
             stopTrack();
@@ -4383,6 +4390,19 @@ bool SatelliteSim::transientContinue(SelTransient &cur, double t, uint8_t &wantK
         auto ti = rocketTypes.find("rocket_" + vh.id + part);
         return ti != rocketTypes.end() ? ti->second : -1;
     };
+    // Time running backwards (or a jump back, 2026-10-20): the ship's entry before it began is its upper stage, an
+    // upper stage before staging is the stack again (a selection taken from a list made at a later time came out as
+    // "upper stage" at T+74 s, placed on the stack's track).
+    if (cur.kind == 2 && t < B.tStageGone)
+        cur.kind = 1;
+    if (cur.kind == 1 && cur.stage == 1 && t - B.tL < vh.t1)
+    {
+        cur.stage = 0;
+        cur.key = (cur.a << 3) ^ 1ull;
+        cur.type = typeOf("_stack");
+        cur.tau = t - B.tL;
+        return transientExactState(cur, t);
+    }
     // The stack separates: its upper stage carries on (the booster is another object).
     if (cur.kind == 1 && cur.stage == 0 && cur.tau < vh.t1 && t - B.tL >= vh.t1)
     {
@@ -5322,16 +5342,62 @@ std::vector<SatelliteSim::CrewStation> SatelliteSim::launchCrewStations()
     return out;
 }
 
+bool SatelliteSim::launchRocketTransient(uint64_t key, double t, SelTransient &out) const
+{
+    if (!launchState)
+        return false;
+    const LaunchState &L = *launchState;
+    auto it = L.batches.find(key);
+    if (it == L.batches.end() || it->second.veh < 0)
+        return false;
+    const LBatch &B = it->second;
+    const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+    const double tau = t - B.tL;
+    // The payload's vehicle: the stack before staging, the upper stage after (its ship entry, its landing).
+    SelTransient c;
+    c.kind = 1;
+    c.a = key;
+    c.stage = tau < vh.t1 ? 0 : 1;
+    c.tau = std::min(tau, vh.t1 - 1e-3); // transientContinue moves a stack past staging itself
+    c.key = (key << 3) ^ (uint64_t)(c.stage + 1);
+    auto ti = rocketTypes.find("rocket_" + vh.id + (c.stage == 1 ? "_upper" : "_stack"));
+    c.type = ti != rocketTypes.end() ? ti->second : -1;
+    uint8_t want = 0;
+    if (!transientContinue(c, t, want))
+        return false;
+    if (c.kind == 1)
+    {
+        glm::dvec3 ax = LaunchImpl::stageNose(L, B, c.stage, c.tau);
+        c.axis = glm::length(ax) > 0.5 ? ax : glm::normalize(c.pos);
+    }
+    const glm::dvec3 rel = c.pos - glm::dvec3(obsECI);
+    const double d = glm::length(rel);
+    if (d > 1.0)
+        c.dirEnu = glm::vec3(glm::dot(rel, glm::dvec3(eci2enuX)) / d, glm::dot(rel, glm::dvec3(eci2enuY)) / d,
+                             glm::dot(rel, glm::dvec3(eci2enuZ)) / d);
+    c.flare = 0.0f;
+    out = c;
+    return true;
+}
+
 bool SatelliteSim::launchSelectRocketOf(uint64_t key, std::string &msg)
 {
     const SelTransient *best = nullptr;
     for (const SelTransient &s : selTransients)
-        if (s.kind == 1 && s.a == key && s.flare > 0.0f && (!best || s.stage > best->stage))
+        if ((s.kind == 1 || s.kind == 2) && s.a == key && (!best || s.stage > best->stage))
             best = &s; // the upper stage (the payload's) once it flies alone
+    // (2026-10-20, issue 20261019_224758) Drawn or not: the list holds rockets within 4000 km only (and the selected one
+    // at any range); beyond, the launch model places it. It was "not drawn from here" whenever the head was not drawn.
+    SelTransient made;
     if (!best)
     {
-        msg = "not drawn from here (below the horizon or too faint)";
-        return false;
+        const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        if (!launchRocketTransient(key, selTransientsT > 0.0 ? selTransientsT : tNow, made))
+        {
+            msg = "that rocket is not flying now";
+            return false;
+        }
+        best = &made;
     }
     selTransientTake(*best);
     selectedPlanetIndex = -1;
