@@ -3920,6 +3920,7 @@ nlohmann::json SatelliteSim::launchStateJson() const
                               {"ground", tail[i].col.y < 0.5f}});
         }
         j["engine_light_gain"] = engineLightGain;
+        j["engine_light_adapt"] = engineAdaptEased; // the eye's adaptation to the lights at night (1 = none)
         j["engine_lights"] = el;
     }
     if (!launchState)
@@ -6987,6 +6988,32 @@ void SatelliteSim::engineLightsFlush()
     {
         engineLights_.clear();
         return;
+    }
+    // The eye adapts to the lights (2026-10-20, QA: following a Starship 310 m off at night the whole view was a
+    // saturated orange-white haze). At night every light is lifted by the moonlight's own lift (~2600x), which is
+    // right while the eye is adapted to moonlight; 300 m from a Super Heavy it stands in ~260 full Moons of the
+    // flame's light, so its lit exhaust, haze and cloud read hundreds of times past white. The lift is scaled by
+    // (1 + R / 2)^-0.75, R = the illuminance at the eye from all the lights in full Moons (the same moonGain
+    // reference), eased (adapting to light in ~0.3 s, back to the dark in ~2 s). Only the night's lift adapts: by
+    // day the lights are physical. From 2.5 km of a lift-off (~6 full Moons) x0.5; from 10 km and orbit ~1.
+    {
+        const double dayness = glm::clamp(((double)sunDirENU.w + 0.1) / 0.3, 0.0, 1.0);
+        double R = 0.0;
+        for (const GpuDustCloud &d : engineLights_)
+            R += (double)d.c.w / (glm::dot(glm::vec3(d.c), glm::vec3(d.c)) + (double)d.ia.w * (double)d.ia.w + 1.0);
+        R /= std::max((double)moonGain, 1e-9);
+        const double aT = glm::mix(1.0, std::pow(1.0 + R / 2.0, -0.75), 1.0 - dayness);
+        const double dt = glm::clamp((double)skyTaaFrameDt, 0.0, 0.5);
+        const double rate = aT < engineAdaptEased ? 3.0 : 0.5;
+        engineAdaptEased = (float)glm::mix((double)engineAdaptEased, aT, 1.0 - std::exp(-dt * rate));
+        if (!(engineAdaptEased > 0.0f) || engineAdaptEased > 1.0f)
+            engineAdaptEased = (float)aT;
+        const float a = engineAdaptEased;
+        for (GpuDustCloud &d : engineLights_)
+        {
+            d.c.w *= a;
+            d.col.z *= std::sqrt(a); // the reach goes as sqrt(I)
+        }
     }
     if (engineLights_.size() > kMaxEngineLights)
         std::partial_sort(engineLights_.begin(), engineLights_.begin() + kMaxEngineLights, engineLights_.end(),
