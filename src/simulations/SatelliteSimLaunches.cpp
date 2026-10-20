@@ -24,6 +24,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 
 namespace launchsim
@@ -3572,6 +3573,19 @@ static std::string fmtUtc(double tJ2000)
     return b;
 }
 
+// "2036-11-22 03:39 UTC" (the mission timeline's rows and facts).
+std::string fmtUtcReadable(double tJ2000)
+{
+    const time_t unixSim = (time_t)std::floor(tJ2000) + 946728000;
+    const struct tm *u = gmtime(&unixSim);
+    char b[48];
+    if (!u)
+        return "--";
+    snprintf(b, sizeof(b), "%04d-%02d-%02d %02d:%02d:%02d UTC", u->tm_year + 1900, u->tm_mon + 1, u->tm_mday, u->tm_hour,
+             u->tm_min, u->tm_sec);
+    return b;
+}
+
 // Every launch with lift-off in [now, now + hours] (builds the batches it needs).
 nlohmann::json SatelliteSim::launchListJson(double hours) const
 {
@@ -6627,14 +6641,15 @@ void SatelliteSim::missionFinish(MissionSubject &s, double now)
     LaunchState &L = *launchState;
     LBatch *B = missionBatch(s.key);
     s.ms.clear();
-    if (!B || !B->valid)
+    if ((!B || !B->valid) && !s.roster)
     {
         s.ok = false;
         return;
     }
     std::vector<MissionMilestone> all;
-    missionBatchMilestones(*B, all);
-    const bool member = s.member >= 0 && (size_t)s.member < B->mem.size();
+    if (B && B->valid)
+        missionBatchMilestones(*B, all);
+    const bool member = B && B->valid && s.member >= 0 && (size_t)s.member < B->mem.size();
     for (const MissionMilestone &m : all)
     {
         if (!(m.who & s.role))
@@ -6786,15 +6801,15 @@ void SatelliteSim::missionFacts(MissionSubject &s, int idx, double t)
             s.facts.push_back({"Raising", b});
         }
         if (s.role == kMsTrain && t < B->tA)
-            s.facts.push_back({"Arrives", inStr(B->tA - t) + " (" + fmtUtc(B->tA) + ")"});
+            s.facts.push_back({"Arrives", inStr(B->tA - t) + " (" + fmtUtcReadable(B->tA) + ")"});
         if (s.role == kMsRetiree && t < mb.tEnd)
-            s.facts.push_back({"Re-enters", inStr(mb.tEnd - t) + " (" + fmtUtc(mb.tEnd) + ")"});
+            s.facts.push_back({"Re-enters", inStr(mb.tEnd - t) + " (" + fmtUtcReadable(mb.tEnd) + ")"});
     }
     if (s.roster)
     {
         if (LBatch *Bp = missionBatch(s.keyPrev); Bp && Bp->valid)
         {
-            s.facts.push_back({"In its slot", "since " + fmtUtc(Bp->tA) + " (" + inStr(Bp->tA - t) + ")"});
+            s.facts.push_back({"In its slot", "since " + fmtUtcReadable(Bp->tA) + " (" + inStr(Bp->tA - t) + ")"});
             const launch::Program &pg = L.cat.programs[Bp->prog];
             const double life = progLifeS(pg, (double)launchLifeScale);
             char b[96];
@@ -6802,7 +6817,7 @@ void SatelliteSim::missionFacts(MissionSubject &s, int idx, double t)
             s.facts.push_back({"Design life", b});
         }
         if (B && B->valid)
-            s.facts.push_back({"Replaced", inStr(B->tA - t) + " (" + fmtUtc(B->tA) + ")"});
+            s.facts.push_back({"Replaced", inStr(B->tA - t) + " (" + fmtUtcReadable(B->tA) + ")"});
     }
 }
 
@@ -7170,7 +7185,7 @@ nlohmann::json SatelliteSim::missionSubjectJson(const MissionSubject &s) const
     j["current"] = s.cur;
     nlohmann::json ms = nlohmann::json::array();
     for (size_t i = 0; i < s.ms.size(); ++i)
-        ms.push_back({{"i", i}, {"label", s.ms[i].label}, {"utc", fmtUtc(s.ms[i].t)}, {"in_s", s.ms[i].t - now},
+        ms.push_back({{"i", i}, {"label", s.ms[i].label}, {"utc", fmtUtcReadable(s.ms[i].t)}, {"in_s", s.ms[i].t - now},
                       {"lead_s", s.ms[i].lead}, {"who", s.ms[i].who}});
     j["milestones"] = ms;
     nlohmann::json f = nlohmann::json::array();

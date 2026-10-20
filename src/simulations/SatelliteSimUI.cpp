@@ -27,6 +27,7 @@
 #include <string>
 
 void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate); // SatelliteSim.cpp: "HH:MM:SS" UTC
+std::string fmtUtcReadable(double tJ2000);                              // SatelliteSimLaunches.cpp: "2036-11-22 03:39:52 UTC"
 
 // Icon index constants (match order passed to ui.loadIcons in buildUI's lazy-load block).
 static constexpr int kIconAngleLeft = 0;  // pixel--angle-left.png  → slow down
@@ -2726,8 +2727,8 @@ void SatelliteSim::buildMissionTimeline(const UIInput &inp, UIRenderer &ui, cons
                     snprintf(rel, sizeof(rel), "%s%lldm %02llds%s", pre, a / 60, a % 60, post);
                 else
                     snprintf(rel, sizeof(rel), "%s%llds%s", pre, a, post);
-                formatSimClock(m.t, utc, sizeof(utc), true);
-                CLAY_TEXT(clayStr(str("%s   %s UTC", rel, utc)),
+                snprintf(utc, sizeof(utc), "%s", fmtUtcReadable(m.t).c_str());
+                CLAY_TEXT(clayStr(str("%s   %s", rel, utc)),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
             }
             if (uiButton(inp, ui, "InfoMsGo", (int)i, past ? "Back" : "Skip",

@@ -3055,13 +3055,15 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 {"right", GLFW_KEY_RIGHT}, {"home", GLFW_KEY_HOME}, {"end", GLFW_KEY_END}, {"w", GLFW_KEY_W},
                 {"up", GLFW_KEY_UP}, {"down", GLFW_KEY_DOWN},
                 // the screenshot / report keys (2026-10-19): f7 new issue shot, f9 shot, f10 screenshot with UI, f12 screenshot
-                {"f7", GLFW_KEY_F7}, {"f8", GLFW_KEY_F8}, {"f9", GLFW_KEY_F9}, {"f10", GLFW_KEY_F10}, {"f12", GLFW_KEY_F12}};
+                {"f7", GLFW_KEY_F7}, {"f8", GLFW_KEY_F8}, {"f9", GLFW_KEY_F9}, {"f10", GLFW_KEY_F10}, {"f12", GLFW_KEY_F12},
+                // the mission milestone keys (2026-10-20)
+                {"]", GLFW_KEY_RIGHT_BRACKET}, {"[", GLFW_KEY_LEFT_BRACKET}};
             int code = -1;
             for (const auto &e : keys)
                 if (k == e.first)
                     code = e.second;
             if (code < 0)
-                fail("ui key: enter | esc | tab | backspace | delete | left | right | up | down | home | end | w | f7 | f8 | f9 | f10 | f12");
+                fail("ui key: enter | esc | tab | backspace | delete | left | right | up | down | home | end | w | f7 | f8 | f9 | f10 | f12 | ] | [");
             onKey(win, code, GLFW_PRESS);
             onKey(win, code, GLFW_RELEASE);
             r["text_focus"] = textEdit_.id != 0;
