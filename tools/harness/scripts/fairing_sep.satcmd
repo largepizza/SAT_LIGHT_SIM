@@ -108,8 +108,50 @@ follow aimat=31,0,60
 wait settle
 capture sm_door_242
 state sm_door_242
+# ... the next one out of the door, side on (flat across the ship, 2.1 m thick along it)
+time add 31
+wait 3
+follow offset=46,-14,9
+follow aimat=31,0,5
+wait settle
+capture sm_side_03
+time add 4
+wait 3
+follow aimat=31,0,7
+wait settle
+capture sm_side_07
+time add 6
+wait 3
+follow aimat=31,0,11
+wait settle
+capture sm_side_13
+# The first one, unfolding ~10 min after its release: the bus halves, then the radiators, then the wings
+time add 380
+wait 60
+launch select kind=train member=0
+follow offset=-30,45,25
+follow aim=sat
+wait settle
+capture sm_unfold_640
+time add 90
+wait 3
+follow aim=sat
+wait settle
+capture sm_unfold_730
+time add 120
+wait 3
+follow offset=-60,90,50
+follow aim=sat
+wait settle
+capture sm_unfold_850
+time add 300
+wait 3
+follow offset=-80,120,60
+follow aim=sat
+wait settle
+capture sm_unfold_1150
 # 4. Starlink V1.5 on Falcon 9: the flat-pack stack (two side by side, 24 high) on the bare stage, released top first
-launch deploy filter=Gen1
+launch deploy filter=Gen1 min_members=30
 wait 5
 follow offset=10,11,5
 follow aimat=17,0,0
@@ -143,3 +185,31 @@ follow offset=12,13,6
 follow aimat=19,0,0
 wait settle
 capture qf_release_10
+# 6. Guowang satellites unfolding after release: the wing packs swing out, then the panels unfold
+launch deploy filter=Guowang
+wait 5
+follow offset=-20,30,10
+time add 320
+wait 60
+launch select kind=train member=0
+follow offset=-12,16,8
+follow aim=sat
+time pause
+wait settle
+capture gw_unfold_310
+time add 120
+wait 3
+follow aim=sat
+wait settle
+capture gw_unfold_430
+time add 240
+wait 3
+follow offset=-16,22,10
+follow aim=sat
+wait settle
+capture gw_unfold_670
+time add 300
+wait 3
+follow aim=sat
+wait settle
+capture gw_unfold_970

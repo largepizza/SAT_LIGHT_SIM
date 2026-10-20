@@ -306,6 +306,7 @@ struct SatelliteSim::LaunchState
     uint32_t frame = 0;
     bool active = false; // anything up on the GPU
     std::vector<uint64_t> live; // batch keys touched this frame (in a stable order)
+    std::vector<LBatch *> livePtr; // ... and the batches (valid until the next launchUpdate: only it erases batches)
     size_t cursor = 0;
     // The settings section's readouts (refreshed every few seconds).
     double uiListAt = -1e300, uiListSim = -1e300;
@@ -337,6 +338,7 @@ struct SatelliteSim::LaunchState
     std::vector<StackDraw> stackDraws;
     uint64_t stackMeshKey[SatelliteSim::kStackMeshSlots] = {}; // per reserved slot: batch key ^ (member + 1) << 48
     uint32_t nStacked = 0, nFairings = 0;
+    double lastFullFreeT = -1e300; // the last full pass over the batches (launchUpdate's freeing)
 
     const Track &upperTrackFor(int veh, double parkKm)
     {
@@ -392,6 +394,7 @@ void SatelliteSim::launchInitBlock()
     L.clearGpu = true; // whatever the GPU block holds goes (records of the state just dropped)
     L.active = false;
     L.live.clear();
+    L.livePtr.clear();
 }
 
 void SatelliteSim::launchDestroy(VkDevice device)
@@ -2202,7 +2205,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     if (on && !L.planesBuilt)
         LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    std::vector<uint64_t> touched;
+    std::vector<std::pair<uint64_t, LBatch *>> touchedP;
     if (on)
     {
         // Batches that matter now: from before the launch to the last retiree's re-entry.
@@ -2238,12 +2241,21 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                     }
                     it->second.touched = L.frame;
                     if (it->second.valid)
-                        touched.push_back(key);
+                        touchedP.push_back({key, &it->second});
                 }
             }
         }
     }
-    std::sort(touched.begin(), touched.end());
+    // (2026-10-20: the batches by pointer: Starmind's eight-a-launch trains made ~5000 live batches, and the hash
+    // lookups over them each frame cost ~0.5 ms.)
+    std::sort(touchedP.begin(), touchedP.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+    std::vector<uint64_t> touched(touchedP.size());
+    L.livePtr.resize(touchedP.size());
+    for (size_t i = 0; i < touchedP.size(); ++i)
+    {
+        touched[i] = touchedP[i].first;
+        L.livePtr[i] = touchedP[i].second;
+    }
     L.live = touched;
     L.nBatches = (uint32_t)touched.size();
     // GPU chunks: a batch holds the train's while any member climbs, the retirees' while any falls.
@@ -2288,8 +2300,30 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         }
         ch.clear();
     };
-    // Free what no longer matters (a batch out of the window, retirees all down, launches off).
-    for (auto it = L.batches.begin(); it != L.batches.end();)
+    // Free what no longer matters (a batch out of the window, retirees all down, launches off). The whole map every 8th
+    // frame (and after a jump), else only the live batches (2026-10-20: ~6000 batches a frame cost ~0.3 ms).
+    auto freeBatch = [&](LBatch &B) {
+        for (int kind = 0; kind < 2; ++kind)
+        {
+            if (B.chunks[kind].empty())
+                continue;
+            const bool need = on && B.touched == L.frame && B.valid &&
+                              (kind == 0 ? (t >= B.tD && t < B.tA) : (t >= B.tA && t < B.tA + 400.0 * kDay));
+            if (!need && nStage + kChunk * (uint32_t)B.chunks[kind].size() <= LaunchState::kStageRecs)
+            {
+                releaseChunks(B.chunks[kind]);
+                B.tw[kind] = -1e300;
+                B.nUp[kind] = 0;
+            }
+        }
+    };
+    const bool fullFree = (L.frame % 8u) == 0u || !on || std::abs(t - L.lastFullFreeT) > 600.0;
+    if (fullFree)
+        L.lastFullFreeT = t;
+    else
+        for (LBatch *pb : L.livePtr)
+            freeBatch(*pb);
+    for (auto it = fullFree ? L.batches.begin() : L.batches.end(); it != L.batches.end();)
     {
         LBatch &B = it->second;
         for (int kind = 0; kind < 2; ++kind)
@@ -2351,7 +2385,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         for (size_t q = 0; q < nb; ++q)
         {
             const size_t bi = (L.cursor + q) % nb;
-            LBatch &B = L.batches[touched[bi]];
+            LBatch &B = *L.livePtr[bi];
             for (int kind = 0; kind < 2; ++kind)
             {
                 const bool phase = kind == 0 ? (t >= B.tD && t < B.tA) : (t >= B.tA && t < B.tA + 400.0 * kDay);
@@ -2642,12 +2676,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     const double pixA = ctx_ ? 2.0 * std::tan(0.5 * glm::radians((double)camera.fovYDeg)) /
                                    (double)std::max(1u, ctx_->swapExtent.height)
                              : 1e-3;
-    for (uint64_t key : L.live)
+    for (size_t li = 0; li < L.live.size() && li < L.livePtr.size(); ++li)
     {
-        auto bit = L.batches.find(key);
-        if (bit == L.batches.end())
-            continue;
-        LBatch &B = bit->second;
+        const uint64_t key = L.live[li];
+        LBatch &B = *L.livePtr[li];
         const launch::Vehicle &vh = L.cat.vehicles[B.veh];
         // Retirees re-entering: their fireballs.
         bool anyRe = false;
@@ -4408,7 +4440,7 @@ bool SatelliteSim::launchGoToVent(std::string &msg) { return launchGoToStageEven
 bool SatelliteSim::launchGoToShipEntry(std::string &msg) { return launchGoToStageEvent(msg, 1); }
 
 // ev 0: a stage venting (sunlit, over a dark ground); 1: a returning stage's re-entry glow (over a dark ground).
-bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::string &filter)
+bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::string &filter, int minMembers)
 {
     if (!launchState)
         return false;
@@ -4427,7 +4459,8 @@ bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::str
                 B = &kv.second;
                 bkey = kv.first;
             }
-        if (!B || (ev == 0 && !B->vents) || (ev == 1 && L.cat.vehicles[B->veh].upperDeorbit) || (ev == 4 && B->tFair < 0.0))
+        if (!B || (ev == 0 && !B->vents) || (ev == 1 && L.cat.vehicles[B->veh].upperDeorbit) || (ev == 4 && B->tFair < 0.0) ||
+            (int)B->mem.size() < minMembers)
             continue;
         if (!filter.empty())
         {

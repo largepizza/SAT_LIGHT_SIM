@@ -2478,7 +2478,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // (2026-10-20) 10 s before its fairing separates, the observer 250 km aside (then `launch select
             // kind=upper` and `follow`).
             std::string msg;
-            if (!launchGoToStageEvent(msg, sub == "deorbit" ? 2 : sub == "deploy" ? 3 : 4, c.str("filter", "")))
+            if (!launchGoToStageEvent(msg, sub == "deorbit" ? 2 : sub == "deploy" ? 3 : 4, c.str("filter", ""),
+                                      (int)c.num("min_members", 0.0)))
                 fail("launch " + sub + ": " + msg);
             r["message"] = msg;
             return Status::Done;

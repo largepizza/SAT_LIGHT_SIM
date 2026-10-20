@@ -142,7 +142,7 @@
      "life_years": 5, "payload": 30, "park_km": 300, "raise_days": [18, 35], "deorbit_days": [20, 80], "batch_gap_days": 2,
      "stack": {"layout": "pez", "pitch_m": 0.71, "member_center": [0.0, 0.0, -0.025]}},
     {"name": "Starlink Gen1", "match": ["Starlink Gen1"], "vehicles": ["falcon9"],
-     "life_years": 5, "payload": 48, "park_km": 290, "raise_days": [20, 40], "deorbit_days": [20, 80], "batch_gap_days": 2,
+     "life_years": 5, "payload": 31, "park_km": 290, "raise_days": [20, 40], "deorbit_days": [20, 80], "batch_gap_days": 2,
      "stack": {"layout": "flat", "per_tier": 2, "side_axis": "x", "pitch_m": 0.28, "offset_m": 0.688, "base_m": 0.6,
                "member_center": [-0.008, 0.0, -0.01], "dispenser": "starlink", "deploy_interval_s": 2, "sep_speed_mps": 0.3, "sep_spread_mps": 0.01}},
     {"name": "Starmind", "match": ["SpaceX Starmind"], "vehicles": ["starship"],

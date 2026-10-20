@@ -2850,7 +2850,7 @@ private:
     bool launchGoToNextReentry(std::string &msg);
     bool launchGoToVent(std::string &msg);
     bool launchGoToShipEntry(std::string &msg);
-    bool launchGoToStageEvent(std::string &msg, int ev, const std::string &filter = "");
+    bool launchGoToStageEvent(std::string &msg, int ev, const std::string &filter = "", int minMembers = 0);
     void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
     void launchDestroy(VkDevice device);
 

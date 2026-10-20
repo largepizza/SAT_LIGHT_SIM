@@ -6714,6 +6714,13 @@ void SatelliteSim::updateSelectedPhotometry()
         return;
     if (!hdr->selectedFound) // not in view: nothing on the GPU side to compare against
         return;
+    {
+        // A satellite just released from its payload stack (launches, 2026-10-20): the CPU poses it in the stack's
+        // attitude, the GPU's point keeps its law — not a parity error.
+        glm::dmat3 Rf;
+        if (satAttOverride(e, pin.tAbs, Rf) > 0.0)
+            return;
+    }
     const double gpu = hdr->selectedRawFlux;
     const double cpu = r.flareUnits * pin.brightnessScale;
     // Below ~magnitude 20 in flare units (0.008 at mag 6) both are noise — see the M1 gate.

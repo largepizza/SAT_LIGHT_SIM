@@ -308,8 +308,6 @@ def starship_ship(b, z0=0.0):
     # (the widest stowed payload, Starlink V3 with its array packs, and the thickest, a folded Starmind).
     b.profile("payload_door", [[z0 + 29.8, r + 0.025], [z0 + 32.4, r + 0.025]], "soot", ro=True)
     b.c[-1]["sweep_deg"] = [43.0, 137.0]
-    b.radial_box("door_frame", 90.0, r, z0 + 32.45, 0.08, 7.0, 0.1, "steel")
-    b.radial_box("door_frame", 90.0, r, z0 + 29.75, 0.08, 7.0, 0.1, "steel")
     # 3 sea-level Raptors in the middle, 3 RVacs outside them, 60 deg apart.
     b.engines("engines", [(3, 1.05)], 0.62, 2.4, z0 - 0.9, phase=30.0)
     b.engines("engines_rvac", [(3, 3.1)], 1.15, 4.4, z0 - 0.5, phase=90.0)

@@ -4334,6 +4334,59 @@ launches follow per-program cadences (no real manifest).
   Joints stay at rest throughout (bit 25). P = 1 (every roster satellite) changes nothing. A paused BACKWARD time jump
   leaves the sky TAA's frozen history (meshes are composited in the sky pass) showing the later pose for a few dozen
   frames: `wait 60` after one in a script.
+- **Payload fairings and stacks** (2026-10-20, issues 20261019_225243 "Guowang birthed out of the launch vehicle,
+  the fairing does not open" and 20261019_223922 "can Starmind actually fit in the Starship?"):
+  - **Fairing separation**: a vehicle with `fairing_sep_km` (launches.json: 110 km, crewed shrouds 85-95) drops its
+    fairing when the upper stage passes it (`LBatch::tFair`, bisected on the upper track). Two halves
+    (`rocket_<v>_fairing.json`: ONE half, profile `sweep_deg` [-90, 90], its origin at its centre; the other is it turned
+    180 deg about the stage's +Z; the centre's place on the stage = launches.json `fairing_center_m`) leave with the
+    stage's velocity + 1.8 m/s outward, tip outward at 9-13 deg/s and fall under gravity and drag (ballistic coefficient
+    60 kg/m^2, air moving with the Earth; `ensureFairing`: RK4 1 s, sampled every 2 s, until below 60 km descending;
+    `fairingAt` Hermite). They are SelTransients of kind 7 (key (batch << 3) ^ 5/6) with a full attitude
+    (`SelTransient::hasAtt` -> `SatOrbitElems::attFix` via `transientAtt`), meshed through the rocket mesh slots, and a
+    sunlit point (mag 4.3 at 1000 km). The stage's model then comes from `upperStageType`: `_upper` -> `_upper_bare` (the
+    payload adapter; its top = `payload_base_m`) -> for a crewed stage `_upper_empty` after deployment (the bare one
+    carries a Shenzhou / Soyuz MS stand-in). Long March 5B's bare "upper" is a 3-m stub of its core.
+  - **Stacks** (launches.json program `"stack"`, `launch::Stack`; `stackSlot` places member i of n in the upper stage's
+    body frame `upperFrame` = the rocket models' law: +Z the nose, -Y toward nadir): `pez` (Starship: every member from
+    the door at `door_m` 31.1 on the leeward +Y side, flat across the ship: its X = ship +Y (out of the door), Z = ship
+    -Z; the ship model has a dark slot there, `payload_door`), `flat` (nadir face down, 1-2 a tier side by side along
+    `side_axis`, leaving along the stage's +Z), `column` (around a dispenser column, nadir face out, X along the stage,
+    tiers alternately rotated, leaving radially). Top tier first. A member leaves FROM ITS SLOT (`depOff` is the slot
+    less its path) with `sep_speed_mps` along the exit direction (`sepDir`, its own LVLH axes), the stack's per-program
+    `deploy_interval_s` / `sep_spread_mps` overriding the vehicle's. Before its release (fairing vehicles, from tFair) it
+    is drawn on the stage by `launchStackJobs` (48 reserved mesh slots, `kStackMeshSlots`, six chunks below the pads';
+    not selectable; members stowed: P 0; the dispenser `rocket_dispenser_<name>.json` too, until the stage is gone) from
+    `LaunchState::stackDraws`, filled where the upper stage is listed. Pez members are not drawn before release (inside
+    the hull).
+  - **Attitude at release**: the member's CPU elements carry `attFix` (`LMember::q0` = the stack's attitude at tRel,
+    `omega` a hashed 0.2-0.8 deg/s tip-off, half for pez) and slew into the law over 180 s from tRel + 60-120 s
+    (`satAttOverride`, SatPhotometry.h; `AttGeometry::fixW / fixR`, slerped in `evalGroupPoses` for the root group; every
+    pose site converts it to its world frame). CPU only: the GPU's point keeps the law for those minutes, and the GPU
+    parity check skips it.
+  - **Fold** (SatModel component `"fold"`: point, axis, angle_deg, phase): after the stow scaling the part turns about a
+    hinge line (rest body frame) by angle x (1 - smoothstep(phase, P)); mesh only (`instFoldAngle`, sat_mesh.vert; the
+    component buffer is FIVE vec4s per component since), skipped as an occluder while folded; the photometry ignores it.
+    Used for: Starmind's bus halves (the -X half folds 180 deg about y at z 0.51, over the radiator packs: stowed
+    6.2 x 5.0 x 2.1 m), array packs folded flat (Qianfan, V1.5, Amazon Leo, V3 over the zenith face; Guowang, OneWeb
+    against the flanks) and DTC's antenna under the bus.
+  - **Fit** (`tools/make_rocket_models.py`: it measures each model stowed, derives `pitch_m` / `offset_m` /
+    `member_center` / `column_radius_m`, checks every vehicle the program flies, writes the dispensers; `--check` fails
+    on a mismatch with launches.json; the fairing inner radius = outer - 0.15 m, Starship's bay 8.2 m x 22 m): Starmind
+    8 a ship (was 40: the 10 m bus did not fit across the bay at all), Starlink (Gen2 + V3) 30 (was 60), DTC 36 (was 50),
+    Starlink Gen1 on Falcon 9 (its own program, 31: a plane's 61 in two launches), Guowang 10 on two tiers of five
+    (5.2 m fairings: LM-5B, LM-8A, Zhuque-3; LM-8A's fairing lengthened to 8.5 + 5.5 m), Qianfan 18 (2 x 9; its bus
+    2.6 x 1.3 m). NOT stacked (no fit as modelled): Amazon Leo (45 of a 2 x 2 x 1.2 m bus with a 3 m panel), OneWeb (36
+    on a column ~12 m tall), Reflect Orbital (no stowed mirror): they still appear at the dispenser point (stowed).
+  - **Cost**: Starmind's launch rate x5 makes ~5300 live batches (1300 before); launch CPU 1.0 -> 2.1 ms a frame at the
+    Starship bookmark (2.4 before `L.livePtr` and the 8-frame full freeing pass). Guowang's model (realism pass:
+    radome over the nadir face, two-panel wings 5 cm lower, yokes, fittings, thruster, star trackers) reads 5.85 vs 4.21
+    in its ungated benchmark (5.80 before).
+  - Harness: `launch fairing [filter=]` (10 s before a sunlit fairing separation), `launch deploy|fairing|deorbit` select
+    the stage once listed (`launchWantSelKey`), `min_members=`, `launch select ... nearest=1`, `kind=fairing`; `launch
+    state` -> `fairing_halves_drawn`, `stack_meshes`, `stack_stages`, `upper_stages[].fairing_sep_in_s / model /
+    payload_layout / deploy_interval_s`. `tools/harness/scripts/fairing_sep.satcmd` (Guowang fairing + column release +
+    unfolding, Starmind's door, Starlink and Qianfan flat stacks).
 - **Satellite indices**: roster `[0, activeSatCount)`, then `kLaunchCap` (131072) launch records, then the Kessler pool
   from `poolIdx0()`. Launch records are `GpuKepOrbit`s in kesslerBuf from `kLaunchWord0` (sat_orbit.comp `LAUNCH_CAP`:
   the indices before `poolBase`, the words before `poolWord0`), born/death only "live or not". They hold the member's

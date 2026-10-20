@@ -475,53 +475,7 @@
    ]
   },
   {
-   "name": "door_frame_13",
-   "type": "box",
-   "size": [
-    0.08,
-    7.0,
-    0.1
-   ],
-   "position": [
-    0.0,
-    4.54,
-    32.45
-   ],
-   "rotation_quat": [
-    0.707107,
-    0.0,
-    -0.0,
-    0.707107
-   ],
-   "material": "steel",
-   "group": "body",
-   "render_only": true
-  },
-  {
-   "name": "door_frame_14",
-   "type": "box",
-   "size": [
-    0.08,
-    7.0,
-    0.1
-   ],
-   "position": [
-    0.0,
-    4.54,
-    29.75
-   ],
-   "rotation_quat": [
-    0.707107,
-    0.0,
-    -0.0,
-    0.707107
-   ],
-   "material": "steel",
-   "group": "body",
-   "render_only": true
-  },
-  {
-   "name": "engines_15",
+   "name": "engines_13",
    "type": "profile",
    "profile": [
     [
@@ -581,7 +535,7 @@
    "render_only": true
   },
   {
-   "name": "engines_16",
+   "name": "engines_14",
    "type": "profile",
    "profile": [
     [
@@ -641,7 +595,7 @@
    "render_only": true
   },
   {
-   "name": "engines_17",
+   "name": "engines_15",
    "type": "profile",
    "profile": [
     [
@@ -701,7 +655,7 @@
    "render_only": true
   },
   {
-   "name": "engines_rvac_18",
+   "name": "engines_rvac_16",
    "type": "profile",
    "profile": [
     [
@@ -761,7 +715,7 @@
    "render_only": true
   },
   {
-   "name": "engines_rvac_19",
+   "name": "engines_rvac_17",
    "type": "profile",
    "profile": [
     [
@@ -821,7 +775,7 @@
    "render_only": true
   },
   {
-   "name": "engines_rvac_20",
+   "name": "engines_rvac_18",
    "type": "profile",
    "profile": [
     [
