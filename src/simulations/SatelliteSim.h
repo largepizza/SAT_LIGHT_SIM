@@ -2865,6 +2865,18 @@ private:
     // Payload stacks on their upper stage (2026-10-20): satellites not yet released and the dispenser, drawn as meshes
     // in six reserved chunks below the pads' (launchMeshJobs). Not selectable.
     static constexpr int kStackMeshSlots = 48;
+    // Booster landing ships (2026-10-20, droneships): one reserved chunk below the stacks' (launchMeshJobs). Scenery,
+    // not selectable (the booster on the deck is).
+    static constexpr int kShipMeshSlots = 8;
+    nlohmann::json launchShipsJson() const; // harness `launch ships`: the ships on station / heading home
+    void launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // their meshes
+    void launchFillShipLights();            // their lights at night (kFireBuf)
+    void launchFillShipGlow(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // their lit decks
+    // The next booster landing on a ship (harness `launch droneship`): the clock leadS before touchdown at 1x, the
+    // observer distM from the ship (az clockwise from its bow) heightM above the sea, looking at the deck; wantDay /
+    // wantNight: the Sun above 10 / below -8 degrees there; vehicle: an id filter.
+    bool launchGoToShipLanding(double leadS, double distM, double azDeg, double heightM, int dayNight,
+                               const std::string &vehicle, std::string &msg);
     void launchFillPadParams(GpuCloudParams &cp); // the UBO's pad block (nearest kMaxPadsGpu)
     void launchFillPadLights(); // their floodlights / beacons as point sprites (kFireBuf)
     nlohmann::json launchPadsJson() const;

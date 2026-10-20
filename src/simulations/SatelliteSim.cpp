@@ -15589,7 +15589,8 @@ void SatelliteSim::loadDefinitions()
         for (const auto &de : std::filesystem::directory_iterator(dir, ec))
         {
             const std::string fn = de.path().filename().string();
-            if ((fn.rfind("rocket_", 0) == 0 || fn.rfind("pad_", 0) == 0) && de.path().extension() == ".json")
+            if ((fn.rfind("rocket_", 0) == 0 || fn.rfind("pad_", 0) == 0 || fn.rfind("ship_", 0) == 0) &&
+                de.path().extension() == ".json")
                 ids.push_back(de.path().stem().string());
         }
         std::sort(ids.begin(), ids.end()); // a stable type order
@@ -15597,7 +15598,9 @@ void SatelliteSim::loadDefinitions()
         {
             SatelliteType t;
             t.modelId = id;
-            t.name = id.rfind("pad_", 0) == 0 ? "Launch pad: " + id.substr(4) : "Rocket: " + id.substr(7);
+            t.name = id.rfind("pad_", 0) == 0    ? "Launch pad: " + id.substr(4)
+                     : id.rfind("ship_", 0) == 0 ? "Landing ship: " + id.substr(5)
+                                                 : "Rocket: " + id.substr(7);
             t.baseColor = glm::vec3(0.95f, 0.95f, 1.0f);
             t.crossSectionM2 = 1.0f;
             t.primary = SurfaceSpec{AttitudeMode::NadirPointing, 0.0f, 1.0f};
@@ -15626,7 +15629,8 @@ void SatelliteSim::loadDefinitions()
         int budget = count <= kSatLobeSmallRoster ? kSatLobeBudgetSmall : kSatLobeBudget;
         if (satTypes[ti].modelId.rfind("debris_", 0) == 0)
             budget = 16; // fragments: up to a pool's worth visible at once, each a few simple parts
-        else if (satTypes[ti].modelId.rfind("rocket_", 0) == 0 || satTypes[ti].modelId.rfind("pad_", 0) == 0)
+        else if (satTypes[ti].modelId.rfind("rocket_", 0) == 0 || satTypes[ti].modelId.rfind("pad_", 0) == 0 ||
+                 satTypes[ti].modelId.rfind("ship_", 0) == 0)
             budget = 24; // a few rockets at a time, CPU-evaluated only
         bakeModelType(satTypes[ti], model, budget, count);
     }

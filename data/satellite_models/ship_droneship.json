@@ -1,0 +1,1503 @@
+{
+ "name": "ship droneship",
+ "note": "Booster landing ship render model (tools/make_ship_models.py). Body frame: +Z up, +X the bow, origin at the landing target's centre at the waterline. Sizes public figures rounded or estimates; detail render-only. SpaceX autonomous spaceport drone ship (ASOG / JRTI / OCISLY class): deck ~91 x 52 m, housings and blast walls aft, the Octagrabber, the landing target.",
+ "materials": [
+  {
+   "name": "hull",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.07,
+   "color": [
+    0.17,
+    0.18,
+    0.2
+   ]
+  },
+  {
+   "name": "deck",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.11,
+   "color": [
+    0.32,
+    0.32,
+    0.33
+   ]
+  },
+  {
+   "name": "white",
+   "preset": "white_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.45,
+   "color": [
+    0.7,
+    0.71,
+    0.72
+   ]
+  },
+  {
+   "name": "steel",
+   "preset": "stainless_steel"
+  },
+  {
+   "name": "red",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.25,
+   "color": [
+    0.62,
+    0.12,
+    0.08
+   ]
+  },
+  {
+   "name": "yellow",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.5,
+   "color": [
+    0.9,
+    0.72,
+    0.12
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "ship",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "zenith"
+   },
+   "secondary": {
+    "axis": [
+     1,
+     0,
+     0
+    ],
+    "target": "velocity"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "hull",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    91.0,
+    52.0,
+    4.7
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.8500000000000001
+   ],
+   "material": "deck"
+  },
+  {
+   "name": "side_band_0",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    91.2,
+    0.15,
+    1.6
+   ],
+   "position": [
+    0.0,
+    -26.05,
+    2.2
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_0_0",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    -36.0,
+    -25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_0_1",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    -24.0,
+    -25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_0_2",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    -12.0,
+    -25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_0_3",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    0.0,
+    -25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_0_4",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    12.0,
+    -25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_0_5",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    24.0,
+    -25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_0_6",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    36.0,
+    -25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "rail_0",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    88.0,
+    0.12,
+    0.9
+   ],
+   "position": [
+    1.0,
+    -25.7,
+    3.6500000000000004
+   ],
+   "material": "yellow",
+   "render_only": true
+  },
+  {
+   "name": "side_band_2",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    91.2,
+    0.15,
+    1.6
+   ],
+   "position": [
+    0.0,
+    26.05,
+    2.2
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_2_0",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    -36.0,
+    25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_2_1",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    -24.0,
+    25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_2_2",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    -12.0,
+    25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_2_3",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    0.0,
+    25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_2_4",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    12.0,
+    25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_2_5",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    24.0,
+    25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "wing_strut_2_6",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.5,
+    0.5,
+    2.0
+   ],
+   "position": [
+    36.0,
+    25.6,
+    2.0
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "rail_2",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    88.0,
+    0.12,
+    0.9
+   ],
+   "position": [
+    1.0,
+    25.7,
+    3.6500000000000004
+   ],
+   "material": "yellow",
+   "render_only": true
+  },
+  {
+   "name": "rail_bow",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    0.12,
+    50.0,
+    0.9
+   ],
+   "position": [
+    45.3,
+    0.0,
+    3.6500000000000004
+   ],
+   "material": "yellow",
+   "render_only": true
+  },
+  {
+   "name": "housing_0",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    9.0,
+    13.0,
+    7.0
+   ],
+   "position": [
+    -40.0,
+    -18.5,
+    6.7
+   ],
+   "material": "grey"
+  },
+  {
+   "name": "blast_wall_0",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.2,
+    13.5,
+    8.5
+   ],
+   "position": [
+    -35.0,
+    -18.5,
+    7.45
+   ],
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "mast_0",
+   "type": "cylinder",
+   "group": "ship",
+   "radius": 0.25,
+   "height": 9.0,
+   "position": [
+    -42.0,
+    -21.0,
+    14.7
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "vent_0",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    3.0,
+    4.0,
+    1.4
+   ],
+   "position": [
+    -41.5,
+    -15.0,
+    10.9
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "housing_2",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    9.0,
+    13.0,
+    7.0
+   ],
+   "position": [
+    -40.0,
+    18.5,
+    6.7
+   ],
+   "material": "grey"
+  },
+  {
+   "name": "blast_wall_2",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.2,
+    13.5,
+    8.5
+   ],
+   "position": [
+    -35.0,
+    18.5,
+    7.45
+   ],
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "mast_2",
+   "type": "cylinder",
+   "group": "ship",
+   "radius": 0.25,
+   "height": 9.0,
+   "position": [
+    -42.0,
+    21.0,
+    14.7
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "vent_2",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    3.0,
+    4.0,
+    1.4
+   ],
+   "position": [
+    -41.5,
+    15.0,
+    10.9
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "garage",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    8.0,
+    10.0,
+    3.5
+   ],
+   "position": [
+    -40.0,
+    0.0,
+    4.95
+   ],
+   "material": "grey",
+   "render_only": true
+  },
+  {
+   "name": "octagrabber",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    4.6,
+    4.6,
+    1.3
+   ],
+   "position": [
+    -31.5,
+    0.0,
+    3.85
+   ],
+   "material": "red",
+   "render_only": true
+  },
+  {
+   "name": "octagrabber_top",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    3.2,
+    3.2,
+    0.5
+   ],
+   "position": [
+    -31.5,
+    0.0,
+    4.75
+   ],
+   "material": "hull",
+   "render_only": true
+  },
+  {
+   "name": "bitt_0",
+   "type": "cylinder",
+   "group": "ship",
+   "radius": 0.45,
+   "height": 1.0,
+   "position": [
+    43.5,
+    -20.0,
+    3.7
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "bitt_1",
+   "type": "cylinder",
+   "group": "ship",
+   "radius": 0.45,
+   "height": 1.0,
+   "position": [
+    43.5,
+    -8.0,
+    3.7
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "bitt_2",
+   "type": "cylinder",
+   "group": "ship",
+   "radius": 0.45,
+   "height": 1.0,
+   "position": [
+    43.5,
+    8.0,
+    3.7
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "bitt_3",
+   "type": "cylinder",
+   "group": "ship",
+   "radius": 0.45,
+   "height": 1.0,
+   "position": [
+    43.5,
+    20.0,
+    3.7
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "target_ring_0",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    13.0,
+    0.0,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    0.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_1",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    12.802500789158705,
+    2.257426309670094,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    10.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_2",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    12.21600407021681,
+    4.446261863233693,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    20.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_3",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    11.258330249197703,
+    6.499999999999999,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    30.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_4",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    9.958577760546714,
+    8.35623892592501,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    40.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_5",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    8.356238925925012,
+    9.958577760546714,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    50.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_6",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    6.500000000000002,
+    11.258330249197702,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    60.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_7",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    4.446261863233695,
+    12.216004070216808,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    70.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_8",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    2.2574263096700955,
+    12.802500789158705,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    80.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_9",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    7.960204194457795e-16,
+    13.0,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    90.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_10",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -2.2574263096700937,
+    12.802500789158705,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    100.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_11",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -4.446261863233693,
+    12.21600407021681,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    110.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_12",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -6.499999999999997,
+    11.258330249197703,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    120.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_13",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -8.356238925925012,
+    9.958577760546714,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    130.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_14",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -9.958577760546714,
+    8.356238925925012,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    140.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_15",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -11.258330249197703,
+    6.499999999999999,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    150.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_16",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -12.216004070216808,
+    4.446261863233696,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    160.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_17",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -12.802500789158705,
+    2.2574263096700937,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    170.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_18",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -13.0,
+    1.592040838891559e-15,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    180.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_19",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -12.802500789158705,
+    -2.257426309670096,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    190.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_20",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -12.21600407021681,
+    -4.446261863233692,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    200.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_21",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -11.258330249197702,
+    -6.500000000000002,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    210.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_22",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -9.958577760546714,
+    -8.35623892592501,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    220.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_23",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -8.356238925925012,
+    -9.958577760546714,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    230.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_24",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -6.500000000000005,
+    -11.2583302491977,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    240.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_25",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -4.446261863233691,
+    -12.21600407021681,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    250.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_26",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -2.257426309670094,
+    -12.802500789158705,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    260.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_27",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    -2.3880612583373385e-15,
+    -13.0,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    270.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_28",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    2.2574263096700897,
+    -12.802500789158707,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    280.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_29",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    4.446261863233697,
+    -12.216004070216808,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    290.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_30",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    6.500000000000002,
+    -11.258330249197702,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    300.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_31",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    8.35623892592501,
+    -9.958577760546715,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    310.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_32",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    9.958577760546712,
+    -8.356238925925014,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    320.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_33",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    11.258330249197698,
+    -6.500000000000005,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    330.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_34",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    12.21600407021681,
+    -4.446261863233691,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    340.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_ring_35",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    1.3,
+    2.3596851486963337,
+    0.03
+   ],
+   "position": [
+    12.802500789158705,
+    -2.257426309670095,
+    3.22
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    350.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_x_0",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    24.0,
+    2.6,
+    0.03
+   ],
+   "position": [
+    0.0,
+    0.0,
+    3.2350000000000003
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    45.0
+   ],
+   "render_only": true
+  },
+  {
+   "name": "target_x_1",
+   "type": "box",
+   "group": "ship",
+   "size": [
+    24.0,
+    2.6,
+    0.03
+   ],
+   "position": [
+    0.0,
+    0.0,
+    3.24
+   ],
+   "material": "white",
+   "rotation_deg": [
+    0,
+    0,
+    -45.0
+   ],
+   "render_only": true
+  }
+ ]
+}

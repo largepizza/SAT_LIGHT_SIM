@@ -4516,7 +4516,7 @@ launches follow per-program cadences (no real manifest).
   key, so a selected or followed ship stays selected into its entry. A stage may vent what is left, spinning
   (`vent_chance`; after its deorbit burn, or 10 min after deploying for a returning stage): ~10 t over two minutes as
   slowly spreading ice (30 m/s, 2000 m^2/kg), each parcel a stretch of the 700 m/s jet, never decimated: seen from
-  below, a dump spiral like the 2009 Norway one (harness `launch vent`). No droneships. Harness `launch deorbit` frames
+  below, a dump spiral like the 2009 Norway one (harness `launch vent`). Boosters land on droneships (below). Harness `launch deorbit` frames
   the next sunlit stage as it starts to turn; `launch state` -> `upper_stages` (each flying stage's timeline in seconds
   from now, burning, altitude, the nose's angle from retrograde); `launch check` -> `booster_nose_max_deg_per_s` (18),
   `upper_nose_max_deg_per_s` (2.0) and `upper_max_step_m_per_s` (7893: 1-s steps through the burn and the entry
@@ -4911,8 +4911,60 @@ launches follow per-program cadences (no real manifest).
     Starbase from 900 m): sky pass within noise (8.09 vs 8.09 ms), scene depth +0.18 ms, CPU ~0; SKY_LITE SPV +288 B
     (the UBO's declaration; 213384 of 230400), sat_sky_minimal unchanged. Open: the pads sit on the 5-km DEM and
     water map, so coastal ones (Starbase, the Cape) are islands of apron in what the map calls sea; the meshes are lit
-    by the scene probe at night (the tanks read pale); no droneships.
-- Not built: droneship meshes, the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
+    by the scene probe at night (the tanks read pale).
+- **Booster recovery at sea: droneships and landing ships (2026-10-20, branch kessler).** Each launch decides its
+  booster's recovery (`planRecovery`, a pure function of the batch, stored in `LBatch::rec` / `landKind`): a vehicle
+  with `booster: droneship` and `rtls_max_kg` (Falcon 9, 7000 kg) flies back to its pad's LANDING ZONE when the launch's
+  payload (the program's `sat_mass_kg` x payload or `payload_mass_kg`, x a hashed 0.9-1.1) is at most that: OneWeb and
+  Reflect Orbital do, Starlink Gen1 (~9.3 t), Amazon Leo and Crew Dragon (12.5 t) do not. Otherwise it lands DOWNRANGE
+  at `droneship_km` (Falcon 9 600, Crew Dragon 550, New Glenn 1000; 0 = where its arc comes down, the Chinese boosters
+  ~390-430 km): on a ship when that point is at sea (`shoreDistCpu` > 3 km), picked by hash among the vehicle's
+  `landing_ships` serving the site (Florida: A Shortfall of Gravitas / Just Read the Instructions; Vandenberg: Of Course
+  I Still Love You; New Glenn: Jacklyn; Hainan: a recovery barge); on land (Jiuquan's inland arcs) on the ground there
+  (`landBase` = the DEM less the track's touchdown height). `landKind` = kLandNone / Tower / Lz / Ship / Ground; harness
+  `launch state` -> `boosters[]` (recovery, land_kind, touchdown_in_s, downrange, ship, dist_to_landing_m) — **the
+  landing effects (dust, spray) key off `LaunchImpl::boosterLandingAt(L, B, t, E, tTouch)`**: the kind, the touchdown
+  time and the point where the booster's aft end stands at t (a ship's deck moves).
+  - **Tracks** (`launch::boosterTrack(vh, recovery, hLand)`): per vehicle its own (`L.booster`) and, for an RTLS-capable
+    droneship vehicle, a return track (`L.boosterRtls`); `LaunchImpl::boosterTr(L, B)` picks this launch's. Downrange:
+    a short retrograde TRIM burn (BURN_BOOSTBACK) secant-solved to touch down exactly at droneship_km (the old code aimed
+    a boostback at 0.55 x the MECO speed that was never burned: every droneship booster came down ~410 km out); the
+    entry burn runs 22 s, longer (up to 40 s) while still above 900 m/s. Falcon 9 / Crew Dragon / New Glenn stage
+    faster (MECO 2.2 / 2.2 / 3.3 km/s: meco_downrange 120 / 115 / 225 km) so their arcs reach the ship.
+  - **The landing burn is a constant deceleration that zeroes both components together at the deck** (Launches.cpp,
+    every recovery, towers included): it starts below 8 km once that deceleration reaches 25 m/s^2 (a faster arrival
+    burns harder, ~40-50 m/s^2 for 20-25 s), analytic from there. The suicide-burn profile it replaced touched down at
+    ~40 m/s down and, for a droneship, ~360 m/s across. Boosters arriving from far downrange still lean ~30-55 deg in the
+    burn (they carry ~700-1100 m/s across at 8 km; drag in this model is weak): an open item.
+  - **RTLS** to a Falcon pad's landing zone: the track lands on the pad's centre and over its last ~40 km slides to the
+    zone (`lzOff`, kLzDistM aside, its ground `LPad::lzElevM`), held there 30 min.
+  - **The ship** (`shipEcef`): on station at the touchdown point from 8 h before lift-off (kShipOnStationS), the booster
+    on its deck at tLand (the track ends `deck_m` above the sea there), 1.5 h later it steams home toward the launch site
+    along the great circle at 4 m/s (eased in), drawn until 12 h after the landing (~150 km on). Its bow points home
+    throughout. The booster rides the deck (`rocketPos` stage 0 past tEnd: `(kR + deckM) x shipEcef`; `boosterHoldS`),
+    stays listed / selectable / followable (label "booster on <ship>'s deck, being secured / heading home"), and its
+    coasting point sprite is dropped once landed (scenery: its mesh). Ship meshes: `ship_droneship` (ASDS: deck ~91 x 52
+    m at 3.2 m, the housings and blast walls aft, the Octagrabber, rails, the landing target's ring and X) and
+    `ship_jacklyn` (estimates: ~120 x 30 m, superstructure forward, landing deck aft at 6 m), written by
+    `tools/make_ship_models.py` (body frame: +X the bow, origin the landing target at the waterline: `deck_m` in
+    launches.json must equal the deck printed), loaded with the rockets (`ship_*` prefix, `rocketTypes`; the accuracy
+    gate loads them), drawn past ~1.4 px in their own reserved chunk (`kShipMeshSlots` 8, below the stacks': the free
+    chunks start 10 below the top; not selectable) by `launchShipJobs` (fixed state, the bow as the "velocity" axis).
+  - **At night** (`launchFillShipLights`, `launchFillShipGlow`): flood clusters on the housings' masts (-2 at 1 km), red
+    beacons, red / green side lights, a stern light (kFireBuf); the floodlit deck (-4) and a landed booster (-3.5) as
+    EMISSIVE Gaussians in the dust list (the mesh renderer has no local lights: the hull was black under its lights); one
+    engine light (`engineLightAdd`, 0.3 suns m^2 x night, lights the sea around it and low cloud). The landing burn's light
+    is the rocket's own engine light.
+  - Harness: `launch droneship [vehicle=] [day=1|night=1] [lead=60] [dist_m=1500] [az=60] [h=5]` (the next landing on a
+    ship, 30 days ahead, 120 with a vehicle filter), `launch ships`; `launch check` -> `booster_recovery_counts`,
+    `booster_landing_downrange_km`, `droneship_touchdown_*`, `lz_ground_touchdown_*`, `booster_ride_home_off_deck_m_max`,
+    `droneship_examples`. `tools/harness/scripts/droneship.satcmd` (day from a boat and from 3 / 10 km, night, New Glenn).
+    Measured (merged build, 14070 batches): 116 ship landings, 73 RTLS by payload, 85 ground, 183 expendable, 13613
+    tower; touchdown on the deck 0 m off centre, 0 m above it; 1-s speed before touchdown <= 31 m/s (the end of a ~50
+    m/s^2 burn); the booster on a steaming ship 0 m off its deck. Perf (RTX 3070 Ti, 1600x900, 1.5 km from the ship):
+    GPU 13.8 ms by day, 12.5-21 ms at night (the cloud lit by the landing burn), CPU ~0 for the ships.
+- Not built: the Octagrabber driving out to the booster, the ship rolling in the swell, the booster's legs deploying,
+  the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
   (trains launch into it), the crew capsule's rendezvous and cargo flights, hole-punching through cloud decks, sonic booms.
 
 ## Subsystem: Reflect-Orbital Beam Cloud Occlusion
