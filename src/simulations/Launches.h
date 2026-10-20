@@ -154,6 +154,18 @@ void cwState(const glm::dvec3 &p0, const glm::dvec3 &v0, double n, double t, glm
 // Earth's centre): it expands into the air and entrains it — near the ground a narrow trail that the wind carries
 // and diffusion widens, high up a bell expanding at km/s that falls back into the thicker air (the "jellyfish").
 // Sampled at log-spaced ages; at(age) interpolates the centre and the radius.
+// Optional physics for the ground clouds (2026-10-20): the ground they spread over, a faster evaporation (sea spray),
+// turbulent growth with the speed through the air (a billowing steam cloud grows ~0.1x the distance it moves), and
+// buoyancy (hot steam and exhaust rise, fading as they mix).
+struct ParcelOpts
+{
+    double groundM = 3.0;  // the ground's height above sea level (m): the parcel spreads along it
+    double evapS = -1.0;   // evaporation time (s; < 0: by altitude)
+    double growK = 0.0;    // turbulent growth: d(sigma)/dt += growK x min(|v - wind|, 60 m/s)
+    double buoy = 0.0;     // upward acceleration (m/s^2), fading over buoyS
+    double buoyS = 60.0;
+    double sig0 = 8.0;     // starting radius (m)
+};
 struct Parcel
 {
     double t0 = 0.0;             // emission (s after lift-off)
@@ -164,6 +176,9 @@ struct Parcel
     double m = 0.0;              // kg
     double kappa = 1.0;          // scattering cross-section per kg (m^2/kg)
     double albedo = 0.9;
+    glm::vec3 tint{1.0f};        // the material's colour (the land's dust is tan; exhaust, steam and spray white)
+    int ground = 0;              // 0 exhaust aloft; 1 the pad's lift-off cloud (steam, exhaust); 2 a landing's
+                                 // dust / steam (land) or spray (sea): drawn as lumpy round puffs, lit by the flame
     glm::dvec3 axis{0.0};        // the trail's direction at emission (unit, Earth-fixed): the parcel is a segment
     double len = 0.0;            // its length (m)
     std::vector<float> age;      // samples
@@ -181,7 +196,7 @@ double airDensity(double hM); // kg/m^3
 // vented propellant, droplets freezing to ice, ~100 m/s).
 Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double m, double kappa, double albedo,
                   const glm::dvec3 &axis, double len, double maxAge, const glm::dvec3 &windDir, double windGain,
-                  double vExp = 2000.0, double windPhase = 0.0);
+                  double vExp = 2000.0, double windPhase = 0.0, const ParcelOpts *opts = nullptr);
 
 double hash01(uint64_t seed, uint64_t index, uint32_t channel);
 } // namespace launch

@@ -2449,7 +2449,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             std::string msg;
             const std::string when = lower(c.str("when", c.num("twilight", 0.0) > 0.5 ? "twilight" : "any"));
             if (!launchGoToNextWhen(msg, when == "twilight" ? 1 : when == "day" ? 2 : when == "night" ? 3 : 0,
-                                    c.str("vehicle", "")))
+                                    c.str("vehicle", ""), c.num("pad_dist_m", 0.0), c.num("lead", 30.0),
+                                    c.num("side", 1.0)))
                 fail("launch next: " + msg);
             r["message"] = msg;
             return Status::Done;
@@ -2483,8 +2484,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // launch landing [booster=1] [lead=90] [dist_m=2500] [day=1]: the next tower catch (a ship, or a booster;
             // day=1: with the Sun above 10 deg at the pad).
             std::string msg;
-            const bool bst = c.num("booster", 0.0) > 0.5;
-            if (!launchGoToLanding(bst ? 1 : 0, c.num("lead", bst ? 60.0 : 90.0), c.num("dist_m", 2500.0), msg,
+            const bool sea = c.num("droneship", 0.0) > 0.5; // (2026-10-20) a booster's landing at sea
+            const bool bst = c.num("booster", 0.0) > 0.5 || sea;
+            if (!launchGoToLanding(sea ? 2 : bst ? 1 : 0, c.num("lead", bst ? 60.0 : 90.0), c.num("dist_m", 2500.0), msg,
                                    c.num("day", 0.0) > 0.5))
                 fail("launch landing: " + msg);
             r["message"] = msg;

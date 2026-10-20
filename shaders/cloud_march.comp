@@ -192,6 +192,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
     vec3 L = vec3(0.0);
     float wT = 0.0;
     float Ls = 0.0;
+    vec3 Lf = vec3(0.0);   // plumes: the flames' light (isotropic, unshadowed: launchFillVisuals)
     for (uint i = 0u; i < n; ++i) {
         if (dot(dir, dust[i].cone.xyz) < dust[i].cone.w)
             continue;
@@ -223,17 +224,73 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
             // baked cloud noise at the ray's closest approach, in the Gaussian's own sigma units (so the structure
             // rides with its parcel and stretches as it spreads and shears), seeded per parcel (ib.w = 4 x seed +
             // the sky light, which nothing reads). Mean ~1: the trail's brightness is unchanged on average.
+            // ib.w = 4 x seed + f: f >= 2 = the CPU lit it (its Sun part already Earth-shadowed) and f - 2 is the
+            // flames' share of col (launchFillVisuals, 2026-10-20); else f is the unread sky light.
+            float sk = floor(d.ib.w * 0.25);
+            float fs = d.ib.w - 4.0 * sk;
+            float flS = fs >= 2.0 ? clamp(fs - 2.0, 0.0, 1.0) : 0.0;
+            float shade = 1.0;
+            float lumpL = 1.0;
+            if (tau <= 0.01) {
+                // (the faint tails of the low puffs are cut as below: left whole here they drew a thin halo outside a
+                // dark gap round every flame-lit ground cloud at night, rings)
+                float lowK0 = 1.0 - smoothstep(3000.0, 12000.0, length(P) - R_EARTH);
+                tau *= 1.0 - lowK0;
+            }
             if (tau > 0.01) {   // (fainter: unmodulated; on every faint tail it cost up to 7 ms)
-                vec3  rl = (tc * dir - d.c.xyz) * sqrt(q);
-                float sk = floor(d.ib.w * 0.25);
-                vec3  sd = fract(sk * vec3(0.6180339, 0.3819660, 0.1372341)) * 7.0;
-                // R = the baked Perlin-Worley (three octaves: billows of ~1 sigma down to a quarter of it).
-                float nz = textureLod(cloudNoiseTex, rl * 0.25 + sd, 0.0).r;
-                tau *= max(1.0 + 1.3 * (nz - kPlumeNoiseMean), 0.2);
+                // Low down (2026-10-20: the lift-off cloud, landing dust, the first km of the trail) a turbulent
+                // volume: the billows are read in a field SHARED by every Gaussian there (world-fixed, ~150 m and
+                // ~55 m cells), so the overlapping puffs of a ground cloud are modulated together into one lumpy
+                // cauliflower instead of averaging their own noise away into a smooth haze; stronger, and floored
+                // lower. Higher up each Gaussian keeps its own noise (it rides with its parcel as it spreads).
+                float hP  = length(P) - R_EARTH;
+                float lowK = 1.0 - smoothstep(3000.0, 12000.0, hP);
+                float mN = 1.0;
+                if (lowK < 1.0) {
+                    vec3  rl = (tc * dir - d.c.xyz) * sqrt(q);
+                    vec3  sd = fract(sk * vec3(0.6180339, 0.3819660, 0.1372341)) * 7.0;
+                    // R = the baked Perlin-Worley (three octaves: billows of ~1 sigma down to a quarter of it).
+                    float nz = textureLod(cloudNoiseTex, rl * 0.25 + sd, 0.0).r;
+                    mN += (1.0 - lowK) * 1.3 * (nz - kPlumeNoiseMean);
+                }
+                if (lowK > 0.0) {
+                    vec3  pw  = P;   // (Earth-centred, in the eye's ENU axes: world-fixed while the eye stays put)
+                    float nW  = textureLod(cloudNoiseTex, pw * (1.0 / 600.0), 0.0).r;
+                    float nW2 = textureLod(cloudNoiseTex, pw * (1.0 / 220.0) + vec3(0.37, 0.71, 0.13), 0.0).r;
+                    mN += lowK * (2.4 * (nW - kPlumeNoiseMean) + 1.1 * (nW2 - kPlumeNoiseMean));
+                    // The billows' own light and shade: the field's change toward the Sun (one more fetch, ~70 m
+                    // sunward): denser toward the Sun = in a lobe's shadow, thinner = its lit face. Shared by every
+                    // Gaussian here, so the lumps of the whole mass are lit as one surface.
+                    float nWs = textureLod(cloudNoiseTex, (pw + sunDir * 70.0) * (1.0 / 600.0), 0.0).r;
+                    lumpL = mix(1.0, clamp(1.0 - 3.5 * (nWs - nW), 0.3, 1.35), lowK);
+                }
+                tau *= max(mN, mix(0.2, 0.05, lowK));
+                // ...and its faint tails cut where the billows thin it (low down): each puff gets a crisp, lumpy edge
+                // (a Gaussian's tail is a soft halo hundreds of metres wide: the ground cloud read as a glowing ball).
+                tau *= mix(1.0, smoothstep(0.02, 0.35, tau), lowK);
+                // Self-shadow: the Gaussian's own optical depth toward the Sun (closed form, as the view's) from where
+                // its light comes from — the closest approach, moved toward the eye by up to ~1.5 sigma as the ray's
+                // optical depth through it grows (a thick cloud is seen by its near surface): the sunward side bright,
+                // the far side and the core dark. A floor for the light multiple scattering carries round.
+                float sv  = inversesqrt(q);
+                float tEf = tc - 1.5 * sv * (1.0 - exp(-0.7 * tau));
+                vec3  rE  = o + tEf * dir;
+                vec3  Ms  = dustMul(d, sunDir);
+                float qS  = dot(sunDir, Ms);
+                if (qS > 0.0) {
+                    float tcS = -dot(rE, Ms) / qS;
+                    vec3  rS  = rE + tcS * sunDir;
+                    float eS  = dot(rS, dustMul(d, rS));
+                    float IS  = exp(-0.5 * eS) * sqrt(PI / (2.0 * qS)) * (1.0 - dustErf(sqrt(0.5 * qS) * (-tcS)));
+                    float tauS = d.ia.w * d.c.w * max(IS, 0.0) * max(mN, 0.2);
+                    shade = mix(exp(-tauS), 1.0, mix(0.4, 0.25, lowK));
+                }
+                shade *= lumpL;
             }
             // (a sharper shadow edge than the dust's: the bell's lit edge is where the Earth's shadow cuts it)
-            float litP = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, dS);
-            Lp   += tau * d.col.rgb * litP;          // the sunlight it scatters (the phase is applied below)
+            float litP = fs >= 2.0 ? 1.0 : (sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, dS));
+            Lp   += tau * d.col.rgb * (litP * shade * (1.0 - flS));   // the sunlight it scatters (phase below)
+            Lf   += tau * d.col.rgb * (flS * mix(shade, 1.0, 0.5));   // the flames' light
             Ls   += tau * (d.col.w - 2.0);            // its albedo (col.w = 2 + albedo)
             tauP += tau;
             tP   += tau * clamp(tc, 0.0, T);
@@ -251,8 +308,11 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
         // Per unit optical depth: single scattering by the phase, and as the trail thickens multiple scattering
         // takes over (a thick sunlit trail is a white cloud: ~albedo / pi, not the phase's 0.05); the sky light on
         // it diffusely. Then the trail's opacity.
-        float ms = 0.075 * (1.0 - exp(-0.6 * tauP));
-        Lp = Lp * (phaseP + ms) / tauP * (1.0 - exp(-tauP));
+        // (2026-10-20: + a second term for optically THICK exhaust, tau >~ 2: the low trail and the ground clouds, a
+        // white cumulus of steam in sunlight, reach ~albedo / pi as the comment says; at 0.075 alone they were as dim
+        // as the horizon haze behind them, invisible from a few km by day. Thin trails (the twilight bells) unchanged.)
+        float ms = 0.075 * (1.0 - exp(-0.6 * tauP)) + 0.17 * (1.0 - exp(-0.25 * tauP * tauP));
+        Lp = (Lp * (phaseP + ms) + Lf * (1.0 / (4.0 * PI) + ms)) / tauP * (1.0 - exp(-tauP));
         aP = Ls / tauP;
     }
     return L * phase;
