@@ -24,6 +24,11 @@ layout(push_constant) uniform GlarePC {
     float spikes;       // number of spikes
     float nearGain;     // glareNearGain: the size multiplier at zero range (1 = off)
     float nearRangeM;   // glareNearRangeKm in metres: at/beyond it the size is exactly as tuned
+    // Clusters (2026-10-20, GlareCluster below): the screen grid every glaring source is summed into
+    // (glare_cluster.comp), and how strongly a crowded source gives up its spikes (0 = off).
+    float tilePx;       // the grid's tile, in pixels of the main view
+    uint  gridW, gridH; // tiles across / down (0 = no grid: every source keeps its spikes)
+    float cluster;      // "Glare cluster merge" (0..1)
 } gpc;
 
 float glareHash(float n) { return fract(sin(n * 12.9898 + 4.1414) * 43758.5453); }
@@ -42,9 +47,11 @@ float glareNearScale(float rangeM)
     return mix(1.0, gpc.nearGain, t * t * (3.0 - 2.0 * t));
 }
 
-// d: pixels from the source; radius: the sprite's radius in pixels. Returns the corona's weight (x)
-// and the core's (y), both already windowed.
-vec2 glareProfile(vec2 d, float radius)
+// d: pixels from the source; radius: the sprite's radius in pixels; spikeW: the share of its spikes it keeps
+// (glareSpikeWeight: < 1 in a cluster). Returns the corona's weight (x) and the core's (y), both already
+// windowed. A crowded source's spikes give way to a slightly stronger halo and shorter rays: a cluster
+// of lights reads as one soft glow, not a sea urchin of overlapping stars.
+vec2 glareProfile(vec2 d, float radius, float spikeW)
 {
     float r = length(d);
     float x = r / max(radius, 1.0);
@@ -66,10 +73,61 @@ vec2 glareProfile(vec2 d, float radius)
         float centre = k + 0.5 + 0.35 * (glareHash(kk * 7.13 + 1.0) - 0.5);
         float dTheta = (t - centre) * (TWO_PI / n);               // radians off this spike
         float p = r * sin(clamp(dTheta, -1.5, 1.5));              // pixels off its line
-        float len = 0.45 + 0.55 * glareHash(kk * 3.71 + 2.0);     // its length, of the radius
+        float len = (0.45 + 0.55 * glareHash(kk * 3.71 + 2.0)) * mix(0.55, 1.0, spikeW); // of the radius
         float bright = 0.35 + 0.65 * glareHash(kk * 5.19 + 3.0);
         float along = max(1.0 - x / len, 0.0);
         spikes += bright * exp(-p * p / (2.0 * 0.75 * 0.75)) * pow(along, gpc.falloff);
     }
-    return vec2((0.25 * halo + 0.6 * spikes) * win, core * win);
+    return vec2(((0.25 + 0.15 * (1.0 - spikeW)) * halo + 0.6 * spikeW * spikes) * win, core * win);
 }
+
+// ── Glare clusters (2026-10-20, issue 20261019_222938 "Glares") ──────────────────────────────────────────
+// One glare per source drew a cluster of bright lights (a launch pad's floods, a Starlink train, the Reflect
+// ring, a mesh's glints) as overlapping stars: "spidery, sea-urchin-y". glare_cluster.comp sums every glaring
+// source into a coarse screen grid (per tile: the weights, and the weighted position inside the tile, fixed
+// point), each weighted u = (its flare / the threshold's)^2 x its visibility. A source then keeps the share
+// w = u_self / (u_self + the others' u within ~its own glare radius) of its spikes, squared: a lone source
+// keeps them all (w = 1, exactly as before), the brightest of a group most of them, N equal neighbours each
+// 1/N^2 (a soft glow). Continuous in the sources' brightness and position (the tile's own centroid, and the
+// window's edge a smoothstep), so a moving train does not flicker. The core and halo are never touched.
+#ifdef GLARE_GRID_SET
+#ifndef GLARE_GRID_ACCESS
+#define GLARE_GRID_ACCESS readonly
+#endif
+layout(set = GLARE_GRID_SET, binding = GLARE_GRID_BINDING, std430) GLARE_GRID_ACCESS buffer GlareGrid {
+    uint glareGrid[]; // per tile: sum q, sum q fx, sum q fy (q = uint(u x kGlareQ), f the position in the tile x 64)
+};
+const float kGlareQ = 16.0;
+// A glaring source's weight in the grid: (flare / the threshold flare)^2, capped at 2^12.
+float glareClusterU(float s) { return exp2(4.0 * clamp(s, 0.0, 3.0)); }
+uint glareClusterQ(float s, float vis) { return uint(glareClusterU(s) * clamp(vis, 0.0, 1.0) * kGlareQ + 0.5); }
+
+// px: the source's pixel; q: its own grid weight (glareClusterQ, as glare_cluster.comp wrote it); radius: its
+// glare's radius in pixels. 1 = keep every spike.
+float glareSpikeWeight(vec2 px, uint q, float radius)
+{
+    if (gpc.cluster <= 0.0 || gpc.gridW == 0u || gpc.gridH == 0u || q == 0u)
+        return 1.0;
+    float T = max(gpc.tilePx, 1.0);
+    float R = clamp(0.8 * radius, 1.5 * T, 12.0 * T);
+    ivec2 g  = ivec2(gpc.gridW, gpc.gridH);
+    ivec2 a  = clamp(ivec2(floor((px - R) / T)), ivec2(0), g - 1);
+    ivec2 b  = clamp(ivec2(floor((px + R) / T)), ivec2(0), g - 1);
+    ivec2 own = ivec2(floor(px / T));
+    float sum = 0.0, kOwn = 1.0;
+    for (int y = a.y; y <= b.y; ++y)
+        for (int x = a.x; x <= b.x; ++x) {
+            uint i  = uint(y * g.x + x) * 3u;
+            uint qs = glareGrid[i];
+            if (qs == 0u) continue;
+            vec2 c  = (vec2(x, y) + vec2(float(glareGrid[i + 1u]), float(glareGrid[i + 2u])) / (64.0 * float(qs))) * T;
+            float k = 1.0 - smoothstep(0.5 * R, R, length(c - px));
+            sum += float(qs) * k;
+            if (x == own.x && y == own.y) kOwn = k;
+        }
+    float qf = float(q);
+    float others = max(sum - qf * kOwn, 0.0);
+    float w = qf / (qf + others);
+    return mix(1.0, w * w, clamp(gpc.cluster, 0.0, 1.0));
+}
+#endif

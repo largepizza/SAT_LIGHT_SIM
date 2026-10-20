@@ -18,12 +18,20 @@ struct SatVisible { // GpuSatVisible (SatelliteSim.h)
 };
 layout(set = 0, binding = 1) readonly buffer SatVisibleBuf { SatVisible satellites[]; };
 
+#define GLARE_GRID_SET 1
+#define GLARE_GRID_BINDING 1
 #include "glare.glsl"
+#include "cloud_occlusion.glsl"
+
+layout(set = 0, binding = 5) uniform sampler2D cloudTargetA;
+layout(set = 0, binding = 6) uniform sampler2D cloudTargetB;
+layout(set = 0, binding = 7) uniform sampler2D sceneDepthTex;
 
 layout(location = 0) out vec3  gColor;
 layout(location = 1) out float gStrength; // 0..1+: how far past the threshold
 layout(location = 2) out float gRadiusPx;
 layout(location = 4) flat out vec3 gSrc;  // xy = the source's screen uv, z = its range (m)
+layout(location = 5) out float gSpikeW;   // the share of its spikes it keeps (a cluster: glare.glsl)
 
 void cull()
 {
@@ -33,6 +41,7 @@ void cull()
     gStrength = 0.0;
     gRadiusPx = 0.0;
     gSrc = vec3(0.0);
+    gSpikeW = 0.0;
 }
 
 void main()
@@ -57,4 +66,9 @@ void main()
     gStrength = s * gpc.gain;
     gRadiusPx = gl_PointSize * 0.5;
     gSrc  = vec3(ndc * 0.5 + 0.5, sat.rangeM > 0.0 ? sat.rangeM : 5.0e29);
+    // Its share of the spikes among the glaring sources around it (glare_cluster.comp wrote the grid with the
+    // same weight and visibility: alone, it keeps them all).
+    float vis = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, gSrc.xy, gSrc.z, 1.0);
+    if (textureLod(sceneDepthTex, gSrc.xy, 0.0).r < gSrc.z) vis = 0.0;
+    gSpikeW = glareSpikeWeight(gSrc.xy * gpc.screenSizePx, glareClusterQ(s, vis), radius);
 }

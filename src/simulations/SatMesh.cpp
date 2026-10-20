@@ -374,7 +374,9 @@ GpuSatMeshMaterial packSatMeshMaterial(const SatMaterial &m)
         }
         x = 0.5f * (lo + hi);
     }
-    g.lattice = glm::vec4(m.coverage, m.trussPitch, x, 0.0f);
+    // w = 1: an engine's inside (the rocket models' "soot", tools/make_rocket_models.py), which glows while the
+    // stage burns (GpuMeshInstance::earthShC.w, sat_mesh.frag; 2026-10-20).
+    g.lattice = glm::vec4(m.coverage, m.trussPitch, x, m.name == "soot" ? 1.0f : 0.0f);
     return g;
 }
 

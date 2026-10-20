@@ -234,7 +234,11 @@ BreakupResult breakupExplosion(double m, const BreakupSizes &sz, uint64_t seed)
     BreakupResult res;
     res.catastrophic = true;
     res.massKg = m;
-    const double nReal = 6.0 * std::pow(sz.LcMin, -1.6);
+    // The NASA SBM's explosion law is for an upper stage of a few tonnes (scale factor S = 1). A much heavier parent
+    // (a 420-t station) breaks into far more pieces: S = (m / 2 t)^0.75, the collision law's mass exponent, never
+    // below 1 (2026-10-20: the ISS exploded into 239 pieces over 10 cm, 7 of them over 1 m; now ~13,000 and ~330).
+    const double S = std::max(1.0, std::pow(m / 2000.0, 0.75));
+    const double nReal = 6.0 * S * std::pow(sz.LcMin, -1.6);
     fillFragments(res, nReal, sz, false, 0.0, seed);
     return res;
 }

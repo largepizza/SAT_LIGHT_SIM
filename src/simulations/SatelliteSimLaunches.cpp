@@ -291,6 +291,9 @@ struct SatelliteSim::LaunchState
     };
     std::vector<PlumeDbg> plumeDbg;
     std::unordered_map<int, glm::dvec3> engineGeom; // per rocket type: (nozzle exit z, exit radius, length) in metres
+    // Per plane: the crewed station's dead second (Kessler's roster word) the plane's batches were built against; a
+    // change (a breakup, the cascade reaching it, a rollback) rebuilds them (crewSync).
+    std::vector<int32_t> crewDead;
     std::vector<LPad> pads;          // the launch pads (ensureCatalog)
     std::vector<int> sitePad;        // per catalog site: its pad
     uint64_t padMeshKey[16] = {};    // the pads drawn as meshes, per reserved slot (pad index + 1; 0 = free)
@@ -948,6 +951,20 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     {
         B.why = sim.launchAfterStorm == 0 ? "stood down since the storm" : "stand-down after the storm";
         return;
+    }
+    // A crewed station the cascade or the player killed (dead, destroyed or re-entered) before lift-off gets no more
+    // crews (issue 20261019_231126). A flight already up keeps flying (launchOngoing reports the station lost). Read
+    // from the roster word mirrored from the event log, so a pure function of time and the log; crewSync rebuilds the
+    // plane's batches when the word changes.
+    if (pg.crew && !pl.sats.empty() && pl.sats[0] < sim.activeSatCount && 2ull * pl.sats[0] + 1 < sim.kRosterWords.size())
+    {
+        // (lost = dead or ended, whichever first: a breakup ends a satellite without a dead second)
+        const int32_t dead = std::min(sim.kRosterWords[2ull * pl.sats[0]], sim.kRosterWords[2ull * pl.sats[0] + 1]);
+        if (sim.kesslerEnabled && dead != kessler::kNever && (double)dead <= secOfKessler(sim, tL))
+        {
+            B.why = "station lost";
+            return;
+        }
     }
     const launch::Vehicle &vh = L.cat.vehicles[B.veh];
     const launch::Site &st = L.cat.sites[B.site];
@@ -1833,6 +1850,43 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     }
 }
 
+// Crewed stations: rebuild a plane's cached batches when its station's dead second changes (a breakup, a rollback,
+// the worker reaching it), so the schedule follows the event log (buildBatch's "station lost").
+static void crewSync(const SatelliteSim &sim, SatelliteSim::LaunchState &L)
+{
+    if (!L.planesBuilt)
+        return;
+    if (L.crewDead.size() != L.planes.size())
+        L.crewDead.assign(L.planes.size(), kessler::kNever);
+    std::vector<int> changed;
+    for (size_t pi = 0; pi < L.planes.size(); ++pi)
+    {
+        const LPlane &pl = L.planes[pi];
+        if (!L.cat.programs[pl.prog].crew || pl.sats.empty())
+            continue;
+        int32_t d = kessler::kNever;
+        if (sim.kesslerEnabled && 2ull * pl.sats[0] + 1 < sim.kRosterWords.size())
+            d = std::min(sim.kRosterWords[2ull * pl.sats[0]], sim.kRosterWords[2ull * pl.sats[0] + 1]);
+        if (d != L.crewDead[pi])
+        {
+            L.crewDead[pi] = d;
+            changed.push_back((int)pi);
+        }
+    }
+    if (changed.empty())
+        return;
+    for (auto it = L.batches.begin(); it != L.batches.end();)
+    {
+        const LBatch &B = it->second;
+        // (a crew batch carries no train and no retirees: no GPU chunks to release)
+        if (B.chunks[0].empty() && B.chunks[1].empty() &&
+            std::find(changed.begin(), changed.end(), B.plane) != changed.end())
+            it = L.batches.erase(it);
+        else
+            ++it;
+    }
+}
+
 };
 
 // ── Per frame ───────────────────────────────────────────────────────────────────────────────────
@@ -1894,6 +1948,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     const bool on = launchesEnabled && L.loaded;
     if (on && !L.planesBuilt)
         LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    LaunchImpl::crewSync(*this, L);
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     std::vector<uint64_t> touched;
     if (on)
@@ -2623,7 +2678,17 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 const double rC = std::max(glm::length(relC), 1.0);
                 const double rEff = std::max(rC, Lcore / (4.0 * pixA));
                 const double pointK = glm::mix(1.0, 0.3, glm::smoothstep(4.0, 30.0, Lpx));
-                const double fP = flare * (range / rEff) * (range / rEff) * pointK;
+                double fP = flare * (range / rEff) * (range / rEff) * pointK;
+                // ...and its glare stays modest once the flame is resolved (2026-10-20, issue 20261019_222938 shot 2:
+                // from 200 m under a Super Heavy the point was ~2e4, a glare and bloom over the whole screen; "a
+                // smaller glare with all 33 engines lit up is the ideal look"). Geometric blend toward a flare of 14
+                // (just past the glare threshold) as the flame grows from 4 to 30 px; the lit nozzles (the mesh,
+                // sat_mesh.frag) and the flame's Gaussians carry the light.
+                {
+                    const double capK = glm::smoothstep(4.0, 30.0, Lpx);
+                    if (fP > 14.0 && capK > 0.0)
+                        fP = std::exp(glm::mix(std::log(fP), std::log(14.0), capK));
+                }
                 if (fP > 2e-4 && kFireCount < kFireballMax)
                     fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(relC) / rC), (float)fP), glm::vec4(col, (float)rC)};
             }
@@ -2640,7 +2705,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 // x kFlameCore, the core's excess over the point magnitudes' average (tuned for points). Without the
                 // hand-over a flame a few hundred metres long seen from a kilometre was a blown-out white sheet over
                 // the vessel even by day (the user's QA shots 5-6).
-                const double kFlameCore = 30.0;
+                // ...x 0.18 at night (2026-10-20): the night exposure is ~5.5x the day's, and a resolved flame's
+                // Gaussians, hundreds of times past white, saturated out to 3-4 sigma: a round white blob several
+                // times the engine cluster's size (issue 20261019_222938 shot 2). As if the eye adapted to the flame.
+                const double kFlameCore = 30.0 * (1.0 - 0.82 * (1.0 - dayness));
                 const double dayK = 1.0 - 0.8 * dayness;
                 const double J = 0.6 * flare / std::max(dayK, 1e-3) * range * range / K;
                 const double corePx = 2.0 * sPk[0] / std::max(range * pixA, 1e-9);
@@ -2652,8 +2720,28 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
                     auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
                     const glm::dvec3 ce = toEnu(Pexit - offK[k] * vdir - eye);
+                    // Faded out as the eye comes inside it (its Mahalanobis radius from 3 to 1.5 sigma): from under a
+                    // rising stage, in its exhaust, the tail's Gaussian lit every direction at a third of its core's
+                    // brightness - a white screen (issue 20261019_222938 shot 2).
+                    const double mA = glm::dot(ce, a) / sA, mP2 = (glm::dot(ce, ce) - glm::dot(ce, a) * glm::dot(ce, a)) / (sP * sP);
+                    const double inK = glm::smoothstep(1.5, 3.0, std::sqrt(mA * mA + std::max(mP2, 0.0)));
+                    if (inK <= 0.0)
+                        continue;
+                    // Resolved and seen along its axis (from under a rising stage), a Gaussian's whole length adds up in
+                    // each pixel: the flame was a white disc over the engines. Its surface brightness is held at its
+                    // side-on value (x sP sqrt(q), q the inverse variance along the line of sight), and from the
+                    // exhaust side, within ~40 deg of the axis, it thins further, so the lit nozzles show through
+                    // (sat_mesh.frag; "a smaller glare with all 33 engines lit up").
+                    double viewK = 1.0;
+                    {
+                        const double rc = std::max(glm::length(ce), 1e-3);
+                        const double cz = glm::dot(-ce / rc, a); // + = the eye on the nose side
+                        const double qv = cz * cz / (sA * sA) + (1.0 - cz * cz) / (sP * sP);
+                        const double endK = glm::smoothstep(0.75, 0.97, -cz);
+                        viewK = glm::mix(1.0, std::min(1.0, sP * std::sqrt(qv)) * glm::mix(1.0, 0.15, endK), resK);
+                    }
                     GpuDustCloud &d = out[n++];
-                    d.c = glm::vec4(glm::vec3(ce), (float)(J * shareK[k] * unitK));
+                    d.c = glm::vec4(glm::vec3(ce), (float)(J * shareK[k] * unitK * inK * viewK));
                     d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2),
                                      (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
                     d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), 0.0f);
@@ -2665,13 +2753,19 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 // drew a white ellipse hundreds of metres across over the rocket), scaled with the engines, behind them.
                 if (n < kMaxDustClouds)
                 {
-                    const double Rg = D * (30.0 + 300.0 * hiK);
+                    // 12 exit diameters low down (30 drew a 270-m ellipse round a Super Heavy whose lit column filled
+                    // the screen from a few km), growing with the expanding exhaust aloft.
+                    const double Rg = D * (12.0 + 318.0 * hiK);
                     const double gA = std::max(1.6 * Rg, sMin), gP = std::max(Rg, sMin);
                     const double jA = 1.0 / (gA * gA), jP = 1.0 / (gP * gP);
                     auto Mg = [&](int p, int q) { return jA * a[p] * a[q] + jP * (b2[p] * b2[q] + c2[p] * c2[q]); };
                     const glm::dvec3 ce = toEnu(Pexit - 2.0 * gA * vdir - eye);
+                    // Gone as the eye comes within a few of its lengths: from inside (under a rising stage, in its
+                    // exhaust) it was a white haze over the whole screen (issue 20261019_222938 shot 2).
+                    // (0.12 of the flame, was 0.25: from a few km at night it saturated into a column taller than the rocket.)
+                    const double nearK = glm::smoothstep(2.0 * gA, 6.0 * gA, glm::length(ce));
                     GpuDustCloud &g = out[n++];
-                    g.c = glm::vec4(glm::vec3(ce), (float)(0.25 * J * unitK * (1.0 - 0.95 * dayness)));
+                    g.c = glm::vec4(glm::vec3(ce), (float)(0.12 * J * unitK * (1.0 - 0.95 * dayness) * nearK));
                     g.ia = glm::vec4((float)Mg(0, 0), (float)Mg(1, 1), (float)Mg(2, 2),
                                      (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * gA * gP * gP)));
                     g.ib = glm::vec4((float)Mg(0, 1), (float)Mg(0, 2), (float)Mg(1, 2), 0.0f);
@@ -4247,6 +4341,7 @@ void SatelliteSim::transientWriteSlot(uint32_t slot, const SelTransient &s, doub
     e.fixVel = s.vel;
     e.fixAcc = s.acc;
     e.fixAxis = s.axis;
+    e.engineGlow = (s.kind == 1 && s.burn != 0) ? 1.0f : 0.0f; // its nozzles lit (sat_mesh.frag)
     e.fixT0 = t0;
     const uint32_t idx = activeSatCount + slot;
     if (idx < satOrbits.size())
@@ -4644,6 +4739,7 @@ void SatelliteSim::selTransientTake(const SelTransient &s)
     e.fixVel = s.vel;
     e.fixAcc = s.acc;
     e.fixAxis = s.axis;
+    e.engineGlow = (s.kind == 1 && s.burn != 0) ? 1.0f : 0.0f; // its nozzles lit (sat_mesh.frag)
     e.fixT0 = t0;
     // A rocket has a model (Info, Go to, its mesh); a fireball none (Track only). The orbit rows read the state.
     const uint32_t idx = transientSatIdx();
@@ -4830,6 +4926,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
         e.fixVel = s.vel;
         e.fixAcc = s.acc;
         e.fixAxis = s.axis;
+        e.engineGlow = (s.kind == 1 && s.burn != 0) ? 1.0f : 0.0f; // its nozzles lit (sat_mesh.frag)
         // The transients are the last frame's: their time is the last fill's.
         e.fixT0 = selTransientsT;
         (void)t;
@@ -4954,6 +5051,7 @@ void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN,
         return;
     if (!L.planesBuilt)
         LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    LaunchImpl::crewSync(*this, L);
     struct Item
     {
         double tL;
@@ -5190,7 +5288,16 @@ void SatelliteSim::launchOngoing(std::vector<MissionOngoing> &out)
             m.cat = 0;
             m.key = key;
             m.title = pg.spacecraft + " to " + target + " (" + std::to_string(pg.people) + " crew)";
-            if (t < B.tL + B.t2)
+            double tLost = 0.0;
+            const int fate = rosterFateAt(L.planes[B.plane].sats[0], t, &tLost);
+            if (fate != 0)
+            {
+                // Launched before its station was lost (issue 20261019_231126): nothing to dock with.
+                m.status = std::string("The station is ") + rosterFateName(fate) + " (" + fmtUtc(tLost) +
+                           "); rendezvous called off";
+                m.tNext = 0.0;
+            }
+            else if (t < B.tL + B.t2)
                 m.status = veh + ": " + phaseOf(B, t - B.tL, m.tNext);
             else
             {
@@ -5538,7 +5645,8 @@ void SatelliteSim::launchFillPadLights()
             // Magnitude at 1 km: a mast's flood cluster seen from the side ~-4, a medium-intensity red aviation
             // beacon ~-2 (flashing ~40 a minute), a landing zone's flood ~-3. (Physical floods are brighter still; the
             // flare is capped below the glare's huge spikes.)
-            double m1 = pl.kind == 0 ? -4.0 : pl.kind == 1 ? -2.0 : -3.0;
+            // Floods -3 (was -4: from a pad's edge they were a field of large stars, issue 20261019_222938 shot 1).
+            double m1 = pl.kind == 0 ? -3.0 : pl.kind == 1 ? -2.0 : -3.0;
             double blink = 1.0;
             if (pl.kind == 1)
             {
@@ -5549,7 +5657,9 @@ void SatelliteSim::launchFillPadLights()
             }
             const double m = m1 + 5.0 * std::log10(range / 1000.0) +
                              atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
-            const double flare = std::min(0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * night * blink, 25.0);
+            // Capped at 14 (was 25): just past the glare threshold (effectFlare ~11.5), so a nearby flood glares faintly
+            // and a mast's cluster reads as one soft glow (glare clusters, include/glare.glsl), not a sea urchin.
+            const double flare = std::min(0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * night * blink, 14.0);
             if (flare < 2e-4 || kFireCount >= kFireballMax)
                 continue;
             const glm::vec3 col = pl.kind == 1 ? glm::vec3(1.0f, 0.12f, 0.06f)

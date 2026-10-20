@@ -267,7 +267,12 @@ nlohmann::json SatelliteSim::missionsStateJson()
     j["ongoing"] = og;
     nlohmann::json st = nlohmann::json::array();
     for (const CrewStation &s : msStations)
-        st.push_back({{"name", constellations[s.constIdx].name}, {"sat", s.sat}});
+    {
+        double tF = 0.0;
+        const int fate = s.sat >= 0 ? rosterFateAt((uint32_t)s.sat, now, &tF) : 0;
+        st.push_back({{"name", constellations[s.constIdx].name}, {"sat", s.sat}, {"fate", rosterFateName(fate)},
+                      {"fate_hours_ago", fate ? (now - tF) / 3600.0 : 0.0}});
+    }
     j["stations"] = st;
     j["status"] = msStatus;
     return j;
@@ -598,7 +603,15 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             const float altKm = cs0.sat >= 0 && cs0.sat < (int)satOrbits.size() ? satOrbits[cs0.sat].altM / 1000.0f : 0.0f;
                             const char *status;
                             double tN = 0.0;
-                            if (!constellations[cs0.constIdx].enabled)
+                            double tFate = 0.0;
+                            const int fate = cs0.sat >= 0 ? rosterFateAt((uint32_t)cs0.sat, now, &tFate) : 0;
+                            char fu[40];
+                            fmtUtcShort(tFate, fu, sizeof(fu));
+                            if (fate == 1)
+                                status = msStr("Dead since %s, tumbling, uncrewed; no more crew flights", fu);
+                            else if (fate >= 2)
+                                status = msStr("%s %s; no more crew flights", fate == 2 ? "Destroyed" : "Re-entered", fu);
+                            else if (!constellations[cs0.constIdx].enabled)
                                 status = msStr("Hidden (Settings > Constellations); %.0f km", altKm);
                             else if (arriving)
                                 status = msStr("Crewed, %.0f km; a new crew is on its way", altKm);
@@ -610,7 +623,8 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             else
                                 status = msStr("Crewed, %.0f km", altKm);
                             const int sidx = (int)s;
-                            const bool en = constellations[cs0.constIdx].enabled;
+                            // (a destroyed / re-entered station is not there to select or fly to; a dead one tumbles)
+                            const bool en = constellations[cs0.constIdx].enabled && fate < 2;
                             ongoingRow(rid++, msStr("%s", constellations[cs0.constIdx].name.c_str()), status, tN, -1.0, [&]() {
                                 if (uiButton(inp, ui, "MsStSel", sidx, "Select", "Select the station", false, en))
                                     stationSel = sidx;
@@ -732,6 +746,16 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
         launchGoToNextReentry(msg);
         msStatus = msg;
         msNextWall = msPinWall = -1e300; // rebuilt next frame (Clay still holds this frame's strings)
+    }
+    const double tNowMs = now;
+    auto stationGone = [&](int i) {
+        return i >= 0 && i < (int)msStations.size() && msStations[(size_t)i].sat >= 0 &&
+               rosterFateAt((uint32_t)msStations[(size_t)i].sat, tNowMs) >= 2;
+    };
+    if (stationGone(stationSel) || stationGone(stationGo))
+    {
+        msStatus = constellations[msStations[(size_t)std::max(stationSel, stationGo)].constIdx].name + " no longer exists";
+        stationSel = stationGo = -1;
     }
     if (stationSel >= 0 && stationSel < (int)msStations.size())
     {
