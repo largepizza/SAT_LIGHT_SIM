@@ -2138,8 +2138,13 @@ its record there with a `report` {id, shot} key (tools/perf_analysis and `snapsh
   `settings_changed_since_previous` (a leaf diff against the issue's previous shot; camera / observer / time
   left out) + `note`.
 - **The image must stay representative:** it is the frame presented right after the key press, through the
-  screenshot path with the UI left out (`screenshotRequested` set in the same `buildUI` that builds the
-  record). Nothing is paused, settled, reset or re-rendered for it — never route it through the HQ photo or a
+  screenshot path (`screenshotRequested` set in the same `buildUI` that builds the record), with the UI left
+  out unless "Issue report shots include the UI" (`display.report_shot_ui`, Display tab and the Issue reports
+  window, 2026-10-19). **A shot with the UI** keeps every window the player had open (a trace, the info window)
+  but never the things that exist because of the shot — the note bar, the Issue reports window and the toast:
+  `shotHidesOverlays()` (screenshotRequested && screenshotIncludeUI && `screenshotHideOverlays_`) skips them in
+  buildUI that frame. The same holds for F12 screenshots (`display.screenshot_ui`) and the "Screenshot with UI"
+  key (`KB_SCREENSHOT_UI`, F10): `requestScreenshot(withUi)`. Harness `capture ui=1` never sets the hide flag. Nothing is paused, settled, reset or re-rendered for it — never route it through the HQ photo or a
   settle, which would hide the grain, ghosting or pop the shot exists to show. A shot waits in
   `reportShotPending_` only while an earlier PNG is encoding (the record is then built on the later frame too).
 - **The note bar** (`buildReportBar`, drawn even with the HUD hidden): title + this shot's note. **It must
@@ -3107,7 +3112,8 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     observer's sky (`pickViewerSatellite`), SELECTS it (`selectSatellite`) and opens BOTH windows
     (`openModelViewer(..., popOut = true)`), so the viewer never shows an unreferenced satellite and a
     station is one click to find.
-    - **Info window** (`buildInfoWindow`, default 470x~680 at the right edge, min 380x470): the title is
+    - **Info window** (`buildInfoWindow`, default 470 wide and tall down to the bottom-right HUD panel (up to
+      1000), min 380x560, at the right edge): the title is
       the satellite's name as the selection panel gives it ("<constellation> #<n>"), amber while it is the
       selection, plus the **Select / Go to title-bar icons**
       (`buildViewTitleIcons`; both satellite windows carry them, each with its own hover pair, and
@@ -3115,17 +3121,23 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
       A **fixed 4:3 render band** sits at the top with the
       **view chips** floating over it (`buildViewChips`, anchored to the image element with
       `attachTo = ELEMENT_WITH_ID` so a resize cannot slide them off), a row of four **stat tiles**
-      (MAGNITUDE as seen, ELEVATION, RANGE, PHASE; a phrase shortens to Dark / Below), then the scrollable
-      collapsible **sections** — the Clouds tab's form (`infoSection`, `+`/`-` headers, because the font
-      atlas is ASCII-only), every body a label / value grid (`uiKV`, 2026-10-03): SATELLITE
-      (`viewerSatValue[4]`: type, model, size, mesh) and ORBIT (`viewerOrbitValue[5]`: altitude, inclination,
-      RAAN, period, the flare-mitigation power) **open by default**, then BRIGHTNESS (`viewerPhotValue[5]`
-      with `kViewerPhotLabels`: magnitude as seen, above the air, the extinction, at 1000 km, phase angle; +
-      Trace pass), SKY POSITION (`viewerObsValue[4]`: visibility, elevation, azimuth, range), VIEW (the 3D
-      view's camera / light / pose choices and the shadows, reflections, detail, glare, markers toggles +
-      Reset view — the old CAMERA and RENDER sections) and CHECK (`viewerCheckValue[3]`: render, model,
-      difference + `viewerCheckNote`; Run check), collapsed. `infoSectionOpen[]` is session state, like the
-      Clouds sections'. The band does not scroll with the
+      (MAGNITUDE as seen, ELEVATION, RANGE, PHASE; a phrase shortens to Dark / Below), then **ACTIONS**, never
+      collapsed or scrolled (2026-10-19): Trace pass, Go to (Leave while following), Track (each selects the
+      viewed satellite first), and the danger pair **Explode / ASAT strike** (`uiDangerButton`, `Pal::btnDanger*`;
+      two clicks, the first arms for 3 s, `infoExplodeArmKind_`). They call `infoExplodeSelected(kind)` — THE
+      call site of a player breakup from this window (today `kesslerBreakupFromUi`; its `kUiMsg` goes to the
+      toast). Then the scrollable collapsible **sections** — the Clouds tab's form (`infoSection`, `+`/`-`
+      headers, because the font atlas is ASCII-only), every body a label / value grid (`uiKV`), indexed by
+      `InfoSect`: STATUS (`infoStatusValue`, formatted each frame: object, constellation, satellite type, status
+      operational / dead / launch / debris; for a transient — a rocket, the ship's entry, a re-entry — its
+      `transientLabel()`, altitude, speed, seconds since lift-off / glow), BRIGHTNESS (`viewerPhotValue[6]` with
+      `kViewerPhotLabels`), SKY POSITION (`viewerObsValue[4]`), ORBIT (`viewerOrbitValue[5]`; hidden for a
+      transient) **open by default**; then MODEL (TECHNICAL) (`viewerSatValue[4]`: type, model id, size, mesh
+      triangles and parts), 3D VIEW (camera / light / pose, spin, shadows, reflections, detail, glare, markers,
+      Reset view) and PHOTOMETRY CHECK (`viewerCheckValue[3]` + Run check), collapsed. The first cut (2026-09-24 ..
+      10-19) opened on SATELLITE (model id, triangles) and hid BRIGHTNESS, SKY POSITION and a BREAKUP section
+      below the 3D view's settings: the user found Explode by chance ("how much is hiding in here?").
+      `infoSectionOpen[]` is session state, like the Clouds sections'. The band does not scroll with the
       sections: it is re-drawn each frame from the same crop.
     - **The chips** (`buildViewChip`: the icon alone, tooltip = its name, on a translucent scrim so a
       white icon survives bright clouds) are the 3D VIEW's own controls, four of them: **Spin**
@@ -3419,9 +3431,10 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
 ### Satellite type data source
 **`data/constellations.json` is the v1.1 roster ported to geometry models (2026-09-24)**: every v1.1
 constellation with its v1.1 orbit and count (ISS and Tiangong at their current orbits) flying a model
-type, ~1.38M satellites, plus Hubble, the 2020 V1.0 / VisorSat benchmark shells and a disabled
-legacy Gen2 comparison. **Constellations ship enabled** - the user wants to see them (even the 1M AI
-disk); the legacy comparison is the only disabled entry. The v1.1 legacy roster is preserved as
+type, ~1.38M satellites, plus Hubble and the 2020 V1.0 / VisorSat benchmark shells. **Constellations ship
+enabled** - the user wants to see them (even the 1M AI disk). The disabled legacy-lighting Gen2 comparison
+shell and its two-surface type were removed 2026-10-19 (the user: "should be removed"); a legacy Gen2 still
+lives in `data/custom/constellations_attitude_example.json`. The v1.1 legacy roster is preserved as
 `data/custom/constellations_v1_1_default.json`. The build copies `data/constellations.json` over the exe-dir copy whenever the
 exe relinks — which is why hand-pasted rosters there kept "reverting": edit the file in `data/`.
 

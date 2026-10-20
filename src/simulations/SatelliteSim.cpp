@@ -483,8 +483,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Save Snapshot", GLFW_KEY_F9, -1, false, false},                                    // KB_SAVE_SNAPSHOT (event) — how the user hands over a location
         {"HQ Photo", GLFW_KEY_F8, -1, false, false},                                         // KB_PHOTO (event) — supersampled screenshot (requestPhoto)
         {"New Issue Snapshot", GLFW_KEY_F7, -1, false, false},                               // KB_REPORT_NEW (event) — a snapshot that starts a new issue report
+        {"Screenshot with UI", GLFW_KEY_F10, -1, false, false},                              // KB_SCREENSHOT_UI (event) — a screenshot that keeps the interface
     };
-    static_assert(KB_COUNT == 21, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 22, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -7776,6 +7777,7 @@ void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx,
     if (!screenshotRequested)
         return;
     screenshotRequested = false; // consume — this is the one frame it's true for
+    screenshotHideOverlays_ = false;
 
     if (!ctx.screenshotSupported)
     {
@@ -8067,7 +8069,7 @@ void SatelliteSim::finalizeScreenshot()
 
 // ─── requestScreenshot ────────────────────────────────────────────────────────
 // UC6: shared by KB_SCREENSHOT and the left HUD panel's camera button (buildLeftHudPanel).
-void SatelliteSim::requestScreenshot()
+void SatelliteSim::requestScreenshot(bool withUi)
 {
     if (screenshotEncoding.load() || screenshotCopyPending || screenshotRequested)
         return; // a previous capture is still in flight (copy pending, or already encoding) — drop this one
@@ -8097,6 +8099,15 @@ void SatelliteSim::requestScreenshot()
     else
         snprintf(nameBuf, sizeof(nameBuf), "satlight_screenshot.png");
     screenshotPath = (dir / nameBuf).string();
+    // Two shots in one second (F12 then F10) must not overwrite each other.
+    for (int k = 2; k < 100 && std::filesystem::exists(screenshotPath, ec); ++k)
+    {
+        std::string stem(nameBuf);
+        stem = stem.substr(0, stem.size() - 4);
+        screenshotPath = (dir / (stem + "_" + std::to_string(k) + ".png")).string();
+    }
+    screenshotIncludeUI = withUi;
+    screenshotHideOverlays_ = withUi;
     screenshotRequested = true;
 }
 
@@ -8241,7 +8252,10 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         break;
     }
     case KB_SCREENSHOT:
-        requestScreenshot();
+        requestScreenshot(screenshotUiSetting);
+        break;
+    case KB_SCREENSHOT_UI:
+        requestScreenshot(true);
         break;
     case KB_PHOTO:
         requestPhoto();

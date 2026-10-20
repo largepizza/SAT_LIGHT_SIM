@@ -70,7 +70,6 @@ camera az=45 el=-70 fov=90
 cine key t=6
 # 5. One AI formation with the shells behind it (v2: a ring of 8, framed from 600 m)
 const all on
-const "Gen2 shell - legacy (comparison)" off
 observer lat=35.869 lon=-121.402 agl=2
 select const "SpaceX Starmind - sun-synchronous X-ring"
 follow

@@ -1,0 +1,90 @@
+# UI QA (2026-10-19): the restructured info window (STATUS / BRIGHTNESS / SKY POSITION / ORBIT open, actions and
+# Explode always visible, MODEL / 3D VIEW / PHOTOMETRY CHECK collapsed) for a Starlink, a station and a rocket, and
+# screenshots / issue shots that keep the UI (the trace window in the shot, the note bar and report window not).
+#   python tools/harness/run.py tools/harness/scripts/info_window_shots.satcmd --name info_shots
+#   i*  info windows;  e*  the Explode button (armed, then the result toast);  s*  screenshots;  r*  issue shot
+preset Medium
+observer lat=34.05 lon=-118.25 agl=10
+time set 2036-11-22T02:30:00Z
+time pause
+camera az=270 el=15 fov=70
+wait settle 20
+ui scale 1.25
+# ── a Starlink ───────────────────────────────────────────────────────────
+select const "Starlink Gen2"
+ui open info
+wait 10
+ui dump i0_starlink
+capture i0_starlink ui=on
+ui click InfoBreakBtn:0
+wait 2
+ui dump e0_armed
+capture e0_armed ui=on
+ui click InfoBreakBtn:0
+wait 3
+capture e1_result ui=on
+# the collapsed MODEL / 3D VIEW / PHOTOMETRY CHECK headers sit below the fold at 900 px: fold the open ones away
+ui click InfoSectHdr:0
+wait 2
+ui click InfoSectHdr:1
+wait 2
+ui click InfoSectHdr:2
+wait 2
+ui click InfoSectHdr:3
+wait 2
+wait 3
+ui click InfoSectHdr:4
+wait 2
+wait 3
+capture i1_starlink_technical ui=on
+ui click InfoSectHdr:0
+wait 2
+ui click InfoSectHdr:1
+wait 2
+ui click InfoSectHdr:2
+wait 2
+ui click InfoSectHdr:3
+wait 2
+ui click InfoSectHdr:4
+wait 2
+ui close all
+# ── a station ────────────────────────────────────────────────────────────
+select const "International Space Station"
+ui open info
+wait 10
+ui dump i2_iss
+capture i2_iss ui=on
+# ── screenshots: F12 clean, F10 with the UI, F12 with the setting on; the trace window is the point ──
+ui close all
+select const "International Space Station"
+ui open trace
+wait 10
+ui key f12
+wait seconds 3
+ui key f10
+wait seconds 3
+set display.screenshot_ui true
+ui key f12
+wait seconds 3
+set display.screenshot_ui false
+# ── an issue shot with the UI: the report window opens on it, but the shot must not show it ──
+set display.report_shot_ui true
+report shot "UI shot check" new=1 title=UI_shot_check bar=1
+wait 10
+report info active
+capture r0_after_report ui=on
+set display.report_shot_ui false
+ui close all
+ui close reports
+# ── a rocket transient ───────────────────────────────────────────────────
+launch next when=twilight
+time add 120
+wait 10
+launch look stage=0
+wait 5
+launch select kind=rocket
+ui open info
+wait 10
+ui dump i3_rocket
+capture i3_rocket ui=on
+state

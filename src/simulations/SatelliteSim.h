@@ -1989,8 +1989,13 @@ public:
     void finalizeScreenshot() override;
     // UC6: shared by KB_SCREENSHOT (dispatchKeyAction) and the left HUD panel's camera button —
     // builds screenshotPath and sets screenshotRequested, or no-ops if a capture is already in
-    // flight (copy pending or still encoding).
-    void requestScreenshot();
+    // flight (copy pending or still encoding). withUi: the shot keeps the interface (the screenshot's own
+    // toast, the issue-report note bar and window are left out: shotHidesOverlays).
+    void requestScreenshot(bool withUi = false);
+    // A player's screenshot or issue-report shot WITH the UI is being taken this frame: buildUI leaves out the
+    // things that only exist because of the shot (its toast, the report note bar, the Issue reports window), so
+    // the image shows what the player was looking at. Harness captures (`capture ui=1`) never set it.
+    bool shotHidesOverlays() const { return screenshotRequested && screenshotIncludeUI && screenshotHideOverlays_; }
     // HQ photo (review 13): render photoScaleSetting x the window's resolution offscreen (App switches to
     // VulkanContext's photo target while photoScaleRequest() > 0), the clouds at full rate and time
     // paused, let photoSettleFrames frames accumulate (cloud history, sky TAA), then save that frame
@@ -2252,10 +2257,24 @@ private:
     // The info window's collapsible sections (buildInfoWindow). Satellite / Orbit / Photometry start
     // OPEN — those are what the window is for; the rest start collapsed. Open state is session-only,
     // like the Clouds tab's section state (buildCloudSliderSections), not a preference.
-    // 2026-10-03: SATELLITE, ORBIT, BRIGHTNESS, SKY POSITION, VIEW (camera + render), CHECK; the stat tiles over
-    // them carry the four numbers a player looks for first.
+    // 2026-10-19 (the user: "the satellite tab is listed first and is the least relevant"): STATUS, BRIGHTNESS,
+    // SKY POSITION, ORBIT open; the technical MODEL (type, model id, size, triangles), VIEW (camera + render) and
+    // CHECK collapsed at the bottom. The stat tiles and the ACTIONS (Trace / Go to / Track / Explode / ASAT) sit
+    // above the list and never scroll away.
+    enum InfoSect { kInfoStatus = 0, kInfoBright, kInfoSky, kInfoOrbit, kInfoModel, kInfoView, kInfoCheck };
     static constexpr int kInfoSectionCount = 7;
-    bool infoSectionOpen[kInfoSectionCount] = {true, true, false, false, false, false, false};
+    bool infoSectionOpen[kInfoSectionCount] = {true, true, true, true, false, false, false};
+    // STATUS rows, formatted each frame (a transient's label is longer than the kit's 96-char ring)
+    static constexpr int kInfoStatusRows = 5;
+    char infoStatusValue[kInfoStatusRows][160] = {};
+    const char *infoStatusLabel[kInfoStatusRows] = {};
+    int infoStatusCount = 0;
+    // The ACTIONS' Explode / ASAT strike take two clicks: the first arms one (kind) for a few seconds.
+    int infoExplodeArmKind_ = -1;
+    float infoExplodeArmT_ = 0.0f;
+    // THE call site of a player breakup from the info window (the viewed satellite): today the Kessler
+    // scenario's kesslerBreakupFromUi; its result goes to the toast. kind = kessler::EV_EXPLOSION / EV_ASAT.
+    void infoExplodeSelected(uint8_t kind);
     bool hovInfoSection[kInfoSectionCount] = {};
     // ORBIT section rows: altitude, inclination, RAAN, period, then the flare-mitigation power readout
     // (only for types whose primary surface uses the tilt, so the count is usually 4).
@@ -4946,6 +4965,11 @@ private:
     // Harness captures (docs/HARNESS.md `capture`): keep the UI in the shot, crop and rescale before
     // the encode. Reset after every request.
     bool screenshotIncludeUI = false;
+    bool screenshotHideOverlays_ = false; // set with screenshotIncludeUI by a player's shot (shotHidesOverlays)
+    // Display tab "SCREENSHOTS": keep the UI in F12 screenshots / in issue-report shots (F9 / F7). The
+    // "Screenshot with UI" key (KB_SCREENSHOT_UI) always keeps it. display.screenshot_ui / report_shot_ui.
+    bool screenshotUiSetting = false;
+    bool reportShotUiSetting = false;
     int screenshotCrop[4] = {0, 0, 0, 0}; // x, y, w, h in frame pixels; w == 0 = the whole frame
     float screenshotScale = 1.0f;          // < 1 box-filtered down, > 1 nearest-neighbour up (pixel peeping)
 
@@ -5135,7 +5159,8 @@ private:
         KB_SAVE_SNAPSHOT = 18, // event — a shot into the active issue report (+ a line in perf_profiles/profile_log.jsonl)
         KB_PHOTO = 19,         // event — HQ photo: a supersampled, settled screenshot (requestPhoto)
         KB_REPORT_NEW = 20,    // event — a snapshot that starts a NEW issue report (KB_SAVE_SNAPSHOT adds to the active one)
-        KB_COUNT = 21,
+        KB_SCREENSHOT_UI = 21, // event — a screenshot that keeps the UI (default F10)
+        KB_COUNT = 22,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -5252,6 +5277,9 @@ private:
     void uiStatTile(const char *key, int idx, const char *label, const char *value, Clay_Color valueColor);
     bool uiButton(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, const char *tip,
                   bool on = false, bool enabled = true, bool grow = false);
+    // A destructive action's pill (Pal::btnDanger*): `armed` = the first click of two has been made.
+    bool uiDangerButton(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, const char *tip,
+                        bool armed, bool enabled = true);
     bool uiToggleRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, bool &v,
                      const char *tip = nullptr, const char *onText = "On", const char *offText = "Off");
     int  uiChoiceRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label,

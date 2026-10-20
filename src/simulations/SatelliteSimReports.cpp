@@ -357,7 +357,8 @@ bool SatelliteSim::reportTakeShot(bool newIssue, bool openBar)
         char th[40];
         snprintf(th, sizeof(th), "shot_%02d_thumb.png", n);
         reportThumbPath_ = (dir / th).string(); // the window's card image, from the same frame
-        screenshotIncludeUI = false;
+        screenshotIncludeUI = reportShotUiSetting;    // the Display tab's "Issue report shots include the UI"
+        screenshotHideOverlays_ = reportShotUiSetting; // ...but never the note bar / reports window / toast
         screenshotRequested = true; // THIS frame, as it is (recordScreenshotCopy after the render pass)
     }
     snprintf(screenshotToastText, sizeof(screenshotToastText), "%s: shot %d saved", title.c_str(), n);
