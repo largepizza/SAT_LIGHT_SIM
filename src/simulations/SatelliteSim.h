@@ -2468,7 +2468,7 @@ private:
     double followRadiusM = 0.0;
     glm::vec3 followSavedObsDir{0.0f}, followSavedFacing{0.0f};
     float followSavedHeight = 0.0f, followSavedEl = 0.0f, followSavedFov = 70.0f;
-    bool hovSelFollowBtn = false, hovFollowAim = false, hovFollowExit = false;
+    bool hovSelFollowBtn = false, hovFollowAim = false, hovFollowExit = false, hovFollowStay = false;
     char followLabel[128] = {};
     // Review 22: "Go to" and "Exit" FLY (fly = true: the UI's buttons): from the eye to the follow point (re-evaluated
     // every frame as the satellite moves) and back to the saved ground spot, the arc slerped and the altitude
@@ -2506,6 +2506,21 @@ private:
     double followFlightDuration(double distM) const;
     void startFollow(int satIndex, bool fly = false);
     void stopFollow(bool fly = false);
+    // Leave Go to WHERE THE CAMERA IS (2026-10-19, "Stay here": the follow HUD's button, KB_FOLLOW_STAY, harness
+    // `follow stay`): the observer becomes a free observer at the camera's place (direction, altitude above sea level,
+    // facing, elevation and FOV kept), Earth-fixed from then on. The parked ground observer is dropped: the settings
+    // save the new free observer like any other. `why` (optional) is shown as a toast (a followed object that ended).
+    void stopFollowHere(const char *why = nullptr);
+    // A handover between objects (a rocket's stack to its upper stage, a stage to its re-entry, a raising train
+    // member to its roster slot): the jump between them (ECEF), eased out over ~2 s so the camera glides.
+    glm::dvec3 followHandD{0.0};
+    // Following a launch record (a train member raising, a retiree deorbiting): its slot's owner and member when
+    // follow began (a slot changes hands when its batch ends).
+    uint64_t followLaunchOwner = 0;
+    uint16_t followLaunchM = 0;
+    // Per frame, before updateFollow: hand over to the object that continues the followed one, or end in place.
+    void followCheckTarget();
+    bool isFollowing(int satIndex) const; // follow rides this satellite (a selected transient: the same object)
     void updateFollow(float dt);
     glm::dvec3 followFlightPos(const glm::dvec3 &from, const glm::dvec3 &to, double u) const;
     void buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx);
@@ -2697,15 +2712,45 @@ private:
     double selTransientSeenT = 0.0;
     double selTransientsT = 0.0;             // the sim time selTransients was made at
     uint32_t transientSatIdx() const { return activeSatCount + kLaunchCap - 1; }
+    // The FOLLOWED transient has a slot of its own (2026-10-19): follow keeps riding it whatever is selected, and it is
+    // re-evaluated at the frame's exact time (transientExactState) rather than extrapolated from the last list.
+    uint32_t followSlotIdx() const { return activeSatCount + kLaunchCap - 2; }
+    bool followIsTransient() const { return followActive && followSatIndex >= 0 && (uint32_t)followSatIndex == followSlotIdx(); }
+    SelTransient followTrCur;
+    uint64_t followTrKey = 0;    // 0 with followWantKind: a record that ended, waiting for its fireball in the list
+    double followTrSeenT = 0.0;
+    uint8_t followWantKind = 0;  // the successor awaited (a SelTransient kind with a == followWantA), until followWantUntil
+    uint64_t followWantA = 0;
+    double followWantUntil = 0.0;
+    uint32_t followPoolGen = 0;  // following a Kessler pool piece: its slot's generation (a reused slot is another object)
+    // Follow moves to `s` (followed in the follow slot); the camera eases across the jump from `fromEci`.
+    void followTakeTransient(const SelTransient &s, const glm::dvec3 &fromEci, double t);
+    // Advances `cur` along its rocket's mission (stack -> upper stage at staging; a returning upper stage -> its ship
+    // entry) and sets its exact state at t. False when it no longer exists as a rocket (wantKind: what continues it).
+    bool transientContinue(SelTransient &cur, double t, uint8_t &wantKind) const;
+    void transientWriteSlot(uint32_t slot, const SelTransient &s, double t0); // fixedState elements + the slot's type
+    // The object that continues `cur` in this frame's list: a stack's upper stage after staging, an upper stage's
+    // ship entry or re-entry fireball. False: none (yet).
+    bool transientSuccessor(const SelTransient &cur, SelTransient &out) const;
+    bool transientIsStack(const SelTransient &s) const; // a rocket's stage 0 before staging (one vehicle)
+    // A rocket stage / ship entry's state at time t from the launch model itself (position, velocity, acceleration;
+    // the axis is kept). False for the fireballs, which keep their extrapolation.
+    bool transientExactState(SelTransient &s, double t) const;
+    void followTransientUpdate(); // after the frame's list: track, hand over, or end in place
+    // A rocket drawn as a mesh is picked (and followed) through its mesh slot: the transient it holds, taken as the
+    // selection. Returns transientSatIdx(), or the index unchanged when it is not a rocket mesh slot.
+    int rocketMeshSlotToTransient(int satIndex);
     bool selIsTransient() const { return selectedSatIndex >= 0 && (uint32_t)selectedSatIndex == transientSatIdx(); }
     void addSelTransient(const SelTransient &s);
     void selTransientUpdate();                // after the frame's visuals: the reserved slot's state, the label
     void selTransientTake(const SelTransient &s); // make it the selection's object (the caller selects the index)
     std::string transientLabel() const;
+    std::string transientLabelOf(const SelTransient &s) const;
+    double transientGraceS() const; // how long a listed transient may be missing before it counts as gone
     bool selectTransient(int kind, std::string &msg, int stage = -1); // harness: the brightest of a kind (0 = any)
     // Rockets near enough to draw as meshes: up to kRocketMeshSlots of the reserved chunk's slots, bound to the
     // drawn rockets' keys (stable while they stay meshed). Returns their satellite indices (recordMeshScene).
-    static constexpr int kRocketMeshSlots = 7;
+    static constexpr int kRocketMeshSlots = 6; // the reserved chunk: 6 rocket meshes, the followed transient, the selection
     uint64_t rocketMeshKey[kRocketMeshSlots] = {};
     std::vector<int> launchMeshJobs(double pixAngle, const glm::dvec3 &obsEci);
     double rocketMeshPx(const SelTransient &s, double pixAngle, const glm::dvec3 &obsEci) const;
@@ -2732,6 +2777,7 @@ private:
     void launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd); // per frame: schedule, records, uploads
     void launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // rockets, plumes, re-entries
     SatOrbitElems launchOrbitElems(uint32_t slot) const;
+    uint64_t launchSlotOwner(uint32_t slot, uint32_t &m) const; // a launch slot's owner (batch key * 2 + kind; 0 = free)
     std::string launchLabel(uint32_t slot) const;
     nlohmann::json launchStateJson() const;
     nlohmann::json launchListJson(double hours) const;
@@ -2834,7 +2880,18 @@ private:
     double kesslerEpoch() const;          // the scenario epoch (the CME's arrival), J2000 s
     void kesslerInit(VulkanContext &ctx); // after the roster's buffers exist: storm, world, cache, worker
     void kesslerShutdown();               // stop the worker, write the cache
-    void kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents, double keepEngineBefore);
+    // syncUntil > 0: when the world starts within two steps of it (a breakup before the CME starts the world at its own
+    // step), that step is computed before this returns (its debris is up the same frame).
+    void kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents, double keepEngineBefore,
+                        double syncUntil = -1.0);
+    double kWorldStart = 0.0; // where the running world starts (the CME, or a step before it: a pre-CME breakup)
+    // A player breakup without replaying the history (2026-10-19): the world rewinds to its last checkpoint at or
+    // before the breakup (World::rollback), re-runs the breakup's step here, and the mirror is rewound to match.
+    bool kesslerBreakupInPlace(const kessler::Event &ev);
+    void kesslerMirrorRewind(double tCheckpoint);
+    double kLastBreakupMs = 0.0; // how long the last player breakup took on the main thread (harness state)
+    bool kLastBreakupFast = false;
+    bool kForceRebuildOnce = false; // harness `kessler breakup ... rebuild=1`: the old full replay (for comparison)
     void kesslerSync(VulkanContext &ctx);  // per frame: take the worker's new events / records / deaths
     void kesslerWant(double tJ2000);       // ask the (lazy) worker to simulate at least this far
     double kWantFloor = 0.0;               // the furthest explicit kesslerWant (harness waits); the warp's target may drop
@@ -2884,6 +2941,28 @@ private:
     void buildKesslerBanner(UIRenderer &ui);
     void buildKesslerSettingsSection(const UIInput &inp, UIRenderer &ui);
     void kesslerBreakupFromUi(int sat, uint8_t kind);
+
+public:
+    // ── Explode (2026-10-19): the one call the UI makes to break a satellite up ─────────────────────────
+    // Any roster satellite or debris piece, at ANY sim time: before the CME too (the Kessler scenario then starts at that
+    // moment, and is switched on if it was off). Before the CME working satellites dodge everything, so only what the
+    // player broke (and its dead neighbours) collides; the configured avoidance applies from the CME on. It is an event
+    // in the log at the current sim time: playing back before it undoes it. Computed in place (the debris is up the
+    // same frame) and time keeps running. Not for rockets, raising trains or retiring satellites (launch objects).
+    // `reason` says why not, or what happened ("Explosion: <name>").
+    enum class BreakupKind
+    {
+        Explosion,
+        Asat
+    };
+    struct ExplodeResult
+    {
+        bool ok = false;
+        std::string reason;
+    };
+    ExplodeResult explodeSatellite(int satIndex, BreakupKind kind);
+
+private:
     char kBannerBuf[160] = {};
     char kUiMsg[200] = {};
     VkDescriptorSetLayout satRebakeDescLayout = VK_NULL_HANDLE;
@@ -5223,7 +5302,8 @@ private:
         KB_REPORT_NEW = 20,    // event — a snapshot that starts a NEW issue report (KB_SAVE_SNAPSHOT adds to the active one)
         KB_SCREENSHOT_UI = 21, // event — a screenshot that keeps the UI (default F10)
         KB_MISSIONS = 22,      // event — the Missions window (launches, crew flights, the Sun's Fury) open / closed
-        KB_COUNT = 23,
+        KB_FOLLOW_STAY = 23,   // event — leave Go to where the camera is (stopFollowHere); G
+        KB_COUNT = 24,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()

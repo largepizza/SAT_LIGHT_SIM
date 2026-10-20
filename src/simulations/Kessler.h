@@ -9,8 +9,10 @@
 
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -233,7 +235,7 @@ struct DebrisGrid
     void deposit(double a, double e, double incl, double argp, double weight, double massKg, uint64_t seed, int sign);
     // The same deposit into other arrays (a death bucket): adding a bucket to / subtracting it from the grid is exact.
     void depositInto(std::vector<int64_t> &c, std::vector<int64_t> &m, double a, double e, double incl, double argp,
-                     double weight, double massKg, uint64_t seed) const;
+                     double weight, double massKg, uint64_t seed, int sign = 1) const;
     // Collision rate per m^2 of cross-section (1/s per m^2) for an object at r moving at v. `pick` (0..1) chooses
     // the heading bin a hit came from (by its share of the rate); vRelOut / massOut are its speed and the cell's
     // mean fragment mass.
@@ -282,6 +284,10 @@ static_assert(sizeof(SmallStream) == 24, "SmallStream packing");
 struct WorldSettings
 {
     double epoch = 0.0;          // the scenario epoch (J2000 s): born / death seconds count from here
+    // Where the world starts (J2000 s, on the step grid from the epoch): the epoch, or earlier when the player broke
+    // something up before the CME (2026-10-19). Before the epoch working satellites dodge everything (avoidance 1):
+    // only the dead and the debris collide.
+    double startT = 0.0;
     double raanAnchorT = 0.0;    // the sim's SSO RAAN anchor (orbitElemsOf)
     double horizonS = 50.0 * 365.25 * 86400.0;
     double stepS = 6.0 * 3600.0;
@@ -351,6 +357,36 @@ public:
     std::vector<uint32_t> rosterChanged;                    // satellites whose dead / end second changed
 
     void reset();
+    // The engine's step grid: steps of stepS from the epoch (before it too). Every step starts on it, whatever the
+    // worker's chunks: the history does not depend on when the player's time made it pause.
+    double stepStart(double t) const { return s.epoch + std::floor((t - s.epoch) / s.stepS) * s.stepS; }
+    int64_t stepIndex(double t0) const { return (int64_t)std::llround((t0 - s.epoch) / s.stepS); }
+
+    // ── Rollback (2026-10-19) ───────────────────────────────────────────────────────────────────────
+    // A player breakup at time t must not replay the whole history: the world keeps a journal of every change since
+    // its oldest kept checkpoint (one per step start, from shortly before the player's time), so it can be rewound
+    // to the last step start at or before t exactly (undoing the journal in reverse) and only the step containing t
+    // re-run. Bounded: journaling starts at checkpoints the caller asks for, the caller drops old ones, and past
+    // journalCap entries the journal is dropped (a breakup then falls back to a full replay).
+    struct Checkpoint
+    {
+        double t = 0.0;
+        size_t journal = 0, events = 0, pool = 0; // journal: an absolute index (journalOff + position)
+        uint64_t recAdded = 0, smallAlive = 0, smallStreamsMade = 0, sampleCount = 0;
+        size_t pendingNext = 0;
+    };
+    std::vector<Checkpoint> checkpoints;
+    size_t journalCap = 1000000; // ~200 MB of entries
+    bool wantCheckpoints = false;   // the stepping loops checkpoint each step start from checkpointFrom on
+    double checkpointFrom = 1e300;
+    void checkpoint(double t, size_t pendingNext);      // at a step start (simulate): journal from here on
+    void dropCheckpointsBefore(double t);               // keep the latest at or before t, and the later ones
+    void dropJournal();                                 // no rollback any more (until the next checkpoint)
+    int checkpointAtOrBefore(double t) const;           // the latest checkpoint at or before t, or -1
+    size_t journalSize() const { return journal.size(); }
+    // Rewinds to checkpoint k (which is dropped with every later one); returns its pendingNext. The outbox
+    // (poolChanges, rosterChanged, smallStreams) is cleared: the caller rebuilds its mirror from the world.
+    size_t rollback(int k);
     State stateOf(uint32_t ref, double t) const;
     bool alive(uint32_t ref, double t) const; // exists (a dead satellite still does: it can be hit)
     bool dead(uint32_t ref, double t) const;  // a roster satellite past its death (or any pool record)
@@ -380,7 +416,74 @@ private:
     // table (perigee-weighted height x log cdAm, log-interpolated), since a breakup makes up to ~110 of these.
     double lifetime(double t, double a, double e, double cdAm) const;
     mutable std::vector<float> lifeTab; // log(seconds); NaN = not yet computed
+
+    // The journal (rollback): what each change overwrote.
+    enum JOp : uint8_t
+    {
+        J_POOL,      // pool[a] was rec
+        J_GEN,       // poolGen[a] was b
+        J_RDEAD,     // rosterDead[a] was b
+        J_REND,      // rosterEnd[a] was b
+        J_RDECAY,    // rosterDecay[a] was b
+        J_FREE_PUSH, // a pushed on poolFree
+        J_FREE_POP,  // a popped from poolFree
+        J_HEAP_PUSH, // (b = sec, a = slot, c = gen) pushed on the release heap
+        J_HEAP_POP,  // ... popped from it
+        J_GRID,      // a deposit into the grid (d[], seed b): undone by its negative
+        J_BUCKET,    // a deposit into death bucket a
+        J_RETIRE,    // death bucket a left the grid (bucket)
+    };
+    struct JEntry
+    {
+        JOp op = J_POOL;
+        uint32_t a = 0, c = 0;
+        int64_t b = 0;
+        PoolRec rec;
+        double d[6] = {0, 0, 0, 0, 0, 0};
+        std::shared_ptr<DeathBucket> bucket;
+    };
+    std::deque<JEntry> journal;
+    size_t journalOff = 0;   // entries dropped from the front
+    bool journalOn = false;
+    void jPool(uint32_t slot)
+    {
+        if (journalOn)
+        {
+            JEntry e;
+            e.op = J_POOL;
+            e.a = slot;
+            e.rec = pool[slot];
+            journal.push_back(std::move(e));
+        }
+    }
+    void jSimple(JOp op, uint32_t a, int64_t b = 0, uint32_t c = 0)
+    {
+        if (journalOn)
+        {
+            JEntry e;
+            e.op = op;
+            e.a = a;
+            e.b = b;
+            e.c = c;
+            journal.push_back(std::move(e));
+        }
+    }
+    void jDeposit(JOp op, uint32_t key, double a, double ecc, double incl, double argp, double weight, double massKg,
+                  uint64_t seed)
+    {
+        if (journalOn)
+        {
+            JEntry e;
+            e.op = op;
+            e.a = key;
+            e.b = (int64_t)seed;
+            e.d[0] = a, e.d[1] = ecc, e.d[2] = incl, e.d[3] = argp, e.d[4] = weight, e.d[5] = massKg;
+            journal.push_back(std::move(e));
+        }
+    }
+    friend void endObject(World &w, uint32_t ref, double t, bool keepWeighted);
 };
+void endObject(World &w, uint32_t ref, double t, bool keepWeighted);
 
 // The orbit elements the CPU mirror (satOrbitStateAt) takes for a roster object / a pool record.
 SatOrbitElems rosterOrbitElems(const RosterObj &o, double raanAnchorT);
@@ -394,4 +497,7 @@ void lowerThreadPriority();
 // The storm's scripted history: which satellites the Carrington-class storm kills (by altitude and
 // inclination), when, and the dead formation members bumping their neighbours. Deterministic.
 std::vector<Event> stormSeedEvents(const World &w, double arriveT, uint64_t seed);
+// The order a world applies its pending events in (from index `from` on): by engine step, then the scripted events,
+// the engine's, the player's, then by time. simulate() applies a step's events in that order.
+void sortPending(std::vector<Event> &pending, size_t from, const World &w);
 } // namespace kessler

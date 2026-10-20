@@ -1185,12 +1185,11 @@ bool processSatellite(uint i, out SatVisible rec)
     bool deadNow = false;
     if (!isPool) {
         orb = orbits[i];
-        // Destroyed / re-entered, or dead (tumbling). Before the scenario epoch nothing is.
-        if (scenNowSec >= 0) {
-            if (int(kw[2u * i + 1u]) <= scenNowSec)
-                return false;
-            deadNow = int(kw[2u * i]) <= scenNowSec;
-        }
+        // Destroyed / re-entered, or dead (tumbling). Before the scenario epoch only what the player broke up (a
+        // breakup before the CME starts the scenario there: negative seconds); the words are kNever otherwise.
+        if (int(kw[2u * i + 1u]) <= scenNowSec)
+            return false;
+        deadNow = int(kw[2u * i]) <= scenNowSec;
     } else {
         bool isLaunch = i < poolBase;
         uint j = isLaunch ? (i - (poolBase - LAUNCH_CAP)) | 0x20000000u : i - poolBase; // (the tumble axis hash)
@@ -1288,7 +1287,11 @@ bool processSatellite(uint i, out SatVisible rec)
         orb.tumbleAxisY = ax.y;
         orb.tumbleAxisZ = ax.z;
         orb.tumbleRate = 0.0;
-        orb.tumblePhase = ph0 + TWO_PI * (float(uint(scenNowSec) % Pd) + fract(pc.deltaT)) / float(Pd);
+        // A floored modulo (before the CME the seconds are negative; GLSL's % is undefined there): uint(s) is s + 2^32.
+        uint tm = uint(scenNowSec) % Pd;
+        if (scenNowSec < 0)
+            tm = (tm + Pd - (0xFFFFFFFFu % Pd + 1u) % Pd) % Pd;
+        orb.tumblePhase = ph0 + TWO_PI * (float(tm) + fract(pc.deltaT)) / float(Pd);
         orb.constIdx &= ~FORMATION_BIT;              // its tumble slots now hold the tumble, not the formation
         orb.alignTerminator += 2.0;                  // forced tumble (SSO precession still reads > 0.5)
     }
