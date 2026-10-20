@@ -2793,6 +2793,8 @@ private:
     SelTransient selTransientCur;            // the selected one, as last seen
     uint64_t selTransientKey = 0;
     uint64_t launchWantSelKey = 0; // a harness jump's stage, selected once the list has it (selTransientUpdate)
+    uint64_t launchFocusKey = 0;   // the launch a jump last framed (launch next / deploy / missions go): `launch
+                                   // select kind=rocket` prefers its stages (2026-10-20)
     double selTransientSeenT = 0.0;
     double selTransientsT = 0.0;             // the sim time selTransients was made at
     uint32_t transientSatIdx() const { return activeSatCount + kLaunchCap - 1; }
@@ -2834,6 +2836,7 @@ private:
     std::string transientLabel() const;
     std::string transientLabelOf(const SelTransient &s) const;
     double transientGraceS() const; // how long a listed transient may be missing before it counts as gone
+    bool launchFocusListed() const; // the framed launch (launchFocusKey) has a stage in this frame's list
     bool selectTransient(int kind, std::string &msg, int stage = -1, bool nearest = false); // harness: the brightest (or
                                                                                             // nearest) of a kind (0 = any)
     // Rockets near enough to draw as meshes: up to kRocketMeshSlots of the reserved chunk's slots, bound to the

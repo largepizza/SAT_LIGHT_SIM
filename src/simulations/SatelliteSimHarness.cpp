@@ -2615,6 +2615,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     trKind = k.second;
             if (trKind >= 0)
             {
+                // (2026-10-20) Right after a jump (`launch next`, a Missions Go) the framed launch's stages are listed
+                // a frame or more later: wait up to 30 frames for them rather than take another launch's rocket.
+                if ((trKind == 1 || trKind > 10) && launchFocusKey != 0 && !launchFocusListed() && a.frame < 30)
+                    return Status::Pending;
                 if (!selectTransient(trKind > 10 ? 1 : trKind, msg, trKind > 10 ? trKind - 11 : -1,
                                      c.num("nearest", 0.0) > 0.5))
                     fail("launch select: " + msg);

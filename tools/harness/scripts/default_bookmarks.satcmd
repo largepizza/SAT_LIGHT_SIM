@@ -6,6 +6,9 @@
 # optional "look" (the clock a Go sets: 0 = 1x). Each view is settled before it is added; the thumbnail is the
 # next clean frame (wait 5). Every bookmark stores the cloud map's drift: the Venezuela storm and the Antarctic
 # snow need a set phase; the rest are framed with the compiled-in offset (`drift default`).
+# The weather bookmarks (#4 snow, #5 rainbow) also depend on the CLOUD DEFAULTS: a change to coverage, flow, the
+# weather evolution or the storm shapes moves or dissolves their storm (2026-10-11's tuning left both clear sky).
+# Re-check them after any such change: harness_runs/bmaudit-style audit (`bookmark go N; wait settle; capture`).
 # The list (2026-10-06, the user's picks after playing the release candidate): six bookmarks, in this order.
 window 1600x900
 time pause
@@ -48,21 +51,29 @@ wait 5
 #    Orbital beams converging on the station under a snow shower at -23 C: the flakes glitter in the beams' light
 #    around the line of mirrors. (The user saw a "satbow" behind the camera: the beams lit the snow shafts as RAIN,
 #    fixed the same day - snow gives no bow.) Needs the snow's drift phase. Paused: the shower moves on.
+#    2026-10-20: re-framed for the 2026-10-11 cloud defaults (cover_clear / cover_full / flow_warp / evo_window_h
+#    moved the showers: the old phase 1.5634 fell between two of them, a clear sky). Phase 1.535 = the eastern edge
+#    of a shower over the station (a drift sweep, harness_runs/bmaudit: snow at the eye at 1.49-1.54 and
+#    1.63-1.67), the camera raised to the line of mirrors.
 time j2000 1176665048.767463
-drift phase=1.5633554565141452 rate=0.000006499999926745659
+drift phase=1.535 rate=0.000006499999926745659
 observer lat=-77.8455147244164 lon=166.6428994442907 alt=383.67
-camera az=22.38 el=10.86 fov=83.48
+camera az=35 el=20 fov=85
 wait settle
 wait 40
 bookmark add Beam-lit Snow over Antarctica id=default_beam_snow_antarctica scale=0 paused=1
 wait 5
 
-# 5. The rainbow (the user's snapshot, profile_log record 40, 2026-10-04): sunrise behind a storm near
-#    Valencia, Venezuela. Needs the storm's drift phase. Paused: the storm moves on within minutes.
+# 5. The rainbow (the user's snapshot, profile_log record 40, 2026-10-04): sunrise behind a storm in northern
+#    Venezuela. Needs the storm's drift phase. Paused: the storm moves on within minutes.
+#    2026-10-20: re-framed for the 2026-10-11 cloud defaults (the user's tuned coverage remap, flow warp and
+#    evolution window shrank and moved the storm: a clear sky over Valencia). Same moment and phase; the observer
+#    stands at the edge of a raining storm on the Falcon coast (11.02 N 68.58 W, found by probing the rain map,
+#    harness_runs/bmaudit), the Sun 6 deg up behind, looking at the antisolar point: a full double bow.
 time j2000 1164408248.06
 drift phase=5.2360808643282795 rate=0.0000065
-observer lat=9.9665 lon=-68.2745 alt=865
-camera az=-61.25 el=15.5 fov=54
+observer lat=11.0225 lon=-68.58 agl=150
+camera az=-68 el=16 fov=90
 wait settle
 wait 30
 bookmark add Rainbow over Venezuela id=default_rainbow_venezuela scale=0 paused=1

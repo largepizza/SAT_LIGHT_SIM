@@ -1562,8 +1562,28 @@ static bool memberState(const SatelliteSim &sim, const LBatch &B, const LMember 
                 o = mb.depOff + mb.sepDir * age;
                 cwV = mb.sepDir;
             }
-            r += f * (o.x * U + o.y * A + o.z * Cn);
-            if (t >= mb.tRel)
+            // The along-track offset is ARC length (Clohessy-Wiltshire's y): turned along the orbit about Cn, not added
+            // as a straight line (2026-10-20). A late release out of a long dispenser run (Starmind: 36 x 45 s) leaves
+            // the stage ~60 km behind its path at ~-40 m/s, whose secular drift reaches thousands of km within a day;
+            // as a chord that put the member 1800-2000 km UP, and its record was refused (never drawn; selftest
+            // launches_schedule_and_phasing: 2 of 33000 slots).
+            if (gLegacyRecords)
+                r += f * (o.x * U + o.y * A + o.z * Cn);
+            else
+            {
+                // (The release offset itself stays the straight line it was measured as, so the member starts exactly
+                // at the dispenser; only the drift since is turned along the orbit.)
+                const double ang = f * (o.y - mb.depOff.y) / glm::length(r);
+                const double ca = std::cos(ang), sa = std::sin(ang);
+                const glm::dvec3 U2 = ca * U + sa * A, A2 = ca * A - sa * U;
+                const double rl = glm::length(r);
+                r = (rl + f * o.x) * U2 + f * mb.depOff.y * A2 + f * o.z * Cn;
+                const double vu = glm::dot(v, U), va = glm::dot(v, A), vc = glm::dot(v, Cn);
+                v = vu * U2 + va * A2 + vc * Cn;
+                if (t >= mb.tRel)
+                    v += f * (cwV.x * U2 + cwV.y * A2 + cwV.z * Cn);
+            }
+            if (gLegacyRecords && t >= mb.tRel)
                 v += f * (cwV.x * U + cwV.y * A + cwV.z * Cn);
         }
     }
@@ -3042,9 +3062,9 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         GpuKepOrbit g{};
         SatOrbitElems ce{};
         if (!LaunchImpl::memberRecord(*this, B, mb, kind, t, tEpoch, g, ce))
-            return;
+            return false;
         if (!putRecord(slot, g))
-            return;
+            return false; // (the frame's staging is full: the batch stays due, 2026-10-20)
         const SatOrbit &so = satOrbits[mb.sat];
         SlotInfo &si = L.slots[slot];
         si.shown = true;
@@ -3063,6 +3083,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         ++L.nWrites;
         if (budget > 0)
             --budget;
+        return true;
     };
     if (on)
     {
@@ -3171,7 +3192,11 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 for (size_t m = 0; m < B.mem.size(); ++m)
                 {
                     const LMember &mb = B.mem[m];
-                    upNow[m] = (kind == 0 ? t >= mb.tRel : t < mb.tEnd) && LaunchImpl::memberAllowed(*this, B, mb);
+                    // (2026-10-20) the same intervals memberState accepts: a train member is up until arrival (tA), a retiree
+                    // from it — with t >= tRel / t < tEnd alone, a batch arriving that frame counted members up that
+                    // memberState refused (no record written, never shown: selftest launches_schedule_and_phasing).
+                    upNow[m] = (kind == 0 ? (t >= mb.tRel && t < B.tA) : (t >= B.tA && t < mb.tEnd)) &&
+                               LaunchImpl::memberAllowed(*this, B, mb);
                     up += upNow[m];
                 }
                 if (up == 0 && ch.empty())
@@ -3232,7 +3257,9 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                         complete = false;
                         continue;
                     }
-                    writeMember(B, kind, m, slot);
+                    if (!writeMember(B, kind, m, slot))
+                        complete = false; // not written this frame: the batch stays due (it had counted it as done,
+                                          // and the member stayed hidden until its next 20-s rewrite)
                 }
                 B.nUp[kind] = up;
                 if (complete)
@@ -4664,7 +4691,10 @@ bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when, const std::str
     const LBatch *B = nullptr;
     for (const auto &kv : L.batches)
         if (kv.second.valid && std::abs(kv.second.tL - t0) < 1.0)
+        {
             B = &kv.second;
+            launchFocusKey = kv.first;
+        }
     if (!B)
     {
         msg = "launch not found";
@@ -5666,6 +5696,7 @@ bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::str
                       (float)glm::degrees(std::asin(glm::clamp(glm::dot(rn, up), -1.0, 1.0))));
         camera.fovYDeg = 60.0f;
         updatePositions(tS);
+        launchFocusKey = bkey;
         if (ev >= 2)
             launchWantSelKey = (bkey << 3) ^ 2ull; // its upper stage, selected once listed (selTransientUpdate)
         char b[240];
@@ -6691,12 +6722,63 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
     return b;
 }
 
+bool SatelliteSim::launchFocusListed() const
+{
+    // A list made before the jump (another time) does not count: its stages carry the old T-.
+    if (std::fabs(selTransientsT - ((double)simDayJ2000 * 86400.0 + simSecInDay)) > 1.0)
+        return false;
+    for (const SelTransient &s : selTransients)
+        if (s.kind == 1 && s.a == launchFocusKey && launchFocusKey != 0)
+            return true;
+    return false;
+}
+
 bool SatelliteSim::selectTransient(int kind, std::string &msg, int stage, bool nearest)
 {
     const SelTransient *best = nullptr;
     const glm::dvec3 eye(obsECI);
+    // Rockets (2026-10-20): the launch the last jump framed (`launch next`, `launch deploy`, a Missions row's Go) comes
+    // first, drawn or not (on the pad before lift-off its stack is not drawn). Without a stage, the stage that flies on:
+    // the stack / booster until staging, then the upper stage while it burns or is drawn, else the brighter.
+    if (kind == 1 && launchFocusKey != 0)
+    {
+        for (const SelTransient &s : selTransients)
+        {
+            if (s.kind != 1 || s.a != launchFocusKey || !(stage < 0 || s.stage == stage) || !(s.type >= 0 || s.flare > 0.0f))
+                continue;
+            if (!best)
+            {
+                best = &s;
+                continue;
+            }
+            if (stage < 0)
+            {
+                // Prefer the upper stage once it exists (it is listed only after staging), unless the booster is the
+                // one drawn and the upper stage is not.
+                const bool sUp = s.stage == 1, bUp = best->stage == 1;
+                if (sUp != bUp)
+                {
+                    const SelTransient &up = sUp ? s : *best, &lo = sUp ? *best : s;
+                    best = (up.flare > 0.0f || up.burn != 0 || lo.flare <= 0.0f) ? &up : &lo;
+                }
+            }
+        }
+    }
+    // Otherwise: never a booster standing on its pad or a ship after its flight (with nearest=1 another launch's landed
+    // booster beside the eye won over the one about to fly). Landed = over its stage time, < 2 km up, < 20 m/s over
+    // the ground, engines off.
+    auto landed = [&](const SelTransient &s) {
+        if (s.kind != 1 || s.tau < 60.0 || s.burn != 0 || glm::length(s.pos) - kR > 2000.0)
+            return false;
+        const glm::dvec3 vg = s.vel - glm::cross(glm::dvec3(0.0, 0.0, satphot::kOmegaEarth), s.pos);
+        return glm::length(vg) < 20.0;
+    };
     for (const SelTransient &s : selTransients)
     {
+        if (best && kind == 1 && launchFocusKey != 0 && best->a == launchFocusKey)
+            break;
+        if (kind == 1 && landed(s))
+            continue;
         // nearest (2026-10-20, harness `launch select ... nearest=1`): any listed one with a model, drawn or not.
         const bool ok = nearest ? (s.type >= 0 || s.flare > 0.0f) : s.flare > 0.0f;
         if (!ok || !(kind == 0 || s.kind == kind) || !(stage < 0 || s.stage == stage))
@@ -6838,6 +6920,7 @@ bool SatelliteSim::launchGoToKey(uint64_t key, bool moveObserver, double leadS, 
     }
     if (!L.planesBuilt)
         LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    launchFocusKey = key;
     auto it = L.batches.find(key);
     if (it == L.batches.end())
     {
@@ -7615,6 +7698,7 @@ bool SatelliteSim::launchGoToLanding(int which, double leadS, double distM, std:
         {
             bestT = tc;
             best = &B;
+            launchFocusKey = m.key;
         }
     }
     if (!best)
@@ -7988,6 +8072,7 @@ bool SatelliteSim::launchGoToShipLanding(double leadS, double distM, double azDe
         }
         bestT = B.tLand;
         best = &B;
+        launchFocusKey = m.key;
     }
     if (!best)
     {
