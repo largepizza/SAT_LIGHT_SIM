@@ -66,7 +66,7 @@ struct GpuMeshInstance
     glm::vec4 earthZ;   // xyz = nadir, w = sh1
     glm::vec4 earthShA; // sh2..sh5
     glm::vec4 earthShB; // sh6..sh9
-    glm::vec4 earthShC; // x = sh10
+    glm::vec4 earthShC; // x = sh10, y = sharp reflections, z = 1 - unfolding, w = engine glow (a burning stage)
 };
 static_assert(sizeof(GpuMeshInstance) == 432, "GpuMeshInstance layout (sat_mesh_common.glsl; mesh_bloom.frag mirrors the stride)");
 struct SatEarthLight;

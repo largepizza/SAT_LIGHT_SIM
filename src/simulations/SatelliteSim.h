@@ -1109,8 +1109,13 @@ struct GlarePC
     float spikes;  // glareSpikes
     float nearGain;   // was pad0 — glareNearGain: the size multiplier a glare gets at zero range
     float nearRangeM; // was pad1 — glareNearRangeKm in metres (include/glare.glsl's glareNearScale)
+    // Glare clusters (2026-10-20, include/glare.glsl): the screen grid glare_cluster.comp fills. gridW = 0 = none.
+    // glare_cluster.comp reads maxPointSize as "the mesh glint list is valid this frame" (it draws nothing).
+    float tilePx;
+    uint32_t gridW, gridH;
+    float cluster; // glareClusterMerge
 };
-static_assert(sizeof(GlarePC) == 112, "GlarePC layout (include/glare.glsl)");
+static_assert(sizeof(GlarePC) == 128, "GlarePC layout (include/glare.glsl)");
 
 // Mesh glints found for glare (glare_find.comp -> glare_mesh.vert; include/glint_list.glsl).
 static constexpr uint32_t kMaxGlints = 64;
@@ -4192,6 +4197,17 @@ private:
     VkPipelineLayout glareFindPipeLayout = VK_NULL_HANDLE, glareMeshPipeLayout = VK_NULL_HANDLE;
     VkPipeline glareFindPipeline = VK_NULL_HANDLE; // compute: not recreated on resize
     VkPipeline glareMeshPipeline = VK_NULL_HANDLE; // graphics: recreated with glarePipeline
+    // Glare clusters (2026-10-20, include/glare.glsl, glare_cluster.comp): the screen grid every glaring
+    // source is summed into (3 uints a tile, kGlareGridMaxTiles at most; binding 1 of glareMeshDescLayout),
+    // the compute that fills it and the glare sprites' own layout (descLayout + the grid's set).
+    static constexpr uint32_t kGlareGridMaxTiles = 1u << 18;
+    VkBuffer glareGridBuf = VK_NULL_HANDLE;
+    VkDeviceMemory glareGridMem = VK_NULL_HANDLE;
+    VkPipelineLayout glareClusterPipeLayout = VK_NULL_HANDLE, glarePipeLayout = VK_NULL_HANDLE;
+    VkPipeline glareClusterPipeline = VK_NULL_HANDLE; // compute: not recreated on resize
+    GlarePC buildGlarePC(const VulkanContext &ctx, float eyeAdapt) const;
+    float glareGridTilePx = 0.0f;                     // this frame's grid (0 = not filled: no clusters)
+    uint32_t glareGridW = 0, glareGridH = 0;
     bool meshGlareListed = false;                  // glare_find.comp ran this frame (recordCompute)
     float meshGlareRangeM = 0.0f;                  // the nearest mesh drawn this frame (0 = none): its
                                                    // glint list's records carry it so a mesh's glare gets
@@ -4235,6 +4251,9 @@ private:
     float glareThreshold = 1.765f;
     float glareFalloff = 4.678f;
     float glareSpikes = 10.0f;
+    // Glare clusters (2026-10-20, issue 20261019_222938): how strongly a glare in a crowd gives up its spikes to
+    // the brighter / summed light around it (include/glare.glsl). 0 = every source draws its own star (as before).
+    float glareClusterMerge = 1.0f;
     // ...and they stay exactly that for a source at `glareNearRangeKm` or beyond: proximity scales the
     // sprite's SIZE alone, so a satellite up in the sky is untouched while one resolved metres away (the
     // 3D viewer) or closing in on a zoomed 3D mesh spreads a much wider glare than a distant point
@@ -5930,9 +5949,10 @@ private:
     // fades, 19/20 trail sliders, 21 flare-mitigation tilt, 22-26 the point model, 27 zoom
     // aperture, 28-32 glare, 33/34 glare near.
     // [38] since 2026-10-07 (35-37: resolved satellites, satellite adaptation, formation merge; photoBufs too).
-    bool hovPhotoMinus[38] = {};
-    bool hovPhotoPlus[38] = {};
-    bool draggingPhoto[38] = {};
+    // [39] since 2026-10-20 (38: glare cluster merge).
+    bool hovPhotoMinus[39] = {};
+    bool hovPhotoPlus[39] = {};
+    bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
     static constexpr int kCloudSliderSlots = 302;   // 296-297 (2026-10-14): layer shadows, cirrus self-shadow; 298-301 aurora storms

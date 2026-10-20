@@ -544,6 +544,16 @@ void main()
         }
     }
 
+    // ── A burning rocket stage's nozzles (2026-10-20, issue 20261019_222938 shot 2) ──
+    // The inside of every bell (the rocket models' "soot", lattice.w = 1) glows while the stage burns
+    // (earthShC.w, the CPU's SatOrbitElems::engineGlow): from below, the engine cluster reads as a ring of lit
+    // nozzles instead of a black disc. Far brighter than a sunlit face (the combustion seen down the bell), white
+    // hot at the throat end, orange at the lip. Render-only parts: no bloom or glare share (photFrac 0).
+    if (inst.earthShC.w > 0.0 && mat.lattice.w > 0.5) {
+        float throat = clamp(0.5 + 0.5 * dot(Ngeo, V), 0.0, 1.0); // looking up the bell: the hot end shows
+        L += inst.earthShC.w * mix(vec3(3.0, 1.3, 0.45), vec3(14.0, 10.0, 6.5), throat * throat);
+    }
+
     // Scene output (4c): pre-exposure radiance (sat_sky.frag applies the atmosphere in front of it
     // and the frame's exposure) scaled by the sprite→mesh hand-off fade, and the distance for the
     // shared scene depth.

@@ -11,6 +11,7 @@ layout(location = 0) in vec3  gColor;
 layout(location = 1) in float gStrength;
 layout(location = 2) in float gRadiusPx;
 layout(location = 4) flat in vec3 gSrc; // xy = the source's screen uv, z = its range (m)
+layout(location = 5) in float gSpikeW;  // the share of its spikes it keeps (glare.glsl)
 
 layout(set = 0, binding = 5) uniform sampler2D cloudTargetA;  // a = tCloudOcclude (>= 0: >= 90% opaque)
 layout(set = 0, binding = 6) uniform sampler2D cloudTargetB;  // rgb = cloud transmittance
@@ -29,7 +30,7 @@ void main()
     if (textureLod(sceneDepthTex, gSrc.xy, 0.0).r < gSrc.z) vis = 0.0;
     if (vis <= 0.001) discard;
 
-    vec2 g = glareProfile(d, gRadiusPx);
+    vec2 g = glareProfile(d, gRadiusPx, gSpikeW);
     // The glint's tint, whitening toward the centre as a bright source reads.
     vec3 col = mix(gColor, vec3(1.0), 0.3) * g.x + mix(gColor, vec3(1.0), 0.7) * g.y;
     outColor = vec4(col * (gStrength * vis), 1.0);

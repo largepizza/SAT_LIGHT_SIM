@@ -4051,7 +4051,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[38][12];
+    static char photoBufs[39][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -4121,6 +4121,9 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         // point sprite from the ground, hundreds of km off, keeps the look tuned on "Glare size (px)".
         {"Glare near gain", &glareNearGain, 1.0f, 8.0f, 0.25f, "%.2f", 33},
         {"Glare near range (km)", &glareNearRangeKm, 1.0f, 20000.0f, 10.0f, "%.0f", 34},
+        // Clusters (2026-10-20, include/glare.glsl): a glare among brighter / many glaring lights gives up its
+        // spikes to a soft glow (a pad's floods, a train, the Reflect ring). 0 = every light its own star.
+        {"Glare cluster merge", &glareClusterMerge, 0.0f, 1.0f, 0.05f, "%.2f", 38},
         // Satellite display (2026-10-07, point_style.glsl / sat_flare.comp): a satellite whose model resolves takes
         // its model's surface brightness (0 = the old bright point to the hand-off); bright resolved satellites in view
         // hide faint points, as an eye adapts (0 = off); an unresolved formation is drawn as one point (0 = each member).
@@ -7745,6 +7748,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         glareSpikes = p.value("glare_spikes", glareSpikes);
         glareNearGain = p.value("glare_near_gain", glareNearGain);
         glareNearRangeKm = p.value("glare_near_range_km", glareNearRangeKm);
+        glareClusterMerge = p.value("glare_cluster_merge", glareClusterMerge);
         satResolvedStrength = p.value("sat_resolved", satResolvedStrength);
         satAdaptationStrength = p.value("sat_adaptation", satAdaptationStrength);
         formationMergeStrength = p.value("formation_merge", formationMergeStrength);
@@ -8375,6 +8379,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"glare_spikes", glareSpikes},
         {"glare_near_gain", glareNearGain},
         {"glare_near_range_km", glareNearRangeKm},
+        {"glare_cluster_merge", glareClusterMerge},
         {"sat_resolved", satResolvedStrength},
         {"sat_adaptation", satAdaptationStrength},
         {"formation_merge", formationMergeStrength},

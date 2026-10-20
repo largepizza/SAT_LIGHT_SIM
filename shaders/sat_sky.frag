@@ -5191,7 +5191,8 @@ void main() {
         vec3 tNight     = (cityLights + cityPool * poolAlb * poolLamb * terrainAO) * (0.12 * (1.0 - twilightFrac));
 #if !defined(SKY_ENV) && !defined(SKY_LITE)
         // + a launch pad's lamps and its floodlit concrete (padGroundAt; white-ish halide floods on the apron).
-        tNight += (padG.glow + 0.35 * padG.pool * poolAlb * vec3(0.95, 0.96, 1.0)) * (0.12 * (1.0 - twilightFrac));
+        // (0.2 of the albedo, was 0.35: the apron read as a blank white slab at night, issue 20261019_222938 shot 1.)
+        tNight += (padG.glow + 0.2 * padG.pool * poolAlb * vec3(0.95, 0.96, 1.0)) * (0.12 * (1.0 - twilightFrac));
 #endif
         // Night light ON the albedo (terrain v2 P1): the moonlit sky (moonlight scattered by the air —
         // ~0.15 of the direct Moon on a flat face, like the Sun's diffuse share) and the moonless

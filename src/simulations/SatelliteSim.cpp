@@ -3641,6 +3641,39 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             meshGlareListed = true;
         }
 
+        // Glare clusters (2026-10-20, include/glare.glsl): every source that glares this frame summed into a coarse
+        // screen grid, so a crowded glare gives up its spikes (glare.vert, glare_mesh_scene.vert read it in recordDraw).
+        glareGridTilePx = 0.0f;
+        glareGridW = glareGridH = 0;
+        if (glareGain > 0.0f && glareClusterMerge > 0.0f && glareClusterPipeline != VK_NULL_HANDLE)
+        {
+            GlarePC cpc = buildGlarePC(ctx, 1.0f);
+            if (cpc.gridW > 0)
+            {
+                glareGridTilePx = cpc.tilePx;
+                glareGridW = cpc.gridW;
+                glareGridH = cpc.gridH;
+                cpc.maxPointSize = meshGlareListed ? 1.0f : 0.0f; // glare_cluster.comp: the glint list is this frame's
+                vkCmdFillBuffer(cmd, glareGridBuf, 0, sizeof(uint32_t) * 3 * cpc.gridW * cpc.gridH, 0u);
+                // The visible list (sat_flare / city sprites / fireballs, compute) and the grid's clear, before the fill.
+                VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+                const VkDescriptorSet sets[2] = {descSet, glareMeshDescSet};
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareClusterPipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareClusterPipeLayout, 0, 2, sets, 0,
+                                        nullptr);
+                vkCmdPushConstants(cmd, glareClusterPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
+                vkCmdDispatch(cmd, 256, 1, 1); // strides over the list (its length is GPU-side)
+                mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1,
+                                     &mb, 0, nullptr, 0, nullptr);
+            }
+        }
+
         // Stage 2: blur/streak — one pipeline, three dispatches ping-ponging flareSourceImg <->
         // flareScratchImg (see FlareBlurPC's comment for the direction/mode scheme). Each
         // dispatch's write must be complete before the next dispatch's read/write — a full
@@ -4944,6 +4977,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         setMeshInstanceEarth(inst, r.earth, glm::dmat3(glm::dvec3(ct, -st, 0.0), glm::dvec3(st, ct, 0.0),
                                                        glm::dvec3(0.0, 0.0, 1.0))); // ECI → ECEF (eciToEcef)
         inst.earthShC.z = (float)(1.0 - satUnfoldAt(e, tNow)); // still unfolding after its release (sat_mesh.vert)
+        inst.earthShC.w = e.engineGlow; // a burning rocket stage: its nozzles' insides glow (sat_mesh.frag)
         inst.firstMaterial = tm->firstMaterial;
         inst.firstOccluder = tm->firstOccluder;
         inst.occluderCount = tm->occluderCount;
@@ -6997,25 +7031,15 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
         // above cannot draw at quarter resolution.
         if (activeSatCount > 0 && glareGain > 0.0f && glarePipeline != VK_NULL_HANDLE)
         {
-            VkPhysicalDeviceProperties props;
-            vkGetPhysicalDeviceProperties(ctx.physicalDevice, &props);
-            GlarePC gpc{};
-            gpc.skyView = camera.viewMatrix();
-            gpc.fovYRad = glm::radians(camera.fovYDeg);
-            gpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
-            gpc.gain = glareGain * flareEyeAdaptGain;
-            gpc.sizePx = glareSizePx * (float)ctx.swapExtent.height / 1080.0f; // resolution-independent
-            gpc.screenSizePx = glm::vec2((float)ctx.swapExtent.width, (float)ctx.swapExtent.height);
-            gpc.maxPointSize = std::min(props.limits.pointSizeRange[1], 1024.0f);
-            gpc.threshold = glareThreshold;
-            gpc.falloff = glareFalloff;
-            gpc.spikes = glareSpikes;
-            gpc.nearGain = glareNearGain;
-            gpc.nearRangeM = glareNearRangeKm * 1000.0f;
+            GlarePC gpc = buildGlarePC(ctx, flareEyeAdaptGain);
+            // The cluster grid recordCompute filled this frame (none: every glare keeps its spikes).
+            gpc.tilePx = glareGridTilePx;
+            gpc.gridW = glareGridW;
+            gpc.gridH = glareGridH;
+            const VkDescriptorSet gsets[2] = {descSet, glareMeshDescSet};
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glarePipeline);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flareSourcePipeLayout, 0, 1, &descSet, 0,
-                                    nullptr);
-            vkCmdPushConstants(cmd, flareSourcePipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glarePipeLayout, 0, 2, gsets, 0, nullptr);
+            vkCmdPushConstants(cmd, glarePipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                sizeof(gpc), &gpc);
             vkCmdDrawIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, drawVertexCount), 1, 0);
             // Glare on the mesh glints glare_find.comp listed this frame.
@@ -7265,6 +7289,11 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyPipeline(device, glareFindPipeline, nullptr);
     vkDestroyPipelineLayout(device, glareFindPipeLayout, nullptr);
     vkDestroyPipelineLayout(device, glareMeshPipeLayout, nullptr);
+    vkDestroyPipeline(device, glareClusterPipeline, nullptr);
+    vkDestroyPipelineLayout(device, glareClusterPipeLayout, nullptr);
+    vkDestroyPipelineLayout(device, glarePipeLayout, nullptr);
+    vkDestroyBuffer(device, glareGridBuf, nullptr);
+    vkFreeMemory(device, glareGridMem, nullptr);
     vkDestroyDescriptorPool(device, glintDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, glareFindDescLayout, nullptr);
     vkDestroyDescriptorSetLayout(device, glareMeshDescLayout, nullptr);
@@ -8819,14 +8848,18 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
     // C12 follow-up #33: cloud occlusion for satellite/flare points — sat_point.frag reads these,
     // same underlying views/samplers already bound into skyDescSet (bindings 10/11 there). Also
     // read by flare_source.frag (flare architecture overhaul) — same layout, VERTEX not needed.
+    // (+ VERTEX / COMPUTE since 2026-10-20: glare.vert and glare_cluster.comp test a glaring source's
+    // visibility for the glare cluster grid.)
+    const VkShaderStageFlags occStages =
+        VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[4] = {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudTargetA
+                   occStages, nullptr}; // cloudTargetA
     bindings[5] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudTargetB
+                   occStages, nullptr}; // cloudTargetB
     // Flare architecture overhaul: flare_source.frag needs terrain occlusion too (this render pass
     // has no shared hardware depth buffer of its own to test against, unlike sat_point.frag).
     bindings[6] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // sceneDepthTex
+                   occStages, nullptr}; // sceneDepthTex
     // Ocean-glint list (GpuOceanGlintBuf) — written here by sat_flare.comp, read by sat_sky.frag
     // via its OWN descriptor set (skyDescSet binding 20) pointed at the same underlying buffer,
     // same split as glowBuf's binding 2 here vs skyDescSet binding 0.
@@ -13304,12 +13337,19 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         li.bindingCount = 2;
         li.pBindings = fb;
         vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &glareFindDescLayout);
-        VkDescriptorSetLayoutBinding mb{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
-        li.bindingCount = 1;
-        li.pBindings = &mb;
+        // The glint list (0) + the glare cluster grid (1): read by the scene's glare sprites and filled / read by
+        // glare_cluster.comp (2026-10-20).
+        ctx.createBuffer(sizeof(uint32_t) * 3 * kGlareGridMaxTiles,
+                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, glareGridBuf, glareGridMem);
+        VkDescriptorSetLayoutBinding mb[2] = {
+            {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        li.bindingCount = 2;
+        li.pBindings = mb;
         vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &glareMeshDescLayout);
 
-        VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
+        VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.poolSizeCount = 2;
         pi.pPoolSizes = ps;
@@ -13325,12 +13365,15 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         glareFindDescSet = sets[0];
         glareMeshDescSet = sets[1];
         VkDescriptorBufferInfo bi{glintBuf, 0, VK_WHOLE_SIZE};
-        VkWriteDescriptorSet w[2] = {};
+        VkDescriptorBufferInfo gbi{glareGridBuf, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet w[3] = {};
         w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareFindDescSet, 1, 0, 1,
                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bi, nullptr};
         w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareMeshDescSet, 0, 0, 1,
                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bi, nullptr};
-        vkUpdateDescriptorSets(ctx.device, 2, w, 0, nullptr);
+        w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareMeshDescSet, 1, 0, 1,
+                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &gbi, nullptr};
+        vkUpdateDescriptorSets(ctx.device, 3, w, 0, nullptr);
 
         VkPushConstantRange fpcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
         VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -13351,6 +13394,25 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         ci.layout = glareFindPipeLayout;
         if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &glareFindPipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create glare find pipeline");
+        vkDestroyShaderModule(ctx.device, mod, nullptr);
+
+        // Glare clusters (2026-10-20): the grid's fill (glare_cluster.comp) and the glare sprites' layout, both
+        // set 0 = descLayout (the visible list, the occlusion textures) + set 1 = the glint list and the grid.
+        const VkDescriptorSetLayout cl[2] = {descLayout, glareMeshDescLayout};
+        VkPushConstantRange cpcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GlarePC)};
+        pli.setLayoutCount = 2;
+        pli.pSetLayouts = cl;
+        pli.pPushConstantRanges = &cpcr;
+        vkCreatePipelineLayout(ctx.device, &pli, nullptr, &glareClusterPipeLayout);
+        VkPushConstantRange gpcr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(GlarePC)};
+        pli.pPushConstantRanges = &gpcr;
+        vkCreatePipelineLayout(ctx.device, &pli, nullptr, &glarePipeLayout);
+        pli.setLayoutCount = 1;
+        mod = ctx.loadShader("shaders/glare_cluster.comp.spv");
+        ci.stage.module = mod;
+        ci.layout = glareClusterPipeLayout;
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &glareClusterPipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create glare cluster pipeline");
         vkDestroyShaderModule(ctx.device, mod, nullptr);
     }
     {
@@ -13453,14 +13515,14 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         VkGraphicsPipelineCreateInfo gci = ci;
         gci.pStages = gst;
         gci.pInputAssemblyState = &gia;
-        gci.layout = flareSourcePipeLayout;
+        gci.layout = glarePipeLayout; // descLayout + the glare cluster grid's set (2026-10-20)
         if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &gci, nullptr, &glarePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create glare pipeline");
         vkDestroyShaderModule(ctx.device, gv, nullptr);
         vkDestroyShaderModule(ctx.device, gf, nullptr);
 
         // The mesh glints' glare: same state, its own list (glare_mesh.vert/.frag).
-        gv = ctx.loadShader("shaders/glare_mesh.vert.spv");
+        gv = ctx.loadShader("shaders/glare_mesh_scene.vert.spv"); // with the cluster grid (the viewer has none)
         gf = ctx.loadShader("shaders/glare_mesh.frag.spv");
         gst[0].module = gv;
         gst[1].module = gf;
@@ -13470,6 +13532,45 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         vkDestroyShaderModule(ctx.device, gv, nullptr);
         vkDestroyShaderModule(ctx.device, gf, nullptr);
     }
+}
+
+// The main view's glare push constants (glare.vert / glare_mesh_scene.vert / glare_cluster.comp). eyeAdapt =
+// recordDraw's night eye adaptation (1 for the cluster fill, which only tests gain > 0). The cluster grid's
+// size is chosen here (a tile ~1/68 of the view's height, ~16 px at 1080); recordDraw replaces it with the grid
+// recordCompute actually filled.
+GlarePC SatelliteSim::buildGlarePC(const VulkanContext &ctx, float eyeAdapt) const
+{
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(ctx.physicalDevice, &props);
+    GlarePC gpc{};
+    gpc.skyView = camera.viewMatrix();
+    gpc.fovYRad = glm::radians(camera.fovYDeg);
+    gpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
+    gpc.gain = glareGain * eyeAdapt;
+    gpc.sizePx = glareSizePx * (float)ctx.swapExtent.height / 1080.0f; // resolution-independent
+    gpc.screenSizePx = glm::vec2((float)ctx.swapExtent.width, (float)ctx.swapExtent.height);
+    gpc.maxPointSize = std::min(props.limits.pointSizeRange[1], 1024.0f);
+    gpc.threshold = glareThreshold;
+    gpc.falloff = glareFalloff;
+    gpc.spikes = glareSpikes;
+    gpc.nearGain = glareNearGain;
+    gpc.nearRangeM = glareNearRangeKm * 1000.0f;
+    gpc.cluster = glm::clamp(glareClusterMerge, 0.0f, 1.0f);
+    float T = std::max(4.0f, std::round((float)ctx.swapExtent.height / 68.0f));
+    uint32_t gw = 0, gh = 0;
+    for (int i = 0; i < 8; ++i, T *= 1.5f)
+    {
+        gw = (uint32_t)std::ceil((float)ctx.swapExtent.width / T);
+        gh = (uint32_t)std::ceil((float)ctx.swapExtent.height / T);
+        if ((uint64_t)gw * gh <= kGlareGridMaxTiles)
+            break;
+    }
+    if ((uint64_t)gw * gh > kGlareGridMaxTiles)
+        gw = gh = 0;
+    gpc.tilePx = T;
+    gpc.gridW = gw;
+    gpc.gridH = gh;
+    return gpc;
 }
 
 // ─── createTrailResources ──────────────────────────────────────────────────────

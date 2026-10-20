@@ -167,9 +167,11 @@ vec3 dustMul(DustCloud d, vec3 v)
 // (tauP), their light per unit optical depth averaged (Lp / tauP), so a thick trail saturates and hides what is
 // behind it (the caller composites 1 - exp(-tauP)); tP = their optical-depth-weighted distance.
 vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le, out float tScat,
-                  out vec3 Lp, out float tauP, out float tP, out float aP)
+                  out vec3 Lp, out float tauP, out float tP, out float aP, out float tE)
 {
     Le = vec3(0.0);
+    tE = 0.0;   // the emissive light's brightness-weighted distance (a rocket's flame in front of its own mesh)
+    float wE = 0.0;
     tScat = 0.0;
     Lp = vec3(0.0);
     tauP = 0.0;
@@ -208,6 +210,9 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
         float tau = d.ia.w * d.c.w * max(I, 0.0);
         if (d.col.w > 0.5 && d.col.w < 1.5) {   // emissive (a re-entry fireball's trail): no phase, no shadow
             Le += d.col.rgb * tau;
+            float we = tau * dot(d.col.rgb, vec3(0.3333));
+            wE += we;
+            tE += we * clamp(tc, 0.0, T);
             continue;
         }
         vec3  P  = obsPos + clamp(tc, 0.0, T) * dir;
@@ -240,6 +245,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
         tScat += tau * lit * clamp(tc, 0.0, T);
     }
     tScat = wT > 0.0 ? tScat / wT : 0.0;
+    tE = wE > 0.0 ? tE / wE : 0.0;
     if (tauP > 0.0) {
         tP /= tauP;
         // Per unit optical depth: single scattering by the phase, and as the trail thickens multiple scattering
@@ -1810,12 +1816,18 @@ void main() {
     }
 
     // Kessler dust clouds: above the weather, so seen from below the clouds hide them as they hide the aurora.
+    float tEmitNear = kNoSurfaceT;
     if (dustCount > 0u) {
         // Extinction to the cloud, not to infinity: looking down from above the air, the path to infinity ends in
         // the ground through the whole atmosphere, and every cloud and fireball trail below the eye went dark.
         vec3  dLe, pL;
-        float dT, pTau, pT, pA;
-        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, dLe, dT, pL, pTau, pT, pA);
+        float dT, pTau, pT, pA, eT;
+        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, dLe, dT, pL, pTau, pT, pA, eT);
+        // Where the nearest emissive / plume light is, for a texel with no cloud of its own (alpha below): sat_sky.frag
+        // composites this texel over a satellite / rocket MESH only when its distance is nearer than the mesh, and
+        // the no-cloud marker (60000 km) hid a burning stage's flame behind the stage's own hull (2026-10-20).
+        if (dot(dLe, dLe) > 0.0) tEmitNear = min(tEmitNear, max(eT, 1.0));
+        if (pTau > 1e-3) tEmitNear = min(tEmitNear, max(pT, 1.0));
         // Rocket plumes: in front of the clouds (nearer than their mean distance) they cover them, behind they are
         // seen through them; either way they dim what lies behind them (the sky, the stars) by exp(-tau).
         if (pTau > 1e-6) {
@@ -1835,7 +1847,11 @@ void main() {
             // Clouds hide them only from below the weather (they are all above 45 km): the aurora's 95-km test hid
             // fireball trails behind the clouds UNDER them when looking down from 60-95 km.
             float sup = obsEffH < 20000.0 ? pow(clamp(dot(A_total, vec3(1.0 / 3.0)), 0.0, 1.0), 3.0) : 1.0;
-            B_total += (dc * ext + dLe) * sup;
+            // The emissive light (a rocket's flame and its lit exhaust, a fireball's trail) only where the clouds are
+            // NOT behind it (2026-10-20, issue 20261019_222829): a launch's glow seen from 3.7 km over a cumulus far
+            // below it was cut out by that cloud, a black hole in the glow.
+            float supE = (dot(dLe, dLe) > 0.0 && eT < tCloudMeanT) ? 1.0 : sup;
+            B_total += dc * ext * sup + dLe * supE;
         }
     }
 
@@ -2179,7 +2195,7 @@ void main() {
     // sky pass split the air there: a dark speck in every such texel. Every point source is 100+ km away, so
     // their occlusion is unchanged.
     float occKm = (tCloudOcclude >= 0.0) ? ((tCloudMeanT < kNoSurfaceT && tCloudMeanT > 0.0) ? tCloudMeanT : tCloudOcclude) * 0.001
-                : -((tCloudMeanT < kNoSurfaceT) ? tCloudMeanT * 0.001 : 60000.0);
+                : -((tCloudMeanT < kNoSurfaceT) ? tCloudMeanT * 0.001 : (tEmitNear < kNoSurfaceT ? tEmitNear * 0.001 : 60000.0));
     imageStore(targetA, coord, vec4(B_total, occKm));
     imageStore(targetB, coord, vec4(A_total, terrainSunT));
 }

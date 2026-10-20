@@ -4475,7 +4475,24 @@ launches follow per-program cadences (no real manifest).
   geometric blend. The point (bloom, glare) sits on the core, its brightness capped where the flame is 4 px long and
   down to 30% once it is 30 px: glare at every scale, no white disc on the hull. A coasting stage's sunlit point is
   dropped once its mesh is up (floored at +10 mag it was still a -7 disc at 100 m). The night glow of the lit exhaust
-  scales with the engines (30-330 exit diameters) and sits 2 of its lengths behind them.
+  scales with the engines (12-330 exit diameters, 0.12 of the flame's light) and sits 2 of its lengths behind them.
+  **Close up (2026-10-20, issues 20261019_222938 shot 2 / 20261019_222829, "a smaller glare with all 33 engines lit up"):**
+  - The nozzles glow while a stage burns: `SatOrbitElems::engineGlow` (set with `fixAxis` for every rocket mesh slot,
+    the selection's and the followed one) -> `GpuMeshInstance::earthShC.w`; sat_mesh.frag adds an emission (orange at
+    the lip to white-hot up the bell) on materials with `lattice.w` = 1, which `packSatMeshMaterial` sets for the
+    rocket models' `"soot"` (the bells' inner material). Render-only parts: no bloom, no glare.
+  - The flame's Gaussians fade out as the eye comes inside one (its Mahalanobis radius 3 -> 1.5 sigma): from under a
+    rising stage the tail's Gaussian lit every direction (a white screen). Resolved, each is held at its side-on surface
+    brightness (x sP sqrt(q)), and seen from the exhaust side within ~40 deg of the axis thinned to 0.15, so the lit
+    nozzles show through; `kFlameCore` is x0.18 at night (the night exposure is ~5.5x the day's: hundreds of times past
+    white, a Gaussian saturated out to 3-4 sigma, a round blob several times the cluster's size).
+  - The exhaust glow fades as the eye comes within 2-6 of its lengths; the point's flare blends geometrically toward 14
+    (just past the glare threshold) as the flame grows from 4 to 30 px (it was ~2e4 at 200 m: a screen-wide bloom).
+  - cloud_march.comp: the emissive light (flames, the glow, fireball trails) is hidden by cloud only where the cloud is
+    NEARER than it (`eT` vs `tCloudMeanT`; a cumulus 2 km below a launch's glow was cut out of it: the report's "black
+    blob"), and a texel with no cloud carries the nearest emissive / plume distance in its alpha (`tEmitNear`), so
+    sat_sky.frag composites a flame in front of its own stage's mesh (the no-cloud marker hid it behind the hull).
+  - Not built: clouds lit by a burning rocket (a cumulus beside a night launch stays moonlit-dark).
 - **Mesh glare needs a compact Sun image** (2026-10-19): sat_mesh.frag packs `meshGlareRoughK` (1 below roughness
   0.04, 0 past 0.10) with the photometric share into the scene target's alpha (`meshSharePack`: share 64 levels, flag 8;
   mesh_bloom.frag and mesh_refl_add.comp unpack it), and mode 3 (the viewer's glare source) multiplies its specular by
@@ -4651,7 +4668,9 @@ launches follow per-program cadences (no real manifest).
     `kPadMeshSlots`, `launchMeshJobs`) as fixed states (the pad's ECI position at t, the Earth's rotation as velocity);
     not selectable (`rocketMeshSlotToTransient` -> -1).
   - **Lights at night** (`launchFillPadLights`, kFireBuf, within 150 km): flood clusters on the masts and tower
-    (~-4 mag at 1 km), red beacons flashing 0.45 s in 1.5 (~-2), a landing zone's four floods; capped at flare 25.
+    (~-3 mag at 1 km), red beacons flashing 0.45 s in 1.5 (~-2), a landing zone's four floods; capped at flare 14 (just
+    past the glare threshold; 2026-10-20: -4 / 25 drew a field of large stars from a pad's edge, issue 20261019_222938
+    shot 1). The floodlit apron at night is 0.2 x its albedo (was 0.35: a blank white slab).
   - Setting `launches.pad_graphics` (Settings > Constellations > LAUNCHES "Launch site graphics"; independent of
     launches being on). Harness `launch pads`, `launch pad <site> [dist_m=] [az=] [h=]`. Cost (RTX 3070 Ti, 1600x900,
     Starbase from 900 m): sky pass within noise (8.09 vs 8.09 ms), scene depth +0.18 ms, CPU ~0; SKY_LITE SPV +288 B
@@ -5041,8 +5060,22 @@ an aliased centre) and a blue anamorphic streak the sun doesn't have; both are g
   (`glare_find.comp` writes `SatelliteSim::meshGlareRangeM`, the nearest mesh it drew this frame;
   `viewer_glare_find.comp` writes `ViewerGlare::rangeM`, the viewer camera's own `viewerDist`), both
   read back through the one `glareNearScale` in `include/glare.glsl`. `GlarePC`'s old `pad0`/`pad1`
-  became `nearGain`/`nearRangeM` (metres): the block is pinned at 112 B by `flareSourcePipeLayout`
-  (`glare.vert` is drawn with it), so it may not grow — hence the reuse of the padding.
+  became `nearGain`/`nearRangeM` (metres). (Since 2026-10-20 `glare.vert` has its own `glarePipeLayout` and
+  GlarePC is 128 B: the cluster grid below.)
+- **Glare clusters (2026-10-20, issue 20261019_222938 "Glares": "clusters have always had a spidery, sea-urchin-y
+  look").** `glare_cluster.comp` (recordCompute, after glare_find; 256 workgroups striding over the visible list's
+  vertex count, + the mesh glints when glare_find ran) sums every source that will glare into a screen grid
+  (`glareGridBuf`, a tile ~1/68 of the view's height, 3 uints a tile: the weights and the weighted position inside the
+  tile, fixed point), each weighted q = (flare / the threshold's)^2 x its visibility (glare.vert's own projection and
+  occlusion tests). `glare.vert` and `glare_mesh_scene.vert` then give each source w = q / (q + the others' q within
+  0.8 x its glare radius, smoothstep-windowed on each tile's centroid) and keep w^2 of its spikes (`glareSpikeWeight`,
+  include/glare.glsl), with shorter rays and a slightly stronger halo as w falls: a lone source is unchanged (exact:
+  measured <= 2 levels), the brightest of a group keeps most of its star, N equal neighbours each 1/N^2 (a soft glow).
+  Core and halo untouched. "Glare cluster merge" (Photometry, `photometry.glare_cluster_merge`, 1; 0 = as before;
+  slot 38, the photometry arrays are [39]). Bindings: descLayout's 5-7 (cloud targets, depth) are also VERTEX | COMPUTE;
+  glareMeshDescLayout = 0 the glint list, 1 the grid (VERTEX | COMPUTE); glarePipeLayout / glareClusterPipeLayout =
+  {descLayout, glareMeshDescLayout}. The viewer's glare (`glare_mesh.vert`, SatMeshRenderer) has no grid (gridW 0); the
+  body is shared in include/glare_mesh_vert.glsl. Cost within noise (Reflect ring from 20 km: 9.7 vs 9.6 ms GPU).
 Photometry sliders "Glare gain / size (px) / threshold / falloff / spikes" (`photometry.glare_*`),
 plus "Glare near gain / near range (km)" (`photometry.glare_near_gain`, default 3.0, and
 `glare_near_range_km`, default 400). The five glare defaults are now the values tuned on screen for

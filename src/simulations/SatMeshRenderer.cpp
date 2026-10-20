@@ -833,8 +833,9 @@ void SatMeshRenderer::createViewerGlare(VulkanContext &ctx)
         vkDestroyShaderModule(ctx.device, mod, nullptr);
     }
 
-    // Draw: the main view's mesh-glare sprite (glare_mesh.vert/.frag), GlarePC (112 B), additive.
-    VkPushConstantRange dpr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 112};
+    // Draw: the main view's mesh-glare sprite (glare_mesh.vert/.frag), GlarePC (128 B since the glare clusters,
+    // 2026-10-20; the viewer has no cluster grid: its gridW is 0), additive.
+    VkPushConstantRange dpr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
     pli.pSetLayouts = &glareDrawLayout;
     pli.pPushConstantRanges = &dpr;
     vkCreatePipelineLayout(ctx.device, &pli, nullptr, &glareDrawPipeLayout);
@@ -1012,7 +1013,7 @@ void SatMeshRenderer::recordViewerGlare(VkCommandBuffer cmd, const GpuMeshFrame 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareDrawPipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareDrawPipeLayout, 0, 1, &glareDrawSet, 0, nullptr);
     vkCmdPushConstants(cmd, glareDrawPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       std::min(glarePcSize, 112u), glarePc);
+                       std::min(glarePcSize, 128u), glarePc);
     vkCmdDrawIndirect(cmd, glintBuf, 4, 1, 0); // the list's own VkDrawIndirectCommand (offset 4)
     vkCmdEndRenderPass(cmd);
 }
