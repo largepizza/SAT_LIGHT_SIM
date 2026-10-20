@@ -86,6 +86,7 @@ bool Catalog::load(const std::string &path, std::string &err)
             vh.x1 = v.value("meco_downrange_km", vh.x1 / 1000.0) * 1000.0;
             vh.t2 = v.value("seco_s", vh.t2);
             vh.deployAfter = v.value("deploy_after_seco_s", vh.deployAfter);
+            vh.deployIntervalS = std::max(v.value("deploy_interval_s", vh.deployIntervalS), 0.0);
             vh.flow1 = v.value("flow1_kg_s", vh.flow1);
             vh.flow2 = v.value("flow2_kg_s", vh.flow2);
             vh.vex1 = v.value("exhaust1_m_s", vh.vex1);
