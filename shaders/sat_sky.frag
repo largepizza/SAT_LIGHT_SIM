@@ -1310,10 +1310,19 @@ float shoreSignedDist(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, out vec2
     } else {
         wm = textureLod(earthSpecTex, uv, 0.0).rg;
     }
+    float cK = 0.0;
+#ifndef SKY_LITE
+    if (cloud.coastInfo.x > 0.5) {   // a coast patch's shore (terrain_detail.glsl tdCoastPatch, as tdDemAt)
+        int   cI;
+        vec2  cP;
+        float cD = tdCoastPatch(q, cK, cI, cP);
+        wm = tdCoastWm(wm, cK, cD);
+    }
+#endif
     if (wm.g < 14.5 / 255.0) return 1e9;
     float d = (wm.r - 0.5) * 2.0 * kShoreSdfMaxM;
     if (d < -1500.0 || d > 1500.0) return 1e9;
-    return d + tdShoreOffset(q, enuX, enuY, enuZ, wm);
+    return d + tdShoreOffset(q, enuX, enuY, enuZ, wm) * (1.0 - 0.7 * cK);
 }
 
 float beachAt(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, float h, float nUp, out float dLand) {
@@ -1587,6 +1596,45 @@ float padLampRow(vec2 p, float u0, float u1, float v0, float sp, vec2 va, vec2 s
     return mix(e, line, smoothstep(0.3 * sp, 0.6 * sp, sgM));
 }
 
+// Smooth value noise (0..1) on a unit lattice: the coast patches' ground colour, the floodlit apron's stains.
+float padValueNoise(vec2 x) {
+    vec2  i = floor(x), f = x - i;
+    f = f * f * (3.0 - 2.0 * f);
+    ivec2 c0 = ivec2(i);
+    float a = tdRand(ivec3(c0, 7713)), b = tdRand(ivec3(c0 + ivec2(1, 0), 7713));
+    float c = tdRand(ivec3(c0 + ivec2(0, 1), 7713)), d = tdRand(ivec3(c0 + ivec2(1, 1), 7713));
+    return 0.5 + 0.5 * mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// The floodlights' light on a pad's ground (2026-10-20), relative to the pad's centre: the masts' and the tower's
+// floods of SatelliteSimLaunches.cpp padLightsOf (keep in step), each aimed at the centre in a cos^6 lobe, Lambert on
+// the ground, 1 / d^2. A uniform floodlit apron read as a pale blank slab at night (the user); now bright under the
+// masts' aim and toward the mount, falling off to the apron's corners and dark beyond it.
+float padFloodOne(vec2 p, vec3 c) {
+    vec3  L = vec3(p, 0.0) - c, A = vec3(0.0, 0.0, 0.0) - c;
+    float d2 = dot(L, L) + 900.0;    // (a flood is a bank of lamps metres across)
+    float cA = max(dot(L, normalize(A)) * inversesqrt(d2), 0.0);
+    float c2 = cA * cA;
+    return c2 * c2 * c2 * (c.z * inversesqrt(d2)) / d2;   // (cos^6: cos^3 lit the apron nearly evenly)
+}
+float padFloodSum(int kind, vec2 p) {
+    float e = 0.0;
+    if (kind == 2) {
+        for (int i = 0; i < 4; ++i)
+            e += padFloodOne(p, vec3((i & 1) != 0 ? 105.0 : -105.0, (i & 2) != 0 ? 105.0 : -105.0, 45.0));
+        for (int lv = 0; lv < 3; ++lv)
+            for (int sd = 0; sd < 2; ++sd)
+                e += 0.2 * padFloodOne(p, vec3(sd != 0 ? 7.0 : -7.0, kPadTowerV + 6.5, 40.0 + 40.0 * float(lv)));
+    } else {
+        float tv = kind == 1 ? -25.0 : -22.0, th = kind == 1 ? 80.0 : 70.0;
+        e += padFloodOne(p, vec3(60.0, 60.0, 35.0)) + padFloodOne(p, vec3(60.0, -60.0, 35.0))
+           + padFloodOne(p, vec3(-60.0, 55.0, 35.0));
+        e += 0.2 * (padFloodOne(p, vec3(5.0, tv + 6.0, 0.4 * th)) + padFloodOne(p, vec3(-5.0, tv + 6.0, 0.75 * th)));
+    }
+    return e;
+}
+float padFlood(int kind, vec2 p) { return padFloodSum(kind, p) / max(padFloodSum(kind, vec2(0.0, 1.0)), 1e-12); }
+
 // One pad at the terrain point q (observer ENU from its sea-level point), seen along dir with a pixel of pixAngle at t.
 void padGroundOne(int i, vec3 q, vec3 dir, vec3 sunD, float pixAngle, float t, inout PadGround G) {
     vec3  d   = q - cloud.padQ[i].xyz;
@@ -1643,9 +1691,15 @@ void padGroundOne(int i, vec3 q, vec3 dir, vec3 sunD, float pixAngle, float t, i
     // The apron: concrete with 10-m expansion joints.
     float apron = padRect(p, vec2(0.0), vec2(ap), fh);
     float joint = 1.0 - solarPulseCover(p.x, fh.x, 10.0, 9.6) * solarPulseCover(p.y, fh.y, 10.0, 9.6);
-    vec3  conc  = kConcrete * (1.0 - 0.3 * joint);
+    // Each 10-m slab its own shade (+-8%) and a weathered mottle (stains, tyre and blast marks), both fading into their
+    // mean once the footprint passes them (2026-10-20: a clean slab read as a blank sheet).
+    float slabV = 1.0 + 0.08 * tdRand(ivec3(ivec2(floor(p / 10.0)), 991)) * (1.0 - smoothstep(3.0, 10.0, s));
+    float mott  = mix(0.82 + 0.36 * padValueNoise(p / 7.0 + float(int(cloud.padAux[i].y) & 255)), 1.0, smoothstep(2.0, 8.0, s));
+    vec3  conc  = kConcrete * (1.0 - 0.3 * joint) * slabV * mott;
     alb = mix(alb, conc, apron);
-    pool += 1.0 * apron;
+    // The floods: the masts' and the tower's light pooled toward the mount (padFlood), not a uniform sheet.
+    float flood = padFlood(kind, p);
+    pool += min(flood, 2.2) * apron;
     if (kind == 2) {
         // The mount's deflector (water-cooled steel), the soot around it, the tower's base, the tank farm's slab
         // and its road.
@@ -1655,7 +1709,7 @@ void padGroundOne(int i, vec3 q, vec3 dir, vec3 sunD, float pixAngle, float t, i
         alb = mix(alb, kConcrete * 0.6, padRect(p, vec2(0.0, kPadTowerV), vec2(9.0), fh));
         float slab = padRect(p, vec2(-225.0, 145.0), vec2(48.0, 42.0), fh);
         alb = mix(alb, kConcrete * 0.95, slab);
-        pool += 0.6 * slab;
+        pool += 0.6 * slab * smoothstep(0.0, 0.25, flood);
         float r2 = padStrip(p, vec2(-120.0, 0.0), vec2(-200.0, 105.0), 4.0, s);
         alb = mix(alb, kAsphalt, r2);
         glow += 300.0 * (padLamp(p, vec2(-273.0, 103.0), va, sg) + padLamp(p, vec2(-177.0, 187.0), va, sg));
@@ -1705,7 +1759,7 @@ void padGroundOne(int i, vec3 q, vec3 dir, vec3 sunD, float pixAngle, float t, i
     }
     if (cov > G.alb.a) G.alb = vec4(alb, cov);
     G.glow  += vec3(1.0, 0.86, 0.62) * glow;   // sodium-warm road lamps
-    G.pool   = max(G.pool, clamp(pool, 0.0, 1.0) * grad);
+    G.pool   = max(G.pool, clamp(pool, 0.0, 2.2) * grad);
     G.shadow = max(G.shadow, shadow);
 }
 
@@ -4581,6 +4635,23 @@ void main() {
             padG = padGroundAt(pQ, dir, sunDir, pixAngle, tHit > 0.0 ? tHit : tSeaLvl);
             nightColor = mix(nightColor, min(nightColor, vec3(0.006, 0.006, 0.0132)), padG.excl);
         }
+        // Coast patches around launch sites (2026-10-20, terrain_detail.glsl tdCoastPatch): their land is drawn in the
+        // patch's ground colour where the 5-km day map shows water (its texels mix the bay, the beach and the sea:
+        // Boca Chica and the Cape read as sea from the ground), varied over ~400 m / ~90 m.
+        if (cloud.coastInfo.x > 0.5 && tHit > 0.0) {
+            float cK;
+            int   cI;
+            vec2  cP;
+            tdCoastPatch(terrainQ, cK, cI, cP);
+            if (cK > 0.0) {
+                // Blue over its luminance: the sea, a lagoon, a mudflat mixed with them (0.15 0.20 0.24 at Starbase).
+                float lumD = dot(dayColor, vec3(0.2126, 0.7152, 0.0722));
+                float wet  = smoothstep(0.05, 0.22, (dayColor.b - 0.5 * (dayColor.r + dayColor.g)) / max(lumD, 0.02));
+                float nz   = 0.65 * padValueNoise(cP / 420.0) + 0.35 * padValueNoise(cP / 90.0 + 17.3);
+                vec3  land = cloud.coastCol[cI].rgb * (0.7 + 0.6 * nz);
+                dayColor   = mix(dayColor, land, max(wet, 0.75) * cK);   // (the 5-km map is a guess here anyway)
+            }
+        }
 #endif
         // No blur of the city lights under cloud any more (2026-10-06). It mixed the lights toward the night
         // map at mip ~8 (cloud.cityLightBlurLod 8.1: ~1000 km of map per texel) by the cloud's opacity in
@@ -6233,7 +6304,10 @@ void main() {
         // sectors — so a city on one horizon suppressed the Milky Way everywhere, including the
         // darkest part of the sky opposite it. See darksky.glsl for the model.
 #ifdef SKY_ENV
-        float mwSkyBgMag = kSkyMagPristine; // the pollution dome is the main observer's
+        // The pollution dome is the main observer's: from orbit a probe sees the pristine sky; inside the air (a launch
+        // pad's mesh, a stage on the pad, 2026-10-20) the observer's dome stands in. A pad near a town lit by a pristine
+        // Milky Way through its probe read as pale blue-white tanks brighter than the sky behind them.
+        float mwSkyBgMag = mix(kSkyMagPristine, darkSkySkyMag(dir, sunDirENU), atmFracSky);
 #else
         float mwSkyBgMag = darkSkySkyMag(dir, sunDirENU);
 #endif
@@ -6446,7 +6520,7 @@ void main() {
         // as the Milky Way, for the same reason (a tuned artistic falloff, not a radiometric one,
         // and half of the contrast-stretch control — see darksky.glsl).
 #ifdef SKY_ENV
-        float zodSkyBgMag = kSkyMagPristine;
+        float zodSkyBgMag = mix(kSkyMagPristine, darkSkySkyMag(dir, sunDirENU), atmFracSkyZ); // (as the Milky Way's)
 #else
         float zodSkyBgMag = darkSkySkyMag(dir, sunDirENU);
 #endif

@@ -1474,6 +1474,8 @@ static_assert(sizeof(CitySpritePC) == 64, "CitySpritePC must match city_sprites.
 
 // Launch pads drawn on the ground (2026-10-19; cloud_params.glsl PAD_MAX must match).
 static constexpr int kMaxPadsGpu = 12;
+static constexpr int kMaxCoastPatchesGpu = 4;   // == COAST_MAX (cloud_params.glsl)
+static constexpr int kCoastGridN = 48;          // == COAST_GRID_N (tools/make_pad_coasts.py GRID_N)
 struct GpuCloudParams
 {
     // Global controls — shared across all layers
@@ -1782,8 +1784,16 @@ struct GpuCloudParams
     glm::vec4 padQ[kMaxPadsGpu];   // xyz pad centre, w the city exclusion radius (m)
     glm::vec4 padU[kMaxPadsGpu];   // xyz the layout's heading axis (horizontal at the pad), w kind (0 generic, 1 Falcon, 2 Starship)
     glm::vec4 padAux[kMaxPadsGpu]; // x plateau height (m above sea level), y seed, z flattened radius (m), w landing zone 1/0
+    // Coasts around launch sites (1552 -> 11040, 2026-10-20, launchFillPadParams; data/launch_coasts.json): the nearest
+    // kMaxCoastPatchesGpu patches, each a kCoastGridN^2 byte grid of the shore's signed distance, in the q frame.
+    glm::vec4 coastInfo;                             // x patch count
+    glm::vec4 coastC[kMaxCoastPatchesGpu];           // xyz centre, w half-width R (m)
+    glm::vec4 coastE[kMaxCoastPatchesGpu];           // xyz east axis
+    glm::vec4 coastN[kMaxCoastPatchesGpu];           // xyz north axis
+    glm::vec4 coastCol[kMaxCoastPatchesGpu];         // rgb land colour, w land floor (m)
+    glm::uvec4 coastG[kMaxCoastPatchesGpu * kCoastGridN * kCoastGridN / 16]; // the grids' bytes
 };
-static_assert(sizeof(GpuCloudParams) == 1552, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 11040, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -2467,6 +2477,7 @@ private:
         uint64_t lastUsed = 0;    // envFrame it was last assigned
         bool wanted = false;      // assigned this frame
         double renderedWall = 0.0; // glfwGetTime() of the last render
+        double renderedSimT = 0.0; // ... and its sim time (J2000 s): a jump re-renders it whole
         uint32_t faceCursor = 0;   // refresh: the next pair of faces to re-render
     };
     EnvProbeSlot envSlots[SatEnvProbes::kProbes];

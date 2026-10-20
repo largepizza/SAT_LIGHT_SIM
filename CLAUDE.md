@@ -65,7 +65,7 @@ code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
 `imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
-validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_icons.py` (regenerates the
+validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
 offline synth renders) · `tools/benchmarks/` ·
@@ -3250,8 +3250,12 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     coverage·(1 − coverage), and the part never shadows (`satComponentOccludes`; its occluder is
     kept with `SatOccluder::blocks = false`, kind 0xFF in the renderer). `sat_mesh.frag` cuts the
     members out (`latticeCover`: bay grid + alternating diagonals, member width solved on the CPU for
-    the same area fraction), kept per pixel against a fixed hash, so sub-pixel members at a distance
-    become the right fraction of pixels with the far side's inner faces behind them. Quad UVs now
+    the same area fraction), kept per pixel against a threshold, so sub-pixel members at a distance
+    become the right fraction of pixels with the far side's inner faces behind them. In the main view with the sky
+    TAA on the threshold is interleaved gradient noise stepped by the golden ratio each frame (`frame.marker0` =
+    phase, TAA on; the scene frame's marker0 is otherwise unused), so the TAA averages a sub-pixel truss to its mean
+    coverage (2026-10-20: with a fixed per-pixel hash a catch tower from ~1 km and a booster's grid fins were a fixed
+    speckle that swam as the view moved); the viewer (MSAA) and TAA off keep the fixed hash. Quad UVs now
     start at a face corner, so bays and cell modules start at an edge.
   - **Procedural surface detail** (`SatMaterial::pattern`, JSON `"pattern"`: none / solar_cells / mli
     / panel_seams / truss / hex_tiles; -1 = from the preset — `solar_cell` → cells, `mli_foil` → crinkle).
@@ -3322,7 +3326,9 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     `early_fragment_tests` (both `sat_mesh.frag` with `-DMESH_DEPTH_PASS` / `-DMESH_SCENE_PASS`;
     `sat_mesh.vert`'s `gl_Position` is `invariant`). The lattice discard had turned early-Z off, so every
     overlapping layer of a close-up station ran the full shader and its per-pixel occluder-loop shadow
-    rays. Scene probes refresh TWO faces per frame (all six only when new); a satellite at 7.6 km/s
+    rays. Scene probes refresh TWO faces per frame (all six only when new, or after a jump in sim time of more than
+    max(30 min, 10 wall seconds of the current warp): `EnvProbeSlot::renderedSimT`, 2026-10-20 — a probe made by day
+    lit a launch pad's tanks pale blue-white for seconds after a jump to night); a satellite at 7.6 km/s
     crossed the 2 km drift threshold every few frames and re-rendered a whole cube each time.
   - **Shadow-ray acceleration (2026-10-20, `SatMeshRenderer::writeShadowAccel`, sat_mesh.frag `shadowBlocked`):** the
     per-pixel shadow rays (sun, transmission, reflection) looped over EVERY occluder of the model, composing each
@@ -4482,7 +4488,8 @@ launches follow per-program cadences (no real manifest).
     2.6 x 1.3 m). NOT stacked (no fit as modelled): Amazon Leo (45 of a 2 x 2 x 1.2 m bus with a 3 m panel), OneWeb (36
     on a column ~12 m tall), Reflect Orbital (no stowed mirror): they still appear at the dispenser point (stowed).
   - **Cost**: Starmind's launch rate x5 makes ~5300 live batches (1300 before); launch CPU 1.0 -> 2.1 ms a frame at the
-    Starship bookmark (2.4 before `L.livePtr` and the 8-frame full freeing pass). Guowang's model (realism pass:
+    Starship bookmark (2.4 before `L.livePtr` and the 8-frame full freeing pass); 1.24-1.28 ms after the 2026-10-20 CPU
+    pass (see "CPU bucket `launches`"). Guowang's model (realism pass:
     radome over the nadir face, two-panel wings 5 cm lower, yokes, fittings, thruster, star trackers) reads 5.85 vs 4.21
     in its ungated benchmark (5.80 before).
   - Harness: `launch fairing [filter=]` (10 s before a sunlit fairing separation), `launch deploy|fairing|deorbit` select
@@ -4636,7 +4643,10 @@ launches follow per-program cadences (no real manifest).
   - The nozzles glow while a stage burns: `SatOrbitElems::engineGlow` (set with `fixAxis` for every rocket mesh slot,
     the selection's and the followed one) -> `GpuMeshInstance::earthShC.w`; sat_mesh.frag adds an emission (orange at
     the lip to white-hot up the bell) on materials with `lattice.w` = 1, which `packSatMeshMaterial` sets for the
-    rocket models' `"soot"` (the bells' inner material). Render-only parts: no bloom, no glare.
+    rocket models' `"soot"` (the bells' inner material). Render-only parts: no bloom, no glare. Each channel is capped
+    at what displays orange (lip, x = 2.0 / 0.7 / 0.18) .. yellow-white (throat, 3.2 / 1.9 / 0.9) at the frame's
+    exposure (`min(phys, cap / camPos.w)`, 2026-10-20): the night exposure (~5x the day's) saturated the physical glow
+    to a white ring. (Not judged in a capture: from the harness's follow offsets the flame Gaussians fill the frame.)
   - The flame's Gaussians fade out as the eye comes inside one (its Mahalanobis radius 3 -> 1.5 sigma): from under a
     rising stage the tail's Gaussian lit every direction (a white screen). Resolved, each is held at its side-on surface
     brightness (x sP sqrt(q)), and seen from the exhaust side within ~40 deg of the axis thinned to 0.15, so the lit
@@ -4807,7 +4817,24 @@ launches follow per-program cadences (no real manifest).
 - **Cost** (RTX 3070 Ti, 1600x900, a Vandenberg twilight launch's bell filling the view, 320 Gaussians): cloud_march +0.9 ms, CPU
   0.3 ms at 1x, 0.6 ms at 1 d/s. ~2600 planes, ~1200 live batches, ~15k train and ~18k retiring satellites at the default lives.
 - CPU bucket `launches` (harness `perf`, Performance tab "Launches"; the visuals run inside the dust fill and are moved
-  out of `kessler`).
+  out of `kessler`). Its parts are in harness `launch state` -> `cpu_split_ms` (eased over 30 frames: window, live_list,
+  freeing, writes (+ writes_member_records, due_evals), visuals (+ plumes, plume_builds, plume_sort_emit, reentries),
+  pad_lights). **CPU pass (2026-10-20, Twilight Starship bookmark, ~5300 live batches, 1600x900):** 2.04-2.26 ->
+  1.24-1.28 ms at 1x, 3.8 -> 3.4 ms at 1 h/s (plume builds ~3 ms there, unchanged). `launch check` and the launch
+  state's counts (trains, retirees, slots, chunks, rockets, plumes) identical before / after on the same tree, at 1x and
+  at 1 h/s. What changed, each exact: (1) the window walk (every plane, a hash lookup per batch) is reused while sim
+  time stays within 300 s of it (`walkList`, `walkT`, `batchEpoch` bumped by any erase that may hit a listed batch);
+  "listed now" is `LBatch::inWalk == walkFrame`, not `touched` (the Missions code bumps `touched` of batches it builds);
+  (2) the freeing pass runs over the batches holding chunks only (`LaunchState::chunked`), and is skipped while t stays
+  inside the interval in which no chunked batch's need changes (`freeLo / freeHi`); the erase pass is every 64th frame;
+  (3) the record writes skip a batch from a compact copy (`liveT`, `liveCh`) when it is outside its raising and falling
+  and holds no chunks, or while t is inside the interval its last look found nothing due (`liveSkip`, invalidated by a
+  release and every GPU reset); nobody-can-be-up batches (before the first release, after the last re-entry) no longer
+  rebuild their member flags each frame; (4) launchFillVisuals loops over `visList`, the live batches whose rocket /
+  plumes / stages (tL - 600 s .. tVisEnd) or retiree re-entries (tA .. last + 200 s) are within the walk's margin;
+  (5) plumes: one extinction column for the three colour channels (linear in k), the Earth's rotation once a batch,
+  `std::partial_sort` of only the drawn Gaussians + 1, the candidate vector kept between frames. Left: the plumes'
+  per-Gaussian work (~1 ms with the bookmark's ~700 candidates incl. the pad smoke) and the plume builds under warp.
 - Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; Missions window > Controls (moved
   there from Settings > Constellations, which keeps a pointer + "Open the Missions window"); harness
   `launch ...` (docs/HARNESS.md: `launch next vehicle=`, `launch select kind=rocket|booster|upper|...`); default
@@ -4952,13 +4979,36 @@ launches follow per-program cadences (no real manifest).
   - **Lights at night** (`launchFillPadLights`, kFireBuf, within 150 km): flood clusters on the masts and tower
     (~-3 mag at 1 km), red beacons flashing 0.45 s in 1.5 (~-2), a landing zone's four floods; capped at flare 14 (just
     past the glare threshold; 2026-10-20: -4 / 25 drew a field of large stars from a pad's edge, issue 20261019_222938
-    shot 1). The floodlit apron at night is 0.2 x its albedo (was 0.35: a blank white slab).
+    shot 1). The floodlit apron at night is 0.2 x its albedo (was 0.35: a blank white slab) x the floods' light
+    (`padFlood`, sat_sky.frag, 2026-10-20: the masts' and the tower's floods of padLightsOf, each aimed at the centre in
+    a cos^6 lobe, Lambert, 1 / (d^2 + 30^2), normalised to 1 at the centre, capped at 2.2): bright toward the mount and
+    under the masts' aim, falling to the corners; each 10-m slab has its own shade (+-8%) and a weathered mottle at 7 m,
+    both fading to their mean past the footprint.
   - Setting `launches.pad_graphics` (Settings > Constellations > LAUNCHES "Launch site graphics"; independent of
     launches being on). Harness `launch pads`, `launch pad <site> [dist_m=] [az=] [h=]`. Cost (RTX 3070 Ti, 1600x900,
     Starbase from 900 m): sky pass within noise (8.09 vs 8.09 ms), scene depth +0.18 ms, CPU ~0; SKY_LITE SPV +288 B
-    (the UBO's declaration; 213384 of 230400), sat_sky_minimal unchanged. Open: the pads sit on the 5-km DEM and
-    water map, so coastal ones (Starbase, the Cape) are islands of apron in what the map calls sea; the meshes are lit
-    by the scene probe at night (the tanks read pale).
+    (the UBO's declaration; 213384 of 230400), sat_sky_minimal unchanged.
+  - **Coasts around launch sites (2026-10-20, `data/launch_coasts.json` baked by `tools/make_pad_coasts.py`).** The 5-km
+    water map cannot hold the narrow land and water around most coastal pads, and the DEM reads 0 m on that land: from
+    the ground at Starbase the foreground read as sea (the land, at 0 m, took the day map's water-coloured texel) and
+    the pads stood on islands of apron; at the Cape 39A sat in a dark-blue sea. Each group of coastal sites (13
+    patches, sites within 6 km merged; inland sites none) gets a 48 x 48 signed distance grid over [-R, R]^2 (R 6-10 km:
+    250-420 m cells) from the Natural Earth 10 m land + lakes (inside / outside by the whole rings, distance from their
+    edges), every pad's graded disc (450 m Starship, 350 m others) forced to land, bytes of +-3000 m. CPU
+    (`loadCoasts`, `launchFillPadParams`): the nearest 4 within 400 km into the UBO (`coastInfo / coastC / coastE /
+    coastN / coastCol / coastG`, PAD block's tail, 1552 -> 11040 B; under the 16 KB uniform floor). GPU
+    (terrain_detail.glsl `tdCoastPatch`, C1 bilinear, `tdCoastWm`): inside a patch the water map's shore distance is the
+    patch's (blended back over its outer quarter), at the sea's level, tdShoreOffset's coves x0.3, and its land is lifted
+    to at least `land_floor_m` (2.5 m) — so the march, the depth passes, the beaches (`shoreSignedDist`) and the sea all
+    see one coast; sat_sky.frag draws its land in the patch's ground colour (`land_color`, a hand table in the tool:
+    Boca Chica's sand flats, the Cape's scrub, the Louisiana marsh) where the day map is blue over its luminance, at
+    least 75% (x a 420 / 90 m value noise). The CPU side mixes the patches into the pads' heading / landing-zone choice
+    (`shoreDistAt`) and Go to's land test. Coastal lines are Natural Earth's (~1 km): the Cape's barrier at 39A is a
+    ~1-km strip, Boca Chica's beach ~1.5 km east of the pad. Re-run the tool after editing the sites. Not in SKY_LITE /
+    SKY_ENV. Off with "Launch site graphics".
+  - The tanks' "pale" look at night was a stale environment probe (made by day, refreshed two faces at a time after
+    3 s of wall time; see the env probes' sim-time jump rule), and probes inside the air now take the main observer's
+    light-pollution dome for the Milky Way and zodiacal light (they used the pristine sky).
 - **Booster recovery at sea: droneships and landing ships (2026-10-20, branch kessler).** Each launch decides its
   booster's recovery (`planRecovery`, a pure function of the batch, stored in `LBatch::rec` / `landKind`): a vehicle
   with `booster: droneship` and `rtls_max_kg` (Falcon 9, 7000 kg) flies back to its pad's LANDING ZONE when the launch's
