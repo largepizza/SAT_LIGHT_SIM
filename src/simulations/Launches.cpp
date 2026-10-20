@@ -56,6 +56,9 @@ bool Catalog::load(const std::string &path, std::string &err)
                 st.azMinDeg = s["azimuth"][0].get<double>();
                 st.azMaxDeg = s["azimuth"][1].get<double>();
             }
+            st.padKind = s.value("pad_kind", -1);
+            if (s.contains("pad_heading_deg"))
+                st.padHeadingDeg = s["pad_heading_deg"].get<double>();
             const double la = glm::radians(st.latDeg), lo = glm::radians(st.lonDeg);
             st.ecef = glm::dvec3(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la));
             sites.push_back(st);
@@ -101,6 +104,8 @@ bool Catalog::load(const std::string &path, std::string &err)
             vh.upperMassKg = v.value("upper_stage_mass_kg", vh.upperMassKg);
             vh.soot = v.value("soot", vh.soot);
             vh.ventChance = v.value("vent_chance", vh.ventChance);
+            vh.mountM = std::max(v.value("mount_m", vh.mountM), 0.0);
+            vh.catchM = std::max(v.value("catch_m", vh.catchM), 0.0);
             vehicles.push_back(vh);
         }
         auto vehIdx = [&](const std::string &id) {
@@ -256,21 +261,23 @@ Track boosterTrack(const Vehicle &vh)
                         entryDone = true;
                 }
                 // Landing burn: a suicide-burn profile (the vertical speed that stops at the ground at aL), thrust up only.
+                // A tower catch stops at hC above the mount (the chopsticks take it there), not on the ground.
                 const double aL = 30.0;
-                if (!landing && v.y < 0.0 && p.y < spd * spd / (2.0 * aL) + 300.0 && p.y < 15000.0)
+                const double hC = vh.recovery == 1 ? vh.catchM : 0.0;
+                if (!landing && v.y < 0.0 && p.y - hC < spd * spd / (2.0 * aL) + 300.0 && p.y < 15000.0)
                     landing = true;
                 if (landing)
                 {
-                    const double vzD = -std::min(0.85 * std::sqrt(2.0 * aL * std::max(p.y, 0.0)) + 1.5, 400.0);
+                    const double vzD = -std::min(0.85 * std::sqrt(2.0 * aL * std::max(p.y - hC, 0.0)) + 1.5, 400.0);
                     const double thrust = std::clamp(g + (vzD - v.y) * 1.5, 0.0, aL + g);
                     a = glm::dvec2(std::clamp(-v.x * 0.6, -aL, aL), thrust - g);
                     b = BURN_LANDING;
-                    if (p.y <= 0.5)
+                    if (p.y <= hC + 0.5)
                     {
                         if (out)
                         {
                             out->landed = true;
-                            out->p.push_back({p.x, 0.0});
+                            out->p.push_back({p.x, hC});
                             out->v.push_back({0.0, 0.0});
                             out->burn.push_back(BURN_NONE);
                         }

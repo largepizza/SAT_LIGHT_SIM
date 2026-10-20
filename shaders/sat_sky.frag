@@ -1525,6 +1525,215 @@ float solarSiteAt(SolarSite S, vec3 q, vec3 dir, vec3 up, vec3 sunD, float pixAn
     return blockK * cov;
 }
 
+// ── Launch pads (2026-10-19, SatelliteSimLaunches.cpp launchFillPadParams) ───────────────────────────────────────
+// The flat parts of the launch sites near the observer (cloud.padQ/U/Aux, the nearest PAD_MAX): graded ground,
+// the concrete apron with its expansion joints, the mount's deflector and the scorched concrete around it (Starship)
+// or the flame trench (Falcon / other pads), the tower's base, the tank slabs, the access roads with their lamps, a
+// landing zone (Falcon pads: a concrete disc with its painted ring and cross, ~2.4 km off), and the tower's and the
+// mount's shadows. Everything is an exact box filter of the pixel's ground footprint (the city pattern's
+// cityBoxCover, the solar parks' pulse trains), so a pad averages out into its graded patch with the footprint: from
+// orbit a pale speck, never a blob. Lamps are Gaussians of the footprint carrying a fixed light (their energy is the
+// same at any distance). The towers, masts, mount and tanks stand on it as a mesh (data/satellite_models/pad_*.json:
+// the layout must agree), its floodlights and beacons as point sprites. Inside a pad's exclusion radius no city grid,
+// glitter, farms or city sprites (main: nightColor is cut to the map's base there; city_sprites.comp).
+#if !defined(SKY_ENV) && !defined(SKY_LITE)   // the pad list is in the MAIN observer's frame; not in Planetarium
+struct PadGround {
+    float excl;   // the city lights' exclusion (0..1)
+    float core;   // the graded ground: flat, no natural textures or beaches
+    vec4  alb;    // rgb albedo, a its cover (mixed over the day colour)
+    vec3  glow;   // ground-level lamps (the night map's units, like cityLights)
+    float pool;   // the floodlit share of the ground (x its albedo)
+    float shadow; // the tower's and the mount's shadow (0..1)
+};
+const float kPadTowerV  = -32.0;    // == SatelliteSimLaunches.cpp kPadTowerV
+const float kPadLzDistM = 2300.0;   // == kLzDistM (the landing zone's distance; its angle in padAux.w)
+float padDisk(vec2 p, vec2 c, float r, float s) {
+    float rr = max(r, s);
+    return clamp((rr - length(p - c)) / (2.0 * s) + 0.5, 0.0, 1.0) * (r * r) / (rr * rr);
+}
+float padRect(vec2 p, vec2 c, vec2 hs, vec2 fh) {
+    vec2 d = p - c;
+    return cityBoxCover(d.x, 2.0 * hs.x, 2.0 * fh.x) * cityBoxCover(d.y, 2.0 * hs.y, 2.0 * fh.y);
+}
+// A straight strip a -> b of half-width w (roads, the shadows).
+float padStrip(vec2 p, vec2 a, vec2 b, float w, float s) {
+    vec2  ab = b - a;
+    float L  = max(length(ab), 1e-3);
+    vec2  e  = ab / L;
+    vec2  d  = p - a;
+    return cityBoxCover(dot(d, e) - 0.5 * L, L, 2.0 * s) * cityBoxCover(dot(d, vec2(-e.y, e.x)), 2.0 * w, 2.0 * s);
+}
+// A lamp: a normalised Gaussian of the footprint (sg along / across the view's horizontal direction va).
+float padLamp(vec2 p, vec2 c, vec2 va, vec2 sg) {
+    vec2  d = p - c;
+    float x = dot(d, va), y = dot(d, vec2(-va.y, va.x));
+    return exp(-0.5 * (x * x / (sg.x * sg.x) + y * y / (sg.y * sg.y))) / (6.2831853 * sg.x * sg.y);
+}
+// Lamps every sp metres along the line v = v0 from u = u0 down to u1 (u1 < u0): the nearest few, becoming a line
+// of the same mean light where the footprint passes their spacing.
+float padLampRow(vec2 p, float u0, float u1, float v0, float sp, vec2 va, vec2 sg) {
+    if (p.x > u0 + 4.0 * max(sg.x, sg.y) || p.x < u1 - 4.0 * max(sg.x, sg.y)) return 0.0;
+    float sgM = max(sg.x, sg.y);
+    float k   = clamp(floor((u0 - p.x) / sp + 0.5), 0.0, floor((u0 - u1) / sp));
+    float e   = 0.0;
+    for (int j = -1; j <= 1; ++j) {
+        float kj = k + float(j);
+        if (kj < 0.0 || kj > floor((u0 - u1) / sp)) continue;
+        e += padLamp(p, vec2(u0 - kj * sp, v0), va, sg);
+    }
+    float sgY  = mix(sg.y, sg.x, va.y * va.y);   // the spread across the row (v)
+    float line = exp(-0.5 * (p.y - v0) * (p.y - v0) / (sgY * sgY)) / (2.5066283 * sgY * sp)
+               * (1.0 - smoothstep(u0, u0 + 2.0 * sgM, p.x)) * smoothstep(u1 - 2.0 * sgM, u1, p.x);
+    return mix(e, line, smoothstep(0.3 * sp, 0.6 * sp, sgM));
+}
+
+// One pad at the terrain point q (observer ENU from its sea-level point), seen along dir with a pixel of pixAngle at t.
+void padGroundOne(int i, vec3 q, vec3 dir, vec3 sunD, float pixAngle, float t, inout PadGround G) {
+    vec3  d   = q - cloud.padQ[i].xyz;
+    float rEx = cloud.padQ[i].w;
+    if (dot(d, d) > rEx * rEx * 1.1 + 2.5e7) return;
+    vec3  up  = normalize(cloud.padQ[i].xyz + vec3(0.0, 0.0, R_EARTH));
+    vec3  U   = cloud.padU[i].xyz;
+    vec3  V   = cross(up, U);
+    vec2  p   = vec2(dot(d, U), dot(d, V));
+    float r   = length(p);
+    if (r > rEx) return;
+    G.excl = max(G.excl, 1.0 - smoothstep(0.75 * rEx, rEx, r));
+    int   kind = int(cloud.padU[i].w + 0.5);
+    // The footprint (half-width) along u and v: the pixel stretched along the horizontal view direction.
+    float dz  = dot(dir, up);
+    float du  = max(abs(dz), 0.04);
+    float fp  = pixAngle * t;
+    vec3  dh  = dir - up * dz;
+    float dh2 = max(dot(dh, dh), 1e-6);
+    vec2  vh  = vec2(dot(dh, U), dot(dh, V));
+    vec2  fh  = 0.5 * fp * mix(vec2(1.0), vec2(1.0 / du), vh * vh / dh2);
+    float s   = max(fh.x, fh.y);
+    vec2  va  = vh / sqrt(dh2);
+    vec2  sg  = max(vec2(0.5 * fp / du, 0.5 * fp), vec2(0.2));   // a lamp's head: ~0.4 m, or the footprint
+    bool  lz  = cloud.padAux[i].w > 0.5;
+    float lzA = (cloud.padAux[i].w - 1.0) * 6.2831853;
+    vec2  lzC = kPadLzDistM * vec2(cos(lzA), sin(lzA));
+    // Out there only the access road (along -u) and the landing zone with its road.
+    if (r > 520.0 + 2.0 * s && abs(p.y) > 40.0 + 2.0 * s && !(lz && length(p - lzC) < 300.0 + 2.0 * s)
+        && !(lz && abs(dot(p, vec2(-lzC.y, lzC.x)) / kPadLzDistM) < 40.0 + 2.0 * s)) return;
+
+    const vec3 kGravel = vec3(0.30, 0.28, 0.24), kConcrete = vec3(0.50, 0.49, 0.47), kAsphalt = vec3(0.07, 0.07, 0.075);
+    const vec3 kSteel = vec3(0.20, 0.20, 0.21), kPaint = vec3(0.72, 0.72, 0.70);
+    vec3  alb = kGravel;
+    float cov = 0.0;
+    float glow = 0.0, pool = 0.0, shadow = 0.0;
+    // Graded ground: an irregular patch around the pad (cleared, compacted sand and gravel; a light tint of the
+    // ground, not a paint: from the air a big clean disc read as a blob).
+    float rG   = kind == 2 ? 330.0 : 240.0;
+    float ang  = atan(p.y, p.x);
+    float wob  = 1.0 + 0.10 * sin(3.0 * ang + cloud.padAux[i].y) + 0.06 * sin(5.0 * ang + 1.7 * cloud.padAux[i].y)
+                     + 0.12 * pow(abs(cos(2.0 * ang)), 4.0);   // squarer than a disc
+    float grad = padDisk(p, vec2(0.0), rG * wob, s);
+    cov = 0.55 * grad;
+    G.core = max(G.core, 1.0 - smoothstep(rG * wob, rG * wob + 40.0, r));
+    // The access road out along -u (to the exclusion edge) with lamps every 40 m.
+    float ap   = kind == 2 ? 85.0 : 60.0;
+    float road = padStrip(p, vec2(-ap, 0.0), vec2(-rEx, 0.0), 5.0, s);
+    alb = mix(alb, kAsphalt, road);
+    cov = max(cov, road);
+    glow += 60.0 * padLampRow(p, -ap - 20.0, -min(rEx, 2600.0), 8.0, 40.0, va, sg);
+    // ... and their light on the road: a lit band along it (the pools of the 40-m spacing, merged).
+    pool += 0.35 * exp(-0.5 * (p.y - 4.0) * (p.y - 4.0) / 64.0) * step(p.x, -ap - 10.0) * step(-min(rEx, 2600.0), p.x);
+    // The apron: concrete with 10-m expansion joints.
+    float apron = padRect(p, vec2(0.0), vec2(ap), fh);
+    float joint = 1.0 - solarPulseCover(p.x, fh.x, 10.0, 9.6) * solarPulseCover(p.y, fh.y, 10.0, 9.6);
+    vec3  conc  = kConcrete * (1.0 - 0.3 * joint);
+    alb = mix(alb, conc, apron);
+    pool += 1.0 * apron;
+    if (kind == 2) {
+        // The mount's deflector (water-cooled steel), the soot around it, the tower's base, the tank farm's slab
+        // and its road.
+        float scorch = (1.0 - smoothstep(12.0, 48.0, r)) * apron;
+        alb = mix(alb, alb * 0.45, scorch);
+        alb = mix(alb, kSteel, padRect(p, vec2(0.0), vec2(11.0), fh));
+        alb = mix(alb, kConcrete * 0.6, padRect(p, vec2(0.0, kPadTowerV), vec2(9.0), fh));
+        float slab = padRect(p, vec2(-225.0, 145.0), vec2(48.0, 42.0), fh);
+        alb = mix(alb, kConcrete * 0.95, slab);
+        pool += 0.6 * slab;
+        float r2 = padStrip(p, vec2(-120.0, 0.0), vec2(-200.0, 105.0), 4.0, s);
+        alb = mix(alb, kAsphalt, r2);
+        glow += 300.0 * (padLamp(p, vec2(-273.0, 103.0), va, sg) + padLamp(p, vec2(-177.0, 187.0), va, sg));
+    } else {
+        // The flame trench (a dark channel out along -u) and its deflector, the service structure's base, the tanks'
+        // slab and its road.
+        float tr = padRect(p, vec2(-55.0, 0.0), vec2(45.0, 7.0), fh);
+        alb = mix(alb, vec3(0.035, 0.033, 0.03), tr);
+        pool -= 0.8 * tr;
+        alb = mix(alb, kSteel, padRect(p, vec2(0.0), vec2(8.0), fh));
+        float tv = kind == 1 ? -25.0 : -22.0;
+        alb = mix(alb, kConcrete * 0.6, padRect(p, vec2(0.0, tv), vec2(7.0), fh));
+        float slab = padRect(p, vec2(-40.0, 112.0), vec2(48.0, 26.0), fh);
+        alb = mix(alb, kConcrete * 0.95, slab);
+        alb = mix(alb, kAsphalt, padStrip(p, vec2(-62.0, 30.0), vec2(-62.0, 86.0), 4.0, s));
+        glow += 250.0 * (padLamp(p, vec2(-88.0, 112.0), va, sg) + padLamp(p, vec2(8.0, 112.0), va, sg));
+        if (lz) {
+            // The landing zone: graded, a concrete disc (86 m) with a painted ring and cross, its road to the main one.
+            vec2  pz = p - lzC;
+            float zg = padDisk(pz, vec2(0.0), 140.0, s);
+            alb = mix(alb, kGravel, zg);
+            cov = max(cov, 0.55 * zg);
+            G.core = max(G.core, 1.0 - smoothstep(140.0, 180.0, length(pz)));
+            float zc = padDisk(pz, vec2(0.0), 43.0, s);
+            alb = mix(alb, kConcrete, zc);
+            float ring = max(padDisk(pz, vec2(0.0), 38.5, s) - padDisk(pz, vec2(0.0), 36.0, s), 0.0);
+            vec2  pr = vec2(pz.x + pz.y, pz.y - pz.x) * 0.70710678;
+            float xmark = max(padRect(pr, vec2(0.0), vec2(22.0, 1.4), fh), padRect(pr, vec2(0.0), vec2(1.4, 22.0), fh));
+            alb = mix(alb, kPaint, max(ring, xmark) * zc);
+            vec2  ze = lzC / kPadLzDistM;
+            float zr = padStrip(p, lzC - ze * 43.0, ze * (ap + 5.0), 4.0, s);   // its road to the pad
+            alb = mix(alb, kAsphalt, zr);
+            cov = max(cov, zr);
+            pool += 0.8 * zc;
+        }
+    }
+    // Shadows on the ground (the Sun's horizontal offset per metre of height): the tower (a lattice: partly through)
+    // and the mount.
+    float sz = dot(sunD, up);
+    if (sz > 0.03) {
+        vec2  so = -vec2(dot(sunD, U), dot(sunD, V)) / sz;
+        vec2  tb = vec2(0.0, kind == 2 ? kPadTowerV : (kind == 1 ? -25.0 : -22.0));
+        float H  = kind == 2 ? 146.0 : (kind == 1 ? 80.0 : 70.0);
+        float sh = 0.5 * padStrip(p, tb, tb + so * H, kind == 2 ? 6.0 : 5.0, s);
+        if (kind == 2) sh = max(sh, 0.85 * padStrip(p, vec2(0.0), so * 20.0, 10.0, s));
+        shadow = max(shadow, sh * smoothstep(0.03, 0.1, sz));
+    }
+    if (cov > G.alb.a) G.alb = vec4(alb, cov);
+    G.glow  += vec3(1.0, 0.86, 0.62) * glow;   // sodium-warm road lamps
+    G.pool   = max(G.pool, clamp(pool, 0.0, 1.0) * grad);
+    G.shadow = max(G.shadow, shadow);
+}
+
+PadGround padGroundAt(vec3 q, vec3 dir, vec3 sunD, float pixAngle, float t) {
+    PadGround G;
+    G.excl = 0.0; G.core = 0.0; G.alb = vec4(0.0); G.glow = vec3(0.0); G.pool = 0.0; G.shadow = 0.0;
+    int n = int(cloud.padInfo.x + 0.5);
+    [[dont_unroll]] for (int i = 0; i < n; ++i)
+        padGroundOne(i, q, dir, sunD, pixAngle, t, G);
+    return G;
+}
+// The graded share alone (the close-up materials and the micro relief step aside on it).
+float padCoreAt(vec3 q) {
+    float k = 0.0;
+    int n = int(cloud.padInfo.x + 0.5);
+    [[dont_unroll]] for (int i = 0; i < n; ++i) {
+        vec3 d = q - cloud.padQ[i].xyz;
+        if (dot(d, d) > 2.5e7 + 7.0e6) continue;
+        vec3  up = normalize(cloud.padQ[i].xyz + vec3(0.0, 0.0, R_EARTH));
+        float r  = length(d - up * dot(d, up));
+        float rG = int(cloud.padU[i].w + 0.5) == 2 ? 330.0 : 240.0;
+        k = max(k, 1.0 - smoothstep(rG, rG + 40.0, r));
+    }
+    return k;
+}
+
+#endif
+
 vec3 farmDayAlbedo(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lonDeg, float latDeg, float green, float dry,
                    float foot, out float wet) {
     wet = 0.0;
@@ -3315,6 +3524,11 @@ void main() {
                         slopeE += terrainDet.grad;
                     }
                     vec3 nECEF  = normalize(terrainUpE - slopeE);
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+                    float padCoreT = cloud.padInfo.x > 0.5 ? padCoreAt(terrainQ) : 0.0;
+#else
+                    const float padCoreT = 0.0;
+#endif
                     if (tdEnabled()) {
                         // Snow in the day map (the material block's test) smooths the micro relief.
                         vec3  dayS  = textureLod(earthDayTex, hitUV, 0.0).rgb;
@@ -3322,7 +3536,7 @@ void main() {
                         float mxS   = max(dayS.r, max(dayS.g, dayS.b));
                         float satS  = (mxS - min(dayS.r, min(dayS.g, dayS.b))) / max(mxS, 1e-3);
                         float snowS = smoothstep(0.40, 0.62, lumS) * (1.0 - smoothstep(0.10, 0.28, satS));
-                        nECEF = normalize(nECEF - tdMicroBump(terrainQ, nECEF, enuX, enuY, enuZ,
+                        nECEF = normalize(nECEF - (1.0 - padCoreT) * tdMicroBump(terrainQ, nECEF, enuX, enuY, enuZ,
                                                               tdShadeLodM(tHit, pixAngle), terrainDet.rough, snowS));
                     }
                     // ── Close-up materials (terrain v2 P3) ─────────────────────────────────────────
@@ -3337,7 +3551,7 @@ void main() {
                     vec3  nTm    = max(textureLod(earthNightTex, hitUV, 1.0).rgb - vec3(0.006, 0.006, 0.0132), vec3(0.0));
                     float cityTm = smoothstep(0.002, 0.03, dot(nTm, vec3(0.2126, 0.7152, 0.0722))) * cloud.cityLightsStrength;
                     tmFade = cloud.terrainTextureStrength * cloud.terrainMaterialStrength
-                           * (1.0 - smoothstep(0.6, 3.0, pixAngle * tHit)) * (1.0 - cityTm);
+                           * (1.0 - smoothstep(0.6, 3.0, pixAngle * tHit)) * (1.0 - cityTm) * (1.0 - padCoreT);
                     if (tdEnabled() && tmFade > 0.001) {
                         vec3  dayT  = textureLod(earthDayTex, hitUV, 0.0).rgb;
                         float lumT  = dot(dayT, vec3(0.2126, 0.7152, 0.0722));
@@ -4356,6 +4570,18 @@ void main() {
         if (uvd_dy.x < -0.5) uvd_dy.x += 1.0;
         vec3 dayColor   = textureGrad(earthDayTex,   uvSurf, uvd_dx, uvd_dy).rgb;
         vec3 nightColor = textureGrad(earthNightTex, uvTaa0, uvd_dx, uvd_dy).rgb;
+        // Launch pads (2026-10-19, padGroundAt): the flat parts of the sites near the observer. Inside a pad's exclusion
+        // radius the night map is cut to its base, so no city grid, glitter, detail texture or farm is drawn there; the
+        // pad's own lamps and floodlit concrete stand in for its light.
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+        PadGround padG;
+        padG.excl = 0.0; padG.core = 0.0; padG.alb = vec4(0.0); padG.glow = vec3(0.0); padG.pool = 0.0; padG.shadow = 0.0;
+        if (cloud.padInfo.x > 0.5 && (tHit > 0.0 || tSeaLvl > 0.0)) {
+            vec3 pQ = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
+            padG = padGroundAt(pQ, dir, sunDir, pixAngle, tHit > 0.0 ? tHit : tSeaLvl);
+            nightColor = mix(nightColor, min(nightColor, vec3(0.006, 0.006, 0.0132)), padG.excl);
+        }
+#endif
         // No blur of the city lights under cloud any more (2026-10-06). It mixed the lights toward the night
         // map at mip ~8 (cloud.cityLightBlurLod 8.1: ~1000 km of map per texel) by the cloud's opacity in
         // front, so from orbit every city under thin or broken cloud became a grey wash with the cloud's
@@ -4624,7 +4850,7 @@ void main() {
                     vec3  fr = farmDayAlbedo(fQ, enuX, enuY, enuZ, uvSurf.x * 360.0 - 180.0, 90.0 - uvSurf.y * 180.0,
                                              green, dry, fFoot, fWet);
                     float tFade = 1.0 - smoothstep(0.55 * gpR, 0.9 * gpR, fFoot);
-                    float fW    = farm * tFade * cloud.cityLightsStrength * (1.0 - solarParkK);
+                    float fW    = farm * tFade * cloud.cityLightsStrength * (1.0 - solarParkK) * (1.0 - padG.excl);
                     dayColor *= mix(vec3(1.0), clamp(fr, vec3(0.0), vec3(4.0)), fW);
                     farmWet = fWet * fW;
                 }
@@ -4662,6 +4888,16 @@ void main() {
             dayColor   = mix(dayColor, kPanel, solarCov);
             solarDiffK *= clamp(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)) / lum0, 0.0, 1.0);
         }
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+        // Launch pads (padGroundAt, above): their ground over the day map, and the tower's / mount's shadows.
+        // Only on dry ground: not on water, and not on land at the sea's level either (marsh and sand bars, which the
+        // 5-km day map paints as water: a road or a landing zone drawn there crossed a lagoon). The pad itself is
+        // graded above it (terrain_detail.glsl tdPadFlat).
+        if (!(tHit > 0.0 && terrainH0 > 0.5)) { padG.alb.a = 0.0; padG.glow = vec3(0.0); padG.pool = 0.0; padG.shadow = 0.0; }
+        if (padG.alb.a > 0.0)
+            dayColor = mix(dayColor, padG.alb.rgb, padG.alb.a);
+        dayColor *= 1.0 - 0.7 * padG.shadow;
+#endif
 
         // ── Beaches: sand on low, gentle shores (beachAt) — dry sand, wet near the water ─────────
 #if !defined(SKY_ENV) && !defined(SKY_LITE)
@@ -4673,6 +4909,7 @@ void main() {
                 float dLand;
                 float bw = beachAt(bQ, enuX, enuY, enuZ, uvSurf, tHit > 0.0 ? terrainH0 : 0.0,
                                    dot(shadingN, normalize(hitPt)), dLand);
+                bw *= 1.0 - padG.core;   // not on a launch pad's graded ground
                 if (bw > 0.0) {
                     vec3 sand = mix(vec3(0.21, 0.18, 0.13), vec3(0.43, 0.37, 0.26), smoothstep(4.0, 25.0, dLand));
                     // Waterline coverage (2026-09-30): the other half of the ocean side's blend — the pixel the
@@ -4952,6 +5189,10 @@ void main() {
         vec3  poolAlb  = vec3(clamp(dot(dayColor, vec3(0.2126, 0.7152, 0.0722)) / 0.12, 0.0, 4.0));
         float poolLamb = pow(clamp(dot(shadingN, normalize(hitPt)), 0.0, 1.0), 1.5);
         vec3 tNight     = (cityLights + cityPool * poolAlb * poolLamb * terrainAO) * (0.12 * (1.0 - twilightFrac));
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+        // + a launch pad's lamps and its floodlit concrete (padGroundAt; white-ish halide floods on the apron).
+        tNight += (padG.glow + 0.35 * padG.pool * poolAlb * vec3(0.95, 0.96, 1.0)) * (0.12 * (1.0 - twilightFrac));
+#endif
         // Night light ON the albedo (terrain v2 P1): the moonlit sky (moonlight scattered by the air —
         // ~0.15 of the direct Moon on a flat face, like the Sun's diffuse share) and the moonless
         // night sky (starlight + airglow), "Night sky light" (cloud.terrainErosion.z) as a fraction of
@@ -5033,6 +5274,9 @@ void main() {
             else if (dv == 25) dbg = tNightSky * 100.0;          // night sky + moonlit sky on the albedo
             else if (dv == 26) dbg = cityLights * 20.0;          // the night map with its base removed
             else if (dv == 27) dbg = vec3(solarCov, solarBlockK, solarN.x * 0.5 + 0.5);   // solar parks
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+            else if (dv == 28) dbg = vec3(padG.alb.a, padG.excl, clamp(dot(padG.glow, vec3(0.33)) + padG.pool, 0.0, 1.0));   // launch pads
+#endif
             else if (dv == 23) dbg = vec3(geoSunDot, sunDot, tHit / 4000.0);
             // 24: the Sun's shadow line at this hit point. R = sunDiscVis (0 = the Sun's disc is
             // below this point's own horizon, so no direct sun reaches it), G = geoSunDot + dipSin

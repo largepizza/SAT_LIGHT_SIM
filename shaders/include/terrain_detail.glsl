@@ -215,6 +215,38 @@ float tdShoreOffset(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 wm) {
     float n = tdNoised(rel / 1024.0, (anchor << 1) + kSalt).x;
     return n * kTdShoreNoiseM;
 }
+// Launch pads (2026-10-19, SatelliteSimLaunches.cpp launchFillPadParams): the ground under a pad is graded flat
+// to its plateau height (cloud.padAux.x, read from the DEM on the CPU — the tower and the rocket on the mount stand
+// on the same height), over its flattened radius and blending back to the terrain over the same distance again,
+// with no detail relief on it (tdAmp0 x (1 - k)) and never water (a marsh pad, Louisiana). Only the nearest
+// cloud.padInfo.w pads (those within ~300 km): nothing at all elsewhere. Horizontal distance at the pad's own up.
+// k of the last tdDemAt (for tdAmp0 right after it in the march; tdBegin recomputes it from its own q).
+#ifndef SKY_LITE
+float gTdPadK = 0.0;
+float tdPadFlat(vec3 q, out float padH, out float landK) {
+    padH = 0.0;
+    landK = 0.0;
+    float k = 0.0;
+    int n = int(cloud.padInfo.w + 0.5);
+    [[dont_unroll]] for (int i = 0; i < n; ++i) {
+        vec3  d  = q - cloud.padQ[i].xyz;
+        float fr = cloud.padAux[i].z;
+        if (dot(d, d) > 4.0 * fr * fr + 2.5e7) continue;             // (5 km of height above the sea point)
+        vec3  up = normalize(cloud.padQ[i].xyz + vec3(0.0, 0.0, R_EARTH));
+        float r  = length(d - up * dot(d, up));
+        float ki = 1.0 - smoothstep(fr, 2.0 * fr, r);
+        if (ki > k) { k = ki; padH = cloud.padAux[i].x; }
+        landK = max(landK, 1.0 - smoothstep(0.3 * fr, 0.4 * fr, r));   // the apron: land even on the map's water
+    }
+    return k;
+}
+float tdPadFlatK(vec3 q) { float h, l; return cloud.padInfo.w > 0.5 ? tdPadFlat(q, h, l) : 0.0; }
+#define TD_PAD_K(q) (1.0 - tdPadFlatK(q))
+#define TD_PAD_LAST (1.0 - gTdPadK)
+#else
+#define TD_PAD_K(q) 1.0
+#define TD_PAD_LAST 1.0
+#endif
 void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
              out float h0, out float hMip3) {
     ivec2 sz = textureSize(elevTex, 0);
@@ -253,6 +285,24 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
         h0 = waterAdjustHeight(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wm), water);
         if (water) hMip3 = kTdWaterMark;
     }
+#ifndef SKY_LITE
+    gTdPadK = 0.0;
+    if (cloud.padInfo.w > 0.5) {
+        float pH, landK;
+        gTdPadK = tdPadFlat(q, pH, landK);
+        if (hMip3 <= kTdWaterMark) {
+            // On the map's water: left alone (the map's coasts are ~1 km off), except the apron itself.
+            if (landK > 0.5) { h0 = pH; hMip3 = pH; }
+            else gTdPadK = 0.0;
+        } else if (h0 <= 0.5) {
+            // Land at the sea's level (marsh, a sand bar: drawn as the sea): left alone too, except the apron.
+            if (landK > 0.5) h0 = pH;
+            else gTdPadK = 0.0;
+        } else if (gTdPadK > 0.0) {
+            h0 = mix(h0, pH, gTdPadK);
+        }
+    }
+#endif
 }
 
 // Roughness from the DEM around a point: SIGNED relief against the ~21 km mean (mip 3) — ridges and
@@ -299,7 +349,7 @@ TdState tdBegin(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float h0, float hMip3) 
     s.h = 0.0; s.grad = vec3(0.0); s.slope = vec3(0.0);
     s.ero = false; s.hEro = 0.0; s.gEro = vec3(0.0); s.flow = vec3(0.0); s.lodDone = false; s.hC3 = 0.0;
     s.rough = tdRoughness(h0, hMip3);
-    s.amp0  = tdAmp0(h0, hMip3);
+    s.amp0  = tdAmp0(h0, hMip3) * TD_PAD_K(q);   // graded flat under a launch pad
     s.amp   = s.amp0;
     s.cell  = kTdBaseCellM;
     s.k     = 0;
@@ -740,7 +790,7 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
         // steps in the half-res depth pass (harness probe) — most of that pass's cost at ground level.
         float maxStep = clamp(t * 0.3, 20.0, 12000.0);
         float gap;
-        float amp0 = detail ? tdAmp0(h0, hMip3) : 0.0;
+        float amp0 = detail ? tdAmp0(h0, hMip3) * TD_PAD_LAST : 0.0;
         float allBound = detail ? tdTailBound(amp0) + tdErosionBound(amp0) : 0.0;
         if (rayH > h0 + allBound) {
             gap = rayH - h0 - allBound;

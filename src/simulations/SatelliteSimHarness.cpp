@@ -2435,6 +2435,34 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = msg;
             return Status::Done;
         }
+        if (sub == "pads")
+        {
+            r["pads"] = launchPadsJson();
+            r["message"] = std::to_string(r["pads"].size()) + " pads";
+            return Status::Done;
+        }
+        if (sub == "pad")
+        {
+            // launch pad <site id> [dist_m=600] [az=200] [h=2]: the observer at a pad, looking at its tower
+            // (az clockwise from the pad's heading).
+            std::string msg;
+            if (!launchGoToPad(pos(1), c.num("dist_m", 600.0), c.num("az", 200.0), c.num("h", 2.0), msg))
+                fail("launch pad: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
+        if (sub == "landing")
+        {
+            // launch landing [booster=1] [lead=90] [dist_m=2500] [day=1]: the next tower catch (a ship, or a booster;
+            // day=1: with the Sun above 10 deg at the pad).
+            std::string msg;
+            const bool bst = c.num("booster", 0.0) > 0.5;
+            if (!launchGoToLanding(bst ? 1 : 0, c.num("lead", bst ? 60.0 : 90.0), c.num("dist_m", 2500.0), msg,
+                                   c.num("day", 0.0) > 0.5))
+                fail("launch landing: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
         if (sub == "vent")
         {
             std::string msg;
@@ -2512,7 +2540,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             return Status::Done;
         }
         if (!sub.empty() && sub != "state")
-            fail("launch: state | list [hours=48] | next [twilight=0|1] | look [stage=0|1]");
+            fail("launch: state | list [hours=48] | next [twilight=0|1] | look [stage=0|1] | pads | pad <site> | landing [booster=1]");
         r["launches"] = launchStateJson();
         r["message"] = r["launches"].dump();
         return Status::Done;
@@ -3488,7 +3516,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                                        // terrain v2: the night sky + moonlit sky on the albedo; the night map with its base removed
                                        "nightsky", "citylights",
                                        // solar parks (R panel coverage, G graded ground, B panel normal east)
-                                       "solar"};
+                                       "solar",
+                                       // launch pads (R the pad ground's cover, G the city exclusion, B lamps + floodlit share)
+                                       "pads"};
         const int viewCount = (int)(sizeof(kViews) / sizeof(kViews[0]));
         const std::string v = lower(pos(0) == "terrain" ? pos(1) : pos(0));
         int idx = -1;

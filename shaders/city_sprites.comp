@@ -117,6 +117,12 @@ void main() {
     vec3  off = rel - cloud.terrainAnchorRel.xyz;                       // from the observer's sea point
     vec3  q   = vec3(dot(off, enuX), dot(off, enuY), dot(off, enuZ));
 
+    // Not at a launch pad (2026-10-19): inside its exclusion radius the lights are its own (the floodlights and
+    // beacons are sprites of their own, SatelliteSimLaunches.cpp launchFillPadLights).
+    for (int pi = 0; pi < int(cloud.padInfo.x + 0.5); ++pi) {
+        vec3 dp = q - cloud.padQ[pi].xyz;
+        if (dot(dp, dp) < cloud.padQ[pi].w * cloud.padQ[pi].w) return;
+    }
     // The night map's light here (base removed): cities only; its density sets the occupancy.
     vec2  uv  = tdUV(q, enuX, enuY, enuZ);
     vec3  nm  = max(textureLod(earthNightTex, uv, 0.0).rgb - vec3(0.006, 0.006, 0.0132), vec3(0.0));

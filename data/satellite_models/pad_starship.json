@@ -1,0 +1,432 @@
+{
+ "name": "pad starship",
+ "note": "Launch pad render model (tools/make_pad_models.py). Body frame: +Z up, +X the pad's heading, origin at the pad's centre on the ground. Sizes public figures rounded or estimates; detail render-only. Starship: the launch mount, the catch tower and its chopsticks, flood masts, the tank farm.",
+ "materials": [
+  {
+   "name": "lattice",
+   "preset": "truss",
+   "coverage": 0.6,
+   "diffuse_albedo": 0.22,
+   "color": [
+    0.32,
+    0.32,
+    0.34
+   ]
+  },
+  {
+   "name": "lattice_red",
+   "preset": "truss",
+   "coverage": 0.55,
+   "diffuse_albedo": 0.25,
+   "color": [
+    0.55,
+    0.22,
+    0.16
+   ]
+  },
+  {
+   "name": "steel",
+   "preset": "stainless_steel"
+  },
+  {
+   "name": "dark",
+   "preset": "black_paint"
+  },
+  {
+   "name": "white",
+   "preset": "white_paint"
+  },
+  {
+   "name": "concrete",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.45,
+   "color": [
+    0.62,
+    0.61,
+    0.58
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "pad",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "zenith"
+   },
+   "secondary": {
+    "axis": [
+     1,
+     0,
+     0
+    ],
+    "target": "velocity"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "olm_leg_0",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 1.4,
+   "height": 18.0,
+   "position": [
+    8.227241335952169,
+    4.749999999999999,
+    9.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "olm_leg_1",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 1.4,
+   "height": 18.0,
+   "position": [
+    5.817072295949927e-16,
+    9.5,
+    9.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "olm_leg_2",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 1.4,
+   "height": 18.0,
+   "position": [
+    -8.227241335952169,
+    4.749999999999999,
+    9.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "olm_leg_3",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 1.4,
+   "height": 18.0,
+   "position": [
+    -8.227241335952167,
+    -4.750000000000001,
+    9.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "olm_leg_4",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 1.4,
+   "height": 18.0,
+   "position": [
+    -1.7451216887849782e-15,
+    -9.5,
+    9.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "olm_leg_5",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 1.4,
+   "height": 18.0,
+   "position": [
+    8.227241335952165,
+    -4.750000000000004,
+    9.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "olm_table",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 11.0,
+   "height": 3.0,
+   "position": [
+    0,
+    0,
+    18.5
+   ],
+   "caps": true,
+   "material": "steel"
+  },
+  {
+   "name": "tower",
+   "type": "box",
+   "group": "pad",
+   "size": [
+    12.0,
+    12.0,
+    146.0
+   ],
+   "position": [
+    0,
+    -32.0,
+    73.0
+   ],
+   "material": "lattice"
+  },
+  {
+   "name": "tower_rod",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 0.4,
+   "height": 14.0,
+   "position": [
+    0,
+    -32.0,
+    153.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "carriage",
+   "type": "box",
+   "group": "pad",
+   "size": [
+    15.0,
+    15.0,
+    7.0
+   ],
+   "position": [
+    0,
+    -32.0,
+    96.0
+   ],
+   "material": "dark",
+   "render_only": true
+  },
+  {
+   "name": "chopstick_0",
+   "type": "box",
+   "group": "pad",
+   "size": [
+    2.4,
+    36.0,
+    3.2
+   ],
+   "position": [
+    -6.2,
+    -8.0,
+    95.0
+   ],
+   "material": "steel"
+  },
+  {
+   "name": "chopstick_2",
+   "type": "box",
+   "group": "pad",
+   "size": [
+    2.4,
+    36.0,
+    3.2
+   ],
+   "position": [
+    6.2,
+    -8.0,
+    95.0
+   ],
+   "material": "steel"
+  },
+  {
+   "name": "qd_arm",
+   "type": "box",
+   "group": "pad",
+   "size": [
+    3.0,
+    22.0,
+    3.0
+   ],
+   "position": [
+    0,
+    -15.0,
+    72.0
+   ],
+   "material": "dark",
+   "render_only": true
+  },
+  {
+   "name": "flood_mast_0",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 0.6,
+   "height": 45.0,
+   "position": [
+    105,
+    105,
+    22.5
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "flood_mast_1",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 0.6,
+   "height": 45.0,
+   "position": [
+    105,
+    -105,
+    22.5
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "flood_mast_2",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 0.6,
+   "height": 45.0,
+   "position": [
+    -105,
+    105,
+    22.5
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "flood_mast_3",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 0.6,
+   "height": 45.0,
+   "position": [
+    -105,
+    -105,
+    22.5
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "tank_0_0",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 5.0,
+   "height": 26.0,
+   "position": [
+    -244.0,
+    126.0,
+    13.0
+   ],
+   "caps": true,
+   "material": "white"
+  },
+  {
+   "name": "tank_0_1",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 5.0,
+   "height": 26.0,
+   "position": [
+    -230.0,
+    126.0,
+    13.0
+   ],
+   "caps": true,
+   "material": "white"
+  },
+  {
+   "name": "tank_0_2",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 5.0,
+   "height": 26.0,
+   "position": [
+    -216.0,
+    126.0,
+    13.0
+   ],
+   "caps": true,
+   "material": "white"
+  },
+  {
+   "name": "tank_1_0",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 5.0,
+   "height": 26.0,
+   "position": [
+    -244.0,
+    141.0,
+    13.0
+   ],
+   "caps": true,
+   "material": "white"
+  },
+  {
+   "name": "tank_1_1",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 5.0,
+   "height": 26.0,
+   "position": [
+    -230.0,
+    141.0,
+    13.0
+   ],
+   "caps": true,
+   "material": "white"
+  },
+  {
+   "name": "tank_1_2",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 5.0,
+   "height": 26.0,
+   "position": [
+    -216.0,
+    141.0,
+    13.0
+   ],
+   "caps": true,
+   "material": "white"
+  },
+  {
+   "name": "tank_farm_lox",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 7.0,
+   "height": 30.0,
+   "position": [
+    -205.0,
+    170.0,
+    15.0
+   ],
+   "caps": true,
+   "material": "white"
+  }
+ ]
+}

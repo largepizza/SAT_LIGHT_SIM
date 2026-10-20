@@ -26,6 +26,13 @@ struct Site
     double latDeg = 0.0, lonDeg = 0.0;
     double azMinDeg = 0.0, azMaxDeg = 360.0; // allowed launch azimuths (clockwise from north; wraps)
     glm::dvec3 ecef{1.0, 0.0, 0.0};          // unit, Earth-fixed
+    // The pad on the ground (2026-10-19, launch-site graphics): its kind (-1 = from the vehicles that fly from it:
+    // 2 a Starship pad with its catch tower, 1 a Falcon pad (fixed service structure, a landing zone), 0 another
+    // pad), the heading of its layout (deg clockwise from north; NaN = the middle of its azimuth range), and its
+    // ground height (m above sea level, read from the DEM when the catalog is loaded; the terrain is flattened to it).
+    int padKind = -1;
+    double padHeadingDeg = std::nan("");
+    double elevM = 0.0;
 };
 
 struct Vehicle
@@ -48,6 +55,8 @@ struct Vehicle
     double upperMassKg = 4000.0;
     double soot = 0.5;               // 0 clean (methane, hydrogen) .. 1 sooty (kerosene, solids): the low trail's albedo
     double ventChance = 0.35;        // the upper stage vents spinning after its deorbit burn (a spiral)
+    double mountM = 0.0;             // the launch mount's height: the vehicle stands on it (Starship: ~20 m)
+    double catchM = 0.0;             // a tower-caught booster stops this far above the mount (its aft end)
 };
 
 struct Program
