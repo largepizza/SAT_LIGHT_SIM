@@ -2743,6 +2743,8 @@ private:
     {
         uint32_t id;
         float level, km, pan; // the thunder synth's event (SatelliteSimAmbience.cpp thunderStep)
+        int stage = 0, burn = 0;  // readouts (harness `launch state`): the stage, its burn and T+ as heard now
+        float tau = 0.0f, altKm = 0.0f;
     };
     std::vector<LaunchSound> launchSounds(double now, const glm::dvec3 &eye, float camAz) const;
     nlohmann::json launchCheckJson() const;

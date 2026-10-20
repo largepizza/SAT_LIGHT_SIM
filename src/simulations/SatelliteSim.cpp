@@ -5705,6 +5705,23 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
                 bestMeshDist = dist;
             }
         }
+        // A rocket drawn in one of the rocket mesh slots is picked as its transient (the selection's own slot, which
+        // selTransientUpdate keeps current and drops when the rocket is gone). The mesh slot itself holds only the
+        // last frame's state: selected (or followed) it froze there for good — the user's ship "still up here" seven
+        // months after it had re-entered (issue 20261019_180502 shot 3), and drawn twice beside its live self (shot 1).
+        const uint32_t rmBase = activeSatCount + kLaunchCap - 1 - kRocketMeshSlots;
+        if (bestMesh >= (int)rmBase && bestMesh < (int)(rmBase + kRocketMeshSlots))
+        {
+            const uint64_t k = rocketMeshKey[bestMesh - (int)rmBase];
+            bestMesh = -1;
+            for (const SelTransient &s : selTransients)
+                if (k != 0 && s.key == k)
+                {
+                    selTransientTake(s);
+                    bestMesh = (int)transientSatIdx();
+                    break;
+                }
+        }
         if (bestMesh >= 0)
             return bestMesh;
     }
