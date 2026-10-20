@@ -2279,7 +2279,19 @@ follow mode is a free camera at the camera's place.
   McMurdo: the bow was the beams lighting snow as rain, fixed the same day), Rainbow over Venezuela, Starmind
   Formation Rings.** Removed: Reflect Orbital over Anchorage, AI Satellites at Twilight, Los Angeles by Night,
   Sunset from Orbit, Blood Moon over Alice Springs (Restore no longer re-adds them; a user list that has them keeps
-  them).
+  them). Since: The Sun's Fury (2026-10-16), Twilight Starship Launch (10-19), Starmind Deployment (10-20) — nine.
+- **The weather bookmarks depend on the CLOUD DEFAULTS, not just their drift phase (2026-10-20 audit).** The
+  2026-10-11 tuning (coverage remap `cover_clear` 0.12 -> 0.0026 / `cover_full` 0.54 -> 1.0 / `coverage`, `flow_warp`,
+  `evo_window_h` 3 -> 0.1, the storm shapes) left both the Venezuela rainbow and the Antarctic snow on a clear sky
+  with default settings: the old phase framed a storm that no longer stood there (bisected by `set` groups from the
+  10-06 defaults: the coverage trio shrank the storm, the flow / window group moved what was left). Re-framed, not
+  re-tuned: the rainbow keeps its moment and phase, the observer moved to the edge of a raining storm on the Falcon
+  coast (11.02 N 68.58 W, az -68 = the antisolar point, a full double bow); the snow takes phase 1.535 (the edge of a
+  shower over McMurdo; a phase sweep found snow at the eye at 1.49-1.54 and 1.63-1.67 — 0.005 rad is ~7 km there and
+  changes the view). **After changing a cloud default, audit the bookmarks** (`bookmark go N; wait settle; wait 30;
+  capture` for N = 1-9, default settings). Finding a storm for a bookmark: probe the rain map over a grid of observer
+  positions (`observer lat= lon= alt=200; wait 3; state` -> `clouds_v2.rain.rate_near_max` and `sun_cloud_t`), then
+  stand sunlit a few km on the Sun's side of the rain (`harness_runs/bmaudit/`: probe / pick scripts).
 
 ## Loading screen (2026-09-26)
 
