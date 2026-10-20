@@ -58,6 +58,12 @@ struct Program
     double raiseDays[2] = {20.0, 35.0};   // deployment to arrival in the slot
     double deorbitDays[2] = {20.0, 60.0}; // the retiree: arrival of its replacement to re-entry
     double batchGapDays = 2.0;       // launches into one plane, apart
+    // Crew rotation (2026-10-19, the Missions window): a crewed program flies people to a station (a constellation of
+    // one) every life_years (NOT scaled by the design-life setting). No train, no retiree: raise_days is the time from
+    // lift-off to docking, and only the rocket and its upper stage are drawn (the capsule's rendezvous is not).
+    bool crew = false;
+    std::string spacecraft;          // "Crew Dragon", "Shenzhou", ...
+    int people = 0;
 };
 
 struct Catalog

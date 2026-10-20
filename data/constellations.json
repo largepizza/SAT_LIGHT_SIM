@@ -97,27 +97,6 @@
         {
             "name": "Starlink VisorSat (geometry model)",
             "model": "starlink_visorsat"
-        },
-        {
-            "name": "Starlink Gen2 (legacy)",
-            "base_color": [
-                0.8,
-                0.87,
-                1.0
-            ],
-            "cross_section_m2": 10.0,
-            "primary": {
-                "attitude": "KnifeEdge",
-                "spec_exp": 18.0,
-                "weight": 1.0
-            },
-            "secondary": {
-                "attitude": "NadirPointing",
-                "spec_exp": 5.0,
-                "weight": 0.2
-            },
-            "diffuse": 0.0,
-            "mirror_frac": 0.05
         }
     ],
     "constellations": [
@@ -467,16 +446,6 @@
             "num_planes": 72,
             "per_plane": 22,
             "enabled": true,
-            "distribution": "Walker"
-        },
-        {
-            "name": "Gen2 shell - legacy (comparison)",
-            "type": "Starlink Gen2 (legacy)",
-            "alt_km": 530.0,
-            "incl_deg": 53.0,
-            "num_planes": 72,
-            "per_plane": 22,
-            "enabled": false,
             "distribution": "Walker"
         },
         {

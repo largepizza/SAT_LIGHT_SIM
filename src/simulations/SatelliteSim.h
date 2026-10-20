@@ -51,6 +51,7 @@ bool settingsTabIsAdvanced(int i);   // behind Display > "Show advanced settings
 
 #include <string>
 #include <vector>
+#include <deque>
 #include <map>
 #include <unordered_map>
 #include <cstdint>
@@ -1989,8 +1990,13 @@ public:
     void finalizeScreenshot() override;
     // UC6: shared by KB_SCREENSHOT (dispatchKeyAction) and the left HUD panel's camera button —
     // builds screenshotPath and sets screenshotRequested, or no-ops if a capture is already in
-    // flight (copy pending or still encoding).
-    void requestScreenshot();
+    // flight (copy pending or still encoding). withUi: the shot keeps the interface (the screenshot's own
+    // toast, the issue-report note bar and window are left out: shotHidesOverlays).
+    void requestScreenshot(bool withUi = false);
+    // A player's screenshot or issue-report shot WITH the UI is being taken this frame: buildUI leaves out the
+    // things that only exist because of the shot (its toast, the report note bar, the Issue reports window), so
+    // the image shows what the player was looking at. Harness captures (`capture ui=1`) never set it.
+    bool shotHidesOverlays() const { return screenshotRequested && screenshotIncludeUI && screenshotHideOverlays_; }
     // HQ photo (review 13): render photoScaleSetting x the window's resolution offscreen (App switches to
     // VulkanContext's photo target while photoScaleRequest() > 0), the clouds at full rate and time
     // paused, let photoSettleFrames frames accumulate (cloud history, sky TAA), then save that frame
@@ -2252,10 +2258,24 @@ private:
     // The info window's collapsible sections (buildInfoWindow). Satellite / Orbit / Photometry start
     // OPEN — those are what the window is for; the rest start collapsed. Open state is session-only,
     // like the Clouds tab's section state (buildCloudSliderSections), not a preference.
-    // 2026-10-03: SATELLITE, ORBIT, BRIGHTNESS, SKY POSITION, VIEW (camera + render), CHECK; the stat tiles over
-    // them carry the four numbers a player looks for first.
+    // 2026-10-19 (the user: "the satellite tab is listed first and is the least relevant"): STATUS, BRIGHTNESS,
+    // SKY POSITION, ORBIT open; the technical MODEL (type, model id, size, triangles), VIEW (camera + render) and
+    // CHECK collapsed at the bottom. The stat tiles and the ACTIONS (Trace / Go to / Track / Explode / ASAT) sit
+    // above the list and never scroll away.
+    enum InfoSect { kInfoStatus = 0, kInfoBright, kInfoSky, kInfoOrbit, kInfoModel, kInfoView, kInfoCheck };
     static constexpr int kInfoSectionCount = 7;
-    bool infoSectionOpen[kInfoSectionCount] = {true, true, false, false, false, false, false};
+    bool infoSectionOpen[kInfoSectionCount] = {true, true, true, true, false, false, false};
+    // STATUS rows, formatted each frame (a transient's label is longer than the kit's 96-char ring)
+    static constexpr int kInfoStatusRows = 5;
+    char infoStatusValue[kInfoStatusRows][160] = {};
+    const char *infoStatusLabel[kInfoStatusRows] = {};
+    int infoStatusCount = 0;
+    // The ACTIONS' Explode / ASAT strike take two clicks: the first arms one (kind) for a few seconds.
+    int infoExplodeArmKind_ = -1;
+    float infoExplodeArmT_ = 0.0f;
+    // THE call site of a player breakup from the info window (the viewed satellite): today the Kessler
+    // scenario's kesslerBreakupFromUi; its result goes to the toast. kind = kessler::EV_EXPLOSION / EV_ASAT.
+    void infoExplodeSelected(uint8_t kind);
     bool hovInfoSection[kInfoSectionCount] = {};
     // ORBIT section rows: altitude, inclination, RAAN, period, then the flare-mitigation power readout
     // (only for types whose primary surface uses the tilt, so the count is usually 4).
@@ -2448,7 +2468,7 @@ private:
     double followRadiusM = 0.0;
     glm::vec3 followSavedObsDir{0.0f}, followSavedFacing{0.0f};
     float followSavedHeight = 0.0f, followSavedEl = 0.0f, followSavedFov = 70.0f;
-    bool hovSelFollowBtn = false, hovFollowAim = false, hovFollowExit = false;
+    bool hovSelFollowBtn = false, hovFollowAim = false, hovFollowExit = false, hovFollowStay = false;
     char followLabel[128] = {};
     // Review 22: "Go to" and "Exit" FLY (fly = true: the UI's buttons): from the eye to the follow point (re-evaluated
     // every frame as the satellite moves) and back to the saved ground spot, the arc slerped and the altitude
@@ -2486,6 +2506,21 @@ private:
     double followFlightDuration(double distM) const;
     void startFollow(int satIndex, bool fly = false);
     void stopFollow(bool fly = false);
+    // Leave Go to WHERE THE CAMERA IS (2026-10-19, "Stay here": the follow HUD's button, KB_FOLLOW_STAY, harness
+    // `follow stay`): the observer becomes a free observer at the camera's place (direction, altitude above sea level,
+    // facing, elevation and FOV kept), Earth-fixed from then on. The parked ground observer is dropped: the settings
+    // save the new free observer like any other. `why` (optional) is shown as a toast (a followed object that ended).
+    void stopFollowHere(const char *why = nullptr);
+    // A handover between objects (a rocket's stack to its upper stage, a stage to its re-entry, a raising train
+    // member to its roster slot): the jump between them (ECEF), eased out over ~2 s so the camera glides.
+    glm::dvec3 followHandD{0.0};
+    // Following a launch record (a train member raising, a retiree deorbiting): its slot's owner and member when
+    // follow began (a slot changes hands when its batch ends).
+    uint64_t followLaunchOwner = 0;
+    uint16_t followLaunchM = 0;
+    // Per frame, before updateFollow: hand over to the object that continues the followed one, or end in place.
+    void followCheckTarget();
+    bool isFollowing(int satIndex) const; // follow rides this satellite (a selected transient: the same object)
     void updateFollow(float dt);
     glm::dvec3 followFlightPos(const glm::dvec3 &from, const glm::dvec3 &to, double u) const;
     void buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx);
@@ -2677,15 +2712,45 @@ private:
     double selTransientSeenT = 0.0;
     double selTransientsT = 0.0;             // the sim time selTransients was made at
     uint32_t transientSatIdx() const { return activeSatCount + kLaunchCap - 1; }
+    // The FOLLOWED transient has a slot of its own (2026-10-19): follow keeps riding it whatever is selected, and it is
+    // re-evaluated at the frame's exact time (transientExactState) rather than extrapolated from the last list.
+    uint32_t followSlotIdx() const { return activeSatCount + kLaunchCap - 2; }
+    bool followIsTransient() const { return followActive && followSatIndex >= 0 && (uint32_t)followSatIndex == followSlotIdx(); }
+    SelTransient followTrCur;
+    uint64_t followTrKey = 0;    // 0 with followWantKind: a record that ended, waiting for its fireball in the list
+    double followTrSeenT = 0.0;
+    uint8_t followWantKind = 0;  // the successor awaited (a SelTransient kind with a == followWantA), until followWantUntil
+    uint64_t followWantA = 0;
+    double followWantUntil = 0.0;
+    uint32_t followPoolGen = 0;  // following a Kessler pool piece: its slot's generation (a reused slot is another object)
+    // Follow moves to `s` (followed in the follow slot); the camera eases across the jump from `fromEci`.
+    void followTakeTransient(const SelTransient &s, const glm::dvec3 &fromEci, double t);
+    // Advances `cur` along its rocket's mission (stack -> upper stage at staging; a returning upper stage -> its ship
+    // entry) and sets its exact state at t. False when it no longer exists as a rocket (wantKind: what continues it).
+    bool transientContinue(SelTransient &cur, double t, uint8_t &wantKind) const;
+    void transientWriteSlot(uint32_t slot, const SelTransient &s, double t0); // fixedState elements + the slot's type
+    // The object that continues `cur` in this frame's list: a stack's upper stage after staging, an upper stage's
+    // ship entry or re-entry fireball. False: none (yet).
+    bool transientSuccessor(const SelTransient &cur, SelTransient &out) const;
+    bool transientIsStack(const SelTransient &s) const; // a rocket's stage 0 before staging (one vehicle)
+    // A rocket stage / ship entry's state at time t from the launch model itself (position, velocity, acceleration;
+    // the axis is kept). False for the fireballs, which keep their extrapolation.
+    bool transientExactState(SelTransient &s, double t) const;
+    void followTransientUpdate(); // after the frame's list: track, hand over, or end in place
+    // A rocket drawn as a mesh is picked (and followed) through its mesh slot: the transient it holds, taken as the
+    // selection. Returns transientSatIdx(), or the index unchanged when it is not a rocket mesh slot.
+    int rocketMeshSlotToTransient(int satIndex);
     bool selIsTransient() const { return selectedSatIndex >= 0 && (uint32_t)selectedSatIndex == transientSatIdx(); }
     void addSelTransient(const SelTransient &s);
     void selTransientUpdate();                // after the frame's visuals: the reserved slot's state, the label
     void selTransientTake(const SelTransient &s); // make it the selection's object (the caller selects the index)
     std::string transientLabel() const;
+    std::string transientLabelOf(const SelTransient &s) const;
+    double transientGraceS() const; // how long a listed transient may be missing before it counts as gone
     bool selectTransient(int kind, std::string &msg, int stage = -1); // harness: the brightest of a kind (0 = any)
     // Rockets near enough to draw as meshes: up to kRocketMeshSlots of the reserved chunk's slots, bound to the
     // drawn rockets' keys (stable while they stay meshed). Returns their satellite indices (recordMeshScene).
-    static constexpr int kRocketMeshSlots = 7;
+    static constexpr int kRocketMeshSlots = 6; // the reserved chunk: 6 rocket meshes, the followed transient, the selection
     uint64_t rocketMeshKey[kRocketMeshSlots] = {};
     std::vector<int> launchMeshJobs(double pixAngle, const glm::dvec3 &obsEci);
     double rocketMeshPx(const SelTransient &s, double pixAngle, const glm::dvec3 &obsEci) const;
@@ -2712,6 +2777,7 @@ private:
     void launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd); // per frame: schedule, records, uploads
     void launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // rockets, plumes, re-entries
     SatOrbitElems launchOrbitElems(uint32_t slot) const;
+    uint64_t launchSlotOwner(uint32_t slot, uint32_t &m) const; // a launch slot's owner (batch key * 2 + kind; 0 = free)
     std::string launchLabel(uint32_t slot) const;
     nlohmann::json launchStateJson() const;
     nlohmann::json launchListJson(double hours) const;
@@ -2735,6 +2801,67 @@ private:
     bool launchGoToStageEvent(std::string &msg, int ev);
     void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
     void launchDestroy(VkDevice device);
+
+    // ── Missions window (2026-10-19, SatelliteSimMissions.cpp; queries in SatelliteSimLaunches.cpp) ───────────
+    // The schedule and what is flying now, outside the settings window: the next launches (Go to / Watch), the next
+    // twilight ("jellyfish") and crewed launches pinned, the Sun's Fury last; ongoing crew transfers, crewed stations,
+    // rockets in flight and the constellations' trains / retirees; and the LAUNCHES / THE SUN'S FURY controls.
+    struct MissionLaunch
+    {
+        uint64_t key = 0;        // the batch (launchGoToKey)
+        double tL = 0.0;         // lift-off, J2000 s
+        double tA = 0.0;         // arrival (trains) / docking (crew)
+        double sunElevDeg = 0.0; // the Sun at the pad at lift-off
+        bool crew = false, twilight = false;
+        int people = 0, payload = 0;
+        std::string vehicle, program, site, target, spacecraft; // target: the constellation or the station
+    };
+    // Lift-offs in [t0, t1] (J2000 s), sorted, at most maxN. filter: 0 all, 1 crewed, 2 twilight (the Sun 5-16 deg
+    // below the pad's horizon). Builds (and keeps) the batches it needs.
+    void launchUpcoming(double t0, double t1, int filter, size_t maxN, std::vector<MissionLaunch> &out);
+    // Jumps to leadS before the batch's lift-off at 1x. moveObserver: on the ground ~12 km beside the pad (on land
+    // where one side is sea), the camera on the pad; else the time only.
+    bool launchGoToKey(uint64_t key, bool moveObserver, double leadS, std::string &msg);
+    struct MissionOngoing
+    {
+        int cat = 0;            // 0 crew transfer, 1 crewed station, 2 satellite launch in flight, 3 trains raising, 4 retiring
+        std::string title, status;
+        uint64_t key = 0;       // the batch (0, 2)
+        int prog = -1;          // the program (3, 4)
+        int sat = -1;           // the station's satellite (1)
+        int count = 0;          // satellites (3, 4)
+        double tNext = 0.0;     // what the status counts down to (J2000 s; 0 = none)
+        double progress = -1.0; // 0..1 (-1 = none)
+        bool drawn = false;     // the rocket is drawn this frame (selectable)
+    };
+    void launchOngoing(std::vector<MissionOngoing> &out); // crew transfers, rockets, trains and retirees (not stations)
+    struct CrewStation
+    {
+        int constIdx = -1, sat = -1, prog = -1;
+    };
+    std::vector<CrewStation> launchCrewStations();         // the stations a crew program serves
+    bool launchSelectRocketOf(uint64_t key, std::string &msg); // the batch's drawn rocket stage
+    bool launchSelectNearestOf(int prog, int kind, std::string &msg); // the nearest train member (0) / retiree (1)
+
+    WindowChrome msChrome;
+    bool hovMsClose = false, hovTimeMissions = false;
+    int msTab = 0;                       // 0 upcoming, 1 ongoing, 2 controls
+    double msNextWall = -1e300, msNextSim = -1e300; // when the next-launches rows were made (wall clock, sim time)
+    double msPinWall = -1e300, msPinSim = -1e300;   // ... the pinned twilight / crewed rows
+    std::vector<MissionLaunch> msNext;   // the next launches
+    std::vector<MissionLaunch> msCrewList; // crewed flights in the next ~400 days (the stations' next flights too)
+    MissionLaunch msTwilight;
+    bool msHasTwilight = false;
+    std::vector<MissionOngoing> msOngoing;
+    std::vector<CrewStation> msStations;
+    std::string msStatus;
+    std::deque<std::string> msText_;     // this frame's formatted strings (Clay keeps the pointers; a deque never moves them)
+    const char *msStr(const char *fmt, ...);
+    void missionsRefresh(bool force);
+    bool missionsGoToFury(int which, std::string &msg); // 0 the CME's arrival (dusk over Monument Valley), 1 the storm night
+    bool missionsGo(const std::string &what, bool watchOnly, std::string &msg); // harness: an index, twilight, crew, fury, fury_night
+    nlohmann::json missionsStateJson();
+    void buildMissionsWindow(const UIInput &inp, UIRenderer &ui);
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
     uint32_t kPoolCap = 16384;            // records the GPU buffers hold
     // Satellite indices: [0, activeSatCount) the roster, then kLaunchCap launch records (trains raising, retirees
@@ -2755,7 +2882,18 @@ private:
     double kesslerEpoch() const;          // the scenario epoch (the CME's arrival), J2000 s
     void kesslerInit(VulkanContext &ctx); // after the roster's buffers exist: storm, world, cache, worker
     void kesslerShutdown();               // stop the worker, write the cache
-    void kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents, double keepEngineBefore);
+    // syncUntil > 0: when the world starts within two steps of it (a breakup before the CME starts the world at its own
+    // step), that step is computed before this returns (its debris is up the same frame).
+    void kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents, double keepEngineBefore,
+                        double syncUntil = -1.0);
+    double kWorldStart = 0.0; // where the running world starts (the CME, or a step before it: a pre-CME breakup)
+    // A player breakup without replaying the history (2026-10-19): the world rewinds to its last checkpoint at or
+    // before the breakup (World::rollback), re-runs the breakup's step here, and the mirror is rewound to match.
+    bool kesslerBreakupInPlace(const kessler::Event &ev);
+    void kesslerMirrorRewind(double tCheckpoint);
+    double kLastBreakupMs = 0.0; // how long the last player breakup took on the main thread (harness state)
+    bool kLastBreakupFast = false;
+    bool kForceRebuildOnce = false; // harness `kessler breakup ... rebuild=1`: the old full replay (for comparison)
     void kesslerSync(VulkanContext &ctx);  // per frame: take the worker's new events / records / deaths
     void kesslerWant(double tJ2000);       // ask the (lazy) worker to simulate at least this far
     double kWantFloor = 0.0;               // the furthest explicit kesslerWant (harness waits); the warp's target may drop
@@ -2805,6 +2943,28 @@ private:
     void buildKesslerBanner(UIRenderer &ui);
     void buildKesslerSettingsSection(const UIInput &inp, UIRenderer &ui);
     void kesslerBreakupFromUi(int sat, uint8_t kind);
+
+public:
+    // ── Explode (2026-10-19): the one call the UI makes to break a satellite up ─────────────────────────
+    // Any roster satellite or debris piece, at ANY sim time: before the CME too (the Kessler scenario then starts at that
+    // moment, and is switched on if it was off). Before the CME working satellites dodge everything, so only what the
+    // player broke (and its dead neighbours) collides; the configured avoidance applies from the CME on. It is an event
+    // in the log at the current sim time: playing back before it undoes it. Computed in place (the debris is up the
+    // same frame) and time keeps running. Not for rockets, raising trains or retiring satellites (launch objects).
+    // `reason` says why not, or what happened ("Explosion: <name>").
+    enum class BreakupKind
+    {
+        Explosion,
+        Asat
+    };
+    struct ExplodeResult
+    {
+        bool ok = false;
+        std::string reason;
+    };
+    ExplodeResult explodeSatellite(int satIndex, BreakupKind kind);
+
+private:
     char kBannerBuf[160] = {};
     char kUiMsg[200] = {};
     VkDescriptorSetLayout satRebakeDescLayout = VK_NULL_HANDLE;
@@ -4948,6 +5108,11 @@ private:
     // Harness captures (docs/HARNESS.md `capture`): keep the UI in the shot, crop and rescale before
     // the encode. Reset after every request.
     bool screenshotIncludeUI = false;
+    bool screenshotHideOverlays_ = false; // set with screenshotIncludeUI by a player's shot (shotHidesOverlays)
+    // Display tab "SCREENSHOTS": keep the UI in F12 screenshots / in issue-report shots (F9 / F7). The
+    // "Screenshot with UI" key (KB_SCREENSHOT_UI) always keeps it. display.screenshot_ui / report_shot_ui.
+    bool screenshotUiSetting = false;
+    bool reportShotUiSetting = false;
     int screenshotCrop[4] = {0, 0, 0, 0}; // x, y, w, h in frame pixels; w == 0 = the whole frame
     float screenshotScale = 1.0f;          // < 1 box-filtered down, > 1 nearest-neighbour up (pixel peeping)
 
@@ -5137,7 +5302,10 @@ private:
         KB_SAVE_SNAPSHOT = 18, // event — a shot into the active issue report (+ a line in perf_profiles/profile_log.jsonl)
         KB_PHOTO = 19,         // event — HQ photo: a supersampled, settled screenshot (requestPhoto)
         KB_REPORT_NEW = 20,    // event — a snapshot that starts a NEW issue report (KB_SAVE_SNAPSHOT adds to the active one)
-        KB_COUNT = 21,
+        KB_SCREENSHOT_UI = 21, // event — a screenshot that keeps the UI (default F10)
+        KB_MISSIONS = 22,      // event — the Missions window (launches, crew flights, the Sun's Fury) open / closed
+        KB_FOLLOW_STAY = 23,   // event — leave Go to where the camera is (stopFollowHere); G
+        KB_COUNT = 24,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -5254,6 +5422,9 @@ private:
     void uiStatTile(const char *key, int idx, const char *label, const char *value, Clay_Color valueColor);
     bool uiButton(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, const char *tip,
                   bool on = false, bool enabled = true, bool grow = false);
+    // A destructive action's pill (Pal::btnDanger*): `armed` = the first click of two has been made.
+    bool uiDangerButton(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, const char *tip,
+                        bool armed, bool enabled = true);
     bool uiToggleRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, bool &v,
                      const char *tip = nullptr, const char *onText = "On", const char *offText = "Off");
     int  uiChoiceRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label,

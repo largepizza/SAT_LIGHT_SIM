@@ -205,7 +205,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -381,8 +381,17 @@ json SatelliteSim::harnessStateJson()
                      {"height_offset_m", obsHeightOffset},
                      {"following", followActive}, {"follow_flight", followFlight}};
     if (followActive)
+    {
         j["observer"]["follow"] = {{"sat", followSatIndex},
-                                   {"offset_m", {followOffset.x, followOffset.y, followOffset.z}}};
+                                   {"offset_m", {followOffset.x, followOffset.y, followOffset.z}},
+                                   {"label", std::string(followLabel)},
+                                   {"handover_m", glm::length(followHandD)}};
+        if (followIsTransient())
+            j["observer"]["follow"]["transient"] = {{"kind", (int)followTrCur.kind}, {"stage", (int)followTrCur.stage},
+                                                    {"key", followTrKey}, {"waiting_for_kind", (int)followWantKind},
+                                                    {"alt_km", (glm::length(followTrCur.pos) - satphot::kEarthRadiusM) / 1000.0},
+                                                    {"tau_s", followTrCur.tau}};
+    }
     j["camera"] = {{"az_deg", camera.azDeg}, {"el_deg", camera.elDeg}, {"fov_y_deg", camera.fovYDeg},
                    {"tracking", trackActive}};
     const glm::vec3 sun(sunDirENU), moon(moonDirENU);
@@ -1724,10 +1733,20 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = fly ? "follow off (flying home)" : "follow off";
             return Status::Done;
         }
+        if (lower(pos(0)) == "stay")
+        {
+            // Leave Go to where the camera is: a free observer there (the HUD's "Stay here", KB_FOLLOW_STAY).
+            if (!followActive)
+                fail("follow stay: not following");
+            stopFollowHere();
+            r["message"] = "follow off (staying here)";
+            r["alt_km"] = obsHeightOffset / 1000.0;
+            return Status::Done;
+        }
         const int idx = c.has("sat") ? (int)c.num("sat", -1) : selectedSatIndex;
         if (idx < 0 || idx >= (int)satOrbits.size())
             fail("follow: select a satellite first (or sat=<i>)");
-        if (!followActive || followSatIndex != idx)
+        if (!isFollowing(idx))
             startFollow(idx, fly);
         if (!followActive)
             fail("follow: this satellite's type has no geometry model");
@@ -2258,8 +2277,12 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             else if (lower(c.str("kind", "explosion")) == "asat")
                 kind = kessler::EV_ASAT;
             std::string why;
+            kForceRebuildOnce = c.num("rebuild", 0.0) > 0.5; // the old path: rebuild the history (comparison)
             if (!kesslerUserEvent(kind, a0, b0, &why))
                 fail("kessler " + sub + ": " + why);
+            r["breakup_ms"] = kLastBreakupMs;
+            r["in_place"] = kLastBreakupFast;
+            r["frontier_days"] = (kFrontier - kesslerEpoch()) / 86400.0;
         }
         else if (sub == "wait")
         {
@@ -2344,6 +2367,35 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         return Status::Done;
     }
 
+    if (n == "missions")
+    {
+        // missions [state] | go <index|twilight|crew|fury|fury_night> [watch=1] | tab upcoming|ongoing|controls
+        // (2026-10-19, SatelliteSimMissions.cpp): the Missions window's rows and actions.
+        const std::string sub = lower(pos(0));
+        if (sub.empty() || sub == "state")
+        {
+            r["missions"] = missionsStateJson();
+            return Status::Done;
+        }
+        if (sub == "go")
+        {
+            std::string msg;
+            if (!missionsGo(lower(pos(1)), c.num("watch", 0.0) > 0.5, msg))
+                fail("missions go: " + msg);
+            msStatus = msg;
+            r["message"] = msg;
+            return Status::Done;
+        }
+        if (sub == "tab")
+        {
+            const std::string t = lower(pos(1));
+            msTab = t == "ongoing" ? 1 : t == "controls" ? 2 : 0;
+            msChrome.open = true;
+            uiVisible = true;
+            return Status::Done;
+        }
+        fail("missions: state | go <index|twilight|crew|fury|fury_night> [watch=1] | tab upcoming|ongoing|controls");
+    }
     if (n == "launch")
     {
         // launch [state] | list [hours=48] | next [twilight=0|1] (2026-10-18, SatelliteSimLaunches.cpp).
@@ -2703,6 +2755,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 return &rpChrome;
             if (l == "cine" || l == "cinematics")
                 return &cineChrome;
+            if (l == "missions" || l == "mission")
+                return &msChrome;
             return nullptr;
         };
         if (sub == "dump")
@@ -2864,13 +2918,15 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 {"enter", GLFW_KEY_ENTER}, {"esc", GLFW_KEY_ESCAPE}, {"escape", GLFW_KEY_ESCAPE}, {"tab", GLFW_KEY_TAB},
                 {"backspace", GLFW_KEY_BACKSPACE}, {"delete", GLFW_KEY_DELETE}, {"left", GLFW_KEY_LEFT},
                 {"right", GLFW_KEY_RIGHT}, {"home", GLFW_KEY_HOME}, {"end", GLFW_KEY_END}, {"w", GLFW_KEY_W},
-                {"up", GLFW_KEY_UP}, {"down", GLFW_KEY_DOWN}};
+                {"up", GLFW_KEY_UP}, {"down", GLFW_KEY_DOWN},
+                // the screenshot / report keys (2026-10-19): f7 new issue shot, f9 shot, f10 screenshot with UI, f12 screenshot
+                {"f7", GLFW_KEY_F7}, {"f8", GLFW_KEY_F8}, {"f9", GLFW_KEY_F9}, {"f10", GLFW_KEY_F10}, {"f12", GLFW_KEY_F12}};
             int code = -1;
             for (const auto &e : keys)
                 if (k == e.first)
                     code = e.second;
             if (code < 0)
-                fail("ui key: enter | esc | tab | backspace | delete | left | right | home | end | w");
+                fail("ui key: enter | esc | tab | backspace | delete | left | right | up | down | home | end | w | f7 | f8 | f9 | f10 | f12");
             onKey(win, code, GLFW_PRESS);
             onKey(win, code, GLFW_RELEASE);
             r["text_focus"] = textEdit_.id != 0;
@@ -2906,10 +2962,19 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             {
                 WindowChrome *ch = chromeOf(w);
                 if (!ch)
-                    fail("ui open: settings, viewcontrols, trace, info, viewer, cine, bookmarks, console");
+                    fail("ui open: settings, viewcontrols, trace, info, viewer, cine, bookmarks, reports, missions, console");
                 ch->open = true;
+                if (ch == &msChrome)
+                {
+                    msNextWall = msPinWall = -1e300;
+                    if (c.has("tab"))
+                    {
+                        const std::string t = lower(c.str("tab"));
+                        msTab = t == "ongoing" ? 1 : t == "controls" ? 2 : 0;
+                    }
+                }
             }
-            if (c.has("tab"))
+            if (c.has("tab") && lower(pos(1)) != "missions" && lower(pos(1)) != "mission")
             {
                 const int t = settingsTabIndexByName(c.str("tab"));
                 if (t < 0)
@@ -2924,7 +2989,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             if (lower(pos(1)) == "all")
                 consoleOpen_ = settingsChrome.open = viewControlsChrome.open = traceChrome.open = infoChrome.open =
-                    viewerChrome.open = cineChrome.open = bmChrome.open = false;
+                    viewerChrome.open = cineChrome.open = bmChrome.open = msChrome.open = false;
             else if (lower(pos(1)) == "console")
                 consoleOpen_ = false;
             else if (WindowChrome *ch = chromeOf(pos(1)))

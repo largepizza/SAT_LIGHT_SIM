@@ -49,6 +49,7 @@ static constexpr int kIconPhoto = 17;    // pixel--photo.png — HQ photo (super
 static constexpr int kIconFilm = 18;     // pixel--film.png — the Cinematics window (review 17)
 static constexpr int kIconReport = 20;   // pixel--report.png — the Issue reports window (2026-10-12)
 static constexpr int kIconBookmark = 19; // pixel--bookmark.png — the Bookmarks window (2026-10-03)
+static constexpr int kIconMissions = 21; // pixel--missions.png — the Missions window (2026-10-19)
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
 // are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
@@ -767,6 +768,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--film.png",
             "assets/icons/ui/pixel--bookmark.png",
             "assets/icons/ui/pixel--report.png",
+            "assets/icons/ui/pixel--missions.png",
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -830,7 +832,11 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildHarnessOverlays(inp, ui); // harness `overlay` titles/labels, likewise (docs/HARNESS.md)
     buildCineHud(inp, ui);         // a playing / exporting cinematic's progress and Stop, likewise
     bookmarkTick(ui);              // bookmarks: the list, thumbnail captures and uploads (window open or not)
-    buildReportBar(inp, ui);       // the note bar after an issue snapshot, likewise
+    // A screenshot / issue shot WITH the UI is taken this frame: leave out what only exists because of the shot
+    // (its toast, the note bar, the Issue reports window), so the image is what the player was looking at.
+    const bool hideShotChrome = shotHidesOverlays();
+    if (!hideShotChrome)
+        buildReportBar(inp, ui);   // the note bar after an issue snapshot, likewise
 
     // ── Tab: skip all UI when hidden ─────────────────────────────────────────
     if (!uiVisible)
@@ -843,7 +849,9 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildTraceWindow(inp, ui);
     buildCinematicWindow(inp, ui);
     buildBookmarksWindow(inp, ui);
-    buildReportsWindow(inp, ui);
+    if (!hideShotChrome)
+        buildReportsWindow(inp, ui);
+    buildMissionsWindow(inp, ui);
     updateViewerView(inp, ui); // the satellite windows' shared prologue (target, drag, readouts)
     buildInfoWindow(inp, ui);
     buildViewPopoutWindow(inp, ui);
@@ -877,6 +885,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         ui.addMouseCaptureRect(bmChrome.x, bmChrome.y, bmChrome.w, bmChrome.h);
     if (rpChrome.open)
         ui.addMouseCaptureRect(rpChrome.x, rpChrome.y, rpChrome.w, rpChrome.h);
+    if (msChrome.open)
+        ui.addMouseCaptureRect(msChrome.x, msChrome.y, msChrome.w, msChrome.h);
     // The satellite windows: without these a drag on a render also clicked the sky behind the window
     // and re-selected (or deselected) whatever satellite was under it.
     if (infoChrome.open && meshRendererInit)
@@ -887,7 +897,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildCrashRecoveryNotice(dt, inp, ui);
     buildGraphicsAutoNotice(dt, inp, ui);
     buildKesslerBanner(ui);
-    buildScreenshotToast(dt, inp, ui);
+    if (!hideShotChrome)
+        buildScreenshotToast(dt, inp, ui);
     buildTutorial(inp, ui); // after every panel it points at: their boxes are last frame's layout
 
     // UC4: draw the virtual cursor itself — inp.mouseX/Y IS vCursorX/Y here (App overrode the
@@ -1098,7 +1109,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 sndRollover(n, hovScreenshot);
                 sndClick(n, inp.lmbPressed);
                 if (n && inp.lmbPressed)
-                    requestScreenshot();
+                    requestScreenshot(screenshotUiSetting);
                 hovScreenshot = n;
                 static char tip[32];
                 snprintf(tip, sizeof(tip), "Screenshot (%s)", keyDisplayName(keybindings[KB_SCREENSHOT].key));
@@ -1365,6 +1376,14 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
         {
             rpChrome.open = !rpChrome.open;
             reportsDirty_ = true;
+        }
+        menuBtn(CLAY_ID("TimeMissionsBtn"), CLAY_ID("TimeMissionsIcon"), kIconMissions, hovTimeMissions, Pal::btnAccent,
+                msChrome.open, "Missions", toggled);
+        if (toggled)
+        {
+            msChrome.open = !msChrome.open;
+            if (msChrome.open)
+                msNextWall = msPinWall = -1e300;
         }
         menuBtn(CLAY_ID("TimeBookmarkBtn"), CLAY_ID("TimeBookmarkIcon"), kIconBookmark, hovTimeBookmark, Pal::btnAccent,
                 bmChrome.open, "Bookmarks", toggled);
@@ -1886,7 +1905,9 @@ void SatelliteSim::updateViewerView(const UIInput &inp, UIRenderer &ui)
         // Right edge: the trace window lives above the time controls in the bottom-left corner, so the
         // satellite windows anchor right. Narrow, because its body is a scrolling list of sections.
         infoChrome.w = std::min(470.0f, std::max(380.0f, inp.screenW * 0.34f));
-        infoChrome.h = std::min(680.0f, std::max(470.0f, inp.screenH - 24.0f)); // 470 = its min height
+        // Tall by default (2026-10-19): the readouts are open sections under the render, not hidden behind headers.
+        // Stops above the bottom-right HUD panel (its menu buttons).
+        infoChrome.h = std::min(1000.0f, std::max(560.0f, inp.screenH - 12.0f - 130.0f)); // 560 = its min height
     }
     if (viewerChrome.w <= 0.0f)
     {
@@ -1903,7 +1924,7 @@ void SatelliteSim::updateViewerView(const UIInput &inp, UIRenderer &ui)
     // give their image frame — keep them in step with this.
     const float kViewPad = 10.0f;
     const float bandW = std::max(32.0f, infoChrome.w - 2.0f * kViewPad - 2.0f);
-    const float bandH = bandW * 0.75f; // the mini view is 4:3 whatever the window is
+    const float bandH = bandW * 0.6f; // the mini view is 5:3 whatever the window is (4:3 until 2026-10-19: the readouts come first)
     viewerBandH = bandH;
     const float popW = std::max(32.0f, viewerChrome.w - 2.0f * kViewPad - 2.0f);
     const float popH = std::max(32.0f, viewerChrome.h - std::max(36.0f, (float)fs(16) + 16.0f) - 2.0f * kViewPad - 2.0f);
@@ -2192,7 +2213,7 @@ void SatelliteSim::buildViewTitleIcons(const UIInput &inp, UIRenderer &ui, bool 
     if (!tracked)
         return;
     const bool isSelected = selectedSatIndex == viewerSatIndex;
-    const bool isFollowed = followActive && followSatIndex == viewerSatIndex;
+    const bool isFollowed = isFollowing(viewerSatIndex);
     bool *hov = popout ? hovViewerTitleBtn : hovInfoTitleBtn;
     const int idBase = popout ? 0 : 2; // unique Clay ids across the two windows
     auto icon = [&](int k, int iconIdx, bool on, const char *name)
@@ -2235,6 +2256,20 @@ void SatelliteSim::buildViewTitleIcons(const UIInput &inp, UIRenderer &ui, bool 
     }
 }
 
+// ─── infoExplodeSelected ─────────────────────────────────────────────────────
+// The info window's Explode / ASAT strike (two clicks), on the VIEWED satellite. The single call site of a
+// player breakup from this window: swap the Kessler entry point here. The result goes to the toast.
+void SatelliteSim::infoExplodeSelected(uint8_t kind)
+{
+    kUiMsg[0] = '\0';
+    kesslerBreakupFromUi(viewerSatIndex, kind); // writes kUiMsg: "<what>: <satellite>" or "Not now: <why>"
+    const bool failed = !kUiMsg[0] || strncmp(kUiMsg, "Not now", 7) == 0 || strncmp(kUiMsg, "No ", 3) == 0;
+    snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", kUiMsg[0] ? kUiMsg : "Breakup refused");
+    screenshotToastTimer = failed ? 5.0f : 3.0f;
+    screenshotToastWarn = failed;
+    Log::line(std::string("info window breakup: ") + screenshotToastText);
+}
+
 // ─── buildInfoWindow (the satellite window; split + sections 2026-09-24) ─────
 // Title: the subject's name, amber + "(selected)" while it is the selection. Body: the fixed 4:3 render
 // at the top with the chip row over it (it does not scroll away — only the sections below do), then the
@@ -2248,8 +2283,55 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
     const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size();
     const bool isSelected = tracked && selectedSatIndex == viewerSatIndex;
 
-    static const char *kInfoSectionNames[kInfoSectionCount] = {"SATELLITE", "ORBIT", "BRIGHTNESS", "SKY POSITION", "VIEW", "CHECK", "BREAKUP"};
+    static const char *kInfoSectionNames[kInfoSectionCount] = {"STATUS", "BRIGHTNESS", "SKY POSITION", "ORBIT",
+                                                               "MODEL (TECHNICAL)", "3D VIEW", "PHOTOMETRY CHECK"};
     static const char *kSatLabels[kViewerSatRows] = {"Type", "Model", "Size", "Mesh"};
+    // A rocket stage, Starship's ship or a re-entry fireball (SelTransient): no orbit, no pass, no breakup.
+    const bool viewTransient = tracked && (uint32_t)viewerSatIndex == transientSatIdx();
+    // Actions on a transient only while it is still the selection (its reserved slot follows the selection).
+    const bool actOk = tracked && (!viewTransient || selIsTransient());
+    const bool hasMesh = tracked && meshRenderer.typeMesh((int)satOrbits[viewerSatIndex].typeIdx) != nullptr;
+    if (infoExplodeArmT_ > 0.0f && (infoExplodeArmT_ -= inp.dt) <= 0.0f)
+        infoExplodeArmKind_ = -1; // the second click did not come
+    // STATUS rows (every frame: a rocket's T+, height and speed move).
+    infoStatusCount = 0;
+    auto statusRow = [&](const char *label, const char *fmt, auto... args)
+    {
+        if (infoStatusCount >= kInfoStatusRows)
+            return;
+        infoStatusLabel[infoStatusCount] = label;
+        snprintf(infoStatusValue[infoStatusCount], sizeof(infoStatusValue[0]), fmt, args...);
+        ++infoStatusCount;
+    };
+    if (viewTransient && selIsTransient())
+    {
+        const SelTransient &st = selTransientCur;
+        static const char *kKind[7] = {"Object", "Rocket", "Ship entry", "Re-entry", "Re-entry", "Re-entry", "Re-entry"};
+        const std::string tl = transientLabel();
+        statusRow(kKind[std::min<int>(st.kind, 6)], "%s", tl.c_str());
+        // The title: the label up to its first comma ("Starship (ascent burn)"), not the model id openModelViewer had.
+        snprintf(viewerTitle, sizeof(viewerTitle), "%s", tl.substr(0, tl.find(',')).c_str());
+        statusRow("Altitude", "%.1f km", (glm::length(st.pos) - satphot::kEarthRadiusM) / 1000.0);
+        statusRow("Speed", "%.2f km/s", glm::length(st.vel) / 1000.0);
+        statusRow(st.kind == 1 ? "Since lift-off" : "Glowing for", "%.0f s", st.tau);
+    }
+    else if (tracked)
+    {
+        const SatOrbit &o = satOrbits[viewerSatIndex];
+        const std::string lab = satLabel(viewerSatIndex);
+        statusRow("Object", "%s", lab.c_str());
+        if (o.constIdx < constellations.size() && (uint32_t)viewerSatIndex < activeSatCount)
+            statusRow("Constellation", "%s", constellations[o.constIdx].name.c_str());
+        if (o.typeIdx < satTypes.size())
+            statusRow("Satellite", "%s", satTypes[o.typeIdx].name.c_str());
+        const bool dead = lab.size() > 7 && lab.compare(lab.size() - 7, 7, " (dead)") == 0;
+        if ((uint32_t)viewerSatIndex < activeSatCount)
+            statusRow("Status", "%s", dead ? "Dead: tumbling, no station keeping" : "Operational");
+        else if ((uint32_t)viewerSatIndex < poolIdx0())
+            statusRow("Status", "%s", "Launch: raising to its slot, or retiring");
+        else
+            statusRow("Status", "%s", "Collision debris");
+    }
     static const char *kOrbitLabels[kViewerOrbitRows] = {"Altitude", "Inclination", "RAAN", "Period", "Power"};
     static const char *kObsLabels[kViewerObsRows] = {"Visibility", "Elevation", "Azimuth", "Range"};
     static const char *kCheckLabels[3] = {"Render", "Model", "Difference"};
@@ -2323,11 +2405,11 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
         return v;
     };
 
-    // minH 470: the render band is 4:3 (268 px at the 380 px minimum width) and the sections need a
-    // usable slice under it — below that the window would be all render and no list.
+    // minH 560: the render band is 4:3 (268 px at the 380 px minimum width), then the tiles and the two action
+    // rows, and the sections need a usable slice under them — below that the window would be all render and no list.
     buildResizableWindow(
         inp, ui, infoChrome, 4, viewerTitle, true, hovInfoClose, inp.screenW - infoChrome.w - 12.0f, 12.0f,
-        380.0f, 470.0f, 1400.0f, 1600.0f,
+        380.0f, 560.0f, 1400.0f, 1600.0f,
         [&]()
         {
             CLAY(CLAY_ID("InfoBody"), {.layout = {
@@ -2372,6 +2454,75 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                     uiStatTile("InfoTile", 2, "RANGE", tileVal(viewerObsValue[3]), Pal::textPrimary);
                     uiStatTile("InfoTile", 3, "PHASE", tileVal(viewerPhotValue[4]), Pal::textPrimary);
                 }
+                // ── ACTIONS: never collapsed, never scrolled away (2026-10-19) ─────────────────────
+                // Row 1 acts on the viewed satellite (selecting it first: Trace and Track work on the selection);
+                // row 2 is the destructive pair, two clicks each.
+                if (tracked)
+                {
+                    buttonRow(10, [&]()
+                              {
+                                  if (uiButton(inp, ui, "InfoActBtn", 0, "Trace pass",
+                                               viewTransient ? "A rocket or a re-entry has no pass to trace" : "Plot this satellite's magnitude over its pass",
+                                               traceChrome.open && isSelected, actOk && !viewTransient))
+                                  {
+                                      selectSatellite(viewerSatIndex);
+                                      computeSelectedTrace();
+                                  }
+                                  const bool following = followActive && followSatIndex == viewerSatIndex;
+                                  if (uiButton(inp, ui, "InfoActBtn", 1, following ? "Leave" : "Go to",
+                                               following ? "Fly back to where you were" : "Fly to it and ride along",
+                                               following, actOk && hasMesh))
+                                  {
+                                      if (following)
+                                          stopFollow(true);
+                                      else
+                                      {
+                                          selectSatellite(viewerSatIndex);
+                                          startFollow(viewerSatIndex, true);
+                                      }
+                                  }
+                                  const bool tracking = trackActive && isSelected;
+                                  if (uiButton(inp, ui, "InfoActBtn", 2, "Track", "Keep the camera on it as it crosses the sky",
+                                               tracking, actOk))
+                                  {
+                                      if (tracking)
+                                          stopTrack();
+                                      else
+                                      {
+                                          selectSatellite(viewerSatIndex);
+                                          startTrack();
+                                      }
+                                  } });
+                    buttonRow(11, [&]()
+                              {
+                                  static const char *kBreakLabel[2] = {"Explode", "ASAT strike"};
+                                  static const uint8_t kBreakKind[2] = {kessler::EV_EXPLOSION, kessler::EV_ASAT};
+                                  for (int k = 0; k < 2; ++k)
+                                  {
+                                      const bool armed = infoExplodeArmKind_ == k && infoExplodeArmT_ > 0.0f;
+                                      const char *tip = viewTransient ? "Only a satellite or a piece of debris can be broken up"
+                                                        : k == 0      ? "Break it up from inside (NASA breakup model): its debris starts the Kessler cascade. Two clicks"
+                                                                      : "A 20-kg kinetic interceptor at 9 km/s: its debris starts the Kessler cascade. Two clicks";
+                                      if (uiDangerButton(inp, ui, "InfoBreakBtn", k, armed ? "Click again" : kBreakLabel[k], tip, armed,
+                                                         !viewTransient))
+                                      {
+                                          if (armed)
+                                          {
+                                              infoExplodeArmKind_ = -1;
+                                              infoExplodeArmT_ = 0.0f;
+                                              infoExplodeSelected(kBreakKind[k]);
+                                          }
+                                          else
+                                          {
+                                              infoExplodeArmKind_ = k;
+                                              infoExplodeArmT_ = 3.0f;
+                                          }
+                                      }
+                                  }
+                                  if (infoExplodeArmT_ > 0.0f)
+                                      CLAY_TEXT(CLAY_STRING("click again to confirm"),
+                                                CLAY_TEXT_CONFIG({.textColor = Pal::textWarn, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE})); });
+                }
                 // ── The sections: only these scroll ──────────────────────────────────────────────
                 CLAY(CLAY_ID("InfoSections"), {.layout = {
                                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
@@ -2379,35 +2530,36 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                                    .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                                .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
                 {
-                    infoSection(0, [&]()
+                    // ── STATUS: what it is and what it is doing (a rocket's stage, T+, height, speed) ──
+                    infoSection(kInfoStatus, [&]()
                                 {
-                                    for (int i = 0; i < kViewerSatRows; ++i)
-                                        uiKV("InfoSatKV", i, kSatLabels[i], viewerSatValue[i], lw); });
-                    infoSection(1, [&]()
-                                {
-                                    if (viewerOrbitCount == 0)
-                                        uiKV("InfoOrbitKV", 9, "Orbit", "-", lw);
-                                    for (int i = 0; i < viewerOrbitCount && i < kViewerOrbitRows; ++i)
-                                        uiKV("InfoOrbitKV", i, kOrbitLabels[i], viewerOrbitValue[i], lw); });
-                    infoSection(2, [&]()
+                                    for (int i = 0; i < infoStatusCount; ++i)
+                                        uiKV("InfoStatusKV", i, infoStatusLabel[i], infoStatusValue[i], lw,
+                                             i == 0 ? &Pal::textPrimary : &Pal::volValue); });
+                    infoSection(kInfoBright, [&]()
                                 {
                                     for (int i = 0; i < kViewerPhotRows; ++i)
                                         uiKV("InfoPhotKV", i, kViewerPhotLabels[i], tracked ? viewerPhotValue[i] : "-", lw,
-                                             i == 0 ? &Pal::textPrimary : &Pal::volValue);
-                                    if (tracked)
-                                        buttonRow(0, [&]()
-                                                  {
-                                                      if (uiButton(inp, ui, "InfoTraceBtn", 0, "Trace pass", "Plot this satellite's magnitude over its pass"))
-                                                      {
-                                                          selectSatellite(viewerSatIndex);
-                                                          computeSelectedTrace();
-                                                      } }); });
-                    infoSection(3, [&]()
+                                             i == 0 ? &Pal::textPrimary : &Pal::volValue); });
+                    infoSection(kInfoSky, [&]()
                                 {
                                     for (int i = 0; i < kViewerObsRows; ++i)
                                         uiKV("InfoObsKV", i, kObsLabels[i], viewerObsValue[i][0] ? viewerObsValue[i] : "-", lw); });
+                    // A rocket or a re-entry is not on an orbit: its height and speed are in STATUS.
+                    if (!viewTransient)
+                        infoSection(kInfoOrbit, [&]()
+                                    {
+                                        if (viewerOrbitCount == 0)
+                                            uiKV("InfoOrbitKV", 9, "Orbit", "-", lw);
+                                        for (int i = 0; i < viewerOrbitCount && i < kViewerOrbitRows; ++i)
+                                            uiKV("InfoOrbitKV", i, kOrbitLabels[i], viewerOrbitValue[i], lw); });
+                    // ── MODEL: the technical description (type, model id, size, mesh) ──────────────────
+                    infoSection(kInfoModel, [&]()
+                                {
+                                    for (int i = 0; i < kViewerSatRows; ++i)
+                                        uiKV("InfoSatKV", i, kSatLabels[i], viewerSatValue[i], lw); });
                     // ── VIEW: the 3D view's camera and rendering (the chips over the render carry the quick ones) ──
-                    infoSection(4, [&]()
+                    infoSection(kInfoView, [&]()
                                 {
                                     static const char *kAim[3] = {"Free", "From you", "Toward you"};
                                     static const char *kLight[2] = {"Live", "Studio"};
@@ -2440,7 +2592,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                                       viewerAim = 0;
                                                   } }); });
                     // ── CHECK: the render-vs-lobes cross-check ───────────────────────────────────────
-                    infoSection(5, [&]()
+                    infoSection(kInfoCheck, [&]()
                                 {
                                     for (int i = 0; i < 3; ++i)
                                         uiKV("InfoCheckKV", i, kCheckLabels[i], viewerCheckValue[i][0] ? viewerCheckValue[i] : "-", lw);
@@ -2451,18 +2603,6 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                                   if (uiButton(inp, ui, "InfoCheckBtn", 0, "Run check",
                                                                "Integrate a sun-only render from this direction and compare it with the photometric model (magnitudes at 1000 km)"))
                                                       viewerCheckRequested = true; }); });
-                    // ── BREAKUP: the Kessler scenario's player breakups (SatelliteSimKessler.cpp) ────────
-                    infoSection(6, [&]()
-                                {
-                                    uiKV("InfoKesKV", 0, "", "From the storm on (2037-07-15): break it up; its debris joins the cascade.", lw, &Pal::textDim);
-                                    buttonRow(3, [&]()
-                                              {
-                                                  if (uiButton(inp, ui, "InfoKesBtn", 0, "Explode", "A breakup from inside (NASA explosion model)"))
-                                                      kesslerBreakupFromUi(viewerSatIndex, kessler::EV_EXPLOSION);
-                                                  if (uiButton(inp, ui, "InfoKesBtn", 1, "ASAT strike", "A 20-kg kinetic interceptor at 9 km/s"))
-                                                      kesslerBreakupFromUi(viewerSatIndex, kessler::EV_ASAT); });
-                                    if (kUiMsg[0])
-                                        uiKV("InfoKesKV", 1, "", kUiMsg, lw, &Pal::textDim); });
                 }
                 // A visible thumb on the section list: without it nothing says the list continues
                 // below the window's edge.
@@ -2669,7 +2809,7 @@ void SatelliteSim::buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size() ||
         !meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx))
         return;
-    const bool on = followActive && followSatIndex == selectedSatIndex;
+    const bool on = isFollowing(selectedSatIndex);
     if (buildSelActionButton(inp, ui, idx * 4 + 1, "Go to", kIconEye, on, hovSelFollowBtn))
     {
         if (on)
@@ -2728,10 +2868,15 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
                        "Locked: the camera keeps the satellite centred while you move. Free: look around with RMB "
                        "(looking unlocks it)"))
             followAimLock = !followAimLock;
+        static char stayTip[96];
+        snprintf(stayTip, sizeof(stayTip), "Leave Go to and stay here, as a free observer (%s)",
+                 keyDisplayName(keybindings[KB_FOLLOW_STAY].key));
+        if (chipButton("FollowStayBtn", "Stay here", hovFollowStay, stayTip))
+            stopFollowHere();
         if (chipButton("FollowExitBtn", "Exit", hovFollowExit, "Return to the ground where you were"))
             stopFollow(true);
     }
-    captureLaidOut(ui, CLAY_ID("FollowHud"), inp.screenW * 0.5f - 200.0f, 12.0f, 400.0f, 34.0f);
+    captureLaidOut(ui, CLAY_ID("FollowHud"), inp.screenW * 0.5f - 250.0f, 12.0f, 500.0f, 34.0f);
 }
 
 // ─── buildTraceButton ────────────────────────────────────────────────────────
@@ -3169,8 +3314,15 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
             }
         }
     }
-    buildKesslerSettingsSection(inp, ui);
-    buildLaunchSettingsSection(inp, ui);
+    // Launches and the Sun's Fury moved to the Missions window (2026-10-19): a pointer here.
+    uiSection("ConstSec", 8, "LAUNCHES AND THE SUN'S FURY");
+    uiKV("ConstMsKV", 0, "", "Now in the Missions window (rocket button, M).", 4.0f, &Pal::textDim);
+    if (uiButton(inp, ui, "ConstMsOpen", 0, "Open the Missions window", "The schedule, what is flying, and these settings (Controls)"))
+    {
+        msChrome.open = true;
+        msTab = 2;
+        msNextWall = msPinWall = -1e300;
+    }
 
     // ── Planets ────────────────────────────────────────────────────────────
     // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern
@@ -3706,6 +3858,18 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                             "Panel colours. Night red keeps the whole interface dim red, to save dark adaptation");
         c >= 0)
         uiTheme = c; // applied next frame (syncUiTheme)
+
+    // ── SCREENSHOTS: keep the interface in the picture (requestScreenshot / reportTakeShot) ──────────────────
+    uiSection("DispSec", 6, "SCREENSHOTS");
+    {
+        char k1[24], k2[24]; // keyDisplayName's letters rotate through a small pool: copy
+        snprintf(k1, sizeof(k1), "%s", keyDisplayName(keybindings[KB_SCREENSHOT].key));
+        snprintf(k2, sizeof(k2), "%s", keyDisplayName(keybindings[KB_SCREENSHOT_UI].key));
+        uiToggleRow(inp, ui, "ShotUi", 0, uiKitStr("Screenshots (%s) include the UI", k1), screenshotUiSetting,
+                    uiKitStr("Off: the scene alone. %s takes one with the UI either way", k2));
+        uiToggleRow(inp, ui, "ShotUi", 1, "Issue report shots include the UI", reportShotUiSetting,
+                    "The windows and panels you had open (the note bar and the Issue reports window are left out)");
+    }
 
     // ── HQ PHOTO (requestPhoto) ────────────────────────────────────────────────────────────────────────────
     uiSection("DispSec", 2, "HQ PHOTO");
@@ -4290,6 +4454,35 @@ bool SatelliteSim::uiButton(const UIInput &inp, UIRenderer &ui, const char *key,
                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
               .backgroundColor = bg,
               .cornerRadius = CLAY_CORNER_RADIUS(3)})
+    {
+        const bool n = Clay_Hovered();
+        if (enabled)
+        {
+            uiHovRoll(id.id, n);
+            sndClick(n, inp.lmbPressed);
+            clicked = n && inp.lmbPressed;
+        }
+        if (tip)
+            ui.tooltip(inp, n, tip, fs(11));
+        CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = enabled ? Pal::btnLabel : Pal::textHint, .fontSize = fs(11),
+                                                   .wrapMode = CLAY_TEXT_WRAP_NONE}));
+    }
+    return clicked;
+}
+
+bool SatelliteSim::uiDangerButton(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, const char *tip,
+                                  bool armed, bool enabled)
+{
+    const Clay_ElementId id = CLAY_SIDI(kitStr(key), (uint32_t)idx);
+    const bool hovPrev = enabled && uiHov_[id.id];
+    const Clay_Color bg = !enabled ? kBtnOff : armed ? Pal::btnDangerArmed : (hovPrev ? Pal::btnDangerHv : Pal::btnDanger);
+    bool clicked = false;
+    CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(20))},
+                         .padding = {10, 10, 0, 0},
+                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+              .backgroundColor = bg,
+              .cornerRadius = CLAY_CORNER_RADIUS(3),
+              .border = {.color = enabled ? Pal::btnDangerArmed : kBtnOff, .width = CLAY_BORDER_ALL(1)}})
     {
         const bool n = Clay_Hovered();
         if (enabled)
@@ -6159,9 +6352,12 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {keybindings[KB_REVERSE].action, KB_REVERSE},
         {keybindings[KB_TOGGLE_UI].action, KB_TOGGLE_UI},
         {keybindings[KB_SCREENSHOT].action, KB_SCREENSHOT},
+        {keybindings[KB_SCREENSHOT_UI].action, KB_SCREENSHOT_UI},
         {keybindings[KB_PHOTO].action, KB_PHOTO},
         {keybindings[KB_SAVE_SNAPSHOT].action, KB_SAVE_SNAPSHOT},
         {keybindings[KB_REPORT_NEW].action, KB_REPORT_NEW},
+        {keybindings[KB_MISSIONS].action, KB_MISSIONS},
+        {keybindings[KB_FOLLOW_STAY].action, KB_FOLLOW_STAY},
         {keybindings[KB_TOGGLE_CURSOR].action, KB_TOGGLE_CURSOR},
     };
     struct AnalogRow
@@ -7626,6 +7822,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         // so a trail-enabled load always starts from a blank buffer.
         trailEnabled = d.value("trail_enabled", trailEnabled);
         photoScaleSetting = std::clamp(d.value("photo_scale", photoScaleSetting), 1.0f, 4.0f);
+        screenshotUiSetting = d.value("screenshot_ui", screenshotUiSetting);
+        reportShotUiSetting = d.value("report_shot_ui", reportShotUiSetting);
         photoSettleFrames = std::clamp(d.value("photo_frames", photoSettleFrames), 4.0f, 240.0f);
         // UC3 follow-up: back to real persisted behavior now that the cinematic itself is settled
         // (the always-on-every-launch testing override is gone). "play_intro_on_startup" absent
@@ -8231,6 +8429,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"tutorial_done", tutorialDone},
         {"ask_graphics_mode", askGraphicsModeOnStartup},
         {"photo_scale", photoScaleSetting},
+        {"screenshot_ui", screenshotUiSetting},
+        {"report_shot_ui", reportShotUiSetting},
         {"photo_frames", photoSettleFrames},
         {"trail_enabled", trailEnabled}};
     if (settingsChrome.x >= 0.0f)

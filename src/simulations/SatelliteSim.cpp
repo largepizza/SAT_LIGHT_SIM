@@ -483,8 +483,11 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Save Snapshot", GLFW_KEY_F9, -1, false, false},                                    // KB_SAVE_SNAPSHOT (event) — how the user hands over a location
         {"HQ Photo", GLFW_KEY_F8, -1, false, false},                                         // KB_PHOTO (event) — supersampled screenshot (requestPhoto)
         {"New Issue Snapshot", GLFW_KEY_F7, -1, false, false},                               // KB_REPORT_NEW (event) — a snapshot that starts a new issue report
+        {"Screenshot with UI", GLFW_KEY_F10, -1, false, false},                              // KB_SCREENSHOT_UI (event) — a screenshot that keeps the interface
+        {"Missions", GLFW_KEY_M, -1, false, false},                                          // KB_MISSIONS (event) — the Missions window
+        {"Leave Go To Here", GLFW_KEY_G, -1, false, false},                                  // KB_FOLLOW_STAY (event) — end Go to as a free observer where the camera is
     };
-    static_assert(KB_COUNT == 21, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 24, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -1605,10 +1608,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     kesslerSync(ctx);
     kesslerCountsTick();
     {
-        // Time may not ADVANCE past what the worker has simulated (after the CME): it holds there. It is
-        // never moved back (a restart pulls the frontier back to the CME; a jump may land past it).
+        // Time may not run far past what the worker has simulated: it holds there (the banner). It is never moved
+        // back (a restart pulls the frontier back to the world's start; a jump may land past it). Since 2026-10-19 it
+        // may run up to ~2 s of the current warp (at most one 6-h step) past the frontier: a player's breakup re-runs
+        // only its own step (kesslerBreakupInPlace), and the worker catches up within that lead, so time keeps
+        // running; events it publishes a moment late appear then (their born seconds are a moment past).
         const double tNowK = (double)simDayJ2000 * 86400.0 + simSecInDay;
-        const double holdAt = std::max(std::max(kFrontier, kesslerEpoch()), tBeforeAdvance);
+        const double lead = std::clamp(2.0 * (double)kTimeScales[timeScaleIdx], 2.0, 6.0 * 3600.0);
+        const double holdAt = std::max(std::max(kFrontier + lead, kWorldStart), tBeforeAdvance);
         if (kesslerEnabled && !kWorkerDone && tNowK > holdAt)
         {
             const double back = tNowK - holdAt;
@@ -1634,6 +1641,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         launchUpdate(ctx, cmd);
     }
 
+    if (followActive)
+        followCheckTarget(); // its object ended: hand over to what continues it, or stay here as a free observer
     if (followActive)
         updateFollow(dt); // Phase 4e: ride along with the followed satellite at this sim time
     {
@@ -5242,9 +5251,35 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
 {
     if (satIndex < 0 || satIndex >= (int)satOrbits.size())
         return;
+    // A rocket drawn as a mesh: the transient its mesh slot holds (the slot itself is rebound every frame).
+    satIndex = rocketMeshSlotToTransient(satIndex);
+    // A transient (a rocket stage, a ship coming home): follow rides it in a slot of its own, independent of the
+    // selection, re-evaluated at each frame's exact time.
+    const bool transient = (uint32_t)satIndex == transientSatIdx() || (uint32_t)satIndex == followSlotIdx();
+    if ((uint32_t)satIndex == transientSatIdx())
+    {
+        if (!selIsTransient() || selTransientCur.type < 0)
+            return;
+        followTrCur = selTransientCur;
+        followTrKey = selTransientKey;
+        followTrSeenT = selTransientSeenT;
+        transientWriteSlot(kLaunchCap - 2, followTrCur, (double)simDayJ2000 * 86400.0 + simSecInDay);
+        satIndex = (int)followSlotIdx();
+    }
+    followLaunchOwner = 0;
+    if (satIndex >= (int)poolIdx0() && (size_t)(satIndex - (int)poolIdx0()) < kPoolGen.size())
+        followPoolGen = kPoolGen[(size_t)(satIndex - (int)poolIdx0())]; // a reused slot is another piece
+    if (!transient && satIndex >= (int)activeSatCount && satIndex < (int)poolIdx0())
+    {
+        // A launch record: remember whose (its slot changes hands when the batch ends).
+        uint32_t m = 0;
+        followLaunchOwner = launchSlotOwner((uint32_t)satIndex - activeSatCount, m);
+        followLaunchM = (uint16_t)m;
+    }
+    followHandD = glm::dvec3(0.0);
     const int ti = (int)satOrbits[satIndex].typeIdx;
     const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(ti);
-    if (!tm)
+    if (!tm || ti < 0)
         return;
     // From the current eye (the ground, or wherever a flight home had got to).
     const glm::dvec3 fromEye = followActive ? followObsEcef : glm::dvec3(obsDir) * (double)obsEyeRadiusM();
@@ -5281,7 +5316,7 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
         followDefaultDist = glm::length(followOffset);
     }
     camera.fovYDeg = 50.0f;
-    snprintf(followLabel, sizeof(followLabel), "Following %s #%d", satTypes[ti].name.c_str(), satIndex);
+    snprintf(followLabel, sizeof(followLabel), "Following %s", satLabel(satIndex).c_str());
     followFlight = 0;
     followFlightInit = false;
     if (fly)
@@ -5320,11 +5355,57 @@ void SatelliteSim::stopFollow(bool fly)
     }
     followFlight = 0;
     followActive = false;
+    followTrKey = 0;
+    followLaunchOwner = 0;
+    followHandD = glm::dvec3(0.0);
     obsDir = followSavedObsDir;
     obsFacing = followSavedFacing;
     obsHeightOffset = followSavedHeight;
     camera.elDeg = followSavedEl;
     camera.fovYDeg = followSavedFov;
+}
+
+// Leave Go to where the camera is: a free observer at the camera's place, Earth-fixed from now on (the satellite flies
+// on unless time is paused). Direction, altitude above sea level, facing, elevation and FOV are kept; the eye radius is
+// R + max(ground, obsHeightOffset) + 2 m (obsEyeRadiusM), so the offset takes the camera's radius less those 2 m.
+void SatelliteSim::stopFollowHere(const char *why)
+{
+    if (!followActive)
+        return;
+    const glm::dvec3 eye = followObsEcef;
+    const double r = glm::length(eye);
+    followFlight = 0;
+    followActive = false;
+    followTrKey = 0;
+    followLaunchOwner = 0;
+    followHandD = glm::dvec3(0.0);
+    if (r > 1.0)
+    {
+        obsDir = glm::vec3(eye / r);
+        obsHeightOffset = (float)std::min(std::max(r - (double)kEarthRadius - 2.0, 0.0), (double)kMaxObsHeightM);
+        obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
+        obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+    }
+    const glm::vec3 up = obsDir;
+    const glm::vec3 f = obsFacing - glm::dot(obsFacing, up) * up;
+    if (glm::length(f) > 1e-6f)
+        obsFacing = glm::normalize(f);
+    // The temporal histories saw a camera that moved with the satellite; from here it is still.
+    skyTaaHistValid = false;
+    snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", why ? why : "Left Go to: you stay here");
+    screenshotToastTimer = 4.0f;
+    screenshotToastWarn = false;
+}
+
+bool SatelliteSim::isFollowing(int satIndex) const
+{
+    if (!followActive || satIndex < 0)
+        return false;
+    if (followSatIndex == satIndex)
+        return true;
+    // The selected transient and the followed one are the same object in two slots.
+    return followIsTransient() && (uint32_t)satIndex == transientSatIdx() && selIsTransient() &&
+           selTransientKey == followTrKey;
 }
 
 // The parked ground observer's eye (where a flight home lands), ECEF.
@@ -5348,9 +5429,18 @@ void SatelliteSim::updateFollow(float dt)
     const double ct = std::cos(theta), st = std::sin(theta);
     auto eciToEcef = [&](glm::dvec3 v) { return glm::dvec3(ct * v.x + st * v.y, -st * v.x + ct * v.y, v.z); };
     const SatOrbitState s = satOrbitStateAt(orbitElemsOf(satOrbits[followSatIndex]), tNow);
-    const glm::dvec3 P = eciToEcef(s.posEci);
+    // A handover's jump (followCheckTarget) eases out over ~2 s of real time: the camera glides to the new object.
+    if (glm::length(followHandD) > 0.01)
+        followHandD *= std::exp(-(double)std::max(dt, 0.0f) / 0.6);
+    else
+        followHandD = glm::dvec3(0.0);
+    const glm::dvec3 P = eciToEcef(s.posEci) + followHandD;
     const glm::dvec3 Rh = glm::normalize(P);
-    glm::dvec3 Th = eciToEcef(s.velocity);
+    // The frame's along-track axis is the inertial VELOCITY, not s.velocity: for a rocket that is its body axis (the
+    // nose), which flips through the vertical at a booster's flip or a turn to retrograde and spun the camera round.
+    glm::dvec3 Th = eciToEcef(glm::length(s.velEci) > 1e-3 ? s.velEci : s.velocity);
+    if (glm::length(glm::cross(Rh, Th)) < 1e-6 * std::max(glm::length(Th), 1e-9))
+        Th = followBasisValid ? followBasisT : glm::dvec3(-Rh.y, Rh.x, 0.0) + glm::dvec3(1e-9, 0.0, 0.0);
     const glm::dvec3 Nh = glm::normalize(glm::cross(Rh, Th));
     Th = glm::cross(Nh, Rh);
 
@@ -5707,19 +5797,8 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
         // selTransientUpdate keeps current and drops when the rocket is gone). The mesh slot itself holds only the
         // last frame's state: selected (or followed) it froze there for good — the user's ship "still up here" seven
         // months after it had re-entered (issue 20261019_180502 shot 3), and drawn twice beside its live self (shot 1).
-        const uint32_t rmBase = activeSatCount + kLaunchCap - 1 - kRocketMeshSlots;
-        if (bestMesh >= (int)rmBase && bestMesh < (int)(rmBase + kRocketMeshSlots))
-        {
-            const uint64_t k = rocketMeshKey[bestMesh - (int)rmBase];
-            bestMesh = -1;
-            for (const SelTransient &s : selTransients)
-                if (k != 0 && s.key == k)
-                {
-                    selTransientTake(s);
-                    bestMesh = (int)transientSatIdx();
-                    break;
-                }
-        }
+        if (bestMesh >= 0)
+            bestMesh = rocketMeshSlotToTransient(bestMesh);
         if (bestMesh >= 0)
             return bestMesh;
     }
@@ -7793,6 +7872,7 @@ void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx,
     if (!screenshotRequested)
         return;
     screenshotRequested = false; // consume — this is the one frame it's true for
+    screenshotHideOverlays_ = false;
 
     if (!ctx.screenshotSupported)
     {
@@ -8084,7 +8164,7 @@ void SatelliteSim::finalizeScreenshot()
 
 // ─── requestScreenshot ────────────────────────────────────────────────────────
 // UC6: shared by KB_SCREENSHOT and the left HUD panel's camera button (buildLeftHudPanel).
-void SatelliteSim::requestScreenshot()
+void SatelliteSim::requestScreenshot(bool withUi)
 {
     if (screenshotEncoding.load() || screenshotCopyPending || screenshotRequested)
         return; // a previous capture is still in flight (copy pending, or already encoding) — drop this one
@@ -8114,6 +8194,15 @@ void SatelliteSim::requestScreenshot()
     else
         snprintf(nameBuf, sizeof(nameBuf), "satlight_screenshot.png");
     screenshotPath = (dir / nameBuf).string();
+    // Two shots in one second (F12 then F10) must not overwrite each other.
+    for (int k = 2; k < 100 && std::filesystem::exists(screenshotPath, ec); ++k)
+    {
+        std::string stem(nameBuf);
+        stem = stem.substr(0, stem.size() - 4);
+        screenshotPath = (dir / (stem + "_" + std::to_string(k) + ".png")).string();
+    }
+    screenshotIncludeUI = withUi;
+    screenshotHideOverlays_ = withUi;
     screenshotRequested = true;
 }
 
@@ -8258,7 +8347,10 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         break;
     }
     case KB_SCREENSHOT:
-        requestScreenshot();
+        requestScreenshot(screenshotUiSetting);
+        break;
+    case KB_SCREENSHOT_UI:
+        requestScreenshot(true);
         break;
     case KB_PHOTO:
         requestPhoto();
@@ -8268,6 +8360,18 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         break;
     case KB_REPORT_NEW:
         reportNewKeyPending = true;
+        break;
+    case KB_MISSIONS:
+        msChrome.open = !msChrome.open;
+        if (msChrome.open)
+        {
+            uiVisible = true;
+            msNextWall = msPinWall = -1e300;
+        }
+        break;
+    case KB_FOLLOW_STAY:
+        if (followActive && !cineActive())
+            stopFollowHere();
         break;
     case KB_TOGGLE_CURSOR:
         // UC5: effective activation also requires uiVisible && !showIntro (see pollGamepad's

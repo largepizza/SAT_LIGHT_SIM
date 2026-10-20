@@ -1,5 +1,5 @@
 {
-  "_comment": "Launches (SatelliteSimLaunches.cpp; plan .plans/LAUNCHES_PLAN.md). Each program keeps the constellations whose names contain one of its 'match' strings flying: every orbital plane is refreshed once per 'life_years', in launches of 'payload' satellites a 'batch_gap_days' apart. A launch flies from one of its vehicle's sites (one whose latitude and azimuth range reach the plane) at the moment the plane passes over it, deploys a train at 'park_km' that climbs to its slots over 'raise_days', and the satellites it replaces deorbit and re-enter over 'deorbit_days'. Vehicle figures are public approximations (2036 is a guess). Sites: azimuth = [min, max] degrees clockwise from north, allowed by range safety (wraps through 360).",
+  "_comment": "Launches (SatelliteSimLaunches.cpp; plan .plans/LAUNCHES_PLAN.md). Each program keeps the constellations whose names contain one of its 'match' strings flying: every orbital plane is refreshed once per 'life_years', in launches of 'payload' satellites a 'batch_gap_days' apart. A launch flies from one of its vehicle's sites (one whose latitude and azimuth range reach the plane) at the moment the plane passes over it, deploys a train at 'park_km' that climbs to its slots over 'raise_days', and the satellites it replaces deorbit and re-enter over 'deorbit_days'. A program with a 'crew' block flies people to a station (a constellation of one) every 'life_years' (not scaled by the design-life setting): raise_days is lift-off to docking; no train, no retiree. Vehicle figures are public approximations (2036 is a guess). Sites: azimuth = [min, max] degrees clockwise from north, allowed by range safety (wraps through 360).",
   "sites": [
     {"id": "starbase",        "name": "Starbase, Texas",                 "lat": 25.997,  "lon": -97.155,  "azimuth": [70, 115]},
     {"id": "louisiana_a1", "name": "Starbase Louisiana A-1",        "lat": 29.575,  "lon": -92.475,  "azimuth": [95, 200]},
@@ -25,6 +25,7 @@
     {"id": "haiyang",         "name": "Haiyang sea launch, Yellow Sea",  "lat": 34.90,   "lon": 121.20,   "azimuth": [90, 200]},
     {"id": "taiyuan",         "name": "Taiyuan, Shanxi",                 "lat": 38.849,  "lon": 111.608,  "azimuth": [135, 200]},
     {"id": "jiuquan",         "name": "Jiuquan, Inner Mongolia",         "lat": 40.958,  "lon": 100.291,  "azimuth": [120, 200]},
+    {"id": "jiuquan_crew",    "name": "Jiuquan LC-43/921 (crewed), Inner Mongolia", "lat": 40.958, "lon": 100.291, "azimuth": [80, 200]},
     {"id": "jiuquan_96b",     "name": "Jiuquan LC-96B (LandSpace), Inner Mongolia", "lat": 40.968, "lon": 100.338, "azimuth": [120, 200]},
     {"id": "jiuquan_dongfeng", "name": "Jiuquan Dongfeng commercial pad, Inner Mongolia", "lat": 40.958, "lon": 100.351, "azimuth": [120, 200]},
     {"id": "hainan_comm_1",   "name": "Hainan Commercial Launch Site pad 1, Wenchang", "lat": 19.664, "lon": 111.010, "azimuth": [90, 200]},
@@ -102,7 +103,22 @@
      "meco_s": 140, "meco_alt_km": 60, "meco_downrange_km": 70, "seco_s": 960, "deploy_after_seco_s": 600,
      "flow1_kg_s": 4600, "flow2_kg_s": 70, "exhaust1_m_s": 2700, "exhaust2_m_s": 4400,
      "booster": "expendable", "flame1_mag_100km": -4.5, "flame2_mag_100km": 0.5,
-     "upper_stage_deorbit": true, "upper_stage_mass_kg": 3000, "soot": 0.7, "vent_chance": 0.3}
+     "upper_stage_deorbit": true, "upper_stage_mass_kg": 3000, "soot": 0.7, "vent_chance": 0.3},
+    {"id": "falcon9_dragon", "name": "Falcon 9 / Crew Dragon", "sites": ["ksc_39a", "ccsfs_slc40"],
+     "meco_s": 158, "meco_alt_km": 66, "meco_downrange_km": 78, "seco_s": 530, "deploy_after_seco_s": 180,
+     "flow1_kg_s": 2600, "flow2_kg_s": 290, "exhaust1_m_s": 2900, "exhaust2_m_s": 3400,
+     "booster": "droneship", "flame1_mag_100km": -4.0, "flame2_mag_100km": -1.5,
+     "upper_stage_deorbit": true, "upper_stage_mass_kg": 4000, "soot": 0.55, "vent_chance": 0.3},
+    {"id": "long_march_2f", "name": "Long March 2F / Shenzhou", "sites": ["jiuquan_crew"],
+     "meco_s": 140, "meco_alt_km": 55, "meco_downrange_km": 60, "seco_s": 580, "deploy_after_seco_s": 10,
+     "flow1_kg_s": 2400, "flow2_kg_s": 270, "exhaust1_m_s": 2800, "exhaust2_m_s": 2900,
+     "booster": "expendable", "flame1_mag_100km": -4.0, "flame2_mag_100km": -1.0,
+     "upper_stage_deorbit": true, "upper_stage_mass_kg": 5500, "soot": 0.35, "vent_chance": 0.2},
+    {"id": "soyuz2", "name": "Soyuz-2.1a / Soyuz MS", "sites": ["baikonur"],
+     "meco_s": 118, "meco_alt_km": 45, "meco_downrange_km": 45, "seco_s": 530, "deploy_after_seco_s": 5,
+     "flow1_kg_s": 1900, "flow2_kg_s": 100, "exhaust1_m_s": 2900, "exhaust2_m_s": 3300,
+     "booster": "expendable", "flame1_mag_100km": -3.5, "flame2_mag_100km": -0.5,
+     "upper_stage_deorbit": true, "upper_stage_mass_kg": 2400, "soot": 0.6, "vent_chance": 0.2}
   ],
   "programs": [
     {"name": "Starlink direct-to-cell", "match": ["Starlink Gen3 Direct-to-Cell"], "vehicles": ["starship"],
@@ -120,6 +136,16 @@
     {"name": "OneWeb", "match": ["OneWeb"], "vehicles": ["falcon9", "lvm3"],
      "life_years": 7, "payload": 36, "park_km": 450, "raise_days": [60, 110], "deorbit_days": [60, 150], "batch_gap_days": 4},
     {"name": "Reflect Orbital", "match": ["Reflect Orbital"], "vehicles": ["falcon9"],
-     "life_years": 5, "payload": 40, "park_km": 360, "raise_days": [10, 25], "deorbit_days": [15, 45], "batch_gap_days": 3}
+     "life_years": 5, "payload": 40, "park_km": 360, "raise_days": [10, 25], "deorbit_days": [15, 45], "batch_gap_days": 3},
+    {"name": "ISS crew rotation", "match": ["International Space Station"], "vehicles": ["falcon9_dragon"],
+     "life_years": 0.5, "payload": 1, "park_km": 210, "raise_days": [0.95, 1.2], "crew": {"spacecraft": "Crew Dragon", "people": 4}},
+    {"name": "Tiangong crew rotation", "match": ["Tiangong"], "vehicles": ["long_march_2f"],
+     "life_years": 0.5, "payload": 1, "park_km": 200, "raise_days": [0.27, 0.3], "crew": {"spacecraft": "Shenzhou", "people": 3}},
+    {"name": "Commercial station crews", "match": ["Haven-1", "Haven-2", "Axiom Station", "Starlab", "Orbital Reef"], "vehicles": ["falcon9_dragon"],
+     "life_years": 0.5, "payload": 1, "park_km": 210, "raise_days": [1.0, 1.4], "crew": {"spacecraft": "Crew Dragon", "people": 4}},
+    {"name": "ROS crew rotation", "match": ["Russian Orbital Service Station"], "vehicles": ["soyuz2"],
+     "life_years": 0.5, "payload": 1, "park_km": 200, "raise_days": [0.13, 0.15], "crew": {"spacecraft": "Soyuz MS", "people": 3}},
+    {"name": "Gaganyaan crew rotation", "match": ["Bharatiya"], "vehicles": ["lvm3"],
+     "life_years": 0.5, "payload": 1, "park_km": 220, "raise_days": [1.0, 1.5], "crew": {"spacecraft": "Gaganyaan", "people": 3}}
   ]
 }

@@ -48,6 +48,9 @@ inline constexpr const char *kUiThemeKeys[] = {"classic", "navy", "night", "midn
     X(btnAccent, UIC(150, 20, 20, 240), UIC(10, 36, 110, 240), UIC(40, 0, 0, 240), UIC(150, 20, 20, 240)) /* ON / active */         \
     X(btnAccentHv, UIC(100, 15, 15, 230), UIC(8, 26, 82, 230), UIC(28, 0, 0, 230), UIC(100, 15, 15, 230))                          \
     X(btnDisabled, UIC(24, 24, 25, 160), UIC(6, 9, 19, 160), UIC(7, 0, 0, 160), UIC(8, 8, 8, 160))                             \
+    X(btnDanger, UIC(110, 42, 8, 235), UIC(110, 42, 8, 235), UIC(46, 0, 0, 235), UIC(110, 42, 8, 235)) /* destructive (Explode) */ \
+    X(btnDangerHv, UIC(150, 60, 12, 240), UIC(150, 60, 12, 240), UIC(64, 0, 0, 240), UIC(150, 60, 12, 240))                      \
+    X(btnDangerArmed, UIC(205, 80, 10, 250), UIC(205, 80, 10, 250), UIC(90, 0, 0, 250), UIC(205, 80, 10, 250)) /* click again */ \
     X(closeBgIdle, UIC(50, 16, 16, 180), UIC(30, 8, 12, 180), UIC(22, 0, 0, 180), UIC(50, 16, 16, 180)) /* [X] */                   \
     X(closeBgHov, UIC(170, 30, 30, 220), UIC(170, 34, 40, 220), UIC(160, 12, 10, 220), UIC(170, 30, 30, 220))                         \
     X(pauseActive, UIC(140, 25, 25, 230), UIC(10, 36, 110, 230), UIC(45, 0, 0, 230), UIC(140, 25, 25, 230))                         \
@@ -90,6 +93,13 @@ inline constexpr const char *kUiThemeKeys[] = {"classic", "navy", "night", "midn
     X(toastInfo, UIC(20, 40, 70, 235), UIC(8, 20, 52, 235), UIC(24, 0, 0, 235), UIC(20, 40, 70, 235))                               \
     X(toastOk, UIC(20, 60, 30, 235), UIC(20, 62, 40, 235), UIC(24, 0, 0, 235), UIC(20, 60, 30, 235))                                 \
     X(toastWarn, UIC(70, 45, 12, 235), UIC(72, 48, 14, 235), UIC(40, 0, 0, 235), UIC(70, 45, 12, 235))                               \
+    /* The Missions window: the Sun's Fury card (ominous dark red), the row tags, progress bars */             \
+    X(furyBg, UIC(30, 4, 4, 235), UIC(30, 4, 8, 235), UIC(14, 0, 0, 235), UIC(22, 2, 2, 242))                                       \
+    X(furyBorder, UIC(125, 16, 12, 255), UIC(125, 18, 22, 255), UIC(70, 0, 0, 255), UIC(125, 16, 12, 255))                           \
+    X(furyText, UIC(232, 72, 52, 255), UIC(232, 76, 60, 255), UIC(205, 0, 0, 255), UIC(232, 72, 52, 255))                            \
+    X(tagTwilight, UIC(62, 46, 128, 235), UIC(62, 46, 128, 235), UIC(42, 0, 0, 235), UIC(62, 46, 128, 235))                          \
+    X(tagCrew, UIC(132, 96, 12, 235), UIC(132, 96, 12, 235), UIC(56, 0, 0, 235), UIC(132, 96, 12, 235))                              \
+    X(progressFill, UIC(150, 20, 20, 220), UIC(30, 90, 200, 220), UIC(60, 0, 0, 220), UIC(150, 20, 20, 220))                         \
     /* Speed indicator */                                                                                      \
     X(speedFwd, UIC(200, 55, 55, 220), UIC(50, 120, 230, 220), UIC(200, 0, 0, 220), UIC(200, 55, 55, 220))                          \
     X(speedRev, UIC(155, 155, 165, 220), UIC(150, 160, 185, 220), UIC(130, 0, 0, 220), UIC(155, 155, 165, 220))                        \

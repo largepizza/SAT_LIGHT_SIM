@@ -7,7 +7,6 @@ set clouds_v2.coverage 0.84
 time pause
 follow off
 const all on
-const "Gen2 shell - legacy (comparison)" off
 cine new short3_why_they_flash
 # 1. Flares, tight
 time set 2036-11-22T02:06:22Z

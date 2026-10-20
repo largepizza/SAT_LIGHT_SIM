@@ -856,6 +856,10 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                         snprintf(k2, sizeof(k2), "%s", keyDisplayName(keybindings[KB_REPORT_NEW].key));
                         text(uiKitStr("%s adds a shot to the active issue, %s starts a new one.", k1, k2), Pal::textHint, 11);
                     }
+                    // The Display tab's setting, here too: shots with the UI show the windows you had open (a trace,
+                    // the info window); this window and the note bar are always left out of them.
+                    uiToggleRow(inp, ui, "RpShotUi", 0, "Shots include the UI", reportShotUiSetting,
+                                "Keep the windows and panels you had open in the shot (this window and the note bar are left out)");
                     if (!reportStatus_.empty())
                         text(reportStatus_.c_str(), {230, 190, 120, 255}, 11);
                     CLAY(CLAY_ID("RpList"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},

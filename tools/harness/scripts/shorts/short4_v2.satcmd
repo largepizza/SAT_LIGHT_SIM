@@ -8,7 +8,6 @@ set clouds_v2.coverage 0.96
 time pause
 follow off
 const all on
-const "Gen2 shell - legacy (comparison)" off
 set clouds_v2.coverage 0
 cine new short4_mirrors_v2
 time set 2036-11-22T02:06:22Z
