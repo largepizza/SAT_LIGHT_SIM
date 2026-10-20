@@ -319,6 +319,9 @@ struct SatelliteSim::LaunchState
         double rangeKm, altKm, sigKm, Sigma, tauPeak, age;
         glm::dvec3 col;
         double amb;
+        int ground = 0;          // 0 exhaust, 1 lift-off cloud, 2 landing cloud
+        glm::dvec3 drawn{0.0};   // the colour handed to the shader (Sun + sky)
+        double isoShare = -1.0;  // the share of it lit isotropically (the sky); < 0: none
     };
     std::vector<PlumeDbg> plumeDbg;
     std::unordered_map<int, glm::dvec3> engineGeom; // per rocket type: (nozzle exit z, exit radius, length) in metres
@@ -2057,6 +2060,9 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     auto kappaAt = [&](double h) { return glm::mix(10.0, 1000.0, glm::smoothstep(25000.0, 90000.0, h)); };
     auto albedoAt = [&](double h) { return glm::mix(0.95 - 0.55 * vh.soot, 0.98, glm::smoothstep(15000.0, 40000.0, h)); };
     const double windPhase = glm::two_pi<double>() * h01(B.seed, 24, 1);
+    const int padI = (B.site >= 0 && (size_t)B.site < L.sitePad.size()) ? L.sitePad[(size_t)B.site] : -1;
+    const LPad *pad = padI >= 0 ? &L.pads[(size_t)padI] : nullptr;
+    const double padGround = pad ? pad->elevM : std::max(B.padBase - vh.mountM, 3.0);
     int stream = -1;           // a burn: its parcels are drawn as one polyline (consecutive in B.parcels)
     double lastEmit = -1e30;   // a gap in the emission starts a new stream
     int lastStage = -1, lastMode = -1;
@@ -2101,9 +2107,14 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         // Vented propellant: droplets freezing to ice, a large cross-section, spreading slowly (the dump spirals).
         const bool vent = mode == 3;
         // (A vent's parcel is a stretch of its jet, not of the stage's path: the stage carries the jet with it.)
+        // The low trail (2026-10-20): a turbulent column that billows and thickens as it entrains the air (it grows
+        // ~0.05x its speed through the air, fading out by 6 km), resting on the pad's ground near the pad.
+        launch::ParcelOpts O;
+        O.growK = vent ? 0.0 : 0.05 * (1.0 - glm::smoothstep(1500.0, 6000.0, h - padGround));
+        O.groundM = glm::length(glm::normalize(p) - B.G0) * kR < 30000.0 ? padGround : 3.0;
         B.parcels.push_back(launch::makeParcel(tau, p, vel + vex * ex, m, vent ? 2000.0 : kappaAt(h), albedoAt(h),
                                                vent ? ex : (spd > 5.0 ? vel / spd : up), vent ? vex * dtE : len,
-                                               maxAge, windDir, windGain, vent ? 30.0 : 2000.0, windPhase));
+                                               maxAge, windDir, windGain, vent ? 30.0 : 2000.0, windPhase, &O));
         B.parcels.back().thin = vent;
         if (!vent)
         {
@@ -2117,16 +2128,123 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         B.parcels.back().stage = stage;
         B.parcels.back().dt = dtE;
     };
-    // The pad's ground cloud: exhaust and the deluge's steam rolling out along the ground in the first seconds.
-    for (int k = 0; k < 6; ++k)
+    // ── Ground clouds (2026-10-20, the user: "smoke trail effects (volumetric) on launch, dust kicking up from
+    // landing"). Parcels on the ground, drawn as lumpy round puffs (cloud_march.comp's billows + self-shadow), lit by
+    // the flame at night (launchFillVisuals' flame light). All from hashes of the batch: a pure function of sim time.
+    auto groundCloud = [&](int kind, double t0, const glm::dvec3 &G, double gnd, const glm::dvec3 &dir, double spd,
+                           double m, double kappa, double albedo, const glm::vec3 &tint, double evap, double sig0,
+                           double buoy, double growK) {
+        launch::ParcelOpts O;
+        O.groundM = gnd;
+        O.evapS = evap;
+        O.growK = growK;
+        O.buoy = buoy;
+        O.buoyS = 90.0;
+        O.sig0 = sig0;
+        const glm::dvec3 p = G * (kR + gnd + 0.6 * sig0);
+        B.parcels.push_back(launch::makeParcel(t0, p, spd * dir + 6.0 * G, m, kappa, albedo, dir, 0.6 * sig0,
+                                               kPlumeAgeLow, windDir, windGain, 300.0, windPhase, &O));
+        B.parcels.back().ground = kind;
+        B.parcels.back().tint = tint;
+    };
+    // (1) Lift-off: the exhaust hits the pad while the stack is low (within hImp of the ground, longer for more thrust)
+    // and rolls out along the ground with the deluge's steam: Starship's mount sprays water up through its steel
+    // deflector, so its cloud billows out all round; the other pads' flame trench throws most of it out of the trench's
+    // mouth behind the pad (-u), a little spilling round the sides. It rises (hot) and drifts for minutes.
     {
-        const double ang = glm::two_pi<double>() * (k + h01(B.seed, 23, k)) / 6.0;
-        const glm::dvec3 dir = std::cos(ang) * east + std::sin(ang) * north;
-        const glm::dvec3 p = (kR + B.padBase + 20.0) * B.G0;
-        B.parcels.push_back(launch::makeParcel(1.0 + 0.8 * k, p, 120.0 * dir + 20.0 * B.G0, vh.flow1 * 2.0,
-                                               kappaAt(0.0), 0.95, dir, 60.0, kPlumeAgeLow, windDir, windGain, 2000.0,
-                                               windPhase));
+        const glm::dvec3 G = B.G0;
+        const glm::dvec3 u = pad ? pad->u : north, v = pad ? pad->v : east;
+        const bool deluge = pad ? pad->kind == 2 : vh.mountM > 0.0;
+        const double hImp = 60.0 * std::pow(vh.flow1 / 1000.0, 0.4);
+        const double dtG = 0.75;
+        int k = 0;
+        for (double tau = 0.25; tau < 20.0; tau += dtG, ++k)
+        {
+            bool okR;
+            const glm::dvec3 P = rocketEcef(L, B, 0, tau, okR);
+            if (!okR)
+                break;
+            const double hAbove = glm::length(P) - kR - padGround - vh.mountM;
+            const double impK = std::pow(glm::clamp(1.0 - hAbove / hImp, 0.0, 1.0), 1.5);
+            if (impK <= 0.0 && tau > 3.0)
+                break;
+            const double mStep = vh.flow1 * dtG * (deluge ? 1.3 : 0.9) * std::max(impK, 0.15);
+            const int nRad = deluge ? 3 : 1;
+            for (int j = 0; j < nRad; ++j)
+            {
+                const double ang = glm::two_pi<double>() * (h01(B.seed, 230 + k, j) + (double)j / nRad) + 2.39996 * k;
+                const glm::dvec3 dir = std::cos(ang) * u + std::sin(ang) * v;
+                const double spd = (70.0 + 80.0 * h01(B.seed, 231 + k, j)) * (0.4 + 0.6 * impK);
+                groundCloud(1, tau, G, padGround, dir, spd, mStep * (deluge ? 1.0 / nRad : 0.3), 8.0,
+                            deluge ? 0.97 : 0.93 - 0.2 * vh.soot, glm::vec3(1.0f), 360.0, 22.0, 0.25, 0.12);
+            }
+            if (!deluge)
+            {
+                // Out of the trench's mouth, ~70 m behind the pad, spreading as a fan.
+                const double sw = (h01(B.seed, 232 + k, 0) - 0.5) * 0.9;
+                const glm::dvec3 dir = glm::normalize(-u + sw * v);
+                const glm::dvec3 Gm = glm::normalize(G - u * (70.0 / kR));
+                groundCloud(1, tau, Gm, padGround, dir, (90.0 + 70.0 * h01(B.seed, 233 + k, 0)) * (0.5 + 0.5 * impK),
+                            mStep * 0.7, 8.0, 0.92 - 0.25 * vh.soot, glm::vec3(1.0f), 420.0, 18.0, 0.2, 0.12);
+            }
+        }
     }
+    // (3) Landings: in a landing burn's last stretch the exhaust reaches the ground and kicks up a cloud spreading
+    // radially. What it is follows the surface under it: a pad (a tower catch, a landing zone) mostly steam and
+    // exhaust with some grit (grey-white); bare land dust (tan, lingering); the sea spray (white, gone in a minute; a
+    // droneship's deck sits in it).
+    auto landingCloud = [&](int stage, double tau0, double tau1, double flowL, int landPadI) {
+        if (tau1 <= tau0)
+            return;
+        bool okE;
+        const glm::dvec3 PE = rocketEcef(L, B, stage, tau1 - 0.05, okE);
+        if (!okE)
+            return;
+        const glm::dvec3 GE = glm::normalize(PE);
+        const double la = glm::degrees(std::asin(glm::clamp(GE.z, -1.0, 1.0))), lo = glm::degrees(std::atan2(GE.y, GE.x));
+        int surf; // 0 pad, 1 land, 2 sea
+        double gnd;
+        if (landPadI >= 0)
+        {
+            surf = 0;
+            gnd = L.pads[(size_t)landPadI].elevM;
+        }
+        else
+        {
+            const double dem = demElevCpu(la, lo);
+            surf = (dem > 1.0 && shoreDistCpu(la, lo) < 0.0) ? 1 : 2;
+            gnd = surf == 1 ? dem : 0.0;
+        }
+        const double hImp = 80.0 * std::pow(flowL / 1000.0, 0.4);
+        const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), GE)), nE = glm::cross(GE, eE);
+        const double dtL = 0.5;
+        int k = 0;
+        for (double tau = tau0; tau < tau1; tau += dtL, ++k)
+        {
+            bool okR;
+            const glm::dvec3 P = rocketEcef(L, B, stage, tau, okR);
+            if (!okR)
+                continue;
+            const double hAbove = glm::length(P) - kR - gnd;
+            const double impK = std::pow(glm::clamp(1.0 - hAbove / hImp, 0.0, 1.0), 1.5);
+            if (impK <= 0.0)
+                continue;
+            const glm::dvec3 G = glm::normalize(P);
+            for (int j = 0; j < 3; ++j)
+            {
+                const double ang = glm::two_pi<double>() * (h01(B.seed, 260 + 7 * stage + k, j) + j / 3.0) + 2.39996 * k;
+                const glm::dvec3 dir = std::cos(ang) * eE + std::sin(ang) * nE;
+                const double spd = (40.0 + 50.0 * h01(B.seed, 261 + 7 * stage + k, j)) * (0.4 + 0.6 * std::sqrt(impK));
+                const double mL = flowL * dtL * impK / 3.0;
+                if (surf == 2) // sea spray: fine droplets, evaporating within a minute or two
+                    groundCloud(2, tau, G, gnd, dir, spd * 1.3, mL * 6.0, 14.0, 0.96, glm::vec3(1.0f), 90.0, 14.0, 0.0, 0.12);
+                else if (surf == 1) // dust from bare ground
+                    groundCloud(2, tau, G, gnd, dir, spd, mL * 1.6, 9.0, 0.6, glm::vec3(1.0f, 0.84f, 0.64f), 480.0, 10.0, 0.08, 0.12);
+                else // a pad: steam and exhaust, a little grit
+                    groundCloud(2, tau, G, gnd, dir, spd, mL, 8.0, 0.85, glm::vec3(1.0f, 0.96f, 0.9f), 300.0, 10.0, 0.15, 0.12);
+            }
+        }
+    };
     // The booster: ascent (every 1 s low, 1.5 s above ~20 km), then its burns. The parcels are the polyline's knots:
     // the trail between them is drawn as segments (launchFillVisuals), so the spacing sets how finely it bends.
     for (double tau = 1.0; tau < vh.t1; )
@@ -2141,6 +2259,24 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         bt.at(tau, nullptr, &b);
         if (b == launch::BURN_BOOSTBACK || b == launch::BURN_ENTRY || b == launch::BURN_LANDING)
             emit(0, tau, 2.0, vh.flow1 * (b == launch::BURN_LANDING ? 0.12 : 0.35), vh.vex1, 1);
+    }
+    if (vh.recovery != 0)
+    {
+        // The landing burn's span (its last seconds reach the ground).
+        double l0 = -1.0, l1 = -1.0;
+        for (double tau = vh.t1 + 1.0; tau <= bt.tEnd; tau += 0.5)
+        {
+            uint8_t b = 0;
+            bt.at(tau, nullptr, &b);
+            if (b == launch::BURN_LANDING)
+            {
+                if (l0 < 0.0)
+                    l0 = tau;
+                l1 = tau;
+            }
+        }
+        if (l0 >= 0.0)
+            landingCloud(0, l0, std::min(l1 + 0.5, bt.tEnd), vh.flow1 * 0.12, vh.recovery == 1 ? padI : -1);
     }
     // The upper stage to orbit: every 1 s. In near vacuum consecutive parcels separate at the exhaust speed (~3.4 km
     // a second of burn) and each spreads at ~2 km/s: at 2.5 s the youngest stood 8.5 km apart and swelled into a
@@ -2158,6 +2294,8 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     if (B.shipLands)
         for (double tau = B.tShipFlip - B.tL + 0.5; tau < B.tShipCatch - B.tL; tau += 2.0)
             emit(1, tau, 2.0, vh.flow2 * 0.5, vh.vex2, 1);
+    if (B.shipLands)
+        landingCloud(1, B.tShipFlip - B.tL, B.tShipCatch - B.tL, vh.flow2 * 0.5, B.landPad);
     if (B.vents)
     {
         const double tv = ventStart(L, B) - B.tL;
@@ -2733,7 +2871,13 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         return miss < kR - R;
     };
     std::vector<Cand> plumes;
-    const double nightBoost = 1.0 + 9.0 * (1.0 - dayness);
+    // The plumes' light (cloud_march.comp: phases per steradian) in the sky's units: the sky and the clouds use
+    // phase functions normalised to a MEAN of 1 (phaseR / phaseM / cv2HG: 4 pi per steradian), so a plume's light is
+    // x 4 pi to stand beside them (2026-10-20: by day a thick sunlit trail or steam cloud was ~13x too dim, as dim as
+    // the haze behind it - invisible from a few km). The night factor (10) was tuned on the twilight bells before
+    // this; it is kept, as the night value of the same factor.
+    const double nightBoost = glm::mix(10.0, 4.0 * glm::pi<double>(), dayness);
+    const double plumeUnitK = 4.0 * glm::pi<double>();
     const double pixA = ctx_ ? 2.0 * std::tan(0.5 * glm::radians((double)camera.fovYDeg)) /
                                    (double)std::max(1u, ctx_->swapExtent.height)
                              : 1e-3;
@@ -3260,10 +3404,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             LaunchImpl::buildParcels(L, B);
         }
         const double era = earthRotationAngle(t);
+        int curGround = 0; // (the parcel being drawn: for the readout)
         // One Gaussian of exhaust: centre C and trail direction axE (Earth-fixed), the half-length it stands for along
         // the trail (hl: its 1-sigma extent beyond its own radius), radius sig, cross-section Sigma (m^2).
         auto addPlume = [&](const glm::dvec3 &CE, const glm::dvec3 &axE, double hl, double sig, double Sigma,
-                            double sweep, double albedo, double age, uint64_t rimSeed, bool trail) {
+                            double sweep, double albedo, double age, uint64_t rimSeed, bool trail,
+                            const glm::vec3 &tint) {
             if (Sigma < 1.0)
                 return;
             const glm::dvec3 C = rotZ(CE, era);
@@ -3326,10 +3472,36 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             const double amb = glm::smoothstep(-0.1, 0.25, sinE) * std::exp(-std::max(h, 0.0) / 15000.0);
             // w = 4 x a per-parcel seed (cloud_march.comp's billows) + the sky light on it (unread there).
             const double seedK = (double)(launch::hash01(rimSeed, 7, 3) * 255.0);
-            d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), (float)(4.0 * std::floor(seedK) + amb));
             // At night the sky's exposure is not physical (only ~5.5x the day's: see the Kessler dust), so a sunlit
             // plume against the dark sky reads far dimmer than it is; its sunlight is raised as the eye's sky darkens.
-            d.col = glm::vec4(glm::vec3(tr * albedo * nightBoost), (float)(2.0 + albedo));
+            const glm::dvec3 sunC = tr * albedo * nightBoost * glm::dvec3(tint);
+            // The blue sky's light on it, low down (2026-10-20: a steam cloud's shaded side is bluish grey, not black;
+            // the engines' and pads' lights are the shader's engine lights, SatelliteSim::engineLightAdd). The CPU
+            // then shadows the Sun's part itself and tells the shader the sky light's share of the colour (ib.w's
+            // fraction: 2 + share; the shader lights that share isotropically, with no Earth shadow and half the
+            // self-shadow). Above 25 km nothing: the bells keep the shader's per-pixel Earth shadow (their lit edge is
+            // the terminator).
+            double flameShare = -1.0;
+            glm::dvec3 colOut = sunC;
+            glm::dvec3 iso(0.0);
+            if (h < 25000.0)
+                iso += plumeUnitK * amb * 0.18 * glm::dvec3(0.62, 0.78, 1.0) * albedo * glm::dvec3(tint);
+            const double lI = iso.x + iso.y + iso.z;
+            if (lI > 1e-6)
+            {
+                const double sp = glm::dot(C, sunD), dS = glm::length(C - sp * sunD);
+                const double litC = sp > 0.0 ? 1.0 : glm::smoothstep(kR * 0.9995, kR * 1.003, dS);
+                const glm::dvec3 sc = sunC * litC;
+                const double lS = sc.x + sc.y + sc.z;
+                if (lI > 0.02 * lS)
+                {
+                    colOut = sc + iso;
+                    flameShare = std::min(lI / (lI + lS), 0.999);
+                }
+            }
+            d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2),
+                             (float)(4.0 * std::floor(seedK) + (flameShare >= 0.0 ? 2.0 + flameShare : amb)));
+            d.col = glm::vec4(glm::vec3(colOut), (float)(2.0 + albedo));
             d.cone = coneOf(toEnu(rel), 5.5 * std::max(sA, sP));
             plumes.push_back(c);
             // High up, once the expanding exhaust has swept up about its own mass of air it piles up at its rim: a
@@ -3396,7 +3568,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 }
             }
             if (L.plumeDbg.size() < 4000)
-                L.plumeDbg.push_back({range / 1000.0, h / 1000.0, sig / 1000.0, Sigma, tauPeak, age, tr * albedo, amb});
+                L.plumeDbg.push_back({range / 1000.0, h / 1000.0, sig / 1000.0, Sigma, tauPeak, age, tr * albedo, amb,
+                                      curGround, colOut, flameShare});
         };
         // Each parcel's state now (age >= 0: emitted; ok: still drawn).
         struct PState
@@ -3439,11 +3612,13 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (pi % (size_t)dec != 0 && !last)
                 continue;
             const uint64_t rimSeed = B.seed ^ (uint64_t)(pc.t0 * 10.0);
+            curGround = pc.ground;
             if (pc.stream < 0 || prev < 0)
             {
                 // A vent's jet stretch, the pad's ground cloud, or the first knot of a burn: as emitted.
                 const double Sigma = pc.kappa * pc.m * s.cond * gain * (double)dec;
-                addPlume(s.cE, pc.axis, 0.5 * pc.len, s.sig, Sigma, s.sweep, pc.albedo, age, rimSeed, pc.stream >= 0);
+                addPlume(s.cE, pc.axis, 0.5 * pc.len, s.sig, Sigma, s.sweep, pc.albedo, age, rimSeed, pc.stream >= 0,
+                         pc.tint);
             }
             else
             {
@@ -3461,7 +3636,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 // the head does not reach ahead of the stage.
                 const double cA = glm::mix(0.35, 0.5, glm::smoothstep(0.0, 3.0 * std::max(pc.dt, 0.5), age));
                 addPlume(0.5 * (s.cE + q.cE), axE, cA * sl, 0.5 * (s.sig + q.sig), Sigma, 0.5 * (s.sweep + q.sweep),
-                         pc.albedo, age, rimSeed, true);
+                         pc.albedo, age, rimSeed, true, pc.tint);
             }
             prev = (int)pi;
             // The head: from the youngest knot to the nozzle, while the burn goes on.
@@ -3482,7 +3657,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     // when the next knot is born the segment that replaces the head is the same Gaussian.
                     const double condH = 0.5 * s.cond;
                     addPlume(0.5 * (nz + s.cE), axE, 0.35 * sl, 0.5 * (s.sig + 8.0),
-                             nx.kappa * nx.m * f * condH * gain, 0.0, nx.albedo, 0.0, rimSeed ^ 0x5Aull, true);
+                             nx.kappa * nx.m * f * condH * gain, 0.0, nx.albedo, 0.0, rimSeed ^ 0x5Aull, true, nx.tint);
                 }
             }
         }
@@ -3621,6 +3796,21 @@ nlohmann::json SatelliteSim::launchStateJson() const
                       {"sun_col", {pd[i].col.x, pd[i].col.y, pd[i].col.z}}});
     j["plume_high"] = hi;
     j["plume_parcels"] = pd.size();
+    // The ground clouds (2026-10-20): lift-off and landing parcels drawn, and the thickest of them.
+    {
+        std::sort(pd.begin(), pd.end(), [](const auto &a, const auto &b) { return a.tauPeak > b.tauPeak; });
+        int nG[3] = {0, 0, 0};
+        nlohmann::json gs = nlohmann::json::array();
+        for (const auto &e : pd)
+        {
+            nG[std::clamp(e.ground, 0, 2)]++;
+            if (e.ground > 0 && gs.size() < 8)
+                gs.push_back({{"kind", e.ground == 1 ? "lift_off" : "landing"}, {"range_km", e.rangeKm},
+                              {"alt_km", e.altKm}, {"sigma_km", e.sigKm}, {"tau_peak", e.tauPeak}, {"age_s", e.age},
+                              {"drawn_col", {e.drawn.x, e.drawn.y, e.drawn.z}}, {"iso_share", e.isoShare}});
+        }
+        j["ground_clouds"] = {{"lift_off", nG[1]}, {"landing", nG[2]}, {"sample", gs}};
+    }
     return j;
 }
 
@@ -3756,7 +3946,8 @@ nlohmann::json SatelliteSim::launchWhyJson(double hours) const
 bool SatelliteSim::launchGoToNext(std::string &msg, bool twilight) { return launchGoToNextWhen(msg, twilight ? 1 : 0); }
 
 // when: 0 the next, 1 twilight (the Sun 5-16 deg down at the pad), 2 day (above 15 deg), 3 night (below -20 deg).
-bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when, const std::string &vehicle)
+bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when, const std::string &vehicle, double padDistM,
+                                      double lead, double sideSign)
 {
     const bool twilight = when != 0;
     if (launchState)
@@ -3821,7 +4012,7 @@ bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when, const std::str
         stopFollow();
     if (trackActive)
         stopTrack();
-    const double tStart = B->tL - 30.0;
+    const double tStart = B->tL - lead;
     const double days = std::floor(tStart / 86400.0);
     simDayJ2000 = (int64_t)days;
     simSecInDay = tStart - days * 86400.0;
@@ -3841,7 +4032,15 @@ bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when, const std::str
     // Look at where the rocket is two minutes in.
     const Track &bt = L.booster[B->veh];
     const glm::dvec2 p = bt.at(std::min(120.0, bt.tEnd));
-    const glm::dvec3 target = LaunchImpl::trackEcef(*B, p.x, p.y);
+    glm::dvec3 target = LaunchImpl::trackEcef(*B, p.x, p.y);
+    if (padDistM > 0.0)
+    {
+        // On the ground beside the pad (the lift-off cloud, the first km of the trail), looking at the pad 120 m up.
+        const glm::dvec3 gp = glm::normalize(B->G0 * kR + side * (sideSign < 0.0 ? -padDistM : padDistM) -
+                                             B->Eaz * (0.35 * padDistM));
+        setObserverLatLon(glm::degrees(std::asin(glm::clamp(gp.z, -1.0, 1.0))), glm::degrees(std::atan2(gp.y, gp.x)));
+        target = B->G0 * (kR + B->padBase + 120.0);
+    }
     const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
     const glm::dvec3 rel = target - up * kR;
     glm::dvec3 east = glm::cross(glm::dvec3(0, 0, 1), up);
@@ -6543,7 +6742,14 @@ bool SatelliteSim::launchGoToLanding(int which, double leadS, double distM, std:
             tc = B.tShipCatch;
         else if (which == 1 && vh.recovery == 1 && L.booster[B.veh].landed)
             tc = B.tL + L.booster[B.veh].tEnd;
-        if (wantDay && tc > 0.0)
+        else if (which == 2 && vh.recovery == 2)
+            tc = B.tL + L.booster[B.veh].tEnd; // a booster landing at sea (a droneship's deck)
+        if (wantDay && tc > 0.0 && which == 2)
+        {
+            if (sunElevAtPad(L.cat.sites[B.site], tc) < 10.0)
+                continue;
+        }
+        else if (wantDay && tc > 0.0)
         {
             const int pi = which == 0 ? B.landPad : L.sitePad[B.site];
             if (pi < 0 || sunElevAtPad(L.cat.sites[L.pads[pi].site], tc) < 10.0)
@@ -6557,10 +6763,51 @@ bool SatelliteSim::launchGoToLanding(int which, double leadS, double distM, std:
     }
     if (!best)
     {
-        msg = which == 0 ? "no ship catch in the next 30 days" : "no booster catch in the next 30 days";
+        msg = which == 0 ? "no ship catch in the next 30 days" : which == 1 ? "no booster catch in the next 30 days"
+                                                                            : "no booster landing at sea in the next 30 days";
         return false;
     }
     const LBatch &B = *best;
+    if (which == 2)
+    {
+        // At sea (2026-10-20, the landing spray): the observer 30 m over the water distM to the side of the
+        // booster's touchdown point, looking at it.
+        if (followActive)
+            stopFollow();
+        if (trackActive)
+            stopTrack();
+        const double tS = bestT - leadS;
+        const double days = std::floor(tS / 86400.0);
+        simDayJ2000 = (int64_t)days;
+        simSecInDay = tS - days * 86400.0;
+        trailClearPending = true;
+        timePaused = false;
+        timeScaleIdx = 0;
+        timeDir = 1.0f;
+        const Track &bt = L.booster[B.veh];
+        const glm::dvec2 pe = bt.at(bt.tEnd);
+        const glm::dvec3 LP = LaunchImpl::trackEcef(B, pe.x, pe.y);
+        const glm::dvec3 gl = glm::normalize(LP);
+        const glm::dvec3 side = glm::normalize(glm::cross(gl, B.Eaz));
+        const glm::dvec3 g = glm::normalize(gl * kR + distM * side);
+        setObserverLatLon(glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), glm::degrees(std::atan2(g.y, g.x)));
+        obsHeightOffset = 30.0f;
+        const glm::dvec3 tgt = gl * (kR + 60.0);
+        const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), g));
+        const glm::dvec3 north = glm::cross(g, east);
+        const glm::dvec3 rn = glm::normalize(tgt - (kR + 30.0) * g);
+        aimCameraAzEl((float)glm::degrees(std::atan2(glm::dot(rn, east), glm::dot(rn, north))),
+                      (float)glm::degrees(std::asin(glm::clamp(glm::dot(rn, g), -1.0, 1.0))));
+        camera.fovYDeg = 40.0f;
+        skyTaaHistValid = false;
+        cv2HistoryValid = false;
+        updatePositions(tS);
+        char b[300];
+        snprintf(b, sizeof(b), "%s booster landing at sea %.0f km downrange: touchdown in %.0f s",
+                 L.cat.vehicles[B.veh].name.c_str(), pe.x / 1000.0, leadS);
+        msg = b;
+        return true;
+    }
     const int pi = which == 0 ? B.landPad : L.sitePad[B.site];
     const LPad &pd = L.pads[pi];
     if (followActive)

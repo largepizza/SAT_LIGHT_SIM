@@ -448,8 +448,9 @@ bool Parcel::at(double a, glm::dvec3 &cOut, double &sOut, double &condOut, doubl
 
 Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double m, double kappa, double albedo,
                   const glm::dvec3 &axis, double len, double maxAge, const glm::dvec3 &windDir, double windGain,
-                  double vExp, double windPhase)
+                  double vExp, double windPhase, const ParcelOpts *opts)
 {
+    const ParcelOpts O = opts ? *opts : ParcelOpts{};
     Parcel pc;
     pc.t0 = t0;
     pc.m = m;
@@ -459,11 +460,11 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
     pc.len = len;
     const glm::dvec3 omega(0.0, 0.0, 7.2921159e-5);
     glm::dvec3 p = p0, v = v0;
-    double sig = 8.0;
+    double sig = O.sig0;
     const double h0 = glm::length(p0) - kR;
     double Me = airDensity(h0) * 4.18879 * sig * sig * sig;
     // Evaporation: a low trail dissipates in minutes, a stratospheric one lingers, the high exhaust's ice longest.
-    const double tauEvap = h0 < 3000.0 ? 420.0 : h0 < 18000.0 ? 1500.0 : 3600.0;
+    const double tauEvap = O.evapS > 0.0 ? O.evapS : h0 < 3000.0 ? 420.0 : h0 < 18000.0 ? 1500.0 : 3600.0;
     // Condensation: the trail is not visible at the nozzle - the gas has to cool as it expands (soot and droplets low
     // down within a fraction of a second; the ice of the high exhaust over a couple of seconds). Without it the
     // newest exhaust, still metres wide, was an opaque white needle at the stage.
@@ -510,7 +511,9 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         const glm::dvec3 vr = v - w;
         // Expansion: the gas's own (km/s into vacuum) while it outweighs the air it has taken in, then diffusion.
         const double Kd = hk < 15.0 ? 25.0 : hk < 60.0 ? 8.0 : 400.0;
-        const double sigDot = vExp * (m / M) + Kd / sig;
+        // (turbulent growth at the parcel's speed through the air, capped at 60 m/s: a young exhaust parcel still moves
+        // at km/s, and uncapped it swelled to hundreds of metres in a second)
+        const double sigDot = vExp * (m / M) + Kd / sig + O.growK * std::min(glm::length(vr), 60.0);
         // Entrainment: the air swept by the growing surface and the parcel's motion through the air. High up the
         // air is so thin (mean free path ~1 km at 200 km) that the exhaust largely passes through it: the coupling
         // weakens, and the bell grows to hundreds of km as seen in twilight launches.
@@ -525,6 +528,8 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         // the exhaust's share (the air it carries is neutral); Coriolis and centrifugal in the Earth-fixed frame.
         const double g = kGM / (r * r);
         glm::dvec3 acc = -g * up * (m / M) - 2.0 * glm::cross(omega, v) - glm::cross(omega, glm::cross(omega, p)) * (m / M);
+        if (O.buoy > 0.0)
+            acc += up * (O.buoy * std::exp(-age / O.buoyS));
         const double dM = dMe * dt;
         v = (M * (v + acc * dt) + dM * w) / (M + dM);
         Me += dM;
@@ -532,10 +537,10 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         p += v * dt;
         // The ground: the exhaust spreads along it (the pad's ground cloud).
         const double hn = glm::length(p) - kR;
-        if (hn < 3.0)
+        if (hn < O.groundM)
         {
             const glm::dvec3 un = glm::normalize(p);
-            p = un * (kR + 3.0);
+            p = un * (kR + O.groundM);
             const double vrad = glm::dot(v, un);
             if (vrad < 0.0)
                 v -= 1.2 * vrad * un; // a little rebound: it billows up

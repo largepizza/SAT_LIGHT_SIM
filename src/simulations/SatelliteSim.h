@@ -2890,7 +2890,10 @@ private:
     nlohmann::json launchListJson(double hours) const;
     nlohmann::json launchWhyJson(double hours) const;
     bool launchGoToNext(std::string &msg, bool twilight);
-    bool launchGoToNextWhen(std::string &msg, int when, const std::string &vehicle = std::string());
+    // padDistM > 0 (2026-10-20): the observer on the ground that far from the pad, beside the track (side -1 / +1),
+    // looking at the pad; lead = seconds before lift-off.
+    bool launchGoToNextWhen(std::string &msg, int when, const std::string &vehicle = std::string(),
+                            double padDistM = 0.0, double lead = 30.0, double side = 1.0);
     bool launchLook(int stage, std::string &msg);
     struct LaunchSound
     {
