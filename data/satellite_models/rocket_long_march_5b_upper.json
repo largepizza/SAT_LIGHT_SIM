@@ -1,150 +1,219 @@
 {
-    "name": "long_march_5b upper",
-    "note": "Launch vehicle render model (tools/make_rocket_models.py), long_march_5b: upper. Body frame: +Z toward the nose, origin at the aft end. Sizes are public figures rounded; liveries broad strokes; detail render-only.",
-    "materials": [
-        {
-            "name": "white",
-            "preset": "white_paint",
-            "pattern": "panel_seams"
-        },
-        {
-            "name": "black",
-            "preset": "black_paint"
-        },
-        {
-            "name": "steel",
-            "preset": "stainless_steel",
-            "pattern": "panel_seams"
-        },
-        {
-            "name": "tan",
-            "preset": "white_paint",
-            "diffuse_albedo": 0.45,
-            "color": [
-                0.86,
-                0.56,
-                0.33
-            ]
-        },
-        {
-            "name": "nozzle",
-            "preset": "aluminum",
-            "diffuse_albedo": 0.08,
-            "roughness": 0.3,
-            "color": [
-                0.4,
-                0.37,
-                0.35
-            ]
-        },
-        {
-            "name": "tiles",
-            "preset": "black_paint",
-            "roughness": 0.6
-        }
+ "name": "long_march_5b upper",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), long_march_5b: upper. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Booster nose cone length estimated.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
     ],
-    "attitude_groups": [
-        {
-            "name": "body",
-            "primary": {
-                "axis": [
-                    0,
-                    0,
-                    1
-                ],
-                "target": "velocity"
-            },
-            "secondary": {
-                "axis": [
-                    0,
-                    -1,
-                    0
-                ],
-                "target": "nadir"
-            }
-        }
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
     ],
-    "components": [
-        {
-            "name": "fairing_boattail_0",
-            "type": "cone",
-            "radius_bottom": 2.5,
-            "radius_top": 2.6,
-            "height": 0.38,
-            "position": [
-                0.0,
-                0.0,
-                0.19
-            ],
-            "caps": true,
-            "material": "white",
-            "group": "body"
-        },
-        {
-            "name": "fairing_1",
-            "type": "cylinder",
-            "radius": 2.6,
-            "height": 12.0,
-            "position": [
-                0,
-                0,
-                6.38
-            ],
-            "caps": false,
-            "material": "white",
-            "group": "body"
-        },
-        {
-            "name": "fairing_nose_2",
-            "type": "cone",
-            "radius_bottom": 2.6,
-            "radius_top": 0.3,
-            "height": 8.0,
-            "position": [
-                0.0,
-                0.0,
-                16.38
-            ],
-            "caps": true,
-            "material": "white",
-            "group": "body"
-        }
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "fairing_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.02,
+     2.5
     ],
-    "sources": [
-        {
-            "subject": "attitude",
-            "status": "estimate",
-            "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
-            "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
-        },
-        {
-            "subject": "body",
-            "status": "estimate",
-            "value": "one rigid group",
-            "source": "Render model; no moving parts."
-        },
-        {
-            "subjects": [
-                "fairing_boattail_0",
-                "fairing_1",
-                "fairing_nose_2"
-            ],
-            "status": "estimate",
-            "value": "rounded public dimensions (Wikipedia / operator pages), broad liveries",
-            "source": "tools/make_rocket_models.py VEHICLES table."
-        },
-        {
-            "subjects": [
-                "white",
-                "black",
-                "steel",
-                "tan",
-                "nozzle",
-                "tiles"
-            ],
-            "status": "estimate",
-            "value": "presets: white paint, black paint, stainless, tan foam, dark nozzles, black tiles",
-            "source": "Liveries from photographs; reflectance from the presets."
-        }
+    [
+     0.59,
+     2.6
     ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_1",
+   "type": "profile",
+   "profile": [
+    [
+     0.59,
+     2.6
+    ],
+    [
+     12.59,
+     2.6
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_2",
+   "type": "profile",
+   "profile": [
+    [
+     12.59,
+     2.6
+    ],
+    [
+     13.3943,
+     2.5762
+    ],
+    [
+     14.1769,
+     2.5072
+    ],
+    [
+     14.9363,
+     2.3962
+    ],
+    [
+     15.6708,
+     2.2467
+    ],
+    [
+     16.19,
+     2.1112
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_3",
+   "type": "profile",
+   "profile": [
+    [
+     16.19,
+     2.1112
+    ],
+    [
+     16.3782,
+     2.0621
+    ],
+    [
+     17.0559,
+     1.8463
+    ],
+    [
+     17.7004,
+     1.6039
+    ],
+    [
+     18.3071,
+     1.3407
+    ],
+    [
+     18.8696,
+     1.0644
+    ],
+    [
+     19.3778,
+     0.7862
+    ],
+    [
+     19.8126,
+     0.525
+    ],
+    [
+     20.1099,
+     0.3334
+    ],
+    [
+     20.1709,
+     0.2836
+    ],
+    [
+     20.221,
+     0.2229
+    ],
+    [
+     20.2582,
+     0.1536
+    ],
+    [
+     20.2812,
+     0.0783
+    ],
+    [
+     20.2889,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "fairing_0",
+    "fairing_1",
+    "fairing_2",
+    "fairing_3"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Wikipedia 'Long March 5': 5 m core (2 YF-77), four 3.35 m boosters (2 YF-100 each) 27.6 m, 5B: no second stage, 5.2 m x 20.5 m fairing, 53.7 m"
+  },
+  {
+   "subjects": [
+    "white"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
 }

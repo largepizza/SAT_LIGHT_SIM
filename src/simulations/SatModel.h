@@ -223,6 +223,7 @@ enum SatSurfacePattern : int
     kPatternMli = 2,        // crinkled film: micro-facet normals instead of a blurred lobe
     kPatternPanelSeams = 3, // panel joints every 0.5 m
     kPatternTruss = 4,      // open lattice: members on a square bay grid + alternating diagonals
+    kPatternHexTiles = 5,   // heat-shield tiles: ~0.3 m hexagons, thin lighter gaps, per-tile shade jitter
 };
 // The pattern a material draws with (resolving -1).
 int satMaterialPattern(const SatMaterial &m);
@@ -236,6 +237,28 @@ enum class PrimitiveKind : uint32_t
     Cylinder, // radius, height along local Z (centred), optional caps
     Cone,     // radius_bottom (z = -h/2), radius_top (z = +h/2), height; optional caps
     Sphere,   // radius
+    // 2026-10-19 (rocket models): a body of revolution about local Z from a meridian polyline r(z) —
+    // ogive noses, domes, fairings, boattails, engine bells. JSON "profile": [[z, r], ...] (z relative to
+    // `position`; recentred at load so the profile spans [-height/2, height/2], `position` moved to match;
+    // `radius` / `radiusTop` = r at its bottom / top end). Occluder: the exact frustum through its end radii.
+    Profile,
+    // A tapered, thick fin or wing: a trapezoid planform along local +X (span) from a root chord on the
+    // local Z axis (centred on z = 0, the leading edge toward +Z) to a tip chord whose leading edge sits
+    // `sweep` m aft of the root's; thickness along local Y, tapering root to tip, with bevelled leading and
+    // trailing edges. Occluder: its bounding box.
+    Fin,
+};
+// The occluder kind of an exact cone frustum (a Profile's): half = (r at -hz, r at +hz, hz). Not a
+// PrimitiveKind a component can have; sat_orbit.comp / sat_mesh.frag kind 5.
+static constexpr uint32_t kOccluderFrustum = 5;
+static_assert((uint32_t)PrimitiveKind::Profile == kOccluderFrustum, "a Profile's occluder kind is its own");
+
+struct SatFinShape
+{
+    float rootChord = 1.0f, tipChord = 0.5f, span = 1.0f;
+    float sweep = 0.0f;                         // tip leading edge aft of the root's, metres (+ = swept back)
+    float thickness = 0.1f, tipThickness = -1.0f; // root / tip; tip < 0 = root x tipChord / rootChord
+    float bevel = 0.15f;                        // share of the chord over which each edge thins to 30%
 };
 
 struct SatComponent
@@ -264,7 +287,27 @@ struct SatComponent
     // to change a magnitude. loadSatModel moves these after every photometric component, so the
     // photometric components keep indices 0..n-1 and occluder i stays component i.
     bool renderOnly = false;
+    // Profile (PrimitiveKind::Profile): the meridian (z, r), z ascending or not, recentred (see above).
+    std::vector<glm::vec2> profile;
+    float profileShift = 0.0f; // load-time only
+    int profileCaps = 0;       // Profile: end discs, bit 0 = the lower-z end, bit 1 = the upper (JSON "caps": bool | "bottom" | "top")
+    // Profile: a second material over an arc of azimuth (degrees from local +X toward +Y, start < end, may
+    // pass 360) — a heat shield on the windward half. JSON "arc_material", "arc_deg": [start, end].
+    int arcMaterial = -1;
+    glm::vec2 arcDeg{0.0f, 0.0f};
+    // Profile: the inside drawn too, in this material (an open engine bell; JSON "inner_material"). Render
+    // mesh only: the photometry has no inner faces (an open bell's inside is mostly hidden by its rim).
+    int innerMaterial = -1;
+    SatFinShape fin; // PrimitiveKind::Fin
 };
+
+// Fin geometry helpers (SatModel.cpp): the 12 corners of a fin's hexagonal-section prism, local frame —
+// [0..5] the root section, [6..11] the tip, each going LE, upper-front, upper-back, TE, lower-back, lower-front.
+void satFinCorners(const SatFinShape &f, glm::dvec3 out[12]);
+// A profile's tessellation azimuths: n uniform steps plus the arc material's boundaries, ascending in [0, 2pi].
+std::vector<double> satProfileAzimuths(const SatComponent &c, int n);
+// Whether azimuth `phi` (radians) lies in the arc material's range.
+bool satProfileInArc(const SatComponent &c, double phi);
 
 // Provenance of one part of a model (benchmarking M4): every group, component and model-local
 // material should be covered by a `sources` entry naming where its numbers come from.
@@ -395,7 +438,8 @@ struct SatOccluder
     glm::dvec3 pivot{0.0}; // the component's joint pivot (SatComponent::pivot)
     glm::dvec3 center{0.0};  // rest pose, root body frame
     glm::dmat3 axes{1.0};    // columns: the component's local X, Y, Z in the rest frame
-    glm::dvec3 half{0.0};    // plane (w/2, h/2, 0); box half extents; cylinder/cone (r, r, h/2); sphere (r, r, r)
+    glm::dvec3 half{0.0};    // plane (w/2, h/2, 0); box half extents; cylinder/cone (r, r, h/2); sphere (r, r, r);
+                             // frustum (kind kOccluderFrustum, a Profile): (r at -hz, r at +hz, hz)
 };
 
 struct SatLobeSamples

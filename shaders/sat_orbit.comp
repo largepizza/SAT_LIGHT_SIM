@@ -228,7 +228,7 @@ layout(set = 0, binding = 8) readonly buffer SatLobeBuf {
 // the observer both leave the satellite. Hand-mirrored by satLobeVisibility() (SatModel.cpp).
 struct SatOccluder {
     vec3  centerT;
-    uint  kind;               // 0 plane, 1 box, 2 cylinder, 3 cone (its larger radius), 4 sphere
+    uint  kind;               // 0 plane, 1 box, 2 cylinder, 3 cone (its larger radius), 4 sphere, 5 frustum
     vec3  halfExt;            // plane (w/2, h/2, 0); box half extents; cylinder/cone (r, r, h/2); sphere r
     uint  group;
     vec3  axisXT;             // the component's local axes
@@ -882,6 +882,39 @@ bool rayHitsOccluder(uint kind, vec3 hf, vec3 org, vec3 dir)
             tFar  = min(tFar,  max(t0, t1));
         }
         return tNear <= tFar && tFar > tMin;
+    }
+    if (kind == 5u) { // exact cone frustum (a Profile): radius hf.x at z = -hf.z, hf.y at +hf.z
+        float hh = hf.z, rm = 0.5 * (hf.x + hf.y), k = (hf.y - hf.x) / (2.0 * max(hh, 1e-9));
+        float q = rm + k * org.z, kd = k * dir.z;
+        float a = dot(dir.xy, dir.xy) - kd * kd;
+        float b = 2.0 * (dot(org.xy, dir.xy) - q * kd);
+        float c = dot(org.xy, org.xy) - q * q;
+        float ts[2] = float[2](-1.0, -1.0);
+        if (abs(a) > 1e-12) {
+            float disc = b * b - 4.0 * a * c;
+            if (disc >= 0.0) {
+                float sq = sqrt(disc);
+                ts[0] = (-b - sq) / (2.0 * a);
+                ts[1] = (-b + sq) / (2.0 * a);
+            }
+        } else if (abs(b) > 1e-12) {
+            ts[0] = -c / b;
+        }
+        for (int i = 0; i < 2; ++i) {
+            float z = org.z + ts[i] * dir.z;
+            if (ts[i] > tMin && abs(z) <= hh && rm + k * z >= 0.0) return true;
+        }
+        if (abs(dir.z) > 1e-12) {
+            for (int e = 0; e < 2; ++e) {
+                float rc = e == 0 ? hf.x : hf.y;
+                float t = ((e == 0 ? -hh : hh) - org.z) / dir.z;
+                if (t > tMin) {
+                    vec2 p = org.xy + t * dir.xy;
+                    if (dot(p, p) <= rc * rc) return true;
+                }
+            }
+        }
+        return false;
     }
     if (kind == 4u) { // sphere
         float b = dot(org, dir), c = dot(org, org) - hf.x * hf.x;

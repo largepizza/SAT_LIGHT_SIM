@@ -739,6 +739,46 @@ bool gpuRayHitsOccluder(uint32_t kind, glm::vec3 hf, glm::vec3 org, glm::vec3 di
         }
         return tNear <= tFar && tFar > tMin;
     }
+    if (kind == 5u) // exact cone frustum (a Profile), the shaders' mirror
+    {
+        const float hh = hf.z, rm = 0.5f * (hf.x + hf.y), k = (hf.y - hf.x) / (2.0f * std::max(hh, 1e-9f));
+        const float q = rm + k * org.z, kd = k * dir.z;
+        const float a = dir.x * dir.x + dir.y * dir.y - kd * kd;
+        const float b = 2.0f * (org.x * dir.x + org.y * dir.y - q * kd);
+        const float c = org.x * org.x + org.y * org.y - q * q;
+        float ts[2] = {-1.0f, -1.0f};
+        if (std::abs(a) > 1e-12f)
+        {
+            const float disc = b * b - 4.0f * a * c;
+            if (disc >= 0.0f)
+            {
+                const float sq = std::sqrt(disc);
+                ts[0] = (-b - sq) / (2.0f * a);
+                ts[1] = (-b + sq) / (2.0f * a);
+            }
+        }
+        else if (std::abs(b) > 1e-12f)
+            ts[0] = -c / b;
+        for (float t : ts)
+        {
+            const float z = org.z + t * dir.z;
+            if (t > tMin && std::abs(z) <= hh && rm + k * z >= 0.0f)
+                return true;
+        }
+        if (std::abs(dir.z) > 1e-12f)
+            for (int e = 0; e < 2; ++e)
+            {
+                const float rc = e == 0 ? hf.x : hf.y;
+                const float t = ((e == 0 ? -hh : hh) - org.z) / dir.z;
+                if (t > tMin)
+                {
+                    const glm::vec2 p = glm::vec2(org) + t * glm::vec2(dir);
+                    if (glm::dot(p, p) <= rc * rc)
+                        return true;
+                }
+            }
+        return false;
+    }
     if (kind == 4u)
     {
         float b = glm::dot(org, dir), c = glm::dot(org, org) - hf.x * hf.x;

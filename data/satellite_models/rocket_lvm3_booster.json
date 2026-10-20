@@ -1,135 +1,259 @@
 {
-    "name": "lvm3 booster",
-    "note": "Launch vehicle render model (tools/make_rocket_models.py), lvm3: booster. Body frame: +Z toward the nose, origin at the aft end. Sizes are public figures rounded; liveries broad strokes; detail render-only.",
-    "materials": [
-        {
-            "name": "white",
-            "preset": "white_paint",
-            "pattern": "panel_seams"
-        },
-        {
-            "name": "black",
-            "preset": "black_paint"
-        },
-        {
-            "name": "steel",
-            "preset": "stainless_steel",
-            "pattern": "panel_seams"
-        },
-        {
-            "name": "tan",
-            "preset": "white_paint",
-            "diffuse_albedo": 0.45,
-            "color": [
-                0.86,
-                0.56,
-                0.33
-            ]
-        },
-        {
-            "name": "nozzle",
-            "preset": "aluminum",
-            "diffuse_albedo": 0.08,
-            "roughness": 0.3,
-            "color": [
-                0.4,
-                0.37,
-                0.35
-            ]
-        },
-        {
-            "name": "tiles",
-            "preset": "black_paint",
-            "roughness": 0.6
-        }
+ "name": "lvm3 booster",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), lvm3: booster. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. S200 nozzle size and the strap-on's lower offset estimated.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "copper",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.12,
+   "roughness": 0.35,
+   "color": [
+    0.62,
+    0.38,
+    0.24
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
     ],
-    "attitude_groups": [
-        {
-            "name": "body",
-            "primary": {
-                "axis": [
-                    0,
-                    0,
-                    1
-                ],
-                "target": "velocity"
-            },
-            "secondary": {
-                "axis": [
-                    0,
-                    -1,
-                    0
-                ],
-                "target": "nadir"
-            }
-        }
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
     ],
-    "components": [
-        {
-            "name": "engines_0",
-            "type": "cone",
-            "radius_bottom": 1.84,
-            "radius_top": 1.2,
-            "height": 1.2,
-            "position": [
-                0.0,
-                0.0,
-                -0.6
-            ],
-            "caps": true,
-            "material": "nozzle",
-            "group": "body",
-            "render_only": true
-        },
-        {
-            "name": "core_1",
-            "type": "cylinder",
-            "radius": 2.0,
-            "height": 21.0,
-            "position": [
-                0,
-                0,
-                10.5
-            ],
-            "caps": true,
-            "material": "white",
-            "group": "body"
-        }
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "core_body_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     2.0
     ],
-    "sources": [
-        {
-            "subject": "attitude",
-            "status": "estimate",
-            "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
-            "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
-        },
-        {
-            "subject": "body",
-            "status": "estimate",
-            "value": "one rigid group",
-            "source": "Render model; no moving parts."
-        },
-        {
-            "subjects": [
-                "engines_0",
-                "core_1"
-            ],
-            "status": "estimate",
-            "value": "rounded public dimensions (Wikipedia / operator pages), broad liveries",
-            "source": "tools/make_rocket_models.py VEHICLES table."
-        },
-        {
-            "subjects": [
-                "white",
-                "black",
-                "steel",
-                "tan",
-                "nozzle",
-                "tiles"
-            ],
-            "status": "estimate",
-            "value": "presets: white paint, black paint, stainless, tan foam, dark nozzles, black tiles",
-            "source": "Liveries from photographs; reflectance from the presets."
-        }
+    [
+     21.0,
+     2.0
     ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "aft_heat_shield_1",
+   "type": "profile",
+   "profile": [
+    [
+     -0.05,
+     1.98
+    ],
+    [
+     -0.01,
+     1.98
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "engines_2",
+   "type": "profile",
+   "profile": [
+    [
+     -1.5,
+     0.55
+    ],
+    [
+     -1.2733,
+     0.4562
+    ],
+    [
+     -1.0467,
+     0.3747
+    ],
+    [
+     -0.82,
+     0.3063
+    ],
+    [
+     -0.5933,
+     0.2524
+    ],
+    [
+     -0.3667,
+     0.2147
+    ],
+    [
+     -0.14,
+     0.198
+    ],
+    [
+     0.02,
+     0.3069
+    ],
+    [
+     0.372,
+     0.3069
+    ],
+    [
+     0.5,
+     0.1841
+    ],
+    [
+     0.55,
+     0.0
+    ]
+   ],
+   "position": [
+    0.9,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "engines_3",
+   "type": "profile",
+   "profile": [
+    [
+     -1.5,
+     0.55
+    ],
+    [
+     -1.2733,
+     0.4562
+    ],
+    [
+     -1.0467,
+     0.3747
+    ],
+    [
+     -0.82,
+     0.3063
+    ],
+    [
+     -0.5933,
+     0.2524
+    ],
+    [
+     -0.3667,
+     0.2147
+    ],
+    [
+     -0.14,
+     0.198
+    ],
+    [
+     0.02,
+     0.3069
+    ],
+    [
+     0.372,
+     0.3069
+    ],
+    [
+     0.5,
+     0.1841
+    ],
+    [
+     0.55,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.9,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "core_body_0"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "ISRO LVM3 page / Wikipedia 'LVM3': L110 core 4 m (2 Vikas), two S200 3.2 m x 25 m, C25 4 m (CE-20), 5 m fairing, 43.4 m"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey",
+    "copper",
+    "soot"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail); copper: copper-alloy chamber and bell (Raptor, Merlin), oxidised; soot: a nozzle's sooty inside",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
 }

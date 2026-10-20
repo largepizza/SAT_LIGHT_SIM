@@ -1,165 +1,704 @@
 {
-    "name": "soyuz2 upper",
-    "note": "Launch vehicle render model (tools/make_rocket_models.py), soyuz2: upper. Body frame: +Z toward the nose, origin at the aft end. Sizes are public figures rounded; liveries broad strokes; detail render-only.",
-    "materials": [
-        {
-            "name": "white",
-            "preset": "white_paint",
-            "pattern": "panel_seams"
-        },
-        {
-            "name": "black",
-            "preset": "black_paint"
-        },
-        {
-            "name": "steel",
-            "preset": "stainless_steel",
-            "pattern": "panel_seams"
-        },
-        {
-            "name": "tan",
-            "preset": "white_paint",
-            "diffuse_albedo": 0.45,
-            "color": [
-                0.86,
-                0.56,
-                0.33
-            ]
-        },
-        {
-            "name": "nozzle",
-            "preset": "aluminum",
-            "diffuse_albedo": 0.08,
-            "roughness": 0.3,
-            "color": [
-                0.4,
-                0.37,
-                0.35
-            ]
-        },
-        {
-            "name": "tiles",
-            "preset": "black_paint",
-            "roughness": 0.6
-        }
+ "name": "soyuz2 upper",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), soyuz2: upper. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Shown as the crewed configuration. Core narrowing and booster taper from drawings; verniers omitted.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  },
+  {
+   "name": "gridfin",
+   "preset": "truss",
+   "coverage": 0.55,
+   "truss_pitch": 0.5,
+   "color": [
+    0.35,
+    0.35,
+    0.37
+   ]
+  },
+  {
+   "name": "lattice",
+   "preset": "truss",
+   "coverage": 0.3,
+   "truss_pitch": 0.7
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
     ],
-    "attitude_groups": [
-        {
-            "name": "body",
-            "primary": {
-                "axis": [
-                    0,
-                    0,
-                    1
-                ],
-                "target": "velocity"
-            },
-            "secondary": {
-                "axis": [
-                    0,
-                    -1,
-                    0
-                ],
-                "target": "nadir"
-            }
-        }
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
     ],
-    "components": [
-        {
-            "name": "upper_nozzle_0",
-            "type": "cone",
-            "radius_bottom": 1.1063,
-            "radius_top": 0.3688,
-            "height": 1.0,
-            "position": [
-                0.0,
-                0.0,
-                0.5
-            ],
-            "caps": true,
-            "material": "nozzle",
-            "group": "body"
-        },
-        {
-            "name": "upper_tank_1",
-            "type": "cylinder",
-            "radius": 1.475,
-            "height": 6.7,
-            "position": [
-                0,
-                0,
-                4.35
-            ],
-            "caps": true,
-            "material": "white",
-            "group": "body"
-        },
-        {
-            "name": "fairing_2",
-            "type": "cylinder",
-            "radius": 1.5,
-            "height": 6.0,
-            "position": [
-                0,
-                0,
-                10.7
-            ],
-            "caps": false,
-            "material": "white",
-            "group": "body"
-        },
-        {
-            "name": "fairing_nose_3",
-            "type": "cone",
-            "radius_bottom": 1.5,
-            "radius_top": 0.3,
-            "height": 5.5,
-            "position": [
-                0.0,
-                0.0,
-                16.45
-            ],
-            "caps": true,
-            "material": "white",
-            "group": "body"
-        }
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "upper_nozzle_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.26
     ],
-    "sources": [
-        {
-            "subject": "attitude",
-            "status": "estimate",
-            "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
-            "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
-        },
-        {
-            "subject": "body",
-            "status": "estimate",
-            "value": "one rigid group",
-            "source": "Render model; no moving parts."
-        },
-        {
-            "subjects": [
-                "upper_nozzle_0",
-                "upper_tank_1",
-                "fairing_2",
-                "fairing_nose_3"
-            ],
-            "status": "estimate",
-            "value": "rounded public dimensions (Wikipedia / operator pages), broad liveries",
-            "source": "tools/make_rocket_models.py VEHICLES table."
-        },
-        {
-            "subjects": [
-                "white",
-                "black",
-                "steel",
-                "tan",
-                "nozzle",
-                "tiles"
-            ],
-            "status": "estimate",
-            "value": "presets: white paint, black paint, stainless, tan foam, dark nozzles, black tiles",
-            "source": "Liveries from photographs; reflectance from the presets."
-        }
+    [
+     0.1133,
+     0.2157
+    ],
+    [
+     0.2267,
+     0.1771
+    ],
+    [
+     0.34,
+     0.1448
+    ],
+    [
+     0.4533,
+     0.1193
+    ],
+    [
+     0.5667,
+     0.1015
+    ],
+    [
+     0.68,
+     0.0936
+    ],
+    [
+     0.76,
+     0.1451
+    ],
+    [
+     0.936,
+     0.1451
+    ],
+    [
+     1.0,
+     0.087
+    ],
+    [
+     1.05,
+     0.0
     ]
+   ],
+   "position": [
+    0.4,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_nozzle_1",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.26
+    ],
+    [
+     0.1133,
+     0.2157
+    ],
+    [
+     0.2267,
+     0.1771
+    ],
+    [
+     0.34,
+     0.1448
+    ],
+    [
+     0.4533,
+     0.1193
+    ],
+    [
+     0.5667,
+     0.1015
+    ],
+    [
+     0.68,
+     0.0936
+    ],
+    [
+     0.76,
+     0.1451
+    ],
+    [
+     0.936,
+     0.1451
+    ],
+    [
+     1.0,
+     0.087
+    ],
+    [
+     1.05,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.4,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_nozzle_2",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.26
+    ],
+    [
+     0.1133,
+     0.2157
+    ],
+    [
+     0.2267,
+     0.1771
+    ],
+    [
+     0.34,
+     0.1448
+    ],
+    [
+     0.4533,
+     0.1193
+    ],
+    [
+     0.5667,
+     0.1015
+    ],
+    [
+     0.68,
+     0.0936
+    ],
+    [
+     0.76,
+     0.1451
+    ],
+    [
+     0.936,
+     0.1451
+    ],
+    [
+     1.0,
+     0.087
+    ],
+    [
+     1.05,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.4,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_nozzle_3",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.26
+    ],
+    [
+     0.1133,
+     0.2157
+    ],
+    [
+     0.2267,
+     0.1771
+    ],
+    [
+     0.34,
+     0.1448
+    ],
+    [
+     0.4533,
+     0.1193
+    ],
+    [
+     0.5667,
+     0.1015
+    ],
+    [
+     0.68,
+     0.0936
+    ],
+    [
+     0.76,
+     0.1451
+    ],
+    [
+     0.936,
+     0.1451
+    ],
+    [
+     1.0,
+     0.087
+    ],
+    [
+     1.05,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.0,
+    -0.4,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_truss_4",
+   "type": "profile",
+   "profile": [
+    [
+     0.6,
+     1.2635
+    ],
+    [
+     2.2,
+     1.2635
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "lattice",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_5",
+   "type": "profile",
+   "profile": [
+    [
+     2.2,
+     1.33
+    ],
+    [
+     8.9,
+     1.33
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_6",
+   "type": "profile",
+   "profile": [
+    [
+     2.15,
+     1.3034
+    ],
+    [
+     2.19,
+     1.3034
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "fairing_7",
+   "type": "profile",
+   "profile": [
+    [
+     8.92,
+     1.33
+    ],
+    [
+     9.553,
+     1.5
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_8",
+   "type": "profile",
+   "profile": [
+    [
+     9.553,
+     1.5
+    ],
+    [
+     15.553,
+     1.5
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_9",
+   "type": "profile",
+   "profile": [
+    [
+     15.553,
+     1.5
+    ],
+    [
+     15.9313,
+     1.4882
+    ],
+    [
+     16.2994,
+     1.454
+    ],
+    [
+     16.6566,
+     1.3991
+    ],
+    [
+     17.002,
+     1.3249
+    ],
+    [
+     17.3348,
+     1.2332
+    ],
+    [
+     17.353,
+     1.2271
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_10",
+   "type": "profile",
+   "profile": [
+    [
+     17.353,
+     1.2271
+    ],
+    [
+     17.6535,
+     1.1259
+    ],
+    [
+     17.9566,
+     1.005
+    ],
+    [
+     18.242,
+     0.8734
+    ],
+    [
+     18.5065,
+     0.7349
+    ],
+    [
+     18.7455,
+     0.5949
+    ],
+    [
+     18.9501,
+     0.4631
+    ],
+    [
+     19.0899,
+     0.3661
+    ],
+    [
+     19.1544,
+     0.3101
+    ],
+    [
+     19.2071,
+     0.2429
+    ],
+    [
+     19.2462,
+     0.167
+    ],
+    [
+     19.2702,
+     0.085
+    ],
+    [
+     19.2783,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "escape_tower_11",
+   "type": "profile",
+   "profile": [
+    [
+     18.953,
+     0.28
+    ],
+    [
+     23.453,
+     0.28
+    ],
+    [
+     23.453,
+     0.35
+    ],
+    [
+     24.233,
+     0.35
+    ],
+    [
+     24.953,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "shroud_grid_fin_12",
+   "type": "box",
+   "size": [
+    0.9,
+    1.1,
+    0.15
+   ],
+   "position": [
+    1.3789,
+    1.3789,
+    14.353
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    0.382683
+   ],
+   "material": "gridfin",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "shroud_grid_fin_13",
+   "type": "box",
+   "size": [
+    0.9,
+    1.1,
+    0.15
+   ],
+   "position": [
+    -1.3789,
+    1.3789,
+    14.353
+   ],
+   "rotation_quat": [
+    0.382683,
+    0.0,
+    0.0,
+    0.92388
+   ],
+   "material": "gridfin",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "shroud_grid_fin_14",
+   "type": "box",
+   "size": [
+    0.9,
+    1.1,
+    0.15
+   ],
+   "position": [
+    -1.3789,
+    -1.3789,
+    14.353
+   ],
+   "rotation_quat": [
+    -0.382683,
+    0.0,
+    0.0,
+    0.92388
+   ],
+   "material": "gridfin",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "shroud_grid_fin_15",
+   "type": "box",
+   "size": [
+    0.9,
+    1.1,
+    0.15
+   ],
+   "position": [
+    1.3789,
+    -1.3789,
+    14.353
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    -0.382683
+   ],
+   "material": "gridfin",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "upper_tank_5",
+    "fairing_7",
+    "fairing_8",
+    "fairing_9",
+    "fairing_10"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Wikipedia 'Soyuz-2': core (Block A) 2.95 m x 27.1 m, four tapered boosters 2.68 m x 19.6 m, Block I 2.66 m x 6.7 m on an open truss, 46 m with escape tower; RD-107A / RD-108A four chambers each"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey",
+    "nozzle",
+    "soot",
+    "gridfin",
+    "lattice"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside; gridfin: titanium / steel grid fins: an open lattice; lattice: an open truss interstage (Soyuz Block A / Block I)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
 }

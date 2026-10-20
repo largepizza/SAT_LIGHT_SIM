@@ -470,6 +470,54 @@ const std::vector<SatMaterial> &satMaterialPresetsBase()
     return presets;
 }
 
+
+// ── Profile and fin geometry (2026-10-19, rocket models) ──────────────────────────────────────
+void satFinCorners(const SatFinShape &f, glm::dvec3 out[12])
+{
+    const double t0 = f.thickness, t1 = f.tipThickness >= 0.0f ? f.tipThickness : f.thickness * f.tipChord / f.rootChord;
+    for (int end = 0; end < 2; ++end)
+    {
+        const double x = end ? f.span : 0.0;
+        const double c = end ? f.tipChord : f.rootChord;
+        const double zLE = end ? 0.5 * f.rootChord - f.sweep : 0.5 * f.rootChord;
+        const double zTE = zLE - c, b = f.bevel * c, t = 0.5 * (end ? t1 : t0);
+        glm::dvec3 *o = out + 6 * end;
+        o[0] = {x, 0.0, zLE};
+        o[1] = {x, t, zLE - b};
+        o[2] = {x, t, zTE + b};
+        o[3] = {x, 0.0, zTE};
+        o[4] = {x, -t, zTE + b};
+        o[5] = {x, -t, zLE - b};
+    }
+}
+
+bool satProfileInArc(const SatComponent &c, double phi)
+{
+    if (c.arcMaterial < 0)
+        return false;
+    const double w = c.arcDeg.y - c.arcDeg.x;
+    if (w >= 360.0)
+        return true;
+    const double d = std::fmod(glm::degrees(phi) - c.arcDeg.x + 3600.0, 360.0);
+    return d < w;
+}
+
+std::vector<double> satProfileAzimuths(const SatComponent &c, int n)
+{
+    std::vector<double> a;
+    for (int i = 0; i <= n; ++i)
+        a.push_back(2.0 * kPi * i / n);
+    if (c.arcMaterial >= 0 && c.arcDeg.y - c.arcDeg.x < 360.0)
+        for (float e : {c.arcDeg.x, c.arcDeg.y})
+            a.push_back(std::fmod(glm::radians((double)e) + 20.0 * kPi, 2.0 * kPi));
+    std::sort(a.begin(), a.end());
+    std::vector<double> u;
+    for (double v : a)
+        if (u.empty() || v - u.back() > 1e-6)
+            u.push_back(v);
+    return u;
+}
+
 // ── Model loader ──────────────────────────────────────────────────────────────────────────────
 bool loadSatModel(const std::string &path, const std::string &id, SatModel &out, std::string &err,
                   std::vector<std::string> &warn)
@@ -550,9 +598,11 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                     m.pattern = kPatternPanelSeams;
                 else if (pat == "truss")
                     m.pattern = kPatternTruss;
+                else if (pat == "hex_tiles")
+                    m.pattern = kPatternHexTiles;
                 else
                     warn.push_back("material '" + m.name + "': unknown pattern '" + pat +
-                                   "' (none|solar_cells|mli|panel_seams|truss)");
+                                   "' (none|solar_cells|mli|panel_seams|truss|hex_tiles)");
             }
             matLib[m.name] = m;
             out.localMaterials.push_back(m.name);
@@ -657,6 +707,58 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                 c.prim = PrimitiveKind::Sphere;
                 c.radius = jc.at("radius").get<float>();
             }
+            else if (type == "profile")
+            {
+                c.prim = PrimitiveKind::Profile;
+                for (const auto &jp : jc.at("profile"))
+                    c.profile.push_back({jp.at(0).get<float>(), std::max(0.0f, jp.at(1).get<float>())});
+                if (c.profile.size() < 2)
+                    throw std::runtime_error("component '" + c.name + "': a profile needs two or more [z, r] points");
+                float zLo = 1e30f, zHi = -1e30f;
+                for (const glm::vec2 &q : c.profile)
+                {
+                    zLo = std::min(zLo, q.x);
+                    zHi = std::max(zHi, q.x);
+                }
+                if (!(zHi - zLo > 1e-4f))
+                    throw std::runtime_error("component '" + c.name + "': a profile must span some height");
+                const float zMid = 0.5f * (zLo + zHi);
+                for (glm::vec2 &q : c.profile)
+                    q.x -= zMid;
+                c.profileShift = zMid; // added to `position` along the local Z once the rotation is known
+                c.height = zHi - zLo;
+                c.radius = c.profile.front().y;
+                c.radiusTop = c.profile.back().y;
+                if (c.profile.front().x > c.profile.back().x)
+                    std::swap(c.radius, c.radiusTop);
+                c.caps = false;
+                if (jc.contains("caps"))
+                {
+                    const auto &jcap = jc["caps"];
+                    if (jcap.is_boolean())
+                        c.profileCaps = jcap.get<bool>() ? 3 : 0;
+                    else
+                    {
+                        const std::string cs = jcap.get<std::string>();
+                        c.profileCaps = cs == "bottom" ? 1 : cs == "top" ? 2 : cs == "both" ? 3 : 0;
+                    }
+                }
+                c.caps = c.profileCaps != 0;
+            }
+            else if (type == "fin")
+            {
+                c.prim = PrimitiveKind::Fin;
+                SatFinShape &f = c.fin;
+                f.rootChord = jc.at("root_chord").get<float>();
+                f.tipChord = jc.value("tip_chord", f.rootChord);
+                f.span = jc.at("span").get<float>();
+                f.sweep = jc.value("sweep", 0.0f);
+                f.thickness = jc.value("thickness", 0.05f * f.rootChord);
+                f.tipThickness = jc.value("tip_thickness", -1.0f);
+                f.bevel = std::clamp(jc.value("bevel", f.bevel), 0.0f, 0.45f);
+                if (!(f.rootChord > 0.0f && f.tipChord >= 0.0f && f.span > 0.0f && f.thickness > 0.0f))
+                    throw std::runtime_error("component '" + c.name + "': a fin needs root_chord, span, thickness > 0");
+            }
             else
                 throw std::runtime_error("component '" + c.name + "': unknown type '" + type + "'");
 
@@ -674,6 +776,21 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                 glm::vec3 e = glm::radians(jsonVec3(jc, "rotation_deg", glm::vec3(0.0f)));
                 c.rotation = glm::angleAxis(e.x, glm::vec3(1, 0, 0)) * glm::angleAxis(e.y, glm::vec3(0, 1, 0)) *
                              glm::angleAxis(e.z, glm::vec3(0, 0, 1));
+            }
+            if (c.prim == PrimitiveKind::Profile)
+            {
+                c.position += glm::mat3_cast(c.rotation) * glm::vec3(0.0f, 0.0f, c.profileShift);
+                c.profileShift = 0.0f;
+                if (jc.contains("arc_material"))
+                {
+                    c.arcMaterial = materialRef(jc["arc_material"].get<std::string>());
+                    const auto &ja = jc.at("arc_deg");
+                    c.arcDeg = {ja.at(0).get<float>(), ja.at(1).get<float>()};
+                    if (!(c.arcDeg.y > c.arcDeg.x))
+                        throw std::runtime_error("component '" + c.name + "': arc_deg must be [start, end], end > start");
+                }
+                if (jc.contains("inner_material"))
+                    c.innerMaterial = materialRef(jc["inner_material"].get<std::string>());
             }
             c.material = materialRef(jc.at("material").get<std::string>());
             c.backMaterial = jc.contains("back_material") ? materialRef(jc["back_material"].get<std::string>()) : -1;
@@ -843,6 +960,70 @@ void tessSphere(TriSink &s, double r, int mat)
     }
     s.spread2 = 0.0;
 }
+// Body of revolution from the meridian (z, r): one frustum band per polyline segment, the azimuths
+// of satProfileAzimuths (32 steps + the arc material's edges). Optional flat end caps.
+void tessProfile(TriSink &s, const SatComponent &c)
+{
+    const std::vector<double> az = satProfileAzimuths(c, 32);
+    const auto &P = c.profile;
+    for (size_t i = 0; i + 1 < P.size(); ++i)
+    {
+        const double z0 = P[i].x, r0 = P[i].y, z1 = P[i + 1].x, r1 = P[i + 1].y;
+        if (r0 < 1e-9 && r1 < 1e-9)
+            continue;
+        const double dz = z1 - z0, dr = r1 - r0;
+        for (size_t k = 0; k + 1 < az.size(); ++k)
+        {
+            const double a0 = az[k], a1 = az[k + 1], am = 0.5 * (a0 + a1), dphi = a1 - a0;
+            const int mat = satProfileInArc(c, am) ? c.arcMaterial : c.material;
+            glm::dvec3 d0(std::cos(a0), std::sin(a0), 0), d1(std::cos(a1), std::sin(a1), 0);
+            glm::dvec3 out(dz * std::cos(am), dz * std::sin(am), -dr);
+            s.spread2 = dphi * dphi / 12.0;
+            s.quad(d0 * r0 + glm::dvec3(0, 0, z0), d1 * r0 + glm::dvec3(0, 0, z0), d1 * r1 + glm::dvec3(0, 0, z1),
+                   d0 * r1 + glm::dvec3(0, 0, z1), out, mat);
+        }
+    }
+    s.spread2 = 0.0;
+    if (!c.profileCaps)
+        return;
+    const double dir = P.back().x > P.front().x ? 1.0 : -1.0;
+    for (int end = 0; end < 2; ++end)
+    {
+        const glm::vec2 q = end ? P.back() : P.front();
+        const bool upper = (end == 1) == (dir > 0.0); // this end is the higher-z one
+        if (q.y <= 1e-6f || !(c.profileCaps & (upper ? 2 : 1)))
+            continue;
+        const glm::dvec3 n(0, 0, end ? dir : -dir);
+        for (size_t k = 0; k + 1 < az.size(); ++k)
+        {
+            glm::dvec3 d0(std::cos(az[k]), std::sin(az[k]), 0), d1(std::cos(az[k + 1]), std::sin(az[k + 1]), 0);
+            const glm::dvec3 zc(0, 0, q.x);
+            s.tri(zc, d0 * (double)q.y + zc, d1 * (double)q.y + zc, n, c.material);
+        }
+    }
+}
+
+// The fin's prism: six side bands root to tip (each split in two triangles: a tapering bevel band is not
+// planar), and the two hexagonal end faces.
+void tessFin(TriSink &s, const SatFinShape &f, int mat, int backMat)
+{
+    glm::dvec3 p[12];
+    satFinCorners(f, p);
+    for (int k = 0; k < 6; ++k)
+    {
+        const int k1 = (k + 1) % 6;
+        // Outward in the section plane: the hexagon runs LE -> upper -> TE -> lower; rotate the edge
+        // (dz, dy) to (y = -dz, z = dy).
+        const glm::dvec3 e = (p[k1] - p[k]) + (p[6 + k1] - p[6 + k]);
+        const glm::dvec3 out(0.0, -e.z, e.y);
+        const int m = out.y < 0.0 ? backMat : mat; // the -Y side may be another material (a flap's tiled face)
+        s.tri(p[k], p[k1], p[6 + k1], out, m);
+        s.tri(p[k], p[6 + k1], p[6 + k], out, m);
+    }
+    for (int end = 0; end < 2; ++end)
+        for (int k = 1; k + 1 < 6; ++k)
+            s.tri(p[6 * end], p[6 * end + k], p[6 * end + k + 1], glm::dvec3(end ? 1.0 : -1.0, 0, 0), mat);
+}
 } // namespace
 
 std::vector<SatTri> tessellateSatModel(const SatModel &m)
@@ -902,6 +1083,12 @@ std::vector<SatTri> tessellateSatModel(const SatModel &m)
             break;
         case PrimitiveKind::Sphere:
             tessSphere(s, c.radius, c.material);
+            break;
+        case PrimitiveKind::Profile:
+            tessProfile(s, c);
+            break;
+        case PrimitiveKind::Fin:
+            tessFin(s, c.fin, c.material, c.backMaterial >= 0 ? c.backMaterial : c.material);
             break;
         }
         // Open lattice (SatMaterial::coverage < 1): each facet counts `coverage` of its area; a closed
@@ -1214,10 +1401,13 @@ std::vector<glm::dvec3> occluderPoints(const SatOccluder &o)
 {
     std::vector<glm::dvec3> pts;
     const double hz = o.kind == PrimitiveKind::Plane ? 0.0 : o.half.z;
+    double hx = o.half.x, hy = o.half.y;
+    if (o.kind == PrimitiveKind::Profile) // a frustum: (r0, r1, hz) — its bounding box takes the larger radius
+        hx = hy = std::max(o.half.x, o.half.y);
     for (int sx = -1; sx <= 1; sx += 2)
         for (int sy = -1; sy <= 1; sy += 2)
             for (int sz = -1; sz <= 1; sz += 2)
-                pts.push_back(o.center + o.axes * glm::dvec3(sx * o.half.x, sy * o.half.y, sz * hz));
+                pts.push_back(o.center + o.axes * glm::dvec3(sx * hx, sy * hy, sz * hz));
     return pts;
 }
 
@@ -1291,6 +1481,46 @@ bool rayHitsOccluder(const SatOccluder &o, glm::dvec3 org, glm::dvec3 dir)
             }
         return false;
     }
+    case PrimitiveKind::Profile: // exact frustum: radius r0 at z = -hz, r1 at +hz
+    {
+        const double r0 = o.half.x, r1 = o.half.y, hh = o.half.z;
+        const double rm = 0.5 * (r0 + r1), k = (r1 - r0) / (2.0 * std::max(hh, 1e-12));
+        const double q = rm + k * org.z, kd = k * dir.z;
+        const double a = dir.x * dir.x + dir.y * dir.y - kd * kd;
+        const double b = 2.0 * (org.x * dir.x + org.y * dir.y - q * kd);
+        const double c = org.x * org.x + org.y * org.y - q * q;
+        auto sideOk = [&](double t) {
+            const double z = org.z + t * dir.z;
+            return t > tMin && std::abs(z) <= hh && rm + k * z >= 0.0;
+        };
+        if (std::abs(a) > 1e-15)
+        {
+            const double disc = b * b - 4.0 * a * c;
+            if (disc >= 0.0)
+            {
+                const double sq = std::sqrt(disc);
+                if (sideOk((-b - sq) / (2.0 * a)) || sideOk((-b + sq) / (2.0 * a)))
+                    return true;
+            }
+        }
+        else if (std::abs(b) > 1e-15 && sideOk(-c / b))
+            return true;
+        if (std::abs(dir.z) > 1e-15)
+            for (int e = 0; e < 2; ++e)
+            {
+                const double zc = e ? hh : -hh, rc = e ? r1 : r0;
+                const double t = (zc - org.z) / dir.z;
+                if (t > tMin)
+                {
+                    const glm::dvec3 p = org + t * dir;
+                    if (p.x * p.x + p.y * p.y <= rc * rc)
+                        return true;
+                }
+            }
+        return false;
+    }
+    case PrimitiveKind::Fin: // never an occluder kind (its occluder is a Box)
+        return false;
     case PrimitiveKind::Sphere:
     {
         const double r = o.half.x;
@@ -1369,6 +1599,24 @@ SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tri
             break;
         }
         case PrimitiveKind::Sphere: o.half = glm::dvec3(c.radius); break;
+        case PrimitiveKind::Profile: // the exact frustum through its end radii (kOccluderFrustum)
+            o.half = {c.radius, c.radiusTop, 0.5 * c.height};
+            break;
+        case PrimitiveKind::Fin: // its bounding box
+        {
+            glm::dvec3 p[12];
+            satFinCorners(c.fin, p);
+            glm::dvec3 lo(1e30), hi(-1e30);
+            for (const glm::dvec3 &q : p)
+            {
+                lo = glm::min(lo, q);
+                hi = glm::max(hi, q);
+            }
+            o.kind = PrimitiveKind::Box;
+            o.half = 0.5 * (hi - lo);
+            o.center += o.axes * (0.5 * (hi + lo));
+            break;
+        }
         }
         occ.occluders.push_back(o);
     }

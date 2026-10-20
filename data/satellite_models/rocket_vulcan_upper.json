@@ -1,165 +1,392 @@
 {
-    "name": "vulcan upper",
-    "note": "Launch vehicle render model (tools/make_rocket_models.py), vulcan: upper. Body frame: +Z toward the nose, origin at the aft end. Sizes are public figures rounded; liveries broad strokes; detail render-only.",
-    "materials": [
-        {
-            "name": "white",
-            "preset": "white_paint",
-            "pattern": "panel_seams"
-        },
-        {
-            "name": "black",
-            "preset": "black_paint"
-        },
-        {
-            "name": "steel",
-            "preset": "stainless_steel",
-            "pattern": "panel_seams"
-        },
-        {
-            "name": "tan",
-            "preset": "white_paint",
-            "diffuse_albedo": 0.45,
-            "color": [
-                0.86,
-                0.56,
-                0.33
-            ]
-        },
-        {
-            "name": "nozzle",
-            "preset": "aluminum",
-            "diffuse_albedo": 0.08,
-            "roughness": 0.3,
-            "color": [
-                0.4,
-                0.37,
-                0.35
-            ]
-        },
-        {
-            "name": "tiles",
-            "preset": "black_paint",
-            "roughness": 0.6
-        }
+ "name": "vulcan upper",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), vulcan: upper. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Shown as VC2 (two solids). Interstage adapter length estimated.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
     ],
-    "attitude_groups": [
-        {
-            "name": "body",
-            "primary": {
-                "axis": [
-                    0,
-                    0,
-                    1
-                ],
-                "target": "velocity"
-            },
-            "secondary": {
-                "axis": [
-                    0,
-                    -1,
-                    0
-                ],
-                "target": "nadir"
-            }
-        }
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
     ],
-    "components": [
-        {
-            "name": "upper_nozzle_0",
-            "type": "cone",
-            "radius_bottom": 2.025,
-            "radius_top": 0.675,
-            "height": 2.0,
-            "position": [
-                0.0,
-                0.0,
-                1.0
-            ],
-            "caps": true,
-            "material": "nozzle",
-            "group": "body"
-        },
-        {
-            "name": "upper_tank_1",
-            "type": "cylinder",
-            "radius": 2.7,
-            "height": 11.7,
-            "position": [
-                0,
-                0,
-                7.85
-            ],
-            "caps": true,
-            "material": "white",
-            "group": "body"
-        },
-        {
-            "name": "fairing_2",
-            "type": "cylinder",
-            "radius": 2.7,
-            "height": 9.0,
-            "position": [
-                0,
-                0,
-                18.2
-            ],
-            "caps": false,
-            "material": "white",
-            "group": "body"
-        },
-        {
-            "name": "fairing_nose_3",
-            "type": "cone",
-            "radius_bottom": 2.7,
-            "radius_top": 0.3,
-            "height": 6.5,
-            "position": [
-                0.0,
-                0.0,
-                25.95
-            ],
-            "caps": true,
-            "material": "white",
-            "group": "body"
-        }
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "upper_nozzle_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.55
     ],
-    "sources": [
-        {
-            "subject": "attitude",
-            "status": "estimate",
-            "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
-            "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
-        },
-        {
-            "subject": "body",
-            "status": "estimate",
-            "value": "one rigid group",
-            "source": "Render model; no moving parts."
-        },
-        {
-            "subjects": [
-                "upper_nozzle_0",
-                "upper_tank_1",
-                "fairing_2",
-                "fairing_nose_3"
-            ],
-            "status": "estimate",
-            "value": "rounded public dimensions (Wikipedia / operator pages), broad liveries",
-            "source": "tools/make_rocket_models.py VEHICLES table."
-        },
-        {
-            "subjects": [
-                "white",
-                "black",
-                "steel",
-                "tan",
-                "nozzle",
-                "tiles"
-            ],
-            "status": "estimate",
-            "value": "presets: white paint, black paint, stainless, tan foam, dark nozzles, black tiles",
-            "source": "Liveries from photographs; reflectance from the presets."
-        }
+    [
+     0.2607,
+     0.4562
+    ],
+    [
+     0.5213,
+     0.3747
+    ],
+    [
+     0.782,
+     0.3063
+    ],
+    [
+     1.0427,
+     0.2524
+    ],
+    [
+     1.3033,
+     0.2147
+    ],
+    [
+     1.564,
+     0.198
+    ],
+    [
+     1.748,
+     0.3069
+    ],
+    [
+     2.1528,
+     0.3069
+    ],
+    [
+     2.3,
+     0.1841
+    ],
+    [
+     2.35,
+     0.0
     ]
+   ],
+   "position": [
+    0.9,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_nozzle_1",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.55
+    ],
+    [
+     0.2607,
+     0.4562
+    ],
+    [
+     0.5213,
+     0.3747
+    ],
+    [
+     0.782,
+     0.3063
+    ],
+    [
+     1.0427,
+     0.2524
+    ],
+    [
+     1.3033,
+     0.2147
+    ],
+    [
+     1.564,
+     0.198
+    ],
+    [
+     1.748,
+     0.3069
+    ],
+    [
+     2.1528,
+     0.3069
+    ],
+    [
+     2.3,
+     0.1841
+    ],
+    [
+     2.35,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.9,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_2",
+   "type": "profile",
+   "profile": [
+    [
+     1.8,
+     2.7
+    ],
+    [
+     13.5,
+     2.7
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_3",
+   "type": "profile",
+   "profile": [
+    [
+     1.75,
+     2.646
+    ],
+    [
+     1.79,
+     2.646
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "fairing_4",
+   "type": "profile",
+   "profile": [
+    [
+     13.52,
+     2.7
+    ],
+    [
+     23.0,
+     2.7
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_5",
+   "type": "profile",
+   "profile": [
+    [
+     23.0,
+     2.7
+    ],
+    [
+     23.6177,
+     2.6762
+    ],
+    [
+     24.2188,
+     2.6068
+    ],
+    [
+     24.8021,
+     2.4948
+    ],
+    [
+     25.3663,
+     2.3428
+    ],
+    [
+     25.7,
+     2.2264
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_6",
+   "type": "profile",
+   "profile": [
+    [
+     25.7,
+     2.2264
+    ],
+    [
+     25.9096,
+     2.1533
+    ],
+    [
+     26.4301,
+     1.9291
+    ],
+    [
+     26.9251,
+     1.6734
+    ],
+    [
+     27.3911,
+     1.3904
+    ],
+    [
+     27.8232,
+     1.0868
+    ],
+    [
+     28.2135,
+     0.7732
+    ],
+    [
+     28.5474,
+     0.4706
+    ],
+    [
+     28.7758,
+     0.2427
+    ],
+    [
+     28.8099,
+     0.2014
+    ],
+    [
+     28.8373,
+     0.1553
+    ],
+    [
+     28.8573,
+     0.1056
+    ],
+    [
+     28.8696,
+     0.0534
+    ],
+    [
+     28.8737,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "upper_tank_2",
+    "fairing_4",
+    "fairing_5",
+    "fairing_6"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "ULA Vulcan Centaur page / User's Guide (2023): 5.4 m booster 33.3 m, Centaur V 11.7 m, GEM 63XL 1.6 m x 22 m, 5.4 m fairing 15.5 m (standard) | Wikipedia 'Vulcan Centaur': 2 BE-4, 2 RL10C-X, 0/2/4/6 GEM 63XL"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey",
+    "nozzle",
+    "soot"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
 }

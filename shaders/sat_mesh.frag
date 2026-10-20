@@ -131,6 +131,39 @@ bool rayHitsOccluder(uint kind, vec3 hf, vec3 org, vec3 dir)
         }
         return tNear <= tFar && tFar > tMin;
     }
+    if (kind == 5u) { // exact cone frustum (a Profile): radius hf.x at z = -hf.z, hf.y at +hf.z
+        float hh = hf.z, rm = 0.5 * (hf.x + hf.y), k = (hf.y - hf.x) / (2.0 * max(hh, 1e-9));
+        float q = rm + k * org.z, kd = k * dir.z;
+        float a = dot(dir.xy, dir.xy) - kd * kd;
+        float b = 2.0 * (dot(org.xy, dir.xy) - q * kd);
+        float c = dot(org.xy, org.xy) - q * q;
+        float ts[2] = float[2](-1.0, -1.0);
+        if (abs(a) > 1e-12) {
+            float disc = b * b - 4.0 * a * c;
+            if (disc >= 0.0) {
+                float sq = sqrt(disc);
+                ts[0] = (-b - sq) / (2.0 * a);
+                ts[1] = (-b + sq) / (2.0 * a);
+            }
+        } else if (abs(b) > 1e-12) {
+            ts[0] = -c / b;
+        }
+        for (int i = 0; i < 2; ++i) {
+            float z = org.z + ts[i] * dir.z;
+            if (ts[i] > tMin && abs(z) <= hh && rm + k * z >= 0.0) return true;
+        }
+        if (abs(dir.z) > 1e-12) {
+            for (int e = 0; e < 2; ++e) {
+                float rc = e == 0 ? hf.x : hf.y;
+                float t = ((e == 0 ? -hh : hh) - org.z) / dir.z;
+                if (t > tMin) {
+                    vec2 p = org.xy + t * dir.xy;
+                    if (dot(p, p) <= rc * rc) return true;
+                }
+            }
+        }
+        return false;
+    }
     if (kind == 4u) {
         float b = dot(org, dir), c = dot(org, org) - hf.x * hf.x;
         float disc = b * b - c;
@@ -168,7 +201,7 @@ bool rayBlocked(MeshInstance inst, vec3 p, vec3 dir)
     for (uint i = 0u; i < inst.occluderCount; ++i) {
         if (i == vComponent) continue;
         MeshOccluder O = occluders[inst.firstOccluder + i];
-        if (O.kind > 4u) continue; // 0xFF: an open lattice (truss) — light passes between its members
+        if (O.kind > 5u) continue; // 0xFF: an open lattice (truss) — light passes between its members
         mat3 R = instGroupRot(inst, O.group);
         vec3 pr = transpose(R) * (p - inst.origin.xyz - inst.trans[O.group].xyz -
                                   instPivotOffset(inst, O.group, i)) - O.center; // occluder i = component i
@@ -296,6 +329,37 @@ Surface applyPattern(MeshMaterial mat, MeshInstance inst, vec3 N)
         const float mSeam = 0.4;
         float sFrac = 1.0 - (1.0 - w) * (1.0 - w);
         s.albedoM = mix((1.0 - sFrac * mSeam) / (1.0 - sFrac), mSeam, seam);
+    } else if (mat.pattern == 5u) {
+        // Heat-shield tiles (Starship-style): hexagons 0.31 m across the flats in staggered rows, 6 mm gaps
+        // showing the lighter felt under them, each tile a little darker or lighter than the next and ~1.5%
+        // pale replacement tiles; each tile ~0.6 deg off the surface. Mean-preserving: tile factors average 1
+        // over the population, the gaps' share is taken out of the tiles' level; fades to the plain material
+        // once a tile is under ~3 pixels.
+        const float tileP = 0.31;                    // across the flats, metres
+        vec2  q  = vUv / tileP;
+        const vec2 hs = vec2(1.0, 1.7320508);
+        vec4  hc = floor(vec4(q, q - vec2(0.5, 1.0)) / hs.xyxy) + 0.5;
+        vec4  h  = vec4(q - hc.xy * hs, q - (hc.zw + 0.5) * hs);
+        bool  firstSet = dot(h.xy, h.xy) < dot(h.zw, h.zw);
+        vec2  lq = firstSet ? h.xy : h.zw;
+        vec2  id = firstSet ? hc.xy : hc.zw + 0.5;
+        vec2  aq = abs(lq);
+        float edge = 0.5 - max(dot(aq, vec2(0.5, 0.8660254)), aq.x); // distance to the tile's edge, tiles
+        const float g = 0.003 / tileP;               // half the gap, tiles
+        float fw = max(length(fwUv) / tileP, 1e-5);
+        float gap = 1.0 - smoothstep(g - 0.5 * fw, g + 0.5 * fw, edge);
+        const float gFrac = 4.0 * g;                 // the gap band's share of a hexagon's area
+        const float mGap = 6.0;                      // the felt between tiles: off-white under black tiles
+        float mTile = (1.0 - gFrac * mGap) / (1.0 - gFrac);
+        vec3  hr = hash3(uvec3(ivec3(ivec2(floor(id * 2.0)) + ivec2(16384), 7)));
+        bool  pale = hr.x < 0.015;
+        float shade = pale ? 2.5 : 1.0 + 0.5 * (hr.y - 0.5);
+        shade /= 1.0225;                             // the population mean (pale tiles included) is 1
+        float resolve = clamp((tileP - 3.0 * max(fwUv.x, fwUv.y)) / (3.0 * max(fwUv.x, fwUv.y) + 1e-6), 0.0, 1.0);
+        float m = mix(mTile * shade, mGap, gap);
+        s.albedoM = mix(1.0, m, resolve);
+        s.tint = mix(mix(mat.color, vec3(0.62, 0.62, 0.60), pale ? 1.0 - gap : 0.0), vec3(0.55, 0.53, 0.50), gap * resolve);
+        s.N = jitterNormal(N, R, ivec2(floor(id * 2.0)), 0.011 * resolve);
     }
     return s;
 }

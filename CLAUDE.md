@@ -2804,6 +2804,22 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   exactly; beyond `kSatLobeBudget` (48) same-group lobes merge agglomeratively with the lost normal
   spread folded into α². Curved facets carry an intrinsic spread ((Δφ)²/12, Ω/2π) so a faceted
   cylinder glints as a band, not N mirrors.
+- **Profile and fin primitives (2026-10-19, rocket models).** `"type": "profile"` is a body of revolution about
+  local Z from a meridian polyline `"profile": [[z, r], ...]` (ogive noses, domes, fairings, bells; listed bottom to
+  top along the OUTSIDE so the normals point out); recentred at load so it spans ±height/2 about `position`
+  (`radius` / `radiusTop` = the end radii, which engineGeomOf reads as an engine's exit). Options: `"caps"` (flat end
+  discs, default off), `"arc_material"` + `"arc_deg": [start, end]` (a second material over an azimuth range from
+  local +X toward +Y — Starship's heat shield; the boundaries are inserted into the tessellation), `"inner_material"`
+  (the inside drawn too, render mesh only: an open bell). Photometry: 32 azimuths × the polyline's bands; the render
+  mesh ~0.3-m facets (12 to 2× the base count), smooth normals except at creases > 35°. Its occluder is the EXACT
+  cone frustum through its end radii (occluder kind 5 = `kOccluderFrustum`, in SatModel.cpp, sat_orbit.comp,
+  sat_mesh.frag and SatModelTool's GPU-form mirror) — inscribed in an ogive, so a flap on a nose is not shadowed by a
+  bounding cylinder. Keep neighbouring meridian segments > 0.5° apart in slope (or equal): the exact lobe merge
+  joins normals within 0.5° and the selftest's exact-bake gate (1e-3 mag) fails. `"type": "fin"`: a tapered,
+  swept, thick fin (`root_chord`, `tip_chord`, `span` along local +X, `sweep` = the tip leading edge's offset aft of
+  the root's, `thickness` / `tip_thickness` along local Y, `bevel` = the share of the chord over which each edge
+  thins to a knife edge); root chord on the local Z axis centred at the origin, leading edge toward +Z;
+  `back_material` paints the faces toward local -Y (a flap's tiled windward side). Occluder: its bounding box.
 - **Reflectance** (`modelFlux()` in `sat_orbit.comp`): per lobe Lambert + GGX/Schlick/Smith (or
   Beckmann, per material: `"distribution": "beckmann"`, `GpuSatLobe::distribution`); the
   sun's disk is folded into every lobe as `SUN_ALPHA` = 0.0023, which reproduces a flat mirror's
@@ -3229,7 +3245,10 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     become the right fraction of pixels with the far side's inner faces behind them. Quad UVs now
     start at a face corner, so bays and cell modules start at an edge.
   - **Procedural surface detail** (`SatMaterial::pattern`, JSON `"pattern"`: none / solar_cells / mli
-    / panel_seams; -1 = from the preset — `solar_cell` → cells, `mli_foil` → crinkle). Visual only and
+    / panel_seams / truss / hex_tiles; -1 = from the preset — `solar_cell` → cells, `mli_foil` → crinkle).
+    `hex_tiles` (2026-10-19, Starship's heat shield): 0.31-m hexagons, 6-mm off-white felt gaps (x6 albedo), each tile
+    ±25% in shade with 1.5% pale replacement tiles, ~0.6° of normal jitter; fades to the plain material below ~3 px a
+    tile. Visual only and
     **photometrically neutral**: each pattern scales albedo by a factor with area mean 1, leaves the
     specular alone, and is an exact box filter (`lineCover`/`gridCover`) so it keeps
     its mean at any distance. Each pattern has structure you can see with the whole model in frame:
@@ -4324,10 +4343,20 @@ launches follow per-program cadences (no real manifest).
   first cut) spun the booster ~340 deg/s after an RTLS boostback, where engines-first and the thrust point opposite
   ways; before that the axis switched instantly at staging and for the deorbit burn.
 - **Rocket meshes** (2026-10-19): `tools/make_rocket_models.py` writes `rocket_<vehicle>_{stack,booster,upper}.json`
-  (13 vehicles; +Z toward the nose, origin at the aft end = the track point; one group, +Z on the "velocity"
-  target, -Y (the ship's heat shield) toward nadir; grid fins, legs, flaps, heat shield, engine bells and
-  interstage sleeves render-only: a separate interstage cylinder on the core's cap was a coincident surface that
-  broke the occlusion samples). Loaded at startup as extra types like the debris kit (`rocketTypes`; the accuracy
+  (16 vehicles; +Z toward the nose, origin at the aft end of the body = the track point, engine bells below it; one
+  group, +Z on the "velocity" target, -Y (the ship's heat shield) toward nadir). Reworked the same day against
+  references (issue 20261019_181320; each model's `sources` cite them): bodies, noses (tangent ogives with blunt tips),
+  fairings, strap-ons (Soyuz's tapered cones leaning onto the core) and bells are PROFILES, flaps / fins / strakes
+  FINS; Starship's ship is a 38.6-m barrel + a 13.5-m ogive with the windward half (arc 176-364 deg) in `tiles`
+  (`hex_tiles`), tapered aft flaps (straight trailing edge) and forward flaps shifted leeward (20 / 160 deg) on the
+  nose's slope; Super Heavy 72.3 m with the integrated hot-staging ring, three grid fins (Block 3) and 33 Raptors
+  3 / 10 / 20; the ship 3 sea-level + 3 RVac. EVERY engine is its own render-only bell (open, sooty inside) named
+  `engines_*` / `upper_nozzle_*` / `side_nozzle_*`: engineGeomOf takes the lowest exit and the radius the bells span
+  (profiles count, the exit at their bottom), so the flame grows out of the actual engine cluster. Grid fins use the
+  `gridfin` lattice material (stowed folded up on Falcon 9's stack, deployed on its booster). Photometric: the bodies,
+  tanks, fairings, capsules, strap-ons and Starship's flaps; detail (bells, grid fins, legs, bands, chines, raceways,
+  escape towers, the hot-staging ring) is render-only. Interstage sleeves stay render-only: a separate interstage
+  cylinder on the core's cap was a coincident surface that broke the occlusion samples. Loaded at startup as extra types like the debris kit (`rocketTypes`; the accuracy
   gate only loads and validates them, `cmake/AccuracyGate.cmake`: their selftest took ~2.5 min). Each listed rocket
   transient carries its stage's type and its BODY AXIS (`SelTransient::axis`): the Earth-fixed velocity on the
   track (in ECI the pad's rotation tilts a rising rocket), up on the pad, engines first for a booster after

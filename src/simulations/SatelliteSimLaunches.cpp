@@ -1052,15 +1052,20 @@ static glm::dvec3 engineGeomOf(const SatelliteType &ty)
     if (ty.model)
         for (const SatComponent &c : ty.model->components)
         {
-            const double hz = c.prim == PrimitiveKind::Cone || c.prim == PrimitiveKind::Cylinder ? 0.5 * c.height : 0.0;
+            const bool revolved = c.prim == PrimitiveKind::Cone || c.prim == PrimitiveKind::Cylinder ||
+                                  c.prim == PrimitiveKind::Profile;
+            const double hz = revolved ? 0.5 * c.height : 0.0;
             zMin = std::min(zMin, (double)c.position.z - hz);
             zMax = std::max(zMax, (double)c.position.z + hz);
             const double rxy = std::sqrt((double)c.position.x * c.position.x + (double)c.position.y * c.position.y);
             if (c.prim == PrimitiveKind::Cylinder)
                 rBody = std::max(rBody, rxy + c.radius);
+            if (c.prim == PrimitiveKind::Profile)
+                for (const glm::vec2 &q : c.profile)
+                    rBody = std::max(rBody, rxy + (double)q.y);
             const bool eng = c.name.rfind("engines", 0) == 0 || c.name.rfind("upper_nozzle", 0) == 0 ||
                              c.name.rfind("side_nozzle", 0) == 0;
-            if (eng && c.prim == PrimitiveKind::Cone)
+            if (eng && (c.prim == PrimitiveKind::Cone || c.prim == PrimitiveKind::Profile)) // the exit at the bottom
             {
                 zExit = std::min(zExit, (double)c.position.z - hz);
                 rExit = std::max(rExit, rxy + c.radius);

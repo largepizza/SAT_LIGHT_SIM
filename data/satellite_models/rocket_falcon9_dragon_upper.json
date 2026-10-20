@@ -1,181 +1,542 @@
 {
-    "name": "falcon9_dragon upper",
-    "note": "Launch vehicle render model (tools/make_rocket_models.py), falcon9_dragon: upper. Body frame: +Z toward the nose, origin at the aft end. Sizes are public figures rounded; liveries broad strokes; detail render-only.",
-    "materials": [
-        {
-            "name": "white",
-            "preset": "white_paint",
-            "pattern": "panel_seams"
-        },
-        {
-            "name": "black",
-            "preset": "black_paint"
-        },
-        {
-            "name": "steel",
-            "preset": "stainless_steel",
-            "pattern": "panel_seams"
-        },
-        {
-            "name": "tan",
-            "preset": "white_paint",
-            "diffuse_albedo": 0.45,
-            "color": [
-                0.86,
-                0.56,
-                0.33
-            ]
-        },
-        {
-            "name": "nozzle",
-            "preset": "aluminum",
-            "diffuse_albedo": 0.08,
-            "roughness": 0.3,
-            "color": [
-                0.4,
-                0.37,
-                0.35
-            ]
-        },
-        {
-            "name": "tiles",
-            "preset": "black_paint",
-            "roughness": 0.6
-        }
+ "name": "falcon9_dragon upper",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), falcon9_dragon: upper. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Capsule side-wall angle and nosecone shape from photographs.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  },
+  {
+   "name": "cells",
+   "preset": "solar_cell"
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
     ],
-    "attitude_groups": [
-        {
-            "name": "body",
-            "primary": {
-                "axis": [
-                    0,
-                    0,
-                    1
-                ],
-                "target": "velocity"
-            },
-            "secondary": {
-                "axis": [
-                    0,
-                    -1,
-                    0
-                ],
-                "target": "nadir"
-            }
-        }
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
     ],
-    "components": [
-        {
-            "name": "upper_nozzle_0",
-            "type": "cone",
-            "radius_bottom": 1.3725,
-            "radius_top": 0.4575,
-            "height": 3.0,
-            "position": [
-                0.0,
-                0.0,
-                1.5
-            ],
-            "caps": true,
-            "material": "nozzle",
-            "group": "body"
-        },
-        {
-            "name": "upper_tank_1",
-            "type": "cylinder",
-            "radius": 1.83,
-            "height": 9.4,
-            "position": [
-                0,
-                0,
-                7.7
-            ],
-            "caps": true,
-            "material": "white",
-            "group": "body"
-        },
-        {
-            "name": "fairing_boattail_2",
-            "type": "cone",
-            "radius_bottom": 1.83,
-            "radius_top": 2.0,
-            "height": 0.436,
-            "position": [
-                0.0,
-                0.0,
-                12.618
-            ],
-            "caps": true,
-            "material": "white",
-            "group": "body"
-        },
-        {
-            "name": "fairing_3",
-            "type": "cylinder",
-            "radius": 2.0,
-            "height": 2.8,
-            "position": [
-                0,
-                0,
-                14.236
-            ],
-            "caps": false,
-            "material": "white",
-            "group": "body"
-        },
-        {
-            "name": "fairing_nose_4",
-            "type": "cone",
-            "radius_bottom": 2.0,
-            "radius_top": 0.3,
-            "height": 4.6,
-            "position": [
-                0.0,
-                0.0,
-                17.936
-            ],
-            "caps": true,
-            "material": "white",
-            "group": "body"
-        }
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "upper_nozzle_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     1.6
     ],
-    "sources": [
-        {
-            "subject": "attitude",
-            "status": "estimate",
-            "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
-            "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
-        },
-        {
-            "subject": "body",
-            "status": "estimate",
-            "value": "one rigid group",
-            "source": "Render model; no moving parts."
-        },
-        {
-            "subjects": [
-                "upper_nozzle_0",
-                "upper_tank_1",
-                "fairing_boattail_2",
-                "fairing_3",
-                "fairing_nose_4"
-            ],
-            "status": "estimate",
-            "value": "rounded public dimensions (Wikipedia / operator pages), broad liveries",
-            "source": "tools/make_rocket_models.py VEHICLES table."
-        },
-        {
-            "subjects": [
-                "white",
-                "black",
-                "steel",
-                "tan",
-                "nozzle",
-                "tiles"
-            ],
-            "status": "estimate",
-            "value": "presets: white paint, black paint, stainless, tan foam, dark nozzles, black tiles",
-            "source": "Liveries from photographs; reflectance from the presets."
-        }
+    [
+     0.4987,
+     1.3271
+    ],
+    [
+     0.9973,
+     1.09
+    ],
+    [
+     1.496,
+     0.8912
+    ],
+    [
+     1.9947,
+     0.7342
+    ],
+    [
+     2.4933,
+     0.6247
+    ],
+    [
+     2.992,
+     0.576
+    ],
+    [
+     3.344,
+     0.8928
+    ],
+    [
+     4.1184,
+     0.8928
+    ],
+    [
+     4.4,
+     0.5357
+    ],
+    [
+     4.45,
+     0.0
     ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_1",
+   "type": "profile",
+   "profile": [
+    [
+     3.7,
+     1.83
+    ],
+    [
+     13.1,
+     1.83
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_2",
+   "type": "profile",
+   "profile": [
+    [
+     3.65,
+     1.7934
+    ],
+    [
+     3.69,
+     1.7934
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "dragon_trunk_3",
+   "type": "profile",
+   "profile": [
+    [
+     13.12,
+     1.83
+    ],
+    [
+     16.8,
+     1.83
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "arc_material": "cells",
+   "arc_deg": [
+    200.0,
+    340.0
+   ],
+   "group": "body"
+  },
+  {
+   "name": "trunk_fin_4",
+   "type": "fin",
+   "root_chord": 2.0,
+   "tip_chord": 1.0,
+   "span": 0.7,
+   "sweep": 1.0,
+   "thickness": 0.1,
+   "bevel": 0.15,
+   "position": [
+    1.294,
+    1.294,
+    14.2
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    0.382683
+   ],
+   "material": "white",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "trunk_fin_5",
+   "type": "fin",
+   "root_chord": 2.0,
+   "tip_chord": 1.0,
+   "span": 0.7,
+   "sweep": 1.0,
+   "thickness": 0.1,
+   "bevel": 0.15,
+   "position": [
+    -1.294,
+    1.294,
+    14.2
+   ],
+   "rotation_quat": [
+    0.382683,
+    0.0,
+    0.0,
+    0.92388
+   ],
+   "material": "white",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "trunk_fin_6",
+   "type": "fin",
+   "root_chord": 2.0,
+   "tip_chord": 1.0,
+   "span": 0.7,
+   "sweep": 1.0,
+   "thickness": 0.1,
+   "bevel": 0.15,
+   "position": [
+    -1.294,
+    -1.294,
+    14.2
+   ],
+   "rotation_quat": [
+    -0.382683,
+    0.0,
+    0.0,
+    0.92388
+   ],
+   "material": "white",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "trunk_fin_7",
+   "type": "fin",
+   "root_chord": 2.0,
+   "tip_chord": 1.0,
+   "span": 0.7,
+   "sweep": 1.0,
+   "thickness": 0.1,
+   "bevel": 0.15,
+   "position": [
+    1.294,
+    -1.294,
+    14.2
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    -0.382683
+   ],
+   "material": "white",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "dragon_capsule_8",
+   "type": "profile",
+   "profile": [
+    [
+     16.82,
+     2.0
+    ],
+    [
+     17.05,
+     2.0
+    ],
+    [
+     19.75,
+     1.25
+    ],
+    [
+     19.95,
+     1.12
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "dragon_capsule_9",
+   "type": "profile",
+   "profile": [
+    [
+     19.95,
+     1.12
+    ],
+    [
+     20.2194,
+     1.0921
+    ],
+    [
+     20.4729,
+     1.0115
+    ],
+    [
+     20.708,
+     0.8794
+    ],
+    [
+     20.9204,
+     0.6921
+    ],
+    [
+     21.1022,
+     0.4383
+    ],
+    [
+     21.2264,
+     0.1194
+    ],
+    [
+     21.2316,
+     0.0958
+    ],
+    [
+     21.2357,
+     0.0721
+    ],
+    [
+     21.2386,
+     0.0481
+    ],
+    [
+     21.2403,
+     0.0241
+    ],
+    [
+     21.2409,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "dragon_heat_shield_10",
+   "type": "profile",
+   "profile": [
+    [
+     16.79,
+     1.98
+    ],
+    [
+     16.83,
+     1.98
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "superdraco_pod_11",
+   "type": "box",
+   "size": [
+    0.25,
+    0.6,
+    0.9
+   ],
+   "position": [
+    1.149,
+    1.149,
+    18.0
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    0.382683
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "superdraco_pod_12",
+   "type": "box",
+   "size": [
+    0.25,
+    0.6,
+    0.9
+   ],
+   "position": [
+    -1.149,
+    1.149,
+    18.0
+   ],
+   "rotation_quat": [
+    0.382683,
+    0.0,
+    0.0,
+    0.92388
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "superdraco_pod_13",
+   "type": "box",
+   "size": [
+    0.25,
+    0.6,
+    0.9
+   ],
+   "position": [
+    -1.149,
+    -1.149,
+    18.0
+   ],
+   "rotation_quat": [
+    -0.382683,
+    0.0,
+    0.0,
+    0.92388
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "superdraco_pod_14",
+   "type": "box",
+   "size": [
+    0.25,
+    0.6,
+    0.9
+   ],
+   "position": [
+    1.149,
+    -1.149,
+    18.0
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    -0.382683
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "upper_tank_1",
+    "dragon_trunk_3",
+    "dragon_capsule_8",
+    "dragon_capsule_9"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "SpaceX Dragon page: 8.1 m tall with trunk, 4 m across; trunk 3.7 m with body-mounted solar cells on half its circumference and four fins | Wikipedia 'Falcon 9 Block 5' / 'SpaceX Dragon 2'"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey",
+    "nozzle",
+    "soot",
+    "cells"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside; cells: Crew Dragon trunk's body-mounted solar cells",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
 }
