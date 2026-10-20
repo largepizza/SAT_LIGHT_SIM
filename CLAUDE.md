@@ -3123,8 +3123,8 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
       `attachTo = ELEMENT_WITH_ID` so a resize cannot slide them off), a row of four **stat tiles**
       (MAGNITUDE as seen, ELEVATION, RANGE, PHASE; a phrase shortens to Dark / Below), then **ACTIONS**, never
       collapsed or scrolled (2026-10-19): Trace pass, Go to (Leave while following), Track (each selects the
-      viewed satellite first), and the danger pair **Explode / ASAT strike** (`uiDangerButton`, `Pal::btnDanger*`;
-      two clicks, the first arms for 3 s, `infoExplodeArmKind_`). They call `infoExplodeSelected(kind)` — THE
+      viewed satellite first), and **Explode** (`uiDangerButton`, `Pal::btnDanger*`; ONE click since 2026-10-19 — the
+      user: no confirm click; the ASAT strike button is gone, see "Player breakups"). It calls `infoExplodeSelected(kind)` — THE
       call site of a player breakup from this window (today `kesslerBreakupFromUi`; its `kUiMsg` goes to the
       toast). Then the scrollable collapsible **sections** — the Clouds tab's form (`infoSection`, `+`/`-`
       headers, because the font atlas is ASCII-only), every body a label / value grid (`uiKV`), indexed by
@@ -4113,9 +4113,13 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   counts at the second it began). Until 2026-10-16 it walked 5M pieces, the roster and ~10M events four times a second
   on the main thread: 50-180 ms spikes late in the cascade (issue 20261016_155342). Harness `state` keeps the exact
   walk (`kesslerStateJson`); the piece-lifetime diagnostic is harness-only.
-- **Player breakups** (info window Explode / ASAT strike -> `infoExplodeSelected` -> `kesslerBreakupFromUi` ->
+- **Player breakups** (info window Explode -> `infoExplodeSelected` -> `kesslerBreakupFromUi` ->
   **`explodeSatellite(int sat, BreakupKind)`** -> `ExplodeResult{ok, reason}`; harness `kessler breakup|collide`) are
-  user events at the current sim time, **at any time** (2026-10-19). Not for launch objects (rockets, raising trains,
+  user events at the current sim time, **at any time** (2026-10-19). One kind in the UI since 2026-10-19: Explode
+  (`EV_EXPLOSION`: `breakupExplosion`, always catastrophic, N(>Lc) = 6 Lc^-1.6, low-dv explosion fragments). The
+  ASAT strike (`EV_ASAT`) was the COLLISION model with a 20-kg projectile at 9 km/s (`breakupCollision`: Lc^-1.71,
+  collision A/m and dv, catastrophic only while 0.5 m v^2 / M >= 40 J/g, i.e. below ~40 t: a station was only
+  cratered) — the same cascade from the player's side, so the button went; harness `kessler breakup kind=asat` keeps it. Not for launch objects (rockets, raising trains,
   retirees). They are computed IN PLACE (`kesslerBreakupInPlace`): the worker stops, the world rewinds to its last
   checkpoint at or before the breakup (`World::rollback`), re-runs that step here with the engine's own events of the
   step (they were sampled before the player acted) and the breakup last, the main thread's mirror is rewound to the
@@ -4437,7 +4441,12 @@ launches follow per-program cadences (no real manifest).
   `typeIdx = UINT32_MAX`: no model, so Info / Go to / Trace hide and `selActionAvailMask` = Track), whose elements are
   `SatOrbitElems::fixedState` (quadratic extrapolation from the frame's state, clamped to 30 s), rewritten each frame
   (`selTransientUpdate`, after the visuals). Label from `transientLabel()` (vehicle, stage, burn, T+, altitude, speed;
-  "Re-entry: <satellite>"), magnitude from the drawn flare. Not drawn for 2 s of sim time: deselected. Harness
+  "Re-entry: <satellite>"), magnitude from the drawn flare. Not drawn for 2 s of sim time: deselected. The selection
+  panel's second line (`selInfoLine[1]`, 160 wide since 2026-10-19 — labels were cut at 40) describes the object:
+  "Rocket stage (starship_upper)", "Starship ship, entry", "Re-entry fireball", and for a launch record
+  `launchStatus()` ("<type> - raising to slot, 412/565 km" / "parking orbit" / "in the dispenser" / "deorbiting",
+  refreshed every frame). It printed the constellation's type, and the transient slots have none: a bare "?" under
+  every rocket and fireball (the user's "? underneath it"). Harness
   `launch select kind=rocket|ship|fireball|retiree_reentry|stage_reentry|kessler_reentry|fragment`, `state` ->
   `selection.transient`. Go to (follow) works on a rocket (it has a mesh). **A click on a rocket's MESH picks its
   transient** (`pickSatelliteAt` maps a rocket mesh slot to its key): it used to select the mesh slot itself, whose
@@ -4451,7 +4460,25 @@ launches follow per-program cadences (no real manifest).
   warp; the list's axis is kept). Along a mission it hands over (`transientContinue`): the stack to its UPPER stage
   at staging (the booster is another object), a returning upper stage to its ship entry (same key, kind 2), a
   deorbiting stage to its re-entry fireball; the selection does the same (`transientSuccessor`). When nothing
-  continues it, follow ends in place (`stopFollowHere`). Verified (harness_runs/gk/mission.satcmd): a Starship
+  continues it, follow ends in place (`stopFollowHere`).
+  **Handovers seen from the Info window and the selection** (2026-10-19): (1) the 3D view switches model with its
+  subject (`viewerSyncModel`, called from `updateViewerView` AND `recordModelViewer`, since the selection's slot is
+  rewritten between them): same camera direction, distance scaled by the models' sizes, env probe kept (it belongs to
+  the index); a subject with no model (a fireball) keeps the last model posed at its position (`viewerKeepModel`)
+  and its SKY POSITION / magnitude readouts come from its state, not dashes. Before, `typeIdx != viewerType` made the
+  view drop to "placed" mode: the old model above the observer. (2) While Go to rides the selected transient, the
+  selection mirrors it through every handover follow makes (`selFollowKeyPrev`, top of `selTransientUpdate`); an
+  expendable stage's selection takes its kind-4 fireball as soon as it is listed (its listing ends before
+  `tStageGone`) and waits 5 s longer for it. (3) A train member's record that ends hands the selection AND the 3D
+  view to its roster slot, a retiree's selection to its re-entry once listed (`launchSlotEndedSelection` from
+  `hideSlot`, `selWant*`). (4) The handover jump is measured at ONE time (`transientPosAt`: followTrCur alternates
+  between the list's time and the frame's), the free aim turns with the eased jump so the object stays where it was
+  on screen (`followHandViewA/B` in `updateFollow`), and the upper stage's blend from the ground track into its
+  inertial plane starts AT staging from the booster track's point (`rocketPos`; it began 60 s early on its own track:
+  a ~4-km jump at separation, the rocket left the frame). Staging is now a 0-m handover; the ship's entry still
+  jumps ~0.5 km (its own entry model) and an expendable stage's fireball ~2.7 km (the Kessler fireball placement),
+  eased with the object held on screen. Harness `state` -> `selection.panel_lines` / `viewer_sat`.
+  Verified (harness_runs/gk/mission.satcmd): a Starship
   followed from T+8 s through staging (eased 49 m), the upper-stage burn to 350 km, coast and deployment, the fall,
   its ship entry (eased 5.2 km) and the end, left as a free observer at 45 km.
 - **Kessler** (L6): launches stand down at the CME; by default for good ("After the Sun's Fury": Stand down /
