@@ -4890,7 +4890,10 @@ void main() {
         }
 #if !defined(SKY_ENV) && !defined(SKY_LITE)
         // Launch pads (padGroundAt, above): their ground over the day map, and the tower's / mount's shadows.
-        if (!cityLand) { padG.alb.a = 0.0; padG.glow = vec3(0.0); padG.pool = 0.0; }   // not on water
+        // Only on dry ground: not on water, and not on land at the sea's level either (marsh and sand bars, which the
+        // 5-km day map paints as water: a road or a landing zone drawn there crossed a lagoon). The pad itself is
+        // graded above it (terrain_detail.glsl tdPadFlat).
+        if (!(tHit > 0.0 && terrainH0 > 0.5)) { padG.alb.a = 0.0; padG.glow = vec3(0.0); padG.pool = 0.0; padG.shadow = 0.0; }
         if (padG.alb.a > 0.0)
             dayColor = mix(dayColor, padG.alb.rgb, padG.alb.a);
         dayColor *= 1.0 - 0.7 * padG.shadow;

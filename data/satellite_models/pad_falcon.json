@@ -5,7 +5,7 @@
   {
    "name": "lattice",
    "preset": "truss",
-   "coverage": 0.45,
+   "coverage": 0.6,
    "diffuse_albedo": 0.22,
    "color": [
     0.32,
@@ -16,7 +16,7 @@
   {
    "name": "lattice_red",
    "preset": "truss",
-   "coverage": 0.4,
+   "coverage": 0.55,
    "diffuse_albedo": 0.25,
    "color": [
     0.55,

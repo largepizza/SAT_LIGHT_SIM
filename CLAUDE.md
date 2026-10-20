@@ -4309,7 +4309,7 @@ launches follow per-program cadences (no real manifest).
   (`tStageGone` = `tStageRE`, ~32 min). An expendable stage re-enters there as a fireball; a returning one (Starship's
   ship) pitches up to its entry attitude (nose 60 deg above the velocity, over 300 s) after the burn and flies its
   8-min plasma glow (`shipEntry`: from `vEI` and the ellipse's descent rate at 100 km to ~65 km, slowing to 1.2 km/s
-  by 45 km, magnitude ~-4 at 100 km near 70 km up; not followed to landing; harness `launch ship`). Until then only
+  by 45 km, magnitude ~-4 at 100 km near 70 km up; then it lands: see the catch below; harness `launch ship`). Until then only
   expendable stages burned (40 s, while sinking 30 km on their circle) and Starship's ship jumped from its 350-km orbit
   to 100 km at the entry interface without turning or burning. The ship's entry is listed under the upper stage's own
   key, so a selected or followed ship stays selected into its entry. A stage may vent what is left, spinning
@@ -4526,6 +4526,74 @@ launches follow per-program cadences (no real manifest).
   into `msText_` (a deque) — an action after the layout only marks the rows stale, never rebuilds them that frame.
   **Go to fixes the observer's altitude** (`obsHeightOffset = 0`, on the ground): `launchGoToNextWhen` and the launch
   re-entry Watch kept whatever height the eye had (a jump from orbit stayed in orbit).
+- **The ship comes home to a tower; boosters are caught (2026-10-19, the user: "do Starships actually land?" — in the
+  2036 setting SpaceX flies full reuse).** A returning stage's deorbit burn is TIMED for a catch (`planShipLanding`):
+  the first moment within 72 h of deployment (30-s steps, refined at 2 s) at which its entry ends (`shipEntry` at
+  te = `kShipEntryS` 480 s, 45 km) 120-450 km short of a Starship pad along its ground track and within 200 km across
+  (score |cross| + 0.3 |along - 260 km|); only the phase of the burn moves the end, so it is a closed form per candidate.
+  A pure function of the batch, like everything here. No pad in 72 h: the old burn time and a touchdown on the sea
+  250 km past the entry's end (`landPad` -1; none measured in 1100+ batches). After the entry the descent
+  (`shipDescentEcef`, Earth-fixed, in the landing pad's gnomonic plane + altitude, a cubic Hermite per axis):
+  `tShipDesc` .. `tShipFlip` (T1 = 2 x the distance / the start speed, 150-1000 s: the start tangent stays under 3x the
+  chord, no loop) belly first from 45 km to F = 1.1 km over the catch point, 400 m back along the approach, falling
+  ~75 m/s; then the flip and landing burn (`BURN_LANDING`, T2 ~30 s) to the catch point at rest, 55 m above the pad's
+  ground (`kShipCatchAboveGround`: the chopsticks at ~95 m hold it under its flaps), held in the tower `kCaughtHoldS`
+  (30 min). Drawn by the ROCKET path (`rocketPos` stage 1 past `tShipDesc`: flame, mesh, plume parcels of the landing
+  burn, its sound), the entry glow before it; the selection / follow continue through `transientContinue` (kind 2 ->
+  kind 1 under the same key). Nose (`upperNoseRaw`): from the entry attitude to level along the ground track over
+  90 s, upright from 2 s before the burn to 5 s into it. **The entry's start is continuous** (`entryOff`: the deorbit
+  ellipse's position at the entry interface minus `shipEntry`'s, eased out over the entry's first 60 s; it jumped
+  ~0.5 km). Boosters with `booster: tower`: the landing burn stops at `catch_m` (10) above the vehicle's `mount_m`
+  (20; the stack stands on the mount), i.e. 30 m above the pad's ground, at its centre, held 30 min
+  (`rocketPos` stage 0). The whole track stands on the pad's plateau + mount (`LBatch::padBase`, faded out over
+  5-40 km downrange in `trackEcef`: a droneship deck stays at sea level). `launch check` (merged build, 1124 batches):
+  ship entry start 7.9 m / 14 m/s (the 1-ms sampling step: was ~0.5 km), hand-over to the descent 3e-9 m / 7 m/s, the
+  descent's largest acceleration 14 m/s^2, catch 0 m off centre at 55.0 m and 1.3 m/s, boosters 0 m off at 30.0 m;
+  all 1124 ships caught (deorbit 20-62 h after deployment, descent 390-720 s from 250-330 km). Harness
+  `launch landing [booster=1] [lead=] [dist_m=] [day=1]`; Settings > Constellations > LAUNCHES "Watch a Starship catch".
+- **Launch pads on the ground (2026-10-19, the user: "launchpads and landing pads should have specialized graphics /
+  play well with the city lights; exclusion zones near launch sites for the city grids").** One pad per distinct place
+  among the catalog's sites (`buildPads`; sites within 150 m share one: 35 pads), its kind from the vehicles there (2
+  Starship: catch tower; 1 Falcon: service structure + a landing zone; 0 other) or `pad_kind`, its layout's heading u
+  the middle of its azimuths (`pad_heading_deg`) — turned so its back (-u: the access road, trench, tanks) faces the
+  most land 1.5-3 km out when it faced water — and its ground height from the DEM (`demElevCpu`: the .r8 halves read
+  four texels at a time, floored at 3 m). A Falcon pad's landing zone stands kLzDistM (2300 m) out on the driest
+  land (`shoreDistCpu` on earth_water_sdf.r8 + DEM > 1 m), angle in `padAux.w`.
+  - **GPU data**: CloudParams `padInfo` / `padQ` / `padU` / `padAux` (PAD_MAX 12, 960 -> 1552 B;
+    `launchFillPadParams`, the nearest within 2500 km in the observer's ENU from its sea-level point, the q frame).
+    In the UBO so every pass that needs them has them: the terrain, the sky pass and city_sprites.comp.
+  - **Terrain** (`tdPadFlat`, terrain_detail.glsl, the nearest `padInfo.w` pads within 300 km): graded to the plateau
+    within flatR (450 / 350 m), blending out to 2 flatR, no detail relief there (tdAmp0 x (1 - k): `gTdPadK` for the
+    march, `TD_PAD_K(q)` in tdBegin). Water and land at the sea's level (marsh, sand bars, drawn as water) are left
+    alone except the apron itself (`landK`, r < ~0.35 flatR): the first cut made every coastal pad a round island
+    and the Starbase lagoon land (`probe`: hit 23 m with pads on, none off).
+  - **Ground pattern** (`padGroundAt` / `padGroundOne`, sat_sky.frag, not SKY_LITE / SKY_ENV): graded patch (an
+    irregular squarish outline, a 55% tint, not paint: a clean disc read as a blob from the air), concrete apron with
+    10-m joints, Starship's steel deflector + soot and the tower base, other pads' flame trench, tank slabs, the access
+    road (asphalt, sodium lamps every 40 m + their lit band) and the landing zone (concrete disc, painted ring and
+    cross, its road), the tower's (lattice: half) and the mount's shadows. Exact box filters of the footprint
+    (`cityBoxCover`, `solarPulseCover`, `padDisk` keeps a disc's area past the footprint): from orbit a pad is a pale
+    speck. Only on dry ground (a terrain hit above 0.5 m): roads and zones crossed lagoons on land at 0 m. The pad's
+    lamps and floodlit concrete are added to the night term. Debug view 28 (`debugview pads`).
+  - **City exclusion** (`exclR` 3 / 3.2 km): the night map is cut to its base there (`nightColor` before the city
+    detail texture and pattern), so no city grid, glitter, detail texture or farms (fW x (1 - excl)); city_sprites.comp
+    skips its cells; beaches give way on the graded ground; close-up materials and micro relief too (`padCoreAt`).
+  - **Meshes**: `data/satellite_models/pad_{starship,falcon,generic}.json` (`tools/make_pad_models.py`; body +Z up, +X
+    the heading, origin the pad's centre on its plateau; one group: +Z zenith, +X "velocity" = the heading). Starship:
+    the mount (table 20 m up on six legs), the 146-m lattice catch tower at v = `kPadTowerV` (-32 m) with its
+    chopsticks at 95 m reaching over the mount, flood masts, the tank farm; Falcon: a red lattice FSS, three lightning
+    masts, LOX sphere, RP-1 tank, water tower. Loaded with the rockets (`rocketTypes["pad_*"]`, loaded by the
+    accuracy gate with them), drawn past ~1.4 px in 16 reserved launch slots (two chunks below the rockets':
+    `kPadMeshSlots`, `launchMeshJobs`) as fixed states (the pad's ECI position at t, the Earth's rotation as velocity);
+    not selectable (`rocketMeshSlotToTransient` -> -1).
+  - **Lights at night** (`launchFillPadLights`, kFireBuf, within 150 km): flood clusters on the masts and tower
+    (~-4 mag at 1 km), red beacons flashing 0.45 s in 1.5 (~-2), a landing zone's four floods; capped at flare 25.
+  - Setting `launches.pad_graphics` (Settings > Constellations > LAUNCHES "Launch site graphics"; independent of
+    launches being on). Harness `launch pads`, `launch pad <site> [dist_m=] [az=] [h=]`. Cost (RTX 3070 Ti, 1600x900,
+    Starbase from 900 m): sky pass within noise (8.09 vs 8.09 ms), scene depth +0.18 ms, CPU ~0; SKY_LITE SPV +288 B
+    (the UBO's declaration; 213384 of 230400), sat_sky_minimal unchanged. Open: the pads sit on the 5-km DEM and
+    water map, so coastal ones (Starbase, the Cape) are islands of apron in what the map calls sea; the meshes are lit
+    by the scene probe at night (the tanks read pale); no droneships.
 - Not built: droneship meshes, the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
   (trains launch into it), the crew capsule's rendezvous and cargo flights, hole-punching through cloud decks, sonic booms.
 

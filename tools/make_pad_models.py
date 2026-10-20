@@ -21,8 +21,8 @@ import os
 OUT = os.path.join(os.path.dirname(__file__), "..", "data", "satellite_models")
 
 MATERIALS = [
-    {"name": "lattice", "preset": "truss", "coverage": 0.45, "diffuse_albedo": 0.22, "color": [0.32, 0.32, 0.34]},
-    {"name": "lattice_red", "preset": "truss", "coverage": 0.4, "diffuse_albedo": 0.25, "color": [0.55, 0.22, 0.16]},
+    {"name": "lattice", "preset": "truss", "coverage": 0.6, "diffuse_albedo": 0.22, "color": [0.32, 0.32, 0.34]},
+    {"name": "lattice_red", "preset": "truss", "coverage": 0.55, "diffuse_albedo": 0.25, "color": [0.55, 0.22, 0.16]},
     {"name": "steel", "preset": "stainless_steel"},
     {"name": "dark", "preset": "black_paint"},
     {"name": "white", "preset": "white_paint"},

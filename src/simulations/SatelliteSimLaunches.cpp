@@ -129,6 +129,9 @@ struct LBatch
     double catchH = 0.0;
     glm::dvec2 dX0{0.0}, dV0{0.0}, dXF{0.0}, dVF{0.0};
     double dH0 = 0.0, dVz0 = 0.0, dHF = 0.0, dVzF = 0.0, T1 = 1.0, T2 = 1.0;
+    // The entry model's start vs the deorbit ellipse at the entry interface (ECI, m): faded out over the entry's
+    // first 60 s (shipEntry), so the ship's track is continuous there (it jumped ~0.5 km).
+    glm::dvec3 entryOff{0.0};
 };
 
 // A launch pad on the ground (2026-10-19): one per distinct place among the catalog's sites (the Jiuquan crewed
@@ -460,8 +463,10 @@ static void buildPads(SatelliteSim::LaunchState &L)
                     const double a = glm::two_pi<double>() * (k + 0.5) / 24.0;
                     const glm::dvec3 dir = std::cos(a) * pd.u + std::sin(a) * pd.v;
                     const glm::dvec3 q = glm::normalize(pd.g + dir * (kLzDistM / kR));
-                    const double d = shoreDistCpu(glm::degrees(std::asin(glm::clamp(q.z, -1.0, 1.0))), glm::degrees(std::atan2(q.y, q.x)));
-                    if (d < best)
+                    const double la = glm::degrees(std::asin(glm::clamp(q.z, -1.0, 1.0))), lo = glm::degrees(std::atan2(q.y, q.x));
+                    const double d = shoreDistCpu(la, lo);
+                    // Dry land: not water, and above the sea's level (land at 0 m is drawn as water).
+                    if (d < best && demElevCpu(la, lo) > 1.0)
                     {
                         best = d;
                         pd.lz = true;
@@ -1045,6 +1050,9 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
         B.vrEI = std::sqrt(launch::kGM / (B.aE * (1.0 - B.eE * B.eE))) * B.eE * std::sin(nu); // < 0: falling
         B.tStageRE = B.tDeorbBurn + (M - glm::pi<double>()) / B.nE;
         B.tStageGone = B.tStageRE;
+        B.entryOff = glm::dvec3(0.0);
+        if (!vh.upperDeorbit)
+            B.entryOff = deorbitPos(B, B.tStageGone) - shipEntry(B, 0.0, nullptr, nullptr);
     };
     setDeorbit();
     if (!vh.upperDeorbit)
@@ -1479,9 +1487,11 @@ static glm::dvec3 shipEntry(const LBatch &B, double te, double *vOut, double *hO
         *vOut = vAt(u);
     if (hOut)
         *hOut = hAt(u);
-    // From the entry interface on the deorbit ellipse (angle per metre at the ellipse's radius there).
+    // From the entry interface on the deorbit ellipse (angle per metre at the ellipse's radius there), plus the
+    // ellipse's own offset there, eased out over the first minute (continuity at the hand-over).
     const double th = B.thEI + sAlong / (kR + 100000.0);
-    return (kR + hAt(u)) * (std::cos(th) * B.U0 + std::sin(th) * B.A0);
+    const double fo = 1.0 - glm::smoothstep(0.0, 60.0, te);
+    return (kR + hAt(u)) * (std::cos(th) * B.U0 + std::sin(th) * B.A0) + fo * B.entryOff;
 }
 
 // When the upper stage vents what is left, spinning (after its deorbit burn, or 10 min after deploying for a stage
@@ -3254,7 +3264,7 @@ nlohmann::json SatelliteSim::launchCheckJson() const
     // jump there, Earth-fixed), the descent's fastest 1-s step (no jumps on the way down), the catch (its distance
     // from the pad's centre, its height above the pad's ground and its speed), and the boosters' catches likewise.
     {
-        double maxHandP = 0.0, maxHandV = 0.0, maxDescStep = 0.0, maxCatchOff = 0.0, maxCatchV = 0.0;
+        double maxEntryP = 0.0, maxEntryV = 0.0, maxHandP = 0.0, maxHandV = 0.0, maxDescStep = 0.0, maxCatchOff = 0.0, maxCatchV = 0.0;
         double catchAbove[2] = {1e9, -1e9}, boostOff = 0.0, boostAbove[2] = {1e9, -1e9};
         int nShip = 0, nCaught = 0, nSplash = 0, nBoost = 0;
         nlohmann::json ex = nlohmann::json::array();
@@ -3284,6 +3294,18 @@ nlohmann::json SatelliteSim::launchCheckJson() const
                 continue;
             ++nShip;
             (B.landPad >= 0 ? nCaught : nSplash)++;
+            {
+                // The entry's start vs the stage on its deorbit ellipse a moment before (and its velocity).
+                glm::dvec3 Pa, Pb;
+                if (LaunchImpl::rocketPos(L, B, 1, B.tStageGone - 1e-3 - B.tL, Pa) &&
+                    LaunchImpl::rocketPos(L, B, 1, B.tStageGone - 1.0 - B.tL, Pb))
+                {
+                    const glm::dvec3 E0 = LaunchImpl::shipEntry(B, 0.0, nullptr, nullptr);
+                    const glm::dvec3 E1 = LaunchImpl::shipEntry(B, 1.0, nullptr, nullptr);
+                    maxEntryP = std::max(maxEntryP, glm::length(E0 - Pa));
+                    maxEntryV = std::max(maxEntryV, glm::length((E1 - E0) - (Pa - Pb)));
+                }
+            }
             const double tH = B.tShipDesc;
             const glm::dvec3 a1 = eciToEcef(LaunchImpl::shipEntry(B, kShipEntryS, nullptr, nullptr), tH);
             const glm::dvec3 a0 = eciToEcef(LaunchImpl::shipEntry(B, kShipEntryS - 1.0, nullptr, nullptr), tH - 1.0);
@@ -3342,6 +3364,8 @@ nlohmann::json SatelliteSim::launchCheckJson() const
         j["ship_landings"] = nShip;
         j["ship_caught"] = nCaught;
         j["ship_splashdowns"] = nSplash;
+        j["ship_entry_start_pos_m_max"] = maxEntryP;
+        j["ship_entry_start_vel_m_s_max"] = maxEntryV;
         j["ship_handover_pos_m_max"] = maxHandP;
         j["ship_handover_vel_m_s_max"] = maxHandV;
         j["ship_descent_max_accel_m_s2"] = maxDescStep;
