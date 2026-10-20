@@ -4334,9 +4334,9 @@ launches follow per-program cadences (no real manifest).
   staging and an upper stage in its deorbit burn, belly first for the ship's entry (60 deg above the velocity).
   The axis rides in `SatOrbitElems::fixAxis`, which `satOrbitStateAt` returns as the attitude's "velocity".
   Rockets past ~1.4 px go through `recordMeshScene` (`launchMeshJobs`: up to `kRocketMeshSlots` 7 slots of the
-  reserved last chunk, bound to their keys) with the evaluator's photometry; the flame Gaussians follow the axis (a
-  landing burn's flame points down), a coasting sunlit point fades into its mesh, and the exhaust's glow Gaussian
-  is a night effect (x (1 - 0.95 dayness): up close by day it was a white ellipse hundreds of metres across). A
+  reserved last chunk, bound to their keys) with the evaluator's photometry; the flames come out of the model's engines
+  (see **Flames**), a coasting sunlit point gives way to its mesh, and the exhaust's glow Gaussian is a night effect
+  (x (1 - 0.95 dayness): up close by day it was a white ellipse hundreds of metres across). A
   selected rocket takes its type in the selection slot, so Info / Go to / Track work (Go to rides the fixed state).
 - **Raising trains fly "open book"** (2026-10-19): a train member's record (kind 0, until arrival) carries bit 25 of
   `typeConst` (sat_orbit.comp: `alignTerminator` -1, every joint at rest) and `SatOrbitElems::restJoints` /
@@ -4352,24 +4352,40 @@ launches follow per-program cadences (no real manifest).
   Zhuque-3 / Tianlong-3, Amazon Leo Falcon 9. A plane is refreshed in one burst per design life, so a
   constellation's cadence follows its plane count: Qianfan ~6 launches a month, Guowang ~4, Starmind ~10 a day.
   Harness `launch why [hours=]` counts the cached batches by program and reason.
-- **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1.5-2.5 s of each burn, integrated once per
+- **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1-1.5 s of each burn, integrated once per
   launch (only for launches within ~4500 km of the eye and not past 1 h/s of warp) with entrainment: the gas expands
   at ~2 km/s while it outweighs the air it has taken in, then diffuses (above ~80 km the coupling to the air falls to
   3%: the exhaust largely passes through air whose mean free path is ~1 km, and the bell grows to hundreds of km); momentum mixes with the swept air (exact for
   any step), gravity acts on the exhaust's share, Coriolis and centrifugal in the Earth-fixed frame, a hashed wind by
-  altitude. Low down a narrow trail the wind carries, high up a bell that expands for tens of km and falls back into
-  the thicker air. Cross-section `kappa`: 10 m^2/kg low (condensation, soot) to 1000 m^2/kg above ~90 km (the exhaust's water as
+  altitude that turns and varies with height (tides / gravity waves above ~35 km, `windPhase` per launch: trails twist
+  and kink as they age). Low down a narrow trail the wind carries, high up a bell that expands for tens of km and falls
+  back into the thicker air. The exhaust condenses over 0.25 s (low) to 1.5 s (high) before it scatters (`cond`).
+  **A burn is a polyline** (2026-10-19, issue 20261019_175126; `Parcel::stream`, launchFillVisuals' `addPlume`): its
+  parcels are knots, each Gaussian the chord from the previous drawn knot to this one as they are NOW (centre the
+  midpoint, along-trail sigma 0.35-0.5 x the chord, condensed share and radius the mean of the two ends), and the
+  youngest knot joins the burning stage's nozzle with a HEAD segment that grows with the burn and is exactly the segment
+  that replaces it when the next knot is born. Each parcel used to be drawn as the stretch of path it was emitted on: a
+  new one popped in every interval as a needle reaching ahead of the stage (the user's "intermittent, squished"
+  trail), the upper stage's young vacuum parcels (2.5 s = 8.5 km apart, spreading 2 km/s) read as puffs, and the frame
+  pulsed at every knot (the newest segment born dimmer than the head). The budget fades Gaussians near its cut by
+  priority (0 at the cut, full at 3x it). **Billows**: cloud_march.comp modulates each plume Gaussian's optical depth by
+  the baked Perlin-Worley (`cloudNoiseTex.r`, mean `kPlumeNoiseMean`) at the ray's closest approach in the Gaussian's
+  own sigma units, seeded per parcel (`ib.w` = 4 x seed + the unread sky light); only where tau > 0.01 (on every
+  faint tail it cost up to 7 ms; now within noise). A raymarched plume (density field + light march per pixel) was
+  not built: hundreds of overlapping Gaussians per pixel would need a voxelised field or a per-tile list first. Cross-section `kappa`: 10 m^2/kg low (condensation, soot) to 1000 m^2/kg above ~90 km (the exhaust's water as
   sub-micron ice: an upper estimate, ~2000 if all of it froze; 300 left the bell's wide part invisible); albedo from
-  `soot`. Parcels past 2 / 10 min are drawn every 2nd / 4th once they are 2x / 4x wider than their spacing (thinned
+  `soot`. Parcels past 2 / 10 / 30 min are drawn every 2nd / 4th / 8th once they are 2x / 4x / 8x wider than their spacing (thinned
   earlier, a trail showed gaps), plumes at most 384 Gaussians a frame (wide ones cover the screen: ~3 ms at 1000). Once
   a high parcel has swept up about its own mass of air it is drawn as a core + its limb-brightened rim: across a
-  near-round parcel a ring of 7 Gaussians round the line of sight, across one drawn out along the trail (projected
-  length > 1.6x its width) two Gaussians beside it, as long as the parcel, so neighbours join into the tube's two edges.
+  lone parcel (or a trail seen end-on) a ring of 7 Gaussians round the line of sight, along a trail two Gaussians beside
+  each segment, as long as it, so neighbours join into the tube's two edges (45% of the light in the rim).
   (Rings on every parcel, 5 s = 10-35 km apart on the upper stage, drew its insertion burn as a pulsing string of
   circles: the user's "oscillating" second-stage trail.) **Colour:** the Sun's light at the parcel through the air
   (grey-ish k per channel), x the ozone shell's Chappuis absorption along the Sun's path (cloud_v2_sunlut.comp's model:
-  vertical 0.019 / 0.027 / 0.0016 at 680 / 550 / 440 nm x the crossing secant, up to 30; a grazing path takes green and
-  orange out), x the sub-micron ice's spectral scattering (Angstrom 1.5, luminance kept) blended in from 25 to 90 km:
+  vertical 0.019 / 0.027 / 0.0016 at 680 / 550 / 440 nm x the crossing secant, counted once, capped at 12: 30 twice
+  turned the plumes between the orange trail and the white bell magenta, the user's "odd purple trail"), x the
+  sub-micron ice's spectral scattering (Angstrom 1.5, luminance kept) from 30 to 100 km, only as far as the sunlight
+  there still has its blue (B/R of its transmittance):
   why twilight plumes, like noctilucent cloud, are off-white to blue (harness `launch state` -> `plume_high[].sun_col`
   ~(0.73, 1.0, 1.4) above 100 km). They go into the dust list as `col.w = 2`
   (`kMaxDustClouds` 1024: the Kessler dust takes at most `kDustMax`, the fireball trails up to `kFireTrailMax`, plumes
@@ -4380,6 +4396,24 @@ launches follow per-program cadences (no real manifest).
   the dark barely dims the sky, a sooty trail silhouettes (as pure absorbers they were dark smudges at night).
   Each Gaussian carries a view cone (80-B `GpuDustCloud`): the shader skips it with one dot product. At night the
   plumes' sunlight is raised up to 10x as the eye's sky darkens (the night exposure is not physical: see the dust).
+- **Flames** (2026-10-19, issue 20261019_175126 shots 5-6): out of the model's engines (`engineGeomOf`: the exit plane
+  and the radius the `engines` / `upper_nozzle` / `side_nozzle` cones span, cached per type in `LaunchState::engineGeom`),
+  along -nose, a chain of three emissive Gaussians (core / flame / tail: 1.2 / 3.5 / 9 exit diameters x (1 + 2.5 x the
+  thin-air factor) long, 0.75 / 1.1 / 1.8 exit radii x (1 + 2 x it) wide, 50 / 32 / 18% of the light), each centred far
+  enough behind the exit that its forward tail stays in the bell (the old one was 950 m x 126 m, centred half its length
+  behind the track point: it reached past the nose). Its light: unresolved, the point's on-screen energy (`toSky`, ~10
+  mag over a surface's physical brightness); resolved (core 1.5 -> 8 px wide), the flame's surface brightness in the
+  sky's units (pi x radiance per unit solar irradiance) x `kFlameCore` 30 (the magnitudes are tuned for points),
+  geometric blend. The point (bloom, glare) sits on the core, its brightness capped where the flame is 4 px long and
+  down to 30% once it is 30 px: glare at every scale, no white disc on the hull. A coasting stage's sunlit point is
+  dropped once its mesh is up (floored at +10 mag it was still a -7 disc at 100 m). The night glow of the lit exhaust
+  scales with the engines (30-330 exit diameters) and sits 2 of its lengths behind them.
+- **Mesh glare needs a compact Sun image** (2026-10-19): sat_mesh.frag packs `meshGlareRoughK` (1 below roughness
+  0.04, 0 past 0.10) with the photometric share into the scene target's alpha (`meshSharePack`: share 64 levels, flag 8;
+  mesh_bloom.frag and mesh_refl_add.comp unpack it), and mode 3 (the viewer's glare source) multiplies its specular by
+  it. Rough lobes (stainless 0.12, paint) reached the Sun-like radiance test at grazing incidence (Fresnel -> 1, the
+  masking term's 1/(2 alpha)) along every edge and panel seam of a Starship in daylight: dozens of glares. Mirrors,
+  OSR, dielectric film and solar glass (0.05: 0.93) still glare.
 - **Sound**: each burning rocket within 150 km on a thunder voice (`launchSounds`, called from `thunderStep`): the
   retarded time, Earth-fixed (the air carries it), level ~ sqrt(flow) / distance, thinning with the air at the rocket.
   The retarded time is the LATEST emission tau with (T - tau) = |P(tau) - eye| / 343, found by a scan back over 440 s

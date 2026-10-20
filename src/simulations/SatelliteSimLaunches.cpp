@@ -1949,7 +1949,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 // x kFlameCore, the core's excess over the point magnitudes' average (tuned for points). Without the
                 // hand-over a flame a few hundred metres long seen from a kilometre was a blown-out white sheet over
                 // the vessel even by day (the user's QA shots 5-6).
-                const double kFlameCore = 60.0;
+                const double kFlameCore = 30.0;
                 const double dayK = 1.0 - 0.8 * dayness;
                 const double J = 0.6 * flare / std::max(dayK, 1e-3) * range * range / K;
                 const double corePx = 2.0 * sPk[0] / std::max(range * pixA, 1e-9);
