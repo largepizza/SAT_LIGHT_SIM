@@ -35,6 +35,8 @@ capture wide_1500
 # Close: the ship's dispenser at a release (the ship 120 m off)
 time add -1460
 wait 3
+# (a paused jump back: let the sky TAA's frozen history clear)
+wait 60
 follow offset=-60,90,40
 follow aim=sat
 wait settle
@@ -67,3 +69,24 @@ state mem_1100
 time add 300
 wait settle
 capture mem_1400
+# Live at 10x: member 0 unfolding (from ~9 to ~20 min after its release), a capture every 100 s of sim time
+time add -850
+wait 60
+follow offset=-60,120,50
+follow aim=sat
+time scale 10x
+time play
+wait 600
+capture live10x_0
+wait 600
+capture live10x_1
+wait 600
+capture live10x_2
+wait 600
+capture live10x_3
+wait 600
+capture live10x_4
+wait 600
+capture live10x_5
+wait 600
+capture live10x_6
