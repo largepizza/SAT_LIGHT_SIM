@@ -3346,6 +3346,35 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     lat / lon only (the observer's height has never been persisted: a relaunch lands on the ground below). "Exit"
     still flies home. Measured: ISS followed and left paused, the ISS stays within 0.4 px of the screen centre (the
     float `obsDir`), the altitude within 2 m.
+  - **Floor, Return, Go to -> Go to (2026-10-20, issues 20261019_223321 / _223437 / _223726):**
+    - **The camera never goes underground** (`followFloorM`, end of `updateFollow`): floor = max(the CPU DEM at the
+      camera, the GPU ground under last frame's eye `terrainFrameMapped[1]` eased 0.2 s as `followGpuFloorM`, only
+      within 20 km of it, 0 = the sea) + 3 m. A camera under it is pushed out radially and, while riding, the offset is
+      rewritten from the result (it slides on the ground). The report: a Starship stack at T+73 s with the offset
+      -20 km along / -18 km radial, the camera 3.9 km under Louisiana.
+    - **A flight in the object's frame** (`followFlightRel`, `followFlightRelA/B`, TNR): the direction slerps
+      (opposite sides go over the radial axis) and the distance changes geometrically. Used by (a) `startFollow` from
+      another follow (`fromFollow`): the start is the camera NOW (`followObsEcef - followLastP` + the old object at this
+      frame's time, `followTargetEcef`; `followObsEcef` alone is an update behind: ~120 m at 1x, km in warp) and B is
+      A's direction at the follow distance; it was the observer's line-of-sight flight, whose start distance along that
+      line clamped at 1 m whenever the camera was on the far side, so the camera dove through the new satellite
+      (train members 120 m apart). Falls back to the arc / line when the Earth is in the way (> 50 km). (b) **Return**.
+    - **Return** (`followReturn`, HUD "Return", `KB_FOLLOW_RETURN` H "Go To: Return", harness `follow return`):
+      following, fly to the default offset (-4r, 0, 1.5r); on the way home, turn back. Not following: follow the LAST
+      object again (`followRemember` in startFollow / stopFollow / stopFollowHere: index + launch owner/member + pool
+      generation, or the transient continued to now by `transientContinue`); a "Go to <name> again" chip
+      (`FollowAgainBtn`) shows 30 s after leaving. `state` -> `observer.follow_last`, `observer.follow.camera_asl_m /
+      dist_to_target_m / flight_rel`.
+  - **Selecting by name, not by brightness (2026-10-20, issue 20261019_224758).** Picking in the sky is the GPU's
+    visible list (above the horizon, effectFlare past the point style's limit: `sat_flare.comp` writes zero records
+    for the rest, which no click can find) — that stays. Everything NAMED goes by index or key: `selectSatellite(idx)`
+    never needed the list (roster, train members, retirees, pool pieces; the panel shows the off-screen chip), but
+    rockets are transients listed only by the code that draws them (within 4000 km, or already selected), so Missions'
+    rocket Select was greyed "Not drawn from here". Now `launchRocketTransient(key, t)` builds the stack / upper stage /
+    ship from the launch model, `launchSelectRocketOf` uses it when the list lacks the rocket, and `selTransientUpdate`
+    keeps a selected rocket the list misses (transientContinue places it) instead of dropping it after 2 s. Missions
+    Ongoing rows: Select always, plus Go to on rockets, trains (nearest member) and retirees (`missionsOngoingAct`,
+    harness `missions ongoing <row> [go=1]`).
   - **Follow ends gracefully** (`followCheckTarget` before `updateFollow`, `followTransientUpdate` after the frame's
     transient list): a followed object that ends hands over to what continues it, the camera easing across the jump
     (`followHandD`, ECEF, decays with a 0.6-s time constant) — a raising train member to its roster slot at

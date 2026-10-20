@@ -379,13 +379,17 @@ json SatelliteSim::harnessStateJson()
                      {"ground_source", gpuGround ? "gpu" : "cpu"},
                      {"terrain_cpu_m", obsTerrainH},
                      {"height_offset_m", obsHeightOffset},
-                     {"following", followActive}, {"follow_flight", followFlight}};
+                     {"following", followActive}, {"follow_flight", followFlight},
+                     {"follow_last", std::string(followLastLabel)}};
     if (followActive)
     {
         j["observer"]["follow"] = {{"sat", followSatIndex},
                                    {"offset_m", {followOffset.x, followOffset.y, followOffset.z}},
                                    {"label", std::string(followLabel)},
-                                   {"handover_m", glm::length(followHandD)}};
+                                   {"handover_m", glm::length(followHandD)},
+                                   {"camera_asl_m", glm::length(followObsEcef) - satphot::kEarthRadiusM},
+                                   {"dist_to_target_m", glm::length(followObsEcef - followLastP)},
+                                   {"flight_rel", followFlightRel}};
         if (followIsTransient())
             j["observer"]["follow"]["transient"] = {{"kind", (int)followTrCur.kind}, {"stage", (int)followTrCur.stage},
                                                     {"key", followTrKey}, {"waiting_for_kind", (int)followWantKind},
@@ -1748,6 +1752,16 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["alt_km"] = obsHeightOffset / 1000.0;
             return Status::Done;
         }
+        if (lower(pos(0)) == "return")
+        {
+            // Following: fly back to the default offset; else follow the last object again (the HUD's Return /
+            // "Go to ... again", KB_FOLLOW_RETURN).
+            std::string m;
+            if (!followReturn(&m))
+                fail("follow return: " + (m.empty() ? std::string("nothing to return to") : m));
+            r["message"] = m;
+            return Status::Done;
+        }
         const int idx = c.has("sat") ? (int)c.num("sat", -1) : selectedSatIndex;
         if (idx < 0 || idx >= (int)satOrbits.size())
             fail("follow: select a satellite first (or sat=<i>)");
@@ -2391,6 +2405,18 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = msg;
             return Status::Done;
         }
+        if (sub == "ongoing")
+        {
+            // missions ongoing <row> [go=1]: an Ongoing row's Select (go=1: its Go to); rows are state's `ongoing`.
+            std::string msg;
+            missionsRefresh(true);
+            if (!missionsOngoingAct((int)parseNum(pos(1), "missions ongoing"), c.num("go", 0.0) > 0.5, msg))
+                fail("missions ongoing: " + msg);
+            msStatus = msg;
+            r["message"] = msg;
+            r["selected"] = selectedSatIndex;
+            return Status::Done;
+        }
         if (sub == "tab")
         {
             const std::string t = lower(pos(1));
@@ -2399,7 +2425,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             uiVisible = true;
             return Status::Done;
         }
-        fail("missions: state | go <index|twilight|crew|fury|fury_night> [watch=1] | tab upcoming|ongoing|controls");
+        fail("missions: state | go <index|twilight|crew|fury|fury_night> [watch=1] | ongoing <row> [go=1] | tab upcoming|ongoing|controls");
     }
     if (n == "launch")
     {
