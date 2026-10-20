@@ -291,6 +291,9 @@ struct SatelliteSim::LaunchState
     };
     std::vector<PlumeDbg> plumeDbg;
     std::unordered_map<int, glm::dvec3> engineGeom; // per rocket type: (nozzle exit z, exit radius, length) in metres
+    // Per plane: the crewed station's dead second (Kessler's roster word) the plane's batches were built against; a
+    // change (a breakup, the cascade reaching it, a rollback) rebuilds them (crewSync).
+    std::vector<int32_t> crewDead;
     std::vector<LPad> pads;          // the launch pads (ensureCatalog)
     std::vector<int> sitePad;        // per catalog site: its pad
     uint64_t padMeshKey[16] = {};    // the pads drawn as meshes, per reserved slot (pad index + 1; 0 = free)
@@ -948,6 +951,20 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     {
         B.why = sim.launchAfterStorm == 0 ? "stood down since the storm" : "stand-down after the storm";
         return;
+    }
+    // A crewed station the cascade or the player killed (dead, destroyed or re-entered) before lift-off gets no more
+    // crews (issue 20261019_231126). A flight already up keeps flying (launchOngoing reports the station lost). Read
+    // from the roster word mirrored from the event log, so a pure function of time and the log; crewSync rebuilds the
+    // plane's batches when the word changes.
+    if (pg.crew && !pl.sats.empty() && pl.sats[0] < sim.activeSatCount && 2ull * pl.sats[0] + 1 < sim.kRosterWords.size())
+    {
+        // (lost = dead or ended, whichever first: a breakup ends a satellite without a dead second)
+        const int32_t dead = std::min(sim.kRosterWords[2ull * pl.sats[0]], sim.kRosterWords[2ull * pl.sats[0] + 1]);
+        if (sim.kesslerEnabled && dead != kessler::kNever && (double)dead <= secOfKessler(sim, tL))
+        {
+            B.why = "station lost";
+            return;
+        }
     }
     const launch::Vehicle &vh = L.cat.vehicles[B.veh];
     const launch::Site &st = L.cat.sites[B.site];
@@ -1833,6 +1850,43 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     }
 }
 
+// Crewed stations: rebuild a plane's cached batches when its station's dead second changes (a breakup, a rollback,
+// the worker reaching it), so the schedule follows the event log (buildBatch's "station lost").
+static void crewSync(const SatelliteSim &sim, SatelliteSim::LaunchState &L)
+{
+    if (!L.planesBuilt)
+        return;
+    if (L.crewDead.size() != L.planes.size())
+        L.crewDead.assign(L.planes.size(), kessler::kNever);
+    std::vector<int> changed;
+    for (size_t pi = 0; pi < L.planes.size(); ++pi)
+    {
+        const LPlane &pl = L.planes[pi];
+        if (!L.cat.programs[pl.prog].crew || pl.sats.empty())
+            continue;
+        int32_t d = kessler::kNever;
+        if (sim.kesslerEnabled && 2ull * pl.sats[0] + 1 < sim.kRosterWords.size())
+            d = std::min(sim.kRosterWords[2ull * pl.sats[0]], sim.kRosterWords[2ull * pl.sats[0] + 1]);
+        if (d != L.crewDead[pi])
+        {
+            L.crewDead[pi] = d;
+            changed.push_back((int)pi);
+        }
+    }
+    if (changed.empty())
+        return;
+    for (auto it = L.batches.begin(); it != L.batches.end();)
+    {
+        const LBatch &B = it->second;
+        // (a crew batch carries no train and no retirees: no GPU chunks to release)
+        if (B.chunks[0].empty() && B.chunks[1].empty() &&
+            std::find(changed.begin(), changed.end(), B.plane) != changed.end())
+            it = L.batches.erase(it);
+        else
+            ++it;
+    }
+}
+
 };
 
 // ── Per frame ───────────────────────────────────────────────────────────────────────────────────
@@ -1894,6 +1948,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     const bool on = launchesEnabled && L.loaded;
     if (on && !L.planesBuilt)
         LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    LaunchImpl::crewSync(*this, L);
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     std::vector<uint64_t> touched;
     if (on)
@@ -4934,6 +4989,7 @@ void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN,
         return;
     if (!L.planesBuilt)
         LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    LaunchImpl::crewSync(*this, L);
     struct Item
     {
         double tL;
@@ -5170,7 +5226,16 @@ void SatelliteSim::launchOngoing(std::vector<MissionOngoing> &out)
             m.cat = 0;
             m.key = key;
             m.title = pg.spacecraft + " to " + target + " (" + std::to_string(pg.people) + " crew)";
-            if (t < B.tL + B.t2)
+            double tLost = 0.0;
+            const int fate = rosterFateAt(L.planes[B.plane].sats[0], t, &tLost);
+            if (fate != 0)
+            {
+                // Launched before its station was lost (issue 20261019_231126): nothing to dock with.
+                m.status = std::string("The station is ") + rosterFateName(fate) + " (" + fmtUtc(tLost) +
+                           "); rendezvous called off";
+                m.tNext = 0.0;
+            }
+            else if (t < B.tL + B.t2)
                 m.status = veh + ": " + phaseOf(B, t - B.tL, m.tNext);
             else
             {

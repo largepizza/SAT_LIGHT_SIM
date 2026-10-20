@@ -33,7 +33,7 @@ constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 12; // bump whenever the world's logic changes (4: round 2, large pieces + grid;
+constexpr uint32_t kCacheVersion = 13; // (13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
                                        // 12: steps on a fixed grid, seeded by their index; a step's events ordered)
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
@@ -1298,8 +1298,8 @@ void SatelliteSim::kesslerMirrorRewind(double tCk)
 // ── The dust clouds (round 2) ───────────────────────────────────────────────────────────────────
 // Each breakup of the last few hours leaves a cloud of fine dust and small fragments that follows its parent's
 // orbit, expands at the fragments' spread speed and shears along-track (a fragment thrown forward climbs and falls
-// behind, 3 x its kick per unit time). Drawn as Gaussian ellipsoids in the parent's radial / along-track /
-// cross-track frame; once it is long enough to curve, as several along the arc. cloud_march.comp integrates them.
+// behind, 3 x its kick per unit time). Drawn as a tube of Gaussian ellipsoids along the parent's orbit (the
+// Clohessy-Wiltshire spread of the fragments' kicks: see below). cloud_march.comp integrates them.
 //
 // Brightness: a physical estimate (dustShare of the broken-up mass as ~100 um grains, 5.6 m^2/kg, plus the small
 // fragments' area, albedo 0.25) x "Dust cloud brightness". Physically a cloud fades below the dark sky within
@@ -1307,6 +1307,7 @@ void SatelliteSim::kesslerMirrorRewind(double tCk)
 void SatelliteSim::kesslerFillDust(float pixelAngle)
 {
     kDustCount = 0;
+    kesslerDropGoneSelection(); // (every frame; cheap)
     if (!kDustMapped)
         return;
     uint32_t *hdr = static_cast<uint32_t *>(kDustMapped);
@@ -1381,7 +1382,13 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             continue;
         // Fades out over the last 40% of its life (it vanished at 3 h, still bright at a high gain).
         const double ageK = 1.0 - glm::smoothstep(0.6 * kLife, kLife, age);
-        const double amp = 0.25 * (5.6 * (double)e.dustKg + 0.02 * (double)e.nSmall) * (double)kesslerDustGain * ageK;
+        // A big parent's cloud (a station: tens of tonnes of dust) is brighter, but not in proportion: the display gain
+        // exists to lift the faint clouds of ordinary satellites, and at x100 a 420-t station's cloud blew out the
+        // whole view (issue 20261019_231126). Linear up to ~5 t of dust at the default gain (a 100-t parent), then as
+        // its square root.
+        const double ampLin = 0.25 * (5.6 * (double)e.dustKg + 0.02 * (double)e.nSmall) * (double)kesslerDustGain;
+        constexpr double kAmpKnee = 7.0e5;
+        const double amp = ampLin / std::sqrt(1.0 + ampLin / kAmpKnee) * ageK;
         kessler::State s0{{e.pos[0], e.pos[1], e.pos[2]}, {e.vel[0], e.vel[1], e.vel[2]}};
         if (glm::length(s0.r) < 1.0)
             continue;
@@ -1390,7 +1397,13 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             continue;
         el.M += std::sqrt(kessler::kGM / (el.a * el.a * el.a)) * age;
         const kessler::State sc = kessler::stateFromElems(el);
-        const double range = std::max(glm::length(sc.r - eye), 1000.0);
+        // Ranked by its nearest part: a cloud strung around its orbit is near the eye somewhere.
+        const double rmC = glm::length(sc.r);
+        const double nC = std::sqrt(kessler::kGM / (rmC * rmC * rmC));
+        const double ntC = nC * age;
+        const double ext = 3.5 * std::clamp((double)e.dvSmall, 80.0, 500.0) *
+                           std::hypot(2.0 * (std::cos(ntC) - 1.0) / nC, 4.0 * std::sin(ntC) / nC - 3.0 * age);
+        const double range = std::max(glm::length(sc.r - eye) - std::min(ext, 2.0 * rmC), 1.0e5);
         cands.push_back({amp / (range * range), k, sc.r, sc.v, amp, age});
     }
     if (cands.empty())
@@ -1399,109 +1412,150 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
     auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
     const uint32_t dustMax = kDustMax;
-    // Each cloud's Gaussians: pieces along the arc (K, once it curves) x a core + 5 lumps (L) for the brightest that
-    // are resolved. The budget runs out somewhere down the ranking; clouds near that cut fade (by priority between
-    // the cut and 3x it) instead of popping in and out as the view moves (issue 20261018_211013).
-    auto pieces = [&](const Cand &c, int rnk, int &K, int &L) {
-        const double rm = glm::length(c.r);
-        const double nMot = std::sqrt(kessler::kGM / (rm * rm * rm));
-        const kessler::Event &e = kEvents[c.ev];
-        const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
-        const double sS = sv * c.age * (1.0 + 2.0 * std::min(nMot * c.age, 1.0)) + 30.0;
-        const double sR = sv * std::min(c.age, 1.0 / nMot) + 30.0;
-        const double px = glm::length(c.r - eye) * (double)pixelAngle;
-        K = (int)std::clamp(std::ceil(4.0 * sS / 1.5e6), 1.0, 12.0);
-        L = (rnk < 24 && sR > 8.0 * px) ? 6 : 1;
+    // The cloud as a TUBE along its orbit (2026-10-20, issue 20261019_231126: a station's cloud was drawn as up to 12
+    // straight Gaussians ~2000 km long, "beams" crossing the sky, and the count of them stepped with age (a ceil() of
+    // the cloud's length), so its width jumped, and a hash per piece index reshuffled its lumps: "it stretches oddly
+    // and glitches"). Now the fragments' spread follows the Clohessy-Wiltshire solution for velocity kicks dv ~ N(0,
+    // sv^2 I) at the breakup (x radial, y along-track, z cross-track, n the mean motion):
+    //   x = (sin nt / n) dvx + 2 (1 - cos nt) / n dvy
+    //   y = 2 (cos nt - 1) / n dvx + (4 sin nt / n - 3 t) dvy
+    //   z = (sin nt / n) dvz
+    // The cloud is cut into pieces along y (arc length on the parent's orbit): each piece holds the fragments at that
+    // y, Gaussian across with the conditional radial mean / spread given y, and cross-track sv |sin theta| / n, theta
+    // = nt + y / r the angle those fragments travelled since the breakup (so the cloud pinches through the breakup
+    // point and its antipode, where every fragment's orbit crosses, as real debris clouds do, and not at one time for
+    // the whole cloud). Along y the pieces are Gaussians on a regular spacing D whose sum is the cloud's along-track
+    // profile; D is a CONTINUOUS function of age (no counts that step): short enough that a piece's straight extent
+    // stays inside the tube's width as the arc curves, and the pieces at the ends carry the profile's tails, so
+    // pieces appear and leave with ~zero weight. Lumps: a smooth noise in the fragments' along-track kick (dvy given
+    // y), which moves and stretches with them.
+    struct Plan
+    {
+        double sy = 0.0;    // along-track profile sigma (m)
+        double dWant = 0.0; // the spacing it asks for (m)
+        double nWant = 0.0; // pieces at that spacing (real-valued: the budget share must not step)
     };
-    double priCut = 0.0;
-    {
-        uint32_t used = 0;
-        for (size_t q = 0; q < cands.size(); ++q)
-        {
-            int K, L;
-            pieces(cands[q], (int)q, K, L);
-            used += (uint32_t)(K * L);
-            if (used > dustMax)
-            {
-                priCut = cands[q].pri;
-                break;
-            }
-        }
-    }
-    int rank = 0;
-    for (const Cand &c : cands)
-    {
-        if (n >= dustMax)
-            break;
+    auto cwParams = [](double nm, double tt, double &a, double &b) {
+        const double nt = nm * tt;
+        a = 2.0 * (std::cos(nt) - 1.0) / nm;
+        b = 4.0 * std::sin(nt) / nm - 3.0 * tt;
+    };
+    auto plan = [&](const Cand &c) {
+        Plan p;
         const kessler::Event &e = kEvents[c.ev];
-        int Kc, Lc;
-        pieces(c, rank, Kc, Lc);
-        const bool lumpy = Lc > 1; // the brightest resolved clouds: a core and uneven lumps, not one smooth ball
-        ++rank;
+        const double rm = glm::length(c.r);
+        const double nm = std::sqrt(kessler::kGM / (rm * rm * rm));
+        const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
+        double a, b;
+        cwParams(nm, std::max(c.age, 1.0), a, b);
+        p.sy = sv * std::sqrt(a * a + b * b) + 30.0;
+        // The tube's typical half-width: sv |sin| / n, at most the ballistic sv t.
+        const double w = std::max(sv * std::min(c.age, 0.7 / nm), 500.0);
+        // A piece's straight extent (+-2 x 0.8 D) bows out from the arc by (1.6 D)^2 / 2r: keep that under w / 3.
+        const double dBend = std::sqrt(2.0 * rm * w / 3.0) / 1.6;
+        p.dWant = std::min(dBend, 0.5 * p.sy);
+        p.nWant = 2.0 * 3.5 * p.sy / p.dWant + 1.0;
+        return p;
+    };
+    // The budget: every cloud (by priority) gets at least kMinPieces; what is left is shared out in proportion to what
+    // each wants beyond that. Clouds past the budget fade by priority (no popping as the view moves).
+    constexpr int kMinPieces = 15;
+    std::vector<Plan> plans(cands.size());
+    size_t nFit = 0;
+    double extra = 0.0;
+    double priCut = 0.0;
+    for (size_t q = 0; q < cands.size(); ++q)
+    {
+        if ((nFit + 1) * kMinPieces > dustMax)
+        {
+            priCut = cands[q].pri;
+            break;
+        }
+        plans[q] = plan(cands[q]);
+        extra += std::max(0.0, plans[q].nWant - kMinPieces);
+        ++nFit;
+    }
+    const double share = extra > 0.0 ? std::min(1.0, ((double)dustMax - (double)(nFit * kMinPieces)) / extra) : 1.0;
+    for (size_t q = 0; q < nFit && n < dustMax; ++q)
+    {
+        const Cand &c = cands[q];
+        const Plan &P = plans[q];
+        const kessler::Event &e = kEvents[c.ev];
         const double cutK = priCut > 0.0 ? glm::smoothstep(priCut, 3.0 * priCut, c.pri) : 1.0;
         if (cutK <= 0.0)
             break;
         const double rm = glm::length(c.r);
-        const double nMot = std::sqrt(kessler::kGM / (rm * rm * rm));
+        const double nM = std::sqrt(kessler::kGM / (rm * rm * rm));
         const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
-        const double nt = nMot * c.age;
-        double sR = sv * std::min(c.age, 1.0 / nMot) + 30.0;
-        double sW = sR;
-        const double sS = sv * c.age * (1.0 + 2.0 * std::min(nt, 1.0)) + 30.0;
-        // Unresolved: never narrower than a half-res pixel at its range (the light is kept, not aliased).
-        const double sMin = 0.6 * glm::length(c.r - eye) * (double)pixelAngle;
-        sR = std::max(sR, sMin);
-        sW = std::max(sW, sMin);
+        const double tA = std::max(c.age, 1.0);
+        double ca, cb;
+        cwParams(nM, tA, ca, cb);
+        const double ab2 = ca * ca + cb * cb;
+        // Pieces (continuous in age: the spacing grows when the budget binds, never by a step).
+        const double nGot =
+            std::min(P.nWant, kMinPieces + share * std::max(0.0, P.nWant - kMinPieces));
+        const double D = std::max(P.dWant, 2.0 * 3.5 * P.sy / std::max(nGot - 1.0, 1.0));
+        const double sp = 0.8 * D;                                                    // a piece's along-track sigma
+        const double vPos = std::max(P.sy * P.sy - sp * sp, 0.25 * P.sy * P.sy); // the centres' spread (deconvolved)
+        const int K = (int)std::floor(3.5 * P.sy / D);
         const glm::dvec3 R = c.r / rm;
         const glm::dvec3 W = glm::normalize(glm::cross(c.r, c.v));
-        const int K = (int)std::clamp(std::ceil(4.0 * sS / 1.5e6), 1.0, 12.0);
+        const glm::dvec3 S0 = glm::cross(W, R);
+        // Floors: a pinch never closes below a few km (the kicks' tails, J2, the fragments' different shapes) nor below
+        // what the straight pieces' bow from the arc would show; never under ~a half-res pixel (below).
+        const double bow = (1.6 * D) * (1.6 * D) / (2.0 * rm);
+        const double floorW = std::max(30.0 + 0.02 * sv * std::min(tA, 1.0 / nM), 0.5 * bow);
+        // Lumps along the cloud: a smooth noise in u = the fragments' along-track kick / sv at that y (material).
+        auto lump = [&](double u) {
+            const double x = u * 2.5 + 0.37;
+            const double fl = std::floor(x), fr = x - fl;
+            const double s = fr * fr * (3.0 - 2.0 * fr);
+            const double h0 = kessler::hash01(e.seed, (uint64_t)(int64_t)fl, 71);
+            const double h1 = kessler::hash01(e.seed, (uint64_t)(int64_t)(fl + 1.0), 71);
+            return 0.55 + 0.9 * (h0 + (h1 - h0) * s); // mean ~1
+        };
         double wsum = 0.0;
-        for (int k = 0; k < K; ++k)
+        for (int k = -K; k <= K; ++k)
         {
-            const double off = K == 1 ? 0.0 : (-2.0 + 4.0 * ((double)k + 0.5) / K);
-            wsum += std::exp(-0.5 * off * off);
+            const double y = k * D;
+            wsum += std::exp(-0.5 * y * y / vPos);
         }
-        const int L = lumpy ? 6 : 1; // per piece: a core + 5 lumps
-        for (int k = 0; k < K * L && n < dustMax; ++k)
+        const double ampC = c.amp * cutK / std::max(wsum, 1e-30);
+        const double sMinA = 0.6 * (double)pixelAngle; // the half-res pixel, x the range
+        for (int k = -K; k <= K && n < dustMax; ++k)
         {
-            const int kp = k / L, lj = k % L;
-            const double off = K == 1 ? 0.0 : (-2.0 + 4.0 * ((double)kp + 0.5) / K);
-            double w = std::exp(-0.5 * off * off) / wsum;
-            double sSk = std::max(K == 1 ? sS : 0.55 * 4.0 * sS / K, sMin);
-            double sRk = sR, sWk = sW;
-            const double sSp = sSk; // the piece's own along-track sigma (lumps are placed in its units)
-            glm::dvec3 lumpOff(0.0); // in (R, S, W) units of the piece's own sigmas
-            if (L > 1)
-            {
-                const uint64_t hs = (uint64_t)e.seed * 131ull + (uint64_t)k;
-                if (lj == 0)
-                    w *= 0.4; // the smooth core
-                else
-                {
-                    w *= 0.6 * (0.5 + kessler::hash01(hs, 1, 61)) / 5.0;
-                    lumpOff = glm::dvec3(kessler::hashNormal(hs, 2, 62), kessler::hashNormal(hs, 3, 63),
-                                         kessler::hashNormal(hs, 4, 64)) * 0.6;
-                    const double f = 0.3 + 0.35 * kessler::hash01(hs, 5, 65);
-                    sRk = std::max(sR * f * (0.7 + 0.6 * kessler::hash01(hs, 6, 66)), sMin);
-                    sWk = std::max(sW * f * (0.7 + 0.6 * kessler::hash01(hs, 7, 67)), sMin);
-                    sSk = std::max(sSk * f * (0.7 + 0.9 * kessler::hash01(hs, 8, 68)), sMin);
-                }
-            }
-            // Along the arc: rotate about the orbit normal by off x sS / r.
-            const double ang = off * sS / rm;
-            const double ca = std::cos(ang), sa = std::sin(ang);
-            const glm::dvec3 S0 = glm::cross(W, R);
-            const glm::dvec3 Rk = ca * R + sa * S0, Sk = ca * S0 - sa * R;
-            const glm::dvec3 ctr = rm * Rk + lumpOff.x * sR * Rk + lumpOff.y * sSp * Sk + lumpOff.z * sW * W;
-            const glm::dvec3 a = toEnu(Rk), b = toEnu(Sk), cw = toEnu(W);
-            const double iR = 1.0 / (sRk * sRk), iS = 1.0 / (sSk * sSk), iW = 1.0 / (sWk * sWk);
-            auto M = [&](int p, int q) { return iR * a[p] * a[q] + iS * b[p] * b[q] + iW * cw[p] * cw[q]; };
+            const double y = k * D;
+            double w = std::exp(-0.5 * y * y / vPos);
+            if (w < 1e-4)
+                continue;
+            // The fragments at y: their kick dvy given y, and the angle they travelled since the breakup.
+            w *= lump(cb * y / (sv * ab2)); // E[dvy | y] / sv
+            const double th = nM * tA + y / rm;
+            const double p = std::sin(th) / nM, qq = 2.0 * (1.0 - std::cos(th)) / nM;
+            const double mx = (p * ca + qq * cb) * y / ab2; // the radial mean given y
+            const double vx = sv * sv * (p * cb - qq * ca) * (p * cb - qq * ca) / ab2;
+            const double vz = sv * sv * p * p;
+            const glm::dvec3 Rk = std::cos(y / rm) * R + std::sin(y / rm) * S0;
+            const glm::dvec3 ctr = (rm + mx) * Rk;
+            const double rng = std::max(glm::length(ctr - eye), 1.0);
+            const double sR = std::max(std::sqrt(vx + floorW * floorW), sMinA * rng);
+            const double sW = std::max(std::sqrt(vz + floorW * floorW), sMinA * rng);
+            const double sS = std::max(sp, sMinA * rng);
+            const glm::dvec3 Sk = glm::cross(W, Rk);
+            const glm::dvec3 a = toEnu(Rk), bq = toEnu(Sk), cw = toEnu(W);
+            const double iR = 1.0 / (sR * sR), iS = 1.0 / (sS * sS), iW = 1.0 / (sW * sW);
+            auto M = [&](int i, int j) { return iR * a[i] * a[j] + iS * bq[i] * bq[j] + iW * cw[i] * cw[j]; };
             GpuDustCloud &d = out[n++];
-            d.cone = glm::vec4(0.0f); // no view cone: tested everywhere
             const glm::dvec3 rel = toEnu(ctr - eye);
-            d.c = glm::vec4(glm::vec3(rel), (float)(c.amp * cutK * w * toSky));
+            // The directions it can reach (4 sigma): one dot product skips it on every other pixel.
+            const double rad = 4.0 * std::max({sR, sS, sW});
+            const double dist = glm::length(rel);
+            d.cone = dist > 1.05 * rad
+                         ? glm::vec4(glm::vec3(rel / dist), (float)std::sqrt(1.0 - (rad / dist) * (rad / dist)))
+                         : glm::vec4(0.0f);
+            d.c = glm::vec4(glm::vec3(rel), (float)(ampC * w * toSky));
             d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
-                             (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sRk * sSk * sWk)));
+                             (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sR * sS * sW)));
             d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
             d.col = glm::vec4(0.96f, 0.92f, 0.86f, 0.0f);
         }
@@ -2157,6 +2211,50 @@ bool SatelliteSim::kesslerGoToNextReentry(std::string &msg)
 }
 
 // ── Readouts ────────────────────────────────────────────────────────────────────────────────────
+int SatelliteSim::rosterFateAt(uint32_t idx, double t, double *whenT) const
+{
+    if (!kesslerEnabled || idx >= activeSatCount || 2ull * idx + 1 >= kRosterWords.size())
+        return 0;
+    const int32_t sec = (int32_t)std::clamp(std::floor(t - kFuryArriveT), -2147483000.0, 2147483000.0);
+    const int32_t dead = kRosterWords[2ull * idx], end = kRosterWords[2ull * idx + 1];
+    if (end != kessler::kNever && sec >= end)
+    {
+        if (whenT)
+            *whenT = kFuryArriveT + (double)end;
+        return (idx < kRosterDecay.size() && end == kRosterDecay[idx]) ? 3 : 2;
+    }
+    if (dead != kessler::kNever && sec >= dead)
+    {
+        if (whenT)
+            *whenT = kFuryArriveT + (double)dead;
+        return 1;
+    }
+    return 0;
+}
+
+const char *SatelliteSim::rosterFateName(int fate)
+{
+    switch (fate)
+    {
+    case 1: return "dead";
+    case 2: return "destroyed";
+    case 3: return "re-entered";
+    default: return "working";
+    }
+}
+
+void SatelliteSim::kesslerDropGoneSelection()
+{
+    // A roster satellite the cascade (or the player) destroyed, or that re-entered, is not there to select: drop it
+    // (the selection panel kept its reticle on the orbit it no longer flies: the user's "ghost", issue 20261019_231126).
+    // Going back in time before its end does not bring the selection back.
+    if (!kesslerEnabled || selectedSatIndex < 0 || selectedSatIndex >= (int)activeSatCount)
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    if (rosterFateAt((uint32_t)selectedSatIndex, t) >= 2)
+        selectedSatIndex = -1;
+}
+
 std::string SatelliteSim::satLabel(int idx) const
 {
     if (idx < 0 || idx >= (int)satOrbits.size())
@@ -2238,6 +2336,32 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
     j["capacity"] = kPoolCap;
     j["hash"] = cacheName(kHash);
     j["dust_clouds_drawn"] = kDustCount;
+    // The scattering dust Gaussians drawn this frame (2026-10-20): how many, their summed light (sky units) and the
+    // spread of their sizes and distances, to check a breakup's cloud without a picture.
+    if (kDustMapped && kDustCount > 0)
+    {
+        const GpuDustCloud *dc = reinterpret_cast<const GpuDustCloud *>(static_cast<const char *>(kDustMapped) + 16);
+        int nd = 0;
+        double ampSum = 0.0, dMin = 1e30, dMax = 0.0, sMin = 1e30, sMax = 0.0;
+        for (uint32_t i = 0; i < kDustCount; ++i)
+        {
+            if (dc[i].col.w != 0.0f)
+                continue;
+            ++nd;
+            ampSum += dc[i].c.w;
+            const double d = glm::length(glm::vec3(dc[i].c));
+            dMin = std::min(dMin, d);
+            dMax = std::max(dMax, d);
+            // ia.w = 1 / ((2 pi)^1.5 sR sS sW): the geometric-mean sigma
+            const double prod = 1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * std::max((double)dc[i].ia.w, 1e-300));
+            const double sg = std::cbrt(prod);
+            sMin = std::min(sMin, sg);
+            sMax = std::max(sMax, sg);
+        }
+        if (nd > 0)
+            j["dust"] = {{"gaussians", nd}, {"light_sum", ampSum}, {"range_km", {dMin / 1000.0, dMax / 1000.0}},
+                         {"sigma_km_geomean", {sMin / 1000.0, sMax / 1000.0}}};
+    }
     j["reentries_now"] = kReentriesNow;
     j["small_reentries"] = {{"now", kSmallReNow}, {"this_hour", kSmallReHourCount}, {"streams", kSmallStreamCount},
                             {"gain", kesslerSmallReGain}};

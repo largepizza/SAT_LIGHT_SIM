@@ -3937,6 +3937,10 @@ void SatelliteSim::selectSatellite(int idx)
 {
     if (idx < 0 || idx >= (int)satOrbits.size())
         return;
+    // A roster satellite destroyed or re-entered by now is not there to select (issue 20261019_231126: the Missions
+    // window selected an exploded station's "ghost"; kesslerDropGoneSelection drops one that goes while selected).
+    if (idx < (int)activeSatCount && rosterFateAt((uint32_t)idx, (double)simDayJ2000 * 86400.0 + simSecInDay) >= 2)
+        return;
     selectedSatIndex = idx;
     selectedPlanetIndex = -1;
     formatSelectedSatInfo();

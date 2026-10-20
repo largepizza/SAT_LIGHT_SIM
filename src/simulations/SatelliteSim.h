@@ -2981,6 +2981,11 @@ private:
     // A satellite's display name: "<constellation> #<n>"; a dead one "... #<n> (dead)" (its roster number),
     // a fragment "Debris <event>.<k>".
     std::string satLabel(int idx) const;
+    // A roster satellite's fate at time t (Kessler's event log, as mirrored): 0 working (or no scenario), 1 dead
+    // (tumbling), 2 destroyed (broken up), 3 re-entered; *whenT = the J2000 second it happened (2026-10-20).
+    int rosterFateAt(uint32_t idx, double t, double *whenT = nullptr) const;
+    static const char *rosterFateName(int fate); // "working" / "dead" / "destroyed" / "re-entered"
+    void kesslerDropGoneSelection(); // a selected roster satellite that is gone now (destroyed, re-entered) is dropped
     void buildKesslerBanner(UIRenderer &ui);
     void buildKesslerSettingsSection(const UIInput &inp, UIRenderer &ui);
     void kesslerBreakupFromUi(int sat, uint8_t kind);
