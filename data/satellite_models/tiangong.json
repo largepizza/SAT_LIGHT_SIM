@@ -17,6 +17,53 @@
             "specular_f0": 0.3,
             "roughness": 0.45,
             "color": [0.78, 0.78, 0.76]
+        },
+        {
+            "name": "module_skin",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.6,
+            "roughness": 0.6,
+            "color": [0.9, 0.9, 0.88],
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "radiator",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.8,
+            "roughness": 0.5,
+            "color": [0.95, 0.95, 0.95],
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "cells",
+            "preset": "solar_cell"
+        },
+        {
+            "name": "cells_back",
+            "preset": "solar_array_back"
+        },
+        {
+            "name": "metal",
+            "preset": "aluminum",
+            "diffuse_albedo": 0.2,
+            "roughness": 0.3,
+            "color": [0.7, 0.7, 0.72]
+        },
+        {
+            "name": "gold",
+            "preset": "mli_foil",
+            "color": [0.95, 0.72, 0.3]
+        },
+        {
+            "name": "dragon_white",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.75
+        },
+        {
+            "name": "cn_green",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.35,
+            "color": [0.55, 0.62, 0.45]
         }
     ],
     "attitude_groups": [
@@ -167,6 +214,340 @@
             "pivot": [0, -20.5, 0],
             "material": "solar_cell_flex",
             "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "gb_wing_mast",
+            "type": "box",
+            "size": [0.25, 0.25, 28.0],
+            "position": [0.0, 20.5, 15.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 20.5, 0.0]
+        },
+        {
+            "name": "gb_wing_box",
+            "type": "box",
+            "size": [4.4, 0.6, 0.5],
+            "position": [0.0, 20.5, 29.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 20.5, 0.0]
+        },
+        {
+            "name": "gb_wing_mast_2",
+            "type": "box",
+            "size": [0.25, 0.25, 28.0],
+            "position": [0.0, 20.5, -15.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 20.5, 0.0]
+        },
+        {
+            "name": "gb_wing_box_2",
+            "type": "box",
+            "size": [4.4, 0.6, 0.5],
+            "position": [0.0, 20.5, -29.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 20.5, 0.0]
+        },
+        {
+            "name": "gb_wing_mast_3",
+            "type": "box",
+            "size": [0.25, 0.25, 28.0],
+            "position": [0.0, -20.5, 15.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -20.5, 0.0]
+        },
+        {
+            "name": "gb_wing_box_3",
+            "type": "box",
+            "size": [4.4, 0.6, 0.5],
+            "position": [0.0, -20.5, 29.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -20.5, 0.0]
+        },
+        {
+            "name": "gb_wing_mast_4",
+            "type": "box",
+            "size": [0.25, 0.25, 28.0],
+            "position": [0.0, -20.5, -15.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -20.5, 0.0]
+        },
+        {
+            "name": "gb_wing_box_4",
+            "type": "box",
+            "size": [4.4, 0.6, 0.5],
+            "position": [0.0, -20.5, -29.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -20.5, 0.0]
+        },
+        {
+            "name": "gb_node_port_fwd",
+            "type": "profile",
+            "profile": [[0.0, 0.7], [0.5, 0.7]],
+            "position": [1.4, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "top",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_node_port_fwd_ring",
+            "type": "profile",
+            "profile": [[0.0, 0.82], [0.12, 0.82]],
+            "position": [1.78, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "both",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_node_port_nadir",
+            "type": "profile",
+            "profile": [[0.0, 0.7], [0.5, 0.7]],
+            "position": [0.0, 0.0, 1.4],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "top",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_node_port_nadir_ring",
+            "type": "profile",
+            "profile": [[0.0, 0.82], [0.12, 0.82]],
+            "position": [0.0, 0.0, 1.78],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "both",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_shenzhou_service",
+            "type": "profile",
+            "profile": [[0.0, 1.35], [0.6, 1.36], [2.9, 1.1]],
+            "position": [9.7, 0.0, 0.0],
+            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
+            "caps": "bottom",
+            "material": "cn_green",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_shenzhou_descent",
+            "type": "profile",
+            "profile": [[0.0, 1.1], [1.8, 1.0], [2.2, 0.5]],
+            "position": [6.8, 0.0, 0.0],
+            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
+            "caps": false,
+            "material": "cn_green",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_shenzhou_orbital",
+            "type": "profile",
+            "profile": [[0.0, 0.6], [0.4, 1.05], [1.2, 1.1], [2.0, 1.0], [2.4, 0.5]],
+            "position": [4.6, 0.0, 0.0],
+            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
+            "caps": "top",
+            "material": "cn_green",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_shenzhou_wing_p",
+            "type": "plane",
+            "size": [1.6, 4.6],
+            "position": [8.3, -3.86, 0.0],
+            "rotation_quat": [-0.0, 1.0, -0.0, 0.0],
+            "material": "cells",
+            "back_material": "cells_back",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_shenzhou_wing_m",
+            "type": "plane",
+            "size": [1.6, 4.6],
+            "position": [8.3, 3.86, 0.0],
+            "rotation_quat": [0.0, 0.0, 1.0, 0.0],
+            "material": "cells",
+            "back_material": "cells_back",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_tianzhou",
+            "type": "profile",
+            "profile": [[0.0, 1.67], [9.8, 1.67], [10.6, 0.8]],
+            "position": [-25.8, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "both",
+            "material": "module_skin",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_tianzhou_wing",
+            "type": "plane",
+            "size": [2.2, 7.2],
+            "position": [-23.2, 5.57, 0.0],
+            "rotation_quat": [0.0, 0.0, 1.0, 0.0],
+            "material": "cells",
+            "back_material": "cells_back",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_tianzhou_wing_2",
+            "type": "plane",
+            "size": [2.2, 7.2],
+            "position": [-23.2, -5.57, 0.0],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "material": "cells",
+            "back_material": "cells_back",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_arm_boom_1",
+            "type": "box",
+            "size": [8.0, 0.35, 0.35],
+            "position": [-8.0, 0.0, -2.5],
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_arm_boom_2",
+            "type": "box",
+            "size": [0.35, 0.35, 3.0],
+            "position": [-12.2, 0.0, -4.0],
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_tianhe_radiator",
+            "type": "box",
+            "size": [5.0, 0.06, 2.0],
+            "position": [-11.5, 2.13, 0.6],
+            "material": "radiator",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_tianhe_radiator_2",
+            "type": "box",
+            "size": [5.0, 0.06, 2.0],
+            "position": [-11.5, -2.13, 0.6],
+            "material": "radiator",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_tianhe_band",
+            "type": "profile",
+            "profile": [[0.0, 2.14], [0.35, 2.14]],
+            "position": [-8.0, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_tianhe_band_2",
+            "type": "profile",
+            "profile": [[0.0, 2.14], [0.35, 2.14]],
+            "position": [-12.6, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_dish_mast",
+            "type": "cylinder",
+            "radius": 0.06,
+            "height": 1.0,
+            "position": [-6.0, 0.0, -2.6],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "caps": true,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_dish",
+            "type": "profile",
+            "profile": [[0.0, 0.08], [0.036, 0.27], [0.096, 0.48], [0.15, 0.6]],
+            "position": [-6.0, 0.0, -3.1],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "caps": false,
+            "material": "metal",
+            "inner_material": "dragon_white",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_mengtian_platform",
+            "type": "box",
+            "size": [3.0, 4.5, 1.0],
+            "position": [0.0, -16.5, -2.6],
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_wentian_airlock",
+            "type": "box",
+            "size": [1.2, 3.0, 2.6],
+            "position": [1.8, 15.0, 0.0],
+            "material": "module_skin",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_lab_band",
+            "type": "profile",
+            "profile": [[0.0, 2.14], [0.35, 2.14]],
+            "position": [0.0, 9.0, 0.0],
+            "rotation_quat": [0.5, -0.5, 0.5, 0.5],
+            "caps": false,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_lab_band_2",
+            "type": "profile",
+            "profile": [[0.0, 2.14], [0.35, 2.14]],
+            "position": [0.0, -9.0, 0.0],
+            "rotation_quat": [-0.5, -0.5, -0.5, 0.5],
+            "caps": false,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
         }
     ],
     "sources": [
@@ -249,6 +630,21 @@
             "status": "estimate",
             "value": "albedo 0.3, F0 0.3, roughness 0.45 (the ISS truss material)",
             "source": "No published reflectance."
+        },
+        {
+            "subjects": [
+                "module_skin",
+                "radiator",
+                "cells",
+                "cells_back",
+                "metal",
+                "gold",
+                "dragon_white",
+                "cn_green"
+            ],
+            "status": "estimate",
+            "value": "render-only detail materials (tools/make_station_models.py)",
+            "source": "white beta-cloth / MMOD blanket exterior (albedo 0.6), panel seams for the shield panels; white (Z-93-class) radiator coating; rigid solar array, cells under cover glass; rigid array substrate back; bare metal fittings; gold MLI; Dragon's white paint; Shenzhou's grey-green paint"
         }
     ]
 }
