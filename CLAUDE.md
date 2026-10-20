@@ -4091,10 +4091,27 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   the pool's phases with the same exact fixed-point turns as the roster.
 - **The dust clouds** (round 2, `kesslerFillDust`, `cloud_march.comp` `dustCloudsCS`, binding 23): every breakup of
   the last 3 h with dust (`Event::dustKg` = 5% of the broken-up mass, 30% of it for cratering) is a sunlit cloud
-  following its parent's orbit (`Event::pos/vel`), expanding at the small fragments' rms spread (`dvSmall`,
-  80-500 m/s) radially / cross-track (saturating after 1/n) and shearing along-track (x3 after 1/n), split into up
-  to 12 Gaussians along the arc once it curves, the 24 brightest as a core + 5 uneven lumps; at most 256 Gaussians a
-  frame, chosen by brightness / range^2, never narrower than a half-res pixel. The optical depth through a Gaussian
+  following its parent's orbit (`Event::pos/vel`), spread by the small fragments' rms kick (`dvSmall`, clamped
+  80-500 m/s). **A tube along the orbit (2026-10-20, issue 20261019_231126):** the fragments' positions are the
+  Clohessy-Wiltshire solution for isotropic kicks; the cloud is cut into pieces along y (arc length on the parent's
+  orbit, the profile's sigma sv sqrt(a^2 + b^2), a = 2 (cos nt - 1) / n, b = 4 sin nt / n - 3t), each piece the
+  fragments at that y: radial mean / spread conditional on y, cross-track sv |sin theta| / n with theta = nt + y / r
+  the angle THOSE fragments travelled since the breakup (so the tube pinches through the breakup point and its
+  antipode, where every fragment's orbit crosses, not at one time for the whole cloud); floors ~30 m + 2% of the
+  saturated width, and half the bow of a piece's straight extent. Pieces sit at k D with an along-track sigma 0.8 D
+  (the centres' spread deconvolved so the sum keeps the profile), D a CONTINUOUS function of age: min(the spacing
+  whose straight +-1.6 D bows < width / 3 from the arc, half the profile sigma), widened when the budget binds
+  (every cloud gets 15 pieces, the rest shared out in proportion to what each wants; real-valued, so it never steps).
+  The end pieces carry the profile's tails, so pieces appear with ~zero weight; lumps are a smooth noise in the
+  fragments' along-track kick E[dvy | y], so they move and stretch with them. Each Gaussian gets a view cone (4
+  sigma). It was up to 12 straight Gaussians ~2000 km long (ceil of the length / 1500 km), whose count stepped with
+  age (the cloud's width jumped ~50% at 1 -> 2), plus hash lumps keyed by the piece index (reshuffled at each step):
+  seen from orbit near the arc, straight "beams" crossing at kinks that stretched and glitched as time ran. Clouds
+  ranked by brightness / (range to their nearest part)^2. A big parent's cloud is brighter as the square root past
+  ~5 t of dust at the default gain (`kAmpKnee`): a 420-t station at x100 blew out the view. The cloud_march cost is
+  unchanged (cascade day 1: 4.6 vs 4.7 ms; one station cloud 0.5-1.1 ms). Harness `kessler state` -> `dust`
+  {gaussians, light_sum, range_km, sigma_km_geomean}; scripts `harness_runs/stationbk` (`user.satcmd`, `strip.satcmd`:
+  the issue's own view, 30-s steps). Never narrower than a half-res pixel. The optical depth through a Gaussian
   is closed form (erf), single-scattered (0.6 HG(0.7) + 0.4 isotropic, albedo 0.25), Earth-shadowed at the ray's
   closest approach, extinguished, hidden by cloud from below like the aurora. **Units:** physical radiance through
   the point sources' scale (`toSky`: a cloud of magnitude m carries the on-screen energy of a star of magnitude m;
@@ -4103,8 +4120,8 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   value in sky units is invisible at any gain. "Dust cloud brightness" (`kessler.dust_gain`, x1 .. x1000, default
   x100): physically a cloud fades below the dark sky within minutes. **No pops** (issue 20261018_211013, day 81 at
   x1000: the budget was full and clouds near the cut snapped in and out as the view moved, and every cloud vanished
-  at 3 h still bright): a cloud fades over the last 40% of its 3 h, lumps are only for the 24 brightest that are
-  resolved (sR > 8 px), and clouds near the budget's cut fade by priority between the cut and 3x it.
+  at 3 h still bright): a cloud fades over the last 40% of its 3 h, and clouds near the budget's cut fade by
+  priority between the cut and 3x it.
 - **The engine** (`engineSample`, cube method, Liou 2006): every 6 h of sim time one sample at the step's middle,
   20-km cubes among the roster and the large pieces (sorted in parallel: keys are unique, so the order is the
   same), P = vRel x pi (rA + rB)^2 x dt / V x weights x rate multiplier, x (1 - avoidance) when one is a working
@@ -4135,7 +4152,13 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
 - **Player breakups** (info window Explode -> `infoExplodeSelected` -> `kesslerBreakupFromUi` ->
   **`explodeSatellite(int sat, BreakupKind)`** -> `ExplodeResult{ok, reason}`; harness `kessler breakup|collide`) are
   user events at the current sim time, **at any time** (2026-10-19). One kind in the UI since 2026-10-19: Explode
-  (`EV_EXPLOSION`: `breakupExplosion`, always catastrophic, N(>Lc) = 6 Lc^-1.6, low-dv explosion fragments). The
+  (`EV_EXPLOSION`: `breakupExplosion`, always catastrophic, N(>Lc) = 6 S Lc^-1.6, low-dv explosion fragments; the
+  SBM's S = 1 is for a few-tonne upper stage, so S = max(1, (m / 2 t)^0.75) since 2026-10-20: the ISS made 239 pieces
+  over 10 cm and 7 over 1 m, now ~13,000 and ~330 (96 records); kCacheVersion 13). **A destroyed roster satellite
+  is gone everywhere** (2026-10-20, issue 20261019_231126): `rosterFateAt(idx, t, &when)` (0 working, 1 dead, 2
+  destroyed, 3 re-entered, from the mirrored roster words) — `selectSatellite` refuses 2-3, `kesslerDropGoneSelection`
+  (each frame) drops one that goes while selected, the Missions window's station row reads "Destroyed <date>; no
+  more crew flights" with Select / Go to disabled, and crew flights stop (Launches > Crew rotations). The
   ASAT strike (`EV_ASAT`) was the COLLISION model with a 20-kg projectile at 9 km/s (`breakupCollision`: Lc^-1.71,
   collision A/m and dv, catastrophic only while 0.5 m v^2 / M >= 40 J/g, i.e. below ~40 t: a station was only
   cratered) — the same cascade from the player's side, so the button went; harness `kessler breakup kind=asat` keeps it. Not for launch objects (rockets, raising trains,
@@ -4569,7 +4592,14 @@ launches follow per-program cadences (no real manifest).
   azimuth 80-200: the old Jiuquan sites' 120-200 cannot reach 41.5 deg), the commercial stations (Haven-1/2, Axiom,
   Starlab, Orbital Reef: Crew Dragon), ROS (Soyuz MS, `soyuz2`, Baikonur), Bharatiya (Gaganyaan on `lvm3`): two flights
   a year each, ~18 a year. The three new vehicles have meshes (`tools/make_rocket_models.py`; the "fairing" stands in
-  for the spacecraft). Crew launches stand down after the Sun's Fury like the rest. No cargo flights.
+  for the spacecraft). Crew launches stand down after the Sun's Fury like the rest. No cargo flights. **A lost
+  station gets no more crews** (2026-10-20, issue 20261019_231126): `buildBatch` refuses a crew launch whose station
+  is dead or ended (min of its two roster words) at or before lift-off (`launch why`: "station lost"); a flight
+  launched before reports "The station is destroyed (<date>); rendezvous called off" in Ongoing. The cached batches
+  were built against the station's word at build time, so `crewSync` (launchUpdate, launchUpcoming) rebuilds a crew
+  plane's batches whenever that word changes (a breakup, a rollback, the worker reaching a cascade kill): the schedule
+  is a pure function of sim time and the event log (as mirrored: a cascade kill the worker has not reached yet still
+  shows its flights). Harness `missions state` -> `stations[].fate` / `fate_hours_ago`.
 - **Missions window** (2026-10-19, `SatelliteSimMissions.cpp`; window id 8, `msChrome`; the rocket button
   `TimeMissionsBtn` on the right HUD panel, `pixel--missions.png`; key M, `KB_MISSIONS`; harness `ui open missions
   [tab=upcoming|ongoing|controls]`, `missions state|go|tab`). Three tabs. **Upcoming**: the next 5 launches (vehicle,
