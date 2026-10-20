@@ -1467,6 +1467,8 @@ struct CitySpritePC {
 };
 static_assert(sizeof(CitySpritePC) == 64, "CitySpritePC must match city_sprites.comp");
 
+// Launch pads drawn on the ground (2026-10-19; cloud_params.glsl PAD_MAX must match).
+static constexpr int kMaxPadsGpu = 12;
 struct GpuCloudParams
 {
     // Global controls — shared across all layers
@@ -1768,8 +1770,15 @@ struct GpuCloudParams
     glm::vec4 auroraOval2;    // x brightness, y max lit colatitude, z ripple (deg), w substorm poleward push (deg)
     glm::vec4 auroraStorm;    // x storm features, y blue ray chance, z arc systems, w storm red glow (928 -> 944)
     glm::vec4 auroraSky;      // x 1 / lightPollutionGain (the aurora's linear sky model), yzw unused (944 -> 960)
+    // Launch pads (960 -> 1552, 2026-10-19, SatelliteSim::launchFillPadParams): the nearest kMaxPadsGpu pads in the main
+    // observer's ENU frame from its SEA-LEVEL point (terrain_detail.glsl's q). padInfo: x count, y "Launch pad graphics"
+    // (0 = off), z night (1 dark .. 0 day), w how many of them (the nearest first) flatten the terrain.
+    glm::vec4 padInfo;
+    glm::vec4 padQ[kMaxPadsGpu];   // xyz pad centre, w the city exclusion radius (m)
+    glm::vec4 padU[kMaxPadsGpu];   // xyz the layout's heading axis (horizontal at the pad), w kind (0 generic, 1 Falcon, 2 Starship)
+    glm::vec4 padAux[kMaxPadsGpu]; // x plateau height (m above sea level), y seed, z flattened radius (m), w landing zone 1/0
 };
-static_assert(sizeof(GpuCloudParams) == 960, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 1552, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -2773,6 +2782,17 @@ private:
     float launchPlumeGain = 1.0f;    // launches.plume_gain: the plumes' optical depth x
     float launchRocketGain = 1.0f;   // launches.rocket_gain: the flames' brightness x
     int launchAfterStorm = 0;        // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
+    // Launch-site graphics (2026-10-19, launches.pad_graphics): the pads on the ground (sat_sky.frag padGround, the
+    // terrain graded flat under them, no city lights within ~3 km), their towers / mounts / tanks as meshes and their
+    // lights at night. Independent of launchesEnabled (the pads are there whether or not anything flies).
+    bool launchPadGraphics = true;
+    static constexpr int kPadMeshSlots = 16; // two reserved chunks below the rockets' (launchInitBlock)
+    void launchFillPadParams(GpuCloudParams &cp); // the UBO's pad block (nearest kMaxPadsGpu)
+    void launchFillPadLights(); // their floodlights / beacons as point sprites (kFireBuf)
+    nlohmann::json launchPadsJson() const;
+    bool launchGoToPad(const std::string &site, double distM, double azDeg, double heightM, std::string &msg);
+    // The next tower catch (0 a ship, 1 a booster; wantDay: the Sun above 10 deg at the pad): the clock leadS before it.
+    bool launchGoToLanding(int which, double leadS, double distM, std::string &msg, bool wantDay = false);
     void launchInitBlock();          // the launch block's satOrbits entries (empty) and the launch state (reset)
     void launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd); // per frame: schedule, records, uploads
     void launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // rockets, plumes, re-entries

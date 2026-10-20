@@ -19,6 +19,7 @@
 #ifndef CLOUD_PARAMS_BINDING
 #error "define CLOUD_PARAMS_BINDING before including cloud_params.glsl"
 #endif
+#define PAD_MAX 12   // launch pads in the block (SatelliteSim.h kMaxPadsGpu)
 
 struct CloudLayer {
     float shellAltM;
@@ -478,4 +479,13 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // -- Aurora sky (944 -> 960, 2026-10-14): x = 1 / "Pollution gain", which turns lightDome[] (gained) back into
     // the raw city brightness the aurora's linear sky model reads (darksky.glsl darkSkySkyMagLinear); yzw unused.
     vec4  auroraSky;
+    // -- Launch pads (960 -> 1552, 2026-10-19; SatelliteSimLaunches.cpp launchFillPadParams): the nearest PAD_MAX pads
+    // in the observer's ENU frame from its sea-level point (terrain_detail.glsl's q). padInfo x count, y "Launch pad
+    // graphics" (0 = off), z night (1 dark .. 0 day), w how many (the nearest first) flatten the terrain;
+    // padQ xyz centre, w city exclusion radius (m); padU xyz the layout's heading axis, w kind (0 generic, 1 Falcon,
+    // 2 Starship); padAux x plateau height (m), y seed, z flattened radius (m), w landing zone (1/0).
+    vec4  padInfo;
+    vec4  padQ[PAD_MAX];
+    vec4  padU[PAD_MAX];
+    vec4  padAux[PAD_MAX];
 } cloud;

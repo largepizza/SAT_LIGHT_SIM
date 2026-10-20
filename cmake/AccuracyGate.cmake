@@ -42,7 +42,8 @@ file(GLOB MODELS "${SRC_DIR}/data/satellite_models/*.json")
 # Launch vehicles (tools/make_rocket_models.py) are render models no benchmark reads: they are loaded and validated
 # (the lobe bake vs the per-triangle evaluation, ~1.5 s for all), not self-tested (the occlusion reference took
 # 20 s for a full stack with strap-on boosters, ~2.5 min for the 39).
-file(GLOB ROCKET_MODELS "${SRC_DIR}/data/satellite_models/rocket_*.json")
+# Launch pads (tools/make_pad_models.py, 2026-10-19) are render models too: loaded and validated with the rockets.
+file(GLOB ROCKET_MODELS "${SRC_DIR}/data/satellite_models/rocket_*.json" "${SRC_DIR}/data/satellite_models/pad_*.json")
 list(REMOVE_ITEM MODELS ${ROCKET_MODELS})
 list(SORT ROCKET_MODELS)
 file(GLOB BENCHMARKS "${SRC_DIR}/data/benchmarks/*.json")

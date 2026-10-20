@@ -1,0 +1,224 @@
+{
+ "name": "pad falcon",
+ "note": "Launch pad render model (tools/make_pad_models.py). Body frame: +Z up, +X the pad's heading, origin at the pad's centre on the ground. Sizes public figures rounded or estimates; detail render-only. Falcon: the fixed service structure, three lightning masts, LOX sphere, RP-1 tank, water tower.",
+ "materials": [
+  {
+   "name": "lattice",
+   "preset": "truss",
+   "coverage": 0.45,
+   "diffuse_albedo": 0.22,
+   "color": [
+    0.32,
+    0.32,
+    0.34
+   ]
+  },
+  {
+   "name": "lattice_red",
+   "preset": "truss",
+   "coverage": 0.4,
+   "diffuse_albedo": 0.25,
+   "color": [
+    0.55,
+    0.22,
+    0.16
+   ]
+  },
+  {
+   "name": "steel",
+   "preset": "stainless_steel"
+  },
+  {
+   "name": "dark",
+   "preset": "black_paint"
+  },
+  {
+   "name": "white",
+   "preset": "white_paint"
+  },
+  {
+   "name": "concrete",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.45,
+   "color": [
+    0.62,
+    0.61,
+    0.58
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "pad",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "zenith"
+   },
+   "secondary": {
+    "axis": [
+     1,
+     0,
+     0
+    ],
+    "target": "velocity"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "fss",
+   "type": "box",
+   "group": "pad",
+   "size": [
+    10.0,
+    10.0,
+    80.0
+   ],
+   "position": [
+    0,
+    -25.0,
+    40.0
+   ],
+   "material": "lattice_red"
+  },
+  {
+   "name": "fss_arm",
+   "type": "box",
+   "group": "pad",
+   "size": [
+    2.4,
+    18.0,
+    3.0
+   ],
+   "position": [
+    0,
+    -11.0,
+    57.599999999999994
+   ],
+   "material": "dark",
+   "render_only": true
+  },
+  {
+   "name": "fss_mast",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 0.4,
+   "height": 20.0,
+   "position": [
+    0,
+    -25.0,
+    90.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "lightning_mast_0",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 1.0,
+   "height": 110.0,
+   "position": [
+    60,
+    60,
+    55.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "lightning_mast_1",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 1.0,
+   "height": 110.0,
+   "position": [
+    60,
+    -60,
+    55.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "lightning_mast_2",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 1.0,
+   "height": 110.0,
+   "position": [
+    -60,
+    55,
+    55.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "lox_sphere",
+   "type": "sphere",
+   "group": "pad",
+   "radius": 11.0,
+   "position": [
+    -60.0,
+    110.0,
+    11.0
+   ],
+   "material": "white"
+  },
+  {
+   "name": "rp1_tank",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 4.0,
+   "height": 26.0,
+   "position": [
+    -20.0,
+    120.0,
+    4.5
+   ],
+   "caps": true,
+   "material": "white",
+   "rotation_deg": [
+    0,
+    90,
+    0
+   ]
+  },
+  {
+   "name": "water_tower_leg",
+   "type": "cylinder",
+   "group": "pad",
+   "radius": 1.2,
+   "height": 40.0,
+   "position": [
+    100.0,
+    -90.0,
+    20.0
+   ],
+   "caps": true,
+   "material": "steel",
+   "render_only": true
+  },
+  {
+   "name": "water_tower",
+   "type": "sphere",
+   "group": "pad",
+   "radius": 6.0,
+   "position": [
+    100.0,
+    -90.0,
+    44.0
+   ],
+   "material": "white"
+  }
+ ]
+}
