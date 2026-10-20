@@ -33,7 +33,8 @@ constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 11; // bump whenever the world's logic changes (4: round 2, large pieces + grid)
+constexpr uint32_t kCacheVersion = 12; // bump whenever the world's logic changes (4: round 2, large pieces + grid;
+                                       // 12: steps on a fixed grid, seeded by their index; a step's events ordered)
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
 {
@@ -88,6 +89,7 @@ struct SatelliteSim::KesslerWorker
     double replayUntil = 0.0; // engine sampling resumes here (the cache's frontier)
     double tEnd = 0.0;
     std::atomic<double> wantUntil{0.0}; // lazy: simulate only this far (the main thread moves it with sim time)
+    std::atomic<double> simNow{0.0};    // the player's sim time: checkpoints are kept from just before it (rollback)
     std::thread th;
     std::mutex mx;
     bool stop = false;
@@ -142,6 +144,7 @@ struct SatelliteSim::KesslerWorker
         // published after each.
         while (!stop && w.frontier < tEnd)
         {
+            keepCheckpoints();
             const double want = std::min(wantUntil.load(), tEnd);
             if (w.frontier >= want)
             {
@@ -151,6 +154,8 @@ struct SatelliteSim::KesslerWorker
             const bool sampling = w.frontier >= replayUntil;
             const double chunk = sampling ? 86400.0 : 30.0 * 86400.0;
             double to = std::min({w.frontier + chunk, tEnd, std::max(want, w.frontier + w.s.stepS)});
+            // Chunks end on the step grid: the steps, and so the history, do not depend on when the worker paused.
+            to = std::min(w.s.epoch + std::ceil((to - w.s.epoch) / w.s.stepS - 1e-9) * w.s.stepS, tEnd);
             if (!sampling)
                 to = std::min(to, replayUntil);
             simulateChunk(to, sampling);
@@ -197,13 +202,40 @@ struct SatelliteSim::KesslerWorker
         // Replay: apply the pending events only, keeping the steps (and the sample counter) aligned.
         while (w.frontier < to && !stop)
         {
-            const double t1 = std::min(w.frontier + w.s.stepS, to);
+            const double t1 = std::min(w.stepStart(w.frontier) + w.s.stepS, to);
+            if (w.frontier == w.stepStart(w.frontier) && w.wantCheckpoints && w.frontier >= w.checkpointFrom)
+                w.checkpoint(w.frontier, pendingNext);
             while (pendingNext < pending.size() && pending[pendingNext].t <= t1)
                 w.apply(pending[pendingNext++]);
-            if (t1 > w.s.epoch)
-                ++w.sampleCount;
+            ++w.sampleCount;
             w.frontier = t1;
         }
+    }
+
+    // Rollback checkpoints: one per step from a step before the player's time on; older ones go.
+    void keepCheckpoints()
+    {
+        const double now = simNow.load();
+        w.wantCheckpoints = true;
+        w.checkpointFrom = w.stepStart(now) - w.s.stepS;
+        w.dropCheckpointsBefore(now - w.s.stepS);
+    }
+
+    void startThread()
+    {
+        stop = false;
+        done = false;
+        th = std::thread([this] { run(); });
+    }
+    void stopThread()
+    {
+        {
+            std::lock_guard<std::mutex> lk(mx);
+            stop = true;
+        }
+        if (th.joinable())
+            th.join();
+        stop = false; // the main thread may step the world itself now (kesslerBreakupInPlace)
     }
 };
 
@@ -433,18 +465,20 @@ void SatelliteSim::kesslerShutdown()
 // (Re)starts the world from scratch: the storm's seeds, the user's events and the engine events before
 // keepEngineBefore (< 0: everything the cache holds) are replayed, then the engine simulates on.
 void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents,
-                                  double keepEngineBefore)
+                                  double keepEngineBefore, double syncUntil)
 {
     std::vector<kessler::Event> keptEngine;
-    double keptFrontier = kFuryArriveT;
+    // The world starts at the CME, or at the step of the player's first breakup before it (2026-10-19).
+    double startT = kFuryArriveT;
+    {
+        const double stepS = kessler::WorldSettings{}.stepS;
+        for (const kessler::Event &e : userEvents)
+            startT = std::min(startT, kFuryArriveT + std::floor((e.t - kFuryArriveT) / stepS) * stepS);
+    }
+    double keptFrontier = startT;
     if (kWorker)
     {
-        {
-            std::lock_guard<std::mutex> lk(kWorker->mx);
-            kWorker->stop = true;
-        }
-        if (kWorker->th.joinable())
-            kWorker->th.join();
+        kWorker->stopThread();
         if (keepEngineBefore >= 0.0)
         {
             for (const kessler::Event &e : kWorker->w.events)
@@ -474,12 +508,13 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     kDirtyPool.clear();
     kDirtyRoster.clear();
     kRosterFullUpload = true;
-    kFrontier = kFuryArriveT;
+    kFrontier = startT;
+    kWorldStart = startT;
     kWorkerDone = false;
     if (selectedSatIndex >= (int)poolIdx0())
         selectedSatIndex = -1;
-    if (followActive && followSatIndex >= (int)poolIdx0())
-        stopFollow();
+    if (followActive && followSatIndex >= (int)poolIdx0()) // its piece may not exist in the new history
+        stopFollowHere("The debris you followed is being recomputed: you stay here.");
     if (!kesslerEnabled || activeSatCount == 0)
     {
         kWorkerDone = true;
@@ -491,14 +526,16 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     buildWorld(*this, wk->w, satOrbits, activeSatCount, constellations, satTypes, raanAnchorT, kFuryArriveT,
                kesslerRateMult, kesslerAvoidance, kesslerHorizonYears, kDebrisType, kDebrisConst, kDebrisKit);
     kHash = worldHash(wk->w);
+    wk->w.s.startT = startT;
+    wk->w.reset();
     wk->tEnd = kFuryArriveT + wk->w.s.horizonS;
 
     // The engine's events: those kept from the run being replaced, else the cache (user data, then the
     // shipped copy next to the exe), else none.
-    double replayUntil = kFuryArriveT;
+    double replayUntil = startT;
     if (keepEngineBefore >= 0.0)
         replayUntil = keptFrontier;
-    else
+    else if (startT >= kFuryArriveT) // a pre-CME breakup changes everything the cache holds
     {
         const std::string name = cacheName(kHash);
         std::vector<kessler::Event> cached;
@@ -522,11 +559,13 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     for (const kessler::Event &e : keptEngine)
         if (e.t < replayUntil)
             pend.push_back(e);
-    std::stable_sort(pend.begin(), pend.end(), [](const kessler::Event &a, const kessler::Event &b) { return a.t < b.t; });
+    kessler::sortPending(pend, 0, wk->w);
     wk->pending = std::move(pend);
     wk->replayUntil = replayUntil;
     kCacheFrontier = keepEngineBefore >= 0.0 ? kFuryArriveT : replayUntil;
-    wk->wantUntil = std::max(kFuryArriveT + 2.0 * 86400.0, (double)simDayJ2000 * 86400.0 + simSecInDay + 86400.0);
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    wk->wantUntil = startT < kFuryArriveT ? tNow + 86400.0 : std::max(kFuryArriveT + 2.0 * 86400.0, tNow + 86400.0);
+    wk->simNow = tNow;
     {
         char msg[200];
         snprintf(msg, sizeof(msg), "kessler: world %016llx: %u satellites, %zu pending events (replay to day %.1f)",
@@ -534,9 +573,26 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
         Log::line(msg);
     }
     kesslerEnsureCapacity(ctx, std::max<size_t>(16384, kPoolCap));
-    KesslerWorker *raw = wk.get();
-    wk->th = std::thread([raw] { raw->run(); });
     kWorker = std::move(wk);
+    // A breakup in the world's first steps (one before the CME starts the world at its own step): computed here, so its
+    // debris is up this frame.
+    if (syncUntil > 0.0)
+    {
+        kessler::World &w = kWorker->w;
+        const double to = w.stepStart(syncUntil) + w.s.stepS;
+        if (to - w.frontier <= 2.0 * w.s.stepS)
+        {
+            const auto c0 = std::chrono::steady_clock::now();
+            kWorker->keepCheckpoints();
+            kWorker->simulateChunk(to, w.frontier >= kWorker->replayUntil);
+            kWorker->publish();
+            char msg[160];
+            snprintf(msg, sizeof(msg), "kessler: breakup step computed in place (%.0f ms)",
+                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+            Log::line(msg);
+        }
+    }
+    kWorker->startThread();
 }
 
 // ── Per frame ───────────────────────────────────────────────────────────────────────────────────
@@ -565,6 +621,7 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
     }
     if (!kWorker)
         return;
+    kWorker->simNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
     {
         // Lazy: keep the world a minute of the CURRENT time warp ahead of sim time (at least two days, and always the
         // storm's first two days), not the whole horizon at once. The target follows the warp DOWN too: it only grew,
@@ -573,7 +630,8 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
         // day 342 at sim day 165). Explicit asks (harness waits) stay as a floor.
         const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
         const double ahead = std::clamp(60.0 * (double)kTimeScales[timeScaleIdx], 2.0 * 86400.0, 400.0 * 86400.0);
-        const double want = std::max({kFuryArriveT + 2.0 * 86400.0, t + ahead, kWantFloor});
+        const double want = std::max({kWorldStart < kFuryArriveT ? t + ahead : kFuryArriveT + 2.0 * 86400.0, t + ahead,
+                                      kWantFloor});
         kWorker->wantUntil = want;
     }
     std::vector<KesslerWorker::OutPoolChange> nPool;
@@ -990,25 +1048,36 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
 // ── The player's breakups ───────────────────────────────────────────────────────────────────────
 bool SatelliteSim::kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, std::string *why)
 {
-    if (!kesslerEnabled || !kWorker || !ctx_)
-    {
+    auto no = [&](const char *m) {
         if (why)
-            *why = "the Kessler scenario is off";
+            *why = m;
         return false;
-    }
+    };
+    if (!ctx_ || activeSatCount == 0)
+        return no("the simulation is not ready");
+    auto isLaunchObj = [&](uint32_t s) { return s >= activeSatCount && s < poolIdx0(); };
+    if (isLaunchObj(satA) || (kind == kessler::EV_COLLISION && isLaunchObj(satB)))
+        return no("rockets, raising trains and retiring satellites cannot be broken up");
+    if (satA >= satOrbits.size() || (kind == kessler::EV_COLLISION && satB >= satOrbits.size()))
+        return no("no such satellite");
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    if (t < kFuryArriveT)
+    const int32_t nowSec = (int32_t)std::clamp(std::floor(t - kFuryArriveT), -2147483000.0, 2147483000.0);
+    // Already gone at this time (destroyed, re-entered; a debris slot not holding a piece now)?
+    auto existsNow = [&](uint32_t s) {
+        if (s < activeSatCount)
+            return 2ull * s + 1 >= kRosterWords.size() || nowSec < kRosterWords[2ull * s + 1];
+        const uint32_t j = s - poolIdx0();
+        return j < kPool.size() && nowSec >= kPool[j].bornSec && nowSec < kPool[j].deathSec;
+    };
+    if (!existsNow(satA) || (kind == kessler::EV_COLLISION && !existsNow(satB)))
+        return no("it no longer exists at this time");
+    // A breakup starts the Kessler scenario (2026-10-19, the user: "if the user clicks the explode button, we presume
+    // we want to start the Kessler situation"), at any time, before the CME too.
+    if (!kesslerEnabled)
     {
-        // Before the storm there is no world yet to break things in (its seconds start at the CME).
-        if (why)
-            *why = "breakups start with the scenario (after the CME arrives, 2037-07-15 03:00 UTC)";
-        return false;
-    }
-    if (t > kFrontier + 1.0)
-    {
-        if (why)
-            *why = "the cascade is still being computed up to here";
-        return false;
+        kesslerEnabled = true;
+        spaceWeatherSetScriptedStorm(true, kFuryArriveT, kFuryPeakKp);
+        kWorker.reset(); // a fresh world below (it cannot be running while disabled)
     }
     kessler::Event ev;
     ev.t = t;
@@ -1018,16 +1087,211 @@ bool SatelliteSim::kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, 
     ev.b = satB == 0xFFFFFFFFu ? kessler::kNoRef : kesslerRefOfSat(satB);
     ev.seed = (uint32_t)(fnvv(fnvv(1469598103934665603ull, t), (uint64_t)kUserEvents.size()) & 0xFFFFFFFFu);
     if (ev.a == kessler::kNoRef || (kind == kessler::EV_COLLISION && ev.b == kessler::kNoRef))
+        return no("no such satellite");
+    kUserEvents.push_back(ev);
+    const auto c0 = std::chrono::steady_clock::now();
+    const bool fast = !kForceRebuildOnce && kesslerBreakupInPlace(ev);
+    kForceRebuildOnce = false;
+    if (!fast)
     {
-        if (why)
-            *why = "no such satellite";
+        // No rollback point (a breakup before the world's start, time played back past the kept checkpoints, the
+        // journal over its cap, or no world yet): rebuild the history with this breakup in it.
+        kesslerRestart(*ctx_, kUserEvents, t, t);
+        kesslerSync(*ctx_); // what the restart computed in place is up this frame
+    }
+    kLastBreakupMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count();
+    kLastBreakupFast = fast;
+    char msg[200];
+    snprintf(msg, sizeof(msg), "kessler: player breakup at day %.3f: %s in %.0f ms", (t - kFuryArriveT) / 86400.0,
+             fast ? "rolled back and re-ran its step" : "rebuilt the world", kLastBreakupMs);
+    Log::line(msg);
+    return true;
+}
+
+SatelliteSim::ExplodeResult SatelliteSim::explodeSatellite(int satIndex, BreakupKind kind)
+{
+    ExplodeResult r;
+    if (satIndex < 0)
+    {
+        r.reason = "no satellite selected";
+        return r;
+    }
+    std::string why;
+    r.ok = kesslerUserEvent(kind == BreakupKind::Asat ? kessler::EV_ASAT : kessler::EV_EXPLOSION, (uint32_t)satIndex,
+                            0xFFFFFFFFu, &why);
+    r.reason = r.ok ? (kind == BreakupKind::Asat ? "ASAT strike: " : "Explosion: ") + satLabel(satIndex) : why;
+    return r;
+}
+
+// The fast path (2026-10-19): rewind the running world to its last checkpoint at or before the breakup's time, re-run
+// up to the end of the breakup's step here (the debris is up this frame), rewind the main thread's mirror to the
+// same moment, and let the worker carry on from there. False when there is no checkpoint to rewind to.
+bool SatelliteSim::kesslerBreakupInPlace(const kessler::Event &ev)
+{
+    if (!kWorker || !ctx_)
+        return false;
+    KesslerWorker &W = *kWorker;
+    W.stopThread();
+    kessler::World &w = W.w;
+    const double t = ev.t;
+    const double stepEnd = w.stepStart(t) + w.s.stepS;
+    if (t < w.s.startT)
+    {
+        W.startThread();
         return false;
     }
-    // Whether the objects are still alive then is the world's to judge (apply() skips an event naming a
-    // dead one): the restart replays everything up to it.
-    kUserEvents.push_back(ev);
-    kesslerRestart(*ctx_, kUserEvents, t);
+    if (w.frontier > w.stepStart(t))
+    {
+        const int k = w.checkpointAtOrBefore(t);
+        if (k < 0)
+        {
+            W.startThread();
+            return false;
+        }
+        const kessler::World::Checkpoint ck = w.checkpoints[(size_t)k];
+        // The engine's own events since the checkpoint, up to the end of the breakup's step: replayed as they were
+        // (the past does not change; the engine samples the next step with the debris in it).
+        std::vector<kessler::Event> eng;
+        for (size_t i = ck.events; i < w.events.size(); ++i)
+            if (w.events[i].origin == kessler::ORIGIN_ENGINE && w.events[i].t < stepEnd)
+                eng.push_back(w.events[i]);
+        // The mirror's events up to the checkpoint (identical in both histories): what was published, and what the
+        // worker published that the main thread has not taken yet. Its unsynced records and roster changes are taken
+        // from the rewound world itself (kesslerMirrorRewind); its small-fragment streams from before the checkpoint
+        // are kept.
+        {
+            std::lock_guard<std::mutex> lk(W.mx);
+            kEvents.insert(kEvents.end(), W.outEvents.begin(), W.outEvents.end());
+            std::vector<kessler::SmallStream> keep;
+            const int32_t ckSec = w.secOf(ck.t);
+            for (const kessler::SmallStream &ss : W.outStreams)
+                if (ss.bornSec < ckSec)
+                    keep.push_back(ss);
+            if (!keep.empty())
+                kesslerAddStreams(keep);
+            W.outEvents.clear();
+            W.outPool.clear();
+            W.outStreams.clear();
+            W.outRoster.clear();
+        }
+        W.pendingNext = w.rollback(k);
+        // The pending tail: no engine events (those past the breakup's step are another future now), then the kept ones.
+        std::vector<kessler::Event> &P = W.pending;
+        P.erase(std::remove_if(P.begin() + (ptrdiff_t)W.pendingNext, P.end(),
+                               [](const kessler::Event &e) { return e.origin == kessler::ORIGIN_ENGINE; }),
+                P.end());
+        P.insert(P.end(), eng.begin(), eng.end());
+        P.push_back(ev);
+        kessler::sortPending(P, W.pendingNext, w);
+        W.replayUntil = stepEnd;
+        W.pubEvents = w.events.size();
+        if (kEvents.size() >= w.events.size())
+            kEvents.resize(w.events.size());
+        else
+            kEvents.assign(w.events.begin(), w.events.end());
+        kesslerMirrorRewind(ck.t);
+    }
+    else
+    {
+        // The world has not reached the breakup's step (time ran a little past the frontier): add it; engine events
+        // (a cache being replayed) past its step are another future now.
+        std::vector<kessler::Event> &P = W.pending;
+        P.erase(std::remove_if(P.begin() + (ptrdiff_t)W.pendingNext, P.end(),
+                               [&](const kessler::Event &e) { return e.origin == kessler::ORIGIN_ENGINE && e.t >= stepEnd; }),
+                P.end());
+        P.push_back(ev);
+        kessler::sortPending(P, W.pendingNext, w);
+        W.replayUntil = std::min(W.replayUntil, stepEnd);
+    }
+    // Up to the end of the breakup's step, here: replayed from its engine events (or sampled, if the world had not
+    // got there).
+    W.keepCheckpoints();
+    if (w.frontier < stepEnd && w.frontier < W.replayUntil)
+        W.simulateChunk(std::min(W.replayUntil, stepEnd), false);
+    if (w.frontier < stepEnd)
+        W.simulateChunk(stepEnd, true);
+    W.publish();
+    kFrontier = w.frontier;
+    W.startThread();
+    if (ctx_)
+        kesslerSync(*ctx_); // the mirror takes the step's records now (the debris is drawn this frame)
     return true;
+}
+
+// The main thread's mirror rewound to the world's state at checkpoint time tCk (after World::rollback): every slot
+// shows the world's generation, the history keeps only generations from before, the roster's seconds are the world's.
+void SatelliteSim::kesslerMirrorRewind(double tCk)
+{
+    kessler::World &w = kWorker->w;
+    const int32_t ckSec = w.secOf(tCk);
+    const size_t n = w.pool.size();
+    const size_t old = kPool.size();
+    // Pool slots past the checkpoint's end: gone.
+    for (size_t j = n; j < old; ++j)
+        kPoolHist.erase((uint32_t)j);
+    kPool.resize(n);
+    kPoolGen.resize(n, UINT32_MAX);
+    satOrbits.resize(poolIdx0() + n);
+    for (uint32_t j = 0; j < (uint32_t)n; ++j)
+    {
+        const uint32_t g = w.poolGen[j];
+        auto it = kPoolHist.find(j);
+        if (it != kPoolHist.end())
+        {
+            std::vector<KGen> &h = it->second;
+            h.erase(std::remove_if(h.begin(), h.end(), [&](const KGen &x) { return x.gen >= g; }), h.end());
+            h.push_back({g, w.pool[j]});
+            if (h.size() <= 1)
+                kPoolHist.erase(it);
+        }
+        else if (j < old && kPoolGen[j] != UINT32_MAX && kPoolGen[j] < g && kPool[j].bornSec < ckSec)
+            kPoolHist[j] = {{kPoolGen[j], kPool[j]}, {g, w.pool[j]}};
+        const bool same = j < old && kPoolGen[j] == g && memcmp(&kPool[j], &w.pool[j], sizeof(kessler::PoolRec)) == 0;
+        if (!same)
+        {
+            kPool[j] = w.pool[j];
+            kPoolGen[j] = g;
+            kesslerSetPoolOrbit(j);
+            if (j < kPoolGpu)
+                kDirtyPool.push_back(j);
+            if (w.pool[j].decaySec != kessler::kNever)
+                kesslerIndexReentry(poolIdx0() + j, w.pool[j].decaySec);
+        }
+    }
+    kPoolGpu = std::min<uint32_t>(kPoolGpu, (uint32_t)n);
+    kGenBounds.clear();
+    for (const auto &kv : kPoolHist)
+        for (size_t q = 1; q < kv.second.size(); ++q)
+            kGenBounds.insert({kv.second[q].rec.bornSec, kv.first});
+    kShownSec = INT32_MIN; // re-pick the shown generations at the next sync
+    for (uint32_t i = 0; i < activeSatCount && i < w.rosterDead.size(); ++i)
+    {
+        if (2ull * i + 1 >= kRosterWords.size())
+            break;
+        if (kRosterWords[2ull * i] != w.rosterDead[i] || kRosterWords[2ull * i + 1] != w.rosterEnd[i] ||
+            kRosterDecay[i] != w.rosterDecay[i])
+        {
+            kRosterWords[2ull * i] = w.rosterDead[i];
+            kRosterWords[2ull * i + 1] = w.rosterEnd[i];
+            kRosterDecay[i] = w.rosterDecay[i];
+            kDirtyRoster.push_back(i);
+            if (w.rosterDecay[i] != kessler::kNever)
+                kesslerIndexReentry(i, w.rosterDecay[i]);
+        }
+    }
+    // Small-fragment streams made since the checkpoint belong to the other future.
+    kSmallStreamCount = 0;
+    for (auto it = kSmallStreams.begin(); it != kSmallStreams.end();)
+    {
+        std::vector<kessler::SmallStream> &v = it->second;
+        v.erase(std::remove_if(v.begin(), v.end(), [&](const kessler::SmallStream &s) { return s.bornSec >= ckSec; }), v.end());
+        kSmallStreamCount += v.size();
+        it = v.empty() ? kSmallStreams.erase(it) : std::next(it);
+    }
+    kSmallReHours.clear();
+    // A selection or follow of a piece that is no longer the same object.
+    if (selectedSatIndex >= (int)poolIdx0() && (size_t)(selectedSatIndex - (int)poolIdx0()) >= n)
+        selectedSatIndex = -1;
 }
 
 
@@ -1089,7 +1353,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     constexpr double kLife = 3.0 * 3600.0;
-    if (t < kFuryArriveT)
+    if (t < kWorldStart)
         return;
     // Events are in time order to within one engine step (6 h): start the scan that far before the window.
     const double tFrom = t - kLife - 6.0 * 3600.0;
@@ -1362,9 +1626,10 @@ FbFrag fbFrag(uint64_t seed, int k, int N, double tau, float matK = 0.0f)
 
 void SatelliteSim::kesslerIndexReentry(uint32_t sat, int32_t sec)
 {
-    if (sec == kessler::kNever || sec < 0)
+    if (sec == kessler::kNever)
         return;
-    kReentries[sec / 3600].push_back({sat, sec});
+    // By hour (floor: a breakup before the CME gives negative seconds).
+    kReentries[(int32_t)std::floor(sec / 3600.0)].push_back({sat, sec});
 }
 
 // The CPU's SatOrbit for pool slot j (the shown generation).
@@ -1565,8 +1830,8 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
     if (!kesslerEnabled || kReentries.empty())
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    const int32_t nowSec = (int32_t)std::floor(t - kFuryArriveT);
-    if (nowSec < 0)
+    const int32_t nowSec = (int32_t)std::floor(t - kFuryArriveT); // negative before the CME (a player's breakup)
+    if (t < kWorldStart)
         return;
     GpuFireball *fo = reinterpret_cast<GpuFireball *>(static_cast<char *>(kFireMapped) + 16);
     const glm::dvec3 eye = glm::dvec3(obsECI);
@@ -1580,7 +1845,8 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
         fbDrawReentry(U0, A, m0, N, seed, tau, out, n, toSky, pixFull, kind, a);
     };
     std::vector<uint32_t> seen;
-    for (int32_t hr = (nowSec - (int32_t)kFbDur) / 3600; hr <= nowSec / 3600; ++hr)
+    const auto hourOf = [](int64_t sec) { return (int32_t)std::floor((double)sec / 3600.0); };
+    for (int32_t hr = hourOf((int64_t)nowSec - (int64_t)kFbDur); hr <= hourOf(nowSec); ++hr)
     {
         auto it = kReentries.find(hr);
         if (it == kReentries.end())
@@ -1642,7 +1908,7 @@ void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double t
     kSmallReHourCount = 0;
     if (kesslerSmallReGain > 0.0f && (kTimeScales[timeScaleIdx] <= 3600.0f || timePaused))
     {
-        const int32_t hr0 = (int32_t)std::floor((nowSec - kFbDur) / 3600.0), hr1 = nowSec / 3600;
+        const int32_t hr0 = (int32_t)std::floor((nowSec - kFbDur) / 3600.0), hr1 = (int32_t)std::floor(nowSec / 3600.0);
         for (auto it = kSmallReHours.begin(); it != kSmallReHours.end();)
             it = (it->first < hr0 - 1 || it->first > hr1 + 1) ? kSmallReHours.erase(it) : std::next(it);
         kSmallReHourCount = (uint32_t)kesslerSmallReHour(hr1).size();
@@ -1682,9 +1948,9 @@ bool SatelliteSim::kesslerNextReentry(uint32_t &satOut, double &tOut, glm::dvec3
     const int32_t nowSec = (int32_t)std::floor(t - kFuryArriveT);
     double best = -1.0;
     // Dead satellites (the spectacle) over the next 48 h, else the heaviest piece over the next 6.
-    for (int32_t hr = std::max(nowSec, 0) / 3600; hr <= std::max(nowSec, 0) / 3600 + 48; ++hr)
+    for (int32_t hr = (int32_t)std::floor(nowSec / 3600.0); hr <= (int32_t)std::floor(nowSec / 3600.0) + 48; ++hr)
     {
-        if (best >= 1.0e6 && hr > std::max(nowSec, 0) / 3600 + 6)
+        if (best >= 1.0e6 && hr > (int32_t)std::floor(nowSec / 3600.0) + 6)
             break;
         auto it = kReentries.find(hr);
         if (it == kReentries.end())
@@ -1927,7 +2193,9 @@ std::string SatelliteSim::kesslerStatusLine() const
     if (!kesslerEnabled || kWorkerDone)
         return {};
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    if (t + 1.0 < kFrontier)
+    // Only while time is actually held (SatelliteSim.cpp: it may lead the frontier by ~2 s of the warp).
+    const double lead = std::clamp(2.0 * (double)kTimeScales[timeScaleIdx], 2.0, 6.0 * 3600.0);
+    if (t < kWorldStart || t + 1.0 < kFrontier + lead)
         return {};
     char b[128];
     snprintf(b, sizeof(b), "Computing the debris cascade: day %.0f of %.0f",
@@ -1961,6 +2229,10 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
     j["done"] = kWorkerDone;
     j["events"] = kEvents.size();
     j["user_events"] = kUserEvents.size();
+    j["world_start_days"] = (kWorldStart - kFuryArriveT) / 86400.0;
+    j["last_breakup_ms"] = kLastBreakupMs;
+    j["last_breakup_in_place"] = kLastBreakupFast;
+    j["time_held"] = !kesslerStatusLine().empty();
     j["records"] = kPool.size();
     j["records_gpu"] = kPoolGpu;
     j["capacity"] = kPoolCap;
@@ -2174,7 +2446,7 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
     if (uiToggleRow(inp, ui, "KesslerOn", 0, "Scenario (a storm on 2037-07-15)", on,
                     "A Carrington-class solar storm arrives two days after the Great Australian Eclipse. Satellites it "
                     "kills tumble, dead ones collide, and every collision is a debris cloud (NASA breakup model). "
-                    "Nothing differs before it."))
+                    "Nothing differs before it, unless you break something up (that starts it there)."))
     {
         kesslerEnabled = on;
         spaceWeatherSetScriptedStorm(kesslerEnabled, kFuryArriveT, kFuryPeakKp);
@@ -2291,12 +2563,6 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
 // A player breakup from the info window (the viewed satellite).
 void SatelliteSim::kesslerBreakupFromUi(int sat, uint8_t kind)
 {
-    std::string why;
-    if (sat < 0)
-        snprintf(kUiMsg, sizeof(kUiMsg), "No satellite to break up");
-    else if (kesslerUserEvent(kind, (uint32_t)sat, 0xFFFFFFFFu, &why))
-        snprintf(kUiMsg, sizeof(kUiMsg), "%s: %s", kind == kessler::EV_ASAT ? "ASAT strike" : "Explosion",
-                 satLabel(sat).c_str());
-    else
-        snprintf(kUiMsg, sizeof(kUiMsg), "Not now: %s", why.c_str());
+    const ExplodeResult r = explodeSatellite(sat, kind == kessler::EV_ASAT ? BreakupKind::Asat : BreakupKind::Explosion);
+    snprintf(kUiMsg, sizeof(kUiMsg), "%s%s", r.ok ? "" : "Not now: ", r.reason.c_str());
 }

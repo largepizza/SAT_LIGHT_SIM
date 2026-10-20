@@ -381,8 +381,17 @@ json SatelliteSim::harnessStateJson()
                      {"height_offset_m", obsHeightOffset},
                      {"following", followActive}, {"follow_flight", followFlight}};
     if (followActive)
+    {
         j["observer"]["follow"] = {{"sat", followSatIndex},
-                                   {"offset_m", {followOffset.x, followOffset.y, followOffset.z}}};
+                                   {"offset_m", {followOffset.x, followOffset.y, followOffset.z}},
+                                   {"label", std::string(followLabel)},
+                                   {"handover_m", glm::length(followHandD)}};
+        if (followIsTransient())
+            j["observer"]["follow"]["transient"] = {{"kind", (int)followTrCur.kind}, {"stage", (int)followTrCur.stage},
+                                                    {"key", followTrKey}, {"waiting_for_kind", (int)followWantKind},
+                                                    {"alt_km", (glm::length(followTrCur.pos) - satphot::kEarthRadiusM) / 1000.0},
+                                                    {"tau_s", followTrCur.tau}};
+    }
     j["camera"] = {{"az_deg", camera.azDeg}, {"el_deg", camera.elDeg}, {"fov_y_deg", camera.fovYDeg},
                    {"tracking", trackActive}};
     const glm::vec3 sun(sunDirENU), moon(moonDirENU);
@@ -1724,10 +1733,20 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = fly ? "follow off (flying home)" : "follow off";
             return Status::Done;
         }
+        if (lower(pos(0)) == "stay")
+        {
+            // Leave Go to where the camera is: a free observer there (the HUD's "Stay here", KB_FOLLOW_STAY).
+            if (!followActive)
+                fail("follow stay: not following");
+            stopFollowHere();
+            r["message"] = "follow off (staying here)";
+            r["alt_km"] = obsHeightOffset / 1000.0;
+            return Status::Done;
+        }
         const int idx = c.has("sat") ? (int)c.num("sat", -1) : selectedSatIndex;
         if (idx < 0 || idx >= (int)satOrbits.size())
             fail("follow: select a satellite first (or sat=<i>)");
-        if (!followActive || followSatIndex != idx)
+        if (!isFollowing(idx))
             startFollow(idx, fly);
         if (!followActive)
             fail("follow: this satellite's type has no geometry model");
@@ -2258,8 +2277,12 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             else if (lower(c.str("kind", "explosion")) == "asat")
                 kind = kessler::EV_ASAT;
             std::string why;
+            kForceRebuildOnce = c.num("rebuild", 0.0) > 0.5; // the old path: rebuild the history (comparison)
             if (!kesslerUserEvent(kind, a0, b0, &why))
                 fail("kessler " + sub + ": " + why);
+            r["breakup_ms"] = kLastBreakupMs;
+            r["in_place"] = kLastBreakupFast;
+            r["frontier_days"] = (kFrontier - kesslerEpoch()) / 86400.0;
         }
         else if (sub == "wait")
         {

@@ -489,15 +489,16 @@ static int headingBin(double e, double nn)
 }
 
 void DebrisGrid::depositInto(std::vector<int64_t> &c, std::vector<int64_t> &m, double a, double e, double incl,
-                             double argp, double weight, double massKg, uint64_t seed) const
+                             double argp, double weight, double massKg, uint64_t seed, int sign) const
 {
     if (c.empty())
     {
         c.assign((size_t)NR * NL * NH, 0);
         m.assign((size_t)NR * NL, 0);
     }
-    const int64_t q = (int64_t)std::llround(weight * kFix / NS);
-    const int64_t mq = (int64_t)std::llround(weight * massKg * 1000.0 * kFix / NS);
+    // sign -1 takes exactly the same integers back out (the rollback undoes a deposit this way).
+    const int64_t q = (int64_t)std::llround(weight * kFix / NS) * sign;
+    const int64_t mq = (int64_t)std::llround(weight * massKg * 1000.0 * kFix / NS) * sign;
     if (q == 0)
         return;
     const double ci = std::cos(incl), si = std::sin(incl);
@@ -617,9 +618,180 @@ void World::reset()
     smallAlive = 0;
     smallStreams.clear();
     smallStreamsMade = 0;
-    frontier = s.epoch;
+    frontier = s.startT != 0.0 ? std::min(s.startT, s.epoch) : s.epoch;
     sampleCount = 0;
+    journal.clear();
+    journalOff = 0;
+    journalOn = false;
+    checkpoints.clear();
 }
+
+// ── Rollback (2026-10-19) ──────────────────────────────────────────────────────────────────────────
+void World::checkpoint(double t, size_t pendingNext)
+{
+    if (!journalOn)
+    {
+        journal.clear();
+        journalOff = 0;
+        checkpoints.clear();
+        journalOn = true;
+    }
+    Checkpoint c;
+    c.t = t;
+    c.journal = journalOff + journal.size();
+    c.events = events.size();
+    c.pool = pool.size();
+    c.recAdded = recAdded;
+    c.smallAlive = smallAlive;
+    c.smallStreamsMade = smallStreamsMade;
+    c.sampleCount = sampleCount;
+    c.pendingNext = pendingNext;
+    checkpoints.push_back(c);
+    if (journal.size() > journalCap)
+        dropJournal(); // too much since the oldest kept one: no rollback until the next checkpoint
+}
+
+void World::dropJournal()
+{
+    journal.clear();
+    journalOff = 0;
+    checkpoints.clear();
+    journalOn = false;
+}
+
+void World::dropCheckpointsBefore(double t)
+{
+    // Keep the latest checkpoint at or before t (a breakup at t rewinds there) and every later one.
+    size_t keep = 0;
+    for (size_t k = 0; k < checkpoints.size(); ++k)
+        if (checkpoints[k].t <= t)
+            keep = k;
+    if (keep == 0)
+        return;
+    const size_t cut = checkpoints[keep].journal - journalOff;
+    journal.erase(journal.begin(), journal.begin() + (ptrdiff_t)std::min(cut, journal.size()));
+    journalOff += cut;
+    checkpoints.erase(checkpoints.begin(), checkpoints.begin() + (ptrdiff_t)keep);
+}
+
+int World::checkpointAtOrBefore(double t) const
+{
+    int best = -1;
+    for (size_t k = 0; k < checkpoints.size(); ++k)
+        if (checkpoints[k].t <= t)
+            best = (int)k;
+    return best;
+}
+
+size_t World::rollback(int k)
+{
+    const Checkpoint c = checkpoints[(size_t)k];
+    const size_t stop = c.journal - journalOff;
+    // The release heap is a multiset (its pop order is fixed by (sec, slot), whatever its layout): what was pushed
+    // since goes, what was popped comes back, then it is re-heaped once.
+    std::vector<Release> pushed, popped;
+    while (journal.size() > stop)
+    {
+        JEntry &e = journal.back();
+        switch (e.op)
+        {
+        case J_POOL:
+            pool[e.a] = e.rec;
+            break;
+        case J_GEN:
+            poolGen[e.a] = (uint32_t)e.b;
+            break;
+        case J_RDEAD:
+            rosterDead[e.a] = (int32_t)e.b;
+            break;
+        case J_REND:
+            rosterEnd[e.a] = (int32_t)e.b;
+            break;
+        case J_RDECAY:
+            rosterDecay[e.a] = (int32_t)e.b;
+            break;
+        case J_FREE_PUSH:
+            if (!poolFree.empty())
+                poolFree.pop_back();
+            break;
+        case J_FREE_POP:
+            poolFree.push_back(e.a);
+            break;
+        case J_HEAP_PUSH:
+            pushed.push_back({(int32_t)e.b, e.a, e.c});
+            break;
+        case J_HEAP_POP:
+            popped.push_back({(int32_t)e.b, e.a, e.c});
+            break;
+        case J_GRID:
+            grid.depositInto(grid.cnt, grid.massG, e.d[0], e.d[1], e.d[2], e.d[3], e.d[4], e.d[5], (uint64_t)e.b, -1);
+            break;
+        case J_BUCKET:
+        {
+            DeathBucket &bk = deathBuckets[(int32_t)e.a];
+            grid.depositInto(bk.cnt, bk.massG, e.d[0], e.d[1], e.d[2], e.d[3], e.d[4], e.d[5], (uint64_t)e.b, -1);
+            break;
+        }
+        case J_RETIRE:
+            if (e.bucket)
+            {
+                if (!grid.cnt.empty() && !e.bucket->cnt.empty())
+                {
+                    for (size_t i = 0; i < grid.cnt.size(); ++i)
+                        grid.cnt[i] += e.bucket->cnt[i];
+                    for (size_t i = 0; i < grid.massG.size(); ++i)
+                        grid.massG[i] += e.bucket->massG[i];
+                }
+                deathBuckets[(int32_t)e.a] = std::move(*e.bucket);
+            }
+            break;
+        }
+        journal.pop_back();
+    }
+    if (!pushed.empty() || !popped.empty())
+    {
+        auto key = [](const Release &r) { return std::make_tuple(r.sec, r.slot, r.gen); };
+        std::map<std::tuple<int32_t, uint32_t, uint32_t>, int> remove;
+        for (const Release &r : pushed)
+            ++remove[key(r)];
+        releaseHeap.insert(releaseHeap.end(), popped.begin(), popped.end());
+        std::vector<Release> kept;
+        kept.reserve(releaseHeap.size());
+        for (const Release &r : releaseHeap)
+        {
+            auto it = remove.find(key(r));
+            if (it != remove.end() && it->second > 0)
+            {
+                --it->second;
+                continue;
+            }
+            kept.push_back(r);
+        }
+        releaseHeap.swap(kept);
+        std::make_heap(releaseHeap.begin(), releaseHeap.end(), std::greater<>());
+    }
+    events.resize(c.events);
+    pool.resize(c.pool);
+    poolGen.resize(c.pool);
+    // Free slots past the old end cannot exist (they were appended after the checkpoint).
+    recAdded = c.recAdded;
+    smallAlive = c.smallAlive;
+    smallStreamsMade = c.smallStreamsMade;
+    sampleCount = c.sampleCount;
+    frontier = c.t;
+    poolChanges.clear();
+    rosterChanged.clear();
+    smallStreams.clear();
+    checkpoints.resize((size_t)k);
+    if (checkpoints.empty())
+    {
+        journal.clear();
+        journalOff = 0;
+        journalOn = false;
+    }
+    return c.pendingNext;
+}
+
 
 int32_t World::secOf(double t) const
 {
@@ -704,11 +876,14 @@ uint32_t World::addRecord(const PoolRec &r)
         std::pop_heap(releaseHeap.begin(), releaseHeap.end(), std::greater<>());
         const Release rel = releaseHeap.back();
         releaseHeap.pop_back();
+        jSimple(J_HEAP_POP, rel.slot, rel.sec, rel.gen);
         if (rel.slot < pool.size() && poolGen[rel.slot] == rel.gen && pool[rel.slot].deathSec != kNever &&
             pool[rel.slot].deathSec + kReleaseDelayS == rel.sec && !(pool[rel.slot].flags & kRecFree))
         {
+            jPool(rel.slot);
             pool[rel.slot].flags |= kRecFree;
             poolFree.push_back(rel.slot);
+            jSimple(J_FREE_PUSH, rel.slot);
         }
     }
     uint32_t slot;
@@ -716,7 +891,10 @@ uint32_t World::addRecord(const PoolRec &r)
     {
         slot = poolFree.back();
         poolFree.pop_back();
+        jSimple(J_FREE_POP, slot);
+        jPool(slot);
         pool[slot] = r;
+        jSimple(J_GEN, slot, poolGen[slot]);
         ++poolGen[slot];
     }
     else if (pool.size() < s.poolCapacity)
@@ -732,6 +910,7 @@ uint32_t World::addRecord(const PoolRec &r)
     {
         releaseHeap.push_back({r.deathSec + kReleaseDelayS, slot, poolGen[slot]});
         std::push_heap(releaseHeap.begin(), releaseHeap.end(), std::greater<>());
+        jSimple(J_HEAP_PUSH, slot, r.deathSec + kReleaseDelayS, poolGen[slot]);
     }
     poolChanges.push_back({slot, poolGen[slot], r.deathSec, 1, r});
     return slot;
@@ -836,12 +1015,15 @@ void World::killRoster(uint32_t ref, double t, uint32_t eventIdx)
     const RosterObj &o = roster[ref];
     const TypeInfo &ty = types[o.type];
     const int32_t sec = secOf(t);
+    jSimple(J_RDEAD, ref, rosterDead[ref]);
     rosterDead[ref] = sec;
     // No longer flying against drag: it re-enters when its (circular) orbit decays.
     const double cdAm = 2.2 * ty.areaM2 / std::max(ty.massKg, 1.0);
     const double td = t + lifetime(t, (double)o.R, 0.0, cdAm);
     if (td < s.epoch + s.horizonS * 1.5)
     {
+        jSimple(J_RDECAY, ref, rosterDecay[ref]);
+        jSimple(J_REND, ref, rosterEnd[ref]);
         rosterDecay[ref] = std::max(sec, secOf(td));
         rosterEnd[ref] = std::min(rosterEnd[ref], rosterDecay[ref]);
     }
@@ -1006,11 +1188,14 @@ void World::spawnSmall(const BreakupResult &br, const State &st, double t, uint3
         const double cdAm = std::clamp(2.2 * f.areaM2 / std::max(f.massKg, 1e-6), 1e-4, 10.0);
         const double deathT = t + lifetime(t, el.a, el.e, cdAm);
         grid.deposit(el.a, el.e, el.i, el.argp, f.weight, f.massKg, pseed, +1);
+        jDeposit(J_GRID, 0, el.a, el.e, el.i, el.argp, f.weight, f.massKg, pseed);
         ++smallAlive;
         if (deathT < s.epoch + s.horizonS * 1.5)
         {
-            DeathBucket &bk = deathBuckets[(int32_t)std::floor((deathT - s.epoch) / kDeathBucketS)];
+            const int32_t bkey = (int32_t)std::floor((deathT - s.epoch) / kDeathBucketS);
+            DeathBucket &bk = deathBuckets[bkey];
             grid.depositInto(bk.cnt, bk.massG, el.a, el.e, el.i, el.argp, f.weight, f.massKg, pseed);
+            jDeposit(J_BUCKET, (uint32_t)bkey, el.a, el.e, el.i, el.argp, f.weight, f.massKg, pseed);
         }
         if (deathT < s.epoch + s.horizonS)
             cands.push_back({deathT, std::clamp(0.15 * (deathT - t), 3600.0, 5.0 * 86400.0), f.weight, f.massKg, el});
@@ -1067,6 +1252,14 @@ void World::retireParticles(double t)
             for (size_t i = 0; i < grid.massG.size(); ++i)
                 grid.massG[i] -= bk.massG[i];
         }
+        if (journalOn)
+        {
+            JEntry e;
+            e.op = J_RETIRE;
+            e.a = (uint32_t)deathBuckets.begin()->first;
+            e.bucket = std::make_shared<DeathBucket>(std::move(deathBuckets.begin()->second));
+            journal.push_back(std::move(e));
+        }
         deathBuckets.erase(deathBuckets.begin());
     }
 }
@@ -1086,7 +1279,7 @@ void World::damageCluster(uint32_t ref, double t, uint32_t eventIdx, uint32_t se
             killRoster(m, t, eventIdx);
 }
 
-static void endObject(World &w, uint32_t ref, double t, bool keepWeighted)
+void endObject(World &w, uint32_t ref, double t, bool keepWeighted)
 {
     if (ref == kNoRef || ref == kSmallRef)
         return;
@@ -1099,14 +1292,17 @@ static void endObject(World &w, uint32_t ref, double t, bool keepWeighted)
         if (sec < r.deathSec)
         {
             const uint32_t slot = ref & ~kPoolBit;
+            w.jPool(slot);
             r.deathSec = std::max(sec, r.bornSec);
             w.poolChanges.push_back({slot, w.poolGen[slot], r.deathSec, 0, {}});
             w.releaseHeap.push_back({r.deathSec + World::kReleaseDelayS, slot, w.poolGen[slot]});
             std::push_heap(w.releaseHeap.begin(), w.releaseHeap.end(), std::greater<>());
+            w.jSimple(World::J_HEAP_PUSH, slot, r.deathSec + World::kReleaseDelayS, w.poolGen[slot]);
         }
     }
     else if (sec < w.rosterEnd[ref])
     {
+        w.jSimple(World::J_REND, ref, w.rosterEnd[ref]);
         w.rosterEnd[ref] = sec;
         w.rosterChanged.push_back(ref);
     }
@@ -1258,13 +1454,24 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
     std::vector<float> hitV, hitM;
     while (frontier < tEnd && !(stop && *stop))
     {
-        const double t0 = frontier, t1 = std::min(frontier + s.stepS, tEnd);
-        while (pendingNext < pending.size() && pending[pendingNext].t <= t1)
+        const double t0 = frontier, t1 = std::min(stepStart(frontier) + s.stepS, tEnd);
+        if (t0 == stepStart(t0) && wantCheckpoints && t0 >= checkpointFrom)
+            checkpoint(t0, pendingNext);
+        // A step applies its scripted events, then the engine's, then the player's (sortPending's order: a replay of
+        // the step from its engine events gives the same history as sampling it).
+        while (pendingNext < pending.size() && pending[pendingNext].t <= t1 && pending[pendingNext].origin != ORIGIN_USER)
             apply(pending[pendingNext++]);
-        if (t1 > s.epoch)
         {
             const double ts = 0.5 * (t0 + t1), dt = t1 - t0;
             const int32_t sec = secOf(ts);
+            // The step's own index on the grid (seeds): the same at any replay, whenever the step is run.
+            const uint64_t stepK = (uint64_t)stepIndex(stepStart(t0));
+            // Before the CME every working satellite dodges (avoidance 1): only the dead and the debris can collide,
+            // so the working ones are left out altogether (they could not collide; the draws are per pair).
+            const bool preStorm = ts < s.epoch;
+            EngineParams ep = s.engine;
+            if (preStorm)
+                ep.avoidance = 1.0;
             auto clk = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
             double c0 = clk();
             retireParticles(ts);
@@ -1273,7 +1480,8 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
             {
                 if (sec >= rosterEnd[i])
                     continue;
-                if (!types[roster[i].type].passive && sec < rosterDead[i] && hash01(sampleCount, i, 21) >= s.activeSample)
+                if (!types[roster[i].type].passive && sec < rosterDead[i] &&
+                    (preStorm || hash01(stepK, i, 21) >= s.activeSample))
                     continue;
                 refs.push_back(i);
             }
@@ -1286,7 +1494,7 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
             hitV.assign(refs.size(), 0.0f);
             hitM.assign(refs.size(), 0.0f);
             const bool gridOn = grid.total() > 0.0;
-            const uint64_t gseed = mix64(0x6121D5ull ^ sampleCount);
+            const uint64_t gseed = mix64(0x6121D5ull ^ stepK);
             parallelChunks(refs.size(), [&](size_t a, size_t b) {
                 for (size_t k = a; k < b; ++k)
                 {
@@ -1320,7 +1528,7 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
                             const double rr = (double)o.radiusM + 0.15;
                             double P = rate * kPi * rr * rr * dt * (double)o.weight * s.engine.rateMultiplier;
                             if (o.active)
-                                P *= (1.0 - s.engine.avoidance);
+                                P *= (1.0 - ep.avoidance);
                             if (hash01(gseed, ref, 13) < std::min(P, 1.0))
                             {
                                 // The projectile is drawn from the small population's size distribution (most
@@ -1340,7 +1548,7 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
             });
             double c2 = clk();
             profState += c2 - c1;
-            std::vector<EngineCollision> col = engineSample(objs, dt, s.engine, mix64(0xC0111DEull ^ sampleCount));
+            std::vector<EngineCollision> col = engineSample(objs, dt, ep, mix64(0xC0111DEull ^ stepK));
             double c3 = clk();
             profPairs += c3 - c2;
             std::vector<Event> evs;
@@ -1353,7 +1561,7 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
                 ev.b = c.b;
                 ev.kind = EV_COLLISION;
                 ev.origin = ORIGIN_ENGINE;
-                ev.seed = (uint32_t)mix64(((uint64_t)c.a << 32 | c.b) ^ (sampleCount * 0x9E3779B97F4A7C15ull));
+                ev.seed = (uint32_t)mix64(((uint64_t)c.a << 32 | c.b) ^ (stepK * 0x9E3779B97F4A7C15ull));
                 evs.push_back(ev);
             }
             for (size_t k = 0; k < refs.size(); ++k)
@@ -1367,7 +1575,7 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
                     ev.origin = ORIGIN_ENGINE;
                     ev.vRel = hitV[k];
                     ev.mProj = hitM[k];
-                    ev.seed = (uint32_t)mix64(((uint64_t)refs[k] << 32 | kSmallRef) ^ (sampleCount * 0x9E3779B97F4A7C15ull));
+                    ev.seed = (uint32_t)mix64(((uint64_t)refs[k] << 32 | kSmallRef) ^ (stepK * 0x9E3779B97F4A7C15ull));
                     evs.push_back(ev);
                 }
             // Each at its own time within the step (all at the midpoint, every collision of 6 h happened in the same
@@ -1382,8 +1590,23 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
             profApply += clk() - c3;
             ++sampleCount;
         }
+        while (pendingNext < pending.size() && pending[pendingNext].t <= t1)
+            apply(pending[pendingNext++]);
         frontier = t1;
     }
+}
+
+void sortPending(std::vector<Event> &pending, size_t from, const World &w)
+{
+    auto cls = [](const Event &e) { return e.origin == ORIGIN_USER ? 2 : e.origin == ORIGIN_ENGINE ? 1 : 0; };
+    std::stable_sort(pending.begin() + (ptrdiff_t)from, pending.end(), [&](const Event &a, const Event &b) {
+        const int64_t sa = w.stepIndex(w.stepStart(a.t)), sb = w.stepIndex(w.stepStart(b.t));
+        if (sa != sb)
+            return sa < sb;
+        if (cls(a) != cls(b))
+            return cls(a) < cls(b);
+        return a.t < b.t;
+    });
 }
 
 std::vector<Event> stormSeedEvents(const World &w, double arriveT, uint64_t seed)

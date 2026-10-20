@@ -2213,7 +2213,7 @@ void SatelliteSim::buildViewTitleIcons(const UIInput &inp, UIRenderer &ui, bool 
     if (!tracked)
         return;
     const bool isSelected = selectedSatIndex == viewerSatIndex;
-    const bool isFollowed = followActive && followSatIndex == viewerSatIndex;
+    const bool isFollowed = isFollowing(viewerSatIndex);
     bool *hov = popout ? hovViewerTitleBtn : hovInfoTitleBtn;
     const int idBase = popout ? 0 : 2; // unique Clay ids across the two windows
     auto icon = [&](int k, int iconIdx, bool on, const char *name)
@@ -2809,7 +2809,7 @@ void SatelliteSim::buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size() ||
         !meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx))
         return;
-    const bool on = followActive && followSatIndex == selectedSatIndex;
+    const bool on = isFollowing(selectedSatIndex);
     if (buildSelActionButton(inp, ui, idx * 4 + 1, "Go to", kIconEye, on, hovSelFollowBtn))
     {
         if (on)
@@ -2868,10 +2868,15 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
                        "Locked: the camera keeps the satellite centred while you move. Free: look around with RMB "
                        "(looking unlocks it)"))
             followAimLock = !followAimLock;
+        static char stayTip[96];
+        snprintf(stayTip, sizeof(stayTip), "Leave Go to and stay here, as a free observer (%s)",
+                 keyDisplayName(keybindings[KB_FOLLOW_STAY].key));
+        if (chipButton("FollowStayBtn", "Stay here", hovFollowStay, stayTip))
+            stopFollowHere();
         if (chipButton("FollowExitBtn", "Exit", hovFollowExit, "Return to the ground where you were"))
             stopFollow(true);
     }
-    captureLaidOut(ui, CLAY_ID("FollowHud"), inp.screenW * 0.5f - 200.0f, 12.0f, 400.0f, 34.0f);
+    captureLaidOut(ui, CLAY_ID("FollowHud"), inp.screenW * 0.5f - 250.0f, 12.0f, 500.0f, 34.0f);
 }
 
 // ─── buildTraceButton ────────────────────────────────────────────────────────
@@ -6352,6 +6357,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {keybindings[KB_SAVE_SNAPSHOT].action, KB_SAVE_SNAPSHOT},
         {keybindings[KB_REPORT_NEW].action, KB_REPORT_NEW},
         {keybindings[KB_MISSIONS].action, KB_MISSIONS},
+        {keybindings[KB_FOLLOW_STAY].action, KB_FOLLOW_STAY},
         {keybindings[KB_TOGGLE_CURSOR].action, KB_TOGGLE_CURSOR},
     };
     struct AnalogRow

@@ -1277,8 +1277,8 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         si.tw = -1e300;
         if (selectedSatIndex == (int)(activeSatCount + slot))
             selectedSatIndex = -1;
-        if (followActive && followSatIndex == (int)(activeSatCount + slot))
-            stopFollow();
+        // A followed record that ends is handed over by followCheckTarget (a train member to its roster slot, a retiree
+        // to its re-entry) or left in place there; it is not snapped home here.
         return true;
     };
     auto releaseChunks = [&](std::vector<uint32_t> &ch) {
@@ -1486,6 +1486,16 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                          &bmb, 0, nullptr);
 }
 
+uint64_t SatelliteSim::launchSlotOwner(uint32_t slot, uint32_t &m) const
+{
+    m = 0;
+    if (!launchState || slot >= launchState->slots.size())
+        return 0;
+    const SlotInfo &si = launchState->slots[slot];
+    m = si.m;
+    return si.live ? si.owner : 0;
+}
+
 SatOrbitElems SatelliteSim::launchOrbitElems(uint32_t slot) const
 {
     if (!launchState || slot >= launchState->elems.size())
@@ -1497,6 +1507,8 @@ std::string SatelliteSim::launchLabel(uint32_t slot) const
 {
     if (slot == kLaunchCap - 1)
         return transientLabel();
+    if (slot == kLaunchCap - 2)
+        return followTrKey ? transientLabelOf(followTrCur) : std::string("Re-entering object");
     if (!launchState || slot >= launchState->slots.size() || launchState->slots[slot].owner == 0)
         return "?";
     const LaunchState &L = *launchState;
@@ -1651,7 +1663,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             const double range = std::max(glm::length(rel), 1.0);
             // Listed for the selection (and its mesh) whether glowing or not; pickable once drawn.
             size_t shipIdx = SIZE_MAX;
-            if (range < 4.0e6 || ((key << 3) ^ 0x2ull) == selTransientKey) // (the selected one at any range)
+            if (range < 4.0e6 || ((key << 3) ^ 0x2ull) == selTransientKey ||
+                ((key << 3) ^ 0x2ull) == followTrKey) // (the selected / followed one at any range)
             {
                 SelTransient st;
                 // The upper stage's own key: a selected or followed ship stays selected into its entry.
@@ -1730,7 +1743,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // Listed for the selection whether drawn or not (a booster coasting in the dark, behind the Earth: a
             // tracked rocket stays selected); pickable only once drawn (flare > 0).
             size_t trIdx = SIZE_MAX;
-            if (glm::length(P - eye) < 4.0e6 || ((key << 3) ^ (uint64_t)(stage + 1)) == selTransientKey)
+            if (glm::length(P - eye) < 4.0e6 || ((key << 3) ^ (uint64_t)(stage + 1)) == selTransientKey ||
+                ((key << 3) ^ (uint64_t)(stage + 1)) == followTrKey)
             {
                 SelTransient st;
                 st.key = (key << 3) ^ (uint64_t)(stage + 1);
@@ -2927,9 +2941,8 @@ void SatelliteSim::addSelTransient(const SelTransient &s)
 void SatelliteSim::selTransientUpdate()
 {
     selTransientsT = (double)simDayJ2000 * 86400.0 + simSecInDay; // the time the list was made at
-    // Selected, or followed after the selection was cleared: either way its slot must stay current (or be dropped).
-    const bool followedTr = followActive && followSatIndex == (int)transientSatIdx();
-    if ((!selIsTransient() && !followedTr) || !launchState || selTransientKey == 0)
+    followTransientUpdate();
+    if (!selIsTransient() || !launchState)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const SelTransient *f = nullptr;
@@ -2939,18 +2952,26 @@ void SatelliteSim::selTransientUpdate()
             f = &s;
             break;
         }
+    // The rocket goes on as another object: a stack after staging is its upper stage (the booster falls away), an
+    // upper stage coming home its ship entry, a stage that deorbits its re-entry fireball. The selection follows it.
+    SelTransient nx;
+    if ((!f || transientIsStack(selTransientCur) != transientIsStack(*f)) && transientSuccessor(selTransientCur, nx))
+    {
+        for (const SelTransient &s : selTransients)
+            if (s.key == nx.key)
+            {
+                f = &s;
+                break;
+            }
+    }
     if (!f)
     {
-        // Out of view this frame (behind the Earth, below the brightness cut) or over: gone for good after 2 s.
-        if (std::abs(t - selTransientSeenT) > 2.0)
+        // Out of view this frame (behind the Earth, below the brightness cut) or over: gone for good after 2 s (or a
+        // few frames of a fast warp).
+        if (std::abs(t - selTransientSeenT) > transientGraceS())
         {
-            if (followedTr)
-                stopFollow(false);
-            if (selIsTransient())
-            {
-                stopTrack();
-                selectedSatIndex = -1;
-            }
+            stopTrack();
+            selectedSatIndex = -1;
             selTransientKey = 0;
             formatSelectedSatInfo();
         }
@@ -2958,6 +2979,374 @@ void SatelliteSim::selTransientUpdate()
     }
     selTransientTake(*f);
     formatSelectedSatInfo(); // the label carries altitude and speed
+}
+
+// ── Following a transient (2026-10-19) ─────────────────────────────────────────────────────────────
+// The followed rocket stage / ship / fireball rides the follow slot (followSlotIdx), whatever is selected. Rockets and
+// the ship are evaluated from the launch model at the frame's own time (transientExactState: no stale extrapolation
+// at any warp); fireballs keep the list's quadratic. At a mission's seams the follow hands over to the object that
+// continues it and the camera eases across the jump; when nothing does, it ends in place (stopFollowHere).
+double SatelliteSim::transientGraceS() const
+{
+    // 2 s of sim time, or ~3 frames of a fast warp (a frame at 1 h/s is a minute).
+    return std::max(2.0, 0.1 * (double)kTimeScales[timeScaleIdx]);
+}
+
+void SatelliteSim::transientWriteSlot(uint32_t slot, const SelTransient &s, double t0)
+{
+    if (!launchState || slot >= launchState->elems.size())
+        return;
+    SatOrbitElems &e = launchState->elems[slot];
+    e = SatOrbitElems{};
+    e.fixedState = true;
+    e.fixPos = s.pos;
+    e.fixVel = s.vel;
+    e.fixAcc = s.acc;
+    e.fixAxis = s.axis;
+    e.fixT0 = t0;
+    const uint32_t idx = activeSatCount + slot;
+    if (idx < satOrbits.size())
+    {
+        SatOrbit &o = satOrbits[idx];
+        o.typeIdx = s.type >= 0 ? (uint32_t)s.type : UINT32_MAX;
+        o.altM = (float)(glm::length(s.pos) - kR);
+        const glm::dvec3 h = glm::cross(s.pos, s.vel);
+        o.incl = glm::length(h) > 1.0 ? (float)std::acos(glm::clamp(h.z / glm::length(h), -1.0, 1.0)) : 0.0f;
+        o.raan = 0.0f;
+        o.meanMot = 0.0f;
+    }
+}
+
+bool SatelliteSim::transientIsStack(const SelTransient &s) const
+{
+    if (s.kind != 1 || s.stage != 0 || !launchState)
+        return false;
+    auto it = launchState->batches.find(s.a);
+    return it != launchState->batches.end() && it->second.veh >= 0 &&
+           s.tau < launchState->cat.vehicles[it->second.veh].t1;
+}
+
+bool SatelliteSim::transientExactState(SelTransient &s, double t) const
+{
+    if (!launchState || (s.kind != 1 && s.kind != 2))
+        return false;
+    const LaunchState &L = *launchState;
+    auto it = L.batches.find(s.a);
+    if (it == L.batches.end() || it->second.veh < 0)
+        return false;
+    const LBatch &B = it->second;
+    if (s.kind == 1)
+    {
+        const double tau = t - B.tL;
+        glm::dvec3 P, P1, P2;
+        uint8_t burn = 0;
+        if (!LaunchImpl::rocketPos(L, B, s.stage, tau, P, &burn))
+            return false;
+        if (!LaunchImpl::rocketPos(L, B, s.stage, tau - 0.5, P1))
+            P1 = P;
+        if (!LaunchImpl::rocketPos(L, B, s.stage, tau - 1.0, P2))
+            P2 = P1;
+        s.pos = P;
+        s.vel = (P - P1) / 0.5;
+        s.acc = (P - 2.0 * P1 + P2) / 0.25;
+        s.tau = tau;
+        s.burn = burn;
+        return true;
+    }
+    const double te = t - B.tStageGone;
+    if (te < 0.0 || te > 480.0)
+        return false;
+    const glm::dvec3 P = LaunchImpl::shipEntry(B, te, nullptr, nullptr);
+    const glm::dvec3 Pp = LaunchImpl::shipEntry(B, te - 6.0, nullptr, nullptr);
+    const glm::dvec3 P2 = LaunchImpl::shipEntry(B, te - 12.0, nullptr, nullptr);
+    s.pos = P;
+    s.vel = (P - Pp) / 6.0;
+    s.acc = (P - 2.0 * Pp + P2) / 36.0;
+    s.tau = te;
+    return true;
+}
+
+bool SatelliteSim::transientContinue(SelTransient &cur, double t, uint8_t &wantKind) const
+{
+    wantKind = 0;
+    if (!launchState || (cur.kind != 1 && cur.kind != 2))
+        return false;
+    const LaunchState &L = *launchState;
+    auto it = L.batches.find(cur.a);
+    if (it == L.batches.end() || it->second.veh < 0)
+        return false;
+    const LBatch &B = it->second;
+    const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+    auto typeOf = [&](const char *part) {
+        auto ti = rocketTypes.find("rocket_" + vh.id + part);
+        return ti != rocketTypes.end() ? ti->second : -1;
+    };
+    // The stack separates: its upper stage carries on (the booster is another object).
+    if (cur.kind == 1 && cur.stage == 0 && cur.tau < vh.t1 && t - B.tL >= vh.t1)
+    {
+        cur.stage = 1;
+        cur.key = (cur.a << 3) ^ 2ull;
+        cur.type = typeOf("_upper");
+    }
+    if (cur.kind == 1 && cur.stage == 1 && t >= B.tStageGone)
+    {
+        if (vh.upperDeorbit)
+        {
+            wantKind = 4; // its re-entry fireball (from the list)
+            return false;
+        }
+        cur.kind = 2; // the listing keeps the upper stage's key for its ship entry
+        cur.type = typeOf("_upper");
+    }
+    return transientExactState(cur, t);
+}
+
+bool SatelliteSim::transientSuccessor(const SelTransient &cur, SelTransient &out) const
+{
+    const double t = selTransientsT;
+    SelTransient c = cur;
+    uint8_t want = 0;
+    if (transientContinue(c, t, want) && (c.key != cur.key || c.kind != cur.kind))
+    {
+        out = c;
+        return true;
+    }
+    if (want)
+        for (const SelTransient &s : selTransients)
+            if (s.kind == want && s.a == cur.a)
+            {
+                out = s;
+                return true;
+            }
+    return false;
+}
+
+void SatelliteSim::followTakeTransient(const SelTransient &s, const glm::dvec3 &fromEci, double t)
+{
+    // The jump, Earth-fixed, eased out by updateFollow (metres at staging; tens of km where a stage's park orbit meets
+    // its entry track).
+    if (glm::length(fromEci) > 1.0)
+        followHandD += eciToEcef(fromEci - s.pos, t);
+    followTrCur = s;
+    followTrKey = s.key;
+    followTrSeenT = t;
+    followWantKind = 0;
+    transientWriteSlot(kLaunchCap - 2, s, t);
+    followSatIndex = (int)followSlotIdx();
+    followLaunchOwner = 0;
+    snprintf(followLabel, sizeof(followLabel), "Following %s", transientLabelOf(s).c_str());
+}
+
+void SatelliteSim::followTransientUpdate()
+{
+    if (!followIsTransient() || !launchState)
+        return;
+    const double t = selTransientsT;
+    if (followTrKey == 0)
+    {
+        // A record that ended: its fireball, once the list has it.
+        for (const SelTransient &s : selTransients)
+            if (followWantKind && s.kind == followWantKind && s.a == followWantA)
+            {
+                followTakeTransient(s, followTrCur.pos, t);
+                return;
+            }
+        if (t > followWantUntil || t < followWantUntil - 3600.0)
+            stopFollowHere("Go to ended: the object is gone. You stay here.");
+        return;
+    }
+    // Along the mission: staging, the ship's entry (computed from the model, not looked up).
+    {
+        SelTransient c = followTrCur;
+        uint8_t want = 0;
+        if (transientContinue(c, t, want))
+        {
+            for (const SelTransient &s : selTransients)
+                if (s.key == c.key)
+                {
+                    c.axis = s.axis; // the list's attitude
+                    c.flare = s.flare;
+                    c.dirEnu = s.dirEnu;
+                    break;
+                }
+            if (c.key != followTrKey || c.kind != followTrCur.kind)
+                followTakeTransient(c, followTrCur.pos, t);
+            else
+            {
+                followTrCur = c;
+                followTrSeenT = t;
+                transientWriteSlot(kLaunchCap - 2, c, t);
+                snprintf(followLabel, sizeof(followLabel), "Following %s", transientLabelOf(c).c_str());
+            }
+            return;
+        }
+        if (want)
+        {
+            followTrKey = 0;
+            followWantKind = want;
+            followWantA = followTrCur.a;
+            followWantUntil = t + transientGraceS() + 5.0;
+            return;
+        }
+    }
+    // Fireballs (and a rocket the model no longer places): the list.
+    for (const SelTransient &s : selTransients)
+        if (s.key == followTrKey)
+        {
+            followTrCur = s;
+            followTrSeenT = t;
+            transientWriteSlot(kLaunchCap - 2, s, t);
+            return;
+        }
+    if (std::abs(t - followTrSeenT) > transientGraceS())
+        stopFollowHere("Go to ended: the object is gone. You stay here.");
+}
+
+// Each frame before updateFollow: the followed object may have ended since the last frame.
+void SatelliteSim::followCheckTarget()
+{
+    if (!followActive || followSatIndex < 0)
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const uint32_t idx = (uint32_t)followSatIndex;
+    if (followIsTransient())
+    {
+        // Rockets at this frame's exact time (the list is a frame old: at a fast warp, many seconds), along the
+        // mission: a stack that staged since the last frame is its upper stage now.
+        if (followTrKey != 0)
+        {
+            SelTransient c = followTrCur;
+            uint8_t want = 0;
+            if (transientContinue(c, t, want))
+            {
+                if (c.key != followTrKey || c.kind != followTrCur.kind)
+                    followTakeTransient(c, followTrCur.pos, t);
+                else
+                {
+                    followTrCur = c;
+                    transientWriteSlot(kLaunchCap - 2, c, t);
+                }
+            }
+        }
+        return;
+    }
+    if (idx >= satOrbits.size())
+    {
+        stopFollowHere("Go to ended: the object is gone. You stay here.");
+        return;
+    }
+    if (rocketMeshSlotToTransient((int)idx) != (int)idx)
+    {
+        // An older path left the follow on a rocket's mesh slot (rebound every frame): its transient.
+        if (selIsTransient())
+            followTakeTransient(selTransientCur, glm::dvec3(0.0), t);
+        else
+            stopFollowHere("Go to ended: the object is gone. You stay here.");
+        return;
+    }
+    // A record that ended in a fireball: ride a coasting copy of it until the list has the fireball (kind, a).
+    auto awaitFireball = [&](uint8_t kind, uint64_t a) {
+        const SatOrbitState st = satOrbitStateAt(orbitElemsOf(satOrbits[idx]), t);
+        SelTransient g;
+        g.pos = st.posEci;
+        g.vel = st.velEci;
+        const double r = std::max(glm::length(st.posEci), 1.0);
+        g.acc = -satphot::kGM * st.posEci / (r * r * r);
+        g.type = satOrbits[idx].typeIdx < satTypes.size() ? (int)satOrbits[idx].typeIdx : -1;
+        followTrCur = g;
+        followTrKey = 0;
+        followWantKind = kind;
+        followWantA = a;
+        followWantUntil = t + transientGraceS() + 5.0;
+        transientWriteSlot(kLaunchCap - 2, g, t);
+        followSatIndex = (int)followSlotIdx();
+        followLaunchOwner = 0;
+    };
+    const int32_t nowSec = (int32_t)std::clamp(std::floor(t - kesslerEpoch()), -2147483000.0, 2147483000.0);
+    if (idx < activeSatCount)
+    {
+        // A roster satellite the cascade ended: destroyed (nothing left to ride) or re-entered (its fireball).
+        if (kesslerEnabled && 2ull * idx + 1 < kRosterWords.size() && nowSec >= kRosterWords[2ull * idx + 1])
+        {
+            if (idx < kRosterDecay.size() && kRosterWords[2ull * idx + 1] == kRosterDecay[idx])
+                awaitFireball(5, idx);
+            else
+                stopFollowHere("Go to ended: the satellite was destroyed. You stay here.");
+        }
+        return;
+    }
+    if (idx < poolIdx0())
+    {
+        uint32_t m = 0;
+        const uint64_t owner = launchSlotOwner(idx - activeSatCount, m);
+        if (followLaunchOwner != 0 && (owner != followLaunchOwner || m != followLaunchM))
+        {
+            const LBatch *B = nullptr;
+            if (launchState)
+            {
+                auto it = launchState->batches.find(followLaunchOwner / 2);
+                if (it != launchState->batches.end() && followLaunchM < it->second.mem.size())
+                    B = &it->second;
+            }
+            const uint32_t sat = B ? B->mem[followLaunchM].sat : UINT32_MAX;
+            if (followLaunchOwner % 2 == 0 && sat < activeSatCount && t >= B->tA - 60.0)
+            {
+                // A train member arrived: it IS its roster slot now (the camera eases across what is left).
+                const glm::dvec3 a = satOrbitStateAt(launchOrbitElems(idx - activeSatCount), t).posEci;
+                const glm::dvec3 b = satOrbitStateAt(orbitElemsOf(satOrbits[sat]), t).posEci;
+                if (glm::length(a) > 1.0)
+                    followHandD += eciToEcef(a - b, t);
+                followSatIndex = (int)sat;
+                followLaunchOwner = 0;
+                snprintf(followLabel, sizeof(followLabel), "Following %s", satLabel((int)sat).c_str());
+            }
+            else if (followLaunchOwner % 2 == 1 && sat < activeSatCount)
+                awaitFireball(3, sat);
+            else
+                stopFollowHere("Go to ended: the object is gone. You stay here.");
+        }
+        return;
+    }
+    const uint32_t j = idx - poolIdx0();
+    if (j >= kPool.size() || j >= kPoolGen.size() || kPoolGen[j] != followPoolGen || nowSec < kPool[j].bornSec)
+    {
+        stopFollowHere("Go to ended: that debris piece does not exist at this time. You stay here.");
+        return;
+    }
+    if (nowSec >= kPool[j].deathSec)
+    {
+        if (kPool[j].deathSec == kPool[j].decaySec)
+            awaitFireball(5, idx);
+        else
+            stopFollowHere("Go to ended: the piece was destroyed. You stay here.");
+    }
+}
+
+int SatelliteSim::rocketMeshSlotToTransient(int satIndex)
+{
+    if (satIndex >= 0 && (uint32_t)satIndex == followSlotIdx())
+    {
+        // The followed rocket's own mesh (follow's slot): as a selection, the same transient in the selection's slot.
+        if (!followIsTransient() || followTrKey == 0)
+            return -1;
+        selTransientTake(followTrCur);
+        selectedSatIndex = (int)transientSatIdx();
+        selectedPlanetIndex = -1;
+        return (int)transientSatIdx();
+    }
+    const uint32_t base = activeSatCount + kLaunchCap - 2 - kRocketMeshSlots;
+    if (satIndex < (int)base || satIndex >= (int)(base + kRocketMeshSlots))
+        return satIndex;
+    const uint64_t key = rocketMeshKey[satIndex - (int)base];
+    for (const SelTransient &s : selTransients)
+        if (key != 0 && s.key == key)
+        {
+            selTransientTake(s);
+            selectedSatIndex = (int)transientSatIdx();
+            selectedPlanetIndex = -1;
+            return (int)transientSatIdx();
+        }
+    return -1;
 }
 
 void SatelliteSim::selTransientTake(const SelTransient &s)
@@ -3027,19 +3416,17 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
             cs.push_back({px, i});
     }
     std::sort(cs.begin(), cs.end(), [](const C &a, const C &b) { return a.px > b.px; });
-    const uint32_t base = activeSatCount + kLaunchCap - 1 - kRocketMeshSlots; // slots base .. base + 6
+    const uint32_t base = activeSatCount + kLaunchCap - 2 - kRocketMeshSlots; // slots base .. base + 5
     bool used[kRocketMeshSlots] = {};
     std::vector<size_t> want;
     for (const C &c : cs)
     {
         const SelTransient &s = selTransients[c.i];
-        const bool followedTr = followActive && followSatIndex == (int)transientSatIdx();
-        if ((selIsTransient() || followedTr) && selTransientKey != 0 && s.key == selTransientKey)
+        if (followIsTransient() && s.key == followTrKey)
+            continue; // the followed one is drawn by follow mode (its own slot)
+        if (selIsTransient() && s.key == selTransientKey)
         {
-            // The selection's slot (already written by selTransientTake); the followed one is drawn by follow mode.
-            // (Never also in a rocket mesh slot: followed with the selection cleared, it was drawn twice.)
-            if (!followedTr)
-                jobs.push_back((int)transientSatIdx());
+            jobs.push_back((int)transientSatIdx()); // the selection's slot (already written by selTransientTake)
             continue;
         }
         if (want.size() < (size_t)kRocketMeshSlots)
@@ -3074,7 +3461,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
         const SelTransient &s = selTransients[want[w]];
         const int k = slotOf[w];
         rocketMeshKey[k] = s.key;
-        const uint32_t slot = kLaunchCap - 1 - kRocketMeshSlots + (uint32_t)k;
+        const uint32_t slot = kLaunchCap - 2 - kRocketMeshSlots + (uint32_t)k;
         const uint32_t idx = base + (uint32_t)k;
         if (idx >= satOrbits.size() || slot >= L.elems.size())
             continue;
@@ -3094,12 +3481,13 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
     return jobs;
 }
 
-std::string SatelliteSim::transientLabel() const
+std::string SatelliteSim::transientLabel() const { return transientLabelOf(selTransientCur); }
+
+std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
 {
     if (!launchState)
         return "?";
     const LaunchState &L = *launchState;
-    const SelTransient &s = selTransientCur;
     const double hKm = (glm::length(s.pos) - kR) / 1000.0;
     // Speed over the ground for a rocket near the pad reads better Earth-fixed; inertial elsewhere (orbit).
     const double vKms = glm::length(s.vel) / 1000.0;
