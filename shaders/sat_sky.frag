@@ -1299,7 +1299,7 @@ vec3 cityDayAlbedo(CityLayout L, float foot, float grey) {
 // Signed distance to the height function's own shoreline (m, > 0 in water), 1e9 = not near a baked shore.
 // The water map filtered by hand near the observer (as tdDemAt does) plus tdShoreOffset's coves.
 float shoreSignedDist(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, out vec2 wm) {
-    if (dot(q.xy, q.xy) < kTdExactDemM * kTdExactDemM) {
+    if (tdExactNear(q)) {
         ivec2 wsz = textureSize(earthSpecTex, 0);
         vec2  tw  = uv * vec2(wsz) - 0.5;
         vec2  fl  = floor(tw), fr = tw - fl;
@@ -1311,7 +1311,7 @@ float shoreSignedDist(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, out vec2
         wm = textureLod(earthSpecTex, uv, 0.0).rg;
     }
     float cK = 0.0;
-#ifndef SKY_LITE
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
     if (cloud.coastInfo.x > 0.5) {   // a coast patch's shore (terrain_detail.glsl tdCoastPatch, as tdDemAt)
         int   cI;
         vec2  cP;
@@ -3456,6 +3456,12 @@ void main() {
     vec3     terrainQ      = vec3(0.0); // hit, observer-relative (terrain_detail.glsl's q)
     vec3     terrainUpE    = vec3(0.0, 0.0, 1.0);
     float    pixAngle      = pc.fovYRad / max(cloud.skyLodScreenH, 1.0); // the output pixel while upscaling
+#if defined(SKY_ENV) && !defined(SKY_REFL)
+    // This render's own pixel (skyLodScreenH is the MAIN view's): the city lights' close-up mean below.
+    float    envPixAngle   = max(length(dFdy(dir)), 1e-6);
+#else
+    float    envPixAngle   = pixAngle;
+#endif
     const int kTerrainMaxSteps = 224;
 
 #ifndef SKY_LITE   // Planetarium: no relief (the flat textured Earth); the march is not compiled in
@@ -5243,6 +5249,17 @@ void main() {
                 vec3 pat = cityLightFar(cQ, enuX, enuY, enuZ, cFootG, cityLum, cNUp);
                 cityLights *= mix(vec3(1.0), pat, cloud.cityLightsStrength);
             }
+#elif defined(SKY_ENV)
+            // No procedural city here, so its MEAN (cityLightPattern's close-up ramp: a city is mostly dark between
+            // its lights; 0.12 of the map until the footprint reaches the layout's range). Without it, the Info
+            // window's 3D view of a rocket on its pad at night (an env render from ~50 m up) drew the 5-km night
+            // map's light under the pad at full strength: a flat, bright beige ground (2026-10-20). From orbit the
+            // footprint is far past the ramp: unchanged.
+            {
+                float tE    = tHit > 0.0 ? tHit : tSeaLvl;
+                float eFoot = envPixAngle * tE / max(abs(dot(dir, normalize(hitPt))), 0.2);
+                cityLights *= mix(0.12, 1.0, smoothstep(0.1 * cloud.cityLod.w, 0.875 * cloud.cityLod.w, eFoot));
+            }
 #endif
             // Where the city light sprites carry the lights (city_sprites.comp, cloud.cityParams.z = their
             // reach), the ground keeps only a share of its glitter (cityParams.y): the sprites are the
@@ -6175,9 +6192,14 @@ void main() {
     // were composited over the model (user: "clouds visible through sat 3d models"). The cloud's distance is its
     // signed alpha (km; the no-cloud marker is far past any mesh).
 #ifndef SKY_ENV
-    if (meshHit && abs(cloudA.a) * 1000.0 > tMesh) {
-        cloudB.rgb = vec3(1.0);
-        cloudA.rgb = vec3(0.0);
+    // Soft over the mesh's own depth (2026-10-20): a burning stage sits INSIDE its exhaust, whose light-weighted
+    // distance (the alpha of a texel with no cloud, cloud_march.comp tEmitNear) is about the hull's own, so a hard
+    // test drew the hull as black blotches through the lit exhaust wherever the billows moved that distance a few
+    // metres behind it. Clouds km in front or behind are unchanged.
+    if (meshHit) {
+        float kM = 1.0 - smoothstep(tMesh, tMesh * 1.25 + 20.0, abs(cloudA.a) * 1000.0);
+        cloudB.rgb = mix(vec3(1.0), cloudB.rgb, kM);
+        cloudA.rgb *= kM;
     }
 #endif
     color = color * cloudB.rgb + cloudA.rgb + (cityGlowFront + airFront) * (vec3(1.0) - cloudB.rgb);

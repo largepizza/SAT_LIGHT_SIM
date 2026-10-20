@@ -1265,6 +1265,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - **Target A's alpha is a signed distance in KILOMETRES** (`include/cloud_occlusion.glsl`): >= 0 opaque
   cloud, < 0 the mean distance of translucent cloud. In metres an RGBA16F alpha was +inf past 65.5 km, so
   from orbit clouds dimmed every satellite in front of them. Point sources use `cloudPointVisibility()`.
+  **A texel with no cloud but a plume / emissive light carries that light's distance, FLAGGED** (2026-10-20): the
+  half float's lowest mantissa bit (`cloudAlphaFlag` / `cloudAlphaIsEmit`, cloud_occlusion.glsl; cloud_march.comp
+  clears it on every real cloud distance, 1/1024 of the distance). Gathered texels are exact, so the bit survives;
+  a filtered read is not a flag. Anything treating the alpha as "a cloud is there" must skip flagged texels (the
+  engine-light and lightning passes in lightning.frag do).
 - `sat_sky.frag` upsamples the half-res clouds joint-bilaterally where a surface edge crosses the half-res
   grid (the ridge/cloud stair-steps).
 - **Passes** (inside the `cloud_march` timestamp bucket, `recordCloudsV2`): `cloud_v2_march.comp`
@@ -3109,6 +3114,12 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     to the differently lit fallback — the ambient light of every mesh flickered. Off under Potato, the
     mesh knockout, or Settings → Photometry "Full-renderer reflections" (`envReflections`,
     `photometry.full_renderer_reflections`).
+    **From near the ground (2026-10-20, the Info 3D view of a rocket on its pad / at 1 km at night was a flat
+    yellow-beige):** SKY_ENV draws no procedural city, so its ground took the 5-km night map's light at full strength
+    (the main view's pattern averages 0.12 of it close up); it now takes the pattern's close-up MEAN by its own pixel
+    footprint (`envPixAngle` = |dFdy(dir)|: `skyLodScreenH` is the main view's). From orbit the footprint is past the
+    ramp: unchanged. And the data in the MAIN observer's frame is off in SKY_ENV (`tdExactNear`: the exact DEM texel,
+    the coast patches, the launch pads' grading): it described another place from another viewpoint.
   - **Sharp mirror reflections (2026-09-25, `sharpReflections`, Photometry "Sharp mirror reflections",
     `photometry.sharp_mirror_reflections`).** A probe texel is 0.35° (0.18° in the viewer): a Reflect
     mirror filling the screen magnified each over dozens of pixels. For the mirror-smooth pixels
@@ -4658,6 +4669,9 @@ launches follow per-program cadences (no real manifest).
     NEARER than it (`eT` vs `tCloudMeanT`; a cumulus 2 km below a launch's glow was cut out of it: the report's "black
     blob"), and a texel with no cloud carries the nearest emissive / plume distance in its alpha (`tEmitNear`), so
     sat_sky.frag composites a flame in front of its own stage's mesh (the no-cloud marker hid it behind the hull).
+    That distance is flagged in the alpha (see "Target A's alpha" under Clouds v2), and the mesh test is SOFT
+    (`kM`: composite fully when nearer than the mesh, none past 1.25 x its distance + 20 m): the stage sits inside its
+    exhaust, whose light-weighted distance is about the hull's, and a hard test drew black blotches on the hull.
   - Not built: clouds lit by a burning rocket (a cumulus beside a night launch stays moonlit-dark).
 - **Ground clouds and the turbulent low trail** (2026-10-20, the user: "smoke trail effects (volumetric) on launch,
   dust kicking up from landing"; `buildParcels`' `groundCloud` / `landingCloud`, `launch::ParcelOpts`):
@@ -4747,16 +4761,27 @@ launches follow per-program cadences (no real manifest).
     Moons (sum of I / (d^2 + r0^2) / moonGain), only the night's share (mix by 1 - dayness), eased (`engineAdaptEased`:
     3/s toward darker, 0.5/s back). 310 m: x0.04; 1.5 km: x0.11; 2.5 km from a lift-off: ~x0.5; orbit / 10 km: ~1.
     `launch state` -> `engine_light_adapt`. Not adapted: the flame's own Gaussians (their night factor, kFlameCore
-    x0.18), the point, the nozzle glow. A capture right after a jump to a near rocket shows the unadapted frame for
-    ~0.5 s (`wait 60`).
+    x0.18), the point, the nozzle glow. **A cut snaps it** (2026-10-20): a sim-time jump > 2 s, the eye moving more
+    than max(300 m, 0.2 x the nearest light's distance) in one frame (teleports, bookmarks, harness jumps), and every
+    frame of a Go-to flight (`engineAdaptPrevEye/T`); before, the first ~0.5 s after a jump beside a stage were a
+    white-out.
   - **A plume Gaussian's engine light is averaged over its depth** (cloud_march.comp: I / (r^2 + 1/q + r0^2), 1/q its
     variance along the ray: the young exhaust Gaussians beside a burning stage are hundreds of metres wide and were
     lit as if all their mass sat at the ray's closest approach), and the plumes' compositing distance (`tP`, in front of
     / behind the clouds) is LIGHT-weighted (a dim, thick ground cloud km away outweighed the bright exhaust 300 m off).
-    Open: from 300 m beside the stage the lit exhaust is still a bright ball ~300 m across (physically the young
-    exhaust IS lit like that; the user's call), with a hard-ish outline where its tails are cut low down (`lowK`), and
-    far clouds on the horizon behind it draw as darker half-res blocks inside the glow (not the plume ordering: forcing
-    the plume in front changed nothing).
+  - **The "bright ball" round a stage seen from 300 m was mostly lit TWICE** (2026-10-20): the plume texels' alpha
+    carries the plume's distance (`tEmitNear`, above), and lightning.frag's mode 2 took them for cloud at that distance
+    and lit them again (0.85 I / r^2 on the plume's opacity) on top of cloud_march's own engine light on the plume.
+    That is also what drew far horizon clouds as DARKER half-res blocks inside the glow: their texels kept their own,
+    far distance (lit by nothing) beside plume texels lit as a cloud 300 m off. Mode 2 skips flagged texels now.
+    Then: each plume Gaussian's engine light is SELF-SHADOWED like its sunlight (closed form along the segment from
+    the engine to the Gaussian's lit point, floor 0.25), so a thick young column glows on its side toward the flame
+    instead of over its whole 6-sigma footprint; and a Gaussian the EYE is inside thins (Mahalanobis 3 -> 1.5 sigma,
+    to 10%; in the QA views the eye was in none). Mode 2's cloud term lights the cloud at a [1 2 1] tent of the 3x3
+    texels' opacity-weighted distance (`tLs`): per gathered texel, a strongly lit deck's outline and gaps were a
+    staircase of 4-8 px steps. What remains round a stage from 300 m is the lit haze (1/d around a point light,
+    physical single scattering) and the lit column: `tools/harness/scripts/follow_visuals.satcmd`. Cost (RTX 3070 Ti,
+    1600x900): cloud_march +0.05 ms (T+15 s, 6 km from the pad) / +0.25 ms (following at 300 m), the rest within noise.
   - Measured (RTX 3070 Ti, 1600x900, Starship at T+15 s under broken cumulus, 6 km from SLC-37): +0.26 ms in the draw
     bucket, plume lighting within noise. Physically the lit deck is wide: a Super Heavy lights cloud 6 km away like a
     full Moon (the user's call whether x1 is too much).

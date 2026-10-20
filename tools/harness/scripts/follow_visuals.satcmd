@@ -1,0 +1,68 @@
+# Follow visuals (2026-10-20): the Info 3D view of a rocket on the pad and at ~1 km at night, following a burning
+# Starship 300 m off at night (lit exhaust), the first frames after jumping beside it (engine-light adaptation),
+# a night lift-off from 2.5 km on the ground, the site from orbit, the engine light on broken cumulus.
+#   python tools/harness/run.py tools/harness/scripts/follow_visuals.satcmd --out harness_runs/follow_visuals
+window 1600x900
+set clouds_v2.auto_exposure 0
+launch next when=night vehicle=starship
+time pause
+time add 20
+wait 5
+launch select kind=rocket nearest=1
+ui open info
+wait 40
+capture i_pad ui=on
+state i_pad
+time add 30
+wait 40
+capture i_1km ui=on
+state i_1km
+ui close info
+time add 30
+wait 5
+launch select kind=rocket nearest=1
+follow offset=-300,0,80
+wait 2
+capture j_f2
+launch state
+wait 10
+capture j_f12
+wait 60
+capture f_300
+launch state
+follow offset=0,300,0
+follow aim=sat
+wait 60
+capture f_side300
+follow offset=0,1500,0
+follow aim=sat
+wait 60
+capture f_side1500
+perf name=follow
+follow off
+select none
+launch next when=night vehicle=starship pad_dist_m=2500 lead=5
+time play
+wait 600
+time pause
+launch look stage=0
+wait 20
+capture g_25km_t15
+launch state
+observer lat=26.0 lon=-97.15 alt=400000
+camera az=0 el=-89 fov=40
+wait 60
+capture o_400
+perf name=orbit
+# Engine light on broken cumulus (the lit deck's outline: no half-res staircase), 6 km from the pad at T+15 s
+launch next when=night vehicle=starship pad_dist_m=6000 lead=2
+drift phase=5.2
+time play
+wait 1020
+time pause
+wait 200
+launch look stage=0
+camera fov=70
+wait 30
+capture k_clouds_t15
+perf name=clouds

@@ -10,6 +10,18 @@
 // so from orbit the range test never fired and every cloud dimmed the satellites in front of it
 // (the night side's clouds swallowed the AI disk seen from 2000 km).
 // cloudT = cloudTargetB's transmittance (mean of rgb); rangeM = the source's distance.
+// The emissive flag (2026-10-20): cloud_march.comp marks a texel whose distance is the nearest emissive / plume
+// light's (no cloud there) by the half float's lowest mantissa bit, and clears it on every real cloud distance.
+// The target is RGBA16F and gathered texels are exact, so the bit survives; filtered reads are not flags.
+float cloudAlphaFlag(float aKm, bool emit) {
+    uint h = packHalf2x16(vec2(aKm, 0.0)) & 0xFFFFu;
+    h = emit ? (h | 1u) : (h & ~1u);
+    return unpackHalf2x16(h).x;
+}
+bool cloudAlphaIsEmit(float aKm) {
+    return abs(aKm) < 50000.0 && (packHalf2x16(vec2(aKm, 0.0)) & 1u) != 0u;
+}
+
 float cloudPointVisibility(float aKm, float cloudT, float rangeM, float power)
 {
     float tC = abs(aKm) * 1000.0;
