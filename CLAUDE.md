@@ -4214,9 +4214,15 @@ launches follow per-program cadences (no real manifest).
 - **The phasing** (`buildBatch`, `memberState`): a member waits in the parking orbit, then its radius ramps linearly to
   the slot's; the phase lag to its slot is the closed-form integral of the mean motion over that ramp
   (`launch::rampPhase`), and the wait is solved so the climb ends exactly on the slot (an unsolvable remainder `eps` is
-  spread over the raise as a slow drift). At deployment each member starts at the stage (an offset in its own orbital
-  frame, eased out over two days), released 120 m apart. Harness `launch check`: arrival 7 m (= 1 ms of flight),
-  deployment 0 (+ the release spacing), retiree start 0.
+  spread over the raise as a slow drift). **Deployment is a sequence** (2026-10-19, issue 20261019_180951): member i
+  leaves the dispenser at `LMember::tRel` = tD + i x `deploy_interval_s` (launches.json, Starship 8 s, else 2), AT the
+  dispenser (the stage's aft end + 31 m along the nose and 4.6 m up for Starship's bay door, 9 / 1.6 m for a fairing),
+  and drifts from it at `sepDir` (0.3-0.55 m/s up, a little aft and sideways), offset and drift eased out over two days
+  in its own orbital frame (the velocity carries the drift, so the GPU's Kepler propagation follows it). A member is
+  hidden until its release, and while the train leaves (and 10 min after) the batch's records are rewritten every 2 s
+  instead of 20. (Until then the whole train appeared at once, a string 120 m apart behind the stage.) Harness
+  `launch check`: arrival 7 m (= 1 ms of flight), deployment 31 m (the dispenser's offset from the track point),
+  retiree start 0; `launch deploy` frames the next sunlit deployment.
 - **Satellite indices**: roster `[0, activeSatCount)`, then `kLaunchCap` (131072) launch records, then the Kessler pool
   from `poolIdx0()`. Launch records are `GpuKepOrbit`s in kesslerBuf from `kLaunchWord0` (sat_orbit.comp `LAUNCH_CAP`:
   the indices before `poolBase`, the words before `poolWord0`), born/death only "live or not". They hold the member's
@@ -4231,12 +4237,32 @@ launches follow per-program cadences (no real manifest).
   `booster: return`), entry and landing burns); the upper stage blends from that ground track into the inertial plane
   by SECO and then flies the parking orbit (`thIns`). Drawn as point sprites in kFireBuf (the flame's magnitude at
   100 km per stage; a coasting stage sunlit), an emissive Gaussian flame and a dim orange glow of the exhaust it lights.
-  Expendable upper stages burn to deorbit and re-enter as fireballs. A stage may vent what is left, spinning
+  **Every upper stage deorbits** (2026-10-19, issue 20261019_180502): 30-90 min after deploying it pitches over to
+  retrograde (120 s, through the vertical), burns for `burnDur` (dv to a perigee of 20 km, 45 km for a returning ship,
+  at ~12% of the stage's thrust: clamped 12-60 s; the flame and its plume parcels) onto an ellipse with its apoapsis at
+  the burn (`deorbitPos`, Kepler in the plane, blended from the circle over the burn: position and velocity
+  continuous), and reaches the entry interface (100 km, `thEI` / `vEI` / `vrEI`) about half an orbit later
+  (`tStageGone` = `tStageRE`, ~32 min). An expendable stage re-enters there as a fireball; a returning one (Starship's
+  ship) pitches up to its entry attitude (nose 60 deg above the velocity, over 300 s) after the burn and flies its
+  8-min plasma glow (`shipEntry`: from `vEI` and the ellipse's descent rate at 100 km to ~65 km, slowing to 1.2 km/s
+  by 45 km, magnitude ~-4 at 100 km near 70 km up; not followed to landing; harness `launch ship`). Until then only
+  expendable stages burned (40 s, while sinking 30 km on their circle) and Starship's ship jumped from its 350-km orbit
+  to 100 km at the entry interface without turning or burning. The ship's entry is listed under the upper stage's own
+  key, so a selected or followed ship stays selected into its entry. A stage may vent what is left, spinning
   (`vent_chance`; after its deorbit burn, or 10 min after deploying for a returning stage): ~10 t over two minutes as
   slowly spreading ice (30 m/s, 2000 m^2/kg), each parcel a stretch of the 700 m/s jet, never decimated: seen from
-  below, a dump spiral like the 2009 Norway one (harness `launch vent`). A returning stage (Starship's ship) re-enters
-  whole 40 min after deploying: an 8-min plasma glow (`shipEntry`: ~7.4 km/s to ~65 km, slowing to 1.2 km/s by 45 km,
-  magnitude ~-4 at 100 km near 70 km up) and is not followed to landing (harness `launch ship`). No droneships.
+  below, a dump spiral like the 2009 Norway one (harness `launch vent`). No droneships. Harness `launch deorbit` frames
+  the next sunlit stage as it starts to turn; `launch state` -> `upper_stages` (each flying stage's timeline in seconds
+  from now, burning, altitude, the nose's angle from retrograde); `launch check` -> `booster_nose_max_deg_per_s` (18),
+  `upper_nose_max_deg_per_s` (2.0) and `upper_max_step_m_per_s` (7893: 1-s steps through the burn and the entry
+  interface, i.e. no jump).
+- **Attitude** (`stageNose`, 2026-10-19): the booster's nose is a pitch angle in its trajectory's vertical plane
+  (`boosterPitchRaw`: along the velocity on the way up, engines first after staging, along the thrust in its burns,
+  upright for landing; branch [-90, 270) deg so nothing wraps), averaged over 10 s: the flip after MECO and the flip
+  back after an RTLS boostback both pass through the vertical at <= ~18 deg/s. The upper stage (`upperNoseRaw`):
+  its velocity to orbit and in orbit, the deorbit pitch schedule above, averaged over 6 s. Averaging nose VECTORS (the
+  first cut) spun the booster ~340 deg/s after an RTLS boostback, where engines-first and the thrust point opposite
+  ways; before that the axis switched instantly at staging and for the deorbit burn.
 - **Rocket meshes** (2026-10-19): `tools/make_rocket_models.py` writes `rocket_<vehicle>_{stack,booster,upper}.json`
   (13 vehicles; +Z toward the nose, origin at the aft end = the track point; one group, +Z on the "velocity"
   target, -Y (the ship's heat shield) toward nadir; grid fins, legs, flaps, heat shield, engine bells and
@@ -4296,6 +4322,18 @@ launches follow per-program cadences (no real manifest).
   plumes' sunlight is raised up to 10x as the eye's sky darkens (the night exposure is not physical: see the dust).
 - **Sound**: each burning rocket within 150 km on a thunder voice (`launchSounds`, called from `thunderStep`): the
   retarded time, Earth-fixed (the air carries it), level ~ sqrt(flow) / distance, thinning with the air at the rocket.
+  The retarded time is the LATEST emission tau with (T - tau) = |P(tau) - eye| / 343, found by a scan back over 440 s
+  (150 km of sound) in 2-s steps for a sign change either way (a booster's supersonic descent arrives in reverse
+  order), then bisected; nothing arriving = silence. (2026-10-19, issue 20261019_175639: a fixed-point iteration that
+  did not converge for a fast, distant stage alternated between the stage and the pad, so an upper stage 1200 km
+  downrange was heard "burning" at full level 300 m from its pad minutes after it left.) Rocket voices are their
+  own kind in the thunder synth (pushEvent's 5th value = 1, `rocketTick`): a low roar (brown + pink noise
+  low-passed at 2200 / (1 + km / 1.8) Hz, under a 62-Hz sub layer), Mach-wave crackle (one-sided spikes, 350 Hz-9 kHz,
+  fading out by 40 km), a punch when the roar first arrives (x3 over ~1.4 s with a 25-ms attack, a burst of crackle,
+  a thump falling from ~70 to 30 Hz) and a send into an FDN echo (t60 3.4 s: the roar off the ground and landscape).
+  Measured offline (harness `audio record ... solo=thunder`, `harness_runs/rk` on the kessler branch): 300 m from the
+  pad ~-23 dBFS while the roar lasts, 25 km ~-31, sub band dominant (centroid ~35-40 Hz). How it sounds is the
+  user's to judge.
 - **Selectable** (2026-10-19): rocket stages, Starship's ship coming home and every re-entry fireball (retirees, upper
   stages, the Kessler re-entries, small fragments) are TRANSIENTS, not records: the code that draws their heads lists
   them each frame (`SelTransient`, `addSelTransient`: a stable key, ECI position / velocity / acceleration, the ENU
@@ -4307,7 +4345,12 @@ launches follow per-program cadences (no real manifest).
   (`selTransientUpdate`, after the visuals). Label from `transientLabel()` (vehicle, stage, burn, T+, altitude, speed;
   "Re-entry: <satellite>"), magnitude from the drawn flare. Not drawn for 2 s of sim time: deselected. Harness
   `launch select kind=rocket|ship|fireball|retiree_reentry|stage_reentry|kessler_reentry|fragment`, `state` ->
-  `selection.transient`. Go to (follow) is not offered: it needs a mesh.
+  `selection.transient`. Go to (follow) works on a rocket (it has a mesh). **A click on a rocket's MESH picks its
+  transient** (`pickSatelliteAt` maps a rocket mesh slot to its key): it used to select the mesh slot itself, whose
+  elements are only last frame's state, so a selected or followed rocket froze there for good (the user's ship "still
+  up here" seven months after it had re-entered) and, followed, was drawn twice (its live self in a rocket mesh slot
+  beside the followed copy). The followed transient keeps updating (and is dropped with the follow when it is gone)
+  even with the selection cleared, is never also drawn in a rocket mesh slot, and is listed at any range.
 - **Kessler** (L6): launches stand down at the CME; by default for good ("After the Sun's Fury": Stand down /
   Resume, `launches.after_storm` 0 / 1; Resume = three weeks later). The trains would not die anyway (they are not
   engine objects), but nobody launches replacements into shells being ground into debris. A slot dead before its swap

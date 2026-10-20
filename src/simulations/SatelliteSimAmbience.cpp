@@ -881,8 +881,8 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
         thunderLevelNow_ = std::max(thunderLevelNow_, ls.level);
         if (syn)
         {
-            const float ev[4] = {(float)v, ls.level, ls.km, ls.pan};
-            syn->pushEvent(ev, 4);
+            const float ev[5] = {(float)v, ls.level, ls.km, ls.pan, 1.0f}; // 1: a rocket's roar, not thunder
+            syn->pushEvent(ev, 5);
         }
     }
     // A voice whose flash had nothing arrive this frame is told so (the gaps between pieces are the roll's
