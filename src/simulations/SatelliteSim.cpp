@@ -487,8 +487,10 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Missions", GLFW_KEY_M, -1, false, false},                                          // KB_MISSIONS (event) — the Missions window
         {"Leave Go To Here", GLFW_KEY_G, -1, false, false},                                  // KB_FOLLOW_STAY (event) — end Go to as a free observer where the camera is
         {"Go To: Return", GLFW_KEY_H, -1, false, false},                                     // KB_FOLLOW_RETURN (event) — back to the followed object / follow the last one again
+        {"Next Mission Milestone", GLFW_KEY_RIGHT_BRACKET, -1, false, false},                // KB_MILESTONE_NEXT (event) — missionJumpNow(+1)
+        {"Previous Mission Milestone", GLFW_KEY_LEFT_BRACKET, -1, false, false},             // KB_MILESTONE_PREV (event) — missionJumpNow(-1)
     };
-    static_assert(KB_COUNT == 25, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 27, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -1640,6 +1642,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         CpuTimer launchTimer(cpuAccumMs[CPU_LAUNCHES]);
         launchUpdate(ctx, cmd);
+        missionAttachAfterJump(); // a milestone skip's launch record: its slot at the new time, before followCheckTarget
     }
 
     if (followActive)
@@ -8810,6 +8813,17 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
     case KB_FOLLOW_STAY:
         if (followActive && !cineActive())
             stopFollowHere();
+        break;
+    case KB_MILESTONE_NEXT:
+    case KB_MILESTONE_PREV:
+        if (!cineActive())
+        {
+            std::string m;
+            const bool ok = missionJumpNow(bindIdx == KB_MILESTONE_NEXT ? 1 : -1, m);
+            snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", m.c_str());
+            screenshotToastTimer = ok ? 2.5f : 3.0f;
+            screenshotToastWarn = !ok;
+        }
         break;
     case KB_FOLLOW_RETURN:
         if (!cineActive())

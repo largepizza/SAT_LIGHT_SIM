@@ -2391,6 +2391,11 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
 - **Long or user-edited text is a `UITextBlock`, not a `CLAY_TEXT` (2026-10-13):** see `textArea` under *Issue
   reports*. Clay's measurement cache is 65536 words (`Clay_SetMaxMeasureTextCacheWordCount`, 4x the default, the
   arena sized by `Clay_MinMemorySize`), and the error handler prints each kind of Clay error once.
+- **Window opacity and stacking (2026-10-20):** a window's panel alpha is "Window opacity" (Display tab,
+  `display.window_opacity`, 0.6-1, default 1 = opaque; the themes' 245 let a window's text show through the one over
+  it). Every window is a floating root at zIndex 10 and Clay sorts roots stably, so the one declared later is on top;
+  a window's own floating children (the info window's view chips, the trace plot's tick labels, the marker labels)
+  must use the SAME zIndex as the window (they were 11 / 12, so they drew over any later window covering them).
 - **Clips nest (2026-10-03):** `UIRenderer::record` keeps a scissor stack — a clip inside a clipped scroll view is
   intersected with it and its end restores the parent's. SCISSOR_END used to reset to the full screen, so anything
   drawn after a nested clip (a text box, a horizontally clipped row) escaped its window's scroll view. `ui dump`'s
@@ -3139,7 +3144,9 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
       `attachTo = ELEMENT_WITH_ID` so a resize cannot slide them off), a row of four **stat tiles**
       (MAGNITUDE as seen, ELEVATION, RANGE, PHASE; a phrase shortens to Dark / Below), then **ACTIONS**, never
       collapsed or scrolled (2026-10-19): Trace pass, Go to (Leave while following), Track (each selects the
-      viewed satellite first), and **Explode** (`uiDangerButton`, `Pal::btnDanger*`; ONE click since 2026-10-19 — the
+      viewed satellite first), and **Explode** — ONE row of four equal (grow) buttons since 2026-10-20 (the user: "line
+      up the explode button"; it sat alone on a second row; `uiDangerButton` gained `grow` and uiButton's padding)
+      (`uiDangerButton`, `Pal::btnDanger*`; ONE click since 2026-10-19 — the
       user: no confirm click; the ASAT strike button is gone, see "Player breakups"). It calls `infoExplodeSelected(kind)` — THE
       call site of a player breakup from this window (today `kesslerBreakupFromUi`; its `kUiMsg` goes to the
       toast). Then the scrollable collapsible **sections** — the Clouds tab's form (`infoSection`, `+`/`-`
@@ -3153,7 +3160,9 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
       Reset view) and PHOTOMETRY CHECK (`viewerCheckValue[3]` + Run check), collapsed. The first cut (2026-09-24 ..
       10-19) opened on SATELLITE (model id, triangles) and hid BRIGHTNESS, SKY POSITION and a BREAKUP section
       below the 3D view's settings: the user found Explode by chance ("how much is hiding in here?").
-      `infoSectionOpen[]` is session state, like the Clouds sections'. The band does not scroll with the
+      `infoSectionOpen[]` is session state, like the Clouds sections'. **MISSION** (`kInfoMission`, the enum's last value
+      but drawn right after STATUS, open; 2026-10-20) appears for anything with a launch timeline (see "Mission
+      milestones" under *Launches*). The band does not scroll with the
       sections: it is re-drawn each frame from the same crop.
     - **The chips** (`buildViewChip`: the icon alone, tooltip = its name, on a translucent scrim so a
       white icon survives bright clouds) are the 3D VIEW's own controls, four of them: **Spin**
@@ -4842,6 +4851,44 @@ launches follow per-program cadences (no real manifest).
   into `msText_` (a deque) — an action after the layout only marks the rows stale, never rebuilds them that frame.
   **Go to fixes the observer's altitude** (`obsHeightOffset = 0`, on the ground): `launchGoToNextWhen` and the launch
   re-entry Watch kept whatever height the eye had (a jump from orbit stayed in orbit).
+  **The Sun's Fury card is pinned under the list on Upcoming** (2026-10-20: outside the `MsList` scroll view; at the
+  default height it was the last card and needed scrolling). Ongoing launch rows have **Next >** (`missionsMilestone`):
+  the batch's next milestone, carrying a selected / followed stage of it.
+- **Mission milestones (2026-10-20, the user: "skip to the next mission milestone", "mission activity in the info
+  screen"; `SatelliteSimLaunches.cpp` end, `missionBatchMilestones` / `missionSubjectOfIndex` / `missionJump`).** A
+  launch's timeline is read from its batch's phase times: lift-off, max-Q (the largest 0.5 rho v^2 on the booster's
+  track before MECO), MECO and staging (`vh.t1`), the fairing (`tFair`), SECO (`tL + t2`), deployment begins / last
+  satellite released (`tD`, `deployInterval`), the deorbit burn (`tDeorbBurn`), entry (`tStageGone`), the ship's
+  descent / flip / catch or splashdown (`tShipDesc / tShipFlip / tShipCatch`), docking for crew (`tA`). **The booster's
+  recovery milestones are read off its `Track`**: every change of `burn` after staging (boostback, entry, landing, or
+  any kind added later, named "Booster burn"), then `tEnd` (tower catch / pad / droneship / sea by `recovery` and
+  `landed`) — so a new landing kind needs no code here. Trains: raising starts (min `sRaise`), arrival; a member adds its
+  release and its own raise; retirees: deorbit (`tA`), re-entries (`ends`), a member its `tEnd`. Each milestone carries
+  `who` (`kMsPayload | kMsBooster | kMsTrain | kMsRetiree`) and the SUBJECT's role filters them: the selection or the
+  followed transient (`kind 1/2/4`: payload, or booster once a stage-0 transient is past `t1`), a launch record (train
+  member / retiree by `launchSlotOwner`), a roster satellite (`missionRosterBatches`: the plane's batch (k, b) whose
+  arrival put it in its slot and k + 1 that replaces it; `LaunchState::satPlane/satPos`, rebuilt with the planes;
+  crew stations and Kessler-dead satellites have none). Facts rows (`missionFacts`): coming up, the record's status,
+  the climb's progress and arrival, re-entry, a roster satellite's time in its slot, design life used, replacement.
+  - **Skipping** (`missionJump`): to `t - lead` (10 s, or 0.45 of the gap to the previous milestone) of the next /
+    previous / an indexed milestone, at 1x (pause kept), histories reset like any time jump. `missionAttachAt` keeps
+    the selection and Go to on the subject's object at the new time — the rocket (`launchRocketTransient`, the camera
+    keeps its offset in the object's frame via `followTakeTransient(c, 0, t)`), the booster (a stage-0 transient), a
+    train member (the rocket before `tD`, its record in [tD, tA), its roster slot after), a retiree (the roster slot
+    before `tA`, its record until `tEnd`), a roster satellite (the train member of the batch before it before that
+    batch's `tA`). A launch record's slot is allocated by `launchUpdate` at the new time, so `missionAttachAfterJump()`
+    runs right after it (before `followCheckTarget`) and re-points follow / the selection (30 frames, then the roster
+    slot). UI: the Info window's MISSION section (`buildMissionTimeline`: mission, object, facts, progress bar,
+    < Previous / Next: <label> >, one row per milestone with T+ from lift-off or "in" / "ago" for a roster satellite,
+    UTC, Skip / Back; the last passed highlighted with `Pal::rowHighlight`), the follow HUD's `<` / `Next: ... >` chips,
+    keys `]` / `[` (`KB_MILESTONE_NEXT` / `_PREV`, `missionJumpNow`: Go to's object, else the selection's), the Missions
+    window's Ongoing **Next >**. Jumps from UI are applied AFTER the layout (they rewrite `followLabel`, which Clay
+    still holds). Harness `missions milestone [list|next|prev|<i>] [row=]`; `scripts/mission_milestones.satcmd`,
+    `scripts/mission_edge_cases.satcmd`.
+  - **A selected / followed re-entry is listed even where it is not drawn** (`transientWanted`, used by
+    `fbDrawReentry` and the retiree / upper-stage re-entry loops' 3000-km gates): behind the Earth, out of range, too
+    faint or in daylight it is listed with flare 0 (picking skips it), so an expendable stage's selection carries on
+    to its fireball (it was dropped: the fireball was never drawn from the pad).
 - **The ship comes home to a tower; boosters are caught (2026-10-19, the user: "do Starships actually land?" — in the
   2036 setting SpaceX flies full reuse).** A returning stage's deorbit burn is TIMED for a catch (`planShipLanding`):
   the first moment within 72 h of deployment (30-s steps, refined at 2 s) at which its entry ends (`shipEntry` at

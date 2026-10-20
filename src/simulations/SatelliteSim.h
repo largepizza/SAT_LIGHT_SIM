@@ -1949,6 +1949,11 @@ struct SatOrbit
 };
 
 // ── SatelliteSim ──────────────────────────────────────────────────────────────
+namespace launchsim
+{
+struct LBatch; // SatelliteSimLaunches.cpp
+}
+
 class SatelliteSim : public Simulation
 {
 public:
@@ -2278,9 +2283,11 @@ private:
     // SKY POSITION, ORBIT open; the technical MODEL (type, model id, size, triangles), VIEW (camera + render) and
     // CHECK collapsed at the bottom. The stat tiles and the ACTIONS (Trace / Go to / Track / Explode) sit
     // above the list and never scroll away.
-    enum InfoSect { kInfoStatus = 0, kInfoBright, kInfoSky, kInfoOrbit, kInfoModel, kInfoView, kInfoCheck };
-    static constexpr int kInfoSectionCount = 7;
-    bool infoSectionOpen[kInfoSectionCount] = {true, true, true, true, false, false, false};
+    // 2026-10-20: MISSION (kInfoMission, drawn second, after STATUS; only for an object with a launch timeline:
+    // missionSubjectOfIndex) — the milestones with T+ / UTC, the current one highlighted, per-row skips, Prev / Next.
+    enum InfoSect { kInfoStatus = 0, kInfoBright, kInfoSky, kInfoOrbit, kInfoModel, kInfoView, kInfoCheck, kInfoMission };
+    static constexpr int kInfoSectionCount = 8;
+    bool infoSectionOpen[kInfoSectionCount] = {true, true, true, true, false, false, false, true};
     // STATUS rows, formatted each frame (a transient's label is longer than the kit's 96-char ring)
     static constexpr int kInfoStatusRows = 5;
     char infoStatusValue[kInfoStatusRows][160] = {};
@@ -2809,6 +2816,7 @@ private:
     int rocketMeshSlotToTransient(int satIndex);
     bool selIsTransient() const { return selectedSatIndex >= 0 && (uint32_t)selectedSatIndex == transientSatIdx(); }
     void addSelTransient(const SelTransient &s);
+    bool transientWanted(uint8_t kind, uint64_t a) const; // a re-entry the selection / Go to holds or waits for
     void selTransientUpdate();                // after the frame's visuals: the reserved slot's state, the label
     void selTransientTake(const SelTransient &s); // make it the selection's object (the caller selects the index)
     std::string transientLabel() const;
@@ -2962,6 +2970,63 @@ private:
     bool launchRocketTransient(uint64_t key, double t, SelTransient &out) const;
     bool launchSelectNearestOf(int prog, int kind, std::string &msg); // the nearest train member (0) / retiree (1)
 
+    // ── Mission milestones (2026-10-20, SatelliteSimLaunches.cpp): a launch's timeline from its batch's phase times
+    // (lift-off, max-Q, staging, fairing, SECO, deployment, deorbit, entry, the ship's descent and catch; the booster's
+    // recovery burns read off its track), trains (release, raising, arrival), retirees (deorbit, re-entry), and for a
+    // roster satellite the batch that put it there and the one that replaces it. The Info window's MISSION section,
+    // the follow HUD's Prev / Next, KB_MILESTONE_NEXT / _PREV, Missions' Ongoing rows, harness `missions milestone`.
+    struct MissionMilestone
+    {
+        double t = 0.0;     // J2000 s
+        std::string label;
+        uint8_t who = 0;    // kMs* bits: whose milestone
+        double lead = 10.0; // a skip lands this long before it (less where milestones crowd)
+    };
+    static constexpr uint8_t kMsPayload = 1, kMsBooster = 2, kMsTrain = 4, kMsRetiree = 8;
+    struct MissionSubject
+    {
+        bool ok = false;
+        uint64_t key = 0;     // the batch (a roster satellite: the one that will replace it)
+        uint64_t keyPrev = 0; // a roster satellite: the batch that put it there
+        uint8_t role = 0;     // kMsPayload (the rocket / upper stage / ship), kMsBooster, kMsTrain, kMsRetiree
+        int member = -1;      // a train member / retiree: its index in the batch
+        int sat = -1;         // its roster slot
+        bool roster = false;  // a roster satellite in operations
+        bool followed = false;
+        std::string title, what;
+        std::vector<MissionMilestone> ms; // the subject's, sorted (skips walk these)
+        int cur = -1;                     // the last one passed
+        double t0 = 0.0, t1 = 0.0;
+        std::vector<std::pair<std::string, std::string>> facts;
+    };
+    launchsim::LBatch *missionBatch(uint64_t key); // built if not cached (a pure function of its key)
+    void missionFinish(MissionSubject &s, double now);
+    void missionBatchMilestones(const launchsim::LBatch &B, std::vector<MissionMilestone> &ms) const; // every object's
+    bool missionSubjectOfBatch(uint64_t key, MissionSubject &out, uint8_t role = kMsPayload);
+    bool missionRosterBatches(int sat, double t, uint64_t &keyPrev, uint64_t &keyNext, int &member);
+    bool missionSubjectOfIndex(int satIndex, MissionSubject &out); // a transient slot, a launch record, a roster satellite
+    bool missionSubjectOfIndexRaw(int satIndex, MissionSubject &out); // ... without the facts rows
+    void missionFacts(MissionSubject &s, int satIndex, double t);
+    bool missionSubjectNow(MissionSubject &out);                    // Go to's object, else the selection's
+    // To just before milestone `index` (>= 0), else the next (dir +1) / previous (-1) one, at 1x; the selection and Go
+    // to stay on the subject's object at the new time (a stage, its booster, a train member's record, its roster slot).
+    bool missionJump(const MissionSubject &s, int dir, int index, std::string &msg);
+    bool missionJumpNow(int dir, std::string &msg);
+    void missionAttachAt(const MissionSubject &s, double t, bool sel, bool fol);
+    void missionAttachAfterJump(); // after launchUpdate: a launch record's new slot
+    nlohmann::json missionSubjectJson(const MissionSubject &s) const;
+    uint64_t msAttachOwner = 0;
+    uint16_t msAttachM = 0;
+    bool msAttachSel = false, msAttachFollow = false;
+    int msAttachTries = 0, msAttachFallback = -1;
+    MissionSubject infoMission_, followMission_; // the Info window's MISSION section, the follow HUD (refreshed 4x a s)
+    double infoMissionWall_ = -1e300, followMissionWall_ = -1e300;
+    int infoMissionIdx_ = -2;
+    bool hovFollowMsPrev = false, hovFollowMsNext = false;
+    void buildMissionTimeline(const UIInput &inp, UIRenderer &ui, const MissionSubject &s, float lw, int &jumpIdx,
+                              int &jumpDir); // the Info window's MISSION section body (SatelliteSimUI.cpp)
+    std::deque<std::string> msTimelineText_;  // its strings this frame (a deque never moves them)
+
     WindowChrome msChrome;
     bool hovMsClose = false, hovTimeMissions = false;
     int msTab = 0;                       // 0 upcoming, 1 ongoing, 2 controls
@@ -2982,6 +3047,7 @@ private:
     // An Ongoing row's object (msOngoing[row]): the rocket of a crew transfer / satellite launch, the nearest raising
     // train member, the nearest retiree. Selected by key / index whether drawn or not; go = also Go to it (2026-10-20).
     bool missionsOngoingAct(int row, bool go, std::string &msg);
+    bool missionsMilestone(int row, int dir, int index, std::string &msg); // an Ongoing row's next / previous milestone
     nlohmann::json missionsStateJson();
     void buildMissionsWindow(const UIInput &inp, UIRenderer &ui);
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
@@ -4480,6 +4546,9 @@ private:
     // UI colour theme (UIPalette.h: 0 Default, 1 Navy, 2 Night red, 3 Midnight = the default), display.ui_theme. buildUI applies it
     // (applyUiTheme + the renderer's night filter) whenever it differs from what is applied.
     int uiTheme = 3; // Midnight (the default since 2026-10-15)
+    // Window opacity (2026-10-20, display.window_opacity, Display tab): the windows' panel alpha. 1 = opaque: at the
+    // themes' 245/255 the text of a window under another showed through it (bright text at ~4%).
+    float windowOpacity = 1.0f;
     void syncUiTheme();
     float masterVol_ = 0.4f; // mirrors AudioSystem default (display fallback)
     float musicVol_ = 0.7f;
@@ -5447,7 +5516,9 @@ private:
         KB_MISSIONS = 22,      // event — the Missions window (launches, crew flights, the Sun's Fury) open / closed
         KB_FOLLOW_STAY = 23,   // event — leave Go to where the camera is (stopFollowHere); G
         KB_FOLLOW_RETURN = 24, // event — Go to: back to the followed object, or follow the last one again; H
-        KB_COUNT = 25,
+        KB_MILESTONE_NEXT = 25, // event — the selected / followed launch object's next mission milestone; ]
+        KB_MILESTONE_PREV = 26, // event — ... its previous one; [
+        KB_COUNT = 27,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -5566,7 +5637,7 @@ private:
                   bool on = false, bool enabled = true, bool grow = false);
     // A destructive action's pill (Pal::btnDanger*): `armed` = the first click of two has been made.
     bool uiDangerButton(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, const char *tip,
-                        bool armed, bool enabled = true);
+                        bool armed, bool enabled = true, bool grow = false);
     bool uiToggleRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, bool &v,
                      const char *tip = nullptr, const char *onText = "On", const char *offText = "Off");
     int  uiChoiceRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label,

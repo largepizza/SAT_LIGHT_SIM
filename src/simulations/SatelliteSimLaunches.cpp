@@ -25,6 +25,7 @@
 
 #include <array>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 
 namespace launchsim
@@ -360,6 +361,9 @@ struct SatelliteSim::LaunchState
     // change (a breakup, the cascade reaching it, a rollback) rebuilds them (crewSync).
     std::vector<int32_t> crewDead;
     std::vector<LPad> pads;          // the launch pads (ensureCatalog)
+    // Roster satellite -> its plane and place in it (missionRosterBatches; rebuilt with the planes).
+    std::vector<int32_t> satPlane;
+    std::vector<uint32_t> satPos;
     std::vector<int> sitePad;        // per catalog site: its pad
     uint64_t padMeshKey[16] = {};    // the pads drawn as meshes, per reserved slot (pad index + 1; 0 = free)
     uint32_t nRockets = 0, nTrain = 0, nRetire = 0, nPlumes = 0, nReentries = 0, nWrites = 0, nBatches = 0;
@@ -603,6 +607,8 @@ static void buildPlanes(SatelliteSim::LaunchState &L, const std::vector<SatOrbit
                         const std::vector<ConstellationConfig> &consts, float lifeScale)
 {
     L.planes.clear();
+    L.satPlane.clear();
+    L.satPos.clear();
     for (size_t c = 0; c < consts.size(); ++c)
     {
         int prog = -1;
@@ -3105,7 +3111,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 if (!LaunchImpl::memberState(*this, B, mb, 1, mb.tEnd - 1.0, r, v))
                     continue;
                 const glm::dvec3 U0 = glm::normalize(r);
-                if (glm::length(kR * U0 - eye) > 3.0e6)
+                if (glm::length(kR * U0 - eye) > 3.0e6 && !transientWanted(3, mb.sat))
                     continue;
                 glm::dvec3 A = v - glm::dot(v, U0) * U0;
                 A = glm::length(A) > 1.0 ? glm::normalize(A) : glm::dvec3(1, 0, 0);
@@ -3128,7 +3134,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 LaunchImpl::rocketPos(L, B, 1, B.tStageRE - B.tL - 2.0, Pm))
             {
                 const glm::dvec3 U0 = glm::normalize(P);
-                if (glm::length(kR * U0 - eye) < 3.0e6)
+                if (glm::length(kR * U0 - eye) < 3.0e6 || transientWanted(4, key))
                 {
                     // Along its entry ellipse's ground track (horizontal part of its velocity).
                     glm::dvec3 A = (P - Pm) - glm::dot(P - Pm, U0) * U0;
@@ -4058,6 +4064,19 @@ static std::string fmtUtc(double tJ2000)
 {
     char b[48];
     formatSimClock(tJ2000, b, sizeof(b), true);
+    return b;
+}
+
+// "2036-11-22 03:39 UTC" (the mission timeline's rows and facts).
+std::string fmtUtcReadable(double tJ2000)
+{
+    const time_t unixSim = (time_t)std::floor(tJ2000) + 946728000;
+    const struct tm *u = gmtime(&unixSim);
+    char b[48];
+    if (!u)
+        return "--";
+    snprintf(b, sizeof(b), "%04d-%02d-%02d %02d:%02d:%02d UTC", u->tm_year + 1900, u->tm_mon + 1, u->tm_mday, u->tm_hour,
+             u->tm_min, u->tm_sec);
     return b;
 }
 
@@ -5246,6 +5265,36 @@ bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::str
 // Their heads are listed each frame (addSelTransient) by the code that draws them; the selected one's state goes into
 // the reserved last launch slot (transientSatIdx()) as SatOrbitElems::fixedState, so the panel, Track and the
 // harness see a satellite there. Nothing else ever owns that slot (launchInitBlock keeps its chunk out of the pool).
+// A re-entry the selection or Go to holds or waits for (kind 3 a retiree: a = its satellite; 4 an upper stage: a = the
+// batch): listed even where it is not drawn (behind the Earth, out of range, too faint), so the selection carries on.
+bool SatelliteSim::transientWanted(uint8_t kind, uint64_t a) const
+{
+    auto rides = [&](const SelTransient &c) {
+        return c.a == a && (c.kind == kind || (kind == 4 && c.kind == 1 && c.stage == 1));
+    };
+    if (selIsTransient() && rides(selTransientCur))
+        return true;
+    if (selWantKind == kind && selWantA == a)
+        return true;
+    if (followIsTransient() && (followTrKey ? rides(followTrCur) : (followWantKind == kind && followWantA == a)))
+        return true;
+    // A retiree's own record selected or followed (its fireball comes next).
+    if (kind == 3 && a < activeSatCount && launchState)
+        for (int idx : {selectedSatIndex, followActive ? followSatIndex : -1})
+            if (idx >= (int)activeSatCount && (uint32_t)idx < poolIdx0() && (uint32_t)idx < transientSatIdx() - 1)
+            {
+                uint32_t m = 0;
+                const uint64_t owner = launchSlotOwner((uint32_t)idx - activeSatCount, m);
+                if (owner % 2 == 1)
+                {
+                    auto it = launchState->batches.find(owner / 2);
+                    if (it != launchState->batches.end() && m < it->second.mem.size() && it->second.mem[m].sat == a)
+                        return true;
+                }
+            }
+    return false;
+}
+
 void SatelliteSim::addSelTransient(const SelTransient &s)
 {
     if (selTransients.size() < 16384)
@@ -7547,4 +7596,737 @@ void SatelliteSim::launchFillShipGlow(GpuDustCloud *out, uint32_t &n, double toS
             add(Pb, ecefToEci(up, t), 12.0, 2.2, -3.5, glm::vec3(1.0f, 0.92f, 0.8f));
         }
     });
+}
+
+// ── Mission milestones (2026-10-20, the user: "skip to the next mission milestone", "mission activity in the info
+// screen") ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+// A launch's timeline from its batch's phase times: lift-off, max-Q and MECO / staging from the booster's track, the
+// fairing, SECO, the deployment, the upper stage's deorbit burn and entry, the ship's descent and catch; the booster's
+// own recovery burns are READ OFF its track (every change of its burn kind after staging, then its landing), so a new
+// recovery kind (a droneship) shows up without code here. Trains: release, raising, arrival; retirees: deorbit,
+// re-entry; a roster satellite in operations: the batch that put it there, and the one that will replace it.
+// A subject's skips land `lead` before each milestone (10 s, less where milestones crowd) at 1x, and keep the
+// selection and Go to on the subject's object at the new time (missionJump / missionAttachAfterJump).
+namespace
+{
+std::string msFmtRel(double dt)
+{
+    char b[48];
+    const char *pre = dt < 0.0 ? "T-" : "T+";
+    const long long s = (long long)std::floor(std::abs(dt));
+    if (s >= 86400)
+        snprintf(b, sizeof(b), "%s%lldd %02lldh", pre, s / 86400, (s % 86400) / 3600);
+    else if (s >= 3600)
+        snprintf(b, sizeof(b), "%s%lldh %02lldm", pre, s / 3600, (s % 3600) / 60);
+    else if (s >= 60)
+        snprintf(b, sizeof(b), "%s%lldm %02llds", pre, s / 60, s % 60);
+    else
+        snprintf(b, sizeof(b), "%s%llds", pre, s);
+    return b;
+}
+const char *msBurnName(uint8_t burn)
+{
+    switch (burn)
+    {
+    case launch::BURN_BOOSTBACK:
+        return "Booster boostback burn";
+    case launch::BURN_ENTRY:
+        return "Booster entry burn";
+    case launch::BURN_LANDING:
+        return "Booster landing burn";
+    case launch::BURN_ASCENT:
+        return "Booster burn";
+    case launch::BURN_UPPER:
+        return "Booster burn";
+    default:
+        return "Booster burn"; // a kind added later (a droneship's): still a milestone
+    }
+}
+} // namespace
+
+LBatch *SatelliteSim::missionBatch(uint64_t key)
+{
+    if (!launchState)
+        launchInitBlock();
+    LaunchState &L = *launchState;
+    LaunchImpl::ensureCatalog(L);
+    if (!L.loaded)
+        return nullptr;
+    if (!L.planesBuilt)
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    auto it = L.batches.find(key);
+    if (it == L.batches.end())
+    {
+        int plane = 0, b = 0;
+        int64_t k = 0;
+        batchKeyDecode(key, plane, k, b);
+        if (plane < 0 || plane >= (int)L.planes.size())
+            return nullptr;
+        LBatch nb;
+        nb.plane = plane;
+        nb.k = k;
+        nb.b = b;
+        const LPlane &pl = L.planes[plane];
+        LaunchImpl::buildBatch(*this, L, nb, pl, progLifeS(L.cat.programs[pl.prog], (double)launchLifeScale));
+        it = L.batches.emplace(key, std::move(nb)).first;
+    }
+    it->second.touched = std::max(it->second.touched, L.frame);
+    return &it->second;
+}
+
+// The batch's whole timeline (every object's milestones, `who` says whose), sorted.
+void SatelliteSim::missionBatchMilestones(const LBatch &B, std::vector<MissionMilestone> &ms) const
+{
+    const SatelliteSim &sim = *this;
+    const LaunchState &L = *launchState;
+    using MM = SatelliteSim::MissionMilestone;
+    const uint8_t P = SatelliteSim::kMsPayload, Bo = SatelliteSim::kMsBooster, Tr = SatelliteSim::kMsTrain,
+                  Re = SatelliteSim::kMsRetiree;
+    ms.clear();
+    if (!B.valid || B.veh < 0)
+        return;
+    const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+    const launch::Program &pg = L.cat.programs[B.prog];
+    auto add = [&](double t, uint8_t who, const std::string &label) { ms.push_back(MM{t, label, who, 10.0}); };
+    add(B.tL, P | Bo | Tr, "Lift-off from " + L.cat.sites[B.site].name);
+    // Max-Q: the largest dynamic pressure on the climb (the booster's track, ground-relative speed).
+    const Track &tr = L.booster[B.veh];
+    {
+        double qMax = 0.0, tq = -1.0;
+        for (size_t i = 0; i < tr.p.size() && (double)i * tr.dt < vh.t1; ++i)
+        {
+            const double q = 0.5 * launch::airDensity(tr.p[i].y) * glm::dot(tr.v[i], tr.v[i]);
+            if (q > qMax)
+            {
+                qMax = q;
+                tq = (double)i * tr.dt;
+            }
+        }
+        if (tq > 5.0)
+        {
+            char b[64];
+            snprintf(b, sizeof(b), "Max-Q (%.0f kPa)", qMax / 1000.0);
+            add(B.tL + tq, P | Bo | Tr, b);
+        }
+    }
+    add(B.tL + vh.t1, P | Bo | Tr, "MECO and stage separation");
+    // The booster after staging: each change of its burn kind, then its landing (or its end).
+    {
+        uint8_t prev = launch::BURN_NONE;
+        for (size_t i = 0; i < tr.burn.size(); ++i)
+        {
+            const double tau = (double)i * tr.dt;
+            const uint8_t b = tr.burn[i];
+            if (tau > vh.t1 + 0.5 && b != prev && b != launch::BURN_NONE)
+                add(B.tL + tau, Bo, msBurnName(b));
+            prev = b;
+        }
+        if (tr.tEnd > vh.t1 + 5.0)
+        {
+            const char *end = !tr.landed               ? (vh.recovery == 0 ? "Booster falls into the sea" : "Booster's track ends")
+                              : vh.recovery == 1        ? (vh.catchM > 0.0 ? "Booster caught by the tower" : "Booster lands at the pad")
+                              : vh.recovery == 2        ? "Booster lands on the droneship"
+                                                        : "Booster touches down";
+            add(B.tL + tr.tEnd, Bo, end);
+        }
+    }
+    if (B.tFair >= 0.0)
+        add(B.tFair, P | Tr, "Fairing separation");
+    add(B.tL + B.t2, P | Tr, "SECO: in the parking orbit");
+    const size_t n = B.mem.size();
+    if (pg.crew)
+        add(B.tD, P, pg.spacecraft.empty() ? "Spacecraft separation" : pg.spacecraft + " separates");
+    else if (n > 0)
+    {
+        add(B.tD, P | Tr, "Deployment begins (" + std::to_string(n) + " satellites)");
+        if (n > 1)
+            add(B.tD + B.deployInterval * (double)(n - 1), P | Tr, "Last satellite released");
+    }
+    if (B.tDeorbBurn > B.tD)
+        add(B.tDeorbBurn, P, "Upper stage deorbit burn");
+    add(B.tStageGone, P, vh.upperDeorbit ? "Upper stage re-enters (burns up)" : "Ship entry interface (100 km)");
+    if (!vh.upperDeorbit && B.shipLands)
+    {
+        add(B.tShipDesc, P, "Entry ends: belly-flop descent");
+        add(B.tShipFlip, P, "Flip and landing burn");
+        add(B.tShipCatch, P, B.landPad >= 0 ? "Ship caught by the tower" : "Ship splashes down");
+    }
+    if (pg.crew)
+        add(B.tA, P, "Docking with " + sim.constellations[L.planes[B.plane].constIdx].name);
+    else if (n > 0)
+    {
+        double r0 = 1e300;
+        for (const LMember &m : B.mem)
+            r0 = std::min(r0, m.sRaise);
+        if (r0 < B.tA)
+            add(r0, Tr, "Train starts raising");
+        add(B.tA, Tr | Re, "Arrival in the slots; the old satellites retire");
+        if (!B.ends.empty())
+        {
+            add(B.ends.front(), Re, "First retiree re-enters");
+            if (B.ends.size() > 1)
+                add(B.ends.back(), Re, "Last retiree re-enters");
+        }
+    }
+    std::stable_sort(ms.begin(), ms.end(), [](const MM &a, const MM &b) { return a.t < b.t; });
+}
+
+// Fills s.ms from the batch for its role (and member), the current milestone and the leads.
+void SatelliteSim::missionFinish(MissionSubject &s, double now)
+{
+    LaunchState &L = *launchState;
+    LBatch *B = missionBatch(s.key);
+    s.ms.clear();
+    if ((!B || !B->valid) && !s.roster)
+    {
+        s.ok = false;
+        return;
+    }
+    std::vector<MissionMilestone> all;
+    if (B && B->valid)
+        missionBatchMilestones(*B, all);
+    const bool member = B && B->valid && s.member >= 0 && (size_t)s.member < B->mem.size();
+    for (const MissionMilestone &m : all)
+    {
+        if (!(m.who & s.role))
+            continue;
+        if (member && s.role == kMsTrain && (m.label == "Train starts raising" || m.label == "Last satellite released"))
+            continue; // the member's own below
+        if (member && s.role == kMsRetiree && m.label.find("retiree re-enters") != std::string::npos)
+            continue;
+        s.ms.push_back(m);
+    }
+    if (member)
+    {
+        const LMember &mb = B->mem[(size_t)s.member];
+        if (s.role == kMsTrain)
+        {
+            if (mb.tRel > B->tD + 0.5)
+                s.ms.push_back({mb.tRel, "Released from the dispenser", kMsTrain, 10.0});
+            if (mb.sRaise < B->tA)
+                s.ms.push_back({mb.sRaise, "Starts raising to its slot", kMsTrain, 10.0});
+        }
+        else if (s.role == kMsRetiree)
+        {
+            for (MissionMilestone &m : s.ms)
+                if (m.t == B->tA)
+                    m.label = "Replacement arrives: retires, starts deorbiting";
+            s.ms.push_back({mb.tEnd, "Re-enters", kMsRetiree, 10.0});
+        }
+    }
+    // A roster satellite: how it got there (the batch before).
+    if (s.roster && s.keyPrev)
+        if (LBatch *Bp = missionBatch(s.keyPrev); Bp && Bp->valid)
+        {
+            s.ms.push_back({Bp->tL, "Launched (" + L.cat.vehicles[Bp->veh].name + ")", kMsTrain, 10.0});
+            if (s.member >= 0 && (size_t)s.member < Bp->mem.size())
+                s.ms.push_back({Bp->mem[(size_t)s.member].tRel, "Released from the dispenser", kMsTrain, 10.0});
+            s.ms.push_back({Bp->tA, "Arrived in its slot", kMsTrain, 10.0});
+        }
+    std::stable_sort(s.ms.begin(), s.ms.end(), [](const MissionMilestone &a, const MissionMilestone &b) { return a.t < b.t; });
+    // Leads: 10 s, less where two crowd (never past the previous one).
+    for (size_t i = 0; i < s.ms.size(); ++i)
+    {
+        const double gap = i ? s.ms[i].t - s.ms[i - 1].t : 1e9;
+        s.ms[i].lead = std::clamp(0.45 * gap, 0.5, 10.0);
+    }
+    s.cur = -1;
+    for (size_t i = 0; i < s.ms.size(); ++i)
+        if (s.ms[i].t <= now)
+            s.cur = (int)i;
+    s.t0 = s.ms.empty() ? 0.0 : s.ms.front().t;
+    s.t1 = s.ms.empty() ? 0.0 : s.ms.back().t;
+    s.ok = !s.ms.empty();
+}
+
+bool SatelliteSim::missionSubjectOfBatch(uint64_t key, MissionSubject &out, uint8_t role)
+{
+    out = MissionSubject{};
+    if (!launchState)
+        launchInitBlock();
+    LBatch *B = missionBatch(key);
+    if (!B || !B->valid)
+        return false;
+    LaunchState &L = *launchState;
+    const launch::Program &pg = L.cat.programs[B->prog];
+    const std::string &target = constellations[L.planes[B->plane].constIdx].name;
+    out.key = key;
+    out.role = role;
+    out.title = pg.crew ? pg.spacecraft + " to " + target + " on " + L.cat.vehicles[B->veh].name
+                        : L.cat.vehicles[B->veh].name + " - " + pg.name + ", " + std::to_string(B->mem.size()) +
+                              " satellites to " + target;
+    out.what = role == kMsBooster ? "the booster" : role == kMsTrain ? "the train" : role == kMsRetiree ? "the retirees"
+                                                                                                       : "the rocket";
+    missionFinish(out, (double)simDayJ2000 * 86400.0 + simSecInDay);
+    return out.ok;
+}
+
+// The roster satellite at index `sat` (its plane's batches: the one that put it there, the one that replaces it).
+bool SatelliteSim::missionRosterBatches(int sat, double t, uint64_t &keyPrev, uint64_t &keyNext, int &member)
+{
+    if (!launchState)
+        return false;
+    LaunchState &L = *launchState;
+    LaunchImpl::ensureCatalog(L);
+    if (!L.loaded)
+        return false;
+    if (!L.planesBuilt)
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    if (L.satPlane.size() != activeSatCount)
+    {
+        L.satPlane.assign(activeSatCount, -1);
+        L.satPos.assign(activeSatCount, 0);
+        for (size_t pi = 0; pi < L.planes.size(); ++pi)
+            for (size_t j = 0; j < L.planes[pi].sats.size(); ++j)
+                if (L.planes[pi].sats[j] < activeSatCount)
+                {
+                    L.satPlane[L.planes[pi].sats[j]] = (int32_t)pi;
+                    L.satPos[L.planes[pi].sats[j]] = (uint32_t)j;
+                }
+    }
+    if (sat < 0 || (uint32_t)sat >= activeSatCount || L.satPlane[(size_t)sat] < 0)
+        return false;
+    const int pi = L.satPlane[(size_t)sat];
+    const LPlane &pl = L.planes[(size_t)pi];
+    const launch::Program &pg = L.cat.programs[pl.prog];
+    if (pg.crew)
+        return false;
+    const int payload = LaunchImpl::payloadOf(*this, L, pl);
+    const int pos = (int)L.satPos[(size_t)sat];
+    const int b = pos / payload;
+    member = pos % payload;
+    const double life = progLifeS(pg, (double)launchLifeScale);
+    const int64_t k = (int64_t)std::floor((t - b * pl.gap) / life - pl.phase);
+    keyPrev = batchKey(pi, k, b);
+    keyNext = batchKey(pi, k + 1, b);
+    return true;
+}
+
+// Extra rows for the MISSION section: what comes next, a train member's climb, a satellite's design life.
+void SatelliteSim::missionFacts(MissionSubject &s, int idx, double t)
+{
+    auto inStr = [](double dt) {
+        std::string r = msFmtRel(dt).substr(2);
+        return dt >= 0.0 ? "in " + r : r + " ago";
+    };
+    for (const MissionMilestone &m : s.ms)
+        if (m.t > t)
+        {
+            s.facts.push_back({"Coming up", m.label + ", " + inStr(m.t - t)});
+            break;
+        }
+    if (!launchState)
+        return;
+    const LaunchState &L = *launchState;
+    LBatch *B = missionBatch(s.key);
+    if ((uint32_t)idx >= activeSatCount && (uint32_t)idx < poolIdx0() && (uint32_t)idx != transientSatIdx() &&
+        (uint32_t)idx != followSlotIdx())
+    {
+        const std::string st = launchStatus((uint32_t)idx - activeSatCount);
+        if (!st.empty())
+            s.facts.push_back({"Now", st.substr(st.find(" - ") == std::string::npos ? 0 : st.find(" - ") + 3)});
+    }
+    if (B && B->valid && s.member >= 0 && (size_t)s.member < B->mem.size() && !s.roster)
+    {
+        const LMember &mb = B->mem[(size_t)s.member];
+        char b[120];
+        if (s.role == kMsTrain && t >= mb.sRaise && t < B->tA)
+        {
+            snprintf(b, sizeof(b), "%.0f%% of the climb to %.0f km", 100.0 * (t - mb.sRaise) / std::max(1.0, B->tA - mb.sRaise),
+                     (mb.rSlot - kR) / 1000.0);
+            s.facts.push_back({"Raising", b});
+        }
+        if (s.role == kMsTrain && t < B->tA)
+            s.facts.push_back({"Arrives", inStr(B->tA - t) + " (" + fmtUtcReadable(B->tA) + ")"});
+        if (s.role == kMsRetiree && t < mb.tEnd)
+            s.facts.push_back({"Re-enters", inStr(mb.tEnd - t) + " (" + fmtUtcReadable(mb.tEnd) + ")"});
+    }
+    if (s.roster)
+    {
+        if (LBatch *Bp = missionBatch(s.keyPrev); Bp && Bp->valid)
+        {
+            s.facts.push_back({"In its slot", "since " + fmtUtcReadable(Bp->tA) + " (" + inStr(Bp->tA - t) + ")"});
+            const launch::Program &pg = L.cat.programs[Bp->prog];
+            const double life = progLifeS(pg, (double)launchLifeScale);
+            char b[96];
+            snprintf(b, sizeof(b), "%.1f years, %.0f%% used", life / kYear, 100.0 * std::clamp((t - Bp->tA) / life, 0.0, 9.99));
+            s.facts.push_back({"Design life", b});
+        }
+        if (B && B->valid)
+            s.facts.push_back({"Replaced", inStr(B->tA - t) + " (" + fmtUtcReadable(B->tA) + ")"});
+    }
+}
+
+bool SatelliteSim::missionSubjectOfIndex(int idx, MissionSubject &out)
+{
+    const bool ok = missionSubjectOfIndexRaw(idx, out);
+    if (ok)
+        missionFacts(out, idx, (double)simDayJ2000 * 86400.0 + simSecInDay);
+    return ok;
+}
+
+bool SatelliteSim::missionSubjectOfIndexRaw(int idx, MissionSubject &out)
+{
+    out = MissionSubject{};
+    if (!launchState || !launchesEnabled || idx < 0 || idx >= (int)satOrbits.size())
+        return false;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const SelTransient *tr = nullptr;
+    if ((uint32_t)idx == transientSatIdx() && selIsTransient())
+        tr = &selTransientCur;
+    else if ((uint32_t)idx == followSlotIdx() && followIsTransient() && followTrKey)
+        tr = &followTrCur;
+    if (tr)
+    {
+        if (tr->kind == 1 || tr->kind == 2 || tr->kind == 4)
+        {
+            LBatch *B = missionBatch(tr->a);
+            if (!B || !B->valid)
+                return false;
+            const double t1 = launchState->cat.vehicles[B->veh].t1;
+            const bool booster = tr->kind == 1 && tr->stage == 0 && t - B->tL >= t1;
+            if (!missionSubjectOfBatch(tr->a, out, booster ? kMsBooster : kMsPayload))
+                return false;
+            out.what = booster ? "the booster" : tr->kind == 2 ? "the ship" : tr->kind == 4 ? "the upper stage's re-entry"
+                                                : (tr->stage == 0 ? "the rocket" : "the upper stage");
+            return true;
+        }
+        if (tr->kind == 3 && tr->a < activeSatCount)
+        {
+            // A retiree's re-entry: the batch that retired it (its replacement's, arrived before now).
+            uint64_t kp = 0, kn = 0;
+            int m = -1;
+            if (!missionRosterBatches((int)tr->a, t, kp, kn, m) || !missionSubjectOfBatch(kp, out, kMsRetiree))
+                return false;
+            out.member = m;
+            out.sat = (int)tr->a;
+            out.what = "a retired satellite re-entering";
+            missionFinish(out, t);
+            return out.ok;
+        }
+        return false;
+    }
+    if ((uint32_t)idx >= activeSatCount && (uint32_t)idx < poolIdx0())
+    {
+        uint32_t m = 0;
+        const uint64_t owner = launchSlotOwner((uint32_t)idx - activeSatCount, m);
+        if (!owner)
+            return false;
+        const uint8_t role = owner % 2 == 0 ? kMsTrain : kMsRetiree;
+        if (!missionSubjectOfBatch(owner / 2, out, role))
+            return false;
+        out.member = (int)m;
+        if (LBatch *B = missionBatch(owner / 2); B && m < B->mem.size())
+            out.sat = (int)B->mem[m].sat;
+        out.what = role == kMsTrain ? "a satellite in the train" : "a retired satellite";
+        missionFinish(out, t);
+        return out.ok;
+    }
+    if ((uint32_t)idx < activeSatCount)
+    {
+        if (rosterFateAt((uint32_t)idx, t) != 0)
+            return false; // dead or gone: the Kessler cascade owns it now
+        uint64_t kp = 0, kn = 0;
+        int m = -1;
+        if (!missionRosterBatches(idx, t, kp, kn, m))
+            return false;
+        if (!missionSubjectOfBatch(kn, out, kMsRetiree))
+        {
+            // No replacement flies (launches stood down, ...): the past only.
+            out = MissionSubject{};
+            out.key = kn;
+            out.role = kMsRetiree;
+        }
+        out.roster = true;
+        out.keyPrev = kp;
+        out.member = m;
+        out.sat = idx;
+        out.what = "a satellite in operations";
+        const LaunchState &L = *launchState;
+        if (LBatch *Bp = missionBatch(kp); Bp && Bp->valid)
+        {
+            const launch::Program &pg = L.cat.programs[Bp->prog];
+            out.title = pg.name + ": launched on " + L.cat.vehicles[Bp->veh].name + " from " + L.cat.sites[Bp->site].name;
+        }
+        else
+            out.title = "No launch on record for this slot";
+        missionFinish(out, t);
+        if (LBatch *Bn = missionBatch(kn); !Bn || !Bn->valid)
+            out.facts.push_back({"Replacement", Bn ? "none scheduled (" + Bn->why + ")" : "none scheduled"});
+        out.ok = !out.ms.empty();
+        return out.ok;
+    }
+    return false;
+}
+
+bool SatelliteSim::missionSubjectNow(MissionSubject &out)
+{
+    if (followActive && followSatIndex >= 0 && missionSubjectOfIndex(followSatIndex, out))
+    {
+        out.followed = true;
+        return true;
+    }
+    return selectedSatIndex >= 0 && missionSubjectOfIndex(selectedSatIndex, out);
+}
+
+// Puts the selection / Go to (whichever was on the subject) on the subject's object at time t.
+void SatelliteSim::missionAttachAt(const MissionSubject &s, double t, bool sel, bool fol)
+{
+    msAttachOwner = 0;
+    if (!sel && !fol)
+        return;
+    LBatch *B = missionBatch(s.key);
+    if (!B || !B->valid)
+        return;
+    auto takeTransient = [&](const SelTransient &c) {
+        if (fol && followActive)
+            followTakeTransient(c, glm::dvec3(0.0), t); // the camera keeps its offset in the object's frame
+        if (sel)
+        {
+            selTransientTake(c);
+            selectedPlanetIndex = -1;
+            selectedSatIndex = (int)transientSatIdx();
+            formatSelectedSatInfo();
+        }
+    };
+    auto takeIndex = [&](int idx) {
+        if (fol && followActive)
+        {
+            followSatIndex = idx;
+            followLaunchOwner = 0;
+            followTrKey = 0;
+            followWantKind = 0;
+            snprintf(followLabel, sizeof(followLabel), "Following %s", satLabel(idx).c_str());
+        }
+        if (sel)
+            selectSatellite(idx);
+    };
+    auto rocket = [&]() {
+        SelTransient c;
+        if (launchRocketTransient(s.key, t, c))
+            takeTransient(c);
+    };
+    if (s.role == kMsPayload)
+    {
+        rocket();
+        return;
+    }
+    if (s.role == kMsBooster)
+    {
+        const launch::Vehicle &vh = launchState->cat.vehicles[B->veh];
+        SelTransient c;
+        c.kind = 1;
+        c.a = s.key;
+        c.stage = 0;
+        c.key = (s.key << 3) ^ 1ull;
+        auto ti = rocketTypes.find("rocket_" + vh.id + (t - B->tL < vh.t1 ? "_stack" : "_booster"));
+        c.type = ti != rocketTypes.end() ? ti->second : -1;
+        if (transientExactState(c, t))
+        {
+            glm::dvec3 ax = LaunchImpl::stageNose(*launchState, *B, 0, c.tau);
+            c.axis = glm::length(ax) > 0.5 ? ax : glm::normalize(c.pos);
+            takeTransient(c);
+        }
+        return;
+    }
+    // A member (or a roster satellite: the retiree of s.key, the train member of s.keyPrev).
+    if (s.member < 0)
+        return;
+    const LBatch *Bt = B; // the batch whose train it is at time t
+    uint64_t trainKey = s.key;
+    if (s.role == kMsRetiree)
+    {
+        if (t >= B->tA)
+        {
+            if ((size_t)s.member < B->mem.size() && t < B->mem[(size_t)s.member].tEnd)
+            {
+                msAttachOwner = s.key * 2 + 1;
+                msAttachM = (uint16_t)s.member;
+            }
+            else
+                return; // its re-entry: the fireball, from the list
+        }
+        else if (s.roster && s.keyPrev)
+        {
+            LBatch *Bp = missionBatch(s.keyPrev);
+            if (Bp && Bp->valid && t < Bp->tA)
+            {
+                Bt = Bp;
+                trainKey = s.keyPrev;
+            }
+            else
+            {
+                takeIndex(s.sat); // in operations
+                return;
+            }
+        }
+        else
+        {
+            takeIndex(s.sat);
+            return;
+        }
+    }
+    if (!msAttachOwner)
+    {
+        if (t >= Bt->tA)
+        {
+            takeIndex(s.sat >= 0 ? s.sat : (int)Bt->mem[(size_t)std::min<int>(s.member, (int)Bt->mem.size() - 1)].sat);
+            return;
+        }
+        if (t < Bt->tD)
+        {
+            SelTransient c;
+            if (launchRocketTransient(trainKey, t, c))
+                takeTransient(c); // still on its rocket
+            return;
+        }
+        msAttachOwner = trainKey * 2;
+        msAttachM = (uint16_t)s.member;
+    }
+    // The record's slot is allocated by launchUpdate at the new time: attached right after it (this frame).
+    msAttachSel = sel;
+    msAttachFollow = fol && followActive;
+    msAttachTries = 0;
+    msAttachFallback = s.sat;
+    if (msAttachFollow)
+        followLaunchOwner = 0; // the old slot changes hands: not "the object is gone"
+}
+
+void SatelliteSim::missionAttachAfterJump()
+{
+    if (!msAttachOwner || !launchState)
+        return;
+    const LaunchState &L = *launchState;
+    for (uint32_t s = 0; s < (uint32_t)L.slots.size(); ++s)
+        if (L.slots[s].live && L.slots[s].owner == msAttachOwner && L.slots[s].m == msAttachM)
+        {
+            const int idx = (int)(activeSatCount + s);
+            if (msAttachFollow && followActive)
+            {
+                followSatIndex = idx;
+                followLaunchOwner = msAttachOwner;
+                followLaunchM = msAttachM;
+                followTrKey = 0;
+                followWantKind = 0;
+                snprintf(followLabel, sizeof(followLabel), "Following %s", launchLabel(s).c_str());
+            }
+            if (msAttachSel)
+            {
+                selectedSatIndex = idx;
+                selectedPlanetIndex = -1;
+                formatSelectedSatInfo();
+            }
+            msAttachOwner = 0;
+            return;
+        }
+    // Not up yet (the staging is shared): a few frames, then the satellite's roster slot.
+    if (++msAttachTries > 30)
+    {
+        msAttachOwner = 0;
+        if (msAttachFallback >= 0)
+        {
+            if (msAttachFollow && followActive)
+            {
+                followSatIndex = msAttachFallback;
+                followLaunchOwner = 0;
+            }
+            if (msAttachSel)
+                selectSatellite(msAttachFallback);
+        }
+    }
+}
+
+bool SatelliteSim::missionJump(const MissionSubject &s, int dir, int index, std::string &msg)
+{
+    if (!s.ok || s.ms.empty())
+    {
+        msg = "No mission milestones here";
+        return false;
+    }
+    const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    int pick = -1;
+    if (index >= 0)
+        pick = index < (int)s.ms.size() ? index : -1;
+    else if (dir > 0)
+    {
+        for (size_t i = 0; i < s.ms.size() && pick < 0; ++i)
+            if (s.ms[i].t - s.ms[i].lead > now + 0.5)
+                pick = (int)i;
+    }
+    else
+    {
+        for (size_t i = s.ms.size(); i-- > 0 && pick < 0;)
+            if (s.ms[i].t - s.ms[i].lead < now - 1.5)
+                pick = (int)i;
+    }
+    if (pick < 0)
+    {
+        msg = dir > 0 ? "No later milestone" : "No earlier milestone";
+        return false;
+    }
+    const MissionMilestone &m = s.ms[(size_t)pick];
+    const double tNew = m.t - m.lead;
+    // Who rides the subject: the selection (it or its slot) and Go to.
+    const bool sel = selectedSatIndex >= 0 && [&]() {
+        MissionSubject q;
+        return missionSubjectOfIndex(selectedSatIndex, q) && q.key == s.key && q.role == s.role && q.member == s.member;
+    }();
+    const bool fol = followActive && followSatIndex >= 0 && [&]() {
+        MissionSubject q;
+        return missionSubjectOfIndex(followSatIndex, q) && q.key == s.key && q.role == s.role && q.member == s.member;
+    }();
+    const double days = std::floor(tNew / 86400.0);
+    simDayJ2000 = (int64_t)days;
+    simSecInDay = tNew - days * 86400.0;
+    timeScaleIdx = 0; // at 1x: the milestone happens in front of you
+    timeDir = 1.0f;
+    trailClearPending = true;
+    skyTaaHistValid = false;
+    cv2HistoryValid = false;
+    missionAttachAt(s, tNew, sel, fol);
+    updatePositions(tNew);
+    char b[200];
+    snprintf(b, sizeof(b), "%s in %.0f s (%s)", m.label.c_str(), m.lead, msFmtRel(m.t - s.ms.front().t).c_str());
+    msg = b;
+    infoMissionWall_ = followMissionWall_ = -1e300; // the readouts refresh now
+    return true;
+}
+
+bool SatelliteSim::missionJumpNow(int dir, std::string &msg)
+{
+    MissionSubject s;
+    if (!missionSubjectNow(s))
+    {
+        msg = followActive || selectedSatIndex >= 0 ? "This object has no mission timeline"
+                                                    : "Select a rocket, a train or a satellite first";
+        return false;
+    }
+    return missionJump(s, dir, -1, msg);
+}
+
+nlohmann::json SatelliteSim::missionSubjectJson(const MissionSubject &s) const
+{
+    nlohmann::json j;
+    j["ok"] = s.ok;
+    if (!s.ok && s.ms.empty())
+        return j;
+    const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    j["title"] = s.title;
+    j["what"] = s.what;
+    j["role"] = s.role;
+    j["member"] = s.member;
+    j["sat"] = s.sat;
+    j["roster"] = s.roster;
+    j["followed"] = s.followed;
+    j["current"] = s.cur;
+    nlohmann::json ms = nlohmann::json::array();
+    for (size_t i = 0; i < s.ms.size(); ++i)
+        ms.push_back({{"i", i}, {"label", s.ms[i].label}, {"utc", fmtUtcReadable(s.ms[i].t)}, {"in_s", s.ms[i].t - now},
+                      {"lead_s", s.ms[i].lead}, {"who", s.ms[i].who}});
+    j["milestones"] = ms;
+    nlohmann::json f = nlohmann::json::array();
+    for (const auto &kv : s.facts)
+        f.push_back({kv.first, kv.second});
+    j["facts"] = f;
+    return j;
 }
