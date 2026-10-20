@@ -3315,6 +3315,22 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     overlapping layer of a close-up station ran the full shader and its per-pixel occluder-loop shadow
     rays. Scene probes refresh TWO faces per frame (all six only when new); a satellite at 7.6 km/s
     crossed the 2 km drift threshold every few frames and re-rendered a whole cube each time.
+  - **Shadow-ray acceleration (2026-10-20, `SatMeshRenderer::writeShadowAccel`, sat_mesh.frag `shadowBlocked`):** the
+    per-pixel shadow rays (sun, transmission, reflection) looped over EVERY occluder of the model, composing each
+    one's group rotation, pivot and stow state from the instance on the way (`rayBlocked`): the ISS filling a
+    1920x1009 view cost 59-69 ms of mesh pass (user issue 20261019_225545 shot 3: 85 ms GPU at 12 m). Now, once per
+    instance per frame, the CPU poses the blocking occluders in world space (centre + bounding sphere, axes, half
+    extents; lattices and stowed parts left out) and bins their shadows on a 16x16 grid on the plane across the
+    Sun: a sun ray tests only its cell's occluders (64-bit masks: `kAccelMaxOcc` = `kMaxOccluders`), and every ray
+    rejects by sphere before the exact test. Same tests, same image (A/B max 3 levels = frame noise). Slots: 0
+    viewer, 1 check, 2.. the 64 scene instances largest on screen (radius / distance); the rest, and knockout bit
+    8388608 `mesh_shadow_accel_disabled`, keep the old loop. Mesh set binding 10 (`MeshShadowAccel`, uvec4s;
+    layout at `writeShadowAccel`), `GpuMeshInstance::earthShC.w` = slot + 1. The reflection ray's facing test runs
+    before its shadow test (half the old cost on its own). Measured (RTX 3070 Ti, 1920x1009, mesh bucket = the
+    `scene_depth` timestamp): report pose 68.9 -> 1.1 ms, ISS 50 m 58.5 -> 0.9, 200 m 6.3 -> 0.4, 1 km 0.6 -> 0.3,
+    Sun-side 60 m 63.9 -> 1.6, Tiangong 40 m 5.9 -> 0.3, Orbital Reef 60 m 3.9 -> 0.3; the info window's viewer on the
+    ISS 27 -> 1.4. Render-only parts (greebles) never had occluders, so the cost no longer grows with the part
+    count beyond the vertex work. `harness_runs/hp/` (`before`, `ab*`, `moving` .satcmd).
   - **Consumers**, all through `imageLoad`, because `sat_sky.frag` is one below the 16
     sampled-image floor:
     - `scene_depth.comp` (binding 3) mins the mesh distance into the shared depth, so clouds and
@@ -5541,6 +5557,7 @@ march, resolve, far layer, lightning/rain map, tiles — see "Weak-Hardware Sky 
 knockout — an optimization A/B; see "Beam pointing-ray tile culling" below), 1048576=satellite
 part occlusion (`sat_orbit.comp`, geometry-model types; via `GpuSatTypeHeader::occlusionOn`),
 4194304=the water map in the shared height function (terrain v2 P2, `tdDemAt`; also the cost A/B),
+8388608=**mesh shadow accel OFF** (an optimization A/B like 131072: `sat_mesh.frag`'s per-pixel occluder loop),
 262144=**Potato sky** (swap `skyBgPipeline` → `skyBgMinimalPipeline`), 524288=**SKY_LITE sky**
 (swap → `skyBgLitePipeline`) — see "Subsystem: Weak-Hardware Sky Tiers". These last two are
 pipeline swaps, not in-shader branches; they're set by the Potato / Planetarium presets and are
