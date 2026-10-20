@@ -2087,8 +2087,10 @@ private:
     // for everything else, including planets — formatSelectedPlanetInfo never touches
     // planetInfoLine[6].
     static constexpr int kSelInfoLines = 7;
-    char selInfoLine[kSelInfoLines][40] = {};
-    char planetInfoLine[kSelInfoLines][40] = {}; // same shape, filled by formatSelectedPlanetInfo
+    // 160 wide: a rocket's or a train member's label runs past 40 characters (it was cut mid-word).
+    static constexpr int kSelInfoLineLen = 160;
+    char selInfoLine[kSelInfoLines][kSelInfoLineLen] = {};
+    char planetInfoLine[kSelInfoLines][kSelInfoLineLen] = {}; // same shape, filled by formatSelectedPlanetInfo
 
     // ── Photometry readout + GPU parity (benchmarking M2) ─────────────────────
     // The exact inputs the last sat_orbit.comp dispatch was given (captured where SatOrbitPC is
@@ -2269,7 +2271,7 @@ private:
     // like the Clouds tab's section state (buildCloudSliderSections), not a preference.
     // 2026-10-19 (the user: "the satellite tab is listed first and is the least relevant"): STATUS, BRIGHTNESS,
     // SKY POSITION, ORBIT open; the technical MODEL (type, model id, size, triangles), VIEW (camera + render) and
-    // CHECK collapsed at the bottom. The stat tiles and the ACTIONS (Trace / Go to / Track / Explode / ASAT) sit
+    // CHECK collapsed at the bottom. The stat tiles and the ACTIONS (Trace / Go to / Track / Explode) sit
     // above the list and never scroll away.
     enum InfoSect { kInfoStatus = 0, kInfoBright, kInfoSky, kInfoOrbit, kInfoModel, kInfoView, kInfoCheck };
     static constexpr int kInfoSectionCount = 7;
@@ -2279,11 +2281,8 @@ private:
     char infoStatusValue[kInfoStatusRows][160] = {};
     const char *infoStatusLabel[kInfoStatusRows] = {};
     int infoStatusCount = 0;
-    // The ACTIONS' Explode / ASAT strike take two clicks: the first arms one (kind) for a few seconds.
-    int infoExplodeArmKind_ = -1;
-    float infoExplodeArmT_ = 0.0f;
     // THE call site of a player breakup from the info window (the viewed satellite): today the Kessler
-    // scenario's kesslerBreakupFromUi; its result goes to the toast. kind = kessler::EV_EXPLOSION / EV_ASAT.
+    // scenario's kesslerBreakupFromUi; its result goes to the toast. kind = kessler::EV_EXPLOSION (the harness can still pass EV_ASAT).
     void infoExplodeSelected(uint8_t kind);
     bool hovInfoSection[kInfoSectionCount] = {};
     // ORBIT section rows: altitude, inclination, RAAN, period, then the flare-mitigation power readout
@@ -2326,6 +2325,23 @@ private:
     // Open the satellite window (and, with popOut, the 3D view as well — what the constellation row's
     // VIEW does, since that caller asked for the view rather than the readout).
     void openModelViewer(int typeIdx, const char *label, float altM, int satIndex = -1, bool popOut = false);
+    // The viewed object's model can change under the same index (2026-10-19): a rocket stages (stack -> upper stage), a
+    // ship starts its entry, a transient becomes a fireball. Called by updateViewerView AND recordModelViewer (the
+    // selection's slot is rewritten between them), so the switch lands in the frame it happens: same camera direction,
+    // distance scaled by the models' sizes, the env probe kept (it belongs to the index). An object with no model (a
+    // re-entry fireball) keeps the last model, posed at its position: viewerKeepModel.
+    void viewerSyncModel();
+    void viewerFillModelRows(int typeIdx);
+    bool viewerKeepModel = false;
+    // The selection's handovers that are not transient-to-transient (SatelliteSimLaunches.cpp): a train member's record
+    // that ends hands the selection (and the 3D view) to its roster slot, a retiree's to its re-entry fireball once the
+    // list has it (selWant*), and while Go to rides a transient the selected transient mirrors it (selFollowKeyPrev).
+    void launchSlotEndedSelection(uint32_t slot);
+    uint8_t selWantKind = 0;
+    uint64_t selWantA = 0;
+    double selWantUntil = 0.0;
+    bool selWantViewer = false;
+    uint64_t selFollowKeyPrev = 0;
     // The selection panel's / out-of-view chip's three actions. "Info" opens the satellite window
     // (it was "View model": the window leads with the orbit, brightness and observer readouts, so it
     // reads as an info pane).
@@ -2523,6 +2539,7 @@ private:
     // A handover between objects (a rocket's stack to its upper stage, a stage to its re-entry, a raising train
     // member to its roster slot): the jump between them (ECEF), eased out over ~2 s so the camera glides.
     glm::dvec3 followHandD{0.0};
+    glm::dvec3 followHandViewA{0.0}, followHandViewB{0.0}; // the free view's turn with the eased handover (updateFollow)
     // Following a launch record (a train member raising, a retiree deorbiting): its slot's owner and member when
     // follow began (a slot changes hands when its batch ends).
     uint64_t followLaunchOwner = 0;
@@ -2745,6 +2762,7 @@ private:
     // A rocket stage / ship entry's state at time t from the launch model itself (position, velocity, acceleration;
     // the axis is kept). False for the fireballs, which keep their extrapolation.
     bool transientExactState(SelTransient &s, double t) const;
+    glm::dvec3 transientPosAt(const SelTransient &s, double t) const; // the model's position at t, else s.pos
     void followTransientUpdate(); // after the frame's list: track, hand over, or end in place
     // A rocket drawn as a mesh is picked (and followed) through its mesh slot: the transient it holds, taken as the
     // selection. Returns transientSatIdx(), or the index unchanged when it is not a rocket mesh slot.
@@ -2799,6 +2817,7 @@ private:
     SatOrbitElems launchOrbitElems(uint32_t slot) const;
     uint64_t launchSlotOwner(uint32_t slot, uint32_t &m) const; // a launch slot's owner (batch key * 2 + kind; 0 = free)
     std::string launchLabel(uint32_t slot) const;
+    std::string launchStatus(uint32_t slot) const; // "<type> - raising to slot, h/target km" | "- deorbiting" | ""
     nlohmann::json launchStateJson() const;
     nlohmann::json launchListJson(double hours) const;
     nlohmann::json launchWhyJson(double hours) const;

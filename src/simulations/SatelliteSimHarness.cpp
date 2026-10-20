@@ -475,6 +475,9 @@ json SatelliteSim::harnessStateJson()
         const SatOrbit &o = satOrbits[selectedSatIndex];
         sel["sat"] = selectedSatIndex;
         sel["type"] = o.typeIdx < satTypes.size() ? satTypes[o.typeIdx].name : std::string("transient");
+        // The selection panel's two text lines as drawn (formatSelectedSatInfo), and the info window's subject.
+        sel["panel_lines"] = {std::string(selInfoLine[0]), std::string(selInfoLine[1])};
+        sel["viewer_sat"] = viewerSatIndex;
         if (selIsTransient())
             sel["transient"] = {{"kind", (int)selTransientCur.kind}, {"label", transientLabel()},
                                 {"alt_km", (glm::length(selTransientCur.pos) - satphot::kEarthRadiusM) / 1000.0},
