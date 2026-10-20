@@ -2792,9 +2792,9 @@ private:
     std::vector<SelTransient> selTransients; // this frame's
     SelTransient selTransientCur;            // the selected one, as last seen
     uint64_t selTransientKey = 0;
-    uint64_t launchWantSelKey = 0;
+    uint64_t launchWantSelKey = 0; // a harness jump's stage, selected once the list has it (selTransientUpdate)
     uint64_t launchFocusKey = 0;   // the launch a jump last framed (launch next / deploy / missions go): `launch
-                                   // select kind=rocket` prefers its stages (2026-10-20) // a harness jump's stage, selected once the list has it (selTransientUpdate)
+                                   // select kind=rocket` prefers its stages (2026-10-20)
     double selTransientSeenT = 0.0;
     double selTransientsT = 0.0;             // the sim time selTransients was made at
     uint32_t transientSatIdx() const { return activeSatCount + kLaunchCap - 1; }
