@@ -45,7 +45,7 @@ lattices, patterns — legacy attitude modes, `typeIdx`, adding a type) · *Orbi
 Constellations* · *GPU Orbital Pipeline* (two-dispatch pattern, buffers, `Gpu*` layouts, push
 constants) · *TargetedReflector / Mirror Ground Targets* · *Kessler syndrome — "The Sun's Fury"* (the
 scripted storm, dead satellites, debris pool, cascade engine, event log) · *Launches* (trains, retirements,
-rockets, plumes: the roster's slots refreshed on a schedule) · *Reflect-Orbital Beam Cloud Occlusion* ·
+rockets, plumes, crew rotations, the Missions window: the roster's slots refreshed on a schedule) · *Reflect-Orbital Beam Cloud Occlusion* ·
 *GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22).
 
 **Rendering** — *UIRenderer / Clay* (icon atlas, the fixed-bitmap font, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
@@ -4330,12 +4330,44 @@ launches follow per-program cadences (no real manifest).
   0.3 ms at 1x, 0.6 ms at 1 d/s. ~2600 planes, ~1200 live batches, ~15k train and ~18k retiring satellites at the default lives.
 - CPU bucket `launches` (harness `perf`, Performance tab "Launches"; the visuals run inside the dust fill and are moved
   out of `kessler`).
-- Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; Settings > Constellations > LAUNCHES; harness
+- Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; Missions window > Controls (moved
+  there from Settings > Constellations, which keeps a pointer + "Open the Missions window"); harness
   `launch ...` (docs/HARNESS.md: `launch next vehicle=`, `launch select kind=rocket|booster|upper|...`); default
   bookmark "Twilight Starship Launch"
   (`tools/harness/scripts/default_bookmarks.satcmd` #8).
+- **Crew rotations** (2026-10-19): a program with a `crew` block (`Program::crew / spacecraft / people`) flies people to a
+  station — a constellation of ONE, which `buildPlanes` now accepts for crew programs — every `life_years`, which for
+  crew is a cadence NOT scaled by the design-life setting (`progLifeS()`, the one place every refresh period comes
+  from). `raise_days` is lift-off to docking (`B.tA = tL + raise`, the "too late" check skipped); no train, no retiree
+  (`B.mem` empty). Only the rocket and its upper stage fly (parking orbit in the station's plane, deorbit): the
+  capsule's rendezvous is NOT drawn — the Missions window shows "Rendezvous; docking in ...". Programs: ISS (Crew
+  Dragon on `falcon9_dragon`, 39A / SLC-40), Tiangong (Shenzhou, `long_march_2f`, the new site `jiuquan_crew`,
+  azimuth 80-200: the old Jiuquan sites' 120-200 cannot reach 41.5 deg), the commercial stations (Haven-1/2, Axiom,
+  Starlab, Orbital Reef: Crew Dragon), ROS (Soyuz MS, `soyuz2`, Baikonur), Bharatiya (Gaganyaan on `lvm3`): two flights
+  a year each, ~18 a year. The three new vehicles have meshes (`tools/make_rocket_models.py`; the "fairing" stands in
+  for the spacecraft). Crew launches stand down after the Sun's Fury like the rest. No cargo flights.
+- **Missions window** (2026-10-19, `SatelliteSimMissions.cpp`; window id 8, `msChrome`; the rocket button
+  `TimeMissionsBtn` on the right HUD panel, `pixel--missions.png`; key M, `KB_MISSIONS`; harness `ui open missions
+  [tab=upcoming|ongoing|controls]`, `missions state|go|tab`). Three tabs. **Upcoming**: the next 5 launches (vehicle,
+  program / payload, pad, UTC, the Sun at the pad, a CREWED / TWILIGHT tag, the T- countdown; **Go to** = 45 s before
+  lift-off at 1x ON THE GROUND ~12 km beside the pad — the first of four candidate spots the DEM calls land — with the
+  camera on the pad, the pad low in a 60-deg frame; **Watch** = the time jump only), then pinned whatever their order
+  the next twilight ("jellyfish": Sun 5-16 deg below the pad, searched day by day up to a week) and the next crewed
+  launch, and last, always, THE SUN'S FURY card (`Pal::furyBg / furyBorder / furyText`): the CME's countdown, then
+  "DAY n" and the cascade's counts; Go to the arrival (2 min before, Monument Valley at dusk, looking north) or the
+  storm night (the default bookmark's moment and weather). **Ongoing**: crew transfers in flight (ascent phase, then
+  "docking in"), the crewed stations (altitude, next crew flight; Select / Go to = follow), satellite launches in
+  flight (phase, Select = the drawn rocket stage, `launchSelectRocketOf`), and per program the trains raising (count,
+  mean progress, next arrival) and the retirees deorbiting (next re-entry; Select the nearest, Watch a re-entry).
+  **Controls**: `buildLaunchSettingsSection` + `buildKesslerSettingsSection`, unchanged. The rows are cached
+  (`missionsRefresh`: the next launches and the ongoing list every 0.5 s or on a 6-h sim jump; the pinned searches
+  every 3 s or when sim time passes them) and rebuilt only while the window is open; `launchUpcoming` keeps the
+  batches it lists alive (`touched`), so they are not rebuilt every ~600 frames. Strings handed to Clay are copied
+  into `msText_` (a deque) — an action after the layout only marks the rows stale, never rebuilds them that frame.
+  **Go to fixes the observer's altitude** (`obsHeightOffset = 0`, on the ground): `launchGoToNextWhen` and the launch
+  re-entry Watch kept whatever height the eye had (a jump from orbit stayed in orbit).
 - Not built: droneship meshes, the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
-  (trains launch into it), stations' crew and cargo flights, hole-punching through cloud decks, sonic booms.
+  (trains launch into it), the crew capsule's rendezvous and cargo flights, hole-punching through cloud decks, sonic booms.
 
 ## Subsystem: Reflect-Orbital Beam Cloud Occlusion
 

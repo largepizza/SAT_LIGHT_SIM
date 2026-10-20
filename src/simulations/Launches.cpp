@@ -136,6 +136,13 @@ bool Catalog::load(const std::string &path, std::string &err)
                 pg.deorbitDays[1] = p["deorbit_days"][1].get<double>();
             }
             pg.batchGapDays = p.value("batch_gap_days", pg.batchGapDays);
+            if (p.contains("crew"))
+            {
+                const auto &cr = p["crew"];
+                pg.crew = true;
+                pg.spacecraft = cr.value("spacecraft", std::string("crew capsule"));
+                pg.people = cr.value("people", 3);
+            }
             programs.push_back(pg);
         }
     }

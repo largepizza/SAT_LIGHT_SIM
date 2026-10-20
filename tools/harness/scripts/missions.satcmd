@@ -1,0 +1,63 @@
+# The Missions window (2026-10-19, SatelliteSimMissions.cpp): its three tabs, Go to on a launch row (from orbit:
+# the observer must land on the ground beside the pad), the pinned twilight and crewed rows, and the Sun's Fury.
+#   python tools/harness/run.py tools/harness/scripts/missions.satcmd
+observer lat=30 lon=-90 alt=400000
+camera az=90 el=-10
+wait 10
+missions state
+ui open missions tab=upcoming
+wait 20
+capture ms_upcoming ui=on
+ui dump ms_upcoming
+missions tab ongoing
+wait 10
+capture ms_ongoing ui=on
+missions tab controls
+wait 5
+capture ms_controls ui=on
+missions tab upcoming
+wait 5
+# Go to the first launch with a real click, from 400 km up.
+ui click MsGo:0
+wait 30
+state ms_go0
+capture ms_go0_t-45 ui=on
+time add 55
+wait 60
+capture ms_go0_t+10
+time add 50
+wait 60
+capture ms_go0_t+60
+missions tab ongoing
+wait 10
+capture ms_go0_ongoing ui=on
+missions state
+# The pinned twilight launch: lift-off, then the climb and its plume.
+missions go twilight
+wait 30
+state ms_twilight
+time add 60
+wait 60
+capture ms_twilight_t+15
+time add 150
+wait 90
+capture ms_twilight_t+165
+# The next crewed launch.
+missions go crew
+wait 30
+state ms_crew
+time add 70
+wait 60
+capture ms_crew_t+25
+missions tab ongoing
+wait 10
+capture ms_crew_ongoing ui=on
+# The Sun's Fury row.
+missions tab upcoming
+missions go fury
+wait 60
+capture ms_fury_arrival ui=on
+missions go fury_night
+wait 120
+capture ms_fury_night
+quit

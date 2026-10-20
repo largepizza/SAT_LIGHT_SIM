@@ -205,7 +205,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -2344,6 +2344,35 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         return Status::Done;
     }
 
+    if (n == "missions")
+    {
+        // missions [state] | go <index|twilight|crew|fury|fury_night> [watch=1] | tab upcoming|ongoing|controls
+        // (2026-10-19, SatelliteSimMissions.cpp): the Missions window's rows and actions.
+        const std::string sub = lower(pos(0));
+        if (sub.empty() || sub == "state")
+        {
+            r["missions"] = missionsStateJson();
+            return Status::Done;
+        }
+        if (sub == "go")
+        {
+            std::string msg;
+            if (!missionsGo(lower(pos(1)), c.num("watch", 0.0) > 0.5, msg))
+                fail("missions go: " + msg);
+            msStatus = msg;
+            r["message"] = msg;
+            return Status::Done;
+        }
+        if (sub == "tab")
+        {
+            const std::string t = lower(pos(1));
+            msTab = t == "ongoing" ? 1 : t == "controls" ? 2 : 0;
+            msChrome.open = true;
+            uiVisible = true;
+            return Status::Done;
+        }
+        fail("missions: state | go <index|twilight|crew|fury|fury_night> [watch=1] | tab upcoming|ongoing|controls");
+    }
     if (n == "launch")
     {
         // launch [state] | list [hours=48] | next [twilight=0|1] (2026-10-18, SatelliteSimLaunches.cpp).
@@ -2693,6 +2722,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 return &rpChrome;
             if (l == "cine" || l == "cinematics")
                 return &cineChrome;
+            if (l == "missions" || l == "mission")
+                return &msChrome;
             return nullptr;
         };
         if (sub == "dump")
@@ -2898,10 +2929,19 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             {
                 WindowChrome *ch = chromeOf(w);
                 if (!ch)
-                    fail("ui open: settings, viewcontrols, trace, info, viewer, cine, bookmarks, console");
+                    fail("ui open: settings, viewcontrols, trace, info, viewer, cine, bookmarks, reports, missions, console");
                 ch->open = true;
+                if (ch == &msChrome)
+                {
+                    msNextWall = msPinWall = -1e300;
+                    if (c.has("tab"))
+                    {
+                        const std::string t = lower(c.str("tab"));
+                        msTab = t == "ongoing" ? 1 : t == "controls" ? 2 : 0;
+                    }
+                }
             }
-            if (c.has("tab"))
+            if (c.has("tab") && lower(pos(1)) != "missions" && lower(pos(1)) != "mission")
             {
                 const int t = settingsTabIndexByName(c.str("tab"));
                 if (t < 0)
@@ -2916,7 +2956,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             if (lower(pos(1)) == "all")
                 consoleOpen_ = settingsChrome.open = viewControlsChrome.open = traceChrome.open = infoChrome.open =
-                    viewerChrome.open = cineChrome.open = bmChrome.open = false;
+                    viewerChrome.open = cineChrome.open = bmChrome.open = msChrome.open = false;
             else if (lower(pos(1)) == "console")
                 consoleOpen_ = false;
             else if (WindowChrome *ch = chromeOf(pos(1)))

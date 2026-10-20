@@ -243,7 +243,20 @@ def build_report():
     return [pole, cut(banner, bang)]
 
 
+def build_missions():
+    """Missions: a solid rocket (nose, body, two fins, a flame under it) with a round window punched out —
+    the Missions window: launches, crew flights, the Sun's Fury (2026-10-19)."""
+    body = rect(18.5, 13.0, 29.5, 35.0)
+    nose = tri((18.5, 13.5), (29.5, 13.5), (24.0, 2.0))
+    window = disc(24.0, 20.0, 3.4)
+    fin_l = tri((18.5, 24.0), (18.5, 36.0), (10.0, 39.0))
+    fin_r = tri((29.5, 24.0), (29.5, 36.0), (38.0, 39.0))
+    flame = tri((20.0, 38.0), (28.0, 38.0), (24.0, 47.0))
+    return [cut(lambda px, py: body(px, py) or nose(px, py), window), fin_l, fin_r, flame]
+
+
 ICONS = {
+    "missions": build_missions,
     "report": build_report,
     "bookmark": build_bookmark,
     "film": build_film,
@@ -258,7 +271,7 @@ ICONS = {
 # Drawn in the HUD's "pixel" style: solid silhouettes with hard edges on a 24-px grid, doubled to 48 —
 # the look of the gear, the camera, play / pause, the crosshair and the eye. Soft-edged thin strokes
 # beside them read as another icon family (the user, 2026-10-03).
-PIXEL_STYLE = {"report", "bookmark", "film", "photo", "maximize", "observer", "spin", "studio"}
+PIXEL_STYLE = {"missions", "report", "bookmark", "film", "photo", "maximize", "observer", "spin", "studio"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

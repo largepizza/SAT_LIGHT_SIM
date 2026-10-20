@@ -51,6 +51,7 @@ bool settingsTabIsAdvanced(int i);   // behind Display > "Show advanced settings
 
 #include <string>
 #include <vector>
+#include <deque>
 #include <map>
 #include <unordered_map>
 #include <cstdint>
@@ -2752,6 +2753,67 @@ private:
     bool launchGoToStageEvent(std::string &msg, int ev);
     void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
     void launchDestroy(VkDevice device);
+
+    // ── Missions window (2026-10-19, SatelliteSimMissions.cpp; queries in SatelliteSimLaunches.cpp) ───────────
+    // The schedule and what is flying now, outside the settings window: the next launches (Go to / Watch), the next
+    // twilight ("jellyfish") and crewed launches pinned, the Sun's Fury last; ongoing crew transfers, crewed stations,
+    // rockets in flight and the constellations' trains / retirees; and the LAUNCHES / THE SUN'S FURY controls.
+    struct MissionLaunch
+    {
+        uint64_t key = 0;        // the batch (launchGoToKey)
+        double tL = 0.0;         // lift-off, J2000 s
+        double tA = 0.0;         // arrival (trains) / docking (crew)
+        double sunElevDeg = 0.0; // the Sun at the pad at lift-off
+        bool crew = false, twilight = false;
+        int people = 0, payload = 0;
+        std::string vehicle, program, site, target, spacecraft; // target: the constellation or the station
+    };
+    // Lift-offs in [t0, t1] (J2000 s), sorted, at most maxN. filter: 0 all, 1 crewed, 2 twilight (the Sun 5-16 deg
+    // below the pad's horizon). Builds (and keeps) the batches it needs.
+    void launchUpcoming(double t0, double t1, int filter, size_t maxN, std::vector<MissionLaunch> &out);
+    // Jumps to leadS before the batch's lift-off at 1x. moveObserver: on the ground ~12 km beside the pad (on land
+    // where one side is sea), the camera on the pad; else the time only.
+    bool launchGoToKey(uint64_t key, bool moveObserver, double leadS, std::string &msg);
+    struct MissionOngoing
+    {
+        int cat = 0;            // 0 crew transfer, 1 crewed station, 2 satellite launch in flight, 3 trains raising, 4 retiring
+        std::string title, status;
+        uint64_t key = 0;       // the batch (0, 2)
+        int prog = -1;          // the program (3, 4)
+        int sat = -1;           // the station's satellite (1)
+        int count = 0;          // satellites (3, 4)
+        double tNext = 0.0;     // what the status counts down to (J2000 s; 0 = none)
+        double progress = -1.0; // 0..1 (-1 = none)
+        bool drawn = false;     // the rocket is drawn this frame (selectable)
+    };
+    void launchOngoing(std::vector<MissionOngoing> &out); // crew transfers, rockets, trains and retirees (not stations)
+    struct CrewStation
+    {
+        int constIdx = -1, sat = -1, prog = -1;
+    };
+    std::vector<CrewStation> launchCrewStations();         // the stations a crew program serves
+    bool launchSelectRocketOf(uint64_t key, std::string &msg); // the batch's drawn rocket stage
+    bool launchSelectNearestOf(int prog, int kind, std::string &msg); // the nearest train member (0) / retiree (1)
+
+    WindowChrome msChrome;
+    bool hovMsClose = false, hovTimeMissions = false;
+    int msTab = 0;                       // 0 upcoming, 1 ongoing, 2 controls
+    double msNextWall = -1e300, msNextSim = -1e300; // when the next-launches rows were made (wall clock, sim time)
+    double msPinWall = -1e300, msPinSim = -1e300;   // ... the pinned twilight / crewed rows
+    std::vector<MissionLaunch> msNext;   // the next launches
+    std::vector<MissionLaunch> msCrewList; // crewed flights in the next ~400 days (the stations' next flights too)
+    MissionLaunch msTwilight;
+    bool msHasTwilight = false;
+    std::vector<MissionOngoing> msOngoing;
+    std::vector<CrewStation> msStations;
+    std::string msStatus;
+    std::deque<std::string> msText_;     // this frame's formatted strings (Clay keeps the pointers; a deque never moves them)
+    const char *msStr(const char *fmt, ...);
+    void missionsRefresh(bool force);
+    bool missionsGoToFury(int which, std::string &msg); // 0 the CME's arrival (dusk over Monument Valley), 1 the storm night
+    bool missionsGo(const std::string &what, bool watchOnly, std::string &msg); // harness: an index, twilight, crew, fury, fury_night
+    nlohmann::json missionsStateJson();
+    void buildMissionsWindow(const UIInput &inp, UIRenderer &ui);
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
     uint32_t kPoolCap = 16384;            // records the GPU buffers hold
     // Satellite indices: [0, activeSatCount) the roster, then kLaunchCap launch records (trains raising, retirees
@@ -5160,7 +5222,8 @@ private:
         KB_PHOTO = 19,         // event — HQ photo: a supersampled, settled screenshot (requestPhoto)
         KB_REPORT_NEW = 20,    // event — a snapshot that starts a NEW issue report (KB_SAVE_SNAPSHOT adds to the active one)
         KB_SCREENSHOT_UI = 21, // event — a screenshot that keeps the UI (default F10)
-        KB_COUNT = 22,
+        KB_MISSIONS = 22,      // event — the Missions window (launches, crew flights, the Sun's Fury) open / closed
+        KB_COUNT = 23,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()

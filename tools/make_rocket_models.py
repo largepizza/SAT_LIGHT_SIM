@@ -59,6 +59,14 @@ VEHICLES = {
                       u_len=11.0, u_noz=2.0, u_mat="white", fr=2.1, f_cyl=7.0, f_cone=6.0),
     "pallas1": dict(r=1.675, b_len=30.0, b_mat="white", band=(2.0, "black"), fins=(1.0, 1.3, 0.12), legs=4,
                     u_len=9.0, u_noz=1.5, u_mat="white", fr=2.1, f_cyl=5.0, f_cone=4.5),
+    # Crewed (2026-10-19, the Missions window's crew rotations). The "fairing" stands in for the spacecraft:
+    # Dragon's trunk and capsule; Shenzhou's and Soyuz's shrouds with the escape tower (a slender cone).
+    "falcon9_dragon": dict(r=1.83, b_len=35.2, b_mat="white", band=(6.0, "black"), fins=(1.1, 1.4, 0.15), legs=4,
+                           u_len=9.4, u_noz=3.0, u_mat="white", fr=2.0, f_cyl=2.8, f_cone=4.6),
+    "long_march_2f": dict(r=1.675, b_len=28.5, b_mat="white", side=(4, 1.125, 15.3, "white"),
+                          u_len=11.4, u_noz=1.5, u_mat="white", fr=1.9, f_cyl=9.0, f_cone=10.0),
+    "soyuz2": dict(r=1.475, b_len=27.1, b_mat="white", side=(4, 1.34, 19.6, "white"),
+                   u_len=6.7, u_noz=1.0, u_mat="white", fr=1.5, f_cyl=6.0, f_cone=5.5),
 }
 
 
