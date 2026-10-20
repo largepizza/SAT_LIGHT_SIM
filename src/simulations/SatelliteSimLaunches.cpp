@@ -1015,11 +1015,23 @@ static bool rocketPos(const SatelliteSim::LaunchState &L, const LBatch &B, int s
     if (tau <= B.t2)
     {
         const glm::dvec2 p = up.at(tau);
-        const glm::dvec3 Pg = ecefToEci(trackEcef(B, p.x, p.y), t);
+        glm::dvec3 Pg = ecefToEci(trackEcef(B, p.x, p.y), t);
         const double a = p.x / kR;
         const glm::dvec3 Pi = (kR + p.y) * (std::cos(a) * B.U0 + std::sin(a) * B.A0);
-        const double s = glm::clamp((tau - (vh.t1 - 60.0)) / (B.t2 - vh.t1 + 60.0), 0.0, 1.0);
-        P = glm::mix(Pg, Pi, s * s * (3.0 - 2.0 * s));
+        // The blend into the inertial plane starts AT staging (2026-10-19): it started 60 s before, so at separation
+        // the upper stage was already ~4 km from the stack it came out of, a jump Go to and the selection carried.
+        const double s = glm::clamp((tau - vh.t1) / std::max(B.t2 - vh.t1, 1.0), 0.0, 1.0);
+        const double sm = s * s * (3.0 - 2.0 * s);
+        // The upper track is integrated on its own and stands ~1 km from the booster's at separation: it starts from the
+        // stack's point (the booster track's at t1, Earth-fixed) and the difference fades out with the blend.
+        const Track &bt = L.booster[B.veh];
+        if (vh.t1 <= bt.tEnd)
+        {
+            const glm::dvec2 pb = bt.at(vh.t1), pu = up.at(vh.t1);
+            const glm::dvec3 d = trackEcef(B, pb.x, pb.y) - trackEcef(B, pu.x, pu.y);
+            Pg += ecefToEci(d, t) * (1.0 - sm);
+        }
+        P = glm::mix(Pg, Pi, sm);
         if (burn && tau > vh.t1 + 4.0)
             *burn = launch::BURN_UPPER;
         return true;
@@ -1495,8 +1507,8 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         }
         si.live = false;
         si.tw = -1e300;
-        if (selectedSatIndex == (int)(activeSatCount + slot))
-            selectedSatIndex = -1;
+        if (selectedSatIndex == (int)(activeSatCount + slot) || viewerSatIndex == (int)(activeSatCount + slot))
+            launchSlotEndedSelection(slot); // to its roster slot, or (a retiree) to its re-entry once listed
         // A followed record that ends is handed over by followCheckTarget (a train member to its roster slot, a retiree
         // to its re-entry) or left in place there; it is not snapped home here.
         return true;
@@ -1725,6 +1737,87 @@ std::string SatelliteSim::launchLabel(uint32_t slot) const
         snprintf(b, sizeof(b), "%s #%d (retired, re-enters in %.1f d)", cn,
                  (int)sat - (int)constellations[o.constIdx].orbitStart, (B.mem[si.m].tEnd - t) / kDay);
     return b;
+}
+
+// The selection panel's second line for a launch record (formatSelectedSatInfo, refreshed every frame while one is
+// selected): the satellite's type and what it is doing now, e.g. "Starlink V2 Mini - raising to slot, 412/565 km".
+// Empty when the slot is not a train member or a retiree (the panel then shows the type alone).
+std::string SatelliteSim::launchStatus(uint32_t slot) const
+{
+    if (!launchState || slot >= kLaunchCap - 2 || slot >= launchState->slots.size() || launchState->slots[slot].owner == 0)
+        return {};
+    const LaunchState &L = *launchState;
+    const SlotInfo &si = L.slots[slot];
+    auto it = L.batches.find(si.owner / 2);
+    if (it == L.batches.end() || si.m >= it->second.mem.size())
+        return {};
+    const LBatch &B = it->second;
+    const LMember &m = B.mem[si.m];
+    const SatOrbit &o = satOrbits[m.sat];
+    const char *tn = o.typeIdx < satTypes.size() ? satTypes[o.typeIdx].name.c_str() : "Satellite";
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double hKm = (glm::length(satOrbitStateAt(launchOrbitElems(slot), t).posEci) - kR) / 1000.0;
+    char b[200];
+    if (si.owner % 2 == 1)
+        snprintf(b, sizeof(b), "%s - deorbiting, %.0f km", tn, hKm);
+    else if (t < m.tRel)
+        snprintf(b, sizeof(b), "%s - in the dispenser, %.0f km", tn, hKm);
+    else if (t < m.sRaise)
+        snprintf(b, sizeof(b), "%s - parking orbit, %.0f km", tn, hKm);
+    else
+        snprintf(b, sizeof(b), "%s - raising to slot, %.0f/%.0f km", tn, hKm, (m.rSlot - kR) / 1000.0);
+    return b;
+}
+
+// A launch record that ends (hideSlot) while it is the selection or in the 3D view: a train member that arrived IS its
+// roster slot now (same place, same model), so both move there; a retiree's selection waits for its re-entry fireball
+// (selWant*, picked up in selTransientUpdate). Anything else ends the selection, as before.
+void SatelliteSim::launchSlotEndedSelection(uint32_t slot)
+{
+    const int idx = (int)(activeSatCount + slot);
+    const bool sel = selectedSatIndex == idx, view = viewerSatIndex == idx;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    // The owner as the slot holds it (hideSlot has just cleared `live`, so launchSlotOwner would say "free").
+    const uint64_t owner = launchState && slot < launchState->slots.size() ? launchState->slots[slot].owner : 0;
+    const uint32_t m = owner ? launchState->slots[slot].m : 0;
+    uint32_t sat = UINT32_MAX;
+    const LBatch *B = nullptr;
+    if (owner != 0 && launchState)
+    {
+        auto it = launchState->batches.find(owner / 2);
+        if (it != launchState->batches.end() && m < it->second.mem.size())
+        {
+            B = &it->second;
+            sat = B->mem[m].sat;
+        }
+    }
+    char lb[200];
+    snprintf(lb, sizeof(lb), "launch slot %u ended (selected %d, viewed %d): owner kind %d, %.0f s from arrival", slot,
+             (int)sel, (int)view, owner ? (int)(owner % 2) : -1, B ? t - B->tA : 0.0);
+    Log::line(lb);
+    int to = -1;
+    if (B && owner % 2 == 0 && sat < activeSatCount && t >= B->tA - 60.0)
+        to = (int)sat;
+    else if (B && owner % 2 == 1 && sat < activeSatCount && sel)
+    {
+        selWantKind = 3;
+        selWantA = sat;
+        selWantUntil = t + transientGraceS() + 5.0;
+        selWantViewer = view;
+    }
+    if (sel)
+    {
+        selectedSatIndex = to;
+        formatSelectedSatInfo();
+    }
+    if (view && to >= 0)
+    {
+        viewerSatIndex = to;
+        viewerLastSelected = selectedSatIndex;
+        viewerSyncModel();
+        snprintf(viewerTitle, sizeof(viewerTitle), "%s", satLabel(to).c_str());
+        viewerObsNextWall = 0.0;
+    }
 }
 
 // ── Visuals: rockets, flames, plumes, re-entries ────────────────────────────────────────────────
@@ -3438,6 +3531,56 @@ void SatelliteSim::selTransientUpdate()
 {
     selTransientsT = (double)simDayJ2000 * 86400.0 + simSecInDay; // the time the list was made at
     followTransientUpdate();
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    // A retiree's record ended while selected: its re-entry fireball, once the list has it (launchSlotEndedSelection).
+    if (selWantKind)
+    {
+        if (selectedSatIndex >= 0 || tNow > selWantUntil || tNow < selWantUntil - 3600.0)
+            selWantKind = 0;
+        else
+            for (const SelTransient &s : selTransients)
+                if (s.kind == selWantKind && s.a == selWantA)
+                {
+                    selTransientTake(s);
+                    selectedSatIndex = (int)transientSatIdx();
+                    selectedPlanetIndex = -1;
+                    if (selWantViewer && viewerSatIndex >= (int)activeSatCount && viewerSatIndex < (int)poolIdx0())
+                    {
+                        viewerSatIndex = selectedSatIndex;
+                        viewerLastSelected = selectedSatIndex;
+                        viewerSyncModel();
+                    }
+                    selWantKind = 0;
+                    formatSelectedSatInfo();
+                    break;
+                }
+    }
+    // Go to rides a transient that is also the selection: the selection IS the followed object, through every
+    // handover follow makes (staging, the ship's entry, the fireball), even while the list does not show it.
+    if (followIsTransient() && followTrKey != 0 && selIsTransient() &&
+        (selTransientKey == followTrKey || (selFollowKeyPrev != 0 && selTransientKey == selFollowKeyPrev)))
+    {
+        SelTransient c = followTrCur;
+        for (const SelTransient &s : selTransients)
+            if (s.key == c.key)
+            {
+                c.axis = s.axis;
+                c.flare = s.flare;
+                c.dirEnu = s.dirEnu;
+                break;
+            }
+        selTransientTake(c);
+        selFollowKeyPrev = followTrKey;
+        formatSelectedSatInfo();
+        return;
+    }
+    if (!followIsTransient())
+        selFollowKeyPrev = 0;
+    else if (followTrKey != 0)
+        selFollowKeyPrev = followTrKey;
+    // A selected train member or retiree: its panel line carries its height (launchStatus), refreshed every frame.
+    if (selectedSatIndex >= (int)activeSatCount && selectedSatIndex < (int)poolIdx0() && !selIsTransient())
+        formatSelectedSatInfo();
     if (!selIsTransient() || !launchState)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -3460,11 +3603,24 @@ void SatelliteSim::selTransientUpdate()
                 break;
             }
     }
+    // An expendable upper stage's listing gives way to its re-entry fireball (kind 4, the same batch) as it starts to
+    // glow, before the model's tStageGone says "fireball" (transientContinue): take it as soon as it is listed.
+    if (!f && selTransientCur.kind == 1 && selTransientCur.stage == 1)
+        for (const SelTransient &s : selTransients)
+            if (s.kind == 4 && s.a == selTransientCur.a)
+            {
+                f = &s;
+                break;
+            }
     if (!f)
     {
         // Out of view this frame (behind the Earth, below the brightness cut) or over: gone for good after 2 s (or a
-        // few frames of a fast warp).
-        if (std::abs(t - selTransientSeenT) > transientGraceS())
+        // few frames of a fast warp). A stage that has just ended in its re-entry fireball waits longer for the list to
+        // show it (as Go to does: followWantUntil), or the selection and the Info window were dropped at the handover.
+        SelTransient cw = selTransientCur;
+        uint8_t wantFb = 0;
+        transientContinue(cw, t, wantFb);
+        if (std::abs(t - selTransientSeenT) > transientGraceS() + (wantFb ? 5.0 : 0.0))
         {
             stopTrack();
             selectedSatIndex = -1;
@@ -3560,6 +3716,16 @@ bool SatelliteSim::transientExactState(SelTransient &s, double t) const
     s.acc = (P - 2.0 * Pp + P2) / 36.0;
     s.tau = te;
     return true;
+}
+
+// Where an object (a stage, the ship) is at time t by the launch model: the handover's "from" must be the predecessor
+// at the SAME time as its successor. followTrCur alternates between the list's time and the frame's (a frame apart: at
+// 10x, ~0.17 s, ~300 m at staging), and the jump eased out by updateFollow carried that motion as a 1.3-km offset of
+// the camera from the rocket it follows (2026-10-19: the rocket left the frame at staging).
+glm::dvec3 SatelliteSim::transientPosAt(const SelTransient &s, double t) const
+{
+    SelTransient p = s;
+    return transientExactState(p, t) ? p.pos : s.pos;
 }
 
 bool SatelliteSim::transientContinue(SelTransient &cur, double t, uint8_t &wantKind) const
@@ -3666,7 +3832,7 @@ void SatelliteSim::followTransientUpdate()
                     break;
                 }
             if (c.key != followTrKey || c.kind != followTrCur.kind)
-                followTakeTransient(c, followTrCur.pos, t);
+                followTakeTransient(c, transientPosAt(followTrCur, t), t);
             else
             {
                 followTrCur = c;
@@ -3692,6 +3858,7 @@ void SatelliteSim::followTransientUpdate()
             followTrCur = s;
             followTrSeenT = t;
             transientWriteSlot(kLaunchCap - 2, s, t);
+            snprintf(followLabel, sizeof(followLabel), "Following %s", transientLabelOf(s).c_str()); // its height moves
             return;
         }
     if (std::abs(t - followTrSeenT) > transientGraceS())
@@ -3716,7 +3883,7 @@ void SatelliteSim::followCheckTarget()
             if (transientContinue(c, t, want))
             {
                 if (c.key != followTrKey || c.kind != followTrCur.kind)
-                    followTakeTransient(c, followTrCur.pos, t);
+                    followTakeTransient(c, transientPosAt(followTrCur, t), t);
                 else
                 {
                     followTrCur = c;

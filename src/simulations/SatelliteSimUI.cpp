@@ -1453,7 +1453,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     bool isPlanet = selectedPlanetIndex >= 0;
     glm::vec3 pickSkyDir;
     float pickFlare;
-    const char (*infoLines)[40];
+    const char (*infoLines)[kSelInfoLineLen];
     if (isPlanet)
     {
         const GpuSatVisible *entries = static_cast<const GpuSatVisible *>(planetMapped);
@@ -1477,8 +1477,11 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     const float kMargin = 12.0f;
     if (!onScreen)
     {
-        static char chipBuf[64];
-        snprintf(chipBuf, sizeof(chipBuf), "Selected: %s (out of view)", infoLines[0]);
+        // The name up to its first comma: a rocket's or a train member's full label runs under the follow bar.
+        static char chipBuf[kSelInfoLineLen + 32];
+        const char *comma = strchr(infoLines[0], ',');
+        const int nameLen = comma ? (int)(comma - infoLines[0]) : (int)strlen(infoLines[0]);
+        snprintf(chipBuf, sizeof(chipBuf), "Selected: %.*s (out of view)", nameLen, infoLines[0]);
         Clay_String chipStr{false, (int32_t)strlen(chipBuf), chipBuf};
         CLAY(CLAY_ID("SelSatChip"), {.layout = {
                                          .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
@@ -1900,6 +1903,7 @@ void SatelliteSim::updateViewerView(const UIInput &inp, UIRenderer &ui)
         const SatOrbit &orb = satOrbits[selectedSatIndex];
         openModelViewer((int)orb.typeIdx, satTypes[orb.typeIdx].name.c_str(), orb.altM, selectedSatIndex);
     }
+    viewerSyncModel(); // a stage, ship entry or fireball under the same index: its model now
     if (infoChrome.w <= 0.0f)
     {
         // Right edge: the trace window lives above the time controls in the bottom-left corner, so the
@@ -2257,7 +2261,7 @@ void SatelliteSim::buildViewTitleIcons(const UIInput &inp, UIRenderer &ui, bool 
 }
 
 // ─── infoExplodeSelected ─────────────────────────────────────────────────────
-// The info window's Explode / ASAT strike (two clicks), on the VIEWED satellite. The single call site of a
+// The info window's Explode (one click), on the VIEWED satellite. The single call site of a
 // player breakup from this window: swap the Kessler entry point here. The result goes to the toast.
 void SatelliteSim::infoExplodeSelected(uint8_t kind)
 {
@@ -2291,8 +2295,6 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
     // Actions on a transient only while it is still the selection (its reserved slot follows the selection).
     const bool actOk = tracked && (!viewTransient || selIsTransient());
     const bool hasMesh = tracked && meshRenderer.typeMesh((int)satOrbits[viewerSatIndex].typeIdx) != nullptr;
-    if (infoExplodeArmT_ > 0.0f && (infoExplodeArmT_ -= inp.dt) <= 0.0f)
-        infoExplodeArmKind_ = -1; // the second click did not come
     // STATUS rows (every frame: a rocket's T+, height and speed move).
     infoStatusCount = 0;
     auto statusRow = [&](const char *label, const char *fmt, auto... args)
@@ -2468,10 +2470,14 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                       selectSatellite(viewerSatIndex);
                                       computeSelectedTrace();
                                   }
-                                  const bool following = followActive && followSatIndex == viewerSatIndex;
+                                  // A followed transient rides its own slot (followSlotIdx): the viewed one is it when
+                                  // the selection mirrors it (selTransientUpdate).
+                                  const bool following = followActive && (followSatIndex == viewerSatIndex ||
+                                                                           (viewTransient && followIsTransient() &&
+                                                                            selTransientKey == followTrKey));
                                   if (uiButton(inp, ui, "InfoActBtn", 1, following ? "Leave" : "Go to",
                                                following ? "Fly back to where you were" : "Fly to it and ride along",
-                                               following, actOk && hasMesh))
+                                               following, actOk && (hasMesh || following)))
                                   {
                                       if (following)
                                           stopFollow(true);
@@ -2495,33 +2501,12 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                   } });
                     buttonRow(11, [&]()
                               {
-                                  static const char *kBreakLabel[2] = {"Explode", "ASAT strike"};
-                                  static const uint8_t kBreakKind[2] = {kessler::EV_EXPLOSION, kessler::EV_ASAT};
-                                  for (int k = 0; k < 2; ++k)
-                                  {
-                                      const bool armed = infoExplodeArmKind_ == k && infoExplodeArmT_ > 0.0f;
-                                      const char *tip = viewTransient ? "Only a satellite or a piece of debris can be broken up"
-                                                        : k == 0      ? "Break it up from inside (NASA breakup model): its debris starts the Kessler cascade. Two clicks"
-                                                                      : "A 20-kg kinetic interceptor at 9 km/s: its debris starts the Kessler cascade. Two clicks";
-                                      if (uiDangerButton(inp, ui, "InfoBreakBtn", k, armed ? "Click again" : kBreakLabel[k], tip, armed,
-                                                         !viewTransient))
-                                      {
-                                          if (armed)
-                                          {
-                                              infoExplodeArmKind_ = -1;
-                                              infoExplodeArmT_ = 0.0f;
-                                              infoExplodeSelected(kBreakKind[k]);
-                                          }
-                                          else
-                                          {
-                                              infoExplodeArmKind_ = k;
-                                              infoExplodeArmT_ = 3.0f;
-                                          }
-                                      }
-                                  }
-                                  if (infoExplodeArmT_ > 0.0f)
-                                      CLAY_TEXT(CLAY_STRING("click again to confirm"),
-                                                CLAY_TEXT_CONFIG({.textColor = Pal::textWarn, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE})); });
+                                  // One click (2026-10-19): the ASAT strike (a 20-kg interceptor through the collision
+                                  // model) is gone from the UI; the harness keeps kind=asat for testing.
+                                  const char *tip = viewTransient ? "Only a satellite or a piece of debris can be broken up"
+                                                                  : "Break it up (NASA breakup model): its debris starts the Kessler cascade";
+                                  if (uiDangerButton(inp, ui, "InfoBreakBtn", 0, "Explode", tip, false, !viewTransient))
+                                      infoExplodeSelected(kessler::EV_EXPLOSION); });
                 }
                 // ── The sections: only these scroll ──────────────────────────────────────────────
                 CLAY(CLAY_ID("InfoSections"), {.layout = {

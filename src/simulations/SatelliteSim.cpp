@@ -3878,18 +3878,58 @@ void SatelliteSim::openModelViewer(int typeIdx, const char *label, float altM, i
     }
     else
         snprintf(viewerTitle, sizeof(viewerTitle), "%s", label);
-    const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(typeIdx);
-    snprintf(viewerSatValue[0], sizeof(viewerSatValue[0]), "%s", t.name.c_str());
-    snprintf(viewerSatValue[1], sizeof(viewerSatValue[1]), "%s", t.modelId.c_str());
-    snprintf(viewerSatValue[2], sizeof(viewerSatValue[2]), "%.1f m", 2.0f * tm->boundsRadius);
-    snprintf(viewerSatValue[3], sizeof(viewerSatValue[3]), "%d triangles, %zu parts", tm->triangles,
-             t.model ? t.model->components.size() : (size_t)0);
+    viewerFillModelRows(typeIdx);
+    viewerKeepModel = false;
     viewerObsNextWall = 0.0; // refresh the readouts now
     viewerCheckValue[0][0] = viewerCheckValue[1][0] = viewerCheckValue[2][0] = viewerCheckNote[0] = '\0';
     viewerCheckAwaiting = viewerCheckRequested = false;
     infoChrome.open = true;             // the satellite window
     if (popOut)
         viewerChrome.open = true;       // ... and the 3D view on its own (the constellation VIEW)
+}
+
+void SatelliteSim::viewerFillModelRows(int typeIdx)
+{
+    const SatelliteType &t = satTypes[typeIdx];
+    const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(typeIdx);
+    snprintf(viewerSatValue[0], sizeof(viewerSatValue[0]), "%s", t.name.c_str());
+    snprintf(viewerSatValue[1], sizeof(viewerSatValue[1]), "%s", t.modelId.c_str());
+    snprintf(viewerSatValue[2], sizeof(viewerSatValue[2]), "%.1f m", 2.0f * (tm ? tm->boundsRadius : 0.0f));
+    snprintf(viewerSatValue[3], sizeof(viewerSatValue[3]), "%d triangles, %zu parts", tm ? tm->triangles : 0,
+             t.model ? t.model->components.size() : (size_t)0);
+}
+
+void SatelliteSim::viewerSyncModel()
+{
+    if (viewerSatIndex < 0 || viewerSatIndex >= (int)satOrbits.size())
+    {
+        viewerKeepModel = false;
+        return;
+    }
+    const uint32_t ti = satOrbits[viewerSatIndex].typeIdx;
+    const SatMeshRenderer::TypeMesh *tm = ti < satTypes.size() ? meshRenderer.typeMesh((int)ti) : nullptr;
+    if (!tm)
+    {
+        // No model (a re-entry fireball, a freed slot): keep showing the last one, where the object is.
+        viewerKeepModel = viewerType >= 0 && viewerType < (int)satTypes.size() && meshRenderer.typeMesh(viewerType);
+        return;
+    }
+    viewerKeepModel = false;
+    if ((int)ti == viewerType)
+        return;
+    const SatMeshRenderer::TypeMesh *old =
+        viewerType >= 0 && viewerType < (int)satTypes.size() ? meshRenderer.typeMesh(viewerType) : nullptr;
+    if (old && viewerDist > 0.0f)
+        viewerDist *= std::max(0.1f, tm->boundsRadius) / std::max(0.1f, old->boundsRadius); // same framing
+    else
+        viewerDist = 0.0f;
+    viewerType = (int)ti;
+    viewerFillModelRows((int)ti);
+    viewerObsNextWall = 0.0;
+    viewerCheckValue[0][0] = viewerCheckValue[1][0] = viewerCheckValue[2][0] = viewerCheckNote[0] = 0;
+    viewerCheckAwaiting = viewerCheckRequested = false;
+    if ((uint32_t)viewerSatIndex != transientSatIdx())
+        snprintf(viewerTitle, sizeof(viewerTitle), "%s", satLabel(viewerSatIndex).c_str());
 }
 
 void SatelliteSim::selectSatellite(int idx)
@@ -3965,7 +4005,37 @@ void SatelliteSim::updateViewerObserverInfo()
         return;
     const SatOrbit &orb = satOrbits[viewerSatIndex];
     if (orb.typeIdx >= satTypes.size())
+    {
+        // No model (a re-entry fireball after a handover, 2026-10-19): the sky position from its state, and the
+        // drawn magnitude while it is the selected transient, rather than a window of dashes.
+        const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const glm::vec3 obsGround = followActive ? followSavedObsDir : obsDir;
+        const float obsGroundH = followActive ? followSavedHeight : obsHeightOffset;
+        const glm::dvec3 obs =
+            observerEciAt(glm::dvec3(obsGround), (double)kEarthRadius + (double)obsTerrainH + (double)obsGroundH, t);
+        const glm::dvec3 rel = satOrbitStateAt(orbitElemsOf(orb), t).posEci - obs;
+        const double range = glm::length(rel);
+        if (range < 1.0)
+            return;
+        const glm::dvec3 d = rel / range;
+        const double up = glm::dot(d, glm::normalize(obs));
+        double azDeg = glm::degrees(std::atan2(glm::dot(d, glm::dvec3(eci2enuX)), glm::dot(d, glm::dvec3(eci2enuY))));
+        if (azDeg < 0.0)
+            azDeg += 360.0;
+        const double b = glm::dot(obs, d), c = glm::dot(obs, obs) - (double)kEarthRadius * kEarthRadius;
+        const double disc = b * b - c;
+        const bool hidden = disc > 0.0 && -b - std::sqrt(disc) > 0.0 && -b - std::sqrt(disc) < range;
+        snprintf(viewerObsValue[0], sizeof(viewerObsValue[0]), hidden ? "Below horizon" : "Above horizon");
+        snprintf(viewerObsValue[1], sizeof(viewerObsValue[1]), "%.1f deg", glm::degrees(std::asin(glm::clamp(up, -1.0, 1.0))));
+        snprintf(viewerObsValue[2], sizeof(viewerObsValue[2]), "%.0f deg", azDeg);
+        snprintf(viewerObsValue[3], sizeof(viewerObsValue[3]), "%.0f km", range / 1000.0);
+        if ((uint32_t)viewerSatIndex == transientSatIdx() && selIsTransient() && selTransientCur.flare > 0.0f && !hidden)
+            snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "%.1f",
+                     6.0 - 2.5 * std::log10((double)selTransientCur.flare / 0.008));
+        else
+            snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), hidden ? "Below horizon" : "-");
         return;
+    }
     const SatelliteType &type = satTypes[orb.typeIdx];
 
     // Orbit rows. Static orbital elements, so they come before the !isModel() early return below — a
@@ -4115,6 +4185,8 @@ int SatelliteSim::pickViewerSatellite(int constIdx) const
 void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
 {
     viewerMarkerLabels[0].on = viewerMarkerLabels[1].on = false;
+    if (meshRendererInit && (infoChrome.open || viewerChrome.open))
+        viewerSyncModel(); // the selection's slot may have staged since buildUI
     if (!meshRendererInit || (!infoChrome.open && !viewerChrome.open) || viewerType < 0 ||
         viewerType >= (int)satTypes.size() || !meshRenderer.viewerView())
         return;
@@ -4134,7 +4206,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     AttGeometry geo;
     glm::dvec3 P;
     const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size() &&
-                         (int)satOrbits[viewerSatIndex].typeIdx == viewerType;
+                         ((int)satOrbits[viewerSatIndex].typeIdx == viewerType || viewerKeepModel);
     if (tracked)
     {
         const SatOrbitElems e = orbitElemsOf(satOrbits[viewerSatIndex]);
@@ -5663,7 +5735,38 @@ void SatelliteSim::updateFollow(float dt)
         setView(d);
     }
     else if (freeView && glm::length(viewSat) > 1e-6)
-        setView(glm::vec3(glm::normalize(viewSat.x * Th + viewSat.y * Nh + viewSat.z * Rh)));
+    {
+        glm::dvec3 v = glm::normalize(viewSat.x * Th + viewSat.y * Nh + viewSat.z * Rh);
+        // A handover's jump (staging, the ship's entry, a train member reaching its slot) is eased out of the camera's
+        // place over ~2 s; the free view turns with the object meanwhile, so it stays where it was on screen instead of
+        // swinging off by the jump's angle (hundreds of metres seen from 260 m: off the frame) and gliding back.
+        // The turn is the rotation taking the eased point's direction to the object's, re-applied as a delta each
+        // frame (the view read back above already holds last frame's).
+        auto rotAB = [](const glm::dvec3 &x, const glm::dvec3 &a, const glm::dvec3 &b) {
+            const glm::dvec3 k = glm::cross(a, b);
+            const double sn = glm::length(k), cs = glm::dot(a, b);
+            if (sn < 1e-12)
+                return x;
+            const glm::dvec3 u = k / sn;
+            return x * cs + glm::cross(u, x) * sn + u * glm::dot(u, x) * (1.0 - cs);
+        };
+        glm::dvec3 hA(0.0), hB(0.0);
+        if (glm::length(followHandD) > 0.01 && glm::length(P - followObsEcef) > 0.01 &&
+            glm::length(P - followHandD - followObsEcef) > 0.01)
+        {
+            hA = glm::normalize(P - followObsEcef);
+            hB = glm::normalize(P - followHandD - followObsEcef);
+        }
+        if (glm::length(followHandViewA) > 0.5)
+            v = rotAB(v, followHandViewB, followHandViewA); // undo last frame's turn
+        if (glm::length(hA) > 0.5)
+            v = rotAB(v, hA, hB);
+        followHandViewA = hA;
+        followHandViewB = hB;
+        setView(glm::vec3(glm::normalize(v)));
+    }
+    if (!freeView)
+        followHandViewA = followHandViewB = glm::dvec3(0.0);
     followBasisT = Th;
     followBasisN = Nh;
     followBasisR = Rh;
@@ -5992,7 +6095,35 @@ void SatelliteSim::formatSelectedSatInfo()
     (void)localId;
     (void)constName;
     snprintf(selInfoLine[0], sizeof(selInfoLine[0]), "%s", satLabel(selectedSatIndex).c_str());
-    snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s", typeName);
+    // The second line under the name. A launch record or a transient has no constellation of its own (the transient
+    // slots carry constIdx UINT32_MAX), and showing typeName there drew a bare "?" under every rocket, fireball and
+    // freed record: describe what it is doing instead (2026-10-19).
+    const uint32_t selU = (uint32_t)selectedSatIndex;
+    if (selU >= activeSatCount && selU < poolIdx0())
+    {
+        std::string st;
+        if (selU == transientSatIdx() || selU == followSlotIdx())
+        {
+            const SelTransient &tr = selU == transientSatIdx() ? selTransientCur : followTrCur;
+            st = tr.kind == 1 ? "Rocket stage" : tr.kind == 2 ? "Starship ship, entry" : "Re-entry fireball";
+            if (orb.typeIdx < satTypes.size() && tr.kind <= 2)
+            {
+                std::string tn = satTypes[orb.typeIdx].name; // "Rocket: starship_upper" -> "starship_upper"
+                if (tn.rfind("Rocket: ", 0) == 0)
+                    tn = tn.substr(8);
+                st += " (" + tn + ")";
+            }
+        }
+        else
+            st = launchStatus(selU - activeSatCount);
+        if (st.empty())
+            st = orb.typeIdx < satTypes.size() ? satTypes[orb.typeIdx].name : std::string("Satellite");
+        snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s", st.c_str());
+    }
+    else
+        snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s", type ? typeName
+                                                                  : orb.typeIdx < satTypes.size() ? satTypes[orb.typeIdx].name.c_str()
+                                                                                                  : "Satellite");
     snprintf(selInfoLine[2], sizeof(selInfoLine[2]), "Alt: %.0f km", altKm);
     snprintf(selInfoLine[3], sizeof(selInfoLine[3]), "Incl: %.1f deg", inclDeg);
     if (orb.alignTerminator)
