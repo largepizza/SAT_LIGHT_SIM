@@ -4640,12 +4640,93 @@ launches follow per-program cadences (no real manifest).
     blob"), and a texel with no cloud carries the nearest emissive / plume distance in its alpha (`tEmitNear`), so
     sat_sky.frag composites a flame in front of its own stage's mesh (the no-cloud marker hid it behind the hull).
   - Not built: clouds lit by a burning rocket (a cumulus beside a night launch stays moonlit-dark).
+- **Ground clouds and the turbulent low trail** (2026-10-20, the user: "smoke trail effects (volumetric) on launch,
+  dust kicking up from landing"; `buildParcels`' `groundCloud` / `landingCloud`, `launch::ParcelOpts`):
+  - **Plumes are in the sky's units now.** The sky and the clouds use phase functions normalised to a MEAN of 1
+    (`phaseR` / `phaseM` / `cv2HG`: 4 pi per steradian); the plumes' phases are per steradian, so every plume was ~13x
+    too dim by day — a thick sunlit trail or a steam cloud was as dim as the horizon haze behind it, invisible from a
+    few km. Their colour is x 4 pi by day (`nightBoost` = mix(10, 4 pi, dayness): the night value, 10, is the factor
+    the twilight bells were tuned with, unchanged). The multiple scattering has a second term for optically THICK
+    exhaust (`ms` + 0.17 (1 - exp(-0.25 tau^2))): ~albedo / pi for a white mass; thin trails unchanged.
+  - **Lift-off**: while the stack is within hImp = 60 (flow1 / 1000 kg/s)^0.4 m of the pad (~200 m Super Heavy, ~90 m
+    Falcon 9; at least 3 s, at most 20 s), every 0.75 s parcels of exhaust + deluge steam start on the pad's ground
+    (`LPad::elevM`) and roll out: a Starship pad (water sprayed up through its steel deflector) 3 a step all round,
+    70-150 m/s; other pads 1 round the side and most of it out of the flame trench's mouth 70 m behind the pad (-u) as
+    a fan. Mass flow1 x 0.75 s x (1.3 deluge / 0.9) x (1 - h / hImp)^1.5 (floored 0.15); sigma0 22 m; they grow with
+    their speed through the air (`growK` 0.12: d sigma / dt += 0.12 min(|v - wind|, 60 m/s)), rise (`buoy` 0.25 m/s^2
+    fading over 90 s: hot steam), evaporate over 6-7 min; the wind carries them. `Parcel::ground` 1.
+  - **Landings**: in a landing burn's last stretch (the stage within 80 (flow / 1000)^0.4 m of the ground: ~115 m
+    Super Heavy, ~105 m the ship, ~50 m a Falcon-class booster) 3 parcels a 0.5 s spread from under it, 40-90 m/s.
+    What they are follows the surface (`demElevCpu` > 1 m and `shoreDistCpu` < 0 = land): a pad (a tower catch: the
+    launch pad for a booster, `landPad` for the ship) steam + exhaust, grey-white, 5 min; bare land tan dust
+    (`Parcel::tint` (1, 0.84, 0.64), albedo 0.6, 8 min); the sea spray (white, kappa 14, gone in ~90 s; a droneship's
+    deck sits in it). `Parcel::ground` 2.
+  - **The low trail**: ascent parcels take `growK` 0.05 fading out by 6 km above the pad (the column thickens as it
+    entrains); parcels within 30 km of the pad rest on ITS ground (`ParcelOpts::groundM`; was 3 m above sea level, so
+    an inland pad's ground cloud could sink into the terrain). The growth is capped at 60 m/s of relative speed: a young
+    parcel still moves at km/s, and uncapped the trail swelled hundreds of metres in a second.
+  - **cloud_march.comp, below 3-12 km** (`lowK`): the billows are read in a field SHARED by every Gaussian there
+    (world-fixed: `cloudNoiseTex` at P / 600 m and P / 220 m, P the Earth-centred point in the eye's ENU axes), so the
+    overlapping puffs of a ground cloud are modulated together into one lumpy mass instead of averaging their own noise
+    into a smooth haze (per-Gaussian noise, which rides with its parcel, is kept higher up); the faint tails are cut
+    (tau x smoothstep(0.02, 0.35, tau); also below the 0.01 noise threshold — left whole there they drew rings round
+    every lit ground cloud at night); the lumps are lit by the field's change toward the Sun (`lumpL`, one more fetch
+    70 m sunward) and darkened against the engine lights by their density (`lumpA`). Every plume Gaussian with
+    tau > 0.01 is SELF-SHADOWED: its own optical depth toward the Sun (closed form, as the view's) from where its light
+    comes from (the closest approach moved toward the eye by up to 1.5 sigma as the ray's optical depth grows: a thick
+    puff is seen by its near surface), mix(exp(-tauS), 1, 0.4 .. 0.25 low).
+  - **Sky light**: below 25 km the CPU adds the blue sky's light (amb x 0.18 (0.62, 0.78, 1) x albedo, the plume
+    units) and, where that is more than 2% of the Sun's, Earth-shadows the Sun's part itself and passes the sky's share
+    of the colour in ib.w's fraction (2 + share; below 2 = unread): the shader lights that share isotropically (`Lf`)
+    with half the self-shadow. Above 25 km nothing changes (the bells keep the per-pixel terminator).
+  - **Night**: the ground clouds take kessler's engine lights (`LpE`, `engineLightAdd`) like any plume, with the
+    multiple scattering those lights were tuned with (`ms0`; with the thick term the steam saturated). Open: a
+    Starship's night lift-off cloud from 2.5 km still saturates into an orange-white ball (the engine light's strength
+    vs the night exposure, which does not adapt at night), so its lumps show only at its edge.
+  - **Cost** (RTX 3070 Ti, 1600x900, Starship T+28 s from 2.5 km, interleaved in one run): GPU 11.25 / 11.11 ms with
+    the new cloud_march vs 11.27 / 11.05 with the old (within noise); plumes off 10.60; with clouds 12.22 vs 11.96.
+  - Harness: `launch next ... pad_dist_m=<m> [lead=<s>] [side=-1]` = on the ground beside the pad, looking at it,
+    lead s before lift-off; `launch landing droneship=1` = a booster landing at sea, 30 m over the water `dist_m`
+    aside; `launch state` -> `ground_clouds` {lift_off, landing, sample: kind, alt, sigma, tau, drawn colour, iso share}.
+    `tools/harness/scripts/pad_smoke.satcmd` (Starship / Falcon 9 by day and night, a ship and a booster catch, a sea
+    landing). Clear the clouds (`set clouds_v2.coverage 0`) and pause time after a jump.
 - **Mesh glare needs a compact Sun image** (2026-10-19): sat_mesh.frag packs `meshGlareRoughK` (1 below roughness
   0.04, 0 past 0.10) with the photometric share into the scene target's alpha (`meshSharePack`: share 64 levels, flag 8;
   mesh_bloom.frag and mesh_refl_add.comp unpack it), and mode 3 (the viewer's glare source) multiplies its specular by
   it. Rough lobes (stainless 0.12, paint) reached the Sun-like radiance test at grazing incidence (Fresnel -> 1, the
   masking term's 1/(2 alpha)) along every edge and panel seam of a Starship in daylight: dozens of glares. Mirrors,
   OSR, dielectric film and solar glass (0.05: 0.93) still glare.
+- **Rocket light on clouds, haze, plumes and the ground** (2026-10-20; the glare pass's open item "a cumulus beside a
+  night launch stays dark"). Every burn (ascent, boostback, entry, landing), a ship's entry glow and each pad's
+  floodlights are POINT LIGHTS (`engineLightAdd`, SatelliteSimLaunches.cpp): intensity in suns x m^2 from the flame's
+  magnitude at 100 km (`flameIntensitySunsM2`: mag 0 = 2.54e-6 lux, the Sun 1.27e5; Super Heavy -6 ~ 6e6 cd ~ 50),
+  lifted at night by the MOON's lift (moonGain / 2e-6, ~2600x; physical by day, so nothing shows), x
+  `launches.engine_light_gain` ("Rocket light on clouds", Off / x0.3 / x1 / x3). Pads: 0.5 (Starship 0.8), no ground
+  term. Reach = where a lit white cloud is 2e-3 on screen; at most `kMaxEngineLights` (32), nearest lit region first.
+  - **Delivery: the dust buffer's TAIL** (`kDustBuf` grew by 32 entries: entries 1024+ are lights in the 80-B
+    `GpuDustCloud` slots, header word 1 = count, `engineLightsFlush` after launchFillVisuals; layout in
+    `include/lightning_draw.glsl`). No new binding in cloud_march.comp.
+  - **Clouds, fog, haze, ground: the lightning pass's mode 2** (`lightning.frag`, `params.w` = 2, `params2.z` = the
+    count; the lightning set gained binding 4 = the half-res scene depth, 5 = the dust buffer). One full-screen
+    triangle after the sky TAA, screen-blended, drawn whenever there are lights (with or without flashes). Clouds: the
+    composite's distance per gathered texel, its opacity from a 3x3 TENT of the transmittance (gating per texel drew
+    the outline as a staircase), 0.85 x opacity^1.5 / (r^2 + r0^2), x 0.35 with the light on the far side of the cloud
+    from the eye (by height). Ground: albedo 0.15 x the cosine to the local up, behind the cloud transmittance, not on
+    the hull (a cylinder up the nose axis). Haze: sigma(h) / 4 x the closed-form integral of I / (d^2 + s^2) along the
+    ray, ending at the ground or (by opacity) at the cloud. Each term fades over the outer 40% of the reach (a hard
+    cut drew a circle from orbit). Tried and dropped: shading by a cloud normal from dFdx/dFdy of the half-res
+    distance (a 2-px crosshatch over the whole deck).
+  - **Plumes: cloud_march.comp's `dustCloudsCS`** adds each light's irradiance on every plume parcel (x its albedo,
+    isotropic phase + its multiple-scattering term): the low exhaust trail glows orange.
+  - **Colour**: the flame's pushed 85% toward (1, 0.45, 0.15) .. (1, 0.38, 0.08) by soot (the first cut, 50% toward a
+    paler orange, read beige over the city-lit cloud).
+  - Measured (RTX 3070 Ti, 1600x900, Starship at T+15 s under broken cumulus, 6 km from SLC-37): +0.26 ms in the draw
+    bucket, plume lighting within noise. Physically the lit deck is wide: a Super Heavy lights cloud 6 km away like a
+    full Moon (the user's call whether x1 is too much).
+  - Harness: `launch state` -> `launches.engine_lights` / `engine_light_gain`; scenes `harness_runs/englight/r7.satcmd`
+    (SLC-37 at night: `drift phase=2.86` broken cumulus, `5.2` overcast, `clouds_v2.coverage 1.6`; air, orbit,
+    `launch landing booster=1`). Open: no cloud-surface orientation, no in-cloud diffusion for a light inside a cloud
+    (lightning's boltGlow does that), no terrain shadowing, the half-res outline can still show where the light is strong.
 - **Sound**: each burning rocket within 150 km on a thunder voice (`launchSounds`, called from `thunderStep`): the
   retarded time, Earth-fixed (the air carries it), level ~ sqrt(flow) / distance, thinning with the air at the rocket.
   The retarded time is the LATEST emission tau with (T - tau) = |P(tau) - eye| / 343, found by a scan back over 440 s

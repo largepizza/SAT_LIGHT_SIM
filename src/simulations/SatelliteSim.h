@@ -2841,6 +2841,21 @@ private:
     float launchLifeScale = 1.0f;    // launches.life_scale: x every program's design life (fewer launches above 1)
     float launchPlumeGain = 1.0f;    // launches.plume_gain: the plumes' optical depth x
     float launchRocketGain = 1.0f;   // launches.rocket_gain: the flames' brightness x
+    // Rocket light on clouds, haze, plumes and the ground (2026-10-20, launches.engine_light_gain): the burning
+    // engines (ascent, boostback, entry and landing burns), a ship's entry glow and the pads' floodlights as point
+    // lights. Physical intensity from each flame's magnitude, lifted at night by the moonlight's own lift (moonGain /
+    // the full Moon's physical irradiance), x this gain. Listed by launchFillVisuals / launchFillPadLights into
+    // engineLights_, written after the dust list's 1024 entries (kDustBuf tail, header word 1) and drawn by the
+    // lightning pass's mode 2 (lightning.frag: clouds and fog, the haze along the ray, the ground) and by
+    // cloud_march.comp's plumes (dustCloudsCS).
+    float engineLightGain = 1.0f;
+    static constexpr uint32_t kMaxEngineLights = 32;
+    std::vector<GpuDustCloud> engineLights_;  // this frame's (kMaxEngineLights at most, brightest kept)
+    uint32_t engineLightCount = 0;
+    void engineLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double r0,
+                        const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround);
+    void engineLightsFlush();
+    static double flameIntensitySunsM2(double mag100km);
     int launchAfterStorm = 0;        // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
     // Launch-site graphics (2026-10-19, launches.pad_graphics): the pads on the ground (sat_sky.frag padGround, the
     // terrain graded flat under them, no city lights within ~3 km), their towers / mounts / tanks as meshes and their
