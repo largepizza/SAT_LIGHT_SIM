@@ -1562,8 +1562,28 @@ static bool memberState(const SatelliteSim &sim, const LBatch &B, const LMember 
                 o = mb.depOff + mb.sepDir * age;
                 cwV = mb.sepDir;
             }
-            r += f * (o.x * U + o.y * A + o.z * Cn);
-            if (t >= mb.tRel)
+            // The along-track offset is ARC length (Clohessy-Wiltshire's y): turned along the orbit about Cn, not added
+            // as a straight line (2026-10-20). A late release out of a long dispenser run (Starmind: 36 x 45 s) leaves
+            // the stage ~60 km behind its path at ~-40 m/s, whose secular drift reaches thousands of km within a day;
+            // as a chord that put the member 1800-2000 km UP, and its record was refused (never drawn; selftest
+            // launches_schedule_and_phasing: 2 of 33000 slots).
+            if (gLegacyRecords)
+                r += f * (o.x * U + o.y * A + o.z * Cn);
+            else
+            {
+                // (The release offset itself stays the straight line it was measured as, so the member starts exactly
+                // at the dispenser; only the drift since is turned along the orbit.)
+                const double ang = f * (o.y - mb.depOff.y) / glm::length(r);
+                const double ca = std::cos(ang), sa = std::sin(ang);
+                const glm::dvec3 U2 = ca * U + sa * A, A2 = ca * A - sa * U;
+                const double rl = glm::length(r);
+                r = (rl + f * o.x) * U2 + f * mb.depOff.y * A2 + f * o.z * Cn;
+                const double vu = glm::dot(v, U), va = glm::dot(v, A), vc = glm::dot(v, Cn);
+                v = vu * U2 + va * A2 + vc * Cn;
+                if (t >= mb.tRel)
+                    v += f * (cwV.x * U2 + cwV.y * A2 + cwV.z * Cn);
+            }
+            if (gLegacyRecords && t >= mb.tRel)
                 v += f * (cwV.x * U + cwV.y * A + cwV.z * Cn);
         }
     }
@@ -3042,9 +3062,9 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         GpuKepOrbit g{};
         SatOrbitElems ce{};
         if (!LaunchImpl::memberRecord(*this, B, mb, kind, t, tEpoch, g, ce))
-            return;
+            return false;
         if (!putRecord(slot, g))
-            return;
+            return false; // (the frame's staging is full: the batch stays due, 2026-10-20)
         const SatOrbit &so = satOrbits[mb.sat];
         SlotInfo &si = L.slots[slot];
         si.shown = true;
@@ -3063,6 +3083,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         ++L.nWrites;
         if (budget > 0)
             --budget;
+        return true;
     };
     if (on)
     {
@@ -3171,7 +3192,11 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 for (size_t m = 0; m < B.mem.size(); ++m)
                 {
                     const LMember &mb = B.mem[m];
-                    upNow[m] = (kind == 0 ? t >= mb.tRel : t < mb.tEnd) && LaunchImpl::memberAllowed(*this, B, mb);
+                    // (2026-10-20) the same intervals memberState accepts: a train member is up until arrival (tA), a retiree
+                    // from it — with t >= tRel / t < tEnd alone, a batch arriving that frame counted members up that
+                    // memberState refused (no record written, never shown: selftest launches_schedule_and_phasing).
+                    upNow[m] = (kind == 0 ? (t >= mb.tRel && t < B.tA) : (t >= B.tA && t < mb.tEnd)) &&
+                               LaunchImpl::memberAllowed(*this, B, mb);
                     up += upNow[m];
                 }
                 if (up == 0 && ch.empty())
@@ -3232,7 +3257,9 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                         complete = false;
                         continue;
                     }
-                    writeMember(B, kind, m, slot);
+                    if (!writeMember(B, kind, m, slot))
+                        complete = false; // not written this frame: the batch stays due (it had counted it as done,
+                                          // and the member stayed hidden until its next 20-s rewrite)
                 }
                 B.nUp[kind] = up;
                 if (complete)
