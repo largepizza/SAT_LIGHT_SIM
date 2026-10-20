@@ -1,0 +1,53 @@
+# Night engine-light adaptation (2026-10-20): following a Starship 300 m off at T+49 s (the white-out), the same
+# stage from 300 m / 1.5 km beside it, a night lift-off from 2.5 km on the ground, the launch site from 400 km.
+# launch state -> engine_light_adapt.
+#   python tools/harness/run.py tools/harness/scripts/engine_light_adapt.satcmd --out harness_runs/englight_adapt
+window 1600x900
+launch next
+time add 40
+wait 5
+launch select kind=rocket nearest=1
+follow offset=-300,0,80
+wait 20
+ui key ]
+wait 20
+time pause
+wait 30
+capture x_base ui=on
+launch state
+set launches.engine_light_gain 0
+set launches.plume_gain 0
+wait 10
+capture x_noel_noplume
+set launches.rocket_gain 0
+wait 10
+capture x_none
+set launches.rocket_gain 1
+set launches.plume_gain 1
+set launches.engine_light_gain 1
+follow offset=0,300,0
+follow aim=sat
+wait 30
+capture x_side300
+follow offset=0,1500,0
+follow aim=sat
+wait 30
+capture x_side1500
+launch state
+follow off
+select none
+# ground at 2.5 km from the pad, the next night launch
+launch next when=night pad_dist_m=2500 lead=5
+time play
+wait 60
+wait 600
+capture g_25km_t15
+launch state
+wait 600
+capture g_25km_t25
+# from orbit
+observer lat=28.5 lon=-80.6 alt=400000
+camera az=0 el=-89 fov=40
+wait 30
+capture o_400
+perf name=orbit

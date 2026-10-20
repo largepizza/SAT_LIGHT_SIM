@@ -4699,9 +4699,9 @@ launches follow per-program cadences (no real manifest).
     of the colour in ib.w's fraction (2 + share; below 2 = unread): the shader lights that share isotropically (`Lf`)
     with half the self-shadow. Above 25 km nothing changes (the bells keep the per-pixel terminator).
   - **Night**: the ground clouds take kessler's engine lights (`LpE`, `engineLightAdd`) like any plume, with the
-    multiple scattering those lights were tuned with (`ms0`; with the thick term the steam saturated). Open: a
-    Starship's night lift-off cloud from 2.5 km still saturates into an orange-white ball (the engine light's strength
-    vs the night exposure, which does not adapt at night), so its lumps show only at its edge.
+    multiple scattering those lights were tuned with (`ms0`; with the thick term the steam saturated). The
+    saturated orange-white ball a night lift-off cloud made from 2.5 km is addressed by the eye's adaptation to the
+    engine lights (2026-10-20, below in "Rocket light on clouds": ~x0.5 there).
   - **Cost** (RTX 3070 Ti, 1600x900, Starship T+28 s from 2.5 km, interleaved in one run): GPU 11.25 / 11.11 ms with
     the new cloud_march vs 11.27 / 11.05 with the old (within noise); plumes off 10.60; with clouds 12.22 vs 11.96.
   - Harness: `launch next ... pad_dist_m=<m> [lead=<s>] [side=-1]` = on the ground beside the pad, looking at it,
@@ -4739,6 +4739,24 @@ launches follow per-program cadences (no real manifest).
     isotropic phase + its multiple-scattering term): the low exhaust trail glows orange.
   - **Colour**: the flame's pushed 85% toward (1, 0.45, 0.15) .. (1, 0.38, 0.08) by soot (the first cut, 50% toward a
     paler orange, read beige over the city-lit cloud).
+  - **The eye adapts to the lights at night** (2026-10-20, QA: following a Starship 310 m off at T+49 s the whole view
+    was a saturated orange-white haze; the CLAUDE.md open item "a night lift-off cloud from 2.5 km saturates" is the
+    same thing). The night lift (moonGain / 2e-6, ~2600x) is right for an eye adapted to moonlight; 300 m from a Super
+    Heavy the eye stands in ~260 full Moons of the flame's light. `engineLightsFlush` scales every light's intensity
+    by (1 + R / 2)^-0.75 (and its reach by the square root), R = the illuminance at the eye from all the lights in full
+    Moons (sum of I / (d^2 + r0^2) / moonGain), only the night's share (mix by 1 - dayness), eased (`engineAdaptEased`:
+    3/s toward darker, 0.5/s back). 310 m: x0.04; 1.5 km: x0.11; 2.5 km from a lift-off: ~x0.5; orbit / 10 km: ~1.
+    `launch state` -> `engine_light_adapt`. Not adapted: the flame's own Gaussians (their night factor, kFlameCore
+    x0.18), the point, the nozzle glow. A capture right after a jump to a near rocket shows the unadapted frame for
+    ~0.5 s (`wait 60`).
+  - **A plume Gaussian's engine light is averaged over its depth** (cloud_march.comp: I / (r^2 + 1/q + r0^2), 1/q its
+    variance along the ray: the young exhaust Gaussians beside a burning stage are hundreds of metres wide and were
+    lit as if all their mass sat at the ray's closest approach), and the plumes' compositing distance (`tP`, in front of
+    / behind the clouds) is LIGHT-weighted (a dim, thick ground cloud km away outweighed the bright exhaust 300 m off).
+    Open: from 300 m beside the stage the lit exhaust is still a bright ball ~300 m across (physically the young
+    exhaust IS lit like that; the user's call), with a hard-ish outline where its tails are cut low down (`lowK`), and
+    far clouds on the horizon behind it draw as darker half-res blocks inside the glow (not the plume ordering: forcing
+    the plume in front changed nothing).
   - Measured (RTX 3070 Ti, 1600x900, Starship at T+15 s under broken cumulus, 6 km from SLC-37): +0.26 ms in the draw
     bucket, plume lighting within noise. Physically the lit deck is wide: a Super Heavy lights cloud 6 km away like a
     full Moon (the user's call whether x1 is too much).
@@ -4769,7 +4787,13 @@ launches follow per-program cadences (no real manifest).
   `typeIdx = UINT32_MAX`: no model, so Info / Go to / Trace hide and `selActionAvailMask` = Track), whose elements are
   `SatOrbitElems::fixedState` (quadratic extrapolation from the frame's state, clamped to 30 s), rewritten each frame
   (`selTransientUpdate`, after the visuals). Label from `transientLabel()` (vehicle, stage, burn, T+, altitude, speed;
-  "Re-entry: <satellite>"), magnitude from the drawn flare. Not drawn for 2 s of sim time: deselected. The selection
+  "Re-entry: <satellite>"), magnitude from the drawn flare (as seen from the CAMERA: following a Super Heavy 310 m off
+  it reads ~-18.5, the physical value of a -6-at-100-km flame there; the Info window's MAGNITUDE tile is the ground
+  observer's, the flame carried there by 1/r^2 + its extinction, since 2026-10-20 — it read "Dark", the model's
+  sunlight). Since 2026-10-20 the label reads "on the pad, T-9 s" before lift-off, a returning ship's "belly-flop
+  descent" / "flip and landing burn" / "caught by the tower" / "splashed down" after `tShipDesc` (it said "falling
+  toward entry" and "deorbit burn"), and the speed is over the ground below 80 km, inertial above 150 km (a stage on
+  the pad read 0.41 km/s, the Earth's rotation); the Info STATUS row the same. Not drawn for 2 s of sim time: deselected. The selection
   panel's second line (`selInfoLine[1]`, 160 wide since 2026-10-19 — labels were cut at 40) describes the object:
   "Rocket stage (starship_upper)", "Starship ship, entry", "Re-entry fireball", and for a launch record
   `launchStatus()` ("<type> - raising to slot, 412/565 km" / "parking orbit" / "in the dispenser" / "deorbiting",

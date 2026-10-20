@@ -1,0 +1,52 @@
+# Mission QA (2026-10-20): time reversal across lift-off and Max-Q while following a Starship, the Info window's
+# flame magnitude and pre-launch label (on the pad, T-9 s, 0.00 km/s), a destroyed satellite's Info status.
+#   python tools/harness/run.py tools/harness/scripts/mission_qa.satcmd --out harness_runs/mission_qa
+window 1600x900
+launch next vehicle=starship
+time add 20
+wait 5
+launch look stage=0
+launch select kind=rocket nearest=1
+follow offset=-200,100,40
+ui open info
+wait 30
+state r0
+capture r0 ui=on
+time scale 10x
+time play
+wait 120
+state r1
+capture r1 ui=on
+time reverse on
+wait 150
+state r2
+capture r2 ui=on
+time reverse off
+wait 200
+state r3
+capture r3 ui=on
+# reverse across staging at 10x
+missions milestone next
+wait 5
+time scale 10x
+time play
+wait 60
+state r4
+capture r4 ui=on
+time reverse on
+wait 60
+state r5
+capture r5 ui=on
+time reverse off
+time pause
+time scale 1x
+wait 5
+state r6
+# a destroyed satellite in the Info window
+follow off
+select const "Starlink Gen1" n=9
+ui open info
+kessler breakup sel
+wait 20
+state x0
+capture x0 ui=on
