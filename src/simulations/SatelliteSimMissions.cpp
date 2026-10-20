@@ -205,6 +205,34 @@ bool SatelliteSim::missionsGo(const std::string &what, bool watchOnly, std::stri
     return launchGoToKey(m->key, !watchOnly, kLeadS, msg);
 }
 
+bool SatelliteSim::missionsOngoingAct(int row, bool go, std::string &msg)
+{
+    if (row < 0 || row >= (int)msOngoing.size())
+    {
+        msg = "no such row";
+        return false;
+    }
+    const MissionOngoing &o = msOngoing[(size_t)row];
+    bool ok = false;
+    if (o.cat == 0 || o.cat == 2)
+        ok = launchSelectRocketOf(o.key, msg);
+    else if (o.cat == 3 || o.cat == 4)
+        ok = launchSelectNearestOf(o.prog, o.cat == 3 ? 0 : 1, msg);
+    else
+        msg = "nothing to select in that row";
+    if (!ok || !go)
+        return ok;
+    const std::string what = msg;
+    startFollow(selectedSatIndex, true);
+    if (!followActive)
+    {
+        msg = what + " - selected (no model to go to)";
+        return false;
+    }
+    msg = "Flying to " + what;
+    return true;
+}
+
 nlohmann::json SatelliteSim::missionsStateJson()
 {
     missionsRefresh(true);
@@ -239,7 +267,12 @@ nlohmann::json SatelliteSim::missionsStateJson()
     j["ongoing"] = og;
     nlohmann::json st = nlohmann::json::array();
     for (const CrewStation &s : msStations)
-        st.push_back({{"name", constellations[s.constIdx].name}, {"sat", s.sat}});
+    {
+        double tF = 0.0;
+        const int fate = s.sat >= 0 ? rosterFateAt((uint32_t)s.sat, now, &tF) : 0;
+        st.push_back({{"name", constellations[s.constIdx].name}, {"sat", s.sat}, {"fate", rosterFateName(fate)},
+                      {"fate_hours_ago", fate ? (now - tF) / 3600.0 : 0.0}});
+    }
     j["stations"] = st;
     j["status"] = msStatus;
     return j;
@@ -284,6 +317,7 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
     // Actions, applied after the layout (they move time and the observer; the rows are rebuilt next frame).
     int goLaunch = -1, watchLaunch = -1; // 0..4 the next launches, 100 twilight, 101 crew
     int furyGo = -1, selRocket = -1, selTrain = -1, selRetiree = -1, stationSel = -1, stationGo = -1;
+    int ongoingGo = -1; // an Ongoing row's Go to (missionsOngoingAct)
     bool watchReentry = false, toControls = false;
 
     // A launch row. id: a stable index; pin: a label shown first ("NEXT TWILIGHT").
@@ -539,9 +573,11 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             ++n0;
                             const int idx = (int)i;
                             ongoingRow(rid++, msStr("%s", o.title.c_str()), msStr("%s", o.status.c_str()), o.tNext, o.progress, [&]() {
-                                if (uiButton(inp, ui, "MsSelRocket", idx, "Select", o.drawn ? "Select the rocket" : "Not drawn from here",
-                                             false, o.drawn))
+                                if (uiButton(inp, ui, "MsSelRocket", idx, "Select",
+                                             o.drawn ? "Select the rocket" : "Select the rocket (not drawn from here: below the horizon or too faint)"))
                                     selRocket = idx;
+                                if (uiButton(inp, ui, "MsGoRocket", idx, "Go to", "Fly to the rocket and ride along"))
+                                    ongoingGo = idx;
                             });
                         }
                         if (!n0)
@@ -567,7 +603,15 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             const float altKm = cs0.sat >= 0 && cs0.sat < (int)satOrbits.size() ? satOrbits[cs0.sat].altM / 1000.0f : 0.0f;
                             const char *status;
                             double tN = 0.0;
-                            if (!constellations[cs0.constIdx].enabled)
+                            double tFate = 0.0;
+                            const int fate = cs0.sat >= 0 ? rosterFateAt((uint32_t)cs0.sat, now, &tFate) : 0;
+                            char fu[40];
+                            fmtUtcShort(tFate, fu, sizeof(fu));
+                            if (fate == 1)
+                                status = msStr("Dead since %s, tumbling, uncrewed; no more crew flights", fu);
+                            else if (fate >= 2)
+                                status = msStr("%s %s; no more crew flights", fate == 2 ? "Destroyed" : "Re-entered", fu);
+                            else if (!constellations[cs0.constIdx].enabled)
                                 status = msStr("Hidden (Settings > Constellations); %.0f km", altKm);
                             else if (arriving)
                                 status = msStr("Crewed, %.0f km; a new crew is on its way", altKm);
@@ -579,7 +623,8 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             else
                                 status = msStr("Crewed, %.0f km", altKm);
                             const int sidx = (int)s;
-                            const bool en = constellations[cs0.constIdx].enabled;
+                            // (a destroyed / re-entered station is not there to select or fly to; a dead one tumbles)
+                            const bool en = constellations[cs0.constIdx].enabled && fate < 2;
                             ongoingRow(rid++, msStr("%s", constellations[cs0.constIdx].name.c_str()), status, tN, -1.0, [&]() {
                                 if (uiButton(inp, ui, "MsStSel", sidx, "Select", "Select the station", false, en))
                                     stationSel = sidx;
@@ -598,9 +643,11 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             ++n2;
                             const int idx = (int)i;
                             ongoingRow(rid++, msStr("%s", o.title.c_str()), msStr("%s", o.status.c_str()), o.tNext, o.progress, [&]() {
-                                if (uiButton(inp, ui, "MsSelRocket", idx, "Select", o.drawn ? "Select the rocket" : "Not drawn from here",
-                                             false, o.drawn))
+                                if (uiButton(inp, ui, "MsSelRocket", idx, "Select",
+                                             o.drawn ? "Select the rocket" : "Select the rocket (not drawn from here: below the horizon or too faint)"))
                                     selRocket = idx;
+                                if (uiButton(inp, ui, "MsGoRocket", idx, "Go to", "Fly to the rocket and ride along"))
+                                    ongoingGo = idx;
                             });
                         }
                         if (!n2)
@@ -620,11 +667,15 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                 {
                                     if (uiButton(inp, ui, "MsSelTrain", idx, "Select", "The nearest satellite of these trains"))
                                         selTrain = idx;
+                                    if (uiButton(inp, ui, "MsGoTrain", idx, "Go to", "Fly to the nearest satellite of these trains"))
+                                        ongoingGo = idx;
                                 }
                                 else
                                 {
                                     if (uiButton(inp, ui, "MsSelRet", idx, "Select", "The nearest of these retirees"))
                                         selRetiree = idx;
+                                    if (uiButton(inp, ui, "MsGoRet", idx, "Go to", "Fly to the nearest of these retirees"))
+                                        ongoingGo = idx;
                                     if (uiButton(inp, ui, "MsReentry", idx, "Watch",
                                                  "The next retiree (any program) coming down over a dark sky: 25 s before it breaks up"))
                                         watchReentry = true;
@@ -675,6 +726,11 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
         launchSelectRocketOf(msOngoing[(size_t)selRocket].key, msg);
         msStatus = msg;
     }
+    if (ongoingGo >= 0 && ongoingGo < (int)msOngoing.size())
+    {
+        missionsOngoingAct(ongoingGo, true, msg);
+        msStatus = msg;
+    }
     if (selTrain >= 0 && selTrain < (int)msOngoing.size())
     {
         launchSelectNearestOf(msOngoing[(size_t)selTrain].prog, 0, msg);
@@ -690,6 +746,16 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
         launchGoToNextReentry(msg);
         msStatus = msg;
         msNextWall = msPinWall = -1e300; // rebuilt next frame (Clay still holds this frame's strings)
+    }
+    const double tNowMs = now;
+    auto stationGone = [&](int i) {
+        return i >= 0 && i < (int)msStations.size() && msStations[(size_t)i].sat >= 0 &&
+               rosterFateAt((uint32_t)msStations[(size_t)i].sat, tNowMs) >= 2;
+    };
+    if (stationGone(stationSel) || stationGone(stationGo))
+    {
+        msStatus = constellations[msStations[(size_t)std::max(stationSel, stationGo)].constIdx].name + " no longer exists";
+        stationSel = stationGo = -1;
     }
     if (stationSel >= 0 && stationSel < (int)msStations.size())
     {

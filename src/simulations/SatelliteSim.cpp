@@ -486,8 +486,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Screenshot with UI", GLFW_KEY_F10, -1, false, false},                              // KB_SCREENSHOT_UI (event) — a screenshot that keeps the interface
         {"Missions", GLFW_KEY_M, -1, false, false},                                          // KB_MISSIONS (event) — the Missions window
         {"Leave Go To Here", GLFW_KEY_G, -1, false, false},                                  // KB_FOLLOW_STAY (event) — end Go to as a free observer where the camera is
+        {"Go To: Return", GLFW_KEY_H, -1, false, false},                                     // KB_FOLLOW_RETURN (event) — back to the followed object / follow the last one again
     };
-    static_assert(KB_COUNT == 24, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 25, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -3970,6 +3971,10 @@ void SatelliteSim::selectSatellite(int idx)
 {
     if (idx < 0 || idx >= (int)satOrbits.size())
         return;
+    // A roster satellite destroyed or re-entered by now is not there to select (issue 20261019_231126: the Missions
+    // window selected an exploded station's "ghost"; kesslerDropGoneSelection drops one that goes while selected).
+    if (idx < (int)activeSatCount && rosterFateAt((uint32_t)idx, (double)simDayJ2000 * 86400.0 + simSecInDay) >= 2)
+        return;
     selectedSatIndex = idx;
     selectedPlanetIndex = -1;
     formatSelectedSatInfo();
@@ -5357,10 +5362,28 @@ glm::dvec3 SatelliteSim::followFlightPos(const glm::dvec3 &from, const glm::dvec
     return glm::normalize(dir) * (R + std::exp(l));
 }
 
+// A followed object's position (ECEF) at t, with the handover's eased jump (followHandD) as updateFollow places it.
+glm::dvec3 SatelliteSim::followTargetEcef(int idx, double t) const
+{
+    if (idx < 0 || idx >= (int)satOrbits.size())
+        return glm::dvec3(0.0);
+    const SatOrbitState s = satOrbitStateAt(orbitElemsOf(satOrbits[idx]), t);
+    const double th = earthRotationAngle(t), ct = std::cos(th), st = std::sin(th);
+    const glm::dvec3 v = s.posEci;
+    return glm::dvec3(ct * v.x + st * v.y, -st * v.x + ct * v.y, v.z) + followHandD;
+}
+
 void SatelliteSim::startFollow(int satIndex, bool fly)
 {
     if (satIndex < 0 || satIndex >= (int)satOrbits.size())
         return;
+    // Go to -> Go to (2026-10-20): where the camera is NOW, by the object it rides (the frame's time; followObsEcef is
+    // the last update's, an orbit's motion behind). Taken before anything below changes the followed object.
+    const double tStart = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    glm::dvec3 camNow(0.0);
+    const bool fromFollow = followActive && followFlight != 2 && followBasisValid;
+    if (fromFollow)
+        camNow = followObsEcef - followLastP + followTargetEcef(followSatIndex, tStart);
     // A rocket drawn as a mesh: the transient its mesh slot holds (the slot itself is rebound every frame).
     satIndex = rocketMeshSlotToTransient(satIndex);
     // A transient (a rocket stage, a ship coming home): follow rides it in a slot of its own, independent of the
@@ -5387,12 +5410,14 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
         followLaunchM = (uint16_t)m;
     }
     followHandD = glm::dvec3(0.0);
+    if (!followActive)
+        followGpuFloorM = -1e30;
     const int ti = (int)satOrbits[satIndex].typeIdx;
     const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(ti);
     if (!tm || ti < 0)
         return;
-    // From the current eye (the ground, or wherever a flight home had got to).
-    const glm::dvec3 fromEye = followActive ? followObsEcef : glm::dvec3(obsDir) * (double)obsEyeRadiusM();
+    // From the current eye (the ground, wherever a flight home had got to, or beside the object followed until now).
+    const glm::dvec3 fromEye = fromFollow ? camNow : followActive ? followObsEcef : glm::dvec3(obsDir) * (double)obsEyeRadiusM();
     if (followActive && followFlight == 2)
         followFlight = 0;   // turned round on the way home: keep the saved ground spot
     else if (!followActive)
@@ -5429,6 +5454,7 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
     snprintf(followLabel, sizeof(followLabel), "Following %s", satLabel(satIndex).c_str());
     followFlight = 0;
     followFlightInit = false;
+    followFlightRel = false;
     if (fly)
     {
         followFlight = 1;
@@ -5436,7 +5462,17 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
         followFlightFrom = fromEye;
         followFlightFromRel = false;
         followFlightDur = 0.0;   // set on the first update, from the distance to the target
+        // From another followed object: straight in from where the camera is, in the new object's frame (the arc and
+        // the observer's line belong to a start on the ground). updateFollow falls back to them when the Earth is in
+        // the way.
+        if (fromFollow)
+        {
+            followFlightRel = true;
+            followFlightRelKeepDir = true;
+            followFlightAlign = false;
+        }
     }
+    followRemember();
     followBasisValid = false;
     updateFollow(0.0f);
     // Review 23: the aim is FREE once there (as on the ground: the mouse looks, WASD moves); a flight aims until it lands.
@@ -5452,6 +5488,7 @@ void SatelliteSim::stopFollow(bool fly)
     {
         // Fly home: updateFollow ends follow mode (this function, fly = false) on arrival.
         followFlight = 2;
+        followFlightRel = false;
         followFlightT = 0.0;
         const glm::dvec3 home = glm::dvec3(followSavedObsDir) *
                                 ((double)kEarthRadius + std::max((double)followSavedGround, (double)followSavedHeight) + 2.0);
@@ -5463,7 +5500,10 @@ void SatelliteSim::stopFollow(bool fly)
         followFlightInit = false;
         return;
     }
+    followRemember();
+    followAgainUntil = glfwGetTime() + 30.0;
     followFlight = 0;
+    followFlightRel = false;
     followActive = false;
     followTrKey = 0;
     followLaunchOwner = 0;
@@ -5482,6 +5522,8 @@ void SatelliteSim::stopFollowHere(const char *why)
 {
     if (!followActive)
         return;
+    followRemember();
+    followAgainUntil = glfwGetTime() + 30.0;
     const glm::dvec3 eye = followObsEcef;
     const double r = glm::length(eye);
     followFlight = 0;
@@ -5489,6 +5531,7 @@ void SatelliteSim::stopFollowHere(const char *why)
     followTrKey = 0;
     followLaunchOwner = 0;
     followHandD = glm::dvec3(0.0);
+    followFlightRel = false;
     if (r > 1.0)
     {
         obsDir = glm::vec3(eye / r);
@@ -5505,6 +5548,158 @@ void SatelliteSim::stopFollowHere(const char *why)
     snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", why ? why : "Left Go to: you stay here");
     screenshotToastTimer = 4.0f;
     screenshotToastWarn = false;
+}
+
+// The follow camera's floor above sea level: the CPU DEM at the camera and the GPU's detailed ground under last
+// frame's eye (terrainFrameBuf, the same point a frame of motion back), the latter eased over ~0.2 s so a reading that
+// jumps does not jerk the camera; never below the sea.
+double SatelliteSim::followFloorM(const glm::dvec3 &eye, float dt)
+{
+    const double r = glm::length(eye);
+    if (r < 1.0)
+        return 0.0;
+    const double latD = glm::degrees(std::asin(std::clamp(eye.z / r, -1.0, 1.0)));
+    const double lonD = glm::degrees(std::atan2(eye.y, eye.x));
+    double floorM = std::max(0.0, (double)cpuTerrainHeightM((float)latD, (float)lonD));
+    if (terrainFrameMapped && (debugDisableMask & 1024u) == 0 && std::isfinite(terrainFrameMapped[1]))
+    {
+        const double g = (double)terrainFrameMapped[1];
+        if (followGpuFloorM < -1e29)
+            followGpuFloorM = g;
+        else if (dt > 0.0f)
+            followGpuFloorM += (g - followGpuFloorM) * (1.0 - std::exp(-(double)dt / 0.2));
+        // (Only near the ground: from altitude the reading is of a place the camera is not about to touch.)
+        if (r - (double)kEarthRadius < followGpuFloorM + 20000.0)
+            floorM = std::max(floorM, followGpuFloorM);
+    }
+    return floorM;
+}
+
+// Go to's object, kept as the "last" one (followReturn follows it again after Stay here / Exit / its end).
+void SatelliteSim::followRemember()
+{
+    if (!followActive || followSatIndex < 0)
+        return;
+    followLastIsTr = followIsTransient();
+    if (followLastIsTr)
+    {
+        if (followTrKey == 0)
+            return; // a record that ended, awaiting its fireball: keep what was remembered before
+        followLastTr = followTrCur;
+        followLastIdx = -1;
+    }
+    else
+    {
+        followLastIdx = followSatIndex;
+        followLastOwner = followLaunchOwner;
+        followLastM = followLaunchM;
+        followLastPoolGen = followPoolGen;
+    }
+    const char *l = followLabel;
+    if (strncmp(l, "Following ", 10) == 0)
+        l += 10;
+    snprintf(followLastLabel, sizeof(followLastLabel), "%s", l);
+}
+
+// Return (KB_FOLLOW_RETURN, the follow HUD's "Return", harness `follow return`). Following: fly back to the default
+// offset (behind and above the object, ~4 model radii), in its own frame; on the way home: turn back to it. Not
+// following: follow the last object again (a flight from wherever the camera is).
+bool SatelliteSim::followReturn(std::string *msg)
+{
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    if (followActive)
+    {
+        if (followSatIndex < 0 || followSatIndex >= (int)satOrbits.size())
+            return false;
+        if (followFlight == 2)
+        {
+            startFollow(followSatIndex, true); // turned round on the way home
+            if (msg)
+                *msg = std::string("Returning to ") + followLastLabel;
+            return followActive;
+        }
+        const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh((int)satOrbits[followSatIndex].typeIdx);
+        const double r = std::max(1.0, tm ? (double)tm->boundsRadius : 1.0);
+        const glm::dvec3 camNow = followObsEcef - followLastP + followTargetEcef(followSatIndex, t);
+        followFlight = 1;
+        followFlightT = 0.0;
+        followFlightDur = 0.0;
+        followFlightInit = false;
+        followFlightFrom = camNow;
+        followFlightFromRel = false;
+        followFlightRel = true;
+        followFlightRelKeepDir = false;
+        followFlightRelB = glm::dvec3(-4.0 * r, 0.0, 1.5 * r);
+        followDefaultDist = glm::length(followFlightRelB);
+        followFlightAlign = false;
+        followFlightFov0 = camera.fovYDeg;
+        {
+            const float el0 = glm::radians(camera.elDeg);
+            followFlightView0 = glm::normalize(std::cos(el0) * obsFacing + std::sin(el0) * obsDir);
+        }
+        followAimLock = true;
+        if (msg)
+            *msg = std::string("Returning to ") + followLastLabel;
+        return true;
+    }
+    int idx = -1;
+    if (followLastIsTr)
+    {
+        SelTransient c = followLastTr;
+        uint8_t want = 0;
+        if (c.key == 0 || c.kind < 1 || c.kind > 2 || !transientContinue(c, t, want))
+        {
+            if (msg)
+                *msg = std::string(followLastLabel[0] ? followLastLabel : "The last object") + " is gone";
+            return false;
+        }
+        selTransientTake(c);
+        selectedSatIndex = (int)transientSatIdx();
+        selectedPlanetIndex = -1;
+        formatSelectedSatInfo();
+        idx = (int)transientSatIdx();
+    }
+    else
+    {
+        idx = followLastIdx;
+        if (idx < 0 || idx >= (int)satOrbits.size())
+        {
+            if (msg)
+                *msg = "Nothing followed yet";
+            return false;
+        }
+        if (idx >= (int)activeSatCount && idx < (int)poolIdx0())
+        {
+            uint32_t m = 0;
+            if (launchSlotOwner((uint32_t)idx - activeSatCount, m) != followLastOwner || m != followLastM || followLastOwner == 0)
+            {
+                if (msg)
+                    *msg = std::string(followLastLabel) + " is no longer in flight";
+                return false;
+            }
+        }
+        else if (idx >= (int)poolIdx0())
+        {
+            const size_t j = (size_t)(idx - (int)poolIdx0());
+            if (j >= kPoolGen.size() || kPoolGen[j] != followLastPoolGen)
+            {
+                if (msg)
+                    *msg = std::string(followLastLabel) + " no longer exists";
+                return false;
+            }
+        }
+        selectSatellite(idx);
+    }
+    startFollow(idx, true);
+    if (!followActive)
+    {
+        if (msg)
+            *msg = "That object has no model to go to";
+        return false;
+    }
+    if (msg)
+        *msg = std::string("Going to ") + followLastLabel + " again";
+    return true;
 }
 
 bool SatelliteSim::isFollowing(int satIndex) const
@@ -5641,6 +5836,26 @@ void SatelliteSim::updateFollow(float dt)
                 followFlightFrom += P;   // the camera's place by the satellite, this frame
                 followFlightFromRel = false;
             }
+            if (followFlightRel)
+            {
+                // In the object's frame: from the camera's offset A to B (a switch: A's direction at the follow
+                // distance; Return: the default offset, set by followReturn).
+                const glm::dvec3 d = followFlightFrom - P;
+                followFlightRelA = glm::dvec3(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
+                if (glm::length(followFlightRelA) < 0.01)
+                    followFlightRelA = followOffset;
+                if (followFlightRelKeepDir)
+                    followFlightRelB = glm::normalize(followFlightRelA) * std::max(followDefaultDist, 1.0);
+                // The Earth in the way (an object beyond the limb): the arc, as from the ground.
+                const glm::dvec3 b = P + followFlightRelB.x * Th + followFlightRelB.y * Nh + followFlightRelB.z * Rh;
+                const glm::dvec3 ab = b - followFlightFrom;
+                const double tc = std::clamp(-glm::dot(followFlightFrom, ab) / std::max(glm::dot(ab, ab), 1e-9), 0.0, 1.0);
+                if (glm::length(followFlightFrom + tc * ab) < (double)kEarthRadius + 2000.0 &&
+                    glm::length(ab) > 50000.0)
+                    followFlightRel = false;
+                else if (followFlightDur <= 0.0)
+                    followFlightDur = followFlightDuration(glm::length(followFlightRelB - followFlightRelA));
+            }
             if (followFlightDur <= 0.0)
                 followFlightDur = followFlightDuration(glm::length(to - followFlightFrom));
             const glm::dvec3 ab = P - home;
@@ -5655,7 +5870,27 @@ void SatelliteSim::updateFollow(float dt)
         followFlightT += (double)std::max(dt, 0.0f);
         const double x = std::min(followFlightT / followFlightDur, 1.0);
         const double u = x * x * (3.0 - 2.0 * x);
-        if (followFlightLine)
+        if (followFlightRel)
+        {
+            // Direction turned (slerp) and distance changed geometrically, both in the object's own frame.
+            const double lA = std::max(glm::length(followFlightRelA), 0.01), lB = std::max(glm::length(followFlightRelB), 0.01);
+            const glm::dvec3 dA = followFlightRelA / lA, dB = followFlightRelB / lB;
+            const double ang = std::acos(std::clamp(glm::dot(dA, dB), -1.0, 1.0));
+            glm::dvec3 dir = dB;
+            if (ang > 1e-6 && ang < glm::pi<double>() - 1e-3)
+                dir = (std::sin((1.0 - u) * ang) * dA + std::sin(u * ang) * dB) / std::sin(ang);
+            else if (ang >= glm::pi<double>() - 1e-3)
+            {
+                // Opposite sides: round over the top (the radial axis).
+                glm::dvec3 mid = glm::dvec3(0.0, 0.0, 1.0) - glm::dot(glm::dvec3(0.0, 0.0, 1.0), dA) * dA;
+                mid = glm::length(mid) > 1e-6 ? glm::normalize(mid) : glm::dvec3(0.0, 1.0, 0.0);
+                const double a = u * glm::pi<double>();
+                dir = std::cos(a) * dA + std::sin(a) * mid;
+            }
+            const glm::dvec3 rel = glm::normalize(dir) * std::exp(glm::mix(std::log(lA), std::log(lB), u));
+            followObsEcef = P + rel.x * Th + rel.y * Nh + rel.z * Rh;
+        }
+        else if (followFlightLine)
         {
             // The distance to the satellite changes geometrically (a constant ratio per unit u: the satellite grows on
             // screen at a steady rate), from the start's to the arrival's (out: the follow distance; home: the
@@ -5697,6 +5932,22 @@ void SatelliteSim::updateFollow(float dt)
                 // Review 24b: hold the arrival where the flight put it (on the observer's line NOW). The offset was set on
                 // the line as it was at the start, and the satellite moves ~10 km during a flight: the camera jumped
                 // ~1.4 deg on the last frame.
+                const glm::dvec3 d = followObsEcef - P;
+                followOffset = glm::dvec3(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
+            }
+        }
+    }
+    // Never below the ground or the sea (issue 20261019_223321: following Starship's ship down to its landing, the
+    // offset behind it went 3.9 km under Louisiana). The camera slides along the floor; while riding, the offset
+    // follows, so moving away from the ground needs no climb out of it first.
+    {
+        const double minR = (double)kEarthRadius + followFloorM(followObsEcef, dt) + (followFlight == 2 ? 0.0 : 3.0);
+        const double r = glm::length(followObsEcef);
+        if (r > 1.0 && r < minR)
+        {
+            followObsEcef *= minR / r;
+            if (followFlight == 0)
+            {
                 const glm::dvec3 d = followObsEcef - P;
                 followOffset = glm::dvec3(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
             }
@@ -8536,6 +8787,18 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
     case KB_FOLLOW_STAY:
         if (followActive && !cineActive())
             stopFollowHere();
+        break;
+    case KB_FOLLOW_RETURN:
+        if (!cineActive())
+        {
+            std::string m;
+            if (!followReturn(&m) && !m.empty())
+            {
+                snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", m.c_str());
+                screenshotToastTimer = 3.0f;
+                screenshotToastWarn = true;
+            }
+        }
         break;
     case KB_TOGGLE_CURSOR:
         // UC5: effective activation also requires uiVisible && !showIntro (see pollGamepad's

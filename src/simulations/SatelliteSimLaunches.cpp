@@ -291,6 +291,9 @@ struct SatelliteSim::LaunchState
     };
     std::vector<PlumeDbg> plumeDbg;
     std::unordered_map<int, glm::dvec3> engineGeom; // per rocket type: (nozzle exit z, exit radius, length) in metres
+    // Per plane: the crewed station's dead second (Kessler's roster word) the plane's batches were built against; a
+    // change (a breakup, the cascade reaching it, a rollback) rebuilds them (crewSync).
+    std::vector<int32_t> crewDead;
     std::vector<LPad> pads;          // the launch pads (ensureCatalog)
     std::vector<int> sitePad;        // per catalog site: its pad
     uint64_t padMeshKey[16] = {};    // the pads drawn as meshes, per reserved slot (pad index + 1; 0 = free)
@@ -948,6 +951,20 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     {
         B.why = sim.launchAfterStorm == 0 ? "stood down since the storm" : "stand-down after the storm";
         return;
+    }
+    // A crewed station the cascade or the player killed (dead, destroyed or re-entered) before lift-off gets no more
+    // crews (issue 20261019_231126). A flight already up keeps flying (launchOngoing reports the station lost). Read
+    // from the roster word mirrored from the event log, so a pure function of time and the log; crewSync rebuilds the
+    // plane's batches when the word changes.
+    if (pg.crew && !pl.sats.empty() && pl.sats[0] < sim.activeSatCount && 2ull * pl.sats[0] + 1 < sim.kRosterWords.size())
+    {
+        // (lost = dead or ended, whichever first: a breakup ends a satellite without a dead second)
+        const int32_t dead = std::min(sim.kRosterWords[2ull * pl.sats[0]], sim.kRosterWords[2ull * pl.sats[0] + 1]);
+        if (sim.kesslerEnabled && dead != kessler::kNever && (double)dead <= secOfKessler(sim, tL))
+        {
+            B.why = "station lost";
+            return;
+        }
     }
     const launch::Vehicle &vh = L.cat.vehicles[B.veh];
     const launch::Site &st = L.cat.sites[B.site];
@@ -1833,6 +1850,43 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     }
 }
 
+// Crewed stations: rebuild a plane's cached batches when its station's dead second changes (a breakup, a rollback,
+// the worker reaching it), so the schedule follows the event log (buildBatch's "station lost").
+static void crewSync(const SatelliteSim &sim, SatelliteSim::LaunchState &L)
+{
+    if (!L.planesBuilt)
+        return;
+    if (L.crewDead.size() != L.planes.size())
+        L.crewDead.assign(L.planes.size(), kessler::kNever);
+    std::vector<int> changed;
+    for (size_t pi = 0; pi < L.planes.size(); ++pi)
+    {
+        const LPlane &pl = L.planes[pi];
+        if (!L.cat.programs[pl.prog].crew || pl.sats.empty())
+            continue;
+        int32_t d = kessler::kNever;
+        if (sim.kesslerEnabled && 2ull * pl.sats[0] + 1 < sim.kRosterWords.size())
+            d = std::min(sim.kRosterWords[2ull * pl.sats[0]], sim.kRosterWords[2ull * pl.sats[0] + 1]);
+        if (d != L.crewDead[pi])
+        {
+            L.crewDead[pi] = d;
+            changed.push_back((int)pi);
+        }
+    }
+    if (changed.empty())
+        return;
+    for (auto it = L.batches.begin(); it != L.batches.end();)
+    {
+        const LBatch &B = it->second;
+        // (a crew batch carries no train and no retirees: no GPU chunks to release)
+        if (B.chunks[0].empty() && B.chunks[1].empty() &&
+            std::find(changed.begin(), changed.end(), B.plane) != changed.end())
+            it = L.batches.erase(it);
+        else
+            ++it;
+    }
+}
+
 };
 
 // ── Per frame ───────────────────────────────────────────────────────────────────────────────────
@@ -1894,6 +1948,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     const bool on = launchesEnabled && L.loaded;
     if (on && !L.planesBuilt)
         LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    LaunchImpl::crewSync(*this, L);
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     std::vector<uint64_t> touched;
     if (on)
@@ -4243,7 +4298,14 @@ void SatelliteSim::selTransientUpdate()
         // show it (as Go to does: followWantUntil), or the selection and the Info window were dropped at the handover.
         SelTransient cw = selTransientCur;
         uint8_t wantFb = 0;
-        transientContinue(cw, t, wantFb);
+        if (transientContinue(cw, t, wantFb))
+        {
+            // (2026-10-20) A rocket or the ship the list does not hold this frame (not drawn, out of the list's reach,
+            // its visuals skipped): the launch model places it, so the selection stays, by its batch key.
+            selTransientTake(cw);
+            formatSelectedSatInfo();
+            return;
+        }
         if (std::abs(t - selTransientSeenT) > transientGraceS() + (wantFb ? 5.0 : 0.0))
         {
             stopTrack();
@@ -4368,6 +4430,19 @@ bool SatelliteSim::transientContinue(SelTransient &cur, double t, uint8_t &wantK
         auto ti = rocketTypes.find("rocket_" + vh.id + part);
         return ti != rocketTypes.end() ? ti->second : -1;
     };
+    // Time running backwards (or a jump back, 2026-10-20): the ship's entry before it began is its upper stage, an
+    // upper stage before staging is the stack again (a selection taken from a list made at a later time came out as
+    // "upper stage" at T+74 s, placed on the stack's track).
+    if (cur.kind == 2 && t < B.tStageGone)
+        cur.kind = 1;
+    if (cur.kind == 1 && cur.stage == 1 && t - B.tL < vh.t1)
+    {
+        cur.stage = 0;
+        cur.key = (cur.a << 3) ^ 1ull;
+        cur.type = typeOf("_stack");
+        cur.tau = t - B.tL;
+        return transientExactState(cur, t);
+    }
     // The stack separates: its upper stage carries on (the booster is another object).
     if (cur.kind == 1 && cur.stage == 0 && cur.tau < vh.t1 && t - B.tL >= vh.t1)
     {
@@ -4976,6 +5051,7 @@ void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN,
         return;
     if (!L.planesBuilt)
         LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    LaunchImpl::crewSync(*this, L);
     struct Item
     {
         double tL;
@@ -5212,7 +5288,16 @@ void SatelliteSim::launchOngoing(std::vector<MissionOngoing> &out)
             m.cat = 0;
             m.key = key;
             m.title = pg.spacecraft + " to " + target + " (" + std::to_string(pg.people) + " crew)";
-            if (t < B.tL + B.t2)
+            double tLost = 0.0;
+            const int fate = rosterFateAt(L.planes[B.plane].sats[0], t, &tLost);
+            if (fate != 0)
+            {
+                // Launched before its station was lost (issue 20261019_231126): nothing to dock with.
+                m.status = std::string("The station is ") + rosterFateName(fate) + " (" + fmtUtc(tLost) +
+                           "); rendezvous called off";
+                m.tNext = 0.0;
+            }
+            else if (t < B.tL + B.t2)
                 m.status = veh + ": " + phaseOf(B, t - B.tL, m.tNext);
             else
             {
@@ -5299,16 +5384,62 @@ std::vector<SatelliteSim::CrewStation> SatelliteSim::launchCrewStations()
     return out;
 }
 
+bool SatelliteSim::launchRocketTransient(uint64_t key, double t, SelTransient &out) const
+{
+    if (!launchState)
+        return false;
+    const LaunchState &L = *launchState;
+    auto it = L.batches.find(key);
+    if (it == L.batches.end() || it->second.veh < 0)
+        return false;
+    const LBatch &B = it->second;
+    const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+    const double tau = t - B.tL;
+    // The payload's vehicle: the stack before staging, the upper stage after (its ship entry, its landing).
+    SelTransient c;
+    c.kind = 1;
+    c.a = key;
+    c.stage = tau < vh.t1 ? 0 : 1;
+    c.tau = std::min(tau, vh.t1 - 1e-3); // transientContinue moves a stack past staging itself
+    c.key = (key << 3) ^ (uint64_t)(c.stage + 1);
+    auto ti = rocketTypes.find("rocket_" + vh.id + (c.stage == 1 ? "_upper" : "_stack"));
+    c.type = ti != rocketTypes.end() ? ti->second : -1;
+    uint8_t want = 0;
+    if (!transientContinue(c, t, want))
+        return false;
+    if (c.kind == 1)
+    {
+        glm::dvec3 ax = LaunchImpl::stageNose(L, B, c.stage, c.tau);
+        c.axis = glm::length(ax) > 0.5 ? ax : glm::normalize(c.pos);
+    }
+    const glm::dvec3 rel = c.pos - glm::dvec3(obsECI);
+    const double d = glm::length(rel);
+    if (d > 1.0)
+        c.dirEnu = glm::vec3(glm::dot(rel, glm::dvec3(eci2enuX)) / d, glm::dot(rel, glm::dvec3(eci2enuY)) / d,
+                             glm::dot(rel, glm::dvec3(eci2enuZ)) / d);
+    c.flare = 0.0f;
+    out = c;
+    return true;
+}
+
 bool SatelliteSim::launchSelectRocketOf(uint64_t key, std::string &msg)
 {
     const SelTransient *best = nullptr;
     for (const SelTransient &s : selTransients)
-        if (s.kind == 1 && s.a == key && s.flare > 0.0f && (!best || s.stage > best->stage))
+        if ((s.kind == 1 || s.kind == 2) && s.a == key && (!best || s.stage > best->stage))
             best = &s; // the upper stage (the payload's) once it flies alone
+    // (2026-10-20, issue 20261019_224758) Drawn or not: the list holds rockets within 4000 km only (and the selected one
+    // at any range); beyond, the launch model places it. It was "not drawn from here" whenever the head was not drawn.
+    SelTransient made;
     if (!best)
     {
-        msg = "not drawn from here (below the horizon or too faint)";
-        return false;
+        const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        if (!launchRocketTransient(key, selTransientsT > 0.0 ? selTransientsT : tNow, made))
+        {
+            msg = "that rocket is not flying now";
+            return false;
+        }
+        best = &made;
     }
     selTransientTake(*best);
     selectedPlanetIndex = -1;

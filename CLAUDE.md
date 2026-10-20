@@ -65,7 +65,7 @@ code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
 `imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
-validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_icons.py` (regenerates the
+validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
 offline synth renders) · `tools/benchmarks/` ·
@@ -3346,6 +3346,35 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     lat / lon only (the observer's height has never been persisted: a relaunch lands on the ground below). "Exit"
     still flies home. Measured: ISS followed and left paused, the ISS stays within 0.4 px of the screen centre (the
     float `obsDir`), the altitude within 2 m.
+  - **Floor, Return, Go to -> Go to (2026-10-20, issues 20261019_223321 / _223437 / _223726):**
+    - **The camera never goes underground** (`followFloorM`, end of `updateFollow`): floor = max(the CPU DEM at the
+      camera, the GPU ground under last frame's eye `terrainFrameMapped[1]` eased 0.2 s as `followGpuFloorM`, only
+      within 20 km of it, 0 = the sea) + 3 m. A camera under it is pushed out radially and, while riding, the offset is
+      rewritten from the result (it slides on the ground). The report: a Starship stack at T+73 s with the offset
+      -20 km along / -18 km radial, the camera 3.9 km under Louisiana.
+    - **A flight in the object's frame** (`followFlightRel`, `followFlightRelA/B`, TNR): the direction slerps
+      (opposite sides go over the radial axis) and the distance changes geometrically. Used by (a) `startFollow` from
+      another follow (`fromFollow`): the start is the camera NOW (`followObsEcef - followLastP` + the old object at this
+      frame's time, `followTargetEcef`; `followObsEcef` alone is an update behind: ~120 m at 1x, km in warp) and B is
+      A's direction at the follow distance; it was the observer's line-of-sight flight, whose start distance along that
+      line clamped at 1 m whenever the camera was on the far side, so the camera dove through the new satellite
+      (train members 120 m apart). Falls back to the arc / line when the Earth is in the way (> 50 km). (b) **Return**.
+    - **Return** (`followReturn`, HUD "Return", `KB_FOLLOW_RETURN` H "Go To: Return", harness `follow return`):
+      following, fly to the default offset (-4r, 0, 1.5r); on the way home, turn back. Not following: follow the LAST
+      object again (`followRemember` in startFollow / stopFollow / stopFollowHere: index + launch owner/member + pool
+      generation, or the transient continued to now by `transientContinue`); a "Go to <name> again" chip
+      (`FollowAgainBtn`) shows 30 s after leaving. `state` -> `observer.follow_last`, `observer.follow.camera_asl_m /
+      dist_to_target_m / flight_rel`.
+  - **Selecting by name, not by brightness (2026-10-20, issue 20261019_224758).** Picking in the sky is the GPU's
+    visible list (above the horizon, effectFlare past the point style's limit: `sat_flare.comp` writes zero records
+    for the rest, which no click can find) — that stays. Everything NAMED goes by index or key: `selectSatellite(idx)`
+    never needed the list (roster, train members, retirees, pool pieces; the panel shows the off-screen chip), but
+    rockets are transients listed only by the code that draws them (within 4000 km, or already selected), so Missions'
+    rocket Select was greyed "Not drawn from here". Now `launchRocketTransient(key, t)` builds the stack / upper stage /
+    ship from the launch model, `launchSelectRocketOf` uses it when the list lacks the rocket, and `selTransientUpdate`
+    keeps a selected rocket the list misses (transientContinue places it) instead of dropping it after 2 s. Missions
+    Ongoing rows: Select always, plus Go to on rockets, trains (nearest member) and retirees (`missionsOngoingAct`,
+    harness `missions ongoing <row> [go=1]`).
   - **Follow ends gracefully** (`followCheckTarget` before `updateFollow`, `followTransientUpdate` after the frame's
     transient list): a followed object that ends hands over to what continues it, the camera easing across the jump
     (`followHandD`, ECEF, decays with a 0.6-s time constant) — a raising train member to its roster slot at
@@ -3378,7 +3407,8 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   below the Earth's limb), `starlink_v2_mini_dtc` (+ a 25 m2 nadir phased array) and `starlink_v3`,
   then `oneweb`, `amazon_leo`, `guowang`, seven commercial stations (`haven1`, `haven2`,
   `axiom_station`, `orbital_reef`, `ross`, `bharatiya_station`, `starlab` - low confidence, render-level
-  sizes) and `debris_fragment` (tumbling) - the parity models; sources and estimates in each file,
+  sizes; since the 2026-10-20 art pass GENERATED by `tools/make_station_models.py`, see "Station models" below)
+  and `debris_fragment` (tumbling) - the parity models; sources and estimates in each file,
   magnitudes in `KNOWN_RESIDUALS.md`. Presets added for them: `stainless_steel`,
   `dielectric_mirror_gen1/_gen2` (Beckmann: GGX's tail made the film forward-scatter grazing sunlight),
   `array_backsheet_dark` - and the M4 benchmark references `starlink_v1_0.json`
@@ -3388,6 +3418,28 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   McDowell's size table; roster: the primary `data/constellations.json` (the working set). The visor's
   real shape is unpublished (derived from Cole's 23 deg full-shade constraint), and the visor only
   dims anything through occlusion — so the VisorSat differential needs Phase 3b.
+- **Station models (art pass 2026-10-20, issue 20261019_225545, `tools/make_station_models.py`).** The seven
+  future stations are written by the generator (edit it, never the JSON); it also appends render-only `gb_*`
+  detail to the hand-made `iss.json` / `tiangong.json` (re-running replaces the old `gb_*` parts and their
+  material source entry, so it is idempotent). Layouts from the operators' concept art and published figures
+  (cited per model): Haven-1 (cone-nosed 10.1 m hull, aft wings on yokes, a docked Dragon), Haven-2 (a 7 m core
+  standing nadir-zenith, four 16 m modules docked radially in a horizontal cross, a wing pair per module, four
+  radiator fins on the core), Axiom (11 m modules with a curved body-mounted array over the zenith half: a
+  profile `arc_material`, PPTM with ISS-style Kapton wings, edge-on radiators, the glass Earth Observatory), Orbital
+  Reef (7 x 28 m core, two LIFE inflatables off its sides, an aft truss of four 10 x 13 m wings, forward
+  radiators), ROS (the Dec 2025 plan: Nauka + UUM + NEM + ShM + base module + two target modules), BAS (BAS-01/02/05
+  in line, 03/04 on BAS-05's side ports, all 3.8 m) and Starlab (8 m domed metal habitat, four wings in a 45-deg
+  cross on the service module, each turning about its own long axis: two diagonal-axis groups). Rules it keeps:
+  (1) **every wing turns about its OWN long axis** (`arrays_y` / `arrays_x` / diagonal groups, per-component
+  pivots on the axis), and a render-only yoke / mast joins it to its module (the old models' wings floated);
+  (2) **photometric hulls are split into one profile per meridian segment** (`Station.hull`): a whole domed
+  profile's occluder is the frustum through its two END radii (a cone for a LIFE habitat) and the occlusion
+  self-test failed (Orbital Reef p95 0.30 vs the 0.25 gate); (3) detail (ports, rings, dishes, windows, RCS
+  pods, bands, arms, visiting Dragon / Soyuz / Shenzhou / Tianzhou) is render-only and kept to a few dozen parts.
+  Render-mesh triangles before -> after: ISS 5304 -> 8296 (+48 parts: SAW masts and blanket boxes, PMA-2 + Dragon,
+  Soyuz, Progress, Canadarm2, ELCs, AMS, Ku dish, cupola glass, bands), Tiangong 2920 -> 4864 (wing masts, Shenzhou,
+  Tianzhou, arm, radiators), Haven-1 200 -> 1996, Haven-2 584 -> 4880, Axiom 968 -> 4080, Orbital Reef 584 ->
+  5804, ROS 584 -> 5292, BAS 584 -> 2392, Starlab 392 -> 4216. m1000 in KNOWN_RESIDUALS.md.
 - **Occlusion between parts (Phase 3b / benchmarking M7).**
   `buildSatOcclusion()` makes one occluder per component (plane, box, capped cylinder — a cone uses
   its larger radius, conservative — sphere; `kMaxOccluders` 64, a 64-bit mask per lobe) and
@@ -4091,10 +4143,27 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   the pool's phases with the same exact fixed-point turns as the roster.
 - **The dust clouds** (round 2, `kesslerFillDust`, `cloud_march.comp` `dustCloudsCS`, binding 23): every breakup of
   the last 3 h with dust (`Event::dustKg` = 5% of the broken-up mass, 30% of it for cratering) is a sunlit cloud
-  following its parent's orbit (`Event::pos/vel`), expanding at the small fragments' rms spread (`dvSmall`,
-  80-500 m/s) radially / cross-track (saturating after 1/n) and shearing along-track (x3 after 1/n), split into up
-  to 12 Gaussians along the arc once it curves, the 24 brightest as a core + 5 uneven lumps; at most 256 Gaussians a
-  frame, chosen by brightness / range^2, never narrower than a half-res pixel. The optical depth through a Gaussian
+  following its parent's orbit (`Event::pos/vel`), spread by the small fragments' rms kick (`dvSmall`, clamped
+  80-500 m/s). **A tube along the orbit (2026-10-20, issue 20261019_231126):** the fragments' positions are the
+  Clohessy-Wiltshire solution for isotropic kicks; the cloud is cut into pieces along y (arc length on the parent's
+  orbit, the profile's sigma sv sqrt(a^2 + b^2), a = 2 (cos nt - 1) / n, b = 4 sin nt / n - 3t), each piece the
+  fragments at that y: radial mean / spread conditional on y, cross-track sv |sin theta| / n with theta = nt + y / r
+  the angle THOSE fragments travelled since the breakup (so the tube pinches through the breakup point and its
+  antipode, where every fragment's orbit crosses, not at one time for the whole cloud); floors ~30 m + 2% of the
+  saturated width, and half the bow of a piece's straight extent. Pieces sit at k D with an along-track sigma 0.8 D
+  (the centres' spread deconvolved so the sum keeps the profile), D a CONTINUOUS function of age: min(the spacing
+  whose straight +-1.6 D bows < width / 3 from the arc, half the profile sigma), widened when the budget binds
+  (every cloud gets 15 pieces, the rest shared out in proportion to what each wants; real-valued, so it never steps).
+  The end pieces carry the profile's tails, so pieces appear with ~zero weight; lumps are a smooth noise in the
+  fragments' along-track kick E[dvy | y], so they move and stretch with them. Each Gaussian gets a view cone (4
+  sigma). It was up to 12 straight Gaussians ~2000 km long (ceil of the length / 1500 km), whose count stepped with
+  age (the cloud's width jumped ~50% at 1 -> 2), plus hash lumps keyed by the piece index (reshuffled at each step):
+  seen from orbit near the arc, straight "beams" crossing at kinks that stretched and glitched as time ran. Clouds
+  ranked by brightness / (range to their nearest part)^2. A big parent's cloud is brighter as the square root past
+  ~5 t of dust at the default gain (`kAmpKnee`): a 420-t station at x100 blew out the view. The cloud_march cost is
+  unchanged (cascade day 1: 4.6 vs 4.7 ms; one station cloud 0.5-1.1 ms). Harness `kessler state` -> `dust`
+  {gaussians, light_sum, range_km, sigma_km_geomean}; scripts `harness_runs/stationbk` (`user.satcmd`, `strip.satcmd`:
+  the issue's own view, 30-s steps). Never narrower than a half-res pixel. The optical depth through a Gaussian
   is closed form (erf), single-scattered (0.6 HG(0.7) + 0.4 isotropic, albedo 0.25), Earth-shadowed at the ray's
   closest approach, extinguished, hidden by cloud from below like the aurora. **Units:** physical radiance through
   the point sources' scale (`toSky`: a cloud of magnitude m carries the on-screen energy of a star of magnitude m;
@@ -4103,8 +4172,8 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   value in sky units is invisible at any gain. "Dust cloud brightness" (`kessler.dust_gain`, x1 .. x1000, default
   x100): physically a cloud fades below the dark sky within minutes. **No pops** (issue 20261018_211013, day 81 at
   x1000: the budget was full and clouds near the cut snapped in and out as the view moved, and every cloud vanished
-  at 3 h still bright): a cloud fades over the last 40% of its 3 h, lumps are only for the 24 brightest that are
-  resolved (sR > 8 px), and clouds near the budget's cut fade by priority between the cut and 3x it.
+  at 3 h still bright): a cloud fades over the last 40% of its 3 h, and clouds near the budget's cut fade by
+  priority between the cut and 3x it.
 - **The engine** (`engineSample`, cube method, Liou 2006): every 6 h of sim time one sample at the step's middle,
   20-km cubes among the roster and the large pieces (sorted in parallel: keys are unique, so the order is the
   same), P = vRel x pi (rA + rB)^2 x dt / V x weights x rate multiplier, x (1 - avoidance) when one is a working
@@ -4135,7 +4204,13 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
 - **Player breakups** (info window Explode -> `infoExplodeSelected` -> `kesslerBreakupFromUi` ->
   **`explodeSatellite(int sat, BreakupKind)`** -> `ExplodeResult{ok, reason}`; harness `kessler breakup|collide`) are
   user events at the current sim time, **at any time** (2026-10-19). One kind in the UI since 2026-10-19: Explode
-  (`EV_EXPLOSION`: `breakupExplosion`, always catastrophic, N(>Lc) = 6 Lc^-1.6, low-dv explosion fragments). The
+  (`EV_EXPLOSION`: `breakupExplosion`, always catastrophic, N(>Lc) = 6 S Lc^-1.6, low-dv explosion fragments; the
+  SBM's S = 1 is for a few-tonne upper stage, so S = max(1, (m / 2 t)^0.75) since 2026-10-20: the ISS made 239 pieces
+  over 10 cm and 7 over 1 m, now ~13,000 and ~330 (96 records); kCacheVersion 13). **A destroyed roster satellite
+  is gone everywhere** (2026-10-20, issue 20261019_231126): `rosterFateAt(idx, t, &when)` (0 working, 1 dead, 2
+  destroyed, 3 re-entered, from the mirrored roster words) — `selectSatellite` refuses 2-3, `kesslerDropGoneSelection`
+  (each frame) drops one that goes while selected, the Missions window's station row reads "Destroyed <date>; no
+  more crew flights" with Select / Go to disabled, and crew flights stop (Launches > Crew rotations). The
   ASAT strike (`EV_ASAT`) was the COLLISION model with a 20-kg projectile at 9 km/s (`breakupCollision`: Lc^-1.71,
   collision A/m and dv, catastrophic only while 0.5 m v^2 / M >= 40 J/g, i.e. below ~40 t: a station was only
   cratered) — the same cascade from the player's side, so the button went; harness `kessler breakup kind=asat` keeps it. Not for launch objects (rockets, raising trains,
@@ -4586,7 +4661,14 @@ launches follow per-program cadences (no real manifest).
   azimuth 80-200: the old Jiuquan sites' 120-200 cannot reach 41.5 deg), the commercial stations (Haven-1/2, Axiom,
   Starlab, Orbital Reef: Crew Dragon), ROS (Soyuz MS, `soyuz2`, Baikonur), Bharatiya (Gaganyaan on `lvm3`): two flights
   a year each, ~18 a year. The three new vehicles have meshes (`tools/make_rocket_models.py`; the "fairing" stands in
-  for the spacecraft). Crew launches stand down after the Sun's Fury like the rest. No cargo flights.
+  for the spacecraft). Crew launches stand down after the Sun's Fury like the rest. No cargo flights. **A lost
+  station gets no more crews** (2026-10-20, issue 20261019_231126): `buildBatch` refuses a crew launch whose station
+  is dead or ended (min of its two roster words) at or before lift-off (`launch why`: "station lost"); a flight
+  launched before reports "The station is destroyed (<date>); rendezvous called off" in Ongoing. The cached batches
+  were built against the station's word at build time, so `crewSync` (launchUpdate, launchUpcoming) rebuilds a crew
+  plane's batches whenever that word changes (a breakup, a rollback, the worker reaching a cascade kill): the schedule
+  is a pure function of sim time and the event log (as mirrored: a cascade kill the worker has not reached yet still
+  shows its flights). Harness `missions state` -> `stations[].fate` / `fate_hours_ago`.
 - **Missions window** (2026-10-19, `SatelliteSimMissions.cpp`; window id 8, `msChrome`; the rocket button
   `TimeMissionsBtn` on the right HUD panel, `pixel--missions.png`; key M, `KB_MISSIONS`; harness `ui open missions
   [tab=upcoming|ongoing|controls]`, `missions state|go|tab`). Three tabs. **Upcoming**: the next 5 launches (vehicle,

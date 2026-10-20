@@ -2499,7 +2499,35 @@ private:
     glm::vec3 followSavedObsDir{0.0f}, followSavedFacing{0.0f};
     float followSavedHeight = 0.0f, followSavedEl = 0.0f, followSavedFov = 70.0f;
     bool hovSelFollowBtn = false, hovFollowAim = false, hovFollowExit = false, hovFollowStay = false;
+    bool hovFollowReturn = false, hovFollowAgain = false;
     char followLabel[128] = {};
+    // ── Go to: Return / follow again (2026-10-20, issue 20261019_223437) ──────────────────────────
+    // KB_FOLLOW_RETURN, the follow HUD's "Return", harness `follow return`: while following, fly the camera back to
+    // the default offset (behind and above, ~4 model radii) in the object's own frame; after leaving Go to ("Stay
+    // here", Exit, an object that ended), follow the last object again (followLast*: what was followed, kept for
+    // the session). A transient (a rocket, the ship) is continued along its mission to now first.
+    int        followLastIdx = -1;        // satellite index (a transient: -1, see followLastTr)
+    bool       followLastIsTr = false;    // the transient itself: followLastTr (declared with SelTransient)
+    uint64_t   followLastOwner = 0;       // a launch record: its owner then (a slot changes hands)
+    uint16_t   followLastM = 0;
+    uint32_t   followLastPoolGen = 0;
+    char       followLastLabel[128] = {};
+    double     followAgainUntil = 0.0;    // the "Go to <last> again" chip shows until this glfwGetTime() after leaving
+    void followRemember();                // store the current follow target as the last one
+    bool followReturn(std::string *msg = nullptr);
+    // Go to -> Go to and Return (2026-10-20, issue 20261019_223726): a flight between two places NEAR the target,
+    // flown in the target's own along/cross/radial frame from the camera's offset A to B: the direction turns, the
+    // distance changes geometrically. A switch from one followed object to another starts from where the camera is
+    // (the old object's frame at this frame's time), not from the parked ground observer; it was flown along the
+    // observer's line of sight, whose start distance clamped at 1 m: the camera passed through the new satellite.
+    bool       followFlightRel = false;
+    bool       followFlightRelKeepDir = false; // B = A's direction at the follow distance (a switch), else B is set
+    glm::dvec3 followFlightRelA{0.0}, followFlightRelB{0.0};
+    // The camera's floor (issue 20261019_223321): never below the ground (the GPU's detailed ground under the eye,
+    // eased, and the CPU DEM at the camera) or the sea. followGpuFloorM is the eased GPU reading.
+    double     followGpuFloorM = -1e30;
+    double     followFloorM(const glm::dvec3 &eyeEcef, float dt);
+    glm::dvec3 followTargetEcef(int idx, double t) const; // a followed object's position (ECEF), with followHandD
     // Review 22: "Go to" and "Exit" FLY (fly = true: the UI's buttons): from the eye to the follow point (re-evaluated
     // every frame as the satellite moves) and back to the saved ground spot, the arc slerped and the altitude
     // interpolated in log space with a rise for long arcs (slow near the ground, fast high up), 2-8 s by the log of
@@ -2748,6 +2776,7 @@ private:
     uint32_t followSlotIdx() const { return activeSatCount + kLaunchCap - 2; }
     bool followIsTransient() const { return followActive && followSatIndex >= 0 && (uint32_t)followSatIndex == followSlotIdx(); }
     SelTransient followTrCur;
+    SelTransient followLastTr;   // Go to's last object when it was a transient (followRemember)
     uint64_t followTrKey = 0;    // 0 with followWantKind: a record that ended, waiting for its fireball in the list
     double followTrSeenT = 0.0;
     uint8_t followWantKind = 0;  // the successor awaited (a SelTransient kind with a == followWantA), until followWantUntil
@@ -2886,7 +2915,10 @@ private:
         int constIdx = -1, sat = -1, prog = -1;
     };
     std::vector<CrewStation> launchCrewStations();         // the stations a crew program serves
-    bool launchSelectRocketOf(uint64_t key, std::string &msg); // the batch's drawn rocket stage
+    bool launchSelectRocketOf(uint64_t key, std::string &msg); // the batch's rocket stage (drawn or not, 2026-10-20)
+    // The batch's rocket as a transient at time t from the launch model alone (the upper stage once staged, the ship on
+    // its entry), whether the list has it or not. False when it no longer exists as a rocket.
+    bool launchRocketTransient(uint64_t key, double t, SelTransient &out) const;
     bool launchSelectNearestOf(int prog, int kind, std::string &msg); // the nearest train member (0) / retiree (1)
 
     WindowChrome msChrome;
@@ -2906,6 +2938,9 @@ private:
     void missionsRefresh(bool force);
     bool missionsGoToFury(int which, std::string &msg); // 0 the CME's arrival (dusk over Monument Valley), 1 the storm night
     bool missionsGo(const std::string &what, bool watchOnly, std::string &msg); // harness: an index, twilight, crew, fury, fury_night
+    // An Ongoing row's object (msOngoing[row]): the rocket of a crew transfer / satellite launch, the nearest raising
+    // train member, the nearest retiree. Selected by key / index whether drawn or not; go = also Go to it (2026-10-20).
+    bool missionsOngoingAct(int row, bool go, std::string &msg);
     nlohmann::json missionsStateJson();
     void buildMissionsWindow(const UIInput &inp, UIRenderer &ui);
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
@@ -2986,6 +3021,11 @@ private:
     // A satellite's display name: "<constellation> #<n>"; a dead one "... #<n> (dead)" (its roster number),
     // a fragment "Debris <event>.<k>".
     std::string satLabel(int idx) const;
+    // A roster satellite's fate at time t (Kessler's event log, as mirrored): 0 working (or no scenario), 1 dead
+    // (tumbling), 2 destroyed (broken up), 3 re-entered; *whenT = the J2000 second it happened (2026-10-20).
+    int rosterFateAt(uint32_t idx, double t, double *whenT = nullptr) const;
+    static const char *rosterFateName(int fate); // "working" / "dead" / "destroyed" / "re-entered"
+    void kesslerDropGoneSelection(); // a selected roster satellite that is gone now (destroyed, re-entered) is dropped
     void buildKesslerBanner(UIRenderer &ui);
     void buildKesslerSettingsSection(const UIInput &inp, UIRenderer &ui);
     void kesslerBreakupFromUi(int sat, uint8_t kind);
@@ -5365,7 +5405,8 @@ private:
         KB_SCREENSHOT_UI = 21, // event — a screenshot that keeps the UI (default F10)
         KB_MISSIONS = 22,      // event — the Missions window (launches, crew flights, the Sun's Fury) open / closed
         KB_FOLLOW_STAY = 23,   // event — leave Go to where the camera is (stopFollowHere); G
-        KB_COUNT = 24,
+        KB_FOLLOW_RETURN = 24, // event — Go to: back to the followed object, or follow the last one again; H
+        KB_COUNT = 25,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()

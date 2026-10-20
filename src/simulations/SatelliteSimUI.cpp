@@ -2808,7 +2808,45 @@ void SatelliteSim::buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx
 void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
 {
     if (!followActive)
+    {
+        // After leaving Go to: a chip to follow the last object again (30 s; the key works for the session).
+        if (followAgainUntil <= glfwGetTime() || cineActive() || showIntro || (followLastIdx < 0 && !followLastIsTr))
+            return;
+        static char againBuf[200], againTip[96];
+        snprintf(againBuf, sizeof(againBuf), "Go to %s again", followLastLabel[0] ? followLastLabel : "the last object");
+        snprintf(againTip, sizeof(againTip), "Follow it again, flying from here (%s)",
+                 keyDisplayName(keybindings[KB_FOLLOW_RETURN].key));
+        bool clicked = false;
+        CLAY(CLAY_ID("FollowAgainBtn"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(11) + 13.0f)},
+                                                    .padding = {10, 10, 0, 0},
+                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                         .backgroundColor = hovFollowAgain ? Pal::btnHover : Pal::panelBgFade,
+                                         .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
+                                         .floating = {.offset = {0.0f, 12.0f}, .zIndex = 6, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovFollowAgain);
+            sndClick(n, inp.lmbPressed);
+            hovFollowAgain = n;
+            clicked = n && inp.lmbPressed;
+            ui.tooltip(inp, n, againTip, fs(11));
+            Clay_String ls{false, (int32_t)strlen(againBuf), againBuf};
+            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+        captureLaidOut(ui, CLAY_ID("FollowAgainBtn"), inp.screenW * 0.5f - 150.0f, 12.0f, 300.0f, 30.0f);
+        if (clicked)
+        {
+            std::string m;
+            if (!followReturn(&m))
+            {
+                snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", m.c_str());
+                screenshotToastTimer = 3.0f;
+                screenshotToastWarn = true;
+            }
+            followAgainUntil = 0.0;
+        }
         return;
+    }
     static char distBuf[64];
     const double d = glm::length(followOffset);
     if (d < 1000.0)
@@ -2856,6 +2894,11 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
         static char stayTip[96];
         snprintf(stayTip, sizeof(stayTip), "Leave Go to and stay here, as a free observer (%s)",
                  keyDisplayName(keybindings[KB_FOLLOW_STAY].key));
+        static char retTip[112];
+        snprintf(retTip, sizeof(retTip), "Fly back to the default view of it, behind and above (%s)",
+                 keyDisplayName(keybindings[KB_FOLLOW_RETURN].key));
+        if (chipButton("FollowReturnBtn", "Return", hovFollowReturn, retTip))
+            followReturn();
         if (chipButton("FollowStayBtn", "Stay here", hovFollowStay, stayTip))
             stopFollowHere();
         if (chipButton("FollowExitBtn", "Exit", hovFollowExit, "Return to the ground where you were"))
@@ -6346,6 +6389,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {keybindings[KB_REPORT_NEW].action, KB_REPORT_NEW},
         {keybindings[KB_MISSIONS].action, KB_MISSIONS},
         {keybindings[KB_FOLLOW_STAY].action, KB_FOLLOW_STAY},
+        {keybindings[KB_FOLLOW_RETURN].action, KB_FOLLOW_RETURN},
         {keybindings[KB_TOGGLE_CURSOR].action, KB_TOGGLE_CURSOR},
     };
     struct AnalogRow

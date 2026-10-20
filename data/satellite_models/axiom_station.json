@@ -1,6 +1,6 @@
 {
-    "name": "Axiom Station (five modules)",
-    "note": "Parity model for the v1.1 'Axiom Station' type (370 m2 cross-section). Body frame: +X along velocity (the module stack), +Z nadir. Four 11 m modules and an airlock in a line. Two array wings on a cross-track mast above the stack turn about it to face the Sun. LOW CONFIDENCE: a future station known from renders and press dimensions.",
+    "name": "Axiom Station (free-flying, five modules)",
+    "note": "Station art pass 2026-10-20 (tools/make_station_models.py), after Axiom's renders: universal modules ~11 x 4.2 m with a curved body-mounted solar panel over the zenith half of the hull, in a line along velocity (PPTM forward, Hab-1, Hab-2, the RMF with its glass Earth Observatory), the Airlock on Hab-1's port radial port; the PPTM carries two ISS-style flexible (Kapton) wings on masts that turn about the cross-track axis, and the RMF radiators turned edge-on to the Sun. Body frame: +X along velocity, +Z nadir. Detail: ports, a docked Dragon, a Canadarm-class arm, dishes.",
     "materials": [
         {
             "name": "module_skin",
@@ -9,6 +9,56 @@
             "roughness": 0.6,
             "color": [0.9, 0.9, 0.88],
             "pattern": "panel_seams"
+        },
+        {
+            "name": "radiator",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.8,
+            "roughness": 0.5,
+            "color": [0.95, 0.95, 0.95],
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "cells",
+            "preset": "solar_cell"
+        },
+        {
+            "name": "flex_cells",
+            "preset": "solar_cell_flex"
+        },
+        {
+            "name": "flex_back",
+            "preset": "solar_array_flex_back"
+        },
+        {
+            "name": "lattice",
+            "preset": "truss",
+            "coverage": 0.3,
+            "truss_pitch": 1.2
+        },
+        {
+            "name": "metal",
+            "preset": "aluminum",
+            "diffuse_albedo": 0.2,
+            "roughness": 0.3,
+            "color": [0.7, 0.7, 0.72]
+        },
+        {
+            "name": "glass",
+            "preset": "black_paint",
+            "diffuse_albedo": 0.02,
+            "roughness": 0.05,
+            "color": [0.05, 0.07, 0.09]
+        },
+        {
+            "name": "gold",
+            "preset": "mli_foil",
+            "color": [0.95, 0.72, 0.3]
+        },
+        {
+            "name": "dragon_white",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.75
         }
     ],
     "attitude_groups": [
@@ -27,133 +77,662 @@
             "name": "arrays",
             "parent": "station",
             "hinge": {
-                "position": [0, 0, -2.7],
-                "axis": [0, 1, 0]
+                "position": [0, 0, 0],
+                "axis": [0.0, 1.0, 0.0]
             },
             "joint": {
                 "mode": "track",
-                "vector": [0, 0, -1],
+                "vector": [0.0, 0.0, -1.0],
+                "target": "sun"
+            }
+        },
+        {
+            "name": "radiators",
+            "parent": "station",
+            "hinge": {
+                "position": [0, 0, 0],
+                "axis": [0, 1, 0]
+            },
+            "joint": {
+                "mode": "edge_on",
+                "vector": [0, 0, 1],
                 "target": "sun"
             }
         }
     ],
     "components": [
         {
+            "name": "axiom_pptm_seg0",
+            "type": "profile",
+            "profile": [[0.0, 1.4], [0.6, 2.1]],
+            "position": [6.0, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "bottom",
+            "material": "module_skin",
+            "group": "station"
+        },
+        {
             "name": "axiom_pptm",
-            "type": "cylinder",
+            "type": "profile",
+            "profile": [[0.0, 2.1], [9.8, 2.1]],
+            "position": [6.6, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "module_skin",
+            "group": "station"
+        },
+        {
+            "name": "axiom_pptm_seg2",
+            "type": "profile",
+            "profile": [[0.0, 2.1], [0.6, 1.4]],
+            "position": [16.4, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "top",
+            "material": "module_skin",
+            "group": "station"
+        },
+        {
+            "name": "axiom_pptm_band",
+            "type": "profile",
+            "profile": [[0.0, 2.14], [0.3, 2.14]],
+            "position": [11.35, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "metal",
             "group": "station",
-            "radius": 2.1,
-            "height": 11.0,
-            "position": [19.8, 0, 0],
-            "rotation_deg": [0, 90, 0],
-            "material": "module_skin"
+            "render_only": true
+        },
+        {
+            "name": "axiom_hab1_seg0",
+            "type": "profile",
+            "profile": [[0.0, 1.4], [0.6, 2.1]],
+            "position": [-5.5, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "bottom",
+            "material": "module_skin",
+            "arc_material": "cells",
+            "arc_deg": [270, 450],
+            "group": "station"
         },
         {
             "name": "axiom_hab1",
-            "type": "cylinder",
+            "type": "profile",
+            "profile": [[0.0, 2.1], [9.8, 2.1]],
+            "position": [-4.9, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "module_skin",
+            "arc_material": "cells",
+            "arc_deg": [270, 450],
+            "group": "station"
+        },
+        {
+            "name": "axiom_hab1_seg2",
+            "type": "profile",
+            "profile": [[0.0, 2.1], [0.6, 1.4]],
+            "position": [4.9, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "top",
+            "material": "module_skin",
+            "arc_material": "cells",
+            "arc_deg": [270, 450],
+            "group": "station"
+        },
+        {
+            "name": "axiom_hab1_band",
+            "type": "profile",
+            "profile": [[0.0, 2.14], [0.3, 2.14]],
+            "position": [-0.15, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "metal",
             "group": "station",
-            "radius": 2.1,
-            "height": 11.0,
-            "position": [8.4, 0, 0],
-            "rotation_deg": [0, 90, 0],
-            "material": "module_skin"
+            "render_only": true
+        },
+        {
+            "name": "axiom_hab2_seg0",
+            "type": "profile",
+            "profile": [[0.0, 1.4], [0.6, 2.1]],
+            "position": [-17.0, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "bottom",
+            "material": "module_skin",
+            "arc_material": "cells",
+            "arc_deg": [270, 450],
+            "group": "station"
         },
         {
             "name": "axiom_hab2",
-            "type": "cylinder",
-            "group": "station",
-            "radius": 2.1,
-            "height": 11.0,
-            "position": [-3.0, 0, 0],
-            "rotation_deg": [0, 90, 0],
-            "material": "module_skin"
+            "type": "profile",
+            "profile": [[0.0, 2.1], [9.8, 2.1]],
+            "position": [-16.4, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "module_skin",
+            "arc_material": "cells",
+            "arc_deg": [270, 450],
+            "group": "station"
         },
         {
-            "name": "axiom_lab",
-            "type": "cylinder",
+            "name": "axiom_hab2_seg2",
+            "type": "profile",
+            "profile": [[0.0, 2.1], [0.6, 1.4]],
+            "position": [-6.6, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "top",
+            "material": "module_skin",
+            "arc_material": "cells",
+            "arc_deg": [270, 450],
+            "group": "station"
+        },
+        {
+            "name": "axiom_hab2_band",
+            "type": "profile",
+            "profile": [[0.0, 2.14], [0.3, 2.14]],
+            "position": [-11.65, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "metal",
             "group": "station",
-            "radius": 2.1,
-            "height": 11.0,
-            "position": [-14.4, 0, 0],
-            "rotation_deg": [0, 90, 0],
-            "material": "module_skin"
+            "render_only": true
+        },
+        {
+            "name": "axiom_rmf_seg0",
+            "type": "profile",
+            "profile": [[0.0, 1.4], [0.6, 2.1]],
+            "position": [-28.5, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "bottom",
+            "material": "module_skin",
+            "arc_material": "cells",
+            "arc_deg": [270, 450],
+            "group": "station"
+        },
+        {
+            "name": "axiom_rmf",
+            "type": "profile",
+            "profile": [[0.0, 2.1], [9.8, 2.1]],
+            "position": [-27.9, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "module_skin",
+            "arc_material": "cells",
+            "arc_deg": [270, 450],
+            "group": "station"
+        },
+        {
+            "name": "axiom_rmf_seg2",
+            "type": "profile",
+            "profile": [[0.0, 2.1], [0.6, 1.4]],
+            "position": [-18.1, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "top",
+            "material": "module_skin",
+            "arc_material": "cells",
+            "arc_deg": [270, 450],
+            "group": "station"
+        },
+        {
+            "name": "axiom_rmf_band",
+            "type": "profile",
+            "profile": [[0.0, 2.14], [0.3, 2.14]],
+            "position": [-23.15, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
         },
         {
             "name": "axiom_airlock",
             "type": "cylinder",
-            "group": "station",
             "radius": 1.5,
             "height": 5.0,
-            "position": [-22.8, 0, 0],
-            "rotation_deg": [0, 90, 0],
-            "material": "module_skin"
+            "position": [0.0, -5.0, 0.0],
+            "rotation_quat": [-0.5, -0.5, -0.5, 0.5],
+            "caps": true,
+            "material": "module_skin",
+            "group": "station"
         },
         {
-            "name": "array_port",
+            "name": "pptm_wing_s_a",
             "type": "plane",
+            "size": [3.4, 20.0],
+            "position": [13.55, 13.5, 0.0],
+            "rotation_quat": [0.0, 0.0, 1.0, 0.0],
+            "material": "flex_cells",
+            "back_material": "flex_back",
             "group": "arrays",
-            "size": [7.0710678118654755, 21.213203435596427],
-            "position": [0, -13.107, -2.7],
-            "rotation_deg": [180, 0, 0],
-            "material": "solar_cell",
-            "back_material": "solar_array_back"
+            "pivot": [11.5, 0.0, 0.0]
         },
         {
-            "name": "array_starboard",
+            "name": "pptm_wing_s_b",
             "type": "plane",
+            "size": [3.4, 20.0],
+            "position": [9.45, 13.5, 0.0],
+            "rotation_quat": [0.0, 0.0, 1.0, 0.0],
+            "material": "flex_cells",
+            "back_material": "flex_back",
             "group": "arrays",
-            "size": [7.0710678118654755, 21.213203435596427],
-            "position": [0, 13.107, -2.7],
-            "rotation_deg": [180, 0, 0],
-            "material": "solar_cell",
-            "back_material": "solar_array_back"
+            "pivot": [11.5, 0.0, 0.0]
+        },
+        {
+            "name": "pptm_wing_s_mast",
+            "type": "box",
+            "size": [0.35, 21.75, 0.35],
+            "position": [11.5, 13.0, 0.0],
+            "material": "lattice",
+            "group": "arrays",
+            "render_only": true,
+            "pivot": [11.5, 0.0, 0.0]
+        },
+        {
+            "name": "pptm_wing_s_box_root",
+            "type": "box",
+            "size": [7.5, 0.5, 0.5],
+            "position": [11.5, 3.2, 0.0],
+            "material": "gold",
+            "group": "arrays",
+            "render_only": true,
+            "pivot": [11.5, 0.0, 0.0]
+        },
+        {
+            "name": "pptm_wing_s_box_tip",
+            "type": "box",
+            "size": [7.5, 0.5, 0.5],
+            "position": [11.5, 23.75, 0.0],
+            "material": "gold",
+            "group": "arrays",
+            "render_only": true,
+            "pivot": [11.5, 0.0, 0.0]
+        },
+        {
+            "name": "pptm_wing_p_a",
+            "type": "plane",
+            "size": [3.4, 20.0],
+            "position": [13.55, -13.5, 0.0],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "material": "flex_cells",
+            "back_material": "flex_back",
+            "group": "arrays",
+            "pivot": [11.5, 0.0, 0.0]
+        },
+        {
+            "name": "pptm_wing_p_b",
+            "type": "plane",
+            "size": [3.4, 20.0],
+            "position": [9.45, -13.5, 0.0],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "material": "flex_cells",
+            "back_material": "flex_back",
+            "group": "arrays",
+            "pivot": [11.5, 0.0, 0.0]
+        },
+        {
+            "name": "pptm_wing_p_mast",
+            "type": "box",
+            "size": [0.35, 21.75, 0.35],
+            "position": [11.5, -13.0, 0.0],
+            "material": "lattice",
+            "group": "arrays",
+            "render_only": true,
+            "pivot": [11.5, 0.0, 0.0]
+        },
+        {
+            "name": "pptm_wing_p_box_root",
+            "type": "box",
+            "size": [7.5, 0.5, 0.5],
+            "position": [11.5, -3.2, 0.0],
+            "material": "gold",
+            "group": "arrays",
+            "render_only": true,
+            "pivot": [11.5, 0.0, 0.0]
+        },
+        {
+            "name": "pptm_wing_p_box_tip",
+            "type": "box",
+            "size": [7.5, 0.5, 0.5],
+            "position": [11.5, -23.75, 0.0],
+            "material": "gold",
+            "group": "arrays",
+            "render_only": true,
+            "pivot": [11.5, 0.0, 0.0]
+        },
+        {
+            "name": "radiator_s",
+            "type": "plane",
+            "size": [3.6, 10.0],
+            "position": [-23.0, 7.7, 0.0],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "material": "radiator",
+            "back_material": "radiator",
+            "group": "radiators",
+            "pivot": [-23.0, 0.0, 0.0]
+        },
+        {
+            "name": "radiator_s_yoke",
+            "type": "box",
+            "size": [0.3, 0.7, 0.3],
+            "position": [-23.0, 2.45, 0.0],
+            "material": "metal",
+            "group": "radiators",
+            "render_only": true,
+            "pivot": [-23.0, 0.0, 0.0]
+        },
+        {
+            "name": "radiator_p",
+            "type": "plane",
+            "size": [3.6, 10.0],
+            "position": [-23.0, -7.7, 0.0],
+            "rotation_quat": [0.0, 0.0, 0.0, 1.0],
+            "material": "radiator",
+            "back_material": "radiator",
+            "group": "radiators",
+            "pivot": [-23.0, 0.0, 0.0]
+        },
+        {
+            "name": "radiator_p_yoke",
+            "type": "box",
+            "size": [0.3, 0.7, 0.3],
+            "position": [-23.0, -2.45, 0.0],
+            "material": "metal",
+            "group": "radiators",
+            "render_only": true,
+            "pivot": [-23.0, 0.0, 0.0]
+        },
+        {
+            "name": "port_fwd",
+            "type": "profile",
+            "profile": [[0.0, 0.75], [0.7, 0.75]],
+            "position": [17.0, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "top",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "port_fwd_ring",
+            "type": "profile",
+            "profile": [[0.0, 0.87], [0.12, 0.87]],
+            "position": [17.58, 0.0, 0.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "both",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "dragon_trunk",
+            "type": "profile",
+            "profile": [[0.0, 1.85], [2.8, 1.85]],
+            "position": [24.15, 0.0, 0.0],
+            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
+            "caps": "bottom",
+            "material": "dragon_white",
+            "arc_material": "cells",
+            "arc_deg": [0, 180],
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "dragon_capsule",
+            "type": "profile",
+            "profile": [[0.0, 1.95], [0.15, 1.95], [2.4, 1.25], [2.9, 0.95], [3.3, 0.55]],
+            "position": [21.35, 0.0, 0.0],
+            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
+            "caps": "top",
+            "material": "dragon_white",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "dragon_nose",
+            "type": "profile",
+            "profile": [[0.0, 0.55], [0.35, 0.45]],
+            "position": [18.05, 0.0, 0.0],
+            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
+            "caps": "top",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "port_aft",
+            "type": "profile",
+            "profile": [[0.0, 0.75], [0.7, 0.75]],
+            "position": [-28.5, 0.0, 0.0],
+            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
+            "caps": "top",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "port_aft_ring",
+            "type": "profile",
+            "profile": [[0.0, 0.87], [0.12, 0.87]],
+            "position": [-29.08, 0.0, 0.0],
+            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
+            "caps": "both",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "port_zenith_0",
+            "type": "profile",
+            "profile": [[0.0, 0.65], [0.4, 0.65]],
+            "position": [0.0, 0.0, -2.1],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "caps": "top",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "port_zenith_0_ring",
+            "type": "profile",
+            "profile": [[0.0, 0.77], [0.12, 0.77]],
+            "position": [0.0, 0.0, -2.38],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "caps": "both",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "port_nadir_0",
+            "type": "profile",
+            "profile": [[0.0, 0.65], [0.4, 0.65]],
+            "position": [0.0, 0.0, 2.1],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "top",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "port_nadir_0_ring",
+            "type": "profile",
+            "profile": [[0.0, 0.77], [0.12, 0.77]],
+            "position": [0.0, 0.0, 2.38],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "both",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "port_zenith_1",
+            "type": "profile",
+            "profile": [[0.0, 0.65], [0.4, 0.65]],
+            "position": [-11.5, 0.0, -2.1],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "caps": "top",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "port_zenith_1_ring",
+            "type": "profile",
+            "profile": [[0.0, 0.77], [0.12, 0.77]],
+            "position": [-11.5, 0.0, -2.38],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "caps": "both",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "port_nadir_1",
+            "type": "profile",
+            "profile": [[0.0, 0.65], [0.4, 0.65]],
+            "position": [-11.5, 0.0, 2.1],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "top",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "port_nadir_1_ring",
+            "type": "profile",
+            "profile": [[0.0, 0.77], [0.12, 0.77]],
+            "position": [-11.5, 0.0, 2.38],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "both",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "earth_observatory",
+            "type": "profile",
+            "profile": [[0.0, 1.5], [0.5, 1.45], [1.0, 1.15], [1.35, 0.6], [1.5, 0.0]],
+            "position": [-23.0, 0.0, 1.9],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": false,
+            "material": "glass",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "arm_boom_1",
+            "type": "box",
+            "size": [7.0, 0.35, 0.35],
+            "position": [-9.5, 2.5, -1.2],
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "arm_boom_2",
+            "type": "box",
+            "size": [0.35, 0.35, 3.0],
+            "position": [-13.0, 2.5, -2.6],
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "hga_mast",
+            "type": "cylinder",
+            "radius": 0.06,
+            "height": 1.0,
+            "position": [8.0, 0.0, -2.6],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "caps": true,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "hga",
+            "type": "profile",
+            "profile": [[0.0, 0.08], [0.036, 0.27], [0.096, 0.48], [0.15, 0.6]],
+            "position": [8.0, 0.0, -3.1],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "caps": false,
+            "material": "metal",
+            "inner_material": "dragon_white",
+            "group": "station",
+            "render_only": true
         }
     ],
     "sources": [
         {
-            "subject": "attitude",
-            "status": "estimate",
-            "value": "flown like the ISS (XVV)",
-            "source": "Unpublished."
-        },
-        {
-            "subject": "station",
-            "status": "estimate",
-            "value": "modules stacked along velocity",
-            "source": "estimate: Axiom's first module (PPTM) 'will be 11 meters long and 4.2 meters in diameter' (Axiom, via press); 'at least five modules' (Wikipedia, 'List of commercial space stations'); the others are drawn at the PPTM size"
-        },
-        {
-            "subject": "arrays",
-            "status": "estimate",
-            "value": "both wings on one cross-track axis, tracking the Sun",
-            "source": "Unpublished; the ISS scheme."
-        },
-        {
+            "status": "sourced",
+            "value": "modules 11 x 4.2 m (Hab-1's published size, the others assumed equal); curved cells over the zenith half of Hab-1, Hab-2 and the RMF (layout from the renders)",
+            "source": "Wikipedia 'Axiom Station': PPTM (power/thermal, 'ISS-equivalent' solar array), Hab-1 ~11 m long and 4.2 m wide with four radial ports, Airlock, Hab-2 (with a Canadarm-class arm), RMF with the glass Earth Observatory; axiomspace.com renders: universal modules with curved body-mounted solar panels over half the hull, ISS-style flexible (Kapton) wings on the power module",
             "subjects": [
                 "axiom_pptm",
                 "axiom_hab1",
                 "axiom_hab2",
-                "axiom_lab",
-                "axiom_airlock"
-            ],
-            "status": "estimate",
-            "value": "axiom_pptm 11.0 x 4.2 m, axiom_hab1 11.0 x 4.2 m, axiom_hab2 11.0 x 4.2 m, axiom_lab 11.0 x 4.2 m, axiom_airlock 5.0 x 3.0 m",
-            "source": "estimate: Axiom's first module (PPTM) 'will be 11 meters long and 4.2 meters in diameter' (Axiom, via press); 'at least five modules' (Wikipedia, 'List of commercial space stations'); the others are drawn at the PPTM size"
+                "axiom_rmf",
+                "axiom_pptm_seg0",
+                "axiom_pptm_seg2",
+                "axiom_hab1_seg0",
+                "axiom_hab1_seg2",
+                "axiom_hab2_seg0",
+                "axiom_hab2_seg2",
+                "axiom_rmf_seg0",
+                "axiom_rmf_seg2"
+            ]
         },
         {
+            "status": "estimate",
+            "value": "airlock 5 x 3 m on Hab-1's port radial port",
+            "source": "Wikipedia 'Axiom Station': PPTM (power/thermal, 'ISS-equivalent' solar array), Hab-1 ~11 m long and 4.2 m wide with four radial ports, Airlock, Hab-2 (with a Canadarm-class arm), RMF with the glass Earth Observatory; axiomspace.com renders: universal modules with curved body-mounted solar panels over half the hull, ISS-style flexible (Kapton) wings on the power module",
+            "subject": "axiom_airlock"
+        },
+        {
+            "status": "estimate",
+            "value": "two flexible wings of two 3.4 x 20 m Kapton blankets (272 m2)",
+            "source": "Axiom: the PPTM's arrays give 'ISS-equivalent' power; ISS-style wings in the renders; sizes estimated.",
             "subjects": [
-                "array_port",
-                "array_starboard"
-            ],
-            "status": "estimate",
-            "value": "two 7.1 x 21.2 m wings, 300 m2",
-            "source": "Unpublished; sized to the v1.1 type's 370 m2."
+                "pptm_wing_s_a",
+                "pptm_wing_s_b",
+                "pptm_wing_p_a",
+                "pptm_wing_p_b"
+            ]
         },
         {
-            "subject": "module_skin",
             "status": "estimate",
-            "value": "white exterior (albedo 0.6)",
-            "source": "Unpublished reflectance."
+            "value": "two 3.6 x 10 m radiators on the RMF, edge-on to the Sun",
+            "source": "Radiators not published; placement and size estimated.",
+            "subjects": [
+                "radiator_s",
+                "radiator_p"
+            ]
+        },
+        {
+            "status": "estimate",
+            "value": "station flown XVV like the ISS; wings turn about their long axes to face the Sun",
+            "source": "Unpublished; the ISS scheme.",
+            "subjects": [
+                "station",
+                "arrays",
+                "radiators"
+            ]
+        },
+        {
+            "status": "estimate",
+            "value": "white beta-cloth / MMOD blanket exterior (albedo 0.6), panel seams for the shield panels; white (Z-93-class) radiator coating; rigid solar array, cells under cover glass; flexible (ISS-style) array, cells on a Kapton blanket; flexible array's Kapton back (translucent); open aluminium truss; bare metal fittings; window glass; gold MLI; Dragon's white paint",
+            "source": "Liveries from the operator's renders; reflectance from the presets.",
+            "subjects": [
+                "module_skin",
+                "radiator",
+                "cells",
+                "flex_cells",
+                "flex_back",
+                "lattice",
+                "metal",
+                "glass",
+                "gold",
+                "dragon_white"
+            ]
         }
     ]
 }
