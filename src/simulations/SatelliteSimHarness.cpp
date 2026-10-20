@@ -2462,6 +2462,25 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = msg;
             return Status::Done;
         }
+        if (sub == "ships")
+        {
+            r["ships"] = launchShipsJson();
+            r["message"] = std::to_string(r["ships"].size()) + " landing ships at sea";
+            return Status::Done;
+        }
+        if (sub == "droneship")
+        {
+            // launch droneship [lead=60] [dist_m=1500] [az=60] [h=5] [day=1|night=1] [vehicle=falcon9|new_glenn]: the next
+            // booster landing on a ship (2026-10-20): the clock lead s before touchdown at 1x, the observer dist_m from
+            // the ship toward az (clockwise from its bow) h m above the sea, looking just above the deck.
+            std::string msg;
+            const int dn = c.num("day", 0.0) > 0.5 ? 1 : c.num("night", 0.0) > 0.5 ? -1 : 0;
+            if (!launchGoToShipLanding(c.num("lead", 60.0), c.num("dist_m", 1500.0), c.num("az", 60.0), c.num("h", 5.0),
+                                       dn, c.str("vehicle", ""), msg))
+                fail("launch droneship: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
         if (sub == "pads")
         {
             r["pads"] = launchPadsJson();

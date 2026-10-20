@@ -64,6 +64,21 @@ struct Vehicle
     double payloadBaseM = 0.0;
     glm::dvec3 fairingCenter{0.0}; // the +X fairing half's centre on the stage (its model's origin), stage frame
     double doorM = 31.1;
+    // Booster recovery at sea (2026-10-20, droneships): a "droneship" booster lands on a ship this far downrange (km;
+    // a short retrograde trim burn puts it there; 0 = wherever its ballistic arc and entry burn take it), and a
+    // launch whose payload is at most rtlsMaxKg flies back to its pad's landing zone instead (0 = never). The ships
+    // a launch may use (one picked per launch by hash among those allowed at its site; a downrange point on land
+    // means a landing on the ground there, no ship).
+    double droneDistKm = 0.0;
+    double rtlsMaxKg = 0.0;
+    struct LandingShip
+    {
+        std::string name;              // "A Shortfall of Gravitas"
+        std::string model;             // its render model: data/satellite_models/<model>.json (tools/make_ship_models.py)
+        double deckM = 3.0;            // the landing deck above the waterline (the booster's aft end comes to rest here)
+        std::vector<int> sites;        // the sites it serves (empty: every site of the vehicle)
+    };
+    std::vector<LandingShip> ships;
 };
 
 // How a program's satellites ride to orbit (2026-10-20, launches.json "stack"; tools/make_rocket_models.py derives
@@ -101,6 +116,9 @@ struct Program
     std::string spacecraft;          // "Crew Dragon", "Shenzhou", ...
     int people = 0;
     Stack stack;
+    // The mass a launch lifts (kg, the payload total; 2026-10-20): picks a reusable booster's recovery (Vehicle::rtlsMaxKg).
+    // < 0: unknown (a droneship).
+    double payloadMassKg = -1.0;
 };
 
 struct Catalog
@@ -135,7 +153,9 @@ struct Track
 
 // The booster's whole flight (ascent, boostback, entry and landing burns: ground-relative) and the upper stage's
 // ascent to its parking orbit at hPark (to t2).
-Track boosterTrack(const Vehicle &v);
+// recovery < 0: the vehicle's own; 2 (droneship) lands at v.droneDistKm downrange (or its ballistic point) on a
+// deck v.ships[0].deckM high (hLand < 0) or at hLand.
+Track boosterTrack(const Vehicle &v, int recovery = -1, double hLand = -1.0);
 Track upperTrack(const Vehicle &v, double hPark);
 
 // ── Orbit raising / lowering ─────────────────────────────────────────────────────────────────────
