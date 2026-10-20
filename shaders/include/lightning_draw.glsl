@@ -22,6 +22,18 @@ layout(std430, set = 0, binding = 0) readonly buffer BoltFlashBuf { BoltFlash bF
 layout(std430, set = 0, binding = 1) readonly buffer BoltSegBuf   { BoltSeg   bSeg[]; };
 layout(set = 0, binding = 2) uniform sampler2D cloudTargetA;   // a: signed cloud distance (km, cloud_occlusion.glsl)
 layout(set = 0, binding = 3) uniform sampler2D cloudTargetB;   // rgb: cloud transmittance
+// The engine lights (2026-10-20, mode 2): the half-res scene depth (m to the first terrain / ocean / mesh surface,
+// 1e30 for sky) and the dust list, whose tail after its 1024 entries holds the lights (SatelliteSim::engineLightAdd):
+//   c   xyz the light (ENU about the eye, m), w its intensity (suns x m^2, lifted at night)
+//   ia  rgb its colour (luminance 1), w the core radius r0 (m: 1 / (r^2 + r0^2))
+//   ib  xyz the vehicle's nose (unit), w the hull's length from the light (m; 0 = none)
+//   col x the hull's radius (m), y 1 = no light on the ground, z its reach (m)
+struct EngineLight { vec4 c; vec4 ia; vec4 ib; vec4 col; vec4 cone; };
+layout(set = 0, binding = 4) uniform sampler2D sceneDepthTex;
+layout(std430, set = 0, binding = 5) readonly buffer EngineLightBuf { uint elDustCount; uint elCount; uint elPad0, elPad1; EngineLight elList[]; };
+const uint kEngineLightBase = 1024u;   // == SatelliteSim::kMaxDustClouds
+// Fades a light out over the outer 40% of its reach (a hard cut drew its reach as a circle from orbit).
+float reachWin(float r2, float reach2) { return 1.0 - smoothstep(0.36 * reach2, reach2, r2); }
 
 // The air between the eye and a point at `range` (ENU about the eye): the transmittance of its column of air
 // (8 km scale height, ~0.15 optical depth per scale height in the visible), so a flash seen from orbit crosses only
