@@ -472,7 +472,15 @@ void main()
     if (mat.lattice.x < 1.0) {
         // Not optional detail (the Detail toggle keeps it): the gaps are the part's real geometry.
         float keep = latticeCover(mat);
-        float thr  = float(hashU(uvec3(uvec2(gl_FragCoord.xy), 977u)) & 0xFFFFu) / 65536.0;
+        // The threshold. In the main view with the sky TAA on (frame.marker0.y, 2026-10-20): interleaved gradient noise
+        // stepped by the golden ratio each frame (marker0.x), so the TAA averages a sub-pixel truss to its mean coverage
+        // (a catch tower from ~1 km, a booster's grid fins): with one fixed per-pixel hash the drawn pixels were a fixed
+        // speckle that swam and shimmered as the view moved. Elsewhere (the viewer's MSAA, TAA off) the fixed hash.
+        float thr;
+        if (frame.params.w > 1.5 && frame.marker0.y > 0.5)
+            thr = fract(fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) + frame.marker0.x);
+        else
+            thr = float(hashU(uvec3(uvec2(gl_FragCoord.xy), 977u)) & 0xFFFFu) / 65536.0;
         if (keep <= thr) discard;
     }
 #endif
@@ -620,10 +628,17 @@ void main()
     // (earthShC.w, the CPU's SatOrbitElems::engineGlow): from below, the engine cluster reads as a ring of lit
     // nozzles instead of a black disc. Far brighter than a sunlit face (the combustion seen down the bell), white
     // hot at the throat end, orange at the lip. Render-only parts: no bloom or glare share (photFrac 0).
+    // Its colour is held through the exposure (2026-10-20): at night the view's exposure is ~5x the day's, and the
+    // physical glow (orange at the lip, white-hot at the throat) saturated every channel to a white ring. Each channel
+    // is capped at what displays as orange (the lip) .. yellow-white (the throat) at this frame's exposure
+    // (frame.camPos.w, the sky's: 1 - exp(-x) of x = 2.0 / 0.7 / 0.18 is ~(0.86, 0.50, 0.16)).
     float engineGlow = fract(inst.earthShC.w) / 0.49; // (w's fraction: its integer part is the accel slot)
     if (engineGlow > 0.0 && mat.lattice.w > 0.5) {
         float throat = clamp(0.5 + 0.5 * dot(Ngeo, V), 0.0, 1.0); // looking up the bell: the hot end shows
-        L += engineGlow * mix(vec3(3.0, 1.3, 0.45), vec3(14.0, 10.0, 6.5), throat * throat);
+        float t2     = throat * throat;
+        vec3  phys   = mix(vec3(3.0, 1.3, 0.45), vec3(14.0, 10.0, 6.5), t2);
+        vec3  capD   = mix(vec3(2.0, 0.7, 0.18), vec3(3.2, 1.9, 0.9), t2);
+        L += engineGlow * min(phys, capD / max(frame.camPos.w, 1e-3));
     }
 
     // Scene output (4c): pre-exposure radiance (sat_sky.frag applies the atmosphere in front of it

@@ -4656,6 +4656,7 @@ void SatelliteSim::renderEnvProbe(VkCommandBuffer cmd, int slot, const glm::dvec
     envSlots[slot].rendered = true;
     envSlots[slot].posEcef = posEcef;
     envSlots[slot].renderedWall = glfwGetTime();
+    envSlots[slot].renderedSimT = (double)simDayJ2000 * 86400.0 + simSecInDay;
 }
 
 uint32_t SatelliteSim::assignEnvProbe(const glm::dvec3 &posEcef, int sat)
@@ -4744,6 +4745,9 @@ uint32_t SatelliteSim::nearestRenderedProbe(const glm::dvec3 &posEcef) const
 void SatelliteSim::renderScheduledEnvProbes(VkCommandBuffer cmd)
 {
     const double now = glfwGetTime();
+    const double simT = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    // (over 10 wall seconds of the current warp: running at a day a second is not a jump, and the 3-s refresh holds)
+    const double kEnvProbeSimJumpS = std::max(1800.0, 10.0 * (timePaused ? 0.0 : (double)kTimeScales[timeScaleIdx]));
     for (int n = 0; n < kEnvRendersPerFrame; ++n)
     {
         int best = -1;
@@ -4760,6 +4764,11 @@ void SatelliteSim::renderScheduledEnvProbes(VkCommandBuffer cmd)
             double score = !e.rendered ? 1e30 : drift / std::max(2000.0, 0.002 * alt);
             if (e.rendered && score < 1.0)
                 score = (now - e.renderedWall > 3.0) ? 0.5 : 0.0;
+            // A jump in sim time (a bookmark, Go to, a script's `time sun`) re-renders it whole, first among the
+            // rendered: refreshed a pair of faces at a time after 3 s of WALL time, a probe made by day lit a launch
+            // pad's tanks pale blue-white after a jump to night until it caught up (2026-10-20).
+            if (e.rendered && std::abs(simT - e.renderedSimT) > kEnvProbeSimJumpS)
+                score = 1e29;
             if (score > bestScore)
             {
                 bestScore = score;
@@ -4772,7 +4781,7 @@ void SatelliteSim::renderScheduledEnvProbes(VkCommandBuffer cmd)
         // threshold every few frames (7.6 km/s against a 2 km threshold, close up) does not pay for a
         // whole cube each frame. Its position counts as updated once all six have been redone.
         EnvProbeSlot &e = envSlots[best];
-        if (!e.rendered)
+        if (!e.rendered || std::abs(simT - e.renderedSimT) > kEnvProbeSimJumpS)
         {
             renderEnvProbe(cmd, best, e.wantEcef);
             e.faceCursor = 0;
@@ -5289,6 +5298,10 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     frame.moonDir = glm::vec4(glm::vec3(eciToEcef(glm::dvec3(moonDirECI))), moonGain * moonDirENU.w);
     frame.earthCenter = glm::vec4(glm::vec3(-obsEcef), (float)std::fmod(theta, glm::two_pi<double>()));
     frame.params = glm::vec4(1.0f, 1.0f, 1.0f, 2.0f); // shadows, reflections, detail, SCENE output
+    // Open lattices' coverage threshold (sat_mesh.frag): a golden-ratio step per frame while the sky TAA runs, so it
+    // averages a sub-pixel truss to its mean coverage (2026-10-20). marker0 is the viewer's; unused in the scene.
+    frame.marker0 = skyTaaWanted() ? glm::vec4(std::fmod(0.61803399f * (float)(skyTaaFrame % 1024u), 1.0f), 1.0f, 0.0f, 0.0f)
+                                   : glm::vec4(0.0f);
 
     // ── Sharp reflections: the largest instances with a mirror-smooth material ──────────────────
     // Each gets its mirror pixels' reflection rendered per pixel (sat_sky.frag SKY_REFL, from the

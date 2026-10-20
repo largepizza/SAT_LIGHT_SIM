@@ -12,6 +12,7 @@
 // records in kesslerBuf's launch block (sat_orbit.comp: LAUNCH_CAP), osculating elements of their state rewritten
 // as they move (a few tens of thousands at most). Rockets are point sprites in kFireBuf, their flames emissive
 // Gaussians and their exhaust scattering Gaussians in the dust list (cloud_march.comp).
+#include <chrono>
 #include "SatelliteSim.h"
 #include "Launches.h"
 #include "../Log.h"
@@ -24,6 +25,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstring>
+#include <fstream>
 #include <filesystem>
 
 namespace launchsim
@@ -258,6 +260,85 @@ double shoreDistCpu(double latDeg, double lonDeg)
     return v < 0.0 ? 0.0 : (v / 255.0 - 0.5) * 2.0 * kShoreSdfMaxM;
 }
 
+// A coast patch around coastal launch sites (2026-10-20, data/launch_coasts.json baked by tools/make_pad_coasts.py;
+// terrain_detail.glsl tdCoastPatch): a kCoastGridN^2 grid of the shore's signed distance (bytes, > 127.5 water) over
+// [-R, R]^2 metres east / north of its centre, rows south to north.
+struct LCoast
+{
+    std::string name;
+    glm::dvec3 g{1, 0, 0}, e{0, 1, 0}, n{0, 0, 1}; // centre (unit, Earth-fixed) and its east / north axes
+    double R = 6000.0;
+    glm::vec3 col{0.14f, 0.16f, 0.10f};
+    float floorM = 2.5f;
+    std::vector<uint8_t> grid;
+};
+constexpr double kCoastSdfMaxM = 3000.0; // == tools/make_pad_coasts.py SDF_MAX_M (terrain_detail.glsl kCoastSdfMaxM)
+
+static std::vector<uint8_t> base64Decode(const std::string &in)
+{
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    std::vector<uint8_t> out;
+    out.reserve(in.size() * 3 / 4);
+    uint32_t acc = 0;
+    int bits = 0;
+    for (char c : in)
+    {
+        const int v = val(c);
+        if (v < 0)
+            continue;
+        acc = (acc << 6) | (uint32_t)v;
+        bits += 6;
+        if (bits >= 8)
+        {
+            bits -= 8;
+            out.push_back((uint8_t)((acc >> bits) & 0xFFu));
+        }
+    }
+    return out;
+}
+
+// The coast patches' shore at an Earth-fixed unit direction u: their signed distance (m, > 0 water) and weight k
+// (the GPU's: 1 inside, fading out over the outer quarter; 0 = no patch). C1 bilinear as tdCoastPatch.
+static double coastPatchAt(const std::vector<LCoast> &cs, const glm::dvec3 &u, double &k)
+{
+    k = 0.0;
+    double dOut = 0.0;
+    for (const LCoast &c : cs)
+    {
+        if (glm::dot(u, c.g) < std::cos(1.5 * c.R / kR))
+            continue;
+        const glm::dvec3 d = (u - c.g) * kR;
+        const double px = glm::dot(d, c.e), py = glm::dot(d, c.n);
+        const double ax = std::abs(px) / c.R, ay = std::abs(py) / c.R;
+        const double ki = (1.0 - glm::smoothstep(0.72, 0.97, ax)) * (1.0 - glm::smoothstep(0.72, 0.97, ay));
+        if (ki <= k)
+            continue;
+        const int N = kCoastGridN;
+        const double gx = (px / c.R * 0.5 + 0.5) * N - 0.5, gy = (py / c.R * 0.5 + 0.5) * N - 0.5;
+        const double fx0 = std::floor(gx), fy0 = std::floor(gy);
+        double fx = gx - fx0, fy = gy - fy0;
+        fx = fx * fx * (3.0 - 2.0 * fx);
+        fy = fy * fy * (3.0 - 2.0 * fy);
+        auto at = [&](int x, int y) {
+            x = std::clamp(x, 0, N - 1);
+            y = std::clamp(y, 0, N - 1);
+            return (double)c.grid[(size_t)y * N + x];
+        };
+        const int x0 = (int)fx0, y0 = (int)fy0;
+        const double b = glm::mix(glm::mix(at(x0, y0), at(x0 + 1, y0), fx), glm::mix(at(x0, y0 + 1), at(x0 + 1, y0 + 1), fx), fy);
+        dOut = (b - 127.5) / 127.5 * kCoastSdfMaxM;
+        k = ki;
+    }
+    return dOut;
+}
+
 struct SlotInfo
 {
     uint64_t owner = 0; // batch key * 2 + kind, 0 = free
@@ -325,6 +406,7 @@ struct SatelliteSim::LaunchState
     // change (a breakup, the cascade reaching it, a rollback) rebuilds them (crewSync).
     std::vector<int32_t> crewDead;
     std::vector<LPad> pads;          // the launch pads (ensureCatalog)
+    std::vector<LCoast> coasts;      // the coast patches around coastal sites (data/launch_coasts.json)
     std::vector<int> sitePad;        // per catalog site: its pad
     uint64_t padMeshKey[16] = {};    // the pads drawn as meshes, per reserved slot (pad index + 1; 0 = free)
     uint32_t nRockets = 0, nTrain = 0, nRetire = 0, nPlumes = 0, nReentries = 0, nWrites = 0, nBatches = 0;
@@ -342,6 +424,15 @@ struct SatelliteSim::LaunchState
     uint64_t stackMeshKey[SatelliteSim::kStackMeshSlots] = {}; // per reserved slot: batch key ^ (member + 1) << 48
     uint32_t nStacked = 0, nFairings = 0;
     double lastFullFreeT = -1e300; // the last full pass over the batches (launchUpdate's freeing)
+    // CPU time per part (ms, eased over ~30 frames; harness `launch state` -> cpu_split_ms, 2026-10-20): 0 window walk,
+    // 1 live list, 2 freeing, 3 record writes, 4 the rest of launchUpdate, 5 pad lights, 6 the visuals' batch loop.
+    double prof[8] = {};
+    void profAdd(int i, std::chrono::steady_clock::time_point &t0)
+    {
+        const auto t1 = std::chrono::steady_clock::now();
+        prof[i] += (std::chrono::duration<double, std::milli>(t1 - t0).count() - prof[i]) / 30.0;
+        t0 = t1;
+    }
 
     const Track &upperTrackFor(int veh, double parkKm)
     {
@@ -430,7 +521,63 @@ static void ensureCatalog(SatelliteSim::LaunchState &L)
     if (L.loaded)
         for (const launch::Vehicle &v : L.cat.vehicles)
             L.booster.push_back(launch::boosterTrack(v));
+    loadCoasts(L);
     buildPads(L);
+}
+
+// The coast patches (data/launch_coasts.json next to the exe): optional; without the file the pads stand on the map.
+static void loadCoasts(SatelliteSim::LaunchState &L)
+{
+    L.coasts.clear();
+    const std::string path = (std::filesystem::path(Paths::exeDir()) / "launch_coasts.json").string();
+    std::ifstream f(path);
+    if (!f)
+    {
+        Log::line("launches: no launch_coasts.json (the pads' coasts are the water map's)");
+        return;
+    }
+    try
+    {
+        const nlohmann::json j = nlohmann::json::parse(f);
+        for (const auto &p : j.at("patches"))
+        {
+            LCoast c;
+            c.name = p.value("name", std::string());
+            const double la = glm::radians(p.at("lat").get<double>()), lo = glm::radians(p.at("lon").get<double>());
+            c.g = glm::dvec3(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la));
+            c.e = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), c.g));
+            c.n = glm::cross(c.g, c.e);
+            c.R = p.at("radius_m").get<double>();
+            const auto col = p.value("land_color", std::vector<float>{0.14f, 0.16f, 0.10f});
+            if (col.size() >= 3)
+                c.col = glm::vec3(col[0], col[1], col[2]);
+            c.floorM = p.value("land_floor_m", 2.5f);
+            c.grid = base64Decode(p.at("sdf_b64").get<std::string>());
+            if (p.value("grid_n", 0) != kCoastGridN || c.grid.size() != (size_t)kCoastGridN * kCoastGridN ||
+                std::abs(p.value("sdf_max_m", 0.0) - kCoastSdfMaxM) > 1e-6)
+            {
+                Log::line("launches: coast patch " + c.name + " has another grid size: skipped (re-run tools/make_pad_coasts.py)");
+                continue;
+            }
+            L.coasts.push_back(std::move(c));
+        }
+        Log::line("launches: " + std::to_string(L.coasts.size()) + " coast patches");
+    }
+    catch (const std::exception &e)
+    {
+        Log::line(std::string("launches: launch_coasts.json: ") + e.what());
+        L.coasts.clear();
+    }
+}
+
+// The water map's shore distance at a place, with the coast patches' shore mixed in (as tdDemAt does).
+static double shoreDistAt(const SatelliteSim::LaunchState &L, double latDeg, double lonDeg)
+{
+    const double map = shoreDistCpu(latDeg, lonDeg);
+    const double la = glm::radians(latDeg), lo = glm::radians(lonDeg);
+    double k = 0.0;
+    const double d = coastPatchAt(L.coasts, glm::dvec3(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la)), k);
+    return glm::mix(map, d, k);
 }
 
 // The pads: one per distinct place (sites within 150 m share one), its kind from the vehicles that fly from it (a
@@ -478,7 +625,7 @@ static void buildPads(SatelliteSim::LaunchState &L)
             auto shoreAt = [&](double az, double dist) {
                 const glm::dvec3 dir = std::cos(az) * north + std::sin(az) * east;
                 const glm::dvec3 q = glm::normalize(pd.g + dir * (dist / kR));
-                return shoreDistCpu(glm::degrees(std::asin(glm::clamp(q.z, -1.0, 1.0))), glm::degrees(std::atan2(q.y, q.x)));
+                return shoreDistAt(L, glm::degrees(std::asin(glm::clamp(q.z, -1.0, 1.0))), glm::degrees(std::atan2(q.y, q.x)));
             };
             double hr = glm::radians(head);
             if (std::isnan(st.padHeadingDeg) && shoreAt(hr + glm::pi<double>(), 1500.0) > -200.0)
@@ -517,9 +664,12 @@ static void buildPads(SatelliteSim::LaunchState &L)
                     const glm::dvec3 dir = std::cos(a) * pd.u + std::sin(a) * pd.v;
                     const glm::dvec3 q = glm::normalize(pd.g + dir * (kLzDistM / kR));
                     const double la = glm::degrees(std::asin(glm::clamp(q.z, -1.0, 1.0))), lo = glm::degrees(std::atan2(q.y, q.x));
-                    const double d = shoreDistCpu(la, lo);
-                    // Dry land: not water, and above the sea's level (land at 0 m is drawn as water).
-                    if (d < best && demElevCpu(la, lo) > 1.0)
+                    const double d = shoreDistAt(L, la, lo);
+                    // Dry land: not water, and above the sea's level (land at 0 m is drawn as water) or in a coast
+                    // patch (its land is lifted, tdDemAt).
+                    double ck = 0.0;
+                    coastPatchAt(L.coasts, q, ck);
+                    if (d < best && (demElevCpu(la, lo) > 1.0 || ck > 0.99))
                     {
                         best = d;
                         pd.lz = true;
@@ -2261,6 +2411,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     LaunchImpl::crewSync(*this, L);
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     std::vector<std::pair<uint64_t, LBatch *>> touchedP;
+    auto pt = std::chrono::steady_clock::now();
     if (on)
     {
         // Batches that matter now: from before the launch to the last retiree's re-entry.
@@ -2301,6 +2452,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             }
         }
     }
+    L.profAdd(0, pt);
     // (2026-10-20: the batches by pointer: Starmind's eight-a-launch trains made ~5000 live batches, and the hash
     // lookups over them each frame cost ~0.5 ms.)
     std::sort(touchedP.begin(), touchedP.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
@@ -2313,6 +2465,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     }
     L.live = touched;
     L.nBatches = (uint32_t)touched.size();
+    L.profAdd(1, pt);
     // GPU chunks: a batch holds the train's while any member climbs, the retirees' while any falls.
     std::vector<VkBufferCopy> copies;
     char *stage = static_cast<char *>(L.stageMapped);
@@ -2400,6 +2553,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         else
             ++it;
     }
+    L.profAdd(2, pt);
     // Writes: members coming up first, then the stalest. A record is rewritten every ~20 s of sim time (the GPU
     // carries it on as a Kepler orbit meanwhile: the climb's drift over 20 s is under a metre).
     const double tEpoch = (double)orbitEpochDay * 86400.0 + orbitEpochSec;
@@ -2528,7 +2682,9 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         if (nb)
             L.cursor = (L.cursor + 97) % nb;
     }
+    L.profAdd(3, pt);
     L.active = std::any_of(L.slots.begin(), L.slots.end(), [](const SlotInfo &s) { return s.shown; });
+    L.profAdd(4, pt);
     if (copies.empty())
         return;
     vkCmdCopyBuffer(cmd, L.stage, kesslerBuf, (uint32_t)copies.size(), copies.data());
@@ -2674,10 +2830,18 @@ void SatelliteSim::launchSlotEndedSelection(uint32_t slot)
 // ── Visuals: rockets, flames, plumes, re-entries ────────────────────────────────────────────────
 void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull)
 {
+    auto pt = std::chrono::steady_clock::now();
     launchFillPadLights(); // the pads' lights at night, whether or not anything flies (2026-10-19)
     if (!launchState || !launchesEnabled || !kFireMapped)
         return;
     LaunchState &L = *launchState;
+    L.profAdd(5, pt);
+    struct ProfEnd
+    {
+        LaunchState &L;
+        std::chrono::steady_clock::time_point &pt;
+        ~ProfEnd() { L.profAdd(6, pt); }
+    } profEnd{L, pt};
     L.nRockets = L.nPlumes = L.nReentries = 0;
     L.nFairings = 0;
     L.plumeDbg.clear();
@@ -2727,6 +2891,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         return miss < kR - R;
     };
     std::vector<Cand> plumes;
+    double plumeMs = 0.0;
     const double nightBoost = 1.0 + 9.0 * (1.0 - dayness);
     const double pixA = ctx_ ? 2.0 * std::tan(0.5 * glm::radians((double)camera.fovYDeg)) /
                                    (double)std::max(1u, ctx_->swapExtent.height)
@@ -3198,6 +3363,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // about an hour: building one costs a few ms, and at a day a second a dozen launches pass each second).
         if (launchPlumeGain <= 0.0f || tau < 0.0)
             continue;
+        struct PlumeTimer
+        {
+            double &acc;
+            std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+            ~PlumeTimer() { acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); }
+        } plumeTimer{plumeMs};
         if (!B.parcelsBuilt)
         {
             const bool fast = !timePaused && kTimeScales[timeScaleIdx] > 3600.0f;
@@ -3439,6 +3610,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             }
         }
     }
+    L.prof[7] += (plumeMs - L.prof[7]) / 30.0;
     // The plumes: the brightest per pixel of sky first, as many as fit.
     if (!plumes.empty())
     {
@@ -3488,6 +3660,8 @@ nlohmann::json SatelliteSim::launchStateJson() const
     j["free_chunks"] = L.freeChunks.size();
     j["slots_shown"] = std::count_if(L.slots.begin(), L.slots.end(), [](const SlotInfo &x) { return x.shown; });
     j["life_scale"] = launchLifeScale;
+    j["cpu_split_ms"] = {{"window", L.prof[0]}, {"live_list", L.prof[1]}, {"freeing", L.prof[2]}, {"writes", L.prof[3]},
+                         {"active_scan", L.prof[4]}, {"pad_lights", L.prof[5]}, {"visuals", L.prof[6]}, {"plumes", L.prof[7]}};
     {
         const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
         const glm::dvec3 eyeE = glm::normalize(glm::dvec3(obsDir)) * (kR + std::max((double)obsTerrainH + 2.0, (double)obsHeightOffset));
@@ -5781,7 +5955,9 @@ bool SatelliteSim::launchGoToKey(uint64_t key, bool moveObserver, double leadS, 
             const glm::dvec3 u = glm::normalize(c);
             const float la = (float)glm::degrees(std::asin(glm::clamp(u.z, -1.0, 1.0)));
             const float lo = (float)glm::degrees(std::atan2(u.y, u.x));
-            if (cpuTerrainHeightM(la, lo) > 10.0f)
+            double ck = 0.0;
+            const double cd = coastPatchAt(L.coasts, u, ck); // (2026-10-20) a coast patch's land counts (DEM 0 there)
+            if (cpuTerrainHeightM(la, lo) > 10.0f || (ck > 0.99 && cd < -300.0))
             {
                 g = u;
                 break;
@@ -6105,6 +6281,7 @@ static glm::dvec3 padPointEcef(const LPad &p, double u, double v, double h)
 void SatelliteSim::launchFillPadParams(GpuCloudParams &cp)
 {
     cp.padInfo = glm::vec4(0.0f);
+    cp.coastInfo = glm::vec4(0.0f);
     if (!launchPadGraphics || !launchState)
         return;
     LaunchState &L = *launchState;
@@ -6145,6 +6322,27 @@ void SatelliteSim::launchFillPadParams(GpuCloudParams &cp)
     }
     const double dayness = glm::clamp(((double)sunDirENU.w + 0.1) / 0.3, 0.0, 1.0);
     cp.padInfo = glm::vec4((float)n, 1.0f, (float)(1.0 - dayness), (float)nFlat);
+    // The coast patches within 400 km (nearest first): their grids go to the GPU whole (tdCoastPatch).
+    std::vector<C> cc;
+    for (size_t c = 0; c < L.coasts.size(); ++c)
+    {
+        const double d2 = glm::dot(L.coasts[c].g - up, L.coasts[c].g - up) * R * R;
+        if (d2 < 400e3 * 400e3)
+            cc.push_back({(int)c, d2});
+    }
+    std::sort(cc.begin(), cc.end(), [](const C &a, const C &b) { return a.d2 < b.d2 || (a.d2 == b.d2 && a.p < b.p); });
+    const int nc = std::min((int)cc.size(), kMaxCoastPatchesGpu);
+    for (int k = 0; k < nc; ++k)
+    {
+        const LCoast &co = L.coasts[cc[k].p];
+        cp.coastC[k] = glm::vec4(glm::vec3(toEnu(co.g) * R - glm::dvec3(0.0, 0.0, R)), (float)co.R);
+        cp.coastE[k] = glm::vec4(glm::vec3(toEnu(co.e)), 0.0f);
+        cp.coastN[k] = glm::vec4(glm::vec3(toEnu(co.n)), 0.0f);
+        cp.coastCol[k] = glm::vec4(co.col, co.floorM);
+        std::memcpy(reinterpret_cast<uint8_t *>(cp.coastG) + (size_t)k * kCoastGridN * kCoastGridN, co.grid.data(),
+                    (size_t)kCoastGridN * kCoastGridN);
+    }
+    cp.coastInfo = glm::vec4((float)nc, 0.0f, 0.0f, 0.0f);
 }
 
 // Each pad's lights (u, v, height m, kind: 0 flood, 1 red beacon (blinking), 2 landing-zone flood).

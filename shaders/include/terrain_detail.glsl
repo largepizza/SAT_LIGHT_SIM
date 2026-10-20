@@ -215,6 +215,59 @@ float tdShoreOffset(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 wm) {
     float n = tdNoised(rel / 1024.0, (anchor << 1) + kSalt).x;
     return n * kTdShoreNoiseM;
 }
+// Coasts around launch sites (2026-10-20, data/launch_coasts.json baked by tools/make_pad_coasts.py; the nearest
+// COAST_MAX patches in cloud.coast*, launchFillPadParams). The water map's ~5 km texels cannot hold the narrow land
+// and water around most coastal pads (Boca Chica's strip between the Gulf and its bay, the Cape's barrier island
+// between the Atlantic and the Banana River), and the DEM reads 0 m on that land: the pads stood on islands in what
+// was drawn as sea. Inside a patch the shoreline is the patch's own signed distance grid (Natural Earth 10 m, every
+// pad's graded disc forced to land, ~250-420 m cells), blended back to the map over its outer edge; tdDemAt lifts its
+// land to at least the patch's floor (coastCol.w: land at 0 m reads like the sea) and sat_sky.frag gives it the
+// patch's ground colour where the 5-km day map shows water. Returns the distance (m, > 0 water), k the patch's
+// weight (0 outside every patch), ci its index, pOut the point in its east / north metres.
+#ifndef SKY_LITE
+const float kCoastSdfMaxM = 3000.0;   // == tools/make_pad_coasts.py SDF_MAX_M
+float tdCoastByte(int pi, ivec2 c) {
+    int   idx = (pi * COAST_GRID_N + c.y) * COAST_GRID_N + c.x;
+    uvec4 v   = cloud.coastG[idx >> 4];
+    uint  w   = v[(idx >> 2) & 3];
+    return float((w >> (8u * uint(idx & 3))) & 255u);
+}
+float tdCoastPatch(vec3 q, out float k, out int ci, out vec2 pOut) {
+    k = 0.0;
+    ci = -1;
+    pOut = vec2(0.0);
+    float dOut = 0.0;
+    int n = int(cloud.coastInfo.x + 0.5);
+    [[dont_unroll]] for (int i = 0; i < n; ++i) {
+        vec3  d = q - cloud.coastC[i].xyz;
+        float R = cloud.coastC[i].w;
+        if (dot(d, d) > 2.0 * R * R + 2.5e7) continue;              // (5 km of height above the sea point)
+        vec2  p  = vec2(dot(d, cloud.coastE[i].xyz), dot(d, cloud.coastN[i].xyz));
+        vec2  a  = abs(p) / R;
+        float ki = (1.0 - smoothstep(0.72, 0.97, a.x)) * (1.0 - smoothstep(0.72, 0.97, a.y));
+        if (ki <= k) continue;
+        // C1 bilinear (the fraction smoothstep-remapped): plain bilinear drew the shore as straight chords.
+        vec2  g  = (p / R * 0.5 + 0.5) * float(COAST_GRID_N) - 0.5;
+        vec2  fl = floor(g), f = g - fl;
+        f = f * f * (3.0 - 2.0 * f);
+        ivec2 c0 = clamp(ivec2(fl), ivec2(0), ivec2(COAST_GRID_N - 1));
+        ivec2 c1 = clamp(ivec2(fl) + 1, ivec2(0), ivec2(COAST_GRID_N - 1));
+        float b  = mix(mix(tdCoastByte(i, c0), tdCoastByte(i, ivec2(c1.x, c0.y)), f.x),
+                       mix(tdCoastByte(i, ivec2(c0.x, c1.y)), tdCoastByte(i, c1), f.x), f.y);
+        dOut = (b - 127.5) / 127.5 * kCoastSdfMaxM;
+        k    = ki;
+        ci   = i;
+        pOut = p;
+    }
+    return dOut;
+}
+// The water map texel(s) wm with a coast patch's shore mixed in (k, its distance d): r the distance, g the sea's level.
+vec2 tdCoastWm(vec2 wm, float k, float d) {
+    if (k <= 0.0) return wm;
+    return vec2(0.5 + 0.5 * mix((wm.r - 0.5) * 2.0 * kShoreSdfMaxM, d, k) / kShoreSdfMaxM,
+                mix(max(wm.g, 15.0 / 255.0), 15.0 / 255.0, k));
+}
+#endif
 // Launch pads (2026-10-19, SatelliteSimLaunches.cpp launchFillPadParams): the ground under a pad is graded flat
 // to its plateau height (cloud.padAux.x, read from the DEM on the CPU — the tower and the rocket on the mount stand
 // on the same height), over its flattened radius and blending back to the terrain over the same distance again,
@@ -262,13 +315,22 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
         h0 = max(0.0, textureLod(elevTex, uv, 0.0).r * kElevRange - kElevOffset);
     }
     hMip3 = max(0.0, textureLod(elevTex, uv, 3.0).r * kElevRange - kElevOffset);
+    float cK = 0.0, cD = 0.0;
+#ifndef SKY_LITE
+    if (cloud.coastInfo.x > 0.5) {
+        int  cI;
+        vec2 cP;
+        cD = tdCoastPatch(q, cK, cI, cP);
+        if (cK > 0.0) h0 = max(h0, cloud.coastCol[cI].w * cK);   // its land never at the sea's level
+    }
+#endif
     // The water map (terrain.glsl waterAdjustHeight): a water texel is its body's flat level (0 = sea),
     // marked by hMip3 = kTdWaterMark so the detail stays off it (tdAmp0) and a hit can tell it from
     // land. It only changes anything within a few km of a shore, so a coarse probe first: mip 2 of the
     // distance field is 0 only where every texel around is > ~15 km from water (the land side is 0
     // only at the field's full scale) — the old mask was fetched only below 160 m, and fetching the
     // map on every height evaluation cost up to ~1.7 ms at ground level in the Alps.
-    if ((cloud.dbgDisableMask & 4194304u) == 0u && textureLod(specTex, uv, 2.0).r > 0.0) {   // knockout "water_map"
+    if ((cloud.dbgDisableMask & 4194304u) == 0u && (textureLod(specTex, uv, 2.0).r > 0.0 || cK > 0.0)) {   // knockout "water_map"
         vec2 wm = textureLod(specTex, uv, 0.0).rg;
         // Near the observer AND the shore, filtered by hand like the DEM: hardware filtering's 8-bit
         // weights step the shoreline every ~20 m.
@@ -281,8 +343,12 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
             wm = mix(mix(texelFetch(specTex, ivec2(x0, y0), 0).rg, texelFetch(specTex, ivec2(x1, y0), 0).rg, f.x),
                      mix(texelFetch(specTex, ivec2(x0, y1), 0).rg, texelFetch(specTex, ivec2(x1, y1), 0).rg, f.x), f.y);
         }
+        // A coast patch's shore, at the sea's level; the coves' noise x0.3 there (+-700 m would swallow its strips).
+#ifndef SKY_LITE
+        wm = tdCoastWm(wm, cK, cD);
+#endif
         bool water;
-        h0 = waterAdjustHeight(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wm), water);
+        h0 = waterAdjustHeight(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wm) * (1.0 - 0.7 * cK), water);
         if (water) hMip3 = kTdWaterMark;
     }
 #ifndef SKY_LITE

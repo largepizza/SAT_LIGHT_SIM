@@ -1,0 +1,255 @@
+{
+ "format": "sat-light-sim-launch-coasts/1",
+ "source": "Natural Earth 10 m land + lakes (public domain), baked by tools/make_pad_coasts.py",
+ "note": "sdf_b64: grid_n x grid_n bytes, rows south to north, columns west to east, over [-R, R]^2 metres east / north of (lat, lon); d = (byte - 127.5) / 127.5 x sdf_max_m, > 0 water",
+ "patches": [
+  {
+   "name": "Starbase, Texas",
+   "sites": [
+    "starbase"
+   ],
+   "lat": 25.997,
+   "lon": -97.155,
+   "radius_m": 6000,
+   "land_color": [
+    0.3,
+    0.27,
+    0.2
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "AAAAAAAAAAAAAAAAAAAAAAIMFyEsNkFLVmBrdX+KlJ+ptL7J093o8v3/////////AAAAAAAAAAAAAAAAAAAAAAALFR8qND9JVF5pc32Ikp2nsrzH0dzm8Pv/////////AAAAAAAAAAAAAAAAAAAAAAAJEx4oMj1HUlxncXyGkJulsLrFz9rk7vn/////////AAAAAAAAAAAAAAAAAAAAAAAHERwmMDtFUFplb3qEj5mjrrjDzdji7ff/////////AAAAAAAAAAAAAAAAAAAAAAAFDxokLzlDTlhjbXiCjZehrLbBy9bg6/X/////////AAAAAAAAAAAAAAAAAAAAAAADDRgiLTdCTFZha3aAi5WgqrS/ydTe6fP+////////AAAAAAAAAAAAAAAAAAAAAAABCxYgKzVASlRfaXR+iZOeqLO9x9Lc5/H8////////AAAAAAAAAAAAAAAAAAAAAAAACRQeKTM+SFNdZ3J8h5GcprG7xdDa5e/6////////AAAAAAAAAAAAAAAAAAAAAAAABxIcJzE8RlFbZnB6hY+apK+5xM7Y4+34////////AAAAAAAAAAAAAAAAAAAAAAAABhAaJS86RE9ZZG54g42Yoq23wszX4ev2////////BgAAAAAAAAAAAAAAAAAAAAAABA4ZIy04Qk1XYmx3gYuWoKu1wMrV3+r0/v//////DQYAAAAAAAAAAAAAAAAAAAAAAgwXISs2QEtVYGp1f4qUnqmzvsjT3ejy/f//////FQwDAAAAAAAAAAAAAAAAAAAAAAoVHyo0PklTXmhzfYiSnaeyvMbR2+bw+///////GxIJAAAAAAAAAAAAAAAAAAAAAAgTHSgyPUdSXGZxe4aQm6WwusXP2uXv+v//////IRcOCQUAAAAAAAAAAAAAAAAAAAYRGyYwO0ZQW2Vwe4WQmqWwusXP2uXv+v//////JRwXEw4KBQEAAAAAAAAAAAAAAAcRHCcxPEZRXGZxe4aRm6awu8bQ2+Xw+///////KiUhHBgUDwsGAgAAAAAAAAAAAAcSHScyPEdSXGdxfIeRnKaxvMbR2+bx+///////My8qJiIdGRQQDAcCAAAAAAAAAAgTHSgzPUhSXWhyfYeSnaeyvMfS3Ofx/P//////PTg0MCsnIh4aFRALBAAAAAAAAAkTHikzPkhTXmhzfYiTnaiyvcjS3efy/f//////R0I+OTUwLCgjHxkTDQYAAAAAAAkUHyk0PklUXml0fomTnqmzvsjT3ujz/f//////UExHQz86NjEtKCIcFQ4IAQAAAAoVHyo1P0pUX2p0f4mUn6m0vsnU3unz/v//////WlVRTUhEPzs2MSskHRcQCgMAAAsVICs1QEpVYGp1f4qVn6q0v8rU3+r0////////ZF9bVlJNSUVAOjMsJh8ZEgsDAQwWISs2QUtWYGt2gIuVoKu1wMrV4Or1////////bWlkYFxXU05IQjs1LighGhIKAgwXISw3QUxWYWx2gYuWoau2wMvW4Ov1////////d3JuamVhXFdRSkQ9NjApIRkRCA0YIi03Qk1XYmx3goyXoay3wczW4ez2////////gXx4c29qZmBZU0xFPzgwKCAXDg4YIy04Q01YYm14go2Xoq23wszX4uz3////////ioaBfXl0b2hhW1RORz83LiUcEw4ZIy45Q05YY254g46Yo624w83Y4u34////////lI+Lh4J+d3BqY11WTkY9NCsiGRAaJC85RE9ZZG55hI6Zo665w87Y4+74////////npmVkIyGf3lybGVdVUtCOTAnHhUaJS86RU9aZG96hI+ZpK+5xM7Z5O75////////p6OempWOiIF6dGxjWlFIPzYtJBsbJjA7RVBbZXB6hZCapa+6xc/a5O/6////////sayopJ2XkImDe3JpYFdORDsyKSAcJjE7RlFbZnB7hpCbpbC7xdDa5fD6////////u7ayrKWfmJKJgHduZVxTSkE4LyUcJzI8R1FcZ3F8hpGcprG7xtHb5vD7////////xMC7tK6noZiPhn10a2JZUEY9MyofKDI9R1JdZ3J8h5Kcp7G8x9Hc5vH8////////zsnDvbawp56Vi4J5cGdeVUtBNy0iKDM9SFNdaHJ9iJKdqLK9x9Ld5/L8////////2NLMxb61rKOakYh/dm1jWE5EOS8kKTQ+SVNeaXN+iJOeqLO9yNPd6PL9////////4dvUzcS7sqmgl46Eem9lW1BGOzEnKjU/SlRfaXR/iZSeqbS+ydPe6fP+////////6uPc0snAt66lm5GGfHJnXVJIPjMpKzVAS1VganV/ipWfqrS/ytTf6fT/////////8urh2M/GvbKonZOJfnRqX1VKQDYrLDZBS1Zha3aAi5Wgq7XAytXg6vX/////////+fDn3tTJv7SqoJWLgXZsYVdNQjgtLDdCTFdhbHeBjJahrLbBy9bg6/b//////////vXr4NbLwbesopiNg3huZFlPRTowLThCTVhibXeCjZeirLfCzNfh7Pb///////////ft4tjOw7mvpJqPhXtwZlxRRzwyLjlDTlhjbniDjZijrbjCzdji7ff///////////rv5drQxruxppySh31zaF5TST40LzlET1lkbnmEjpmjrrnDztjj7vj///////////zx593SyL6zqZ6UiX90al9VSj81MDpFT1plb3qEj5qkr7nEz9nk7vn///////////706d/Vyr+1qqCVioB1a2BWS0A2MDtGUFtlcHuFkJqlsLrFz9rl7/r/////////9vr16+DWy8C2q6GWi4F2bGFXTEE3MTxGUVxmcXuGkZumsLvG0Nvl8Pv/////////7PD17OHXzMG3rKKXjIJ3bWJYTUI4Mz1HUlxncnyHkZynsbzG0dzm8fv/////////4ufs7eLYzcK4raOYjoN4bmNZTkM5NUBKVF5pc32Ikp2nsr3H0tzn8vz/////////2N3j6ePZzsO5rqSZj4R5b2RaT0Q6OENNV2FrdoCKlJ+ps77I093o8v3/////////"
+  },
+  {
+   "name": "Starbase Louisiana A-1",
+   "sites": [
+    "louisiana_a1",
+    "louisiana_a2",
+    "louisiana_b1",
+    "louisiana_b2",
+    "louisiana_c1",
+    "louisiana_c2",
+    "louisiana_d1",
+    "louisiana_d2",
+    "louisiana_e1",
+    "louisiana_e2"
+   ],
+   "lat": 29.573,
+   "lon": -92.412,
+   "radius_m": 10000,
+   "land_color": [
+    0.12,
+    0.15,
+    0.08
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9+fby7+3t/////////////////////////////////////////////////Pn28u/r6OXh3tvb//////////////////////////////////////////z59fLu6+jk4d3a19PQzMrJ///////////////////////////////////8+PXy7uvn5ODd2tbTz8zJxcK+u7i4////////////////////////////+/j18e7q5+Tg3dnW0s/MyMXBvru3tLCtqqam//////////////////////v49PHt6ufj4NzZ1tLPy8jFwb66t7Owrammop+cmJWU//////////////779/Tx7erm49/c2dXSzsvIxMG9urezsKyppqKfm5iUkY6Kh4OD/////vv49vTx7+3p5uPf3NjV0s7Lx8TAvbq2s6+sqaWinpuYlJGNioaDgHx5dXJx9PLv7Onn5eLg3dvY1dHOysfEwL25trOvrKiloZ6bl5SQjYqGg398eXVybmtnZGFf4+Dd29jV09HOzMrHw8C8ubayr6uopaGempeTkI2JhoJ/fHh1cW5rZ2RgXVpWU09O0c/MycbEwb+9uri1sq6rqKShnZqXk5CMiYaCf3t4dHFuamdjYF1ZVlJPTEhFQT48wL26uLWysK6rqaakoJ2alpOPjImFgn57eHRxbWpnY2BcWVVST0tIREE+OjczMC0qrqyppqOhnpyal5WTj4yIhYF+e3d0cG1qZmNfXFlVUk5LR0RBPTo2MzAsKSUiHxsYnZqXlZKPjYqIhoOBfnp3c3BtaWZiX1xYVVFOS0dEQD06NjMvLCglIh4bFxQRDQoHi4mGg4F+e3l2dHJvbGlmYl9bWFRRTkpHQ0A9OTYyLywoJSEeGhcUEA0JBgMAAAAAend1cm9samdlY2BeW1hUUU1KR0NAPDk1Mi8rKCQhHhoXExANCQYCAAAAAAAAAAAAaWZjYF5bWFZTUU9MSkZDPzw5NTIuKyckIR0aFhMQDAkFAgAAAAAAAAAAAAAAAAAAV1RST0xJR0RCPz07ODUxLisnJCAdGhYTDwwIBQIAAAAAAAAAAAAAAAAAAAAAAAAARkNAPTs4NTMwLiwpJyMgHRkWEg8MCAUBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAANDEvLCkmJCEfHBoYFRIPCwgEAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIyAdGhgVEhANCwgGBAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEg4MCQYDAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGCwwMCAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABCBAXHB4dGRIJAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgoRGCAnLTAvKiIZDwYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  {
+   "name": "Kennedy LC-39A, Florida",
+   "sites": [
+    "ksc_39a",
+    "ccsfs_slc37",
+    "ccsfs_slc40",
+    "ccsfs_slc41"
+   ],
+   "lat": 28.571,
+   "lon": -80.58275,
+   "radius_m": 10000,
+   "land_color": [
+    0.11,
+    0.14,
+    0.08
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "AAESIjJDU2NzhJSktMXV5dfFtKORgG9dTDspGB8uPUxbanmHlqW0w9Hg8P//////AAALGys8TFxsfY2drb3O3trJuKaVhHJhUD4tHCY3R1Zlc4KRoK+9zNvq+f//////AAAEFCQ1RVVldYaWprbH197Nu6qZh3ZlU0IxHyw9TV5ufYybqrjH1uX0////////AAAADR0tPk5ebn+Pn6+/0ODQv62ci3loV0U0IzFCU2R1hZaks8LR4O/9////////AAAABhYmN0dXZ3eImKi4ydnUwrGgjn1sWkk4JjdIWGl6i5ytvczb6fj/////////AAAAAA8fL0BQYHCBkaGxwtLXxrWjkoFvXk07LDxNXm+AkKGyw9Tk8///////////AAAAAAgYKDlJWWl6ipqqusvbyrinloRzYVA+MUJTZHSFlqe4yNnq+///////////AAAAAAERITJCUmJyg5Ojs8TUzLqol4VzYlA+N0hYaXqLnKy9zt/w////////////AAAAAAAKGio7S1trfIycrLzNzLqpl4V0YlA/PE1eb4CQobLD1OT1////////////AAAAAAADEyM0RFRkdIWVpbXGzbupl4Z0YlE/QlNjdIWWp7jI2er7////////////AAAAAAAADBwsPU1dbX6Onq6/zbupmIZ0Y1E/R1hpeoubrL3O3/D/////////////AAAAAAAABRUlNkZWZneHl6e3yLuqmIZ1Y1FATV5vf5ChssPT5PX/////////////AAAAAAAAAA4eLz9PX2+AkKCwwbyqmId1Y1JCUmN0hZant8jZ6vv/////////////AAAAAAAAAAcXJzhIWGh5iZmpuryqmYd1ZFJHWGl6ipusvc7f7///////////////BQAAAAAAAAAQIDFBUWFygpKitLyrmYd2ZFJNXm5/kKGywtPk9f//////////////CgAAAAAAAAAJGSo6SlprfI6fsL2rmYh2ZFNSY3SFlqa3yNnq+v//////////////EAAAAAAAAAACEiIzRVZoeYqcrb2rmoh2ZVNYaXmKm6y9zt7v////////////////FQQAAAAAAAAADR8wQlNkdoeZqryqmYd2ZFNdbn+QobHC0+T1////////////////Gw8FAAAAAAAAChwtPlBhc4SWp7mnloRzYVJjdIWVprfI2en6////////////////Jx4VDAIAAAAABxkqO01ecIGTpLWkk4FwX1hoeYqbrL3N3u//////////////////Ni0kGxIIAAAABBUnOEpbbX6PobKikH9tXGBwf5CgscLT5PX/////////////////RTwzKiEXDAIAARIkNUdYaXuMnq+fjXxqWWl4iJent8jY6fr/////////////////VEtCOTAlGhAFAA8hMkRVZniJm6yci3loYnGBkKCvv87e7///////////////////ZFtRSD4zKR4TCRcnN0dXZ3eHmKqZiHZla3qKmai4x9fm9v//////////////////c2phV0xBNywiFx8vP09fbn6OnqiWhXNkc4OSorHB0N/v/v//////////////////gnlvZVpQRTowJSc3R1dmdoaWpqWUgnFtfIubqrrJ2ej3////////////////////kYh+c2heU0k+NS8/T15ufo6erqKRf251gY+gscLS4fH/////////////////////oJaMgXdsYVdNRj5HVmZ2hpamsJ+OfW56fI2esMLT5ff/////////////////////oqOaj4V6cGVdVk9OXm5+jp6uqpmIeHeGipWjtMXW5/j/////////////////////kZKTl5OIfnRtZmBfZnaGlqa1pJOCcoCPmqKuvMvb7P3/////////////////////f4CBhoyRjIR9dnJxcH6Onq2uno19eYiYp7G7x9Tj8///////////////////////bW5wdnuFl5WOh4SDgoaWpaqelod3gpGgsL/J0+Dt+///////////////////////XF1fZXGDlaWel5WUk5SerZ+Rhn17ipqpucjX4uz5////////////////////////SktQYXOElqimn5+goqOjnZeIeHSDk6KywdHg8Pr/////////////////////////OD9RY3SGmKGWjo2PkJKTjIaAdXqJmqu6ytnp+P//////////////////////////L0FSZHaHmZOIfnt9foCCfHZwdoWTobDB0uLx////////////////////////////MEFTZHaHjYR6b2prbW5wa2Vvf46drLrI2Oj5////////////////////////////LT9QYnN7e3VsYVhaW11eW2h4h5emtsXS4fD/////////////////////////////KjtLWmZpamZdVElISktSYnGAkJ+vvs7d6/n/////////////////////////////JDNBTlVXWFZNRTs2PEtbanqJmai3x9bm9f//////////////////////////////Gyg1PkRGRkU+NSw1RVRjc4KSobHA0N/u/v//////////////////////////////DxwmLjM0NTMuJi4+TV1sfIuaqrnJ2Oj3////////////////////////////////Aw4XHSEiIyIeKDdGVmV1hJSjs8LR4fD/////////////////////////////////AAAHDBARERQjMUBPX259jZysu8va6vn/////////////////////////////////AAAAAAACEB8tPEpZZ3eGlqW0xNPj8v//////////////////////////////////AAAAAAAMGik3RlRjcYCPnq69zdzr+///////////////////////////////////AAAAAAgWJTNCUF5te4qYp7bG1eX0////////////////////////////////////AAAAAxIgLz1MWml3hpSjscDO3u39////////////////////////////////////"
+  },
+  {
+   "name": "Cape Canaveral LC-36, Florida",
+   "sites": [
+    "ccsfs_lc36"
+   ],
+   "lat": 28.472,
+   "lon": -80.538,
+   "radius_m": 6000,
+   "land_color": [
+    0.11,
+    0.14,
+    0.08
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "VUtHTFRcZGx0fYaQmaKrtL7Ex8zS2ODn7/j/////////////////////////////WE1DRU1VXWZveIGKlJ2mr7i6vsPJ0djg6fH5////////////////////////////Wk9FPkZOV2Bpc3yFjpehq62wtLrCydLa4ury+v//////////////////////////XFJHPT9JUltkbXeAiZOdoaOmq7O6w8vT2+Pr8/v/////////////////////////XlRJPzpDTFZfaHJ8hpCVl5mdo6y0vMTM1Nzk7PT8////////////////////////YFZLQTc+R1BaZG54goiKjI6UnaWttb3FzdXd5e31/f//////////////////////YlhOQzk5Q01XYWt1fH6AgoWOlp6mrra+xs7W3ubu9v7/////////////////////ZVpQRTs1P0lTXWZucXN1d3+Hj5efp6+3v8fP19/n7/f/////////////////////Z1xSSD0zPEVPWF9lZ2lrcHiAiJCYoKiwuMDI0Njg6PD5////////////////////aV9USj81N0BJUFZaXF5haXF5gYmRmaGpsbnBydHZ4erz/f//////////////////a2FWTEI3MTpBSE1QUlRaYmpyeoKKkpqiqrK6wsrT3OXu+P//////////////////bWNZTkQ5LzI5P0NGSEtTW2Nrc3uDi5Obo6uzu8TN1+Dq8/z/////////////////b2VbUEY7MSowNTk7PURMVFxkbHR8hIyUnKSstb/I0tvl7vj/////////////////cmddUkg+MyknKy8xNT1FTVVdZW11fYWNlZ6nsbrDzdbg6fP8////////////////dGlfVUpANSshISQmLjY+Rk5WXmZudn6Gj5mirLW/yNLb5O73////////////////dmxhV0xCOC0jGBofJy83P0dPV19nb3iBipSdp7C6w83W4Onz/P//////////////eG5jWU9EOi8lGxAYICgwOEBIUFhgaXN8ho+Zoqu1vsjR2+Tu9///////////////enBmW1FGPDInHRIRGSEpMTlBSVJbZG53gYqUnaewusPM1t/p8vz/////////////fXJoXVNJPjQpHxUKEhoiKjI6Q01WYGlzfIWPmKKrtb7I0dvk7vf/////////////f3RqX1VLQDYrIRcMCxMbIys1PkhRW2Rud4GKlJ2msLnDzNbf6fL8////////////gXZsYldNQjguIxkOBAwUHScwOkNMVl9pcnyFj5iiq7W+x9Ha5O74////////////g3luZFlPRTowJRsRBgUPGCIrNT5IUVtkbXeAipOdprC5w8zW4Or1////////////hXtwZlxRRzwyKB0TCAEKEx0mMDlDTFZfaXJ8hY6Yoau1v8nT3ujz/f//////////h31zaF5TST80Kh8VCwAFDxgiKzQ+R1FaZG13gIqTnaeyvMfS3Ofx/P//////////in91amBWS0E2LCIXDQILExwlLjdASVJaY2x1foeSnKexvMfR3Obx/P//////////jIF3bWJYTUM5LiQZDwcQGSIrND1GT1dgaXJ7hI2Wn6mzvcjS3efy/P//////////joN5b2RaT0U7MCYbEQ0WHygxOkNLVF1mb3iBipObpK23wMrU3+nz/v//////////kIZ7cWZcUkc9MigeExMcJS43QEhRWmNsdX6Hj5ihqrO8xc7Y4uz2////////////koh9c2leVEk/NSogFRkiKzQ8RU5XYGlye4SMlZ6nsLnCy9Td5vD6////////////lIqAdWtgVkxBNywiGB0nMDlCS1RdZm94gYmSm6Sttr/I0Nni6/T+////////////l4yCd21jWE5DOS8kGiErNT9IUVpjbHV9ho+YoaqzvMXN1t/o8fr/////////////mY6Eem9lWlBGOzEmHCQuOEJNVmBpcnqDjJWep7C5wcrT3OXu9///////////////m5GGfHFnXVJIPTMpHigyPEZQWmRud4CJkpukrba+x9DZ4uv0/f//////////////nZOIfnNpX1RKPzUrISs1P0lTXWdyfIaPmKGqsrvEzdbf6PH6////////////////n5WKgHZrYVZMQjctJC44QkxXYWt1f4mTnaevuMHK09zl7vb/////////////////oZeNgnhtY1lORDkvJzI8RlBaZG54goyWoau1vsfQ2eLr8/z/////////////////pJmPhHpwZVtQRjwxKzU/SVNdZ3F7hpCapK64wszW3+fw+f//////////////////ppuRh3xyZ11TSD4zLjhCTFZha3V/iZOdp7G7xdDa5O32////////////////////qJ6TiX50al9VSj81MTxGUFpkbniCjJagq7W/ydPd5/H7////////////////////qp+VioB1amBVSkA1NT9JU11ncXuFkJqkrrjCzNbg6vT/////////////////////qqCVioB1a2BVS0A1OEJMVmBrdX+Jk52nsbvFz9rk7vj/////////////////////qqCVi4B1a2BVS0A2O0ZQWmRueIKMlqCqtb/J093n8fv/////////////////////q6CVi4B2a2BWS0A2P0lTXWdxe4WPmqSuuMLM1uDq9P7/////////////////////q6CWi4B2a2BWS0E4QkxWYGp1f4mTnaexu8XP2eTu+P//////////////////////q6CWi4F2a2FWS0E7RVBaZG54goyWoKq0v8nT3efx+///////////////////////q6GWi4F2a2FWTEE/SVNdZ3F7hY+ZpK64wszW4Or0/v//////////////////////q6GWjIF2bGFWTEFCTFZganR/iZOdp7G7xc/Z4+74////////////////////////rKGWjIF2bGFXTEFFT1pkbniCjJagqrS+ydPd5/H7////////////////////////"
+  },
+  {
+   "name": "Vandenberg SLC-4E, California",
+   "sites": [
+    "vandenberg_slc4e",
+    "vandenberg_slc6"
+   ],
+   "lat": 34.6065,
+   "lon": -120.6185,
+   "radius_m": 8917,
+   "land_color": [
+    0.2,
+    0.19,
+    0.13
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "///////////////////////////89/X09ff4+vv9/fju5dvSycK9uLOuqaOakomB/////////////////////////fTt6OXk5ufp6uvt7evi2M/FvLOuqaSfmpWNhXxz///////////////////////78eff2dXU1tfZ2tzd3dzVzMK5r6afmpWQi4aAd29m//////////////////////nu5NrRysbFxsjJy8zNzczIv7aso5mQi4aBfHdyamFZ////////////////////9+zi2M7Eu7a1tri5u7y+vry7sqmfloyDfHdybWhjXVRM///////////////////16uDWzMK4rqelp6iqq62urq2rppyTiYB2bWhjXllUT0c+//////////////////bq3tTKwLasopiVl5iam52enp2bmZCGfXNqYFlUT0pFQDkx////////////////++3g08i+tKqglouGh4mKjI2Pjo2MioN5cGddVEpFQDs2MSwk////////////////8+XYyr2yqJ6TiX92eHl6fH1/f318e3ZtY1pQRz42MSwnIh0W///////////////5697QwrSnnJGHfXNpaGlrbG5vb25sa2lgV01EOjEnIh0YEw4I///////////////x49bIuq2fkYV7cWddWFpbXF5fX15dW1pTSkE3LiQbEw4JBAAA//////////////jq3M7AsqWXiXxvZVtRSEpLTU5QT05NS0pGPTQrIRgOBQAAAAAA//////////////Pk1ca4q52PgnRmWU9FOzo8PT9AQD49PDo3MCceFAsBAAAAAAAA//////////////Dg0cKyo5WHemxeUUM4LiosLS8wMC8tLCsoIhsRCAAAAAAAAAAA////////////++zdzb6vn5CBcmRWSTstIhscHh8hIB8eHBsYFA0FAAAAAAAAAAAA////////////+OjZyrqrm4x9bV5PQTMlGAwMDg8REQ8ODQsJBQAAAAAAAAAAAAAA////////////9OXVxranmIh5alpLPCweEAIAAAABAQAAAAAAAAAAAAAAAAAAAAAA////////////8uPTw7OklIV1ZldHOCkZCgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA////////////8+PUxLSllod4aVpLPCwdDgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA////////////9ubXyLmqm4x9bV5PQDEiEwQAAAAAAAAAAAAAAAAAAAAAAAAAAAAA////////////+uvczb6un5CBcmNURTYnGAkAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//////////////Dg0cKzpJWGd2hZSjssHQ4AAAAAAAAAAAAAAAAAAAAAAAAAAAAA//////////////Tl1se4qZqKfG1eT0AxIhMEAAAAAAAAAAAAAAAAAAAAAAAAAAAA//////////////nq28u8rZ+QgXJjVEU2JxgJAAAAAAAAAAAAAAAAAAAAAAAAAAAA//////////////3u39DCs6SVhndoWUo7LR4PAAAAAAAAAAAAAAAAAAAAAAAAAAAA///////////////05dbHuKmai3xtXlBBMiMUBQAAAAAAAAAAAAAAAAAAAAAAAAAA///////////////56tvMva6fkIFzZFVGNygZCgAAAAAAAAAAAAAAAAAAAAAAAAAA///////////////+7+DRwrOklod4aVpLPC0eDwEAAAAAAAAAAAAAAAAAAAAAAAAA////////////////9OXWyLmqm4x9bl9QQTIkFQcAAAAAAAAAAAAAAAAAAAAAAAAA////////////////+evczb6voJGCc2RVRzgqGw0AAAAAAAAAAAAAAAAAAAAAAAAA//////////////////Dh0sO0pZaHeWpcTT8wIhMFAAAAAAAAAAAAAAAAAAAAAAAA//////////////////Xm18i5qpyNf3BiVEU3KBoLAAAAAAAAAAAAAAAAAAAAAAAA//////////////////rr3M6/saKUhXdoWks9LiARAwAAAAAAAAAAAAAAAAAAAAAA///////////////////x4tTFt6majH1vYFJDNSYYCQAAAAAAAAAAAAAAAAAAAAAA///////////////////36drMva+gkoN1ZlhJOyweDwEAAAAAAAAAAAAAAAAAAAAA///////////////////+7+HSxLWnmIp7bV5QQTMkFgcAAAAAAAAAAAAAAAAAAAAA////////////////////9efYyrutnpCBc2RWRzkqHA0AAAAAAAAAAAAAAAAAAAAA/////////////////////O3f0MKzpZaIeWtcTj8xIhQFAAAAAAAAAAAAAAAAAAAA//////////////////////Pl1si5q5yOf3FiVEU3KBkKAAAAAAAAAAAAAAAAAAAA//////////////////////rr3c7AsaOUhndoWks8LR4PAAAAAAAAAAAAAAAAAAAA///////////////////////x49TGt6mai3xtX1BBMiMUBQAAAAAAAAAAAAAAAAAA///////////////////////46dvMva6fkIFyZFVGNygZCgAAAAAAAAAAAAAAAAAA///////////////////////+7+DRwrOklYZ3aFpLPC0eDwAAAAAAAAAAAAAAAAAA////////////////////////9OXWx7ipmot8bV9QQTIjFAUAAAAAAAAAAAAAAAAA////////////////////////+erbzL2un5CBcmRVRjcnGAgAAAAAAAAAAAAAAAAA/////////////////////////u/g0cKzpJWGd2hZSTkqGgoAAAAAAAAAAAAAAAAA//////////////////////////Tl1se4qZmJempaSzsrGwwAAAAAAAAAAAAAAAAA//////////////////////////np2sq6qpuLe2xcTDwtHQ0AAAAAAAAAAAAAAAAA"
+  },
+  {
+   "name": "Wallops LP-0, Virginia",
+   "sites": [
+    "wallops"
+   ],
+   "lat": 37.834,
+   "lon": -75.488,
+   "radius_m": 6000,
+   "land_color": [
+    0.14,
+    0.16,
+    0.1
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "QEpTXGZveYKLlZ6osbrDzNTd5e73////////////////////////////////////O0VOV2FqdH2GkJmjrLS9xc7X3+jw+f//////////////////////////////////NkBJU1xlb3iCi5Sdpa63v8jQ2eHq8/v/////////////////////////////////MTtETldganN9hY6Xn6iwucHK09vk7PX+////////////////////////////////LDY/SVJbZW53f4iQmaGqs7vEzNXe5u/3////////////////////////////////JzE6RE1WX2hweYGKk5ukrLW+xs/X4Ojx+v//////////////////////////////Iyw1P0hQWWFqc3uEjJWepq+3wMjR2uLr8/z/////////////////////////////HicwOUFKU1tkbHV+ho+XoKixusLL09zl7fb/////////////////////////////GCEqMztETFVeZm93gIiRmqKrs7zEzdbe5/D5////////////////////////////ExskLDU+Rk9XYGhxeoKLk5ykrba+x9DY4erz+///////////////////////////DBUdJi83QEhRWmJrc3yEjZaep6+4wcrS2+Ts9f7/////////////////////////Bg8XICgxOkJLU1xkbXZ+h4+Yoamyu8TM1d7m7/j/////////////////////////AAgRGiIrMzxETVZeZ294gImSm6Ostb3Gz9jg6fL4/f//////////////////////AAILExwkLTY+R09YYGlyeoOMlZ2mr7fAydLa4+rv9Pr/////////////////////AAAEDRYeJy84QElSWmNsdH2GjpegqbG6w8vU3ODl6/H4////////////////////AAAABw8YICkyOkNLVF1mbneAiJGao6u0vcXO0tfc4unw+P//////////////////AAAAAAkSGiMrND1FTldfaHF6gouUnKWut7/Fyc7T2uHp8fr/////////////////AAAAAAMLFB0lLjY/SFFZYmt0fIWOlp+osbi7v8XL0tri6/T9////////////////AAAAAAAFDhYfKDA5QktTXGVtdn+IkJmiqq2xtrzDy9Pc5e/4////////////////AAAAAAAABxAZIiozPEVNVl9ncHmCipOcoaOnrbS8xc7X4Or0/v//////////////AAAAAAAAAQoTHCQtNj5HUFlhanN7hI2Wlpmepa22v8nS3Obw+///////////////AAAAAAAAAAQNFR4nMDhBSlNbZG11foeMjJCWnqexu8XP2ePu+P//////////////AAAAAAAAAAAHDxghKjI7RExVXmdveIGBgYeQmaOtuMLM1+Hq8vr/////////////AAAAAAAAAAABCRIbJCw1PkZPWGFpcnp4eIGMlqGrtsDL09vj6/P7////////////AAAAAAAAAAAAAwwVHSYvOEBJUlpja3N4eIGMlqGrtLzEzNTc5Ozz+v//////////AAAAAAAAAAAAAAYPFyApMjpDTFRcZGx0fIWNlZ2lrbW9xc3V3eTr8vn/////////AAAAAAAAAAAAAAAJERojKzQ9RU1VXWVtdn6Gjpaepq62vsfO1dzj6vH4////////AAAAAAAAAAAAAAADCxQdJS42PkZOVl9nb3d/h4+Xn6evuL/GzdTb4unw9/7/////AAAAAAAAAAAAAAAABQ4XHycvNz9HUFhgaHB4gIiQmKCpsLe+xczT2uHo7/X8////AAAAAAAAAAAAAAAAAAgQGCAoMDhBSVFZYWlxeYGJkZqhqK+2vcTL0tng5u30+f3/AAAAAAAAAAAAAAAAAAEJERkhKTI6QkpSWmJqcnqDi5KZoKeutbzDytHX3uXr7/P4AAAAAAAAAAAAAAAAAAACChIbIyszO0NLU1tja3R8g4qRmJ+mrbS7wsjP1tzh5eruAAAAAAAAAAAAAAAAAAAAAwwUHCQsNDxETFRcZW10e4KJkJeepayzusDHztPX2+DkAAAAAAAAAAAAAAAAAAAAAAUNFR0lLTU9RU1WXmVsc3qBiI+WnaSrsbi/xcnN0tbaAAAAAAAAAAAAAAAAAAAAAAAGDhYeJi42P0dPVl1ka3J5gIeOlZyiqbC3u7/EyMzRAAAAAAAAAAAAAAAAAAAAAAAABw8XHycwOEBHTlVcY2pxeH+GjZOaoaitsba6vsPHAAAAAAAAAAAAAAAAAAAAAAAAAAgQGCEpMTg/Rk1UW2JpcHd+hIuSmZ+jqKywtbm9AAAAAAAAAAAAAAAAAAAAAAAAAAEJEhoiKTA3PkVMU1phaG92fIOKkZWanqKnq6+0AAAAAAAAAAAAAAAAAAAAAAAAAAADCxMaISgvNj1ES1JZYGdtdHuCh4yQlJmdoaaqAAAAAAAAAAAAAAAAAAAAAAAAAAAABAsSGSAnLjU8Q0pRWF5lbHN5foKGi4+TmJygAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMKERgfJi00O0JJT1ZdZGtvdHh9gYWKjpKXAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACCRAXHiUsMzpAR05VXGFmam5zd3yAhImQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQgPFh0kKzI4P0ZNU1hcYGVpbXJ2e4GLAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHDhUcIykwNz5FSk5SV1tfZGhsc3yGAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABg0UGiEpMThASE1SVFNWWl5lbneAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAw0WHygwOEBHT1ZcXl1bWFZfaXJ7AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABxEbJC42P0dPVl5laWhlY2BeY212AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACxUfKTM8RU5WXmVtc3JwbWtoaHB3"
+  },
+  {
+   "name": "Guiana Space Centre, Kourou",
+   "sites": [
+    "kourou"
+   ],
+   "lat": 5.239,
+   "lon": -52.769,
+   "radius_m": 6000,
+   "land_color": [
+    0.14,
+    0.16,
+    0.1
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQLAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABg0TAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEIDhUcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwkQFx0kAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAECxIYHyYsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYNExohJy41AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABCA4VHCIpMDY9AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMJEBcdJCsxOD5FAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABQsSGB8mLDM6QEdNAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGDRMaIScuNTtCSE9WAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQgOFRwiKTA2PURKUVdeAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADChAXHSQrMTg/RUxSWWBmAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAULEhgfJiwzOkBHTVRbYWhvAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABg0UGiEnLjU7QklPVlxjanB3AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEIDxUcIikwNj1ESlFXXmVrcnl/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAwoQFx4kKzE4P0VMU1lgZm10eoGIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCxIZHyYsMzpAR05UW2Fob3V8g4mQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAYNFBohJy41O0JJT1ZdY2pwd36Ei5KYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABCA8VHCMpMDY9REpRWF5la3J5f4aNk5qgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIJEBceJCsxOD9FTFNZYGZtdHqBiI6VnKKpAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAkRGB8mLTM6QEdOVFtiaG91fIOJkJedpKqxAAAAAAAAAAAAAAAAAAAAAAAAAAAABw8YICcuNTtCSU9WXWNqcHd+hIuSmJ+lrLO5AAAAAAAAAAAAAAAAAAAAAAAAAAADDBUeJy82PURKUVheZWxyeX+GjZOaoaeutLvCAAAAAAAAAAAAAAAAAAAAAAAAAAAIEhskLTY+RUxTWWBnbXR6gYiOlZyiqa+2vcPKAAAAAAAAAAAAAAAAAAAAAAAAAAUOFyApMjtETVRbYmhvdnyDiZCXnaSrsbi+xczSAAAAAAAAAAAAAAAAAAAAAAAAAQoUHSYvOEFKU1xjanF3foSLkpifpqyzucDHzdTbAAAAAAAAAAAAAAAAAAAAAAAABxAZIis0PUZQWWJrcnl/ho2TmqGnrrW7wsjP1tzjAAAAAAAAAAAAAAAAAAAAAAADDBUfKDE6Q0xVXmdweYGIjpWcoqmwtr3DytHX3uXrAAAAAAAAAAAAAAAAAAAAAAAJEhskLTY/SFFbZG12f4iQl52kq7G4vsXM0tng5u30AAAAAAAAAAAAAAAAAAAAAAUOFyEqMzxFTldgaXJ7hI2Xn6ass7rAx83U2+Ho7/X8AAAAAAAAAAAAAAAAAAAAAgsUHSYvOEFKU11mb3iBipOcpa61u8LIz9bc4+rw9/3/AAAAAAAAAAAAAAAAAAAABxAZIiw1PkdQWWJrdH2Gj5miq7S9xMrR197l6/L5////AAAAAAAAAAAAAAAAAAAEDRYfKDE6Q0xVXmhxeoOMlZ6nsLnCy9LZ4Obt9Pr/////AAAAAAAAAAAAAAAAAAAJEhskLTdASVJbZG12f4iRmqSttr/I0drh6O/1/P//////AAAAAAAAAAAAAAAAAAYPGCEqMzxFTldgaXN8hY6XoKmyu8TN1uDp8Pf+////////AAAAAAAAAAAAAAAAAgsUHSYvOUJLVF1mb3iBipOcpa+4wcrT3OXu9///////////AAAAAAAAAAAAAAAACBEaIyw1PkdQWWJrdX6HkJmiq7S9xs/Y4ev0/f//////////AAAAAAAAAAAAAAAEDRYfKDE6RE1WX2hxeoOMlZ6nsbrDzNXe5/D5////////////AAAAAAAAAAAAAAAKExwlLjdASVJbZG12gImSm6Sttr/I0drj7fb/////////////"
+  },
+  {
+   "name": "Wenchang, Hainan",
+   "sites": [
+    "wenchang"
+   ],
+   "lat": 19.614,
+   "lon": 110.951,
+   "radius_m": 6000,
+   "land_color": [
+    0.14,
+    0.16,
+    0.1
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "fISNlZ6mr7jAydHa4uvz/P//////////////////////////////////////////dX6Hj5igqbG6wsvT3OXt9v7/////////////////////////////////////////b3iAiZGaoqu0vMXN1t7n7/j/////////////////////////////////////////aXF6gouUnKWttr7Hz9jh6fL6////////////////////////////////////////Y2t0fIWNlp6nr7jBydLa4+vy+v//////////////////////////////////////XGVtdn6HkJihqbK6w8vU3OPr8/r/////////////////////////////////////Vl5ncHiBiZKao6u0vcXN1Nzk6/P7////////////////////////////////////UFhhaXJ6g4uUnaWutr7FzdXc5Oz0+///////////////////////////////////SVJaY2x0fYWOlp+nrra+xs3V3eXs9Pz/////////////////////////////////Q0xUXWVudn+HkJifp6+3vsbO1t3l7fX8////////////////////////////////PUVOVl9ncHmBiZCYoKivt7/Hztbe5u31/f//////////////////////////////Nj9HUFlhanJ6gYmRmaCosLi/x8/X3ubu9fb4+/7/////////////////////////MDlBSlJbY2tyeoKKkZmhqbC4wMjP19/m6+zu8PT4/f//////////////////////KjI7Q0xUXGNrc3uCipKaoamxucDI0Nff4OHj5urv9Pr/////////////////////Iyw1PUVNVFxkbHN7g4uSmqKpsbnByNDW1tfZ3ODl6/H4////////////////////HSYuNj5FTVVdZGx0fIOLk5qiqrK5wcnLy8zP0tfc4unw+P//////////////////Fx8nLzY+Rk5VXWVtdHyEi5Obo6qyusLAwMLFyc7T2uHp8fr/////////////////EBggJy83P0ZOVl1lbXV8hIyUm6Ors7i2tri7v8XL0tri6/T9////////////////CREYICgwNz9HTlZeZm11fYWMlJykq62rq62xtrzDy9Pc5e/4////////////////AgkRGSAoMDg/R09XXmZudn2FjZWcpKOhoaOnrbS8xc7X4Or0/v//////////////AAIKERkhKTA4QEhPV19nbnZ+ho2VnZmWlpmepa22v8nS3Obw+///////////////AAACChIaISkxOUBIUFhfZ293foaOlZCMjJCWnqexu8XP2ePu+P//////////////AAAAAwsSGiIqMTlBSVBYYGdvd3+GjoeBgYeQmaOtuMLM1+Hs9v//////////////AAAAAAMLExsiKjI6QUlRWGBocHd/h4F4eIGMlqGrtsDL1uDr9v/////////////8AAAAAAAEDBMbIysyOkJJUVlhaHB4gIF4eIGMlqGrtsDL1uDr9Pn9/v///////PfyAAAAAAAABAwUGyMrMzpCSlJZYWlxeICBgYeQmaOtuMLM1d3l6+/y9PX3+Pf28+7pAAAAAAAAAAUMFBwkKzM7Q0pSWmJpcXmBiJCWnqevt77Gztbd4ebo6evs7ezr6uXgAAAAAAAAAAAFDRUcJCw0O0NLU1pianJ5gYmQmKCor7e/x87T2Nzd3+Di4uHh4NvWAAAAAAAAAAAABg0VHSUsNDxES1NbYmpyeoGJkZmgqLC4v8XKztHT1NbX2NfW1dLNAAAAAAAAAAAAAAYOFh0lLTU8RExTW2NrcnqCipGZoamwt7vAxMfIysvNzczLy8nEAAAAAAAAAAAAAAAHDhYeJS01PURMVFxja3N7goqSmqGprbK2ury+v8HCw8LBwL+6AAAAAAAAAAAAAAAABw8WHiYuNT1FTVRcZGxze4OLkpqfpKissLKztba4uLe2tbSxAAAAAAAAAAAAAAAAAAcPFx8mLjY+RU1VXWRsdHyDi5GWmp6jpqepqqytra2sq6qoAAAAAAAAAAAAAAAAAAAIEBcfJy82PkZOVV1lbHR8g4iMkJWZm52eoKGjo6KhoJ+eAAAAAAAAAAAAAAAAAAABCBAYICcvNz9GTlZdZW11en6Ch4uPkZKUlZeYmJeWlpWUAAAAAAAAAAAAAAAAAAAAAQkRGCAoMDc/R05WXmZscHR5fYGFhoiJi4yOjo2Mi4qJAAAAAAAAAAAAAAAAAAAAAAIJERkgKDA4P0dPV11iZmtvc3h6fH1/gIKDg4KBgH9/AAAAAAAAAAAAAAAAAAAAAAACChEZISkwOEBIT1RYXWFlaW5wcXN0dnd5eXh3dnV0AAAAAAAAAAAAAAAAAAAAAAAAAgoSGiEpMTlARkpPU1dbYGNlZ2hqa21ubm1sa2ppAAAAAAAAAAAAAAAAAAAAAAAAAAMLEhoiKjE3PEBFSU1SVllaXF5fYWJkY2JiYWBfAAAAAAAAAAAAAAAAAAAAAAAAAAADCxMbIiguMjc7P0RITE5QUlNVVlhZWVhXVlVUAAAAAAAAAAAAAAAAAAAAAAAAAAAABAsTGR8kKS0xNjo+QkRFR0lKTE1PTk1MS0tKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQLERYbHyMoLDA1ODk7PT5AQUNERENCQUA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACCA0RFRoeIicrLS8wMjQ1Nzg5OTg3NjU0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMHDBAUGR0gIyQmKCkrLC4vLi0tLCw1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgYLDxMWGBobHR8gIiMkJCMiJzE6AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBQkMDg8REhQWFxkaGRsiLDU/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAwUGCxEWGx4hIyUnMDpD"
+  },
+  {
+   "name": "Hainan Commercial Launch Site pad 1, Wenchang",
+   "sites": [
+    "hainan_comm_1",
+    "hainan_comm_2"
+   ],
+   "lat": 19.6615,
+   "lon": 111.013,
+   "radius_m": 6419,
+   "land_color": [
+    0.14,
+    0.16,
+    0.1
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "usLL09vk7PT8////////////////////////////////////////////////////srvDy9Tc5Oz1/f//////////////////////////////////////////////////q7O7w8zU3OXt9f3//////////////////vz7+/3/////////////////////////o6uzvMTM1d3l7fb+//////////////r28/Hw8PH09/z/////////////////////m6OstLzEzdXd5u72/P/////////79fDs6Obl5ebp7fH2+///////////////////k5ykrLS9xc3V3ubt8vT2+Pn5+Pbx7Obh3dvZ2dve4ufs8fX6////////////////i5ScpK21vcXO1t7j5+nr7e7u7ezn4tzX0s/OztDT2N3h5uvw9fr/////////////hIyUnaWttb7GztTY3N7g4ePi4eDd2NLNyMTDw8XJztLX3OHl6vD2/f//////////fISMlZ2lrra+xcnO0dPU1tjX1tXTzsjDvbm3uLq+w8jN0tbb4Obt9Pz/////////dHyFjZWepq62ur/DxsfJy8zMy8rJxL65s66srK+0ub7Dx8zR1t3k7PX+////////bHV9hY2WnqarsLS5u7y+wMHAv769urSvqaShoaWqr7O4vcLHzdTc5e73////////ZW11fYaOlpyhpaqur7GztLa1tLOysKqln5qVlpugpKmus7e9xMzV3ujy/P//////XWVtdn6GjZKWm6CipKanqauqqainpqCblZCKjJCVmp+kqK20vMXP2ePt+P//////VV1mbnZ+g4eMkZWXmZqcnp+enZybmpaRi4aAgYaLkJSZnqSstb/J1N/q9f//////TVVeZm50eH2ChoqMjo+Rk5STkpGQj4yHgXx2d3yBhYqPlJymsLvG0dzn8/7/////RU5WXmVpbnN3fH+BgoSGh4mIh4aFhIJ9d3JsbXF2e4CFjJeirbnEz9vm8f3/////PkZOVVpfZGhtcXR1d3l6fH18e3p5eHdzbWhjYmdscXiCjJeirbnEz9vm8f3/////Nj5FS1BVWV5iZ2hqbG1vcXJxcG9ubWxpY15ZWF5oc32HkZymsLvG0dzn8/7/////LjU8QUZKT1NYXF1fYWJkZmdmZWRjYmFfWVRPWWNteIKMlqCrtb/K1N/q9f//////JSwyNztARElOUFJUVVdZWltaWVhXVlVUT0pTXmhyfIeRm6WwusTO2ePt+P//////HCMoLDE1Oj9DRUdISkxNT1BPTk1MS0pJRU5YY213gYyWoKq1v8nT3ujy/P//////ExkdIiYrMDQ4Ojw9P0FCREVEQ0JBQD8/SVNdaHJ8hpGbpa+6xM7Y4u33////////CQ4TFxwhJSotLzAyNDU3OTk4NzY1NDlETlhibXeBi5WgqrS+ydPd5/L8////////AAQIDRIWGx8iIyUnKCosLS4tLCsqND5IU11ncXyGkJqlr7nDztji7Pf/////////AAAAAwcMEBQWGBobHR8gIiIiISQvOUNNWGJsdoGLlZ+qtL7I093n8fz/////////AAAAAAACBgkLDQ8QEhQVFxocHyk0PkhSXWdxe4aQmqSvucPN1+Ls9v//////////AAAAAAAAAAAAAgcOFBofIiUnKi45Q01XYmx2gIqVn6mzvsjS3Ofx+///////////AAAAAAAAAAAABw8XHiQpLTAyNTc9SFJcZnF7hY+apK64w83X4ez2////////////AAAAAAAAAAAEDhcfJy40ODs9QEJFTVdha3aAipSfqbO9yNLc5vH7////////////AAAAAAAAAAAKFB0nLzc9Q0ZJS01QVV5mcHuFj5mkrrjCzNfh6/X/////////////AAAAAAAAAAUPGSMtNz9HTVFUVlhbXWVudn+KlJ6os73H0dzm8Pr/////////////AAAAAAAAAAgTHigzPUZPV1xfYWRmaG11foaPmaOtuMLM1uHr9f//////////////AAAAAAAAAAsWISw3QkxWX2ZqbG9xc3Z9ho6WnqiyvcfR2+bw+v//////////////AAAAAAAAAw4ZJC86RVBbZm91d3p8foGFjZaepq64wszW4Or1////////////////AAAAAAAABhEcJzI9SFNeaXR/goWHioyPlZ6mrra+x9Hb5e/6////////////////AAAAAAAACRQfKjVAS1ZhbHeCjZCSlZeZnqWutr7Gztfh6vT/////////////////AAAAAAAACxYhLDhDTllkb3qFkJudoKKlqK61vsbO1t7n8Pr/////////////////AAAAAAAACxciLTlEUFtmcn2Ik56pq62wsre+xs7W3ubv9///////////////////AAAAAAAACxYiLThDT1plcHuGkp2os7i7vcHHztbe5u72////////////////////AAAAAAAACRUgKzZBTFhjbnmEj5umsbzGyMzR197m7vb+////////////////////AAAAAAAABxIeKTQ/SlVhbHeCjZikr7rF0Nbb4Ofu9v7/////////////////////AAAAAAAABRAbJzI9SFNeanWAi5ahrbjDztnk6vD3/v//////////////////////AAAAAAAAAw4ZJDA7RlFcZ3N+iZSfqrbBzNfi7fn/////////////////////////AAAAAAAAAQwXIi05RE9aZXB8h5KdqLO/ytXg6/b/////////////////////////AAAAAAAAAAoVICs2Qk1YY255hZCbprG8yNPe6fT/////////////////////////AAAAAAAAAAgTHik0P0tWYWx3go6ZpK+6xdHc5/L9////////////////////////AAAAAAAAAAYRHCcyPUhUX2p1gIuXoq24w87a5fD7////////////////////////AAAAAAAAAAMPGiUwO0ZRXWhzfomUoKu2wczX4+75////////////////////////"
+  },
+  {
+   "name": "Satish Dhawan, Sriharikota",
+   "sites": [
+    "sriharikota"
+   ],
+   "lat": 13.733,
+   "lon": 80.235,
+   "radius_m": 6000,
+   "land_color": [
+    0.14,
+    0.16,
+    0.1
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "iH93bWNZT0U7MScmMDpETlhibHaBi5WfqLG7xM3W3+jx+v//////////////////gXlwaF9VS0E3LSQpMz1HUVxmcHqEjpiirLbAydLb5O73////////////////////e3JqYVlQRz40KiIsNkFLVV9pc32HkZulsLrEztjh6vP8////////////////////dGxjW1NKQjkvJiYwOkROWGJsdoCLlZ+ps73H0dvl7/j/////////////////////bmVdVUxEOzMqISkzPUdRW2VweoSOmKKstsDK1N/p8/3/////////////////////aF9XTkY9NSwkIiw2QEtVX2lzfYeRm6WvusTO2OLs9v//////////////////////YVlQSD83LiYdJS85RE5YYmx2gIqVn6mzvcfR2+Xv+f//////////////////////W1JKQTkwKB8bJjA7RlBbZW96hI6Yoqy2wMrU3unz/f//////////////////////VExDOzIqIRkbJjA7RlBbZW96hI6Yo623wszW4Ov1////////////////////////TkU9NCwjGxMaJC85RE5YYm13gYuWoKq1v8nT3ujy/P//////////////////////Rz82LiYdFQ0YIiw3QUtVYGp0fomTnaiyvMbR2+Xv+v//////////////////////QTgwKB8XDgsVHyo0PkhTXWdxfIaQm6WvucTO2OLt9///////////////////////OzIqIRkQCAgSHScxO0ZQWmRveYOOmKKst8HL1eDq9P//////////////////////NCwjGxIKAQUQGiQuOUNNV2JsdoGLlZ+qtL7I093n8vr/////////////////////LiUdFAwDAAMNFyEsNkBKVV9pdH6Ikp2nsbvG0Nrl6/H4////////////////////Jx8WDgUAAAAKFB8pMz1IUlxncXuFkJqkrrnDzdfc4unw+P//////////////////IRgQBwAAAAAHEhwmMDtFT1pkbniDjZehrLbAyc7T2uHp8fr/////////////////GhIJAQAAAAAFDxkjLjhCTVdha3aAipSfqLK7v8XL0tri6/T9////////////////FAsDAAAAAAACDBchKzVASlReaXN9h5Cao62xtrzDy9Pc5e/4////////////////DgUAAAAAAAAAChQeKDM9R1FcZm95goyVn6OnrbS8xc7X4Or0/v//////////////BwAAAAAAAAAABxEbJjA6RE5XYWp0fYeQlpmepa22v8nS3Obw+///////////////AQAAAAAAAAAABA4YIiw2P0lTXGZveYKMjJCWnqexu8XP2ePu+P//////////////AAAAAAAAAAAAAQsVHigxO0ROV2FqdH2BgYeQmaOtuMLM1+Hs9v//////////////AAAAAAAAAAAAAAYQGSMsNj9JUlxlb3l4eIGMlqGrtsDL1uDr9v//////////////AAAAAAAAAAAAAAILFR4oMTtETldhanR4eIGMlqGrtsDL1uDr9v//////////////AAAAAAAAAAAAAAAGEBkjLDY/SVJcZW94gYeQmaOtuMLM1+Hr9P7/////////////AAAAAAAAAAAAAAACCxUeKDE7RE5XYWp0fYeQmqOttsDJ09zm7/n/////////////AAAAAAAAAAAAAAAABhAZIyw2P0lSXGVveIKLlZ6osrvFztjh6/T+////////////AAAAAAAAAAAAAAAAAgsVHigxO0ROV2FqdH2HkJqjrbbAydPc5u/5////////////AAAAAAAAAAAAAAAAAAYQGSMsNj9JUlxlb3iCi5WeqLG7xM7Y4ev0/v//////////AAAAAAAAAAAAAAAAAAILFR4oMTtETldhanR9h5Cao622wMnT3Obw+v//////////AAAAAAAAAAAAAAAAAAAGEBkjLDY/SVJcZW94gouVnqixu8XP2ePt9///////////AAAAAAAAAAAAAAAAAAACCxUeKDE7RE5XYWp0fYeQmqOtt8HM1uDr9f//////////AAAAAAAAAAAAAAAAAAAABhAZIyw2P0lSXGVveIKLlaCqtb/K1d/q9P//////////AAAAAAAAAAAAAAAAAAAAAgsVHigxO0ROV2FqdH+KlJ+ptL7J1N7p8/7/////////AAAAAAAAAAAAAAAAAAAAAAYQGSMsNj9JVF5pc36Jk56os77I093o8/3/////////AAAAAAAAAAAAAAAAAAAAAAILFR4oMz5IU11oc32Ikp2osr3H0tzn8vz/////////AAAAAAAAAAAAAAAAAAAAAAAIEh0oMj1HUl1ncnyHkZynsbzG0dzm8fv/////////AAAAAAAAAAAAAAAAAAAAAAAHEhwnMTxGUVxmcXuGkZumsLvG0Nvl8Pr/////////AAAAAAAAAAAAAAAAAAAAAAAGERsmMDtGUFtlcHuFkJqlr7rFz9rk7/r/////////AAAAAAAAAAAAAAAAAAAAAAAFEBolMDpFT1pkb3qEj5mkr7nEztnk7vn/////////AAAAAAAAAAAAAAAAAAAAAAAEDxkkLzlETllkbnmDjpmjrrjDzdjj7fj/////////AAAAAAAAAAAAAAAAAAAAAAADDhkjLjhDTlhjbXiCjZiirbfCzdfi7Pf/////////AAAAAAAAAAAAAAAAAAAAAAADDRgiLTdCTVdibHeCjJehrLfBzNbh6/b/////////AAAAAAAAAAAAAAAAAAAAAAACDBchLDdBTFZhbHaBi5agq7bAy9Xg6/X/////////AAAAAAAAAAAAAAAAAAAAAAABCxYhKzZAS1Vga3WAipWgqrW/ytXf6vT/////////AAAAAAAAAAAAAAAAAAAAAAAAChUgKjU/SlVfanR/ipSfqbS+ydTe6fP+////////AAAAAAAAAAAAAAAAAAAAAAAAChQfKTQ/SVReaXN+iZOeqLO+yNPd6PP9////////"
+  },
+  {
+   "name": "Tanegashima",
+   "sites": [
+    "tanegashima"
+   ],
+   "lat": 30.4,
+   "lon": 130.977,
+   "radius_m": 6000,
+   "land_color": [
+    0.14,
+    0.16,
+    0.1
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "3eHk5ujr7fDz9/r9//79+/r5+fn7/f//////////////////////////////////1NfZ3N7g4+bp7PDz9PPy8fDu7u/w8/f7////////////////////////////////yszP0dTW2dzf4uXo6unn5uXk4+Tm6e3y9/3/////////////////////////////wMLFx8nMz9LV2Nve397d3NrZ2drc3+Po7vX8////////////////////////////tbi6vb/CxcjLztHU1dTS0dDPzs/S1drg5u31/f//////////////////////////q62wsrW3ur7BxMfKysnIx8XExMXHzNHX3ubu9v//////////////////////////oaOlqKqtsLO3ur3AwL69vLu6ubq9wsjP19/o8fr/////////////////////////lpmbnqCjpqmsr7O2tbSzsbCvrrC0ucDI0Nni7PX/////////////////////////jI6Rk5aZnJ+ipairq6mop6akpKarsbnBy9Te6PL8////////////////////////goSGiYyPkpWYm56hoJ+enJuamZyiqrO8xtDa5O/5////////////////////////d3p8foGFiIuOkZSXlpSTkpGPj5Obpa65w83Y4u33////////////////////////bW9ydHd6foGEh4qMi4qIh4aFhI2Xoqy3wczX4ez2////////////////////////Y2Vnam1wc3Z6fYCCgH9+fXt6gYyWoau2wcvW4Ov2/f//////////////////////WFtdYGNmaWxvcnZ3dnVzcnF2gIuVoKu1wMrV4Orv9Pr/////////////////////TlBTVllcX2JlaGtta2ppaGp1gIqVn6q1v8rU3ODl6/H4////////////////////REZITE9SVVhbXmFiYWBeX2p0f4mUn6m0vsbO0tfc4unw+P//////////////////OTw+QURIS05RVFdXVlVUXmlzfomTnqevt7/Fyc7T2uHp8fr/////////////////LzE0Nzo9QURHSkxNTEpTXWhzfYiQmKCosLi7v8XL0tri6/T9////////////////JCcqLTAzNjk9QEJCQUdSXGdxeYGJkZmhqa2xtrzDy9Pc5e/4////////////////Gh0gIyYpLC8yNTc4O0VPWWJqcnqCipKaoaOnrbS8xc7X4Or0/v//////////////EBMWGRwfIiUoKy0uN0FKU1tja3N7g4uTlpmepa22v8nS3Obw+///////////////BQgLDxIVGBseISIpMzxETFRcZGx0fISMjJCWnqexu8XP2ePu+P//////////////AAABBAgLDhEUFhskLTU9RU1VXWVtdX2BgYeQmaOtuMLM1+Hs9v//////////////AAAAAAAABAcKDBUeJi42PkZOVl5mbnZ4eIGMlqGrtsDL1uDr9v//////////////AAAAAAAAAAAABg8XHycvNz9HT1dfZ3B4eIGMlqGrtsDL1uDr9v//////////////AAAAAAAAAAAAAAgQGCAoMTpETldha3R+gYeQmaOtuMLM1+Hs9v//////////////AAAAAAAAAAAAAAUPGCIsNT9JUlxlb3mCjJCWnqexu8XP2ePu+P//////////////AAAAAAAAAAAAAAkTHSYwOkNNV2BqdH2HkJmepa22v8nS3Obw+///////////////AAAAAAAAAAAAAQsWICo0PkhRW2VueIKLlZ+nrbS8xc7X4Or0/v//////////////AAAAAAAAAAAAAw0YIi03QUxWYGlzfYaQmaOttrzDy9Pc5e/4////////////////AAAAAAAAAAAAAw4ZIy44Q05YY213gYuUnqixu8TL0tri6/T9////////////////AAAAAAAAAAAAAw4YIy44Q01YYm13goyXoay2v8nT2uHp8fr/////////////////AAAAAAAAAAAAAg0XIiw3QUxWYWt1gIqVn6q0v8nU3unw+P//////////////////AAAAAAAAAAAAAAsVICo1P0pUX2l0fomTnqiyvcfR2+Tu+P//////////////////AAAAAAAAAAAAAAkUHikzPkhSXWdyfIeRnKawucPN1uDq8/3/////////////////AAAAAAAAAAAAAAcSHCcxPEZRW2Zwe4WOmKKrtb/I0tvl7/j/////////////////AAAAAAAAAAAAAAYQGiUvOkRPWWNtd4CKlJ2nsLrEzdfh6vT+////////////////AAAAAAAAAAAAAAQOGSMtOEJMVV9pcnyFj5mirLa/ydLc5vD6////////////////AAAAAAAAAAAAAAIMFiAqND5HUVpkbneBi5Sep7G7xc/Z4+34////////////////AAAAAAAAAAAAAAAJEhwmLzlDTFZgaXN8hpCZo623wszX4ez2////////////////AAAAAAAAAAAAAAAFDhghKzU+SFFbZW54gouWoau2wMvW4Ov2////////////////AAAAAAAAAAAAAAQMFBsjKjQ+SFJcZnB6g42Xoqy2wcvW4ev2////////////////AAAAAAAAAAAAAgsTGyMqMjlCTFZfaXN9h5Gbpa+5w83Y4u33////////////////AAAAAAAAAAAACBEaIioyOUFIUFljbXeBi5WfqbO9x9Hb5e/5////////////////AAAAAAAAAAADDRYgKTE5QUhQV19ncXuFj5mjrbbAytTe6PL8////////////////AAAAAAAAAAAHERskLjdASFBXX2Zudn+Jk5ymsLrEztji7Pb/////////////////AAAAAAAAAAAKFB4oMjxGT1dfZm51fYWNlqCqtL7I0tzm8Pr/////////////////AAAAAAAAAAEMFiErNUBKVF1mbnV9hYyUm6SuuMLM1uDq8/3/////////////////"
+  },
+  {
+   "name": "Rocket Lab LC-1, Mahia",
+   "sites": [
+    "mahia"
+   ],
+   "lat": -39.261,
+   "lon": 177.865,
+   "radius_m": 6000,
+   "land_color": [
+    0.14,
+    0.16,
+    0.1
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "///////////////////////////69vPx7+/w8vT4/P//////////////////////////////////////////////+/Xw7Onm5eXl5+ru8/n////////////////////////////////////////////58+zn4t7c2trb3eDl6vD3/v////////////////////////////////////////ry6uTe2NTR0M/Q09fb4ejv9v7//////////////////////////////////////PPr49vVz8rHxcXGyc3S2eDn7/f/////////////////////////////////////9u3k3NTMxsG9urq8v8TK0djg6PD4///////////////////////////////////78eje1c3FvbezsK+xtbvCydHZ4enx+P/////////////////////////////////37ePZ0Me+tq+ppaWnrLO6wsrS2uHp8fn///////////////////////////////706uDWzMK4r6egm5qdpKuzu8PL0tri6vL5//////////////////////////////rw5tzSyL60qqCYkZCVnKSstLzDy9Pb4+rx+P////////////////////////////ft49nPxbuxppySiYaNlZ2lrbS8xMzU3OLp8Pb9/////////////////////////fPp39XLwbeto5mPhX6Gjpaepa21vcXN09rh6O71/P//////////////////////+vDm3NLIvrSqoJWLgXd/h4+Wnqautr7Ey9LZ3+bt8/r/////////////////////9uzi2M7EurCmnJKIfnR4gIePl5+nr7W8w8rQ197l6/L6///////////////////98+nf1cvBt62jmY+FenBxeICIkJigpq20u8HIz9bc4+vz+//////////////////67+Xb0ce9s6mflYuBd21pcXmBiZGXnqWssrnAx83U3OTs9P3////////////////27OLYzsS6sKackoh+dGlianJ6gomPlp2jqrG4vsXN1d3m7vb+//////////////3z6d/UysC2rKKYjoR6cGZcY2tzeoCHjpWboqmvtr7Gztff5+/3//////////////nv5dvRx72zqZ+Vi4F3bWNYXGRrcXh/hoyTmqCnr7e/yNDY4Ojw//////////////bs4tjOw7mvpZuRh31zaV9VVVxiaXB3fYSLkpigqLC5wcnR2eHp/////////////PLo3tTKwLasopiOhHpwZlxSTVNaYWhudXyDiZGZoaqyusLK0tri////////////+e/l29HHvbOonpSKgHZsYlhORUtSWV9mbXR6goqTm6Ors7vDy9Tc////////////9evh183Dua+lm5GHfXNpX1VLQUNKUFdeZWtze4SMlJykrLS8xc7X///////////88uje1MrAtqyil42DeW9lW1FHPTtCSE9WXGRsdX2FjZWdpa22v8nT///////////47uTa0Ma8sqielIqAdmxiWE5EOjM5QEdOVV1mbnZ+ho6Wnqexu8XQ///////////16+HXzcO5r6WbkYd8cmheVEpANiwxOD9GT1dfZ293f4eQmaSuucPN//////////zy593Tyb+1q6GXjYN5b2VbUUc9MykpMDdASFBYYGhweIKNl6KstsHL//////////ju5NrQxryyqJ6UioB2a2FXTUM5LyUhKDE5QUlRWWFrdoCLlZ+qtL/J//////////Xr4dbMwriupJqQhnxyaF5USkA2LCIZIioyOkJKVF9pdH6Ik52osrzH////////+/Hn3dPJv7WroZeNg3lvZVtQRjwyKB4UGyMrMz1IUl1ncXyGkZulsLrF////////+O7k2tDFu7GnnZOJf3VrYVdNQzkvJRsRFBwmMTtGUFplb3qEjpmjrrjC///////+9Org1szCuK6kmpCGfHJoXlRKPzUrIRcNDxokLzlDTlhjbXeCjJehq7bA///////78efd08m/taqgloyCeG5kWlBGPDIoHhQKDRgiLDdBTFZga3WAipSfqbS+///////37ePZz8W7saedk4l/dWthV01DOS4kGhAGCxUgKjU/SVReaXN9iJKdp7G8//////706uDWzMK4rqSZj4V7cWddU0k/NSshFw0DCRMeKDI9R1JcZnF7hpCapa+6//////vx5tzSyL60qqCWjIJ4bmRaUEY8MigeEwkABxEcJjA7RU9aZG95g46Yo623//////nu5NrPxbuxp52TiX50amBWTEI4LiQaEAYABQ8ZJC45Q01YYmx3gYyWoKu1//////ft4tjNw7iuo5mPhXtxZ11TST81KyEXDQIAAg0XIiw2QUtWYGp1f4qUnqmz//////Xr4NbLwbasoZeNgnhtY1lPRTsxJx0TCQAAAAsVHyo0P0lTXmhzfYeSnKex/////vPp3tTJv7SqoJWLgHZrYVZMQjguJBoQBgAAAAgTHSgyPEdRXGZwe4WQmqSu/////PHn3NLHvbOonpOJfnRpX1RKQDUrIBYMAgAAAAYRGyUwOkVPWWRueYONl6Gr////+u/l2tDGu7GmnJGHfHJnXVNIPjMpHhQJAAAAAAQOGSMuOEJNV2FrdX+Jk52n////+O7j2c7Eua+kmo+Fe3BmW1FGPDEnHBIHAAAAAAIMFyErNkBKVF5ocnyGkJmj////9uzh18zCt62imI6DeW5kWU9EOi8lGxAGAAAAAAAKFB4oMjxGUFpkbniCjJag////9Orf1crAtauhloyBd2xiV01COC4jGQ4EAAAAAAAGEBokLjhCTFZganR+iJKc///98ujd08i+tKmflIp/dWpgVUtBNiwhFwwCAAAAAAADDRchKzU/SVNdZ3F7hY+Z///78Obc0ce8sqedkoh9c2heVEk/NCofFQoAAAAAAAAACRMdJzE7RU9ZY213gYuV///57+Taz8W6sKWbkIZ8cWdcUkc9MigdEwkAAAAAAAAABhAaIy03QUtVX2lzfYeR"
+  },
+  {
+   "name": "SaxaVord, Shetland",
+   "sites": [
+    "saxavord"
+   ],
+   "lat": 60.814,
+   "lon": -0.765,
+   "radius_m": 6000,
+   "land_color": [
+    0.14,
+    0.16,
+    0.1
+   ],
+   "land_floor_m": 2.5,
+   "grid_n": 48,
+   "sdf_max_m": 3000.0,
+   "sdf_b64": "BxIcJzE8RlBbZG1zdHR1eoSPmqSvucTP2eTv+f//////////////////////////BhAaJS85Q01WXmVoaWpveoSPmqSvucTP2eTv+f//////////////////////////CQ0XISs1PkdPVlteXmRveoSPmqSvucTP2eTv+f//////////////////////////Ew8UHSYwOEBHTVFTXWdxfIaQmqWvusTP2uTv+f//////////////////////////HRkUGCEpMTg/REtVYGp0fomTnaeyvMbR2+Xw9vz/////////////////////////JyIdGRoiKTA5RE5YYm13gYuWoKq0v8nT3eLo7fT7////////////////////////MCwnIh0dKDI8R1FbZXB6hI6Zo623wsjO09nf5ezz+///////////////////////OjUwLCYgKTQ+SVNeaHJ9h5GbpKy0ur/FytDW3eTs9Pz/////////////////////Qz86NS8oKjQ/SlRfaXR9hY2VnaWrsba8wcfO1d3l7fX9////////////////////TUhDPjcxKjM+SFJcZm52foaOlp2iqK2zuL/Gztbe5u72/v//////////////////VlJNRkA5MjE7RU5XX2dvd3+HjpSZn6SqsLe/x8/X3+fv9///////////////////YFtVT0hBOzQ2QEhQWGBocHh/hYqQlpuhqLC4wMjQ2ODo8fn/////////////////aWRdV1BJQzw0OUFJUVlhaXF2fIGHjJKZoamxucHJ0dni6/T9////////////////c2xmX1hSS0M6MjpCSlJaYmhtc3h+g4qSmqKqsrrCytPc5u/5////////////////e3VuZ2FaUklBOTM7Q0tTWV9kam91e4OLk5ujq7O8xM7X4ev1////////////////hH12cGlhWFBIQDc0PERKUFZbYWZsdHyEjJScpK22wMrU3ujz/f//////////////jIV/eHBnX1dPRj0zNTxBR0xSWF1lbXV9hY2VnqiyvMfR3Obx+///////////////ko2Hf3ZuZl1US0E3MjtETFNZXmRqb3V5foeRm6awu8XQ2+Xw+///////////////ipKNhX11bGJYTkQ5NkBJU1tiZ21zeH6DhomSnKaxu8bQ2+Xw+///////////////g4qSjIR6b2VbUUc8OUNNV2FqcHZ8gYeNkJKYoKmzvcjS3Ofx/P//////////////e4OLkYd9cmheVEk/OkVPWmVveX+FipCWlpmepa22v8nS3Obw+///////////////dH2Fjop/dWthV0xCOkVPWmRud3yCiI2MjJCWnqexu8XP2ePu+P//////////////bnZ/h42CeG5kWU9FO0JNVmBobnN5foSBgYeQmaOtuMLM1+Hs9v//////////////Z3B5gYyFe3FnXFJIPj9IUVlfZWpwdXt4eIGMlqGrtsDL1uDr9v//////////////YWt1gIqIfnRpX1VLQTlCSlFWXGFnbHJ0eIGMlqGrtsDL1uDr9v//////////////XmlzfoiLgXdsYlhOQzk7QkhNU1heY2hzfoeQmaOtuMLM1+Hs9v//////////////XGdxfIaOhHlvZVtRRjwzOT9ESk9VX2p0f4mUnqexu8XP2ePu+P//////////////WmVveoSPh3xyaF5TST81MDU7QUtWYWt2gIuVoKq1v8nS3Obw+///////////////WWNueIONin91a2FWTEI4LzQ8RlBZY2x3gYyXoay2wcvW4Or0/v//////////////WmVveoSPjIJ4bmRZT0U7OT1DS1ReZ3F6hI6Yoq24ws3X4uz3////////////////XGZxe4aQj4V7cWZcUkhCQ0ZLUllibHV/iZKcpa+5xM7Z4+74////////////////XWhyfYeSkoh+dGlfVUxNTlBUWmFocXqEjZegqrO9x9Hb5fD6////////////////X2l0fomTlYuBdmxiWFZXWFpeYmlwd3+Ikpulr7jCy9Xf6PL9////////////////YWt1gIqVmI6EeW9lXGBiY2RobHF4f4aNl6Cqs73G0Nnj7fb/////////////////Zm94gYyWm5GGfHJoZmpsbm9xdnqAh46VnKWuuMHL1N7o8fv/////////////////bHV+h5CZnpSJf3Ztb3R3eHl7f4SIj5adpKu0vcbQ2ePs9v//////////////////cXqDjJafoZeNhHtyeH6Cg4SFiY2Sl56lrLO7w8vU3ufx+v//////////////////fICJkpukpZyTioF4foeMjY6Pk5ecoKattLvCytHa4+z2////////////////////hoePmKGqqqGYj4Z9hI2VmJmanKGlqq61vMPK0dng6fL7////////////////////kZGWnaavsKeelYyEipOcoqOkpquvs7i9xMvS2eDo7/j/////////////////////nJyfpay1tq2km5OPkZmhqq6vsbS5vcHGzNPa4ejv9/7/////////////////////pqaorbS7u7KpopyZm6CosLm6u77Cx8vP1dvi6fD3/v//////////////////////sbGztrzDwbixqqakpamvt7/ExcjM0NXZ3uPq8fj/////////////////////////u7u9wMXLx8C5tLCvr7O4vsbO0NLW2t7j5+zy+f//////////////////////////xsbHys7Tz8jCvbq5ur3Bxs3V2tzg5Ojs8fb7////////////////////////////0dHS1Njc19HLx8XExMfKz9Xc5Ofq7fL2+///////////////////////////////29vc3uLm39rV0s/Oz9HU2d7k6/H09/v/////////////////////////////////5ubn6ezu6OPf3NrZ2tve4uft8/r+////////////////////////////////////"
+  }
+ ]
+}

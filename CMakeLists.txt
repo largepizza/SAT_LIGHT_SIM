@@ -399,6 +399,9 @@ function(sat_copy_runtime_files tgt)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/launches.json"
                 "$<TARGET_FILE_DIR:${tgt}>/launches.json"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/launch_coasts.json"
+                "$<TARGET_FILE_DIR:${tgt}>/launch_coasts.json"
             COMMENT "Copying data files next to ${tgt}"
         )
         # Satellite geometry models (lighting overhaul Phase 3), referenced from constellations.json
@@ -479,6 +482,7 @@ function(sat_sync_runtime_sources tgt)
                 "$<TARGET_FILE_DIR:${tgt}>/default_bookmarks")
     endif()
     foreach(f data/constellations.json data/constellations.schema.json data/reflector_targets.json data/launches.json
+              data/launch_coasts.json
               THIRD_PARTY_NOTICES.txt)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${f}")
             list(APPEND sync_files "${CMAKE_CURRENT_SOURCE_DIR}/${f}")

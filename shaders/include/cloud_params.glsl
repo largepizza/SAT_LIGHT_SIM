@@ -20,6 +20,8 @@
 #error "define CLOUD_PARAMS_BINDING before including cloud_params.glsl"
 #endif
 #define PAD_MAX 12   // launch pads in the block (SatelliteSim.h kMaxPadsGpu)
+#define COAST_MAX 4  // coast patches around launch sites (SatelliteSim.h kMaxCoastPatchesGpu)
+#define COAST_GRID_N 48 // their signed distance grid's side (kCoastGridN; tools/make_pad_coasts.py GRID_N)
 
 struct CloudLayer {
     float shellAltM;
@@ -488,4 +490,16 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     vec4  padQ[PAD_MAX];
     vec4  padU[PAD_MAX];
     vec4  padAux[PAD_MAX];
+    // -- Coasts around launch sites (1552 -> 11040, 2026-10-20; data/launch_coasts.json, tools/make_pad_coasts.py,
+    // SatelliteSimLaunches.cpp launchFillPadParams; terrain_detail.glsl tdCoastPatch): the nearest COAST_MAX patches.
+    // coastInfo x count; coastC xyz centre (q frame), w half-width R (m: the grid covers [-R, R]^2); coastE / coastN xyz
+    // the patch's east / north axes; coastCol rgb the land's colour (where the day map shows water), w the land's floor
+    // (m). coastG: per patch COAST_GRID_N^2 bytes (rows south to north), the shore's signed distance, > 0 water,
+    // d = (byte - 127.5) / 127.5 x 3000 m.
+    vec4  coastInfo;
+    vec4  coastC[COAST_MAX];
+    vec4  coastE[COAST_MAX];
+    vec4  coastN[COAST_MAX];
+    vec4  coastCol[COAST_MAX];
+    uvec4 coastG[COAST_MAX * COAST_GRID_N * COAST_GRID_N / 16];
 } cloud;
