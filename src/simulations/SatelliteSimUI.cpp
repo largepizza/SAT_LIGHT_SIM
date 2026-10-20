@@ -2651,7 +2651,9 @@ void SatelliteSim::buildMissionTimeline(const UIInput &inp, UIRenderer &ui, cons
         return msTimelineText_.back().c_str();
     };
     auto clayStr = [](const char *p) { return Clay_String{false, (int32_t)strlen(p), p}; };
-    uiKV("InfoMsKV", 0, "Mission", str("%s", s.title.c_str()), lw, &Pal::textPrimary);
+    // The mission on its own line, wrapped (a uiKV value is one line: the title was cut).
+    CLAY_TEXT(clayStr(str("%s", s.title.c_str())),
+              CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
     uiKV("InfoMsKV", 1, "Object", str("%s", s.what.c_str()), lw);
     for (size_t f = 0; f < s.facts.size() && f < 6; ++f)
         uiKV("InfoMsKV", 2 + (int)f, str("%s", s.facts[f].first.c_str()), str("%s", s.facts[f].second.c_str()), lw);
@@ -3071,7 +3073,7 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
                     dir = -1;
                 if (nx)
                 {
-                    snprintf(nextLab, sizeof(nextLab), "Next: %.24s%s >", nx->label.c_str(), nx->label.size() > 24 ? "..." : "");
+                    snprintf(nextLab, sizeof(nextLab), "Next: %.18s%s >", nx->label.c_str(), nx->label.size() > 18 ? "..." : "");
                     snprintf(nextTip, sizeof(nextTip), "%.0f s before \"%s\", at 1x (%s)", nx->lead, nx->label.c_str(),
                              keyDisplayName(keybindings[KB_MILESTONE_NEXT].key));
                     if (chipButton("FollowMsNextBtn", nextLab, hovFollowMsNext, nextTip))

@@ -1,0 +1,39 @@
+# 2026-10-20 leftovers: an expendable upper stage selected through its re-entry while it is behind the Earth from the
+# observer (its fireball is listed for the selection even where it is not drawn); `select const` on a destroyed
+# satellite is an error; the window opacity setting.
+#   python tools/harness/run.py tools/harness/scripts/mission_edge_cases.satcmd --out harness_runs/mission_edge
+window 1600x900
+launch next vehicle=falcon
+time add 200
+wait 5
+launch select kind=upper nearest=1
+missions milestone list
+# Skip to 10 s before "Upper stage re-enters (burns up)": the observer stays at the pad, thousands of km away.
+missions milestone next
+missions milestone next
+missions milestone next
+missions milestone next
+missions milestone next
+missions milestone next
+state
+time scale 10x
+wait 120
+state
+wait 300
+state
+time scale 1x
+# A destroyed satellite cannot be selected (an error, not "selected")
+select const "Starlink Gen1" n=5
+kessler breakup sel
+wait 30
+select none
+select const "Starlink Gen1" n=5
+# Window opacity
+set display.window_opacity 0.6
+ui open missions
+ui open settings tab=display
+wait 10
+capture opacity60 ui=on
+set display.window_opacity 1
+wait 5
+capture opacity100 ui=on

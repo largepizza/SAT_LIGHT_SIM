@@ -6922,7 +6922,7 @@ void SatelliteSim::missionFacts(MissionSubject &s, int idx, double t)
     for (const MissionMilestone &m : s.ms)
         if (m.t > t)
         {
-            s.facts.push_back({"Next", m.label + ", " + inStr(m.t - t)});
+            s.facts.push_back({"Coming up", m.label + ", " + inStr(m.t - t)});
             break;
         }
     if (!launchState)
