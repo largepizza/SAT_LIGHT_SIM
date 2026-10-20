@@ -11,13 +11,17 @@ camera fov=25
 wait settle
 capture f9_day_t-40
 time add 26
+launch select kind=booster nearest=1
+camera look sel
 wait settle
 capture f9_day_t-14
 time add 8
+camera look sel
 wait settle
 capture f9_day_t-6
 state f9_day_t-6
 time add 6
+camera el=4
 wait settle
 capture f9_day_touchdown
 state f9_day_touchdown
@@ -30,9 +34,14 @@ time pause
 camera fov=12
 wait settle
 capture f9_day_aircraft3k_t-8
+launch select kind=booster nearest=1
 time add 9
 wait settle
 capture f9_day_aircraft3k_touchdown
+state f9_sel_touchdown
+time add 3600
+wait settle
+state f9_sel_1h
 launch droneship vehicle=falcon9 day=1 lead=8 dist_m=6000 az=150 h=10000
 time pause
 camera fov=6
@@ -48,9 +57,12 @@ camera fov=25
 wait settle
 capture f9_night_t-14
 time add 8
+launch select kind=booster nearest=1
+camera look sel
 wait settle
 capture f9_night_t-6
 time add 6
+camera el=3
 wait settle
 capture f9_night_touchdown
 time add 300
@@ -63,6 +75,8 @@ camera fov=25
 wait settle
 capture ng_t-20
 time add 14
+launch select kind=booster nearest=1
+camera look sel
 wait settle
 capture ng_t-6
 time add 6

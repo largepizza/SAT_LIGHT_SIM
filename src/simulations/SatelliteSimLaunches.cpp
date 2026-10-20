@@ -5944,6 +5944,22 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
             else if (t > B->tDeorbBurn)
                 doing = "falling toward entry";
         }
+        // Landed (2026-10-20): where it stands.
+        if (B && s.stage == 0 && s.burn == launch::BURN_NONE && s.tau >= LaunchImpl::boosterTr(L, *B).tEnd)
+        {
+            const double t = B->tL + s.tau;
+            if (B->landKind == kLandShip)
+                snprintf(b, sizeof(b), "%s booster on %s's deck, %s, %.0f km from home", veh,
+                         L.cat.vehicles[B->veh].ships[(size_t)B->ship].name.c_str(),
+                         t < B->tShipDepart ? "being secured" : "heading home",
+                         std::acos(glm::clamp(glm::dot(LaunchImpl::shipEcef(*B, t) / kR, B->G0), -1.0, 1.0)) * kR / 1000.0);
+            else
+                snprintf(b, sizeof(b), "%s booster, landed %s, T+%.0f s", veh,
+                         B->landKind == kLandTower ? "in the tower" : B->landKind == kLandLz ? "on its landing zone"
+                                                                                               : "downrange",
+                         s.tau);
+            break;
+        }
         snprintf(b, sizeof(b), "%s%s (%s), T+%.0f s, %.0f km up, %.2f km/s", veh, what, doing, s.tau, hKm, vKms);
         break;
     }
@@ -7040,6 +7056,11 @@ void SatelliteSim::launchFillShipLights()
     auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
     std::vector<ShipLight> lights;
     forEachShip(L, t, [&](const LBatch &B) {
+        // The deck floods' light on the sea around the ship, on low cloud and haze (engineLightAdd, like a pad's: one
+        // light ~15 m over the deck; the landing burn's own light is the rocket's, launchFillVisuals).
+        if (glm::length(LaunchImpl::shipEcef(B, t) - eyeE) < 300e3)
+            engineLightAdd(ecefToEci(shipPointEcef(B, t, 0.0, 0.0, B.deckM + 15.0), t), 0.3 * night,
+                           glm::vec3(1.0f, 0.9f, 0.76f), 40.0, glm::dvec3(0.0), 0.0, 0.0, false);
         if (glm::length(LaunchImpl::shipEcef(B, t) - eyeE) > 160e3)
             return;
         const launch::Vehicle &vh = L.cat.vehicles[B.veh];
@@ -7059,7 +7080,7 @@ void SatelliteSim::launchFillShipLights()
                     continue; // below the horizon
             }
             // At 1 km: a deck flood ~-3 (as the pads'), a beacon ~-2 flashing, navigation lights ~0 (2 nmi lamps).
-            const double m1 = sl.kind == 0 ? -3.0 : sl.kind == 1 ? -2.0 : 0.0;
+            const double m1 = sl.kind == 0 ? -2.0 : sl.kind == 1 ? -1.5 : 0.0;
             double blink = 1.0;
             if (sl.kind == 1)
             {
@@ -7251,12 +7272,12 @@ void SatelliteSim::launchFillShipGlow(GpuDustCloud *out, uint32_t &n, double toS
         const bool jack = L.cat.vehicles[B.veh].ships[(size_t)B.ship].model == "ship_jacklyn";
         // The lit deck (the landing area, a few m thick so it reads from a grazing view).
         const glm::dvec3 Pd = ecefToEci((kR + B.deckM + 1.5) * up + (jack ? 0.0 : -6.0) * bow, t);
-        add(Pd, ecefToEci(up, t), 2.0, jack ? 16.0 : 22.0, -2.0, glm::vec3(1.0f, 0.88f, 0.7f));
+        add(Pd, ecefToEci(up, t), 2.0, jack ? 16.0 : 22.0, -4.0, glm::vec3(1.0f, 0.88f, 0.7f));
         // The booster on it (white, floodlit): a column ~40 m tall.
         if (t >= B.tLand)
         {
             const glm::dvec3 Pb = ecefToEci((kR + B.deckM + 21.0) * up, t);
-            add(Pb, ecefToEci(up, t), 12.0, 2.2, -1.5, glm::vec3(1.0f, 0.92f, 0.8f));
+            add(Pb, ecefToEci(up, t), 12.0, 2.2, -3.5, glm::vec3(1.0f, 0.92f, 0.8f));
         }
     });
 }
