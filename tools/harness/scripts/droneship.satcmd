@@ -1,0 +1,85 @@
+# Booster landings at sea (2026-10-20, CLAUDE.md "Launches" > Droneships): a Falcon 9 booster onto its droneship by
+# day (from a boat 1.5 km off, then from aircraft at 3 km and 10 km) and by night, New Glenn onto Jacklyn, the ship
+# heading home with the booster on deck. `launch check` reports the recoveries (counts, downrange, the touchdown).
+#   python tools/harness/run.py tools/harness/scripts/droneship.satcmd
+wait 30
+launch droneship vehicle=falcon9 day=1 lead=40 dist_m=1500 az=70 h=6
+time pause
+wait 30
+launch check
+camera fov=25
+wait settle
+capture f9_day_t-40
+time add 26
+launch select kind=booster nearest=1
+camera look sel
+wait settle
+capture f9_day_t-14
+time add 8
+camera look sel
+wait settle
+capture f9_day_t-6
+state f9_day_t-6
+time add 6
+camera el=4
+wait settle
+capture f9_day_touchdown
+state f9_day_touchdown
+time add 120
+wait settle
+capture f9_day_after
+perf frames=60 name=f9_day_boat
+launch droneship vehicle=falcon9 day=1 lead=8 dist_m=4000 az=110 h=3000
+time pause
+camera fov=12
+wait settle
+capture f9_day_aircraft3k_t-8
+launch select kind=booster nearest=1
+time add 9
+wait settle
+capture f9_day_aircraft3k_touchdown
+state f9_sel_touchdown
+time add 3600
+wait settle
+state f9_sel_1h
+launch droneship vehicle=falcon9 day=1 lead=8 dist_m=6000 az=150 h=10000
+time pause
+camera fov=6
+wait settle
+capture f9_day_aircraft10k_touchdown_t-8
+time add 10800
+wait settle
+launch ships
+capture f9_day_aircraft10k_3h_home
+launch droneship vehicle=falcon9 night=1 lead=14 dist_m=1500 az=70 h=6
+time pause
+camera fov=25
+wait settle
+capture f9_night_t-14
+time add 8
+launch select kind=booster nearest=1
+camera look sel
+wait settle
+capture f9_night_t-6
+time add 6
+camera el=3
+wait settle
+capture f9_night_touchdown
+time add 300
+wait settle
+capture f9_night_after
+perf frames=60 name=f9_night_boat
+launch droneship vehicle=new_glenn lead=20 dist_m=2000 az=60 h=8
+time pause
+camera fov=25
+wait settle
+capture ng_t-20
+time add 14
+launch select kind=booster nearest=1
+camera look sel
+wait settle
+capture ng_t-6
+time add 6
+wait settle
+capture ng_touchdown
+state ng_touchdown

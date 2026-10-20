@@ -1,0 +1,34 @@
+# The default bookmark "Starmind Deployment" (#9 of default_bookmarks.satcmd) on its own, plus a check that #8
+# ("Twilight Starship Launch") still frames a rocket (`launch state` -> rockets drawn).
+#   python tools/harness/run.py tools/harness/scripts/default_bookmark_starmind_deploy.satcmd --out harness_runs/bm_starmind
+#   then merge harness_runs/bm_starmind/bookmarks/bookmarks.json's default_starmind_deploy entry (+ its png) into
+#   data/bookmarks/
+window 1600x900
+bookmark list
+bookmark go 8
+wait settle
+wait 30
+launch state
+capture bm8_twilight_launch ui=on
+time add 20
+wait 20
+launch state
+capture bm8_twilight_launch_20s ui=on
+
+# 9. A sunlit Starmind deployment from Starship (2026-10-20): the ship's door open, the first AI1 satellites leaving
+#    the dispenser one by one (45 s apart) over the sunlit Earth. Paused: the ship flies on at 7.7 km/s
+#    from a free camera; press play to watch the next ones leave.
+drift default
+launch deploy filter=Starmind
+wait 5
+follow offset=-140,300,55
+follow aimat=-70,0,25
+camera fov=55
+time pause
+time add 110
+wait settle
+wait 40
+capture bm9_starmind_deploy ui=on
+bookmark add Starmind Deployment id=default_starmind_deploy scale=0 paused=1
+wait 5
+bookmark list

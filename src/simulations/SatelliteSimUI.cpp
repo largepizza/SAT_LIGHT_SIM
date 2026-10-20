@@ -14,6 +14,7 @@
 #include "clay.h"
 #include "UIPalette.h"
 
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -26,6 +27,7 @@
 #include <string>
 
 void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate); // SatelliteSim.cpp: "HH:MM:SS" UTC
+std::string fmtUtcReadable(double tJ2000);                              // SatelliteSimLaunches.cpp: "2036-11-22 03:39:52 UTC"
 
 // Icon index constants (match order passed to ui.loadIcons in buildUI's lazy-load block).
 static constexpr int kIconAngleLeft = 0;  // pixel--angle-left.png  → slow down
@@ -1746,7 +1748,7 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
              {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}},
               .floating = {.offset = {ox, oy},
                            .parentId = plotId.id,
-                           .zIndex = 11,
+                           .zIndex = 10, // = its window: drawn right after it, under any later window (stable z sort)
                            .attachPoints = {.element = elemPt, .parent = parentPt},
                            .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
                            .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID}})
@@ -2167,7 +2169,7 @@ void SatelliteSim::buildViewerMarkerLabels(int view)
               .cornerRadius = CLAY_CORNER_RADIUS(3),
               .floating = {.offset = {ex + r + 5.0f, ey - 0.5f * (float)fs(11) - 2.0f},
                            .parentId = imgId.id,
-                           .zIndex = 11,
+                           .zIndex = 10, // = its window (see the trace ticks)
                            .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_TOP},
                            .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
                            .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID}})
@@ -2291,7 +2293,19 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
     const bool isSelected = tracked && selectedSatIndex == viewerSatIndex;
 
     static const char *kInfoSectionNames[kInfoSectionCount] = {"STATUS", "BRIGHTNESS", "SKY POSITION", "ORBIT",
-                                                               "MODEL (TECHNICAL)", "3D VIEW", "PHOTOMETRY CHECK"};
+                                                               "MODEL (TECHNICAL)", "3D VIEW", "PHOTOMETRY CHECK", "MISSION"};
+    // MISSION (2026-10-20): the viewed object's launch timeline, refreshed 4x a second or when the object changes.
+    {
+        const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (wall - infoMissionWall_ > 0.25 || infoMissionIdx_ != viewerSatIndex)
+        {
+            infoMissionWall_ = wall;
+            infoMissionIdx_ = viewerSatIndex;
+            if (!tracked || !missionSubjectOfIndex(viewerSatIndex, infoMission_))
+                infoMission_ = MissionSubject{};
+        }
+    }
+    int msJumpIdx = -1, msJumpDir = 0; // a MISSION skip, applied after the layout
     static const char *kSatLabels[kViewerSatRows] = {"Type", "Model", "Size", "Mesh"};
     // A rocket stage, Starship's ship or a re-entry fireball (SelTransient): no orbit, no pass, no breakup.
     const bool viewTransient = tracked && (uint32_t)viewerSatIndex == transientSatIdx();
@@ -2440,7 +2454,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                     CLAY(CLAY_ID("ViewChipsMini"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}},
                                                     .floating = {.offset = {8, 8},
                                                                  .parentId = CLAY_ID("ViewerImageMini").id,
-                                                                 .zIndex = 12,
+                                                                 .zIndex = 10, // = its window: a window over this one hides them
                                                                  .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP,
                                                                                   .parent = CLAY_ATTACH_POINT_LEFT_TOP},
                                                                  .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID}})
@@ -2460,15 +2474,16 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                     uiStatTile("InfoTile", 3, "PHASE", tileVal(viewerPhotValue[4]), Pal::textPrimary);
                 }
                 // ── ACTIONS: never collapsed, never scrolled away (2026-10-19) ─────────────────────
-                // Row 1 acts on the viewed satellite (selecting it first: Trace and Track work on the selection);
-                // row 2 is the destructive pair, two clicks each.
+                // One row, four equal buttons (2026-10-20, the user: "line up the Explode button"): Trace pass, Go to,
+                // Track act on the viewed satellite (selecting it first: Trace and Track work on the selection), and
+                // Explode, in the danger colour, last.
                 if (tracked)
                 {
                     buttonRow(10, [&]()
                               {
                                   if (uiButton(inp, ui, "InfoActBtn", 0, "Trace pass",
                                                viewTransient ? "A rocket or a re-entry has no pass to trace" : "Plot this satellite's magnitude over its pass",
-                                               traceChrome.open && isSelected, actOk && !viewTransient))
+                                               traceChrome.open && isSelected, actOk && !viewTransient, true))
                                   {
                                       selectSatellite(viewerSatIndex);
                                       computeSelectedTrace();
@@ -2480,7 +2495,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                                                             selTransientKey == followTrKey));
                                   if (uiButton(inp, ui, "InfoActBtn", 1, following ? "Leave" : "Go to",
                                                following ? "Fly back to where you were" : "Fly to it and ride along",
-                                               following, actOk && (hasMesh || following)))
+                                               following, actOk && (hasMesh || following), true))
                                   {
                                       if (following)
                                           stopFollow(true);
@@ -2492,7 +2507,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                   }
                                   const bool tracking = trackActive && isSelected;
                                   if (uiButton(inp, ui, "InfoActBtn", 2, "Track", "Keep the camera on it as it crosses the sky",
-                                               tracking, actOk))
+                                               tracking, actOk, true))
                                   {
                                       if (tracking)
                                           stopTrack();
@@ -2501,14 +2516,12 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                           selectSatellite(viewerSatIndex);
                                           startTrack();
                                       }
-                                  } });
-                    buttonRow(11, [&]()
-                              {
+                                  }
                                   // One click (2026-10-19): the ASAT strike (a 20-kg interceptor through the collision
                                   // model) is gone from the UI; the harness keeps kind=asat for testing.
                                   const char *tip = viewTransient ? "Only a satellite or a piece of debris can be broken up"
                                                                   : "Break it up (NASA breakup model): its debris starts the Kessler cascade";
-                                  if (uiDangerButton(inp, ui, "InfoBreakBtn", 0, "Explode", tip, false, !viewTransient))
+                                  if (uiDangerButton(inp, ui, "InfoBreakBtn", 0, "Explode", tip, false, !viewTransient, true))
                                       infoExplodeSelected(kessler::EV_EXPLOSION); });
                 }
                 // ── The sections: only these scroll ──────────────────────────────────────────────
@@ -2524,6 +2537,10 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                     for (int i = 0; i < infoStatusCount; ++i)
                                         uiKV("InfoStatusKV", i, infoStatusLabel[i], infoStatusValue[i], lw,
                                              i == 0 ? &Pal::textPrimary : &Pal::volValue); });
+                    // ── MISSION: the launch timeline (rockets, boosters, trains, retirees, satellites in operations) ──
+                    if (infoMission_.ok)
+                        infoSection(kInfoMission, [&]()
+                                    { buildMissionTimeline(inp, ui, infoMission_, lw, msJumpIdx, msJumpDir); });
                     infoSection(kInfoBright, [&]()
                                 {
                                     for (int i = 0; i < kViewerPhotRows; ++i)
@@ -2599,6 +2616,128 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
         },
         [&]()
         { buildViewTitleIcons(inp, ui, false); }, isSelected);
+    if ((msJumpIdx >= 0 || msJumpDir != 0) && infoMission_.ok)
+    {
+        // Selecting the viewed object first (so the skip carries it), unless Go to rides it already.
+        if (!infoMission_.followed && selectedSatIndex != viewerSatIndex && !viewTransient)
+            selectSatellite(viewerSatIndex);
+        std::string m;
+        const bool ok = missionJump(infoMission_, msJumpDir, msJumpIdx, m);
+        snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", m.c_str());
+        screenshotToastTimer = ok ? 2.5f : 3.0f;
+        screenshotToastWarn = !ok;
+        infoMissionWall_ = -1e300;
+    }
+}
+
+// ─── buildMissionTimeline ────────────────────────────────────────────────────
+// A mission's milestones (missionSubjectOfIndex): the object and its mission, progress, Prev / Next, then one row per
+// milestone (label, T+ from lift-off or "in" / "ago", UTC, a skip button), the last one passed highlighted. Shared by
+// the Info window's MISSION section. A click sets jumpIdx (a row) or jumpDir (+1 / -1); the caller applies it after the
+// layout (it moves time).
+void SatelliteSim::buildMissionTimeline(const UIInput &inp, UIRenderer &ui, const MissionSubject &s, float lw,
+                                        int &jumpIdx, int &jumpDir)
+{
+    const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    int cur = -1;
+    for (size_t i = 0; i < s.ms.size(); ++i)
+        if (s.ms[i].t <= now)
+            cur = (int)i;
+    msTimelineText_.clear(); // last frame's strings: recorded by now (Clay keeps the pointers until then)
+    auto str = [&](const char *fmt, auto... args) -> const char * {
+        char b[256];
+        snprintf(b, sizeof(b), fmt, args...);
+        msTimelineText_.emplace_back(b);
+        return msTimelineText_.back().c_str();
+    };
+    auto clayStr = [](const char *p) { return Clay_String{false, (int32_t)strlen(p), p}; };
+    // The mission on its own line, wrapped (a uiKV value is one line: the title was cut).
+    CLAY_TEXT(clayStr(str("%s", s.title.c_str())),
+              CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
+    uiKV("InfoMsKV", 1, "Object", str("%s", s.what.c_str()), lw);
+    for (size_t f = 0; f < s.facts.size() && f < 6; ++f)
+        uiKV("InfoMsKV", 2 + (int)f, str("%s", s.facts[f].first.c_str()), str("%s", s.facts[f].second.c_str()), lw);
+    // Progress: through the subject's timeline (first to last milestone).
+    const double span = std::max(1.0, s.t1 - s.t0);
+    const float frac = (float)std::clamp((now - s.t0) / span, 0.0, 1.0);
+    uiKV("InfoMsKV", 9, "Progress", str("%.0f%%  (%d of %d milestones)", frac * 100.0f, cur + 1, (int)s.ms.size()), lw);
+    CLAY(CLAY_SIDI(CLAY_STRING("InfoMsBar"), 0), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(3)}},
+                                      .backgroundColor = Pal::trackBg})
+    {
+        CLAY(CLAY_SIDI(CLAY_STRING("InfoMsBar"), 1), {.layout = {.sizing = {CLAY_SIZING_PERCENT(frac), CLAY_SIZING_GROW(0)}},
+                                          .backgroundColor = Pal::progressFill}) {}
+    }
+    // Prev / Next.
+    const MissionMilestone *nx = nullptr;
+    for (const MissionMilestone &m : s.ms)
+        if (m.t - m.lead > now + 0.5)
+        {
+            nx = &m;
+            break;
+        }
+    bool anyPrev = false;
+    for (const MissionMilestone &m : s.ms)
+        if (m.t - m.lead < now - 1.5)
+            anyPrev = true;
+    CLAY(CLAY_SIDI(CLAY_STRING("InfoMsNav"), 100), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                   .padding = {0, 0, 4, 2},
+                                                   .childGap = 6,
+                                                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                   .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        char kp[24], kn[24];
+        snprintf(kp, sizeof(kp), "%s", keyDisplayName(keybindings[KB_MILESTONE_PREV].key));
+        snprintf(kn, sizeof(kn), "%s", keyDisplayName(keybindings[KB_MILESTONE_NEXT].key));
+        if (uiButton(inp, ui, "InfoMsNav", 0, "< Previous", str("Back to just before the previous milestone (%s)", kp), false,
+                     anyPrev, true))
+            jumpDir = -1;
+        if (uiButton(inp, ui, "InfoMsNav", 1, nx ? str("Next: %.26s%s >", nx->label.c_str(), nx->label.size() > 26 ? "..." : "") : "Next >",
+                     str("Skip to %.0f s before \"%s\", at 1x (%s)", nx ? nx->lead : 10.0, nx ? nx->label.c_str() : "", kn), false,
+                     nx != nullptr, true))
+            jumpDir = 1;
+    }
+    const double tRef = s.roster ? 0.0 : s.ms.front().t; // T+ from the mission's first milestone (lift-off)
+    for (size_t i = 0; i < s.ms.size(); ++i)
+    {
+        const MissionMilestone &m = s.ms[i];
+        const bool isCur = (int)i == cur, past = m.t <= now;
+        CLAY(CLAY_SIDI(CLAY_STRING("InfoMsRow"), (uint32_t)i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                              .padding = {4, 2, 2, 2},
+                                                              .childGap = 6,
+                                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                              .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                                   .backgroundColor = isCur ? Pal::rowHighlight : Clay_Color{0, 0, 0, 0},
+                                                   .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            CLAY(CLAY_SIDI(CLAY_STRING("InfoMsRow"), (uint32_t)i + 0x1000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                            .childGap = 1,
+                                                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+            {
+                CLAY_TEXT(clayStr(str("%s%s", isCur ? "> " : "", m.label.c_str())),
+                          CLAY_TEXT_CONFIG({.textColor = isCur ? Pal::textPrimary : past ? Pal::textDim : Pal::volValue,
+                                            .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
+                char rel[48], utc[48];
+                const double d = s.roster ? m.t - now : m.t - tRef;
+                const long long a = (long long)std::floor(std::abs(d));
+                const char *pre = s.roster ? (d >= 0.0 ? "in " : "") : (d >= 0.0 ? "T+" : "T-");
+                const char *post = s.roster && d < 0.0 ? " ago" : "";
+                if (a >= 86400)
+                    snprintf(rel, sizeof(rel), "%s%lldd %02lldh%s", pre, a / 86400, (a % 86400) / 3600, post);
+                else if (a >= 3600)
+                    snprintf(rel, sizeof(rel), "%s%lldh %02lldm%s", pre, a / 3600, (a % 3600) / 60, post);
+                else if (a >= 60)
+                    snprintf(rel, sizeof(rel), "%s%lldm %02llds%s", pre, a / 60, a % 60, post);
+                else
+                    snprintf(rel, sizeof(rel), "%s%llds%s", pre, a, post);
+                snprintf(utc, sizeof(utc), "%s", fmtUtcReadable(m.t).c_str());
+                CLAY_TEXT(clayStr(str("%s   %s", rel, utc)),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            }
+            if (uiButton(inp, ui, "InfoMsGo", (int)i, past ? "Back" : "Skip",
+                         str("%.0f s before \"%s\", at 1x", m.lead, m.label.c_str())))
+                jumpIdx = (int)i;
+        }
+    }
 }
 
 // ─── buildViewPopoutWindow (the maximized 3D view) ───────────────────────────
@@ -2638,7 +2777,7 @@ void SatelliteSim::buildViewPopoutWindow(const UIInput &inp, UIRenderer &ui)
                 CLAY(CLAY_ID("ViewChipsPop"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}},
                                                .floating = {.offset = {10, 10},
                                                             .parentId = CLAY_ID("ViewerImagePop").id,
-                                                            .zIndex = 12,
+                                                            .zIndex = 10,
                                                             .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP,
                                                                              .parent = CLAY_ATTACH_POINT_LEFT_TOP},
                                                             .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID}})
@@ -2877,6 +3016,7 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
         }
         return clicked;
     };
+    int followMsDir = 0;
     CLAY(CLAY_ID("FollowHud"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                            .padding = {12, 12, 6, 6},
                                            .childGap = 10,
@@ -2902,12 +3042,61 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
                  keyDisplayName(keybindings[KB_FOLLOW_RETURN].key));
         if (chipButton("FollowReturnBtn", "Return", hovFollowReturn, retTip))
             followReturn();
+        // A launch object (a rocket, its booster, a train member, a retiree, a satellite with a launch on record): its
+        // mission's milestones (2026-10-20). Skips keep Go to on the object at the new time.
+        {
+            const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            if (wall - followMissionWall_ > 0.25)
+            {
+                followMissionWall_ = wall;
+                if (!missionSubjectOfIndex(followSatIndex, followMission_))
+                    followMission_ = MissionSubject{};
+                followMission_.followed = true;
+            }
+            if (followMission_.ok)
+            {
+                const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+                const MissionMilestone *nx = nullptr;
+                bool anyPrev = false;
+                for (const MissionMilestone &m : followMission_.ms)
+                {
+                    if (!nx && m.t - m.lead > now + 0.5)
+                        nx = &m;
+                    if (m.t - m.lead < now - 1.5)
+                        anyPrev = true;
+                }
+                static char prevTip[96], nextTip[160], nextLab[64];
+                snprintf(prevTip, sizeof(prevTip), "Back to just before the previous mission milestone (%s)",
+                         keyDisplayName(keybindings[KB_MILESTONE_PREV].key));
+                int dir = 0;
+                if (anyPrev && chipButton("FollowMsPrevBtn", "<", hovFollowMsPrev, prevTip))
+                    dir = -1;
+                if (nx)
+                {
+                    snprintf(nextLab, sizeof(nextLab), "Next: %.18s%s >", nx->label.c_str(), nx->label.size() > 18 ? "..." : "");
+                    snprintf(nextTip, sizeof(nextTip), "%.0f s before \"%s\", at 1x (%s)", nx->lead, nx->label.c_str(),
+                             keyDisplayName(keybindings[KB_MILESTONE_NEXT].key));
+                    if (chipButton("FollowMsNextBtn", nextLab, hovFollowMsNext, nextTip))
+                        dir = 1;
+                }
+                followMsDir = dir; // applied after the layout (it rewrites followLabel, which Clay still holds)
+            }
+        }
         if (chipButton("FollowStayBtn", "Stay here", hovFollowStay, stayTip))
             stopFollowHere();
         if (chipButton("FollowExitBtn", "Exit", hovFollowExit, "Return to the ground where you were"))
             stopFollow(true);
     }
     captureLaidOut(ui, CLAY_ID("FollowHud"), inp.screenW * 0.5f - 250.0f, 12.0f, 500.0f, 34.0f);
+    if (followMsDir != 0)
+    {
+        std::string m;
+        const bool ok = missionJump(followMission_, followMsDir, -1, m);
+        snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", m.c_str());
+        screenshotToastTimer = ok ? 2.5f : 3.0f;
+        screenshotToastWarn = !ok;
+        followMissionWall_ = -1e300;
+    }
 }
 
 // ─── buildTraceButton ────────────────────────────────────────────────────────
@@ -2971,13 +3160,17 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
 
     bool justClosed = false;
     Clay_String titleStr{false, (int32_t)strlen(title), title};
+    // The panel's alpha is the "Window opacity" setting (2026-10-20): the themes' 245 let a window under another show
+    // through it.
+    Clay_Color winBg = Pal::panelSolid;
+    winBg.a = 255.0f * std::clamp(windowOpacity, 0.6f, 1.0f);
 
     CLAY(CLAY_IDI("GenWin", winId), {.layout = {
                                          .sizing = {CLAY_SIZING_FIXED(chrome.w), CLAY_SIZING_FIXED(chrome.h)},
                                          .padding = {0, 0, 0, 0},
                                          .childGap = 0,
                                          .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                     .backgroundColor = Pal::panelSolid,
+                                     .backgroundColor = winBg,
                                      .cornerRadius = CLAY_CORNER_RADIUS(Style::windowCornerRadius),
                                      .floating = {.offset = {chrome.x, chrome.y}, .zIndex = 10, .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_CAPTURE, .attachTo = CLAY_ATTACH_TO_ROOT},
                                      .border = {.color = Style::borderColor, .width = CLAY_BORDER_ALL(Style::borderWidthPx)}})
@@ -3889,6 +4082,12 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                             "Panel colours. Night red keeps the whole interface dim red, to save dark adaptation");
         c >= 0)
         uiTheme = c; // applied next frame (syncUiTheme)
+    {
+        float o = windowOpacity;
+        if (stepper("WinOpacity", "Window opacity", o, 0.6f, 1.0f, 0.05f, "%.0f%%", 100.0f,
+                    "The windows' background. 100%: opaque (a window over another hides it)"))
+            windowOpacity = std::clamp(o, 0.6f, 1.0f);
+    }
 
     // ── SCREENSHOTS: keep the interface in the picture (requestScreenshot / reportTakeShot) ──────────────────
     uiSection("DispSec", 6, "SCREENSHOTS");
@@ -4505,14 +4704,15 @@ bool SatelliteSim::uiButton(const UIInput &inp, UIRenderer &ui, const char *key,
 }
 
 bool SatelliteSim::uiDangerButton(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, const char *tip,
-                                  bool armed, bool enabled)
+                                  bool armed, bool enabled, bool grow)
 {
     const Clay_ElementId id = CLAY_SIDI(kitStr(key), (uint32_t)idx);
     const bool hovPrev = enabled && uiHov_[id.id];
     const Clay_Color bg = !enabled ? kBtnOff : armed ? Pal::btnDangerArmed : (hovPrev ? Pal::btnDangerHv : Pal::btnDanger);
     bool clicked = false;
-    CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(20))},
-                         .padding = {10, 10, 0, 0},
+    // The same size as uiButton (2026-10-20: Explode sits in one row with Trace pass / Go to / Track).
+    CLAY(id, {.layout = {.sizing = {grow ? CLAY_SIZING_GROW(0) : CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(20))},
+                         .padding = {8, 8, 0, 0},
                          .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
               .backgroundColor = bg,
               .cornerRadius = CLAY_CORNER_RADIUS(3),
@@ -7851,6 +8051,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         settingsActiveTab = std::clamp(d.value("active_tab", settingsActiveTab), 0, kSettingsTabCount - 1);
         if (d.contains("ui_theme") && d["ui_theme"].is_string())
             uiTheme = (int)uiThemeFromKey(d["ui_theme"].get<std::string>().c_str());
+        windowOpacity = std::clamp(d.value("window_opacity", windowOpacity), 0.6f, 1.0f);
         int unitVal = d.value("unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0);
         unitSystem = unitVal == 1 ? UnitSystem::Imperial : UnitSystem::Metric;
         // Feature preference, not a graphics-tuning value — unconditional, not gated behind
@@ -8464,6 +8665,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"active_tab", settingsActiveTab},
         {"unit_system", unitSystem == UnitSystem::Imperial ? 1 : 0},
         {"ui_theme", kUiThemeKeys[std::clamp(uiTheme, 0, (int)UiTheme::Count - 1)]},
+        {"window_opacity", windowOpacity},
         {"play_intro_on_startup", playIntroOnStartup},
         {"tutorial_done", tutorialDone},
         {"ask_graphics_mode", askGraphicsModeOnStartup},

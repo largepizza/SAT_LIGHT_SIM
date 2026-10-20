@@ -112,6 +112,28 @@ bool Catalog::load(const std::string &path, std::string &err)
                 vh.fairingCenter = glm::dvec3(v["fairing_center_m"][0].get<double>(), v["fairing_center_m"][1].get<double>(),
                                               v["fairing_center_m"][2].get<double>());
             vh.doorM = v.value("door_m", vh.doorM);
+            vh.droneDistKm = std::max(v.value("droneship_km", vh.droneDistKm), 0.0);
+            vh.rtlsMaxKg = std::max(v.value("rtls_max_kg", vh.rtlsMaxKg), 0.0);
+            if (v.contains("landing_ships"))
+                for (const auto &ls : v["landing_ships"])
+                {
+                    Vehicle::LandingShip sh;
+                    sh.name = ls.value("name", std::string("droneship"));
+                    sh.model = ls.value("model", std::string("ship_droneship"));
+                    sh.deckM = ls.value("deck_m", sh.deckM);
+                    if (ls.contains("sites"))
+                        for (const auto &s : ls["sites"])
+                        {
+                            const int k = siteIdx(s.get<std::string>());
+                            if (k < 0)
+                            {
+                                err = "vehicle " + vh.id + ": landing ship " + sh.name + ": unknown site " + s.get<std::string>();
+                                return false;
+                            }
+                            sh.sites.push_back(k);
+                        }
+                    vh.ships.push_back(sh);
+                }
             vehicles.push_back(vh);
         }
         auto vehIdx = [&](const std::string &id) {
@@ -150,6 +172,10 @@ bool Catalog::load(const std::string &path, std::string &err)
                 pg.deorbitDays[1] = p["deorbit_days"][1].get<double>();
             }
             pg.batchGapDays = p.value("batch_gap_days", pg.batchGapDays);
+            if (p.contains("payload_mass_kg"))
+                pg.payloadMassKg = p["payload_mass_kg"].get<double>();
+            else if (p.contains("sat_mass_kg"))
+                pg.payloadMassKg = p["sat_mass_kg"].get<double>() * (double)pg.payload;
             if (p.contains("crew"))
             {
                 const auto &cr = p["crew"];
@@ -225,8 +251,13 @@ double airDensity(double hM)
 }
 
 // The booster's flight: the ascent's closed form to MECO, then integrated (gravity, drag, the burns).
-Track boosterTrack(const Vehicle &vh)
+// recovery: 0 expendable, 1 back to the pad (x = 0; a tower catch stops catch_m above the mount), 2 downrange: a short
+// retrograde trim burn (when the ballistic arc overshoots) puts it down droneDistKm out, on a deck hLand high.
+Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
 {
+    const int rec = recovery < 0 ? vh.recovery : recovery;
+    if (hLand < 0.0)
+        hLand = rec == 2 ? (vh.ships.empty() ? 3.0 : vh.ships[0].deckM) : rec == 1 ? vh.catchM : 0.0;
     Track tr;
     tr.dt = 0.5;
     const double t1 = vh.t1, h1 = vh.h1, x1 = vh.x1;
@@ -239,14 +270,16 @@ Track boosterTrack(const Vehicle &vh)
         tr.burn.push_back(BURN_ASCENT);
     }
     const glm::dvec2 p1(x1, h1), v1(3.0 * x1 / t1, 2.0 * h1 / t1);
-    // After MECO: integrated. The boostback's target speed is found by a few shots (the landing x -> 0).
-    auto fly = [&](double vBack, Track *out) {
+    // After MECO: integrated. The boostback's target speed is found by a few shots (the landing x -> the target).
+    auto fly = [&](double vBack, bool doBoost, Track *out) {
         glm::dvec2 p = p1, v = v1;
-        bool boost = vh.recovery == 1, entryDone = false, landing = false;
+        bool boost = doBoost, entryDone = false, landing = false;
         double entryT = -1.0;
+        double lt0 = 0.0, lT = 1.0;  // the landing burn: its start and length
+        glm::dvec2 lp0(0.0), lv0(0.0);
         const double dt = 0.05;
         double t = t1;
-        double rec = t1;
+        double rec2 = t1;
         const double g = 9.81, k = 9.81 / (280.0 * 280.0);
         for (int it = 0; it < 200000; ++it)
         {
@@ -254,7 +287,7 @@ Track boosterTrack(const Vehicle &vh)
             glm::dvec2 a(0.0, -g);
             const double spd = glm::length(v);
             a -= k * (airDensity(p.y) / 1.225) * spd * v; // drag
-            if (vh.recovery == 0)
+            if (rec == 0)
             {
                 // Expendable: falls away; drawn until it breaks up low in the atmosphere.
                 if (p.y < 30000.0 && v.y < 0.0)
@@ -264,7 +297,7 @@ Track boosterTrack(const Vehicle &vh)
             {
                 if (boost && t > t1 + 12.0)
                 {
-                    // Boostback: horizontal thrust toward the target speed.
+                    // Boostback (RTLS) or a droneship mission's trim: horizontal thrust toward the target speed.
                     const double dv = vBack - v.x;
                     if (std::abs(dv) < 1.0)
                         boost = false;
@@ -278,7 +311,8 @@ Track boosterTrack(const Vehicle &vh)
                 {
                     if (entryT < 0.0)
                         entryT = t;
-                    if (t - entryT < 22.0)
+                    // (22 s, longer while still fast: up to 40 s above 900 m/s, a droneship booster arriving from far downrange)
+                    if (t - entryT < 22.0 || (spd > 900.0 && t - entryT < 40.0))
                     {
                         a -= 28.0 * v / std::max(spd, 1.0);
                         b = BURN_ENTRY;
@@ -286,19 +320,34 @@ Track boosterTrack(const Vehicle &vh)
                     else
                         entryDone = true;
                 }
-                // Landing burn: a suicide-burn profile (the vertical speed that stops at the ground at aL), thrust up only.
-                // A tower catch stops at hC above the mount (the chopsticks take it there), not on the ground.
-                const double aL = 30.0;
-                const double hC = vh.recovery == 1 ? vh.catchM : 0.0;
-                if (!landing && v.y < 0.0 && p.y - hC < spd * spd / (2.0 * aL) + 300.0 && p.y < 15000.0)
-                    landing = true;
+                // Landing burn (2026-10-20): a constant deceleration that brings BOTH components of the velocity to
+                // zero together at hC (a tower catch stops hC above the mount, a droneship on its deck), started when
+                // that deceleration reaches aL (from 8 km down: above it the air has yet to slow the booster; a
+                // faster arrival takes a harder burn, ~20 s from 8 km). The first cut flew a vertical suicide-burn profile with a 300-m margin
+                // and an independent horizontal damping: a booster arriving at ~900 m/s down and ~1300 m/s across (a
+                // droneship's: the entry burn removes ~600 m/s) touched down at ~40 m/s down and ~360 m/s across.
+                const double aL = 25.0;
+                const double hC = hLand;
+                if (!landing && entryDone && v.y < 0.0 && p.y > hC && p.y - hC < 8000.0)
+                {
+                    const double h = p.y - hC;
+                    if (std::max(v.y * v.y, std::abs(v.x * v.y)) >= 2.0 * aL * h)
+                    {
+                        landing = true;
+                        lt0 = t;
+                        lp0 = p;
+                        lv0 = v;
+                        lT = 2.0 * h / std::max(-v.y, 1.0);
+                    }
+                }
                 if (landing)
                 {
-                    const double vzD = -std::min(0.85 * std::sqrt(2.0 * aL * std::max(p.y - hC, 0.0)) + 1.5, 400.0);
-                    const double thrust = std::clamp(g + (vzD - v.y) * 1.5, 0.0, aL + g);
-                    a = glm::dvec2(std::clamp(-v.x * 0.6, -aL, aL), thrust - g);
-                    b = BURN_LANDING;
-                    if (p.y <= hC + 0.5)
+                    // Analytic: p = p0 + v0 s + a s^2 / 2 with a = -v0 / T (ends at rest on hC: p0.y + v0.y T / 2 = hC).
+                    const double sN = std::min(t + dt - lt0, lT);
+                    p = lp0 + lv0 * sN - 0.5 * lv0 * (sN * sN / lT);
+                    v = lv0 * (1.0 - sN / lT);
+                    t += dt;
+                    if (sN >= lT)
                     {
                         if (out)
                         {
@@ -309,6 +358,14 @@ Track boosterTrack(const Vehicle &vh)
                         }
                         return p.x;
                     }
+                    if (out && t >= rec2 + out->dt - 1e-9)
+                    {
+                        rec2 += out->dt;
+                        out->p.push_back(p);
+                        out->v.push_back(v);
+                        out->burn.push_back(BURN_LANDING);
+                    }
+                    continue;
                 }
             }
             v += a * dt;
@@ -316,9 +373,9 @@ Track boosterTrack(const Vehicle &vh)
             t += dt;
             if (p.y <= 0.0)
                 break;
-            if (out && t >= rec + out->dt - 1e-9)
+            if (out && t >= rec2 + out->dt - 1e-9)
             {
-                rec += out->dt;
+                rec2 += out->dt;
                 out->p.push_back(p);
                 out->v.push_back(v);
                 out->burn.push_back(b);
@@ -326,30 +383,55 @@ Track boosterTrack(const Vehicle &vh)
         }
         return p.x;
     };
-    double vBack = 0.0;
-    if (vh.recovery == 1)
+    double vBack = 0.0, target = 0.0;
+    bool doBoost = false;
+    if (rec == 1)
     {
-        // Secant on the boostback speed for a landing at x = 0 (the pad / the tower).
+        // Secant on the boostback speed for a landing at x = 0 (the pad / the tower / its landing zone).
+        doBoost = true;
         double va = -0.25 * v1.x, vb = -0.6 * v1.x;
-        double fa = fly(va, nullptr), fb = fly(vb, nullptr);
+        double fa = fly(va, true, nullptr), fb = fly(vb, true, nullptr);
         for (int i = 0; i < 12 && std::abs(fb) > 50.0 && std::abs(fb - fa) > 1e-6; ++i)
         {
             const double vc = vb - fb * (vb - va) / (fb - fa);
             va = vb;
             fa = fb;
             vb = std::clamp(vc, -3.0 * v1.x, v1.x);
-            fb = fly(vb, nullptr);
+            fb = fly(vb, true, nullptr);
         }
         vBack = vb;
     }
-    else if (vh.recovery == 2)
-        vBack = 0.55 * v1.x; // a short boostback: lands ~downrange on the droneship
-    const size_t n0 = tr.p.size();
-    fly(vBack, &tr);
-    // The return lands exactly on the pad: the residual is taken out smoothly after the boostback.
-    if (vh.recovery == 1 && tr.landed && tr.p.size() > n0 + 2)
+    else if (rec == 2)
     {
-        const double resid = tr.p.back().x;
+        // No boostback when the arc falls short of the ship's station (the ship waits where the booster comes down);
+        // else a short retrograde trim, secant-solved on the speed it leaves the booster with (2026-10-20: it aimed
+        // a boostback at 0.55 x the MECO speed that was never burned).
+        const double xBal = fly(v1.x, false, nullptr);
+        target = vh.droneDistKm * 1000.0;
+        if (target > 0.0 && xBal > target + 200.0)
+        {
+            doBoost = true;
+            double va = v1.x, fa = xBal - target;
+            double vb = v1.x * target / xBal, fb = fly(vb, true, nullptr) - target;
+            for (int i = 0; i < 14 && std::abs(fb) > 20.0 && std::abs(fb - fa) > 1e-6; ++i)
+            {
+                const double vc = vb - fb * (vb - va) / (fb - fa);
+                va = vb;
+                fa = fb;
+                vb = std::clamp(vc, 0.0, v1.x);
+                fb = fly(vb, true, nullptr) - target;
+            }
+            vBack = vb;
+        }
+        else
+            target = -1.0; // where it comes down
+    }
+    const size_t n0 = tr.p.size();
+    fly(vBack, doBoost, &tr);
+    // It lands exactly on its target: the residual is taken out smoothly after the boostback.
+    if ((rec == 1 || (rec == 2 && target > 0.0)) && tr.landed && tr.p.size() > n0 + 2)
+    {
+        const double resid = tr.p.back().x - (rec == 1 ? 0.0 : target);
         for (size_t i = n0; i < tr.p.size(); ++i)
         {
             const double s = (double)(i - n0) / (double)(tr.p.size() - 1 - n0);
@@ -448,8 +530,9 @@ bool Parcel::at(double a, glm::dvec3 &cOut, double &sOut, double &condOut, doubl
 
 Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double m, double kappa, double albedo,
                   const glm::dvec3 &axis, double len, double maxAge, const glm::dvec3 &windDir, double windGain,
-                  double vExp, double windPhase)
+                  double vExp, double windPhase, const ParcelOpts *opts)
 {
+    const ParcelOpts O = opts ? *opts : ParcelOpts{};
     Parcel pc;
     pc.t0 = t0;
     pc.m = m;
@@ -459,11 +542,11 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
     pc.len = len;
     const glm::dvec3 omega(0.0, 0.0, 7.2921159e-5);
     glm::dvec3 p = p0, v = v0;
-    double sig = 8.0;
+    double sig = O.sig0;
     const double h0 = glm::length(p0) - kR;
     double Me = airDensity(h0) * 4.18879 * sig * sig * sig;
     // Evaporation: a low trail dissipates in minutes, a stratospheric one lingers, the high exhaust's ice longest.
-    const double tauEvap = h0 < 3000.0 ? 420.0 : h0 < 18000.0 ? 1500.0 : 3600.0;
+    const double tauEvap = O.evapS > 0.0 ? O.evapS : h0 < 3000.0 ? 420.0 : h0 < 18000.0 ? 1500.0 : 3600.0;
     // Condensation: the trail is not visible at the nozzle - the gas has to cool as it expands (soot and droplets low
     // down within a fraction of a second; the ice of the high exhaust over a couple of seconds). Without it the
     // newest exhaust, still metres wide, was an opaque white needle at the stage.
@@ -510,7 +593,9 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         const glm::dvec3 vr = v - w;
         // Expansion: the gas's own (km/s into vacuum) while it outweighs the air it has taken in, then diffusion.
         const double Kd = hk < 15.0 ? 25.0 : hk < 60.0 ? 8.0 : 400.0;
-        const double sigDot = vExp * (m / M) + Kd / sig;
+        // (turbulent growth at the parcel's speed through the air, capped at 60 m/s: a young exhaust parcel still moves
+        // at km/s, and uncapped it swelled to hundreds of metres in a second)
+        const double sigDot = vExp * (m / M) + Kd / sig + O.growK * std::min(glm::length(vr), 60.0);
         // Entrainment: the air swept by the growing surface and the parcel's motion through the air. High up the
         // air is so thin (mean free path ~1 km at 200 km) that the exhaust largely passes through it: the coupling
         // weakens, and the bell grows to hundreds of km as seen in twilight launches.
@@ -525,6 +610,8 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         // the exhaust's share (the air it carries is neutral); Coriolis and centrifugal in the Earth-fixed frame.
         const double g = kGM / (r * r);
         glm::dvec3 acc = -g * up * (m / M) - 2.0 * glm::cross(omega, v) - glm::cross(omega, glm::cross(omega, p)) * (m / M);
+        if (O.buoy > 0.0)
+            acc += up * (O.buoy * std::exp(-age / O.buoyS));
         const double dM = dMe * dt;
         v = (M * (v + acc * dt) + dM * w) / (M + dM);
         Me += dM;
@@ -532,10 +619,10 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         p += v * dt;
         // The ground: the exhaust spreads along it (the pad's ground cloud).
         const double hn = glm::length(p) - kR;
-        if (hn < 3.0)
+        if (hn < O.groundM)
         {
             const glm::dvec3 un = glm::normalize(p);
-            p = un * (kR + 3.0);
+            p = un * (kR + O.groundM);
             const double vrad = glm::dot(v, un);
             if (vrad < 0.0)
                 v -= 1.2 * vrad * un; // a little rebound: it billows up

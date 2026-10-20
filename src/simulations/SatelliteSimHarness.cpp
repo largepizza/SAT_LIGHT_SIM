@@ -1659,6 +1659,23 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     if (n == "select")
     {
         const std::string sub = lower(pos(0));
+        // A roster satellite destroyed or re-entered by now cannot be selected (selectSatellite ignores it): an error,
+        // not "selected" with the previous selection left standing (2026-10-20).
+        auto selectOrFail = [&](int idx, const char *what) {
+            const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            double tGone = 0.0;
+            const int fate = idx >= 0 && idx < (int)activeSatCount ? rosterFateAt((uint32_t)idx, tNow, &tGone) : 0;
+            if (fate >= 2)
+            {
+                char b[64];
+                const double h = (tNow - tGone) / 3600.0;
+                snprintf(b, sizeof(b), "%.1f h ago", h);
+                fail(std::string(what) + ": satellite " + std::to_string(idx) + " is " + rosterFateName(fate) + " (" + b + ")");
+            }
+            selectSatellite(idx);
+            if (selectedSatIndex != idx)
+                fail(std::string(what) + ": satellite " + std::to_string(idx) + " could not be selected");
+        };
         if (sub == "none")
         {
             selectedSatIndex = -1;
@@ -1669,7 +1686,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const int idx = (int)parseNum(pos(1), "select sat");
             if (idx < 0 || idx >= (int)satOrbits.size())
                 fail("select sat: index out of range (0.." + std::to_string(satOrbits.size() - 1) + ")");
-            selectSatellite(idx);
+            selectOrFail(idx, "select sat");
         }
         else if (sub == "at")
         {
@@ -1703,7 +1720,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 idx = pickViewerSatellite(ci); // the member highest in the observer's sky
             if (idx < 0)
                 fail("select const: constellation has no satellites");
-            selectSatellite(idx);
+            selectOrFail(idx, "select const");
         }
         else if (sub == "planet")
         {
@@ -2418,6 +2435,47 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["selected"] = selectedSatIndex;
             return Status::Done;
         }
+        if (sub == "milestone" || sub == "milestones")
+        {
+            // missions milestone [list|next|prev|<index>] [row=<ongoing row>] (2026-10-20): the mission timeline of
+            // Go to's object, else the selection's (row=: an Ongoing launch row's); next / prev / an index skip to just
+            // before that milestone at 1x, keeping the selection / Go to on the object.
+            const std::string what = lower(pos(1).empty() ? std::string("list") : pos(1));
+            const bool isList = what == "list" || what == "state";
+            int dir = 0, index = -1;
+            if (what == "next")
+                dir = 1;
+            else if (what == "prev" || what == "previous")
+                dir = -1;
+            else if (!isList)
+                index = (int)parseNum(what, "missions milestone");
+            std::string msg;
+            MissionSubject s;
+            if (c.has("row"))
+            {
+                missionsRefresh(true);
+                const int row = (int)c.num("row", 0);
+                if (row < 0 || row >= (int)msOngoing.size() || (msOngoing[(size_t)row].cat != 0 && msOngoing[(size_t)row].cat != 2))
+                    fail("missions milestone: row " + std::to_string(row) + " is not a launch in flight (see `missions` ongoing)");
+                if (!isList && !missionsMilestone(row, dir, index, msg))
+                    fail("missions milestone: " + msg);
+                missionSubjectOfBatch(msOngoing[(size_t)row].key, s, kMsPayload);
+            }
+            else
+            {
+                if (!missionSubjectNow(s))
+                    fail("missions milestone: the selection / Go to's object has no mission timeline");
+                if (!isList)
+                {
+                    if (!missionJump(s, dir, index, msg))
+                        fail("missions milestone: " + msg);
+                    missionSubjectNow(s);
+                }
+            }
+            r["mission"] = missionSubjectJson(s);
+            r["message"] = isList ? s.title : msg;
+            return Status::Done;
+        }
         if (sub == "tab")
         {
             const std::string t = lower(pos(1));
@@ -2426,7 +2484,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             uiVisible = true;
             return Status::Done;
         }
-        fail("missions: state | go <index|twilight|crew|fury|fury_night> [watch=1] | ongoing <row> [go=1] | tab upcoming|ongoing|controls");
+        fail("missions: state | go <index|twilight|crew|fury|fury_night> [watch=1] | ongoing <row> [go=1] | "
+             "milestone [list|next|prev|<i>] [row=<ongoing row>] | tab upcoming|ongoing|controls");
     }
     if (n == "launch")
     {
@@ -2449,7 +2508,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             std::string msg;
             const std::string when = lower(c.str("when", c.num("twilight", 0.0) > 0.5 ? "twilight" : "any"));
             if (!launchGoToNextWhen(msg, when == "twilight" ? 1 : when == "day" ? 2 : when == "night" ? 3 : 0,
-                                    c.str("vehicle", "")))
+                                    c.str("vehicle", ""), c.num("pad_dist_m", 0.0), c.num("lead", 30.0),
+                                    c.num("side", 1.0)))
                 fail("launch next: " + msg);
             r["message"] = msg;
             return Status::Done;
@@ -2459,6 +2519,25 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             std::string msg;
             if (!launchGoToShipEntry(msg))
                 fail("launch ship: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
+        if (sub == "ships")
+        {
+            r["ships"] = launchShipsJson();
+            r["message"] = std::to_string(r["ships"].size()) + " landing ships at sea";
+            return Status::Done;
+        }
+        if (sub == "droneship")
+        {
+            // launch droneship [lead=60] [dist_m=1500] [az=60] [h=5] [day=1|night=1] [vehicle=falcon9|new_glenn]: the next
+            // booster landing on a ship (2026-10-20): the clock lead s before touchdown at 1x, the observer dist_m from
+            // the ship toward az (clockwise from its bow) h m above the sea, looking just above the deck.
+            std::string msg;
+            const int dn = c.num("day", 0.0) > 0.5 ? 1 : c.num("night", 0.0) > 0.5 ? -1 : 0;
+            if (!launchGoToShipLanding(c.num("lead", 60.0), c.num("dist_m", 1500.0), c.num("az", 60.0), c.num("h", 5.0),
+                                       dn, c.str("vehicle", ""), msg))
+                fail("launch droneship: " + msg);
             r["message"] = msg;
             return Status::Done;
         }
@@ -2483,8 +2562,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // launch landing [booster=1] [lead=90] [dist_m=2500] [day=1]: the next tower catch (a ship, or a booster;
             // day=1: with the Sun above 10 deg at the pad).
             std::string msg;
-            const bool bst = c.num("booster", 0.0) > 0.5;
-            if (!launchGoToLanding(bst ? 1 : 0, c.num("lead", bst ? 60.0 : 90.0), c.num("dist_m", 2500.0), msg,
+            const bool sea = c.num("droneship", 0.0) > 0.5; // (2026-10-20) a booster's landing at sea
+            const bool bst = c.num("booster", 0.0) > 0.5 || sea;
+            if (!launchGoToLanding(sea ? 2 : bst ? 1 : 0, c.num("lead", bst ? 60.0 : 90.0), c.num("dist_m", 2500.0), msg,
                                    c.num("day", 0.0) > 0.5))
                 fail("launch landing: " + msg);
             r["message"] = msg;
@@ -2996,13 +3076,15 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 {"right", GLFW_KEY_RIGHT}, {"home", GLFW_KEY_HOME}, {"end", GLFW_KEY_END}, {"w", GLFW_KEY_W},
                 {"up", GLFW_KEY_UP}, {"down", GLFW_KEY_DOWN},
                 // the screenshot / report keys (2026-10-19): f7 new issue shot, f9 shot, f10 screenshot with UI, f12 screenshot
-                {"f7", GLFW_KEY_F7}, {"f8", GLFW_KEY_F8}, {"f9", GLFW_KEY_F9}, {"f10", GLFW_KEY_F10}, {"f12", GLFW_KEY_F12}};
+                {"f7", GLFW_KEY_F7}, {"f8", GLFW_KEY_F8}, {"f9", GLFW_KEY_F9}, {"f10", GLFW_KEY_F10}, {"f12", GLFW_KEY_F12},
+                // the mission milestone keys (2026-10-20)
+                {"]", GLFW_KEY_RIGHT_BRACKET}, {"[", GLFW_KEY_LEFT_BRACKET}};
             int code = -1;
             for (const auto &e : keys)
                 if (k == e.first)
                     code = e.second;
             if (code < 0)
-                fail("ui key: enter | esc | tab | backspace | delete | left | right | up | down | home | end | w | f7 | f8 | f9 | f10 | f12");
+                fail("ui key: enter | esc | tab | backspace | delete | left | right | up | down | home | end | w | f7 | f8 | f9 | f10 | f12 | ] | [");
             onKey(win, code, GLFW_PRESS);
             onKey(win, code, GLFW_RELEASE);
             r["text_focus"] = textEdit_.id != 0;
@@ -3065,13 +3147,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             if (lower(pos(1)) == "all")
                 consoleOpen_ = settingsChrome.open = viewControlsChrome.open = traceChrome.open = infoChrome.open =
-                    viewerChrome.open = cineChrome.open = bmChrome.open = msChrome.open = false;
+                    viewerChrome.open = cineChrome.open = bmChrome.open = msChrome.open = rpChrome.open = false;
             else if (lower(pos(1)) == "console")
                 consoleOpen_ = false;
             else if (WindowChrome *ch = chromeOf(pos(1)))
                 ch->open = false;
             else
-                fail("ui close: settings, viewcontrols, trace, info, viewer, cine, bookmarks, all");
+                fail("ui close: settings, viewcontrols, trace, info, viewer, cine, bookmarks, reports, missions, console, all");
         }
         else
             fail("ui: show | hide | scale <x> | open <window> [tab=<name>] | close <window|all> | hint | dump [name] | "

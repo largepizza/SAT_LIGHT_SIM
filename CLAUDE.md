@@ -2391,6 +2391,11 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
 - **Long or user-edited text is a `UITextBlock`, not a `CLAY_TEXT` (2026-10-13):** see `textArea` under *Issue
   reports*. Clay's measurement cache is 65536 words (`Clay_SetMaxMeasureTextCacheWordCount`, 4x the default, the
   arena sized by `Clay_MinMemorySize`), and the error handler prints each kind of Clay error once.
+- **Window opacity and stacking (2026-10-20):** a window's panel alpha is "Window opacity" (Display tab,
+  `display.window_opacity`, 0.6-1, default 1 = opaque; the themes' 245 let a window's text show through the one over
+  it). Every window is a floating root at zIndex 10 and Clay sorts roots stably, so the one declared later is on top;
+  a window's own floating children (the info window's view chips, the trace plot's tick labels, the marker labels)
+  must use the SAME zIndex as the window (they were 11 / 12, so they drew over any later window covering them).
 - **Clips nest (2026-10-03):** `UIRenderer::record` keeps a scissor stack — a clip inside a clipped scroll view is
   intersected with it and its end restores the parent's. SCISSOR_END used to reset to the full screen, so anything
   drawn after a nested clip (a text box, a horizontally clipped row) escaped its window's scroll view. `ui dump`'s
@@ -3139,7 +3144,9 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
       `attachTo = ELEMENT_WITH_ID` so a resize cannot slide them off), a row of four **stat tiles**
       (MAGNITUDE as seen, ELEVATION, RANGE, PHASE; a phrase shortens to Dark / Below), then **ACTIONS**, never
       collapsed or scrolled (2026-10-19): Trace pass, Go to (Leave while following), Track (each selects the
-      viewed satellite first), and **Explode** (`uiDangerButton`, `Pal::btnDanger*`; ONE click since 2026-10-19 — the
+      viewed satellite first), and **Explode** — ONE row of four equal (grow) buttons since 2026-10-20 (the user: "line
+      up the explode button"; it sat alone on a second row; `uiDangerButton` gained `grow` and uiButton's padding)
+      (`uiDangerButton`, `Pal::btnDanger*`; ONE click since 2026-10-19 — the
       user: no confirm click; the ASAT strike button is gone, see "Player breakups"). It calls `infoExplodeSelected(kind)` — THE
       call site of a player breakup from this window (today `kesslerBreakupFromUi`; its `kUiMsg` goes to the
       toast). Then the scrollable collapsible **sections** — the Clouds tab's form (`infoSection`, `+`/`-`
@@ -3153,7 +3160,9 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
       Reset view) and PHOTOMETRY CHECK (`viewerCheckValue[3]` + Run check), collapsed. The first cut (2026-09-24 ..
       10-19) opened on SATELLITE (model id, triangles) and hid BRIGHTNESS, SKY POSITION and a BREAKUP section
       below the 3D view's settings: the user found Explode by chance ("how much is hiding in here?").
-      `infoSectionOpen[]` is session state, like the Clouds sections'. The band does not scroll with the
+      `infoSectionOpen[]` is session state, like the Clouds sections'. **MISSION** (`kInfoMission`, the enum's last value
+      but drawn right after STATUS, open; 2026-10-20) appears for anything with a launch timeline (see "Mission
+      milestones" under *Launches*). The band does not scroll with the
       sections: it is re-drawn each frame from the same crop.
     - **The chips** (`buildViewChip`: the icon alone, tooltip = its name, on a translucent scrim so a
       white icon survives bright clouds) are the 3D VIEW's own controls, four of them: **Spin**
@@ -4516,7 +4525,7 @@ launches follow per-program cadences (no real manifest).
   key, so a selected or followed ship stays selected into its entry. A stage may vent what is left, spinning
   (`vent_chance`; after its deorbit burn, or 10 min after deploying for a returning stage): ~10 t over two minutes as
   slowly spreading ice (30 m/s, 2000 m^2/kg), each parcel a stretch of the 700 m/s jet, never decimated: seen from
-  below, a dump spiral like the 2009 Norway one (harness `launch vent`). No droneships. Harness `launch deorbit` frames
+  below, a dump spiral like the 2009 Norway one (harness `launch vent`). Boosters land on droneships (below). Harness `launch deorbit` frames
   the next sunlit stage as it starts to turn; `launch state` -> `upper_stages` (each flying stage's timeline in seconds
   from now, burning, altitude, the nose's angle from retrograde); `launch check` -> `booster_nose_max_deg_per_s` (18),
   `upper_nose_max_deg_per_s` (2.0) and `upper_max_step_m_per_s` (7893: 1-s steps through the burn and the entry
@@ -4640,6 +4649,56 @@ launches follow per-program cadences (no real manifest).
     blob"), and a texel with no cloud carries the nearest emissive / plume distance in its alpha (`tEmitNear`), so
     sat_sky.frag composites a flame in front of its own stage's mesh (the no-cloud marker hid it behind the hull).
   - Not built: clouds lit by a burning rocket (a cumulus beside a night launch stays moonlit-dark).
+- **Ground clouds and the turbulent low trail** (2026-10-20, the user: "smoke trail effects (volumetric) on launch,
+  dust kicking up from landing"; `buildParcels`' `groundCloud` / `landingCloud`, `launch::ParcelOpts`):
+  - **Plumes are in the sky's units now.** The sky and the clouds use phase functions normalised to a MEAN of 1
+    (`phaseR` / `phaseM` / `cv2HG`: 4 pi per steradian); the plumes' phases are per steradian, so every plume was ~13x
+    too dim by day — a thick sunlit trail or a steam cloud was as dim as the horizon haze behind it, invisible from a
+    few km. Their colour is x 4 pi by day (`nightBoost` = mix(10, 4 pi, dayness): the night value, 10, is the factor
+    the twilight bells were tuned with, unchanged). The multiple scattering has a second term for optically THICK
+    exhaust (`ms` + 0.17 (1 - exp(-0.25 tau^2))): ~albedo / pi for a white mass; thin trails unchanged.
+  - **Lift-off**: while the stack is within hImp = 60 (flow1 / 1000 kg/s)^0.4 m of the pad (~200 m Super Heavy, ~90 m
+    Falcon 9; at least 3 s, at most 20 s), every 0.75 s parcels of exhaust + deluge steam start on the pad's ground
+    (`LPad::elevM`) and roll out: a Starship pad (water sprayed up through its steel deflector) 3 a step all round,
+    70-150 m/s; other pads 1 round the side and most of it out of the flame trench's mouth 70 m behind the pad (-u) as
+    a fan. Mass flow1 x 0.75 s x (1.3 deluge / 0.9) x (1 - h / hImp)^1.5 (floored 0.15); sigma0 22 m; they grow with
+    their speed through the air (`growK` 0.12: d sigma / dt += 0.12 min(|v - wind|, 60 m/s)), rise (`buoy` 0.25 m/s^2
+    fading over 90 s: hot steam), evaporate over 6-7 min; the wind carries them. `Parcel::ground` 1.
+  - **Landings**: in a landing burn's last stretch (the stage within 80 (flow / 1000)^0.4 m of the ground: ~115 m
+    Super Heavy, ~105 m the ship, ~50 m a Falcon-class booster) 3 parcels a 0.5 s spread from under it, 40-90 m/s.
+    What they are follows the surface (`demElevCpu` > 1 m and `shoreDistCpu` < 0 = land): a pad (a tower catch: the
+    launch pad for a booster, `landPad` for the ship) steam + exhaust, grey-white, 5 min; bare land tan dust
+    (`Parcel::tint` (1, 0.84, 0.64), albedo 0.6, 8 min); the sea spray (white, kappa 14, gone in ~90 s; a droneship's
+    deck sits in it). `Parcel::ground` 2.
+  - **The low trail**: ascent parcels take `growK` 0.05 fading out by 6 km above the pad (the column thickens as it
+    entrains); parcels within 30 km of the pad rest on ITS ground (`ParcelOpts::groundM`; was 3 m above sea level, so
+    an inland pad's ground cloud could sink into the terrain). The growth is capped at 60 m/s of relative speed: a young
+    parcel still moves at km/s, and uncapped the trail swelled hundreds of metres in a second.
+  - **cloud_march.comp, below 3-12 km** (`lowK`): the billows are read in a field SHARED by every Gaussian there
+    (world-fixed: `cloudNoiseTex` at P / 600 m and P / 220 m, P the Earth-centred point in the eye's ENU axes), so the
+    overlapping puffs of a ground cloud are modulated together into one lumpy mass instead of averaging their own noise
+    into a smooth haze (per-Gaussian noise, which rides with its parcel, is kept higher up); the faint tails are cut
+    (tau x smoothstep(0.02, 0.35, tau); also below the 0.01 noise threshold — left whole there they drew rings round
+    every lit ground cloud at night); the lumps are lit by the field's change toward the Sun (`lumpL`, one more fetch
+    70 m sunward) and darkened against the engine lights by their density (`lumpA`). Every plume Gaussian with
+    tau > 0.01 is SELF-SHADOWED: its own optical depth toward the Sun (closed form, as the view's) from where its light
+    comes from (the closest approach moved toward the eye by up to 1.5 sigma as the ray's optical depth grows: a thick
+    puff is seen by its near surface), mix(exp(-tauS), 1, 0.4 .. 0.25 low).
+  - **Sky light**: below 25 km the CPU adds the blue sky's light (amb x 0.18 (0.62, 0.78, 1) x albedo, the plume
+    units) and, where that is more than 2% of the Sun's, Earth-shadows the Sun's part itself and passes the sky's share
+    of the colour in ib.w's fraction (2 + share; below 2 = unread): the shader lights that share isotropically (`Lf`)
+    with half the self-shadow. Above 25 km nothing changes (the bells keep the per-pixel terminator).
+  - **Night**: the ground clouds take kessler's engine lights (`LpE`, `engineLightAdd`) like any plume, with the
+    multiple scattering those lights were tuned with (`ms0`; with the thick term the steam saturated). Open: a
+    Starship's night lift-off cloud from 2.5 km still saturates into an orange-white ball (the engine light's strength
+    vs the night exposure, which does not adapt at night), so its lumps show only at its edge.
+  - **Cost** (RTX 3070 Ti, 1600x900, Starship T+28 s from 2.5 km, interleaved in one run): GPU 11.25 / 11.11 ms with
+    the new cloud_march vs 11.27 / 11.05 with the old (within noise); plumes off 10.60; with clouds 12.22 vs 11.96.
+  - Harness: `launch next ... pad_dist_m=<m> [lead=<s>] [side=-1]` = on the ground beside the pad, looking at it,
+    lead s before lift-off; `launch landing droneship=1` = a booster landing at sea, 30 m over the water `dist_m`
+    aside; `launch state` -> `ground_clouds` {lift_off, landing, sample: kind, alt, sigma, tau, drawn colour, iso share}.
+    `tools/harness/scripts/pad_smoke.satcmd` (Starship / Falcon 9 by day and night, a ship and a booster catch, a sea
+    landing). Clear the clouds (`set clouds_v2.coverage 0`) and pause time after a jump.
 - **Mesh glare needs a compact Sun image** (2026-10-19): sat_mesh.frag packs `meshGlareRoughK` (1 below roughness
   0.04, 0 past 0.10) with the photometric share into the scene target's alpha (`meshSharePack`: share 64 levels, flag 8;
   mesh_bloom.frag and mesh_refl_add.comp unpack it), and mode 3 (the viewer's glare source) multiplies its specular by
@@ -4792,6 +4851,44 @@ launches follow per-program cadences (no real manifest).
   into `msText_` (a deque) — an action after the layout only marks the rows stale, never rebuilds them that frame.
   **Go to fixes the observer's altitude** (`obsHeightOffset = 0`, on the ground): `launchGoToNextWhen` and the launch
   re-entry Watch kept whatever height the eye had (a jump from orbit stayed in orbit).
+  **The Sun's Fury card is pinned under the list on Upcoming** (2026-10-20: outside the `MsList` scroll view; at the
+  default height it was the last card and needed scrolling). Ongoing launch rows have **Next >** (`missionsMilestone`):
+  the batch's next milestone, carrying a selected / followed stage of it.
+- **Mission milestones (2026-10-20, the user: "skip to the next mission milestone", "mission activity in the info
+  screen"; `SatelliteSimLaunches.cpp` end, `missionBatchMilestones` / `missionSubjectOfIndex` / `missionJump`).** A
+  launch's timeline is read from its batch's phase times: lift-off, max-Q (the largest 0.5 rho v^2 on the booster's
+  track before MECO), MECO and staging (`vh.t1`), the fairing (`tFair`), SECO (`tL + t2`), deployment begins / last
+  satellite released (`tD`, `deployInterval`), the deorbit burn (`tDeorbBurn`), entry (`tStageGone`), the ship's
+  descent / flip / catch or splashdown (`tShipDesc / tShipFlip / tShipCatch`), docking for crew (`tA`). **The booster's
+  recovery milestones are read off its `Track`**: every change of `burn` after staging (boostback, entry, landing, or
+  any kind added later, named "Booster burn"), then `tEnd` (tower catch / pad / droneship / sea by `recovery` and
+  `landed`) — so a new landing kind needs no code here. Trains: raising starts (min `sRaise`), arrival; a member adds its
+  release and its own raise; retirees: deorbit (`tA`), re-entries (`ends`), a member its `tEnd`. Each milestone carries
+  `who` (`kMsPayload | kMsBooster | kMsTrain | kMsRetiree`) and the SUBJECT's role filters them: the selection or the
+  followed transient (`kind 1/2/4`: payload, or booster once a stage-0 transient is past `t1`), a launch record (train
+  member / retiree by `launchSlotOwner`), a roster satellite (`missionRosterBatches`: the plane's batch (k, b) whose
+  arrival put it in its slot and k + 1 that replaces it; `LaunchState::satPlane/satPos`, rebuilt with the planes;
+  crew stations and Kessler-dead satellites have none). Facts rows (`missionFacts`): coming up, the record's status,
+  the climb's progress and arrival, re-entry, a roster satellite's time in its slot, design life used, replacement.
+  - **Skipping** (`missionJump`): to `t - lead` (10 s, or 0.45 of the gap to the previous milestone) of the next /
+    previous / an indexed milestone, at 1x (pause kept), histories reset like any time jump. `missionAttachAt` keeps
+    the selection and Go to on the subject's object at the new time — the rocket (`launchRocketTransient`, the camera
+    keeps its offset in the object's frame via `followTakeTransient(c, 0, t)`), the booster (a stage-0 transient), a
+    train member (the rocket before `tD`, its record in [tD, tA), its roster slot after), a retiree (the roster slot
+    before `tA`, its record until `tEnd`), a roster satellite (the train member of the batch before it before that
+    batch's `tA`). A launch record's slot is allocated by `launchUpdate` at the new time, so `missionAttachAfterJump()`
+    runs right after it (before `followCheckTarget`) and re-points follow / the selection (30 frames, then the roster
+    slot). UI: the Info window's MISSION section (`buildMissionTimeline`: mission, object, facts, progress bar,
+    < Previous / Next: <label> >, one row per milestone with T+ from lift-off or "in" / "ago" for a roster satellite,
+    UTC, Skip / Back; the last passed highlighted with `Pal::rowHighlight`), the follow HUD's `<` / `Next: ... >` chips,
+    keys `]` / `[` (`KB_MILESTONE_NEXT` / `_PREV`, `missionJumpNow`: Go to's object, else the selection's), the Missions
+    window's Ongoing **Next >**. Jumps from UI are applied AFTER the layout (they rewrite `followLabel`, which Clay
+    still holds). Harness `missions milestone [list|next|prev|<i>] [row=]`; `scripts/mission_milestones.satcmd`,
+    `scripts/mission_edge_cases.satcmd`.
+  - **A selected / followed re-entry is listed even where it is not drawn** (`transientWanted`, used by
+    `fbDrawReentry` and the retiree / upper-stage re-entry loops' 3000-km gates): behind the Earth, out of range, too
+    faint or in daylight it is listed with flare 0 (picking skips it), so an expendable stage's selection carries on
+    to its fireball (it was dropped: the fireball was never drawn from the pad).
 - **The ship comes home to a tower; boosters are caught (2026-10-19, the user: "do Starships actually land?" — in the
   2036 setting SpaceX flies full reuse).** A returning stage's deorbit burn is TIMED for a catch (`planShipLanding`):
   the first moment within 72 h of deployment (30-s steps, refined at 2 s) at which its entry ends (`shipEntry` at
@@ -4861,8 +4958,60 @@ launches follow per-program cadences (no real manifest).
     Starbase from 900 m): sky pass within noise (8.09 vs 8.09 ms), scene depth +0.18 ms, CPU ~0; SKY_LITE SPV +288 B
     (the UBO's declaration; 213384 of 230400), sat_sky_minimal unchanged. Open: the pads sit on the 5-km DEM and
     water map, so coastal ones (Starbase, the Cape) are islands of apron in what the map calls sea; the meshes are lit
-    by the scene probe at night (the tanks read pale); no droneships.
-- Not built: droneship meshes, the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
+    by the scene probe at night (the tanks read pale).
+- **Booster recovery at sea: droneships and landing ships (2026-10-20, branch kessler).** Each launch decides its
+  booster's recovery (`planRecovery`, a pure function of the batch, stored in `LBatch::rec` / `landKind`): a vehicle
+  with `booster: droneship` and `rtls_max_kg` (Falcon 9, 7000 kg) flies back to its pad's LANDING ZONE when the launch's
+  payload (the program's `sat_mass_kg` x payload or `payload_mass_kg`, x a hashed 0.9-1.1) is at most that: OneWeb and
+  Reflect Orbital do, Starlink Gen1 (~9.3 t), Amazon Leo and Crew Dragon (12.5 t) do not. Otherwise it lands DOWNRANGE
+  at `droneship_km` (Falcon 9 600, Crew Dragon 550, New Glenn 1000; 0 = where its arc comes down, the Chinese boosters
+  ~390-430 km): on a ship when that point is at sea (`shoreDistCpu` > 3 km), picked by hash among the vehicle's
+  `landing_ships` serving the site (Florida: A Shortfall of Gravitas / Just Read the Instructions; Vandenberg: Of Course
+  I Still Love You; New Glenn: Jacklyn; Hainan: a recovery barge); on land (Jiuquan's inland arcs) on the ground there
+  (`landBase` = the DEM less the track's touchdown height). `landKind` = kLandNone / Tower / Lz / Ship / Ground; harness
+  `launch state` -> `boosters[]` (recovery, land_kind, touchdown_in_s, downrange, ship, dist_to_landing_m) — **the
+  landing effects (dust, spray) key off `LaunchImpl::boosterLandingAt(L, B, t, E, tTouch)`**: the kind, the touchdown
+  time and the point where the booster's aft end stands at t (a ship's deck moves).
+  - **Tracks** (`launch::boosterTrack(vh, recovery, hLand)`): per vehicle its own (`L.booster`) and, for an RTLS-capable
+    droneship vehicle, a return track (`L.boosterRtls`); `LaunchImpl::boosterTr(L, B)` picks this launch's. Downrange:
+    a short retrograde TRIM burn (BURN_BOOSTBACK) secant-solved to touch down exactly at droneship_km (the old code aimed
+    a boostback at 0.55 x the MECO speed that was never burned: every droneship booster came down ~410 km out); the
+    entry burn runs 22 s, longer (up to 40 s) while still above 900 m/s. Falcon 9 / Crew Dragon / New Glenn stage
+    faster (MECO 2.2 / 2.2 / 3.3 km/s: meco_downrange 120 / 115 / 225 km) so their arcs reach the ship.
+  - **The landing burn is a constant deceleration that zeroes both components together at the deck** (Launches.cpp,
+    every recovery, towers included): it starts below 8 km once that deceleration reaches 25 m/s^2 (a faster arrival
+    burns harder, ~40-50 m/s^2 for 20-25 s), analytic from there. The suicide-burn profile it replaced touched down at
+    ~40 m/s down and, for a droneship, ~360 m/s across. Boosters arriving from far downrange still lean ~30-55 deg in the
+    burn (they carry ~700-1100 m/s across at 8 km; drag in this model is weak): an open item.
+  - **RTLS** to a Falcon pad's landing zone: the track lands on the pad's centre and over its last ~40 km slides to the
+    zone (`lzOff`, kLzDistM aside, its ground `LPad::lzElevM`), held there 30 min.
+  - **The ship** (`shipEcef`): on station at the touchdown point from 8 h before lift-off (kShipOnStationS), the booster
+    on its deck at tLand (the track ends `deck_m` above the sea there), 1.5 h later it steams home toward the launch site
+    along the great circle at 4 m/s (eased in), drawn until 12 h after the landing (~150 km on). Its bow points home
+    throughout. The booster rides the deck (`rocketPos` stage 0 past tEnd: `(kR + deckM) x shipEcef`; `boosterHoldS`),
+    stays listed / selectable / followable (label "booster on <ship>'s deck, being secured / heading home"), and its
+    coasting point sprite is dropped once landed (scenery: its mesh). Ship meshes: `ship_droneship` (ASDS: deck ~91 x 52
+    m at 3.2 m, the housings and blast walls aft, the Octagrabber, rails, the landing target's ring and X) and
+    `ship_jacklyn` (estimates: ~120 x 30 m, superstructure forward, landing deck aft at 6 m), written by
+    `tools/make_ship_models.py` (body frame: +X the bow, origin the landing target at the waterline: `deck_m` in
+    launches.json must equal the deck printed), loaded with the rockets (`ship_*` prefix, `rocketTypes`; the accuracy
+    gate loads them), drawn past ~1.4 px in their own reserved chunk (`kShipMeshSlots` 8, below the stacks': the free
+    chunks start 10 below the top; not selectable) by `launchShipJobs` (fixed state, the bow as the "velocity" axis).
+  - **At night** (`launchFillShipLights`, `launchFillShipGlow`): flood clusters on the housings' masts (-2 at 1 km), red
+    beacons, red / green side lights, a stern light (kFireBuf); the floodlit deck (-4) and a landed booster (-3.5) as
+    EMISSIVE Gaussians in the dust list (the mesh renderer has no local lights: the hull was black under its lights); one
+    engine light (`engineLightAdd`, 0.3 suns m^2 x night, lights the sea around it and low cloud). The landing burn's light
+    is the rocket's own engine light.
+  - Harness: `launch droneship [vehicle=] [day=1|night=1] [lead=60] [dist_m=1500] [az=60] [h=5]` (the next landing on a
+    ship, 30 days ahead, 120 with a vehicle filter), `launch ships`; `launch check` -> `booster_recovery_counts`,
+    `booster_landing_downrange_km`, `droneship_touchdown_*`, `lz_ground_touchdown_*`, `booster_ride_home_off_deck_m_max`,
+    `droneship_examples`. `tools/harness/scripts/droneship.satcmd` (day from a boat and from 3 / 10 km, night, New Glenn).
+    Measured (merged build, 14070 batches): 116 ship landings, 73 RTLS by payload, 85 ground, 183 expendable, 13613
+    tower; touchdown on the deck 0 m off centre, 0 m above it; 1-s speed before touchdown <= 31 m/s (the end of a ~50
+    m/s^2 burn); the booster on a steaming ship 0 m off its deck. Perf (RTX 3070 Ti, 1600x900, 1.5 km from the ship):
+    GPU 13.8 ms by day, 12.5-21 ms at night (the cloud lit by the landing burn), CPU ~0 for the ships.
+- Not built: the Octagrabber driving out to the booster, the ship rolling in the swell, the booster's legs deploying,
+  the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
   (trains launch into it), the crew capsule's rendezvous and cargo flights, hole-punching through cloud decks, sonic booms.
 
 ## Subsystem: Reflect-Orbital Beam Cloud Occlusion

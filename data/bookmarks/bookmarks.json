@@ -159,6 +159,26 @@
         0.48562775058398133
       ],
       "sim_t_j2000": 1164237385.2156668
+    },
+    {
+      "az_deg": -77.56539154052734,
+      "cloud_drift_phase": 2.4865869212310656,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": -5.564919948577881,
+      "fov_y_deg": 55.0,
+      "height_m": 350055.0,
+      "id": "default_starmind_deploy",
+      "look": {
+        "paused": true,
+        "time_scale_idx": 0
+      },
+      "name": "Starmind Deployment",
+      "obs_dir": [
+        -0.23746792088849553,
+        -0.2905722632757617,
+        -0.9269178746597222
+      ],
+      "sim_t_j2000": 1164240713.6230392
     }
   ],
   "format": "sat-light-sim-bookmarks/1"

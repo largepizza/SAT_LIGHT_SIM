@@ -487,8 +487,10 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Missions", GLFW_KEY_M, -1, false, false},                                          // KB_MISSIONS (event) — the Missions window
         {"Leave Go To Here", GLFW_KEY_G, -1, false, false},                                  // KB_FOLLOW_STAY (event) — end Go to as a free observer where the camera is
         {"Go To: Return", GLFW_KEY_H, -1, false, false},                                     // KB_FOLLOW_RETURN (event) — back to the followed object / follow the last one again
+        {"Next Mission Milestone", GLFW_KEY_RIGHT_BRACKET, -1, false, false},                // KB_MILESTONE_NEXT (event) — missionJumpNow(+1)
+        {"Previous Mission Milestone", GLFW_KEY_LEFT_BRACKET, -1, false, false},             // KB_MILESTONE_PREV (event) — missionJumpNow(-1)
     };
-    static_assert(KB_COUNT == 25, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 27, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -1640,6 +1642,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         CpuTimer launchTimer(cpuAccumMs[CPU_LAUNCHES]);
         launchUpdate(ctx, cmd);
+        missionAttachAfterJump(); // a milestone skip's launch record: its slot at the new time, before followCheckTarget
     }
 
     if (followActive)
@@ -8824,6 +8827,17 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         if (followActive && !cineActive())
             stopFollowHere();
         break;
+    case KB_MILESTONE_NEXT:
+    case KB_MILESTONE_PREV:
+        if (!cineActive())
+        {
+            std::string m;
+            const bool ok = missionJumpNow(bindIdx == KB_MILESTONE_NEXT ? 1 : -1, m);
+            snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", m.c_str());
+            screenshotToastTimer = ok ? 2.5f : 3.0f;
+            screenshotToastWarn = !ok;
+        }
+        break;
     case KB_FOLLOW_RETURN:
         if (!cineActive())
         {
@@ -15602,7 +15616,8 @@ void SatelliteSim::loadDefinitions()
         for (const auto &de : std::filesystem::directory_iterator(dir, ec))
         {
             const std::string fn = de.path().filename().string();
-            if ((fn.rfind("rocket_", 0) == 0 || fn.rfind("pad_", 0) == 0) && de.path().extension() == ".json")
+            if ((fn.rfind("rocket_", 0) == 0 || fn.rfind("pad_", 0) == 0 || fn.rfind("ship_", 0) == 0) &&
+                de.path().extension() == ".json")
                 ids.push_back(de.path().stem().string());
         }
         std::sort(ids.begin(), ids.end()); // a stable type order
@@ -15610,7 +15625,9 @@ void SatelliteSim::loadDefinitions()
         {
             SatelliteType t;
             t.modelId = id;
-            t.name = id.rfind("pad_", 0) == 0 ? "Launch pad: " + id.substr(4) : "Rocket: " + id.substr(7);
+            t.name = id.rfind("pad_", 0) == 0    ? "Launch pad: " + id.substr(4)
+                     : id.rfind("ship_", 0) == 0 ? "Landing ship: " + id.substr(5)
+                                                 : "Rocket: " + id.substr(7);
             t.baseColor = glm::vec3(0.95f, 0.95f, 1.0f);
             t.crossSectionM2 = 1.0f;
             t.primary = SurfaceSpec{AttitudeMode::NadirPointing, 0.0f, 1.0f};
@@ -15639,7 +15656,8 @@ void SatelliteSim::loadDefinitions()
         int budget = count <= kSatLobeSmallRoster ? kSatLobeBudgetSmall : kSatLobeBudget;
         if (satTypes[ti].modelId.rfind("debris_", 0) == 0)
             budget = 16; // fragments: up to a pool's worth visible at once, each a few simple parts
-        else if (satTypes[ti].modelId.rfind("rocket_", 0) == 0 || satTypes[ti].modelId.rfind("pad_", 0) == 0)
+        else if (satTypes[ti].modelId.rfind("rocket_", 0) == 0 || satTypes[ti].modelId.rfind("pad_", 0) == 0 ||
+                 satTypes[ti].modelId.rfind("ship_", 0) == 0)
             budget = 24; // a few rockets at a time, CPU-evaluated only
         bakeModelType(satTypes[ti], model, budget, count);
     }

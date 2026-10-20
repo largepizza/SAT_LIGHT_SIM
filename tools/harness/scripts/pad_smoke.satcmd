@@ -1,0 +1,105 @@
+# Ground clouds of launches and landings (2026-10-20, CLAUDE.md "Launches" > Ground clouds): the lift-off cloud at
+# a Starship and a Falcon pad by day and by night, the turbulent low trail, a ship catch, a booster catch and a
+# booster landing at sea (spray). Clouds cleared so the exhaust is what shows; time paused after each jump.
+#   python tools/harness/run.py tools/harness/scripts/pad_smoke.satcmd
+set clouds_v2.coverage 0
+set display.dynamic_resolution false
+
+# Starship by day, 2.5 km beside the pad.
+launch next when=day vehicle=starship pad_dist_m=2500 lead=0
+camera fov=30
+time add 8
+time pause
+wait settle
+wait 30
+capture ss_day_t08
+perf frames=60 name=ss_day_t08
+set launches.plume_gain 0
+wait settle
+perf frames=60 name=ss_day_t08_noplume
+set launches.plume_gain 1
+time add 20
+wait settle
+wait 30
+capture ss_day_t28
+perf frames=60 name=ss_day_t28
+camera fov=50
+time add 90
+wait settle
+wait 30
+capture ss_day_t118
+time add 300
+wait settle
+wait 30
+capture ss_day_t7m
+
+# Starship at night: the steam lit by the flame.
+launch next when=night vehicle=starship pad_dist_m=2500 lead=0
+camera fov=30
+time add 5
+time pause
+wait settle
+wait 30
+capture ss_night_t05
+perf frames=60 name=ss_night_t05
+time add 6
+wait settle
+wait 30
+capture ss_night_t11
+
+# Falcon 9 by day and by night (the flame trench throws the cloud out behind the pad).
+launch next when=day vehicle=falcon pad_dist_m=2000 lead=0
+camera fov=30
+time add 7
+time pause
+wait settle
+wait 30
+capture f9_day_t07
+time add 15
+wait settle
+wait 30
+capture f9_day_t22
+launch next when=night vehicle=falcon pad_dist_m=2000 lead=0
+camera fov=30
+time add 6
+time pause
+wait settle
+wait 30
+capture f9_night_t06
+
+# A ship caught by the tower, a booster catch, a booster landing at sea.
+launch landing day=1 lead=3 dist_m=1500
+camera fov=30
+time add 2
+time pause
+wait settle
+wait 30
+capture catch_ship_m1
+time add 20
+wait settle
+wait 30
+capture catch_ship_p19
+launch landing booster=1 day=1 lead=3 dist_m=1500
+camera fov=30
+time add 2
+time pause
+wait settle
+wait 30
+capture catch_booster_m1
+time add 20
+wait settle
+wait 30
+capture catch_booster_p19
+launch landing droneship=1 day=1 lead=3 dist_m=1500
+camera fov=30
+time add 2
+time pause
+wait settle
+wait 30
+capture sea_booster_m1
+time add 12
+wait settle
+wait 30
+capture sea_booster_p11
+launch state
+quit

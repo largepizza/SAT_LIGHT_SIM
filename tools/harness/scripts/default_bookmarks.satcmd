@@ -99,9 +99,6 @@ wait 30
 bookmark add The Sun's Fury id=default_suns_fury scale=0 paused=0
 wait 5
 
-bookmark list
-quit
-
 # 8. A twilight Starship launch (2026-10-18, launches; from Kennedy LC-39A since the Louisiana pads, 2026-10-19 — it
 #    was Vandenberg, and any change to launches.json can move it: re-run and check `launch state` shows a rocket):
 #    the Sun ~9 degrees down at the pad, the upper stage's exhaust lit high over the dark sea (the "jellyfish").
@@ -117,3 +114,23 @@ wait 30
 bookmark add Twilight Starship Launch id=default_launch_twilight scale=0 paused=0
 wait 5
 
+# 9. A sunlit Starmind deployment from Starship (2026-10-20): the ship's door open, the first AI1 satellites leaving
+#    the dispenser one by one (45 s apart) over the sunlit Earth. Paused: from a free camera the ship flies on at
+#    7.7 km/s; press play to watch the next ones leave. (Also on its own, with a check of #8:
+#    scripts/default_bookmark_starmind_deploy.satcmd.)
+drift default
+launch deploy filter=Starmind
+wait 5
+follow offset=-140,300,55
+follow aimat=-70,0,25
+camera fov=55
+time pause
+time add 110
+wait settle
+wait 40
+bookmark add Starmind Deployment id=default_starmind_deploy scale=0 paused=1
+wait 5
+follow off
+
+bookmark list
+quit

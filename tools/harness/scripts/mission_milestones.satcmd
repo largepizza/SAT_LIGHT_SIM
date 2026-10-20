@@ -1,0 +1,99 @@
+# Mission milestones (2026-10-20): the Info window's MISSION section and one-row actions, skipping a launch's
+# milestones with Go to riding the rocket (the key ] / [ and `missions milestone`), the booster's own timeline, a
+# train member's and a roster satellite's, the Missions window's Ongoing "Next >" and the pinned Sun's Fury card.
+#   python tools/harness/run.py tools/harness/scripts/mission_milestones.satcmd --out harness_runs/mission_ux
+window 1600x900
+launch next
+time add 40
+wait 5
+launch select kind=rocket nearest=1
+follow offset=-300,0,80
+missions milestone list
+ui open info
+wait 20
+capture m_info_liftoff ui=on
+ui dump
+ui key ]
+wait 20
+state
+capture m_next1 ui=on
+missions milestone next
+wait 20
+state
+capture m_next2 ui=on
+missions milestone next
+wait 20
+state
+missions milestone next
+wait 20
+state
+capture m_next4 ui=on
+missions milestone next
+wait 20
+state
+capture m_next5 ui=on
+ui key [
+wait 20
+state
+capture m_prev ui=on
+missions milestone list
+follow off
+# The booster after staging: its own milestones (boostback, entry, landing burn, catch), Go to riding it
+launch next
+time add 200
+wait 5
+launch select kind=booster nearest=1
+follow offset=-200,0,60
+missions milestone list
+missions milestone next
+wait 10
+state
+capture m_booster1 ui=on
+missions milestone next
+wait 10
+state
+missions milestone next
+wait 10
+state
+capture m_booster3 ui=on
+follow off
+select none
+# The Missions window's Ongoing tab and the pinned Sun's Fury card
+ui open missions tab=ongoing
+wait 10
+capture m_missions_ongoing ui=on
+missions milestone row=0
+ui open missions tab=upcoming
+wait 10
+capture m_missions_upcoming ui=on
+ui dump
+ui close missions
+# A train member
+launch deploy filter=Starmind
+wait 10
+time add 300
+wait 5
+launch select kind=train
+missions milestone list
+ui open info
+wait 20
+capture m_train_info ui=on
+missions milestone next
+wait 20
+state
+missions milestone list
+capture m_train_arrived ui=on
+# A roster satellite in operations
+select none
+select const "Starlink Gen1" n=5
+missions milestone list
+ui open info
+wait 20
+capture m_roster_info ui=on
+ui dump
+# ui close all closes the Issue reports window too
+ui open reports
+wait 5
+ui close all
+wait 5
+ui dump
