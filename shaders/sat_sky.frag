@@ -1607,14 +1607,15 @@ float padValueNoise(vec2 x) {
 }
 
 // The floodlights' light on a pad's ground (2026-10-20), relative to the pad's centre: the masts' and the tower's
-// floods of SatelliteSimLaunches.cpp padLightsOf (keep in step), each aimed at the centre in a cos^3 lobe, Lambert on
+// floods of SatelliteSimLaunches.cpp padLightsOf (keep in step), each aimed at the centre in a cos^6 lobe, Lambert on
 // the ground, 1 / d^2. A uniform floodlit apron read as a pale blank slab at night (the user); now bright under the
 // masts' aim and toward the mount, falling off to the apron's corners and dark beyond it.
 float padFloodOne(vec2 p, vec3 c) {
     vec3  L = vec3(p, 0.0) - c, A = vec3(0.0, 0.0, 0.0) - c;
-    float d2 = dot(L, L) + 2500.0;   // (a flood is a bank of lamps tens of metres across, aimed broadly)
+    float d2 = dot(L, L) + 900.0;    // (a flood is a bank of lamps metres across)
     float cA = max(dot(L, normalize(A)) * inversesqrt(d2), 0.0);
-    return cA * cA * cA * (c.z * inversesqrt(d2)) / d2;
+    float c2 = cA * cA;
+    return c2 * c2 * c2 * (c.z * inversesqrt(d2)) / d2;   // (cos^6: cos^3 lit the apron nearly evenly)
 }
 float padFloodSum(int kind, vec2 p) {
     float e = 0.0;

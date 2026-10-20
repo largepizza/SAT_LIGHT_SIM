@@ -4981,7 +4981,7 @@ launches follow per-program cadences (no real manifest).
     past the glare threshold; 2026-10-20: -4 / 25 drew a field of large stars from a pad's edge, issue 20261019_222938
     shot 1). The floodlit apron at night is 0.2 x its albedo (was 0.35: a blank white slab) x the floods' light
     (`padFlood`, sat_sky.frag, 2026-10-20: the masts' and the tower's floods of padLightsOf, each aimed at the centre in
-    a cos^3 lobe, Lambert, 1 / (d^2 + 50^2), normalised to 1 at the centre, capped at 2.2): bright toward the mount and
+    a cos^6 lobe, Lambert, 1 / (d^2 + 30^2), normalised to 1 at the centre, capped at 2.2): bright toward the mount and
     under the masts' aim, falling to the corners; each 10-m slab has its own shade (+-8%) and a weathered mottle at 7 m,
     both fading to their mean past the footprint.
   - Setting `launches.pad_graphics` (Settings > Constellations > LAUNCHES "Launch site graphics"; independent of
