@@ -1,6 +1,7 @@
 {
     "name": "Starlink V3 (Gen3 broadband, mitigated)",
     "note": "Parity model for the v1.1 'Starlink Gen3' type (broadband shell). The V2 Mini's mitigations at V3 scale: a 7.5 m flat bus under the gen-2 mirror film, black elsewhere, two arrays 60 m tip to tip held edge-on to the Earth's limb. Body frame: +Z nadir, +X velocity. Only the span, the base length and the mass are published.",
+    "deployment": {"unfold_delay_s": 900, "unfold_s": 240},
     "attitude_groups": [
         {
             "name": "bus",
@@ -47,6 +48,7 @@
         },
         {
             "name": "array_left",
+            "stow": {"axis": [0, 1, 0], "root": 2.0, "scale": 0.04, "phase": [0.0, 1.0]},
             "type": "plane",
             "group": "wings",
             "size": [4.2, 28.0],
@@ -57,6 +59,7 @@
         },
         {
             "name": "array_right",
+            "stow": {"axis": [0, -1, 0], "root": 2.0, "scale": 0.04, "phase": [0.0, 1.0]},
             "type": "plane",
             "group": "wings",
             "size": [4.2, 28.0],
@@ -93,6 +96,14 @@
             "status": "estimate",
             "value": "two 4.2 x 28.0 m arrays, opaque dark backsheet",
             "source": "SpaceX 'Starlink Version 3 Satellites' update (2025) and reporting (NextBigFuture 2025-02): ~1900 kg, 'a wingspan of about 60 meters, unfolded from a base of 7-8 meters', arrays of '19-meter-long segments', about twice the V2's power; no array area published. Length DERIVED from the 60 m span; width 4.2 m is an estimate: about twice the V2 Mini's 105 m2 of array (2 x 4.2 x 28 = 235 m2)."
+        },
+        {
+            "subjects": [
+                "deployment"
+            ],
+            "status": "estimate",
+            "value": "arrays leave the stack folded (4% of their span, at the bus edge) and unfold over 4 min, 15 min (+-15%) after release",
+            "source": "SpaceX describes the arrays unfolding after the satellites leave the stack; no timeline is published. Estimate."
         }
     ]
 }

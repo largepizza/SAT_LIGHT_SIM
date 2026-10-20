@@ -27,8 +27,17 @@ void main()
     uint g = inPacked & 0xFFu;
     mat3 R = instGroupRot(inst, g);
     uint comp = (inPacked >> 20) & 0xFFFu;
-    vWorld  = inst.origin.xyz + R * inPos + inst.trans[g].xyz + instPivotOffset(inst, g, comp);
-    vNormal = R * inNormal;
+    // Stowed (a satellite still unfolding after its release): the part packs toward its root along its stow axis
+    // (positions scaled by sc beyond the root plane; normals by the inverse transpose).
+    vec3 pos = inPos, nrm = inNormal, sa;
+    float sroot;
+    float sc = instStowScale(inst, comp, sa, sroot);
+    if (sc < 1.0) {
+        pos -= sa * ((1.0 - sc) * max(dot(sa, pos) - sroot, 0.0));
+        nrm = normalize(nrm + sa * (dot(sa, nrm) * (1.0 / max(sc, 1e-3) - 1.0)));
+    }
+    vWorld  = inst.origin.xyz + R * pos + inst.trans[g].xyz + instPivotOffset(inst, g, comp);
+    vNormal = R * nrm;
     vUv     = inUv;
     vMaterial  = inst.firstMaterial + ((inPacked >> 8) & 0xFFFu);
     vComponent = (inPacked >> 20) & 0xFFFu;

@@ -215,7 +215,8 @@ struct SatLobe {
     uint  distribution;       // 0 = GGX, 1 = Beckmann (materials whose α came from a Phong cos^n fit)
     float transmission;       // Phase 4f: diffuse transmission (light from behind the face), V band
     uint  occluderMaskHi;     // occluders 32-63
-    uint  lobePadC;
+    uint  stowPack;           // stowed parts (launches): bits 0-15 the area share lost stowed, 16-23 / 24-31 the
+                              // unfolding window (x 255); 0 = none. GpuSatLobe::stowPack, satLobeStowFactor()
 };
 layout(set = 0, binding = 8) readonly buffer SatLobeBuf {
     SatLobe lobes[];
@@ -809,13 +810,24 @@ float lobeSpecular(vec3 n, SatLobe L, vec3 s, vec3 o, float srcA2)
     return L.area * D * F * G1s * G1o * 0.25;
 }
 
+// A launch record still unfolding (2026-10-19, flag bit 26): its progress, 0 stowed .. 1 deployed. Set per satellite
+// at the top of processSatellite. A lobe's area scales by its stowed share (satLobeStowFactor, SatModel.cpp).
+float gUnfoldP = 1.0;
+float lobeStow(uint pk)
+{
+    if (pk == 0u || gUnfoldP >= 1.0) return 1.0;
+    float k = float(pk & 0xFFFFu) * (1.0 / 65535.0);
+    float p0 = float((pk >> 16) & 0xFFu) * (1.0 / 255.0), p1 = float(pk >> 24) * (1.0 / 255.0);
+    return 1.0 - k * (1.0 - smoothstep(p0, p1, gUnfoldP));
+}
+
 float lobeIntensity(vec3 n, SatLobe L, vec3 s, vec3 o, float srcA2)
 {
     float ns = dot(n, s), no = dot(n, o);
     if (no <= 0.0) return 0.0;
     // Phase 4f: light from BEHIND the face (a translucent array blanket), transmitted diffusely.
-    if (ns <= 0.0) return L.transmission * (1.0 / PI) * L.diffArea * (-ns) * no;
-    return L.albedoD * (1.0 / PI) * L.diffArea * ns * no + lobeSpecular(n, L, s, o, srcA2);
+    if (ns <= 0.0) return L.transmission * (1.0 / PI) * L.diffArea * (-ns) * no * lobeStow(L.stowPack);
+    return (L.albedoD * (1.0 / PI) * L.diffArea * ns * no + lobeSpecular(n, L, s, o, srcA2)) * lobeStow(L.stowPack);
 }
 
 // -- Earthshine as a light (2026-09-24) - mirror of SatEarthLight (SatModel.h) --------------------
@@ -853,7 +865,7 @@ float lobeEarthIntensity(vec3 n, SatLobe L, EarthLight e, vec3 o)
     if (no <= 0.0 || e.E <= 0.0) return 0.0;
     float I = (L.albedoD * earthDiffuse(e, n) + L.transmission * earthDiffuse(e, -n)) * (1.0 / PI) * L.diffArea * no;
     if (dot(n, e.dir) > 0.0) I += e.E * lobeSpecular(n, L, e.dir, o, e.a2);
-    return I;
+    return I * lobeStow(L.stowPack);
 }
 
 // ── Phase 3b occlusion between parts ──────────────────────────────────────────
@@ -1209,6 +1221,7 @@ const uint LAUNCH_CAP = 131072u;
 
 bool processSatellite(uint i, out SatVisible rec)
 {
+    gUnfoldP = 1.0;
     // ── Kessler pool (2026-10-16): indices from poolBase are Keplerian records ──────────────────
     // (and the launch records before it: the same record format)
     bool  isPool   = i >= poolBase - LAUNCH_CAP;
@@ -1238,6 +1251,13 @@ bool processSatellite(uint i, out SatVisible rec)
             orb.alignTerminator = -1.0; // "open book" (a train raising): every joint at rest (groupFrame)
         orb.tumbleRate = uintBitsToFloat(kw[w + 10u]);
         orb.tumblePhase = uintBitsToFloat(kw[w + 11u]);
+        if (((tc >> 26) & 1u) != 0u) {
+            // Unfolding after its release (launches): the tumble words hold the progress's rate and value at the
+            // orbit epoch (CPU mirror satUnfoldAt); the joints stay at rest and nothing tumbles.
+            gUnfoldP = clamp(orb.tumblePhase + orb.tumbleRate * pc.deltaT, 0.0, 1.0);
+            orb.tumbleRate = 0.0;
+            orb.tumblePhase = 0.0;
+        }
         vec3 ax = poolTumbleAxis(j);
         orb.tumbleAxisX = ax.x;
         orb.tumbleAxisY = ax.y;

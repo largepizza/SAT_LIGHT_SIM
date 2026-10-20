@@ -656,8 +656,9 @@ SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const 
 
     // ── Lobes ───────────────────────────────────────────────────────────────────────────────
     const double a2Sun = (double)kSunAlpha * kSunAlpha;
-    r.intensitySun = evalSatLobesPosed(lobes, groups, poses, sun, o, a2Sun, &r.dominantLobe, occ, true);
-    r.intensityEarth = r.earth.E > 0.0 ? evalSatLobesEarthPosed(lobes, groups, poses, r.earth, o, occ) : 0.0;
+    const double unfold = satUnfoldAt(orbit, tJ2000); // a satellite still unfolding (launches)
+    r.intensitySun = evalSatLobesPosed(lobes, groups, poses, sun, o, a2Sun, &r.dominantLobe, occ, true, unfold);
+    r.intensityEarth = r.earth.E > 0.0 ? evalSatLobesEarthPosed(lobes, groups, poses, r.earth, o, occ, unfold) : 0.0;
     r.intensitySun *= orbit.areaScale; // a fragment: its share of the debris model's area
     r.intensityEarth *= orbit.areaScale;
     r.intensity = r.intensitySun * r.litFactor + r.intensityEarth;

@@ -4298,20 +4298,55 @@ launches follow per-program cadences (no real manifest).
   the slot's; the phase lag to its slot is the closed-form integral of the mean motion over that ramp
   (`launch::rampPhase`), and the wait is solved so the climb ends exactly on the slot (an unsolvable remainder `eps` is
   spread over the raise as a slow drift). **Deployment is a sequence** (2026-10-19, issue 20261019_180951): member i
-  leaves the dispenser at `LMember::tRel` = tD + i x `deploy_interval_s` (launches.json, Starship 8 s, else 2), AT the
-  dispenser (the stage's aft end + 31 m along the nose and 4.6 m up for Starship's bay door, 9 / 1.6 m for a fairing),
-  and drifts from it at `sepDir` (0.3-0.55 m/s up, a little aft and sideways), offset and drift eased out over two days
-  in its own orbital frame (the velocity carries the drift, so the GPU's Kepler propagation follows it). A member is
-  hidden until its release, and while the train leaves (and 10 min after) the batch's records are rewritten every 2 s
-  instead of 20. (Until then the whole train appeared at once, a string 120 m apart behind the stage.) Harness
+  leaves the dispenser at `LMember::tRel` = tD + i x `deploy_interval_s` (launches.json: Starship 45 s, else 2), AT the
+  dispenser (the stage's aft end + 31 m along the nose and 5.3 m up for Starship's bay door, 9 / 1.6 m for a fairing),
+  with the dispenser's VELOCITY + a push `sepDir` = `sep_speed_mps` x (0.97 up, 0.22 aft) + +-`sep_spread_mps` per axis
+  (Starship 0.7 / 0.025: the train leaves as ONE string along one free-flight arc, ~50 m apart; stacks 0.45 / 0.12).
+  **The whole offset from the member's own path flies free** (2026-10-19, issue 20261019_205535 "serious jitter at
+  10x"): `LMember::depOff` / `depVel` (the dispenser less the member's path at release, position and rotating-frame
+  velocity, up to ~80 km / 65 m/s: the stage's plane differs from the slot's by up to a degree of node) + `sepDir` are
+  propagated as Clohessy-Wiltshire motion about the parking circle (`launch::cwState`), eased out over two days (the
+  satellite's own thrusters). The first cut held depOff fixed in the rotating frame and drifted in a straight line
+  there: a constant push no orbit has (0.07 m/s^2 across), so the Kepler record drifted off the path between rewrites.
+  A member is hidden until its release, and while the train leaves (and 10 min after) — and for a train with a phasing
+  residual `eps` (its slow drift is no free orbit) — the batch's records are rewritten every 2 s instead of 20. Harness
   `launch check`: arrival 7 m (= 1 ms of flight), deployment 31 m (the dispenser's offset from the track point),
-  retiree start 0; `launch deploy` frames the next sunlit deployment.
+  retiree start 0, `release_offset_m_max` / `release_rel_vel_mps_max`; `launch deploy [filter=Starmind]` frames the next
+  sunlit deployment (of that constellation / program / vehicle); `launch jitter` / `launch legacy on|off` measure the
+  record jumps (below); `tools/harness/scripts/starmind_deploy.satcmd` (release to unfolding, paused and live at 10x)
+  and `deploy_jitter.satcmd` (per-frame screen motion of a member at 10x, old vs new records; parity while unfolding).
+- **Unfolding after release** (2026-10-19): a model's stowable parts (`SatComponent::stow`, JSON
+  `"stow": {"axis", "root", "scale", "phase"}`; model `"deployment": {"unfold_delay_s", "unfold_s"}`) leave the
+  dispenser packed — an accordion array or a folded radiator scaled along `axis` toward the plane dot(axis, x) = root
+  (rest BODY frame) to `scale` of its extent — and unfold over `unfold_s`, starting `unfold_delay_s` (+-15% per member,
+  hashed) after the member's release, each part over its own `phase` window of the progress P. Then the open book
+  (below), and on arrival the operating roster satellite. Starmind: radiators [0, 0.35] then trusses + wings [0.3, 1]
+  (folded to the bus edge, y = +-1.5), 10 + 10 min; Starlink V2 Mini / DTC / V3: arrays, 15 + 4 min (estimates in the
+  models' `sources`). P = clamp((t - unfoldT0) / unfoldDur) (`SatOrbitElems::unfoldT0/Dur`, `satUnfoldAt`); on the GPU
+  the launch record's flag bit 26 + its tumble words (rate, value at the orbit epoch) give `gUnfoldP`
+  (sat_orbit.comp). **Photometry**: each lobe carries `GpuSatLobe::stowPack` (the area share lost when fully stowed, x
+  (1 - scale), + the window of its largest stowable part, `bakeSatLobes`); its area x (1 - k (1 - smoothstep(p0, p1, P)))
+  in `lobeIntensity` / `lobeEarthIntensity` (GPU, `lobeStow`) and `evalSatLobesPosed` / `evalSatLobesEarthPosed`
+  (CPU, `satLobeStowFactor`, the `unfold` argument from `evalSatPhotometry`). Parity at P 0.19-0.59: dmag <= 0.01.
+  **Mesh**: the component buffer is THREE vec4s per component (pivot / parent, stow axis x (1 - scale) / root, window);
+  `GpuMeshInstance::earthShC.z` = 1 - P; `sat_mesh.vert` scales positions (and normals by the inverse transpose)
+  (`instStowScale`), and `sat_mesh.frag`'s shadows skip a stowed part's occluder (it is not where its box says).
+  Joints stay at rest throughout (bit 25). P = 1 (every roster satellite) changes nothing. A paused BACKWARD time jump
+  leaves the sky TAA's frozen history (meshes are composited in the sky pass) showing the later pose for a few dozen
+  frames: `wait 60` after one in a script.
 - **Satellite indices**: roster `[0, activeSatCount)`, then `kLaunchCap` (131072) launch records, then the Kessler pool
   from `poolIdx0()`. Launch records are `GpuKepOrbit`s in kesslerBuf from `kLaunchWord0` (sat_orbit.comp `LAUNCH_CAP`:
   the indices before `poolBase`, the words before `poolWord0`), born/death only "live or not". They hold the member's
   OSCULATING elements at the write time (phases at the current orbit epoch, so they are written after the rebake), and
   a batch rewrites them together every 20 s of sim time or when a retiree's re-entry passes (1200 writes a frame,
-  round-robin); the GPU carries them on as Kepler orbits meanwhile (the climb's drift in 20 s is under a metre).
+  round-robin); the GPU carries them on as Kepler orbits meanwhile. **A record must be the orbit the member is really
+  on** (`memberRecord`, 2026-10-19): the velocity is memberState's own derivative (central difference, 0.25 s), an SSO
+  plane's precession goes in as `raanDot` (removed from the velocity first), and the epoch phase is computed with the
+  mean motion AS THE GPU'S FLOAT HOLDS IT (with the double one, the float's rounding x up to 7 days put a member up to
+  ~140-270 m off, differently at every rewrite). Harness `launch jitter` emulates rewrites (the CPU copy and the GPU's
+  float Kepler) and reports the jump at each: before (`launch legacy on` rebuilds the old records in the app) 7-290 m
+  CPU / 80-300 m GPU mean, after 0.003-0.1 m CPU / ~1.3 m GPU (the float angle's floor, ~3 m at 7e6 m); in the app at
+  10x a member's screen motion's second difference fell from 2.4 px max (0.37 mean) to 0.011 px.
   `SatOrbit::launchSlot` -> `launchOrbitElems` for the CPU mirror (parity 0.8 m). 8-slot chunks per batch and kind.
   **Never assume `satOrbits.size() == activeSatCount + kPool.size()`** or that indices past the roster are debris:
   per-constellation scans run over `activeSatCount`; empty launch entries have `constIdx = UINT32_MAX`.

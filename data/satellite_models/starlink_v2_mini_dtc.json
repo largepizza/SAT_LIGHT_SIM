@@ -1,6 +1,7 @@
 {
     "name": "Starlink V2 Mini Direct-to-Cell (mitigated)",
     "note": "Parity model for the v1.1 'Starlink Gen3 Direct-to-Cell' shell (today's DTCs are V2 Minis). The mitigated V2 Mini plus a ~25 m2 nadir phased array ahead of the bus along the velocity axis, at ~360 km. Benchmark: mallama2025_dtc (6.47 at 1000 km, mitigated).",
+    "deployment": {"unfold_delay_s": 900, "unfold_s": 240},
     "attitude_groups": [
         {
             "name": "bus",
@@ -56,6 +57,7 @@
         },
         {
             "name": "array_left",
+            "stow": {"axis": [0, 1, 0], "root": 1.85, "scale": 0.04, "phase": [0.0, 1.0]},
             "type": "plane",
             "group": "wings",
             "size": [4.1, 12.8],
@@ -66,6 +68,7 @@
         },
         {
             "name": "array_right",
+            "stow": {"axis": [0, -1, 0], "root": 1.85, "scale": 0.04, "phase": [0.0, 1.0]},
             "type": "plane",
             "group": "wings",
             "size": [4.1, 12.8],
@@ -114,6 +117,14 @@
             "status": "estimate",
             "value": "dielectric_mirror_gen1 values (a mirror worse than the gen-2 chassis film)",
             "source": "Mallama, Cole, Respler & Harrington 2025 (arXiv:2502.03651) section 4.1: 'the unfolded DTC antenna ... is expected to be maintained parallel to the surface of the Earth, as is the chassis'; 'the long axis of the spacecraft, through the DTC antenna, remains oriented parallel to the orbit velocity vector' (assumed); the antenna surface 'is reflective, but not as perfectly reflective as the chassis base'. Area: 'roughly 25 square meters' (KeepTrack, 'Starlink Direct to Cell', secondary). Reflectance unpublished."
+        },
+        {
+            "subjects": [
+                "deployment"
+            ],
+            "status": "estimate",
+            "value": "arrays leave the stack folded (4% of their span, at the bus edge) and unfold over 4 min, 15 min (+-15%) after release",
+            "source": "SpaceX describes the arrays unfolding after the satellites leave the stack; no timeline is published. Estimate."
         }
     ],
     "materials": [

@@ -37,6 +37,9 @@ struct Vehicle
     double t2 = 520.0;               // SECO: insertion into the parking orbit (s)
     double deployAfter = 900.0;      // payload deployment, s after SECO
     double deployIntervalS = 2.0;    // the satellites leave the dispenser one after another, this far apart
+    double sepSpeedMps = 0.45;       // their separation speed from the dispenser (mostly up, a little back)
+    double sepSpreadMps = 0.12;      // +- per member and axis: a stack's spread (Starship's PEZ dispenser: a few cm/s,
+                                     // so the train leaves as one clean string, sep x interval apart)
     double flow1 = 2500.0, flow2 = 300.0; // propellant flow (kg/s): booster, upper stage
     double vex1 = 2900.0, vex2 = 3400.0;  // exhaust speed (m/s)
     int recovery = 2;                // booster: 0 expendable, 1 return to the pad (RTLS / tower catch), 2 droneship
@@ -106,6 +109,11 @@ Track upperTrack(const Vehicle &v, double hPark);
 // over the first tau seconds (rad).
 double rampPhase(double a0, double a1, double T, double tau);
 inline double meanMotion(double a) { return std::sqrt(kGM / (a * a * a)); }
+// A free body's motion relative to a circular orbit of mean motion n (Clohessy-Wiltshire), starting at the reference
+// point with velocity v0 = (radial, along-track, cross-track), after t seconds: position p and velocity v, same axes.
+void cwFree(const glm::dvec3 &v0, double n, double t, glm::dvec3 &p, glm::dvec3 &v);
+// The same from position p0 and velocity v0 (the general Clohessy-Wiltshire solution).
+void cwState(const glm::dvec3 &p0, const glm::dvec3 &v0, double n, double t, glm::dvec3 &p, glm::dvec3 &v);
 
 // ── Exhaust parcels ──────────────────────────────────────────────────────────────────────────────
 // A parcel of exhaust (mass m, emitted at p0 with velocity v0 relative to the air, Earth-fixed axes about the

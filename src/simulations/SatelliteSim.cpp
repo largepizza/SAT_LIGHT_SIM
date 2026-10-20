@@ -4271,6 +4271,8 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     inst.sun = glm::vec4(glm::vec3(sun), (float)lit);
     inst.sunColor = glm::vec4(1.0f, 1.0f, 1.0f, (float)earthL.a2);
     setMeshInstanceEarth(inst, earthL, glm::dmat3(1.0));
+    if (tracked) // a launch record still unfolding: its stowed parts (sat_mesh.vert)
+        inst.earthShC.z = (float)(1.0 - satUnfoldAt(orbitElemsOf(satOrbits[viewerSatIndex]), tNow));
     inst.firstMaterial = tm->firstMaterial;
     inst.firstOccluder = tm->firstOccluder;
     inst.occluderCount = tm->occluderCount;
@@ -4940,6 +4942,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         inst.sunColor = glm::vec4(glm::vec3(tint), (float)(alphaE * alphaE));
         setMeshInstanceEarth(inst, r.earth, glm::dmat3(glm::dvec3(ct, -st, 0.0), glm::dvec3(st, ct, 0.0),
                                                        glm::dvec3(0.0, 0.0, 1.0))); // ECI → ECEF (eciToEcef)
+        inst.earthShC.z = (float)(1.0 - satUnfoldAt(e, tNow)); // still unfolding after its release (sat_mesh.vert)
         inst.firstMaterial = tm->firstMaterial;
         inst.firstOccluder = tm->firstOccluder;
         inst.occluderCount = tm->occluderCount;

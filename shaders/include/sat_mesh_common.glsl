@@ -81,8 +81,10 @@ struct MeshOccluder {
 };
 layout(set = 0, binding = 3, std430) readonly buffer MeshOccluders { MeshOccluder occluders[]; };
 
-// Per component: xyz = joint pivot (rest frame, relative to its group's hinge; 0 = the hinge),
-// w = its group's parent (−1: root — never pivoted). SatComponent::pivot, satPivotOffset().
+// Per component, THREE vec4s (2026-10-19; firstComponent counts vec4s): [3c] xyz = joint pivot (rest frame, relative
+// to its group's hinge; 0 = the hinge), w = its group's parent (−1: root — never pivoted). SatComponent::pivot,
+// satPivotOffset(). [3c + 1] xyz = the stow axis x (1 - stowScale) (0 = never stowed), w = the stow root;
+// [3c + 2] xy = the unfolding window (SatComponent::stow*; the instance's earthShC.z = 1 - unfolding progress).
 layout(set = 0, binding = 7, std430) readonly buffer MeshComponents { vec4 components[]; };
 
 layout(set = 0, binding = 4) uniform sampler2D earthDayTex;
@@ -99,7 +101,7 @@ mat3 instGroupRot(MeshInstance inst, uint g)
 // components[].w = the parent group (-1 = root), + 100 for a RENDER-ONLY part (SatMeshRenderer::setTypeModels).
 vec3 instPivotOffset(MeshInstance inst, uint g, uint comp)
 {
-    vec4 c = components[inst.firstComponent + comp];
+    vec4 c = components[inst.firstComponent + 3u * comp];
     float parent = c.w >= 50.0 ? c.w - 100.0 : c.w;
     if (parent < 0.0 || c.xyz == vec3(0.0)) return vec3(0.0);
     return (instGroupRot(inst, uint(parent)) - instGroupRot(inst, g)) * c.xyz;
@@ -111,7 +113,24 @@ vec3 instPivotOffset(MeshInstance inst, uint g, uint comp)
 // hundreds of pixels wide — its light had no share of the model's flux to be scaled against).
 bool instCompRenderOnly(MeshInstance inst, uint comp)
 {
-    return components[inst.firstComponent + comp].w >= 50.0;
+    return components[inst.firstComponent + 3u * comp].w >= 50.0;
+}
+
+// A stowed part (launches, 2026-10-19: an accordion-folded array or radiator while the satellite unfolds): its scale
+// along the stow axis at the instance's unfolding progress (1 = deployed; satComponentStowScale, SatModel.cpp), and
+// that axis. Returns 1 for a part that is never stowed or a deployed satellite.
+float instStowScale(MeshInstance inst, uint comp, out vec3 axis, out float root)
+{
+    axis = vec3(0.0);
+    root = 0.0;
+    if (inst.earthShC.z <= 0.0) return 1.0;
+    vec4 st = components[inst.firstComponent + 3u * comp + 1u];
+    float ls = length(st.xyz);
+    if (ls <= 0.0) return 1.0;
+    vec4 ph = components[inst.firstComponent + 3u * comp + 2u];
+    axis = st.xyz / ls;
+    root = st.w;
+    return mix(1.0 - ls, 1.0, smoothstep(ph.x, ph.y, 1.0 - inst.earthShC.z));
 }
 
 #endif // SATLIGHTSIM_SAT_MESH_COMMON_GLSL

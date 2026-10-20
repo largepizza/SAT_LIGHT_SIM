@@ -607,6 +607,11 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             matLib[m.name] = m;
             out.localMaterials.push_back(m.name);
         }
+        if (j.contains("deployment"))
+        {
+            out.unfoldDelayS = std::max(0.0, j["deployment"].value("unfold_delay_s", 0.0));
+            out.unfoldDurS = std::max(0.0, j["deployment"].value("unfold_s", 0.0));
+        }
         // Provenance (benchmarking M4) — informational; SatModelTool reports coverage.
         // An entry names one `subject` or several `subjects` sharing the same provenance.
         for (const auto &js : j.value("sources", nlohmann::json::array()))
@@ -796,6 +801,25 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             c.backMaterial = jc.contains("back_material") ? materialRef(jc["back_material"].get<std::string>()) : -1;
             c.group = groupRef(jc);
             c.renderOnly = jc.value("render_only", false);
+            if (jc.contains("stow"))
+            {
+                // Stowed for launch (2026-10-19): packs toward stowRoot along stowAxis (rest body frame).
+                const nlohmann::json &js = jc["stow"];
+                glm::vec3 ax = jsonVec3(js, "axis", glm::vec3(0.0f));
+                if (glm::length(ax) < 1e-6f)
+                    throw std::runtime_error("component '" + c.name + "': stow needs an axis");
+                c.stowAxis = glm::normalize(ax);
+                c.stowRoot = js.value("root", 0.0f);
+                c.stowScale = std::clamp(js.value("scale", 0.05f), 0.0f, 1.0f);
+                if (js.contains("phase"))
+                {
+                    c.stowP0 = std::clamp(js["phase"].at(0).get<float>(), 0.0f, 1.0f);
+                    c.stowP1 = std::clamp(js["phase"].at(1).get<float>(), c.stowP0 + 1.0f / 255.0f, 1.0f);
+                }
+                // As the GPU sees them (GpuSatLobe::stowPack, the mesh's component buffer): whole 1/255 steps.
+                c.stowP0 = std::round(c.stowP0 * 255.0f) / 255.0f;
+                c.stowP1 = std::max(std::round(c.stowP1 * 255.0f) / 255.0f, c.stowP0 + 1.0f / 255.0f);
+            }
             out.components.push_back(std::move(c));
         }
         // Render-only detail goes last (stable): the photometric components keep indices 0..n-1, so
@@ -1297,6 +1321,33 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
         L.occluderMask = 0;
         L.distribution = 2.0 * a.sumBeck > a.sumA ? 1u : 0u;
         L.transmission = (float)(a.sumT / a.sumA);
+        {
+            // Stowed parts (2026-10-19): the area lost when fully stowed, and the window of the largest of them.
+            double lost = 0.0, bestA = 0.0;
+            const SatComponent *dom = nullptr;
+            std::map<int, double> byComp;
+            for (int ti : a.tris)
+                byComp[tris[ti].component] += tris[ti].area;
+            for (const auto &kv : byComp)
+            {
+                const SatComponent &c = m.components[kv.first];
+                if (c.stowScale >= 1.0f)
+                    continue;
+                lost += kv.second * (1.0 - c.stowScale);
+                if (kv.second > bestA)
+                {
+                    bestA = kv.second;
+                    dom = &c;
+                }
+            }
+            if (dom && lost > 0.0)
+            {
+                const uint32_t k = (uint32_t)std::lround(std::clamp(lost / a.sumA, 0.0, 1.0) * 65535.0);
+                const uint32_t p0 = (uint32_t)std::lround(dom->stowP0 * 255.0f);
+                const uint32_t p1 = (uint32_t)std::lround(dom->stowP1 * 255.0f);
+                L.stowPack = std::max(k, 1u) | (p0 << 16) | (p1 << 24);
+            }
+        }
         lobes.push_back(L);
         if (lobeTris)
             lobeTris->push_back(a.tris);
@@ -1327,9 +1378,31 @@ glm::dvec3 satLobeNormalPosed(const std::vector<GpuSatLobe> &lobes, const std::v
     return glm::normalize(poses[L.group].R * nBody);
 }
 
+static double stowSmooth(double p0, double p1, double P)
+{
+    const double x = std::clamp((P - p0) / std::max(p1 - p0, 1e-6), 0.0, 1.0);
+    return x * x * (3.0 - 2.0 * x);
+}
+
+double satLobeStowFactor(uint32_t stowPack, double P)
+{
+    if (stowPack == 0u || P >= 1.0)
+        return 1.0;
+    const double k = (double)(stowPack & 0xFFFFu) / 65535.0;
+    const double p0 = (double)((stowPack >> 16) & 0xFFu) / 255.0, p1 = (double)(stowPack >> 24) / 255.0;
+    return 1.0 - k * (1.0 - stowSmooth(p0, p1, P));
+}
+
+double satComponentStowScale(const SatComponent &c, double P)
+{
+    if (c.stowScale >= 1.0f || P >= 1.0)
+        return 1.0;
+    return c.stowScale + (1.0 - c.stowScale) * stowSmooth(c.stowP0, c.stowP1, P);
+}
+
 double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                          const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o, double sourceAlpha2,
-                         int *dominant, const SatOcclusion *occ, bool occludeSource)
+                         int *dominant, const SatOcclusion *occ, bool occludeSource, double unfold)
 {
     double sum = 0.0, best = 0.0;
     int bestIdx = -1;
@@ -1342,6 +1415,7 @@ double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector
                               L.distribution != 0, L.transmission);
         if (I > 0.0 && occ && li < occ->lobes.size())
             I *= satLobeVisibility(*occ, (int)li, (int)L.group, poses, s, occludeSource, o);
+        I *= satLobeStowFactor(L.stowPack, unfold);
         sum += I;
         if (I > best)
         {
@@ -1370,7 +1444,7 @@ double satLobeEarthIntensity(glm::dvec3 n, double area, double diffArea, double 
 
 double evalSatLobesEarthPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                               const std::vector<GroupPose> &poses, const SatEarthLight &earth, glm::dvec3 o,
-                              const SatOcclusion *occ)
+                              const SatOcclusion *occ, double unfold)
 {
     double sum = 0.0;
     for (size_t li = 0; li < lobes.size(); ++li)
@@ -1382,7 +1456,7 @@ double evalSatLobesEarthPosed(const std::vector<GpuSatLobe> &lobes, const std::v
                                          earth, o, L.transmission);
         if (I > 0.0 && occ && li < occ->lobes.size())
             I *= satLobeVisibility(*occ, (int)li, (int)L.group, poses, earth.dir, false, o);
-        sum += I;
+        sum += I * satLobeStowFactor(L.stowPack, unfold);
     }
     return sum;
 }

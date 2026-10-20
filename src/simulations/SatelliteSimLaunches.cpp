@@ -81,10 +81,12 @@ struct LMember
     glm::dvec3 depOff{0.0}; // at its release, the dispenser's position less the member's (radial, along, cross): eased out
     double tRel = 0.0;      // its release from the dispenser (s, J2000): the train leaves one after another
     glm::dvec3 sepDir{0.0}; // its separation drift (radial, along, cross; m/s) from the dispenser, eased out with depOff
+    glm::dvec3 depVel{0.0}; // at its release, the dispenser's velocity less the member's (same axes, rotating frame)
 };
 
 struct LBatch
 {
+    bool resid = false; // a member has a phasing residual (rewritten every 2 s while raising)
     int plane = -1, b = 0;
     int64_t k = 0;
     int prog = -1, veh = -1, site = -1;
@@ -674,7 +676,9 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     // an expendable one re-enters as a fireball, a returning one (Starship's ship) flies its entry glow. Until
     // 2026-10-19 only the expendable ones burned (40 s, while the stage sank 30 km on its circle) and Starship's ship
     // jumped from its parking orbit to 100 km at the entry interface 40 min after deploying.
-    B.tDeorbBurn = B.tD + 1800.0 + 3600.0 * h01(B.seed, 7, 1);
+    // (not before the last member has left the dispenser and drifted clear: a Starship train takes ~20-30 min)
+    B.tDeorbBurn = std::max(B.tD + 1800.0 + 3600.0 * h01(B.seed, 7, 1),
+                            B.tD + vh.deployIntervalS * (double)B.mem.size() + 900.0);
     {
         const double ra = B.rPark, rp = kR + (vh.upperDeorbit ? 20000.0 : 45000.0); // the ship enters shallower
         B.aE = 0.5 * (ra + rp);
@@ -701,8 +705,12 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     B.tVisEnd = std::max({boosterEnd + kPlumeAgeLow, B.tStageGone + kPlumeAgeHigh, tL + B.t2 + kPlumeAgeHigh,
                           B.tStageGone + 480.0});
     B.ends.clear();
+    B.resid = false;
     for (const LMember &mb : B.mem)
+    {
         B.ends.push_back(mb.tEnd);
+        B.resid = B.resid || std::abs(mb.eps) > 1e-9;
+    }
     std::sort(B.ends.begin(), B.ends.end());
     // Each member leaves the dispenser in turn (deployIntervalS apart): at its release it is AT the dispenser — in the
     // payload bay's door, near the nose on the zenith side (the stage flies nose prograde, belly to nadir) — and drifts
@@ -710,7 +718,8 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     // 2026-10-19 the whole train appeared at once at deployment, a string 120 m apart behind the stage.)
     {
         const bool big = vh.upperMassKg > 50000.0; // Starship's ship: a 9-m body, the bay door high on the side
-        const double noseOff = big ? 31.0 : 9.0, sideOff = big ? 4.6 : 1.6;
+        // (5.3 m up: a stowed satellite's underside clears the 4.5-m hull)
+        const double noseOff = big ? 31.0 : 9.0, sideOff = big ? 5.3 : 1.6;
         for (size_t mi = 0; mi < B.mem.size(); ++mi)
         {
             LMember &mb = B.mem[mi];
@@ -719,22 +728,43 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
             if (!rocketPos(L, B, 1, mb.tRel - B.tL, Pst) || !rocketPos(L, B, 1, mb.tRel - B.tL - 1.0, Pb))
                 continue;
             mb.depOff = glm::dvec3(0.0);
-            glm::dvec3 r, v;
-            if (!memberState(sim, B, mb, 0, mb.tRel, r, v))
+            mb.depVel = glm::dvec3(0.0);
+            // The dispenser less the member's own path, in the member's (radial, along, cross) axes, at tt.
+            auto offsetAt = [&](double tt, glm::dvec3 &o) {
+                glm::dvec3 P1, P0, r, v;
+                if (!rocketPos(L, B, 1, tt - B.tL, P1) || !rocketPos(L, B, 1, tt - B.tL - 1.0, P0) ||
+                    !memberState(sim, B, mb, 0, tt, r, v))
+                    return false;
+                const glm::dvec3 nose = glm::normalize(P1 - P0), up = glm::normalize(P1);
+                const glm::dvec3 disp = P1 + noseOff * nose + sideOff * up;
+                const glm::dvec3 U = r / glm::length(r);
+                const glm::dvec3 Cn = glm::normalize(glm::cross(r, v));
+                const glm::dvec3 A = glm::cross(Cn, U);
+                const glm::dvec3 d = disp - r;
+                o = glm::dvec3(glm::dot(d, U), glm::dot(d, A), glm::dot(d, Cn));
+                return true;
+            };
+            glm::dvec3 o0, oA, oB;
+            // (one-sided, second order: the first member's own path starts at its release)
+            if (!offsetAt(mb.tRel, o0) || !offsetAt(mb.tRel + 0.5, oA) || !offsetAt(mb.tRel + 1.0, oB))
                 continue;
-            const glm::dvec3 nose = glm::normalize(Pst - Pb), up = glm::normalize(Pst);
-            const glm::dvec3 disp = Pst + noseOff * nose + sideOff * up;
-            const glm::dvec3 U = r / glm::length(r);
-            const glm::dvec3 Cn = glm::normalize(glm::cross(r, v));
-            const glm::dvec3 A = glm::cross(Cn, U);
-            const glm::dvec3 d = disp - r;
-            mb.depOff = glm::dvec3(glm::dot(d, U), glm::dot(d, A), glm::dot(d, Cn));
+            mb.depOff = o0;
+            // The member leaves with the dispenser's velocity (+ its push): relative to its own plane and phase that is
+            // tens to a hundred m/s across (the stage's plane differs from the slot's by up to a degree of node).
+            mb.depVel = -3.0 * o0 + 4.0 * oA - oB; // (/ 2h, h = 0.5 s)
             const uint64_t ms = B.seed ^ ((uint64_t)mi * 0xD1B54A32D192ED03ull);
-            mb.sepDir = glm::dvec3(0.30 + 0.25 * h01(ms, 30, 1), -0.05 - 0.1 * h01(ms, 31, 1), 0.16 * (h01(ms, 32, 1) - 0.5));
+            // Mostly up, a little back, + the dispenser's spread (Starship's: a few cm/s, so the members leave as
+            // one string along the same free-flight arc, sepSpeed x interval apart; a stack's: ~0.1 m/s).
+            const double sp = vh.sepSpeedMps, sd = vh.sepSpreadMps;
+            mb.sepDir = sp * glm::dvec3(0.97, -0.22, 0.0) +
+                        sd * glm::dvec3(2.0 * h01(ms, 30, 1) - 1.0, 2.0 * h01(ms, 31, 1) - 1.0, 2.0 * h01(ms, 32, 1) - 1.0);
         }
     }
     B.valid = true;
 }
+
+// Diagnostics only (harness `launch jitter`): build records and drift the old way, for a before / after comparison.
+static inline bool gLegacyRecords = false;
 
 // A member's state: the train climbing (kind 0, tD <= t < tA) or the retiree falling (kind 1, tA <= t < tEnd).
 static bool memberState(const SatelliteSim &sim, const LBatch &B, const LMember &mb, int kind, double t, glm::dvec3 &r,
@@ -781,7 +811,11 @@ static bool memberState(const SatelliteSim &sim, const LBatch &B, const LMember 
     v = st.velocity * std::sqrt(launch::kGM / glm::length(r));
     // Leaving the stage: the member starts where the stage is and drifts into its own plane and phase over two days
     // (members of one "plane" differ by up to a degree of node, a Starmind cluster by its jitter).
-    // It leaves the dispenser at tRel, drifting away at sepDir (m/s), and both ease out together.
+    // It leaves the dispenser at tRel with the dispenser's velocity + its push sepDir (m/s) and moves away as a FREE
+    // body does (Clohessy-Wiltshire about the parking circle: a radial push makes it rise and fall back behind, an
+    // along-track one drift), and the offset eases out over two days (the satellite's own thrusters). (Until 2026-10-19 the drift was a straight line in the
+    // rotating frame, which no orbit follows: the GPU's Kepler record of it was off by metres after 2 s and by up
+    // to hundreds of metres after the 20-s rewrites — the jitter at 10x.)
     if (kind == 0 && glm::dot(mb.depOff, mb.depOff) > 0.0)
     {
         const double age = std::max(t - mb.tRel, 0.0);
@@ -792,11 +826,144 @@ static bool memberState(const SatelliteSim &sim, const LBatch &B, const LMember 
             const glm::dvec3 U = r / glm::length(r);
             const glm::dvec3 Cn = glm::normalize(glm::cross(r, v));
             const glm::dvec3 A = glm::cross(Cn, U);
-            const glm::dvec3 o = mb.depOff + mb.sepDir * age;
+            // The whole offset from its own path flies free from the release: the dispenser's position and velocity
+            // relative to that path (+ its push), as Clohessy-Wiltshire motion about the parking circle. (Holding the
+            // dispenser's offset fixed in the rotating frame — up to ~100 km across, the planes' difference — took a
+            // constant push no orbit has: 0.07 m/s^2 across, 14 m off a Kepler record after 20 s.)
+            glm::dvec3 o, cwV;
+            launch::cwState(mb.depOff, mb.depVel + mb.sepDir, B.nPark, age, o, cwV);
+            if (gLegacyRecords) // (harness `launch jitter`: the pre-2026-10-19 straight drift, for comparison)
+            {
+                o = mb.depOff + mb.sepDir * age;
+                cwV = mb.sepDir;
+            }
             r += f * (o.x * U + o.y * A + o.z * Cn);
             if (t >= mb.tRel)
-                v += f * (mb.sepDir.x * U + mb.sepDir.y * A + mb.sepDir.z * Cn);
+                v += f * (cwV.x * U + cwV.y * A + cwV.z * Cn);
         }
+    }
+    return true;
+}
+
+// A member's unfolding (2026-10-19): a train member leaves its dispenser stowed and its model's stowable parts
+// (arrays, radiators: SatComponent::stow) unfold over SatModel::unfoldDurS, starting unfoldDelayS (+-15% per member)
+// after its release; a retiree is deployed. t0 / dur as SatOrbitElems::unfoldT0 / unfoldDur (dur 0 = deployed).
+static void memberUnfold(const SatelliteSim &sim, const LMember &mb, int kind, double &t0, double &dur)
+{
+    t0 = 0.0;
+    dur = 0.0;
+    if (kind != 0)
+        return;
+    const SatOrbit &so = sim.satOrbits[mb.sat];
+    if (so.typeIdx >= sim.satTypes.size() || !sim.satTypes[so.typeIdx].model)
+        return;
+    const SatModel &m = *sim.satTypes[so.typeIdx].model;
+    if (m.unfoldDurS <= 0.0)
+        return;
+    const double j = h01((uint64_t)mb.sat * 0x9E3779B97F4A7C15ull, 41, 1);
+    t0 = mb.tRel + m.unfoldDelayS * (0.85 + 0.3 * j);
+    dur = m.unfoldDurS;
+}
+
+// The Kepler record a member's GPU slot carries from t (and the CPU's copy of it, ce): its OSCULATING orbit at t.
+// The GPU propagates it as a Kepler orbit until the next rewrite, so it must be the orbit the member is really on
+// (2026-10-19, the 10x jitter): the velocity is memberState's own derivative (its drift and every eased offset
+// included; the analytic one was the bare circle's), an SSO plane's precession is the record's node rate (removed
+// from the velocity first, so it is not counted twice), and the epoch phase uses the mean motion as the GPU's float
+// holds it (with the double one the float's rounding, x up to 7 days, put a satellite up to ~140 m off, a different
+// amount at every rewrite).
+static bool memberRecord(const SatelliteSim &sim, const LBatch &B, const LMember &mb, int kind, double t,
+                         double tEpoch, GpuKepOrbit &g, SatOrbitElems &ce)
+{
+    glm::dvec3 r, v, rA, rB, vT;
+    if (!memberState(sim, B, mb, kind, t, r, v))
+        return false;
+    if (gLegacyRecords)
+    {
+        // The pre-2026-10-19 record (harness `launch jitter` only): memberState's analytic velocity, no node rate,
+        // the double mean motion.
+        const kessler::Elems el = kessler::elemsFromState({r, v});
+        if (!(el.a > kR) || el.e >= 0.9)
+            return false;
+        const double n = launch::meanMotion(el.a);
+        g = GpuKepOrbit{};
+        g.M = (float)wrap2pi(el.M - n * (t - tEpoch));
+        g.argp = (float)wrap2pi(el.argp);
+        g.raan = (float)wrap2pi(el.raan);
+        g.n = (float)n;
+        g.a = (float)el.a;
+        g.e = (float)el.e;
+        g.cosI = (float)std::cos(el.i);
+        g.sinI = (float)std::sin(el.i);
+        ce = SatOrbitElems{};
+        ce.kepler = true;
+        ce.u0 = wrap2pi(el.M - n * t);
+        ce.raan = el.raan;
+        ce.argp = el.argp;
+        ce.meanMot = n;
+        ce.rSatM = el.a;
+        ce.ecc = el.e;
+        ce.incl = el.i;
+        return true;
+    }
+    const double h = 0.25;
+    const bool okA = memberState(sim, B, mb, kind, t + h, rA, vT), okB = memberState(sim, B, mb, kind, t - h, rB, vT);
+    if (okA && okB)
+        v = (rA - rB) / (2.0 * h);
+    else if (okA)
+        v = (rA - r) / h;
+    else if (okB)
+        v = (r - rB) / h;
+    const SatOrbit &so = sim.satOrbits[mb.sat];
+    const SatOrbitElems re = sim.rosterElemsOf(so);
+    const double raanDot = re.sso ? satphot::kSSOPrecRate : 0.0;
+    const glm::dvec3 vRel = v - glm::cross(glm::dvec3(0.0, 0.0, raanDot), r);
+    const kessler::Elems el = kessler::elemsFromState({r, vRel});
+    if (!(el.a > kR) || el.e >= 0.9)
+        return false;
+    const float nf = (float)launch::meanMotion(el.a);
+    const double n = (double)nf;
+    g = GpuKepOrbit{};
+    g.M = (float)wrap2pi(el.M - n * (t - tEpoch));
+    g.argp = (float)wrap2pi(el.argp);
+    g.raan = (float)wrap2pi(el.raan - raanDot * (t - tEpoch));
+    g.n = nf;
+    g.a = (float)el.a;
+    g.e = (float)el.e;
+    g.cosI = (float)std::cos(el.i);
+    g.sinI = (float)std::sin(el.i);
+    g.raanDot = (float)raanDot;
+    g.flux = 1.0f;
+    g.bornSec = (int32_t)0x80000001;
+    g.deathSec = kessler::kNever;
+    // A train raising flies "open book" (bit 25: every joint at rest, arrays flat with the bus, edge into the
+    // flow): the low-drag configuration that makes fresh trains bright. On station it is the roster satellite.
+    // Bit 26: still unfolding — the tumble words hold the progress (rate, value at the orbit epoch).
+    double uT0 = 0.0, uDur = 0.0;
+    memberUnfold(sim, mb, kind, uT0, uDur);
+    const bool unfolding = uDur > 0.0 && t < uT0 + uDur;
+    g.typeConst = (uint32_t)so.typeIdx | ((so.constIdx & 0xFFu) << 16) | (kind == 0 ? (1u << 25) : 0u) |
+                  (unfolding ? (1u << 26) : 0u);
+    if (unfolding)
+    {
+        g.tumbleRate = (float)(1.0 / uDur);
+        g.tumblePhase = (float)((tEpoch - uT0) / uDur);
+    }
+    ce = SatOrbitElems{};
+    ce.kepler = true;
+    ce.u0 = el.M - n * t;
+    ce.raan = el.raan - raanDot * t;
+    ce.raanDot = raanDot;
+    ce.argp = el.argp;
+    ce.meanMot = n;
+    ce.rSatM = el.a;
+    ce.ecc = el.e;
+    ce.incl = el.i;
+    ce.restJoints = kind == 0;
+    if (unfolding)
+    {
+        ce.unfoldT0 = uT0;
+        ce.unfoldDur = uDur;
     }
     return true;
 }
@@ -1393,52 +1560,25 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     uint32_t budget = 1200;
     auto writeMember = [&](LBatch &B, int kind, uint32_t mi, uint32_t slot) {
         const LMember &mb = B.mem[mi];
-        glm::dvec3 r, v;
-        if (!LaunchImpl::memberState(*this, B, mb, kind, t, r, v))
-            return;
-        kessler::Elems el = kessler::elemsFromState({r, v});
-        if (!(el.a > kR) || el.e >= 0.9)
-            return;
-        const double n = launch::meanMotion(el.a);
-        const SatOrbit &so = satOrbits[mb.sat];
         GpuKepOrbit g{};
-        g.M = (float)wrap2pi(el.M - n * (t - tEpoch));
-        g.argp = (float)wrap2pi(el.argp);
-        g.raan = (float)wrap2pi(el.raan);
-        g.n = (float)n;
-        g.a = (float)el.a;
-        g.e = (float)el.e;
-        g.cosI = (float)std::cos(el.i);
-        g.sinI = (float)std::sin(el.i);
-        g.flux = 1.0f;
-        g.bornSec = (int32_t)0x80000001;
-        g.deathSec = kessler::kNever;
-        // A train raising flies "open book" (bit 25: every joint at rest, arrays flat with the bus, edge into the
-        // flow): the low-drag configuration that makes fresh trains bright. On station it is the roster satellite.
-        g.typeConst = (uint32_t)so.typeIdx | ((so.constIdx & 0xFFu) << 16) | (kind == 0 ? (1u << 25) : 0u);
+        SatOrbitElems ce{};
+        if (!LaunchImpl::memberRecord(*this, B, mb, kind, t, tEpoch, g, ce))
+            return;
         if (!putRecord(slot, g))
             return;
+        const SatOrbit &so = satOrbits[mb.sat];
         SlotInfo &si = L.slots[slot];
         si.shown = true;
         si.live = true;
         si.tw = t;
-        SatOrbitElems &ce = L.elems[slot];
-        ce = SatOrbitElems{};
-        ce.kepler = true;
-        ce.u0 = wrap2pi(el.M - n * t);
-        ce.raan = el.raan;
-        ce.argp = el.argp;
-        ce.meanMot = n;
-        ce.rSatM = el.a;
-        ce.ecc = el.e;
-        ce.incl = el.i;
-        ce.restJoints = kind == 0;
+        L.elems[slot] = ce;
+        const double elA = ce.rSatM, elI = ce.incl, n = ce.meanMot;
         SatOrbit &o = satOrbits[activeSatCount + slot];
         o.typeIdx = so.typeIdx;
         o.constIdx = so.constIdx;
-        o.incl = (float)el.i;
-        o.altM = (float)(el.a - kR);
-        o.R_sat = (float)el.a;
+        o.incl = (float)elI;
+        o.altM = (float)(elA - kR);
+        o.R_sat = (float)elA;
         o.meanMot = (float)n;
         o.launchSlot = (int32_t)slot;
         ++L.nWrites;
@@ -1463,8 +1603,10 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 std::vector<uint32_t> &ch = B.chunks[kind];
                 // While the train leaves the dispenser (and its first minutes, drifting from the stage at a fraction
                 // of a m/s) every 2 s, so each member appears at its release and the separation stays smooth.
+                // (2026-10-19) Also every 2 s for a train with a phasing residual (LMember::eps): its slow drift is no
+                // free orbit (a circle flown faster than circular), and a Kepler record of it was off by 5-15 m after 20 s.
                 const double relEnd = B.mem.empty() ? B.tD : B.mem.back().tRel;
-                const double every = (kind == 0 && t < relEnd + 600.0) ? 2.0 : 20.0;
+                const double every = (kind == 0 && (t < relEnd + 600.0 || B.resid)) ? 2.0 : 20.0;
                 bool due = ch.empty() || std::abs(t - B.tw[kind]) > every;
                 if (!due && kind == 1)
                 {
@@ -2718,6 +2860,7 @@ nlohmann::json SatelliteSim::launchCheckJson() const
         return j;
     const LaunchState &L = *launchState;
     double maxArr = 0.0, sumArr = 0.0, maxDep = 0.0, sumDep = 0.0, maxRet = 0.0, maxEps = 0.0;
+    glm::dvec3 depOffMax(0.0), depVelMax(0.0);
     size_t nMem = 0, nB = 0, nResid = 0;
     for (const auto &kv : L.batches)
     {
@@ -2747,6 +2890,11 @@ nlohmann::json SatelliteSim::launchCheckJson() const
             if (LaunchImpl::memberState(*this, B, mb, 1, B.tA, r, v))
                 maxRet = std::max(maxRet, glm::length(r - slotA));
             maxEps = std::max(maxEps, std::abs(mb.eps));
+            for (int a = 0; a < 3; ++a)
+            {
+                depOffMax[a] = std::max(depOffMax[a], std::abs(mb.depOff[a]));
+                depVelMax[a] = std::max(depVelMax[a], std::abs(mb.depVel[a]));
+            }
             nResid += std::abs(mb.eps) > 1e-9;
             ++nMem;
         }
@@ -2822,12 +2970,142 @@ nlohmann::json SatelliteSim::launchCheckJson() const
     j["deploy_err_km_mean"] = nMem ? sumDep / nMem / 1000.0 : 0.0;
     j["retiree_start_err_m_max"] = maxRet;
     j["phasing_residual_rad_max"] = maxEps;
+    // the dispenser less a member's own path at its release (radial, along, cross): m and m/s
+    j["release_offset_m_max"] = {depOffMax.x, depOffMax.y, depOffMax.z};
+    j["release_rel_vel_mps_max"] = {depVelMax.x, depVelMax.y, depVelMax.z};
     j["members_with_residual"] = nResid;
     return j;
 }
 
+// The GPU's view of a launch record (sat_orbit.comp's Kepler block, in float as it runs there; orbitPhase's product
+// is exact, so only the final angle is rounded).
+static glm::dvec3 gpuKeplerEmu(const GpuKepOrbit &g, double deltaT)
+{
+    const float M = (float)launchsim::wrap2pi((double)g.M + (double)g.n * deltaT);
+    const float dtf = (float)deltaT;
+    const float argp = g.argp + g.argpDot * dtf, raan = g.raan + g.raanDot * dtf;
+    const float e = g.e, a = g.a, ci = g.cosI, si = g.sinI;
+    float E = M + e * std::sin(M);
+    for (int k = 0; k < 5; ++k)
+        E -= (E - e * std::sin(E) - M) / (1.0f - e * std::cos(E));
+    const float cE = std::cos(E), sE = std::sin(E), sq = std::sqrt(std::max(0.0f, 1.0f - e * e));
+    const float cO = std::cos(raan), sO = std::sin(raan), cw = std::cos(argp), sw = std::sin(argp);
+    const glm::vec3 P(cw * cO - sw * sO * ci, cw * sO + sw * cO * ci, sw * si);
+    const glm::vec3 Q(-sw * cO - cw * sO * ci, -sw * sO + cw * cO * ci, cw * si);
+    return glm::dvec3((a * (cE - e)) * P + (a * sq * sE) * Q);
+}
+
+void SatelliteSim::launchLegacyRecords(bool on)
+{
+    LaunchImpl::gLegacyRecords = on;
+    if (launchState)
+        for (auto &kv : launchState->batches)
+            kv.second.tw[0] = kv.second.tw[1] = -1e300; // rewrite everything now
+    if (launchState)
+        for (SlotInfo &si : launchState->slots)
+            si.tw = -1e300;
+}
+
+// Harness `launch jitter` (2026-10-19): how far a train member's drawn position jumps when its record is rewritten
+// (the CPU copy, which places the mesh, and the GPU's, which places the point), over the release, the first minutes
+// (rewritten every 2 s) and later (every 20 s); the new records against the pre-2026-10-19 ones on the same batches.
+nlohmann::json SatelliteSim::launchJitterJson(int maxBatches)
+{
+    nlohmann::json j;
+    if (!launchState)
+        return j;
+    const LaunchState &L = *launchState;
+    struct Phase
+    {
+        const char *name;
+        double from, to, every;
+    };
+    static const Phase kPh[] = {{"release_0_60s", 1.0, 60.0, 2.0},
+                                {"early_1_10min", 60.0, 600.0, 2.0},
+                                {"later_10min_6h", 600.0, 21600.0, 20.0},
+                                {"day_1_2", 86400.0, 172800.0, 20.0}};
+    const bool keepLegacy = LaunchImpl::gLegacyRecords;
+    for (int legacy = 1; legacy >= 0; --legacy)
+    {
+        LaunchImpl::gLegacyRecords = legacy != 0;
+        nlohmann::json out;
+        for (const Phase &ph : kPh)
+        {
+            double maxC = 0.0, sumC = 0.0, maxG = 0.0, sumG = 0.0, maxQ = 0.0;
+            nlohmann::json worst;
+            size_t n = 0, nb = 0;
+            for (const auto &kv : L.batches)
+            {
+                const LBatch &B = kv.second;
+                if (!B.valid || B.mem.empty() || (int)nb >= maxBatches)
+                    continue;
+                ++nb;
+                for (size_t mi = 0; mi < B.mem.size(); mi += std::max<size_t>(1, B.mem.size() / 8))
+                {
+                    const LMember &mb = B.mem[mi];
+                    if (std::abs(mb.eps) > 1e-9)
+                        continue; // (a phasing residual: rewritten every 2 s, see LaunchState::update)
+                    for (int k = 0; k < 6; ++k)
+                    {
+                        const double tw = mb.tRel + ph.from + (ph.to - ph.from) * (k + 0.37) / 6.0;
+                        const double t1 = tw + ph.every;
+                        const double tEpoch = std::floor((tw - 3.5 * 86400.0) / 86400.0) * 86400.0; // mid-rebake
+                        GpuKepOrbit g0{}, g1{};
+                        SatOrbitElems c0{}, c1{};
+                        if (!LaunchImpl::memberRecord(*this, B, mb, 0, tw, tEpoch, g0, c0) ||
+                            !LaunchImpl::memberRecord(*this, B, mb, 0, t1, tEpoch, g1, c1))
+                            continue;
+                        const double dC = glm::length(satOrbitStateAt(c0, t1).posEci - satOrbitStateAt(c1, t1).posEci);
+                        const double dG = glm::length(gpuKeplerEmu(g0, t1 - tEpoch) - gpuKeplerEmu(g1, t1 - tEpoch));
+                        // (the GPU's float floor: the same record a frame later, against its double position)
+                        const double q = glm::length(gpuKeplerEmu(g1, t1 + 0.1 - tEpoch) -
+                                                     satOrbitStateAt(c1, t1 + 0.1).posEci);
+                        if (dC > maxC)
+                            worst = {{"age_s", tw - mb.tRel}, {"raise_in_s", mb.sRaise - tw}, {"arrive_in_s", B.tA - tw},
+                                     {"sep", {mb.sepDir.x, mb.sepDir.y, mb.sepDir.z}}, {"ecc", c0.ecc},
+                                     {"alt_km", (c0.rSatM - kR) / 1000.0}, {"vehicle", L.cat.vehicles[B.veh].id}};
+                        if (dC >= maxC)
+                        {
+                            // the path's acceleration less gravity (radial, along, cross): what no Kepler record follows
+                            glm::dvec3 ra, rb, rc, vv;
+                            const double hh = 2.0;
+                            if (LaunchImpl::memberState(*this, B, mb, 0, tw - hh, ra, vv) &&
+                                LaunchImpl::memberState(*this, B, mb, 0, tw, rb, vv) &&
+                                LaunchImpl::memberState(*this, B, mb, 0, tw + hh, rc, vv))
+                            {
+                                const glm::dvec3 acc = (ra - 2.0 * rb + rc) / (hh * hh) +
+                                                       launch::kGM * rb / std::pow(glm::length(rb), 3.0);
+                                const glm::dvec3 U = glm::normalize(rb), Cn = glm::normalize(glm::cross(rb, rc - ra)),
+                                                 A = glm::cross(Cn, U);
+                                worst["accel_resid_rac"] = {glm::dot(acc, U), glm::dot(acc, A), glm::dot(acc, Cn)};
+                            }
+                        }
+                        maxC = std::max(maxC, dC);
+                        sumC += dC;
+                        maxG = std::max(maxG, dG);
+                        sumG += dG;
+                        maxQ = std::max(maxQ, q);
+                        ++n;
+                    }
+                }
+            }
+            out[ph.name] = {{"rewrite_s", ph.every},
+                            {"samples", n},
+                            {"cpu_jump_m_max", maxC},
+                            {"cpu_jump_m_mean", n ? sumC / n : 0.0},
+                            {"gpu_jump_m_max", maxG},
+                            {"gpu_jump_m_mean", n ? sumG / n : 0.0},
+                            {"gpu_vs_cpu_m_max", maxQ},
+                            {"worst_cpu", worst}};
+        }
+        j[legacy ? "before" : "after"] = out;
+    }
+    LaunchImpl::gLegacyRecords = keepLegacy;
+    return j;
+}
+
 // Selects the nearest drawn train member (kind 0) or retiree (1) above the horizon (harness `launch select`).
-bool SatelliteSim::launchSelect(int kind, std::string &msg)
+bool SatelliteSim::launchSelect(int kind, std::string &msg, int member)
 {
     if (!launchState)
         return false;
@@ -2839,7 +3117,7 @@ bool SatelliteSim::launchSelect(int kind, std::string &msg)
     for (uint32_t s = 0; s < (uint32_t)L.slots.size(); ++s)
     {
         const SlotInfo &si = L.slots[s];
-        if (!si.shown || (int)(si.owner % 2) != kind)
+        if (!si.shown || (int)(si.owner % 2) != kind || (member >= 0 && (int)si.m != member))
             continue;
         const glm::dvec3 P = satOrbitStateAt(L.elems[s], (double)simDayJ2000 * 86400.0 + simSecInDay).posEci;
         const glm::dvec3 rel = P - eye;
@@ -3152,7 +3430,7 @@ bool SatelliteSim::launchGoToVent(std::string &msg) { return launchGoToStageEven
 bool SatelliteSim::launchGoToShipEntry(std::string &msg) { return launchGoToStageEvent(msg, 1); }
 
 // ev 0: a stage venting (sunlit, over a dark ground); 1: a returning stage's re-entry glow (over a dark ground).
-bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev)
+bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::string &filter)
 {
     if (!launchState)
         return false;
@@ -3169,6 +3447,20 @@ bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev)
                 B = &kv.second;
         if (!B || (ev == 0 && !B->vents) || (ev == 1 && L.cat.vehicles[B->veh].upperDeorbit))
             continue;
+        if (!filter.empty())
+        {
+            // (harness `launch deploy filter=Starmind`: a part of the constellation, program or vehicle name)
+            auto low = [](std::string x) {
+                for (char &ch : x)
+                    ch = (char)std::tolower((unsigned char)ch);
+                return x;
+            };
+            const std::string f = low(filter);
+            const std::string hay = low(o.value("constellation", std::string()) + "|" + o.value("program", std::string()) +
+                                        "|" + o.value("vehicle", std::string()));
+            if (hay.find(f) == std::string::npos)
+                continue;
+        }
         // (ev 2: 50 s before the stage starts turning for its deorbit burn; ev 3: 10 s before it deploys.)
         const double tv = ev == 0   ? LaunchImpl::ventStart(L, *B) + 30.0
                           : ev == 1 ? B->tStageGone + 230.0
