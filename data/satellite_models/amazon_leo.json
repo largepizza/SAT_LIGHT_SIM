@@ -64,7 +64,19 @@
             "position": [0, 0, -4.3],
             "rotation_deg": [0, 90, 0],
             "material": "solar_cell",
-            "back_material": "solar_array_back"
+            "back_material": "solar_array_back",
+            "stow": {
+                "axis": [0, 0, -1],
+                "root": 0.6,
+                "scale": 0.25,
+                "phase": [0.4, 1.0]
+            },
+            "fold": {
+                "point": [0.5125, 0, -1.1625],
+                "axis": [0, 1, 0],
+                "angle_deg": 90.0,
+                "phase": [0.0, 0.4]
+            }
         }
     ],
     "sources": [
@@ -103,6 +115,18 @@
             "status": "estimate",
             "value": "a gen-1-like mirror with a larger diffuse part (0.1): 'partly mirror-faced'",
             "source": "Mallama, Cole, Respler & Harrington 2026 (arXiv:2601.07708) section 4 and Figure 4: 'three antenna panels are folded at launch and deploy to form a large, nadir-facing panel, at least part of which is mirror-faced', 'the solar panel can rotate around its long axis to track the Sun', seen 'oriented close to the local vertical'. Reflectance unpublished."
+        },
+        {
+            "subjects": [
+                "deployment"
+            ],
+            "status": "estimate",
+            "value": "stowed: the 8 m array a 2 m accordion pack folded flat over the zenith face; 5 min after release it swings up (3 min), then unfolds (5 min)",
+            "source": "Unpublished; the usual single-wing scheme."
         }
-    ]
+    ],
+    "deployment": {
+        "unfold_delay_s": 300,
+        "unfold_s": 480
+    }
 }

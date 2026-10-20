@@ -81,10 +81,12 @@ struct MeshOccluder {
 };
 layout(set = 0, binding = 3, std430) readonly buffer MeshOccluders { MeshOccluder occluders[]; };
 
-// Per component, THREE vec4s (2026-10-19; firstComponent counts vec4s): [3c] xyz = joint pivot (rest frame, relative
+// Per component, FIVE vec4s (2026-10-20; firstComponent counts vec4s): [5c] xyz = joint pivot (rest frame, relative
 // to its group's hinge; 0 = the hinge), w = its group's parent (−1: root — never pivoted). SatComponent::pivot,
-// satPivotOffset(). [3c + 1] xyz = the stow axis x (1 - stowScale) (0 = never stowed), w = the stow root;
-// [3c + 2] xy = the unfolding window (SatComponent::stow*; the instance's earthShC.z = 1 - unfolding progress).
+// satPivotOffset(). [5c + 1] xyz = the stow axis x (1 - stowScale) (0 = never stowed), w = the stow root;
+// [5c + 2] xy = the stow window, zw = the fold window (SatComponent::stow* / fold*; the instance's earthShC.z =
+// 1 - unfolding progress); [5c + 3] xyz = the fold hinge point, w = the fold angle (radians, 0 = never folded);
+// [5c + 4] xyz = the fold axis.
 layout(set = 0, binding = 7, std430) readonly buffer MeshComponents { vec4 components[]; };
 
 layout(set = 0, binding = 4) uniform sampler2D earthDayTex;
@@ -101,7 +103,7 @@ mat3 instGroupRot(MeshInstance inst, uint g)
 // components[].w = the parent group (-1 = root), + 100 for a RENDER-ONLY part (SatMeshRenderer::setTypeModels).
 vec3 instPivotOffset(MeshInstance inst, uint g, uint comp)
 {
-    vec4 c = components[inst.firstComponent + 3u * comp];
+    vec4 c = components[inst.firstComponent + 5u * comp];
     float parent = c.w >= 50.0 ? c.w - 100.0 : c.w;
     if (parent < 0.0 || c.xyz == vec3(0.0)) return vec3(0.0);
     return (instGroupRot(inst, uint(parent)) - instGroupRot(inst, g)) * c.xyz;
@@ -113,7 +115,7 @@ vec3 instPivotOffset(MeshInstance inst, uint g, uint comp)
 // hundreds of pixels wide — its light had no share of the model's flux to be scaled against).
 bool instCompRenderOnly(MeshInstance inst, uint comp)
 {
-    return components[inst.firstComponent + 3u * comp].w >= 50.0;
+    return components[inst.firstComponent + 5u * comp].w >= 50.0;
 }
 
 // A stowed part (launches, 2026-10-19: an accordion-folded array or radiator while the satellite unfolds): its scale
@@ -124,13 +126,36 @@ float instStowScale(MeshInstance inst, uint comp, out vec3 axis, out float root)
     axis = vec3(0.0);
     root = 0.0;
     if (inst.earthShC.z <= 0.0) return 1.0;
-    vec4 st = components[inst.firstComponent + 3u * comp + 1u];
+    vec4 st = components[inst.firstComponent + 5u * comp + 1u];
     float ls = length(st.xyz);
     if (ls <= 0.0) return 1.0;
-    vec4 ph = components[inst.firstComponent + 3u * comp + 2u];
+    vec4 ph = components[inst.firstComponent + 5u * comp + 2u];
     axis = st.xyz / ls;
     root = st.w;
     return mix(1.0 - ls, 1.0, smoothstep(ph.x, ph.y, 1.0 - inst.earthShC.z));
+}
+
+// A folded part (launches, 2026-10-20: an array folded flat onto the bus, half a bus folded over the other): its fold
+// angle at the instance's unfolding progress (0 = deployed or never folded; satComponentFoldAngle, SatModel.cpp), the
+// hinge point and axis (rest body frame).
+float instFoldAngle(MeshInstance inst, uint comp, out vec3 point, out vec3 axis)
+{
+    point = vec3(0.0);
+    axis = vec3(0.0, 0.0, 1.0);
+    if (inst.earthShC.z <= 0.0) return 0.0;
+    vec4 fp = components[inst.firstComponent + 5u * comp + 3u];
+    if (fp.w == 0.0) return 0.0;
+    vec4 ph = components[inst.firstComponent + 5u * comp + 2u];
+    point = fp.xyz;
+    axis = components[inst.firstComponent + 5u * comp + 4u].xyz;
+    return fp.w * (1.0 - smoothstep(ph.z, ph.w, 1.0 - inst.earthShC.z));
+}
+
+// Rodrigues: v turned by angle a about the unit axis k.
+vec3 rotateAbout(vec3 v, vec3 k, float a)
+{
+    float c = cos(a), s = sin(a);
+    return v * c + cross(k, v) * s + k * (dot(k, v) * (1.0 - c));
 }
 
 #endif // SATLIGHTSIM_SAT_MESH_COMMON_GLSL

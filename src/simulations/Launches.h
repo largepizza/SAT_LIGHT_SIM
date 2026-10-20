@@ -57,6 +57,30 @@ struct Vehicle
     double ventChance = 0.35;        // the upper stage vents spinning after its deorbit burn (a spiral)
     double mountM = 0.0;             // the launch mount's height: the vehicle stands on it (Starship: ~20 m)
     double catchM = 0.0;             // a tower-caught booster stops this far above the mount (its aft end)
+    // Payload fairing (2026-10-20, issue 20261019_225243): the halves separate once the upper stage passes this
+    // altitude (0 = no fairing: Starship, Dragon); the payload adapter's top on the upper stage (its model's +Z, m:
+    // tools/make_rocket_models.py prints it); Starship's payload door ("PEZ" slot) height above its aft end.
+    double fairingSepKm = 0.0;
+    double payloadBaseM = 0.0;
+    glm::dvec3 fairingCenter{0.0}; // the +X fairing half's centre on the stage (its model's origin), stage frame
+    double doorM = 31.1;
+};
+
+// How a program's satellites ride to orbit (2026-10-20, launches.json "stack"; tools/make_rocket_models.py derives
+// and checks the numbers): drawn on the upper stage once its fairing is gone, released one after another.
+struct Stack
+{
+    enum Layout : int { None = 0, Pez = 1, Flat = 2, Column = 3 };
+    int layout = None;
+    int perTier = 1;            // flat: 1 or 2 side by side; column: around the column
+    bool sideX = false;         // flat, 2 a tier: side by side along the satellite's X (else its Y)
+    double pitchM = 1.0;        // tier to tier along the stage
+    double offsetM = 0.0;       // flat: each centre's offset from the axis; column: the centres' radius
+    double baseM = 0.3;         // the lowest tier's bottom above the payload adapter
+    double columnRadiusM = 0.0; // column: the dispenser's
+    glm::dvec3 center{0.0};     // the stowed satellite's centre (body frame): placed at the slot
+    std::string dispenser;      // its model: rocket_dispenser_<this>.json ("" = none)
+    double intervalS = -1.0, sepMps = -1.0, spreadMps = -1.0; // < 0: the vehicle's
 };
 
 struct Program
@@ -76,6 +100,7 @@ struct Program
     bool crew = false;
     std::string spacecraft;          // "Crew Dragon", "Shenzhou", ...
     int people = 0;
+    Stack stack;
 };
 
 struct Catalog

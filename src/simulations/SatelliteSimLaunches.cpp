@@ -82,6 +82,29 @@ struct LMember
     double tRel = 0.0;      // its release from the dispenser (s, J2000): the train leaves one after another
     glm::dvec3 sepDir{0.0}; // its separation drift (radial, along, cross; m/s) from the dispenser, eased out with depOff
     glm::dvec3 depVel{0.0}; // at its release, the dispenser's velocity less the member's (same axes, rotating frame)
+    // Its place in the payload stack (2026-10-20, launches.json "stack"; stackSlot): in the upper stage's body frame,
+    // the satellite's origin (slotO), its body axes (slotR: columns = its X, Y, Z in the stage's), the direction it
+    // leaves in (exitDir). stacked: the program has a stack — the satellite is drawn on the stage until its release
+    // (a fairing vehicle, once the fairing is gone), leaves it in the stack's attitude (q0, body -> ECI at tRel) with
+    // a little tip-off rate (omega, ECI), and slews to its attitude law from slewT0 over slewDur.
+    bool stacked = false;
+    glm::dvec3 slotO{0.0}, exitDir{0.0, 0.0, 1.0};
+    glm::dmat3 slotR{1.0};
+    glm::dquat q0{1.0, 0.0, 0.0, 0.0};
+    glm::dvec3 omega{0.0};
+    double slewT0 = 0.0, slewDur = 0.0;
+};
+
+// A fairing half falling away (2026-10-20): its centre of mass sampled every kFairDt s from the separation (ECI,
+// position and velocity), its attitude at the separation and its tumble rate. The model's origin is the stage's
+// (the half was modelled in place); cb is its centre in that frame.
+constexpr double kFairDt = 2.0;
+struct LFairing
+{
+    std::vector<glm::dvec3> c, cv;
+    glm::dquat q0{1.0, 0.0, 0.0, 0.0};
+    glm::dvec3 w{0.0};
+    double tEnd = 0.0; // gone (below ~60 km, or the table's end)
 };
 
 struct LBatch
@@ -134,6 +157,12 @@ struct LBatch
     // The entry model's start vs the deorbit ellipse at the entry interface (ECI, m): faded out over the entry's
     // first 60 s (shipEntry), so the ship's track is continuous there (it jumped ~0.5 km).
     glm::dvec3 entryOff{0.0};
+    // The payload fairing (2026-10-20): its halves separate at tFair (-1: no fairing), then fall (built lazily by
+    // ensureFairing; fairBuilt). deployInterval: the members' spacing in time (the stack's, else the vehicle's).
+    double tFair = -1.0;
+    bool fairBuilt = false;
+    LFairing fair[2];
+    double deployInterval = 2.0;
 };
 
 // A launch pad on the ground (2026-10-19): one per distinct place among the catalog's sites (the Jiuquan crewed
@@ -295,6 +324,19 @@ struct SatelliteSim::LaunchState
     std::vector<int> sitePad;        // per catalog site: its pad
     uint64_t padMeshKey[16] = {};    // the pads drawn as meshes, per reserved slot (pad index + 1; 0 = free)
     uint32_t nRockets = 0, nTrain = 0, nRetire = 0, nPlumes = 0, nReentries = 0, nWrites = 0, nBatches = 0;
+    // Upper stages carrying a visible payload stack this frame (launchFillVisuals -> launchMeshJobs): the stage's
+    // state at the list's time and its body frame.
+    struct StackDraw
+    {
+        uint64_t key = 0;
+        double t = 0.0;
+        glm::dvec3 P{0.0}, V{0.0}, A{0.0};
+        glm::dmat3 S{1.0};
+        int type = -1; // the stage's model (its mesh size: which stack is nearest)
+    };
+    std::vector<StackDraw> stackDraws;
+    uint64_t stackMeshKey[SatelliteSim::kStackMeshSlots] = {}; // per reserved slot: batch key ^ (member + 1) << 48
+    uint32_t nStacked = 0, nFairings = 0;
 
     const Track &upperTrackFor(int veh, double parkKm)
     {
@@ -332,10 +374,13 @@ void SatelliteSim::launchInitBlock()
     L.slots.assign(kLaunchCap, SlotInfo{});
     L.elems.assign(kLaunchCap, SatOrbitElems{});
     L.freeChunks.clear();
-    // The last chunk holds the rocket meshes and the transient selection's slots, the two before it the pads' meshes.
-    for (uint32_t c = kNumChunks - 3; c-- > 0;)
+    // The last chunk holds the rocket meshes and the transient selection's slots, the two before it the pads' meshes,
+    // the six before those the payload stacks' (2026-10-20).
+    for (uint32_t c = kNumChunks - 3 - kStackMeshSlots / kChunk; c-- > 0;)
         L.freeChunks.push_back(c);
     static_assert(kPadMeshSlots == 2 * kChunk, "the pads' mesh slots: two chunks");
+    static_assert(kStackMeshSlots % kChunk == 0, "the stacks' mesh slots: whole chunks");
+    std::fill(std::begin(L.stackMeshKey), std::end(L.stackMeshKey), 0ull);
     if (activeSatCount + kLaunchCap - 1 < satOrbits.size())
         satOrbits[activeSatCount + kLaunchCap - 1].typeIdx = UINT32_MAX; // no model: Track only
     if (selIsTransient())
@@ -1031,8 +1076,41 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     // 2026-10-19 only the expendable ones burned (40 s, while the stage sank 30 km on its circle) and Starship's ship
     // jumped from its parking orbit to 100 km at the entry interface 40 min after deploying.
     // (not before the last member has left the dispenser and drifted clear: a Starship train takes ~20-30 min)
+    const launch::Stack &stk = pg.stack;
+    B.deployInterval = stk.intervalS >= 0.0 ? stk.intervalS : vh.deployIntervalS;
     B.tDeorbBurn = std::max(B.tD + 1800.0 + 3600.0 * h01(B.seed, 7, 1),
-                            B.tD + vh.deployIntervalS * (double)B.mem.size() + 900.0);
+                            B.tD + B.deployInterval * (double)B.mem.size() + 900.0);
+    // The payload fairing (2026-10-20): its halves go once the upper stage passes vh.fairingSepKm (~110 km: the
+    // heating has fallen off), found on the upper stage's track and refined to 0.1 s.
+    B.tFair = -1.0;
+    B.fairBuilt = false;
+    if (vh.fairingSepKm > 0.0)
+    {
+        const double hSep = vh.fairingSepKm * 1000.0;
+        auto alt = [&](double tau) {
+            glm::dvec3 P;
+            return rocketPos(L, B, 1, tau, P) ? glm::length(P) - kR : -1.0;
+        };
+        double lo = vh.t1 + 5.0, hi = -1.0;
+        if (alt(lo) >= hSep)
+            hi = lo;
+        else
+            for (double tau = lo; tau <= vh.t2; tau += 2.0)
+                if (alt(tau) >= hSep)
+                {
+                    hi = tau;
+                    lo = tau - 2.0;
+                    break;
+                }
+        if (hi < 0.0)
+            hi = lo = std::min(vh.t1 + 30.0, vh.t2);
+        while (hi - lo > 0.1)
+        {
+            const double m = 0.5 * (lo + hi);
+            (alt(m) >= hSep ? hi : lo) = m;
+        }
+        B.tFair = B.tL + hi;
+    }
     auto setDeorbit = [&]()
     {
         const double ra = B.rPark, rp = kR + (vh.upperDeorbit ? 20000.0 : 45000.0); // the ship enters shallower
@@ -1084,7 +1162,9 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
         for (size_t mi = 0; mi < B.mem.size(); ++mi)
         {
             LMember &mb = B.mem[mi];
-            mb.tRel = B.tD + vh.deployIntervalS * (double)mi;
+            mb.tRel = B.tD + B.deployInterval * (double)mi;
+            // Its slot in the stack (2026-10-20): it leaves from there, in the stack's attitude.
+            mb.stacked = stackSlot(vh, stk, mi, B.mem.size(), mb.slotO, mb.slotR, mb.exitDir);
             glm::dvec3 Pst, Pb;
             if (!rocketPos(L, B, 1, mb.tRel - B.tL, Pst) || !rocketPos(L, B, 1, mb.tRel - B.tL - 1.0, Pb))
                 continue;
@@ -1097,7 +1177,8 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
                     !memberState(sim, B, mb, 0, tt, r, v))
                     return false;
                 const glm::dvec3 nose = glm::normalize(P1 - P0), up = glm::normalize(P1);
-                const glm::dvec3 disp = P1 + noseOff * nose + sideOff * up;
+                const glm::dvec3 disp = mb.stacked ? P1 + upperFrame(L, B, tt - B.tL) * mb.slotO
+                                                   : P1 + noseOff * nose + sideOff * up;
                 const glm::dvec3 U = r / glm::length(r);
                 const glm::dvec3 Cn = glm::normalize(glm::cross(r, v));
                 const glm::dvec3 A = glm::cross(Cn, U);
@@ -1116,9 +1197,33 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
             const uint64_t ms = B.seed ^ ((uint64_t)mi * 0xD1B54A32D192ED03ull);
             // Mostly up, a little back, + the dispenser's spread (Starship's: a few cm/s, so the members leave as
             // one string along the same free-flight arc, sepSpeed x interval apart; a stack's: ~0.1 m/s).
-            const double sp = vh.sepSpeedMps, sd = vh.sepSpreadMps;
+            const double sp = stk.sepMps >= 0.0 ? stk.sepMps : vh.sepSpeedMps;
+            const double sd = stk.spreadMps >= 0.0 ? stk.spreadMps : vh.sepSpreadMps;
             mb.sepDir = sp * glm::dvec3(0.97, -0.22, 0.0) +
                         sd * glm::dvec3(2.0 * h01(ms, 30, 1) - 1.0, 2.0 * h01(ms, 31, 1) - 1.0, 2.0 * h01(ms, 32, 1) - 1.0);
+            if (mb.stacked)
+            {
+                // Out of its slot (2026-10-20): along the stack's exit direction (Starship: out of the door, up; a
+                // flat stack: forward along the stage; a column: radially out), in the member's own axes at tRel.
+                glm::dvec3 r, v;
+                const glm::dmat3 S = upperFrame(L, B, mb.tRel - B.tL);
+                if (memberState(sim, B, mb, 0, mb.tRel, r, v))
+                {
+                    const glm::dvec3 U = glm::normalize(r), Cn = glm::normalize(glm::cross(r, v)), A = glm::cross(Cn, U);
+                    const glm::dvec3 e = S * mb.exitDir;
+                    mb.sepDir = sp * glm::dvec3(glm::dot(e, U), glm::dot(e, A), glm::dot(e, Cn)) +
+                                sd * glm::dvec3(2.0 * h01(ms, 30, 1) - 1.0, 2.0 * h01(ms, 31, 1) - 1.0,
+                                                2.0 * h01(ms, 32, 1) - 1.0);
+                }
+                // It leaves in the stack's attitude with a little tip-off rate (0.2-0.8 deg/s about a hashed axis),
+                // and its own control turns it to its attitude law 1-2 min later (over 3 min), before it unfolds.
+                mb.q0 = glm::normalize(glm::quat_cast(S * mb.slotR));
+                const double a1 = glm::two_pi<double>() * h01(ms, 33, 1), c1 = 2.0 * h01(ms, 34, 1) - 1.0;
+                const glm::dvec3 ax(std::sqrt(1.0 - c1 * c1) * std::cos(a1), std::sqrt(1.0 - c1 * c1) * std::sin(a1), c1);
+                mb.omega = ax * glm::radians(0.2 + 0.6 * h01(ms, 35, 1)) * (stk.layout == launch::Stack::Pez ? 0.5 : 1.0);
+                mb.slewT0 = mb.tRel + 60.0 + 60.0 * h01(ms, 36, 1);
+                mb.slewDur = 180.0;
+            }
         }
     }
     B.valid = true;
@@ -1325,6 +1430,17 @@ static bool memberRecord(const SatelliteSim &sim, const LBatch &B, const LMember
     {
         ce.unfoldT0 = uT0;
         ce.unfoldDur = uDur;
+    }
+    if (kind == 0 && mb.stacked && t < mb.slewT0 + mb.slewDur)
+    {
+        // Just released from its stack (2026-10-20): the stack's attitude, tumbling slowly, until its control acquires
+        // its law (CPU only: the GPU's point keeps the law).
+        ce.attFix = true;
+        ce.attQ = mb.q0;
+        ce.attOmega = mb.omega;
+        ce.attT0 = mb.tRel;
+        ce.attSlewT0 = mb.slewT0;
+        ce.attSlewDur = mb.slewDur;
     }
     return true;
 }
@@ -1628,6 +1744,197 @@ static glm::dvec3 stageNose(const SatelliteSim::LaunchState &L, const LBatch &B,
 
 // A returning stage's entry, te s after the entry interface (B.tStageGone): ~7.4 km/s down to ~65 km, then slowing to
 // ~1.2 km/s by 45 km over 8 minutes, along its orbit's plane. Position ECI; speed and altitude out.
+// The upper stage's body frame at tau (body -> ECI, columns = its X, Y, Z): +Z the nose (stageNose), -Y as near the
+// nadir as it can be — the rocket models' attitude law (primary +Z on the "velocity" the transient hands in,
+// secondary -Y on the nadir), so a stack posed in it sits where the stage's mesh is drawn. (2026-10-20)
+static glm::dmat3 upperFrame(const SatelliteSim::LaunchState &L, const LBatch &B, double tau)
+{
+    glm::dvec3 P;
+    if (!rocketPos(L, B, 1, tau, P))
+        return glm::dmat3(1.0);
+    const glm::dvec3 up = glm::normalize(P);
+    glm::dvec3 Z = stageNose(L, B, 1, tau);
+    if (glm::length(Z) < 0.5)
+        Z = up;
+    Z = glm::normalize(Z);
+    glm::dvec3 Y = up - glm::dot(up, Z) * Z;
+    if (glm::length(Y) < 1e-6)
+        Y = std::abs(Z.z) < 0.9 ? glm::dvec3(0, 0, 1) - Z.z * Z : glm::dvec3(1, 0, 0) - Z.x * Z;
+    Y = glm::normalize(Y);
+    return glm::dmat3(glm::cross(Y, Z), Y, Z);
+}
+
+// Member i of n's place in its program's stack (2026-10-20; tools/make_rocket_models.py lays the stacks out and checks
+// them against every fairing): in the upper stage's body frame (+Z the nose, the payload adapter's top at
+// vh.payloadBaseM), the satellite's origin o, its body axes R (columns: its X, Y, Z in the stage's frame) and the
+// direction it leaves in. Released top tier first. Pez (Starship): every satellite from the door's slot, flat across
+// the ship (its nadir face aft, its X out of the door), leaving through the door (+Y, the leeward side: zenith while
+// the ship flies belly down). Flat: nadir face down, one or two a tier, leaving forward along the stage. Column:
+// around the dispenser column, nadir face out, the long axis (X) along the stage, leaving radially.
+static bool stackSlot(const launch::Vehicle &vh, const launch::Stack &st, size_t i, size_t n, glm::dvec3 &o,
+                      glm::dmat3 &R, glm::dvec3 &exitDir)
+{
+    if (st.layout == launch::Stack::None)
+        return false;
+    glm::dvec3 slot;
+    if (st.layout == launch::Stack::Column)
+    {
+        const size_t per = (size_t)std::max(st.perTier, 1);
+        const size_t tiers = (n + per - 1) / per;
+        const size_t k = tiers - 1 - i / per, j = i % per;
+        const double phi = glm::two_pi<double>() * (double)j / (double)per +
+                           ((k % 2) ? glm::pi<double>() / (double)per : 0.0);
+        const glm::dvec3 er(std::cos(phi), std::sin(phi), 0.0), zs(0.0, 0.0, 1.0);
+        R = glm::dmat3(zs, glm::cross(er, zs), er);
+        slot = er * st.offsetM + zs * (vh.payloadBaseM + st.baseM + ((double)k + 0.5) * st.pitchM);
+        exitDir = er;
+    }
+    else
+    {
+        R = glm::dmat3(glm::dvec3(0, 1, 0), glm::dvec3(1, 0, 0), glm::dvec3(0, 0, -1));
+        if (st.layout == launch::Stack::Pez)
+        {
+            slot = glm::dvec3(0.0, 0.0, vh.doorM);
+            exitDir = glm::dvec3(0.0, 1.0, 0.0);
+        }
+        else
+        {
+            const size_t per = (size_t)std::clamp(st.perTier, 1, 2);
+            const size_t tiers = (n + per - 1) / per;
+            const size_t k = tiers - 1 - i / per, j = i % per;
+            const double s = per == 2 ? (j == 0 ? -1.0 : 1.0) : 0.0;
+            // The satellite's X lies along the stage's Y, its Y along the stage's X.
+            slot = (st.sideX ? glm::dvec3(0.0, s * st.offsetM, 0.0) : glm::dvec3(s * st.offsetM, 0.0, 0.0)) +
+                   glm::dvec3(0.0, 0.0, vh.payloadBaseM + st.baseM + ((double)k + 0.5) * st.pitchM);
+            exitDir = glm::dvec3(0.0, 0.0, 1.0);
+        }
+    }
+    o = slot - R * st.center;
+    return true;
+}
+
+// The upper stage's model at t (2026-10-20): with its fairing until the halves separate, bare after (the payload on its
+// adapter), and a crewed stage empty once its spacecraft has left. Falls back to "_upper" when a variant is missing.
+static int upperStageType(const SatelliteSim &sim, const SatelliteSim::LaunchState &L, const LBatch &B, double t)
+{
+    const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+    auto find = [&](const char *part) {
+        auto it = sim.rocketTypes.find("rocket_" + vh.id + part);
+        return it != sim.rocketTypes.end() ? it->second : -1;
+    };
+    if (B.tFair > 0.0 && t >= B.tFair)
+    {
+        if (L.cat.programs[B.prog].crew && t >= B.tD)
+        {
+            const int e = find("_upper_empty");
+            if (e >= 0)
+                return e;
+        }
+        const int b = find("_upper_bare");
+        if (b >= 0)
+            return b;
+    }
+    return find("_upper");
+}
+
+// The fairing halves' fall (2026-10-20), built the first time they are drawn: each half leaves the stage at tFair with
+// the stage's velocity + 1.8 m/s outward (the separation springs), its top tipping outward at ~11 deg/s, and falls
+// under gravity and drag (ballistic coefficient 60 kg/m^2, air ~1.2 exp(-h / 8 km) moving with the Earth); its centre
+// is sampled every kFairDt s until it is below 60 km on the way down (it would burn or parachute). cb = the +X half's
+// centre on the stage (stage frame: launches.json fairing_center_m, the model's origin).
+static void ensureFairing(const SatelliteSim::LaunchState &L, LBatch &B, const glm::dvec3 &cb)
+{
+    if (B.fairBuilt || B.tFair < 0.0)
+        return;
+    B.fairBuilt = true;
+    const double tau = B.tFair - B.tL;
+    glm::dvec3 P, Pa, Pb;
+    if (!rocketPos(L, B, 1, tau, P) || !rocketPos(L, B, 1, tau + 0.5, Pa) || !rocketPos(L, B, 1, tau - 0.5, Pb))
+        return;
+    const glm::dvec3 V = Pa - Pb;
+    const glm::dmat3 S0 = upperFrame(L, B, tau);
+    const glm::dvec3 wE(0.0, 0.0, 7.2921159e-5);
+    for (int h = 0; h < 2; ++h)
+    {
+        LFairing &F = B.fair[h];
+        F.c.clear();
+        F.cv.clear();
+        const double ca = h ? -1.0 : 1.0; // the second half: the first turned 180 deg about the stage's axis
+        const glm::dmat3 Rh = S0 * glm::dmat3(glm::dvec3(ca, 0, 0), glm::dvec3(0, ca, 0), glm::dvec3(0, 0, 1));
+        F.q0 = glm::normalize(glm::quat_cast(Rh));
+        const uint64_t hs = B.seed ^ (0xFA1Bull + (uint64_t)h * 0x9E3779B97F4A7C15ull);
+        F.w = Rh * glm::dvec3(0.02 * (h01(hs, 1, 1) - 0.5), glm::radians(9.0 + 4.0 * h01(hs, 2, 1)),
+                              0.05 * (h01(hs, 3, 1) - 0.5));
+        glm::dvec3 r = P + Rh * cb;
+        glm::dvec3 v = V + Rh * glm::dvec3(1.8, 0.0, 0.0);
+        auto acc = [&](const glm::dvec3 &x, const glm::dvec3 &u) {
+            const double rr = glm::length(x);
+            const glm::dvec3 g = -launch::kGM * x / (rr * rr * rr);
+            const double rho = 1.225 * std::exp(-(rr - kR) / 8000.0);
+            const glm::dvec3 vr = u - glm::cross(wE, x);
+            return g - (0.5 * rho * glm::length(vr) / 60.0) * vr;
+        };
+        bool rising = true;
+        for (int k = 0; k <= 1200; ++k)
+        {
+            if (k % (int)kFairDt == 0)
+            {
+                F.c.push_back(r);
+                F.cv.push_back(v);
+            }
+            const double hgt = glm::length(r) - kR;
+            if (glm::dot(r, v) < 0.0)
+                rising = false;
+            if (!rising && hgt < 60000.0)
+                break;
+            // RK4, 1 s
+            const glm::dvec3 k1v = acc(r, v), k1r = v;
+            const glm::dvec3 k2v = acc(r + 0.5 * k1r, v + 0.5 * k1v), k2r = v + 0.5 * k1v;
+            const glm::dvec3 k3v = acc(r + 0.5 * k2r, v + 0.5 * k2v), k3r = v + 0.5 * k2v;
+            const glm::dvec3 k4v = acc(r + k3r, v + k3v), k4r = v + k3v;
+            r += (k1r + 2.0 * k2r + 2.0 * k3r + k4r) / 6.0;
+            v += (k1v + 2.0 * k2v + 2.0 * k3v + k4v) / 6.0;
+        }
+        F.tEnd = B.tFair + kFairDt * (double)(F.c.size() - 1);
+    }
+}
+
+// A fairing half at t: its centre = its model's origin (ECI), its velocity, attitude (body -> ECI). False outside
+// [tFair, tEnd].
+static bool fairingAt(const LBatch &B, int h, double t, glm::dvec3 &pos, glm::dvec3 &vel, glm::dmat3 &R)
+{
+    const LFairing &F = B.fair[h];
+    if (F.c.size() < 2 || t < B.tFair || t > F.tEnd)
+        return false;
+    const double x = (t - B.tFair) / kFairDt;
+    const size_t i = std::min((size_t)x, F.c.size() - 2);
+    const double s = x - (double)i, d = kFairDt;
+    // Cubic Hermite on the samples and their velocities.
+    const double s2 = s * s, s3 = s2 * s;
+    const glm::dvec3 c = (2 * s3 - 3 * s2 + 1) * F.c[i] + (s3 - 2 * s2 + s) * d * F.cv[i] + (-2 * s3 + 3 * s2) * F.c[i + 1] +
+                         (s3 - s2) * d * F.cv[i + 1];
+    vel = glm::mix(F.cv[i], F.cv[i + 1], s);
+    const double wl = glm::length(F.w);
+    glm::dquat q = F.q0;
+    if (wl > 1e-12)
+        q = glm::angleAxis(wl * (t - B.tFair), F.w / wl) * q;
+    R = glm::mat3_cast(glm::normalize(q));
+    pos = c;
+    return true;
+}
+
+// A transient's full attitude (a fairing half, 2026-10-20) into the elements its mesh slot is posed from.
+static void transientAtt(SatOrbitElems &e, const SatelliteSim::SelTransient &s)
+{
+    if (!s.hasAtt)
+        return;
+    e.attFix = true;
+    e.attQ = s.attQ;
+    e.attOmega = s.attOmega;
+    e.attT0 = s.attT0;
+    e.attSlewDur = 0.0;
+}
+
 static glm::dvec3 shipEntry(const LBatch &B, double te, double *vOut, double *hOut)
 {
     te = std::clamp(te, 0.0, 480.0);
@@ -2283,7 +2590,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         return;
     LaunchState &L = *launchState;
     L.nRockets = L.nPlumes = L.nReentries = 0;
+    L.nFairings = 0;
     L.plumeDbg.clear();
+    L.stackDraws.clear();
     if (!L.loaded)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -2470,6 +2779,68 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 ++L.nReentries;
             }
         }
+        // The payload fairing's halves (2026-10-20): separated at ~110 km, they fall away tumbling. Listed (selectable,
+        // drawn as meshes up close) and, sunlit, a faint point each.
+        if (B.tFair > 0.0 && t >= B.tFair && t < B.tFair + 1300.0)
+        {
+            auto fi = rocketTypes.find("rocket_" + vh.id + "_fairing");
+            if (fi != rocketTypes.end())
+            {
+                LaunchImpl::ensureFairing(L, B, vh.fairingCenter);
+                for (int h = 0; h < 2; ++h)
+                {
+                    glm::dvec3 P, V;
+                    glm::dmat3 R;
+                    if (!LaunchImpl::fairingAt(B, h, t, P, V, R))
+                        continue;
+                    const glm::dvec3 rel = P - eye;
+                    const double range = std::max(glm::length(rel), 1.0);
+                    const uint64_t fkey = (key << 3) ^ (uint64_t)(5 + h);
+                    if (range > 4.0e6 && fkey != selTransientKey && fkey != followTrKey)
+                        continue;
+                    ++L.nFairings;
+                    SelTransient st;
+                    st.key = fkey;
+                    st.kind = 7;
+                    st.stage = (uint8_t)h;
+                    st.a = key;
+                    st.tau = t - B.tFair;
+                    glm::dvec3 P1, V1;
+                    glm::dmat3 R1;
+                    st.pos = P;
+                    st.vel = V;
+                    st.acc = LaunchImpl::fairingAt(B, h, t - 1.0, P1, V1, R1) ? V - V1 : glm::dvec3(0.0);
+                    st.axis = R[2];
+                    st.type = fi->second;
+                    st.dirEnu = glm::vec3(toEnu(rel) / range);
+                    st.flare = 0.0f;
+                    st.hasAtt = true;
+                    st.attQ = glm::normalize(glm::quat_cast(R));
+                    st.attOmega = B.fair[h].w;
+                    st.attT0 = t;
+                    const size_t idx = selTransients.size();
+                    addSelTransient(st);
+                    if (earthBlocks(P) || !sunlit(P))
+                        continue;
+                    // Sunlit: a white half-shell of some 60 m^2, about as bright as a coasting stage; it gives way to
+                    // its mesh as that resolves.
+                    double m = 4.3 + 5.0 * std::log10(range / 1.0e6) +
+                               atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
+                    const double px = rocketMeshPx(selTransients[idx], pixA, eye);
+                    const double keep = 1.0 - glm::smoothstep(2.0, 8.0, px);
+                    if (keep <= 0.0)
+                        continue;
+                    m -= 2.5 * std::log10(keep);
+                    const double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.97 * dayness);
+                    if (flare < 2e-4)
+                        continue;
+                    selTransients[idx].flare = (float)flare;
+                    if (kFireCount < kFireballMax)
+                        fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(rel) / range), (float)flare),
+                                            glm::vec4(0.95f, 0.95f, 0.98f, (float)range)};
+                }
+            }
+        }
         // Rockets: the flame (a point and, close up, an emissive Gaussian) or, coasting, the sunlit body.
         for (int stage = 0; stage < 2; ++stage)
         {
@@ -2502,9 +2873,11 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     if (glm::length(ax) < 0.5)
                         ax = glm::normalize(P);
                     st.axis = ax;
-                    const std::string mid = "rocket_" + vh.id + (stage == 1 ? "_upper" : tau < vh.t1 ? "_stack" : "_booster");
-                    auto ti = rocketTypes.find(mid);
-                    st.type = ti != rocketTypes.end() ? ti->second : -1;
+                    st.type = stage == 1 ? LaunchImpl::upperStageType(*this, L, B, t)
+                                         : [&] {
+                                               auto ti = rocketTypes.find("rocket_" + vh.id + (tau < vh.t1 ? "_stack" : "_booster"));
+                                               return ti != rocketTypes.end() ? ti->second : -1;
+                                           }();
                 }
                 st.kind = 1;
                 st.stage = (uint8_t)stage;
@@ -2523,6 +2896,21 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 st.flare = 0.0f;
                 trIdx = selTransients.size();
                 addSelTransient(st);
+                // Its payload stack, visible once the fairing is gone (2026-10-20): drawn by launchMeshJobs.
+                const launch::Stack &stk = L.cat.programs[B.prog].stack;
+                if (stage == 1 && B.tFair > 0.0 && t >= B.tFair && t < B.tStageGone &&
+                    (stk.layout == launch::Stack::Flat || stk.layout == launch::Stack::Column))
+                {
+                    LaunchState::StackDraw sd;
+                    sd.key = key;
+                    sd.t = t;
+                    sd.P = st.pos;
+                    sd.V = st.vel;
+                    sd.A = st.acc;
+                    sd.S = LaunchImpl::upperFrame(L, B, tau);
+                    sd.type = st.type;
+                    L.stackDraws.push_back(sd);
+                }
             }
             if (earthBlocks(P))
                 continue;
@@ -2968,6 +3356,9 @@ nlohmann::json SatelliteSim::launchStateJson() const
     j["plume_gaussians"] = L.nPlumes;
     j["reentries_now"] = L.nReentries;
     j["records_written"] = L.nWrites;
+    j["fairing_halves_drawn"] = L.nFairings; // (2026-10-20)
+    j["stack_meshes"] = L.nStacked;          // satellites drawn on their upper stage (payload stacks)
+    j["stack_stages"] = L.stackDraws.size();
     j["free_chunks"] = L.freeChunks.size();
     j["slots_shown"] = std::count_if(L.slots.begin(), L.slots.end(), [](const SlotInfo &x) { return x.shown; });
     j["life_scale"] = launchLifeScale;
@@ -3009,7 +3400,14 @@ nlohmann::json SatelliteSim::launchStateJson() const
                           {"deorbit_burn_in_s", B.tDeorbBurn - now}, {"burn_s", B.burnDur},
                           {"entry_interface_in_s", B.tStageGone - now}, {"returns", !vh.upperDeorbit},
                           {"flying", fl}, {"burning", burn != launch::BURN_NONE},
-                          {"alt_km", fl ? (glm::length(P) - kR) / 1000.0 : 0.0}, {"nose_from_retrograde_deg", retroDeg}});
+                          {"alt_km", fl ? (glm::length(P) - kR) / 1000.0 : 0.0}, {"nose_from_retrograde_deg", retroDeg},
+                          {"fairing_sep_in_s", B.tFair > 0.0 ? B.tFair - now : 0.0},
+                          {"model", [&] {
+                               const int ty = LaunchImpl::upperStageType(*this, L, B, now);
+                               return ty >= 0 && ty < (int)satTypes.size() ? satTypes[ty].modelId : std::string();
+                           }()},
+                          {"payload_layout", L.cat.programs[B.prog].stack.layout},
+                          {"deploy_interval_s", B.deployInterval}});
         }
         j["upper_stages"] = us;
     }
@@ -4022,10 +4420,14 @@ bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::str
     {
         const double tl = t0 + o["in_hours"].get<double>() * 3600.0;
         const LBatch *B = nullptr;
+        uint64_t bkey = 0;
         for (const auto &kv : L.batches)
             if (kv.second.valid && std::abs(kv.second.tL - tl) < 1.0)
+            {
                 B = &kv.second;
-        if (!B || (ev == 0 && !B->vents) || (ev == 1 && L.cat.vehicles[B->veh].upperDeorbit))
+                bkey = kv.first;
+            }
+        if (!B || (ev == 0 && !B->vents) || (ev == 1 && L.cat.vehicles[B->veh].upperDeorbit) || (ev == 4 && B->tFair < 0.0))
             continue;
         if (!filter.empty())
         {
@@ -4041,11 +4443,13 @@ bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::str
             if (hay.find(f) == std::string::npos)
                 continue;
         }
-        // (ev 2: 50 s before the stage starts turning for its deorbit burn; ev 3: 10 s before it deploys.)
+        // (ev 2: 50 s before the stage starts turning for its deorbit burn; ev 3: 10 s before it deploys; ev 4: 10 s
+        // before its fairing separates.)
         const double tv = ev == 0   ? LaunchImpl::ventStart(L, *B) + 30.0
                           : ev == 1 ? B->tStageGone + 230.0
                           : ev == 2 ? B->tDeorbBurn - 100.0
-                                    : B->tD + 40.0;
+                          : ev == 3 ? B->tD + 40.0
+                                    : B->tFair + 40.0;
         glm::dvec3 P;
         if (ev != 1)
         {
@@ -4088,11 +4492,13 @@ bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::str
                       (float)glm::degrees(std::asin(glm::clamp(glm::dot(rn, up), -1.0, 1.0))));
         camera.fovYDeg = 60.0f;
         updatePositions(tS);
+        if (ev >= 2)
+            launchWantSelKey = (bkey << 3) ^ 2ull; // its upper stage, selected once listed (selTransientUpdate)
         char b[240];
         static const char *kWhat[] = {"vents in 20 s", "re-entry glow peaks in 20 s", "turns for its deorbit burn in 0 s",
-                                      "deploys in 10 s"};
+                                      "deploys in 10 s", "drops its fairing in 10 s"};
         snprintf(b, sizeof(b), "%s upper stage from %s %s, %.0f km away", o["vehicle"].get<std::string>().c_str(),
-                 o["site"].get<std::string>().c_str(), kWhat[std::clamp(ev, 0, 3)], glm::length(rel) / 1000.0);
+                 o["site"].get<std::string>().c_str(), kWhat[std::clamp(ev, 0, 4)], glm::length(rel) / 1000.0);
         msg = b;
         return true;
     }
@@ -4115,6 +4521,19 @@ void SatelliteSim::addSelTransient(const SelTransient &s)
 void SatelliteSim::selTransientUpdate()
 {
     selTransientsT = (double)simDayJ2000 * 86400.0 + simSecInDay; // the time the list was made at
+    if (launchWantSelKey)
+    {
+        // (2026-10-20) the stage a `launch deploy` / `fairing` / `deorbit` jump framed: selected once it is listed.
+        for (const SelTransient &s : selTransients)
+            if (s.key == launchWantSelKey)
+            {
+                selTransientTake(s);
+                selectedSatIndex = (int)transientSatIdx();
+                selectedPlanetIndex = -1;
+                launchWantSelKey = 0;
+                break;
+            }
+    }
     followTransientUpdate();
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
     // A retiree's record ended while selected: its re-entry fireball, once the list has it (launchSlotEndedSelection).
@@ -4240,6 +4659,7 @@ void SatelliteSim::transientWriteSlot(uint32_t slot, const SelTransient &s, doub
     e.fixVel = s.vel;
     e.fixAcc = s.acc;
     e.fixAxis = s.axis;
+    LaunchImpl::transientAtt(e, s);
     e.fixT0 = t0;
     const uint32_t idx = activeSatCount + slot;
     if (idx < satOrbits.size())
@@ -4288,6 +4708,8 @@ bool SatelliteSim::transientExactState(SelTransient &s, double t) const
         s.acc = (P - 2.0 * P1 + P2) / 0.25;
         s.tau = tau;
         s.burn = burn;
+        if (s.stage == 1)
+            s.type = LaunchImpl::upperStageType(*this, L, B, t); // its fairing goes (2026-10-20)
         return true;
     }
     const double te = t - B.tStageGone;
@@ -4590,8 +5012,9 @@ int SatelliteSim::rocketMeshSlotToTransient(int satIndex)
         return (int)transientSatIdx();
     }
     const uint32_t base = activeSatCount + kLaunchCap - 2 - kRocketMeshSlots;
-    // A pad's mesh (its tower, mount, tanks) is scenery: not selectable.
-    if (satIndex >= (int)(base - kPadMeshSlots) && satIndex < (int)base)
+    // A pad's mesh (its tower, mount, tanks) is scenery, a payload stack's (2026-10-20) part of its stage: not
+    // selectable.
+    if (satIndex >= (int)(base - kPadMeshSlots - kStackMeshSlots) && satIndex < (int)base)
         return -1;
     if (satIndex < (int)base || satIndex >= (int)(base + kRocketMeshSlots))
         return satIndex;
@@ -4624,6 +5047,7 @@ void SatelliteSim::selTransientTake(const SelTransient &s)
     e.fixVel = s.vel;
     e.fixAcc = s.acc;
     e.fixAxis = s.axis;
+    LaunchImpl::transientAtt(e, s);
     e.fixT0 = t0;
     // A rocket has a model (Info, Go to, its mesh); a fireball none (Track only). The orbit rows read the state.
     const uint32_t idx = transientSatIdx();
@@ -4810,13 +5234,132 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
         e.fixVel = s.vel;
         e.fixAcc = s.acc;
         e.fixAxis = s.axis;
+        LaunchImpl::transientAtt(e, s);
         // The transients are the last frame's: their time is the last fill's.
         e.fixT0 = selTransientsT;
         (void)t;
         satOrbits[idx].typeIdx = (uint32_t)s.type;
         jobs.push_back((int)idx);
     }
+    launchStackJobs(pixAngle, obsEci, jobs);
     return jobs;
+}
+
+// The payload stacks (2026-10-20, issue 20261019_225243): the satellites still on an upper stage whose fairing has gone
+// and its dispenser, as meshes in the reserved stack slots — the nearest stacks first, each satellite stowed (folded,
+// its arrays packed) in its slot's attitude, posed rigidly with the stage (fixedState from the stage's listed state).
+// A satellite leaves the stack at its release and is from then on its launch record (memberState: from the same
+// point, in the same attitude). Not selectable.
+void SatelliteSim::launchStackJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs)
+{
+    LaunchState &L = *launchState;
+    struct Want
+    {
+        uint64_t key; // batch key ^ (what + 1) << 48: what = member index, or 0xFFFF the dispenser
+        int type;
+        glm::dvec3 P, V, A;
+        glm::dmat3 R;
+        double t;
+        bool stowed;
+    };
+    std::vector<Want> want;
+    std::vector<std::pair<double, size_t>> order;
+    for (size_t i = 0; i < L.stackDraws.size(); ++i)
+    {
+        const LaunchState::StackDraw &sd = L.stackDraws[i];
+        const SatMeshRenderer::TypeMesh *tm = sd.type >= 0 ? meshRenderer.typeMesh(sd.type) : nullptr;
+        const double r = tm ? std::max(1.0, (double)tm->boundsRadius) : 10.0;
+        const double px = 2.0 * r / std::max(glm::length(sd.P - obsEci), 1.0) / std::max(pixAngle, 1e-9);
+        if (px > 1.4)
+            order.push_back({px, i});
+    }
+    std::sort(order.begin(), order.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+    for (const auto &o : order)
+    {
+        const LaunchState::StackDraw &sd = L.stackDraws[o.second];
+        auto bit = L.batches.find(sd.key);
+        if (bit == L.batches.end() || !bit->second.valid)
+            continue;
+        const LBatch &B = bit->second;
+        const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+        const launch::Stack &stk = L.cat.programs[B.prog].stack;
+        if (!stk.dispenser.empty())
+        {
+            auto di = rocketTypes.find("rocket_dispenser_" + stk.dispenser);
+            if (di != rocketTypes.end())
+                want.push_back({sd.key ^ (0xFFFFull << 48), di->second, sd.P + sd.S * glm::dvec3(0.0, 0.0, vh.payloadBaseM),
+                                sd.V, sd.A, sd.S, sd.t, false});
+        }
+        for (size_t mi = 0; mi < B.mem.size() && want.size() < (size_t)kStackMeshSlots; ++mi)
+        {
+            const LMember &mb = B.mem[mi];
+            if (!mb.stacked || sd.t >= mb.tRel || !LaunchImpl::memberAllowed(*this, B, mb))
+                continue;
+            const uint32_t ty = satOrbits[mb.sat].typeIdx;
+            if (ty >= satTypes.size())
+                continue;
+            want.push_back({sd.key ^ ((uint64_t)(mi + 1) << 48), (int)ty, sd.P + sd.S * mb.slotO, sd.V, sd.A,
+                            sd.S * mb.slotR, sd.t, true});
+        }
+        if (want.size() >= (size_t)kStackMeshSlots)
+            break;
+    }
+    if (want.size() > (size_t)kStackMeshSlots)
+        want.resize(kStackMeshSlots);
+    // Keep each object in the slot it had (its mesh fade), give the rest the free ones.
+    bool used[kStackMeshSlots] = {};
+    std::vector<int> slotOf(want.size(), -1);
+    for (size_t w = 0; w < want.size(); ++w)
+        for (int k = 0; k < kStackMeshSlots; ++k)
+            if (!used[k] && L.stackMeshKey[k] == want[w].key)
+            {
+                used[k] = true;
+                slotOf[w] = k;
+                break;
+            }
+    for (size_t w = 0; w < want.size(); ++w)
+        if (slotOf[w] < 0)
+            for (int k = 0; k < kStackMeshSlots; ++k)
+                if (!used[k])
+                {
+                    used[k] = true;
+                    slotOf[w] = k;
+                    break;
+                }
+    for (int k = 0; k < kStackMeshSlots; ++k)
+        if (!used[k])
+            L.stackMeshKey[k] = 0;
+    const uint32_t sbase = kLaunchCap - 2 - kRocketMeshSlots - kPadMeshSlots - kStackMeshSlots;
+    L.nStacked = 0;
+    for (size_t w = 0; w < want.size(); ++w)
+    {
+        const Want &W = want[w];
+        const int k = slotOf[w];
+        L.stackMeshKey[k] = W.key;
+        const uint32_t slot = sbase + (uint32_t)k, idx = activeSatCount + slot;
+        if (idx >= satOrbits.size() || slot >= L.elems.size())
+            continue;
+        SatOrbitElems &e = L.elems[slot];
+        e = SatOrbitElems{};
+        e.fixedState = true;
+        e.fixPos = W.P;
+        e.fixVel = W.V;
+        e.fixAcc = W.A;
+        e.fixAxis = W.R[2];
+        e.fixT0 = W.t;
+        e.attFix = true;
+        e.attQ = glm::normalize(glm::quat_cast(W.R));
+        e.attT0 = W.t;
+        if (W.stowed)
+        {
+            e.restJoints = true;
+            e.unfoldT0 = W.t + 1.0e9; // stowed: progress 0
+            e.unfoldDur = 1.0;
+        }
+        satOrbits[idx].typeIdx = (uint32_t)W.type;
+        jobs.push_back((int)idx);
+        L.nStacked += W.stowed ? 1u : 0u;
+    }
 }
 
 std::string SatelliteSim::transientLabel() const { return transientLabelOf(selTransientCur); }
@@ -4831,7 +5374,7 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
     const double vKms = glm::length(s.vel) / 1000.0;
     char b[200];
     const LBatch *B = nullptr;
-    if (s.kind <= 2 || s.kind == 4)
+    if (s.kind <= 2 || s.kind == 4 || s.kind == 7)
     {
         auto it = L.batches.find(s.a);
         if (it != L.batches.end())
@@ -4877,6 +5420,10 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
     case 5:
         snprintf(b, sizeof(b), "Re-entry: %s, %.0f km up", satLabel((int)s.a).c_str(), hKm);
         break;
+    case 7:
+        snprintf(b, sizeof(b), "%s payload fairing half, %.0f s after separation, %.0f km up, %.2f km/s", veh, s.tau, hKm,
+                 vKms);
+        break;
     default:
         snprintf(b, sizeof(b), "Re-entry: debris fragment, %.0f km up", hKm);
         break;
@@ -4884,13 +5431,19 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
     return b;
 }
 
-bool SatelliteSim::selectTransient(int kind, std::string &msg, int stage)
+bool SatelliteSim::selectTransient(int kind, std::string &msg, int stage, bool nearest)
 {
     const SelTransient *best = nullptr;
+    const glm::dvec3 eye(obsECI);
     for (const SelTransient &s : selTransients)
-        if (s.flare > 0.0f && (kind == 0 || s.kind == kind) && (stage < 0 || s.stage == stage) &&
-            (!best || s.flare > best->flare))
+    {
+        // nearest (2026-10-20, harness `launch select ... nearest=1`): any listed one with a model, drawn or not.
+        const bool ok = nearest ? (s.type >= 0 || s.flare > 0.0f) : s.flare > 0.0f;
+        if (!ok || !(kind == 0 || s.kind == kind) || !(stage < 0 || s.stage == stage))
+            continue;
+        if (!best || (nearest ? glm::length(s.pos - eye) < glm::length(best->pos - eye) : s.flare > best->flare))
             best = &s;
+    }
     if (!best)
     {
         msg = "nothing of that kind drawn this frame";

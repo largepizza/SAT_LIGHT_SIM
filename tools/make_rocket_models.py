@@ -40,6 +40,7 @@ MATERIALS = [
     {"name": "gridfin", "preset": "truss", "coverage": 0.55, "truss_pitch": 0.5, "color": [0.35, 0.35, 0.37]},
     {"name": "lattice", "preset": "truss", "coverage": 0.3, "truss_pitch": 0.7},
     {"name": "cells", "preset": "solar_cell"},
+    {"name": "green", "preset": "white_paint", "diffuse_albedo": 0.3, "color": [0.36, 0.42, 0.30]},
 ]
 MATERIAL_SOURCES = {
     "white": "white paint (operator liveries in launch photographs)",
@@ -53,7 +54,8 @@ MATERIAL_SOURCES = {
     "tiles": "black silica heat-shield tiles (Starship), hexagonal pattern",
     "gridfin": "titanium / steel grid fins: an open lattice",
     "lattice": "an open truss interstage (Soyuz Block A / Block I)",
-    "cells": "Crew Dragon trunk's body-mounted solar cells",
+    "cells": "Crew Dragon trunk's body-mounted solar cells; a crewed spacecraft's folded arrays",
+    "green": "Soyuz orbital module's green insulation blanket",
 }
 
 
@@ -299,7 +301,15 @@ def starship_ship(b, z0=0.0):
     # Chines along the heat shield's edges between the flaps, and the leeward raceway.
     for phi in (-4.0, 184.0):
         b.fin("chine", phi, r, z0 + 24.0, 27.0, 27.0, 0.35, 0.0, 0.18, "steel", ro=True, bevel=0.3)
-    b.radial_box("raceway", 90.0, r, z0 + 24.0, 0.3, 0.6, 30.0, "steel")
+    b.radial_box("raceway", 90.0, r, z0 + 19.0, 0.3, 0.6, 20.0, "steel")
+    b.radial_box("raceway", 90.0, r, z0 + 35.6, 0.3, 0.6, 5.6, "steel")
+    # The payload door (2026-10-20, issue 20261019_223922): the "PEZ" slot on the leeward side the satellites leave
+    # through one at a time, 31.1 m up (launches.json door_m), open: a dark slot 6.6 m across and 2.6 m tall
+    # (the widest stowed payload, Starlink V3 with its array packs, and the thickest, a folded Starmind).
+    b.profile("payload_door", [[z0 + 29.8, r + 0.025], [z0 + 32.4, r + 0.025]], "soot", ro=True)
+    b.c[-1]["sweep_deg"] = [43.0, 137.0]
+    b.radial_box("door_frame", 90.0, r, z0 + 32.45, 0.08, 7.0, 0.1, "steel")
+    b.radial_box("door_frame", 90.0, r, z0 + 29.75, 0.08, 7.0, 0.1, "steel")
     # 3 sea-level Raptors in the middle, 3 RVacs outside them, 60 deg apart.
     b.engines("engines", [(3, 1.05)], 0.62, 2.4, z0 - 0.9, phase=30.0)
     b.engines("engines_rvac", [(3, 3.1)], 1.15, 4.4, z0 - 0.5, phase=90.0)
@@ -369,10 +379,10 @@ VEHICLES = {
         side=dict(n=2, r=1.125, len=26.0, mat="white", nose=3.4, nose_kind="cone", re=0.5, eL=1.8, cant=0.0,
                   phase=90.0),
         upper=dict(len=10.0, mat="white", eng=dict(rings=[(2, 0.55)], re=0.42, L=1.6, protrude=1.3)),
-        fairing=dict(fr=2.6, cyl=6.0, nose=5.0, tip=0.3),
+        fairing=dict(fr=2.6, cyl=8.5, nose=5.5, tip=0.3),
         refs=["Wikipedia 'Long March 8': 3.35 m core, two 2.25 m boosters, 2 YF-100 on the core, 1 per booster, "
               "a hydrolox second stage (2 YF-75), 5.2 m fairing"],
-        notes="Booster nose and fairing lengths estimated from photographs."),
+        notes="Booster nose and fairing lengths estimated from photographs (the fairing long enough for Guowang's two tiers of five, 2026-10-20)."),
     "long_march_12": dict(
         r=1.9, core=40.0, core_mat="white", inter=(2.0, "black"),
         eng=dict(rings=[(4, 1.1)], re=0.52, L=1.9, z=-1.4), aft="black",
@@ -444,7 +454,7 @@ VEHICLES = {
                   phase=45.0, fin=(2.5, 1.0, 1.4)),
         core_fins=(4, 3.0, 1.2, 1.8),
         upper=dict(len=11.4, mat="white", eng=dict(rings=[(1, 0.0)], re=0.55, L=1.9, protrude=1.4)),
-        fairing=dict(fr=1.9, cyl=9.0, nose=4.5, tip=0.55), les=(0.32, 7.5), shroud_fins=4,
+        fairing=dict(fr=1.9, cyl=9.0, nose=4.5, tip=0.55), les=(0.32, 7.5), shroud_fins=4, capsule="shenzhou",
         refs=["Wikipedia 'Long March 2F': 3.35 m core (4 YF-20), four 2.25 m x 15.3 m boosters with fins, 3.8 m "
               "Shenzhou shroud with escape tower and four grid fins, 62 m"],
         notes="Escape tower length and shroud nose estimated."),
@@ -455,7 +465,7 @@ VEHICLES = {
                   rings=[(4, 0.45)], fin=(1.8, 0.9, 1.1)),
         upper=dict(len=6.7, mat="white", r=1.33, truss=1.6,
                    eng=dict(rings=[(4, 0.4)], re=0.26, L=1.0, protrude=0.6)),
-        fairing=dict(fr=1.5, cyl=6.0, nose=4.0, tip=0.45), les=(0.28, 6.0), shroud_fins=4,
+        fairing=dict(fr=1.5, cyl=6.0, nose=4.0, tip=0.45), les=(0.28, 6.0), shroud_fins=4, capsule="soyuz",
         refs=["Wikipedia 'Soyuz-2': core (Block A) 2.95 m x 27.1 m, four tapered boosters 2.68 m x 19.6 m, Block I "
               "2.66 m x 6.7 m on an open truss, 46 m with escape tower; RD-107A / RD-108A four chambers each"],
         notes="Shown as the crewed configuration. Core narrowing and booster taper from drawings; verniers omitted."),
@@ -558,32 +568,12 @@ def side_parts(b, v, z0=0.0):
             b.fin("side_fin", phi, rr, zb + 0.5 * rc + 0.3, rc, tc, sp, rc - tc, 0.12, "grey", ro=True)
 
 
-def upper_parts(b, v, z0=0.0):
-    """The upper stage from its nozzle exit (z0) up, then the fairing (or spacecraft). Returns the top."""
+def fairing_profile(v, z):
+    """The fairing's meridian from the top of what it sits on (z) up: [[z, r], ...] and the cut heights."""
     u = v.get("upper")
-    r = v["r"]
-    z = z0
-    if u:
-        ru = u.get("r", r)
-        e = u["eng"]
-        # The engine(s): bell exit at z0, the bell's upper part inside the tank's aft skirt.
-        b.engines("upper_nozzle", e["rings"], e["re"], e["L"], z0, mat="nozzle")
-        z = z0 + e["protrude"]
-        if u.get("truss"):
-            # Soyuz: Block I sits on an open truss over the core's neck; the tank above.
-            b.tube("upper_truss", ru * 0.95, z, z + u["truss"], "lattice", ro=True)
-            z += u["truss"]
-        b.profile("upper_tank", [[z, ru], [z + u["len"], ru]], u["mat"], caps=True)
-        b.disc("upper_aft", ru * 0.98, z - 0.01, "grey")
-        z += u["len"]
-    else:
-        # Long March 5B: the fairing sits on the core.
-        z = z0
-    if v.get("dragon"):
-        return dragon_parts(b, z)
     f = v["fairing"]
     fr = f["fr"]
-    base_r = u.get("r", r) if u else r
+    base_r = u.get("r", v["r"]) if u else v["r"]
     pts = []
     if fr > base_r + 0.05:
         bt = 0.9 * (fr - base_r) + 0.5
@@ -595,8 +585,86 @@ def upper_parts(b, v, z0=0.0):
     z += f["cyl"]
     cuts = [pts[1][0]] if len(pts) > 2 else []
     pts += ogive(fr, f["nose"], z, tip_r=f["tip"], n=12)[1:]
-    b.pieces("fairing", pts, "white", cuts + [z, z + 0.45 * f["nose"]])
-    top = z + f["nose"]
+    return pts, cuts + [z, z + 0.45 * f["nose"]], z + f["nose"]
+
+
+def upper_parts(b, v, z0=0.0, mode="full", info=None):
+    """The upper stage from its nozzle exit (z0) up, then the fairing (or spacecraft). Returns the top.
+    mode: "full" with its fairing; "bare" the fairing gone (2026-10-20: separated at ~110 km), the payload adapter
+    on top (and a crewed vehicle's spacecraft); "empty" a crewed vehicle's stage once its spacecraft has left;
+    "fairing" ONE fairing half alone (azimuth -90..90 deg, the half toward +X; the other is it turned 180 deg about
+    Z), at the place it had on the stage. info (dict): gets payload_base (z of the payload adapter's top), the
+    fairing's base, radius and cylinder length."""
+    u = v.get("upper")
+    r = v["r"]
+    z = z0
+    draw = mode != "fairing"
+    if u:
+        ru = u.get("r", r)
+        e = u["eng"]
+        if draw:
+            # The engine(s): bell exit at z0, the bell's upper part inside the tank's aft skirt.
+            b.engines("upper_nozzle", e["rings"], e["re"], e["L"], z0, mat="nozzle")
+        z = z0 + e["protrude"]
+        if u.get("truss"):
+            # Soyuz: Block I sits on an open truss over the core's neck; the tank above.
+            if draw:
+                b.tube("upper_truss", ru * 0.95, z, z + u["truss"], "lattice", ro=True)
+            z += u["truss"]
+        if draw:
+            b.profile("upper_tank", [[z, ru], [z + u["len"], ru]], u["mat"], caps=True)
+            b.disc("upper_aft", ru * 0.98, z - 0.01, "grey")
+        z += u["len"]
+    else:
+        # Long March 5B: the fairing sits on the core; bare, a short stub of the core's top stands for it.
+        z = z0
+        if mode in ("bare", "empty"):
+            b.profile("core_top", [[z - 3.0, r], [z, r]], v["core_mat"], caps=True)
+    if v.get("dragon"):
+        return dragon_parts(b, z)
+    if info is not None:
+        info["fairing_base"] = z
+        info["fr"] = v["fairing"]["fr"]
+        info["cyl"] = v["fairing"]["cyl"]
+        info["nose"] = v["fairing"]["nose"]
+    if mode in ("bare", "empty"):
+        # The payload adapter: a dark cone from the tank's top to a 1.6-m separation ring.
+        base_r = u.get("r", r) if u else r
+        ra = min(0.8, 0.9 * base_r)
+        b.profile("payload_adapter", [[z + 0.01, 0.97 * base_r], [z + 0.55, ra], [z + 0.6, ra]], "black", ro=True,
+                  caps="top")
+        b.tube("separation_ring", ra + 0.03, z + 0.5, z + 0.62, "grey", ro=True)
+        if info is not None:
+            info["payload_base"] = z + 0.62
+        if mode == "bare" and v.get("capsule"):
+            return capsule_parts(b, v["capsule"], z + 0.62)
+        return z + 0.62
+    pts, cuts, top = fairing_profile(v, z)
+    if mode == "fairing":
+        b.pieces("fairing_half", pts, "white", cuts, caps=False)
+        for c in b.c:
+            c["sweep_deg"] = [-90.0, 90.0]
+            c["inner_material"] = "grey"
+        if v.get("shroud_fins"):
+            f = v["fairing"]
+            for k in range(v["shroud_fins"]):
+                phi = 45.0 + 90.0 * k
+                if -90.0 < ((phi + 180.0) % 360.0) - 180.0 < 90.0:
+                    b.radial_box("shroud_grid_fin", phi, f["fr"], z + f["cyl"] - 1.2, 0.9, 1.1, 0.15, "gridfin")
+        # The model's origin at the half's centre (what Go to rides and it tumbles about); its place on the stage is
+        # launches.json's "fairing_center_m" (the stage frame).
+        cx, cz = 0.5 * v["fairing"]["fr"], 0.5 * (pts[0][0] + top)
+        for c in b.c:
+            if c["type"] == "profile":
+                c["profile"] = [r4([q[0] - cz, q[1]]) for q in c["profile"]]
+                c["position"] = r4([c["position"][0] - cx, c["position"][1], c["position"][2]])
+            else:
+                c["position"] = r4([c["position"][0] - cx, c["position"][1], c["position"][2] - cz])
+        if info is not None:
+            info["fairing_center"] = [round(cx, 2), 0.0, round(cz, 2)]
+        return top
+    b.pieces("fairing", pts, "white", cuts)
+    z = top - v["fairing"]["nose"]
     if v.get("les"):
         # Launch escape tower: a slim tower over the shroud nose with its motor nozzles' ring.
         tr, tl = v["les"]
@@ -606,8 +674,37 @@ def upper_parts(b, v, z0=0.0):
         top = zt + tl
     if v.get("shroud_fins"):
         for k in range(v["shroud_fins"]):
-            b.radial_box("shroud_grid_fin", 45.0 + 90.0 * k, fr, z - 1.2, 0.9, 1.1, 0.15, "gridfin")
+            b.radial_box("shroud_grid_fin", 45.0 + 90.0 * k, v["fairing"]["fr"], z - 1.2, 0.9, 1.1, 0.15, "gridfin")
     return top
+
+
+def capsule_parts(b, kind, z):
+    """A crewed spacecraft on its adapter (shown once its shroud is gone): Shenzhou or Soyuz MS, stand-ins of
+    public dimensions (service module, descent module, orbital module; the arrays folded)."""
+    if kind == "shenzhou":
+        # Service module 2.8 m x 2.9 m, descent module (bell) 2.5 m, orbital module 2.25 m x 2.8 m.
+        b.profile("service_module", [[z, 1.4], [z + 2.9, 1.4]], "white", caps=True)
+        b.engines("sm_engines", [(4, 0.6)], 0.15, 0.4, z - 0.3, mat="nozzle")
+        for k in range(2):
+            b.radial_box("sm_array_folded", 90.0 + 180.0 * k, 1.4, z + 1.45, 0.25, 2.0, 2.6, "cells")
+        z += 2.9
+        b.profile("descent_module", [[z, 1.25], [z + 0.3, 1.25], [z + 2.0, 0.6], [z + 2.05, 0.5]], "grey",
+                  caps=True)
+        z += 2.05
+        b.profile("orbital_module", dome(1.1, 0.4, z + 0.4, up=False) + [[z + 2.4, 1.1]] +
+                  dome(1.1, 0.4, z + 2.4, up=True)[1:], "white", caps=False)
+        return z + 2.8
+    # Soyuz MS: service module 2.7 m x 2.5 m, descent module 2.17 m, orbital module 2.25 m (a sphere-ish).
+    b.profile("service_module", [[z, 1.36], [z + 2.5, 1.36], [z + 2.6, 1.1]], "grey", caps=True)
+    b.engines("sm_engine", [(1, 0.0)], 0.3, 0.5, z - 0.3, mat="nozzle")
+    for k in range(2):
+        b.radial_box("sm_array_folded", 90.0 + 180.0 * k, 1.36, z + 1.3, 0.2, 1.8, 2.2, "cells")
+    z += 2.6
+    b.profile("descent_module", [[z, 1.08], [z + 0.2, 1.08], [z + 1.9, 0.5], [z + 2.0, 0.3]], "grey", caps=True)
+    z += 2.0
+    b.profile("orbital_module", [[z, 0.4]] + [[z + 1.1 - 1.1 * math.cos(math.pi * k / 8), 1.1 * math.sin(math.pi * k / 8) + 0.001]
+                                            for k in range(1, 8)] + [[z + 2.2, 0.4]], "green", caps=True)
+    return z + 2.2
 
 
 def dragon_parts(b, z):
@@ -624,6 +721,259 @@ def dragon_parts(b, z):
     for k in range(4):
         b.radial_box("superdraco_pod", 45.0 + 90.0 * k, 1.75 - 0.25, z + 1.2, 0.25, 0.6, 0.9, "black")
     return z + 3.15 + 1.3
+
+
+# ── Payload stacks (2026-10-20, issue 20261019_225243) ─────────────────────────────────────────────────────────────
+# data/launches.json's programs carry a "stack": how their satellites sit on the upper stage under the fairing (or in
+# Starship's bay). The sim draws them there (SatelliteSimLaunches.cpp, launchStackJobs) and releases them in sequence.
+# This script measures each satellite model STOWED (its "stow" scaling and "fold" applied, as sat_mesh.vert does),
+# derives the layout's numbers (pitch, offsets, the member centre, the column radius), checks they fit every fairing
+# the program flies in, writes the dispensers (rocket_dispenser_<name>.json) and prints the numbers launches.json must
+# hold (--check fails if they differ).
+LAUNCHES = os.path.join(os.path.dirname(__file__), "..", "data", "launches.json")
+CONSTELLATIONS = os.path.join(os.path.dirname(__file__), "..", "data", "constellations.json")
+BAY_RADIUS, BAY_LENGTH = 4.1, 17.24  # Starship: SpaceX's payload user's guide (2020): 8 m usable, 17.24 m cylinder;
+# the bay of a PEZ ship has no fairing-like dynamic envelope, so 8.2 m across of its ~8.8 m inner skin is allowed
+BAY_TAPER = 4.8                      # + the usable part of the nose (to the guide's 22 m)
+FAIRING_WALL = 0.15                  # a fairing's skin, acoustic blankets and the dynamic envelope: inner = outer - this
+STACK_GAP = 0.06                     # between neighbours in a stack
+
+
+def quat_rot(q, v):
+    w, x, y, z = q
+    tx, ty, tz = 2 * (y * v[2] - z * v[1]), 2 * (z * v[0] - x * v[2]), 2 * (x * v[1] - y * v[0])
+    return [v[0] + w * tx + (y * tz - z * ty), v[1] + w * ty + (z * tx - x * tz), v[2] + w * tz + (x * ty - y * tx)]
+
+
+def euler_quat(e):
+    def aa(axis, a):
+        h = math.radians(a) / 2
+        return [math.cos(h)] + [math.sin(h) * c for c in axis]
+
+    def mul(a, b):
+        w1, x1, y1, z1 = a
+        w2, x2, y2, z2 = b
+        return [w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2, w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2, w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2]
+    return mul(mul(aa([1, 0, 0], e[0]), aa([0, 1, 0], e[1])), aa([0, 0, 1], e[2]))
+
+
+def rodrigues(v, k, a):
+    c, s_ = math.cos(a), math.sin(a)
+    d = sum(k[i] * v[i] for i in range(3))
+    cr = [k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0]]
+    return [v[i] * c + cr[i] * s_ + k[i] * d * (1 - c) for i in range(3)]
+
+
+def stowed_points(path):
+    """Sample points of a satellite model with every part stowed and folded (rest body frame), as sat_mesh.vert."""
+    m = json.load(open(path, encoding="utf-8"))
+    groups = {g["name"]: g for g in m["attitude_groups"]}
+    names = [g["name"] for g in m["attitude_groups"]]
+
+    def hinge(gname):
+        g = groups[gname]
+        if "parent" in g:
+            h = g.get("hinge", {}).get("position", [0, 0, 0])
+            ph = hinge(g["parent"])
+            return [h[i] + ph[i] for i in range(3)]
+        return [0.0, 0.0, 0.0]
+    out = []
+    for c in m["components"]:
+        t = c["type"]
+        if t == "box":
+            sx, sy, sz = [a / 2 for a in c["size"]]
+            loc = [[a, b, d] for a in (-sx, sx) for b in (-sy, sy) for d in (-sz, sz)]
+        elif t == "plane":
+            w, h = c["size"][0] / 2, c["size"][1] / 2
+            loc = [[a, b, 0.0] for a in (-w, 0.0, w) for b in (-h, 0.0, h)]
+        elif t in ("cylinder", "cone"):
+            r0 = c.get("radius", c.get("radius_bottom", 0.1))
+            r1 = c.get("radius", c.get("radius_top", r0))
+            hh = c["height"] / 2
+            loc = [[r * math.cos(a), r * math.sin(a), z] for (r, z) in ((r0, -hh), (r1, hh))
+                   for a in [k * math.pi / 8 for k in range(16)]]
+        elif t == "sphere":
+            r = c["radius"]
+            loc = [[r * a, r * b, r * d] for (a, b, d) in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1),
+                                                         (0, 0, -1))]
+        else:
+            continue
+        q = c.get("rotation_quat") or (euler_quat(c["rotation_deg"]) if "rotation_deg" in c else [1, 0, 0, 0])
+        pos = c.get("position", [0, 0, 0])
+        g = c["group"]
+        hg = hinge(g if isinstance(g, str) else names[g])
+        st, fo = c.get("stow"), c.get("fold")
+        for p in loc:
+            v = quat_rot(q, p)
+            v = [v[i] + pos[i] + hg[i] for i in range(3)]
+            if st:
+                ax = st["axis"]
+                n = math.sqrt(sum(a * a for a in ax))
+                ax = [a / n for a in ax]
+                d = sum(ax[i] * v[i] for i in range(3)) - st.get("root", 0.0)
+                if d > 0:
+                    v = [v[i] - ax[i] * (1 - st.get("scale", 0.05)) * d for i in range(3)]
+            if fo:
+                ax = fo["axis"]
+                n = math.sqrt(sum(a * a for a in ax))
+                ax = [a / n for a in ax]
+                pt = fo.get("point", [0, 0, 0])
+                r = rodrigues([v[i] - pt[i] for i in range(3)], ax, math.radians(fo.get("angle_deg", 0.0)))
+                v = [pt[i] + r[i] for i in range(3)]
+            out.append(v)
+    return out
+
+
+def fairing_radius_at(v, z_rel):
+    """The fairing's outer radius z_rel above its base (the vehicle's dict); 0 past its tip."""
+    pts, _, _ = fairing_profile(v, 0.0)
+    for (z0, r0), (z1, r1) in zip(pts, pts[1:]):
+        if z0 <= z_rel <= z1:
+            return r0 + (r1 - r0) * (z_rel - z0) / max(z1 - z0, 1e-9)
+    return 0.0
+
+
+def r3(x):
+    return round(x, 3)
+
+
+def plan_stacks(infos):
+    """Per program with a stack: its numbers (to put in launches.json), the fit in each of its vehicles, and the
+    dispenser's dimensions. infos: vehicle id -> the upper-stage info (payload_base, fairing_base, fr, cyl, nose)."""
+    L = json.load(open(LAUNCHES, encoding="utf-8"))
+    C = json.load(open(CONSTELLATIONS, encoding="utf-8"))
+    tmodel = {t["name"]: t.get("model") for t in C["satellite_types"]}
+    plans = []
+    for pg in L["programs"]:
+        st = pg.get("stack")
+        if not st:
+            continue
+        # Every model the program flies (Starlink: V2 Mini and V3): the stack is laid out for the largest.
+        ids = []
+        for c in C["constellations"]:
+            if any(mm in c["name"] for mm in pg["match"]):
+                mid = tmodel.get(c["type"])
+                if mid and mid not in ids:
+                    ids.append(mid)
+        if not ids:
+            continue
+        model_id = "+".join(ids)
+        lo, hi = [1e9] * 3, [-1e9] * 3
+        corner_pez = 0.0
+        for mid in ids:
+            pts = stowed_points(os.path.join(OUT, mid + ".json"))
+            l1 = [min(p[i] for p in pts) for i in range(3)]
+            h1 = [max(p[i] for p in pts) for i in range(3)]
+            corner_pez = max(corner_pez, 0.5 * math.hypot(h1[0] - l1[0], h1[1] - l1[1]))
+            lo = [min(lo[i], l1[i]) for i in range(3)]
+            hi = [max(hi[i], h1[i]) for i in range(3)]
+        ext = [hi[i] - lo[i] for i in range(3)]
+        cen = [r3(0.5 * (hi[i] + lo[i])) for i in range(3)]
+        lay = st["layout"]
+        n = pg["payload"]
+        P = {"program": pg["name"], "model": model_id, "layout": lay, "extent": [r3(e) for e in ext],
+             "member_center": cen, "payload": n, "fits": {}}
+        if lay == "pez":
+            pitch = ext[2] + STACK_GAP
+            corner = corner_pez  # (each model about its own centre)
+            P["pitch_m"] = r3(pitch)
+            cap = int((BAY_LENGTH + BAY_TAPER) // pitch)
+            P["fits"]["starship"] = {"corner_radius_m": r3(corner), "bay_radius_m": BAY_RADIUS,
+                                     "stack_length_m": r3(n * pitch), "bay_length_m": BAY_LENGTH + BAY_TAPER,
+                                     "capacity": cap if corner <= BAY_RADIUS else 0,
+                                     "ok": corner <= BAY_RADIUS and n <= cap}
+            # The slot the satellites leave through (the ship model's door): the stowed member's width across the
+            # ship (its Y) and thickness (its Z).
+            P["slot_w"], P["slot_h"] = r3(ext[1]), r3(ext[2])
+        elif lay == "flat":
+            per = st.get("per_tier", 1)
+            side = st.get("side_axis", "y")
+            si = 0 if side == "x" else 1
+            pitch = ext[2] + STACK_GAP
+            off = 0.5 * (ext[si] + STACK_GAP) if per == 2 else 0.0
+            tiers = (n + per - 1) // per
+            P.update({"pitch_m": r3(pitch), "offset_m": r3(off), "tiers": tiers})
+            # Footprint corners in the stage's cross-section: the member's X along stage Y, Y along stage X.
+            hx, hy = 0.5 * ext[0], 0.5 * ext[1]
+            if per == 2:
+                if si == 0:
+                    corner = math.hypot(off + hx, hy)
+                else:
+                    corner = math.hypot(hx, off + hy)
+            else:
+                corner = math.hypot(hx, hy)
+            P["corner_m"] = r3(corner)
+            height = st.get("base_m", 0.3) + tiers * pitch
+            for vid in pg["vehicles"]:
+                P["fits"][vid] = fit_column(vid, infos, corner, height, st.get("base_m", 0.3))
+        elif lay == "column":
+            per = st["per_tier"]
+            # Zenith face on the column, Z radially out, X along the stage, Y tangential.
+            half_t = 0.5 * ext[1] + 0.5 * STACK_GAP
+            r_in = half_t / math.tan(math.pi / per)  # where neighbours' inner corners meet
+            col = st.get("column_radius_m") or 0.0
+            r_face = max(r_in, 0.0)
+            col = r3(max(0.35, r_face - 0.05))
+            radius = r_face + 0.5 * ext[2]  # the member centre's distance from the axis
+            pitch = ext[0] + STACK_GAP
+            tiers = (n + per - 1) // per
+            corner = math.hypot(r_face + ext[2], 0.5 * ext[1])
+            P.update({"pitch_m": r3(pitch), "offset_m": r3(radius), "column_radius_m": col, "tiers": tiers,
+                      "corner_m": r3(corner)})
+            height = st.get("base_m", 0.3) + tiers * pitch
+            for vid in pg["vehicles"]:
+                P["fits"][vid] = fit_column(vid, infos, corner, height, st.get("base_m", 0.3))
+        P["height_m"] = r3(st.get("base_m", 0.3) + P.get("tiers", 0) * P.get("pitch_m", 0))
+        plans.append(P)
+    return plans
+
+
+def fit_column(vid, infos, corner, height, base):
+    """Whether a stack `height` tall needing `corner` of radius fits vid's fairing (from the payload adapter up)."""
+    v = VEHICLES.get(vid)
+    inf = infos.get(vid)
+    if not v or not inf or "fairing" not in v:
+        return {"ok": False, "why": "no fairing"}
+    z0 = inf["payload_base"] - inf["fairing_base"]
+    worst = 1e9
+    z = z0 + base
+    while z <= z0 + height + 1e-9:
+        worst = min(worst, fairing_radius_at(v, z) - FAIRING_WALL - corner)
+        z += 0.1
+    usable = inf["cyl"] + inf["nose"]
+    return {"ok": worst >= 0.0, "margin_m": r3(worst), "inner_radius_m": r3(v["fairing"]["fr"] - FAIRING_WALL),
+            "fairing_length_m": r3(usable + (inf["payload_base"] - inf["fairing_base"]) * 0.0)}
+
+
+def dispenser_model(P, st):
+    """The dispenser left on the stage after the satellites go: a column with a ring per tier and the mounting
+    fittings (Guowang, OneWeb), or a base plate and four tension rods (a flat stack)."""
+    b = Builder()
+    h = P["height_m"]
+    if P["layout"] == "column":
+        rc = P["column_radius_m"]
+        b.profile("column", [[0.0, rc + 0.15], [0.15, rc], [h, rc], [h + 0.05, rc * 0.8]], "grey", caps="top")
+        per, pitch, base = st["per_tier"], P["pitch_m"], st.get("base_m", 0.3)
+        for k in range(P["tiers"] + 1):
+            b.tube("tier_ring", rc + 0.06, base + k * pitch - 0.05, base + k * pitch + 0.05, "black", ro=True)
+        for k in range(P["tiers"]):
+            for j in range(per):
+                phi = 360.0 * j / per + (180.0 / per if k % 2 else 0.0)
+                for dz in (0.25, 0.75):
+                    b.radial_box("mount_fitting", phi, rc, base + (k + dz) * pitch, 0.12, 0.25, 0.12, "black")
+        notes = "A central column the satellites are mounted around, %d to a tier (tier rings, separation fittings)." % per
+    else:
+        r_plate = P["corner_m"] + 0.05
+        b.profile("base_plate", [[0.0, r_plate], [0.12, r_plate]], "black", caps=True)
+        for k in range(4):
+            phi = 45.0 + 90.0 * k
+            p = math.radians(phi)
+            rr = 0.92 * r_plate
+            b.profile("tension_rod", [[0.12, 0.04], [h, 0.04]], "grey", x=rr * math.cos(p), y=rr * math.sin(p),
+                      ro=True, caps=True)
+        notes = "A flat stack's base plate and four tension rods (released all at once, the rods fall away)."
+    return b.c, notes
 
 
 def model(vid, part, refs, notes, comps):
@@ -665,6 +1015,7 @@ def write(vid, part, refs, notes, comps):
 
 
 def main():
+    import sys
     n = 0
     # Starship.
     notes = ("Ogive nose 13.5 m with a 1 m blunt tip, flap planforms, chines and engine heights are estimates "
@@ -680,6 +1031,7 @@ def main():
     starship_ship(b)
     write("starship", "upper", STARSHIP_REFS, notes, b.c)
     n += 3
+    infos = {}
     for vid, v in VEHICLES.items():
         refs, notes = v["refs"], v.get("notes", "")
         u = v.get("upper")
@@ -694,7 +1046,59 @@ def main():
         upper_parts(b, v, 0.0)
         write(vid, "upper", refs, notes, b.c)
         n += 3
+        if "fairing" in v and not v.get("dragon"):
+            # 2026-10-20: the fairing separates (~110 km); the stage flies on bare, its payload on the adapter.
+            info = {}
+            b = Builder()
+            upper_parts(b, v, 0.0, mode="bare", info=info)
+            write(vid, "upper_bare", refs, notes + " Shown after fairing separation.", b.c)
+            b = Builder()
+            upper_parts(b, v, 0.0, mode="fairing", info=info)
+            write(vid, "fairing", refs, notes + " One fairing half (the other is it turned 180 deg about +Z), in the "
+                  "stage's frame: separated, it falls away tumbling.", b.c)
+            n += 2
+            if v.get("capsule"):
+                b = Builder()
+                upper_parts(b, v, 0.0, mode="empty")
+                write(vid, "upper_empty", refs, notes + " After its spacecraft has separated.", b.c)
+                n += 1
+            infos[vid] = info
     print("wrote %d models" % n)
+    print("\nvehicle payload_base_m (launches.json):")
+    for vid, inf in infos.items():
+        print("  %-16s payload_base_m %.2f   fairing_center_m %s   fairing: r %.2f, base %.2f, cylinder %.1f + nose %.1f" %
+              (vid, inf["payload_base"], inf["fairing_center"], inf["fr"], inf["fairing_base"], inf["cyl"], inf["nose"]))
+    plans = plan_stacks(infos)
+    L = json.load(open(LAUNCHES, encoding="utf-8"))
+    bad = []
+    for P in plans:
+        print("\n%s (%s, %s, %d a launch): stowed %s m, centre %s" % (P["program"], P["model"], P["layout"],
+              P["payload"], P["extent"], P["member_center"]))
+        keys = [k for k in ("pitch_m", "offset_m", "column_radius_m", "tiers", "corner_m", "height_m") if k in P]
+        print("   " + ", ".join("%s %s" % (k, P[k]) for k in keys))
+        for vid, f in P["fits"].items():
+            print("   %-16s %s" % (vid, "FITS" if f.get("ok") else "DOES NOT FIT") + "  " +
+                  ", ".join("%s %s" % (k, v) for k, v in f.items() if k != "ok"))
+            if not f.get("ok"):
+                bad.append((P["program"], vid))
+        st = next(p for p in L["programs"] if p["name"] == P["program"])["stack"]
+        for k in ("pitch_m", "offset_m", "column_radius_m", "member_center"):
+            if k in P and k in st and st[k] != P[k]:
+                bad.append((P["program"], "launches.json %s %s != %s" % (k, st[k], P[k])))
+        if st.get("dispenser"):
+            comps, dn = dispenser_model(P, st)
+            write("dispenser", st["dispenser"], ["Generated from data/launches.json's stack layout."], dn, comps)
+    for vh in L["vehicles"]:
+        if vh["id"] in infos and abs(vh.get("payload_base_m", -1) - round(infos[vh["id"]]["payload_base"], 2)) > 0.005:
+            bad.append((vh["id"], "launches.json payload_base_m %s != %.2f" % (vh.get("payload_base_m"),
+                                                                                infos[vh["id"]]["payload_base"])))
+        if vh["id"] in infos and vh.get("fairing_center_m") != infos[vh["id"]]["fairing_center"]:
+            bad.append((vh["id"], "launches.json fairing_center_m %s != %s" % (vh.get("fairing_center_m"),
+                                                                               infos[vh["id"]]["fairing_center"])))
+    if bad:
+        print("\nCHECK:", *bad, sep="\n  ")
+        if "--check" in sys.argv:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

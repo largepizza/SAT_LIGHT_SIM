@@ -165,6 +165,10 @@ struct AttGeometry
     double flareTiltRad = 0.0;
     bool forceTumble = false; // a dead satellite (Kessler): the root tumbles whatever its law
     bool jointsRest = false;  // "open book" (a train raising, launches): every joint at its rest angle
+    // Attitude override (launches, 2026-10-20): a satellite in a payload stack, just released from it, a fairing half
+    // or a rocket stage. The root group's body -> world rotation is slerp(the law's, fixR, fixW): fixW 1 = fixR alone.
+    double fixW = 0.0;
+    glm::dmat3 fixR{1.0};
 };
 // Rigid transform per group: posed = R * rest + t (rest = the model's body frame with every
 // joint at 0; world = the frame AttGeometry's directions are given in).
@@ -298,6 +302,10 @@ struct SatComponent
     // Profile: the inside drawn too, in this material (an open engine bell; JSON "inner_material"). Render
     // mesh only: the photometry has no inner faces (an open bell's inside is mostly hidden by its rim).
     int innerMaterial = -1;
+    // Profile: a partial body of revolution (JSON "sweep_deg": [start, end], degrees from local +X toward +Y): a
+    // fairing half. Default the full turn. The occluder stays the full frustum (a half shell's only use so far is a
+    // model of its own, where nothing else is shadowed).
+    glm::vec2 sweepDeg{0.0f, 360.0f};
     SatFinShape fin; // PrimitiveKind::Fin
     // Stowed for launch (JSON "stow", 2026-10-19): an accordion-folded array or radiator packs toward its root. With
     // the unfolding progress P (SatOrbitElems::unfoldT0/Dur; 1 = deployed) its extent along stowAxis beyond the plane
@@ -307,6 +315,13 @@ struct SatComponent
     float stowRoot = 0.0f;
     float stowScale = 1.0f;
     float stowP0 = 0.0f, stowP1 = 1.0f;
+    // Folded for launch (JSON "fold", 2026-10-20): after the stow scaling, the part is turned about the line through
+    // foldPoint along foldAxis (rest BODY frame) by foldAngle x (1 - smoothstep(foldP0, foldP1, P)) radians: an array
+    // folded flat onto the bus, half of a bus folded over the other (Starmind). Mesh only (sat_mesh.vert); the
+    // photometry ignores it (a satellite is folded only in its dispenser and for a minute or two after release).
+    glm::vec3 foldPoint{0.0f}, foldAxis{0.0f};
+    float foldAngle = 0.0f;
+    float foldP0 = 0.0f, foldP1 = 1.0f;
 };
 
 // Fin geometry helpers (SatModel.cpp): the 12 corners of a fin's hexagonal-section prism, local frame —
@@ -553,6 +568,8 @@ glm::dvec3 satLobeNormalPosed(const std::vector<GpuSatLobe> &lobes, const std::v
                               const std::vector<GroupPose> &poses, int li);
 // The area factor of a lobe at unfolding progress P (GpuSatLobe::stowPack): 1 deployed.
 double satLobeStowFactor(uint32_t stowPack, double P);
+// A component's fold angle (radians) at unfolding progress P (SatComponent::fold*): 0 deployed.
+double satComponentFoldAngle(const SatComponent &c, double P);
 // A component's stow scale at unfolding progress P (SatComponent::stow*): 1 deployed.
 double satComponentStowScale(const SatComponent &c, double P);
 double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,

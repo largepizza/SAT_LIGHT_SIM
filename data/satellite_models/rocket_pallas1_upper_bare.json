@@ -1,0 +1,254 @@
+{
+ "name": "pallas1 upper_bare",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), pallas1: upper_bare. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Lengths estimated. Shown after fairing separation.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "upper_nozzle_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.8
+    ],
+    [
+     0.2493,
+     0.6635
+    ],
+    [
+     0.4987,
+     0.545
+    ],
+    [
+     0.748,
+     0.4456
+    ],
+    [
+     0.9973,
+     0.3671
+    ],
+    [
+     1.2467,
+     0.3123
+    ],
+    [
+     1.496,
+     0.288
+    ],
+    [
+     1.672,
+     0.4464
+    ],
+    [
+     2.0592,
+     0.4464
+    ],
+    [
+     2.2,
+     0.2678
+    ],
+    [
+     2.25,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_1",
+   "type": "profile",
+   "profile": [
+    [
+     1.7,
+     1.675
+    ],
+    [
+     10.7,
+     1.675
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_2",
+   "type": "profile",
+   "profile": [
+    [
+     1.65,
+     1.6415
+    ],
+    [
+     1.69,
+     1.6415
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "payload_adapter_3",
+   "type": "profile",
+   "profile": [
+    [
+     10.71,
+     1.6247
+    ],
+    [
+     11.25,
+     0.8
+    ],
+    [
+     11.3,
+     0.8
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "separation_ring_4",
+   "type": "profile",
+   "profile": [
+    [
+     11.2,
+     0.83
+    ],
+    [
+     11.32,
+     0.83
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "upper_tank_1"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Galactic Energy / Wikipedia 'Pallas-1': 3.35 m, 7 Welkin engines, 4.2 m fairing"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey",
+    "nozzle",
+    "soot"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

@@ -1,0 +1,250 @@
+{
+ "name": "zhuque3 fairing",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), zhuque3: fairing. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Stage split estimated. One fairing half (the other is it turned 180 deg about +Z), in the stage's frame: separated, it falls away tumbling.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "fairing_half_0",
+   "type": "profile",
+   "profile": [
+    [
+     -7.3975,
+     2.25
+    ],
+    [
+     -6.6025,
+     2.6
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_1",
+   "type": "profile",
+   "profile": [
+    [
+     -6.6025,
+     2.6
+    ],
+    [
+     1.3975,
+     2.6
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_2",
+   "type": "profile",
+   "profile": [
+    [
+     1.3975,
+     2.6
+    ],
+    [
+     2.0131,
+     2.5769
+    ],
+    [
+     2.6121,
+     2.5098
+    ],
+    [
+     3.1933,
+     2.4015
+    ],
+    [
+     3.7555,
+     2.2547
+    ],
+    [
+     4.0975,
+     2.1392
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_3",
+   "type": "profile",
+   "profile": [
+    [
+     4.0975,
+     2.1392
+    ],
+    [
+     4.2969,
+     2.0719
+    ],
+    [
+     4.8156,
+     1.8559
+    ],
+    [
+     5.3088,
+     1.6102
+    ],
+    [
+     5.7732,
+     1.3391
+    ],
+    [
+     6.2037,
+     1.0492
+    ],
+    [
+     6.5927,
+     0.751
+    ],
+    [
+     6.9255,
+     0.4647
+    ],
+    [
+     7.153,
+     0.25
+    ],
+    [
+     7.1896,
+     0.208
+    ],
+    [
+     7.2189,
+     0.1608
+    ],
+    [
+     7.2405,
+     0.1095
+    ],
+    [
+     7.2536,
+     0.0555
+    ],
+    [
+     7.2581,
+     0.0
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "fairing_half_0",
+    "fairing_half_1",
+    "fairing_half_2",
+    "fairing_half_3"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "LandSpace / Wikipedia 'Zhuque-3': stainless steel, 4.5 m across, 66.1 m, 9 TQ-12A on the first stage, 1 TQ-15A, grid fins and four landing legs, 5.2 m fairing"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

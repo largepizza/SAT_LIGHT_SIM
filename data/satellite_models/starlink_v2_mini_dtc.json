@@ -1,7 +1,10 @@
 {
     "name": "Starlink V2 Mini Direct-to-Cell (mitigated)",
     "note": "Parity model for the v1.1 'Starlink Gen3 Direct-to-Cell' shell (today's DTCs are V2 Minis). The mitigated V2 Mini plus a ~25 m2 nadir phased array ahead of the bus along the velocity axis, at ~360 km. Benchmark: mallama2025_dtc (6.47 at 1000 km, mitigated).",
-    "deployment": {"unfold_delay_s": 900, "unfold_s": 240},
+    "deployment": {
+        "unfold_delay_s": 900,
+        "unfold_s": 240
+    },
     "attitude_groups": [
         {
             "name": "bus",
@@ -53,11 +56,22 @@
             "size": [5.0, 5.0],
             "position": [4.85, 0, 0.25],
             "single_sided": false,
-            "material": "dtc_antenna_face"
+            "material": "dtc_antenna_face",
+            "fold": {
+                "point": [2.3, 0, 0.275],
+                "axis": [0, 1, 0],
+                "angle_deg": -180.0,
+                "phase": [0.0, 0.3]
+            }
         },
         {
             "name": "array_left",
-            "stow": {"axis": [0, 1, 0], "root": 1.85, "scale": 0.04, "phase": [0.0, 1.0]},
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.85,
+                "scale": 0.04,
+                "phase": [0.3, 1.0]
+            },
             "type": "plane",
             "group": "wings",
             "size": [4.1, 12.8],
@@ -68,7 +82,12 @@
         },
         {
             "name": "array_right",
-            "stow": {"axis": [0, -1, 0], "root": 1.85, "scale": 0.04, "phase": [0.0, 1.0]},
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.85,
+                "scale": 0.04,
+                "phase": [0.3, 1.0]
+            },
             "type": "plane",
             "group": "wings",
             "size": [4.1, 12.8],
@@ -125,6 +144,14 @@
             "status": "estimate",
             "value": "arrays leave the stack folded (4% of their span, at the bus edge) and unfold over 4 min, 15 min (+-15%) after release",
             "source": "SpaceX describes the arrays unfolding after the satellites leave the stack; no timeline is published. Estimate."
+        },
+        {
+            "subjects": [
+                "deployment"
+            ],
+            "status": "estimate",
+            "value": "stowed: the 5 x 5 m direct-to-cell antenna folded flat under the bus (40 to a Starship); it swings out over the first 70 s of the unfolding",
+            "source": "Fit to a Starship's payload bay (8 m across); an estimate."
         }
     ],
     "materials": [

@@ -4218,6 +4218,13 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
         geo.tumbleAxis = eciToEcef(e.tumbleAxis);
         geo.forceTumble = e.forceTumble;
         geo.jointsRest = e.restJoints;
+        glm::dmat3 Rf;
+        geo.fixW = satAttOverride(e, tNow, Rf);
+        if (geo.fixW > 0.0) // ECI -> this view's ECEF
+        {
+            const double c = std::cos(theta), s = std::sin(theta);
+            geo.fixR = glm::dmat3(glm::dvec3(c, -s, 0.0), glm::dvec3(s, c, 0.0), glm::dvec3(0.0, 0.0, 1.0)) * Rf;
+        }
     }
     else
         P = glm::normalize(glm::dvec3(obsDir)) * (satphot::kEarthRadiusM + (double)viewerAltM);
@@ -4924,6 +4931,12 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         geo.forceTumble = e.forceTumble;
         geo.jointsRest = e.restJoints;
         geo.flareTiltRad = in.flareTiltRad;
+        {
+            glm::dmat3 Rf;
+            geo.fixW = satAttOverride(e, tNow, Rf);
+            if (geo.fixW > 0.0) // ECI -> ECEF (eciToEcef)
+                geo.fixR = glm::dmat3(glm::dvec3(ct, -st, 0.0), glm::dvec3(st, ct, 0.0), glm::dvec3(0.0, 0.0, 1.0)) * Rf;
+        }
         const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, false);
         GpuMeshInstance &inst = out.inst;
         inst.origin = glm::vec4(glm::vec3(rel), fade);
@@ -6106,7 +6119,7 @@ void SatelliteSim::formatSelectedSatInfo()
         if (selU == transientSatIdx() || selU == followSlotIdx())
         {
             const SelTransient &tr = selU == transientSatIdx() ? selTransientCur : followTrCur;
-            st = tr.kind == 1 ? "Rocket stage" : tr.kind == 2 ? "Starship ship, entry" : "Re-entry fireball";
+            st = tr.kind == 1 ? "Rocket stage" : tr.kind == 2 ? "Starship ship, entry" : tr.kind == 7 ? "Payload fairing half" : "Re-entry fireball";
             if (orb.typeIdx < satTypes.size() && tr.kind <= 2)
             {
                 std::string tn = satTypes[orb.typeIdx].name; // "Rocket: starship_upper" -> "starship_upper"

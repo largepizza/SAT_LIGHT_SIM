@@ -542,6 +542,7 @@ json SatelliteSim::harnessStateJson()
             geo.forceTumble = e.forceTumble;
         geo.jointsRest = e.restJoints;
             geo.flareTiltRad = in.flareTiltRad;
+            geo.fixW = satAttOverride(e, t, geo.fixR);
             const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, false);
             const glm::dvec3 s = in.sunDirEci, ob = glm::normalize(in.obsEci - pr.orbit.posEci);
             const double sh = glm::dot(s, glm::normalize(s + ob));
@@ -2471,12 +2472,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = msg;
             return Status::Done;
         }
-        if (sub == "deorbit" || sub == "deploy")
+        if (sub == "deorbit" || sub == "deploy" || sub == "fairing")
         {
-            // (2026-10-19) the next sunlit upper stage as it turns for its deorbit burn / 10 s before it deploys,
-            // the observer 250 km aside (then `launch select kind=upper` and `follow`).
+            // (2026-10-19) the next sunlit upper stage as it turns for its deorbit burn / 10 s before it deploys /
+            // (2026-10-20) 10 s before its fairing separates, the observer 250 km aside (then `launch select
+            // kind=upper` and `follow`).
             std::string msg;
-            if (!launchGoToStageEvent(msg, sub == "deorbit" ? 2 : 3, c.str("filter", "")))
+            if (!launchGoToStageEvent(msg, sub == "deorbit" ? 2 : sub == "deploy" ? 3 : 4, c.str("filter", "")))
                 fail("launch " + sub + ": " + msg);
             r["message"] = msg;
             return Status::Done;
@@ -2497,14 +2499,15 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             static const std::pair<const char *, int> kTr[] = {{"rocket", 1}, {"booster", 11}, {"upper", 12},
                                                                {"ship", 2}, {"fireball", 0},
                                                                {"retiree_reentry", 3}, {"stage_reentry", 4},
-                                                               {"kessler_reentry", 5}, {"fragment", 6}};
+                                                               {"kessler_reentry", 5}, {"fragment", 6}, {"fairing", 7}};
             int trKind = -1;
             for (const auto &k : kTr)
                 if (kind == k.first)
                     trKind = k.second;
             if (trKind >= 0)
             {
-                if (!selectTransient(trKind > 10 ? 1 : trKind, msg, trKind > 10 ? trKind - 11 : -1))
+                if (!selectTransient(trKind > 10 ? 1 : trKind, msg, trKind > 10 ? trKind - 11 : -1,
+                                     c.num("nearest", 0.0) > 0.5))
                     fail("launch select: " + msg);
             }
             else if (!launchSelect(kind == "retiree" ? 1 : 0, msg, (int)c.num("member", -1.0)))

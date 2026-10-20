@@ -36,7 +36,7 @@ Benchmarking" design page (Results log).
 | Starlink V1.5 (arXiv:2507.00107 Table 1) | 6.055 | 6.34 | −0.285 (tol 0.3) | Narrow margin. Backsheet transmission (0.03) fitted to Mallama & Respler 2022's Post-VisorSat phase function; its low-phase bins stay 0.6-0.8 too bright (weighted RMS 0.63 vs the fit). Observers/period assumed. |
 | OneWeb (Mallama 2020b) | 6.97 | 7.18 | −0.21 | The bus MLI (albedo 0.1, F0 0.25) was FITTED to this mean (gold-foil MLI read 6.49). sd 1.1 vs 0.68. |
 | Amazon Leo, operational (Mallama et al. 2026) | 6.59 | 6.81 | −0.22 | Held out; layout from the authors' interpretation of Amazon imagery. sd 0.94 vs 0.64. |
-| Guowang, orbit-raising (arXiv:2507.00107) | 5.80 | 4.21 | **+1.59, NOT GATED** | Unpublished hardware and attitude during orbit raising; the estimated 10 m-span model is far too faint. The benchmark file is `"gated": false`. |
+| Guowang, orbit-raising (arXiv:2507.00107) | 5.85 | 4.21 | **+1.64, NOT GATED** | Unpublished hardware and attitude during orbit raising; the estimated 10 m-span model is far too faint. (5.80 until the 2026-10-20 realism pass: a radome over the nadir face, wings 5 cm lower.) The benchmark file is `"gated": false`. |
 | Starlink V3, V2 Mini DTC dims, stations, debris | — | — | — | No benchmarks. Stations are render-level estimates. |
 
 ## Fitted, estimated or stood-in values

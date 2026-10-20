@@ -1,0 +1,254 @@
+{
+ "name": "ariane6 upper_bare",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), ariane6: upper_bare. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Shown as A64. Core and upper-stage split estimated. Shown after fairing separation.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "upper_nozzle_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     1.07
+    ],
+    [
+     0.374,
+     0.8875
+    ],
+    [
+     0.748,
+     0.7289
+    ],
+    [
+     1.122,
+     0.596
+    ],
+    [
+     1.496,
+     0.491
+    ],
+    [
+     1.87,
+     0.4178
+    ],
+    [
+     2.244,
+     0.3852
+    ],
+    [
+     2.508,
+     0.5971
+    ],
+    [
+     3.0888,
+     0.5971
+    ],
+    [
+     3.3,
+     0.3582
+    ],
+    [
+     3.35,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_1",
+   "type": "profile",
+   "profile": [
+    [
+     2.6,
+     2.7
+    ],
+    [
+     14.2,
+     2.7
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_2",
+   "type": "profile",
+   "profile": [
+    [
+     2.55,
+     2.646
+    ],
+    [
+     2.59,
+     2.646
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "payload_adapter_3",
+   "type": "profile",
+   "profile": [
+    [
+     14.21,
+     2.619
+    ],
+    [
+     14.75,
+     0.8
+    ],
+    [
+     14.8,
+     0.8
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "separation_ring_4",
+   "type": "profile",
+   "profile": [
+    [
+     14.7,
+     0.83
+    ],
+    [
+     14.82,
+     0.83
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "upper_tank_1"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Arianespace Ariane 6 User's Manual (2021): 5.4 m core, P120C boosters 3.4 m x 13.5 m, long fairing 20 m, A64 62 m | Wikipedia 'Ariane 6': Vulcain 2.1, Vinci"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey",
+    "nozzle",
+    "soot"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

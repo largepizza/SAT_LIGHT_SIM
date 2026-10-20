@@ -323,6 +323,12 @@ std::vector<GroupPose> evalGroupPoses(const std::vector<AttitudeGroup> &groups, 
                 W = glm::dmat3(t1, t2, glm::cross(t1, t2));
             }
             pre.R = W * glm::transpose(bodyTriad(g)); // body → world
+            if (geo.fixW > 0.0)
+            {
+                // Attitude override (launches: a stowed satellite in its dispenser, a fairing half, a rocket).
+                const glm::dquat qL = glm::quat_cast(pre.R), qF = glm::quat_cast(geo.fixR);
+                pre.R = geo.fixW >= 1.0 ? geo.fixR : glm::mat3_cast(glm::slerp(qL, qF, std::clamp(geo.fixW, 0.0, 1.0)));
+            }
         }
         else
         {
@@ -505,6 +511,30 @@ bool satProfileInArc(const SatComponent &c, double phi)
 std::vector<double> satProfileAzimuths(const SatComponent &c, int n)
 {
     std::vector<double> a;
+    const double w = (double)c.sweepDeg.y - (double)c.sweepDeg.x;
+    if (w < 359.999)
+    {
+        // A partial sweep (a fairing half): [start, end] in n x its share of a turn steps (at least 4), absolute
+        // angles (not wrapped: the strip runs start -> end); the arc material's edges inside it.
+        const double a0 = glm::radians((double)c.sweepDeg.x), a1 = glm::radians((double)c.sweepDeg.y);
+        const int m = std::max(4, (int)std::ceil(n * w / 360.0));
+        for (int i = 0; i <= m; ++i)
+            a.push_back(a0 + (a1 - a0) * i / m);
+        if (c.arcMaterial >= 0 && c.arcDeg.y - c.arcDeg.x < 360.0)
+            for (float e : {c.arcDeg.x, c.arcDeg.y})
+                for (int k = -2; k <= 2; ++k)
+                {
+                    const double v = glm::radians((double)e) + 2.0 * kPi * k;
+                    if (v > a0 && v < a1)
+                        a.push_back(v);
+                }
+        std::sort(a.begin(), a.end());
+        std::vector<double> u;
+        for (double v : a)
+            if (u.empty() || v - u.back() > 1e-6)
+                u.push_back(v);
+        return u;
+    }
     for (int i = 0; i <= n; ++i)
         a.push_back(2.0 * kPi * i / n);
     if (c.arcMaterial >= 0 && c.arcDeg.y - c.arcDeg.x < 360.0)
@@ -796,6 +826,15 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                 }
                 if (jc.contains("inner_material"))
                     c.innerMaterial = materialRef(jc["inner_material"].get<std::string>());
+                if (jc.contains("sweep_deg"))
+                {
+                    const auto &jw = jc["sweep_deg"];
+                    c.sweepDeg = {jw.at(0).get<float>(), jw.at(1).get<float>()};
+                    if (!(c.sweepDeg.y > c.sweepDeg.x) || c.sweepDeg.y - c.sweepDeg.x > 360.0f)
+                        throw std::runtime_error("component '" + c.name + "': sweep_deg must be [start, end], 0 < end - start <= 360");
+                    if (c.profileCaps)
+                        throw std::runtime_error("component '" + c.name + "': a partial sweep has no caps");
+                }
             }
             c.material = materialRef(jc.at("material").get<std::string>());
             c.backMaterial = jc.contains("back_material") ? materialRef(jc["back_material"].get<std::string>()) : -1;
@@ -819,6 +858,22 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                 // As the GPU sees them (GpuSatLobe::stowPack, the mesh's component buffer): whole 1/255 steps.
                 c.stowP0 = std::round(c.stowP0 * 255.0f) / 255.0f;
                 c.stowP1 = std::max(std::round(c.stowP1 * 255.0f) / 255.0f, c.stowP0 + 1.0f / 255.0f);
+            }
+            if (jc.contains("fold"))
+            {
+                // Folded for launch (2026-10-20): turned about a hinge line after the stow scaling (rest body frame).
+                const nlohmann::json &jf = jc["fold"];
+                glm::vec3 ax = jsonVec3(jf, "axis", glm::vec3(0.0f));
+                if (glm::length(ax) < 1e-6f)
+                    throw std::runtime_error("component '" + c.name + "': fold needs an axis");
+                c.foldAxis = glm::normalize(ax);
+                c.foldPoint = jsonVec3(jf, "point", glm::vec3(0.0f));
+                c.foldAngle = glm::radians(jf.value("angle_deg", 0.0f));
+                if (jf.contains("phase"))
+                {
+                    c.foldP0 = std::clamp(jf["phase"].at(0).get<float>(), 0.0f, 1.0f);
+                    c.foldP1 = std::clamp(jf["phase"].at(1).get<float>(), c.foldP0 + 1e-3f, 1.0f);
+                }
             }
             out.components.push_back(std::move(c));
         }
@@ -1391,6 +1446,13 @@ double satLobeStowFactor(uint32_t stowPack, double P)
     const double k = (double)(stowPack & 0xFFFFu) / 65535.0;
     const double p0 = (double)((stowPack >> 16) & 0xFFu) / 255.0, p1 = (double)(stowPack >> 24) / 255.0;
     return 1.0 - k * (1.0 - stowSmooth(p0, p1, P));
+}
+
+double satComponentFoldAngle(const SatComponent &c, double P)
+{
+    if (c.foldAngle == 0.0f || P >= 1.0)
+        return 0.0;
+    return (double)c.foldAngle * (1.0 - stowSmooth(c.foldP0, c.foldP1, P));
 }
 
 double satComponentStowScale(const SatComponent &c, double P)

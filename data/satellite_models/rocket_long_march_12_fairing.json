@@ -1,0 +1,250 @@
+{
+ "name": "long_march_12 fairing",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), long_march_12: fairing. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Shown with grid fins and legs (the reusable variant). Lengths estimated. One fairing half (the other is it turned 180 deg about +Z), in the stage's frame: separated, it falls away tumbling.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "fairing_half_0",
+   "type": "profile",
+   "profile": [
+    [
+     -5.83,
+     1.9
+    ],
+    [
+     -5.17,
+     2.1
+    ]
+   ],
+   "position": [
+    -1.05,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_1",
+   "type": "profile",
+   "profile": [
+    [
+     -5.17,
+     2.1
+    ],
+    [
+     0.83,
+     2.1
+    ]
+   ],
+   "position": [
+    -1.05,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_2",
+   "type": "profile",
+   "profile": [
+    [
+     0.83,
+     2.1
+    ],
+    [
+     1.3407,
+     2.0814
+    ],
+    [
+     1.8376,
+     2.0271
+    ],
+    [
+     2.3199,
+     1.9397
+    ],
+    [
+     2.7863,
+     1.8212
+    ],
+    [
+     3.08,
+     1.7249
+    ]
+   ],
+   "position": [
+    -1.05,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_3",
+   "type": "profile",
+   "profile": [
+    [
+     3.08,
+     1.7249
+    ],
+    [
+     3.2354,
+     1.6739
+    ],
+    [
+     3.6657,
+     1.5001
+    ],
+    [
+     4.075,
+     1.3027
+    ],
+    [
+     4.4602,
+     1.0855
+    ],
+    [
+     4.8174,
+     0.8538
+    ],
+    [
+     5.1401,
+     0.6164
+    ],
+    [
+     5.4162,
+     0.3892
+    ],
+    [
+     5.605,
+     0.2194
+    ],
+    [
+     5.6381,
+     0.1831
+    ],
+    [
+     5.6648,
+     0.1418
+    ],
+    [
+     5.6844,
+     0.0967
+    ],
+    [
+     5.6964,
+     0.049
+    ],
+    [
+     5.7004,
+     0.0
+    ]
+   ],
+   "position": [
+    -1.05,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "fairing_half_0",
+    "fairing_half_1",
+    "fairing_half_2",
+    "fairing_half_3"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Wikipedia 'Long March 12': 3.8 m stages, 4 YF-100K, 2 YF-115 on the second stage, 4.2 m fairing"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

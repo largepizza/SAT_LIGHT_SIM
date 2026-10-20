@@ -36,6 +36,13 @@ void main()
         pos -= sa * ((1.0 - sc) * max(dot(sa, pos) - sroot, 0.0));
         nrm = normalize(nrm + sa * (dot(sa, nrm) * (1.0 / max(sc, 1e-3) - 1.0)));
     }
+    // Folded (launches, 2026-10-20): then turned about its hinge line.
+    vec3 fpnt, fax;
+    float fa = instFoldAngle(inst, comp, fpnt, fax);
+    if (fa != 0.0) {
+        pos = fpnt + rotateAbout(pos - fpnt, fax, fa);
+        nrm = rotateAbout(nrm, fax, fa);
+    }
     vWorld  = inst.origin.xyz + R * pos + inst.trans[g].xyz + instPivotOffset(inst, g, comp);
     vNormal = R * nrm;
     vUv     = inUv;

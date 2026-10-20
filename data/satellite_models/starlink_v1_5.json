@@ -110,7 +110,19 @@
             "position": [0, 0, -4.05],
             "rotation_deg": [0, 90, 0],
             "material": "solar_cell",
-            "back_material": "array_backsheet_gen1"
+            "back_material": "array_backsheet_gen1",
+            "stow": {
+                "axis": [0, 0, -1],
+                "root": 0.1,
+                "scale": 0.1625,
+                "phase": [0.4, 1.0]
+            },
+            "fold": {
+                "point": [0.315, 0, -0.435],
+                "axis": [0, 1, 0],
+                "angle_deg": 90.0,
+                "phase": [0.0, 0.4]
+            }
         }
     ],
     "sources": [
@@ -161,6 +173,18 @@
             "status": "calibrated",
             "value": "white translucent backsheet: albedo 0.5 (estimate), diffuse transmission 0.03 (fitted)",
             "source": "SpaceX (2022): the back of a solar array 'can be lit up by the sun like a lampshade' - fixed on the V2 with 'an opaque pigment for the solar backsheet', i.e. Gen1 backsheets were translucent. Transmission FITTED to Mallama & Respler 2022 (arXiv:2210.17268): Post-VisorSat phase function m1000 = 3.944 + 0.06893 phi - 0.0004089 phi^2 (Table 1), characteristic magnitude 5.5 at 72 deg and 550 km: the 100-160 deg bins (an opaque back left them 2.7-3.9 mag too faint; T = 0.03 puts them within 0.6); metric = the paper's phase function, 5000 samples seed 1 of a Mallama/Respler-sited 550 km campaign (2026-09-24). Held out: nothing (no published mean or per-pass data)."
+        },
+        {
+            "subjects": [
+                "deployment"
+            ],
+            "status": "estimate",
+            "value": "stowed: the 8.1 m array a 1.3 m accordion pack folded flat over the zenith face (the flat-pack Starlink stack, two side by side per layer on a Falcon 9); 10 min after release it swings up (2 min), then unfolds (3 min)",
+            "source": "SpaceX Starlink stack photographs (Falcon 9, 2019-2023); timings estimated."
         }
-    ]
+    ],
+    "deployment": {
+        "unfold_delay_s": 600,
+        "unfold_s": 300
+    }
 }

@@ -1,0 +1,308 @@
+{
+ "name": "soyuz2 fairing",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), soyuz2: fairing. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Shown as the crewed configuration. Core narrowing and booster taper from drawings; verniers omitted. One fairing half (the other is it turned 180 deg about +Z), in the stage's frame: separated, it falls away tumbling.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "gridfin",
+   "preset": "truss",
+   "coverage": 0.55,
+   "truss_pitch": 0.5,
+   "color": [
+    0.35,
+    0.35,
+    0.37
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "fairing_half_0",
+   "type": "profile",
+   "profile": [
+    [
+     -5.3165,
+     1.33
+    ],
+    [
+     -4.6835,
+     1.5
+    ]
+   ],
+   "position": [
+    -0.75,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_1",
+   "type": "profile",
+   "profile": [
+    [
+     -4.6835,
+     1.5
+    ],
+    [
+     1.3165,
+     1.5
+    ]
+   ],
+   "position": [
+    -0.75,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_2",
+   "type": "profile",
+   "profile": [
+    [
+     1.3165,
+     1.5
+    ],
+    [
+     1.6948,
+     1.4882
+    ],
+    [
+     2.0629,
+     1.454
+    ],
+    [
+     2.4201,
+     1.3991
+    ],
+    [
+     2.7655,
+     1.3249
+    ],
+    [
+     3.0983,
+     1.2332
+    ],
+    [
+     3.1165,
+     1.2271
+    ]
+   ],
+   "position": [
+    -0.75,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_3",
+   "type": "profile",
+   "profile": [
+    [
+     3.1165,
+     1.2271
+    ],
+    [
+     3.417,
+     1.1259
+    ],
+    [
+     3.7201,
+     1.005
+    ],
+    [
+     4.0055,
+     0.8734
+    ],
+    [
+     4.27,
+     0.7349
+    ],
+    [
+     4.509,
+     0.5949
+    ],
+    [
+     4.7136,
+     0.4631
+    ],
+    [
+     4.8534,
+     0.3661
+    ],
+    [
+     4.9179,
+     0.3101
+    ],
+    [
+     4.9706,
+     0.2429
+    ],
+    [
+     5.0097,
+     0.167
+    ],
+    [
+     5.0337,
+     0.085
+    ],
+    [
+     5.0418,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.75,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "shroud_grid_fin_4",
+   "type": "box",
+   "size": [
+    0.9,
+    1.1,
+    0.15
+   ],
+   "position": [
+    0.6289,
+    1.3789,
+    -0.5365
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    0.382683
+   ],
+   "material": "gridfin",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "shroud_grid_fin_5",
+   "type": "box",
+   "size": [
+    0.9,
+    1.1,
+    0.15
+   ],
+   "position": [
+    0.6289,
+    -1.3789,
+    -0.5365
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    -0.382683
+   ],
+   "material": "gridfin",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "fairing_half_0",
+    "fairing_half_1",
+    "fairing_half_2",
+    "fairing_half_3"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Wikipedia 'Soyuz-2': core (Block A) 2.95 m x 27.1 m, four tapered boosters 2.68 m x 19.6 m, Block I 2.66 m x 6.7 m on an open truss, 46 m with escape tower; RD-107A / RD-108A four chambers each"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey",
+    "gridfin"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail); gridfin: titanium / steel grid fins: an open lattice",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

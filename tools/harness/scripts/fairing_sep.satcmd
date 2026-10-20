@@ -1,0 +1,145 @@
+# Payload fairings and stacks (2026-10-20, issues 20261019_225243 / _223922). `launch fairing` / `launch deploy`
+# select the stage they frame once it is listed, so `follow` rides it.
+#   python tools/harness/run.py tools/harness/scripts/fairing_sep.satcmd
+# 1. A Guowang launch: the fairing halves separating at ~110 km and falling away tumbling, the stage flying on bare
+#    with its ten satellites on the dispenser column (two tiers of five).
+launch fairing filter=Guowang
+wait 5
+follow offset=-25,30,10
+follow aimat=12,0,0
+time pause
+wait settle
+capture gw_fairing_before
+state gw_fairing_before
+time add 10.5
+wait 3
+follow offset=-25,30,10
+follow aimat=12,0,0
+wait settle
+capture gw_fairing_sep_00
+time add 2
+wait 3
+follow aimat=6,0,0
+wait settle
+capture gw_fairing_sep_02
+# ride with a half as it falls away (the stage, still burning, pulls ahead)
+launch select kind=fairing nearest=1
+follow offset=12,14,5
+follow aim=sat
+wait settle
+capture gw_half_02
+time add 8
+wait 3
+follow offset=14,16,6
+follow aim=sat
+wait settle
+capture gw_half_10
+time add 30
+wait 3
+follow offset=16,18,7
+follow aim=sat
+wait settle
+capture gw_half_40
+time add 120
+wait 3
+follow offset=20,22,8
+follow aim=sat
+wait settle
+capture gw_half_160
+state gw_half_160
+# 2. The stack on the bare stage, then released one every 8 s, each leaving its column radially
+launch deploy filter=Guowang
+wait 5
+follow offset=3,13,7
+follow aimat=3,0,0
+time pause
+wait settle
+capture gw_stack
+state gw_stack
+time add 12
+wait 3
+follow offset=3,13,7
+follow aimat=3,0,0
+wait settle
+capture gw_release_02
+time add 30
+wait 3
+follow offset=4,24,12
+follow aimat=14,0,0
+wait settle
+capture gw_release_32
+time add 60
+wait 3
+follow offset=-10,45,25
+follow aimat=14,0,0
+wait settle
+capture gw_release_92
+state gw_release_92
+# 3. Starmind out of Starship's PEZ door: eight to a ship (a folded Starmind is 6.2 x 5.0 x 2.1 m), one every 45 s,
+#    flat across the ship, leaving through the door on its leeward (zenith) side.
+launch deploy filter=Starmind
+wait 5
+follow offset=31,40,18
+follow aimat=31,0,4
+time pause
+wait settle
+capture sm_door_0
+time add 14
+wait 3
+follow offset=31,40,18
+follow aimat=31,0,4
+wait settle
+capture sm_door_04
+time add 8
+wait 3
+follow aimat=31,0,8
+wait settle
+capture sm_door_12
+time add 30
+wait 3
+follow offset=20,60,40
+follow aimat=31,0,20
+wait settle
+capture sm_door_42
+time add 200
+wait 3
+follow offset=-150,200,150
+follow aimat=31,0,60
+wait settle
+capture sm_door_242
+state sm_door_242
+# 4. Starlink V1.5 on Falcon 9: the flat-pack stack (two side by side, 24 high) on the bare stage, released top first
+launch deploy filter=Gen1
+wait 5
+follow offset=10,11,5
+follow aimat=17,0,0
+time pause
+wait settle
+capture sl_stack
+state sl_stack
+time add 16
+wait 3
+follow offset=10,11,5
+follow aimat=17,0,0
+wait settle
+capture sl_release_06
+time add 60
+wait 3
+follow offset=10,30,15
+follow aimat=25,0,0
+wait settle
+capture sl_release_66
+# 5. Qianfan on its flat stack (two side by side, nine high) on a Zhuque-3
+launch deploy filter=Qianfan
+wait 5
+follow offset=12,11,5
+follow aimat=17,0,0
+time pause
+wait settle
+capture qf_stack
+time add 20
+wait 3
+follow offset=12,13,6
+follow aimat=19,0,0
+wait settle
+capture qf_release_10

@@ -106,6 +106,12 @@ bool Catalog::load(const std::string &path, std::string &err)
             vh.ventChance = v.value("vent_chance", vh.ventChance);
             vh.mountM = std::max(v.value("mount_m", vh.mountM), 0.0);
             vh.catchM = std::max(v.value("catch_m", vh.catchM), 0.0);
+            vh.fairingSepKm = std::max(v.value("fairing_sep_km", vh.fairingSepKm), 0.0);
+            vh.payloadBaseM = v.value("payload_base_m", vh.payloadBaseM);
+            if (v.contains("fairing_center_m"))
+                vh.fairingCenter = glm::dvec3(v["fairing_center_m"][0].get<double>(), v["fairing_center_m"][1].get<double>(),
+                                              v["fairing_center_m"][2].get<double>());
+            vh.doorM = v.value("door_m", vh.doorM);
             vehicles.push_back(vh);
         }
         auto vehIdx = [&](const std::string &id) {
@@ -150,6 +156,26 @@ bool Catalog::load(const std::string &path, std::string &err)
                 pg.crew = true;
                 pg.spacecraft = cr.value("spacecraft", std::string("crew capsule"));
                 pg.people = cr.value("people", 3);
+            }
+            if (p.contains("stack"))
+            {
+                const auto &js = p["stack"];
+                Stack &st = pg.stack;
+                const std::string lay = js.value("layout", std::string("flat"));
+                st.layout = lay == "pez" ? Stack::Pez : lay == "column" ? Stack::Column : Stack::Flat;
+                st.perTier = std::clamp(js.value("per_tier", 1), 1, 12);
+                st.sideX = js.value("side_axis", std::string("y")) == "x";
+                st.pitchM = std::max(js.value("pitch_m", st.pitchM), 0.05);
+                st.offsetM = js.value("offset_m", st.offsetM);
+                st.baseM = js.value("base_m", st.baseM);
+                st.columnRadiusM = js.value("column_radius_m", st.columnRadiusM);
+                if (js.contains("member_center"))
+                    st.center = glm::dvec3(js["member_center"][0].get<double>(), js["member_center"][1].get<double>(),
+                                           js["member_center"][2].get<double>());
+                st.dispenser = js.value("dispenser", std::string());
+                st.intervalS = js.value("deploy_interval_s", st.intervalS);
+                st.sepMps = js.value("sep_speed_mps", st.sepMps);
+                st.spreadMps = js.value("sep_spread_mps", st.spreadMps);
             }
             programs.push_back(pg);
         }

@@ -1,0 +1,222 @@
+{
+ "name": "vulcan fairing",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), vulcan: fairing. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Shown as VC2 (two solids). Interstage adapter length estimated. One fairing half (the other is it turned 180 deg about +Z), in the stage's frame: separated, it falls away tumbling.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "fairing_half_0",
+   "type": "profile",
+   "profile": [
+    [
+     -7.74,
+     2.7
+    ],
+    [
+     1.74,
+     2.7
+    ]
+   ],
+   "position": [
+    -1.35,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_1",
+   "type": "profile",
+   "profile": [
+    [
+     1.74,
+     2.7
+    ],
+    [
+     2.3577,
+     2.6762
+    ],
+    [
+     2.9588,
+     2.6068
+    ],
+    [
+     3.5421,
+     2.4948
+    ],
+    [
+     4.1063,
+     2.3428
+    ],
+    [
+     4.44,
+     2.2264
+    ]
+   ],
+   "position": [
+    -1.35,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_2",
+   "type": "profile",
+   "profile": [
+    [
+     4.44,
+     2.2264
+    ],
+    [
+     4.6496,
+     2.1533
+    ],
+    [
+     5.1701,
+     1.9291
+    ],
+    [
+     5.6651,
+     1.6734
+    ],
+    [
+     6.1311,
+     1.3904
+    ],
+    [
+     6.5632,
+     1.0868
+    ],
+    [
+     6.9535,
+     0.7732
+    ],
+    [
+     7.2874,
+     0.4706
+    ],
+    [
+     7.5158,
+     0.2427
+    ],
+    [
+     7.5499,
+     0.2014
+    ],
+    [
+     7.5773,
+     0.1553
+    ],
+    [
+     7.5973,
+     0.1056
+    ],
+    [
+     7.6096,
+     0.0534
+    ],
+    [
+     7.6137,
+     0.0
+    ]
+   ],
+   "position": [
+    -1.35,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "fairing_half_0",
+    "fairing_half_1",
+    "fairing_half_2"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "ULA Vulcan Centaur page / User's Guide (2023): 5.4 m booster 33.3 m, Centaur V 11.7 m, GEM 63XL 1.6 m x 22 m, 5.4 m fairing 15.5 m (standard) | Wikipedia 'Vulcan Centaur': 2 BE-4, 2 RL10C-X, 0/2/4/6 GEM 63XL"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

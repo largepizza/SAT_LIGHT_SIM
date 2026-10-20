@@ -356,7 +356,10 @@ void SatMeshRenderer::setTypeModels(VulkanContext &ctx, const std::vector<TypeMo
             // Stowed for launch (instStowScale): the axis x (1 - stowScale), the root; the unfolding window.
             comps.push_back(glm::vec4(c.stowScale < 1.0f ? c.stowAxis * (1.0f - c.stowScale) : glm::vec3(0.0f),
                                       c.stowRoot));
-            comps.push_back(glm::vec4(c.stowP0, c.stowP1, 0.0f, 0.0f));
+            comps.push_back(glm::vec4(c.stowP0, c.stowP1, c.foldP0, c.foldP1));
+            // Folded for launch (instFoldAngle): the hinge point and angle, the axis.
+            comps.push_back(glm::vec4(c.foldPoint, c.foldAngle));
+            comps.push_back(glm::vec4(c.foldAxis, 0.0f));
         }
         out.firstOccluder = (uint32_t)occs.size();
         if (tm.occlusion)

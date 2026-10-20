@@ -2721,7 +2721,7 @@ private:
     {
         uint64_t key = 0;   // stable over the object's life
         uint8_t kind = 0;   // 1 rocket stage, 2 ship entry, 3 retiree re-entry, 4 upper-stage re-entry, 5 Kessler
-                            // re-entry, 6 small fragment
+                            // re-entry, 6 small fragment, 7 a payload fairing half (stage = the half, 0 / 1)
         uint8_t stage = 0;  // rockets: 0 booster, 1 upper; burn in burn
         uint8_t burn = 0;
         uint64_t a = 0;     // the batch key (1, 2, 4), the satellite (3, 5)
@@ -2731,10 +2731,16 @@ private:
         int type = -1;                           // rockets: its model type (rocketTypes), -1 = none
         glm::vec3 dirEnu{0.0f, 0.0f, 1.0f};
         float flare = 0.0f;
+        // A full attitude (2026-10-20, a tumbling fairing half): body -> ECI at attT0, turning at attOmega (ECI).
+        bool hasAtt = false;
+        glm::dquat attQ{1.0, 0.0, 0.0, 0.0};
+        glm::dvec3 attOmega{0.0};
+        double attT0 = 0.0;
     };
     std::vector<SelTransient> selTransients; // this frame's
     SelTransient selTransientCur;            // the selected one, as last seen
     uint64_t selTransientKey = 0;
+    uint64_t launchWantSelKey = 0; // a harness jump's stage, selected once the list has it (selTransientUpdate)
     double selTransientSeenT = 0.0;
     double selTransientsT = 0.0;             // the sim time selTransients was made at
     uint32_t transientSatIdx() const { return activeSatCount + kLaunchCap - 1; }
@@ -2774,12 +2780,14 @@ private:
     std::string transientLabel() const;
     std::string transientLabelOf(const SelTransient &s) const;
     double transientGraceS() const; // how long a listed transient may be missing before it counts as gone
-    bool selectTransient(int kind, std::string &msg, int stage = -1); // harness: the brightest of a kind (0 = any)
+    bool selectTransient(int kind, std::string &msg, int stage = -1, bool nearest = false); // harness: the brightest (or
+                                                                                            // nearest) of a kind (0 = any)
     // Rockets near enough to draw as meshes: up to kRocketMeshSlots of the reserved chunk's slots, bound to the
     // drawn rockets' keys (stable while they stay meshed). Returns their satellite indices (recordMeshScene).
     static constexpr int kRocketMeshSlots = 6; // the reserved chunk: 6 rocket meshes, the followed transient, the selection
     uint64_t rocketMeshKey[kRocketMeshSlots] = {};
     std::vector<int> launchMeshJobs(double pixAngle, const glm::dvec3 &obsEci);
+    void launchStackJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // payload stacks
     double rocketMeshPx(const SelTransient &s, double pixAngle, const glm::dvec3 &obsEci) const;
 
     // ── Launches (SatelliteSimLaunches.cpp, 2026-10-18; .plans/LAUNCHES_PLAN.md) ─────────────────────
@@ -2805,6 +2813,9 @@ private:
     // lights at night. Independent of launchesEnabled (the pads are there whether or not anything flies).
     bool launchPadGraphics = true;
     static constexpr int kPadMeshSlots = 16; // two reserved chunks below the rockets' (launchInitBlock)
+    // Payload stacks on their upper stage (2026-10-20): satellites not yet released and the dispenser, drawn as meshes
+    // in six reserved chunks below the pads' (launchMeshJobs). Not selectable.
+    static constexpr int kStackMeshSlots = 48;
     void launchFillPadParams(GpuCloudParams &cp); // the UBO's pad block (nearest kMaxPadsGpu)
     void launchFillPadLights(); // their floodlights / beacons as point sprites (kFireBuf)
     nlohmann::json launchPadsJson() const;

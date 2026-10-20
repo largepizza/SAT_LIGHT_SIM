@@ -1,0 +1,314 @@
+{
+ "name": "vulcan upper_bare",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), vulcan: upper_bare. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Shown as VC2 (two solids). Interstage adapter length estimated. Shown after fairing separation.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "upper_nozzle_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.55
+    ],
+    [
+     0.2607,
+     0.4562
+    ],
+    [
+     0.5213,
+     0.3747
+    ],
+    [
+     0.782,
+     0.3063
+    ],
+    [
+     1.0427,
+     0.2524
+    ],
+    [
+     1.3033,
+     0.2147
+    ],
+    [
+     1.564,
+     0.198
+    ],
+    [
+     1.748,
+     0.3069
+    ],
+    [
+     2.1528,
+     0.3069
+    ],
+    [
+     2.3,
+     0.1841
+    ],
+    [
+     2.35,
+     0.0
+    ]
+   ],
+   "position": [
+    0.9,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_nozzle_1",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.55
+    ],
+    [
+     0.2607,
+     0.4562
+    ],
+    [
+     0.5213,
+     0.3747
+    ],
+    [
+     0.782,
+     0.3063
+    ],
+    [
+     1.0427,
+     0.2524
+    ],
+    [
+     1.3033,
+     0.2147
+    ],
+    [
+     1.564,
+     0.198
+    ],
+    [
+     1.748,
+     0.3069
+    ],
+    [
+     2.1528,
+     0.3069
+    ],
+    [
+     2.3,
+     0.1841
+    ],
+    [
+     2.35,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.9,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_2",
+   "type": "profile",
+   "profile": [
+    [
+     1.8,
+     2.7
+    ],
+    [
+     13.5,
+     2.7
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_3",
+   "type": "profile",
+   "profile": [
+    [
+     1.75,
+     2.646
+    ],
+    [
+     1.79,
+     2.646
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "payload_adapter_4",
+   "type": "profile",
+   "profile": [
+    [
+     13.51,
+     2.619
+    ],
+    [
+     14.05,
+     0.8
+    ],
+    [
+     14.1,
+     0.8
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "separation_ring_5",
+   "type": "profile",
+   "profile": [
+    [
+     14.0,
+     0.83
+    ],
+    [
+     14.12,
+     0.83
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "upper_tank_2"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "ULA Vulcan Centaur page / User's Guide (2023): 5.4 m booster 33.3 m, Centaur V 11.7 m, GEM 63XL 1.6 m x 22 m, 5.4 m fairing 15.5 m (standard) | Wikipedia 'Vulcan Centaur': 2 BE-4, 2 RL10C-X, 0/2/4/6 GEM 63XL"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey",
+    "nozzle",
+    "soot"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

@@ -1,0 +1,633 @@
+{
+ "name": "dispenser guowang",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), dispenser: guowang. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. A central column the satellites are mounted around, 5 to a tier (tier rings, separation fittings).",
+ "materials": [
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "column_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.953
+    ],
+    [
+     0.15,
+     0.803
+    ],
+    [
+     7.22,
+     0.803
+    ],
+    [
+     7.27,
+     0.6424
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "grey",
+   "group": "body"
+  },
+  {
+   "name": "tier_ring_1",
+   "type": "profile",
+   "profile": [
+    [
+     0.75,
+     0.863
+    ],
+    [
+     0.85,
+     0.863
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "tier_ring_2",
+   "type": "profile",
+   "profile": [
+    [
+     3.96,
+     0.863
+    ],
+    [
+     4.06,
+     0.863
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "tier_ring_3",
+   "type": "profile",
+   "profile": [
+    [
+     7.17,
+     0.863
+    ],
+    [
+     7.27,
+     0.863
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_4",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    0.863,
+    0.0,
+    1.6025
+   ],
+   "rotation_quat": [
+    1.0,
+    0.0,
+    -0.0,
+    0.0
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_5",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    0.863,
+    0.0,
+    3.2075
+   ],
+   "rotation_quat": [
+    1.0,
+    0.0,
+    -0.0,
+    0.0
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_6",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    0.2667,
+    0.8208,
+    1.6025
+   ],
+   "rotation_quat": [
+    0.809017,
+    0.0,
+    -0.0,
+    0.587785
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_7",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    0.2667,
+    0.8208,
+    3.2075
+   ],
+   "rotation_quat": [
+    0.809017,
+    0.0,
+    -0.0,
+    0.587785
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_8",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    -0.6982,
+    0.5073,
+    1.6025
+   ],
+   "rotation_quat": [
+    0.309017,
+    0.0,
+    0.0,
+    0.951057
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_9",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    -0.6982,
+    0.5073,
+    3.2075
+   ],
+   "rotation_quat": [
+    0.309017,
+    0.0,
+    0.0,
+    0.951057
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_10",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    -0.6982,
+    -0.5073,
+    1.6025
+   ],
+   "rotation_quat": [
+    -0.309017,
+    0.0,
+    0.0,
+    0.951057
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_11",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    -0.6982,
+    -0.5073,
+    3.2075
+   ],
+   "rotation_quat": [
+    -0.309017,
+    0.0,
+    0.0,
+    0.951057
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_12",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    0.2667,
+    -0.8208,
+    1.6025
+   ],
+   "rotation_quat": [
+    0.809017,
+    0.0,
+    -0.0,
+    -0.587785
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_13",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    0.2667,
+    -0.8208,
+    3.2075
+   ],
+   "rotation_quat": [
+    0.809017,
+    0.0,
+    -0.0,
+    -0.587785
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_14",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    0.6982,
+    0.5073,
+    4.8125
+   ],
+   "rotation_quat": [
+    0.951057,
+    0.0,
+    -0.0,
+    0.309017
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_15",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    0.6982,
+    0.5073,
+    6.4175
+   ],
+   "rotation_quat": [
+    0.951057,
+    0.0,
+    -0.0,
+    0.309017
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_16",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    -0.2667,
+    0.8208,
+    4.8125
+   ],
+   "rotation_quat": [
+    0.587785,
+    0.0,
+    0.0,
+    0.809017
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_17",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    -0.2667,
+    0.8208,
+    6.4175
+   ],
+   "rotation_quat": [
+    0.587785,
+    0.0,
+    0.0,
+    0.809017
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_18",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    -0.863,
+    0.0,
+    4.8125
+   ],
+   "rotation_quat": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_19",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    -0.863,
+    0.0,
+    6.4175
+   ],
+   "rotation_quat": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_20",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    -0.2667,
+    -0.8208,
+    4.8125
+   ],
+   "rotation_quat": [
+    0.587785,
+    0.0,
+    0.0,
+    -0.809017
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_21",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    -0.2667,
+    -0.8208,
+    6.4175
+   ],
+   "rotation_quat": [
+    0.587785,
+    0.0,
+    0.0,
+    -0.809017
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_22",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    0.6982,
+    -0.5073,
+    4.8125
+   ],
+   "rotation_quat": [
+    0.951057,
+    0.0,
+    -0.0,
+    -0.309017
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "mount_fitting_23",
+   "type": "box",
+   "size": [
+    0.12,
+    0.25,
+    0.12
+   ],
+   "position": [
+    0.6982,
+    -0.5073,
+    6.4175
+   ],
+   "rotation_quat": [
+    0.951057,
+    0.0,
+    -0.0,
+    -0.309017
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "column_0"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Generated from data/launches.json's stack layout."
+  },
+  {
+   "subjects": [
+    "black",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

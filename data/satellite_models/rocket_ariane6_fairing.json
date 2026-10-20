@@ -1,0 +1,222 @@
+{
+ "name": "ariane6 fairing",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), ariane6: fairing. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Shown as A64. Core and upper-stage split estimated. One fairing half (the other is it turned 180 deg about +Z), in the stage's frame: separated, it falls away tumbling.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "fairing_half_0",
+   "type": "profile",
+   "profile": [
+    [
+     -9.99,
+     2.7
+    ],
+    [
+     2.99,
+     2.7
+    ]
+   ],
+   "position": [
+    -1.35,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_1",
+   "type": "profile",
+   "profile": [
+    [
+     2.99,
+     2.7
+    ],
+    [
+     3.7006,
+     2.6758
+    ],
+    [
+     4.392,
+     2.6053
+    ],
+    [
+     5.063,
+     2.4918
+    ],
+    [
+     5.712,
+     2.3383
+    ],
+    [
+     6.14,
+     2.208
+    ]
+   ],
+   "position": [
+    -1.35,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_2",
+   "type": "profile",
+   "profile": [
+    [
+     6.14,
+     2.208
+    ],
+    [
+     6.337,
+     2.148
+    ],
+    [
+     6.9357,
+     1.9244
+    ],
+    [
+     7.5051,
+     1.6714
+    ],
+    [
+     8.0412,
+     1.3944
+    ],
+    [
+     8.5382,
+     1.1008
+    ],
+    [
+     8.9872,
+     0.8021
+    ],
+    [
+     9.3713,
+     0.5185
+    ],
+    [
+     9.6341,
+     0.3082
+    ],
+    [
+     9.6841,
+     0.2588
+    ],
+    [
+     9.7247,
+     0.2015
+    ],
+    [
+     9.7546,
+     0.1379
+    ],
+    [
+     9.7729,
+     0.07
+    ],
+    [
+     9.7791,
+     0.0
+    ]
+   ],
+   "position": [
+    -1.35,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "fairing_half_0",
+    "fairing_half_1",
+    "fairing_half_2"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Arianespace Ariane 6 User's Manual (2021): 5.4 m core, P120C boosters 3.4 m x 13.5 m, long fairing 20 m, A64 62 m | Wikipedia 'Ariane 6': Vulcain 2.1, Vinci"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

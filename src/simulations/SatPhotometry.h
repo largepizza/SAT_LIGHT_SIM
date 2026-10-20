@@ -142,7 +142,40 @@ struct SatOrbitElems
     glm::dvec3 fixPos{0.0}, fixVel{0.0}, fixAcc{0.0};
     glm::dvec3 fixAxis{0.0}; // nonzero: the body axis the attitude's "velocity" target takes (a rocket's thrust axis)
     double fixT0 = 0.0;
+    // Attitude override (launches, 2026-10-20; satAttOverride): the root group's body -> ECI rotation is attQ at attT0,
+    // turning at attOmega (ECI, rad/s) — a satellite stowed in its dispenser, then free after its release with a
+    // little tip-off rate — and, from attSlewT0 over attSlewDur, eased into its attitude law (the satellite's own
+    // control acquiring nadir). attSlewDur 0 = held for good (a rocket stage, a fairing half). CPU only: the GPU's
+    // point of a just-released satellite keeps the law's attitude.
+    bool attFix = false;
+    glm::dquat attQ{1.0, 0.0, 0.0, 0.0};
+    glm::dvec3 attOmega{0.0};
+    double attT0 = 0.0, attSlewT0 = 0.0, attSlewDur = 0.0;
 };
+
+// The attitude override at t (SatOrbitElems::attFix): the weight of the fixed rotation (0 = the law alone) and that
+// rotation, body -> ECI. The callers put it in AttGeometry::fixW / fixR in their own world frame.
+inline double satAttOverride(const SatOrbitElems &e, double tJ2000, glm::dmat3 &R)
+{
+    if (!e.attFix)
+        return 0.0;
+    double w = 1.0;
+    if (e.attSlewDur > 0.0)
+    {
+        const double x = (tJ2000 - e.attSlewT0) / e.attSlewDur;
+        const double c = x < 0.0 ? 0.0 : x > 1.0 ? 1.0 : x;
+        w = 1.0 - c * c * (3.0 - 2.0 * c);
+        if (w <= 0.0)
+            return 0.0;
+    }
+    const glm::dvec3 rv = e.attOmega * (tJ2000 - e.attT0);
+    const double ang = glm::length(rv);
+    glm::dquat q = e.attQ;
+    if (ang > 1e-12)
+        q = glm::angleAxis(ang, rv / ang) * q;
+    R = glm::mat3_cast(glm::normalize(q));
+    return w;
+}
 
 struct SatOrbitState
 {

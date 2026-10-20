@@ -407,12 +407,12 @@
    "size": [
     0.3,
     0.6,
-    30.0
+    20.0
    ],
    "position": [
     0.0,
     4.65,
-    24.0
+    19.0
    ],
    "rotation_quat": [
     0.707107,
@@ -425,7 +425,103 @@
    "render_only": true
   },
   {
-   "name": "engines_11",
+   "name": "raceway_11",
+   "type": "box",
+   "size": [
+    0.3,
+    0.6,
+    5.6
+   ],
+   "position": [
+    0.0,
+    4.65,
+    35.6
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    -0.0,
+    0.707107
+   ],
+   "material": "steel",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "payload_door_12",
+   "type": "profile",
+   "profile": [
+    [
+     29.8,
+     4.525
+    ],
+    [
+     32.4,
+     4.525
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "soot",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    43.0,
+    137.0
+   ]
+  },
+  {
+   "name": "door_frame_13",
+   "type": "box",
+   "size": [
+    0.08,
+    7.0,
+    0.1
+   ],
+   "position": [
+    0.0,
+    4.54,
+    32.45
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    -0.0,
+    0.707107
+   ],
+   "material": "steel",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "door_frame_14",
+   "type": "box",
+   "size": [
+    0.08,
+    7.0,
+    0.1
+   ],
+   "position": [
+    0.0,
+    4.54,
+    29.75
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    -0.0,
+    0.707107
+   ],
+   "material": "steel",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "engines_15",
    "type": "profile",
    "profile": [
     [
@@ -485,7 +581,7 @@
    "render_only": true
   },
   {
-   "name": "engines_12",
+   "name": "engines_16",
    "type": "profile",
    "profile": [
     [
@@ -545,7 +641,7 @@
    "render_only": true
   },
   {
-   "name": "engines_13",
+   "name": "engines_17",
    "type": "profile",
    "profile": [
     [
@@ -605,7 +701,7 @@
    "render_only": true
   },
   {
-   "name": "engines_rvac_14",
+   "name": "engines_rvac_18",
    "type": "profile",
    "profile": [
     [
@@ -665,7 +761,7 @@
    "render_only": true
   },
   {
-   "name": "engines_rvac_15",
+   "name": "engines_rvac_19",
    "type": "profile",
    "profile": [
     [
@@ -725,7 +821,7 @@
    "render_only": true
   },
   {
-   "name": "engines_rvac_16",
+   "name": "engines_rvac_20",
    "type": "profile",
    "profile": [
     [

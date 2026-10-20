@@ -205,6 +205,8 @@ bool rayBlocked(MeshInstance inst, vec3 p, vec3 dir)
         vec3 sa;
         float sroot;
         if (instStowScale(inst, i, sa, sroot) < 1.0) continue; // stowed: not where its occluder says (launches)
+        vec3 fpnt, fax;
+        if (instFoldAngle(inst, i, fpnt, fax) != 0.0) continue; // folded: likewise
         mat3 R = instGroupRot(inst, O.group);
         vec3 pr = transpose(R) * (p - inst.origin.xyz - inst.trans[O.group].xyz -
                                   instPivotOffset(inst, O.group, i)) - O.center; // occluder i = component i

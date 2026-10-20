@@ -1,6 +1,6 @@
 {
  "name": "long_march_8a booster",
- "note": "Launch vehicle render model (tools/make_rocket_models.py), long_march_8a: booster. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Booster nose and fairing lengths estimated from photographs.",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), long_march_8a: booster. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Booster nose and fairing lengths estimated from photographs (the fairing long enough for Guowang's two tiers of five, 2026-10-20).",
  "materials": [
   {
    "name": "white",

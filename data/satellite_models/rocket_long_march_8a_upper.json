@@ -1,6 +1,6 @@
 {
  "name": "long_march_8a upper",
- "note": "Launch vehicle render model (tools/make_rocket_models.py), long_march_8a: upper. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Booster nose and fairing lengths estimated from photographs.",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), long_march_8a: upper. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Booster nose and fairing lengths estimated from photographs (the fairing long enough for Guowang's two tiers of five, 2026-10-20).",
  "materials": [
   {
    "name": "white",
@@ -253,7 +253,7 @@
      2.6
     ],
     [
-     18.6325,
+     21.1325,
      2.6
     ]
    ],
@@ -271,28 +271,28 @@
    "type": "profile",
    "profile": [
     [
-     18.6325,
+     21.1325,
      2.6
     ],
     [
-     19.1531,
-     2.5778
+     21.7026,
+     2.5771
     ],
     [
-     19.6597,
-     2.513
+     22.2574,
+     2.5105
     ],
     [
-     20.1513,
-     2.4081
+     22.7957,
+     2.4029
     ],
     [
-     20.6268,
-     2.2652
+     23.3164,
+     2.2567
     ],
     [
-     20.8825,
-     2.1652
+     23.6075,
+     2.1506
     ]
    ],
    "position": [
@@ -309,59 +309,59 @@
    "type": "profile",
    "profile": [
     [
-     20.8825,
-     2.1652
+     23.6075,
+     2.1506
     ],
     [
-     21.0847,
-     2.0861
+     23.8178,
+     2.074
     ],
     [
-     21.5234,
-     1.8725
+     24.2982,
+     1.8572
     ],
     [
-     21.9406,
-     1.6266
+     24.755,
+     1.6092
     ],
     [
-     22.3333,
-     1.3511
+     25.1851,
+     1.3336
     ],
     [
-     22.6975,
-     1.0508
+     25.5838,
+     1.0362
     ],
     [
-     23.0264,
-     0.7347
+     25.944,
+     0.7272
     ],
     [
-     23.3079,
-     0.4223
+     26.2522,
+     0.4268
     ],
     [
-     23.5004,
-     0.1812
+     26.463,
+     0.1988
     ],
     [
-     23.5218,
-     0.1487
+     26.4894,
+     0.1643
     ],
     [
-     23.5388,
-     0.1138
+     26.5105,
+     0.1263
     ],
     [
-     23.5512,
-     0.0769
+     26.5258,
+     0.0857
     ],
     [
-     23.5587,
-     0.0388
+     26.5352,
+     0.0433
     ],
     [
-     23.5613,
+     26.5383,
      0.0
     ]
    ],

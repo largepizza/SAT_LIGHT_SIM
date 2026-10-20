@@ -1,0 +1,250 @@
+{
+ "name": "tianlong3 fairing",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), tianlong3: fairing. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Stage split, grid fins and legs (planned reuse) estimated. One fairing half (the other is it turned 180 deg about +Z), in the stage's frame: separated, it falls away tumbling.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "fairing_half_0",
+   "type": "profile",
+   "profile": [
+    [
+     -6.83,
+     1.9
+    ],
+    [
+     -6.17,
+     2.1
+    ]
+   ],
+   "position": [
+    -1.05,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_1",
+   "type": "profile",
+   "profile": [
+    [
+     -6.17,
+     2.1
+    ],
+    [
+     0.83,
+     2.1
+    ]
+   ],
+   "position": [
+    -1.05,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_2",
+   "type": "profile",
+   "profile": [
+    [
+     0.83,
+     2.1
+    ],
+    [
+     1.4378,
+     2.0808
+    ],
+    [
+     2.0293,
+     2.025
+    ],
+    [
+     2.6033,
+     1.9352
+    ],
+    [
+     3.1584,
+     1.814
+    ],
+    [
+     3.53,
+     1.7099
+    ]
+   ],
+   "position": [
+    -1.05,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_3",
+   "type": "profile",
+   "profile": [
+    [
+     3.53,
+     1.7099
+    ],
+    [
+     3.693,
+     1.6642
+    ],
+    [
+     4.2052,
+     1.4886
+    ],
+    [
+     4.6922,
+     1.2908
+    ],
+    [
+     5.1508,
+     1.0752
+    ],
+    [
+     5.5759,
+     0.8481
+    ],
+    [
+     5.96,
+     0.6183
+    ],
+    [
+     6.2886,
+     0.4017
+    ],
+    [
+     6.5133,
+     0.2421
+    ],
+    [
+     6.5554,
+     0.2047
+    ],
+    [
+     6.5897,
+     0.1602
+    ],
+    [
+     6.6152,
+     0.11
+    ],
+    [
+     6.6308,
+     0.056
+    ],
+    [
+     6.6361,
+     0.0
+    ]
+   ],
+   "position": [
+    -1.05,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "fairing_half_0",
+    "fairing_half_1",
+    "fairing_half_2",
+    "fairing_half_3"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Space Pioneer / Wikipedia 'Tianlong-3': 3.8 m across, ~71 m, 9 TH-12 engines, 4.2 m fairing"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

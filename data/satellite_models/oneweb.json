@@ -1,6 +1,6 @@
 {
     "name": "OneWeb Gen1 (Airbus Arrow)",
-    "note": "Parity model for the v1.1 'LEO Broadband' type as flown by OneWeb (1200 km, 87.9 deg). Body frame: +Z nadir, +X velocity. A 1 x 1.3 x 1 m bus in MLI, two dish antennas below it, two arrays on yokes (5 m span) tracking the Sun about the cross-track axis. Benchmark: mallama2020b_oneweb (7.18 at 1000 km).",
+    "note": "Parity model for the v1.1 'LEO Broadband' type as flown by OneWeb (1200 km, 87.9 deg). Body frame: +Z nadir, +X velocity. A 1 x 1.3 x 1 m bus in MLI, two dish antennas below it, two arrays on yokes (5 m span) tracking the Sun about the cross-track axis. Benchmark: mallama2020b_oneweb (7.18 at 1000 km). LAUNCH (2026-10-20): 36 on a dispenser column, six to a tier, each satellite's zenith face on the column; each array a two-fold pack turned flat against the bus's flank.",
     "materials": [
         {
             "name": "oneweb_mli",
@@ -52,7 +52,19 @@
             "position": [0, 1.85, 0],
             "rotation_deg": [180, 0, 0],
             "material": "solar_cell",
-            "back_material": "solar_array_back"
+            "back_material": "solar_array_back",
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 0.7,
+                "scale": 0.31,
+                "phase": [0.35, 1.0]
+            },
+            "fold": {
+                "point": [0, 0.7, -0.5],
+                "axis": [1, 0, 0],
+                "angle_deg": 90.0,
+                "phase": [0.0, 0.35]
+            }
         },
         {
             "name": "dish_left",
@@ -71,7 +83,19 @@
             "position": [0, -1.85, 0],
             "rotation_deg": [180, 0, 0],
             "material": "solar_cell",
-            "back_material": "solar_array_back"
+            "back_material": "solar_array_back",
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 0.7,
+                "scale": 0.31,
+                "phase": [0.35, 1.0]
+            },
+            "fold": {
+                "point": [0, -0.7, -0.5],
+                "axis": [1, 0, 0],
+                "angle_deg": -90.0,
+                "phase": [0.0, 0.35]
+            }
         },
         {
             "name": "dish_right",
@@ -119,6 +143,18 @@
             "status": "calibrated",
             "value": "dark MLI: albedo 0.1, F0 0.25, roughness 0.35",
             "source": "FITTED to mallama2020b_oneweb (mean m1000, 5000 samples seed 1, 2026-09-24): the gold-foil mli_foil preset (albedo 0.2, F0 0.6) read 6.49 vs 7.18; dark MLI reads 6.99. Reflectance unpublished; no other OneWeb data is held out."
+        },
+        {
+            "subjects": [
+                "deployment"
+            ],
+            "status": "estimate",
+            "value": "stowed: each 1.6 m array a 0.5 m pack folded against the bus flank; 4 min after release it swings out, then unfolds (7 min)",
+            "source": "OneWeb's dispenser (Airbus OneWeb Satellites; 34-36 per Soyuz / LVM3, radial mounting); the fold sequence is an estimate."
         }
-    ]
+    ],
+    "deployment": {
+        "unfold_delay_s": 240,
+        "unfold_s": 420
+    }
 }

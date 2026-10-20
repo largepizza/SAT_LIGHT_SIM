@@ -1,7 +1,10 @@
 {
     "name": "SpaceX Starmind AI1 orbital data center satellite",
     "note": "Parity model for the v1.1 'SpaceX AI Satellites' type (Starmind AI1: up to a million satellites in sun-synchronous X-ring and 30 deg shells, FCC Table 1 of 29 May 2026). Body frame: +Z nadir, +X (the bus's long axis) as close to the Sun as it can be, +Y along the span. A flat 10 x 3 x 0.6 m bus (it stacks PEZ-style) with its 3 x 0.6 m end to the Sun; two white radiators, 10 m long, standing up from its zenith face and hanging from its nadir face (20 m top to bottom), edge-on to the Sun; two wings of three 3.2 m strips spanning 70 m, each on one truss to a pivot at its root, turning about the span axis to face the Sun. 10 lobes: a million satellites fly it. Trusses, gimbals, spars, fittings and terminals are render-only detail.",
-    "deployment": {"unfold_delay_s": 600, "unfold_s": 600},
+    "deployment": {
+        "unfold_delay_s": 600,
+        "unfold_s": 600
+    },
     "materials": [
         {
             "name": "bus_metal",
@@ -72,37 +75,95 @@
     ],
     "components": [
         {
-            "name": "bus",
+            "name": "bus_posx",
             "type": "box",
             "group": "bus",
-            "size": [10.0, 3.0, 0.6],
+            "size": [4.99, 3.0, 0.6],
+            "position": [2.505, 0, 0],
             "material": "bus_metal"
         },
         {
+            "name": "bus_negx",
+            "type": "box",
+            "group": "bus",
+            "size": [4.99, 3.0, 0.6],
+            "position": [-2.505, 0, 0],
+            "material": "bus_metal",
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
+        },
+        {
             "name": "wing_pos_0",
-            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "plane",
             "group": "array",
             "size": [3.2333, 30.0],
             "position": [-3.3833, 20.0, 0],
             "rotation_deg": [180, 0, 0],
             "material": "solar_cell",
-            "back_material": "array_back"
+            "back_material": "array_back",
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
-            "name": "wing_pos_1",
-            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "name": "wing_pos_1a",
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "plane",
             "group": "array",
-            "size": [3.2333, 30.0],
-            "position": [0.0, 20.0, 0],
+            "size": [1.6166, 30.0],
+            "position": [0.8083, 20.0, 0],
             "rotation_deg": [180, 0, 0],
             "material": "solar_cell",
             "back_material": "array_back"
         },
         {
+            "name": "wing_pos_1b",
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
+            "type": "plane",
+            "group": "array",
+            "size": [1.6166, 30.0],
+            "position": [-0.8083, 20.0, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "array_back",
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
+        },
+        {
             "name": "wing_pos_2",
-            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "plane",
             "group": "array",
             "size": [3.2333, 30.0],
@@ -113,29 +174,72 @@
         },
         {
             "name": "wing_neg_0",
-            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "plane",
             "group": "array",
             "size": [3.2333, 30.0],
             "position": [-3.3833, -20.0, 0],
             "rotation_deg": [180, 0, 0],
             "material": "solar_cell",
-            "back_material": "array_back"
+            "back_material": "array_back",
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
-            "name": "wing_neg_1",
-            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "name": "wing_neg_1a",
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "plane",
             "group": "array",
-            "size": [3.2333, 30.0],
-            "position": [0.0, -20.0, 0],
+            "size": [1.6166, 30.0],
+            "position": [0.8083, -20.0, 0],
             "rotation_deg": [180, 0, 0],
             "material": "solar_cell",
             "back_material": "array_back"
         },
         {
+            "name": "wing_neg_1b",
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
+            "type": "plane",
+            "group": "array",
+            "size": [1.6166, 30.0],
+            "position": [-0.8083, -20.0, 0],
+            "rotation_deg": [180, 0, 0],
+            "material": "solar_cell",
+            "back_material": "array_back",
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
+        },
+        {
             "name": "wing_neg_2",
-            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "plane",
             "group": "array",
             "size": [3.2333, 30.0],
@@ -145,28 +249,85 @@
             "back_material": "array_back"
         },
         {
-            "name": "radiator_nadir",
-            "stow": {"axis": [0, 0, 1], "root": 0.35, "scale": 0.03, "phase": [0.0, 0.35]},
+            "name": "radiator_nadir_posx",
+            "stow": {
+                "axis": [0, 0, 1],
+                "root": 0.35,
+                "scale": 0.0125,
+                "phase": [0.2, 0.45]
+            },
             "type": "plane",
             "group": "bus",
-            "size": [10.0, 9.65],
-            "position": [0, 0, 5.175],
+            "size": [4.99, 9.65],
+            "position": [2.505, 0, 5.175],
             "rotation_deg": [-90, 0, 0],
             "material": "radiator_white"
         },
         {
-            "name": "radiator_zenith",
-            "stow": {"axis": [0, 0, -1], "root": 0.35, "scale": 0.03, "phase": [0.0, 0.35]},
+            "name": "radiator_nadir_negx",
+            "stow": {
+                "axis": [0, 0, 1],
+                "root": 0.35,
+                "scale": 0.0125,
+                "phase": [0.2, 0.45]
+            },
             "type": "plane",
             "group": "bus",
-            "size": [10.0, 9.65],
-            "position": [0, 0, -5.175],
+            "size": [4.99, 9.65],
+            "position": [-2.505, 0, 5.175],
+            "rotation_deg": [-90, 0, 0],
+            "material": "radiator_white",
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
+        },
+        {
+            "name": "radiator_zenith_posx",
+            "stow": {
+                "axis": [0, 0, -1],
+                "root": 0.35,
+                "scale": 0.0125,
+                "phase": [0.2, 0.45]
+            },
+            "type": "plane",
+            "group": "bus",
+            "size": [4.99, 9.65],
+            "position": [2.505, 0, -5.175],
             "rotation_deg": [-90, 0, 0],
             "material": "radiator_white"
+        },
+        {
+            "name": "radiator_zenith_negx",
+            "stow": {
+                "axis": [0, 0, -1],
+                "root": 0.35,
+                "scale": 0.0125,
+                "phase": [0.2, 0.45]
+            },
+            "type": "plane",
+            "group": "bus",
+            "size": [4.99, 9.65],
+            "position": [-2.505, 0, -5.175],
+            "rotation_deg": [-90, 0, 0],
+            "material": "radiator_white",
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
             "name": "truss_pos",
-            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "box",
             "group": "bus",
             "size": [0.9, 2.8, 0.9],
@@ -176,7 +337,12 @@
         },
         {
             "name": "gimbal_pos",
-            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "cylinder",
             "group": "bus",
             "radius": 0.55,
@@ -187,28 +353,85 @@
             "render_only": true
         },
         {
-            "name": "root_spar_pos",
-            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "name": "root_spar_pos_posx",
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "box",
             "group": "array",
-            "size": [10.0, 0.2, 0.3],
-            "position": [0, 4.9, 0.05],
+            "size": [4.99, 0.2, 0.3],
+            "position": [2.505, 4.9, 0.05],
             "material": "spar_metal",
             "render_only": true
         },
         {
-            "name": "tip_spar_pos",
-            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "name": "root_spar_pos_negx",
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "box",
             "group": "array",
-            "size": [10.0, 0.15, 0.2],
-            "position": [0, 35.075, 0.05],
+            "size": [4.99, 0.2, 0.3],
+            "position": [-2.505, 4.9, 0.05],
+            "material": "spar_metal",
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
+        },
+        {
+            "name": "tip_spar_pos_posx",
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
+            "type": "box",
+            "group": "array",
+            "size": [4.99, 0.15, 0.2],
+            "position": [2.505, 35.075, 0.05],
             "material": "spar_metal",
             "render_only": true
+        },
+        {
+            "name": "tip_spar_pos_negx",
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
+            "type": "box",
+            "group": "array",
+            "size": [4.99, 0.15, 0.2],
+            "position": [-2.505, 35.075, 0.05],
+            "material": "spar_metal",
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
             "name": "centre_spar_pos",
-            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "stow": {
+                "axis": [0, 1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "box",
             "group": "array",
             "size": [0.35, 30.0, 0.3],
@@ -218,7 +441,12 @@
         },
         {
             "name": "truss_neg",
-            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "box",
             "group": "bus",
             "size": [0.9, 2.8, 0.9],
@@ -228,7 +456,12 @@
         },
         {
             "name": "gimbal_neg",
-            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "cylinder",
             "group": "bus",
             "radius": 0.55,
@@ -239,28 +472,85 @@
             "render_only": true
         },
         {
-            "name": "root_spar_neg",
-            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "name": "root_spar_neg_posx",
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "box",
             "group": "array",
-            "size": [10.0, 0.2, 0.3],
-            "position": [0, -4.9, 0.05],
+            "size": [4.99, 0.2, 0.3],
+            "position": [2.505, -4.9, 0.05],
             "material": "spar_metal",
             "render_only": true
         },
         {
-            "name": "tip_spar_neg",
-            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "name": "root_spar_neg_negx",
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "box",
             "group": "array",
-            "size": [10.0, 0.15, 0.2],
-            "position": [0, -35.075, 0.05],
+            "size": [4.99, 0.2, 0.3],
+            "position": [-2.505, -4.9, 0.05],
+            "material": "spar_metal",
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
+        },
+        {
+            "name": "tip_spar_neg_posx",
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
+            "type": "box",
+            "group": "array",
+            "size": [4.99, 0.15, 0.2],
+            "position": [2.505, -35.075, 0.05],
             "material": "spar_metal",
             "render_only": true
+        },
+        {
+            "name": "tip_spar_neg_negx",
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
+            "type": "box",
+            "group": "array",
+            "size": [4.99, 0.15, 0.2],
+            "position": [-2.505, -35.075, 0.05],
+            "material": "spar_metal",
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
             "name": "centre_spar_neg",
-            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
+            "stow": {
+                "axis": [0, -1, 0],
+                "root": 1.5,
+                "scale": 0.03,
+                "phase": [0.4, 1.0]
+            },
             "type": "box",
             "group": "array",
             "size": [0.35, 30.0, 0.3],
@@ -269,15 +559,32 @@
             "render_only": true
         },
         {
-            "name": "radiator_manifold_nadir",
+            "name": "radiator_manifold_nadir_posx",
             "type": "cylinder",
             "group": "bus",
-            "radius": 0.14,
-            "height": 10.0,
-            "position": [0, 0, 0.44],
+            "radius": 0.1,
+            "height": 4.99,
+            "position": [2.505, 0, 0.4],
             "rotation_deg": [0, 90, 0],
             "material": "spar_metal",
             "render_only": true
+        },
+        {
+            "name": "radiator_manifold_nadir_negx",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.1,
+            "height": 4.99,
+            "position": [-2.505, 0, 0.4],
+            "rotation_deg": [0, 90, 0],
+            "material": "spar_metal",
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
             "name": "stack_fitting_nadir_0",
@@ -287,7 +594,13 @@
             "height": 0.12,
             "position": [-4.6, -1.2, 0.36],
             "material": "spar_metal",
-            "render_only": true
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
             "name": "stack_fitting_nadir_1",
@@ -297,7 +610,13 @@
             "height": 0.12,
             "position": [-4.6, 1.2, 0.36],
             "material": "spar_metal",
-            "render_only": true
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
             "name": "stack_fitting_nadir_2",
@@ -320,15 +639,32 @@
             "render_only": true
         },
         {
-            "name": "radiator_manifold_zenith",
+            "name": "radiator_manifold_zenith_posx",
             "type": "cylinder",
             "group": "bus",
-            "radius": 0.14,
-            "height": 10.0,
-            "position": [0, 0, -0.44],
+            "radius": 0.1,
+            "height": 4.99,
+            "position": [2.505, 0, -0.4],
             "rotation_deg": [0, 90, 0],
             "material": "spar_metal",
             "render_only": true
+        },
+        {
+            "name": "radiator_manifold_zenith_negx",
+            "type": "cylinder",
+            "group": "bus",
+            "radius": 0.1,
+            "height": 4.99,
+            "position": [-2.505, 0, -0.4],
+            "rotation_deg": [0, 90, 0],
+            "material": "spar_metal",
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
             "name": "stack_fitting_zenith_0",
@@ -338,7 +674,13 @@
             "height": 0.12,
             "position": [-4.6, -1.2, -0.36],
             "material": "spar_metal",
-            "render_only": true
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
             "name": "stack_fitting_zenith_1",
@@ -348,7 +690,13 @@
             "height": 0.12,
             "position": [-4.6, 1.2, -0.36],
             "material": "spar_metal",
-            "render_only": true
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
             "name": "stack_fitting_zenith_2",
@@ -376,16 +724,17 @@
             "group": "bus",
             "radius": 0.22,
             "height": 0.3,
-            "position": [4.2, 1.0, -0.45],
+            "position": [5.15, 1.0, -0.1],
             "material": "black_paint",
-            "render_only": true
+            "render_only": true,
+            "rotation_deg": [0, 90, 0]
         },
         {
             "name": "laser_terminal_head_sunward",
             "type": "sphere",
             "group": "bus",
             "radius": 0.26,
-            "position": [4.2, 1.0, -0.75],
+            "position": [5.42, 1.0, -0.1],
             "material": "terminal_mli",
             "render_only": true
         },
@@ -404,18 +753,31 @@
             "group": "bus",
             "radius": 0.22,
             "height": 0.3,
-            "position": [-4.2, 1.0, -0.45],
+            "position": [-5.15, 1.0, -0.1],
             "material": "black_paint",
-            "render_only": true
+            "render_only": true,
+            "rotation_deg": [0, 90, 0],
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
             "name": "laser_terminal_head_anti_sun",
             "type": "sphere",
             "group": "bus",
             "radius": 0.26,
-            "position": [-4.2, 1.0, -0.75],
+            "position": [-5.42, 1.0, -0.1],
             "material": "terminal_mli",
-            "render_only": true
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         },
         {
             "name": "thruster_pod_anti_sun",
@@ -424,7 +786,13 @@
             "size": [0.25, 0.7, 0.4],
             "position": [-5.125, -0.8, 0],
             "material": "black_paint",
-            "render_only": true
+            "render_only": true,
+            "fold": {
+                "point": [0, 0, 0.51],
+                "axis": [0, 1, 0],
+                "angle_deg": 180.0,
+                "phase": [0.0, 0.22]
+            }
         }
     ],
     "sources": [
@@ -435,10 +803,13 @@
             "source": "Starmind AI1 as specified by the project owner (2026-09-24, from the AI1 spec sheet image): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'; the bus 'flatter, proportions similar to a door ... as wide as the solar panels', 'the radiators need to be the same length as that body', panels and radiators extending 'horizontally (panels) and vertically (radiators)' with 'widths contained within the length of the bus', 'flat, so it can pancake on top of other datacenters' (PEZ-style stacking), and 'the larger gap between the panels and the satellite body ... with large trusses'. Second round (same day): 'One truss, per half, extending to the solar panel central pivot'; 'the radiators are pointed up and down (relative to the Earth) ... This will leave the smallest face (by area) facing the sun directly on the chassis. With the panels freed to that center pivot single truss, they can maintain alignment'. AI1 spec sheet: 150 kW solar array at 250 W/m2, 110 m2 deployable liquid radiator, 150 kW peak compute. The tilt joint is the v1.1 legacy type's (SunTrackingTilted), kept for the slider."
         },
         {
-            "subject": "bus",
             "status": "derived",
-            "value": "flat 10 x 3 x 0.6 m aluminium bus (a 4 t node)",
-            "source": "Starmind AI1 as specified by the project owner (2026-09-24, from the AI1 spec sheet image): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'; the bus 'flatter, proportions similar to a door ... as wide as the solar panels', 'the radiators need to be the same length as that body', panels and radiators extending 'horizontally (panels) and vertically (radiators)' with 'widths contained within the length of the bus', 'flat, so it can pancake on top of other datacenters' (PEZ-style stacking), and 'the larger gap between the panels and the satellite body ... with large trusses'. Second round (same day): 'One truss, per half, extending to the solar panel central pivot'; 'the radiators are pointed up and down (relative to the Earth) ... This will leave the smallest face (by area) facing the sun directly on the chassis. With the panels freed to that center pivot single truss, they can maintain alignment'. AI1 spec sheet: 150 kW solar array at 250 W/m2, 110 m2 deployable liquid radiator, 150 kW peak compute. Length DERIVED = the array chord (below); width and thickness estimates (+-50%). SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node."
+            "value": "flat 10 x 3 x 0.6 m aluminium bus (a 4 t node); built as two 5 x 3 x 0.6 m halves hinged across the middle (they fold for launch)",
+            "source": "Starmind AI1 as specified by the project owner (2026-09-24, from the AI1 spec sheet image): 'two large sun pointing panels with a wingspan of 70m', 'edge on radiators on the top and bottom of the bus with a deployed height of 20m'; the bus 'flatter, proportions similar to a door ... as wide as the solar panels', 'the radiators need to be the same length as that body', panels and radiators extending 'horizontally (panels) and vertically (radiators)' with 'widths contained within the length of the bus', 'flat, so it can pancake on top of other datacenters' (PEZ-style stacking), and 'the larger gap between the panels and the satellite body ... with large trusses'. Second round (same day): 'One truss, per half, extending to the solar panel central pivot'; 'the radiators are pointed up and down (relative to the Earth) ... This will leave the smallest face (by area) facing the sun directly on the chassis. With the panels freed to that center pivot single truss, they can maintain alignment'. AI1 spec sheet: 150 kW solar array at 250 W/m2, 110 m2 deployable liquid radiator, 150 kW peak compute. Length DERIVED = the array chord (below); width and thickness estimates (+-50%). SatNews 2026-09-19 (FCC debris analysis): 'up to 4,000 kilograms' per node.",
+            "subjects": [
+                "bus", "bus_posx",
+                "bus_negx"
+            ]
         },
         {
             "subject": "array_track",
@@ -455,10 +826,12 @@
         {
             "subjects": [
                 "wing_pos_0",
-                "wing_pos_1",
+                "wing_pos_1a",
+                "wing_pos_1b",
                 "wing_pos_2",
                 "wing_neg_0",
-                "wing_neg_1",
+                "wing_neg_1a",
+                "wing_neg_1b",
                 "wing_neg_2"
             ],
             "status": "derived",
@@ -467,8 +840,10 @@
         },
         {
             "subjects": [
-                "radiator_nadir",
-                "radiator_zenith"
+                "radiator_nadir_posx",
+                "radiator_nadir_negx",
+                "radiator_zenith_posx",
+                "radiator_zenith_negx"
             ],
             "status": "derived",
             "value": "two 10 x 9.65 m white radiators on the bus's nadir and zenith faces, edge-on to the Sun, 20 m top to bottom",
@@ -507,8 +882,8 @@
                 "deployment"
             ],
             "status": "estimate",
-            "value": "leaves its dispenser stowed (each wing with its truss an accordion stack ~1 m wide at the bus's edge, each radiator folded flat on its bus face: 3% of their deployed extent); 10 min (+-15%) after release the radiators unfold over the first 3.5 min, then the wings over the next 7 min",
-            "source": "No published deployment sequence for Starmind. Estimate chosen so a Starship train (a satellite every 45 s, 0.7 m/s up) is a few hundred metres clear of the ship and its neighbours before anything unfolds; rolled-out (ROSA-like) arrays and folded radiators as on large modern buses."
+            "value": "STOWED (2026-10-20, issue 20261019_223922): a 10 x 3 m bus cannot lie across a Starship's ~8 m payload bay (the bus alone needs a 10.4 m circle), so it folds in half about its middle (y axis, the hinge 0.51 m above it on the nadir side): stowed it is 5.25 x 5 x 2.0 m (wing packs 1 m wide at the bus edges, each radiator a 12-cm pack on its face), a 7.2 m circle. Eight stack along the ship's axis in its ~17 m bay (2.1 m pitch). After release: 10 min (+-15%), then the bus unfolds over the first 2.2 min, the radiators over the next 2.5, the wings over the last 6",
+            "source": "Fit: SpaceX Starship payload user's guide (2020): 8 m usable diameter, 17.24 m cylindrical payload height (22 m with the nose); the fold scheme is an estimate, nothing about Starmind's stowage is published."
         }
     ]
 }

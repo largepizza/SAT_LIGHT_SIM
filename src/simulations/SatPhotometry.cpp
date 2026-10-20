@@ -633,6 +633,7 @@ SatPhotResult evalSatPhotometry(const std::vector<AttitudeGroup> &groups, const 
     geo.forceTumble = orbit.forceTumble;
     geo.jointsRest = orbit.restJoints;
     geo.flareTiltRad = in.flareTiltRad;
+    geo.fixW = satAttOverride(orbit, tJ2000, geo.fixR); // (ECI: this evaluator's frame)
     std::vector<GroupPose> poses = evalGroupPoses(groups, geo, false);
 
     // ── Legacy two-surface model (GPU parity only) ──────────────────────────────────────────

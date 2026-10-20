@@ -1444,7 +1444,7 @@
     "cells"
    ],
    "status": "estimate",
-   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; copper: copper-alloy chamber and bell (Raptor, Merlin), oxidised; soot: a nozzle's sooty inside; gridfin: titanium / steel grid fins: an open lattice; cells: Crew Dragon trunk's body-mounted solar cells",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; copper: copper-alloy chamber and bell (Raptor, Merlin), oxidised; soot: a nozzle's sooty inside; gridfin: titanium / steel grid fins: an open lattice; cells: Crew Dragon trunk's body-mounted solar cells; a crewed spacecraft's folded arrays",
    "source": "Liveries from photographs; reflectance from the presets."
   }
  ]
