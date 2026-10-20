@@ -1659,6 +1659,23 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     if (n == "select")
     {
         const std::string sub = lower(pos(0));
+        // A roster satellite destroyed or re-entered by now cannot be selected (selectSatellite ignores it): an error,
+        // not "selected" with the previous selection left standing (2026-10-20).
+        auto selectOrFail = [&](int idx, const char *what) {
+            const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            double tGone = 0.0;
+            const int fate = idx >= 0 && idx < (int)activeSatCount ? rosterFateAt((uint32_t)idx, tNow, &tGone) : 0;
+            if (fate >= 2)
+            {
+                char b[64];
+                const double h = (tNow - tGone) / 3600.0;
+                snprintf(b, sizeof(b), "%.1f h ago", h);
+                fail(std::string(what) + ": satellite " + std::to_string(idx) + " is " + rosterFateName(fate) + " (" + b + ")");
+            }
+            selectSatellite(idx);
+            if (selectedSatIndex != idx)
+                fail(std::string(what) + ": satellite " + std::to_string(idx) + " could not be selected");
+        };
         if (sub == "none")
         {
             selectedSatIndex = -1;
@@ -1669,7 +1686,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const int idx = (int)parseNum(pos(1), "select sat");
             if (idx < 0 || idx >= (int)satOrbits.size())
                 fail("select sat: index out of range (0.." + std::to_string(satOrbits.size() - 1) + ")");
-            selectSatellite(idx);
+            selectOrFail(idx, "select sat");
         }
         else if (sub == "at")
         {
@@ -1703,7 +1720,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 idx = pickViewerSatellite(ci); // the member highest in the observer's sky
             if (idx < 0)
                 fail("select const: constellation has no satellites");
-            selectSatellite(idx);
+            selectOrFail(idx, "select const");
         }
         else if (sub == "planet")
         {
@@ -2418,6 +2435,47 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["selected"] = selectedSatIndex;
             return Status::Done;
         }
+        if (sub == "milestone" || sub == "milestones")
+        {
+            // missions milestone [list|next|prev|<index>] [row=<ongoing row>] (2026-10-20): the mission timeline of
+            // Go to's object, else the selection's (row=: an Ongoing launch row's); next / prev / an index skip to just
+            // before that milestone at 1x, keeping the selection / Go to on the object.
+            const std::string what = lower(pos(1).empty() ? std::string("list") : pos(1));
+            const bool isList = what == "list" || what == "state";
+            int dir = 0, index = -1;
+            if (what == "next")
+                dir = 1;
+            else if (what == "prev" || what == "previous")
+                dir = -1;
+            else if (!isList)
+                index = (int)parseNum(what, "missions milestone");
+            std::string msg;
+            MissionSubject s;
+            if (c.has("row"))
+            {
+                missionsRefresh(true);
+                const int row = (int)c.num("row", 0);
+                if (row < 0 || row >= (int)msOngoing.size() || (msOngoing[(size_t)row].cat != 0 && msOngoing[(size_t)row].cat != 2))
+                    fail("missions milestone: row " + std::to_string(row) + " is not a launch in flight (see `missions` ongoing)");
+                if (!isList && !missionsMilestone(row, dir, index, msg))
+                    fail("missions milestone: " + msg);
+                missionSubjectOfBatch(msOngoing[(size_t)row].key, s, kMsPayload);
+            }
+            else
+            {
+                if (!missionSubjectNow(s))
+                    fail("missions milestone: the selection / Go to's object has no mission timeline");
+                if (!isList)
+                {
+                    if (!missionJump(s, dir, index, msg))
+                        fail("missions milestone: " + msg);
+                    missionSubjectNow(s);
+                }
+            }
+            r["mission"] = missionSubjectJson(s);
+            r["message"] = isList ? s.title : msg;
+            return Status::Done;
+        }
         if (sub == "tab")
         {
             const std::string t = lower(pos(1));
@@ -2426,7 +2484,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             uiVisible = true;
             return Status::Done;
         }
-        fail("missions: state | go <index|twilight|crew|fury|fury_night> [watch=1] | ongoing <row> [go=1] | tab upcoming|ongoing|controls");
+        fail("missions: state | go <index|twilight|crew|fury|fury_night> [watch=1] | ongoing <row> [go=1] | "
+             "milestone [list|next|prev|<i>] [row=<ongoing row>] | tab upcoming|ongoing|controls");
     }
     if (n == "launch")
     {
@@ -3065,13 +3124,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             if (lower(pos(1)) == "all")
                 consoleOpen_ = settingsChrome.open = viewControlsChrome.open = traceChrome.open = infoChrome.open =
-                    viewerChrome.open = cineChrome.open = bmChrome.open = msChrome.open = false;
+                    viewerChrome.open = cineChrome.open = bmChrome.open = msChrome.open = rpChrome.open = false;
             else if (lower(pos(1)) == "console")
                 consoleOpen_ = false;
             else if (WindowChrome *ch = chromeOf(pos(1)))
                 ch->open = false;
             else
-                fail("ui close: settings, viewcontrols, trace, info, viewer, cine, bookmarks, all");
+                fail("ui close: settings, viewcontrols, trace, info, viewer, cine, bookmarks, reports, missions, console, all");
         }
         else
             fail("ui: show | hide | scale <x> | open <window> [tab=<name>] | close <window|all> | hint | dump [name] | "

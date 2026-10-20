@@ -233,6 +233,26 @@ bool SatelliteSim::missionsOngoingAct(int row, bool go, std::string &msg)
     return true;
 }
 
+// An Ongoing row's launch: to its next (dir +1) / previous (-1) milestone, or milestone `index`. The batch's rocket
+// timeline; when the selection or Go to rides one of its objects, that object's (so a booster stays the booster).
+bool SatelliteSim::missionsMilestone(int row, int dir, int index, std::string &msg)
+{
+    if (row < 0 || row >= (int)msOngoing.size() || (msOngoing[(size_t)row].cat != 0 && msOngoing[(size_t)row].cat != 2))
+    {
+        msg = "no launch in that row";
+        return false;
+    }
+    const uint64_t key = msOngoing[(size_t)row].key;
+    MissionSubject s;
+    if (!missionSubjectNow(s) || s.key != key || s.roster)
+        if (!missionSubjectOfBatch(key, s, kMsPayload))
+        {
+            msg = "that launch has no milestones";
+            return false;
+        }
+    return missionJump(s, dir, index, msg);
+}
+
 nlohmann::json SatelliteSim::missionsStateJson()
 {
     missionsRefresh(true);
@@ -318,6 +338,7 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
     int goLaunch = -1, watchLaunch = -1; // 0..4 the next launches, 100 twilight, 101 crew
     int furyGo = -1, selRocket = -1, selTrain = -1, selRetiree = -1, stationSel = -1, stationGo = -1;
     int ongoingGo = -1; // an Ongoing row's Go to (missionsOngoingAct)
+    int ongoingNext = -1; // an Ongoing row's next milestone (missionsMilestone)
     bool watchReentry = false, toControls = false;
 
     // A launch row. id: a stable index; pin: a label shown first ("NEXT TWILIGHT").
@@ -485,76 +506,6 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                         else if (launchesEnabled)
                             text(noneWhy(400.0, "None scheduled."), Pal::textDim, 11, true);
 
-                        // ── The Sun's Fury: last, always ─────────────────────────────────────────────
-                        CLAY(CLAY_ID("MsFurySpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(6)}}}) {}
-                        const Clay_Color furyBg = kesslerEnabled ? Pal::furyBg : Pal::cardBg;
-                        CLAY(CLAY_ID("MsFury"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                            .padding = {10, 10, 8, 9},
-                                                            .childGap = 4,
-                                                            .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                                 .backgroundColor = furyBg,
-                                                 .cornerRadius = CLAY_CORNER_RADIUS(4),
-                                                 .border = {.color = kesslerEnabled ? Pal::furyBorder : Pal::cardBorder,
-                                                            .width = CLAY_BORDER_ALL((uint16_t)(kesslerEnabled ? 2 : 1))}})
-                        {
-                            const double dt = kesslerEpoch() - now;
-                            CLAY(CLAY_ID("MsFuryHead"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                    .childGap = 8,
-                                                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-                            {
-                                CLAY(CLAY_ID("MsFuryTitle"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                         .childGap = 2,
-                                                                         .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-                                {
-                                    text("THE SUN'S FURY", kesslerEnabled ? Pal::furyText : Pal::textDim, 16);
-                                    text("Kessler simulation", kesslerEnabled ? Pal::furyText : Pal::textDim, 11);
-                                }
-                                char cd[48];
-                                if (dt > 0.0)
-                                    fmtCountdown(dt, cd, sizeof(cd));
-                                else
-                                    snprintf(cd, sizeof(cd), "DAY %.1f", -dt / kDay);
-                                text(msStr("%s", cd), kesslerEnabled ? Pal::furyText : Pal::textDim, 16);
-                            }
-                            char ua[48], uf[48];
-                            fmtUtcShort(kesslerEpoch(), ua, sizeof(ua));
-                            fmtUtcShort(kesslerEpoch() - kFuryFlareLead, uf, sizeof(uf));
-                            if (!kesslerEnabled)
-                                text("The scenario is off. Turn it on in Controls.", Pal::textDim, 11, true);
-                            else if (dt > 0.0)
-                                text(msStr("%s: an X-class flare. %s: its coronal mass ejection arrives. Satellites die in "
-                                           "the storm, the dead tumble and collide, and every collision is a cloud of "
-                                           "debris that feeds the next.",
-                                           uf, ua),
-                                     Pal::textPrimary, 11, true);
-                            else
-                            {
-                                const nlohmann::json &j = kesslerStateCached();
-                                const nlohmann::json &n = j["now"];
-                                text(msStr("The cascade is running: %d dead satellites tumbling, %d destroyed or re-entered, "
-                                           "%d collisions (%d catastrophic).",
-                                           n.value("dead_satellites", 0), n.value("roster_gone", 0), n.value("collisions", 0),
-                                           n.value("catastrophic", 0)),
-                                     Pal::textPrimary, 11, true);
-                            }
-                            CLAY(CLAY_ID("MsFuryBtns"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                    .childGap = 4,
-                                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-                            {
-                                if (kesslerEnabled)
-                                {
-                                    if (uiButton(inp, ui, "MsFuryGo", 0, "Go to the arrival",
-                                                 "Two minutes before the CME arrives: dusk over Monument Valley, looking north"))
-                                        furyGo = 0;
-                                    if (uiButton(inp, ui, "MsFuryGo", 1, "The storm night",
-                                                 "3.5 hours in: the aurora overhead (the bookmark \"The Sun's Fury\")"))
-                                        furyGo = 1;
-                                }
-                                else if (uiButton(inp, ui, "MsFuryCtl", 0, "Controls", "The scenario's switch"))
-                                    toControls = true;
-                            }
-                        }
                     }
                     else if (msTab == 1)
                     {
@@ -578,6 +529,10 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                     selRocket = idx;
                                 if (uiButton(inp, ui, "MsGoRocket", idx, "Go to", "Fly to the rocket and ride along"))
                                     ongoingGo = idx;
+                                if (uiButton(inp, ui, "MsNextMs", idx, "Next >",
+                                             "Skip to just before this launch's next milestone, at 1x (a selected or followed "
+                                             "stage stays selected / followed)"))
+                                    ongoingNext = idx;
                             });
                         }
                         if (!n0)
@@ -648,6 +603,10 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                     selRocket = idx;
                                 if (uiButton(inp, ui, "MsGoRocket", idx, "Go to", "Fly to the rocket and ride along"))
                                     ongoingGo = idx;
+                                if (uiButton(inp, ui, "MsNextMs", idx, "Next >",
+                                             "Skip to just before this launch's next milestone, at 1x (a selected or followed "
+                                             "stage stays selected / followed)"))
+                                    ongoingNext = idx;
                             });
                         }
                         if (!n2)
@@ -693,6 +652,80 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                     }
                 }
                 ui.scrollbar(CLAY_ID("MsList"));
+                if (msTab == 0)
+                {
+                // ── The Sun's Fury: pinned under the list on Upcoming, always visible (2026-10-20: at the default
+                // height it was the last card of the list and needed scrolling to find) ─────────────────────
+                
+                const Clay_Color furyBg = kesslerEnabled ? Pal::furyBg : Pal::cardBg;
+                CLAY(CLAY_ID("MsFury"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                    .padding = {10, 10, 8, 9},
+                                                    .childGap = 4,
+                                                    .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                         .backgroundColor = furyBg,
+                                         .cornerRadius = CLAY_CORNER_RADIUS(4),
+                                         .border = {.color = kesslerEnabled ? Pal::furyBorder : Pal::cardBorder,
+                                                    .width = CLAY_BORDER_ALL((uint16_t)(kesslerEnabled ? 2 : 1))}})
+                {
+                    const double dt = kesslerEpoch() - now;
+                    CLAY(CLAY_ID("MsFuryHead"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                            .childGap = 8,
+                                                            .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                            .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                    {
+                        CLAY(CLAY_ID("MsFuryTitle"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                 .childGap = 2,
+                                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+                        {
+                            text("THE SUN'S FURY", kesslerEnabled ? Pal::furyText : Pal::textDim, 16);
+                            text("Kessler simulation", kesslerEnabled ? Pal::furyText : Pal::textDim, 11);
+                        }
+                        char cd[48];
+                        if (dt > 0.0)
+                            fmtCountdown(dt, cd, sizeof(cd));
+                        else
+                            snprintf(cd, sizeof(cd), "DAY %.1f", -dt / kDay);
+                        text(msStr("%s", cd), kesslerEnabled ? Pal::furyText : Pal::textDim, 16);
+                    }
+                    char ua[48], uf[48];
+                    fmtUtcShort(kesslerEpoch(), ua, sizeof(ua));
+                    fmtUtcShort(kesslerEpoch() - kFuryFlareLead, uf, sizeof(uf));
+                    if (!kesslerEnabled)
+                        text("The scenario is off. Turn it on in Controls.", Pal::textDim, 11, true);
+                    else if (dt > 0.0)
+                        text(msStr("%s: an X-class flare. %s: its coronal mass ejection arrives. Satellites die in "
+                                   "the storm, the dead tumble and collide, and every collision is a cloud of "
+                                   "debris that feeds the next.",
+                                   uf, ua),
+                             Pal::textPrimary, 11, true);
+                    else
+                    {
+                        const nlohmann::json &j = kesslerStateCached();
+                        const nlohmann::json &n = j["now"];
+                        text(msStr("The cascade is running: %d dead satellites tumbling, %d destroyed or re-entered, "
+                                   "%d collisions (%d catastrophic).",
+                                   n.value("dead_satellites", 0), n.value("roster_gone", 0), n.value("collisions", 0),
+                                   n.value("catastrophic", 0)),
+                             Pal::textPrimary, 11, true);
+                    }
+                    CLAY(CLAY_ID("MsFuryBtns"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                            .childGap = 4,
+                                                            .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                    {
+                        if (kesslerEnabled)
+                        {
+                            if (uiButton(inp, ui, "MsFuryGo", 0, "Go to the arrival",
+                                         "Two minutes before the CME arrives: dusk over Monument Valley, looking north"))
+                                furyGo = 0;
+                            if (uiButton(inp, ui, "MsFuryGo", 1, "The storm night",
+                                         "3.5 hours in: the aurora overhead (the bookmark \"The Sun's Fury\")"))
+                                furyGo = 1;
+                        }
+                        else if (uiButton(inp, ui, "MsFuryCtl", 0, "Controls", "The scenario's switch"))
+                            toControls = true;
+                    }
+                }
+                }
             }
         });
 
@@ -725,6 +758,12 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
     {
         launchSelectRocketOf(msOngoing[(size_t)selRocket].key, msg);
         msStatus = msg;
+    }
+    if (ongoingNext >= 0)
+    {
+        missionsMilestone(ongoingNext, 1, -1, msg);
+        msStatus = msg;
+        msNextWall = msPinWall = -1e300; // rebuilt next frame (Clay still holds this frame's strings)
     }
     if (ongoingGo >= 0 && ongoingGo < (int)msOngoing.size())
     {

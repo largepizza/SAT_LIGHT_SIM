@@ -1760,10 +1760,15 @@ void SatelliteSim::fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, doub
         return (R + f.h) * (std::cos(a) * U0 + std::sin(a) * A) + f.lat * C;
     };
     const bool broken = tau >= fbBreakupT();
+    // The selected / followed object (or the one a selection or Go to waits for) is listed even where it is not drawn
+    // (behind the Earth, too faint, in daylight): its stage's selection must not end because nobody sees it burn
+    // (2026-10-20). Picking ignores a listing with no flare.
+    const bool wanted = tagKind && transientWanted(tagKind, tagA);
     for (int k = broken ? 0 : -1; k < (broken ? N : 0); ++k)
     {
         const FbFrag f = fbFrag(seed, k, N, tau, kesslerFireColor);
-        if (f.I <= 1e-4)
+        const bool mainBody = tagKind && k == (broken ? 0 : -1);
+        if (f.I <= 1e-4 && !(wanted && mainBody))
             continue;
         const glm::dvec3 P = place(f);
         const glm::dvec3 rel = P - eye;
@@ -1771,7 +1776,8 @@ void SatelliteSim::fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, doub
         // The Earth in the way?
         const double b = glm::dot(eye, rel / range), c = glm::dot(eye, eye) - R * R;
         const double disc = b * b - c;
-        if (disc > 0.0 && (-b - std::sqrt(disc)) > 0.0 && (-b - std::sqrt(disc)) < range)
+        bool hidden = disc > 0.0 && (-b - std::sqrt(disc)) > 0.0 && (-b - std::sqrt(disc)) < range;
+        if (hidden && !(wanted && mainBody))
             continue;
         // Magnitude at the eye: + distance, + the air between the eye and the fireball, x daylight. (A
         // 1 / sin(elevation) airmass clamped at 0.03 added 8 magnitudes to every fireball seen from above.)
@@ -1779,9 +1785,13 @@ void SatelliteSim::fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, doub
         const double m = m0 - 2.5 * std::log10(f.I) + 5.0 * std::log10(range / 1.0e5) +
                          atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
         double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
-        if (flare < 2e-4)
+        if ((flare < 2e-4 || f.I <= 1e-4) && !(wanted && mainBody))
             continue;
-        if (kFireCount < kFireballMax)
+        if (flare < 2e-4 || f.I <= 1e-4)
+            hidden = true; // listed for the selection, not drawn
+        if (hidden)
+            flare = 0.0;
+        if (!hidden && kFireCount < kFireballMax)
             fo[kFireCount++] = {glm::vec4(glm::vec3(dirE), (float)flare), glm::vec4(f.col, (float)range)};
         // The main body (the remnant once broken up) can be picked.
         if (tagKind && k == (broken ? 0 : -1))
@@ -1803,7 +1813,7 @@ void SatelliteSim::fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, doub
             addSelTransient(st);
         }
         // Its trail: the path over the last 1.5 s (shorter as it slows), an emissive Gaussian along it.
-        if (n < kFireTrailMax && flare > 5e-3)
+        if (!hidden && n < kFireTrailMax && flare > 5e-3)
         {
             const FbFrag fp = fbFrag(seed, k, N, std::max(tau - 1.5, 0.0), kesslerFireColor);
             const glm::dvec3 Pp = place(fp);
