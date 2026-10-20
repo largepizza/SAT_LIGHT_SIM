@@ -483,8 +483,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Save Snapshot", GLFW_KEY_F9, -1, false, false},                                    // KB_SAVE_SNAPSHOT (event) — how the user hands over a location
         {"HQ Photo", GLFW_KEY_F8, -1, false, false},                                         // KB_PHOTO (event) — supersampled screenshot (requestPhoto)
         {"New Issue Snapshot", GLFW_KEY_F7, -1, false, false},                               // KB_REPORT_NEW (event) — a snapshot that starts a new issue report
+        {"Missions", GLFW_KEY_M, -1, false, false},                                          // KB_MISSIONS (event) — the Missions window
     };
-    static_assert(KB_COUNT == 21, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 22, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -8251,6 +8252,14 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         break;
     case KB_REPORT_NEW:
         reportNewKeyPending = true;
+        break;
+    case KB_MISSIONS:
+        msChrome.open = !msChrome.open;
+        if (msChrome.open)
+        {
+            uiVisible = true;
+            msNextWall = msPinWall = -1e300;
+        }
         break;
     case KB_TOGGLE_CURSOR:
         // UC5: effective activation also requires uiVisible && !showIntro (see pollGamepad's

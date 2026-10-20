@@ -90,6 +90,13 @@ inline constexpr const char *kUiThemeKeys[] = {"classic", "navy", "night", "midn
     X(toastInfo, UIC(20, 40, 70, 235), UIC(8, 20, 52, 235), UIC(24, 0, 0, 235), UIC(20, 40, 70, 235))                               \
     X(toastOk, UIC(20, 60, 30, 235), UIC(20, 62, 40, 235), UIC(24, 0, 0, 235), UIC(20, 60, 30, 235))                                 \
     X(toastWarn, UIC(70, 45, 12, 235), UIC(72, 48, 14, 235), UIC(40, 0, 0, 235), UIC(70, 45, 12, 235))                               \
+    /* The Missions window: the Sun's Fury card (ominous dark red), the row tags, progress bars */             \
+    X(furyBg, UIC(30, 4, 4, 235), UIC(30, 4, 8, 235), UIC(14, 0, 0, 235), UIC(22, 2, 2, 242))                                       \
+    X(furyBorder, UIC(125, 16, 12, 255), UIC(125, 18, 22, 255), UIC(70, 0, 0, 255), UIC(125, 16, 12, 255))                           \
+    X(furyText, UIC(232, 72, 52, 255), UIC(232, 76, 60, 255), UIC(205, 0, 0, 255), UIC(232, 72, 52, 255))                            \
+    X(tagTwilight, UIC(62, 46, 128, 235), UIC(62, 46, 128, 235), UIC(42, 0, 0, 235), UIC(62, 46, 128, 235))                          \
+    X(tagCrew, UIC(132, 96, 12, 235), UIC(132, 96, 12, 235), UIC(56, 0, 0, 235), UIC(132, 96, 12, 235))                              \
+    X(progressFill, UIC(150, 20, 20, 220), UIC(30, 90, 200, 220), UIC(60, 0, 0, 220), UIC(150, 20, 20, 220))                         \
     /* Speed indicator */                                                                                      \
     X(speedFwd, UIC(200, 55, 55, 220), UIC(50, 120, 230, 220), UIC(200, 0, 0, 220), UIC(200, 55, 55, 220))                          \
     X(speedRev, UIC(155, 155, 165, 220), UIC(150, 160, 185, 220), UIC(130, 0, 0, 220), UIC(155, 155, 165, 220))                        \

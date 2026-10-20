@@ -49,6 +49,7 @@ static constexpr int kIconPhoto = 17;    // pixel--photo.png — HQ photo (super
 static constexpr int kIconFilm = 18;     // pixel--film.png — the Cinematics window (review 17)
 static constexpr int kIconReport = 20;   // pixel--report.png — the Issue reports window (2026-10-12)
 static constexpr int kIconBookmark = 19; // pixel--bookmark.png — the Bookmarks window (2026-10-03)
+static constexpr int kIconMissions = 21; // pixel--missions.png — the Missions window (2026-10-19)
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
 // are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
@@ -767,6 +768,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             "assets/icons/ui/pixel--film.png",
             "assets/icons/ui/pixel--bookmark.png",
             "assets/icons/ui/pixel--report.png",
+            "assets/icons/ui/pixel--missions.png",
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -844,6 +846,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildCinematicWindow(inp, ui);
     buildBookmarksWindow(inp, ui);
     buildReportsWindow(inp, ui);
+    buildMissionsWindow(inp, ui);
     updateViewerView(inp, ui); // the satellite windows' shared prologue (target, drag, readouts)
     buildInfoWindow(inp, ui);
     buildViewPopoutWindow(inp, ui);
@@ -877,6 +880,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         ui.addMouseCaptureRect(bmChrome.x, bmChrome.y, bmChrome.w, bmChrome.h);
     if (rpChrome.open)
         ui.addMouseCaptureRect(rpChrome.x, rpChrome.y, rpChrome.w, rpChrome.h);
+    if (msChrome.open)
+        ui.addMouseCaptureRect(msChrome.x, msChrome.y, msChrome.w, msChrome.h);
     // The satellite windows: without these a drag on a render also clicked the sky behind the window
     // and re-selected (or deselected) whatever satellite was under it.
     if (infoChrome.open && meshRendererInit)
@@ -1365,6 +1370,14 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
         {
             rpChrome.open = !rpChrome.open;
             reportsDirty_ = true;
+        }
+        menuBtn(CLAY_ID("TimeMissionsBtn"), CLAY_ID("TimeMissionsIcon"), kIconMissions, hovTimeMissions, Pal::btnAccent,
+                msChrome.open, "Missions", toggled);
+        if (toggled)
+        {
+            msChrome.open = !msChrome.open;
+            if (msChrome.open)
+                msNextWall = msPinWall = -1e300;
         }
         menuBtn(CLAY_ID("TimeBookmarkBtn"), CLAY_ID("TimeBookmarkIcon"), kIconBookmark, hovTimeBookmark, Pal::btnAccent,
                 bmChrome.open, "Bookmarks", toggled);
@@ -3169,8 +3182,15 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
             }
         }
     }
-    buildKesslerSettingsSection(inp, ui);
-    buildLaunchSettingsSection(inp, ui);
+    // Launches and the Sun's Fury moved to the Missions window (2026-10-19): a pointer here.
+    uiSection("ConstSec", 8, "LAUNCHES AND THE SUN'S FURY");
+    uiKV("ConstMsKV", 0, "", "Now in the Missions window (rocket button, M).", 4.0f, &Pal::textDim);
+    if (uiButton(inp, ui, "ConstMsOpen", 0, "Open the Missions window", "The schedule, what is flying, and these settings (Controls)"))
+    {
+        msChrome.open = true;
+        msTab = 2;
+        msNextWall = msPinWall = -1e300;
+    }
 
     // ── Planets ────────────────────────────────────────────────────────────
     // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern
@@ -6162,6 +6182,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {keybindings[KB_PHOTO].action, KB_PHOTO},
         {keybindings[KB_SAVE_SNAPSHOT].action, KB_SAVE_SNAPSHOT},
         {keybindings[KB_REPORT_NEW].action, KB_REPORT_NEW},
+        {keybindings[KB_MISSIONS].action, KB_MISSIONS},
         {keybindings[KB_TOGGLE_CURSOR].action, KB_TOGGLE_CURSOR},
     };
     struct AnalogRow

@@ -52,6 +52,11 @@ double wrap2pi(double a)
     return a < 0.0 ? a + glm::two_pi<double>() : a;
 }
 double h01(uint64_t seed, uint64_t idx, uint32_t ch) { return launch::hash01(seed, idx, ch); }
+// A program's refresh period (s): the design life x the setting, or for a crew rotation its own cadence (unscaled).
+double progLifeS(const launch::Program &pg, double scale)
+{
+    return pg.crew ? std::max(0.05, pg.lifeYears) * kYear : std::max(0.25, pg.lifeYears * scale) * kYear;
+}
 
 struct LPlane
 {
@@ -281,7 +286,7 @@ static void buildPlanes(SatelliteSim::LaunchState &L, const std::vector<SatOrbit
                     prog = (int)p;
                     break;
                 }
-        if (prog < 0 || consts[c].orbitCount < 2)
+        if (prog < 0 || consts[c].orbitCount < (L.cat.programs[prog].crew ? 1u : 2u))
             continue;
         const launch::Program &pg = L.cat.programs[prog];
         std::map<uint64_t, std::vector<uint32_t>> groups;
@@ -297,7 +302,7 @@ static void buildPlanes(SatelliteSim::LaunchState &L, const std::vector<SatOrbit
         }
         const int cluster = std::max(1, consts[c].clusterSize);
         const int payload = std::max(cluster, pg.payload / cluster * cluster);
-        const double life = std::max(0.25, pg.lifeYears * (double)lifeScale) * kYear;
+        const double life = progLifeS(pg, (double)lifeScale);
         for (auto &g : groups)
         {
             LPlane pl;
@@ -432,7 +437,7 @@ static SatelliteSim::LaunchState::Cand candidate(const SatelliteSim &sim, Satell
     SatelliteSim::LaunchState::Cand c;
     const LPlane &pl = L.planes[plane];
     const launch::Program &pg = L.cat.programs[pl.prog];
-    const double lifeS = std::max(0.25, pg.lifeYears * (double)sim.launchLifeScale) * kYear;
+    const double lifeS = progLifeS(pg, (double)sim.launchLifeScale);
     const uint64_t seed = batchSeed(pl, k, b);
     const double tA = (k + pl.phase) * lifeS + b * pl.gap;
     const double raise = (pg.raiseDays[0] + (pg.raiseDays[1] - pg.raiseDays[0]) * h01(seed, 2, 1)) * kDay;
@@ -510,7 +515,7 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
         {
             const LPlane &pq = L.planes[q];
             const launch::Program &gq = L.cat.programs[pq.prog];
-            const double lifeQ = std::max(0.25, gq.lifeYears * (double)sim.launchLifeScale) * kYear;
+            const double lifeQ = progLifeS(gq, (double)sim.launchLifeScale);
             const double lo = tL + (gq.raiseDays[0] - 1.0) * kDay, hi = tL + (gq.raiseDays[1] + 3.0) * kDay;
             const int64_t k0 = (int64_t)std::floor((lo - (pq.nb - 1) * pq.gap) / lifeQ - pq.phase);
             const int64_t k1 = (int64_t)std::floor(hi / lifeQ - pq.phase);
@@ -591,7 +596,13 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     B.azDeg = az;
     B.t2 = std::max(vh.t2, vh.t1 + 60.0);
     B.tD = tL + B.t2 + vh.deployAfter;
-    if (B.tD >= B.tA - 0.5 * kDay)
+    if (pg.crew)
+    {
+        // A crew flight: docking raise_days after lift-off (the capsule's rendezvous is not drawn).
+        B.tA = std::max(tL + (pg.raiseDays[0] + (pg.raiseDays[1] - pg.raiseDays[0]) * h01(B.seed, 2, 1)) * kDay,
+                        B.tD + 600.0);
+    }
+    else if (B.tD >= B.tA - 0.5 * kDay)
     {
         B.why = "launch window too late";
         return;
@@ -614,7 +625,7 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     // Members.
     const double T = B.tA - B.tD;
     B.mem.clear();
-    for (size_t m = m0; m < m1; ++m)
+    for (size_t m = m0; m < m1 && !pg.crew; ++m) // a crew flight carries no train
     {
         LMember mb;
         mb.sat = pl.sats[m];
@@ -1027,7 +1038,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         {
             const LPlane &pl = L.planes[pi];
             const launch::Program &pg = L.cat.programs[pl.prog];
-            const double life = std::max(0.25, pg.lifeYears * (double)launchLifeScale) * kYear;
+            const double life = progLifeS(pg, (double)launchLifeScale);
             const double lo = t - (pg.deorbitDays[1] + 1.0) * kDay, hi = t + (pg.raiseDays[1] + 1.5) * kDay;
             const int64_t k0 = (int64_t)std::floor((lo - (pl.nb - 1) * pl.gap) / life - pl.phase);
             const int64_t k1 = (int64_t)std::floor(hi / life - pl.phase);
@@ -1943,7 +1954,7 @@ nlohmann::json SatelliteSim::launchListJson(double hours) const
     {
         const LPlane &pl = L.planes[pi];
         const launch::Program &pg = L.cat.programs[pl.prog];
-        const double life = std::max(0.25, pg.lifeYears * (double)launchLifeScale) * kYear;
+        const double life = progLifeS(pg, (double)launchLifeScale);
         // Lift-off precedes arrival by the raise (+ under a day for the window).
         const double lo = t + (pg.raiseDays[0] - 0.5) * kDay, hi = t + hours * 3600.0 + (pg.raiseDays[1] + 2.5) * kDay;
         const int64_t k0 = (int64_t)std::floor((lo - (pl.nb - 1) * pl.gap) / life - pl.phase);
@@ -2107,6 +2118,10 @@ bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when, const std::str
     const glm::dvec3 side = glm::normalize(glm::cross(B->G0, B->Eaz));
     const glm::dvec3 g = glm::normalize(B->G0 * kR - B->Eaz * 60000.0 + side * 50000.0);
     setObserverLatLon(glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), glm::degrees(std::atan2(g.y, g.x)));
+    obsHeightOffset = 0.0f; // on the ground (the height is above sea level, floored at the ground): it was left as it
+                            // was, so a jump from orbit stayed in orbit
+    skyTaaHistValid = false;
+    cv2HistoryValid = false;
     // Look at where the rocket is two minutes in.
     const Track &bt = L.booster[B->veh];
     const glm::dvec2 p = bt.at(std::min(120.0, bt.tEnd));
@@ -2326,6 +2341,7 @@ bool SatelliteSim::launchGoToNextReentry(std::string &msg)
     const glm::dvec3 G = glm::normalize(Bp * kR + C * 120000.0 - A * 80000.0);
     const glm::dvec3 g = eciToEcef(G, t0);
     setObserverLatLon(glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), glm::degrees(std::atan2(g.y, g.x)));
+    obsHeightOffset = 0.0f; // on the ground
     const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
     const glm::dvec3 rel = eciToEcef(Bp * (kR + 78000.0), tb) - up * kR;
     glm::dvec3 east = glm::cross(glm::dvec3(0, 0, 1), up);
@@ -2821,5 +2837,426 @@ bool SatelliteSim::selectTransient(int kind, std::string &msg, int stage)
     formatSelectedSatInfo();
     updateSelectedSkyDir();
     msg = transientLabel();
+    return true;
+}
+
+// ── Missions window queries (2026-10-19, SatelliteSimMissions.cpp draws them) ───────────────────────────────────
+namespace
+{
+// The inverse of batchKey.
+void batchKeyDecode(uint64_t key, int &plane, int64_t &k, int &b)
+{
+    plane = (int)(uint32_t)(key >> 40);
+    k = (int64_t)((key >> 20) & 0xFFFFFull) - (int64_t)(1 << 19);
+    b = (int)(key & 0xFFFFFull);
+}
+
+double sunElevAtPad(const launch::Site &st, double t)
+{
+    const glm::dvec3 sun = sunDirEciAt(t);
+    return glm::degrees(std::asin(glm::clamp(glm::dot(sun, ecefToEci(st.ecef, t)), -1.0, 1.0)));
+}
+} // namespace
+
+void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN, std::vector<MissionLaunch> &out)
+{
+    out.clear();
+    if (!launchState || !launchesEnabled)
+        return;
+    LaunchState &L = *launchState;
+    LaunchImpl::ensureCatalog(L);
+    if (!L.loaded)
+        return;
+    if (!L.planesBuilt)
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    struct Item
+    {
+        double tL;
+        uint64_t key;
+    };
+    std::vector<Item> items;
+    for (size_t pi = 0; pi < L.planes.size(); ++pi)
+    {
+        const LPlane &pl = L.planes[pi];
+        const launch::Program &pg = L.cat.programs[pl.prog];
+        if (filter == 1 && !pg.crew)
+            continue;
+        const double life = progLifeS(pg, (double)launchLifeScale);
+        // As launchListJson: lift-off precedes the nominal arrival by the raise (+ the window).
+        const double lo = t0 + (pg.raiseDays[0] - 0.5) * kDay, hi = t1 + (pg.raiseDays[1] + 2.5) * kDay;
+        const int64_t k0 = (int64_t)std::floor((lo - (pl.nb - 1) * pl.gap) / life - pl.phase);
+        const int64_t k1 = (int64_t)std::floor(hi / life - pl.phase);
+        for (int64_t k = k0; k <= k1; ++k)
+        {
+            const double base = (k + pl.phase) * life;
+            const int b0 = std::max(0, (int)std::ceil((lo - base) / pl.gap));
+            const int b1 = std::min(pl.nb - 1, (int)std::floor((hi - base) / pl.gap));
+            for (int b = b0; b <= b1; ++b)
+            {
+                const uint64_t key = batchKey((int)pi, k, b);
+                auto it = L.batches.find(key);
+                if (it == L.batches.end())
+                {
+                    LBatch nb;
+                    nb.plane = (int)pi;
+                    nb.k = k;
+                    nb.b = b;
+                    LaunchImpl::buildBatch(*this, L, nb, pl, life);
+                    it = L.batches.emplace(key, std::move(nb)).first;
+                }
+                LBatch &B = it->second;
+                B.touched = std::max(B.touched, L.frame); // kept while the window lists it
+                if (!B.valid || B.tL < t0 || B.tL > t1)
+                    continue;
+                if (filter == 2)
+                {
+                    const double se = sunElevAtPad(L.cat.sites[B.site], B.tL);
+                    if (!(se < -5.0 && se > -16.0))
+                        continue;
+                }
+                items.push_back({B.tL, key});
+            }
+        }
+    }
+    std::sort(items.begin(), items.end(),
+              [](const Item &a, const Item &b) { return a.tL < b.tL || (a.tL == b.tL && a.key < b.key); });
+    for (size_t i = 0; i < items.size() && out.size() < maxN; ++i)
+    {
+        const LBatch &B = L.batches.at(items[i].key);
+        const LPlane &pl = L.planes[B.plane];
+        const launch::Program &pg = L.cat.programs[B.prog];
+        MissionLaunch m;
+        m.key = items[i].key;
+        m.tL = B.tL;
+        m.tA = B.tA;
+        m.sunElevDeg = sunElevAtPad(L.cat.sites[B.site], B.tL);
+        m.twilight = m.sunElevDeg < -5.0 && m.sunElevDeg > -16.0;
+        m.crew = pg.crew;
+        m.people = pg.people;
+        m.payload = (int)B.mem.size();
+        m.vehicle = L.cat.vehicles[B.veh].name;
+        m.program = pg.name;
+        m.site = L.cat.sites[B.site].name;
+        m.target = constellations[pl.constIdx].name;
+        m.spacecraft = pg.spacecraft;
+        out.push_back(std::move(m));
+    }
+}
+
+bool SatelliteSim::launchGoToKey(uint64_t key, bool moveObserver, double leadS, std::string &msg)
+{
+    if (!launchState || !launchesEnabled)
+    {
+        msg = "launches are off";
+        return false;
+    }
+    LaunchState &L = *launchState;
+    LaunchImpl::ensureCatalog(L);
+    if (!L.loaded)
+    {
+        msg = "no launch data";
+        return false;
+    }
+    if (!L.planesBuilt)
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    auto it = L.batches.find(key);
+    if (it == L.batches.end())
+    {
+        // Dropped from the cache since it was listed: build it again (a pure function of its key).
+        int plane = 0, b = 0;
+        int64_t k = 0;
+        batchKeyDecode(key, plane, k, b);
+        if (plane < 0 || plane >= (int)L.planes.size())
+        {
+            msg = "launch not found";
+            return false;
+        }
+        LBatch nb;
+        nb.plane = plane;
+        nb.k = k;
+        nb.b = b;
+        const LPlane &pl = L.planes[plane];
+        LaunchImpl::buildBatch(*this, L, nb, pl, progLifeS(L.cat.programs[pl.prog], (double)launchLifeScale));
+        nb.touched = L.frame;
+        it = L.batches.emplace(key, std::move(nb)).first;
+    }
+    const LBatch &B = it->second;
+    if (!B.valid)
+    {
+        msg = "that launch does not fly (" + B.why + ")";
+        return false;
+    }
+    if (followActive)
+        stopFollow();
+    if (trackActive)
+        stopTrack();
+    const double tStart = B.tL - leadS;
+    const double days = std::floor(tStart / 86400.0);
+    simDayJ2000 = (int64_t)days;
+    simSecInDay = tStart - days * 86400.0;
+    trailClearPending = true;
+    timePaused = false;
+    timeScaleIdx = 0;
+    timeDir = 1.0f;
+    const launch::Site &st = L.cat.sites[B.site];
+    if (moveObserver)
+    {
+        // On the ground ~12 km from the pad, beside the ground track and a little behind it (the climb crosses the sky
+        // sideways, and the staging stays in view). The first candidate on land (the DEM reads ~0 over the sea).
+        const glm::dvec3 side = glm::normalize(glm::cross(B.G0, B.Eaz));
+        const glm::dvec3 cand[4] = {B.G0 * kR + side * 12000.0 - B.Eaz * 3000.0, B.G0 * kR - side * 12000.0 - B.Eaz * 3000.0,
+                                    B.G0 * kR - B.Eaz * 12000.0, B.G0 * kR + side * 6000.0 - B.Eaz * 1500.0};
+        glm::dvec3 g = glm::normalize(cand[0]);
+        for (const glm::dvec3 &c : cand)
+        {
+            const glm::dvec3 u = glm::normalize(c);
+            const float la = (float)glm::degrees(std::asin(glm::clamp(u.z, -1.0, 1.0)));
+            const float lo = (float)glm::degrees(std::atan2(u.y, u.x));
+            if (cpuTerrainHeightM(la, lo) > 10.0f)
+            {
+                g = u;
+                break;
+            }
+        }
+        setObserverLatLon(glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), glm::degrees(std::atan2(g.y, g.x)));
+        obsHeightOffset = 0.0f; // on the ground (the height is above sea level, floored at the ground)
+        // The camera on the pad, the pad low in the frame (the climb rises through the middle).
+        const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+        const glm::dvec3 rel = B.G0 * kR - up * kR;
+        glm::dvec3 east = glm::cross(glm::dvec3(0, 0, 1), up);
+        east = glm::length(east) > 1e-9 ? glm::normalize(east) : glm::dvec3(1, 0, 0);
+        const glm::dvec3 north = glm::cross(up, east);
+        const glm::dvec3 rn = glm::normalize(rel);
+        camera.fovYDeg = 60.0f;
+        aimCameraAzEl((float)glm::degrees(std::atan2(glm::dot(rn, east), glm::dot(rn, north))),
+                      (float)glm::degrees(std::asin(glm::clamp(glm::dot(rn, up), -1.0, 1.0))) + 12.0f);
+    }
+    updatePositions(tStart);
+    skyTaaHistValid = false; // a cut
+    cv2HistoryValid = false;
+    char b[320];
+    if (L.cat.programs[B.prog].crew)
+        snprintf(b, sizeof(b), "%s to %s from %s: lift-off in %.0f s", L.cat.vehicles[B.veh].name.c_str(),
+                 constellations[L.planes[B.plane].constIdx].name.c_str(), st.name.c_str(), leadS);
+    else
+        snprintf(b, sizeof(b), "%s (%s) from %s: lift-off in %.0f s", L.cat.vehicles[B.veh].name.c_str(),
+                 L.cat.programs[B.prog].name.c_str(), st.name.c_str(), leadS);
+    msg = b;
+    return true;
+}
+
+void SatelliteSim::launchOngoing(std::vector<MissionOngoing> &out)
+{
+    out.clear();
+    if (!launchState || !launchesEnabled)
+        return;
+    const LaunchState &L = *launchState;
+    if (!L.loaded)
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    struct Agg
+    {
+        int batches = 0, sats = 0;
+        double next = 1e300, progSum = 0.0;
+    };
+    std::map<int, Agg> trains, retire;
+    auto drawnRocket = [&](uint64_t key) {
+        for (const SelTransient &s : selTransients)
+            if (s.kind == 1 && s.a == key && s.flare > 0.0f)
+                return true;
+        return false;
+    };
+    auto phaseOf = [&](const LBatch &B, double tau, double &tNext) -> std::string {
+        const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+        if (tau < vh.t1)
+        {
+            tNext = B.tL + vh.t1;
+            return "first stage burning; staging";
+        }
+        if (tau < B.t2)
+        {
+            tNext = B.tL + B.t2;
+            return vh.recovery == 1   ? "upper stage burning, booster returning; orbit"
+                   : vh.recovery == 2 ? "upper stage burning, booster to the droneship; orbit"
+                                      : "upper stage burning, booster falling; orbit";
+        }
+        if (B.tL + tau < B.tD)
+        {
+            tNext = B.tD;
+            return L.cat.programs[B.prog].crew ? "in the parking orbit; separation" : "in the parking orbit; deployment";
+        }
+        tNext = vh.upperDeorbit ? B.tStageRE : B.tStageGone;
+        return vh.upperDeorbit ? "deployed; upper stage re-entry" : "deployed; ship coming home";
+    };
+    for (uint64_t key : L.live)
+    {
+        auto bit = L.batches.find(key);
+        if (bit == L.batches.end() || !bit->second.valid)
+            continue;
+        const LBatch &B = bit->second;
+        const launch::Program &pg = L.cat.programs[B.prog];
+        const std::string &target = constellations[L.planes[B.plane].constIdx].name;
+        const std::string &veh = L.cat.vehicles[B.veh].name;
+        if (pg.crew)
+        {
+            if (t < B.tL || t >= B.tA)
+                continue;
+            MissionOngoing m;
+            m.cat = 0;
+            m.key = key;
+            m.title = pg.spacecraft + " to " + target + " (" + std::to_string(pg.people) + " crew)";
+            if (t < B.tL + B.t2)
+                m.status = veh + ": " + phaseOf(B, t - B.tL, m.tNext);
+            else
+            {
+                m.status = "Rendezvous with the station; docking";
+                m.tNext = B.tA;
+            }
+            m.progress = (t - B.tL) / std::max(1.0, B.tA - B.tL);
+            m.drawn = drawnRocket(key);
+            out.push_back(std::move(m));
+            continue;
+        }
+        if (t >= B.tL && t < B.tStageGone)
+        {
+            MissionOngoing m;
+            m.cat = 2;
+            m.key = key;
+            m.title = veh + " - " + pg.name + " (" + std::to_string(B.mem.size()) + " satellites to " + target + ")";
+            m.status = phaseOf(B, t - B.tL, m.tNext);
+            m.status[0] = (char)std::toupper((unsigned char)m.status[0]);
+            m.progress = (t - B.tL) / std::max(1.0, B.tStageGone - B.tL);
+            m.drawn = drawnRocket(key);
+            out.push_back(std::move(m));
+        }
+        if (t >= B.tD && t < B.tA)
+        {
+            Agg &a = trains[B.prog];
+            ++a.batches;
+            a.sats += (int)B.mem.size();
+            a.next = std::min(a.next, B.tA);
+            a.progSum += (t - B.tD) / std::max(1.0, B.tA - B.tD);
+        }
+        if (t >= B.tA && !B.ends.empty() && B.ends.back() > t)
+        {
+            Agg &a = retire[B.prog];
+            auto it = std::upper_bound(B.ends.begin(), B.ends.end(), t);
+            a.sats += (int)(B.ends.end() - it);
+            a.next = std::min(a.next, *it);
+            ++a.batches;
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const MissionOngoing &a, const MissionOngoing &b) {
+        return a.cat < b.cat || (a.cat == b.cat && a.tNext < b.tNext);
+    });
+    for (const auto &kv : trains)
+    {
+        MissionOngoing m;
+        m.cat = 3;
+        m.prog = kv.first;
+        m.count = kv.second.sats;
+        m.title = L.cat.programs[kv.first].name + ": " + std::to_string(kv.second.batches) +
+                  (kv.second.batches == 1 ? " train raising" : " trains raising");
+        m.status = std::to_string(kv.second.sats) + " satellites climbing to their slots; next arrival";
+        m.tNext = kv.second.next;
+        m.progress = kv.second.progSum / std::max(1, kv.second.batches);
+        out.push_back(std::move(m));
+    }
+    for (const auto &kv : retire)
+    {
+        MissionOngoing m;
+        m.cat = 4;
+        m.prog = kv.first;
+        m.count = kv.second.sats;
+        m.title = L.cat.programs[kv.first].name + ": " + std::to_string(kv.second.sats) + " retired, deorbiting";
+        m.status = "Lowering toward re-entry; next re-entry";
+        m.tNext = kv.second.next;
+        out.push_back(std::move(m));
+    }
+}
+
+std::vector<SatelliteSim::CrewStation> SatelliteSim::launchCrewStations()
+{
+    std::vector<CrewStation> out;
+    if (!launchState)
+        return out;
+    LaunchState &L = *launchState;
+    LaunchImpl::ensureCatalog(L);
+    if (!L.loaded)
+        return out;
+    if (!L.planesBuilt)
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+    for (const LPlane &pl : L.planes)
+        if (L.cat.programs[pl.prog].crew && !pl.sats.empty())
+            out.push_back({(int)pl.constIdx, (int)pl.sats[0], pl.prog});
+    return out;
+}
+
+bool SatelliteSim::launchSelectRocketOf(uint64_t key, std::string &msg)
+{
+    const SelTransient *best = nullptr;
+    for (const SelTransient &s : selTransients)
+        if (s.kind == 1 && s.a == key && s.flare > 0.0f && (!best || s.stage > best->stage))
+            best = &s; // the upper stage (the payload's) once it flies alone
+    if (!best)
+    {
+        msg = "not drawn from here (below the horizon or too faint)";
+        return false;
+    }
+    selTransientTake(*best);
+    selectedPlanetIndex = -1;
+    selectedSatIndex = (int)transientSatIdx();
+    formatSelectedSatInfo();
+    updateSelectedSkyDir();
+    msg = transientLabel();
+    return true;
+}
+
+bool SatelliteSim::launchSelectNearestOf(int prog, int kind, std::string &msg)
+{
+    if (!launchState)
+        return false;
+    const LaunchState &L = *launchState;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const glm::dvec3 eye = glm::dvec3(obsECI);
+    const glm::dvec3 up = glm::normalize(eye);
+    double best = 1e30, bestAny = 1e30;
+    int bestSlot = -1, bestSlotAny = -1;
+    for (uint32_t s = 0; s < (uint32_t)L.slots.size(); ++s)
+    {
+        const SlotInfo &si = L.slots[s];
+        if (!si.shown || (int)(si.owner % 2) != kind)
+            continue;
+        auto it = L.batches.find(si.owner / 2);
+        if (it == L.batches.end() || it->second.prog != prog)
+            continue;
+        const glm::dvec3 rel = satOrbitStateAt(L.elems[s], t).posEci - eye;
+        const double d = glm::length(rel);
+        if (d < bestAny)
+        {
+            bestAny = d;
+            bestSlotAny = (int)s;
+        }
+        if (glm::dot(rel / d, up) < 0.05 || d >= best)
+            continue;
+        best = d;
+        bestSlot = (int)s;
+    }
+    const bool above = bestSlot >= 0;
+    if (!above)
+    {
+        bestSlot = bestSlotAny;
+        best = bestAny;
+    }
+    if (bestSlot < 0)
+    {
+        msg = "none up right now";
+        return false;
+    }
+    selectSatellite((int)(activeSatCount + (uint32_t)bestSlot));
+    char b[240];
+    snprintf(b, sizeof(b), "%s, %.0f km away%s", launchLabel((uint32_t)bestSlot).c_str(), best / 1000.0,
+             above ? "" : " (below your horizon)");
+    msg = b;
     return true;
 }
