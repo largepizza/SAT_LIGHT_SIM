@@ -4646,6 +4646,37 @@ launches follow per-program cadences (no real manifest).
   it. Rough lobes (stainless 0.12, paint) reached the Sun-like radiance test at grazing incidence (Fresnel -> 1, the
   masking term's 1/(2 alpha)) along every edge and panel seam of a Starship in daylight: dozens of glares. Mirrors,
   OSR, dielectric film and solar glass (0.05: 0.93) still glare.
+- **Rocket light on clouds, haze, plumes and the ground** (2026-10-20; the glare pass's open item "a cumulus beside a
+  night launch stays dark"). Every burn (ascent, boostback, entry, landing), a ship's entry glow and each pad's
+  floodlights are POINT LIGHTS (`engineLightAdd`, SatelliteSimLaunches.cpp): intensity in suns x m^2 from the flame's
+  magnitude at 100 km (`flameIntensitySunsM2`: mag 0 = 2.54e-6 lux, the Sun 1.27e5; Super Heavy -6 ~ 6e6 cd ~ 50),
+  lifted at night by the MOON's lift (moonGain / 2e-6, ~2600x; physical by day, so nothing shows), x
+  `launches.engine_light_gain` ("Rocket light on clouds", Off / x0.3 / x1 / x3). Pads: 0.5 (Starship 0.8), no ground
+  term. Reach = where a lit white cloud is 2e-3 on screen; at most `kMaxEngineLights` (32), nearest lit region first.
+  - **Delivery: the dust buffer's TAIL** (`kDustBuf` grew by 32 entries: entries 1024+ are lights in the 80-B
+    `GpuDustCloud` slots, header word 1 = count, `engineLightsFlush` after launchFillVisuals; layout in
+    `include/lightning_draw.glsl`). No new binding in cloud_march.comp.
+  - **Clouds, fog, haze, ground: the lightning pass's mode 2** (`lightning.frag`, `params.w` = 2, `params2.z` = the
+    count; the lightning set gained binding 4 = the half-res scene depth, 5 = the dust buffer). One full-screen
+    triangle after the sky TAA, screen-blended, drawn whenever there are lights (with or without flashes). Clouds: the
+    composite's distance per gathered texel, its opacity from a 3x3 TENT of the transmittance (gating per texel drew
+    the outline as a staircase), 0.85 x opacity^1.5 / (r^2 + r0^2), x 0.35 with the light on the far side of the cloud
+    from the eye (by height). Ground: albedo 0.15 x the cosine to the local up, behind the cloud transmittance, not on
+    the hull (a cylinder up the nose axis). Haze: sigma(h) / 4 x the closed-form integral of I / (d^2 + s^2) along the
+    ray, ending at the ground or (by opacity) at the cloud. Each term fades over the outer 40% of the reach (a hard
+    cut drew a circle from orbit). Tried and dropped: shading by a cloud normal from dFdx/dFdy of the half-res
+    distance (a 2-px crosshatch over the whole deck).
+  - **Plumes: cloud_march.comp's `dustCloudsCS`** adds each light's irradiance on every plume parcel (x its albedo,
+    isotropic phase + its multiple-scattering term): the low exhaust trail glows orange.
+  - **Colour**: the flame's pushed 85% toward (1, 0.45, 0.15) .. (1, 0.38, 0.08) by soot (the first cut, 50% toward a
+    paler orange, read beige over the city-lit cloud).
+  - Measured (RTX 3070 Ti, 1600x900, Starship at T+15 s under broken cumulus, 6 km from SLC-37): +0.26 ms in the draw
+    bucket, plume lighting within noise. Physically the lit deck is wide: a Super Heavy lights cloud 6 km away like a
+    full Moon (the user's call whether x1 is too much).
+  - Harness: `launch state` -> `launches.engine_lights` / `engine_light_gain`; scenes `harness_runs/englight/r7.satcmd`
+    (SLC-37 at night: `drift phase=2.86` broken cumulus, `5.2` overcast, `clouds_v2.coverage 1.6`; air, orbit,
+    `launch landing booster=1`). Open: no cloud-surface orientation, no in-cloud diffusion for a light inside a cloud
+    (lightning's boltGlow does that), no terrain shadowing, the half-res outline can still show where the light is strong.
 - **Sound**: each burning rocket within 150 km on a thunder voice (`launchSounds`, called from `thunderStep`): the
   retarded time, Earth-fixed (the air carries it), level ~ sqrt(flow) / distance, thinning with the air at the rocket.
   The retarded time is the LATEST emission tau with (T - tau) = |P(tau) - eye| / 343, found by a scan back over 440 s

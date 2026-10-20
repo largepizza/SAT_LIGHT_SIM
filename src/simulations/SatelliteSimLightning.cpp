@@ -262,18 +262,20 @@ void SatelliteSim::createLightningResources(VulkanContext &ctx)
     vkMapMemory(ctx.device, boltSegMem, 0, VK_WHOLE_SIZE, 0, &boltSegMapped);
 
     const VkShaderStageFlags st = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutBinding b[4] = {
+    VkDescriptorSetLayoutBinding b[6] = {
         {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the flashes (frames, state, glow emitters)
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the channel segments
         {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the cloud composite A (distance, km)
         {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the cloud composite B (transmittance)
+        {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the half-res scene depth (m; engine lights)
+        {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the dust list + the engine lights in its tail
     };
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 4;
+    li.bindingCount = 6;
     li.pBindings = b;
     if (vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &boltDescLayout) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: lightning descriptor layout");
-    VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}};
+    VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.maxSets = 1;
     pi.poolSizeCount = 2;
@@ -362,14 +364,16 @@ void SatelliteSim::createLightningPipeline(VulkanContext &ctx)
 
 void SatelliteSim::writeLightningDescriptors(VulkanContext &ctx)
 {
-    if (!boltDescSet || !cloudMarchTargetAView || !cloudMarchTargetBView)
+    if (!boltDescSet || !cloudMarchTargetAView || !cloudMarchTargetBView || !sceneDepthView || !kDustBuf)
         return;
     VkDescriptorBufferInfo fl{boltFlashBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo sg{boltSegBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo ta{cloudMarchSampler, cloudMarchTargetAView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo tb{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet w[4] = {};
-    for (int i = 0; i < 4; ++i)
+    VkDescriptorImageInfo sd{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo du{kDustBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet w[6] = {};
+    for (int i = 0; i < 6; ++i)
     {
         w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w[i].dstSet = boltDescSet;
@@ -384,7 +388,11 @@ void SatelliteSim::writeLightningDescriptors(VulkanContext &ctx)
     w[2].pImageInfo = &ta;
     w[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w[3].pImageInfo = &tb;
-    vkUpdateDescriptorSets(ctx.device, 4, w, 0, nullptr);
+    w[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w[4].pImageInfo = &sd;
+    w[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    w[5].pBufferInfo = &du;
+    vkUpdateDescriptorSets(ctx.device, 6, w, 0, nullptr);
 }
 
 void SatelliteSim::destroyLightningResources(VkDevice device)
@@ -590,7 +598,7 @@ void SatelliteSim::updateLightningBolts()
 // Inside the main render pass, after the scene and before the rain (recordDraw).
 void SatelliteSim::recordLightning(VkCommandBuffer cmd, VulkanContext &ctx)
 {
-    if (!boltPipeline || boltFlashCount == 0)
+    if (!boltPipeline || (boltFlashCount == 0 && engineLightCount == 0))
         return;
     BoltDrawPC pc{};
     pc.skyView = camera.viewMatrix();
@@ -599,13 +607,23 @@ void SatelliteSim::recordLightning(VkCommandBuffer cmd, VulkanContext &ctx)
     pc.screenH = (float)ctx.swapExtent.height;
     pc.aspect = pc.screenW / pc.screenH;
     pc.params = glm::vec4(skyExposure(), cv2LightningBolt, cv2LightningGlow, 0.0f);
-    pc.params2 = glm::vec4(cv2HighlightRolloff, (float)boltFlashCount, 0.0f, 0.0f);
+    pc.params2 = glm::vec4(cv2HighlightRolloff, (float)boltFlashCount, (float)engineLightCount, 0.0f);
     {
         const float ground = (terrainFrameMapped && (debugDisableMask & 1024u) == 0) ? terrainFrameMapped[1] : obsTerrainH;
         pc.spare = glm::vec4(std::max(ground + 2.0f, obsHeightOffset), 0.0f, 0.0f, 0.0f);
     }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, boltPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, boltPipeLayout, 0, 1, &boltDescSet, 0, nullptr);
+    // The burning engines' and the pads' light on the clouds, fog, haze and ground (2026-10-20, mode 2: one
+    // full-screen triangle looping over the engine lights; lightning.frag).
+    if (engineLightCount > 0)
+    {
+        pc.params.w = 2.0f;
+        vkCmdPushConstants(cmd, boltPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+    }
+    if (boltFlashCount == 0)
+        return;
     // The glow first (one full-screen triangle looping over the flashes' emitters), then the channels.
     pc.params.w = 1.0f;
     vkCmdPushConstants(cmd, boltPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);

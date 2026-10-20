@@ -192,6 +192,10 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
     vec3 L = vec3(0.0);
     float wT = 0.0;
     float Ls = 0.0;
+    // The engine lights (2026-10-20, SatelliteSim::engineLightAdd: the dust list's tail, count in dustPad0): the
+    // burning engines and the pads' floodlights light the plumes (and the exhaust round the pad) at night.
+    uint nEL = min(dustPad0, 32u);
+    vec3 LpE = vec3(0.0);
     for (uint i = 0u; i < n; ++i) {
         if (dot(dir, dust[i].cone.xyz) < dust[i].cone.w)
             continue;
@@ -234,6 +238,13 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
             // (a sharper shadow edge than the dust's: the bell's lit edge is where the Earth's shadow cuts it)
             float litP = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, dS);
             Lp   += tau * d.col.rgb * litP;          // the sunlight it scatters (the phase is applied below)
+            for (uint k = 0u; k < nEL; ++k) {
+                DustCloud el = dust[1024u + k];
+                vec3  rl = clamp(tc, 0.0, T) * dir - el.c.xyz;
+                float r2 = dot(rl, rl);
+                if (r2 > el.col.z * el.col.z) continue;
+                LpE += el.ia.rgb * (tau * (d.col.w - 2.0) * el.c.w / (r2 + el.ia.w * el.ia.w));
+            }
             Ls   += tau * (d.col.w - 2.0);            // its albedo (col.w = 2 + albedo)
             tauP += tau;
             tP   += tau * clamp(tc, 0.0, T);
@@ -252,7 +263,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
         // takes over (a thick sunlit trail is a white cloud: ~albedo / pi, not the phase's 0.05); the sky light on
         // it diffusely. Then the trail's opacity.
         float ms = 0.075 * (1.0 - exp(-0.6 * tauP));
-        Lp = Lp * (phaseP + ms) / tauP * (1.0 - exp(-tauP));
+        Lp = (Lp * (phaseP + ms) + LpE * (1.0 / (4.0 * PI) + ms)) / tauP * (1.0 - exp(-tauP));
         aP = Ls / tauP;
     }
     return L * phase;
