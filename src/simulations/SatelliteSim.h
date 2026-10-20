@@ -2794,11 +2794,13 @@ private:
     };
     std::vector<LaunchSound> launchSounds(double now, const glm::dvec3 &eye, float camAz) const;
     nlohmann::json launchCheckJson() const;
-    bool launchSelect(int kind, std::string &msg);
+    nlohmann::json launchJitterJson(int maxBatches); // harness `launch jitter`
+    void launchLegacyRecords(bool on);              // harness `launch legacy on|off`
+    bool launchSelect(int kind, std::string &msg, int member = -1); // member >= 0: only that member of a batch
     bool launchGoToNextReentry(std::string &msg);
     bool launchGoToVent(std::string &msg);
     bool launchGoToShipEntry(std::string &msg);
-    bool launchGoToStageEvent(std::string &msg, int ev);
+    bool launchGoToStageEvent(std::string &msg, int ev, const std::string &filter = "");
     void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
     void launchDestroy(VkDevice device);
 

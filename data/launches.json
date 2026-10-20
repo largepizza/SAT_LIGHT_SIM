@@ -40,7 +40,7 @@
   ],
   "vehicles": [
     {"id": "starship", "name": "Starship", "sites": ["starbase", "louisiana_a1", "louisiana_a2", "louisiana_b1", "louisiana_b2", "louisiana_c1", "louisiana_c2", "louisiana_d1", "louisiana_d2", "louisiana_e1", "louisiana_e2", "ksc_39a", "ccsfs_slc37", "vandenberg_slc6", "vandenberg_slc4e"],
-     "meco_s": 160, "meco_alt_km": 70, "meco_downrange_km": 75, "seco_s": 500, "deploy_after_seco_s": 1200, "deploy_interval_s": 8,
+     "meco_s": 160, "meco_alt_km": 70, "meco_downrange_km": 75, "seco_s": 500, "deploy_after_seco_s": 1200, "deploy_interval_s": 45, "sep_speed_mps": 0.7, "sep_spread_mps": 0.025,
      "flow1_kg_s": 21000, "flow2_kg_s": 4100, "exhaust1_m_s": 3200, "exhaust2_m_s": 3600,
      "booster": "tower", "flame1_mag_100km": -6.0, "flame2_mag_100km": -4.0,
      "upper_stage_deorbit": false, "upper_stage_mass_kg": 120000, "soot": 0.0, "vent_chance": 0.15},

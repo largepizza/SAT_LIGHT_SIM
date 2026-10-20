@@ -131,6 +131,10 @@ struct SatOrbitElems
     double argpDot = 0.0, raanDot = 0.0;
     bool forceTumble = false; // a dead satellite: the root group tumbles whatever its law
     bool restJoints = false;  // a train raising in the "open book" configuration (launches): joints at rest
+    // A satellite unfolding after its release (launches, 2026-10-19): its stowable parts (SatComponent::stow) go from
+    // stowed to deployed as the progress clamp((t - unfoldT0) / unfoldDur, 0, 1) goes 0 -> 1 (satUnfoldAt).
+    // unfoldDur 0 = deployed. sat_orbit.comp reads the same from a launch record's tumble words (flag bit 26).
+    double unfoldT0 = 0.0, unfoldDur = 0.0;
     double areaScale = 1.0;   // flux multiplier (a fragment against its type's model)
     // A transient object picked on screen (a rocket stage, a re-entry fireball: SatelliteSim's selTransient):
     // position, velocity and acceleration at fixT0, extrapolated quadratically. Rewritten every frame.
@@ -149,6 +153,14 @@ struct SatOrbitState
     glm::dvec3 velEci{0.0};  // m/s, the full velocity (Kessler: collisions, breakups)
 };
 SatOrbitState satOrbitStateAt(const SatOrbitElems &e, double tJ2000);
+// The unfolding progress (0 stowed .. 1 deployed) of a satellite at t (SatOrbitElems::unfoldT0 / unfoldDur).
+inline double satUnfoldAt(const SatOrbitElems &e, double tJ2000)
+{
+    if (e.unfoldDur <= 0.0)
+        return 1.0;
+    const double p = (tJ2000 - e.unfoldT0) / e.unfoldDur;
+    return p < 0.0 ? 0.0 : p > 1.0 ? 1.0 : p;
+}
 
 // ── Ground-site mirror aim (TargetedReflector / SunReflectGroundSite) ─────────────────────────
 // The CPU mirror of sat_orbit.comp's ground-site block, in double: each satellite picks a target

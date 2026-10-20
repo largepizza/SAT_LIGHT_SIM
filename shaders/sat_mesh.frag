@@ -169,6 +169,9 @@ bool rayBlocked(MeshInstance inst, vec3 p, vec3 dir)
         if (i == vComponent) continue;
         MeshOccluder O = occluders[inst.firstOccluder + i];
         if (O.kind > 4u) continue; // 0xFF: an open lattice (truss) — light passes between its members
+        vec3 sa;
+        float sroot;
+        if (instStowScale(inst, i, sa, sroot) < 1.0) continue; // stowed: not where its occluder says (launches)
         mat3 R = instGroupRot(inst, O.group);
         vec3 pr = transpose(R) * (p - inst.origin.xyz - inst.trans[O.group].xyz -
                                   instPivotOffset(inst, O.group, i)) - O.center; // occluder i = component i

@@ -1,0 +1,634 @@
+# Jitter of train members at 10x during a Starmind deployment (2026-10-19): the selected member's screen position
+# and GPU-vs-CPU range per frame, with the pre-fix launch records (`launch legacy on`) and the new ones; then the
+# GPU / CPU photometric parity of a member while it unfolds (state par1-4: selection.parity, photometry.unfold).
+launch deploy filter=Starmind
+wait 5
+launch select kind=upper
+follow offset=-200,500,-60
+time add 300
+wait 3
+follow aimat=-100,0,120
+wait 30
+launch select kind=train member=0
+time scale 10x
+time play
+launch legacy on
+wait 20
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+launch legacy off
+wait 20
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+wait 1
+state
+launch legacy off
+time pause
+time add 400
+wait 3
+launch select kind=train member=0
+wait 5
+state par1
+time add 60
+wait 5
+state par2
+time add 60
+wait 5
+state par3
+time add 120
+wait 5
+state par4

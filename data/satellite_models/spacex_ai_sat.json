@@ -1,6 +1,7 @@
 {
     "name": "SpaceX Starmind AI1 orbital data center satellite",
     "note": "Parity model for the v1.1 'SpaceX AI Satellites' type (Starmind AI1: up to a million satellites in sun-synchronous X-ring and 30 deg shells, FCC Table 1 of 29 May 2026). Body frame: +Z nadir, +X (the bus's long axis) as close to the Sun as it can be, +Y along the span. A flat 10 x 3 x 0.6 m bus (it stacks PEZ-style) with its 3 x 0.6 m end to the Sun; two white radiators, 10 m long, standing up from its zenith face and hanging from its nadir face (20 m top to bottom), edge-on to the Sun; two wings of three 3.2 m strips spanning 70 m, each on one truss to a pivot at its root, turning about the span axis to face the Sun. 10 lobes: a million satellites fly it. Trusses, gimbals, spars, fittings and terminals are render-only detail.",
+    "deployment": {"unfold_delay_s": 600, "unfold_s": 600},
     "materials": [
         {
             "name": "bus_metal",
@@ -79,6 +80,7 @@
         },
         {
             "name": "wing_pos_0",
+            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "plane",
             "group": "array",
             "size": [3.2333, 30.0],
@@ -89,6 +91,7 @@
         },
         {
             "name": "wing_pos_1",
+            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "plane",
             "group": "array",
             "size": [3.2333, 30.0],
@@ -99,6 +102,7 @@
         },
         {
             "name": "wing_pos_2",
+            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "plane",
             "group": "array",
             "size": [3.2333, 30.0],
@@ -109,6 +113,7 @@
         },
         {
             "name": "wing_neg_0",
+            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "plane",
             "group": "array",
             "size": [3.2333, 30.0],
@@ -119,6 +124,7 @@
         },
         {
             "name": "wing_neg_1",
+            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "plane",
             "group": "array",
             "size": [3.2333, 30.0],
@@ -129,6 +135,7 @@
         },
         {
             "name": "wing_neg_2",
+            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "plane",
             "group": "array",
             "size": [3.2333, 30.0],
@@ -139,6 +146,7 @@
         },
         {
             "name": "radiator_nadir",
+            "stow": {"axis": [0, 0, 1], "root": 0.35, "scale": 0.03, "phase": [0.0, 0.35]},
             "type": "plane",
             "group": "bus",
             "size": [10.0, 9.65],
@@ -148,6 +156,7 @@
         },
         {
             "name": "radiator_zenith",
+            "stow": {"axis": [0, 0, -1], "root": 0.35, "scale": 0.03, "phase": [0.0, 0.35]},
             "type": "plane",
             "group": "bus",
             "size": [10.0, 9.65],
@@ -157,6 +166,7 @@
         },
         {
             "name": "truss_pos",
+            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "box",
             "group": "bus",
             "size": [0.9, 2.8, 0.9],
@@ -166,6 +176,7 @@
         },
         {
             "name": "gimbal_pos",
+            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "cylinder",
             "group": "bus",
             "radius": 0.55,
@@ -177,6 +188,7 @@
         },
         {
             "name": "root_spar_pos",
+            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "box",
             "group": "array",
             "size": [10.0, 0.2, 0.3],
@@ -186,6 +198,7 @@
         },
         {
             "name": "tip_spar_pos",
+            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "box",
             "group": "array",
             "size": [10.0, 0.15, 0.2],
@@ -195,6 +208,7 @@
         },
         {
             "name": "centre_spar_pos",
+            "stow": {"axis": [0, 1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "box",
             "group": "array",
             "size": [0.35, 30.0, 0.3],
@@ -204,6 +218,7 @@
         },
         {
             "name": "truss_neg",
+            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "box",
             "group": "bus",
             "size": [0.9, 2.8, 0.9],
@@ -213,6 +228,7 @@
         },
         {
             "name": "gimbal_neg",
+            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "cylinder",
             "group": "bus",
             "radius": 0.55,
@@ -224,6 +240,7 @@
         },
         {
             "name": "root_spar_neg",
+            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "box",
             "group": "array",
             "size": [10.0, 0.2, 0.3],
@@ -233,6 +250,7 @@
         },
         {
             "name": "tip_spar_neg",
+            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "box",
             "group": "array",
             "size": [10.0, 0.15, 0.2],
@@ -242,6 +260,7 @@
         },
         {
             "name": "centre_spar_neg",
+            "stow": {"axis": [0, -1, 0], "root": 1.5, "scale": 0.03, "phase": [0.3, 1.0]},
             "type": "box",
             "group": "array",
             "size": [0.35, 30.0, 0.3],
@@ -482,6 +501,14 @@
             "status": "estimate",
             "value": "render-only detail materials (truss lattice 0.9 m bays, aluminium spars and gimbals, MLI terminal heads)",
             "source": "Visual only: these parts are render_only and never enter the photometry."
+        },
+        {
+            "subjects": [
+                "deployment"
+            ],
+            "status": "estimate",
+            "value": "leaves its dispenser stowed (each wing with its truss an accordion stack ~1 m wide at the bus's edge, each radiator folded flat on its bus face: 3% of their deployed extent); 10 min (+-15%) after release the radiators unfold over the first 3.5 min, then the wings over the next 7 min",
+            "source": "No published deployment sequence for Starmind. Estimate chosen so a Starship train (a satellite every 45 s, 0.7 m/s up) is a few hundred metres clear of the ship and its neighbours before anything unfolds; rolled-out (ROSA-like) arrays and folded radiators as on large modern buses."
         }
     ]
 }

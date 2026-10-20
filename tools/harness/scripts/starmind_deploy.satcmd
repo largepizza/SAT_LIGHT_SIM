@@ -1,0 +1,69 @@
+# A sunlit Starmind deployment from Starship (2026-10-19): the train leaves the ship's dispenser stowed, one every
+# 45 s, rises away as one string along its free-flight arc and unfolds (radiators, then wings) ~10 min after each
+# release.   python tools/harness/run.py tools/harness/scripts/starmind_deploy.satcmd
+launch deploy filter=Starmind
+wait 5
+launch jitter
+launch select kind=upper
+# Wide: the camera rides with the ship, 700 m to the side, looking at the arc the train climbs.
+follow offset=-250,700,120
+follow aimat=-200,0,160
+time pause
+wait settle
+capture wide_0000
+time add 70
+wait settle
+capture wide_0060
+time add 240
+wait settle
+capture wide_0300
+time add 300
+wait settle
+capture wide_0600
+time add 150
+wait settle
+capture wide_0750
+time add 150
+wait settle
+capture wide_0900
+time add 300
+wait settle
+capture wide_1200
+time add 300
+wait settle
+capture wide_1500
+# Close: the ship's dispenser at a release (the ship 120 m off)
+time add -1460
+wait 3
+follow offset=-60,90,40
+follow aim=sat
+wait settle
+capture ship_0040
+# Close: the first member out, from 150 m, through its unfolding
+time add 460
+wait 3
+launch select kind=train member=0
+follow offset=-60,120,50
+follow aim=sat
+wait settle
+capture mem_0500
+state mem_0500
+time add 130
+wait settle
+capture mem_0630
+time add 100
+wait settle
+capture mem_0730
+time add 100
+wait settle
+capture mem_0830
+time add 120
+wait settle
+capture mem_0950
+time add 150
+wait settle
+capture mem_1100
+state mem_1100
+time add 300
+wait settle
+capture mem_1400

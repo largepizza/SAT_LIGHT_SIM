@@ -526,7 +526,9 @@ json SatelliteSim::harnessStateJson()
                       {"i_sun", pr.intensitySun},
                       {"i_earth", pr.intensityEarth},
                       {"dominant_lobe", pr.dominantLobe},
-                      {"flare_units", pr.flareUnits * brightnessScale}};
+                      {"flare_units", pr.flareUnits * brightnessScale},
+                      {"unfold", satUnfoldAt(e, t)},
+                      {"rest_joints", e.restJoints}};
             AttGeometry geo;
             geo.nadir = pr.orbit.nadir;
             geo.velocity = pr.orbit.velocity;
@@ -2443,7 +2445,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // (2026-10-19) the next sunlit upper stage as it turns for its deorbit burn / 10 s before it deploys,
             // the observer 250 km aside (then `launch select kind=upper` and `follow`).
             std::string msg;
-            if (!launchGoToStageEvent(msg, sub == "deorbit" ? 2 : 3))
+            if (!launchGoToStageEvent(msg, sub == "deorbit" ? 2 : 3, c.str("filter", "")))
                 fail("launch " + sub + ": " + msg);
             r["message"] = msg;
             return Status::Done;
@@ -2474,9 +2476,22 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 if (!selectTransient(trKind > 10 ? 1 : trKind, msg, trKind > 10 ? trKind - 11 : -1))
                     fail("launch select: " + msg);
             }
-            else if (!launchSelect(kind == "retiree" ? 1 : 0, msg))
+            else if (!launchSelect(kind == "retiree" ? 1 : 0, msg, (int)c.num("member", -1.0)))
                 fail("launch select: " + msg);
             r["message"] = msg;
+            return Status::Done;
+        }
+        if (sub == "legacy")
+        {
+            // (2026-10-19) write the launch records the pre-fix way (diagnostics: an in-app before / after of the jitter)
+            launchLegacyRecords(lower(pos(1)) == "on");
+            r["message"] = std::string("legacy launch records ") + (lower(pos(1)) == "on" ? "on" : "off");
+            return Status::Done;
+        }
+        if (sub == "jitter")
+        {
+            r["jitter"] = launchJitterJson((int)c.num("batches", 6.0));
+            r["message"] = r["jitter"].dump();
             return Status::Done;
         }
         if (sub == "check")

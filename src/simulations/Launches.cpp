@@ -87,6 +87,8 @@ bool Catalog::load(const std::string &path, std::string &err)
             vh.t2 = v.value("seco_s", vh.t2);
             vh.deployAfter = v.value("deploy_after_seco_s", vh.deployAfter);
             vh.deployIntervalS = std::max(v.value("deploy_interval_s", vh.deployIntervalS), 0.0);
+            vh.sepSpeedMps = std::max(v.value("sep_speed_mps", vh.sepSpeedMps), 0.0);
+            vh.sepSpreadMps = std::max(v.value("sep_spread_mps", vh.sepSpreadMps), 0.0);
             vh.flow1 = v.value("flow1_kg_s", vh.flow1);
             vh.flow2 = v.value("flow2_kg_s", vh.flow2);
             vh.vex1 = v.value("exhaust1_m_s", vh.vex1);
@@ -360,6 +362,26 @@ Track upperTrack(const Vehicle &vh, double hPark)
     }
     tr.tEnd = (double)(tr.p.size() - 1) * tr.dt;
     return tr;
+}
+
+void cwFree(const glm::dvec3 &v0, double n, double t, glm::dvec3 &p, glm::dvec3 &v)
+{
+    const double c = std::cos(n * t), s = std::sin(n * t);
+    const double vr = v0.x, va = v0.y, vc = v0.z;
+    p = glm::dvec3(vr / n * s + 2.0 * va / n * (1.0 - c), 2.0 * vr / n * (c - 1.0) + va * (4.0 * s / n - 3.0 * t),
+                   vc / n * s);
+    v = glm::dvec3(vr * c + 2.0 * va * s, -2.0 * vr * s + va * (4.0 * c - 3.0), vc * c);
+}
+
+void cwState(const glm::dvec3 &p0, const glm::dvec3 &v0, double n, double t, glm::dvec3 &p, glm::dvec3 &v)
+{
+    const double c = std::cos(n * t), s = std::sin(n * t);
+    const double x0 = p0.x, y0 = p0.y, z0 = p0.z, xd = v0.x, yd = v0.y, zd = v0.z;
+    p = glm::dvec3((4.0 - 3.0 * c) * x0 + s / n * xd + 2.0 / n * (1.0 - c) * yd,
+                   6.0 * (s - n * t) * x0 + y0 - 2.0 / n * (1.0 - c) * xd + (4.0 * s - 3.0 * n * t) / n * yd,
+                   c * z0 + s / n * zd);
+    v = glm::dvec3(3.0 * n * s * x0 + c * xd + 2.0 * s * yd, 6.0 * n * (c - 1.0) * x0 - 2.0 * s * xd + (4.0 * c - 3.0) * yd,
+                   -n * s * z0 + c * zd);
 }
 
 double rampPhase(double a0, double a1, double T, double tau)

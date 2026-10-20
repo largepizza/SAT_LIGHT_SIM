@@ -349,9 +349,15 @@ void SatMeshRenderer::setTypeModels(VulkanContext &ctx, const std::vector<TypeMo
         }
         out.firstComponent = (uint32_t)comps.size();
         for (const SatComponent &c : tm.model->components)
+        {
             // w = parent group (-1 = root), + 100 for a render-only part (sat_mesh_common.glsl
             // instCompRenderOnly): its light is not in the photometric model the bloom is normalised by.
             comps.push_back(glm::vec4(c.pivot, (float)tm.model->groups[c.group].parent + (c.renderOnly ? 100.0f : 0.0f)));
+            // Stowed for launch (instStowScale): the axis x (1 - stowScale), the root; the unfolding window.
+            comps.push_back(glm::vec4(c.stowScale < 1.0f ? c.stowAxis * (1.0f - c.stowScale) : glm::vec3(0.0f),
+                                      c.stowRoot));
+            comps.push_back(glm::vec4(c.stowP0, c.stowP1, 0.0f, 0.0f));
+        }
         out.firstOccluder = (uint32_t)occs.size();
         if (tm.occlusion)
         {

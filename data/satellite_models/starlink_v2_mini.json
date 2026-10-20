@@ -1,6 +1,7 @@
 {
     "name": "Starlink V2 Mini (on-station, brightness-mitigated)",
     "note": "Benchmark model for Mallama et al. 2023 (mallama2023_v2mini): V2 Minis in SpaceX's on-station mitigation conops. Body frame: +Z nadir, +X velocity, +Y = +Z x +X. Nadir face under the gen-2 dielectric mirror film, the rest of the bus black; arrays track the Sun but never tip their plane below the Earth's limb. Orbit raising, station-keeping burns and deorbit (unmitigated, ~5 at 1000 km) are not modelled.",
+    "deployment": {"unfold_delay_s": 900, "unfold_s": 240},
     "attitude_groups": [
         {
             "name": "bus",
@@ -47,6 +48,7 @@
         },
         {
             "name": "array_left",
+            "stow": {"axis": [0, 1, 0], "root": 1.85, "scale": 0.04, "phase": [0.0, 1.0]},
             "type": "plane",
             "group": "wings",
             "size": [4.1, 12.8],
@@ -57,6 +59,7 @@
         },
         {
             "name": "array_right",
+            "stow": {"axis": [0, -1, 0], "root": 1.85, "scale": 0.04, "phase": [0.0, 1.0]},
             "type": "plane",
             "group": "wings",
             "size": [4.1, 12.8],
@@ -93,6 +96,14 @@
             "status": "sourced",
             "value": "two 4.1 x 12.8 m arrays; dark inter-cell cells, opaque dark backsheet",
             "source": "McDowell, planet4589.org/astro/starsim (V2 Mini: bus 4.1 x 2.7 m, solar array 4.1 x 12.8 m per wing). SpaceX, 'Brightness Mitigation Best Practices for Satellite Operators' (2022, starlink.com/public-files/BrightnessMitigationBestPracticesSatelliteOperators.pdf): 'an opaque pigment for the solar backsheet'. Backsheet reflectance: the array_backsheet_dark preset (estimate). 0.5 m boom gap: estimate."
+        },
+        {
+            "subjects": [
+                "deployment"
+            ],
+            "status": "estimate",
+            "value": "arrays leave the stack folded (4% of their span, at the bus edge) and unfold over 4 min, 15 min (+-15%) after release",
+            "source": "SpaceX describes the arrays unfolding after the satellites leave the stack; no timeline is published. Estimate."
         }
     ]
 }

@@ -264,6 +264,14 @@ struct SatComponent
     // to change a magnitude. loadSatModel moves these after every photometric component, so the
     // photometric components keep indices 0..n-1 and occluder i stays component i.
     bool renderOnly = false;
+    // Stowed for launch (JSON "stow", 2026-10-19): an accordion-folded array or radiator packs toward its root. With
+    // the unfolding progress P (SatOrbitElems::unfoldT0/Dur; 1 = deployed) its extent along stowAxis beyond the plane
+    // dot(stowAxis, x) = stowRoot (rest BODY frame) is scaled by s = mix(stowScale, 1, smoothstep(stowP0, stowP1, P)).
+    // stowScale 1 = never stowed. The photometry scales the lobes it is part of by the same area (GpuSatLobe::stowPack).
+    glm::vec3 stowAxis{0.0f};
+    float stowRoot = 0.0f;
+    float stowScale = 1.0f;
+    float stowP0 = 0.0f, stowP1 = 1.0f;
 };
 
 // Provenance of one part of a model (benchmarking M4): every group, component and model-local
@@ -291,6 +299,9 @@ struct SatModel
     std::vector<SatComponent> components;
     std::vector<SatModelSource> sources;
     std::vector<std::string> localMaterials; // materials defined in the model file (need sources)
+    // Deployment after release from a launch vehicle (JSON "deployment", 2026-10-19): the stowable components unfold
+    // over unfoldDurS, starting unfoldDelayS after the satellite leaves its dispenser. 0 = arrives deployed.
+    double unfoldDelayS = 0.0, unfoldDurS = 0.0;
 };
 
 // Does component `ci` block light in the photometry and the renderer's shadows? Not when it is
@@ -347,7 +358,10 @@ struct GpuSatLobe
     uint32_t distribution; // 0 = GGX, 1 = Beckmann (the majority by area of the merged faces)
     float transmission;    // Phase 4f: diffuse transmission, V band (SatMaterial::transmission), 0 = opaque
     uint32_t occluderMaskHi; // occluders 32-63 (kMaxOccluders = 64 since the ISS model)
-    uint32_t pad2;
+    // Stowed parts in this lobe (2026-10-19): bits 0-15 k = the area share lost when fully stowed (Σ share x (1 -
+    // stowScale)), 16-23 / 24-31 the unfolding window p0 / p1 (x 255). Unfolding progress P: the lobe's area x
+    // (1 - k (1 - smoothstep(p0, p1, P))). 0 = nothing stowable. satLobeStowFactor(); sat_orbit.comp lobeStow().
+    uint32_t stowPack;
 };
 static_assert(sizeof(GpuSatLobe) == 64, "GpuSatLobe layout mismatch");
 
@@ -493,9 +507,14 @@ double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<Atti
 // Lobe `li`'s normal in the world frame the poses are in.
 glm::dvec3 satLobeNormalPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                               const std::vector<GroupPose> &poses, int li);
+// The area factor of a lobe at unfolding progress P (GpuSatLobe::stowPack): 1 deployed.
+double satLobeStowFactor(uint32_t stowPack, double P);
+// A component's stow scale at unfolding progress P (SatComponent::stow*): 1 deployed.
+double satComponentStowScale(const SatComponent &c, double P);
 double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                          const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o, double sourceAlpha2,
-                         int *dominant = nullptr, const SatOcclusion *occ = nullptr, bool occludeSource = true);
+                         int *dominant = nullptr, const SatOcclusion *occ = nullptr, bool occludeSource = true,
+                         double unfold = 1.0);
 
 // Intensity of one flat facet or lobe per unit irradiance — the formula every evaluator above (and
 // sat_orbit.comp's lobeIntensity()) uses. `a2` includes the source-size term.
@@ -547,7 +566,7 @@ double satLobeEarthIntensity(glm::dvec3 n, double area, double diffArea, double 
 // Σ over the posed lobes of satLobeEarthIntensity (occlusion: the observer ray only).
 double evalSatLobesEarthPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                               const std::vector<GroupPose> &poses, const SatEarthLight &earth, glm::dvec3 o,
-                              const SatOcclusion *occ = nullptr);
+                              const SatOcclusion *occ = nullptr, double unfold = 1.0);
 
 // How much does self-shadowing (all groups, posed) change the model's brightness? Poses the model
 // at `samples` random geometries — sun anywhere that lights the satellite, observer within the
