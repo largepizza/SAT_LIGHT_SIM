@@ -129,6 +129,8 @@ struct LBatch
     uint32_t nUp[2] = {0, 0};        // members up then
     std::vector<double> ends;        // the retirees' re-entries, sorted
     uint32_t touched = 0;
+    bool inChunked = false;          // listed in LaunchState::chunked (it holds GPU chunks)
+    uint32_t liveIdx = UINT32_MAX;   // its index in the live list it was last put in
     double tDeorbBurn = 0.0, tStageRE = 0.0, tStageGone = 0.0;
     // The upper stage's deorbit (every stage burns, expendable or returning): a burn of burnDur from tDeorbBurn that
     // puts it on an ellipse with its apoapsis there (angle thApo in the plane, from U0); it reaches the entry interface
@@ -272,7 +274,8 @@ struct LCoast
     float floorM = 2.5f;
     std::vector<uint8_t> grid;
 };
-constexpr double kCoastSdfMaxM = 3000.0; // == tools/make_pad_coasts.py SDF_MAX_M (terrain_detail.glsl kCoastSdfMaxM)
+constexpr double kCoastSdfMaxM = 3000.0;
+constexpr double kTwoPi1p5 = 15.749609945722419; // (2 pi)^1.5: a 3D Gaussian's normalisation // == tools/make_pad_coasts.py SDF_MAX_M (terrain_detail.glsl kCoastSdfMaxM)
 
 static std::vector<uint8_t> base64Decode(const std::string &in)
 {
@@ -424,9 +427,38 @@ struct SatelliteSim::LaunchState
     uint64_t stackMeshKey[SatelliteSim::kStackMeshSlots] = {}; // per reserved slot: batch key ^ (member + 1) << 48
     uint32_t nStacked = 0, nFairings = 0;
     double lastFullFreeT = -1e300; // the last full pass over the batches (launchUpdate's freeing)
+    // (2026-10-20, CPU) The window walk's result, reused while sim time stays within kWalkMarginS (300 s) of walkT:
+    // every plane and a hash lookup per batch each frame was ~0.33 ms with Starmind's ~5300 live batches.
+    std::vector<std::pair<uint64_t, LBatch *>> walkList; // sorted by key; invalid batches too (they are touched)
+    double walkT = -1e300;
+    bool walkOk = false;            // complete (no build budget hit) and current
+    uint64_t batchEpoch = 0;        // bumped whenever a batch that may be listed is erased
+    uint64_t walkEpoch = ~0ull;
+    double freeLo = 0.0, freeHi = -1.0; // launchUpdate's freeing: no chunked batch's need changes for t in [lo, hi)
+    bool freeForce = true;
+    uint32_t walkFrame = UINT32_MAX; // the frame of the walk the live list comes from (batches touched then)
+    // The batches holding GPU chunks (the freeing pass looks at these only).
+    std::vector<LBatch *> chunked;
+    std::vector<uint8_t> upScratch;
+    // Per live batch (parallel to livePtr, 2026-10-20): its raising and falling times, and whether it holds chunks.
+    struct LiveTimes
+    {
+        double tD, tA, tEnd; // tEnd = the last retiree's re-entry + 1 s
+    };
+    std::vector<LiveTimes> liveT;
+    // ... and the interval of t in which its last look found nothing due, with its counts then (2026-10-20, CPU).
+    struct LiveSkip
+    {
+        double lo = 1.0, hi = 0.0; // empty
+        uint32_t addT = 0, addR = 0;
+    };
+    std::vector<LiveSkip> liveSkip;
+    std::vector<uint8_t> liveCh;
+    std::vector<std::pair<uint64_t, LBatch *>> visList; // the live batches with something to draw near now // launchUpdate's per-batch "member up now" flags (reused)
     // CPU time per part (ms, eased over ~30 frames; harness `launch state` -> cpu_split_ms, 2026-10-20): 0 window walk,
     // 1 live list, 2 freeing, 3 record writes, 4 the rest of launchUpdate, 5 pad lights, 6 the visuals' batch loop.
-    double prof[8] = {};
+    double prof[12] = {};
+    uint32_t nDueEval = 0, nFinds = 0; // this frame: batches whose members were tested for a write; window lookups
     void profAdd(int i, std::chrono::steady_clock::time_point &t0)
     {
         const auto t1 = std::chrono::steady_clock::now();
@@ -465,6 +497,11 @@ void SatelliteSim::launchInitBlock()
     L.planesBuilt = false;
     L.planes.clear();
     L.batches.clear();
+    L.walkOk = false;
+    L.walkList.clear();
+    L.visList.clear();
+    L.chunked.clear();
+    ++L.batchEpoch;
     L.cands.clear();
     L.planesBySite.clear();
     L.slots.assign(kLaunchCap, SlotInfo{});
@@ -2341,7 +2378,10 @@ static void crewSync(const SatelliteSim &sim, SatelliteSim::LaunchState &L)
         // (a crew batch carries no train and no retirees: no GPU chunks to release)
         if (B.chunks[0].empty() && B.chunks[1].empty() &&
             std::find(changed.begin(), changed.end(), B.plane) != changed.end())
+        {
             it = L.batches.erase(it);
+            ++L.batchEpoch; // (it may be in the window walk's list)
+        }
         else
             ++it;
     }
@@ -2356,6 +2396,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         launchInitBlock();
     LaunchState &L = *launchState;
     L.nRockets = L.nTrain = L.nRetire = L.nWrites = L.nBatches = 0;
+    L.nDueEval = L.nFinds = 0;
     ++L.frame;
     LaunchImpl::ensureCatalog(L);
     if (kesslerBuf == VK_NULL_HANDLE || activeSatCount == 0)
@@ -2377,6 +2418,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         }
         for (auto &kv : L.batches)
             kv.second.tw[0] = kv.second.tw[1] = -1e300; // every batch due again
+        std::fill(L.liveSkip.begin(), L.liveSkip.end(), LaunchState::LiveSkip{}); // (their skip intervals with them)
     }
     // A new design-life scale reshuffles every refresh: start over.
     if (L.planesBuilt && (L.lifeScale != launchLifeScale || (L.afterStorm >= 0 && L.afterStorm != launchAfterStorm)))
@@ -2404,6 +2446,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             si.shown = false;
         for (auto &kv : L.batches)
             kv.second.tw[0] = kv.second.tw[1] = -1e300;
+        std::fill(L.liveSkip.begin(), L.liveSkip.end(), LaunchState::LiveSkip{}); // (their skip intervals with them)
     }
     const bool on = launchesEnabled && L.loaded;
     if (on && !L.planesBuilt)
@@ -2412,10 +2455,19 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     std::vector<std::pair<uint64_t, LBatch *>> touchedP;
     auto pt = std::chrono::steady_clock::now();
-    if (on)
+    constexpr double kWalkMarginS = 300.0;
+    const bool reuseWalk = on && L.walkOk && L.walkEpoch == L.batchEpoch && std::abs(t - L.walkT) < kWalkMarginS;
+    // Reused, nothing is touched again: "touched now" is B.touched == L.walkFrame (the frame of the current walk).
+    if (reuseWalk)
     {
-        // Batches that matter now: from before the launch to the last retiree's re-entry.
+    }
+    else if (on)
+    {
+        // Batches that matter now: from before the launch to the last retiree's re-entry. The list is reused while t
+        // stays within kWalkMarginS of this walk: the window's edges are days from any launch or re-entry, so a batch
+        // entering or leaving it a few minutes late changes nothing drawn (and the batches built stay the same).
         int builds = 0;
+        L.walkList.clear();
         for (size_t pi = 0; pi < L.planes.size(); ++pi)
         {
             const LPlane &pl = L.planes[pi];
@@ -2433,6 +2485,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 {
                     const uint64_t key = batchKey((int)pi, k, b);
                     auto it = L.batches.find(key);
+                    ++L.nFinds;
                     if (it == L.batches.end())
                     {
                         // At most a few hundred new batches a frame (the first frame finds every train in the sky).
@@ -2446,24 +2499,60 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                         it = L.batches.emplace(key, std::move(nb)).first;
                     }
                     it->second.touched = L.frame;
+                    L.walkList.push_back({key, &it->second});
                     if (it->second.valid)
                         touchedP.push_back({key, &it->second});
                 }
             }
         }
+        std::sort(L.walkList.begin(), L.walkList.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+        L.walkOk = builds <= 200;
+        L.walkT = t;
+        L.walkFrame = L.frame;
+        L.walkEpoch = L.batchEpoch;
     }
+    else
+        L.walkOk = false;
     L.profAdd(0, pt);
     // (2026-10-20: the batches by pointer: Starmind's eight-a-launch trains made ~5000 live batches, and the hash
     // lookups over them each frame cost ~0.5 ms.)
-    std::sort(touchedP.begin(), touchedP.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-    std::vector<uint64_t> touched(touchedP.size());
-    L.livePtr.resize(touchedP.size());
-    for (size_t i = 0; i < touchedP.size(); ++i)
+    if (!reuseWalk) // (reused: the live list stands)
     {
-        touched[i] = touchedP[i].first;
-        L.livePtr[i] = touchedP[i].second;
+        if (!on)
+            L.walkFrame = UINT32_MAX; // nothing touched now
+        std::sort(touchedP.begin(), touchedP.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+        L.live.resize(touchedP.size());
+        L.livePtr.resize(touchedP.size());
+        L.liveT.resize(touchedP.size());
+        L.liveSkip.assign(touchedP.size(), LaunchState::LiveSkip{});
+        L.liveCh.resize(touchedP.size());
+        for (size_t i = 0; i < touchedP.size(); ++i)
+        {
+            L.live[i] = touchedP[i].first;
+            LBatch *pb = touchedP[i].second;
+            L.livePtr[i] = pb;
+            pb->liveIdx = (uint32_t)i;
+            L.liveT[i] = {pb->tD, pb->tA, pb->ends.empty() ? pb->tA : pb->ends.back() + 1.0};
+            L.liveCh[i] = pb->inChunked ? 1 : 0;
+        }
     }
-    L.live = touched;
+    const std::vector<uint64_t> &touched = L.live;
+    // The batches launchFillVisuals has anything to draw for around now (2026-10-20, CPU: it looked at all ~5300):
+    // their rocket, plumes and stages (tL - 600 s .. tVisEnd) or retirees' re-entries (tA .. the last + 200 s), with the
+    // walk's margin, rebuilt with the walk.
+    if (!reuseWalk)
+    {
+        L.visList.clear();
+        for (size_t i = 0; i < touched.size(); ++i)
+        {
+            const LBatch &B = *L.livePtr[i];
+            const bool rocket = t + kWalkMarginS >= B.tL - 600.0 && t - kWalkMarginS <= B.tVisEnd;
+            const bool re = !B.ends.empty() && t + kWalkMarginS >= std::max(B.tA, B.ends.front()) &&
+                            t - kWalkMarginS <= B.ends.back() + 200.0;
+            if (rocket || re)
+                L.visList.push_back({touched[i], L.livePtr[i]});
+        }
+    }
     L.nBatches = (uint32_t)touched.size();
     L.profAdd(1, pt);
     // GPU chunks: a batch holds the train's while any member climbs, the retirees' while any falls.
@@ -2510,55 +2599,94 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     };
     // Free what no longer matters (a batch out of the window, retirees all down, launches off). The whole map every 8th
     // frame (and after a jump), else only the live batches (2026-10-20: ~6000 batches a frame cost ~0.3 ms).
+    // freeLo / freeHi (2026-10-20, CPU): the interval of t in which no chunked batch's need changes; the pass is skipped
+    // inside it while the walk stands.
+    double freeLo = -1e300, freeHi = 1e300;
+    bool freeBlocked = false;
     auto freeBatch = [&](LBatch &B) {
         for (int kind = 0; kind < 2; ++kind)
         {
             if (B.chunks[kind].empty())
                 continue;
-            const bool need = on && B.touched == L.frame && B.valid &&
-                              (kind == 0 ? (t >= B.tD && t < B.tA) : (t >= B.tA && t < B.tA + 400.0 * kDay));
-            if (!need && nStage + kChunk * (uint32_t)B.chunks[kind].size() <= LaunchState::kStageRecs)
+            const double b0 = kind == 0 ? B.tD : B.tA;
+            const double b1 = kind == 0 ? B.tA : B.tA + 400.0 * kDay;
+            const bool need = on && B.touched == L.walkFrame && B.valid && t >= b0 && t < b1;
+            if (t < b0)
+                freeHi = std::min(freeHi, b0);
+            else if (t < b1)
             {
-                releaseChunks(B.chunks[kind]);
-                B.tw[kind] = -1e300;
-                B.nUp[kind] = 0;
+                freeLo = std::max(freeLo, b0);
+                freeHi = std::min(freeHi, b1);
+            }
+            else
+                freeLo = std::max(freeLo, b1);
+            if (!need)
+            {
+                if (nStage + kChunk * (uint32_t)B.chunks[kind].size() <= LaunchState::kStageRecs)
+                {
+                    releaseChunks(B.chunks[kind]);
+                    B.tw[kind] = -1e300;
+                    B.nUp[kind] = 0;
+                    if (B.liveIdx < L.livePtr.size() && L.livePtr[B.liveIdx] == &B)
+                        L.liveSkip[B.liveIdx] = LaunchState::LiveSkip{};
+                }
+                else
+                    freeBlocked = true;
             }
         }
     };
-    const bool fullFree = (L.frame % 8u) == 0u || !on || std::abs(t - L.lastFullFreeT) > 600.0;
-    if (fullFree)
-        L.lastFullFreeT = t;
-    else
-        for (LBatch *pb : L.livePtr)
-            freeBatch(*pb);
-    for (auto it = fullFree ? L.batches.begin() : L.batches.end(); it != L.batches.end();)
+    // (2026-10-20, CPU) Every frame over the batches that hold chunks (LaunchState::chunked), whether listed this frame
+    // or not; the batches no longer touched are erased in a pass every 64th frame. It walked the live list each frame
+    // and the whole map every 8th (~0.14 ms with ~5300 live batches); a batch out of the window now gives its chunks
+    // back the frame it leaves (up to 8 frames sooner).
+    // (Only while the staging can take every hide: a freed slot whose record stayed up would be a ghost.)
+    if (!reuseWalk || !on || L.freeForce || t < L.freeLo || t >= L.freeHi)
     {
-        LBatch &B = it->second;
-        for (int kind = 0; kind < 2; ++kind)
+        size_t w = 0;
+        for (size_t i = 0; i < L.chunked.size(); ++i)
         {
-            if (B.chunks[kind].empty())
-                continue;
-            const bool need = on && B.touched == L.frame && B.valid &&
-                              (kind == 0 ? (t >= B.tD && t < B.tA) : (t >= B.tA && t < B.tA + 400.0 * kDay));
-            // (Only while the staging can take every hide: a freed slot whose record stayed up would be a ghost.)
-            if (!need && nStage + kChunk * (uint32_t)B.chunks[kind].size() <= LaunchState::kStageRecs)
+            LBatch *pb = L.chunked[i];
+            freeBatch(*pb);
+            if (pb->chunks[0].empty() && pb->chunks[1].empty())
             {
-                releaseChunks(B.chunks[kind]);
-                B.tw[kind] = -1e300;
-                B.nUp[kind] = 0;
+                pb->inChunked = false;
+                if (pb->liveIdx < L.livePtr.size() && L.livePtr[pb->liveIdx] == pb)
+                    L.liveCh[pb->liveIdx] = 0;
             }
+            else
+                L.chunked[w++] = pb;
         }
-        if (B.touched + 600 < L.frame && B.chunks[0].empty() && B.chunks[1].empty())
-            it = L.batches.erase(it);
-        else
-            ++it;
+        L.chunked.resize(w);
+        L.freeLo = freeLo;
+        L.freeHi = freeHi;
+        L.freeForce = freeBlocked;
+    }
+    const bool fullFree = (L.frame % 64u) == 0u || !on || std::abs(t - L.lastFullFreeT) > 600.0;
+    if (fullFree)
+    {
+        L.lastFullFreeT = t;
+        for (auto it = L.batches.begin(); it != L.batches.end();)
+        {
+            const LBatch &B = it->second;
+            if (B.touched + 600 < L.frame && B.touched != L.walkFrame && B.chunks[0].empty() && B.chunks[1].empty())
+                it = L.batches.erase(it);
+            else
+                ++it;
+        }
     }
     L.profAdd(2, pt);
     // Writes: members coming up first, then the stalest. A record is rewritten every ~20 s of sim time (the GPU
     // carries it on as a Kepler orbit meanwhile: the climb's drift over 20 s is under a metre).
     const double tEpoch = (double)orbitEpochDay * 86400.0 + orbitEpochSec;
     uint32_t budget = 1200;
+    double writeMs = 0.0;
     auto writeMember = [&](LBatch &B, int kind, uint32_t mi, uint32_t slot) {
+        struct WT
+        {
+            double &acc;
+            std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+            ~WT() { acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); }
+        } wt{writeMs};
         const LMember &mb = B.mem[mi];
         GpuKepOrbit g{};
         SatOrbitElems ce{};
@@ -2594,12 +2722,56 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         for (size_t q = 0; q < nb; ++q)
         {
             const size_t bi = (L.cursor + q) % nb;
+            // (2026-10-20, CPU) From the compact copy, without touching the batch: outside its train's raising and its
+            // retirees' fall and holding no chunks, there is nothing to write or hide (the loop below would only
+            // find nobody up).
+            {
+                const LaunchState::LiveTimes &c = L.liveT[bi];
+                if (!(t >= c.tD && t < c.tA) && !(t >= c.tA && t < c.tEnd) && !L.liveCh[bi])
+                    continue;
+                // ... and inside the interval its last look found it not due (nothing changes there but t).
+                const LaunchState::LiveSkip &sk = L.liveSkip[bi];
+                if (t >= sk.lo && t < sk.hi)
+                {
+                    nT += sk.addT;
+                    nR += sk.addR;
+                    continue;
+                }
+            }
             LBatch &B = *L.livePtr[bi];
+            // The interval of t around now in which this batch stays exactly as found (no kind due, none entering or
+            // leaving its phase), and what it adds to the counts meanwhile; cache = false when it cannot be known.
+            double skLo = -1e300, skHi = 1e300;
+            bool skOk = true;
+            uint32_t skT = 0, skR = 0;
+            auto notDueSpan = [&](int kind, double tw, double every, double relEnd) {
+                skLo = std::max(skLo, tw - every);
+                skHi = std::min(skHi, tw + every);
+                if (kind == 0 && every > 2.5)
+                    skLo = std::max(skLo, relEnd + 600.0); // (below it, every 2 s)
+                if (kind == 1)
+                {
+                    auto it = std::upper_bound(B.ends.begin(), B.ends.end(), tw);
+                    if (it != B.ends.end())
+                        skHi = std::min(skHi, *it);     // the next re-entry after tw makes it due
+                    if (it != B.ends.begin())
+                        skLo = std::max(skLo, *(it - 1)); // going back, the last one at or before tw does
+                }
+            };
             for (int kind = 0; kind < 2; ++kind)
             {
-                const bool phase = kind == 0 ? (t >= B.tD && t < B.tA) : (t >= B.tA && t < B.tA + 400.0 * kDay);
+                const double pb0 = kind == 0 ? B.tD : B.tA, pb1 = kind == 0 ? B.tA : B.tA + 400.0 * kDay;
+                const bool phase = t >= pb0 && t < pb1;
                 if (!phase)
+                {
+                    if (t < pb0)
+                        skHi = std::min(skHi, pb0);
+                    else
+                        skLo = std::max(skLo, pb1);
                     continue;
+                }
+                skLo = std::max(skLo, pb0);
+                skHi = std::min(skHi, pb1);
                 std::vector<uint32_t> &ch = B.chunks[kind];
                 // While the train leaves the dispenser (and its first minutes, drifting from the stage at a fraction
                 // of a m/s) every 2 s, so each member appears at its release and the separation stays smooth.
@@ -2617,10 +2789,33 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 if (!due || (budget == 0 && !ch.empty()))
                 {
                     (kind == 0 ? nT : nR) += B.nUp[kind];
+                    if (due)
+                        skOk = false;
+                    else
+                    {
+                        notDueSpan(kind, B.tw[kind], every, relEnd);
+                        (kind == 0 ? skT : skR) += B.nUp[kind];
+                    }
                     continue;
                 }
                 // Who is up now (Kessler may have taken a slot; a retiree is gone at its re-entry).
-                std::vector<uint8_t> upNow(B.mem.size(), 0);
+                // Nobody can be up (before the first release; after the last re-entry): nothing to test (2026-10-20,
+                // CPU: ~200 batches a frame rebuilt this answer member by member).
+                if (ch.empty() && (B.mem.empty() || (kind == 0 ? t < B.mem.front().tRel : t >= B.ends.back())))
+                {
+                    B.nUp[kind] = 0;
+                    if (!B.mem.empty())
+                    {
+                        if (kind == 0)
+                            skHi = std::min(skHi, B.mem.front().tRel);
+                        else
+                            skLo = std::max(skLo, B.ends.back());
+                    }
+                    continue;
+                }
+                ++L.nDueEval;
+                std::vector<uint8_t> &upNow = L.upScratch;
+                upNow.assign(B.mem.size(), 0);
                 uint32_t up = 0;
                 for (size_t m = 0; m < B.mem.size(); ++m)
                 {
@@ -2631,17 +2826,34 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 if (up == 0 && ch.empty())
                 {
                     B.nUp[kind] = 0;
+                    skOk = false; // (nobody allowed: the Kessler roster, not t, decides)
                     continue;
                 }
                 const uint32_t need = (uint32_t)((B.mem.size() + kChunk - 1) / kChunk);
                 if (ch.size() < need)
                 {
                     if (L.freeChunks.size() < need - ch.size())
+                    {
+                        skOk = false;
                         continue; // the block is full: this batch waits
+                    }
                     while (ch.size() < need)
                     {
                         ch.push_back(L.freeChunks.back());
                         L.freeChunks.pop_back();
+                    }
+                    if (!B.inChunked)
+                    {
+                        B.inChunked = true;
+                        L.chunked.push_back(&B);
+                    }
+                    L.liveCh[bi] = 1;
+                    // Its need interval (freeBatch): the skipped freeing pass must still see it end.
+                    {
+                        const double b0 = kind == 0 ? B.tD : B.tA;
+                        const double b1 = kind == 0 ? B.tA : B.tA + 400.0 * kDay;
+                        L.freeLo = std::max(L.freeLo, b0);
+                        L.freeHi = std::min(L.freeHi, b1);
                     }
                     const uint64_t owner = touched[bi] * 2 + (uint64_t)kind;
                     for (uint32_t m = 0; m < (uint32_t)B.mem.size(); ++m)
@@ -2673,9 +2885,16 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 }
                 B.nUp[kind] = up;
                 if (complete)
+                {
                     B.tw[kind] = t;
+                    notDueSpan(kind, t, every, relEnd);
+                    (kind == 0 ? skT : skR) += up;
+                }
+                else
+                    skOk = false;
                 (kind == 0 ? nT : nR) += up;
             }
+            L.liveSkip[bi] = skOk ? LaunchState::LiveSkip{skLo, skHi, skT, skR} : LaunchState::LiveSkip{};
         }
         L.nTrain = nT;
         L.nRetire = nR;
@@ -2683,6 +2902,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             L.cursor = (L.cursor + 97) % nb;
     }
     L.profAdd(3, pt);
+    L.prof[8] += (writeMs - L.prof[8]) / 30.0;
     L.active = std::any_of(L.slots.begin(), L.slots.end(), [](const SlotInfo &s) { return s.shown; });
     L.profAdd(4, pt);
     if (copies.empty())
@@ -2890,16 +3110,18 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         const double miss = glm::length(eye + tc * u);
         return miss < kR - R;
     };
-    std::vector<Cand> plumes;
+    static std::vector<Cand> plumes; // (kept: its capacity is reused frame to frame; main thread only)
+    plumes.clear();
     double plumeMs = 0.0;
+    double reMs = 0.0, buildMs = 0.0;
     const double nightBoost = 1.0 + 9.0 * (1.0 - dayness);
     const double pixA = ctx_ ? 2.0 * std::tan(0.5 * glm::radians((double)camera.fovYDeg)) /
                                    (double)std::max(1u, ctx_->swapExtent.height)
                              : 1e-3;
-    for (size_t li = 0; li < L.live.size() && li < L.livePtr.size(); ++li)
+    for (size_t li = 0; li < L.visList.size(); ++li)
     {
-        const uint64_t key = L.live[li];
-        LBatch &B = *L.livePtr[li];
+        const uint64_t key = L.visList[li].first;
+        LBatch &B = *L.visList[li].second;
         const launch::Vehicle &vh = L.cat.vehicles[B.veh];
         // Retirees re-entering: their fireballs.
         bool anyRe = false;
@@ -2909,6 +3131,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             anyRe = it != B.ends.end() && *it <= t;
         }
         if (anyRe)
+        {
+        const auto reT0 = std::chrono::steady_clock::now();
             for (size_t mi = 0; mi < B.mem.size(); ++mi)
             {
                 const LMember &mb = B.mem[mi];
@@ -2931,6 +3155,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                               3, mb.sat);
                 ++L.nReentries;
             }
+            reMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - reT0).count();
+        }
         if (t < B.tL - 600.0 || t > B.tVisEnd)
             continue;
         const double tau = t - B.tL;
@@ -3029,7 +3255,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     GpuDustCloud &d = out[n++];
                     d.c = glm::vec4(glm::vec3(ce), (float)(J * toSky));
                     d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2),
-                                     (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
+                                     (float)(1.0 / (kTwoPi1p5 * sA * sP * sP)));
                     d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), 0.0f);
                     d.col = glm::vec4(col, 1.0f);
                     d.cone = coneOf(ce, 5.5 * std::max(sA, sP));
@@ -3370,7 +3596,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     GpuDustCloud &d = out[n++];
                     d.c = glm::vec4(glm::vec3(ce), (float)(J * shareK[k] * unitK * inK * viewK));
                     d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2),
-                                     (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
+                                     (float)(1.0 / (kTwoPi1p5 * sA * sP * sP)));
                     d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), 0.0f);
                     // The core white-hot, the tail the exhaust's colour.
                     d.col = glm::vec4(glm::mix(glm::vec3(1.0f, 0.95f, 0.88f), col, 0.5f * (float)k), 1.0f);
@@ -3394,7 +3620,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     GpuDustCloud &g = out[n++];
                     g.c = glm::vec4(glm::vec3(ce), (float)(0.12 * J * unitK * (1.0 - 0.95 * dayness) * nearK));
                     g.ia = glm::vec4((float)Mg(0, 0), (float)Mg(1, 1), (float)Mg(2, 2),
-                                     (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * gA * gP * gP)));
+                                     (float)(1.0 / (kTwoPi1p5 * gA * gP * gP)));
                     g.ib = glm::vec4((float)Mg(0, 1), (float)Mg(0, 2), (float)Mg(1, 2), 0.0f);
                     g.col = glm::vec4(glm::mix(col, glm::vec3(1.0f, 0.5f, 0.2f), 0.5f), 1.0f);
                     g.cone = coneOf(ce, 5.5 * gA);
@@ -3422,23 +3648,27 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 dNear = std::min(dNear, glm::length(Pst - eye)); // (a stage venting half an orbit downrange)
             if (fast || dNear > 4.5e6 + 2.0 * eyeAlt)
                 continue;
+            const auto bt0 = std::chrono::steady_clock::now();
             LaunchImpl::buildParcels(L, B);
+            buildMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bt0).count();
         }
         const double era = earthRotationAngle(t);
+        const double cEra = std::cos(era), sEra = std::sin(era); // (rotZ, once a batch rather than twice a Gaussian)
+        auto rotE = [&](const glm::dvec3 &v) { return glm::dvec3(v.x * cEra - v.y * sEra, v.x * sEra + v.y * cEra, v.z); };
         // One Gaussian of exhaust: centre C and trail direction axE (Earth-fixed), the half-length it stands for along
         // the trail (hl: its 1-sigma extent beyond its own radius), radius sig, cross-section Sigma (m^2).
         auto addPlume = [&](const glm::dvec3 &CE, const glm::dvec3 &axE, double hl, double sig, double Sigma,
                             double sweep, double albedo, double age, uint64_t rimSeed, bool trail) {
             if (Sigma < 1.0)
                 return;
-            const glm::dvec3 C = rotZ(CE, era);
+            const glm::dvec3 C = rotE(CE);
             const glm::dvec3 rel = C - eye;
             const double range = std::max(glm::length(rel), 1.0);
             const double ext5 = 5.5 * std::sqrt(sig * sig + hl * hl);
             if (range > 6.0e6 + ext5 || earthHides(C, ext5))
                 return; // over the horizon
             // Elongated along the trail (a Gaussian stands for a stretch of the path).
-            const glm::dvec3 ax = rotZ(axE, era);
+            const glm::dvec3 ax = rotE(axE);
             const double sMin = 0.6 * range * 2.0 * pixFull;
             const double sP = std::max(sig, sMin);
             const double sA = std::max(std::sqrt(sig * sig + hl * hl), sMin);
@@ -3455,13 +3685,14 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
             d.c = glm::vec4(glm::vec3(toEnu(rel)), (float)Sigma);
             d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2),
-                             (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
+                             (float)(1.0 / (kTwoPi1p5 * sA * sP * sP)));
             // The Sun's colour at the parcel (its path through the air; the Earth's shadow is the shader's) x albedo.
             const double h = glm::length(C) - kR;
             glm::dvec3 tr(1.0);
             const double kc[3] = {0.11, 0.2, 0.42};
+            const double ext1 = atmExtinctionMag(C, sunD, 0.0, 1.0); // (linear in k: one column for the three)
             for (int ch = 0; ch < 3; ++ch)
-                tr[ch] = std::pow(10.0, -0.4 * std::min(atmExtinctionMag(C, sunD, 0.0, kc[ch]), 30.0));
+                tr[ch] = std::pow(10.0, -0.4 * std::min(kc[ch] * ext1, 30.0));
             // Why twilight plumes are off-white to blue (the jellyfish, like noctilucent cloud):
             // (1) the Sun's grazing path crosses the ozone layer, whose Chappuis band takes green and orange out
             //     (cloud_v2_sunlut.comp's thin shell at 25 km: vertical optical depth 0.019 / 0.027 / 0.0016 at
@@ -3553,7 +3784,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     const glm::dvec3 ce = toEnu(rel) + off;
                     dr.c = glm::vec4(glm::vec3(ce), (float)(Sigma * shellK / K));
                     dr.ia = glm::vec4((float)Mr(0, 0), (float)Mr(1, 1), (float)Mr(2, 2),
-                                      (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sT * sN * sig)));
+                                      (float)(1.0 / (kTwoPi1p5 * sT * sN * sig)));
                     dr.ib = glm::vec4((float)Mr(0, 1), (float)Mr(0, 2), (float)Mr(1, 2), d.ib.w + (float)(4 * (k + 1)));
                     dr.col = d.col;
                     dr.cone = coneOf(ce, 5.5 * std::max(sT, sig));
@@ -3570,7 +3801,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             double sig = 0.0, cond = 0.0, sweep = 0.0;
             bool ok = false;
         };
-        std::vector<PState> ps(B.parcels.size());
+        static std::vector<PState> ps;
+        ps.assign(B.parcels.size(), PState{});
         for (size_t pi = 0; pi < B.parcels.size(); ++pi)
         {
             const double age = tau - B.parcels[pi].t0;
@@ -3653,13 +3885,19 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         }
     }
     L.prof[7] += (plumeMs - L.prof[7]) / 30.0;
+    L.prof[9] += (reMs - L.prof[9]) / 30.0;
+    L.prof[10] += (buildMs - L.prof[10]) / 30.0;
+    const auto sortT0 = std::chrono::steady_clock::now();
     // The plumes: the brightest per pixel of sky first, as many as fit.
     if (!plumes.empty())
     {
-        std::sort(plumes.begin(), plumes.end(), [](const Cand &a, const Cand &b) { return a.pri > b.pri; });
         // At most 384 plume Gaussians: a wide one covers much of the screen and costs every pixel it covers
         // (cloud_march.comp's loop), ~3 ms at 1000.
         const uint32_t nMax = std::min<uint32_t>(kMaxDustClouds, n + 384u);
+        // Only the drawn ones and the first past the cut need their order (2026-10-20, CPU: a full sort of thousands).
+        const size_t nOrd = std::min(plumes.size(), (size_t)(nMax > n ? nMax - n : 0) + 1);
+        std::partial_sort(plumes.begin(), plumes.begin() + nOrd, plumes.end(),
+                          [](const Cand &a, const Cand &b) { return a.pri > b.pri; });
         // Near the cut a Gaussian fades by its priority (to 0 at the cut, full at 3x it): as plumes age and the view
         // moves their ranks shift, and a hard cut switched pieces of a trail on and off (blocky in time warp).
         const size_t room = nMax > n ? (size_t)(nMax - n) : 0;
@@ -3675,6 +3913,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             ++L.nPlumes;
         }
     }
+    L.prof[11] += (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sortT0).count() - L.prof[11]) / 30.0;
     uint32_t *fh = static_cast<uint32_t *>(kFireMapped);
     fh[0] = kFireCount;
 }
@@ -3721,7 +3960,9 @@ nlohmann::json SatelliteSim::launchStateJson() const
     j["slots_shown"] = std::count_if(L.slots.begin(), L.slots.end(), [](const SlotInfo &x) { return x.shown; });
     j["life_scale"] = launchLifeScale;
     j["cpu_split_ms"] = {{"window", L.prof[0]}, {"live_list", L.prof[1]}, {"freeing", L.prof[2]}, {"writes", L.prof[3]},
-                         {"active_scan", L.prof[4]}, {"pad_lights", L.prof[5]}, {"visuals", L.prof[6]}, {"plumes", L.prof[7]}};
+                         {"active_scan", L.prof[4]}, {"pad_lights", L.prof[5]}, {"visuals", L.prof[6]}, {"plumes", L.prof[7]},
+                         {"writes_member_records", L.prof[8]}, {"reentries", L.prof[9]}, {"plume_builds", L.prof[10]}, {"plume_candidates", L.plumeDbg.size()}, {"plume_sort_emit", L.prof[11]}, {"due_evals", L.nDueEval},
+                         {"window_finds", L.nFinds}};
     {
         const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
         const glm::dvec3 eyeE = glm::normalize(glm::dvec3(obsDir)) * (kR + std::max((double)obsTerrainH + 2.0, (double)obsHeightOffset));
@@ -4325,8 +4566,11 @@ void SatelliteSim::launchLegacyRecords(bool on)
 {
     LaunchImpl::gLegacyRecords = on;
     if (launchState)
+    {
         for (auto &kv : launchState->batches)
             kv.second.tw[0] = kv.second.tw[1] = -1e300; // rewrite everything now
+        std::fill(launchState->liveSkip.begin(), launchState->liveSkip.end(), LaunchState::LiveSkip{});
+    }
     if (launchState)
         for (SlotInfo &si : launchState->slots)
             si.tw = -1e300;

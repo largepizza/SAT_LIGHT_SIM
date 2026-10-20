@@ -4648,7 +4648,7 @@ void main() {
                 float wet  = smoothstep(0.05, 0.22, (dayColor.b - 0.5 * (dayColor.r + dayColor.g)) / max(lumD, 0.02));
                 float nz   = 0.65 * padValueNoise(cP / 420.0) + 0.35 * padValueNoise(cP / 90.0 + 17.3);
                 vec3  land = cloud.coastCol[cI].rgb * (0.7 + 0.6 * nz);
-                dayColor   = mix(dayColor, land, max(wet, 0.35) * cK);   // (the 5-km map is a guess here anyway)
+                dayColor   = mix(dayColor, land, max(wet, 0.75) * cK);   // (the 5-km map is a guess here anyway)
             }
         }
 #endif
