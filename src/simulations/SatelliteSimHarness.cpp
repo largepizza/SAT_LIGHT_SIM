@@ -2438,6 +2438,16 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = msg;
             return Status::Done;
         }
+        if (sub == "deorbit" || sub == "deploy")
+        {
+            // (2026-10-19) the next sunlit upper stage as it turns for its deorbit burn / 10 s before it deploys,
+            // the observer 250 km aside (then `launch select kind=upper` and `follow`).
+            std::string msg;
+            if (!launchGoToStageEvent(msg, sub == "deorbit" ? 2 : 3))
+                fail("launch " + sub + ": " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
         if (sub == "reentry")
         {
             std::string msg;

@@ -2025,6 +2025,11 @@ protected:
         Svf lpL, lpR, crHp;
         Brown brL, brR;
         Pink pkL, pkR;
+        // A rocket's roar (pushEvent's 5th value, 2026-10-19): a steady low roar instead of peals, a sub-bass layer,
+        // Mach-wave crackle, a punch when it first arrives, and a share sent to the echo (ground and landscape).
+        bool rocket = false;
+        float punchAge = -1.0f, thumpPh = 0.0f, crk = 0.0f; // s since the roar arrived (-1: none)
+        Svf subL, subR, crLp;
     };
 
     void start()
@@ -2065,6 +2070,7 @@ public:
             return false;
         Ev &e = q_[w % kQ];
         std::copy(data, data + 4, e.d);
+        e.d[4] = n >= 5 ? data[4] : 0.0f; // 1 = a rocket's roar
         qW_.store(w + 1, std::memory_order_release);
         return true;
     }
@@ -2082,6 +2088,11 @@ protected:
             const uint32_t rI = qR_.load(std::memory_order_relaxed);
             const float *d = q_[rI % kQ].d;
             Voice &v = voices_[std::clamp((int)d[0], 0, kVoices - 1)];
+            const bool rk = d[4] > 0.5f;
+            // A voice arriving out of silence: a rocket's roar punches in (the first wave of a lift-off's sound).
+            if (rk && d[1] > 0.0f && (!v.rocket || v.lv < 0.02f) && v.target <= 0.0f)
+                v.punchAge = 0.0f;
+            v.rocket = rk;
             v.target = std::clamp(d[1], 0.0f, 8.0f);
             v.dist = std::clamp(d[2], 0.03f, 60.0f);
             v.pan = std::clamp(d[3], -1.0f, 1.0f);
@@ -2106,7 +2117,24 @@ protected:
             v.rel = 1.0f - expf(-1.0f / (sr_ * std::min(0.09f + 0.012f * v.dist, 0.4f)));
             v.crack = std::clamp(1.0f - v.dist / 4.0f, 0.0f, 1.0f);
             panGains(v.pan * 0.8f, v.tgl, v.tgr);
+            if (v.rocket)
+            {
+                // The roar is low: the air takes its highs sooner than thunder's (~1.2 kHz at 1 km, ~580 at 5).
+                const float rc = std::clamp(2200.0f / (1.0f + v.dist / 1.8f), 90.0f, 2200.0f);
+                v.lpL.set(rc, 0.55f, sr_);
+                v.lpR.set(rc * 1.05f, 0.55f, sr_);
+                v.subL.set(62.0f, 0.8f, sr_);
+                v.subR.set(66.0f, 0.8f, sr_);
+                // Crackle carries tens of km (the N-waves keep their shape longer than the roar keeps its highs).
+                v.crHp.set(350.0f, 0.7f, sr_);
+                v.crLp.set(std::clamp(9000.0f / (1.0f + v.dist / 4.0f), 600.0f, 9000.0f), 0.6f, sr_);
+                v.crack = std::clamp(1.0f - v.dist / 40.0f, 0.0f, 1.0f);
+                v.att = 1.0f - expf(-1.0f / (sr_ * 0.03f));
+                v.rel = 1.0f - expf(-1.0f / (sr_ * 0.35f));
+            }
         }
+        // The rockets' echo: their roar off the ground, the water and the landscape (a long, dark tail).
+        echo_.set(sr_, 3.4f, 2.6f);
         rumL_.set(150.0f, 0.6f, sr_);
         rumR_.set(165.0f, 0.6f, sr_);
         const float rumAtt = 1.0f - expf(-1.0f / (sr_ * 0.25f)), rumRel = 1.0f - expf(-1.0f / (sr_ * 2.2f));
@@ -2114,11 +2142,16 @@ protected:
         const float dt = 1.0f / sr_;
         for (uint32_t i = 0; i < n; ++i)
         {
-            float l = 0.0f, rr = 0.0f, feed = 0.0f;
+            float l = 0.0f, rr = 0.0f, feed = 0.0f, sendL = 0.0f, sendR = 0.0f;
             for (Voice &v : voices_)
             {
                 if (!v.on)
                     continue;
+                if (v.rocket)
+                {
+                    rocketTick(v, dt, l, rr, sendL, sendR, feed);
+                    continue;
+                }
                 v.lv += (v.target - v.lv) * (v.target > v.lv ? v.att : v.rel);
                 v.gl += (v.tgl - v.gl) * 0.002f;
                 v.gr += (v.tgr - v.gr) * 0.002f;
@@ -2197,6 +2230,15 @@ protected:
                 l += (r.lpL.lp * env * 0.24f + o * 0.07f) * r.gain * r.gl;
                 rr += (r.lpR.lp * env * 0.24f + o * 0.07f) * r.gain * r.gr;
             }
+            // The echo runs only while something feeds it or its tail is still ringing.
+            echoEnv_ = std::max(std::fabs(sendL) + std::fabs(sendR), echoEnv_ * 0.99997f);
+            if (echoEnv_ > 1e-6f)
+            {
+                float eL = 0.0f, eR = 0.0f;
+                echo_.process(sendL, sendR, 0.55f, eL, eR);
+                l += eL * 0.55f;
+                rr += eR * 0.55f;
+            }
             // A soft limit: the loudest peals of a close strike stacked past full scale.
             out[2 * i] = softLimit(l * lvl);
             out[2 * i + 1] = softLimit(rr * lvl);
@@ -2209,11 +2251,70 @@ protected:
     }
     static float softLimit(float x) { return x / (1.0f + fabsf(x) * 0.5f); }
 
+    // One sample of a rocket's roar: brown + pink noise low-passed by the distance (the body), a sub-bass layer
+    // under it, Mach-wave crackle (sparse one-sided spikes: the N-waves' "ripping" heard at launch viewing sites),
+    // a punch as it first arrives (a level boost and a falling thump), and a share sent to the echo.
+    void rocketTick(Voice &v, float dt, float &l, float &rr, float &sendL, float &sendR, float &feed)
+    {
+        v.lv += (v.target - v.lv) * (v.target > v.lv ? v.att : v.rel);
+        v.gl += (v.tgl - v.gl) * 0.002f;
+        v.gr += (v.tgr - v.gr) * 0.002f;
+        // Slow swells of the roar (turbulence, the wind), never the thunder's peals.
+        v.pealT -= dt;
+        if (v.pealT <= 0.0f)
+        {
+            v.pealT = 0.4f + 0.8f * uni();
+            v.pealTarget = 0.8f + 0.4f * uni();
+        }
+        v.peal += (v.pealTarget - v.peal) * 0.0003f;
+        // The punch: up in ~25 ms (a jump clicked), down over ~1.4 s.
+        float punch = 0.0f;
+        if (v.punchAge >= 0.0f)
+        {
+            v.punchAge += dt;
+            punch = (1.0f - expf(-v.punchAge / 0.025f)) * expf(-v.punchAge / 1.4f);
+            if (v.punchAge > 8.0f)
+                v.punchAge = -1.0f;
+        }
+        const float wl = bip(), wr = bip();
+        const float bl = v.brL.tick(wl), br = v.brR.tick(wr);
+        v.lpL.tick(bl * 2.0f + v.pkL.tick(wl) * 1.1f);
+        v.lpR.tick(br * 2.0f + v.pkR.tick(wr) * 1.1f);
+        v.subL.tick(bl * 3.0f);
+        v.subR.tick(br * 3.0f);
+        // Crackle: one-sided spikes, denser as more of the roar arrives.
+        const float a = std::min(v.lv, 4.0f);
+        if (v.crack > 0.0f && uni() < a * 0.006f * (1.0f + 6.0f * punch))
+            v.crk += (0.4f + 2.6f * uni() * uni()) * v.crack;
+        v.crk *= 0.82f;
+        v.crHp.tick(v.crk);
+        v.crLp.tick(v.crHp.hp);
+        const float c = v.crLp.lp * 0.9f;
+        // The punch: x3 at the first arrival (with a burst of crackle), falling over ~1.5 s, and a thump falling from
+        // ~70 to ~30 Hz.
+        float thump = 0.0f;
+        if (punch > 1e-3f)
+        {
+            v.thumpPh += dt * (30.0f + 40.0f * punch * punch);
+            v.thumpPh -= floorf(v.thumpPh);
+            thump = sinf(6.2831853f * v.thumpPh) * punch * punch * 0.5f;
+        }
+        const float g = v.lv * v.peal * (1.0f + 2.0f * punch) * 0.01f; // headroom for the punch under the soft limit
+        const float e = (c * 0.5f + thump * 4.0f) * std::min(v.lv, 3.0f) * 0.035f;
+        const float oL = (v.lpL.lp + v.subL.lp * 1.3f) * g + e;
+        const float oR = (v.lpR.lp + v.subR.lp * 1.3f) * g + e;
+        l += oL * v.gl * 1.41f;
+        rr += oR * v.gr * 1.41f;
+        sendL += oL * 0.5f;
+        sendR += oR * 0.5f;
+        feed += v.lv * 0.25f;
+    }
+
 private:
     static constexpr uint32_t kQ = 256;
     struct Ev
     {
-        float d[4];
+        float d[5];
     };
     Ev q_[kQ];
     std::atomic<uint32_t> qW_{0}, qR_{0};
@@ -2223,6 +2324,8 @@ private:
     Svf rumL_, rumR_;
     Brown rumBrL_, rumBrR_;
     float rumEnv_ = 0.0f;
+    Fdn echo_;
+    float echoEnv_ = 0.0f;
     int next_ = 0;
     float lastTrig_ = 0.0f;
 };

@@ -36,6 +36,7 @@ struct Vehicle
     double h1 = 68000.0, x1 = 80000.0; // altitude and downrange there (m)
     double t2 = 520.0;               // SECO: insertion into the parking orbit (s)
     double deployAfter = 900.0;      // payload deployment, s after SECO
+    double deployIntervalS = 2.0;    // the satellites leave the dispenser one after another, this far apart
     double flow1 = 2500.0, flow2 = 300.0; // propellant flow (kg/s): booster, upper stage
     double vex1 = 2900.0, vex2 = 3400.0;  // exhaust speed (m/s)
     int recovery = 2;                // booster: 0 expendable, 1 return to the pad (RTLS / tower catch), 2 droneship

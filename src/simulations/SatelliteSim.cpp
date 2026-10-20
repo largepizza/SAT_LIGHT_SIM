@@ -5436,7 +5436,11 @@ void SatelliteSim::updateFollow(float dt)
         followHandD = glm::dvec3(0.0);
     const glm::dvec3 P = eciToEcef(s.posEci) + followHandD;
     const glm::dvec3 Rh = glm::normalize(P);
-    glm::dvec3 Th = eciToEcef(s.velocity);
+    // The frame's along-track axis is the inertial VELOCITY, not s.velocity: for a rocket that is its body axis (the
+    // nose), which flips through the vertical at a booster's flip or a turn to retrograde and spun the camera round.
+    glm::dvec3 Th = eciToEcef(glm::length(s.velEci) > 1e-3 ? s.velEci : s.velocity);
+    if (glm::length(glm::cross(Rh, Th)) < 1e-6 * std::max(glm::length(Th), 1e-9))
+        Th = followBasisValid ? followBasisT : glm::dvec3(-Rh.y, Rh.x, 0.0) + glm::dvec3(1e-9, 0.0, 0.0);
     const glm::dvec3 Nh = glm::normalize(glm::cross(Rh, Th));
     Th = glm::cross(Nh, Rh);
 
@@ -5789,6 +5793,12 @@ int SatelliteSim::pickSatelliteAt(float clickX, float clickY, float screenW, flo
                 bestMeshDist = dist;
             }
         }
+        // A rocket drawn in one of the rocket mesh slots is picked as its transient (the selection's own slot, which
+        // selTransientUpdate keeps current and drops when the rocket is gone). The mesh slot itself holds only the
+        // last frame's state: selected (or followed) it froze there for good — the user's ship "still up here" seven
+        // months after it had re-entered (issue 20261019_180502 shot 3), and drawn twice beside its live self (shot 1).
+        if (bestMesh >= 0)
+            bestMesh = rocketMeshSlotToTransient(bestMesh);
         if (bestMesh >= 0)
             return bestMesh;
     }
