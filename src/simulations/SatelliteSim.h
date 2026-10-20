@@ -3445,7 +3445,7 @@ private:
     //
     // kDebugToggleSlots sizes hovDebugToggle[] and the accumulators below; the static_assert in
     // startKnockoutSweep() keeps it honest.
-    static constexpr int kDebugToggleSlots = 21;
+    static constexpr int kDebugToggleSlots = 22;
     static constexpr int kSweepSettleFrames = 6;  // discard after a mask change — covers the
                                                   // one-frame-stale timestamp readback plus a
                                                   // little driver/clock hysteresis

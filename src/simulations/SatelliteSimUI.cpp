@@ -122,6 +122,9 @@ static constexpr DebugToggleEntry kDebugToggles[] = {
     // Terrain v2 P2: the water map in the shared height function (terrain_detail.glsl tdDemAt) —
     // lake levels, the shore ramp and coves. Off = no water work at all (the DEM's own 0 m is sea).
     {4194304u, "Water map (lakes + shores)", "water_map"},
+    // An OPTIMIZATION knockout (2026-10-20), like 131072: the satellite meshes' shadow rays go back to the
+    // per-pixel loop over every occluder instead of SatMeshRenderer's posed, sun-binned occluders. Same image.
+    {8388608u, "Mesh shadow accel OFF (A/B)", "mesh_shadow_accel_disabled"},
 };
 static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kDebugToggles[0]));
 int debugToggleTableSize() { return kDebugToggleCount; }

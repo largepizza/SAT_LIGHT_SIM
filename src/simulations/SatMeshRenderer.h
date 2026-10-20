@@ -203,6 +203,19 @@ public:
     void recordReflections(VkCommandBuffer cmd, VkDescriptorSet skyDescSet, const std::vector<ReflDraw> &draws,
                            uint32_t pcSize);
 
+    // ── Shadow-ray acceleration (2026-10-20) ────────────────────────────────────────────────────
+    // Per drawn instance (the largest kAccelScene on screen, the viewer and the check), the CPU poses its
+    // blocking occluders in world space once per frame (bounding sphere, axes, half extents: no per-pixel
+    // matrix work) and bins them into a 16x16 grid on the plane across the Sun, so a pixel's sun ray tests
+    // only the occluders whose shadow can reach it and a reflection ray rejects the rest by sphere. Off
+    // (knockout bit 8388608) = the original per-pixel loop over every occluder: same image, the A/B.
+    void setShadowAccelEnabled(bool on) { accelEnabled = on; }
+    static constexpr uint32_t kAccelGrid = 16;               // grid cells per side
+    static constexpr uint32_t kAccelMaxOcc = 64;             // = kMaxOccluders (64-bit cell masks)
+    static constexpr uint32_t kAccelStride = 4 + kAccelMaxOcc * 5 + kAccelGrid * kAccelGrid / 2; // uvec4s
+    static constexpr uint32_t kAccelSlots = 66;              // 0 viewer, 1 check, 2.. the scene
+    uint32_t accelLastScene() const { return accelSceneUsed; }
+
 private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkFormat colorFormat = VK_FORMAT_B8G8R8A8_SRGB;
@@ -219,6 +232,16 @@ private:
     VkBuffer componentBuf = VK_NULL_HANDLE;
     VkDeviceMemory componentMem = VK_NULL_HANDLE;
     std::vector<TypeMesh> typeMeshes;
+    std::vector<GpuSatMeshOccluder> occsCpu; // CPU copies of occluderBuf / componentBuf (shadow accel)
+    std::vector<glm::vec4> compsCpu;
+    VkBuffer accelBuf = VK_NULL_HANDLE;
+    VkDeviceMemory accelMem = VK_NULL_HANDLE;
+    void *accelMapped = nullptr;
+    bool accelEnabled = true;
+    uint32_t accelSceneUsed = 0;
+    // Builds slot `slot`'s accel from `inst` (its posed groups, Sun) and sets inst.earthShC.w = slot + 1
+    // (0 = none: sat_mesh.frag's original loop).
+    void writeShadowAccel(uint32_t slot, GpuMeshInstance &inst, int typeIdx);
 
     // Per-frame data (host-coherent, mapped).
     static constexpr uint32_t kMaxInstances = 4096;

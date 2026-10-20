@@ -4787,6 +4787,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     meshesDrawnThisFrame = false;
     if (!meshRendererInit)
         return;
+    meshRenderer.setShadowAccelEnabled((debugDisableMask & 8388608u) == 0u);
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const double theta = earthRotationAngle(tNow);
     const double ct = std::cos(theta), st = std::sin(theta);

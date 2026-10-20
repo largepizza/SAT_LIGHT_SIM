@@ -216,6 +216,73 @@ bool rayBlocked(MeshInstance inst, vec3 p, vec3 dir)
     return false;
 }
 
+// ── Shadow-ray acceleration (2026-10-20, SatMeshRenderer::writeShadowAccel) ─────────────────
+// For the instances largest on screen (inst.earthShC.w = slot + 1) the CPU has posed every blocking
+// occluder in world space with a bounding sphere, and binned the spheres' shadows on a 16x16 grid across
+// the Sun. A sun ray tests only its cell's occluders; any ray rejects an occluder by its sphere before the
+// exact test. Same tests, same answer as rayBlocked() (which the rest still use): it was ~60 ms with the
+// ISS filling a 1920x1009 screen (three rays x ~50 occluders per pixel, each composing its pose).
+layout(set = 0, binding = 10, std430) readonly buffer MeshShadowAccel { uvec4 accel[]; };
+const uint kAccelGridN  = 16u;
+const uint kAccelMaxOcc = 64u;
+const uint kAccelStride = 4u + kAccelMaxOcc * 5u + kAccelGridN * kAccelGridN / 2u;
+
+bool accelOccHit(uint base, uint k, vec3 p, vec3 dir)
+{
+    uint o = base + 4u + k * 5u;
+    vec4 c = uintBitsToFloat(accel[o]);
+    vec3 v = c.xyz - p;
+    float vv = dot(v, v), b = dot(v, dir), r2 = c.w * c.w;
+    if (vv > r2 && (b <= 0.0 || vv - b * b > r2)) return false; // misses the bounding sphere
+    uvec4 meta = accel[o + 4u];
+    if (meta.y == vComponent) return false; // a primitive never occludes its own surface
+    vec4 ax = uintBitsToFloat(accel[o + 1u]), ay = uintBitsToFloat(accel[o + 2u]), az = uintBitsToFloat(accel[o + 3u]);
+    vec3 d = -v;
+    return rayHitsOccluder(meta.x, vec3(ax.w, ay.w, az.w), vec3(dot(d, ax.xyz), dot(d, ay.xyz), dot(d, az.xyz)),
+                           vec3(dot(dir, ax.xyz), dot(dir, ay.xyz), dot(dir, az.xyz)));
+}
+
+bool accelSunBlocked(uint base, vec3 p, vec3 S)
+{
+    vec4 h0 = uintBitsToFloat(accel[base]), h1 = uintBitsToFloat(accel[base + 1u]);
+    uvec4 h2 = accel[base + 2u];
+    vec2 uv = vec2(dot(p, h0.xyz) - h0.w, dot(p, h1.xyz) - h1.w) * uintBitsToFloat(h2.xy);
+    if (h2.w == 0u || any(lessThan(uv, vec2(0.0))) || any(greaterThanEqual(uv, vec2(float(kAccelGridN)))))
+        return false; // no occluder's shadow reaches this point
+    uint cell = uint(uv.y) * kAccelGridN + uint(uv.x);
+    uvec4 pair = accel[base + 4u + kAccelMaxOcc * 5u + cell / 2u];
+    uvec2 m = (cell & 1u) == 0u ? pair.xy : pair.zw;
+    while (m.x != 0u) {
+        uint k = uint(findLSB(m.x));
+        m.x &= m.x - 1u;
+        if (accelOccHit(base, k, p, S)) return true;
+    }
+    while (m.y != 0u) {
+        uint k = uint(findLSB(m.y));
+        m.y &= m.y - 1u;
+        if (accelOccHit(base, k + 32u, p, S)) return true;
+    }
+    return false;
+}
+
+bool accelRayBlocked(uint base, vec3 p, vec3 dir)
+{
+    uint n = accel[base + 2u].w;
+    for (uint k = 0u; k < n; ++k)
+        if (accelOccHit(base, k, p, dir)) return true;
+    return false;
+}
+
+// The sun ray (dir = inst.sun) or any other: the accel where the instance has one, else the full loop.
+bool shadowBlocked(MeshInstance inst, vec3 p, vec3 dir, bool isSun)
+{
+    if (inst.earthShC.w > 0.5) {
+        uint base = (uint(inst.earthShC.w + 0.5) - 1u) * kAccelStride;
+        return isSun ? accelSunBlocked(base, p, dir) : accelRayBlocked(base, p, dir);
+    }
+    return rayBlocked(inst, p, dir);
+}
+
 // ── Procedural surface detail (SatSurfacePattern, SatModel.h) ────────────────────────────────
 // Visual only, and photometrically neutral: each pattern scales the diffuse albedo by a factor whose
 // AREA-WEIGHTED MEAN is 1, so the lobe model's scalar albedo stays the average of what is drawn. The
@@ -444,7 +511,7 @@ void main()
     vec3  S  = inst.sun.xyz;
     float ns = dot(N, S);
     if (inst.sun.w > 0.0 && ns > 0.0) {
-        bool blocked = shadows && inst.occluderCount > 0u && rayBlocked(inst, vWorld, S);
+        bool blocked = shadows && inst.occluderCount > 0u && shadowBlocked(inst, vWorld, S, true);
         if (!blocked) {
             vec3 E = inst.sunColor.rgb * inst.sun.w;
             Lspec = E * specC * specCos(N, V, S, a2 + SUN_ALPHA2, mat.f0, beck);
@@ -459,7 +526,7 @@ void main()
     const vec3  tC = Tm * sf.transM * (check ? vec3(1.0) : mat.extra.rgb);
     if (Tm > 0.0) {
         float nsB = -dot(Ngeo, S);
-        if (inst.sun.w > 0.0 && nsB > 0.0 && !(shadows && inst.occluderCount > 0u && rayBlocked(inst, vWorld, S)))
+        if (inst.sun.w > 0.0 && nsB > 0.0 && !(shadows && inst.occluderCount > 0u && shadowBlocked(inst, vWorld, S, true)))
             L += inst.sunColor.rgb * inst.sun.w * tC * nsB;
     }
 
@@ -506,8 +573,9 @@ void main()
     // ── Reflection of the Earth / atmosphere / clouds ────────────────────────
     if (frame.params.y > 0.5) {
         vec3 Rd = reflect(-V, N);
-        bool blocked = shadows && inst.occluderCount > 0u && rayBlocked(inst, vWorld, Rd);
-        if (!blocked && dot(Rd, N) > 0.0) {
+        // The facing test first: a reflection that leaves below the surface is not drawn, blocked or not.
+        bool blocked = dot(Rd, N) <= 0.0 || (shadows && inst.occluderCount > 0u && shadowBlocked(inst, vWorld, Rd, false));
+        if (!blocked) {
             float Fr  = mat.f0 + (max(1.0 - sf.rough, mat.f0) - mat.f0) * pow(1.0 - nv, 5.0);
             // A mirror-smooth pixel (a membrane mirror; most of a quartz radiator) of an instance picked
             // for sharp reflections: that share goes to the G-buffer, the rest (a rougher lobe) to the
