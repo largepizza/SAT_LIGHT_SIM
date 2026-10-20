@@ -115,3 +115,12 @@ bool instCompRenderOnly(MeshInstance inst, uint comp)
 }
 
 #endif // SATLIGHTSIM_SAT_MESH_COMMON_GLSL
+
+// The scene mesh target's alpha = instance slot + 1 + a packed fraction (2026-10-19): the photometric share of the
+// pixel's light (what seeds the bloom, 64 levels) and whether its reflection may glare (meshGlareRoughK, 8 levels).
+// Readers: mesh_bloom.frag, mesh_refl_add.comp (keep their copies of the unpack in step).
+float meshGlareRoughK(float rough) { return 1.0 - smoothstep(0.04, 0.10, rough); }
+float meshSharePack(float photFrac, float glareK)
+{
+    return (floor(clamp(photFrac, 0.0, 1.0) * 63.99) * 8.0 + floor(clamp(glareK, 0.0, 1.0) * 7.99)) / 512.0;
+}

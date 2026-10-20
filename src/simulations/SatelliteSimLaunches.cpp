@@ -164,6 +164,7 @@ struct SatelliteSim::LaunchState
         double amb;
     };
     std::vector<PlumeDbg> plumeDbg;
+    std::unordered_map<int, glm::dvec3> engineGeom; // per rocket type: (nozzle exit z, exit radius, length) in metres
     uint32_t nRockets = 0, nTrain = 0, nRetire = 0, nPlumes = 0, nReentries = 0, nWrites = 0, nBatches = 0;
 
     const Track &upperTrackFor(int veh, double parkKm)
@@ -852,6 +853,39 @@ static double ventStart(const SatelliteSim::LaunchState &L, const LBatch &B)
     return L.cat.vehicles[B.veh].upperDeorbit ? B.tDeorbBurn + 50.0 : B.tD + 600.0;
 }
 
+// A rocket model's engines (tools/make_rocket_models.py): the exit plane's height on the body axis (the origin is the
+// aft end), the radius the engines' exits span, and the vehicle's length. From the components named engines /
+// upper_nozzle / side_nozzle (cones, the exit at their bottom); a model without them: the aft end, 0.7 x the body.
+static glm::dvec3 engineGeomOf(const SatelliteType &ty)
+{
+    double zExit = 1e30, rExit = 0.0, zMin = 1e30, zMax = -1e30, rBody = 0.0;
+    if (ty.model)
+        for (const SatComponent &c : ty.model->components)
+        {
+            const double hz = c.prim == PrimitiveKind::Cone || c.prim == PrimitiveKind::Cylinder ? 0.5 * c.height : 0.0;
+            zMin = std::min(zMin, (double)c.position.z - hz);
+            zMax = std::max(zMax, (double)c.position.z + hz);
+            const double rxy = std::sqrt((double)c.position.x * c.position.x + (double)c.position.y * c.position.y);
+            if (c.prim == PrimitiveKind::Cylinder)
+                rBody = std::max(rBody, rxy + c.radius);
+            const bool eng = c.name.rfind("engines", 0) == 0 || c.name.rfind("upper_nozzle", 0) == 0 ||
+                             c.name.rfind("side_nozzle", 0) == 0;
+            if (eng && c.prim == PrimitiveKind::Cone)
+            {
+                zExit = std::min(zExit, (double)c.position.z - hz);
+                rExit = std::max(rExit, rxy + c.radius);
+            }
+        }
+    if (zMin > zMax)
+        return glm::dvec3(0.0, 2.0, 40.0);
+    if (rExit <= 0.0)
+    {
+        zExit = 0.0;
+        rExit = std::max(0.7 * rBody, 0.5);
+    }
+    return glm::dvec3(zExit, rExit, zMax - zMin);
+}
+
 // The exhaust's parcels, from the whole flight (built once, when the launch first matters to the view).
 static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
 {
@@ -869,6 +903,10 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     // (~3000 m^2/kg of ice, ~10% of the exhaust condensing): the bright, sunlit bell seen at twilight.
     auto kappaAt = [&](double h) { return glm::mix(10.0, 1000.0, glm::smoothstep(25000.0, 90000.0, h)); };
     auto albedoAt = [&](double h) { return glm::mix(0.95 - 0.55 * vh.soot, 0.98, glm::smoothstep(15000.0, 40000.0, h)); };
+    const double windPhase = glm::two_pi<double>() * h01(B.seed, 24, 1);
+    int stream = -1;           // a burn: its parcels are drawn as one polyline (consecutive in B.parcels)
+    double lastEmit = -1e30;   // a gap in the emission starts a new stream
+    int lastStage = -1, lastMode = -1;
     auto emit = [&](int stage, double tau, double dtE, double flow, double vex, int mode) {
         bool ok0, ok1;
         const glm::dvec3 p = rocketEcef(L, B, stage, tau, ok0);
@@ -912,8 +950,19 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         // (A vent's parcel is a stretch of its jet, not of the stage's path: the stage carries the jet with it.)
         B.parcels.push_back(launch::makeParcel(tau, p, vel + vex * ex, m, vent ? 2000.0 : kappaAt(h), albedoAt(h),
                                                vent ? ex : (spd > 5.0 ? vel / spd : up), vent ? vex * dtE : len,
-                                               maxAge, windDir, windGain, vent ? 30.0 : 2000.0));
+                                               maxAge, windDir, windGain, vent ? 30.0 : 2000.0, windPhase));
         B.parcels.back().thin = vent;
+        if (!vent)
+        {
+            if (stage != lastStage || mode != lastMode || tau - lastEmit > 1.6 * dtE)
+                ++stream;
+            B.parcels.back().stream = stream;
+            lastEmit = tau;
+            lastStage = stage;
+            lastMode = mode;
+        }
+        B.parcels.back().stage = stage;
+        B.parcels.back().dt = dtE;
     };
     // The pad's ground cloud: exhaust and the deluge's steam rolling out along the ground in the first seconds.
     for (int k = 0; k < 6; ++k)
@@ -922,12 +971,14 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         const glm::dvec3 dir = std::cos(ang) * east + std::sin(ang) * north;
         const glm::dvec3 p = (kR + 20.0) * B.G0;
         B.parcels.push_back(launch::makeParcel(1.0 + 0.8 * k, p, 120.0 * dir + 20.0 * B.G0, vh.flow1 * 2.0,
-                                               kappaAt(0.0), 0.95, dir, 60.0, kPlumeAgeLow, windDir, windGain));
+                                               kappaAt(0.0), 0.95, dir, 60.0, kPlumeAgeLow, windDir, windGain, 2000.0,
+                                               windPhase));
     }
-    // The booster: ascent (every 1.5 s low, 2 s above ~20 km), then its burns.
+    // The booster: ascent (every 1 s low, 1.5 s above ~20 km), then its burns. The parcels are the polyline's knots:
+    // the trail between them is drawn as segments (launchFillVisuals), so the spacing sets how finely it bends.
     for (double tau = 1.0; tau < vh.t1; )
     {
-        const double dtE = tau < 60.0 ? 1.5 : 2.0;
+        const double dtE = tau < 60.0 ? 1.0 : 1.5;
         emit(0, tau, dtE, vh.flow1, vh.vex1, 0);
         tau += dtE;
     }
@@ -938,9 +989,11 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         if (b == launch::BURN_BOOSTBACK || b == launch::BURN_ENTRY || b == launch::BURN_LANDING)
             emit(0, tau, 2.0, vh.flow1 * (b == launch::BURN_LANDING ? 0.12 : 0.35), vh.vex1, 1);
     }
-    // The upper stage to orbit: every 2.5 s (at 5 s the young parcels, 10-35 km apart, drew the trail as beads).
-    for (double tau = vh.t1 + 2.5; tau < B.t2; tau += 2.5)
-        emit(1, tau, 2.5, vh.flow2, vh.vex2, 0);
+    // The upper stage to orbit: every 1 s. In near vacuum consecutive parcels separate at the exhaust speed (~3.4 km
+    // a second of burn) and each spreads at ~2 km/s: at 2.5 s the youngest stood 8.5 km apart and swelled into a
+    // string of separate puffs before they merged (the user's "poofs").
+    for (double tau = vh.t1 + 1.0; tau < B.t2; tau += 1.0)
+        emit(1, tau, 1.0, vh.flow2, vh.vex2, 0);
     // Its deorbit burn, and maybe a spinning vent of what is left (the spirals seen from Norway, New Zealand...).
     if (vh.upperDeorbit)
     {
@@ -1610,66 +1663,132 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 // The sunlit body gives way to its mesh as that resolves (a burning stage keeps its flame's point).
                 if (trIdx < selTransients.size())
                 {
+                    // Gone once the mesh is up: floored at 1e-4 (+10 mag) a point of magnitude 3 at 1000 km seen
+                    // from 100 m (-17) still drew a blinding white disc on the hull (the user's QA shot 6).
                     const double px = rocketMeshPx(selTransients[trIdx], pixA, eye);
-                    m -= 2.5 * std::log10(std::max(1.0 - glm::smoothstep(2.0, 8.0, px), 1e-4));
+                    const double keep = 1.0 - glm::smoothstep(2.0, 8.0, px);
+                    if (keep <= 0.0)
+                        continue;
+                    m -= 2.5 * std::log10(keep);
                 }
             }
             double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - (burning ? 0.8 : 0.97) * dayness);
             if (flare < 2e-4)
                 continue;
-            if (kFireCount < kFireballMax)
-                fo[kFireCount++] = {glm::vec4(glm::vec3(dirE), (float)flare), glm::vec4(col, (float)range)};
             if (trIdx < selTransients.size())
                 selTransients[trIdx].flare = (float)flare; // drawn: pickable
-            // The flame as a shape (seen close it is long: the exhaust glows behind the engines, and high up the
-            // expanding plume around it).
-            if (burning && n < kMaxDustClouds && flare > 2e-3)
+            if (!burning)
+            {
+                if (kFireCount < kFireballMax)
+                    fo[kFireCount++] = {glm::vec4(glm::vec3(dirE), (float)flare), glm::vec4(col, (float)range)};
+                continue;
+            }
+            // The flame, from the engines out (2026-10-19, the user's QA: "a plume emerging from the engine", not a
+            // white cloud round the vessel). Its geometry is the model's: the nozzle exit plane and the radius the
+            // exits span (engineGeomOf), the nose axis (out of the engines: a landing burn's flame points down).
+            glm::dvec3 vdir;
             {
                 glm::dvec3 Pb;
-                const double dts = 0.5;
-                if (!LaunchImpl::rocketPos(L, B, stage, tau - dts, Pb))
+                if (!LaunchImpl::rocketPos(L, B, stage, tau - 0.5, Pb))
                     Pb = P;
-                glm::dvec3 vdir = P - Pb;
+                vdir = P - Pb;
                 vdir = glm::length(vdir) > 1e-3 ? glm::normalize(vdir) : glm::normalize(P);
                 if (trIdx < selTransients.size() && glm::length(selTransients[trIdx].axis) > 0.5)
-                    vdir = selTransients[trIdx].axis; // out of the engines: a landing burn's flame points down
-                const double h = glm::length(P) - kR;
-                const double hiK = glm::smoothstep(20000.0, 90000.0, h);
-                const double Lf = 50.0 + 900.0 * hiK, Wf = 6.0 + 120.0 * hiK;
+                    vdir = selTransients[trIdx].axis;
+            }
+            glm::dvec3 eg(0.0, 2.0, 40.0);
+            {
+                const int ty = trIdx < selTransients.size() ? selTransients[trIdx].type : -1;
+                if (ty >= 0 && ty < (int)satTypes.size())
+                {
+                    auto it = L.engineGeom.find(ty);
+                    if (it == L.engineGeom.end())
+                        it = L.engineGeom.emplace(ty, LaunchImpl::engineGeomOf(satTypes[(size_t)ty])).first;
+                    eg = it->second;
+                }
+            }
+            const glm::dvec3 Pexit = P + eg.x * vdir;
+            const double D = 2.0 * eg.y;
+            const double hAlt = glm::length(P) - kR;
+            // The flame lengthens and widens as the air thins (the exhaust under-expanded at altitude).
+            const double hiK = glm::smoothstep(20000.0, 90000.0, hAlt);
+            // A chain of three Gaussians: the bright core at the nozzle, the flame, its fading tail. Each starts far
+            // enough behind the exit that its forward tail stays inside the bell (the old flame was one Gaussian
+            // 950 m long centred half its length behind the stage: it reached past the nose).
+            const double lenK[3] = {1.2, 3.5, 9.0}, widK[3] = {0.75, 1.1, 1.8}, shareK[3] = {0.5, 0.32, 0.18};
+            double offK[3], sAk[3], sPk[3];
+            for (int k = 0; k < 3; ++k)
+            {
+                const double len = D * lenK[k] * (1.0 + 2.5 * hiK);
+                sAk[k] = 0.42 * len;
+                sPk[k] = eg.y * widK[k] * (1.0 + 2.0 * hiK);
+                offK[k] = k == 0 ? 2.2 * sAk[0] : offK[k - 1] + 1.2 * (sAk[k - 1] + sAk[k]);
+            }
+            const glm::dvec3 Pcore = Pexit - offK[0] * vdir;
+            const double Lcore = offK[1] + sAk[1];
+            const double Lpx = Lcore / std::max(range * pixA, 1e-9);
+            // The point (bloom, glare) sits on the core, not on the hull (it drew a white disc on the aft end). Once
+            // the flame resolves, a point's 1/r^2 no longer holds: its brightness stops growing where the flame is
+            // ~4 px long, and most of the light goes to the flame's Gaussians (a glare remains at every scale).
+            {
+                const glm::dvec3 relC = Pcore - eye;
+                const double rC = std::max(glm::length(relC), 1.0);
+                const double rEff = std::max(rC, Lcore / (4.0 * pixA));
+                const double pointK = glm::mix(1.0, 0.3, glm::smoothstep(4.0, 30.0, Lpx));
+                const double fP = flare * (range / rEff) * (range / rEff) * pointK;
+                if (fP > 2e-4 && kFireCount < kFireballMax)
+                    fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(relC) / rC), (float)fP), glm::vec4(col, (float)rC)};
+            }
+            if (n < kMaxDustClouds && flare > 2e-3)
+            {
                 const double sMin = 0.6 * range * 2.0 * pixFull;
-                const double sA = std::max(0.5 * Lf, sMin), sP = std::max(Wf, sMin);
                 const glm::dvec3 a = toEnu(vdir);
                 glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
                 b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
                 const glm::dvec3 c2 = glm::cross(a, b2);
-                const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
-                auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
-                const double J = 0.6 * flare * range * range / K;
-                GpuDustCloud &d = out[n++];
-                d.c = glm::vec4(glm::vec3(toEnu(P - 0.5 * Lf * vdir - eye)), (float)(J * toSky));
-                d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2),
-                                 (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
-                d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), 0.0f);
-                d.col = glm::vec4(col, 1.0f);
-                d.cone = coneOf(toEnu(P - 0.5 * Lf * vdir - eye), 5.5 * std::max(sA, sP));
-                // The exhaust the flame lights (at night an orange glow round the engines, longer behind them; high up
-                // the expanding plume around the stage glows over kilometres).
+                // Its light: unresolved, the point's on-screen energy (toSky: a Gaussian of magnitude m carries what a
+                // star of magnitude m shows, ~10 mag over a surface's physical brightness); resolved, its surface
+                // brightness in the sky's own units (pi x radiance per unit solar irradiance: a sunlit white face is 1)
+                // x kFlameCore, the core's excess over the point magnitudes' average (tuned for points). Without the
+                // hand-over a flame a few hundred metres long seen from a kilometre was a blown-out white sheet over
+                // the vessel even by day (the user's QA shots 5-6).
+                const double kFlameCore = 60.0;
+                const double dayK = 1.0 - 0.8 * dayness;
+                const double J = 0.6 * flare / std::max(dayK, 1e-3) * range * range / K;
+                const double corePx = 2.0 * sPk[0] / std::max(range * pixA, 1e-9);
+                const double resK = glm::smoothstep(1.5, 8.0, corePx);
+                const double unitK = toSky * dayK * std::pow(glm::pi<double>() * kFlameCore / std::max(toSky * dayK, 1e-30), resK);
+                for (int k = 0; k < 3 && n < kMaxDustClouds; ++k)
+                {
+                    const double sA = std::max(sAk[k], sMin), sP = std::max(sPk[k], sMin);
+                    const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
+                    auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
+                    const glm::dvec3 ce = toEnu(Pexit - offK[k] * vdir - eye);
+                    GpuDustCloud &d = out[n++];
+                    d.c = glm::vec4(glm::vec3(ce), (float)(J * shareK[k] * unitK));
+                    d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2),
+                                     (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sA * sP * sP)));
+                    d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), 0.0f);
+                    // The core white-hot, the tail the exhaust's colour.
+                    d.col = glm::vec4(glm::mix(glm::vec3(1.0f, 0.95f, 0.88f), col, 0.5f * (float)k), 1.0f);
+                    d.cone = coneOf(ce, 5.5 * std::max(sA, sP));
+                }
+                // The exhaust the flame lights: a night effect (by day the lit exhaust is lost in the sky; up close it
+                // drew a white ellipse hundreds of metres across over the rocket), scaled with the engines, behind them.
                 if (n < kMaxDustClouds)
                 {
-                    const double Rg = 250.0 + 2500.0 * hiK;
+                    const double Rg = D * (30.0 + 300.0 * hiK);
                     const double gA = std::max(1.6 * Rg, sMin), gP = std::max(Rg, sMin);
                     const double jA = 1.0 / (gA * gA), jP = 1.0 / (gP * gP);
                     auto Mg = [&](int p, int q) { return jA * a[p] * a[q] + jP * (b2[p] * b2[q] + c2[p] * c2[q]); };
+                    const glm::dvec3 ce = toEnu(Pexit - 2.0 * gA * vdir - eye);
                     GpuDustCloud &g = out[n++];
-                    // A night effect: by day the lit exhaust is lost in the sky (up close it drew a white ellipse
-                    // hundreds of metres across over the rocket).
-                    g.c = glm::vec4(glm::vec3(toEnu(P - 1.2 * Rg * vdir - eye)),
-                                    (float)(0.25 * J * toSky * (1.0 - 0.95 * dayness)));
+                    g.c = glm::vec4(glm::vec3(ce), (float)(0.25 * J * unitK * (1.0 - 0.95 * dayness)));
                     g.ia = glm::vec4((float)Mg(0, 0), (float)Mg(1, 1), (float)Mg(2, 2),
                                      (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * gA * gP * gP)));
                     g.ib = glm::vec4((float)Mg(0, 1), (float)Mg(0, 2), (float)Mg(1, 2), 0.0f);
                     g.col = glm::vec4(glm::mix(col, glm::vec3(1.0f, 0.5f, 0.2f), 0.5f), 1.0f);
-                    g.cone = coneOf(toEnu(P - 1.2 * Rg * vdir - eye), 5.5 * gA);
+                    g.cone = coneOf(ce, 5.5 * gA);
                 }
             }
         }
@@ -1691,36 +1810,23 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             LaunchImpl::buildParcels(L, B);
         }
         const double era = earthRotationAngle(t);
-        for (size_t pi = 0; pi < B.parcels.size(); ++pi)
-        {
-            const launch::Parcel &pc = B.parcels[pi];
-            const double age = tau - pc.t0;
-            // Old parcels are wide and overlap their neighbours: every 2nd stands for two past 2 min, every 4th for
-            // four past 10 min (the budget then reaches the whole bell, not just its young part).
-            if (age < 0.0)
-                continue;
-            glm::dvec3 cE;
-            double sig, cond, sweep = 0.0;
-            if (!pc.at(age, cE, sig, cond, &sweep))
-                continue;
-            // ... but only once they are wide against the spacing (pc.len): thinned earlier, a trail showed gaps.
-            const int dec = pc.thin ? 1 : (age > 600.0 && sig > 4.0 * pc.len) ? 4 : (age > 120.0 && sig > 2.0 * pc.len) ? 2 : 1;
-            if (pi % (size_t)dec != 0)
-                continue;
-            const double Sigma = pc.kappa * pc.m * cond * (double)launchPlumeGain * (double)dec;
+        // One Gaussian of exhaust: centre C and trail direction axE (Earth-fixed), the half-length it stands for along
+        // the trail (hl: its 1-sigma extent beyond its own radius), radius sig, cross-section Sigma (m^2).
+        auto addPlume = [&](const glm::dvec3 &CE, const glm::dvec3 &axE, double hl, double sig, double Sigma,
+                            double sweep, double albedo, double age, uint64_t rimSeed, bool trail) {
             if (Sigma < 1.0)
-                continue;
-            const glm::dvec3 C = rotZ(cE, era);
+                return;
+            const glm::dvec3 C = rotZ(CE, era);
             const glm::dvec3 rel = C - eye;
             const double range = std::max(glm::length(rel), 1.0);
-            const double ext5 = 5.5 * std::sqrt(sig * sig + 0.25 * pc.len * pc.len);
+            const double ext5 = 5.5 * std::sqrt(sig * sig + hl * hl);
             if (range > 6.0e6 + ext5 || earthHides(C, ext5))
-                continue; // over the horizon
-            // Elongated along the trail while young (a parcel stands for a stretch of the path).
-            const glm::dvec3 ax = rotZ(pc.axis, era);
+                return; // over the horizon
+            // Elongated along the trail (a Gaussian stands for a stretch of the path).
+            const glm::dvec3 ax = rotZ(axE, era);
             const double sMin = 0.6 * range * 2.0 * pixFull;
             const double sP = std::max(sig, sMin);
-            const double sA = std::max(std::sqrt(sig * sig + 0.25 * pc.len * pc.len), sMin);
+            const double sA = std::max(std::sqrt(sig * sig + hl * hl), sMin);
             const double tauPeak = Sigma / (2.0 * glm::pi<double>() * sP * sA);
             const double pri = Sigma / (range * range) * (1.0 + std::min(tauPeak, 4.0));
             Cand c;
@@ -1744,49 +1850,53 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // Why twilight plumes are off-white to blue (the jellyfish, like noctilucent cloud):
             // (1) the Sun's grazing path crosses the ozone layer, whose Chappuis band takes green and orange out
             //     (cloud_v2_sunlut.comp's thin shell at 25 km: vertical optical depth 0.019 / 0.027 / 0.0016 at
-            //     680 / 550 / 440 nm, x the secant where the ray crosses it, twice from above when it dips through);
+            //     680 / 550 / 440 nm, x the secant where the ray crosses it). Counted ONCE, the secant capped at 12:
+            //     the 15-35 km layer is thick, so a grazing ray's path through it is ~10-20 vertical columns, not 30
+            //     twice; with both, the reddened low sunlight lost its green under the ice's blue and the plumes
+            //     between the orange trail and the white bell came out magenta (the user's "odd purple trail").
             {
                 const double rO = kR + 25000.0, r = glm::length(C), cz = glm::dot(C, sunD) / r;
                 const double sin2 = (r / rO) * (r / rO) * (1.0 - cz * cz);
                 const double sec = 1.0 / std::sqrt(std::max(1.0 - sin2, 1e-3));
-                const double nX = r <= rO ? 1.0 : ((cz < 0.0 && sin2 < 1.0) ? 2.0 : 0.0);
+                const double nX = r <= rO ? 1.0 : ((cz < 0.0 && sin2 < 1.0) ? 1.0 : 0.0);
                 const double odO[3] = {0.019, 0.027, 0.0016};
                 for (int ch = 0; ch < 3; ++ch)
-                    tr[ch] *= std::exp(-odO[ch] * std::min(sec, 30.0) * nX);
+                    tr[ch] *= std::exp(-odO[ch] * std::min(sec, 12.0) * nX);
             }
             // (2) high up the exhaust's ice is sub-micron: it scatters blue more than red (Angstrom exponent ~1.5,
             //     680 / 550 / 440 nm), normalised to keep the luminance; low down the droplets and soot are grey.
+            //     The blue only where the sunlight still has its blue: ice lit by the reddened Sun is lit red.
             {
-                const double ice = glm::smoothstep(25000.0, 90000.0, h);
+                const double ice = glm::smoothstep(30000.0, 100000.0, h) * glm::clamp(tr[2] / std::max(tr[0], 1e-6), 0.0, 1.0);
                 const glm::dvec3 sp(0.727 / 0.9707, 1.0 / 0.9707, 1.398 / 0.9707);
                 tr *= glm::mix(glm::dvec3(1.0), sp, ice);
             }
             const double sinE = glm::dot(glm::normalize(C), sunD);
             // The sky's light on it, relative (1 = a clear daytime sky), fading with the air above it.
             const double amb = glm::smoothstep(-0.1, 0.25, sinE) * std::exp(-std::max(h, 0.0) / 15000.0);
-            d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), (float)amb);
+            // w = 4 x a per-parcel seed (cloud_march.comp's billows) + the sky light on it (unread there).
+            const double seedK = (double)(launch::hash01(rimSeed, 7, 3) * 255.0);
+            d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), (float)(4.0 * std::floor(seedK) + amb));
             // At night the sky's exposure is not physical (only ~5.5x the day's: see the Kessler dust), so a sunlit
             // plume against the dark sky reads far dimmer than it is; its sunlight is raised as the eye's sky darkens.
-            d.col = glm::vec4(glm::vec3(tr * pc.albedo * nightBoost), (float)(2.0 + pc.albedo));
+            d.col = glm::vec4(glm::vec3(tr * albedo * nightBoost), (float)(2.0 + albedo));
             d.cone = coneOf(toEnu(rel), 5.5 * std::max(sA, sP));
             plumes.push_back(c);
-            // High up, once the expanding exhaust has swept up about its own mass of air it piles up at its rim: a shell,
-            // limb-brightened (the jellyfish's bell). Seen across a near-round parcel the rim is a ring (7 Gaussians
-            // round the line of sight); across a parcel drawn out along the trail it is a tube, whose limb is two lines
-            // beside the trail (2 Gaussians, as long as the parcel, so neighbours join: rings on every parcel drew the
-            // young trail as a string of circles).
-            const double shellK = (h > 60000.0 && sig > 2000.0) ? 0.65 * glm::smoothstep(0.3, 2.0, sweep) : 0.0;
+            // High up, once the expanding exhaust has swept up about its own mass of air it piles up at its rim: a
+            // shell, limb-brightened (the jellyfish's bell). Along a trail the rim is a tube, whose limb is two lines
+            // beside the trail (2 Gaussians as long as the segment, so neighbours join); only a lone parcel, or a
+            // trail seen end-on, shows a ring (7 Gaussians round the line of sight). Rings on every parcel drew the
+            // trail as a string of circles, and the young vacuum trail as puffs.
+            const double shellK = (h > 60000.0 && sig > 2000.0) ? 0.45 * glm::smoothstep(0.3, 2.0, sweep) : 0.0;
             if (shellK > 0.02)
             {
                 const double coreShare = 1.0 - shellK;
                 plumes.back().d.c.w = (float)(Sigma * coreShare);
                 plumes.back().pri *= coreShare;
                 const glm::dvec3 vE = toEnu(rel) / range; // the line of sight
-                // The trail's direction across the line of sight, and how drawn out the parcel is along it.
                 glm::dvec3 aP = a - glm::dot(a, vE) * vE;
                 const double aPl = glm::length(aP);
-                const double elong = aPl > 1e-3 ? (sA * aPl) / sP : 1.0;
-                const bool tube = elong > 1.6;
+                const bool tube = trail ? aPl > 0.3 : (aPl > 1e-3 && (sA * aPl) / sP > 1.6);
                 glm::dvec3 r1, r2;
                 if (tube)
                 {
@@ -1809,17 +1919,16 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     {
                         nrm = k == 0 ? r2 : -r2;
                         tg = r1;
-                        sT = std::max(std::sqrt(sig * sig + 0.25 * pc.len * pc.len * aPl * aPl), sMin);
+                        sT = std::max(std::sqrt(sig * sig + hl * hl * aPl * aPl), sMin);
                     }
                     else
                     {
-                        const double ang = glm::two_pi<double>() * ((double)k + h01(B.seed ^ (uint64_t)(pc.t0 * 10.0), (uint64_t)k, 31)) / K;
+                        const double ang = glm::two_pi<double>() * ((double)k + h01(rimSeed, (uint64_t)k, 31)) / K;
                         nrm = std::cos(ang) * r1 + std::sin(ang) * r2;
                         tg = -std::sin(ang) * r1 + std::cos(ang) * r2;
                         sT = std::max(0.9 * sig, sMin);
                     }
                     const glm::dvec3 off = rr * nrm;
-                    // Each piece is stretched along the rim (the tangent) and the line of sight.
                     const double sN = sr;
                     const double iT = 1.0 / (sT * sT), iN = 1.0 / (sN * sN), iV = 1.0 / (sig * sig);
                     auto Mr = [&](int p, int q) { return iT * tg[p] * tg[q] + iN * nrm[p] * nrm[q] + iV * vE[p] * vE[q]; };
@@ -1830,14 +1939,100 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     dr.c = glm::vec4(glm::vec3(ce), (float)(Sigma * shellK / K));
                     dr.ia = glm::vec4((float)Mr(0, 0), (float)Mr(1, 1), (float)Mr(2, 2),
                                       (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sT * sN * sig)));
-                    dr.ib = glm::vec4((float)Mr(0, 1), (float)Mr(0, 2), (float)Mr(1, 2), (float)amb);
+                    dr.ib = glm::vec4((float)Mr(0, 1), (float)Mr(0, 2), (float)Mr(1, 2), d.ib.w + (float)(4 * (k + 1)));
                     dr.col = d.col;
                     dr.cone = coneOf(ce, 5.5 * std::max(sT, sig));
                     plumes.push_back(cr);
                 }
             }
             if (L.plumeDbg.size() < 4000)
-                L.plumeDbg.push_back({range / 1000.0, h / 1000.0, sig / 1000.0, Sigma, tauPeak, age, tr * pc.albedo, amb});
+                L.plumeDbg.push_back({range / 1000.0, h / 1000.0, sig / 1000.0, Sigma, tauPeak, age, tr * albedo, amb});
+        };
+        // Each parcel's state now (age >= 0: emitted; ok: still drawn).
+        struct PState
+        {
+            glm::dvec3 cE;
+            double sig = 0.0, cond = 0.0, sweep = 0.0;
+            bool ok = false;
+        };
+        std::vector<PState> ps(B.parcels.size());
+        for (size_t pi = 0; pi < B.parcels.size(); ++pi)
+        {
+            const double age = tau - B.parcels[pi].t0;
+            ps[pi].ok = age >= 0.0 && B.parcels[pi].at(age, ps[pi].cE, ps[pi].sig, ps[pi].cond, &ps[pi].sweep);
+        }
+        const double gain = (double)launchPlumeGain;
+        // A burn's parcels are the knots of a polyline: each draws the stretch of trail since the knot before it
+        // (centre the midpoint, axis and length the chord between the two as they are NOW, so the trail bends and
+        // shears with the winds that carry its parcels), and the youngest knot connects to the burning stage's nozzle
+        // (the head grows with the burn instead of a parcel appearing every interval: the trail used to arrive in
+        // jumps, each new parcel a needle reaching ahead of the rocket - the user's "intermittent, squished" trail).
+        int prev = -1;
+        for (size_t pi = 0; pi < B.parcels.size(); ++pi)
+        {
+            const launch::Parcel &pc = B.parcels[pi];
+            const PState &s = ps[pi];
+            if (!s.ok)
+                continue;
+            const double age = tau - pc.t0;
+            if (prev >= 0 && B.parcels[(size_t)prev].stream != pc.stream)
+                prev = -1;
+            // Old parcels are wide and overlap their neighbours: every 2nd stands for two past 2 min, every 4th for
+            // four past 10 min, every 8th past 30 min (the budget then reaches the whole bell, not just its young
+            // part) - but only once they are wide against the spacing (pc.len): thinned earlier, a trail showed gaps.
+            const int dec = pc.thin ? 1
+                            : (age > 1800.0 && s.sig > 8.0 * pc.len) ? 8
+                            : (age > 600.0 && s.sig > 4.0 * pc.len)  ? 4
+                            : (age > 120.0 && s.sig > 2.0 * pc.len)  ? 2 : 1;
+            const bool last = pi + 1 >= B.parcels.size() || B.parcels[pi + 1].stream != pc.stream || pc.stream < 0 ||
+                              !ps[pi + 1].ok;
+            if (pi % (size_t)dec != 0 && !last)
+                continue;
+            const uint64_t rimSeed = B.seed ^ (uint64_t)(pc.t0 * 10.0);
+            if (pc.stream < 0 || prev < 0)
+            {
+                // A vent's jet stretch, the pad's ground cloud, or the first knot of a burn: as emitted.
+                const double Sigma = pc.kappa * pc.m * s.cond * gain * (double)dec;
+                addPlume(s.cE, pc.axis, 0.5 * pc.len, s.sig, Sigma, s.sweep, pc.albedo, age, rimSeed, pc.stream >= 0);
+            }
+            else
+            {
+                const PState &q = ps[(size_t)prev];
+                glm::dvec3 seg = s.cE - q.cE;
+                const double sl = glm::length(seg);
+                const glm::dvec3 axE = sl > 1e-3 ? seg / sl : pc.axis;
+                double Sigma = 0.0;
+                for (int k = prev + 1; k <= (int)pi; ++k)
+                    Sigma += B.parcels[(size_t)k].kappa * B.parcels[(size_t)k].m;
+                Sigma *= s.cond * gain;
+                // Half the chord as the along-trail sigma joins neighbours smoothly; a young segment is tighter, so
+                // the head does not reach ahead of the stage.
+                const double cA = glm::mix(0.35, 0.5, glm::smoothstep(0.0, 3.0 * std::max(pc.dt, 0.5), age));
+                addPlume(0.5 * (s.cE + q.cE), axE, cA * sl, 0.5 * (s.sig + q.sig), Sigma, 0.5 * (s.sweep + q.sweep),
+                         pc.albedo, age, rimSeed, true);
+            }
+            prev = (int)pi;
+            // The head: from the youngest knot to the nozzle, while the burn goes on.
+            if (pc.stream >= 0 && pi + 1 < B.parcels.size() && B.parcels[pi + 1].stream == pc.stream &&
+                !ps[pi + 1].ok)
+            {
+                const launch::Parcel &nx = B.parcels[pi + 1];
+                const double f = (tau - pc.t0) / std::max(nx.t0 - pc.t0, 1e-3);
+                bool okN = false;
+                const glm::dvec3 nz = LaunchImpl::rocketEcef(L, B, nx.stage, tau, okN);
+                if (okN && f > 0.0 && f < 1.0 + 1e-6)
+                {
+                    glm::dvec3 seg = nz - s.cE;
+                    const double sl = glm::length(seg);
+                    const glm::dvec3 axE = sl > 1e-3 ? seg / sl : nx.axis;
+                    // The exhaust's own spread over the head's age (its knot's radius, shrinking to the nozzle).
+                    // Mostly still gas (launch::makeParcel's condensation time): half the head's age, on average.
+                    const double tauC = glm::mix(0.25, 1.5, glm::smoothstep(20000.0, 90000.0, glm::length(nz) - kR));
+                    const double condH = 1.0 - std::exp(-0.5 * (tau - pc.t0) / tauC);
+                    addPlume(0.5 * (nz + s.cE), axE, 0.35 * sl, std::max(0.5 * s.sig, 8.0),
+                             nx.kappa * nx.m * f * condH * gain, 0.0, nx.albedo, 0.0, rimSeed ^ 0x5Aull, true);
+                }
+            }
         }
     }
     // The plumes: the brightest per pixel of sky first, as many as fit.
@@ -1847,11 +2042,18 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // At most 384 plume Gaussians: a wide one covers much of the screen and costs every pixel it covers
         // (cloud_march.comp's loop), ~3 ms at 1000.
         const uint32_t nMax = std::min<uint32_t>(kMaxDustClouds, n + 384u);
+        // Near the cut a Gaussian fades by its priority (to 0 at the cut, full at 3x it): as plumes age and the view
+        // moves their ranks shift, and a hard cut switched pieces of a trail on and off (blocky in time warp).
+        const size_t room = nMax > n ? (size_t)(nMax - n) : 0;
+        const double cut = plumes.size() > room && room > 0 ? plumes[room].pri : 0.0;
         for (const Cand &c : plumes)
         {
             if (n >= nMax)
                 break;
-            out[n++] = c.d;
+            out[n] = c.d;
+            if (cut > 0.0)
+                out[n].c.w *= (float)glm::clamp((c.pri - cut) / (2.0 * cut), 0.0, 1.0);
+            ++n;
             ++L.nPlumes;
         }
     }

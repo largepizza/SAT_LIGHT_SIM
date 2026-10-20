@@ -109,6 +109,9 @@ struct Parcel
 {
     double t0 = 0.0;             // emission (s after lift-off)
     bool thin = false;           // a vent's jet (never decimated: its arms are thin)
+    int stream = -1;             // the burn it belongs to (>= 0: drawn as a polyline through its stream's parcels)
+    int stage = 0;               // which stage emitted it (the head segment runs to that stage's nozzle)
+    double dt = 0.0;             // the emission interval it stands for (s)
     double m = 0.0;              // kg
     double kappa = 1.0;          // scattering cross-section per kg (m^2/kg)
     double albedo = 0.9;
@@ -129,7 +132,7 @@ double airDensity(double hM); // kg/m^3
 // vented propellant, droplets freezing to ice, ~100 m/s).
 Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double m, double kappa, double albedo,
                   const glm::dvec3 &axis, double len, double maxAge, const glm::dvec3 &windDir, double windGain,
-                  double vExp = 2000.0);
+                  double vExp = 2000.0, double windPhase = 0.0);
 
 double hash01(uint64_t seed, uint64_t index, uint32_t channel);
 } // namespace launch

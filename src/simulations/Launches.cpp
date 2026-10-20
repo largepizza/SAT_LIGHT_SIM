@@ -385,7 +385,7 @@ bool Parcel::at(double a, glm::dvec3 &cOut, double &sOut, double &condOut, doubl
 
 Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double m, double kappa, double albedo,
                   const glm::dvec3 &axis, double len, double maxAge, const glm::dvec3 &windDir, double windGain,
-                  double vExp)
+                  double vExp, double windPhase)
 {
     Parcel pc;
     pc.t0 = t0;
@@ -401,12 +401,16 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
     double Me = airDensity(h0) * 4.18879 * sig * sig * sig;
     // Evaporation: a low trail dissipates in minutes, a stratospheric one lingers, the high exhaust's ice longest.
     const double tauEvap = h0 < 3000.0 ? 420.0 : h0 < 18000.0 ? 1500.0 : 3600.0;
+    // Condensation: the trail is not visible at the nozzle - the gas has to cool as it expands (soot and droplets low
+    // down within a fraction of a second; the ice of the high exhaust over a couple of seconds). Without it the
+    // newest exhaust, still metres wide, was an opaque white needle at the stage.
+    const double tauCond = glm::mix(0.25, 1.5, glm::smoothstep(20000.0, 90000.0, h0));
     double age = 0.0, nextRec = 0.0;
     auto record = [&]() {
         pc.age.push_back((float)age);
         pc.c.push_back(p);
         pc.sig.push_back((float)sig);
-        pc.cond.push_back((float)std::exp(-age / tauEvap));
+        pc.cond.push_back((float)(std::exp(-age / tauEvap) * (1.0 - std::exp(-age / tauCond))));
         pc.sweep.push_back((float)(Me / m));
     };
     record();
@@ -421,10 +425,25 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         // Wind: the launch's wind direction (Earth-fixed, horizontal at the pad), its speed by altitude: a few m/s
         // at the ground, the jet stream near 12 km, the mesosphere's strong winds near 90 km.
         const double hk = h / 1000.0;
+        // Layered: the direction turns with height (tides and gravity waves, vertical wavelengths ~10-25 km, strongest
+        // above ~50 km), and the speed varies from layer to layer, so a trail shears into kinks and corkscrews as it
+        // ages (the twisted noctilucent trails of twilight launches). windPhase decorrelates launches.
+        const double gw = glm::smoothstep(35.0, 90.0, hk);
         const double wspd = windGain * (6.0 + 28.0 * std::exp(-std::pow((hk - 12.0) / 6.0, 2.0)) +
-                                        45.0 * std::exp(-std::pow((hk - 95.0) / 15.0, 2.0)));
+                                        45.0 * std::exp(-std::pow((hk - 95.0) / 15.0, 2.0)) +
+                                        15.0 * gw * (1.0 + std::sin(6.2831853 * hk / 13.0 + 3.0 * windPhase))) +
+                            2.0 * std::sin(6.2831853 * hk / 3.1 + 5.0 * windPhase); // fine shear in the lower layers
+        const double twist = (0.12 + 0.55 * gw) * (std::sin(6.2831853 * hk / 9.0 + windPhase) +
+                                                   0.6 * std::sin(6.2831853 * hk / 23.0 + 2.1 * windPhase));
         glm::dvec3 w = windDir - glm::dot(windDir, up) * up;
-        w = glm::length(w) > 1e-9 ? glm::normalize(w) * wspd : glm::dvec3(0.0);
+        if (glm::length(w) > 1e-9)
+        {
+            w = glm::normalize(w);
+            const glm::dvec3 side = glm::cross(up, w);
+            w = (std::cos(twist) * w + std::sin(twist) * side) * wspd;
+        }
+        else
+            w = glm::dvec3(0.0);
         const glm::dvec3 vr = v - w;
         // Expansion: the gas's own (km/s into vacuum) while it outweighs the air it has taken in, then diffusion.
         const double Kd = hk < 15.0 ? 25.0 : hk < 60.0 ? 8.0 : 400.0;

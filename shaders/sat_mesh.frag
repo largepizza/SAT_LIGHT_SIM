@@ -401,7 +401,11 @@ void main()
         // Mode 3: the specular sunlight (a reflection, however rough, never a diffuse face) as L·d², and
         // the whole sunlit L; both luminance (L is sunColor × a scalar here).
         const vec3 kLum = vec3(0.2126, 0.7152, 0.0722);
-        float Ls = dot(Lspec, kLum);
+        // Only a Sun-LIKE reflection glares: a mirror-smooth surface shows the Sun as a compact, intense image; a
+        // rough lobe (stainless steel 0.12, paint) spreads it over degrees, and at grazing incidence (Fresnel -> 1,
+        // the 1/(2 alpha) of the masking term) such lobes still reached glare levels along every edge and panel
+        // seam of a Starship in daylight: dozens of flares (the user's QA, 2026-10-19).
+        float Ls = dot(Lspec, kLum) * meshGlareRoughK(sf.rough);
         outColor = glareSrc ? vec4(Ls * dot(d, d), dot(L, kLum), 0.0, 1.0) : vec4(L.r * dot(d, d), 0.0, 0.0, 1.0);
         outDist  = 0.0;
         return;
@@ -483,7 +487,7 @@ void main()
         // A render-only part has no share (instCompRenderOnly): its light is not in the model.
         float photFrac = instCompRenderOnly(inst, vComponent)
                        ? 0.0 : clamp(dot(Lphot, kLum) / max(dot(L, kLum), 1e-12), 0.0, 0.999);
-        outColor = vec4(L * inst.origin.w, float(vInstance + 1u) + photFrac);
+        outColor = vec4(L * inst.origin.w, float(vInstance + 1u) + meshSharePack(photFrac, meshGlareRoughK(sf.rough)));
         outDist  = length(vWorld - frame.camPos.xyz);
         return;
     }

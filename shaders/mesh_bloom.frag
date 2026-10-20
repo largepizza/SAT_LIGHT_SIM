@@ -53,11 +53,17 @@ void main()
             // a = instance slot + 1 + the photometric share of the pixel's light (sat_mesh.frag):
             // only sunlight and earthshine seed the bloom, not reflections of the Earth or moonlight,
             // matching the model intensity bloomScale is normalised by.
-            float l = dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)) * fract(m.a);
+            // The fraction packs the share (64 levels) and the glare-eligibility of the surface's roughness (8 levels):
+            // sat_mesh_common.glsl's meshSharePack.
+            float pk = floor(fract(m.a) * 512.0 + 0.5);
+            float share = floor(pk / 8.0) / 63.0, roughK = mod(pk, 8.0) / 7.0;
+            float l = dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)) * share;
             MeshInstanceBloom inst = instances[int(floor(m.a)) - 1];
             float k = l * inst.bloomScale;
             seed += k;
-            float glareW = smoothstep(kGlareRadiance0, kGlareRadiance1, l);
+            // Sun-like = intense AND a compact image of the Sun: a rough lobe at grazing incidence passes the radiance
+            // test along every edge of a stainless hull (2026-10-19).
+            float glareW = smoothstep(kGlareRadiance0, kGlareRadiance1, l) * roughK;
             // A point-like mesh glares through its sprite (glare.vert, at its glint; glarePoint = the
             // sprite's glare keep), so only the rest glares here: both at once drew two stars a few
             // pixels apart over the hand-off.
