@@ -16,7 +16,115 @@ void main()
 {
     vec2 uv = gl_FragCoord.xy / vec2(pc.screenW, pc.screenH);
     vec3 x;
-    if (vSeg.z > 0.5) {
+    if (vSeg.z > 1.5) {
+        // ── The engine lights (2026-10-20): burning rocket engines, a ship's entry glow, the pads' floodlights ──
+        // Each a point light of intensity I (suns x m^2): on the cloud composite (clouds and fog: albedo 0.9, facing it,
+        // the light floored at its core radius; from the far side of the cloud the diffuse transmission, 0.35), on the
+        // ground (the scene depth: albedo 0.15 x the cosine to the light; not on the vehicle's own hull) and on the haze
+        // along the ray (single scattering, in closed form: the integral of 1 / (d^2 + s^2) is an arctangent).
+        float tanH = tan(pc.fovYRad * 0.5);
+        vec3  dc   = normalize(vec3((2.0 * uv.x - 1.0) * tanH * pc.aspect, -(2.0 * uv.y - 1.0) * tanH, -1.0));
+        vec3  dir  = transpose(mat3(pc.skyView)) * dc;
+        vec4  ga = textureGather(cloudTargetA, uv, 3);
+        vec4  gt = textureGather(cloudTargetB, uv, 1);
+        vec4  gd = textureGather(sceneDepthTex, uv, 0);
+        vec2  fw = fract(uv * vec2(textureSize(cloudTargetA, 0)) - 0.5);
+        vec4  w4 = vec4((1.0 - fw.x) * fw.y, fw.x * fw.y, fw.x * (1.0 - fw.y), (1.0 - fw.x) * (1.0 - fw.y));
+        const float RE = 6371000.0;
+        float hE  = max(pc.spare.x, 0.0);
+        vec3  ctr = vec3(0.0, 0.0, RE + hE);   // p + ctr: a point ENU about the eye, from the Earth's centre
+        // The cloud's opacity from the FILTERED transmittance (smooth across the half-res texels: per gathered texel,
+        // gated on a valid distance, the lit cloud's outline was a staircase); its distance and air from the texels
+        // that have one, weighted bilinearly among themselves.
+        // A 3x3-texel tent (four bilinear taps half a texel out): one bilinear tap still drew the half-res texels as
+        // 2-px steps where the light is strong.
+        vec2  hT  = 0.5 / vec2(textureSize(cloudTargetB, 0));
+        float opF = 1.0 - clamp(0.25 * (texture(cloudTargetB, uv + vec2(-hT.x, -hT.y)).g + texture(cloudTargetB, uv + vec2(hT.x, -hT.y)).g +
+                                         texture(cloudTargetB, uv + vec2(-hT.x, hT.y)).g + texture(cloudTargetB, uv + hT).g),
+                                0.0, 1.0);
+        vec4  wk4, tC4, air4, tr4, airG4;
+        float wS = 0.0, opS = 0.0, tOp = 0.0, tGround = 1e30, tCmin = 1e30;
+        for (int k = 0; k < 4; ++k) {
+            tr4[k]  = clamp(gt[k], 0.0, 1.0);
+            float op = 1.0 - tr4[k];
+            bool ok = op >= 0.005 && abs(ga[k]) < 5000.0;
+            wk4[k]  = ok ? w4[k] : 0.0;
+            tC4[k]  = abs(ga[k]) * 1000.0;
+            air4[k] = ok ? boltAir(dir * tC4[k], tC4[k]) : 0.0;
+            wS  += wk4[k];
+            opS += op * wk4[k];
+            tOp += op * wk4[k] * tC4[k];
+            if (ok) tCmin = min(tCmin, tC4[k]);
+            bool okG = gd[k] < 1e29;
+            airG4[k] = okG ? boltAir(dir * gd[k], gd[k]) : 0.0;
+            if (okG) tGround = min(tGround, gd[k]);
+        }
+        wk4 *= wS > 0.0 ? 1.0 / wS : 0.0;
+        float tCbar = opS > 0.0 ? tOp / opS : 0.0;
+        // (No surface orientation: the screen derivatives of the half-res distance drew a 2-px crosshatch. The relief
+        // that shows comes from the opacity: thin edges and wisps take less of the light, as the cloud's own does.)
+        float opK = opF * sqrt(opF);
+        float trBar = dot(tr4, w4);
+        // The haze is lit up to the ground, and in the cloud's share of the pixel only up to the cloud (a threshold on
+        // the opacity drew the cloud's half-res outline into the haze as a staircase).
+        float tEndC = min(tGround, 4.0e5);
+        float tEndK = min(tEndC, tCbar > 0.0 ? tCbar : tEndC);
+        x = vec3(0.0);
+        uint n = min(uint(pc.params2.z + 0.5), 32u);
+        for (uint i = 0u; i < n; ++i) {
+            EngineLight L = elList[kEngineLightBase + i];
+            vec3  Lp = L.c.xyz;
+            float reach = L.col.z;
+            float rE = length(Lp);
+            if (rE > reach && dot(dir, Lp) < rE * sqrt(1.0 - (reach * reach) / (rE * rE))) continue;
+            float r02 = L.ia.w * L.ia.w, reach2 = reach * reach;
+            float hL  = length(Lp + ctr) - RE;
+            float g = 0.0;
+            // Clouds and fog.
+            for (int k = 0; k < 4; ++k) {
+                if (wk4[k] <= 0.0) continue;
+                vec3  C  = dir * tC4[k];
+                vec3  dl = Lp - C;
+                float r2 = dot(dl, dl);
+                if (r2 > reach2) continue;
+                float hC  = length(C + ctr) - RE;
+                float far = (hL - hC) * (hE - hC) < 0.0 ? smoothstep(150.0, 800.0, min(abs(hL - hC), abs(hE - hC))) : 0.0;
+                g += opK * wk4[k] * air4[k] * 0.85 * mix(1.0, 0.35, far) * reachWin(r2, reach2) / (r2 + r02);
+            }
+            // The ground (and the sea, the pad's meshes), behind the clouds' transmittance.
+            if (L.col.y < 0.5) {
+                for (int k = 0; k < 4; ++k) {
+                    if (gd[k] >= 1e29) continue;
+                    vec3  P  = dir * gd[k];
+                    vec3  dl = Lp - P;
+                    float r2 = dot(dl, dl);
+                    if (r2 > reach2) continue;
+                    float ax = -dot(dl, L.ib.xyz);
+                    vec3  rd = -dl - ax * L.ib.xyz;
+                    if (ax > -5.0 && ax < L.ib.w && dot(rd, rd) < L.col.x * L.col.x) continue;   // the hull itself
+                    float cosL = max(dot(normalize(P + ctr), dl), 0.0) * inversesqrt(max(r2, 1.0));
+                    g += w4[k] * tr4[k] * airG4[k] * 0.15 * cosL * reachWin(r2, reach2) / (r2 + 0.25 * r02);
+                }
+            }
+            // The haze along the ray: sigma(h) / 4 x the integral of I / (d^2 + (t - t0)^2) over [0, tEnd].
+            {
+                float t0 = dot(dir, Lp);
+                float d  = max(length(Lp - dir * t0), L.ia.w);
+                if (d < reach) {
+                    float hh  = max(hL, 0.0);
+                    float sig = 1.2e-5 * exp(-hh / 8000.0) + 2.5e-5 * exp(-hh / 1500.0);
+                    float a0  = atan(-t0 / d);
+                    float ang = mix(atan((tEndC - t0) / d), atan((tEndK - t0) / d), opF) - a0;
+                    float tc  = clamp(t0, 0.0, tEndC);
+                    g += 0.25 * sig * max(ang, 0.0) / d * boltAir(dir * tc, tc) * (tc > tCmin ? trBar : 1.0) *
+                         reachWin(d * d, reach2);
+                }
+            }
+            x += L.ia.rgb * (L.c.w * g);
+        }
+        x *= pc.params.x;
+        if (max(x.r, max(x.g, x.b)) < 1e-4) discard;
+    } else if (vSeg.z > 0.5) {
         // The ray through this pixel, and the cloud composite's four texels about it (own distance and opacity each,
         // blended bilinearly: one filtered distance mixes a cloud's with the no-cloud marker).
         float tanH = tan(pc.fovYRad * 0.5);

@@ -38,7 +38,7 @@ void main()
         vec2 q = vec2(float((vi << 1) & 2), float(vi & 2));
         gl_Position = vec4(q * 2.0 - 1.0, 0.0, 1.0);
         vLocal = vec2(0.0); vCore = vec4(0.0); vHalo = vec4(0.0);
-        vSeg  = vec4(0.0, 0.0, 1.0, 0.0);
+        vSeg  = vec4(0.0, 0.0, pc.params.w, 0.0);   // 1 the flashes' glow, 2 the engine lights
         vGlow = vec4(0.0);
         return;
     }

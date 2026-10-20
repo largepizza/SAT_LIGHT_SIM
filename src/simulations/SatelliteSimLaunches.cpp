@@ -2835,6 +2835,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 shipIdx = selTransients.size();
                 addSelTransient(st);
             }
+            // The plasma's light on the cloud tops below (faint: it is 45-100 km up).
+            if (I > 1e-3)
+                engineLightAdd(P, flameIntensitySunsM2(-4.0 - 2.5 * std::log10(I)),
+                               glm::mix(glm::vec3(1.0f, 0.62f, 0.38f), glm::vec3(1.0f, 0.55f, 0.75f),
+                                        (float)glm::clamp(v / 7500.0, 0.0, 1.0)),
+                               400.0, glm::normalize(P), 0.0, 0.0, false);
             if (I > 1e-3 && !earthBlocks(P))
             {
                 const double m = -4.0 - 2.5 * std::log10(I) + 5.0 * std::log10(range / 1.0e5) +
@@ -3004,6 +3010,42 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     sd.type = st.type;
                     L.stackDraws.push_back(sd);
                 }
+            }
+            // The burning engines as a light on the clouds, fog, haze, plumes and ground (2026-10-20; engineLightAdd):
+            // listed before the horizon test (a rocket below the eye's horizon still lights the clouds above it).
+            if (burn != launch::BURN_NONE && engineLightGain > 0.0f)
+            {
+                double fmL = stage == 0 ? vh.flameMag1 : vh.flameMag2;
+                if (burn == launch::BURN_LANDING)
+                    fmL += 1.5;
+                else if (burn == launch::BURN_BOOSTBACK || burn == launch::BURN_ENTRY)
+                    fmL += 0.7;
+                glm::dvec3 nose = glm::normalize(P);
+                if (trIdx < selTransients.size() && glm::length(selTransients[trIdx].axis) > 0.5)
+                    nose = glm::normalize(selTransients[trIdx].axis);
+                glm::dvec3 egL(0.0, 2.0, 40.0);
+                {
+                    const int ty = trIdx < selTransients.size() ? selTransients[trIdx].type : -1;
+                    if (ty >= 0 && ty < (int)satTypes.size())
+                    {
+                        auto it = L.engineGeom.find(ty);
+                        if (it == L.engineGeom.end())
+                            it = L.engineGeom.emplace(ty, LaunchImpl::engineGeomOf(satTypes[(size_t)ty])).first;
+                        egL = it->second;
+                    }
+                }
+                const double DL = 2.0 * egL.y;
+                const double hiL = glm::smoothstep(20000.0, 90000.0, glm::length(P) - kR);
+                const double Lf = DL * 6.0 * (1.0 + 2.5 * hiL); // ~ the flame's core + body (launchFillVisuals below)
+                const glm::dvec3 Pl = P + egL.x * nose - 0.4 * Lf * nose;
+                const glm::vec3 fc = glm::mix(glm::vec3(1.0f, 0.82f, 0.62f), glm::vec3(1.0f, 0.6f, 0.3f), (float)vh.soot);
+                // The light the clouds see: the flame's colour toward the deep orange of launch photographs (the lit exhaust
+                // and the cloud's own multiple scattering redden it), sootier flames deeper.
+                const glm::vec3 lc = glm::mix(fc, glm::mix(glm::vec3(1.0f, 0.45f, 0.15f), glm::vec3(1.0f, 0.38f, 0.08f),
+                                                           (float)vh.soot), 0.85f);
+                engineLightAdd(Pl, flameIntensitySunsM2(fmL), lc,
+                               std::max(25.0, 0.5 * Lf), nose, std::min(18.0 * DL, 130.0) + 0.4 * Lf, 1.5 * egL.y + 3.0,
+                               false);
             }
             if (earthBlocks(P))
                 continue;
@@ -3476,6 +3518,24 @@ nlohmann::json SatelliteSim::launchStateJson() const
 {
     nlohmann::json j;
     j["enabled"] = launchesEnabled;
+    // The engine / floodlight lights drawn this frame (engineLightsFlush), from the dust buffer's tail.
+    {
+        nlohmann::json el = nlohmann::json::array();
+        if (kDustMapped)
+        {
+            const GpuDustCloud *tail =
+                reinterpret_cast<const GpuDustCloud *>(static_cast<const char *>(kDustMapped) + 16) + kMaxDustClouds;
+            for (uint32_t i = 0; i < engineLightCount; ++i)
+                el.push_back({{"dist_km", glm::length(glm::vec3(tail[i].c)) / 1000.0f},
+                              {"up_km", tail[i].c.z / 1000.0f},
+                              {"intensity_suns_m2", tail[i].c.w},
+                              {"r0_m", tail[i].ia.w},
+                              {"reach_km", tail[i].col.z / 1000.0f},
+                              {"ground", tail[i].col.y < 0.5f}});
+        }
+        j["engine_light_gain"] = engineLightGain;
+        j["engine_lights"] = el;
+    }
     if (!launchState)
         return j;
     const LaunchState &L = *launchState;
@@ -4370,6 +4430,20 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
                                "(the 'jellyfish'), lit while the ground below is dark.");
     if (pg >= 0 && pg != pSel)
         launchPlumeGain = kPlumeV[pg];
+    {
+        static const char *kEl[] = {"Off", "x0.3", "x1", "x3"};
+        static const float kElV[] = {0.0f, 0.3f, 1.0f, 3.0f};
+        int eSel = 2;
+        for (int i = 0; i < 4; ++i)
+            if (std::abs(engineLightGain - kElV[i]) < 1e-3f)
+                eSel = i;
+        const int eg = uiChoiceRow(inp, ui, "LaunchEngLight", 0, "Rocket light on clouds", kEl, 4, eSel,
+                                   "At night the burning engines light the clouds, fog, haze, exhaust and ground around "
+                                   "them orange (and the pads' floodlights the low cloud over them). x1: each flame's "
+                                   "light from its magnitude, lifted at night as the moonlight is.");
+        if (eg >= 0 && eg != eSel)
+            engineLightGain = kElV[eg];
+    }
     if (kesslerEnabled)
     {
         static const char *kAfter[] = {"Stand down", "Resume"};
@@ -6259,6 +6333,13 @@ void SatelliteSim::launchFillPadLights()
     for (size_t pi = 0; pi < L.pads.size(); ++pi)
     {
         const LPad &pd = L.pads[pi];
+        // The floodlights' light on low cloud and fog over the pad (2026-10-20): one light per pad, mostly the floods'
+        // spill and their light off the pad's concrete (~5e4 cd upward, a Starship pad's more), not on the ground
+        // (sat_sky.frag's padGround draws the lit apron itself).
+        if (glm::length(pd.g * kR - eyeE) < 300e3)
+            engineLightAdd(ecefToEci(padPointEcef(pd, 0.0, pd.kind == 2 ? kPadTowerV : 0.0, 60.0), t),
+                           (pd.kind == 2 ? 0.8 : 0.5) * night, glm::vec3(1.0f, 0.93f, 0.80f), 80.0,
+                           glm::dvec3(0.0), 0.0, 0.0, true);
         if (glm::length(pd.g * kR - eyeE) > 160e3)
             continue;
         padLightsOf(pd, lights);
@@ -6304,6 +6385,71 @@ void SatelliteSim::launchFillPadLights()
         }
     }
     static_cast<uint32_t *>(kFireMapped)[0] = kFireCount;
+}
+
+// -- Engine and floodlight light on clouds, haze, plumes and the ground (2026-10-20) --------------------------------
+// A flame's magnitude seen from 100 km above the air -> its luminous intensity in suns x m^2 (the irradiance it gives
+// at 1 m, per unit of the Sun's): mag 0 = 2.54e-6 lux, the Sun 1.27e5 lux. A Super Heavy (-6 at 100 km) is ~6e6 cd,
+// ~50 suns m^2: ~0.7 lux (~3 full Moons) on a cloud base 3 km up.
+double SatelliteSim::flameIntensitySunsM2(double mag100km)
+{
+    return 2.54e-6 * std::pow(10.0, -0.4 * mag100km) * 1.0e10 / 1.27e5;
+}
+
+void SatelliteSim::engineLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double r0,
+                                  const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround)
+{
+    if (engineLightGain <= 0.0f || intensitySunsM2 <= 0.0)
+        return;
+    // Physical by day (nothing to see); at night lifted as the moonlight is (moonGain = the full Moon's light on the
+    // terrain in the sky's units, physically ~2e-6 of the Sun's): the night exposure is not physical.
+    const double dayness = glm::clamp(((double)sunDirENU.w + 0.1) / 0.3, 0.0, 1.0);
+    const double lift = glm::mix(1.0, (double)moonGain / 2.0e-6, 1.0 - dayness) * (double)engineLightGain;
+    const double Il = intensitySunsM2 * lift;
+    // Its reach: where a white cloud it lights falls to ~2e-3 of white on screen.
+    const double reach = std::min(std::sqrt((double)skyExposure() * 0.9 * Il / 2.0e-3), 300.0e3);
+    if (reach < 50.0)
+        return;
+    const glm::dvec3 eye(obsECI);
+    const glm::dvec3 rel = posEci - eye;
+    const double dist = glm::length(rel);
+    if (dist > 3.0e6 + reach)
+        return;
+    const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
+    auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
+    const float lum = std::max(glm::dot(col, glm::vec3(0.2126f, 0.7152f, 0.0722f)), 1e-3f);
+    GpuDustCloud d{};
+    d.c = glm::vec4(glm::vec3(toEnu(rel)), (float)Il);
+    d.ia = glm::vec4(col / lum, (float)r0);
+    d.ib = glm::vec4(glm::vec3(glm::length(noseEci) > 0.5 ? toEnu(glm::normalize(noseEci)) : glm::dvec3(0.0, 0.0, 1.0)),
+                     (float)hullLen);
+    d.col = glm::vec4((float)hullR, noGround ? 1.0f : 0.0f, (float)reach, 0.0f);
+    // (cone.w: the ranking while listing; zeroed on upload) the lights whose lit region is nearest the eye first.
+    d.cone = glm::vec4(0.0f, 0.0f, 0.0f, (float)(reach / std::max(dist - reach, reach)));
+    engineLights_.push_back(d);
+}
+
+void SatelliteSim::engineLightsFlush()
+{
+    engineLightCount = 0;
+    if (!kDustMapped)
+    {
+        engineLights_.clear();
+        return;
+    }
+    if (engineLights_.size() > kMaxEngineLights)
+        std::partial_sort(engineLights_.begin(), engineLights_.begin() + kMaxEngineLights, engineLights_.end(),
+                          [](const GpuDustCloud &a, const GpuDustCloud &b) { return a.cone.w > b.cone.w; });
+    const uint32_t n = (uint32_t)std::min<size_t>(engineLights_.size(), kMaxEngineLights);
+    GpuDustCloud *tail = reinterpret_cast<GpuDustCloud *>(static_cast<char *>(kDustMapped) + 16) + kMaxDustClouds;
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        tail[i] = engineLights_[i];
+        tail[i].cone = glm::vec4(0.0f);
+    }
+    static_cast<uint32_t *>(kDustMapped)[1] = n;
+    engineLightCount = n;
+    engineLights_.clear();
 }
 
 nlohmann::json SatelliteSim::launchPadsJson() const
