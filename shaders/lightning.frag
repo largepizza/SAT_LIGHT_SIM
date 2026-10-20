@@ -47,7 +47,8 @@ void main()
         for (int k = 0; k < 4; ++k) {
             tr4[k]  = clamp(gt[k], 0.0, 1.0);
             float op = 1.0 - tr4[k];
-            bool ok = op >= 0.005 && abs(ga[k]) < 5000.0;
+            // (not a texel whose opacity is a plume's: cloud_march lit it by the engine lights already, cloudAlphaIsEmit)
+            bool ok = op >= 0.005 && abs(ga[k]) < 5000.0 && !cloudAlphaIsEmit(ga[k]);
             wk4[k]  = ok ? w4[k] : 0.0;
             tC4[k]  = abs(ga[k]) * 1000.0;
             air4[k] = ok ? boltAir(dir * tC4[k], tC4[k]) : 0.0;
@@ -61,6 +62,27 @@ void main()
         }
         wk4 *= wS > 0.0 ? 1.0 / wS : 0.0;
         float tCbar = opS > 0.0 ? tOp / opS : 0.0;
+        // The cloud's distance for its LIGHT: a [1 2 1] tent over the 3x3 half-res texels (four gathers half a texel
+        // out), weighted by opacity (2026-10-20). The light goes as 1 / r^2 of that distance, and the composite's
+        // distances step from texel to texel (the sparse march's blocks, a near cloud's edge over a far one): taken per
+        // gathered texel, a lit deck's outline and every gap in it were drawn as a staircase of 4-8 px steps.
+        float tLs = 0.0, wLs = 0.0;
+        {
+            vec2 hT2 = 0.5 / vec2(textureSize(cloudTargetA, 0));
+            for (int j = 0; j < 4; ++j) {
+                vec2 o2 = vec2((j & 1) == 0 ? -hT2.x : hT2.x, (j & 2) == 0 ? -hT2.y : hT2.y);
+                vec4 a4 = textureGather(cloudTargetA, uv + o2, 3);
+                vec4 t4 = textureGather(cloudTargetB, uv + o2, 1);
+                for (int k = 0; k < 4; ++k) {
+                    float op = 1.0 - clamp(t4[k], 0.0, 1.0);
+                    if (op < 0.005 || abs(a4[k]) >= 5000.0 || cloudAlphaIsEmit(a4[k])) continue;
+                    tLs += op * abs(a4[k]) * 1000.0;
+                    wLs += op;
+                }
+            }
+            tLs = wLs > 0.0 ? tLs / wLs : 0.0;
+        }
+        float airLs = wLs > 0.0 ? boltAir(dir * tLs, tLs) : 0.0;
         // (No surface orientation: the screen derivatives of the half-res distance drew a 2-px crosshatch. The relief
         // that shows comes from the opacity: thin edges and wisps take less of the light, as the cloud's own does.)
         float opK = opF * sqrt(opF);
@@ -80,16 +102,16 @@ void main()
             float r02 = L.ia.w * L.ia.w, reach2 = reach * reach;
             float hL  = length(Lp + ctr) - RE;
             float g = 0.0;
-            // Clouds and fog.
-            for (int k = 0; k < 4; ++k) {
-                if (wk4[k] <= 0.0) continue;
-                vec3  C  = dir * tC4[k];
+            // Clouds and fog (at the tent-smoothed distance above).
+            if (wLs > 0.0 && wS > 0.0) {
+                vec3  C  = dir * tLs;
                 vec3  dl = Lp - C;
                 float r2 = dot(dl, dl);
-                if (r2 > reach2) continue;
-                float hC  = length(C + ctr) - RE;
-                float far = (hL - hC) * (hE - hC) < 0.0 ? smoothstep(150.0, 800.0, min(abs(hL - hC), abs(hE - hC))) : 0.0;
-                g += opK * wk4[k] * air4[k] * 0.85 * mix(1.0, 0.35, far) * reachWin(r2, reach2) / (r2 + r02);
+                if (r2 <= reach2) {
+                    float hC  = length(C + ctr) - RE;
+                    float far = (hL - hC) * (hE - hC) < 0.0 ? smoothstep(150.0, 800.0, min(abs(hL - hC), abs(hE - hC))) : 0.0;
+                    g += opK * airLs * 0.85 * mix(1.0, 0.35, far) * reachWin(r2, reach2) / (r2 + r02);
+                }
             }
             // The ground (and the sea, the pad's meshes), behind the clouds' transmittance.
             if (L.col.y < 0.5) {
@@ -138,7 +160,7 @@ void main()
         bool  any = false;
         for (int k = 0; k < 4; ++k) {
             op4[k]  = 1.0 - clamp(gt[k], 0.0, 1.0);
-            bool ok = op4[k] >= 0.005 && abs(ga[k]) < 5000.0;
+            bool ok = op4[k] >= 0.005 && abs(ga[k]) < 5000.0 && !cloudAlphaIsEmit(ga[k]);
             op4[k] *= ok ? w4[k] : 0.0;
             tC4[k]  = abs(ga[k]) * 1000.0;
             air4[k] = ok ? boltAir(dir * tC4[k], tC4[k]) : 0.0;

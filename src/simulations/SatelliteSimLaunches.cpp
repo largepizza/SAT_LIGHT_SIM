@@ -7522,6 +7522,23 @@ void SatelliteSim::engineLightsFlush()
         const double dt = glm::clamp((double)skyTaaFrameDt, 0.0, 0.5);
         const double rate = aT < engineAdaptEased ? 3.0 : 0.5;
         engineAdaptEased = (float)glm::mix((double)engineAdaptEased, aT, 1.0 - std::exp(-dt * rate));
+        // A CUT snaps it (2026-10-20, QA: the first ~0.5 s after jumping beside a burning stage showed the scene
+        // unadapted, a white-out): a time jump, the eye moving more than a fifth of the way to the nearest light (or
+        // 300 m) in one frame (a teleport, a bookmark, harness / Go-to jumps), and every frame of a Go-to flight
+        // (the eye closes on the stage far faster than the eye adapts: the arrival is then already adapted).
+        {
+            const glm::dvec3 eye(obsECI);
+            const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            double dNear = 1e30;
+            for (const GpuDustCloud &d : engineLights_)
+                dNear = std::min(dNear, (double)glm::length(glm::vec3(d.c)));
+            const bool cut = std::abs(tNow - engineAdaptPrevT) > 2.0 ||
+                             glm::length(eye - engineAdaptPrevEye) > std::max(300.0, 0.2 * dNear) || followFlight != 0;
+            if (cut)
+                engineAdaptEased = (float)aT;
+            engineAdaptPrevEye = eye;
+            engineAdaptPrevT = tNow;
+        }
         if (!(engineAdaptEased > 0.0f) || engineAdaptEased > 1.0f)
             engineAdaptEased = (float)aT;
         const float a = engineAdaptEased;

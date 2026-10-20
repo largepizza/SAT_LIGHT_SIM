@@ -196,6 +196,17 @@ float tdDemBilinear(sampler2D elevTex, ivec2 base, vec2 f, ivec2 sz) {
 // angle math — the exact path everywhere measured +1 ms in the depth pass). The choice depends on q
 // alone, so every pass makes the same one for the same point.
 const float kTdExactDemM = 4000.0;
+// The exact DEM near the observer, the coast patches and the launch pads are all in the MAIN observer's frame (its
+// DEM texel, its sea-level point): SKY_ENV renders from another viewpoint (a satellite, the Info window's camera),
+// where they described a different place. A rocket's 3D view on its pad at night was a flat beige wall
+// (2026-10-20): the exact DEM read the main observer's terrain ~80 km away. Off there.
+bool tdExactNear(vec3 q) {
+#ifdef SKY_ENV
+    return false;
+#else
+    return dot(q.xy, q.xy) < kTdExactDemM * kTdExactDemM;
+#endif
+}
 
 // Coves and headlands (terrain v2 P2): the water map's shore is a ~5 km-smooth curve, so from the
 // ground a coast was one long clean line. One octave of the detail's value noise (1024 m cells, the
@@ -274,7 +285,7 @@ vec2 tdCoastWm(vec2 wm, float k, float d) {
 // with no detail relief on it (tdAmp0 x (1 - k)) and never water (a marsh pad, Louisiana). Only the nearest
 // cloud.padInfo.w pads (those within ~300 km): nothing at all elsewhere. Horizontal distance at the pad's own up.
 // k of the last tdDemAt (for tdAmp0 right after it in the march; tdBegin recomputes it from its own q).
-#ifndef SKY_LITE
+#if !defined(SKY_LITE) && !defined(SKY_ENV)   // (the pads are in the main observer's frame: tdExactNear)
 float gTdPadK = 0.0;
 float tdPadFlat(vec3 q, out float padH, out float landK) {
     padH = 0.0;
@@ -304,7 +315,7 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
              out float h0, out float hMip3) {
     ivec2 sz = textureSize(elevTex, 0);
     vec2  uv;
-    if (dot(q.xy, q.xy) < kTdExactDemM * kTdExactDemM) {
+    if (tdExactNear(q)) {
         ivec2 base;
         vec2  f;
         tdDemTexel(q, enuX, enuY, enuZ, vec2(sz), base, f);
@@ -316,7 +327,7 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
     }
     hMip3 = max(0.0, textureLod(elevTex, uv, 3.0).r * kElevRange - kElevOffset);
     float cK = 0.0, cD = 0.0;
-#ifndef SKY_LITE
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
     if (cloud.coastInfo.x > 0.5) {
         int  cI;
         vec2 cP;
@@ -334,7 +345,7 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
         vec2 wm = textureLod(specTex, uv, 0.0).rg;
         // Near the observer AND the shore, filtered by hand like the DEM: hardware filtering's 8-bit
         // weights step the shoreline every ~20 m.
-        if (abs(wm.r - 0.5) * 2.0 * kShoreSdfMaxM < kShoreBankM && dot(q.xy, q.xy) < kTdExactDemM * kTdExactDemM) {
+        if (abs(wm.r - 0.5) * 2.0 * kShoreSdfMaxM < kShoreBankM && tdExactNear(q)) {
             ivec2 wsz = textureSize(specTex, 0);
             vec2  tw  = uv * vec2(wsz) - 0.5;
             vec2  fl  = floor(tw), f = tw - fl;
@@ -344,14 +355,14 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
                      mix(texelFetch(specTex, ivec2(x0, y1), 0).rg, texelFetch(specTex, ivec2(x1, y1), 0).rg, f.x), f.y);
         }
         // A coast patch's shore, at the sea's level; the coves' noise x0.3 there (+-700 m would swallow its strips).
-#ifndef SKY_LITE
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
         wm = tdCoastWm(wm, cK, cD);
 #endif
         bool water;
         h0 = waterAdjustHeight(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wm) * (1.0 - 0.7 * cK), water);
         if (water) hMip3 = kTdWaterMark;
     }
-#ifndef SKY_LITE
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
     gTdPadK = 0.0;
     if (cloud.padInfo.w > 0.5) {
         float pH, landK;

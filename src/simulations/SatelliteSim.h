@@ -2875,6 +2875,8 @@ private:
     static constexpr uint32_t kMaxEngineLights = 32;
     std::vector<GpuDustCloud> engineLights_;  // this frame's (kMaxEngineLights at most, brightest kept)
     float engineAdaptEased = 1.0f;            // the eye's adaptation to the lights at night (engineLightsFlush)
+    glm::dvec3 engineAdaptPrevEye{0.0};       // last frame's eye (ECI) and sim time: a cut snaps the adaptation
+    double engineAdaptPrevT = -1e30;
     uint32_t engineLightCount = 0;
     void engineLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double r0,
                         const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround);
