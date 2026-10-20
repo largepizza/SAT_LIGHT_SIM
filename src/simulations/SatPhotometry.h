@@ -141,6 +141,7 @@ struct SatOrbitElems
     bool fixedState = false;
     glm::dvec3 fixPos{0.0}, fixVel{0.0}, fixAcc{0.0};
     glm::dvec3 fixAxis{0.0}; // nonzero: the body axis the attitude's "velocity" target takes (a rocket's thrust axis)
+    float engineGlow = 0.0f; // a rocket stage's engines burning (0..1): the mesh draws its nozzles' insides lit
     double fixT0 = 0.0;
     // Attitude override (launches, 2026-10-20; satAttOverride): the root group's body -> ECI rotation is attQ at attT0,
     // turning at attOmega (ECI, rad/s) — a satellite stowed in its dispenser, then free after its release with a

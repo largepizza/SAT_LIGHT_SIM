@@ -9,6 +9,7 @@
 layout(location = 0) in vec3  gColor;
 layout(location = 1) in float gStrength;
 layout(location = 2) in float gRadiusPx;
+layout(location = 5) in float gSpikeW;
 
 layout(location = 0) out vec4 outColor;
 
@@ -16,7 +17,7 @@ void main()
 {
     vec2 d = (gl_PointCoord - 0.5) * (2.0 * gRadiusPx);
     if (gStrength <= 0.0 || dot(d, d) >= gRadiusPx * gRadiusPx) discard;
-    vec2 g = glareProfile(d, gRadiusPx);
+    vec2 g = glareProfile(d, gRadiusPx, gSpikeW);
     vec3 col = mix(gColor, vec3(1.0), 0.3) * g.x + mix(gColor, vec3(1.0), 0.7) * g.y;
     outColor = vec4(col * gStrength, 1.0);
 }

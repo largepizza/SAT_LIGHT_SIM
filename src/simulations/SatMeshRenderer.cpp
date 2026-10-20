@@ -109,6 +109,8 @@ void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth, const
     makeHostBuffer(ctx, sizeof(GpuSatMeshOccluder), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr, occluderBuf,
                    occluderMem);
     makeHostBuffer(ctx, sizeof(glm::vec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr, componentBuf, componentMem);
+    makeHostBuffer(ctx, (VkDeviceSize)kAccelSlots * kAccelStride * sizeof(glm::uvec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                   nullptr, accelBuf, accelMem, &accelMapped);
 
     VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sci.magFilter = VK_FILTER_LINEAR;
@@ -189,6 +191,9 @@ void SatMeshRenderer::cleanup(VkDevice d)
     destroy(d, frameMem, vkFreeMemory);
     destroy(d, instanceBuf, vkDestroyBuffer);
     destroy(d, instanceMem, vkFreeMemory);
+    destroy(d, accelBuf, vkDestroyBuffer);
+    destroy(d, accelMem, vkFreeMemory);
+    accelMapped = nullptr;
     destroy(d, materialBuf, vkDestroyBuffer);
     destroy(d, materialMem, vkFreeMemory);
     destroy(d, occluderBuf, vkDestroyBuffer);
@@ -211,7 +216,7 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
 {
     const VkShaderStageFlags vf = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     const VkShaderStageFlags f = VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutBinding b[10] = {
+    VkDescriptorSetLayoutBinding b[11] = {
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, vf, nullptr},
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, vf, nullptr},
         {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, f, nullptr},
@@ -222,9 +227,10 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
         {7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, vf, nullptr}, // per-component pivots (Phase 4f)
         {8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, f, nullptr},  // every env probe's SH irradiance
         {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, f, nullptr}, // viewer background (HDR)
+        {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, f, nullptr}, // shadow-ray accel (writeShadowAccel)
     };
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 10;
+    li.bindingCount = 11;
     li.pBindings = b;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &descLayout);
 
@@ -232,7 +238,7 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
     // its own frame UBO (all can be recorded in one frame, and a shared host-written UBO would hold only
     // the last write).
     VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4},
-                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 20},
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 24},
                                   {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 3;
@@ -263,7 +269,8 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
         {earth_.cloudsSampler, earth_.clouds, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
     };
     VkDescriptorBufferInfo shInfo{probes_.shBuffer, 0, VK_WHOLE_SIZE};
-    VkWriteDescriptorSet w[6] = {};
+    VkDescriptorBufferInfo accelInfo{accelBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet w[7] = {};
     w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             nullptr, &frameInfo, nullptr};
     w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -273,7 +280,9 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &img[i], nullptr, nullptr};
     w[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 8, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             nullptr, &shInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 6, w, 0, nullptr);
+    w[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 10, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            nullptr, &accelInfo, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 7, w, 0, nullptr);
     }
     writeGeometryDescriptors();
 }
@@ -381,6 +390,8 @@ void SatMeshRenderer::setTypeModels(VulkanContext &ctx, const std::vector<TypeMo
                    occs.empty() ? nullptr : occs.data(), occluderBuf, occluderMem);
     makeHostBuffer(ctx, comps.size() * sizeof(glm::vec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                    comps.empty() ? nullptr : comps.data(), componentBuf, componentMem);
+    occsCpu = std::move(occs);
+    compsCpu = std::move(comps);
     writeGeometryDescriptors();
 }
 
@@ -643,6 +654,7 @@ void SatMeshRenderer::recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &fram
         return;
     memcpy(frameMapped, &frame, sizeof(frame));
     memcpy(instanceMapped, &inst, sizeof(inst)); // viewer = instance slot 0
+    writeShadowAccel(0, static_cast<GpuMeshInstance *>(instanceMapped)[0], typeIdx);
 
     VkClearValue clears[3] = {};
     clears[1].depthStencil = {1.0f, 0};
@@ -836,8 +848,9 @@ void SatMeshRenderer::createViewerGlare(VulkanContext &ctx)
         vkDestroyShaderModule(ctx.device, mod, nullptr);
     }
 
-    // Draw: the main view's mesh-glare sprite (glare_mesh.vert/.frag), GlarePC (112 B), additive.
-    VkPushConstantRange dpr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 112};
+    // Draw: the main view's mesh-glare sprite (glare_mesh.vert/.frag), GlarePC (128 B since the glare clusters,
+    // 2026-10-20; the viewer has no cluster grid: its gridW is 0), additive.
+    VkPushConstantRange dpr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128};
     pli.pSetLayouts = &glareDrawLayout;
     pli.pPushConstantRanges = &dpr;
     vkCreatePipelineLayout(ctx.device, &pli, nullptr, &glareDrawPipeLayout);
@@ -1015,7 +1028,7 @@ void SatMeshRenderer::recordViewerGlare(VkCommandBuffer cmd, const GpuMeshFrame 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareDrawPipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareDrawPipeLayout, 0, 1, &glareDrawSet, 0, nullptr);
     vkCmdPushConstants(cmd, glareDrawPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                       std::min(glarePcSize, 112u), glarePc);
+                       std::min(glarePcSize, 128u), glarePc);
     vkCmdDrawIndirect(cmd, glintBuf, 4, 1, 0); // the list's own VkDrawIndirectCommand (offset 4)
     vkCmdEndRenderPass(cmd);
 }
@@ -1099,6 +1112,7 @@ void SatMeshRenderer::recordCheck(VkCommandBuffer cmd, const GpuMeshFrame &frame
         return;
     memcpy(checkFrameMapped, &frame, sizeof(frame));
     memcpy(static_cast<char *>(instanceMapped) + sizeof(GpuMeshInstance), &inst, sizeof(inst)); // slot 1
+    writeShadowAccel(1, static_cast<GpuMeshInstance *>(instanceMapped)[1], typeIdx);
 
     VkClearValue clears[2] = {};
     clears[1].depthStencil = {1.0f, 0};
@@ -1332,6 +1346,30 @@ void SatMeshRenderer::recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame
     if (n)
         memcpy(static_cast<char *>(instanceMapped) + 2 * sizeof(GpuMeshInstance), insts.data(),
                n * sizeof(GpuMeshInstance)); // slots 2.. (0 = viewer, 1 = check)
+    {
+        // Shadow-ray accel for the instances largest on screen (bounding radius / distance: the scene's
+        // instance origins are camera-relative); the rest keep the per-pixel loop (they are small).
+        GpuMeshInstance *mapped = static_cast<GpuMeshInstance *>(instanceMapped) + 2;
+        std::vector<std::pair<float, size_t>> order;
+        order.reserve(n);
+        for (size_t i = 0; i < n; ++i)
+        {
+            mapped[i].earthShC.w = 0.0f;
+            const TypeMesh *tm = typeMesh(types[i]);
+            if (tm && tm->occluderCount > 0u)
+                order.push_back({-(tm->boundsRadius + glm::length(tm->boundsCenter)) /
+                                     std::max(glm::length(glm::vec3(mapped[i].origin)), 1e-3f),
+                                 i});
+        }
+        const size_t take = std::min(order.size(), (size_t)(kAccelSlots - 2));
+        std::partial_sort(order.begin(), order.begin() + take, order.end());
+        accelSceneUsed = 0;
+        for (size_t k = 0; k < take; ++k)
+        {
+            writeShadowAccel((uint32_t)(2 + k), mapped[order[k].second], types[order[k].second]);
+            accelSceneUsed += mapped[order[k].second].earthShC.w > 0.0f ? 1u : 0u;
+        }
+    }
 
     VkClearValue clears[4] = {};
     clears[3].depthStencil = {0.0f, 0}; // reverse-Z
@@ -1371,6 +1409,116 @@ void SatMeshRenderer::recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame
         }
     }
     vkCmdEndRenderPass(cmd);
+}
+
+// ─── Shadow-ray acceleration (2026-10-20) ─────────────────────────────────────────────────────────
+// sat_mesh.frag's shadow rays used to loop over every occluder of the model per pixel, composing each
+// one's group rotation, pivot and stow state from the instance on the way (rayBlocked): up to three rays
+// x ~50 occluders x every pixel of a close-up station - the ISS filling the screen cost ~60 ms. Here, once
+// per instance per frame, the occluders are posed in world space and bounded by spheres, and binned on the
+// plane across the Sun. Layout per slot (uvec4s, sat_mesh.frag accel*): [0] e1.xyz, u0  [1] e2.xyz, v0
+// [2] 1/cell u, 1/cell v, -, count (floats; count as an integer)  [3] unused; then kAccelMaxOcc records of 5:
+// (centre, radius) (axis x, half x) (axis y, half y) (axis z, half z) (kind, component); then the grid,
+// two cells per uvec4, each a 64-bit mask of records.
+void SatMeshRenderer::writeShadowAccel(uint32_t slot, GpuMeshInstance &inst, int typeIdx)
+{
+    inst.earthShC.w = 0.0f;
+    const TypeMesh *tm = typeMesh(typeIdx);
+    if (!accelEnabled || !accelMapped || slot >= kAccelSlots || !tm || tm->occluderCount == 0u ||
+        tm->firstOccluder + tm->occluderCount > occsCpu.size())
+        return;
+    glm::uvec4 *A = static_cast<glm::uvec4 *>(accelMapped) + (size_t)slot * kAccelStride;
+    auto f2u = [](float x) { uint32_t u; memcpy(&u, &x, 4); return u; };
+    auto put = [&](glm::uvec4 &d, glm::vec3 v, float w) { d = glm::uvec4(f2u(v.x), f2u(v.y), f2u(v.z), f2u(w)); };
+    auto groupRot = [&](uint32_t g) {
+        g = std::min(g, 3u);
+        return glm::mat3(glm::vec3(inst.rot[g * 3]), glm::vec3(inst.rot[g * 3 + 1]), glm::vec3(inst.rot[g * 3 + 2]));
+    };
+    struct Rec { glm::vec3 c; float r; };
+    Rec recs[kAccelMaxOcc];
+    uint32_t n = 0;
+    const float unfold = inst.earthShC.z;
+    for (uint32_t i = 0; i < tm->occluderCount && n < kAccelMaxOcc; ++i)
+    {
+        const GpuSatMeshOccluder &O = occsCpu[tm->firstOccluder + i];
+        if (O.kind > 5u)
+            continue; // an open lattice: light passes between its members
+        const size_t ci = (size_t)tm->firstComponent + 3u * i;
+        if (ci + 2 >= compsCpu.size())
+            continue;
+        if (unfold > 0.0f) // instStowScale: a stowed part is not where its occluder says
+        {
+            const glm::vec4 st = compsCpu[ci + 1], ph = compsCpu[ci + 2];
+            const float ls = glm::length(glm::vec3(st));
+            if (ls > 0.0f && glm::mix(1.0f - ls, 1.0f, glm::smoothstep(ph.x, ph.y, 1.0f - unfold)) < 1.0f)
+                continue;
+        }
+        const glm::mat3 R = groupRot(O.group);
+        const glm::vec4 pc = compsCpu[ci];
+        const float parent = pc.w >= 50.0f ? pc.w - 100.0f : pc.w;
+        glm::vec3 pivot(0.0f);
+        if (parent >= 0.0f && glm::vec3(pc) != glm::vec3(0.0f))
+            pivot = (groupRot((uint32_t)parent) - R) * glm::vec3(pc);
+        const glm::vec3 C = glm::vec3(inst.origin) + glm::vec3(inst.trans[std::min(O.group, 3u)]) + pivot + R * O.center;
+        const glm::vec3 h = O.half;
+        float r;
+        switch (O.kind)
+        {
+        case 0u: r = glm::length(glm::vec2(h.x, h.y)); break;
+        case 1u: r = glm::length(h); break;
+        case 4u: r = h.x; break;
+        case 5u: r = glm::length(glm::vec2(std::max(h.x, h.y), h.z)); break;
+        default: r = glm::length(glm::vec2(h.x, h.z)); break; // cylinder (and cone, at its larger radius)
+        }
+        r = r * 1.001f + 1e-4f;
+        glm::uvec4 *o = A + 4 + n * 5;
+        put(o[0], C, r);
+        put(o[1], R * glm::vec3(O.axisX), h.x);
+        put(o[2], R * glm::vec3(O.axisY), h.y);
+        put(o[3], R * glm::vec3(O.axisZ), h.z);
+        o[4] = glm::uvec4(O.kind, i, 0u, 0u);
+        recs[n++] = {C, r};
+    }
+    // The grid across the Sun: a record can block a sun ray from p only if its sphere's shadow disc covers p.
+    const glm::vec3 S = glm::normalize(glm::vec3(inst.sun));
+    const glm::vec3 e1 = glm::normalize(glm::cross(S, std::abs(S.z) < 0.9f ? glm::vec3(0, 0, 1) : glm::vec3(1, 0, 0)));
+    const glm::vec3 e2 = glm::cross(S, e1);
+    float u0 = 1e30f, u1 = -1e30f, v0 = 1e30f, v1 = -1e30f;
+    for (uint32_t k = 0; k < n; ++k)
+    {
+        const float u = glm::dot(recs[k].c, e1), v = glm::dot(recs[k].c, e2);
+        u0 = std::min(u0, u - recs[k].r);
+        u1 = std::max(u1, u + recs[k].r);
+        v0 = std::min(v0, v - recs[k].r);
+        v1 = std::max(v1, v + recs[k].r);
+    }
+    glm::uvec4 *G = A + 4 + kAccelMaxOcc * 5;
+    memset(G, 0, sizeof(glm::uvec4) * kAccelGrid * kAccelGrid / 2);
+    float iu = 0.0f, iv = 0.0f;
+    if (n > 0)
+    {
+        const float pu = 0.01f * (u1 - u0) + 1e-3f, pv = 0.01f * (v1 - v0) + 1e-3f;
+        u0 -= pu, u1 += pu, v0 -= pv, v1 += pv;
+        iu = (float)kAccelGrid / (u1 - u0);
+        iv = (float)kAccelGrid / (v1 - v0);
+        uint32_t *cells = reinterpret_cast<uint32_t *>(G); // cell c: words 2c (records 0-31), 2c + 1 (32-63)
+        for (uint32_t k = 0; k < n; ++k)
+        {
+            const float u = glm::dot(recs[k].c, e1) - u0, v = glm::dot(recs[k].c, e2) - v0, r = recs[k].r;
+            const int ia = std::clamp((int)std::floor((u - r) * iu), 0, (int)kAccelGrid - 1);
+            const int ib = std::clamp((int)std::floor((u + r) * iu), 0, (int)kAccelGrid - 1);
+            const int ja = std::clamp((int)std::floor((v - r) * iv), 0, (int)kAccelGrid - 1);
+            const int jb = std::clamp((int)std::floor((v + r) * iv), 0, (int)kAccelGrid - 1);
+            for (int j = ja; j <= jb; ++j)
+                for (int i = ia; i <= ib; ++i)
+                    cells[2 * (j * kAccelGrid + i) + (k >> 5)] |= 1u << (k & 31u);
+        }
+    }
+    put(A[0], e1, u0);
+    put(A[1], e2, v0);
+    A[2] = glm::uvec4(f2u(iu), f2u(iv), 0u, n);
+    A[3] = glm::uvec4(0u);
+    inst.earthShC.w = (float)(slot + 1);
 }
 
 // ─── Sharp reflections (2026-09-25) ───────────────────────────────────────────────────────────────

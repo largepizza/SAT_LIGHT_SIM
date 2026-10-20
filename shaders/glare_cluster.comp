@@ -1,0 +1,86 @@
+#version 450
+layout(local_size_x = 64) in;
+// ── glare_cluster.comp — the glare cluster grid (2026-10-20, issue 20261019_222938 "Glares") ─────────────
+// Every source that will glare this frame (the compact visible list's satellites, city lights, launch pads'
+// floods and beacons, rockets and fireballs, plus the mesh glints glare_find.comp listed) is summed into a coarse
+// screen grid: per tile its weight q = (flare / the threshold's)^2 x its visibility (include/glare.glsl's
+// glareClusterQ) and the q-weighted position inside the tile. glare.vert / glare_mesh_scene.vert then give each
+// source its share of the spikes among the glaring sources around it (glareSpikeWeight). Same projection,
+// response and occlusion as glare.vert, so a source alone in its window cancels exactly and keeps every spike.
+// A fixed grid of workgroups strides over the list (its length is GPU-side: the draw's vertex count).
+
+#define GLARE_GRID_SET 1
+#define GLARE_GRID_BINDING 1
+#define GLARE_GRID_ACCESS
+#include "glare.glsl"
+#include "cloud_occlusion.glsl"
+#define GLINT_LIST_BINDING 0
+#define GLINT_LIST_ACCESS readonly
+#define GLINT_LIST_SET 1
+#include "glint_list.glsl"
+
+struct SatVisible { // GpuSatVisible (SatelliteSim.h)
+    vec3  skyDir;
+    float flareIntensity;
+    uint  color;
+    float angularSize;
+    float rangeM;
+    float glareFlare;
+};
+layout(set = 0, binding = 1) readonly buffer SatVisibleBuf { SatVisible satellites[]; };
+layout(set = 0, binding = 5) uniform sampler2D cloudTargetA;
+layout(set = 0, binding = 6) uniform sampler2D cloudTargetB;
+layout(set = 0, binding = 7) uniform sampler2D sceneDepthTex;
+layout(set = 0, binding = 10) readonly buffer SatListBuf {
+    uint listCount;
+    uint dispatchX, dispatchY, dispatchZ;
+    uint drawVertexCount, drawInstanceCount, drawFirstVertex, drawFirstInstance;
+};
+
+void addToGrid(vec2 px, uint q)
+{
+    if (q == 0u) return;
+    float T = max(gpc.tilePx, 1.0);
+    ivec2 t = ivec2(floor(px / T));
+    if (t.x < 0 || t.y < 0 || t.x >= int(gpc.gridW) || t.y >= int(gpc.gridH)) return;
+    vec2 f = clamp(px / T - vec2(t), 0.0, 0.999) * 64.0;
+    uint i = uint(t.y * int(gpc.gridW) + t.x) * 3u;
+    atomicAdd(glareGrid[i], q);
+    atomicAdd(glareGrid[i + 1u], uint(float(q) * f.x));
+    atomicAdd(glareGrid[i + 2u], uint(float(q) * f.y));
+}
+
+void main()
+{
+    if (gpc.gridW == 0u || gpc.gain <= 0.0) return;
+    uint stride = gl_NumWorkGroups.x * 64u;
+    uint n = drawVertexCount;
+    float tanHalfFov = tan(gpc.fovYRad * 0.5);
+    for (uint k = gl_GlobalInvocationID.x; k < n; k += stride) {
+        SatVisible sat = satellites[k];
+        // glare.vert's response, threshold and projection.
+        float b = clamp(log2(max(max(sat.flareIntensity, sat.glareFlare), 1.0)) * 0.5, 0.0, 4.0);
+        float s = b - gpc.threshold;
+        if (s <= 0.0) continue;
+        vec3 cam = (gpc.skyView * vec4(sat.skyDir, 0.0)).xyz;
+        if (cam.z >= -0.001) continue;
+        vec2 ndc = vec2(cam.x / (-cam.z) / (tanHalfFov * gpc.aspect), -cam.y / (-cam.z) / tanHalfFov);
+        if (any(greaterThan(abs(ndc), vec2(1.3)))) continue;
+        vec2 uv = ndc * 0.5 + 0.5;
+        float range = sat.rangeM > 0.0 ? sat.rangeM : 5.0e29;
+        float vis = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, uv, range, 1.0);
+        if (textureLod(sceneDepthTex, uv, 0.0).r < range) vis = 0.0;
+        addToGrid(uv * gpc.screenSizePx, glareClusterQ(s, vis));
+    }
+    // The mesh glints (glare_mesh_scene.vert): no occlusion test, as their glare has none. maxPointSize > 0.5 = the
+    // list was written this frame.
+    if (gpc.maxPointSize > 0.5 && gl_WorkGroupID.x == 0u && gl_LocalInvocationID.x < kMaxGlints) {
+        uint i = gl_LocalInvocationID.x;
+        if (i < min(glints.vertexCount, kMaxGlints)) {
+            vec4 p = glints.glintPos[i];
+            float s = clamp(log2(max(p.z, 1.0)) * 0.5, 0.0, 4.0) - gpc.threshold;
+            if (s > 0.0)
+                addToGrid(p.xy * gpc.screenSizePx, glareClusterQ(s, 1.0));
+        }
+    }
+}

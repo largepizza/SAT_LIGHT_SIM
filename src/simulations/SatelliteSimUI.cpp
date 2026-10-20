@@ -122,6 +122,9 @@ static constexpr DebugToggleEntry kDebugToggles[] = {
     // Terrain v2 P2: the water map in the shared height function (terrain_detail.glsl tdDemAt) —
     // lake levels, the shore ramp and coves. Off = no water work at all (the DEM's own 0 m is sea).
     {4194304u, "Water map (lakes + shores)", "water_map"},
+    // An OPTIMIZATION knockout (2026-10-20), like 131072: the satellite meshes' shadow rays go back to the
+    // per-pixel loop over every occluder instead of SatMeshRenderer's posed, sun-binned occluders. Same image.
+    {8388608u, "Mesh shadow accel OFF (A/B)", "mesh_shadow_accel_disabled"},
 };
 static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kDebugToggles[0]));
 int debugToggleTableSize() { return kDebugToggleCount; }
@@ -2808,7 +2811,45 @@ void SatelliteSim::buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx
 void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
 {
     if (!followActive)
+    {
+        // After leaving Go to: a chip to follow the last object again (30 s; the key works for the session).
+        if (followAgainUntil <= glfwGetTime() || cineActive() || showIntro || (followLastIdx < 0 && !followLastIsTr))
+            return;
+        static char againBuf[200], againTip[96];
+        snprintf(againBuf, sizeof(againBuf), "Go to %s again", followLastLabel[0] ? followLastLabel : "the last object");
+        snprintf(againTip, sizeof(againTip), "Follow it again, flying from here (%s)",
+                 keyDisplayName(keybindings[KB_FOLLOW_RETURN].key));
+        bool clicked = false;
+        CLAY(CLAY_ID("FollowAgainBtn"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(11) + 13.0f)},
+                                                    .padding = {10, 10, 0, 0},
+                                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                         .backgroundColor = hovFollowAgain ? Pal::btnHover : Pal::panelBgFade,
+                                         .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
+                                         .floating = {.offset = {0.0f, 12.0f}, .zIndex = 6, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
+        {
+            bool n = Clay_Hovered();
+            sndRollover(n, hovFollowAgain);
+            sndClick(n, inp.lmbPressed);
+            hovFollowAgain = n;
+            clicked = n && inp.lmbPressed;
+            ui.tooltip(inp, n, againTip, fs(11));
+            Clay_String ls{false, (int32_t)strlen(againBuf), againBuf};
+            CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+        captureLaidOut(ui, CLAY_ID("FollowAgainBtn"), inp.screenW * 0.5f - 150.0f, 12.0f, 300.0f, 30.0f);
+        if (clicked)
+        {
+            std::string m;
+            if (!followReturn(&m))
+            {
+                snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", m.c_str());
+                screenshotToastTimer = 3.0f;
+                screenshotToastWarn = true;
+            }
+            followAgainUntil = 0.0;
+        }
         return;
+    }
     static char distBuf[64];
     const double d = glm::length(followOffset);
     if (d < 1000.0)
@@ -2856,6 +2897,11 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
         static char stayTip[96];
         snprintf(stayTip, sizeof(stayTip), "Leave Go to and stay here, as a free observer (%s)",
                  keyDisplayName(keybindings[KB_FOLLOW_STAY].key));
+        static char retTip[112];
+        snprintf(retTip, sizeof(retTip), "Fly back to the default view of it, behind and above (%s)",
+                 keyDisplayName(keybindings[KB_FOLLOW_RETURN].key));
+        if (chipButton("FollowReturnBtn", "Return", hovFollowReturn, retTip))
+            followReturn();
         if (chipButton("FollowStayBtn", "Stay here", hovFollowStay, stayTip))
             stopFollowHere();
         if (chipButton("FollowExitBtn", "Exit", hovFollowExit, "Return to the ground where you were"))
@@ -4051,7 +4097,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[38][12];
+    static char photoBufs[39][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -4121,6 +4167,9 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         // point sprite from the ground, hundreds of km off, keeps the look tuned on "Glare size (px)".
         {"Glare near gain", &glareNearGain, 1.0f, 8.0f, 0.25f, "%.2f", 33},
         {"Glare near range (km)", &glareNearRangeKm, 1.0f, 20000.0f, 10.0f, "%.0f", 34},
+        // Clusters (2026-10-20, include/glare.glsl): a glare among brighter / many glaring lights gives up its
+        // spikes to a soft glow (a pad's floods, a train, the Reflect ring). 0 = every light its own star.
+        {"Glare cluster merge", &glareClusterMerge, 0.0f, 1.0f, 0.05f, "%.2f", 38},
         // Satellite display (2026-10-07, point_style.glsl / sat_flare.comp): a satellite whose model resolves takes
         // its model's surface brightness (0 = the old bright point to the hand-off); bright resolved satellites in view
         // hide faint points, as an eye adapts (0 = off); an unresolved formation is drawn as one point (0 = each member).
@@ -6343,6 +6392,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {keybindings[KB_REPORT_NEW].action, KB_REPORT_NEW},
         {keybindings[KB_MISSIONS].action, KB_MISSIONS},
         {keybindings[KB_FOLLOW_STAY].action, KB_FOLLOW_STAY},
+        {keybindings[KB_FOLLOW_RETURN].action, KB_FOLLOW_RETURN},
         {keybindings[KB_TOGGLE_CURSOR].action, KB_TOGGLE_CURSOR},
     };
     struct AnalogRow
@@ -7745,6 +7795,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         glareSpikes = p.value("glare_spikes", glareSpikes);
         glareNearGain = p.value("glare_near_gain", glareNearGain);
         glareNearRangeKm = p.value("glare_near_range_km", glareNearRangeKm);
+        glareClusterMerge = p.value("glare_cluster_merge", glareClusterMerge);
         satResolvedStrength = p.value("sat_resolved", satResolvedStrength);
         satAdaptationStrength = p.value("sat_adaptation", satAdaptationStrength);
         formationMergeStrength = p.value("formation_merge", formationMergeStrength);
@@ -8375,6 +8426,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"glare_spikes", glareSpikes},
         {"glare_near_gain", glareNearGain},
         {"glare_near_range_km", glareNearRangeKm},
+        {"glare_cluster_merge", glareClusterMerge},
         {"sat_resolved", satResolvedStrength},
         {"sat_adaptation", satAdaptationStrength},
         {"formation_merge", formationMergeStrength},

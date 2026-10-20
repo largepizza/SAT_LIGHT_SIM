@@ -39,7 +39,7 @@ struct MeshInstance {
     vec4 earthZ;   // xyz = nadir, w = sh1
     vec4 earthShA; // sh2..sh5 (SatEarthLight — diffuse = max(SH(n), vector irradiance))
     vec4 earthShB; // sh6..sh9
-    vec4 earthShC; // x = sh10
+    vec4 earthShC; // x = sh10, y = sharp reflections, z = 1 - unfolding, w = a burning stage's engine glow
 };
 
 // Irradiance of the lit Earth on a plane with unit normal n (fraction of sunlight): the SH fit of

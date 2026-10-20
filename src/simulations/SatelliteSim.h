@@ -1109,8 +1109,13 @@ struct GlarePC
     float spikes;  // glareSpikes
     float nearGain;   // was pad0 — glareNearGain: the size multiplier a glare gets at zero range
     float nearRangeM; // was pad1 — glareNearRangeKm in metres (include/glare.glsl's glareNearScale)
+    // Glare clusters (2026-10-20, include/glare.glsl): the screen grid glare_cluster.comp fills. gridW = 0 = none.
+    // glare_cluster.comp reads maxPointSize as "the mesh glint list is valid this frame" (it draws nothing).
+    float tilePx;
+    uint32_t gridW, gridH;
+    float cluster; // glareClusterMerge
 };
-static_assert(sizeof(GlarePC) == 112, "GlarePC layout (include/glare.glsl)");
+static_assert(sizeof(GlarePC) == 128, "GlarePC layout (include/glare.glsl)");
 
 // Mesh glints found for glare (glare_find.comp -> glare_mesh.vert; include/glint_list.glsl).
 static constexpr uint32_t kMaxGlints = 64;
@@ -2494,7 +2499,35 @@ private:
     glm::vec3 followSavedObsDir{0.0f}, followSavedFacing{0.0f};
     float followSavedHeight = 0.0f, followSavedEl = 0.0f, followSavedFov = 70.0f;
     bool hovSelFollowBtn = false, hovFollowAim = false, hovFollowExit = false, hovFollowStay = false;
+    bool hovFollowReturn = false, hovFollowAgain = false;
     char followLabel[128] = {};
+    // ── Go to: Return / follow again (2026-10-20, issue 20261019_223437) ──────────────────────────
+    // KB_FOLLOW_RETURN, the follow HUD's "Return", harness `follow return`: while following, fly the camera back to
+    // the default offset (behind and above, ~4 model radii) in the object's own frame; after leaving Go to ("Stay
+    // here", Exit, an object that ended), follow the last object again (followLast*: what was followed, kept for
+    // the session). A transient (a rocket, the ship) is continued along its mission to now first.
+    int        followLastIdx = -1;        // satellite index (a transient: -1, see followLastTr)
+    bool       followLastIsTr = false;    // the transient itself: followLastTr (declared with SelTransient)
+    uint64_t   followLastOwner = 0;       // a launch record: its owner then (a slot changes hands)
+    uint16_t   followLastM = 0;
+    uint32_t   followLastPoolGen = 0;
+    char       followLastLabel[128] = {};
+    double     followAgainUntil = 0.0;    // the "Go to <last> again" chip shows until this glfwGetTime() after leaving
+    void followRemember();                // store the current follow target as the last one
+    bool followReturn(std::string *msg = nullptr);
+    // Go to -> Go to and Return (2026-10-20, issue 20261019_223726): a flight between two places NEAR the target,
+    // flown in the target's own along/cross/radial frame from the camera's offset A to B: the direction turns, the
+    // distance changes geometrically. A switch from one followed object to another starts from where the camera is
+    // (the old object's frame at this frame's time), not from the parked ground observer; it was flown along the
+    // observer's line of sight, whose start distance clamped at 1 m: the camera passed through the new satellite.
+    bool       followFlightRel = false;
+    bool       followFlightRelKeepDir = false; // B = A's direction at the follow distance (a switch), else B is set
+    glm::dvec3 followFlightRelA{0.0}, followFlightRelB{0.0};
+    // The camera's floor (issue 20261019_223321): never below the ground (the GPU's detailed ground under the eye,
+    // eased, and the CPU DEM at the camera) or the sea. followGpuFloorM is the eased GPU reading.
+    double     followGpuFloorM = -1e30;
+    double     followFloorM(const glm::dvec3 &eyeEcef, float dt);
+    glm::dvec3 followTargetEcef(int idx, double t) const; // a followed object's position (ECEF), with followHandD
     // Review 22: "Go to" and "Exit" FLY (fly = true: the UI's buttons): from the eye to the follow point (re-evaluated
     // every frame as the satellite moves) and back to the saved ground spot, the arc slerped and the altitude
     // interpolated in log space with a rise for long arcs (slow near the ground, fast high up), 2-8 s by the log of
@@ -2749,6 +2782,7 @@ private:
     uint32_t followSlotIdx() const { return activeSatCount + kLaunchCap - 2; }
     bool followIsTransient() const { return followActive && followSatIndex >= 0 && (uint32_t)followSatIndex == followSlotIdx(); }
     SelTransient followTrCur;
+    SelTransient followLastTr;   // Go to's last object when it was a transient (followRemember)
     uint64_t followTrKey = 0;    // 0 with followWantKind: a record that ended, waiting for its fireball in the list
     double followTrSeenT = 0.0;
     uint8_t followWantKind = 0;  // the successor awaited (a SelTransient kind with a == followWantA), until followWantUntil
@@ -2892,7 +2926,10 @@ private:
         int constIdx = -1, sat = -1, prog = -1;
     };
     std::vector<CrewStation> launchCrewStations();         // the stations a crew program serves
-    bool launchSelectRocketOf(uint64_t key, std::string &msg); // the batch's drawn rocket stage
+    bool launchSelectRocketOf(uint64_t key, std::string &msg); // the batch's rocket stage (drawn or not, 2026-10-20)
+    // The batch's rocket as a transient at time t from the launch model alone (the upper stage once staged, the ship on
+    // its entry), whether the list has it or not. False when it no longer exists as a rocket.
+    bool launchRocketTransient(uint64_t key, double t, SelTransient &out) const;
     bool launchSelectNearestOf(int prog, int kind, std::string &msg); // the nearest train member (0) / retiree (1)
 
     WindowChrome msChrome;
@@ -2912,6 +2949,9 @@ private:
     void missionsRefresh(bool force);
     bool missionsGoToFury(int which, std::string &msg); // 0 the CME's arrival (dusk over Monument Valley), 1 the storm night
     bool missionsGo(const std::string &what, bool watchOnly, std::string &msg); // harness: an index, twilight, crew, fury, fury_night
+    // An Ongoing row's object (msOngoing[row]): the rocket of a crew transfer / satellite launch, the nearest raising
+    // train member, the nearest retiree. Selected by key / index whether drawn or not; go = also Go to it (2026-10-20).
+    bool missionsOngoingAct(int row, bool go, std::string &msg);
     nlohmann::json missionsStateJson();
     void buildMissionsWindow(const UIInput &inp, UIRenderer &ui);
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
@@ -2992,6 +3032,11 @@ private:
     // A satellite's display name: "<constellation> #<n>"; a dead one "... #<n> (dead)" (its roster number),
     // a fragment "Debris <event>.<k>".
     std::string satLabel(int idx) const;
+    // A roster satellite's fate at time t (Kessler's event log, as mirrored): 0 working (or no scenario), 1 dead
+    // (tumbling), 2 destroyed (broken up), 3 re-entered; *whenT = the J2000 second it happened (2026-10-20).
+    int rosterFateAt(uint32_t idx, double t, double *whenT = nullptr) const;
+    static const char *rosterFateName(int fate); // "working" / "dead" / "destroyed" / "re-entered"
+    void kesslerDropGoneSelection(); // a selected roster satellite that is gone now (destroyed, re-entered) is dropped
     void buildKesslerBanner(UIRenderer &ui);
     void buildKesslerSettingsSection(const UIInput &inp, UIRenderer &ui);
     void kesslerBreakupFromUi(int sat, uint8_t kind);
@@ -3421,7 +3466,7 @@ private:
     //
     // kDebugToggleSlots sizes hovDebugToggle[] and the accumulators below; the static_assert in
     // startKnockoutSweep() keeps it honest.
-    static constexpr int kDebugToggleSlots = 21;
+    static constexpr int kDebugToggleSlots = 22;
     static constexpr int kSweepSettleFrames = 6;  // discard after a mask change — covers the
                                                   // one-frame-stale timestamp readback plus a
                                                   // little driver/clock hysteresis
@@ -4203,6 +4248,17 @@ private:
     VkPipelineLayout glareFindPipeLayout = VK_NULL_HANDLE, glareMeshPipeLayout = VK_NULL_HANDLE;
     VkPipeline glareFindPipeline = VK_NULL_HANDLE; // compute: not recreated on resize
     VkPipeline glareMeshPipeline = VK_NULL_HANDLE; // graphics: recreated with glarePipeline
+    // Glare clusters (2026-10-20, include/glare.glsl, glare_cluster.comp): the screen grid every glaring
+    // source is summed into (3 uints a tile, kGlareGridMaxTiles at most; binding 1 of glareMeshDescLayout),
+    // the compute that fills it and the glare sprites' own layout (descLayout + the grid's set).
+    static constexpr uint32_t kGlareGridMaxTiles = 1u << 18;
+    VkBuffer glareGridBuf = VK_NULL_HANDLE;
+    VkDeviceMemory glareGridMem = VK_NULL_HANDLE;
+    VkPipelineLayout glareClusterPipeLayout = VK_NULL_HANDLE, glarePipeLayout = VK_NULL_HANDLE;
+    VkPipeline glareClusterPipeline = VK_NULL_HANDLE; // compute: not recreated on resize
+    GlarePC buildGlarePC(const VulkanContext &ctx, float eyeAdapt) const;
+    float glareGridTilePx = 0.0f;                     // this frame's grid (0 = not filled: no clusters)
+    uint32_t glareGridW = 0, glareGridH = 0;
     bool meshGlareListed = false;                  // glare_find.comp ran this frame (recordCompute)
     float meshGlareRangeM = 0.0f;                  // the nearest mesh drawn this frame (0 = none): its
                                                    // glint list's records carry it so a mesh's glare gets
@@ -4246,6 +4302,9 @@ private:
     float glareThreshold = 1.765f;
     float glareFalloff = 4.678f;
     float glareSpikes = 10.0f;
+    // Glare clusters (2026-10-20, issue 20261019_222938): how strongly a glare in a crowd gives up its spikes to
+    // the brighter / summed light around it (include/glare.glsl). 0 = every source draws its own star (as before).
+    float glareClusterMerge = 1.0f;
     // ...and they stay exactly that for a source at `glareNearRangeKm` or beyond: proximity scales the
     // sprite's SIZE alone, so a satellite up in the sky is untouched while one resolved metres away (the
     // 3D viewer) or closing in on a zoomed 3D mesh spreads a much wider glare than a distant point
@@ -5357,7 +5416,8 @@ private:
         KB_SCREENSHOT_UI = 21, // event — a screenshot that keeps the UI (default F10)
         KB_MISSIONS = 22,      // event — the Missions window (launches, crew flights, the Sun's Fury) open / closed
         KB_FOLLOW_STAY = 23,   // event — leave Go to where the camera is (stopFollowHere); G
-        KB_COUNT = 24,
+        KB_FOLLOW_RETURN = 24, // event — Go to: back to the followed object, or follow the last one again; H
+        KB_COUNT = 25,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -5941,9 +6001,10 @@ private:
     // fades, 19/20 trail sliders, 21 flare-mitigation tilt, 22-26 the point model, 27 zoom
     // aperture, 28-32 glare, 33/34 glare near.
     // [38] since 2026-10-07 (35-37: resolved satellites, satellite adaptation, formation merge; photoBufs too).
-    bool hovPhotoMinus[38] = {};
-    bool hovPhotoPlus[38] = {};
-    bool draggingPhoto[38] = {};
+    // [39] since 2026-10-20 (38: glare cluster merge).
+    bool hovPhotoMinus[39] = {};
+    bool hovPhotoPlus[39] = {};
+    bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
     static constexpr int kCloudSliderSlots = 302;   // 296-297 (2026-10-14): layer shadows, cirrus self-shadow; 298-301 aurora storms

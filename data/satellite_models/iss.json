@@ -39,6 +39,56 @@
             "name": "irosa_cell",
             "preset": "solar_cell_flex",
             "color": [0.12, 0.14, 0.3]
+        },
+        {
+            "name": "module_skin",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.6,
+            "roughness": 0.6,
+            "color": [0.9, 0.9, 0.88],
+            "pattern": "panel_seams"
+        },
+        {
+            "name": "cells",
+            "preset": "solar_cell"
+        },
+        {
+            "name": "cells_back",
+            "preset": "solar_array_back"
+        },
+        {
+            "name": "metal",
+            "preset": "aluminum",
+            "diffuse_albedo": 0.2,
+            "roughness": 0.3,
+            "color": [0.7, 0.7, 0.72]
+        },
+        {
+            "name": "dark",
+            "preset": "black_paint"
+        },
+        {
+            "name": "glass",
+            "preset": "black_paint",
+            "diffuse_albedo": 0.02,
+            "roughness": 0.05,
+            "color": [0.05, 0.07, 0.09]
+        },
+        {
+            "name": "gold",
+            "preset": "mli_foil",
+            "color": [0.95, 0.72, 0.3]
+        },
+        {
+            "name": "dragon_white",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.75
+        },
+        {
+            "name": "cn_green",
+            "preset": "white_paint",
+            "diffuse_albedo": 0.35,
+            "color": [0.55, 0.62, 0.45]
         }
     ],
     "attitude_groups": [
@@ -594,6 +644,502 @@
             "pivot": [0, -46.0, 0],
             "material": "irosa_cell",
             "back_material": "solar_array_flex_back"
+        },
+        {
+            "name": "gb_saw_mast",
+            "type": "box",
+            "size": [0.3, 0.3, 33.4],
+            "position": [0.0, 31.5, 19.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 31.5, 0.0]
+        },
+        {
+            "name": "gb_saw_box",
+            "type": "box",
+            "size": [0.5, 9.6, 0.6],
+            "position": [0.0, 31.5, 36.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 31.5, 0.0]
+        },
+        {
+            "name": "gb_saw_mast_2",
+            "type": "box",
+            "size": [0.3, 0.3, 33.4],
+            "position": [0.0, 31.5, -19.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 31.5, 0.0]
+        },
+        {
+            "name": "gb_saw_box_2",
+            "type": "box",
+            "size": [0.5, 9.6, 0.6],
+            "position": [0.0, 31.5, -36.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 31.5, 0.0]
+        },
+        {
+            "name": "gb_saw_mast_3",
+            "type": "box",
+            "size": [0.3, 0.3, 33.4],
+            "position": [0.0, 46.0, 19.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 46.0, 0.0]
+        },
+        {
+            "name": "gb_saw_box_3",
+            "type": "box",
+            "size": [0.5, 9.6, 0.6],
+            "position": [0.0, 46.0, 36.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 46.0, 0.0]
+        },
+        {
+            "name": "gb_saw_mast_4",
+            "type": "box",
+            "size": [0.3, 0.3, 33.4],
+            "position": [0.0, 46.0, -19.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 46.0, 0.0]
+        },
+        {
+            "name": "gb_saw_box_4",
+            "type": "box",
+            "size": [0.5, 9.6, 0.6],
+            "position": [0.0, 46.0, -36.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, 46.0, 0.0]
+        },
+        {
+            "name": "gb_saw_mast_5",
+            "type": "box",
+            "size": [0.3, 0.3, 33.4],
+            "position": [0.0, -31.5, 19.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -31.5, 0.0]
+        },
+        {
+            "name": "gb_saw_box_5",
+            "type": "box",
+            "size": [0.5, 9.6, 0.6],
+            "position": [0.0, -31.5, 36.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -31.5, 0.0]
+        },
+        {
+            "name": "gb_saw_mast_6",
+            "type": "box",
+            "size": [0.3, 0.3, 33.4],
+            "position": [0.0, -31.5, -19.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -31.5, 0.0]
+        },
+        {
+            "name": "gb_saw_box_6",
+            "type": "box",
+            "size": [0.5, 9.6, 0.6],
+            "position": [0.0, -31.5, -36.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -31.5, 0.0]
+        },
+        {
+            "name": "gb_saw_mast_7",
+            "type": "box",
+            "size": [0.3, 0.3, 33.4],
+            "position": [0.0, -46.0, 19.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -46.0, 0.0]
+        },
+        {
+            "name": "gb_saw_box_7",
+            "type": "box",
+            "size": [0.5, 9.6, 0.6],
+            "position": [0.0, -46.0, 36.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -46.0, 0.0]
+        },
+        {
+            "name": "gb_saw_mast_8",
+            "type": "box",
+            "size": [0.3, 0.3, 33.4],
+            "position": [0.0, -46.0, -19.3],
+            "material": "metal",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -46.0, 0.0]
+        },
+        {
+            "name": "gb_saw_box_8",
+            "type": "box",
+            "size": [0.5, 9.6, 0.6],
+            "position": [0.0, -46.0, -36.0],
+            "material": "gold",
+            "group": "beta",
+            "render_only": true,
+            "pivot": [0.0, -46.0, 0.0]
+        },
+        {
+            "name": "gb_pma2",
+            "type": "profile",
+            "profile": [[0.0, 1.0], [1.4, 0.85], [1.9, 0.8]],
+            "position": [12.2, 0.0, 5.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_dragon_trunk",
+            "type": "profile",
+            "profile": [[0.0, 1.85], [2.8, 1.85]],
+            "position": [20.55, 0.0, 5.0],
+            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
+            "caps": "bottom",
+            "material": "dragon_white",
+            "arc_material": "cells",
+            "arc_deg": [0, 180],
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_dragon_capsule",
+            "type": "profile",
+            "profile": [[0.0, 1.95], [0.15, 1.95], [2.4, 1.25], [2.9, 0.95], [3.3, 0.55]],
+            "position": [17.75, 0.0, 5.0],
+            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
+            "caps": "top",
+            "material": "dragon_white",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_dragon_nose",
+            "type": "profile",
+            "profile": [[0.0, 0.55], [0.35, 0.45]],
+            "position": [14.45, 0.0, 5.0],
+            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
+            "caps": "top",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_soyuz_service",
+            "type": "profile",
+            "profile": [[0.0, 1.35], [0.6, 1.36], [2.9, 1.1]],
+            "position": [-16.18, 0.0, 21.25],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "caps": "bottom",
+            "material": "module_skin",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_soyuz_descent",
+            "type": "profile",
+            "profile": [[0.0, 1.1], [1.8, 1.0], [2.2, 0.5]],
+            "position": [-16.18, 0.0, 18.35],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "caps": false,
+            "material": "module_skin",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_soyuz_orbital",
+            "type": "profile",
+            "profile": [[0.0, 0.6], [0.4, 1.05], [1.2, 1.1], [2.0, 1.0], [2.4, 0.5]],
+            "position": [-16.18, 0.0, 16.15],
+            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
+            "caps": "top",
+            "material": "module_skin",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_soyuz_wing_p",
+            "type": "plane",
+            "size": [1.6, 4.0],
+            "position": [-16.18, -3.56, 19.85],
+            "rotation_quat": [0.0, 0.707107, 0.0, 0.707107],
+            "material": "cells",
+            "back_material": "cells_back",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_soyuz_wing_m",
+            "type": "plane",
+            "size": [1.6, 4.0],
+            "position": [-16.18, 3.56, 19.85],
+            "rotation_quat": [0.707107, -0.0, 0.707107, 0.0],
+            "material": "cells",
+            "back_material": "cells_back",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_progress_service",
+            "type": "profile",
+            "profile": [[0.0, 1.35], [0.6, 1.36], [2.9, 1.1]],
+            "position": [-46.26, 0.0, 5.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "bottom",
+            "material": "cn_green",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_progress_descent",
+            "type": "profile",
+            "profile": [[0.0, 1.1], [1.8, 1.0], [2.2, 0.5]],
+            "position": [-43.36, 0.0, 5.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "cn_green",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_progress_orbital",
+            "type": "profile",
+            "profile": [[0.0, 0.6], [0.4, 1.05], [1.2, 1.1], [2.0, 1.0], [2.4, 0.5]],
+            "position": [-41.16, 0.0, 5.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": "top",
+            "material": "cn_green",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_progress_wing_p",
+            "type": "plane",
+            "size": [1.6, 4.0],
+            "position": [-44.86, 3.56, 5.0],
+            "rotation_quat": [0.0, 0.0, 1.0, 0.0],
+            "material": "cells",
+            "back_material": "cells_back",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_progress_wing_m",
+            "type": "plane",
+            "size": [1.6, 4.0],
+            "position": [-44.86, -3.56, 5.0],
+            "rotation_quat": [-0.0, 1.0, 0.0, 0.0],
+            "material": "cells",
+            "back_material": "cells_back",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_canadarm_boom_1",
+            "type": "box",
+            "size": [0.35, 8.5, 0.35],
+            "position": [-1.0, -12.0, -3.0],
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_canadarm_boom_2",
+            "type": "box",
+            "size": [7.5, 0.35, 0.35],
+            "position": [2.6, -16.0, -3.0],
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_canadarm_base",
+            "type": "box",
+            "size": [2.0, 2.0, 0.6],
+            "position": [0.0, -8.0, -2.6],
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_elc",
+            "type": "box",
+            "size": [4.2, 2.6, 1.2],
+            "position": [0.0, 23.5, 2.9],
+            "material": "module_skin",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_elc_2",
+            "type": "box",
+            "size": [4.2, 2.6, 1.2],
+            "position": [0.0, 23.5, -2.9],
+            "material": "module_skin",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_elc_3",
+            "type": "box",
+            "size": [4.2, 2.6, 1.2],
+            "position": [0.0, -23.5, 2.9],
+            "material": "module_skin",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_elc_4",
+            "type": "box",
+            "size": [4.2, 2.6, 1.2],
+            "position": [0.0, -23.5, -2.9],
+            "material": "module_skin",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_ams02",
+            "type": "box",
+            "size": [3.0, 3.0, 2.8],
+            "position": [0.0, 21.0, -3.6],
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_ku_band_mast",
+            "type": "cylinder",
+            "radius": 0.06,
+            "height": 1.6,
+            "position": [0.7412, 2.2412, -3.0236],
+            "rotation_quat": [-0.158308, 0.975536, -0.024434, 0.150571],
+            "caps": true,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_ku_band",
+            "type": "profile",
+            "profile": [[0.0, 0.08], [0.06, 0.45], [0.16, 0.8], [0.25, 1.0]],
+            "position": [0.9824, 2.4824, -3.7473],
+            "rotation_quat": [-0.158308, 0.975536, -0.024434, 0.150571],
+            "caps": false,
+            "material": "metal",
+            "inner_material": "dragon_white",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_cupola_glass",
+            "type": "profile",
+            "profile": [[0.0, 1.3], [0.25, 1.1], [0.35, 0.0]],
+            "position": [-7.75, -5.903, 9.14],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": false,
+            "material": "glass",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_destiny_window",
+            "type": "profile",
+            "profile": [[0.0, 0.25], [0.05, 0.25]],
+            "position": [0.0, 0.0, 7.13],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "top",
+            "material": "glass",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_destiny_band",
+            "type": "profile",
+            "profile": [[0.0, 2.19], [0.4, 2.19]],
+            "position": [-0.2, 0.0, 5.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_harmony_band",
+            "type": "profile",
+            "profile": [[0.0, 2.24], [0.4, 2.24]],
+            "position": [8.4, 0.0, 5.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_zarya_band",
+            "type": "profile",
+            "profile": [[0.0, 2.09], [0.4, 2.09]],
+            "position": [-18.88, 0.0, 5.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_zvezda_band",
+            "type": "profile",
+            "profile": [[0.0, 2.14], [0.4, 2.14]],
+            "position": [-32.11, 0.0, 5.0],
+            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
+            "caps": false,
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_zvezda_radiator_s",
+            "type": "box",
+            "size": [3.5, 0.06, 1.8],
+            "position": [-35.0, 2.17, 3.6],
+            "material": "dark",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_zvezda_radiator_p",
+            "type": "box",
+            "size": [3.5, 0.06, 1.8],
+            "position": [-35.0, -2.17, 3.6],
+            "material": "dark",
+            "group": "station",
+            "render_only": true
         }
     ],
     "sources": [
@@ -772,6 +1318,22 @@
             "status": "estimate",
             "value": "the solar_cell_flex preset, darker blue tint",
             "source": "iROSA cells are multi-junction cells on a flexible blanket; no published reflectance. Visual tint only."
+        },
+        {
+            "subjects": [
+                "module_skin",
+                "cells",
+                "cells_back",
+                "metal",
+                "dark",
+                "glass",
+                "gold",
+                "dragon_white",
+                "cn_green"
+            ],
+            "status": "estimate",
+            "value": "render-only detail materials (tools/make_station_models.py)",
+            "source": "white beta-cloth / MMOD blanket exterior (albedo 0.6), panel seams for the shield panels; rigid solar array, cells under cover glass; rigid array substrate back; bare metal fittings; black paint; window glass; gold MLI; Dragon's white paint; Shenzhou's grey-green paint"
         }
     ]
 }

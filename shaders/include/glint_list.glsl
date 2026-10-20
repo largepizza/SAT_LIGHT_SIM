@@ -6,8 +6,11 @@
 #ifndef GLINT_LIST_ACCESS
 #define GLINT_LIST_ACCESS
 #endif
+#ifndef GLINT_LIST_SET
+#define GLINT_LIST_SET 0
+#endif
 const uint kMaxGlints = 64u;
-layout(set = 0, binding = GLINT_LIST_BINDING, std430) GLINT_LIST_ACCESS buffer GlintList {
+layout(set = GLINT_LIST_SET, binding = GLINT_LIST_BINDING, std430) GLINT_LIST_ACCESS buffer GlintList {
     uint count;                                              // append counter (may pass kMaxGlints)
     uint vertexCount, instanceCount, firstVertex, firstInstance; // VkDrawIndirectCommand
     uint pad0, pad1, pad2;

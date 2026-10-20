@@ -486,8 +486,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Screenshot with UI", GLFW_KEY_F10, -1, false, false},                              // KB_SCREENSHOT_UI (event) — a screenshot that keeps the interface
         {"Missions", GLFW_KEY_M, -1, false, false},                                          // KB_MISSIONS (event) — the Missions window
         {"Leave Go To Here", GLFW_KEY_G, -1, false, false},                                  // KB_FOLLOW_STAY (event) — end Go to as a free observer where the camera is
+        {"Go To: Return", GLFW_KEY_H, -1, false, false},                                     // KB_FOLLOW_RETURN (event) — back to the followed object / follow the last one again
     };
-    static_assert(KB_COUNT == 24, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 25, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -3641,6 +3642,39 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             meshGlareListed = true;
         }
 
+        // Glare clusters (2026-10-20, include/glare.glsl): every source that glares this frame summed into a coarse
+        // screen grid, so a crowded glare gives up its spikes (glare.vert, glare_mesh_scene.vert read it in recordDraw).
+        glareGridTilePx = 0.0f;
+        glareGridW = glareGridH = 0;
+        if (glareGain > 0.0f && glareClusterMerge > 0.0f && glareClusterPipeline != VK_NULL_HANDLE)
+        {
+            GlarePC cpc = buildGlarePC(ctx, 1.0f);
+            if (cpc.gridW > 0)
+            {
+                glareGridTilePx = cpc.tilePx;
+                glareGridW = cpc.gridW;
+                glareGridH = cpc.gridH;
+                cpc.maxPointSize = meshGlareListed ? 1.0f : 0.0f; // glare_cluster.comp: the glint list is this frame's
+                vkCmdFillBuffer(cmd, glareGridBuf, 0, sizeof(uint32_t) * 3 * cpc.gridW * cpc.gridH, 0u);
+                // The visible list (sat_flare / city sprites / fireballs, compute) and the grid's clear, before the fill.
+                VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+                const VkDescriptorSet sets[2] = {descSet, glareMeshDescSet};
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareClusterPipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, glareClusterPipeLayout, 0, 2, sets, 0,
+                                        nullptr);
+                vkCmdPushConstants(cmd, glareClusterPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
+                vkCmdDispatch(cmd, 256, 1, 1); // strides over the list (its length is GPU-side)
+                mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1,
+                                     &mb, 0, nullptr, 0, nullptr);
+            }
+        }
+
         // Stage 2: blur/streak — one pipeline, three dispatches ping-ponging flareSourceImg <->
         // flareScratchImg (see FlareBlurPC's comment for the direction/mode scheme). Each
         // dispatch's write must be complete before the next dispatch's read/write — a full
@@ -3936,6 +3970,10 @@ void SatelliteSim::viewerSyncModel()
 void SatelliteSim::selectSatellite(int idx)
 {
     if (idx < 0 || idx >= (int)satOrbits.size())
+        return;
+    // A roster satellite destroyed or re-entered by now is not there to select (issue 20261019_231126: the Missions
+    // window selected an exploded station's "ghost"; kesslerDropGoneSelection drops one that goes while selected).
+    if (idx < (int)activeSatCount && rosterFateAt((uint32_t)idx, (double)simDayJ2000 * 86400.0 + simSecInDay) >= 2)
         return;
     selectedSatIndex = idx;
     selectedPlanetIndex = -1;
@@ -4793,6 +4831,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     meshesDrawnThisFrame = false;
     if (!meshRendererInit)
         return;
+    meshRenderer.setShadowAccelEnabled((debugDisableMask & 8388608u) == 0u);
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const double theta = earthRotationAngle(tNow);
     const double ct = std::cos(theta), st = std::sin(theta);
@@ -4957,6 +4996,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         setMeshInstanceEarth(inst, r.earth, glm::dmat3(glm::dvec3(ct, -st, 0.0), glm::dvec3(st, ct, 0.0),
                                                        glm::dvec3(0.0, 0.0, 1.0))); // ECI → ECEF (eciToEcef)
         inst.earthShC.z = (float)(1.0 - satUnfoldAt(e, tNow)); // still unfolding after its release (sat_mesh.vert)
+        inst.earthShC.w = e.engineGlow; // a burning rocket stage: its nozzles' insides glow (sat_mesh.frag)
         inst.firstMaterial = tm->firstMaterial;
         inst.firstOccluder = tm->firstOccluder;
         inst.occluderCount = tm->occluderCount;
@@ -5336,10 +5376,28 @@ glm::dvec3 SatelliteSim::followFlightPos(const glm::dvec3 &from, const glm::dvec
     return glm::normalize(dir) * (R + std::exp(l));
 }
 
+// A followed object's position (ECEF) at t, with the handover's eased jump (followHandD) as updateFollow places it.
+glm::dvec3 SatelliteSim::followTargetEcef(int idx, double t) const
+{
+    if (idx < 0 || idx >= (int)satOrbits.size())
+        return glm::dvec3(0.0);
+    const SatOrbitState s = satOrbitStateAt(orbitElemsOf(satOrbits[idx]), t);
+    const double th = earthRotationAngle(t), ct = std::cos(th), st = std::sin(th);
+    const glm::dvec3 v = s.posEci;
+    return glm::dvec3(ct * v.x + st * v.y, -st * v.x + ct * v.y, v.z) + followHandD;
+}
+
 void SatelliteSim::startFollow(int satIndex, bool fly)
 {
     if (satIndex < 0 || satIndex >= (int)satOrbits.size())
         return;
+    // Go to -> Go to (2026-10-20): where the camera is NOW, by the object it rides (the frame's time; followObsEcef is
+    // the last update's, an orbit's motion behind). Taken before anything below changes the followed object.
+    const double tStart = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    glm::dvec3 camNow(0.0);
+    const bool fromFollow = followActive && followFlight != 2 && followBasisValid;
+    if (fromFollow)
+        camNow = followObsEcef - followLastP + followTargetEcef(followSatIndex, tStart);
     // A rocket drawn as a mesh: the transient its mesh slot holds (the slot itself is rebound every frame).
     satIndex = rocketMeshSlotToTransient(satIndex);
     // A transient (a rocket stage, a ship coming home): follow rides it in a slot of its own, independent of the
@@ -5366,12 +5424,14 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
         followLaunchM = (uint16_t)m;
     }
     followHandD = glm::dvec3(0.0);
+    if (!followActive)
+        followGpuFloorM = -1e30;
     const int ti = (int)satOrbits[satIndex].typeIdx;
     const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(ti);
     if (!tm || ti < 0)
         return;
-    // From the current eye (the ground, or wherever a flight home had got to).
-    const glm::dvec3 fromEye = followActive ? followObsEcef : glm::dvec3(obsDir) * (double)obsEyeRadiusM();
+    // From the current eye (the ground, wherever a flight home had got to, or beside the object followed until now).
+    const glm::dvec3 fromEye = fromFollow ? camNow : followActive ? followObsEcef : glm::dvec3(obsDir) * (double)obsEyeRadiusM();
     if (followActive && followFlight == 2)
         followFlight = 0;   // turned round on the way home: keep the saved ground spot
     else if (!followActive)
@@ -5408,6 +5468,7 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
     snprintf(followLabel, sizeof(followLabel), "Following %s", satLabel(satIndex).c_str());
     followFlight = 0;
     followFlightInit = false;
+    followFlightRel = false;
     if (fly)
     {
         followFlight = 1;
@@ -5415,7 +5476,17 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
         followFlightFrom = fromEye;
         followFlightFromRel = false;
         followFlightDur = 0.0;   // set on the first update, from the distance to the target
+        // From another followed object: straight in from where the camera is, in the new object's frame (the arc and
+        // the observer's line belong to a start on the ground). updateFollow falls back to them when the Earth is in
+        // the way.
+        if (fromFollow)
+        {
+            followFlightRel = true;
+            followFlightRelKeepDir = true;
+            followFlightAlign = false;
+        }
     }
+    followRemember();
     followBasisValid = false;
     updateFollow(0.0f);
     // Review 23: the aim is FREE once there (as on the ground: the mouse looks, WASD moves); a flight aims until it lands.
@@ -5431,6 +5502,7 @@ void SatelliteSim::stopFollow(bool fly)
     {
         // Fly home: updateFollow ends follow mode (this function, fly = false) on arrival.
         followFlight = 2;
+        followFlightRel = false;
         followFlightT = 0.0;
         const glm::dvec3 home = glm::dvec3(followSavedObsDir) *
                                 ((double)kEarthRadius + std::max((double)followSavedGround, (double)followSavedHeight) + 2.0);
@@ -5442,7 +5514,10 @@ void SatelliteSim::stopFollow(bool fly)
         followFlightInit = false;
         return;
     }
+    followRemember();
+    followAgainUntil = glfwGetTime() + 30.0;
     followFlight = 0;
+    followFlightRel = false;
     followActive = false;
     followTrKey = 0;
     followLaunchOwner = 0;
@@ -5461,6 +5536,8 @@ void SatelliteSim::stopFollowHere(const char *why)
 {
     if (!followActive)
         return;
+    followRemember();
+    followAgainUntil = glfwGetTime() + 30.0;
     const glm::dvec3 eye = followObsEcef;
     const double r = glm::length(eye);
     followFlight = 0;
@@ -5468,6 +5545,7 @@ void SatelliteSim::stopFollowHere(const char *why)
     followTrKey = 0;
     followLaunchOwner = 0;
     followHandD = glm::dvec3(0.0);
+    followFlightRel = false;
     if (r > 1.0)
     {
         obsDir = glm::vec3(eye / r);
@@ -5484,6 +5562,158 @@ void SatelliteSim::stopFollowHere(const char *why)
     snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", why ? why : "Left Go to: you stay here");
     screenshotToastTimer = 4.0f;
     screenshotToastWarn = false;
+}
+
+// The follow camera's floor above sea level: the CPU DEM at the camera and the GPU's detailed ground under last
+// frame's eye (terrainFrameBuf, the same point a frame of motion back), the latter eased over ~0.2 s so a reading that
+// jumps does not jerk the camera; never below the sea.
+double SatelliteSim::followFloorM(const glm::dvec3 &eye, float dt)
+{
+    const double r = glm::length(eye);
+    if (r < 1.0)
+        return 0.0;
+    const double latD = glm::degrees(std::asin(std::clamp(eye.z / r, -1.0, 1.0)));
+    const double lonD = glm::degrees(std::atan2(eye.y, eye.x));
+    double floorM = std::max(0.0, (double)cpuTerrainHeightM((float)latD, (float)lonD));
+    if (terrainFrameMapped && (debugDisableMask & 1024u) == 0 && std::isfinite(terrainFrameMapped[1]))
+    {
+        const double g = (double)terrainFrameMapped[1];
+        if (followGpuFloorM < -1e29)
+            followGpuFloorM = g;
+        else if (dt > 0.0f)
+            followGpuFloorM += (g - followGpuFloorM) * (1.0 - std::exp(-(double)dt / 0.2));
+        // (Only near the ground: from altitude the reading is of a place the camera is not about to touch.)
+        if (r - (double)kEarthRadius < followGpuFloorM + 20000.0)
+            floorM = std::max(floorM, followGpuFloorM);
+    }
+    return floorM;
+}
+
+// Go to's object, kept as the "last" one (followReturn follows it again after Stay here / Exit / its end).
+void SatelliteSim::followRemember()
+{
+    if (!followActive || followSatIndex < 0)
+        return;
+    followLastIsTr = followIsTransient();
+    if (followLastIsTr)
+    {
+        if (followTrKey == 0)
+            return; // a record that ended, awaiting its fireball: keep what was remembered before
+        followLastTr = followTrCur;
+        followLastIdx = -1;
+    }
+    else
+    {
+        followLastIdx = followSatIndex;
+        followLastOwner = followLaunchOwner;
+        followLastM = followLaunchM;
+        followLastPoolGen = followPoolGen;
+    }
+    const char *l = followLabel;
+    if (strncmp(l, "Following ", 10) == 0)
+        l += 10;
+    snprintf(followLastLabel, sizeof(followLastLabel), "%s", l);
+}
+
+// Return (KB_FOLLOW_RETURN, the follow HUD's "Return", harness `follow return`). Following: fly back to the default
+// offset (behind and above the object, ~4 model radii), in its own frame; on the way home: turn back to it. Not
+// following: follow the last object again (a flight from wherever the camera is).
+bool SatelliteSim::followReturn(std::string *msg)
+{
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    if (followActive)
+    {
+        if (followSatIndex < 0 || followSatIndex >= (int)satOrbits.size())
+            return false;
+        if (followFlight == 2)
+        {
+            startFollow(followSatIndex, true); // turned round on the way home
+            if (msg)
+                *msg = std::string("Returning to ") + followLastLabel;
+            return followActive;
+        }
+        const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh((int)satOrbits[followSatIndex].typeIdx);
+        const double r = std::max(1.0, tm ? (double)tm->boundsRadius : 1.0);
+        const glm::dvec3 camNow = followObsEcef - followLastP + followTargetEcef(followSatIndex, t);
+        followFlight = 1;
+        followFlightT = 0.0;
+        followFlightDur = 0.0;
+        followFlightInit = false;
+        followFlightFrom = camNow;
+        followFlightFromRel = false;
+        followFlightRel = true;
+        followFlightRelKeepDir = false;
+        followFlightRelB = glm::dvec3(-4.0 * r, 0.0, 1.5 * r);
+        followDefaultDist = glm::length(followFlightRelB);
+        followFlightAlign = false;
+        followFlightFov0 = camera.fovYDeg;
+        {
+            const float el0 = glm::radians(camera.elDeg);
+            followFlightView0 = glm::normalize(std::cos(el0) * obsFacing + std::sin(el0) * obsDir);
+        }
+        followAimLock = true;
+        if (msg)
+            *msg = std::string("Returning to ") + followLastLabel;
+        return true;
+    }
+    int idx = -1;
+    if (followLastIsTr)
+    {
+        SelTransient c = followLastTr;
+        uint8_t want = 0;
+        if (c.key == 0 || c.kind < 1 || c.kind > 2 || !transientContinue(c, t, want))
+        {
+            if (msg)
+                *msg = std::string(followLastLabel[0] ? followLastLabel : "The last object") + " is gone";
+            return false;
+        }
+        selTransientTake(c);
+        selectedSatIndex = (int)transientSatIdx();
+        selectedPlanetIndex = -1;
+        formatSelectedSatInfo();
+        idx = (int)transientSatIdx();
+    }
+    else
+    {
+        idx = followLastIdx;
+        if (idx < 0 || idx >= (int)satOrbits.size())
+        {
+            if (msg)
+                *msg = "Nothing followed yet";
+            return false;
+        }
+        if (idx >= (int)activeSatCount && idx < (int)poolIdx0())
+        {
+            uint32_t m = 0;
+            if (launchSlotOwner((uint32_t)idx - activeSatCount, m) != followLastOwner || m != followLastM || followLastOwner == 0)
+            {
+                if (msg)
+                    *msg = std::string(followLastLabel) + " is no longer in flight";
+                return false;
+            }
+        }
+        else if (idx >= (int)poolIdx0())
+        {
+            const size_t j = (size_t)(idx - (int)poolIdx0());
+            if (j >= kPoolGen.size() || kPoolGen[j] != followLastPoolGen)
+            {
+                if (msg)
+                    *msg = std::string(followLastLabel) + " no longer exists";
+                return false;
+            }
+        }
+        selectSatellite(idx);
+    }
+    startFollow(idx, true);
+    if (!followActive)
+    {
+        if (msg)
+            *msg = "That object has no model to go to";
+        return false;
+    }
+    if (msg)
+        *msg = std::string("Going to ") + followLastLabel + " again";
+    return true;
 }
 
 bool SatelliteSim::isFollowing(int satIndex) const
@@ -5620,6 +5850,26 @@ void SatelliteSim::updateFollow(float dt)
                 followFlightFrom += P;   // the camera's place by the satellite, this frame
                 followFlightFromRel = false;
             }
+            if (followFlightRel)
+            {
+                // In the object's frame: from the camera's offset A to B (a switch: A's direction at the follow
+                // distance; Return: the default offset, set by followReturn).
+                const glm::dvec3 d = followFlightFrom - P;
+                followFlightRelA = glm::dvec3(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
+                if (glm::length(followFlightRelA) < 0.01)
+                    followFlightRelA = followOffset;
+                if (followFlightRelKeepDir)
+                    followFlightRelB = glm::normalize(followFlightRelA) * std::max(followDefaultDist, 1.0);
+                // The Earth in the way (an object beyond the limb): the arc, as from the ground.
+                const glm::dvec3 b = P + followFlightRelB.x * Th + followFlightRelB.y * Nh + followFlightRelB.z * Rh;
+                const glm::dvec3 ab = b - followFlightFrom;
+                const double tc = std::clamp(-glm::dot(followFlightFrom, ab) / std::max(glm::dot(ab, ab), 1e-9), 0.0, 1.0);
+                if (glm::length(followFlightFrom + tc * ab) < (double)kEarthRadius + 2000.0 &&
+                    glm::length(ab) > 50000.0)
+                    followFlightRel = false;
+                else if (followFlightDur <= 0.0)
+                    followFlightDur = followFlightDuration(glm::length(followFlightRelB - followFlightRelA));
+            }
             if (followFlightDur <= 0.0)
                 followFlightDur = followFlightDuration(glm::length(to - followFlightFrom));
             const glm::dvec3 ab = P - home;
@@ -5634,7 +5884,27 @@ void SatelliteSim::updateFollow(float dt)
         followFlightT += (double)std::max(dt, 0.0f);
         const double x = std::min(followFlightT / followFlightDur, 1.0);
         const double u = x * x * (3.0 - 2.0 * x);
-        if (followFlightLine)
+        if (followFlightRel)
+        {
+            // Direction turned (slerp) and distance changed geometrically, both in the object's own frame.
+            const double lA = std::max(glm::length(followFlightRelA), 0.01), lB = std::max(glm::length(followFlightRelB), 0.01);
+            const glm::dvec3 dA = followFlightRelA / lA, dB = followFlightRelB / lB;
+            const double ang = std::acos(std::clamp(glm::dot(dA, dB), -1.0, 1.0));
+            glm::dvec3 dir = dB;
+            if (ang > 1e-6 && ang < glm::pi<double>() - 1e-3)
+                dir = (std::sin((1.0 - u) * ang) * dA + std::sin(u * ang) * dB) / std::sin(ang);
+            else if (ang >= glm::pi<double>() - 1e-3)
+            {
+                // Opposite sides: round over the top (the radial axis).
+                glm::dvec3 mid = glm::dvec3(0.0, 0.0, 1.0) - glm::dot(glm::dvec3(0.0, 0.0, 1.0), dA) * dA;
+                mid = glm::length(mid) > 1e-6 ? glm::normalize(mid) : glm::dvec3(0.0, 1.0, 0.0);
+                const double a = u * glm::pi<double>();
+                dir = std::cos(a) * dA + std::sin(a) * mid;
+            }
+            const glm::dvec3 rel = glm::normalize(dir) * std::exp(glm::mix(std::log(lA), std::log(lB), u));
+            followObsEcef = P + rel.x * Th + rel.y * Nh + rel.z * Rh;
+        }
+        else if (followFlightLine)
         {
             // The distance to the satellite changes geometrically (a constant ratio per unit u: the satellite grows on
             // screen at a steady rate), from the start's to the arrival's (out: the follow distance; home: the
@@ -5676,6 +5946,22 @@ void SatelliteSim::updateFollow(float dt)
                 // Review 24b: hold the arrival where the flight put it (on the observer's line NOW). The offset was set on
                 // the line as it was at the start, and the satellite moves ~10 km during a flight: the camera jumped
                 // ~1.4 deg on the last frame.
+                const glm::dvec3 d = followObsEcef - P;
+                followOffset = glm::dvec3(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
+            }
+        }
+    }
+    // Never below the ground or the sea (issue 20261019_223321: following Starship's ship down to its landing, the
+    // offset behind it went 3.9 km under Louisiana). The camera slides along the floor; while riding, the offset
+    // follows, so moving away from the ground needs no climb out of it first.
+    {
+        const double minR = (double)kEarthRadius + followFloorM(followObsEcef, dt) + (followFlight == 2 ? 0.0 : 3.0);
+        const double r = glm::length(followObsEcef);
+        if (r > 1.0 && r < minR)
+        {
+            followObsEcef *= minR / r;
+            if (followFlight == 0)
+            {
                 const glm::dvec3 d = followObsEcef - P;
                 followOffset = glm::dvec3(glm::dot(d, Th), glm::dot(d, Nh), glm::dot(d, Rh));
             }
@@ -7017,25 +7303,15 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
         // above cannot draw at quarter resolution.
         if (activeSatCount > 0 && glareGain > 0.0f && glarePipeline != VK_NULL_HANDLE)
         {
-            VkPhysicalDeviceProperties props;
-            vkGetPhysicalDeviceProperties(ctx.physicalDevice, &props);
-            GlarePC gpc{};
-            gpc.skyView = camera.viewMatrix();
-            gpc.fovYRad = glm::radians(camera.fovYDeg);
-            gpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
-            gpc.gain = glareGain * flareEyeAdaptGain;
-            gpc.sizePx = glareSizePx * (float)ctx.swapExtent.height / 1080.0f; // resolution-independent
-            gpc.screenSizePx = glm::vec2((float)ctx.swapExtent.width, (float)ctx.swapExtent.height);
-            gpc.maxPointSize = std::min(props.limits.pointSizeRange[1], 1024.0f);
-            gpc.threshold = glareThreshold;
-            gpc.falloff = glareFalloff;
-            gpc.spikes = glareSpikes;
-            gpc.nearGain = glareNearGain;
-            gpc.nearRangeM = glareNearRangeKm * 1000.0f;
+            GlarePC gpc = buildGlarePC(ctx, flareEyeAdaptGain);
+            // The cluster grid recordCompute filled this frame (none: every glare keeps its spikes).
+            gpc.tilePx = glareGridTilePx;
+            gpc.gridW = glareGridW;
+            gpc.gridH = glareGridH;
+            const VkDescriptorSet gsets[2] = {descSet, glareMeshDescSet};
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glarePipeline);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, flareSourcePipeLayout, 0, 1, &descSet, 0,
-                                    nullptr);
-            vkCmdPushConstants(cmd, flareSourcePipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glarePipeLayout, 0, 2, gsets, 0, nullptr);
+            vkCmdPushConstants(cmd, glarePipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                                sizeof(gpc), &gpc);
             vkCmdDrawIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, drawVertexCount), 1, 0);
             // Glare on the mesh glints glare_find.comp listed this frame.
@@ -7285,6 +7561,11 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyPipeline(device, glareFindPipeline, nullptr);
     vkDestroyPipelineLayout(device, glareFindPipeLayout, nullptr);
     vkDestroyPipelineLayout(device, glareMeshPipeLayout, nullptr);
+    vkDestroyPipeline(device, glareClusterPipeline, nullptr);
+    vkDestroyPipelineLayout(device, glareClusterPipeLayout, nullptr);
+    vkDestroyPipelineLayout(device, glarePipeLayout, nullptr);
+    vkDestroyBuffer(device, glareGridBuf, nullptr);
+    vkFreeMemory(device, glareGridMem, nullptr);
     vkDestroyDescriptorPool(device, glintDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, glareFindDescLayout, nullptr);
     vkDestroyDescriptorSetLayout(device, glareMeshDescLayout, nullptr);
@@ -8528,6 +8809,18 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         if (followActive && !cineActive())
             stopFollowHere();
         break;
+    case KB_FOLLOW_RETURN:
+        if (!cineActive())
+        {
+            std::string m;
+            if (!followReturn(&m) && !m.empty())
+            {
+                snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", m.c_str());
+                screenshotToastTimer = 3.0f;
+                screenshotToastWarn = true;
+            }
+        }
+        break;
     case KB_TOGGLE_CURSOR:
         // UC5: effective activation also requires uiVisible && !showIntro (see pollGamepad's
         // cursorActive computation) — this just flips the player-facing on/off state.
@@ -8839,14 +9132,18 @@ void SatelliteSim::createDescriptors(VulkanContext &ctx)
     // C12 follow-up #33: cloud occlusion for satellite/flare points — sat_point.frag reads these,
     // same underlying views/samplers already bound into skyDescSet (bindings 10/11 there). Also
     // read by flare_source.frag (flare architecture overhaul) — same layout, VERTEX not needed.
+    // (+ VERTEX / COMPUTE since 2026-10-20: glare.vert and glare_cluster.comp test a glaring source's
+    // visibility for the glare cluster grid.)
+    const VkShaderStageFlags occStages =
+        VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[4] = {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudTargetA
+                   occStages, nullptr}; // cloudTargetA
     bindings[5] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // cloudTargetB
+                   occStages, nullptr}; // cloudTargetB
     // Flare architecture overhaul: flare_source.frag needs terrain occlusion too (this render pass
     // has no shared hardware depth buffer of its own to test against, unlike sat_point.frag).
     bindings[6] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                   VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}; // sceneDepthTex
+                   occStages, nullptr}; // sceneDepthTex
     // Ocean-glint list (GpuOceanGlintBuf) — written here by sat_flare.comp, read by sat_sky.frag
     // via its OWN descriptor set (skyDescSet binding 20) pointed at the same underlying buffer,
     // same split as glowBuf's binding 2 here vs skyDescSet binding 0.
@@ -13324,12 +13621,19 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         li.bindingCount = 2;
         li.pBindings = fb;
         vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &glareFindDescLayout);
-        VkDescriptorSetLayoutBinding mb{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
-        li.bindingCount = 1;
-        li.pBindings = &mb;
+        // The glint list (0) + the glare cluster grid (1): read by the scene's glare sprites and filled / read by
+        // glare_cluster.comp (2026-10-20).
+        ctx.createBuffer(sizeof(uint32_t) * 3 * kGlareGridMaxTiles,
+                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, glareGridBuf, glareGridMem);
+        VkDescriptorSetLayoutBinding mb[2] = {
+            {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+        li.bindingCount = 2;
+        li.pBindings = mb;
         vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &glareMeshDescLayout);
 
-        VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}};
+        VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.poolSizeCount = 2;
         pi.pPoolSizes = ps;
@@ -13345,12 +13649,15 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         glareFindDescSet = sets[0];
         glareMeshDescSet = sets[1];
         VkDescriptorBufferInfo bi{glintBuf, 0, VK_WHOLE_SIZE};
-        VkWriteDescriptorSet w[2] = {};
+        VkDescriptorBufferInfo gbi{glareGridBuf, 0, VK_WHOLE_SIZE};
+        VkWriteDescriptorSet w[3] = {};
         w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareFindDescSet, 1, 0, 1,
                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bi, nullptr};
         w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareMeshDescSet, 0, 0, 1,
                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bi, nullptr};
-        vkUpdateDescriptorSets(ctx.device, 2, w, 0, nullptr);
+        w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareMeshDescSet, 1, 0, 1,
+                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &gbi, nullptr};
+        vkUpdateDescriptorSets(ctx.device, 3, w, 0, nullptr);
 
         VkPushConstantRange fpcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
         VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -13371,6 +13678,25 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         ci.layout = glareFindPipeLayout;
         if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &glareFindPipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create glare find pipeline");
+        vkDestroyShaderModule(ctx.device, mod, nullptr);
+
+        // Glare clusters (2026-10-20): the grid's fill (glare_cluster.comp) and the glare sprites' layout, both
+        // set 0 = descLayout (the visible list, the occlusion textures) + set 1 = the glint list and the grid.
+        const VkDescriptorSetLayout cl[2] = {descLayout, glareMeshDescLayout};
+        VkPushConstantRange cpcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GlarePC)};
+        pli.setLayoutCount = 2;
+        pli.pSetLayouts = cl;
+        pli.pPushConstantRanges = &cpcr;
+        vkCreatePipelineLayout(ctx.device, &pli, nullptr, &glareClusterPipeLayout);
+        VkPushConstantRange gpcr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(GlarePC)};
+        pli.pPushConstantRanges = &gpcr;
+        vkCreatePipelineLayout(ctx.device, &pli, nullptr, &glarePipeLayout);
+        pli.setLayoutCount = 1;
+        mod = ctx.loadShader("shaders/glare_cluster.comp.spv");
+        ci.stage.module = mod;
+        ci.layout = glareClusterPipeLayout;
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &glareClusterPipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create glare cluster pipeline");
         vkDestroyShaderModule(ctx.device, mod, nullptr);
     }
     {
@@ -13473,14 +13799,14 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         VkGraphicsPipelineCreateInfo gci = ci;
         gci.pStages = gst;
         gci.pInputAssemblyState = &gia;
-        gci.layout = flareSourcePipeLayout;
+        gci.layout = glarePipeLayout; // descLayout + the glare cluster grid's set (2026-10-20)
         if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &gci, nullptr, &glarePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create glare pipeline");
         vkDestroyShaderModule(ctx.device, gv, nullptr);
         vkDestroyShaderModule(ctx.device, gf, nullptr);
 
         // The mesh glints' glare: same state, its own list (glare_mesh.vert/.frag).
-        gv = ctx.loadShader("shaders/glare_mesh.vert.spv");
+        gv = ctx.loadShader("shaders/glare_mesh_scene.vert.spv"); // with the cluster grid (the viewer has none)
         gf = ctx.loadShader("shaders/glare_mesh.frag.spv");
         gst[0].module = gv;
         gst[1].module = gf;
@@ -13490,6 +13816,45 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         vkDestroyShaderModule(ctx.device, gv, nullptr);
         vkDestroyShaderModule(ctx.device, gf, nullptr);
     }
+}
+
+// The main view's glare push constants (glare.vert / glare_mesh_scene.vert / glare_cluster.comp). eyeAdapt =
+// recordDraw's night eye adaptation (1 for the cluster fill, which only tests gain > 0). The cluster grid's
+// size is chosen here (a tile ~1/68 of the view's height, ~16 px at 1080); recordDraw replaces it with the grid
+// recordCompute actually filled.
+GlarePC SatelliteSim::buildGlarePC(const VulkanContext &ctx, float eyeAdapt) const
+{
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(ctx.physicalDevice, &props);
+    GlarePC gpc{};
+    gpc.skyView = camera.viewMatrix();
+    gpc.fovYRad = glm::radians(camera.fovYDeg);
+    gpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
+    gpc.gain = glareGain * eyeAdapt;
+    gpc.sizePx = glareSizePx * (float)ctx.swapExtent.height / 1080.0f; // resolution-independent
+    gpc.screenSizePx = glm::vec2((float)ctx.swapExtent.width, (float)ctx.swapExtent.height);
+    gpc.maxPointSize = std::min(props.limits.pointSizeRange[1], 1024.0f);
+    gpc.threshold = glareThreshold;
+    gpc.falloff = glareFalloff;
+    gpc.spikes = glareSpikes;
+    gpc.nearGain = glareNearGain;
+    gpc.nearRangeM = glareNearRangeKm * 1000.0f;
+    gpc.cluster = glm::clamp(glareClusterMerge, 0.0f, 1.0f);
+    float T = std::max(4.0f, std::round((float)ctx.swapExtent.height / 68.0f));
+    uint32_t gw = 0, gh = 0;
+    for (int i = 0; i < 8; ++i, T *= 1.5f)
+    {
+        gw = (uint32_t)std::ceil((float)ctx.swapExtent.width / T);
+        gh = (uint32_t)std::ceil((float)ctx.swapExtent.height / T);
+        if ((uint64_t)gw * gh <= kGlareGridMaxTiles)
+            break;
+    }
+    if ((uint64_t)gw * gh > kGlareGridMaxTiles)
+        gw = gh = 0;
+    gpc.tilePx = T;
+    gpc.gridW = gw;
+    gpc.gridH = gh;
+    return gpc;
 }
 
 // ─── createTrailResources ──────────────────────────────────────────────────────
