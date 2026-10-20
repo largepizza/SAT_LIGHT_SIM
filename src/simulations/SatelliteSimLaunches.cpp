@@ -1177,8 +1177,8 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     {
         // (every stage burns to deorbit since 2026-10-19, for B.burnDur; part of its engines)
         const double tb = B.tDeorbBurn - B.tL;
-        for (double tau = tb; tau < tb + B.burnDur; tau += 3.0)
-            emit(1, tau, 3.0, vh.flow2 * 0.3, vh.vex2, 2);
+        for (double tau = tb; tau < tb + B.burnDur; tau += 1.0)
+            emit(1, tau, 1.0, vh.flow2 * 0.3, vh.vex2, 2); // knots every second, like the ascent's
     }
     if (B.vents)
     {
@@ -2176,7 +2176,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 double Sigma = 0.0;
                 for (int k = prev + 1; k <= (int)pi; ++k)
                     Sigma += B.parcels[(size_t)k].kappa * B.parcels[(size_t)k].m;
-                Sigma *= s.cond * gain;
+                // The chord's condensed share: the mean of its two ends (the younger end alone made a new segment,
+                // born with nothing condensed, dimmer than the head it replaced: the trail pulsed once a knot).
+                Sigma *= 0.5 * (s.cond + q.cond) * gain;
                 // Half the chord as the along-trail sigma joins neighbours smoothly; a young segment is tighter, so
                 // the head does not reach ahead of the stage.
                 const double cA = glm::mix(0.35, 0.5, glm::smoothstep(0.0, 3.0 * std::max(pc.dt, 0.5), age));
@@ -2198,10 +2200,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     const double sl = glm::length(seg);
                     const glm::dvec3 axE = sl > 1e-3 ? seg / sl : nx.axis;
                     // The exhaust's own spread over the head's age (its knot's radius, shrinking to the nozzle).
-                    // Mostly still gas (launch::makeParcel's condensation time): half the head's age, on average.
-                    const double tauC = glm::mix(0.25, 1.5, glm::smoothstep(20000.0, 90000.0, glm::length(nz) - kR));
-                    const double condH = 1.0 - std::exp(-0.5 * (tau - pc.t0) / tauC);
-                    addPlume(0.5 * (nz + s.cE), axE, 0.35 * sl, std::max(0.5 * s.sig, 8.0),
+                    // Like a segment's: the mean of its ends' condensed shares (the nozzle's is 0) and radii (8 m), so
+                    // when the next knot is born the segment that replaces the head is the same Gaussian.
+                    const double condH = 0.5 * s.cond;
+                    addPlume(0.5 * (nz + s.cE), axE, 0.35 * sl, 0.5 * (s.sig + 8.0),
                              nx.kappa * nx.m * f * condH * gain, 0.0, nx.albedo, 0.0, rimSeed ^ 0x5Aull, true);
                 }
             }
