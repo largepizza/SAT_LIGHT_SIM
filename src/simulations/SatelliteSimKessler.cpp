@@ -1097,6 +1097,7 @@ bool SatelliteSim::kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, 
         // No rollback point (a breakup before the world's start, time played back past the kept checkpoints, the
         // journal over its cap, or no world yet): rebuild the history with this breakup in it.
         kesslerRestart(*ctx_, kUserEvents, t, t);
+        kesslerSync(*ctx_); // what the restart computed in place is up this frame
     }
     kLastBreakupMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count();
     kLastBreakupFast = fast;
@@ -2445,7 +2446,7 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
     if (uiToggleRow(inp, ui, "KesslerOn", 0, "Scenario (a storm on 2037-07-15)", on,
                     "A Carrington-class solar storm arrives two days after the Great Australian Eclipse. Satellites it "
                     "kills tumble, dead ones collide, and every collision is a debris cloud (NASA breakup model). "
-                    "Nothing differs before it."))
+                    "Nothing differs before it, unless you break something up (that starts it there)."))
     {
         kesslerEnabled = on;
         spaceWeatherSetScriptedStorm(kesslerEnabled, kFuryArriveT, kFuryPeakKp);

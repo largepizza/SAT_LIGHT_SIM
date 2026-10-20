@@ -3211,14 +3211,21 @@ void SatelliteSim::followCheckTarget()
     const uint32_t idx = (uint32_t)followSatIndex;
     if (followIsTransient())
     {
-        // Rockets at this frame's exact time (the list is a frame old: at a fast warp, many seconds).
+        // Rockets at this frame's exact time (the list is a frame old: at a fast warp, many seconds), along the
+        // mission: a stack that staged since the last frame is its upper stage now.
         if (followTrKey != 0)
         {
             SelTransient c = followTrCur;
-            if (transientExactState(c, t))
+            uint8_t want = 0;
+            if (transientContinue(c, t, want))
             {
-                followTrCur = c;
-                transientWriteSlot(kLaunchCap - 2, c, t);
+                if (c.key != followTrKey || c.kind != followTrCur.kind)
+                    followTakeTransient(c, followTrCur.pos, t);
+                else
+                {
+                    followTrCur = c;
+                    transientWriteSlot(kLaunchCap - 2, c, t);
+                }
             }
         }
         return;

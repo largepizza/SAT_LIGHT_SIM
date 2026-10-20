@@ -3317,6 +3317,23 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     the offset (speed ∝ distance); RMB look unlocks the aim lock. Settings persist the ground
     observer, not the orbit. The panel's **Track** is the aim-only sibling: it leaves `followObsEcef`
     alone (the observer keeps walking), and follow mode releases the lock instead of fighting it.
+    The frame's along-track axis is the inertial VELOCITY (`velEci`), not `SatOrbitState::velocity`, which for a
+    rocket is its body axis and flips through the vertical at a flip or a turn to retrograde.
+  - **Stay here** (2026-10-19, `stopFollowHere`; the follow HUD's "Stay here", key G = `KB_FOLLOW_STAY` "Leave Go To
+    Here", harness `follow stay`): leaves Go to WITHOUT flying home: the observer becomes a free observer at the
+    camera's place (direction, altitude above sea level, facing, elevation, FOV kept; Earth-fixed from then on, so
+    with time paused the satellite stays put beside you, and it flies off when time runs). The parked ground
+    observer is dropped; WASD / Q-E then work as for any observer at altitude. Settings save it like any observer:
+    lat / lon only (the observer's height has never been persisted: a relaunch lands on the ground below). "Exit"
+    still flies home. Measured: ISS followed and left paused, the ISS stays within 0.4 px of the screen centre (the
+    float `obsDir`), the altitude within 2 m.
+  - **Follow ends gracefully** (`followCheckTarget` before `updateFollow`, `followTransientUpdate` after the frame's
+    transient list): a followed object that ends hands over to what continues it, the camera easing across the jump
+    (`followHandD`, ECEF, decays with a 0.6-s time constant) — a raising train member to its roster slot at
+    arrival, a retiree / a roster satellite / a debris piece that re-enters to its fireball (kinds 3 / 5, while the
+    follow rides a coasting copy for a few seconds until the list has it); a destroyed one, a reused debris slot
+    (`followPoolGen`) or a fireball that burns out ends in place (`stopFollowHere` with a toast). `isFollowing(i)`
+    is the one "is this followed" test (the selected transient and the followed one are one object in two slots).
   - **Reflections in the scene** come from the environment probes above (4c part 2, 2026-09-24).
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, `iss.json` (the first parity model: 50 components; station
@@ -4096,9 +4113,39 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   counts at the second it began). Until 2026-10-16 it walked 5M pieces, the roster and ~10M events four times a second
   on the main thread: 50-180 ms spikes late in the cascade (issue 20261016_155342). Harness `state` keeps the exact
   walk (`kesslerStateJson`); the piece-lifetime diagnostic is harness-only.
-- **Player breakups** (info window BREAKUP: Explode / ASAT strike; harness `kessler breakup|collide`) are user
-  events: the world restarts, replaying everything before them (engine events kept up to the step before),
-  re-simulating after. Allowed from the epoch on, up to the frontier.
+- **Player breakups** (info window Explode / ASAT strike -> `infoExplodeSelected` -> `kesslerBreakupFromUi` ->
+  **`explodeSatellite(int sat, BreakupKind)`** -> `ExplodeResult{ok, reason}`; harness `kessler breakup|collide`) are
+  user events at the current sim time, **at any time** (2026-10-19). Not for launch objects (rockets, raising trains,
+  retirees). They are computed IN PLACE (`kesslerBreakupInPlace`): the worker stops, the world rewinds to its last
+  checkpoint at or before the breakup (`World::rollback`), re-runs that step here with the engine's own events of the
+  step (they were sampled before the player acted) and the breakup last, the main thread's mirror is rewound to the
+  checkpoint (`kesslerMirrorRewind`: every slot shows the world's generation, the history keeps only older ones, the
+  roster's seconds are the world's, streams made since go) and takes the step's records the same frame; the worker
+  then carries on. Measured (shipped roster, x1, 1600x900): day 9 30-100 ms on the main thread, day 30 229 ms, and
+  no hold; the old full rebuild (`kessler breakup ... rebuild=1`, still the fallback) took 0.2-0.3 s plus a 2.4 s
+  (day 9) / 4.3 s (day 30) hold during which every dead satellite and fragment vanished. In-place and rebuilt
+  histories are identical (two breakups at day 9.1, counts at day 14: 72698 events, 73890 records, 55638 dead,
+  64933 fragments in both). The fallback (no checkpoint: time played back past the kept ones, the journal over its
+  cap, a breakup before the world's start) is `kesslerRestart(ctx, kUserEvents, t, t)`.
+  - **Rollback journal** (`World::checkpoint/rollback`, Kessler.h): one checkpoint per step start from one step
+    before the player's time (`KesslerWorker::simNow`, `keepCheckpoints`), and a journal of what every change
+    overwrote (pool records, generations, roster seconds, the free list, the release heap as a multiset, grid and
+    death-bucket deposits undone by their exact negatives, retired buckets moved in). Bounded by `journalCap` (1M
+    entries, ~200 MB); past it the journal is dropped until the next checkpoint. **Every new mutation of World state
+    must be journaled** (`jPool`, `jSimple`, `jDeposit`) or a rollback silently keeps it.
+  - **Steps are on a fixed grid** (`World::stepStart`, from the epoch; the worker's chunks end on it) and seeded by
+    their index (`stepIndex`), not a running counter: the history no longer depends on when the player's time made
+    the worker pause (it did: chunk ends were the player's sim time + the lookahead). A step applies its scripted
+    events, then the engine's, then the player's (`sortPending`), in sampling and in replay alike. `kCacheVersion` 12.
+  - **Before the CME** (2026-10-19, the user: "if the user clicks the explode button, we presume we want to start the
+    Kessler situation"): a breakup starts the world at its own step (`WorldSettings::startT`, `kWorldStart`; a
+    disabled scenario is switched on) and that step is computed in place. Before the epoch working satellites dodge
+    everything (avoidance 1: they are left out of the engine's objects), so only the debris, the dead and the passive
+    roster junk collide; the configured avoidance applies from the CME on. Seconds before the epoch are negative
+    (`sat_orbit.comp` no longer gates the roster words on `scenNowSec >= 0`, and takes a floored modulo for the dead
+    tumble; re-entries index by floored hours). Going back before the breakup undoes it (pure function of time).
+  - **Time keeps running**: sim time may lead the frontier by ~2 s of the current warp (at most one step) before it
+    holds (SatelliteSim.cpp; the banner only while actually held): events published a moment late appear then.
 - **Cache**: the engine's events + frontier in `<user data>/kessler/suns_fury_<hash>.bin` (the hash covers the
   roster, types, settings, the kit and `kCacheVersion`), written longer only, never while the player has
   breakups; a launch replays it (lazily) instead of re-sampling. Not shipped.
@@ -4364,6 +4411,15 @@ launches follow per-program cadences (no real manifest).
   up here" seven months after it had re-entered) and, followed, was drawn twice (its live self in a rocket mesh slot
   beside the followed copy). The followed transient keeps updating (and is dropped with the follow when it is gone)
   even with the selection cleared, is never also drawn in a rocket mesh slot, and is listed at any range.
+  **Following a transient** (2026-10-19): the followed one has a slot of its own (`followSlotIdx()`, the reserved
+  chunk is now 6 rocket meshes + the followed transient + the selection), independent of the selection, and is
+  evaluated from the launch model at the frame's exact time (`transientExactState`: no stale extrapolation at any
+  warp; the list's axis is kept). Along a mission it hands over (`transientContinue`): the stack to its UPPER stage
+  at staging (the booster is another object), a returning upper stage to its ship entry (same key, kind 2), a
+  deorbiting stage to its re-entry fireball; the selection does the same (`transientSuccessor`). When nothing
+  continues it, follow ends in place (`stopFollowHere`). Verified (harness_runs/gk/mission.satcmd): a Starship
+  followed from T+8 s through staging (eased 49 m), the upper-stage burn to 350 km, coast and deployment, the fall,
+  its ship entry (eased 5.2 km) and the end, left as a free observer at 45 km.
 - **Kessler** (L6): launches stand down at the CME; by default for good ("After the Sun's Fury": Stand down /
   Resume, `launches.after_storm` 0 / 1; Resume = three weeks later). The trains would not die anyway (they are not
   engine objects), but nobody launches replacements into shells being ground into debris. A slot dead before its swap
