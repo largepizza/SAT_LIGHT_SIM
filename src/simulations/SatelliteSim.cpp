@@ -10433,10 +10433,10 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &cloudMarchDescPool);
     if (kDustBuf == VK_NULL_HANDLE)
     {
-        ctx.createBuffer(16 + sizeof(GpuDustCloud) * kMaxDustClouds, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        ctx.createBuffer(16 + sizeof(GpuDustCloud) * (kMaxDustClouds + kMaxEngineLights), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, kDustBuf, kDustMem);
         vkMapMemory(ctx.device, kDustMem, 0, VK_WHOLE_SIZE, 0, &kDustMapped);
-        memset(kDustMapped, 0, 16 + sizeof(GpuDustCloud) * kMaxDustClouds);
+        memset(kDustMapped, 0, 16 + sizeof(GpuDustCloud) * (kMaxDustClouds + kMaxEngineLights));
     }
 
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
