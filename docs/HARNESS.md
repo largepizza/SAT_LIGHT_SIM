@@ -359,7 +359,8 @@ What makes two runs identical, and what breaks it:
   time. `wait settle` holds sim time and runs frames at a 0.5 s step. The HUD's fps readout during
   a settle is meaningless.
 - **Set the preset explicitly.** A fresh run folder seeds the preset from the device type
-  (Medium on a discrete GPU, Low otherwise). Put `preset <name>` first.
+  (High on a discrete GPU with >= 5.5 GiB, Medium on a smaller discrete GPU, Planetarium on an integrated one —
+  this machine's RTX 3070 Ti gets High). Put `preset <name>` first.
 - **`time pause`** unless the script is about motion.
 - Same window size and build. Verified: two runs of `determinism.satcmd` are bit-identical.
 

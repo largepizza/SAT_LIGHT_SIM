@@ -37,6 +37,14 @@ LOAD = re.compile(
     re.S,
 )
 
+# The same load wrapped in a range guard: "member = settingClamp(c.value("key", member), lo, hi);"
+# (also std::clamp). The range is kept: a live value outside it is clamped on every normal load.
+LOAD_CLAMPED = re.compile(
+    r"([A-Za-z_][\w\.\[\]]*?)\s*=\s*(?:settingClamp|std::clamp)\(\s*[\w\[\]\"'\.]+?\.value\(\s*\"([^\"]+)\"\s*,"
+    r"\s*([^()]+?)\)\s*,\s*([^,()]+?)\s*,\s*([^()]+?)\)\s*;",
+    re.S,
+)
+
 # Metadata keys that are written but never loaded. Not tunables - never report them as mismatches.
 SKIP_KEYS = {"app_version", "git_commit", "schema_version"}
 
@@ -149,12 +157,20 @@ def find_initializer(name: str, owner: str = None):
 
 
 
+CLAMPS: dict = {}  # key -> (lo, hi) of its load-time range guard
+
+
 def load_path() -> dict:
     """key -> [(member, default, "File.h:line")] for every persisted key in applySettingsJson."""
     src = UI_CPP.read_text(encoding="utf-8", errors="replace")
     entries: dict[str, list] = {}
-    for m in LOAD.finditer(src):
-        member, key, default_expr = m.group(1), m.group(2), m.group(3)
+    found = [(m.group(1), m.group(2), m.group(3)) for m in LOAD.finditer(src)]
+    for m in LOAD_CLAMPED.finditer(src):
+        lo, hi = parse_literal(m.group(4)), parse_literal(m.group(5))
+        if isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+            CLAMPS[m.group(2)] = (lo, hi)
+        found.append((m.group(1), m.group(2), m.group(3)))
+    for member, key, default_expr in found:
         if key in SKIP_KEYS:
             continue
         # Some loaders copy into a local first (`float latDeg = j["observer"].value("lat_deg",
@@ -275,6 +291,15 @@ def main() -> None:
         print("Same value, different text (float32 round-trip):")
         for dotted, live, probe in sorted(rounding):
             print(f"    {dotted:<38} live {live!r:<24} default {probe[0]} = {probe[1]!r} ({probe[2]})")
+        print()
+
+    clamped = [(dotted, live, CLAMPS[key]) for _s, key, dotted, live in sorted(flatten(data))
+               if key in CLAMPS and isinstance(live, (int, float)) and not isinstance(live, bool)
+               and not (f32(CLAMPS[key][0]) <= f32(float(live)) <= f32(CLAMPS[key][1]))]
+    if clamped:
+        print("OUTSIDE the load-time range (a normal load clamps these):")
+        for dotted, live, (lo, hi) in clamped:
+            print(f"    {dotted:<38} live {live!r:<24} range [{lo}, {hi}]")
         print()
 
     print(f"{ok} keys match, {len(mismatches)} differ, {len(unresolved)} unresolved from the load path")

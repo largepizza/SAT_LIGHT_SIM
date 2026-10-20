@@ -4031,6 +4031,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         ctx_)
     {
         renderScale = std::round(renderScale * 100.0f) / 100.0f;
+        graphicsPreset = GraphicsPreset::Custom; // the preset table owns renderScale: a named preset re-derives it on load
         destroySkyLowResResources(ctx_->device);
         createSkyLowResResources(*ctx_);
     }
@@ -4043,8 +4044,9 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         stepper("DynResMin", "Lowest render scale", dynResMinScale, 0.5f, 1.0f, 0.05f, "%.0f%%", 100.0f,
                 "The automatic render scale never goes below this");
     }
-    uiToggleRow(inp, ui, "CloudsFollowScale", 0, "Clouds follow render scale", computeFollowsRenderScale,
-                "Below 100% the clouds and the terrain depth pass also render at the reduced resolution");
+    if (uiToggleRow(inp, ui, "CloudsFollowScale", 0, "Clouds follow render scale", computeFollowsRenderScale,
+                    "Below 100% the clouds and the terrain depth pass also render at the reduced resolution"))
+        graphicsPreset = GraphicsPreset::Custom; // in the preset table since 2026-10-20 (applyGraphicsPreset)
     uiToggleRow(inp, ui, "SkyTaa", 0, "Temporal anti-aliasing", skyTaaEnabled,
                 "Terrain, sky and sea; below 100% render scale it also upscales (rebuilds full resolution over frames)");
     {
@@ -7661,7 +7663,8 @@ void SatelliteSim::buildHarnessOverlays(const UIInput &inp, UIRenderer &ui)
 //     of that era are slower still. Apple silicon follows the integrated rule.
 //   - a discrete GPU with at most ~2 GB of device-local memory (the shipped textures alone are ~500 MB, and
 //     the full tiers' cloud and mesh targets more): Planetarium.
-//   - other discrete GPUs: Medium; integrated / CPU / virtual: Planetarium.
+//   - discrete GPUs with ~6 GB or more: High (the compiled-in defaults); other discrete GPUs: Medium;
+//     integrated / CPU / virtual: Planetarium.
 GraphicsPreset SatelliteSim::recommendedPresetForDevice(VkPhysicalDevice pd, std::string *why)
 {
     VkPhysicalDeviceProperties props{};
@@ -7697,8 +7700,14 @@ GraphicsPreset SatelliteSim::recommendedPresetForDevice(VkPhysicalDevice pd, std
     }
     else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
     {
-        p = smallVram ? GraphicsPreset::Planetarium : GraphicsPreset::Medium;
-        reason = smallVram ? "discrete GPU with <= 2 GB of VRAM" : "discrete GPU";
+        // 2026-10-20: a discrete GPU with ~6 GB or more (an RTX 3070 Ti has 8) starts on High, the compiled-in
+        // defaults = the author's tuned look at 100% render scale (a packaged build has no settings.json, and
+        // Medium's 67% scale, sparse cloud march and smaller budgets were what a fresh install showed).
+        const bool bigVram = vramGiB >= 5.5;
+        p = smallVram ? GraphicsPreset::Planetarium : bigVram ? GraphicsPreset::High : GraphicsPreset::Medium;
+        reason = smallVram ? "discrete GPU with <= 2 GB of VRAM"
+                 : bigVram ? "discrete GPU with >= 6 GB of VRAM"
+                           : "discrete GPU with < 6 GB of VRAM";
     }
     else
     {
@@ -7784,6 +7793,11 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         float terrainFadeStartM, terrainFadeEndM;
         float cloudFadeStartM, cloudFadeEndM;
     } v{};
+    // 2026-10-20: the cloud march's rate and the half-res passes' size follow the tier too. High / Ultra keep the
+    // compiled-in defaults (full rate always, compute at full size whatever the render scale: the author's look);
+    // the lighter tiers keep the cheap configuration they were measured with (adaptive rate, sparse when still,
+    // the half-res passes following the render scale).
+    const bool cheapClouds = !(p == GraphicsPreset::High || p == GraphicsPreset::Ultra);
 
     switch (p)
     {
@@ -7891,6 +7905,9 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
     terrainDistFadeEndM = v.terrainFadeEndM;
     cloudDistFadeStartM = v.cloudFadeStartM;
     cloudDistFadeEndM = v.cloudFadeEndM;
+    cv2AdaptiveRate = cheapClouds ? 1.0f : 0.0f;
+    cv2SparseWhenStill = cheapClouds ? 1.0f : 0.0f;
+    computeFollowsRenderScale = cheapClouds;
     // Procedural terrain detail (terrain_detail.glsl). Measured with the harness on an RTX 3070 Ti:
     // +3 ms at Medium in the Anchorage worst case (10.0 vs 6.9 ms), +5-8 ms at High on the ground in
     // mountains, ~+1 ms from aircraft altitude. Off on the integrated-GPU tiers — and on Planetarium /

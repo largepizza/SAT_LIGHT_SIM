@@ -753,8 +753,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   reaching the anvil (`full`) get the waist, flared head and overshoot dome (shrunk in radius, storm-edge
   towers stood as thin "straws"). "Storm cumulus top" is a TARGET for the storm regions' low tops
   (`mix`, not `min`: the congestus type already topped out below it, so raising it did nothing).
-  **Full rate only while moving** (`cv2SparseWhenStill`, slot 176, key `sparse_when_still`, default
-  on): after 8 frames with no camera turn (> 0.3 half-res px), eye motion, zoom, time warp or history
+  **Full rate only while moving** (`cv2SparseWhenStill`, slot 176, key `sparse_when_still`; default OFF since 2026-10-20 — High / Ultra march at full rate always, the lighter presets
+  turn it on): after 8 frames with no camera turn (> 0.3 half-res px), eye motion, zoom, time warp or history
   loss, the march goes back to 1 pixel in 4 even above `full_rate_above_km`; the history converges on
   the same image. Measured at 1920x1009 overlooking anvils: 16 ms still vs 44 ms full rate; a settings
   change takes ~4x longer to reconverge (grain for a few seconds at history weight 0.05).
@@ -1138,7 +1138,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   6-24 px (or with no valid history). White noise was tried first: clumpier. Harness:
   harness_runs/motion2 (fastG = before, fastG4 = after, paths at the real walking speed).
 - **Adaptive rate / dynamic sampling (2026-09-29, `cv2AdaptiveRate`, "Adaptive rate while moving (0/1)",
-  key `adaptive_rate`, slot 192, default ON; "Adaptive parallax (px)" `adaptive_parallax_px` 1.0, slot 193,
+  key `adaptive_rate`, slot 192; default OFF since 2026-10-20 (the compiled defaults = High / Ultra; Low / Medium /
+  Planetarium / Potato set it on, `applyGraphicsPreset`); "Adaptive parallax (px)" `adaptive_parallax_px` 1.6, slot 193,
   `misc2.w`; rate `misc.z` = 3):** where the march used to go full rate because the view moved, it runs the
   sparse grid (pass A, `cloud_v2_march.comp`) and marches at full rate only the 32x32 half-res tiles whose
   clouds show more than that parallax a frame (|eye delta| + the volumes' slide over last frame's resolved
@@ -1549,7 +1550,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   its image at 3000-8000 km (review 18's "3" was matched on p97 at 8000 km, where few pixels are cloud). Saved settings
   keep the old values. Also: partial cover is an area mix in the layer (share x full-depth light), not one thinner cloud
   (no visible change here). **Sea:** waves out to "Sea wave range (km)" (`ocean_wave_range_km` 100, slot 237, UBO
-  `oceanWaveRangeM` = v1's unread marchSteps; was a fixed 3-8 km) and "Sea wave sharpness" (`ocean_wave_sharpness` 0.5,
+  `oceanWaveRangeM` = v1's unread marchSteps; was a fixed 3-8 km) and "Sea wave sharpness" (`ocean_wave_sharpness` 0.1 since 2026-10-20, was 0.5,
   slot 243, `oceanWaveFootK` = v1's unread lightSteps: x the footprint the octaves are filtered at; 1 = review 14); +0.1 ms.
   The reflection no longer decays with distance (exp(-d / 40 km), from the first waves). The reflected clouds' screen fade
   lies just OUTSIDE the frame (review 19's fade inside it took every row's last 8% off the clouds at a horizon view:
@@ -1967,7 +1968,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - **Review 27 (records 13-14):** the far-sea ripple's level blend drew RINGS round the observer (worst in motion): a level
   took a different offset as the incoming and the outgoing one (`seaRippleLevel(k)` is now one function of k), and the
   mix of two independent levels dipped to 0.71 contrast mid-way (renormalised). "Far sea ripple size (px)" (slot 256,
-  `seaTune.w`, default 5): the cell in along-view footprints; lower = finer ripples, more shimmer.
+  `seaTune.w`, default 1.5 since 2026-10-20, was 5): the cell in along-view footprints; lower = finer ripples, more shimmer.
 - **Review 28 (record 15):** **the sea's hard line at the wave range** was the reflection's lost-slope roughness
   (`seaRough`), set only inside the range (blend < 0.99): past it the roughness fell from ~seaState / 2 to 0 in a pixel,
   wherever the range was. It is computed from the footprint everywhere now; "Sea wave range fade" (slot 257,
@@ -5385,12 +5386,12 @@ except `brightnessScale`/`mirrorBoost`, which the reflectance model in `sat_orbi
 |--------|---------|-------------|
 | `brightnessScale` | 1.0 | global flux multiplier |
 | `daySuppression` | 500.0 | sky background suppression ratio (sun) |
-| `mirrorBoost` | 300.0 | mirror peak multiplier (MIRROR_BOOST) |
+| `mirrorBoost` | 1000.0 | mirror peak multiplier (MIRROR_BOOST) |
 | `visThresh` | 0.0 | visibility cull threshold |
 | `highlightFlare` | 0.05 | fixed flare for highlight/census mode |
 | `moonSuppression` | 4.0 | sky background suppression ratio (moon) |
 | `lightPollutionGain` | 1.0 | multiplies the light-pollution dome at its source — see "Subsystem: Light Pollution Dome" |
-| `extinctionCoeff` | 0.079 | sea-level zenith extinction, magnitudes — see "Subsystem: Atmospheric Extinction" |
+| `extinctionCoeff` | 0.18 | sea-level zenith extinction, magnitudes — see "Subsystem: Atmospheric Extinction" |
 
 `effectFlare = flare / (1 + (dayBright × daySuppression + moonBright × moonSuppression) × atmFrac)`,
 then `×= extinction` (line of sight), then `×= (1 − domeVal × 0.85)` (light pollution)
@@ -5645,7 +5646,7 @@ full through the flyable atmosphere, fading over 40-100 km — instead of `exp(-
 and satellites in the same sky are dimmed alike.
 
 **Tunable:** `extinctionCoeff` — the sea-level ZENITH extinction in magnitudes (V band, clear sky:
-~0.2-0.3; the user-tuned default is 0.079), settings slider "Extinction". Reuses `SatFlarePC`'s
+~0.2-0.3; the user-tuned default is 0.18 since 2026-10-20, was 0.079), settings slider "Extinction". Reuses `SatFlarePC`'s
 `pad2` slot (the one freed by `lightPollution`'s move to `lightDomeBuf`); stars read the same C++
 member directly.
 
@@ -5882,6 +5883,18 @@ Key Vulkan design decisions:
 Persisted fields: photometry params, `ui_scale`, settings window position, audio volumes, camera orientation (`az_deg`, `el_deg`, `fov_y_deg`), observer lat/lon, time scale index, keybindings (action → GLFW key code), constellation `enabled` + `highlight` state per name.
 
 If the file is missing (first run) all defaults are used silently.
+
+**The compiled defaults ARE the shipped look (2026-10-20).** A packaged build has no settings.json, so a fresh install is
+the member initializers in SatelliteSim.h + the first-run preset (`recommendedPresetForDevice`). On 2026-10-20 the
+author's tuned settings (`user_data/settings.json`, preset Custom) were baked into the initializers (2 s.f.): clouds_v2
+sun gain 2.3, multi-scatter 0.27, history weight 0.046, light march 2500 m, mid layer density 0.3, cloud sunlight Rayleigh
+0.86, accumulation 39, adaptive rate / sparse-when-still OFF (adaptive parallax 1.6); flat layers coverage 0.57 / sun 1.8;
+sea far ripple 1.7, ripple size 1.5, wave sharpness 0.1; the aurora sheet / storm / coverage tunables, shimmer 0;
+extinction 0.18, mirror boost 1000; display automatic render scale OFF, clouds follow render scale OFF. A discrete GPU
+with >= 5.5 GiB now starts on High (= those defaults, 100% render scale). Check with `python tools/settings_defaults_diff.py
+<settings.json>` (it now also reads `settingClamp(...)`-wrapped loads and lists values outside their load range). Out of
+scope and left alone: `kessler.dust_gain` (the author runs x1000, default x100), `launches.after_storm`,
+`display.photo_scale`, `clouds.aurora_kp_manual` (unused while space weather is automatic).
 
 ---
 
@@ -6149,7 +6162,8 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
   Dallas night). First runs seed `SatelliteSim::recommendedPresetForDevice` (2026-10-06; static, so the
   startup chooser can call it before init): **Potato** for MoltenVK on a non-Apple GPU (the 2015 MacBook Pro's
   R9 M370X is DISCRETE, 2 GB), **Planetarium** for integrated / CPU / virtual GPUs and discrete ones with
-  <= ~2 GB of VRAM, else Medium — logged as `graphics: recommended preset ...`. Crash recovery steps the preset
+  <= ~2 GB of VRAM, **High** for discrete GPUs with >= 5.5 GiB of device-local memory (2026-10-20: a 6-8 GB card;
+  High is the compiled defaults, the author's tuned look), else Medium — logged as `graphics: recommended preset ...`. Crash recovery steps the preset
   down one tier (`crashRecoveryPreset`: full -> Planetarium -> Potato; it always forced Planetarium). The tutorial then ends with a "Graphics" card
   (`TUT_GRAPHICS`, shown only when it starts on Planetarium or Potato) saying there are no clouds and pointing at
   Settings > Display > Preset.
@@ -6207,7 +6221,8 @@ See `TERRAIN_PLAN.md` session 29 log for the full design writeup and the bug's r
 narrative.
 
 **The half-res compute passes follow it (2026-10-04, "Clouds follow render scale", `display.clouds_follow_render_scale`,
-default on):** scene depth (+ its quarter seed), the cloud march targets and clouds v2's screen images are sized by
+default OFF since 2026-10-20 — on for Low / Medium / Planetarium / Potato, off for High / Ultra, set by
+`applyGraphicsPreset`; toggling it, or the render scale, makes the preset Custom):** scene depth (+ its quarter seed), the cloud march targets and clouds v2's screen images are sized by
 `computeHalfExtent()` = half of the SCALED extent, recreated by `recreateComputeScaledTargets()` (onResize, and
 recordCompute's check before anything is recorded when the extent changes). Every consumer already sized itself from
 `imageSize`/`textureSize` or sampled by UV. The march's noise LOD keeps the 100% pixel (`cv2.motion.w` = march pixel /
@@ -6621,7 +6636,7 @@ Read it at the start of any terrain-related session before making changes.
   oval mask was 0 cut the sheets in whole-step chunks: a staircase). Folds finer than the 15-km steps alias
   (a crossing and its return inside one step are missed): the 71x wave does not scale with "Sheet folds",
   capped at 2. Cost +0.55 ms of cloud march in a storm. Settings (Atmosphere tab, aurora): "Curtain sheets"
-  `clouds.aurora_sheets` 1, "Sheet spacing (deg)" 0.3, "Crisp sheets (share)" 0.5, "Sheet folds" 1 (slots
+  `clouds.aurora_sheets` 1.4, "Sheet spacing (deg)" 0.34, "Crisp sheets (share)" 0.77, "Sheet folds" 1.1 (2026-10-20; slots
   215-218, UBO `auroraSheets`). The aurora's light on the ground (terrain and sea) was REMOVED the same day
   (the user: green and bad); `auroraContribTerrain` stays as a zero term. Test from a DARK site (Coldfoot,
   67.25 N 150.18 W, December): Fairbanks' skyglow gates the aurora out. `scripts/aurora_sheets.satcmd`.
@@ -6649,8 +6664,8 @@ Read it at the start of any terrain-related session before making changes.
   concentric bands (the coverage noise varies with colatitude by design); the noise azimuth is still Earth-fixed
   while the oval is Sun-fixed; no dawn-side omega bands / pulsating aurora; the dipole axis is fixed (no IGRF).
 - **Aurora storms + a physical sky gate (2026-10-14, issue 20261014_193231; `cloud_march.comp`, `include/darksky.glsl`,
-  UBO `auroraStorm` / `auroraSky`, 928 -> 960; Atmosphere tab slots 298-301, keys `clouds.aurora_storm_features` 1 /
-  `aurora_blue_rays` 0.012 / `aurora_arc_systems` 1 / `aurora_storm_red` 1).**
+  UBO `auroraStorm` / `auroraSky`, 928 -> 960; Atmosphere tab slots 298-301, keys `clouds.aurora_storm_features` 1.2 /
+  `aurora_blue_rays` 0.004 / `aurora_arc_systems` 2 / `aurora_storm_red` 1.1; defaults since 2026-10-20).**
   - **The gate (the bug):** a Kp 9 storm was invisible from an Iowa farm and from Arizona and was cut off along a hard
     azimuth toward a town. The aurora read the Milky Way's dark-sky dome: a LOG ramp from 1e-6 (a raw glow of 0.01 is
     already 83% "city"; a sector of 0 beside one of 0.83 = the hard edge; populated farmland = 1.0 in every sector,
