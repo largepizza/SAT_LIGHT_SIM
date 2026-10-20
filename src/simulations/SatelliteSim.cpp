@@ -4996,7 +4996,9 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         setMeshInstanceEarth(inst, r.earth, glm::dmat3(glm::dvec3(ct, -st, 0.0), glm::dvec3(st, ct, 0.0),
                                                        glm::dvec3(0.0, 0.0, 1.0))); // ECI → ECEF (eciToEcef)
         inst.earthShC.z = (float)(1.0 - satUnfoldAt(e, tNow)); // still unfolding after its release (sat_mesh.vert)
-        inst.earthShC.w = e.engineGlow; // a burning rocket stage: its nozzles' insides glow (sat_mesh.frag)
+        // A burning rocket stage: its nozzles' insides glow (sat_mesh.frag). The fraction of w (x 0.49): its integer
+        // part is the shadow accel's slot (SatMeshRenderer::writeShadowAccel).
+        inst.earthShC.w = 0.49f * std::clamp(e.engineGlow, 0.0f, 1.0f);
         inst.firstMaterial = tm->firstMaterial;
         inst.firstOccluder = tm->firstOccluder;
         inst.occluderCount = tm->occluderCount;

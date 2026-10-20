@@ -4458,6 +4458,9 @@ launches follow per-program cadences (no real manifest).
   - **Fold** (SatModel component `"fold"`: point, axis, angle_deg, phase): after the stow scaling the part turns about a
     hinge line (rest body frame) by angle x (1 - smoothstep(phase, P)); mesh only (`instFoldAngle`, sat_mesh.vert; the
     component buffer is FIVE vec4s per component since), skipped as an occluder while folded; the photometry ignores it.
+    (The CPU shadow accel, `SatMeshRenderer::writeShadowAccel`, reads the same stride and skips folded parts.
+    `GpuMeshInstance::earthShC.w` = the accel slot + 1 in its integer part + 0.49 x a burning stage's engine glow in
+    its fraction: two parallel 2026-10-20 changes had both written w, so the accel lit every big mesh's "soot" parts.)
     Used for: Starmind's bus halves (the -X half folds 180 deg about y at z 0.51, over the radiator packs: stowed
     6.2 x 5.0 x 2.1 m), array packs folded flat (Qianfan, V1.5, Amazon Leo, V3 over the zenith face; Guowang, OneWeb
     against the flanks) and DTC's antenna under the bus.

@@ -278,8 +278,9 @@ bool accelRayBlocked(uint base, vec3 p, vec3 dir)
 // The sun ray (dir = inst.sun) or any other: the accel where the instance has one, else the full loop.
 bool shadowBlocked(MeshInstance inst, vec3 p, vec3 dir, bool isSun)
 {
-    if (inst.earthShC.w > 0.5) {
-        uint base = (uint(inst.earthShC.w + 0.5) - 1u) * kAccelStride;
+    // earthShC.w = the accel slot (1-based, its integer part) + 0.49 x the engine glow (2026-10-20: both shared w).
+    if (inst.earthShC.w >= 1.0) {
+        uint base = (uint(floor(inst.earthShC.w)) - 1u) * kAccelStride;
         return isSun ? accelSunBlocked(base, p, dir) : accelRayBlocked(base, p, dir);
     }
     return rayBlocked(inst, p, dir);
@@ -619,9 +620,10 @@ void main()
     // (earthShC.w, the CPU's SatOrbitElems::engineGlow): from below, the engine cluster reads as a ring of lit
     // nozzles instead of a black disc. Far brighter than a sunlit face (the combustion seen down the bell), white
     // hot at the throat end, orange at the lip. Render-only parts: no bloom or glare share (photFrac 0).
-    if (inst.earthShC.w > 0.0 && mat.lattice.w > 0.5) {
+    float engineGlow = fract(inst.earthShC.w) / 0.49; // (w's fraction: its integer part is the accel slot)
+    if (engineGlow > 0.0 && mat.lattice.w > 0.5) {
         float throat = clamp(0.5 + 0.5 * dot(Ngeo, V), 0.0, 1.0); // looking up the bell: the hot end shows
-        L += inst.earthShC.w * mix(vec3(3.0, 1.3, 0.45), vec3(14.0, 10.0, 6.5), throat * throat);
+        L += engineGlow * mix(vec3(3.0, 1.3, 0.45), vec3(14.0, 10.0, 6.5), throat * throat);
     }
 
     // Scene output (4c): pre-exposure radiance (sat_sky.frag applies the atmosphere in front of it

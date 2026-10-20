@@ -1354,7 +1354,7 @@ void SatMeshRenderer::recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame
         order.reserve(n);
         for (size_t i = 0; i < n; ++i)
         {
-            mapped[i].earthShC.w = 0.0f;
+            mapped[i].earthShC.w = glm::fract(mapped[i].earthShC.w); // keep the engine glow (w's fraction)
             const TypeMesh *tm = typeMesh(types[i]);
             if (tm && tm->occluderCount > 0u)
                 order.push_back({-(tm->boundsRadius + glm::length(tm->boundsCenter)) /
@@ -1367,7 +1367,7 @@ void SatMeshRenderer::recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame
         for (size_t k = 0; k < take; ++k)
         {
             writeShadowAccel((uint32_t)(2 + k), mapped[order[k].second], types[order[k].second]);
-            accelSceneUsed += mapped[order[k].second].earthShC.w > 0.0f ? 1u : 0u;
+            accelSceneUsed += mapped[order[k].second].earthShC.w >= 1.0f ? 1u : 0u;
         }
     }
 
@@ -1422,7 +1422,9 @@ void SatMeshRenderer::recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame
 // two cells per uvec4, each a 64-bit mask of records.
 void SatMeshRenderer::writeShadowAccel(uint32_t slot, GpuMeshInstance &inst, int typeIdx)
 {
-    inst.earthShC.w = 0.0f;
+    // earthShC.w = the accel slot + 1 (integer part) + 0.49 x the engine glow (fraction; 2026-10-20: the two shared w).
+    const float glowPart = glm::fract(inst.earthShC.w);
+    inst.earthShC.w = glowPart;
     const TypeMesh *tm = typeMesh(typeIdx);
     if (!accelEnabled || !accelMapped || slot >= kAccelSlots || !tm || tm->occluderCount == 0u ||
         tm->firstOccluder + tm->occluderCount > occsCpu.size())
@@ -1443,14 +1445,16 @@ void SatMeshRenderer::writeShadowAccel(uint32_t slot, GpuMeshInstance &inst, int
         const GpuSatMeshOccluder &O = occsCpu[tm->firstOccluder + i];
         if (O.kind > 5u)
             continue; // an open lattice: light passes between its members
-        const size_t ci = (size_t)tm->firstComponent + 3u * i;
-        if (ci + 2 >= compsCpu.size())
+        const size_t ci = (size_t)tm->firstComponent + 5u * i; // five vec4s a component (sat_mesh_common.glsl)
+        if (ci + 4 >= compsCpu.size())
             continue;
-        if (unfold > 0.0f) // instStowScale: a stowed part is not where its occluder says
+        if (unfold > 0.0f) // instStowScale / instFoldAngle: a stowed or folded part is not where its occluder says
         {
-            const glm::vec4 st = compsCpu[ci + 1], ph = compsCpu[ci + 2];
+            const glm::vec4 st = compsCpu[ci + 1], ph = compsCpu[ci + 2], fp = compsCpu[ci + 3];
             const float ls = glm::length(glm::vec3(st));
             if (ls > 0.0f && glm::mix(1.0f - ls, 1.0f, glm::smoothstep(ph.x, ph.y, 1.0f - unfold)) < 1.0f)
+                continue;
+            if (fp.w != 0.0f && 1.0f - glm::smoothstep(ph.z, ph.w, 1.0f - unfold) > 0.0f)
                 continue;
         }
         const glm::mat3 R = groupRot(O.group);
@@ -1518,7 +1522,7 @@ void SatMeshRenderer::writeShadowAccel(uint32_t slot, GpuMeshInstance &inst, int
     put(A[1], e2, v0);
     A[2] = glm::uvec4(f2u(iu), f2u(iv), 0u, n);
     A[3] = glm::uvec4(0u);
-    inst.earthShC.w = (float)(slot + 1);
+    inst.earthShC.w = (float)(slot + 1) + glowPart;
 }
 
 // ─── Sharp reflections (2026-09-25) ───────────────────────────────────────────────────────────────
