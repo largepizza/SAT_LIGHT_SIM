@@ -135,8 +135,22 @@ the cut and full at three times it, so pieces of a trail do not switch on and of
 ## Shading in `dustCloudsCS`
 
 For each plume Gaussian the shader integrates its optical depth along the ray in closed form (an erf), as for the
-Kessler dust. A one-dot-product view cone skips Gaussians the ray cannot touch. Plumes are real clouds: their
-optical depths are summed, their light per unit optical depth averaged, and the composite is \( 1 - e^{-\tau} \).
+Kessler dust. Plumes are real clouds: their optical depths are summed, their light per unit optical depth
+averaged, and the composite is \( 1 - e^{-\tau} \).
+
+The list is culled three ways, none of which changes the image by more than a bound far under one display level:
+
+- **Per tile** (`cullDustForTile()`): each 16×16-texel workgroup tests every Gaussian's view cone once against the
+  tile's own cone and keeps a bit mask in list order, so the sums run in the same order as a full scan and give the
+  same result. Each Gaussian also carries a mask of the engine lights that can reach it.
+- **Per texel, the faint skip**: a plume whose optical depth at the texel is below \(10^{-5}\) and whose light is
+  below \(2 \times 10^{-7}\) of white at the frame's sky exposure (word 2 of the dust buffer's header) is skipped
+  before its lighting. Summed over the whole list that is at most 1% dimming and \(2 \times 10^{-4}\) of white.
+- **On the CPU** (`dustCullInsignificant()`): plume Gaussians whose summed worst-case bounds stay under
+  \(2 \times 10^{-4}\) of white and 1% dimming are not uploaded at all. Old, wide, Earth-shadowed exhaust is the
+  typical case: in a droneship view 160 of 390 Gaussians covered every texel while adding about \(10^{-6}\) of white.
+
+Knockout bits 16777216 (tile cull and faint skip off) and 33554432 (CPU cull off) are their A/Bs.
 
 - **The eye inside a Gaussian.** Its optical depth thins from a Mahalanobis radius of 3 to 1.5 sigma, down to 10%,
   so the exhaust round a stage the camera follows is structure in front, not a fog the camera is in.
@@ -394,6 +408,8 @@ Measured on an RTX 3070 Ti at 1600×900:
 - A Vandenberg twilight launch's bell filling the view (320 Gaussians): `cloud_march` +0.9 ms.
 - The plume billows: within 0.2 ms over three views of a launch (GPU 21.3 / 16.0 / 18.5 ms with them).
 - The ground clouds: within noise at a Starship lift-off from 2.5 km.
+- The Gaussian culls: `cloud_march` 8.1 → 6.6 ms in a droneship view, 4.3 → 3.4 ms at a daytime lift-off,
+  3.3 → 3.0 ms following a stage at night from 300 m. Time these with no other app on the GPU.
 - The engine-light pass: +0.26 ms (Starship at T+15 s under broken cumulus, 6 km from the pad); the exhaust's
   engine lighting +0.05 to +0.25 ms of cloud march.
 
@@ -407,7 +423,8 @@ strong.
 The harness (see [Harness](../development/harness.md)) has `launch next ... pad_dist_m=<m> [lead=<s>] [side=-1]`
 (on the ground beside a pad), `launch landing [booster=1] [droneship=1]` and `launch droneship`, `launch pad <site>`
 and `launch state`, which reports `ground_clouds`, `engine_lights`, `engine_light_gain`, `engine_light_adapt`,
-`plume_high` and `cpu_split_ms`. Scripts: `tools/harness/scripts/pad_smoke.satcmd`, `follow_visuals.satcmd`,
+`plume_high`, `dust_list` (the list's counts by kind) and `cpu_split_ms`; `shaders reload` also reports the
+composite's register count. Scripts: `tools/harness/scripts/pad_smoke.satcmd`, `follow_visuals.satcmd`,
 `droneship.satcmd`. Pause time and clear the clouds (`set clouds_v2.coverage 0`) before judging a ground cloud.
 
 ## Where in the code

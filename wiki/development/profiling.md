@@ -137,6 +137,8 @@ Performance → *Knockouts* (it reads **Skip** while the bit is set, **On** othe
 | 2097152 | `sat_meshes` | satellite meshes in the main view |
 | 4194304 | `water_map` | the water map in the shared terrain height function |
 | 8388608 | `mesh_shadow_accel_disabled` | **an optimisation A/B**: the satellite meshes' shadow rays go back to testing every occluder of the model per pixel instead of the posed, Sun-binned occluder grid ([Satellite meshes](../rendering/satellite-meshes.md)). Same image; its sweep cost is the saving |
+| 16777216 | `plume_tile_cull_disabled` | **an optimisation A/B**: `cloud_march.comp` walks the whole dust / plume / flame Gaussian list in every texel, without the per-tile cull or the per-texel faint skip ([Launch visuals](../rendering/launch-visuals.md)) |
+| 33554432 | `plume_cull_disabled` | **an optimisation A/B**: keeps the plume Gaussians the CPU's significance cull would drop |
 
 Two more bits are pipeline swaps, not in-shader branches, and are set by presets rather than swept: 262144
 (`potato_sky`, the minimal sky shader) and 524288 (`lite_sky`, the `SKY_LITE` variant). See
