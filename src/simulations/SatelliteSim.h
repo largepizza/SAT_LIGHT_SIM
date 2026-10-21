@@ -3004,6 +3004,10 @@ private:
     bool launchGoToVent(std::string &msg);
     bool launchGoToShipEntry(std::string &msg);
     bool launchGoToStageEvent(std::string &msg, int ev, const std::string &filter = "", int minMembers = 0);
+    // (2026-10-20) The next crew flight event (launch, sep, phasing, arrive, axis, hold400, hold200, hold20, dock,
+    // undock, depart, deorbit, entry, chutes, splash) at a station whose name contains `station` (any if empty): the
+    // clock leadS before it at 1x, its spacecraft (its rocket before the separation) selected and, follow, followed.
+    bool launchGoToCrew(const std::string &station, const std::string &event, double leadS, bool follow, std::string &msg);
     void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
     void launchDestroy(VkDevice device);
 
@@ -3064,7 +3068,8 @@ private:
         uint8_t who = 0;    // kMs* bits: whose milestone
         double lead = 10.0; // a skip lands this long before it (less where milestones crowd)
     };
-    static constexpr uint8_t kMsPayload = 1, kMsBooster = 2, kMsTrain = 4, kMsRetiree = 8;
+    // kMsStage (2026-10-20): a crewed upper stage after its spacecraft has left (the payload role is the spacecraft then)
+    static constexpr uint8_t kMsPayload = 1, kMsBooster = 2, kMsTrain = 4, kMsRetiree = 8, kMsStage = 16;
     struct MissionSubject
     {
         bool ok = false;

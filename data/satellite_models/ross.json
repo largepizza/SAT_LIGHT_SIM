@@ -1,6 +1,6 @@
 {
     "name": "Russian Orbital Station (2030s configuration)",
-    "note": "Station art pass 2026-10-20 (tools/make_station_models.py), the December 2025 plan: the core assembled at the ISS from Nauka, the Universal Node Module (UUM) and the Science-Power Module (NEM) and separated from it, then the gateway airlock (ShM), a base module (an upgraded NEM) and two target modules. Body frame: +X along velocity, +Z nadir: Nauka forward, the base module aft, NEM on the node's nadir port, ShM to starboard, target modules to port and zenith. NEM and the base module each carry two large rigid wings at their far ends, turning about the cross-track axis; NEM has two radiator panels. Detail: a docked Soyuz and Progress, Nauka's ERA arm and radiator, ports, dishes.",
+    "note": "Station art pass 2026-10-20 (tools/make_station_models.py), the December 2025 plan: the core assembled at the ISS from Nauka, the Universal Node Module (UUM) and the Science-Power Module (NEM) and separated from it, then the gateway airlock (ShM), a base module (an upgraded NEM) and two target modules. Body frame: +X along velocity, +Z nadir: Nauka forward, the base module aft, NEM on the node's nadir port, ShM to starboard, target modules to port and zenith. NEM and the base module each carry two large rigid wings at their far ends, turning about the cross-track axis; NEM has two radiator panels. Detail: a docked Progress (the crew Soyuz is the sim's own), Nauka's ERA arm and radiator, ports, dishes.",
     "materials": [
         {
             "name": "module_skin",
@@ -317,61 +317,6 @@
             "render_only": true
         },
         {
-            "name": "soyuz_service",
-            "type": "profile",
-            "profile": [[0.0, 1.35], [0.6, 1.36], [2.9, 1.1]],
-            "position": [23.6, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "bottom",
-            "material": "module_skin",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "soyuz_descent",
-            "type": "profile",
-            "profile": [[0.0, 1.1], [1.8, 1.0], [2.2, 0.5]],
-            "position": [20.7, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": false,
-            "material": "module_skin",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "soyuz_orbital",
-            "type": "profile",
-            "profile": [[0.0, 0.6], [0.4, 1.05], [1.2, 1.1], [2.0, 1.0], [2.4, 0.5]],
-            "position": [18.5, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "top",
-            "material": "module_skin",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "soyuz_wing_p",
-            "type": "plane",
-            "size": [1.6, 4.0],
-            "position": [22.2, -3.56, 0.0],
-            "rotation_quat": [-0.0, 1.0, -0.0, 0.0],
-            "material": "cells",
-            "back_material": "cells_back",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "soyuz_wing_m",
-            "type": "plane",
-            "size": [1.6, 4.0],
-            "position": [22.2, 3.56, 0.0],
-            "rotation_quat": [0.0, 0.0, 1.0, 0.0],
-            "material": "cells",
-            "back_material": "cells_back",
-            "group": "station",
-            "render_only": true
-        },
-        {
             "name": "port_aft",
             "type": "profile",
             "profile": [[0.0, 0.7], [0.7, 0.7]],
@@ -585,6 +530,13 @@
                 "dragon_white",
                 "cn_green"
             ]
+        }
+    ],
+    "docking_ports": [
+        {
+            "name": "port_fwd",
+            "position": [15.8, 0.0, 0.0],
+            "axis": [1.0, 0.0, 0.0]
         }
     ]
 }

@@ -1,0 +1,415 @@
+{
+ "name": "soyuz in orbit",
+ "note": "Crew spacecraft render model (tools/make_crew_models.py), in orbit. Soyuz MS in orbit: orbital module forward (docking), descent module, service module and its two wings. Body frame: +Z out of the docking port, origin at the port's contact point.",
+ "materials": [
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  },
+  {
+   "name": "cells",
+   "preset": "solar_cell"
+  },
+  {
+   "name": "green",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.36,
+    0.42,
+    0.3
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "service_module_0",
+   "type": "profile",
+   "profile": [
+    [
+     -7.15,
+     1.36
+    ],
+    [
+     -4.65,
+     1.36
+    ],
+    [
+     -4.55,
+     1.1152
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body"
+  },
+  {
+   "name": "sm_engines_1",
+   "type": "profile",
+   "profile": [
+    [
+     -7.45,
+     0.3
+    ],
+    [
+     -7.399,
+     0.2488
+    ],
+    [
+     -7.348,
+     0.2044
+    ],
+    [
+     -7.297,
+     0.1671
+    ],
+    [
+     -7.246,
+     0.1377
+    ],
+    [
+     -7.195,
+     0.1171
+    ],
+    [
+     -7.144,
+     0.108
+    ],
+    [
+     -7.108,
+     0.1674
+    ],
+    [
+     -7.0288,
+     0.1674
+    ],
+    [
+     -7.0,
+     0.1004
+    ],
+    [
+     -6.95,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "solar_wing_2",
+   "type": "box",
+   "size": [
+    4.1,
+    0.04,
+    1.15
+   ],
+   "position": [
+    0.0,
+    3.81,
+    -5.85
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    -0.0,
+    0.707107
+   ],
+   "material": "cells",
+   "group": "body"
+  },
+  {
+   "name": "wing_yoke_3",
+   "type": "box",
+   "size": [
+    0.45,
+    0.12,
+    0.3
+   ],
+   "position": [
+    0.0,
+    1.585,
+    -5.85
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    -0.0,
+    0.707107
+   ],
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "solar_wing_4",
+   "type": "box",
+   "size": [
+    4.1,
+    0.04,
+    1.15
+   ],
+   "position": [
+    -0.0,
+    -3.81,
+    -5.85
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    0.0,
+    -0.707107
+   ],
+   "material": "cells",
+   "group": "body"
+  },
+  {
+   "name": "wing_yoke_5",
+   "type": "box",
+   "size": [
+    0.45,
+    0.12,
+    0.3
+   ],
+   "position": [
+    -0.0,
+    -1.585,
+    -5.85
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    0.0,
+    -0.707107
+   ],
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "descent_module_6",
+   "type": "profile",
+   "profile": [
+    [
+     -4.55,
+     1.08
+    ],
+    [
+     -4.3,
+     1.08
+    ],
+    [
+     -2.75,
+     0.594
+    ],
+    [
+     -2.55,
+     0.378
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body"
+  },
+  {
+   "name": "heat_shield_7",
+   "type": "profile",
+   "profile": [
+    [
+     -4.57,
+     1.0584
+    ],
+    [
+     -4.53,
+     1.0584
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "orbital_module_8",
+   "type": "profile",
+   "profile": [
+    [
+     -2.5,
+     0.4
+    ],
+    [
+     -2.4663,
+     0.571
+    ],
+    [
+     -2.2278,
+     0.9278
+    ],
+    [
+     -1.871,
+     1.1663
+    ],
+    [
+     -1.45,
+     1.25
+    ],
+    [
+     -1.029,
+     1.1663
+    ],
+    [
+     -0.6722,
+     0.9278
+    ],
+    [
+     -0.4337,
+     0.571
+    ],
+    [
+     -0.35,
+     0.45
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "green",
+   "group": "body"
+  },
+  {
+   "name": "docking_probe_9",
+   "type": "profile",
+   "profile": [
+    [
+     -0.35,
+     0.35
+    ],
+    [
+     0.0,
+     0.35
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "the sim hands in a full attitude (approach, docked, entry); this law is only its fallback",
+   "source": "SatelliteSimLaunches.cpp crew vehicles."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "service_module_0",
+    "solar_wing_2",
+    "solar_wing_4",
+    "descent_module_6",
+    "orbital_module_8"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes estimated from photographs",
+   "source": "Wikipedia 'Soyuz MS': service module 2.72 m wide, 2.58 m long; descent module 2.17 m; orbital module 2.25 m with the SSVP probe forward; arrays 10.6 m tip to tip; one main parachute (1000 m2)"
+  },
+  {
+   "subjects": [
+    "black",
+    "grey",
+    "nozzle",
+    "soot",
+    "cells",
+    "green"
+   ],
+   "status": "estimate",
+   "value": "black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside; cells: Crew Dragon trunk's body-mounted solar cells; a crewed spacecraft's folded arrays; green: Soyuz orbital module's green insulation blanket",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

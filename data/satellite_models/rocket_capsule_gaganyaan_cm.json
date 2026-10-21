@@ -1,0 +1,156 @@
+{
+ "name": "gaganyaan the crew / descent module alone (entry)",
+ "note": "Crew spacecraft render model (tools/make_crew_models.py), the crew / descent module alone (entry). Gaganyaan in orbit: a docking port on the crew module's apex (an estimate: Gaganyaan G1 has none; the scenario's Bharatiya crews dock), service module and two wings. Body frame: +Z out of the docking port, origin at the port's contact point.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "crew_module_0",
+   "type": "profile",
+   "profile": [
+    [
+     -3.4,
+     1.75
+    ],
+    [
+     -3.15,
+     1.75
+    ],
+    [
+     -0.7,
+     0.75
+    ],
+    [
+     -0.3,
+     0.55
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "heat_shield_1",
+   "type": "profile",
+   "profile": [
+    [
+     -3.42,
+     1.72
+    ],
+    [
+     -3.38,
+     1.72
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "docking_ring_2",
+   "type": "profile",
+   "profile": [
+    [
+     -0.3,
+     0.5
+    ],
+    [
+     0.0,
+     0.5
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "the sim hands in a full attitude (approach, docked, entry); this law is only its fallback",
+   "source": "SatelliteSimLaunches.cpp crew vehicles."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "crew_module_0"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes estimated from photographs",
+   "source": "ISRO / Wikipedia 'Gaganyaan': crew module ~3.1 m tall, ~3.5 m across; service module ~2.9 m, 3.9 m across, with deployable solar panels; parachutes: three mains"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

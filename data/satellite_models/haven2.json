@@ -1,6 +1,6 @@
 {
     "name": "Vast Haven-2 (2032 configuration)",
-    "note": "Station art pass 2026-10-20 (tools/make_station_models.py), after Vast's concept art: a 7 m core standing nadir-zenith with four radial ports, four 16 m modules docked radially in a cross in the orbit-horizontal plane, each with its own pair of wings near its outer end (the +-X spokes' wings along +-Y turn about Y, the +-Y spokes' along +-X turn about X), four radiator fins on the core between the spokes, an airlock on the core's zenith port. Body frame: +X along velocity, +Z nadir. Detail: windows, ports, a docked Dragon, dishes, bands.",
+    "note": "Station art pass 2026-10-20 (tools/make_station_models.py), after Vast's concept art: a 7 m core standing nadir-zenith with four radial ports, four 16 m modules docked radially in a cross in the orbit-horizontal plane, each with its own pair of wings near its outer end (the +-X spokes' wings along +-Y turn about Y, the +-Y spokes' along +-X turn about X), four radiator fins on the core between the spokes, an airlock on the core's zenith port. Body frame: +X along velocity, +Z nadir. Detail: windows, ports (two crew docking ports: the sim docks real Crew Dragons there), dishes, bands.",
     "materials": [
         {
             "name": "module_skin",
@@ -788,41 +788,6 @@
             "render_only": true
         },
         {
-            "name": "dragon_trunk",
-            "type": "profile",
-            "profile": [[0.0, 1.85], [2.8, 1.85]],
-            "position": [27.1, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "bottom",
-            "material": "dragon_white",
-            "arc_material": "cells",
-            "arc_deg": [0, 180],
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "dragon_capsule",
-            "type": "profile",
-            "profile": [[0.0, 1.95], [0.15, 1.95], [2.4, 1.25], [2.9, 0.95], [3.3, 0.55]],
-            "position": [24.3, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "top",
-            "material": "dragon_white",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "dragon_nose",
-            "type": "profile",
-            "profile": [[0.0, 0.55], [0.35, 0.45]],
-            "position": [21.0, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "top",
-            "material": "metal",
-            "group": "station",
-            "render_only": true
-        },
-        {
             "name": "hga_1_mast",
             "type": "cylinder",
             "radius": 0.06,
@@ -957,6 +922,18 @@
                 "glass",
                 "dragon_white"
             ]
+        }
+    ],
+    "docking_ports": [
+        {
+            "name": "port_fwd",
+            "position": [20.65, 0.0, 0.0],
+            "axis": [1.0, 0.0, 0.0]
+        },
+        {
+            "name": "port_aft",
+            "position": [-20.65, 0.0, 0.0],
+            "axis": [-1.0, 0.0, 0.0]
         }
     ]
 }

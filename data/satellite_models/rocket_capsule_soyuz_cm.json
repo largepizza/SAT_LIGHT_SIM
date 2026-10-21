@@ -1,0 +1,127 @@
+{
+ "name": "soyuz the crew / descent module alone (entry)",
+ "note": "Crew spacecraft render model (tools/make_crew_models.py), the crew / descent module alone (entry). Soyuz MS in orbit: orbital module forward (docking), descent module, service module and its two wings. Body frame: +Z out of the docking port, origin at the port's contact point.",
+ "materials": [
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "descent_module_0",
+   "type": "profile",
+   "profile": [
+    [
+     -4.55,
+     1.08
+    ],
+    [
+     -4.3,
+     1.08
+    ],
+    [
+     -2.75,
+     0.594
+    ],
+    [
+     -2.55,
+     0.378
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body"
+  },
+  {
+   "name": "heat_shield_1",
+   "type": "profile",
+   "profile": [
+    [
+     -4.57,
+     1.0584
+    ],
+    [
+     -4.53,
+     1.0584
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "the sim hands in a full attitude (approach, docked, entry); this law is only its fallback",
+   "source": "SatelliteSimLaunches.cpp crew vehicles."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "descent_module_0"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes estimated from photographs",
+   "source": "Wikipedia 'Soyuz MS': service module 2.72 m wide, 2.58 m long; descent module 2.17 m; orbital module 2.25 m with the SSVP probe forward; arrays 10.6 m tip to tip; one main parachute (1000 m2)"
+  },
+  {
+   "subjects": [
+    "black",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

@@ -453,6 +453,16 @@ VEHICLES = {
         refs=["Galactic Energy / Wikipedia 'Pallas-1': 3.35 m, 7 Welkin engines, 4.2 m fairing"],
         notes="Lengths estimated."),
     # Crewed (the Missions window's crew rotations): the fairing is the spacecraft's shroud with an escape tower.
+    "hlvm3": dict(
+        r=2.0, core=21.0, core_mat="white", inter=(2.0, "white"),
+        eng=dict(rings=[(2, 0.9)], re=0.55, L=2.0, z=-1.5), aft="grey",
+        side=dict(n=2, r=1.6, len=25.0, mat="white", nose=4.5, nose_kind="ogive", re=1.4, eL=3.0, cant=0.0,
+                  phase=90.0, lift=-2.5),
+        upper=dict(len=13.0, mat="white", eng=dict(rings=[(1, 0.0)], re=1.0, L=2.6, protrude=2.0)),
+        fairing=dict(fr=2.5, cyl=7.0, nose=4.0, tip=0.6), les=(0.45, 9.0), capsule="gaganyaan",
+        refs=["ISRO / Wikipedia 'LVM3' (HLVM3, the human-rated variant): as LVM3, 53 m with the crew escape system; "
+              "a crew-module fairing (CMF) over the Gaganyaan orbital module"],
+        notes="Crew escape system and shroud lengths estimated from the TV-D1 / G1 imagery."),
     "long_march_2f": dict(
         r=1.675, core=28.5, core_mat="white", inter=(2.0, "white"),
         eng=dict(rings=[(4, 0.75)], re=0.42, L=1.7, z=-1.3, phase=45.0), aft="grey",
@@ -627,6 +637,12 @@ def upper_parts(b, v, z0=0.0, mode="full", info=None):
         if mode in ("bare", "empty"):
             b.profile("core_top", [[z - 3.0, r], [z, r]], v["core_mat"], caps=True)
     if v.get("dragon"):
+        if mode == "empty":
+            # (2026-10-20) The Dragon has left: the stage's top and the trunk's separation ring.
+            b.tube("dragon_sep_ring", 1.83, z, z + 0.12, "grey", ro=True)
+            return z + 0.12
+        if info is not None:
+            info["spacecraft_top"] = dragon_parts(Builder(), z)
         return dragon_parts(b, z)
     if info is not None:
         info["fairing_base"] = z
@@ -643,7 +659,10 @@ def upper_parts(b, v, z0=0.0, mode="full", info=None):
         if info is not None:
             info["payload_base"] = z + 0.62
         if mode == "bare" and v.get("capsule"):
-            return capsule_parts(b, v["capsule"], z + 0.62)
+            top = capsule_parts(b, v["capsule"], z + 0.62)
+            if info is not None:
+                info["spacecraft_top"] = top
+            return top
         return z + 0.62
     pts, cuts, top = fairing_profile(v, z)
     if mode == "fairing":
@@ -685,8 +704,21 @@ def upper_parts(b, v, z0=0.0, mode="full", info=None):
 
 
 def capsule_parts(b, kind, z):
-    """A crewed spacecraft on its adapter (shown once its shroud is gone): Shenzhou or Soyuz MS, stand-ins of
-    public dimensions (service module, descent module, orbital module; the arrays folded)."""
+    """A crewed spacecraft on its adapter (shown once its shroud is gone): Shenzhou, Soyuz MS or Gaganyaan, stand-ins
+    of public dimensions (service module, descent module, orbital module; the arrays folded). deployed: in orbit,
+    the arrays out (tools/make_crew_models.py: the spacecraft on its own); cm_only: the descent / crew module alone
+    (after the others separate for the entry). Returns the top (the docking port)."""
+    if kind == "gaganyaan":
+        # Service module ~2.9 m x 3.9 m wide, crew module ~3.1 m tall, 3.5 m across at the heat shield (published
+        # figures, rounded; the docking port is a future addition: on top, as on Bharatiya's BDS).
+        b.profile("service_module", [[z, 1.95], [z + 2.9, 1.95]], "white", caps=True)
+        b.engines("sm_engines", [(5, 1.2)], 0.14, 0.4, z - 0.3, mat="nozzle")
+        for k in range(2):
+            b.radial_box("sm_array_folded", 90.0 + 180.0 * k, 1.95, z + 1.45, 0.2, 2.0, 2.6, "cells")
+        z += 2.9
+        b.profile("crew_module", [[z, 1.75], [z + 0.25, 1.75], [z + 2.7, 0.75], [z + 3.1, 0.55]], "white",
+                  caps=True)
+        return z + 3.1
     if kind == "shenzhou":
         # Service module 2.8 m x 2.9 m, descent module (bell) 2.5 m, orbital module 2.25 m x 2.8 m.
         b.profile("service_module", [[z, 1.4], [z + 2.9, 1.4]], "white", caps=True)
@@ -1038,6 +1070,9 @@ def main():
     write("starship", "upper", STARSHIP_REFS, notes, b.c)
     n += 3
     infos = {}
+    # A crewed vehicle's spacecraft: its docking port's contact point (the origin of tools/make_crew_models.py's
+    # rocket_capsule_* models: the probe / ring on top) above the upper stage's origin, launches.json spacecraft_dock_m.
+    tops = {}
     for vid, v in VEHICLES.items():
         refs, notes = v["refs"], v.get("notes", "")
         u = v.get("upper")
@@ -1049,9 +1084,17 @@ def main():
         core_parts(b, v, 0.0, stack=False)
         write(vid, "booster", refs, notes, b.c)
         b = Builder()
-        upper_parts(b, v, 0.0)
+        uinfo = {}
+        upper_parts(b, v, 0.0, info=uinfo)
         write(vid, "upper", refs, notes, b.c)
         n += 3
+        if v.get("dragon"):
+            # 2026-10-20: the stage after the Dragon has separated (crew rotations: the capsule flies on its own).
+            b = Builder()
+            upper_parts(b, v, 0.0, mode="empty")
+            write(vid, "upper_empty", refs, notes + " After its spacecraft has separated.", b.c)
+            n += 1
+            tops[vid] = uinfo["spacecraft_top"] - 1.0  # the docking ring under the closed nose cone
         if "fairing" in v and not v.get("dragon"):
             # 2026-10-20: the fairing separates (~110 km); the stage flies on bare, its payload on the adapter.
             info = {}
@@ -1064,6 +1107,7 @@ def main():
                   "stage's frame: separated, it falls away tumbling.", b.c)
             n += 2
             if v.get("capsule"):
+                tops[vid] = info["spacecraft_top"] + (0.3 if v["capsule"] == "gaganyaan" else 0.35)
                 b = Builder()
                 upper_parts(b, v, 0.0, mode="empty")
                 write(vid, "upper_empty", refs, notes + " After its spacecraft has separated.", b.c)
@@ -1101,6 +1145,13 @@ def main():
         if vh["id"] in infos and vh.get("fairing_center_m") != infos[vh["id"]]["fairing_center"]:
             bad.append((vh["id"], "launches.json fairing_center_m %s != %s" % (vh.get("fairing_center_m"),
                                                                                infos[vh["id"]]["fairing_center"])))
+    print("\nvehicle spacecraft_dock_m (launches.json, crewed vehicles):")
+    for vid, top in tops.items():
+        print("  %-16s spacecraft_dock_m %.2f" % (vid, top))
+    for vh in L["vehicles"]:
+        if vh["id"] in tops and abs(vh.get("spacecraft_dock_m", -1) - round(tops[vh["id"]], 2)) > 0.005:
+            bad.append((vh["id"], "launches.json spacecraft_dock_m %s != %.2f" % (vh.get("spacecraft_dock_m"),
+                                                                                  tops[vh["id"]])))
     if bad:
         print("\nCHECK:", *bad, sep="\n  ")
         if "--check" in sys.argv:

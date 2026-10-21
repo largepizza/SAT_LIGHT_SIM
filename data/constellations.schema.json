@@ -327,9 +327,9 @@
         },
         "joint": {
           "type": "object",
-          "description": "Optional 1-DOF rotation of the whole group about its own body 'axis'. track: turn so body 'vector' points as close to 'target' as possible (a solar-array gimbal). edge_on: turn so 'vector' is perpendicular to 'target' (the smaller solution — Starlink's knife-edge roll). fixed: constant 'angle_deg'. flare_mitigation_tilt: the global 'Flare mitigate tilt' setting. 'vector' should be perpendicular to 'axis'.",
+          "description": "Optional 1-DOF rotation of the whole group about its own body 'axis'. track: turn so body 'vector' points as close to 'target' as possible (a solar-array gimbal). edge_on: turn so 'vector' is perpendicular to 'target' (the smaller solution — Starlink's knife-edge roll; it swaps solutions where the two are equal, a 180-degree flip). edge_on_continuous: edge_on always on the same solution (continuous in time: a radiator turning once per orbit). fixed: constant 'angle_deg'. flare_mitigation_tilt: the global 'Flare mitigate tilt' setting. 'vector' should be perpendicular to 'axis'.",
           "properties": {
-            "mode": { "type": "string", "enum": ["none", "track", "edge_on", "fixed", "flare_mitigation_tilt"] },
+            "mode": { "type": "string", "enum": ["none", "track", "edge_on", "fixed", "flare_mitigation_tilt", "edge_on_continuous"] },
             "axis": { "$ref": "#/$defs/vec3" },
             "vector": { "$ref": "#/$defs/vec3" },
             "target": { "$ref": "#/$defs/att_target" },
