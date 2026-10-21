@@ -6456,10 +6456,20 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // moves their ranks shift, and a hard cut switched pieces of a trail on and off (blocky in time warp).
         const size_t room = nMax > n ? (size_t)(nMax - n) : 0;
         const double cut = plumes.size() > room && room > 0 ? plumes[room].pri : 0.0;
+        // The ones that cannot show are dropped (dustCullInsignificant: on a CPU copy, never reading the mapped list).
+        static std::vector<GpuDustCloud> sel;
+        static std::vector<uint8_t> drop;
+        sel.clear();
+        for (size_t k = 0; k < std::min(room, plumes.size()); ++k)
+            sel.push_back(plumes[k].d);
+        dustCullInsignificant(sel.data(), (uint32_t)sel.size(), drop);
+        size_t ci = 0;
         for (const Cand &c : plumes)
         {
-            if (n >= nMax)
+            if (n >= nMax || ci >= sel.size())
                 break;
+            if (drop[ci++])
+                continue;
             out[n] = c.d;
             if (cut > 0.0)
                 out[n].c.w *= (float)glm::clamp((c.pri - cut) / (2.0 * cut), 0.0, 1.0);
@@ -6506,6 +6516,46 @@ nlohmann::json SatelliteSim::launchStateJson() const
     j["train_satellites"] = L.nTrain;
     j["retiring_satellites"] = L.nRetire;
     j["plume_gaussians"] = L.nPlumes;
+    // The whole Gaussian list cloud_march.comp walks this frame (2026-10-21, its cost): by kind, and how much of the
+    // sky each one's view cone covers (cullDustForTile skips a Gaussian on every tile its cone misses).
+    if (kDustMapped)
+    {
+        const uint32_t cnt = std::min<uint32_t>(*static_cast<const uint32_t *>(kDustMapped), kMaxDustClouds);
+        const GpuDustCloud *dl = reinterpret_cast<const GpuDustCloud *>(static_cast<const char *>(kDustMapped) + 16);
+        int nKind[3] = {0, 0, 0}, nEvery = 0, nWide = 0, nMid = 0;
+        double tauEvery = 0.0, radEvery = 0.0, tauEveryMax = 0.0;
+        const double expo = (double)skyExposure();
+        for (uint32_t i = 0; i < cnt; ++i)
+        {
+            const float w = dl[i].col.w;
+            ++nKind[w < 0.5f ? 0 : (w < 1.5f ? 1 : 2)];
+            const glm::vec4 &c = dl[i].cone;
+            if (c.w <= -1.0f || glm::dot(glm::vec3(c), glm::vec3(c)) < 0.5f)
+            {
+                ++nEvery;
+                // its optical depth through the centre and the light that could carry (display units, x2 for the phase)
+                const GpuDustCloud &g = dl[i];
+                const glm::dvec3 v = glm::normalize(glm::dvec3(g.c));
+                const glm::dvec3 Mv(g.ia.x * v.x + g.ib.x * v.y + g.ib.y * v.z, g.ib.x * v.x + g.ia.y * v.y + g.ib.z * v.z,
+                                    g.ib.y * v.x + g.ib.z * v.y + g.ia.z * v.z);
+                const double q = std::max(glm::dot(v, Mv), 1e-30);
+                const double tc = (double)g.c.w * g.ia.w * std::sqrt(2.0 * glm::pi<double>() / q);
+                tauEvery += tc;
+                tauEveryMax = std::max(tauEveryMax, tc);
+                radEvery += tc * std::max({g.col.x, g.col.y, g.col.z}) * 2.0 * expo;
+            }
+            else if (c.w < std::cos(glm::radians(30.0f)))
+                ++nWide;
+            else if (c.w < std::cos(glm::radians(5.0f)))
+                ++nMid;
+        }
+        j["dust_list"] = {{"count", cnt},          {"dust", nKind[0]},       {"emissive", nKind[1]},
+                          {"plumes", nKind[2]},    {"cone_everywhere", nEvery}, {"cone_over_30deg", nWide},
+                          {"cone_5_30deg", nMid},  {"everywhere_tau_sum", tauEvery},
+                          {"everywhere_tau_max", tauEveryMax}, {"everywhere_display_sum", radEvery},
+                          {"exposure", expo},      {"culled", plumesCulled},
+                          {"cull_stop", {plumeCullStop.x, plumeCullStop.y, plumeCullStop.z, plumeCullStop.w}}};
+    }
     j["reentries_now"] = L.nReentries;
     j["records_written"] = L.nWrites;
     j["fairing_halves_drawn"] = L.nFairings; // (2026-10-20)
@@ -10298,6 +10348,122 @@ void SatelliteSim::engineLightsFlush()
     static_cast<uint32_t *>(kDustMapped)[1] = n;
     engineLightCount = n;
     engineLights_.clear();
+}
+
+// The plume Gaussians that cannot show, dropped from the list cloud_march.comp walks (2026-10-21). Every texel tests
+// every Gaussian whose view cone covers it, and old, wide or Earth-shadowed exhaust (a bell hundreds of km across seen
+// from a few hundred km, a plume in the night) covers the whole sky while adding nothing: in the launch benchmark's
+// droneship view 164 of 389 Gaussians covered every texel, ~2 ms of cloud_march, their summed optical depth through
+// their centres 8e-4 and their light 1e-6 of white. A worst-case bound per Gaussian (dustCloudsCS: its largest column
+// x the billows' and lighting's largest factors, its light per unit optical depth from the Sun / sky colour at the
+// phase's peak and from every engine light at its nearest approach, x the frame's exposure), then the faintest are
+// dropped while the SUMMED bounds stay under kRadEps of displayed light and kTauEps of dimming (as if every dropped
+// Gaussian overlapped one pixel: the image can move by less than that anywhere). Plumes only (col.w >= 2): the
+// flames', fireball trails' and dust's units differ. Knockout bit 33554432 keeps them all (the A/B). In the droneship
+// view it drops ~60 (the dimming budget binds first: from inside a long Gaussian the eye can look down its length);
+// cloud_march.comp's per-texel faint skip (dustCloudsCS) takes most of the rest where they are faint.
+void SatelliteSim::dustCullInsignificant(const GpuDustCloud *out, uint32_t n, std::vector<uint8_t> &drop)
+{
+    plumesCulled = 0;
+    drop.assign(n, 0);
+    if ((debugDisableMask & 33554432u) != 0u || n == 0)
+        return;
+    constexpr double kRadEps = 2.0e-4; // display-linear (sRGB: ~0.7 of a level at black, less above)
+    constexpr double kTauEps = 1.0e-2; // relative dimming of what is behind (1%: 0.01 mag of a star, ~2 levels at white)
+    const double expo = (double)skyExposure();
+    // The engine lights as listed so far this frame (all of them are added before the plumes are emitted), before the
+    // eye's adaptation (which only dims them) and the cut to kMaxEngineLights: a superset, so the bound holds.
+    const GpuDustCloud *lights = engineLights_.data();
+    const uint32_t nL = (uint32_t)engineLights_.size();
+    struct B
+    {
+        uint32_t i;
+        double rad, dim, key;
+    };
+    static std::vector<B> bs; // (main thread only; capacity reused)
+    bs.clear();
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const GpuDustCloud &g = out[i];
+        if (!(g.col.w >= 2.0f))
+            continue;
+        // The smallest eigenvalue of the inverse covariance (the longest axis) by the closed form for a symmetric 3x3.
+        const double a11 = g.ia.x, a22 = g.ia.y, a33 = g.ia.z, a12 = g.ib.x, a13 = g.ib.y, a23 = g.ib.z;
+        const double p1 = a12 * a12 + a13 * a13 + a23 * a23;
+        const double qm = (a11 + a22 + a33) / 3.0;
+        const double p2 = (a11 - qm) * (a11 - qm) + (a22 - qm) * (a22 - qm) + (a33 - qm) * (a33 - qm) + 2.0 * p1;
+        const double p = std::sqrt(std::max(p2, 0.0) / 6.0);
+        double lmin = qm;
+        if (p > 1e-300)
+        {
+            const double b11 = (a11 - qm) / p, b22 = (a22 - qm) / p, b33 = (a33 - qm) / p;
+            const double b12 = a12 / p, b13 = a13 / p, b23 = a23 / p;
+            const double detB = b11 * (b22 * b33 - b23 * b23) - b12 * (b12 * b33 - b23 * b13) + b13 * (b12 * b23 - b22 * b13);
+            const double phi = std::acos(glm::clamp(0.5 * detB, -1.0, 1.0)) / 3.0;
+            lmin = qm + 2.0 * p * std::cos(phi + 2.0 * glm::pi<double>() / 3.0);
+        }
+        if (!(lmin > 0.0))
+            continue; // (degenerate: keep it)
+        // Its largest column along any ray FROM THE EYE, x the billows' largest gain (2.5). In coordinates where the
+        // Gaussian is round (y = M^1/2 x) a ray is a line through the eye's y0; its column is
+        // K sqrt(2 pi) |M^-1/2 w| exp(-h^2 / 2) for a whitened direction w (unit) at distance h from the centre. With w
+        // at an angle th from y0: h^2 = |y0|^2 sin^2 th and |M^-1/2 w| <= s0 cos th + sMax sin th, s0 = the line of
+        // sight's 1 / sqrt(q) (w along y0 is the ray through the centre). Maximised over th: an eye far outside a long
+        // Gaussian cannot look down its length.
+        const double sMax = 1.0 / std::sqrt(lmin);
+        double tauMax;
+        {
+            const glm::dvec3 x0 = -glm::dvec3(g.c);
+            auto Mul = [&](const glm::dvec3 &v) {
+                return glm::dvec3(a11 * v.x + a12 * v.y + a13 * v.z, a12 * v.x + a22 * v.y + a23 * v.z,
+                                  a13 * v.x + a23 * v.y + a33 * v.z);
+            };
+            const double Y2 = std::max(glm::dot(x0, Mul(x0)), 0.0);
+            const double lx = glm::length(x0);
+            const glm::dvec3 v = lx > 1e-9 ? x0 / lx : glm::dvec3(0.0, 0.0, 1.0);
+            const double s0 = 1.0 / std::sqrt(std::max(glm::dot(v, Mul(v)), lmin));
+            // <= s0 + sMax max_u u exp(-Y^2 u^2 / 2) (u = sin th) = s0 + sMax / (Y sqrt(e)) for Y >= 1, else s0 + sMax.
+            const double Y = std::sqrt(Y2);
+            const double best = s0 + sMax * (Y > 1.0 ? 1.0 / (Y * std::sqrt(glm::e<double>())) : 1.0);
+            tauMax = (double)g.c.w * (double)g.ia.w * std::sqrt(2.0 * glm::pi<double>()) * best * 2.5;
+        }
+        // Light per unit optical depth: the Sun / sky colour at the phase's peak + multiple scattering (<= 1.9),
+        // x the self-shadow's and the lumps' largest gain (1.35); each engine light at its nearest approach to the
+        // Gaussian's 8-sigma extent (x the lumps' 1.3 and the isotropic + multiple-scattering factor <= 0.16).
+        const double cMax = std::max({(double)g.col.x, (double)g.col.y, (double)g.col.z});
+        double perTau = cMax * 1.9 * 1.35;
+        const double albedo = std::max((double)g.col.w - 2.0, 0.0);
+        for (uint32_t k = 0; k < nL; ++k)
+        {
+            const GpuDustCloud &el = lights[k];
+            const double dC = glm::length(glm::dvec3(el.c) - glm::dvec3(g.c));
+            const double dmin = std::max(dC - 8.0 * sMax, 0.0);
+            if (dmin > (double)el.col.z)
+                continue; // beyond its reach (the shader's test)
+            const double cE = std::max({(double)el.ia.x, (double)el.ia.y, (double)el.ia.z});
+            perTau += cE * albedo * 1.3 * 0.16 * (double)el.c.w / (dmin * dmin + (double)el.ia.w * (double)el.ia.w);
+        }
+        const double rad = tauMax * perTau * expo;
+        const double dim = tauMax * std::max(1.0 - 0.85 * albedo, 0.0);
+        bs.push_back({i, rad, dim, std::max(rad / kRadEps, dim / kTauEps)});
+    }
+    if (bs.empty())
+        return;
+    std::sort(bs.begin(), bs.end(), [](const B &a, const B &b) { return a.key < b.key; });
+    double sR = 0.0, sD = 0.0;
+    plumeCullStop = glm::vec4(0.0f);
+    for (const B &b : bs)
+    {
+        if (sR + b.rad > kRadEps || sD + b.dim > kTauEps)
+        {
+            plumeCullStop = glm::vec4((float)sR, (float)sD, (float)b.rad, (float)b.dim);
+            break;
+        }
+        sR += b.rad;
+        sD += b.dim;
+        drop[b.i] = 1;
+        ++plumesCulled;
+    }
 }
 
 nlohmann::json SatelliteSim::launchPadsJson() const

@@ -128,6 +128,12 @@ static constexpr DebugToggleEntry kDebugToggles[] = {
     // An OPTIMIZATION knockout (2026-10-20), like 131072: the satellite meshes' shadow rays go back to the
     // per-pixel loop over every occluder instead of SatMeshRenderer's posed, sun-binned occluders. Same image.
     {8388608u, "Mesh shadow accel OFF (A/B)", "mesh_shadow_accel_disabled"},
+    // An OPTIMIZATION knockout (2026-10-21): cloud_march.comp's per-tile cull of the dust / plume / flame Gaussians
+    // (cullDustForTile) off, every texel walking the whole list. Same image.
+    {16777216u, "Plume tile cull + faint skip OFF (A/B)", "plume_tile_cull_disabled"},
+    // ...and the CPU's drop of the plume Gaussians that cannot show (SatelliteSim::dustCullInsignificant): within
+    // ~0.7 of a display level and 0.2% dimming, worst case.
+    {33554432u, "Plume significance cull OFF (A/B)", "plume_cull_disabled"},
 };
 static constexpr int kDebugToggleCount = (int)(sizeof(kDebugToggles) / sizeof(kDebugToggles[0]));
 int debugToggleTableSize() { return kDebugToggleCount; }
