@@ -38,8 +38,23 @@ void main() {
         float aa = 1.0 - smoothstep(-1.0, 1.0, dist);
         outColor = vec4(fragColor.rgb, fragColor.a * aa);
     } else if (fragMode < 1.5) {
-        // Text glyph: red channel of font atlas is the alpha mask
-        float alpha = texture(fontAtlas, fragUV).r;
+        // Text glyph (2026-10-21): the atlas holds a signed distance field (UIRenderer::loadFont): stored =
+        // kSdfOnEdge + distance in atlas texels x kSdfDistScale, inside brighter. The distance is turned into
+        // SCREEN pixels by the glyph's own scale (atlas texels per screen pixel, from the UV derivatives —
+        // a glyph quad is one primitive with one mode, so its 2x2 pixel quads all take this branch) and the
+        // coverage is a one-pixel ramp across the outline: an exact edge at any size, 9 px to titles.
+        const float kSdfOnEdge = 128.0 / 255.0;
+        const float kSdfDistScale = 16.0 / 255.0;
+        vec2 tex = fragUV * vec2(textureSize(fontAtlas, 0));
+        vec2 dx = dFdx(tex), dy = dFdy(tex);
+        float texPerPx = max(sqrt(0.5 * (dot(dx, dx) + dot(dy, dy))), 1e-3);
+        float distTex = (texture(fontAtlas, fragUV).r - kSdfOnEdge) / kSdfDistScale;
+        // Very small text (under 13 px, the sizes only the automatic UI scale reaches on short windows): a
+        // slight emboldening, up to 0.1 px at 9 px, so sub-pixel stems keep their weight. None at 13 px and up
+        // (at 16-18 px the plain ramp already matches the bitmap's ink within a few percent).
+        float pxPerEm = 48.0 / texPerPx;
+        float bold = 0.10 * clamp((13.0 - pxPerEm) / 4.0, 0.0, 1.0);
+        float alpha = clamp(distTex / texPerPx + 0.5 + bold, 0.0, 1.0);
         outColor = vec4(fragColor.rgb, fragColor.a * alpha);
     } else if (fragMode < 2.5) {
         // Icon sprite: RGBA sample, tinted by fragColor

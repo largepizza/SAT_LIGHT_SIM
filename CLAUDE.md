@@ -48,7 +48,7 @@ scripted storm, dead satellites, debris pool, cascade engine, event log) · *Lau
 rockets, plumes, crew rotations, the Missions window: the roster's slots refreshed on a schedule) · *Reflect-Orbital Beam Cloud Occlusion* ·
 *GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22).
 
-**Rendering** — *UIRenderer / Clay* (icon atlas, the fixed-bitmap font, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
+**Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
 *Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
 Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Scaling* · *Weak-Hardware
 Sky Tiers (Potato / SKY_LITE)*. The mesh renderer, model viewer and environment probes are
@@ -2340,8 +2340,9 @@ Invariants:
   resize during init is deferred to one `sim->onResize()` after it.
 - `bootStatus()` presents a frame, so it may only be called from the main thread during init.
 - Text fades on a perceptual curve (alpha = brightness^2.2): the UI blends linearly into an sRGB
-  swapchain, so linear alpha steps look far brighter than intended. Font sizes never scale below
-  16 px (the baked bitmap font breaks up smaller).
+  swapchain, so linear alpha steps look far brighter than intended. The boot UI's scale is
+  clamp(H / 900, 0.8, 1.6) (0.8 on a short window since the SDF font; it was never below 1 while the font was a
+  bitmap that broke up under ~16 px).
 - `SATLIGHTSIM_BOOT_SCREEN=0` (`run.py --boot-screen off`) restores the old white-window launch.
 - **The app keeps its own pipeline cache** (`VulkanContext::pipelineCache`, `pipeline_cache.bin` next to the exe, else
   the user data folder; loaded at device creation, saved after init and at exit, dropped past 256 MB; every
@@ -2460,9 +2461,9 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   - **The UI scale is the setting x the window's height.** `uiScaleUser` = "Text scale" (`display.ui_scale`, 1.5);
     `uiScale`, which every builder reads, = it x `uiAutoScaleFactor(screenH)` = clamp(H / 1000, 0.7, 1) when "Scale
     with window" (`display.ui_auto_scale`, on) — recomputed at the top of buildUI (`updateUiScale`). Nothing changes
-    at 1000 px and taller (a maximized window on a 1080p desktop is 1009). **`fs()` never lets the automatic factor take text below 16 px** (the baked font's floor;
-    or the player's own size where that is smaller), so on a short window the text stays ~16 px and the paddings,
-    titles and fixed-size boxes shrink. Never write `uiScale` itself: it is overwritten every frame.
+    at 1000 px and taller (a maximized window on a 1080p desktop is 1009). **`fs()` never lets the automatic factor take text below `kAutoFontFloorPx` = 12 px**
+    (or the player's own size where that is smaller; it was 16 px, the bitmap font's floor, until the SDF atlas of
+    2026-10-21), so on a short window text goes to 12-13 px along with the paddings, titles and fixed-size boxes. Never write `uiScale` itself: it is overwritten every frame.
   - **No window is larger than the screen:** `buildResizableWindow` caps the maximum AND minimum size at the screen
     less `kWinScreenMargin` (8 px) every frame and re-clamps the position, so a window survives a resolution change
     (or a persisted size from a bigger desktop) on screen; its content scrolls.
@@ -2539,21 +2540,20 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   directory the exe sits in — if a regenerated glyph "does not appear", read that line before anything
   else (and note the old process keeps its old atlas: rebuilding does not touch a running instance).
 
-### Font atlas is a fixed-size bitmap, not resolution-independent
-`loadFont()` bakes ASCII 32-126 once via `stbtt_BakeFontBitmap` at a single pixel height
-(`font.bakedSize`) into a fixed `atlasW`x`atlasH` R8 atlas. Every requested `CLAY_TEXT_CONFIG`
-`fontSize` (via `fs(base) = base * uiScale`, `SatelliteSim.h`) just scales that ONE baked bitmap by
-`fontSize / bakedSize` (`pushText`'s `renderScale`) — there is no per-size re-rasterization, so any
-requested size well above `bakedSize` visibly upscales/blocks, most noticeably on large one-off
-text like the intro's title captions (`fs(48)`/`fs(34)`, which can request 68-96px at high
-`uiScale`). Bumped `bakedSize` 32→48 (session follow-up) with `atlasW/H` scaled by the same
-`(48/32)²` factor (512→768) to preserve `stbtt_BakeFontBitmap`'s packing headroom — it's "a very
-crappy packing" (its own doc comment) that silently drops/omits glyphs past whatever fits, so
-`loadFont()` now checks its return value and logs a warning if that ever happens again. This is a
-mitigation, not a fix: text is still a raster upscale, just from a less-coarse source. True
-resolution-independence at arbitrary `uiScale`/title sizes would need an SDF font atlas instead — a
-separate, larger change (new bake step, new glyph metadata, a distance-based alpha threshold in
-the text fragment shader) not undertaken here.
+### Font atlas is a signed distance field (2026-10-21)
+`loadFont()` bakes ASCII 32-126 once with `stbtt_GetCodepointSDF` at `font.bakedSize` (48 px), padded by
+`kSdfPad` (8) texels, into a 1024x1024 R8 atlas (simple shelf packer; a warning is logged if a glyph does not fit):
+stored value = `kSdfOnEdge` (128) + distance in texels x `kSdfDistScale` (16), inside brighter. `ui.frag` mode 1
+turns it back into coverage over ONE SCREEN PIXEL: texels per screen pixel from the UV derivatives
+(`dFdx/dFdy(uv x atlas size)`), `alpha = clamp(dist / texPerPx + 0.5 + bold)`; `bold` (up to 0.1 px) applies only
+under 13 px. **The shader's constants must equal UIRenderer.h's `kSdfOnEdge` / `kSdfDistScale`.** The metrics are
+unchanged: a throw-away `stbtt_BakeFontBitmap` at the same size still fills `charData` (`stbtt_bakedchar`), whose
+`xadvance` Clay's measurement, `pushText` and `textAdvance` use, so no layout moved; each glyph's SDF box
+(`FontAtlas::sdf`, padding included) is placed at its own stbtt offset, the same origin the bitmap glyph had.
+Measured against the bitmap at 1080p: the same ink within ~1% (Settings text, HUD); intro titles and the "2036"
+card are crisp instead of blocky; 9-12 px text is clean (the bitmap was minified without mips and broke up below
+~16 px, which is why there was a 16-px floor). Night red (the colour filter) and the loading screen use the same
+path. Earlier: a 32 px, then 48 px plain bitmap (`stbtt_BakeFontBitmap`), scaled per fontSize by a ratio.
 
 ### MSVC C++20 Designated Initializer Ordering
 MSVC requires designators in declaration order:

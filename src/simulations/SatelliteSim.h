@@ -4804,7 +4804,7 @@ private:
     // UI scale (2026-10-21, low resolutions): `uiScaleUser` is the player's setting (display.ui_scale, "Text scale",
     // 0.75-2.0); `uiScale` is what every builder reads = uiScaleUser x uiAutoScaleFactor(window height) when
     // `uiScaleAuto` (display.ui_auto_scale, default on): 1 at 1000 px and taller (a maximized window on a 1080p desktop is ~1009), down to 0.7 at 700 px.
-    // Set once per frame at the top of buildUI (updateUiScale). fs() never lets the auto factor take text below 16 px.
+    // Set once per frame at the top of buildUI (updateUiScale). fs() never lets the auto factor take text below kAutoFontFloorPx (12 px; 16 before the SDF font).
     float uiScale = 1.5f;     // effective (per frame)
     float uiScaleUser = 1.5f; // the setting
     bool uiScaleAuto = true;
@@ -6763,12 +6763,14 @@ private:
     // ── Small UI helpers shared across every UI builder method ────────────────
     // (formerly local lambdas inside the single monolithic buildUI(); now member
     // functions since buildUI is split across buildLeftHudPanel/buildSettingsWindow/etc.)
-    // The font is one baked 48-px bitmap that breaks up much under ~16 px: the automatic (window-height) factor may
-    // shrink text only down to 16 px, or to the player's own size where that is already smaller.
+    // The automatic (window-height) factor may shrink text down to kAutoFontFloorPx, or to the player's own size where
+    // that is already smaller. The floor was 16 px while the font was a baked bitmap (it broke up below that); the SDF
+    // atlas (2026-10-21, UIRenderer::loadFont) stays clean at 9-12 px, so short windows now really get smaller text.
+    static constexpr int kAutoFontFloorPx = 12;
     uint16_t fs(int base) const
     {
         const int eff = (int)(base * uiScale + 0.5f), user = (int)(base * uiScaleUser + 0.5f);
-        return (uint16_t)std::max(8, std::max(eff, std::min(user, 16)));
+        return (uint16_t)std::max(8, std::max(eff, std::min(user, kAutoFontFloorPx)));
     }
     // Defined in SatelliteSimUI.cpp — need AudioSystem's complete type (only forward-declared here).
     void sndRollover(bool nowHov, bool prevHov) const;
