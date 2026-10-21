@@ -4487,7 +4487,9 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     {
         fillMeshLocalLights(frame, P);
         inst.trans[1].w = (float)meshLightMask(frame, centre, radius, (double)viewerExposureNow);
-    } (Live light): probe slot 0 + the background ─
+    }
+
+    // ── Full-renderer environment (Live light): probe slot 0 + the background ─
     // Studio light keeps the analytic Earth (its sun is not the sky's).
     const bool envOn = envActive() && !viewerStudioLight;
     if (envOn)
