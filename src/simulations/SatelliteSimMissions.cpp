@@ -112,35 +112,66 @@ void SatelliteSim::missionsRefresh(bool force)
     const double wall = wallNow();
     // The next launches and what is flying: twice a second, or at once after a jump in sim time.
     const bool jumped = std::abs(now - msNextSim) > 6.0 * 3600.0 && std::abs(wall - msNextWall) < 0.5;
-    if (force || wall - msNextWall > 0.5 || jumped || (!msNext.empty() && now > msNext.front().tL))
+    // (2026-10-21) The batch builds the search needs are spent within ~8 ms a frame (launchUpcomingBudgetMs): a refresh
+    // after a jump took 65-230 ms. Until it has them all, the rows stay as they were and it goes on next frame.
+    launchUpcomingBudgetMs = force ? 0.0 : 8.0; // (a forced refresh — a click, the harness — needs the rows now)
+    struct BudgetOff
+    {
+        double &b;
+        ~BudgetOff() { b = 0.0; }
+    } budgetOff{launchUpcomingBudgetMs};
+    if (msNextPending || force || wall - msNextWall > 0.5 || jumped || (!msNext.empty() && now > msNext.front().tL))
     {
         msNextWall = wall;
         msNextSim = now;
-        launchUpcoming(now, now + 2.0 * kDay, 0, 5, msNext);
-        if (msNext.size() < 5)
-            launchUpcoming(now, now + 14.0 * kDay, 0, 5, msNext);
+        std::vector<MissionLaunch> next = msNext;
+        launchUpcoming(now, now + 2.0 * kDay, 0, 5, next);
+        bool incomplete = launchUpcomingIncomplete;
+        if (!incomplete && next.size() < 5)
+        {
+            launchUpcoming(now, now + 14.0 * kDay, 0, 5, next);
+            incomplete = launchUpcomingIncomplete;
+        }
+        msNextPending = incomplete;
+        if (!incomplete)
+            msNext.swap(next);
         launchOngoing(msOngoing);
     }
     // The pinned rows (wider searches): every 3 s, or when sim time passes one, or jumps.
     const bool pinJump = std::abs(now - msPinSim) > 1.0 * kDay && std::abs(wall - msPinWall) < 3.0;
     const bool passed = (msHasTwilight && now > msTwilight.tL) || (!msCrewList.empty() && now > msCrewList.front().tL);
-    if (force || wall - msPinWall > 3.0 || pinJump || passed)
+    if (!msNextPending && (msPinPending || force || wall - msPinWall > 3.0 || pinJump || passed))
     {
         msPinWall = wall;
         msPinSim = now;
-        msHasTwilight = false;
+        bool hasTw = false, incomplete = false;
+        MissionLaunch tw;
         std::vector<MissionLaunch> one;
-        for (int d = 0; d < 7 && !msHasTwilight; ++d) // day by day: most days hold one
+        for (int d = 0; d < 7 && !hasTw && !incomplete; ++d) // day by day: most days hold one
         {
             launchUpcoming(now + d * kDay, now + (d + 1) * kDay, 2, 1, one);
-            if (!one.empty())
+            incomplete = launchUpcomingIncomplete;
+            if (!incomplete && !one.empty())
             {
-                msTwilight = one.front();
-                msHasTwilight = true;
+                tw = one.front();
+                hasTw = true;
             }
         }
-        launchUpcoming(now, now + 400.0 * kDay, 1, 64, msCrewList);
-        msStations = launchCrewStations();
+        std::vector<MissionLaunch> crew = msCrewList;
+        if (!incomplete)
+        {
+            launchUpcoming(now, now + 400.0 * kDay, 1, 64, crew);
+            incomplete = launchUpcomingIncomplete;
+        }
+        msPinPending = incomplete;
+        if (!incomplete)
+        {
+            msHasTwilight = hasTw;
+            if (hasTw)
+                msTwilight = tw;
+            msCrewList.swap(crew);
+            msStations = launchCrewStations();
+        }
     }
 }
 

@@ -6689,7 +6689,16 @@ gives both): every command's result line is written with an fsync, ~10-15 ms eac
 screen*), the boot's model bakes, the Kessler mirror's roster / event / stream tail, prune and GPU growth (see
 *Kessler*), launch batch builds with a wall-time budget as well as the count cap (pieces sized from the eased cost of
 one build, `LaunchState::buildMsEach`, stopping past ~8 ms: the cap follows the LAST frame's cost, and after a frame
-of cheap builds 400 expensive ones took 300-600 ms at 1 week/s after the CME), ambience voices on workers.
+of cheap builds 400 expensive ones took 300-600 ms at 1 week/s after the CME), ambience voices on workers, the
+Missions window's searches (`launchUpcoming` builds its missing batches in parallel first, and with
+`launchUpcomingBudgetMs` = 8, set by a non-forced `missionsRefresh`, stops there, leaves its output as it was and
+reports `launchUpcomingIncomplete`; the window keeps its rows and finishes next frame: `msNextPending` / `msPinPending`;
+a refresh after a jump was 65-230 ms, bookmark jumps with the window open up to 310 ms, now <= ~65 ms), the ambience
+context's first evaluation (`rosterRangePresentFrac` sorts every constellation's deployment-era seconds once: ~50 ms,
+now at load), the Kessler worker's publish (outside its mutex; `kesslerSync` try-locks). Still open (QA 2026-10-21):
+a player breakup BEFORE the CME restarts the world on the main thread (`kesslerRestart` ~220 ms: `buildWorld`, and
+its `launchInitBlock` makes the next walk rebuild the launch planes, ~75 ms); the first walk after a bookmark jump
+is ~25-35 ms (the window walk over ~3000 planes plus 8 ms of builds).
 **Regression check: `python tools/harness/hitch_check.py`** (scenarios A load, B a user's settings via `--settings`,
 C 2031, D day 32 after the CME; `--run <folders>` checks finished runs) against `tools/harness/hitch_thresholds.json`
 (p99 / max per rate, the first frame after load, launch to first frame); exit 1 on a regression. **It must run alone

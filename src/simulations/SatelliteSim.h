@@ -3108,6 +3108,9 @@ private:
     // Lift-offs in [t0, t1] (J2000 s), sorted, at most maxN. filter: 0 all, 1 crewed, 2 twilight (the Sun 5-16 deg
     // below the pad's horizon). Builds (and keeps) the batches it needs.
     void launchUpcoming(double t0, double t1, int filter, size_t maxN, std::vector<MissionLaunch> &out);
+    double launchUpcomingBudgetMs = 0.0;   // (2026-10-21) > 0: build at most ~this long, then report incomplete
+    bool launchUpcomingIncomplete = false; // the last launchUpcoming ran out of its budget (out left unchanged)
+    bool msNextPending = false, msPinPending = false; // the Missions rows' refresh to finish next frame
     // Jumps to leadS before the batch's lift-off at 1x. moveObserver: on the ground ~12 km beside the pad (on land
     // where one side is sea), the camera on the pad; else the time only.
     bool launchGoToKey(uint64_t key, bool moveObserver, double leadS, std::string &msg);

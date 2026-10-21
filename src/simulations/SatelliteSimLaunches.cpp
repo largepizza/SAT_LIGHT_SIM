@@ -10021,9 +10021,12 @@ double sunElevAtPad(const launch::Site &st, double t)
 void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN, std::vector<MissionLaunch> &out)
 {
     FPROF_SCOPE("launchUpcoming");
-    out.clear();
+    launchUpcomingIncomplete = false;
     if (!launchState || !launchesEnabled)
+    {
+        out.clear();
         return;
+    }
     LaunchState &L = *launchState;
     LaunchImpl::ensureCatalog(L);
     if (!L.loaded)
@@ -10037,6 +10040,50 @@ void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN,
         uint64_t key;
     };
     std::vector<Item> items;
+    // (2026-10-21) The batches not built yet are built first, in parallel (LaunchImpl::buildMissing): one by one on the
+    // main thread a Missions refresh after a jump took 65-230 ms (ship-landing scans, the rivals' day buckets). The
+    // same batches either way (a pure function of the batch).
+    {
+        FPROF_SCOPE("launchUpcoming.build");
+        std::vector<LaunchImpl::ToBuild> toBuild;
+        for (size_t pi = 0; pi < L.planes.size(); ++pi)
+        {
+            const LPlane &pl = L.planes[pi];
+            const launch::Program &pg = L.cat.programs[pl.prog];
+            if (filter == 1 && (!pg.crew || pg.cargo))
+                continue;
+            const double life = progLifeS(pg, (double)launchLifeScale);
+            const double lo = t0 + (pg.raiseDays[0] - 0.5 - pg.earlyDays()) * kDay, hi = t1 + (pg.raiseDays[1] + 2.5) * kDay;
+            LaunchImpl::forBatches(L, pl, life, lo, hi, [&](int64_t k, int b) {
+                const uint64_t key = batchKey((int)pi, k, b);
+                if (L.batches.find(key) == L.batches.end())
+                    toBuild.push_back({key, (int)pi, k, b, life});
+            });
+        }
+        // With a budget (launchUpcomingBudgetMs, the Missions window: 8 ms), in pieces until it is spent; then `out` is
+        // left as it was and launchUpcomingIncomplete set (the caller asks again next frame, the batches built so far
+        // kept).
+        const auto b0 = std::chrono::steady_clock::now();
+        size_t done = 0;
+        std::vector<LBatch> built;
+        while (done < toBuild.size())
+        {
+            const size_t piece = launchUpcomingBudgetMs > 0.0 ? (size_t)16 : toBuild.size();
+            const size_t e = std::min(toBuild.size(), done + piece);
+            const std::vector<LaunchImpl::ToBuild> part(toBuild.begin() + (ptrdiff_t)done, toBuild.begin() + (ptrdiff_t)e);
+            LaunchImpl::buildMissing(*this, L, part, built);
+            for (size_t q = 0; q < part.size(); ++q)
+                L.batches.emplace(part[q].key, std::move(built[q]));
+            done = e;
+            if (launchUpcomingBudgetMs > 0.0 && done < toBuild.size() &&
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count() > launchUpcomingBudgetMs)
+            {
+                launchUpcomingIncomplete = true;
+                return;
+            }
+        }
+    }
+    out.clear();
     for (size_t pi = 0; pi < L.planes.size(); ++pi)
     {
         const LPlane &pl = L.planes[pi];
