@@ -5692,6 +5692,7 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
     // Start behind and a little above it, ~4 model radii out.
     const double r = std::max(1.0, (double)tm->boundsRadius);
     followOffset = glm::dvec3(-4.0 * r, 0.0, 1.5 * r);
+    followDefaultSideOffset = true; // (behind the motion: updateFollow)
     followFlightFov0 = camera.fovYDeg;   // a flight eases the FOV to 50 (review 22)
     // Review 22b: the view direction the flight starts from (ECEF), eased toward the satellite over its first third,
     // and the arrival point put on the line from the satellite back to where the flight came from, so the view
@@ -5885,6 +5886,7 @@ bool SatelliteSim::followReturn(std::string *msg)
         followFlightRel = true;
         followFlightRelKeepDir = false;
         followFlightRelB = glm::dvec3(-4.0 * r, 0.0, 1.5 * r);
+        followDefaultSideRelB = true; // (behind the motion: updateFollow)
         followDefaultDist = glm::length(followFlightRelB);
         followFlightAlign = false;
         followFlightFov0 = camera.fovYDeg;
@@ -6014,6 +6016,10 @@ void SatelliteSim::updateFollow(float dt)
     const glm::dvec3 ThRaw = glm::normalize(Th - glm::dot(Th, Rh) * Rh + 1e-12 * Rh); // (follow log: the unsmoothed heading)
     // A jump in time (a milestone skip, a bookmark) or a fast warp's long step: the heading is the goal's again.
     const double dtSimExpect = (double)std::max(dt, 0.0f) * (double)kTimeScales[std::clamp(timeScaleIdx, 0, kNumTimeScales - 1)];
+    // (2026-10-21) Which way is "behind" for the default offset: the motion's heading over the ground, or a slow
+    // rocket's nose (its engine end behind). Unset: the frame's own axis (a roster satellite's velocity).
+    glm::dvec3 fwdRef(0.0);
+    bool haveFwdRef = false;
     if (followIsTransient())
     {
         // The goal: the heading of the motion OVER THE GROUND (the Earth's rotation taken out), a rocket's flight
@@ -6040,6 +6046,31 @@ void SatelliteSim::updateFollow(float dt)
         const bool haveG = gw > 0.5;
         if (haveG)
             G /= gw;
+        if (haveG && gw >= 30.0)
+        {
+            fwdRef = G;
+            haveFwdRef = true;
+        }
+        else if (glm::length(followTrCur.axis) > 0.5)
+        {
+            const glm::dvec3 nz = eciToEcef(glm::normalize(followTrCur.axis));
+            const glm::dvec3 nh = nz - glm::dot(nz, Rh) * Rh;
+            if (glm::length(nh) > 0.05)
+            {
+                fwdRef = glm::normalize(nh);
+                haveFwdRef = true;
+            }
+            else if (haveG)
+            {
+                fwdRef = G;
+                haveFwdRef = true;
+            }
+        }
+        else if (haveG)
+        {
+            fwdRef = G;
+            haveFwdRef = true;
+        }
         glm::dvec3 Tp = followBasisValid ? followBasisT - glm::dot(followBasisT, Rh) * Rh : glm::dvec3(0.0);
         const bool carry = followBasisValid && glm::length(Tp) > 1e-6 && dtSimF < 3.0 * dtSimExpect + 2.0;
         if (!carry)
@@ -6126,6 +6157,18 @@ void SatelliteSim::updateFollow(float dt)
         }
     }
 
+    // (2026-10-21) A default offset just set goes on the side behind the motion (see followDefaultSideOffset).
+    followFwdRefEcef = haveFwdRef ? fwdRef : Th;
+    if (followDefaultSideOffset || followDefaultSideRelB)
+    {
+        followDefaultSideDot = haveFwdRef ? glm::dot(Th, fwdRef) : 1.0;
+        const double sgn = followDefaultSideDot < 0.0 ? -1.0 : 1.0;
+        if (followDefaultSideOffset)
+            followOffset.x = -sgn * std::abs(followOffset.x);
+        if (followDefaultSideRelB)
+            followFlightRelB.x = -sgn * std::abs(followFlightRelB.x);
+        followDefaultSideOffset = followDefaultSideRelB = false;
+    }
     if (followFlightAlign)
     {
         // Review 24: on the observer's line of sight (the ground observer to the satellite), so the arrival keeps the

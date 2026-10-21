@@ -187,6 +187,12 @@ struct Program
     bool cargo = false;
     bool burnsUp = false;
     double heatShieldM = 3.0; // its heat shield below the docking port (m, the entry glow sits there; "heat_shield_m")
+    // (2026-10-21) The entry plasma's windward face: a capsule's heat shield radius ("heat_shield_r_m"); a spaceplane
+    // (bellyHalfLen > 0, "belly_half_len_m") glows along its belly instead: heat_shield_m is then the belly's middle along
+    // -Z from the model origin, heat_shield_r_m the belly's depth below the body axis (-Y) and belly_half_len_m its
+    // half length (SatelliteSim::launchFillVisuals, the shock layer, its wake and its light on the hull).
+    double heatShieldR = 1.5;
+    double bellyHalfLen = 0.0;
     std::vector<std::pair<double, double>> fastDockH;
     std::string portUse = "crew";
     bool sharePorts = false;

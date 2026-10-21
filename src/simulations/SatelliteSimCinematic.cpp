@@ -233,6 +233,7 @@ void SatelliteSim::cineApplyAt(double t, bool force)
                 off = glm::dvec3(-4.0 * r, 0.0, 1.5 * r);
             }
             followOffset = off;
+            followDefaultSideOffset = false;
             followAimLock = !k.hasView;
             camera.fovYDeg = glm::clamp((float)k.fov, SkyCamera::kMinFovDeg, SkyCamera::kMaxFovDeg);
             updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, 0.0f);
