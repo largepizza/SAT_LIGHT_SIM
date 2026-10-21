@@ -1003,6 +1003,19 @@ void UIRenderer::tooltip(const UIInput& inp, bool show, const char* text, uint16
     // bottom-right corner at the cursor, so the box grows up-and-left from it.
     float tx = inp.mouseX;
     float ty = inp.mouseY;
+    // (2026-10-21, low resolutions) A long tooltip ran off the LEFT edge from a cursor further in than the fixed
+    // 220-px estimate (a 550-px tip at x 360 started at -190). With the text's real width: anchor its left edge,
+    // placed where the box fits on screen.
+    {
+        const float w = textAdvance(text, (int)strlen(text), (float)fontSize) + 16.0f;
+        if (!flipX && inp.mouseX - w < 0.0f)
+        {
+            elemAnchor = flipY ? CLAY_ATTACH_POINT_LEFT_TOP : CLAY_ATTACH_POINT_LEFT_BOTTOM;
+            tx = std::max(0.0f, std::min(inp.mouseX, inp.screenW - w));
+        }
+        else if (flipX && inp.mouseX + w > inp.screenW)
+            tx = std::max(0.0f, inp.screenW - w);
+    }
 
     Clay_String s{ false, (int32_t)strlen(text), text };
     CLAY(CLAY_IDI("UITooltip", tooltipSeq++), {
@@ -1309,7 +1322,10 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
             }
             if (Clay_LayoutElementHashMapItem* item = Clay__GetHashMapItem(rc->id))
                 if (item->elementId.stringId.length > 0)
+                {
                     it.id.assign(item->elementId.stringId.chars, (size_t)item->elementId.stringId.length);
+                    it.idIndex = item->elementId.offset;
+                }
             if (rc->commandType == CLAY_RENDER_COMMAND_TYPE_TEXT) {
                 const Clay_TextRenderData& td = rc->renderData.text;
                 it.text.assign(td.stringContents.chars, (size_t)td.stringContents.length);

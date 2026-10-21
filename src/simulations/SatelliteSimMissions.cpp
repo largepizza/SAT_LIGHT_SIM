@@ -345,8 +345,11 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
     msText_.clear(); // last frame's strings: recorded by now
     if (msChrome.w <= 0.0f)
     {
-        msChrome.w = std::min(600.0f, inp.screenW - 40.0f);
-        msChrome.h = std::max(360.0f, std::min(720.0f, inp.screenH - 200.0f));
+        // Docked right under the top edge: 600 x 720 where the screen has room (1080p and up), otherwise at most
+        // ~42% of the width and ~70% of the height (2026-10-21: at 1280 x 720 it covered the middle of the screen);
+        // the list scrolls.
+        msChrome.w = winDefault(600.0f, 0.42f, inp.screenW, 420.0f);
+        msChrome.h = winDefault(std::min(720.0f, inp.screenH - 200.0f), 0.70f, inp.screenH, 360.0f);
     }
     missionsRefresh(false);
     const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -794,15 +797,18 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                     char ua[48], uf[48];
                     fmtUtcShort(kesslerEpoch(), ua, sizeof(ua));
                     fmtUtcShort(kesslerEpoch() - kFuryFlareLead, uf, sizeof(uf));
+                    // (2026-10-21) on a short window the pinned card keeps its title, countdown and buttons only:
+                    // its paragraph took half of a 720-px screen's list
+                    const bool furyShort = msChrome.h < 620.0f;
                     if (!kesslerEnabled)
                         text("The scenario is off. Turn it on in Controls.", Pal::textDim, 11, true);
-                    else if (dt > 0.0)
+                    else if (!furyShort && dt > 0.0)
                         text(msStr("%s: an X-class flare. %s: its coronal mass ejection arrives. Satellites die in "
                                    "the storm, the dead tumble and collide, and every collision is a cloud of "
                                    "debris that feeds the next.",
                                    uf, ua),
                              Pal::textPrimary, 11, true);
-                    else
+                    else if (!furyShort)
                     {
                         const nlohmann::json &j = kesslerStateCached();
                         const nlohmann::json &n = j["now"];

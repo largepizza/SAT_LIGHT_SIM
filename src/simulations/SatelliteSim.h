@@ -4782,7 +4782,15 @@ private:
     bool showIntro = true;
     bool uiVisible = true;
     bool iconsLoaded = false;
-    float uiScale = 1.5f;    // text/UI size multiplier (0.75 – 2.0)
+    // UI scale (2026-10-21, low resolutions): `uiScaleUser` is the player's setting (display.ui_scale, "Text scale",
+    // 0.75-2.0); `uiScale` is what every builder reads = uiScaleUser x uiAutoScaleFactor(window height) when
+    // `uiScaleAuto` (display.ui_auto_scale, default on): 1 at 1000 px and taller (a maximized window on a 1080p desktop is ~1009), down to 0.7 at 700 px.
+    // Set once per frame at the top of buildUI (updateUiScale). fs() never lets the auto factor take text below 16 px.
+    float uiScale = 1.5f;     // effective (per frame)
+    float uiScaleUser = 1.5f; // the setting
+    bool uiScaleAuto = true;
+    static float uiAutoScaleFactor(float screenH) { return screenH > 0.0f ? std::clamp(screenH / 1000.0f, 0.7f, 1.0f) : 1.0f; }
+    void updateUiScale(float screenH) { uiScale = uiScaleUser * (uiScaleAuto ? uiAutoScaleFactor(screenH) : 1.0f); }
     // UI colour theme (UIPalette.h: 0 Default, 1 Navy, 2 Night red, 3 Midnight = the default), display.ui_theme. buildUI applies it
     // (applyUiTheme + the renderer's night filter) whenever it differs from what is applied.
     int uiTheme = 3; // Midnight (the default since 2026-10-15)
@@ -6736,7 +6744,13 @@ private:
     // ── Small UI helpers shared across every UI builder method ────────────────
     // (formerly local lambdas inside the single monolithic buildUI(); now member
     // functions since buildUI is split across buildLeftHudPanel/buildSettingsWindow/etc.)
-    uint16_t fs(int base) const { return (uint16_t)std::max(8, (int)(base * uiScale + 0.5f)); }
+    // The font is one baked 48-px bitmap that breaks up much under ~16 px: the automatic (window-height) factor may
+    // shrink text only down to 16 px, or to the player's own size where that is already smaller.
+    uint16_t fs(int base) const
+    {
+        const int eff = (int)(base * uiScale + 0.5f), user = (int)(base * uiScaleUser + 0.5f);
+        return (uint16_t)std::max(8, std::max(eff, std::min(user, 16)));
+    }
     // Defined in SatelliteSimUI.cpp — need AudioSystem's complete type (only forward-declared here).
     void sndRollover(bool nowHov, bool prevHov) const;
     void sndClick(bool nowHov, bool lmbPressed) const;
@@ -6763,6 +6777,18 @@ private:
                               const std::function<void()> &titleExtras = nullptr,
                               bool titleHighlight = false);
     std::string winTitleBuf_[32]; // buildResizableWindow's ellipsized titles, per winId (Clay keeps the pointers)
+    static constexpr float kWinScreenMargin = 8.0f; // a window keeps this far inside the screen (size caps)
+    // The right HUD panel's compact form (no FPS / version) when it would reach the left panel (buildRightHudPanel).
+    bool hudCompact_ = false;
+    float hudCompactKey_ = -1.0f; // screen size + UI scale it was decided for
+    int hudCompactSettle_ = 0;
+    // A window's DEFAULT extent (2026-10-21, low resolutions): `px` (its 1080p size, which it keeps on any screen
+    // that is big enough) but at most `frac` of the screen's extent `scr`, and never below `minPx` (unless the
+    // screen itself is smaller; buildResizableWindow caps every size at the screen).
+    static float winDefault(float px, float frac, float scr, float minPx = 0.0f)
+    {
+        return std::max(std::min(px, scr * frac), std::min(minPx, scr - 2.0f * kWinScreenMargin));
+    }
 
     void buildSettingsWindow(const UIInput &inp, UIRenderer &ui);
     void buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui);

@@ -64,7 +64,7 @@ Development: Earth / Terrain Rendering* (read **Elevation texture encoding** bef
 code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
-`imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions), `mission_ops.py` (every launch vehicle traced phase by phase, PASS / FAIL), `launch_bench.py` (the launch system's CPU / GPU cost), `hitch_check.py` (frame-hitch regression check over the time-scale ladder) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
+`imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `ui_lowres.py` (every window at low resolutions), `reports.py` (issue reports: triage, agent briefs, resolutions), `mission_ops.py` (every launch vehicle traced phase by phase, PASS / FAIL), `launch_bench.py` (the launch system's CPU / GPU cost), `hitch_check.py` (frame-hitch regression check over the time-scale ladder) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
 validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_geo_belt.py` + `tools/make_geo_models.py` (the GEO belt's members and models) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
@@ -2436,6 +2436,27 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   it). Every window is a floating root at zIndex 10 and Clay sorts roots stably, so the one declared later is on top;
   a window's own floating children (the info window's view chips, the trace plot's tick labels, the marker labels)
   must use the SAME zIndex as the window (they were 11 / 12, so they drew over any later window covering them).
+- **Low resolutions (2026-10-21; the user: "the Missions window occupies the entire screen basically"):**
+  - **The UI scale is the setting x the window's height.** `uiScaleUser` = "Text scale" (`display.ui_scale`, 1.5);
+    `uiScale`, which every builder reads, = it x `uiAutoScaleFactor(screenH)` = clamp(H / 1000, 0.7, 1) when "Scale
+    with window" (`display.ui_auto_scale`, on) — recomputed at the top of buildUI (`updateUiScale`). Nothing changes
+    at 1000 px and taller (a maximized window on a 1080p desktop is 1009). **`fs()` never lets the automatic factor take text below 16 px** (the baked font's floor;
+    or the player's own size where that is smaller), so on a short window the text stays ~16 px and the paddings,
+    titles and fixed-size boxes shrink. Never write `uiScale` itself: it is overwritten every frame.
+  - **No window is larger than the screen:** `buildResizableWindow` caps the maximum AND minimum size at the screen
+    less `kWinScreenMargin` (8 px) every frame and re-clamps the position, so a window survives a resolution change
+    (or a persisted size from a bigger desktop) on screen; its content scrolls.
+  - **Default sizes go through `winDefault(px, frac, screen, minPx)`**: the 1080p size where it fits, else a share
+    of the screen (Missions 600 x min(720, H - 200) docked right, at most 42% x 70%; Issue reports 60% x 72%;
+    Bookmarks 55% x 66%; Cinematics 45% wide; Info 470 or a third of the width, at least 350, its minimum height
+    72% of a short screen; Settings / Controls are sized on first build, not in init). New windows: size them the
+    same way, never with a bare pixel size.
+  - **The right HUD panel goes compact** (`hudCompact_`: no FPS or version label) when last frame's boxes show it
+    reaching the left panel (1024 px wide), re-decided whenever the screen or the UI scale changes.
+  - Tooltips measure their text and stay on screen on the left too (a 550-px tip started at x -190).
+  - **Check it:** `python tools/harness/ui_lowres.py run` (docs/HARNESS.md "Low-resolution UI check"): every window
+    and the HUD at 1024x768 / 1280x720 / 1366x768 / 1600x900 / 1920x1009, failing on a window off screen or over 62%
+    of it (Settings 80%), text cut sideways or off screen, overlapping text, or overlapping HUD panels.
 - **Clips nest (2026-10-03):** `UIRenderer::record` keeps a scissor stack — a clip inside a clipped scroll view is
   intersected with it and its end restores the parent's. SCISSOR_END used to reset to the full screen, so anything
   drawn after a nested clip (a text box, a horizontally clipped row) escaped its window's scroll view. `ui dump`'s
