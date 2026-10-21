@@ -2923,6 +2923,28 @@ private:
     void engineLightsFlush();
     static double flameIntensitySunsM2(double mag100km);
     int launchAfterStorm = 0;        // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
+    // The deployment era (2026-10-20, launches.deployment_era; launches.json "deployment" / "roster_history" / site and
+    // vehicle "online" dates): the constellations are BUILT UP by launches from the late 2010s to 2036 instead of
+    // standing complete at any date. Each roster satellite's born / gone second (rosterLife, 2 per satellite, seconds
+    // since kesslerEpoch(); INT32_MIN+1 / kNever = always) is uploaded after the Kessler roster words (sat_orbit.comp)
+    // and read by the Kessler world (no collisions before a satellite exists). Off: everything always there (as before).
+    bool launchDeployEra = true;
+    std::vector<int32_t> rosterLife;
+    uint64_t rosterLifeKey = 0;      // what rosterLife was computed for (0 = not yet)
+    uint64_t kLifeHashKey = 0;       // ... and what the running Kessler world was built with
+    bool rosterLifeUploaded = false; // the GPU holds the current rosterLife
+    void rosterLifeEnsure();         // (re)computes rosterLife when stale (builds the launch planes if needed)
+    void rosterLifeUpload(VulkanContext &ctx);
+    nlohmann::json deployStatsJson(double fromT, double toT, double stepDays) const; // harness `deploy stats`
+    nlohmann::json deployStateJson() const;                                        // harness `deploy state`
+    struct DeployRow
+    {
+        std::string name;      // the cohort (program / constellation)
+        double deployed = 0.0, target = 0.0;
+        double perDay = 0.0;   // launches a day now (its first fills + refreshes, by arrival)
+        double startT = 0.0, completeT = 0.0;
+    };
+    std::vector<DeployRow> deployRows(double t) const; // the Missions window's BUILD-OUT section
     // Launch-site graphics (2026-10-19, launches.pad_graphics): the pads on the ground (sat_sky.frag padGround, the
     // terrain graded flat under them, no city lights within ~3 km), their towers / mounts / tanks as meshes and their
     // lights at night. Independent of launchesEnabled (the pads are there whether or not anything flies).
@@ -2959,6 +2981,7 @@ private:
     nlohmann::json launchStateJson() const;
     nlohmann::json launchListJson(double hours) const;
     nlohmann::json launchWhyJson(double hours) const;
+    nlohmann::json launchPadStatsJson(double hours) const; // harness `launch padstats`: same-pad pressure (deployment era)
     bool launchGoToNext(std::string &msg, bool twilight);
     // padDistM > 0 (2026-10-20): the observer on the ground that far from the pad, beside the track (side -1 / +1),
     // looking at the pad; lead = seconds before lift-off.
@@ -2995,6 +3018,7 @@ private:
         double tA = 0.0;         // arrival (trains) / docking (crew)
         double sunElevDeg = 0.0; // the Sun at the pad at lift-off
         bool crew = false, twilight = false;
+        bool firstFill = false;  // the deployment era: a plane's first fill (its slots were empty)
         int people = 0, payload = 0;
         std::string vehicle, program, site, target, spacecraft; // target: the constellation or the station
     };
@@ -3214,6 +3238,8 @@ public:
         std::string reason;
     };
     ExplodeResult explodeSatellite(int satIndex, BreakupKind kind);
+    // The deployment era's roster table (born / gone seconds since the Kessler epoch, 2 per satellite; may be empty).
+    const std::vector<int32_t> &rosterLifeTable() const { return rosterLife; }
 
 private:
     char kBannerBuf[160] = {};

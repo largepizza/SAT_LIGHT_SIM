@@ -33,6 +33,18 @@ struct Site
     int padKind = -1;
     double padHeadingDeg = std::nan("");
     double elevM = 0.0;
+    // The deployment era (2026-10-20): the pad flies from this date on ("online", J2000 s; -inf = always). A pad
+    // that does not exist yet is neither used nor drawn. fictional: not an announced site (the 2030s build-out).
+    double onlineT = -1e300;
+    bool fictional = false;
+    std::vector<std::pair<std::string, double>> onlineFor; // per vehicle id: a later date (39A's Starship tower)
+    double onlineForVehicle(const std::string &veh) const
+    {
+        for (const auto &p : onlineFor)
+            if (p.first == veh)
+                return std::max(p.second, onlineT);
+        return onlineT;
+    }
 };
 
 struct Vehicle
@@ -79,6 +91,7 @@ struct Vehicle
         std::vector<int> sites;        // the sites it serves (empty: every site of the vehicle)
     };
     std::vector<LandingShip> ships;
+    double onlineT = -1e300; // first flight (J2000 s; the deployment era): not used before
 };
 
 // How a program's satellites ride to orbit (2026-10-20, launches.json "stack"; tools/make_rocket_models.py derives
@@ -98,9 +111,39 @@ struct Stack
     double intervalS = -1.0, sepMps = -1.0, spreadMps = -1.0; // < 0: the vehicle's
 };
 
+// The deployment era (2026-10-20, launches.json "deployment"): how a program's constellations were BUILT UP before
+// they reached the 2036 roster. One cohort per block (an optional "match" narrows it to some of the program's
+// constellations): its satellites arrive along an S-curve from `start` to `complete`, passing `present` satellites at
+// the reference date (2026-10-20). Each plane's slots are filled by first-fill launches in that order (shells one
+// after another, overlapping by `stagger`); a slot is not there before its first fill arrives. Later refreshes follow
+// the program's life cadence.
+struct Deployment
+{
+    std::vector<std::string> match;   // constellation name substrings (empty: every constellation of the program)
+    double startT = 0.0, completeT = 0.0; // J2000 s
+    double present = 0.0;             // satellites up at the reference date
+    double steep = 8.0;               // the logistic's steepness over [start, complete]
+    double stagger = 1.0;             // shells: the last starts this many "shell fill spans" after the first
+    std::vector<int> earlyVehicles;   // before earlyUntilT the program flies these instead (Falcon 9 before Starship)
+    double earlyUntilT = -1e300;
+};
+
+// A roster group's presence over time without launches (stations, the benchmark shells, the debris field): its
+// members appear in a fixed (hashed) order as `count` rises and leave as it falls (piecewise linear in time).
+struct RosterHistory
+{
+    std::vector<std::string> match;
+    std::vector<std::pair<double, double>> count; // (J2000 s, members present); a fraction of the group if <= 1 and
+                                                  // "fraction" is set
+    bool fraction = false;
+};
+
+double dateToJ2000(const std::string &s); // "YYYY-MM-DD[THH:MM[:SS]]" (UTC) -> s since J2000; NaN if malformed
+
 struct Program
 {
     std::string name;
+    std::vector<Deployment> deploy;  // the deployment era (empty: always there)
     std::vector<std::string> match;  // constellation name substrings
     std::vector<int> vehicles;       // indices into Catalog::vehicles
     double lifeYears = 5.0;          // design life: each plane is refreshed once per life
@@ -126,6 +169,9 @@ struct Catalog
     std::vector<Site> sites;
     std::vector<Vehicle> vehicles;
     std::vector<Program> programs;
+    std::vector<RosterHistory> history;
+    double referenceT = 0.0;         // the deployment's reference date ("present" counts), J2000 s
+    double minFirstLifeFrac = 0.25;  // a first-filled slot's first refresh comes at least this x the life after it
     bool load(const std::string &path, std::string &err);
 };
 
@@ -219,4 +265,14 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
                   double vExp = 2000.0, double windPhase = 0.0, const ParcelOpts *opts = nullptr);
 
 double hash01(uint64_t seed, uint64_t index, uint32_t channel);
+
+// A deployment cohort's S-curve (2026-10-20): the cumulative share f(t) of its satellites arrived, a logistic of
+// steepness k over [S, C] normalised to 0 at S and 1 at C, its midpoint m solved so that f(tRef) = fRef.
+struct SCurve
+{
+    double S = 0.0, C = 1.0, k = 8.0, m = 0.5;
+    void fit(double start, double complete, double steep, double tRef, double fRef);
+    double frac(double t) const;
+    double inv(double f) const; // the time the share reaches f (0 < f < 1)
+};
 } // namespace launch

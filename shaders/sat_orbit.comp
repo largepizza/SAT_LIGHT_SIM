@@ -1240,6 +1240,13 @@ bool processSatellite(uint i, out SatVisible rec)
         // breakup before the CME starts the scenario there: negative seconds); the words are kNever otherwise.
         if (int(kw[2u * i + 1u]) <= scenNowSec)
             return false;
+        // The deployment era (2026-10-20, SatelliteSimLaunches.cpp rosterLife): the roster's born / gone seconds after
+        // the dead / end words (2 more per satellite): a slot whose first fill has not arrived, or a retired group.
+        {
+            uint nR = poolBase - LAUNCH_CAP;
+            if (scenNowSec < int(kw[2u * nR + 2u * i]) || scenNowSec >= int(kw[2u * nR + 2u * i + 1u]))
+                return false;
+        }
         deadNow = int(kw[2u * i]) <= scenNowSec;
     } else {
         bool isLaunch = i < poolBase;

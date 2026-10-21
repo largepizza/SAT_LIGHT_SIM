@@ -113,6 +113,10 @@ wait 5
 # 8. A twilight Starship launch (2026-10-18, launches; from Kennedy LC-39A since the Louisiana pads, 2026-10-19 — it
 #    was Vandenberg, and any change to launches.json can move it: re-run and check `launch state` shows a rocket):
 #    the Sun ~9 degrees down at the pad, the upper stage's exhaust lit high over the dark sea (the "jellyfish").
+#    (2026-10-20, the deployment era's pad expansion: from Starbase Louisiana E-1 at a -7.7 deg Sun; the search starts
+#    at 11:50 UTC — the first twilight launch after the default start time had the Sun -12.8 deg down, no sunlit bell.)
+time set 2036-11-22T11:50:00Z
+wait 200
 drift default
 launch next twilight=1
 time add 330
@@ -129,6 +133,8 @@ wait 5
 #    the dispenser one by one (45 s apart) over the sunlit Earth. Paused: from a free camera the ship flies on at
 #    7.7 km/s; press play to watch the next ones leave. (Also on its own, with a check of #8:
 #    scripts/default_bookmark_starmind_deploy.satcmd.)
+time set 2036-11-22T02:06:22Z
+wait 200
 drift default
 launch deploy filter=Starmind
 wait 5

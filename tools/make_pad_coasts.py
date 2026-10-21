@@ -125,6 +125,11 @@ def sdf_grid(lat0, lon0, R, rg, pads):
 def main():
     lj = json.load(open(os.path.join(REPO, "data", "launches.json"), encoding="utf-8"))
     sites = lj["sites"]
+    # The Starship pads (buildPads: kind 2, a 450-m graded disc): every site Starship flies from.
+    starship_sites = set()
+    for v in lj["vehicles"]:
+        if v["id"] == "starship":
+            starship_sites.update(v["sites"])
     rg = rings()
 
     def coast_dist(lat, lon):
@@ -146,9 +151,14 @@ def main():
             coastal.append(s)
         print(f"{s['id']:22s} coast {d / 1000.0:7.2f} km{'' if d < COAST_REACH_KM * 1000 else '  (no patch)'}")
     groups = []
+    # (2026-10-20, the deployment era's pad expansion) a group never spans more than a patch can hold: the 20 Louisiana
+    # pads in a row (~27 km) would have shared one 10-km patch and left its ends uncovered.
+    span = 2.0 * (MAX_RADIUS_KM - MARGIN_KM) * 1000.0
     for s in coastal:
         hit = [g for g in groups
-               if any(math.hypot(*local(s["lat"], s["lon"], o["lat"], o["lon"])) < MERGE_KM * 1000.0 for o in g)]
+               if any(math.hypot(*local(s["lat"], s["lon"], o["lat"], o["lon"])) < MERGE_KM * 1000.0 for o in g)
+               and all(math.hypot(*local(s["lat"], s["lon"], o["lat"], o["lon"])) < span for o in g)]
+        hit = hit[:1]
         if hit:
             g0 = hit[0]
             for g in hit[1:]:
@@ -167,7 +177,7 @@ def main():
         for s in sites:   # every pad inside the patch, as buildPads sizes it (Starship: Starbase, Louisiana, 39A)
             x, y = local(lat0, lon0, s["lat"], s["lon"])
             if math.hypot(x, y) < R + 500.0:
-                big = s["id"].startswith(("starbase", "louisiana", "ksc_39a"))
+                big = s["id"] in starship_sites or s.get("pad_kind") == 2
                 pads.append((x, y, STARSHIP_PAD_M if big else 350.0))
         d = sdf_grid(lat0, lon0, R, rg, pads)
         b = np.clip(np.round(127.5 + d / SDF_MAX_M * 127.5), 0, 255).astype(np.uint8)

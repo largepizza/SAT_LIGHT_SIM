@@ -1482,7 +1482,7 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
             refs.clear();
             for (uint32_t i = 0; i < (uint32_t)roster.size(); ++i)
             {
-                if (sec >= rosterEnd[i])
+                if (sec >= rosterEnd[i] || !rosterPresent(i, sec))
                     continue;
                 if (!types[roster[i].type].passive && sec < rosterDead[i] &&
                     (preStorm || hash01(stepK, i, 21) >= s.activeSample))
@@ -1620,7 +1620,7 @@ std::vector<Event> stormSeedEvents(const World &w, double arriveT, uint64_t seed
     {
         const RosterObj &o = w.roster[i];
         const TypeInfo &ty = w.types[o.type];
-        if (ty.passive)
+        if (ty.passive || !w.rosterPresent(i, (int32_t)std::floor(arriveT - w.s.epoch)))
             continue;
         const double alt = o.R - kRMean;
         double p = alt < 650e3 ? 0.015

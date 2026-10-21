@@ -317,6 +317,14 @@ public:
                                       // never manoeuvres, and drag lowers nothing but its end second
     std::vector<int32_t> rosterEnd;   // end second: destroyed or re-entered (kNever)
     std::vector<int32_t> rosterDecay; // its drag re-entry second once dead (kNever): an end AT it is a re-entry
+    // The deployment era (2026-10-20): each roster satellite is there from its born second to its gone second (its
+    // first launch; a retired benchmark shell). Not there, it is in no collision and the storm cannot kill it.
+    // Empty: always there. Set by the sim (rosterLife) before reset().
+    std::vector<int32_t> rosterBorn, rosterGone;
+    bool rosterPresent(uint32_t i, int32_t sec) const
+    {
+        return i >= rosterBorn.size() || (sec >= rosterBorn[i] && sec < rosterGone[i]);
+    }
     std::vector<PoolRec> pool;
     std::vector<Event> events;        // applied, in time order
     DebrisGrid grid;                  // the small fragments

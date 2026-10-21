@@ -9,6 +9,7 @@
 #include "UIPalette.h"
 #include "SatelliteSim.h"
 #include "SatPhotometry.h"
+#include "Launches.h"
 #include "Ambience.h"
 #include "../AudioSystem.h"
 #include "../Harness.h"
@@ -205,7 +206,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -2506,10 +2507,36 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         fail("missions: state | go <index|twilight|crew|fury|fury_night> [watch=1] | ongoing <row> [go=1] | "
              "milestone [list|next|prev|<i>] [row=<ongoing row>] | tab upcoming|ongoing|controls");
     }
+    if (n == "deploy")
+    {
+        // deploy [state] | stats [from=YYYY-MM-DD] [to=YYYY-MM-DD] [step=30] (2026-10-20, the deployment era).
+        const std::string sub = lower(pos(0));
+        if (sub == "stats")
+        {
+            const double from = launch::dateToJ2000(c.str("from", "2026-10-20"));
+            const double to = launch::dateToJ2000(c.str("to", "2036-11-22"));
+            if (std::isnan(from) || std::isnan(to) || to <= from)
+                fail("deploy stats: from= / to= as YYYY-MM-DD, from < to");
+            r["stats"] = deployStatsJson(from, to, c.num("step", 30.0));
+            r["message"] = "peak " + r["stats"].value("peak_launches_per_day", nlohmann::json(0)).dump() + " launches a day";
+            return Status::Done;
+        }
+        r["deploy"] = deployStateJson();
+        r["message"] = std::to_string(r["deploy"].value("roster_there", 0ull)) + " of " +
+                       std::to_string(r["deploy"].value("roster_total", 0ull)) + " roster satellites there";
+        return Status::Done;
+    }
     if (n == "launch")
     {
         // launch [state] | list [hours=48] | next [twilight=0|1] (2026-10-18, SatelliteSimLaunches.cpp).
         const std::string sub = lower(pos(0));
+        if (sub == "padstats")
+        {
+            r["padstats"] = launchPadStatsJson(c.num("hours", 168.0));
+            r["message"] = std::to_string(r["padstats"].value("same_pad_pairs_within_90min", 0)) +
+                           " same-pad pairs within 90 min";
+            return Status::Done;
+        }
         if (sub == "list")
         {
             const nlohmann::json l = launchListJson(c.num("hours", 48.0));

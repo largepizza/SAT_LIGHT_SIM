@@ -2,6 +2,8 @@
 #include "Launches.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <fstream>
 
 #include <nlohmann/json.hpp>
@@ -20,12 +22,74 @@ double hash01(uint64_t seed, uint64_t index, uint32_t channel)
     return (double)(h >> 11) * (1.0 / 9007199254740992.0);
 }
 
+// ── Dates and the deployment curve ──────────────────────────────────────────────────────────────
+double dateToJ2000(const std::string &s)
+{
+    int y = 0, mo = 0, d = 0, hh = 0, mm = 0, ss = 0;
+    const int n = std::sscanf(s.c_str(), "%d-%d-%d%*[T ]%d:%d:%d", &y, &mo, &d, &hh, &mm, &ss);
+    if (n < 3 || mo < 1 || mo > 12 || d < 1 || d > 31)
+        return std::nan("");
+    // Days from civil (Howard Hinnant): days since 1970-01-01.
+    const int yy = y - (mo <= 2 ? 1 : 0);
+    const int era = (yy >= 0 ? yy : yy - 399) / 400;
+    const unsigned yoe = (unsigned)(yy - era * 400);
+    const unsigned doy = (153u * (unsigned)(mo + (mo > 2 ? -3 : 9)) + 2u) / 5u + (unsigned)d - 1u;
+    const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+    const long long days1970 = (long long)era * 146097 + (long long)doe - 719468;
+    const long long days2000 = days1970 - 10957; // 2000-01-01
+    // J2000 = 2000-01-01 12:00 (the sim's UTC time base).
+    return (double)days2000 * 86400.0 - 43200.0 + hh * 3600.0 + mm * 60.0 + ss;
+}
+
+static double sigm(double x) { return 1.0 / (1.0 + std::exp(-x)); }
+
+void SCurve::fit(double start, double complete, double steep, double tRef, double fRef)
+{
+    S = start;
+    C = std::max(complete, start + 86400.0);
+    k = std::max(steep, 0.5);
+    m = 0.5;
+    const double x = (tRef - S) / (C - S);
+    if (x <= 0.0 || x >= 1.0 || !(fRef > 0.0) || fRef >= 1.0)
+        return;
+    const double f = std::clamp(fRef, 1e-4, 1.0 - 1e-4);
+    // f(x; m) falls as m rises: bisect m over a wide range.
+    double lo = -1.5, hi = 2.5;
+    for (int i = 0; i < 80; ++i)
+    {
+        m = 0.5 * (lo + hi);
+        (frac(tRef) > f ? lo : hi) = m;
+    }
+    m = 0.5 * (lo + hi);
+}
+
+double SCurve::frac(double t) const
+{
+    const double x = (t - S) / (C - S);
+    if (x <= 0.0)
+        return 0.0;
+    if (x >= 1.0)
+        return 1.0;
+    const double a = sigm(-k * m), b = sigm(k * (1.0 - m));
+    return (sigm(k * (x - m)) - a) / std::max(b - a, 1e-12);
+}
+
+double SCurve::inv(double f) const
+{
+    f = std::clamp(f, 0.0, 1.0);
+    const double a = sigm(-k * m), b = sigm(k * (1.0 - m));
+    const double s = std::clamp(a + f * (b - a), 1e-15, 1.0 - 1e-15);
+    const double x = m + std::log(s / (1.0 - s)) / k;
+    return S + std::clamp(x, 0.0, 1.0) * (C - S);
+}
+
 // ── Catalog ──────────────────────────────────────────────────────────────────────────────────────
 bool Catalog::load(const std::string &path, std::string &err)
 {
     sites.clear();
     vehicles.clear();
     programs.clear();
+    history.clear();
     std::ifstream f(path);
     if (!f)
     {
@@ -57,6 +121,27 @@ bool Catalog::load(const std::string &path, std::string &err)
                 st.azMaxDeg = s["azimuth"][1].get<double>();
             }
             st.padKind = s.value("pad_kind", -1);
+            if (s.contains("online"))
+            {
+                st.onlineT = dateToJ2000(s["online"].get<std::string>());
+                if (std::isnan(st.onlineT))
+                {
+                    err = "site " + st.id + ": bad online date";
+                    return false;
+                }
+            }
+            st.fictional = s.value("fictional", false);
+            if (s.contains("online_for"))
+                for (auto it = s["online_for"].begin(); it != s["online_for"].end(); ++it)
+                {
+                    const double tv = dateToJ2000(it.value().get<std::string>());
+                    if (std::isnan(tv))
+                    {
+                        err = "site " + st.id + ": bad online_for date";
+                        return false;
+                    }
+                    st.onlineFor.push_back({it.key(), tv});
+                }
             if (s.contains("pad_heading_deg"))
                 st.padHeadingDeg = s["pad_heading_deg"].get<double>();
             const double la = glm::radians(st.latDeg), lo = glm::radians(st.lonDeg);
@@ -134,6 +219,15 @@ bool Catalog::load(const std::string &path, std::string &err)
                         }
                     vh.ships.push_back(sh);
                 }
+            if (v.contains("online"))
+            {
+                vh.onlineT = dateToJ2000(v["online"].get<std::string>());
+                if (std::isnan(vh.onlineT))
+                {
+                    err = "vehicle " + vh.id + ": bad online date";
+                    return false;
+                }
+            }
             vehicles.push_back(vh);
         }
         auto vehIdx = [&](const std::string &id) {
@@ -203,8 +297,90 @@ bool Catalog::load(const std::string &path, std::string &err)
                 st.sepMps = js.value("sep_speed_mps", st.sepMps);
                 st.spreadMps = js.value("sep_spread_mps", st.spreadMps);
             }
+            if (p.contains("deployment"))
+            {
+                const auto &jd = p["deployment"];
+                std::vector<nlohmann::json> blocks;
+                if (jd.is_array())
+                    for (const auto &b : jd)
+                        blocks.push_back(b);
+                else
+                    blocks.push_back(jd);
+                for (const auto &b : blocks)
+                {
+                    Deployment dp;
+                    if (b.contains("match"))
+                        for (const auto &m : b["match"])
+                            dp.match.push_back(m.get<std::string>());
+                    dp.startT = dateToJ2000(b.at("start").get<std::string>());
+                    dp.completeT = dateToJ2000(b.at("complete").get<std::string>());
+                    if (std::isnan(dp.startT) || std::isnan(dp.completeT) || dp.completeT <= dp.startT)
+                    {
+                        err = "program " + pg.name + ": deployment needs start < complete (YYYY-MM-DD)";
+                        return false;
+                    }
+                    dp.present = std::max(b.value("present_2026", 0.0), 0.0);
+                    dp.steep = b.value("steepness", dp.steep);
+                    dp.stagger = std::max(b.value("shell_stagger", dp.stagger), 0.0);
+                    if (b.contains("early_vehicles"))
+                    {
+                        for (const auto &v : b["early_vehicles"])
+                        {
+                            const int k = vehIdx(v.get<std::string>());
+                            if (k < 0)
+                            {
+                                err = "program " + pg.name + ": unknown early vehicle " + v.get<std::string>();
+                                return false;
+                            }
+                            dp.earlyVehicles.push_back(k);
+                        }
+                        dp.earlyUntilT = dateToJ2000(b.value("early_until", std::string("2000-01-01")));
+                    }
+                    pg.deploy.push_back(dp);
+                }
+            }
             programs.push_back(pg);
         }
+        referenceT = dateToJ2000(j.value("deployment_reference", std::string("2026-10-20")));
+        minFirstLifeFrac = std::clamp(j.value("min_first_life", minFirstLifeFrac), 0.0, 2.0);
+        if (j.contains("roster_history"))
+            for (const auto &h : j["roster_history"])
+            {
+                RosterHistory rh;
+                for (const auto &m : h.at("match"))
+                    rh.match.push_back(m.get<std::string>());
+                rh.fraction = h.value("fraction", false);
+                if (h.contains("born"))
+                {
+                    // A single object (a station): there from this date.
+                    const double tb = dateToJ2000(h["born"].get<std::string>());
+                    if (std::isnan(tb))
+                    {
+                        err = "roster_history: bad born date";
+                        return false;
+                    }
+                    rh.count = {{tb - 1.0, 0.0}, {tb, 1e9}};
+                    if (h.contains("gone"))
+                    {
+                        const double tg = dateToJ2000(h["gone"].get<std::string>());
+                        rh.count.push_back({tg, 1e9});
+                        rh.count.push_back({tg + 1.0, 0.0});
+                    }
+                }
+                else
+                    for (const auto &c : h.at("count"))
+                    {
+                        const double tc = dateToJ2000(c.at(0).get<std::string>());
+                        if (std::isnan(tc))
+                        {
+                            err = "roster_history: bad date";
+                            return false;
+                        }
+                        rh.count.push_back({tc, c.at(1).get<double>()});
+                    }
+                std::sort(rh.count.begin(), rh.count.end());
+                history.push_back(rh);
+            }
     }
     catch (const std::exception &e)
     {

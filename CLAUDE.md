@@ -4187,7 +4187,8 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   back before an event just stops drawing its debris and brings the satellites back. Random numbers come from
   hashes of (seed, ids), never a shared stream, so results do not depend on threads or order. **Bump
   `kCacheVersion` (SatelliteSimKessler.cpp) whenever the world's logic changes**: the cache key does not see code.
-- **Dead satellites stay roster records** (kesslerBuf words 2i / 2i+1 = dead second, end second): they keep
+- **Dead satellites stay roster records** (kesslerBuf words 2i / 2i+1 = dead second, end second; since 2026-10-20 the
+  deployment era's born / gone words follow from 2N: CLAUDE.md "Launches" > The deployment era): they keep
   their orbit and TUMBLE (`deadTumble`: an integer period 40-600 s and a phase from the index, the angle taken mod
   one period from the scenario's whole seconds, exact at any date; CPU mirror in `orbitElemsOf`, which therefore
   depends on the current sim time for roster satellites), never manoeuvre (engine: passive), and drag sets their
@@ -5184,6 +5185,79 @@ launches follow per-program cadences (no real manifest).
     tower; touchdown on the deck 0 m off centre, 0 m above it; 1-s speed before touchdown <= 31 m/s (the end of a ~50
     m/s^2 burn); the booster on a steaming ship 0 m off its deck. Perf (RTX 3070 Ti, 1600x900, 1.5 km from the ship):
     GPU 13.8 ms by day, 12.5-21 ms at night (the cloud lit by the landing burn), CPU ~0 for the ships.
+- **The deployment era: the constellations are BUILT UP from the late 2010s to 2036 (2026-10-20, branch kessler;
+  setting `launches.deployment_era`, default on, Missions > Controls / Settings > Constellations "Deployment era
+  (2019-2036)"; off = the 2036 roster at every date, the A/B).** Until then the full 2036 roster stood in the sky at any
+  date. Now:
+  - **Data** (data/launches.json): a program's `deployment` block(s) (one cohort each; `match` narrows a block to some of
+    the program's constellations, e.g. Starlink Gen2 vs Gen3 Broadband): `start`, `complete`, `present_2026` (satellites
+    up at `deployment_reference` 2026-10-20), `steepness` (8), `shell_stagger` (Starmind 1.5), `early_vehicles` +
+    `early_until` (Starlink and DTC fly Falcon 9 until 2027-06: no stack, the satellites leave stowed from the dispenser
+    point). `min_first_life` (0.25): a first-filled slot's first lattice refresh comes at least that x the design life
+    later. Site `online` (+ `online_for: {vehicle: date}`, 39A's Starship tower 2027-03) and `fictional`; vehicle
+    `online` (first flight). `roster_history`: groups without launches — stations' `born` dates (Tiangong 2021-04-29,
+    Haven-1 2026-05-15, Axiom 2027-06, Haven-2 2028-06, ROS 2028-09, Bharatiya 2028-12, Starlab 2029-03, Orbital Reef
+    2030-06: a station appears WHOLE at its first module's date), the HLS depots, the 2020 benchmark shells (V1.0
+    2019-11 .. gone 2024-06, VisorSat 2020-08 .. 2025-01) and Space Junk (`count` over time: 9k 2000, 22k 2019, 30k at
+    2026-10-20, 80k 2031, 300k 2036-11; members appear in a hashed order). The ISS, Hubble and the GEO belt are always
+    there (no entry). Dates are coarse real history before 2026, the scenario after.
+  - **First fills** (buildPlanes, `LPlane::fillT`): per cohort every batch of its planes is put in fill order — shells
+    one after another by altitude within each constellation (constellations side by side), overlapping by the stagger;
+    within a shell batch 0 of every plane, then batch 1 (planes fill in parallel) — and the cumulative share of satellites
+    mapped through the cohort's S-curve (`launch::SCurve`: a logistic over [start, complete], its midpoint solved so
+    f(reference) = present / N) gives each batch's ARRIVAL. A first fill is refresh `kFillK` (-400000) in batch keys
+    (`LBatch::first`): its "retirees" end as they start (nobody retires), labels say "first deployment". The lattice
+    refreshes keep their times ((k + phase) L + b gap, unchanged), but one exists only from fillT[b] + min_first_life x L
+    on (`batchExists`); `arrivalOf`, `forBatches` (lattice + first fills arriving in a window: the walk, the pad
+    deconfliction's rivals, `launch list`, Upcoming, `deploy stats`) and `missionRosterBatches` (the first fill stands for
+    the lattice refreshes it precedes) are the only places that know.
+  - **rosterLife** (`rosterLifeEnsure`, SatelliteSimLaunches.cpp end): each roster satellite's born / gone second since
+    the Kessler epoch (born = its batch's first-fill arrival, rounded up; history groups by their count crossings;
+    INT32_MIN+1 / kNever = always), recomputed when the era or the roster changes (~100 ms at startup). **kesslerBuf's
+    roster words are 4 per satellite now**: dead, end (2i, 2i+1), then the born / gone region from word 2N
+    (`kLaunchWord0` = round4(4N)); sat_orbit.comp hides a roster satellite outside [born, gone) (N = poolBase -
+    LAUNCH_CAP); `rosterLifeUpload` writes it (kesslerUploadAllSync and on a change). `rosterFateAt` returns 4 "not
+    launched yet" / 5 "retired" (selection, Explode, `kessler breakup`, the Info window and the Missions stations refuse
+    or say so). The Kessler world takes it (`World::rosterBorn/Gone`, `rosterPresent`): no collisions, no storm kill for a
+    satellite that is not there; the cache hash includes it (kCacheVersion 15). A crew flight to a station not there yet
+    is invalid ("station not there yet").
+  - **Sites and vehicles come online**: candidate() and the deconfliction skip a site / vehicle before its date
+    (`onlineAt`, true when the era is off), the ship catch picks only online Starship pads, and a pad not built yet is
+    not drawn (ground pattern, mesh, lights). **The deconfliction's alternative pads start after the candidate's pad in
+    the vehicle's site list** (they started at its head: every launch pushed off a pad landed on the first few, 20 a day
+    on Louisiana A-1).
+  - **The pad expansion** (Starship: 15 -> 42 sites): Starbase Pad 2 (2026-06), Louisiana A-E 2029-06 .. 2031-09 (were
+    always there), **fictional**: Louisiana F-J (10 pads east of E, 2030-06 .. 2031-12), 6 Gulf sea platforms 60-90 km
+    south of Louisiana, 3 "Starbase South" platforms off Boca Chica (the 26-28.5 deg shells only reach from below
+    ~28.5 N), 4 Pacific polar platforms off Point Conception, 2 Cape Atlantic platforms (2030-01 .. 2031-12); KSC LC-49
+    (the real proposal, 2029-06), SLC-37 2027-09, SLC-6 2028-06, SLC-4E for Starship 2029-06. Sea platforms are drawn as
+    pads on the water (the graded apron is a small island; no coast patch: they are > 10 km offshore).
+    tools/make_pad_coasts.py: a group spans at most 8 km (the 20 Louisiana pads are 4 patches) and every Starship site
+    gets the 450-m disc.
+  - **Numbers** (harness `deploy stats`, 2026-10-20 .. 2036-11-22, from the schedule; invalid batches still counted):
+    196,632 launches — Starmind 188,529 (123,584 first fills at 8 a ship + 64,945 refreshes), Starlink 2,975, Guowang
+    2,138, Qianfan 1,037, DTC 1,019, Gen1 290, Reflect 231, Amazon Leo 228, crew ~175, OneWeb 27. Busiest day 107
+    launches (2032-12-15), Starship 104 (2032-08-27); quarterly means ~99 a day mid-2032, 63 in 2036 (the old 2036 sky:
+    ~54). Same-pad pairs within 90 min per week (`launch padstats hours=168`): 2032-09 at ~99 a day 398 (29 pads,
+    alternatives from the list head) -> 182 (rotated alternatives) -> 89 (+13 platforms, earlier dates; busiest pad-day
+    20 -> 9); 2034 39 at 74 a day; 2036 12 at 52 a day (era off: 12 at 54).
+  - **2036 vs before**: the roster at 2036-11-22 is the same but for the retired benchmark shells (1,377,341 of
+    1,380,509 there); the lattice refreshes are unchanged where they exist, but a plane first filled less than 0.25 L
+    before a lattice refresh skips it (batches live at the default start 5,187 vs 5,363 era off; trains 16,422 vs 16,782).
+    The schedule moved anyway: adding sites to Starship's list re-hashes every launch's pad, so the default bookmarks
+    "Twilight Starship Launch" (now 2036-11-22 12:10 UTC, T+290 s from Louisiana E-1, Sun -7.7 deg; the script searches
+    from 11:50)
+    and "Starmind Deployment" were re-shot (tools/harness/scripts/default_bookmarks.satcmd). `launch look` prefers the
+    launch `launch next` went to (with dozens of pads the nearest stage was often another rocket on its pad).
+  - **Missions window**: Ongoing opens with BUILD-OUT (DEPLOYMENT ERA) — per cohort deployed / target, launches a day
+    now (first fills from the curve's slope + refreshes), complete date (`deployRows`); Upcoming tags first fills
+    "BUILD-OUT"; a station not there yet reads "Not launched yet (date)". Harness `deploy`, `deploy stats`,
+    `launch padstats` (docs/HARNESS.md); `missions state` -> `build_out`.
+  - **Perf** (RTX 3070 Ti, 1600x900): launches CPU 0.97 ms at the 2036 default start (1.04 era off); 2.17 ms on the Gulf
+    coast at a 2032 twilight (plumes 1.75 ms with ~1,700 candidates). 2032-09: ~9,700 live batches, 28k train satellites.
+  - Open: a station appears whole (no module-by-module build); a pad kind is fixed (39A shows its Starship tower in
+    2019); the ambience's closed-form shell counts ignore the era; Starlink Gen1's first fills start 2019-05 while the 2020
+    V1.0 / VisorSat benchmark shells cover the same satellites (~1.5k double-counted in 2020-2022).
 - Not built: the Octagrabber driving out to the booster, the ship rolling in the swell, the booster's legs deploying,
   the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
   (trains launch into it), the crew capsule's rendezvous and cargo flights, hole-punching through cloud decks, sonic booms.

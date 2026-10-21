@@ -72,7 +72,14 @@ struct LPlane
     int nb = 1;                 // batches per refresh
     double gap = 2.0 * kDay;
     double inclRad = 0.0;
+    // The deployment era (2026-10-20): the arrival of each batch's FIRST fill (refresh kFillK), its cohort's S-curve
+    // order; empty = the plane has always been there (lattice refreshes only).
+    int cohort = -1;
+    std::vector<double> fillT;
+    uint32_t shell = 0; // its shell (alt / inclination group within the constellation): the fill order's stagger
 };
+// The first fill's refresh number in batch keys (k + 2^19 must fit 20 bits).
+constexpr int64_t kFillK = -400000;
 
 struct LMember
 {
@@ -113,6 +120,7 @@ struct LFairing
 
 struct LBatch
 {
+    bool first = false; // the plane's first fill (the deployment era): its slots were empty, nobody retires
     bool resid = false; // a member has a phasing residual (rewritten every 2 s while raising)
     int plane = -1, b = 0;
     int64_t k = 0;
@@ -207,6 +215,8 @@ struct LPad
     double lzAng = 0.0;            // ... kLzDistM out at this angle from u (toward v), on land
     double lzElevM = 0.0;          // ... its ground (m above sea level)
     std::string name;
+    double onlineT = -1e300;       // the deployment era: built from this date (the earliest of its sites)
+    bool fictional = false;
 };
 // Where things stand on a pad, in its (u, v) frame (metres): shared by the ground pattern (sat_sky.frag padGround,
 // which must agree), the meshes and the lights.
@@ -398,6 +408,18 @@ struct SatelliteSim::LaunchState
     std::string err;
     bool planesBuilt = false;
     std::vector<LPlane> planes;
+    // The deployment era (2026-10-20): one cohort per program deployment block (its constellations' satellites in
+    // first-fill order along its S-curve). deployOn: the era as the planes were built.
+    struct Cohort
+    {
+        int prog = -1, dep = -1;
+        std::string name;
+        double N = 0.0;      // satellites
+        launch::SCurve curve;
+        uint32_t nBatches = 0;
+    };
+    std::vector<Cohort> cohorts;
+    bool deployOn = false;
     std::vector<Track> booster; // per vehicle (its own recovery)
     std::vector<Track> boosterRtls; // per vehicle: back to the pad (a droneship vehicle with rtls_max_kg; else empty)
     std::map<std::pair<int, int>, Track> upper; // (vehicle, park km)
@@ -763,12 +785,15 @@ static void buildPads(SatelliteSim::LaunchState &L)
                     }
                 }
             }
+            pd.onlineT = st.onlineT;
+            pd.fictional = st.fictional;
             at = (int)L.pads.size();
             L.pads.push_back(pd);
             Log::line("launches: pad " + st.id + " kind " + std::to_string(pd.kind) + ", heading " +
                       std::to_string((int)std::lround(head)) + " deg, ground " + std::to_string((int)std::lround(pd.elevM)) + " m");
         }
         L.sitePad[i] = at;
+        L.pads[at].onlineT = std::min(L.pads[at].onlineT, st.onlineT);
         st.elevM = L.pads[at].elevM;
     }
 }
@@ -792,9 +817,11 @@ static double launchTypeMass(const SatelliteType &ty)
 
 // Groups each programme's constellations into planes (raan, inclination, altitude), each sorted by phase.
 static void buildPlanes(SatelliteSim::LaunchState &L, const std::vector<SatOrbit> &orbits, uint32_t rosterCount,
-                        const std::vector<ConstellationConfig> &consts, float lifeScale)
+                        const std::vector<ConstellationConfig> &consts, float lifeScale, bool deployOn)
 {
     L.planes.clear();
+    L.cohorts.clear();
+    L.deployOn = deployOn;
     L.satPlane.clear();
     L.satPos.clear();
     for (size_t c = 0; c < consts.size(); ++c)
@@ -837,8 +864,105 @@ static void buildPlanes(SatelliteSim::LaunchState &L, const std::vector<SatOrbit
             pl.nb = (int)((pl.sats.size() + (size_t)payload - 1) / (size_t)payload);
             pl.gap = std::min(pg.batchGapDays * kDay, life / std::max(pl.nb, 1));
             pl.inclRad = orbits[pl.sats[0]].incl;
+            // The deployment era: its cohort (the program's first deployment block whose match takes this
+            // constellation; none = always there).
+            if (deployOn && !pg.crew)
+                for (size_t d = 0; d < pg.deploy.size() && pl.cohort < 0; ++d)
+                {
+                    const launch::Deployment &dp = pg.deploy[d];
+                    bool m = dp.match.empty();
+                    for (const std::string &s : dp.match)
+                        m = m || consts[c].name.find(s) != std::string::npos;
+                    if (!m)
+                        continue;
+                    int ci = -1;
+                    for (size_t q = 0; q < L.cohorts.size(); ++q)
+                        if (L.cohorts[q].prog == prog && L.cohorts[q].dep == (int)d)
+                            ci = (int)q;
+                    if (ci < 0)
+                    {
+                        SatelliteSim::LaunchState::Cohort co;
+                        co.prog = prog;
+                        co.dep = (int)d;
+                        co.name = dp.match.empty() ? pg.name : dp.match[0];
+                        ci = (int)L.cohorts.size();
+                        L.cohorts.push_back(co);
+                    }
+                    pl.cohort = ci;
+                }
             L.planes.push_back(std::move(pl));
         }
+    }
+    // The deployment era's first fills (2026-10-20): per cohort, every batch of its planes in fill order — shells one
+    // after another (by altitude within each constellation; constellations side by side), overlapping by the block's
+    // "shell_stagger"; within a shell batch 0 of every plane, then batch 1 ... (planes fill in parallel) — and the
+    // cumulative share of satellites mapped through the cohort's S-curve gives each batch's arrival.
+    for (size_t ci = 0; ci < L.cohorts.size(); ++ci)
+    {
+        SatelliteSim::LaunchState::Cohort &co = L.cohorts[ci];
+        const launch::Program &pg = L.cat.programs[co.prog];
+        const launch::Deployment &dp = pg.deploy[co.dep];
+        std::vector<int> pls;
+        for (size_t pi = 0; pi < L.planes.size(); ++pi)
+            if (L.planes[pi].cohort == (int)ci)
+                pls.push_back((int)pi);
+        // Shells per constellation, by altitude (1 km) and inclination (0.25 deg).
+        std::map<uint32_t, std::vector<std::pair<int64_t, int64_t>>> shellsOf; // constIdx -> sorted (alt, inc)
+        auto shellKey = [&](const LPlane &pl) {
+            const SatOrbit &o = orbits[pl.sats[0]];
+            return std::make_pair((int64_t)std::lround(o.altM / 1000.0), (int64_t)std::lround(glm::degrees((double)o.incl) * 4.0));
+        };
+        for (int pi : pls)
+        {
+            auto &v = shellsOf[L.planes[pi].constIdx];
+            const auto k = shellKey(L.planes[pi]);
+            if (std::find(v.begin(), v.end(), k) == v.end())
+                v.push_back(k);
+        }
+        for (auto &kv : shellsOf)
+            std::sort(kv.second.begin(), kv.second.end());
+        struct FB
+        {
+            double key;
+            int plane, b;
+            uint32_t n;
+        };
+        std::vector<FB> fb;
+        co.N = 0.0;
+        for (int pi : pls)
+        {
+            LPlane &pl = L.planes[pi];
+            const auto &sv = shellsOf[pl.constIdx];
+            const size_t rank = (size_t)(std::find(sv.begin(), sv.end(), shellKey(pl)) - sv.begin());
+            pl.shell = (uint32_t)rank;
+            const double sk = sv.size() > 1 ? (double)rank / (double)(sv.size() - 1) : 0.0;
+            const int cluster = std::max(1, consts[pl.constIdx].clusterSize);
+            const int payload = std::max(cluster, pg.payload / cluster * cluster);
+            const double jit = 1e-7 * h01(pl.seed, 3, 7);
+            pl.fillT.assign((size_t)pl.nb, 0.0);
+            for (int b = 0; b < pl.nb; ++b)
+            {
+                const size_t m0 = (size_t)b * payload, m1 = std::min(pl.sats.size(), m0 + (size_t)payload);
+                fb.push_back({((double)b + 0.5) / (double)pl.nb + dp.stagger * sk + jit, pi, b, (uint32_t)(m1 - m0)});
+                co.N += (double)(m1 - m0);
+            }
+        }
+        std::sort(fb.begin(), fb.end(), [](const FB &a, const FB &b) {
+            return a.key < b.key || (a.key == b.key && (a.plane < b.plane || (a.plane == b.plane && a.b < b.b)));
+        });
+        co.curve.fit(dp.startT, dp.completeT, dp.steep, L.cat.referenceT, co.N > 0.0 ? dp.present / co.N : 0.0);
+        double cum = 0.0;
+        for (const FB &f : fb)
+        {
+            const double mid = (cum + 0.5 * f.n) / std::max(co.N, 1.0);
+            cum += f.n;
+            L.planes[f.plane].fillT[(size_t)f.b] = co.curve.inv(mid);
+        }
+        co.nBatches = (uint32_t)fb.size();
+        char m[240];
+        snprintf(m, sizeof(m), "launches: deployment %s: %.0f satellites in %zu planes, %u first-fill launches, %.0f%% at the reference date",
+                 co.name.c_str(), co.N, pls.size(), co.nBatches, 100.0 * co.curve.frac(L.cat.referenceT));
+        Log::line(m);
     }
     L.planesBySite.assign(L.cat.sites.size(), {});
     for (size_t pi = 0; pi < L.planes.size(); ++pi)
@@ -931,6 +1055,49 @@ static uint64_t batchSeed(const LPlane &pl, int64_t k, int b)
     return pl.seed ^ ((uint64_t)(k + 77) * 0x2545F4914F6CDD1Dull) ^ ((uint64_t)b * 0x9E3779B97F4A7C15ull);
 }
 
+// The deployment era (2026-10-20). A batch's arrival: its first fill's (k == kFillK) or the lattice's.
+static double arrivalOf(const LPlane &pl, int64_t k, int b, double life)
+{
+    if (k == kFillK)
+        return (size_t)b < pl.fillT.size() ? pl.fillT[(size_t)b] : -1e300;
+    return (k + pl.phase) * life + b * pl.gap;
+}
+// Whether a lattice refresh flies: never before the plane's first fill (+ the shortest first life); a first fill does
+// when the plane has one.
+static bool batchExists(const SatelliteSim::LaunchState &L, const LPlane &pl, int64_t k, int b, double life)
+{
+    if (k == kFillK)
+        return (size_t)b < pl.fillT.size();
+    if (pl.fillT.empty() || (size_t)b >= pl.fillT.size())
+        return true;
+    return arrivalOf(pl, k, b, life) >= pl.fillT[(size_t)b] + L.cat.minFirstLifeFrac * life;
+}
+// Every batch of a plane whose arrival is in [lo, hi]: fn(k, b) — the lattice refreshes that exist, then the first
+// fills (a plane's first fills arrive in b order, fillT increasing).
+template <class F>
+static void forBatches(const SatelliteSim::LaunchState &L, const LPlane &pl, double life, double lo, double hi, F &&fn)
+{
+    const int64_t k0 = (int64_t)std::floor((lo - (pl.nb - 1) * pl.gap) / life - pl.phase);
+    const int64_t k1 = (int64_t)std::floor(hi / life - pl.phase);
+    for (int64_t k = k0; k <= k1; ++k)
+    {
+        const double base = (k + pl.phase) * life;
+        const int b0 = std::max(0, (int)std::ceil((lo - base) / pl.gap));
+        const int b1 = std::min(pl.nb - 1, (int)std::floor((hi - base) / pl.gap));
+        for (int b = b0; b <= b1; ++b)
+            if (batchExists(L, pl, k, b, life))
+                fn(k, b);
+    }
+    if (!pl.fillT.empty() && hi >= pl.fillT.front() && lo <= pl.fillT.back())
+    {
+        auto it = std::lower_bound(pl.fillT.begin(), pl.fillT.end(), lo);
+        for (; it != pl.fillT.end() && *it <= hi; ++it)
+            fn(kFillK, (int)(it - pl.fillT.begin()));
+    }
+}
+// Is a site / vehicle there at t (the deployment era; always when the era is off)?
+static bool onlineAt(const SatelliteSim::LaunchState &L, double onlineT, double t) { return !L.deployOn || onlineT <= t; }
+
 // The plane's normal at t (from the batch's first member's slot).
 static glm::dvec3 planeNormal(const SatelliteSim &sim, const LPlane &pl, int b, int payload, double t)
 {
@@ -960,21 +1127,34 @@ static SatelliteSim::LaunchState::Cand candidate(const SatelliteSim &sim, Satell
     const launch::Program &pg = L.cat.programs[pl.prog];
     const double lifeS = progLifeS(pg, (double)sim.launchLifeScale);
     const uint64_t seed = batchSeed(pl, k, b);
-    const double tA = (k + pl.phase) * lifeS + b * pl.gap;
+    const double tA = arrivalOf(pl, k, b, lifeS);
     const double raise = (pg.raiseDays[0] + (pg.raiseDays[1] - pg.raiseDays[0]) * h01(seed, 2, 1)) * kDay;
     const double tNom = tA - raise;
     const int payload = payloadOf(sim, L, pl);
     auto normalAt = [&](double t) { return planeNormal(sim, pl, b, payload, t); };
-    const size_t nv = pg.vehicles.size();
+    // The deployment era: before a block's early_until its early vehicles (Falcon 9 before Starship); only vehicles
+    // and sites already flying.
+    const std::vector<int> *vehList = &pg.vehicles;
+    if (L.deployOn && pl.cohort >= 0)
+    {
+        const launch::Deployment &dp = pg.deploy[(size_t)L.cohorts[(size_t)pl.cohort].dep];
+        if (!dp.earlyVehicles.empty() && tNom < dp.earlyUntilT)
+            vehList = &dp.earlyVehicles;
+    }
+    const size_t nv = vehList->size();
     for (size_t vi = 0; vi < nv && c.tL < 0.0; ++vi)
     {
-        const int veh = pg.vehicles[(vi + (size_t)(h01(seed, 3, 1) * nv)) % nv];
+        const int veh = (*vehList)[(vi + (size_t)(h01(seed, 3, 1) * nv)) % nv];
         const launch::Vehicle &vh = L.cat.vehicles[veh];
+        if (!onlineAt(L, vh.onlineT, tNom))
+            continue;
         const double lead = vh.t2 + vh.deployAfter;
         const size_t ns = vh.sites.size();
         for (size_t si = 0; si < ns && c.tL < 0.0; ++si)
         {
             const int site = vh.sites[(si + (size_t)(h01(seed, 4, 1) * ns)) % ns];
+            if (!onlineAt(L, L.cat.sites[site].onlineForVehicle(vh.id), tNom - lead))
+                continue;
             double a = 0.0;
             const double t = nextCrossing(L.cat.sites[site], normalAt, tNom - lead, a);
             if (t >= 0.0)
@@ -1034,7 +1214,7 @@ template <class F> static void planShipLanding(SatelliteSim &sim, SatelliteSim::
         for (int p : pads)
         {
             const glm::dvec3 g = L.pads[p].g;
-            if (glm::dot(g, e) < 0.98)
+            if (glm::dot(g, e) < 0.98 || !onlineAt(L, L.pads[p].onlineT, Td))
                 continue;
             const double a = kR * glm::dot(g - e, dT), x = kR * glm::dot(g - e, c);
             if (a < 120e3 || a > 450e3 || std::abs(x) > 200e3)
@@ -1125,7 +1305,13 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     const launch::Program &pg = L.cat.programs[pl.prog];
     B.prog = pl.prog;
     B.seed = batchSeed(pl, B.k, B.b);
-    B.tA = (B.k + pl.phase) * lifeS + B.b * pl.gap;
+    B.first = B.k == kFillK;
+    B.tA = arrivalOf(pl, B.k, B.b, lifeS);
+    if (!batchExists(L, pl, B.k, B.b, lifeS))
+    {
+        B.why = B.k == kFillK ? "no such first fill" : "before the plane's first deployment";
+        return;
+    }
     // Members: a contiguous run of the plane's slots.
     const int cluster = std::max(1, sim.constellations[pl.constIdx].clusterSize);
     const int payload = std::max(cluster, pg.payload / cluster * cluster);
@@ -1165,26 +1351,17 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
             const launch::Program &gq = L.cat.programs[pq.prog];
             const double lifeQ = progLifeS(gq, (double)sim.launchLifeScale);
             const double lo = tL + (gq.raiseDays[0] - 1.0) * kDay, hi = tL + (gq.raiseDays[1] + 3.0) * kDay;
-            const int64_t k0 = (int64_t)std::floor((lo - (pq.nb - 1) * pq.gap) / lifeQ - pq.phase);
-            const int64_t k1 = (int64_t)std::floor(hi / lifeQ - pq.phase);
-            for (int64_t k = k0; k <= k1; ++k)
-            {
-                const double base = (k + pq.phase) * lifeQ;
-                const int b0 = std::max(0, (int)std::ceil((lo - base) / pq.gap));
-                const int b1 = std::min(pq.nb - 1, (int)std::floor((hi - base) / pq.gap));
-                for (int b = b0; b <= b1; ++b)
-                {
-                    const uint64_t other = batchKey(q, k, b);
-                    if (other == self)
-                        continue;
-                    const SatelliteSim::LaunchState::Cand co = candidate(sim, L, q, k, b);
-                    ++B.rivals;
-                    if (co.site != B.site)
-                        continue;
-                    if (std::abs(co.tL - c0.tL) < 5400.0 && h01(other, 9, 9) > myPri)
-                        ++rank;
-                }
-            }
+            forBatches(L, pq, lifeQ, lo, hi, [&](int64_t k, int b) {
+                const uint64_t other = batchKey(q, k, b);
+                if (other == self)
+                    return;
+                const SatelliteSim::LaunchState::Cand co = candidate(sim, L, q, k, b);
+                ++B.rivals;
+                if (co.site != B.site)
+                    return;
+                if (std::abs(co.tL - c0.tL) < 5400.0 && h01(other, 9, 9) > myPri)
+                    ++rank;
+            });
         }
         // A rank first moves the launch to the vehicle's next pad that reaches the plane, then (past the pads) to
         // later passes.
@@ -1197,9 +1374,19 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
             std::vector<double> pAz;
             pads.push_back({B.site, c0.tL});
             pAz.push_back(c0.az);
-            for (int st : vh0.sites)
+            // (2026-10-20, the deployment era's ~90 Starship launches a day) the alternatives in the vehicle's site list
+            // order starting AFTER the candidate's pad: the launches pushed off one pad (distinct ranks) land on distinct
+            // pads, and those pushed off different pads start from different places. (From the list's head they all
+            // piled onto its first pads: 20 a day on Louisiana A-1.)
+            const size_t ns0 = vh0.sites.size();
+            size_t at0 = 0;
+            for (size_t q = 0; q < ns0; ++q)
+                if (vh0.sites[q] == B.site)
+                    at0 = q;
+            for (size_t q = 1; q < ns0; ++q)
             {
-                if (st == B.site)
+                const int st = vh0.sites[(at0 + q) % ns0];
+                if (st == B.site || !onlineAt(L, L.cat.sites[st].onlineForVehicle(vh0.id), tNom - lead))
                     continue;
                 double a2 = 0.0;
                 const double t2 = nextCrossing(L.cat.sites[st], normalAt, tNom - lead, a2);
@@ -1251,6 +1438,12 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
             B.why = "station lost";
             return;
         }
+    }
+    // The deployment era: no crew before the station is up (or after it is retired).
+    if (pg.crew && !pl.sats.empty() && pl.sats[0] < sim.activeSatCount && sim.rosterFateAt(pl.sats[0], tL) >= 4)
+    {
+        B.why = "station not there yet";
+        return;
     }
     const launch::Vehicle &vh = L.cat.vehicles[B.veh];
     const launch::Site &st = L.cat.sites[B.site];
@@ -1326,7 +1519,9 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
             mb.sRaise = B.tD + s;
             mb.eps = lag - (dn * s + rampLag);
         }
-        mb.tEnd = B.tA + (pg.deorbitDays[0] + (pg.deorbitDays[1] - pg.deorbitDays[0]) * h01(ms, 6, 1)) * kDay;
+        // (a first fill replaces nobody: its "retiree" ends as it starts, so it is never up)
+        mb.tEnd = B.first ? B.tA
+                          : B.tA + (pg.deorbitDays[0] + (pg.deorbitDays[1] - pg.deorbitDays[0]) * h01(ms, 6, 1)) * kDay;
         B.mem.push_back(mb);
     }
     // The upper stage after deployment: a deorbit burn 30-90 min later onto an ellipse whose perigee is in the air,
@@ -1335,7 +1530,11 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     // 2026-10-19 only the expendable ones burned (40 s, while the stage sank 30 km on its circle) and Starship's ship
     // jumped from its parking orbit to 100 km at the entry interface 40 min after deploying.
     // (not before the last member has left the dispenser and drifted clear: a Starship train takes ~20-30 min)
-    const launch::Stack &stk = pg.stack;
+    // (the deployment era: an early vehicle — Falcon 9 before Starship — flies the program's satellites without its
+    // stack: they leave from the dispenser point, stowed)
+    static const launch::Stack kNoStack{};
+    const bool earlyVeh = std::find(pg.vehicles.begin(), pg.vehicles.end(), B.veh) == pg.vehicles.end();
+    const launch::Stack &stk = earlyVeh ? kNoStack : pg.stack;
     B.deployInterval = stk.intervalS >= 0.0 ? stk.intervalS : vh.deployIntervalS;
     B.tDeorbBurn = std::max(B.tD + 1800.0 + 3600.0 * h01(B.seed, 7, 1),
                             B.tD + B.deployInterval * (double)B.mem.size() + 900.0);
@@ -2790,12 +2989,18 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             kv.second.tw[0] = kv.second.tw[1] = -1e300; // every batch due again
         std::fill(L.liveSkip.begin(), L.liveSkip.end(), LaunchState::LiveSkip{}); // (their skip intervals with them)
     }
-    // A new design-life scale reshuffles every refresh: start over.
-    if (L.planesBuilt && (L.lifeScale != launchLifeScale || (L.afterStorm >= 0 && L.afterStorm != launchAfterStorm)))
+    // A new design-life scale reshuffles every refresh: start over (and the deployment era switched on / off).
+    if (L.planesBuilt && (L.lifeScale != launchLifeScale || (L.afterStorm >= 0 && L.afterStorm != launchAfterStorm) ||
+                          L.deployOn != launchDeployEra))
     {
         launchInitBlock();
         L.gpuGen = kesslerBufGen;
     }
+    // The deployment era's roster table (who is there when): computed once (and on a change), uploaded after the
+    // Kessler roster words.
+    rosterLifeEnsure();
+    if (!rosterLifeUploaded)
+        rosterLifeUpload(ctx);
     L.afterStorm = launchAfterStorm;
     if (L.clearGpu)
     {
@@ -2820,7 +3025,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     }
     const bool on = launchesEnabled && L.loaded;
     if (on && !L.planesBuilt)
-        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale, launchDeployEra);
     LaunchImpl::crewSync(*this, L);
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     std::vector<std::pair<uint64_t, LBatch *>> touchedP;
@@ -2844,37 +3049,28 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             const launch::Program &pg = L.cat.programs[pl.prog];
             const double life = progLifeS(pg, (double)launchLifeScale);
             const double lo = t - (pg.deorbitDays[1] + 1.0) * kDay, hi = t + (pg.raiseDays[1] + 1.5) * kDay;
-            const int64_t k0 = (int64_t)std::floor((lo - (pl.nb - 1) * pl.gap) / life - pl.phase);
-            const int64_t k1 = (int64_t)std::floor(hi / life - pl.phase);
-            for (int64_t k = k0; k <= k1; ++k)
-            {
-                const double base = (k + pl.phase) * life;
-                const int b0 = std::max(0, (int)std::ceil((lo - base) / pl.gap));
-                const int b1 = std::min(pl.nb - 1, (int)std::floor((hi - base) / pl.gap));
-                for (int b = b0; b <= b1; ++b)
+            LaunchImpl::forBatches(L, pl, life, lo, hi, [&](int64_t k, int b) {
+                const uint64_t key = batchKey((int)pi, k, b);
+                auto it = L.batches.find(key);
+                ++L.nFinds;
+                if (it == L.batches.end())
                 {
-                    const uint64_t key = batchKey((int)pi, k, b);
-                    auto it = L.batches.find(key);
-                    ++L.nFinds;
-                    if (it == L.batches.end())
-                    {
-                        // At most a few hundred new batches a frame (the first frame finds every train in the sky).
-                        if (++builds > 200)
-                            continue;
-                        LBatch nb;
-                        nb.plane = (int)pi;
-                        nb.k = k;
-                        nb.b = b;
-                        LaunchImpl::buildBatch(*this, L, nb, pl, life);
-                        it = L.batches.emplace(key, std::move(nb)).first;
-                    }
-                    it->second.touched = L.frame;
-                    it->second.inWalk = L.frame;
-                    L.walkList.push_back({key, &it->second});
-                    if (it->second.valid)
-                        touchedP.push_back({key, &it->second});
+                    // At most a few hundred new batches a frame (the first frame finds every train in the sky).
+                    if (++builds > 200)
+                        return;
+                    LBatch nb;
+                    nb.plane = (int)pi;
+                    nb.k = k;
+                    nb.b = b;
+                    LaunchImpl::buildBatch(*this, L, nb, pl, life);
+                    it = L.batches.emplace(key, std::move(nb)).first;
                 }
-            }
+                it->second.touched = L.frame;
+                it->second.inWalk = L.frame;
+                L.walkList.push_back({key, &it->second});
+                if (it->second.valid)
+                    touchedP.push_back({key, &it->second});
+            });
         }
         std::sort(L.walkList.begin(), L.walkList.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
         L.walkOk = builds <= 200;
@@ -3335,9 +3531,9 @@ std::string SatelliteSim::launchLabel(uint32_t slot) const
     const char *cn = o.constIdx < constellations.size() ? constellations[o.constIdx].name.c_str() : "Satellite";
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     if (si.owner % 2 == 0)
-        snprintf(b, sizeof(b), "%s #%d (new, raising; %s, arrives in %.1f d)", cn,
-                 (int)sat - (int)constellations[o.constIdx].orbitStart, L.cat.vehicles[B.veh].name.c_str(),
-                 (B.tA - t) / kDay);
+        snprintf(b, sizeof(b), "%s #%d (%s, raising; %s, arrives in %.1f d)", cn,
+                 (int)sat - (int)constellations[o.constIdx].orbitStart, B.first ? "first deployment" : "new",
+                 L.cat.vehicles[B.veh].name.c_str(), (B.tA - t) / kDay);
     else
         snprintf(b, sizeof(b), "%s #%d (retired, re-enters in %.1f d)", cn,
                  (int)sat - (int)constellations[o.constIdx].orbitStart, (B.mem[si.m].tEnd - t) / kDay);
@@ -3370,7 +3566,8 @@ std::string SatelliteSim::launchStatus(uint32_t slot) const
     else if (t < m.sRaise)
         snprintf(b, sizeof(b), "%s - parking orbit, %.0f km", tn, hKm);
     else
-        snprintf(b, sizeof(b), "%s - raising to slot, %.0f/%.0f km", tn, hKm, (m.rSlot - kR) / 1000.0);
+        snprintf(b, sizeof(b), "%s - %sraising to slot, %.0f/%.0f km", tn, B.first ? "first deployment, " : "", hKm,
+                 (m.rSlot - kR) / 1000.0);
     return b;
 }
 
@@ -3511,7 +3708,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         const launch::Vehicle &vh = L.cat.vehicles[B.veh];
         // Retirees re-entering: their fireballs.
         bool anyRe = false;
-        if (t >= B.tA)
+        if (t >= B.tA && !B.first)
         {
             auto it = std::lower_bound(B.ends.begin(), B.ends.end(), t - 200.0);
             anyRe = it != B.ends.end() && *it <= t;
@@ -4552,7 +4749,7 @@ nlohmann::json SatelliteSim::launchListJson(double hours) const
         return arr;
     SatelliteSim &sim = const_cast<SatelliteSim &>(*this);
     if (!L.planesBuilt)
-        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale, launchDeployEra);
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     struct Item
     {
@@ -4567,32 +4764,23 @@ nlohmann::json SatelliteSim::launchListJson(double hours) const
         const double life = progLifeS(pg, (double)launchLifeScale);
         // Lift-off precedes arrival by the raise (+ under a day for the window).
         const double lo = t + (pg.raiseDays[0] - 0.5) * kDay, hi = t + hours * 3600.0 + (pg.raiseDays[1] + 2.5) * kDay;
-        const int64_t k0 = (int64_t)std::floor((lo - (pl.nb - 1) * pl.gap) / life - pl.phase);
-        const int64_t k1 = (int64_t)std::floor(hi / life - pl.phase);
-        for (int64_t k = k0; k <= k1; ++k)
-        {
-            const double base = (k + pl.phase) * life;
-            const int b0 = std::max(0, (int)std::ceil((lo - base) / pl.gap));
-            const int b1 = std::min(pl.nb - 1, (int)std::floor((hi - base) / pl.gap));
-            for (int b = b0; b <= b1; ++b)
+        LaunchImpl::forBatches(L, pl, life, lo, hi, [&](int64_t k, int b) {
+            const uint64_t key = batchKey((int)pi, k, b);
+            auto it = L.batches.find(key);
+            if (it == L.batches.end())
             {
-                const uint64_t key = batchKey((int)pi, k, b);
-                auto it = L.batches.find(key);
-                if (it == L.batches.end())
-                {
-                    LBatch nb;
-                    nb.plane = (int)pi;
-                    nb.k = k;
-                    nb.b = b;
-                    LaunchImpl::buildBatch(sim, L, nb, pl, life);
-                    nb.touched = L.frame;
-                    it = L.batches.emplace(key, std::move(nb)).first;
-                }
-                const LBatch &B = it->second;
-                if (B.valid && B.tL >= t && B.tL <= t + hours * 3600.0)
-                    items.push_back({B.tL, key});
+                LBatch nb;
+                nb.plane = (int)pi;
+                nb.k = k;
+                nb.b = b;
+                LaunchImpl::buildBatch(sim, L, nb, pl, life);
+                nb.touched = L.frame;
+                it = L.batches.emplace(key, std::move(nb)).first;
             }
-        }
+            const LBatch &B = it->second;
+            if (B.valid && B.tL >= t && B.tL <= t + hours * 3600.0)
+                items.push_back({B.tL, key});
+        });
     }
     std::sort(items.begin(), items.end(), [](const Item &a, const Item &b) { return a.tL < b.tL; });
     for (const Item &it : items)
@@ -4613,6 +4801,7 @@ nlohmann::json SatelliteSim::launchListJson(double hours) const
         o["plane"] = B.plane;
         o["batch"] = B.b;
         o["refresh"] = B.k;
+        o["first_fill"] = B.first;
         o["pad_shifts"] = B.shifts;
         o["pad_rivals"] = B.rivals;
         // The Sun at the pad at lift-off (twilight launches make the jellyfish).
@@ -4783,6 +4972,11 @@ bool SatelliteSim::launchLook(int stage, std::string &msg)
     {
         const LBatch &B = kv.second;
         if (!B.valid || t < B.tL - 600.0 || t > B.tStageGone + 60.0)
+            continue;
+        // (2026-10-20, the deployment era's dozens of pads) the launch `launch next` went to, when it is flying: the
+        // nearest stage was often another rocket still on its pad.
+        if (launchFocusKey && kv.first != launchFocusKey && L.batches.count(launchFocusKey) &&
+            t >= L.batches.at(launchFocusKey).tL)
             continue;
         glm::dvec3 P;
         if (!LaunchImpl::rocketPos(L, B, stage, t - B.tL, P))
@@ -5405,6 +5599,12 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
                     "The pads on the ground: graded flat, concrete, flame trenches, tank farms, the towers (Starship's "
                     "catch tower), landing zones, their floodlights and beacons at night; no city lights within ~3 km."))
         launchPadGraphics = padOn;
+    bool eraOn = launchDeployEra;
+    if (uiToggleRow(inp, ui, "LaunchEra", 0, "Deployment era (2019-2036)", eraOn,
+                    "The constellations are built up by launches: before 2036 a constellation has only the satellites "
+                    "launched so far (Starlink from 2019, Starmind 2028-2036), stations appear on their launch dates, "
+                    "the debris field grows and the 2030s launch sites come online. Off: the 2036 roster at every date."))
+        launchDeployEra = eraOn;
     if (!launchesEnabled)
         return;
     static const char *kLife[] = {"x0.5", "x1", "x2", "x4"};
@@ -5415,7 +5615,7 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
             lSel = i;
     const int l = uiChoiceRow(inp, ui, "LaunchLife", 0, "Satellite design life", kLife, 4, lSel,
                               "x1 = each program's life (5-7 years). Shorter: more launches and re-entries (Starmind at "
-                              "x1 is already ~13 Starship launches a day). Reshuffles the schedule.");
+                              "x1 is already ~50 Starship launches a day in 2036). Reshuffles the schedule.");
     if (l >= 0 && l != lSel)
         launchLifeScale = kLifeV[l];
     static const char *kPlume[] = {"Off", "x0.3", "x1", "x3"};
@@ -6371,6 +6571,8 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
         for (size_t pi = 0; pi < L.pads.size(); ++pi)
         {
             const LPad &pd = L.pads[pi];
+            if (launchDeployEra && pd.onlineT > (double)simDayJ2000 * 86400.0 + simSecInDay)
+                continue; // the deployment era: not built yet
             auto ti = rocketTypes.find(pd.kind == 2 ? "pad_starship" : pd.kind == 1 ? "pad_falcon" : "pad_generic");
             if (ti == rocketTypes.end())
                 continue;
@@ -6843,7 +7045,7 @@ void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN,
     if (!L.loaded)
         return;
     if (!L.planesBuilt)
-        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale, launchDeployEra);
     LaunchImpl::crewSync(*this, L);
     struct Item
     {
@@ -6860,39 +7062,30 @@ void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN,
         const double life = progLifeS(pg, (double)launchLifeScale);
         // As launchListJson: lift-off precedes the nominal arrival by the raise (+ the window).
         const double lo = t0 + (pg.raiseDays[0] - 0.5) * kDay, hi = t1 + (pg.raiseDays[1] + 2.5) * kDay;
-        const int64_t k0 = (int64_t)std::floor((lo - (pl.nb - 1) * pl.gap) / life - pl.phase);
-        const int64_t k1 = (int64_t)std::floor(hi / life - pl.phase);
-        for (int64_t k = k0; k <= k1; ++k)
-        {
-            const double base = (k + pl.phase) * life;
-            const int b0 = std::max(0, (int)std::ceil((lo - base) / pl.gap));
-            const int b1 = std::min(pl.nb - 1, (int)std::floor((hi - base) / pl.gap));
-            for (int b = b0; b <= b1; ++b)
+        LaunchImpl::forBatches(L, pl, life, lo, hi, [&](int64_t k, int b) {
+            const uint64_t key = batchKey((int)pi, k, b);
+            auto it = L.batches.find(key);
+            if (it == L.batches.end())
             {
-                const uint64_t key = batchKey((int)pi, k, b);
-                auto it = L.batches.find(key);
-                if (it == L.batches.end())
-                {
-                    LBatch nb;
-                    nb.plane = (int)pi;
-                    nb.k = k;
-                    nb.b = b;
-                    LaunchImpl::buildBatch(*this, L, nb, pl, life);
-                    it = L.batches.emplace(key, std::move(nb)).first;
-                }
-                LBatch &B = it->second;
-                B.touched = std::max(B.touched, L.frame); // kept while the window lists it
-                if (!B.valid || B.tL < t0 || B.tL > t1)
-                    continue;
-                if (filter == 2)
-                {
-                    const double se = sunElevAtPad(L.cat.sites[B.site], B.tL);
-                    if (!(se < -5.0 && se > -16.0))
-                        continue;
-                }
-                items.push_back({B.tL, key});
+                LBatch nb;
+                nb.plane = (int)pi;
+                nb.k = k;
+                nb.b = b;
+                LaunchImpl::buildBatch(*this, L, nb, pl, life);
+                it = L.batches.emplace(key, std::move(nb)).first;
             }
-        }
+            LBatch &B = it->second;
+            B.touched = std::max(B.touched, L.frame); // kept while the window lists it
+            if (!B.valid || B.tL < t0 || B.tL > t1)
+                return;
+            if (filter == 2)
+            {
+                const double se = sunElevAtPad(L.cat.sites[B.site], B.tL);
+                if (!(se < -5.0 && se > -16.0))
+                    return;
+            }
+            items.push_back({B.tL, key});
+        });
     }
     std::sort(items.begin(), items.end(),
               [](const Item &a, const Item &b) { return a.tL < b.tL || (a.tL == b.tL && a.key < b.key); });
@@ -6915,6 +7108,7 @@ void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN,
         m.site = L.cat.sites[B.site].name;
         m.target = constellations[pl.constIdx].name;
         m.spacecraft = pg.spacecraft;
+        m.firstFill = B.first;
         out.push_back(std::move(m));
     }
 }
@@ -6934,7 +7128,7 @@ bool SatelliteSim::launchGoToKey(uint64_t key, bool moveObserver, double leadS, 
         return false;
     }
     if (!L.planesBuilt)
-        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale, launchDeployEra);
     launchFocusKey = key;
     auto it = L.batches.find(key);
     if (it == L.batches.end())
@@ -7174,7 +7368,7 @@ std::vector<SatelliteSim::CrewStation> SatelliteSim::launchCrewStations()
     if (!L.loaded)
         return out;
     if (!L.planesBuilt)
-        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale, launchDeployEra);
     for (const LPlane &pl : L.planes)
         if (L.cat.programs[pl.prog].crew && !pl.sats.empty())
             out.push_back({(int)pl.constIdx, (int)pl.sats[0], pl.prog});
@@ -7335,8 +7529,11 @@ void SatelliteSim::launchFillPadParams(GpuCloudParams &cp)
         double d2;
     };
     std::vector<C> cs;
+    const double tNowPad = (double)simDayJ2000 * 86400.0 + simSecInDay;
     for (size_t p = 0; p < L.pads.size(); ++p)
     {
+        if (launchDeployEra && L.pads[p].onlineT > tNowPad) // (the deployment era: not built yet)
+            continue;
         const double d2 = glm::dot(L.pads[p].g - up, L.pads[p].g - up) * R * R;
         if (d2 < 2500e3 * 2500e3)
             cs.push_back({(int)p, d2});
@@ -7443,6 +7640,8 @@ void SatelliteSim::launchFillPadLights()
     for (size_t pi = 0; pi < L.pads.size(); ++pi)
     {
         const LPad &pd = L.pads[pi];
+        if (launchDeployEra && pd.onlineT > t)
+            continue; // the deployment era: not built yet
         // The floodlights' light on low cloud and fog over the pad (2026-10-20): one light per pad, mostly the floods'
         // spill and their light off the pad's concrete (~5e4 cd upward, a Starship pad's more), not on the ground
         // (sat_sky.frag's padGround draws the lit apron itself).
@@ -8257,7 +8456,7 @@ LBatch *SatelliteSim::missionBatch(uint64_t key)
     if (!L.loaded)
         return nullptr;
     if (!L.planesBuilt)
-        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale, launchDeployEra);
     auto it = L.batches.find(key);
     if (it == L.batches.end())
     {
@@ -8364,7 +8563,8 @@ void SatelliteSim::missionBatchMilestones(const LBatch &B, std::vector<MissionMi
             r0 = std::min(r0, m.sRaise);
         if (r0 < B.tA)
             add(r0, Tr, "Train starts raising");
-        add(B.tA, Tr | Re, "Arrival in the slots; the old satellites retire");
+        add(B.tA, Tr | Re, B.first ? "Arrival in the slots (first deployment: they were empty)"
+                                   : "Arrival in the slots; the old satellites retire");
         if (!B.ends.empty())
         {
             add(B.ends.front(), Re, "First retiree re-enters");
@@ -8458,7 +8658,7 @@ bool SatelliteSim::missionSubjectOfBatch(uint64_t key, MissionSubject &out, uint
     out.role = role;
     out.title = pg.crew ? pg.spacecraft + " to " + target + " on " + L.cat.vehicles[B->veh].name
                         : L.cat.vehicles[B->veh].name + " - " + pg.name + ", " + std::to_string(B->mem.size()) +
-                              " satellites to " + target;
+                              " satellites to " + target + (B->first ? " (first deployment)" : "");
     out.what = role == kMsBooster ? "the booster" : role == kMsTrain ? "the train" : role == kMsRetiree ? "the retirees"
                                                                                                        : "the rocket";
     missionFinish(out, (double)simDayJ2000 * 86400.0 + simSecInDay);
@@ -8475,7 +8675,7 @@ bool SatelliteSim::missionRosterBatches(int sat, double t, uint64_t &keyPrev, ui
     if (!L.loaded)
         return false;
     if (!L.planesBuilt)
-        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale);
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale, launchDeployEra);
     if (L.satPlane.size() != activeSatCount)
     {
         L.satPlane.assign(activeSatCount, -1);
@@ -8503,6 +8703,23 @@ bool SatelliteSim::missionRosterBatches(int sat, double t, uint64_t &keyPrev, ui
     const int64_t k = (int64_t)std::floor((t - b * pl.gap) / life - pl.phase);
     keyPrev = batchKey(pi, k, b);
     keyNext = batchKey(pi, k + 1, b);
+    // The deployment era: the first fill stands for every lattice refresh it precedes (they do not fly).
+    if (!pl.fillT.empty() && (size_t)b < pl.fillT.size())
+    {
+        int64_t kn = k + 1;
+        while (!LaunchImpl::batchExists(L, pl, kn, b, life) && kn < k + 64)
+            ++kn;
+        keyNext = batchKey(pi, kn, b);
+        if (!LaunchImpl::batchExists(L, pl, k, b, life))
+        {
+            keyPrev = batchKey(pi, kFillK, b);
+            if (t < pl.fillT[(size_t)b]) // not there yet: its first fill is next
+            {
+                keyNext = keyPrev;
+                keyPrev = 0;
+            }
+        }
+    }
     return true;
 }
 
@@ -8932,5 +9149,378 @@ nlohmann::json SatelliteSim::missionSubjectJson(const MissionSubject &s) const
     for (const auto &kv : s.facts)
         f.push_back({kv.first, kv.second});
     j["facts"] = f;
+    return j;
+}
+
+// ── The deployment era (2026-10-20) ──────────────────────────────────────────────────────────────────
+// The constellations are BUILT UP between the late 2010s and 2036: every plane a program's "deployment" block covers is
+// first filled by launches along the block's S-curve (LPlane::fillT, buildPlanes), and a slot is not there before its
+// first fill arrives; stations, the 2020 benchmark shells and the debris field follow "roster_history" (count over
+// time, members in a hashed order). rosterLife holds each roster satellite's born / gone second (since the Kessler
+// epoch): sat_orbit.comp hides it outside them, the Kessler world leaves it out of collisions and the storm.
+namespace
+{
+constexpr int32_t kLifeAlways = INT32_MIN + 1;
+int32_t lifeSec(double t, double epoch)
+{
+    if (t <= -1e299)
+        return kLifeAlways;
+    if (t >= 1e299)
+        return kessler::kNever;
+    return (int32_t)std::clamp(std::ceil(t - epoch), -2147483000.0, 2147483000.0);
+}
+// A piecewise-linear count (held at its ends): the first time it rises above `level`, then the first after that it
+// falls back to it (+-inf: never).
+void countCrossings(const std::vector<std::pair<double, double>> &c, double scale, double level, double &born, double &gone)
+{
+    born = 1e300;
+    gone = 1e300;
+    if (c.empty())
+    {
+        born = -1e300;
+        return;
+    }
+    bool present = c.front().second * scale > level;
+    if (present)
+        born = -1e300;
+    for (size_t i = 0; i + 1 < c.size(); ++i)
+    {
+        const double t0 = c[i].first, t1 = c[i + 1].first, c0 = c[i].second * scale, c1 = c[i + 1].second * scale;
+        if (!present && c0 <= level && c1 > level)
+        {
+            born = t0 + (level - c0) / (c1 - c0) * (t1 - t0);
+            present = true;
+        }
+        else if (present && c0 > level && c1 <= level)
+        {
+            gone = t0 + (c0 - level) / (c0 - c1) * (t1 - t0);
+            return;
+        }
+    }
+}
+} // namespace
+
+void SatelliteSim::rosterLifeEnsure()
+{
+    if (!launchState)
+        launchInitBlock();
+    LaunchState &L = *launchState;
+    LaunchImpl::ensureCatalog(L);
+    const uint64_t key = 1ull | (launchDeployEra ? 2ull : 0ull) | (L.loaded ? 4ull : 0ull) | ((uint64_t)activeSatCount << 8);
+    if (key == rosterLifeKey && rosterLife.size() == 2ull * activeSatCount)
+        return;
+    const auto t0 = std::chrono::steady_clock::now();
+    rosterLifeKey = key;
+    rosterLifeUploaded = false;
+    rosterLife.assign(2ull * activeSatCount, 0);
+    for (uint32_t i = 0; i < activeSatCount; ++i)
+    {
+        rosterLife[2ull * i] = kLifeAlways;
+        rosterLife[2ull * i + 1] = kessler::kNever;
+    }
+    const double E = kesslerEpoch();
+    if (launchDeployEra && L.loaded && activeSatCount > 0)
+    {
+        if (L.planesBuilt && L.deployOn != launchDeployEra)
+            launchInitBlock(); // (the batches were built for the other era)
+        if (!L.planesBuilt)
+            LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale, launchDeployEra);
+        size_t nFill = 0;
+        for (const LPlane &pl : L.planes)
+        {
+            if (pl.fillT.empty())
+                continue;
+            const int payload = LaunchImpl::payloadOf(*this, L, pl);
+            for (size_t j = 0; j < pl.sats.size(); ++j)
+                if (pl.sats[j] < activeSatCount)
+                {
+                    rosterLife[2ull * pl.sats[j]] = lifeSec(pl.fillT[std::min(j / (size_t)payload, pl.fillT.size() - 1)], E);
+                    ++nFill;
+                }
+        }
+        // Groups without launches (stations, benchmark shells, the debris field).
+        size_t nHist = 0;
+        for (size_t c = 0; c < constellations.size(); ++c)
+        {
+            const ConstellationConfig &cc = constellations[c];
+            const launch::RosterHistory *rh = nullptr;
+            for (const launch::RosterHistory &h : L.cat.history)
+            {
+                for (const std::string &m : h.match)
+                    if (cc.name.find(m) != std::string::npos)
+                        rh = &h;
+                if (rh)
+                    break;
+            }
+            if (!rh)
+                continue;
+            const uint32_t i0 = cc.orbitStart, i1 = std::min(cc.orbitStart + cc.orbitCount, activeSatCount);
+            if (i1 <= i0)
+                continue;
+            // Members in a hashed order (a growing debris field fills in everywhere at once, not plane by plane).
+            std::vector<std::pair<double, uint32_t>> ord;
+            ord.reserve(i1 - i0);
+            for (uint32_t i = i0; i < i1; ++i)
+                ord.push_back({h01(0x5EED0000ull + c, i, 3), i});
+            std::sort(ord.begin(), ord.end());
+            const double scale = rh->fraction ? (double)(i1 - i0) : 1.0;
+            for (size_t r = 0; r < ord.size(); ++r)
+            {
+                double born, gone;
+                countCrossings(rh->count, scale, (double)r + 0.5, born, gone);
+                rosterLife[2ull * ord[r].second] = lifeSec(born, E);
+                rosterLife[2ull * ord[r].second + 1] = lifeSec(gone, E);
+                ++nHist;
+            }
+        }
+        char m[200];
+        snprintf(m, sizeof(m), "launches: deployment era: %zu satellites by first fills, %zu by history, %.0f ms", nFill, nHist,
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        Log::line(m);
+    }
+    // The Kessler world was built with another table: re-simulate (its cache key includes it).
+    if (kWorker && kLifeHashKey != rosterLifeKey)
+        kRestartPending = true;
+}
+
+void SatelliteSim::rosterLifeUpload(VulkanContext &ctx)
+{
+    if (kesslerBuf == VK_NULL_HANDLE || activeSatCount == 0)
+        return;
+    const VkDeviceSize bytes = 8ull * activeSatCount;
+    std::vector<int32_t> words;
+    const std::vector<int32_t> *src = &rosterLife;
+    if (rosterLife.size() < 2ull * activeSatCount)
+    {
+        words.assign(2ull * activeSatCount, kessler::kNever);
+        for (uint32_t i = 0; i < activeSatCount; ++i)
+            words[2ull * i] = kLifeAlways;
+        src = &words;
+    }
+    VkBuffer st;
+    VkDeviceMemory sm;
+    ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, st, sm);
+    void *m = nullptr;
+    vkMapMemory(ctx.device, sm, 0, bytes, 0, &m);
+    memcpy(m, src->data(), (size_t)bytes);
+    vkUnmapMemory(ctx.device, sm);
+    VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+    VkBufferCopy region{0, 8ull * activeSatCount, bytes}; // after the 2 dead / end words per satellite
+    vkCmdCopyBuffer(cmd, st, kesslerBuf, 1, &region);
+    ctx.endOneTimeCommands(cmd);
+    vkDestroyBuffer(ctx.device, st, nullptr);
+    vkFreeMemory(ctx.device, sm, nullptr);
+    rosterLifeUploaded = src == &rosterLife;
+}
+
+std::vector<SatelliteSim::DeployRow> SatelliteSim::deployRows(double t) const
+{
+    std::vector<DeployRow> out;
+    if (!launchState)
+        return out;
+    const LaunchState &L = *launchState;
+    if (!L.deployOn)
+        return out;
+    for (const LaunchState::Cohort &co : L.cohorts)
+    {
+        const launch::Program &pg = L.cat.programs[(size_t)co.prog];
+        const double life = progLifeS(pg, (double)launchLifeScale);
+        DeployRow r;
+        r.name = co.name;
+        r.target = co.N;
+        r.deployed = co.N * co.curve.frac(t);
+        r.startT = co.curve.S;
+        r.completeT = co.curve.C;
+        // Launches a day: the first fills (the curve's slope) + the refreshes of planes past their first life.
+        const double h = 0.5 * kDay;
+        const double fillPerDay = co.nBatches * (co.curve.frac(t + h) - co.curve.frac(t - h)) / (2.0 * h) * kDay;
+        const double refreshPerDay = co.nBatches * co.curve.frac(t - L.cat.minFirstLifeFrac * life) / (life / kDay);
+        r.perDay = fillPerDay + refreshPerDay;
+        out.push_back(r);
+    }
+    return out;
+}
+
+nlohmann::json SatelliteSim::deployStateJson() const
+{
+    nlohmann::json j;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    j["enabled"] = launchDeployEra;
+    j["utc"] = fmtUtc(t);
+    nlohmann::json rows = nlohmann::json::array();
+    for (const DeployRow &r : deployRows(t))
+        rows.push_back({{"cohort", r.name}, {"deployed", std::lround(r.deployed)}, {"target", std::lround(r.target)},
+                        {"launches_per_day", r.perDay}, {"start", fmtUtc(r.startT)}, {"complete", fmtUtc(r.completeT)}});
+    j["cohorts"] = rows;
+    // The roster now: how many satellites are there per constellation (rosterLife).
+    nlohmann::json cs = nlohmann::json::object();
+    const int32_t sec = (int32_t)std::clamp(std::floor(t - kesslerEpoch()), -2147483000.0, 2147483000.0);
+    uint64_t total = 0, there = 0;
+    for (const ConstellationConfig &cc : constellations)
+    {
+        uint64_t n = 0;
+        const uint32_t i1 = std::min(cc.orbitStart + cc.orbitCount, activeSatCount);
+        for (uint32_t i = cc.orbitStart; i < i1; ++i)
+            n += 2ull * i + 1 >= rosterLife.size() || (sec >= rosterLife[2ull * i] && sec < rosterLife[2ull * i + 1]);
+        cs[cc.name] = {{"there", n}, {"of", i1 > cc.orbitStart ? i1 - cc.orbitStart : 0}};
+        total += i1 > cc.orbitStart ? i1 - cc.orbitStart : 0;
+        there += n;
+    }
+    j["constellations"] = cs;
+    j["roster_there"] = there;
+    j["roster_total"] = total;
+    if (launchState)
+    {
+        const LaunchState &L = *launchState;
+        int online = 0, onlineStarship = 0;
+        for (const LPad &p : L.pads)
+        {
+            const bool on = !launchDeployEra || p.onlineT <= t;
+            online += on;
+            onlineStarship += on && p.kind == 2;
+        }
+        j["pads_online"] = online;
+        j["starship_pads_online"] = onlineStarship;
+        j["pads_total"] = L.pads.size();
+    }
+    return j;
+}
+
+// Launch counts from the schedule alone (no batch is built): per program, per calendar year, by arrival less the mean
+// raise (+ ~1 day for the window) — the first fills and the refreshes that exist; and the Starship launches per day
+// (programs flying Starship only, early vehicles excepted), their busiest day. Approximate: a batch that turns out
+// invalid (no window, a pad taken) still counts.
+nlohmann::json SatelliteSim::deployStatsJson(double fromT, double toT, double stepDays) const
+{
+    nlohmann::json j;
+    if (!launchState)
+        return j;
+    LaunchState &L = const_cast<LaunchState &>(*launchState);
+    LaunchImpl::ensureCatalog(L);
+    if (!L.loaded)
+        return j;
+    if (!L.planesBuilt)
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale, launchDeployEra);
+    int starshipVeh = -1;
+    for (size_t v = 0; v < L.cat.vehicles.size(); ++v)
+        if (L.cat.vehicles[v].id == "starship")
+            starshipVeh = (int)v;
+    const int nDays = std::max(1, (int)std::ceil((toT - fromT) / kDay));
+    std::vector<float> ssDay((size_t)nDays, 0.0f), allDay((size_t)nDays, 0.0f);
+    std::map<std::string, std::map<int, int>> byProgYear;
+    std::map<std::string, int> fillByProg, refreshByProg;
+    for (const LPlane &pl : L.planes)
+    {
+        const launch::Program &pg = L.cat.programs[(size_t)pl.prog];
+        const double life = progLifeS(pg, (double)launchLifeScale);
+        const double raise = 0.5 * (pg.raiseDays[0] + pg.raiseDays[1]) * kDay + 1.0 * kDay;
+        const bool ssOnly = pg.vehicles.size() == 1 && pg.vehicles[0] == starshipVeh;
+        const launch::Deployment *dp =
+            pl.cohort >= 0 ? &pg.deploy[(size_t)L.cohorts[(size_t)pl.cohort].dep] : nullptr;
+        LaunchImpl::forBatches(L, pl, life, fromT + raise, toT + raise, [&](int64_t k, int b) {
+            const double tl = LaunchImpl::arrivalOf(pl, k, b, life) - (pg.crew ? 0.0 : raise);
+            if (tl < fromT || tl >= toT)
+                return;
+            if (pg.crew && rosterFateAt(pl.sats[0], tl) >= 4)
+                return;
+            const int d = (int)((tl - fromT) / kDay);
+            if (d < 0 || d >= nDays)
+                return;
+            allDay[(size_t)d] += 1.0f;
+            const bool early = dp && !dp->earlyVehicles.empty() && tl < dp->earlyUntilT;
+            if (ssOnly && !early)
+                ssDay[(size_t)d] += 1.0f;
+            // The calendar year (J2000 s -> year, 365.2425-day years from 2000-01-01).
+            const int year = 2000 + (int)std::floor((tl + 43200.0) / (365.2425 * kDay));
+            byProgYear[pg.name][year] += 1;
+            (k == kFillK ? fillByProg : refreshByProg)[pg.name] += 1;
+        });
+    }
+    nlohmann::json progs = nlohmann::json::object();
+    for (const auto &kv : byProgYear)
+    {
+        nlohmann::json y = nlohmann::json::object();
+        int tot = 0;
+        for (const auto &yv : kv.second)
+        {
+            y[std::to_string(yv.first)] = yv.second;
+            tot += yv.second;
+        }
+        progs[kv.first] = {{"by_year", y}, {"total", tot}, {"first_fills", fillByProg[kv.first]},
+                           {"refreshes", refreshByProg[kv.first]}};
+    }
+    j["programs"] = progs;
+    // Rates: per-step means (stepDays) and the busiest single day.
+    auto peak = [&](const std::vector<float> &v, double &peakDay) {
+        float mx = 0.0f;
+        for (size_t d = 0; d < v.size(); ++d)
+            if (v[d] > mx)
+            {
+                mx = v[d];
+                peakDay = fromT + (double)d * kDay;
+            }
+        return mx;
+    };
+    double pAll = 0.0, pSs = 0.0;
+    j["peak_launches_per_day"] = peak(allDay, pAll);
+    j["peak_day"] = fmtUtc(pAll);
+    j["peak_starship_per_day"] = peak(ssDay, pSs);
+    j["peak_starship_day"] = fmtUtc(pSs);
+    nlohmann::json series = nlohmann::json::array();
+    const int step = std::max(1, (int)std::lround(stepDays));
+    for (int d0 = 0; d0 < nDays; d0 += step)
+    {
+        double a = 0.0, s = 0.0;
+        int n = 0;
+        for (int d = d0; d < std::min(nDays, d0 + step); ++d, ++n)
+        {
+            a += allDay[(size_t)d];
+            s += ssDay[(size_t)d];
+        }
+        series.push_back({{"from", fmtUtc(fromT + d0 * kDay)}, {"launches_per_day", a / std::max(n, 1)},
+                          {"starship_per_day", s / std::max(n, 1)}});
+    }
+    j["series"] = series;
+    return j;
+}
+
+// Same-pad pressure in a window (harness `launch padstats`): the listed launches (built: deconflicted), per site, the
+// pairs on one pad within 90 min, the busiest pad-day.
+nlohmann::json SatelliteSim::launchPadStatsJson(double hours) const
+{
+    const nlohmann::json list = launchListJson(hours);
+    nlohmann::json j;
+    std::map<std::string, std::vector<double>> bySite;
+    for (const nlohmann::json &o : list)
+        bySite[o["site"].get<std::string>()].push_back(o["in_hours"].get<double>());
+    int pairs90 = 0, maxPadDay = 0;
+    nlohmann::json sites = nlohmann::json::object();
+    for (auto &kv : bySite)
+    {
+        std::sort(kv.second.begin(), kv.second.end());
+        int p = 0;
+        for (size_t a = 0; a < kv.second.size(); ++a)
+            for (size_t b = a + 1; b < kv.second.size() && kv.second[b] - kv.second[a] < 1.5; ++b)
+                ++p;
+        pairs90 += p;
+        // The busiest 24 h on this pad.
+        int best = 0;
+        for (size_t a = 0, b = 0; a < kv.second.size(); ++a)
+        {
+            while (b < kv.second.size() && kv.second[b] - kv.second[a] < 24.0)
+                ++b;
+            best = std::max(best, (int)(b - a));
+        }
+        maxPadDay = std::max(maxPadDay, best);
+        sites[kv.first] = {{"launches", kv.second.size()}, {"pairs_within_90min", p}, {"busiest_24h", best}};
+    }
+    j["hours"] = hours;
+    j["launches"] = list.size();
+    j["launches_per_day"] = (double)list.size() / std::max(hours / 24.0, 1e-9);
+    j["same_pad_pairs_within_90min"] = pairs90;
+    j["same_pad_pairs_per_week"] = pairs90 * 168.0 / std::max(hours, 1.0);
+    j["busiest_pad_24h"] = maxPadDay;
+    j["sites"] = sites;
     return j;
 }

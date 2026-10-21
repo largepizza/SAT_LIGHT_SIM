@@ -33,7 +33,7 @@ constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 14; // (14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
+constexpr uint32_t kCacheVersion = 15; // (15: the deployment era: roster born / gone seconds, 2026-10-20; 14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
                                        // 12: steps on a fixed grid, seeded by their index; a step's events ordered)
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
@@ -324,6 +324,19 @@ static void buildWorld(const SatelliteSim &sim, kessler::World &w, const std::ve
                 r.clusterSize = (uint8_t)std::max<uint32_t>(1, cc.orbitStart + cc.orbitCount - (i - r.clusterSlot));
         }
     }
+    // The deployment era (2026-10-20): when each roster satellite is there (rosterLife: born, gone).
+    w.rosterBorn.clear();
+    w.rosterGone.clear();
+    if (sim.rosterLifeTable().size() >= 2ull * rosterCount && rosterCount > 0)
+    {
+        w.rosterBorn.resize(rosterCount);
+        w.rosterGone.resize(rosterCount);
+        for (uint32_t i = 0; i < rosterCount; ++i)
+        {
+            w.rosterBorn[i] = sim.rosterLifeTable()[2ull * i];
+            w.rosterGone[i] = sim.rosterLifeTable()[2ull * i + 1];
+        }
+    }
     w.reset();
 }
 
@@ -350,6 +363,18 @@ static uint64_t worldHash(const kessler::World &w)
     h = fnv(h, w.s.kitArea, sizeof(w.s.kitArea));
     h = fnvv(h, kFuryArriveT);
     h = fnvv(h, kFuryPeakKp);
+    {
+        // The deployment era: who is there from the CME on (born seconds before it are all alike to the cached
+        // engine; a gone second matters).
+        uint64_t m = 0x9E3779B97F4A7C15ull;
+        for (size_t i = 0; i < w.rosterBorn.size(); ++i)
+        {
+            const uint64_t v = ((uint64_t)(uint32_t)std::max(w.rosterBorn[i], -1) << 32) | (uint32_t)w.rosterGone[i];
+            m = (m ^ (v + i * 0xC2B2AE3D27D4EB4Full)) * 0x100000001B3ull;
+            m ^= m >> 29;
+        }
+        h = fnvv(h, m);
+    }
     for (const kessler::TypeInfo &t : w.types)
     {
         h = fnvv(h, t.massKg);
@@ -523,6 +548,8 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
 
     std::unique_ptr<KesslerWorker, KesslerWorkerDelete> wk(new KesslerWorker());
     const double raanAnchorT = (double)simInitDayJ2000 * 86400.0 + simInitSecInDay;
+    rosterLifeEnsure(); // the deployment era: who is there when (the world needs it)
+    kLifeHashKey = rosterLifeKey;
     buildWorld(*this, wk->w, satOrbits, activeSatCount, constellations, satTypes, raanAnchorT, kFuryArriveT,
                kesslerRateMult, kesslerAvoidance, kesslerHorizonYears, kDebrisType, kDebrisConst, kDebrisKit);
     kHash = worldHash(wk->w);
@@ -871,7 +898,9 @@ void SatelliteSim::kesslerEnsureCapacity(VulkanContext &ctx, size_t records)
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, satVisibleBuf, satVisibleMem);
     ctx.createBuffer(sizeof(uint32_t) * slots, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, satVisibleIdxBuf, satVisibleIdxMem);
-    kLaunchWord0 = (2u * std::max<uint32_t>(activeSatCount, 1) + 3u) & ~3u;
+    // Roster words: dead / end seconds (2 per satellite), then the deployment era's born / gone seconds (2 more,
+    // rosterLife), then the launch block.
+    kLaunchWord0 = (4u * std::max<uint32_t>(activeSatCount, 1) + 3u) & ~3u;
     kPoolWord0 = kLaunchWord0 + 16u * kLaunchCap;
     ++kesslerBufGen;
     ctx.createBuffer(4ull * ((VkDeviceSize)kPoolWord0 + 16ull * kPoolCap),
@@ -917,6 +946,7 @@ void SatelliteSim::kesslerUploadAllSync(VulkanContext &ctx)
     ctx.endOneTimeCommands(cmd);
     vkDestroyBuffer(ctx.device, st, nullptr);
     vkFreeMemory(ctx.device, sm, nullptr);
+    rosterLifeUpload(ctx); // the deployment era's born / gone words
     if (kStageBuf == VK_NULL_HANDLE)
     {
         ctx.createBuffer(kStageBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -1064,6 +1094,8 @@ bool SatelliteSim::kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, 
     const int32_t nowSec = (int32_t)std::clamp(std::floor(t - kFuryArriveT), -2147483000.0, 2147483000.0);
     // Already gone at this time (destroyed, re-entered; a debris slot not holding a piece now)?
     auto existsNow = [&](uint32_t s) {
+        if (s < activeSatCount && rosterFateAt(s, t) >= 4) // the deployment era: not launched yet / retired
+            return false;
         if (s < activeSatCount)
             return 2ull * s + 1 >= kRosterWords.size() || nowSec < kRosterWords[2ull * s + 1];
         const uint32_t j = s - poolIdx0();
@@ -1115,6 +1147,16 @@ SatelliteSim::ExplodeResult SatelliteSim::explodeSatellite(int satIndex, Breakup
     {
         r.reason = "no satellite selected";
         return r;
+    }
+    if (satIndex < (int)activeSatCount)
+    {
+        // (2026-10-20) A slot whose satellite is not launched yet, or whose group is retired, is not there.
+        const int fate = rosterFateAt((uint32_t)satIndex, (double)simDayJ2000 * 86400.0 + simSecInDay);
+        if (fate >= 4)
+        {
+            r.reason = std::string("that satellite is ") + rosterFateName(fate);
+            return r;
+        }
     }
     std::string why;
     r.ok = kesslerUserEvent(kind == BreakupKind::Asat ? kessler::EV_ASAT : kessler::EV_EXPLOSION, (uint32_t)satIndex,
@@ -2225,6 +2267,23 @@ bool SatelliteSim::kesslerGoToNextReentry(std::string &msg)
 // ── Readouts ────────────────────────────────────────────────────────────────────────────────────
 int SatelliteSim::rosterFateAt(uint32_t idx, double t, double *whenT) const
 {
+    // The deployment era (2026-10-20): not launched yet (4), or retired with its group (5).
+    if (idx < activeSatCount && 2ull * idx + 1 < rosterLife.size())
+    {
+        const int32_t sec = (int32_t)std::clamp(std::floor(t - kFuryArriveT), -2147483000.0, 2147483000.0);
+        if (sec < rosterLife[2ull * idx])
+        {
+            if (whenT)
+                *whenT = kFuryArriveT + (double)rosterLife[2ull * idx];
+            return 4;
+        }
+        if (sec >= rosterLife[2ull * idx + 1])
+        {
+            if (whenT)
+                *whenT = kFuryArriveT + (double)rosterLife[2ull * idx + 1];
+            return 5;
+        }
+    }
     if (!kesslerEnabled || idx >= activeSatCount || 2ull * idx + 1 >= kRosterWords.size())
         return 0;
     const int32_t sec = (int32_t)std::clamp(std::floor(t - kFuryArriveT), -2147483000.0, 2147483000.0);
@@ -2251,6 +2310,8 @@ const char *SatelliteSim::rosterFateName(int fate)
     case 1: return "dead";
     case 2: return "destroyed";
     case 3: return "re-entered";
+    case 4: return "not launched yet";
+    case 5: return "retired";
     default: return "working";
     }
 }
@@ -2260,7 +2321,7 @@ void SatelliteSim::kesslerDropGoneSelection()
     // A roster satellite the cascade (or the player) destroyed, or that re-entered, is not there to select: drop it
     // (the selection panel kept its reticle on the orbit it no longer flies: the user's "ghost", issue 20261019_231126).
     // Going back in time before its end does not bring the selection back.
-    if (!kesslerEnabled || selectedSatIndex < 0 || selectedSatIndex >= (int)activeSatCount)
+    if (selectedSatIndex < 0 || selectedSatIndex >= (int)activeSatCount)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     if (rosterFateAt((uint32_t)selectedSatIndex, t) >= 2)

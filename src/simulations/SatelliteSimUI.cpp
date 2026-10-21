@@ -8448,6 +8448,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         engineLightGain = settingClamp(lj.value("engine_light_gain", engineLightGain), 0.0f, 100.0f);
         launchAfterStorm = settingClamp(lj.value("after_storm", launchAfterStorm), 0, 1);
         launchPadGraphics = lj.value("pad_graphics", launchPadGraphics);
+        launchDeployEra = lj.value("deployment_era", launchDeployEra);
     }
 
     if (j.contains("planets"))
@@ -9264,7 +9265,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                      {"rocket_gain", launchRocketGain},
                      {"engine_light_gain", engineLightGain},
                      {"after_storm", launchAfterStorm},
-                     {"pad_graphics", launchPadGraphics}};
+                     {"pad_graphics", launchPadGraphics},
+                     {"deployment_era", launchDeployEra}};
     return j;
 }
 

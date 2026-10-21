@@ -295,6 +295,11 @@ nlohmann::json SatelliteSim::missionsStateJson()
     }
     j["stations"] = st;
     j["status"] = msStatus;
+    nlohmann::json bo = nlohmann::json::array();
+    for (const DeployRow &d : deployRows(now))
+        bo.push_back({{"name", d.name}, {"deployed", std::lround(d.deployed)}, {"target", std::lround(d.target)},
+                      {"launches_per_day", d.perDay}});
+    j["build_out"] = bo;
     return j;
 }
 
@@ -365,6 +370,8 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                         tag((uint32_t)id * 4u + 0u, "CREWED", Pal::tagCrew);
                     if (m.twilight)
                         tag((uint32_t)id * 4u + 1u, "TWILIGHT", Pal::tagTwilight);
+                    if (m.firstFill)
+                        tag((uint32_t)id * 4u + 2u, "BUILD-OUT", Pal::progressFill);
                     if (m.crew)
                         text(msStr("%s to %s (%d crew)", m.spacecraft.c_str(), m.target.c_str(), m.people), Pal::textPrimary, 12, true);
                     else
@@ -457,7 +464,8 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                 {
                     static const char *kTabs[] = {"Upcoming", "Ongoing", "Controls"};
                     static const char *kTips[] = {"The next launches, the next twilight and crewed launches, the Sun's Fury",
-                                                  "Crew flights, stations, rockets in flight, trains and retirements",
+                                                  "The constellations' build-out, crew flights, stations, rockets in flight, "
+                                                  "trains and retirements",
                                                   "Launches and the Sun's Fury: settings and live counts"};
                     for (int i = 0; i < 3; ++i)
                         if (uiButton(inp, ui, "MsTab", i, kTabs[i], kTips[i], msTab == i))
@@ -510,6 +518,29 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                     else if (msTab == 1)
                     {
                         // ── Ongoing ──────────────────────────────────────────────────────────────────
+                        // The deployment era (2026-10-20): each constellation's build-out to its 2036 size, first.
+                        if (launchDeployEra)
+                        {
+                            uiSection("MsOSec", 4, "BUILD-OUT (DEPLOYMENT ERA)");
+                            const std::vector<DeployRow> rows = deployRows(now);
+                            if (rows.empty())
+                                text("Nothing is being built up.", Pal::textDim, 11);
+                            for (size_t r = 0; r < rows.size(); ++r)
+                            {
+                                const DeployRow &d = rows[r];
+                                const double f = d.target > 0.0 ? d.deployed / d.target : 1.0;
+                                char uc[48], us[48];
+                                fmtUtcShort(d.completeT, uc, sizeof(uc));
+                                fmtUtcShort(d.startT, us, sizeof(us));
+                                const char *state = f >= 0.9999 ? msStr("complete since %.10s", uc)
+                                                    : f <= 0.0  ? msStr("first launch %.10s", us)
+                                                                : msStr("complete %.10s", uc);
+                                ongoingRow(1000 + (int)r, msStr("%s", d.name.c_str()),
+                                           msStr("%.0f of %.0f satellites (%.1f%%), %.1f launches a day; %s", d.deployed,
+                                                 d.target, 100.0 * f, d.perDay, state),
+                                           0.0, f, nullptr);
+                            }
+                        }
                         static const char *kCats[] = {"CREW TRANSFERS", "CREWED STATIONS", "SATELLITE LAUNCHES",
                                                       "SATELLITE OPERATIONS"};
                         int rid = 0;
@@ -562,7 +593,11 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             const int fate = cs0.sat >= 0 ? rosterFateAt((uint32_t)cs0.sat, now, &tFate) : 0;
                             char fu[40];
                             fmtUtcShort(tFate, fu, sizeof(fu));
-                            if (fate == 1)
+                            if (fate == 4)
+                                status = msStr("Not launched yet (%.10s)", fu);
+                            else if (fate == 5)
+                                status = msStr("Retired %.10s", fu);
+                            else if (fate == 1)
                                 status = msStr("Dead since %s, tumbling, uncrewed; no more crew flights", fu);
                             else if (fate >= 2)
                                 status = msStr("%s %s; no more crew flights", fate == 2 ? "Destroyed" : "Re-entered", fu);
