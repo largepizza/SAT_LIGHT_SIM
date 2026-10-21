@@ -647,6 +647,7 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             dp.pos = glm::dvec3(jsonVec3(jp, "position", glm::vec3(0.0f)));
             const glm::dvec3 ax = glm::dvec3(jsonVec3(jp, "axis", glm::vec3(1.0f, 0.0f, 0.0f)));
             dp.axis = glm::length(ax) > 1e-9 ? glm::normalize(ax) : glm::dvec3(1.0, 0.0, 0.0);
+            dp.use = jp.value("use", std::string("crew"));
             out.dockPorts.push_back(dp);
         }
         if (j.contains("deployment"))

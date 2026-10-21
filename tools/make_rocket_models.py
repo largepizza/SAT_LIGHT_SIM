@@ -485,6 +485,29 @@ VEHICLES = {
         refs=["Wikipedia 'Soyuz-2': core (Block A) 2.95 m x 27.1 m, four tapered boosters 2.68 m x 19.6 m, Block I "
               "2.66 m x 6.7 m on an open truss, 46 m with escape tower; RD-107A / RD-108A four chambers each"],
         notes="Shown as the crewed configuration. Core narrowing and booster taper from drawings; verniers omitted."),
+    # Cargo (2026-10-21, the visiting cargo ships): Progress MS under its own fairing (no escape tower), Tianzhou on
+    # Long March 7.
+    "soyuz2_progress": dict(
+        r=1.475, core=27.1, core_mat="white", soyuz_core=True, inter=(0.0, "white"),
+        eng=dict(rings=[(4, 0.45)], re=0.36, L=1.5, z=-1.1, phase=45.0), aft="grey",
+        side=dict(n=4, r=1.34, len=19.6, mat="white", nose_kind="soyuz", re=0.36, eL=1.4, cant=0.0, phase=45.0,
+                  rings=[(4, 0.45)], fin=(1.8, 0.9, 1.1)),
+        upper=dict(len=6.7, mat="white", r=1.33, truss=1.6,
+                   eng=dict(rings=[(4, 0.4)], re=0.26, L=1.0, protrude=0.6)),
+        fairing=dict(fr=1.5, cyl=6.6, nose=3.6, tip=0.45), capsule="progress",
+        refs=["Wikipedia 'Soyuz-2' / 'Progress MS': as the crewed Soyuz-2.1a, Progress under a 2.7-3 m fairing "
+              "without an escape tower, ~46 m"],
+        notes="Shown as the Progress configuration. Fairing length estimated from photographs."),
+    "long_march_7": dict(
+        r=1.675, core=26.7, core_mat="white", inter=(2.0, "white"),
+        eng=dict(rings=[(2, 0.75)], re=0.5, L=1.8, z=-1.3), aft="grey",
+        side=dict(n=4, r=1.125, len=26.3, mat="white", nose=3.6, nose_kind="cone", re=0.5, eL=1.8, cant=0.0,
+                  phase=45.0),
+        upper=dict(len=11.5, mat="white", eng=dict(rings=[(4, 0.75)], re=0.35, L=1.4, protrude=1.1)),
+        fairing=dict(fr=2.1, cyl=10.4, nose=4.6, tip=0.4), capsule="tianzhou",
+        refs=["Wikipedia 'Long March 7': 3.35 m core (2 YF-100) 26.7 m, four 2.25 m boosters (1 YF-100 each) 26.3 m, "
+              "a 3.35 m second stage (4 YF-115), 4.2 m fairing, 53.1 m; Tianzhou flies from Wenchang LC-201"],
+        notes="Booster nose and fairing lengths estimated from photographs (the fairing long enough for Tianzhou)."),
 }
 
 
@@ -750,6 +773,26 @@ def capsule_parts(b, kind, z):
         b.profile("orbital_module", dome(1.1, 0.4, z + 0.4, up=False) + [[z + 2.4, 1.1]] +
                   dome(1.1, 0.4, z + 2.4, up=True)[1:], "white", caps=False)
         return z + 2.8
+    if kind == "progress":
+        # Progress MS (2026-10-21): Soyuz MS's service module, a refuelling module, the cargo module; arrays folded.
+        b.profile("service_module", [[z, 1.36], [z + 2.5, 1.36], [z + 2.6, 1.1]], "grey", caps=True)
+        b.engines("sm_engine", [(1, 0.0)], 0.3, 0.5, z - 0.3, mat="nozzle")
+        for k in range(2):
+            b.radial_box("sm_array_folded", 90.0 + 180.0 * k, 1.36, z + 1.3, 0.2, 1.8, 2.2, "cells")
+        z += 2.6
+        b.profile("refuelling_module", [[z, 1.05], [z + 1.2, 1.05], [z + 1.6, 0.7]], "grey", caps=True)
+        z += 1.6
+        b.profile("cargo_module", [[z, 0.6], [z + 0.4, 1.1], [z + 2.2, 1.1], [z + 2.65, 0.5]], "green", caps=True)
+        return z + 2.65
+    if kind == "tianzhou":
+        # Tianzhou (2026-10-21): propulsion module aft, cargo module forward; wings folded against the propulsion module.
+        b.profile("propulsion_module", [[z, 1.4], [z + 3.3, 1.4], [z + 3.9, 1.675]], "white", caps=True)
+        b.engines("pm_engines", [(4, 0.7)], 0.18, 0.5, z - 0.3, mat="nozzle")
+        for k in range(2):
+            b.radial_box("pm_array_folded", 90.0 + 180.0 * k, 1.4, z + 1.6, 0.25, 2.0, 2.8, "cells")
+        z += 3.9
+        b.profile("cargo_module", [[z, 1.675], [z + 5.6, 1.675], [z + 6.3, 0.85]], "white", caps=True)
+        return z + 6.3
     # Soyuz MS: service module 2.7 m x 2.5 m, descent module 2.17 m, orbital module 2.25 m (a sphere-ish).
     b.profile("service_module", [[z, 1.36], [z + 2.5, 1.36], [z + 2.6, 1.1]], "grey", caps=True)
     b.engines("sm_engine", [(1, 0.0)], 0.3, 0.5, z - 0.3, mat="nozzle")
@@ -1125,7 +1168,7 @@ def main():
                   "stage's frame: separated, it falls away tumbling.", b.c)
             n += 2
             if v.get("capsule"):
-                tops[vid] = info["spacecraft_top"] + (0.3 if v["capsule"] == "gaganyaan" else 0.35)
+                tops[vid] = info["spacecraft_top"] + (0.3 if v["capsule"] in ("gaganyaan", "tianzhou") else 0.35)
                 b = Builder()
                 upper_parts(b, v, 0.0, mode="empty")
                 write(vid, "upper_empty", refs, notes + " After its spacecraft has separated.", b.c)

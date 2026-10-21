@@ -274,22 +274,27 @@ class Station:
                    abs(a[1]) * 0.5 + abs(a[0]) * (2 * blanket_w + gap), 0.5]
             self.box(name + "_box_" + end, add(root, a, off), bsz, "gold", group, pivot=axis_pt)
 
-    def port(self, name, base, axis, r=0.8, length=0.7, ring=True, dock=False):
-        """A docking / berthing port: a short barrel and a lip ring. dock: a crew spacecraft docks here (the sim's
-        crew rotations, 2026-10-20: the contact point is the barrel's end)."""
+    def port(self, name, base, axis, r=0.8, length=0.7, ring=True, dock=False, use="crew"):
+        """A docking / berthing port: a short barrel and a lip ring. dock: a visiting spacecraft docks here (the sim's
+        crew rotations, 2026-10-20, and cargo ships, 2026-10-21: the contact point is the barrel's end); use: which
+        ("crew" / "cargo")."""
         self.prof(name, base, axis, [[0, r], [length, r]], "metal", ro=True, caps="top")
         if dock:
-            self.dock(name, add(base, AX[axis] if isinstance(axis, str) else norm(axis), length), axis)
+            self.dock(name, add(base, AX[axis] if isinstance(axis, str) else norm(axis), length), axis, use=use)
         if ring:
             self.prof(name + "_ring", add(base, AX[axis] if isinstance(axis, str) else axis, length - 0.12),
                       axis, [[0, r + 0.12], [0.12, r + 0.12]], "metal", ro=True, caps="both")
 
-    def dock(self, name, tip, axis):
-        """A docking port's contact point (station body frame) and its outward axis, for the sim's crew vehicles.
-        Visiting crew spacecraft are NOT modelled on the station any more (they were render-only greebles): the sim
-        flies real ones there and draws them docked."""
+    def dock(self, name, tip, axis, use="crew"):
+        """A docking port's contact point (station body frame) and its outward axis, for the sim's visiting vehicles
+        (use: "crew" or "cargo"). Visiting spacecraft are NOT modelled on the station any more (they were render-only
+        greebles): the sim flies real ones there (crews 2026-10-20, Progress / Tianzhou 2026-10-21) and draws them
+        docked."""
         a = AX[axis] if isinstance(axis, str) else norm(axis)
-        self.ports.append({"name": name, "position": r4(tip), "axis": r4(a)})
+        e = {"name": name, "position": r4(tip), "axis": r4(a)}
+        if use != "crew":
+            e["use"] = use
+        self.ports.append(e)
 
     def dish(self, name, base, axis, r, mast=1.0):
         """A dish antenna on a mast: the mast from `base` along `axis`, the dish facing further out."""
@@ -661,7 +666,7 @@ def ross():
                 "target modules. Body frame: +X along velocity, +Z nadir: Nauka forward, the base module aft, NEM "
                 "on the node's nadir port, ShM to starboard, target modules to port and zenith. NEM and the base "
                 "module each carry two large rigid wings at their far ends, turning about the cross-track axis; "
-                "NEM has two radiator panels. Detail: a docked Progress (the crew Soyuz is the sim's own), Nauka's ERA arm and radiator, "
+                "NEM has two radiator panels. Detail (the crew Soyuz and the cargo Progress are the sim's own), Nauka's ERA arm and radiator, "
                 "ports, dishes.")
     s.arrays("arrays", "+y")
     Rn = 1.8
@@ -697,8 +702,7 @@ def ross():
     xn = Rn + 0.2 + 13.1
     s.port("port_fwd", [xn, 0, 0], "+x", r=0.7, dock=True)
     xa = -(Rn + 0.2 + 11.0)
-    s.port("port_aft", [xa, 0, 0], "-x", r=0.7)
-    s.soyuz("progress", [xa - 0.7, 0, 0], "+x", mat="cn_green")
+    s.port("port_aft", [xa, 0, 0], "-x", r=0.7, dock=True, use="cargo")
     s.box("nauka_radiator", [8.5, 2.125 + 0.05, -0.8], [4.0, 0.08, 1.6], "radiator")
     s.box("era_boom_1", [6.0, -2.4, -1.4], [5.5, 0.3, 0.3], "metal")
     s.box("era_boom_2", [10.2, -2.4, -2.6], [3.0, 0.3, 0.3], "metal")
@@ -864,12 +868,13 @@ def iss_detail(s):
             s.box("saw_mast", [0, yc, zs * 19.3], [0.3, 0.3, 33.4], "metal", group="beta", pivot=[0, yc, 0])
             s.box("saw_box", [0, yc, zs * 36.0], [0.5, 9.6, 0.6], "gold", group="beta", pivot=[0, yc, 0])
     # PMA-2 / IDA-2 on Harmony forward, PMA-3 / IDA-3 on Harmony zenith: the crew docking ports (the sim flies the
-    # Crew Dragons there, docked and leaving: they are no longer drawn here); a Progress on Zvezda aft
+    # Crew Dragons there, docked and leaving: they are no longer drawn here); Zvezda aft: the cargo port (the sim docks
+    # its Progress ships there, 2026-10-21)
     s.prof("pma2", [12.2, 0, 5.0], "+x", [[0, 1.0], [1.4, 0.85], [1.9, 0.8]], "metal")
     s.prof("pma3", [8.6, 0, 2.8], "-z", [[0, 1.0], [1.4, 0.85], [1.9, 0.8]], "metal")
     s.dock("ida2_harmony_fwd", [14.1, 0, 5.0], "+x")
     s.dock("ida3_harmony_zenith", [8.6, 0, 0.9], "-z")
-    s.soyuz("progress", [-38.46, 0, 5.0], "+x", mat="cn_green")
+    s.dock("zvezda_aft", [-38.46, 0, 5.0], "-x", use="cargo")
     # Canadarm2 on the mobile base, ELCs and AMS on the inboard truss
     s.box("canadarm_boom_1", [-1.0, -12.0, -3.0], [0.35, 8.5, 0.35], "metal")
     s.box("canadarm_boom_2", [2.6, -16.0, -3.0], [7.5, 0.35, 0.35], "metal")
@@ -897,14 +902,12 @@ def tiangong_detail(s):
                   pivot=[0, ys * 20.5, 0])
             s.box("wing_box", [0, ys * 20.5, zs * 29.0], [4.4, 0.6, 0.5], "gold", group="beta",
                   pivot=[0, ys * 20.5, 0])
-    # Docking ports on the node (the sim docks real Shenzhous there, forward or nadir); Tianzhou aft
+    # Docking ports on the node (the sim docks real Shenzhous there, forward or nadir); Tianhe aft: the cargo port
+    # (the sim docks its Tianzhou ships there, 2026-10-21)
     s.port("node_port_fwd", [1.4, 0, 0], "+x", r=0.7, length=0.5, dock=True)
     s.port("node_port_nadir", [0, 0, 1.4], "+z", r=0.7, length=0.5, dock=True)
     xa = -15.2
-    s.prof("tianzhou", [xa - 10.6, 0, 0], "+x", [[0, 1.67], [9.8, 1.67], [10.6, 0.8]], "module_skin", caps="both")
-    for ys in (1, -1):
-        s.plane("tianzhou_wing", [xa - 8.0, ys * (1.67 + 0.3 + 3.6), 0], [0, ys, 0], [0, 0, -1], 7.2, 2.2,
-                "cells", "cells_back")
+    s.dock("tianhe_aft", [xa, 0, 0], "-x", use="cargo")
     # Tianhe's robotic arm, radiators and bands; a dish; Mengtian's exposed platform
     s.box("arm_boom_1", [-8.0, 0, -2.5], [8.0, 0.35, 0.35], "metal")
     s.box("arm_boom_2", [-12.2, 0, -4.0], [0.35, 0.35, 3.0], "metal")

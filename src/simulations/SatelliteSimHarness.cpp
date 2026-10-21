@@ -2714,8 +2714,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // station, its spacecraft selected (and followed). Events: launch sep phasing arrive axis hold400 hold200
             // hold20 dock undock depart deorbit entry chutes splash.
             std::string msg;
+            // (2026-10-21) craft=progress|tianzhou|cargo dragon|cargo|crew: the visiting vehicle's kind; event=abort:
+            // the moment the station's loss called its flight off.
             if (!launchGoToCrew(c.str("station", ""), c.str("event", "dock"), c.num("lead", 60.0),
-                                c.num("follow", 1.0) > 0.5, msg))
+                                c.num("follow", 1.0) > 0.5, msg, c.str("craft", "")))
                 fail("launch crew: " + msg);
             r["message"] = msg;
             return Status::Done;

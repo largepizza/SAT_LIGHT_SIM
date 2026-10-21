@@ -340,39 +340,6 @@
             "render_only": true
         },
         {
-            "name": "gb_tianzhou",
-            "type": "profile",
-            "profile": [[0.0, 1.67], [9.8, 1.67], [10.6, 0.8]],
-            "position": [-25.8, 0.0, 0.0],
-            "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
-            "caps": "both",
-            "material": "module_skin",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_tianzhou_wing",
-            "type": "plane",
-            "size": [2.2, 7.2],
-            "position": [-23.2, 5.57, 0.0],
-            "rotation_quat": [0.0, 0.0, 1.0, 0.0],
-            "material": "cells",
-            "back_material": "cells_back",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_tianzhou_wing_2",
-            "type": "plane",
-            "size": [2.2, 7.2],
-            "position": [-23.2, -5.57, 0.0],
-            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
-            "material": "cells",
-            "back_material": "cells_back",
-            "group": "station",
-            "render_only": true
-        },
-        {
             "name": "gb_arm_boom_1",
             "type": "box",
             "size": [8.0, 0.35, 0.35],
@@ -587,6 +554,12 @@
             "name": "node_port_nadir",
             "position": [0.0, 0.0, 1.9],
             "axis": [0.0, 0.0, 1.0]
+        },
+        {
+            "name": "tianhe_aft",
+            "position": [-15.2, 0.0, 0.0],
+            "axis": [-1.0, 0.0, 0.0],
+            "use": "cargo"
         }
     ]
 }

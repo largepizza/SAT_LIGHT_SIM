@@ -1,0 +1,535 @@
+{
+ "name": "long_march_7 upper",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), long_march_7: upper. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Booster nose and fairing lengths estimated from photographs (the fairing long enough for Tianzhou).",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "upper_nozzle_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.35
+    ],
+    [
+     0.1587,
+     0.2903
+    ],
+    [
+     0.3173,
+     0.2384
+    ],
+    [
+     0.476,
+     0.1949
+    ],
+    [
+     0.6347,
+     0.1606
+    ],
+    [
+     0.7933,
+     0.1367
+    ],
+    [
+     0.952,
+     0.126
+    ],
+    [
+     1.064,
+     0.1953
+    ],
+    [
+     1.3104,
+     0.1953
+    ],
+    [
+     1.4,
+     0.1172
+    ],
+    [
+     1.45,
+     0.0
+    ]
+   ],
+   "position": [
+    0.75,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_nozzle_1",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.35
+    ],
+    [
+     0.1587,
+     0.2903
+    ],
+    [
+     0.3173,
+     0.2384
+    ],
+    [
+     0.476,
+     0.1949
+    ],
+    [
+     0.6347,
+     0.1606
+    ],
+    [
+     0.7933,
+     0.1367
+    ],
+    [
+     0.952,
+     0.126
+    ],
+    [
+     1.064,
+     0.1953
+    ],
+    [
+     1.3104,
+     0.1953
+    ],
+    [
+     1.4,
+     0.1172
+    ],
+    [
+     1.45,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.75,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_nozzle_2",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.35
+    ],
+    [
+     0.1587,
+     0.2903
+    ],
+    [
+     0.3173,
+     0.2384
+    ],
+    [
+     0.476,
+     0.1949
+    ],
+    [
+     0.6347,
+     0.1606
+    ],
+    [
+     0.7933,
+     0.1367
+    ],
+    [
+     0.952,
+     0.126
+    ],
+    [
+     1.064,
+     0.1953
+    ],
+    [
+     1.3104,
+     0.1953
+    ],
+    [
+     1.4,
+     0.1172
+    ],
+    [
+     1.45,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.75,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_nozzle_3",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.35
+    ],
+    [
+     0.1587,
+     0.2903
+    ],
+    [
+     0.3173,
+     0.2384
+    ],
+    [
+     0.476,
+     0.1949
+    ],
+    [
+     0.6347,
+     0.1606
+    ],
+    [
+     0.7933,
+     0.1367
+    ],
+    [
+     0.952,
+     0.126
+    ],
+    [
+     1.064,
+     0.1953
+    ],
+    [
+     1.3104,
+     0.1953
+    ],
+    [
+     1.4,
+     0.1172
+    ],
+    [
+     1.45,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.0,
+    -0.75,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_4",
+   "type": "profile",
+   "profile": [
+    [
+     1.1,
+     1.675
+    ],
+    [
+     12.6,
+     1.675
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_5",
+   "type": "profile",
+   "profile": [
+    [
+     1.05,
+     1.6415
+    ],
+    [
+     1.09,
+     1.6415
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "fairing_6",
+   "type": "profile",
+   "profile": [
+    [
+     12.62,
+     1.675
+    ],
+    [
+     13.4825,
+     2.1
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_7",
+   "type": "profile",
+   "profile": [
+    [
+     13.4825,
+     2.1
+    ],
+    [
+     23.8825,
+     2.1
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_8",
+   "type": "profile",
+   "profile": [
+    [
+     23.8825,
+     2.1
+    ],
+    [
+     24.3468,
+     2.0823
+    ],
+    [
+     24.7986,
+     2.0307
+    ],
+    [
+     25.237,
+     1.9474
+    ],
+    [
+     25.661,
+     1.8344
+    ],
+    [
+     25.9525,
+     1.734
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_9",
+   "type": "profile",
+   "profile": [
+    [
+     25.9525,
+     1.734
+    ],
+    [
+     26.0693,
+     1.6937
+    ],
+    [
+     26.4605,
+     1.5272
+    ],
+    [
+     26.8325,
+     1.3375
+    ],
+    [
+     27.1828,
+     1.1279
+    ],
+    [
+     27.5075,
+     0.9031
+    ],
+    [
+     27.8009,
+     0.6715
+    ],
+    [
+     28.0519,
+     0.4483
+    ],
+    [
+     28.2235,
+     0.2805
+    ],
+    [
+     28.2635,
+     0.2329
+    ],
+    [
+     28.2956,
+     0.1798
+    ],
+    [
+     28.3191,
+     0.1223
+    ],
+    [
+     28.3335,
+     0.0619
+    ],
+    [
+     28.3383,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "upper_tank_4",
+    "fairing_6",
+    "fairing_7",
+    "fairing_8",
+    "fairing_9"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Wikipedia 'Long March 7': 3.35 m core (2 YF-100) 26.7 m, four 2.25 m boosters (1 YF-100 each) 26.3 m, a 3.35 m second stage (4 YF-115), 4.2 m fairing, 53.1 m; Tianzhou flies from Wenchang LC-201"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey",
+    "nozzle",
+    "soot"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

@@ -264,7 +264,7 @@ nlohmann::json SatelliteSim::missionsStateJson()
         fmtUtcShort(m.tL, u, sizeof(u));
         return nlohmann::json{{"vehicle", m.vehicle}, {"program", m.program}, {"site", m.site}, {"target", m.target},
                               {"utc", u}, {"in_hours", (m.tL - now) / 3600.0}, {"sun_elev_deg", m.sunElevDeg},
-                              {"twilight", m.twilight}, {"crew", m.crew}, {"spacecraft", m.spacecraft},
+                              {"twilight", m.twilight}, {"crew", m.crew}, {"cargo", m.cargo}, {"spacecraft", m.spacecraft},
                               {"people", m.people}, {"payload", m.payload}};
     };
     nlohmann::json j;
@@ -371,18 +371,22 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                 {
                     if (m.crew)
                         tag((uint32_t)id * 4u + 0u, "CREWED", Pal::tagCrew);
+                    else if (m.cargo)
+                        tag((uint32_t)id * 4u + 0u, "CARGO", Pal::progressFill);
                     if (m.twilight)
                         tag((uint32_t)id * 4u + 1u, "TWILIGHT", Pal::tagTwilight);
                     if (m.firstFill)
                         tag((uint32_t)id * 4u + 2u, "BUILD-OUT", Pal::progressFill);
                     if (m.crew)
                         text(msStr("%s to %s (%d crew)", m.spacecraft.c_str(), m.target.c_str(), m.people), Pal::textPrimary, 12, true);
+                    else if (m.cargo)
+                        text(msStr("%s to %s (cargo)", m.spacecraft.c_str(), m.target.c_str()), Pal::textPrimary, 12, true);
                     else
                         text(msStr("%s - %s, %d satellites", m.vehicle.c_str(), m.program.c_str(), m.payload), Pal::textPrimary, 12, true);
                 }
                 char u[48];
                 fmtUtcShort(m.tL, u, sizeof(u));
-                if (m.crew)
+                if (m.crew || m.cargo)
                     text(msStr("%s from %s, %s", m.vehicle.c_str(), m.site.c_str(), u), Pal::textDim, 11, true);
                 else
                     text(msStr("%s, %s, Sun %+.0f deg at the pad", m.site.c_str(), u, m.sunElevDeg), Pal::textDim, 11, true);

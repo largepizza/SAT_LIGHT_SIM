@@ -2817,7 +2817,8 @@ private:
     {
         uint64_t key = 0;   // stable over the object's life
         uint8_t kind = 0;   // 1 rocket stage, 2 ship entry, 3 retiree re-entry, 4 upper-stage re-entry, 5 Kessler
-                            // re-entry, 6 small fragment, 7 a payload fairing half (stage = the half, 0 / 1)
+                            // re-entry, 6 small fragment, 7 a payload fairing half (stage = the half, 0 / 1), 8 a
+                            // visiting spacecraft (crew / cargo), 9 a cargo ship's destructive re-entry (2026-10-21)
         uint8_t stage = 0;  // rockets: 0 booster, 1 upper; burn in burn
         uint8_t burn = 0;
         uint64_t a = 0;     // the batch key (1, 2, 4), the satellite (3, 5)
@@ -3018,7 +3019,8 @@ private:
     // (2026-10-20) The next crew flight event (launch, sep, phasing, arrive, axis, hold400, hold200, hold20, dock,
     // undock, depart, deorbit, entry, chutes, splash) at a station whose name contains `station` (any if empty): the
     // clock leadS before it at 1x, its spacecraft (its rocket before the separation) selected and, follow, followed.
-    bool launchGoToCrew(const std::string &station, const std::string &event, double leadS, bool follow, std::string &msg);
+    bool launchGoToCrew(const std::string &station, const std::string &event, double leadS, bool follow, std::string &msg,
+                        const std::string &craft = std::string());
     void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
     void launchDestroy(VkDevice device);
 
@@ -3033,6 +3035,7 @@ private:
         double tA = 0.0;         // arrival (trains) / docking (crew)
         double sunElevDeg = 0.0; // the Sun at the pad at lift-off
         bool crew = false, twilight = false;
+        bool cargo = false;      // a cargo ship to a station (2026-10-21)
         bool firstFill = false;  // the deployment era: a plane's first fill (its slots were empty)
         int people = 0, payload = 0;
         std::string vehicle, program, site, target, spacecraft; // target: the constellation or the station

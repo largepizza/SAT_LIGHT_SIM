@@ -6504,7 +6504,7 @@ void SatelliteSim::formatSelectedSatInfo()
         {
             const SelTransient &tr = selU == transientSatIdx() ? selTransientCur : followTrCur;
             st = tr.kind == 1 ? "Rocket stage" : tr.kind == 2 ? "Starship ship, entry" : tr.kind == 7 ? "Payload fairing half"
-                 : tr.kind == 8 ? "Crew spacecraft" : "Re-entry fireball";
+                 : tr.kind == 8 ? "Visiting spacecraft" : "Re-entry fireball";
             if (orb.typeIdx < satTypes.size() && (tr.kind <= 2 || tr.kind == 8))
             {
                 std::string tn = satTypes[orb.typeIdx].name; // "Rocket: starship_upper" -> "starship_upper"

@@ -20,7 +20,7 @@ every check with its value, limit, status), report.md and report.html (the matri
 --captures captures/<combo>/*.png + sheets/<combo>.png (contact sheets: one tile per phase, follow + wide views).
 
 Statuses: PASS, FAIL, WARN (outside the limit in a part another agent owns, e.g. the booster's landing burn
-physics: reported, not failed), SKIP (a crew flight whose spacecraft has no model), N/A (the phase does not exist for this launch),
+physics: reported, not failed), SKIP (a crew / cargo flight whose spacecraft has no model), N/A (the phase does not exist for this launch),
 NOT FOUND (no launch of the pair in the search window).
 """
 import argparse
@@ -104,6 +104,9 @@ THRESHOLDS = [
     ("docking", "docked_days", "range", [1.0, 400.0], "", "stays docked for the rotation"),
     ("docking", "accel_max_mps2", "<", 200.0, "", "no position jumps at any seam (burns and the entry: tens to ~120 m/s^2)"),
     ("docking", "turn_max_deg_s", "<", 15.0, "", "turns smoothly (no half-turn flips)"),
+    ("docking", "fast_hours", "range", [2.3, 7.2], "", "a fast track (Soyuz / Progress / Shenzhou / Tianzhou) docks 2.5-7 h after lift-off"),
+    ("docking", "port_conflicts", "<", 1, "", "its port is free for its stay (crews and cargo ships never share one at once)"),
+    ("docking", "reentry_h_after_undock", "range", [1.0, 30.0], "", "a cargo ship that burns up deorbits within a day of undocking"),
     ("upper_deorbit", "nose_from_retrograde_deg", "<", 15.0, "", "burns retrograde"),
     ("upper_deorbit", "nose_max_deg_s", "<", 6.0, "", "turns smoothly before and after the burn"),
     ("upper_deorbit", "burn_max_proper_accel_m_s2", "<", 100.0, "", "no jump in the deorbit burn (the smoothstep blend peaks at ~4x dv / burn)"),
