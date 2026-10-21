@@ -2431,7 +2431,7 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
 - **Never `return` or `break` inside a `CLAY(...)` block**: the macro is a for loop that closes the element at its
   end; leaving it early leaves the element open and corrupts the layout. Set a flag and act after the block.
 - **UI kit (2026-10-03, SatelliteSimUI.cpp "UI kit"): build windows and settings rows from it.** `uiSection` (small
-  caps over a 1-px rule — the Cinematics window's form), `uiKV` (a label column and a value column), `uiStatTile`
+  caps over a 1-px rule — the Cinematics window's form), `uiKV` (a label column and a value column; the value wraps by words since 2026-10-21 — its column must NOT clip: Clay never compresses a clip container's children, so the text could not wrap and was cut at the window edge), `uiStatTile`
   (a label over a large value in a dark inset), `uiButton` (a 20-px pill; `on`, `enabled`, `grow`), `uiToggleRow`
   (label + On/Off pill, custom words: the knockouts read Skip/On) and `uiChoiceRow` (label + segmented pills;
   returns the picked index). Ids are `CLAY_SIDI(key, index)` — scripts click them as `Key:index`
@@ -7278,7 +7278,7 @@ Read it at the start of any terrain-related session before making changes.
   while the oval is Sun-fixed; no dawn-side omega bands / pulsating aurora; the dipole axis is fixed (no IGRF).
 - **Aurora storms + a physical sky gate (2026-10-14, issue 20261014_193231; `cloud_march.comp`, `include/darksky.glsl`,
   UBO `auroraStorm` / `auroraSky`, 928 -> 960; Atmosphere tab slots 298-301, keys `clouds.aurora_storm_features` 1.2 /
-  `aurora_blue_rays` 0.004 / `aurora_arc_systems` 2 / `aurora_storm_red` 1.1; defaults since 2026-10-20).**
+  `aurora_blue_rays` 0.004 / `aurora_arc_systems` 1 (0-1; was 2 past its slider until 2026-10-21, the coverage threshold remapped so 1 is that look) / `aurora_storm_red` 1.1; defaults since 2026-10-20).**
   - **The gate (the bug):** a Kp 9 storm was invisible from an Iowa farm and from Arizona and was cut off along a hard
     azimuth toward a town. The aurora read the Milky Way's dark-sky dome: a LOG ramp from 1e-6 (a raw glow of 0.01 is
     already 83% "city"; a sector of 0 beside one of 0.83 = the hard edge; populated farmland = 1.0 in every sector,

@@ -2277,7 +2277,7 @@ float auroraCoverage(float colat, float az, float t, float storm) {
     // any fixed (az,colat) point instead evolves/shimmers over time.
     vec2  azWarp = vec2(cos(az), sin(az)) * cloud.auroraCoverageAzFreq + t * cloud.auroraCoverageDriftRate;
     float n = warpPerlin3(vec3(azWarp, degrees(colat) * cloud.auroraCoverageFreq));
-    float threshold = mix(0.2, mix(-0.6, -0.35, cloud.auroraStorm.z), clamp(storm, 0.0, 1.0)); // = cloud_march.comp
+    float threshold = mix(0.2, mix(-0.6, -0.1, clamp(cloud.auroraStorm.z, 0.0, 1.0)), clamp(storm, 0.0, 1.0)); // = cloud_march.comp
     return smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
 }
 
