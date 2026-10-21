@@ -16,6 +16,7 @@
 // storage images, read as sampled images and copied, and GENERAL serves all three, so the passes
 // need memory barriers only — no layout bookkeeping to get out of step.
 
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 
 #include "Log.h"
@@ -1645,6 +1646,7 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
 // The face is taken out of SHADER_READ_ONLY for the writes and returned before the passes read it.
 void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
 {
+    FPROF_SCOPE("recordWeatherEvolution");
     if (!cv2WxPipeline || cv2WxSets.size() != kCv2WeatherMips)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -1709,6 +1711,7 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
 
 void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc)
 {
+    FPROF_SCOPE("recordCloudsV2");
     fillCloudsV2Params(ctx, cpc);   // cloud_march.comp reads the v2 UBO (beams, debug views) either way
     // The weather cube keeps evolving with the clouds off: the flat stand-ins (sat_sky.frag's flat layers,
     // SKY_LITE, Potato's deck, reflections and probes) read it.

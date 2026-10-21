@@ -6,6 +6,7 @@
 // Everything here runs at the top of buildUI (harnessTick), i.e. before this frame's camera
 // derivation, recordCompute and draws: a command's effect is in the very frame it ran in, and a
 // `capture` issued after it records that frame.
+#include "../FrameProfile.h"
 #include "UIPalette.h"
 #include "SatelliteSim.h"
 #include "SatPhotometry.h"
@@ -21,6 +22,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <map>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -206,7 +208,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -276,6 +278,7 @@ float SatelliteSim::frameDt(float realDt)
 
 void SatelliteSim::harnessTick()
 {
+    FPROF_SCOPE("harnessTick");
     if (!harnessRunner_ || harnessQuit_)
         return;
     if (harnessTrack_ != 0)
@@ -4229,6 +4232,79 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         a.error = "audio [state [name]] | record <name> [seconds=] [bus=] [solo=] | expect <layers> [absent=<layers>] "
                   "[min=] | force <layer> <gain|off> | force off | music [...] | tonality [wait]";
         return Status::Error;
+    }
+
+    // ── hitches (src/FrameProfile.h) ────────────────────────────────────────────────
+    if (n == "hitches")
+    {
+        fprof::State &fs = fprof::st();
+        if (pos(0) == "clear")
+        {
+            fs.hitches.clear();
+            fs.walls.clear();
+            r["message"] = "hitches cleared";
+            return Status::Done;
+        }
+        if (pos(0) == "threshold")
+        {
+            fs.thresholdMs = (float)parseNum(pos(1), "hitches threshold");
+            r["message"] = "hitch threshold " + pos(1) + " ms";
+            return Status::Done;
+        }
+        const int top = (int)c.num("top", 8.0);
+        const int maxList = (int)c.num("list", 25.0);
+        std::vector<float> w(fs.walls.begin(), fs.walls.end());
+        json st = json::object();
+        if (!w.empty())
+        {
+            std::vector<float> v = w;
+            std::sort(v.begin(), v.end());
+            double sum = 0.0;
+            for (float x : v)
+                sum += x;
+            auto q = [&](double p) { return v[std::min(v.size() - 1, (size_t)(p * (v.size() - 1) + 0.5))]; };
+            int over50 = 0, over100 = 0, over250 = 0;
+            for (float x : v)
+            {
+                over50 += x > 50.0f;
+                over100 += x > 100.0f;
+                over250 += x > 250.0f;
+            }
+            st = {{"frames", v.size()}, {"mean", sum / v.size()}, {"p50", q(0.5)}, {"p90", q(0.9)}, {"p99", q(0.99)},
+                  {"max", v.back()}, {"over_50", over50}, {"over_100", over100}, {"over_250", over250}};
+        }
+        r["wall_ms"] = st;
+        r["threshold_ms"] = fs.thresholdMs;
+        // Per section: summed and largest ms over the hitch frames (where the hitches' time went).
+        std::map<std::string, std::pair<double, double>> agg;
+        for (const fprof::Frame &f : fs.hitches)
+            for (const fprof::Entry &e : f.e)
+            {
+                auto &x = agg[e.name];
+                x.first += e.ms;
+                x.second = std::max(x.second, (double)e.ms);
+            }
+        std::vector<std::pair<std::string, std::pair<double, double>>> av(agg.begin(), agg.end());
+        std::sort(av.begin(), av.end(), [](const auto &x, const auto &y) { return x.second.second > y.second.second; });
+        json secs = json::array();
+        for (size_t i = 0; i < av.size() && i < 30; ++i)
+            secs.push_back({{"name", av[i].first}, {"max_ms", av[i].second.second}, {"sum_ms", av[i].second.first}});
+        r["sections_in_hitches"] = secs;
+        std::vector<const fprof::Frame *> hv;
+        for (const fprof::Frame &f : fs.hitches)
+            hv.push_back(&f);
+        std::sort(hv.begin(), hv.end(), [](const fprof::Frame *x, const fprof::Frame *y) { return x->wallMs > y->wallMs; });
+        json hl = json::array();
+        for (size_t i = 0; i < hv.size() && (int)i < maxList; ++i)
+            hl.push_back(fprof::describe(*hv[i], top));
+        r["hitches"] = hl;
+        r["hitch_count"] = fs.hitches.size();
+        char buf[200];
+        snprintf(buf, sizeof(buf), "%zu frames: p99 %.1f ms, max %.1f ms, %zu hitches > %.0f ms",
+                 w.size(), st.empty() ? 0.0 : st["p99"].get<double>(), st.empty() ? 0.0 : st["max"].get<double>(),
+                 fs.hitches.size(), (double)fs.thresholdMs);
+        r["message"] = buf;
+        return Status::Done;
     }
 
     // ── perf ────────────────────────────────────────────────────────────────────

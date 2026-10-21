@@ -5,6 +5,7 @@
 // thread. This file builds it from the roster, mirrors what it produces (pool records, end seconds,
 // events) on the main thread, uploads that to kesslerBuf for sat_orbit.comp, and keeps an event cache
 // so a later launch replays instead of re-simulating.
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "../Log.h"
 #include "../Paths.h"
@@ -13,6 +14,7 @@
 #include "UIPalette.h"
 #include "clay.h"
 
+#include <deque>
 #include <nlohmann/json.hpp>
 
 #include <cstring>
@@ -114,6 +116,19 @@ struct SatelliteSim::KesslerWorker
     };
     std::vector<RosterChange> outRoster;
     double outFrontier = 0.0;
+    // The main thread's queue of what it took from the outbox and has not mirrored yet (main thread only, no lock):
+    // worked through within a time budget a frame (kesslerSyncProcess, 2026-10-20).
+    struct SyncBatch
+    {
+        std::vector<OutPoolChange> pool;
+        size_t next = 0;
+        std::vector<kessler::Event> ev;
+        std::vector<kessler::SmallStream> st;
+        std::vector<RosterChange> rd;
+        double frontier = 0.0;
+    };
+    std::deque<SyncBatch> syncQ;
+    double syncQFrontier = 0.0;
 
     void publish()
     {
@@ -492,6 +507,7 @@ void SatelliteSim::kesslerShutdown()
 void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents,
                                   double keepEngineBefore, double syncUntil)
 {
+    FPROF_SCOPE("kesslerRestart");
     std::vector<kessler::Event> keptEngine;
     // The world starts at the CME, or at the step of the player's first breakup before it (2026-10-19).
     double startT = kFuryArriveT;
@@ -528,6 +544,16 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     kShownSec = kHistPrunedUntil = kHistPrunedAt = INT32_MIN;
     kReplayPending = false;
     satOrbits.resize(poolIdx0()); // the roster and the launch block; the pool tail goes
+    // (2026-10-20) Room for the whole pool now, during the load: as a cascade fills it, growing satOrbits (with the 1.4M
+    // roster in front of the pool) and kPool meant copying hundreds of MB, 50+ ms frames. Address space only: the
+    // pages are touched as the pool fills.
+    if (kesslerEnabled && activeSatCount > 0)
+    {
+        const size_t cap = kessler::WorldSettings{}.poolCapacity;
+        satOrbits.reserve(poolIdx0() + cap);
+        kPool.reserve(cap);
+        kPoolGen.reserve(cap);
+    }
     launchInitBlock();            // the launch block's entries (empty) and the launch state
     kPoolGpu = 0;
     kDirtyPool.clear();
@@ -632,6 +658,7 @@ void SatelliteSim::kesslerWant(double tJ2000)
 
 void SatelliteSim::kesslerSync(VulkanContext &ctx)
 {
+    FPROF_SCOPE("kesslerSync");
     if (kRestartPending)
     {
         kRestartPending = false;
@@ -661,92 +688,35 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
                                       kWantFloor});
         kWorker->wantUntil = want;
     }
-    std::vector<KesslerWorker::OutPoolChange> nPool;
-    std::vector<kessler::Event> nEv;
-    std::vector<KesslerWorker::RosterChange> rd;
-    std::vector<kessler::SmallStream> nStreams;
     {
-        std::lock_guard<std::mutex> lk(kWorker->mx);
-        nPool.swap(kWorker->outPool);
-        nEv.swap(kWorker->outEvents);
-        nStreams.swap(kWorker->outStreams);
-        rd.swap(kWorker->outRoster);
-        kFrontier = kWorker->outFrontier > 0.0 ? kWorker->outFrontier : kFrontier;
+        // (2026-10-20) The worker's output goes into a queue the main thread works through within a time budget
+        // (kesslerSyncProcess): at a fast warp a frame took up to ~200 ms here (hundreds of thousands of pool changes
+        // at once). kFrontier is the frontier of what has been mirrored, so sim time holds (the banner) rather than
+        // the frame freezing.
+        KesslerWorker &W = *kWorker;
+        std::lock_guard<std::mutex> lk(W.mx);
+        if (!W.outPool.empty() || !W.outEvents.empty() || !W.outStreams.empty() || !W.outRoster.empty() ||
+            (W.outFrontier > 0.0 && W.outFrontier != W.syncQFrontier))
+        {
+            KesslerWorker::SyncBatch b;
+            b.pool.swap(W.outPool);
+            b.ev.swap(W.outEvents);
+            b.st.swap(W.outStreams);
+            b.rd.swap(W.outRoster);
+            b.frontier = W.outFrontier > 0.0 ? W.outFrontier : kFrontier;
+            W.syncQFrontier = b.frontier;
+            W.syncQ.push_back(std::move(b));
+        }
     }
-    if (kWorker->done && !kWorkerDone)
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const int32_t nowSec = (int32_t)std::clamp(std::floor(tNow - kFuryArriveT), -2147483000.0, 2147483000.0);
+    kesslerSyncProcess(nowSec, kSyncBudgetMs);
+    if (kWorker->done && !kWorkerDone && kWorker->syncQ.empty())
     {
         kWorkerDone = true;
         if (kUserEvents.empty() && kWorker->w.frontier > kCacheFrontier + 1.0)
             writeCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / cacheName(kHash), kHash,
                        kWorker->w.events, kWorker->w.frontier);
-    }
-    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    const int32_t nowSec = (int32_t)std::clamp(std::floor(tNow - kFuryArriveT), -2147483000.0, 2147483000.0);
-    bool grew = false;
-    for (const KesslerWorker::OutPoolChange &c : nPool)
-    {
-        const uint32_t j = c.slot;
-        if (c.isRecord)
-        {
-            if (j >= kPool.size() || kPoolGen[j] == UINT32_MAX)
-            {
-                // A new slot (or one skipped past earlier in this batch: a slot filled and reused before the next new
-                // one was appended). Slots in between stay empty (never alive) until their record arrives.
-                if (j >= kPool.size())
-                {
-                    kessler::PoolRec empty{};
-                    empty.bornSec = kessler::kNever;
-                    empty.deathSec = kessler::kNever;
-                    empty.decaySec = kessler::kNever;
-                    const size_t old = kPool.size();
-                    kPool.resize(j + 1, empty);
-                    kPoolGen.resize(j + 1, UINT32_MAX);
-                    satOrbits.resize(poolIdx0() + j + 1);
-                    for (size_t q = old; q < j; ++q)
-                        kesslerSetPoolOrbit((uint32_t)q);
-                }
-                kPool[j] = c.rec;
-                kPoolGen[j] = c.gen;
-                kesslerSetPoolOrbit(j);
-                if (j < kPoolGpu)
-                    kDirtyPool.push_back(j);
-                grew = true;
-            }
-            else
-            {
-                // A reused slot: a later generation. Keep the earlier ones (the window) and show the right one now.
-                std::vector<KGen> &hist = kPoolHist[j];
-                if (hist.empty())
-                    hist.push_back({kPoolGen[j], kPool[j]}); // without history the shown record is the latest
-                hist.push_back({c.gen, c.rec});
-                kGenBounds.insert({c.rec.bornSec, j});
-                if (selectedSatIndex == (int)(poolIdx0() + j) && c.rec.bornSec <= nowSec)
-                    selectedSatIndex = -1; // that piece is gone; its slot holds another now
-                kesslerShowGen(j, nowSec);
-            }
-            if (c.rec.decaySec != kessler::kNever)
-                kesslerIndexReentry(poolIdx0() + j, c.rec.decaySec);
-        }
-        else if (j < kPool.size())
-        {
-            // A death: of the shown generation, or of one kept in the history.
-            auto it = kPoolHist.find(j);
-            if (it != kPoolHist.end())
-                for (KGen &g : it->second)
-                    if (g.gen == c.gen)
-                        g.rec.deathSec = c.deathSec;
-            if (kPoolGen[j] == c.gen)
-            {
-                kPool[j].deathSec = c.deathSec;
-                if (j < kPoolGpu)
-                    kDirtyPool.push_back(j);
-            }
-        }
-    }
-    if (grew)
-    {
-        satOrbits.reserve(poolIdx0() + kPool.size());
-        kesslerEnsureCapacity(ctx, kPool.size());
     }
     // Sim time moved: slots whose hands changed between the shown second and now show the other generation.
     if (nowSec != kShownSec)
@@ -761,8 +731,13 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
         if (nowSec < kHistPrunedUntil)
             kReplayPending = true;
         // Once a simulated day: drop generations that ended more than kHistKeepS ago (a reversal beyond replays).
-        if ((int64_t)nowSec - (int64_t)kHistPrunedAt > 86400)
+        // (2026-10-20) ... and at most every 2 s of wall time: at 1 yr/s a simulated day passes every frame, and the walk
+        // over every slot's history took ~40 ms late in a cascade. Pruning later only keeps more history.
+        const auto nowWall = std::chrono::steady_clock::now();
+        if ((int64_t)nowSec - (int64_t)kHistPrunedAt > 86400 && nowWall - kHistPruneWall > std::chrono::seconds(2))
         {
+            FPROF_SCOPE("kessler.prune");
+            kHistPruneWall = nowWall;
             kHistPrunedAt = nowSec;
             for (auto it = kPoolHist.begin(); it != kPoolHist.end();)
             {
@@ -792,25 +767,136 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
             }
         }
     }
-    for (const auto &d : rd)
-        if (2ull * d.sat + 1 < kRosterWords.size())
+}
+
+// Works through the queue of the worker's output, in order, for up to budgetMs of wall time (1e30: all of it).
+void SatelliteSim::kesslerSyncProcess(int32_t nowSec, double budgetMs)
+{
+    if (!kWorker)
+        return;
+    FPROF_SCOPE("kessler.syncPool");
+    KesslerWorker &W = *kWorker;
+    const auto t0 = std::chrono::steady_clock::now();
+    auto over = [&] {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() > budgetMs;
+    };
+    bool grew = false;
+    bool stopped = false;
+    while (!W.syncQ.empty() && !stopped)
+    {
+        KesslerWorker::SyncBatch &sb = W.syncQ.front();
+        while (sb.next < sb.pool.size())
         {
-            kRosterWords[2 * d.sat] = d.dead;
-            kRosterWords[2 * d.sat + 1] = d.end;
-            if (d.sat < kRosterDecay.size())
-                kRosterDecay[d.sat] = d.decay;
-            if (d.decay != kessler::kNever)
-                kesslerIndexReentry(d.sat, d.decay);
-            kDirtyRoster.push_back(d.sat);
+            const KesslerWorker::OutPoolChange &c = sb.pool[sb.next++];
+            const uint32_t j = c.slot;
+            if (c.isRecord)
+            {
+                if (j >= kPool.size() || kPoolGen[j] == UINT32_MAX)
+                {
+                    // A new slot (or one skipped past earlier in this batch: a slot filled and reused before the next new
+                    // one was appended). Slots in between stay empty (never alive) until their record arrives.
+                    if (j >= kPool.size())
+                    {
+                        FPROF_SCOPE("kessler.syncGrow");
+                        kessler::PoolRec empty{};
+                        empty.bornSec = kessler::kNever;
+                        empty.deathSec = kessler::kNever;
+                        empty.decaySec = kessler::kNever;
+                        const size_t old = kPool.size();
+                        // (2026-10-20) Room in two steps: 128k records (a player's breakups), then the whole pool once
+                        // a cascade passes that (it fills it to its cap). Grown a slot at a time, satOrbits (the 1.4M
+                        // roster in front of the pool) was reallocated and copied again and again, 50+ ms each time,
+                        // while a fast warp filled the pool.
+                        if (satOrbits.capacity() < poolIdx0() + j + 1)
+                        {
+                            const size_t cap = std::max<size_t>(
+                                j + 1, j + 1 <= 131072 ? 131072 : (size_t)kessler::WorldSettings{}.poolCapacity);
+                            satOrbits.reserve(poolIdx0() + cap);
+                            kPool.reserve(cap);
+                            kPoolGen.reserve(cap);
+                        }
+                        kPool.resize(j + 1, empty);
+                        kPoolGen.resize(j + 1, UINT32_MAX);
+                        satOrbits.resize(poolIdx0() + j + 1);
+                        for (size_t q = old; q < j; ++q)
+                            kesslerSetPoolOrbit((uint32_t)q);
+                    }
+                    kPool[j] = c.rec;
+                    kPoolGen[j] = c.gen;
+                    kesslerSetPoolOrbit(j);
+                    if (j < kPoolGpu)
+                        kDirtyPool.push_back(j);
+                    grew = true;
+                }
+                else
+                {
+                    // A reused slot: a later generation. Keep the earlier ones (the window) and show the right one now.
+                    std::vector<KGen> &hist = kPoolHist[j];
+                    if (hist.empty())
+                        hist.push_back({kPoolGen[j], kPool[j]}); // without history the shown record is the latest
+                    hist.push_back({c.gen, c.rec});
+                    kGenBounds.insert({c.rec.bornSec, j});
+                    if (selectedSatIndex == (int)(poolIdx0() + j) && c.rec.bornSec <= nowSec)
+                        selectedSatIndex = -1; // that piece is gone; its slot holds another now
+                    kesslerShowGen(j, nowSec);
+                }
+                if (c.rec.decaySec != kessler::kNever)
+                    kesslerIndexReentry(poolIdx0() + j, c.rec.decaySec);
+            }
+            else if (j < kPool.size())
+            {
+                // A death: of the shown generation, or of one kept in the history.
+                auto it = kPoolHist.find(j);
+                if (it != kPoolHist.end())
+                    for (KGen &g : it->second)
+                        if (g.gen == c.gen)
+                            g.rec.deathSec = c.deathSec;
+                if (kPoolGen[j] == c.gen)
+                {
+                    kPool[j].deathSec = c.deathSec;
+                    if (j < kPoolGpu)
+                        kDirtyPool.push_back(j);
+                }
+            }
+            if ((sb.next & 1023u) == 0u && over())
+            {
+                stopped = true;
+                break;
+            }
         }
-    kEvents.insert(kEvents.end(), nEv.begin(), nEv.end());
-    if (!nStreams.empty())
-        kesslerAddStreams(nStreams);
+        if (stopped)
+            break;
+        FPROF_SCOPE("kessler.syncRosterEvents");
+        for (const auto &d : sb.rd)
+            if (2ull * d.sat + 1 < kRosterWords.size())
+            {
+                kRosterWords[2 * d.sat] = d.dead;
+                kRosterWords[2 * d.sat + 1] = d.end;
+                if (d.sat < kRosterDecay.size())
+                    kRosterDecay[d.sat] = d.decay;
+                if (d.decay != kessler::kNever)
+                    kesslerIndexReentry(d.sat, d.decay);
+                kDirtyRoster.push_back(d.sat);
+            }
+        kEvents.insert(kEvents.end(), sb.ev.begin(), sb.ev.end());
+        if (!sb.st.empty())
+            kesslerAddStreams(sb.st);
+        kFrontier = sb.frontier;
+        W.syncQ.pop_front();
+        if (over())
+            break;
+    }
+    if (grew && ctx_)
+    {
+        satOrbits.reserve(poolIdx0() + kPool.size());
+        kesslerEnsureCapacity(*ctx_, kPool.size());
+    }
 }
 
 // ── Small fragments coming down (round 4) ──────────────────────────────────────────────────────────
 void SatelliteSim::kesslerAddStreams(const std::vector<kessler::SmallStream> &v)
 {
+    FPROF_SCOPE("kesslerAddStreams");
     for (const kessler::SmallStream &ss : v)
     {
         const int32_t w0 = ss.deathSec - ss.halfS();
@@ -830,6 +916,7 @@ void SatelliteSim::kesslerAddStreams(const std::vector<kessler::SmallStream> &v)
 // second, point of its orbit and RAAN spread (the fragments' planes drift apart under differential J2 over ~a month).
 const std::vector<SatelliteSim::KSmallRe> &SatelliteSim::kesslerSmallReHour(int32_t hr)
 {
+    FPROF_SCOPE("kesslerSmallReHour");
     auto found = kSmallReHours.find(hr);
     if (found != kSmallReHours.end())
         return found->second;
@@ -874,13 +961,14 @@ const std::vector<SatelliteSim::KSmallRe> &SatelliteSim::kesslerSmallReHour(int3
 
 void SatelliteSim::kesslerEnsureCapacity(VulkanContext &ctx, size_t records)
 {
+    FPROF_SCOPE("kesslerEnsureCapacity");
     if (records <= kPoolCap && kesslerBuf != VK_NULL_HANDLE)
         return;
-    // Grow by doubling, but never past the world's cap (records beyond it are never made).
+    // Grow by quadrupling, but never past the world's cap (records beyond it are never made).
     const uint32_t maxCap = kessler::WorldSettings{}.poolCapacity;
     uint32_t cap = kPoolCap;
     while (cap < records)
-        cap = (uint32_t)std::min<uint64_t>((uint64_t)cap * 2, 0x7FFFFFF0ull);
+        cap = (uint32_t)std::min<uint64_t>((uint64_t)cap * 4, 0x7FFFFFF0ull); // (x4 since 2026-10-20: each growth stalls ~20-30 ms)
     if (records <= maxCap)
         cap = std::min(cap, maxCap);
     vkDeviceWaitIdle(ctx.device);
@@ -957,6 +1045,7 @@ void SatelliteSim::kesslerUploadAllSync(VulkanContext &ctx)
 
 void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
 {
+    FPROF_SCOPE("kesslerRecordUploads");
     if (kesslerBuf == VK_NULL_HANDLE || !kStageMapped)
         return;
     if (kRosterFullUpload)
@@ -1174,6 +1263,10 @@ bool SatelliteSim::kesslerBreakupInPlace(const kessler::Event &ev)
         return false;
     KesslerWorker &W = *kWorker;
     W.stopThread();
+    // The mirror must hold everything taken from the outbox before it is rewound (the queue, all of it, now).
+    kesslerSyncProcess((int32_t)std::clamp(std::floor((double)simDayJ2000 * 86400.0 + simSecInDay - kFuryArriveT),
+                                           -2147483000.0, 2147483000.0),
+                       1e30);
     kessler::World &w = W.w;
     const double t = ev.t;
     const double stepEnd = w.stepStart(t) + w.s.stepS;
@@ -1348,6 +1441,7 @@ void SatelliteSim::kesslerMirrorRewind(double tCk)
 // minutes (it expands at hundreds of m/s); the default gain keeps it visible for an hour or so.
 void SatelliteSim::kesslerFillDust(float pixelAngle)
 {
+    FPROF_SCOPE("kesslerFillDust");
     kDustCount = 0;
     kesslerDropGoneSelection(); // (every frame; cheap)
     if (!kDustMapped)
@@ -1928,6 +2022,7 @@ void SatelliteSim::fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, doub
 
 void SatelliteSim::kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull)
 {
+    FPROF_SCOPE("kesslerFillFireballs");
     kFireCount = 0;
     kFireTrails = 0;
     kReentriesNow = 0;
@@ -2163,6 +2258,7 @@ void SatelliteSim::kesslerCreateFireballPass(VulkanContext &ctx)
 
 void SatelliteSim::kesslerRecordFireballs(VkCommandBuffer cmd, VulkanContext &ctx)
 {
+    FPROF_SCOPE("kesslerRecordFireballs");
     if (kFireCount == 0)
         return;
     if (kFirePipeline == VK_NULL_HANDLE)
@@ -2318,6 +2414,7 @@ const char *SatelliteSim::rosterFateName(int fate)
 
 void SatelliteSim::kesslerDropGoneSelection()
 {
+    FPROF_SCOPE("kesslerDropGoneSelection");
     // A roster satellite the cascade (or the player) destroyed, or that re-entered, is not there to select: drop it
     // (the selection panel kept its reticle on the orbit it no longer flies: the user's "ghost", issue 20261019_231126).
     // Going back in time before its end does not bring the selection back.
@@ -2591,6 +2688,7 @@ nlohmann::json SatelliteSim::kesslerCountsJson(const KCounts &c) const
 // at the second it started (a second or so stale at 1x).
 void SatelliteSim::kesslerCountsTick()
 {
+    FPROF_SCOPE("kesslerCountsTick");
     const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (kCountsWantedWall < 0.0 || now - kCountsWantedWall > 1.0)
         return;

@@ -4,6 +4,7 @@
 // Split out of SatelliteSim.cpp (session-long UI redesign) because buildUI() alone had
 // grown to ~25% of that file with zero decomposition. See CLAUDE.md for the panel/window
 // inventory and the WindowChrome (drag+resize+pin) primitive this file builds on.
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "../UIRenderer.h"
 #include "../AudioSystem.h"
@@ -1898,6 +1899,7 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
 // any size.
 void SatelliteSim::updateViewerView(const UIInput &inp, UIRenderer &ui)
 {
+    FPROF_SCOPE("updateViewerView");
     if (!meshRendererInit || (!infoChrome.open && !viewerChrome.open))
         return; // nothing visible: no target to size, no drag to read, no readouts to refresh
     // A viewer tracking a satellite follows the selection (as the magnitude trace does), when the

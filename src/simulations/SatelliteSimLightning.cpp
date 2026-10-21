@@ -11,6 +11,7 @@
 // arrives at its distance / 343 m/s, so the roll's peals are the channel's own shape.
 // It replaced cloud_march.comp's lightningCS (a 14-vertex channel and a glow, per pixel in the half-res
 // composite, smeared by the sky TAA).
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "../AmbientSynth.h"
 #include "../AudioSystem.h"
@@ -422,6 +423,7 @@ void SatelliteSim::destroyLightningResources(VkDevice device)
 // buffers this frame's recordLightning draws from, in THIS frame's eye-centred ENU.
 void SatelliteSim::updateLightningBolts()
 {
+    FPROF_SCOPE("updateLightningBolts");
     boltFlashCount = 0;
     boltSegCount = 0;
     ++boltFrame;

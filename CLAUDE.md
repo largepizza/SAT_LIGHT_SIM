@@ -4284,6 +4284,16 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   rewinds: a restart pulls the frontier back to the epoch) with a banner, "Computing the debris cascade".
   Rendering is not the cost: at day 60 with a full pool the orbit pass is +0.2 ms GPU and the frame holds vsync
   (harness_runs/kessler2/pw1); what slows a player down is the hold while warping past the frontier.
+- **The mirror is BUDGETED (2026-10-20):** `kesslerSync` moves the worker's outbox into a queue
+  (`KesslerWorker::syncQ`, main thread only) and `kesslerSyncProcess` works through it in order for `kSyncBudgetMs`
+  (3 ms) a frame; `kFrontier` is the frontier of what has been MIRRORED, so under a fast warp sim time holds (the
+  banner) instead of a frame freezing (at 1 yr/s a single sync took up to ~200 ms: hundreds of thousands of pool
+  changes). `kesslerBreakupInPlace` drains the queue (unbounded) before it rewinds the mirror; `kWorkerDone` waits for
+  an empty queue. `satOrbits`, `kPool` and `kPoolGen` are reserved for the whole pool (5M) in `kesslerRestart` (address
+  space: pages are touched as it fills): grown a slot at a time, satOrbits (with the 1.4M roster in front) was copied
+  again and again, 50+ ms each. The history prune runs at most every 2 s of wall time (`kHistPruneWall`; at 1 yr/s a
+  simulated day passes every frame, ~40 ms a walk late in a cascade). GPU pool buffers grow x4 (each growth is a
+  ~20-30 ms device-idle stall; ~4 a session).
 - **The main thread mirrors** the worker's batches (`kesslerSync`: records, roster changes, events) and uploads
   them (`kesslerRecordUploads`, a persistent 16-MB staging buffer, at most 16k new records a frame, roster words
   in budget-sized pieces — a whole-roster run that did not fit the budget was re-sorted every frame and never
@@ -4960,6 +4970,21 @@ launches follow per-program cadences (no real manifest).
   (5) plumes: one extinction column for the three colour channels (linear in k), the Earth's rotation once a batch,
   `std::partial_sort` of only the drawn Gaussians + 1, the candidate vector kept between frames. Left: the plumes'
   per-Gaussian work (~1 ms with the bookmark's ~700 candidates incl. the pad smoke) and the plume builds under warp.
+  **Hitch pass (2026-10-20, `harness_runs/hitch/`, see GPU Performance Profiling "Frame profile and hitches"):**
+  (1) **plume parcels are built on a worker** (`LaunchState::parcelJobs`, `std::async`, at most 4 in flight, from 2 min
+  before lift-off; the batch copied in, the catalog / pads / tracks read: they never change after load; a
+  `launchInitBlock` or the state's destruction joins them): `buildParcels` was 80-190 ms on the main thread the frame
+  a launch first mattered (1 min/s - 1 h/s); a plume asked for after lift-off appears a few frames late. (2) **New
+  batches are built in parallel** in the walk (collected first, then: their candidates, the rivals' day buckets they
+  need, the builds, each `par`allel; `candidate()`'s cache under `candsMx`, a shared_mutex), at most `buildCap` a frame
+  (follows the measured cost: ~8 ms of building; the walk is redone until complete). (3) **Pad deconfliction reads a
+  day index** (`rivalBucket`, `LaunchState::rivalIdx`: per site and day of candidate lift-off, every batch of the
+  planes flying from the site whose candidate is there that day): each build enumerated every plane flying from its
+  site (~2000 at a Starship pad), ~1 ms a build. Same rank, same schedule (`launch list` / `padstats` identical before
+  and after); `pad_rivals` now counts the rivals within the 90 min. (4) **`planShipLanding` skips exactly** the 30-s
+  steps that cannot reach a Starship pad (its end moves over the ground at most |nPark| + the Earth's rate: from a step
+  whose nearest pad is farther than acos(0.98), it skips that many steps; same grid, same answer). Load: the first
+  frames were 6 x ~130 ms of builds; now one ~20-30 ms.
 - Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; Missions window > Controls (moved
   there from Settings > Constellations, which keeps a pointer + "Open the Missions window"); harness
   `launch ...` (docs/HARNESS.md: `launch next vehicle=`, `launch select kind=rocket|booster|upper|...`); default
@@ -6176,6 +6201,23 @@ tools/perf_analysis/analyze_profile.py`.
 
 See `TERRAIN_PLAN.md` session 29 log for the full narrative — what was measured, what was
 concluded, and which prior assumptions (the session-24 transmittance-LUT guess) it overturned.
+
+**Frame profile and hitches (2026-10-20, `src/FrameProfile.h`).** The buckets above are averages; a hitch is ONE
+frame, and its cause is usually a one-off (a batch build, a reallocation, a sync of a big batch). `FPROF_SCOPE("name")`
+adds a scope's wall time to a named section of the main thread's current frame (inclusive: read nested names as a
+tree; calls from other threads are ignored, so it is safe in code a worker also runs); `App::drawFrame` publishes
+each frame first thing (`app.*` sections: wait_fence = the GPU, build_ui, record_compute, record_draw, submit,
+present...), `recordDraw` adds the CPU buckets as `cpu.*`. A frame over 50 ms (env `SATLIGHTSIM_HITCH_MS`, 0 = off)
+is logged to satlight_log.txt as `hitch: wall N ms (frame, warp, sim t): <largest sections>` (400 lines at most a run)
+and kept for harness `hitches` (docs/HARNESS.md: wall p50 / p99 / max and the hitch frames since `hitches clear`).
+Scoped so far: every per-frame subsystem entry point (launches, Kessler sync / uploads / fills, clouds v2, mesh scene,
+ambience, stars, the dome, harness, reports, bookmarks...). **Add a scope to anything new that can take > 1 ms in a
+frame.** Benchmark: `tools/harness/scripts/hitch_ladder.satcmd` (every time rate from 1x to 1 yr/s right
+after load; its header lists the variants run: the user's settings, 2031, after the CME).
+The 2026-10-20 pass, measured this way (RTX 3070 Ti, 1600x900, harness fixed 1/60 s step), and what each fixed —
+see the sections named: plume builds (Launches: async), batch builds + pad deconfliction (Launches: parallel, rival
+day index, ship landing skip), the Kessler mirror (budgeted sync queue, pool reserved at load, prune throttled, GPU
+pool x4 growth), the first frame (ambience + bookmarks loaded during the loading screen).
 
 ---
 

@@ -3164,6 +3164,9 @@ private:
     double kLastBreakupMs = 0.0; // how long the last player breakup took on the main thread (harness state)
     bool kLastBreakupFast = false;
     bool kForceRebuildOnce = false; // harness `kessler breakup ... rebuild=1`: the old full replay (for comparison)
+    void kesslerSyncProcess(int32_t nowSec, double budgetMs); // works through the queue of the worker's output
+    std::chrono::steady_clock::time_point kHistPruneWall{}; // the last history prune (wall time; kesslerSync)
+    double kSyncBudgetMs = 3.0; // its wall-time budget a frame (2026-10-20, the hitches at a fast warp)
     void kesslerSync(VulkanContext &ctx);  // per frame: take the worker's new events / records / deaths
     void kesslerWant(double tJ2000);       // ask the (lazy) worker to simulate at least this far
     double kWantFloor = 0.0;               // the furthest explicit kesslerWant (harness waits); the warp's target may drop

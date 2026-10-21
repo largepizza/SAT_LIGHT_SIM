@@ -1,3 +1,4 @@
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "Ambience.h"
 #include "MusicAnalysis.h"
@@ -680,6 +681,7 @@ void SatelliteSim::init(VulkanContext &ctx)
 // the HQ photo target is up.
 void SatelliteSim::updateDynamicResolution()
 {
+    FPROF_SCOPE("updateDynamicResolution");
     if (!dynResEnabled || photoScaleActive || gpuMsRawTotal <= 0.0f)
         return;
     const float ms = gpuMsRawTotal;
@@ -1019,6 +1021,7 @@ static bool dbgEnv(const char *name)
 
 void SatelliteSim::updateGpuTimingStats(VulkanContext &ctx)
 {
+    FPROF_SCOPE("updateGpuTimingStats");
     if (!ctx.timestampsReady)
         return;
     const double *t = ctx.timestampMs;
@@ -4295,6 +4298,7 @@ int SatelliteSim::pickViewerSatellite(int constIdx) const
 // constellation row, placed at viewerAltM above the observer's ground point, flying east.
 void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
 {
+    FPROF_SCOPE("recordModelViewer");
     viewerMarkerLabels[0].on = viewerMarkerLabels[1].on = false;
     if (meshRendererInit && (infoChrome.open || viewerChrome.open))
         viewerSyncModel(); // the selection's slot may have staged since buildUI
@@ -4612,6 +4616,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
 // (geometry only — lit or not). Uses this frame's observer (obsECI's inputs) and ENU basis.
 void SatelliteSim::updateSelectedSkyDir()
 {
+    FPROF_SCOPE("updateSelectedSkyDir");
     selAboveEarth = false;
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
         return;
@@ -4907,6 +4912,7 @@ template <typename F> static void parallelFor(size_t n, F &&fn)
 // Always records the pass (it clears the targets the rest of the frame reads).
 void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
 {
+    FPROF_SCOPE("recordMeshScene");
     meshSceneSatIdx = -1;
     meshSceneFade = 0.0f;
     meshesDrawnThisFrame = false;
@@ -5827,6 +5833,7 @@ glm::dvec3 SatelliteSim::followHomeEcef() const
 // the offset, and aims the camera at it while the aim lock is on. Everything in double.
 void SatelliteSim::updateFollow(float dt)
 {
+    FPROF_SCOPE("updateFollow");
     if (followSatIndex < 0 || followSatIndex >= (int)satOrbits.size())
     {
         stopFollow();
@@ -7015,6 +7022,7 @@ void SatelliteSim::startBulkExport()
 // in a panel the player reads), but a mismatch is still logged, throttled to one line per 120 frames.
 void SatelliteSim::updateSelectedPhotometry()
 {
+    FPROF_SCOPE("updateSelectedPhotometry");
     for (auto &line : selPhotLine)
         line[0] = '\0';
     selParityWarn = false;
@@ -7260,6 +7268,16 @@ void SatelliteSim::recordPrePass(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
 void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
 {
+    {
+        // Frame profile: this frame's CPU buckets (recorded in buildUI / recordCompute) as sections too.
+        static const char *kNames[CPU_COUNT] = {"cpu.build_ui", "cpu.update_positions", "cpu.beam_readback",
+                                                "cpu.update_stars", "cpu.light_dome", "cpu.update_planets",
+                                                "cpu.orbit_rebake", "cpu.kessler", "cpu.launches"};
+        for (int i = 0; i < CPU_COUNT; ++i)
+            if (cpuAccumMs[i] > 0.0f)
+                fprof::add(kNames[i], cpuAccumMs[i]);
+        fprof::tag((double)simDayJ2000 * 86400.0 + simSecInDay, timePaused ? 0.0f : kTimeScales[timeScaleIdx] * timeDir);
+    }
     SatDrawPC skyPc = buildSkyDrawPC(ctx);  // Pass 1 (sky background) — skyBgPipeLayout
     PointDrawPC pc = buildPointDrawPC(ctx); // Passes 2/3/3.5 (satellite/star/planet points)
 
@@ -7455,6 +7473,12 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
 void SatelliteSim::setAudio(AudioSystem *audio)
 {
     audio_ = audio;
+    // (2026-10-20) Work the first frame used to do lazily (its ~100 ms hitch after the loading screen): the ambience
+    // table and the bookmarks list, here during the load (App calls this after init, before the last loading frame).
+    if (!ambience_)
+        initAmbience();
+    if (!bookmarksLoaded_)
+        bookmarksLoad();
     if (!audio_)
         return;
 
@@ -8364,6 +8388,7 @@ float SatelliteSim::cpuTerrainHeightM(float latDeg, float lonDeg) const
 // command buffer is ended.
 void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image)
 {
+    FPROF_SCOPE("recordScreenshotCopy");
     // ── The exposure meter (every frame): the frame as displayed, its central 60% (most HUD panels
     // sit outside it), blitted down to 64x36 into a linear RGBA8 image (the blit decodes sRGB) and
     // copied to the host; readExposureMeter() reads it after the next fence. ──
@@ -8530,6 +8555,7 @@ void SatelliteSim::readExposureMeter()
 
 void SatelliteSim::finalizeScreenshot()
 {
+    FPROF_SCOPE("finalizeScreenshot");
     readExposureMeter();
     if (!screenshotCopyPending)
         return;
@@ -8774,6 +8800,7 @@ void SatelliteSim::requestPhoto()
 
 void SatelliteSim::updatePhoto(VulkanContext &ctx)
 {
+    FPROF_SCOPE("updatePhoto");
     if (photoState == 1 && ctx.photoActive)
     {
         if (++photoFrame >= std::max(1, (int)std::lround(photoSettleFrames)))
@@ -9764,6 +9791,7 @@ void SatelliteSim::createSatRebake(VulkanContext &ctx)
 // are rewritten.
 void SatelliteSim::recordSatRebake(VkCommandBuffer cmd)
 {
+    FPROF_SCOPE("recordSatRebake");
     if (activeSatCount == 0 || satRebakePipeline == VK_NULL_HANDLE)
         return;
     orbitEpochDay = simDayJ2000;
@@ -13131,6 +13159,7 @@ void SatelliteSim::destroySkyTaaResources(VkDevice device)
 // The TAA path of recordPrePass: render, resolve, blit. Returns false when it does not apply.
 bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_t imgIdx)
 {
+    FPROF_SCOPE("recordSkyTaa");
     skyTaaUsedThisFrame = false;
     if (!skyTaaWanted() || dbgEnv("SATLIGHTSIM_SKIP_SKYBG"))
     {
@@ -14781,6 +14810,7 @@ void SatelliteSim::createStarPipeline(VulkanContext &ctx)
 // updateStars() (called right after this) reads lightDomeAz[] directly, no upload needed there.
 void SatelliteSim::updateLightPollutionDome(float dt)
 {
+    FPROF_SCOPE("updateLightPollutionDome");
     float obsR = glm::length(obsECI);
     float obsHeight = obsR - kEarthRadius;
     // Altitude falloff: light pollution's visible skyglow washes out within a few km — a much
@@ -14982,6 +15012,7 @@ void SatelliteSim::uploadLightDome()
 // Stars fade out during civil/nautical twilight — invisible in full daylight.
 void SatelliteSim::updateStars()
 {
+    FPROF_SCOPE("updateStars");
     if (!starMapped || starCount == 0)
         return;
 
@@ -15111,6 +15142,7 @@ void SatelliteSim::updateStars()
 // Pollution Dome").
 void SatelliteSim::updatePlanets()
 {
+    FPROF_SCOPE("updatePlanets");
     if (!planetMapped)
         return;
 
@@ -16780,6 +16812,7 @@ void SatelliteSim::fillSolarSites(GpuGroundBeams &gb, const std::vector<SolarBea
 //   (~6.4 MB at 100k sats).
 void SatelliteSim::updatePositions(double t, float dt)
 {
+    FPROF_SCOPE("updatePositions");
     // ── Observer ECI position (rotates with Earth) ────────────────────────────
     // fmod keeps the angle small so float trig precision is maintained at large t.
     // Add the Earth-fixed longitude offset to the GMST angle.

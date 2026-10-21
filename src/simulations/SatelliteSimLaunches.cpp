@@ -12,6 +12,7 @@
 // records in kesslerBuf's launch block (sat_orbit.comp: LAUNCH_CAP), osculating elements of their state rewritten
 // as they move (a few tens of thousands at most). Rockets are point sprites in kFireBuf, their flames emissive
 // Gaussians and their exhaust scattering Gaussians in the dust list (cloud_march.comp).
+#include "../FrameProfile.h"
 #include <chrono>
 #include "SatelliteSim.h"
 #include "Launches.h"
@@ -25,6 +26,12 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <atomic>
+#include <future>
+#include <thread>
+#include <mutex>
+#include <shared_mutex>
+#include <unordered_map>
 #include <cstring>
 #include <ctime>
 #include <fstream>
@@ -403,6 +410,12 @@ using namespace launchsim;
 
 struct SatelliteSim::LaunchState
 {
+    // Plume parcels built on worker threads (2026-10-20: buildParcels integrates every parcel over its life, 80-190 ms
+    // a launch, and ran on the main thread the frame a launch first mattered: the hitches at 1 min/s - 1 h/s). Keyed by
+    // batch; a std::async future's destructor waits, so clearing the map joins them: launchInitBlock does (the batches
+    // they were made for go), and the destructor does before the catalog and pads they read are destroyed.
+    std::unordered_map<uint64_t, std::future<std::vector<launch::Parcel>>> parcelJobs;
+    ~LaunchState() { parcelJobs.clear(); }
     launch::Catalog cat;
     bool tried = false, loaded = false;
     std::string err;
@@ -431,6 +444,19 @@ struct SatelliteSim::LaunchState
         double tL = -1.0, az = 0.0;
     };
     std::unordered_map<uint64_t, Cand> cands;
+    int buildCap = 100; // batches built a frame at most (launchUpdate's walk; follows their measured cost)
+    std::shared_mutex candsMx; // (2026-10-20) batches are built in parallel (launchUpdate's walk): candidate() is shared
+    // Pad deconfliction's rivals by (site, day of their candidate launch): every batch whose candidate is at the site
+    // that day (2026-10-20: each build enumerated every plane flying from its site, ~1 ms a build, 100+ ms a frame at
+    // load and at a fast warp). Pure functions of the batches, shared by the parallel builds.
+    struct RivalEntry
+    {
+        double tL, tA, pri;
+        uint64_t key;
+        int plane;
+    };
+    std::unordered_map<uint64_t, std::shared_ptr<const std::vector<RivalEntry>>> rivalIdx;
+    std::mutex rivalMx;
     std::vector<std::vector<int>> planesBySite; // the planes that may launch from each site
     std::vector<uint32_t> freeChunks;
     std::vector<SlotInfo> slots;
@@ -558,6 +584,7 @@ void SatelliteSim::launchInitBlock()
         launchState.reset(new LaunchState());
     LaunchState &L = *launchState;
     // The catalog stays; the roster may have changed (planes, batches, slots go).
+    L.parcelJobs.clear(); // (waits for plume builds in flight: their batches go)
     L.planesBuilt = false;
     L.planes.clear();
     L.batches.clear();
@@ -567,6 +594,10 @@ void SatelliteSim::launchInitBlock()
     L.chunked.clear();
     ++L.batchEpoch;
     L.cands.clear();
+    {
+        std::lock_guard<std::mutex> lk(L.rivalMx);
+        L.rivalIdx.clear();
+    }
     L.planesBySite.clear();
     L.slots.assign(kLaunchCap, SlotInfo{});
     L.elems.assign(kLaunchCap, SatOrbitElems{});
@@ -819,6 +850,7 @@ static double launchTypeMass(const SatelliteType &ty)
 static void buildPlanes(SatelliteSim::LaunchState &L, const std::vector<SatOrbit> &orbits, uint32_t rosterCount,
                         const std::vector<ConstellationConfig> &consts, float lifeScale, bool deployOn)
 {
+    FPROF_SCOPE("launch.buildPlanes");
     L.planes.clear();
     L.cohorts.clear();
     L.deployOn = deployOn;
@@ -1119,9 +1151,12 @@ static SatelliteSim::LaunchState::Cand candidate(const SatelliteSim &sim, Satell
                                                  int64_t k, int b)
 {
     const uint64_t key = batchKey(plane, k, b);
-    auto it = L.cands.find(key);
-    if (it != L.cands.end())
-        return it->second;
+    {
+        std::shared_lock<std::shared_mutex> lk(L.candsMx);
+        auto it = L.cands.find(key);
+        if (it != L.cands.end())
+            return it->second;
+    }
     SatelliteSim::LaunchState::Cand c;
     const LPlane &pl = L.planes[plane];
     const launch::Program &pg = L.cat.programs[pl.prog];
@@ -1166,10 +1201,47 @@ static SatelliteSim::LaunchState::Cand candidate(const SatelliteSim &sim, Satell
             }
         }
     }
+    std::unique_lock<std::shared_mutex> lk(L.candsMx);
     if (L.cands.size() > 200000)
         L.cands.clear();
     L.cands.emplace(key, c);
     return c;
+}
+
+// The rivals at a site in one day of candidate launch times (LaunchState::rivalIdx): every batch of the planes flying
+// from the site whose arrival is in the widest window any query that day can ask about, kept when its candidate is at
+// the site that day. Built once, shared (a race builds it twice, identically).
+static constexpr double kRivalBucketS = 86400.0;
+static std::shared_ptr<const std::vector<SatelliteSim::LaunchState::RivalEntry>>
+rivalBucket(const SatelliteSim &sim, SatelliteSim::LaunchState &L, int site, int64_t beta)
+{
+    const uint64_t ik = ((uint64_t)(uint32_t)site << 40) ^ ((uint64_t)beta & 0xFFFFFFFFFFull);
+    {
+        std::lock_guard<std::mutex> lk(L.rivalMx);
+        auto it = L.rivalIdx.find(ik);
+        if (it != L.rivalIdx.end())
+            return it->second;
+    }
+    auto v = std::make_shared<std::vector<SatelliteSim::LaunchState::RivalEntry>>();
+    const double b0 = (double)beta * kRivalBucketS, b1 = b0 + kRivalBucketS;
+    for (int q : L.planesBySite[(size_t)site])
+    {
+        const LPlane &pq = L.planes[(size_t)q];
+        const launch::Program &gq = L.cat.programs[pq.prog];
+        const double lifeQ = progLifeS(gq, (double)sim.launchLifeScale);
+        const double lo = b0 - 5400.0 + (gq.raiseDays[0] - 1.0) * kDay, hi = b1 + 5400.0 + (gq.raiseDays[1] + 3.0) * kDay;
+        forBatches(L, pq, lifeQ, lo, hi, [&](int64_t k, int b) {
+            const SatelliteSim::LaunchState::Cand co = candidate(sim, L, q, k, b);
+            if (co.site != site || co.tL < b0 || co.tL >= b1)
+                return;
+            const uint64_t key = batchKey(q, k, b);
+            v->push_back({co.tL, arrivalOf(pq, k, b, lifeQ), h01(key, 9, 9), key, q});
+        });
+    }
+    std::lock_guard<std::mutex> lk(L.rivalMx);
+    if (L.rivalIdx.size() > 20000)
+        L.rivalIdx.clear();
+    return L.rivalIdx.emplace(ik, v).first->second;
 }
 
 // A returning ship's landing (2026-10-19; the user: SpaceX's 2036 plan is full reuse, the ship caught by the tower).
@@ -1180,6 +1252,7 @@ static SatelliteSim::LaunchState::Cand candidate(const SatelliteSim &sim, Satell
 // burn time and a touchdown on the sea 250 km past the entry's end.
 template <class F> static void planShipLanding(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &B, F &&setDeorbit)
 {
+    FPROF_SCOPE("launch.planShipLanding");
     (void)sim;
     const double tD0 = B.tDeorbBurn;
     const glm::dvec3 omega(0.0, 0.0, 7.2921159e-5);
@@ -1230,8 +1303,29 @@ template <class F> static void planShipLanding(SatelliteSim &sim, SatelliteSim::
     };
     double TdBest = -1.0;
     int padBest = -1;
+    // (2026-10-20, hitches at a high warp: this scan was ~0.5 ms a ship, ~100 ms a frame at 1 yr/s) Exact skip: score()
+    // needs a pad within acos(0.98) of the entry's end e(Td), and e moves over the ground at most |nPark| + the Earth's
+    // rate, so from a step where the nearest pad is farther, the steps that cannot reach it are passed over (the same
+    // 30-s grid, the same additions: the same answer).
+    const double eRate = std::abs(B.nPark) + 7.2921159e-5;
+    const double angLim = std::acos(0.98);
     for (double Td = tD0; Td < tD0 + 72.0 * 3600.0 && TdBest < 0.0; Td += 30.0)
     {
+        {
+            glm::dvec3 e, dT;
+            endAt(Td, e, dT);
+            double maxDot = -1.0;
+            for (int pp : pads)
+                maxDot = std::max(maxDot, glm::dot(L.pads[pp].g, e));
+            if (maxDot < 0.98)
+            {
+                const double ang = std::acos(glm::clamp(maxDot, -1.0, 1.0));
+                const double gap = (ang - angLim) / eRate - 1e-3;
+                for (int j = 0, nSkip = (int)std::floor(gap / 30.0); j < nSkip; ++j)
+                    Td += 30.0;
+                continue;
+            }
+        }
         int p;
         if (score(Td, p) < 1e29)
         {
@@ -1302,6 +1396,7 @@ template <class F> static void planShipLanding(SatelliteSim &sim, SatelliteSim::
 // Builds a batch: where and when it launches, its trajectory frame, each member's climb and its predecessor's fall.
 static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &B, const LPlane &pl, double lifeS)
 {
+    FPROF_SCOPE("launch.buildBatch");
     const launch::Program &pg = L.cat.programs[pl.prog];
     B.prog = pl.prog;
     B.seed = batchSeed(pl, B.k, B.b);
@@ -1342,26 +1437,30 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     {
         // The launches competing for this pad around this pass (their candidates): this one waits as many passes as
         // there are rivals of higher priority (a hash), so the cluster goes out on successive passes (~a day apart).
+        FPROF_SCOPE("launch.rivals");
         const uint64_t self = batchKey(B.plane, B.k, B.b);
         const double myPri = h01(self, 9, 9);
         int rank = 0;
-        for (int q : L.planesBySite[B.site])
+        // (The batches of the planes flying from this site whose arrival is in [tL + raise0 - 1 d, tL + raise1 + 3 d]
+        // and whose candidate is at this site within 90 min; from the day index, rivalBucket. B.rivals counts those
+        // within the 90 min, since 2026-10-20: it was every batch looked at.)
+        const int64_t be0 = (int64_t)std::floor((c0.tL - 5400.0) / kRivalBucketS);
+        const int64_t be1 = (int64_t)std::floor((c0.tL + 5400.0) / kRivalBucketS);
+        for (int64_t be = be0; be <= be1; ++be)
         {
-            const LPlane &pq = L.planes[q];
-            const launch::Program &gq = L.cat.programs[pq.prog];
-            const double lifeQ = progLifeS(gq, (double)sim.launchLifeScale);
-            const double lo = tL + (gq.raiseDays[0] - 1.0) * kDay, hi = tL + (gq.raiseDays[1] + 3.0) * kDay;
-            forBatches(L, pq, lifeQ, lo, hi, [&](int64_t k, int b) {
-                const uint64_t other = batchKey(q, k, b);
-                if (other == self)
-                    return;
-                const SatelliteSim::LaunchState::Cand co = candidate(sim, L, q, k, b);
+            const auto bucket = rivalBucket(sim, L, B.site, be);
+            for (const SatelliteSim::LaunchState::RivalEntry &e : *bucket)
+            {
+                if (e.key == self || !(std::abs(e.tL - c0.tL) < 5400.0))
+                    continue;
+                const launch::Program &gq = L.cat.programs[L.planes[(size_t)e.plane].prog];
+                const double lo = tL + (gq.raiseDays[0] - 1.0) * kDay, hi = tL + (gq.raiseDays[1] + 3.0) * kDay;
+                if (e.tA < lo || e.tA > hi)
+                    continue;
                 ++B.rivals;
-                if (co.site != B.site)
-                    return;
-                if (std::abs(co.tL - c0.tL) < 5400.0 && h01(other, 9, 9) > myPri)
+                if (e.pri > myPri)
                     ++rank;
-            });
+            }
         }
         // A rank first moves the launch to the vehicle's next pad that reaches the plane, then (past the pads) to
         // later passes.
@@ -2637,6 +2736,7 @@ static glm::dvec3 engineGeomOf(const SatelliteType &ty)
 // The exhaust's parcels, from the whole flight (built once, when the launch first matters to the view).
 static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
 {
+    FPROF_SCOPE("launch.buildParcels");
     B.parcels.clear();
     B.parcelsBuilt = true;
     const launch::Vehicle &vh = L.cat.vehicles[B.veh];
@@ -2920,6 +3020,7 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
 // the worker reaching it), so the schedule follows the event log (buildBatch's "station lost").
 static void crewSync(const SatelliteSim &sim, SatelliteSim::LaunchState &L)
 {
+    FPROF_SCOPE("launch.crewSync");
     if (!L.planesBuilt)
         return;
     if (L.crewDead.size() != L.planes.size())
@@ -2961,6 +3062,7 @@ static void crewSync(const SatelliteSim &sim, SatelliteSim::LaunchState &L)
 // ── Per frame ───────────────────────────────────────────────────────────────────────────────────
 void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
 {
+    FPROF_SCOPE("launchUpdate");
     if (!launchState)
         launchInitBlock();
     LaunchState &L = *launchState;
@@ -3038,9 +3140,27 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     }
     else if (on)
     {
+        FPROF_SCOPE("launch.walk");
         // Batches that matter now: from before the launch to the last retiree's re-entry. The list is reused while t
         // stays within kWalkMarginS of this walk: the window's edges are days from any launch or re-entry, so a batch
         // entering or leaving it a few minutes late changes nothing drawn (and the batches built stay the same).
+        // (2026-10-20) The batches not built yet are collected, then built in parallel (buildBatch is a pure function of
+        // the batch; its only shared write is candidate()'s cache, under L.candsMx): built one by one, the first frames
+        // after a load and every frame at a fast warp spent 100-170 ms here. At most kMaxBuilds a frame.
+        // The cap follows the measured cost of a build (with the candidates and the rivals' day buckets it needs, which
+        // are the expensive part the first time): ~8 ms of building a frame. Not every batch is built at once after a
+        // load or under a fast warp; the walk is then redone each frame until it is complete (walkOk).
+        const int kMaxBuilds = L.buildCap;
+        struct ToBuild
+        {
+            uint64_t key;
+            int pi;
+            int64_t k;
+            int b;
+            double life;
+        };
+        std::vector<ToBuild> toBuild;
+        std::vector<std::pair<uint64_t, LBatch *>> found; // in walk order; null = built below
         int builds = 0;
         L.walkList.clear();
         for (size_t pi = 0; pi < L.planes.size(); ++pi)
@@ -3055,25 +3175,94 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 ++L.nFinds;
                 if (it == L.batches.end())
                 {
-                    // At most a few hundred new batches a frame (the first frame finds every train in the sky).
-                    if (++builds > 200)
+                    // At most kMaxBuilds new batches a frame (the first frame finds every train in the sky).
+                    if (++builds > kMaxBuilds)
                         return;
-                    LBatch nb;
-                    nb.plane = (int)pi;
-                    nb.k = k;
-                    nb.b = b;
-                    LaunchImpl::buildBatch(*this, L, nb, pl, life);
-                    it = L.batches.emplace(key, std::move(nb)).first;
+                    toBuild.push_back({key, (int)pi, k, b, life});
+                    found.push_back({key, nullptr});
+                    return;
                 }
-                it->second.touched = L.frame;
-                it->second.inWalk = L.frame;
-                L.walkList.push_back({key, &it->second});
-                if (it->second.valid)
-                    touchedP.push_back({key, &it->second});
+                found.push_back({key, &it->second});
             });
         }
+        if (!toBuild.empty())
+        {
+            FPROF_SCOPE("launch.buildBatches");
+            struct CapTimer
+            {
+                LaunchState &L;
+                size_t n;
+                std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+                ~CapTimer()
+                {
+                    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                    const double per = std::max(ms / (double)std::max<size_t>(n, 1), 1e-3);
+                    L.buildCap = (int)std::clamp(8.0 / per, 16.0, 400.0);
+                }
+            } capTimer{L, toBuild.size()};
+            auto par = [](size_t n, const auto &fn) {
+                const size_t hw = std::max(1u, std::thread::hardware_concurrency());
+                const size_t workers = std::min(hw, n / 2);
+                if (workers <= 1)
+                {
+                    for (size_t i = 0; i < n; ++i)
+                        fn(i);
+                    return;
+                }
+                std::atomic<size_t> next{0};
+                auto run = [&] {
+                    for (size_t i = next.fetch_add(1); i < n; i = next.fetch_add(1))
+                        fn(i);
+                };
+                std::vector<std::thread> th;
+                for (size_t w = 1; w < workers; ++w)
+                    th.emplace_back(run);
+                run();
+                for (std::thread &x : th)
+                    x.join();
+            };
+            const size_t n = toBuild.size();
+            // Their candidates, then the rivals' day buckets they will ask for, each built once (in parallel).
+            {
+                std::vector<LaunchState::Cand> c0(n);
+                par(n, [&](size_t i) { c0[i] = LaunchImpl::candidate(*this, L, toBuild[i].pi, toBuild[i].k, toBuild[i].b); });
+                std::vector<std::pair<int, int64_t>> need;
+                for (const LaunchState::Cand &c : c0)
+                    if (c.tL >= 0.0 && c.site >= 0)
+                        for (int64_t be = (int64_t)std::floor((c.tL - 5400.0) / LaunchImpl::kRivalBucketS);
+                             be <= (int64_t)std::floor((c.tL + 5400.0) / LaunchImpl::kRivalBucketS); ++be)
+                            need.push_back({c.site, be});
+                std::sort(need.begin(), need.end());
+                need.erase(std::unique(need.begin(), need.end()), need.end());
+                par(need.size(), [&](size_t i) { LaunchImpl::rivalBucket(*this, L, need[i].first, need[i].second); });
+            }
+            std::vector<LBatch> built(n);
+            par(n, [&](size_t i) {
+                LBatch &nb = built[i];
+                nb.plane = toBuild[i].pi;
+                nb.k = toBuild[i].k;
+                nb.b = toBuild[i].b;
+                LaunchImpl::buildBatch(*this, L, nb, L.planes[(size_t)toBuild[i].pi], toBuild[i].life);
+            });
+            size_t q = 0;
+            for (auto &f : found)
+                if (!f.second)
+                {
+                    f.second = &L.batches.emplace(toBuild[q].key, std::move(built[q])).first->second;
+                    ++q;
+                }
+        }
+        for (const auto &f : found)
+        {
+            LBatch &B = *f.second;
+            B.touched = L.frame;
+            B.inWalk = L.frame;
+            L.walkList.push_back({f.first, &B});
+            if (B.valid)
+                touchedP.push_back({f.first, &B});
+        }
         std::sort(L.walkList.begin(), L.walkList.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-        L.walkOk = builds <= 200;
+        L.walkOk = builds <= kMaxBuilds;
         L.walkT = t;
         L.walkFrame = L.frame;
         L.walkEpoch = L.batchEpoch;
@@ -3231,6 +3420,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     const bool fullFree = (L.frame % 64u) == 0u || !on || std::abs(t - L.lastFullFreeT) > 600.0;
     if (fullFree)
     {
+        FPROF_SCOPE("launch.fullFree");
         L.lastFullFreeT = t;
         for (auto it = L.batches.begin(); it != L.batches.end();)
         {
@@ -3625,6 +3815,7 @@ void SatelliteSim::launchSlotEndedSelection(uint32_t slot)
 // ── Visuals: rockets, flames, plumes, re-entries ────────────────────────────────────────────────
 void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull)
 {
+    FPROF_SCOPE("launchFillVisuals");
     auto pt = std::chrono::steady_clock::now();
     launchFillPadLights(); // the pads' lights at night, whether or not anything flies (2026-10-19)
     if (!launchState || !launchesEnabled || !kFireMapped)
@@ -4231,7 +4422,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         }
         // Plumes: built (once) only for launches that can be seen from here, and not past 1 h/s of warp (a plume lasts
         // about an hour: building one costs a few ms, and at a day a second a dozen launches pass each second).
-        if (launchPlumeGain <= 0.0f || tau < 0.0)
+        // (2026-10-20) Built on a worker thread (LaunchState::parcelJobs), from up to 2 min before lift-off, so it is
+        // ready when the rocket lifts off; a plume asked for later appears a few frames after it is first wanted.
+        if (launchPlumeGain <= 0.0f || tau < -120.0 || (tau < 0.0 && B.parcelsBuilt))
             continue;
         struct PlumeTimer
         {
@@ -4251,9 +4444,30 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (fast || dNear > 4.5e6 + 2.0 * eyeAlt)
                 continue;
             const auto bt0 = std::chrono::steady_clock::now();
-            LaunchImpl::buildParcels(L, B);
+            const uint64_t jobKey = L.visList[li].first;
+            auto job = L.parcelJobs.find(jobKey);
+            if (job == L.parcelJobs.end())
+            {
+                if (L.parcelJobs.size() < 4)
+                {
+                    const LaunchState *Lc = &L;
+                    L.parcelJobs.emplace(jobKey, std::async(std::launch::async, [Lc, Bc = B]() mutable {
+                                             LaunchImpl::buildParcels(*Lc, Bc);
+                                             return std::move(Bc.parcels);
+                                         }));
+                }
+                buildMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bt0).count();
+                continue;
+            }
+            if (job->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+                continue;
+            B.parcels = job->second.get();
+            B.parcelsBuilt = true;
+            L.parcelJobs.erase(job);
             buildMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bt0).count();
         }
+        if (tau < 0.0)
+            continue;
         const double era = earthRotationAngle(t);
         const double cEra = std::cos(era), sEra = std::sin(era); // (rotZ, once a batch rather than twice a Gaussian)
         auto rotE = [&](const glm::dvec3 &v) { return glm::dvec3(v.x * cEra - v.y * sEra, v.x * sEra + v.y * cEra, v.z); };
@@ -5970,6 +6184,7 @@ void SatelliteSim::addSelTransient(const SelTransient &s)
 
 void SatelliteSim::selTransientUpdate()
 {
+    FPROF_SCOPE("selTransientUpdate");
     selTransientsT = (double)simDayJ2000 * 86400.0 + simSecInDay; // the time the list was made at
     if (launchWantSelKey)
     {
@@ -6286,6 +6501,7 @@ void SatelliteSim::followTakeTransient(const SelTransient &s, const glm::dvec3 &
 
 void SatelliteSim::followTransientUpdate()
 {
+    FPROF_SCOPE("followTransientUpdate");
     if (!followIsTransient() || !launchState)
         return;
     const double t = selTransientsT;
@@ -6353,6 +6569,7 @@ void SatelliteSim::followTransientUpdate()
 // Each frame before updateFollow: the followed object may have ended since the last frame.
 void SatelliteSim::followCheckTarget()
 {
+    FPROF_SCOPE("followCheckTarget");
     if (!followActive || followSatIndex < 0)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -6549,6 +6766,7 @@ double SatelliteSim::rocketMeshPx(const SelTransient &s, double pixAngle, const 
 // satellite. Uses the transients the last frame listed (the visuals fill after this pass): one frame of extrapolation.
 std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 &obsEci)
 {
+    FPROF_SCOPE("launchMeshJobs");
     std::vector<int> jobs;
     if (!launchState)
         return jobs;
@@ -6728,6 +6946,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
 // point, in the same attitude). Not selectable.
 void SatelliteSim::launchStackJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs)
 {
+    FPROF_SCOPE("launchStackJobs");
     LaunchState &L = *launchState;
     struct Want
     {
@@ -7037,6 +7256,7 @@ double sunElevAtPad(const launch::Site &st, double t)
 
 void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN, std::vector<MissionLaunch> &out)
 {
+    FPROF_SCOPE("launchUpcoming");
     out.clear();
     if (!launchState || !launchesEnabled)
         return;
@@ -7220,6 +7440,7 @@ bool SatelliteSim::launchGoToKey(uint64_t key, bool moveObserver, double leadS, 
 
 void SatelliteSim::launchOngoing(std::vector<MissionOngoing> &out)
 {
+    FPROF_SCOPE("launchOngoing");
     out.clear();
     if (!launchState || !launchesEnabled)
         return;
@@ -7509,6 +7730,7 @@ static glm::dvec3 padPointEcef(const LPad &p, double u, double v, double h)
 
 void SatelliteSim::launchFillPadParams(GpuCloudParams &cp)
 {
+    FPROF_SCOPE("launchFillPadParams");
     cp.padInfo = glm::vec4(0.0f);
     cp.coastInfo = glm::vec4(0.0f);
     if (!launchPadGraphics || !launchState)
@@ -7622,6 +7844,7 @@ static void padLightsOf(const LPad &p, std::vector<PadLight> &out)
 
 void SatelliteSim::launchFillPadLights()
 {
+    FPROF_SCOPE("launchFillPadLights");
     if (!launchPadGraphics || !launchState || !kFireMapped)
         return;
     LaunchState &L = *launchState;
@@ -7740,6 +7963,7 @@ void SatelliteSim::engineLightAdd(const glm::dvec3 &posEci, double intensitySuns
 
 void SatelliteSim::engineLightsFlush()
 {
+    FPROF_SCOPE("engineLightsFlush");
     engineLightCount = 0;
     if (!kDustMapped)
     {
@@ -8079,6 +8303,7 @@ void shipLightsOf(const std::string &model, double deck, std::vector<ShipLight> 
 // The ships as meshes: those over ~1.4 px, nearest first, each kept in its reserved slot while it stays.
 void SatelliteSim::launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs)
 {
+    FPROF_SCOPE("launchShipJobs");
     LaunchState &L = *launchState;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     struct W
@@ -8159,6 +8384,7 @@ void SatelliteSim::launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std
 // Their lights at night (point sprites in kFireBuf, like the pads'): within 150 km.
 void SatelliteSim::launchFillShipLights()
 {
+    FPROF_SCOPE("launchFillShipLights");
     if (!launchState || !kFireMapped)
         return;
     LaunchState &L = *launchState;
@@ -8342,6 +8568,7 @@ bool SatelliteSim::launchGoToShipLanding(double leadS, double distM, double azDe
 // floods' own sprites are drawn at -3: kept in step with them).
 void SatelliteSim::launchFillShipGlow(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull)
 {
+    FPROF_SCOPE("launchFillShipGlow");
     if (!launchState)
         return;
     LaunchState &L = *launchState;
@@ -9015,6 +9242,7 @@ void SatelliteSim::missionAttachAt(const MissionSubject &s, double t, bool sel, 
 
 void SatelliteSim::missionAttachAfterJump()
 {
+    FPROF_SCOPE("missionAttachAfterJump");
     if (!msAttachOwner || !launchState)
         return;
     const LaunchState &L = *launchState;
@@ -9202,6 +9430,7 @@ void countCrossings(const std::vector<std::pair<double, double>> &c, double scal
 
 void SatelliteSim::rosterLifeEnsure()
 {
+    FPROF_SCOPE("rosterLifeEnsure");
     if (!launchState)
         launchInitBlock();
     LaunchState &L = *launchState;
@@ -9285,6 +9514,7 @@ void SatelliteSim::rosterLifeEnsure()
 
 void SatelliteSim::rosterLifeUpload(VulkanContext &ctx)
 {
+    FPROF_SCOPE("rosterLifeUpload");
     if (kesslerBuf == VK_NULL_HANDLE || activeSatCount == 0)
         return;
     const VkDeviceSize bytes = 8ull * activeSatCount;

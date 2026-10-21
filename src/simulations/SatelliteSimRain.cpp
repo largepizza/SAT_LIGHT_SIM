@@ -7,6 +7,7 @@
 // lights it with the cloud march's rain sample at the eye (the lightning pass writes cv2RainKey / cv2RainAmb)
 // through the rain's own phase function — the bows included (include/cv2_optics.glsl). The particles are the
 // near part of the rain volume, drawn one drop at a time. It replaced cloud_march.comp's rainDrops.
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "../VulkanContext.h"
 #include "../Log.h"
@@ -255,6 +256,7 @@ void SatelliteSim::recordRainParticles(VkCommandBuffer cmd, VulkanContext &ctx, 
 // The fall: "Rain fall speed" x the drops' terminal velocities, x 1.35 at rain rate 1 (heavier rain, bigger drops).
 void SatelliteSim::updateRainMotion(GpuCloudV2Params &p)
 {
+    FPROF_SCOPE("updateRainMotion");
     const double simT = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const double dts = rainPrevSimTValid ? simT - rainPrevSimT : 0.0;
     rainPrevSimT = simT;

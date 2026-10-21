@@ -15,6 +15,7 @@
 // (the pinned twilight / crewed searches every few seconds, or when sim time passes them), never per frame. Only the
 // countdowns are formatted per frame. Strings handed to Clay live in msText_ (a deque: it never moves them) or in the
 // cached rows, which change only before the layout.
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "../UIRenderer.h"
 #include "../VulkanContext.h"
@@ -106,6 +107,7 @@ const char *SatelliteSim::msStr(const char *fmt, ...)
 // ── The rows (cached) ───────────────────────────────────────────────────────────────────────────
 void SatelliteSim::missionsRefresh(bool force)
 {
+    FPROF_SCOPE("missionsRefresh");
     const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const double wall = wallNow();
     // The next launches and what is flying: twice a second, or at once after a jump in sim time.
@@ -306,6 +308,7 @@ nlohmann::json SatelliteSim::missionsStateJson()
 // ── The window ──────────────────────────────────────────────────────────────────────────────────
 void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
 {
+    FPROF_SCOPE("buildMissionsWindow");
     if (!msChrome.open)
         return;
     msText_.clear(); // last frame's strings: recorded by now

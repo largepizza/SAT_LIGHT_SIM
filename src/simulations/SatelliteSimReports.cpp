@@ -18,6 +18,7 @@
 // Save Snapshot (F9) adds a shot to the active issue (and still appends its record to
 // perf_profiles/profile_log.jsonl); New Issue Snapshot (F7) starts another issue. Harness: `report`
 // (SatelliteSimHarness.cpp, docs/HARNESS.md).
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "../UIRenderer.h"
 #include "../VulkanContext.h"
@@ -131,6 +132,7 @@ SatelliteSim::ReportPose SatelliteSim::reportPoseNow() const
 // keys, and a pending shot (which waits here while an earlier screenshot is still encoding).
 void SatelliteSim::reportTick(float dt)
 {
+    FPROF_SCOPE("reportTick");
     // The window's queued New / Delete, then the list itself: all before this frame's layout.
     if (reportOp_.kind == 1)
         reportDeleteIssue(reportOp_.id);

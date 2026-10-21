@@ -1,6 +1,7 @@
 #include "App.h"
 #include "Harness.h"
 #include "Log.h"
+#include "FrameProfile.h"
 #include "version.h"
 #include "simulations/UIPalette.h" // the HUD palette, for the startup chooser
 #include "clay.h" // the boot screen's Clay tree (buildBootUI) — CLAY_IMPLEMENTATION lives in UIRenderer.cpp
@@ -762,7 +763,17 @@ void App::drawFrame()
     };
     int ftRecreated = 0;
 
-    vkWaitForFences(ctx.device, 1, &ctx.fenceFrame, VK_TRUE, UINT64_MAX);
+    // Frame profile (src/FrameProfile.h): publish the previous frame; a hitch is logged with its sections.
+    {
+        fprof::Frame hf;
+        if (fprof::beginFrame(glfwGetTime(), &hf) && fprof::st().logged++ < 400)
+            Log::line("hitch: " + fprof::describe(hf));
+    }
+
+    {
+        FPROF_SCOPE("app.wait_fence");
+        vkWaitForFences(ctx.device, 1, &ctx.fenceFrame, VK_TRUE, UINT64_MAX);
+    }
     ftMark("waitFences");
 
     // Resolve last frame's GPU timestamp queries now that the fence proves the GPU
@@ -770,6 +781,7 @@ void App::drawFrame()
     // so nothing has actually been submitted yet, and there'd be no query data to read.
     if (submittedOnce)
     {
+        FPROF_SCOPE("app.resolve_finalize");
         ctx.resolveTimestamps();
         // UC6: same reasoning — a screenshot copy recorded last frame is only safe to read back
         // once this fence wait proves the GPU has finished writing it.
@@ -795,8 +807,11 @@ void App::drawFrame()
     uint32_t imgIdx = ctx.photoIndex;
     VkResult res = VK_SUCCESS;
     if (!photo)
+    {
+        FPROF_SCOPE("app.acquire");
         res = vkAcquireNextImageKHR(ctx.device, ctx.swapchain, UINT64_MAX,
                                     ctx.semImageAvailable, VK_NULL_HANDLE, &imgIdx);
+    }
     ftMark("acquire");
     if (res == VK_ERROR_OUT_OF_DATE_KHR)
     {
@@ -867,10 +882,16 @@ void App::drawFrame()
     scrollX = scrollY = 0.0f; // consumed
 
     // Advance music playlist (detects track end, starts next track).
-    audio.update(dt);
+    {
+        FPROF_SCOPE("app.audio");
+        audio.update(dt);
+    }
 
     // Let the simulation declare its UI elements and read input state via ui.
-    sim->buildUI(dt, ui);
+    {
+        FPROF_SCOPE("app.build_ui");
+        sim->buildUI(dt, ui);
+    }
     ftMark("buildUI");
 
     // Record GPU commands
@@ -890,12 +911,18 @@ void App::drawFrame()
     ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
 
     // 1. Simulation compute work (before render pass)
-    sim->recordCompute(ctx.commandBuffer, ctx, dt);
+    {
+        FPROF_SCOPE("app.record_compute");
+        sim->recordCompute(ctx.commandBuffer, ctx, dt);
+    }
     ftMark("recordCompute");
 
     // 1b. Optional offscreen pre-pass (e.g. a low-res background blitted into the swapchain
     // image ahead of time) — must run before the main render pass begins. Default: no-op.
-    sim->recordPrePass(ctx.commandBuffer, ctx, dt, imgIdx);
+    {
+        FPROF_SCOPE("app.prepass");
+        sim->recordPrePass(ctx.commandBuffer, ctx, dt, imgIdx);
+    }
 
     // 2. Begin render pass — App now owns this
     VkClearValue clearValues[2];
@@ -911,13 +938,19 @@ void App::drawFrame()
     vkCmdBeginRenderPass(ctx.commandBuffer, &rbi, VK_SUBPASS_CONTENTS_INLINE);
 
     // 3. Simulation draw calls (render pass is already open)
-    sim->recordDraw(ctx.commandBuffer, ctx, dt);
+    {
+        FPROF_SCOPE("app.record_draw");
+        sim->recordDraw(ctx.commandBuffer, ctx, dt);
+    }
     ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 7);
 
     // 4. UI draws on top of the simulation — UC6 clean-shot mode skips this for a captured frame
     // (nobody shares a screenshot with a settings panel in it).
     if (!sim->wantsCleanScreenshot() && !photo)
+    {
+        FPROF_SCOPE("app.ui_record");
         ui.record(ctx.commandBuffer, ctx);
+    }
     ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 8);
 
     vkCmdEndRenderPass(ctx.commandBuffer);
@@ -945,8 +978,11 @@ void App::drawFrame()
     si.pCommandBuffers = &ctx.commandBuffer;
     si.signalSemaphoreCount = photo ? 0 : 1;
     si.pSignalSemaphores = photo ? nullptr : &ctx.semRenderDone[imgIdx];
-    if (vkQueueSubmit(ctx.graphicsQueue, 1, &si, ctx.fenceFrame) != VK_SUCCESS)
-        throw std::runtime_error("vkQueueSubmit failed.");
+    {
+        FPROF_SCOPE("app.submit");
+        if (vkQueueSubmit(ctx.graphicsQueue, 1, &si, ctx.fenceFrame) != VK_SUCCESS)
+            throw std::runtime_error("vkQueueSubmit failed.");
+    }
     submittedOnce = true;
     ftMark("queueSubmit");
     // A photo frame is not presented; a resize waits for the photo to end (resized stays set). A few times a
@@ -970,7 +1006,10 @@ void App::drawFrame()
     pi.swapchainCount = 1;
     pi.pSwapchains = &ctx.swapchain;
     pi.pImageIndices = &imgIdx;
-    res = vkQueuePresentKHR(ctx.graphicsQueue, &pi);
+    {
+        FPROF_SCOPE("app.present");
+        res = vkQueuePresentKHR(ctx.graphicsQueue, &pi);
+    }
     ftMark("queuePresent");
     // NOTE: VK_SUBOPTIMAL_KHR is deliberately NOT a trigger here. MoltenVK returns it on almost
     // every present on Retina/scaled displays, and recreateSwapchain() rebuilds every graphics

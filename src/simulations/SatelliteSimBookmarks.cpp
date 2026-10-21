@@ -11,6 +11,7 @@
 // centre-cropped to 16:9 and box-filtered down to kBmThumbW x kBmThumbH. All thumbnails live in one SRGB atlas
 // registered once with the UI (UIRenderer has only four external image slots), each card drawing its cell through
 // UIImage's sub-rect.
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "../UIRenderer.h"
 #include "../VulkanContext.h"
@@ -481,6 +482,7 @@ void SatelliteSim::bookmarkLoadThumb(Bookmark &b)
 // captured one, and load the saved thumbnails a few per frame once the window is open.
 void SatelliteSim::bookmarkTick(UIRenderer &ui)
 {
+    FPROF_SCOPE("bookmarkTick");
     if (!bookmarksLoaded_)
         bookmarksLoad();
     // The window's Add / Delete from last frame (deferred: see the end of buildBookmarksWindow).

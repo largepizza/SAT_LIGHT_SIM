@@ -10,6 +10,7 @@
 //   fullSkyDeferred     — on a light tier init() never builds the three FULL sat_sky.frag pipelines;
 //                         ensureFullSkyPipelines() builds them the first frame anything needs them
 //   updateBootSafetyNet — the first seconds after loading at > 250 ms a frame step one tier down
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "../Harness.h"
 #include "../Log.h"
@@ -176,6 +177,7 @@ bool SatelliteSim::fullSkyNeeded() const
 // frame in flight, fence waited), so the pipelines can be rebuilt the way onResize does.
 void SatelliteSim::ensureFullSkyPipelines(VulkanContext &ctx)
 {
+    FPROF_SCOPE("ensureFullSkyPipelines");
     if (!fullSkyDeferred || !fullSkyNeeded())
         return;
     fullSkyDeferred = false;

@@ -8,6 +8,7 @@
 // Export HQ: every frame is a settled HQ photo — the offscreen photo target at "HQ photo resolution" for the
 //   whole export, the clouds at full rate, "HQ photo settle frames" at each pose (time held), then the copy.
 //   Converged and supersampled; motion leaves no trace in a frame (no motion blur).
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "../Log.h"
 #include "../Harness.h"
@@ -375,6 +376,7 @@ void SatelliteSim::cineStop(const char *why)
 
 void SatelliteSim::cineTick(float dt)
 {
+    FPROF_SCOPE("cineTick");
     if (!cineActive())
         return;
     const double dur = cinePlayOneShot_ ? cine_.shots[std::clamp(cineShot_, 0, (int)cine_.shots.size() - 1)].duration()

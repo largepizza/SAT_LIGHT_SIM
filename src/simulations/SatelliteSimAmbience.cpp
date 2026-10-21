@@ -40,6 +40,7 @@
 //                        harness teleport) is not motion: the speed is held at 0 for that frame.
 //   <group>_count        satellites of a shell group within its hearing range (closed form below)
 //   <group>_near_m       expected distance to the nearest one
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 
 #include "Ambience.h"
@@ -216,6 +217,7 @@ float SatelliteSim::oceanFraction(double latRad, double lonRad, double radiusM, 
 
 void SatelliteSim::computeAmbienceContext(float dt)
 {
+    FPROF_SCOPE("computeAmbienceContext");
     Ambience &a = *ambience_;
     const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
     const double lat = std::asin(std::clamp(up.z, -1.0, 1.0));
@@ -615,8 +617,12 @@ void SatelliteSim::computeAmbienceContext(float dt)
 
 void SatelliteSim::updateAmbience(float dt)
 {
+    FPROF_SCOPE("updateAmbience");
     if (!ambience_)
+    {
+        FPROF_SCOPE("ambience.init");
         initAmbience();
+    }
     if (!ambience_->loaded())
         return;
     computeAmbienceContext(dt);
@@ -626,7 +632,10 @@ void SatelliteSim::updateAmbience(float dt)
     ambience_->setTonal(tonal_.scale, tonal_.chord, ambience_->tonality().tension);
     for (size_t g = 0; g < Ambience::groupNames().size() && g < 6; ++g)
         ambience_->setGroupGain(Ambience::groupNames()[g], ambGroupGain[g]);
-    ambience_->update(dt, audio_);
+    {
+        FPROF_SCOPE("ambience.update");
+        ambience_->update(dt, audio_);
+    }
     updateThunder(dt);
 
     // The playing track's upwell stem: its gain is the table's "music_upwell" map of the glare on
@@ -721,6 +730,7 @@ void SatelliteSim::thunderRecordTick(float dt)
 
 void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
 {
+    FPROF_SCOPE("thunderStep");
     constexpr double kC = 343.0;
     constexpr float kGain = 270.0f;   // sqrt(m of channel / m^2 / s) -> the synth's level (~4 for a strike 1 km off)
     thunderRealT_ += std::max((double)realDt, 0.0);

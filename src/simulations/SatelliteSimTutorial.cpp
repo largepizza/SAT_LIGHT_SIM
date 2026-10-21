@@ -11,6 +11,7 @@
 // It follows the intro (finishIntro), or the first frame when the intro is off, once: Skip or Finish
 // sets display.tutorial_done. Settings > Display > Replay Tutorial runs it again. A harness run never
 // starts it on its own (`tutorial start [step]` does).
+#include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "../UIRenderer.h"
 #include "../AudioSystem.h"
@@ -140,6 +141,7 @@ bool SatelliteSim::tutActionOn() const
 // only need to know that the player pressed them while the camera could move.
 void SatelliteSim::updateTutorial(float dt)
 {
+    FPROF_SCOPE("updateTutorial");
     if (!tutAutoChecked)
     {
         // The intro was off (finishIntro starts it otherwise): the first frame in the scene.
