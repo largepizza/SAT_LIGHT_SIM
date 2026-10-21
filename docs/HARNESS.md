@@ -367,7 +367,9 @@ python tools/harness/mission_ops.py report harness_runs/mission_ops/<stamp>   # 
 
 - Epochs: 2036-11-22 (the default start), 2031-06-01 (the deployment era's build-out) and 2026-11-05 (Falcon 9 still
   flying Starlink and direct-to-cell from the dispenser point). For each, `launch trace from=<epoch>`.
-- Judging: `THRESHOLDS` in mission_ops.py (one row per check: phase, metric, limit, owner, why). FAIL = a real problem;
+- Judging: `THRESHOLDS` in mission_ops.py (one row per check: phase, metric, limit, owner, why; 2026-10-21: a train's
+  members >= 20 m apart from a minute after release through their 6-h free flight, the booster < 50 m/s^2 after
+  staging, the upper stage's deorbit burn < 25 m/s^2, touchdowns measured at the legs' feet). FAIL = a real problem;
   WARN = outside the limit in a part another agent owns (the booster landing burn's physics: tilt, last-second speed,
   burn accelerations); INFO = recorded only; SKIP = a crew flight whose spacecraft has no model (the docking phase checks `LCrew`: holds, contact, docked, undocking, jumps, turns); N/A = the phase does not exist for that
   launch; NOT FOUND = no launch of the pair in the window (Long March 12 flies no program; LVM3 / OneWeb and Falcon 9 /

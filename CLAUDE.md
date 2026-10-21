@@ -4536,6 +4536,23 @@ launches follow per-program cadences (no real manifest).
   sunlit deployment (of that constellation / program / vehicle); `launch jitter` / `launch legacy on|off` measure the
   record jumps (below); `tools/harness/scripts/starmind_deploy.satcmd` (release to unfolding, paused and live at 10x)
   and `deploy_jitter.satcmd` (per-frame screen motion of a member at 10x, old vs new records; parity while unfolding).
+  **Free flight about ONE reference orbit** (2026-10-21, mission-ops suite: Falcon 9 Starlink Gen1 / OneWeb pairs closed
+  to 0.8-1.6 m in the first 10 min and again ~an orbit later): each member's drift was linearised about ITS OWN path
+  (planes up to a degree apart: their CW errors differed by metres), and a random +-0.04-0.12 m/s per axis did the rest.
+  Now (`memberState`, `LMember::ff / ffP / ffV`) a released member flies for `kFreeFlightS` (6 h) EXACTLY as CW motion
+  about the stage's parking circle (curvilinear: x radial, y arc length, z across, from its slot / dispenser point at
+  tRel; before its release it rides in its slot), then eases into its own path by two days after release as before. Its
+  velocity relative to the circle: the train's COMMON in-plane push (`releaseInPlane`: Starship's door and a flat stack
+  straight up, a dispenser point 0.97 up / 0.22 back, a column forward off the nose 0.25 up / 0.97 along) + across the
+  plane its own (a column's lateral exit + `sep_spread_mps` golden-ratio stepped: cross-track motion is decoupled, it
+  never brings two together) + an along-track trim -2 n x0 that cancels the secular drift of its slot's radial offset.
+  So every member flies one trajectory shifted in time, and two released dt apart stay >= (its least relative speed,
+  `releaseMinRate`) x dt apart; the deploy interval is raised to `kReleaseGapM` (30 m) / that rate (Falcon 9 dispenser
+  point ~67 s, Gen1 flat stack ~100 s, Qianfan ~86 s, Guowang's column ~75 s; Starship's 45 s stands). A pure
+  along-track push collides with itself ~0.41 orbit later (why the flat stack now leaves upward, its upper member of a
+  radial pair first). `launch trace` -> deployment `min_member_gap_1_10min_m` / `min_member_gap_after_60s_m` (now over
+  the whole free flight): >= 20 m (mission_ops FAIL below). Offline design check: the CW model of every layout gave
+  28-31 m minima over 6 h.
 - **Unfolding after release** (2026-10-19): a model's stowable parts (`SatComponent::stow`, JSON
   `"stow": {"axis", "root", "scale", "phase"}`; model `"deployment": {"unfold_delay_s", "unfold_s"}`) leave the
   dispenser packed — an accordion array or a folded radiator scaled along `axis` toward the plane dot(axis, x) = root
@@ -4643,10 +4660,12 @@ launches follow per-program cadences (no real manifest).
   100 km per stage; a coasting stage sunlit), an emissive Gaussian flame and a dim orange glow of the exhaust it lights.
   **Every upper stage deorbits** (2026-10-19, issue 20261019_180502): 30-90 min after deploying it pitches over to
   retrograde (120 s, through the vertical), burns for `burnDur` (dv to a perigee of 20 km, 45 km for a returning ship,
-  at ~12% of the stage's thrust: clamped 12-60 s; the flame and its plume parcels) onto an ellipse with its apoapsis at
-  the burn (`deorbitPos`, Kepler in the plane, blended from the circle over the burn: position and velocity
-  continuous), and reaches the entry interface (100 km, `thEI` / `vEI` / `vrEI`) about half an orbit later
-  (`tStageGone` = `tStageRE`, ~32 min). An expendable stage re-enters there as a fireball; a returning one (Starship's
+  at ~12% of the stage's thrust, never more: at least 12 s; the flame and its plume parcels) onto an ellipse whose
+  apoapsis is the burn's MIDDLE (`deorbitApoT`: the impulsive equivalent of the finite burn), and reaches the entry interface (100 km, `thEI` / `vEI` / `vrEI`) about half an orbit later
+  (`tStageGone` = `tStageRE`, ~32 min). In the burn the stage leaves the circle by `deorbitBurnShape` (the double
+  integral of a flat thrust with 1-s start-up / shut-down ramps, normalised) x the ellipse's offset at the burn's end:
+  its acceleration is the thrust / mass (~dv / D), and it ends exactly on the ellipse at its speed (2026-10-21; the
+  smoothstep blend it replaced peaked at ~4x dv / D, Qianfan's 800-km stage ~90 m/s^2). An expendable stage re-enters there as a fireball; a returning one (Starship's
   ship) pitches up to its entry attitude (nose 60 deg above the velocity, over 300 s) after the burn and flies its
   8-min plasma glow (`shipEntry`: from `vEI` and the ellipse's descent rate at 100 km to ~65 km, slowing to 1.2 km/s
   by 45 km, magnitude ~-4 at 100 km near 70 km up; then it lands: see the catch below; harness `launch ship`). Until then only
@@ -5292,13 +5311,23 @@ launches follow per-program cadences (no real manifest).
   (`landBase` = the DEM less the track's touchdown height). `landKind` = kLandNone / Tower / Lz / Ship / Ground; harness
   `launch state` -> `boosters[]` (recovery, land_kind, touchdown_in_s, downrange, ship, dist_to_landing_m) — **the
   landing effects (dust, spray) key off `LaunchImpl::boosterLandingAt(L, B, t, E, tTouch)`**: the kind, the touchdown
-  time and the point where the booster's aft end stands at t (a ship's deck moves).
+  time and the point where the booster comes to rest at t (a ship's deck moves; for legs, the feet's surface).
   - **Tracks** (`launch::boosterTrack(vh, recovery, hLand)`): per vehicle its own (`L.booster`) and, for an RTLS-capable
     droneship vehicle, a return track (`L.boosterRtls`); `LaunchImpl::boosterTr(L, B)` picks this launch's. Downrange:
     a short retrograde TRIM burn (BURN_BOOSTBACK) secant-solved to touch down exactly at droneship_km (the old code aimed
     a boostback at 0.55 x the MECO speed that was never burned: every droneship booster came down ~410 km out); the
     entry burn runs 22 s, longer (up to 40 s) while still above 900 m/s. Falcon 9 / Crew Dragon / New Glenn stage
-    faster (MECO 2.2 / 2.2 / 3.3 km/s: meco_downrange 120 / 115 / 225 km) so their arcs reach the ship.
+    faster (MECO 2.2 / 2.2 / 3.3 km/s: meco_downrange 120 / 115 / 225 km) so their arcs reach the ship. **A fast arrival
+    (> 2.4 km/s descending, New Glenn's 1000-km shot ~3.3 km/s) starts its entry burn higher** (up to 100 km) and burns
+    until its speed is one whose peak drag stays near 1.5 g (Allen-Eggers, v = sqrt(15 x 2e x 7.6 km / sin gamma)), up
+    to 150 s (2026-10-21): it met the dense air at ~2 km/s and peaked at 92 m/s^2 (9.4 g), now ~45 (4.6 g). Slower
+    arrivals are unchanged; mission_ops' `booster_recovery.max_proper_accel_m_s2` < 50 (FAIL).
+  - **Landing legs** (2026-10-21): the track is the booster's aft end, and deployed legs stand `leg_m` (launches.json,
+    the model's feet: tools/make_rocket_models.py's `legs`; Falcon 9 1.68, New Glenn 2.36, Zhuque-3 / LM-12 1.88,
+    Tianlong-3 1.78, Pallas-1 1.68) below it: every recovery's touchdown height is + leg_m (`boosterTrack`), a ship ride
+    home carries it (`rocketPos`), a ground landing's `landBase` includes it, and `boosterLandingAt`'s E is the surface
+    (the feet). Trace / check `touchdown_above_m` measure the feet. A vehicle whose model's legs change must update
+    leg_m (the feet sat 1.7-2.4 m below the deck).
   - **The landing burn is a constant deceleration that zeroes both components together at the deck** (Launches.cpp,
     every recovery, towers included): it starts below 8 km once that deceleration reaches 25 m/s^2 (a faster arrival
     burns harder, ~40-50 m/s^2 for 20-25 s), analytic from there. The suicide-burn profile it replaced touched down at
@@ -5320,7 +5349,7 @@ launches follow per-program cadences (no real manifest).
     `fold` back flat against the body; `transientLegs` (SatelliteSimLaunches.cpp, every rocket mesh write) sets the
     booster's unfolding progress: folded from lift-off, deployed over 2.5 s from 7 s before touchdown. The track's touchdown
     point is still the aft end on the deck, so the feet stand a little below it (the engines' exits are level with it).
-  - **RTLS** to a Falcon pad's landing zone: the track lands on the pad's centre and over its last ~40 km slides to the
+  - **RTLS** to a Falcon pad's landing zone: the track lands on the pad's centre and over its last 150 s (by time; the last 15 s vertical) slides to the
     zone (`lzOff`, kLzDistM aside, its ground `LPad::lzElevM`), held there 30 min.
   - **The ship** (`shipEcef`): on station at the touchdown point from 8 h before lift-off (kShipOnStationS), the booster
     on its deck at tLand (the track ends `deck_m` above the sea there), 1.5 h later it steams home toward the launch site
