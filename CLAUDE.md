@@ -64,7 +64,7 @@ Development: Earth / Terrain Rendering* (read **Elevation texture encoding** bef
 code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
-`imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions), `mission_ops.py` (every launch vehicle traced phase by phase, PASS / FAIL), `launch_bench.py` (the launch system's CPU / GPU cost) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
+`imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions), `mission_ops.py` (every launch vehicle traced phase by phase, PASS / FAIL), `launch_bench.py` (the launch system's CPU / GPU cost), `hitch_check.py` (frame-hitch regression check over the time-scale ladder) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
 validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_geo_belt.py` + `tools/make_geo_models.py` (the GEO belt's members and models) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
@@ -2325,6 +2325,23 @@ Invariants:
   shader changed since — 30-40 s to "Starting" (pipelines 18 s, the clouds' bakes 4 s, then a frozen first frame).
   With it: 4.6 s on a warm cache. `VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR` is requested only during harness
   `shaders reload` (`ctx.capturePipelineStats`). Look at the `boot:` lines of satlight_log.txt when startup slows.
+- **Boot timeline (2026-10-21, RTX 3070 Ti, warm caches): ~8.6-9 s to "Starting"** — textures ~1.5 s, clouds v2 0.1 s,
+  constellations + the 142 satellite model bakes ~3.5 s, satellite orbits/pipelines 0.3 s, meshes/probes/settings/
+  launches/Kessler ~1.5 s, the first-frame prewarm ~0.5 s, the music analysis (harness: synchronous) ~1.3 s. It was
+  ~15 s: the model bakes (tessellation, lobe bake, the brute-force validator, occlusion, OBJ export) ran one after the
+  other, ~10 s with the rocket, capsule, pad and station models. They run in parallel now (`loadConstellations`: up to
+  15 worker threads, largest first, `bakeModelType(..., logOut)` collecting each model's log lines, written in roster
+  order after; the main thread shows "Satellite models k / N"). A cold pipeline cache adds ~35 s (Pipelines) and ~8 s
+  (clouds v2) once per build directory.
+- **The first frame does no one-off work any more (2026-10-21): ~360 ms -> under 30 ms.** `setAudio` (still in the
+  loading screen) also runs `launchPrewarm` (the planes and every batch the first walk wants, in parallel: ~0.4 s),
+  the deployment era's roster upload, the city-sprite and fireball pipelines (made lazily before), the half-res targets
+  at the loaded render scale, the first joystick query, and logs the music analysis's messages (every `Log::line` is
+  flushed to disk: a few on one frame cost ms each). App rebuilds the swapchain there if init asked
+  (`consumeSwapchainRebuildRequest`), and `applyFpsCapMode` asks only when the present mode CHANGES
+  (`VulkanContext::presentModeBuilt`): it asked on every launch, and that rebuild (swapchain + every size-dependent
+  pipeline, ~215 ms) was most of the first frame. `Simulation::prepareUI(ui)`, just before `mainLoop`, loads the icon
+  atlas.
 - **Music analysis cache key = a content hash** (kAnalysisVersion 2): the write time changed with every build's copy of
   the music, so every launch after a rebuild re-analysed all tracks (~10 s).
 
@@ -2641,9 +2658,12 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   `audio record` pulls the graph synchronously (`renderWav`, with a 0.25 s discarded pre-roll and
   per-1/60 s event ticks). Offline renders outrun miniaudio's streamer — the music came out with a
   0.25 s hole every second — so offline, streamed sounds are DECODED instead (music on the first
-  recording that asks for it, loops at creation). In the live app loops STREAM: a voice is created
-  the first time its layer becomes audible, on the main thread, and decoding a 36 s FLAC there is a
-  hitch.
+  recording that asks for it, loops at creation). In the live app loops STREAM. A voice is created
+  the first time its layer becomes audible, **on a worker thread** (2026-10-21, `AudioSystem::addAmbienceLoopAsync`
+  / `addAmbienceSynthAsync`: the handle at once, the voice silent until made, then it takes the gain set meanwhile;
+  `voiceSynth()` is null until then, and `Ambience` resolves the synth's parameter indices once it is up). Made on the
+  main thread it was a 5-50 ms hitch each time (~50 ms of the first frame). `renderWav` and `clearAmbience` wait for
+  voices still being made, so an offline recording hears every voice asked for before it.
 - **Levels.** At level 1, gain 1 and the default bus volume every synth kind measures ≈ −24 LUFS
   (`ambience_solos.satcmd`); samples are normalised to −24 LUFS. The table's gains then set the mix
   so each tour stop totals ≈ 10 dB under the music (≈ −35 against its ≈ −25 LUFS). No tonal
@@ -4343,7 +4363,25 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
 - **The main thread mirrors** the worker's batches (`kesslerSync`: records, roster changes, events) and uploads
   them (`kesslerRecordUploads`, a persistent 16-MB staging buffer, at most 16k new records a frame, roster words
   in budget-sized pieces — a whole-roster run that did not fit the budget was re-sorted every frame and never
-  uploaded: 8.7 ms a frame). GPU pool buffers grow by doubling up to the cap (83 MB at 750k records). The
+  uploaded: 8.7 ms a frame). GPU pool buffers grow by quadrupling up to the cap (553 MB at 5M records), **without a
+  device wait** (2026-10-21, `kesslerEnsureCapacity(ctx, n, inFrame=true)` from the sync): the next size's four buffers
+  (visible list + index, kesslerBuf, phase bases) are allocated ahead on a worker once the pool passes 40% of its
+  capacity (`kesslerPreallocTick`; ~10 ms of vkAllocateMemory in the frame otherwise), the frame's command buffer
+  copies the old kesslerBuf and phase bases into the new ones first thing in `kesslerRecordUploads` (`kGrowCopy`; same
+  layout: roster words, deployment era, launch block, records), and the old buffers are destroyed two frames later
+  (`kRetired`, `kesslerRetireTick` after the fence). Every record already up stays up and the launch block is kept
+  (`kesslerBufGen` is not bumped). It was `vkDeviceWaitIdle` + a synchronous roster upload + every record re-sent:
+  20-30 ms, ~4 times a session. Restarts and the init still take the synchronous path. The worker's output is
+  mirrored within `kSyncBudgetMs` (3 ms) a frame, all of it: pool changes, then roster changes, events and small-
+  fragment streams in pieces of 4096 with a look at the clock after each, resuming where it stopped
+  (`SyncBatch::rdNext / evNext / stNext`; the batch's frontier is taken only once it is all in, so sim time holds
+  rather than the frame freezing; 6-14 ms at 1 yr/s before). The worker builds each batch outside its mutex and
+  hands it over by swap (`KesslerWorker::publish`), and `kesslerSync` only try-locks it (a busy mutex: next frame):
+  a replay's publish of ~4.7M pool changes was built under the lock and stalled the main thread ~300 ms. `kEvents` is a `SegVec` (64k-element segments: growing
+  never copies; ~10M events late in a cascade reallocated 0.4-0.8 GB at each doubling). A stream invalidates the
+  expanded hours it reaches by range (`kSmallReHours.lower_bound`; it scanned every expanded hour per stream). The
+  history prune (`kPoolHist`) is a pass over the map's buckets within ~1 ms a frame (`kPruneBucket`; one pass was
+  16-105 ms late in the cascade). The
   settings tab reads the counts through `kesslerStateCached`: cheap fields at 4 Hz, the counts from a walk spread over
   frames (`kesslerCountsTick`, 150k records + 150k roster + 600k events a frame, only while the tab reads them; a pass
   counts at the second it began). Until 2026-10-16 it walked 5M pieces, the roster and ~10M events four times a second
@@ -6583,6 +6621,22 @@ The 2026-10-20 pass, measured this way (RTX 3070 Ti, 1600x900, harness fixed 1/6
 see the sections named: plume builds (Launches: async), batch builds + pad deconfliction (Launches: parallel, rival
 day index, ship landing skip), the Kessler mirror (budgeted sync queue, pool reserved at load, prune throttled, GPU
 pool x4 growth), the first frame (ambience + bookmarks loaded during the loading screen).
+**Hitch pass 2 (2026-10-21).** `app.other` = a frame's time outside every `app.*` section (a hitch whose sections sum
+to far less than its wall was spent unscoped: that is how the first frame's swapchain rebuild was found), new App
+sections (`app.poll`, `app.ui_begin`, `app.screenshot_copy`, `app.recreate_swapchain`), and `fprof::mark("x")` splits
+(the time since the previous mark; `recordCompute` carries `rc.seg1_pre` .. `rc.seg7_flare`). **The statistics and
+the hitch threshold use the frame NET of the harness's own work** (`Frame::netMs` = wall - `harnessTick`; the log line
+gives both): every command's result line is written with an fsync, ~10-15 ms each on a busy disk, so a ladder step's
+`time scale; time play; hitches clear` frame read 50-60 ms no player ever pays. Fixed: the first frame (see *Loading
+screen*), the boot's model bakes, the Kessler mirror's roster / event / stream tail, prune and GPU growth (see
+*Kessler*), launch batch builds with a wall-time budget as well as the count cap (pieces sized from the eased cost of
+one build, `LaunchState::buildMsEach`, stopping past ~8 ms: the cap follows the LAST frame's cost, and after a frame
+of cheap builds 400 expensive ones took 300-600 ms at 1 week/s after the CME), ambience voices on workers.
+**Regression check: `python tools/harness/hitch_check.py`** (scenarios A load, B a user's settings via `--settings`,
+C 2031, D day 32 after the CME; `--run <folders>` checks finished runs) against `tools/harness/hitch_thresholds.json`
+(p99 / max per rate, the first frame after load, launch to first frame); exit 1 on a regression. **It must run alone
+on the GPU**: other agents' harness apps add 20-100 ms to frames, so it waits for other SAT_LIGHT_SIM processes to
+exit, polls during the run, reruns a scenario that shared the machine and reports it CONTENDED (exit 3) otherwise.
 
 ---
 

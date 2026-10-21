@@ -18,6 +18,11 @@ from launch to the first frame (the log's `boot: Starting`). Exits 1 if any chec
 hitch back fails here. Thresholds are for an RTX 3070 Ti class machine at the harness's 1600x900: `--scale 1.5`
 loosens all of them on a slower machine. Other agents' GPU work on the same machine adds noise: a failure that does
 not repeat on a second run is noise; `--retries 1` reruns a failing scenario once and keeps the better result.
+
+The app must run ALONE on the GPU: another harness app (other agents' runs) adds 20-100 ms to frames. Before each
+scenario the check waits (up to --wait-alone s) until no other SAT_LIGHT_SIM process runs, and polls while it runs;
+a scenario that shared the machine is rerun (up to --alone-retries times) and otherwise reported CONTENDED (exit 3)
+rather than judged.
 """
 import argparse
 import json
@@ -25,6 +30,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -96,8 +103,40 @@ def check_run(run, scen, th, scale):
     return rows, fails, boot
 
 
+def sat_processes():
+    """Running SAT_LIGHT_SIM processes (the app under any version name). Windows: tasklist; else ps."""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True).stdout
+        else:
+            out = subprocess.run(["ps", "-A", "-o", "comm="], capture_output=True, text=True).stdout
+    except Exception:
+        return 0
+    return sum(1 for line in out.splitlines() if "sat_light_sim" in line.lower())
+
+
+def wait_alone(timeout_s):
+    t0 = time.time()
+    while sat_processes() > 0:
+        if time.time() - t0 > timeout_s:
+            return False
+        print("waiting for other SAT_LIGHT_SIM apps to exit ...", flush=True)
+        time.sleep(15)
+    return True
+
+
 def run_scenario(scen, args):
+    """Runs one scenario; returns (run folder, alone) - alone: no other app ran at any poll during it."""
     out = os.path.join(args.out, "hitch_%s" % scen)
+    alone = wait_alone(args.wait_alone)
+    peak = [0]
+    done = threading.Event()
+
+    def poll():
+        while not done.wait(5.0):
+            peak[0] = max(peak[0], sat_processes())
+
+    th = threading.Thread(target=poll, daemon=True)
     cmd = [sys.executable, os.path.join(HERE, "run.py"), os.path.join(HERE, "scripts", SCRIPTS[scen]),
            "--out", out, "--timeout", "1800", "--quiet"]
     if args.exe:
@@ -105,8 +144,11 @@ def run_scenario(scen, args):
     if scen == "B":
         cmd += ["--settings", args.settings]
     print("running scenario %s ..." % scen, flush=True)
+    th.start()
     subprocess.run(cmd, cwd=REPO)
-    return out
+    done.set()
+    th.join()
+    return out, alone and peak[0] <= 1  # (ours is one of them)
 
 
 def main():
@@ -119,21 +161,33 @@ def main():
     ap.add_argument("--thresholds", default=os.path.join(HERE, "hitch_thresholds.json"))
     ap.add_argument("--scale", type=float, default=1.0, help="multiply every limit (a slower machine)")
     ap.add_argument("--retries", type=int, default=0, help="rerun a failing scenario this many times")
+    ap.add_argument("--wait-alone", type=float, default=1800.0, help="seconds to wait for other apps to exit")
+    ap.add_argument("--alone-retries", type=int, default=2, help="reruns of a scenario that shared the machine")
     args = ap.parse_args()
     th = load_thresholds(args.thresholds)
     scens = [s.strip().upper() for s in args.scenarios.split(",") if s.strip()]
     if "B" in scens and not args.run and not args.settings:
         sys.exit("scenario B needs --settings <settings.json>")
-    all_rows, all_fails = [], []
+    all_rows, all_fails, contended = [], [], []
     for i, scen in enumerate(scens):
         if args.run:
             if i >= len(args.run):
                 break
             rows, fails, boot = check_run(args.run[i], scen, th, args.scale)
         else:
-            tries = 0
+            tries = shared = 0
             while True:
-                rows, fails, boot = check_run(run_scenario(scen, args), scen, th, args.scale)
+                out, alone = run_scenario(scen, args)
+                rows, fails, boot = check_run(out, scen, th, args.scale)
+                if not alone:
+                    if shared < args.alone_retries:
+                        shared += 1
+                        print("scenario %s shared the machine with another app; rerunning" % scen, flush=True)
+                        continue
+                    contended.append(scen)
+                    fails = []
+                    rows = [r[:5] + (None,) for r in rows]  # shown, not judged
+                    break
                 if not fails or tries >= args.retries:
                     break
                 tries += 1
@@ -145,12 +199,16 @@ def main():
     print("%-4s %-10s %7s %7s %7s %8s %8s  %s" % ("scen", "rate", "p50", "p99", "max", "p99 lim", "max lim", ""))
     for scen, rate, w, p99l, maxl, ok in all_rows:
         print("%-4s %-10s %7.1f %7.1f %7.1f %8.0f %8.0f  %s" % (scen, rate, w.get("p50", 0), w.get("p99", 0),
-                                                              w.get("max", 0), p99l, maxl, "ok" if ok else "FAIL"))
+                                                              w.get("max", 0), p99l, maxl,
+                                                              "contended" if ok is None else "ok" if ok else "FAIL"))
     if all_fails:
         print("\nFAILED:")
         for f in all_fails:
             print("  " + f)
         sys.exit(1)
+    if contended:
+        print("\nCONTENDED (another app ran during the scenario; not judged): " + ", ".join(contended))
+        sys.exit(3)
     print("\nall within limits")
 
 

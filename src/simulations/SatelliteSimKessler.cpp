@@ -135,21 +135,38 @@ struct SatelliteSim::KesslerWorker
 
     void publish()
     {
-        std::lock_guard<std::mutex> lk(mx);
+        // (2026-10-21) Built outside the lock, then handed over under it (a swap when the main thread has taken the
+        // last batch, which it does every frame): built under the lock, a replay's publish of ~4.7M pool changes held
+        // the mutex ~300 ms, and the main thread's kesslerSync waited on it for a whole frame.
+        std::vector<OutPoolChange> pool;
+        pool.reserve(w.poolChanges.size());
         for (const kessler::World::PoolChange &c : w.poolChanges)
         {
             // Every generation goes, in order (one that lived and was replaced between two publishes too: its
             // fireball and its stretch of the timeline need it).
-            outPool.push_back({c.slot, c.gen, c.deathSec, c.isRecord, c.rec});
+            pool.push_back({c.slot, c.gen, c.deathSec, c.isRecord, c.rec});
         }
         w.poolChanges.clear();
-        outEvents.insert(outEvents.end(), w.events.begin() + (ptrdiff_t)pubEvents, w.events.end());
+        std::vector<kessler::Event> ev(w.events.begin() + (ptrdiff_t)pubEvents, w.events.end());
         pubEvents = w.events.size();
-        outStreams.insert(outStreams.end(), w.smallStreams.begin(), w.smallStreams.end());
-        w.smallStreams.clear();
+        std::vector<kessler::SmallStream> st;
+        st.swap(w.smallStreams);
+        std::vector<RosterChange> rd;
+        rd.reserve(w.rosterChanged.size());
         for (uint32_t i : w.rosterChanged)
-            outRoster.push_back({i, w.rosterDead[i], w.rosterEnd[i], w.rosterDecay[i]});
+            rd.push_back({i, w.rosterDead[i], w.rosterEnd[i], w.rosterDecay[i]});
         w.rosterChanged.clear();
+        auto give = [](auto &out, auto &v) {
+            if (out.empty())
+                out.swap(v);
+            else
+                out.insert(out.end(), std::make_move_iterator(v.begin()), std::make_move_iterator(v.end()));
+        };
+        std::lock_guard<std::mutex> lk(mx);
+        give(outPool, pool);
+        give(outEvents, ev);
+        give(outStreams, st);
+        give(outRoster, rd);
         outFrontier = w.frontier;
     }
 
@@ -698,9 +715,11 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
         // at once). kFrontier is the frontier of what has been mirrored, so sim time holds (the banner) rather than
         // the frame freezing.
         KesslerWorker &W = *kWorker;
-        std::lock_guard<std::mutex> lk(W.mx);
-        if (!W.outPool.empty() || !W.outEvents.empty() || !W.outStreams.empty() || !W.outRoster.empty() ||
-            (W.outFrontier > 0.0 && W.outFrontier != W.syncQFrontier))
+        // (2026-10-21) Never wait for the worker: if it is handing over a batch right now, take it next frame.
+        std::unique_lock<std::mutex> lk(W.mx, std::try_to_lock);
+        if (lk.owns_lock() &&
+            (!W.outPool.empty() || !W.outEvents.empty() || !W.outStreams.empty() || !W.outRoster.empty() ||
+             (W.outFrontier > 0.0 && W.outFrontier != W.syncQFrontier)))
         {
             KesslerWorker::SyncBatch b;
             b.pool.swap(W.outPool);

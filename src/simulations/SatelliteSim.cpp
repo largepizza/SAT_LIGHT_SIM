@@ -15363,6 +15363,7 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
 {
     // (2026-10-21) Run on worker threads at load (loadConstellations): its log lines are collected into logOut and
     // written in roster order afterwards, and the loading screen is updated by the caller.
+    const auto bake0 = std::chrono::steady_clock::now();
     auto logLine = [&](const std::string &s) {
         if (logOut)
             logOut->push_back(s);
@@ -15451,10 +15452,11 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
     char msg[320];
     snprintf(msg, sizeof(msg),
              "model '%s' (type '%s', %zu satellites): %d groups, %d components, %d triangles -> %d exact lobes "
-             "-> %d lobes (budget %d); validator |dmag| p95 %.3f, max %.3f%s",
+             "-> %d lobes (budget %d); validator |dmag| p95 %.3f, max %.3f%s; %.0f ms",
              t.modelId.c_str(), t.name.c_str(), rosterCount, (int)model.groups.size(),
              (int)model.components.size(), stats.triangles, stats.exactLobes, stats.lobes, budget,
-             stats.p95ErrMag, stats.maxErrMag, objOk ? "" : " (OBJ export failed)");
+             stats.p95ErrMag, stats.maxErrMag, objOk ? "" : " (OBJ export failed)",
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bake0).count());
     logLine(msg);
 }
 

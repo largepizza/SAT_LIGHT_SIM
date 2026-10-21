@@ -593,6 +593,7 @@ struct SatelliteSim::LaunchState
     };
     std::unordered_map<uint64_t, Cand> cands;
     int buildCap = 100; // batches built a frame at most (launchUpdate's walk; follows their measured cost)
+    double buildMsEach = 0.1; // (2026-10-21) the wall time of one batch build in the parallel pieces (eased)
     std::shared_mutex candsMx; // (2026-10-20) batches are built in parallel (launchUpdate's walk): candidate() is shared
     // Pad deconfliction's rivals by (site, day of their candidate launch): every batch whose candidate is at the site
     // that day (2026-10-20: each build enumerated every plane flying from its site, ~1 ms a build, 100+ ms a frame at
@@ -4861,13 +4862,22 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             std::vector<LBatch> built;
             size_t done = 0;
             const auto b0 = std::chrono::steady_clock::now();
-            for (size_t piece = 16; done < toBuild.size(); piece = std::min<size_t>(piece * 2, 128))
+            // Each piece sized by the measured cost of a build (L.buildMsEach, eased), so the last piece cannot overrun
+            // the budget by much: a piece of 128 expensive builds alone took ~40 ms (1 yr/s, the user's settings).
+            while (done < toBuild.size())
             {
+                const double spent = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count();
+                const size_t piece =
+                    (size_t)std::clamp((8.0 - spent) / std::max(L.buildMsEach, 0.005), 4.0, 256.0);
                 const size_t e = std::min(toBuild.size(), done + piece);
+                const auto p0 = std::chrono::steady_clock::now();
                 const std::vector<LaunchImpl::ToBuild> part(toBuild.begin() + (ptrdiff_t)done, toBuild.begin() + (ptrdiff_t)e);
                 LaunchImpl::buildMissing(*this, L, part, built);
                 for (size_t q = 0; q < part.size(); ++q)
                     L.batches.emplace(part[q].key, std::move(built[q]));
+                const double each =
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count() / (double)part.size();
+                L.buildMsEach = 0.5 * L.buildMsEach + 0.5 * each;
                 done = e;
                 if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count() > 8.0)
                     break;
