@@ -26,6 +26,7 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <cctype>
 #include <atomic>
 #include <future>
 #include <thread>
@@ -4162,7 +4163,33 @@ static bool buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
             C.port = ports[(size_t)k];
             C.portPos = dp.pos;
             C.portAx = dp.axis;
-            C.portName = dp.name;
+            // The model's port id ("ida2_harmony_fwd") as a player reads it ("IDA-2 Harmony forward"): it shows in the
+            // follow bar, the Missions window and the milestones (2026-10-21 QA).
+            C.portName.clear();
+            {
+                std::string tok;
+                auto flush = [&]() {
+                    if (tok.empty())
+                        return;
+                    std::string w = tok;
+                    if (w == "fwd")
+                        w = "forward";
+                    else if (w == "stbd")
+                        w = "starboard";
+                    else if (w.size() == 4 && (w.compare(0, 3, "ida") == 0 || w.compare(0, 3, "pma") == 0) && isdigit((unsigned char)w[3]))
+                        w = std::string(1, (char)toupper(w[0])) + (char)toupper(w[1]) + (char)toupper(w[2]) + "-" + w[3];
+                    else if (w == "harmony" || w == "zvezda" || w == "tianhe" || w == "nauka" || w == "unity" || w == "destiny")
+                        w[0] = (char)toupper(w[0]);
+                    C.portName += (C.portName.empty() ? "" : " ") + w;
+                    tok.clear();
+                };
+                for (char ch : dp.name)
+                    if (ch == '_')
+                        flush();
+                    else
+                        tok += ch;
+                flush();
+            }
         }
         else if (pg.portUse != "crew")
         {

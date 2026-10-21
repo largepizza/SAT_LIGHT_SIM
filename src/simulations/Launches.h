@@ -167,7 +167,7 @@ struct Program
     double batchGapDays = 2.0;       // launches into one plane, apart
     // Crew rotation (2026-10-19, the Missions window): a crewed program flies people to a station (a constellation of
     // one) every life_years (NOT scaled by the design-life setting). No train, no retiree: raise_days is the time from
-    // lift-off to docking, and only the rocket and its upper stage are drawn (the capsule's rendezvous is not).
+    // lift-off to docking. Since 2026-10-20 the spacecraft itself flies the rendezvous and docks (below).
     bool crew = false;
     std::string spacecraft;          // "Crew Dragon", "Shenzhou", ...
     int people = 0;

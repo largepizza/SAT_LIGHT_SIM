@@ -28,7 +28,7 @@
 // Define CV2_LAYER_BINDING (and CV2_LAYER_WRITE for the bake) after including clouds_v2.glsl.
 const int   kCv2LayN     = 256;
 const int   kCv2LayCells = kCv2LayN * kCv2LayN;
-const int   kCv2LayOff   = 4096;     // keeps absolute cell indices positive (the CPU re-anchors past ~2000 km)
+const int   kCv2LayOff   = 4096;     // keeps absolute cell indices positive (the CPU re-anchors past 1500 km, SatelliteSimCloudsV2.cpp)
 const float kCv2LayR     = 6371000.0;
 layout(std430, set = 0, binding = CV2_LAYER_BINDING)
 #ifndef CV2_LAYER_WRITE
