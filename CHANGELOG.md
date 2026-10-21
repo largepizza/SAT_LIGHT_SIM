@@ -12,7 +12,8 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
 ### Launches and rockets
 
 - **Launches keep the constellations flying.** Each orbital plane is refreshed once per design life: a rocket
-  lifts off from a real pad the plane passes over, deploys a train of satellites low, the train climbs over
+  lifts off from a pad the plane passes over (real launch sites, plus a few fictional offshore
+  platforms for the busiest years), deploys a train of satellites low, the train climbs over
   weeks to its slots, and the satellites it replaces deorbit and re-enter as fireballs. Everything is a function
   of sim time, so time warp, reverse playback and bookmarks show the same launches.
 - **Real vehicles and pads.** Falcon 9, Starship (including Starbase Louisiana's ten pads), New Glenn, Vulcan,
