@@ -852,18 +852,23 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
     };
     if (const MissionLaunch *m = launchOf(goLaunch >= 0 ? goLaunch : watchLaunch))
     {
-        launchGoToKey(m->key, goLaunch >= 0, kLeadS, msg);
+        if (launchGoToKey(m->key, goLaunch >= 0, kLeadS, msg))
+            ++msUpcomingActs_; // the tutorial's Missions step (SatelliteSimTutorial.cpp)
         msStatus = msg;
         msNextWall = msPinWall = -1e300; // rebuilt next frame (Clay still holds this frame's strings)
     }
     if (furyGo >= 0)
     {
-        missionsGoToFury(furyGo, msg);
+        if (missionsGoToFury(furyGo, msg))
+            ++msUpcomingActs_;
         msStatus = msg;
         msNextWall = msPinWall = -1e300; // rebuilt next frame (Clay still holds this frame's strings)
     }
     if (toControls)
         msTab = 2;
+    if (selRocket >= 0 || ongoingNext >= 0 || ongoingGo >= 0 || selTrain >= 0 || selRetiree >= 0 || watchReentry ||
+        stationSel >= 0 || stationGo >= 0)
+        ++msOngoingActs_; // the tutorial's Ongoing step
     if (selRocket >= 0 && selRocket < (int)msOngoing.size())
     {
         launchSelectRocketOf(msOngoing[(size_t)selRocket].key, msg);

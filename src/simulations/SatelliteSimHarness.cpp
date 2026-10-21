@@ -209,7 +209,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -2374,17 +2374,20 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         // The first-run tutorial (SatelliteSimTutorial.cpp): start it (at a step: a number or a name),
         // move through it, end it, or report where it is. Its steps finish on real input, which a
         // harness run cannot press — `next` is the way past an action step.
-        static const char *kNames[TUT_COUNT] = {"look", "move", "altitude", "boost", "select",
-                                                "actions", "time", "capture", "settings", "graphics"};
+        static const char *kNames[TUT_COUNT] = {"look", "move", "altitude", "boost", "select", "info", "goto",
+                                                "trace", "time", "capture", "missions", "ongoing", "settings", "graphics"};
         const std::string sub = lower(pos(0));
         auto stepArg = [&](const std::string &a) -> int
         {
             for (int i = 0; i < TUT_COUNT; ++i)
                 if (a == kNames[i])
                     return i;
+            if (a == "actions") // the one "selection buttons" step before 2026-10-21
+                return (int)TUT_INFO;
             if (!a.empty() && std::isdigit((unsigned char)a[0]))
                 return std::clamp(std::atoi(a.c_str()) - 1, 0, TUT_COUNT - 1);
-            fail("tutorial: unknown step '" + a + "' (1-9 or look|move|altitude|boost|select|actions|time|capture|settings)");
+            fail("tutorial: unknown step '" + a + "' (1-14 or look|move|altitude|boost|select|info|goto|trace|time|capture|"
+                 "missions|ongoing|settings|graphics)");
             return 0;
         };
         // pad=1 shows the gamepad graphics (the card follows the last input used; a real pad is not needed)
@@ -2400,8 +2403,19 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             setTutorialStep(std::max(0, tutStep - 1));
         else if (sub == "skip" || sub == "end")
             endTutorial(false);
+        else if (sub == "pick") // the card's "Pick one for me"
+        {
+            if (!tutPickSatellite())
+                fail(std::string("tutorial pick: ") + tutPickMsg);
+        }
+        else if (sub == "return") // the card's "Back to <time>" (after the Missions step's jump)
+        {
+            if (!tutRetValid)
+                fail("tutorial return: nothing to go back to (the Missions step has not moved the clock)");
+            tutReturnNow();
+        }
         else if (!sub.empty() && sub != "state")
-            fail("tutorial: start [step] | step <n> | next | back | skip | state  [pad=0|1]");
+            fail("tutorial: start [step] | step <n> | next | back | skip | pick | return | state  [pad=0|1]");
         r["active"] = tutActive;
         r["step"] = tutActive ? tutStep + 1 : 0;
         r["step_name"] = tutActive ? kNames[tutStep] : "";
@@ -2409,6 +2423,11 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["done_showing"] = tutDoneT >= 0.0f;
         r["tutorial_done"] = tutorialDone;
         r["gamepad_view"] = tutGamepadView();
+        r["step_count"] = tutStepCount();
+        r["needs_pick"] = tutActive && tutNeedsPick(tutStep);
+        r["return_offered"] = tutRetValid;
+        if (tutRetValid)
+            r["return_label"] = tutRetLabel;
         r["message"] = tutActive ? std::string("tutorial step ") + std::to_string(tutStep + 1) + " (" + kNames[tutStep] + ")"
                                  : std::string("tutorial off");
         return Status::Done;

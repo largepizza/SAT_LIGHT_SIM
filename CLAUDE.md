@@ -2515,9 +2515,11 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   max(0, offset - ground), the ground the GPU's when the depth pass runs. Harness `expect state.<path>`
   (`tools/harness/scripts/ui_windows.satcmd`).
 - **HUD layout (2026-10-03):** the bottom-left panel is the clock, the time buttons and the picture buttons
-  (Screenshot, HQ photo, Star trails); the bottom-right panel ends in the MENU buttons — Bookmarks, Cinematics,
-  Settings (`menuBtn` in `buildRightHudPanel`: lit while the window is open). Their ids kept the `Time` prefix
-  (`TimeCineBtn`, `TimeBookmarkBtn`) for scripts. The tutorial's last step ("Menus") outlines the three.
+  (Screenshot, HQ photo, Star trails); the bottom-right panel ends in the MENU buttons — Missions, Bookmarks,
+  Cinematics, Issue reports, Settings (`menuBtn` in `buildRightHudPanel`: lit while the window is open; the Issue
+  reports flag sits immediately left of Settings since 2026-10-21). Their ids kept the `Time` prefix
+  (`TimeMissionsBtn`, `TimeBookmarkBtn`, `TimeCineBtn`, `TimeReportBtn`) for scripts. The tutorial's Missions steps
+  outline the rocket; its "Menus" step outlines Bookmarks .. Settings.
 
 ### Icon Atlas
 - `ui.loadIcons(ctx, paths, count)` — loads PNGs, packs into RGBA GPU atlas, rebinds descriptor. Call once on first frame (lazy init). Store `VulkanContext*` in your sim.
@@ -7319,15 +7321,30 @@ turning the intro off just resumes wherever the player last was.
 ## Subsystem: First-run tutorial (2026-10-03, `SatelliteSimTutorial.cpp`)
 
 One card at a time (`buildTutorial`, z 40) — a low, wide strip, the graphic beside the text, in the HUD's
-palette (`Pal` / `Style`, moved to `UIPalette.h` so every UI file shares it; wanted input pulses in the
-red accent, held input is solid red) — nine steps (`TutStep`; a tenth, Graphics, only on the light presets: "no
-clouds", the preset to try, done by opening Settings or changing the preset; `tutStepCount()`): look, move, climb, boost, select —
-each finished by DOING it, with a keyboard (Q W E / A S D / Shift, labels from the live bindings), mouse
-or gamepad graphic (`buildTutKeyboard/Mouse/Gamepad`; the pad's when `lastInputWasGamepad`), plus a progress bar — then the selection's buttons, the
-time controls, the picture buttons and the menu buttons (Bookmarks, Cinematics, Settings), each OUTLINED on the HUD (PASSTHROUGH floating boxes
-from last frame's layout) and finished by using one of them (a change from the state the step began in,
-`tutBase*`) or Next. A finished step shows "Done!" for 1.1 s and moves on. The card sits low in the
-middle, above both corner panels, or above the panel it points at (`CLAY_ATTACH_TO_ELEMENT_WITH_ID`).
+palette (`Pal` / `Style`, `UIPalette.h`; wanted input pulses in the red accent, held input is solid red). Thirteen
+steps (`TutStep`; a fourteenth, Graphics, only on the light presets: "no clouds", the preset to try, done by opening
+Settings or changing the preset; `tutStepCount()`):
+1. look, 2. move, 3. climb, 4. boost, 5. select — finished by DOING it, with a keyboard (Q W E / A S D / Shift, labels
+   from the live bindings), mouse or gamepad graphic (`buildTutKeyboard/Mouse/Gamepad`; the pad's when
+   `lastInputWasGamepad`), plus a progress bar;
+6. **Info** (opening the info window on the selection, `tutInfoOn`), 7. **Go to** (the eye; once riding, the follow
+   HUD's Stay here and Exit are outlined and explained; finished by leaving: Exit's flight home or Stay here),
+   8. **Trace and Track** (either) — split 2026-10-21 from one "selection buttons" step any of the four finished. Each
+   outlines only its own `SelActBtn` (id % 4). With nothing suitable selected (`tutNeedsPick`: Info / Go to need a
+   geometry model) the card asks for a selection and offers **"Pick one for me"** (`TutPick`, `tutPickSatellite`: a
+   sunlit, > 12 deg up station or Starlink with a model, else anything > 5 deg; the camera is aimed at it). Not on the
+   pad view (no cursor; A selects at the centre);
+9. time, 10. pictures — outlined HUD controls, finished by using one (a change from `tutBase*`) or Next;
+11. **Missions: what's next** — the rocket button (or M) outlined until the window opens, then Upcoming's first launch's
+   Go to / Watch and the Sun's Fury buttons (up to three outline boxes, `TutOutline:<g>`); finished by any of those
+   (`msUpcomingActs_`, counted after a successful action in buildMissionsWindow);
+12. **Missions: under way** — the Ongoing tab outlined; 5 s on it (progress bar) or any of its buttons
+   (`msOngoingActs_`) finish it;
+13. menus (Bookmarks, Cinematics, Issue reports, Settings).
+The Missions cards sit above the left panel while the window (docked top right) is open, above the right panel while
+it is closed. **The Missions step's jump has a way back:** entering it saves the time, place, camera, clock and cloud
+drift (`tutSaveReturn`; not again once a jump happened); after the jump every later card shows **"Back to <UTC>"**
+(`TutReturn`, `tutReturnNow`: bookmarkGo's cut) until used. A finished step shows "Done!" for 1.1 s and moves on.
 - **Starts** from `finishIntro` (not on a replay of the intro), or on the first frame in the scene when
   the intro is off (`updateTutorial`, `tutAutoChecked`), once: Skip and Finish both set
   `display.tutorial_done` (absent = not done, so existing installs see it once). Settings > Display >

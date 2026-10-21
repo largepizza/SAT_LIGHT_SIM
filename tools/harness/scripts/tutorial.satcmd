@@ -1,77 +1,135 @@
 # The first-run tutorial (SatelliteSimTutorial.cpp). Every card captured with the UI (keyboard/mouse
-# and gamepad graphics), its layout dumped (overlap / clipped-text checks), and the steps that finish
-# on a HUD control driven by the real click path:
-#   tut5   select: a satellite selection finishes it (results: done_showing true)
-#   tut6   actions: the four SelActBtn outlined; `ui click SelActBtn:4` (Info) finishes it
-#   tut7   time: the four time buttons outlined; `ui click TimePauseBtn` finishes it, the card moves on
-#   tut9   settings: the gear outlined; Finish ends it (tutorial_done true)
-#   intro  the replayed intro's last second: the title fading, no controls caption
+# and gamepad graphics), its layout dumped, and the steps that finish on a HUD control driven by the real
+# click path (2026-10-21 flow, 13 steps + the Graphics card on light presets):
+#   c05-c06  select / info: "Pick one for me" (TutPick) selects a sunlit satellite; Info (SelActBtn:4) finishes
+#   c07      go to: SelActBtn:5, then the follow HUD's Stay here / Exit outlined; Exit finishes it
+#   c08      trace and track: Trace pass (SelActBtn:6) finishes it
+#   c09-c10  time (TimePauseBtn), pictures (Next)
+#   c11      missions: the rocket button, then Upcoming's first launch Go to (MsGo:0) finishes it (the clock jumps)
+#   c12      ongoing: the Ongoing tab (MsTab:1) for 5 s finishes it; "Back to <time>" offered from here on
+#   c13      menus (Bookmarks, Cinematics, Issue reports, Settings); TutReturn goes back to the time before the jump
+#   c14      graphics (only on Planetarium / Potato in a real run)
 preset High
 observer lat=35.869 lon=-121.402 agl=50
 time sun -6 setting
 time pause
+set clouds_v2.coverage 0
 wait settle
 camera az=-106 el=20 fov=70
+wait 5
+ui dump hud_after
+capture hud_after ui=on
 tutorial start
 wait 5
-state tut1
-ui dump tut1_look
-capture tut1_look ui=on scale=0.5
+capture c01_look ui=on
 tutorial next
 wait 3
-capture tut2_move ui=on scale=0.5
+capture c02_move ui=on
 tutorial next
 wait 3
-capture tut3_altitude ui=on scale=0.5
+capture c03_altitude ui=on
 tutorial next
 wait 3
-ui dump tut4_boost
-capture tut4_boost ui=on scale=0.5
+capture c04_boost ui=on
 tutorial next
 wait 3
-capture tut5_select ui=on scale=0.5
-select const "Starlink Gen1"
-camera look sel
+capture c05_select ui=on
+tutorial next
 wait 3
 tutorial state
-capture tut5_done ui=on scale=0.5
-wait 80
+capture c06a_info_nosel ui=on
+ui click TutPick
+wait 20
 tutorial state
-ui dump tut6_actions
-capture tut6_actions ui=on scale=0.5
+ui dump c06b_info
+capture c06b_info ui=on
 ui click SelActBtn:4
+wait 20
+tutorial state
+capture c06c_info_done ui=on
+wait 80
+ui close info
 wait 3
 tutorial state
+ui dump c07a_goto
+capture c07a_goto ui=on
+ui click SelActBtn:5
+wait 240
+tutorial state
+ui dump c07b_goto_riding
+capture c07b_goto_riding ui=on
+ui click FollowExitBtn
+wait 10
+tutorial state
+capture c07c_goto_done ui=on
+wait 240
+tutorial state
+ui dump c08_trace
+capture c08_trace ui=on
+ui click SelActBtn:6
+wait 10
+tutorial state
+capture c08b_trace_done ui=on
+wait 80
 ui close all
-wait 80
+wait 3
 tutorial state
-ui dump tut7_time
-capture tut7_time ui=on scale=0.5
+ui dump c09_time
+capture c09_time ui=on
 ui click TimePauseBtn
-wait 3
-tutorial state
 wait 80
 tutorial state
-ui dump tut8_capture
-capture tut8_capture ui=on scale=0.5
+ui dump c10_capture
+capture c10_capture ui=on
 ui click TutNext
 wait 3
 tutorial state
-ui dump tut9_settings
-capture tut9_settings ui=on scale=0.5
-ui click TutNext
-wait 3
+ui dump c11a_missions_closed
+capture c11a_missions_closed ui=on
+ui click TimeMissionsBtn
+wait 30
 tutorial state
-# Gamepad graphics, and a larger UI scale
-tutorial start look pad=1
-wait 3
-capture tutp1_look ui=on scale=0.5
-tutorial step altitude pad=1
-wait 3
-capture tutp3_altitude ui=on scale=0.5
-tutorial step select pad=1
-wait 3
-capture tutp5_select ui=on scale=0.5
+ui dump c11b_missions_upcoming
+capture c11b_missions_upcoming ui=on
+ui click MsGo:0
+wait 20
+tutorial state
+capture c11c_missions_done ui=on
+wait 80
+tutorial state
+ui dump c12a_ongoing
+capture c12a_ongoing ui=on
+ui click MsTab:1
+wait 60
+tutorial state
+ui dump c12b_ongoing_tab
+capture c12b_ongoing_tab ui=on
+wait 300
+ui close missions
+wait 80
+tutorial state
+ui dump c13_menus
+capture c13_menus ui=on
+ui click TutReturn
+wait 30
+tutorial state
+capture c13b_menus_returned ui=on
+tutorial step graphics
+wait 4
+ui dump c14_graphics
+capture c14_graphics ui=on
+# gamepad variants
+select none
+tutorial start info pad=1
+wait 4
+capture p06_info_nosel ui=on
+tutorial pick
+wait 10
+capture p06_info ui=on
+tutorial step missions pad=1
+wait 4
+capture p11_missions ui=on
+tutorial skip
 ui scale 1.5
 tutorial start move pad=0
 wait 3
@@ -79,16 +137,7 @@ ui dump tuts2_move
 capture tuts2_move ui=on scale=0.5
 tutorial step settings
 wait 3
-ui dump tuts9_settings
-capture tuts9_settings ui=on scale=0.5
+ui dump tuts13_settings
+capture tuts13_settings ui=on scale=0.5
 tutorial skip
 ui scale 1
-# The replayed intro's end (53.3 s at the fixed 1/60 step): the title fades, no controls beat
-ui open settings tab=Display
-wait 3
-ui click ReplayIntroBtn:0
-wait 3150
-capture intro_end ui=on scale=0.5
-wait 60
-state intro_after
-tutorial state

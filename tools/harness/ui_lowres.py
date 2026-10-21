@@ -62,8 +62,13 @@ def views():
         ("viewcontrols", ["ui open viewcontrols", "wait 4"], ["ui close viewcontrols"]),
         ("follow", [ISS, "follow", "wait 20"], ["follow off", "wait 5"]),
         ("tut_look", ["tutorial start 1", "wait 4"], []),
-        ("tut_actions", ["tutorial step actions", "wait 4"], []),
+        ("tut_select", ["tutorial step select", "wait 4"], []),
+        ("tut_info", [ISS, "tutorial step info", "wait 4"], []),
+        ("tut_goto", [ISS, "tutorial step goto", "follow", "wait 20"], ["follow off", "wait 5"]),
+        ("tut_trace", [ISS, "tutorial step trace", "wait 4"], []),
         ("tut_time", ["tutorial step time", "wait 4"], []),
+        ("tut_missions", ["tutorial step missions", "ui open missions tab=upcoming", "wait 12"], ["ui close missions"]),
+        ("tut_ongoing", ["tutorial step ongoing", "ui open missions tab=ongoing", "wait 12"], ["ui close missions"]),
         ("tut_settings", ["tutorial step settings", "wait 4"], ["tutorial skip", "wait 2"]),
     ]
     return v

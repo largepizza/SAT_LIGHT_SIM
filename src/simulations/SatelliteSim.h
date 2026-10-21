@@ -3256,6 +3256,7 @@ private:
     WindowChrome msChrome;
     bool hovMsClose = false, hovTimeMissions = false;
     int msTab = 0;                       // 0 upcoming, 1 ongoing, 2 controls
+    int msUpcomingActs_ = 0, msOngoingActs_ = 0; // Go to / Watch / Fury on Upcoming, any button on Ongoing (the tutorial)
     int msBuildOutOpen = -1;             // Ongoing's BUILD-OUT list: -1 = auto (collapsed once every cohort is complete)
     double msNextWall = -1e300, msNextSim = -1e300; // when the next-launches rows were made (wall clock, sim time)
     double msPinWall = -1e300, msPinSim = -1e300;   // ... the pinned twilight / crewed rows
@@ -6884,9 +6885,13 @@ private:
         TUT_ALTITUDE,
         TUT_BOOST,
         TUT_SELECT,
-        TUT_ACTIONS,
+        TUT_INFO,       // the selection's Info (2026-10-21: the four buttons had one step, any of them finished it)
+        TUT_GOTO,       // Go to, then leave it again (Exit flies home, Stay here stays)
+        TUT_TRACE,      // Trace pass or Track
         TUT_TIME,
         TUT_CAPTURE,
+        TUT_MISSIONS,   // open the Missions window; Upcoming: Go to / Watch a launch (or the Sun's Fury)
+        TUT_ONGOING,    // the Ongoing tab (a few seconds on it, or any of its buttons); "Back to <time>" offered
         TUT_SETTINGS,
         TUT_GRAPHICS,   // only when the tutorial starts on a light preset (tutGraphicsCard): no clouds there
         TUT_COUNT,
@@ -6907,9 +6912,23 @@ private:
     // The state a step started from (Time / Capture / Settings / Actions finish on a CHANGE of it).
     int tutBaseTimeIdx = 0;
     bool tutBasePaused = false, tutBaseReverse = false, tutBaseTrails = false, tutBaseCine = false, tutBaseBookmarks = false;
-    bool tutBaseSettings = false, tutBaseAction = false;
+    bool tutBaseSettings = false, tutBaseReports = false;
+    bool tutBaseInfo = false, tutBaseTrace = false, tutBaseTrack = false, tutGoSeen = false;
+    int tutBaseMsUpcoming = 0, tutBaseMsOngoing = 0;
+    float tutOngoingS = 0.0f;       // seconds on the Missions window's Ongoing tab (TUT_ONGOING)
+    // Where the player was before the Missions step's Go to / Watch moved the clock and the place (2026-10-21):
+    // every later card offers "Back to <time>" until it is used (tutReturnNow), so nobody is left days ahead.
+    bool tutRetSaved = false, tutRetValid = false;
+    double tutRetT = 0.0, tutRetDriftPhaseOff = 0.0;
+    glm::vec3 tutRetObsDir{0.0f, 0.0f, 1.0f};
+    float tutRetHeight = 0.0f, tutRetAz = 0.0f, tutRetEl = 0.0f, tutRetFov = 70.0f, tutRetDir = 1.0f, tutRetDriftRate = 0.0f;
+    int tutRetTimeIdx = 0;
+    bool tutRetPaused = false;
+    char tutRetLabel[64] = {};
+    char tutPickMsg[96] = {};       // "Pick one for me"'s result when it found nothing
     char tutKeyLabel[3][16] = {};   // rebindable keycap labels (keyDisplayName's letters rotate through a pool)
-    bool hovTutNext = false, hovTutBack = false, hovTutSkip = false, hovReplayTutorial = false;
+    bool hovTutNext = false, hovTutBack = false, hovTutSkip = false, hovReplayTutorial = false, hovTutPick = false,
+         hovTutReturn = false;
     // ── Gamepad navigation of the selection (2026-10-03, pollGamepad) ──
     // With a satellite selected and no virtual cursor: D-pad left/right move a focus ring across its
     // buttons (Info, Go to, Trace pass, Track = SelActBtn id % 4), A presses the focused one (the
@@ -6927,13 +6946,17 @@ private:
     bool padContextButton(int glfwPadButton, bool cursorActive); // true = used (the binding does not fire)
     bool padFocusVisible() const { return lastInputWasGamepad && !vCursorActive; }
     uint32_t selBtnDrawnMask = 0;   // SelActBtn ids drawn this frame (buildSelActionButton; reset by buildSelectedSatPanel)
-    char tutBodyBuf[320] = {};
+    char tutBodyBuf[400] = {};
     char tutHeadBuf[48] = {};
     void startTutorial(int step = 0);
     void endTutorial(bool finished);
     void setTutorialStep(int step);
     void updateTutorial(float dt); // completion detection, every frame after the look block
-    bool tutActionOn() const;      // the selection's info window / Go to / Trace / Track in use
+    bool tutInfoOn() const;        // the info window open on the selection
+    bool tutNeedsPick(int step) const; // Select / Info / Go to / Trace: no (suitable) selection yet
+    bool tutPickSatellite();       // "Pick one for me": a sunlit satellite with a model, high in the sky; aims at it
+    void tutSaveReturn();
+    void tutReturnNow();
     void buildTutorial(const UIInput &inp, UIRenderer &ui);
     void buildTutKeyboard(int step);  // the key cluster graphic (Q W E / A S D / Shift)
     void buildTutMouse(int step, const UIInput &inp);

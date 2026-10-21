@@ -17,11 +17,13 @@
 #include "../AudioSystem.h"
 #include "clay.h"
 #include "UIPalette.h"
+#include "SatPhotometry.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 
 // SatelliteSimUI.cpp: the names the settings window shows for a key / a gamepad button.
 const char *keyDisplayName(int key);
@@ -42,10 +44,12 @@ constexpr float kLastHoldS = 3.0f;  // the last card's closing line
 constexpr float kLookDeg = 70.0f;   // degrees of look (yaw + pitch) that finish the look step
 constexpr float kMoveS = 1.5f;      // seconds of moving / climbing / boosting that finish those steps
 constexpr float kBoostS = 1.0f;
+constexpr float kOngoingS = 5.0f;   // seconds on the Missions window's Ongoing tab that finish that step
 
 const char *const kTitles[] = {
     "Look around", "Move over the Earth", "Climb and descend", "Go faster", "Pick a satellite",
-    "Your satellite", "Time", "Pictures", "Menus", "Graphics"};
+    "Satellite info", "Go to: ride along", "Trace and Track", "Time", "Pictures",
+    "Missions: what's next", "Missions: under way", "Menus", "Graphics"};
 
 Clay_String clayStr(const char *s) { return Clay_String{false, (int32_t)strlen(s), s}; }
 
@@ -91,6 +95,7 @@ void SatelliteSim::startTutorial(int step)
 {
     tutActive = true;
     tutAutoChecked = true;
+    tutRetSaved = tutRetValid = false;
     tutGraphicsCard = graphicsPreset == GraphicsPreset::Planetarium || graphicsPreset == GraphicsPreset::Potato ||
                       step >= TUT_GRAPHICS;
     setTutorialStep(std::clamp(step, 0, tutStepCount() - 1));
@@ -123,16 +128,166 @@ void SatelliteSim::setTutorialStep(int step)
     tutBaseCine = cineChrome.open;
     tutBaseBookmarks = bmChrome.open;
     tutBaseSettings = settingsChrome.open;
-    tutBaseAction = tutActionOn();
+    tutBaseReports = rpChrome.open;
+    tutBaseInfo = tutInfoOn();
+    tutBaseTrace = traceChrome.open;
+    tutBaseTrack = trackActive;
+    tutGoSeen = false;
+    tutBaseMsUpcoming = msUpcomingActs_;
+    tutBaseMsOngoing = msOngoingActs_;
+    tutOngoingS = 0.0f;
+    tutPickMsg[0] = '\0';
     tutBasePreset = (int)graphicsPreset;
+    // The Missions step's Go to / Watch moves the clock (and Go to the place): remember where the player was, unless
+    // a jump already happened (Back to this step must not make the launch's moment the place to come back to).
+    if (tutStep == TUT_MISSIONS && !tutRetValid)
+        tutSaveReturn();
 }
 
-// Any of the selection's actions in use: its info window, Go to, Trace pass, Track.
-bool SatelliteSim::tutActionOn() const
+bool SatelliteSim::tutInfoOn() const
 {
-    if (selectedSatIndex < 0)
+    return selectedSatIndex >= 0 && infoChrome.open && viewerSatIndex == selectedSatIndex;
+}
+
+// Select / Info / Go to / Trace with nothing (suitable) selected: the card asks for a selection and offers
+// "Pick one for me". Info and Go to need a geometry model (selActionAvailMask bits 0 / 1), Trace or Track bits 2 / 3.
+bool SatelliteSim::tutNeedsPick(int step) const
+{
+    switch (step)
+    {
+    case TUT_SELECT:
+        return selectedSatIndex < 0;
+    case TUT_INFO:
+        return (selActionAvailMask() & 0x1u) == 0u;
+    case TUT_GOTO:
+        return !followActive && (selActionAvailMask() & 0x2u) == 0u;
+    case TUT_TRACE:
+        return (selActionAvailMask() & 0xCu) == 0u;
+    default:
         return false;
-    return (infoChrome.open && viewerSatIndex == selectedSatIndex) || followActive || traceChrome.open || trackActive;
+    }
+}
+
+// "Pick one for me": a SUNLIT satellite with a geometry model, high in the observer's sky — a crewed station first if
+// one is up, else the highest Starlink. Then the camera is aimed at it (not while riding along with Go to).
+bool SatelliteSim::tutPickSatellite()
+{
+    tutPickMsg[0] = '\0';
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const glm::vec3 obsGround = followActive ? followSavedObsDir : obsDir;
+    const float obsH = followActive ? followSavedHeight : obsHeightOffset;
+    const glm::dvec3 obs = observerEciAt(glm::dvec3(obsGround),
+                                                  satphot::kEarthRadiusM + (double)std::max(obsTerrainH, obsH), t);
+    const glm::dvec3 up = glm::normalize(obs);
+    const glm::dvec3 sun = glm::normalize(glm::dvec3(sunDirECI));
+    auto lit = [&](const glm::dvec3 &p) {
+        const double a = glm::dot(p, sun);
+        return a > 0.0 || glm::length(p - a * sun) > satphot::kEarthRadiusM;
+    };
+    int best = -1;
+    for (int pass = 0; pass < 2 && best < 0; ++pass) // pass 0: sunlit and > 12 deg up; pass 1: anything > 5 deg up
+    {
+        double bestScore = -1e9;
+        const double minSin = std::sin(glm::radians(pass == 0 ? 12.0 : 5.0));
+        for (int ci = 0; ci < (int)constellations.size(); ++ci)
+        {
+            const ConstellationConfig &c = constellations[ci];
+            const bool station = c.name.find("Space Station") != std::string::npos || c.name.find("Tiangong") != std::string::npos;
+            const bool starlink = c.name.rfind("Starlink", 0) == 0;
+            if (!c.enabled || (!station && !starlink) || c.orbitCount == 0)
+                continue;
+            const uint32_t i0 = c.orbitStart;
+            if (i0 >= satOrbits.size() || !meshRenderer.typeMesh((int)satOrbits[i0].typeIdx))
+                continue;
+            const uint32_t stride = std::max<uint32_t>(1u, c.orbitCount / 20000u);
+            for (uint32_t k = 0; k < c.orbitCount; k += stride)
+            {
+                const uint32_t i = i0 + k;
+                if (i >= activeSatCount || rosterFateAt(i, t) != 0)
+                    continue;
+                const glm::dvec3 p = satOrbitStateAt(orbitElemsOf(satOrbits[i]), t).posEci;
+                const double el = glm::dot(glm::normalize(p - obs), up);
+                if (el < minSin || (pass == 0 && !lit(p)))
+                    continue;
+                const double score = el + (station ? 2.0 : 0.0);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = (int)i;
+                }
+            }
+        }
+    }
+    if (best >= 0)
+        selectSatellite(best);
+    if (best < 0 || selectedSatIndex != best)
+    {
+        snprintf(tutPickMsg, sizeof(tutPickMsg), "None is up right now: speed up time or move, then try again.");
+        return false;
+    }
+    if (!followActive)
+    {
+        stopTrack();
+        updateSelectedSkyDir();
+        const glm::vec3 d = selSkyDirCpu;
+        if (glm::dot(d, d) > 1e-12f)
+            aimCameraAzEl(glm::degrees(atan2f(d.x, d.y)), glm::degrees(asinf(glm::clamp(d.z, -1.0f, 1.0f))));
+    }
+    return true;
+}
+
+void SatelliteSim::tutSaveReturn()
+{
+    tutRetSaved = true;
+    tutRetT = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    tutRetObsDir = followActive ? followSavedObsDir : obsDir;
+    tutRetHeight = followActive ? followSavedHeight : obsHeightOffset;
+    tutRetAz = camera.azDeg;
+    tutRetEl = camera.elDeg;
+    tutRetFov = camera.fovYDeg;
+    tutRetTimeIdx = timeScaleIdx;
+    tutRetPaused = timePaused;
+    tutRetDir = timeDir;
+    tutRetDriftRate = cloudDriftRate;
+    tutRetDriftPhaseOff = cloudDriftPhaseOffset;
+    const time_t unixSim = (time_t)std::floor(tutRetT) + 946728000;
+    const struct tm *u = gmtime(&unixSim);
+    if (u)
+        snprintf(tutRetLabel, sizeof(tutRetLabel), "Back to %04d-%02d-%02d %02d:%02d", u->tm_year + 1900, u->tm_mon + 1,
+                 u->tm_mday, u->tm_hour, u->tm_min);
+    else
+        snprintf(tutRetLabel, sizeof(tutRetLabel), "Back to where you were");
+}
+
+// Back to the time and place before the Missions step's jump (bookmarkGo's cut).
+void SatelliteSim::tutReturnNow()
+{
+    if (!tutRetValid)
+        return;
+    tutRetValid = false;
+    if (followActive)
+        stopFollow();
+    stopTrack();
+    const double days = std::floor(tutRetT / 86400.0);
+    simDayJ2000 = (int64_t)days;
+    simSecInDay = tutRetT - days * 86400.0;
+    obsDir = glm::normalize(tutRetObsDir);
+    obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
+    obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+    obsHeightOffset = tutRetHeight;
+    camera.fovYDeg = tutRetFov;
+    aimCameraAzEl(tutRetAz, tutRetEl);
+    cloudDriftRate = tutRetDriftRate;
+    cloudDriftPhaseOffset = tutRetDriftPhaseOff;
+    timeScaleIdx = tutRetTimeIdx;
+    timePaused = tutRetPaused;
+    timeDir = tutRetDir;
+    obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+    updatePositions(tutRetT, 0.0f);
+    trailClearPending = true;
+    skyTaaHistValid = false; // a cut
+    cv2HistoryValid = false;
+    msNextWall = msPinWall = -1e300; // the Missions rows are rebuilt for the new time
 }
 
 // ─── Completion ───────────────────────────────────────────────────────────────────────────────────
@@ -197,9 +352,26 @@ void SatelliteSim::updateTutorial(float dt)
     case TUT_SELECT:
         tutProgress = selectedSatIndex >= 0 ? 1.0f : 0.0f;
         break;
-    case TUT_ACTIONS:
-        // Already in use when the card came up (a replay with the info window open): Next moves on.
-        if (!tutBaseAction && tutActionOn())
+    case TUT_INFO:
+        // Already open when the card came up (a replay): closing and opening it again counts, as does Next.
+        if (!tutInfoOn())
+            tutBaseInfo = false;
+        else if (!tutBaseInfo)
+            tutProgress = 1.0f;
+        break;
+    case TUT_GOTO:
+        // Go to, then leave it: Exit (flying home: followFlight 2) or Stay here (follow ends where the camera is).
+        if (followActive)
+            tutGoSeen = true;
+        if (tutGoSeen && (!followActive || followFlight == 2))
+            tutProgress = 1.0f;
+        break;
+    case TUT_TRACE:
+        if (!traceChrome.open)
+            tutBaseTrace = false;
+        if (!trackActive)
+            tutBaseTrack = false;
+        if ((traceChrome.open && !tutBaseTrace) || (trackActive && !tutBaseTrack))
             tutProgress = 1.0f;
         break;
     case TUT_TIME:
@@ -210,8 +382,23 @@ void SatelliteSim::updateTutorial(float dt)
         if (trailEnabled != tutBaseTrails || photoState != 0 || screenshotRequested || screenshotCopyPending || screenshotEncoding.load())
             tutProgress = 1.0f;
         break;
+    case TUT_MISSIONS:
+        // Go to / Watch on an Upcoming launch, or a Sun's Fury button: the clock (and place) moved.
+        if (msUpcomingActs_ != tutBaseMsUpcoming)
+        {
+            tutRetValid = tutRetSaved;
+            tutProgress = 1.0f;
+        }
+        break;
+    case TUT_ONGOING:
+        // A few seconds on the Ongoing tab (time to read it), or any of its buttons.
+        if (msChrome.open && msTab == 1)
+            tutOngoingS += dt;
+        tutProgress = std::max(tutOngoingS / kOngoingS, msOngoingActs_ != tutBaseMsOngoing ? 1.0f : 0.0f);
+        break;
     case TUT_SETTINGS:
-        if ((settingsChrome.open && !tutBaseSettings) || cineChrome.open != tutBaseCine || bmChrome.open != tutBaseBookmarks)
+        if ((settingsChrome.open && !tutBaseSettings) || cineChrome.open != tutBaseCine || bmChrome.open != tutBaseBookmarks ||
+            rpChrome.open != tutBaseReports)
             tutProgress = 1.0f;
         break;
     case TUT_GRAPHICS:
@@ -376,67 +563,117 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
     static_assert(sizeof(kTitles) / sizeof(kTitles[0]) == TUT_COUNT, "a title per step");
 
     // ── Outline what the card talks about (the HUD's own controls; boxes from the last layout) ──
-    bool haveBox = false;
-    Clay_BoundingBox box{};
-    auto addBox = [&](Clay_ElementId id)
+    // Up to three boxes, each the union of its elements (the Missions step outlines a launch's buttons AND the Sun's
+    // Fury card). Only elements drawn this frame: Clay keeps stale boxes for the rest.
+    const bool needPick = tutNeedsPick(step);
+    constexpr int kBoxes = 3;
+    bool haveBox[kBoxes] = {};
+    Clay_BoundingBox box[kBoxes]{};
+    auto addBox = [&](int g, Clay_ElementId id)
     {
         const Clay_ElementData d = Clay_GetElementData(id);
         if (!d.found || d.boundingBox.width <= 0.0f)
             return;
-        if (!haveBox)
-            box = d.boundingBox;
+        Clay_BoundingBox &b = box[g];
+        if (!haveBox[g])
+            b = d.boundingBox;
         else
         {
-            const float x1 = std::max(box.x + box.width, d.boundingBox.x + d.boundingBox.width);
-            const float y1 = std::max(box.y + box.height, d.boundingBox.y + d.boundingBox.height);
-            box.x = std::min(box.x, d.boundingBox.x);
-            box.y = std::min(box.y, d.boundingBox.y);
-            box.width = x1 - box.x;
-            box.height = y1 - box.y;
+            const float x1 = std::max(b.x + b.width, d.boundingBox.x + d.boundingBox.width);
+            const float y1 = std::max(b.y + b.height, d.boundingBox.y + d.boundingBox.height);
+            b.x = std::min(b.x, d.boundingBox.x);
+            b.y = std::min(b.y, d.boundingBox.y);
+            b.width = x1 - b.x;
+            b.height = y1 - b.y;
         }
-        haveBox = true;
+        haveBox[g] = true;
+    };
+    // The selection's buttons (SelActBtn id % 4: 0 Info, 1 Go to, 2 Trace pass, 3 Track) drawn this frame.
+    auto selBtns = [&](uint32_t which)
+    {
+        for (int id = 0; id < 8; ++id)
+            if ((selBtnDrawnMask & (1u << id)) && (which & (1u << (id % 4))))
+                addBox(0, CLAY_SIDI(CLAY_STRING("SelActBtn"), id));
     };
     switch (step)
     {
-    case TUT_ACTIONS:
-        for (int id = 0; id < 8; ++id)
-            if (selBtnDrawnMask & (1u << id))
-                addBox(CLAY_SIDI(CLAY_STRING("SelActBtn"), id));
+    case TUT_INFO:
+        if (!needPick)
+            selBtns(0x1u);
+        break;
+    case TUT_GOTO:
+        if (followActive)
+        {
+            addBox(0, CLAY_ID("FollowStayBtn"));
+            addBox(1, CLAY_ID("FollowExitBtn"));
+        }
+        else if (!needPick)
+            selBtns(0x2u);
+        break;
+    case TUT_TRACE:
+        if (!needPick)
+            selBtns(0xCu);
         break;
     case TUT_TIME:
-        addBox(CLAY_ID("TimeSlowerBtn"));
-        addBox(CLAY_ID("TimePauseBtn"));
-        addBox(CLAY_ID("TimeFasterBtn"));
-        addBox(CLAY_ID("TimeReverseBtn"));
+        addBox(0, CLAY_ID("TimeSlowerBtn"));
+        addBox(0, CLAY_ID("TimePauseBtn"));
+        addBox(0, CLAY_ID("TimeFasterBtn"));
+        addBox(0, CLAY_ID("TimeReverseBtn"));
         break;
     case TUT_CAPTURE:
-        addBox(CLAY_ID("TimeScreenshotBtn"));
-        addBox(CLAY_ID("TimePhotoBtn"));
-        addBox(CLAY_ID("TrailsBtn"));
+        addBox(0, CLAY_ID("TimeScreenshotBtn"));
+        addBox(0, CLAY_ID("TimePhotoBtn"));
+        addBox(0, CLAY_ID("TrailsBtn"));
         break;
-    case TUT_SETTINGS: // the right panel's menu buttons
-        addBox(CLAY_ID("TimeBookmarkBtn"));
-        addBox(CLAY_ID("TimeCineBtn"));
-        addBox(CLAY_ID("SettingsBtn"));
+    case TUT_MISSIONS:
+        if (!msChrome.open)
+            addBox(0, CLAY_ID("TimeMissionsBtn"));
+        else if (msTab != 0)
+            addBox(0, CLAY_SIDI(CLAY_STRING("MsTab"), 0));
+        else
+        {
+            // The first launch row's Go to / Watch (the next launch, else the pinned twilight / crewed one), and the
+            // Sun's Fury card's buttons.
+            const int row = !msNext.empty() ? 0 : msHasTwilight ? 100 : !msCrewList.empty() ? 101 : -1;
+            if (row >= 0)
+                addBox(0, CLAY_SIDI(CLAY_STRING("MsLBtns"), row));
+            addBox(1, CLAY_ID("MsFuryBtns"));
+        }
+        break;
+    case TUT_ONGOING:
+        if (!msChrome.open)
+            addBox(0, CLAY_ID("TimeMissionsBtn"));
+        else if (msTab != 1)
+            addBox(0, CLAY_SIDI(CLAY_STRING("MsTab"), 1));
+        break;
+    case TUT_SETTINGS: // the right panel's menu buttons (Missions had its own steps)
+        addBox(0, CLAY_ID("TimeBookmarkBtn"));
+        addBox(0, CLAY_ID("TimeCineBtn"));
+        addBox(0, CLAY_ID("TimeReportBtn"));
+        addBox(0, CLAY_ID("SettingsBtn"));
         break;
     case TUT_GRAPHICS:
-        addBox(CLAY_ID("SettingsBtn"));
+        addBox(0, CLAY_ID("SettingsBtn"));
         break;
     default:
         break;
     }
-    if (haveBox && !done)
+    for (int g = 0; g < kBoxes; ++g)
     {
+        if (!haveBox[g] || done)
+            continue;
         const float m = 4.0f;
+        const Clay_BoundingBox &b = box[g];
         // PASSTHROUGH: it sits over the buttons it points at (CLAUDE.md, the pointer-capture rule).
-        CLAY(CLAY_ID("TutOutline"), {.layout = {.sizing = {CLAY_SIZING_FIXED(box.width + 2.0f * m), CLAY_SIZING_FIXED(box.height + 2.0f * m)}},
-                                     .backgroundColor = {Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 20.0f + 25.0f * pulse},
-                                     .cornerRadius = CLAY_CORNER_RADIUS(6),
-                                     .floating = {.offset = {box.x - m, box.y - m},
-                                                  .zIndex = kZCard + 2,
-                                                  .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
-                                                  .attachTo = CLAY_ATTACH_TO_ROOT},
-                                     .border = {.color = {Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 140.0f + 115.0f * pulse}, .width = {2, 2, 2, 2, 0}}}) {}
+        CLAY(CLAY_SIDI(CLAY_STRING("TutOutline"), g),
+             {.layout = {.sizing = {CLAY_SIZING_FIXED(b.width + 2.0f * m), CLAY_SIZING_FIXED(b.height + 2.0f * m)}},
+              .backgroundColor = {Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 20.0f + 25.0f * pulse},
+              .cornerRadius = CLAY_CORNER_RADIUS(6),
+              .floating = {.offset = {b.x - m, b.y - m},
+                           .zIndex = kZCard + 2,
+                           .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+                           .attachTo = CLAY_ATTACH_TO_ROOT},
+              .border = {.color = {Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 140.0f + 115.0f * pulse}, .width = {2, 2, 2, 2, 0}}}) {}
     }
 
     // ── The text, from the live bindings ──
@@ -482,13 +719,36 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         else
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Left-click a satellite, any moving point of light, to select it. %s picks the one nearest the middle of the view.", k1);
         break;
-    case TUT_ACTIONS:
-        if (selectedSatIndex < 0)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Select a satellite first: its buttons appear beside it.");
+    case TUT_INFO:
+    case TUT_GOTO:
+    case TUT_TRACE:
+        if (needPick)
+        {
+            if (selectedSatIndex >= 0 && step != TUT_TRACE)
+                snprintf(tutBodyBuf, sizeof(tutBodyBuf), "This one has no 3D model. Select a station or a Starlink, or let the tutorial pick one.");
+            else
+                snprintf(tutBodyBuf, sizeof(tutBodyBuf), "%s", pad ? "Select a satellite first: put one near the middle of the view and press A."
+                                                               : "Select a satellite first (left-click one), or let the tutorial pick one for you.");
+            if (tutPickMsg[0])
+                snprintf(tutBodyBuf + strlen(tutBodyBuf), sizeof(tutBodyBuf) - strlen(tutBodyBuf), " %s", tutPickMsg);
+        }
+        else if (step == TUT_INFO)
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Info (the \"i\") opens its window: a live 3D view, its brightness, its place in your sky and its orbit. Open it.%s",
+                     pad ? " D-pad left / right picks a button, A presses it." : "");
+        else if (step == TUT_GOTO && !followActive)
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Go to (the eye) flies you out to ride beside it. Try it.%s",
+                     pad ? " D-pad to the eye, then A." : "");
+        else if (step == TUT_GOTO)
+        {
+            snprintf(k1, sizeof(k1), "%s", K(KB_FOLLOW_STAY));
+            if (pad)
+                snprintf(tutBodyBuf, sizeof(tutBodyBuf), "You are riding along: move around it with the sticks. B (Exit) flies you back home; Stay here, at the top, leaves you floating up here.");
+            else
+                snprintf(tutBodyBuf, sizeof(tutBodyBuf), "You are riding along: WASD and the mouse move around it. Exit flies you back home; Stay here (%s) leaves you floating up here, free to move. Use one.",
+                         k1);
+        }
         else
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Info opens its 3D model, orbit and brightness. Go to flies you out to ride beside it. "
-                                                     "Trace plots its brightness over the pass. Track keeps the camera on it.%s",
-                     pad ? " D-pad left / right choose one, A presses it, B goes back." : " Try one.");
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Trace pass plots its brightness over this pass across your sky. Track keeps the camera locked on it as it moves. Try either.");
         break;
     case TUT_TIME:
         if (pad)
@@ -511,10 +771,32 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Screenshot (%s), HQ photo (%s) for a sharper image, and Star trails (%s) for a long exposure.%s",
                  k1, k2, k3, pad ? " On a controller, after the tutorial, Start gives a cursor for these buttons." : "");
         break;
+    case TUT_MISSIONS:
+        snprintf(k1, sizeof(k1), "%s", K(KB_MISSIONS));
+        if (!msChrome.open)
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Missions (the rocket button, or %s) lists the coming launches, the flights under way and the Sun's Fury. Open it.",
+                     k1);
+        else if (msTab != 0)
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Open the Upcoming tab.");
+        else
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Upcoming: the next launches. Go to puts you beside the pad 45 s before lift-off; Watch only moves the clock. "
+                                                     "Pinned below: the next twilight and crewed launches, and the Sun's Fury storm. Try one.");
+        break;
+    case TUT_ONGOING:
+        if (!msChrome.open)
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Open Missions again (the rocket button, or %s).", K(KB_MISSIONS));
+        else if (msTab != 1)
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Now open the Ongoing tab.");
+        else
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Ongoing: rockets in flight, crews on their way, new satellites rising to their orbits, old ones coming down. "
+                                                     "Next > skips to a launch's next milestone.");
+        if (tutRetValid)
+            snprintf(tutBodyBuf + strlen(tutBodyBuf), sizeof(tutBodyBuf) - strlen(tutBodyBuf), " The button below takes you back to where you were.");
+        break;
     case TUT_SETTINGS:
         snprintf(k1, sizeof(k1), "%s", K(KB_TOGGLE_UI));
-        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Bookmarks save a place and time, Cinematics record camera paths, and Settings hold graphics, "
-                                                 "constellations, sound and key bindings. %s hides the interface for a clean view.%s",
+        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Bookmarks save a place and time, Cinematics record camera paths, Issue reports send us screenshots "
+                                                 "of problems, and Settings hold graphics, sound and keys. %s hides the interface.%s",
                  pad ? P(KB_TOGGLE_UI) : k1, pad ? " After the tutorial, Start gives a cursor for these buttons." : "");
         break;
     case TUT_GRAPHICS:
@@ -532,14 +814,15 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
     // ── Where: beside the panel it points at, else low in the middle of the view ──
     Clay_FloatingElementConfig fl{};
     fl.zIndex = kZCard;
-    if (step == TUT_TIME || step == TUT_CAPTURE)
+    // The Missions window docks top right: its two cards sit above the left panel, out of its way.
+    if (step == TUT_TIME || step == TUT_CAPTURE || ((step == TUT_MISSIONS || step == TUT_ONGOING) && msChrome.open))
     {
         fl.offset = {0.0f, -10.0f};
         fl.parentId = CLAY_ID("LeftPanel").id;
         fl.attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_BOTTOM, .parent = CLAY_ATTACH_POINT_LEFT_TOP};
         fl.attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID;
     }
-    else if (step == TUT_SETTINGS || step == TUT_GRAPHICS)
+    else if (step == TUT_SETTINGS || step == TUT_GRAPHICS || ((step == TUT_MISSIONS || step == TUT_ONGOING) && !msChrome.open))
     {
         fl.offset = {0.0f, -10.0f};
         fl.parentId = CLAY_ID("RightPanel").id;
@@ -561,8 +844,8 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
     // Wide and short: the graphic beside the text, so the card keeps to the bottom of the view.
     const float cardW = std::min(std::max(420.0f, fs(13) * 38.0f), inp.screenW - 24.0f);
     const bool graphic = step <= TUT_SELECT;
-    const bool bar = step <= TUT_BOOST;
-    bool clickNext = false, clickBack = false, clickSkip = false;
+    const bool bar = step <= TUT_BOOST || step == TUT_ONGOING;
+    bool clickNext = false, clickBack = false, clickSkip = false, clickPick = false, clickReturn = false;
     auto button = [&](Clay_ElementId id, const char *label, bool accent, bool &hov) -> bool
     {
         bool clicked = false;
@@ -661,6 +944,11 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
                     CLAY_TEXT(last ? CLAY_STRING("Start: finish   View: skip") : CLAY_STRING("Start: next   View: skip"),
                               CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
                 CLAY(CLAY_ID("TutFootGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+                if (needPick && !done && !pad)
+                    clickPick = button(CLAY_ID("TutPick"), "Pick one for me", false, hovTutPick);
+                // After the Missions step's jump: back to the time and place before it (tutReturnNow).
+                if (tutRetValid && step > TUT_MISSIONS)
+                    clickReturn = button(CLAY_ID("TutReturn"), tutRetLabel, false, hovTutReturn);
                 clickNext = button(CLAY_ID("TutNext"), last ? "Finish" : "Next", true, hovTutNext);
             }
         }
@@ -669,6 +957,10 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         ui.addMouseCaptureRect(d.boundingBox.x, d.boundingBox.y, d.boundingBox.width, d.boundingBox.height);
 
     // Acted on after the card is closed: never leave a CLAY block early (CLAUDE.md).
+    if (clickPick)
+        tutPickSatellite();
+    if (clickReturn)
+        tutReturnNow();
     if (clickSkip)
         endTutorial(false);
     else if (clickBack)

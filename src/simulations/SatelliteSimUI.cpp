@@ -1402,7 +1402,7 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
         CLAY(CLAY_ID("SBDiv5"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
                                  .backgroundColor = Pal::divider}) {}
 
-        // ── Menus: Bookmarks, Cinematics, Settings (2026-10-03) ─────────────
+        // ── Menus: Missions, Bookmarks, Cinematics, Issue reports, Settings (2026-10-03; order 2026-10-21) ─────
         // The left panel is the clock and the picture buttons; the windows open from here. Each button is lit
         // (accent) while its window is open, the Cinematics one amber while a cinematic plays or exports.
         auto menuBtn = [&](Clay_ElementId id, Clay_ElementId iconId, int icon, bool &hov, Clay_Color onBg, bool on,
@@ -1427,13 +1427,6 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             }
         };
         bool toggled = false;
-        menuBtn(CLAY_ID("TimeReportBtn"), CLAY_ID("TimeReportIcon"), kIconReport, hovTimeReport, Pal::btnAccent, rpChrome.open,
-                "Issue reports", toggled);
-        if (toggled)
-        {
-            rpChrome.open = !rpChrome.open;
-            reportsDirty_ = true;
-        }
         menuBtn(CLAY_ID("TimeMissionsBtn"), CLAY_ID("TimeMissionsIcon"), kIconMissions, hovTimeMissions, Pal::btnAccent,
                 msChrome.open, "Missions", toggled);
         if (toggled)
@@ -1453,6 +1446,14 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             cineChrome.open = !cineChrome.open;
             if (cineChrome.open)
                 cineRefreshFiles();
+        }
+        // Issue reports sit immediately left of Settings (2026-10-21, the user).
+        menuBtn(CLAY_ID("TimeReportBtn"), CLAY_ID("TimeReportIcon"), kIconReport, hovTimeReport, Pal::btnAccent, rpChrome.open,
+                "Issue reports", toggled);
+        if (toggled)
+        {
+            rpChrome.open = !rpChrome.open;
+            reportsDirty_ = true;
         }
         menuBtn(CLAY_ID("SettingsBtn"), CLAY_ID("SettingsIcon"), kIconSettings, hovSettings, Pal::btnAccent,
                 settingsChrome.open, "Settings", toggled);
