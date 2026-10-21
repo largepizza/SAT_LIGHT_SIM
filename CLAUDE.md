@@ -4245,13 +4245,19 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   saturated width, and half the bow of a piece's straight extent. Pieces sit at k D with an along-track sigma 0.8 D
   (the centres' spread deconvolved so the sum keeps the profile), D a CONTINUOUS function of age: min(the spacing
   whose straight +-1.6 D bows < width / 3 from the arc, half the profile sigma), widened when the budget binds
-  (every cloud gets 15 pieces, the rest shared out in proportion to what each wants; real-valued, so it never steps).
+  (every cloud gets 15 pieces, or fewer when it is small on screen: pieces are never closer than 3 half-res pixels at
+  its nearest part, so a young or distant cloud is 1-5 Gaussians and the budget holds ~40 clouds, not 25; the rest
+  shared out in proportion to what each wants; real-valued, so it never steps).
   The end pieces carry the profile's tails, so pieces appear with ~zero weight; lumps are a smooth noise in the
   fragments' along-track kick E[dvy | y], so they move and stretch with them. Each Gaussian gets a view cone (4
   sigma). It was up to 12 straight Gaussians ~2000 km long (ceil of the length / 1500 km), whose count stepped with
   age (the cloud's width jumped ~50% at 1 -> 2), plus hash lumps keyed by the piece index (reshuffled at each step):
   seen from orbit near the arc, straight "beams" crossing at kinks that stretched and glitched as time ran. Clouds
-  ranked by brightness / (range to their nearest part)^2. A big parent's cloud is brighter as the square root past
+  are ranked by SURFACE BRIGHTNESS: amp / (along-track sigma x half-width + (nearest part's range x 0.02 rad)^2), a
+  hash breaking exact ties (issue 20261020_221525, "Dust doesn't seem to appear anymore": ranked by amp / (nearest
+  part's range, floored at 100 km)^2, a late cascade's dozens of IDENTICAL breakups strung past the eye (Starmind on
+  Starmind) tied at the budget's cut and the cut's fade drew every one at ~0 — no dust at any gain — and those old,
+  wide, faint clouds outranked fresh bright ones). A big parent's cloud is brighter as the square root past
   ~5 t of dust at the default gain (`kAmpKnee`): a 420-t station at x100 blew out the view. The cloud_march cost is
   unchanged (cascade day 1: 4.6 vs 4.7 ms; one station cloud 0.5-1.1 ms). Harness `kessler state` -> `dust`
   {gaussians, light_sum, range_km, sigma_km_geomean}; scripts `harness_runs/stationbk` (`user.satcmd`, `strip.satcmd`:
@@ -4265,7 +4271,8 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   x100): physically a cloud fades below the dark sky within minutes. **No pops** (issue 20261018_211013, day 81 at
   x1000: the budget was full and clouds near the cut snapped in and out as the view moved, and every cloud vanished
   at 3 h still bright): a cloud fades over the last 40% of its 3 h, and clouds near the budget's cut fade by
-  priority between the cut and 3x it.
+  priority between the cut and 3x it — never the first 60% of those kept. Harness `kessler state` -> `dust.clouds`
+  (each drawn cloud's event, kind, dust kg, age, rank size, amp, cut fade).
 - **The engine** (`engineSample`, cube method, Liou 2006): every 6 h of sim time one sample at the step's middle,
   20-km cubes among the roster and the large pieces (sorted in parallel: keys are unique, so the order is the
   same), P = vRel x pi (rA + rB)^2 x dt / V x weights x rate multiplier, x (1 - avoidance) when one is a working

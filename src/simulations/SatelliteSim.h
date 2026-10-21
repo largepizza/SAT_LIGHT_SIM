@@ -2,6 +2,7 @@
 #define GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_NONE // see VulkanContext.h — must be repeated at every raw glfw3.h include site
 #include "Cinematic.h"
+#include <array>
 #include <GLFW/glfw3.h>
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -2796,6 +2797,9 @@ private:
     VkDeviceMemory kDustMem = VK_NULL_HANDLE;
     void *kDustMapped = nullptr;
     uint32_t kDustCount = 0; // drawn this frame (harness state)
+    // The clouds drawn this frame (harness `kessler state` -> dust.clouds): event index, kind, dust kg, small
+    // fragments, age (s), the rank's effective size sqrt(amp / priority) (km), its light (amp, before the sky units), cut fade.
+    std::vector<std::array<double, 8>> kDustDbg;
     void kesslerFillDust(float pixelAngle);
     // Fills the fireballs for the current time into kFireBuf and appends their trails to the dust list (out, n).
     void kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
