@@ -60,6 +60,9 @@ struct VulkanContext {
     // in the surface's supported list. A simulation changes this and then reports true from
     // Simulation::consumeSwapchainRebuildRequest() to have App rebuild the swapchain with it.
     VkPresentModeKHR         presentModePreference = VK_PRESENT_MODE_FIFO_KHR;
+    // The preference the current swapchain was made with (2026-10-21): a request that does not change it needs no
+    // rebuild (applyFpsCapMode after loading the settings rebuilt it on every launch: ~215 ms of the first frame).
+    VkPresentModeKHR         presentModeBuilt = VK_PRESENT_MODE_FIFO_KHR;
     // UC6 (RELEASE_v1_1_PLAN.md): true if the surface advertised TRANSFER_SRC support for
     // swapchain images (near-universal but not spec-guaranteed) — createSwapchain() only adds
     // VK_IMAGE_USAGE_TRANSFER_SRC_BIT to ci.imageUsage when this would be true, since requesting

@@ -34,6 +34,7 @@ namespace fprof
     {
         uint64_t index = 0;
         double wallMs = 0.0;
+        double netMs = 0.0;  // wallMs less the harness's own work (section "harnessTick"): what a player's frame took
         double simT = 0.0;  // sim time (s since J2000) as tagged by the sim, for the log
         float timeScale = 0; // the sim's warp that frame
         std::vector<Entry> e;
@@ -82,6 +83,19 @@ namespace fprof
         st().curSimT = simT;
         st().curScale = timeScale;
     }
+    // Splits: fprof::mark("x") adds the time since the previous mark (or markReset) to section x (2026-10-21).
+    inline std::chrono::steady_clock::time_point &markT()
+    {
+        static std::chrono::steady_clock::time_point t;
+        return t;
+    }
+    inline void markReset() { markT() = std::chrono::steady_clock::now(); }
+    inline void mark(const char *name)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        add(name, std::chrono::duration<float, std::milli>(now - markT()).count());
+        markT() = now;
+    }
     struct Scope
     {
         const char *name;
@@ -120,10 +134,28 @@ namespace fprof
             f.wallMs = (nowS - s.lastBegin) * 1000.0;
             f.simT = s.curSimT;
             f.timeScale = s.curScale;
-            s.walls.push_back((float)f.wallMs);
+            // (2026-10-21) The frame's time outside every top-level "app.*" section (App's own phases are siblings):
+            // a hitch that sums to far less than its wall time was spent somewhere nothing is scoped yet.
+            {
+                double app = 0.0;
+                for (const Entry &e : s.cur)
+                    if (std::strncmp(e.name, "app.", 4) == 0)
+                        app += e.ms;
+                const double other = f.wallMs - app;
+                if (other > 0.0)
+                    s.cur.push_back({"app.other", (float)other, 1});
+            }
+            // (2026-10-21) Statistics and the hitch test use the frame less the harness's own work (harnessTick: every
+            // command's result line is written with an fsync, ~10-15 ms each on a busy disk, so a ladder step's
+            // `time scale; time play; hitches clear` frame read 50-60 ms that no player ever pays).
+            f.netMs = f.wallMs;
+            for (const Entry &e : s.cur)
+                if (std::strcmp(e.name, "harnessTick") == 0)
+                    f.netMs = std::max(0.0, f.wallMs - e.ms);
+            s.walls.push_back((float)f.netMs);
             if (s.walls.size() > 4096)
                 s.walls.pop_front();
-            if (s.thresholdMs > 0.0f && f.wallMs > s.thresholdMs && s.frame >= s.warmupFrames)
+            if (s.thresholdMs > 0.0f && f.netMs > s.thresholdMs && s.frame >= s.warmupFrames)
             {
                 f.e = sorted(s.cur);
                 s.hitches.push_back(f);
@@ -143,8 +175,12 @@ namespace fprof
     inline std::string describe(const Frame &f, int top = 10)
     {
         char buf[256];
-        std::snprintf(buf, sizeof(buf), "wall %.1f ms (frame %llu, warp x%g, sim t %.0f):", f.wallMs,
-                      (unsigned long long)f.index, (double)f.timeScale, f.simT);
+        if (f.netMs < f.wallMs - 0.05)
+            std::snprintf(buf, sizeof(buf), "wall %.1f ms, %.1f without the harness (frame %llu, warp x%g, sim t %.0f):",
+                          f.wallMs, f.netMs, (unsigned long long)f.index, (double)f.timeScale, f.simT);
+        else
+            std::snprintf(buf, sizeof(buf), "wall %.1f ms (frame %llu, warp x%g, sim t %.0f):", f.wallMs,
+                          (unsigned long long)f.index, (double)f.timeScale, f.simT);
         std::string out = buf;
         int n = 0;
         for (const Entry &e : f.e)

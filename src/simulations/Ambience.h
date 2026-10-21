@@ -162,6 +162,7 @@ private:
 
         // runtime
         int voice = -1;
+        bool idxReady = false; // the parameter indices above, resolved from the synth once a worker made it
         bool failed = false;
         std::string failure;
         float target = 0.0f, current = 0.0f, rateScale = 1.0f;

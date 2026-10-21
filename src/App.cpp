@@ -112,6 +112,15 @@ void App::run()
     // `audio record` to render (docs/HARNESS.md).
     audio.init(harness::active() && harness::options().mute);
     sim->setAudio(&audio); // let the simulation configure its playlist
+    // (2026-10-21) A swapchain rebuild init asked for (a saved frame-rate cap's present mode): now, during the load,
+    // not on the first frame (which it cost ~215 ms: the swapchain and every size-dependent pipeline again).
+    if (sim->consumeSwapchainRebuildRequest())
+    {
+        ctx.recreateSwapchain(window);
+        sim->onResize(ctx);
+        if (bootScreen)
+            ui.onResize(ctx);
+    }
 
     if (bootScreen)
     {
@@ -136,6 +145,7 @@ void App::run()
     {
         ui.init(ctx, window);
     }
+    sim->prepareUI(ui); // (2026-10-21) the first frame's lazy UI work, here (the GPU is idle after the waits above)
     mainLoop();
     // Wait for GPU idle before tearing down
     vkDeviceWaitIdle(ctx.device);
@@ -185,7 +195,10 @@ void App::mainLoop()
     while (!glfwWindowShouldClose(window) && !sim->wantsQuit())
     {
         double frameStart = glfwGetTime();
-        glfwPollEvents();
+        {
+            FPROF_SCOPE("app.poll");
+            glfwPollEvents();
+        }
         drawFrame();
 
         // NEW-7: manual pacing for numeric FPS caps (see Simulation::targetFpsCap comment —
@@ -876,9 +889,12 @@ void App::drawFrame()
     }
 
     // Prepare Clay layout for this frame — simulation may call CLAY() in buildUI()
-    ui.beginFrame((float)ww, (float)wh,
-                  (float)mx, (float)my, lmb, rmb,
-                  scrollX, scrollY, dt);
+    {
+        FPROF_SCOPE("app.ui_begin");
+        ui.beginFrame((float)ww, (float)wh,
+                      (float)mx, (float)my, lmb, rmb,
+                      scrollX, scrollY, dt);
+    }
     scrollX = scrollY = 0.0f; // consumed
 
     // Advance music playlist (detects track end, starts next track).
@@ -959,9 +975,11 @@ void App::drawFrame()
     // swapchain image holds the fully composited frame — must happen after the render pass ends
     // (the image is back in a layout a transfer op can act on) and before the command buffer is
     // ended, since this project has one command buffer / one frame in flight.
-    sim->recordScreenshotCopy(ctx.commandBuffer, ctx, ctx.swapImages[imgIdx]);
-
-    vkEndCommandBuffer(ctx.commandBuffer);
+    {
+        FPROF_SCOPE("app.screenshot_copy");
+        sim->recordScreenshotCopy(ctx.commandBuffer, ctx, ctx.swapImages[imgIdx]);
+        vkEndCommandBuffer(ctx.commandBuffer);
+    }
     ftMark("record rest");
 
     // Submit
@@ -1020,6 +1038,7 @@ void App::drawFrame()
     // already ignores SUBOPTIMAL for the same reason.
     if (res == VK_ERROR_OUT_OF_DATE_KHR || resized || sim->consumeSwapchainRebuildRequest())
     {
+        FPROF_SCOPE("app.recreate_swapchain");
         resized = false;
         ctx.recreateSwapchain(window);
         sim->onResize(ctx);

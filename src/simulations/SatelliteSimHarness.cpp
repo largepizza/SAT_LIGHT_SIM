@@ -2387,10 +2387,12 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // kessler select [k=<n>]: the n-th record (default 0) of the newest player breakup, once the
             // worker has replayed it (Pending until then).
             const kessler::Event *ev = nullptr;
+            size_t evAt = 0;
             for (size_t e = kEvents.size(); e-- > 0;)
                 if (kEvents[e].origin == kessler::ORIGIN_USER)
                 {
                     ev = &kEvents[e];
+                    evAt = e;
                     break;
                 }
             if (!ev)
@@ -2402,7 +2404,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const uint32_t k = (uint32_t)c.num("k", 0.0);
             if (k >= ev->nRec)
                 fail("kessler select: that breakup made " + std::to_string(ev->nRec) + " records");
-            const uint32_t evIdx = (uint32_t)(ev - kEvents.data());
+            const uint32_t evIdx = (uint32_t)evAt;
             uint32_t seen = 0;
             int found = -1;
             for (uint32_t j = 0; j < (uint32_t)kPool.size(); ++j)
@@ -4419,7 +4421,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         std::vector<const fprof::Frame *> hv;
         for (const fprof::Frame &f : fs.hitches)
             hv.push_back(&f);
-        std::sort(hv.begin(), hv.end(), [](const fprof::Frame *x, const fprof::Frame *y) { return x->wallMs > y->wallMs; });
+        std::sort(hv.begin(), hv.end(), [](const fprof::Frame *x, const fprof::Frame *y) { return x->netMs > y->netMs; });
         json hl = json::array();
         for (size_t i = 0; i < hv.size() && (int)i < maxList; ++i)
             hl.push_back(fprof::describe(*hv[i], top));

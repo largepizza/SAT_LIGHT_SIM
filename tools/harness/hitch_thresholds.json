@@ -1,0 +1,10 @@
+{
+  "_comment": "tools/harness/hitch_check.py limits (ms of wall time per frame, harness fixed 1/60 s step, 1600x900, RTX 3070 Ti class). Set 2026-10-21 from the hitch pass's measurements with headroom for GPU noise from other work on the machine. Lookup: default, then scenarios.<S>.all, then rates.<rate>, then scenarios.<S>.<rate>. first_frame_max_ms replaces max_ms for the step holding the first frame after load (A/B 1x); boot_max_ms is launch to first frame (the log's 'boot: Starting').",
+  "default": {"p99_ms": 50, "max_ms": 75},
+  "first_frame_max_ms": 90,
+  "boot_max_ms": 12000,
+  "rates": {},
+  "scenarios": {
+    "B": {"all": {"p99_ms": 60, "max_ms": 160}}
+  }
+}

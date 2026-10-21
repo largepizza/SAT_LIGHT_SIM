@@ -733,6 +733,7 @@ void VulkanContext::createSwapchain(GLFWwindow *window)
     // actually supports it, otherwise fall back to FIFO, which every Vulkan implementation
     // guarantees.
     VkPresentModeKHR pm = VK_PRESENT_MODE_FIFO_KHR;
+    presentModeBuilt = presentModePreference;
     for (auto &m : sc.modes)
         if (m == presentModePreference)
         {

@@ -962,6 +962,7 @@ std::string chordLabel(const music::Analysis &a, uint16_t absMask)
 // root never moves faster than tonality.slew_semitones_per_s — a skipped track glides too.
 void SatelliteSim::updateTonality(float dt)
 {
+    FPROF_SCOPE("updateTonality");
     const Ambience::TonalityConfig &cfg = ambience_->tonality();
     if (musicLib_)
         for (const std::string &m : musicLib_->takeMessages())

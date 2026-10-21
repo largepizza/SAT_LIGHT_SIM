@@ -6,6 +6,7 @@
 #include "AmbientSynth.h" // Voice owns its synth (unique_ptr needs the complete type in every TU)
 
 #include <functional>
+#include <future>
 #include <memory>
 #include <string>
 #include <vector>
@@ -107,6 +108,15 @@ public:
     // Returns a handle >= 0, or -1 if the file could not be loaded.
     int  addAmbienceLoop(const std::string& path);
     int  addAmbienceSynth(std::unique_ptr<AmbientSynth> synth);
+    // (2026-10-21) The same, made on a worker thread: the handle is returned at once and the voice is silent until it
+    // is ready (it then takes the gain set meanwhile). Opening a FLAC stream (decoding it whole, offline) or building a
+    // synth on the main thread was a 5-50 ms hitch each time a layer first became audible (~50 ms on the first frame).
+    // `make` runs on the worker. voiceFailed(): the file could not be loaded (known once the worker is done).
+    int  addAmbienceLoopAsync(const std::string& path);
+    int  addAmbienceSynthAsync(std::function<std::unique_ptr<AmbientSynth>()> make);
+    bool voiceFailed(int voice) const;
+    bool voicePending(int voice) const;
+    void finishPendingVoices(); // waits for every voice still being made (offline renders, teardown)
     void setVoiceGain(int voice, float gain);
     float voiceGain(int voice) const;
     AmbientSynth* voiceSynth(int voice) const;
@@ -141,12 +151,19 @@ private:
     void applyMusicVolume();    // push musicVol_ into the music group
     void applyVoiceVolume(int voice);
 
+    struct Made {
+        ma_sound* sound = nullptr;
+        std::unique_ptr<AmbientSynth> synth;
+    };
     struct Voice {
         ma_sound* sound = nullptr;
         std::unique_ptr<AmbientSynth> synth; // null for a sample loop
         float gain = 0.0f;
         bool playing = false;
+        bool failed = false;
+        std::shared_ptr<std::future<Made>> pending; // being made on a worker (addAmbience*Async)
     };
+    bool adoptVoice(Voice& v, bool wait); // takes a finished worker's voice; false while it is not ready
     struct OneShot {
         ma_sound* sound = nullptr;
     };

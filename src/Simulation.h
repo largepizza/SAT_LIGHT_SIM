@@ -80,6 +80,9 @@ public:
     // Override to configure the playlist and store the pointer for use in buildUI.
     // Default: no-op (simulations without audio ignore this).
     virtual void setAudio(AudioSystem* /*audio*/) {}
+    // (2026-10-21) Called once just before the first real frame, after the UI is set up for it (its pipeline and
+    // descriptors idle): one-off UI work the first frame would otherwise do (the icon atlas).
+    virtual void prepareUI(UIRenderer& /*ui*/) {}
 
     // Called by App immediately after init(). Gives the simulation access to the
     // native window handle for operations like fullscreen toggling.
