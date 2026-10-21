@@ -20,6 +20,16 @@
     0.46,
     0.48
    ]
+  },
+  {
+   "name": "chute_orange",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.55,
+   "color": [
+    0.96,
+    0.45,
+    0.1
+   ]
   }
  ],
  "attitude_groups": [
@@ -159,36 +169,1086 @@
     0.0
    ],
    "caps": false,
-   "material": "white",
-   "inner_material": "grey",
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
    "group": "body",
-   "render_only": true
+   "render_only": true,
+   "sweep_deg": [
+    0.0,
+    30.0
+   ]
   },
   {
-   "name": "riser_4",
+   "name": "canopy_4",
    "type": "profile",
    "profile": [
     [
-     0.0,
-     0.05
+     38.0,
+     13.0
     ],
     [
-     38.0,
-     0.05
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
     ]
    ],
    "position": [
     0.0,
-    6.0,
+    12.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    30.0,
+    60.0
+   ]
+  },
+  {
+   "name": "canopy_5",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    12.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    60.0,
+    90.0
+   ]
+  },
+  {
+   "name": "canopy_6",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    12.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    90.0,
+    120.0
+   ]
+  },
+  {
+   "name": "canopy_7",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    12.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    120.0,
+    150.0
+   ]
+  },
+  {
+   "name": "canopy_8",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    12.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    150.0,
+    180.0
+   ]
+  },
+  {
+   "name": "canopy_9",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    12.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    180.0,
+    210.0
+   ]
+  },
+  {
+   "name": "canopy_10",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    12.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    210.0,
+    240.0
+   ]
+  },
+  {
+   "name": "canopy_11",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    12.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    240.0,
+    270.0
+   ]
+  },
+  {
+   "name": "canopy_12",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    12.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    270.0,
+    300.0
+   ]
+  },
+  {
+   "name": "canopy_13",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    12.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    300.0,
+    330.0
+   ]
+  },
+  {
+   "name": "canopy_14",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    12.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    330.0,
+    360.0
+   ]
+  },
+  {
+   "name": "riser_15",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.08
+    ],
+    [
+     13.4833,
+     0.08
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
     0.0
    ],
    "caps": false,
    "material": "grey",
+   "rotation_quat": [
+    0.679244,
+    -0.196539,
+    -0.196539,
+    -0.679244
+   ],
    "group": "body",
    "render_only": true
   },
   {
-   "name": "canopy_5",
+   "name": "suspension_line_16",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     29.9933,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.672662,
+    -0.218006,
+    0.095087,
+    -0.700684
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_17",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     30.7792,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.657576,
+    -0.259987,
+    0.017218,
+    -0.706897
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_18",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.43,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.653866,
+    -0.269182,
+    -0.066174,
+    -0.704004
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_19",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.8575,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.661729,
+    -0.249227,
+    -0.142834,
+    -0.69253
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_20",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     32.0062,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.676588,
+    -0.205495,
+    -0.205495,
+    -0.676588
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_21",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.8575,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.69253,
+    -0.142834,
+    -0.249227,
+    -0.661729
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_22",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.43,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.704004,
+    -0.066174,
+    -0.269182,
+    -0.653866
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_23",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     30.7792,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.706897,
+    0.017218,
+    -0.259987,
+    -0.657576
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_24",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     29.9933,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.700684,
+    0.095087,
+    -0.218006,
+    -0.672662
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_25",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     29.1863,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.690775,
+    0.151096,
+    -0.146551,
+    -0.691753
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_26",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.4843,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.685797,
+    0.172285,
+    -0.058252,
+    -0.704703
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_27",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.0054,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.689808,
+    0.155449,
+    0.030438,
+    -0.706451
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_28",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     27.8352,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.699218,
+    0.105329,
+    0.105329,
+    -0.699218
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_29",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.0054,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.706451,
+    0.030438,
+    0.155449,
+    -0.689808
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_30",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.4843,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.704703,
+    -0.058252,
+    0.172285,
+    -0.685797
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_31",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     29.1863,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    7.2,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.691753,
+    -0.146551,
+    0.151096,
+    -0.690775
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "canopy_32",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    -10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    0.0,
+    30.0
+   ]
+  },
+  {
+   "name": "canopy_33",
    "type": "profile",
    "profile": [
     [
@@ -227,35 +1287,1037 @@
    ],
    "caps": false,
    "material": "white",
-   "inner_material": "grey",
+   "inner_material": "white",
    "group": "body",
-   "render_only": true
+   "render_only": true,
+   "sweep_deg": [
+    30.0,
+    60.0
+   ]
   },
   {
-   "name": "riser_6",
+   "name": "canopy_34",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    -10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    60.0,
+    90.0
+   ]
+  },
+  {
+   "name": "canopy_35",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    -10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    90.0,
+    120.0
+   ]
+  },
+  {
+   "name": "canopy_36",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    -10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    120.0,
+    150.0
+   ]
+  },
+  {
+   "name": "canopy_37",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    -10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    150.0,
+    180.0
+   ]
+  },
+  {
+   "name": "canopy_38",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    -10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    180.0,
+    210.0
+   ]
+  },
+  {
+   "name": "canopy_39",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    -10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    210.0,
+    240.0
+   ]
+  },
+  {
+   "name": "canopy_40",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    -10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    240.0,
+    270.0
+   ]
+  },
+  {
+   "name": "canopy_41",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    -10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    270.0,
+    300.0
+   ]
+  },
+  {
+   "name": "canopy_42",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    -10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    300.0,
+    330.0
+   ]
+  },
+  {
+   "name": "canopy_43",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    -10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    330.0,
+    360.0
+   ]
+  },
+  {
+   "name": "riser_44",
    "type": "profile",
    "profile": [
     [
      0.0,
-     0.05
+     0.08
     ],
     [
-     38.0,
-     0.05
+     13.4833,
+     0.08
     ]
    ],
    "position": [
-    -5.1962,
-    -3.0,
+    0.0,
+    0.0,
     0.0
    ],
    "caps": false,
    "material": "grey",
+   "rotation_quat": [
+    0.653114,
+    0.271003,
+    -0.06175,
+    -0.704405
+   ],
    "group": "body",
    "render_only": true
   },
   {
-   "name": "canopy_7",
+   "name": "suspension_line_45",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.134,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.702446,
+    -0.081053,
+    0.143848,
+    -0.692321
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_46",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     27.8544,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.694226,
+    -0.13435,
+    0.066837,
+    -0.703941
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_47",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     27.9115,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.69072,
+    -0.151347,
+    -0.024252,
+    -0.706691
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_48",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.2947,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.694673,
+    -0.13202,
+    -0.111883,
+    -0.698199
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_49",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.9344,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.702229,
+    -0.082909,
+    -0.182936,
+    -0.683033
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_50",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     29.7205,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.707002,
+    -0.012159,
+    -0.228802,
+    -0.669066
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_51",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     30.527,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.703483,
+    0.0715,
+    -0.243328,
+    -0.663921
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_52",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.2342,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.689475,
+    0.156921,
+    -0.222621,
+    -0.671148
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_53",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.744,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.66884,
+    0.229463,
+    -0.168433,
+    -0.686754
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_54",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.9896,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.651248,
+    0.275457,
+    -0.091448,
+    -0.701168
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_55",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.9397,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.645337,
+    0.289033,
+    -0.007143,
+    -0.707071
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_56",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.6008,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.652706,
+    0.271983,
+    0.071764,
+    -0.703456
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_57",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.0161,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.669042,
+    0.228874,
+    0.137141,
+    -0.69368
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_58",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     30.2637,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.687717,
+    0.164457,
+    0.182984,
+    -0.68302
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_59",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     29.4499,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.702057,
+    0.084354,
+    0.203152,
+    -0.677296
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_60",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.6989,
+     0.06
+    ]
+   ],
+   "position": [
+    -6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.707103,
+    -0.002379,
+    0.191212,
+    -0.680763
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "canopy_61",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    0.0,
+    30.0
+   ]
+  },
+  {
+   "name": "canopy_62",
    "type": "profile",
    "profile": [
     [
@@ -294,30 +2356,984 @@
    ],
    "caps": false,
    "material": "white",
-   "inner_material": "grey",
+   "inner_material": "white",
    "group": "body",
-   "render_only": true
+   "render_only": true,
+   "sweep_deg": [
+    30.0,
+    60.0
+   ]
   },
   {
-   "name": "riser_8",
+   "name": "canopy_63",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    60.0,
+    90.0
+   ]
+  },
+  {
+   "name": "canopy_64",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    90.0,
+    120.0
+   ]
+  },
+  {
+   "name": "canopy_65",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    120.0,
+    150.0
+   ]
+  },
+  {
+   "name": "canopy_66",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    150.0,
+    180.0
+   ]
+  },
+  {
+   "name": "canopy_67",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    180.0,
+    210.0
+   ]
+  },
+  {
+   "name": "canopy_68",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    210.0,
+    240.0
+   ]
+  },
+  {
+   "name": "canopy_69",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    240.0,
+    270.0
+   ]
+  },
+  {
+   "name": "canopy_70",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    270.0,
+    300.0
+   ]
+  },
+  {
+   "name": "canopy_71",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_orange",
+   "inner_material": "chute_orange",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    300.0,
+    330.0
+   ]
+  },
+  {
+   "name": "canopy_72",
+   "type": "profile",
+   "profile": [
+    [
+     38.0,
+     13.0
+    ],
+    [
+     39.8506,
+     12.557
+    ],
+    [
+     41.575,
+     11.2583
+    ],
+    [
+     43.0558,
+     9.1924
+    ],
+    [
+     44.1921,
+     6.5
+    ],
+    [
+     44.9064,
+     3.3646
+    ],
+    [
+     45.15,
+     0.0
+    ]
+   ],
+   "position": [
+    10.3923,
+    -6.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    330.0,
+    360.0
+   ]
+  },
+  {
+   "name": "riser_73",
    "type": "profile",
    "profile": [
     [
      0.0,
-     0.05
+     0.08
     ],
     [
-     38.0,
-     0.05
+     13.4833,
+     0.08
     ]
    ],
    "position": [
-    5.1962,
-    -3.0,
+    0.0,
+    0.0,
     0.0
    ],
    "caps": false,
    "material": "grey",
+   "rotation_quat": [
+    0.704405,
+    -0.06175,
+    0.271003,
+    -0.653114
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_74",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.744,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.686754,
+    -0.168433,
+    0.229463,
+    -0.66884
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_75",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.2342,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.671148,
+    -0.222621,
+    0.156921,
+    -0.689475
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_76",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     30.527,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.663921,
+    -0.243328,
+    0.0715,
+    -0.703483
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_77",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     29.7205,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.669066,
+    -0.228802,
+    -0.012159,
+    -0.707002
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_78",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.9344,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.683033,
+    -0.182936,
+    -0.082909,
+    -0.702229
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_79",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.2947,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.698199,
+    -0.111883,
+    -0.13202,
+    -0.694673
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_80",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     27.9115,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.706691,
+    -0.024252,
+    -0.151347,
+    -0.69072
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_81",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     27.8544,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.703941,
+    0.066837,
+    -0.13435,
+    -0.694226
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_82",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.134,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.692321,
+    0.143848,
+    -0.081053,
+    -0.702446
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_83",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     28.6989,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.680763,
+    0.191212,
+    -0.002379,
+    -0.707103
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_84",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     29.4499,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.677296,
+    0.203152,
+    0.084354,
+    -0.702057
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_85",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     30.2637,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.68302,
+    0.182984,
+    0.164457,
+    -0.687717
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_86",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.0161,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.69368,
+    0.137141,
+    0.228874,
+    -0.669042
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_87",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.6008,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.703456,
+    0.071764,
+    0.271983,
+    -0.652706
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_88",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.9397,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.707071,
+    -0.007143,
+    0.289033,
+    -0.645337
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_89",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     31.9896,
+     0.06
+    ]
+   ],
+   "position": [
+    6.2354,
+    -3.6,
+    11.4
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.701168,
+    -0.091448,
+    0.275457,
+    -0.651248
+   ],
    "group": "body",
    "render_only": true
   }
@@ -347,10 +3363,11 @@
    "subjects": [
     "white",
     "black",
-    "grey"
+    "grey",
+    "chute_orange"
    ],
    "status": "estimate",
-   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail)",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); chute_orange: orange parachute nylon (Soyuz, Gaganyaan canopies)",
    "source": "Liveries from photographs; reflectance from the presets."
   }
  ]

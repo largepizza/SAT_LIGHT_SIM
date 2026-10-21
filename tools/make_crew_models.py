@@ -1,4 +1,8 @@
-"""Writes the crew spacecraft's render models: data/satellite_models/rocket_capsule_<kind>[_cm|_chute].json.
+"""Writes the visiting spacecraft's render models: data/satellite_models/rocket_capsule_<kind>[_cm|_chute].json.
+
+Crew spacecraft (Crew Dragon, Shenzhou, Soyuz MS, Gaganyaan) and, since 2026-10-21, the cargo ships (Progress MS,
+Tianzhou; Cargo Dragon flies the Crew Dragon model). A cargo ship that burns up on re-entry has only the in-orbit
+model.
 
 The sim flies a crewed spacecraft as its own object once it separates from its upper stage (2026-10-20,
 SatelliteSimLaunches.cpp "Crew vehicles"): phasing, the approach to its station, docked, undocking, the deorbit
@@ -38,6 +42,12 @@ REFS = {
                  "solar wings (~17 m tip to tip); one main parachute (1200 m2)"],
     "soyuz": ["Wikipedia 'Soyuz MS': service module 2.72 m wide, 2.58 m long; descent module 2.17 m; orbital module "
               "2.25 m with the SSVP probe forward; arrays 10.6 m tip to tip; one main parachute (1000 m2)"],
+    "progress": ["Wikipedia 'Progress MS' / RSC Energia: 7.2 m long, 2.72 m across; instrumentation-propulsion module "
+                 "as Soyuz MS's, a refuelling module (tanks) in place of the descent module, a cargo module (~2.2 m "
+                 "across) with the SSVP probe forward; two arrays 10.6 m tip to tip; ~7 t at launch"],
+    "tianzhou": ["Wikipedia 'Tianzhou (spacecraft)' / CMSA: 10.6 m long, 3.35 m across; a cargo module forward with the "
+                 "docking mechanism, a propulsion module aft carrying two wings of three panels (14.9 m tip to tip); "
+                 "13.5 t at launch"],
     "gaganyaan": ["ISRO / Wikipedia 'Gaganyaan': crew module ~3.1 m tall, ~3.5 m across; service module ~2.9 m, "
                   "3.9 m across, with deployable solar panels; parachutes: three mains"],
 }
@@ -47,6 +57,9 @@ NOTES = {
     "shenzhou": "Shenzhou in orbit: orbital module forward (docking), descent module, service module and its two "
                 "pairs of wings.",
     "soyuz": "Soyuz MS in orbit: orbital module forward (docking), descent module, service module and its two wings.",
+    "progress": "Progress MS in orbit: cargo module forward (docking probe), refuelling module, instrumentation-"
+                "propulsion module and its two wings.",
+    "tianzhou": "Tianzhou in orbit: cargo module forward (docking ring), propulsion module aft and its two wings.",
     "gaganyaan": "Gaganyaan in orbit: a docking port on the crew module's apex (an estimate: Gaganyaan G1 has none; "
                  "the scenario's Bharatiya crews dock), service module and two wings.",
 }
@@ -116,6 +129,53 @@ def soyuz_like(b, kind, cm_only=False):
     return z + 0.35
 
 
+def progress(b):
+    """Progress MS from the instrumentation-propulsion module's base at z = 0; returns the docking probe's tip."""
+    z = 0.0
+    b.profile("service_module", [[z, 1.36], [z + 2.5, 1.36], [z + 2.6, 1.1]], "grey", caps=True)
+    b.engines("sm_engine", [(1, 0.0)], 0.3, 0.5, z - 0.3, mat="nozzle")
+    for k in range(2):
+        b.radial_box("solar_wing", 90.0 + 180.0 * k, 1.36 + 0.4, z + 1.3, 4.1, 0.04, 1.15, "cells", ro=False)
+        b.radial_box("wing_yoke", 90.0 + 180.0 * k, 1.36, z + 1.3, 0.45, 0.12, 0.3, "grey")
+    z += 2.6
+    b.profile("refuelling_module", [[z, 1.05], [z + 1.2, 1.05], [z + 1.6, 0.7]], "grey", caps=True)
+    z += 1.6
+    b.profile("cargo_module", [[z, 0.6], [z + 0.4, 1.1], [z + 2.2, 1.1], [z + 2.65, 0.5]], "green", caps=True)
+    z += 2.65
+    b.tube("docking_probe", 0.35, z, z + 0.35, "grey", ro=True, caps=True)
+    return z + 0.35
+
+
+def tianzhou(b):
+    """Tianzhou from the propulsion module's base at z = 0; returns the docking ring's top."""
+    z = 0.0
+    b.profile("propulsion_module", [[z, 1.4], [z + 3.3, 1.4], [z + 3.9, 1.675]], "white", caps=True)
+    b.engines("pm_engines", [(4, 0.7)], 0.18, 0.5, z - 0.3, mat="nozzle")
+    for k in range(2):
+        b.radial_box("solar_wing", 90.0 + 180.0 * k, 1.4 + 0.6, z + 1.6, 5.6, 0.04, 2.0, "cells", ro=False)
+        b.radial_box("wing_yoke", 90.0 + 180.0 * k, 1.4, z + 1.6, 0.65, 0.12, 0.3, "grey")
+    z += 3.9
+    b.profile("cargo_module", [[z, 1.675], [z + 5.6, 1.675], [z + 6.3, 0.85]], "white", caps=True)
+    z += 6.3
+    b.tube("docking_ring", 0.55, z, z + 0.3, "grey", ro=True, caps=True)
+    return z + 0.3
+
+
+CARGO = ("progress", "tianzhou")
+
+
+def body(b, kind, cm_only=False):
+    if kind == "dragon":
+        return dragon(b, cm_only=cm_only)
+    if kind == "gaganyaan":
+        return gaganyaan(b, cm_only=cm_only)
+    if kind == "progress":
+        return progress(b)
+    if kind == "tianzhou":
+        return tianzhou(b)
+    return soyuz_like(b, kind, cm_only=cm_only)
+
+
 def gaganyaan(b, cm_only=False):
     z = 0.0
     if not cm_only:
@@ -132,26 +192,59 @@ def gaganyaan(b, cm_only=False):
     return z + 0.3
 
 
+# Canopy liveries (2026-10-21, the daylight review): alternating gores, from photographs of the recoveries.
+CANOPY_COLORS = {"dragon": ("white", "chute_red"), "soyuz": ("chute_orange", "white"),
+                 "shenzhou": ("chute_red", "white"), "gaganyaan": ("chute_orange", "white")}
+
+
+def line(b, name, p0, p1, r):
+    """A thin render-only line (a suspension line, a riser) from p0 to p1."""
+    d = [p1[i] - p0[i] for i in range(3)]
+    L = math.sqrt(sum(v * v for v in d))
+    z = [v / L for v in d]
+    ref = (1.0, 0.0, 0.0) if abs(z[0]) < 0.9 else (0.0, 1.0, 0.0)
+    x = [ref[1] * z[2] - ref[2] * z[1], ref[2] * z[0] - ref[0] * z[2], ref[0] * z[1] - ref[1] * z[0]]
+    n = math.sqrt(sum(v * v for v in x))
+    x = [v / n for v in x]
+    y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]]
+    c = b.profile(name, [[0.0, r], [L, r]], "grey", ro=True, rot=rm.quat_from_basis(x, y, z))
+    c["position"] = rm.r4(p0)
+    c["_line"] = True
+
+
 def chutes(b, top, kind):
-    """Render-only main canopies over the module (+Z up in descent): hemispherical shells on their riser."""
+    """Render-only main canopies over the module (+Z up in descent): shells of alternating gores on their suspension
+    lines, which gather at a confluence above the module (a riser from there to the module's top)."""
     if kind == "dragon":
         cans = [(17.0, 18.0, 42.0, a) for a in (45.0, 135.0, 225.0, 315.0)]
     elif kind == "gaganyaan":
         cans = [(12.0, 13.0, 38.0, a) for a in (90.0, 210.0, 330.0)]
     else:
         cans = [(0.0, 18.0, 40.0, 0.0)]
+    c0, c1 = CANOPY_COLORS[kind]
+    ngore, nline = 12, 16
     for off, rad, hgt, az in cans:
         x, y = off * math.cos(math.radians(az)), off * math.sin(math.radians(az))
         pts = [[top + hgt + rad * math.sin(math.pi * 0.5 * k / 6) * 0.55, rad * math.cos(math.pi * 0.5 * k / 6)]
                for k in range(7)]
         pts[-1][1] = 0.0
-        b.profile("canopy", pts, "white", x=x, y=y, ro=True, inner="grey")
-        b.tube("riser", 0.05, top, top + hgt, "grey", ro=True, x=x * 0.5, y=y * 0.5)
+        for g in range(ngore):
+            col = c0 if g % 2 == 0 else c1
+            c = b.profile("canopy", pts, col, x=x, y=y, ro=True, inner=col)  # (the fabric shows its colour inside too)
+            c["sweep_deg"] = [360.0 * g / ngore, 360.0 * (g + 1) / ngore]
+        conf = [x * 0.6, y * 0.6, top + 0.3 * hgt]
+        line(b, "riser", [0.0, 0.0, top], conf, 0.08)
+        for k in range(nline):
+            t = 2.0 * math.pi * k / nline
+            line(b, "suspension_line", conf, [x + rad * math.cos(t), y + rad * math.sin(t), top + hgt], 0.06)
 
 
 def shift(comps, dz):
     for c in comps:
-        if c["type"] == "profile":
+        if c.pop("_line", False):
+            # a line (its profile runs along its own rotated axis): only its start point moves
+            c["position"] = rm.r4([c["position"][0], c["position"][1], c["position"][2] + dz])
+        elif c["type"] == "profile":
             c["profile"] = [rm.r4([p[0] + dz, p[1]]) for p in c["profile"]]
             # A rotated profile's position carries its own z (the open nose cone).
             if c.get("rotation_quat"):
@@ -163,16 +256,10 @@ def shift(comps, dz):
 def build(kind, variant):
     b = rm.Builder()
     cm = variant != ""
-    if kind == "dragon":
-        top = dragon(b, cm_only=cm)
-    elif kind == "gaganyaan":
-        top = gaganyaan(b, cm_only=cm)
-    else:
-        top = soyuz_like(b, kind, cm_only=cm)
+    top = body(b, kind, cm_only=cm)
     # The port's height in the full spacecraft: the cm / chute variants share its origin.
     if cm:
-        b2 = rm.Builder()
-        full = (dragon(b2) if kind == "dragon" else gaganyaan(b2) if kind == "gaganyaan" else soyuz_like(b2, kind))
+        full = body(rm.Builder(), kind)
     else:
         full = top
     if variant == "chute":
@@ -188,10 +275,11 @@ def model(kind, variant, comps):
     mats = [m for m in rm.MATERIALS if m["name"] in used]
     part = {"": "in orbit", "cm": "the crew / descent module alone (entry)",
             "chute": "the descent module under its main parachutes"}[variant]
+    what = "Cargo ship" if kind in CARGO else "Crew spacecraft"
     return {
         "name": "%s %s" % (kind, part),
-        "note": ("Crew spacecraft render model (tools/make_crew_models.py), %s. %s Body frame: +Z out of the docking "
-                 "port, origin at the port's contact point." % (part, NOTES[kind])),
+        "note": ("%s render model (tools/make_crew_models.py), %s. %s Body frame: +Z out of the docking "
+                 "port, origin at the port's contact point." % (what, part, NOTES[kind])),
         "materials": mats,
         "attitude_groups": [{"name": "body", "primary": {"axis": [0, 0, 1], "target": "velocity"},
                              "secondary": {"axis": [0, -1, 0], "target": "nadir"}}],
@@ -214,8 +302,8 @@ def model(kind, variant, comps):
 
 def main():
     n = 0
-    for kind in ("dragon", "shenzhou", "soyuz", "gaganyaan"):
-        for variant in ("", "cm", "chute"):
+    for kind in ("dragon", "shenzhou", "soyuz", "gaganyaan") + CARGO:
+        for variant in (("",) if kind in CARGO else ("", "cm", "chute")):
             comps = build(kind, variant)
             name = "rocket_capsule_%s%s.json" % (kind, "_" + variant if variant else "")
             with open(os.path.join(OUT, name), "w", encoding="utf-8") as f:

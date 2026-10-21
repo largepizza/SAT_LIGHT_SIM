@@ -1,0 +1,250 @@
+{
+ "name": "soyuz2_progress fairing",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), soyuz2_progress: fairing. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Shown as the Progress configuration. Fairing length estimated from photographs. One fairing half (the other is it turned 180 deg about +Z), in the stage's frame: separated, it falls away tumbling.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "fairing_half_0",
+   "type": "profile",
+   "profile": [
+    [
+     -5.4165,
+     1.33
+    ],
+    [
+     -4.7835,
+     1.5
+    ]
+   ],
+   "position": [
+    -0.75,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_1",
+   "type": "profile",
+   "profile": [
+    [
+     -4.7835,
+     1.5
+    ],
+    [
+     1.8165,
+     1.5
+    ]
+   ],
+   "position": [
+    -0.75,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_2",
+   "type": "profile",
+   "profile": [
+    [
+     1.8165,
+     1.5
+    ],
+    [
+     2.1607,
+     1.4883
+    ],
+    [
+     2.4956,
+     1.4543
+    ],
+    [
+     2.8206,
+     1.3996
+    ],
+    [
+     3.1349,
+     1.3256
+    ],
+    [
+     3.4365,
+     1.2342
+    ]
+   ],
+   "position": [
+    -0.75,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_3",
+   "type": "profile",
+   "profile": [
+    [
+     3.4365,
+     1.2342
+    ],
+    [
+     3.4377,
+     1.2338
+    ],
+    [
+     3.7277,
+     1.126
+    ],
+    [
+     4.0035,
+     1.0041
+    ],
+    [
+     4.2631,
+     0.8706
+    ],
+    [
+     4.5038,
+     0.7292
+    ],
+    [
+     4.7213,
+     0.5854
+    ],
+    [
+     4.9074,
+     0.4489
+    ],
+    [
+     5.0346,
+     0.3477
+    ],
+    [
+     5.0913,
+     0.2921
+    ],
+    [
+     5.1373,
+     0.2274
+    ],
+    [
+     5.1712,
+     0.1557
+    ],
+    [
+     5.192,
+     0.0791
+    ],
+    [
+     5.199,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.75,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "fairing_half_0",
+    "fairing_half_1",
+    "fairing_half_2",
+    "fairing_half_3"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Wikipedia 'Soyuz-2' / 'Progress MS': as the crewed Soyuz-2.1a, Progress under a 2.7-3 m fairing without an escape tower, ~46 m"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

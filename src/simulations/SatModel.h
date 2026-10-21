@@ -392,6 +392,7 @@ struct SatModel
         std::string name;
         glm::dvec3 pos{0.0};
         glm::dvec3 axis{1.0, 0.0, 0.0};
+        std::string use = "crew"; // (2026-10-21) the visiting vehicles that take it: "crew" / "cargo" (JSON "use")
         double sinceDays = -1e30; // the port's module is there from this date ("since"; stations module by module)
     };
     std::vector<DockPort> dockPorts;

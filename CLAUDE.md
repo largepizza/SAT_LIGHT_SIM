@@ -3520,7 +3520,9 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   visiting vehicles: a module launch with a "module docked" milestone is the open item).
   **(2026-10-20, crew vehicles)** The visiting CREW vehicles are no longer greebles (the sim flies and docks real ones:
   Launches > "Crew spacecraft"); the generator writes each station's `docking_ports` instead (`dock()`, `port(...,
-  dock=True)`; the ISS gained PMA-3 on Harmony's zenith port). Cargo ships stay. Photometric parts unchanged.
+  dock=True)`; the ISS gained PMA-3 on Harmony's zenith port). Since 2026-10-21 the cargo ships are flown too: the
+  ISS's Progress, ROS's Progress and Tiangong's Tianzhou greebles are replaced by `"use": "cargo"` ports (Zvezda aft,
+  ROS's aft port, Tianhe aft; `dock(..., use=)`, `port(..., use=)`). Photometric parts unchanged.
 - **Radiators turn continuously (2026-10-20, issue 20261020_214656: "advance time here, the radiators totally
   flip").** The ISS's TRRJ radiators (and Axiom's, Orbital Reef's) were `edge_on` joints: "the smaller of the two
   solutions pi apart", which swaps solutions wherever the two are equal — twice an orbit the whole radiator group
@@ -5130,7 +5132,7 @@ launches follow per-program cadences (no real manifest).
   human-rated LVM3 added 2026-10-20 — appended to the vehicle list, so no other program's schedule moved): two flights
   a year each, ~18 a year. The vehicles have meshes (`tools/make_rocket_models.py`; the shroud with its escape tower,
   the spacecraft on top of the upper stage once it is gone). Crew launches stand down after the Sun's Fury like the
-  rest. No cargo flights. **A lost
+  rest. Cargo ships fly too (2026-10-21: "Visiting vehicles" below). **A lost
   station gets no more crews** (2026-10-20, issue 20261019_231126): `buildBatch` refuses a crew launch whose station
   is dead or ended (min of its two roster words) at or before lift-off (`launch why`: "station lost"); a flight
   launched before reports "The station is destroyed (<date>); rendezvous called off" in Ongoing. The cached batches
@@ -5148,8 +5150,12 @@ launches follow per-program cadences (no real manifest).
     a coast, a Hohmann raise to a phasing orbit `rP` (burns tB1 / tB1e), a wait there, a Hohmann to the station's
     altitude arriving 5 km behind it (tB2 .. tArr). rP is SOLVED (bisection on the catch-up) so the arrival lands as
     near the program's `raise_days` as the station's lead (+ whole turns) allows; with too short a time it waits in
-    the parking orbit (`skipRaise1`). Soyuz / Shenzhou's 3-6-h fast tracks need launch-time phasing, which the schedule
-    does not do: their dockings come 8-40 h after lift-off.
+    the parking orbit (`skipRaise1`). A fast track (Soyuz, Progress, Shenzhou, Tianzhou) picks its lift-off pass for
+    the phase (below: "Visiting vehicles"). Each burn is spread over `kCrewBurnS` (240 s) about its impulse time: the
+    path before it and the Kepler path after it (both defined either side, `crewTransfer`) cross-fade by a smoothstep,
+    and the last (the circularisation at tArr) into the approach's first leg (`crewFarPos`; `raw` = without that
+    blend, where the approach starts). The first cut changed the velocity in one step: ~84 m/s^2 in a 1-s second
+    difference.
   - **Approach** in the station's body frame (`crewStation`: Z nadir, X along the velocity — the stations' own
     two-vector law, so the port lands where the mesh draws it; `LCrewSeg`): from 5 km behind to 1 km on the line toward
     the port (30 min), round onto the port's axis at 1 km (an arc about the port; opposite directions go round BELOW,
@@ -5163,7 +5169,10 @@ launches follow per-program cadences (no real manifest).
     + 5-7 days (a hand-over, both docked); one port: it leaves 2-3 days before. Docked = the station's position + R x
     port, attitude fixed in the station frame (+Z into the port). **The visiting crew vehicles drawn as render-only
     greebles on the station models (the ISS's Dragon and Soyuz, Tiangong's Shenzhou, the commercial stations' Dragons,
-    ROS's Soyuz) are gone**; cargo ships (Progress, Tianzhou) stay.
+    ROS's Soyuz) are gone**, and so are the cargo ships' (2026-10-21: the sim flies Progress and Tianzhou there).
+    The arc onto the docking axis carries the frame facing the port round the arc (rotated about its axis, `arcFrameB`
+    in `crewAttitude`), its roll easing into the axis frame over the next leg's first 300 s: rebuilt from an "up"
+    reference each moment it rolled 180 deg in a second on some arcs (Haven-1, ROS, BAS, Orbital Reef).
   - **Return**: back out to 20 / 200 m, a 40-min departure onto a circle 2 km under and 3 km ahead of the station, a
     10-min deorbit burn (timed in 12-min steps over a day so it comes down at SEA for Dragon / Gaganyaan, on LAND for
     Soyuz / Shenzhou — `crew.lands`, launches.json `"lands"`; the water map saturates at ~19.5 km, hence +-15 km), the
@@ -5196,6 +5205,54 @@ launches follow per-program cadences (no real manifest).
     (phase, docked, range to station / port, the station-frame offset, the timeline in s from now), `launch check` ->
     `crew[]` / `crew_*` (separation and contact offsets, 0 m; largest acceleration and turn rate and where).
     `scripts/crew_rendezvous.satcmd`.
+- **Visiting vehicles: fast tracks, cargo ships, the station's loss (2026-10-21).** A program's `crew` block is any
+  vehicle that docks at a station (`Program::crew`, the LCrew machinery); new keys (launches.json; `launch::Program`):
+  `cargo` (no people: Upcoming tags it CARGO, "(cargo)" in titles; "crewed" lists and the Missions station rows skip
+  it), `return`: `lands` / `burns` (destroyed on re-entry: `burnsUp`), `ports`: the class of docking port it takes
+  (the station model's `docking_ports[].use`, "crew" default / "cargo"; `SatModel::DockPort::use`), `share_crew_ports`,
+  `stay_days`, `fast_dock_h` (windows, hours after lift-off), `heat_shield_m` (the entry glow's place below the port).
+  - **Fast-track rendezvous** (`candidate`, `crewFastD`, `CrewPhaseGeom` / `crewCatchup` shared with `buildCrew`): for a
+    program with `fast_dock_h` the candidate tries the passes over its pad of the next 30 days (each a pure function of
+    the batch) and takes the first whose station phase lets the far phases close in a window's time (the middle of the
+    feasible stretch of D, for margin), preferring the first window (2-orbit) when it comes within 14 days of the first
+    pass allowing any (`Cand::dockAfter`; such a launch is not moved by the pad rivals, `LBatch::crewFast`). Fast flights
+    coast 15-25 min before the first burn and fly a 65-min approach (`kCrewApproachLegs[1]`; the ~1-day profile 2.7 h).
+    Windows: Soyuz MS / Progress MS 3.0-3.7 h (2-orbit) or 5.6-6.4 h (4-orbit), Shenzhou 6.2-6.9 h, Tianzhou 2.4-3.6 /
+    6.0-7.0 h; Dragon and Gaganyaan keep the ~1-day profile. Measured (mission-ops suite, 92 cached flights): fast
+    dockings 3.3-6.8 h after lift-off. A nominal arrival may lie up to 31 days before its lift-off
+    (`Program::earlyDays`): the pad rivals, Upcoming, `launch list` / `trace` / `crew` reach that far back.
+  - **Cargo programs**: Progress resupply (`soyuz2_progress`, the Soyuz-2.1a without an escape tower, Baikonur; ISS +
+    ROS, 3 a year each, Zvezda aft / ROS's aft port), Tianzhou resupply (`long_march_7`, Wenchang; 2 a year, Tianhe aft),
+    Cargo Dragon resupply (`falcon9_dragon`; ISS, Haven-2, Axiom, Starlab, Orbital Reef: 2 a year each, 28-35 days
+    docked; Haven-1 has one port and gets none). Progress and Tianzhou burn up: after the deorbit burn (aimed at the open
+    ocean) the spacecraft becomes a re-entry fireball at the entry interface (`fbDrawReentry`, transient kind 9 =
+    the cargo ship's re-entry, `transientContinue` hands the selection / Go to over). A station served by several
+    programs has a plane per program; the extra (cargo) planes are appended after every other plane
+    (`LPlane::extra`, `crewPlane`) so no other batch key moves. **Ports**: each program takes ports of its class
+    (`k mod n`; with the era on only ports on modules there at docking, `since`); Cargo Dragon shares the crew ports,
+    its schedule half a rotation after the crews' (`phase` = crew phase + 0.5) on the port the current crew is NOT on,
+    undocking 3 days before the next crew needs it. `launch trace` -> docking `port_conflicts` (every other visit to the
+    station at the same port overlapping its stay): 0 in the suite. Models: `tools/make_crew_models.py` (Progress,
+    Tianzhou: in-orbit model only), `tools/make_rocket_models.py` (`soyuz2_progress`, `long_march_7`, folded arrays on
+    the stage); the stations' Progress / Tianzhou greebles are gone (ISS, ROS, Tiangong carry a `"use": "cargo"` port).
+  - **The station's loss** (`LCrew::tDeath`, from the roster's dead / end words = the event log; crewSync rebuilds the
+    batches when they change): before arrival the rendezvous is called off (`abort` 1: it finishes the coast or
+    transfer it is in, waits on that circle and comes home); on the approach it turns away from where it is onto the
+    departure circle (2, `LCrewSeg::tCut`, `attFrom`); docked, a crew undocks in an emergency 90 s later and backs off
+    fast (3, `CP_ESCAPE`), a cargo ship is destroyed with the station (4, gone at tDeath). Milestones, Missions >
+    Ongoing ("The station is destroyed (date). <phase>") and the labels follow. No new launches to a lost station (as
+    before). Harness: `launch crew craft=progress|tianzhou|cargo dragon|cargo|crew event=abort|reentry ...`,
+    `scripts/station_loss.satcmd` (all four cases), `scripts/visiting_vehicles.satcmd`.
+  - **Daylight review**: the entry's plasma point sits at the heat shield (`heat_shield_m` below the port along -Z,
+    not at the model's origin) and gives way, as the capsule's mesh resolves, to a soft sheath Gaussian (3.5 m, 3% of
+    the point's light; the first cut at 50% washed the frame pink); the wake keeps the unresolved light. Canopies have
+    12 alternating gores (Soyuz / Gaganyaan orange-white, Shenzhou / Dragon red-white; inside the same colours) and 16
+    suspension lines to a confluence, a riser to the module (all render-only, `make_crew_models.py` `chutes`).
+  - `launch check` -> `crew[]` gains `spacecraft`, `cargo`, `burns_up`, `fast_track`, `hours_to_dock`, `abort`,
+    `burn_accel_max_mps2` (in space: burns, approach, deorbit), `key`; `crew_burn_accel_max_mps2` / `_in`,
+    `crew_fast_track_count` / `_hours`, `crew_cargo_count`. Measured: burns <= 13 m/s^2 (the entry interface's
+    hand-over), the entry <= 25 m/s^2, turns <= 1.5 deg/s. The mission-ops suite judges every cached visiting
+    vehicle around each epoch (`VISIT_THRESHOLDS`, `launch_check_<epoch>.json`), not only the traced flights.
 - **Missions window** (2026-10-19, `SatelliteSimMissions.cpp`; window id 8, `msChrome`; the rocket button
   `TimeMissionsBtn` on the right HUD panel, `pixel--missions.png`; key M, `KB_MISSIONS`; harness `ui open missions
   [tab=upcoming|ongoing|controls]`, `missions state|go|tab`). Three tabs. **Upcoming**: the next 5 launches (vehicle,
@@ -5590,8 +5647,8 @@ launches follow per-program cadences (no real manifest).
   at its end so a moved stage shows.
 - Not built: the booster's legs deploying,
   the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
-  (trains launch into it), cargo flights (and the cargo ships on the stations are still greebles), launch-time phasing for
-  fast-track crew rendezvous, hole-punching through cloud decks, sonic booms.
+  (trains launch into it), berthing with Canadarm (HTV-X, Cygnus, Dream Chaser), the stations' own phasing manoeuvres
+  (a fast track waits for the right pass instead), hole-punching through cloud decks, sonic booms.
 
 ## Subsystem: Reflect-Orbital Beam Cloud Occlusion
 

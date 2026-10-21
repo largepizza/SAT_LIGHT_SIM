@@ -20,6 +20,16 @@
     0.46,
     0.48
    ]
+  },
+  {
+   "name": "chute_red",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.45,
+   "color": [
+    0.85,
+    0.12,
+    0.1
+   ]
   }
  ],
  "attitude_groups": [
@@ -136,22 +146,46 @@
     0.0
    ],
    "caps": false,
-   "material": "white",
-   "inner_material": "grey",
+   "material": "chute_red",
+   "inner_material": "chute_red",
    "group": "body",
-   "render_only": true
+   "render_only": true,
+   "sweep_deg": [
+    0.0,
+    30.0
+   ]
   },
   {
-   "name": "riser_3",
+   "name": "canopy_3",
    "type": "profile",
    "profile": [
     [
-     -3.15,
-     0.05
+     36.85,
+     18.0
     ],
     [
-     36.85,
-     0.05
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
     ]
    ],
    "position": [
@@ -160,7 +194,985 @@
     0.0
    ],
    "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    30.0,
+    60.0
+   ]
+  },
+  {
+   "name": "canopy_4",
+   "type": "profile",
+   "profile": [
+    [
+     36.85,
+     18.0
+    ],
+    [
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_red",
+   "inner_material": "chute_red",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    60.0,
+    90.0
+   ]
+  },
+  {
+   "name": "canopy_5",
+   "type": "profile",
+   "profile": [
+    [
+     36.85,
+     18.0
+    ],
+    [
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    90.0,
+    120.0
+   ]
+  },
+  {
+   "name": "canopy_6",
+   "type": "profile",
+   "profile": [
+    [
+     36.85,
+     18.0
+    ],
+    [
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_red",
+   "inner_material": "chute_red",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    120.0,
+    150.0
+   ]
+  },
+  {
+   "name": "canopy_7",
+   "type": "profile",
+   "profile": [
+    [
+     36.85,
+     18.0
+    ],
+    [
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    150.0,
+    180.0
+   ]
+  },
+  {
+   "name": "canopy_8",
+   "type": "profile",
+   "profile": [
+    [
+     36.85,
+     18.0
+    ],
+    [
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_red",
+   "inner_material": "chute_red",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    180.0,
+    210.0
+   ]
+  },
+  {
+   "name": "canopy_9",
+   "type": "profile",
+   "profile": [
+    [
+     36.85,
+     18.0
+    ],
+    [
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    210.0,
+    240.0
+   ]
+  },
+  {
+   "name": "canopy_10",
+   "type": "profile",
+   "profile": [
+    [
+     36.85,
+     18.0
+    ],
+    [
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_red",
+   "inner_material": "chute_red",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    240.0,
+    270.0
+   ]
+  },
+  {
+   "name": "canopy_11",
+   "type": "profile",
+   "profile": [
+    [
+     36.85,
+     18.0
+    ],
+    [
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    270.0,
+    300.0
+   ]
+  },
+  {
+   "name": "canopy_12",
+   "type": "profile",
+   "profile": [
+    [
+     36.85,
+     18.0
+    ],
+    [
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "chute_red",
+   "inner_material": "chute_red",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    300.0,
+    330.0
+   ]
+  },
+  {
+   "name": "canopy_13",
+   "type": "profile",
+   "profile": [
+    [
+     36.85,
+     18.0
+    ],
+    [
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "white",
+   "group": "body",
+   "render_only": true,
+   "sweep_deg": [
+    330.0,
+    360.0
+   ]
+  },
+  {
+   "name": "riser_14",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.08
+    ],
+    [
+     12.0,
+     0.08
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    -3.15
+   ],
+   "caps": false,
    "material": "grey",
+   "rotation_quat": [
+    0.707107,
+    -0.0,
+    0.0,
+    -0.707107
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_15",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.67845,
+    -0.199262,
+    0.199262,
+    -0.67845
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_16",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.656093,
+    -0.263709,
+    0.099341,
+    -0.700094
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_17",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.648642,
+    -0.281538,
+    -0.01212,
+    -0.707003
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_18",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.658693,
+    -0.257145,
+    -0.11527,
+    -0.697648
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_19",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.67845,
+    -0.199262,
+    -0.199262,
+    -0.67845
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_20",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.697648,
+    -0.11527,
+    -0.257145,
+    -0.658693
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_21",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.707003,
+    -0.01212,
+    -0.281538,
+    -0.648642
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_22",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.700094,
+    0.099341,
+    -0.263709,
+    -0.656093
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_23",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.67845,
+    0.199262,
+    -0.199262,
+    -0.67845
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_24",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.656093,
+    0.263709,
+    -0.099341,
+    -0.700094
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_25",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.648642,
+    0.281538,
+    0.01212,
+    -0.707003
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_26",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.658693,
+    0.257145,
+    0.11527,
+    -0.697648
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_27",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.67845,
+    0.199262,
+    0.199262,
+    -0.67845
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_28",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.697648,
+    0.11527,
+    0.257145,
+    -0.658693
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_29",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.707003,
+    0.01212,
+    0.281538,
+    -0.648642
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "suspension_line_30",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.06
+    ],
+    [
+     33.2866,
+     0.06
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    8.85
+   ],
+   "caps": false,
+   "material": "grey",
+   "rotation_quat": [
+    0.700094,
+    -0.099341,
+    0.263709,
+    -0.656093
+   ],
    "group": "body",
    "render_only": true
   }
@@ -190,10 +1202,11 @@
    "subjects": [
     "white",
     "black",
-    "grey"
+    "grey",
+    "chute_red"
    ],
    "status": "estimate",
-   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail)",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); chute_red: red parachute nylon (Shenzhou, Dragon canopies)",
    "source": "Liveries from photographs; reflectance from the presets."
   }
  ]

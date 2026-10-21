@@ -175,6 +175,26 @@ struct Program
     // its render model rocket_<crewModel>[_cm|_chute].json; lands: comes home on land (Soyuz, Shenzhou), else splashes.
     std::string crewModel;
     bool crewLands = false;
+    // Visiting vehicles (2026-10-21): a program with a "crew" block is any vehicle that flies to a station and docks
+    // (the same machinery, LCrew): cargo = no people (Progress, Tianzhou, Cargo Dragon); burnsUp = it is destroyed
+    // on re-entry (a fireball) instead of landing / splashing down. fastDockH: windows (hours after lift-off) for a
+    // fast-track rendezvous (Soyuz / Progress 2- and 4-orbit, Shenzhou ~6.5 h, Tianzhou ~3 h): the lift-off pass is
+    // chosen so the station's phase allows one (an empty list: the ~1-day profile). portUse: the class of docking port
+    // it takes ("crew" / "cargo", the station model's docking_ports "use"). sharePorts: it uses the station's CREW ports
+    // between rotations (Cargo Dragon at the ISS / the US commercial stations): its schedule sits half a rotation from
+    // the crews' and it takes the port the current crew does not. stayDays: docked this long (< 0: until the next
+    // visit of the same program, as the crews).
+    bool cargo = false;
+    bool burnsUp = false;
+    double heatShieldM = 3.0; // its heat shield below the docking port (m, the entry glow sits there; "heat_shield_m")
+    std::vector<std::pair<double, double>> fastDockH;
+    std::string portUse = "crew";
+    bool sharePorts = false;
+    double stayDays[2] = {-1.0, -1.0};
+    // How much earlier than its lift-off a batch's nominal arrival may lie (days): a fast track takes the first pass
+    // with the right phase within 30 days of the nominal one, so windows listing launches by their nominal arrival
+    // (the pad rivals, Upcoming, `launch list`, `launch trace`) reach this much further back.
+    double earlyDays() const { return fastDockH.empty() ? 0.0 : 31.0; }
     Stack stack;
     // The mass a launch lifts (kg, the payload total; 2026-10-20): picks a reusable booster's recovery (Vehicle::rtlsMaxKg).
     // < 0: unknown (a droneship).

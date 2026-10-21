@@ -294,6 +294,26 @@ bool Catalog::load(const std::string &path, std::string &err)
                 pg.people = cr.value("people", 3);
                 pg.crewModel = cr.value("model", std::string());
                 pg.crewLands = cr.value("lands", false);
+                pg.cargo = cr.value("cargo", false);
+                if (pg.cargo)
+                    pg.people = cr.value("people", 0);
+                const std::string ret = cr.value("return", std::string());
+                if (ret == "lands")
+                    pg.crewLands = true;
+                pg.burnsUp = ret == "burns";
+                pg.heatShieldM = cr.value("heat_shield_m", pg.heatShieldM);
+                pg.portUse = cr.value("ports", std::string(pg.cargo ? "cargo" : "crew"));
+                pg.sharePorts = cr.value("share_crew_ports", false);
+                if (pg.sharePorts)
+                    pg.portUse = "crew";
+                if (cr.contains("fast_dock_h"))
+                    for (const auto &w : cr["fast_dock_h"])
+                        pg.fastDockH.push_back({w[0].get<double>(), w[1].get<double>()});
+                if (cr.contains("stay_days"))
+                {
+                    pg.stayDays[0] = cr["stay_days"][0].get<double>();
+                    pg.stayDays[1] = cr["stay_days"][1].get<double>();
+                }
             }
             if (p.contains("stack"))
             {

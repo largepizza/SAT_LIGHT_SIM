@@ -20,7 +20,7 @@ every check with its value, limit, status), report.md and report.html (the matri
 --captures captures/<combo>/*.png + sheets/<combo>.png (contact sheets: one tile per phase, follow + wide views).
 
 Statuses: PASS, FAIL, WARN (outside the limit in a part another agent owns, e.g. the booster's landing burn
-physics: reported, not failed), SKIP (a crew flight whose spacecraft has no model), N/A (the phase does not exist for this launch),
+physics: reported, not failed), SKIP (a crew / cargo flight whose spacecraft has no model), N/A (the phase does not exist for this launch),
 NOT FOUND (no launch of the pair in the search window).
 """
 import argparse
@@ -103,7 +103,11 @@ THRESHOLDS = [
     ("docking", "undocked_after", "true", None, "", "undocks and backs out at its departure"),
     ("docking", "docked_days", "range", [1.0, 400.0], "", "stays docked for the rotation"),
     ("docking", "accel_max_mps2", "<", 200.0, "", "no position jumps at any seam (burns and the entry: tens to ~120 m/s^2)"),
-    ("docking", "turn_max_deg_s", "<", 15.0, "", "turns smoothly (no half-turn flips)"),
+    ("docking", "turn_max_deg_s", "<", 5.0, "", "turns smoothly (no half-turn flips)"),
+    ("docking", "burn_accel_max_mps2", "<", 15.0, "", "its burns are finite (<= ~1.5 g: no velocity steps)"),
+    ("docking", "fast_hours", "range", [2.3, 7.2], "", "a fast track (Soyuz / Progress / Shenzhou / Tianzhou) docks 2.5-7 h after lift-off"),
+    ("docking", "port_conflicts", "<", 1, "", "its port is free for its stay (crews and cargo ships never share one at once)"),
+    ("docking", "reentry_h_after_undock", "range", [1.0, 30.0], "", "a cargo ship that burns up deorbits within a day of undocking"),
     ("upper_deorbit", "nose_from_retrograde_deg", "<", 15.0, "", "burns retrograde"),
     ("upper_deorbit", "nose_max_deg_s", "<", 6.0, "", "turns smoothly before and after the burn"),
     ("upper_deorbit", "burn_max_proper_accel_m_s2", "<", 25.0, "", "the deorbit burn's thrust / mass (one engine throttled, a flat profile with 1-s ramps)"),
@@ -113,6 +117,34 @@ THRESHOLDS = [
     ("ship_catch", "above_ground_m", "range", [50.0, 60.0], "", "under its flaps, ~55 m up"),
     ("ship_catch", "handover_m", "<", 50.0, "", "entry to descent hand-over is continuous"),
 ]
+
+# Every visiting vehicle (crew and cargo, 2026-10-21) in the app's cache after each epoch's traces (`launch check` ->
+# crew[]): not only the traced flights. One row per check: metric, op, limit, why.
+VISIT_THRESHOLDS = [
+    ("sep_offset_m", "<", 1.0, "separates from its place on the upper stage"),
+    ("dock_contact_m", "<", 0.5, "contact at the port (-1: an approach the station's loss called off)"),
+    ("burn_accel_max_mps2", "<", 15.0, "phasing / approach / deorbit burns <= ~1.5 g (no velocity steps)"),
+    ("accel_max_mps2", "<", 60.0, "nothing past the entry's ~4-5 g (no position jumps)"),
+    ("turn_max_deg_s", "<", 5.0, "turns smoothly everywhere (approach, docking, departure, entry, chutes)"),
+    ("docked_days", "range", [0.0, 400.0], "a stay of weeks to months"),
+]
+
+
+def evaluate_visits(check):
+    """[(entry, [checks])] for every cached visiting vehicle in a `launch check` result."""
+    out = []
+    for e in (check or {}).get("crew", []):
+        cks = []
+        for (metric, op, limit, why) in VISIT_THRESHOLDS:
+            v = e.get(metric)
+            if v is None or (metric == "dock_contact_m" and v < 0):
+                continue
+            _, ok = check_one(e, metric, op, limit)
+            cks.append({"metric": metric, "value": v, "op": op, "limit": limit, "status": "PASS" if ok else "FAIL",
+                        "why": why})
+        out.append((e, cks))
+    return out
+
 
 # The formation (Starmind rings of 8): the train converges into its rings once the release offsets ease out.
 FORMATION_THRESHOLDS = [
@@ -407,7 +439,21 @@ def build_report(run_dir):
         for ph in (r.get("phases") or {}).values():
             if ph["status"] in summary:
                 summary[ph["status"]] += 1
+    # Every cached visiting vehicle (launch_check_<epoch>.json), each flight once (by batch key).
+    visits, seen = [], set()
+    for p in sorted(glob.glob(os.path.join(run_dir, "launch_check*.json"))):
+        for e, cks in evaluate_visits(json.load(open(p, encoding="utf-8"))):
+            k = e.get("key") or json.dumps([e.get("station"), e.get("spacecraft"), e.get("hours_to_dock")])
+            if k in seen:
+                continue
+            seen.add(k)
+            st = "FAIL" if any(c["status"] == "FAIL" for c in cks) else "PASS"
+            visits.append({"station": e.get("station"), "spacecraft": e.get("spacecraft"), "cargo": e.get("cargo"),
+                           "fast_track": e.get("fast_track"), "hours_to_dock": e.get("hours_to_dock"),
+                           "abort": e.get("abort"), "status": st, "checks": cks})
+            summary[st] += 1
     rep = {"run_dir": run_dir, "generated": time.strftime("%Y-%m-%d %H:%M:%S"), "summary": summary, "rows": rows,
+           "visits": visits,
            "formation": {k: v["eval"] for k, v in formation.items()},
            "thresholds": [dict(zip(("phase", "metric", "op", "limit", "owner", "why"), t)) for t in THRESHOLDS]}
     json.dump(rep, open(os.path.join(run_dir, "report.json"), "w", encoding="utf-8"), indent=1)
@@ -440,6 +486,13 @@ def write_markdown(rep, path):
                              f"{fmt(ck['value'])} (limit {ck['op']} {ck['limit']}): {ck['why']}")
             if ph.get("note") and ph["status"] == "FAIL":
                 L.append(f"- **FAIL** {r['epoch']} {r['vehicle']} / {r['program']} `{p}`: {ph['note']}")
+    L.append("\n## Visiting vehicles (every cached crew / cargo flight)\n")
+    L.append("| station | spacecraft | cargo | fast track | h to dock | abort | status | failing |")
+    L.append("|---|---|---|---|---|---|---|---|")
+    for v in rep.get("visits", []):
+        bad = "; ".join(f"{c['metric']} = {fmt(c['value'])}" for c in v["checks"] if c["status"] == "FAIL")
+        L.append(f"| {v['station']} | {v['spacecraft']} | {v['cargo']} | {v['fast_track']} | {fmt(v['hours_to_dock'])} | "
+                 f"{v['abort']} | {v['status']} | {bad} |")
     L.append("\n## Formation (rings of 8)\n")
     for k, f in rep["formation"].items():
         L.append(f"- {k}: **{f['status']}** " + "; ".join(f"{c['metric']} = {fmt(c['value'])} ({c['status']})" for c in f["checks"]))
@@ -552,6 +605,13 @@ def cmd_run(a):
         res = live.send("launch check", timeout=600)
         if res and res[-1].get("ok"):
             json.dump(res[-1]["result"]["check"], open(os.path.join(run_dir, "launch_check.json"), "w"), indent=1)
+        # (2026-10-21) every visiting vehicle cached around each epoch (crew and cargo), not only the traced flights:
+        # `launch list` over half a year builds the batches it lists
+        for ep in a.epochs:
+            res = live.send(f"time set {ep}T00:00:00Z\ntime pause\nlaunch list hours=4400\nlaunch check", timeout=900)
+            if res and res[-1].get("ok"):
+                json.dump(res[-1]["result"]["check"], open(os.path.join(run_dir, f"launch_check_{ep}.json"), "w"),
+                          indent=1)
         if a.captures:
             cap_dir = os.path.join(live.run_dir, "captures") if live.run_dir else os.path.join(run_dir, "captures")
             os.makedirs(os.path.join(run_dir, "sheets"), exist_ok=True)
