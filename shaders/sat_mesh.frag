@@ -459,20 +459,30 @@ float latticeCover(MeshMaterial mat)
     float d    = abs(s) * 0.70710678;                            // perpendicular distance, bays
     float fwd  = 0.70710678 * (fw.x + fw.y) * 0.5;
     float diag = 1.0 - smoothstep(0.5 * x - fwd, 0.5 * x + fwd, d);
-    return max(grid, diag);
+    return mat.lattice.w > 1.5 ? grid : max(grid, diag); // a grid fin: plates, no diagonals
 }
 
 void main()
 {
     MeshInstance inst = instances[vInstance];
     MeshMaterial mat  = materials[vMaterial];
+    // A grid fin's cells finer than a few pixels (2026-10-21: the plates were a speckle of kept / dropped pixels at
+    // any normal distance, and swam as the view moved): drawn SOLID, at the grid's mean look (the plates plus the
+    // shaded inner walls and back plates seen through the cells), fading in from 6 to 3 px a cell. (Derivatives taken
+    // here, in uniform control flow, for the depth pre-pass and the scene pass to agree.)
+    vec2  fwUvL    = fwidth(vUv);
+    float latSolid = 0.0;
+    if (mat.lattice.x < 1.0 && mat.lattice.w > 1.5) {
+        vec2 fwb = fwUvL / mat.lattice.y;
+        latSolid = 1.0 - smoothstep(3.0, 6.0, 1.0 / max(max(fwb.x, fwb.y), 1e-5));
+    }
 #ifdef MESH_SCENE_PASS
     outRefl = uvec4(0u);
 #endif
 #ifndef MESH_SCENE_PASS // there, the depth pre-pass has already cut the gaps (depth EQUAL fails in them)
     if (mat.lattice.x < 1.0) {
         // Not optional detail (the Detail toggle keeps it): the gaps are the part's real geometry.
-        float keep = latticeCover(mat);
+        float keep = mix(latticeCover(mat), 1.0, latSolid);
         // The threshold. In the main view with the sky TAA on (frame.marker0.y, 2026-10-20): interleaved gradient noise
         // stepped by the golden ratio each frame (marker0.x), so the TAA averages a sub-pixel truss to its mean coverage
         // (a catch tower from ~1 km, a booster's grid fins): with one fixed per-pixel hash the drawn pixels were a fixed
@@ -507,6 +517,7 @@ void main()
     const bool check = abs(frame.params.w - 1.0) < 0.5 || glareSrc;
     const vec3 Ngeo = N; // before the pattern's micro-normals: which SIDE the light is on
     Surface sf = check ? Surface(N, vec3(1.0), 1.0, mat.roughness, 1.0) : applyPattern(mat, inst, N);
+    sf.albedoM *= mix(1.0, mat.lattice.x + (1.0 - mat.lattice.x) * 0.3, latSolid);
     N  = sf.N;
     nv = max(dot(N, V), 1e-3);
 
@@ -582,6 +593,28 @@ void main()
     // ── Moonlight ────────────────────────────────────────────────────────────
     L += frame.moonDir.w * diffC * max(dot(N, frame.moonDir.xyz), 0.0);
 
+    // ── Local lights (2026-10-21): a burning engine, the floods of a pad or a ship at night ──
+    // Irradiance I / (r^2 + rs^2) in suns (the lights are lifted at night as the moonlight is), diffuse + the
+    // material's specular lobe. No shadow rays (cost): a light inside a hull lights none of its outward faces anyway.
+    // Not in the photometric model (Lphot): it seeds no bloom.
+    {
+        int nLoc = int(frame.lightInfo.x + 0.5);
+        for (int i = 0; i < nLoc; ++i) {
+            vec3  dl = frame.lightPos[i].xyz - vWorld;
+            float r2 = dot(dl, dl);
+            vec3  l  = dl * inversesqrt(max(r2, 1e-6));
+            float nl = dot(N, l);
+            if (nl <= 0.0) continue;
+            float rs = frame.lightCol[i].w;
+            float E  = frame.lightPos[i].w / (r2 + rs * rs);
+            // A floodlight lights its beam (soft over its outer 10 degrees), not what stands beside or behind it.
+            vec4  ad = frame.lightDir[i];
+            if (ad.w > -1.5)
+                E *= smoothstep(ad.w, min(ad.w + 0.17 * sqrt(max(1.0 - ad.w * ad.w, 0.0)) + 0.015, 1.0), dot(-l, ad.xyz));
+            L += frame.lightCol[i].rgb * E * (diffC * nl + specC * specCos(N, V, l, a2, mat.f0, beck));
+        }
+    }
+
     // ── Reflection of the Earth / atmosphere / clouds ────────────────────────
     if (frame.params.y > 0.5) {
         vec3 Rd = reflect(-V, N);
@@ -634,7 +667,7 @@ void main()
     // is capped at what displays as orange (the lip) .. yellow-white (the throat) at this frame's exposure
     // (frame.camPos.w, the sky's: 1 - exp(-x) of x = 2.0 / 0.7 / 0.18 is ~(0.86, 0.50, 0.16)).
     float engineGlow = fract(inst.earthShC.w) / 0.49; // (w's fraction: its integer part is the accel slot)
-    if (engineGlow > 0.0 && mat.lattice.w > 0.5) {
+    if (engineGlow > 0.0 && abs(mat.lattice.w - 1.0) < 0.5) {
         float throat = clamp(0.5 + 0.5 * dot(Ngeo, V), 0.0, 1.0); // looking up the bell: the hot end shows
         float t2     = throat * throat;
         vec3  phys   = mix(vec3(3.0, 1.3, 0.45), vec3(14.0, 10.0, 6.5), t2);

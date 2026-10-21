@@ -4682,6 +4682,7 @@ void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
     w[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthQDescSet, 3, 0, 1,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &distInfo, nullptr, nullptr};
     vkUpdateDescriptorSets(ctx.device, sceneDepthQDescSet ? 5 : 4, w, 0, nullptr);
+    writeLightningMeshDescriptor(ctx); // the engine lights' pass reads the mesh distance too (lightning.frag)
 }
 
 // ─── Environment probes (2026-09-24) ─────────────────────────────────────────
@@ -5385,6 +5386,39 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     // averages a sub-pixel truss to its mean coverage (2026-10-20). marker0 is the viewer's; unused in the scene.
     frame.marker0 = skyTaaWanted() ? glm::vec4(std::fmod(0.61803399f * (float)(skyTaaFrame % 1024u), 1.0f), 1.0f, 0.0f, 0.0f)
                                    : glm::vec4(0.0f);
+    // Local lights (2026-10-21, sat_mesh.frag): last frame's engine / flood lights (SatelliteSim::MeshLocalLight, made
+    // by the launch visuals after this pass), with the eye's adaptation to them; the most important to what is near
+    // the camera first.
+    {
+        struct Ml
+        {
+            double w;
+            glm::dvec3 p;
+            const MeshLocalLight *m;
+        };
+        std::vector<Ml> ml;
+        ml.reserve(meshLightsPrev_.size());
+        const double adapt = (double)meshLightAdapt_;
+        for (const MeshLocalLight &m : meshLightsPrev_)
+        {
+            const glm::dvec3 p = m.ecef - obsEcef;
+            const double I = m.I * adapt;
+            // (where the light no longer matters: ~1e-4 sun of irradiance at its distance from the camera + 20 m)
+            const double d2 = glm::dot(p, p);
+            if (I < 1e-4 * (d2 + 400.0) * 1e-2)
+                continue;
+            ml.push_back({I / (d2 + 2500.0), p, &m});
+        }
+        const size_t nL = std::min<size_t>(ml.size(), (size_t)GpuMeshFrame::kLocalLights);
+        std::partial_sort(ml.begin(), ml.begin() + nL, ml.end(), [](const Ml &a, const Ml &b) { return a.w > b.w; });
+        frame.lightInfo = glm::vec4((float)nL, 0.0f, 0.0f, 0.0f);
+        for (size_t i = 0; i < nL; ++i)
+        {
+            frame.lightPos[i] = glm::vec4(glm::vec3(ml[i].p), (float)(ml[i].m->I * adapt));
+            frame.lightCol[i] = glm::vec4(ml[i].m->col, ml[i].m->rs);
+            frame.lightDir[i] = glm::vec4(glm::vec3(ml[i].m->aimEcef), ml[i].m->cosCut);
+        }
+    }
 
     // ── Sharp reflections: the largest instances with a mirror-smooth material ──────────────────
     // Each gets its mirror pixels' reflection rendered per pixel (sat_sky.frag SKY_REFL, from the

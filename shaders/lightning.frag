@@ -11,6 +11,9 @@ layout(location = 2) flat in vec4 vHalo;
 layout(location = 3) flat in vec4 vSeg;
 layout(location = 4) flat in vec4 vGlow;
 layout(location = 0) out vec4 outColor;
+// The meshes' distance (m, 0 = none; SatMeshRenderer's scene target, full resolution): a mesh pixel is lit by the
+// engine lights in sat_mesh.frag (with its own normals), not by the ground term here (2026-10-21).
+layout(set = 0, binding = 6, r32f) uniform readonly image2D meshDistImg;
 
 void main()
 {
@@ -91,6 +94,13 @@ void main()
         // the opacity drew the cloud's half-res outline into the haze as a staircase).
         float tEndC = min(tGround, 4.0e5);
         float tEndK = min(tEndC, tCbar > 0.0 ? tCbar : tEndC);
+        bool onMesh;
+        {
+            ivec2 ms = imageSize(meshDistImg);
+            ivec2 mp = clamp(ivec2(gl_FragCoord.xy * vec2(ms) / vec2(pc.screenW, pc.screenH)), ivec2(0), ms - 1);
+            float md = imageLoad(meshDistImg, mp).r;
+            onMesh = md > 0.0 && md < tGround * 1.05 + 2.0;
+        }
         x = vec3(0.0);
         uint n = min(uint(pc.params2.z + 0.5), 32u);
         for (uint i = 0u; i < n; ++i) {
@@ -113,8 +123,9 @@ void main()
                     g += opK * airLs * 0.85 * mix(1.0, 0.35, far) * reachWin(r2, reach2) / (r2 + r02);
                 }
             }
-            // The ground (and the sea, the pad's meshes), behind the clouds' transmittance.
-            if (L.col.y < 0.5) {
+            // The ground (and the sea), behind the clouds' transmittance. Not on a mesh (the pad's, a ship's, a
+            // rocket's): sat_mesh.frag lights those with their own normals (it took the local up as every surface's).
+            if (L.col.y < 0.5 && !onMesh) {
                 for (int k = 0; k < 4; ++k) {
                     if (gd[k] >= 1e29) continue;
                     vec3  P  = dir * gd[k];
@@ -131,7 +142,12 @@ void main()
             // The haze along the ray: sigma(h) / 4 x the integral of I / (d^2 + (t - t0)^2) over [0, tEnd].
             {
                 float t0 = dot(dir, Lp);
-                float d  = max(length(Lp - dir * t0), L.ia.w);
+                // The light's own extent softens the 1/d core (2026-10-21): it was floored at the core radius r0 (25 m
+                // .. ~100 m for a flame aloft, 40 m for a ship's floods), so the lit haze was a flat disc that size
+                // with a rim where the 1/d fall-off began: a round milky halo round a landing burn or a followed
+                // stage. A third of r0 in quadrature: a glow concentrated on the light, no edge.
+                float dP = length(Lp - dir * t0);
+                float d  = sqrt(dP * dP + 0.12 * L.ia.w * L.ia.w);
                 if (d < reach) {
                     float hh  = max(hL, 0.0);
                     float sig = 1.2e-5 * exp(-hh / 8000.0) + 2.5e-5 * exp(-hh / 1500.0);

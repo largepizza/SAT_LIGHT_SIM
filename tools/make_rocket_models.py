@@ -37,7 +37,7 @@ MATERIALS = [
     {"name": "soot", "preset": "black_paint", "diffuse_albedo": 0.03, "roughness": 0.7},
     {"name": "tiles", "preset": "black_paint", "diffuse_albedo": 0.06, "roughness": 0.6,
      "color": [0.10, 0.10, 0.11], "pattern": "hex_tiles"},
-    {"name": "gridfin", "preset": "truss", "coverage": 0.55, "truss_pitch": 0.5, "color": [0.35, 0.35, 0.37]},
+    {"name": "gridfin", "preset": "truss", "coverage": 0.55, "truss_pitch": 0.14, "color": [0.35, 0.35, 0.37]},
     {"name": "lattice", "preset": "truss", "coverage": 0.3, "truss_pitch": 0.7},
     {"name": "cells", "preset": "solar_cell"},
     {"name": "green", "preset": "white_paint", "diffuse_albedo": 0.3, "color": [0.36, 0.42, 0.30]},

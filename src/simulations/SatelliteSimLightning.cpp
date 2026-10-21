@@ -263,23 +263,25 @@ void SatelliteSim::createLightningResources(VulkanContext &ctx)
     vkMapMemory(ctx.device, boltSegMem, 0, VK_WHOLE_SIZE, 0, &boltSegMapped);
 
     const VkShaderStageFlags st = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutBinding b[6] = {
+    VkDescriptorSetLayoutBinding b[7] = {
         {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the flashes (frames, state, glow emitters)
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the channel segments
         {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the cloud composite A (distance, km)
         {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the cloud composite B (transmittance)
         {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the half-res scene depth (m; engine lights)
         {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the dust list + the engine lights in its tail
+        {6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, st, nullptr},           // the meshes' distance (lit by sat_mesh.frag)
     };
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 6;
+    li.bindingCount = 7;
     li.pBindings = b;
     if (vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &boltDescLayout) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: lightning descriptor layout");
-    VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
+    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.maxSets = 1;
-    pi.poolSizeCount = 2;
+    pi.poolSizeCount = 3;
     pi.pPoolSizes = ps;
     if (vkCreateDescriptorPool(ctx.device, &pi, nullptr, &boltDescPool) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: lightning descriptor pool");
@@ -394,6 +396,24 @@ void SatelliteSim::writeLightningDescriptors(VulkanContext &ctx)
     w[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     w[5].pBufferInfo = &du;
     vkUpdateDescriptorSets(ctx.device, 6, w, 0, nullptr);
+    if (meshRendererInit)
+        writeLightningMeshDescriptor(ctx);
+}
+
+// Binding 6: the meshes' distance target (2026-10-21): the engine lights' ground term leaves mesh pixels to
+// sat_mesh.frag's local lights. Rewritten whenever the mesh scene targets are (writeMeshSceneDescriptors).
+void SatelliteSim::writeLightningMeshDescriptor(VulkanContext &ctx)
+{
+    if (!boltDescSet || !meshRenderer.sceneDistView())
+        return;
+    VkDescriptorImageInfo md{VK_NULL_HANDLE, meshRenderer.sceneDistView(), VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = boltDescSet;
+    w.dstBinding = 6;
+    w.descriptorCount = 1;
+    w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    w.pImageInfo = &md;
+    vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
 }
 
 void SatelliteSim::destroyLightningResources(VkDevice device)
