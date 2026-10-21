@@ -570,40 +570,6 @@
    "render_only": true
   },
   {
-   "name": "octagrabber",
-   "type": "box",
-   "group": "ship",
-   "size": [
-    4.6,
-    4.6,
-    1.3
-   ],
-   "position": [
-    -31.5,
-    0.0,
-    3.85
-   ],
-   "material": "red",
-   "render_only": true
-  },
-  {
-   "name": "octagrabber_top",
-   "type": "box",
-   "group": "ship",
-   "size": [
-    3.2,
-    3.2,
-    0.5
-   ],
-   "position": [
-    -31.5,
-    0.0,
-    4.75
-   ],
-   "material": "hull",
-   "render_only": true
-  },
-  {
    "name": "bitt_0",
    "type": "cylinder",
    "group": "ship",

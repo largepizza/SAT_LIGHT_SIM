@@ -576,7 +576,7 @@ json SatelliteSim::harnessStateJson()
                 const GpuSatLobe &L = type.lobes[li];
                 const glm::dvec3 n = satLobeNormalPosed(type.lobes, type.groups, poses, li);
                 const double a2 = L.alpha2Mat + (double)kSunAlpha * kSunAlpha;
-                const double I = satLobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, a2, L.distribution != 0, s, ob, L.transmission);
+                const double I = satLobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, a2, satLobeBeckmann(L), s, ob, L.transmission);
                 const double ns = glm::dot(n, s), no = glm::dot(n, ob);
                 const double Id = no <= 0.0 ? 0.0
                                   : ns > 0.0 ? L.albedoD / glm::pi<double>() * L.diffArea * ns * no
@@ -2716,8 +2716,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // station, its spacecraft selected (and followed). Events: launch sep phasing arrive axis hold400 hold200
             // hold20 dock undock depart deorbit entry chutes splash.
             std::string msg;
+            // (2026-10-21) craft=progress|tianzhou|cargo dragon|cargo|crew: the visiting vehicle's kind; event=abort:
+            // the moment the station's loss called its flight off.
             if (!launchGoToCrew(c.str("station", ""), c.str("event", "dock"), c.num("lead", 60.0),
-                                c.num("follow", 1.0) > 0.5, msg))
+                                c.num("follow", 1.0) > 0.5, msg, c.str("craft", "")))
                 fail("launch crew: " + msg);
             r["message"] = msg;
             return Status::Done;

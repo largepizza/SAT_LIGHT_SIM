@@ -16,6 +16,11 @@ any (each model's `sources` cite them) and the layout from their concept art; wh
 payloads, MMOD sleeves, radiator manifolds, visiting vehicles - is render_only: it costs no lobes and no occlusion,
 and is kept to a few dozen parts per station (the mesh renderer draws every part; prefer patterns - panel_seams
 reads as MMOD panels and handrails - over many tiny parts).
+
+Module by module (2026-10-21): a station assembled over years stamps its parts with the date their module arrives
+(`Station.since(date, match)`: component "since" and docking port "since"). With the sim's deployment era on, a part is
+neither drawn nor counted in the photometry before its date (SatComponent::sinceDays). Dates before 2026 are the
+real ones (Tiangong); later ones are the scenario's (the operators' published sequences where there are any).
 """
 
 import json
@@ -157,6 +162,7 @@ class Station:
         self.sources = []
         self.extra_mats = []
         self.ports = []  # docking ports a crew spacecraft can use (the sim's crew rotations: "docking_ports")
+        self.when = []   # (date, predicate on a component / port dict): the module's arrival (since())
 
     # Groups ------------------------------------------------------------------------------------------------
     def arrays(self, name, axis, vector=(0, 0, -1)):
@@ -274,22 +280,27 @@ class Station:
                    abs(a[1]) * 0.5 + abs(a[0]) * (2 * blanket_w + gap), 0.5]
             self.box(name + "_box_" + end, add(root, a, off), bsz, "gold", group, pivot=axis_pt)
 
-    def port(self, name, base, axis, r=0.8, length=0.7, ring=True, dock=False):
-        """A docking / berthing port: a short barrel and a lip ring. dock: a crew spacecraft docks here (the sim's
-        crew rotations, 2026-10-20: the contact point is the barrel's end)."""
+    def port(self, name, base, axis, r=0.8, length=0.7, ring=True, dock=False, use="crew"):
+        """A docking / berthing port: a short barrel and a lip ring. dock: a visiting spacecraft docks here (the sim's
+        crew rotations, 2026-10-20, and cargo ships, 2026-10-21: the contact point is the barrel's end); use: which
+        ("crew" / "cargo")."""
         self.prof(name, base, axis, [[0, r], [length, r]], "metal", ro=True, caps="top")
         if dock:
-            self.dock(name, add(base, AX[axis] if isinstance(axis, str) else norm(axis), length), axis)
+            self.dock(name, add(base, AX[axis] if isinstance(axis, str) else norm(axis), length), axis, use=use)
         if ring:
             self.prof(name + "_ring", add(base, AX[axis] if isinstance(axis, str) else axis, length - 0.12),
                       axis, [[0, r + 0.12], [0.12, r + 0.12]], "metal", ro=True, caps="both")
 
-    def dock(self, name, tip, axis):
-        """A docking port's contact point (station body frame) and its outward axis, for the sim's crew vehicles.
-        Visiting crew spacecraft are NOT modelled on the station any more (they were render-only greebles): the sim
-        flies real ones there and draws them docked."""
+    def dock(self, name, tip, axis, use="crew"):
+        """A docking port's contact point (station body frame) and its outward axis, for the sim's visiting vehicles
+        (use: "crew" or "cargo"). Visiting spacecraft are NOT modelled on the station any more (they were render-only
+        greebles): the sim flies real ones there (crews 2026-10-20, Progress / Tianzhou 2026-10-21) and draws them
+        docked."""
         a = AX[axis] if isinstance(axis, str) else norm(axis)
-        self.ports.append({"name": name, "position": r4(tip), "axis": r4(a)})
+        e = {"name": name, "position": r4(tip), "axis": r4(a)}
+        if use != "crew":
+            e["use"] = use
+        self.ports.append(e)
 
     def dish(self, name, base, axis, r, mast=1.0):
         """A dish antenna on a mast: the mast from `base` along `axis`, the dish facing further out."""
@@ -342,6 +353,22 @@ class Station:
             self.plane(name + ("_wing_p" if s > 0 else "_wing_m"), ctr, [s * v for v in y], x, wing_span, 1.6,
                        "cells", "cells_back", ro=True)
 
+    def since(self, date, *prefixes, pred=None):
+        """Parts (and docking ports) whose name starts with one of `prefixes` - or for which pred(dict) is true - are
+        built on `date` ("YYYY-MM-DD"). The first matching call wins, so give the specific ones first."""
+        def m(d):
+            if pred is not None and pred(d):
+                return True
+            return any(d["name"].startswith(p) for p in prefixes)
+        self.when.append((date, m))
+
+    def apply_since(self, items):
+        for d in items:
+            for date, m in self.when:
+                if m(d):
+                    d["since"] = date
+                    break
+
     # Output ------------------------------------------------------------------------------------------------
     def source(self, subjects, status, value, src):
         e = {"status": status, "value": value, "source": src}
@@ -356,6 +383,8 @@ class Station:
 
     def finish(self, refs):
         """Default provenance for whatever the station's own entries did not cover."""
+        self.apply_since(self.c)
+        self.apply_since(self.ports)
         covered = set()
         for s in self.sources:
             covered |= set([s["subject"]] if "subject" in s else s["subjects"])
@@ -523,6 +552,12 @@ def haven2():
     s.dish("hga_1", [1.5, 0, -0.5 * Hc - 0.1], [0.5, 0.5, -0.7], 0.7, mast=2.0)
     s.dish("hga_2", [0, 0, 0.5 * Hc], [0, 0, 1], 0.5, mast=0.8)
     s.prof("airlock_hatch", [0, 0, -0.5 * Hc - 3.2], "-z", [[0, 1.0], [0.3, 0.9], [0.4, 0.0]], "metal", ro=True)
+    # Module by module (Vast: the first, stretched module 2028, more 2029-30, complete 2032; order the scenario's):
+    # the forward module flies alone first (the station's roster date), the core joins it, then a spoke a year.
+    s.since("2029-06-01", "haven2_core", "core_", "hga_", "airlock_hatch")
+    s.since("2030-03-01", "haven2_module_aft", "adapter_aft", "port_aft", "array_aft_", "window_aft_", "band_aft")
+    s.since("2031-03-01", "haven2_module_stbd", "adapter_stbd", "port_stbd", "array_stbd_", "window_stbd_", "band_stbd")
+    s.since("2032-03-01", "haven2_module_port", "adapter_port", "port_port", "array_port_", "window_port_", "band_port")
     s.write([REF_HAVEN2])
 
 
@@ -581,6 +616,11 @@ def axiom():
     s.box("arm_boom_1", [xh + 2.0, R + 0.4, -1.2], [7.0, 0.35, 0.35], "metal")
     s.box("arm_boom_2", [xh - 1.5, R + 0.4, -2.6], [0.35, 0.35, 3.0], "metal")
     s.dish("hga", [mods[0][1] + 2.0, 0, -R], "-z", 0.6, mast=1.0)
+    # Module by module (Axiom's 2024 resequencing: the PPTM first, free-flying, then Hab-1; the rest the scenario's).
+    s.since("2028-03-01", "axiom_hab1", "port_zenith_0", "port_nadir_0")
+    s.since("2029-01-01", "axiom_airlock")
+    s.since("2029-09-01", "axiom_hab2", "port_zenith_1", "port_nadir_1", "arm_boom")
+    s.since("2030-06-01", "axiom_rmf", "radiator_", "port_aft", "earth_observatory")
     s.write([REF_AXIOM])
 
 
@@ -649,6 +689,11 @@ def orbital_reef():
     for k, xx in enumerate((-8.0, 6.0)):
         s.sleeve("core_band_%d" % k, [xx, 0, 0], "+x", 0.35, Rc + 0.05, "metal")
     s.dish("hga", [8.0, 0, -Rc], [0.0, 0.6, -0.8], 0.8, mast=1.4)
+    # Module by module (the scenario's): the core with its power and thermal trusses first, then a LIFE habitat, the
+    # Boeing science module, the second LIFE habitat.
+    s.since("2031-03-01", "reef_life_s", "life_neck_s", "life_strap_s")
+    s.since("2031-09-01", "reef_science", "port_fwd", "window_")
+    s.since("2032-06-01", "reef_life_p", "life_neck_p", "life_strap_p")
     s.write([REF_REEF])
 
 
@@ -661,7 +706,7 @@ def ross():
                 "target modules. Body frame: +X along velocity, +Z nadir: Nauka forward, the base module aft, NEM "
                 "on the node's nadir port, ShM to starboard, target modules to port and zenith. NEM and the base "
                 "module each carry two large rigid wings at their far ends, turning about the cross-track axis; "
-                "NEM has two radiator panels. Detail: a docked Progress (the crew Soyuz is the sim's own), Nauka's ERA arm and radiator, "
+                "NEM has two radiator panels. Detail (the crew Soyuz and the cargo Progress are the sim's own), Nauka's ERA arm and radiator, "
                 "ports, dishes.")
     s.arrays("arrays", "+y")
     Rn = 1.8
@@ -697,14 +742,19 @@ def ross():
     xn = Rn + 0.2 + 13.1
     s.port("port_fwd", [xn, 0, 0], "+x", r=0.7, dock=True)
     xa = -(Rn + 0.2 + 11.0)
-    s.port("port_aft", [xa, 0, 0], "-x", r=0.7)
-    s.soyuz("progress", [xa - 0.7, 0, 0], "+x", mat="cn_green")
+    s.port("port_aft", [xa, 0, 0], "-x", r=0.7, dock=True, use="cargo")
     s.box("nauka_radiator", [8.5, 2.125 + 0.05, -0.8], [4.0, 0.08, 1.6], "radiator")
     s.box("era_boom_1", [6.0, -2.4, -1.4], [5.5, 0.3, 0.3], "metal")
     s.box("era_boom_2", [10.2, -2.4, -2.6], [3.0, 0.3, 0.3], "metal")
     s.dish("hga", [-6.0, 0, -2.05], "-z", 0.6, mast=1.2)
     s.sleeve("nem_band", [0, 0, Rn + 0.2 + 7.0], "+z", 0.3, 2.1, "mli")
     s.sleeve("base_band", [-(Rn + 0.2 + 7.5), 0, 0], "-x", 0.3, 2.1, "mli")
+    # Module by module (the Dec 2025 plan: Nauka + UUM + NEM leave the ISS as the core - the station's roster date -
+    # then the gateway airlock, the base module and the two target modules by 2033; dates the scenario's).
+    s.since("2029-06-01", "ros_shm")
+    s.since("2031-06-01", "ros_base_module", "base_array", "base_band", "port_aft", "progress", "hga")
+    s.since("2033-03-01", "ros_target_port")
+    s.since("2033-09-01", "ros_target_zenith")
     s.write([REF_ROS])
 
 
@@ -760,6 +810,11 @@ def bas():
     for sgn in (1, -1):
         s.box("bas02_radiator_%s" % ("n" if sgn > 0 else "z"), [x02 + 6.5, 0, sgn * (R + 0.04)], [3.0, 1.6, 0.06],
               "radiator")
+    # Module by module (ISRO: BAS-01 first, the station complete by 2035; the order of the others as numbered).
+    s.since("2031-06-01", "bas_02", "bas02_", "arm_boom")
+    s.since("2032-06-01", "bas_05", "bas05_", "cbm_", "cupola")
+    s.since("2033-12-01", "bas_03", "bas03_")
+    s.since("2035-06-01", "bas_04", "bas04_")
     s.write([REF_BAS])
 
 
@@ -817,8 +872,9 @@ def starlab():
 GB_NOTE = "render-only detail materials (tools/make_station_models.py)"
 
 
-def patch(sid, build, extra_mats):
-    """Replace the gb_* components of a hand-made model with what `build` adds, and add the materials it uses."""
+def patch(sid, build, extra_mats, dates=None):
+    """Replace the gb_* components of a hand-made model with what `build` adds, and add the materials it uses.
+    dates: [(date, predicate on a component dict)] - the module each part arrives with ("since"; the first match wins)."""
     path = os.path.join(OUT, sid + ".json")
     with open(path, encoding="utf-8") as f:
         m = json.load(f)
@@ -848,6 +904,12 @@ def patch(sid, build, extra_mats):
         m["sources"].append({"subjects": [a["name"] for a in added], "status": "estimate", "value": GB_NOTE,
                              "source": "; ".join(MATERIAL_NOTES[a["name"]] for a in added)})
     m["components"] += s.c
+    for c in m["components"]:
+        c.pop("since", None)
+        for date, pred in dates or []:
+            if pred(c):
+                c["since"] = date
+                break
     if s.ports:
         m["docking_ports"] = s.ports
     else:
@@ -864,12 +926,13 @@ def iss_detail(s):
             s.box("saw_mast", [0, yc, zs * 19.3], [0.3, 0.3, 33.4], "metal", group="beta", pivot=[0, yc, 0])
             s.box("saw_box", [0, yc, zs * 36.0], [0.5, 9.6, 0.6], "gold", group="beta", pivot=[0, yc, 0])
     # PMA-2 / IDA-2 on Harmony forward, PMA-3 / IDA-3 on Harmony zenith: the crew docking ports (the sim flies the
-    # Crew Dragons there, docked and leaving: they are no longer drawn here); a Progress on Zvezda aft
+    # Crew Dragons there, docked and leaving: they are no longer drawn here); Zvezda aft: the cargo port (the sim docks
+    # its Progress ships there, 2026-10-21)
     s.prof("pma2", [12.2, 0, 5.0], "+x", [[0, 1.0], [1.4, 0.85], [1.9, 0.8]], "metal")
     s.prof("pma3", [8.6, 0, 2.8], "-z", [[0, 1.0], [1.4, 0.85], [1.9, 0.8]], "metal")
     s.dock("ida2_harmony_fwd", [14.1, 0, 5.0], "+x")
     s.dock("ida3_harmony_zenith", [8.6, 0, 0.9], "-z")
-    s.soyuz("progress", [-38.46, 0, 5.0], "+x", mat="cn_green")
+    s.dock("zvezda_aft", [-38.46, 0, 5.0], "-x", use="cargo")
     # Canadarm2 on the mobile base, ELCs and AMS on the inboard truss
     s.box("canadarm_boom_1", [-1.0, -12.0, -3.0], [0.35, 8.5, 0.35], "metal")
     s.box("canadarm_boom_2", [2.6, -16.0, -3.0], [7.5, 0.35, 0.35], "metal")
@@ -897,14 +960,12 @@ def tiangong_detail(s):
                   pivot=[0, ys * 20.5, 0])
             s.box("wing_box", [0, ys * 20.5, zs * 29.0], [4.4, 0.6, 0.5], "gold", group="beta",
                   pivot=[0, ys * 20.5, 0])
-    # Docking ports on the node (the sim docks real Shenzhous there, forward or nadir); Tianzhou aft
+    # Docking ports on the node (the sim docks real Shenzhous there, forward or nadir); Tianhe aft: the cargo port
+    # (the sim docks its Tianzhou ships there, 2026-10-21)
     s.port("node_port_fwd", [1.4, 0, 0], "+x", r=0.7, length=0.5, dock=True)
     s.port("node_port_nadir", [0, 0, 1.4], "+z", r=0.7, length=0.5, dock=True)
     xa = -15.2
-    s.prof("tianzhou", [xa - 10.6, 0, 0], "+x", [[0, 1.67], [9.8, 1.67], [10.6, 0.8]], "module_skin", caps="both")
-    for ys in (1, -1):
-        s.plane("tianzhou_wing", [xa - 8.0, ys * (1.67 + 0.3 + 3.6), 0], [0, ys, 0], [0, 0, -1], 7.2, 2.2,
-                "cells", "cells_back")
+    s.dock("tianhe_aft", [xa, 0, 0], "-x", use="cargo")
     # Tianhe's robotic arm, radiators and bands; a dish; Mengtian's exposed platform
     s.box("arm_boom_1", [-8.0, 0, -2.5], [8.0, 0.35, 0.35], "metal")
     s.box("arm_boom_2", [-12.2, 0, -4.0], [0.35, 0.35, 3.0], "metal")
@@ -928,7 +989,12 @@ def main():
     bas()
     starlab()
     patch("iss", iss_detail, None)
-    patch("tiangong", tiangong_detail, None)
+    # Tiangong module by module: Tianhe 2021-04-29 (the station's roster date), Wentian 2022-07-24 (starboard, +Y),
+    # Mengtian 2022-10-31 (port, -Y); each lab's wings, masts, band and fittings with it.
+    def lab(name, sgn):
+        return lambda c: (c["name"].startswith(name) or c["name"].startswith("gb_" + name) or
+                          (c["name"].startswith(("gb_wing", "gb_lab_band")) and c["position"][1] * sgn > 0))
+    patch("tiangong", tiangong_detail, None, [("2022-07-24", lab("wentian", 1)), ("2022-10-31", lab("mengtian", -1))])
 
 
 if __name__ == "__main__":

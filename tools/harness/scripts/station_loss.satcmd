@@ -1,0 +1,47 @@
+# A station lost with visiting vehicles at it (2026-10-21, CLAUDE.md "Launches" > Visiting vehicles: the station's
+# loss): Tiangong broken up with a Shenzhou and a Tianzhou docked (the crew undocks in an emergency, the cargo ship
+# goes with the station), a Progress turned away on its approach to ROS, a Crew Dragon's rendezvous with the ISS
+# called off in its phasing orbit. Every flight's timeline follows from the Kessler event log.
+#   python tools/harness/run.py --script tools/harness/scripts/station_loss.satcmd
+set clouds_v2.coverage 0
+wait 20
+# 1. Docked: Tianzhou and Shenzhou at Tiangong.
+time set 2036-11-22T00:00:00Z
+launch crew craft=tianzhou event=dock lead=-86400 follow=1
+wait settle
+capture loss_tiangong_before
+launch state
+select const "Tiangong"
+kessler breakup sel
+wait 10
+launch state
+capture loss_tiangong_at
+time add 240
+wait settle
+launch state
+capture loss_tiangong_escape
+# 2. On the approach: a Progress 200 m off ROS.
+time set 2036-11-22T00:00:00Z
+launch crew craft=progress station=russian event=hold200 lead=-60 follow=1
+wait settle
+select const "Russian Orbital Service Station"
+kessler breakup sel
+wait 10
+launch state
+time add 900
+wait settle
+launch state
+capture loss_progress_turned_away
+missions milestone list
+# 3. Phasing: a Crew Dragon on its way to the ISS.
+time set 2036-11-22T00:00:00Z
+launch crew craft=crew station=international event=phasing lead=-60 follow=1
+wait settle
+select const "International Space Station"
+kessler breakup sel
+wait 30
+time add 60
+wait 30
+launch state
+missions milestone list
+launch check

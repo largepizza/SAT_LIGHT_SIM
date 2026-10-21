@@ -142,6 +142,20 @@ bool Catalog::load(const std::string &path, std::string &err)
                     }
                     st.onlineFor.push_back({it.key(), tv});
                 }
+            if (s.contains("pad_history"))
+            {
+                for (const auto &e : s["pad_history"])
+                {
+                    const double tv = dateToJ2000(e.at(0).get<std::string>());
+                    if (std::isnan(tv))
+                    {
+                        err = "site " + st.id + ": bad pad_history date";
+                        return false;
+                    }
+                    st.padHistory.push_back({tv, std::clamp(e.at(1).get<int>(), -1, 2)});
+                }
+                std::sort(st.padHistory.begin(), st.padHistory.end());
+            }
             if (s.contains("pad_heading_deg"))
                 st.padHeadingDeg = s["pad_heading_deg"].get<double>();
             const double la = glm::radians(st.latDeg), lo = glm::radians(st.lonDeg);
@@ -191,6 +205,7 @@ bool Catalog::load(const std::string &path, std::string &err)
             vh.ventChance = v.value("vent_chance", vh.ventChance);
             vh.mountM = std::max(v.value("mount_m", vh.mountM), 0.0);
             vh.catchM = std::max(v.value("catch_m", vh.catchM), 0.0);
+            vh.legM = std::max(v.value("leg_m", vh.legM), 0.0);
             vh.fairingSepKm = std::max(v.value("fairing_sep_km", vh.fairingSepKm), 0.0);
             vh.payloadBaseM = v.value("payload_base_m", vh.payloadBaseM);
             if (v.contains("fairing_center_m"))
@@ -279,6 +294,26 @@ bool Catalog::load(const std::string &path, std::string &err)
                 pg.people = cr.value("people", 3);
                 pg.crewModel = cr.value("model", std::string());
                 pg.crewLands = cr.value("lands", false);
+                pg.cargo = cr.value("cargo", false);
+                if (pg.cargo)
+                    pg.people = cr.value("people", 0);
+                const std::string ret = cr.value("return", std::string());
+                if (ret == "lands")
+                    pg.crewLands = true;
+                pg.burnsUp = ret == "burns";
+                pg.heatShieldM = cr.value("heat_shield_m", pg.heatShieldM);
+                pg.portUse = cr.value("ports", std::string(pg.cargo ? "cargo" : "crew"));
+                pg.sharePorts = cr.value("share_crew_ports", false);
+                if (pg.sharePorts)
+                    pg.portUse = "crew";
+                if (cr.contains("fast_dock_h"))
+                    for (const auto &w : cr["fast_dock_h"])
+                        pg.fastDockH.push_back({w[0].get<double>(), w[1].get<double>()});
+                if (cr.contains("stay_days"))
+                {
+                    pg.stayDays[0] = cr["stay_days"][0].get<double>();
+                    pg.stayDays[1] = cr["stay_days"][1].get<double>();
+                }
             }
             if (p.contains("stack"))
             {
@@ -353,6 +388,7 @@ bool Catalog::load(const std::string &path, std::string &err)
                 for (const auto &m : h.at("match"))
                     rh.match.push_back(m.get<std::string>());
                 rh.fraction = h.value("fraction", false);
+                rh.benchmark = h.value("benchmark", false);
                 if (h.contains("born"))
                 {
                     // A single object (a station): there from this date.
@@ -437,6 +473,8 @@ Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
     const int rec = recovery < 0 ? vh.recovery : recovery;
     if (hLand < 0.0)
         hLand = rec == 2 ? (vh.ships.empty() ? 3.0 : vh.ships[0].deckM) : rec == 1 ? vh.catchM : 0.0;
+    if (rec != 0)
+        hLand += vh.legM; // (the aft end stops with its feet on the surface)
     Track tr;
     tr.dt = 0.5;
     const double t1 = vh.t1, h1 = vh.h1, x1 = vh.x1;
@@ -452,7 +490,7 @@ Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
     // After MECO: integrated. The boostback's target speed is found by a few shots (the landing x -> the target).
     auto fly = [&](double vBack, bool doBoost, Track *out, double glideTarget) {
         glm::dvec2 p = p1, v = v1;
-        bool boost = doBoost, entryDone = false, landing = false;
+        bool boost = doBoost, entryDone = false, landing = false, fastEntry = false;
         double entryT = -1.0;
         double lt0 = 0.0, lT = 1.0;  // the landing burn: its start and length
         glm::dvec2 lp0(0.0), lv0(0.0);
@@ -497,12 +535,23 @@ Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
                         b = BURN_BOOSTBACK;
                     }
                 }
-                if (!entryDone && v.y < 0.0 && p.y < 60000.0)
+                // A booster coming down from far downrange (New Glenn's 1000-km shot arrives at ~3.3 km/s) starts its entry
+                // burn higher (up to 100 km, from 2.4 km/s) and burns until its speed is one whose peak drag stays near
+                // 1.5 g (Allen-Eggers: a_peak = v^2 sin(gamma) / (2 e H)), up to 150 s (2026-10-21, mission-ops suite:
+                // it met the dense air at ~2 km/s and peaked at 92 m/s^2, 9.4 g). Slower arrivals are unchanged.
+                const double sinG = std::max(-v.y / std::max(spd, 1.0), 0.2);
+                const double vSafe = std::sqrt(15.0 * 2.0 * 2.718281828 * 7600.0 / sinG);
+                const double fastK = std::clamp((spd - 2400.0) / 800.0, 0.0, 1.0);
+                if (!entryDone && v.y < 0.0 && p.y < 60000.0 + 40000.0 * (entryT < 0.0 ? fastK : (fastEntry ? 1.0 : 0.0)))
                 {
                     if (entryT < 0.0)
+                    {
                         entryT = t;
+                        fastEntry = fastK > 0.0;
+                    }
                     // (22 s, longer while still fast: up to 40 s above 900 m/s, a droneship booster arriving from far downrange)
-                    if (t - entryT < 22.0 || (spd > 900.0 && t - entryT < 40.0))
+                    if (t - entryT < 22.0 || (spd > 900.0 && t - entryT < 40.0) ||
+                        (fastEntry && spd > vSafe && t - entryT < 150.0))
                     {
                         a -= 28.0 * v / std::max(spd, 1.0);
                         b = BURN_ENTRY;

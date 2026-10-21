@@ -85,9 +85,8 @@ def droneship():
         comps.append(cyl(f"mast_{sd + 1}", 0.25, 9.0, (-42.0, sd * 21.0, D + 7.0 + 4.5), "steel", True))
         comps.append(box(f"vent_{sd + 1}", (3.0, 4.0, 1.4), (-41.5, sd * 15.0, D + 7.7), "hull", True))
     comps.append(box("garage", (8.0, 10.0, 3.5), (-40.0, 0.0, D + 1.75), "grey", True))
-    # The Octagrabber, parked by its garage (it drives under a landed booster to clamp it).
-    comps.append(box("octagrabber", (4.6, 4.6, 1.3), (-31.5, 0.0, D + 0.65), "red", True))
-    comps.append(box("octagrabber_top", (3.2, 3.2, 0.5), (-31.5, 0.0, D + 1.55), "hull", True))
+    # The Octagrabber is its own model (ship_robot, below): it drives out to a landed booster and clamps it
+    # (SatelliteSimLaunches.cpp shipRobotAt), parked in front of the garage until then.
     # Bollards and the tow bitts forward.
     for i, y in enumerate((-20.0, -8.0, 8.0, 20.0)):
         comps.append(cyl(f"bitt_{i}", 0.45, 1.0, (43.5, y, D + 0.5), "steel", True))
@@ -115,9 +114,26 @@ def jacklyn():
         comps.append(box(f"crane_base_{sd + 1}", (3.0, 3.0, 4.0), (45.0, sd * 11.0, D + 2.0), "yellow", True))
         comps.append(box(f"crane_jib_{sd + 1}", (16.0, 0.8, 0.8), (37.5, sd * 11.0, D + 4.3), "yellow", True, rot=(0, -12, 0)))
     comps.append(box("bulwark_stern", (0.3, 29.6, 1.6), (-41.0, 0.0, D + 0.8), "grey", True))
-    comps.append(box("securing_robot", (4.0, 4.0, 1.2), (24.0, 0.0, D + 0.6), "red", True))
+    # (Its securing robot is the ship_robot model, parked at (24, 0) on the deck.)
     target(comps, D, 11.5, 1.1, 20.0, 2.2)
     return comps, D
+
+
+def robot():
+    """The booster-securing robot (SpaceX's "Octagrabber"; estimates from photographs: a low red tracked vehicle ~4.5 m
+    square). Origin at its centre on the deck, +X its front. Four clamp arms reach forward and up under a booster's
+    engine section: stowed (folded into the body) while it drives, deployed when it clamps (the unfolding progress)."""
+    comps = []
+    comps.append(box("body", (4.4, 4.0, 0.9), (0.0, 0.0, 0.65), "red"))
+    comps.append(box("top", (3.0, 3.0, 0.3), (-0.2, 0.0, 1.25), "hull", True))
+    for sd in (-1, 1):
+        comps.append(box(f"track_{sd + 1}", (4.6, 0.7, 0.75), (0.0, sd * 2.25, 0.375), "hull", True))
+        comps.append(box(f"beacon_{sd + 1}", (0.25, 0.25, 0.3), (-1.8, sd * 1.6, 1.25), "yellow", True))
+    for k, y in enumerate((-1.5, -0.5, 0.5, 1.5)):
+        a = box(f"clamp_arm_{k}", (2.6, 0.35, 0.35), (3.4, y, 1.0), "steel", True, rot=(0, -12, 0))
+        a["stow"] = {"axis": [1, 0, 0], "root": 2.1, "scale": 0.08, "phase": [0.0, 1.0]}
+        comps.append(a)
+    return comps
 
 
 def write(name, note, comps):
@@ -145,6 +161,10 @@ if __name__ == "__main__":
     write("ship_droneship", base + " SpaceX autonomous spaceport drone ship (ASOG / JRTI / OCISLY class): deck ~91 x 52 "
           "m, housings and blast walls aft, the Octagrabber, the landing target.", c)
     print("  deck_m", d)
+    write("ship_robot", base.replace("Booster landing ship render model", "Booster-securing robot render model").replace(
+          "+X the bow, origin at the landing target's centre at the waterline", "+X its front, origin at its centre on "
+          "the deck") + " SpaceX's Octagrabber (estimates): a tracked vehicle ~4.5 m square with four clamp arms "
+          "(stowed while it drives).", robot())
     c, d = jacklyn()
     write("ship_jacklyn", base + " Blue Origin's landing ship Jacklyn (estimates): superstructure forward, the "
           "landing deck aft.", c)

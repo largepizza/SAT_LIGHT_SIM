@@ -1,0 +1,433 @@
+{
+ "name": "soyuz2_progress booster",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), soyuz2_progress: booster. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Shown as the Progress configuration. Fairing length estimated from photographs.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "copper",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.12,
+   "roughness": 0.35,
+   "color": [
+    0.62,
+    0.38,
+    0.24
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "core_body_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     1.03
+    ],
+    [
+     18.0,
+     1.4
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "core_body_1",
+   "type": "profile",
+   "profile": [
+    [
+     18.0,
+     1.4
+    ],
+    [
+     21.0,
+     1.475
+    ],
+    [
+     23.5,
+     1.475
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "core_body_2",
+   "type": "profile",
+   "profile": [
+    [
+     23.5,
+     1.475
+    ],
+    [
+     24.6,
+     1.2
+    ],
+    [
+     27.1,
+     1.2
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "aft_heat_shield_3",
+   "type": "profile",
+   "profile": [
+    [
+     -0.05,
+     1.4603
+    ],
+    [
+     -0.01,
+     1.4603
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "engines_4",
+   "type": "profile",
+   "profile": [
+    [
+     -1.1,
+     0.36
+    ],
+    [
+     -0.93,
+     0.2986
+    ],
+    [
+     -0.76,
+     0.2452
+    ],
+    [
+     -0.59,
+     0.2005
+    ],
+    [
+     -0.42,
+     0.1652
+    ],
+    [
+     -0.25,
+     0.1406
+    ],
+    [
+     -0.08,
+     0.1296
+    ],
+    [
+     0.04,
+     0.2009
+    ],
+    [
+     0.304,
+     0.2009
+    ],
+    [
+     0.4,
+     0.1205
+    ],
+    [
+     0.45,
+     0.0
+    ]
+   ],
+   "position": [
+    0.3182,
+    0.3182,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "engines_5",
+   "type": "profile",
+   "profile": [
+    [
+     -1.1,
+     0.36
+    ],
+    [
+     -0.93,
+     0.2986
+    ],
+    [
+     -0.76,
+     0.2452
+    ],
+    [
+     -0.59,
+     0.2005
+    ],
+    [
+     -0.42,
+     0.1652
+    ],
+    [
+     -0.25,
+     0.1406
+    ],
+    [
+     -0.08,
+     0.1296
+    ],
+    [
+     0.04,
+     0.2009
+    ],
+    [
+     0.304,
+     0.2009
+    ],
+    [
+     0.4,
+     0.1205
+    ],
+    [
+     0.45,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.3182,
+    0.3182,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "engines_6",
+   "type": "profile",
+   "profile": [
+    [
+     -1.1,
+     0.36
+    ],
+    [
+     -0.93,
+     0.2986
+    ],
+    [
+     -0.76,
+     0.2452
+    ],
+    [
+     -0.59,
+     0.2005
+    ],
+    [
+     -0.42,
+     0.1652
+    ],
+    [
+     -0.25,
+     0.1406
+    ],
+    [
+     -0.08,
+     0.1296
+    ],
+    [
+     0.04,
+     0.2009
+    ],
+    [
+     0.304,
+     0.2009
+    ],
+    [
+     0.4,
+     0.1205
+    ],
+    [
+     0.45,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.3182,
+    -0.3182,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "engines_7",
+   "type": "profile",
+   "profile": [
+    [
+     -1.1,
+     0.36
+    ],
+    [
+     -0.93,
+     0.2986
+    ],
+    [
+     -0.76,
+     0.2452
+    ],
+    [
+     -0.59,
+     0.2005
+    ],
+    [
+     -0.42,
+     0.1652
+    ],
+    [
+     -0.25,
+     0.1406
+    ],
+    [
+     -0.08,
+     0.1296
+    ],
+    [
+     0.04,
+     0.2009
+    ],
+    [
+     0.304,
+     0.2009
+    ],
+    [
+     0.4,
+     0.1205
+    ],
+    [
+     0.45,
+     0.0
+    ]
+   ],
+   "position": [
+    0.3182,
+    -0.3182,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "core_body_0",
+    "core_body_1",
+    "core_body_2"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "Wikipedia 'Soyuz-2' / 'Progress MS': as the crewed Soyuz-2.1a, Progress under a 2.7-3 m fairing without an escape tower, ~46 m"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey",
+    "copper",
+    "soot"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail); copper: copper-alloy chamber and bell (Raptor, Merlin), oxidised; soot: a nozzle's sooty inside",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

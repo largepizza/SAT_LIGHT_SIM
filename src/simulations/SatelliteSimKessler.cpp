@@ -35,7 +35,7 @@ constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 15; // (15: the deployment era: roster born / gone seconds, 2026-10-20; 14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
+constexpr uint32_t kCacheVersion = 16; // (16: the 2020 benchmark shells left out of the deployment era by default, 2026-10-21; 15: the deployment era: roster born / gone seconds, 2026-10-20; 14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
                                        // 12: steps on a fixed grid, seeded by their index; a step's events ordered)
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
@@ -1665,6 +1665,11 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     uint32_t *hdr = static_cast<uint32_t *>(kDustMapped);
     hdr[0] = 0;
     hdr[1] = 0; // the engine lights (engineLightsFlush)
+    {
+        // the frame's sky exposure (cloud_march.comp: the faint plumes' skip is in display units)
+        const float ex = skyExposure();
+        std::memcpy(&hdr[2], &ex, 4);
+    }
     GpuDustCloud *out = reinterpret_cast<GpuDustCloud *>(static_cast<char *>(kDustMapped) + 16);
     uint32_t n = 0;
     // Physical radiance (per unit solar irradiance, 1/sr) -> the sky's units, through the point sources' scale: a

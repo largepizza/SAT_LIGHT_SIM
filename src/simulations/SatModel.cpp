@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -647,6 +648,13 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             dp.pos = glm::dvec3(jsonVec3(jp, "position", glm::vec3(0.0f)));
             const glm::dvec3 ax = glm::dvec3(jsonVec3(jp, "axis", glm::vec3(1.0f, 0.0f, 0.0f)));
             dp.axis = glm::length(ax) > 1e-9 ? glm::normalize(ax) : glm::dvec3(1.0, 0.0, 0.0);
+            dp.use = jp.value("use", std::string("crew"));
+            if (jp.contains("since"))
+            {
+                dp.sinceDays = satDateToDays(jp["since"].get<std::string>());
+                if (std::isnan(dp.sinceDays))
+                    dp.sinceDays = -1e30;
+            }
             out.dockPorts.push_back(dp);
         }
         if (j.contains("deployment"))
@@ -852,6 +860,13 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             c.backMaterial = jc.contains("back_material") ? materialRef(jc["back_material"].get<std::string>()) : -1;
             c.group = groupRef(jc);
             c.renderOnly = jc.value("render_only", false);
+            if (jc.contains("since"))
+            {
+                // Built on a date (2026-10-21, stations module by module).
+                c.sinceDays = satDateToDays(jc["since"].get<std::string>());
+                if (std::isnan(c.sinceDays))
+                    throw std::runtime_error("component '" + c.name + "': since must be \"YYYY-MM-DD\"");
+            }
             if (jc.contains("stow"))
             {
                 // Stowed for launch (2026-10-19): packs toward stowRoot along stowAxis (rest body frame).
@@ -1217,6 +1232,7 @@ struct LobeAcc
     double sumT = 0.0;                              // area-weighted transmission (Phase 4f)
     double sumBeck = 0.0;                          // area of Beckmann faces
     int group = 0;
+    uint32_t since = 0; // build-date code (satSinceCode): lobes never merge across dates
     int material = -1; // -1 once lobes of different materials have been merged
     bool alive = true;
     std::vector<int> tris; // source triangles (occlusion sample points)
@@ -1245,7 +1261,7 @@ struct LobeAcc
 // closest normals.
 double mergeScore(const LobeAcc &a, const LobeAcc &b)
 {
-    if (a.group != b.group)
+    if (a.group != b.group || a.since != b.since)
         return -1e9;
     return glm::dot(a.dir(), b.dir()) - (a.material != b.material || a.material < 0 ? 2.5 : 0.0);
 }
@@ -1303,8 +1319,10 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
         const SatTri &t = tris[ti];
         const SatMaterial &mat = m.materials[t.material];
         LobeAcc *hit = nullptr;
+        const uint32_t since = t.component >= 0 && t.component < (int)m.components.size()
+                                   ? satSinceCode(m.components[t.component].sinceDays) : 0u;
         for (LobeAcc &a : acc)
-            if (a.group == t.group && a.material == t.material && glm::dot(a.dir(), t.n) > 0.99996)
+            if (a.group == t.group && a.since == since && a.material == t.material && glm::dot(a.dir(), t.n) > 0.99996)
             {
                 hit = &a;
                 break;
@@ -1318,6 +1336,7 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
         one.sumA2 = ((double)mat.roughness * mat.roughness + t.spread2) * t.area;
         one.sumBeck = mat.beckmann ? t.area : 0.0;
         one.group = t.group;
+        one.since = since;
         one.material = t.material;
         one.tris.push_back((int)ti);
         if (hit)
@@ -1356,7 +1375,7 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
             if (acc[i].alive && best[i] >= 0 && (bi < 0 || bestScore[i] > bestScore[bi]))
                 bi = i;
         if (bi < 0 || bestScore[bi] < -1e8)
-            break; // only cross-group pairs left — cannot merge further
+            break; // only cross-group (or cross-date) pairs left — cannot merge further
         int bj = best[bi];
         acc[bi].absorb(acc[bj]);
         acc[bj].alive = false;
@@ -1386,7 +1405,7 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
         L.sampleFirst = 0;
         L.sampleCount = 0;
         L.occluderMask = 0;
-        L.distribution = 2.0 * a.sumBeck > a.sumA ? 1u : 0u;
+        L.distribution = (2.0 * a.sumBeck > a.sumA ? 1u : 0u) | (a.since << 8);
         L.transmission = (float)(a.sumT / a.sumA);
         {
             // Stowed parts (2026-10-19): the area lost when fully stowed, and the window of the largest of them.
@@ -1432,7 +1451,7 @@ double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<Atti
     {
         glm::dvec3 n = bodyTriad(groups[attRootOf(groups, (int)L.group)]) * glm::dvec3(L.normalT);
         sum += lobeIntensity(glm::normalize(n), L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat + sourceAlpha2, s, o,
-                              L.distribution != 0, L.transmission);
+                              satLobeBeckmann(L), L.transmission);
     }
     return sum;
 }
@@ -1449,6 +1468,21 @@ static double stowSmooth(double p0, double p1, double P)
 {
     const double x = std::clamp((P - p0) / std::max(p1 - p0, 1e-6), 0.0, 1.0);
     return x * x * (3.0 - 2.0 * x);
+}
+
+double satDateToDays(const std::string &s)
+{
+    int y = 0, mo = 0, d = 0;
+    if (std::sscanf(s.c_str(), "%d-%d-%d", &y, &mo, &d) != 3 || mo < 1 || mo > 12 || d < 1 || d > 31)
+        return std::nan("");
+    // Days from the civil date (Howard Hinnant's days_from_civil), relative to 2000-01-01 12:00.
+    y -= mo <= 2;
+    const int era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153u * (unsigned)(mo + (mo > 2 ? -3 : 9)) + 2u) / 5u + (unsigned)d - 1u;
+    const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+    const long days1970 = (long)era * 146097L + (long)doe - 719468L;
+    return (double)(days1970 - 10957L) - 0.5;
 }
 
 double satLobeStowFactor(uint32_t stowPack, double P)
@@ -1476,7 +1510,7 @@ double satComponentStowScale(const SatComponent &c, double P)
 
 double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                          const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o, double sourceAlpha2,
-                         int *dominant, const SatOcclusion *occ, bool occludeSource, double unfold)
+                         int *dominant, const SatOcclusion *occ, bool occludeSource, double unfold, double buildDays)
 {
     double sum = 0.0, best = 0.0;
     int bestIdx = -1;
@@ -1485,11 +1519,14 @@ double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector
         const GpuSatLobe &L = lobes[li];
         glm::dvec3 nBody = bodyTriad(groups[attRootOf(groups, (int)L.group)]) * glm::dvec3(L.normalT);
         glm::dvec3 n = glm::normalize(poses[L.group].R * nBody);
+        const double pres = satLobePresence(L, unfold, buildDays);
+        if (pres <= 0.0)
+            continue;
         double I = lobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat + sourceAlpha2, s, o,
-                              L.distribution != 0, L.transmission);
+                              satLobeBeckmann(L), L.transmission);
         if (I > 0.0 && occ && li < occ->lobes.size())
             I *= satLobeVisibility(*occ, (int)li, (int)L.group, poses, s, occludeSource, o);
-        I *= satLobeStowFactor(L.stowPack, unfold);
+        I *= pres;
         sum += I;
         if (I > best)
         {
@@ -1518,7 +1555,7 @@ double satLobeEarthIntensity(glm::dvec3 n, double area, double diffArea, double 
 
 double evalSatLobesEarthPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                               const std::vector<GroupPose> &poses, const SatEarthLight &earth, glm::dvec3 o,
-                              const SatOcclusion *occ, double unfold)
+                              const SatOcclusion *occ, double unfold, double buildDays)
 {
     double sum = 0.0;
     for (size_t li = 0; li < lobes.size(); ++li)
@@ -1526,11 +1563,14 @@ double evalSatLobesEarthPosed(const std::vector<GpuSatLobe> &lobes, const std::v
         const GpuSatLobe &L = lobes[li];
         glm::dvec3 nBody = bodyTriad(groups[attRootOf(groups, (int)L.group)]) * glm::dvec3(L.normalT);
         glm::dvec3 n = glm::normalize(poses[L.group].R * nBody);
-        double I = satLobeEarthIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat, L.distribution != 0,
+        const double pres = satLobePresence(L, unfold, buildDays);
+        if (pres <= 0.0)
+            continue;
+        double I = satLobeEarthIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat, satLobeBeckmann(L),
                                          earth, o, L.transmission);
         if (I > 0.0 && occ && li < occ->lobes.size())
             I *= satLobeVisibility(*occ, (int)li, (int)L.group, poses, earth.dir, false, o);
-        sum += I * satLobeStowFactor(L.stowPack, unfold);
+        sum += I * pres;
     }
     return sum;
 }

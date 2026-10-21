@@ -425,8 +425,12 @@ struct GpuSatTypeHeader
     // constellation past the 32nd (its satellites read bit 0..31 of some other entry: constIdx & 31).
     uint32_t constEnabled[8];
     uint32_t constHighlight[8];
+    // Stations built module by module (2026-10-21): today in days since J2000 (1e9 = every part: the deployment era
+    // off). A lobe whose build-date code (GpuSatLobe::distribution bits 8-31) is later carries nothing.
+    float buildDays = 1e9f;
+    uint32_t padB0 = 0, padB1 = 0, padB2 = 0;
 };
-static_assert(sizeof(GpuSatTypeHeader) == 112, "GpuSatTypeHeader layout mismatch");
+static_assert(sizeof(GpuSatTypeHeader) == 128, "GpuSatTypeHeader layout mismatch");
 // The constellation index a satellite record carries is 8 bits wide (GpuSatOrbit::constIdx's low byte; Kessler
 // pool / launch records' typeConst word), so 256 constellations is the ceiling.
 static constexpr uint32_t kMaxConstellationBits = 256;
@@ -2819,7 +2823,8 @@ private:
     {
         uint64_t key = 0;   // stable over the object's life
         uint8_t kind = 0;   // 1 rocket stage, 2 ship entry, 3 retiree re-entry, 4 upper-stage re-entry, 5 Kessler
-                            // re-entry, 6 small fragment, 7 a payload fairing half (stage = the half, 0 / 1)
+                            // re-entry, 6 small fragment, 7 a payload fairing half (stage = the half, 0 / 1), 8 a
+                            // visiting spacecraft (crew / cargo), 9 a cargo ship's destructive re-entry (2026-10-21)
         uint8_t stage = 0;  // rockets: 0 booster, 1 upper; burn in burn
         uint8_t burn = 0;
         uint64_t a = 0;     // the batch key (1, 2, 4), the satellite (3, 5)
@@ -2925,8 +2930,34 @@ private:
     double engineAdaptPrevT = -1e30;
     uint32_t engineLightCount = 0;
     void engineLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double r0,
-                        const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround);
+                        const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround,
+                        double meshK = 1.0, const glm::dvec3 *meshPosEci = nullptr);
     void engineLightsFlush();
+    // (2026-10-21) Drops the plume Gaussians that cannot show (SatelliteSimLaunches.cpp): their summed worst case, as
+    // if all of them overlapped one pixel, stays under 2e-4 of white on screen and 1% of dimming.
+    void dustCullInsignificant(const GpuDustCloud *list, uint32_t n, std::vector<uint8_t> &drop);
+    // Knockout bit 33554432 = off (the A/B).
+    uint32_t plumesCulled = 0;       // this frame's (launch state: dust_list.culled)
+    glm::vec4 plumeCullStop{0.0f};   // the summed bounds where it stopped, and the next one's (light, dimming)
+    // The same lights on the MESHES (2026-10-21, sat_mesh.frag: a landing booster, a pad's tower, a droneship's deck
+    // lit by the floods and the burn): Earth-fixed positions, intensity (suns x m^2, lifted at night like the engine lights,
+    // before the eye's adaptation), colour and the source's soft radius. engineLightAdd adds a light here too
+    // (meshK x its intensity, at meshPosEci if given: a flame's light from just behind its nozzles); a pad's or a
+    // ship's individual floods are mesh-only (meshLightAdd: their single cloud light stands at the pad's centre).
+    // recordMeshScene takes the kMeshLocalLights most important to what the camera sees (last frame's list).
+    struct MeshLocalLight
+    {
+        glm::dvec3 ecef{0.0}; // Earth-fixed (taken at its frame's time: a pad's or a ship's floods stay put)
+        double I = 0.0;
+        glm::vec3 col{1.0f};
+        float rs = 1.0f;
+        glm::dvec3 aimEcef{0.0}; // a floodlight's aim (unit, Earth-fixed; 0 = all round)
+        float cosCut = -2.0f;     // ... and its beam: full inside acos(cosCut) - 10 deg, none past it
+    };
+    std::vector<MeshLocalLight> meshLights_, meshLightsPrev_;
+    float meshLightAdapt_ = 1.0f; // engineAdaptEased at the flush that made meshLightsPrev_
+    void meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double rs,
+                      const glm::dvec3 *aimEci = nullptr, double beamHalfDeg = 180.0);
     static double flameIntensitySunsM2(double mag100km);
     int launchAfterStorm = 0;        // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
     // The deployment era (2026-10-20, launches.deployment_era; launches.json "deployment" / "roster_history" / site and
@@ -2935,6 +2966,17 @@ private:
     // since kesslerEpoch(); INT32_MIN+1 / kNever = always) is uploaded after the Kessler roster words (sat_orbit.comp)
     // and read by the Kessler world (no collisions before a satellite exists). Off: everything always there (as before).
     bool launchDeployEra = true;
+    // launches.era_benchmark_shells (2026-10-21): the 2020 V1.0 / VisorSat benchmark shells in the era's sky (off: they
+    // are photometric references standing for Gen1 satellites the first fills already fly; Constellations > Benchmark).
+    bool launchEraBenchmarkShells = false;
+    // The share of roster satellites [i0, i1) there at t (the deployment era; 1 with it off): sorted born / gone seconds
+    // per range, cached until rosterLife changes. The ambience's closed-form shell counts scale by it.
+    double rosterRangePresentFrac(uint32_t i0, uint32_t i1, double t) const;
+    // A mesh instance's date (GpuMeshInstance::trans[0].w, instCompAbsent): today's build-date code with the deployment
+    // era on, 0 = every part (stations built module by module, 2026-10-21).
+    float meshBuildCode(double tJ2000) const { return launchDeployEra ? (float)(tJ2000 / 86400.0 + kSatSinceBias) : 0.0f; }
+    mutable std::unordered_map<uint64_t, std::pair<std::vector<int32_t>, std::vector<int32_t>>> rangeLifeCache_;
+    mutable uint64_t rangeLifeKey_ = 0;
     std::vector<int32_t> rosterLife;
     uint64_t rosterLifeKey = 0;      // what rosterLife was computed for (0 = not yet)
     uint64_t kLifeHashKey = 0;       // ... and what the running Kessler world was built with
@@ -2965,6 +3007,7 @@ private:
     static constexpr int kShipMeshSlots = 8;
     nlohmann::json launchShipsJson() const; // harness `launch ships`: the ships on station / heading home
     void launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // their meshes
+    double shipSeaState(const glm::dvec3 &ecefUnit) const; // the sea state at a ship (its swell; 1 = default)
     void launchFillShipLights();            // their lights at night (kFireBuf)
     void launchFillShipGlow(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // their lit decks
     // The next booster landing on a ship (harness `launch droneship`): the clock leadS before touchdown at 1x, the
@@ -3021,7 +3064,8 @@ private:
     // (2026-10-20) The next crew flight event (launch, sep, phasing, arrive, axis, hold400, hold200, hold20, dock,
     // undock, depart, deorbit, entry, chutes, splash) at a station whose name contains `station` (any if empty): the
     // clock leadS before it at 1x, its spacecraft (its rocket before the separation) selected and, follow, followed.
-    bool launchGoToCrew(const std::string &station, const std::string &event, double leadS, bool follow, std::string &msg);
+    bool launchGoToCrew(const std::string &station, const std::string &event, double leadS, bool follow, std::string &msg,
+                        const std::string &craft = std::string());
     void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
     void launchDestroy(VkDevice device);
 
@@ -3036,6 +3080,7 @@ private:
         double tA = 0.0;         // arrival (trains) / docking (crew)
         double sunElevDeg = 0.0; // the Sun at the pad at lift-off
         bool crew = false, twilight = false;
+        bool cargo = false;      // a cargo ship to a station (2026-10-21)
         bool firstFill = false;  // the deployment era: a plane's first fill (its slots were empty)
         int people = 0, payload = 0;
         std::string vehicle, program, site, target, spacecraft; // target: the constellation or the station
@@ -3696,7 +3741,7 @@ private:
     //
     // kDebugToggleSlots sizes hovDebugToggle[] and the accumulators below; the static_assert in
     // startKnockoutSweep() keeps it honest.
-    static constexpr int kDebugToggleSlots = 22;
+    static constexpr int kDebugToggleSlots = 24;
     static constexpr int kSweepSettleFrames = 6;  // discard after a mask change — covers the
                                                   // one-frame-stale timestamp readback plus a
                                                   // little driver/clock hysteresis
@@ -6469,6 +6514,7 @@ private:
     void createLightningResources(VulkanContext &ctx);
     void createLightningPipeline(VulkanContext &ctx);
     void writeLightningDescriptors(VulkanContext &ctx);
+    void writeLightningMeshDescriptor(VulkanContext &ctx);
     void destroyLightningResources(VkDevice device);
     void updateLightningBolts();
     void recordLightning(VkCommandBuffer cmd, VulkanContext &ctx);
