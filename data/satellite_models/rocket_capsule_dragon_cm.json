@@ -1,0 +1,330 @@
+{
+ "name": "dragon the crew / descent module alone (entry)",
+ "note": "Crew spacecraft render model (tools/make_crew_models.py), the crew / descent module alone (entry). Crew Dragon in orbit: the trunk (cells on half of it, four fins), the capsule, the docking ring; the nose cone hinged open forward. Body frame: +Z out of the docking port, origin at the port's contact point.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "dragon_capsule_0",
+   "type": "profile",
+   "profile": [
+    [
+     -3.43,
+     2.0
+    ],
+    [
+     -3.2,
+     2.0
+    ],
+    [
+     -0.5,
+     1.25
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "dragon_capsule_1",
+   "type": "profile",
+   "profile": [
+    [
+     -0.5,
+     1.25
+    ],
+    [
+     -0.3,
+     1.12
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "dragon_heat_shield_2",
+   "type": "profile",
+   "profile": [
+    [
+     -3.46,
+     1.98
+    ],
+    [
+     -3.42,
+     1.98
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "superdraco_pod_3",
+   "type": "box",
+   "size": [
+    0.25,
+    0.6,
+    0.9
+   ],
+   "position": [
+    1.149,
+    1.149,
+    -2.25
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    0.382683
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "superdraco_pod_4",
+   "type": "box",
+   "size": [
+    0.25,
+    0.6,
+    0.9
+   ],
+   "position": [
+    -1.149,
+    1.149,
+    -2.25
+   ],
+   "rotation_quat": [
+    0.382683,
+    0.0,
+    0.0,
+    0.92388
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "superdraco_pod_5",
+   "type": "box",
+   "size": [
+    0.25,
+    0.6,
+    0.9
+   ],
+   "position": [
+    -1.149,
+    -1.149,
+    -2.25
+   ],
+   "rotation_quat": [
+    -0.382683,
+    0.0,
+    0.0,
+    0.92388
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "superdraco_pod_6",
+   "type": "box",
+   "size": [
+    0.25,
+    0.6,
+    0.9
+   ],
+   "position": [
+    1.149,
+    -1.149,
+    -2.25
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    -0.382683
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "docking_ring_7",
+   "type": "profile",
+   "profile": [
+    [
+     -0.3,
+     0.62
+    ],
+    [
+     0.0,
+     0.62
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "nose_cone_8",
+   "type": "profile",
+   "profile": [
+    [
+     -0.3,
+     1.12
+    ],
+    [
+     -0.0306,
+     1.0921
+    ],
+    [
+     0.2229,
+     1.0115
+    ],
+    [
+     0.458,
+     0.8794
+    ],
+    [
+     0.6704,
+     0.6921
+    ],
+    [
+     0.8522,
+     0.4383
+    ],
+    [
+     0.9764,
+     0.1194
+    ],
+    [
+     0.9816,
+     0.0958
+    ],
+    [
+     0.9857,
+     0.0721
+    ],
+    [
+     0.9886,
+     0.0481
+    ],
+    [
+     0.9903,
+     0.0241
+    ],
+    [
+     0.9909,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "the sim hands in a full attitude (approach, docked, entry); this law is only its fallback",
+   "source": "SatelliteSimLaunches.cpp crew vehicles."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "dragon_capsule_0",
+    "dragon_capsule_1"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes estimated from photographs",
+   "source": "SpaceX Dragon page: 8.1 m tall with trunk, 4 m across; trunk 3.7 m with body-mounted solar cells on half its circumference; the nose cone hinges open to expose the docking adapter (IDSS) | Wikipedia 'SpaceX Dragon 2': four main parachutes, ~35 m across"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

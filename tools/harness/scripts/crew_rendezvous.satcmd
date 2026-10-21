@@ -1,0 +1,65 @@
+# A Crew Dragon from lift-off to docking with the ISS and home again, followed at warp (2026-10-20, issue
+# 20261020_214759; CLAUDE.md Launches > "Crew spacecraft fly as their own objects"). Follow rides the stack, the upper
+# stage, then the spacecraft from its separation (the handover), through the phasing burns, the approach and its holds,
+# docked, then undocking, the deorbit, the entry and the splashdown. `launch state` -> crew_vehicles at each step.
+#   python tools/harness/run.py tools/harness/scripts/crew_rendezvous.satcmd
+time set 2027-08-30T11:00:00Z
+wait 5
+launch crew station=International event=launch lead=20 follow=1
+wait 40
+capture cr00_liftoff
+time scale 1m
+wait 600
+state cr01_after_sep
+capture cr01_after_sep
+missions milestone list
+time scale 1h
+wait 240
+state cr02_phasing
+capture cr02_phasing
+# the approach at 1x from its start (the jump keeps Go to on the spacecraft)
+launch crew station=International event=arrive lead=-120 follow=1
+wait 60
+capture cr03_far
+launch crew station=International event=hold400 lead=-60 follow=1
+follow offset=-60,-260,40
+follow aim=sat
+wait 60
+capture cr04_hold400
+launch crew station=International event=hold20 lead=-60 follow=1
+follow offset=-20,-60,10
+follow aim=sat
+wait 60
+capture cr05_hold20
+launch crew station=International event=dock lead=30 follow=1
+time scale 10x
+wait 300
+state cr06_docked
+follow offset=-10,-45,12
+follow aim=sat
+wait 30
+capture cr06_docked
+missions milestone next
+wait 30
+missions milestone list
+# undocking six months on, then home at warp
+launch crew station=International event=undock lead=60 follow=1
+follow offset=-10,-45,12
+follow aim=sat
+time scale 10x
+wait 900
+state cr07_backout
+capture cr07_backout
+time scale 1m
+wait 2000
+state cr08_departed
+launch crew station=International event=entry lead=-150 follow=1
+wait 60
+capture cr09_entry
+launch crew station=International event=splash lead=120 follow=1
+follow offset=-30,-80,20
+follow aim=sat
+wait 60
+capture cr10_chutes
+launch state
+launch check

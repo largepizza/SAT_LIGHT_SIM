@@ -1,6 +1,6 @@
 {
     "name": "Axiom Station (free-flying, five modules)",
-    "note": "Station art pass 2026-10-20 (tools/make_station_models.py), after Axiom's renders: universal modules ~11 x 4.2 m with a curved body-mounted solar panel over the zenith half of the hull, in a line along velocity (PPTM forward, Hab-1, Hab-2, the RMF with its glass Earth Observatory), the Airlock on Hab-1's port radial port; the PPTM carries two ISS-style flexible (Kapton) wings on masts that turn about the cross-track axis, and the RMF radiators turned edge-on to the Sun. Body frame: +X along velocity, +Z nadir. Detail: ports, a docked Dragon, a Canadarm-class arm, dishes.",
+    "note": "Station art pass 2026-10-20 (tools/make_station_models.py), after Axiom's renders: universal modules ~11 x 4.2 m with a curved body-mounted solar panel over the zenith half of the hull, in a line along velocity (PPTM forward, Hab-1, Hab-2, the RMF with its glass Earth Observatory), the Airlock on Hab-1's port radial port; the PPTM carries two ISS-style flexible (Kapton) wings on masts that turn about the cross-track axis, and the RMF radiators turned edge-on to the Sun. Body frame: +X along velocity, +Z nadir. Detail: ports (crew docking ports for the sim's Dragons), a Canadarm-class arm, dishes.",
     "materials": [
         {
             "name": "module_skin",
@@ -94,7 +94,7 @@
                 "axis": [0, 1, 0]
             },
             "joint": {
-                "mode": "edge_on",
+                "mode": "edge_on_continuous",
                 "vector": [0, 0, 1],
                 "target": "sun"
             }
@@ -463,41 +463,6 @@
             "render_only": true
         },
         {
-            "name": "dragon_trunk",
-            "type": "profile",
-            "profile": [[0.0, 1.85], [2.8, 1.85]],
-            "position": [24.15, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "bottom",
-            "material": "dragon_white",
-            "arc_material": "cells",
-            "arc_deg": [0, 180],
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "dragon_capsule",
-            "type": "profile",
-            "profile": [[0.0, 1.95], [0.15, 1.95], [2.4, 1.25], [2.9, 0.95], [3.3, 0.55]],
-            "position": [21.35, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "top",
-            "material": "dragon_white",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "dragon_nose",
-            "type": "profile",
-            "profile": [[0.0, 0.55], [0.35, 0.45]],
-            "position": [18.05, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "top",
-            "material": "metal",
-            "group": "station",
-            "render_only": true
-        },
-        {
             "name": "port_aft",
             "type": "profile",
             "profile": [[0.0, 0.75], [0.7, 0.75]],
@@ -733,6 +698,18 @@
                 "gold",
                 "dragon_white"
             ]
+        }
+    ],
+    "docking_ports": [
+        {
+            "name": "port_fwd",
+            "position": [17.7, 0.0, 0.0],
+            "axis": [1.0, 0.0, 0.0]
+        },
+        {
+            "name": "port_zenith_0",
+            "position": [0.0, 0.0, -2.5],
+            "axis": [0.0, 0.0, -1.0]
         }
     ]
 }

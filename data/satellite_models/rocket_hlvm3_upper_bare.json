@@ -1,0 +1,659 @@
+{
+ "name": "hlvm3 upper_bare",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), hlvm3: upper_bare. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Crew escape system and shroud lengths estimated from the TV-D1 / G1 imagery. Shown after fairing separation.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  },
+  {
+   "name": "cells",
+   "preset": "solar_cell"
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "upper_nozzle_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     1.0
+    ],
+    [
+     0.2947,
+     0.8294
+    ],
+    [
+     0.5893,
+     0.6812
+    ],
+    [
+     0.884,
+     0.557
+    ],
+    [
+     1.1787,
+     0.4589
+    ],
+    [
+     1.4733,
+     0.3904
+    ],
+    [
+     1.768,
+     0.36
+    ],
+    [
+     1.976,
+     0.558
+    ],
+    [
+     2.4336,
+     0.558
+    ],
+    [
+     2.6,
+     0.3348
+    ],
+    [
+     2.65,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_1",
+   "type": "profile",
+   "profile": [
+    [
+     2.0,
+     2.0
+    ],
+    [
+     15.0,
+     2.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_2",
+   "type": "profile",
+   "profile": [
+    [
+     1.95,
+     1.96
+    ],
+    [
+     1.99,
+     1.96
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "payload_adapter_3",
+   "type": "profile",
+   "profile": [
+    [
+     15.01,
+     1.94
+    ],
+    [
+     15.55,
+     0.8
+    ],
+    [
+     15.6,
+     0.8
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "separation_ring_4",
+   "type": "profile",
+   "profile": [
+    [
+     15.5,
+     0.83
+    ],
+    [
+     15.62,
+     0.83
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "service_module_5",
+   "type": "profile",
+   "profile": [
+    [
+     15.62,
+     1.95
+    ],
+    [
+     18.52,
+     1.95
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "sm_engines_6",
+   "type": "profile",
+   "profile": [
+    [
+     15.32,
+     0.14
+    ],
+    [
+     15.3653,
+     0.1161
+    ],
+    [
+     15.4107,
+     0.0954
+    ],
+    [
+     15.456,
+     0.078
+    ],
+    [
+     15.5013,
+     0.0642
+    ],
+    [
+     15.5467,
+     0.0547
+    ],
+    [
+     15.592,
+     0.0504
+    ],
+    [
+     15.624,
+     0.0781
+    ],
+    [
+     15.6944,
+     0.0781
+    ],
+    [
+     15.72,
+     0.0469
+    ],
+    [
+     15.77,
+     0.0
+    ]
+   ],
+   "position": [
+    1.2,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "sm_engines_7",
+   "type": "profile",
+   "profile": [
+    [
+     15.32,
+     0.14
+    ],
+    [
+     15.3653,
+     0.1161
+    ],
+    [
+     15.4107,
+     0.0954
+    ],
+    [
+     15.456,
+     0.078
+    ],
+    [
+     15.5013,
+     0.0642
+    ],
+    [
+     15.5467,
+     0.0547
+    ],
+    [
+     15.592,
+     0.0504
+    ],
+    [
+     15.624,
+     0.0781
+    ],
+    [
+     15.6944,
+     0.0781
+    ],
+    [
+     15.72,
+     0.0469
+    ],
+    [
+     15.77,
+     0.0
+    ]
+   ],
+   "position": [
+    0.3708,
+    1.1413,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "sm_engines_8",
+   "type": "profile",
+   "profile": [
+    [
+     15.32,
+     0.14
+    ],
+    [
+     15.3653,
+     0.1161
+    ],
+    [
+     15.4107,
+     0.0954
+    ],
+    [
+     15.456,
+     0.078
+    ],
+    [
+     15.5013,
+     0.0642
+    ],
+    [
+     15.5467,
+     0.0547
+    ],
+    [
+     15.592,
+     0.0504
+    ],
+    [
+     15.624,
+     0.0781
+    ],
+    [
+     15.6944,
+     0.0781
+    ],
+    [
+     15.72,
+     0.0469
+    ],
+    [
+     15.77,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.9708,
+    0.7053,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "sm_engines_9",
+   "type": "profile",
+   "profile": [
+    [
+     15.32,
+     0.14
+    ],
+    [
+     15.3653,
+     0.1161
+    ],
+    [
+     15.4107,
+     0.0954
+    ],
+    [
+     15.456,
+     0.078
+    ],
+    [
+     15.5013,
+     0.0642
+    ],
+    [
+     15.5467,
+     0.0547
+    ],
+    [
+     15.592,
+     0.0504
+    ],
+    [
+     15.624,
+     0.0781
+    ],
+    [
+     15.6944,
+     0.0781
+    ],
+    [
+     15.72,
+     0.0469
+    ],
+    [
+     15.77,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.9708,
+    -0.7053,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "sm_engines_10",
+   "type": "profile",
+   "profile": [
+    [
+     15.32,
+     0.14
+    ],
+    [
+     15.3653,
+     0.1161
+    ],
+    [
+     15.4107,
+     0.0954
+    ],
+    [
+     15.456,
+     0.078
+    ],
+    [
+     15.5013,
+     0.0642
+    ],
+    [
+     15.5467,
+     0.0547
+    ],
+    [
+     15.592,
+     0.0504
+    ],
+    [
+     15.624,
+     0.0781
+    ],
+    [
+     15.6944,
+     0.0781
+    ],
+    [
+     15.72,
+     0.0469
+    ],
+    [
+     15.77,
+     0.0
+    ]
+   ],
+   "position": [
+    0.3708,
+    -1.1413,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "sm_array_folded_11",
+   "type": "box",
+   "size": [
+    0.2,
+    2.0,
+    2.6
+   ],
+   "position": [
+    0.0,
+    2.05,
+    17.07
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    -0.0,
+    0.707107
+   ],
+   "material": "cells",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "sm_array_folded_12",
+   "type": "box",
+   "size": [
+    0.2,
+    2.0,
+    2.6
+   ],
+   "position": [
+    -0.0,
+    -2.05,
+    17.07
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    0.0,
+    -0.707107
+   ],
+   "material": "cells",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "crew_module_13",
+   "type": "profile",
+   "profile": [
+    [
+     18.52,
+     1.75
+    ],
+    [
+     18.77,
+     1.75
+    ],
+    [
+     21.22,
+     0.75
+    ],
+    [
+     21.62,
+     0.55
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "upper_tank_1",
+    "service_module_5",
+    "crew_module_13"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "ISRO / Wikipedia 'LVM3' (HLVM3, the human-rated variant): as LVM3, 53 m with the crew escape system; a crew-module fairing (CMF) over the Gaganyaan orbital module"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey",
+    "nozzle",
+    "soot",
+    "cells"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside; cells: Crew Dragon trunk's body-mounted solar cells; a crewed spacecraft's folded arrays",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

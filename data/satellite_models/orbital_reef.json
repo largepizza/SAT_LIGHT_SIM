@@ -93,7 +93,7 @@
                 "axis": [0, 1, 0]
             },
             "joint": {
-                "mode": "edge_on",
+                "mode": "edge_on_continuous",
                 "vector": [0, 0, 1],
                 "target": "sun"
             }
@@ -749,6 +749,18 @@
                 "glass",
                 "dragon_white"
             ]
+        }
+    ],
+    "docking_ports": [
+        {
+            "name": "port_fwd",
+            "position": [24.0, 0.0, 0.0],
+            "axis": [1.0, 0.0, 0.0]
+        },
+        {
+            "name": "port_nadir",
+            "position": [4.0, 0.0, 4.0],
+            "axis": [0.0, 0.0, 1.0]
         }
     ]
 }

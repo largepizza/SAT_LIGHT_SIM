@@ -433,6 +433,7 @@ const uint JOINT_TRACK      = 1u;
 const uint JOINT_EDGE_ON    = 2u;
 const uint JOINT_FIXED      = 3u;
 const uint JOINT_FLARE_TILT = 4u;
+const uint JOINT_EDGE_ON_CONT = 5u; // EdgeOn on one branch: continuous in time (SatModel.h EdgeOnContinuous)
 
 const uint ATT_NO_PARENT = 0xFFFFFFFFu;
 
@@ -557,6 +558,8 @@ mat3 groupFrame(AttGroup g, mat3 parentF, SatOrbit orb, vec3 nadir, vec3 vel, ve
         float b   = dot(tgt, cross(k, jv));
         if (g.jointMode == JOINT_TRACK) {
             theta = atan(b, a); // maximises jv·tgt
+        } else if (g.jointMode == JOINT_EDGE_ON_CONT) {
+            theta = atan(-a, b); // one branch (k x jv toward tgt): +-pi is the same pose, so no flip
         } else {
             // JOINT_EDGE_ON (legacy KnifeEdge): jv ⊥ tgt has two solutions π apart — take the
             // smaller rotation, exactly as the old roll solver did.
@@ -599,7 +602,7 @@ bool typeUsesGroundSite(uint typeIdx)
         if (g.law != ATT_LAW_TWO_VECTOR) continue;
         if (g.primaryTarget == ATT_T_SUN_REFLECT_SITE || g.secondaryTarget == ATT_T_SUN_REFLECT_SITE)
             return true;
-        if ((g.jointMode == JOINT_TRACK || g.jointMode == JOINT_EDGE_ON) &&
+        if ((g.jointMode == JOINT_TRACK || g.jointMode == JOINT_EDGE_ON || g.jointMode == JOINT_EDGE_ON_CONT) &&
             g.jointTarget == ATT_T_SUN_REFLECT_SITE)
             return true;
     }

@@ -197,6 +197,7 @@ bool Catalog::load(const std::string &path, std::string &err)
                 vh.fairingCenter = glm::dvec3(v["fairing_center_m"][0].get<double>(), v["fairing_center_m"][1].get<double>(),
                                               v["fairing_center_m"][2].get<double>());
             vh.doorM = v.value("door_m", vh.doorM);
+            vh.spacecraftDockM = v.value("spacecraft_dock_m", vh.spacecraftDockM);
             vh.droneDistKm = std::max(v.value("droneship_km", vh.droneDistKm), 0.0);
             vh.rtlsMaxKg = std::max(v.value("rtls_max_kg", vh.rtlsMaxKg), 0.0);
             if (v.contains("landing_ships"))
@@ -276,6 +277,8 @@ bool Catalog::load(const std::string &path, std::string &err)
                 pg.crew = true;
                 pg.spacecraft = cr.value("spacecraft", std::string("crew capsule"));
                 pg.people = cr.value("people", 3);
+                pg.crewModel = cr.value("model", std::string());
+                pg.crewLands = cr.value("lands", false);
             }
             if (p.contains("stack"))
             {

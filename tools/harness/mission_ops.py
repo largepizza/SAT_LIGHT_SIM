@@ -20,7 +20,7 @@ every check with its value, limit, status), report.md and report.html (the matri
 --captures captures/<combo>/*.png + sheets/<combo>.png (contact sheets: one tile per phase, follow + wide views).
 
 Statuses: PASS, FAIL, WARN (outside the limit in a part another agent owns, e.g. the booster's landing burn
-physics: reported, not failed), SKIP (not modelled yet: docking), N/A (the phase does not exist for this launch),
+physics: reported, not failed), SKIP (a crew flight whose spacecraft has no model), N/A (the phase does not exist for this launch),
 NOT FOUND (no launch of the pair in the search window).
 """
 import argparse
@@ -90,6 +90,20 @@ THRESHOLDS = [
     ("retiree_deorbit", "start_vel_err_m_s_max", "<", 1.0, "", "at the slot's velocity"),
     ("retiree_deorbit", "end_alt_km_max", "range", [190.0, 215.0], "", "lowered to ~200 km before re-entry"),
     ("retiree_deorbit", "max_rise_m", "<", 100.0, "", "the deorbit never climbs"),
+    # Crew spacecraft (2026-10-20, CLAUDE.md Launches > "Crew spacecraft fly as their own objects").
+    ("docking", "sep_offset_m", "<", 1.0, "", "the spacecraft separates from its place on the upper stage"),
+    ("docking", "hours_after_launch", "range", [2.0, 72.0], "", "docks hours to a few days after lift-off (phasing)"),
+    ("docking", "arrival_range_to_station_km", "range", [3.0, 8.0], "", "the phasing ends ~5 km behind the station"),
+    ("docking", "hold400_range_m", "range", [390.0, 410.0], "", "holds 400 m out on the port's axis"),
+    ("docking", "hold200_range_m", "range", [190.0, 210.0], "", "holds 200 m out"),
+    ("docking", "hold20_range_m", "range", [15.0, 25.0], "", "holds 20 m out"),
+    ("docking", "dock_contact_m", "<", 0.5, "", "contact at the station model's docking port"),
+    ("docking", "docked_after_60s", "true", None, "", "docked after contact"),
+    ("docking", "docked_mid_stay", "true", None, "", "still docked months later (rides with the station)"),
+    ("docking", "undocked_after", "true", None, "", "undocks and backs out at its departure"),
+    ("docking", "docked_days", "range", [1.0, 400.0], "", "stays docked for the rotation"),
+    ("docking", "accel_max_mps2", "<", 200.0, "", "no position jumps at any seam (burns and the entry: tens to ~120 m/s^2)"),
+    ("docking", "turn_max_deg_s", "<", 15.0, "", "turns smoothly (no half-turn flips)"),
     ("upper_deorbit", "nose_from_retrograde_deg", "<", 15.0, "", "burns retrograde"),
     ("upper_deorbit", "nose_max_deg_s", "<", 6.0, "", "turns smoothly before and after the burn"),
     ("upper_deorbit", "burn_max_proper_accel_m_s2", "<", 100.0, "", "no jump in the deorbit burn (the smoothstep blend peaks at ~4x dv / burn)"),
@@ -160,7 +174,7 @@ def evaluate_trace(tr):
             continue
         if ph == "docking" and not po.get("modelled", False):
             res["status"] = "SKIP"
-            res["note"] = "capsule rendezvous / docking not modelled yet (another agent is building it)"
+            res["note"] = "this crew flight has no spacecraft model (launches.json crew \"model\")"
             res["metrics"] = {k: v for k, v in po.items() if k not in ("t", "utc")}
             out[ph] = res
             continue

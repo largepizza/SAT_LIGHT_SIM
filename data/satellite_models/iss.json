@@ -111,7 +111,7 @@
                 "axis": [0, 1, 0]
             },
             "joint": {
-                "mode": "edge_on",
+                "mode": "edge_on_continuous",
                 "vector": [0, 0, 1],
                 "target": "sun"
             }
@@ -817,92 +817,13 @@
             "render_only": true
         },
         {
-            "name": "gb_dragon_trunk",
+            "name": "gb_pma3",
             "type": "profile",
-            "profile": [[0.0, 1.85], [2.8, 1.85]],
-            "position": [20.55, 0.0, 5.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "bottom",
-            "material": "dragon_white",
-            "arc_material": "cells",
-            "arc_deg": [0, 180],
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_dragon_capsule",
-            "type": "profile",
-            "profile": [[0.0, 1.95], [0.15, 1.95], [2.4, 1.25], [2.9, 0.95], [3.3, 0.55]],
-            "position": [17.75, 0.0, 5.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "top",
-            "material": "dragon_white",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_dragon_nose",
-            "type": "profile",
-            "profile": [[0.0, 0.55], [0.35, 0.45]],
-            "position": [14.45, 0.0, 5.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "top",
-            "material": "metal",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_soyuz_service",
-            "type": "profile",
-            "profile": [[0.0, 1.35], [0.6, 1.36], [2.9, 1.1]],
-            "position": [-16.18, 0.0, 21.25],
-            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
-            "caps": "bottom",
-            "material": "module_skin",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_soyuz_descent",
-            "type": "profile",
-            "profile": [[0.0, 1.1], [1.8, 1.0], [2.2, 0.5]],
-            "position": [-16.18, 0.0, 18.35],
+            "profile": [[0.0, 1.0], [1.4, 0.85], [1.9, 0.8]],
+            "position": [8.6, 0.0, 2.8],
             "rotation_quat": [0.0, 1.0, 0.0, 0.0],
             "caps": false,
-            "material": "module_skin",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_soyuz_orbital",
-            "type": "profile",
-            "profile": [[0.0, 0.6], [0.4, 1.05], [1.2, 1.1], [2.0, 1.0], [2.4, 0.5]],
-            "position": [-16.18, 0.0, 16.15],
-            "rotation_quat": [0.0, 1.0, 0.0, 0.0],
-            "caps": "top",
-            "material": "module_skin",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_soyuz_wing_p",
-            "type": "plane",
-            "size": [1.6, 4.0],
-            "position": [-16.18, -3.56, 19.85],
-            "rotation_quat": [0.0, 0.707107, 0.0, 0.707107],
-            "material": "cells",
-            "back_material": "cells_back",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_soyuz_wing_m",
-            "type": "plane",
-            "size": [1.6, 4.0],
-            "position": [-16.18, 3.56, 19.85],
-            "rotation_quat": [0.707107, -0.0, 0.707107, 0.0],
-            "material": "cells",
-            "back_material": "cells_back",
+            "material": "metal",
             "group": "station",
             "render_only": true
         },
@@ -1318,22 +1239,18 @@
             "status": "estimate",
             "value": "the solar_cell_flex preset, darker blue tint",
             "source": "iROSA cells are multi-junction cells on a flexible blanket; no published reflectance. Visual tint only."
+        }
+    ],
+    "docking_ports": [
+        {
+            "name": "ida2_harmony_fwd",
+            "position": [14.1, 0.0, 5.0],
+            "axis": [1.0, 0.0, 0.0]
         },
         {
-            "subjects": [
-                "module_skin",
-                "cells",
-                "cells_back",
-                "metal",
-                "dark",
-                "glass",
-                "gold",
-                "dragon_white",
-                "cn_green"
-            ],
-            "status": "estimate",
-            "value": "render-only detail materials (tools/make_station_models.py)",
-            "source": "white beta-cloth / MMOD blanket exterior (albedo 0.6), panel seams for the shield panels; rigid solar array, cells under cover glass; rigid array substrate back; bare metal fittings; black paint; window glass; gold MLI; Dragon's white paint; Shenzhou's grey-green paint"
+            "name": "ida3_harmony_zenith",
+            "position": [8.6, 0.0, 0.9],
+            "axis": [0.0, 0.0, -1.0]
         }
     ]
 }

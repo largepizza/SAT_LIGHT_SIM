@@ -1,0 +1,200 @@
+{
+ "name": "shenzhou the descent module under its main parachutes",
+ "note": "Crew spacecraft render model (tools/make_crew_models.py), the descent module under its main parachutes. Shenzhou in orbit: orbital module forward (docking), descent module, service module and its two pairs of wings. Body frame: +Z out of the docking port, origin at the port's contact point.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "descent_module_0",
+   "type": "profile",
+   "profile": [
+    [
+     -5.2,
+     1.25
+    ],
+    [
+     -4.95,
+     1.25
+    ],
+    [
+     -3.355,
+     0.6875
+    ],
+    [
+     -3.15,
+     0.4375
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body"
+  },
+  {
+   "name": "heat_shield_1",
+   "type": "profile",
+   "profile": [
+    [
+     -5.22,
+     1.225
+    ],
+    [
+     -5.18,
+     1.225
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "canopy_2",
+   "type": "profile",
+   "profile": [
+    [
+     36.85,
+     18.0
+    ],
+    [
+     39.4123,
+     17.3867
+    ],
+    [
+     41.8,
+     15.5885
+    ],
+    [
+     43.8504,
+     12.7279
+    ],
+    [
+     45.4237,
+     9.0
+    ],
+    [
+     46.4127,
+     4.6587
+    ],
+    [
+     46.75,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "inner_material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "riser_3",
+   "type": "profile",
+   "profile": [
+    [
+     -3.15,
+     0.05
+    ],
+    [
+     36.85,
+     0.05
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "the sim hands in a full attitude (approach, docked, entry); this law is only its fallback",
+   "source": "SatelliteSimLaunches.cpp crew vehicles."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "descent_module_0"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes estimated from photographs",
+   "source": "Wikipedia 'Shenzhou (spacecraft)': service module 2.8 m x 2.9 m, descent module 2.5 m across, orbital module 2.25 m x 2.8 m with the docking mechanism forward, two pairs of service-module solar wings (~17 m tip to tip); one main parachute (1200 m2)"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

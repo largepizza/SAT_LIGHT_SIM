@@ -156,6 +156,7 @@ class Station:
         self.c = []
         self.sources = []
         self.extra_mats = []
+        self.ports = []  # docking ports a crew spacecraft can use (the sim's crew rotations: "docking_ports")
 
     # Groups ------------------------------------------------------------------------------------------------
     def arrays(self, name, axis, vector=(0, 0, -1)):
@@ -169,7 +170,7 @@ class Station:
         """Radiators turned about a body axis to stay edge-on to the Sun (the ISS's TRRJ scheme)."""
         self.groups.append({"name": name, "parent": "station",
                             "hinge": {"position": [0, 0, 0], "axis": AX[axis]},
-                            "joint": {"mode": "edge_on", "vector": [0, 0, 1], "target": "sun"}})
+                            "joint": {"mode": "edge_on_continuous", "vector": [0, 0, 1], "target": "sun"}})
 
     # Primitives --------------------------------------------------------------------------------------------
     def add(self, d, group="station", ro=False, pivot=None):
@@ -273,12 +274,22 @@ class Station:
                    abs(a[1]) * 0.5 + abs(a[0]) * (2 * blanket_w + gap), 0.5]
             self.box(name + "_box_" + end, add(root, a, off), bsz, "gold", group, pivot=axis_pt)
 
-    def port(self, name, base, axis, r=0.8, length=0.7, ring=True):
-        """A docking / berthing port: a short barrel and a lip ring."""
+    def port(self, name, base, axis, r=0.8, length=0.7, ring=True, dock=False):
+        """A docking / berthing port: a short barrel and a lip ring. dock: a crew spacecraft docks here (the sim's
+        crew rotations, 2026-10-20: the contact point is the barrel's end)."""
         self.prof(name, base, axis, [[0, r], [length, r]], "metal", ro=True, caps="top")
+        if dock:
+            self.dock(name, add(base, AX[axis] if isinstance(axis, str) else norm(axis), length), axis)
         if ring:
             self.prof(name + "_ring", add(base, AX[axis] if isinstance(axis, str) else axis, length - 0.12),
                       axis, [[0, r + 0.12], [0.12, r + 0.12]], "metal", ro=True, caps="both")
+
+    def dock(self, name, tip, axis):
+        """A docking port's contact point (station body frame) and its outward axis, for the sim's crew vehicles.
+        Visiting crew spacecraft are NOT modelled on the station any more (they were render-only greebles): the sim
+        flies real ones there and draws them docked."""
+        a = AX[axis] if isinstance(axis, str) else norm(axis)
+        self.ports.append({"name": name, "position": r4(tip), "axis": r4(a)})
 
     def dish(self, name, base, axis, r, mast=1.0):
         """A dish antenna on a mast: the mast from `base` along `axis`, the dish facing further out."""
@@ -372,8 +383,11 @@ class Station:
                 k += 1
                 c["name"] = "%s_%d" % (n, k)
             names.add(c["name"])
-        return {"name": self.name, "note": self.note, "materials": mats, "attitude_groups": self.groups,
-                "components": self.c, "sources": self.sources}
+        out = {"name": self.name, "note": self.note, "materials": mats, "attitude_groups": self.groups,
+               "components": self.c, "sources": self.sources}
+        if self.ports:
+            out["docking_ports"] = self.ports
+        return out
 
     def write(self, refs):
         path = os.path.join(OUT, self.sid + ".json")
@@ -416,7 +430,7 @@ def haven1():
     s = Station("haven1", "Vast Haven-1",
                 "Station art pass 2026-10-20 (tools/make_station_models.py). Body frame: +X along velocity, +Z "
                 "nadir. One 10.1 x 4.4 m module: a cylindrical hull and a conical forward end to the docking port "
-                "(a Crew Dragon drawn docked there, render-only); two rigid wings on yokes at the aft end turn "
+                "(the sim docks its Crew Dragons there); two rigid wings on yokes at the aft end turn "
                 "about the cross-track axis. Detail: berthing ring, nadir dome window, RCS pods, dish, radiator "
                 "panels, MMOD bands.")
     s.arrays("arrays", "+y")
@@ -429,8 +443,7 @@ def haven1():
                [x0 + 1.9, 0, 0], boom=0.7)
     s.source(["array_starboard", "array_port"], "estimate", "two rigid wings 3.2 x 7.8 m (50 m2) at the aft end",
              "Vast renders show two wings at the aft end; their size is not published (estimated from the renders).")
-    s.port("dock_fwd", [x0 + L, 0, 0], "+x", r=0.75, length=0.6)
-    s.dragon("dragon", [x0 + L + 0.6, 0, 0], "-x")
+    s.port("dock_fwd", [x0 + L, 0, 0], "+x", r=0.75, length=0.6, dock=True)
     s.prof("aft_bulkhead", [x0 - 0.4, 0, 0], "+x", [[0, 1.5], [0.4, 2.0]], "metal", ro=True, caps="bottom")
     s.prof("aft_engine", [x0 - 0.9, 0, 0], "+x", [[0, 0.35], [0.5, 0.18]], "dark", ro=True)
     s.dish("hga", [x0 + 0.8, 0, -R], "-z", 0.55, mast=0.7)
@@ -456,7 +469,7 @@ def haven2():
                 "orbit-horizontal plane, each with its own pair of wings near its outer end (the +-X spokes' wings "
                 "along +-Y turn about Y, the +-Y spokes' along +-X turn about X), four radiator fins on the core "
                 "between the spokes, an airlock on the core's zenith port. Body frame: +X along velocity, +Z nadir. "
-                "Detail: windows, ports, a docked Dragon, dishes, bands.")
+                "Detail: windows, ports (two crew docking ports: the sim docks real Crew Dragons there), dishes, bands.")
     s.arrays("arrays_y", "+y")
     s.arrays("arrays_x", "+x")
     Rc, Hc, R, L = 3.5, 9.0, 2.2, 16.0
@@ -473,7 +486,7 @@ def haven2():
         s.prof("adapter_" + tag, [(Rc - 0.2) * d[0], (Rc - 0.2) * d[1], 0], d, [[0, 1.1], [0.8, 1.1]],
                "metal", ro=True)
         tip = d0 + L
-        s.port("port_" + tag, [tip * d[0], tip * d[1], 0], d, r=0.75, length=0.55)
+        s.port("port_" + tag, [tip * d[0], tip * d[1], 0], d, r=0.75, length=0.55, dock=tag in ("fwd", "aft"))
         wc = d0 + L - 3.0
         if d[1] == 0:
             for along, sg in (("+y", 1), ("-y", -1)):
@@ -507,7 +520,6 @@ def haven2():
         fins.append(n)
     s.source(fins, "estimate", "four radiator fins 7 x 6.5 m on the core between the spokes",
              "Concept art places the radiators on the core; size estimated.")
-    s.dragon("dragon", [d0 + L + 0.55, 0, 0], "-x")
     s.dish("hga_1", [1.5, 0, -0.5 * Hc - 0.1], [0.5, 0.5, -0.7], 0.7, mast=2.0)
     s.dish("hga_2", [0, 0, 0.5 * Hc], [0, 0, 1], 0.5, mast=0.8)
     s.prof("airlock_hatch", [0, 0, -0.5 * Hc - 3.2], "-z", [[0, 1.0], [0.3, 0.9], [0.4, 0.0]], "metal", ro=True)
@@ -522,7 +534,7 @@ def axiom():
                 "line along velocity (PPTM forward, Hab-1, Hab-2, the RMF with its glass Earth Observatory), the "
                 "Airlock on Hab-1's port radial port; the PPTM carries two ISS-style flexible (Kapton) wings on "
                 "masts that turn about the cross-track axis, and the RMF radiators turned edge-on to the Sun. Body "
-                "frame: +X along velocity, +Z nadir. Detail: ports, a docked Dragon, a Canadarm-class arm, dishes.")
+                "frame: +X along velocity, +Z nadir. Detail: ports (crew docking ports for the sim's Dragons), a Canadarm-class arm, dishes.")
     s.arrays("arrays", "+y")
     s.radiator_group("radiators", "+y")
     R, L, gap = 2.1, 11.0, 0.5
@@ -558,11 +570,10 @@ def axiom():
     s.source(rads, "estimate", "two 3.6 x 10 m radiators on the RMF, edge-on to the Sun",
              "Radiators not published; placement and size estimated.")
     xf = mods[0][1] + L
-    s.port("port_fwd", [xf, 0, 0], "+x", r=0.75)
-    s.dragon("dragon", [xf + 0.7, 0, 0], "-x")
+    s.port("port_fwd", [xf, 0, 0], "+x", r=0.75, dock=True)
     s.port("port_aft", [mods[3][1], 0, 0], "-x", r=0.75)
     for k, (name, x0) in enumerate(mods[1:3]):
-        s.port("port_zenith_%d" % k, [x0 + 0.5 * L, 0, -R], "-z", r=0.65, length=0.4)
+        s.port("port_zenith_%d" % k, [x0 + 0.5 * L, 0, -R], "-z", r=0.65, length=0.4, dock=k == 0)
         s.port("port_nadir_%d" % k, [x0 + 0.5 * L, 0, R], "+z", r=0.65, length=0.4)
     s.prof("earth_observatory", [mods[3][1] + 0.5 * L, 0, R - 0.2], "+z",
            [[0, 1.5], [0.5, 1.45], [1.0, 1.15], [1.35, 0.6], [1.5, 0.0]], "glass", ro=True)
@@ -630,9 +641,9 @@ def orbital_reef():
                 group="radiators", pivot=[xf, 0, -(Rc + 1.4)])
         rads.append(n)
     s.source(rads, "estimate", "two 4.5 x 12 m radiators, edge-on to the Sun", "Placement and size estimated.")
-    s.port("port_fwd", [0.5 * Lc + 9.3, 0, 0], "+x", r=0.75)
+    s.port("port_fwd", [0.5 * Lc + 9.3, 0, 0], "+x", r=0.75, dock=True)
     s.port("port_aft", [-0.5 * Lc, 0, 0], "-x", r=0.9)
-    s.port("port_nadir", [4.0, 0, Rc], "+z", r=0.8, length=0.5)
+    s.port("port_nadir", [4.0, 0, Rc], "+z", r=0.8, length=0.5, dock=True)
     for k in range(3):
         s.window("window_%d" % k, [0.5 * Lc + 2.5 + 2.2 * k, 0, 2.2], [0, 0, 1], 0.4)
     for k, xx in enumerate((-8.0, 6.0)):
@@ -650,7 +661,7 @@ def ross():
                 "target modules. Body frame: +X along velocity, +Z nadir: Nauka forward, the base module aft, NEM "
                 "on the node's nadir port, ShM to starboard, target modules to port and zenith. NEM and the base "
                 "module each carry two large rigid wings at their far ends, turning about the cross-track axis; "
-                "NEM has two radiator panels. Detail: a docked Soyuz and Progress, Nauka's ERA arm and radiator, "
+                "NEM has two radiator panels. Detail: a docked Progress (the crew Soyuz is the sim's own), Nauka's ERA arm and radiator, "
                 "ports, dishes.")
     s.arrays("arrays", "+y")
     Rn = 1.8
@@ -684,8 +695,7 @@ def ross():
         rads.append(n)
     s.source(rads, "estimate", "two 4 x 6 m radiator panels on NEM", "NEM renders; size estimated.")
     xn = Rn + 0.2 + 13.1
-    s.port("port_fwd", [xn, 0, 0], "+x", r=0.7)
-    s.soyuz("soyuz", [xn + 0.7, 0, 0], "-x", mat="module_skin")
+    s.port("port_fwd", [xn, 0, 0], "+x", r=0.7, dock=True)
     xa = -(Rn + 0.2 + 11.0)
     s.port("port_aft", [xa, 0, 0], "-x", r=0.7)
     s.soyuz("progress", [xa - 0.7, 0, 0], "+x", mat="cn_green")
@@ -738,7 +748,7 @@ def bas():
     s.source(wings, "estimate", "pairs of rigid wings on BAS-01 (3.4 x 8 m), BAS-02 (3.4 x 6.5 m), BAS-03/04 "
              "(3 x 5 m): 158 m2", "ISRO: every module but BAS-05 has its own panels; sizes estimated from the "
              "BAS-01 model.")
-    s.port("bds_port", [x01 + 8.0, 0, 0], "+x", r=0.7)
+    s.port("bds_port", [x01 + 8.0, 0, 0], "+x", r=0.7, dock=True)
     s.port("cbm_nadir", [xc, 0, R], "+z", r=0.9, length=0.4)
     s.prof("cupola", [xc, 0, R + 0.4], "+z", [[0, 1.1], [0.35, 1.0], [0.6, 0.6], [0.7, 0.0]], "glass", ro=True)
     s.port("cbm_aft", [x05, 0, 0], "-x", r=0.9, length=0.4)
@@ -760,7 +770,7 @@ def starlab():
                 "metallic habitat with domed ends and a docking node forward, a service module aft carrying four "
                 "large wings in a cross at 45 deg (each turning about its own long axis), a robotic arm along the "
                 "habitat. Body frame: +X along velocity, +Z nadir. (The early concept's inflatable habitat was "
-                "replaced by a rigid metal module in 2023.) Detail: node ports, a docked Dragon, windows, dishes.")
+                "replaced by a rigid metal module in 2023.) Detail: node ports (crew docking for the sim's Dragons), windows, dishes.")
     d1 = norm([0, 1, 1])
     d2 = norm([0, 1, -1])
     s.arrays("arrays_a", d1, vector=cross([1, 0, 0], d1))
@@ -790,10 +800,9 @@ def starlab():
     s.source(wings, "estimate", "four rigid wings 6 x 14 m (336 m2, ~60 kW) in a cross at 45 deg",
              "Starlab renders show four arrays on the service module; the 60 kW figure sets the area.")
     xn = xh + 9.6 + 2.6
-    s.port("node_fwd", [xn, 0, 0], "+x", r=0.75)
-    s.dragon("dragon", [xn + 0.7, 0, 0], "-x")
+    s.port("node_fwd", [xn, 0, 0], "+x", r=0.75, dock=True)
     for k, d in enumerate(([0, 1, 0], [0, -1, 0], [0, 0, -1])):
-        s.port("node_port_%d" % k, [xh + 10.9, 1.3 * d[1], 1.3 * d[2]], d, r=0.6, length=0.4)
+        s.port("node_port_%d" % k, [xh + 10.9, 1.3 * d[1], 1.3 * d[2]], d, r=0.6, length=0.4, dock=k == 0)
     for k, xx in enumerate((1.5, 4.5)):
         s.window("window_%d" % k, [xh + xx, 0, R], [0, 0, 1], 0.45)
         s.sleeve("band_%d" % k, [xh + xx + 1.2, 0, 0], "+x", 0.3, R + 0.04, "metal")
@@ -839,6 +848,10 @@ def patch(sid, build, extra_mats):
         m["sources"].append({"subjects": [a["name"] for a in added], "status": "estimate", "value": GB_NOTE,
                              "source": "; ".join(MATERIAL_NOTES[a["name"]] for a in added)})
     m["components"] += s.c
+    if s.ports:
+        m["docking_ports"] = s.ports
+    else:
+        m.pop("docking_ports", None)
     dump_file(path, m)
     print("%-18s +%d render-only detail parts (%d parts in all)" % (sid, len(s.c), len(m["components"])))
 
@@ -850,10 +863,12 @@ def iss_detail(s):
         for zs in (1, -1):
             s.box("saw_mast", [0, yc, zs * 19.3], [0.3, 0.3, 33.4], "metal", group="beta", pivot=[0, yc, 0])
             s.box("saw_box", [0, yc, zs * 36.0], [0.5, 9.6, 0.6], "gold", group="beta", pivot=[0, yc, 0])
-    # PMA-2 + a Crew Dragon on Harmony forward; a Soyuz on Rassvet; a Progress on Zvezda aft
+    # PMA-2 / IDA-2 on Harmony forward, PMA-3 / IDA-3 on Harmony zenith: the crew docking ports (the sim flies the
+    # Crew Dragons there, docked and leaving: they are no longer drawn here); a Progress on Zvezda aft
     s.prof("pma2", [12.2, 0, 5.0], "+x", [[0, 1.0], [1.4, 0.85], [1.9, 0.8]], "metal")
-    s.dragon("dragon", [14.1, 0, 5.0], "-x")
-    s.soyuz("soyuz", [-16.18, 0, 13.45], "-z", mat="module_skin")
+    s.prof("pma3", [8.6, 0, 2.8], "-z", [[0, 1.0], [1.4, 0.85], [1.9, 0.8]], "metal")
+    s.dock("ida2_harmony_fwd", [14.1, 0, 5.0], "+x")
+    s.dock("ida3_harmony_zenith", [8.6, 0, 0.9], "-z")
     s.soyuz("progress", [-38.46, 0, 5.0], "+x", mat="cn_green")
     # Canadarm2 on the mobile base, ELCs and AMS on the inboard truss
     s.box("canadarm_boom_1", [-1.0, -12.0, -3.0], [0.35, 8.5, 0.35], "metal")
@@ -882,10 +897,9 @@ def tiangong_detail(s):
                   pivot=[0, ys * 20.5, 0])
             s.box("wing_box", [0, ys * 20.5, zs * 29.0], [4.4, 0.6, 0.5], "gold", group="beta",
                   pivot=[0, ys * 20.5, 0])
-    # Docking ports on the node; Shenzhou forward, Tianzhou aft
-    s.port("node_port_fwd", [1.4, 0, 0], "+x", r=0.7, length=0.5)
-    s.port("node_port_nadir", [0, 0, 1.4], "+z", r=0.7, length=0.5)
-    s.soyuz("shenzhou", [1.9, 0, 0], "-x", mat="cn_green", wing_span=4.6)
+    # Docking ports on the node (the sim docks real Shenzhous there, forward or nadir); Tianzhou aft
+    s.port("node_port_fwd", [1.4, 0, 0], "+x", r=0.7, length=0.5, dock=True)
+    s.port("node_port_nadir", [0, 0, 1.4], "+z", r=0.7, length=0.5, dock=True)
     xa = -15.2
     s.prof("tianzhou", [xa - 10.6, 0, 0], "+x", [[0, 1.67], [9.8, 1.67], [10.6, 0.8]], "module_skin", caps="both")
     for ys in (1, -1):

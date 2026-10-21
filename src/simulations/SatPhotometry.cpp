@@ -407,7 +407,7 @@ bool usesGroundSite(const std::vector<AttitudeGroup> &groups)
             continue;
         if (g.primaryTarget == AttTarget::SunReflectGroundSite || g.secondaryTarget == AttTarget::SunReflectGroundSite)
             return true;
-        if ((g.jointMode == JointMode::Track || g.jointMode == JointMode::EdgeOn) &&
+        if ((g.jointMode == JointMode::Track || g.jointMode == JointMode::EdgeOn || g.jointMode == JointMode::EdgeOnContinuous) &&
             g.jointTarget == AttTarget::SunReflectGroundSite)
             return true;
     }

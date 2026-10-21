@@ -76,6 +76,9 @@ struct Vehicle
     double payloadBaseM = 0.0;
     glm::dvec3 fairingCenter{0.0}; // the +X fairing half's centre on the stage (its model's origin), stage frame
     double doorM = 31.1;
+    // A crewed vehicle (2026-10-20): its spacecraft's docking port above the upper stage's origin (m): where the
+    // spacecraft (tools/make_crew_models.py, origin at its port) sits on the stage until it separates.
+    double spacecraftDockM = 0.0;
     // Booster recovery at sea (2026-10-20, droneships): a "droneship" booster lands on a ship this far downrange (km;
     // a short retrograde trim burn puts it there; 0 = wherever its ballistic arc and entry burn take it), and a
     // launch whose payload is at most rtlsMaxKg flies back to its pad's landing zone instead (0 = never). The ships
@@ -158,6 +161,10 @@ struct Program
     bool crew = false;
     std::string spacecraft;          // "Crew Dragon", "Shenzhou", ...
     int people = 0;
+    // (2026-10-20) The spacecraft flies as its own object after separation (SatelliteSimLaunches.cpp "Crew vehicles"):
+    // its render model rocket_<crewModel>[_cm|_chute].json; lands: comes home on land (Soyuz, Shenzhou), else splashes.
+    std::string crewModel;
+    bool crewLands = false;
     Stack stack;
     // The mass a launch lifts (kg, the payload total; 2026-10-20): picks a reusable booster's recovery (Vehicle::rtlsMaxKg).
     // < 0: unknown (a droneship).

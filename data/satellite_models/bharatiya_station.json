@@ -618,5 +618,12 @@
                 "dragon_white"
             ]
         }
+    ],
+    "docking_ports": [
+        {
+            "name": "bds_port",
+            "position": [13.525, 0.0, 0.0],
+            "axis": [1.0, 0.0, 0.0]
+        }
     ]
 }
