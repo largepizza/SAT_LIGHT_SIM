@@ -24,6 +24,7 @@ cadence, not a design life: it is not scaled by the Satellite design life settin
 | Cargo Dragon resupply | Cargo Dragon | Falcon 9 / Crew Dragon | ISS, Haven-2, Axiom, Starlab, Orbital Reef | 2 |
 | Cygnus resupply | Cygnus (cargo, berthed) | Falcon 9 / Cygnus, Cape Canaveral SLC-40 | ISS (Unity nadir) | 1.33 (every 0.75 y) |
 | HTV-X resupply | HTV-X (cargo, berthed) | H3-24W / HTV-X, Tanegashima | ISS (Harmony nadir) | 1 |
+| Dream Chaser resupply | Dream Chaser (cargo, berthed, lands on a runway) | Vulcan Centaur VC4L / Dream Chaser, Cape Canaveral SLC-41 | ISS (Harmony nadir) | 1, half a year after HTV-X |
 
 A station served by several programs has one schedule plane per program. The first program to match it (its
 crew rotation) owns the station's main plane; every further one gets a plane of its own, appended after all
@@ -39,6 +40,8 @@ others so no other plane's index (and so no batch key or pad priority) moves.
 | `lands` | comes home on land (Soyuz, Shenzhou); otherwise splashes down |
 | `cargo` | no people |
 | `return: "burns"` | destroyed on re-entry (Progress, Tianzhou) |
+| `return: "runway"`, `runway` | a spaceplane that glides to a runway: `runway` gives its `lat`, `lon`, `heading_deg`, `length_m` and `elev_m` (see [Runway landing](#runway-landing)) |
+| `alternate_with` | the name of another program at the same station: this one's visits come half a cadence after that one's, so two vehicles needing the same port never meet there |
 | `ports` | the port class it uses, matched against the station model's port `use`: `crew` (default), `cargo`, or any other name (`berth_unity`, `berth_harmony`) |
 | `share_crew_ports` | uses the crews' ports between rotations (Cargo Dragon) |
 | `stay_days` | [min, max] time docked |
@@ -136,7 +139,7 @@ arrives. Progress and Tianzhou take the aft cargo ports.
 
 ### Berthing
 
-A vehicle with `"berth": true` (Cygnus, HTV-X) is captured by the station's robotic arm instead of docking. Its
+A vehicle with `"berth": true` (Cygnus, HTV-X, Dream Chaser) is captured by the station's robotic arm instead of docking. Its
 port is a nadir berthing port (a common berthing mechanism, CBM), so after the arc onto the port's axis it climbs
 the R-bar (the line from the Earth's centre through the station) with holds at 250 m and 30 m, stops at the
 capture point `capture_m` below the port, and free-drifts. The arm grapples it 5 min after it arrives there, moves
@@ -153,7 +156,7 @@ it to 1.5 m from the port in 50 min, and pulls it onto the CBM in 20 min: it is 
 
 At departure the arm takes it again, lifts it off the port, carries it back to the release point (the capture
 point) and lets go 5 min after arriving there; the vehicle drifts away and about 7 min after the release burns onto the
-usual departure circle, and later deorbits. Both berthed cargo ships burn up on re-entry. A berthing approach and its
+usual departure circle, and later deorbits. Cygnus and HTV-X burn up on re-entry; Dream Chaser lands on a runway. A berthing approach and its
 departure are flown like the docking ones (closed forms of sim time, continuous through every leg).
 
 **The arm** is data: `launches.json` `"station_arms"` gives, per station, its base on the station, the base's
@@ -186,6 +189,19 @@ leaves 15 min before the entry interface (100 km). The entry lasts 540 s, from 1
 to 6.5 m/s. The capsule is drawn for 40 min after splashdown or landing. Progress and Tianzhou break up at
 the entry interface as a re-entry fireball instead.
 
+### Runway landing
+
+Dream Chaser comes home to the Shuttle Landing Facility at Kennedy. Its deorbit burn is timed (searched every 30 s
+from 3 h after the departure, for up to six days, refined at 3 s) so the entry ends 60 to 160 km short of the
+runway and heading for it. Fifteen minutes before the entry interface its Shooting Star cargo module is
+jettisoned; the module re-enters a little behind the spaceplane and burns up as a fireball. The spaceplane flies
+the entry down to 10 km, then glides: a cubic path in the runway's tangent plane from the entry's end, at its
+speed over the ground, to the touchdown point, landing along the runway from the end the glide arrives at. It
+touches down on the centreline at about 95 m/s, rolls about 2.4 km to a stop (never more than the runway's length
+less 900 m) and stays on the runway for 40 minutes before it is towed off. It is selectable and followable
+throughout; its mission milestones are the module jettison, the entry interface, the glide, the final approach,
+touchdown and wheels stop.
+
 ## When a station is lost
 
 A station can be destroyed by the [Kessler cascade](kessler.md) or by the player. Its fate is read from the
@@ -208,10 +224,10 @@ down at the Sun's Fury with every other launch (see [Launches](launches.md)).
 ## Checking it
 
 Harness: `launch crew [station=] [event=] [lead=] [follow=1]` frames a visit at a chosen event (for berthing
-vehicles also `capture_point`, `capture`, `berth`, `unberth`, `release`, `arm`, `arm_depart`),
+vehicles also `capture_point`, `capture`, `berth`, `unberth`, `release`, `arm`, `arm_depart`; for the runway lander `jettison`, `glide`, `final`, `touchdown`, `stop`; `craft=dream` picks Dream Chaser),
 `launch state` lists `crew_vehicles`, `launch check` reports `crew` (and the `berth_*` checks: the arm's tip on
 the fixture at capture, berthed and release, its joint speeds and turn rates, and any reach shortfall), `missions state` gives each station's
-`fate`, and `tools/harness/mission_ops.py` judges every cached visiting flight around each epoch (docking
+`fate`, `launch trace` reports a runway landing's glide start, touchdown and rollout under `docking.runway`, and `tools/harness/mission_ops.py` judges every cached visiting flight around each epoch (docking
 times, burn accelerations, turn rates, port conflicts). See [Harness](../development/harness.md).
 
 ## Where in the code

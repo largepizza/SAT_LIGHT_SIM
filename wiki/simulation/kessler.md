@@ -234,7 +234,10 @@ than computing hundreds of days ahead.
 
 The main thread **mirrors** the worker's output each frame: new and changed records, roster changes, events
 and small-fragment streams, worked through within a time budget per frame, then uploaded (a persistent 16 MB
-staging buffer, at most about 16 000 new records a frame). Sim time may run about two seconds of the current
+staging buffer, at most about 16 000 new records a frame). At fast warps the deaths of records already on the GPU
+are sent in the order they arrive, at most about 24 000 (about 2 ms) a frame, without sorting the backlog; the
+roster's dirty list sorts only what is new; and when the GPU pool grows, the buffers it replaced are freed on a
+thread. Sim time may run about two seconds of the current
 warp (at most one 6-hour step) past what has been mirrored; past that it **holds**, with a banner, "Computing
 the debris cascade: day n of N", until the worker catches up. The live counts in the settings are gathered over about a
 second of frames, not walked all at once.
@@ -263,7 +266,9 @@ time has been played back past the kept checkpoints, or for a breakup before the
 before the CME), the breakup falls back to rebuilding the history from the epoch with the breakup in it. That rebuild
 (`kesslerRestart()` with `async` true) runs on a thread of its own: sim time holds at the breakup under the banner
 "Computing the debris cascade: the breakup" until `kesslerRestartPoll()` installs the new worker (about 0.15 s for a
-breakup before the CME), so the frame of the click is not stalled. Both paths give identical histories.
+breakup before the CME), so the frame of the click is not stalled. A breakup clicked while such a rebuild runs is
+queued and applied once the rebuild is in, again without a wait on the main thread. Both paths give identical
+histories.
 
 !!! warning "Invariant"
     Every change to `World` state must be journaled (`jPool()`, `jSimple()`, `jDeposit()`), or a rollback

@@ -370,6 +370,16 @@ frame at 1x and about 3.4 ms at 1 h/s, where plume integration for newly visible
 their measured cost so a load or a fast warp does not stall a frame, and the window of batches that matter is
 re-walked only when sim time moves more than 300 s.
 
+**Background builds.** When the walk finds many batches missing (more than 48, as after a time jump: a bookmark Go,
+a typed time, a Missions Go to) or the warp is past 1 h/s, it sorts them by urgency (the launches nearest now first),
+builds at most 16 itself (none at a fast warp) and hands the rest to one background thread at below-normal priority
+on all cores but two. That thread builds them in chunks, and each frame the main thread moves the finished prefix
+into the batch cache within about 2 ms. The batches are identical to those built on the main thread
+(`SATLIGHTSIM_LAUNCH_BG=0` turns the background build off for the A/B: `launch list` and `padstats` match). A jump
+to a busy deployment-era day (about 9700 batches) fills in about a second, with the launch CPU near 3.4 ms a frame
+over the first ~40 frames; a bookmark Go fills in under 40 frames at 1.3-2.3 ms. Plume candidates below a quarter of
+the last frame's priority cut are not finished, which keeps the Twilight Starship bookmark near 1.5 ms at 1x.
+
 ## Where in the code
 
 | File | What |

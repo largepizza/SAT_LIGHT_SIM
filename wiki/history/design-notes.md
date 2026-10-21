@@ -208,6 +208,8 @@ New entries arrive through wiki passes (see [History](index.md)).
 - **2026-10-20** — The deployment era: satellites not launched yet are left out of the Kessler world (the storm cannot kill them, they collide with nothing); cache version 15, then 16 when the 2020 benchmark shells left the era by default.
 - **2026-10-20** — Bookmark audit: with the 2026-10-11 cloud defaults the Venezuela rainbow and the Antarctic snow bookmarks showed a clear sky; their storms were re-framed (same moment, new place or cloud phase) rather than the defaults re-tuned. Weather bookmarks must be re-checked after any change of the cloud defaults.
 - **2026-10-21** — A pre-CME Explode cost ~220 ms on the main thread plus ~75 ms of launch-plane rebuild the next frame; the rebuild now runs on a background thread under a brief clock hold (the click frame ~13 ms).
+- **2026-10-21** — A second Explode during a rebuild waited for it on the main thread (171 ms), and at 1 yr/s after the CME the upload of record deaths (up to 131k a frame, the whole backlog re-sorted each frame) and freeing the old pool buffers were the remaining hitches (hitch_check D 1 yr p99 62 ms, max 91 ms); deaths now go in arrival order within a budget, old buffers are freed on a thread, and a click during a rebuild is queued.
+- **2026-10-21** — Bookmark 4 (Beam-lit Snow) moved from cloud phase 1.535 to 1.520: under the 2026-10-11 cloud defaults 1.535 sat at the shower's edge (rate at the eye 2e-4). The band with both snow and beam light is only ~0.002 rad wide.
 
 ## Launches and rockets
 
@@ -254,6 +256,8 @@ New entries arrive through wiki passes (see [History](index.md)).
 - **2026-10-21** — The plume / flame / dust Gaussian list got a per-tile cull, a per-texel faint skip and a CPU significance cull (`cloud_march` 8.1 → 6.6 ms in a droneship view, 6.0 → 5.0 ms in the busy 2032 era). The launch benchmark's "+22 ms" for those scenes had been GPU contention from another app on the same GPU (+3.7 ms measured alone). [Launch visuals](../rendering/launch-visuals.md)
 - **2026-10-21** — Berthing added: Cygnus and HTV-X are captured by the ISS's Canadarm2 and berthed to a nadir CBM; the arm is data (`station_arms`) and replaced a static Canadarm2 greeble on the ISS model. Measured over 4 cached visits: tip on the fixture to 0.000 m at capture, berth and release, joints <= 0.012 m/s, booms <= 0.12 deg/s. Progress / Tianzhou wings had been edge-on to the vehicle axis (a thin line from behind). Not built: Dream Chaser, Antares 330.
 - **2026-10-21** — A docked Progress read "Since separation 10086696 s" in the Info window; long durations now read in days / hours / minutes and visiting spacecraft by phase. At 1 yr/s a single pad-deconfliction rival day took ~40 ms on one thread; rival lists are now built in parallel.
+- **2026-10-21** — Dream Chaser added: berthed at Harmony nadir half a year after HTV-X, home to the KSC Shuttle Landing Facility on a glide timed from the deorbit burn, its cargo module jettisoned to burn up.
+- **2026-10-21** — The hitch pass's ~8 ms-a-frame batch build budget made a time jump slow (2032: 8.5k of 9.7k batches after 480 frames at ~11 ms CPU; bookmarks 250-300 frames at 9-12 ms), and at 1 yr/s the main thread's cold rival day buckets reached 62 ms in a frame. Large build sets now go to a background thread (hitch_check C 1 yr p99 75.2 -> 37.6 ms).
 
 ## Clouds
 

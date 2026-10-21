@@ -148,7 +148,8 @@ polls while it runs. A scenario that shared the machine is rerun (`--alone-retri
 !!! warning "Invariant"
     Put an `FPROF_SCOPE` on anything new that can take more than about a millisecond in a frame. Work that can
     take longer than a frame's budget belongs on a worker thread or behind a per-frame budget, and one-off work
-    belongs in the load, not the first frame. The launch batch builds (about 8 ms of wall time a frame), the plume
+    belongs in the load, not the first frame. The launch batch builds (about 8 ms of wall time a frame, the bulk after a
+    time jump on a background thread), the plume
     parcels, the debris cascade's mirror (3 ms a frame), its reuse-history prune (about 1 ms a frame), the GPU debris
     pool's growth and the ambience voices all work this way; see [Code architecture](architecture.md#threads).
 

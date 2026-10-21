@@ -43,8 +43,11 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
 
 - **Every station is visited.** Crews rotate twice a year: Crew Dragon (ISS and the commercial stations),
   Shenzhou (Tiangong), Soyuz MS (the Russian station), Gaganyaan (Bharatiya Antariksh Station).
-- **Cargo ships.** Progress, Tianzhou and Cargo Dragon resupply the stations; Cygnus and HTV-X are captured by
-  the ISS's Canadarm2 and berthed, then released.
+- **Cargo ships.** Progress, Tianzhou and Cargo Dragon resupply the stations; Cygnus, HTV-X and Dream Chaser are
+  captured by the ISS's Canadarm2 and berthed, then released. The arm also shows in the Info window's 3D view.
+- **Dream Chaser** flies once a year on Vulcan Centaur from SLC-41. Coming home it jettisons its cargo module (which
+  burns up behind it), glides to Kennedy's Shuttle Landing Facility, touches down on the centreline and rolls to a
+  stop on the runway.
 - **The flights are flown.** Spacecraft are their own objects: phasing burns, approach and docking at real ports
   (fast-track rendezvous of a few hours for Soyuz, Progress, Shenzhou and Tianzhou), time docked, undocking, entry
   glow, parachutes and landing or splashdown; Progress and Tianzhou burn up.
@@ -72,7 +75,8 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
   breakup flash, fragment trains and material colours (aluminium white, copper green, sodium yellow, lithium
   crimson); and once the cascade runs, many small meteor-like streaks.
 - **Explode** (Info window) breaks any satellite or debris piece up with one click, at any date; the debris is
-  there the same frame. A breakup before the storm starts the cascade then; going back in time undoes it.
+  there the same frame. A breakup before the storm starts the cascade then (computed in the background while the
+  clock holds briefly); going back in time undoes it. A second click while that runs is queued, not waited for.
 - Settings: collision rate, collision avoidance, horizon, dust and small re-entry brightness, fireball colours;
   "Watch the next re-entry". Launches stand down after the storm (or resume three weeks later).
 
@@ -152,6 +156,8 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
 - **Missions window** (the rocket button, or M): the next launches with Go to / Watch, pinned twilight and crewed
   launches, the Sun's Fury countdown; what is flying now (crew transfers, stations, launches, trains, retirees,
   build-out); and the launch and Sun's Fury settings.
+- **Mission milestones.** Skip to the next or previous milestone of a launch, train, retiree or the satellite in a
+  slot (`]` / `[`, the follow HUD, the Info window's MISSION section with a progress bar by milestone).
 - **Issue reports.** F9 adds a shot (frame, place, camera, time, weather, settings, frame times, the last 12 s
   of camera motion) to an issue, F7 starts a new one; the Issue reports window adds notes, pins and areas, and
   exports a zip to send.
@@ -188,6 +194,11 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
   (about 1.4 million satellites in the default roster), the launch system (plume builds and batch builds off the
   main thread, culled exhaust), close-up station shadows (from 30-60 ms to about 1 ms) and frame hitches after
   loading and at high time rates.
+- **Hitches.** The first frame no longer stalls (boot about 9-10 s on a warm cache, models baked in parallel);
+  ambience voices load asynchronously; the debris pool grows, uploads deaths and frees old buffers without stalls
+  even at 1 year/s; launch batches build within a per-frame budget, and after a time jump (a bookmark, a typed time,
+  a Missions Go to) or at fast warps the bulk builds on a background thread, so a jump to a busy year fills in about
+  a second. Pad-deconfliction lists are built in parallel. `hitch_check.py` gates frame hitches.
 
 ### Tools
 
@@ -234,6 +245,12 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
 - Many fixes from QA of launches and missions: no plume pulsing, no train jitter in time warp, smooth handovers
   in the Info window, no "?" under a selection, the camera never goes underground following a rocket.
 - The Attributions tab lists every bundled asset.
+- QA fixes: the Sun's lens-flare ghosts no longer wash out a backlit satellite's earthlit side; the selection
+  panel's magnitude follows the Info window's rule; the Info window's 3D view shows a burning stage's flame and
+  destroyed objects; long durations read in days / hours / minutes and visiting spacecraft by phase ("Docked
+  since"); the Ongoing tab lists build-out last; long window titles are ellipsized instead of clipped;
+  Planetarium shows the green airglow only at the limb; engine light reaches the hull above it; the Beam-lit Snow
+  bookmark frames its snow shower again.
 
 ### Technical and modding
 

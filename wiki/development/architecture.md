@@ -223,6 +223,7 @@ The renderer and the simulation run on the main thread. Work moved off it:
 | bulk export worker | the photometry bulk export (Settings, Photometry tab), over snapshots of the type and orbit data |
 | screenshot encoder | PNG encoding of a screenshot or capture; the next `finalizeScreenshot()` joins the previous encode |
 | `parallelFor()` | short-lived threads that evaluate the satellite mesh instances' photometry and poses each frame, and build new launch batches in parallel (at most about 8 ms of building a frame) |
+| the launch batch builder | after a time jump (more than 48 batches missing) or past 1 h/s of warp, builds the missing launch batches in chunks at below-normal priority on all cores but two; the main thread moves each finished prefix into the cache within about 2 ms a frame |
 | plume parcel jobs (`std::async`) | a launch's exhaust parcels, integrated from 2 minutes before lift-off; at most four in flight |
 | the debris cascade worker (`KesslerWorker`) | the Sun's Fury collision engine, at below-normal priority, simulating a minute of the current time warp ahead of sim time; the main thread mirrors its output within a budget of a few milliseconds a frame, and sim time holds at the mirrored frontier |
 | harness watchdog | hard-exits a harness run past its `--timeout` |
