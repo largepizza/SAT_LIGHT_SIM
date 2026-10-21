@@ -394,7 +394,10 @@ json SatelliteSim::harnessStateJson()
                                    {"handover_m", glm::length(followHandD)},
                                    {"camera_asl_m", glm::length(followObsEcef) - satphot::kEarthRadiusM},
                                    {"dist_to_target_m", glm::length(followObsEcef - followLastP)},
-                                   {"flight_rel", followFlightRel}};
+                                   {"flight_rel", followFlightRel},
+                                   // (2026-10-21) the camera along the object's motion over the ground (< 0: behind it)
+                                   {"cam_along_motion_m", glm::dot(followObsEcef - followLastP, followFwdRefEcef)},
+                                   {"default_side_dot", followDefaultSideDot}};
         if (followIsTransient())
             j["observer"]["follow"]["transient"] = {{"kind", (int)followTrCur.kind}, {"stage", (int)followTrCur.stage},
                                                     {"key", followTrKey}, {"waiting_for_kind", (int)followWantKind},
@@ -1907,6 +1910,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             if (sscanf(c.str("offset").c_str(), "%lf,%lf,%lf", &x, &y, &z) != 3)
                 fail("follow: offset=<along>,<cross>,<radial> in metres");
             followOffset = glm::dvec3(x, y, z);
+            followDefaultSideOffset = false; // (an explicit offset: as given)
             updateFollow(0.0f);
         }
         // toward=observer|sun [dist=<m>] [side=<deg>] [lift=<deg>]: put the camera `dist` metres from the satellite
@@ -1938,6 +1942,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const glm::dvec3 hd = hl > 1e-9 ? glm::dvec3(o.x / hl, o.y / hl, 0.0) : glm::dvec3(1.0, 0.0, 0.0);
             o = std::cos(el) * hd + glm::dvec3(0.0, 0.0, std::sin(el));
             followOffset = o * c.num("dist", 300.0);
+            followDefaultSideOffset = false;
             followAimLock = true;
             updateFollow(0.0f);
             followAimLock = false;
@@ -2730,7 +2735,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (sub == "ship")
         {
             std::string msg;
-            if (!launchGoToShipEntry(msg))
+            launchShipDay_ = c.num("day", 0.0) > 0.5;
+            const bool okS = launchGoToShipEntry(msg);
+            launchShipDay_ = false;
+            if (!okS)
                 fail("launch ship: " + msg);
             r["message"] = msg;
             return Status::Done;

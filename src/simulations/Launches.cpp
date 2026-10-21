@@ -313,6 +313,8 @@ bool Catalog::load(const std::string &path, std::string &err)
                 }
                 pg.alternateWith = cr.value("alternate_with", std::string());
                 pg.heatShieldM = cr.value("heat_shield_m", pg.heatShieldM);
+                pg.heatShieldR = cr.value("heat_shield_r_m", pg.heatShieldR);
+                pg.bellyHalfLen = cr.value("belly_half_len_m", pg.bellyHalfLen);
                 pg.portUse = cr.value("ports", std::string(pg.cargo ? "cargo" : "crew"));
                 pg.sharePorts = cr.value("share_crew_ports", false);
                 if (pg.sharePorts)

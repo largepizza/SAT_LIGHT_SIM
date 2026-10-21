@@ -3537,6 +3537,14 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     190 m at the descent). (3) At a handover the view stays put in the object's frame and the camera glides across
     `followHandD`: the view used to be turned at once onto the new object (`followHandViewA/B`, now unused) and back
     as the jump eased out — 6.2 deg at Crew Dragon's separation from 68 m, 21.7 deg at the ship's entry.
+    (4) **The default offset goes BEHIND the motion** (2026-10-21, `followDefaultSideOffset` / `followDefaultSideRelB`):
+    the carried heading keeps its side through a reversal, so after a boostback "along" points against the ground
+    motion and Return's / Go to's (-4r, 0, 1.5r) landed IN FRONT of the booster. The next updateFollow after the default
+    is set flips its along sign so it sits behind the motion over the ground (> 30 m/s), else behind a rocket's engine
+    end (its nose's horizontal part). An explicit offset (harness `follow offset=` / `toward=`, a cinematic key) clears
+    the flag. Measured (Starship booster, T+171 -> T+231 at 10x): held offset +150 m along the motion (in front),
+    Return -150 m, a fresh Go to -150 m. `state` -> `observer.follow.cam_along_motion_m` (< 0 = behind),
+    `default_side_dot`.
   - **Reflections in the scene** come from the environment probes above (4c part 2, 2026-09-24).
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, `iss.json` (the first parity model: 50 components; station
@@ -4807,10 +4815,21 @@ launches follow per-program cadences (no real manifest).
   key, so a selected or followed ship stays selected into its entry. **Its glow is on the belly** (2026-10-21, user: "re-entry emits from the rocket
   engine"): the point, its light on clouds and the wake start at the body's middle (the upper model's bounds centre
   along the nose) standing off the windward side (perpendicular to the axis, toward the velocity) by the body radius
-  + 1.5 m, not the track point (the model origin = the aft end, the engine bells); as the mesh resolves (2 -> 8 px) the
-  point gives way to an emissive sheath along the belly (sigma 0.38 x the half-length along, 0.6 / 1.1 x the radius
-  across), the capsules' rule. Booster entry burns stay at the engines (they are burns). Dream Chaser's glow is still
-  on its body axis (`heat_shield_m` along -Z), not on its belly. A stage may vent what is left, spinning
+  + 0.6 m, not the track point (the model origin = the aft end, the engine bells); as the mesh resolves (2 -> 8 px) the
+  point gives way to the shared **entry-plasma emitter** (2026-10-21 validation, `plasmaGauss` / `plasmaHullLight` in
+  launchFillVisuals, also used by the capsules and Dream Chaser): a thin shock layer along the belly (sigma 0.4 x the
+  half-length along, 0.75 x the radius across, 0.45 m thick), a short hot wake behind the body (0.12 of the layer's
+  brightness) and the 6-s path wake (0.15). Each Gaussian's light is, unresolved, the point's on-screen energy and,
+  resolved (its middle sigma 1.5 -> 8 px, geometric blend as the flames), a SURFACE BRIGHTNESS: the layer ~4x a sunlit
+  white face x the plasma intensity, held at its face-on value whatever the view, capped at 2.0 of DISPLAYED light (x
+  `skyExposure()`: the night exposure needs no separate factor), the wakes keeping their ratio to it; faded as the eye
+  comes inside one (3 -> 1.5 sigma). The sheath was in the point's units (`toSky`, ~10 mag over a surface): a white
+  ellipse / disc several times the vehicle. The plasma lights its own hull: three PHYSICAL mesh local lights 2 m under
+  the belly (`meshLightAdd(..., physical = true)`: not lifted at night, not adapted; irradiance 1.5 x the capped layer
+  brightness x its share), so the belly and flaps glow pink instead of a dark silhouette; its cloud light no longer
+  adds a mesh light (meshK 0: its rs was 160 m). `launch state` -> `entry_plasma[]` (range, res_k, s_asked,
+  s_disp_capped, view_hold, sigmas), `sky_exposure`; harness `launch ship day=1` (the entry over a sunlit ground).
+  Booster entry burns stay at the engines (they are burns). A stage may vent what is left, spinning
   (`vent_chance`; after its deorbit burn, or 10 min after deploying for a returning stage): ~10 t over two minutes as
   slowly spreading ice (30 m/s, 2000 m^2/kg), each parcel a stretch of the 700 m/s jet, never decimated: seen from
   below, a dump spiral like the 2009 Norway one (harness `launch vent`). Boosters land on droneships (below). Harness `launch deorbit` frames
@@ -5386,7 +5405,7 @@ launches follow per-program cadences (no real manifest).
   `cargo` (no people: Upcoming tags it CARGO, "(cargo)" in titles; "crewed" lists and the Missions station rows skip
   it), `return`: `lands` / `burns` (destroyed on re-entry: `burnsUp`), `ports`: the class of docking port it takes
   (the station model's `docking_ports[].use`, "crew" default / "cargo"; `SatModel::DockPort::use`), `share_crew_ports`,
-  `stay_days`, `fast_dock_h` (windows, hours after lift-off), `heat_shield_m` (the entry glow's place below the port).
+  `stay_days`, `fast_dock_h` (windows, hours after lift-off), `heat_shield_m` (the entry glow's place below the port), `heat_shield_r_m` (its radius; a spaceplane's belly depth), `belly_half_len_m` (> 0: the glow along the belly).
   - **Fast-track rendezvous** (`candidate`, `crewFastD`, `CrewPhaseGeom` / `crewCatchup` shared with `buildCrew`): for a
     program with `fast_dock_h` the candidate tries the passes over its pad of the next 30 days (each a pure function of
     the batch) and takes the first whose station phase lets the far phases close in a window's time (the middle of the
@@ -5420,8 +5439,12 @@ launches follow per-program cadences (no real manifest).
     before). Harness: `launch crew craft=progress|tianzhou|cargo dragon|cargo|crew event=abort|reentry ...`,
     `scripts/station_loss.satcmd` (all four cases), `scripts/visiting_vehicles.satcmd`.
   - **Daylight review**: the entry's plasma point sits at the heat shield (`heat_shield_m` below the port along -Z,
-    not at the model's origin) and gives way, as the capsule's mesh resolves, to a soft sheath Gaussian (3.5 m, 3% of
-    the point's light; the first cut at 50% washed the frame pink); the wake keeps the unresolved light. Canopies have
+    not at the model's origin) and gives way, as the capsule's mesh resolves, to the entry-plasma emitter (2026-10-21
+    validation; see Starship's ship above): a shock layer 0.12 R + 0.1 m ahead of the shield (sigma 0.55 R across, 0.06 R
+    thick; R = `heat_shield_r_m`: Dragon 1.85, Shenzhou 1.25, Soyuz 1.1, Gaganyaan 1.75, Cygnus 1.53, HTV-X 2.0), a hot
+    wake behind the body and the 4-s path wake (centred 0.6 of it back, sigma 0.22: at 0.55 / 0.28 it reached ahead
+    of the capsule), and one physical hull light 0.8 R ahead of the shield. It was a 3.5-m round Gaussian in the
+    point's units (0.03 of its light): from 40 m a saturated disc several capsules wide. Canopies have
     12 alternating gores (Soyuz / Gaganyaan orange-white, Shenzhou / Dragon red-white; inside the same colours) and 16
     suspension lines to a confluence, a riser to the module (all render-only, `make_crew_models.py` `chutes`).
   - `launch check` -> `crew[]` gains `spacecraft`, `cargo`, `burns_up`, `fast_track`, `hours_to_dock`, `abort`,
@@ -5499,7 +5522,11 @@ launches follow per-program cadences (no real manifest).
   CP_FINAL_GLIDE (the last 90 s), CP_ROLLOUT, then CP_DOWN (inserted before CP_ABORT). **The deorbit is timed**
   (buildCrew, every 30 s from 3 h after the departure for six days, refined at 3 s near each pass) so the entry ends 60-160 km short of the runway
   heading for it, else the closest (measured 152-192 km at the three mission_ops epochs: a long subsonic glide from 10 km); the
-  attitude follows the velocity (nose forward, belly down) and holds the rollout's at rest. Milestones: cargo module
+  attitude follows the velocity (nose forward, belly down) and holds the rollout's at rest; through the entry it flies
+  NOSE-HIGH (2026-10-21: 40 deg angle of attack about body X, eased in over the 10 min before the entry interface and
+  out over the last 3 min before the glide, `crewAttitude`), its glow on the windward BELLY (`belly_half_len_m` 4.5:
+  `heat_shield_m` 9.65 = the hull's middle along -Z, `heat_shield_r_m` 1.5 = the belly below the axis; a layer 1.8 x
+  1.9 m across, two physical hull lights under it); it sat on the body axis. Milestones: cargo module
   jettisoned, entry interface, glide, final approach, touchdown, wheels stop. Models: `tools/make_crew_models.py`
   (`rocket_capsule_dreamchaser[_cm]`, sources: Sierra Space / Wikipedia; 9 m, 7 m span, Shooting Star 4.6 m, arrays,
   grapple fixtures, the CBM on top) and `make_rocket_models.py` (`rocket_vulcan_dreamchaser_*`, the spaceplane nose

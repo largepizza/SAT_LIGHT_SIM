@@ -743,6 +743,13 @@ struct SatelliteSim::LaunchState
         double isoShare = -1.0;  // the share of it lit isotropically (the sky); < 0: none
     };
     std::vector<PlumeDbg> plumeDbg;
+    // (2026-10-21) The entry plasma Gaussians drawn this frame (launch state -> entry_plasma): range, the resolved share,
+    // the face-on surface brightness asked for and as capped x the sky exposure (displayed), the weight, the view hold.
+    struct PlasmaDbg
+    {
+        double rangeM, resK, sAsked, sDispCapped, weight, hold, sigMin, sigMax;
+    };
+    std::vector<PlasmaDbg> plasmaDbg;
     std::unordered_map<int, glm::dvec3> engineGeom; // per rocket type: (nozzle exit z, exit radius, length) in metres
     // Per plane: the crewed station's dead second (Kessler's roster word) the plane's batches were built against; a
     // change (a breakup, the cascade reaching it, a rollback) rebuilds them (crewSync).
@@ -4339,7 +4346,23 @@ static glm::dmat3 crewAttitude(const LCrew &C, double t)
         // Prograde while drifting; turned heat shield forward (+Z retrograde) over the 10 min before the burn.
         const glm::dmat3 pro = prograde(t);
         const glm::dmat3 retro = crewFrame(-velDir(t), glm::normalize(P));
-        return crewSlerp(pro, retro, glm::smoothstep(C.tDeorb - 900.0, C.tDeorb - 300.0, t), glm::normalize(P));
+        glm::dmat3 R = crewSlerp(pro, retro, glm::smoothstep(C.tDeorb - 900.0, C.tDeorb - 300.0, t), glm::normalize(P));
+        if (C.runway)
+        {
+            // (2026-10-21) A spaceplane enters NOSE-HIGH, its tiled belly into the flow (Dream Chaser, like the
+            // Shuttle, ~40 deg angle of attack): pitched up about its wing axis (body X) from 10 min before the
+            // entry interface, held through the entry, and lowered over the last 3 min of it into the glide.
+            const double aoa = glm::radians(40.0) * glm::smoothstep(C.tEI - 600.0, C.tEI - 120.0, t) *
+                               (1.0 - glm::smoothstep(C.tGlide - 180.0, C.tGlide, t));
+            if (aoa > 1e-6)
+            {
+                const double ca = std::cos(aoa), sa = std::sin(aoa);
+                const glm::dvec3 Y = R[1], Z = R[2];
+                R[1] = ca * Y + sa * Z; // (the nose, -Z, turns toward +Y: up)
+                R[2] = ca * Z - sa * Y;
+            }
+        }
+        return R;
     }
     const glm::dmat3 up = crewFrame(glm::normalize(P), glm::cross(C.Ns, glm::normalize(P)));
     if (t < C.tChute + 60.0)
@@ -6237,6 +6260,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     L.nRockets = L.nPlumes = L.nReentries = 0;
     L.nFairings = 0;
     L.plumeDbg.clear();
+    L.plasmaDbg.clear();
     L.stackDraws.clear();
     if (!L.loaded)
         return;
@@ -6299,6 +6323,80 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     const double pixA = ctx_ ? 2.0 * std::tan(0.5 * glm::radians((double)camera.fovYDeg)) /
                                    (double)std::max(1u, ctx_->swapExtent.height)
                              : 1e-3;
+    // ── Entry plasma close up (2026-10-21, the validation review: a capsule's glow from ~40 m was a large saturated
+    // round blob at its heat shield, Starship's hull a dark silhouette in front of its sheath, Dream Chaser's glow on
+    // its body axis). One emitter for the ship, the capsules and the spaceplane: an emissive Gaussian whose light is,
+    // unresolved, the point's on-screen energy (`Jpt`, toSky units: what the point carried), and resolved (its middle
+    // sigma past ~1.5-8 px), a SURFACE BRIGHTNESS in the sky's units (pi x radiance per unit solar irradiance: a sunlit
+    // white face is 1), geometric blend between the two as the flames do. The resolved brightness is
+    //   - held at its face-on value whatever the view: seen edge-on a thin layer's column is its length, and seen along
+    //     a wake its whole length adds up (flames: "held at its side-on surface brightness");
+    //   - capped at kPlasmaMaxDisp of displayed light (x the sky exposure): the shock layer's ~4x a white face is
+    //     hundreds of times past white under the night exposure, where a Gaussian saturates out to several sigma (the
+    //     round disc). Capped, the layer saturates only in its own thin core;
+    //   - faded as the eye comes inside it (3 -> 1.5 sigma), like the flames (a camera behind a capsule sits in its wake).
+    // `holdAxis` = the axis whose face-on (column along it) brightness is held: the layer's thin axis, or for a wake one
+    // of its cross axes (its side-on value).
+    const double plasmaExpo = (double)skyExposure();
+    constexpr double kPlasmaMaxDisp = 2.0;
+    auto plasmaGauss = [&](const glm::dvec3 &cEci, const glm::dvec3 (&ax3)[3], const double (&s3)[3], int holdAxis,
+                           double Jpt, double Sres, glm::vec3 col, double rel) {
+        if (n >= kMaxDustClouds || !(Jpt > 0.0) || !(Sres > 0.0))
+            return;
+        const glm::dvec3 relC = cEci - eye;
+        const double rangeC = std::max(glm::length(relC), 1e-3);
+        const double sMin = 0.6 * rangeC * 2.0 * pixFull;
+        glm::dvec3 A[3];
+        double s[3], sr[3];
+        for (int i = 0; i < 3; ++i)
+        {
+            A[i] = toEnu(ax3[i]);
+            s[i] = std::max(s3[i], sMin);
+            sr[i] = s3[i];
+        }
+        std::sort(sr, sr + 3);
+        const double resK = glm::smoothstep(1.5, 8.0, 2.0 * sr[1] / std::max(rangeC * pixA, 1e-12));
+        const glm::dvec3 ce = toEnu(relC);
+        auto quad = [&](const glm::dvec3 &v) {
+            double q = 0.0;
+            for (int i = 0; i < 3; ++i)
+                q += glm::dot(v, A[i]) * glm::dot(v, A[i]) / (s[i] * s[i]);
+            return q;
+        };
+        const double inK = glm::smoothstep(1.5, 3.0, std::sqrt(quad(ce)));
+        if (inK <= 0.0)
+            return;
+        const glm::dvec3 dv = -ce / std::max(glm::length(ce), 1e-9); // from the centre toward the eye
+        const double hold = std::min(1.0, s[holdAxis] * std::sqrt(std::max(quad(dv), 1e-30)));
+        double sFace = 1.0; // the face-on area factor: 2 pi x the two sigmas across the held axis
+        for (int i = 0; i < 3; ++i)
+            if (i != holdAxis)
+                sFace *= s[i];
+        // (rel: a wake's brightness relative to the layer's, the cap taken on the layer's: their ratio kept)
+        const double Sc = rel * std::min(Sres, kPlasmaMaxDisp / std::max(plasmaExpo, 1e-6));
+        const double cRes = Sc * 2.0 * glm::pi<double>() * sFace * hold;
+        const double w = std::exp(glm::mix(std::log(Jpt), std::log(std::max(cRes, 1e-30)), resK)) * inK;
+        glm::dmat3 M(0.0);
+        for (int i = 0; i < 3; ++i)
+            M += glm::outerProduct(A[i], A[i]) / (s[i] * s[i]);
+        if (L.plasmaDbg.size() < 64)
+            L.plasmaDbg.push_back({rangeC, resK, Sres, Sc * plasmaExpo, w, hold, sr[0], sr[2]});
+        GpuDustCloud &d = out[n++];
+        d.c = glm::vec4(glm::vec3(ce), (float)w);
+        d.ia = glm::vec4((float)M[0][0], (float)M[1][1], (float)M[2][2], (float)(1.0 / (kTwoPi1p5 * s[0] * s[1] * s[2])));
+        d.ib = glm::vec4((float)M[0][1], (float)M[0][2], (float)M[1][2], 0.0f);
+        d.col = glm::vec4(col, 1.0f);
+        d.cone = coneOf(ce, 5.5 * std::max(s[0], std::max(s[1], s[2])));
+    };
+    // The plasma's light on its own hull (sat_mesh.frag's local lights), physical (not lifted at night, not adapted):
+    // the irradiance the layer gives the face under it is ~ its surface brightness (a bright layer filling half the
+    // sky above the face: S / 2 .. S), capped like the layer so the lit hull displays at most ~as bright as the glow.
+    auto plasmaHullLight = [&](const glm::dvec3 &posEci, double Sres, double dSurf, double rs, glm::vec3 col, double share) {
+        const double Sc = std::min(Sres, kPlasmaMaxDisp / std::max(plasmaExpo, 1e-6));
+        const double E = 1.5 * Sc * share;
+        if (E > 1e-6)
+            meshLightAdd(posEci, E * (dSurf * dSurf + rs * rs), col, rs, nullptr, 180.0, true);
+    };
     // Crew spacecraft (2026-10-20): flying, docked or coming home. Listed (selectable, drawn as meshes up close) within
     // 4000 km or when selected / followed; sunlit and free-flying, a faint point that gives way to its mesh; a small
     // flame in its burns; the plasma's glow and wake through its entry.
@@ -6380,50 +6478,74 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     ambUpwellSource(2, toEnu(rel), range, m);
                 const double fl = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
                 col = glm::mix(glm::vec3(1.0f, 0.62f, 0.38f), glm::vec3(1.0f, 0.55f, 0.75f), (float)glm::clamp(v / 7500.0, 0.0, 1.0));
-                // (2026-10-21, the daylight review) The plasma is at the heat shield, not at the docking port (the
-                // model's origin): a few metres down the capsule. The point gives way, as the capsule's mesh resolves,
-                // to a sheath of glow the size of the capsule around the heat shield (it was a white disc with glare
-                // spikes beside a resolved capsule).
+                // (2026-10-21) Where the plasma is: a capsule's shock layer stands just ahead of its heat shield
+                // (heat_shield_m below the port along -Z, radius heat_shield_r_m); a spaceplane's (belly_half_len_m > 0:
+                // Dream Chaser, flying nose-high) along its tiled belly. The point sits there and gives way, as the mesh
+                // resolves, to the layer (thin, hugging the face), a short hot wake behind the body and the layer's light
+                // on the hull (plasmaGauss / plasmaHullLight above). It was a 3.5-m round Gaussian at the shield in the
+                // point's units: from ~40 m a saturated disc several times the capsule (and the spaceplane's sat on its
+                // body axis).
+                const launch::Program &pgE = L.cat.programs[B.prog];
                 const glm::dmat3 Ra = LaunchImpl::crewAttitude(C, t);
-                const glm::dvec3 Ph = P - Ra[2] * L.cat.programs[B.prog].heatShieldM;
+                glm::dvec3 vdirE = -Ra[2];
+                {
+                    glm::dvec3 Pv;
+                    if (LaunchImpl::crewPos(C, t - 0.5, Pv) && glm::length(P - Pv) > 1e-3)
+                        vdirE = glm::normalize(P - Pv);
+                }
+                const bool belly = pgE.bellyHalfLen > 0.0;
+                const double Rs = std::max(pgE.heatShieldR, 0.3);
+                const glm::dvec3 nW = belly ? -Ra[1] : -Ra[2]; // the windward face's normal (out into the flow)
+                const glm::dvec3 Fc = belly ? P - Ra[2] * pgE.heatShieldM - Ra[1] * Rs : P - Ra[2] * pgE.heatShieldM;
+                const double standoff = belly ? 0.35 : 0.12 * Rs + 0.1;
+                const glm::dvec3 Ph = Fc + nW * standoff;
                 ptRel = Ph - eye;
                 const double keep = 1.0 - glm::smoothstep(2.0, 8.0, rocketMeshPx(selTransients[idx], pixA, eye));
                 flare = fl * keep;
-                if (keep < 1.0 && n < kMaxDustClouds)
+                const double dayKE = std::max(1.0 - 0.95 * dayness, 1e-3);
+                const double Jpt = fl / dayKE * range * range / K * toSky * dayKE; // the point's on-screen energy
+                const double Sres = 4.0 * I; // the layer's surface brightness: ~4x a sunlit white face at peak heating
+                if (keep < 1.0)
                 {
-                    const double sMin = 0.6 * range * 2.0 * pixFull;
-                    const double sS = std::max(3.5, sMin), iS = 1.0 / (sS * sS);
-                    const double J = 0.03 * fl * (1.0 - keep) * range * range / K;
-                    const glm::dvec3 ce = toEnu(Ph - Ra[2] * 0.8 - eye);
-                    GpuDustCloud &d = out[n++];
-                    d.c = glm::vec4(glm::vec3(ce), (float)(J * toSky));
-                    d.ia = glm::vec4((float)iS, (float)iS, (float)iS, (float)(1.0 / (kTwoPi1p5 * sS * sS * sS)));
-                    d.ib = glm::vec4(0.0f);
-                    d.col = glm::vec4(col, 1.0f);
-                    d.cone = coneOf(ce, 5.5 * sS);
+                    const glm::dvec3 ax3[3] = {Ra[0], belly ? Ra[2] : Ra[1], nW};
+                    const double s3[3] = {belly ? 1.2 * Rs : 0.55 * Rs, belly ? 0.42 * pgE.bellyHalfLen : 0.55 * Rs,
+                                          belly ? 0.3 : 0.06 * Rs + 0.05};
+                    plasmaGauss(Ph, ax3, s3, 2, 0.6 * Jpt * (1.0 - keep), Sres, col, 1.0);
+                    // The hot wake close behind the body: the gas the shock heated, flowing round it (an eighth of the
+                    // layer's brightness: the first cut at 0.3 drew a lit sheet several capsules long).
+                    const double bodyL = belly ? 2.0 * pgE.bellyHalfLen : pgE.heatShieldM + Rs;
+                    glm::dvec3 u1 = glm::cross(vdirE, Ra[0]);
+                    u1 = glm::length(u1) > 1e-6 ? glm::normalize(u1) : Ra[1];
+                    const glm::dvec3 u2 = glm::cross(vdirE, u1);
+                    const double sw = belly ? 1.2 * Rs : 0.8 * Rs, sl = 0.8 * bodyL + Rs;
+                    const glm::dvec3 axW[3] = {vdirE, u1, u2};
+                    const double sW[3] = {sl, sw, sw};
+                    plasmaGauss(Fc - vdirE * (0.5 * bodyL + sl), axW, sW, 1, 0.25 * Jpt * (1.0 - keep), Sres,
+                                glm::mix(col, glm::vec3(1.0f, 0.45f, 0.3f), 0.5f), 0.12);
+                    // Its light on the hull: the face under the layer and what stands round it.
+                    if (belly)
+                        for (int k = -1; k <= 1; k += 2)
+                            plasmaHullLight(Fc + nW * 1.5 + Ra[2] * (0.45 * pgE.bellyHalfLen * k), Sres, 1.5, 1.6, col,
+                                            0.6 * (1.0 - keep));
+                    else
+                        plasmaHullLight(Fc + nW * (0.8 * Rs), Sres, 0.8 * Rs, Rs, col, 1.0 - keep);
                 }
-                // Its glowing wake: the last 4 s of path, an emissive Gaussian.
+                // Its glowing wake: the last 4 s of path. Resolved (it is ~80 m wide) a dim trail at its side-on surface
+                // brightness, capped like the layer; unresolved the point's energy as before.
                 glm::dvec3 Pp;
-                if (fl > 5e-3 && n < kMaxDustClouds && LaunchImpl::crewPos(C, t - 4.0, Pp))
+                if (fl > 5e-3 && LaunchImpl::crewPos(C, t - 4.0, Pp))
                 {
                     const glm::dvec3 axis = P - Pp;
                     const double Lw = glm::length(axis);
-                    const glm::dvec3 a = toEnu(axis / std::max(Lw, 1.0));
-                    glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
+                    const glm::dvec3 a = axis / std::max(Lw, 1.0);
+                    glm::dvec3 b2 = glm::cross(a, glm::normalize(P));
                     b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
                     const glm::dvec3 c2 = glm::cross(a, b2);
-                    const double sMin = 0.6 * range * 2.0 * pixFull;
-                    const double sA = std::max(0.28 * Lw, sMin), sP = std::max(80.0, sMin);
-                    const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
-                    auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
-                    const double J = 0.6 * fl * range * range / K;
-                    const glm::dvec3 ce = toEnu(Ph - 0.55 * axis - eye);
-                    GpuDustCloud &d = out[n++];
-                    d.c = glm::vec4(glm::vec3(ce), (float)(J * toSky));
-                    d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2), (float)(1.0 / (kTwoPi1p5 * sA * sP * sP)));
-                    d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), 0.0f);
-                    d.col = glm::vec4(col, 1.0f);
-                    d.cone = coneOf(ce, 5.5 * std::max(sA, sP));
+                    const glm::dvec3 axF[3] = {a, b2, c2};
+                    // (centred 0.6 of the path back, sigma 0.22: at 0.55 / 0.28 its 3-sigma tail reached ~a third of the
+                    // path AHEAD of the capsule)
+                    const double sF[3] = {0.22 * Lw, 80.0, 80.0};
+                    plasmaGauss(Ph - 0.6 * axis, axF, sF, 1, 0.6 * Jpt, Sres, col, 0.15);
                 }
             }
         }
@@ -6559,7 +6681,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // body's middle, not the track point (the model's origin = the aft end, at the engines: the glow and its
             // glare sat on the engine bells of a followed ship). The belly faces down and forward, perpendicular to the
             // body axis in the plane of the axis and the velocity.
-            glm::dvec3 Pg = P, ax(0.0), nb(0.0);
+            glm::dvec3 Pg = P, Fb = P, ax(0.0), nb(0.0), vdS = glm::normalize(P - Pp);
             double bodyHalf = 25.0, bodyR = 4.5, meshPx = 0.0;
             {
                 const glm::dvec3 vh1 = glm::normalize(P - Pp), up = glm::normalize(P);
@@ -6577,7 +6699,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     bodyHalf = std::max(2.0, (double)tm->boundsRadius - 2.0);
                 }
                 bodyR = std::clamp(0.17 * bodyHalf, 1.5, 6.0);
-                Pg = P + ax * zc + nb * (bodyR + 1.5);
+                Fb = P + ax * zc + nb * bodyR; // the belly's middle, on the hull
+                Pg = Fb + nb * 0.6;            // the shock layer, standing just off it
                 if (shipIdx < selTransients.size())
                     meshPx = rocketMeshPx(selTransients[shipIdx], pixA, eye);
             }
@@ -6588,7 +6711,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 engineLightAdd(Pg, flameIntensitySunsM2(-4.0 - 2.5 * std::log10(I)),
                                glm::mix(glm::vec3(1.0f, 0.62f, 0.38f), glm::vec3(1.0f, 0.55f, 0.75f),
                                         (float)glm::clamp(v / 7500.0, 0.0, 1.0)),
-                               400.0, glm::normalize(P), 0.0, 0.0, false);
+                               400.0, glm::normalize(P), 0.0, 0.0, false, 0.0);
             if (I > 1e-3 && !earthBlocks(P))
             {
                 const double m = -4.0 - 2.5 * std::log10(I) + 5.0 * std::log10(range / 1.0e5) +
@@ -6604,45 +6727,42 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(relG) / rangeG), (float)(flare * keep)), glm::vec4(col, (float)rangeG)};
                 if (flare > 2e-4 && shipIdx < selTransients.size())
                     selTransients[shipIdx].flare = (float)flare;
-                if (keep < 1.0 && n < kMaxDustClouds)
+                // (2026-10-21, validation) The sheath, the wake close behind the body and the plasma's light on the hull,
+                // through the capsules' emitter (plasmaGauss: resolved, a held and capped surface brightness): the sheath
+                // was in the point's units (a wide white ellipse), and the hull read as a dark silhouette in front of it.
+                const double dayKS = std::max(1.0 - 0.95 * dayness, 1e-3);
+                const double Jpt = flare / dayKS * range * range / K * toSky * dayKS;
+                const double Sres = 4.0 * I;
+                if (keep < 1.0)
                 {
-                    // Elongated along the body, a few metres thick, standing off the belly.
-                    const glm::dvec3 a = toEnu(ax), b2 = toEnu(nb), c2 = glm::cross(a, b2);
-                    const double sMin = 0.6 * rangeG * 2.0 * pixFull;
-                    const double sA = std::max(0.38 * bodyHalf, sMin), sB = std::max(0.6 * bodyR, sMin), sC = std::max(1.1 * bodyR, sMin);
-                    const double iA = 1.0 / (sA * sA), iB = 1.0 / (sB * sB), iC = 1.0 / (sC * sC);
-                    auto Mx = [&](int p2, int q2) { return iA * a[p2] * a[q2] + iB * b2[p2] * b2[q2] + iC * c2[p2] * c2[q2]; };
-                    const double J = 0.0006 * flare * (1.0 - keep) * rangeG * rangeG / K; // (x0.03 as the capsule's blew a ~4x-wide white ellipse)
-                    const glm::dvec3 ce = toEnu(relG);
-                    GpuDustCloud &d = out[n++];
-                    d.c = glm::vec4(glm::vec3(ce), (float)(J * toSky));
-                    d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2), (float)(1.0 / (kTwoPi1p5 * sA * sB * sC)));
-                    d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), 0.0f);
-                    d.col = glm::vec4(col, 1.0f);
-                    d.cone = coneOf(ce, 5.5 * sA);
+                    const glm::dvec3 side = glm::normalize(glm::cross(ax, nb));
+                    const glm::dvec3 ax3[3] = {ax, side, nb};
+                    const double s3[3] = {0.4 * bodyHalf, 0.75 * bodyR, 0.45};
+                    plasmaGauss(Pg, ax3, s3, 2, 0.6 * Jpt * (1.0 - keep), Sres, col, 1.0);
+                    glm::dvec3 u1 = glm::cross(vdS, side);
+                    u1 = glm::length(u1) > 1e-6 ? glm::normalize(u1) : nb;
+                    const glm::dvec3 u2 = glm::cross(vdS, u1);
+                    const double sl = 0.6 * bodyHalf, sw = 1.2 * bodyR;
+                    const glm::dvec3 axW[3] = {vdS, u1, u2};
+                    const double sW[3] = {sl, sw, sw};
+                    plasmaGauss(Fb - vdS * (0.5 * bodyHalf + sl), axW, sW, 1, 0.2 * Jpt * (1.0 - keep), Sres,
+                                glm::mix(col, glm::vec3(1.0f, 0.45f, 0.3f), 0.5f), 0.12);
+                    // Three lights under the belly: the tiles, the flaps and the body's flanks glow orange / pink.
+                    for (int k = -1; k <= 1; ++k)
+                        plasmaHullLight(Fb + nb * 2.0 + ax * (0.55 * bodyHalf * k), Sres, 2.0, 2.5, col, 0.5 * (1.0 - keep));
                 }
-                // Its glowing wake: the last 6 s of path, an emissive Gaussian.
-                if (flare > 5e-3 && n < kMaxDustClouds)
+                // Its glowing wake: the last 6 s of path (300 m wide): resolved, a dim trail at its side-on brightness.
+                if (flare > 5e-3)
                 {
                     const glm::dvec3 axis = P - Pp;
                     const double Lw = glm::length(axis);
-                    const glm::dvec3 a = toEnu(axis / std::max(Lw, 1.0));
-                    glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
+                    const glm::dvec3 a = axis / std::max(Lw, 1.0);
+                    glm::dvec3 b2 = glm::cross(a, glm::normalize(P));
                     b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
                     const glm::dvec3 c2 = glm::cross(a, b2);
-                    const double sMin = 0.6 * range * 2.0 * pixFull;
-                    const double sA = std::max(0.28 * Lw, sMin), sP = std::max(300.0, sMin);
-                    const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
-                    auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
-                    const double J = 0.7 * flare * range * range / K;
-                    const glm::dvec3 ce = toEnu(Pg - 0.55 * axis - eye); // behind the body, from its belly
-                    GpuDustCloud &d = out[n++];
-                    d.c = glm::vec4(glm::vec3(ce), (float)(J * toSky));
-                    d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2),
-                                     (float)(1.0 / (kTwoPi1p5 * sA * sP * sP)));
-                    d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), 0.0f);
-                    d.col = glm::vec4(col, 1.0f);
-                    d.cone = coneOf(ce, 5.5 * std::max(sA, sP));
+                    const glm::dvec3 axF[3] = {a, b2, c2};
+                    const double sF[3] = {0.22 * Lw, 300.0, 300.0};
+                    plasmaGauss(Pg - 0.6 * axis, axF, sF, 1, 0.7 * Jpt, Sres, col, 0.15);
                 }
                 ++L.nReentries;
             }
@@ -7580,6 +7700,14 @@ nlohmann::json SatelliteSim::launchStateJson() const
     }
     j["stack_meshes"] = L.nStacked;          // satellites drawn on their upper stage (payload stacks)
     j["stack_stages"] = L.stackDraws.size();
+    {
+        nlohmann::json pa = nlohmann::json::array();
+        for (const auto &q : L.plasmaDbg)
+            pa.push_back({{"range_m", q.rangeM}, {"res_k", q.resK}, {"s_asked", q.sAsked}, {"s_disp_capped", q.sDispCapped},
+                          {"weight", q.weight}, {"view_hold", q.hold}, {"sigma_min_m", q.sigMin}, {"sigma_max_m", q.sigMax}});
+        j["entry_plasma"] = pa;
+        j["sky_exposure"] = skyExposure();
+    }
     j["free_chunks"] = L.freeChunks.size();
     j["slots_shown"] = std::count_if(L.slots.begin(), L.slots.end(), [](const SlotInfo &x) { return x.shown; });
     j["life_scale"] = launchLifeScale;
@@ -9293,7 +9421,12 @@ bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::str
         const glm::dvec3 U = glm::normalize(P);
         const double sp = glm::dot(P, sun);
         const bool lit = sp > 0.0 || glm::length(P - sp * sun) > kR + 20000.0;
-        if (ev >= 2 ? !lit : ((ev == 0 && !lit) || glm::dot(U, sun) > -0.12))
+        if (ev == 1 && launchShipDay_)
+        {
+            if (glm::dot(U, sun) < 0.3)
+                continue; // (harness `launch ship day=1`, 2026-10-21: the entry over a sunlit ground)
+        }
+        else if (ev >= 2 ? !lit : ((ev == 0 && !lit) || glm::dot(U, sun) > -0.12))
             continue; // a vent must be sunlit, both over a dark ground; a deorbit or a deployment sunlit
         if (followActive)
             stopFollow();
@@ -11432,13 +11565,14 @@ double SatelliteSim::flameIntensitySunsM2(double mag100km)
 }
 
 void SatelliteSim::meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double rs,
-                                const glm::dvec3 *aimEci, double beamHalfDeg)
+                                const glm::dvec3 *aimEci, double beamHalfDeg, bool physical)
 {
     if (engineLightGain <= 0.0f || intensitySunsM2 <= 0.0)
         return;
     const double dayness = glm::clamp(((double)sunDirENU.w + 0.1) / 0.3, 0.0, 1.0);
-    const double lift = glm::mix(1.0, (double)moonGain / 2.0e-6, 1.0 - dayness) * (double)engineLightGain;
+    const double lift = (physical ? 1.0 : glm::mix(1.0, (double)moonGain / 2.0e-6, 1.0 - dayness)) * (double)engineLightGain;
     MeshLocalLight m;
+    m.physical = physical;
     m.ecef = eciToEcef(posEci, (double)simDayJ2000 * 86400.0 + simSecInDay);
     m.I = intensitySunsM2 * lift;
     m.col = col / std::max(glm::dot(col, glm::vec3(0.2126f, 0.7152f, 0.0722f)), 1e-3f);
@@ -11466,7 +11600,7 @@ void SatelliteSim::fillMeshLocalLights(GpuMeshFrame &frame, const glm::dvec3 &or
     for (const MeshLocalLight &m : meshLightsPrev_)
     {
         const glm::dvec3 p = m.ecef - originEcef;
-        const double I = m.I * adapt;
+        const double I = m.I * (m.physical ? 1.0 : adapt);
         // (where the light no longer matters: ~1e-4 sun of irradiance at its distance from the origin + 20 m)
         const double d2 = glm::dot(p, p);
         if (I < 1e-4 * (d2 + 400.0) * 1e-2)
@@ -11478,7 +11612,7 @@ void SatelliteSim::fillMeshLocalLights(GpuMeshFrame &frame, const glm::dvec3 &or
     frame.lightInfo = glm::vec4((float)nL, 0.0f, 0.0f, 0.0f);
     for (size_t i = 0; i < nL; ++i)
     {
-        frame.lightPos[i] = glm::vec4(glm::vec3(ml[i].p), (float)(ml[i].m->I * adapt));
+        frame.lightPos[i] = glm::vec4(glm::vec3(ml[i].p), (float)(ml[i].m->I * (ml[i].m->physical ? 1.0 : adapt)));
         frame.lightCol[i] = glm::vec4(ml[i].m->col, ml[i].m->rs);
         frame.lightDir[i] = glm::vec4(glm::vec3(ml[i].m->aimEcef), ml[i].m->cosCut);
     }

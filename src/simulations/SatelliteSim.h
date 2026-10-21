@@ -2602,6 +2602,13 @@ private:
     // (the old object's frame at this frame's time), not from the parked ground observer; it was flown along the
     // observer's line of sight, whose start distance clamped at 1 m: the camera passed through the new satellite.
     bool       followFlightRel = false;
+    // (2026-10-21) The default offset (-4r, 0, 1.5r) was just set (startFollow: followOffset; followReturn:
+    // followFlightRelB): the next updateFollow puts it on the side BEHIND the object's motion over the ground (a
+    // rocket slower than 30 m/s: behind its engine end). A transient's carried frame heading can point backward (a
+    // booster's boostback keeps the side), where "-4r along" was in front.
+    bool       followDefaultSideOffset = false, followDefaultSideRelB = false;
+    double     followDefaultSideDot = 0.0;
+    glm::dvec3 followFwdRefEcef{0.0}; // (harness) the motion heading behind which the default offset sits (unit, ECEF) // (harness: the frame's along axis . the motion's heading when last applied)
     bool       followFlightRelKeepDir = false; // B = A's direction at the follow distance (a switch), else B is set
     glm::dvec3 followFlightRelA{0.0}, followFlightRelB{0.0};
     // The camera's floor (issue 20261019_223321): never below the ground (the GPU's detailed ground under the eye,
@@ -3002,6 +3009,7 @@ private:
         float rs = 1.0f;
         glm::dvec3 aimEcef{0.0}; // a floodlight's aim (unit, Earth-fixed; 0 = all round)
         float cosCut = -2.0f;     // ... and its beam: full inside acos(cosCut) - 10 deg, none past it
+        bool physical = false;    // (2026-10-21) an entry plasma's light on its own hull: neither lifted at night nor adapted
     };
     std::vector<MeshLocalLight> meshLights_, meshLightsPrev_;
     float meshLightAdapt_ = 1.0f; // engineAdaptEased at the flush that made meshLightsPrev_
@@ -3010,7 +3018,7 @@ private:
     uint32_t viewerLightMaskDbg_ = 0;
     int viewerArmPartsDrawn_ = 0; // a station's arm parts in the info window's 3D view (harness)
     void meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double rs,
-                      const glm::dvec3 *aimEci = nullptr, double beamHalfDeg = 180.0);
+                      const glm::dvec3 *aimEci = nullptr, double beamHalfDeg = 180.0, bool physical = false);
     static double flameIntensitySunsM2(double mag100km);
     // (2026-10-21, cost) Fills frame.lightInfo / lightPos / lightCol / lightDir with last frame's mesh lights, the
     // positions relative to `originEcef` (the frame's world origin, ECEF axes): the scene pass (the camera) and the
@@ -3128,6 +3136,7 @@ private:
     bool launchGoToNextReentry(std::string &msg);
     bool launchGoToVent(std::string &msg);
     bool launchGoToShipEntry(std::string &msg);
+    bool launchShipDay_ = false; // (harness `launch ship day=1`) the next ship entry over a SUNLIT ground
     bool launchGoToStageEvent(std::string &msg, int ev, const std::string &filter = "", int minMembers = 0);
     // (2026-10-20) The next crew flight event (launch, sep, phasing, arrive, axis, hold400, hold200, hold20, dock,
     // undock, depart, deorbit, entry, chutes, splash) at a station whose name contains `station` (any if empty): the
