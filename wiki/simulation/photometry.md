@@ -243,8 +243,12 @@ This is evaluated at run time against the model's own primitives, posed at the l
 (`buildSatOcclusion()`, `satLobeVisibility()`).
 
 - **Occluders.** One per component (up to 64 per model): planes, boxes and spheres exactly, a cylinder
-  as a capped smooth cylinder, a cone as the cylinder of its larger radius (conservative). Open-lattice
-  and render-only parts never occlude.
+  as a capped smooth cylinder, a cone as the cylinder of its larger radius (conservative), a body of
+  revolution from a meridian profile as the exact cone frustum through its two end radii. Open-lattice
+  and render-only parts never occlude. A frustum is inscribed in a domed or ogive profile, so a long
+  rounded hull is modelled as one profile per meridian segment: then each piece's frustum follows the
+  shape. The generated station models (`tools/make_station_models.py`) split their photometric hulls this
+  way; a whole domed hull's single frustum misses its own ends and fails the occlusion self-test.
 - **Samples.** Each lobe keeps area-weighted sample points on its own surface: 16 per component of the
   lobe (up to 64), chosen by weighted k-means over evenly spread sub-triangle centroids (more on triangles
   over 32 m²).

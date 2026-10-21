@@ -1,9 +1,10 @@
 # Features tour
 
-A walk through what you can do in SAT LIGHT SIM: find your way around the screen, pick out satellites and planets,
-inspect one in 3D, plot how bright it gets over a pass, control time, save places as bookmarks, take pictures and
-films, and find your way around the settings. The keys are on [Controls](controls.md); how each thing is computed
-is linked from each section.
+A walk through what you can do in SAT LIGHT SIM: find your way around the screen, pick out satellites, rockets and
+planets, inspect one in 3D, plot how bright it gets over a pass, control time, watch launches and the Sun's Fury,
+save places as bookmarks, take pictures and films, report a problem, and find your way around the settings. The
+keys are on [Controls](controls.md), the Missions window on [Missions](missions.md); how each thing is computed is
+linked from each section.
 
 ## The screen
 
@@ -12,7 +13,7 @@ Two panels sit along the bottom of the screen; **Tab** hides them for a clean vi
 | Panel | Contents |
 |---|---|
 | Bottom left | The UTC clock and speed, the time buttons (slower, pause, faster, reverse) and the picture buttons (Screenshot, HQ photo, Star trails) |
-| Bottom right | Latitude, longitude, altitude with an **MSL / AGL** switch (above sea level or above the ground), the frame rate, the version, and the menu buttons: **Bookmarks**, **Cinematics** and **Settings**. A menu button is lit while its window is open |
+| Bottom right | Latitude, longitude, altitude with an **MSL / AGL** switch (above sea level or above the ground), the frame rate, the version, and the menu buttons: **Issue reports**, **Missions**, **Bookmarks**, **Cinematics** and **Settings**. A menu button is lit while its window is open |
 
 The icons are solid white silhouettes; hover any button to see its name.
 
@@ -27,62 +28,105 @@ text box (Enter applies, Esc cancels):
 
 Text that does not parse shows an amber notice and changes nothing. Moving the observer this way ends follow mode.
 
-## Selecting satellites and planets
+## Selecting satellites, rockets and planets
 
 Left-click a point of light to select it, or press `T` (A on a gamepad) to select whatever is nearest the centre
 of the screen. Planets (Mercury, Venus, Mars, Jupiter, Saturn, Uranus) win over satellites when both are under the
 cursor. Clicking empty sky clears the selection.
 
-A satellite that is large enough on screen is drawn as a 3D model instead of a point, with no selection needed.
-Those are picked by their outline. See [Satellite meshes](../rendering/satellite-meshes.md).
+Besides satellites, these can be selected:
+
+- **rocket stages**, from the pad to their re-entry, and Starship's ship on its way home;
+- **re-entry fireballs**: a retired satellite or a spent stage burning up, and the re-entries of the
+  [Sun's Fury](#the-suns-fury);
+- **debris pieces** of the Sun's Fury, which are drawn as 3D pieces close up.
+
+A click picks from what is drawn: an object below your horizon or too faint to show cannot be clicked. Anything
+reached by name instead (a row of the [Missions](missions.md) window, a station in the Constellations tab, a
+member of the GEO belt's list) is selected whether it is drawn or not, and a rocket stays selected while it is out
+of view. A satellite that does not exist at the current date (one not yet launched in the deployment era, or one
+destroyed or re-entered in the Sun's Fury) cannot be selected; if the selected satellite is destroyed or re-enters,
+the selection is dropped.
+
+A satellite or rocket that is large enough on screen is drawn as a 3D model instead of a point, with no selection
+needed. Those are picked by their outline. See [Satellite meshes](../rendering/satellite-meshes.md).
 
 ### The selection panel
 
-A small panel follows the selected object, with a reticle around it. For a satellite it shows its constellation
-and number, its type and its current brightness as an apparent magnitude. For a planet it shows its magnitude,
-distance and phase.
+A small panel follows the selected object, with a reticle around it. Its first line is the object's name: the
+constellation and number (`Starlink Gen2 #1234`), a station's or a GEO satellite's own name, or for a rocket its
+vehicle, stage and what it is doing (`on the pad, T-9 s`, its burn, T+, altitude and speed). The second line says
+what it is:
+
+| Object | Second line |
+|---|---|
+| A roster satellite | Its satellite type |
+| A GEO belt satellite | Its operator and slot (`Intelsat - GEO 27.5 W`) |
+| A rocket | `Rocket stage (<model>)` |
+| Starship's ship coming home | `Starship ship, entry` |
+| A fireball | `Re-entry fireball` |
+| A satellite in a train or deorbiting | Its type and phase with its height: `raising to slot, 412/565 km`, `parking orbit`, `in the dispenser`, `deorbiting` |
+
+Then its brightness as an apparent magnitude (for a planet: magnitude, distance and phase). A rocket's magnitude is
+that of its flame as seen from the camera.
 
 A satellite's panel has a row of icon buttons. Hover one to see its name.
 
 | Button | What it does |
 |---|---|
-| **Info** (an italic *i*) | Opens the satellite window: a 3D view and the satellite's orbit, brightness and geometry. Satellites with a geometry model only |
-| **Go to** (an eye) | Flies out to the satellite and rides along with it ([follow mode](controls.md#follow-mode-go-to)). Satellites with a geometry model only |
+| **Info** (an italic *i*) | Opens the satellite window: a 3D view and the satellite's status, brightness, orbit and mission. Objects with a geometry model only |
+| **Go to** (an eye) | Flies out to the object and rides along with it ([follow mode](controls.md#follow-mode-go-to)). Objects with a geometry model only (every modelled satellite, rocket and debris piece) |
 | **Trace pass** | Plots the satellite's brightness over its current or next pass |
-| **Track** (a sight) | Keeps the camera pointed at the satellite while you stay where you are. Works for every satellite |
+| **Track** (a sight) | Keeps the camera pointed at the object while you stay where you are. Works for everything selectable |
 
 A lit button means the action is active (the eye while following, the reticle while tracking). When the selected
-satellite is off screen, a chip at the edge of the screen points to it and carries the same buttons.
+object is off screen, a chip at the edge of the screen points to it and carries the same buttons.
 
 ## The satellite window and the 3D view
 
-**Info** opens a window with a rendered view of the real satellite, where it is right now, lit by the real Sun
-and the light of the Earth below it. Drag inside the picture to orbit the camera around it, scroll to zoom.
+**Info** opens a window on the right side of the screen, as tall as the space above the bottom-right panel. At its
+top is a rendered view of the real object, where it is right now, lit by the real Sun and the light of the Earth
+below it. Drag inside the picture to orbit the camera around it, scroll to zoom.
 
 Four icons sit over the picture:
 
 | Chip | Effect |
 |---|---|
-| **Spin** | The camera slowly circles the satellite |
+| **Spin** | The camera slowly circles the object |
 | **Observer** | View it from your direction on the ground: this is the side, and the glint, that you see from below |
 | **Studio** | A fixed studio light instead of the live Sun, to see the shape clearly |
 | **Maximize** | Pop the view out into its own large, resizable window (the small view keeps running) |
 
-The window title shows the satellite's name and, in its title bar, **Select** (select it in the sky) and **Go to**.
+The window title shows the object's name and, in its title bar, **Select** (select it in the sky) and **Go to**.
 Under the picture four tiles show its **magnitude** as you see it, its **elevation**, its **range** and the
-**phase** angle. Below them are collapsible sections, each a list of labels and values:
+**phase** angle. For a burning rocket stage the magnitude is its flame's, as you see it from the ground.
+
+**ACTIONS**, always visible, is one row of four buttons. Trace pass, Go to and Track select the viewed object first.
+
+| Button | What it does |
+|---|---|
+| Trace pass | Plots its brightness over its pass (not for a rocket or a re-entry) |
+| Go to | Flies to it and rides along; reads **Leave** while you are following it |
+| Track | Keeps the camera on it as it crosses the sky |
+| **Explode** (danger colour) | Breaks it up with one click; see [Breaking a satellite up](#breaking-a-satellite-up) |
+
+Below them are collapsible sections, each a list of labels and values. Only the sections scroll.
 
 | Section | Contents |
 |---|---|
-| SATELLITE *(open)* | Type, model, size, mesh (triangle and part counts) |
-| ORBIT *(open)* | Altitude, inclination, RAAN, period, and the power lost to the flare-mitigation tilt |
-| BRIGHTNESS | Magnitude as seen, above the air, the extinction, the magnitude at 1000 km, the phase angle; a **Trace pass** button |
-| SKY POSITION | Visibility, elevation, azimuth and range from your position |
-| VIEW | Camera (Free, From you, Toward you), light (Live, Studio), pose (Sunlit, Rest), and switches for Spin, Shadows, Reflections, Surface detail, Glare and Markers (a cyan dot and line toward you; for a mirror, an orange line to the ground site it is aiming at); **Reset view** |
-| CHECK | A photometric check: the rendered picture integrated into a magnitude (Render), the brightness model's value (Model) and the difference; **Run check** |
+| STATUS *(open)* | What it is: constellation, satellite type, and its state (operational, dead and tumbling, destroyed, re-entered, in a launch, a debris piece). For a rocket or a re-entry: the stage and its burn, T+, altitude and speed (over the ground below 80 km, inertial from 150 km) |
+| MISSION *(open)* | For a launch object: its timeline and milestones, with buttons to skip between them; see [Missions](missions.md#the-mission-section-in-the-info-window) |
+| BRIGHTNESS *(open)* | Magnitude as seen, above the air, the extinction, the magnitude at 1000 km, the phase angle, and for a formation satellite the formation's combined magnitude |
+| SKY POSITION *(open)* | Visibility, elevation, azimuth and range from your position |
+| ORBIT *(open)* | Altitude, inclination, RAAN, period, and the power lost to the flare-mitigation tilt. Not shown for a rocket or a re-entry |
+| MODEL (TECHNICAL) | Type, model id, size, mesh (triangle and part counts) |
+| 3D VIEW | Camera (Free, From you, Toward you), light (Live, Studio), pose (Sunlit, Rest), and switches for Spin, Shadows, Reflections, Surface detail, Glare and Markers (a cyan dot and line toward you; for a mirror, an orange line to the ground site it is aiming at); **Reset view** |
+| PHOTOMETRY CHECK | A photometric check: the rendered picture integrated into a magnitude (Render), the brightness model's value (Model) and the difference; **Run check** |
 
-The readouts always refer to your parked position on the ground, even while you are following the satellite.
-How the brightness is computed is on [Satellite photometry](../simulation/photometry.md).
+The readouts always refer to your parked position on the ground, even while you are following the object.
+When the object changes into what continues it (a rocket stack into its upper stage at staging, a stage into its
+re-entry fireball, a satellite in a train into its slot on arrival), the window and its 3D view follow it, keeping
+the camera's direction. How the brightness is computed is on [Satellite photometry](../simulation/photometry.md).
 
 ## Magnitude traces
 
@@ -123,12 +167,15 @@ writes. See [SatBench and the accuracy gate](../accuracy/satbench.md).
 
 The panel at the bottom left shows the simulated UTC time and the speed. Its buttons are slower, pause, faster
 and **R** (reverse). Speeds run from 1x through 10x, 1 minute, 5 minutes, 1 hour, 1 day, 1 week and 1 month up to
-1 year per second. Time can run backwards at any speed, and every satellite, beam and mirror is a pure function of
-time, so going back and forth through the same moment gives the same sky.
+1 year per second. Time can run backwards at any speed, and every satellite, beam, mirror, launch and debris piece
+is a function of time, so going back and forth through the same moment gives the same sky.
 
 The program always starts at the same moment, 22 November 2036, 02:06 UTC <!-- history-ok -->, and the clock is
 real UTC: the Sun, Moon and planets are where they will really be. To go to another moment, click the clock and
 type a date and time (see [The screen](#the-screen)), or use the faster speeds.
+
+With the deployment era on (the default; see [Missions](missions.md#the-deployment-era)), going back in time also
+goes back in the constellations' history: at a date before 2036 only the satellites launched by then are in the sky.
 
 ### Eclipses
 
@@ -138,6 +185,74 @@ their real times and places. Two fall within a year of the start: the total luna
 central Australia, greatest near 02:43 UTC). <!-- history-ok --> During a solar eclipse the sky darkens, the
 horizon turns orange and the corona appears; during a lunar eclipse the Moon goes red. See
 [Moon and eclipses](../rendering/moon-and-eclipses.md).
+
+## Launches and rockets
+
+The constellations are kept flying by launches. Each orbital plane is refreshed once per design life: a rocket lifts
+off from a pad the plane passes over, deploys a train of satellites low, the train climbs over weeks to its slots,
+and the satellites it replaces deorbit and re-enter as fireballs. Crews fly to the stations twice a year. Rockets are
+bright points, then 3D models as you come close; their exhaust trails across the sky, and at twilight it spreads
+into a sunlit bell high above a dark ground. Boosters fly back and land, Starship's ships come home to be caught by
+their towers, and every upper stage deorbits. The roar arrives at the speed of sound.
+
+The launch sites are drawn on the ground: graded concrete, flame trenches, towers, tank farms and landing zones,
+with floodlights and beacons at night. Everything about launches is in the [Missions](missions.md) window: the
+schedule, what is flying, the settings, and the milestones of each flight. The physics is on
+[Launches](../simulation/launches.md), [Rocket flight](../simulation/rockets.md) and
+[Crew flights](../simulation/crew-flights.md).
+
+## The Sun's Fury
+
+On 15 July 2037 at 03:00 UTC <!-- history-ok -->, two days after the Great Australian Eclipse, a Carrington-class
+solar storm arrives. Its aurora reaches the mid-latitudes, it kills a share of the satellites in orbit, and the dead
+tumble and collide. Every collision is a cloud of debris that feeds the next: a Kessler cascade, computed at
+physical rates. Before the storm nothing differs from the plain sky. There is no mode to switch on: the storm
+happens when sim time gets there. The [Missions](missions.md#the-suns-fury-card) window counts down to it and has
+buttons to go there.
+
+What you can see after it:
+
+- dead satellites tumbling, glinting as they turn;
+- debris pieces of a metre and more, drawn close up as torn solar arrays, radiator sections and pieces of bus;
+- a glowing dust cloud along each breakup's orbit for about three hours;
+- re-entry fireballs as drag brings things down: a glow from about 100 km, a breakup flash, then a train of
+  fragments, some tinted by what burns; and, once the cascade runs, many small meteor-like streaks.
+
+The cascade is computed in the background, a little ahead of sim time. When time runs faster than it can be
+computed, time holds and a banner says "Computing the debris cascade". The results are cached in the user data
+folder (`kessler/`), so a second visit is quick. How it all works is on [The Sun's Fury](../simulation/kessler.md).
+
+### Breaking a satellite up
+
+**Explode** in the [satellite window](#the-satellite-window-and-the-3d-view) breaks the viewed satellite or debris
+piece up with one click, at any date. The debris is there the same frame and time keeps running; the result shows
+as a notice. A breakup before the storm starts the cascade at that moment (and switches the scenario on if it was
+off). Until the storm arrives, working satellites dodge everything, so only the debris, the dead satellites and the
+passive junk collide; after it, the **Collision avoidance** setting applies. Going back in time before the breakup
+undoes it. A destroyed satellite is gone everywhere: it cannot be selected, and a destroyed station gets no more crew
+flights. Explode is disabled for rockets, re-entries and satellites already destroyed. **Undo my breakups** in the
+settings below removes all of yours.
+
+### Settings
+
+In the Missions window's **Controls** tab, section THE SUN'S FURY:
+
+| UI label | `settings.json` key | Default | Effect |
+|---|---|---|---|
+| Scenario (a storm on 2037-07-15) | `kessler.enabled` | on | The storm and the cascade <!-- history-ok --> |
+| Collision rate | `kessler.rate_multiplier` | x1 | x0.1, x1, x10, x100. x1 is physical; higher is faster, not realistic. Re-simulates from the storm |
+| Collision avoidance | `kessler.avoidance` | 90% | 0%, 50%, 90%, 99%: the share of encounters a working satellite dodges. Re-simulates |
+| Simulate up to | `kessler.horizon_years` | 20 y | 5, 20 or 50 years after the storm |
+| Dust cloud brightness | `kessler.dust_gain` | x100 | x1, x10, x30, x100, x1000. At x1 (the physical estimate) a cloud fades below the dark sky within minutes |
+| Fireball material colours | `kessler.fireball_colors` | Vivid | Off, Subtle, Vivid: aluminium white, copper green, titanium blue-white, sodium yellow, lithium crimson |
+| Small re-entry brightness | `kessler.small_reentry_gain` | x30 | Off, x1, x3, x10, x30, x100 for the small fragments' streaks. x1 is physical, about magnitude +1 from 100 km |
+
+**Watch the next re-entry** jumps to the next satellite or large piece coming down over a dark sky, 25 s before it
+breaks up, from beside its track. Live counts follow: days since the storm, how far the cascade is computed, dead
+satellites, destroyed or re-entered satellites, large pieces, small fragments made, collisions, and your breakups.
+
+The **Collision debris** row of the Constellations tab shows or hides the debris; its **HLT** tints the pieces
+orange and draws each as a visible dot, to see the cloud's pattern.
 
 ## Bookmarks
 
@@ -160,28 +275,36 @@ thumbnails as PNG files beside it.
 
 ### The bookmarks that ship with the sim
 
-A first run, with no `bookmarks.json` yet, starts with six bookmarks. Deleting all of them leaves an empty list,
+A first run, with no `bookmarks.json` yet, starts with nine bookmarks. Deleting all of them leaves an empty list,
 which stays empty; **Restore defaults** brings them back.
 
 | Bookmark | What it shows |
 |---|---|
 | Great Australian Eclipse | The total solar eclipse of 13 July 2037 at greatest eclipse (21.75 S 138.31 E): the corona in a 15° field <!-- history-ok --> |
 | Blood Moon from Anchorage | The total lunar eclipse of 31 January 2037, 14:10 UTC, with the reddened Moon about 29° up in the west-southwest over the city <!-- history-ok --> |
-| Solar Storm | A strong geomagnetic storm (Kp about 6.8) seen from 420 km over Siberia |
-| Beam-lit Snow over Antarctica | McMurdo in mid-April twilight at about −23 °C, standing in the converging Reflect Orbital beams: the snow glints and haloes around the satellites. Starts paused |
-| Rainbow over Venezuela | Sunrise behind a storm over northern Venezuela (9.97 N 68.27 W). Starts paused, since the storm changes within minutes |
+| Solar Storm | A strong geomagnetic storm seen from 420 km over Siberia |
+| Beam-lit Snow over Antarctica | McMurdo in mid-April twilight at the edge of a snow shower, the camera on the line of Reflect Orbital mirrors: the flakes glitter and halo in the beams. Starts paused |
+| Rainbow over Venezuela | Sunrise at the edge of a raining storm on the Falcón coast (11.02 N 68.58 W), looking at the point opposite the Sun: a full double bow, with the drops falling around you. Starts paused |
 | Starmind Formation Rings | Beside one of Starmind's eight-satellite formation rings at 565 km. Starts paused |
+| The Sun's Fury | Monument Valley on the storm's first night, three and a half hours after it arrives: the aurora overhead |
+| Twilight Starship Launch | A Starship lift-off from Starbase Louisiana at twilight, from the ground |
+| Starmind Deployment | A sunlit Starship releasing Starmind satellites, seen from 350 km. Starts paused |
 
-A bookmark may also set the clock when you go to it: the shipped ones run at 1x, and the three marked above start
+A bookmark may also set the clock when you go to it: the shipped ones run at 1x, and those marked above start
 paused. The shipped files live in `default_bookmarks/` next to the program.
 
 ## Pictures
 
 | Tool | How | Result |
 |---|---|---|
-| Screenshot | F12, or the camera button in the bottom-left panel | `screenshots/satlight_<date>_<time>.png` at window size, without the interface |
+| Screenshot | F12, or the camera button in the bottom-left panel | `screenshots/satlight_<date>_<time>.png` at window size, without the interface (unless the setting below is on) |
+| Screenshot with UI | F10 | The same, always with the interface |
 | HQ photo | F8, or the sparkle-camera button | `screenshots/satlight_hq_<date>_<time>.png` |
 | Star trails | `F`, or the trails button | A long exposure: stars, planets and satellites leave streaks until you switch it off |
+
+A screenshot with the interface keeps every window you had open, but never the things that exist only because of
+the shot: its own notice, the issue note bar and the Issue reports window. The picture is the frame shown right
+after the key press.
 
 **HQ photo** pauses time, renders the scene offscreen at a multiple of the window size and lets it settle for a
 number of frames before saving, so the clouds and other temporally accumulated effects are fully converged. All
@@ -189,10 +312,12 @@ the detail that depends on pixel size (terrain, city lights) follows the finer p
 detail than the window, not just more pixels. At 2× a 1600 × 900 window (a 3200 × 1800 photo) it takes a
 couple of seconds.
 
-| Setting (Display tab, *HQ photo*) | `settings.json` key | Default |
+| Setting (Display tab) | `settings.json` key | Default |
 |---|---|---|
-| Resolution (x window) | `display.photo_scale` | 1 (1 to 4) |
-| Settle frames | `display.photo_frames` | 48 |
+| Screenshots (F12) include the UI (*Screenshots*) | `display.screenshot_ui` | off |
+| Issue report shots include the UI (*Screenshots*) | `display.report_shot_ui` | off |
+| Resolution (x window) (*HQ photo*) | `display.photo_scale` | 1 (1 to 4) |
+| Settle frames (*HQ photo*) | `display.photo_frames` | 48 |
 
 Star trails' decay and brightness are the **Trail decay (s)** and **Trail gain** sliders on the Photometry tab.
 
@@ -223,9 +348,33 @@ The **Cinematics** button (a clapperboard, bottom right) opens the **Cinematics*
 | **Export preview** | Renders each frame at window size, at the chosen frames per second |
 | **Export HQ** | Renders each frame as an HQ photo (resolution and settle frames set in the window). The window shows the expected time before it starts |
 
+In an HQ export, each frame's settle frames are averaged evenly, and the previous frame's result counts as one more
+frame's worth, so each exported frame is the mean of about twice the settle frames. Fine cloud edges therefore do not
+flicker from frame to frame; after a cut between shots the average starts afresh.
+
 **Motion blur (subframes)** renders each exported frame as several subframes across a half-frame shutter and
 averages them in linear light. While an export runs, a progress bar with the frame count, the time left and
 **Stop** stays on screen.
+
+## Reporting a problem
+
+When something looks wrong, an **issue report** records it with everything needed to reproduce it.
+
+- **F9** (*Save Snapshot*) adds a **shot** to the active issue, and **F7** (*New Issue Snapshot*) starts a new issue.
+  A shot is the frame shown right after the key press (with or without the interface, as set above), together with
+  the place, camera, time, cloud drift, every setting, recent frame times and the camera's last 12 seconds of
+  movement. Nothing is paused or settled for it, so the shot shows exactly what you saw.
+- After a shot, a bar at the top asks for a note on it: Enter saves, Esc closes, Shift+Enter is a new line. It never
+  takes the keyboard while you are moving. A new issue opens the **Issue reports** window on it instead, for a
+  title, a category and a description.
+- The **Issue reports** window (the flag button, bottom right) lists the issues as cards. In an issue, a click on a
+  shot's frame pins the spot that matters and a drag marks an area. **Go** returns to a shot's place and moment
+  (paused); **Go + settings** also switches to its settings, which replace yours.
+- **Export zip** writes `report_exports/<id>.zip` in the user data folder: the issue's folder and the end of the
+  log, with your folder paths removed. That file is what you send.
+
+When a fix comes back, the issue shows its resolution and is listed in green; set it to Closed after checking, or
+to Open again. The format and the developer's side are on [Issue reports](../development/issue-reports.md).
 
 ## Settings
 
@@ -235,13 +384,13 @@ advanced settings** (Display tab) is on.
 
 | Heading | Tab | What it holds |
 |---|---|---|
-| GENERAL | Display | *Graphics*: preset, render scale, automatic render scale, clouds following the render scale, temporal anti-aliasing, frame limiter, beam pointing rays. *Window*: window mode, text scale, units. *HQ photo*. *Startup*: play the intro on startup, ask for the graphics mode on startup, replay the intro or the tutorial. *Settings*: show advanced settings, reset to defaults |
+| GENERAL | Display | *Graphics*: preset, render scale, automatic render scale, clouds following the render scale, temporal anti-aliasing, frame limiter, beam pointing rays. *Window*: window mode, text scale, units, UI theme, window opacity. *Screenshots*. *HQ photo*. *Startup*: play the intro on startup, ask for the graphics mode on startup, replay the intro or the tutorial. *Settings*: show advanced settings, dev mode, reset to defaults |
 | | Controls | *Movement* (move speed), *Bindings* (each action's key and gamepad button, with Rebind and Bind), *Mouse* (look, zoom, select), *Invert look*, *Help* (the controls overlay); see [Controls](controls.md) |
 | | Sound | Volume, music, ambience and the ambience mix; see [Sound](../sound/index.md) |
-| SKY | Constellations | Every shell with ON/OFF, **HLT** (highlight: draw every satellite of the shell at least faintly, to see its pattern) and **VIEW** (select its highest satellite in your sky and open its 3D view); the planets |
+| SKY | Constellations | The constellations, grouped (below); the planets; a button that opens the Missions window |
 | | Photometry | *Exposure and Moon* (exposure, auto exposure, highlight roll-off, white balance, the Moon's drawn size), *Brightness*, *Sky dimming*, *Point sources*, *Bloom and glare*, *Dark sky* (Milky Way and zodiacal light), *Star trails*, *Satellite models* (part occlusion, reflections), *Bulk export* |
 | RENDERING *(advanced)* | Clouds | The volumetric clouds: shape, lighting, quality |
-| | Weather | Storms, lightning, rain and snow, weather evolution, fog, dust, ice fog |
+| | Weather | Storms, lightning, rain and snow, weather evolution, fog, dust, ice fog, cloud shadows and god rays |
 | | Atmosphere | Scattering, airglow, zodiacal light, aurora (with a live readout of the current space weather) |
 | | Terrain | Relief detail, materials, shadows, close-up textures |
 | | Night lights | City lights, roads, light sprites, night sky light |
@@ -252,19 +401,49 @@ advanced settings** (Display tab) is on.
 
 Every window and tab is built from the same few parts: sections headed in small capitals over a thin rule,
 readouts as a label column and a value column, and switches, choices and buttons as small pills. Every slider's
-value can be clicked and typed ([Controls](controls.md#typing-values)).
+value can be clicked and typed ([Controls](controls.md#typing-values)). Changing any slider on a rendering tab sets
+the graphics preset to **Custom**. See [Graphics settings](graphics-settings.md).
 
-Changing any slider on a rendering tab sets the graphics preset to **Custom**. See
-[Graphics settings](graphics-settings.md).
+### The Constellations tab
+
+The constellations are grouped by kind: broadband constellations, stations and depots, orbital data centers,
+reflectors, the geostationary belt, science, the 2020 benchmark shells, and debris. A group starts folded; click its
+name to open it. Its **ON** and **HLT** set every entry in it (**MIX** when they differ). Each entry has:
+
+| Column | Meaning |
+|---|---|
+| Show (ON / OFF) | Whether its satellites are in the sky |
+| HLT | Highlight: draw every satellite of it at least faintly, to see its pattern |
+| Actions | **VIEW** for a constellation: select its satellite highest in your sky and open its 3D view. **SEL** and **GO** for a station: select it, or fly to it. **LIST** for the geostationary belt: its satellites by name, searchable and in pages, each with SEL and GO |
+| Count | How many satellites it has |
+
+The geostationary belt holds about 400 real geostationary satellites by name at their slots (positions from the
+mid-2020s, approximate for 2036). Which groups are open and the list's search are saved.
+
+### Brightness of satellites on screen
+
+Four values on the Photometry side change how satellites are drawn, not how bright they are physically. They have
+no slider; set them in `settings.json`.
+
+| `settings.json` key | Default | Effect |
+|---|---|---|
+| `photometry.sat_resolved` | 1 | A modelled satellite a few pixels across fades from a point into its model's real surface brightness, so the point does not blaze beside a dim model |
+| `photometry.sat_adaptation` | 1 | Bright satellite models filling the view, or a bright Earth seen from orbit, dim the faint points, as an eye adapts (up to 8 magnitudes) |
+| `photometry.formation_merge` | 1 | A formation too small to resolve is drawn as one point with the members' combined light |
+| `photometry.glare_cluster_merge` | 1 | Lights glaring close together give up their spikes to a soft shared glow: the brightest keeps most of its star. 0 gives every light its own star |
 
 ## Where in the code
 
 - `src/simulations/SatelliteSimUI.cpp`: the HUD (`buildUI()`, `buildRightHudPanel()`), the typed fields
   (`setSimTimeFromText()`, `setLatLonFromText()`, `setAltitudeFromText()`), the selection panel
-  (`buildSelectedSatPanel()`), the info window, trace window, settings tabs and the UI kit (`uiSection()`,
-  `uiKV()`, `uiStatTile()`, `uiButton()`, `uiToggleRow()`, `uiChoiceRow()`).
+  (`buildSelectedSatPanel()`), the info window (`buildInfoWindow()`), trace window, settings tabs
+  (`buildSettingsConstellationsTab()`) and the UI kit (`uiSection()`, `uiKV()`, `uiStatTile()`, `uiButton()`,
+  `uiToggleRow()`, `uiChoiceRow()`).
+- `src/simulations/SatelliteSim.cpp`: the selection's text (`formatSelectedSatInfo()`), screenshots
+  (`requestScreenshot()`), HQ photos (`requestPhoto()`), follow mode (`updateFollow()`), traces and bulk export.
+- `src/simulations/SatelliteSimKessler.cpp`: breakups from the window (`kesslerBreakupFromUi()`) and the Sun's Fury
+  settings.
 - `src/simulations/SatelliteSimBookmarks.cpp`: bookmarks.
-- `src/simulations/SatelliteSim.cpp`: screenshots (`requestScreenshot()`), HQ photos (`requestPhoto()`), follow
-  mode (`updateFollow()`), traces and bulk export.
+- `src/simulations/SatelliteSimReports.cpp`, `src/simulations/SatelliteSimReportsWindow.cpp`: issue reports.
 - `src/simulations/SatelliteSimCinematic.cpp`, `src/simulations/Cinematic.cpp`: cinematics.
 - `src/simulations/SatelliteSimTutorial.cpp`: the tutorial.

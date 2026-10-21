@@ -44,8 +44,15 @@ The default table is initialised in `SatelliteSim::init()`:
 | `KB_SCREENSHOT` | Screenshot | F12 | none | event |
 | `KB_TOGGLE_CURSOR` | Toggle Cursor | C | Start (Menu) | event (the gamepad's virtual cursor) |
 | `KB_TOGGLE_TRAILS` | Star Trails | F | none | event |
-| `KB_SAVE_SNAPSHOT` | Save Snapshot | F9 | none | event |
+| `KB_SAVE_SNAPSHOT` | Save Snapshot | F9 | none | event (a shot into the active issue report) |
 | `KB_PHOTO` | HQ Photo | F8 | none | event |
+| `KB_REPORT_NEW` | New Issue Snapshot | F7 | none | event (a shot that starts a new issue) |
+| `KB_SCREENSHOT_UI` | Screenshot with UI | F10 | none | event |
+| `KB_MISSIONS` | Missions | M | none | event (the Missions window) |
+| `KB_FOLLOW_STAY` | Leave Go To Here | G | none | event (end Go to as a free observer where the camera is) |
+| `KB_FOLLOW_RETURN` | Go To: Return | H | none | event (back to the followed object, or follow the last one again) |
+| `KB_MILESTONE_NEXT` | Next Mission Milestone | `]` | none | event |
+| `KB_MILESTONE_PREV` | Previous Mission Milestone | `[` | none | event |
 
 Event actions are dispatched by `dispatchKeyAction()`, shared by `onKey()` (keyboard) and `pollGamepad()`
 (gamepad edge detection), so the two input paths cannot drift apart. Held actions are polled each frame in
@@ -122,6 +129,33 @@ and does not re-derive a preset unless it names the preset. The harness's `get` 
 **Adding a setting:** add a member with its default in `SatelliteSim.h`, read it in `applySettingsJson()` and
 write it in `buildSettingsJson()`, under the same section and key. That is all the harness needs: the setting
 is immediately scriptable with `set` and `get`, with no harness code.
+
+### Range guards and unbounded values
+
+A few keys are clamped when they are loaded, where an out-of-range value would break something (the cloud
+history weights, the god-ray share, the haze, the sea's wave range, the Sun's Fury settings and the
+launch gains, the sky TAA weights, among others). Such a guard is written with `settingClamp(v, lo, hi)`, never
+`std::clamp`: when `settingsRawImport_` is set it passes the value through unchanged. The harness's `snapshot` and
+`report load` set it while they apply a recorded settings object, so a replay runs with exactly the values the
+reporter ran with ([Issue reports](issue-reports.md#replay-is-unclamped)); `clamp=on` keeps the guards. Ordinary
+`settings.json` loads always clamp.
+
+!!! warning "Invariant"
+    A new load-time range guard in `applySettingsJson()` uses `settingClamp()`. A `std::clamp` there silently
+    changes replayed reports.
+
+**Dev mode: unbounded values** (Display tab, SETTINGS section, shown only with *Show advanced settings*;
+`display.dev_unbounded_values`, default off) lets a number typed into a settings slider's value box be applied as
+typed instead of being clamped to the slider's range. It covers the shared slider rows of every advanced tab and the
+Sound tab's advanced rows (`numberField(..., devUnbound)`) and the Photometry rows. A value outside its range shows
+in amber; the -/+ buttons step it without snapping it back (`sliderStep()`), and dragging the slider returns it to the
+range. Nothing downstream is guaranteed to handle such a value. The Display tab's steppers, the volumes and the
+Cinematics fields are not covered, and a key with a load-time guard takes its typed value for the session only: it is
+clamped again on the next launch (but not in a replay).
+
+| UI label | Key | Default |
+|---|---|---|
+| Dev mode: unbounded values | `display.dev_unbounded_values` | off |
 
 ### Schema version
 
@@ -203,6 +237,7 @@ so every window looks and behaves the same:
 | `uiButton(inp, ui, key, idx, label, tip, on, enabled, grow)` | a 20-px pill button; returns true on click |
 | `uiToggleRow(inp, ui, key, idx, label, v, tip, onWord, offWord)` | a label and an On / Off pill (the knockouts use the words Skip / On) |
 | `uiChoiceRow(inp, ui, key, idx, label, labels, n, current, tip)` | a label and a row of segmented pills; returns the picked index or -1 |
+| `uiDangerButton(inp, ui, key, idx, label, tip, armed, enabled, grow)` | a button in the orange danger colours (`Pal::btnDanger*`), for a destructive action such as the info window's Explode |
 
 Element ids are `CLAY_SIDI(key, idx)`, so a harness script clicks a kit element as `Key:index`
 (`ui click ReplayIntroBtn:0`). The previous frame's hover state lives in one map (`uiHov_`), so a kit row needs no
@@ -267,6 +302,7 @@ The tier a launch starts on is decided before anything heavy loads.
 |---|---|
 | MoltenVK (macOS) on a GPU not made by Apple | Potato |
 | a discrete GPU with at most about 2 GB (2.25 GiB) of device-local memory | Planetarium |
+| a discrete GPU with at least 5.5 GiB of device-local memory | High |
 | any other discrete GPU | Medium |
 | an integrated, CPU or virtual GPU (Apple silicon included) | Planetarium |
 
@@ -311,8 +347,10 @@ A harness run skips the chooser and the safety net; `run.py --boot-chooser N` an
 
 ## Defaults
 
-The compiled-in member initialisers in `SatelliteSim.h` are the out-of-box look. Tuned defaults are written to
-two significant figures for legibility; round a value taken from a tuned settings file before baking it in.
+The compiled-in member initialisers in `SatelliteSim.h` are the out-of-box look: a packaged build has no
+`settings.json`, so a fresh install is those initialisers plus the first-run preset. They hold the project's tuned
+settings, which is also what the High preset applies. Tuned defaults are written to two significant figures for
+legibility; round a value taken from a tuned settings file before baking it in.
 
 `tools/settings_defaults_diff.py [settings.json]` lists every key in a settings file whose value differs from
 its compiled-in default. It parses `applySettingsJson()` to find the member behind each key and reads that
@@ -335,7 +373,7 @@ ground. While a text field is focused or a cinematic is playing, movement keys a
 |---|---|
 | `src/simulations/SatelliteSim.h` | `KeyBinding`, `KB`, `GraphicsPreset`, `CloudSlider`, slot constants, every setting's member and default |
 | `src/simulations/SatelliteSim.cpp` | the `keybindings` initializer, `dispatchKeyAction()`, `onKey()`, `pollGamepad()`, `padContextButton()`, `padBack()` |
-| `src/simulations/SatelliteSimUI.cpp` | `loadSettings()`, `applySettingsJson()`, `buildSettingsJson()`, `saveSettings()`, `applyGraphicsPreset()`, `recommendedPresetForDevice()`, `seedGraphicsPresetFromDevice()`, `crashRecoveryPreset()`, `buildCloudSliderRows()`, `buildCloudSliderSections()`, the tab tables (`kSettingsTabNames`, `kSettingsStrip`), the UI kit |
+| `src/simulations/SatelliteSimUI.cpp` | `loadSettings()`, `applySettingsJson()`, `settingClamp()` users, `numberField()`, `buildSettingsJson()`, `saveSettings()`, `applyGraphicsPreset()`, `recommendedPresetForDevice()`, `seedGraphicsPresetFromDevice()`, `crashRecoveryPreset()`, `buildCloudSliderRows()`, `buildCloudSliderSections()`, the tab tables (`kSettingsTabNames`, `kSettingsStrip`), the UI kit |
 | `src/simulations/SatelliteSimBootChooser.cpp` | `prepareBootChooser()`, `applyBootChoice()`, `ensureFullSkyPipelines()`, `updateBootSafetyNet()` |
 | `src/App.cpp` | `runBootChooser()`, `buildBootChooserUI()`: the chooser on the loading screen |
 | `src/VulkanContext.cpp`, `cmake/CheckSpvSize.cmake` | `logDeviceLimits()`; the light-tier SPIR-V budget check |

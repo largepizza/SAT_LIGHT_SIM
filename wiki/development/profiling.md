@@ -1,8 +1,9 @@
 # Profiling
 
-How to find out where frame time goes: the GPU timestamp buckets, the CPU frame buckets, the knockout bits
-that switch individual shader blocks off, the automated knockout sweep, perf snapshots and their analysis
-script, and the harness commands for timing and for comparing shader variants reliably. Measured costs of
+How to find out where frame time goes: the GPU timestamp buckets, the CPU frame buckets, the frame profile
+that explains a single slow frame, the knockout bits that switch individual shader blocks off, the automated
+knockout sweep, perf snapshots and their analysis script, and the harness commands for timing and for comparing
+shader variants reliably. Measured costs of
 particular features are on their own pages (for example [Rendering](../rendering/index.md)); this page is about
 the instruments.
 
@@ -51,6 +52,9 @@ The CPU counterpart, in Settings → Performance → *CPU frame (ms)*:
 | `update_stars` | the star catalogue's positions and suppression chain |
 | `light_pollution_dome` | the light-pollution dome's sectors |
 | `update_planets` | the planets' render entries |
+| `orbit_rebake` | the 7-sim-day orbit rebake's CPU side (the work itself is a GPU dispatch); at a fast time warp it runs every few frames |
+| `kessler` | the debris cascade's main-thread side: taking the background worker's output, the uploads, the dust and fireball lists (UI label *Debris cascade*) |
+| `launches` | the launch schedule, the trains' and retirees' orbit records, rockets, plumes and pad lights |
 | `other` | the wall-clock frame time minus the GPU total minus everything above: present and vsync wait, driver submission, App-side work, any CPU block without a bucket |
 
 Timers are scoped (`SatelliteSim::CpuTimer`, an RAII object that adds to its bucket, so one bucket can be timed
@@ -59,6 +63,43 @@ previous complete frame and clears the accumulator, so it never publishes a half
 one-frame lag matches the GPU buckets', so a sample of both comes from the same frame.
 
 A large `other` is a finding: it is fixed per-frame cost that this table does not look at.
+
+The `launches` bucket has its own breakdown: the harness's `launch state` reports `cpu_split_ms` (eased over 30
+frames), with the window walk, the live list, freeing, record writes, the visuals, plume builds and sorting,
+re-entries and pad lights as separate parts. `tools/harness/launch_bench.py` times fixed launch scenes with launches
+on and off ([Automation harness](harness.md#launch-and-mission-checks)).
+
+## Frame profile and hitches
+
+The buckets are averages. A **hitch** is one slow frame, and its cause is usually a one-off: a batch of launches
+being built, a buffer reallocation, a large sync from a background thread. `src/FrameProfile.h` keeps, for every
+frame of the main thread, named wall-clock sections:
+
+```cpp
+FPROF_SCOPE("kessler.sync");   // adds this scope's wall time to the section "kessler.sync"
+```
+
+Sections are inclusive (a nested section also counts inside its parent), so read the names as a tree. A call from
+any thread other than the main one is ignored, which makes a scope safe in code a worker also runs.
+`App::drawFrame()` publishes each frame first thing (`fprof::beginFrame()`) and contributes the `app.*` sections
+(`app.wait_fence` is waiting for the GPU; `build_ui`, `record_compute`, `record_draw`, `submit`, `present`);
+`recordDraw()` adds the CPU buckets as `cpu.*`. The cost is a clock read per scope.
+
+A frame longer than the threshold (50 ms; environment variable `SATLIGHTSIM_HITCH_MS`, 0 = off) is logged to
+`satlight_log.txt` as `hitch: wall N ms (frame, warp, sim t): <largest sections>` (at most 400 lines a run) and
+kept in a ring of the last 256 hitches; the last 4096 frames' wall times are kept for statistics. The very first
+frame after load is not reported, since its interval includes initialisation.
+
+The harness reads them with `hitches` (the wall-time distribution since `hitches clear`: mean, p50, p90, p99, max,
+frames over 50, 100 and 250 ms, and every hitch frame with its largest sections, worst first) and
+`hitches threshold <ms>`. `tools/harness/scripts/hitch_ladder.satcmd` steps through every time rate from 1x to
+1 yr/s right after load.
+
+!!! warning "Invariant"
+    Put an `FPROF_SCOPE` on anything new that can take more than about a millisecond in a frame. Work that can
+    take longer than a frame's budget belongs on a worker thread or behind a per-frame budget (the launch batch
+    builds, the plume parcels and the debris cascade's mirror all work this way; see
+    [Code architecture](architecture.md#threads)).
 
 ## Knockout bits
 
@@ -95,6 +136,7 @@ Performance → *Knockouts* (it reads **Skip** while the bit is set, **On** othe
 | 1048576 | `sat_part_occlusion` | occlusion between satellite parts (when it is enabled at all) |
 | 2097152 | `sat_meshes` | satellite meshes in the main view |
 | 4194304 | `water_map` | the water map in the shared terrain height function |
+| 8388608 | `mesh_shadow_accel_disabled` | **an optimisation A/B**: the satellite meshes' shadow rays go back to testing every occluder of the model per pixel instead of the posed, Sun-binned occluder grid ([Satellite meshes](../rendering/satellite-meshes.md)). Same image; its sweep cost is the saving |
 
 Two more bits are pipeline swaps, not in-shader branches, and are set by presets rather than swept: 262144
 (`potato_sky`, the minimal sky shader) and 524288 (`lite_sky`, the `SKY_LITE` variant). See
@@ -127,13 +169,14 @@ Two choices make it trustworthy where a hand measurement is not:
 
 ## Perf snapshots and `analyze_profile.py`
 
-*Save snapshot* (Settings → Performance → *Record*, or F9) appends one JSON record (`"record_kind": "snapshot"`) to
-`perf_profiles/profile_log.jsonl` in the user data folder: the GPU buckets, the CPU buckets, resolution,
+*Save snapshot* (Settings → Performance → *Record*) appends one JSON record (`"record_kind": "snapshot"`) to
+`perf_profiles/profile_log.jsonl` in the user data folder; every issue report shot (F9, F7) appends the same record
+with a `report` key naming its issue and shot ([Issue reports](issue-reports.md)). A record holds the GPU buckets, the CPU buckets, resolution,
 observer position and altitude, sim time, the knockout mask, the GPU name, the quality settings and preset, a
 `beams` block (active beams, ground spots, whether the beam rays are drawn), the full settings and the view
 (observer direction and height, camera, the cloud map's drift). The file is JSON Lines, so it grows by appending
 across sessions. A snapshot doubles as the way a location is handed to the harness (`snapshot` command,
-[Automation harness](harness.md#snapshots)).
+[Automation harness](harness.md#snapshots-and-issue-reports)).
 
 ```bash
 tools/perf_analysis/.venv/Scripts/python.exe tools/perf_analysis/analyze_profile.py [path/to/profile_log.jsonl]
@@ -174,13 +217,14 @@ comparison:
 
 1. Keep **one app running** (`live.py start`) and compare variants inside it, interleaved (A, B, A, B), at fixed,
    settled views.
-2. For the cloud march, build the variants' SPIR-V (`cmake --build build --config Release --target
-   CompileShaders`) and load each with `shaders reload march=<spv path>`, which rebuilds the cloud pipelines from
-   the files on disk without a relaunch. Copy the SPIR-V into `build/Release/shaders/` by hand: the full build's
+2. For the clouds, build the variants' SPIR-V (`cmake --build build --config Release --target
+   CompileShaders`) and load each with `shaders reload march=<spv path>` (also `resolve=`, `lightning=`,
+   `composite=`, `layers=` for those passes), which rebuilds the cloud pipelines from the files on disk without a
+   relaunch. Copy the SPIR-V into `build/Release/shaders/` by hand: the full build's
    post-build copy fails while the app holds the files open.
 3. **Check the register count before timing.** `shaders reload` reports the driver's statistics for the
    rebuilt pipeline (register count, binary size, spill memory) through `VK_KHR_pipeline_executable_properties`.
-   On NVIDIA the cloud march compiles either to 128 registers or to about 227, and the second is 20 to 60% slower
+   On NVIDIA the cloud march compiles either to 128 registers or to roughly 220 to 230, and the second is 20 to 60% slower
    whatever the change was meant to do. A variant that flipped allocation measures the flip, not the change
    ([GPU conventions](gpu-conventions.md#register-pressure-in-the-cloud-march)). `wg=<X>x<Y>` sets the march's
    workgroup size (specialisation constants), which bounds the registers a thread may get.
@@ -194,7 +238,9 @@ The first launch after shader changes recompiles pipelines and is slow; never re
 | File | What |
 |---|---|
 | `src/VulkanContext.h/.cpp` | the slot table, `resetTimestamps()`, `writeTimestamp()`, `resolveTimestamps()` |
+| `src/FrameProfile.h` | `FPROF_SCOPE`, `fprof::beginFrame()`, the hitch log and ring |
 | `src/simulations/SatelliteSim.cpp` | `updateGpuTimingStats()`, `beginCpuFrameTiming()`, the timestamp writes |
 | `src/simulations/SatelliteSimUI.cpp` | `kDebugToggles[]`, the Performance tab (`buildSettingsPerformanceTab()`), `savePerfSnapshot()`, `buildPerfSnapshotJson()`, `startKnockoutSweep()`, `updateKnockoutSweep()` |
-| `src/simulations/SatelliteSimHarness.cpp` | `perf`, `sweep`, `shaders reload`, `knockout` |
+| `src/simulations/SatelliteSimHarness.cpp` | `perf`, `hitches`, `sweep`, `shaders reload`, `knockout` |
 | `tools/perf_analysis/` | `analyze_profile.py`, `live_perf_table.py` |
+| `tools/harness/launch_bench.py`, `tools/harness/scripts/hitch_ladder.satcmd` | launch cost benchmark, hitch ladder |

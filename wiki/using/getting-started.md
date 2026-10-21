@@ -11,6 +11,11 @@ where the program keeps its settings, logs and pictures. Moving around is on [Co
   default roster of about 1.38 million satellites adds about 130 MB. Weak and integrated GPUs work through the
   lower [graphics presets](graphics-settings.md).
 
+The default roster is the sky of late 2036: the broadband constellations (Starlink, OneWeb, Amazon Leo, Guowang,
+Qianfan), the space stations, the Starmind orbital data centers, the Reflect Orbital mirrors, Hubble, the 2020
+Starlink benchmark shells, a field of space junk, and the geostationary belt of about 400 real satellites, each by
+name at its slot. With the deployment era on (the default), earlier dates show only what had been launched by then.
+
 ## Installing a release
 
 Releases are published on the project's GitHub page as one archive per platform:
@@ -28,9 +33,13 @@ Every archive has the same layout:
 ```
 SAT_LIGHT_SIM_V_<version>[.exe]
 constellations.json            the satellite roster (moddable)
+geo_satellites.json            the geostationary belt's members (moddable)
+launches.json                  launch sites, rockets and programs (moddable)
+launch_coasts.json             coastlines around launch sites
 constellations.schema.json     field reference for the roster
 reflector_targets.json         ground sites for orbital mirrors (moddable)
 satellite_models/              one geometry file per satellite type (moddable)
+default_bookmarks/             the bookmarks that ship with the sim
 shaders/                       compiled shaders
 assets/                        textures, sounds, music, icons
 THIRD_PARTY_NOTICES.txt
@@ -118,7 +127,10 @@ What is in it:
 | `cinematics/` | Saved cinematics, one JSON file each |
 | `traces/` | Magnitude traces exported as CSV |
 | `exports/` | Bulk brightness exports (CSV) |
-| `perf_profiles/profile_log.jsonl` | Performance snapshots (F9, or Settings → Performance → Save snapshot) |
+| `perf_profiles/profile_log.jsonl` | Performance snapshots: one line per issue shot (F9, F7) and per Settings → Performance → Save snapshot |
+| `reports/` | Issue reports, one folder per issue with its shots (see [Reporting a problem](features.md#reporting-a-problem)) |
+| `report_exports/` | Issue reports exported as zip files, ready to send |
+| `kessler/` | A cache of the Sun's Fury debris cascade, so a second visit to the storm is quick. Safe to delete |
 | `bookmarks/` | Saved bookmarks (`bookmarks.json`) and their thumbnails. A first run fills it with the [bookmarks that ship with the sim](features.md#the-bookmarks-that-ship-with-the-sim) |
 | `satellite_types_resolved.json` | The loaded satellite types in explicit form; see [Modding](../modding/index.md) |
 | `satellite_models_debug/` | A 3D shape (OBJ) of every satellite model, for checking a mod |

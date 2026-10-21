@@ -144,6 +144,7 @@ it, not the parked ground observer.
 | `wind` | 0..1 | a smooth pseudo-random wind strength over position (about 500 km cells) and sim time (hours); deterministic for a place and time |
 | `cloud` | 0..1 | the 2D cloud coverage map directly overhead, with the same drift the clouds use; eased over 1.5 s; 1 if the map failed to load |
 | `rain` | 0..1 | the rain rate around the eye (below), times the liquid share; eased over 2 s |
+| `thunder` | 0/1 | 1 while thunder or a rocket's roar is arriving, about to arrive (within about 2 s) or ended less than 4 s ago; 0 otherwise ([below](#rain-and-thunder)) |
 | `aurora` | 0..1 | inside the auroral oval (the band only, no curtain noise), 0 when the aurora gain is 0 |
 
 The land-cover classification uses the map as drawn, so the sound agrees with the ground the player sees.
@@ -199,7 +200,9 @@ Each entry in `shell_groups` registers two more drivers:
 | `<group>_near_m` | m | expected distance to the nearest one |
 
 A pattern (only `*` is a wildcard, case-insensitive) matches a constellation whose satellite type has that
-model id or type name. Disabled constellations are skipped.
+model id or type name. Disabled constellations are skipped. With the deployment era on, each constellation (and each
+filed group of a Shells constellation) counts only its share deployed at the current date, so a sky of 2020 hums with
+the first Starlink launches rather than the shells of 2036.
 
 The values are computed in closed form from each constellation's orbit distribution, not by searching the
 roster, so they cost nothing at millions of satellites. For a Walker shell of \(N\) satellites at radius
@@ -250,7 +253,7 @@ classes taken from the music's own key.
 | `pad` | the glare chorus ([below](#the-beam-sounds)) | `level f0_hz scale_mask chord_mask tension_mask voices hollow bright detune_cents warp_cents warp_rate glide_s attack_s release_s bloom bloom_s shimmer cutoff_hz reverb reverb_s spread hp_hz` |
 | `bass` | the beam-site pedal ([below](#the-beam-sounds)) | `level f0_hz fifth sub bright hollow beat_hz throb throb_rate bend_cents bend_rate drive cutoff_hz width hp_hz` |
 | `rain` | a band-passed hiss, a low rumble for heavy rain, a Poisson stream of drop ticks each with its own resonance, level and pan | `level intensity drops hiss_hz rumble width` |
-| `thunder` | rolls shaped by envelopes from the lightning channels, pushed as events ([below](#rain-and-thunder)) | `level trigger distance_km energy pan` |
+| `thunder` | streamed voices for thunder and rockets, driven by events from the sim ([below](#rain-and-thunder)) | `level trigger distance_km energy pan` |
 | `beeps` | FSK data bursts (unused by the shipped table) | `level rate carrier_hz spread tone_ms tones_min tones_max gap_ms doppler width bright_hz symbols` |
 | `disk` | seek clicks and fan noise (unused) | `level activity whine whine_hz fan fan_hz click_hz seek_ms clicks width` |
 | `chorus` | procedural VLF chorus, whistlers and sferics, flanged (unused; a recorded loop is used instead) | `level hiss chorus_rate chorus_hz chorus_rise chorus_ms cluster whistler_rate crackle width flange flange_rate flange_ms flange_fb` |
@@ -271,7 +274,9 @@ gusts swing in decibels, not linearly, so they are audible as gusts.
 | machines | `datacenter_hum` (inside the AI datacenter disk) |
 
 The ground wind follows the weather overhead (`cloud`): a full bed under cloud and a light breeze in clear
-air, so the wind is loud in some places and quiet in others. Crickets and tropical night sounds fall silent
+air, so the wind is loud in some places and quiet in others. The `thunder` layer is up only while `thunder` is (so
+*Ambience now* lists it only when there is some) and below about 12 to 25 km above the ground; it carries the
+rockets' roar as well as thunder ([Rockets](#rockets)). Crickets and tropical night sounds fall silent
 in Reflect Orbital light (`beam` above 20 000). Most nature and city layers fade out under time warp faster
 than 300x.
 
@@ -298,33 +303,63 @@ louder, gains drive and sub, throbs faster and sags further and more slowly in p
 
 ## Rain and thunder
 
+Rain, thunder and the rockets' roar are all procedural: there are no sample files for them.
+
 **Rain.** The cloud renderer keeps a 32 x 32 map of the rain rate around the eye (40 m cells, about 640 m
 either side). The `rain` driver is the mean of its central 6 x 6 cells, so what is heard is what falls on
 screen and a passing shaft is heard as it arrives. It is multiplied by the liquid share of precipitation at
 the eye's temperature (snow is silent) and is 0 above 6 km. The `rain` layer's `intensity` follows the rate:
 a drizzle is a thin hiss with a few ticks, a cumulonimbus core a roar.
 
-**Thunder.** Thunder is computed from the lightning channel itself. When a flash first appears, the host
-builds its channel as geometry (see [Weather: lightning](../rendering/clouds/weather.md#lightning)) and, for a
-flash whose origin is within 35 km (red sprites excluded), `queueThunder()` turns that geometry into the roll's
-envelope. The sound of each segment of the main channel and its branches reaches the listener at its distance
-/ 343 m/s, weighted by the segment's length and brightness, by 1/r, and by how far it lies across the line of
-sight (a tortuous channel radiates most perpendicular to itself); branches count half. The arrivals are binned
-at 50 ms from the first one and normalised to the loudest bin: that envelope is the roll. A channel running
-away from the listener rumbles long and low; one lying across the sky claps.
+**Thunder is streamed from sound shells.** When a lightning flash first appears, the host builds its channel as
+geometry (see [Weather: lightning](../rendering/clouds/weather.md#lightning)), and every flash except a red sprite
+becomes a sound source: the pieces of its main channel and branches (positions, directions and lengths, branches
+at half weight) in Earth-fixed axes. Up to 48 sources are kept, each for 150 s of sim time. The sound leaves the
+channel at the return stroke and spreads at 343 m/s in sim time, so a piece at distance \(d\) from the listener is
+heard when
 
-The roll is queued to start at the flash's start + 50 ms (the stepped leader) + the first arrival, in sim
-time: paused, nothing arrives; under time warp it rolls in almost at once. Each frame `updateThunder()` hands
-every roll that has arrived to the `thunder` voice through `AmbientSynth::pushEvent()`, a lock-free queue of up
-to 8 events carrying the distance, energy (1 for a ground strike, 0.5 in cloud), pan (from the bearing relative
-to the camera) and the envelope. The synth plays brown noise under that envelope, with a ~10 Hz flicker (the
-arrivals within a bin are not smooth). The noise is low-passed by the distance the sound has come, and that
-distance grows through the roll (\(d + 0.343\,t\) km), so the later rumble, from further up the channel, is
-duller. A strike closer than about 3 km opens with a ripping crack whose crackle follows the envelope's first
-second. Up to 8 rolls sound at once. Reversing or jumping time drops the queue.
+\[
+g = d - 343\,(t - t_0)
+\]
 
-If the queue is full, the voice falls back to its trigger parameters: a change of the `trigger` counter starts
-a generic roll from `distance_km`, `energy` and `pan` (a Poisson stream of peals thinning out over the roll).
+crosses zero. Each frame `thunderStep()` finds the pieces whose \(g\) changed sign between last frame's listener and
+time and this frame's, whatever moved it: time passing, or the listener. Their power is each piece's length times
+its weight over \(d^2\), more where the piece lies across the line of sight (a tortuous channel radiates mostly
+sideways). The level sent to the synth is \(270 \sqrt{P / T}\) for the power \(P\) arriving over the frame's
+duration \(T\), scaled by the flash's energy (1 for a ground stroke, 0.6 in cloud) and faded out between 20 and
+40 km, with the arrivals' mean distance and their bearing against the camera's heading as the pan.
+
+So the roll is the channel's geometry as heard from where the listener is now:
+
+- standing still, near pieces arrive first: a channel lying across the sky claps, one running away rumbles long
+  and low;
+- flying toward a storm, the sound arrives sooner and compressed (at most 3x); outrunning it, it never arrives;
+- paused, nothing arrives; under time warp it rolls faster;
+- a teleport (more than 5 km in a frame) or a jump of more than 20 s of sim time arrives silently.
+
+The `thunder` synth has 8 streamed voices, one per sounding flash (`AmbientSynth::pushEvent()`, a lock-free queue
+carrying the voice, level, distance and pan). Each voice is pink and brown noise under that level, with a flicker
+of about 10 Hz and peals of 0.3 to 1.2 s, low-passed by the distance (about 3 kHz at 1 km, 1.1 kHz at 5 km, 650 Hz
+at 10 km, 350 Hz at 20 km), with a ripping crackle within about 4 km. All voices feed a shared low rumble that
+decays over about 2 s and joins the peals into one roll. A voice that hears nothing for 2 s is free for another
+flash. The synth's `trigger` parameter still starts a generic roll, for `SoundTool`.
+
+Measured with the layer alone at gain 1 (loudest second, RMS): a ground stroke 1.5 km away about -16 dBFS, 5 km
+-19, 12 km -25. A strike 3 km away is about 10 dB over the music in the full mix.
+
+## Rockets
+
+Each burning rocket within about 150 km is heard on a thunder voice of its own. Its sound is the one it
+made at the **retarded time**: the latest moment \(	au\) whose sound, travelling at 343 m/s through air that moves
+with the Earth, reaches the listener now. `launchSounds()` scans back over 440 s (150 km of sound) for the latest
+such moment, in either direction of approach, so a booster's supersonic descent is heard in reverse order; it stops
+once the burns that made the sound have been heard. The level grows with the square root of the engines' mass flow,
+falls with distance and thins with the air at the rocket. A rocket voice is a steady low roar instead of peals
+(brown and pink noise low-passed by the distance, over a sub-bass layer around 62 Hz), with Mach-wave crackle that
+fades out by 40 km, a punch when the roar first arrives (three times louder over about 1.4 s, with a burst of
+crackle and a thump falling from about 70 to 30 Hz), and a send into an echo (a feedback delay network with a 3.4 s
+decay) for the roar off the ground and the landscape. 300 m from a pad it measures about -23 dBFS while the roar
+lasts, 25 km away about -31, with most of its energy in the sub-bass.
 
 ## Samples
 
@@ -399,7 +434,7 @@ ends). `--analyze` runs the soundtrack analysis described on [Music and tonality
 
 | UI label (Sound tab) | `settings.json` key | Default |
 |---|---|---|
-| Ambience | `audio.ambience_vol` | 0.8 |
+| Ambience | `audio.ambience_vol` | 0.7 |
 | Fade in x (advanced) | `audio.ambience_fade_in_scale` | 0.27 |
 | Fade out x (advanced) | `audio.ambience_fade_out_scale` | 0.32 |
 | Wind & air, Water, Nature, City, Space, Machines (advanced) | `audio.ambience_groups.<group>` | 0.93, 1.0, 1.0, 1.6, 1.2, 2.0 |
@@ -412,9 +447,10 @@ wrong layer from a wrong mix while flying around.
 | File | Main functions |
 |---|---|
 | `src/simulations/Ambience.h/.cpp` | `Ambience::load()`, `evalTarget()`, `update()`, `tickEvents()`, `stateJson()` |
-| `src/simulations/SatelliteSimAmbience.cpp` | `initAmbience()` (registers the drivers), `computeAmbienceContext()`, `updateAmbience()`, `updateThunder()` |
-| `src/simulations/SatelliteSimLightning.cpp` | `queueThunder()` (the roll's envelope from the channel) |
-| `src/AmbientSynth.h/.cpp` | `AmbientSynth::create()`, one class per kind |
+| `src/simulations/SatelliteSimAmbience.cpp` | `initAmbience()` (registers the drivers), `computeAmbienceContext()`, `updateAmbience()`, `updateThunder()`, `thunderStep()` (the sound shells and the rocket voices) |
+| `src/simulations/SatelliteSimLightning.cpp` | `addThunderSource()` (a flash's channel as a sound source) |
+| `src/simulations/SatelliteSimLaunches.cpp` | `launchSounds()` (each rocket's level, distance and pan at its retarded time) |
+| `src/AmbientSynth.h/.cpp` | `AmbientSynth::create()`, one class per kind (`ThunderSynth` also plays the rockets) |
 | `src/AudioSystem.h/.cpp` | `addAmbienceLoop()`, `addAmbienceSynth()`, `playAmbienceOneShot()`, `renderWav()` |
 | `tools/make_ambience.py` | the samples and `CREDITS.txt` |
 | `tools/sound_tool/main.cpp` | `SoundTool` |

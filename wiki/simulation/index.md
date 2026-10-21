@@ -16,7 +16,7 @@ answer.
 | Time | Seconds since J2000, real UTC through GMST | UT1 = UTC = TT; no leap seconds, no nutation |
 | Earth | Sphere, \( R = 6371 \) km, rotating at the GMST rate | No oblateness in geometry; J2 only drives sun-synchronous precession |
 | Orbits | Circular, two-body, fixed radius | No drag, no eccentricity, no perturbations besides the SSO node drift |
-| Constellation phasing | Walker planes, random shells, terminator-aligned disks | Phases are synthetic (seeded random), not real catalogue elements |
+| Constellation phasing | Walker planes, filed shell tables, random shells, terminator-aligned disks, named GEO satellites | Phases are synthetic (seeded random), not real catalogue elements, except the GEO slots |
 | Attitude | Rigid groups with closed-form pointing laws and 1-DOF joints | No attitude noise or control error |
 | Reflectance | Facet lobes: Lambert + GGX or Beckmann microfacet, Schlick Fresnel, Smith shadowing | Merged facets beyond a lobe budget; material values partly estimated |
 | Earthshine | Exact irradiance from the lit cap of a Lambertian Earth, albedo 0.3 | Uniform albedo, no clouds or ocean glint |
@@ -27,6 +27,9 @@ answer.
 | Moon | Meeus chapter 47 main terms, about 0.05 deg | Truncated series |
 | Planets | JPL approximate Keplerian elements, Schlyter magnitudes | No light time, no Saturn rings in the magnitude |
 | Stars | Yale Bright Star Catalogue, 8404 stars to V = 6.5 | J2000 positions, no precession or proper motion |
+| Launches | Per-program cadences refreshing every plane once per design life; trains raised in closed form | Synthetic schedule, not a manifest |
+| Rockets | Closed-form booster and upper-stage tracks, deorbit, entry, recovery | No guidance or 3-D aerodynamics |
+| Debris (Kessler scenario) | NASA Standard Breakup Model, cube-method collision rates, drag lifetimes | Orbits do not decay until re-entry; small-small collisions omitted |
 
 The model stops at the top of the atmosphere for brightness: a magnitude computed by the photometric
 model is the **above-atmosphere** (exo-atmospheric) apparent V magnitude. Extinction, sky brightness and
@@ -79,7 +82,16 @@ satellite's index). There is no integrated state: no velocity is stepped, no att
 
 This shapes several designs that would otherwise be simpler with state. The clearest example is the
 mirror satellites: they choose a target per fixed time window and ease between aims in closed form,
-rather than slewing step by step (see [Reflectors and beams](reflectors.md)).
+rather than slewing step by step (see [Reflectors and beams](reflectors.md)). Launches and rocket flights
+are built the same way: a launch's lift-off, its train's climb and the retirement of the satellites it
+replaces are all solved from sim time (see [Launches](launches.md) and [Rockets](rockets.md)).
+
+The [Kessler scenario](kessler.md) is the one place with a genuine history, because a collision depends on
+everything that collided before it. It keeps that history as an **append-only event log** with born and
+death seconds, computed ahead of sim time in the background and drawn as a function of the current second.
+Playing back before an event simply stops drawing its debris, so the reversibility above still holds. A
+player's breakup is an event like any other: computed at once by rewinding the world to the start of its
+6-hour step, and undone by playing back before it.
 
 A few things outside the satellite pipeline are deliberately eased over wall-clock time and are therefore
 not reversible: the brightness of clustered beam lights on clouds, the solar trackers on the ground,
@@ -105,12 +117,16 @@ orbital phase after a week. The rules that keep the simulation accurate:
 | Page | Covers |
 |---|---|
 | [Time and reference frames](time-and-frames.md) | sim time, J2000, GMST, ECI/ECEF/ENU, the observer's eye, precision |
-| [Orbits and constellations](orbits.md) | circular orbits, Walker/RandomShell/Disk, SSO, the GPU orbit pass, error budget |
+| [Orbits and constellations](orbits.md) | circular orbits, Walker/Shells/RandomShell/Disk/List, SSO, the GPU orbit pass and rebake, launch and debris records, error budget |
 | [Attitude](attitude.md) | rigid attitude groups, pointing laws, joints, kinematic trees, legacy modes |
 | [Satellite photometry](photometry.md) | facet lobes, BRDF, earthshine, self-occlusion, magnitudes, CPU evaluator |
 | [Seeing a satellite from the ground](visibility.md) | Earth shadow, extinction, sky brightness, light pollution, point drawing |
 | [Reflectors and beams](reflectors.md) | targeted mirrors, lock windows, beams, cloud occlusion, ground spots |
 | [Sun, Moon and planets](sun-moon-planets.md) | ephemerides, eclipses, planets, the star catalogue |
+| [Launches](launches.md) | the launch schedule, planes and batches, trains, retirees, the deployment era, stacks and fairings, launch sites |
+| [Rockets](rockets.md) | booster and upper-stage flight, staging, deorbit, ship entry, tower catches, booster recovery, mission milestones |
+| [Crew flights](crew-flights.md) | crew rotations, visiting vehicles, the stations they serve |
+| [Kessler syndrome](kessler.md) | The Sun's Fury storm, the collision cascade, debris, dust clouds, re-entry fireballs, player breakups |
 
 ## Where in the code
 
@@ -123,3 +139,5 @@ orbital phase after a week. The rules that keep the simulation accurate:
 | `shaders/sat_flare.comp` | per-visible-satellite sky effects and point size |
 | `shaders/include/atmosphere.glsl` | extinction along a line of sight |
 | `shaders/include/point_style.glsl` | magnitude to point-spread function |
+| `src/simulations/Launches.h/.cpp`, `SatelliteSimLaunches.cpp` | launch schedule, rocket tracks, trains, retirees |
+| `src/simulations/Kessler.h/.cpp`, `SatelliteSimKessler.cpp` | the Kessler world, breakups, collision engine, debris drawing |

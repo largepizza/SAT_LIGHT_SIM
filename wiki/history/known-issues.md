@@ -32,6 +32,10 @@ fixed since are in [Design notes](design-notes.md).
 | Only RandomShell assigns tumble axis, rate and phase: a `tumble`-law type flown in a Walker or Disk shell never spins. | [Attitude](../simulation/attitude.md) | verified 2026-10-03 |
 | File-level loader errors (bad or missing `constellations.json` or `reflector_targets.json`, unknown shell type, attitude or target kind) go to stderr only, not `satlight_log.txt`, so Windows modders may never see them. | [Modding](../modding/index.md) | verified 2026-10-03 |
 
+- **2026-10-21** — "Arc systems" defaults to 2 while its slider runs 0-1. `auroraArcWeight()` clamps it to 1, but the storm coverage threshold in `auroraCoverage()` (both copies, sat_sky.frag and cloud_march.comp) mixes by it unclamped, giving -0.1 at the default instead of the -0.35 the design describes. Possibly intended (the tuned look); worth confirming.
+- **2026-10-21** — The Photometry slider table defines "Glare cluster merge", "Resolved satellites", "Satellite adaptation" and "Merge formations" (slots 35-38), but none of the Photometry tab's groups lists those slots (`kGroups` in `buildSettingsPhotometryTab`, SatelliteSimUI.cpp: BLOOM AND GLARE stops at 34, and `ids[10]` is full), so the four sliders are never drawn. They are reachable only through settings.json (`photometry.glare_cluster_merge`, `sat_resolved`, `sat_adaptation`, `formation_merge`). The wiki documents them as settings.json-only.
+- **2026-10-21** — Esc cancelling a key rebind also quits the program: App's Esc handler does not check `capturesKeyboard()` for a listening binding.
+
 ## Rendering: open visual problems
 
 ### Clouds
@@ -81,6 +85,12 @@ fixed since are in [Design notes](design-notes.md).
 | Saturn's ring brightness is omitted from its magnitude; the Moon's near-disc sky halo is not modelled; star day suppression uses an older formula than satellites'. | [Sun, Moon and planets](../simulation/sun-moon-planets.md) | 2026-07-30 |
 | UI text is one baked bitmap scaled to every size; large captions at high UI scale look blocky. An SDF font would fix it. | [UI (Clay)](../development/ui.md) | 2026-08 |
 
+- **2026-10-10** — Sun shadow cascade: blockers 5-15 km sunward of a sample fall in its one-knot bias; above a ~15 deg Sun it catches little of an anvil's shadow on the cloud under it; nothing beyond its range.
+- **2026-10-11** — The mid layer's shadow still has an edge at a grazing Sun at "Mid layer shadow" 0.3; cirrus bundles from orbit still read as wavy bands; "Small cumulus" at 0.15 visibly fills gaps in near views.
+- **2026-10-13** — Sunset grain on moving clouds from the light march's far steps is not fixed; reading them at a 2 km footprint erased large clouds' far shadows (coarse reads do not conserve cumulus optical depth). Needs an unbiased estimator.
+- **2026-10-13** — After the cumulus shape pass: a tower's flared head and the map-fed anvil are still smooth; full-coverage stratus seen edge-on is a slab; near clouds have nothing finer than the detail volume's 24 m cells; a finer moire remains on anvil heads under cirrus at 12 light steps.
+- **2026-10-20** — Engine light on clouds has no cloud-surface orientation, no in-cloud diffusion for a light inside a cloud, no terrain shadowing, and mesh local lights cast no shadows; the lit cloud's outline can show half-res texels where the light is strong.
+
 ## Simulation and accuracy
 
 | Issue | Affects | Recorded |
@@ -106,6 +116,9 @@ Recorded in the October 2026 pass; the first three re-checked 2026-10-03 and sti
   shadowMaxDistM, maxRenderDistM and others); some have been reused under new names. `cityLightBlurLod` joined
   them on 2026-10-06 (written as 0, read nowhere; its cloud slider slot 62 is free).
 - The Reflect beams' light pillars (ice plates over the lit ground spots, in snow) are not modelled (2026-10-06).
+
+- **2026-10-21** — `cloud_v2_march.comp` still writes debug view 10 (god-ray share) from `godT`, which is now always 1; the runtime test exists only to keep the march at 128 registers. "God ray range" (`clouds_v2.godray_range_km`) is still persisted and packed into `lightVol.y`, but nothing reads it.
+- **2026-10-21** — `uiDangerButton()`'s `armed` parameter (the second click of a two-click danger button) has no caller passing true since Explode became a single click; the armed fill colour is now used only for the button's border.
 
 ## Documentation drift
 
@@ -184,3 +197,12 @@ Every page follows the code. These are the sources it disagreed with.
 - The `GpuSatLobe` comment says 48 B (it is 64). The RandomShell tumble comment says 0-1 Hz (the code scales by 0.001: up to ~0.0063 rad/s). The Potato enum comment says render scale 0.5 (it is 1.0). `MusicAnalysis.h` says the cache key is size + write time (it is size + a content hash).
 - `star_catalog.h` comment names are wrong for several stars ("Bellatrix" on Canopus, "Capella" on Betelgeuse), from `tools/parse_bsc.py`'s `STAR_NAMES` table. Only the comments are affected.
 - Unread JSON fields: `constellations.json` `"version"` and `reflector_targets.json` `"tech"`; `observer_spawn` is only logged.
+
+
+### Recorded 2026-10-21 (wiki pass)
+
+- **2026-10-21** — The Weather tab's slider label "Cb columns (0 = old cores)" is stale: the low layer's deep cores were deleted on 2026-10-13, and 0 now turns the tower layer off (a storm is tall congestus). `cv2_layer_map.glsl`'s comment says the CPU re-anchors past ~2000 km; the code re-anchors past 1500 km.
+- **2026-10-21** — Inbox notes disagree on train deploy intervals (8 s, 12 s, 2 s, 45 s). The code is authoritative: launches.json values (Starship 45 s, fairing vehicles 30 s, stacks' own values) raised by buildBatch so members stay >= 30 m apart (Falcon 9 dispenser ~67 s, Gen1 100 s, Guowang 75 s, Qianfan ~86 s).
+- **2026-10-21** — The `_comment` in data/launches.json and the `Program` comment in src/simulations/Launches.h still say crew programs draw only the rocket and its upper stage (no capsule rendezvous); crew spacecraft have flown as their own objects since 2026-10-20.
+- **2026-10-21** — The cities page claimed the procedural city ran in SKY_LITE (Planetarium) with a +2.4 ms cost there; the code compiles the whole procedural city out of SKY_LITE. The terrain page said the city lights were blurred toward the map under cloud, which the code no longer does. Both corrected.
+- **2026-10-21** — The audio defaults are master 0.4, music 0.7, ambience 0.7 (AudioSystem.h); the sound pages said 0.8 / 0.6 / 0.8.

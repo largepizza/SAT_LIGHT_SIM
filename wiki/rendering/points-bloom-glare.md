@@ -16,8 +16,10 @@ Satellites reach the screen through one **compact visible list** (`satVisibleBuf
    `atomicMax`.
 2. `sat_flare.comp`, dispatched indirectly over that list, finishes each record **in place**: the day and
    Moon sky dimming, line-of-sight extinction, light pollution, a soft ceiling, the mesh hand-off and the sprite
-   size. Its output brightness is **effectFlare**, with 0.008 equal to magnitude 6.
-3. `city_sprites.comp` appends finished records for far city lights.
+   size. Its output brightness is the **displayed effectFlare** (see [Displayed brightness](#displayed-brightness)),
+   with 0.008 equal to magnitude 6 before the display shift.
+3. `city_sprites.comp` appends finished records for far city lights; launch pad lights, rockets and re-entry
+   fireballs are appended the same way (see [Launch visuals](launch-visuals.md)).
 4. The point, flare-source, glare and trail draws are `vkCmdDrawIndirect` over the list.
 
 | Field | Meaning after `sat_flare.comp` |
@@ -37,6 +39,61 @@ Satellites reach the screen through one **compact visible list** (`satVisibleBuf
 
 Stars and planets have their own small host-written buffers in the same record format, filled each frame by
 `updateStars()` and `updatePlanets()`, and drawn with `star_point.vert/.frag` (planets with twinkle off).
+
+## Displayed brightness
+
+A satellite's record carries one value that the point, the bloom, the glare, the sky glow bins and the ocean
+glints all read: the physical effectFlare times three display factors.
+
+\[
+F_\text{disp} = F_\text{phys} \cdot 10^{0.4\,g} \cdot k_\text{resolved} \cdot n_\text{merge},
+\qquad g = \text{exposure gain} - \text{satellite adaptation}\ (\text{mag})
+\]
+
+The point-style UBO's reference and limit magnitudes already carry the exposure shift for stars and planets, so
+`sat_point.frag` adds \(g\) back to a satellite's magnitude before `pointPsf()`. The effect is that bloom and
+glare follow the exposure exactly as the point does. \(g\) is `SatelliteSim::satDisplayGainMag()`, passed to the
+shaders as `satGainMag` in `GpuPointStyle`.
+
+**Resolved satellites.** A model satellite stops being a point once it covers a few pixels. Its effective
+diameter is \(d = \text{meshPx}\sqrt{\text{fill}}\), where `meshPx` is its bounding diameter on screen and *fill*
+is the type's mean projected area over its bounding disc (about 0.10 for a Starmind satellite, 0.32 for a Reflect
+Orbital mirror), carried in the record colour's alpha. As \(d\) grows from 0.8 to 2.5 px the sprite blends
+(geometrically) from the point-style brightness to the model's own mean surface brightness through the sky
+exposure and tonemap (`resolvedSatFlare()`):
+
+\[
+\text{peak} = 1 - \exp\!\left(-\frac{k_\text{phys}\,F_\text{raw}}{N_\text{px}}\right),
+\qquad k_\text{phys} = \frac{\pi \cdot \text{skyExposure}}{K_\text{flux}\cdot \text{brightnessScale}\cdot \Omega_\text{pix}}
+\]
+
+with \(N_\text{px}\) the object's area in pixels. The sprite spreads over that area
+(\(\sigma^2 = \sigma_0^2 + N_\text{px}/2\pi\)) with its drawn flux kept, and never reads brighter than the
+unresolved point. The point style is white at about magnitude 1.5 and a model's pixel at about −7.5: without the
+blend a satellite a few pixels wide would be a blazing point beside a grey model.
+
+**Satellite adaptation.** A camera or an eye adapted to a bright resolved satellite, or to the lit Earth, does
+not see faint points. Every point (satellites, stars and planets) is dimmed by
+
+\[
+A = \min\!\left(\max\!\left(2.5\log_{10}(1 + S/0.003),\ 2.5\log_{10}(1 + M/0.01)\right),\ 8\right)
+\]
+
+magnitudes, times "Satellite adaptation", eased with a 0.25 s time constant as it rises and 2.5 s as it falls.
+
+- \(S\) is the light of the meshes drawn this frame per frame pixel, in the sky exposure's units.
+- \(M\) is the exposure meter's mean of the displayed frame. It counts only above the air (ramped in from 40 to
+  100 km of eye altitude) and only with auto exposure on; on the ground the day, Moon and light-pollution
+  suppression already do this job.
+- A bright resolved satellite (\(S\) from 0.02 to 0.2) also lets the auto exposure stop down at night.
+
+**Formation merge.** A formation cluster narrower than a few pixels would draw as several overlapping points, and
+the display response (flux to the power 0.8) reads several overlapping points brighter than one point of their
+summed light, with none of them glaring. So as a cluster shrinks from 3 to 1 px across, `sat_orbit.comp` gives its
+slot-0 member N times its light and fades the others (`constIdx` bits 8-15 hold the cluster size, bits 16-23 the
+member's slot). The merge applies to the drawn point, bloom and glare only. The sky glow bins and ocean glints
+keep each member's own light, so a merged leader cannot brighten the whole sky through a per-bin maximum. The
+selection panel and the info window show the formation's combined magnitude.
 
 ## The shared point-spread model
 
@@ -195,6 +252,31 @@ three times that), its glare stays the **sprite's**, at the sprite's position: `
 effectFlare × the CPU's glare keep weight into the record's last field. Counting all of a small mesh's light as
 glints would put its one glare on whichever few texels happen to be brightest, and it would jump about.
 
+Only the **Sun-like share** of a small mesh's light keeps that sprite glare all the way to 36 px. The CPU computes
+the share per instance (`glintShare`) with `mesh_bloom.frag`'s own test: each lobe's sunlight weighted by
+smoothstep(150, 1500) of π × its mean radiance per unit irradiance. The rest (diffuse, glossy and earthshine light)
+stops glaring as the mesh fades in (about 1.5 to 3 px). A backlit, earthlit satellite many pixels wide therefore
+reads as a dark silhouette, not a starburst; a Reflect mirror's glint share is 1.
+
+### Glare clusters
+
+A camera gives every point light the same spikes, so a tight group of bright lights (a formation, a launch pad's
+floods, a lit Reflect ring) would draw as overlapping stars: a spiky tangle. `glare_cluster.comp` (after
+`glare_find.comp`, over the visible list and the mesh glints) sums every source that glares this frame into a
+coarse screen grid, a tile about 1/68 of the view height, with weight
+
+\[
+q = \left(\frac{F}{F_\text{threshold}}\right)^2 \cdot \text{visibility}
+\]
+
+and the q-weighted position inside each tile. It uses `glare.vert`'s own projection, response and occlusion tests.
+When the glare is drawn, each source takes \(w = q / (q + Q_\text{others})\), where \(Q_\text{others}\) is the grid's weight
+within 0.8 of its glare radius less its own (smoothstep-windowed on each tile's centroid), and keeps \(w^2\)
+of its spikes (`glareSpikeWeight()`); as \(w\) falls its rays shorten and its halo strengthens slightly. A lone
+source is unchanged, the brightest of a group keeps most of its star, and N equal neighbours each keep \(1/N^2\): a
+tight cluster reads as a soft glow with at most a few spikes. The core and halo are never reduced. The 3D view's
+glare has no grid and is unaffected. Cost is within run-to-run noise.
+
 !!! note
     Mesh bloom and mesh glints are not occlusion-tested: they come from the mesh's own rendered pixels, which
     the march's half-resolution depth may not hide behind thin terrain or cloud.
@@ -231,6 +313,10 @@ A long-exposure accumulation, toggled by the HUD's "Star trails" button (default
 | Glare spikes (Photometry) | `photometry.glare_spikes` | 10 |
 | Glare near gain (Photometry) | `photometry.glare_near_gain` | 8.0 |
 | Glare near range (km) (Photometry) | `photometry.glare_near_range_km` | 21.86 |
+| Glare cluster merge (Photometry) | `photometry.glare_cluster_merge` | 1 (0 = every light its own star) |
+| Resolved satellites (Photometry) | `photometry.sat_resolved` | 1 |
+| Satellite adaptation (Photometry) | `photometry.sat_adaptation` | 1 (range 0-2) |
+| Merge formations (Photometry) | `photometry.formation_merge` | 1 |
 | Trail decay (s) (Photometry) | `photometry.trail_decay_seconds` | 4.0 |
 | Trail gain (Photometry) | `photometry.trail_composite_gain` | 1.0 |
 | Star trails (HUD) | `display.trail_enabled` | off |
@@ -246,7 +332,12 @@ proximity scaling leaves exactly those untouched beyond the near range. City spr
 - `shaders/sat_point.vert/.frag`, `shaders/star_point.vert/.frag`, `shaders/city_sprites.comp`.
 - `shaders/flare_source.vert/.frag`, `shaders/flare_blur.comp`, `shaders/flare_composite.frag`,
   `shaders/mesh_bloom.frag`.
-- `shaders/glare.vert/.frag`, `shaders/glare_find.comp`, `shaders/glare_mesh.vert/.frag`.
+- `shaders/glare.vert/.frag`, `shaders/glare_find.comp`, `shaders/glare_cluster.comp`,
+  `shaders/glare_mesh.vert/.frag`, `shaders/include/glare_mesh_vert.glsl`.
+- `shaders/sat_flare.comp` (the displayed effectFlare, resolved factor, merge), `shaders/sat_orbit.comp` (the
+  formation merge's slot weights).
+- `src/simulations/SatelliteSim.cpp`: the adaptation (`satAdaptMag`, `satDisplayGainMag()`) and the per-instance
+  `glintShare` in the mesh instance evaluation.
 - `shaders/trail_fade.comp`, `shaders/trail_composite.frag`.
 - `src/simulations/SatelliteSim.cpp`: `recordCompute()` (flare source, glare find, blur, trails),
   `recordDraw()` (points, stars, planets, composite, glare), `updateStars()`, `updatePlanets()`, `pointPsf()`.

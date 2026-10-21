@@ -1,0 +1,175 @@
+# Crew and cargo flights
+
+Every station in the roster is visited: crews rotate twice a year and cargo ships resupply them. This page
+covers the visiting programs, how a launch is timed to the station, the spacecraft's rendezvous, docking,
+departure and return, and what happens when a station is lost. The launch scheduler these flights share with
+the constellations is on [Launches](launches.md); the rocket's own flight is on [Rockets](rockets.md); the
+Missions window that lists them is on [Missions](../using/missions.md).
+
+## Programs and stations
+
+A program in `data/launches.json` with a `crew` block is a **visiting vehicle**: it matches station
+constellations (one satellite each) and flies once per `life_years`. For these programs `life_years` is a
+cadence, not a design life: it is not scaled by the Satellite design life setting.
+
+| Program | Spacecraft | Vehicle and site | Stations | Per year, each |
+|---|---|---|---|---|
+| ISS crew rotation | Crew Dragon (4) | Falcon 9 / Crew Dragon, Kennedy 39A or SLC-40 | ISS | 2 |
+| Tiangong crew rotation | Shenzhou (3) | Long March 2F, Jiuquan | Tiangong | 2 |
+| Commercial station crews | Crew Dragon (4) | Falcon 9 / Crew Dragon | Haven-1, Haven-2, Axiom, Starlab, Orbital Reef | 2 |
+| ROS crew rotation | Soyuz MS (3) | Soyuz-2.1a, Baikonur | Russian Orbital Service Station | 2 |
+| Gaganyaan crew rotation | Gaganyaan (3) | HLVM3, Sriharikota | Bharatiya Antariksh Station | 2 |
+| Progress resupply | Progress MS (cargo) | Soyuz-2.1a, Baikonur | ISS, ROS | 3 |
+| Tianzhou resupply | Tianzhou (cargo) | Long March 7, Wenchang | Tiangong | 2 |
+| Cargo Dragon resupply | Cargo Dragon | Falcon 9 / Crew Dragon | ISS, Haven-2, Axiom, Starlab, Orbital Reef | 2 |
+
+A station served by several programs has one schedule plane per program. The first program to match it (its
+crew rotation) owns the station's main plane; every further one gets a plane of its own, appended after all
+others so no other plane's index (and so no batch key or pad priority) moves.
+
+`crew` block fields:
+
+| Field | Meaning |
+|---|---|
+| `spacecraft`, `people` | name and crew size (none for cargo) |
+| `model` | render model `rocket_<model>[_cm\|_chute].json` (whole, crew module only, under parachutes) |
+| `heat_shield_m` | the heat shield's distance below the docking port, where the entry glow sits |
+| `lands` | comes home on land (Soyuz, Shenzhou); otherwise splashes down |
+| `cargo` | no people |
+| `return: "burns"` | destroyed on re-entry (Progress, Tianzhou) |
+| `ports` | the docking-port class it uses: `crew` (default) or `cargo` |
+| `share_crew_ports` | uses the crews' ports between rotations (Cargo Dragon) |
+| `stay_days` | [min, max] time docked |
+| `fast_dock_h` | windows (hours after lift-off) for a fast-track rendezvous, in order of preference |
+
+The program's `raise_days` is lift-off to docking, and `payload_mass_kg` (when given) sets the booster's
+recovery. Stations declare their ports in their model (`"docking_ports"`: name, position, axis, `use`,
+optional `since`); see [Satellite models](../modding/satellite-models.md). With the deployment era on, a
+crew launch waits until its station's first module is up, and a spacecraft docks only at a port on a module
+that exists by then: a cargo ship whose port class is not there yet does not fly (the ROS cargo port, for
+instance), while a crew falls back to any crew port.
+
+## Timing the launch to the station
+
+A visiting launch is scheduled like any other: the plane's next pass over a pad after the nominal time
+(see [Launches](launches.md#choosing-a-pad-and-a-time)). Two profiles then differ:
+
+- **About a day** (Crew Dragon, Cargo Dragon, Gaganyaan): the pass is kept, and the phasing below absorbs the
+  station's position, docking around `raise_days` after lift-off (Dragon about 1-1.4 days).
+- **Fast track** (Soyuz, Progress, Shenzhou, Tianzhou): the passes of the next 30 days are tried in order,
+  and the launch takes the first whose station phase lets the phasing close inside a `fast_dock_h` window:
+  Soyuz 3.0-3.6 h or 5.6-6.4 h, Progress 3.1-3.7 h or 5.6-6.4 h, Shenzhou 6.2-6.9 h, Tianzhou 2.4-3.6 h or
+  6.0-7.0 h. The first window (two orbits) is preferred if a pass allows it within 14 days of the first pass
+  allowing any. A fast-track launch keeps this pass even when another launch wants the pad.
+
+Both are pure functions of the batch, like every launch.
+
+## The flight
+
+The spacecraft separates from its upper stage at deployment and from then on is its own selectable,
+followable object; its phases are closed forms of sim time (`crewPos()`).
+
+```mermaid
+flowchart LR
+  A[separation<br/>parking orbit] --> B[coast c1]
+  B --> C[Hohmann up to<br/>phasing orbit rP]
+  C --> D[wait in rP]
+  D --> E[Hohmann to the station's<br/>altitude, 5 km behind]
+  E --> F[approach legs<br/>in the station's frame]
+  F --> G[docked]
+  G --> H[back out, depart<br/>2 km below, 3 km ahead]
+  H --> I[deorbit burn]
+  I --> J[entry]
+  J --> K[drogues, mains,<br/>splashdown / landing]
+```
+
+### Phasing
+
+From separation the capsule coasts in the parking orbit for \( c_1 \) (900-1500 s on a fast track,
+2400-3600 s otherwise), raises by a Hohmann transfer to a phasing orbit \( r_P \) between the parking orbit
+and 8 km below the station, waits there for \( W \), and raises by a second Hohmann to the station's
+altitude, arriving 5 km behind it. The angle it gains on the station over the far phases of duration
+\( D \) is
+
+\[
+\Delta\theta = (n_0 + v_s/r_0 - n_S)\,c_1 + (\pi - n_S T_1) + (n_P - n_S)\,W + (\pi - n_S T_2),
+\qquad W = D - c_1 - T_1 - T_2 ,
+\]
+
+with \( T_1, T_2 \) the two transfer times and \( n_0, n_P, n_S \) the mean motions of the parking orbit,
+the phasing orbit and the station. `buildCrew()` sets \( D \) from the target docking time less the approach,
+then solves \( r_P \) by bisection so that \( \Delta\theta \) equals the station's lead (plus whole turns).
+If even the parking orbit cannot catch up in time, the capsule waits longer there. Each phasing burn is
+spread over 240 s (a smoothstep cross-fade between the path before and the Kepler path after), so thrust stays
+at about 1 m/s² or less.
+
+### Approach and docking
+
+The approach is flown in the station's body frame (X along its velocity, Z to nadir: the stations' pointing
+law, so a port in the model lands where the station's mesh draws it): from the arrival point to 1 km out on
+the line toward the port, an arc round onto the port's axis (passing below the station when the two
+directions are nearly opposite), then along the axis with holds at 400, 200 and 20 m, and contact. The legs
+take about 2.4 h, or about 65 min on a fast track. Until it arrives behind the station the capsule flies
+prograde; on the approach it faces the port, then lies on the docking axis from the arc on, and on departure
+turns back to prograde over about 15 min. Its attitude changes continuously through every leg.
+
+### Docked
+
+A spacecraft stays docked until the next visit of its own program:
+
+- two ports of its class: until the next crew has arrived plus a hand-over of 5-7 days;
+- one port (Haven-1, Bharatiya): it leaves 2-3 days before the next one comes;
+- `stay_days` caps the stay (Cargo Dragon 28-35 days); the stay is never shorter than 2 days.
+
+Crews alternate between the station's two crew ports. Cargo Dragon's schedule sits half a rotation from the
+crews' and it takes the crew port the current crew is not using, leaving 3 days before the next crew
+arrives. Progress and Tianzhou take the aft cargo ports.
+
+### Departure and return
+
+The spacecraft backs out along the axis to 20 m, then 200 m, and departs onto a circle 2 km below the
+station and 3 km ahead of it. From 3 h after the departure a deorbit burn of about 10 min puts it on an
+ellipse with its perigee 35 km up, its apoapsis at the burn. The burn time is searched in 12-minute steps
+over a day so the parachutes open over the sea (Dragon, Gaganyaan) or over land (Soyuz, Shenzhou) at least
+15 km from the coast; cargo ships that burn up are aimed at the open ocean. The trunk or service module
+leaves 15 min before the entry interface (100 km). The entry lasts 540 s, from 100 km to the drogues at
+10 km; the drogues let the fall build to about 70 m/s, the mains open 3 km above the ground and bring it down
+to 6.5 m/s. The capsule is drawn for 40 min after splashdown or landing. Progress and Tianzhou break up at
+the entry interface as a re-entry fireball instead.
+
+## When a station is lost
+
+A station can be destroyed by the [Kessler cascade](kessler.md) or by the player. Its fate is read from the
+Kessler event log (the roster words mirrored from the Kessler world), so the visits follow it:
+
+| When | What happens |
+|---|---|
+| before lift-off | the launch is not scheduled (`launch why`: "station lost"); Missions shows the station as Destroyed, Dead or Re-entered with "no more crew flights" |
+| launched, before arrival | the rendezvous is called off: the capsule finishes the coast or transfer it is in, waits on that circle and comes home |
+| on the approach | it turns away from where it is onto the departure circle |
+| docked, crew | emergency undocking 90 s later, a fast back-out, then the usual return |
+| docked, cargo ship | destroyed with the station |
+
+A launched flight shows "rendezvous called off" in the Missions window's Ongoing tab. Because the schedule
+is a function of sim time and the event log, going back before the breakup brings the flights back. When a
+station's fate changes (a breakup, a rollback, or the Kessler worker reaching a cascade kill),
+`crewSync()` discards that station's cached batches so they are rebuilt against the new fate. Visits stand
+down at the Sun's Fury with every other launch (see [Launches](launches.md)).
+
+## Checking it
+
+Harness: `launch crew [station=] [event=] [lead=] [follow=1]` frames a visit at a chosen event,
+`launch state` lists `crew_vehicles`, `launch check` reports `crew`, `missions state` gives each station's
+`fate`, and `tools/harness/mission_ops.py` judges every cached visiting flight around each epoch (docking
+times, burn accelerations, turn rates, port conflicts). See [Harness](../development/harness.md).
+
+## Where in the code
+
+| File | What |
+|---|---|
+| `data/launches.json` | the crew and cargo programs, crew vehicles (`spacecraft_dock_m`) |
+| `src/simulations/Launches.h/.cpp` | `Program`'s crew fields and their loading |
+| `src/simulations/SatelliteSimLaunches.cpp` | `candidate()` (fast-track pass search, `crewFastD()`), `buildCrew()` (phasing, ports, approach, stay, aborts, return), `crewPos()`, `crewFarPos()`, `crewAttitude()`, `crewFill()`, `crewSync()`, `launchOngoing()` |
+| `src/simulations/SatModel.cpp` | `docking_ports` |
+| `tools/make_crew_models.py` | the spacecraft models |
+| `tools/make_station_models.py` | the stations and their ports |
