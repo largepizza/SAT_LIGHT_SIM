@@ -72,3 +72,6 @@ satlight_log.txt
 
 # â”€â”€ Wiki (mkdocs.yml) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /build-wiki/
+
+# SatModelTool / app debug OBJ output when run from the repo root
+satellite_models_debug/

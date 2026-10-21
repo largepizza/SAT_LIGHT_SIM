@@ -1,0 +1,259 @@
+{
+ "name": "h3_htvx booster",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), h3_htvx: booster. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Core / upper split, SRB nose and fairing lengths estimated from photographs.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "copper",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.12,
+   "roughness": 0.35,
+   "color": [
+    0.62,
+    0.38,
+    0.24
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "core_body_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     2.6
+    ],
+    [
+     37.0,
+     2.6
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "aft_heat_shield_1",
+   "type": "profile",
+   "profile": [
+    [
+     -0.05,
+     2.574
+    ],
+    [
+     -0.01,
+     2.574
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "engines_2",
+   "type": "profile",
+   "profile": [
+    [
+     -1.8,
+     0.7
+    ],
+    [
+     -1.528,
+     0.5806
+    ],
+    [
+     -1.256,
+     0.4769
+    ],
+    [
+     -0.984,
+     0.3899
+    ],
+    [
+     -0.712,
+     0.3212
+    ],
+    [
+     -0.44,
+     0.2733
+    ],
+    [
+     -0.168,
+     0.252
+    ],
+    [
+     0.024,
+     0.3906
+    ],
+    [
+     0.4464,
+     0.3906
+    ],
+    [
+     0.6,
+     0.2344
+    ],
+    [
+     0.65,
+     0.0
+    ]
+   ],
+   "position": [
+    0.95,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "engines_3",
+   "type": "profile",
+   "profile": [
+    [
+     -1.8,
+     0.7
+    ],
+    [
+     -1.528,
+     0.5806
+    ],
+    [
+     -1.256,
+     0.4769
+    ],
+    [
+     -0.984,
+     0.3899
+    ],
+    [
+     -0.712,
+     0.3212
+    ],
+    [
+     -0.44,
+     0.2733
+    ],
+    [
+     -0.168,
+     0.252
+    ],
+    [
+     0.024,
+     0.3906
+    ],
+    [
+     0.4464,
+     0.3906
+    ],
+    [
+     0.6,
+     0.2344
+    ],
+    [
+     0.65,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.95,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "core_body_0"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "JAXA H3 Launch Vehicle pages / Wikipedia 'H3 (rocket)': 5.2 m core, 2 LE-9 on the '24' configuration, four SRB-3 (2.5 m x 14.6 m), LE-5B-3 second stage, 5.2 m 'W' fairing (long), ~63 m | JAXA HTV-X: launched on H3-24W from Tanegashima (HTV-X1, 2025-10-26)"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey",
+    "copper",
+    "soot"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail); copper: copper-alloy chamber and bell (Raptor, Merlin), oxidised; soot: a nozzle's sooty inside",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

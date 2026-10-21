@@ -760,8 +760,9 @@ float auroraCoverage(float colat, float az, float t, float storm) {
     vec2  azWarp = vec2(cos(az), sin(az)) * cloud.auroraCoverageAzFreq + t * cloud.auroraCoverageDriftRate;
     float n = warpPerlin3(vec3(azWarp, degrees(colat) * cloud.auroraCoverageFreq));
     // With arc systems on (auroraStorm.z) a storm no longer fills the whole oval (-0.6: a uniform donut from
-    // orbit, issue 20261014_193231); it keeps gaps. Same in sat_sky.frag's copy.
-    float threshold = mix(0.2, mix(-0.6, -0.35, cloud.auroraStorm.z), clamp(storm, 0.0, 1.0));
+    // orbit, issue 20261014_193231); it keeps gaps. Same in sat_sky.frag's copy. (2026-10-21: the setting is 0..1;
+    // its old default 2 extrapolated mix(-0.6, -0.35) to -0.1, which is now the value at 1.)
+    float threshold = mix(0.2, mix(-0.6, -0.1, clamp(cloud.auroraStorm.z, 0.0, 1.0)), clamp(storm, 0.0, 1.0));
     return smoothstep(threshold, threshold + kAuroraCoverageSoftness, n);
 }
 

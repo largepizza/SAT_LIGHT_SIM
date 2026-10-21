@@ -2094,7 +2094,16 @@ public:
     void onChar(GLFWwindow *w, unsigned int codepoint) override;
     // The console, a focused text field (Esc cancels the edit) and a playing / exporting cinematic (Esc stops it)
     // keep Esc from quitting the app.
-    bool capturesKeyboard() const override { return consoleOpen_ || textEdit_.id != 0 || cineActive() || reportBarOpen_; } // (Esc closes the report bar)
+    // (Esc closes the report bar; since 2026-10-21 it also cancels a key rebind that is listening instead of quitting)
+    bool capturesKeyboard() const override
+    {
+        if (consoleOpen_ || textEdit_.id != 0 || cineActive() || reportBarOpen_)
+            return true;
+        for (const auto &kb : keybindings)
+            if (kb.listening || kb.listeningPad)
+                return true;
+        return false;
+    }
 
 private:
     // ── SSBOs ─────────────────────────────────────────────────────────────────
@@ -2956,10 +2965,18 @@ private:
     };
     std::vector<MeshLocalLight> meshLights_, meshLightsPrev_;
     float meshLightAdapt_ = 1.0f; // engineAdaptEased at the flush that made meshLightsPrev_
+    int meshLightsScene_ = 0, meshLightsViewer_ = 0; // lights in the last scene / info-window view frame (harness)
     void meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double rs,
                       const glm::dvec3 *aimEci = nullptr, double beamHalfDeg = 180.0);
     static double flameIntensitySunsM2(double mag100km);
-    int launchAfterStorm = 0;        // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
+    // (2026-10-21, cost) Fills frame.lightInfo / lightPos / lightCol / lightDir with last frame's mesh lights, the
+    // positions relative to `originEcef` (the frame's world origin, ECEF axes): the scene pass (the camera) and the
+    // info window's 3D view (the viewed object). meshLightMask: which of those lights can reach a bounding sphere
+    // (centre in the same frame) with more than a hair of displayed light at `exposure` — GpuMeshInstance::trans[1].w
+    // (bits), so sat_mesh.frag loops only over lights that matter to that instance.
+    void fillMeshLocalLights(struct GpuMeshFrame &frame, const glm::dvec3 &originEcef) const;
+    static uint32_t meshLightMask(const struct GpuMeshFrame &frame, const glm::dvec3 &centre, double radius, double exposure);
+    int launchAfterStorm = 0;       // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
     // The deployment era (2026-10-20, launches.deployment_era; launches.json "deployment" / "roster_history" / site and
     // vehicle "online" dates): the constellations are BUILT UP by launches from the late 2010s to 2036 instead of
     // standing complete at any date. Each roster satellite's born / gone second (rosterLife, 2 per satellite, seconds
@@ -3005,8 +3022,11 @@ private:
     // Booster landing ships (2026-10-20, droneships): one reserved chunk below the stacks' (launchMeshJobs). Scenery,
     // not selectable (the booster on the deck is).
     static constexpr int kShipMeshSlots = 8;
+    // A station arm (2026-10-21, Canadarm2: two booms + the wrist): one reserved chunk below the ships'. Not selectable.
+    static constexpr int kArmMeshSlots = 8;
     nlohmann::json launchShipsJson() const; // harness `launch ships`: the ships on station / heading home
     void launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // their meshes
+    void launchArmJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // the station arms (Canadarm2)
     double shipSeaState(const glm::dvec3 &ecefUnit) const; // the sea state at a ship (its swell; 1 = default)
     void launchFillShipLights();            // their lights at night (kFireBuf)
     void launchFillShipGlow(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // their lit decks
@@ -3185,6 +3205,8 @@ private:
     std::vector<MissionOngoing> msOngoing;
     std::vector<CrewStation> msStations;
     std::string msStatus;
+    std::string msStatusShown;           // msStatus as first drawn, and when (wall clock): it fades after 12 s
+    double msStatusWall = 0.0;
     std::deque<std::string> msText_;     // this frame's formatted strings (Clay keeps the pointers; a deque never moves them)
     const char *msStr(const char *fmt, ...);
     void missionsRefresh(bool force);
@@ -4223,7 +4245,7 @@ private:
     bool  boostHeldNow = false, cv2FastLodNow = false;
     // Cumulonimbus as three layers (pass 15): the cumulus field capped at cv2CbCumulusTopKm, discrete
     // concave towers on a lattice (cv2ColumnSigma), and the anvil hanging lower around their heads.
-    float cv2CbColumns = 2.0f;         // Cb column density (0 = the pass-14 deep cores in the low layer)
+    float cv2CbColumns = 2.0f;         // Cb column density (0 = no towers: a storm is tall congestus; the pass-14 deep cores are gone)
     float cv2CbSpacingKm = 30.0f;      // lattice cell: about one tower per cell where storms are strong
     float cv2CbRadiusKm = 15.0f;        // a tower's base radius (waist ~0.7x, head ~1.6x)
     float cv2CbCumulusTopKm = 2.6f;    // the low (cumulus/congestus) field's top in storm regions
@@ -5382,7 +5404,8 @@ private:
     // Aurora storms (Atmosphere tab, slots 298-301, 2026-10-14; cloud_params.glsl auroraStorm).
     float auroraStormFeatures = 1.2f;       // tall red-topped curtains + magenta borders above Kp ~5
     float auroraBlueRayChance = 0.004f;     // rare giant rayed bands with sunlit blue tops (per ~220-km sheet stretch)
-    float auroraArcSystems = 2.0f;          // sheets grouped into a few bright arc systems (0 = all alike)
+    float auroraArcSystems = 1.0f;          // sheets grouped into a few bright arc systems (0 = all alike; 0..1, was
+                                            // 2 outside its 0-1 slider until 2026-10-21: the shader maps 1 to that look)
     float auroraStormRedGain = 1.1f;        // storm-time 630-nm red equatorward of the oval
     float oceanSeaStateGain = 1.0f;          // waves follow the weather (Ocean tab, slot 213; 0 = fixed sea)
     float oceanWhitecapGain = 1.0f;          // whitecap foam gain (Ocean tab, slot 214)

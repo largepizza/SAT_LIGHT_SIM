@@ -48,6 +48,14 @@ REFS = {
     "tianzhou": ["Wikipedia 'Tianzhou (spacecraft)' / CMSA: 10.6 m long, 3.35 m across; a cargo module forward with the "
                  "docking mechanism, a propulsion module aft carrying two wings of three panels (14.9 m tip to tip); "
                  "13.5 t at launch"],
+    "cygnus": ["Northrop Grumman / Wikipedia 'Cygnus (spacecraft)' (Enhanced): pressurized cargo module 3.07 m across, "
+               "~5.1 m long, with the CBM forward; service module ~1.3 m with two UltraFlex circular arrays ~3.8 m "
+               "across; berthed by Canadarm2 at Unity nadir; ~7.5 t at launch; destroyed on re-entry",
+               "NASA 'Cygnus capture' imagery: the grapple fixture on the cargo module's side; arrays face along the "
+               "axis"],
+    "htvx": ["JAXA HTV-X: ~8 m long, 4.4 m across; pressurized module forward with the CBM, service module aft "
+             "carrying deployable solar wings; berthed by Canadarm2 at Harmony nadir; ~16 t at launch, 4+ t cargo; "
+             "destroyed on re-entry"],
     "gaganyaan": ["ISRO / Wikipedia 'Gaganyaan': crew module ~3.1 m tall, ~3.5 m across; service module ~2.9 m, "
                   "3.9 m across, with deployable solar panels; parachutes: three mains"],
 }
@@ -60,6 +68,10 @@ NOTES = {
     "progress": "Progress MS in orbit: cargo module forward (docking probe), refuelling module, instrumentation-"
                 "propulsion module and its two wings.",
     "tianzhou": "Tianzhou in orbit: cargo module forward (docking ring), propulsion module aft and its two wings.",
+    "cygnus": "Cygnus in orbit: the cargo module (CBM forward, grapple fixtures on both sides), the service module "
+              "and its two round UltraFlex arrays.",
+    "htvx": "HTV-X in orbit: the pressurized module (CBM forward, grapple fixtures on both sides), the service module "
+            "and its two wings of three panels.",
     "gaganyaan": "Gaganyaan in orbit: a docking port on the crew module's apex (an estimate: Gaganyaan G1 has none; "
                  "the scenario's Bharatiya crews dock), service module and two wings.",
 }
@@ -108,10 +120,15 @@ def soyuz_like(b, kind, cm_only=False):
         b.engines("sm_engines", [(4, 0.6)] if kind == "shenzhou" else [(1, 0.0)], 0.15 if kind == "shenzhou" else 0.3,
                   0.45, z - 0.3, mat="nozzle")
         for k in range(2):
-            # A wing standing out from the service module: span radially, its width along the axis.
-            b.radial_box("solar_wing", 90.0 + 180.0 * k, sm_r + 0.4, z + 0.5 * sm_l, span, 0.04, wing_w, "cells",
+            # A wing standing out from the service module: span radially, its face across the axis (2026-10-21: the
+            # cells face along the vehicle's axis, as seen in photographs of an approaching Soyuz / Progress; the
+            # first cut had them edge-on to it). Shenzhou's wings turn about their span to the Sun (group "wings").
+            b.radial_box("solar_wing", 90.0 + 180.0 * k, sm_r + 0.4, z + 0.5 * sm_l, span, wing_w, 0.04, "cells",
                          ro=False)
             b.radial_box("wing_yoke", 90.0 + 180.0 * k, sm_r, z + 0.5 * sm_l, 0.45, 0.12, 0.3, "grey")
+            if kind == "shenzhou":
+                b.c[-2]["_wing"] = z + 0.5 * sm_l
+                b.c[-1]["_wing"] = z + 0.5 * sm_l
     z += sm_l
     r0, h = dm
     b.profile("descent_module", [[z, r0], [z + 0.25, r0], [z + 0.9 * h, 0.55 * r0], [z + h, 0.35 * r0]], "grey",
@@ -135,7 +152,8 @@ def progress(b):
     b.profile("service_module", [[z, 1.36], [z + 2.5, 1.36], [z + 2.6, 1.1]], "grey", caps=True)
     b.engines("sm_engine", [(1, 0.0)], 0.3, 0.5, z - 0.3, mat="nozzle")
     for k in range(2):
-        b.radial_box("solar_wing", 90.0 + 180.0 * k, 1.36 + 0.4, z + 1.3, 4.1, 0.04, 1.15, "cells", ro=False)
+        # Fixed wings, the cells facing along the axis (as Soyuz MS's; 2026-10-21: they were edge-on to it).
+        b.radial_box("solar_wing", 90.0 + 180.0 * k, 1.36 + 0.4, z + 1.3, 4.1, 1.15, 0.04, "cells", ro=False)
         b.radial_box("wing_yoke", 90.0 + 180.0 * k, 1.36, z + 1.3, 0.45, 0.12, 0.3, "grey")
     z += 2.6
     b.profile("refuelling_module", [[z, 1.05], [z + 1.2, 1.05], [z + 1.6, 0.7]], "grey", caps=True)
@@ -152,8 +170,12 @@ def tianzhou(b):
     b.profile("propulsion_module", [[z, 1.4], [z + 3.3, 1.4], [z + 3.9, 1.675]], "white", caps=True)
     b.engines("pm_engines", [(4, 0.7)], 0.18, 0.5, z - 0.3, mat="nozzle")
     for k in range(2):
-        b.radial_box("solar_wing", 90.0 + 180.0 * k, 1.4 + 0.6, z + 1.6, 5.6, 0.04, 2.0, "cells", ro=False)
+        # The wings turn about their span to the Sun (a solar array drive; 2026-10-21: they were fixed edge-on to
+        # the axis, a thin line seen from behind): rest pose facing along the axis, group "wings".
+        b.radial_box("solar_wing", 90.0 + 180.0 * k, 1.4 + 0.6, z + 1.6, 5.6, 2.0, 0.04, "cells", ro=False)
         b.radial_box("wing_yoke", 90.0 + 180.0 * k, 1.4, z + 1.6, 0.65, 0.12, 0.3, "grey")
+        b.c[-2]["_wing"] = z + 1.6
+        b.c[-1]["_wing"] = z + 1.6
     z += 3.9
     b.profile("cargo_module", [[z, 1.675], [z + 5.6, 1.675], [z + 6.3, 0.85]], "white", caps=True)
     z += 6.3
@@ -161,7 +183,54 @@ def tianzhou(b):
     return z + 0.3
 
 
-CARGO = ("progress", "tianzhou")
+def cbm(b, z):
+    """A common berthing mechanism ring on top (its contact plane 0.35 m up: the model's origin)."""
+    b.tube("cbm_ring", 1.0, z, z + 0.35, "grey", ro=True, caps=True)
+    return z + 0.35
+
+
+def grapple_fixtures(b, r, z):
+    """Flight-releasable grapple fixtures on both sides (+-Y), gZ below the port: the arm takes the one facing it."""
+    for k in range(2):
+        b.radial_box("grapple_fixture", 90.0 + 180.0 * k, r, z, 0.25, 0.35, 0.35, "grey")
+        b.radial_box("grapple_pin", 90.0 + 180.0 * k, r + 0.25, z, 0.15, 0.06, 0.06, "black")
+
+
+def cygnus(b):
+    """Cygnus from its service module's base at z = 0; returns the CBM's contact plane."""
+    z = 0.0
+    b.profile("service_module", [[z, 1.4], [z + 1.3, 1.4]], "grey", caps=True)
+    b.engines("sm_engine", [(1, 0.0)], 0.3, 0.5, z - 0.3, mat="nozzle")
+    for k in range(2):
+        # UltraFlex arrays: round fans on booms either side of the service module, the cells facing along the axis.
+        y = (1.4 + 0.35 + 1.9) * (1 if k == 0 else -1)
+        b.add({"name": "ultraflex", "type": "cylinder", "radius": 1.9, "height": 0.04,
+               "position": rm.r4([0.0, y, z + 0.65]), "material": "cells"})
+        b.radial_box("array_boom", 90.0 + 180.0 * k, 1.4, z + 0.65, 0.4, 0.15, 0.15, "grey")
+    z += 1.3
+    b.profile("cargo_module", [[z, 1.535], [z + 4.6, 1.535], [z + 5.1, 1.0]], "white", caps=True)
+    top = z + 5.1
+    grapple_fixtures(b, 1.535, top + 0.35 - 2.5)
+    return cbm(b, top)
+
+
+def htvx(b):
+    """HTV-X from its service module's base at z = 0; returns the CBM's contact plane."""
+    z = 0.0
+    b.profile("service_module", [[z, 2.2], [z + 3.6, 2.2]], "white", caps=True)
+    b.engines("sm_engines", [(4, 1.2)], 0.2, 0.5, z - 0.3, mat="nozzle")
+    for k in range(2):
+        # Fixed wings of three panels, the cells facing along the axis.
+        b.radial_box("solar_wing", 90.0 + 180.0 * k, 2.2 + 0.5, z + 1.8, 6.0, 1.7, 0.04, "cells", ro=False)
+        b.radial_box("wing_yoke", 90.0 + 180.0 * k, 2.2, z + 1.8, 0.55, 0.15, 0.3, "grey")
+    z += 3.6
+    b.profile("pressurized_module", [[z, 2.2], [z + 3.6, 2.2], [z + 4.2, 1.0]], "white", caps=True)
+    top = z + 4.2
+    grapple_fixtures(b, 2.2, top + 0.35 - 2.0)
+    return cbm(b, top)
+
+
+CARGO = ("progress", "tianzhou", "cygnus", "htvx")
 
 
 def body(b, kind, cm_only=False):
@@ -173,6 +242,10 @@ def body(b, kind, cm_only=False):
         return progress(b)
     if kind == "tianzhou":
         return tianzhou(b)
+    if kind == "cygnus":
+        return cygnus(b)
+    if kind == "htvx":
+        return htvx(b)
     return soyuz_like(b, kind, cm_only=cm_only)
 
 
@@ -265,10 +338,25 @@ def build(kind, variant):
     if variant == "chute":
         chutes(b, top, kind)
     shift(b.c, -full)
+    # Sun-tracking wings (2026-10-21): a child group turning about the span axis (body Y) through the wings' centre;
+    # its parts' positions are relative to the hinge.
+    for c in b.c:
+        zw = c.pop("_wing", None)
+        if zw is not None:
+            c["group"] = "wings"
+            c["position"] = rm.r4([c["position"][0], c["position"][1], c["position"][2] - (zw - full)])
+            c["_hinge_z"] = zw - full
     return b.c
 
 
 def model(kind, variant, comps):
+    groups = [{"name": "body", "primary": {"axis": [0, 0, 1], "target": "velocity"},
+               "secondary": {"axis": [0, -1, 0], "target": "nadir"}}]
+    hz = [c.pop("_hinge_z") for c in comps if "_hinge_z" in c]
+    if hz:
+        groups.append({"name": "wings", "parent": "body",
+                       "hinge": {"position": [0.0, 0.0, round(hz[0], 4)], "axis": [0, 1, 0]},
+                       "joint": {"mode": "track", "vector": [0, 0, 1], "target": "sun"}})
     phot = [c["name"] for c in comps if not c.get("render_only")]
     used = sorted({c["material"] for c in comps} | {c.get("arc_material") for c in comps if c.get("arc_material")} |
                   {c.get("inner_material") for c in comps if c.get("inner_material")})
@@ -281,15 +369,18 @@ def model(kind, variant, comps):
         "note": ("%s render model (tools/make_crew_models.py), %s. %s Body frame: +Z out of the docking "
                  "port, origin at the port's contact point." % (what, part, NOTES[kind])),
         "materials": mats,
-        "attitude_groups": [{"name": "body", "primary": {"axis": [0, 0, 1], "target": "velocity"},
-                             "secondary": {"axis": [0, -1, 0], "target": "nadir"}}],
+        "attitude_groups": groups,
         "components": comps,
         "sources": [
             {"subject": "attitude", "status": "estimate",
              "value": "the sim hands in a full attitude (approach, docked, entry); this law is only its fallback",
-             "source": "SatelliteSimLaunches.cpp crew vehicles."},
-            {"subject": "body", "status": "estimate", "value": "one rigid group",
-             "source": "Render model; no moving parts."},
+             "source": "SatelliteSimLaunches.cpp crew vehicles."}] + ([
+            {"subject": "wings", "status": "estimate",
+             "value": "the wings turn about their span to face the Sun (a solar array drive), rest facing along +Z",
+             "source": "Photographs of Tianzhou / Shenzhou in flight: their wings are steered; the law is estimated."}]
+            if hz else []) + [
+            {"subject": "body", "status": "estimate", "value": "the rigid body",
+             "source": "Render model."},
             {"subjects": phot, "status": "sourced",
              "value": "diameters and lengths rounded from the references; shapes estimated from photographs",
              "source": " | ".join(REFS[kind])},
@@ -298,6 +389,73 @@ def model(kind, variant, comps):
              "source": "Liveries from photographs; reflectance from the presets."},
         ],
     }
+
+
+# ── The station's arm (2026-10-21): Canadarm2 ─────────────────────────────────────────────────────────────────
+# data/launches.json "station_arms" sets its geometry (boom_m, wrist_m); the sim poses three meshes: the boom twice
+# (shoulder -> elbow, elbow -> wrist) and the wrist + end effector. Body frame: +Z along the part toward the next
+# joint (the tip), +Y the plane normal the booms bend about (the pitch joints' axis), origin at the part's own joint.
+ARM_REFS = ["CSA / Wikipedia 'Mobile Servicing System' (Canadarm2): 17.6 m long, two booms ~7.1 m, 35 cm across, "
+            "seven joints (shoulder roll / yaw / pitch, elbow pitch, wrist pitch / yaw / roll), a latching end "
+            "effector (LEE) at each end, 1.8 t"]
+
+
+def arm_parts(part, boom_m, wrist_m):
+    b = rm.Builder()
+    ry = rm.quat_from_basis((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0))  # a cylinder's axis along +Y
+    joint = b.profile("joint_housing", [[-0.42, 0.34], [0.42, 0.34]], "white", ro=True, caps=True, rot=ry)
+    if part == "boom":
+        b.profile("boom", [[0.4, 0.19], [boom_m - 0.4, 0.19]], "white", caps=True)
+        b.profile("boom_band", [[0.4, 0.21], [0.75, 0.21]], "grey", ro=True, caps=True)
+        b.profile("boom_band", [[boom_m - 0.75, 0.21], [boom_m - 0.4, 0.21]], "grey", ro=True, caps=True)
+        b.add({"name": "camera", "type": "box", "size": [0.25, 0.3, 0.4],
+               "position": [0.3, 0.0, 0.5 * boom_m], "material": "black"}, True)
+    else:
+        b.profile("wrist_roll", [[0.3, 0.28], [0.75, 0.28]], "grey", ro=True, caps=True)
+        b.profile("end_effector", [[0.75, 0.45], [wrist_m - 0.05, 0.45]], "white", caps=True)
+        b.profile("snare", [[wrist_m - 0.05, 0.3], [wrist_m, 0.3]], "black", ro=True, caps=True)
+        b.add({"name": "camera", "type": "box", "size": [0.3, 0.25, 0.35],
+               "position": [0.55, 0.0, 1.0], "material": "black"}, True)
+    return b.c
+
+
+def arm_model(part, comps, boom_m, wrist_m):
+    phot = [c["name"] for c in comps if not c.get("render_only")]
+    used = sorted({c["material"] for c in comps})
+    mats = [m for m in rm.MATERIALS if m["name"] in used]
+    what = ("a boom (%.1f m) with its joint housing at the origin" % boom_m if part == "boom"
+            else "the wrist joints and the latching end effector (%.1f m to its tip)" % wrist_m)
+    return {
+        "name": "canadarm2 %s" % part,
+        "note": ("Station arm render model (tools/make_crew_models.py): %s. Body frame: +Z toward the next joint, +Y "
+                 "the bending plane's normal; posed per frame by the sim (launches.json station_arms)." % what),
+        "materials": mats,
+        "attitude_groups": [{"name": "body", "primary": {"axis": [0, 0, 1], "target": "velocity"},
+                             "secondary": {"axis": [0, -1, 0], "target": "nadir"}}],
+        "components": comps,
+        "sources": [
+            {"subject": "attitude", "status": "estimate", "value": "the sim hands in the pose (the arm's kinematics)",
+             "source": "SatelliteSimLaunches.cpp stationArmPose."},
+            {"subject": "body", "status": "estimate", "value": "one rigid part of the arm", "source": "Render model."},
+            {"subjects": phot, "status": "sourced", "value": "lengths and diameters rounded from the reference",
+             "source": " | ".join(ARM_REFS)},
+            {"subjects": [m["name"] for m in mats], "status": "estimate",
+             "value": "; ".join("%s: %s" % (m["name"], rm.MATERIAL_SOURCES[m["name"]]) for m in mats),
+             "source": "White thermal blankets and booms from photographs."},
+        ],
+    }
+
+
+def write_arm():
+    L = json.load(open(rm.LAUNCHES, encoding="utf-8"))
+    for a in L.get("station_arms", []):
+        boom_m, wrist_m = a.get("boom_m", 7.1), a.get("wrist_m", 1.6)
+        for part in ("boom", "wrist"):
+            comps = arm_parts(part, boom_m, wrist_m)
+            name = "rocket_arm_%s_%s.json" % (a.get("model", "canadarm2"), part)
+            with open(os.path.join(OUT, name), "w", encoding="utf-8") as f:
+                json.dump(arm_model(part, comps, boom_m, wrist_m), f, indent=1)
+            print("%-36s %2d parts" % (name, len(comps)))
 
 
 def main():
@@ -317,6 +475,7 @@ def main():
                     zs.append(c["position"][2])
             print("%-36s %2d parts, z %.2f .. %.2f" % (name, len(comps), min(zs), max(zs)))
     print("wrote %d models" % n)
+    write_arm()
 
 
 if __name__ == "__main__":

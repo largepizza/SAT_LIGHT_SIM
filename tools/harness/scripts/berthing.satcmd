@@ -1,0 +1,44 @@
+# Berthing with the ISS's arm (2026-10-21, CLAUDE.md "Launches" > Berthing): a Cygnus and an HTV-X from the capture
+# point to berthed and back to their release, framed from beside and below the vehicle.
+#   python tools/harness/run.py tools/harness/scripts/berthing.satcmd --window 1600x900
+set clouds_v2.coverage 0
+launch crew craft=cygnus event=capture lead=1500 follow=1
+follow offset=-30,45,-12 aim=sat
+wait 40
+launch state
+capture cyg_1_arm_leaves_park
+time add 1250
+wait 30
+capture cyg_2_pre_grapple
+time add 300
+wait 30
+launch state
+capture cyg_3_grappled
+time add 1500
+wait 30
+capture cyg_4_on_arm
+time add 2700
+wait 30
+launch state
+capture cyg_5_berthed
+missions milestone list
+launch crew craft=cygnus event=unberth lead=600 follow=1
+follow offset=-30,45,-12 aim=sat
+wait 40
+capture cyg_6_arm_holds_berthed
+time add 2800
+wait 30
+launch state
+capture cyg_7_release_point
+time add 900
+wait 30
+capture cyg_8_departing
+launch crew craft=htv event=capture lead=200 follow=1
+follow offset=-30,-45,-12 aim=sat
+wait 40
+launch state
+capture htv_1_pre_grapple
+time add 4000
+wait 30
+capture htv_2_on_arm
+launch check

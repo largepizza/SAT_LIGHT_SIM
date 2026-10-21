@@ -1688,7 +1688,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             {
                 char b[64];
                 const double h = (tNow - tGone) / 3600.0;
-                snprintf(b, sizeof(b), "%.1f h ago", h);
+                if (h < 0.0) // not launched yet: its launch is ahead
+                    snprintf(b, sizeof(b), "in %.1f h", -h);
+                else
+                    snprintf(b, sizeof(b), "%.1f h ago", h);
                 fail(std::string(what) + ": satellite " + std::to_string(idx) + " is " + rosterFateName(fate) + " (" + b + ")");
             }
             selectSatellite(idx);

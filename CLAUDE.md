@@ -2448,7 +2448,7 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
 - **Never `return` or `break` inside a `CLAY(...)` block**: the macro is a for loop that closes the element at its
   end; leaving it early leaves the element open and corrupts the layout. Set a flag and act after the block.
 - **UI kit (2026-10-03, SatelliteSimUI.cpp "UI kit"): build windows and settings rows from it.** `uiSection` (small
-  caps over a 1-px rule — the Cinematics window's form), `uiKV` (a label column and a value column), `uiStatTile`
+  caps over a 1-px rule — the Cinematics window's form), `uiKV` (a label column and a value column; the value wraps by words since 2026-10-21 — its column must NOT clip: Clay never compresses a clip container's children, so the text could not wrap and was cut at the window edge), `uiStatTile`
   (a label over a large value in a dark inset), `uiButton` (a 20-px pill; `on`, `enabled`, `grow`), `uiToggleRow`
   (label + On/Off pill, custom words: the knockouts read Skip/On) and `uiChoiceRow` (label + segmented pills;
   returns the picked index). Ids are `CLAY_SIDI(key, index)` — scripts click them as `Key:index`
@@ -4949,6 +4949,16 @@ launches follow per-program cadences (no real manifest).
   `GpuMeshFrame::lightPos / lightCol / lightDir` (528 -> 656 B). Diffuse + the material's specular, no shadow rays, not
   photometric (no bloom). The lightning pass's mode-2 ground term now skips mesh pixels (binding 6 = the mesh distance
   target, `writeLightningMeshDescriptor`): it lit them by the local up. Cost ~0.2 ms with the lights on (issue view).
+  **Cheaper and in the info window (2026-10-21):** `fillMeshLocalLights(frame, originEcef)` picks the lights (the scene:
+  the camera; the info window's 3D view: the viewed object, so a rocket on its pad at night is lit there as in the main
+  view — Live light and a tracked subject only), and `meshLightMask` gives each instance the bits of the lights that
+  can reach its bounding sphere above ~1/1000 of white at its exposure, an aimed flood only if the sphere is in its
+  beam (`GpuMeshInstance::trans[1].w`, a float of the bits; 0 = none). sat_mesh.frag loops over those bits only and skips
+  a light under ~1e-4 of white at the pixel before its specular lobe. Measured (launch_bench night_close: following a
+  night Starship at 300 m, 1600x900): GPU 16.21 -> 15.46 ms, the launches' share 2.24 -> 1.60 ms (single runs while no
+  other app ran — repeat before trusting the 0.1-ms digits). Harness `launch state` -> `mesh_local_lights`,
+  `mesh_lights_scene`, `mesh_lights_viewer`. Still no shadow rays: the shadow accel bins occluders across the SUN, a
+  point light would need the full occluder loop (the ISS: tens of ms), so local-light shadows are not built.
 - **The landing halo (issue 20261020_213739, 2026-10-21)** was the PLUME, not the haze: a droneship landing laid down sea
   spray (6x the exhaust's mass at kappa 14, growing 7 m/s) as a dome ~50 m round the booster, lit white by the burn and the
   floods. A ship's deck now gets a thin exhaust skirt (`landingCloud` surf 3: 1.2x the mass, kappa 9, sigma0 6 m, growth
@@ -5291,6 +5301,54 @@ launches follow per-program cadences (no real manifest).
     `crew_fast_track_count` / `_hours`, `crew_cargo_count`. Measured: burns <= 13 m/s^2 (the entry interface's
     hand-over), the entry <= 25 m/s^2, turns <= 1.5 deg/s. The mission-ops suite judges every cached visiting
     vehicle around each epoch (`VISIT_THRESHOLDS`, `launch_check_<epoch>.json`), not only the traced flights.
+  - **Wings (2026-10-21)**: Progress's and Soyuz MS's fixed wings face ALONG the vehicle's axis (the cells seen face-on
+    from in front / behind, as in photographs of an approaching Soyuz; the first cut had them edge-on to it: a thin
+    line from behind); Tianzhou's and Shenzhou's turn about their span to the Sun (a child group "wings", joint
+    `track` toward the Sun, rest pose facing +Z: `make_crew_models.py`, `_wing` marks). Photometric parts: the four
+    models were selftested.
+- **Berthing with the station's arm (2026-10-21; Canadarm2 on the ISS: Cygnus, HTV-X).** A program whose crew block has
+  `"berth": true` (`Program::berth`, `grapple` [radius, z below the port] = the vehicle's grapple fixture, `capture_m`)
+  does not dock: after the arc onto the port's axis (a NADIR port: the R-bar, from below) it closes to 250 m (hold
+  20 min), 30 m (hold 15 min, go for capture), to the capture point `capture_m` (9 m) out, and free-drifts there; the
+  arm grapples it 5 min later (`tGrapple`), moves it to 1.5 m (50 min) and onto the port (20 min, the CBM's bolts;
+  `tDock`, phase `berthed`). At departure the arm takes it again (`armD0`), lifts it off the port (`tUndock`), moves it
+  back to the release point, holds and opens (`tRelease`); it drifts off, a departure burn 2 min into the departure
+  (`LCrew::tDepBurn`, now every visiting vehicle's), then the usual deorbit (both burn up). Legs `kBerthLegs`
+  (buildCrew); new phases CP_TO_250 .. CP_ARM_INSTALL, CP_BERTHED, CP_UNBERTH, CP_RELEASE.
+  - **The arm** (`launches.json` `"station_arms"`, `launch::StationArm`: the station by `match`, `model`, `base` +
+    `base_normal` in the station body frame, `shoulder_m`, `boom_m`, `wrist_m`, the park `park_wrist` / `park_dir`, the
+    elbow's `pole`): `LaunchImpl::stationArmPose(arm, t, visits)` is a pure function of t over the berthing visits to
+    that station: the end effector's tip G and its approach direction follow a target — the park, a 0.6-m stand-off
+    from the vehicle's fixture (its pose at the capture hold, berthed, or the release hold: fixed in the station's
+    frame), or the fixture itself while it holds (`berthFixture`: crewPos + crewAttitude, in the station's frame) —
+    blended by smootherstep (30 min park <-> stand-off, 2 min stand-off <-> fixture, an hour holding on after the
+    bolts); the wrist point is the tip less `wrist_m` along it, and the two equal booms solve to it with the elbow
+    toward `pole` (`armSolve`). The arm works with the first visit whose window holds t (`armA0` .. `armA3` on arrival,
+    `armD0` .. `armD3` at departure). Drawn by `launchArmJobs` as three meshes in one reserved chunk below the ships'
+    (`kArmMeshSlots`): `rocket_arm_canadarm2_boom` twice (shoulder -> elbow, elbow -> wrist) and `_wrist` (+Z toward
+    the next joint, +Y the bending plane's normal; `make_crew_models.py write_arm`, lengths from launches.json); the
+    shoulder base is the ISS model's render-only `gb_canadarm_pdgf` / `_shoulder` on Destiny's nadir side (the old
+    static boom greebles are gone). The ISS's `docking_ports` gain `unity_nadir` (use `berth_unity`: Cygnus) and
+    `harmony_nadir` (`berth_harmony`: HTV-X) — CBM rings 0.35 m proud.
+  - **A station near a visiting vehicle is drawn by the CPU** (`launchArmJobs`: the arm's station whenever the arm is,
+    and any station within ~3 px of size with a crew-list vehicle): the GPU lists no satellite in the Earth's shadow,
+    so at night a docked or approaching vehicle (and the arm) floated beside a station that was not drawn.
+    recordMeshScene skips a GPU candidate already among those jobs.
+  - **Programs** (launches.json, appended: no other batch key moves): Cygnus resupply (`falcon9_cygnus`, SLC-40, every
+    0.75 y, 60-100 days berthed at Unity nadir; NG-20 .. 23 flew on Falcon 9 while Antares 330 was built), HTV-X
+    resupply (`h3_htvx`, H3-24W from Tanegashima, yearly, 120-170 days at Harmony nadir). Models: `rocket_capsule_cygnus`
+    (UltraFlex discs) / `_htvx` (`make_crew_models.py`: CBM ring on top, grapple fixtures on both sides), the rockets
+    (`make_rocket_models.py`: `capsule` "cygnus" / "htvx" under the fairing). Not built: Dream Chaser (Vulcan, a runway
+    landing at KSC), Antares 330, the arm walking between grapple fixtures, the SSRMS's seven joints as separate parts,
+    a free-flyer's capture dynamics (the vehicle holds still in the station's frame at the capture point).
+  - Harness: `launch crew craft=cygnus|htv event=capture_point|capture|berth|unberth|release|arm|arm_depart`;
+    `launch state` -> `station_arms[]` (`with`, `attached`, `reach_short_m`, shoulder / elbow / wrist / tip in the
+    station frame) and `arm_parts_drawn`; `launch check` -> `crew[].berth` (`capture_point_err_m`, `grip_tip_err_m`,
+    `release_tip_err_m`, `arm_attached_err_m`, `arm_step_max_m_s`, `arm_turn_max_deg_s`, `arm_reach_short_m`) and the
+    `berth_*` maxima; `launch trace` docking adds `hold250_range_m`, `hold30_range_m`, `capture_range_m`,
+    `grip_tip_err_m`, `berthed_tip_err_m`, `release_tip_err_m` (mission_ops.py thresholds). Measured (4 cached
+    visits): every tip error 0.000 m, capture-point error 0, arm joints <= 0.012 m/s, booms <= 0.12 deg/s, nothing out
+    of reach; the vehicles' turns <= 0.9 deg/s. `scripts/berthing.satcmd`.
 - **Missions window** (2026-10-19, `SatelliteSimMissions.cpp`; window id 8, `msChrome`; the rocket button
   `TimeMissionsBtn` on the right HUD panel, `pixel--missions.png`; key M, `KB_MISSIONS`; harness `ui open missions
   [tab=upcoming|ongoing|controls]`, `missions state|go|tab`). Three tabs. **Upcoming**: the next 5 launches (vehicle,
@@ -5685,7 +5743,7 @@ launches follow per-program cadences (no real manifest).
   at its end so a moved stage shows.
 - Not built: the booster's legs deploying,
   the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
-  (trains launch into it), berthing with Canadarm (HTV-X, Cygnus, Dream Chaser), the stations' own phasing manoeuvres
+  (trains launch into it), Dream Chaser's berthing and runway landing, the stations' own phasing manoeuvres
   (a fast track waits for the right pass instead), hole-punching through cloud decks, sonic booms.
 
 ## Subsystem: Reflect-Orbital Beam Cloud Occlusion
@@ -7274,7 +7332,7 @@ Read it at the start of any terrain-related session before making changes.
   while the oval is Sun-fixed; no dawn-side omega bands / pulsating aurora; the dipole axis is fixed (no IGRF).
 - **Aurora storms + a physical sky gate (2026-10-14, issue 20261014_193231; `cloud_march.comp`, `include/darksky.glsl`,
   UBO `auroraStorm` / `auroraSky`, 928 -> 960; Atmosphere tab slots 298-301, keys `clouds.aurora_storm_features` 1.2 /
-  `aurora_blue_rays` 0.004 / `aurora_arc_systems` 2 / `aurora_storm_red` 1.1; defaults since 2026-10-20).**
+  `aurora_blue_rays` 0.004 / `aurora_arc_systems` 1 (0-1; was 2 past its slider until 2026-10-21, the coverage threshold remapped so 1 is that look) / `aurora_storm_red` 1.1; defaults since 2026-10-20).**
   - **The gate (the bug):** a Kp 9 storm was invisible from an Iowa farm and from Arizona and was cut off along a hard
     azimuth toward a town. The aurora read the Milky Way's dark-sky dome: a LOG ramp from 1e-6 (a raw glow of 0.01 is
     already 83% "city"; a sector of 0 beside one of 0.83 = the hard edge; populated farmland = 1.0 in every sector,

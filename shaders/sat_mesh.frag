@@ -598,15 +598,21 @@ void main()
     // material's specular lobe. No shadow rays (cost): a light inside a hull lights none of its outward faces anyway.
     // Not in the photometric model (Lphot): it seeds no bloom.
     {
-        int nLoc = int(frame.lightInfo.x + 0.5);
+        // (2026-10-21, cost) Only the lights the CPU found can reach this instance (meshLightMask: its bounding
+        // sphere, the beam's cone, a displayed-light threshold): inst.trans[1].w = their bits. Per pixel, a light
+        // under ~1e-4 of white at this exposure is skipped before its specular lobe.
+        uint lmask = uint(inst.trans[1].w + 0.5);
+        int nLoc = lmask == 0u ? 0 : int(frame.lightInfo.x + 0.5);
         for (int i = 0; i < nLoc; ++i) {
+            if ((lmask & (1u << uint(i))) == 0u) continue;
             vec3  dl = frame.lightPos[i].xyz - vWorld;
             float r2 = dot(dl, dl);
+            float rs = frame.lightCol[i].w;
+            float E  = frame.lightPos[i].w / (r2 + rs * rs);
+            if (E * frame.camPos.w < 1e-4) continue;
             vec3  l  = dl * inversesqrt(max(r2, 1e-6));
             float nl = dot(N, l);
             if (nl <= 0.0) continue;
-            float rs = frame.lightCol[i].w;
-            float E  = frame.lightPos[i].w / (r2 + rs * rs);
             // A floodlight lights its beam (soft over its outer 10 degrees), not what stands beside or behind it.
             vec4  ad = frame.lightDir[i];
             if (ad.w > -1.5)

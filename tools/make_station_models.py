@@ -933,10 +933,15 @@ def iss_detail(s):
     s.dock("ida2_harmony_fwd", [14.1, 0, 5.0], "+x")
     s.dock("ida3_harmony_zenith", [8.6, 0, 0.9], "-z")
     s.dock("zvezda_aft", [-38.46, 0, 5.0], "-x", use="cargo")
-    # Canadarm2 on the mobile base, ELCs and AMS on the inboard truss
-    s.box("canadarm_boom_1", [-1.0, -12.0, -3.0], [0.35, 8.5, 0.35], "metal")
-    s.box("canadarm_boom_2", [2.6, -16.0, -3.0], [7.5, 0.35, 0.35], "metal")
-    s.box("canadarm_base", [0.0, -8.0, -2.6], [2.0, 2.0, 0.6], "metal")
+    # Berthing ports (2026-10-21): Unity nadir (Cygnus) and Harmony nadir (HTV-X), the CBM rings the station's arm
+    # berths the cargo ships to (use "berth_unity" / "berth_harmony": launches.json's berthing programs).
+    s.port("unity_nadir", [-7.75, 0, 7.15], "+z", r=0.95, length=0.35, dock=True, use="berth_unity")
+    s.port("harmony_nadir", [8.6, 0, 7.2], "+z", r=0.95, length=0.35, dock=True, use="berth_harmony")
+    # Canadarm2's base (2026-10-21): its grapple fixture on Destiny's nadir side and the shoulder housing up to the
+    # shoulder joint; the booms and the wrist are drawn by the sim, posed per frame (launches.json station_arms:
+    # base [2, 0, 7.15], shoulder 1.4 m). ELCs and AMS on the inboard truss.
+    s.box("canadarm_pdgf", [2.0, 0, 7.25], [1.0, 1.0, 0.2], "metal")
+    s.prof("canadarm_shoulder", [2.0, 0, 7.15], "+z", [[0, 0.33], [1.0, 0.33]], "metal", caps="top")
     for ys in (1, -1):
         for zs in (1, -1):
             s.box("elc", [0.0, ys * 23.5, zs * 2.9], [4.2, 2.6, 1.2], "module_skin")

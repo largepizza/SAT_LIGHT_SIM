@@ -26,6 +26,7 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <cctype>
 #include <atomic>
 #include <future>
 #include <thread>
@@ -145,14 +146,23 @@ struct LFairing
 enum CrewPhase : int
 {
     CP_NONE = 0, CP_SEPARATED, CP_RAISE1, CP_PHASING, CP_RAISE2, CP_FAR, CP_TO_AXIS, CP_TO_400, CP_HOLD_400, CP_TO_200,
-    CP_HOLD_200, CP_TO_20, CP_HOLD_20, CP_FINAL, CP_DOCKED, CP_BACKOUT, CP_DEPART, CP_DRIFT, CP_DEORBIT, CP_ENTRY,
+    CP_HOLD_200, CP_TO_20, CP_HOLD_20, CP_FINAL,
+    // (2026-10-21) Berthing: the R-bar approach to the capture point, the arm's capture and berthing
+    CP_TO_250, CP_HOLD_250, CP_TO_30, CP_HOLD_30, CP_TO_CAPTURE, CP_CAPTURE, CP_ARM_BERTH, CP_ARM_INSTALL,
+    CP_DOCKED, CP_BERTHED, CP_UNBERTH, CP_RELEASE,
+    CP_BACKOUT, CP_DEPART, CP_DRIFT, CP_DEORBIT, CP_ENTRY,
     CP_DROGUES, CP_MAINS, CP_DOWN, CP_ABORT, CP_ESCAPE, CP_COUNT
 };
 const char *const kCrewPhaseNames[CP_COUNT] = {
     "none", "separated", "phasing burn: raising", "phasing orbit", "raising to the station's altitude",
     "approach: closing to 1 km", "approach: onto the docking axis", "approach: closing to 400 m", "hold at 400 m",
     "approach: closing to 200 m", "hold at 200 m (go / no-go)", "final approach: closing to 20 m", "hold at 20 m",
-    "final approach: contact", "docked", "undocked: backing out", "departure", "drifting away, deorbit prep",
+    "final approach: contact",
+    "approach: closing to 250 m (R-bar)", "hold at 250 m", "approach: closing to 30 m", "hold at 30 m (go for capture)",
+    "approach: closing to the capture point", "free drift at the capture point (the arm grapples it)",
+    "on the arm: moved to the berthing port", "on the arm: berthing (bolts driving)",
+    "docked", "berthed", "unberthed: on the arm to the release point", "released: free drift at the release point",
+    "undocked: backing out", "departure", "drifting away, deorbit prep",
     "deorbit burn, falling", "entry (plasma)", "drogue parachutes", "main parachutes", "down",
     "the station is lost: rendezvous called off", "the station is lost: emergency undocking"};
 struct LCrewSeg
@@ -199,9 +209,26 @@ struct LCrew
     // reaches and comes home), during the approach it turns away (2), docked a crew undocks in an emergency (3), a
     // cargo ship docked is destroyed with the station (4: gone at tDeath).
     bool fast = false, cargo = false, burns = false;
+    // Berthing (2026-10-21): captured by the station's arm capM below the port (tGrapple), moved onto the port
+    // (tBerth0 .. tDock), unberthed (tUndock ..) to the release point and released there (tRelease); its grapple
+    // fixture (gfB, body frame) and the fixture's outward normal (gfN). The arm (stationArmPose) is with this vehicle
+    // over [armA0, armA3) on arrival and [armD0, armD3) at departure. tDepBurn: its departure burn (both kinds).
+    bool berth = false;
+    double capM = 9.0, tCapArr = 0.0, tGrapple = 0.0, tBerth0 = 0.0, tRelease = 0.0, tDepBurn = 0.0;
+    glm::dvec3 gfB{0.0}, gfN{1.0, 0.0, 0.0};
+    double armA0 = 0.0, armA2 = 0.0, armA3 = 0.0, armD0 = 0.0, armD3 = 0.0;
     int abort = 0;
     double tDeath = 1e300;
     double massKg = 7000.0;
+};
+
+// A station arm's pose (2026-10-21; LaunchImpl::stationArmPose), station body frame.
+struct ArmPose
+{
+    glm::dvec3 S{0.0}, E{0.0}, W{0.0}, G{0.0}, nrm{0.0, 1.0, 0.0};
+    const LCrew *with = nullptr; // the vehicle it is working with (nullptr: parked or moving to / from the park)
+    bool attached = false;       // holding it
+    double reachShort = 0.0;     // > 0: the wrist point was out of reach by this much (m)
 };
 
 struct LBatch
@@ -564,6 +591,18 @@ struct SatelliteSim::LaunchState
     std::unordered_map<uint64_t, std::future<std::vector<launch::Parcel>>> parcelJobs;
     ~LaunchState() { parcelJobs.clear(); }
     launch::Catalog cat;
+    // Station arms (2026-10-21, Canadarm2): (the station's roster index, its arm in cat.arms), set by buildPlanes.
+    std::vector<std::pair<uint32_t, int>> armSat;
+    const launch::StationArm *armOf(uint32_t sat) const
+    {
+        for (const auto &a : armSat)
+            if (a.first == sat)
+                return &cat.arms[(size_t)a.second];
+        return nullptr;
+    }
+    uint32_t nArmParts = 0;                 // arm parts drawn this frame (launchArmJobs)
+    ArmPose armPoseNow;    // the last drawn arm's pose (harness `launch arm`)
+    uint32_t armPoseSat = UINT32_MAX;
     bool tried = false, loaded = false;
     std::string err;
     bool planesBuilt = false;
@@ -755,7 +794,7 @@ void SatelliteSim::launchInitBlock()
     // The last chunk holds the rocket meshes and the transient selection's slots, the two before it the pads' meshes,
     // the six before those the payload stacks' (2026-10-20).
     // The landing ships' (2026-10-20) one more below the stacks'.
-    for (uint32_t c = kNumChunks - 3 - kStackMeshSlots / kChunk - kShipMeshSlots / kChunk; c-- > 0;)
+    for (uint32_t c = kNumChunks - 3 - kStackMeshSlots / kChunk - kShipMeshSlots / kChunk - kArmMeshSlots / kChunk; c-- > 0;)
         L.freeChunks.push_back(c);
     static_assert(kPadMeshSlots == 2 * kChunk, "the pads' mesh slots: two chunks");
     static_assert(kStackMeshSlots % kChunk == 0, "the stacks' mesh slots: whole chunks");
@@ -1285,6 +1324,17 @@ static void buildPlanes(SatelliteSim::LaunchState &L, const std::vector<SatOrbit
             for (int v : dp.earlyVehicles)
                 L.upperTrackFor(v, pg.parkKm);
     }
+    // (2026-10-21) The stations with an arm.
+    L.armSat.clear();
+    for (size_t ai = 0; ai < L.cat.arms.size(); ++ai)
+        for (size_t c = 0; c < consts.size(); ++c)
+            for (const std::string &m : L.cat.arms[ai].match)
+                if (consts[c].name.find(m) != std::string::npos && consts[c].orbitCount > 0 &&
+                    consts[c].orbitStart < rosterCount)
+                {
+                    L.armSat.push_back({consts[c].orbitStart, (int)ai});
+                    break;
+                }
     L.planesBuilt = true;
     L.lifeScale = lifeScale;
     char m[160];
@@ -1450,11 +1500,23 @@ static double crewCatchup(const CrewPhaseGeom &g, double rP, double D, double *W
 // Shenzhou / Tianzhou automated approaches), the ~1-day profile in ~2.7 h.
 static constexpr double kCrewApproachLegs[2][9] = {{1800.0, 1500.0, 900.0, 900.0, 600.0, 900.0, 1200.0, 600.0, 400.0},
                                                    {900.0, 600.0, 420.0, 240.0, 300.0, 240.0, 600.0, 300.0, 300.0}};
-static double crewApproachS(bool fast)
+// (2026-10-21) A berthing vehicle's legs after the axis (buildCrew): to 250 m, hold, to 30 m, hold (go for capture),
+// to the capture point, free drift (grappled after kBerthGrappleS), on the arm to 1.5 m, berthing (the last 1.5 m).
+static constexpr double kBerthLegs[8] = {1500.0, 1200.0, 1800.0, 900.0, 900.0, 1500.0, 3000.0, 1200.0};
+static constexpr double kBerthGrappleS = 300.0;     // in free drift at the capture / release point until the grapple / release
+static constexpr double kBerthReleaseHoldS = 600.0; // the release point: held, released at + kBerthGrappleS, drifting
+static constexpr double kArmMoveS = 1800.0;         // the arm from its park to the vehicle (or back)
+static constexpr double kArmOpenS = 120.0;          // its end effector closing / opening (0.6 m along the fixture's normal)
+static constexpr double kArmBoltS = 3600.0;         // berthed: the arm holds on while the bolts drive
+static double crewApproachS(bool fast, bool berth = false)
 {
     double s = 0.0;
-    for (double d : kCrewApproachLegs[fast ? 1 : 0])
-        s += d;
+    const double *lg = kCrewApproachLegs[fast ? 1 : 0];
+    for (int i = 0; i < (berth ? 2 : 9); ++i)
+        s += lg[i];
+    if (berth)
+        for (double d : kBerthLegs)
+            s += d;
     return s;
 }
 static double crewC1(uint64_t seed, bool fast)
@@ -3888,7 +3950,7 @@ static bool crewPos(const LCrew &C, double t, glm::dvec3 &P, int *phase = nullpt
         if (t >= C.tDock && t < C.tUndock)
         {
             P = Ps + R * C.portPos;
-            ph = CP_DOCKED;
+            ph = C.berth ? CP_BERTHED : CP_DOCKED;
         }
         else
         {
@@ -3898,7 +3960,7 @@ static bool crewPos(const LCrew &C, double t, glm::dvec3 &P, int *phase = nullpt
             P = Ps + R * crewSegPos(C, *g, t);
             ph = g->phase;
         }
-        lit = burning(C.tArr - 30.0, 40.0) || burning(C.tUndock + 900.0, 30.0);
+        lit = burning(C.tArr - 30.0, 40.0) || burning(C.tDepBurn, 30.0);
     }
     else if (t < C.tEI)
     {
@@ -4114,6 +4176,8 @@ static bool buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
     C.fast = B.crewFast;
     C.cargo = pg.cargo;
     C.burns = pg.burnsUp;
+    C.berth = pg.berth;
+    C.capM = pg.captureM;
     C.massKg = pg.payloadMassKg > 0.0 ? pg.payloadMassKg : (pg.cargo ? 7000.0 : 10000.0);
     // The station's loss (2026-10-21): its dead / end second from the event log (the roster words mirrored from the
     // Kessler world; crewSync rebuilds the batch when they change).
@@ -4163,7 +4227,33 @@ static bool buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
             C.port = ports[(size_t)k];
             C.portPos = dp.pos;
             C.portAx = dp.axis;
-            C.portName = dp.name;
+            // The model's port id ("ida2_harmony_fwd") as a player reads it ("IDA-2 Harmony forward"): it shows in the
+            // follow bar, the Missions window and the milestones (2026-10-21 QA).
+            C.portName.clear();
+            {
+                std::string tok;
+                auto flush = [&]() {
+                    if (tok.empty())
+                        return;
+                    std::string w = tok;
+                    if (w == "fwd")
+                        w = "forward";
+                    else if (w == "stbd")
+                        w = "starboard";
+                    else if (w.size() == 4 && (w.compare(0, 3, "ida") == 0 || w.compare(0, 3, "pma") == 0) && isdigit((unsigned char)w[3]))
+                        w = std::string(1, (char)toupper(w[0])) + (char)toupper(w[1]) + (char)toupper(w[2]) + "-" + w[3];
+                    else if (w == "harmony" || w == "zvezda" || w == "tianhe" || w == "nauka" || w == "unity" || w == "destiny")
+                        w[0] = (char)toupper(w[0]);
+                    C.portName += (C.portName.empty() ? "" : " ") + w;
+                    tok.clear();
+                };
+                for (char ch : dp.name)
+                    if (ch == '_')
+                        flush();
+                    else
+                        tok += ch;
+                flush();
+            }
         }
         else if (pg.portUse != "crew")
         {
@@ -4218,7 +4308,7 @@ static bool buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
     const double c1 = pgm.c1, rPmax = pgm.rPmax, vs = pgm.vs;
     auto catchup = [&](double rP, double D, double *Wout) { return crewCatchup(pgm, rP, D, Wout); };
     // The far phases' time (separation to arrival 5 km behind), from the arrival less the approach.
-    const double kApproachS = crewApproachS(C.fast);
+    const double kApproachS = crewApproachS(C.fast, C.berth);
     double D = std::max(B.tA - C.tSep - kApproachS,
                         c1 + crewHohmannT(C.r0, C.rS) * 2.0 + (C.fast ? 60.0 : 1200.0));
     double lag = 0.0 - C.th0 - lamF;
@@ -4281,6 +4371,47 @@ static bool buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
     seg(0, W0, pp + 1000.0 * d0, lg[0], CP_FAR, 0);
     seg(1, d0, ax, lg[1], CP_TO_AXIS, 0);
     C.tAxis = t;
+    if (C.berth)
+    {
+        // (2026-10-21) Berthing: up the R-bar (a nadir port) with holds at 250 m and 30 m to the capture point capM
+        // out, free drift there while the arm grapples it, then on the arm onto the port (the last 1.5 m: the CBM's
+        // bolts). Every leg a smootherstep / Hermite with stops at its ends (no jump at a seam). Legs in s.
+        const glm::dvec3 cap = pp + C.capM * ax, pre = pp + 1.5 * ax;
+        seg(0, pp + 1000.0 * ax, pp + 250.0 * ax, kBerthLegs[0], CP_TO_250, 1);
+        C.hold[0] = t;
+        seg(2, pp + 250.0 * ax, pp + 250.0 * ax, kBerthLegs[1], CP_HOLD_250, 1);
+        seg(0, pp + 250.0 * ax, pp + 30.0 * ax, kBerthLegs[2], CP_TO_30, 1);
+        C.hold[1] = t;
+        seg(2, pp + 30.0 * ax, pp + 30.0 * ax, kBerthLegs[3], CP_HOLD_30, 1);
+        seg(0, pp + 30.0 * ax, cap, kBerthLegs[4], CP_TO_CAPTURE, 1);
+        C.hold[2] = C.tCapArr = t;
+        C.tGrapple = t + kBerthGrappleS;
+        seg(2, cap, cap, kBerthLegs[5], CP_CAPTURE, 1);
+        C.tBerth0 = t;
+        seg(0, cap, pre, kBerthLegs[6], CP_ARM_BERTH, 1);
+        seg(0, pre, pp, kBerthLegs[7], CP_ARM_INSTALL, 1);
+        // The arm leaves its park ~kArmMoveS before the capture point is reached, and is back after the bolts drive.
+        C.armA0 = C.tCapArr - kArmMoveS;
+        C.armA2 = t + kArmBoltS;
+        C.armA3 = C.armA2 + kArmOpenS + kArmMoveS;
+        // Its grapple fixture: on its side toward the arm's shoulder (its attitude docked: +Z into the port), gR out,
+        // gZ below the port.
+        {
+            glm::dvec3 toS = (L.armOf(C.sat) ? L.armOf(C.sat)->base : glm::dvec3(0.0)) - pp;
+            toS -= glm::dot(toS, ax) * ax;
+            if (glm::length(toS) < 1e-3)
+                toS = glm::dvec3(-1.0, 0.0, 0.0) - glm::dot(glm::dvec3(-1.0, 0.0, 0.0), ax) * ax;
+            toS = glm::normalize(toS);
+            // The body frame docked in the station frame (crewAttitude's stationFrame, att 1, with R = identity).
+            const glm::dvec3 Zb = -ax;
+            const double kz = glm::smoothstep(0.7, 0.95, std::abs(Zb.z));
+            const glm::dmat3 F = crewFrame(Zb, glm::normalize(glm::mix(glm::dvec3(0, 0, -1), glm::dvec3(1, 0, 0), kz)));
+            C.gfN = glm::transpose(F) * toS;
+            C.gfB = pg.grappleR * C.gfN + glm::dvec3(0.0, 0.0, -pg.grappleZ);
+        }
+    }
+    else
+    {
     seg(0, pp + 1000.0 * ax, pp + 400.0 * ax, lg[2], CP_TO_400, 1);
     C.hold[0] = t;
     seg(2, pp + 400.0 * ax, pp + 400.0 * ax, lg[3], CP_HOLD_400, 1);
@@ -4291,6 +4422,7 @@ static bool buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
     C.hold[2] = t;
     seg(2, pp + 20.0 * ax, pp + 20.0 * ax, lg[7], CP_HOLD_20, 1);
     seg(0, pp + 20.0 * ax, pp, lg[8], CP_FINAL, 1);
+    }
     C.tDock = t;
     B.tA = C.tDock;
     // Docked until the next visit of the same program has arrived (two ports: a hand-over of a few days), or a little
@@ -4310,6 +4442,7 @@ static bool buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
         C.tUndock = std::min(C.tUndock, arrivalOf(cp, kc + 1, 0, lifeC) - 3.0 * kDay);
     }
     C.tUndock = std::max(C.tUndock, C.tDock + 2.0 * kDay);
+    C.tDepBurn = C.tUndock + 900.0;
     // The departure: from (posFrom, velFrom: station frame) at tFrom onto a circle 2 km under the station and 3 km
     // ahead of it (attFrom: the attitude it turns to prograde from).
     auto depart = [&](const glm::dvec3 &posFrom, const glm::dvec3 &velFrom, double tFrom, double dur, int attFrom) {
@@ -4419,10 +4552,26 @@ static bool buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
         // A crew docked when the station is lost undocks at once (they shelter in their spacecraft) and backs off fast.
         C.abort = 3;
         C.tUndock = C.tDeath + 90.0;
+        C.tDepBurn = C.tUndock + 300.0;
         t = C.tUndock;
         seg(0, pp, pp + 20.0 * ax, 60.0, CP_ESCAPE, 1);
         seg(0, pp + 20.0 * ax, pp + 200.0 * ax, 240.0, CP_ESCAPE, 1);
         depart(pp + 200.0 * ax, glm::dvec3(0.0), t, 1500.0, 1);
+    }
+    else if (C.berth)
+    {
+        // (2026-10-21) Unberthing: the arm takes it (from armD0), lifts it off the port (bolts released) and moves it
+        // to the release point, holds, opens (tRelease); it drifts off, a departure burn, then the usual departure.
+        t = C.tUndock;
+        const glm::dvec3 rel = pp + C.capM * ax, pre = pp + 1.5 * ax;
+        seg(0, pp, pre, kBerthLegs[7], CP_UNBERTH, 1);
+        seg(0, pre, rel, kBerthLegs[6], CP_UNBERTH, 1);
+        C.tRelease = t + kBerthGrappleS;
+        seg(2, rel, rel, kBerthReleaseHoldS, CP_RELEASE, 1);
+        C.armD0 = C.tUndock - kArmMoveS - kArmOpenS;
+        C.armD3 = C.tRelease + kArmOpenS + kArmMoveS;
+        C.tDepBurn = t + 120.0;
+        depart(rel, glm::dvec3(0.0), t, 2400.0, 1);
     }
     else
     {
@@ -4569,6 +4718,179 @@ static bool crewFill(const SatelliteSim &sim, const SatelliteSim::LaunchState &L
     s.attOmega = glm::length(axq) > 1e-12 ? glm::normalize(axq) * ang * (dq.w < 0.0 ? -1.0 : 1.0) : glm::dvec3(0.0);
     s.attT0 = t;
     return true;
+}
+
+// ── The station's arm (2026-10-21, Canadarm2 berthing) ─────────────────────────────────────────────────────────────
+// Its pose in the station's body frame: the shoulder S (the base + its housing), the elbow E, the wrist W and the end
+// effector's tip G; nrm = the normal of the plane the booms bend in. A two-link solution (equal booms) of the wrist
+// point, the elbow toward the arm's pole. The tip follows a target that is a pure function of t: the park, or a
+// berthing vehicle's grapple fixture (approached and left 0.6 m out along the fixture's normal), blended by
+// smootherstep between targets that are themselves continuous: no jump at any step.
+static void armSolve(const launch::StationArm &A, const glm::dvec3 &G, const glm::dvec3 &e, ArmPose &o)
+{
+    o.S = A.base + A.shoulderM * A.baseN;
+    o.G = G;
+    glm::dvec3 W = G - A.wristM * e;
+    glm::dvec3 d = W - o.S;
+    double dl = glm::length(d);
+    const double reach = 2.0 * A.boomM * 0.999;
+    o.reachShort = std::max(0.0, dl - reach);
+    if (dl > reach)
+    {
+        W = o.S + d * (reach / dl);
+        dl = reach;
+    }
+    o.W = W;
+    const glm::dvec3 u = dl > 1e-6 ? d / dl : A.baseN;
+    glm::dvec3 v = A.pole - glm::dot(A.pole, u) * u;
+    if (glm::length(v) < 1e-6)
+        v = glm::cross(u, std::abs(u.x) < 0.9 ? glm::dvec3(1, 0, 0) : glm::dvec3(0, 1, 0));
+    v = glm::normalize(v);
+    const double a = 0.5 * dl, h = std::sqrt(std::max(A.boomM * A.boomM - a * a, 0.0));
+    o.E = o.S + a * u + h * v;
+    o.nrm = glm::normalize(glm::cross(u, v));
+}
+// The station's position and body frame from its elements (crewStation's frame).
+static void stationFrameAt(const SatOrbitElems &st, double t, glm::dvec3 &Ps, glm::dmat3 &R)
+{
+    const SatOrbitState s = satOrbitStateAt(st, t);
+    Ps = s.posEci;
+    const glm::dvec3 Z = glm::normalize(s.nadir);
+    glm::dvec3 X = s.velocity - glm::dot(s.velocity, Z) * Z;
+    X = glm::length(X) > 1e-9 ? glm::normalize(X) : glm::normalize(glm::cross(Z, glm::dvec3(0, 0, 1)));
+    R = glm::dmat3(X, glm::cross(Z, X), Z);
+}
+// A berthing vehicle's grapple fixture at t, in the station's frame: its point G and outward normal n.
+static bool berthFixture(const LCrew &C, double t, glm::dvec3 &G, glm::dvec3 &n)
+{
+    glm::dvec3 P;
+    if (!crewPos(C, t, P))
+        return false;
+    glm::dvec3 Ps;
+    glm::dmat3 R;
+    crewStation(C, t, Ps, R);
+    const glm::dmat3 Rv = crewAttitude(C, t);
+    const glm::dmat3 Rt = glm::transpose(R);
+    G = Rt * (P + Rv * C.gfB - Ps);
+    n = glm::normalize(Rt * (Rv * C.gfN));
+    return true;
+}
+// The arm at t, given the berthing vehicles visiting its station (any order). Parked unless one is in its arm window.
+static void stationArmPose(const launch::StationArm &A, double t, const std::vector<const LCrew *> &visits, ArmPose &o)
+{
+    const glm::dvec3 Gp = A.parkW + A.wristM * A.parkN, ep = A.parkN;
+    auto ss = [](double x) {
+        x = glm::clamp(x, 0.0, 1.0);
+        return x * x * x * (x * (6.0 * x - 15.0) + 10.0);
+    };
+    for (const LCrew *Cp : visits)
+    {
+        const LCrew &C = *Cp;
+        if (!C.on || !C.berth || C.abort == 1 || C.abort == 2 || t >= C.tDeath)
+            continue;
+        // Fixed targets (the vehicle is still in the station's frame at each: the capture hold, berthed, the release
+        // hold): pre = 0.6 m out along the fixture's normal.
+        auto at = [&](double tt, double out, glm::dvec3 &G, glm::dvec3 &e) {
+            glm::dvec3 g, n;
+            if (!berthFixture(C, tt, g, n))
+                return false;
+            G = g + out * n;
+            e = -n;
+            return true;
+        };
+        auto blend = [&](const glm::dvec3 &G0, const glm::dvec3 &e0, const glm::dvec3 &G1, const glm::dvec3 &e1, double w) {
+            const glm::dvec3 e = glm::normalize(glm::mix(e0, e1, w) + 1e-9 * e1);
+            armSolve(A, glm::mix(G0, G1, w), e, o);
+        };
+        glm::dvec3 G0, e0, G1, e1;
+        const double tA1 = C.tCapArr;
+        if (t >= C.armA0 && t < C.armA3)
+        {
+            o.with = &C;
+            if (t < tA1)
+            {
+                if (!at(tA1, 0.6, G1, e1))
+                    break;
+                blend(Gp, ep, G1, e1, ss((t - C.armA0) / (tA1 - C.armA0)));
+            }
+            else if (t < C.tGrapple)
+            {
+                if (!at(tA1, 0.6, G0, e0) || !at(tA1, 0.0, G1, e1))
+                    break;
+                blend(G0, e0, G1, e1, ss((t - (C.tGrapple - kArmOpenS)) / kArmOpenS));
+            }
+            else if (t < C.armA2)
+            {
+                if (!at(t, 0.0, G1, e1))
+                    break;
+                armSolve(A, G1, e1, o);
+                o.attached = true;
+            }
+            else if (t < C.armA2 + kArmOpenS)
+            {
+                if (!at(C.armA2, 0.0, G0, e0) || !at(C.armA2, 0.6, G1, e1))
+                    break;
+                blend(G0, e0, G1, e1, ss((t - C.armA2) / kArmOpenS));
+            }
+            else
+            {
+                if (!at(C.armA2, 0.6, G0, e0))
+                    break;
+                blend(G0, e0, Gp, ep, ss((t - C.armA2 - kArmOpenS) / kArmMoveS));
+            }
+            return;
+        }
+        if (t >= C.armD0 && t < C.armD3)
+        {
+            o.with = &C;
+            const double tD1 = C.armD0 + kArmMoveS;
+            if (t < tD1)
+            {
+                if (!at(C.tUndock - 1.0, 0.6, G1, e1))
+                    break;
+                blend(Gp, ep, G1, e1, ss((t - C.armD0) / kArmMoveS));
+            }
+            else if (t < C.tUndock)
+            {
+                if (!at(C.tUndock - 1.0, 0.6, G0, e0) || !at(C.tUndock - 1.0, 0.0, G1, e1))
+                    break;
+                blend(G0, e0, G1, e1, ss((t - tD1) / kArmOpenS));
+            }
+            else if (t < C.tRelease)
+            {
+                if (!at(t, 0.0, G1, e1))
+                    break;
+                armSolve(A, G1, e1, o);
+                o.attached = true;
+            }
+            else if (t < C.tRelease + kArmOpenS)
+            {
+                if (!at(C.tRelease, 0.0, G0, e0) || !at(C.tRelease, 0.6, G1, e1))
+                    break;
+                blend(G0, e0, G1, e1, ss((t - C.tRelease) / kArmOpenS));
+            }
+            else
+            {
+                if (!at(C.tRelease, 0.6, G0, e0))
+                    break;
+                blend(G0, e0, Gp, ep, ss((t - C.tRelease - kArmOpenS) / kArmMoveS));
+            }
+            return;
+        }
+    }
+    o.with = nullptr;
+    o.attached = false;
+    armSolve(A, Gp, ep, o);
+}
+
+// The berthing vehicles visiting a station now (the live crew list; any order).
+static std::vector<const LCrew *> berthVisits(const SatelliteSim::LaunchState &L, uint32_t sat)
+{
+    std::vector<const LCrew *> v;
+    for (const auto &cv : L.crewList)
+        if (cv.second->crew.on && cv.second->crew.berth && cv.second->crew.sat == sat)
+            v.push_back(&cv.second->crew);
+    return v;
 }
 
 // Crewed stations: rebuild a plane's cached batches when its station's dead second changes (a breakup, a rollback,
@@ -5670,7 +5992,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.9 * dayness);
             col = glm::vec3(1.0f, 0.82f, 0.62f);
         }
-        else if (ph != CP_DOCKED && sunlit(P))
+        else if (ph != CP_DOCKED && ph != CP_BERTHED && sunlit(P))
         {
             // Sunlit: a white body of some 20-30 m^2, giving way to its mesh as that resolves.
             double m = 3.8 + 5.0 * std::log10(range / 1.0e6) + ext;
@@ -6691,7 +7013,7 @@ nlohmann::json SatelliteSim::launchStateJson() const
                                                : std::string("?")},
                           {"phase", kCrewPhaseNames[ph]},
                           {"phase_index", ph},
-                          {"docked", ph == CP_DOCKED},
+                          {"docked", (ph == CP_DOCKED || ph == CP_BERTHED)},
                           {"burning", burn != launch::BURN_NONE},
                           {"alt_km", (glm::length(P) - kR) / 1000.0},
                           {"range_to_station_m", glm::length(P - Ps)},
@@ -6711,6 +7033,28 @@ nlohmann::json SatelliteSim::launchStateJson() const
         }
         j["crew_vehicles"] = cv;
         j["crew_drawn"] = L.nCrew;
+        // (2026-10-21) The station arms now (station frame, m): who they work with, holding or not, the joint points.
+        nlohmann::json aj = nlohmann::json::array();
+        for (const auto &as : L.armSat)
+        {
+            const launch::StationArm &A = L.cat.arms[(size_t)as.second];
+            ArmPose ap;
+            LaunchImpl::stationArmPose(A, t, LaunchImpl::berthVisits(L, as.first), ap);
+            std::string with;
+            if (ap.with)
+                for (const auto &kv : L.crewList)
+                    if (&kv.second->crew == ap.with)
+                        with = L.cat.programs[kv.second->prog].spacecraft;
+            auto v3 = [](const glm::dvec3 &v) { return nlohmann::json::array({v.x, v.y, v.z}); };
+            aj.push_back({{"station", constellations[satOrbits[as.first].constIdx].name}, {"model", A.model},
+                          {"with", with}, {"attached", ap.attached}, {"reach_short_m", ap.reachShort},
+                          {"shoulder", v3(ap.S)}, {"elbow", v3(ap.E)}, {"wrist", v3(ap.W)}, {"tip", v3(ap.G)}});
+        }
+        j["station_arms"] = aj;
+        j["arm_parts_drawn"] = L.nArmParts;
+        j["mesh_local_lights"] = meshLightsPrev_.size();
+        j["mesh_lights_scene"] = meshLightsScene_;
+        j["mesh_lights_viewer"] = meshLightsViewer_;
     }
     j["stack_meshes"] = L.nStacked;          // satellites drawn on their upper stage (payload stacks)
     j["stack_stages"] = L.stackDraws.size();
@@ -7528,6 +7872,15 @@ nlohmann::json SatelliteSim::launchCheckJson() const
         double burnAccMax = 0.0;
         std::string burnAccAt;
         double fastLo = 1e30, fastHi = 0.0;
+        // (2026-10-21) Berthing: every cached berthing visit per station (the arm's pose depends on all of them).
+        std::map<uint32_t, std::vector<const LCrew *>> berthBy;
+        for (const auto &kv : L.batches)
+            if (kv.second.valid && kv.second.crew.on && kv.second.crew.berth)
+                berthBy[kv.second.crew.sat].push_back(&kv.second.crew);
+        int nBerth = 0;
+        double bCapMax = 0.0, bGripMax = 0.0, bRelMax = 0.0, bArmStepMax = 0.0, bArmTurnMax = 0.0, bReachMax = 0.0,
+               bAttachMax = 0.0;
+        std::string bArmStepAt;
         for (const auto &kv : L.batches)
         {
             const LBatch &B = kv.second;
@@ -7603,6 +7956,90 @@ nlohmann::json SatelliteSim::launchCheckJson() const
                           {"spacecraft", L.cat.programs[B.prog].spacecraft}, {"cargo", C.cargo}, {"burns_up", C.burns},
                           {"fast_track", C.fast}, {"hours_to_dock", (C.tDock - B.tL) / 3600.0}, {"abort", C.abort},
                           {"burn_accel_max_mps2", bBurn}, {"key", std::to_string(kv.first)}});
+            // Berthing (2026-10-21): the vehicle at the capture point (m off it, mid-hold), the arm's tip on its grapple
+            // fixture at capture and at release, and the arm over both of its windows (2-s steps): the largest step of
+            // any joint point (shoulder, elbow, wrist, tip) per second, the booms' largest turn rate, the wrist out of
+            // reach, and the tip's distance from the fixture while it holds the vehicle.
+            const launch::StationArm *arm = L.armOf(C.sat);
+            if (C.berth && arm && (C.abort == 0 || C.abort == 4))
+            {
+                ++nBerth;
+                const std::vector<const LCrew *> &vis = berthBy[C.sat];
+                nlohmann::json bj;
+                glm::dvec3 Pv, Psb;
+                glm::dmat3 Rb;
+                const glm::dvec3 ax = glm::normalize(C.portAx);
+                const double tc = C.tCapArr + 100.0;
+                LaunchImpl::crewPos(C, tc, Pv);
+                LaunchImpl::crewStation(C, tc, Psb, Rb);
+                const double capErr = glm::length(Psb + Rb * (C.portPos + C.capM * ax) - Pv);
+                auto gripErr = [&](double t) {
+                    ArmPose ap;
+                    LaunchImpl::stationArmPose(*arm, t, vis, ap);
+                    glm::dvec3 G, n;
+                    if (!LaunchImpl::berthFixture(C, t, G, n))
+                        return -1.0;
+                    return glm::length(ap.G - G);
+                };
+                const double gGrip = gripErr(C.tGrapple + 1.0);
+                const double gRel = C.abort == 4 ? 0.0 : gripErr(C.tRelease - 1.0);
+                double stepMax = 0.0, turnMax = 0.0, reachMax = 0.0, attachMax = 0.0;
+                std::string stepAt;
+                auto sweep = [&](double ta, double tb) {
+                    ArmPose prev;
+                    bool have = false;
+                    for (double t = ta; t <= tb; t += 2.0)
+                    {
+                        ArmPose ap;
+                        LaunchImpl::stationArmPose(*arm, t, vis, ap);
+                        reachMax = std::max(reachMax, ap.reachShort);
+                        if (ap.attached && ap.with == &C)
+                        {
+                            glm::dvec3 G, n;
+                            if (LaunchImpl::berthFixture(C, t, G, n))
+                                attachMax = std::max(attachMax, glm::length(ap.G - G));
+                        }
+                        if (have)
+                        {
+                            const double st = std::max({glm::length(ap.E - prev.E), glm::length(ap.W - prev.W),
+                                                        glm::length(ap.G - prev.G)}) / 2.0;
+                            if (st > stepMax)
+                            {
+                                stepMax = st;
+                                char b[64];
+                                snprintf(b, sizeof(b), "%+.0f s from the arm's start", t - ta);
+                                stepAt = b;
+                            }
+                            auto ang = [](glm::dvec3 a, glm::dvec3 b) {
+                                return glm::degrees(std::acos(glm::clamp(glm::dot(glm::normalize(a), glm::normalize(b)), -1.0, 1.0)));
+                            };
+                            turnMax = std::max({turnMax, ang(ap.E - ap.S, prev.E - prev.S) / 2.0,
+                                                ang(ap.W - ap.E, prev.W - prev.E) / 2.0, ang(ap.G - ap.W, prev.G - prev.W) / 2.0});
+                        }
+                        prev = ap;
+                        have = true;
+                    }
+                };
+                sweep(C.armA0 - 60.0, std::min(C.armA3, C.tDeath) + 60.0);
+                if (C.abort == 0)
+                    sweep(C.armD0 - 60.0, C.armD3 + 60.0);
+                bj = {{"capture_point_err_m", capErr}, {"grip_tip_err_m", gGrip}, {"release_tip_err_m", gRel},
+                      {"arm_step_max_m_s", stepMax}, {"arm_step_max_at", stepAt}, {"arm_turn_max_deg_s", turnMax},
+                      {"arm_reach_short_m", reachMax}, {"arm_attached_err_m", attachMax}, {"port", C.portName},
+                      {"capture_m", C.capM}, {"berthed_days", (C.tUndock - C.tDock) / kDay}};
+                cj.back()["berth"] = bj;
+                bCapMax = std::max(bCapMax, capErr);
+                bGripMax = std::max(bGripMax, gGrip);
+                bRelMax = std::max(bRelMax, gRel);
+                if (stepMax > bArmStepMax)
+                {
+                    bArmStepMax = stepMax;
+                    bArmStepAt = L.cat.programs[B.prog].spacecraft + " " + stepAt;
+                }
+                bArmTurnMax = std::max(bArmTurnMax, turnMax);
+                bReachMax = std::max(bReachMax, reachMax);
+                bAttachMax = std::max(bAttachMax, attachMax);
+            }
             if (C.fast)
             {
                 ++nFast;
@@ -7635,6 +8072,15 @@ nlohmann::json SatelliteSim::launchCheckJson() const
         j["crew_fast_track_count"] = nFast;
         j["crew_fast_track_hours"] = {nFast ? fastLo : 0.0, fastHi};
         j["crew_cargo_count"] = nCargo;
+        j["berth_count"] = nBerth;
+        j["berth_capture_point_err_m_max"] = bCapMax;
+        j["berth_grip_tip_err_m_max"] = bGripMax;
+        j["berth_release_tip_err_m_max"] = bRelMax;
+        j["berth_arm_step_max_m_s"] = bArmStepMax;
+        j["berth_arm_step_max_at"] = bArmStepAt;
+        j["berth_arm_turn_max_deg_s"] = bArmTurnMax;
+        j["berth_arm_reach_short_m"] = bReachMax;
+        j["berth_arm_attached_err_m_max"] = bAttachMax;
     }
     return j;
 }
@@ -8160,7 +8606,14 @@ bool SatelliteSim::launchGoToCrew(const std::string &station, const std::string 
         if (ev == "hold20") return C.hold[2];
         if (ev == "dock") return C.tDock;
         if (ev == "undock") return C.tUndock;
-        if (ev == "depart") return C.tUndock + 900.0;
+        if (ev == "depart") return C.tDepBurn;
+        if (ev == "capture" || ev == "grapple") return C.berth ? C.tGrapple : 1e300;
+        if (ev == "capture_point") return C.berth ? C.tCapArr : 1e300;
+        if (ev == "arm") return C.berth ? C.armA0 : 1e300;
+        if (ev == "berth") return C.berth ? C.tDock : 1e300;
+        if (ev == "unberth") return C.berth ? C.tUndock : 1e300;
+        if (ev == "release") return C.berth ? C.tRelease : 1e300;
+        if (ev == "arm_depart") return C.berth ? C.armD0 : 1e300;
         if (ev == "deorbit") return C.tDeorb;
         if (ev == "entry" || ev == "reentry") return C.tEI;
         if (ev == "abort") return C.abort ? std::min(C.tDeath, C.tGone) : 1e300;
@@ -8198,7 +8651,7 @@ bool SatelliteSim::launchGoToCrew(const std::string &station, const std::string 
             const double te = evTime(*B, ok);
             if (!ok)
             {
-                msg = "unknown event '" + event + "' (launch sep phasing arrive axis hold400 hold200 hold20 dock undock "
+                msg = "unknown event '" + event + "' (launch sep phasing arrive axis hold400 hold200 hold20 dock undock capture_point capture berth unberth release arm arm_depart "
                                                   "depart deorbit entry chutes splash abort)";
                 return false;
             }
@@ -8973,7 +9426,7 @@ int SatelliteSim::rocketMeshSlotToTransient(int satIndex)
     const uint32_t base = activeSatCount + kLaunchCap - 2 - kRocketMeshSlots;
     // A pad's mesh (its tower, mount, tanks) is scenery, a payload stack's (2026-10-20) part of its stage: not
     // selectable.
-    if (satIndex >= (int)(base - kPadMeshSlots - kStackMeshSlots - kShipMeshSlots) && satIndex < (int)base)
+    if (satIndex >= (int)(base - kPadMeshSlots - kStackMeshSlots - kShipMeshSlots - kArmMeshSlots) && satIndex < (int)base)
         return -1;
     if (satIndex < (int)base || satIndex >= (int)(base + kRocketMeshSlots))
         return satIndex;
@@ -9215,6 +9668,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
     }
     launchStackJobs(pixAngle, obsEci, jobs);
     launchShipJobs(pixAngle, obsEci, jobs);
+    launchArmJobs(pixAngle, obsEci, jobs);
     return jobs;
 }
 
@@ -9373,7 +9827,7 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
         glm::dmat3 R;
         LaunchImpl::crewStation(C, t, Ps, R);
         const double dPort = glm::length(P - (Ps + R * C.portPos));
-        if (ph == CP_DOCKED)
+        if (ph == CP_DOCKED || ph == CP_BERTHED)
             snprintf(b, sizeof(b), "%s docked at %s (%s), undocks in %.1f days", pg.spacecraft.c_str(), stn.c_str(),
                      C.portName.c_str(), (C.tUndock - t) / kDay);
         else if (ph >= CP_FAR && ph <= CP_DEPART)
@@ -9850,7 +10304,7 @@ void SatelliteSim::launchOngoing(std::vector<MissionOngoing> &out)
                     }
                 std::string phs = kCrewPhaseNames[ph];
                 phs[0] = (char)std::toupper((unsigned char)phs[0]);
-                m.status = phs + (ph == CP_DOCKED ? " (" + C.portName + ")" : std::string()) + "; " + nx;
+                m.status = phs + ((ph == CP_DOCKED || ph == CP_BERTHED) ? " (" + C.portName + ")" : std::string()) + "; " + nx;
                 if (fate != 0)
                     m.status = std::string("The station is ") + rosterFateName(fate) + " (" + fmtUtc(tLost) + "). " + m.status;
             }
@@ -10332,6 +10786,68 @@ void SatelliteSim::meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2
         m.cosCut = (float)std::cos(glm::radians(beamHalfDeg));
     }
     meshLights_.push_back(m);
+}
+
+void SatelliteSim::fillMeshLocalLights(GpuMeshFrame &frame, const glm::dvec3 &originEcef) const
+{
+    struct Ml
+    {
+        double w;
+        glm::dvec3 p;
+        const MeshLocalLight *m;
+    };
+    std::vector<Ml> ml;
+    ml.reserve(meshLightsPrev_.size());
+    const double adapt = (double)meshLightAdapt_;
+    for (const MeshLocalLight &m : meshLightsPrev_)
+    {
+        const glm::dvec3 p = m.ecef - originEcef;
+        const double I = m.I * adapt;
+        // (where the light no longer matters: ~1e-4 sun of irradiance at its distance from the origin + 20 m)
+        const double d2 = glm::dot(p, p);
+        if (I < 1e-4 * (d2 + 400.0) * 1e-2)
+            continue;
+        ml.push_back({I / (d2 + 2500.0), p, &m});
+    }
+    const size_t nL = std::min<size_t>(ml.size(), (size_t)GpuMeshFrame::kLocalLights);
+    std::partial_sort(ml.begin(), ml.begin() + nL, ml.end(), [](const Ml &a, const Ml &b) { return a.w > b.w; });
+    frame.lightInfo = glm::vec4((float)nL, 0.0f, 0.0f, 0.0f);
+    for (size_t i = 0; i < nL; ++i)
+    {
+        frame.lightPos[i] = glm::vec4(glm::vec3(ml[i].p), (float)(ml[i].m->I * adapt));
+        frame.lightCol[i] = glm::vec4(ml[i].m->col, ml[i].m->rs);
+        frame.lightDir[i] = glm::vec4(glm::vec3(ml[i].m->aimEcef), ml[i].m->cosCut);
+    }
+}
+
+uint32_t SatelliteSim::meshLightMask(const GpuMeshFrame &frame, const glm::dvec3 &centre, double radius, double exposure)
+{
+    // A light counts for an instance if its largest irradiance anywhere on the bounding sphere, in its beam, would
+    // show as more than ~1/1000 of white (the scene's radiance x exposure; the tonemap's toe is linear there).
+    const double thr = 1.0e-3 / std::max(exposure, 1e-6);
+    const int n = std::min((int)(frame.lightInfo.x + 0.5f), GpuMeshFrame::kLocalLights);
+    uint32_t mask = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        const glm::dvec3 d = glm::dvec3(frame.lightPos[i]) - centre;
+        const double dist = glm::length(d);
+        const double gap = std::max(dist - radius, 0.0), rs = (double)frame.lightCol[i].w;
+        const double E = (double)frame.lightPos[i].w / (gap * gap + rs * rs);
+        if (E < thr)
+            continue;
+        const glm::vec4 ad = frame.lightDir[i];
+        if (ad.w > -1.5f && dist > radius)
+        {
+            // An aimed flood: the sphere seen from the light is a cone of half-angle asin(r / d); outside its beam
+            // (+ the 10-deg soft edge) it lights nothing there.
+            const double cAx = glm::dot(-d / dist, glm::dvec3(ad));
+            const double ang = std::acos(glm::clamp(cAx, -1.0, 1.0)) - std::asin(glm::clamp(radius / dist, 0.0, 1.0));
+            if (ang > std::acos(glm::clamp((double)ad.w, -1.0, 1.0)) + 0.01)
+                continue;
+        }
+        mask |= 1u << i;
+    }
+    return mask;
 }
 
 void SatelliteSim::engineLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double r0,
@@ -10841,6 +11357,109 @@ void shipLightsOf(const std::string &model, double deck, std::vector<ShipLight> 
     }
 }
 } // namespace
+
+// The station arms (2026-10-21, Canadarm2): the two booms and the wrist as meshes in the arm's reserved chunk, posed by
+// LaunchImpl::stationArmPose in the station's frame (the station's own pose: the same law its mesh is posed by).
+// Drawn whenever the station is near enough to resolve them; parked when no berthing vehicle needs the arm.
+void SatelliteSim::launchArmJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs)
+{
+    FPROF_SCOPE("launchArmJobs");
+    LaunchState &L = *launchState;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const uint32_t abase = kLaunchCap - 2 - kRocketMeshSlots - kPadMeshSlots - kStackMeshSlots - kShipMeshSlots - kArmMeshSlots;
+    L.nArmParts = 0;
+    int k = 0;
+    // A station with a visiting vehicle near it (at its port, approaching, leaving) is drawn by the CPU too: the GPU
+    // lists no satellite in the Earth's shadow, so at night the vehicle was drawn at a station that was not.
+    for (const auto &cv : L.crewList)
+    {
+        const uint32_t sat = cv.second->crew.sat;
+        if (sat >= activeSatCount || (followActive && followSatIndex == (int)sat) ||
+            std::find(jobs.begin(), jobs.end(), (int)sat) != jobs.end() ||
+            satOrbits[sat].constIdx >= constellations.size() || !constellations[satOrbits[sat].constIdx].enabled)
+            continue;
+        if (kesslerEnabled && 2ull * sat + 1 < kRosterWords.size())
+        {
+            const int32_t d = std::min(kRosterWords[2ull * sat], kRosterWords[2ull * sat + 1]);
+            if (d != kessler::kNever && t >= kesslerEpoch() + (double)d)
+                continue;
+        }
+        const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh((int)satOrbits[sat].typeIdx);
+        if (!tm)
+            continue;
+        glm::dvec3 Ps;
+        glm::dmat3 R;
+        LaunchImpl::stationFrameAt(rosterElemsOf(satOrbits[sat]), t, Ps, R);
+        if (2.0 * std::max(1.0, (double)tm->boundsRadius) / std::max(glm::length(Ps - obsEci), 1.0) /
+                std::max(pixAngle, 1e-9) > 3.0)
+            jobs.push_back((int)sat);
+    }
+    for (const auto &as : L.armSat)
+    {
+        const uint32_t sat = as.first;
+        const launch::StationArm &A = L.cat.arms[(size_t)as.second];
+        if (sat >= activeSatCount || satOrbits[sat].constIdx >= constellations.size() || !constellations[satOrbits[sat].constIdx].enabled)
+            continue;
+        if (kesslerEnabled && 2ull * sat + 1 < kRosterWords.size())
+        {
+            const int32_t d = std::min(kRosterWords[2ull * sat], kRosterWords[2ull * sat + 1]);
+            if (d != kessler::kNever && t >= kesslerEpoch() + (double)d)
+                continue;
+        }
+        auto tb = rocketTypes.find("rocket_arm_" + A.model + "_boom");
+        auto tw = rocketTypes.find("rocket_arm_" + A.model + "_wrist");
+        if (tb == rocketTypes.end() || tw == rocketTypes.end())
+            continue;
+        glm::dvec3 Ps;
+        glm::dmat3 R;
+        const SatOrbitElems st = rosterElemsOf(satOrbits[sat]);
+        LaunchImpl::stationFrameAt(st, t, Ps, R);
+        const double dist = std::max(glm::length(Ps - obsEci), 1.0);
+        if (2.0 * A.boomM / dist / std::max(pixAngle, 1e-9) < 1.4)
+            continue;
+        // The station itself with its arm: the GPU lists no satellite in the Earth's shadow, so the station's mesh
+        // would vanish there and leave the arm (and the vehicles at its ports) floating (2026-10-21). Drawn by the CPU
+        // as the followed satellite is (recordMeshScene skips it among the GPU's candidates).
+        if (!(followActive && followSatIndex == (int)sat) &&
+            std::find(jobs.begin(), jobs.end(), (int)sat) == jobs.end())
+            jobs.push_back((int)sat);
+        ArmPose ap;
+        LaunchImpl::stationArmPose(A, t, LaunchImpl::berthVisits(L, sat), ap);
+        L.armPoseNow = ap;
+        L.armPoseSat = sat;
+        const SatOrbitState so = satOrbitStateAt(st, t);
+        const glm::dvec3 acc = -launch::kGM * so.posEci / std::pow(glm::length(so.posEci), 3.0);
+        struct Part
+        {
+            int type;
+            glm::dvec3 o, z;
+        } parts[3] = {{tb->second, ap.S, ap.E - ap.S}, {tb->second, ap.E, ap.W - ap.E}, {tw->second, ap.W, ap.G - ap.W}};
+        for (const Part &pt : parts)
+        {
+            if (k >= kArmMeshSlots)
+                break;
+            const uint32_t slot = abase + (uint32_t)k, idx = activeSatCount + slot;
+            ++k;
+            if (idx >= satOrbits.size() || slot >= L.elems.size())
+                continue;
+            const glm::dmat3 Rb = R * LaunchImpl::crewFrame(glm::length(pt.z) > 1e-6 ? pt.z : A.baseN, ap.nrm);
+            SatOrbitElems &e = L.elems[slot];
+            e = SatOrbitElems{};
+            e.fixedState = true;
+            e.fixPos = Ps + R * pt.o;
+            e.fixVel = so.velEci;
+            e.fixAcc = acc;
+            e.fixAxis = Rb[2];
+            e.fixT0 = t;
+            e.attFix = true;
+            e.attQ = glm::normalize(glm::quat_cast(Rb));
+            e.attT0 = t;
+            satOrbits[idx].typeIdx = (uint32_t)pt.type;
+            jobs.push_back((int)idx);
+            ++L.nArmParts;
+        }
+    }
+}
 
 // The sea state at a point of the sea (2026-10-21, the ships' swell): the CPU's mirror of the drawn waves' rule
 // (sat_sky.frag oceanSeaState: the westerly belts, a slow regional wind, the weather's storms) with the storms from
@@ -11473,20 +12092,47 @@ void SatelliteSim::missionBatchMilestones(const LBatch &B, std::vector<MissionMi
                     add(t, P, l);
             };
             addA(C.segs.empty() ? C.tArr : C.segs[0].t1, "Enters the approach ellipsoid (1 km)");
+            if (C.berth)
+            {
+                // (2026-10-21) Berthing: up the R-bar to the capture point, the arm's capture and berthing.
+                addA(C.tAxis, "On the R-bar under " + stn + ", 1 km out");
+                addA(C.hold[0], "Hold at 250 m");
+                addA(C.hold[1], "Hold at 30 m: go for capture");
+                addA(C.armA0, "The arm leaves its park for the capture point");
+                addA(C.tCapArr, "At the capture point (" + std::to_string((int)std::lround(C.capM)) + " m): free drift");
+                addA(C.tGrapple, "Captured by the station's arm");
+                addA(C.tBerth0, "On the arm: moved to the berthing port (" + C.portName + ")");
+            }
+            else
+            {
             addA(C.tAxis, "On the docking axis (" + C.portName + "), 1 km out");
             addA(C.hold[0], "Hold at 400 m");
             addA(C.hold[1], "Hold at 200 m: go for the final approach");
             addA(C.hold[2], "Hold at 20 m");
+            }
             if (C.abort == 2)
                 add(C.tDeath, P, stn + " is lost: the approach is called off, turning away");
             else
             {
+                if (C.berth)
+                {
+                    add(C.tDock, P, "Berthed to " + stn + " (" + C.portName + "): the bolts drive");
+                    if (C.armA2 > C.tDock && C.abort != 4)
+                        add(C.armA2, P, "The arm lets go and returns to its park");
+                }
+                else
                 add(C.tDock, P, std::string(C.fast ? "Fast-track docking" : "Soft capture") + ": docked to " + stn + " (" +
                                     C.portName + ")");
                 if (C.abort == 4)
                     add(C.tDeath, P, stn + " breaks up: " + pg.spacecraft + " is destroyed with it");
                 else if (C.abort == 3)
                     add(C.tUndock, P, stn + " is lost: emergency undocking");
+                else if (C.berth)
+                {
+                    add(C.armD0, P, "The arm takes hold of " + pg.spacecraft);
+                    add(C.tUndock, P, "Unberthing: the arm lifts it off the port");
+                    add(C.tRelease, P, "Released by the station's arm");
+                }
                 else
                     add(C.tUndock, P, "Undocking from " + stn);
             }
@@ -11494,7 +12140,7 @@ void SatelliteSim::missionBatchMilestones(const LBatch &B, std::vector<MissionMi
         if (C.abort != 4)
         {
             if (C.abort == 0 || C.abort == 3)
-                add(C.tUndock + (C.abort == 3 ? 300.0 : 900.0), P, "Departure burn");
+                add(C.tDepBurn, P, "Departure burn");
             add(C.tDeorb, P, "Deorbit burn");
             if (C.burns)
             {
@@ -13284,13 +13930,44 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
                                                  Pc);
             q["port"] = C.portName;
             q["dock_contact_m"] = portDist(C.tDock);
+            if (C.berth)
+            {
+                // (2026-10-21) Berthing: the R-bar holds, the capture point and the arm's work.
+                q["berth"] = true;
+                q["hold250_range_m"] = portDist(C.hold[0] + 0.5 * LaunchImpl::kBerthLegs[1]);
+                q["hold30_range_m"] = portDist(C.hold[1] + 0.5 * LaunchImpl::kBerthLegs[3]);
+                q["capture_range_m"] = portDist(C.tCapArr + 0.5 * LaunchImpl::kBerthLegs[5]);
+                q["capture_m"] = C.capM;
+                q["capture_h_after_launch"] = (C.tGrapple - B.tL) / 3600.0;
+                if (const launch::StationArm *arm = L.armOf(C.sat))
+                {
+                    std::vector<const LCrew *> vis;
+                    for (const auto &kv2 : L.batches)
+                        if (kv2.second.valid && kv2.second.crew.on && kv2.second.crew.berth && kv2.second.crew.sat == C.sat)
+                            vis.push_back(&kv2.second.crew);
+                    auto tipErr = [&](double tt) {
+                        ArmPose ap;
+                        LaunchImpl::stationArmPose(*arm, tt, vis, ap);
+                        glm::dvec3 G, n;
+                        return LaunchImpl::berthFixture(C, tt, G, n) ? glm::length(ap.G - G) : -1.0;
+                    };
+                    q["grip_tip_err_m"] = tipErr(C.tGrapple + 1.0);
+                    q["berthed_tip_err_m"] = tipErr(C.tDock + 60.0);
+                    if (C.abort == 0)
+                        q["release_tip_err_m"] = tipErr(C.tRelease - 1.0);
+                }
+            }
+            else
+            {
             q["hold400_range_m"] = portDist(C.hold[0] + 0.5 * LaunchImpl::kCrewApproachLegs[C.fast ? 1 : 0][3]);
             q["hold200_range_m"] = portDist(C.hold[1] + 0.5 * LaunchImpl::kCrewApproachLegs[C.fast ? 1 : 0][5]);
             q["hold20_range_m"] = portDist(C.hold[2] + 0.5 * LaunchImpl::kCrewApproachLegs[C.fast ? 1 : 0][7]);
+            }
             q["arrival_range_to_station_km"] = portDist(C.tArr) / 1000.0;
-            q["docked_after_60s"] = phaseAt(C.tDock + 60.0) == CP_DOCKED;
-            q["docked_mid_stay"] = phaseAt(0.5 * (C.tDock + C.tUndock)) == CP_DOCKED;
-            q["undocked_after"] = phaseAt(C.tUndock + 60.0) == CP_BACKOUT;
+            { const int pa = phaseAt(C.tDock + 60.0), pb = phaseAt(0.5 * (C.tDock + C.tUndock));
+              q["docked_after_60s"] = pa == CP_DOCKED || pa == CP_BERTHED;
+              q["docked_mid_stay"] = pb == CP_DOCKED || pb == CP_BERTHED; }
+            q["undocked_after"] = phaseAt(C.tUndock + 60.0) == (C.berth ? CP_UNBERTH : CP_BACKOUT);
             q["docked_days"] = (C.tUndock - C.tDock) / kDay;
             q["phasing_alt_km"] = (C.rP - kR) / 1000.0;
             q["lands"] = C.lands;

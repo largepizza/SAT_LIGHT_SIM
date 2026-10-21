@@ -92,7 +92,7 @@ THRESHOLDS = [
     ("retiree_deorbit", "max_rise_m", "<", 100.0, "", "the deorbit never climbs"),
     # Crew spacecraft (2026-10-20, CLAUDE.md Launches > "Crew spacecraft fly as their own objects").
     ("docking", "sep_offset_m", "<", 1.0, "", "the spacecraft separates from its place on the upper stage"),
-    ("docking", "hours_after_launch", "range", [2.0, 72.0], "", "docks hours to a few days after lift-off (phasing)"),
+    ("docking", "hours_after_launch", "range", [2.0, 120.0], "", "docks hours to a few days after lift-off (phasing; a berthing HTV took 4-5 days)"),
     ("docking", "arrival_range_to_station_km", "range", [3.0, 8.0], "", "the phasing ends ~5 km behind the station"),
     ("docking", "hold400_range_m", "range", [390.0, 410.0], "", "holds 400 m out on the port's axis"),
     ("docking", "hold200_range_m", "range", [190.0, 210.0], "", "holds 200 m out"),
@@ -107,6 +107,13 @@ THRESHOLDS = [
     ("docking", "burn_accel_max_mps2", "<", 15.0, "", "its burns are finite (<= ~1.5 g: no velocity steps)"),
     ("docking", "fast_hours", "range", [2.3, 7.2], "", "a fast track (Soyuz / Progress / Shenzhou / Tianzhou) docks 2.5-7 h after lift-off"),
     ("docking", "port_conflicts", "<", 1, "", "its port is free for its stay (crews and cargo ships never share one at once)"),
+    # Berthing (2026-10-21: Cygnus, HTV-X on the ISS's arm)
+    ("docking", "hold250_range_m", "range", [245.0, 255.0], "", "berthing: holds 250 m out on the R-bar"),
+    ("docking", "hold30_range_m", "range", [28.0, 32.0], "", "berthing: holds 30 m out"),
+    ("docking", "capture_range_m", "absdiff<", ["capture_m", 0.5], "", "berthing: free drift at the capture point"),
+    ("docking", "grip_tip_err_m", "<", 0.05, "", "berthing: the arm's end effector is on the grapple fixture at capture"),
+    ("docking", "berthed_tip_err_m", "<", 0.05, "", "berthing: the arm still holds it while the bolts drive"),
+    ("docking", "release_tip_err_m", "<", 0.05, "", "berthing: the arm holds it until its release"),
     ("docking", "reentry_h_after_undock", "range", [1.0, 30.0], "", "a cargo ship that burns up deorbits within a day of undocking"),
     ("upper_deorbit", "nose_from_retrograde_deg", "<", 15.0, "", "burns retrograde"),
     ("upper_deorbit", "nose_max_deg_s", "<", 6.0, "", "turns smoothly before and after the burn"),
@@ -127,6 +134,14 @@ VISIT_THRESHOLDS = [
     ("accel_max_mps2", "<", 60.0, "nothing past the entry's ~4-5 g (no position jumps)"),
     ("turn_max_deg_s", "<", 5.0, "turns smoothly everywhere (approach, docking, departure, entry, chutes)"),
     ("docked_days", "range", [0.0, 400.0], "a stay of weeks to months"),
+    # Berthing (2026-10-21): the arm and its vehicle (each berthing visit's `berth` block)
+    ("berth.capture_point_err_m", "<", 0.5, "berthing: free drift at the capture point (m off it)"),
+    ("berth.grip_tip_err_m", "<", 0.05, "berthing: the end effector on the grapple fixture at capture"),
+    ("berth.release_tip_err_m", "<", 0.05, "berthing: ... and at the release"),
+    ("berth.arm_attached_err_m", "<", 0.05, "berthing: the end effector stays on the fixture while it holds the vehicle"),
+    ("berth.arm_step_max_m_s", "<", 0.5, "berthing: no arm joint (shoulder, elbow, wrist, tip) jumps (slow, continuous moves)"),
+    ("berth.arm_turn_max_deg_s", "<", 2.0, "berthing: the booms turn slowly"),
+    ("berth.arm_reach_short_m", "<", 0.01, "berthing: every target is within the arm's reach"),
 ]
 
 
@@ -136,7 +151,7 @@ def evaluate_visits(check):
     for e in (check or {}).get("crew", []):
         cks = []
         for (metric, op, limit, why) in VISIT_THRESHOLDS:
-            v = e.get(metric)
+            v = get(e, metric)
             if v is None or (metric == "dock_contact_m" and v < 0):
                 continue
             _, ok = check_one(e, metric, op, limit)

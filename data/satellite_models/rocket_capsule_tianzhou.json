@@ -58,6 +58,31 @@
     ],
     "target": "nadir"
    }
+  },
+  {
+   "name": "wings",
+   "parent": "body",
+   "hinge": {
+    "position": [
+     0.0,
+     0.0,
+     -8.9
+    ],
+    "axis": [
+     0,
+     1,
+     0
+    ]
+   },
+   "joint": {
+    "mode": "track",
+    "vector": [
+     0,
+     0,
+     1
+    ],
+    "target": "sun"
+   }
   }
  ],
  "components": [
@@ -332,13 +357,13 @@
    "type": "box",
    "size": [
     5.6,
-    0.04,
-    2.0
+    2.0,
+    0.04
    ],
    "position": [
     0.0,
     4.8,
-    -8.9
+    0.0
    ],
    "rotation_quat": [
     0.707107,
@@ -347,7 +372,7 @@
     0.707107
    ],
    "material": "cells",
-   "group": "body"
+   "group": "wings"
   },
   {
    "name": "wing_yoke_6",
@@ -360,7 +385,7 @@
    "position": [
     0.0,
     1.725,
-    -8.9
+    0.0
    ],
    "rotation_quat": [
     0.707107,
@@ -369,7 +394,7 @@
     0.707107
    ],
    "material": "grey",
-   "group": "body",
+   "group": "wings",
    "render_only": true
   },
   {
@@ -377,13 +402,13 @@
    "type": "box",
    "size": [
     5.6,
-    0.04,
-    2.0
+    2.0,
+    0.04
    ],
    "position": [
     -0.0,
     -4.8,
-    -8.9
+    0.0
    ],
    "rotation_quat": [
     0.707107,
@@ -392,7 +417,7 @@
     -0.707107
    ],
    "material": "cells",
-   "group": "body"
+   "group": "wings"
   },
   {
    "name": "wing_yoke_8",
@@ -405,7 +430,7 @@
    "position": [
     -0.0,
     -1.725,
-    -8.9
+    0.0
    ],
    "rotation_quat": [
     0.707107,
@@ -414,7 +439,7 @@
     -0.707107
    ],
    "material": "grey",
-   "group": "body",
+   "group": "wings",
    "render_only": true
   },
   {
@@ -475,10 +500,16 @@
    "source": "SatelliteSimLaunches.cpp crew vehicles."
   },
   {
+   "subject": "wings",
+   "status": "estimate",
+   "value": "the wings turn about their span to face the Sun (a solar array drive), rest facing along +Z",
+   "source": "Photographs of Tianzhou / Shenzhou in flight: their wings are steered; the law is estimated."
+  },
+  {
    "subject": "body",
    "status": "estimate",
-   "value": "one rigid group",
-   "source": "Render model; no moving parts."
+   "value": "the rigid body",
+   "source": "Render model."
   },
   {
    "subjects": [
