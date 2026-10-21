@@ -5940,10 +5940,20 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // moves their ranks shift, and a hard cut switched pieces of a trail on and off (blocky in time warp).
         const size_t room = nMax > n ? (size_t)(nMax - n) : 0;
         const double cut = plumes.size() > room && room > 0 ? plumes[room].pri : 0.0;
+        // The ones that cannot show are dropped (dustCullInsignificant: on a CPU copy, never reading the mapped list).
+        static std::vector<GpuDustCloud> sel;
+        static std::vector<uint8_t> drop;
+        sel.clear();
+        for (size_t k = 0; k < std::min(room, plumes.size()); ++k)
+            sel.push_back(plumes[k].d);
+        dustCullInsignificant(sel.data(), (uint32_t)sel.size(), drop);
+        size_t ci = 0;
         for (const Cand &c : plumes)
         {
-            if (n >= nMax)
+            if (n >= nMax || ci >= sel.size())
                 break;
+            if (drop[ci++])
+                continue;
             out[n] = c.d;
             if (cut > 0.0)
                 out[n].c.w *= (float)glm::clamp((c.pri - cut) / (2.0 * cut), 0.0, 1.0);
@@ -9785,17 +9795,19 @@ void SatelliteSim::engineLightsFlush()
 // flames', fireball trails' and dust's units differ. Knockout bit 33554432 keeps them all (the A/B). In the droneship
 // view it drops ~60 (the dimming budget binds first: from inside a long Gaussian the eye can look down its length);
 // cloud_march.comp's per-texel faint skip (dustCloudsCS) takes most of the rest where they are faint.
-void SatelliteSim::dustCullInsignificant(GpuDustCloud *out, uint32_t &n)
+void SatelliteSim::dustCullInsignificant(const GpuDustCloud *out, uint32_t n, std::vector<uint8_t> &drop)
 {
     plumesCulled = 0;
-    if ((debugDisableMask & 33554432u) != 0u || !kDustMapped || n == 0)
+    drop.assign(n, 0);
+    if ((debugDisableMask & 33554432u) != 0u || n == 0)
         return;
     constexpr double kRadEps = 2.0e-4; // display-linear (sRGB: ~0.7 of a level at black, less above)
     constexpr double kTauEps = 1.0e-2; // relative dimming of what is behind (1%: 0.01 mag of a star, ~2 levels at white)
     const double expo = (double)skyExposure();
-    const GpuDustCloud *lights = reinterpret_cast<const GpuDustCloud *>(static_cast<const char *>(kDustMapped) + 16) +
-                                 kMaxDustClouds;
-    const uint32_t nL = engineLightCount;
+    // The engine lights as listed so far this frame (all of them are added before the plumes are emitted), before the
+    // eye's adaptation (which only dims them) and the cut to kMaxEngineLights: a superset, so the bound holds.
+    const GpuDustCloud *lights = engineLights_.data();
+    const uint32_t nL = (uint32_t)engineLights_.size();
     struct B
     {
         uint32_t i;
@@ -9871,8 +9883,6 @@ void SatelliteSim::dustCullInsignificant(GpuDustCloud *out, uint32_t &n)
     if (bs.empty())
         return;
     std::sort(bs.begin(), bs.end(), [](const B &a, const B &b) { return a.key < b.key; });
-    static std::vector<uint8_t> drop;
-    drop.assign(n, 0);
     double sR = 0.0, sD = 0.0;
     plumeCullStop = glm::vec4(0.0f);
     for (const B &b : bs)
@@ -9887,17 +9897,6 @@ void SatelliteSim::dustCullInsignificant(GpuDustCloud *out, uint32_t &n)
         drop[b.i] = 1;
         ++plumesCulled;
     }
-    if (plumesCulled == 0)
-        return;
-    uint32_t m = 0;
-    for (uint32_t i = 0; i < n; ++i)
-        if (!drop[i])
-        {
-            if (m != i)
-                out[m] = out[i];
-            ++m;
-        }
-    n = m;
 }
 
 nlohmann::json SatelliteSim::launchPadsJson() const

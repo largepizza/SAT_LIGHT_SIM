@@ -1485,7 +1485,6 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
                 const auto l0 = std::chrono::steady_clock::now();
                 s->launchFillVisuals(out, n, toSky, pixFull); // rockets, flames, plumes, the retirees' re-entries
                 s->engineLightsFlush(); // the burning engines' and the pads' light (dust buffer tail, header word 1)
-                s->dustCullInsignificant(out, n); // the plume Gaussians that cannot show (they cost every texel they cover)
                 const float ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l0).count();
                 s->cpuAccumMs[CPU_LAUNCHES] += ms;
                 s->cpuAccumMs[CPU_KESSLER] -= ms;

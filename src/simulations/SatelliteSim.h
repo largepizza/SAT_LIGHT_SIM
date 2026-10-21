@@ -2932,7 +2932,7 @@ private:
     void engineLightsFlush();
     // (2026-10-21) Drops the plume Gaussians that cannot show (SatelliteSimLaunches.cpp): their summed worst case, as
     // if all of them overlapped one pixel, stays under 2e-4 of white on screen and 1% of dimming.
-    void dustCullInsignificant(GpuDustCloud *out, uint32_t &n);
+    void dustCullInsignificant(const GpuDustCloud *list, uint32_t n, std::vector<uint8_t> &drop);
     // Knockout bit 33554432 = off (the A/B).
     uint32_t plumesCulled = 0;       // this frame's (launch state: dust_list.culled)
     glm::vec4 plumeCullStop{0.0f};   // the summed bounds where it stopped, and the next one's (light, dimming)
