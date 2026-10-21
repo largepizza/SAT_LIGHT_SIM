@@ -92,7 +92,7 @@ THRESHOLDS = [
     ("retiree_deorbit", "max_rise_m", "<", 100.0, "", "the deorbit never climbs"),
     # Crew spacecraft (2026-10-20, CLAUDE.md Launches > "Crew spacecraft fly as their own objects").
     ("docking", "sep_offset_m", "<", 1.0, "", "the spacecraft separates from its place on the upper stage"),
-    ("docking", "hours_after_launch", "range", [2.0, 72.0], "", "docks hours to a few days after lift-off (phasing)"),
+    ("docking", "hours_after_launch", "range", [2.0, 120.0], "", "docks hours to a few days after lift-off (phasing; a berthing HTV took 4-5 days)"),
     ("docking", "arrival_range_to_station_km", "range", [3.0, 8.0], "", "the phasing ends ~5 km behind the station"),
     ("docking", "hold400_range_m", "range", [390.0, 410.0], "", "holds 400 m out on the port's axis"),
     ("docking", "hold200_range_m", "range", [190.0, 210.0], "", "holds 200 m out"),
