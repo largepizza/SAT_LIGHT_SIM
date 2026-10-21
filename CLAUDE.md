@@ -6966,7 +6966,8 @@ registers for the largest path. The rule: a new feature in `sat_sky.frag` is `#i
 gated on a uniform), nothing new goes into `sat_sky_minimal.frag`, and its CPU work is skipped for those presets.
 The build enforces it: `cmake/CheckSpvSize.cmake` runs after both compiles and fails past `SKY_LITE_MAX_BYTES`
 (225 KB) / `SKY_MINIMAL_MAX_BYTES` (46 KB) in CMakeLists.txt — ~10% over the trimmed 199 / 41 KB (glslc versions
-differ by a few percent). Raise a budget only with a measurement on the target hardware.
+differ by a few percent). As of 2026-10-21 they are ~212 / ~41 KB (SKY_LITE grew with the UBO's pad/coast blocks and
+the closed-form airglow limb): ~13 KB of SKY_LITE headroom left. Raise a budget only with a measurement on the target hardware.
 `tools/harness/scripts/low_tiers.satcmd` is the check: Potato / Planetarium / Low at a day, night-city, orbit and
 storm view, perf + captures, and run once with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`. First run
 (RTX 3070 Ti, 1600x900, GPU frame): Potato 0.8-1.0 ms, Planetarium 1.4-3.0 ms, Low 4.8-6.7 ms (coverage forced
