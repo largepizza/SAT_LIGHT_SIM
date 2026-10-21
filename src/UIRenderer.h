@@ -254,6 +254,7 @@ public:
         const char *kind; // rect, text, border, image, custom, scissor_start, scissor_end
         float x, y, w, h;
         std::string id;
+        uint32_t idIndex = 0; // the element's index (CLAY_IDI / CLAY_SIDI), 0 for a plain CLAY_ID
         std::string text;
         float clip[4]; // the active scissor (x, y, w, h); the full screen when none
         int fontSize;
