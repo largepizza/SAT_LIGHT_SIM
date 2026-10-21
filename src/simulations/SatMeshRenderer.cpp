@@ -368,7 +368,8 @@ void SatMeshRenderer::setTypeModels(VulkanContext &ctx, const std::vector<TypeMo
             comps.push_back(glm::vec4(c.stowP0, c.stowP1, c.foldP0, c.foldP1));
             // Folded for launch (instFoldAngle): the hinge point and angle, the axis.
             comps.push_back(glm::vec4(c.foldPoint, c.foldAngle));
-            comps.push_back(glm::vec4(c.foldAxis, 0.0f));
+            // w: the build-date code (stations module by module; instCompAbsent).
+            comps.push_back(glm::vec4(c.foldAxis, (float)satSinceCode(c.sinceDays)));
         }
         out.firstOccluder = (uint32_t)occs.size();
         if (tm.occlusion)
@@ -1457,6 +1458,9 @@ void SatMeshRenderer::writeShadowAccel(uint32_t slot, GpuMeshInstance &inst, int
             if (fp.w != 0.0f && 1.0f - glm::smoothstep(ph.z, ph.w, 1.0f - unfold) > 0.0f)
                 continue;
         }
+        // A station module not launched yet (instCompAbsent): casts no shadow.
+        if (inst.trans[0].w > 0.0f && compsCpu[ci + 4].w > 0.0f && compsCpu[ci + 4].w > inst.trans[0].w)
+            continue;
         const glm::mat3 R = groupRot(O.group);
         const glm::vec4 pc = compsCpu[ci];
         const float parent = pc.w >= 50.0f ? pc.w - 100.0f : pc.w;

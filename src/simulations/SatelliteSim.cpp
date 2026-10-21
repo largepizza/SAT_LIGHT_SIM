@@ -3107,6 +3107,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         hdr.poolBase = poolIdx0(); // the launch records are the kLaunchCap indices before it (LAUNCH_CAP)
         hdr.poolCount = kPoolGpu;
         hdr.poolWord0 = kPoolWord0;
+        // Stations built module by module (2026-10-21): today, or every part with the deployment era off.
+        hdr.buildDays = launchDeployEra ? (float)(((double)simDayJ2000 * 86400.0 + simSecInDay) / 86400.0) : 1e9f;
         hdr.scenNowSec = (int32_t)std::clamp(std::floor((double)simDayJ2000 * 86400.0 + simSecInDay - kesslerEpoch()),
                                              -2147483000.0, 2147483000.0);
         // Show / Highlight per constellation (one bit each; the shader reads constIdx's low byte).
@@ -4388,6 +4390,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
             inst.rot[g * 3 + c] = glm::vec4(glm::vec3(gp.R[c]), 0.0f);
         inst.trans[g] = glm::vec4(glm::vec3(gp.t), 0.0f);
     }
+    inst.trans[0].w = meshBuildCode(tNow); // a station built module by module (instCompAbsent)
     const double rOverD = satphot::kEarthRadiusM / glm::length(P);
     const SatEarthLight earthL = earthshineLight(-up, sun, rOverD); // already in the viewer's ECEF axes
     inst.sun = glm::vec4(glm::vec3(sun), (float)lit);
@@ -4605,7 +4608,8 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
         meshRenderer.recordCheck(cmd, cf, ci, viewerType, envProbes.probeSet(0));
         viewerCheckModelI = evalSatLobesPosed(type.lobes, type.groups, poses, sun, o,
                                               (double)kSunAlpha * kSunAlpha, nullptr,
-                                              viewerShadows ? &type.occlusion : nullptr, true);
+                                              viewerShadows ? &type.occlusion : nullptr, true, 1.0,
+                                              launchDeployEra ? tNow / 86400.0 : 1e30); // (stations by date)
         viewerCheckTanHalf = tanHalf;
         viewerCheckPhaseDeg = glm::degrees(std::acos(glm::clamp(glm::dot(sun, o), -1.0, 1.0)));
         viewerCheckAwaiting = true;
@@ -4678,6 +4682,7 @@ void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
     w[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, sceneDepthQDescSet, 3, 0, 1,
             VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &distInfo, nullptr, nullptr};
     vkUpdateDescriptorSets(ctx.device, sceneDepthQDescSet ? 5 : 4, w, 0, nullptr);
+    writeLightningMeshDescriptor(ctx); // the engine lights' pass reads the mesh distance too (lightning.frag)
 }
 
 // ─── Environment probes (2026-09-24) ─────────────────────────────────────────
@@ -5073,6 +5078,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
                 inst.rot[g * 3 + c] = glm::vec4(glm::vec3(gp.R[c]), 0.0f);
             inst.trans[g] = glm::vec4(glm::vec3(gp.t), 0.0f);
         }
+        inst.trans[0].w = meshBuildCode(tNow); // a station built module by module (instCompAbsent)
         const double rOverD = satphot::kEarthRadiusM / glm::length(satEcef);
         const double alphaE = rOverD / (1.0 + std::sqrt(std::max(0.0, 1.0 - rOverD * rOverD)));
         // Penumbral reddening, as sat_orbit.comp tints the sprite.
@@ -5153,7 +5159,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
                 if (no <= 0.0 || glm::dot(n, s) <= 0.0)
                     continue;
                 const double I = satLobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0,
-                                                  L.alpha2Mat + (double)kSunAlpha * kSunAlpha, L.distribution != 0, s, o, 0.0);
+                                                  L.alpha2Mat + (double)kSunAlpha * kSunAlpha, satLobeBeckmann(L), s, o, 0.0);
                 const double piL = glm::pi<double>() * I / std::max((double)L.area * no, 1e-9);
                 glint += I * glm::smoothstep(150.0, 1500.0, piL);
             }
@@ -5173,7 +5179,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
             const glm::dvec3 s = geo.sun;
             const glm::dvec3 o = -rel / range;
             const double spec = satLobeIntensity(n, L.area, L.diffArea, 0.0, L.f0,
-                                                 L.alpha2Mat + (double)kSunAlpha * kSunAlpha, L.distribution != 0, s, o, 0.0);
+                                                 L.alpha2Mat + (double)kSunAlpha * kSunAlpha, satLobeBeckmann(L), s, o, 0.0);
             const double w = glm::clamp(spec / r.intensitySun, 0.0, 1.0);
             const double sn = glm::dot(s, n);
             if (w > 0.01 && sn > 0.0)
@@ -5380,6 +5386,39 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     // averages a sub-pixel truss to its mean coverage (2026-10-20). marker0 is the viewer's; unused in the scene.
     frame.marker0 = skyTaaWanted() ? glm::vec4(std::fmod(0.61803399f * (float)(skyTaaFrame % 1024u), 1.0f), 1.0f, 0.0f, 0.0f)
                                    : glm::vec4(0.0f);
+    // Local lights (2026-10-21, sat_mesh.frag): last frame's engine / flood lights (SatelliteSim::MeshLocalLight, made
+    // by the launch visuals after this pass), with the eye's adaptation to them; the most important to what is near
+    // the camera first.
+    {
+        struct Ml
+        {
+            double w;
+            glm::dvec3 p;
+            const MeshLocalLight *m;
+        };
+        std::vector<Ml> ml;
+        ml.reserve(meshLightsPrev_.size());
+        const double adapt = (double)meshLightAdapt_;
+        for (const MeshLocalLight &m : meshLightsPrev_)
+        {
+            const glm::dvec3 p = m.ecef - obsEcef;
+            const double I = m.I * adapt;
+            // (where the light no longer matters: ~1e-4 sun of irradiance at its distance from the camera + 20 m)
+            const double d2 = glm::dot(p, p);
+            if (I < 1e-4 * (d2 + 400.0) * 1e-2)
+                continue;
+            ml.push_back({I / (d2 + 2500.0), p, &m});
+        }
+        const size_t nL = std::min<size_t>(ml.size(), (size_t)GpuMeshFrame::kLocalLights);
+        std::partial_sort(ml.begin(), ml.begin() + nL, ml.end(), [](const Ml &a, const Ml &b) { return a.w > b.w; });
+        frame.lightInfo = glm::vec4((float)nL, 0.0f, 0.0f, 0.0f);
+        for (size_t i = 0; i < nL; ++i)
+        {
+            frame.lightPos[i] = glm::vec4(glm::vec3(ml[i].p), (float)(ml[i].m->I * adapt));
+            frame.lightCol[i] = glm::vec4(ml[i].m->col, ml[i].m->rs);
+            frame.lightDir[i] = glm::vec4(glm::vec3(ml[i].m->aimEcef), ml[i].m->cosCut);
+        }
+    }
 
     // ── Sharp reflections: the largest instances with a mirror-smooth material ──────────────────
     // Each gets its mirror pixels' reflection rendered per pixel (sat_sky.frag SKY_REFL, from the
@@ -6610,6 +6649,7 @@ SatOrbitElems SatelliteSim::rosterElemsOf(const SatOrbit &orb) const
     e.formP = orb.formP;
     e.formQ = orb.formQ;
     e.formK = orb.formK;
+    e.buildByDate = launchDeployEra; // stations built module by module (SatComponent::sinceDays)
     return e;
 }
 

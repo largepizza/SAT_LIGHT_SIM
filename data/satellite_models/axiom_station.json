@@ -152,7 +152,8 @@
             "material": "module_skin",
             "arc_material": "cells",
             "arc_deg": [270, 450],
-            "group": "station"
+            "group": "station",
+            "since": "2028-03-01"
         },
         {
             "name": "axiom_hab1",
@@ -164,7 +165,8 @@
             "material": "module_skin",
             "arc_material": "cells",
             "arc_deg": [270, 450],
-            "group": "station"
+            "group": "station",
+            "since": "2028-03-01"
         },
         {
             "name": "axiom_hab1_seg2",
@@ -176,7 +178,8 @@
             "material": "module_skin",
             "arc_material": "cells",
             "arc_deg": [270, 450],
-            "group": "station"
+            "group": "station",
+            "since": "2028-03-01"
         },
         {
             "name": "axiom_hab1_band",
@@ -187,7 +190,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2028-03-01"
         },
         {
             "name": "axiom_hab2_seg0",
@@ -199,7 +203,8 @@
             "material": "module_skin",
             "arc_material": "cells",
             "arc_deg": [270, 450],
-            "group": "station"
+            "group": "station",
+            "since": "2029-09-01"
         },
         {
             "name": "axiom_hab2",
@@ -211,7 +216,8 @@
             "material": "module_skin",
             "arc_material": "cells",
             "arc_deg": [270, 450],
-            "group": "station"
+            "group": "station",
+            "since": "2029-09-01"
         },
         {
             "name": "axiom_hab2_seg2",
@@ -223,7 +229,8 @@
             "material": "module_skin",
             "arc_material": "cells",
             "arc_deg": [270, 450],
-            "group": "station"
+            "group": "station",
+            "since": "2029-09-01"
         },
         {
             "name": "axiom_hab2_band",
@@ -234,7 +241,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-09-01"
         },
         {
             "name": "axiom_rmf_seg0",
@@ -246,7 +254,8 @@
             "material": "module_skin",
             "arc_material": "cells",
             "arc_deg": [270, 450],
-            "group": "station"
+            "group": "station",
+            "since": "2030-06-01"
         },
         {
             "name": "axiom_rmf",
@@ -258,7 +267,8 @@
             "material": "module_skin",
             "arc_material": "cells",
             "arc_deg": [270, 450],
-            "group": "station"
+            "group": "station",
+            "since": "2030-06-01"
         },
         {
             "name": "axiom_rmf_seg2",
@@ -270,7 +280,8 @@
             "material": "module_skin",
             "arc_material": "cells",
             "arc_deg": [270, 450],
-            "group": "station"
+            "group": "station",
+            "since": "2030-06-01"
         },
         {
             "name": "axiom_rmf_band",
@@ -281,7 +292,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2030-06-01"
         },
         {
             "name": "axiom_airlock",
@@ -292,7 +304,8 @@
             "rotation_quat": [-0.5, -0.5, -0.5, 0.5],
             "caps": true,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2029-01-01"
         },
         {
             "name": "pptm_wing_s_a",
@@ -407,7 +420,8 @@
             "material": "radiator",
             "back_material": "radiator",
             "group": "radiators",
-            "pivot": [-23.0, 0.0, 0.0]
+            "pivot": [-23.0, 0.0, 0.0],
+            "since": "2030-06-01"
         },
         {
             "name": "radiator_s_yoke",
@@ -417,7 +431,8 @@
             "material": "metal",
             "group": "radiators",
             "render_only": true,
-            "pivot": [-23.0, 0.0, 0.0]
+            "pivot": [-23.0, 0.0, 0.0],
+            "since": "2030-06-01"
         },
         {
             "name": "radiator_p",
@@ -428,7 +443,8 @@
             "material": "radiator",
             "back_material": "radiator",
             "group": "radiators",
-            "pivot": [-23.0, 0.0, 0.0]
+            "pivot": [-23.0, 0.0, 0.0],
+            "since": "2030-06-01"
         },
         {
             "name": "radiator_p_yoke",
@@ -438,7 +454,8 @@
             "material": "metal",
             "group": "radiators",
             "render_only": true,
-            "pivot": [-23.0, 0.0, 0.0]
+            "pivot": [-23.0, 0.0, 0.0],
+            "since": "2030-06-01"
         },
         {
             "name": "port_fwd",
@@ -471,7 +488,8 @@
             "caps": "top",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2030-06-01"
         },
         {
             "name": "port_aft_ring",
@@ -482,7 +500,8 @@
             "caps": "both",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2030-06-01"
         },
         {
             "name": "port_zenith_0",
@@ -493,7 +512,8 @@
             "caps": "top",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2028-03-01"
         },
         {
             "name": "port_zenith_0_ring",
@@ -504,7 +524,8 @@
             "caps": "both",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2028-03-01"
         },
         {
             "name": "port_nadir_0",
@@ -515,7 +536,8 @@
             "caps": "top",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2028-03-01"
         },
         {
             "name": "port_nadir_0_ring",
@@ -526,7 +548,8 @@
             "caps": "both",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2028-03-01"
         },
         {
             "name": "port_zenith_1",
@@ -537,7 +560,8 @@
             "caps": "top",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-09-01"
         },
         {
             "name": "port_zenith_1_ring",
@@ -548,7 +572,8 @@
             "caps": "both",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-09-01"
         },
         {
             "name": "port_nadir_1",
@@ -559,7 +584,8 @@
             "caps": "top",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-09-01"
         },
         {
             "name": "port_nadir_1_ring",
@@ -570,7 +596,8 @@
             "caps": "both",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-09-01"
         },
         {
             "name": "earth_observatory",
@@ -581,7 +608,8 @@
             "caps": false,
             "material": "glass",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2030-06-01"
         },
         {
             "name": "arm_boom_1",
@@ -590,7 +618,8 @@
             "position": [-9.5, 2.5, -1.2],
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-09-01"
         },
         {
             "name": "arm_boom_2",
@@ -599,7 +628,8 @@
             "position": [-13.0, 2.5, -2.6],
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-09-01"
         },
         {
             "name": "hga_mast",
@@ -709,7 +739,8 @@
         {
             "name": "port_zenith_0",
             "position": [0.0, 0.0, -2.5],
-            "axis": [0.0, 0.0, -1.0]
+            "axis": [0.0, 0.0, -1.0],
+            "since": "2028-03-01"
         }
     ]
 }

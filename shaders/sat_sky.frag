@@ -5801,7 +5801,26 @@ void main() {
                                 float al  = dot(Ck, reflDir);
                                 float mis = length(Ck - reflDir * al);
                                 float angS = al > 0.0 ? atan(mis, al) : 3.0;
-                                rEmitBad = max(rEmitBad, (1.0 - smoothstep(rad, 1.6 * rad, angE)) * smoothstep(0.03, 0.10, angS));
+                                // Only where the flame DOMINATES the texel (2026-10-21): its composite against the cloud
+                                // just outside the disc round the light (four taps 2.5 x its radius out, the dimmest): a
+                                // cloud lit by the flame or by the Moon is smooth across the disc, a flame is a compact spot
+                                // many times brighter. Real clouds near a flame keep their reflection.
+                                float dom = 1.0;
+                                {
+                                    vec3  lc   = mat3(pc.skyView) * (Lc / dL);
+                                    float tHF  = tan(pc.fovYRad * 0.5);
+                                    vec2  lu   = vec2(lc.x, -lc.y) / (-min(lc.z, -1e-3) * tHF * 2.0);
+                                    vec2  lUV  = vec2(lu.x / pc.aspect + 0.5, lu.y + 0.5);
+                                    float off  = 2.5 * rad / (2.0 * tHF);
+                                    const vec3 kL = vec3(0.2126, 0.7152, 0.0722);
+                                    float ring = 1e30;
+                                    for (int q = 0; q < 4; ++q) {
+                                        vec2 o = (q < 2) ? vec2((q == 0 ? -off : off) / pc.aspect, 0.0) : vec2(0.0, q == 2 ? -off : off);
+                                        ring = min(ring, dot(texture(cloudTargetA, clamp(lUV + o, vec2(0.001), vec2(0.999))).rgb, kL));
+                                    }
+                                    dom = smoothstep(3.0, 10.0, dot(rCA.rgb, kL) / max(ring, 1e-12));
+                                }
+                                rEmitBad = max(rEmitBad, (1.0 - smoothstep(rad, 1.6 * rad, angE)) * smoothstep(0.03, 0.10, angS) * dom);
                             }
                         }
                         vec4  wq = wB * (1.0 - emK)

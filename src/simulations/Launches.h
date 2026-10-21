@@ -38,6 +38,10 @@ struct Site
     double onlineT = -1e300;
     bool fictional = false;
     std::vector<std::pair<std::string, double>> onlineFor; // per vehicle id: a later date (39A's Starship tower)
+    // The pad on the ground by date (2026-10-21, "pad_history": [[date, kind], ...], kind -1 = no pad): what is
+    // DRAWN there (ground pattern, mesh, lights, city exclusion), independent of which vehicles fly. Empty = derived
+    // from the vehicles at their onlineFor dates (SatelliteSimLaunches.cpp buildPads).
+    std::vector<std::pair<double, int>> padHistory;
     double onlineForVehicle(const std::string &veh) const
     {
         for (const auto &p : onlineFor)
@@ -69,6 +73,8 @@ struct Vehicle
     double ventChance = 0.35;        // the upper stage vents spinning after its deorbit burn (a spiral)
     double mountM = 0.0;             // the launch mount's height: the vehicle stands on it (Starship: ~20 m)
     double catchM = 0.0;             // a tower-caught booster stops this far above the mount (its aft end)
+    double legM = 0.0;               // its deployed landing legs' feet stand this far below its aft end (2026-10-21:
+                                     // the track's touchdown is the aft end; it stops this much higher, feet on the deck)
     // Payload fairing (2026-10-20, issue 20261019_225243): the halves separate once the upper stage passes this
     // altitude (0 = no fairing: Starship, Dragon); the payload adapter's top on the upper stage (its model's +Z, m:
     // tools/make_rocket_models.py prints it); Starship's payload door ("PEZ" slot) height above its aft end.
@@ -139,6 +145,10 @@ struct RosterHistory
     std::vector<std::pair<double, double>> count; // (J2000 s, members present); a fraction of the group if <= 1 and
                                                   // "fraction" is set
     bool fraction = false;
+    // A photometric BENCHMARK shell (2026-10-21: the 2020 V1.0 / VisorSat shells, the same satellites Starlink Gen1's
+    // early first fills stand for): with the deployment era on it is not in the sky unless the player opts in
+    // (launches.era_benchmark_shells); the benchmarks / accuracy gate read the models directly and never need it.
+    bool benchmark = false;
 };
 
 double dateToJ2000(const std::string &s); // "YYYY-MM-DD[THH:MM[:SS]]" (UTC) -> s since J2000; NaN if malformed
@@ -207,7 +217,7 @@ struct Track
 // The booster's whole flight (ascent, boostback, entry and landing burns: ground-relative) and the upper stage's
 // ascent to its parking orbit at hPark (to t2).
 // recovery < 0: the vehicle's own; 2 (droneship) lands at v.droneDistKm downrange (or its ballistic point) on a
-// deck v.ships[0].deckM high (hLand < 0) or at hLand.
+// deck v.ships[0].deckM high (hLand < 0) or at hLand. Either way + v.legM: the track is the aft end, the feet land.
 Track boosterTrack(const Vehicle &v, int recovery = -1, double hLand = -1.0);
 Track upperTrack(const Vehicle &v, double hPark);
 

@@ -100,6 +100,12 @@ struct LMember
     double tRel = 0.0;      // its release from the dispenser (s, J2000): the train leaves one after another
     glm::dvec3 sepDir{0.0}; // its separation drift (radial, along, cross; m/s) from the dispenser, eased out with depOff
     glm::dvec3 depVel{0.0}; // at its release, the dispenser's velocity less the member's (same axes, rotating frame)
+    // Its FREE FLIGHT (2026-10-21, mission-ops suite): every member of a train flies about ONE reference orbit, the
+    // upper stage's parking circle (Clohessy-Wiltshire, curvilinear: x radial, y arc length along it, z cross-track),
+    // from its place at release (ffP: the dispenser / stack slot) with its separation velocity (ffV, relative to the
+    // circle). ff: set (memberState flies it for kFreeFlightS, then eases into the member's own path).
+    bool ff = false;
+    glm::dvec3 ffP{0.0}, ffV{0.0};
     // Its place in the payload stack (2026-10-20, launches.json "stack"; stackSlot): in the upper stage's body frame,
     // the satellite's origin (slotO), its body axes (slotR: columns = its X, Y, Z in the stage's), the direction it
     // leaves in (exitDir). stacked: the program has a stack — the satellite is drawn on the stage until its release
@@ -259,6 +265,9 @@ struct LBatch
     double deckM = 3.0;
     glm::dvec3 shipG{1, 0, 0}, shipHome{0, 1, 0}; // its station and the horizontal direction home (unit, there)
     double tShipOn = 0.0, tLand = 0.0, tShipDepart = 0.0, tShipGone = 0.0;
+    // The sea state at the ship (2026-10-21; 1 = the default sea, the drawn waves' rule: SatelliteSim::shipSeaState),
+    // eased; set each frame by launchShipJobs while the ship is out (-1 = not yet: the default). Its swell (shipSwell).
+    mutable float seaK = -1.0f;
     LCrew crew; // a crew spacecraft's own flight (a crew program with a spacecraft model)
 };
 
@@ -281,13 +290,76 @@ struct LPad
     std::string name;
     double onlineT = -1e300;       // the deployment era: built from this date (the earliest of its sites)
     bool fictional = false;
+    // What stands here by date (2026-10-21): (from J2000 s, kind; -1 = nothing), sorted; `kind` above is the last
+    // (the 2036 pad, drawn at every date with the deployment era off). Built by buildPads from the sites'
+    // pad_history or their vehicles' online dates (39A: Shuttle pad, Falcon from 2017, its Starship tower 2027-03).
+    std::vector<std::pair<double, int>> kindHist;
 };
+// The pad's kind at t (-1 = not there), with its time-dependent radii. era false: the 2036 pad always.
+static int padKindAt(const LPad &p, double t, bool era)
+{
+    if (!era)
+        return p.kind;
+    int k = -1;
+    for (const auto &h : p.kindHist)
+    {
+        if (h.first > t)
+            break;
+        k = h.second;
+    }
+    return k;
+}
+static double padExclRFor(int kind) { return kind == 1 ? 3200.0 : 3000.0; }
+static double padFlatRFor(int kind) { return kind == 2 ? 450.0 : 350.0; }
+// A copy of the pad as it stands at t (kind, exclusion and graded radii); kind -1 = not there.
+static LPad padAtTime(const LPad &p, double t, bool era)
+{
+    LPad q = p;
+    q.kind = padKindAt(p, t, era);
+    if (q.kind >= 0)
+    {
+        q.exclR = padExclRFor(q.kind);
+        q.flatR = padFlatRFor(q.kind);
+    }
+    return q;
+}
 // Where things stand on a pad, in its (u, v) frame (metres): shared by the ground pattern (sat_sky.frag padGround,
 // which must agree), the meshes and the lights.
 constexpr double kPadTowerV = -32.0;   // the tower's centre (u = 0); its arms reach +v over the mount at the centre
 constexpr double kShipCatchAboveGround = 55.0; // a caught ship's aft end (the chopsticks hold it under its flaps)
 constexpr double kShipEntryS = 480.0;  // the entry glow (shipEntry) lasts this long
 constexpr double kCaughtHoldS = 1800.0;
+// A train's free flight (2026-10-21): each member flies free from its release for this long, then its own propulsion
+// takes it into its own path (eased out by two days after the release).
+constexpr double kFreeFlightS = 6.0 * 3600.0;
+// The least distance two members of a train come to in free flight (from a minute after the later one leaves).
+constexpr double kReleaseGapM = 30.0;
+// A train's separation velocity in the parking circle's plane (radial, along; m/s): the SAME for every member, so
+// their relative motion is one Clohessy-Wiltshire trajectory shifted in time and never closes below the chord it
+// leaves with (members differ only across the plane, which never brings two together). Mostly up out of the stack,
+// a little back for a dispenser point; forward off the nose for a column (its satellites' lateral directions go
+// across the plane). (A pure along-track push collides with itself 0.41 orbit later: release spans stay short.)
+static glm::dvec2 releaseInPlane(int layout, double sp)
+{
+    if (layout == launch::Stack::Column)
+        return sp * glm::dvec2(0.25, 0.968);
+    if (layout == launch::Stack::Pez || layout == launch::Stack::Flat)
+        return glm::dvec2(sp, 0.0);
+    return sp * glm::dvec2(0.97, -0.22);
+}
+// The least speed of that trajectory relative to the stage (min over an orbit of |dX/dt|): two members released dt
+// apart stay at least this x dt apart.
+static double releaseMinRate(const glm::dvec2 &v)
+{
+    double m = 1e30;
+    for (int k = 0; k < 128; ++k)
+    {
+        const double th = glm::two_pi<double>() * (double)k / 128.0, c = std::cos(th), s = std::sin(th);
+        const double xp = v.x * c + 2.0 * v.y * s, yp = -2.0 * v.x * s + v.y * (4.0 * c - 3.0);
+        m = std::min(m, std::sqrt(xp * xp + yp * yp));
+    }
+    return m;
+}
 constexpr double kLzDistM = 2300.0;
 // Where a booster comes to rest (LBatch::landKind; harness `launch state` -> recovery, and the landing effects key off
 // it: dust on a pad or the ground, spray off a ship's deck).
@@ -572,7 +644,7 @@ struct SatelliteSim::LaunchState
     uint64_t stackMeshKey[SatelliteSim::kStackMeshSlots] = {}; // per reserved slot: batch key ^ (member + 1) << 48
     uint32_t nStacked = 0, nFairings = 0, nCrew = 0;
     uint64_t shipMeshKey[SatelliteSim::kShipMeshSlots] = {}; // the landing ships drawn, per reserved slot (batch key)
-    uint32_t nShips = 0;
+    uint32_t nShips = 0, nShipRobots = 0;
     double lastFullFreeT = -1e300; // the last full pass over the batches (launchUpdate's freeing)
     // (2026-10-20, CPU) The window walk's result, reused while sim time stays within kWalkMarginS (300 s) of walkT:
     // every plane and a hash lookup per batch each frame was ~0.33 ms with Starmind's ~5300 live batches.
@@ -884,6 +956,76 @@ static void buildPads(SatelliteSim::LaunchState &L)
         L.sitePad[i] = at;
         L.pads[at].onlineT = std::min(L.pads[at].onlineT, st.onlineT);
         st.elevM = L.pads[at].elevM;
+    }
+    // Each pad's history (2026-10-21): per site its pad_history, else a pad from its online date (kind 0) raised to
+    // each vehicle's kind from the date that vehicle flies there (onlineFor: 39A's Starship tower); the pad is the
+    // largest of its sites' kinds at each change point. The 2036 kind (`kind`) is unchanged.
+    auto siteKindAt = [&](size_t si, double t) {
+        const launch::Site &st = L.cat.sites[si];
+        if (!st.padHistory.empty())
+        {
+            int k = -1;
+            for (const auto &h : st.padHistory)
+                if (h.first <= t)
+                    k = h.second;
+            return k;
+        }
+        if (st.onlineT > t)
+            return -1;
+        int k = 0;
+        for (const launch::Vehicle &vh : L.cat.vehicles)
+            if (std::find(vh.sites.begin(), vh.sites.end(), (int)si) != vh.sites.end() && st.onlineForVehicle(vh.id) <= t)
+            {
+                if (vh.recovery == 1 && vh.mountM > 0.0)
+                    k = 2;
+                else if (vh.id.rfind("falcon9", 0) == 0)
+                    k = std::max(k, 1);
+            }
+        if (st.padKind >= 0)
+            k = std::min(st.padKind, 2);
+        return k;
+    };
+    for (size_t p = 0; p < L.pads.size(); ++p)
+    {
+        LPad &pd = L.pads[p];
+        std::vector<double> ts{-1e300};
+        for (size_t si = 0; si < L.cat.sites.size(); ++si)
+        {
+            if (L.sitePad[si] != (int)p)
+                continue;
+            const launch::Site &st = L.cat.sites[si];
+            for (const auto &h : st.padHistory)
+                ts.push_back(h.first);
+            ts.push_back(st.onlineT);
+            for (const auto &f : st.onlineFor)
+                ts.push_back(std::max(f.second, st.onlineT));
+        }
+        std::sort(ts.begin(), ts.end());
+        ts.erase(std::unique(ts.begin(), ts.end()), ts.end());
+        pd.kindHist.clear();
+        for (double t : ts)
+        {
+            int k = -1;
+            for (size_t si = 0; si < L.cat.sites.size(); ++si)
+                if (L.sitePad[si] == (int)p)
+                    k = std::max(k, siteKindAt(si, t));
+            if (pd.kindHist.empty() || pd.kindHist.back().second != k)
+                pd.kindHist.push_back({t, k});
+        }
+        // The 2036 pad keeps the kind buildPads gave it (and its landing zone); the era draws the history.
+        pd.onlineT = 1e300;
+        for (const auto &h : pd.kindHist)
+            if (h.second >= 0)
+            {
+                pd.onlineT = h.first;
+                break;
+            }
+        std::string hs;
+        for (const auto &h : pd.kindHist)
+            hs += " " + (h.first < -1e299 ? std::string("always") : std::to_string((int)std::lround(2000.0 + h.first / 31557600.0))) +
+                  ":" + std::to_string(h.second);
+        if (pd.kindHist.size() > 1 || (pd.kindHist.size() == 1 && pd.kindHist[0].second != pd.kind))
+            Log::line("launches: pad " + L.cat.sites[pd.site].id + " history" + hs);
     }
 }
 
@@ -1345,7 +1487,7 @@ template <class F> static void planShipLanding(SatelliteSim &sim, SatelliteSim::
         for (int p : pads)
         {
             const glm::dvec3 g = L.pads[p].g;
-            if (glm::dot(g, e) < 0.98 || !onlineAt(L, L.pads[p].onlineT, Td))
+            if (glm::dot(g, e) < 0.98 || padKindAt(L.pads[p], Td, L.deployOn) != 2) // (a catch tower there by then)
                 continue;
             const double a = kR * glm::dot(g - e, dT), x = kR * glm::dot(g - e, c);
             if (a < 120e3 || a > 450e3 || std::abs(x) > 200e3)
@@ -1712,6 +1854,12 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     const bool earlyVeh = std::find(pg.vehicles.begin(), pg.vehicles.end(), B.veh) == pg.vehicles.end();
     const launch::Stack &stk = earlyVeh ? kNoStack : pg.stack;
     B.deployInterval = stk.intervalS >= 0.0 ? stk.intervalS : vh.deployIntervalS;
+    // (2026-10-21) Far enough apart that two members never come within kReleaseGapM in free flight: they follow one
+    // trajectory, deployInterval apart (a Falcon 9 dispenser point: ~67 s; Starship's door: its 45 s).
+    const double relSp = stk.sepMps >= 0.0 ? stk.sepMps : vh.sepSpeedMps;
+    const glm::dvec2 relV = releaseInPlane(stk.layout, relSp);
+    if (B.mem.size() > 1 && relSp > 0.0)
+        B.deployInterval = std::max(B.deployInterval, kReleaseGapM / std::max(releaseMinRate(relV), 1e-3));
     B.tDeorbBurn = std::max(B.tD + 1800.0 + 3600.0 * h01(B.seed, 7, 1),
                             B.tD + B.deployInterval * (double)B.mem.size() + 900.0);
     auto setDeorbit = [&]()
@@ -1721,10 +1869,11 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
         B.eE = (ra - rp) / (ra + rp);
         B.nE = launch::meanMotion(B.aE);
         const double dv = std::sqrt(launch::kGM / ra) - std::sqrt(launch::kGM * (2.0 / ra - 1.0 / B.aE));
-        // One engine, throttled (~12% of the stage's full thrust): a 12-60 s burn.
+        // One engine, throttled (~12% of the stage's full thrust; never more): a burn of 12 s or more.
         const double acc = 0.12 * vh.flow2 * vh.vex2 / std::max(vh.upperMassKg, 1000.0);
-        B.burnDur = std::clamp(dv / std::max(acc, 0.1), 12.0, 60.0);
-        B.thApo = B.thIns + B.nPark * (B.tDeorbBurn - tL - B.t2);
+        B.burnDur = std::clamp(dv / std::max(acc, 0.1), 12.0, 240.0);
+        // (The ellipse is the impulsive equivalent of the finite burn: its apoapsis at the burn's middle, deorbitApoT.)
+        B.thApo = B.thIns + B.nPark * (deorbitApoT(B) - tL - B.t2);
         const double rEI = kR + 100000.0;
         const double cE = std::clamp((1.0 - rEI / B.aE) / std::max(B.eE, 1e-6), -1.0, 1.0);
         const double E = glm::two_pi<double>() - std::acos(cE); // after the apoapsis, falling toward the perigee
@@ -1733,7 +1882,7 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
         B.thEI = B.thApo + (nu < 0.0 ? nu + glm::two_pi<double>() : nu) - glm::pi<double>();
         B.vEI = std::sqrt(launch::kGM * (2.0 / rEI - 1.0 / B.aE));
         B.vrEI = std::sqrt(launch::kGM / (B.aE * (1.0 - B.eE * B.eE))) * B.eE * std::sin(nu); // < 0: falling
-        B.tStageRE = B.tDeorbBurn + (M - glm::pi<double>()) / B.nE;
+        B.tStageRE = deorbitApoT(B) + (M - glm::pi<double>()) / B.nE;
         B.tStageGone = B.tStageRE;
         B.entryOff = glm::dvec3(0.0);
         if (!vh.upperDeorbit)
@@ -1807,6 +1956,7 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
                 continue;
             mb.depOff = glm::dvec3(0.0);
             mb.depVel = glm::dvec3(0.0);
+            mb.ff = false; // (the offsets below are measured from the member's own path)
             // The dispenser less the member's own path, in the member's (radial, along, cross) axes, at tt.
             auto offsetAt = [&](double tt, glm::dvec3 &o) {
                 glm::dvec3 P1, P0, r, v;
@@ -1860,6 +2010,32 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
                 mb.omega = ax * glm::radians(0.2 + 0.6 * h01(ms, 35, 1)) * (stk.layout == launch::Stack::Pez ? 0.5 : 1.0);
                 mb.slewT0 = mb.tRel + 60.0 + 60.0 * h01(ms, 36, 1);
                 mb.slewDur = 180.0;
+            }
+            // Its free flight about the parking circle (2026-10-21, replacing the drift about each member's own path:
+            // their planes differ by up to a degree, and the members' linearised drifts disagreed by metres: pairs
+            // closed to 0.8-1.6 m in the first minutes and again about an orbit later; a random spread of +-0.04-0.12
+            // m/s per axis did the rest). The dispenser in the circle's curvilinear frame at tRel:
+            {
+                const double th0 = B.thIns + B.nPark * (mb.tRel - B.tL - B.t2);
+                const glm::dvec3 Ur = std::cos(th0) * B.U0 + std::sin(th0) * B.A0;
+                const glm::dvec3 Ar = -std::sin(th0) * B.U0 + std::cos(th0) * B.A0;
+                const glm::dvec3 nose = glm::normalize(Pst - Pb), up = glm::normalize(Pst);
+                const glm::dvec3 disp = mb.stacked ? Pst + upperFrame(L, B, mb.tRel - B.tL) * mb.slotO
+                                                   : Pst + noseOff * nose + sideOff * up;
+                const double z = glm::dot(disp, B.N);
+                const glm::dvec3 rin = disp - z * B.N;
+                mb.ffP = glm::dvec3(glm::length(rin) - B.rPark, B.rPark * std::atan2(glm::dot(rin, Ar), glm::dot(rin, Ur)), z);
+                // Its velocity relative to the circle: the train's common in-plane push, across the plane its own
+                // (a column's satellites leave sideways; + a small spread, golden-ratio stepped so neighbours differ),
+                // and an along-track trim of -2 n x0 that cancels the secular drift its radial place would give it.
+                const double sp = stk.sepMps >= 0.0 ? stk.sepMps : vh.sepSpeedMps;
+                const double sd = stk.spreadMps >= 0.0 ? stk.spreadMps : vh.sepSpreadMps;
+                const glm::dvec2 vin = releaseInPlane(mb.stacked ? stk.layout : (int)launch::Stack::None, sp);
+                double vc = sd * (2.0 * std::fmod(0.6180339887498949 * (double)mi + 0.5 * h01(B.seed, 37, 1), 1.0) - 1.0);
+                if (mb.stacked && stk.layout == launch::Stack::Column)
+                    vc += sp * mb.exitDir.x; // (the stage's X is the circle's normal at deployment)
+                mb.ffV = glm::dvec3(vin.x, vin.y - 2.0 * B.nPark * mb.ffP.x, vc);
+                mb.ff = true;
             }
         }
     }
@@ -1930,6 +2106,50 @@ static bool memberState(const SatelliteSim &sim, const LBatch &B, const LMember 
     // along-track one drift), and the offset eases out over two days (the satellite's own thrusters). (Until 2026-10-19 the drift was a straight line in the
     // rotating frame, which no orbit follows: the GPU's Kepler record of it was off by metres after 2 s and by up
     // to hundreds of metres after the 20-s rewrites — the jitter at 10x.)
+    // Free flight (2026-10-21): about the train's ONE reference orbit, the stage's parking circle, from the member's
+    // place at release with its separation velocity (LMember::ffP / ffV), so the members' relative motion is exactly
+    // consistent; before its release it rides in its slot. kFreeFlightS after the release its own propulsion takes
+    // over: the offset from its own path eases out by two days, as before.
+    if (kind == 0 && mb.ff && !gLegacyRecords)
+    {
+        const double age = t - mb.tRel;
+        double f = 1.0;
+        if (age > kFreeFlightS)
+        {
+            const double s = glm::clamp((age - kFreeFlightS) / (2.0 * 86400.0 - kFreeFlightS), 0.0, 1.0);
+            f = 1.0 - s * s * (3.0 - 2.0 * s);
+        }
+        if (f <= 0.0)
+            return true;
+        glm::dvec3 X = mb.ffP, Xv(0.0);
+        if (age > 0.0)
+            launch::cwState(mb.ffP, mb.ffV, B.nPark, age, X, Xv);
+        const double th = B.thIns + B.nPark * (t - B.tL - B.t2) + X.y / B.rPark;
+        const glm::dvec3 Ur = std::cos(th) * B.U0 + std::sin(th) * B.A0;
+        const glm::dvec3 Ar = -std::sin(th) * B.U0 + std::cos(th) * B.A0;
+        const glm::dvec3 rf = (B.rPark + X.x) * Ur + X.z * B.N;
+        const glm::dvec3 vf = Xv.x * Ur + (B.rPark + X.x) * (B.nPark + Xv.y / B.rPark) * Ar + Xv.z * B.N;
+        if (f >= 1.0)
+        {
+            r = rf;
+            v = vf;
+            return true;
+        }
+        // Easing into its own path: the free position's offset from it (radius, angle along it, across) scaled by f.
+        const glm::dvec3 U = r / glm::length(r);
+        const glm::dvec3 Cn = glm::normalize(glm::cross(r, v));
+        const glm::dvec3 A = glm::cross(Cn, U);
+        const double z = glm::dot(rf, Cn);
+        const glm::dvec3 rin = rf - z * Cn;
+        const double rl = glm::length(r), dx = glm::length(rin) - rl;
+        const double ang = f * std::atan2(glm::dot(rin, A), glm::dot(rin, U));
+        const double ca = std::cos(ang), sa = std::sin(ang);
+        const glm::dvec3 U2 = ca * U + sa * A, A2 = ca * A - sa * U;
+        const double vu = glm::dot(v, U), va = glm::dot(v, A), vc = glm::dot(v, Cn);
+        r = (rl + f * dx) * U2 + f * z * Cn;
+        v = (1.0 - f) * (vu * U2 + va * A2 + vc * Cn) + f * vf;
+        return true;
+    }
     if (kind == 0 && glm::dot(mb.depOff, mb.depOff) > 0.0)
     {
         const double age = std::max(t - mb.tRel, 0.0);
@@ -2197,14 +2417,16 @@ static void planRecovery(const SatelliteSim::LaunchState &L, LBatch &B, const la
     }
     B.landKind = kLandGround;
     // The track touches down at the deck's height (the vehicle's first ship, else 3 m): the ground's height less it.
+    // (the track ends vh.legM above it: the legs' feet on the ground)
     const double hTrack = tr.p.back().y;
-    B.landBase = std::max(demElevCpu(la, lo), 0.0) - hTrack;
+    B.landBase = std::max(demElevCpu(la, lo), 0.0) + vh.legM - hTrack;
 }
 
 // Where this launch's booster comes to rest (for the landing effects: dust on a pad or the ground, spray off a ship's
 // deck; harness `launch state` -> boosters[].land_kind). Returns its kind (kLand*: kLandNone for an expendable one),
-// the touchdown time tTouch and E = the point (Earth-fixed AT t: a ship's moves) where the booster's aft end stands:
-// a tower's catch point, a landing zone's ground, a ship's deck at its landing target, the ground downrange.
+// the touchdown time tTouch and E = the point (Earth-fixed AT t: a ship's moves) where the booster comes to rest:
+// a tower's catch point (its aft end), a landing zone's ground, a ship's deck at its landing target, the ground
+// downrange (its legs' feet: the aft end stands Vehicle::legM above them).
 static int boosterLandingAt(const SatelliteSim::LaunchState &L, const LBatch &B, double t, glm::dvec3 &E, double &tTouch)
 {
     const Track &tr = boosterTr(L, B);
@@ -2214,7 +2436,7 @@ static int boosterLandingAt(const SatelliteSim::LaunchState &L, const LBatch &B,
         return kLandNone;
     if (B.landKind == kLandShip)
     {
-        E = (kR + B.deckM) / kR * shipEcef(B, t);
+        E = shipDeckEcef(B, t, 0.0, 0.0, B.deckM);
         return kLandShip;
     }
     const glm::dvec2 p = tr.p.back();
@@ -2223,6 +2445,8 @@ static int boosterLandingAt(const SatelliteSim::LaunchState &L, const LBatch &B,
         E += B.lzOff + B.lzUp * glm::normalize(E);
     else if (B.landKind == kLandGround)
         E += B.landBase * glm::normalize(E);
+    if (B.landKind == kLandLz || B.landKind == kLandGround)
+        E -= L.cat.vehicles[B.veh].legM * glm::normalize(E);
     return B.landKind;
 }
 
@@ -2253,6 +2477,52 @@ static glm::dvec3 shipEcef(const LBatch &B, double t, glm::dvec3 *bow = nullptr)
     if (bow)
         *bow = -std::sin(a) * B.shipG + std::cos(a) * B.shipHome;
     return kR * (std::cos(a) * B.shipG + std::sin(a) * B.shipHome);
+}
+
+// The ship riding the swell (2026-10-21): heave (m), pitch (bow up) and roll (to starboard) in radians, each a sum of
+// three sinusoids with periods of ~6-14 s (hashed per ship) x the sea state there (seaK). A pure function of sim time
+// and the batch. Jacklyn, a ship four times the barge's displacement, moves less.
+static void shipSwell(const LBatch &B, double t, double &heave, double &pitch, double &roll)
+{
+    const double s = (B.seaK > 0.0f ? (double)B.seaK : 1.0) * (B.deckM > 5.0 ? 0.6 : 1.0);
+    heave = pitch = roll = 0.0;
+    static const double kPer[3] = {7.0, 9.5, 12.5};
+    for (int k = 0; k < 3; ++k)
+    {
+        const double w = glm::two_pi<double>() / (kPer[k] * (0.9 + 0.2 * h01(B.seed, 340 + k, 1)));
+        const double a = std::fmod(w * t, glm::two_pi<double>()) + glm::two_pi<double>() * h01(B.seed, 340 + k, 2);
+        heave += 0.3 * s * std::sin(a);
+        pitch += glm::radians(0.35) * s * std::sin(a + 1.3 + 0.9 * k);
+        roll += glm::radians(0.7) * s * std::sin(a + 2.1 + 2.3 * k);
+    }
+}
+// The ship's frame at t (Earth-fixed): its origin (the landing target at the waterline) and axes, riding the swell.
+struct ShipFrame
+{
+    glm::dvec3 O, bow, port, up;
+};
+static ShipFrame shipFrame(const LBatch &B, double t)
+{
+    glm::dvec3 bow0;
+    const glm::dvec3 S = shipEcef(B, t, &bow0);
+    const glm::dvec3 up0 = S / kR;
+    bow0 = glm::normalize(bow0 - glm::dot(bow0, up0) * up0);
+    const glm::dvec3 port0 = glm::cross(up0, bow0);
+    double hv, p, r;
+    shipSwell(B, t, hv, p, r);
+    ShipFrame F;
+    F.bow = std::cos(p) * bow0 + std::sin(p) * up0;
+    const glm::dvec3 up1 = -std::sin(p) * bow0 + std::cos(p) * up0;
+    F.port = std::cos(r) * port0 + std::sin(r) * up1;
+    F.up = -std::sin(r) * port0 + std::cos(r) * up1;
+    F.O = S + hv * up0;
+    return F;
+}
+// A point on the ship (its body frame: u toward the bow, v to port, h above the waterline), Earth-fixed.
+static glm::dvec3 shipDeckEcef(const LBatch &B, double t, double u, double v, double h)
+{
+    const ShipFrame F = shipFrame(B, t);
+    return F.O + h * F.up + u * F.bow + v * F.port;
 }
 
 // The landing frame's gnomonic plane (x east, y north at the target, metres) and back.
@@ -2329,18 +2599,23 @@ static bool rocketPos(const SatelliteSim::LaunchState &L, const LBatch &B, int s
         if (tau > vh.t1)
         {
             // Coming home to a landing zone beside the pad (Falcon RTLS): the track's touchdown is the pad's centre;
-            // over its last ~40 km it slides to the zone (2.3 km aside) and the zone's ground.
+            // over its last 150 s it slides to the zone (2.3 km aside) and the zone's ground.
+            // (2026-10-21: both blended in over the last 150 s of the descent by TIME, the last 15 s purely vertical; by
+            // downrange distance they were crossed in ~20 s at ~1.5 km/s, a 1.5-km height change that peaked the proper
+            // acceleration at 51-53 m/s^2 for Pallas-1 / Zhuque-3 to the ground and a Falcon 9 to its zone)
+            const double wT = glm::smoothstep(tr.tEnd - 150.0, tr.tEnd - 15.0, tau);
             if (B.landKind == kLandLz)
-            {
-                const double w = 1.0 - glm::smoothstep(3000.0, 40000.0, std::abs(p.x));
-                E += w * (B.lzOff + B.lzUp * glm::normalize(E));
-            }
+                E += wT * (B.lzOff + B.lzUp * glm::normalize(E));
             // Down on the ground downrange: the ground's height there.
             else if (B.landKind == kLandGround)
-                E += (1.0 - glm::smoothstep(5000.0, 40000.0, std::abs(p.x - B.xLand))) * B.landBase * glm::normalize(E);
-            // On the ship's deck once down, riding it home.
+                E += wT * B.landBase * glm::normalize(E);
+            // On the ship's deck once down (standing on its legs), riding it home (and its swell: over the last seconds
+            // of the landing burn the booster takes up the deck's motion, so it touches down on the moving deck).
             if (B.landKind == kLandShip && tau >= tr.tEnd)
-                E = (kR + B.deckM) / kR * shipEcef(B, t);
+                E = shipDeckEcef(B, t, 0.0, 0.0, B.deckM + vh.legM);
+            else if (B.landKind == kLandShip && tau > tr.tEnd - 6.0)
+                E += glm::smoothstep(tr.tEnd - 6.0, tr.tEnd, tau) *
+                     (shipDeckEcef(B, t, 0.0, 0.0, B.deckM + vh.legM) - (kR + B.deckM + vh.legM) / kR * shipEcef(B, t));
         }
         P = ecefToEci(E, t);
         return true;
@@ -2384,10 +2659,20 @@ static bool rocketPos(const SatelliteSim::LaunchState &L, const LBatch &B, int s
     P = B.rPark * (std::cos(th) * B.U0 + std::sin(th) * B.A0);
     if (t > B.tDeorbBurn)
     {
-        // The deorbit burn: from its parking circle onto the entry ellipse, blended over the burn (both start at the
-        // same point at the same speed's direction, so position and velocity stay continuous).
-        const double s = glm::clamp((t - B.tDeorbBurn) / std::max(B.burnDur, 1.0), 0.0, 1.0);
-        P = glm::mix(P, deorbitPos(B, t), s * s * (3.0 - 2.0 * s));
+        // The deorbit burn (2026-10-21): a constant thrust with 1-s start-up and shut-down ramps. Off the parking
+        // circle by Q(tau) / Q(D) x the entry ellipse's offset from it at the burn's end, Q the thrust profile's
+        // double integral: the displacement a finite burn makes, its acceleration the profile's (dv / D, ~flat), and at
+        // the end exactly on the ellipse at its speed, the ellipse being the impulsive burn at the profile's centroid
+        // (the middle: deorbitApoT). The smoothstep blend it replaced peaked at ~4x dv / D (Qianfan: ~90 m/s^2).
+        const double D = std::max(B.burnDur, 1.0), tau2 = std::min(t - B.tDeorbBurn, D);
+        if (t - B.tDeorbBurn >= D)
+            P = deorbitPos(B, t);
+        else
+        {
+            const double te = B.tDeorbBurn + D, the = B.thIns + B.nPark * (te - B.tL - B.t2);
+            const glm::dvec3 Ce = B.rPark * (std::cos(the) * B.U0 + std::sin(the) * B.A0);
+            P += deorbitBurnShape(tau2, D) * (deorbitPos(B, te) - Ce);
+        }
     }
     if (burn && t >= B.tDeorbBurn && t < B.tDeorbBurn + B.burnDur)
         *burn = launch::BURN_UPPER;
@@ -2395,10 +2680,33 @@ static bool rocketPos(const SatelliteSim::LaunchState &L, const LBatch &B, int s
     return true;
 }
 
-// The stage on its entry ellipse (apoapsis at the deorbit burn's start), ECI.
+// The deorbit ellipse's apoapsis: the impulsive equivalent of the finite burn, at its middle (the thrust profile below
+// is symmetric).
+static double deorbitApoT(const LBatch &B)
+{
+    return B.tDeorbBurn + 0.5 * std::max(B.burnDur, 1.0);
+}
+// The deorbit burn's displacement profile at tau of D s, normalised to 1 at the end: Q(tau) / Q(D), Q = the double
+// integral of the thrust (a trapezoid: 1-s ramps at start-up and shut-down, flat between).
+static double deorbitBurnShape(double tau, double D)
+{
+    const double r = std::min(1.0, 0.25 * D);
+    auto Q = [&](double x) {
+        if (x <= r)
+            return x * x * x / (6.0 * r);
+        const double qr = r * r / 6.0, vr = 0.5 * r;
+        if (x <= D - r)
+            return qr + vr * (x - r) + 0.5 * (x - r) * (x - r);
+        const double y = D - r, s = x - y;
+        const double qy = qr + vr * (y - r) + 0.5 * (y - r) * (y - r), vy = vr + (y - r);
+        return qy + vy * s + 0.5 * s * s - s * s * s / (6.0 * r);
+    };
+    return Q(glm::clamp(tau, 0.0, D)) / Q(D);
+}
+// The stage on its entry ellipse (apoapsis at the deorbit burn's middle, deorbitApoT), ECI.
 static glm::dvec3 deorbitPos(const LBatch &B, double t)
 {
-    const double M = glm::pi<double>() + B.nE * (t - B.tDeorbBurn);
+    const double M = glm::pi<double>() + B.nE * (t - deorbitApoT(B));
     double E = M;
     for (int i = 0; i < 8; ++i)
         E -= (E - B.eE * std::sin(E) - M) / (1.0 - B.eE * std::cos(E));
@@ -2613,11 +2921,14 @@ static bool stackSlot(const launch::Vehicle &vh, const launch::Stack &st, size_t
             const size_t per = (size_t)std::clamp(st.perTier, 1, 2);
             const size_t tiers = (n + per - 1) / per;
             const size_t k = tiers - 1 - i / per, j = i % per;
-            const double s = per == 2 ? (j == 0 ? -1.0 : 1.0) : 0.0;
+            // (two side by side along the stage's Y, the zenith: the upper one leaves first, both upward)
+            const double s = per == 2 ? ((j == 0) == st.sideX ? 1.0 : -1.0) : 0.0;
             // The satellite's X lies along the stage's Y, its Y along the stage's X.
             slot = (st.sideX ? glm::dvec3(0.0, s * st.offsetM, 0.0) : glm::dvec3(s * st.offsetM, 0.0, 0.0)) +
                    glm::dvec3(0.0, 0.0, vh.payloadBaseM + st.baseM + ((double)k + 0.5) * st.pitchM);
-            exitDir = glm::dvec3(0.0, 0.0, 1.0);
+            // Up, sliding off the stack's side (2026-10-21; it left forward along the stage, and a pure along-track push
+            // brings a train's members back together ~0.4 orbit later: releaseInPlane).
+            exitDir = glm::dvec3(0.0, 1.0, 0.0);
         }
     }
     o = slot - R * st.center;
@@ -2867,6 +3178,7 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     int stream = -1;           // a burn: its parcels are drawn as one polyline (consecutive in B.parcels)
     double lastEmit = -1e30;   // a gap in the emission starts a new stream
     int lastStage = -1, lastMode = -1;
+    double kappaMul = 1.0; // (a landing burn's exhaust: 0.5, set below)
     auto emit = [&](int stage, double tau, double dtE, double flow, double vex, int mode) {
         bool ok0, ok1;
         const glm::dvec3 p = rocketEcef(L, B, stage, tau, ok0);
@@ -2913,7 +3225,7 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         launch::ParcelOpts O;
         O.growK = vent ? 0.0 : 0.05 * (1.0 - glm::smoothstep(1500.0, 6000.0, h - padGround));
         O.groundM = glm::length(glm::normalize(p) - B.G0) * kR < 30000.0 ? padGround : 3.0;
-        B.parcels.push_back(launch::makeParcel(tau, p, vel + vex * ex, m, vent ? 2000.0 : kappaAt(h), albedoAt(h),
+        B.parcels.push_back(launch::makeParcel(tau, p, vel + vex * ex, m, vent ? 2000.0 : kappaAt(h) * kappaMul, albedoAt(h),
                                                vent ? ex : (spd > 5.0 ? vel / spd : up), vent ? vex * dtE : len,
                                                maxAge, windDir, windGain, vent ? 30.0 : 2000.0, windPhase, &O));
         B.parcels.back().thin = vent;
@@ -2955,7 +3267,7 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     {
         const glm::dvec3 G = B.G0;
         const glm::dvec3 u = pad ? pad->u : north, v = pad ? pad->v : east;
-        const bool deluge = pad ? pad->kind == 2 : vh.mountM > 0.0;
+        const bool deluge = pad ? padKindAt(*pad, B.tL, L.deployOn) == 2 : vh.mountM > 0.0;
         const double hImp = 60.0 * std::pow(vh.flow1 / 1000.0, 0.4);
         const double dtG = 0.75;
         int k = 0;
@@ -3004,7 +3316,7 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
             return;
         const glm::dvec3 GE = glm::normalize(PE);
         const double la = glm::degrees(std::asin(glm::clamp(GE.z, -1.0, 1.0))), lo = glm::degrees(std::atan2(GE.y, GE.x));
-        int surf; // 0 pad, 1 land, 2 sea
+        int surf; // 0 pad, 1 land, 2 sea, 3 a ship's deck
         double gnd;
         if (surfForce >= 0)
         {
@@ -3043,7 +3355,10 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
                 const glm::dvec3 dir = std::cos(ang) * eE + std::sin(ang) * nE;
                 const double spd = (40.0 + 50.0 * h01(B.seed, 261 + 7 * stage + k, j)) * (0.4 + 0.6 * std::sqrt(impK));
                 const double mL = flowL * dtL * impK / 3.0;
-                if (surf == 2) // sea spray: fine droplets, evaporating within a minute or two
+                if (surf == 3) // a ship's steel deck: the exhaust deflected sideways, a low, thin skirt (2026-10-21)
+                    groundCloud(2, tau, G, gnd, dir, spd * 1.2, mL * 1.2, 9.0, 0.9, glm::vec3(1.0f, 0.97f, 0.92f), 50.0, 6.0,
+                                0.05, 0.05);
+                else if (surf == 2) // sea spray: fine droplets, evaporating within a minute or two
                     groundCloud(2, tau, G, gnd, dir, spd * 1.3, mL * 6.0, 14.0, 0.96, glm::vec3(1.0f), 90.0, 14.0, 0.0, 0.12);
                 else if (surf == 1) // dust from bare ground
                     groundCloud(2, tau, G, gnd, dir, spd, mL * 1.6, 9.0, 0.6, glm::vec3(1.0f, 0.84f, 0.64f), 480.0, 10.0, 0.08, 0.12);
@@ -3064,9 +3379,14 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     {
         uint8_t b = 0;
         bt.at(tau, nullptr, &b);
+        // (A landing burn's exhaust at half the trail's cross-section, 2026-10-21: one deeply throttled engine's gas,
+        // with no deluge steam in it; at the full value the parcels piled up round a booster nearing the deck were an
+        // opaque ball its flame lit from inside, the halo of issue 20261020_213739.)
+        kappaMul = b == launch::BURN_LANDING ? 0.5 : 1.0;
         if (b == launch::BURN_BOOSTBACK || b == launch::BURN_ENTRY || b == launch::BURN_LANDING)
             emit(0, tau, 2.0, vh.flow1 * (b == launch::BURN_LANDING ? 0.12 : 0.35), vh.vex1, 1);
     }
+    kappaMul = 1.0;
     if (vh.recovery != 0)
     {
         // The landing burn's span (its last seconds reach the ground).
@@ -3089,8 +3409,11 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
             double tTouch;
             const int lk = boosterLandingAt(L, B, B.tL + bt.tEnd, EL, tTouch);
             const double gL = glm::length(EL) - kR;
+            // On a ship's deck (2026-10-21, issue 20261020_213739: the old sea spray, 6x the exhaust's mass as droplets
+            // growing at 7 m/s, was a round milky dome ~50 m across over the deck, lit white by the burn): the exhaust
+            // the steel deck deflects, a thin skirt that spreads low and is gone in under a minute.
             if (lk == kLandShip)
-                landingCloud(0, l0, std::min(l1 + 0.5, bt.tEnd), vh.flow1 * 0.12, -1, 2, gL);
+                landingCloud(0, l0, std::min(l1 + 0.5, bt.tEnd), vh.flow1 * 0.12, -1, 3, gL);
             else if (lk == kLandLz)
                 landingCloud(0, l0, std::min(l1 + 0.5, bt.tEnd), vh.flow1 * 0.12, -1, 0, gL);
             else if (lk == kLandGround)
@@ -3477,6 +3800,16 @@ static void buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
         {
             C.nPorts = (int)m->dockPorts.size();
             C.port = (int)(((B.k % C.nPorts) + C.nPorts) % C.nPorts);
+            // A station built module by module (2026-10-21): only ports on modules there at docking (the era on).
+            if (L.deployOn)
+            {
+                std::vector<int> ok;
+                for (int p = 0; p < C.nPorts; ++p)
+                    if (m->dockPorts[(size_t)p].sinceDays * 86400.0 <= B.tA)
+                        ok.push_back(p);
+                if (!ok.empty() && (int)ok.size() < C.nPorts)
+                    C.port = ok[(size_t)(((B.k % (int64_t)ok.size()) + (int64_t)ok.size()) % (int64_t)ok.size())];
+            }
             C.portPos = m->dockPorts[(size_t)C.port].pos;
             C.portAx = m->dockPorts[(size_t)C.port].axis;
             C.portName = m->dockPorts[(size_t)C.port].name;
@@ -4818,8 +5151,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             const double range = std::max(glm::length(rel), 1.0);
             // Listed for the selection (and its mesh) whether glowing or not; pickable once drawn.
             size_t shipIdx = SIZE_MAX;
-            if (range < 4.0e6 || ((key << 3) ^ 0x2ull) == selTransientKey ||
-                ((key << 3) ^ 0x2ull) == followTrKey) // (the selected / followed one at any range)
+            if (range < 4.0e6 || ((key << 3) ^ 0x2ull) == selTransientKey || key == launchFocusKey ||
+                ((key << 3) ^ 0x2ull) == followTrKey) // (the selected / followed / framed one at any range)
             {
                 SelTransient st;
                 // The upper stage's own key: a selected or followed ship stays selected into its entry.
@@ -4966,8 +5299,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // Listed for the selection whether drawn or not (a booster coasting in the dark, behind the Earth: a
             // tracked rocket stays selected); pickable only once drawn (flare > 0).
             size_t trIdx = SIZE_MAX;
+            // (and the launch the last jump framed, launchFocusKey: a traced launch's upper stage is ~5000 km downrange
+            // by its deployment, and `launch select kind=upper` found nothing; 2026-10-21)
             if (glm::length(P - eye) < 4.0e6 || ((key << 3) ^ (uint64_t)(stage + 1)) == selTransientKey ||
-                ((key << 3) ^ (uint64_t)(stage + 1)) == followTrKey)
+                ((key << 3) ^ (uint64_t)(stage + 1)) == followTrKey || key == launchFocusKey)
             {
                 SelTransient st;
                 st.key = (key << 3) ^ (uint64_t)(stage + 1);
@@ -4980,6 +5315,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     glm::dvec3 ax = LaunchImpl::stageNose(L, B, stage, tau);
                     if (glm::length(ax) < 0.5)
                         ax = glm::normalize(P);
+                    // On a ship's deck it stands on the deck as the ship rolls and pitches (2026-10-21).
+                    if (stage == 0 && B.landKind == kLandShip && tau >= LaunchImpl::boosterTr(L, B).tEnd)
+                        ax = ecefToEci(LaunchImpl::shipFrame(B, t).up, t);
                     st.axis = ax;
                     st.type = stage == 1 ? LaunchImpl::upperStageType(*this, L, B, t)
                                          : [&] {
@@ -5052,9 +5390,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 // and the cloud's own multiple scattering redden it), sootier flames deeper.
                 const glm::vec3 lc = glm::mix(fc, glm::mix(glm::vec3(1.0f, 0.45f, 0.15f), glm::vec3(1.0f, 0.38f, 0.08f),
                                                            (float)vh.soot), 0.85f);
+                // On the meshes (sat_mesh.frag) the light comes from just behind the nozzles: the flame's brightest
+                // part, above the deck it is about to land on (0.4 Lf down it stood under the deck at touchdown).
+                const glm::dvec3 PlM = P + egL.x * nose - 0.12 * Lf * nose;
                 engineLightAdd(Pl, flameIntensitySunsM2(fmL), lc,
                                std::max(25.0, 0.5 * Lf), nose, std::min(18.0 * DL, 130.0) + 0.4 * Lf, 1.5 * egL.y + 3.0,
-                               false);
+                               false, 1.0, &PlM);
             }
             if (earthBlocks(P))
                 continue;
@@ -5837,6 +6178,7 @@ nlohmann::json SatelliteSim::launchStateJson() const
         j["boosters"] = bs;
         j["ships"] = launchShipsJson();
         j["ship_meshes"] = L.nShips;
+        j["ship_robot_meshes"] = L.nShipRobots;
     }
     j["plume_gain"] = launchPlumeGain;
     // The plume parcels drawn: a sample (the largest optical depths first).
@@ -6355,8 +6697,9 @@ nlohmann::json SatelliteSim::launchCheckJson() const
                         const glm::dvec3 d = E0 - E;
                         const int ki = B.landKind == kLandShip ? 0 : 1;
                         rcOff[ki] = std::max(rcOff[ki], glm::length(d - glm::dot(d, up) * up));
-                        rcAbove[ki][0] = std::min(rcAbove[ki][0], glm::dot(d, up));
-                        rcAbove[ki][1] = std::max(rcAbove[ki][1], glm::dot(d, up));
+                        // (its legs' feet: the aft end stands vh.legM above them)
+                        rcAbove[ki][0] = std::min(rcAbove[ki][0], glm::dot(d, up) - vh.legM);
+                        rcAbove[ki][1] = std::max(rcAbove[ki][1], glm::dot(d, up) - vh.legM);
                         rcSpeed[ki] = std::max(rcSpeed[ki], glm::length(E0 - E1));
                     }
                     // Its last 60 s of descent: the largest change of velocity between 1-s steps (Earth-fixed).
@@ -6387,7 +6730,7 @@ nlohmann::json SatelliteSim::launchCheckJson() const
                             if (!LaunchImpl::rocketPos(L, B, 0, t - B.tL, P))
                                 continue;
                             LaunchImpl::boosterLandingAt(L, B, t, Ed, tt);
-                            rcRide = std::max(rcRide, glm::length(eciToEcef(P, t) - Ed));
+                            rcRide = std::max(rcRide, glm::length(eciToEcef(P, t) - Ed - vh.legM * glm::normalize(Ed)));
                         }
                     if (B.landKind == kLandShip && rcShipEx.size() < 4)
                     {
@@ -8048,14 +8391,20 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
             double px;
             int p;
             int type;
+            int kind;
         };
         std::vector<PC> pcs;
+        // A slot is keyed by pad AND kind, so a pad rebuilt as another kind (39A's tower) takes a fresh slot.
+        auto padKey = [](const PC &c) { return (uint64_t)c.p + 1 + ((uint64_t)(c.kind + 1) << 32); };
         for (size_t pi = 0; pi < L.pads.size(); ++pi)
         {
             const LPad &pd = L.pads[pi];
-            if (launchDeployEra && pd.onlineT > (double)simDayJ2000 * 86400.0 + simSecInDay)
-                continue; // the deployment era: not built yet
-            auto ti = rocketTypes.find(pd.kind == 2 ? "pad_starship" : pd.kind == 1 ? "pad_falcon" : "pad_generic");
+            // The deployment era: what stands there at this date (none before it is built; 39A a Falcon pad until
+            // its Starship tower, SLC-37 a Delta IV pad until it is cleared).
+            const int kindT = padKindAt(pd, t, launchDeployEra);
+            if (kindT < 0)
+                continue;
+            auto ti = rocketTypes.find(kindT == 2 ? "pad_starship" : kindT == 1 ? "pad_falcon" : "pad_generic");
             if (ti == rocketTypes.end())
                 continue;
             const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(ti->second);
@@ -8065,7 +8414,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
             const double px = 2.0 * std::max(1.0, (double)tm->boundsRadius) / std::max(glm::length(P - obsEci), 1.0) /
                               std::max(pixAngle, 1e-9);
             if (px > 1.4)
-                pcs.push_back({px, (int)pi, ti->second});
+                pcs.push_back({px, (int)pi, ti->second, kindT});
         }
         std::sort(pcs.begin(), pcs.end(), [](const PC &a, const PC &b) { return a.px > b.px || (a.px == b.px && a.p < b.p); });
         if (pcs.size() > (size_t)kPadMeshSlots)
@@ -8076,7 +8425,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
         {
             slotP[w] = -1;
             for (int k = 0; k < kPadMeshSlots; ++k)
-                if (!usedP[k] && L.padMeshKey[k] == (uint64_t)pcs[w].p + 1)
+                if (!usedP[k] && L.padMeshKey[k] == padKey(pcs[w]))
                 {
                     usedP[k] = true;
                     slotP[w] = k;
@@ -8100,7 +8449,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
         {
             const LPad &pd = L.pads[pcs[w].p];
             const int k = slotP[w];
-            L.padMeshKey[k] = (uint64_t)pcs[w].p + 1;
+            L.padMeshKey[k] = padKey(pcs[w]);
             const uint32_t slot = pbase + (uint32_t)k, idx = activeSatCount + slot;
             if (idx >= satOrbits.size() || slot >= L.elems.size())
                 continue;
@@ -9097,7 +9446,7 @@ void SatelliteSim::launchFillPadParams(GpuCloudParams &cp)
     const double tNowPad = (double)simDayJ2000 * 86400.0 + simSecInDay;
     for (size_t p = 0; p < L.pads.size(); ++p)
     {
-        if (launchDeployEra && L.pads[p].onlineT > tNowPad) // (the deployment era: not built yet)
+        if (padKindAt(L.pads[p], tNowPad, launchDeployEra) < 0) // (the deployment era: not built yet / cleared)
             continue;
         const double d2 = glm::dot(L.pads[p].g - up, L.pads[p].g - up) * R * R;
         if (d2 < 2500e3 * 2500e3)
@@ -9108,12 +9457,13 @@ void SatelliteSim::launchFillPadParams(GpuCloudParams &cp)
     int nFlat = 0;
     for (int k = 0; k < n; ++k)
     {
-        const LPad &pd = L.pads[cs[k].p];
+        // The pad as it stands at this date (its kind sets the pattern, the exclusion and the graded radius).
+        const LPad pd = padAtTime(L.pads[cs[k].p], tNowPad, launchDeployEra);
         const glm::dvec3 c = toEnu(pd.g) * R - glm::dvec3(0.0, 0.0, R);
         cp.padQ[k] = glm::vec4(glm::vec3(c), (float)pd.exclR);
         cp.padU[k] = glm::vec4(glm::vec3(toEnu(pd.u)), (float)pd.kind);
         cp.padAux[k] = glm::vec4((float)pd.elevM, (float)pd.seed, (float)pd.flatR,
-                                 pd.lz ? (float)(1.0 + pd.lzAng / glm::two_pi<double>()) : 0.0f);
+                                 pd.lz && pd.kind == 1 ? (float)(1.0 + pd.lzAng / glm::two_pi<double>()) : 0.0f);
         if (cs[k].d2 < 300e3 * 300e3)
             nFlat = k + 1;
     }
@@ -9205,16 +9555,33 @@ void SatelliteSim::launchFillPadLights()
     std::vector<PadLight> lights;
     for (size_t pi = 0; pi < L.pads.size(); ++pi)
     {
-        const LPad &pd = L.pads[pi];
-        if (launchDeployEra && pd.onlineT > t)
-            continue; // the deployment era: not built yet
+        const LPad pd = padAtTime(L.pads[pi], t, launchDeployEra); // (as it stands at this date)
+        if (pd.kind < 0)
+            continue; // the deployment era: not built yet / cleared
         // The floodlights' light on low cloud and fog over the pad (2026-10-20): one light per pad, mostly the floods'
         // spill and their light off the pad's concrete (~5e4 cd upward, a Starship pad's more), not on the ground
         // (sat_sky.frag's padGround draws the lit apron itself).
         if (glm::length(pd.g * kR - eyeE) < 300e3)
             engineLightAdd(ecefToEci(padPointEcef(pd, 0.0, pd.kind == 2 ? kPadTowerV : 0.0, 60.0), t),
                            (pd.kind == 2 ? 0.8 : 0.5) * night, glm::vec3(1.0f, 0.93f, 0.80f), 80.0,
-                           glm::dvec3(0.0), 0.0, 0.0, true);
+                           glm::dvec3(0.0), 0.0, 0.0, true, 0.0);
+        // On the meshes (the tower, the mount, a vehicle on the pad: sat_mesh.frag) each flood is its own light,
+        // ~2e4 cd (0.16 suns x m^2) toward the pad (2026-10-21).
+        if (glm::length(pd.g * kR - eyeE) < 6e3)
+        {
+            padLightsOf(pd, lights);
+            const glm::dvec3 aimPad = ecefToEci(padPointEcef(pd, 0.0, 0.0, 25.0), t);
+            for (const PadLight &pl : lights)
+                if (pl.kind != 1)
+                {
+                    // (a landing zone's floods face its own centre, 2.3 km from the pad's)
+                    const glm::dvec3 aim = pl.kind == 2 ? ecefToEci(padPointEcef(pd, kLzDistM * std::cos(pd.lzAng),
+                                                                                 kLzDistM * std::sin(pd.lzAng), 0.0), t)
+                                                        : aimPad;
+                    meshLightAdd(ecefToEci(padPointEcef(pd, pl.u, pl.v, pl.h), t), 0.16 * night,
+                                 glm::vec3(1.0f, 0.93f, 0.80f), 4.0, &aim, 40.0);
+                }
+        }
         if (glm::length(pd.g * kR - eyeE) > 160e3)
             continue;
         padLightsOf(pd, lights);
@@ -9271,11 +9638,35 @@ double SatelliteSim::flameIntensitySunsM2(double mag100km)
     return 2.54e-6 * std::pow(10.0, -0.4 * mag100km) * 1.0e10 / 1.27e5;
 }
 
-void SatelliteSim::engineLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double r0,
-                                  const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround)
+void SatelliteSim::meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double rs,
+                                const glm::dvec3 *aimEci, double beamHalfDeg)
 {
     if (engineLightGain <= 0.0f || intensitySunsM2 <= 0.0)
         return;
+    const double dayness = glm::clamp(((double)sunDirENU.w + 0.1) / 0.3, 0.0, 1.0);
+    const double lift = glm::mix(1.0, (double)moonGain / 2.0e-6, 1.0 - dayness) * (double)engineLightGain;
+    MeshLocalLight m;
+    m.ecef = eciToEcef(posEci, (double)simDayJ2000 * 86400.0 + simSecInDay);
+    m.I = intensitySunsM2 * lift;
+    m.col = col / std::max(glm::dot(col, glm::vec3(0.2126f, 0.7152f, 0.0722f)), 1e-3f);
+    m.rs = (float)std::max(rs, 0.5);
+    if (aimEci && beamHalfDeg < 180.0 && glm::length(*aimEci - posEci) > 1e-3)
+    {
+        const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        m.aimEcef = glm::normalize(eciToEcef(*aimEci, tNow) - m.ecef);
+        m.cosCut = (float)std::cos(glm::radians(beamHalfDeg));
+    }
+    meshLights_.push_back(m);
+}
+
+void SatelliteSim::engineLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double r0,
+                                  const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround,
+                                  double meshK, const glm::dvec3 *meshPosEci)
+{
+    if (engineLightGain <= 0.0f || intensitySunsM2 <= 0.0)
+        return;
+    if (meshK > 0.0)
+        meshLightAdd(meshPosEci ? *meshPosEci : posEci, intensitySunsM2 * meshK, col, 0.4 * r0);
     // Physical by day (nothing to see); at night lifted as the moonlight is (moonGain = the full Moon's light on the
     // terrain in the sky's units, physically ~2e-6 of the Sun's): the night exposure is not physical.
     const double dayness = glm::clamp(((double)sunDirENU.w + 0.1) / 0.3, 0.0, 1.0);
@@ -9308,6 +9699,17 @@ void SatelliteSim::engineLightsFlush()
 {
     FPROF_SCOPE("engineLightsFlush");
     engineLightCount = 0;
+    struct MeshSwap
+    {
+        SatelliteSim *s;
+        ~MeshSwap()
+        {
+            // (after the adaptation below: the meshes take the same eye adaptation as the clouds)
+            s->meshLightsPrev_.swap(s->meshLights_);
+            s->meshLights_.clear();
+            s->meshLightAdapt_ = s->engineAdaptEased;
+        }
+    } meshSwap{this};
     if (!kDustMapped)
     {
         engineLights_.clear();
@@ -9512,6 +9914,15 @@ nlohmann::json SatelliteSim::launchPadsJson() const
         o["site"] = L.cat.sites[p.site].id;
         o["name"] = p.name;
         o["kind"] = p.kind == 2 ? "starship" : p.kind == 1 ? "falcon" : "generic";
+        {
+            // As drawn at this date (the deployment era), and the pad's history.
+            const int kt = padKindAt(p, t, launchDeployEra);
+            o["kind_now"] = kt == 2 ? "starship" : kt == 1 ? "falcon" : kt == 0 ? "generic" : "none";
+            nlohmann::json hj = nlohmann::json::array();
+            for (const auto &h : p.kindHist)
+                hj.push_back({h.first < -1e299 ? -1e9 : 2000.0 + h.first / 31557600.0, h.second});
+            o["history"] = hj;
+        }
         o["ground_m"] = p.elevM;
         o["lat"] = glm::degrees(std::asin(glm::clamp(p.g.z, -1.0, 1.0)));
         o["lon"] = glm::degrees(std::atan2(p.g.y, p.g.x));
@@ -9539,7 +9950,7 @@ bool SatelliteSim::launchGoToPad(const std::string &site, double distM, double a
         msg = "no site '" + site + "' (see `launch pads`)";
         return false;
     }
-    const LPad &pd = L.pads[pi];
+    const LPad pd = padAtTime(L.pads[pi], (double)simDayJ2000 * 86400.0 + simSecInDay, launchDeployEra);
     if (followActive)
         stopFollow();
     if (trackActive)
@@ -9560,7 +9971,7 @@ bool SatelliteSim::launchGoToPad(const std::string &site, double distM, double a
     updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay);
     char b[200];
     snprintf(b, sizeof(b), "at %s (%s pad, ground %.0f m), %.0f m out", pd.name.c_str(),
-             pd.kind == 2 ? "Starship" : pd.kind == 1 ? "Falcon" : "launch", pd.elevM, distM);
+             pd.kind == 2 ? "Starship" : pd.kind == 1 ? "Falcon" : pd.kind == 0 ? "launch" : "not built yet: empty", pd.elevM, distM);
     msg = b;
     return true;
 }
@@ -9715,10 +10126,7 @@ namespace
 // A point on the ship (its body frame: u toward the bow, v to port, h above the waterline), Earth-fixed.
 glm::dvec3 shipPointEcef(const LBatch &B, double t, double u, double v, double h)
 {
-    glm::dvec3 bow;
-    const glm::dvec3 S = LaunchImpl::shipEcef(B, t, &bow);
-    const glm::dvec3 up = S / kR;
-    return (kR + h) * up + u * bow + v * glm::cross(up, bow);
+    return LaunchImpl::shipDeckEcef(B, t, u, v, h); // riding the swell (2026-10-21)
 }
 // The ships whose time it is (t in [tShipOn, tShipGone]) among the live batches.
 template <typename F> void forEachShip(SatelliteSim::LaunchState &L, double t, F f)
@@ -9770,21 +10178,82 @@ void shipLightsOf(const std::string &model, double deck, std::vector<ShipLight> 
 }
 } // namespace
 
-// The ships as meshes: those over ~1.4 px, nearest first, each kept in its reserved slot while it stays.
+// The sea state at a point of the sea (2026-10-21, the ships' swell): the CPU's mirror of the drawn waves' rule
+// (sat_sky.frag oceanSeaState: the westerly belts, a slow regional wind, the weather's storms) with the storms from
+// the cloud map's coverage there (the CPU has no weather cube: no cloud type or rain). 1 = the default sea.
+double SatelliteSim::shipSeaState(const glm::dvec3 &dE) const
+{
+    const double g = (double)oceanSeaStateGain;
+    if (g <= 0.0)
+        return 1.0;
+    double cov = 0.3;
+    if (!earthCloudsCpu.empty())
+    {
+        const double twoPi = glm::two_pi<double>();
+        const double lat = std::asin(glm::clamp(dE.z, -1.0, 1.0)), lon = std::atan2(dE.y, dE.x);
+        double u = (lon + glm::pi<double>()) / twoPi + cloudDriftPhase() / twoPi;
+        u -= std::floor(u);
+        const double v = (0.5 * glm::pi<double>() - lat) / glm::pi<double>();
+        const int x = ((int)(u * earthCloudsCpuW) % earthCloudsCpuW + earthCloudsCpuW) % earthCloudsCpuW;
+        const int y = std::clamp((int)(v * earthCloudsCpuH), 0, earthCloudsCpuH - 1);
+        cov = earthCloudsCpu[(size_t)y * earthCloudsCpuW + x] / 255.0;
+    }
+    const double storm = glm::smoothstep(0.45, 0.85, cov) * 0.6;
+    const double latA = std::abs(dE.z);
+    const double belt = glm::smoothstep(0.5, 0.71, latA) * (1.0 - glm::smoothstep(0.87, 0.94, latA));
+    const double wind = 0.5 + 0.28 * std::sin(3.1 * dE.x + 5.0 * dE.y + 1.3) + 0.22 * std::sin(4.7 * dE.z - 2.3 * dE.x + 0.4);
+    const double s = (0.3 + 0.35 * wind + 0.35 * belt + 0.9 * storm) / 0.65;
+    return std::max(0.25, 1.0 + (s - 1.0) * g);
+}
+
+namespace
+{
+// The securing robot (SpaceX's Octagrabber; Jacklyn's own) on a landing ship (2026-10-21; model ship_robot): parked
+// on the deck (the droneship: in front of its garage aft), it drives out 75 s after a booster lands, stops with its
+// front at the booster's skirt and swings its clamp arms under the engine section (the model's unfolding, 15 s).
+// Deck coordinates (u toward the bow, v to port), its heading (rad from the bow, toward port) and when it clamps.
+struct ShipRobot
+{
+    double u, v, head, tClamp;
+};
+ShipRobot shipRobotAt(const LBatch &B, double t)
+{
+    const bool jack = B.deckM > 5.0;
+    const glm::dvec2 park = jack ? glm::dvec2(24.0, 0.0) : glm::dvec2(-31.5, 0.0);
+    const glm::dvec2 dir = -glm::normalize(park); // toward the landing target
+    const glm::dvec2 stop = -dir * 4.6;           // its front (arms) at the booster's skirt
+    const double dist = glm::length(stop - park);
+    const double tGo = B.tLand + 75.0, dur = dist / 0.6 + 6.0;
+    const double s = glm::smoothstep(tGo, tGo + dur, t);
+    const glm::dvec2 p = glm::mix(park, stop, s);
+    return {p.x, p.y, std::atan2(dir.y, dir.x), tGo + dur + 5.0};
+}
+} // namespace
+
+// The ships as meshes: those over ~1.4 px, nearest first, each kept in its reserved slot while it stays; and their
+// securing robots (2026-10-21) in the same slots, once near enough to resolve.
 void SatelliteSim::launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs)
 {
     FPROF_SCOPE("launchShipJobs");
     LaunchState &L = *launchState;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double dt = glm::clamp((double)skyTaaFrameDt, 0.0, 1.0);
     struct W
     {
         double px;
         uint64_t key;
         int type;
         const LBatch *B;
+        bool robot;
     };
     std::vector<W> want;
+    auto robotTi = rocketTypes.find("ship_robot");
     forEachShip(L, t, [&](const LBatch &B) {
+        // Its sea state (the swell, shipSwell): eased over ~20 s (the cloud map's coverage under a moving ship).
+        {
+            const double sk = shipSeaState(glm::normalize(LaunchImpl::shipEcef(B, t)));
+            B.seaK = B.seaK < 0.0f ? (float)sk : (float)glm::mix((double)B.seaK, sk, 1.0 - std::exp(-dt / 20.0));
+        }
         const launch::Vehicle &vh = L.cat.vehicles[B.veh];
         auto ti = rocketTypes.find(vh.ships[(size_t)B.ship].model);
         if (ti == rocketTypes.end())
@@ -9793,10 +10262,17 @@ void SatelliteSim::launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std
         if (!tm)
             return;
         const glm::dvec3 P = ecefToEci(LaunchImpl::shipEcef(B, t), t);
-        const double px = 2.0 * std::max(1.0, (double)tm->boundsRadius) / std::max(glm::length(P - obsEci), 1.0) /
-                          std::max(pixAngle, 1e-9);
+        const double dist = std::max(glm::length(P - obsEci), 1.0);
+        const double px = 2.0 * std::max(1.0, (double)tm->boundsRadius) / dist / std::max(pixAngle, 1e-9);
         if (px > 1.4)
-            want.push_back({px, batchKey(B.plane, B.k, B.b), ti->second, &B});
+            want.push_back({px, batchKey(B.plane, B.k, B.b), ti->second, &B, false});
+        if (robotTi != rocketTypes.end())
+            if (const SatMeshRenderer::TypeMesh *rm = meshRenderer.typeMesh(robotTi->second))
+            {
+                const double rpx = 2.0 * std::max(1.0, (double)rm->boundsRadius) / dist / std::max(pixAngle, 1e-9);
+                if (rpx > 1.4)
+                    want.push_back({rpx, batchKey(B.plane, B.k, B.b) ^ 0x8000000000000000ull, robotTi->second, &B, true});
+            }
     });
     std::sort(want.begin(), want.end(), [](const W &a, const W &b) { return a.px > b.px || (a.px == b.px && a.key < b.key); });
     if (want.size() > (size_t)kShipMeshSlots)
@@ -9825,6 +10301,7 @@ void SatelliteSim::launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std
             L.shipMeshKey[k] = 0;
     const uint32_t sbase = kLaunchCap - 2 - kRocketMeshSlots - kPadMeshSlots - kStackMeshSlots - kShipMeshSlots;
     L.nShips = 0;
+    L.nShipRobots = 0;
     for (size_t w = 0; w < want.size(); ++w)
     {
         const W &ws = want[w];
@@ -9833,21 +10310,36 @@ void SatelliteSim::launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std
         const uint32_t slot = sbase + (uint32_t)k, idx = activeSatCount + slot;
         if (idx >= satOrbits.size() || slot >= L.elems.size())
             continue;
-        glm::dvec3 bow;
-        const glm::dvec3 E = LaunchImpl::shipEcef(*ws.B, t, &bow);
-        const glm::dvec3 E1 = LaunchImpl::shipEcef(*ws.B, t - 1.0);
+        // Its frame riding the swell (shipFrame): the mesh takes the full attitude (attFix); the robot its heading
+        // on the deck, about the deck's normal.
+        const LaunchImpl::ShipFrame F = LaunchImpl::shipFrame(*ws.B, t);
+        glm::dvec3 E = F.O, X = F.bow, Y = F.port;
         SatOrbitElems &e = L.elems[slot];
         e = SatOrbitElems{};
+        if (ws.robot)
+        {
+            const ShipRobot R = shipRobotAt(*ws.B, t);
+            E = F.O + ws.B->deckM * F.up + R.u * F.bow + R.v * F.port;
+            X = std::cos(R.head) * F.bow + std::sin(R.head) * F.port;
+            Y = glm::cross(F.up, X);
+            e.unfoldT0 = R.tClamp; // its clamp arms swing out (the model's stowable parts)
+            e.unfoldDur = 15.0;
+        }
+        const glm::dvec3 E1 = LaunchImpl::shipEcef(*ws.B, t - 1.0) + (E - LaunchImpl::shipEcef(*ws.B, t));
         e.fixedState = true;
         e.fixPos = ecefToEci(E, t);
         e.fixVel = e.fixPos - ecefToEci(E1, t - 1.0);
         const glm::dvec3 omega(0.0, 0.0, 7.2921159e-5);
         e.fixAcc = glm::cross(omega, e.fixVel);
-        e.fixAxis = ecefToEci(bow, t);
+        e.fixAxis = ecefToEci(X, t);
         e.fixT0 = t;
+        e.attFix = true;
+        e.attQ = glm::quat_cast(glm::dmat3(ecefToEci(X, t), ecefToEci(Y, t), ecefToEci(glm::cross(X, Y), t)));
+        e.attT0 = t;
+        e.attSlewDur = 0.0;
         satOrbits[idx].typeIdx = (uint32_t)ws.type;
         jobs.push_back((int)idx);
-        ++L.nShips;
+        (ws.robot ? L.nShipRobots : L.nShips)++;
     }
 }
 
@@ -9874,7 +10366,17 @@ void SatelliteSim::launchFillShipLights()
         // light ~15 m over the deck; the landing burn's own light is the rocket's, launchFillVisuals).
         if (glm::length(LaunchImpl::shipEcef(B, t) - eyeE) < 300e3)
             engineLightAdd(ecefToEci(shipPointEcef(B, t, 0.0, 0.0, B.deckM + 15.0), t), 0.3 * night,
-                           glm::vec3(1.0f, 0.9f, 0.76f), 40.0, glm::dvec3(0.0), 0.0, 0.0, false);
+                           glm::vec3(1.0f, 0.9f, 0.76f), 40.0, glm::dvec3(0.0), 0.0, 0.0, false, 0.0);
+        // On the meshes (the deck, a booster on it: sat_mesh.frag) each deck flood is its own light (2026-10-21).
+        if (glm::length(LaunchImpl::shipEcef(B, t) - eyeE) < 6e3)
+        {
+            shipLightsOf(L.cat.vehicles[B.veh].ships[(size_t)B.ship].model, B.deckM, lights);
+            const glm::dvec3 aimDeck = ecefToEci(shipPointEcef(B, t, 0.0, 0.0, B.deckM + 10.0), t);
+            for (const ShipLight &sl : lights)
+                if (sl.kind == 0)
+                    meshLightAdd(ecefToEci(shipPointEcef(B, t, sl.u, sl.v, sl.h), t), 0.1 * night,
+                                 glm::vec3(1.0f, 0.9f, 0.76f), 4.0, &aimDeck, 45.0);
+        }
         if (glm::length(LaunchImpl::shipEcef(B, t) - eyeE) > 160e3)
             return;
         const launch::Vehicle &vh = L.cat.vehicles[B.veh];
@@ -9944,6 +10446,18 @@ nlohmann::json SatelliteSim::launchShipsJson() const
                                                                                                     : "heading home";
         o["home_km"] = std::acos(glm::clamp(glm::dot(g, B.G0), -1.0, 1.0)) * kR / 1000.0;
         o["payload_kg"] = B.payloadKg;
+        // Its swell (2026-10-21) and its securing robot.
+        {
+            double hv, p, r;
+            LaunchImpl::shipSwell(B, t, hv, p, r);
+            o["sea_state"] = B.seaK;
+            o["heave_m"] = hv;
+            o["pitch_deg"] = glm::degrees(p);
+            o["roll_deg"] = glm::degrees(r);
+            const ShipRobot R = shipRobotAt(B, t);
+            o["robot_deck_uv_m"] = {R.u, R.v};
+            o["robot_clamp_in_s"] = R.tClamp - t;
+        }
         a.push_back(o);
     });
     return a;
@@ -10086,14 +10600,21 @@ void SatelliteSim::launchFillShipGlow(GpuDustCloud *out, uint32_t &n, double toS
             return;
         const glm::dvec3 up = S / kR;
         const bool jack = L.cat.vehicles[B.veh].ships[(size_t)B.ship].model == "ship_jacklyn";
+        // Only while the ship is small on screen (2026-10-21): once its mesh resolves, the deck and the booster on it
+        // are lit by the floods in sat_mesh.frag (local lights); these glows over them read as a milky slab.
+        const double px = 100.0 / std::max(glm::length(S - eyeE), 1.0) / std::max(pixFull, 1e-9);
+        const double keep = 1.0 - glm::smoothstep(6.0, 30.0, px);
+        if (keep <= 0.0)
+            return;
+        const double dK = -2.5 * std::log10(keep);
         // The lit deck (the landing area, a few m thick so it reads from a grazing view).
         const glm::dvec3 Pd = ecefToEci((kR + B.deckM + 1.5) * up + (jack ? 0.0 : -6.0) * bow, t);
-        add(Pd, ecefToEci(up, t), 2.0, jack ? 16.0 : 22.0, -4.0, glm::vec3(1.0f, 0.88f, 0.7f));
+        add(Pd, ecefToEci(up, t), 2.0, jack ? 16.0 : 22.0, -4.0 + dK, glm::vec3(1.0f, 0.88f, 0.7f));
         // The booster on it (white, floodlit): a column ~40 m tall.
         if (t >= B.tLand)
         {
             const glm::dvec3 Pb = ecefToEci((kR + B.deckM + 21.0) * up, t);
-            add(Pb, ecefToEci(up, t), 12.0, 2.2, -3.5, glm::vec3(1.0f, 0.92f, 0.8f));
+            add(Pb, ecefToEci(up, t), 12.0, 2.2, -3.5 + dK, glm::vec3(1.0f, 0.92f, 0.8f));
         }
     });
 }
@@ -10973,7 +11494,8 @@ void SatelliteSim::rosterLifeEnsure()
         launchInitBlock();
     LaunchState &L = *launchState;
     LaunchImpl::ensureCatalog(L);
-    const uint64_t key = 1ull | (launchDeployEra ? 2ull : 0ull) | (L.loaded ? 4ull : 0ull) | ((uint64_t)activeSatCount << 8);
+    const uint64_t key = 1ull | (launchDeployEra ? 2ull : 0ull) | (L.loaded ? 4ull : 0ull) |
+                         (launchEraBenchmarkShells ? 8ull : 0ull) | ((uint64_t)activeSatCount << 8);
     if (key == rosterLifeKey && rosterLife.size() == 2ull * activeSatCount)
         return;
     const auto t0 = std::chrono::steady_clock::now();
@@ -11031,10 +11553,15 @@ void SatelliteSim::rosterLifeEnsure()
                 ord.push_back({h01(0x5EED0000ull + c, i, 3), i});
             std::sort(ord.begin(), ord.end());
             const double scale = rh->fraction ? (double)(i1 - i0) : 1.0;
+            // A benchmark shell stands for satellites Starlink Gen1's first fills already fly (2026-10-21): left out
+            // of the era's sky unless the player opts in (it would count them twice in 2019-2024).
+            const bool hideBench = rh->benchmark && !launchEraBenchmarkShells;
             for (size_t r = 0; r < ord.size(); ++r)
             {
                 double born, gone;
                 countCrossings(rh->count, scale, (double)r + 0.5, born, gone);
+                if (hideBench)
+                    born = gone = 1e300;
                 rosterLife[2ull * ord[r].second] = lifeSec(born, E);
                 rosterLife[2ull * ord[r].second + 1] = lifeSec(gone, E);
                 ++nHist;
@@ -11048,6 +11575,36 @@ void SatelliteSim::rosterLifeEnsure()
     // The Kessler world was built with another table: re-simulate (its cache key includes it).
     if (kWorker && kLifeHashKey != rosterLifeKey)
         kRestartPending = true;
+}
+
+// The share of roster satellites [i0, i1) there at t (a shell group, a disk's ring): sorted born / gone seconds per
+// range, built on first use and dropped when rosterLife is recomputed.
+double SatelliteSim::rosterRangePresentFrac(uint32_t i0, uint32_t i1, double t) const
+{
+    i1 = std::min(i1, activeSatCount);
+    if (i1 <= i0 || rosterLife.size() < 2ull * i1)
+        return 1.0;
+    if (rangeLifeKey_ != rosterLifeKey)
+    {
+        rangeLifeCache_.clear();
+        rangeLifeKey_ = rosterLifeKey;
+    }
+    auto &e = rangeLifeCache_[((uint64_t)i0 << 32) | i1];
+    if (e.first.empty())
+    {
+        for (uint32_t i = i0; i < i1; ++i)
+        {
+            e.first.push_back(rosterLife[2ull * i]);
+            if (rosterLife[2ull * i + 1] != kessler::kNever)
+                e.second.push_back(rosterLife[2ull * i + 1]);
+        }
+        std::sort(e.first.begin(), e.first.end());
+        std::sort(e.second.begin(), e.second.end());
+    }
+    const int32_t sec = (int32_t)std::clamp(std::floor(t - kesslerEpoch()), -2147483000.0, 2147483000.0);
+    const size_t born = (size_t)(std::upper_bound(e.first.begin(), e.first.end(), sec) - e.first.begin());
+    const size_t gone = (size_t)(std::upper_bound(e.second.begin(), e.second.end(), sec) - e.second.begin());
+    return born > gone ? (double)(born - gone) / (double)e.first.size() : 0.0;
 }
 
 void SatelliteSim::rosterLifeUpload(VulkanContext &ctx)
@@ -11144,9 +11701,9 @@ nlohmann::json SatelliteSim::deployStateJson() const
         int online = 0, onlineStarship = 0;
         for (const LPad &p : L.pads)
         {
-            const bool on = !launchDeployEra || p.onlineT <= t;
-            online += on;
-            onlineStarship += on && p.kind == 2;
+            const int k = padKindAt(p, t, launchDeployEra);
+            online += k >= 0;
+            onlineStarship += k == 2;
         }
         j["pads_online"] = online;
         j["starship_pads_online"] = onlineStarship;
@@ -11594,7 +12151,8 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
                 const glm::dvec3 E0 = eciToEcef(P0, tT), E1 = eciToEcef(P1, tT - 1.0);
                 const glm::dvec3 up = glm::normalize(E), d = E0 - E;
                 p["touchdown_off_m"] = glm::length(d - glm::dot(d, up) * up);
-                p["touchdown_above_m"] = glm::dot(d, up);
+                p["touchdown_above_m"] = glm::dot(d, up) - vh.legM; // (the legs' feet; the aft end is legM above)
+                p["leg_m"] = vh.legM;
                 p["touchdown_speed_m_s"] = glm::length(E0 - E1);
                 double tilt = 0.0;
                 for (double tau = btr.tEnd - 10.0; tau <= btr.tEnd; tau += 1.0)
@@ -11617,7 +12175,7 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
                     if (!LaunchImpl::rocketPos(L, B, 0, t - B.tL, P))
                         continue;
                     LaunchImpl::boosterLandingAt(L, B, t, Ed, tt);
-                    ride = std::max(ride, glm::length(eciToEcef(P, t) - Ed));
+                    ride = std::max(ride, glm::length(eciToEcef(P, t) - Ed - vh.legM * glm::normalize(Ed)));
                 }
                 p["ride_home_off_deck_m"] = ride;
             }
@@ -11789,7 +12347,7 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
         p["unfolding_members"] = nUnfold;
         p["unfold_start_after_release_s_min"] = nUnfold ? unfoldBefore : 0.0;
         p["unfold_dur_s"] = unfoldDur;
-        // Members never pass through each other or the stage in the first two hours (min pairwise distance, 30 s).
+        // Members never pass through each other or the stage in their free flight (kFreeFlightS; min pairwise distance, 30 s).
         {
             // (A stack's satellites start as close as they were stacked: each pair is judged against its distance when
             // the second of the two leaves, gap_ratio = closest later / that.)
@@ -11808,7 +12366,7 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
                         relMin = std::min(relMin, dRel[a * nm + b]);
                     }
                 }
-            for (double t = B.mem[0].tRel + 5.0; t < B.mem[nm - 1].tRel + 7200.0; t += (t < B.mem[nm - 1].tRel + 120.0 ? 2.0 : 30.0))
+            for (double t = B.mem[0].tRel + 5.0; t < B.mem[nm - 1].tRel + kFreeFlightS; t += (t < B.mem[nm - 1].tRel + 120.0 ? 2.0 : 30.0))
             {
                 std::vector<glm::dvec3> rs(nm);
                 std::vector<char> up(nm, 0);
@@ -11833,7 +12391,9 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
                             dLow[a * nm + b] = std::min(dLow[a * nm + b], d);
                             if (t > B.mem[b].tRel + 60.0 && t < B.mem[b].tRel + 600.0)
                                 d10 = std::min(d10, d);
-                            if (t > B.mem[b].tRel + 60.0 && d < d60)
+                            // (free flight: from a minute after the later one leaves until the earlier one's own
+                            // propulsion takes over, kFreeFlightS after its release)
+                            if (t > B.mem[b].tRel + 60.0 && t < B.mem[a].tRel + kFreeFlightS && d < d60)
                             {
                                 d60 = d;
                                 d60At = t - B.mem[b].tRel;

@@ -189,6 +189,9 @@ layout(set = 0, binding = 5) readonly buffer SatTypeBuf {
     // Per-constellation Show / Highlight bits (GpuSatTypeHeader, 2026-10-20): bit (c & 31) of word (c >> 5).
     uint    constEnabled[8];
     uint    constHighlight[8];
+    // Stations built module by module (2026-10-21): today, days since J2000 (1e9 = every part). GpuSatTypeHeader.
+    float   buildDays;
+    uint    padB0, padB1, padB2;
     // Earthshine table (satphot::earthshineLut(), written once by createSatBuffers): per (visible
     // cap half-angle, cos of the Sun's zenith at the sub-satellite point) the ln irradiance and the
     // tilt of its effective direction from nadir toward the Sun.
@@ -798,7 +801,7 @@ float lobeSpecular(vec3 n, SatLobe L, vec3 s, vec3 o, float srcA2)
     float sin2 = dot(nxh, nxh);
     float a2   = L.alpha2Mat + srcA2;
     float F    = L.f0 + (1.0 - L.f0) * pow(1.0 - clamp(dot(s, h), 0.0, 1.0), 5.0);
-    if (L.distribution != 0u) {
+    if ((L.distribution & 0xFFu) != 0u) {
         // Beckmann D and Walter et al. 2007's rational fit to its Smith G1 — mirror of the CPU
         // lobeIntensity() (SatModel.cpp).
         if (nh <= 0.0) return 0.0;
@@ -821,6 +824,13 @@ float lobeSpecular(vec3 n, SatLobe L, vec3 s, vec3 o, float srcA2)
 // A launch record still unfolding (2026-10-19, flag bit 26): its progress, 0 stowed .. 1 deployed. Set per satellite
 // at the top of processSatellite. A lobe's area scales by its stowed share (satLobeStowFactor, SatModel.cpp).
 float gUnfoldP = 1.0;
+// A lobe of a part not built yet (stations module by module, 2026-10-21): distribution bits 8-31 = its build-date
+// code (satSinceCode, SatModel.h: floor(days since J2000) + 30001; 0 = always).
+float lobeBuilt(uint dist)
+{
+    uint code = dist >> 8;
+    return (code == 0u || float(code) - 30001.0 <= buildDays) ? 1.0 : 0.0;
+}
 float lobeStow(uint pk)
 {
     if (pk == 0u || gUnfoldP >= 1.0) return 1.0;
@@ -834,8 +844,9 @@ float lobeIntensity(vec3 n, SatLobe L, vec3 s, vec3 o, float srcA2)
     float ns = dot(n, s), no = dot(n, o);
     if (no <= 0.0) return 0.0;
     // Phase 4f: light from BEHIND the face (a translucent array blanket), transmitted diffusely.
-    if (ns <= 0.0) return L.transmission * (1.0 / PI) * L.diffArea * (-ns) * no * lobeStow(L.stowPack);
-    return (L.albedoD * (1.0 / PI) * L.diffArea * ns * no + lobeSpecular(n, L, s, o, srcA2)) * lobeStow(L.stowPack);
+    if (ns <= 0.0) return L.transmission * (1.0 / PI) * L.diffArea * (-ns) * no * lobeStow(L.stowPack) * lobeBuilt(L.distribution);
+    return (L.albedoD * (1.0 / PI) * L.diffArea * ns * no + lobeSpecular(n, L, s, o, srcA2)) * lobeStow(L.stowPack) *
+           lobeBuilt(L.distribution);
 }
 
 // -- Earthshine as a light (2026-09-24) - mirror of SatEarthLight (SatModel.h) --------------------
@@ -873,7 +884,7 @@ float lobeEarthIntensity(vec3 n, SatLobe L, EarthLight e, vec3 o)
     if (no <= 0.0 || e.E <= 0.0) return 0.0;
     float I = (L.albedoD * earthDiffuse(e, n) + L.transmission * earthDiffuse(e, -n)) * (1.0 / PI) * L.diffArea * no;
     if (dot(n, e.dir) > 0.0) I += e.E * lobeSpecular(n, L, e.dir, o, e.a2);
-    return I * lobeStow(L.stowPack);
+    return I * lobeStow(L.stowPack) * lobeBuilt(L.distribution);
 }
 
 // ── Phase 3b occlusion between parts ──────────────────────────────────────────

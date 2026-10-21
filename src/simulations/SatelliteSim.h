@@ -423,8 +423,12 @@ struct GpuSatTypeHeader
     // constellation past the 32nd (its satellites read bit 0..31 of some other entry: constIdx & 31).
     uint32_t constEnabled[8];
     uint32_t constHighlight[8];
+    // Stations built module by module (2026-10-21): today in days since J2000 (1e9 = every part: the deployment era
+    // off). A lobe whose build-date code (GpuSatLobe::distribution bits 8-31) is later carries nothing.
+    float buildDays = 1e9f;
+    uint32_t padB0 = 0, padB1 = 0, padB2 = 0;
 };
-static_assert(sizeof(GpuSatTypeHeader) == 112, "GpuSatTypeHeader layout mismatch");
+static_assert(sizeof(GpuSatTypeHeader) == 128, "GpuSatTypeHeader layout mismatch");
 // The constellation index a satellite record carries is 8 bits wide (GpuSatOrbit::constIdx's low byte; Kessler
 // pool / launch records' typeConst word), so 256 constellations is the ceiling.
 static constexpr uint32_t kMaxConstellationBits = 256;
@@ -2923,7 +2927,8 @@ private:
     double engineAdaptPrevT = -1e30;
     uint32_t engineLightCount = 0;
     void engineLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double r0,
-                        const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround);
+                        const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround,
+                        double meshK = 1.0, const glm::dvec3 *meshPosEci = nullptr);
     void engineLightsFlush();
     // (2026-10-21) Drops the plume Gaussians that cannot show (SatelliteSimLaunches.cpp): their summed worst case, as
     // if all of them overlapped one pixel, stays under 2e-4 of white on screen and 1% of dimming.
@@ -2931,6 +2936,25 @@ private:
     // Knockout bit 33554432 = off (the A/B).
     uint32_t plumesCulled = 0;       // this frame's (launch state: dust_list.culled)
     glm::vec4 plumeCullStop{0.0f};   // the summed bounds where it stopped, and the next one's (light, dimming)
+    // The same lights on the MESHES (2026-10-21, sat_mesh.frag: a landing booster, a pad's tower, a droneship's deck
+    // lit by the floods and the burn): Earth-fixed positions, intensity (suns x m^2, lifted at night like the engine lights,
+    // before the eye's adaptation), colour and the source's soft radius. engineLightAdd adds a light here too
+    // (meshK x its intensity, at meshPosEci if given: a flame's light from just behind its nozzles); a pad's or a
+    // ship's individual floods are mesh-only (meshLightAdd: their single cloud light stands at the pad's centre).
+    // recordMeshScene takes the kMeshLocalLights most important to what the camera sees (last frame's list).
+    struct MeshLocalLight
+    {
+        glm::dvec3 ecef{0.0}; // Earth-fixed (taken at its frame's time: a pad's or a ship's floods stay put)
+        double I = 0.0;
+        glm::vec3 col{1.0f};
+        float rs = 1.0f;
+        glm::dvec3 aimEcef{0.0}; // a floodlight's aim (unit, Earth-fixed; 0 = all round)
+        float cosCut = -2.0f;     // ... and its beam: full inside acos(cosCut) - 10 deg, none past it
+    };
+    std::vector<MeshLocalLight> meshLights_, meshLightsPrev_;
+    float meshLightAdapt_ = 1.0f; // engineAdaptEased at the flush that made meshLightsPrev_
+    void meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double rs,
+                      const glm::dvec3 *aimEci = nullptr, double beamHalfDeg = 180.0);
     static double flameIntensitySunsM2(double mag100km);
     int launchAfterStorm = 0;        // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
     // The deployment era (2026-10-20, launches.deployment_era; launches.json "deployment" / "roster_history" / site and
@@ -2939,6 +2963,17 @@ private:
     // since kesslerEpoch(); INT32_MIN+1 / kNever = always) is uploaded after the Kessler roster words (sat_orbit.comp)
     // and read by the Kessler world (no collisions before a satellite exists). Off: everything always there (as before).
     bool launchDeployEra = true;
+    // launches.era_benchmark_shells (2026-10-21): the 2020 V1.0 / VisorSat benchmark shells in the era's sky (off: they
+    // are photometric references standing for Gen1 satellites the first fills already fly; Constellations > Benchmark).
+    bool launchEraBenchmarkShells = false;
+    // The share of roster satellites [i0, i1) there at t (the deployment era; 1 with it off): sorted born / gone seconds
+    // per range, cached until rosterLife changes. The ambience's closed-form shell counts scale by it.
+    double rosterRangePresentFrac(uint32_t i0, uint32_t i1, double t) const;
+    // A mesh instance's date (GpuMeshInstance::trans[0].w, instCompAbsent): today's build-date code with the deployment
+    // era on, 0 = every part (stations built module by module, 2026-10-21).
+    float meshBuildCode(double tJ2000) const { return launchDeployEra ? (float)(tJ2000 / 86400.0 + kSatSinceBias) : 0.0f; }
+    mutable std::unordered_map<uint64_t, std::pair<std::vector<int32_t>, std::vector<int32_t>>> rangeLifeCache_;
+    mutable uint64_t rangeLifeKey_ = 0;
     std::vector<int32_t> rosterLife;
     uint64_t rosterLifeKey = 0;      // what rosterLife was computed for (0 = not yet)
     uint64_t kLifeHashKey = 0;       // ... and what the running Kessler world was built with
@@ -2968,6 +3003,7 @@ private:
     static constexpr int kShipMeshSlots = 8;
     nlohmann::json launchShipsJson() const; // harness `launch ships`: the ships on station / heading home
     void launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // their meshes
+    double shipSeaState(const glm::dvec3 &ecefUnit) const; // the sea state at a ship (its swell; 1 = default)
     void launchFillShipLights();            // their lights at night (kFireBuf)
     void launchFillShipGlow(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // their lit decks
     // The next booster landing on a ship (harness `launch droneship`): the clock leadS before touchdown at 1x, the
@@ -6441,6 +6477,7 @@ private:
     void createLightningResources(VulkanContext &ctx);
     void createLightningPipeline(VulkanContext &ctx);
     void writeLightningDescriptors(VulkanContext &ctx);
+    void writeLightningMeshDescriptor(VulkanContext &ctx);
     void destroyLightningResources(VkDevice device);
     void updateLightningBolts();
     void recordLightning(VkCommandBuffer cmd, VulkanContext &ctx);

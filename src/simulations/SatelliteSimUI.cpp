@@ -3595,6 +3595,17 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
         }
         if (!open)
             continue;
+        if (cat == "Benchmarks")
+        {
+            // The 2020 shells stand for satellites Starlink Gen1's early first fills already fly: with the deployment era
+            // on they are left out of the sky unless asked for (2026-10-21; their benchmarks never need the roster).
+            bool eraB = launchEraBenchmarkShells;
+            if (uiToggleRow(inp, ui, "ConstBenchEra", 0, "In the deployment era", eraB,
+                            "Off (default): the era's sky has Starlink Gen1's own first fills in 2019-2024 and not these "
+                            "photometric reference shells, which stand for the same satellites. On: both (counted twice). "
+                            "With the era off they are always there."))
+                launchEraBenchmarkShells = eraB;
+        }
 
         // ── Entries ────────────────────────────────────────────────
         for (int ci : groups[g])
@@ -8428,6 +8439,24 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             }
         }
     }
+    if (j.contains("constellations_ui") && j["constellations_ui"].is_object())
+    {
+        const auto &cu = j["constellations_ui"];
+        if (cu.contains("groups_open") && cu["groups_open"].is_object())
+            for (auto it = cu["groups_open"].begin(); it != cu["groups_open"].end(); ++it)
+                if (it.value().is_boolean())
+                    constGroupOpen_[it.key()] = it.value().get<bool>();
+        if (cu.contains("list_filter") && cu["list_filter"].is_string())
+            constListFilter_ = cu["list_filter"].get<std::string>().substr(0, 48);
+        if (cu.contains("list_open") && cu["list_open"].is_string())
+        {
+            const std::string nm = cu["list_open"].get<std::string>();
+            constListOpen_ = -1;
+            for (size_t c = 0; c < constellations.size(); ++c)
+                if (!nm.empty() && constellations[c].name == nm)
+                    constListOpen_ = (int)c;
+        }
+    }
 
     if (j.contains("kessler") && j["kessler"].is_object())
     {
@@ -8457,6 +8486,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         launchAfterStorm = settingClamp(lj.value("after_storm", launchAfterStorm), 0, 1);
         launchPadGraphics = lj.value("pad_graphics", launchPadGraphics);
         launchDeployEra = lj.value("deployment_era", launchDeployEra);
+        launchEraBenchmarkShells = lj.value("era_benchmark_shells", launchEraBenchmarkShells);
     }
 
     if (j.contains("planets"))
@@ -9250,6 +9280,16 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     for (const auto &c : constellations)
         constArr.push_back({{"name", c.name}, {"enabled", c.enabled}, {"highlight", c.highlight}});
     j["constellations"] = constArr;
+    // The Constellations tab's view (2026-10-21): which groups are unfolded, the open member list and its search.
+    {
+        nlohmann::json open = nlohmann::json::object();
+        for (const auto &kv : constGroupOpen_)
+            open[kv.first] = kv.second;
+        j["constellations_ui"] = {{"groups_open", open},
+                                  {"list_open", constListOpen_ >= 0 && constListOpen_ < (int)constellations.size()
+                                                    ? constellations[constListOpen_].name : std::string()},
+                                  {"list_filter", constListFilter_}};
+    }
 
     // Planets (RELEASE_v1_1_PLAN.md follow-up, session 30) — same shape as constellations above,
     // ungated by schema_version like constellations_enabled/constellations: this isn't a
@@ -9274,7 +9314,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                      {"engine_light_gain", engineLightGain},
                      {"after_storm", launchAfterStorm},
                      {"pad_graphics", launchPadGraphics},
-                     {"deployment_era", launchDeployEra}};
+                     {"deployment_era", launchDeployEra},
+                     {"era_benchmark_shells", launchEraBenchmarkShells}};
     return j;
 }
 
