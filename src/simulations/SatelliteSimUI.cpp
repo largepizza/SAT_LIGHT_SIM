@@ -4494,10 +4494,10 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
             uiScaleUser = s;
     }
     // (2026-10-21) The automatic part of the UI scale: smaller on a short window (1 at 1000 px and up, 0.77 at 768, 0.72 at 720),
-    // times the Text scale above; text never shrinks below 16 px through it.
+    // times the Text scale above; text never shrinks below 12 px through it (16 px before the SDF font).
     uiToggleRow(inp, ui, "UiAutoScale", 0, "Scale with window", uiScaleAuto,
                 "Shrink the interface on a short window (under 1000 px tall): 0.77x at 768 px, 0.72x at 720. Text stays at "
-                "least 16 px");
+                "least 12 px");
     {
         static const char *kUnits[2] = {"Metric", "Imperial"};
         if (int c = uiChoiceRow(inp, ui, "Units", 0, "Units", kUnits, 2, unitSystem == UnitSystem::Metric ? 0 : 1); c >= 0)
@@ -7177,11 +7177,11 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
             // behind this text; user testing found it read as UI clutter, especially since players
             // rarely dismissed the intro quickly, so demo footage was full of it). A dedicated
             // serif face was tried in its place (2026-09-08) but reverted the same day: the stbtt
-            // baked-bitmap atlas this renderer uses has no per-size re-rasterization (see
-            // UIRenderer::FontAtlas's bakedSize comment), and the serif face's hinting produced
-            // visibly misaligned glyphs at these large caption sizes (most obviously "2036"'s 3/6)
-            // once scaled up from the bake. Fixing that for real needs an SDF font atlas, not
-            // attempted here — regular UI font stays the only font for now.
+            // baked-bitmap atlas the renderer used then had no per-size re-rasterization, and the
+            // serif face's hinting produced visibly misaligned glyphs at these large caption sizes
+            // (most obviously "2036"'s 3/6) once scaled up from the bake. The atlas is an SDF since
+            // 2026-10-21 (crisp edges at caption sizes), so a second face could be tried again;
+            // the regular UI font is still the only font.
             CLAY(CLAY_ID("IntroCaptionPanel"), {.layout = {
                                                     .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                     .padding = {24, 24, 16, 16},

@@ -277,25 +277,28 @@ private:
     uint32_t clayMemorySize = 0;
 
     // ── Font (stb_truetype) ───────────────────────────────────────────────
+    // SDF encoding of the font atlas — ui.frag's kSdfOnEdge / kSdfDistScale must match.
+    static constexpr int   kSdfPad       = 8;      // texels of distance kept around each glyph
+    static constexpr int   kSdfOnEdge    = 128;    // the stored value ON the outline
+    static constexpr float kSdfDistScale = 16.0f;  // stored units per texel of distance (128/8: +-8 texels)
     struct FontAtlas {
         VkImage        image   = VK_NULL_HANDLE;
         VkDeviceMemory memory  = VK_NULL_HANDLE;
         VkImageView    view    = VK_NULL_HANDLE;
         VkSampler      sampler = VK_NULL_HANDLE;
-        // Glyphs are baked once at a fixed pixel height (stbtt_BakeFontBitmap — a plain bitmap
-        // atlas, not an SDF), then every requested Clay fontSize just scales that one baked
-        // bitmap by a ratio (see pushText's renderScale) — there's no re-rasterization per size.
-        // bakedSize was 32px, fine for normal UI text (11-19px * up to 2.0x uiScale tops out
-        // around 32-38, a mild upscale) but visibly blocky on the intro's large title captions
-        // (fs(48)/fs(34), which can request 68-96px — a 2-3x upscale of a 32px source). Bumped to
-        // 48 with the atlas area scaled by the same (48/32)^2 factor to preserve the same packing
-        // headroom stbtt_BakeFontBitmap's simple shelf-packer had at the old size (it silently
-        // drops/omits glyphs that don't fit, so this ratio isn't optional). Still a raster
-        // upscale, not resolution-independent — true crispness at arbitrary uiScale/title sizes
-        // would need an SDF font atlas instead, a larger separate change.
-        int            atlasW  = 768;
-        int            atlasH  = 768;
+        // A signed-distance-field atlas (2026-10-21; it was a plain stbtt_BakeFontBitmap bitmap): ASCII 32-126
+        // baked once at bakedSize by stbtt_GetCodepointSDF (loadFont), every Clay fontSize drawn from it by a
+        // ratio (pushText's renderScale) with ui.frag reconstructing the edge over one screen pixel — crisp at
+        // any size. charData (stbtt_bakedchar, from a throw-away bitmap bake at the same size) keeps the
+        // metrics every layout uses; `sdf` holds each glyph's atlas rect and offset (padding included).
+        struct SdfGlyph {
+            int   x0 = 0, y0 = 0, x1 = 0, y1 = 0; // atlas texels; x1 == x0 = no outline (space)
+            float xoff = 0.0f, yoff = 0.0f;       // from the pen / baseline, in bakedSize pixels
+        };
+        int            atlasW  = 1024;
+        int            atlasH  = 1024;
         float          bakedSize = 48.0f;
+        std::vector<SdfGlyph> sdf;
         std::vector<uint8_t> charData;
         std::vector<uint8_t> fileData;
         void*                fontInfo = nullptr;

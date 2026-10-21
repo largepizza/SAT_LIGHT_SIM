@@ -709,9 +709,9 @@ void App::buildBootUI()
 {
     int ww = 0, wh = 0;
     glfwGetWindowSize(window, &ww, &wh);
-    // Never below 1: the font is one baked bitmap, and scaled much under ~16 px its thin strokes
-    // break up (a faded "Milky Way" lost its "l" at 13.5 px).
-    const float s = std::clamp((float)wh / 900.0f, 1.0f, 1.6f);
+    // Down to 0.8 on a short window (720 px: the steps at 13 px). It was never below 1 while the font was
+    // a baked bitmap (a faded "Milky Way" lost its "l" at 13.5 px); the SDF atlas keeps thin strokes.
+    const float s = std::clamp((float)wh / 900.0f, 0.8f, 1.6f);
 
     // Clay keeps raw pointers until ui.record(), which runs in the same bootFrame() — so static
     // storage (and bootLines' own strings, untouched until the next frame) is enough.

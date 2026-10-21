@@ -248,23 +248,69 @@ void UIRenderer::loadFont(VulkanContext& ctx) {
                         stbtt_GetFontOffsetForIndex(font.fileData.data(), 0)))
         throw std::runtime_error("UIRenderer: stbtt_InitFont failed.");
 
-    // Bake ASCII 32-126 (96 glyphs) into an atlasW x atlasH R8 atlas
+    // Metrics: stbtt_BakeFontBitmap at bakedSize into a scratch bitmap that is thrown away. Its
+    // stbtt_bakedchar table (xadvance) is what Clay's measurement, pushText and textAdvance use,
+    // exactly as before the SDF atlas (2026-10-21), so no layout moves.
     font.charData.resize(96 * sizeof(stbtt_bakedchar));
-    std::vector<uint8_t> pixels(font.atlasW * font.atlasH);
-    int bakeResult = stbtt_BakeFontBitmap(font.fileData.data(), 0,
-                         font.bakedSize,
-                         pixels.data(), font.atlasW, font.atlasH,
-                         32, 96,
-                         reinterpret_cast<stbtt_bakedchar*>(font.charData.data()));
-    // stbtt_BakeFontBitmap: positive = success (all 96 glyphs fit, value = first unused row);
-    // <=0 = ran out of atlas room partway through ("a very crappy packing", per its own comment)
-    // and silently omitted the rest — glyphs past that point would render as garbage/blank. Not
-    // fatal (rare in practice; bakedSize/atlasW/H are sized with headroom), but worth a loud
-    // warning instead of a silent missing-character bug if that headroom is ever reduced.
-    if (bakeResult <= 0)
-        fprintf(stderr, "[UIRenderer] stbtt_BakeFontBitmap: atlas too small for bakedSize=%.0f "
-                        "(%dx%d) — only %d of 96 glyphs fit. Increase atlasW/atlasH.\n",
-                font.bakedSize, font.atlasW, font.atlasH, -bakeResult);
+    {
+        std::vector<uint8_t> scratch(768 * 768);
+        const int bakeResult = stbtt_BakeFontBitmap(font.fileData.data(), 0, font.bakedSize, scratch.data(), 768, 768,
+                                                    32, 96, reinterpret_cast<stbtt_bakedchar*>(font.charData.data()));
+        if (bakeResult <= 0)
+            fprintf(stderr, "[UIRenderer] stbtt_BakeFontBitmap (metrics): only %d of 96 glyphs fit.\n", -bakeResult);
+    }
+
+    // The atlas is a SIGNED DISTANCE FIELD (2026-10-21): each glyph baked once by stbtt_GetCodepointSDF at
+    // bakedSize, padded by kSdfPad texels, the distance stored as kSdfOnEdge + texels x kSdfDistScale (inside
+    // brighter). ui.frag (mode 1) turns it back into coverage over one SCREEN pixel, so text is crisp from ~9 px
+    // to 100+ px titles. (The bitmap atlas was minified without mips below ~16 px — strokes broke up — and went
+    // blocky scaled up for titles.) ui.frag's kSdfOnEdge / kSdfDistScale must match these.
+    const float sdfScale = stbtt_ScaleForPixelHeight(fi, font.bakedSize);
+    std::vector<uint8_t> pixels((size_t)font.atlasW * font.atlasH, 0);
+    font.sdf.assign(96, FontAtlas::SdfGlyph{});
+    {
+        int penX = 1, penY = 1, rowH = 0, placed = 0;
+        for (int i = 0; i < 96; ++i)
+        {
+            int w = 0, h = 0, xo = 0, yo = 0;
+            unsigned char* bm = stbtt_GetCodepointSDF(fi, sdfScale, 32 + i, kSdfPad, (unsigned char)kSdfOnEdge,
+                                                      kSdfDistScale, &w, &h, &xo, &yo);
+            if (!bm || w <= 0 || h <= 0)
+            {
+                if (bm)
+                    stbtt_FreeSDF(bm, nullptr);
+                ++placed; // no outline (the space): no quad
+                continue;
+            }
+            if (penX + w + 1 > font.atlasW)
+            {
+                penX = 1;
+                penY += rowH + 1;
+                rowH = 0;
+            }
+            if (penY + h + 1 > font.atlasH)
+            {
+                stbtt_FreeSDF(bm, nullptr);
+                break;
+            }
+            for (int y = 0; y < h; ++y)
+                memcpy(&pixels[(size_t)(penY + y) * font.atlasW + penX], bm + (size_t)y * w, (size_t)w);
+            FontAtlas::SdfGlyph& g = font.sdf[i];
+            g.x0 = penX;
+            g.y0 = penY;
+            g.x1 = penX + w;
+            g.y1 = penY + h;
+            g.xoff = (float)xo;
+            g.yoff = (float)yo;
+            penX += w + 1;
+            rowH = std::max(rowH, h);
+            stbtt_FreeSDF(bm, nullptr);
+            ++placed;
+        }
+        if (placed < 96)
+            fprintf(stderr, "[UIRenderer] SDF font atlas %dx%d too small: only %d of 96 glyphs fit.\n", font.atlasW,
+                    font.atlasH, placed);
+    }
 
     // ── Upload atlas as VK_FORMAT_R8_UNORM ────────────────────────────────
     VkDeviceSize atlasBytes = (VkDeviceSize)(font.atlasW * font.atlasH);
@@ -1172,19 +1218,19 @@ void UIRenderer::pushText(float x, float y, const char* text, int len,
         unsigned char c = (unsigned char)text[i];
         if (c < 32 || c > 126) continue;
 
-        stbtt_bakedchar& ch = bc[c - 32];
-
-        float gx = penX + ch.xoff * renderScale;
-        float gy = baselineY + ch.yoff * renderScale;
-        float gw = (float)(ch.x1 - ch.x0) * renderScale;
-        float gh = (float)(ch.y1 - ch.y0) * renderScale;
-
-        float u0 = (float)ch.x0 / atlasW;
-        float v0 = (float)ch.y0 / atlasH;
-        float u1 = (float)ch.x1 / atlasW;
-        float v1 = (float)ch.y1 / atlasH;
-
-        pushQuad(gx, gy, gw, gh, u0, v0, u1, v1, color, 1.0f);
+        const stbtt_bakedchar& ch = bc[c - 32];
+        const FontAtlas::SdfGlyph& g = font.sdf[c - 32];
+        if (g.x1 > g.x0)
+        {
+            // The SDF glyph's box (padding included) at its own offset from the pen: the same origin the
+            // bitmap glyph had (both from stbtt's glyph box at bakedSize), so the ink lands where it did.
+            const float gx = penX + g.xoff * renderScale;
+            const float gy = baselineY + g.yoff * renderScale;
+            const float gw = (float)(g.x1 - g.x0) * renderScale;
+            const float gh = (float)(g.y1 - g.y0) * renderScale;
+            pushQuad(gx, gy, gw, gh, (float)g.x0 / atlasW, (float)g.y0 / atlasH, (float)g.x1 / atlasW,
+                     (float)g.y1 / atlasH, color, 1.0f);
+        }
 
         penX += ch.xadvance * renderScale;
     }
