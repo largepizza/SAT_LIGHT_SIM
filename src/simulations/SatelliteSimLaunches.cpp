@@ -3821,7 +3821,6 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (earthBlocks(P))
                 continue;
             ++L.nRockets;
-            const glm::dvec3 dirE = toEnu(rel) / range;
             const double ext = atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
             const bool burning = burn != launch::BURN_NONE;
             double m;
@@ -3865,8 +3864,23 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 selTransients[trIdx].flare = (float)flare; // drawn: pickable
             if (!burning)
             {
+                // The sunlit body's point at the middle of the stage (it sat on the track point, the aft end: half a
+                // stage off its mesh while the two cross-fade).
+                glm::dvec3 relB = rel;
+                if (trIdx < selTransients.size() && glm::length(selTransients[trIdx].axis) > 0.5)
+                {
+                    const int ty = selTransients[trIdx].type;
+                    if (ty >= 0 && ty < (int)satTypes.size())
+                    {
+                        auto it = L.engineGeom.find(ty);
+                        if (it == L.engineGeom.end())
+                            it = L.engineGeom.emplace(ty, LaunchImpl::engineGeomOf(satTypes[(size_t)ty])).first;
+                        relB += (it->second.x + 0.5 * it->second.z) * glm::normalize(selTransients[trIdx].axis);
+                    }
+                }
+                const double rB = std::max(glm::length(relB), 1.0);
                 if (kFireCount < kFireballMax)
-                    fo[kFireCount++] = {glm::vec4(glm::vec3(dirE), (float)flare), glm::vec4(col, (float)range)};
+                    fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(relB) / rB), (float)flare), glm::vec4(col, (float)rB)};
                 continue;
             }
             // The flame, from the engines out (2026-10-19, the user's QA: "a plume emerging from the engine", not a
@@ -3910,14 +3924,15 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 sPk[k] = eg.y * widK[k] * (1.0 + 2.0 * hiK);
                 offK[k] = k == 0 ? 2.2 * sAk[0] : offK[k - 1] + 1.2 * (sAk[k - 1] + sAk[k]);
             }
-            const glm::dvec3 Pcore = Pexit - offK[0] * vdir;
             const double Lcore = offK[1] + sAk[1];
             const double Lpx = Lcore / std::max(range * pixA, 1e-9);
-            // The point (bloom, glare) sits on the core, not on the hull (it drew a white disc on the aft end). Once
-            // the flame resolves, a point's 1/r^2 no longer holds: its brightness stops growing where the flame is
-            // ~4 px long, and most of the light goes to the flame's Gaussians (a glare remains at every scale).
+            // The point (bloom, glare) sits just behind the nozzle exits, on the engine cluster (2026-10-20, issue
+            // 20261020_181510: it sat on the core Gaussian's centre, ~33 m behind a Starship's exits in vacuum, and
+            // seen from behind and aside the glare stood ~300 px off the engines). Once the flame resolves, a point's
+            // 1/r^2 no longer holds: its brightness stops growing where the flame is ~4 px long, and most of the light
+            // goes to the flame's Gaussians (a glare remains at every scale).
             {
-                const glm::dvec3 relC = Pcore - eye;
+                const glm::dvec3 relC = (Pexit - 0.08 * D * vdir) - eye;
                 const double rC = std::max(glm::length(relC), 1.0);
                 const double rEff = std::max(rC, Lcore / (4.0 * pixA));
                 const double pointK = glm::mix(1.0, 0.3, glm::smoothstep(4.0, 30.0, Lpx));

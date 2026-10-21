@@ -4578,7 +4578,13 @@ launches follow per-program cadences (no real manifest).
   nose's slope; Super Heavy 72.3 m with the integrated hot-staging ring, three grid fins (Block 3) and 33 Raptors
   3 / 10 / 20; the ship 3 sea-level + 3 RVac. EVERY engine is its own render-only bell (open, sooty inside) named
   `engines_*` / `upper_nozzle_*` / `side_nozzle_*`: engineGeomOf takes the lowest exit and the radius the bells span
-  (profiles count, the exit at their bottom), so the flame grows out of the actual engine cluster. Grid fins use the
+  (profiles count, the exit at their bottom), so the flame grows out of the actual engine cluster. **No surface may
+  cut a bell** (2026-10-20, issue 20261020_181510): every bell's throat (exit + 0.68 x its length) sits at or below the
+  aft cap / heat shield over it. The ship's barrel used to end in a cap at the track point with the bells half above
+  it, so their glowing interiors read as crescents: it now has an open render-only aft SKIRT (`aft_skirt`, 3.3 m,
+  black inside) down to the track point, the RVac exits 0.15 m inside its bottom, the sea-level bells recessed (exit
+  0.8 m up), the `aft_heat_shield` at 3.3 m above every throat; the photometric barrel starts there. Super Heavy's
+  and Falcon 9's core exits moved down 0.15 / 0.1 m for the same rule. Grid fins use the
   `gridfin` lattice material (stowed folded up on Falcon 9's stack, deployed on its booster). Photometric: the bodies,
   tanks, fairings, capsules, strap-ons and Starship's flaps; detail (bells, grid fins, legs, bands, chines, raceways,
   escape towers, the hot-staging ring) is render-only. Interstage sleeves stay render-only: a separate interstage
@@ -4659,8 +4665,11 @@ launches follow per-program cadences (no real manifest).
   behind the track point: it reached past the nose). Its light: unresolved, the point's on-screen energy (`toSky`, ~10
   mag over a surface's physical brightness); resolved (core 1.5 -> 8 px wide), the flame's surface brightness in the
   sky's units (pi x radiance per unit solar irradiance) x `kFlameCore` 30 (the magnitudes are tuned for points),
-  geometric blend. The point (bloom, glare) sits on the core, its brightness capped where the flame is 4 px long and
-  down to 30% once it is 30 px: glare at every scale, no white disc on the hull. A coasting stage's sunlit point is
+  geometric blend. The point (bloom, glare) sits 0.08 exit diameters behind the exit plane, on the engine cluster
+  (2026-10-20, issue 20261020_181510: on the core Gaussian's centre it was ~33 m behind a Starship's exits in vacuum,
+  ~300 px off the engines seen from behind and aside), its brightness capped where the flame is 4 px long and
+  down to 30% once it is 30 px: glare at every scale, no white disc on the hull. A coasting stage's sunlit point sits
+  at the middle of the stage (exit + half the model's length along the axis; it was the aft end) and is
   dropped once its mesh is up (floored at +10 mag it was still a -7 disc at 100 m). The night glow of the lit exhaust
   scales with the engines (12-330 exit diameters, 0.12 of the flame's light) and sits 2 of its lengths behind them.
   **Close up (2026-10-20, issues 20261019_222938 shot 2 / 20261019_222829, "a smaller glare with all 33 engines lit up"):**
