@@ -147,7 +147,7 @@
    ],
    "caps": false,
    "material": "chute_orange",
-   "inner_material": "grey",
+   "inner_material": "chute_orange",
    "group": "body",
    "render_only": true,
    "sweep_deg": [
@@ -195,7 +195,7 @@
    ],
    "caps": false,
    "material": "white",
-   "inner_material": "grey",
+   "inner_material": "white",
    "group": "body",
    "render_only": true,
    "sweep_deg": [
@@ -243,7 +243,7 @@
    ],
    "caps": false,
    "material": "chute_orange",
-   "inner_material": "grey",
+   "inner_material": "chute_orange",
    "group": "body",
    "render_only": true,
    "sweep_deg": [
@@ -291,7 +291,7 @@
    ],
    "caps": false,
    "material": "white",
-   "inner_material": "grey",
+   "inner_material": "white",
    "group": "body",
    "render_only": true,
    "sweep_deg": [
@@ -339,7 +339,7 @@
    ],
    "caps": false,
    "material": "chute_orange",
-   "inner_material": "grey",
+   "inner_material": "chute_orange",
    "group": "body",
    "render_only": true,
    "sweep_deg": [
@@ -387,7 +387,7 @@
    ],
    "caps": false,
    "material": "white",
-   "inner_material": "grey",
+   "inner_material": "white",
    "group": "body",
    "render_only": true,
    "sweep_deg": [
@@ -435,7 +435,7 @@
    ],
    "caps": false,
    "material": "chute_orange",
-   "inner_material": "grey",
+   "inner_material": "chute_orange",
    "group": "body",
    "render_only": true,
    "sweep_deg": [
@@ -483,7 +483,7 @@
    ],
    "caps": false,
    "material": "white",
-   "inner_material": "grey",
+   "inner_material": "white",
    "group": "body",
    "render_only": true,
    "sweep_deg": [
@@ -531,7 +531,7 @@
    ],
    "caps": false,
    "material": "chute_orange",
-   "inner_material": "grey",
+   "inner_material": "chute_orange",
    "group": "body",
    "render_only": true,
    "sweep_deg": [
@@ -579,7 +579,7 @@
    ],
    "caps": false,
    "material": "white",
-   "inner_material": "grey",
+   "inner_material": "white",
    "group": "body",
    "render_only": true,
    "sweep_deg": [
@@ -627,7 +627,7 @@
    ],
    "caps": false,
    "material": "chute_orange",
-   "inner_material": "grey",
+   "inner_material": "chute_orange",
    "group": "body",
    "render_only": true,
    "sweep_deg": [
@@ -675,7 +675,7 @@
    ],
    "caps": false,
    "material": "white",
-   "inner_material": "grey",
+   "inner_material": "white",
    "group": "body",
    "render_only": true,
    "sweep_deg": [

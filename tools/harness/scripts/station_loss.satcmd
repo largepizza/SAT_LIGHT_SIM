@@ -24,7 +24,7 @@ capture loss_tiangong_escape
 time set 2036-11-22T00:00:00Z
 launch crew craft=progress station=russian event=hold200 lead=-60 follow=1
 wait settle
-select const "Russian"
+select const "Russian Orbital Service Station"
 kessler breakup sel
 wait 10
 launch state
@@ -39,7 +39,9 @@ launch crew craft=crew station=international event=phasing lead=-60 follow=1
 wait settle
 select const "International Space Station"
 kessler breakup sel
-wait 10
+wait 30
+time add 60
+wait 30
 launch state
 missions milestone list
 launch check

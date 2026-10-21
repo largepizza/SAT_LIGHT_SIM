@@ -229,7 +229,8 @@ def chutes(b, top, kind):
                for k in range(7)]
         pts[-1][1] = 0.0
         for g in range(ngore):
-            c = b.profile("canopy", pts, c0 if g % 2 == 0 else c1, x=x, y=y, ro=True, inner="grey")
+            col = c0 if g % 2 == 0 else c1
+            c = b.profile("canopy", pts, col, x=x, y=y, ro=True, inner=col)  # (the fabric shows its colour inside too)
             c["sweep_deg"] = [360.0 * g / ngore, 360.0 * (g + 1) / ngore]
         conf = [x * 0.6, y * 0.6, top + 0.3 * hgt]
         line(b, "riser", [0.0, 0.0, top], conf, 0.08)

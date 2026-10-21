@@ -3680,32 +3680,71 @@ static glm::dvec3 crewSegPos(const LCrew &C, const LCrewSeg &g, double t)
     return (2.0 * s3 - 3.0 * s2 + 1.0) * g.a + (s3 - 2.0 * s2 + s) * T * g.va + (-2.0 * s3 + 3.0 * s2) * g.b +
            (s3 - s2) * T * g.vb;
 }
-// In the station's orbit plane (Us, As): the capsule's radius and angle from separation to its arrival behind the
-// station (the far phases), then on the departure circle and the deorbit ellipse.
-static glm::dvec3 crewFarPos(const LCrew &C, double t)
+// In the station's orbit plane (Us, As): the capsule from separation to its arrival behind the station (the far
+// phases). Each phasing burn (2026-10-21) is spread over kCrewBurnS about its impulse time: the path before it and the
+// Kepler path after it (both defined either side) cross-fade by a smoothstep, ~0.5-1.5 m/s^2 of thrust for the ~30-60
+// m/s burns (the first cut changed the velocity in one step: ~80 m/s^2 in a 1-s second difference). The last burn,
+// the circularisation at tArr, blends into the approach's first leg (or, the rendezvous called off, the circle it
+// waits on). raw: without that last blend (where the approach starts).
+static constexpr double kCrewBurnS = 240.0;
+static glm::dvec3 crewPlanePt(const LCrew &C, double r, double th)
 {
-    double r = C.r0, th = C.th0, nu = 0.0;
-    if (t < C.tB1)
-        th = C.th0 + (C.n0 + C.vSep / C.r0) * (t - C.tSep);
-    else if (t < C.tB1e)
-    {
-        hohmannAt(C.r0, C.rP, t - C.tB1, r, nu);
-        th = C.th1 + nu;
-    }
-    else if (t < C.tB2)
-    {
-        r = C.rP;
-        th = C.th2 + C.nP * (t - C.tB1e);
-    }
+    return r * (std::cos(th) * C.Us + std::sin(th) * C.As);
+}
+// A Hohmann-type transfer ellipse up from ra (its periapsis, at angle thStart and time ts) to rb, at any t.
+static glm::dvec3 crewTransfer(const LCrew &C, double ra, double rb, double thStart, double ts, double t)
+{
+    const double a = 0.5 * (ra + rb), e = std::abs(rb - ra) / std::max(ra + rb, 1.0);
+    const double n = std::sqrt(launch::kGM / (a * a * a));
+    const double M = n * (t - ts);
+    double E = M;
+    for (int i = 0; i < 12; ++i)
+        E -= (E - e * std::sin(E) - M) / (1.0 - e * std::cos(E));
+    const double r = a * (1.0 - e * std::cos(E));
+    double nu = 2.0 * std::atan2(std::sqrt(1.0 + e) * std::sin(0.5 * E), std::sqrt(1.0 - e) * std::cos(0.5 * E));
+    nu += glm::two_pi<double>() * std::round((E - nu) / glm::two_pi<double>());
+    return crewPlanePt(C, r, thStart + nu);
+}
+static glm::dvec3 crewFarPos(const LCrew &C, double t, bool raw = false)
+{
+    const double h = 0.5 * kCrewBurnS;
+    auto piece = [&](int k, double tt) -> glm::dvec3 {
+        switch (k)
+        {
+        case 0:
+            return crewPlanePt(C, C.r0, C.th0 + (C.n0 + C.vSep / C.r0) * (tt - C.tSep)) +
+                   C.fix0 * (1.0 - glm::smoothstep(C.tSep, C.tB1, tt));
+        case 1:
+            return crewTransfer(C, C.r0, C.rP, C.th1, C.tB1, tt);
+        case 2:
+            return crewPlanePt(C, C.rP, C.th2 + C.nP * (tt - C.tB1e));
+        default:
+            return crewTransfer(C, C.rP, C.rS, C.th3, C.tB2, tt);
+        }
+    };
+    const double T[4] = {-1e300, C.tB1, C.tB1e, C.tB2};
+    // The last transition that has fully happened, then the ones in progress.
+    int k0 = 0;
+    for (int k = 1; k < 4; ++k)
+        if (T[k] < C.tArr - 1e-6 && t >= T[k] + h)
+            k0 = k;
+    glm::dvec3 P = piece(k0, t);
+    for (int k = k0 + 1; k < 4; ++k)
+        if (T[k] < C.tArr - 1e-6 && t > T[k] - h)
+            P = glm::mix(P, piece(k, t), glm::smoothstep(T[k] - h, T[k] + h, t));
+    if (raw || t <= C.tArr - h)
+        return P;
+    glm::dvec3 A;
+    if (C.abort == 1 || C.segs.empty())
+        A = crewPlanePt(C, C.rD, C.thDep + C.nD * (t - C.tDepEnd));
     else
     {
-        hohmannAt(C.rP, C.rS, t - C.tB2, r, nu);
-        th = C.th3 + nu;
+        glm::dvec3 Ps;
+        glm::dmat3 R;
+        crewStation(C, t, Ps, R);
+        A = Ps + R * crewSegPos(C, C.segs[0], t);
     }
-    glm::dvec3 P = r * (std::cos(th) * C.Us + std::sin(th) * C.As);
-    if (t < C.tB1)
-        P += C.fix0 * (1.0 - glm::smoothstep(C.tSep, C.tB1, t));
-    return P;
+    return glm::mix(P, A, glm::smoothstep(C.tArr - h, C.tArr + h, t));
 }
 static glm::dvec3 crewReturnPos(const LCrew &C, double t)
 {
@@ -3765,11 +3804,15 @@ static bool crewPos(const LCrew &C, double t, glm::dvec3 &P, int *phase = nullpt
     int ph = CP_NONE;
     bool lit = false;
     auto burning = [&](double tb, double dur) { return t >= tb && t < tb + dur; };
-    if (t < C.tArr)
+    if (t < C.tArr + 0.5 * kCrewBurnS)
     {
+        // (the far phases, and the last burn's blend into the approach or the waiting circle)
         P = crewFarPos(C, t);
-        ph = t < C.tB1 ? CP_SEPARATED : t < C.tB1e ? (C.skipRaise1 ? CP_PHASING : CP_RAISE1) : t < C.tB2 ? CP_PHASING : CP_RAISE2;
-        lit = (!C.skipRaise1 && (burning(C.tB1, 40.0) || burning(C.tB1e, 40.0))) || burning(C.tB2, 40.0);
+        ph = t < C.tB1 ? CP_SEPARATED : t < C.tB1e ? (C.skipRaise1 ? CP_PHASING : CP_RAISE1) : t < C.tB2 ? CP_PHASING
+             : t < C.tArr ? CP_RAISE2 : (C.abort == 1 ? CP_ABORT : CP_FAR);
+        const double hb = 0.5 * kCrewBurnS;
+        lit = (!C.skipRaise1 && (burning(C.tB1 - hb, kCrewBurnS) || burning(C.tB1e - hb, kCrewBurnS))) ||
+              (C.abort != 1 && (burning(C.tB2 - hb, kCrewBurnS) || burning(C.tArr - hb, kCrewBurnS)));
     }
     else if (t < C.tDepEnd)
     {
@@ -3919,6 +3962,60 @@ static glm::dmat3 crewAttitude(const LCrew &C, double t)
             const double w = glm::smoothstep(g->t0 + 60.0, g->t0 + 900.0, t);
             return crewSlerp(stationFrame(t, g->attFrom), prograde(t), w, glm::normalize(P));
         }
+        // (2026-10-21) Round onto the docking axis (the arc about the port): the frame facing the port is carried round
+        // the arc (rotated with the direction, about the arc's axis), not rebuilt from an "up" reference each moment:
+        // that reference passed through the facing direction on some arcs (a 180-deg roll in a second). Its roll then
+        // eases into the docking axis's own frame over the first minutes of the next leg.
+        auto rotTo = [](const glm::dvec3 &p, const glm::dvec3 &q, double w) {
+            const glm::dvec3 ax = glm::cross(p, q);
+            const double sn = glm::length(ax);
+            if (sn < 1e-9)
+                return glm::dmat3(1.0);
+            const double ang = std::atan2(sn, glm::dot(p, q));
+            return glm::dmat3(glm::rotate(glm::dmat4(1.0), w * ang, ax / sn));
+        };
+        auto formulaB = [](const glm::dvec3 &Z) {
+            const double k = glm::smoothstep(0.7, 0.95, std::abs(Z.z));
+            return crewFrame(Z, glm::normalize(glm::mix(glm::dvec3(0, 0, -1), glm::dvec3(1, 0, 0), k)));
+        };
+        auto arcFrameB = [&](const LCrewSeg &q, double tt) {
+            const double T = std::max(q.t1 - q.t0, 1e-3), sa = glm::clamp((tt - q.t0) / T, 0.0, 1.0);
+            const double u = sa * sa * sa * (sa * (6.0 * sa - 15.0) + 10.0);
+            const glm::dmat3 F0 = formulaB(-q.a);
+            if (glm::dot(q.a, q.b) > -0.85)
+                return glm::dmat3(rotTo(q.a, q.b, u) * F0);
+            // (crewSlerpDir's way round: through m, below the station)
+            glm::dvec3 m = q.a + q.b;
+            if (glm::length(m) < 0.5)
+            {
+                m = glm::dvec3(0, 0, 1) - glm::dot(glm::dvec3(0, 0, 1), q.a) * q.a;
+                if (glm::length(m) < 1e-3)
+                    m = glm::dvec3(1, 0, 0) - glm::dot(glm::dvec3(1, 0, 0), q.a) * q.a;
+            }
+            m = glm::normalize(m);
+            return u < 0.5 ? glm::dmat3(rotTo(q.a, m, 2.0 * u) * F0)
+                           : glm::dmat3(rotTo(m, q.b, 2.0 * u - 1.0) * rotTo(q.a, m, 1.0) * F0);
+        };
+        const LCrewSeg *arc = nullptr;
+        for (const LCrewSeg &q : C.segs)
+            if (q.kind == 1)
+            {
+                arc = &q;
+                break;
+            }
+        glm::dvec3 PsA;
+        glm::dmat3 RA;
+        crewStation(C, t, PsA, RA);
+        if (arc && g == arc && g->att == 0)
+        {
+            const glm::dmat3 Fa = RA * arcFrameB(*arc, t);
+            if (t < C.tArr + 300.0)
+                return crewSlerp(prograde(t), Fa, glm::smoothstep(C.tArr, C.tArr + 300.0, t), glm::normalize(P));
+            return Fa;
+        }
+        if (arc && g->att == 1 && t >= arc->t1 && t < arc->t1 + 300.0)
+            return crewSlerp(RA * arcFrameB(*arc, arc->t1), stationFrame(t, 1), glm::smoothstep(arc->t1, arc->t1 + 300.0, t),
+                             glm::normalize(P));
         // Turning from prograde to face the port over the approach's first 5 min.
         const glm::dmat3 F = stationFrame(t, g->att);
         if (t < C.tArr + 300.0)
@@ -4095,7 +4192,7 @@ static bool buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
     glm::dvec3 Ps, Pc;
     glm::dmat3 R;
     crewStation(C, C.tArr, Ps, R);
-    Pc = crewFarPos(C, C.tArr);
+    Pc = crewFarPos(C, C.tArr, true);
     const glm::dvec3 W0 = glm::transpose(R) * (Pc - Ps);
     const glm::dvec3 ax = glm::normalize(C.portAx), pp = C.portPos;
     glm::dvec3 d0 = W0 - pp;
@@ -5368,8 +5465,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 if (keep < 1.0 && n < kMaxDustClouds)
                 {
                     const double sMin = 0.6 * range * 2.0 * pixFull;
-                    const double sS = std::max(2.2, sMin), iS = 1.0 / (sS * sS);
-                    const double J = 0.5 * fl * (1.0 - keep) * range * range / K;
+                    const double sS = std::max(3.5, sMin), iS = 1.0 / (sS * sS);
+                    const double J = 0.03 * fl * (1.0 - keep) * range * range / K;
                     const glm::dvec3 ce = toEnu(Ph - Ra[2] * 0.8 - eye);
                     GpuDustCloud &d = out[n++];
                     d.c = glm::vec4(glm::vec3(ce), (float)(J * toSky));
@@ -7208,6 +7305,8 @@ nlohmann::json SatelliteSim::launchCheckJson() const
         double sepMax = 0.0, dockMax = 0.0, accMax = 0.0, rateMax = 0.0;
         std::string accAt, rateAt;
         int nFast = 0, nCargo = 0;
+        double burnAccMax = 0.0;
+        std::string burnAccAt;
         double fastLo = 1e30, fastHi = 0.0;
         for (const auto &kv : L.batches)
         {
@@ -7232,7 +7331,7 @@ nlohmann::json SatelliteSim::launchCheckJson() const
                                   C.tUndock, C.tDepEnd, C.tDeorb, C.tDeorb + C.deorbDur, C.tCm, C.tEI, C.tChute,
                                   C.tMains, C.tSplash};
             for (double e : evs)
-                for (double d = -6.0; d <= 6.0; d += 1.0)
+                for (double d = -70.0; d <= 70.0; d += (std::abs(d) < 6.5 ? 1.0 : 4.0)) // (the burns span +-60 s)
                     ts.push_back(e + d);
             for (const LCrewSeg &g : C.segs)
                 for (double d = -3.0; d <= 3.0; d += 1.0)
@@ -7242,7 +7341,7 @@ nlohmann::json SatelliteSim::launchCheckJson() const
                 }
             for (double t = C.tSep; t < C.tGone; t += (t > C.tDock + 3600.0 && t < C.tUndock - 3600.0) ? 3600.0 : 20.0)
                 ts.push_back(t);
-            double bAcc = 0.0, bRate = 0.0;
+            double bAcc = 0.0, bRate = 0.0, bBurn = 0.0;
             std::string bAccAt, bRateAt;
             for (double t : ts)
             {
@@ -7256,6 +7355,15 @@ nlohmann::json SatelliteSim::launchCheckJson() const
                 {
                     bAcc = acc;
                     bAccAt = kCrewPhaseNames[ph];
+                }
+                // (2026-10-21) in space (burns, the approach) apart from the entry and the parachutes
+                const bool inAir = ph == CP_ENTRY || ph == CP_DROGUES || ph == CP_MAINS || ph == CP_DOWN;
+                if (!inAir)
+                    bBurn = std::max(bBurn, acc);
+                if (!inAir && acc > burnAccMax)
+                {
+                    burnAccMax = acc;
+                    burnAccAt = kCrewPhaseNames[ph];
                 }
                 const glm::dmat3 Ra = LaunchImpl::crewAttitude(C, t), Rb = LaunchImpl::crewAttitude(C, t + 1.0);
                 const glm::dmat3 d = glm::transpose(Ra) * Rb;
@@ -7273,7 +7381,8 @@ nlohmann::json SatelliteSim::launchCheckJson() const
                           {"docked_days", (C.tUndock - C.tDock) / kDay}, {"lands", C.lands},
                           {"phasing_alt_km", (C.rP - kR) / 1000.0},
                           {"spacecraft", L.cat.programs[B.prog].spacecraft}, {"cargo", C.cargo}, {"burns_up", C.burns},
-                          {"fast_track", C.fast}, {"hours_to_dock", (C.tDock - B.tL) / 3600.0}, {"abort", C.abort}});
+                          {"fast_track", C.fast}, {"hours_to_dock", (C.tDock - B.tL) / 3600.0}, {"abort", C.abort},
+                          {"burn_accel_max_mps2", bBurn}, {"key", std::to_string(kv.first)}});
             if (C.fast)
             {
                 ++nFast;
@@ -7301,6 +7410,8 @@ nlohmann::json SatelliteSim::launchCheckJson() const
         j["crew_accel_max_in"] = accAt;
         j["crew_turn_max_deg_s"] = rateMax;
         j["crew_turn_max_in"] = rateAt;
+        j["crew_burn_accel_max_mps2"] = burnAccMax;
+        j["crew_burn_accel_max_in"] = burnAccAt;
         j["crew_fast_track_count"] = nFast;
         j["crew_fast_track_hours"] = {nFast ? fastLo : 0.0, fastHi};
         j["crew_cargo_count"] = nCargo;
@@ -12675,9 +12786,9 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
                                                  Pc);
             q["port"] = C.portName;
             q["dock_contact_m"] = portDist(C.tDock);
-            q["hold400_range_m"] = portDist(C.hold[0] + 300.0);
-            q["hold200_range_m"] = portDist(C.hold[1] + 300.0);
-            q["hold20_range_m"] = portDist(C.hold[2] + 300.0);
+            q["hold400_range_m"] = portDist(C.hold[0] + 0.5 * LaunchImpl::kCrewApproachLegs[C.fast ? 1 : 0][3]);
+            q["hold200_range_m"] = portDist(C.hold[1] + 0.5 * LaunchImpl::kCrewApproachLegs[C.fast ? 1 : 0][5]);
+            q["hold20_range_m"] = portDist(C.hold[2] + 0.5 * LaunchImpl::kCrewApproachLegs[C.fast ? 1 : 0][7]);
             q["arrival_range_to_station_km"] = portDist(C.tArr) / 1000.0;
             q["docked_after_60s"] = phaseAt(C.tDock + 60.0) == CP_DOCKED;
             q["docked_mid_stay"] = phaseAt(0.5 * (C.tDock + C.tUndock)) == CP_DOCKED;
@@ -12726,22 +12837,28 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
                 q["port_conflicts"] = conflicts;
             }
             // Continuity: the largest 1-s second difference of its position and its fastest turn, around every seam.
-            double acc = 0.0, turn = 0.0;
+            double acc = 0.0, turn = 0.0, burnAcc = 0.0;
             const double evs[] = {C.tSep, C.tB1, C.tB1e, C.tB2, C.tArr, C.tAxis, C.hold[0], C.hold[1], C.hold[2],
                                   C.tDock, C.tUndock, C.tDepEnd, C.tDeorb, C.tDeorb + C.deorbDur, C.tEI, C.tChute,
                                   C.tMains, C.tSplash};
             for (double e : evs)
-                for (double d = -4.0; d <= 4.0; d += 1.0)
+                for (double d = -70.0; d <= 70.0; d += (std::abs(d) < 4.5 ? 1.0 : 2.0)) // (the burns span +-60 s)
                 {
                     glm::dvec3 a, b0, c0;
                     if (!LaunchImpl::crewPos(C, e + d - 1.0, a) || !LaunchImpl::crewPos(C, e + d, b0) ||
                         !LaunchImpl::crewPos(C, e + d + 1.0, c0))
                         continue;
                     acc = std::max(acc, glm::length(a - 2.0 * b0 + c0));
+                    int phx = 0;
+                    glm::dvec3 tmp;
+                    LaunchImpl::crewPos(C, e + d, tmp, &phx);
+                    if (!(phx == CP_ENTRY || phx == CP_DROGUES || phx == CP_MAINS || phx == CP_DOWN))
+                        burnAcc = std::max(burnAcc, glm::length(a - 2.0 * b0 + c0));
                     const glm::dmat3 Dm = glm::transpose(LaunchImpl::crewAttitude(C, e + d)) * LaunchImpl::crewAttitude(C, e + d + 1.0);
                     turn = std::max(turn, glm::degrees(std::acos(std::clamp((Dm[0][0] + Dm[1][1] + Dm[2][2] - 1.0) * 0.5, -1.0, 1.0))));
                 }
             q["accel_max_mps2"] = acc;
+            q["burn_accel_max_mps2"] = burnAcc;
             q["turn_max_deg_s"] = turn;
         }
         if (!pl.sats.empty())
