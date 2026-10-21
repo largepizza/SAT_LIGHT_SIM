@@ -4758,7 +4758,12 @@ launches follow per-program cadences (no real manifest).
     an inland pad's ground cloud could sink into the terrain). The growth is capped at 60 m/s of relative speed: a young
     parcel still moves at km/s, and uncapped the trail swelled hundreds of metres in a second.
   - **cloud_march.comp, below 3-12 km** (`lowK`): the billows are read in a field SHARED by every Gaussian there
-    (world-fixed: `cloudNoiseTex` at P / 600 m and P / 220 m, P the Earth-centred point in the eye's ENU axes), so the
+    (EARTH-fixed: `cloudNoiseTex` at 2048/3 m and 2048/9 m cells, read at the point's ECEF offset from the terrain
+    detail's integer-anchored 2048-m cell, `terrainAnchorRel`, so the cell index drops out of the repeating texture; it was
+    P / 600 m with P Earth-centred in the EYE's ENU axes, which turn with the eye's position: the field slid with the
+    camera, 2 km a second at the reporter's 2 km/s — issue 20261020_214200 "noise evolves with position"; checked by
+    moving the eye 55 m with time paused: the billows' high-pass now correlates with the trail's parallax shift (0.16)
+    rather than with the screen (0.06), the reverse of before), so the
     overlapping puffs of a ground cloud are modulated together into one lumpy mass instead of averaging their own noise
     into a smooth haze (per-Gaussian noise, which rides with its parcel, is kept higher up); the faint tails are cut
     (tau x smoothstep(0.02, 0.35, tau); also below the 0.01 noise threshold — left whole there they drew rings round
@@ -4858,7 +4863,12 @@ launches follow per-program cadences (no real manifest).
     real mirror point is 74 deg below the horizon (horizontal distance D h / (h + H) = 1.35 km; a source at infinity at
     the rocket's 17 deg elevation would mirror at 17 deg). That lookup now drops an EMISSIVE-flagged texel (no cloud,
     `cloudAlphaIsEmit`) whose light, at its stored distance, misses the sea point's reflected ray by more than 2-6 deg
-    (`rEmitBad`); real cloud texels are unchanged. Far rockets (40-100 km) keep a glitter path from the horizon down,
+    (`rEmitBad`). **Shot 2 (same day, "still broken", the user's build had the fix):** a flame in front of the horizon's
+    cloud is composited into that CLOUD's texel (alpha = the cloud's distance, unflagged), so the test never saw it;
+    the lookup now also drops any texel within the flame + glow's angular size round an engine light's own place on
+    screen (>= 3 deg, ~600 m) when the reflected ray misses that light's real position seen from the sea point (real
+    clouds right round a flame lose their reflection there). Reproduced with `report load` shot 2 (its own settings):
+    the column is gone, the true mirror point (D h / (h + H), ~75 deg down) is below the frame. Far rockets (40-100 km) keep a glitter path from the horizon down,
     now from the light glint. Satellites' `OceanGlintBuf` glints are unchanged (at hundreds of km the infinite-distance
     geometry is off by < 1 deg). Cost within run-to-run noise (sky pass 11.9-12.8 ms with the lights vs 13.0 without,
     1920x1009). The bloom ellipse under the flame (the flame's tail Gaussian + the exhaust glow, 2 of its lengths behind
@@ -5156,8 +5166,24 @@ launches follow per-program cadences (no real manifest).
   - **The landing burn is a constant deceleration that zeroes both components together at the deck** (Launches.cpp,
     every recovery, towers included): it starts below 8 km once that deceleration reaches 25 m/s^2 (a faster arrival
     burns harder, ~40-50 m/s^2 for 20-25 s), analytic from there. The suicide-burn profile it replaced touched down at
-    ~40 m/s down and, for a droneship, ~360 m/s across. Boosters arriving from far downrange still lean ~30-55 deg in the
-    burn (they carry ~700-1100 m/s across at 8 km; drag in this model is weak): an open item.
+    ~40 m/s down and, for a droneship, ~360 m/s across. It ends at `kTouchV` 1.5 m/s straight down on the deck / catch
+    height (the horizontal speed nulled), not at rest.
+  - **The aerodynamic descent** (2026-10-20, issue 20261020_213739 "Rockets land tilted"): drag is a ballistic
+    coefficient of 2200 kg/m^2 (terminal ~190 m/s at sea level; it was 280 m/s, half the real drag), and after the entry
+    burn the grid fins / body lift steer the horizontal speed (up to `kGlideLD` 0.6 x the drag, time constant 3 s) to
+    what reaches the landing point in the time left (+8 s; a ballistic droneship arc: to zero). So the booster comes
+    over its target nearly vertical and the landing burn starts ~1.3-2.3 km up at ~260-340 m/s. Lean from the local
+    vertical (`launch check` -> `booster_lean_deg_by_alt`, max over the batches, at 20 / 8 / 3 / 1 / 0.3 / 0.05 km and
+    touchdown): ship 63 / 44 / 16 / 3.7 / 1.6 / 1.1 / 0.9 (mean at 1 km 0.7), landing zone 55 / 32 / 7.5 / 1.6 / 0.9 /
+    0.7 / 0.7, ground 40 / 18 / 1.4 / 0.1 / 0 / 0 / 0, tower 24 / 7 / 0.2 / 0.2 / 0.2 / 0.2 / 0.2. Before (the same
+    model replayed offline): a Falcon 9 to its ship 52 / 37 / 37 / 37 / 37 deg from 20 km to touchdown (the burn's
+    thrust, 650 m/s across at 8 km), RTLS the same, New Glenn 49, Super Heavy 17, ballistic 25. The 20-km values are the
+    entry burn (retrograde along the steep arc). Every landing moved later by the slower descent.
+  - **Landing legs** (Falcon 9 / Dragon, New Glenn, LM-12, Zhuque-3, Tianlong-3, Pallas-1): `tools/make_rocket_models.py`
+    draws them DEPLOYED (hinged a quarter of their length above the base, feet a little below the engine exits) with a
+    `fold` back flat against the body; `transientLegs` (SatelliteSimLaunches.cpp, every rocket mesh write) sets the
+    booster's unfolding progress: folded from lift-off, deployed over 2.5 s from 7 s before touchdown. The track's touchdown
+    point is still the aft end on the deck, so the feet stand a little below it (the engines' exits are level with it).
   - **RTLS** to a Falcon pad's landing zone: the track lands on the pad's centre and over its last ~40 km slides to the
     zone (`lzOff`, kLzDistM aside, its ground `LPad::lzElevM`), held there 30 min.
   - **The ship** (`shipEcef`): on station at the touchdown point from 8 h before lift-off (kShipOnStationS), the booster
