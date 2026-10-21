@@ -209,7 +209,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -3285,6 +3285,41 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = name + ".layout.json: " + std::to_string(list.size()) + " items, " +
                            std::to_string(clipped.size()) + " clipped, " + std::to_string(offscreen.size()) +
                            " off-screen, " + std::to_string(overlaps.size()) + " overlapping text";
+            return Status::Done;
+        }
+        if (sub == "hover")
+        {
+            // ui hover <ElementId>[:index] [fx=] [fy=] | ui hover off (2026-10-21): the scripted pointer rests over the
+            // element (no press) until `ui hover off` or the next `ui click` — tooltips show for a capture.
+            if (lower(pos(1)) == "off")
+            {
+                harnessPtrActive_ = false;
+                harnessPtrDown_ = false;
+                r["message"] = "pointer released";
+                return Status::Done;
+            }
+            std::string idStr = pos(1);
+            int index = -1;
+            const size_t colon = idStr.rfind(':');
+            if (colon != std::string::npos)
+            {
+                index = (int)parseNum(idStr.substr(colon + 1), "ui hover index");
+                idStr = idStr.substr(0, colon);
+            }
+            if (idStr.empty())
+                fail("ui hover <ElementId>[:index] | off");
+            const Clay_String cs{false, (int32_t)idStr.size(), idStr.c_str()};
+            const Clay_ElementId eid = index >= 0 ? Clay_GetElementIdWithIndex(cs, (uint32_t)index) : Clay_GetElementId(cs);
+            const Clay_ElementData d = Clay_GetElementData(eid);
+            if (!d.found)
+                fail("ui hover: no element '" + pos(1) + "' in the last frame's layout");
+            harnessPtrX_ = d.boundingBox.x + d.boundingBox.width * (float)c.num("fx", 0.5);
+            harnessPtrY_ = d.boundingBox.y + d.boundingBox.height * (float)c.num("fy", 0.5);
+            harnessPtrActive_ = true;
+            harnessPtrDown_ = false;
+            r["x"] = harnessPtrX_;
+            r["y"] = harnessPtrY_;
+            r["message"] = "pointer over " + pos(1);
             return Status::Done;
         }
         if (sub == "click")
