@@ -83,7 +83,6 @@ fixed since are in [Design notes](design-notes.md).
 | Bloom and corona exist for satellites and the Sun only, not stars and planets. | [Points, bloom and glare](../rendering/points-bloom-glare.md) | 2026-09-23 |
 | Aurora: a storm seen from orbit is a filled ring of concentric bands; the curtain noise's azimuth is Earth-fixed while the oval is Sun-fixed; no dawn-side omega bands or pulsating aurora; the dipole axis is fixed (no IGRF). | [Aurora and airglow](../rendering/aurora-airglow.md) | 2026-10-03 |
 | Saturn's ring brightness is omitted from its magnitude; the Moon's near-disc sky halo is not modelled; star day suppression uses an older formula than satellites'. | [Sun, Moon and planets](../simulation/sun-moon-planets.md) | 2026-07-30 |
-| UI text is one baked bitmap scaled to every size; large captions at high UI scale look blocky. An SDF font would fix it. | [UI (Clay)](../development/ui.md) | 2026-08 |
 
 - **2026-10-10** — Sun shadow cascade: blockers 5-15 km sunward of a sample fall in its one-knot bias; above a ~15 deg Sun it catches little of an anvil's shadow on the cloud under it; nothing beyond its range.
 - **2026-10-11** — The mid layer's shadow still has an edge at a grazing Sun at "Mid layer shadow" 0.3; cirrus bundles from orbit still read as wavy bands; "Small cumulus" at 0.15 visibly fills gaps in near views.

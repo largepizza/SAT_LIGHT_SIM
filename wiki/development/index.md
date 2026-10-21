@@ -65,7 +65,7 @@ Each of these has broken the build, the image or the machine when ignored. The l
 | [Building and releasing](building.md) | prerequisites, configure and build, runtime file sync, presets, packaging, CI, macOS universal builds, raw textures |
 | [Code architecture](architecture.md) | the three layers, the `Simulation` interface, the frame loop, the SatelliteSim file split, satellite indices, the orbit rebake, runtime roster changes, the loading screen, threads |
 | [GPU conventions](gpu-conventions.md) | `VulkanContext` helpers, barriers, push constants, `CloudParams`, layouts, shader includes, precision, descriptor budgets, register pressure, validation |
-| [UI (Clay)](ui.md) | the Clay rules, icons, the bitmap font, images and plots, text fields and long text, hit-testing, window stacking, the colour themes |
+| [UI (Clay)](ui.md) | the Clay rules, icons, the distance-field font, images and plots, text fields and long text, hit-testing, window stacking, the colour themes |
 | [Controls and settings plumbing](controls-and-settings.md) | key bindings, the gamepad, `settings.json`, slider slots, tabs, graphics presets, defaults |
 | [Automation harness](harness.md) | running the app from scripts: commands, outputs, analysis tools, launch and mission checks, architecture |
 | [Issue reports](issue-reports.md) | how a player's annotated snapshots are stored, exported, triaged, replayed and resolved |

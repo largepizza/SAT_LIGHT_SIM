@@ -2,7 +2,7 @@
 
 The app's UI is built with [Clay](https://github.com/nicbarker/clay), a single-header immediate-mode layout
 library, and drawn by `UIRenderer` as Vulkan quads. This page lists the rules that Clay and this renderer
-impose, and describes the icon atlas, the bitmap font, embedded images and plots, text fields and long text,
+impose, and describes the icon atlas, the distance-field font, embedded images and plots, text fields and long text,
 hit-testing, window stacking and the colour themes. Which windows and panels exist is player-facing and covered in [Using](../using/index.md).
 
 ## How a frame of UI is built
@@ -73,7 +73,8 @@ covers their parent.
 **Low resolutions.** Every builder reads `uiScale`, the effective scale set once per frame at the top of
 `buildUI()` (`updateUiScale()`): the setting `uiScaleUser` (`display.ui_scale`) times `uiAutoScaleFactor()` =
 clamp(window height / 1000, 0.7, 1) while `uiScaleAuto` (`display.ui_auto_scale`) is on. `fs()` never lets the
-automatic factor take text below 16 px. Window sizes and minimums are capped at the screen less 8 px every frame
+automatic factor take text below 12 px (`kAutoFontFloorPx`), or below the player's own size where that is already
+smaller. Window sizes and minimums are capped at the screen less 8 px every frame
 (`buildResizableWindow()`), and windows are kept on screen after a resolution change. A window's default size is
 its 1080p size where it fits and a share of the screen otherwise, so give a new window a share-based default
 rather than a fixed pixel size. `tools/harness/ui_lowres.py run` opens every window alone at its default and
@@ -126,11 +127,14 @@ background is the caller's problem (see the translucent chip colours in the pale
 
 ## The font
 
-`UIRenderer::loadFont()` bakes ASCII 32 to 126 once with `stbtt_BakeFontBitmap` at 48 px into a 768 x 768
-single-channel atlas. Every requested font size scales that one bitmap; there is no rasterisation per size.
-Text near the baked size or below is sharp; much larger text (the intro's title captions) is an upscaled
-bitmap. `loadFont()` logs a warning if the baker drops glyphs for lack of atlas space. True resolution
-independence would need a signed-distance-field font, which is not implemented.
+The font is a **signed distance field**. `UIRenderer::loadFont()` bakes ASCII 32 to 126 once at startup with
+stb_truetype's `stbtt_GetCodepointSDF` at 48 px, with 8 texels of padding, into a 1024 x 1024 single-channel atlas:
+128 on the glyph's outline and 16 per texel of distance. The UI fragment shader (`shaders/ui.frag`) turns the
+distance into coverage over one screen pixel, taking the texels per pixel from the UV derivatives, and emboldens
+slightly (up to 0.1 px) only below 13 px. So one atlas draws crisp text at every size, from about 9 px to the
+intro's 100 px titles, with no rasterisation per size. The metrics (advances, glyph origins) are stb_truetype's,
+and they set the layout. Because small text stays clean, the automatic window-height scale may take text down to
+12 px, and the loading screen scales down to 0.8 on a short window.
 
 The atlas is ASCII only: there are no media symbols or arrows, so UI text uses ASCII stand-ins (`<<`, `||`,
 `>>`, `+`/`-` section headers).

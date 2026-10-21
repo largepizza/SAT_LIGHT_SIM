@@ -208,7 +208,7 @@ often doubles it back; the automatic render scale is built for exactly this.
 **Text scale and Scale with window.** The interface is drawn at *Text scale* times a factor from the window's
 height while *Scale with window* is on: clamp(height / 1000, 0.7, 1). At 1000 px and taller (a maximized window
 on a 1080p desktop) nothing changes; a 720 px window draws the interface at 72%. The automatic factor never takes
-text below 16 px, the smallest size the built-in bitmap font stays legible at. Turn it off to keep *Text scale*
+text below 12 px. Turn it off to keep *Text scale*
 exactly at every window size.
 
 No window is ever larger than the screen: window sizes and minimums are capped at the screen less a small margin,
