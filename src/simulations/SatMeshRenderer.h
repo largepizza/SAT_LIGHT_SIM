@@ -37,8 +37,16 @@ struct GpuMeshFrame
     glm::vec4 marker1;
     glm::vec4 bgParams; // x = 1: the HDR background (SatEnvProbes) is valid, y = marker radius (px),
                         // z = viewport height (px)
+    // Local point lights (2026-10-21; the scene only): a burning engine's flame, a pad's or a ship's floods at night
+    // (SatelliteSim::MeshLocalLight). lightInfo.x = count; lightPos xyz world, w intensity (suns x m^2: irradiance
+    // I / (r^2 + rs^2) in suns); lightCol rgb (luminance 1), w the source's soft radius rs (m).
+    static constexpr int kLocalLights = 8;
+    glm::vec4 lightInfo;
+    glm::vec4 lightPos[kLocalLights];
+    glm::vec4 lightCol[kLocalLights];
+    glm::vec4 lightDir[kLocalLights]; // xyz a floodlight's aim (unit), w the cosine of its beam's edge (-2 = all round)
 };
-static_assert(sizeof(GpuMeshFrame) == 256, "GpuMeshFrame layout (sat_mesh_common.glsl)");
+static_assert(sizeof(GpuMeshFrame) == 656, "GpuMeshFrame layout (sat_mesh_common.glsl)");
 
 // std430 mirror of sat_mesh_common.glsl's MeshInstance.
 struct GpuMeshInstance

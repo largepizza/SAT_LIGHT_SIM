@@ -18,6 +18,12 @@ layout(set = 0, binding = 0, std140) uniform MeshFrame {
     vec4 marker0;     // model viewer background: the observer's world position, w = 1 to draw
     vec4 marker1;     // a ground-site mirror's current target, w = 1 to draw
     vec4 bgParams;    // x = 1: the HDR background (SatEnvProbes) is valid, y = marker radius px, z = viewport px
+    // Local point lights (2026-10-21, the scene): a burning engine, a pad's / a ship's floods at night.
+    // x = count; pos xyz world, w intensity (suns x m^2); col rgb (luminance 1), w the soft radius (m).
+    vec4 lightInfo;
+    vec4 lightPos[8];
+    vec4 lightCol[8];
+    vec4 lightDir[8]; // xyz a floodlight's aim (unit), w the cosine of its beam's edge (-2 = all round)
 } frame;
 
 struct MeshInstance {

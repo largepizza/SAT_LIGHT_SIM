@@ -363,7 +363,11 @@ GpuSatMeshMaterial packSatMeshMaterial(const SatMaterial &m)
     // on the bay grid in both directions, 1 − (1 − x)², plus one diagonal per bay across the open
     // square, √2·x·(1 − x).
     float x = 0.0f;
-    if (m.coverage < 1.0f)
+    // A rocket's grid fin (2026-10-21): a square grid of plates with no diagonals, 1 - (1 - x)^2 = coverage.
+    const bool gridFin = m.name == "gridfin";
+    if (m.coverage < 1.0f && gridFin)
+        x = 1.0f - std::sqrt(std::max(1.0f - m.coverage, 0.0f));
+    else if (m.coverage < 1.0f)
     {
         float lo = 0.0f, hi = 1.0f;
         for (int it = 0; it < 40; ++it)
@@ -376,7 +380,9 @@ GpuSatMeshMaterial packSatMeshMaterial(const SatMaterial &m)
     }
     // w = 1: an engine's inside (the rocket models' "soot", tools/make_rocket_models.py), which glows while the
     // stage burns (GpuMeshInstance::earthShC.w, sat_mesh.frag; 2026-10-20).
-    g.lattice = glm::vec4(m.coverage, m.trussPitch, x, m.name == "soot" ? 1.0f : 0.0f);
+    // w = 2: a grid fin (sat_mesh.frag: the grid without diagonals, drawn solid at its mean once the plates are
+    // finer than a pixel).
+    g.lattice = glm::vec4(m.coverage, m.trussPitch, x, m.name == "soot" ? 1.0f : gridFin ? 2.0f : 0.0f);
     return g;
 }
 

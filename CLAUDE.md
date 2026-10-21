@@ -4698,7 +4698,9 @@ launches follow per-program cadences (no real manifest).
   pulsed at every knot (the newest segment born dimmer than the head). The budget fades Gaussians near its cut by
   priority (0 at the cut, full at 3x it). **Billows**: cloud_march.comp modulates each plume Gaussian's optical depth by
   the baked Perlin-Worley (`cloudNoiseTex.r`, mean `kPlumeNoiseMean`) at the ray's closest approach in the Gaussian's
-  own sigma units, seeded per parcel (`ib.w` = 4 x seed + the unread sky light); only where tau > 0.01 (on every
+  own frame (2026-10-21: the offset from its centre in Earth-fixed axes / its width sqrt(2 / trace M); it was the eye's
+  ENU axes x the inverse sigma along the view, which rescaled the billows with the view angle on elongated segments and
+  swam as the camera moved), seeded per parcel (`ib.w` = 4 x seed + the unread sky light); only where tau > 0.01 (on every
   faint tail it cost up to 7 ms; now within noise). A raymarched plume (density field + light march per pixel) was
   not built: hundreds of overlapping Gaussians per pixel would need a voxelised field or a per-tile list first. Cross-section `kappa`: 10 m^2/kg low (condensation, soot) to 1000 m^2/kg above ~90 km (the exhaust's water as
   sub-micron ice: an upper estimate, ~2000 if all of it froze; 300 left the bell's wide part invisible); albedo from
@@ -4823,6 +4825,28 @@ launches follow per-program cadences (no real manifest).
   it. Rough lobes (stainless 0.12, paint) reached the Sun-like radiance test at grazing incidence (Fresnel -> 1, the
   masking term's 1/(2 alpha)) along every edge and panel seam of a Starship in daylight: dozens of glares. Mirrors,
   OSR, dielectric film and solar glass (0.05: 0.93) still glare.
+- **Local lights on the meshes** (2026-10-21, sat_mesh.frag; `SatelliteSim::MeshLocalLight`, `meshLightAdd`): a burning
+  engine (from just behind its nozzles, 0.12 of the flame's length: `engineLightAdd`'s `meshPosEci`), and at night each
+  flood of a pad (`padLightsOf` kinds 0 / 2, 0.16 suns m^2 ~ 2e4 cd, a 40-deg beam at the pad's centre 25 m up / a landing
+  zone's centre) and of a landing ship (0.1, 45 deg at the deck) — the single cloud / haze light at a pad's or ship's centre
+  has `meshK` 0. Lifted at night like the engine lights and with the eye's adaptation (`meshLightAdapt_`); Earth-fixed
+  positions (last frame's list: the launch visuals run after `recordMeshScene`); the 8 most important to the camera in
+  `GpuMeshFrame::lightPos / lightCol / lightDir` (528 -> 656 B). Diffuse + the material's specular, no shadow rays, not
+  photometric (no bloom). The lightning pass's mode-2 ground term now skips mesh pixels (binding 6 = the mesh distance
+  target, `writeLightningMeshDescriptor`): it lit them by the local up. Cost ~0.2 ms with the lights on (issue view).
+- **The landing halo (issue 20261020_213739, 2026-10-21)** was the PLUME, not the haze: a droneship landing laid down sea
+  spray (6x the exhaust's mass at kappa 14, growing 7 m/s) as a dome ~50 m round the booster, lit white by the burn and the
+  floods. A ship's deck now gets a thin exhaust skirt (`landingCloud` surf 3: 1.2x the mass, kappa 9, sigma0 6 m, growth
+  0.05, 50 s), and a landing burn's own trail parcels are at half the trail's cross-section (`kappaMul`). The haze term in
+  lightning.frag mode 2 takes the light's core radius in quadrature at a third (`sqrt(d^2 + 0.12 r0^2)`): floored at r0 it
+  was a flat disc 25-100 m across with a rim (the "haze halo at 300 m" following a stage).
+- **Grid fins** (material `gridfin`, `GpuSatMeshMaterial::lattice.w` 2): a square grid without diagonals (member width
+  1 - sqrt(1 - coverage)), 0.14-m cells (tools/make_rocket_models.py; render-only, so no photometry change), drawn SOLID at
+  the grid's mean (plates + 0.3 x the cells) once a cell is under 3-6 px (`latSolid`, sat_mesh.frag): dithered they were a
+  speckle at every normal distance. The soot glow tests `lattice.w` == 1.
+- **The sea's reflection near a flame** (sat_sky.frag): the texels within an engine light's on-screen disc are dropped only
+  where the flame DOMINATES (the composite there >= 3-10x the dimmest of four taps 2.5 disc radii out): clouds round a flame
+  keep their reflection; issue 20261020_181339 shot 2's column stays gone.
 - **Rocket light on clouds, haze, plumes and the ground** (2026-10-20; the glare pass's open item "a cumulus beside a
   night launch stays dark"). Every burn (ascent, boostback, entry, landing), a ship's entry glow and each pad's
   floodlights are POINT LIGHTS (`engineLightAdd`, SatelliteSimLaunches.cpp): intensity in suns x m^2 from the flame's
@@ -5304,9 +5328,22 @@ launches follow per-program cadences (no real manifest).
     chunks start 10 below the top; not selectable) by `launchShipJobs` (fixed state, the bow as the "velocity" axis).
   - **At night** (`launchFillShipLights`, `launchFillShipGlow`): flood clusters on the housings' masts (-2 at 1 km), red
     beacons, red / green side lights, a stern light (kFireBuf); the floodlit deck (-4) and a landed booster (-3.5) as
-    EMISSIVE Gaussians in the dust list (the mesh renderer has no local lights: the hull was black under its lights); one
-    engine light (`engineLightAdd`, 0.3 suns m^2 x night, lights the sea around it and low cloud). The landing burn's light
-    is the rocket's own engine light.
+    EMISSIVE Gaussians in the dust list, only while the ship is under ~6-30 px (once its mesh resolves the deck and booster
+    are lit by the mesh renderer's local lights, below); one engine light (`engineLightAdd`, 0.3 suns m^2 x night, lights
+    the sea around it and low cloud; not the meshes). The landing burn's light is the rocket's own engine light.
+  - **The swell** (2026-10-21, `shipSwell` / `shipFrame` / `shipDeckEcef`): heave, pitch and roll, each three sinusoids
+    of hashed 6-14 s periods (up to ~0.9 m / 1 deg / 2 deg at sea state 1; Jacklyn x0.6) x the sea state at the ship
+    (`SatelliteSim::shipSeaState`: the CPU mirror of sat_sky.frag's `oceanSeaState` with the storms from the CPU cloud
+    map's coverage; `LBatch::seaK`, set eased by `launchShipJobs`). Everything on the ship rides `shipFrame`: the mesh
+    (full attitude through `attFix`), the booster on the deck (position, and its axis = the deck's normal; it takes up the
+    deck's motion over the landing burn's last 6 s), the lights. `launch ships` -> `sea_state`, `heave_m`, `pitch_deg`,
+    `roll_deg`.
+  - **The securing robot** (Octagrabber; Jacklyn's own): its own model `ship_robot` (tools/make_ship_models.py: the ship
+    models no longer carry it) drawn in the ship mesh slots (key = the ship's ^ bit 63). Parked on the deck (droneship
+    (-31.5, 0), Jacklyn (24, 0)), it drives out 75 s after touchdown at 0.6 m/s to stop with its front 4.6 m from the
+    booster's axis, then swings its four clamp arms forward under the engine section (stowable parts, the unfolding
+    progress over 15 s; `shipRobotAt`). `launch ships` -> `robot_deck_uv_m`, `robot_clamp_in_s`; `state` ->
+    `ship_robot_meshes`.
   - Harness: `launch droneship [vehicle=] [day=1|night=1] [lead=60] [dist_m=1500] [az=60] [h=5]` (the next landing on a
     ship, 30 days ahead, 120 with a vehicle filter), `launch ships`; `launch check` -> `booster_recovery_counts`,
     `booster_landing_downrange_km`, `droneship_touchdown_*`, `lz_ground_touchdown_*`, `booster_ride_home_off_deck_m_max`,
@@ -5445,7 +5482,7 @@ launches follow per-program cadences (no real manifest).
   The "Starmind Deployment" default bookmark was re-shot (the SECO fix moved the ship ~90 km along its orbit;
   harness_runs/bm9/bm9.satcmd = section 9 of default_bookmarks.satcmd); `launch_bench.py` captures both launch bookmarks
   at its end so a moved stage shows.
-- Not built: the Octagrabber driving out to the booster, the ship rolling in the swell, the booster's legs deploying,
+- Not built: the booster's legs deploying,
   the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
   (trains launch into it), cargo flights (and the cargo ships on the stations are still greebles), launch-time phasing for
   fast-track crew rendezvous, hole-punching through cloud decks, sonic booms.

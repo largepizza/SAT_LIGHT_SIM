@@ -365,23 +365,6 @@
    "render_only": true
   },
   {
-   "name": "securing_robot",
-   "type": "box",
-   "group": "ship",
-   "size": [
-    4.0,
-    4.0,
-    1.2
-   ],
-   "position": [
-    24.0,
-    0.0,
-    6.6
-   ],
-   "material": "red",
-   "render_only": true
-  },
-  {
    "name": "target_ring_0",
    "type": "box",
    "group": "ship",
