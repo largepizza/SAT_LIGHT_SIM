@@ -2925,6 +2925,12 @@ private:
     void engineLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double r0,
                         const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround);
     void engineLightsFlush();
+    // (2026-10-21) Drops the plume Gaussians that cannot show (SatelliteSimLaunches.cpp): their summed worst case, as
+    // if all of them overlapped one pixel, stays under 2e-4 of white on screen and 1% of dimming.
+    void dustCullInsignificant(GpuDustCloud *out, uint32_t &n);
+    // Knockout bit 33554432 = off (the A/B).
+    uint32_t plumesCulled = 0;       // this frame's (launch state: dust_list.culled)
+    glm::vec4 plumeCullStop{0.0f};   // the summed bounds where it stopped, and the next one's (light, dimming)
     static double flameIntensitySunsM2(double mag100km);
     int launchAfterStorm = 0;        // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
     // The deployment era (2026-10-20, launches.deployment_era; launches.json "deployment" / "roster_history" / site and
@@ -3665,7 +3671,7 @@ private:
     //
     // kDebugToggleSlots sizes hovDebugToggle[] and the accumulators below; the static_assert in
     // startKnockoutSweep() keeps it honest.
-    static constexpr int kDebugToggleSlots = 22;
+    static constexpr int kDebugToggleSlots = 24;
     static constexpr int kSweepSettleFrames = 6;  // discard after a mask change — covers the
                                                   // one-frame-stale timestamp readback plus a
                                                   // little driver/clock hysteresis

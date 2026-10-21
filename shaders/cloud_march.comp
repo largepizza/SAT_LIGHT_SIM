@@ -142,7 +142,64 @@ struct DustCloud
     vec4 col; // tint; w = 1: emissive (a re-entry fireball's trail, a rocket's flame); 2: a rocket's plume
     vec4 cone; // the directions it can reach (xyz unit, w = cos of the half-angle; all 0 = everywhere): one dot to skip
 };
+// dustPad0 = the engine lights after the 1024 entries; dustPad1 = floatBits(the frame's sky exposure: display per unit of
+// the sky's radiance, SatelliteSim::skyExposure()), for the faint plumes' skip in dustCloudsCS.
 layout(set = 0, binding = 23) readonly buffer DustBuf { uint dustCount; uint dustPad0, dustPad1, dustPad2; DustCloud dust[]; };
+
+// Per-tile cull of the dust / plume / flame list (2026-10-21, Forward+ like cullBeamsForTile below): one workgroup owns
+// a 16x16-texel tile, its 256 threads test every Gaussian's view cone once against the tile's bounding cone and set a
+// bit; each texel then walks only the set bits. Conservative: a texel's ray is inside the tile's cone, so if the
+// Gaussian's cone and the tile's do not overlap no texel of the tile passes the per-texel cone test either (it is kept,
+// so the result is exactly the full scan's). The busy-launch and droneship views had ~400 Gaussians, every texel paying
+// all of them. Knockout bit 16777216 forces the full list (the A/B).
+shared uint sDustMask[32];
+shared uint sDustLM[1024];   // per Gaussian: the engine lights (dust[1024 + k]) whose reach touches it
+void cullDustForTile(vec3 cAxis, float tileHalfAngle)
+{
+    uint lid = gl_LocalInvocationIndex;
+    if (lid < 32u) sDustMask[lid] = 0u;
+    barrier();
+    uint n = min(dustCount, 1024u);
+    bool all = (cloud.dbgDisableMask & 16777216u) != 0u;
+    uint nEL = min(dustPad0, 32u);
+    float cosTile = cos(tileHalfAngle), sinTile = sin(tileHalfAngle);
+    for (uint i = lid; i < n; i += gl_WorkGroupSize.x * gl_WorkGroupSize.y) {
+        vec4 cn = dust[i].cone;
+        bool hit = all || cn.w <= -1.0 || dot(cn.xyz, cn.xyz) < 0.5;   // -2 or all zero: everywhere
+        if (!hit) {
+            // angle(tile axis, cone axis) <= cone half-angle + tile half-angle, with a little slack for rounding:
+            // cos(a) >= cos(hc + ht) = cos hc cos ht - sin hc sin ht.
+            float cw = clamp(cn.w, -1.0, 1.0);
+            float sw = sqrt(max(1.0 - cw * cw, 0.0));
+            float cSum = cw * cosTile - sw * sinTile;
+            hit = (cw <= 0.0 && cosTile <= 0.0) || dot(cAxis, cn.xyz) >= cSum - 2e-3;
+        }
+        if (hit) {
+            atomicOr(sDustMask[i >> 5u], 1u << (i & 31u));
+            // The lights that can reach any point dustCloudsCS lights it at (the ray's closest approach to its centre,
+            // within Mahalanobis 8 where anything at all is drawn: within 8 sigma_max, sigma_max^2 <= trace of the
+            // covariance; the inverse of a matrix scaled to O(1): the entries go to 1e-12 for a bell 1000 km wide).
+            uint lm = 0u;
+            if (nEL > 0u && dust[i].col.w > 1.5) {
+                vec4 ia = dust[i].ia, ib = dust[i].ib;
+                float sc = 1.0 / max(max(ia.x, ia.y), max(ia.z, 1e-30));
+                float a11 = ia.x * sc, a22 = ia.y * sc, a33 = ia.z * sc, a12 = ib.x * sc, a13 = ib.y * sc, a23 = ib.z * sc;
+                float c11 = a22 * a33 - a23 * a23, c22 = a11 * a33 - a13 * a13, c33 = a11 * a22 - a12 * a12;
+                float det = a11 * c11 - a12 * (a12 * a33 - a23 * a13) + a13 * (a12 * a23 - a22 * a13);
+                float tr = det > 0.0 ? (c11 + c22 + c33) / det * sc : 1e30;   // trace of the covariance
+                float R = 8.0 * sqrt(tr);
+                vec3 cg = dust[i].c.xyz;
+                for (uint k = 0u; k < nEL; ++k) {
+                    vec4 ec = dust[1024u + k].c;
+                    float reach = dust[1024u + k].col.z;
+                    if (length(ec.xyz - cg) <= reach + R) lm |= 1u << k;
+                }
+            }
+            sDustLM[i] = lm;
+        }
+    }
+    barrier();
+}
 
 // The mean of cloudNoiseTex.r (Perlin-Worley), so the plumes' billows keep their mean optical depth.
 const float kPlumeNoiseMean = 0.70; // ~ inverted Worley (0.45) + Perlin (0.5) x the rest
@@ -202,7 +259,16 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
     vec3 plEnuX, plEnuY, plEnuZ;   // the eye's ENU axes in ECEF (the plumes' Earth-fixed billow field, below)
     enuBasis(pc.obsECEFDir.xyz, plEnuX, plEnuY, plEnuZ);
     vec3 plSunE = sunDir.x * plEnuX + sunDir.y * plEnuY + sunDir.z * plEnuZ;
-    for (uint i = 0u; i < n; ++i) {
+    // The workgroup's list (cullDustForTile: a 1024-bit mask in list order, so the sums keep their order and the
+    // image is the full scan's exactly). Uniform across the workgroup: no divergence in the iteration itself.
+    uint nW = (n + 31u) >> 5u;
+    float expo = uintBitsToFloat(dustPad1);
+    bool keepAll = (cloud.dbgDisableMask & 16777216u) != 0u || !(expo > 0.0);
+    for (uint w = 0u; w < nW; ++w) {
+      uint bits = sDustMask[w];
+      while (bits != 0u) {
+        uint i = (w << 5u) + uint(findLSB(bits));
+        bits &= bits - 1u;
         if (dot(dir, dust[i].cone.xyz) < dust[i].cone.w)
             continue;
         DustCloud d = dust[i];
@@ -218,6 +284,30 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
         float sq = sqrt(0.5 * q);
         float I  = exp(-0.5 * e) * sqrt(PI / (2.0 * q)) * (dustErf(sq * (T - tc)) - dustErf(-sq * tc));
         float tau = d.ia.w * d.c.w * max(I, 0.0);
+        // A plume that adds nothing to THIS texel is skipped before its lighting (2026-10-21): its optical depth here
+        // under 1e-5 of dimming, and its light (the Sun / sky colour at the phase's peak with multiple scattering, x the
+        // billows' and self-shadow's largest gains: 2.6 per unit optical depth, + the engine lights) under 2e-7 of
+        // white on screen. Summed over the whole list (<= 1024) that is <= 1% dimming and <= 2e-4 of white
+        // (~0.7 of a display level at black), worst case; in the benchmark views ~0.1%. Wide old exhaust (a bell
+        // hundreds of km across, the trails in the Earth's shadow) covers the sky at ~1e-6 a texel: in the droneship
+        // view 160 of 390 Gaussians were in every texel, their lighting ~1.2 ms. Knockout 16777216 keeps them.
+        if (d.col.w > 1.5 && !keepAll && tau < 1e-5) {
+            // its light per unit optical depth, bounded: the Sun / sky colour, and each engine light that reaches the
+            // point it is lit at (the loop below's own test) at that point (x the lumps' 1.3 and the isotropic +
+            // multiple-scattering factor <= 0.16, x its albedo <= 1)
+            float lb = max(max(d.col.r, d.col.g), d.col.b) * 2.6;
+            uint lm = sDustLM[i];
+            while (lm != 0u) {
+                uint k = uint(findLSB(lm));
+                lm &= lm - 1u;
+                DustCloud el = dust[1024u + k];
+                vec3  rl = clamp(tc, 0.0, T) * dir - el.c.xyz;
+                float r2 = dot(rl, rl);
+                if (r2 <= el.col.z * el.col.z)
+                    lb += 0.21 * max(max(el.ia.r, el.ia.g), el.ia.b) * el.c.w / (r2 + el.ia.w * el.ia.w);
+            }
+            if (tau * lb * expo < 2e-7) continue;
+        }
         if (d.col.w > 0.5 && d.col.w < 1.5) {   // emissive (a re-entry fireball's trail): no phase, no shadow
             Le += d.col.rgb * tau;
             float we = tau * dot(d.col.rgb, vec3(0.3333));
@@ -226,15 +316,13 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
             continue;
         }
         vec3  P  = obsPos + clamp(tc, 0.0, T) * dir;
-        float sp = dot(P, sunDir);
-        float dS  = length(P - sp * sunDir);
         if (d.col.w > 1.5) {   // a plume: sunlit by its tint (the Sun's colour there x albedo)
             // A Gaussian the EYE is inside thins out (2026-10-20, as the flames' do on the CPU: Mahalanobis radius
             // 3 -> 1.5 sigma, to 10%). Following a burning stage 300 m off, the young exhaust Gaussians beside it are
             // hundreds of metres wide and the eye sat in several: summed along every ray they were one bright ball
             // ~300 m across round the camera, hiding the vehicle and the trail's structure (close-up launch footage
             // shows the plume as the structure in front, not a fog the camera is in). Far views: unchanged.
-            float eM = dot(o, dustMul(d, o));
+            float eM = e + tc * tc * q;   // = o.M.o (e = o.M.o - q tc^2: both terms >= 0, so far views stay large)
             tau *= mix(0.1, 1.0, smoothstep(2.25, 9.0, eM));
             // Billows (2026-10-19): the optical depth through each Gaussian is modulated by two octaves of the
             // baked cloud noise at the ray's closest approach, in the Gaussian's own sigma units (so the structure
@@ -316,7 +404,11 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
                 shade *= lumpL;
             }
             // (a sharper shadow edge than the dust's: the bell's lit edge is where the Earth's shadow cuts it)
-            float litP = fs >= 2.0 ? 1.0 : (sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, dS));
+            float litP = 1.0;
+            if (fs < 2.0) {
+                float sp = dot(P, sunDir);
+                if (sp <= 0.0) litP = smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, length(P - sp * sunDir));
+            }
             Lp   += tau * d.col.rgb * (litP * shade * (1.0 - flS));   // the sunlight it scatters (phase below)
             Lf   += tau * d.col.rgb * (flS * mix(shade, 1.0, 0.5));   // the sky's light
             // (2026-10-20, QA: a burning stage seen from 300 m sat in a white ball hundreds of metres across: its
@@ -325,7 +417,11 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
             // over it is ~1 / (r^2 + 1 / q).)
             float sAl2 = 1.0 / q;
             vec3  lpe0 = LpE;
-            for (uint k = 0u; k < nEL; ++k) {
+            // Only the lights that can reach this Gaussian at all (cullDustForTile's per-Gaussian mask; view-independent).
+            uint lm = sDustLM[i];
+            while (lm != 0u) {
+                uint k = uint(findLSB(lm));
+                lm &= lm - 1u;
                 DustCloud el = dust[1024u + k];
                 vec3  rl = clamp(tc, 0.0, T) * dir - el.c.xyz;
                 float r2 = dot(rl, rl);
@@ -365,10 +461,12 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
             tPL += wl * clamp(tc, 0.0, T);
             continue;
         }
-        float lit = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.995, R_EARTH * 1.01, dS);
+        float sp = dot(P, sunDir);
+        float lit = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.995, R_EARTH * 1.01, length(P - sp * sunDir));
         L += d.col.rgb * (tau * lit);
         wT += tau * lit;
         tScat += tau * lit * clamp(tc, 0.0, T);
+      }
     }
     tScat = wT > 0.0 ? tScat / wT : 0.0;
     tE = wE > 0.0 ? tE / wE : 0.0;
@@ -1842,6 +1940,7 @@ void main() {
     float tileHalfAngle;
     tileViewCone(size, tanHalfFov, camToENU, tileAxis, tileHalfAngle);
     cullBeamsForTile(tileAxis, tileHalfAngle, obsPos);
+    if (dustCount > 0u) cullDustForTile(tileAxis, tileHalfAngle);   // dustCount: uniform, so the barriers are too
 
     if (coord.x >= size.x || coord.y >= size.y) return;
 
