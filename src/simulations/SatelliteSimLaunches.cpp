@@ -2586,6 +2586,23 @@ static void transientAtt(SatOrbitElems &e, const SatelliteSim::SelTransient &s)
     e.attSlewDur = 0.0;
 }
 
+// A booster's landing legs (2026-10-20, issue 20261020_213739): folded up against the body ("fold" parts in the rocket
+// models) from lift-off, swung down kLegDeployS seconds before touchdown over kLegDeployDurS (the unfolding progress of
+// its mesh slot, satUnfoldAt). Every other rocket transient keeps the default (deployed: nothing of theirs folds).
+static void transientLegs(const SatelliteSim::LaunchState &L, SatOrbitElems &e, const SatelliteSim::SelTransient &s)
+{
+    if (s.kind != 1 || s.stage != 0)
+        return;
+    auto it = L.batches.find(s.a);
+    if (it == L.batches.end())
+        return;
+    const LBatch &B = it->second;
+    const Track &tr = boosterTr(L, B);
+    constexpr double kLegDeployS = 7.0, kLegDeployDurS = 2.5;
+    e.unfoldT0 = tr.landed ? B.tL + tr.tEnd - kLegDeployS : B.tL + 1.0e9; // expendable: never
+    e.unfoldDur = kLegDeployDurS;
+}
+
 static glm::dvec3 shipEntry(const LBatch &B, double te, double *vOut, double *hOut)
 {
     te = std::clamp(te, 0.0, 480.0);
@@ -5158,6 +5175,11 @@ nlohmann::json SatelliteSim::launchCheckJson() const
         double rcOff[2] = {0.0, 0.0}, rcAbove[2][2] = {{1e9, -1e9}, {1e9, -1e9}}, rcSpeed[2] = {0.0, 0.0}, rcAcc = 0.0, rcRide = 0.0;
         nlohmann::json rcShipEx = nlohmann::json::array();
         nlohmann::json ex = nlohmann::json::array();
+        // The booster's lean (its nose from the local vertical) on the way down, by landing kind (2026-10-20, issue
+        // 20261020_213739 "Rockets land tilted"): at these heights above its touchdown point, max and mean.
+        static const double kLeanAltKm[7] = {20.0, 8.0, 3.0, 1.0, 0.3, 0.05, 0.0};
+        double leanMax[5][7] = {}, leanSum[5][7] = {};
+        int leanN[5][7] = {};
         for (const auto &kv : L.batches)
         {
             const LBatch &B = kv.second;
@@ -5170,6 +5192,39 @@ nlohmann::json SatelliteSim::launchCheckJson() const
             {
                 const Track &btr = LaunchImpl::boosterTr(L, B);
                 rcCount[std::clamp(B.landKind, 0, 4)]++;
+                if (btr.landed && B.landKind >= 1 && B.landKind <= 4 && btr.p.size() > 2)
+                {
+                    const double hT = btr.p.back().y;
+                    size_t iTop = 0;
+                    for (size_t i = 1; i < btr.p.size(); ++i)
+                        if (btr.p[i].y > btr.p[iTop].y)
+                            iTop = i;
+                    for (int a = 0; a < 7; ++a)
+                    {
+                        double tau = btr.tEnd - 0.2; // 0 km: at touchdown
+                        if (a < 6)
+                        {
+                            const double H = hT + 1000.0 * kLeanAltKm[a];
+                            tau = -1.0;
+                            for (size_t i = iTop; i + 1 < btr.p.size(); ++i)
+                                if (btr.p[i].y >= H && btr.p[i + 1].y < H)
+                                {
+                                    tau = btr.dt * ((double)i + (btr.p[i].y - H) / std::max(btr.p[i].y - btr.p[i + 1].y, 1e-9));
+                                    break;
+                                }
+                        }
+                        glm::dvec3 Pn;
+                        if (tau < 0.0 || !LaunchImpl::rocketPos(L, B, 0, tau, Pn))
+                            continue;
+                        const glm::dvec3 nose = LaunchImpl::stageNose(L, B, 0, tau);
+                        if (glm::length(nose) < 0.5)
+                            continue;
+                        const double lean = glm::degrees(std::acos(glm::clamp(glm::dot(glm::normalize(nose), glm::normalize(Pn)), -1.0, 1.0)));
+                        leanMax[B.landKind][a] = std::max(leanMax[B.landKind][a], lean);
+                        leanSum[B.landKind][a] += lean;
+                        ++leanN[B.landKind][a];
+                    }
+                }
                 if (B.rec == 1 && vh.recovery == 2)
                     ++rcRtls;
                 if (B.landKind == kLandShip || B.landKind == kLandGround || B.landKind == kLandLz)
@@ -5350,6 +5405,22 @@ nlohmann::json SatelliteSim::launchCheckJson() const
         j["booster_descent_max_dv_m_s_per_s"] = rcAcc;
         j["booster_ride_home_off_deck_m_max"] = rcRide;
         j["droneship_examples"] = rcShipEx;
+        {
+            static const char *kKindName[5] = {"expendable", "tower", "landing_zone", "ship", "ground"};
+            nlohmann::json lj = nlohmann::json::object();
+            for (int k = 1; k < 5; ++k)
+            {
+                nlohmann::json mx = nlohmann::json::array(), mn = nlohmann::json::array();
+                for (int a = 0; a < 7; ++a)
+                {
+                    mx.push_back(leanN[k][a] ? leanMax[k][a] : -1.0);
+                    mn.push_back(leanN[k][a] ? leanSum[k][a] / leanN[k][a] : -1.0);
+                }
+                lj[kKindName[k]] = {{"max", mx}, {"mean", mn}, {"n", leanN[k][0]}};
+            }
+            lj["alt_km"] = std::vector<double>(kLeanAltKm, kLeanAltKm + 7);
+            j["booster_lean_deg_by_alt"] = lj;
+        }
         j["booster_catch_off_centre_m_max"] = boostOff;
         j["booster_catch_above_ground_m"] = {boostAbove[0], boostAbove[1]};
     }
@@ -6147,6 +6218,7 @@ void SatelliteSim::transientWriteSlot(uint32_t slot, const SelTransient &s, doub
     e.fixAcc = s.acc;
     e.fixAxis = s.axis;
     LaunchImpl::transientAtt(e, s);
+    LaunchImpl::transientLegs(*launchState, e, s);
     e.engineGlow = (s.kind == 1 && s.burn != 0) ? 1.0f : 0.0f; // its nozzles lit (sat_mesh.frag)
     e.fixT0 = t0;
     const uint32_t idx = activeSatCount + slot;
@@ -6549,6 +6621,7 @@ void SatelliteSim::selTransientTake(const SelTransient &s)
     e.fixAcc = s.acc;
     e.fixAxis = s.axis;
     LaunchImpl::transientAtt(e, s);
+    LaunchImpl::transientLegs(*launchState, e, s);
     e.engineGlow = (s.kind == 1 && s.burn != 0) ? 1.0f : 0.0f; // its nozzles lit (sat_mesh.frag)
     e.fixT0 = t0;
     // A rocket has a model (Info, Go to, its mesh); a fireball none (Track only). The orbit rows read the state.
@@ -6739,6 +6812,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
         e.fixAcc = s.acc;
         e.fixAxis = s.axis;
         LaunchImpl::transientAtt(e, s);
+        LaunchImpl::transientLegs(L, e, s);
         e.engineGlow = (s.kind == 1 && s.burn != 0) ? 1.0f : 0.0f; // its nozzles lit (sat_mesh.frag)
         // The transients are the last frame's: their time is the last fill's.
         e.fixT0 = selTransientsT;

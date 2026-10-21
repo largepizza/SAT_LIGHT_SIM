@@ -5778,6 +5778,32 @@ void main() {
                             emK[k] = smoothstep(0.03, 0.10, ang);
                         }
                         rEmitBad = dot(wB, emK);
+                        // ...and texels that ALSO hold cloud (2026-10-20, the same issue's shot 2, "still broken"): a
+                        // flame in front of the horizon's cloud is composited into that cloud's texel, whose alpha is
+                        // the cloud's distance (unflagged), so the test above never saw it and the flame's light was
+                        // reflected at the mirrored DIRECTION: a glitter column from the horizon down under a booster
+                        // 3 km off whose mirror point is ~75 deg below the horizon. Where the mirrored direction looks
+                        // at an engine light's own place on screen (within the flame and its glow, seen from the eye)
+                        // while the reflected ray misses the light's real position seen from this sea point, the
+                        // texels there are dropped too. Real clouds right round a flame lose their reflection there.
+                        {
+                            uint nELr = min(selCount, kSkyEngineLightMax);
+                            vec3 Pr = dir * dist;
+                            [[dont_unroll]] for (uint li = 0u; li < nELr; ++li) {
+                                vec3  Lc  = selList[kSkyEngineLightBase + li].c.xyz;
+                                float dL  = length(Lc);
+                                if (dL < 1.0) continue;
+                                // its angular size from the eye: the flame and the glow round it (>= 3 deg, ~600 m)
+                                float rad = max(0.052, atan(600.0, dL));
+                                float angE = acos(clamp(dot(reflDir, Lc / dL), -1.0, 1.0));
+                                if (angE > 1.6 * rad) continue;
+                                vec3  Ck  = Lc - Pr;              // the light, from the sea point
+                                float al  = dot(Ck, reflDir);
+                                float mis = length(Ck - reflDir * al);
+                                float angS = al > 0.0 ? atan(mis, al) : 3.0;
+                                rEmitBad = max(rEmitBad, (1.0 - smoothstep(rad, 1.6 * rad, angE)) * smoothstep(0.03, 0.10, angS));
+                            }
+                        }
                         vec4  wq = wB * (1.0 - emK)
                                  * clamp(1.0 - gT, 0.0, 1.0) * vec4(lessThan(ga, vec4(50000.0)));
                         float ws = wq.x + wq.y + wq.z + wq.w;
