@@ -2092,7 +2092,16 @@ public:
     void onChar(GLFWwindow *w, unsigned int codepoint) override;
     // The console, a focused text field (Esc cancels the edit) and a playing / exporting cinematic (Esc stops it)
     // keep Esc from quitting the app.
-    bool capturesKeyboard() const override { return consoleOpen_ || textEdit_.id != 0 || cineActive() || reportBarOpen_; } // (Esc closes the report bar)
+    // (Esc closes the report bar; since 2026-10-21 it also cancels a key rebind that is listening instead of quitting)
+    bool capturesKeyboard() const override
+    {
+        if (consoleOpen_ || textEdit_.id != 0 || cineActive() || reportBarOpen_)
+            return true;
+        for (const auto &kb : keybindings)
+            if (kb.listening || kb.listeningPad)
+                return true;
+        return false;
+    }
 
 private:
     // ── SSBOs ─────────────────────────────────────────────────────────────────
@@ -3193,6 +3202,8 @@ private:
     std::vector<MissionOngoing> msOngoing;
     std::vector<CrewStation> msStations;
     std::string msStatus;
+    std::string msStatusShown;           // msStatus as first drawn, and when (wall clock): it fades after 12 s
+    double msStatusWall = 0.0;
     std::deque<std::string> msText_;     // this frame's formatted strings (Clay keeps the pointers; a deque never moves them)
     const char *msStr(const char *fmt, ...);
     void missionsRefresh(bool force);
@@ -4203,7 +4214,7 @@ private:
     bool  boostHeldNow = false, cv2FastLodNow = false;
     // Cumulonimbus as three layers (pass 15): the cumulus field capped at cv2CbCumulusTopKm, discrete
     // concave towers on a lattice (cv2ColumnSigma), and the anvil hanging lower around their heads.
-    float cv2CbColumns = 2.0f;         // Cb column density (0 = the pass-14 deep cores in the low layer)
+    float cv2CbColumns = 2.0f;         // Cb column density (0 = no towers: a storm is tall congestus; the pass-14 deep cores are gone)
     float cv2CbSpacingKm = 30.0f;      // lattice cell: about one tower per cell where storms are strong
     float cv2CbRadiusKm = 15.0f;        // a tower's base radius (waist ~0.7x, head ~1.6x)
     float cv2CbCumulusTopKm = 2.6f;    // the low (cumulus/congestus) field's top in storm regions
@@ -5360,7 +5371,8 @@ private:
     // Aurora storms (Atmosphere tab, slots 298-301, 2026-10-14; cloud_params.glsl auroraStorm).
     float auroraStormFeatures = 1.2f;       // tall red-topped curtains + magenta borders above Kp ~5
     float auroraBlueRayChance = 0.004f;     // rare giant rayed bands with sunlit blue tops (per ~220-km sheet stretch)
-    float auroraArcSystems = 2.0f;          // sheets grouped into a few bright arc systems (0 = all alike)
+    float auroraArcSystems = 1.0f;          // sheets grouped into a few bright arc systems (0 = all alike; 0..1, was
+                                            // 2 outside its 0-1 slider until 2026-10-21: the shader maps 1 to that look)
     float auroraStormRedGain = 1.1f;        // storm-time 630-nm red equatorward of the oval
     float oceanSeaStateGain = 1.0f;          // waves follow the weather (Ocean tab, slot 213; 0 = fixed sea)
     float oceanWhitecapGain = 1.0f;          // whitecap foam gain (Ocean tab, slot 214)

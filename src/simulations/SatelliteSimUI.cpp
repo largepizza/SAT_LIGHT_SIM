@@ -436,6 +436,17 @@ namespace
     }
 }
 
+// The name part of an object label: up to its first ",", ": " or " (" (a rocket's T+, a spacecraft's phase, a port
+// id), for the short chips at the top of the screen.
+static int labelNameLen(const char *s)
+{
+    int n = 0;
+    for (; s[n]; ++n)
+        if (s[n] == ',' || (s[n] == ':' && s[n + 1] == ' ') || (n > 0 && s[n] == ' ' && s[n + 1] == '('))
+            break;
+    return n;
+}
+
 void SatelliteSim::setObserverLatLon(double latDeg, double lonDeg)
 {
     if (followActive)
@@ -1490,10 +1501,13 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     if (!onScreen)
     {
         // The name up to its first comma: a rocket's or a train member's full label runs under the follow bar.
+        // (2026-10-21 QA) A spacecraft's label carries its phase after ": " ("Progress MS at International Space
+        // Station: undocked: backing out"): cut there too, and sit below the follow bar while following (the two
+        // drew over each other at the top-left).
         static char chipBuf[kSelInfoLineLen + 32];
-        const char *comma = strchr(infoLines[0], ',');
-        const int nameLen = comma ? (int)(comma - infoLines[0]) : (int)strlen(infoLines[0]);
+        const int nameLen = labelNameLen(infoLines[0]);
         snprintf(chipBuf, sizeof(chipBuf), "Selected: %.*s (out of view)", nameLen, infoLines[0]);
+        const float chipY = kMargin + (followActive ? (float)fs(11) + 30.0f : 0.0f);
         Clay_String chipStr{false, (int32_t)strlen(chipBuf), chipBuf};
         CLAY(CLAY_ID("SelSatChip"), {.layout = {
                                          .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
@@ -1503,7 +1517,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                                          .layoutDirection = CLAY_LEFT_TO_RIGHT},
                                      .backgroundColor = Pal::panelBgFade,
                                      .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
-                                     .floating = {.offset = {kMargin, kMargin}, .zIndex = 6, .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
+                                     .floating = {.offset = {kMargin, chipY}, .zIndex = 6, .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
         {
             CLAY_TEXT(chipStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
             if (!isPlanet)
@@ -1514,7 +1528,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                 buildTrackButton(inp, ui, 0);
             }
         }
-        captureLaidOut(ui, CLAY_ID("SelSatChip"), kMargin, kMargin, 360.0f, 34.0f);
+        captureLaidOut(ui, CLAY_ID("SelSatChip"), kMargin, chipY, 360.0f, 34.0f);
         return;
     }
 
@@ -2339,11 +2353,15 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
     if (viewTransient && selIsTransient())
     {
         const SelTransient &st = selTransientCur;
-        static const char *kKind[7] = {"Object", "Rocket", "Ship entry", "Re-entry", "Re-entry", "Re-entry", "Re-entry"};
+        // Kinds 7-9 (fairing halves, visiting spacecraft, a cargo ship's re-entry) read as "Re-entry" with a
+        // "Glowing for" row (2026-10-21 QA: a Progress on its final approach).
+        static const char *kKind[10] = {"Object", "Rocket", "Ship entry", "Re-entry", "Re-entry", "Re-entry",
+                                        "Re-entry", "Fairing half", "Spacecraft", "Re-entry"};
         const std::string tl = transientLabel();
-        statusRow(kKind[std::min<int>(st.kind, 6)], "%s", tl.c_str());
+        statusRow(kKind[std::min<int>(st.kind, 9)], "%s", tl.c_str());
         // The title: the label up to its first comma ("Starship (ascent burn)"), not the model id openModelViewer had.
-        snprintf(viewerTitle, sizeof(viewerTitle), "%s", tl.substr(0, tl.find(',')).c_str());
+        // (and up to ": ", a visiting spacecraft's phase: "Progress MS at International Space Station: undocked: ...")
+        snprintf(viewerTitle, sizeof(viewerTitle), "%s", tl.substr(0, std::min(tl.find(','), tl.find(": "))).c_str());
         statusRow("Altitude", "%.1f km", (glm::length(st.pos) - satphot::kEarthRadiusM) / 1000.0);
         {
             // Over the ground low down, inertial in orbit (as the label: on the pad it read the Earth's 0.4 km/s).
@@ -2351,7 +2369,10 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
             const glm::dvec3 vRot = st.vel - glm::dvec3(-satphot::kOmegaEarth * st.pos.y, satphot::kOmegaEarth * st.pos.x, 0.0);
             statusRow("Speed", "%.2f km/s", glm::mix(glm::length(vRot), glm::length(st.vel), glm::smoothstep(80.0, 150.0, hKm)) / 1000.0);
         }
-        statusRow(st.kind == 1 ? (st.tau < 0.0 ? "Lift-off in" : "Since lift-off") : "Glowing for", "%.0f s", std::abs(st.tau));
+        statusRow(st.kind == 1               ? (st.tau < 0.0 ? "Lift-off in" : "Since lift-off")
+                  : (st.kind == 7 || st.kind == 8) ? "Since separation"
+                                                   : "Glowing for",
+                  "%.0f s", std::abs(st.tau));
     }
     else if (tracked)
     {
@@ -2989,7 +3010,8 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
         if (followAgainUntil <= glfwGetTime() || cineActive() || showIntro || (followLastIdx < 0 && !followLastIsTr))
             return;
         static char againBuf[200], againTip[96];
-        snprintf(againBuf, sizeof(againBuf), "Go to %s again", followLastLabel[0] ? followLastLabel : "the last object");
+        snprintf(againBuf, sizeof(againBuf), "Go to %.*s again", followLastLabel[0] ? labelNameLen(followLastLabel) : 15,
+                 followLastLabel[0] ? followLastLabel : "the last object");
         snprintf(againTip, sizeof(againTip), "Follow it again, flying from here (%s)",
                  keyDisplayName(keybindings[KB_FOLLOW_RETURN].key));
         bool clicked = false;
@@ -4712,8 +4734,9 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
     static const PhotoGroup kGroups[] = {
         {"BRIGHTNESS", {0, 2, 3, 4, 21}, 5},
         {"SKY DIMMING", {1, 5, 6, 7, 8}, 5},
-        {"POINT SOURCES", {22, 23, 24, 25, 26, 27}, 6},
-        {"BLOOM AND GLARE", {9, 10, 28, 29, 30, 31, 32, 33, 34}, 9},
+        // 35-38 (2026-10-21): in the table since 2026-10-07 / 10-20 but in no group, so never drawn (settings.json only).
+        {"POINT SOURCES", {22, 23, 24, 25, 26, 27, 35, 36, 37}, 9},
+        {"BLOOM AND GLARE", {9, 10, 28, 29, 30, 31, 32, 33, 34, 38}, 10},
         {"DARK SKY (MILKY WAY, ZODIACAL LIGHT)", {11, 12, 13, 14, 15, 16, 17, 18}, 8},
         {"STAR TRAILS", {19, 20}, 2},
     };
@@ -4880,10 +4903,12 @@ void SatelliteSim::uiKV(const char *key, int idx, const char *label, const char 
         {
             CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
         }
-        CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x20000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}},
-                                                                .clip = {.horizontal = true}})
+        // No clip here: Clay never compresses a clip (scroll) container's children, so the text below could not wrap.
+        CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x20000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
         {
-            CLAY_TEXT(kitStr(value), CLAY_TEXT_CONFIG({.textColor = valueColor ? *valueColor : Pal::volValue, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            // Words wrap (2026-10-21 QA): a long value ("Next launch: Starship, Pacific polar sea platform 2 off
+            // Point Conception (fictional), in 0.3 h") ran past the window's edge and was cut mid-word.
+            CLAY_TEXT(kitStr(value), CLAY_TEXT_CONFIG({.textColor = valueColor ? *valueColor : Pal::volValue, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
         }
     }
 }
@@ -6162,7 +6187,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
 {
     CloudSlider secStorms[] = {
         {"Cb fill (share of cells)", &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
-        {"Cb columns (0 = old cores)", &cv2CbColumns, 0.0f, 4.0f, 0.05f, "%.2f", 164},
+        {"Cb columns (0 = none)", &cv2CbColumns, 0.0f, 4.0f, 0.05f, "%.2f", 164},
         {"Cb spacing (km)", &cv2CbSpacingKm, 8.0f, 120.0f, 1.0f, "%.0f", 165},
         {"Cb tower radius (km)", &cv2CbRadiusKm, 1.0f, 20.0f, 0.25f, "%.2f", 166},
         {"Cb waist (x radius)", &cv2CbWaist, 0.2f, 1.5f, 0.05f, "%.2f", 168},
@@ -8747,7 +8772,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         auroraSheetFold = c.value("aurora_sheet_fold", auroraSheetFold);
         auroraStormFeatures = c.value("aurora_storm_features", auroraStormFeatures);
         auroraBlueRayChance = c.value("aurora_blue_rays", auroraBlueRayChance);
-        auroraArcSystems = c.value("aurora_arc_systems", auroraArcSystems);
+        auroraArcSystems = settingClamp(c.value("aurora_arc_systems", auroraArcSystems), 0.0f, 1.0f); // old files: 2
         auroraStormRedGain = c.value("aurora_storm_red", auroraStormRedGain);
         oceanWhitecapGain = c.value("ocean_whitecaps", oceanWhitecapGain);
         oceanWaveRangeKm = settingClamp(c.value("ocean_wave_range_km", oceanWaveRangeKm), 5.0f, 200.0f);

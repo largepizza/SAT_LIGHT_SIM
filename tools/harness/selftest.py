@@ -387,16 +387,17 @@ track on
 def launches_schedule_and_phasing():
     # Launches (2026-10-18): the schedule finds lift-offs, the phasing lands every train member on its slot and
     # starts every retiree on its own, and the schedule is a pure function of time (a day forward and back again).
-    # (Batches are built at most 200 a frame: the waits let the whole window build.)
+    # (Batches are built at most ~100 a frame (buildCap) and the deployment era's window holds ~5000: the waits let the
+    # whole window build. 30 frames left the first state at ~4000 of its 16,422 train satellites, 2026-10-21.)
     out, res, _ = run("launches", """
-wait 30
+wait 150
 launch list hours=24
 launch check
 launch state
 time add 86400
-wait 30
+wait 150
 time add -86400
-wait 30
+wait 150
 launch list hours=24
 launch state
 """)

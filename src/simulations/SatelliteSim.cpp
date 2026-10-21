@@ -4068,7 +4068,7 @@ void SatelliteSim::updateViewerObserverInfo()
             azDeg += 360.0;
         const double b = glm::dot(obs, d), c = glm::dot(obs, obs) - (double)kEarthRadius * kEarthRadius;
         const double disc = b * b - c;
-        const bool hidden = disc > 0.0 && -b - std::sqrt(disc) > 0.0 && -b - std::sqrt(disc) < range;
+        const bool hidden = disc > 0.0 && -b + std::sqrt(disc) > 1.0 && -b - std::sqrt(disc) < range; // as below
         snprintf(viewerObsValue[0], sizeof(viewerObsValue[0]), hidden ? "Below horizon" : "Above horizon");
         snprintf(viewerObsValue[1], sizeof(viewerObsValue[1]), "%.1f deg", glm::degrees(std::asin(glm::clamp(up, -1.0, 1.0))));
         snprintf(viewerObsValue[2], sizeof(viewerObsValue[2]), "%.0f deg", azDeg);
@@ -4140,7 +4140,10 @@ void SatelliteSim::updateViewerObserverInfo()
     // Behind the Earth: the sightline meets the sphere before reaching the satellite.
     const double b = glm::dot(obs, d), c = glm::dot(obs, obs) - (double)kEarthRadius * kEarthRadius;
     const double disc = b * b - c;
-    const bool hidden = disc > 0.0 && -b - std::sqrt(disc) > 0.0 && -b - std::sqrt(disc) < range;
+    // The segment passes through the sphere: the far root ahead of the eye, the near one before the satellite. (The
+    // near root alone > 0 missed an observer ON the sea-level sphere, whose near root is 0: a satellite 67 deg below
+    // the horizon read "Above horizon" with a magnitude, 2026-10-21 QA.)
+    const bool hidden = disc > 0.0 && -b + std::sqrt(disc) > 1.0 && -b - std::sqrt(disc) < range;
     // SKY POSITION: the ground observer's sky.
     snprintf(viewerObsValue[0], sizeof(viewerObsValue[0]), hidden ? "Below horizon" : "Above horizon");
     snprintf(viewerObsValue[1], sizeof(viewerObsValue[1]), "%.1f deg", elDeg);
@@ -5791,7 +5794,9 @@ bool SatelliteSim::followReturn(std::string *msg)
     {
         SelTransient c = followLastTr;
         uint8_t want = 0;
-        if (c.key == 0 || c.kind < 1 || c.kind > 2 || !transientContinue(c, t, want))
+        // transientContinue decides which kinds it can carry on (rockets, the ship, crew / cargo spacecraft: kind 8;
+        // a kind-1/2-only test here made Return after Stay here report a still-flying Progress "gone", 2026-10-21 QA).
+        if (c.key == 0 || !transientContinue(c, t, want))
         {
             if (msg)
                 *msg = std::string(followLastLabel[0] ? followLastLabel : "The last object") + " is gone";
@@ -6540,7 +6545,7 @@ void SatelliteSim::formatSelectedSatInfo()
             const SelTransient &tr = selU == transientSatIdx() ? selTransientCur : followTrCur;
             st = tr.kind == 1 ? "Rocket stage" : tr.kind == 2 ? "Starship ship, entry" : tr.kind == 7 ? "Payload fairing half"
                  : tr.kind == 8 ? "Visiting spacecraft" : "Re-entry fireball";
-            if (orb.typeIdx < satTypes.size() && (tr.kind <= 2 || tr.kind == 8))
+            if (orb.typeIdx < satTypes.size() && tr.kind <= 2) // (a spacecraft's model id, "capsule_dragon", left out)
             {
                 std::string tn = satTypes[orb.typeIdx].name; // "Rocket: starship_upper" -> "starship_upper"
                 if (tn.rfind("Rocket: ", 0) == 0)

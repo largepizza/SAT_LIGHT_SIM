@@ -482,6 +482,15 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                     fmtUtcShort(now, u, sizeof(u));
                     text(msStr("Now %s", u), Pal::textDim, 11);
                 }
+                // An action's result line goes after 12 s (2026-10-21 QA: "... lift-off in 45 s" still stood two
+                // weeks of sim time and several jumps later).
+                if (msStatus != msStatusShown)
+                {
+                    msStatusShown = msStatus;
+                    msStatusWall = glfwGetTime();
+                }
+                if (!msStatus.empty() && glfwGetTime() - msStatusWall > 12.0)
+                    msStatus.clear();
                 if (!msStatus.empty())
                     text(msStr("%s", msStatus.c_str()), Pal::textWarn, 11, true);
 
