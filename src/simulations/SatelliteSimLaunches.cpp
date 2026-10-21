@@ -33,7 +33,9 @@
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <cstring>
+#include <cstdlib>
 #include <ctime>
 #include <fstream>
 #include <filesystem>
@@ -589,7 +591,11 @@ struct SatelliteSim::LaunchState
     // batch; a std::async future's destructor waits, so clearing the map joins them: launchInitBlock does (the batches
     // they were made for go), and the destructor does before the catalog and pads they read are destroyed.
     std::unordered_map<uint64_t, std::future<std::vector<launch::Parcel>>> parcelJobs;
-    ~LaunchState() { parcelJobs.clear(); }
+    ~LaunchState()
+    {
+        joinJob();
+        parcelJobs.clear();
+    }
     launch::Catalog cat;
     // Station arms (2026-10-21, Canadarm2): (the station's roster index, its arm in cat.arms), set by buildPlanes.
     std::vector<std::pair<uint32_t, int>> armSat;
@@ -633,6 +639,53 @@ struct SatelliteSim::LaunchState
     std::unordered_map<uint64_t, Cand> cands;
     int buildCap = 100; // batches built a frame at most (launchUpdate's walk; follows their measured cost)
     double buildMsEach = 0.1; // (2026-10-21) the wall time of one batch build in the parallel pieces (eased)
+    // (2026-10-21b) The background build: after a time jump (a bookmark, `time set`, Missions Go to) thousands of
+    // batches are missing at once, and the walk's ~8-ms-a-frame budget took 300-500 frames to build them (busy
+    // 2032: never within 500). They are built on worker threads (below normal priority) in order of urgency, in
+    // chunks; each frame the main thread moves the finished prefix into `batches` (applyBuildJob). The builds read
+    // the planes, the catalog, the roster and the candidate / rival caches (both locked) and write only `out`:
+    // anything that changes those (launchInitBlock, a crewed station's fate in crewSync) joins or discards the job
+    // (buildGen). The same batches as a build on the main thread (buildBatch is a pure function of the batch).
+    struct BuildItem
+    {
+        uint64_t key;
+        int pi;
+        int64_t k;
+        int b;
+        double life;
+    };
+    struct BuildJob
+    {
+        std::vector<BuildItem> items;
+        std::vector<LBatch> out;
+        std::atomic<size_t> done{0};    // items [0, done) are built (release)
+        std::atomic<bool> cancel{false};
+        std::atomic<bool> finished{false};
+        std::thread th;
+        uint64_t gen = 0;
+        size_t applied = 0;
+        std::chrono::steady_clock::time_point t0;
+    };
+    std::unique_ptr<BuildJob> job;
+    std::unordered_set<uint64_t> jobKeys; // the keys the job holds (not built on the main thread meanwhile)
+    uint64_t buildGen = 0;
+    uint32_t jobsRun = 0;
+    double plumeCutPrev = 0.0;   // (2026-10-21b) last frame's plume priority cut (launchFillVisuals)
+    uint32_t plumeSkipped = 0, plumeSkippedLast = 0;
+    double lastJobMs = 0.0;
+    size_t lastJobN = 0;
+    void joinJob()
+    {
+        if (job)
+        {
+            job->cancel.store(true);
+            if (job->th.joinable())
+                job->th.join();
+            job.reset();
+        }
+        jobKeys.clear();
+        ++buildGen;
+    }
     std::shared_mutex candsMx; // (2026-10-20) batches are built in parallel (launchUpdate's walk): candidate() is shared
     // Pad deconfliction's rivals by (site, day of their candidate launch): every batch whose candidate is at the site
     // that day (2026-10-20: each build enumerated every plane flying from its site, ~1 ms a build, 100+ ms a frame at
@@ -775,6 +828,10 @@ void SatelliteSim::launchInitBlock(bool keepPlanes)
     if (!launchState)
         launchState.reset(new LaunchState());
     LaunchState &L = *launchState;
+    {
+        FPROF_SCOPE("launch.initBlock.joinBuildJob");
+        L.joinJob(); // (2026-10-21b: the background build reads the planes and the roster)
+    }
     // The catalog stays; the roster may have changed (planes, batches, slots go).
     {
         FPROF_SCOPE("launch.initBlock.parcelJobs");
@@ -848,6 +905,7 @@ void SatelliteSim::launchDestroy(VkDevice device)
     if (!launchState)
         return;
     LaunchState &L = *launchState;
+    L.joinJob();
     if (L.stage)
     {
         vkDestroyBuffer(device, L.stage, nullptr);
@@ -1714,6 +1772,9 @@ static SatelliteSim::LaunchState::Cand candidate(const SatelliteSim &sim, Satell
 // from the site whose arrival is in the widest window any query that day can ask about, kept when its candidate is at
 // the site that day. Built once, shared (a race builds it twice, identically).
 static constexpr double kRivalBucketS = 86400.0;
+// (2026-10-21b) Set on the background build's threads (LaunchState::BuildJob): their helpers run below normal
+// priority and leave two cores to the frame.
+static inline thread_local bool gBuildBg = false;
 static std::shared_ptr<const std::vector<SatelliteSim::LaunchState::RivalEntry>>
 rivalBucket(const SatelliteSim &sim, SatelliteSim::LaunchState &L, int site, int64_t beta, bool parallel = false)
 {
@@ -1743,7 +1804,7 @@ rivalBucket(const SatelliteSim &sim, SatelliteSim::LaunchState &L, int site, int
     };
     // (2026-10-21) A bucket wanted on its own (at 1 mo/s - 1 yr/s, one new day a frame) is split over the planes in
     // parallel: ~40 ms on one thread at a Starship pad (~2000 planes). Same entries in the same (plane) order.
-    const size_t hw = std::max(1u, std::thread::hardware_concurrency());
+    const size_t hw = buildThreads();
     const size_t workers = parallel ? std::min(hw, sitePlanes.size() / 64) : 1;
     if (workers <= 1)
     {
@@ -1754,7 +1815,13 @@ rivalBucket(const SatelliteSim &sim, SatelliteSim::LaunchState &L, int site, int
     {
         std::vector<std::vector<SatelliteSim::LaunchState::RivalEntry>> per(sitePlanes.size());
         std::atomic<size_t> next{0};
-        auto run = [&] {
+        const bool bg = gBuildBg;
+        auto run = [&, bg] {
+            if (bg)
+            {
+                gBuildBg = true;
+                kessler::lowerThreadPriority();
+            }
             for (size_t i = next.fetch_add(1); i < sitePlanes.size(); i = next.fetch_add(1))
                 planeEntries(sitePlanes[i], per[i]);
         };
@@ -4973,6 +5040,7 @@ static void crewSync(const SatelliteSim &sim, SatelliteSim::LaunchState &L)
     }
     if (changed.empty())
         return;
+    L.joinJob(); // (a background build may hold batches built against the old fate)
     for (auto it = L.batches.begin(); it != L.batches.end();)
     {
         const LBatch &B = it->second;
@@ -4992,19 +5060,18 @@ static void crewSync(const SatelliteSim &sim, SatelliteSim::LaunchState &L)
 // (2026-10-21) Builds the given batches (not yet in L.batches) in parallel: their candidates, the rivals' day buckets
 // they will ask for, then the builds (buildBatch is a pure function of the batch; candidate()'s cache is under
 // L.candsMx). The walk (launchUpdate, a frame's cap of them) and the load (launchPrewarm, all of them) share it.
-struct ToBuild
+using ToBuild = SatelliteSim::LaunchState::BuildItem;
+static size_t buildThreads()
 {
-    uint64_t key;
-    int pi;
-    int64_t k;
-    int b;
-    double life;
-};
+    // The background build (gBuildBg) leaves two cores to the frame and its other workers.
+    const size_t hw = std::max(1u, std::thread::hardware_concurrency());
+    return gBuildBg ? std::max<size_t>(1, hw > 4 ? hw - 2 : hw - 1) : hw;
+}
 static void buildMissing(SatelliteSim &sim, SatelliteSim::LaunchState &L, const std::vector<ToBuild> &toBuild,
                          std::vector<LBatch> &built)
 {
     auto par = [](size_t n, const auto &fn) {
-        const size_t hw = std::max(1u, std::thread::hardware_concurrency());
+        const size_t hw = buildThreads();
         const size_t workers = std::min(hw, n / 2);
         if (workers <= 1)
         {
@@ -5013,7 +5080,13 @@ static void buildMissing(SatelliteSim &sim, SatelliteSim::LaunchState &L, const 
             return;
         }
         std::atomic<size_t> next{0};
-        auto run = [&] {
+        const bool bg = gBuildBg;
+        auto run = [&, bg] {
+            if (bg)
+            {
+                gBuildBg = true;
+                kessler::lowerThreadPriority();
+            }
             for (size_t i = next.fetch_add(1); i < n; i = next.fetch_add(1))
                 fn(i);
         };
@@ -5038,7 +5111,7 @@ static void buildMissing(SatelliteSim &sim, SatelliteSim::LaunchState &L, const 
         std::sort(need.begin(), need.end());
         need.erase(std::unique(need.begin(), need.end()), need.end());
         // Few buckets: each one split over the threads; many: one bucket a thread.
-        const size_t hwB = std::max(1u, std::thread::hardware_concurrency());
+        const size_t hwB = buildThreads();
         if (need.size() * 2 < hwB)
             for (const auto &nd : need)
                 rivalBucket(sim, L, nd.first, nd.second, true);
@@ -5054,6 +5127,76 @@ static void buildMissing(SatelliteSim &sim, SatelliteSim::LaunchState &L, const 
         buildBatch(sim, L, nb, L.planes[(size_t)toBuild[i].pi], toBuild[i].life);
     });
 }
+
+// (2026-10-21b) The background build (LaunchState::BuildJob): the items in order (most urgent first), in chunks
+// (64 while the first ones are wanted, then 256), each published by `done`.
+static void startBuildJob(SatelliteSim &sim, SatelliteSim::LaunchState &L, std::vector<ToBuild> items)
+{
+    auto J = std::make_unique<SatelliteSim::LaunchState::BuildJob>();
+    J->items = std::move(items);
+    J->out.resize(J->items.size());
+    J->gen = L.buildGen;
+    J->t0 = std::chrono::steady_clock::now();
+    for (const ToBuild &it : J->items)
+        L.jobKeys.insert(it.key);
+    SatelliteSim::LaunchState::BuildJob *jp = J.get();
+    J->th = std::thread([&sim, &L, jp] {
+        gBuildBg = true;
+        kessler::lowerThreadPriority();
+        const size_t n = jp->items.size();
+        size_t done = 0;
+        std::vector<LBatch> built;
+        while (done < n && !jp->cancel.load(std::memory_order_relaxed))
+        {
+            const size_t e = std::min(n, done + (done < 512 ? (size_t)64 : (size_t)256));
+            const std::vector<ToBuild> part(jp->items.begin() + (ptrdiff_t)done, jp->items.begin() + (ptrdiff_t)e);
+            buildMissing(sim, L, part, built);
+            for (size_t q = 0; q < part.size(); ++q)
+                jp->out[done + q] = std::move(built[q]);
+            done = e;
+            jp->done.store(done, std::memory_order_release);
+        }
+        jp->finished.store(true, std::memory_order_release);
+    });
+    ++L.jobsRun;
+    L.job = std::move(J);
+}
+
+// Moves the background build's finished prefix into the batches (within ~maxMs); joins it when all is in.
+static void applyBuildJob(SatelliteSim &sim, SatelliteSim::LaunchState &L, double maxMs)
+{
+    (void)sim;
+    if (!L.job)
+        return;
+    FPROF_SCOPE("launch.applyBuildJob");
+    SatelliteSim::LaunchState::BuildJob &J = *L.job;
+    const size_t d = J.done.load(std::memory_order_acquire);
+    const auto a0 = std::chrono::steady_clock::now();
+    while (J.applied < d)
+    {
+        const size_t e = std::min(d, J.applied + 256);
+        for (; J.applied < e; ++J.applied)
+        {
+            const ToBuild &it = J.items[J.applied];
+            L.batches.emplace(it.key, std::move(J.out[J.applied]));
+            L.jobKeys.erase(it.key);
+        }
+        if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a0).count() > maxMs)
+            break;
+    }
+    if (J.finished.load(std::memory_order_acquire) && J.applied >= J.done.load(std::memory_order_acquire))
+    {
+        if (J.th.joinable())
+            J.th.join();
+        L.lastJobMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - J.t0).count();
+        L.lastJobN = J.items.size();
+        char msg[160];
+        snprintf(msg, sizeof(msg), "launches: background build of %zu batches in %.0f ms", J.items.size(), L.lastJobMs);
+        Log::line(msg);
+        L.job.reset();
+        L.jobKeys.clear();
+    }
+}
 };
 
 // ── Per frame ───────────────────────────────────────────────────────────────────────────────────
@@ -5061,6 +5204,12 @@ static void buildMissing(SatelliteSim &sim, SatelliteSim::LaunchState &L, const 
 // will want, built in parallel with no per-frame cap. The first frame after the load spent ~25 ms building them (and
 // the next dozen frames 6-12 ms each under the cap). The walk itself still runs on the first frame and finds them all.
 // The same batches the walk would build (a pure function of the batch), so nothing drawn changes.
+void SatelliteSim::launchJoinBuildJob()
+{
+    if (launchState)
+        launchState->joinJob();
+}
+
 void SatelliteSim::launchPrewarm()
 {
     if (!launchState)
@@ -5192,11 +5341,13 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         // The cap follows the measured cost of a build (with the candidates and the rivals' day buckets it needs, which
         // are the expensive part the first time): ~8 ms of building a frame. Not every batch is built at once after a
         // load or under a fast warp; the walk is then redone each frame until it is complete (walkOk).
-        const int kMaxBuilds = L.buildCap;
+        // (2026-10-21b) Thousands missing at once (a time jump) go to the background build (LaunchState::BuildJob),
+        // most urgent first; its finished prefix is moved in before the walk (applyBuildJob). A few are built here.
+        LaunchImpl::applyBuildJob(*this, L, 2.0);
         using ToBuild = LaunchImpl::ToBuild;
         std::vector<ToBuild> toBuild;
         std::vector<std::pair<uint64_t, LBatch *>> found; // in walk order; null = built below
-        int builds = 0;
+        bool incomplete = false;
         L.walkList.clear();
         for (size_t pi = 0; pi < L.planes.size(); ++pi)
         {
@@ -5212,9 +5363,11 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 ++L.nFinds;
                 if (it == L.batches.end())
                 {
-                    // At most kMaxBuilds new batches a frame (the first frame finds every train in the sky).
-                    if (++builds > kMaxBuilds)
+                    if (!L.jobKeys.empty() && L.jobKeys.count(key))
+                    {
+                        incomplete = true; // the background build has it
                         return;
+                    }
                     toBuild.push_back({key, (int)pi, k, b, life});
                     found.push_back({key, nullptr});
                     return;
@@ -5225,6 +5378,49 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         if (!toBuild.empty())
         {
             FPROF_SCOPE("launch.buildBatches");
+            // Most urgent first: the launches nearest now (a batch's arrival less its mean raise).
+            if (toBuild.size() > 1)
+            {
+                std::vector<std::pair<double, size_t>> ord(toBuild.size());
+                for (size_t i = 0; i < toBuild.size(); ++i)
+                {
+                    const ToBuild &tb = toBuild[i];
+                    const LPlane &pl = L.planes[(size_t)tb.pi];
+                    const launch::Program &pg = L.cat.programs[pl.prog];
+                    const double tL = LaunchImpl::arrivalOf(pl, tb.k, tb.b, tb.life) -
+                                      0.5 * (pg.raiseDays[0] + pg.raiseDays[1]) * kDay;
+                    ord[i] = {std::abs(tL - t), i};
+                }
+                std::sort(ord.begin(), ord.end());
+                std::vector<ToBuild> sorted(toBuild.size());
+                for (size_t i = 0; i < ord.size(); ++i)
+                    sorted[i] = toBuild[ord[i].second];
+                toBuild.swap(sorted);
+            }
+            // Many: the most urgent few here (this frame shows them), the rest to the background build.
+            // Past 1 h/s of warp (a new stretch of days every frame, nothing lingers to be seen) none here: the first
+            // builds of a day ask for its rival buckets, 20-40 ms on the main thread at 1 yr/s.
+            // (SATLIGHTSIM_LAUNCH_BG=0 turns the background build off: the A/B for its schedule identity.)
+            static const bool bgOn = [] {
+                const char *e = std::getenv("SATLIGHTSIM_LAUNCH_BG");
+                return !(e && e[0] == '0');
+            }();
+            const size_t kBgMin = bgOn ? 48 : SIZE_MAX;
+            const bool fastWarp = !timePaused && kTimeScales[timeScaleIdx] > 3600.0f;
+            if ((toBuild.size() > kBgMin || (bgOn && fastWarp && toBuild.size() > 4)) && !L.job)
+            {
+                const size_t syncN = fastWarp ? 0 : 16;
+                std::vector<ToBuild> rest(toBuild.begin() + (ptrdiff_t)syncN, toBuild.end());
+                LaunchImpl::startBuildJob(*this, L, std::move(rest));
+                toBuild.resize(syncN);
+                incomplete = true;
+            }
+            else if (L.job && (fastWarp || toBuild.size() > 8))
+            {
+                // The job holds the cores: these wait for the next one (the walk stays incomplete meanwhile).
+                toBuild.clear();
+                incomplete = true;
+            }
             struct CapTimer
             {
                 LaunchState &L;
@@ -5248,13 +5444,15 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             // the budget by much: a piece of 128 expensive builds alone took ~40 ms (1 yr/s, the user's settings).
             // The frame's first piece is at most 16 (the cost of a build varies by an order of magnitude: the first
             // builds of a day ask for the rivals' day buckets), then each piece takes this frame's measured cost.
+            // With the background build running (it shares the cores) a smaller budget here.
+            const double budgetMs = L.job ? 4.0 : 8.0;
             double eachNow = -1.0;
             while (done < toBuild.size())
             {
                 const double spent = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count();
                 const size_t piece =
                     eachNow < 0.0 ? (size_t)std::clamp(6.0 / std::max(L.buildMsEach, 0.005), 4.0, 16.0)
-                                  : (size_t)std::clamp((8.0 - spent) / std::max(eachNow, 0.005), 4.0, 256.0);
+                                  : (size_t)std::clamp((budgetMs - spent) / std::max(eachNow, 0.005), 4.0, 256.0);
                 const size_t e = std::min(toBuild.size(), done + piece);
                 const auto p0 = std::chrono::steady_clock::now();
                 const std::vector<LaunchImpl::ToBuild> part(toBuild.begin() + (ptrdiff_t)done, toBuild.begin() + (ptrdiff_t)e);
@@ -5266,23 +5464,21 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 L.buildMsEach = 0.5 * L.buildMsEach + 0.5 * each;
                 eachNow = eachNow < 0.0 ? each : std::max(each, 0.5 * (eachNow + each));
                 done = e;
-                if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count() > 8.0)
+                if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count() > budgetMs)
                     break;
             }
             capTimer.n = done;
             if (done < toBuild.size())
-                builds = kMaxBuilds + 1; // incomplete: redone next frame
-            size_t q = 0, w = 0;
+                incomplete = true; // redone next frame
+            size_t w = 0;
             for (auto &f : found)
             {
                 if (!f.second)
                 {
-                    const bool have = q < done;
-                    if (have)
-                        f.second = &L.batches.find(toBuild[q].key)->second;
-                    ++q;
-                    if (!have)
+                    auto it = L.batches.find(f.first);
+                    if (it == L.batches.end())
                         continue; // not built this frame: left out of the walk
+                    f.second = &it->second;
                 }
                 found[w++] = f;
             }
@@ -5298,7 +5494,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 touchedP.push_back({f.first, &B});
         }
         std::sort(L.walkList.begin(), L.walkList.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-        L.walkOk = builds <= kMaxBuilds;
+        L.walkOk = !incomplete && !L.job;
         L.walkT = t;
         L.walkFrame = L.frame;
         L.walkEpoch = L.batchEpoch;
@@ -5924,6 +6120,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     };
     static std::vector<Cand> plumes; // (kept: its capacity is reused frame to frame; main thread only)
     plumes.clear();
+    L.plumeSkipped = 0;
     double plumeMs = 0.0;
     double reMs = 0.0, buildMs = 0.0;
     // The plumes' light (cloud_march.comp: phases per steradian) in the sky's units: the sky and the clouds use
@@ -6679,6 +6876,13 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             const double sA = std::max(std::sqrt(sig * sig + hl * hl), sMin);
             const double tauPeak = Sigma / (2.0 * glm::pi<double>() * sP * sA);
             const double pri = Sigma / (range * range) * (1.0 + std::min(tauPeak, 4.0));
+            // (2026-10-21b, CPU) Far below last frame's cut it cannot be drawn (it would fade to nothing there): its
+            // colour and rim are not worked out. Self-correcting: a frame whose cut fell past the margin turns it off.
+            if (pri < 0.25 * L.plumeCutPrev)
+            {
+                ++L.plumeSkipped;
+                return;
+            }
             Cand c;
             c.pri = pri;
             GpuDustCloud &d = c.d;
@@ -6936,6 +7140,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // moves their ranks shift, and a hard cut switched pieces of a trail on and off (blocky in time warp).
         const size_t room = nMax > n ? (size_t)(nMax - n) : 0;
         const double cut = plumes.size() > room && room > 0 ? plumes[room].pri : 0.0;
+        // (the skip in addPlume is exact while this frame's cut stayed above its margin)
+        const bool unsafe = L.plumeSkipped > 0 && (cut <= 0.0 || cut < 0.25 * L.plumeCutPrev);
+        L.plumeCutPrev = unsafe ? 0.0 : cut;
         // The ones that cannot show are dropped (dustCullInsignificant: on a CPU copy, never reading the mapped list).
         static std::vector<GpuDustCloud> sel;
         static std::vector<uint8_t> drop;
@@ -6957,6 +7164,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             ++L.nPlumes;
         }
     }
+    else
+        L.plumeCutPrev = 0.0;
+    L.plumeSkippedLast = L.plumeSkipped;
     L.prof[11] += (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sortT0).count() - L.prof[11]) / 30.0;
     uint32_t *fh = static_cast<uint32_t *>(kFireMapped);
     fh[0] = kFireCount;
@@ -6992,6 +7202,15 @@ nlohmann::json SatelliteSim::launchStateJson() const
     j["catalog"] = L.loaded ? "ok" : L.err;
     j["planes"] = L.planes.size();
     j["batches_now"] = L.nBatches;
+    j["batches_cached"] = L.batches.size();
+    j["walk_complete"] = L.walkOk;
+    // (2026-10-21b) The background build after a time jump: items, built, moved in; the last one's size and time.
+    j["build_job"] = L.job ? nlohmann::json{{"items", L.job->items.size()},
+                                             {"built", L.job->done.load()},
+                                             {"applied", L.job->applied}}
+                           : nlohmann::json(nullptr);
+    j["build_jobs_run"] = L.jobsRun;
+    j["last_build_job"] = {{"batches", L.lastJobN}, {"ms", L.lastJobMs}};
     j["rockets_drawn"] = L.nRockets;
     j["train_satellites"] = L.nTrain;
     j["retiring_satellites"] = L.nRetire;
@@ -7129,7 +7348,7 @@ nlohmann::json SatelliteSim::launchStateJson() const
     j["life_scale"] = launchLifeScale;
     j["cpu_split_ms"] = {{"window", L.prof[0]}, {"live_list", L.prof[1]}, {"freeing", L.prof[2]}, {"writes", L.prof[3]},
                          {"active_scan", L.prof[4]}, {"pad_lights", L.prof[5]}, {"visuals", L.prof[6]}, {"plumes", L.prof[7]},
-                         {"writes_member_records", L.prof[8]}, {"reentries", L.prof[9]}, {"plume_builds", L.prof[10]}, {"plume_candidates", L.plumeDbg.size()}, {"plume_sort_emit", L.prof[11]}, {"due_evals", L.nDueEval},
+                         {"writes_member_records", L.prof[8]}, {"reentries", L.prof[9]}, {"plume_builds", L.prof[10]}, {"plume_candidates", L.plumeDbg.size()}, {"plume_skipped", L.plumeSkippedLast}, {"plume_sort_emit", L.prof[11]}, {"due_evals", L.nDueEval},
                          {"window_finds", L.nFinds}};
     {
         const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;

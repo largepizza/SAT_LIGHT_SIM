@@ -55,8 +55,13 @@ wait 5
 #    moved the showers: the old phase 1.5634 fell between two of them, a clear sky). Phase 1.535 = the eastern edge
 #    of a shower over the station (a drift sweep, harness_runs/bmaudit: snow at the eye at 1.49-1.54 and
 #    1.63-1.67), the camera raised to the line of mirrors.
+#    2026-10-21: 1.535 had drifted to the shower's edge under the current defaults (snow at the eye 2e-4, the shower
+#    500 m off: beam-lit cloud and the line of mirrors, almost no flakes). A phase sweep at the same moment and place
+#    (harness_runs/fill/pr2, pr3 on that branch: rate at the eye / beam light at the eye) found snow at the eye with
+#    the beams through it only in a narrow band: 1.520 (0.25 / 0.009 Suns; 1.519 and 1.521 already lose one or the
+#    other; 1.500-1.508 and 1.532 snow harder but the cloud above blocks the beams).
 time j2000 1176665048.767463
-drift phase=1.535 rate=0.000006499999926745659
+drift phase=1.520 rate=0.000006499999926745659
 observer lat=-77.8455147244164 lon=166.6428994442907 alt=383.67
 camera az=35 el=20 fov=85
 wait settle

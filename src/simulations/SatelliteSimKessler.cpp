@@ -536,6 +536,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
                                   double keepEngineBefore, double syncUntil, bool async)
 {
     FPROF_SCOPE("kesslerRestart");
+    launchJoinBuildJob(); // (the background launch build reads the roster: satOrbits is resized below)
     kesslerRestartPoll(true); // one still building: finished (and replaced) first
     std::vector<kessler::Event> keptEngine;
     // The world starts at the CME, or at the step of the player's first breakup before it (2026-10-19).

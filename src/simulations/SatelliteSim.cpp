@@ -16447,6 +16447,7 @@ void SatelliteSim::loadHardcoded()
 // Also generates reflector ground targets and applies the MAX_SATELLITES cap.
 void SatelliteSim::buildOrbits()
 {
+    launchJoinBuildJob(); // (2026-10-21b: a background launch build reads satOrbits)
     // ── Populate satOrbits ────────────────────────────────────────────────────
     satOrbits.clear();
     // Reserve the exact total up front (perPlane is never ignored — total = numPlanes × perPlane

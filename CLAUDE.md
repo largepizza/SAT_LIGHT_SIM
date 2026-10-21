@@ -2294,7 +2294,12 @@ follow mode is a free camera at the camera's place.
   re-tuned: the rainbow keeps its moment and phase, the observer moved to the edge of a raining storm on the Falcon
   coast (11.02 N 68.58 W, az -68 = the antisolar point, a full double bow); the snow takes phase 1.535 (the edge of a
   shower over McMurdo; a phase sweep found snow at the eye at 1.49-1.54 and 1.63-1.67 — 0.005 rad is ~7 km there and
-  changes the view). **After changing a cloud default, audit the bookmarks** (`bookmark go N; wait settle; wait 30;
+  changes the view). **2026-10-21: the snow is phase 1.520.** At 1.535 the eye had drifted to the shower's edge (rate
+  at the eye 2e-4, the shower ~500 m off: beam-lit cloud, no flakes). Re-swept at the same moment and place (16 phases
+  1.500-1.560, then 0.002 steps; `state` -> `clouds_v2.rain.rate_eye` and `beam_eye_irr_suns`, after `wait settle;
+  wait 40` — the beam light is eased): heavier snow at 1.500-1.508 and 1.532 has cloud overhead that blocks the beams;
+  only ~1.520 has both (0.25 at the eye, 0.009 Suns of beam light), and 1.519 / 1.521 already lose one of them. The
+  rain map at the eye varies on ~0.001 rad of drift here: re-sweep, don't nudge. **After changing a cloud default, audit the bookmarks** (`bookmark go N; wait settle; wait 30;
   capture` for N = 1-9, default settings). Finding a storm for a bookmark: probe the rain map over a grid of observer
   positions (`observer lat= lon= alt=200; wait 3; state` -> `clouds_v2.rain.rate_near_max` and `sun_cloud_t`), then
   stand sunlit a few km on the Sun's side of the rain (`harness_runs/bmaudit/`: probe / pick scripts).
@@ -5180,6 +5185,29 @@ launches follow per-program cadences (no real manifest).
   steps that cannot reach a Starship pad (its end moves over the ground at most |nPark| + the Earth's rate: from a step
   whose nearest pad is farther than acos(0.98), it skips that many steps; same grid, same answer). Load: the first
   frames were 6 x ~130 ms of builds; now one ~20-30 ms.
+  **The background build (2026-10-21b, `LaunchState::BuildJob`, `startBuildJob` / `applyBuildJob`).** The ~8-ms-a-frame
+  walk budget (hitch pass 2) made a time jump slow to fill: after `time set 2032-08-27` the walk had 8.5k of 9.7k
+  batches after 480 frames at ~11 ms CPU a frame, and each bookmark Go took 250-300 frames at 9-12 ms. Now, when a walk
+  finds more than 48 missing, it sorts them by urgency (|arrival - mean raise - t|: the launches nearest now first),
+  builds the first 16 itself and hands the rest to ONE worker thread (`std::thread`, below normal priority; its
+  `buildMissing` helpers use all cores but two, `gBuildBg` thread_local), which builds them in chunks of 64 then 256 and
+  publishes each by an atomic `done`; every frame `applyBuildJob` (start of the walk, <= 2 ms) moves the finished
+  prefix into `batches`. Keys in flight (`jobKeys`) are not built on the main thread; the walk stays incomplete
+  (`walkOk` false) until the job is in; with a job in flight the walk builds at most 8 itself (4-ms budget) and past
+  1 h/s of warp none (the first 16 neither: every frame is a new stretch of days whose rival buckets are cold, 20-60 ms
+  on the main thread). `SATLIGHTSIM_LAUNCH_BG=0` turns it off (A/B: `launch list hours=72` / `launch padstats` after a
+  2032 jump and a bookmark Go identical on and off, `harness_runs/fill/ident.satcmd` + `cmpid.py`). The job reads the planes,
+  catalog, roster (`satOrbits`, the Kessler roster words) and the locked candidate / rival caches, writes only its own
+  output: `launchInitBlock`, `crewSync` (a station's fate changed), `kesslerRestart` and `buildOrbits` join it first
+  (`LaunchState::joinJob`, `SatelliteSim::launchJoinBuildJob`), as does `launchDestroy`. Same batches (buildBatch is pure).
+  Measured (RTX 3070 Ti, 1600x900, `harness_runs/fill/`, fill.satcmd + parse.py): 2032 jump all 9706 batches in the
+  first 40 frames (background 9690 in 1.1 s), launch CPU 3.4 ms over those frames then 1.9; bookmark Go 1/2/4/7/8
+  complete in the first 40 frames (5-6k batches in 0.2-0.5 s), 1.3-2.3 ms over those frames (were 9-12 ms for 250-300
+  frames). `launch state` -> `batches_cached`, `walk_complete`, `build_job` {items, built, applied}, `build_jobs_run`,
+  `last_build_job`. **Plume skip:** a plume candidate whose priority is under 0.25 x last frame's cut is not finished
+  (no colour, no rim); exact while this frame's cut stays above that margin, else the next frame skips nothing
+  (`plumeCutPrev`): Twilight Starship 1.77 -> 1.47 ms at 1x (1801 candidates, ~1030 skipped; `launch state` ->
+  `cpu_split_ms.plume_skipped`). The remaining plume cost is the per-parcel state (`Parcel::at`) of every parcel.
 - Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; Missions window > Controls (moved
   there from Settings > Constellations, which keeps a pointer + "Open the Missions window"); harness
   `launch ...` (docs/HARNESS.md: `launch next vehicle=`, `launch select kind=rocket|booster|upper|...`); default
@@ -6729,7 +6757,7 @@ context's first evaluation (`rosterRangePresentFrac` sorts every constellation's
 now at load), the Kessler worker's publish (outside its mutex; `kesslerSync` try-locks). Still open (QA 2026-10-21):
 a player breakup BEFORE the CME restarts the world on the main thread (`kesslerRestart` ~220 ms: `buildWorld`, and
 its `launchInitBlock` makes the next walk rebuild the launch planes, ~75 ms); the first walk after a bookmark jump
-is ~25-35 ms (the window walk over ~3000 planes plus 8 ms of builds); at 1 yr/s a frame could take ~40 ms of batch building (one rival day bucket, `rivalBucket`, enumerating a site's planes; hitch_thresholds.json allows 1mo / 1yr p99 65 / 75 ms). Since 2026-10-21 a frame that needs fewer buckets than half the cores builds each split over the threads by plane (`rivalBucket(..., parallel)`, per-plane lists concatenated in plane order: same entries, same order); the worst 1-yr/s frames' `launch.buildBatches` is ~20 ms now (hitch_check A: p99 51, max 53 ms, of which ~25 ms GPU). Still open: building the buckets ahead on a worker.
+is ~25-35 ms (the window walk over ~3000 planes plus 8 ms of builds); at 1 yr/s a frame could take ~40 ms of batch building (one rival day bucket, `rivalBucket`, enumerating a site's planes; hitch_thresholds.json allows 1mo / 1yr p99 65 / 75 ms). Since 2026-10-21 a frame that needs fewer buckets than half the cores builds each split over the threads by plane (`rivalBucket(..., parallel)`, per-plane lists concatenated in plane order: same entries, same order); the worst 1-yr/s frames' `launch.buildBatches` is ~20 ms now (hitch_check A: p99 51, max 53 ms, of which ~25 ms GPU). **Since 2026-10-21b the builds after a jump and every build past 1 h/s of warp run on the background build** (CLAUDE.md "Launches" > The background build; the main thread builds none at a fast warp while it runs): hitch_check A / C / D all within limits, C 1yr p99 37.6 / max 38.7 (was 75.2 / 96.7 with main-thread builds of cold rival buckets, 62 ms in one frame), the 1-yr/s hitches left are the Kessler sync (`kesslerSync`, `kru.deaths`).
 **Regression check: `python tools/harness/hitch_check.py`** (scenarios A load, B a user's settings via `--settings`,
 C 2031, D day 32 after the CME; `--run <folders>` checks finished runs) against `tools/harness/hitch_thresholds.json`
 (p99 / max per rate, the first frame after load, launch to first frame); exit 1 on a regression. **It must run alone

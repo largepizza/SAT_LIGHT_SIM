@@ -3025,6 +3025,7 @@ private:
     uint64_t kLifeHashKey = 0;       // ... and what the running Kessler world was built with
     bool rosterLifeUploaded = false; // the GPU holds the current rosterLife
     void launchPrewarm();            // (2026-10-21) at load: the first walk's batches, built in parallel
+    void launchJoinBuildJob();       // (2026-10-21b) waits for the background batch build (before the roster changes)
     void rosterLifeEnsure();         // (re)computes rosterLife when stale (builds the launch planes if needed)
     void rosterLifeUpload(VulkanContext &ctx);
     nlohmann::json deployStatsJson(double fromT, double toT, double stepDays) const; // harness `deploy stats`
