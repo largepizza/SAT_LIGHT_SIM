@@ -6698,7 +6698,7 @@ context's first evaluation (`rosterRangePresentFrac` sorts every constellation's
 now at load), the Kessler worker's publish (outside its mutex; `kesslerSync` try-locks). Still open (QA 2026-10-21):
 a player breakup BEFORE the CME restarts the world on the main thread (`kesslerRestart` ~220 ms: `buildWorld`, and
 its `launchInitBlock` makes the next walk rebuild the launch planes, ~75 ms); the first walk after a bookmark jump
-is ~25-35 ms (the window walk over ~3000 planes plus 8 ms of builds).
+is ~25-35 ms (the window walk over ~3000 planes plus 8 ms of builds); at 1 yr/s a frame can still take ~40 ms of batch building (one rival day bucket, `rivalBucket`, enumerating a site's planes, cannot be split: hitch_thresholds.json allows 1mo / 1yr p99 65 / 75 ms).
 **Regression check: `python tools/harness/hitch_check.py`** (scenarios A load, B a user's settings via `--settings`,
 C 2031, D day 32 after the CME; `--run <folders>` checks finished runs) against `tools/harness/hitch_thresholds.json`
 (p99 / max per rate, the first frame after load, launch to first frame); exit 1 on a regression. **It must run alone

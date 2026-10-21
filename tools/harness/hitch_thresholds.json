@@ -3,7 +3,7 @@
   "default": {"p99_ms": 50, "max_ms": 75},
   "first_frame_max_ms": 90,
   "boot_max_ms": 18000,
-  "rates": {},
+  "rates": {"1mo": {"p99_ms": 65, "max_ms": 95}, "1yr": {"p99_ms": 75, "max_ms": 100}},
   "scenarios": {
     "B": {"all": {"p99_ms": 60, "max_ms": 160}}
   }
