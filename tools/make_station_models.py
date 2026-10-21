@@ -16,6 +16,11 @@ any (each model's `sources` cite them) and the layout from their concept art; wh
 payloads, MMOD sleeves, radiator manifolds, visiting vehicles - is render_only: it costs no lobes and no occlusion,
 and is kept to a few dozen parts per station (the mesh renderer draws every part; prefer patterns - panel_seams
 reads as MMOD panels and handrails - over many tiny parts).
+
+Module by module (2026-10-21): a station assembled over years stamps its parts with the date their module arrives
+(`Station.since(date, match)`: component "since" and docking port "since"). With the sim's deployment era on, a part is
+neither drawn nor counted in the photometry before its date (SatComponent::sinceDays). Dates before 2026 are the
+real ones (Tiangong); later ones are the scenario's (the operators' published sequences where there are any).
 """
 
 import json
@@ -157,6 +162,7 @@ class Station:
         self.sources = []
         self.extra_mats = []
         self.ports = []  # docking ports a crew spacecraft can use (the sim's crew rotations: "docking_ports")
+        self.when = []   # (date, predicate on a component / port dict): the module's arrival (since())
 
     # Groups ------------------------------------------------------------------------------------------------
     def arrays(self, name, axis, vector=(0, 0, -1)):
@@ -347,6 +353,22 @@ class Station:
             self.plane(name + ("_wing_p" if s > 0 else "_wing_m"), ctr, [s * v for v in y], x, wing_span, 1.6,
                        "cells", "cells_back", ro=True)
 
+    def since(self, date, *prefixes, pred=None):
+        """Parts (and docking ports) whose name starts with one of `prefixes` - or for which pred(dict) is true - are
+        built on `date` ("YYYY-MM-DD"). The first matching call wins, so give the specific ones first."""
+        def m(d):
+            if pred is not None and pred(d):
+                return True
+            return any(d["name"].startswith(p) for p in prefixes)
+        self.when.append((date, m))
+
+    def apply_since(self, items):
+        for d in items:
+            for date, m in self.when:
+                if m(d):
+                    d["since"] = date
+                    break
+
     # Output ------------------------------------------------------------------------------------------------
     def source(self, subjects, status, value, src):
         e = {"status": status, "value": value, "source": src}
@@ -361,6 +383,8 @@ class Station:
 
     def finish(self, refs):
         """Default provenance for whatever the station's own entries did not cover."""
+        self.apply_since(self.c)
+        self.apply_since(self.ports)
         covered = set()
         for s in self.sources:
             covered |= set([s["subject"]] if "subject" in s else s["subjects"])
@@ -528,6 +552,12 @@ def haven2():
     s.dish("hga_1", [1.5, 0, -0.5 * Hc - 0.1], [0.5, 0.5, -0.7], 0.7, mast=2.0)
     s.dish("hga_2", [0, 0, 0.5 * Hc], [0, 0, 1], 0.5, mast=0.8)
     s.prof("airlock_hatch", [0, 0, -0.5 * Hc - 3.2], "-z", [[0, 1.0], [0.3, 0.9], [0.4, 0.0]], "metal", ro=True)
+    # Module by module (Vast: the first, stretched module 2028, more 2029-30, complete 2032; order the scenario's):
+    # the forward module flies alone first (the station's roster date), the core joins it, then a spoke a year.
+    s.since("2029-06-01", "haven2_core", "core_", "hga_", "airlock_hatch")
+    s.since("2030-03-01", "haven2_module_aft", "adapter_aft", "port_aft", "array_aft_", "window_aft_", "band_aft")
+    s.since("2031-03-01", "haven2_module_stbd", "adapter_stbd", "port_stbd", "array_stbd_", "window_stbd_", "band_stbd")
+    s.since("2032-03-01", "haven2_module_port", "adapter_port", "port_port", "array_port_", "window_port_", "band_port")
     s.write([REF_HAVEN2])
 
 
@@ -586,6 +616,11 @@ def axiom():
     s.box("arm_boom_1", [xh + 2.0, R + 0.4, -1.2], [7.0, 0.35, 0.35], "metal")
     s.box("arm_boom_2", [xh - 1.5, R + 0.4, -2.6], [0.35, 0.35, 3.0], "metal")
     s.dish("hga", [mods[0][1] + 2.0, 0, -R], "-z", 0.6, mast=1.0)
+    # Module by module (Axiom's 2024 resequencing: the PPTM first, free-flying, then Hab-1; the rest the scenario's).
+    s.since("2028-03-01", "axiom_hab1", "port_zenith_0", "port_nadir_0")
+    s.since("2029-01-01", "axiom_airlock")
+    s.since("2029-09-01", "axiom_hab2", "port_zenith_1", "port_nadir_1", "arm_boom")
+    s.since("2030-06-01", "axiom_rmf", "radiator_", "port_aft", "earth_observatory")
     s.write([REF_AXIOM])
 
 
@@ -654,6 +689,11 @@ def orbital_reef():
     for k, xx in enumerate((-8.0, 6.0)):
         s.sleeve("core_band_%d" % k, [xx, 0, 0], "+x", 0.35, Rc + 0.05, "metal")
     s.dish("hga", [8.0, 0, -Rc], [0.0, 0.6, -0.8], 0.8, mast=1.4)
+    # Module by module (the scenario's): the core with its power and thermal trusses first, then a LIFE habitat, the
+    # Boeing science module, the second LIFE habitat.
+    s.since("2031-03-01", "reef_life_s", "life_neck_s", "life_strap_s")
+    s.since("2031-09-01", "reef_science", "port_fwd", "window_")
+    s.since("2032-06-01", "reef_life_p", "life_neck_p", "life_strap_p")
     s.write([REF_REEF])
 
 
@@ -709,6 +749,12 @@ def ross():
     s.dish("hga", [-6.0, 0, -2.05], "-z", 0.6, mast=1.2)
     s.sleeve("nem_band", [0, 0, Rn + 0.2 + 7.0], "+z", 0.3, 2.1, "mli")
     s.sleeve("base_band", [-(Rn + 0.2 + 7.5), 0, 0], "-x", 0.3, 2.1, "mli")
+    # Module by module (the Dec 2025 plan: Nauka + UUM + NEM leave the ISS as the core - the station's roster date -
+    # then the gateway airlock, the base module and the two target modules by 2033; dates the scenario's).
+    s.since("2029-06-01", "ros_shm")
+    s.since("2031-06-01", "ros_base_module", "base_array", "base_band", "port_aft", "progress", "hga")
+    s.since("2033-03-01", "ros_target_port")
+    s.since("2033-09-01", "ros_target_zenith")
     s.write([REF_ROS])
 
 
@@ -764,6 +810,11 @@ def bas():
     for sgn in (1, -1):
         s.box("bas02_radiator_%s" % ("n" if sgn > 0 else "z"), [x02 + 6.5, 0, sgn * (R + 0.04)], [3.0, 1.6, 0.06],
               "radiator")
+    # Module by module (ISRO: BAS-01 first, the station complete by 2035; the order of the others as numbered).
+    s.since("2031-06-01", "bas_02", "bas02_", "arm_boom")
+    s.since("2032-06-01", "bas_05", "bas05_", "cbm_", "cupola")
+    s.since("2033-12-01", "bas_03", "bas03_")
+    s.since("2035-06-01", "bas_04", "bas04_")
     s.write([REF_BAS])
 
 
@@ -821,8 +872,9 @@ def starlab():
 GB_NOTE = "render-only detail materials (tools/make_station_models.py)"
 
 
-def patch(sid, build, extra_mats):
-    """Replace the gb_* components of a hand-made model with what `build` adds, and add the materials it uses."""
+def patch(sid, build, extra_mats, dates=None):
+    """Replace the gb_* components of a hand-made model with what `build` adds, and add the materials it uses.
+    dates: [(date, predicate on a component dict)] - the module each part arrives with ("since"; the first match wins)."""
     path = os.path.join(OUT, sid + ".json")
     with open(path, encoding="utf-8") as f:
         m = json.load(f)
@@ -852,6 +904,12 @@ def patch(sid, build, extra_mats):
         m["sources"].append({"subjects": [a["name"] for a in added], "status": "estimate", "value": GB_NOTE,
                              "source": "; ".join(MATERIAL_NOTES[a["name"]] for a in added)})
     m["components"] += s.c
+    for c in m["components"]:
+        c.pop("since", None)
+        for date, pred in dates or []:
+            if pred(c):
+                c["since"] = date
+                break
     if s.ports:
         m["docking_ports"] = s.ports
     else:
@@ -931,7 +989,12 @@ def main():
     bas()
     starlab()
     patch("iss", iss_detail, None)
-    patch("tiangong", tiangong_detail, None)
+    # Tiangong module by module: Tianhe 2021-04-29 (the station's roster date), Wentian 2022-07-24 (starboard, +Y),
+    # Mengtian 2022-10-31 (port, -Y); each lab's wings, masts, band and fittings with it.
+    def lab(name, sgn):
+        return lambda c: (c["name"].startswith(name) or c["name"].startswith("gb_" + name) or
+                          (c["name"].startswith(("gb_wing", "gb_lab_band")) and c["position"][1] * sgn > 0))
+    patch("tiangong", tiangong_detail, None, [("2022-07-24", lab("wentian", 1)), ("2022-10-31", lab("mengtian", -1))])
 
 
 if __name__ == "__main__":

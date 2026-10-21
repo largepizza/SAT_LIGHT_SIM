@@ -143,7 +143,8 @@
             "height": 17.9,
             "position": [0, 10.75, 0],
             "rotation_deg": [-90, 0, 0],
-            "material": "cn_module_blanket"
+            "material": "cn_module_blanket",
+            "since": "2022-07-24"
         },
         {
             "name": "mengtian",
@@ -153,7 +154,8 @@
             "height": 17.9,
             "position": [0, -10.75, 0],
             "rotation_deg": [-90, 0, 0],
-            "material": "cn_module_blanket"
+            "material": "cn_module_blanket",
+            "since": "2022-10-31"
         },
         {
             "name": "wentian_array_boom",
@@ -161,7 +163,8 @@
             "group": "alpha",
             "size": [1.0, 1.0, 3.0],
             "position": [0, 20.5, 0],
-            "material": "boom_metal"
+            "material": "boom_metal",
+            "since": "2022-07-24"
         },
         {
             "name": "mengtian_array_boom",
@@ -169,7 +172,8 @@
             "group": "alpha",
             "size": [1.0, 1.0, 3.0],
             "position": [0, -20.5, 0],
-            "material": "boom_metal"
+            "material": "boom_metal",
+            "since": "2022-10-31"
         },
         {
             "name": "wentian_wing_nadir",
@@ -180,7 +184,8 @@
             "rotation_deg": [0, 90, 0],
             "pivot": [0, 20.5, 0],
             "material": "solar_cell_flex",
-            "back_material": "solar_array_flex_back"
+            "back_material": "solar_array_flex_back",
+            "since": "2022-07-24"
         },
         {
             "name": "wentian_wing_zenith",
@@ -191,7 +196,8 @@
             "rotation_deg": [0, 90, 0],
             "pivot": [0, 20.5, 0],
             "material": "solar_cell_flex",
-            "back_material": "solar_array_flex_back"
+            "back_material": "solar_array_flex_back",
+            "since": "2022-07-24"
         },
         {
             "name": "mengtian_wing_nadir",
@@ -202,7 +208,8 @@
             "rotation_deg": [0, 90, 0],
             "pivot": [0, -20.5, 0],
             "material": "solar_cell_flex",
-            "back_material": "solar_array_flex_back"
+            "back_material": "solar_array_flex_back",
+            "since": "2022-10-31"
         },
         {
             "name": "mengtian_wing_zenith",
@@ -213,7 +220,8 @@
             "rotation_deg": [0, 90, 0],
             "pivot": [0, -20.5, 0],
             "material": "solar_cell_flex",
-            "back_material": "solar_array_flex_back"
+            "back_material": "solar_array_flex_back",
+            "since": "2022-10-31"
         },
         {
             "name": "gb_wing_mast",
@@ -223,7 +231,8 @@
             "material": "metal",
             "group": "beta",
             "render_only": true,
-            "pivot": [0.0, 20.5, 0.0]
+            "pivot": [0.0, 20.5, 0.0],
+            "since": "2022-07-24"
         },
         {
             "name": "gb_wing_box",
@@ -233,7 +242,8 @@
             "material": "gold",
             "group": "beta",
             "render_only": true,
-            "pivot": [0.0, 20.5, 0.0]
+            "pivot": [0.0, 20.5, 0.0],
+            "since": "2022-07-24"
         },
         {
             "name": "gb_wing_mast_2",
@@ -243,7 +253,8 @@
             "material": "metal",
             "group": "beta",
             "render_only": true,
-            "pivot": [0.0, 20.5, 0.0]
+            "pivot": [0.0, 20.5, 0.0],
+            "since": "2022-07-24"
         },
         {
             "name": "gb_wing_box_2",
@@ -253,7 +264,8 @@
             "material": "gold",
             "group": "beta",
             "render_only": true,
-            "pivot": [0.0, 20.5, 0.0]
+            "pivot": [0.0, 20.5, 0.0],
+            "since": "2022-07-24"
         },
         {
             "name": "gb_wing_mast_3",
@@ -263,7 +275,8 @@
             "material": "metal",
             "group": "beta",
             "render_only": true,
-            "pivot": [0.0, -20.5, 0.0]
+            "pivot": [0.0, -20.5, 0.0],
+            "since": "2022-10-31"
         },
         {
             "name": "gb_wing_box_3",
@@ -273,7 +286,8 @@
             "material": "gold",
             "group": "beta",
             "render_only": true,
-            "pivot": [0.0, -20.5, 0.0]
+            "pivot": [0.0, -20.5, 0.0],
+            "since": "2022-10-31"
         },
         {
             "name": "gb_wing_mast_4",
@@ -283,7 +297,8 @@
             "material": "metal",
             "group": "beta",
             "render_only": true,
-            "pivot": [0.0, -20.5, 0.0]
+            "pivot": [0.0, -20.5, 0.0],
+            "since": "2022-10-31"
         },
         {
             "name": "gb_wing_box_4",
@@ -293,7 +308,8 @@
             "material": "gold",
             "group": "beta",
             "render_only": true,
-            "pivot": [0.0, -20.5, 0.0]
+            "pivot": [0.0, -20.5, 0.0],
+            "since": "2022-10-31"
         },
         {
             "name": "gb_node_port_fwd",
@@ -428,7 +444,8 @@
             "position": [0.0, -16.5, -2.6],
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2022-10-31"
         },
         {
             "name": "gb_wentian_airlock",
@@ -437,7 +454,8 @@
             "position": [1.8, 15.0, 0.0],
             "material": "module_skin",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2022-07-24"
         },
         {
             "name": "gb_lab_band",
@@ -448,7 +466,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2022-07-24"
         },
         {
             "name": "gb_lab_band_2",
@@ -459,7 +478,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2022-10-31"
         }
     ],
     "sources": [

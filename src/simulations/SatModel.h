@@ -15,6 +15,7 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -325,7 +326,27 @@ struct SatComponent
     glm::vec3 foldPoint{0.0f}, foldAxis{0.0f};
     float foldAngle = 0.0f;
     float foldP0 = 0.0f, foldP1 = 1.0f;
+    // Built on this date (JSON "since": "YYYY-MM-DD", 2026-10-21, stations module by module): the part exists from
+    // then on (days since J2000; -1e30 = always). With the deployment era on, a part not built yet is not drawn
+    // (sat_mesh.vert collapses it, its occluder casts no shadow) and its lobes carry nothing (GpuSatLobe::
+    // distribution's build code, satLobeBuilt / sat_orbit.comp lobeBuilt). Lobes never merge across dates.
+    double sinceDays = -1e30;
 };
+
+// Build-date codes (2026-10-21): 0 = always there; else floor(days since J2000) + kSatSinceBias (dates from 1918 on,
+// exact in a float). Carried in GpuSatLobe::distribution bits 8-31 and the mesh component buffer.
+constexpr double kSatSinceBias = 30001.0;
+inline uint32_t satSinceCode(double sinceDays)
+{
+    if (!(sinceDays > -kSatSinceBias + 1.0))
+        return 0u;
+    const double c = std::floor(sinceDays) + kSatSinceBias;
+    return (uint32_t)(c < 1.0 ? 1.0 : c > 16777215.0 ? 16777215.0 : c);
+}
+// Is a part / lobe with this code there on day `nowDays` (days since J2000; +huge = everything)?
+inline bool satSinceBuilt(uint32_t code, double nowDays) { return code == 0u || (double)code - kSatSinceBias <= nowDays; }
+// "YYYY-MM-DD" -> days since J2000 (2000-01-01 12:00 UTC); NaN if malformed.
+double satDateToDays(const std::string &s);
 
 // Fin geometry helpers (SatModel.cpp): the 12 corners of a fin's hexagonal-section prism, local frame —
 // [0..5] the root section, [6..11] the tip, each going LE, upper-front, upper-back, TE, lower-back, lower-front.
@@ -372,6 +393,7 @@ struct SatModel
         glm::dvec3 pos{0.0};
         glm::dvec3 axis{1.0, 0.0, 0.0};
         std::string use = "crew"; // (2026-10-21) the visiting vehicles that take it: "crew" / "cargo" (JSON "use")
+        double sinceDays = -1e30; // the port's module is there from this date ("since"; stations module by module)
     };
     std::vector<DockPort> dockPorts;
 };
@@ -427,7 +449,8 @@ struct GpuSatLobe
     uint32_t sampleCount;  // 0 = never occluded
     uint32_t occluderMask; // bit i: the type's occluder i can block this lobe (occluders 0-31)
 
-    uint32_t distribution; // 0 = GGX, 1 = Beckmann (the majority by area of the merged faces)
+    uint32_t distribution; // bits 0-7: 0 = GGX, 1 = Beckmann (the majority by area of the merged faces); bits 8-31: the
+                           // lobe's build-date code (satSinceCode; 0 = always: stations built module by module)
     float transmission;    // Phase 4f: diffuse transmission, V band (SatMaterial::transmission), 0 = opaque
     uint32_t occluderMaskHi; // occluders 32-63 (kMaxOccluders = 64 since the ISS model)
     // Stowed parts in this lobe (2026-10-19): bits 0-15 k = the area share lost when fully stowed (Σ share x (1 -
@@ -582,6 +605,13 @@ glm::dvec3 satLobeNormalPosed(const std::vector<GpuSatLobe> &lobes, const std::v
                               const std::vector<GroupPose> &poses, int li);
 // The area factor of a lobe at unfolding progress P (GpuSatLobe::stowPack): 1 deployed.
 double satLobeStowFactor(uint32_t stowPack, double P);
+// A lobe's share at unfolding progress P on day buildDays (days since J2000; 1e30 = every part built): the stow
+// factor, or 0 before the lobe's build date (GpuSatLobe::distribution bits 8-31).
+inline double satLobePresence(const GpuSatLobe &L, double P, double buildDays)
+{
+    return satSinceBuilt(L.distribution >> 8, buildDays) ? satLobeStowFactor(L.stowPack, P) : 0.0;
+}
+inline bool satLobeBeckmann(const GpuSatLobe &L) { return (L.distribution & 0xFFu) != 0u; }
 // A component's fold angle (radians) at unfolding progress P (SatComponent::fold*): 0 deployed.
 double satComponentFoldAngle(const SatComponent &c, double P);
 // A component's stow scale at unfolding progress P (SatComponent::stow*): 1 deployed.
@@ -589,7 +619,7 @@ double satComponentStowScale(const SatComponent &c, double P);
 double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                          const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o, double sourceAlpha2,
                          int *dominant = nullptr, const SatOcclusion *occ = nullptr, bool occludeSource = true,
-                         double unfold = 1.0);
+                         double unfold = 1.0, double buildDays = 1e30);
 
 // Intensity of one flat facet or lobe per unit irradiance — the formula every evaluator above (and
 // sat_orbit.comp's lobeIntensity()) uses. `a2` includes the source-size term.
@@ -641,7 +671,7 @@ double satLobeEarthIntensity(glm::dvec3 n, double area, double diffArea, double 
 // Σ over the posed lobes of satLobeEarthIntensity (occlusion: the observer ray only).
 double evalSatLobesEarthPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                               const std::vector<GroupPose> &poses, const SatEarthLight &earth, glm::dvec3 o,
-                              const SatOcclusion *occ = nullptr, double unfold = 1.0);
+                              const SatOcclusion *occ = nullptr, double unfold = 1.0, double buildDays = 1e30);
 
 // How much does self-shadowing (all groups, posed) change the model's brightness? Poses the model
 // at `samples` random geometries — sun anywhere that lights the satellite, observer within the

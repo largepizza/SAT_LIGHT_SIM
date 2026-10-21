@@ -423,8 +423,12 @@ struct GpuSatTypeHeader
     // constellation past the 32nd (its satellites read bit 0..31 of some other entry: constIdx & 31).
     uint32_t constEnabled[8];
     uint32_t constHighlight[8];
+    // Stations built module by module (2026-10-21): today in days since J2000 (1e9 = every part: the deployment era
+    // off). A lobe whose build-date code (GpuSatLobe::distribution bits 8-31) is later carries nothing.
+    float buildDays = 1e9f;
+    uint32_t padB0 = 0, padB1 = 0, padB2 = 0;
 };
-static_assert(sizeof(GpuSatTypeHeader) == 112, "GpuSatTypeHeader layout mismatch");
+static_assert(sizeof(GpuSatTypeHeader) == 128, "GpuSatTypeHeader layout mismatch");
 // The constellation index a satellite record carries is 8 bits wide (GpuSatOrbit::constIdx's low byte; Kessler
 // pool / launch records' typeConst word), so 256 constellations is the ceiling.
 static constexpr uint32_t kMaxConstellationBits = 256;
@@ -2934,6 +2938,17 @@ private:
     // since kesslerEpoch(); INT32_MIN+1 / kNever = always) is uploaded after the Kessler roster words (sat_orbit.comp)
     // and read by the Kessler world (no collisions before a satellite exists). Off: everything always there (as before).
     bool launchDeployEra = true;
+    // launches.era_benchmark_shells (2026-10-21): the 2020 V1.0 / VisorSat benchmark shells in the era's sky (off: they
+    // are photometric references standing for Gen1 satellites the first fills already fly; Constellations > Benchmark).
+    bool launchEraBenchmarkShells = false;
+    // The share of roster satellites [i0, i1) there at t (the deployment era; 1 with it off): sorted born / gone seconds
+    // per range, cached until rosterLife changes. The ambience's closed-form shell counts scale by it.
+    double rosterRangePresentFrac(uint32_t i0, uint32_t i1, double t) const;
+    // A mesh instance's date (GpuMeshInstance::trans[0].w, instCompAbsent): today's build-date code with the deployment
+    // era on, 0 = every part (stations built module by module, 2026-10-21).
+    float meshBuildCode(double tJ2000) const { return launchDeployEra ? (float)(tJ2000 / 86400.0 + kSatSinceBias) : 0.0f; }
+    mutable std::unordered_map<uint64_t, std::pair<std::vector<int32_t>, std::vector<int32_t>>> rangeLifeCache_;
+    mutable uint64_t rangeLifeKey_ = 0;
     std::vector<int32_t> rosterLife;
     uint64_t rosterLifeKey = 0;      // what rosterLife was computed for (0 = not yet)
     uint64_t kLifeHashKey = 0;       // ... and what the running Kessler world was built with

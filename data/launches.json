@@ -1,7 +1,7 @@
 {
   "_comment": "Launches (SatelliteSimLaunches.cpp; plan .plans/LAUNCHES_PLAN.md). Each program keeps the constellations whose names contain one of its 'match' strings flying: every orbital plane is refreshed once per 'life_years', in launches of 'payload' satellites a 'batch_gap_days' apart. A launch flies from one of its vehicle's sites (one whose latitude and azimuth range reach the plane) at the moment the plane passes over it, deploys a train at 'park_km' that climbs to its slots over 'raise_days', and the satellites it replaces deorbit and re-enter over 'deorbit_days'. A program with a 'crew' block flies people to a station (a constellation of one) every 'life_years' (not scaled by the design-life setting): raise_days is lift-off to docking; no train, no retiree. Vehicle figures are public approximations (2036 is a guess). Sites: azimuth = [min, max] degrees clockwise from north, allowed by range safety (wraps through 360). Pads (drawn on the ground; sites within 150 m share one): optional 'pad_kind' (0 generic, 1 Falcon: service structure + landing zone, 2 Starship: catch tower; default from the vehicles flying there) and 'pad_heading_deg' (default the middle of the azimuth range). Vehicles: 'mount_m' = the launch mount the vehicle stands on, 'catch_m' = how far above it a tower-caught booster stops. Booster recovery at sea (droneships): 'droneship_km' = how far downrange a 'droneship' booster lands (a short trim burn; 0 = where its arc comes down), 'rtls_max_kg' = the heaviest payload with which it flies back to its pad's landing zone instead, 'landing_ships' = [{name, model (data/satellite_models, tools/make_ship_models.py), deck_m (must equal the model's deck), sites (the sites it serves; none = all)}]; a downrange point on land is a ground landing. Programs: 'sat_mass_kg' (per satellite) or 'payload_mass_kg' (the launch's total) picks the recovery.",
   "sites": [
-    {"id": "starbase",        "name": "Starbase, Texas",                 "lat": 25.997,  "lon": -97.155,  "azimuth": [70, 115], "online": "2023-04-20"},
+    {"id": "starbase",        "name": "Starbase, Texas",                 "lat": 25.997,  "lon": -97.155,  "azimuth": [70, 115], "online": "2023-04-20", "pad_history": [["2021-07-01", 2]]},
     {"id": "starbase_b",      "name": "Starbase Pad 2, Texas",           "lat": 25.993,  "lon": -97.151,  "azimuth": [70, 115], "online": "2026-06-01"},
     {"id": "louisiana_a1", "name": "Starbase Louisiana A-1",        "lat": 29.575,  "lon": -92.475,  "azimuth": [95, 200], "online": "2029-06-01"},
     {"id": "louisiana_a2", "name": "Starbase Louisiana A-2",        "lat": 29.571,  "lon": -92.469,  "azimuth": [95, 200], "online": "2029-09-01"},
@@ -38,14 +38,18 @@
     {"id": "pacific_p4",   "name": "Pacific polar sea platform 4 off Point Conception (fictional)", "lat": 33.94, "lon": -121.36, "azimuth": [140, 230], "pad_kind": 2, "online": "2031-12-01", "fictional": true},
     {"id": "cape_p1",      "name": "Cape Canaveral Atlantic sea platform 1 (fictional)", "lat": 28.42, "lon": -80.20, "azimuth": [35, 200], "pad_kind": 2, "online": "2030-09-01", "fictional": true},
     {"id": "cape_p2",      "name": "Cape Canaveral Atlantic sea platform 2 (fictional)", "lat": 28.26, "lon": -80.32, "azimuth": [35, 200], "pad_kind": 2, "online": "2031-03-01", "fictional": true},
-    {"id": "ksc_39a",         "name": "Kennedy LC-39A, Florida",         "lat": 28.608,  "lon": -80.604,  "azimuth": [35, 200], "online": "2017-02-19", "online_for": {"starship": "2027-03-01"}},
+    {"id": "ksc_39a",         "name": "Kennedy LC-39A, Florida",         "lat": 28.608,  "lon": -80.604,  "azimuth": [35, 200], "online": "2017-02-19", "online_for": {"starship": "2027-03-01"},
+     "pad_history": [["1966-01-01", 0], ["2017-02-19", 1], ["2027-03-01", 2]]},
     {"id": "ksc_lc49",        "name": "Kennedy LC-49 (proposed Starship pad), Florida", "lat": 28.665, "lon": -80.640, "azimuth": [35, 200], "online": "2029-06-01"},
-    {"id": "ccsfs_slc37",     "name": "Cape Canaveral SLC-37, Florida",  "lat": 28.531,  "lon": -80.567,  "azimuth": [35, 200], "online": "2027-09-01"},
+    {"id": "ccsfs_slc37",     "name": "Cape Canaveral SLC-37, Florida",  "lat": 28.531,  "lon": -80.567,  "azimuth": [35, 200], "online": "2027-09-01",
+     "pad_history": [["2002-11-20", 0], ["2025-06-01", -1], ["2027-09-01", 2]]},
     {"id": "ccsfs_slc40",     "name": "Cape Canaveral SLC-40, Florida",  "lat": 28.562,  "lon": -80.577,  "azimuth": [35, 200]},
     {"id": "ccsfs_slc41",     "name": "Cape Canaveral SLC-41, Florida",  "lat": 28.583,  "lon": -80.583,  "azimuth": [35, 120]},
-    {"id": "ccsfs_lc36",      "name": "Cape Canaveral LC-36, Florida",   "lat": 28.472,  "lon": -80.538,  "azimuth": [35, 120], "online": "2025-01-16"},
+    {"id": "ccsfs_lc36",      "name": "Cape Canaveral LC-36, Florida",   "lat": 28.472,  "lon": -80.538,  "azimuth": [35, 120], "online": "2025-01-16",
+     "pad_history": [["2021-01-01", 0]]},
     {"id": "vandenberg_slc4e","name": "Vandenberg SLC-4E, California",   "lat": 34.632,  "lon": -120.611, "azimuth": [140, 215], "online_for": {"starship": "2029-06-01"}},
-    {"id": "vandenberg_slc6", "name": "Vandenberg SLC-6, California",    "lat": 34.581,  "lon": -120.626, "azimuth": [140, 215], "online": "2028-06-01"},
+    {"id": "vandenberg_slc6", "name": "Vandenberg SLC-6, California",    "lat": 34.581,  "lon": -120.626, "azimuth": [140, 215], "online": "2028-06-01",
+     "pad_history": [["1985-01-01", 0], ["2023-06-01", -1], ["2028-06-01", 2]]},
     {"id": "wallops",         "name": "Wallops LP-0, Virginia",          "lat": 37.834,  "lon": -75.488,  "azimuth": [38, 130]},
     {"id": "kourou",          "name": "Guiana Space Centre, Kourou",     "lat": 5.239,   "lon": -52.769,  "azimuth": [-10, 100]},
     {"id": "wenchang",        "name": "Wenchang, Hainan",                "lat": 19.614,  "lon": 110.951,  "azimuth": [90, 200]},
@@ -248,7 +252,7 @@
      "payload_mass_kg": 12000, "life_years": 0.5, "payload": 1, "park_km": 210, "raise_days": [1.0, 1.3],
      "crew": {"spacecraft": "Cargo Dragon", "cargo": true, "model": "capsule_dragon", "share_crew_ports": true, "stay_days": [28, 35]}}
   ],
-  "_deployment_comment": "The deployment era (SatelliteSimLaunches.cpp rosterLifeEnsure; launches.deployment_era): a program's 'deployment' block(s) build its constellations up along an S-curve from 'start' to 'complete' (dates, UTC) through 'present_2026' satellites at 'deployment_reference'; 'match' narrows a block to some of the program's constellations, 'shell_stagger' starts the shells one after another (overlapping), 'early_vehicles' fly before 'early_until'. A first-filled slot's first refresh comes at least 'min_first_life' x the design life later. Sites and vehicles fly from 'online' (a site's 'online_for' a later date for one vehicle). 'roster_history': groups without launches (stations, the 2020 benchmark shells, the debris field): 'born' (and 'gone') dates, or a 'count' of members present over time (piecewise linear; members in a hashed order). Counts before 2026 follow the real record coarsely; later ones are the scenario's.",
+  "_deployment_comment": "The deployment era (SatelliteSimLaunches.cpp rosterLifeEnsure; launches.deployment_era): a program's 'deployment' block(s) build its constellations up along an S-curve from 'start' to 'complete' (dates, UTC) through 'present_2026' satellites at 'deployment_reference'; 'match' narrows a block to some of the program's constellations, 'shell_stagger' starts the shells one after another (overlapping), 'early_vehicles' fly before 'early_until'. A first-filled slot's first refresh comes at least 'min_first_life' x the design life later. Sites and vehicles fly from 'online' (a site's 'online_for' a later date for one vehicle). What is DRAWN at a site by date: 'pad_history' [[date, kind], ...] (kind as 'pad_kind', -1 = nothing there: SLC-37 a Delta IV pad until it was cleared, then Starship), else a pad from 'online' raised to each vehicle's kind from its date there (39A: Falcon, its Starship tower from 2027-03). 'roster_history': groups without launches (stations, the 2020 benchmark shells, the debris field): 'born' (and 'gone') dates, or a 'count' of members present over time (piecewise linear; members in a hashed order). 'benchmark': a photometric reference shell standing for satellites a program's first fills already fly (the 2020 V1.0 / VisorSat shells vs Starlink Gen1): absent in the deployment era unless launches.era_benchmark_shells is on. Counts before 2026 follow the real record coarsely; later ones are the scenario's.",
   "deployment_reference": "2026-10-20",
   "min_first_life": 0.25,
   "roster_history": [
@@ -261,8 +265,8 @@
     {"match": ["Starlab"], "born": "2029-03-01"},
     {"match": ["Orbital Reef"], "born": "2030-06-01"},
     {"match": ["Starship HLS Fuel Depots"], "count": [["2027-06-01", 0], ["2027-09-01", 1], ["2028-06-01", 3]]},
-    {"match": ["V1.0 shell (2020"], "count": [["2019-11-11", 0], ["2020-08-01", 1584], ["2022-06-01", 1584], ["2024-06-01", 0]]},
-    {"match": ["VisorSat shell (2020"], "count": [["2020-08-07", 0], ["2021-05-01", 1584], ["2023-01-01", 1584], ["2025-01-01", 0]]},
+    {"match": ["V1.0 shell (2020"], "benchmark": true, "count": [["2019-11-11", 0], ["2020-08-01", 1584], ["2022-06-01", 1584], ["2024-06-01", 0]]},
+    {"match": ["VisorSat shell (2020"], "benchmark": true, "count": [["2020-08-07", 0], ["2021-05-01", 1584], ["2023-01-01", 1584], ["2025-01-01", 0]]},
     {"match": ["Space Junk"], "count": [["2000-01-01", 9000], ["2010-01-01", 15000], ["2019-01-01", 22000], ["2026-10-20", 30000], ["2031-01-01", 80000], ["2036-11-01", 300000]]}
   ]
 }
