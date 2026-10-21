@@ -2529,6 +2529,75 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                        std::to_string(r["deploy"].value("roster_total", 0ull)) + " roster satellites there";
         return Status::Done;
     }
+    if (n == "joints")
+    {
+        // joints [sat=<i>] [minutes=200] [step=20] (2026-10-20, issue 20261020_214656): each child group's joint angle
+        // (its rotation relative to its parent) over time for a roster satellite (default: the selection), by the CPU
+        // pose evaluator the meshes use; max_step_deg is the largest change between samples (a joint flip shows as
+        // ~180 degrees, a continuous joint as ~360 / its period x step).
+        const int si = c.has("sat") ? (int)c.num("sat", -1.0) : selectedSatIndex;
+        if (si < 0 || si >= (int)activeSatCount)
+            fail("joints: select a roster satellite (or sat=<i>)");
+        const SatelliteType &type = satTypes[satOrbits[(size_t)si].typeIdx];
+        if (type.groups.size() < 2)
+            fail("joints: this type has no child groups");
+        const SatOrbitElems e = rosterElemsOf(satOrbits[(size_t)si]);
+        const double t0 = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const double stepS = std::max(1.0, c.num("step", 20.0));
+        const int nS = (int)std::clamp(c.num("minutes", 200.0) * 60.0 / stepS, 2.0, 20000.0);
+        std::vector<double> maxStep(type.groups.size(), 0.0), atMax(type.groups.size(), 0.0);
+        std::vector<glm::dmat3> prev(type.groups.size());
+        json series = json::array();
+        for (int k = 0; k <= nS; ++k)
+        {
+            const double t = t0 + stepS * k;
+            const SatOrbitState st = satOrbitStateAt(e, t);
+            AttGeometry geo;
+            geo.nadir = st.nadir;
+            geo.velocity = st.velocity;
+            geo.sun = sunDirEciAt(t);
+            geo.siteIdeal = geo.nadir;
+            geo.tumbleAngle = st.tumbleAngle;
+            geo.tumbleAxis = e.tumbleAxis;
+            const std::vector<GroupPose> poses = evalGroupPoses(type.groups, geo, false);
+            json row = json::array();
+            for (size_t g = 1; g < type.groups.size(); ++g)
+            {
+                const int par = type.groups[g].parent < 0 ? 0 : type.groups[g].parent;
+                const glm::dmat3 rel = glm::transpose(poses[(size_t)par].R) * poses[g].R;
+                if (k > 0)
+                {
+                    const glm::dmat3 d = glm::transpose(prev[g]) * rel;
+                    const double ang = glm::degrees(std::acos(std::clamp((d[0][0] + d[1][1] + d[2][2] - 1.0) * 0.5, -1.0, 1.0)));
+                    if (ang > maxStep[g])
+                    {
+                        maxStep[g] = ang;
+                        atMax[g] = t - t0;
+                    }
+                }
+                prev[g] = rel;
+                const double ang0 = glm::degrees(std::acos(std::clamp((rel[0][0] + rel[1][1] + rel[2][2] - 1.0) * 0.5, -1.0, 1.0)));
+                row.push_back(std::round(ang0 * 10.0) / 10.0);
+            }
+            if (k % std::max(1, nS / 40) == 0)
+                series.push_back(row);
+        }
+        json gj = json::array();
+        std::string m;
+        for (size_t g = 1; g < type.groups.size(); ++g)
+        {
+            gj.push_back({{"group", type.groups[g].name}, {"mode", jointModeName(type.groups[g].jointMode)},
+                          {"max_step_deg", maxStep[g]}, {"at_s", atMax[g]}});
+            char b[96];
+            snprintf(b, sizeof(b), "%s%s max step %.2f deg", m.empty() ? "" : ", ", type.groups[g].name.c_str(), maxStep[g]);
+            m += b;
+        }
+        r["groups"] = gj;
+        r["angle_series_deg"] = series;
+        r["message"] = type.name + ": " + m;
+        return Status::Done;
+    }
+
     if (n == "launch")
     {
         // launch [state] | list [hours=48] | next [twilight=0|1] (2026-10-18, SatelliteSimLaunches.cpp).
@@ -2639,6 +2708,18 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = msg;
             return Status::Done;
         }
+        if (sub == "crew")
+        {
+            // launch crew [station=ISS] [event=dock] [lead=60] [follow=1] (2026-10-20): the next crew flight event at a
+            // station, its spacecraft selected (and followed). Events: launch sep phasing arrive axis hold400 hold200
+            // hold20 dock undock depart deorbit entry chutes splash.
+            std::string msg;
+            if (!launchGoToCrew(c.str("station", ""), c.str("event", "dock"), c.num("lead", 60.0),
+                                c.num("follow", 1.0) > 0.5, msg))
+                fail("launch crew: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
         if (sub == "reentry")
         {
             std::string msg;
@@ -2655,7 +2736,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             static const std::pair<const char *, int> kTr[] = {{"rocket", 1}, {"booster", 11}, {"upper", 12},
                                                                {"ship", 2}, {"fireball", 0},
                                                                {"retiree_reentry", 3}, {"stage_reentry", 4},
-                                                               {"kessler_reentry", 5}, {"fragment", 6}, {"fairing", 7}};
+                                                               {"kessler_reentry", 5}, {"fragment", 6}, {"fairing", 7},
+                                                               {"crew", 8}};
             int trKind = -1;
             for (const auto &k : kTr)
                 if (kind == k.first)
@@ -2686,6 +2768,50 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             r["jitter"] = launchJitterJson((int)c.num("batches", 6.0));
             r["message"] = r["jitter"].dump();
+            return Status::Done;
+        }
+        if (sub == "trace")
+        {
+            // launch trace [from=YYYY-MM-DD[THH:MM]] [days=400] [vehicle=<id>] [program=<name part>] [key=<batch>]
+            // (2026-10-20, tools/harness/mission_ops.py): the next launch of every (vehicle, program) pair after `from`
+            // (default: now), traced through its phases from the launch model; key= traces one batch.
+            if (c.has("key"))
+            {
+                r["trace"] = launchTraceBatchJson(std::stoull(c.str("key", "0")));
+                r["message"] = r["trace"].value("vehicle", std::string("?"));
+                return Status::Done;
+            }
+            double from = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            if (c.has("from"))
+            {
+                from = launch::dateToJ2000(c.str("from", ""));
+                if (std::isnan(from))
+                    fail("launch trace: from= as YYYY-MM-DD[THH:MM]");
+            }
+            r["trace"] = launchTraceJson(from, c.num("days", 400.0), c.str("vehicle", ""), c.str("program", ""),
+                                         c.num("phases", 1.0) > 0.5);
+            int nf = 0;
+            for (const auto &x : r["trace"].value("combos", nlohmann::json::array()))
+                nf += x.value("found", false);
+            r["message"] = std::to_string(nf) + " of " + std::to_string(r["trace"].value("combos", nlohmann::json::array()).size()) +
+                           " vehicle / program pairs found";
+            return Status::Done;
+        }
+        if (sub == "formation")
+        {
+            // launch formation key=<batch> [samples=8]: a formation train's arrangement from release to arrival.
+            r["formation"] = launchFormationJson(std::stoull(c.str("key", "0")), (int)c.num("samples", 8.0), c.num("before", 0.0) > 0.5);
+            r["message"] = r["formation"].value("constellation", std::string("?"));
+            return Status::Done;
+        }
+        if (sub == "goto")
+        {
+            // launch goto key=<batch> [t=<s after lift-off>] [ground=0|1]: the clock at that moment of that launch (1x,
+            // running); ground=1 also puts the observer beside the pad. Then `launch select kind=...` takes its stages.
+            std::string msg;
+            if (!launchGoToKey(std::stoull(c.str("key", "0")), c.num("ground", 0.0) > 0.5, -c.num("t", 0.0), msg))
+                fail("launch goto: " + msg);
+            r["message"] = msg;
             return Status::Done;
         }
         if (sub == "check")

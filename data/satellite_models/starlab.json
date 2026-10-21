@@ -1,6 +1,6 @@
 {
     "name": "Starlab (habitat + service module)",
-    "note": "Station art pass 2026-10-20 (tools/make_station_models.py), after Starlab's renders: an 8 m wide metallic habitat with domed ends and a docking node forward, a service module aft carrying four large wings in a cross at 45 deg (each turning about its own long axis), a robotic arm along the habitat. Body frame: +X along velocity, +Z nadir. (The early concept's inflatable habitat was replaced by a rigid metal module in 2023.) Detail: node ports, a docked Dragon, windows, dishes.",
+    "note": "Station art pass 2026-10-20 (tools/make_station_models.py), after Starlab's renders: an 8 m wide metallic habitat with domed ends and a docking node forward, a service module aft carrying four large wings in a cross at 45 deg (each turning about its own long axis), a robotic arm along the habitat. Body frame: +X along velocity, +Z nadir. (The early concept's inflatable habitat was replaced by a rigid metal module in 2023.) Detail: node ports (crew docking for the sim's Dragons), windows, dishes.",
     "materials": [
         {
             "name": "module_skin",
@@ -283,41 +283,6 @@
             "render_only": true
         },
         {
-            "name": "dragon_trunk",
-            "type": "profile",
-            "profile": [[0.0, 1.85], [2.8, 1.85]],
-            "position": [18.35, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "bottom",
-            "material": "dragon_white",
-            "arc_material": "cells",
-            "arc_deg": [0, 180],
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "dragon_capsule",
-            "type": "profile",
-            "profile": [[0.0, 1.95], [0.15, 1.95], [2.4, 1.25], [2.9, 0.95], [3.3, 0.55]],
-            "position": [15.55, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "top",
-            "material": "dragon_white",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "dragon_nose",
-            "type": "profile",
-            "profile": [[0.0, 0.55], [0.35, 0.45]],
-            "position": [12.25, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "top",
-            "material": "metal",
-            "group": "station",
-            "render_only": true
-        },
-        {
             "name": "node_port_0",
             "type": "profile",
             "profile": [[0.0, 0.6], [0.4, 0.6]],
@@ -531,6 +496,18 @@
                 "glass",
                 "dragon_white"
             ]
+        }
+    ],
+    "docking_ports": [
+        {
+            "name": "node_fwd",
+            "position": [11.9, 0.0, 0.0],
+            "axis": [1.0, 0.0, 0.0]
+        },
+        {
+            "name": "node_port_0",
+            "position": [9.9, 1.7, 0.0],
+            "axis": [0.0, 1.0, 0.0]
         }
     ]
 }

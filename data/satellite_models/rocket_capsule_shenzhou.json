@@ -1,0 +1,590 @@
+{
+ "name": "shenzhou in orbit",
+ "note": "Crew spacecraft render model (tools/make_crew_models.py), in orbit. Shenzhou in orbit: orbital module forward (docking), descent module, service module and its two pairs of wings. Body frame: +Z out of the docking port, origin at the port's contact point.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  },
+  {
+   "name": "cells",
+   "preset": "solar_cell"
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "service_module_0",
+   "type": "profile",
+   "profile": [
+    [
+     -8.1,
+     1.4
+    ],
+    [
+     -5.3,
+     1.4
+    ],
+    [
+     -5.2,
+     1.148
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body"
+  },
+  {
+   "name": "sm_engines_1",
+   "type": "profile",
+   "profile": [
+    [
+     -8.4,
+     0.15
+    ],
+    [
+     -8.349,
+     0.1244
+    ],
+    [
+     -8.298,
+     0.1022
+    ],
+    [
+     -8.247,
+     0.0835
+    ],
+    [
+     -8.196,
+     0.0688
+    ],
+    [
+     -8.145,
+     0.0586
+    ],
+    [
+     -8.094,
+     0.054
+    ],
+    [
+     -8.058,
+     0.0837
+    ],
+    [
+     -7.9788,
+     0.0837
+    ],
+    [
+     -7.95,
+     0.0502
+    ],
+    [
+     -7.9,
+     0.0
+    ]
+   ],
+   "position": [
+    0.6,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "sm_engines_2",
+   "type": "profile",
+   "profile": [
+    [
+     -8.4,
+     0.15
+    ],
+    [
+     -8.349,
+     0.1244
+    ],
+    [
+     -8.298,
+     0.1022
+    ],
+    [
+     -8.247,
+     0.0835
+    ],
+    [
+     -8.196,
+     0.0688
+    ],
+    [
+     -8.145,
+     0.0586
+    ],
+    [
+     -8.094,
+     0.054
+    ],
+    [
+     -8.058,
+     0.0837
+    ],
+    [
+     -7.9788,
+     0.0837
+    ],
+    [
+     -7.95,
+     0.0502
+    ],
+    [
+     -7.9,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.6,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "sm_engines_3",
+   "type": "profile",
+   "profile": [
+    [
+     -8.4,
+     0.15
+    ],
+    [
+     -8.349,
+     0.1244
+    ],
+    [
+     -8.298,
+     0.1022
+    ],
+    [
+     -8.247,
+     0.0835
+    ],
+    [
+     -8.196,
+     0.0688
+    ],
+    [
+     -8.145,
+     0.0586
+    ],
+    [
+     -8.094,
+     0.054
+    ],
+    [
+     -8.058,
+     0.0837
+    ],
+    [
+     -7.9788,
+     0.0837
+    ],
+    [
+     -7.95,
+     0.0502
+    ],
+    [
+     -7.9,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.6,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "sm_engines_4",
+   "type": "profile",
+   "profile": [
+    [
+     -8.4,
+     0.15
+    ],
+    [
+     -8.349,
+     0.1244
+    ],
+    [
+     -8.298,
+     0.1022
+    ],
+    [
+     -8.247,
+     0.0835
+    ],
+    [
+     -8.196,
+     0.0688
+    ],
+    [
+     -8.145,
+     0.0586
+    ],
+    [
+     -8.094,
+     0.054
+    ],
+    [
+     -8.058,
+     0.0837
+    ],
+    [
+     -7.9788,
+     0.0837
+    ],
+    [
+     -7.95,
+     0.0502
+    ],
+    [
+     -7.9,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.0,
+    -0.6,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "solar_wing_5",
+   "type": "box",
+   "size": [
+    7.2,
+    0.04,
+    2.1
+   ],
+   "position": [
+    0.0,
+    5.4,
+    -6.65
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    -0.0,
+    0.707107
+   ],
+   "material": "cells",
+   "group": "body"
+  },
+  {
+   "name": "wing_yoke_6",
+   "type": "box",
+   "size": [
+    0.45,
+    0.12,
+    0.3
+   ],
+   "position": [
+    0.0,
+    1.625,
+    -6.65
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    -0.0,
+    0.707107
+   ],
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "solar_wing_7",
+   "type": "box",
+   "size": [
+    7.2,
+    0.04,
+    2.1
+   ],
+   "position": [
+    -0.0,
+    -5.4,
+    -6.65
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    0.0,
+    -0.707107
+   ],
+   "material": "cells",
+   "group": "body"
+  },
+  {
+   "name": "wing_yoke_8",
+   "type": "box",
+   "size": [
+    0.45,
+    0.12,
+    0.3
+   ],
+   "position": [
+    -0.0,
+    -1.625,
+    -6.65
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    0.0,
+    -0.707107
+   ],
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "descent_module_9",
+   "type": "profile",
+   "profile": [
+    [
+     -5.2,
+     1.25
+    ],
+    [
+     -4.95,
+     1.25
+    ],
+    [
+     -3.355,
+     0.6875
+    ],
+    [
+     -3.15,
+     0.4375
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body"
+  },
+  {
+   "name": "heat_shield_10",
+   "type": "profile",
+   "profile": [
+    [
+     -5.22,
+     1.225
+    ],
+    [
+     -5.18,
+     1.225
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "orbital_module_11",
+   "type": "profile",
+   "profile": [
+    [
+     -3.1,
+     0.4
+    ],
+    [
+     -3.0434,
+     0.571
+    ],
+    [
+     -2.7399,
+     0.9278
+    ],
+    [
+     -2.2858,
+     1.1663
+    ],
+    [
+     -1.75,
+     1.25
+    ],
+    [
+     -1.2142,
+     1.1663
+    ],
+    [
+     -0.7601,
+     0.9278
+    ],
+    [
+     -0.4566,
+     0.571
+    ],
+    [
+     -0.35,
+     0.45
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "docking_probe_12",
+   "type": "profile",
+   "profile": [
+    [
+     -0.35,
+     0.35
+    ],
+    [
+     0.0,
+     0.35
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "the sim hands in a full attitude (approach, docked, entry); this law is only its fallback",
+   "source": "SatelliteSimLaunches.cpp crew vehicles."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "service_module_0",
+    "solar_wing_5",
+    "solar_wing_7",
+    "descent_module_9",
+    "orbital_module_11"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes estimated from photographs",
+   "source": "Wikipedia 'Shenzhou (spacecraft)': service module 2.8 m x 2.9 m, descent module 2.5 m across, orbital module 2.25 m x 2.8 m with the docking mechanism forward, two pairs of service-module solar wings (~17 m tip to tip); one main parachute (1200 m2)"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey",
+    "nozzle",
+    "soot",
+    "cells"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside; cells: Crew Dragon trunk's body-mounted solar cells; a crewed spacecraft's folded arrays",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

@@ -18,7 +18,8 @@ constexpr double kPi = 3.14159265358979323846;
 const char *const kAttTargetNames[] = {
     "nadir", "zenith", "sun", "anti_sun", "velocity", "anti_velocity",
     "orbit_normal", "anti_orbit_normal", "sun_reflect_nadir", "sun_reflect_ground_site"};
-const char *const kJointModeNames[] = {"none", "track", "edge_on", "fixed", "flare_mitigation_tilt"};
+const char *const kJointModeNames[] = {"none", "track", "edge_on", "fixed", "flare_mitigation_tilt",
+                                       "edge_on_continuous"};
 const char *const kAttLawNames[] = {"two_vector", "tumble"};
 static_assert(sizeof(kAttTargetNames) / sizeof(kAttTargetNames[0]) == (size_t)AttTarget::Count);
 static_assert(sizeof(kJointModeNames) / sizeof(kJointModeNames[0]) == (size_t)JointMode::Count);
@@ -180,7 +181,7 @@ std::string validateAttitudeGroups(const std::vector<AttitudeGroup> &groups)
             return "group '" + g.name + "' has parallel primary/secondary axes";
         if (g.jointMode != JointMode::None && glm::length(g.jointAxis) < 1e-6f)
             return "group '" + g.name + "' has a zero joint axis";
-        if ((g.jointMode == JointMode::Track || g.jointMode == JointMode::EdgeOn) &&
+        if ((g.jointMode == JointMode::Track || g.jointMode == JointMode::EdgeOn || g.jointMode == JointMode::EdgeOnContinuous) &&
             glm::length(glm::cross(glm::normalize(g.jointAxis), glm::normalize(g.jointVector))) < 1e-3f)
             return "group '" + g.name + "' has its joint vector parallel to the joint axis";
     }
@@ -209,7 +210,7 @@ nlohmann::json attitudeGroupToJson(const AttitudeGroup &g, const std::vector<Att
         nlohmann::json jj = {{"mode", jointModeName(g.jointMode)}};
         if (g.parent < 0)
             jj["axis"] = vecJson(g.jointAxis);
-        if (g.jointMode == JointMode::Track || g.jointMode == JointMode::EdgeOn)
+        if (g.jointMode == JointMode::Track || g.jointMode == JointMode::EdgeOn || g.jointMode == JointMode::EdgeOnContinuous)
         {
             jj["vector"] = vecJson(g.jointVector);
             jj["target"] = attTargetName(g.jointTarget);
@@ -354,6 +355,8 @@ std::vector<GroupPose> evalGroupPoses(const std::vector<AttitudeGroup> &groups, 
                 double a = glm::dot(tgt, jv), b = glm::dot(tgt, glm::cross(k, jv));
                 if (g.jointMode == JointMode::Track)
                     theta = std::atan2(b, a);
+                else if (g.jointMode == JointMode::EdgeOnContinuous)
+                    theta = std::atan2(-a, b); // one branch: (axis x vector) toward the target (+-pi the same pose)
                 else
                 {
                     double th1 = std::atan2(-a, b);
@@ -636,6 +639,15 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
             }
             matLib[m.name] = m;
             out.localMaterials.push_back(m.name);
+        }
+        for (const auto &jp : j.value("docking_ports", nlohmann::json::array()))
+        {
+            SatModel::DockPort dp;
+            dp.name = jp.value("name", std::string("port"));
+            dp.pos = glm::dvec3(jsonVec3(jp, "position", glm::vec3(0.0f)));
+            const glm::dvec3 ax = glm::dvec3(jsonVec3(jp, "axis", glm::vec3(1.0f, 0.0f, 0.0f)));
+            dp.axis = glm::length(ax) > 1e-9 ? glm::normalize(ax) : glm::dvec3(1.0, 0.0, 0.0);
+            out.dockPorts.push_back(dp);
         }
         if (j.contains("deployment"))
         {

@@ -205,7 +205,7 @@ A group can be a **child** of another group, which is what turns a type into a k
 
 | Joint field | Meaning |
 |---|---|
-| `mode` | `none`, `track` (turn so `vector` points as close to `target` as it can), `edge_on` (turn so `vector` is perpendicular to `target` — the smaller solution), `fixed` (a constant `angle_deg`), or `flare_mitigation_tilt` (the global *Flare mitigate tilt* setting). |
+| `mode` | `none`, `track` (turn so `vector` points as close to `target` as it can), `edge_on` (turn so `vector` is perpendicular to `target` — the smaller solution, which swaps to the other one, a 180-degree flip, where the two are equal), `edge_on_continuous` (the same, always on one solution: continuous, turning once per orbit — the ISS's radiators), `fixed` (a constant `angle_deg`), or `flare_mitigation_tilt` (the global *Flare mitigate tilt* setting). |
 | `axis` | The hinge axis, in the parent's body frame. `vector` should be perpendicular to it. |
 | `vector`, `target` | What the joint aims (`target` is an `att_target` above). |
 | `limit_deg` | Rotation clamp for `track` / `edge_on`. Default 180. |

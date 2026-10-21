@@ -2,6 +2,7 @@
 #define GLFW_INCLUDE_VULKAN
 #define GLFW_INCLUDE_NONE // see VulkanContext.h — must be repeated at every raw glfw3.h include site
 #include "Cinematic.h"
+#include <array>
 #include <GLFW/glfw3.h>
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -2796,6 +2797,9 @@ private:
     VkDeviceMemory kDustMem = VK_NULL_HANDLE;
     void *kDustMapped = nullptr;
     uint32_t kDustCount = 0; // drawn this frame (harness state)
+    // The clouds drawn this frame (harness `kessler state` -> dust.clouds): event index, kind, dust kg, small
+    // fragments, age (s), the rank's effective size sqrt(amp / priority) (km), its light (amp, before the sky units), cut fade.
+    std::vector<std::array<double, 8>> kDustDbg;
     void kesslerFillDust(float pixelAngle);
     // Fills the fireballs for the current time into kFireBuf and appends their trails to the dust list (out, n).
     void kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
@@ -2998,12 +3002,23 @@ private:
     std::vector<LaunchSound> launchSounds(double now, const glm::dvec3 &eye, float camAz) const;
     nlohmann::json launchCheckJson() const;
     nlohmann::json launchJitterJson(int maxBatches); // harness `launch jitter`
+    // Mission-operations suite (2026-10-20, harness `launch trace` / `launch formation`; tools/harness/mission_ops.py):
+    // the next launch of each (vehicle, program) pair after fromT and its phases measured from the launch model.
+    nlohmann::json launchTraceJson(double fromT, double days, const std::string &vehFilter, const std::string &progFilter,
+                                   bool trace);
+    nlohmann::json launchTraceBatchJson(uint64_t key);
+    const void *launchEnsureBatch(uint64_t key); // (an LBatch*: SatelliteSimLaunches.cpp)
+    nlohmann::json launchFormationJson(uint64_t key, int samples, bool before = false);
     void launchLegacyRecords(bool on);              // harness `launch legacy on|off`
     bool launchSelect(int kind, std::string &msg, int member = -1); // member >= 0: only that member of a batch
     bool launchGoToNextReentry(std::string &msg);
     bool launchGoToVent(std::string &msg);
     bool launchGoToShipEntry(std::string &msg);
     bool launchGoToStageEvent(std::string &msg, int ev, const std::string &filter = "", int minMembers = 0);
+    // (2026-10-20) The next crew flight event (launch, sep, phasing, arrive, axis, hold400, hold200, hold20, dock,
+    // undock, depart, deorbit, entry, chutes, splash) at a station whose name contains `station` (any if empty): the
+    // clock leadS before it at 1x, its spacecraft (its rocket before the separation) selected and, follow, followed.
+    bool launchGoToCrew(const std::string &station, const std::string &event, double leadS, bool follow, std::string &msg);
     void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
     void launchDestroy(VkDevice device);
 
@@ -3064,7 +3079,8 @@ private:
         uint8_t who = 0;    // kMs* bits: whose milestone
         double lead = 10.0; // a skip lands this long before it (less where milestones crowd)
     };
-    static constexpr uint8_t kMsPayload = 1, kMsBooster = 2, kMsTrain = 4, kMsRetiree = 8;
+    // kMsStage (2026-10-20): a crewed upper stage after its spacecraft has left (the payload role is the spacecraft then)
+    static constexpr uint8_t kMsPayload = 1, kMsBooster = 2, kMsTrain = 4, kMsRetiree = 8, kMsStage = 16;
     struct MissionSubject
     {
         bool ok = false;

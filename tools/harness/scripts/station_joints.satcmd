@@ -1,0 +1,14 @@
+# Every station's joints over three orbits (2026-10-20, issue 20261020_214656): `joints` reports each child group's
+# largest change between 20-s samples. A continuous joint turns at most a few degrees a step; a flip shows as ~180.
+#   python tools/harness/run.py tools/harness/scripts/station_joints.satcmd
+time set 2033-08-30T11:01:04Z
+time pause
+select const "International Space Station"; joints minutes=280 step=20
+select const "Tiangong"; joints minutes=280 step=20
+select const "Haven-1"; joints minutes=280 step=20
+select const "Haven-2"; joints minutes=280 step=20
+select const "Axiom Station"; joints minutes=280 step=20
+select const "Orbital Reef"; joints minutes=280 step=20
+select const "Russian Orbital Service Station"; joints minutes=280 step=20
+select const "Bharatiya Antariksha Station"; joints minutes=280 step=20
+select const "Starlab"; joints minutes=280 step=20

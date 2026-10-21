@@ -340,61 +340,6 @@
             "render_only": true
         },
         {
-            "name": "gb_shenzhou_service",
-            "type": "profile",
-            "profile": [[0.0, 1.35], [0.6, 1.36], [2.9, 1.1]],
-            "position": [9.7, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "bottom",
-            "material": "cn_green",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_shenzhou_descent",
-            "type": "profile",
-            "profile": [[0.0, 1.1], [1.8, 1.0], [2.2, 0.5]],
-            "position": [6.8, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": false,
-            "material": "cn_green",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_shenzhou_orbital",
-            "type": "profile",
-            "profile": [[0.0, 0.6], [0.4, 1.05], [1.2, 1.1], [2.0, 1.0], [2.4, 0.5]],
-            "position": [4.6, 0.0, 0.0],
-            "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
-            "caps": "top",
-            "material": "cn_green",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_shenzhou_wing_p",
-            "type": "plane",
-            "size": [1.6, 4.6],
-            "position": [8.3, -3.86, 0.0],
-            "rotation_quat": [-0.0, 1.0, -0.0, 0.0],
-            "material": "cells",
-            "back_material": "cells_back",
-            "group": "station",
-            "render_only": true
-        },
-        {
-            "name": "gb_shenzhou_wing_m",
-            "type": "plane",
-            "size": [1.6, 4.6],
-            "position": [8.3, 3.86, 0.0],
-            "rotation_quat": [0.0, 0.0, 1.0, 0.0],
-            "material": "cells",
-            "back_material": "cells_back",
-            "group": "station",
-            "render_only": true
-        },
-        {
             "name": "gb_tianzhou",
             "type": "profile",
             "profile": [[0.0, 1.67], [9.8, 1.67], [10.6, 0.8]],
@@ -630,21 +575,18 @@
             "status": "estimate",
             "value": "albedo 0.3, F0 0.3, roughness 0.45 (the ISS truss material)",
             "source": "No published reflectance."
+        }
+    ],
+    "docking_ports": [
+        {
+            "name": "node_port_fwd",
+            "position": [1.9, 0.0, 0.0],
+            "axis": [1.0, 0.0, 0.0]
         },
         {
-            "subjects": [
-                "module_skin",
-                "radiator",
-                "cells",
-                "cells_back",
-                "metal",
-                "gold",
-                "dragon_white",
-                "cn_green"
-            ],
-            "status": "estimate",
-            "value": "render-only detail materials (tools/make_station_models.py)",
-            "source": "white beta-cloth / MMOD blanket exterior (albedo 0.6), panel seams for the shield panels; white (Z-93-class) radiator coating; rigid solar array, cells under cover glass; rigid array substrate back; bare metal fittings; gold MLI; Dragon's white paint; Shenzhou's grey-green paint"
+            "name": "node_port_nadir",
+            "position": [0.0, 0.0, 1.9],
+            "axis": [0.0, 0.0, 1.0]
         }
     ]
 }

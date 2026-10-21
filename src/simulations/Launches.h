@@ -76,6 +76,9 @@ struct Vehicle
     double payloadBaseM = 0.0;
     glm::dvec3 fairingCenter{0.0}; // the +X fairing half's centre on the stage (its model's origin), stage frame
     double doorM = 31.1;
+    // A crewed vehicle (2026-10-20): its spacecraft's docking port above the upper stage's origin (m): where the
+    // spacecraft (tools/make_crew_models.py, origin at its port) sits on the stage until it separates.
+    double spacecraftDockM = 0.0;
     // Booster recovery at sea (2026-10-20, droneships): a "droneship" booster lands on a ship this far downrange (km;
     // a short retrograde trim burn puts it there; 0 = wherever its ballistic arc and entry burn take it), and a
     // launch whose payload is at most rtlsMaxKg flies back to its pad's landing zone instead (0 = never). The ships
@@ -158,6 +161,10 @@ struct Program
     bool crew = false;
     std::string spacecraft;          // "Crew Dragon", "Shenzhou", ...
     int people = 0;
+    // (2026-10-20) The spacecraft flies as its own object after separation (SatelliteSimLaunches.cpp "Crew vehicles"):
+    // its render model rocket_<crewModel>[_cm|_chute].json; lands: comes home on land (Soyuz, Shenzhou), else splashes.
+    std::string crewModel;
+    bool crewLands = false;
     Stack stack;
     // The mass a launch lifts (kg, the payload total; 2026-10-20): picks a reusable booster's recovery (Vehicle::rtlsMaxKg).
     // < 0: unknown (a droneship).
@@ -207,7 +214,9 @@ Track upperTrack(const Vehicle &v, double hPark);
 // ── Orbit raising / lowering ─────────────────────────────────────────────────────────────────────
 // A circular orbit whose radius goes linearly from a0 to a1 over T seconds: the integral of its mean motion
 // over the first tau seconds (rad).
-double rampPhase(double a0, double a1, double T, double tau);
+// f0 / f1 (2026-10-20): the rate is n(a) x a factor going linearly from f0 to f1 over T: a slot's mean motion is not
+// Kepler's at its radius (the roster's J2 term), and a climb that ends at Kepler's rate meets its slot ~7 m/s off.
+double rampPhase(double a0, double a1, double T, double tau, double f0 = 1.0, double f1 = 1.0);
 inline double meanMotion(double a) { return std::sqrt(kGM / (a * a * a)); }
 // A free body's motion relative to a circular orbit of mean motion n (Clohessy-Wiltshire), starting at the reference
 // point with velocity v0 = (radial, along-track, cross-track), after t seconds: position p and velocity v, same axes.

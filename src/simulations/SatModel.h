@@ -62,6 +62,9 @@ enum class JointMode : uint32_t
     EdgeOn,              // rotate so body `vector` is perpendicular to `target` (smaller solution)
     FixedAngle,          // constant rotation of `angleDeg`
     FlareMitigationTilt, // rotation by the global flareMitigationTiltDeg slider
+    EdgeOnContinuous,    // EdgeOn, always the SAME branch (axis x vector turned toward the target): continuous in
+                         // time, the joint turning once per orbit (the ISS TRRJ radiators, 2026-10-20: EdgeOn's
+                         // "smaller rotation" swapped branches twice an orbit and the radiators flipped 180 deg)
     Count
 };
 
@@ -360,6 +363,16 @@ struct SatModel
     // Deployment after release from a launch vehicle (JSON "deployment", 2026-10-19): the stowable components unfold
     // over unfoldDurS, starting unfoldDelayS after the satellite leaves its dispenser. 0 = arrives deployed.
     double unfoldDelayS = 0.0, unfoldDurS = 0.0;
+    // Docking ports (JSON "docking_ports", 2026-10-20, crew rotations): where a visiting spacecraft docks, in the
+    // ROOT group's body frame (the station's), the contact point and the port's outward axis. Render/mission data
+    // only (no photometry).
+    struct DockPort
+    {
+        std::string name;
+        glm::dvec3 pos{0.0};
+        glm::dvec3 axis{1.0, 0.0, 0.0};
+    };
+    std::vector<DockPort> dockPorts;
 };
 
 // Does component `ci` block light in the photometry and the renderer's shadows? Not when it is

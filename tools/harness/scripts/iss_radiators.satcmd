@@ -1,0 +1,20 @@
+# The ISS's TRRJ radiators at the moment of issue 20261020_214656 ("advance time here, the radiators totally flip"):
+# with joint mode edge_on they swapped to the other edge-on solution 20 s after the shot (a 179-degree jump of the
+# radiators group, harness `joints`); edge_on_continuous (2026-10-20) keeps one solution, turning once per orbit.
+# The camera rides beside the station (follow, cross-track), captures every 10 s through the old flip.
+#   python tools/harness/run.py tools/harness/scripts/iss_radiators.satcmd
+time set 2027-08-30T11:01:04Z
+time pause
+select const "International Space Station"
+follow offset=10,-120,15
+follow aim=sat
+joints minutes=280 step=20
+wait settle
+wait 30
+capture rad_t00
+time add 10; wait 4; capture rad_t10
+time add 10; wait 4; capture rad_t20
+time add 10; wait 4; capture rad_t30
+time add 10; wait 4; capture rad_t40
+time add 600; wait 4; capture rad_t640
+time add 1200; wait 4; capture rad_t1840

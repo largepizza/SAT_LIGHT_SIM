@@ -1443,6 +1443,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
 {
     FPROF_SCOPE("kesslerFillDust");
     kDustCount = 0;
+    kDustDbg.clear();
     kesslerDropGoneSelection(); // (every frame; cheap)
     if (!kDustMapped)
         return;
@@ -1505,6 +1506,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         size_t ev;
         glm::dvec3 r, v;
         double amp, age;
+        double rNear; // the nearest part's distance (m)
     };
     std::vector<Cand> cands;
     const glm::dvec3 eye = glm::dvec3(obsECI);
@@ -1535,14 +1537,26 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             continue;
         el.M += std::sqrt(kessler::kGM / (el.a * el.a * el.a)) * age;
         const kessler::State sc = kessler::stateFromElems(el);
-        // Ranked by its nearest part: a cloud strung around its orbit is near the eye somewhere.
+        // Ranked by its SURFACE BRIGHTNESS (2026-10-20, issue 20261020_221525 "Dust doesn't seem to appear anymore").
+        // Since the tube (issue 20261019_231126) the rank was amp / (distance to the nearest part, floored at 100 km)^2:
+        // (1) in a late cascade dozens of clouds are strung past the eye, all floored at 100 km, and identical breakups
+        // (Starmind on Starmind: the same dust, the same fragments) TIED, so the fade at the budget's cut (a smoothstep
+        // from the cut's priority) drew every one at ~0: no dust at any gain; (2) those old clouds, hundreds of km wide
+        // and thousands long, faint per pixel, outranked a fresh, bright one 1500 km away. A cloud's light per unit of
+        // sky is ~ amp / (its along-track length x width) once resolved; a cloud smaller than ~1 deg ranks as if it
+        // were that size (a point is not a cloud). A deterministic hash breaks exact ties.
         const double rmC = glm::length(sc.r);
         const double nC = std::sqrt(kessler::kGM / (rmC * rmC * rmC));
         const double ntC = nC * age;
-        const double ext = 3.5 * std::clamp((double)e.dvSmall, 80.0, 500.0) *
-                           std::hypot(2.0 * (std::cos(ntC) - 1.0) / nC, 4.0 * std::sin(ntC) / nC - 3.0 * age);
-        const double range = std::max(glm::length(sc.r - eye) - std::min(ext, 2.0 * rmC), 1.0e5);
-        cands.push_back({amp / (range * range), k, sc.r, sc.v, amp, age});
+        const double svC = std::clamp((double)e.dvSmall, 80.0, 500.0);
+        const double syC = svC * std::hypot(2.0 * (std::cos(ntC) - 1.0) / nC, 4.0 * std::sin(ntC) / nC - 3.0 * age) + 30.0;
+        const double ext = 3.5 * syC;
+        const double wHalf = std::max(svC * std::min(age, 0.7 / nC), 500.0);
+        const double rNear = std::max(glm::length(sc.r - eye) - std::min(ext, 2.0 * rmC), 0.0);
+        constexpr double kCloudMinAng = 0.02; // rad
+        const double areaEff = syC * wHalf + (rNear * kCloudMinAng) * (rNear * kCloudMinAng) + 1.0e6;
+        const double pri = amp / areaEff * (1.0 + 1e-6 * kessler::hash01(e.seed, k, 97));
+        cands.push_back({pri, k, sc.r, sc.v, amp, age, rNear});
     }
     if (cands.empty())
         return;
@@ -1572,12 +1586,14 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         double sy = 0.0;    // along-track profile sigma (m)
         double dWant = 0.0; // the spacing it asks for (m)
         double nWant = 0.0; // pieces at that spacing (real-valued: the budget share must not step)
+        double nMin = 0.0;  // the pieces it is guaranteed (kMinPieces, fewer for a cloud small on screen)
     };
     auto cwParams = [](double nm, double tt, double &a, double &b) {
         const double nt = nm * tt;
         a = 2.0 * (std::cos(nt) - 1.0) / nm;
         b = 4.0 * std::sin(nt) / nm - 3.0 * tt;
     };
+    constexpr int kMinPieces = 15;
     auto plan = [&](const Cand &c) {
         Plan p;
         const kessler::Event &e = kEvents[c.ev];
@@ -1592,36 +1608,50 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         // A piece's straight extent (+-2 x 0.8 D) bows out from the arc by (1.6 D)^2 / 2r: keep that under w / 3.
         const double dBend = std::sqrt(2.0 * rm * w / 3.0) / 1.6;
         p.dWant = std::min(dBend, 0.5 * p.sy);
+        // (2026-10-20) Pieces never closer than ~3 half-res pixels at the cloud's nearest part: a young or distant
+        // cloud a few pixels long needs one to a few Gaussians, not 15, which leaves the budget for many more clouds
+        // (a late cascade has hundreds within 3 h; at 15 each only 25 could be drawn).
+        p.dWant = std::max(p.dWant, std::min(3.0 * (double)pixelAngle * c.rNear, 7.0 * p.sy));
         p.nWant = 2.0 * 3.5 * p.sy / p.dWant + 1.0;
+        p.nMin = std::min((double)kMinPieces, p.nWant);
         return p;
     };
-    // The budget: every cloud (by priority) gets at least kMinPieces; what is left is shared out in proportion to what
-    // each wants beyond that. Clouds past the budget fade by priority (no popping as the view moves).
-    constexpr int kMinPieces = 15;
+    // The budget: every cloud (by priority) gets at least its nMin pieces; what is left is shared out in proportion to
+    // what each wants beyond that. Clouds past the budget fade by priority (no popping as the view moves).
     std::vector<Plan> plans(cands.size());
     size_t nFit = 0;
-    double extra = 0.0;
+    double extra = 0.0, minSum = 0.0;
     double priCut = 0.0;
     for (size_t q = 0; q < cands.size(); ++q)
     {
-        if ((nFit + 1) * kMinPieces > dustMax)
+        const Plan pq = plan(cands[q]);
+        if (minSum + std::ceil(pq.nMin) > (double)dustMax)
         {
             priCut = cands[q].pri;
             break;
         }
-        plans[q] = plan(cands[q]);
-        extra += std::max(0.0, plans[q].nWant - kMinPieces);
+        plans[q] = pq;
+        minSum += std::ceil(pq.nMin);
+        extra += std::max(0.0, pq.nWant - pq.nMin);
         ++nFit;
     }
-    const double share = extra > 0.0 ? std::min(1.0, ((double)dustMax - (double)(nFit * kMinPieces)) / extra) : 1.0;
+    const double share = extra > 0.0 ? std::clamp(((double)dustMax - minSum) / extra, 0.0, 1.0) : 1.0;
+    // Clouds near the budget's cut fade by priority (from the cut to 3x it), but never the first 60% of those kept:
+    // when the priorities crowd within 3x of the cut (many similar clouds), the fade must not dim them all.
+    const size_t nFull = (nFit * 6) / 10;
+    const double priFull = priCut > 0.0 && nFull < nFit ? std::min(3.0 * priCut, cands[nFull].pri) : 3.0 * priCut;
     for (size_t q = 0; q < nFit && n < dustMax; ++q)
     {
         const Cand &c = cands[q];
         const Plan &P = plans[q];
         const kessler::Event &e = kEvents[c.ev];
-        const double cutK = priCut > 0.0 ? glm::smoothstep(priCut, 3.0 * priCut, c.pri) : 1.0;
+        const double cutK = priCut <= 0.0 || q < nFull || c.pri >= priFull
+                                ? 1.0
+                                : glm::smoothstep(priCut, std::max(priFull, priCut * (1.0 + 1e-9)), c.pri);
         if (cutK <= 0.0)
             break;
+        kDustDbg.push_back({(double)c.ev, (double)e.kind, (double)e.dustKg, (double)e.nSmall, c.age,
+                            std::sqrt(c.amp / std::max(c.pri, 1e-300)) / 1000.0, c.amp, cutK});
         const double rm = glm::length(c.r);
         const double nM = std::sqrt(kessler::kGM / (rm * rm * rm));
         const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
@@ -1631,9 +1661,9 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         const double ab2 = ca * ca + cb * cb;
         // Pieces (continuous in age: the spacing grows when the budget binds, never by a step).
         const double nGot =
-            std::min(P.nWant, kMinPieces + share * std::max(0.0, P.nWant - kMinPieces));
+            std::min(P.nWant, P.nMin + share * std::max(0.0, P.nWant - P.nMin));
         const double D = std::max(P.dWant, 2.0 * 3.5 * P.sy / std::max(nGot - 1.0, 1.0));
-        const double sp = 0.8 * D;                                                    // a piece's along-track sigma
+        const double sp = std::min(0.8 * D, P.sy); // a piece's along-track sigma (one piece: the profile's own)
         const double vPos = std::max(P.sy * P.sy - sp * sp, 0.25 * P.sy * P.sy); // the centres' spread (deconvolved)
         const int K = (int)std::floor(3.5 * P.sy / D);
         const glm::dvec3 R = c.r / rm;
@@ -2534,6 +2564,18 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
         if (nd > 0)
             j["dust"] = {{"gaussians", nd}, {"light_sum", ampSum}, {"range_km", {dMin / 1000.0, dMax / 1000.0}},
                          {"sigma_km_geomean", {sMin / 1000.0, sMax / 1000.0}}};
+        if (nd > 0 && !kDustDbg.empty())
+        {
+            nlohmann::json cl = nlohmann::json::array();
+            for (size_t q = 0; q < kDustDbg.size() && q < 24; ++q)
+            {
+                const auto &a = kDustDbg[q];
+                cl.push_back({{"ev", (uint64_t)a[0]}, {"kind", (int)a[1]}, {"dust_kg", a[2]}, {"n_small", a[3]},
+                              {"age_s", a[4]}, {"eff_size_km", a[5]}, {"amp", a[6]}, {"cut", a[7]}});
+            }
+            j["dust"]["clouds"] = cl;
+            j["dust"]["clouds_drawn"] = kDustDbg.size();
+        }
     }
     j["reentries_now"] = kReentriesNow;
     j["small_reentries"] = {{"now", kSmallReNow}, {"this_hour", kSmallReHourCount}, {"streams", kSmallStreamCount},
