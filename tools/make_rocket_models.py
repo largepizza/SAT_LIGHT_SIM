@@ -512,6 +512,27 @@ VEHICLES = {
         refs=["Wikipedia 'Long March 7': 3.35 m core (2 YF-100) 26.7 m, four 2.25 m boosters (1 YF-100 each) 26.3 m, "
               "a 3.35 m second stage (4 YF-115), 4.2 m fairing, 53.1 m; Tianzhou flies from Wenchang LC-201"],
         notes="Booster nose and fairing lengths estimated from photographs (the fairing long enough for Tianzhou)."),
+    # Berthing cargo ships (2026-10-21, captured by the ISS's Canadarm2): Cygnus on Falcon 9, HTV-X on H3.
+    "falcon9_cygnus": dict(
+        r=1.83, core=41.2, core_mat="white", inter=(6.0, "black"),
+        eng=dict(rings=[(1, 0.0), (8, 1.32)], re=0.46, L=1.7, z=-1.2), aft="black",
+        grid=(4, 1.25, 1.5, 0.18, "gridfin"), grid_stowed=True, legs=(4, 9.6, 0.75, "black"),
+        upper=dict(len=9.4, mat="white", eng=dict(rings=[(1, 0.0)], re=1.6, L=4.4, protrude=3.7)),
+        fairing=dict(fr=2.6, cyl=6.7, nose=6.4, tip=0.35), capsule="cygnus",
+        refs=["SpaceX Falcon User's Guide (2021): fairing 13.1 m tall, 5.2 m across; vehicle 70 m, 3.7 m across",
+              "Wikipedia 'Cygnus NG-20' .. 'NG-23': Cygnus flown on Falcon 9 from SLC-40 while Antares 330 was built"],
+        notes="As falcon9; the Cygnus under the fairing (arrays stowed)."),
+    "h3_htvx": dict(
+        r=2.6, core=37.0, core_mat="white", inter=(2.0, "white"),
+        eng=dict(rings=[(2, 0.95)], re=0.7, L=2.4, z=-1.8), aft="grey",
+        side=dict(n=4, r=1.25, len=14.6, mat="white", nose=2.6, nose_kind="ogive", re=0.62, eL=1.9, cant=0.0,
+                  phase=45.0),
+        upper=dict(len=11.8, mat="white", eng=dict(rings=[(1, 0.0)], re=0.75, L=2.6, protrude=2.0)),
+        fairing=dict(fr=2.6, cyl=10.5, nose=6.0, tip=0.35), capsule="htvx",
+        refs=["JAXA H3 Launch Vehicle pages / Wikipedia 'H3 (rocket)': 5.2 m core, 2 LE-9 on the '24' configuration, "
+              "four SRB-3 (2.5 m x 14.6 m), LE-5B-3 second stage, 5.2 m 'W' fairing (long), ~63 m",
+              "JAXA HTV-X: launched on H3-24W from Tanegashima (HTV-X1, 2025-10-26)"],
+        notes="Core / upper split, SRB nose and fairing lengths estimated from photographs."),
 }
 
 
@@ -788,6 +809,26 @@ def capsule_parts(b, kind, z):
         z += 1.6
         b.profile("cargo_module", [[z, 0.6], [z + 0.4, 1.1], [z + 2.2, 1.1], [z + 2.65, 0.5]], "green", caps=True)
         return z + 2.65
+    if kind == "cygnus":
+        # Cygnus (2026-10-21): service module aft with its two UltraFlex arrays stowed (drums), the pressurized cargo
+        # module forward ending in its CBM (berthed by the station's arm).
+        b.profile("service_module", [[z, 1.4], [z + 1.3, 1.4]], "grey", caps=True)
+        b.engines("sm_engine", [(1, 0.0)], 0.3, 0.5, z - 0.3, mat="nozzle")
+        for k in range(2):
+            b.radial_box("ultraflex_stowed", 90.0 + 180.0 * k, 1.4, z + 0.65, 0.35, 0.9, 0.9, "cells")
+        z += 1.3
+        b.profile("cargo_module", [[z, 1.535], [z + 4.6, 1.535], [z + 5.1, 1.0]], "white", caps=True)
+        return z + 5.1
+    if kind == "htvx":
+        # HTV-X (2026-10-21): the service module aft (its wings folded against it), the pressurized module forward
+        # ending in its CBM.
+        b.profile("service_module", [[z, 2.2], [z + 3.6, 2.2]], "white", caps=True)
+        b.engines("sm_engines", [(4, 1.2)], 0.2, 0.5, z - 0.3, mat="nozzle")
+        for k in range(2):
+            b.radial_box("sm_wing_folded", 90.0 + 180.0 * k, 2.2, z + 1.8, 0.25, 1.8, 3.2, "cells")
+        z += 3.6
+        b.profile("pressurized_module", [[z, 2.2], [z + 3.6, 2.2], [z + 4.2, 1.0]], "white", caps=True)
+        return z + 4.2
     if kind == "tianzhou":
         # Tianzhou (2026-10-21): propulsion module aft, cargo module forward; wings folded against the propulsion module.
         b.profile("propulsion_module", [[z, 1.4], [z + 3.3, 1.4], [z + 3.9, 1.675]], "white", caps=True)

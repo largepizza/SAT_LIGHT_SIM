@@ -828,28 +828,65 @@
             "render_only": true
         },
         {
-            "name": "gb_canadarm_boom_1",
-            "type": "box",
-            "size": [0.35, 8.5, 0.35],
-            "position": [-1.0, -12.0, -3.0],
+            "name": "gb_unity_nadir",
+            "type": "profile",
+            "profile": [[0.0, 0.95], [0.35, 0.95]],
+            "position": [-7.75, 0.0, 7.15],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "top",
             "material": "metal",
             "group": "station",
             "render_only": true
         },
         {
-            "name": "gb_canadarm_boom_2",
-            "type": "box",
-            "size": [7.5, 0.35, 0.35],
-            "position": [2.6, -16.0, -3.0],
+            "name": "gb_unity_nadir_ring",
+            "type": "profile",
+            "profile": [[0.0, 1.07], [0.12, 1.07]],
+            "position": [-7.75, 0.0, 7.38],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "both",
             "material": "metal",
             "group": "station",
             "render_only": true
         },
         {
-            "name": "gb_canadarm_base",
+            "name": "gb_harmony_nadir",
+            "type": "profile",
+            "profile": [[0.0, 0.95], [0.35, 0.95]],
+            "position": [8.6, 0.0, 7.2],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "top",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_harmony_nadir_ring",
+            "type": "profile",
+            "profile": [[0.0, 1.07], [0.12, 1.07]],
+            "position": [8.6, 0.0, 7.43],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "both",
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_canadarm_pdgf",
             "type": "box",
-            "size": [2.0, 2.0, 0.6],
-            "position": [0.0, -8.0, -2.6],
+            "size": [1.0, 1.0, 0.2],
+            "position": [2.0, 0.0, 7.25],
+            "material": "metal",
+            "group": "station",
+            "render_only": true
+        },
+        {
+            "name": "gb_canadarm_shoulder",
+            "type": "profile",
+            "profile": [[0.0, 0.33], [1.0, 0.33]],
+            "position": [2.0, 0.0, 7.15],
+            "rotation_quat": [1.0, 0.0, 0.0, 0.0],
+            "caps": "top",
             "material": "metal",
             "group": "station",
             "render_only": true
@@ -1202,6 +1239,18 @@
             "position": [-38.46, 0.0, 5.0],
             "axis": [-1.0, 0.0, 0.0],
             "use": "cargo"
+        },
+        {
+            "name": "unity_nadir",
+            "position": [-7.75, 0.0, 7.5],
+            "axis": [0.0, 0.0, 1.0],
+            "use": "berth_unity"
+        },
+        {
+            "name": "harmony_nadir",
+            "position": [8.6, 0.0, 7.55],
+            "axis": [0.0, 0.0, 1.0],
+            "use": "berth_harmony"
         }
     ]
 }

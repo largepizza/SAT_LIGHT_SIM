@@ -1,0 +1,415 @@
+{
+ "name": "falcon9_cygnus upper_bare",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), falcon9_cygnus: upper_bare. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. As falcon9; the Cygnus under the fairing (arrays stowed). Shown after fairing separation.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  },
+  {
+   "name": "cells",
+   "preset": "solar_cell"
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "upper_nozzle_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     1.6
+    ],
+    [
+     0.4987,
+     1.3271
+    ],
+    [
+     0.9973,
+     1.09
+    ],
+    [
+     1.496,
+     0.8912
+    ],
+    [
+     1.9947,
+     0.7342
+    ],
+    [
+     2.4933,
+     0.6247
+    ],
+    [
+     2.992,
+     0.576
+    ],
+    [
+     3.344,
+     0.8928
+    ],
+    [
+     4.1184,
+     0.8928
+    ],
+    [
+     4.4,
+     0.5357
+    ],
+    [
+     4.45,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_1",
+   "type": "profile",
+   "profile": [
+    [
+     3.7,
+     1.83
+    ],
+    [
+     13.1,
+     1.83
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_2",
+   "type": "profile",
+   "profile": [
+    [
+     3.65,
+     1.7934
+    ],
+    [
+     3.69,
+     1.7934
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "payload_adapter_3",
+   "type": "profile",
+   "profile": [
+    [
+     13.11,
+     1.7751
+    ],
+    [
+     13.65,
+     0.8
+    ],
+    [
+     13.7,
+     0.8
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "separation_ring_4",
+   "type": "profile",
+   "profile": [
+    [
+     13.6,
+     0.83
+    ],
+    [
+     13.72,
+     0.83
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "service_module_5",
+   "type": "profile",
+   "profile": [
+    [
+     13.72,
+     1.4
+    ],
+    [
+     15.02,
+     1.4
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body"
+  },
+  {
+   "name": "sm_engine_6",
+   "type": "profile",
+   "profile": [
+    [
+     13.42,
+     0.3
+    ],
+    [
+     13.4767,
+     0.2488
+    ],
+    [
+     13.5333,
+     0.2044
+    ],
+    [
+     13.59,
+     0.1671
+    ],
+    [
+     13.6467,
+     0.1377
+    ],
+    [
+     13.7033,
+     0.1171
+    ],
+    [
+     13.76,
+     0.108
+    ],
+    [
+     13.8,
+     0.1674
+    ],
+    [
+     13.888,
+     0.1674
+    ],
+    [
+     13.92,
+     0.1004
+    ],
+    [
+     13.97,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "ultraflex_stowed_7",
+   "type": "box",
+   "size": [
+    0.35,
+    0.9,
+    0.9
+   ],
+   "position": [
+    0.0,
+    1.575,
+    14.37
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    -0.0,
+    0.707107
+   ],
+   "material": "cells",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "ultraflex_stowed_8",
+   "type": "box",
+   "size": [
+    0.35,
+    0.9,
+    0.9
+   ],
+   "position": [
+    -0.0,
+    -1.575,
+    14.37
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    0.0,
+    -0.707107
+   ],
+   "material": "cells",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "cargo_module_9",
+   "type": "profile",
+   "profile": [
+    [
+     15.02,
+     1.535
+    ],
+    [
+     19.62,
+     1.535
+    ],
+    [
+     20.12,
+     1.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "upper_tank_1",
+    "service_module_5",
+    "cargo_module_9"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "SpaceX Falcon User's Guide (2021): fairing 13.1 m tall, 5.2 m across; vehicle 70 m, 3.7 m across | Wikipedia 'Cygnus NG-20' .. 'NG-23': Cygnus flown on Falcon 9 from SLC-40 while Antares 330 was built"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey",
+    "nozzle",
+    "soot",
+    "cells"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside; cells: Crew Dragon trunk's body-mounted solar cells; a crewed spacecraft's folded arrays",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

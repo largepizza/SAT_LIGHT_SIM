@@ -1,0 +1,250 @@
+{
+ "name": "falcon9_cygnus fairing",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), falcon9_cygnus: fairing. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. As falcon9; the Cygnus under the fairing (arrays stowed). One fairing half (the other is it turned 180 deg about +Z), in the stage's frame: separated, it falls away tumbling.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "fairing_half_0",
+   "type": "profile",
+   "profile": [
+    [
+     -7.1365,
+     1.83
+    ],
+    [
+     -5.9635,
+     2.6
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_1",
+   "type": "profile",
+   "profile": [
+    [
+     -5.9635,
+     2.6
+    ],
+    [
+     0.7365,
+     2.6
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_2",
+   "type": "profile",
+   "profile": [
+    [
+     0.7365,
+     2.6
+    ],
+    [
+     1.3911,
+     2.5766
+    ],
+    [
+     2.0281,
+     2.5087
+    ],
+    [
+     2.6462,
+     2.3991
+    ],
+    [
+     3.244,
+     2.2508
+    ],
+    [
+     3.6165,
+     2.1316
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_3",
+   "type": "profile",
+   "profile": [
+    [
+     3.6165,
+     2.1316
+    ],
+    [
+     3.8198,
+     2.0665
+    ],
+    [
+     4.3714,
+     1.8494
+    ],
+    [
+     4.8959,
+     1.6033
+    ],
+    [
+     5.3897,
+     1.3328
+    ],
+    [
+     5.8476,
+     1.0449
+    ],
+    [
+     6.2612,
+     0.7507
+    ],
+    [
+     6.6151,
+     0.4699
+    ],
+    [
+     6.8571,
+     0.2608
+    ],
+    [
+     6.8974,
+     0.218
+    ],
+    [
+     6.9301,
+     0.1692
+    ],
+    [
+     6.9541,
+     0.1155
+    ],
+    [
+     6.9687,
+     0.0586
+    ],
+    [
+     6.9737,
+     0.0
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "fairing_half_0",
+    "fairing_half_1",
+    "fairing_half_2",
+    "fairing_half_3"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "SpaceX Falcon User's Guide (2021): fairing 13.1 m tall, 5.2 m across; vehicle 70 m, 3.7 m across | Wikipedia 'Cygnus NG-20' .. 'NG-23': Cygnus flown on Falcon 9 from SLC-40 while Antares 330 was built"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

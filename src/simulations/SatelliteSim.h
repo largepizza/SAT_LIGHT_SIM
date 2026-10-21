@@ -2954,6 +2954,7 @@ private:
     };
     std::vector<MeshLocalLight> meshLights_, meshLightsPrev_;
     float meshLightAdapt_ = 1.0f; // engineAdaptEased at the flush that made meshLightsPrev_
+    int meshLightsScene_ = 0, meshLightsViewer_ = 0; // lights in the last scene / info-window view frame (harness)
     void meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double rs,
                       const glm::dvec3 *aimEci = nullptr, double beamHalfDeg = 180.0);
     static double flameIntensitySunsM2(double mag100km);
@@ -3009,8 +3010,11 @@ private:
     // Booster landing ships (2026-10-20, droneships): one reserved chunk below the stacks' (launchMeshJobs). Scenery,
     // not selectable (the booster on the deck is).
     static constexpr int kShipMeshSlots = 8;
+    // A station arm (2026-10-21, Canadarm2: two booms + the wrist): one reserved chunk below the ships'. Not selectable.
+    static constexpr int kArmMeshSlots = 8;
     nlohmann::json launchShipsJson() const; // harness `launch ships`: the ships on station / heading home
     void launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // their meshes
+    void launchArmJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // the station arms (Canadarm2)
     double shipSeaState(const glm::dvec3 &ecefUnit) const; // the sea state at a ship (its swell; 1 = default)
     void launchFillShipLights();            // their lights at night (kFireBuf)
     void launchFillShipGlow(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // their lit decks

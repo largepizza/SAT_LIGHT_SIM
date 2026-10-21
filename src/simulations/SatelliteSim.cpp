@@ -4486,6 +4486,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     if (tracked && !viewerStudioLight)
     {
         fillMeshLocalLights(frame, P);
+        meshLightsViewer_ = (int)(frame.lightInfo.x + 0.5f);
         inst.trans[1].w = (float)meshLightMask(frame, centre, radius, (double)viewerExposureNow);
     }
 
@@ -5000,10 +5001,17 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         // Rockets up close (launches: their stages as meshes; they are not in the GPU's list).
         for (int s : launchMeshJobs(pixAngle, obsEci))
             jobs.push_back({s, -1.0f, -1.0f, true});
+        const size_t nFixedJobs = jobs.size();
         for (const GpuSatListHeader::MeshCandidate &c : cands)
         {
             if ((int)jobs.size() >= kMaxMeshInstances || c.meshPx < fadeIn * 0.9) // sorted: the rest are smaller
                 break;
+            // (2026-10-21) a station the launch jobs drew (its arm, visiting vehicles: drawn in its shadow too)
+            bool dup = false;
+            for (size_t q = 0; q < nFixedJobs && !dup; ++q)
+                dup = jobs[q].sat == (int)c.sat;
+            if (dup)
+                continue;
             if (!(followActive && (int)c.sat == followSatIndex))
             {
                 const glm::vec2 sk = glm::unpackHalf2x16(c.sizeKept);
@@ -5397,6 +5405,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     // by the launch visuals after this pass), with the eye's adaptation to them; the most important to what is near
     // the camera first.
     fillMeshLocalLights(frame, obsEcef);
+    meshLightsScene_ = (int)(frame.lightInfo.x + 0.5f);
     for (size_t i = 0; i < insts.size(); ++i)
     {
         GpuMeshInstance &in = insts[i];
