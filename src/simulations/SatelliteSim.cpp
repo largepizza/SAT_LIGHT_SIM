@@ -1083,6 +1083,7 @@ bool SatelliteSim::gpHeld(int bindIdx) const
 // mouse's, same as any other cross-frame state here — imperceptible for continuous input).
 void SatelliteSim::pollGamepad(float dt)
 {
+    FPROF_SCOPE("pollGamepad");
     gpMoveFwd = gpMoveRight = 0.0f;
     gpLookYawDeg = gpLookPitchDeg = 0.0f;
     gpElevRaise = gpElevLower = 0.0f;
@@ -1440,23 +1441,35 @@ struct TopK
 
 void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
 {
+    fprof::markReset();
     skyTaaFrameDt = dt;
-    updateGpuTimingStats(ctx);
-    updatePhoto(ctx);
+    {
+        FPROF_SCOPE("rc.updateGpuTimingStats");
+        updateGpuTimingStats(ctx);
+    }
+    {
+        FPROF_SCOPE("rc.updatePhoto");
+        updatePhoto(ctx);
+    }
     // Immediately after, so the sweep accumulates THIS frame's freshly-resolved gpuMsRaw[] and any
     // mask change it makes takes effect in the push constants filled later in this same call.
     updateKnockoutSweep(dt);
     pollGamepad(dt);
 
     updateDynamicResolution();
+    fprof::mark("rc.seg1_pre");
     // A light tier deferred the full sky pipelines (startup graphics chooser): build them the first frame
     // a preset, the render scale or a knockout change needs them — before recordPrePass / recordDraw.
-    ensureFullSkyPipelines(ctx);
+    {
+        FPROF_SCOPE("rc.ensureFullSkyPipelines");
+        ensureFullSkyPipelines(ctx);
+    }
     // The half-res compute targets follow the render scale (computeHalfExtent): recreate them when the
     // slider, a preset, the harness, the settings load or the automatic scale moved it. Before anything is
     // recorded, so no set it patches is bound yet; single frame in flight, so the GPU is done with the old
     // images. The low-res sky target too, when the plain (non-TAA) scaled path will use it.
     {
+        FPROF_SCOPE("rc.scaledTargets");
         const VkExtent2D e = computeHalfExtent(ctx);
         if (e.width != computeHalfExtentBuilt.width || e.height != computeHalfExtentBuilt.height)
             recreateComputeScaledTargets(ctx);
@@ -1635,6 +1648,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
     }
     kesslerRecordUploads(cmd);
+    fprof::mark("rc.seg2_kessler");
     }
     if (std::abs(simDayJ2000 - orbitEpochDay) >= kOrbitRebakeDays)
     {
@@ -1658,6 +1672,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, simDt);
     }
     updateSelectedSkyDir();
+    fprof::mark("rc.seg3_launch_positions");
 
     // ── Sky-background sun-glare gate (stars / Milky Way, space only) ──────────
     // updateStars()'s atmFrac fade (see that function) lets the day/night sky-brightness gate
@@ -1733,6 +1748,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     }
     // Ambient sound: the context (camera position, Sun, ground beams, shells) is this frame's.
     updateAmbience(dt);
+    fprof::mark("rc.seg4_dome_stars_ambience");
     // Unlike formatSelectedSatInfo() (called only when the selection changes, since a satellite's
     // orbital elements are static), a planet's distance/phase/magnitude changes every frame — so
     // this re-derives planetInfoLine[] every frame the selection is active, from the planetStates[]
@@ -2891,7 +2907,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     }
 
     // ── Phase 4c: satellite meshes (before scene_depth, which folds their distance in) ────────────
-    recordMeshScene(cmd, ctx, dt);
+    {
+        FPROF_SCOPE("rc.recordMeshScene");
+        recordMeshScene(cmd, ctx, dt);
+    }
 
     // ── Dispatch: scene_depth.comp — shared terrain/ocean depth (pipeline unification) ──────────
     // Runs FIRST. Everything downstream that needs to know "is this pixel's view blocked by the
@@ -3045,6 +3064,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // Zero reflectBeamsBuf so this frame's orbit dispatch starts with an empty sector
     // selection (same rationale as the glowBuf fill below — atomicMax needs a known-zero start).
     vkCmdFillBuffer(cmd, reflectBeamsBuf, 0, sizeof(GpuReflectBeams), 0);
+    fprof::mark("rc.seg5_to_beams");
     {
         VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         bmb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -3152,6 +3172,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     vkCmdPushConstants(cmd, orbitPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(orbitPc), &orbitPc);
     vkCmdDispatch(cmd, (poolIdx0() + kPoolGpu + 63) / 64, 1, 1);
+    fprof::mark("rc.seg6_orbit");
 
     // Barrier: sat_orbit.comp appended the compact visible list (records + slot→satellite index +
     // header/indirect args) → sat_flare.comp finishes the records in place (READ|WRITE), and the
@@ -3471,6 +3492,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
     // Kessler re-entry fireballs (kessler_fireballs.comp): appended to the finished list before the city lights.
     kesslerRecordFireballs(cmd, ctx);
+    fprof::mark("rc.seg7_flare");
 
     // City lights as satellite point sprites (city_sprites.comp): appended to the finished list.
     // Not under Potato (bit 262144): it skips the depth pass that writes the observer's ground and the terrain
@@ -7617,6 +7639,42 @@ void SatelliteSim::setAudio(AudioSystem *audio)
         initAmbience();
     if (!bookmarksLoaded_)
         bookmarksLoad();
+    // (2026-10-21) More of the first frame's one-off work, here during the load: the launch schedule's first walk
+    // (~25 ms, then the per-frame cap's tail over a dozen frames) and two compute pipelines made lazily on first use
+    // (city sprites on the first frame, the fireballs on the first re-entry: ~15 ms each from the pipeline cache).
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        launchPrewarm();
+        glfwJoystickPresent(GLFW_JOYSTICK_1); // (the first joystick query initialises the platform's joystick input)
+        if (ctx_ && kesslerBuf != VK_NULL_HANDLE)
+        {
+            rosterLifeEnsure();
+            if (!rosterLifeUploaded)
+                rosterLifeUpload(*ctx_); // (the deployment era's born / gone words: a synchronous upload, ~6 ms)
+        }
+        // The ambience's context once: its first evaluation sorts the deployment era's born / gone seconds of every
+        // constellation's range (rosterRangePresentFrac's cache, ~50 ms with Starmind's million).
+        if (ambience_ && ambience_->loaded())
+        {
+            computeAmbienceContext(0.0f);
+            ambPrevValid = false; // (its camera-speed state starts on the first frame)
+        }
+        if (ctx_ && citySpritePipeline == VK_NULL_HANDLE)
+            createCitySprites(*ctx_);
+        if (ctx_ && kFirePipeline == VK_NULL_HANDLE)
+            kesslerCreateFireballPass(*ctx_);
+        // The half-res compute targets at the loaded render scale (recordCompute recreated them on the first frame).
+        if (ctx_)
+        {
+            const VkExtent2D e = computeHalfExtent(*ctx_);
+            if (e.width != computeHalfExtentBuilt.width || e.height != computeHalfExtentBuilt.height)
+                recreateComputeScaledTargets(*ctx_);
+        }
+        char msg[96];
+        snprintf(msg, sizeof(msg), "init: first-frame prewarm %.0f ms",
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        Log::line(msg);
+    }
     if (!audio_)
         return;
 
@@ -7682,6 +7740,9 @@ void SatelliteSim::setAudio(AudioSystem *audio)
     }
     // The ambience's key follows these tracks: analyse them (cached; a new file is analysed once).
     startMusicAnalysis();
+    if (musicLib_) // (2026-10-21) what the analysis has to say so far, logged now rather than on the first frame
+        for (const std::string &m : musicLib_->takeMessages())
+            Log::line(m);
     audio_->setMusicGap(musicGapS);
     // Harness runs (docs/HARNESS.md) are unattended — often overnight — so silent unless --sound.
     // The persisted masterVol_ is left alone; only the device gain is zeroed.
@@ -8250,6 +8311,8 @@ void SatelliteSim::cleanup(VkDevice device)
     vkFreeMemory(device, kesslerMem, nullptr);
     vkDestroyBuffer(device, kPoolBaseBuf, nullptr);
     vkFreeMemory(device, kPoolBaseMem, nullptr);
+    kesslerPreallocDrop(device, false); // the next growth's buffers, if a worker allocated them
+    kesslerRetireTick(device, true); // a grown pool's old buffers still waiting for their frame
     if (kStageMapped)
         vkUnmapMemory(device, kStageMem);
     vkDestroyBuffer(device, kStageBuf, nullptr);
@@ -15399,9 +15462,20 @@ bool SatelliteSim::loadModelType(SatelliteType &t, SatModel &model)
     return true;
 }
 
-void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int budget, size_t rosterCount)
+void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int budget, size_t rosterCount,
+                                 std::vector<std::string> *logOut)
 {
-    bootStatus(("Satellite model: " + t.modelId).c_str()); // the loading screen (App); a no-op after init
+    // (2026-10-21) Run on worker threads at load (loadConstellations): its log lines are collected into logOut and
+    // written in roster order afterwards, and the loading screen is updated by the caller.
+    const auto bake0 = std::chrono::steady_clock::now();
+    auto logLine = [&](const std::string &s) {
+        if (logOut)
+            logOut->push_back(s);
+        else
+            Log::line(s);
+    };
+    if (!logOut)
+        bootStatus(("Satellite model: " + t.modelId).c_str()); // the loading screen (App); a no-op after init
     std::vector<SatTri> tris = tessellateSatModel(model);
     SatLobeBakeStats stats;
     std::vector<std::vector<int>> lobeTris;
@@ -15432,7 +15506,7 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
             t.mirrorFrac = (float)(areaF0 / area);
         }
         else
-            Log::line("model '" + t.modelId + "': no mirror face along its site-aimed axis; its beams are off");
+            logLine("model '" + t.modelId + "': no mirror face along its site-aimed axis; its beams are off");
     }
     {
         glm::dvec3 lo(1e30), hi(-1e30);
@@ -15472,8 +15546,8 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
         }
         t.debrisArrayShare = areaSum > 0.0 ? (float)(arr / areaSum) : 0.0f;
         t.debrisRadiatorShare = areaSum > 0.0 ? (float)(rad / areaSum) : 0.0f;
-        Log::line("model '" + t.modelId + "': bounding radius " + std::to_string(r) + " m, area fill " +
-                  std::to_string(t.meshFill));
+        logLine("model '" + t.modelId + "': bounding radius " + std::to_string(r) + " m, area fill " +
+                std::to_string(t.meshFill));
     }
 
     const std::string objDir = (std::filesystem::path(userDataDir_) / "satellite_models_debug").string();
@@ -15482,11 +15556,12 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
     char msg[320];
     snprintf(msg, sizeof(msg),
              "model '%s' (type '%s', %zu satellites): %d groups, %d components, %d triangles -> %d exact lobes "
-             "-> %d lobes (budget %d); validator |dmag| p95 %.3f, max %.3f%s",
+             "-> %d lobes (budget %d); validator |dmag| p95 %.3f, max %.3f%s; %.0f ms",
              t.modelId.c_str(), t.name.c_str(), rosterCount, (int)model.groups.size(),
              (int)model.components.size(), stats.triangles, stats.exactLobes, stats.lobes, budget,
-             stats.p95ErrMag, stats.maxErrMag, objOk ? "" : " (OBJ export failed)");
-    Log::line(msg);
+             stats.p95ErrMag, stats.maxErrMag, objOk ? "" : " (OBJ export failed)",
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bake0).count());
+    logLine(msg);
 }
 
 // ─── writeResolvedSatTypes ───────────────────────────────────────────────────
@@ -15975,6 +16050,17 @@ void SatelliteSim::loadDefinitions()
     // GPU cost is (visible satellites of the type) × (its lobes), so a type flown by few
     // satellites (a station, a telescope, a depot) can afford far more lobes — enough to stay
     // exact for multi-module stations — than a mass constellation can.
+    // (2026-10-21) The bakes run in parallel (each model is independent; ~10 s serial with the rocket, capsule and station
+    // models, the largest part of the loading screen); the loading screen counts them as they finish.
+    struct BakeJob
+    {
+        size_t ti;
+        const SatModel *model;
+        int budget;
+        size_t count;
+        std::vector<std::string> log;
+    };
+    std::vector<BakeJob> bakeJobs;
     for (auto &[ti, model] : pendingModels)
     {
         size_t count = 0;
@@ -15998,7 +16084,55 @@ void SatelliteSim::loadDefinitions()
         else if (satTypes[ti].modelId.rfind("rocket_", 0) == 0 || satTypes[ti].modelId.rfind("pad_", 0) == 0 ||
                  satTypes[ti].modelId.rfind("ship_", 0) == 0)
             budget = 24; // a few rockets at a time, CPU-evaluated only
-        bakeModelType(satTypes[ti], model, budget, count);
+        bakeJobs.push_back({ti, &model, budget, count, {}});
+    }
+    if (!bakeJobs.empty())
+    {
+        const auto b0 = std::chrono::steady_clock::now();
+        // Largest first (by component count), so the long ones (stations, stacks) do not finish last on one thread.
+        std::vector<size_t> order(bakeJobs.size());
+        for (size_t i = 0; i < order.size(); ++i)
+            order[i] = i;
+        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            return bakeJobs[a].model->components.size() > bakeJobs[b].model->components.size();
+        });
+        std::atomic<size_t> next{0}, done{0};
+        auto run = [&] {
+            for (size_t k = next.fetch_add(1); k < order.size(); k = next.fetch_add(1))
+            {
+                BakeJob &j = bakeJobs[order[k]];
+                bakeModelType(satTypes[j.ti], *j.model, j.budget, j.count, &j.log);
+                done.fetch_add(1);
+            }
+        };
+        const size_t nThreads = std::clamp<size_t>(std::thread::hardware_concurrency(), 1, 16);
+        std::vector<std::thread> th;
+        for (size_t w = 0; w + 1 < nThreads && w + 1 < bakeJobs.size(); ++w)
+            th.emplace_back(run);
+        if (th.empty())
+            run();
+        // The main thread keeps the loading screen up to date (bootStatus presents a frame: main thread only).
+        size_t shown = SIZE_MAX;
+        while (done.load() < bakeJobs.size())
+        {
+            const size_t d = done.load();
+            if (d != shown)
+            {
+                shown = d;
+                bootStatus(("Satellite models " + std::to_string(d) + " / " + std::to_string(bakeJobs.size())).c_str());
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        for (std::thread &x : th)
+            x.join();
+        for (const BakeJob &j : bakeJobs)
+            for (const std::string &s : j.log)
+                Log::line(s);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "constellation: %zu satellite models baked in %.0f ms (%zu threads)", bakeJobs.size(),
+                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count(),
+                 std::max<size_t>(th.size(), 1));
+        Log::line(msg);
     }
 
     hovConst.assign(constellations.size(), false);

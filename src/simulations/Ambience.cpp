@@ -3,6 +3,7 @@
 
 #include "AmbientSynth.h"
 #include "AudioSystem.h"
+#include "FrameProfile.h"
 
 #include <algorithm>
 #include <cmath>
@@ -396,30 +397,31 @@ void Ambience::ensureVoice(Layer &l, AudioSystem *audio)
 {
     if (l.voice >= 0 || l.failed || l.kind == Kind::Events)
         return;
+    FPROF_SCOPE("ambience.createVoice");
+    // (2026-10-21) Made on a worker (AudioSystem::addAmbience*Async): opening a loop's stream (decoding it whole in an
+    // offline harness run) or building a synth here was a hitch each time a layer first became audible. The synth gets
+    // its initial parameters there by name; the indices for the per-frame writes are resolved once it is up (update).
     if (l.kind == Kind::Synth)
     {
-        auto s = AmbientSynth::create(l.synthKind, audio->sampleRate(), fnv1a(l.id));
-        for (const auto &p : l.params)
-            s->setParam(s->paramIndex(p.first), p.second);
-        for (Mod &m : l.mods)
-            m.paramIdx = s->paramIndex(m.param);
-        l.rootParamIdx.clear();
+        std::vector<std::pair<std::string, float>> init = l.params;
         for (const auto &p : l.rootParams)
-        {
-            l.rootParamIdx.push_back(s->paramIndex(p.first));
-            s->setParam(l.rootParamIdx.back(), p.second * rootHz_);
-        }
-        l.tonalParamIdx.clear();
+            init.push_back({p.first, p.second * rootHz_});
         for (const auto &p : l.tonalParams)
-        {
-            l.tonalParamIdx.push_back(s->paramIndex(p.first));
-            s->setParam(l.tonalParamIdx.back(), (float)tonal_[p.second]);
-        }
-        l.voice = audio->addAmbienceSynth(std::move(s));
+            init.push_back({p.first, (float)tonal_[p.second]});
+        const std::string kind = l.synthKind;
+        const uint32_t sr = audio->sampleRate(), seed = fnv1a(l.id);
+        l.idxReady = false;
+        l.voice = audio->addAmbienceSynthAsync([kind, sr, seed, init]() {
+            auto s = AmbientSynth::create(kind, sr, seed);
+            if (s)
+                for (const auto &p : init)
+                    s->setParam(s->paramIndex(p.first), p.second);
+            return s;
+        });
     }
     else
     {
-        l.voice = audio->addAmbienceLoop(baseDir_ + l.files[0]);
+        l.voice = audio->addAmbienceLoopAsync(baseDir_ + l.files[0]);
     }
     if (l.voice < 0)
     {
@@ -444,6 +446,24 @@ void Ambience::update(float dt, AudioSystem *audio)
             l.current = std::max(l.target, l.current - step / (l.fadeOutS * std::max(fadeOutScale_, 0.01f)));
 
         l.rateScale = 1.0f;
+        if (audio && l.voice >= 0 && !l.failed && audio->voiceFailed(l.voice))
+        {
+            l.failed = true;
+            l.failure = l.kind == Kind::Loop ? "missing or unreadable " + l.files[0] : "could not create voice";
+        }
+        if (audio && l.voice >= 0 && !l.idxReady && l.kind == Kind::Synth)
+            if (AmbientSynth *s = audio->voiceSynth(l.voice))
+            {
+                for (Mod &m : l.mods)
+                    m.paramIdx = s->paramIndex(m.param);
+                l.rootParamIdx.clear();
+                for (const auto &p : l.rootParams)
+                    l.rootParamIdx.push_back(s->paramIndex(p.first));
+                l.tonalParamIdx.clear();
+                for (const auto &p : l.tonalParams)
+                    l.tonalParamIdx.push_back(s->paramIndex(p.first));
+                l.idxReady = true;
+            }
         for (const Mod &m : l.mods)
         {
             const float x = values_[m.driver];

@@ -1,0 +1,15 @@
+# Frame hitches across the time-scale ladder (CLAUDE.md "Frame profile and hitches"; tools/harness/hitch_check.py
+# checks the result): each rate 180 frames, then `hitches` (wall p50 / p99 / max and the hitch frames with their sections).
+# Scenario C: in 2031, while the deployment era's first fills are still launching. The jump itself is not measured.
+hitches threshold 50
+time set 2031-06-15T12:00:00Z; time scale 1x; wait 120; hitches clear
+time scale 1x; time play; hitches clear; wait 180; hitches top=10 list=12  # 2031 1x
+time scale 10x; time play; hitches clear; wait 180; hitches top=10 list=12  # 2031 10x
+time scale 1m; time play; hitches clear; wait 180; hitches top=10 list=12  # 2031 1m
+time scale 5m; time play; hitches clear; wait 180; hitches top=10 list=12  # 2031 5m
+time scale 1h; time play; hitches clear; wait 180; hitches top=10 list=12  # 2031 1h
+time scale 1d; time play; hitches clear; wait 180; hitches top=10 list=12  # 2031 1d
+time scale 1w; time play; hitches clear; wait 180; hitches top=10 list=12  # 2031 1w
+time scale 1mo; time play; hitches clear; wait 180; hitches top=10 list=12  # 2031 1mo
+time scale 1yr; time play; hitches clear; wait 180; hitches top=10 list=12  # 2031 1yr
+time scale 1x

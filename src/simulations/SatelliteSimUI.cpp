@@ -589,6 +589,57 @@ void SatelliteSim::syncUiTheme()
         UIRenderer::setColorFilter(night);
 }
 
+// (2026-10-21) The icon atlas: at load (prepareUI), or on the first buildUI that finds it missing.
+void SatelliteSim::prepareUI(UIRenderer &ui) { loadUiIcons(ui); }
+
+void SatelliteSim::loadUiIcons(UIRenderer &ui)
+{
+    if (!iconsLoaded && ctx_)
+    {
+        const char *iconPaths[] = {
+            "assets/icons/ui/pixel--angle-left.png",
+            "assets/icons/ui/pixel--angle-right.png",
+            "assets/icons/ui/pixel--controller.png",
+            "assets/icons/ui/pixel--pause.png",
+            "assets/icons/ui/pixel--play.png",
+            "assets/icons/ui/pixel--settings.png",
+            "assets/icons/ui/camera-solid.png",
+            "assets/icons/ui/pixel--star-trails.png",
+            "assets/icons/ui/pixel--eye.png",
+            "assets/icons/ui/pixel--crosshair.png",
+            "assets/icons/ui/pixel--trace.png",
+            "assets/icons/ui/pixel--info.png",
+            "assets/icons/ui/pixel--spin.png",
+            "assets/icons/ui/pixel--observer.png",
+            "assets/icons/ui/pixel--studio.png",
+            "assets/icons/ui/pixel--maximize.png",
+            "assets/icons/ui/pixel--track.png",
+            "assets/icons/ui/pixel--photo.png",
+            "assets/icons/ui/pixel--film.png",
+            "assets/icons/ui/pixel--bookmark.png",
+            "assets/icons/ui/pixel--report.png",
+            "assets/icons/ui/pixel--missions.png",
+        };
+        // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
+        // number used to be a silent way to drop the last icon of the array.
+        const int wanted = (int)(sizeof(iconPaths) / sizeof(iconPaths[0]));
+        const int got = ui.loadIcons(*ctx_, iconPaths, wanted);
+        // One line into the startup log (Log::path()): which directory the icons were resolved from,
+        // and how many of them loaded. A stale or missing asset otherwise shows up only as a wrong or
+        // magenta glyph, with nothing recorded anywhere about where it came from — the exact confusion
+        // the CMake runtime-file sync (`sat_sync_runtime_sources`) exists to prevent.
+        std::error_code cwdEc;
+        const std::string cwd = std::filesystem::current_path(cwdEc).string();
+        char iconLog[512];
+        snprintf(iconLog, sizeof(iconLog), "UI: %d/%d icons loaded ('%s', cwd '%s')", got, wanted, iconPaths[0],
+                 cwd.c_str());
+        Log::line(iconLog);
+        if (got < wanted)
+            fprintf(stderr, "[icons] only %d of %d loaded — see %s\n", got, wanted, Log::path().c_str());
+        iconsLoaded = true;
+    }
+}
+
 void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 {
     // First sim entry point of the frame — publish the previous (complete) frame's CPU bucket
@@ -767,50 +818,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     updateTutorial(dt);
 
     // ── Lazy icon loading (first buildUI call after init) ─────────────────────
-    if (!iconsLoaded && ctx_)
-    {
-        const char *iconPaths[] = {
-            "assets/icons/ui/pixel--angle-left.png",
-            "assets/icons/ui/pixel--angle-right.png",
-            "assets/icons/ui/pixel--controller.png",
-            "assets/icons/ui/pixel--pause.png",
-            "assets/icons/ui/pixel--play.png",
-            "assets/icons/ui/pixel--settings.png",
-            "assets/icons/ui/camera-solid.png",
-            "assets/icons/ui/pixel--star-trails.png",
-            "assets/icons/ui/pixel--eye.png",
-            "assets/icons/ui/pixel--crosshair.png",
-            "assets/icons/ui/pixel--trace.png",
-            "assets/icons/ui/pixel--info.png",
-            "assets/icons/ui/pixel--spin.png",
-            "assets/icons/ui/pixel--observer.png",
-            "assets/icons/ui/pixel--studio.png",
-            "assets/icons/ui/pixel--maximize.png",
-            "assets/icons/ui/pixel--track.png",
-            "assets/icons/ui/pixel--photo.png",
-            "assets/icons/ui/pixel--film.png",
-            "assets/icons/ui/pixel--bookmark.png",
-            "assets/icons/ui/pixel--report.png",
-            "assets/icons/ui/pixel--missions.png",
-        };
-        // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
-        // number used to be a silent way to drop the last icon of the array.
-        const int wanted = (int)(sizeof(iconPaths) / sizeof(iconPaths[0]));
-        const int got = ui.loadIcons(*ctx_, iconPaths, wanted);
-        // One line into the startup log (Log::path()): which directory the icons were resolved from,
-        // and how many of them loaded. A stale or missing asset otherwise shows up only as a wrong or
-        // magenta glyph, with nothing recorded anywhere about where it came from — the exact confusion
-        // the CMake runtime-file sync (`sat_sync_runtime_sources`) exists to prevent.
-        std::error_code cwdEc;
-        const std::string cwd = std::filesystem::current_path(cwdEc).string();
-        char iconLog[512];
-        snprintf(iconLog, sizeof(iconLog), "UI: %d/%d icons loaded ('%s', cwd '%s')", got, wanted, iconPaths[0],
-                 cwd.c_str());
-        Log::line(iconLog);
-        if (got < wanted)
-            fprintf(stderr, "[icons] only %d of %d loaded — see %s\n", got, wanted, Log::path().c_str());
-        iconsLoaded = true;
-    }
+    loadUiIcons(ui); // (normally already done by prepareUI at load)
 
     // ── Scroll wheel → FOV zoom (when not hovering over UI panels) ───────────
     if (inp.scrollY != 0.0f && !ui.mouseOverUI())

@@ -17,6 +17,7 @@
 #include "SatTrace.h"      // magnitude trace + CSV export (benchmarking M9)
 #include "SpaceWeather.h"  // aurora activity over sim time + the oval (2026-10-03)
 #include "Kessler.h"       // Kessler syndrome: breakups, the debris pool, the cascade (2026-10-16)
+#include "SegVec.h"        // kEvents: a segmented vector (no reallocation hitches, 2026-10-21)
 #include "SatBench.h"      // shared sample schema + bulk export (benchmarking M10)
 #include "SatMeshRenderer.h"
 #include "SatEnvProbes.h" // Phase 4: satellite meshes (model viewer; scene pass in 4c)
@@ -61,6 +62,7 @@ bool settingsTabIsAdvanced(int i);   // behind Display > "Show advanced settings
 #include <algorithm>
 #include <functional>
 #include <thread>
+#include <future>
 #include <atomic>
 #include <mutex>
 #include <chrono>
@@ -2760,7 +2762,7 @@ private:
     size_t kSmallStreamCount = 0;
     std::map<int32_t, std::vector<KSmallRe>> kSmallReHours;
     uint32_t kSmallReNow = 0, kSmallReHourCount = 0;
-    void kesslerAddStreams(const std::vector<kessler::SmallStream> &v);
+    void kesslerAddStreams(const kessler::SmallStream *v, size_t n);
     const std::vector<KSmallRe> &kesslerSmallReHour(int32_t hr);
     VkDescriptorSetLayout kFireDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool kFireDescPool = VK_NULL_HANDLE;
@@ -2776,7 +2778,7 @@ private:
     // Sets the clock 25 s before that re-entry's breakup (1x, running) and the observer ~120 km to the side of its
     // track, looking at the breakup point. False (and why in msg) when none is due in the next 6 h.
     bool kesslerGoToNextReentry(std::string &msg);
-    std::vector<kessler::Event> kEvents;  // ... of the applied events
+    SegVec<kessler::Event> kEvents;      // ... of the applied events (segmented: it never moves, 2026-10-21)
     double kFrontier = 0.0;               // simulated up to here (J2000 s)
     double kCacheFrontier = 0.0;          // the loaded cache's frontier: a cache is only ever rewritten longer
     bool kWorkerDone = false;
@@ -3000,6 +3002,7 @@ private:
     uint64_t rosterLifeKey = 0;      // what rosterLife was computed for (0 = not yet)
     uint64_t kLifeHashKey = 0;       // ... and what the running Kessler world was built with
     bool rosterLifeUploaded = false; // the GPU holds the current rosterLife
+    void launchPrewarm();            // (2026-10-21) at load: the first walk's batches, built in parallel
     void rosterLifeEnsure();         // (re)computes rosterLife when stale (builds the launch planes if needed)
     void rosterLifeUpload(VulkanContext &ctx);
     nlohmann::json deployStatsJson(double fromT, double toT, double stepDays) const; // harness `deploy stats`
@@ -3109,6 +3112,9 @@ private:
     // Lift-offs in [t0, t1] (J2000 s), sorted, at most maxN. filter: 0 all, 1 crewed, 2 twilight (the Sun 5-16 deg
     // below the pad's horizon). Builds (and keeps) the batches it needs.
     void launchUpcoming(double t0, double t1, int filter, size_t maxN, std::vector<MissionLaunch> &out);
+    double launchUpcomingBudgetMs = 0.0;   // (2026-10-21) > 0: build at most ~this long, then report incomplete
+    bool launchUpcomingIncomplete = false; // the last launchUpcoming ran out of its budget (out left unchanged)
+    bool msNextPending = false, msPinPending = false; // the Missions rows' refresh to finish next frame
     // Jumps to leadS before the batch's lift-off at 1x. moveObserver: on the ground ~12 km beside the pad (on land
     // where one side is sea), the camera on the pad; else the time only.
     bool launchGoToKey(uint64_t key, bool moveObserver, double leadS, std::string &msg);
@@ -3254,12 +3260,40 @@ private:
     bool kForceRebuildOnce = false; // harness `kessler breakup ... rebuild=1`: the old full replay (for comparison)
     void kesslerSyncProcess(int32_t nowSec, double budgetMs); // works through the queue of the worker's output
     std::chrono::steady_clock::time_point kHistPruneWall{}; // the last history prune (wall time; kesslerSync)
+    size_t kPruneBucket = SIZE_MAX; // the prune pass's next kPoolHist bucket (SIZE_MAX: none running; 2026-10-21)
     double kSyncBudgetMs = 3.0; // its wall-time budget a frame (2026-10-20, the hitches at a fast warp)
     void kesslerSync(VulkanContext &ctx);  // per frame: take the worker's new events / records / deaths
     void kesslerWant(double tJ2000);       // ask the (lazy) worker to simulate at least this far
     double kWantFloor = 0.0;               // the furthest explicit kesslerWant (harness waits); the warp's target may drop
     void kesslerRecordUploads(VkCommandBuffer cmd); // per frame: copy them to the GPU
-    void kesslerEnsureCapacity(VulkanContext &ctx, size_t records);
+    void kesslerEnsureCapacity(VulkanContext &ctx, size_t records, bool inFrame = false);
+    // (2026-10-21) A pool grown during a frame: the old buffers to copy from (kesslerRecordUploads) and, with the visible
+    // list's, to destroy once that frame has finished (kesslerRetireTick, called after the next fence wait).
+    struct KGrowCopy
+    {
+        VkBuffer oldK = VK_NULL_HANDLE, oldB = VK_NULL_HANDLE;
+        VkDeviceSize bytesK = 0, bytesB = 0;
+    } kGrowCopy;
+    struct KRetired
+    {
+        VkBuffer buf;
+        VkDeviceMemory mem;
+        uint64_t frame;
+    };
+    std::vector<KRetired> kRetired;
+    uint64_t kRetireFrame = 0;
+    void kesslerRetireTick(VkDevice device, bool all = false);
+    // (2026-10-21) The next growth's buffers, allocated on a worker thread once the pool passes 40% of its capacity:
+    // allocating ~0.5 GB of device memory in the frame took ~10 ms.
+    struct KPrealloc
+    {
+        uint32_t cap = 0, poolWord0 = 0;
+        VkBuffer vis = VK_NULL_HANDLE, idx = VK_NULL_HANDLE, k = VK_NULL_HANDLE, b = VK_NULL_HANDLE;
+        VkDeviceMemory visM = VK_NULL_HANDLE, idxM = VK_NULL_HANDLE, kM = VK_NULL_HANDLE, bM = VK_NULL_HANDLE;
+    };
+    std::future<KPrealloc> kPreFut;
+    void kesslerPreallocTick(VulkanContext &ctx);
+    void kesslerPreallocDrop(VkDevice device, bool retire);
     void kesslerUploadAllSync(VulkanContext &ctx); // after (re)allocating: roster ends now, records progressively
     bool kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, std::string *why);
     std::vector<kessler::Event> kUserEvents; // breakups the player (or a script) caused
@@ -4830,6 +4864,8 @@ private:
     std::string tonalityLine() const; // Sound tab readout
     std::vector<std::vector<int>> ambGroupConsts_; // per shell group: constellation indices it matches
     void initAmbience();
+    void prepareUI(UIRenderer &ui) override; // (2026-10-21) the icon atlas, at load
+    void loadUiIcons(UIRenderer &ui);
     void updateAmbience(float dt);
     void computeAmbienceContext(float dt);
     bool oceanAt(double latRad, double lonRad) const;
@@ -6410,7 +6446,8 @@ private:
             ctx_->presentModePreference = VK_PRESENT_MODE_MAILBOX_KHR;
             break; // Cap30/60/120
         }
-        fpsCapSwapchainRebuildPending = true;
+        if (ctx_->presentModePreference != ctx_->presentModeBuilt)
+            fpsCapSwapchainRebuildPending = true; // (only a change: 2026-10-21)
     }
     void createBuffers(VulkanContext &ctx);
     void createSatBuffers(VulkanContext &ctx); // per-satellite/per-type buffers; after initConstellation()
@@ -6574,7 +6611,8 @@ private:
     void initConstellation();                                                   // called once: loads definitions then builds orbits
     void writeResolvedSatTypes() const; // dumps resolved types (new attitude format) to the user data dir
     bool loadModelType(SatelliteType &t, SatModel &model); // Phase 3: read a geometry model file
-    void bakeModelType(SatelliteType &t, const SatModel &model, int budget, size_t rosterCount); // bake + validate + OBJ
+    void bakeModelType(SatelliteType &t, const SatModel &model, int budget, size_t rosterCount,
+                       std::vector<std::string> *logOut = nullptr); // bake + validate + OBJ (logOut: from a worker)
     // Max baked facet lobes per model type. GPU cost is (visible satellites of the type) × lobes,
     // so the budget depends on how many satellites fly the type: mass constellations keep it
     // tight, small rosters (stations, telescopes, depots) get enough to stay exact.

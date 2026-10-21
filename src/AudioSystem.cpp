@@ -485,9 +485,93 @@ int AudioSystem::addAmbienceSynth(std::unique_ptr<AmbientSynth> synth)
     return (int)voices_.size() - 1;
 }
 
+int AudioSystem::addAmbienceLoopAsync(const std::string& path)
+{
+    if (!initialized_ || !ambienceGroup_) return -1;
+    const ma_uint32 flags = (offline_ ? MA_SOUND_FLAG_DECODE : MA_SOUND_FLAG_STREAM) | MA_SOUND_FLAG_NO_SPATIALIZATION;
+    ma_engine* engine = engine_;
+    ma_sound_group* group = ambienceGroup_;
+    Voice v;
+    v.pending = std::make_shared<std::future<Made>>(std::async(std::launch::async, [engine, group, flags, path]() {
+        Made m;
+        auto* snd = new ma_sound;
+        if (ma_sound_init_from_file(engine, path.c_str(), flags, group, nullptr, snd) != MA_SUCCESS) {
+            fprintf(stderr, "[AudioSystem] Failed to load ambience loop: %s\n", path.c_str());
+            delete snd;
+            return m;
+        }
+        ma_sound_set_looping(snd, MA_TRUE);
+        ma_sound_set_volume(snd, 0.0f);
+        m.sound = snd;
+        return m;
+    }));
+    voices_.push_back(std::move(v));
+    return (int)voices_.size() - 1;
+}
+
+int AudioSystem::addAmbienceSynthAsync(std::function<std::unique_ptr<AmbientSynth>()> make)
+{
+    if (!initialized_ || !ambienceGroup_ || !make) return -1;
+    ma_engine* engine = engine_;
+    ma_sound_group* group = ambienceGroup_;
+    Voice v;
+    v.pending = std::make_shared<std::future<Made>>(std::async(std::launch::async, [engine, group, make]() {
+        Made m;
+        std::unique_ptr<AmbientSynth> synth = make();
+        if (!synth) return m;
+        auto* snd = new ma_sound;
+        if (ma_sound_init_from_data_source(engine, synth->dataSource(), MA_SOUND_FLAG_NO_SPATIALIZATION, group, snd) !=
+            MA_SUCCESS) {
+            fprintf(stderr, "[AudioSystem] Failed to create ambience synth '%s'\n", synth->kind());
+            delete snd;
+            return m;
+        }
+        ma_sound_set_volume(snd, 0.0f);
+        m.sound = snd;
+        m.synth = std::move(synth);
+        return m;
+    }));
+    voices_.push_back(std::move(v));
+    return (int)voices_.size() - 1;
+}
+
+bool AudioSystem::adoptVoice(Voice& v, bool wait)
+{
+    if (!v.pending) return true;
+    if (!wait && v.pending->wait_for(std::chrono::seconds(0)) != std::future_status::ready) return false;
+    Made m = v.pending->get();
+    v.pending.reset();
+    v.sound = m.sound;
+    v.synth = std::move(m.synth);
+    v.failed = v.sound == nullptr;
+    v.playing = false;
+    return true;
+}
+
+bool AudioSystem::voiceFailed(int voice) const
+{
+    return voice >= 0 && voice < (int)voices_.size() && voices_[voice].failed;
+}
+
+bool AudioSystem::voicePending(int voice) const
+{
+    return voice >= 0 && voice < (int)voices_.size() && voices_[voice].pending != nullptr;
+}
+
+void AudioSystem::finishPendingVoices()
+{
+    for (int i = 0; i < (int)voices_.size(); ++i)
+        if (voices_[i].pending) {
+            adoptVoice(voices_[i], true);
+            if (voices_[i].sound) applyVoiceVolume(i);
+        }
+}
+
 void AudioSystem::applyVoiceVolume(int i)
 {
     Voice& v = voices_[i];
+    if (v.pending && !adoptVoice(v, false)) return; // not made yet: it takes the gain when it is
+    if (!v.sound) return;                           // the worker could not make it
     const float g = (solo_ < 0 || solo_ == i) ? v.gain : 0.0f;
     ma_sound_set_volume(v.sound, g);
     // Start/stop on the voice's own gain (not the solo-muted one), so a solo render does not
@@ -516,11 +600,14 @@ float AudioSystem::voiceGain(int voice) const
 
 AmbientSynth* AudioSystem::voiceSynth(int voice) const
 {
-    return (voice >= 0 && voice < (int)voices_.size()) ? voices_[voice].synth.get() : nullptr;
+    // (null while a worker is still making it: the caller's per-frame parameter writes start once it is up)
+    return (voice >= 0 && voice < (int)voices_.size() && !voices_[voice].pending) ? voices_[voice].synth.get() : nullptr;
 }
 
 void AudioSystem::clearAmbience()
 {
+    for (Voice& v : voices_)
+        adoptVoice(v, true); // (a worker still making one: wait, then release it below)
     for (Voice& v : voices_) {
         if (v.sound) {
             ma_sound_uninit(v.sound); // detaches from the graph before the synth it reads goes away
@@ -590,6 +677,7 @@ bool AudioSystem::renderWav(const std::string& path, double seconds, uint32_t bu
         musicDecoded_ = true;
         loadTrack(trackIdx_);
     }
+    finishPendingVoices(); // a recording hears every voice asked for before it, as if it had been made at once
     solo_ = (soloVoice >= 0 && soloVoice < (int)voices_.size()) ? soloVoice : -1;
     for (int i = 0; i < (int)voices_.size(); ++i) applyVoiceVolume(i);
     if (solo_ >= 0)

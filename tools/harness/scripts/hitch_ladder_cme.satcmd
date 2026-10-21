@@ -1,0 +1,15 @@
+# Frame hitches across the time-scale ladder (CLAUDE.md "Frame profile and hitches"; tools/harness/hitch_check.py
+# checks the result): each rate 180 frames, then `hitches` (wall p50 / p99 / max and the hitch frames with their sections).
+# Scenario D: day 32 of the Sun's Fury cascade (the worker simulates to there first). The jump is not measured.
+hitches threshold 50
+kessler wait days=32; time set 2037-08-15T12:00:00Z; time scale 1x; wait 120; hitches clear
+time scale 1x; time play; hitches clear; wait 180; hitches top=10 list=12  # 2037 1x
+time scale 10x; time play; hitches clear; wait 180; hitches top=10 list=12  # 2037 10x
+time scale 1m; time play; hitches clear; wait 180; hitches top=10 list=12  # 2037 1m
+time scale 5m; time play; hitches clear; wait 180; hitches top=10 list=12  # 2037 5m
+time scale 1h; time play; hitches clear; wait 180; hitches top=10 list=12  # 2037 1h
+time scale 1d; time play; hitches clear; wait 180; hitches top=10 list=12  # 2037 1d
+time scale 1w; time play; hitches clear; wait 180; hitches top=10 list=12  # 2037 1w
+time scale 1mo; time play; hitches clear; wait 180; hitches top=10 list=12  # 2037 1mo
+time scale 1yr; time play; hitches clear; wait 180; hitches top=10 list=12  # 2037 1yr
+time scale 1x
