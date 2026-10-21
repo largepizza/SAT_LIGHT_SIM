@@ -97,11 +97,32 @@
         {
             "name": "Starlink VisorSat (geometry model)",
             "model": "starlink_visorsat"
+        },
+        {
+            "name": "GEO comsat (large)",
+            "model": "geo_comsat_large",
+            "mass_kg": 3500
+        },
+        {
+            "name": "GEO comsat (medium)",
+            "model": "geo_comsat_medium",
+            "mass_kg": 2000
+        },
+        {
+            "name": "GEO weather satellite",
+            "model": "geo_weather",
+            "mass_kg": 2900
+        },
+        {
+            "name": "GEO spin-stabilised weather satellite",
+            "model": "geo_spinner",
+            "mass_kg": 1200
         }
     ],
     "constellations": [
         {
             "name": "Starlink Gen1",
+            "category": "Broadband",
             "type": "Starlink V1.5 (Gen1)",
             "alt_km": 550.0,
             "incl_deg": 53.0,
@@ -112,6 +133,7 @@
         },
         {
             "name": "Starlink Gen2",
+            "category": "Broadband",
             "type": "Starlink V2 Mini (Gen2)",
             "alt_km": 525.0,
             "incl_deg": 53.2,
@@ -122,6 +144,7 @@
         },
         {
             "name": "Starlink Gen3 Broadband",
+            "category": "Broadband",
             "type": "Starlink V3 (Gen3)",
             "alt_km": 525.0,
             "incl_deg": 53.0,
@@ -132,6 +155,7 @@
         },
         {
             "name": "Starlink Gen3 Direct-to-Cell",
+            "category": "Broadband",
             "type": "Starlink V2 Mini Direct-to-Cell",
             "alt_km": 326.0,
             "incl_deg": 53.0,
@@ -142,6 +166,7 @@
         },
         {
             "name": "OneWeb",
+            "category": "Broadband",
             "type": "OneWeb Gen1",
             "alt_km": 1200.0,
             "incl_deg": 87.9,
@@ -152,6 +177,7 @@
         },
         {
             "name": "Amazon Leo Shell 1",
+            "category": "Broadband",
             "type": "Amazon Leo",
             "alt_km": 590.0,
             "incl_deg": 51.9,
@@ -162,6 +188,7 @@
         },
         {
             "name": "Amazon Leo Shell 2",
+            "category": "Broadband",
             "type": "Amazon Leo",
             "alt_km": 610.0,
             "incl_deg": 33.0,
@@ -172,6 +199,7 @@
         },
         {
             "name": "Amazon Leo Shell 3",
+            "category": "Broadband",
             "type": "Amazon Leo",
             "alt_km": 630.0,
             "incl_deg": 26.0,
@@ -182,6 +210,7 @@
         },
         {
             "name": "Guowang-2 Polar",
+            "category": "Broadband",
             "type": "Guowang",
             "alt_km": 1145.0,
             "incl_deg": 86.5,
@@ -192,6 +221,7 @@
         },
         {
             "name": "Guowang-2 Mid-Inclination",
+            "category": "Broadband",
             "type": "Guowang",
             "alt_km": 1145.0,
             "incl_deg": 50.0,
@@ -202,6 +232,7 @@
         },
         {
             "name": "Guowang GW-A59",
+            "category": "Broadband",
             "type": "Guowang",
             "alt_km": 572.0,
             "incl_deg": 55.0,
@@ -212,6 +243,7 @@
         },
         {
             "name": "International Space Station",
+            "category": "Stations",
             "type": "ISS",
             "alt_km": 415.0,
             "incl_deg": 51.64,
@@ -222,6 +254,7 @@
         },
         {
             "name": "Tiangong",
+            "category": "Stations",
             "type": "Tiangong",
             "alt_km": 386.0,
             "incl_deg": 41.47,
@@ -232,6 +265,7 @@
         },
         {
             "name": "Haven-1",
+            "category": "Stations",
             "type": "Haven-1",
             "alt_km": 425.0,
             "incl_deg": 51.6,
@@ -242,6 +276,7 @@
         },
         {
             "name": "Haven-2",
+            "category": "Stations",
             "type": "Haven-2",
             "alt_km": 420.0,
             "incl_deg": 51.6,
@@ -252,6 +287,7 @@
         },
         {
             "name": "Axiom Station",
+            "category": "Stations",
             "type": "Axiom Station",
             "alt_km": 408.0,
             "incl_deg": 51.6,
@@ -262,6 +298,7 @@
         },
         {
             "name": "Orbital Reef",
+            "category": "Stations",
             "type": "Orbital Reef",
             "alt_km": 500.0,
             "incl_deg": 51.6,
@@ -272,6 +309,7 @@
         },
         {
             "name": "Russian Orbital Service Station",
+            "category": "Stations",
             "type": "Russian Orbital Service Station",
             "alt_km": 400.0,
             "incl_deg": 51.6,
@@ -282,6 +320,7 @@
         },
         {
             "name": "Bharatiya Antariksha Station",
+            "category": "Stations",
             "type": "Bharatiya Antariksh Station",
             "alt_km": 420.0,
             "incl_deg": 51.6,
@@ -292,6 +331,7 @@
         },
         {
             "name": "Starlab",
+            "category": "Stations",
             "type": "Starlab",
             "alt_km": 400.0,
             "incl_deg": 51.6,
@@ -302,6 +342,7 @@
         },
         {
             "name": "Starship HLS Fuel Depots",
+            "category": "Stations",
             "type": "Starship HLS Depot",
             "alt_km": 281.0,
             "incl_deg": 31.0,
@@ -312,6 +353,7 @@
         },
         {
             "name": "SpaceX Starmind - sun-synchronous X-ring",
+            "category": "Orbital data centers",
             "type": "SpaceX Starmind AI1",
             "enabled": true,
             "distribution": "Shells",
@@ -353,6 +395,7 @@
         },
         {
             "name": "SpaceX Starmind - 30 deg shells",
+            "category": "Orbital data centers",
             "type": "SpaceX Starmind AI1",
             "enabled": true,
             "distribution": "Shells",
@@ -394,6 +437,7 @@
         },
         {
             "name": "Reflect Orbital",
+            "category": "Reflectors",
             "type": "Reflect Orbital mirror",
             "alt_km": 500.0,
             "incl_deg": 0.0,
@@ -409,6 +453,7 @@
         },
         {
             "name": "Space Junk",
+            "category": "Debris",
             "type": "Debris fragment",
             "alt_km": 1000.0,
             "incl_deg": 180.0,
@@ -420,6 +465,7 @@
         },
         {
             "name": "Hubble - geometry model",
+            "category": "Science",
             "type": "Hubble (geometry model)",
             "alt_km": 535.0,
             "incl_deg": 28.5,
@@ -430,6 +476,7 @@
         },
         {
             "name": "V1.0 shell (2020, benchmark reference) - geometry model",
+            "category": "Benchmarks",
             "type": "Starlink V1.0 (geometry model)",
             "alt_km": 550.0,
             "incl_deg": 53.0,
@@ -440,6 +487,7 @@
         },
         {
             "name": "VisorSat shell (2020, benchmark reference) - geometry model",
+            "category": "Benchmarks",
             "type": "Starlink VisorSat (geometry model)",
             "alt_km": 550.0,
             "incl_deg": 53.0,
@@ -450,6 +498,7 @@
         },
         {
             "name": "Qianfan (Spacesail)",
+            "category": "Broadband",
             "note": "Phase 1 as flown: 18 satellites per Long March 6A into near-polar planes, raised to ~1070 km (89 deg). The later shells are ESTIMATES toward the ~14,000-satellite plan of the 2030s (their altitudes and inclinations are unpublished).",
             "type": "Qianfan",
             "enabled": true,
@@ -459,6 +508,22 @@
                 {"alt_min_km": 1160.0, "alt_max_km": 1160.0, "incl_deg": 89.0, "shells": 1, "planes_per_shell": 144, "per_plane": 36},
                 {"alt_min_km": 1100.0, "alt_max_km": 1100.0, "incl_deg": 55.0, "shells": 1, "planes_per_shell": 144, "per_plane": 36}
             ]
+        },
+        {
+            "name": "GEO belt",
+            "category": "GEO",
+            "note": "Real geostationary satellites, each by name at its slot (data/geo_satellites.json, written by tools/make_geo_belt.py). Slots are the mid-2020s positions, approximate; the class picks the model.",
+            "type": "GEO comsat (large)",
+            "enabled": true,
+            "distribution": "List",
+            "members_file": "geo_satellites.json",
+            "class_types": {
+                "large": "GEO comsat (large)",
+                "medium": "GEO comsat (medium)",
+                "small": "GEO comsat (medium)",
+                "weather": "GEO weather satellite",
+                "spinner": "GEO spin-stabilised weather satellite"
+            }
         }
     ]
 }

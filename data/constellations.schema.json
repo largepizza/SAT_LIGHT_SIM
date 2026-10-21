@@ -25,6 +25,11 @@
             "type": "string",
             "description": "Unique identifier for this type. Constellations reference it via the 'type' field."
           },
+          "mass_kg": {
+            "type": "number",
+            "description": "Mass for the Sun's Fury (Kessler) collisions and drag; absent = a default by model.",
+            "exclusiveMinimum": 0
+          },
           "model": {
             "type": "string",
             "description": "Geometry model id: loads satellite_models/<id>.json next to the executable (primitives + materials on a kinematic tree of attitude groups), baked at startup into physical reflectance lobes. When set, brightness is a physical apparent magnitude and the legacy fields (cross_section_m2, primary, secondary, diffuse, mirror_frac, attitude_groups) are ignored; base_color stays the sprite tint (default near-white). If the model fails to load, the legacy fields are used instead."
@@ -76,11 +81,50 @@
         "required": ["name", "type"],
         "if": { "properties": { "distribution": { "const": "Shells" } }, "required": ["distribution"] },
         "then": { "required": ["groups"] },
-        "else": { "required": ["alt_km", "num_planes", "per_plane"] },
+        "else": {
+          "if": { "properties": { "distribution": { "const": "List" } }, "required": ["distribution"] },
+          "then": { "anyOf": [{ "required": ["members"] }, { "required": ["members_file"] }] },
+          "else": { "required": ["alt_km", "num_planes", "per_plane"] }
+        },
         "properties": {
           "name": {
             "type": "string",
             "description": "Display name shown in the Settings panel."
+          },
+          "note": { "type": "string", "description": "Free text for modders; not read." },
+          "category": {
+            "type": "string",
+            "description": "The group Settings > Constellations lists it under: Broadband, Stations, Orbital data centers, Reflectors, GEO, Science, Benchmarks, Debris, or any other name (a new group after those). Absent = inferred from the name."
+          },
+          "members": {
+            "type": "array",
+            "description": "List only: the named members, one satellite each. A member with lon_deg (and no alt_km) is geostationary at that sub-satellite longitude.",
+            "items": {
+              "type": "object",
+              "required": ["name"],
+              "properties": {
+                "name": { "type": "string" },
+                "operator": { "type": "string" },
+                "class": { "type": "string", "description": "Picks the type through class_types." },
+                "purpose": { "type": "string" },
+                "type": { "type": "string", "description": "A satellite_type name; overrides class." },
+                "lon_deg": { "type": "number", "minimum": -180, "maximum": 360, "description": "Geostationary slot, degrees east." },
+                "incl_deg": { "type": "number", "minimum": 0, "maximum": 180, "description": "Absent on a geostationary member = 0.02-0.08 deg." },
+                "alt_km": { "type": "number", "exclusiveMinimum": 0 },
+                "raan_deg": { "type": "number" },
+                "u0_deg": { "type": "number", "description": "Argument of latitude at J2000 (non-geostationary members)." }
+              },
+              "additionalProperties": false
+            }
+          },
+          "members_file": {
+            "type": "string",
+            "description": "List only: a JSON file next to the executable whose \"members\" array is appended (data/geo_satellites.json)."
+          },
+          "class_types": {
+            "type": "object",
+            "description": "List only: member class -> satellite_type name.",
+            "additionalProperties": { "type": "string" }
           },
           "type": {
             "type": "string",
@@ -115,8 +159,8 @@
           },
           "distribution": {
             "type": "string",
-            "description": "Orbit generation algorithm. Walker: regular grid. RandomShell: random RAAN + incl. Disk: concentric rings in a fixed plane. Shells: a table of shell groups (see groups); alt_km, num_planes and per_plane are derived from it.",
-            "enum": ["Walker", "RandomShell", "Disk", "Shells"],
+            "description": "Orbit generation algorithm. Walker: regular grid. RandomShell: random RAAN + incl. Disk: concentric rings in a fixed plane. Shells: a table of shell groups (see groups); alt_km, num_planes and per_plane are derived from it. List: named members, each its own satellite (members / members_file).",
+            "enum": ["Walker", "RandomShell", "Disk", "Shells", "List"],
             "default": "Walker"
           },
           "alt_jitter_km": {

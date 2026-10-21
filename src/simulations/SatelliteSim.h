@@ -170,6 +170,27 @@ enum class OrbitDistribution
                  // Set alignTerminator=true to auto-derive the plane from sunDirECI
     Shells,      // a filed table of shell groups (ShellGroup), e.g. Starmind's FCC Table 1:
                  // each group = shells over an altitude range x planes x satellites per plane
+    List,        // individual named members, each with its own elements and type (ConstMember):
+                 // the real GEO belt (data/geo_satellites.json), 2026-10-20
+};
+
+// One member of a "List" constellation (2026-10-20, issue 20261020_190331 "GEO Satellites"): a real,
+// named satellite with its own elements and type. A geostationary member is given by its sub-satellite
+// longitude (geo): buildOrbits() puts it at the geostationary radius with a mean motion equal to the
+// Earth's rotation rate and its phase solved so it sits over that longitude at every time (see there).
+struct ConstMember
+{
+    std::string name;
+    std::string operatorName; // "operator" in the file
+    std::string cls;          // "class": the type key (large, medium, small, weather, spinner, ...)
+    std::string purpose;      // comsat, weather, relay, navigation, ...
+    uint32_t typeIdx = 0;
+    bool geo = false;         // lonDeg is the sub-satellite longitude; altM / raan / u0 are derived
+    float lonDeg = 0.0f;      // degrees east (geo)
+    float altM = 0.0f;        // non-geo: altitude (m)
+    float incl = 0.0f;        // radians
+    float raan = 0.0f;        // radians (non-geo; geo: a hashed node, the inclination is tiny)
+    float u0 = 0.0f;          // radians at J2000 (non-geo)
 };
 
 // One row of a "Shells" constellation: `shells` shells evenly spread over [altMin, altMax], each
@@ -297,6 +318,11 @@ struct ConstellationConfig
     // golden-ratio sequence over the entry's SSO planes (no clumps); random: uniform. 0 = tight nodes.
     float raanSpreadRad = 0.0f;
     bool raanSpreadRandom = false;
+    // List (2026-10-20): the members, one satellite each, in roster order (orbitStart + k = member k).
+    std::vector<ConstMember> members;
+    // Settings > Constellations groups the roster by this ("category" in constellations.json; empty =
+    // inferred from the name and distribution, constCategoryOf()).
+    std::string category;
     bool highlight = false;       // highlight mode: every above-horizon sat at least the census dot
     // Populated by initConstellation():
     uint32_t orbitStart = 0; // first index into satOrbits[]
@@ -391,8 +417,16 @@ struct GpuSatTypeHeader
     uint32_t poolCount;   // records on the GPU
     int32_t scenNowSec;   // whole seconds since the scenario epoch (negative before it)
     uint32_t poolWord0;   // kesslerBuf word of the first record
+    // Per-constellation Show / Highlight bits (2026-10-20): bit (c & 31) of word (c >> 5) for constellation c,
+    // up to kMaxConstellationBits. They replaced SatOrbitPC's two 32-bit masks, which silently dropped every
+    // constellation past the 32nd (its satellites read bit 0..31 of some other entry: constIdx & 31).
+    uint32_t constEnabled[8];
+    uint32_t constHighlight[8];
 };
-static_assert(sizeof(GpuSatTypeHeader) == 48, "GpuSatTypeHeader layout mismatch");
+static_assert(sizeof(GpuSatTypeHeader) == 112, "GpuSatTypeHeader layout mismatch");
+// The constellation index a satellite record carries is 8 bits wide (GpuSatOrbit::constIdx's low byte; Kessler
+// pool / launch records' typeConst word), so 256 constellations is the ceiling.
+static constexpr uint32_t kMaxConstellationBits = 256;
 
 // A Kessler pool record as sat_orbit.comp reads it (16 words in kesslerBuf; see the shader's KesslerBuf).
 struct GpuKepOrbit
@@ -1807,8 +1841,8 @@ struct SatOrbitPC
     float deltaT;                 // simTime - epochT0 (float precision) — offset 60
     glm::vec3 obsECI;             // observer ECI position (meters) — offset 64
     uint32_t satCount;            // total satellite count — offset 76
-    uint32_t highlightMask;       // bit i = constellation i in highlight mode — offset 80
-    uint32_t enabledMask;         // bit i = constellation i is enabled — offset 84
+    uint32_t padMask0;            // offset 80 (was highlightMask: GpuSatTypeHeader::constHighlight since 2026-10-20)
+    uint32_t padMask1;            // offset 84 (was enabledMask: GpuSatTypeHeader::constEnabled)
     float simDt;                  // simulated seconds this frame — offset 88
     float elevCutoff;             // sin(Earth-limb angle) — horizon cull threshold (≤ -0.01) — offset 92
     float beamGain;               // Reflect-Orbital ground-beam intensity multiplier — offset 96
@@ -2299,7 +2333,7 @@ private:
     static constexpr int kInfoSectionCount = 8;
     bool infoSectionOpen[kInfoSectionCount] = {true, true, true, true, false, false, false, true};
     // STATUS rows, formatted each frame (a transient's label is longer than the kit's 96-char ring)
-    static constexpr int kInfoStatusRows = 5;
+    static constexpr int kInfoStatusRows = 8; // 8 since 2026-10-20: a GEO member adds operator, mission and slot
     char infoStatusValue[kInfoStatusRows][160] = {};
     const char *infoStatusLabel[kInfoStatusRows] = {};
     int infoStatusCount = 0;
@@ -2344,6 +2378,12 @@ private:
     // A real satellite of constellation `constIdx` to show: the one highest in the observer's sky
     // (or, if none is up, the nearest) — so the constellation row's VIEW shows a satellite where it is.
     int pickViewerSatellite(int constIdx) const;
+    // A roster satellite's own name, or nullptr (2026-10-20): a List member's name (the GEO belt), or the
+    // constellation's name when it has exactly one satellite (a station). satLabel() uses it.
+    const char *rosterMemberName(uint32_t idx) const;
+    const ConstMember *rosterMember(uint32_t idx) const; // a List member, or nullptr
+    // Settings > Constellations group of an entry: its "category", else inferred from its name / distribution.
+    std::string constCategoryOf(const ConstellationConfig &c) const;
     // Open the satellite window (and, with popOut, the 3D view as well — what the constellation row's
     // VIEW does, since that caller asked for the view rather than the readout).
     void openModelViewer(int typeIdx, const char *label, float altM, int satIndex = -1, bool popOut = false);
@@ -6061,6 +6101,12 @@ private:
     // ── UI hover state (one-frame lag) ────────────────────────────────────────
     std::vector<bool> hovConst;           // one entry per constellation; sized in loadDefinitions()
     std::vector<bool> hovHighlightConst;  // highlight button hover state, parallel to hovConst
+    // Settings > Constellations (2026-10-20): session state of the grouped list.
+    std::unordered_map<std::string, bool> constGroupOpen_; // by category; absent = folded
+    int constListOpen_ = -1;                                // the List entry whose members are shown
+    int constListPage_ = 0;
+    std::string constListFilter_;
+    std::deque<std::string> constUiText_;                   // this frame's formatted strings (Clay keeps pointers)
     bool hovShowPlanets = false;          // "Show planets" global toggle hover state
     bool hovPlanetBtn[kPlanetCount] = {}; // per-planet ON/OFF toggle hover state
     bool hovTimeSlower = false;

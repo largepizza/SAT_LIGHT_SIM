@@ -33,7 +33,7 @@ constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 13; // (13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
+constexpr uint32_t kCacheVersion = 14; // (14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
                                        // 12: steps on a fixed grid, seeded by their index; a step's events ordered)
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
@@ -2274,7 +2274,10 @@ std::string SatelliteSim::satLabel(int idx) const
     char b[160];
     auto rosterName = [&](uint32_t i) {
         const SatOrbit &o = satOrbits[i];
-        if (o.constIdx < constellations.size())
+        const char *member = rosterMemberName(i); // a List member's own name (the GEO belt), a station's
+        if (member)
+            snprintf(b, sizeof(b), "%s", member);
+        else if (o.constIdx < constellations.size())
             snprintf(b, sizeof(b), "%s #%d", constellations[o.constIdx].name.c_str(),
                      (int)i - (int)constellations[o.constIdx].orbitStart);
         else

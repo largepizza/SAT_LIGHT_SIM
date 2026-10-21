@@ -1,0 +1,694 @@
+{
+ "name": "GEO comsat, medium (Star-2 / A2100 / DFH-4 class)",
+ "note": "Generic GEO comsat (geo_comsat_medium), written by tools/make_geo_models.py - edit the script, not this file. Body frame: +Z nadir, +X velocity (east), +Y south. A stand-in for a class: real satellites of it differ in reflector count, size and placement.",
+ "materials": [
+  {
+   "name": "bus_mli",
+   "preset": "mli_foil",
+   "color": [
+    0.92,
+    0.74,
+    0.36
+   ]
+  },
+  {
+   "name": "radiator",
+   "preset": "osr_radiator"
+  },
+  {
+   "name": "reflector",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.75,
+   "roughness": 0.6,
+   "color": [
+    0.94,
+    0.94,
+    0.92
+   ]
+  },
+  {
+   "name": "cells",
+   "preset": "solar_cell"
+  },
+  {
+   "name": "cells_back",
+   "preset": "solar_array_back"
+  },
+  {
+   "name": "metal",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.25,
+   "roughness": 0.35,
+   "color": [
+    0.72,
+    0.72,
+    0.74
+   ]
+  },
+  {
+   "name": "dark",
+   "preset": "black_paint"
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "bus",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "nadir"
+   },
+   "secondary": {
+    "axis": [
+     1,
+     0,
+     0
+    ],
+    "target": "velocity"
+   }
+  },
+  {
+   "name": "wings",
+   "parent": "bus",
+   "hinge": {
+    "position": [
+     0,
+     0,
+     0
+    ],
+    "axis": [
+     0.0,
+     1.0,
+     0.0
+    ]
+   },
+   "joint": {
+    "mode": "track",
+    "vector": [
+     0.0,
+     0.0,
+     -1.0
+    ],
+    "target": "sun"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "bus",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    2.0,
+    1.9,
+    3.2
+   ],
+   "material": "bus_mli"
+  },
+  {
+   "name": "radiator_south",
+   "type": "plane",
+   "group": "bus",
+   "size": [
+    2.04,
+    3.24
+   ],
+   "position": [
+    0,
+    1.0,
+    0
+   ],
+   "rotation_deg": [
+    -90,
+    0,
+    0
+   ],
+   "material": "radiator",
+   "single_sided": true
+  },
+  {
+   "name": "radiator_north",
+   "type": "plane",
+   "group": "bus",
+   "size": [
+    2.04,
+    3.24
+   ],
+   "position": [
+    0,
+    -1.0,
+    0
+   ],
+   "rotation_deg": [
+    90,
+    0,
+    0
+   ],
+   "material": "radiator",
+   "single_sided": true
+  },
+  {
+   "name": "wing_south",
+   "type": "plane",
+   "group": "wings",
+   "size": [
+    2.0,
+    7.800000000000001
+   ],
+   "position": [
+    0,
+    6.45,
+    0
+   ],
+   "rotation_quat": [
+    0.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   "material": "cells",
+   "back_material": "cells_back"
+  },
+  {
+   "name": "wing_north",
+   "type": "plane",
+   "group": "wings",
+   "size": [
+    2.0,
+    7.800000000000001
+   ],
+   "position": [
+    0,
+    -6.45,
+    0
+   ],
+   "rotation_quat": [
+    0.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   "material": "cells",
+   "back_material": "cells_back"
+  },
+  {
+   "name": "reflector_east",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 1.1,
+   "height": 0.12,
+   "position": [
+    2.45,
+    0,
+    0.576
+   ],
+   "rotation_deg": [
+    0,
+    22,
+    0
+   ],
+   "material": "reflector"
+  },
+  {
+   "name": "reflector_west",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 1.1,
+   "height": 0.12,
+   "position": [
+    -2.45,
+    0,
+    0.576
+   ],
+   "rotation_deg": [
+    0,
+    -22,
+    0
+   ],
+   "material": "reflector"
+  },
+  {
+   "name": "reflector_deck",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 0.45,
+   "height": 0.1,
+   "position": [
+    0.0,
+    0.0,
+    2.0500000000000003
+   ],
+   "material": "reflector"
+  },
+  {
+   "name": "yoke_south",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    0.12,
+    1.6,
+    0.12
+   ],
+   "position": [
+    0,
+    1.75,
+    0
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "drive_south",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 0.22,
+   "height": 0.18,
+   "position": [
+    0,
+    1.0699999999999998,
+    0
+   ],
+   "rotation_deg": [
+    90,
+    0,
+    0
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "hinge_south_1",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    2.0,
+    0.05,
+    0.05
+   ],
+   "position": [
+    0,
+    5.15,
+    0.03
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "hinge_south_2",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    2.0,
+    0.05,
+    0.05
+   ],
+   "position": [
+    0,
+    7.75,
+    0.03
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "yoke_north",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    0.12,
+    1.6,
+    0.12
+   ],
+   "position": [
+    0,
+    -1.75,
+    0
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "drive_north",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 0.22,
+   "height": 0.18,
+   "position": [
+    0,
+    -1.0699999999999998,
+    0
+   ],
+   "rotation_deg": [
+    90,
+    0,
+    0
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "hinge_north_1",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    2.0,
+    0.05,
+    0.05
+   ],
+   "position": [
+    0,
+    -5.15,
+    0.03
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "hinge_north_2",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    2.0,
+    0.05,
+    0.05
+   ],
+   "position": [
+    0,
+    -7.75,
+    0.03
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "arm_east",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    1.5,
+    0.1,
+    0.1
+   ],
+   "position": [
+    1.75,
+    0,
+    0.37599999999999995
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "feed_east",
+   "type": "cone",
+   "group": "bus",
+   "radius_bottom": 0.12,
+   "radius_top": 0.28,
+   "height": 0.6,
+   "position": [
+    0.6,
+    0.0,
+    1.9000000000000001
+   ],
+   "rotation_deg": [
+    0,
+    -60,
+    0
+   ],
+   "material": "dark",
+   "render_only": true
+  },
+  {
+   "name": "dish_rim_east",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 1.122,
+   "height": 0.04,
+   "position": [
+    2.45,
+    0,
+    0.506
+   ],
+   "rotation_deg": [
+    0,
+    22,
+    0
+   ],
+   "material": "metal",
+   "render_only": true,
+   "caps": false
+  },
+  {
+   "name": "arm_west",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    1.5,
+    0.1,
+    0.1
+   ],
+   "position": [
+    -1.75,
+    0,
+    0.37599999999999995
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "feed_west",
+   "type": "cone",
+   "group": "bus",
+   "radius_bottom": 0.12,
+   "radius_top": 0.28,
+   "height": 0.6,
+   "position": [
+    -0.6,
+    0.0,
+    1.9000000000000001
+   ],
+   "rotation_deg": [
+    0,
+    60,
+    0
+   ],
+   "material": "dark",
+   "render_only": true
+  },
+  {
+   "name": "dish_rim_west",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 1.122,
+   "height": 0.04,
+   "position": [
+    -2.45,
+    0,
+    0.506
+   ],
+   "rotation_deg": [
+    0,
+    -22,
+    0
+   ],
+   "material": "metal",
+   "render_only": true,
+   "caps": false
+  },
+  {
+   "name": "apogee_engine",
+   "type": "cone",
+   "group": "bus",
+   "radius_bottom": 0.45,
+   "radius_top": 0.12,
+   "height": 0.7,
+   "position": [
+    0,
+    0,
+    -1.9500000000000002
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "deck_tower",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    0.9,
+    0.855,
+    0.4
+   ],
+   "position": [
+    0,
+    0,
+    1.8
+   ],
+   "material": "bus_mli",
+   "render_only": true
+  },
+  {
+   "name": "earth_sensor",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    0.3,
+    0.3,
+    0.25
+   ],
+   "position": [
+    0.6,
+    0.57,
+    1.7200000000000002
+   ],
+   "material": "dark",
+   "render_only": true
+  },
+  {
+   "name": "omni_antenna",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 0.05,
+   "height": 0.8,
+   "position": [
+    -0.6,
+    -0.57,
+    -2.0
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "thruster_pod_0",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    0.25,
+    0.25,
+    0.3
+   ],
+   "position": [
+    0.9,
+    0.85,
+    -1.7000000000000002
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "thruster_pod_1",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    0.25,
+    0.25,
+    0.3
+   ],
+   "position": [
+    0.9,
+    -0.85,
+    -1.7000000000000002
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "thruster_pod_2",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    0.25,
+    0.25,
+    0.3
+   ],
+   "position": [
+    -0.9,
+    0.85,
+    -1.7000000000000002
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "thruster_pod_3",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    0.25,
+    0.25,
+    0.3
+   ],
+   "position": [
+    -0.9,
+    -0.85,
+    -1.7000000000000002
+   ],
+   "material": "metal",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "bus",
+   "status": "derived",
+   "value": "2.0 x 1.9 x 3.2 m box (E-W x N-S x nadir), gold MLI",
+   "source": "Orbital ATK GEOStar-2: 1.7 x 1.7 x 3.0 m bus; Lockheed A2100A: ~2 x 2 x 3 m; CAST DFH-4: 2.36 x 2.1 x 3.6 m (manufacturers' figures via Gunter's Space Page). The box is their middle."
+  },
+  {
+   "subjects": [
+    "radiator_south",
+    "radiator_north"
+   ],
+   "status": "sourced",
+   "value": "OSR radiator panels over the whole north and south faces (5 cm off them: a full cover keeps the MLI face under it from being a sliver lobe)",
+   "source": "Standard three-axis GEO comsat thermal design: the N/S faces, which see the Sun only at a grazing angle all year, carry the optical solar reflector radiators (e.g. Gilmore, Spacecraft Thermal Control Handbook, ch. on communications satellites)."
+  },
+  {
+   "subjects": [
+    "wing_south",
+    "wing_north"
+   ],
+   "status": "estimate",
+   "value": "two wings of 3 panels 2.0 x 2.6 m on 1.6 m yokes: 20.7 m tip to tip",
+   "source": "Mid-size GEO comsats span ~20-30 m (Star-2 ~20 m, A2100 ~26 m); 3 panels per wing an estimate."
+  },
+  {
+   "subject": "wings",
+   "status": "sourced",
+   "value": "wings turn about the N-S axis to face the Sun (one turn a day)",
+   "source": "The universal GEO comsat solar array drive (SADA) arrangement: arrays on the north and south faces rotating once per day about the pitch (orbit-normal) axis."
+  },
+  {
+   "subject": "bus",
+   "status": "sourced",
+   "value": "three-axis stabilised, Earth deck to nadir, yaw along velocity",
+   "source": "Standard GEO comsat attitude (Earth-pointing, zero-momentum or momentum-bias)."
+  },
+  {
+   "subjects": [
+    "reflector_east",
+    "reflector_west",
+    "reflector_deck"
+   ],
+   "status": "estimate",
+   "value": "deployed reflectors 2.2 m on the E/W faces (22 deg off nadir), a 0.9 m dish on the Earth deck",
+   "source": "Two ~2.2 m deployed reflectors on the E/W faces (factory photographs of the class); estimates."
+  },
+  {
+   "subjects": [
+    "bus_mli",
+    "radiator",
+    "reflector",
+    "cells",
+    "cells_back",
+    "metal",
+    "dark"
+   ],
+   "status": "estimate",
+   "value": "class liveries and the presets' reflectance",
+   "source": "Liveries from published on-orbit / factory photographs of the classes (gold or amber MLI on the bus, silver OSR radiator panels on the north and south faces, white-painted reflectors, blue-black cells under cover glass); reflectance from the presets."
+  }
+ ]
+}

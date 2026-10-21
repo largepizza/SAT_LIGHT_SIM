@@ -76,14 +76,16 @@ struct SatOrbit {
     float tumbleAxisZ;        // tumble axis unit vector z  (formation member: formK)
     float alignTerminator;    // 1.0 = SSO (RAAN precesses); 0.0 = fixed RAAN
     uint  typeIdx;            // index into types[] (SatTypeBuf)
-    uint  constIdx;           // constellation index (low 5 bits, for enabledMask/highlightMask)
+    uint  constIdx;           // constellation index (low 8 bits: constEnabled / constHighlight)
                               // | FORMATION_BIT for a formation ring member
 };
 // GpuSatOrbit::constIdx flag (kGpuFormationBit in SatelliteSim.h): a formation ring member flies a
 // Clohessy-Wiltshire relative orbit about its cluster centre, whose elements the record holds; the
 // tumble slots carry P, Q, K (it never tumbles). See SatOrbit::formP / formationOffset().
 const uint FORMATION_BIT = 0x80000000u;
-const uint CONST_IDX_MASK = 31u;
+const uint CONST_IDX_MASK = 255u; // the constellation index: the low byte (256 entries, kMaxConstellationBits)
+// Bit of constellation ci in SatTypeBuf's constEnabled / constHighlight words.
+#define CONST_BIT(arr, ci) (((arr[((ci) & CONST_IDX_MASK) >> 5u] >> ((ci) & 31u)) & 1u) != 0u)
 
 // Clohessy-Wiltshire (Hill) offset of a formation member from its cluster centre at argument of
 // latitude u: x = P cos u - Q sin u (radial), y = -2 (P sin u + Q cos u) (along-track), z = K x
@@ -184,6 +186,9 @@ layout(set = 0, binding = 5) readonly buffer SatTypeBuf {
     uint    poolCount;
     int     scenNowSec;
     uint    poolWord0;        // KesslerBuf word of the first pool record (16 words each)
+    // Per-constellation Show / Highlight bits (GpuSatTypeHeader, 2026-10-20): bit (c & 31) of word (c >> 5).
+    uint    constEnabled[8];
+    uint    constHighlight[8];
     // Earthshine table (satphot::earthshineLut(), written once by createSatBuffers): per (visible
     // cap half-angle, cos of the Sun's zenith at the sub-satellite point) the ln irradiance and the
     // tilt of its effective direction from nadir toward the Sun.
@@ -360,8 +365,8 @@ layout(push_constant) uniform PC {
     float deltaT;        // simTime - epochT0 (float) — offset 60
     vec3  obsECI;        // observer ECI position (meters) — offset 64
     uint  satCount;      // total satellite count — offset 76
-    uint  highlightMask; // bit i set = constellation i in highlight mode — offset 80
-    uint  enabledMask;   // bit i set = constellation i is enabled — offset 84
+    uint  padMask0;      // offset 80 (was highlightMask: constHighlight[] in SatTypeBuf since 2026-10-20)
+    uint  padMask1;      // offset 84 (was enabledMask: constEnabled[])
     float simDt;         // simulated seconds this frame — offset 88
     float elevCutoff;    // sin(Earth-limb angle); horizon cull threshold (≤ -0.01) — offset 92
     float beamGain;          // Reflect-Orbital ground-beam intensity multiplier — offset 96
@@ -1291,7 +1296,7 @@ bool processSatellite(uint i, out SatVisible rec)
     SatType ty = types[orb.typeIdx];
 
     // ── Disabled constellation: not appended ──────────────────────────────────
-    if (((pc.enabledMask >> (orb.constIdx & CONST_IDX_MASK)) & 1u) == 0u)
+    if (!CONST_BIT(constEnabled, orb.constIdx))
         return false;
 
     if (!isPool) {
@@ -1690,7 +1695,7 @@ bool processSatellite(uint i, out SatVisible rec)
     // size (unset until sat_flare.comp), which raises it to at least the fixed census dot. It used to
     // skip the lighting and draw EVERY highlighted satellite at that dot (~mag 5.4), so highlighting
     // a sunlit ISS at mag -2 made it far fainter and harder to find.
-    const float highlightFlag = bool((pc.highlightMask >> (orb.constIdx & CONST_IDX_MASK)) & 1u) ? -1.0 : 0.0;
+    const float highlightFlag = CONST_BIT(constHighlight, orb.constIdx) ? -1.0 : 0.0;
     // Highlighted debris (Kessler fragments) is tinted, so the census view tells it apart from the satellites.
     if (i >= poolBase && highlightFlag < 0.0)   // (not the launch records: satellites)
         outBaseColor = vec3(1.0, 0.42, 0.22);

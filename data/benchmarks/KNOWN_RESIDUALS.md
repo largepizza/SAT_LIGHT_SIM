@@ -47,6 +47,12 @@ Benchmarking" design page (Results log).
 - **Estimates (model `sources` blocks, status `estimate`):** antenna-region size and albedo (0.8) on
   both 2020 Starlink models; V2 Mini wing hinge placement and tracking; most material presets
   outside `solar_cell`.
+- **The GEO belt (2026-10-20)** flies four GENERIC class models (`geo_comsat_large`, `geo_comsat_medium`,
+  `geo_weather`, `geo_spinner`, tools/make_geo_models.py), not one per satellite, at the mid-2020s slots of
+  data/geo_satellites.json (approximate). No benchmark. In-app check (2036-11-22 14:00 UTC from 40 N 10 E):
+  Astra 1KR 13.8 seen (5.7 at 1000 km, phase 126°), Nilesat 201 15.1 (6.9, 153°), Meteosat-11 16.3 (8.2, 136°);
+  GOES-19 from Quito at night 11.4 (3.6, 61°). Real GEO comsats are typically mag 10-14 away from glints. Baked
+  at the 48-lobe budget (validator p95 ≤ 0.01 mag). The spin of MSG / Fengyun-2 is not modelled (axisymmetric drum).
 - **Hubble** flies an anti-sun stand-in attitude (no inertial-pointing law) and has no benchmark.
 - **GGX, not Beckmann,** for the polished bus (Beckmann made 70–110° 0.3–0.5 mag too faint once
   earthshine was fixed), even though that material's α came from a Beckmann↔Phong equivalence.

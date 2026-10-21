@@ -491,6 +491,21 @@ json SatelliteSim::harnessStateJson()
             sel["constellation"] = constellations[o.constIdx].name;
             sel["n"] = selectedSatIndex - (int)constellations[o.constIdx].orbitStart;
         }
+        if (const ConstMember *m = rosterMember((uint32_t)selectedSatIndex)) // a List member (the GEO belt)
+        {
+            sel["member"] = {{"name", m->name}, {"operator", m->operatorName}, {"class", m->cls}, {"purpose", m->purpose}};
+            if (m->geo)
+            {
+                // Its sub-satellite longitude now (the slot it is drawn at), from the CPU evaluator.
+                const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+                const glm::dvec3 p = satOrbitStateAt(orbitElemsOf(o), t).posEci;
+                double lon = glm::degrees(std::atan2(p.y, p.x) - earthRotationAngle(t));
+                lon = std::fmod(lon + 540.0, 360.0) - 180.0;
+                sel["member"]["slot_lon_deg"] = m->lonDeg;
+                sel["member"]["lon_now_deg"] = lon;
+                sel["member"]["lat_now_deg"] = glm::degrees(std::asin(p.z / glm::length(p)));
+            }
+        }
         updateSelectedSkyDir();
         sel["az_deg"] = azDegOf(selSkyDirCpu);
         sel["el_deg"] = elDegOf(selSkyDirCpu);
@@ -1742,7 +1757,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         std::string msg = "selected";
         if (r.contains("constellation"))
             msg += " " + r["constellation"].get<std::string>() + " #" + std::to_string(r["n"].get<int>()) +
-                   " (sat " + std::to_string(r["sat"].get<int>()) + ")";
+                   " (sat " + std::to_string(r["sat"].get<int>()) + ")" +
+                   (rosterMemberName((uint32_t)r["sat"].get<int>()) ? std::string(": ") + rosterMemberName((uint32_t)r["sat"].get<int>())
+                                                                       : std::string());
         if (r.contains("planet"))
             msg += " " + r["planet"].get<std::string>();
         if (r.empty())
@@ -2706,7 +2723,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             json list = json::array();
             for (const auto &cc : constellations)
-                list.push_back({{"name", cc.name}, {"enabled", cc.enabled}, {"highlight", cc.highlight},
+                list.push_back({{"name", cc.name}, {"category", constCategoryOf(cc)}, {"enabled", cc.enabled}, {"highlight", cc.highlight},
                                 {"count", cc.orbitCount}, {"type", satTypes[cc.typeIdx].name}});
             r["constellations"] = list;
             r["message"] = std::to_string(list.size()) + " constellations";

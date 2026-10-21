@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <fstream>
 #include <unordered_map>
+#include <map>
 #include <atomic>
 #include <thread>
 
@@ -2827,16 +2828,6 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // movement). Running unconditionally here (even when activeSatCount==0, a legal 0-workgroup
     // no-op dispatch) — before the `if (activeSatCount==0) return` check below — means
     // cloud_march.comp always reads THIS frame's fresh beam data instead.
-    // Build enabled / highlight masks from constellation config (one bit per constellation).
-    uint32_t enabledMask = 0, highlightMask = 0;
-    for (uint32_t ci = 0; ci < (uint32_t)constellations.size() && ci < 32; ++ci)
-    {
-        if (constellations[ci].enabled)
-            enabledMask |= (1u << ci);
-        if (constellations[ci].highlight)
-            highlightMask |= (1u << ci);
-    }
-
     SatOrbitPC orbitPc{};
     orbitPc.enuX = eci2enuX;
     orbitPc.enuY = eci2enuY;
@@ -2856,8 +2847,6 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     orbitDeltaTLo = (float)(deltaTD - (double)orbitPc.deltaT); // → GpuSatTypeHeader::deltaTLo
     orbitPc.obsECI = obsECI;
     orbitPc.satCount = poolIdx0() + kPoolGpu; // the roster, the launch records, then the Kessler pool
-    orbitPc.highlightMask = highlightMask;
-    orbitPc.enabledMask = enabledMask;
     orbitPc.simDt = simDt;
     // Horizon cull threshold: open up to Earth limb for elevated observers.
     // limbSin = -sqrt(1 - (R_EARTH/obsR)²); always clamped to at most -0.01.
@@ -3117,6 +3106,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         hdr.poolWord0 = kPoolWord0;
         hdr.scenNowSec = (int32_t)std::clamp(std::floor((double)simDayJ2000 * 86400.0 + simSecInDay - kesslerEpoch()),
                                              -2147483000.0, 2147483000.0);
+        // Show / Highlight per constellation (one bit each; the shader reads constIdx's low byte).
+        for (uint32_t ci = 0; ci < (uint32_t)constellations.size() && ci < kMaxConstellationBits; ++ci)
+        {
+            if (constellations[ci].enabled)
+                hdr.constEnabled[ci >> 5] |= 1u << (ci & 31u);
+            if (constellations[ci].highlight)
+                hdr.constHighlight[ci >> 5] |= 1u << (ci & 31u);
+        }
         memcpy(satTypeMapped, &hdr, sizeof(hdr));
         uploadPointStyle(); // sat_flare.comp and the point draws read it this frame
     }
@@ -4203,6 +4200,58 @@ void SatelliteSim::updateViewerObserverInfo()
         if (std::isfinite(fm))
             snprintf(viewerPhotValue[5], sizeof(viewerPhotValue[5]), "%.2f (%d sats)", fm + formExt, n);
     }
+}
+
+const ConstMember *SatelliteSim::rosterMember(uint32_t idx) const
+{
+    if (idx >= activeSatCount || idx >= satOrbits.size())
+        return nullptr;
+    const uint32_t ci = satOrbits[idx].constIdx;
+    if (ci >= constellations.size())
+        return nullptr;
+    const ConstellationConfig &c = constellations[ci];
+    if (c.distribution != OrbitDistribution::List || idx < c.orbitStart || idx - c.orbitStart >= c.members.size())
+        return nullptr;
+    return &c.members[idx - c.orbitStart];
+}
+
+const char *SatelliteSim::rosterMemberName(uint32_t idx) const
+{
+    if (const ConstMember *m = rosterMember(idx))
+        return m->name.c_str();
+    if (idx >= activeSatCount || idx >= satOrbits.size() || satOrbits[idx].constIdx >= constellations.size())
+        return nullptr;
+    const ConstellationConfig &c = constellations[satOrbits[idx].constIdx];
+    return c.orbitCount == 1 ? c.name.c_str() : nullptr;
+}
+
+std::string SatelliteSim::constCategoryOf(const ConstellationConfig &c) const
+{
+    if (!c.category.empty())
+        return c.category;
+    if (&c - constellations.data() == kDebrisConst)
+        return "Debris";
+    std::string n = c.name;
+    for (char &ch : n)
+        ch = (char)std::tolower((unsigned char)ch);
+    auto has = [&](const char *k) { return n.find(k) != std::string::npos; };
+    if (c.distribution == OrbitDistribution::List || has("geo"))
+        return "GEO";
+    if (has("benchmark"))
+        return "Benchmarks";
+    if (has("junk") || has("debris"))
+        return "Debris";
+    if (has("starmind"))
+        return "Orbital data centers";
+    if (has("reflect"))
+        return "Reflectors";
+    if (has("hubble"))
+        return "Science";
+    if (has("station") || has("tiangong") || has("haven") || has("starlab") || has("orbital reef") || has("depot"))
+        return "Stations";
+    if (has("starlink") || has("oneweb") || has("amazon") || has("guowang") || has("qianfan"))
+        return "Broadband";
+    return c.orbitCount <= 3 ? "Stations" : "Other";
 }
 
 int SatelliteSim::pickViewerSatellite(int constIdx) const
@@ -6421,9 +6470,11 @@ void SatelliteSim::formatSelectedSatInfo()
         const ConstellationConfig &c = constellations[orb.constIdx];
         constName = c.name.c_str();
         localId = selectedSatIndex - (int)c.orbitStart;
-        if (c.typeIdx < satTypes.size())
+        // The satellite's own type: a List member's may differ from its entry's (the GEO belt's classes).
+        const uint32_t ti = (uint32_t)selectedSatIndex < activeSatCount ? orb.typeIdx : c.typeIdx;
+        if (ti < satTypes.size())
         {
-            type = &satTypes[c.typeIdx];
+            type = &satTypes[ti];
             typeName = type->name.c_str();
         }
     }
@@ -6459,6 +6510,15 @@ void SatelliteSim::formatSelectedSatInfo()
         if (st.empty())
             st = orb.typeIdx < satTypes.size() ? satTypes[orb.typeIdx].name : std::string("Satellite");
         snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s", st.c_str());
+    }
+    else if (const ConstMember *m = rosterMember((uint32_t)selectedSatIndex))
+    {
+        // A named member (the GEO belt): its operator and slot under its name.
+        if (m->geo)
+            snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s - GEO %.1f %c", m->operatorName.c_str(),
+                     std::fabs(m->lonDeg), m->lonDeg < 0.0f ? 'W' : 'E');
+        else
+            snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s", m->operatorName.c_str());
     }
     else
         snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s", type ? typeName
@@ -15523,6 +15583,7 @@ void SatelliteSim::loadDefinitions()
             c.distribution = OrbitDistribution::Disk;
         else
             c.distribution = OrbitDistribution::Walker;
+        c.category = jc.value("category", std::string());
 
         c.altJitterM = jc.value("alt_jitter_km", 0.0f) * 1000.0f;
         c.raan = glm::radians(jc.value("raan_deg", 0.0f));
@@ -15581,6 +15642,78 @@ void SatelliteSim::loadDefinitions()
             c.altM = (float)(altSum / (double)total);
             c.incl = c.groups[0].sso ? computeSSOInclination(c.groups[0].altMinM) : c.groups[0].inclMin;
             c.alignTerminator = false; // per group: the orbits carry it
+        }
+        else if (dist == "List")
+        {
+            // Named members, each its own satellite (2026-10-20): inline "members" or a "members_file" next
+            // to this file (data/geo_satellites.json). A member's type: its "type" (a type name), else
+            // "class_types"[its "class"], else the entry's "type".
+            c.distribution = OrbitDistribution::List;
+            nlohmann::json mj = jc.value("members", nlohmann::json::array());
+            if (jc.contains("members_file"))
+            {
+                const std::string mf = jc["members_file"].get<std::string>();
+                std::ifstream in((std::filesystem::path(exeDir_) / mf).string());
+                nlohmann::json doc;
+                if (in)
+                    doc = nlohmann::json::parse(in, nullptr, false);
+                if (doc.is_discarded() || !doc.is_object())
+                    Log::line("constellations.json: '" + c.name + "': members_file '" + mf + "' is missing or not JSON.");
+                else
+                    for (const auto &m : doc.value("members", nlohmann::json::array()))
+                        mj.push_back(m);
+            }
+            const nlohmann::json classTypes = jc.value("class_types", nlohmann::json::object());
+            std::map<float, int> slotCount; // collocated GEO members (one slot) are spread in their box below
+            for (const auto &m : mj)
+            {
+                ConstMember mb;
+                mb.name = m.value("name", std::string("Satellite"));
+                mb.operatorName = m.value("operator", std::string());
+                mb.cls = m.value("class", std::string());
+                mb.purpose = m.value("purpose", std::string());
+                std::string tn = m.value("type", std::string());
+                if (tn.empty() && !mb.cls.empty() && classTypes.contains(mb.cls))
+                    tn = classTypes[mb.cls].get<std::string>();
+                mb.typeIdx = c.typeIdx;
+                if (!tn.empty())
+                {
+                    auto ti = typeMap.find(tn);
+                    if (ti != typeMap.end())
+                        mb.typeIdx = ti->second;
+                    else
+                        Log::line("constellations.json: '" + c.name + "' member '" + mb.name + "': unknown type '" + tn +
+                                  "', using the entry's.");
+                }
+                mb.geo = m.contains("lon_deg") && !m.contains("alt_km");
+                mb.lonDeg = m.value("lon_deg", 0.0f);
+                mb.altM = m.value("alt_km", 0.0f) * 1000.0f;
+                mb.incl = glm::radians(m.value("incl_deg", -1.0f)); // < 0: hashed (geo) / 0
+                mb.raan = glm::radians(m.value("raan_deg", 0.0f));
+                mb.u0 = glm::radians(m.value("u0_deg", 0.0f));
+                if (mb.geo)
+                    ++slotCount[mb.lonDeg];
+                c.members.push_back(std::move(mb));
+            }
+            // Collocated members share a slot's station-keeping box: spread them +-0.06 deg in longitude.
+            std::map<float, int> slotSeen;
+            for (ConstMember &mb : c.members)
+                if (mb.geo)
+                {
+                    const int n = slotCount[mb.lonDeg], k = slotSeen[mb.lonDeg]++;
+                    if (n > 1)
+                        mb.lonDeg += -0.06f + 0.12f * (float)k / (float)(n - 1);
+                }
+            if (c.members.empty())
+            {
+                Log::line("constellations.json: '" + c.name + "' is a List constellation with no members; skipping.");
+                continue;
+            }
+            c.numPlanes = (int)c.members.size();
+            c.perPlane = 1;
+            if (c.altM <= 0.0f)
+                c.altM = c.members[0].geo ? (float)(std::cbrt(kGM / (kOmegaEarth * kOmegaEarth)) - kEarthRadius)
+                                          : c.members[0].altM;
         }
         else if (!jc.contains("num_planes") || !jc.contains("per_plane") || !jc.contains("alt_km"))
         {
@@ -15673,9 +15806,20 @@ void SatelliteSim::loadDefinitions()
     {
         size_t count = 0;
         for (const ConstellationConfig &c : constellations)
-            if (c.typeIdx == ti)
+            if (c.distribution == OrbitDistribution::List) // its members carry their own types
+            {
+                for (const ConstMember &m : c.members)
+                    count += m.typeIdx == ti ? 1 : 0;
+            }
+            else if (c.typeIdx == ti)
                 count += (size_t)std::max(c.numPlanes, 0) * (size_t)std::max(c.perPlane, 0);
         int budget = count <= kSatLobeSmallRoster ? kSatLobeBudgetSmall : kSatLobeBudget;
+        // The GEO belt (2026-10-20): ~200 of its ~400 satellites are above any observer's horizon at once, every
+        // night, each on one GPU thread; the generic comsats bake to 112 exact lobes (mostly the reflectors' facets),
+        // which cost ~0.3 ms of orbit dispatch on the ground. The mass-constellation budget keeps them at
+        // validator p95 < 0.01 mag for a third of that.
+        if (satTypes[ti].modelId.rfind("geo_", 0) == 0)
+            budget = kSatLobeBudget;
         if (satTypes[ti].modelId.rfind("debris_", 0) == 0)
             budget = 16; // fragments: up to a pool's worth visible at once, each a few simple parts
         else if (satTypes[ti].modelId.rfind("rocket_", 0) == 0 || satTypes[ti].modelId.rfind("pad_", 0) == 0 ||
@@ -16197,6 +16341,38 @@ void SatelliteSim::buildOrbits()
                     satOrbits.push_back({raan_d, ringIncl, u0, c.typeIdx, ringAlt + jitter, 0.0f, 0.0f, {0.0f, 0.0f, 1.0f}, c.alignTerminator});
                     setFormation(c, satOrbits.back(), s, satsInThisRing, rot);
                 }
+            }
+        }
+
+        else if (c.distribution == OrbitDistribution::List)
+        {
+            // Named members (the GEO belt). A geostationary member sits at the radius whose mean motion
+            // (as the precompute below rounds it to float) is the Earth's rotation rate, and its phase at
+            // J2000 is solved so that at the build's sim time its sub-satellite longitude is its slot:
+            // u0 = lon + ERA(t) - raan - n t. The drift is (n_float - omega) t: < 0.01 deg a year. No J2 and
+            // no station keeping are modelled - nothing else moves a GEO record (sat_orbit.comp has none).
+            const double tRef = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const double era = earthRotationAngle(tRef);
+            for (size_t k = 0; k < c.members.size(); ++k)
+            {
+                const ConstMember &m = c.members[k];
+                const uint32_t key = (uint32_t)k;
+                if (m.geo)
+                {
+                    const float altM = (float)(std::cbrt(kGM / (kOmegaEarth * kOmegaEarth)) - (double)kEarthRadius);
+                    const double r = (double)kEarthRadius + (double)altM;
+                    const double nF = (double)(float)std::sqrt(kGM / (r * r * r)); // exactly what the GPU will hold
+                    const float incl = m.incl >= 0.0f ? m.incl : glm::radians(0.02f + 0.06f * hash01(c.defIndex, key, 11));
+                    const float raan = hash01(c.defIndex, key, 12) * glm::two_pi<float>();
+                    double u0 = (double)glm::radians(m.lonDeg) + era - (double)raan - nF * tRef;
+                    u0 = std::fmod(u0, glm::two_pi<double>());
+                    if (u0 < 0.0)
+                        u0 += glm::two_pi<double>();
+                    satOrbits.push_back({raan, incl, (float)u0, m.typeIdx, altM, 0.0f, 0.0f, {0.0f, 0.0f, 1.0f}, false});
+                }
+                else
+                    satOrbits.push_back({m.raan, std::max(m.incl, 0.0f), m.u0, m.typeIdx, m.altM, 0.0f, 0.0f,
+                                         {0.0f, 0.0f, 1.0f}, false});
             }
         }
 

@@ -1,0 +1,2817 @@
+{
+ "note": "Real geostationary satellites for the 'GEO belt' List constellation (constellations.json \"members_file\"). Written by tools/make_geo_belt.py - edit the table there, not this file. APPROXIMATE: slots are the mid-2020s published / commonly tracked positions rounded to 0.1 deg; the sim is set in 2036, so read this as the GEO belt as populated, not a 2036 manifest. Government satellites' slots are amateur-tracking estimates.",
+ "classes": {
+  "large": "high-power comsat / HTS, ~5-7 t, solar wings ~40-48 m tip to tip (SSL-1300, Eurostar Neo, Boeing 702HP, Spacebus 4000C4 class)",
+  "medium": "mid-size comsat, ~3-4 t, wings ~25-30 m (Star-2, A2100, DFH-4, Express-1000 class)",
+  "small": "small GEO platform (Astranis MicroGEO, NavIC, Luch-5): drawn with the medium model",
+  "weather": "three-axis weather satellite (GOES-R, Himawari, MTG, Fengyun-4, Elektro-L, INSAT-3D)",
+  "spinner": "spin-stabilised weather drum (Meteosat Second Generation, Fengyun-2)"
+ },
+ "members": [
+  {
+   "name": "Intelsat 37e",
+   "operator": "Intelsat",
+   "lon_deg": -18.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 35e",
+   "operator": "Intelsat",
+   "lon_deg": -34.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 32e / SKY Brasil-1",
+   "operator": "Intelsat",
+   "lon_deg": -43.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 11",
+   "operator": "Intelsat",
+   "lon_deg": -43.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 14",
+   "operator": "Intelsat",
+   "lon_deg": -45.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 23",
+   "operator": "Intelsat",
+   "lon_deg": -53.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 34",
+   "operator": "Intelsat",
+   "lon_deg": -55.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 21",
+   "operator": "Intelsat",
+   "lon_deg": -58.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 10-02",
+   "operator": "Intelsat",
+   "lon_deg": -1.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 39",
+   "operator": "Intelsat",
+   "lon_deg": 62.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 33e",
+   "operator": "Intelsat",
+   "lon_deg": 60.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 17",
+   "operator": "Intelsat",
+   "lon_deg": 66.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 20",
+   "operator": "Intelsat",
+   "lon_deg": 68.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 36",
+   "operator": "Intelsat",
+   "lon_deg": 68.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 22",
+   "operator": "Intelsat",
+   "lon_deg": 72.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 15",
+   "operator": "Intelsat",
+   "lon_deg": 85.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Horizons 3e",
+   "operator": "Intelsat / SKY Perfect JSAT",
+   "lon_deg": 169.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 19",
+   "operator": "Intelsat",
+   "lon_deg": 166.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 18",
+   "operator": "Intelsat",
+   "lon_deg": 180.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 40e",
+   "operator": "Intelsat",
+   "lon_deg": -91.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 3C",
+   "operator": "Intelsat",
+   "lon_deg": -95.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 19",
+   "operator": "Intelsat",
+   "lon_deg": -97.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 16",
+   "operator": "Intelsat",
+   "lon_deg": -99.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 28",
+   "operator": "Intelsat",
+   "lon_deg": -89.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 31",
+   "operator": "Intelsat",
+   "lon_deg": -121.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 32",
+   "operator": "Intelsat",
+   "lon_deg": -91.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 33",
+   "operator": "Intelsat",
+   "lon_deg": -133.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 34",
+   "operator": "Intelsat",
+   "lon_deg": -129.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 35",
+   "operator": "Intelsat",
+   "lon_deg": -77.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 36",
+   "operator": "Intelsat",
+   "lon_deg": -125.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 37",
+   "operator": "Intelsat",
+   "lon_deg": -127.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 30",
+   "operator": "Intelsat",
+   "lon_deg": -125.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 13",
+   "operator": "Intelsat",
+   "lon_deg": -127.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 18",
+   "operator": "Intelsat",
+   "lon_deg": -123.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Galaxy 23",
+   "operator": "Intelsat",
+   "lon_deg": -121.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Intelsat 16",
+   "operator": "Intelsat",
+   "lon_deg": -76.2,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 1KR",
+   "operator": "SES",
+   "lon_deg": 19.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 1L",
+   "operator": "SES",
+   "lon_deg": 19.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 1M",
+   "operator": "SES",
+   "lon_deg": 19.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 1N",
+   "operator": "SES",
+   "lon_deg": 19.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 1P",
+   "operator": "SES",
+   "lon_deg": 19.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 1Q",
+   "operator": "SES",
+   "lon_deg": 19.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 2E",
+   "operator": "SES",
+   "lon_deg": 28.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 2F",
+   "operator": "SES",
+   "lon_deg": 28.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 2G",
+   "operator": "SES",
+   "lon_deg": 28.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 3B",
+   "operator": "SES",
+   "lon_deg": 23.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 3C",
+   "operator": "SES",
+   "lon_deg": 23.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 4A",
+   "operator": "SES",
+   "lon_deg": 4.8,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-5",
+   "operator": "SES",
+   "lon_deg": 5.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astra 5B",
+   "operator": "SES",
+   "lon_deg": 31.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-4",
+   "operator": "SES",
+   "lon_deg": -22.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-6",
+   "operator": "SES",
+   "lon_deg": -40.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-14",
+   "operator": "SES",
+   "lon_deg": -47.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-10",
+   "operator": "SES",
+   "lon_deg": -67.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-2",
+   "operator": "SES",
+   "lon_deg": -87.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-17",
+   "operator": "SES",
+   "lon_deg": -95.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-1",
+   "operator": "SES",
+   "lon_deg": -101.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-3",
+   "operator": "SES",
+   "lon_deg": -103.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-18",
+   "operator": "SES",
+   "lon_deg": -103.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-11 / EchoStar 105",
+   "operator": "SES / EchoStar",
+   "lon_deg": -105.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-15",
+   "operator": "SES",
+   "lon_deg": -129.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-19",
+   "operator": "SES",
+   "lon_deg": -135.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-20",
+   "operator": "SES",
+   "lon_deg": -103.2,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-21",
+   "operator": "SES",
+   "lon_deg": -131.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-22",
+   "operator": "SES",
+   "lon_deg": -135.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "AMC-11",
+   "operator": "SES",
+   "lon_deg": -131.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "AMC-18",
+   "operator": "SES",
+   "lon_deg": -105.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "NSS-12",
+   "operator": "SES",
+   "lon_deg": 57.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-8",
+   "operator": "SES",
+   "lon_deg": 95.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-12",
+   "operator": "SES",
+   "lon_deg": 95.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-9",
+   "operator": "SES",
+   "lon_deg": 108.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SES-7",
+   "operator": "SES",
+   "lon_deg": 108.3,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "NSS-9",
+   "operator": "SES",
+   "lon_deg": -177.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Hot Bird 13F",
+   "operator": "Eutelsat",
+   "lon_deg": 13.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Hot Bird 13G",
+   "operator": "Eutelsat",
+   "lon_deg": 13.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Hot Bird 13E",
+   "operator": "Eutelsat",
+   "lon_deg": 13.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat Konnect VHTS",
+   "operator": "Eutelsat",
+   "lon_deg": 13.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 5 West B",
+   "operator": "Eutelsat",
+   "lon_deg": -5.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 7B",
+   "operator": "Eutelsat",
+   "lon_deg": 7.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 7C",
+   "operator": "Eutelsat",
+   "lon_deg": 7.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat Konnect",
+   "operator": "Eutelsat",
+   "lon_deg": 7.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 9B / EDRS-A",
+   "operator": "Eutelsat / ESA",
+   "lon_deg": 9.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "KA-SAT",
+   "operator": "Viasat / Eutelsat",
+   "lon_deg": 9.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 10B",
+   "operator": "Eutelsat",
+   "lon_deg": 10.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 16A",
+   "operator": "Eutelsat",
+   "lon_deg": 16.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 21B",
+   "operator": "Eutelsat",
+   "lon_deg": 21.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 33E",
+   "operator": "Eutelsat",
+   "lon_deg": 33.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 36B",
+   "operator": "Eutelsat",
+   "lon_deg": 36.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 36D",
+   "operator": "Eutelsat",
+   "lon_deg": 36.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 3B",
+   "operator": "Eutelsat",
+   "lon_deg": 3.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 70B",
+   "operator": "Eutelsat",
+   "lon_deg": 70.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 172B",
+   "operator": "Eutelsat",
+   "lon_deg": 172.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 8 West B",
+   "operator": "Eutelsat",
+   "lon_deg": -8.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 65 West A",
+   "operator": "Eutelsat",
+   "lon_deg": -65.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 113 West A",
+   "operator": "Eutelsat",
+   "lon_deg": -113.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 115 West B",
+   "operator": "Eutelsat",
+   "lon_deg": -114.9,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 117 West A",
+   "operator": "Eutelsat",
+   "lon_deg": -116.8,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Eutelsat 117 West B",
+   "operator": "Eutelsat",
+   "lon_deg": -117.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ViaSat-1",
+   "operator": "Viasat",
+   "lon_deg": -115.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ViaSat-2",
+   "operator": "Viasat",
+   "lon_deg": -69.9,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ViaSat-3 Americas",
+   "operator": "Viasat",
+   "lon_deg": -88.9,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ViaSat-3 EMEA",
+   "operator": "Viasat",
+   "lon_deg": 35.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ViaSat-3 APAC",
+   "operator": "Viasat",
+   "lon_deg": 125.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Inmarsat-4 F1",
+   "operator": "Inmarsat",
+   "lon_deg": 143.5,
+   "class": "large",
+   "purpose": "comsat",
+   "incl_deg": 2.5
+  },
+  {
+   "name": "Inmarsat-4 F2",
+   "operator": "Inmarsat",
+   "lon_deg": 64.0,
+   "class": "large",
+   "purpose": "comsat",
+   "incl_deg": 2.0
+  },
+  {
+   "name": "Inmarsat-4 F3",
+   "operator": "Inmarsat",
+   "lon_deg": -98.0,
+   "class": "large",
+   "purpose": "comsat",
+   "incl_deg": 1.5
+  },
+  {
+   "name": "Inmarsat-5 F1",
+   "operator": "Inmarsat",
+   "lon_deg": 62.6,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Inmarsat-5 F2",
+   "operator": "Inmarsat",
+   "lon_deg": -55.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Inmarsat-5 F3",
+   "operator": "Inmarsat",
+   "lon_deg": 179.6,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Inmarsat-5 F4",
+   "operator": "Inmarsat",
+   "lon_deg": 56.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Inmarsat-6 F1",
+   "operator": "Inmarsat",
+   "lon_deg": 83.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Alphasat",
+   "operator": "Inmarsat / ESA",
+   "lon_deg": 25.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Inmarsat GX5",
+   "operator": "Inmarsat",
+   "lon_deg": 11.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "EchoStar 10",
+   "operator": "EchoStar",
+   "lon_deg": -110.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "EchoStar 11",
+   "operator": "EchoStar",
+   "lon_deg": -110.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "EchoStar 14",
+   "operator": "EchoStar",
+   "lon_deg": -119.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "EchoStar 15",
+   "operator": "EchoStar",
+   "lon_deg": -61.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "EchoStar 16",
+   "operator": "EchoStar",
+   "lon_deg": -61.6,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "EchoStar 17 / Jupiter 1",
+   "operator": "EchoStar",
+   "lon_deg": -107.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "EchoStar 18",
+   "operator": "EchoStar",
+   "lon_deg": -110.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "EchoStar 19 / Jupiter 2",
+   "operator": "EchoStar",
+   "lon_deg": -97.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "EchoStar 24 / Jupiter 3",
+   "operator": "EchoStar",
+   "lon_deg": -95.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "EchoStar 23",
+   "operator": "EchoStar",
+   "lon_deg": -44.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "DirecTV 10",
+   "operator": "DirecTV",
+   "lon_deg": -102.8,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "DirecTV 11",
+   "operator": "DirecTV",
+   "lon_deg": -99.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "DirecTV 12",
+   "operator": "DirecTV",
+   "lon_deg": -102.9,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "DirecTV 14",
+   "operator": "DirecTV",
+   "lon_deg": -99.3,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "DirecTV 15",
+   "operator": "DirecTV",
+   "lon_deg": -103.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "DirecTV 16",
+   "operator": "DirecTV",
+   "lon_deg": -101.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SKY Mexico-1",
+   "operator": "DirecTV / SKY Mexico",
+   "lon_deg": -78.8,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SXM-7",
+   "operator": "SiriusXM",
+   "lon_deg": -85.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SXM-8",
+   "operator": "SiriusXM",
+   "lon_deg": -115.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SXM-9",
+   "operator": "SiriusXM",
+   "lon_deg": -85.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SXM-10",
+   "operator": "SiriusXM",
+   "lon_deg": -115.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "XM-5",
+   "operator": "SiriusXM",
+   "lon_deg": -85.3,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "QuetzSat-1",
+   "operator": "SES / EchoStar",
+   "lon_deg": -77.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Ciel-2",
+   "operator": "Ciel Satellite Group",
+   "lon_deg": -129.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Anik F1R",
+   "operator": "Telesat",
+   "lon_deg": -107.3,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Anik G1",
+   "operator": "Telesat",
+   "lon_deg": -107.4,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Anik F2",
+   "operator": "Telesat",
+   "lon_deg": -111.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Anik F3",
+   "operator": "Telesat",
+   "lon_deg": -118.7,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Nimiq 4",
+   "operator": "Telesat",
+   "lon_deg": -82.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Nimiq 5",
+   "operator": "Telesat",
+   "lon_deg": -72.7,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Nimiq 6",
+   "operator": "Telesat",
+   "lon_deg": -91.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Telstar 12 VANTAGE",
+   "operator": "Telesat",
+   "lon_deg": -15.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Telstar 11N",
+   "operator": "Telesat",
+   "lon_deg": -37.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Telstar 14R",
+   "operator": "Telesat",
+   "lon_deg": -63.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Telstar 19 VANTAGE",
+   "operator": "Telesat",
+   "lon_deg": -63.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Telstar 18 VANTAGE",
+   "operator": "Telesat",
+   "lon_deg": 138.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Hispasat 30W-5",
+   "operator": "Hispasat",
+   "lon_deg": -30.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Hispasat 30W-6",
+   "operator": "Hispasat",
+   "lon_deg": -30.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Amazonas Nexus",
+   "operator": "Hispasat",
+   "lon_deg": -61.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Amazonas 3",
+   "operator": "Hispasat",
+   "lon_deg": -61.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Star One C2",
+   "operator": "Embratel Star One",
+   "lon_deg": -70.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Star One C3",
+   "operator": "Embratel Star One",
+   "lon_deg": -75.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Star One C4",
+   "operator": "Embratel Star One",
+   "lon_deg": -70.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Star One D1",
+   "operator": "Embratel Star One",
+   "lon_deg": -84.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Star One D2",
+   "operator": "Embratel Star One",
+   "lon_deg": -70.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SGDC-1",
+   "operator": "Telebras",
+   "lon_deg": -75.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ARSAT-1",
+   "operator": "ARSAT",
+   "lon_deg": -72.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ARSAT-2",
+   "operator": "ARSAT",
+   "lon_deg": -81.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Tupac Katari",
+   "operator": "ABE (Bolivia)",
+   "lon_deg": -87.2,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Bicentenario",
+   "operator": "Mexsat",
+   "lon_deg": -114.9,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Morelos 3",
+   "operator": "Mexsat",
+   "lon_deg": -113.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Thor 5",
+   "operator": "Space Norway",
+   "lon_deg": -0.8,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Thor 6",
+   "operator": "Space Norway",
+   "lon_deg": -0.9,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Thor 7",
+   "operator": "Space Norway",
+   "lon_deg": -1.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Amos-3",
+   "operator": "Spacecom",
+   "lon_deg": -4.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Amos-7",
+   "operator": "Spacecom",
+   "lon_deg": -4.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Amos-17",
+   "operator": "Spacecom",
+   "lon_deg": 17.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Nilesat 201",
+   "operator": "Nilesat",
+   "lon_deg": -7.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Nilesat 301",
+   "operator": "Nilesat",
+   "lon_deg": -7.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Hellas Sat 3",
+   "operator": "Hellas Sat",
+   "lon_deg": 39.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Hellas Sat 4 / SaudiGeoSat-1",
+   "operator": "Hellas Sat / KACST",
+   "lon_deg": 39.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Arabsat 5A",
+   "operator": "Arabsat",
+   "lon_deg": 30.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Arabsat 6A",
+   "operator": "Arabsat",
+   "lon_deg": 30.6,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Arabsat 7A",
+   "operator": "Arabsat",
+   "lon_deg": 30.4,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Badr-4",
+   "operator": "Arabsat",
+   "lon_deg": 26.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Badr-5",
+   "operator": "Arabsat",
+   "lon_deg": 26.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Badr-7",
+   "operator": "Arabsat",
+   "lon_deg": 26.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Badr-8",
+   "operator": "Arabsat",
+   "lon_deg": 20.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Arabsat 5C",
+   "operator": "Arabsat",
+   "lon_deg": 20.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Es'hail 2",
+   "operator": "Es'hailSat",
+   "lon_deg": 25.8,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Al Yah 1",
+   "operator": "Yahsat",
+   "lon_deg": 52.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Al Yah 2",
+   "operator": "Yahsat",
+   "lon_deg": 47.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Al Yah 3",
+   "operator": "Yahsat",
+   "lon_deg": -20.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Thuraya 4-NGS",
+   "operator": "Yahsat (Thuraya)",
+   "lon_deg": 44.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Thuraya 3",
+   "operator": "Yahsat (Thuraya)",
+   "lon_deg": 98.5,
+   "class": "large",
+   "purpose": "comsat",
+   "incl_deg": 3.0
+  },
+  {
+   "name": "Turksat 3A",
+   "operator": "Turksat",
+   "lon_deg": 42.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Turksat 4A",
+   "operator": "Turksat",
+   "lon_deg": 42.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Turksat 4B",
+   "operator": "Turksat",
+   "lon_deg": 50.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Turksat 5A",
+   "operator": "Turksat",
+   "lon_deg": 31.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Turksat 5B",
+   "operator": "Turksat",
+   "lon_deg": 42.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Turksat 6A",
+   "operator": "Turksat",
+   "lon_deg": 42.3,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Azerspace-1",
+   "operator": "Azercosmos",
+   "lon_deg": 46.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Azerspace-2",
+   "operator": "Azercosmos",
+   "lon_deg": 45.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Belintersat-1",
+   "operator": "Belintersat",
+   "lon_deg": 51.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "PakSat-MM1",
+   "operator": "SUPARCO",
+   "lon_deg": 38.2,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "PakSat-1R",
+   "operator": "SUPARCO",
+   "lon_deg": 38.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "NigComSat-1R",
+   "operator": "NigComSat",
+   "lon_deg": 42.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "AngoSat-2",
+   "operator": "Angola (GGPEN)",
+   "lon_deg": 23.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Rascom-QAF1R",
+   "operator": "RascomStar-QAF",
+   "lon_deg": 2.9,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Alcomsat-1",
+   "operator": "ASAL (Algeria)",
+   "lon_deg": -24.8,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SPAINSAT NG I",
+   "operator": "Hisdesat",
+   "lon_deg": -30.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Skynet 5A",
+   "operator": "UK MoD / Airbus",
+   "lon_deg": 6.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Skynet 5B",
+   "operator": "UK MoD / Airbus",
+   "lon_deg": 25.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Skynet 5C",
+   "operator": "UK MoD / Airbus",
+   "lon_deg": -17.8,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Skynet 5D",
+   "operator": "UK MoD / Airbus",
+   "lon_deg": 53.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Syracuse 4A",
+   "operator": "DGA (France)",
+   "lon_deg": 47.6,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Syracuse 4B",
+   "operator": "DGA (France)",
+   "lon_deg": 5.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Athena-Fidus",
+   "operator": "CNES / ASI",
+   "lon_deg": 38.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Sicral 2",
+   "operator": "Italian MoD / CNES",
+   "lon_deg": 37.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "EDRS-C",
+   "operator": "ESA / Airbus",
+   "lon_deg": 31.0,
+   "class": "medium",
+   "purpose": "relay"
+  },
+  {
+   "name": "Hylas 2",
+   "operator": "Avanti",
+   "lon_deg": 31.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Hylas 4",
+   "operator": "Avanti",
+   "lon_deg": -33.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Kazsat-2",
+   "operator": "KazSat",
+   "lon_deg": 86.5,
+   "class": "small",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Kazsat-3",
+   "operator": "KazSat",
+   "lon_deg": 58.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Express-AM5",
+   "operator": "RSCC",
+   "lon_deg": 140.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Express-AT2",
+   "operator": "RSCC",
+   "lon_deg": 140.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Express-AM6",
+   "operator": "RSCC",
+   "lon_deg": 53.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Express-AM7",
+   "operator": "RSCC",
+   "lon_deg": 40.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Express-AMU1",
+   "operator": "RSCC",
+   "lon_deg": 36.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Express-AMU3",
+   "operator": "RSCC",
+   "lon_deg": 103.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Express-AMU7",
+   "operator": "RSCC",
+   "lon_deg": 145.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Express-80",
+   "operator": "RSCC",
+   "lon_deg": 80.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Express-103",
+   "operator": "RSCC",
+   "lon_deg": 96.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Express-AT1",
+   "operator": "RSCC",
+   "lon_deg": 56.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Yamal-401",
+   "operator": "Gazprom Space Systems",
+   "lon_deg": 90.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Yamal-402",
+   "operator": "Gazprom Space Systems",
+   "lon_deg": 55.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Yamal-601",
+   "operator": "Gazprom Space Systems",
+   "lon_deg": 49.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Luch-5A",
+   "operator": "Roscosmos",
+   "lon_deg": 167.0,
+   "class": "small",
+   "purpose": "relay",
+   "incl_deg": 4.0
+  },
+  {
+   "name": "Luch-5B",
+   "operator": "Roscosmos",
+   "lon_deg": -16.0,
+   "class": "small",
+   "purpose": "relay",
+   "incl_deg": 4.0
+  },
+  {
+   "name": "Luch-5V",
+   "operator": "Roscosmos",
+   "lon_deg": 95.0,
+   "class": "small",
+   "purpose": "relay",
+   "incl_deg": 3.0
+  },
+  {
+   "name": "Elektro-L N2",
+   "operator": "Roscosmos",
+   "lon_deg": 77.8,
+   "class": "weather",
+   "purpose": "weather",
+   "incl_deg": 1.0
+  },
+  {
+   "name": "Elektro-L N3",
+   "operator": "Roscosmos",
+   "lon_deg": 165.8,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "Elektro-L N4",
+   "operator": "Roscosmos",
+   "lon_deg": 76.0,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "Elektro-L N5",
+   "operator": "Roscosmos",
+   "lon_deg": 14.5,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "ChinaSat 6A",
+   "operator": "China Satcom",
+   "lon_deg": 125.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 6B",
+   "operator": "China Satcom",
+   "lon_deg": 115.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 6C",
+   "operator": "China Satcom",
+   "lon_deg": 130.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 6D",
+   "operator": "China Satcom",
+   "lon_deg": 125.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 6E",
+   "operator": "China Satcom",
+   "lon_deg": 115.6,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 9",
+   "operator": "China Satcom",
+   "lon_deg": 92.2,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 9B",
+   "operator": "China Satcom",
+   "lon_deg": 101.4,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 9C",
+   "operator": "China Satcom",
+   "lon_deg": 101.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 10",
+   "operator": "China Satcom",
+   "lon_deg": 110.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 11",
+   "operator": "China Satcom",
+   "lon_deg": 98.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 12",
+   "operator": "China Satcom",
+   "lon_deg": 87.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 16",
+   "operator": "China Satcom",
+   "lon_deg": 110.6,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 19",
+   "operator": "China Satcom",
+   "lon_deg": 163.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ChinaSat 26",
+   "operator": "China Satcom",
+   "lon_deg": 125.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "APSTAR-5C",
+   "operator": "APT Satellite",
+   "lon_deg": 138.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "APSTAR-6C",
+   "operator": "APT Satellite",
+   "lon_deg": 134.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "APSTAR-6D",
+   "operator": "APT Satellite",
+   "lon_deg": 134.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "APSTAR-6E",
+   "operator": "APT Satellite",
+   "lon_deg": 134.2,
+   "class": "small",
+   "purpose": "comsat"
+  },
+  {
+   "name": "APSTAR-7",
+   "operator": "APT Satellite",
+   "lon_deg": 76.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "APSTAR-9",
+   "operator": "APT Satellite",
+   "lon_deg": 142.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "AsiaSat 5",
+   "operator": "AsiaSat",
+   "lon_deg": 100.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "AsiaSat 7",
+   "operator": "AsiaSat",
+   "lon_deg": 105.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "AsiaSat 9",
+   "operator": "AsiaSat",
+   "lon_deg": 122.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Tianlian II-01",
+   "operator": "CNSA (data relay)",
+   "lon_deg": 80.0,
+   "class": "medium",
+   "purpose": "relay"
+  },
+  {
+   "name": "Tianlian II-02",
+   "operator": "CNSA (data relay)",
+   "lon_deg": 171.0,
+   "class": "medium",
+   "purpose": "relay"
+  },
+  {
+   "name": "Tianlian II-03",
+   "operator": "CNSA (data relay)",
+   "lon_deg": 10.6,
+   "class": "medium",
+   "purpose": "relay"
+  },
+  {
+   "name": "Tianlian I-04",
+   "operator": "CNSA (data relay)",
+   "lon_deg": 77.0,
+   "class": "medium",
+   "purpose": "relay"
+  },
+  {
+   "name": "Tianlian I-05",
+   "operator": "CNSA (data relay)",
+   "lon_deg": 176.8,
+   "class": "medium",
+   "purpose": "relay"
+  },
+  {
+   "name": "Fengyun-2G",
+   "operator": "CMA",
+   "lon_deg": 99.5,
+   "class": "spinner",
+   "purpose": "weather"
+  },
+  {
+   "name": "Fengyun-2H",
+   "operator": "CMA",
+   "lon_deg": 79.0,
+   "class": "spinner",
+   "purpose": "weather"
+  },
+  {
+   "name": "Fengyun-4A",
+   "operator": "CMA",
+   "lon_deg": 86.5,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "Fengyun-4B",
+   "operator": "CMA",
+   "lon_deg": 105.0,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "Fengyun-4C",
+   "operator": "CMA",
+   "lon_deg": 133.0,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "BeiDou-3 G1",
+   "operator": "CNSA (BeiDou)",
+   "lon_deg": 140.0,
+   "class": "medium",
+   "purpose": "navigation"
+  },
+  {
+   "name": "BeiDou-3 G2",
+   "operator": "CNSA (BeiDou)",
+   "lon_deg": 80.1,
+   "class": "medium",
+   "purpose": "navigation"
+  },
+  {
+   "name": "BeiDou-3 G3",
+   "operator": "CNSA (BeiDou)",
+   "lon_deg": 110.5,
+   "class": "medium",
+   "purpose": "navigation"
+  },
+  {
+   "name": "BeiDou-3 G4",
+   "operator": "CNSA (BeiDou)",
+   "lon_deg": 144.5,
+   "class": "medium",
+   "purpose": "navigation"
+  },
+  {
+   "name": "BeiDou-2 G6",
+   "operator": "CNSA (BeiDou)",
+   "lon_deg": 80.2,
+   "class": "medium",
+   "purpose": "navigation"
+  },
+  {
+   "name": "BeiDou-2 G7",
+   "operator": "CNSA (BeiDou)",
+   "lon_deg": 144.6,
+   "class": "medium",
+   "purpose": "navigation"
+  },
+  {
+   "name": "BeiDou-2 G8",
+   "operator": "CNSA (BeiDou)",
+   "lon_deg": 110.6,
+   "class": "medium",
+   "purpose": "navigation"
+  },
+  {
+   "name": "Shijian-20",
+   "operator": "CAST",
+   "lon_deg": 105.5,
+   "class": "large",
+   "purpose": "experimental"
+  },
+  {
+   "name": "Yaogan-41",
+   "operator": "PLA (estimated)",
+   "lon_deg": 99.0,
+   "class": "large",
+   "purpose": "earth observation"
+  },
+  {
+   "name": "Himawari-9",
+   "operator": "JMA",
+   "lon_deg": 140.7,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "Himawari-8",
+   "operator": "JMA",
+   "lon_deg": 140.8,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "JCSAT-1C",
+   "operator": "SKY Perfect JSAT",
+   "lon_deg": 150.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "JCSAT-2B",
+   "operator": "SKY Perfect JSAT",
+   "lon_deg": 154.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "JCSAT-3A",
+   "operator": "SKY Perfect JSAT",
+   "lon_deg": 128.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "JCSAT-4B",
+   "operator": "SKY Perfect JSAT",
+   "lon_deg": 124.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "JCSAT-5A",
+   "operator": "SKY Perfect JSAT",
+   "lon_deg": 132.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "JCSAT-15",
+   "operator": "SKY Perfect JSAT",
+   "lon_deg": 110.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "JCSAT-16",
+   "operator": "SKY Perfect JSAT",
+   "lon_deg": 162.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "JCSAT-17",
+   "operator": "SKY Perfect JSAT",
+   "lon_deg": 136.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "JCSAT-18 / Kacific-1",
+   "operator": "SKY Perfect JSAT / Kacific",
+   "lon_deg": 150.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "JCSAT-110R",
+   "operator": "SKY Perfect JSAT",
+   "lon_deg": 110.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Superbird-8",
+   "operator": "SKY Perfect JSAT",
+   "lon_deg": 162.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Superbird-C2",
+   "operator": "SKY Perfect JSAT",
+   "lon_deg": 144.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "BSAT-3a",
+   "operator": "B-SAT",
+   "lon_deg": 110.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "BSAT-3c",
+   "operator": "B-SAT",
+   "lon_deg": 109.9,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "BSAT-4a",
+   "operator": "B-SAT",
+   "lon_deg": 110.3,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "BSAT-4b",
+   "operator": "B-SAT",
+   "lon_deg": 109.8,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Michibiki QZS-3",
+   "operator": "Cabinet Office (QZSS)",
+   "lon_deg": 127.0,
+   "class": "medium",
+   "purpose": "navigation"
+  },
+  {
+   "name": "Kirameki-2 (DSN-2)",
+   "operator": "Japan MoD",
+   "lon_deg": 162.2,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Kirameki-1 (DSN-1)",
+   "operator": "Japan MoD",
+   "lon_deg": 102.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Koreasat 5A",
+   "operator": "KT SAT",
+   "lon_deg": 113.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Koreasat 6",
+   "operator": "KT SAT",
+   "lon_deg": 116.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Koreasat 6A",
+   "operator": "KT SAT",
+   "lon_deg": 116.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Koreasat 7",
+   "operator": "KT SAT",
+   "lon_deg": 116.2,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GEO-KOMPSAT-2A",
+   "operator": "KMA / KARI",
+   "lon_deg": 128.2,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "GEO-KOMPSAT-2B",
+   "operator": "KME / KARI",
+   "lon_deg": 128.3,
+   "class": "weather",
+   "purpose": "earth observation"
+  },
+  {
+   "name": "GSAT-7 (Rukmini)",
+   "operator": "ISRO / Indian Navy",
+   "lon_deg": 74.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-7A",
+   "operator": "ISRO / Indian Air Force",
+   "lon_deg": 63.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-10",
+   "operator": "ISRO",
+   "lon_deg": 83.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-11",
+   "operator": "ISRO",
+   "lon_deg": 74.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-15",
+   "operator": "ISRO",
+   "lon_deg": 93.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-16",
+   "operator": "ISRO",
+   "lon_deg": 55.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-17",
+   "operator": "ISRO",
+   "lon_deg": 93.6,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-18",
+   "operator": "ISRO",
+   "lon_deg": 74.2,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-19",
+   "operator": "ISRO",
+   "lon_deg": 48.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-24",
+   "operator": "NSIL",
+   "lon_deg": 83.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-29",
+   "operator": "ISRO",
+   "lon_deg": 55.2,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-30",
+   "operator": "ISRO",
+   "lon_deg": 83.2,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-31",
+   "operator": "ISRO",
+   "lon_deg": 48.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GSAT-N2 (GSAT-20)",
+   "operator": "NSIL",
+   "lon_deg": 68.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "INSAT-3DR",
+   "operator": "ISRO / IMD",
+   "lon_deg": 74.3,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "INSAT-3DS",
+   "operator": "ISRO / IMD",
+   "lon_deg": 82.0,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "IRNSS-1C",
+   "operator": "ISRO (NavIC)",
+   "lon_deg": 83.3,
+   "class": "small",
+   "purpose": "navigation"
+  },
+  {
+   "name": "IRNSS-1G",
+   "operator": "ISRO (NavIC)",
+   "lon_deg": 129.5,
+   "class": "small",
+   "purpose": "navigation"
+  },
+  {
+   "name": "NVS-01",
+   "operator": "ISRO (NavIC)",
+   "lon_deg": 129.6,
+   "class": "small",
+   "purpose": "navigation"
+  },
+  {
+   "name": "Telkom-3S",
+   "operator": "Telkomsat",
+   "lon_deg": 118.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Merah Putih",
+   "operator": "Telkomsat",
+   "lon_deg": 108.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Merah Putih 2",
+   "operator": "Telkomsat",
+   "lon_deg": 113.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SATRIA-1",
+   "operator": "Satelit Nusantara Tiga",
+   "lon_deg": 146.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Nusantara Satu",
+   "operator": "PSN",
+   "lon_deg": 146.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "BRIsat",
+   "operator": "Bank Rakyat Indonesia",
+   "lon_deg": 150.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Thaicom 4 (IPSTAR)",
+   "operator": "Thaicom",
+   "lon_deg": 119.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Thaicom 6",
+   "operator": "Thaicom",
+   "lon_deg": 78.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Thaicom 8",
+   "operator": "Thaicom",
+   "lon_deg": 78.6,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "MEASAT-3a",
+   "operator": "MEASAT",
+   "lon_deg": 91.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "MEASAT-3b",
+   "operator": "MEASAT",
+   "lon_deg": 91.6,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "MEASAT-3d",
+   "operator": "MEASAT",
+   "lon_deg": 91.4,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Vinasat-1",
+   "operator": "VNPT",
+   "lon_deg": 132.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Vinasat-2",
+   "operator": "VNPT",
+   "lon_deg": 131.8,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Lao Sat-1",
+   "operator": "LaoSat",
+   "lon_deg": 128.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Bangabandhu-1",
+   "operator": "BCSCL",
+   "lon_deg": 119.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ABS-2",
+   "operator": "ABS",
+   "lon_deg": 75.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ABS-2A",
+   "operator": "ABS",
+   "lon_deg": 75.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "ABS-3A",
+   "operator": "ABS",
+   "lon_deg": -3.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Optus D1",
+   "operator": "Optus",
+   "lon_deg": 160.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Optus D2",
+   "operator": "Optus",
+   "lon_deg": 152.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Optus D3",
+   "operator": "Optus",
+   "lon_deg": 156.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Optus 10",
+   "operator": "Optus",
+   "lon_deg": 164.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Optus-11",
+   "operator": "Optus",
+   "lon_deg": 156.1,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Sky Muster",
+   "operator": "NBN Co",
+   "lon_deg": 140.2,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Sky Muster II",
+   "operator": "NBN Co",
+   "lon_deg": 145.1,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Kacific-2 / Astranis",
+   "operator": "Kacific",
+   "lon_deg": 150.2,
+   "class": "small",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astranis Block 2 (1)",
+   "operator": "Astranis",
+   "lon_deg": -163.0,
+   "class": "small",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astranis Block 2 (2)",
+   "operator": "Astranis",
+   "lon_deg": -95.3,
+   "class": "small",
+   "purpose": "comsat"
+  },
+  {
+   "name": "Astranis Block 2 (3)",
+   "operator": "Astranis",
+   "lon_deg": 134.3,
+   "class": "small",
+   "purpose": "comsat"
+  },
+  {
+   "name": "TDRS-10",
+   "operator": "NASA (TDRSS)",
+   "lon_deg": -41.0,
+   "class": "medium",
+   "purpose": "relay",
+   "incl_deg": 4.0
+  },
+  {
+   "name": "TDRS-11",
+   "operator": "NASA (TDRSS)",
+   "lon_deg": -171.0,
+   "class": "medium",
+   "purpose": "relay",
+   "incl_deg": 3.0
+  },
+  {
+   "name": "TDRS-12",
+   "operator": "NASA (TDRSS)",
+   "lon_deg": -174.0,
+   "class": "medium",
+   "purpose": "relay",
+   "incl_deg": 3.0
+  },
+  {
+   "name": "TDRS-13",
+   "operator": "NASA (TDRSS)",
+   "lon_deg": -150.0,
+   "class": "medium",
+   "purpose": "relay",
+   "incl_deg": 3.0
+  },
+  {
+   "name": "TDRS-6",
+   "operator": "NASA (TDRSS)",
+   "lon_deg": -46.0,
+   "class": "medium",
+   "purpose": "relay",
+   "incl_deg": 9.0
+  },
+  {
+   "name": "TDRS-8",
+   "operator": "NASA (TDRSS)",
+   "lon_deg": -89.0,
+   "class": "medium",
+   "purpose": "relay",
+   "incl_deg": 5.0
+  },
+  {
+   "name": "WGS-1",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": 175.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "WGS-2",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": 60.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "WGS-3",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": -12.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "WGS-4",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": -88.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "WGS-5",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": -52.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "WGS-6",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": 135.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "WGS-7",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": 150.3,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "WGS-8",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": 58.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "WGS-9",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": -170.0,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "WGS-10",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": 75.4,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "WGS-11",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": -103.5,
+   "class": "large",
+   "purpose": "comsat"
+  },
+  {
+   "name": "MUOS-1",
+   "operator": "US Navy (approx.)",
+   "lon_deg": -100.0,
+   "class": "large",
+   "purpose": "comsat",
+   "incl_deg": 3.0
+  },
+  {
+   "name": "MUOS-2",
+   "operator": "US Navy (approx.)",
+   "lon_deg": -177.0,
+   "class": "large",
+   "purpose": "comsat",
+   "incl_deg": 3.0
+  },
+  {
+   "name": "MUOS-3",
+   "operator": "US Navy (approx.)",
+   "lon_deg": -15.5,
+   "class": "large",
+   "purpose": "comsat",
+   "incl_deg": 3.0
+  },
+  {
+   "name": "MUOS-4",
+   "operator": "US Navy (approx.)",
+   "lon_deg": 75.0,
+   "class": "large",
+   "purpose": "comsat",
+   "incl_deg": 3.0
+  },
+  {
+   "name": "MUOS-5",
+   "operator": "US Navy (approx.)",
+   "lon_deg": -105.5,
+   "class": "large",
+   "purpose": "comsat",
+   "incl_deg": 3.0
+  },
+  {
+   "name": "AEHF-1",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": -90.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "AEHF-2",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": 150.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "AEHF-3",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": -44.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "AEHF-4",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": 106.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "AEHF-5",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": -120.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "AEHF-6",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": 60.5,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "SBIRS GEO-3",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": -105.0,
+   "class": "medium",
+   "purpose": "early warning"
+  },
+  {
+   "name": "SBIRS GEO-4",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": 10.0,
+   "class": "medium",
+   "purpose": "early warning"
+  },
+  {
+   "name": "SBIRS GEO-5",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": -32.0,
+   "class": "medium",
+   "purpose": "early warning"
+  },
+  {
+   "name": "SBIRS GEO-6",
+   "operator": "US Space Force (approx.)",
+   "lon_deg": 93.0,
+   "class": "medium",
+   "purpose": "early warning"
+  },
+  {
+   "name": "CBAS / Galaxy filler",
+   "operator": "Intelsat",
+   "lon_deg": -71.0,
+   "class": "medium",
+   "purpose": "comsat"
+  },
+  {
+   "name": "GOES-19 (GOES-East)",
+   "operator": "NOAA",
+   "lon_deg": -75.2,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "GOES-18 (GOES-West)",
+   "operator": "NOAA",
+   "lon_deg": -137.0,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "GOES-16 (standby)",
+   "operator": "NOAA",
+   "lon_deg": -104.7,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "GOES-17 (storage)",
+   "operator": "NOAA",
+   "lon_deg": -104.8,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "Meteosat-12 (MTG-I1)",
+   "operator": "EUMETSAT",
+   "lon_deg": 0.0,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "MTG-S1 (Meteosat sounder)",
+   "operator": "EUMETSAT",
+   "lon_deg": 0.1,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "MTG-I2",
+   "operator": "EUMETSAT",
+   "lon_deg": 9.5,
+   "class": "weather",
+   "purpose": "weather"
+  },
+  {
+   "name": "Meteosat-11",
+   "operator": "EUMETSAT",
+   "lon_deg": 9.6,
+   "class": "spinner",
+   "purpose": "weather"
+  },
+  {
+   "name": "Meteosat-10",
+   "operator": "EUMETSAT",
+   "lon_deg": 3.5,
+   "class": "spinner",
+   "purpose": "weather"
+  },
+  {
+   "name": "Meteosat-9 (IODC)",
+   "operator": "EUMETSAT",
+   "lon_deg": 45.5,
+   "class": "spinner",
+   "purpose": "weather"
+  }
+ ]
+}

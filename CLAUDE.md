@@ -65,7 +65,7 @@ code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
 `imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
-validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_icons.py` (regenerates the
+validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_geo_belt.py` + `tools/make_geo_models.py` (the GEO belt's members and models) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
 offline synth renders) · `tools/benchmarks/` ·
@@ -3581,6 +3581,15 @@ lives in `data/custom/constellations_attitude_example.json`. The v1.1 legacy ros
 `data/custom/constellations_v1_1_default.json`. The build copies `data/constellations.json` over the exe-dir copy whenever the
 exe relinks — which is why hand-pasted rosters there kept "reverting": edit the file in `data/`.
 
+**Settings > Constellations (2026-10-20, `buildSettingsConstellationsTab`)** lists the roster GROUPED by category,
+folded at first (`constGroupOpen_`, session state): a group header has ON / HLT for every entry in it (MIX when
+some are on) and the group's satellite count; an entry row has ON / HLT and its action — Select / Go to for a
+one-satellite entry (a station), LIST for a List entry (its members: a search field over name / operator /
+purpose, pages of 25 sorted west to east, Select / Go to each; destroyed members greyed), else VIEW (3D view of
+its satellite highest in the sky). Formatted strings live in `constUiText_` (a per-build deque: Clay keeps the
+pointers). Ids: `ConstGrpName:<g>`, `ConstGrpOn:<g>`, `ConstGrpHlt:<g>`, `ConstBtn:<ci>`, `ConstListBtn:<ci>`,
+`ConstListFind:<ci>`, `ConstMemSel:<sat>`, `ConstMemGo:<sat>`, `ConstSel:<ci>`, `ConstGo:<ci>` (harness `ui click`).
+
 Types and constellations are loaded from `constellations.json` next to the exe. If the file is missing or malformed, `loadHardcoded()` provides the catalogue above as a fallback. The JSON schema is in `constellations.schema.json`.
 
 ### Adding a new satellite type
@@ -3602,8 +3611,30 @@ Types and constellations are loaded from `constellations.json` next to the exe. 
   `sun_synchronous`, shells, planes per shell, satellites per plane; `ShellGroup`). Non-SSO groups are Walker
   shells (each shell's planes staggered); SSO groups take each shell's J2 inclination and spread their planes
   from the dusk node (LTAN 18:00), so 2 planes per shell = the 18:00 + 06:00 **X-ring** crossing at the
-  equator. One entry rather than one per group because `enabledMask`/`highlightMask` (`SatOrbitPC`) are
-  32-bit: the roster is at 29 entries, and an entry index >= 32 has no mask bit.
+  equator. One entry rather than one per group (a roster entry is one Show / Highlight bit; see List below for the
+  limit, now 256).
+- **List** (2026-10-20, issue 20261020_190331 "GEO Satellites") — named MEMBERS, each its own satellite
+  (`ConstMember`: name, operator, class, purpose, its own type), inline `members` or a `members_file` next to the
+  exe; a member's type is its `type`, else `class_types[class]`, else the entry's. A member with `lon_deg` (no
+  `alt_km`) is GEOSTATIONARY: buildOrbits puts it at the radius whose float mean motion is the Earth's rotation
+  rate and solves its J2000 phase so that at the build's sim time it is over its slot (u0 = lon + ERA(t) - raan -
+  n t; inclination 0.02-0.08 deg hashed unless given, node hashed); collocated members are spread +-0.06 deg in
+  their box. Drift < 0.01 deg a year (harness `state` -> `selection.member.lon_now_deg`: GOES-19 -75.200 /
+  -75.199 / -75.196 over a year). No J2, no station keeping — nothing else moves a roster record. The roster's
+  **GEO belt** is one List entry, APPENDED last (so no earlier entry's random stream, `defIndex` or Kessler
+  history moves): 398 real satellites from `data/geo_satellites.json` (written by `tools/make_geo_belt.py`: name,
+  operator, slot, class, purpose; approximate mid-2020s slots, see its header), flying four generic models
+  (`tools/make_geo_models.py`: `geo_comsat_large` 205, `geo_comsat_medium` 168 incl. "small", `geo_weather` 20,
+  `geo_spinner` 5) baked at the 48-lobe budget (`geo_` prefix: ~200 are above any observer's horizon every
+  night; 112 exact lobes cost ~0.3 ms of orbit dispatch on the ground). `satLabel()` / the selection panel /
+  the info window show a member's own name (`rosterMemberName()`; a one-satellite entry, a station, shows its
+  entry's name, no "#0"), with operator, mission and slot (`rosterMember()`). Harness `select const "GEO belt"
+  n=<k>`; `state` -> `selection.member`.
+- **Show / Highlight bits** (2026-10-20): `GpuSatTypeHeader::constEnabled[8]` / `constHighlight[8]` (bit c & 31 of
+  word c >> 5; 256 constellations, the width of a record's constIdx byte: `kMaxConstellationBits`), read in
+  `sat_orbit.comp` by `CONST_BIT`. They replaced `SatOrbitPC`'s two 32-bit masks (now `padMask0/1`): every entry
+  past the 32nd — and every Kessler / launch record carrying one (constIdx & 31 wrapped onto another entry) — read
+  another entry's bit.
 - **Clusters** (`cluster_size`; Walker, Disk, Shells): each plane's satellites fly in formation clusters,
   evenly spaced. 1 = off (Walker keeps random phases). `cluster_shape` "line": `cluster_spacing_km` apart along
   track; "ring" (2026-10-06 rework): a PASSIVE formation — every member takes the cluster CENTRE's circular
@@ -3654,8 +3685,12 @@ Types and constellations are loaded from `constellations.json` next to the exe. 
 - `incl` is ignored when `alignTerminator=true`
 
 ### Adding a new constellation
-1. Add a `ConstellationConfig` entry to `constellations.json` (or `loadHardcoded()`)
-2. `hovConst` and `hovHighlightConst` are `std::vector<bool>` and auto-size to `constellations.size()` — no manual hover bool management needed
+1. Add a `ConstellationConfig` entry to `constellations.json` (or `loadHardcoded()`) — APPEND it: an entry inserted
+   mid-roster moves every later entry's `defIndex` (cluster jitter), the Kessler history and the launches' planes
+   (bump the Kessler `kCacheVersion` when the roster changes)
+2. Give it a `"category"` (Settings > Constellations groups by it: Broadband, Stations, Orbital data centers,
+   Reflectors, GEO, Science, Benchmarks, Debris; any other name makes a new group; absent = `constCategoryOf()`
+   infers one from the name). Rows are hover-keyed through `uiHov_`, so there is no per-entry hover state to size
 3. `MAX_SATELLITES = 10,000,000` — cap is generous; only relevant for very large test configs
 
 ### Current constellation roster (9 total, hardcoded fallback)
@@ -3799,8 +3834,9 @@ bits 8-15 are the member's cluster size and 16-23 its slot in it (the formation 
 
 ### GpuSatType layout (416 bytes, std430) — `satTypeBuf`
 One per `satTypes[]` entry, indexed by `GpuSatOrbit::typeIdx`, at `kSatTypeArrayOffset`: after a
-32-byte `GpuSatTypeHeader` (`brightnessScale`, `mirrorBoost`, `occlusionFluxFloor`, `occlusionOn`,
-`deltaTLo` —
+112-byte `GpuSatTypeHeader` (`brightnessScale`, `mirrorBoost`, `occlusionFluxFloor`, `occlusionOn`,
+`deltaTLo`, the mesh / formation / Kessler pool fields, and since 2026-10-20 the per-constellation
+`constEnabled[8]` / `constHighlight[8]` bits —
 rewritten every frame; `SatOrbitPC` is full) and the 448 KB `GpuEarthshineLut` (`earthLut` +
 `earthShA/B/C` in the shader, written once by `createSatBuffers()`). Must match
 `SatType`/`AttGroup`/`SatTypeBuf` in `sat_orbit.comp` (`offsetof` static_asserts guard the C++ side).
@@ -3873,7 +3909,7 @@ guard the C++ side.
 enuX (vec4), enuY (vec4), enuZ (vec4)  — ECI→ENU basis, offsets 0/16/32
 sunDirECI (vec3), deltaT (float)       — offset 48/60
 obsECI (vec3), satCount (uint)         — offset 64/76
-highlightMask (uint), enabledMask (uint), simDt (float), elevCutoff (float) — offset 80/84/88/92
+padMask0, padMask1 (uint; the old highlight / enabled masks, 2026-10-20: GpuSatTypeHeader), simDt (float), elevCutoff (float) — offset 80/84/88/92
 beamGain (float), reflectorLockWindowS (float), targetCount (uint),
 minBeamElevSin (float)                 — offsets 96/100/104/108
 gmstNow (float), windowFrac (float), mirrorMaxRateDegPerSec (float), pad2 — offset 112/116/120,

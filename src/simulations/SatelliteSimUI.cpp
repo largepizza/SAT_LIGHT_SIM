@@ -2352,6 +2352,15 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
         statusRow("Object", "%s", lab.c_str());
         if (o.constIdx < constellations.size() && (uint32_t)viewerSatIndex < activeSatCount)
             statusRow("Constellation", "%s", constellations[o.constIdx].name.c_str());
+        if (const ConstMember *m = rosterMember((uint32_t)viewerSatIndex))
+        {
+            if (!m->operatorName.empty())
+                statusRow("Operator", "%s", m->operatorName.c_str());
+            if (!m->purpose.empty())
+                statusRow("Mission", "%s", m->purpose.c_str());
+            if (m->geo)
+                statusRow("GEO slot", "%.2f %c (approx.)", std::fabs(m->lonDeg), m->lonDeg < 0.0f ? 'W' : 'E');
+        }
         if (o.typeIdx < satTypes.size())
             statusRow("Satellite", "%s", satTypes[o.typeIdx].name.c_str());
         const bool dead = lab.size() > 7 && lab.compare(lab.size() - 7, 7, " (dead)") == 0;
@@ -3416,145 +3425,326 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
 }
 
 // ─── buildSettingsConstellationsTab ─────────────────────────────────────────
+// Grouped by kind (2026-10-20, issue 20261020_190331): broadband mega-constellations, stations and depots, orbital
+// data centers, reflectors, the GEO belt, science, the 2020 benchmark shells, debris. Each group folds and has
+// ON / HLT for every entry in it; an entry of one satellite (a station) has Select / Go to; a List entry (the GEO
+// belt) opens a searchable, paged list of its named members with Select / Go to each. Rows are one per roster
+// ENTRY, never one per member: an entry is one Show / Highlight bit (GpuSatTypeHeader::constEnabled, up to 256).
 void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer &ui)
 {
-    static char constCntBuf[256][16]; // one slot per constellation; 256 > any realistic mod
+    constUiText_.clear(); // Clay keeps pointers into these until the frame is recorded
+    auto kitStr = [](const char *s) { return Clay_String{false, (int32_t)strlen(s), s}; };
+    auto keep = [&](std::string s) -> const char * {
+        constUiText_.push_back(std::move(s));
+        return constUiText_.back().c_str();
+    };
+    // A fixed-width toggle pill (ON / HLT / SEL / GO / LIST), hover kept in uiHov_ by its id.
+    auto pill = [&](const char *key, int idx, const char *label, Clay_Color bg, Clay_Color bgHv, const char *tip,
+                    float w = 30.0f, bool enabled = true) -> bool {
+        const Clay_ElementId id = CLAY_SIDI(kitStr(key), (uint32_t)idx);
+        const bool hovPrev = enabled && uiHov_[id.id];
+        bool clicked = false;
+        CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIXED(18)},
+                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                  .backgroundColor = !enabled ? Pal::rowDisabled : hovPrev ? bgHv : bg,
+                  .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            const bool n = Clay_Hovered();
+            if (enabled)
+            {
+                uiHovRoll(id.id, n);
+                sndClick(n, inp.lmbPressed);
+                clicked = n && inp.lmbPressed;
+            }
+            if (tip)
+                ui.tooltip(inp, n, tip, fs(11));
+            CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = enabled ? Pal::textPrimary : Pal::textHint,
+                                                       .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+        return clicked;
+    };
+    auto text = [&](Clay_ElementId id, const char *s, float w, Clay_Color col, int size, bool right = false) {
+        CLAY(id, {.layout = {.sizing = {w > 0.0f ? CLAY_SIZING_FIXED(w) : CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                             .childAlignment = {.x = right ? CLAY_ALIGN_X_RIGHT : CLAY_ALIGN_X_LEFT}},
+                  .clip = {.horizontal = true}})
+        {
+            CLAY_TEXT(kitStr(s), CLAY_TEXT_CONFIG({.textColor = col, .fontSize = fs(size), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+    };
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    auto gone = [&](int sat) { return kesslerEnabled && sat >= 0 && sat < (int)activeSatCount && rosterFateAt((uint32_t)sat, tNow) >= 2; };
+    int actSel = -1, actGo = -1; // applied after the layout below
+
     uiSection("ConstSec", 0, "CONSTELLATIONS");
-    // Column header over the buttons: Show / Highlight / 3D view, the name, the satellite count.
+    uiKV("ConstHintKV", 0, "", "Grouped by kind. Click a group's name to fold it; its ON / HLT set every entry in it.", 4.0f,
+         &Pal::textDim);
+    // Column header over the buttons: Show / Highlight / actions, the name, the satellite count.
     CLAY(CLAY_ID("ConstHeader"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                              .padding = {4, 4, 4, 0},
                                              .childGap = 6,
                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
     {
-        auto hdr = [&](Clay_ElementId id, float w, const char *s, bool right)
+        text(CLAY_ID("ConstHdrShow"), "Show", 30, Pal::textHint, 10);
+        text(CLAY_ID("ConstHdrHlt"), "Hlt", 30, Pal::textHint, 10);
+        text(CLAY_ID("ConstHdrView"), "Actions", 84, Pal::textHint, 10);
+        text(CLAY_ID("ConstHdrName"), "Name", 0.0f, Pal::textHint, 10);
+        text(CLAY_ID("ConstHdrCount"), "Count", 64, Pal::textHint, 10, true);
+    }
+
+    // Groups in a fixed order; a category nobody listed here goes after them, in roster order.
+    static const char *kOrder[] = {"Broadband", "Stations", "Orbital data centers", "Reflectors", "GEO",
+                                   "Science", "Benchmarks", "Debris", "Other"};
+    static const char *kTitles[] = {"BROADBAND CONSTELLATIONS", "STATIONS AND DEPOTS", "ORBITAL DATA CENTERS",
+                                    "REFLECTORS", "GEOSTATIONARY BELT", "SCIENCE", "BENCHMARK SHELLS (2020)",
+                                    "DEBRIS", "OTHER"};
+    std::vector<std::string> cats(std::begin(kOrder), std::end(kOrder));
+    std::vector<std::vector<int>> groups(cats.size());
+    const int nConst = std::min((int)constellations.size(), (int)kMaxConstellationBits);
+    for (int ci = 0; ci < nConst; ++ci)
+    {
+        const std::string cat = constCategoryOf(constellations[ci]);
+        size_t g = 0;
+        while (g < cats.size() && cats[g] != cat)
+            ++g;
+        if (g == cats.size())
         {
-            CLAY(id, {.layout = {.sizing = {w > 0.0f ? CLAY_SIZING_FIXED(w) : CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                 .childAlignment = {.x = right ? CLAY_ALIGN_X_RIGHT : CLAY_ALIGN_X_LEFT}}})
+            cats.push_back(cat);
+            groups.emplace_back();
+        }
+        groups[g].push_back(ci);
+    }
+    auto countOf = [&](int ci) -> long long {
+        if (ci == kDebrisConst) // Kessler fragments: none in the roster; the live count of drawn records
+            return kesslerStateCached()["now"]["fragments"].get<long long>();
+        return (long long)constellations[ci].orbitCount;
+    };
+    auto fmtCount = [&](long long n) {
+        if (n >= 1000000)
+            return keep(std::string(uiKitStr("%.2fM", (double)n / 1e6)));
+        if (n >= 100000)
+            return keep(std::string(uiKitStr("%.0fk", (double)n / 1e3)));
+        return keep(std::to_string(n));
+    };
+
+    for (size_t g = 0; g < cats.size(); ++g)
+    {
+        if (groups[g].empty())
+            continue;
+        const std::string &cat = cats[g];
+        auto openIt = constGroupOpen_.find(cat);
+        const bool open = openIt == constGroupOpen_.end() ? false : openIt->second; // folded at first: the groups are the overview
+        int nOn = 0, nHlt = 0;
+        long long total = 0;
+        for (int ci : groups[g])
+        {
+            nOn += constellations[ci].enabled ? 1 : 0;
+            nHlt += constellations[ci].highlight ? 1 : 0;
+            total += countOf(ci);
+        }
+        const int n = (int)groups[g].size();
+        const char *title = g < std::size(kTitles) ? kTitles[g] : keep(cat);
+        // ── Group header ────────────────────────────────────────────
+        CLAY(CLAY_IDI("ConstGrp", (int)g), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26)},
+                                                      .padding = {4, 4, 4, 4},
+                                                      .childGap = 6,
+                                                      .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                      .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                           .backgroundColor = Pal::sectionHdr,
+                                           .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            const bool allOn = nOn == n, allHlt = nHlt == n;
+            if (pill("ConstGrpOn", (int)g, nOn == 0 ? "OFF" : allOn ? "ON" : "MIX",
+                     nOn == 0 ? Pal::btnIdle : allOn ? Pal::btnAccent : Pal::btnAccentHv, Pal::btnHover,
+                     "Show or hide every entry in this group"))
+                for (int ci : groups[g])
+                    constellations[ci].enabled = !allOn;
+            if (pill("ConstGrpHlt", (int)g, "HLT", nHlt == 0 ? Pal::btnIdle : allHlt ? Pal::btnHighlight : Pal::btnHighlightHv,
+                     Pal::btnHover, "Highlight every entry in this group (census mode)"))
+                for (int ci : groups[g])
+                    constellations[ci].highlight = !allHlt;
+            const Clay_ElementId nid = CLAY_IDI("ConstGrpName", (int)g);
+            CLAY(nid, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(18)},
+                                  .padding = {6, 0, 0, 0},
+                                  .childGap = 6,
+                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                  .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                       .backgroundColor = uiHov_[nid.id] ? Pal::ghostHover : Clay_Color{0, 0, 0, 0},
+                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
             {
-                CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}),
+                const bool h = Clay_Hovered();
+                uiHovRoll(nid.id, h);
+                sndClick(h, inp.lmbPressed);
+                if (h && inp.lmbPressed)
+                    constGroupOpen_[cat] = !open;
+                CLAY_TEXT(open ? CLAY_STRING("-") : CLAY_STRING("+"),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
+                CLAY_TEXT(kitStr(title), CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11),
+                                                           .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                CLAY_TEXT(kitStr(keep(n == 1 ? std::string("1 entry") : std::to_string(n) + " entries")),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
             }
-        };
-        hdr(CLAY_ID("ConstHdrShow"), 30, "Show", false);
-        hdr(CLAY_ID("ConstHdrHlt"), 30, "Hlt", false);
-        hdr(CLAY_ID("ConstHdrView"), 38, "3D", false);
-        hdr(CLAY_ID("ConstHdrName"), 0.0f, "Name", false);
-        hdr(CLAY_ID("ConstHdrCount"), 52, "Count", true);
-    }
-    for (int ci = 0; ci < (int)constellations.size() && ci < 256; ++ci)
-    {
-        ConstellationConfig &c = constellations[ci];
-        snprintf(constCntBuf[ci], sizeof(constCntBuf[ci]), "%u", c.orbitCount);
-        if (ci == kDebrisConst) // Kessler fragments: none in the roster; the live count of drawn records
-            snprintf(constCntBuf[ci], sizeof(constCntBuf[ci]), "%d", kesslerStateCached()["now"]["fragments"].get<int>());
+            text(CLAY_IDI("ConstGrpCnt", (int)g), fmtCount(total), 64, Pal::textCamera, 11, true);
+        }
+        if (!open)
+            continue;
 
-        bool hov = ci < (int)hovConst.size() && hovConst[ci];
-        bool hovHlt = ci < (int)hovHighlightConst.size() && hovHighlightConst[ci];
-        Clay_Color rowBg = c.highlight ? Pal::rowHighlight
-                                       : (c.enabled ? Pal::rowEnabled : Pal::rowDisabled);
-        CLAY(CLAY_IDI("ConstRow", ci), {.layout = {
-                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
-                                            .padding = {4, 4, 3, 3},
-                                            .childGap = 6,
-                                            .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                            .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                        .backgroundColor = rowBg,
-                                        .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        // ── Entries ────────────────────────────────────────────────
+        for (int ci : groups[g])
         {
-            // ── ON/OFF toggle ────────────────────────────────────
-            Clay_Color btnBg = c.enabled
-                                   ? Pal::btnAccent
-                                   : (hov ? Pal::btnAccentHv : Pal::btnIdle);
-            CLAY(CLAY_IDI("ConstBtn", ci), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(30), CLAY_SIZING_FIXED(18)},
-                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                            .backgroundColor = btnBg,
+            ConstellationConfig &c = constellations[ci];
+            const bool isList = c.distribution == OrbitDistribution::List;
+            const bool single = c.orbitCount == 1 && ci != kDebrisConst;
+            Clay_Color rowBg = c.highlight ? Pal::rowHighlight : (c.enabled ? Pal::rowEnabled : Pal::rowDisabled);
+            CLAY(CLAY_IDI("ConstRow", ci), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
+                                                       .padding = {14, 4, 3, 3},
+                                                       .childGap = 6,
+                                                       .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                       .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                            .backgroundColor = rowBg,
                                             .cornerRadius = CLAY_CORNER_RADIUS(3)})
             {
-                bool n = Clay_Hovered();
-                sndRollover(n, hov);
-                sndClick(n, inp.lmbPressed);
-                if (ci < (int)hovConst.size())
-                    hovConst[ci] = n;
-                if (hov && inp.lmbPressed)
-                {
+                if (pill("ConstBtn", ci, c.enabled ? "ON" : "OFF", c.enabled ? Pal::btnAccent : Pal::btnIdle, Pal::btnAccentHv,
+                         nullptr))
                     c.enabled = !c.enabled;
-                    // TargetedReflector mirrors carry no persisted state to invalidate any more
-                    // (2026-08-06 reversibility rework) — re-enabling a constellation just resumes
-                    // normal per-frame selection, no snap needed.
-                }
-                CLAY_TEXT(c.enabled ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
-            }
-            // ── Highlight toggle ─────────────────────────────────
-            Clay_Color hltBg = c.highlight
-                                   ? Pal::btnHighlight
-                                   : (hovHlt ? Pal::btnHighlightHv : Pal::btnIdle);
-            CLAY(CLAY_IDI("ConstHltBtn", ci), {.layout = {
-                                                   .sizing = {CLAY_SIZING_FIXED(30), CLAY_SIZING_FIXED(18)},
-                                                   .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                               .backgroundColor = hltBg,
-                                               .cornerRadius = CLAY_CORNER_RADIUS(3)})
-            {
-                bool n = Clay_Hovered();
-                sndRollover(n, hovHlt);
-                sndClick(n, inp.lmbPressed);
-                if (ci < (int)hovHighlightConst.size())
-                    hovHighlightConst[ci] = n;
-                if (hovHlt && inp.lmbPressed)
+                if (pill("ConstHltBtn", ci, "HLT", c.highlight ? Pal::btnHighlight : Pal::btnIdle, Pal::btnHighlightHv, nullptr))
                     c.highlight = !c.highlight;
-                CLAY_TEXT(CLAY_STRING("HLT"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
-            }
-            // ── View the type's 3D model (Phase 4 model viewer) ──
-            {
-                if (hovViewConst.size() != constellations.size())
-                    hovViewConst.assign(constellations.size(), false);
-                const bool hasMesh = meshRenderer.typeMesh((int)c.typeIdx) != nullptr;
-                const bool hovView = hovViewConst[ci];
-                CLAY(CLAY_IDI("ConstViewBtn", ci), {.layout = {
-                                                        .sizing = {CLAY_SIZING_FIXED(38), CLAY_SIZING_FIXED(18)},
-                                                        .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                                    .backgroundColor = hasMesh ? (hovView ? Pal::btnHover : Pal::btnIdle) : Pal::rowDisabled,
-                                                    .cornerRadius = CLAY_CORNER_RADIUS(3)})
+                // Actions (84 px): a station: Select + Go to; a List: its member list; else the 3D view.
+                CLAY(CLAY_IDI("ConstActs", ci), {.layout = {.sizing = {CLAY_SIZING_FIXED(84), CLAY_SIZING_FIXED(18)},
+                                                            .childGap = 4,
+                                                            .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    bool n = Clay_Hovered();
-                    if (hasMesh)
+                    if (single)
                     {
-                        sndRollover(n, hovView);
-                        sndClick(n, inp.lmbPressed);
-                        if (n && inp.lmbPressed) // a real satellite of it, where it is now — and selected,
-                        {                        // so the viewer always refers to the selection
-                            const int pick = pickViewerSatellite((int)ci);
-                            selectSatellite(pick);
-                            // popOut: this caller asked for the VIEW, not the readout, so the 3D view
-                            // opens as well as the satellite window.
-                            openModelViewer((int)c.typeIdx, c.name.c_str(), c.altM, pick, true);
+                        const int sat = (int)c.orbitStart;
+                        const bool ok = !gone(sat);
+                        if (pill("ConstSel", ci, "SEL", Pal::btnIdle, Pal::btnHover, ok ? "Select it" : "Destroyed", 40, ok))
+                            actSel = sat;
+                        if (pill("ConstGo", ci, "GO", Pal::btnIdle, Pal::btnHover, ok ? "Go to it (fly there and follow it)" : "Destroyed",
+                                 40, ok))
+                            actGo = sat;
+                    }
+                    else if (isList)
+                    {
+                        const bool lo = constListOpen_ == ci;
+                        if (pill("ConstListBtn", ci, lo ? "HIDE" : "LIST", lo ? Pal::btnAccent : Pal::btnIdle, Pal::btnHover,
+                                 "Its satellites by name: select one or go to it", 84))
+                        {
+                            constListOpen_ = lo ? -1 : ci;
+                            constListPage_ = 0;
                         }
                     }
-                    hovViewConst[ci] = n;
-                    ui.tooltip(inp, n, hasMesh ? "Select one of this constellation's satellites (the one highest in your sky) "
-                                                 "and view it in 3D where it is now - a quick way to find a station"
-                                               : "No 3D model: this type uses the legacy two-surface model",
-                               fs(11));
-                    CLAY_TEXT(CLAY_STRING("VIEW"), CLAY_TEXT_CONFIG({.textColor = hasMesh ? Pal::textPrimary : Pal::textHint,
-                                                                     .fontSize = fs(10)}));
+                    else
+                    {
+                        const bool hasMesh = meshRenderer.typeMesh((int)c.typeIdx) != nullptr && c.orbitCount > 0;
+                        if (pill("ConstViewBtn", ci, "VIEW", Pal::btnIdle, Pal::btnHover,
+                                 hasMesh ? "Select one of its satellites (the one highest in your sky) and view it in 3D where it is now"
+                                         : "No 3D model: this type uses the legacy two-surface model",
+                                 84, hasMesh))
+                        {
+                            // a real satellite of it, where it is now — and selected, so the viewer refers to the selection
+                            const int pick = pickViewerSatellite(ci);
+                            selectSatellite(pick);
+                            const uint32_t ti = pick >= 0 ? satOrbits[pick].typeIdx : c.typeIdx;
+                            openModelViewer((int)ti, c.name.c_str(), c.altM, pick, true);
+                        }
+                    }
                 }
+                text(CLAY_IDI("ConstName", ci), c.name.c_str(), 0.0f, Pal::volLabel, 12);
+                text(CLAY_IDI("ConstCnt", ci), fmtCount(countOf(ci)), 64, Pal::textCamera, 11, true);
             }
-            CLAY(CLAY_IDI("ConstName", ci), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+            if (isList && constListOpen_ == ci)
             {
-                Clay_String nameStr{false, (int32_t)c.name.size(), c.name.data()};
-                CLAY_TEXT(nameStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            }
-            CLAY(CLAY_IDI("ConstCnt", ci), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(52), CLAY_SIZING_FIT(0)},
-                                                .childAlignment = {.x = CLAY_ALIGN_X_RIGHT}}})
-            {
-                Clay_String cntStr{false, (int32_t)strlen(constCntBuf[ci]), constCntBuf[ci]};
-                CLAY_TEXT(cntStr, CLAY_TEXT_CONFIG({.textColor = Pal::textCamera, .fontSize = fs(11)}));
+                // ── The members: search, pages of 25, sorted west to east for a GEO list ──
+                CLAY(CLAY_IDI("ConstListTools", ci), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                 .padding = {24, 4, 4, 2},
+                                                                 .childGap = 6,
+                                                                 .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                {
+                    CLAY_TEXT(CLAY_STRING("Find"), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+                    if (textField(inp, ui, CLAY_IDI("ConstListFind", ci), constListFilter_, (float)fs(11) * 14.0f, 11,
+                                  "Name or operator (e.g. Intelsat, GOES, SES)", 48))
+                        constListPage_ = 0;
+                }
+                std::string f = constListFilter_;
+                for (char &ch : f)
+                    ch = (char)std::tolower((unsigned char)ch);
+                std::vector<int> rows;
+                for (int k = 0; k < (int)c.members.size(); ++k)
+                {
+                    if (!f.empty())
+                    {
+                        std::string h = c.members[k].name + " " + c.members[k].operatorName + " " + c.members[k].purpose;
+                        for (char &ch : h)
+                            ch = (char)std::tolower((unsigned char)ch);
+                        if (h.find(f) == std::string::npos)
+                            continue;
+                    }
+                    rows.push_back(k);
+                }
+                std::stable_sort(rows.begin(), rows.end(), [&](int a, int b) {
+                    const ConstMember &A = c.members[a], &B = c.members[b];
+                    return A.geo && B.geo ? A.lonDeg < B.lonDeg : A.geo > B.geo;
+                });
+                constexpr int kPage = 25;
+                const int pages = std::max(1, ((int)rows.size() + kPage - 1) / kPage);
+                constListPage_ = std::clamp(constListPage_, 0, pages - 1);
+                for (int r = constListPage_ * kPage; r < std::min((int)rows.size(), (constListPage_ + 1) * kPage); ++r)
+                {
+                    const int k = rows[r];
+                    const ConstMember &m = c.members[k];
+                    const int sat = (int)c.orbitStart + k;
+                    const bool ok = !gone(sat);
+                    const bool isSel = selectedSatIndex == sat;
+                    CLAY(CLAY_IDI("ConstMem", sat), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
+                                                                .padding = {24, 4, 2, 2},
+                                                                .childGap = 6,
+                                                                .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                                     .backgroundColor = isSel ? Pal::rowHighlight : (r & 1) ? Pal::cardBg : Pal::rowStripe,
+                                                     .cornerRadius = CLAY_CORNER_RADIUS(2)})
+                    {
+                        if (pill("ConstMemSel", sat, "SEL", Pal::btnIdle, Pal::btnHover, ok ? "Select it" : "Destroyed", 34, ok))
+                            actSel = sat;
+                        if (pill("ConstMemGo", sat, "GO", Pal::btnIdle, Pal::btnHover, ok ? "Go to it (fly there and follow it)" : "Destroyed",
+                                 34, ok))
+                            actGo = sat;
+                        text(CLAY_IDI("ConstMemSlot", sat),
+                             m.geo ? keep(uiKitStr("%5.1f %c", std::fabs(m.lonDeg), m.lonDeg < 0.0f ? 'W' : 'E')) : "", 48,
+                             Pal::textCamera, 11, true);
+                        text(CLAY_IDI("ConstMemName", sat), m.name.c_str(), 0.0f, ok ? Pal::volLabel : Pal::textHint, 11);
+                        text(CLAY_IDI("ConstMemOp", sat), m.operatorName.c_str(), (float)fs(11) * 11.0f, Pal::textDim, 10);
+                    }
+                }
+                CLAY(CLAY_IDI("ConstListNav", ci), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                               .padding = {24, 4, 3, 6},
+                                                               .childGap = 6,
+                                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                               .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                {
+                    if (pill("ConstListPrev", ci, "<", Pal::btnIdle, Pal::btnHover, "Previous page", 26, constListPage_ > 0))
+                        --constListPage_;
+                    text(CLAY_IDI("ConstListPg", ci),
+                         keep(rows.empty() ? std::string("No match")
+                                           : std::string(uiKitStr("%d-%d of %d", constListPage_ * kPage + 1,
+                                                                  std::min((int)rows.size(), (constListPage_ + 1) * kPage),
+                                                                  (int)rows.size()))),
+                         (float)fs(11) * 9.0f, Pal::textDim, 11);
+                    if (pill("ConstListNext", ci, ">", Pal::btnIdle, Pal::btnHover, "Next page", 26, constListPage_ + 1 < pages))
+                        ++constListPage_;
+                    text(CLAY_IDI("ConstListNote", ci), "Slots approximate (mid-2020s positions)", 0.0f, Pal::textHint, 10);
+                }
             }
         }
     }
+    // After the layout's buttons: select / fly (Go to rewrites the follow label; the Missions window does the same).
+    if (actGo >= 0)
+    {
+        selectSatellite(actGo);
+        startFollow(actGo, true);
+    }
+    else if (actSel >= 0)
+        selectSatellite(actSel);
     // Launches and the Sun's Fury moved to the Missions window (2026-10-19): a pointer here.
     uiSection("ConstSec", 8, "LAUNCHES AND THE SUN'S FURY");
     uiKV("ConstMsKV", 0, "", "Now in the Missions window (rocket button, M).", 4.0f, &Pal::textDim);

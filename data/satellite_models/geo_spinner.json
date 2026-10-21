@@ -1,0 +1,239 @@
+{
+ "name": "GEO spin-stabilised weather satellite (MSG / Fengyun-2 class)",
+ "note": "Generic spinning GEO weather drum (Meteosat Second Generation, Fengyun-2), written by tools/make_geo_models.py. The drum spins at 100 rpm about the north-south axis; photometrically it is a cylinder of cells, so the spin is not modelled. Body frame: +Z nadir, +X velocity, +Y south.",
+ "materials": [
+  {
+   "name": "bus_mli",
+   "preset": "mli_foil",
+   "color": [
+    0.92,
+    0.74,
+    0.36
+   ]
+  },
+  {
+   "name": "radiator",
+   "preset": "osr_radiator"
+  },
+  {
+   "name": "reflector",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.75,
+   "roughness": 0.6,
+   "color": [
+    0.94,
+    0.94,
+    0.92
+   ]
+  },
+  {
+   "name": "cells",
+   "preset": "solar_cell"
+  },
+  {
+   "name": "cells_back",
+   "preset": "solar_array_back"
+  },
+  {
+   "name": "metal",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.25,
+   "roughness": 0.35,
+   "color": [
+    0.72,
+    0.72,
+    0.74
+   ]
+  },
+  {
+   "name": "dark",
+   "preset": "black_paint"
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "bus",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "nadir"
+   },
+   "secondary": {
+    "axis": [
+     1,
+     0,
+     0
+    ],
+    "target": "velocity"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "drum",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 1.6,
+   "height": 2.4,
+   "rotation_deg": [
+    90,
+    0,
+    0
+   ],
+   "material": "cells"
+  },
+  {
+   "name": "end_south",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 1.6,
+   "height": 0.04,
+   "position": [
+    0,
+    1.215,
+    0
+   ],
+   "rotation_deg": [
+    90,
+    0,
+    0
+   ],
+   "material": "bus_mli",
+   "render_only": true
+  },
+  {
+   "name": "end_north",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 1.6,
+   "height": 0.04,
+   "position": [
+    0,
+    -1.215,
+    0
+   ],
+   "rotation_deg": [
+    90,
+    0,
+    0
+   ],
+   "material": "bus_mli",
+   "render_only": true
+  },
+  {
+   "name": "antenna_mast",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 0.35,
+   "height": 1.0,
+   "position": [
+    0,
+    -1.82,
+    0
+   ],
+   "rotation_deg": [
+    90,
+    0,
+    0
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "antenna_drum",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 0.55,
+   "height": 0.5,
+   "position": [
+    0,
+    -2.55,
+    0
+   ],
+   "rotation_deg": [
+    90,
+    0,
+    0
+   ],
+   "material": "bus_mli",
+   "render_only": true
+  },
+  {
+   "name": "imager_port",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    0.6,
+    0.8,
+    0.12
+   ],
+   "position": [
+    0,
+    0,
+    1.62
+   ],
+   "material": "dark",
+   "render_only": true
+  },
+  {
+   "name": "thermal_band",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 1.62,
+   "height": 0.3,
+   "caps": false,
+   "position": [
+    0,
+    0.0,
+    0
+   ],
+   "rotation_deg": [
+    90,
+    0,
+    0
+   ],
+   "material": "radiator",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "drum",
+   "status": "sourced",
+   "value": "3.2 m diameter, 2.4 m tall drum of body-mounted cells",
+   "source": "EUMETSAT, 'Meteosat Second Generation (MSG) design': cylindrical, 3.2 m diameter, 2.4 m high, spin-stabilised at 100 rpm, solar cells on the cylindrical surface; Fengyun-2 is similar (2.1 m x 1.6 m drum)."
+  },
+  {
+   "subjects": [
+    "end_south",
+    "end_north"
+   ],
+   "status": "estimate",
+   "value": "MLI-covered end platforms (drawn; photometrically the drum's caps, which are cells)",
+   "source": "MSG photographs; size from the drum."
+  },
+  {
+   "subject": "bus",
+   "status": "sourced",
+   "value": "spin axis parallel to the Earth's axis",
+   "source": "EUMETSAT MSG design: spin axis north-south; the spin is not modelled (axisymmetric drum)."
+  },
+  {
+   "subjects": [
+    "bus_mli",
+    "radiator",
+    "reflector",
+    "cells",
+    "cells_back",
+    "metal",
+    "dark"
+   ],
+   "status": "estimate",
+   "value": "class liveries and the presets' reflectance",
+   "source": "Liveries from published on-orbit / factory photographs of the classes (gold or amber MLI on the bus, silver OSR radiator panels on the north and south faces, white-painted reflectors, blue-black cells under cover glass); reflectance from the presets."
+  }
+ ]
+}

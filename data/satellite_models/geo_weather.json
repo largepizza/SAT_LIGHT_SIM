@@ -1,0 +1,440 @@
+{
+ "name": "GEO weather satellite (three-axis, GOES-R class)",
+ "note": "Generic three-axis GEO weather satellite (GOES-R / Himawari / MTG / Fengyun-4 / Elektro-L class), written by tools/make_geo_models.py. Body frame: +Z nadir, +X velocity, +Y south. One solar wing on the south face, the imager on the Earth deck, a magnetometer boom to the north.",
+ "materials": [
+  {
+   "name": "bus_mli",
+   "preset": "mli_foil",
+   "color": [
+    0.92,
+    0.74,
+    0.36
+   ]
+  },
+  {
+   "name": "radiator",
+   "preset": "osr_radiator"
+  },
+  {
+   "name": "reflector",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.75,
+   "roughness": 0.6,
+   "color": [
+    0.94,
+    0.94,
+    0.92
+   ]
+  },
+  {
+   "name": "cells",
+   "preset": "solar_cell"
+  },
+  {
+   "name": "cells_back",
+   "preset": "solar_array_back"
+  },
+  {
+   "name": "metal",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.25,
+   "roughness": 0.35,
+   "color": [
+    0.72,
+    0.72,
+    0.74
+   ]
+  },
+  {
+   "name": "dark",
+   "preset": "black_paint"
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "bus",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "nadir"
+   },
+   "secondary": {
+    "axis": [
+     1,
+     0,
+     0
+    ],
+    "target": "velocity"
+   }
+  },
+  {
+   "name": "wings",
+   "parent": "bus",
+   "hinge": {
+    "position": [
+     0,
+     0,
+     0
+    ],
+    "axis": [
+     0.0,
+     1.0,
+     0.0
+    ]
+   },
+   "joint": {
+    "mode": "track",
+    "vector": [
+     0.0,
+     0.0,
+     -1.0
+    ],
+    "target": "sun"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "bus",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    2.6,
+    2.5,
+    3.6
+   ],
+   "material": "bus_mli"
+  },
+  {
+   "name": "radiator_north",
+   "type": "plane",
+   "group": "bus",
+   "size": [
+    2.64,
+    3.64
+   ],
+   "position": [
+    0,
+    -1.3,
+    0
+   ],
+   "rotation_deg": [
+    90,
+    0,
+    0
+   ],
+   "material": "radiator",
+   "single_sided": true
+  },
+  {
+   "name": "wing",
+   "type": "plane",
+   "group": "wings",
+   "size": [
+    3.6,
+    10.0
+   ],
+   "position": [
+    0,
+    7.75,
+    0
+   ],
+   "rotation_quat": [
+    0.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   "material": "cells",
+   "back_material": "cells_back"
+  },
+  {
+   "name": "imager",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    1.6,
+    1.2,
+    1.0
+   ],
+   "position": [
+    0.2,
+    -0.3,
+    2.35
+   ],
+   "material": "radiator"
+  },
+  {
+   "name": "dish",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 0.6,
+   "height": 0.08,
+   "position": [
+    -0.95,
+    0.95,
+    2.1
+   ],
+   "material": "reflector"
+  },
+  {
+   "name": "yoke",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    0.12,
+    1.5,
+    0.12
+   ],
+   "position": [
+    0,
+    2.0,
+    0
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "drive",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 0.25,
+   "height": 0.2,
+   "position": [
+    0,
+    1.37,
+    0
+   ],
+   "rotation_deg": [
+    90,
+    0,
+    0
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "magnetometer_boom",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    0.06,
+    8.0,
+    0.06
+   ],
+   "position": [
+    -1.1,
+    -5.25,
+    -1.4
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "magnetometer",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    0.18,
+    0.18,
+    0.18
+   ],
+   "position": [
+    -1.1,
+    -9.25,
+    -1.4
+   ],
+   "material": "dark",
+   "render_only": true
+  },
+  {
+   "name": "sun_platform",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    1.2,
+    0.6,
+    0.6
+   ],
+   "position": [
+    0,
+    2.15,
+    -0.6
+   ],
+   "material": "bus_mli",
+   "render_only": true
+  },
+  {
+   "name": "imager_aperture",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 0.3,
+   "height": 0.08,
+   "position": [
+    0.2,
+    -0.3,
+    2.87
+   ],
+   "material": "dark",
+   "render_only": true
+  },
+  {
+   "name": "lightning_mapper",
+   "type": "box",
+   "group": "bus",
+   "size": [
+    0.7,
+    0.6,
+    0.6
+   ],
+   "position": [
+    0.8,
+    0.8,
+    2.1
+   ],
+   "material": "bus_mli",
+   "render_only": true
+  },
+  {
+   "name": "apogee_engine",
+   "type": "cone",
+   "group": "bus",
+   "radius_bottom": 0.4,
+   "radius_top": 0.1,
+   "height": 0.6,
+   "position": [
+    0,
+    0,
+    -2.1
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "hinge_1",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    3.6,
+    0.05,
+    0.05
+   ],
+   "position": [
+    0,
+    4.75,
+    0.03
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "hinge_2",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    3.6,
+    0.05,
+    0.05
+   ],
+   "position": [
+    0,
+    6.75,
+    0.03
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "hinge_3",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    3.6,
+    0.05,
+    0.05
+   ],
+   "position": [
+    0,
+    8.75,
+    0.03
+   ],
+   "material": "metal",
+   "render_only": true
+  },
+  {
+   "name": "hinge_4",
+   "type": "box",
+   "group": "wings",
+   "size": [
+    3.6,
+    0.05,
+    0.05
+   ],
+   "position": [
+    0,
+    10.75,
+    0.03
+   ],
+   "material": "metal",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "bus",
+   "status": "derived",
+   "value": "2.6 x 2.5 x 3.6 m box, MLI",
+   "source": "GOES-R series (Lockheed Martin A2100A): 6.1 x 5.6 x 3.9 m including instruments, dry mass 2857 kg (NOAA/NASA GOES-R Data Book, 2019); the bus box derived from that envelope."
+  },
+  {
+   "subject": "wing",
+   "status": "estimate",
+   "value": "one wing 3.6 x 10.0 m (5 panels) on a 1.5 m yoke",
+   "source": "GOES-R, Himawari-8/9 (DS2000) and MTG carry ONE solar wing (Data Books / JMA and EUMETSAT fact sheets); GOES-R's array ~4 kW EOL - the panel size is an estimate from that."
+  },
+  {
+   "subject": "wings",
+   "status": "sourced",
+   "value": "the wing turns about the N-S axis to face the Sun",
+   "source": "GOES-R Data Book: solar array drive rotating once per day."
+  },
+  {
+   "subjects": [
+    "radiator_north",
+    "imager"
+   ],
+   "status": "estimate",
+   "value": "OSR radiator on the north face; the imager (1.6 x 1.2 x 1.0 m, radiator-white) on the Earth deck",
+   "source": "GOES-R Data Book (ABI on the Earth-pointing platform, radiators on the anti-Sun side); sizes estimated from the ABI's published 2 x 1.2 x 1 m envelope."
+  },
+  {
+   "subject": "dish",
+   "status": "estimate",
+   "value": "a 1.2 m data-relay dish on the Earth deck",
+   "source": "GOES-R GRB / DCS antennas on the Earth deck; size an estimate."
+  },
+  {
+   "subject": "bus",
+   "status": "sourced",
+   "value": "three-axis, Earth deck to nadir",
+   "source": "GOES-R Data Book."
+  },
+  {
+   "subjects": [
+    "bus_mli",
+    "radiator",
+    "reflector",
+    "cells",
+    "cells_back",
+    "metal",
+    "dark"
+   ],
+   "status": "estimate",
+   "value": "class liveries and the presets' reflectance",
+   "source": "Liveries from published on-orbit / factory photographs of the classes (gold or amber MLI on the bus, silver OSR radiator panels on the north and south faces, white-painted reflectors, blue-black cells under cover glass); reflectance from the presets."
+  }
+ ]
+}
