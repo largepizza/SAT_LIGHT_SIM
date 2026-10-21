@@ -207,7 +207,9 @@ Track upperTrack(const Vehicle &v, double hPark);
 // ── Orbit raising / lowering ─────────────────────────────────────────────────────────────────────
 // A circular orbit whose radius goes linearly from a0 to a1 over T seconds: the integral of its mean motion
 // over the first tau seconds (rad).
-double rampPhase(double a0, double a1, double T, double tau);
+// f0 / f1 (2026-10-20): the rate is n(a) x a factor going linearly from f0 to f1 over T: a slot's mean motion is not
+// Kepler's at its radius (the roster's J2 term), and a climb that ends at Kepler's rate meets its slot ~7 m/s off.
+double rampPhase(double a0, double a1, double T, double tau, double f0 = 1.0, double f1 = 1.0);
 inline double meanMotion(double a) { return std::sqrt(kGM / (a * a * a)); }
 // A free body's motion relative to a circular orbit of mean motion n (Clohessy-Wiltshire), starting at the reference
 // point with velocity v0 = (radial, along-track, cross-track), after t seconds: position p and velocity v, same axes.

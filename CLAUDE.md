@@ -64,7 +64,7 @@ Development: Earth / Terrain Rendering* (read **Elevation texture encoding** bef
 code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
-`imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
+`imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions), `mission_ops.py` (every launch vehicle traced phase by phase, PASS / FAIL), `launch_bench.py` (the launch system's CPU / GPU cost) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
 validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_geo_belt.py` + `tools/make_geo_models.py` (the GEO belt's members and models) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
@@ -4765,7 +4765,12 @@ launches follow per-program cadences (no real manifest).
     an inland pad's ground cloud could sink into the terrain). The growth is capped at 60 m/s of relative speed: a young
     parcel still moves at km/s, and uncapped the trail swelled hundreds of metres in a second.
   - **cloud_march.comp, below 3-12 km** (`lowK`): the billows are read in a field SHARED by every Gaussian there
-    (world-fixed: `cloudNoiseTex` at P / 600 m and P / 220 m, P the Earth-centred point in the eye's ENU axes), so the
+    (EARTH-fixed: `cloudNoiseTex` at 2048/3 m and 2048/9 m cells, read at the point's ECEF offset from the terrain
+    detail's integer-anchored 2048-m cell, `terrainAnchorRel`, so the cell index drops out of the repeating texture; it was
+    P / 600 m with P Earth-centred in the EYE's ENU axes, which turn with the eye's position: the field slid with the
+    camera, 2 km a second at the reporter's 2 km/s — issue 20261020_214200 "noise evolves with position"; checked by
+    moving the eye 55 m with time paused: the billows' high-pass now correlates with the trail's parallax shift (0.16)
+    rather than with the screen (0.06), the reverse of before), so the
     overlapping puffs of a ground cloud are modulated together into one lumpy mass instead of averaging their own noise
     into a smooth haze (per-Gaussian noise, which rides with its parcel, is kept higher up); the faint tails are cut
     (tau x smoothstep(0.02, 0.35, tau); also below the 0.01 noise threshold — left whole there they drew rings round
@@ -4865,7 +4870,12 @@ launches follow per-program cadences (no real manifest).
     real mirror point is 74 deg below the horizon (horizontal distance D h / (h + H) = 1.35 km; a source at infinity at
     the rocket's 17 deg elevation would mirror at 17 deg). That lookup now drops an EMISSIVE-flagged texel (no cloud,
     `cloudAlphaIsEmit`) whose light, at its stored distance, misses the sea point's reflected ray by more than 2-6 deg
-    (`rEmitBad`); real cloud texels are unchanged. Far rockets (40-100 km) keep a glitter path from the horizon down,
+    (`rEmitBad`). **Shot 2 (same day, "still broken", the user's build had the fix):** a flame in front of the horizon's
+    cloud is composited into that CLOUD's texel (alpha = the cloud's distance, unflagged), so the test never saw it;
+    the lookup now also drops any texel within the flame + glow's angular size round an engine light's own place on
+    screen (>= 3 deg, ~600 m) when the reflected ray misses that light's real position seen from the sea point (real
+    clouds right round a flame lose their reflection there). Reproduced with `report load` shot 2 (its own settings):
+    the column is gone, the true mirror point (D h / (h + H), ~75 deg down) is below the frame. Far rockets (40-100 km) keep a glitter path from the horizon down,
     now from the light glint. Satellites' `OceanGlintBuf` glints are unchanged (at hundreds of km the infinite-distance
     geometry is off by < 1 deg). Cost within run-to-run noise (sky pass 11.9-12.8 ms with the lights vs 13.0 without,
     1920x1009). The bloom ellipse under the flame (the flame's tail Gaussian + the exhaust glow, 2 of its lengths behind
@@ -5163,8 +5173,24 @@ launches follow per-program cadences (no real manifest).
   - **The landing burn is a constant deceleration that zeroes both components together at the deck** (Launches.cpp,
     every recovery, towers included): it starts below 8 km once that deceleration reaches 25 m/s^2 (a faster arrival
     burns harder, ~40-50 m/s^2 for 20-25 s), analytic from there. The suicide-burn profile it replaced touched down at
-    ~40 m/s down and, for a droneship, ~360 m/s across. Boosters arriving from far downrange still lean ~30-55 deg in the
-    burn (they carry ~700-1100 m/s across at 8 km; drag in this model is weak): an open item.
+    ~40 m/s down and, for a droneship, ~360 m/s across. It ends at `kTouchV` 1.5 m/s straight down on the deck / catch
+    height (the horizontal speed nulled), not at rest.
+  - **The aerodynamic descent** (2026-10-20, issue 20261020_213739 "Rockets land tilted"): drag is a ballistic
+    coefficient of 2200 kg/m^2 (terminal ~190 m/s at sea level; it was 280 m/s, half the real drag), and after the entry
+    burn the grid fins / body lift steer the horizontal speed (up to `kGlideLD` 0.6 x the drag, time constant 3 s) to
+    what reaches the landing point in the time left (+8 s; a ballistic droneship arc: to zero). So the booster comes
+    over its target nearly vertical and the landing burn starts ~1.3-2.3 km up at ~260-340 m/s. Lean from the local
+    vertical (`launch check` -> `booster_lean_deg_by_alt`, max over the batches, at 20 / 8 / 3 / 1 / 0.3 / 0.05 km and
+    touchdown): ship 63 / 44 / 16 / 3.7 / 1.6 / 1.1 / 0.9 (mean at 1 km 0.7), landing zone 55 / 32 / 7.5 / 1.6 / 0.9 /
+    0.7 / 0.7, ground 40 / 18 / 1.4 / 0.1 / 0 / 0 / 0, tower 24 / 7 / 0.2 / 0.2 / 0.2 / 0.2 / 0.2. Before (the same
+    model replayed offline): a Falcon 9 to its ship 52 / 37 / 37 / 37 / 37 deg from 20 km to touchdown (the burn's
+    thrust, 650 m/s across at 8 km), RTLS the same, New Glenn 49, Super Heavy 17, ballistic 25. The 20-km values are the
+    entry burn (retrograde along the steep arc). Every landing moved later by the slower descent.
+  - **Landing legs** (Falcon 9 / Dragon, New Glenn, LM-12, Zhuque-3, Tianlong-3, Pallas-1): `tools/make_rocket_models.py`
+    draws them DEPLOYED (hinged a quarter of their length above the base, feet a little below the engine exits) with a
+    `fold` back flat against the body; `transientLegs` (SatelliteSimLaunches.cpp, every rocket mesh write) sets the
+    booster's unfolding progress: folded from lift-off, deployed over 2.5 s from 7 s before touchdown. The track's touchdown
+    point is still the aft end on the deck, so the feet stand a little below it (the engines' exits are level with it).
   - **RTLS** to a Falcon pad's landing zone: the track lands on the pad's centre and over its last ~40 km slides to the
     zone (`lzOff`, kLzDistM aside, its ground `LPad::lzElevM`), held there 30 min.
   - **The ship** (`shipEcef`): on station at the touchdown point from 8 h before lift-off (kShipOnStationS), the booster
@@ -5265,6 +5291,61 @@ launches follow per-program cadences (no real manifest).
   - Open: a station appears whole (no module-by-module build); a pad kind is fixed (39A shows its Starship tower in
     2019); the ambience's closed-form shell counts ignore the era; Starlink Gen1's first fills start 2019-05 while the 2020
     V1.0 / VisorSat benchmark shells cover the same satellites (~1.5k double-counted in 2020-2022).
+- **Mission-operations suite and launch benchmark (2026-10-20, `tools/harness/mission_ops.py`, `launch_bench.py`;
+  docs/HARNESS.md "Mission operations" / "Launch benchmark").** Harness `launch trace` (`launchTraceJson`,
+  `launchTraceBatchJson`, end of SatelliteSimLaunches.cpp) finds the next launch of every (vehicle, program) pair after a
+  date — the batches' CANDIDATES first (vehicle, time; cheap), then building those of the pair in time order until one
+  flies — and measures it phase by phase from the launch model itself (rocketPos, memberState, stageNose, the tracks;
+  no frames): pad, climb, max-Q, staging, booster recovery, fairing, insertion (parking altitude, circular speed,
+  flight-path angle, inclination and angle to the target plane), coast, deployment (release error vs the dispenser /
+  stack slot, separation speed, member gaps), raising (proper acceleration, spread, monotonic climb), arrival and
+  retiree start (position and velocity vs the slot, at the SAME instant), upper-stage deorbit / entry / a ship's catch,
+  docking. `launch formation` checks a formation train (Starmind) from release to arrival; `launch goto` jumps to a
+  launch's T+t. The thresholds are one Python table (`mission_ops.THRESHOLDS`, PASS / FAIL / WARN for the landing burn's
+  physics, which another agent owns / SKIP for docking). `selftest.py -k mission_ops` runs it at the default start.
+  **What it found and what was fixed:**
+  - **Staging**: `boosterTrack` never stored its MECO sample (fly() records from t1 + dt), so every post-MECO sample sat
+    one index early: the booster's whole flight after staging ran 0.5 s ahead and the stack's last half second moved
+    at twice its speed (an ~800 m jump at separation; velocity "jump" 1,200-3,450 m/s). The sample is pushed now.
+  - **SECO**: the upper track's x is the arc ALONG THE GROUND (rocketPos turns x / kR into the inertial plane) but its
+    rate was the inertial speed, so the stage ran 5-13% fast and dropped 250-940 m/s in one step into its parking orbit.
+    Its rate now eases from the ascent's ground rate to vOrb x kR / (kR + h). This moves where every upper stage is
+    after MECO (the parking orbit's phase, deployment): re-check bookmarks that frame a stage in orbit.
+  - **Fairings** separated at MECO + 30 s (~60-100 km) on every vehicle: the 110-km search ran before setDeorbit, while
+    tStageGone was still 0 and rocketPos returned nothing for the upper stage. It runs after the deorbit plan now.
+  - **Trains' arrival**: a slot's mean motion is the roster's (J2), not Kepler's at its radius, and the climb ended at
+    Kepler's rate (`launch::rampPhase` takes a rate factor f0 -> f1 now: the climb ends at the slot's rate, a retiree
+    starts at it). The phasing residual (`LMember::eps`) is spread as a smoothstep, not a constant drift that stopped dead
+    at the arrival (Starlink direct-to-cell's short raise: an 18 m/s jump onto the slot).
+  - **Formations raise as one group**: every member of a cluster takes its leader's schedule (wait, ramp, residual:
+    `buildBatch`, `gPerMemberRaise` = the old behaviour for `launch formation before=1`). Each member had its own hashed
+    ramp, so a Starmind ring's eight spread up to ~10,000 km along the orbit during the climb and met only at the
+    arrival, each from its own side. Now the pez string (45 s apart) eases into the ring over the release offset's two
+    days (spread ~3 km at most) and the eight climb as a ring (shape within metres, `ring_shape_err_after_2d_m_max`).
+  - **Trains left too close**: dispenser launches released a satellite every 2 s at ~0.45 m/s +- 0.12 (stacks 2-4 s at
+    0.3 m/s): ~1 m apart for minutes, bodies overlapping. launches.json: `deploy_interval_s` 30 and `sep_spread_mps` 0.04
+    on every dispenser vehicle (30 s apart, ~13 m at release; 12 s still met at ~1 m from the Clohessy-Wiltshire offsets),
+    and 30 s for the Starlink Gen1 and Qianfan stacks.
+  - **Milestones** (`missionBatchMilestones`) used the vehicle's own booster track and recovery for max-Q, the burns and
+    the landing label: an RTLS Falcon 9 listed a trim burn and "lands on the droneship"; a ground landing likewise. They
+    use this launch's track (`boosterTr`) and `B.landKind` now.
+  **Still open (reported, not fixed):** New Glenn's booster peaks at ~92 m/s^2 after staging (the landing physics; WARN); a deorbit burn blended by smoothstep
+  peaks at ~4x dv / burn (up to ~90 m/s^2 for the 800-km Qianfan stages: no jump, but violent); late close passes
+  (~1 m, about an orbit after release) between train members, from the Clohessy-Wiltshire offsets taken about each
+  member's own plane; crew docking is not modelled (SKIP); Long March 12 flies no program.
+  **Measured:** (2026-10-20, RTX 3070 Ti shared with other agents' runs, so GPU numbers are noisy) `mission_ops.py run`: 69 launches over
+    three epochs (27 pairs each), 947 phase checks PASS, 2 FAIL (Falcon 9 Starlink Gen1 and OneWeb at 2026-11-05: a pair within ~1-1.6 m
+    in the first 10 min, from the random spread), 3 WARN (New Glenn's booster peaks at 92 m/s^2 of proper acceleration
+    after staging; before the 7b729c7 landing rework 42: every recovered booster tilted 17-50 deg landing), 13 SKIP
+    (docking); Starmind's ring shape error from day 2 ~0 m with the shared schedule vs 10,000 km before. `launch_bench.py`
+    (harness_runs/launch_bench/baseline.json, launches on - off): the Twilight Starship bookmark +2.8 ms GPU (cloud_march
+    +2.3: plumes) and 1.9 ms CPU; at 1 h/s 6.3 ms CPU (plume builds 4.6 ms); at 1 d/s 3.0 ms CPU (the window walk 0.9,
+    record writes 1.0); a 2032 Gulf dusk +21.6 ms GPU (cloud_march +14.4, scene_depth +5.8) and 4.7 ms CPU; following a
+    night Starship from 300 m +6.1 ms; a droneship landing +22.9 ms GPU, almost all cloud_march (the landing cloud /
+    plume Gaussians).
+  The "Starmind Deployment" default bookmark was re-shot (the SECO fix moved the ship ~90 km along its orbit;
+  harness_runs/bm9/bm9.satcmd = section 9 of default_bookmarks.satcmd); `launch_bench.py` captures both launch bookmarks
+  at its end so a moved stage shows.
 - Not built: the Octagrabber driving out to the booster, the ship rolling in the swell, the booster's legs deploying,
   the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
   (trains launch into it), the crew capsule's rendezvous and cargo flights, hole-punching through cloud decks, sonic booms.

@@ -447,7 +447,7 @@ Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
     }
     const glm::dvec2 p1(x1, h1), v1(3.0 * x1 / t1, 2.0 * h1 / t1);
     // After MECO: integrated. The boostback's target speed is found by a few shots (the landing x -> the target).
-    auto fly = [&](double vBack, bool doBoost, Track *out) {
+    auto fly = [&](double vBack, bool doBoost, Track *out, double glideTarget) {
         glm::dvec2 p = p1, v = v1;
         bool boost = doBoost, entryDone = false, landing = false;
         double entryT = -1.0;
@@ -456,7 +456,18 @@ Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
         const double dt = 0.05;
         double t = t1;
         double rec2 = t1;
-        const double g = 9.81, k = 9.81 / (280.0 * 280.0);
+        // Drag (2026-10-20, issue 20261020_213739 "Rockets land tilted"): a returning booster falls engines first with
+        // a ballistic coefficient m / (Cd A) ~2200 kg/m^2 (a ~30-t Falcon 9 core, 3.7 m across: terminal ~190 m/s at sea
+        // level). It was 280 m/s terminal (~half the real drag) and with no lift the booster reached 8 km still crossing
+        // the ground at 650-1000 m/s, so its landing burn leaned 35-50 degrees.
+        const double g = 9.81, k = 1.225 / (2.0 * 2200.0);
+        // The aerodynamic descent after the entry burn: the grid fins and the body at angle of attack give lift up to
+        // kGlideLD x the drag, steered (time constant kGlideTau) to the horizontal speed that reaches the landing point
+        // in the time left (the target; none: to zero). A real booster arrives over its target nearly vertical: a few
+        // degrees of lean in the last kilometre, then the landing burn's own small divert.
+        const double kGlideLD = 0.6, kGlideTau = 3.0, kGlideLead = 8.0;
+        const bool glideToX = rec == 1 || (rec == 2 && glideTarget >= 0.0);
+        const double glideX = rec == 1 ? 0.0 : glideTarget;
         for (int it = 0; it < 200000; ++it)
         {
             uint8_t b = BURN_NONE;
@@ -496,6 +507,14 @@ Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
                     else
                         entryDone = true;
                 }
+                if (entryDone && !landing && v.y < 0.0)
+                {
+                    const double hgo = std::max(p.y - hLand, 0.0);
+                    const double tgo = std::max(hgo / std::max(-v.y, 50.0), 1.0);
+                    const double vDes = glideToX ? (glideX - p.x) / (tgo + kGlideLead) : 0.0;
+                    const double lim = kGlideLD * k * (airDensity(p.y) / 1.225) * spd * spd;
+                    a.x += std::clamp((vDes - v.x) / kGlideTau, -lim, lim);
+                }
                 // Landing burn (2026-10-20): a constant deceleration that brings BOTH components of the velocity to
                 // zero together at hC (a tower catch stops hC above the mount, a droneship on its deck), started when
                 // that deceleration reaches aL (from 8 km down: above it the air has yet to slow the booster; a
@@ -503,6 +522,7 @@ Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
                 // and an independent horizontal damping: a booster arriving at ~900 m/s down and ~1300 m/s across (a
                 // droneship's: the entry burn removes ~600 m/s) touched down at ~40 m/s down and ~360 m/s across.
                 const double aL = 25.0;
+                const double kTouchV = 1.5; // touchdown speed (m/s): a real landing burn ends at a metre or two a second
                 const double hC = hLand;
                 if (!landing && entryDone && v.y < 0.0 && p.y > hC && p.y - hC < 8000.0)
                 {
@@ -513,15 +533,18 @@ Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
                         lt0 = t;
                         lp0 = p;
                         lv0 = v;
-                        lT = 2.0 * h / std::max(-v.y, 1.0);
+                        lT = 2.0 * h / std::max(-v.y + kTouchV, 1.0);
                     }
                 }
                 if (landing)
                 {
-                    // Analytic: p = p0 + v0 s + a s^2 / 2 with a = -v0 / T (ends at rest on hC: p0.y + v0.y T / 2 = hC).
+                    // Analytic: p = p0 + v0 s + a s^2 / 2 with a = (vE - v0) / T, vE = (0, -kTouchV): it touches down on
+                    // hC at kTouchV straight down (p0.y + (v0.y + vE.y) T / 2 = hC), the horizontal speed nulled.
+                    const glm::dvec2 vE(0.0, -kTouchV);
+                    const glm::dvec2 aB = (vE - lv0) / lT;
                     const double sN = std::min(t + dt - lt0, lT);
-                    p = lp0 + lv0 * sN - 0.5 * lv0 * (sN * sN / lT);
-                    v = lv0 * (1.0 - sN / lT);
+                    p = lp0 + lv0 * sN + 0.5 * aB * (sN * sN);
+                    v = lv0 + aB * sN;
                     t += dt;
                     if (sN >= lT)
                     {
@@ -566,14 +589,14 @@ Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
         // Secant on the boostback speed for a landing at x = 0 (the pad / the tower / its landing zone).
         doBoost = true;
         double va = -0.25 * v1.x, vb = -0.6 * v1.x;
-        double fa = fly(va, true, nullptr), fb = fly(vb, true, nullptr);
+        double fa = fly(va, true, nullptr, 0.0), fb = fly(vb, true, nullptr, 0.0);
         for (int i = 0; i < 12 && std::abs(fb) > 50.0 && std::abs(fb - fa) > 1e-6; ++i)
         {
             const double vc = vb - fb * (vb - va) / (fb - fa);
             va = vb;
             fa = fb;
             vb = std::clamp(vc, -3.0 * v1.x, v1.x);
-            fb = fly(vb, true, nullptr);
+            fb = fly(vb, true, nullptr, 0.0);
         }
         vBack = vb;
     }
@@ -582,28 +605,34 @@ Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
         // No boostback when the arc falls short of the ship's station (the ship waits where the booster comes down);
         // else a short retrograde trim, secant-solved on the speed it leaves the booster with (2026-10-20: it aimed
         // a boostback at 0.55 x the MECO speed that was never burned).
-        const double xBal = fly(v1.x, false, nullptr);
+        const double xBal = fly(v1.x, false, nullptr, -1.0);
         target = vh.droneDistKm * 1000.0;
         if (target > 0.0 && xBal > target + 200.0)
         {
             doBoost = true;
             double va = v1.x, fa = xBal - target;
-            double vb = v1.x * target / xBal, fb = fly(vb, true, nullptr) - target;
+            double vb = v1.x * target / xBal, fb = fly(vb, true, nullptr, target) - target;
             for (int i = 0; i < 14 && std::abs(fb) > 20.0 && std::abs(fb - fa) > 1e-6; ++i)
             {
                 const double vc = vb - fb * (vb - va) / (fb - fa);
                 va = vb;
                 fa = fb;
                 vb = std::clamp(vc, 0.0, v1.x);
-                fb = fly(vb, true, nullptr) - target;
+                fb = fly(vb, true, nullptr, target) - target;
             }
             vBack = vb;
         }
         else
             target = -1.0; // where it comes down
     }
+    // The MECO sample itself (2026-10-20, mission-ops suite): fly() records from t1 + dt on, so without it every
+    // post-MECO sample sat one index early: the whole flight after staging ran 0.5 s ahead, and the stack jumped
+    // ~800 m (twice its speed for one sample) at separation.
+    tr.p.push_back(p1);
+    tr.v.push_back(v1);
+    tr.burn.push_back(BURN_ASCENT);
     const size_t n0 = tr.p.size();
-    fly(vBack, doBoost, &tr);
+    fly(vBack, doBoost, &tr, rec == 2 ? target : 0.0);
     // It lands exactly on its target: the residual is taken out smoothly after the boostback.
     if ((rec == 1 || (rec == 2 && target > 0.0)) && tr.landed && tr.p.size() > n0 + 2)
     {
@@ -644,7 +673,10 @@ Track upperTrack(const Vehicle &vh, double hPark)
         const double h = h00 * h1 + h10 * vz1 * T + h01 * hPark;
         const double dh = ((6 * s * s - 6 * s) * h1 + (3 * s * s - 4 * s + 1) * vz1 * T + (-6 * s * s + 6 * s) * hPark) / T;
         const double e = s * s * (3.0 - 2.0 * s);
-        const double vx = vx1 + (vOrb - vx1) * e;
+        // x is the arc ALONG THE GROUND (the angle x kR: rocketPos turns it into the inertial plane at x / kR), so its
+        // rate is the speed x kR / (kR + h). (Until 2026-10-20 the speed itself: at SECO the stage ran 5-13% faster than
+        // its parking orbit and lost 250-950 m/s in one step; mission-ops suite, insertion.dv_seco_m_s.)
+        const double vx = vx1 + (vOrb * kR / (kR + h) - vx1) * e; // (vx1: the ascent's, already a ground rate)
         if (!tr.p.empty())
             x += 0.5 * (vx + tr.v.back().x) * tr.dt;
         tr.p.push_back({x, h});
@@ -675,13 +707,18 @@ void cwState(const glm::dvec3 &p0, const glm::dvec3 &v0, double n, double t, glm
                    -n * s * z0 + c * zd);
 }
 
-double rampPhase(double a0, double a1, double T, double tau)
+double rampPhase(double a0, double a1, double T, double tau, double f0, double f1)
 {
-    if (T <= 0.0 || std::abs(a1 - a0) < 1e-6)
-        return meanMotion(a0) * tau;
+    if (T <= 0.0)
+        return meanMotion(a0) * f0 * tau;
+    if (std::abs(a1 - a0) < 1e-6)
+        return meanMotion(a0) * (f0 * tau + 0.5 * (f1 - f0) * tau * tau / T);
     const double k = (a1 - a0) / T;
     const double a = a0 + k * tau;
-    return 2.0 * std::sqrt(kGM) / k * (1.0 / std::sqrt(a0) - 1.0 / std::sqrt(a));
+    // The integral of sqrt(GM) a^-3/2 (A + B a) over a from a0 (the factor f = A + B a is linear in tau, so in a).
+    const double Bf = (f1 - f0) / (k * T), Af = f0 - Bf * a0;
+    return std::sqrt(kGM) / k *
+           (2.0 * Af * (1.0 / std::sqrt(a0) - 1.0 / std::sqrt(a)) + 2.0 * Bf * (std::sqrt(a) - std::sqrt(a0)));
 }
 
 // ── Parcels ──────────────────────────────────────────────────────────────────────────────────────
