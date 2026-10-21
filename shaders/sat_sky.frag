@@ -293,6 +293,15 @@ layout(location = 1) out float outDepthCopy;
 #define CV2_FLASH_BINDING 30
 #define CV2_SUN_CASC_FN
 #include "cloud_lightning.glsl"
+// The engine / floodlight lights (2026-10-20, SatelliteSim::engineLightAdd): the dust list's tail after its 1024 entries,
+// header word 1 = their count (layout: include/lightning_draw.glsl). The sea mirrors each one from where it really is
+// (seaPointLightGlint): a nearby light's glitter path is not the infinite-distance one the reflected cloud composite gives.
+struct SkyEngineLight { vec4 c; vec4 ia; vec4 ib; vec4 col; vec4 cone; };
+layout(std430, set = 0, binding = 32) readonly buffer SkyEngineLightBuf {
+    uint selDustCount; uint selCount; uint selPad0, selPad1; SkyEngineLight selList[]; };
+const uint kSkyEngineLightBase = 1024u;   // == SatelliteSim::kMaxDustClouds
+const uint kSkyEngineLightMax  = 32u;     // == SatelliteSim::kMaxEngineLights
+#include "cloud_occlusion.glsl"           // cloudAlphaIsEmit, cloudPointVisibilityAt
 #endif
 #include "eclipse.glsl"  // the Moon's shadow per point (solar eclipses)     // unified scene depth (gl_FragDepth)
 
@@ -5744,17 +5753,39 @@ void main() {
                     }
                     // Per texel, weighted by opacity (review 14): the filtered alpha blends a cloud's distance with the
                     // no-cloud marker (-60000 km) at every edge, and the reflected clouds came out in hard blocks.
-                    float rKf, rHasCloud = 0.0;
+                    float rKf, rHasCloud = 0.0, rEmitBad = 0.0;
                     {
-                        vec4  ga = abs(textureGather(cloudTargetA, reflScreenUV, 3));
+                        vec4  gaRaw = textureGather(cloudTargetA, reflScreenUV, 3);
+                        vec4  ga = abs(gaRaw);
                         vec4  gT = textureGather(cloudTargetB, reflScreenUV, 1);
                         vec2  fq = fract(reflScreenUV * vec2(textureSize(cloudTargetA, 0)) - 0.5);
-                        vec4  wq = vec4((1.0 - fq.x) * fq.y, fq.x * fq.y, fq.x * (1.0 - fq.y), (1.0 - fq.x) * (1.0 - fq.y))
+                        vec4  wB = vec4((1.0 - fq.x) * fq.y, fq.x * fq.y, fq.x * (1.0 - fq.y), (1.0 - fq.x) * (1.0 - fq.y));
+                        // 2026-10-20 (issue 20261020_181339): the lookup at the mirrored DIRECTION assumes what it finds is
+                        // at infinity. A texel whose only content is emissive / plume light (flames, a rocket's lit exhaust,
+                        // re-entry trails: flagged, cloud_occlusion.glsl) carries that light's distance, and a near one does
+                        // not lie on this sea point's reflected ray at all: from 4.9 km a Starship 3 km away drew a glitter
+                        // path from the horizon down, where its mirror image is 74 deg below the horizon. Such texels drop out
+                        // when the reflected ray misses the light's position by more than a few degrees (seen from the sea);
+                        // the lights themselves are mirrored from where they are (the engine-light glint after the Sun glint, below). Real clouds
+                        // are not tested (their screen-space reflection is the approximation it always was).
+                        vec4  emK = vec4(0.0);
+                        for (int k = 0; k < 4; ++k) {
+                            if (!cloudAlphaIsEmit(gaRaw[k])) continue;
+                            vec3  Ck  = reflDir * (ga[k] * 1000.0) - dir * dist;   // the light, from the sea point
+                            float al  = dot(Ck, reflDir);
+                            float mis = length(Ck - reflDir * al);
+                            float ang = al > 0.0 ? atan(mis, al) : 3.0;
+                            emK[k] = smoothstep(0.03, 0.10, ang);
+                        }
+                        rEmitBad = dot(wB, emK);
+                        vec4  wq = wB * (1.0 - emK)
                                  * clamp(1.0 - gT, 0.0, 1.0) * vec4(lessThan(ga, vec4(50000.0)));
                         float ws = wq.x + wq.y + wq.z + wq.w;
                         rKf = (ws > 1e-6) ? dot(wq, vec4(1.0) - exp(-ga / 40.0)) / ws : 1.0;   // alpha: signed distance, km
                         rHasCloud = clamp(ws * 3.0, 0.0, 1.0);
                     }
+                    rCA.rgb   *= 1.0 - rEmitBad;                          // (the misplaced lights, above)
+                    reflCloudT = mix(reflCloudT, vec3(1.0), rEmitBad);
                     rKf = mix(rKf, 1.0, 0.7 * seaRough);   // a rough sea blurs the clouds in it away
                     rKf = mix(rKf, 1.0, 0.3 * smoothstep(3000.0, 30000.0, dist));   // review 22b: and far out, more of it
                     rKf = mix(1.0, rKf, onS);
@@ -5903,6 +5934,60 @@ void main() {
                 float glint = nl > 0.0 ? PI * F * D * gV * gL / (4.0 * nv) : 0.0;
                 surfColor += sunSpecTint * sunTransMax * min(glint, 400.0) * directSun;
             }
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+            // The engine / floodlight / ship lights mirrored by the sea FROM WHERE THEY ARE (2026-10-20, issue
+            // 20261020_181339 "Rocket Ocean Flare"): the Sun glint's Beckmann lobe, but with the light's direction taken
+            // from this sea point (a light kilometres away is not at infinity) and its irradiance I / d^2 there (suns; I in
+            // suns x m^2, the same lifted value that lights the clouds, lightning.frag mode 2). For a Starship 0.9 km above
+            // an eye 4.9 km up and 3 km away, the mirror point is 74 deg BELOW the horizon, not the 17 deg an infinitely
+            // far source at the rocket's elevation would give: the reflected cloud composite drew it there (a glitter path
+            // from the horizon down under the flame). The flames' own Gaussians are dropped from that reflection where
+            // they cannot lie on the reflected ray (rEmitBad, in the sky reflection above).
+            {
+                // Below ~1e-5 (x the night exposure, ~10: 1e-4 of white) a light's glint does not show; the cloud
+                // visibility lookup runs only for the pixels where one does.
+                const float kSeaLightMin = 1e-5;
+                uint  nEL  = min(selCount, kSkyEngineLightMax);
+                vec3  Pe   = dir * dist;                                   // the sea point, about the eye
+                float wndL = 7.0 * clamp(seaState, 0.2, 2.5);
+                float s2L  = 0.003 + 0.00512 * wndL + 0.06 * seaRoughFoot + 2e-5;
+                float sqL  = sqrt(s2L);
+                float nvL  = max(dot(waveN, -dir), 1e-3);
+                float aVL  = nvL / (sqL * sqrt(max(1.0 - nvL * nvL, 1e-6)));
+                float gVL  = aVL < 1.6 ? (3.535 * aVL + 2.181 * aVL * aVL) / (1.0 + 2.276 * aVL + 2.577 * aVL * aVL) : 1.0;
+                float tanHL = tan(pc.fovYRad * 0.5);
+                [[dont_unroll]] for (uint li = 0u; li < nEL; ++li) {
+                    SkyEngineLight L = selList[kSkyEngineLightBase + li];
+                    vec3  lv = L.c.xyz - Pe;
+                    float d2 = dot(lv, lv);
+                    float E  = L.c.w / (d2 + L.ia.w * L.ia.w);
+                    if (!(E * 0.25 / s2L > kSeaLightMin)) continue;   // even the lobe's peak (D = 1 / (pi s2)) would not show
+                    vec3  ld = lv * inversesqrt(max(d2, 1e-6));
+                    float nl = dot(waveN, ld);
+                    if (nl <= 0.0 || dot(surfUp, ld) <= 0.0) continue;
+                    vec3  hv = normalize(ld - dir);
+                    float nh = max(dot(waveN, hv), 1e-3);
+                    float c2 = nh * nh;
+                    float Dl = exp(-(1.0 - c2) / (c2 * s2L)) / (PI * s2L * c2 * c2);
+                    float Fl = 0.02 + 0.98 * pow(1.0 - max(dot(hv, -dir), 0.0), 5.0);
+                    float g  = min(PI * Fl * Dl * gVL / (4.0 * nvL), 400.0) * E;
+                    if (g < kSeaLightMin) continue;
+                    float aLL = nl / (sqL * sqrt(max(1.0 - nl * nl, 1e-6)));
+                    g *= aLL < 1.6 ? (3.535 * aLL + 2.181 * aLL * aLL) / (1.0 + 2.276 * aLL + 2.577 * aLL * aLL) : 1.0;
+                    // Hidden by the clouds the eye sees in front of the light (on screen only: the reflected ray's own
+                    // clouds are not known here).
+                    float vis = 1.0;
+                    vec3  lc  = mat3(pc.skyView) * L.c.xyz;
+                    if (lc.z < -0.01) {
+                        vec2 luv = vec2(lc.x, -lc.y) / (-lc.z * tanHL * 2.0);
+                        luv = vec2(luv.x / pc.aspect + 0.5, luv.y + 0.5);
+                        if (all(greaterThan(luv, vec2(0.0))) && all(lessThan(luv, vec2(1.0))))
+                            vis = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, luv, length(L.c.xyz), 1.0);
+                    }
+                    surfColor += L.ia.rgb * (g * vis);
+                }
+            }
+#endif
 
             // Surf and the waterline (2026-09-30, see dShore above).
             if (dShore < 400.0) {
