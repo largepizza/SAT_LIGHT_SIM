@@ -10186,6 +10186,68 @@ void SatelliteSim::meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2
     meshLights_.push_back(m);
 }
 
+void SatelliteSim::fillMeshLocalLights(GpuMeshFrame &frame, const glm::dvec3 &originEcef) const
+{
+    struct Ml
+    {
+        double w;
+        glm::dvec3 p;
+        const MeshLocalLight *m;
+    };
+    std::vector<Ml> ml;
+    ml.reserve(meshLightsPrev_.size());
+    const double adapt = (double)meshLightAdapt_;
+    for (const MeshLocalLight &m : meshLightsPrev_)
+    {
+        const glm::dvec3 p = m.ecef - originEcef;
+        const double I = m.I * adapt;
+        // (where the light no longer matters: ~1e-4 sun of irradiance at its distance from the origin + 20 m)
+        const double d2 = glm::dot(p, p);
+        if (I < 1e-4 * (d2 + 400.0) * 1e-2)
+            continue;
+        ml.push_back({I / (d2 + 2500.0), p, &m});
+    }
+    const size_t nL = std::min<size_t>(ml.size(), (size_t)GpuMeshFrame::kLocalLights);
+    std::partial_sort(ml.begin(), ml.begin() + nL, ml.end(), [](const Ml &a, const Ml &b) { return a.w > b.w; });
+    frame.lightInfo = glm::vec4((float)nL, 0.0f, 0.0f, 0.0f);
+    for (size_t i = 0; i < nL; ++i)
+    {
+        frame.lightPos[i] = glm::vec4(glm::vec3(ml[i].p), (float)(ml[i].m->I * adapt));
+        frame.lightCol[i] = glm::vec4(ml[i].m->col, ml[i].m->rs);
+        frame.lightDir[i] = glm::vec4(glm::vec3(ml[i].m->aimEcef), ml[i].m->cosCut);
+    }
+}
+
+uint32_t SatelliteSim::meshLightMask(const GpuMeshFrame &frame, const glm::dvec3 &centre, double radius, double exposure)
+{
+    // A light counts for an instance if its largest irradiance anywhere on the bounding sphere, in its beam, would
+    // show as more than ~1/1000 of white (the scene's radiance x exposure; the tonemap's toe is linear there).
+    const double thr = 1.0e-3 / std::max(exposure, 1e-6);
+    const int n = std::min((int)(frame.lightInfo.x + 0.5f), GpuMeshFrame::kLocalLights);
+    uint32_t mask = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        const glm::dvec3 d = glm::dvec3(frame.lightPos[i]) - centre;
+        const double dist = glm::length(d);
+        const double gap = std::max(dist - radius, 0.0), rs = (double)frame.lightCol[i].w;
+        const double E = (double)frame.lightPos[i].w / (gap * gap + rs * rs);
+        if (E < thr)
+            continue;
+        const glm::vec4 ad = frame.lightDir[i];
+        if (ad.w > -1.5f && dist > radius)
+        {
+            // An aimed flood: the sphere seen from the light is a cone of half-angle asin(r / d); outside its beam
+            // (+ the 10-deg soft edge) it lights nothing there.
+            const double cAx = glm::dot(-d / dist, glm::dvec3(ad));
+            const double ang = std::acos(glm::clamp(cAx, -1.0, 1.0)) - std::asin(glm::clamp(radius / dist, 0.0, 1.0));
+            if (ang > std::acos(glm::clamp((double)ad.w, -1.0, 1.0)) + 0.01)
+                continue;
+        }
+        mask |= 1u << i;
+    }
+    return mask;
+}
+
 void SatelliteSim::engineLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double r0,
                                   const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround,
                                   double meshK, const glm::dvec3 *meshPosEci)

@@ -108,10 +108,15 @@ def soyuz_like(b, kind, cm_only=False):
         b.engines("sm_engines", [(4, 0.6)] if kind == "shenzhou" else [(1, 0.0)], 0.15 if kind == "shenzhou" else 0.3,
                   0.45, z - 0.3, mat="nozzle")
         for k in range(2):
-            # A wing standing out from the service module: span radially, its width along the axis.
-            b.radial_box("solar_wing", 90.0 + 180.0 * k, sm_r + 0.4, z + 0.5 * sm_l, span, 0.04, wing_w, "cells",
+            # A wing standing out from the service module: span radially, its face across the axis (2026-10-21: the
+            # cells face along the vehicle's axis, as seen in photographs of an approaching Soyuz / Progress; the
+            # first cut had them edge-on to it). Shenzhou's wings turn about their span to the Sun (group "wings").
+            b.radial_box("solar_wing", 90.0 + 180.0 * k, sm_r + 0.4, z + 0.5 * sm_l, span, wing_w, 0.04, "cells",
                          ro=False)
             b.radial_box("wing_yoke", 90.0 + 180.0 * k, sm_r, z + 0.5 * sm_l, 0.45, 0.12, 0.3, "grey")
+            if kind == "shenzhou":
+                b.c[-2]["_wing"] = z + 0.5 * sm_l
+                b.c[-1]["_wing"] = z + 0.5 * sm_l
     z += sm_l
     r0, h = dm
     b.profile("descent_module", [[z, r0], [z + 0.25, r0], [z + 0.9 * h, 0.55 * r0], [z + h, 0.35 * r0]], "grey",
@@ -135,7 +140,8 @@ def progress(b):
     b.profile("service_module", [[z, 1.36], [z + 2.5, 1.36], [z + 2.6, 1.1]], "grey", caps=True)
     b.engines("sm_engine", [(1, 0.0)], 0.3, 0.5, z - 0.3, mat="nozzle")
     for k in range(2):
-        b.radial_box("solar_wing", 90.0 + 180.0 * k, 1.36 + 0.4, z + 1.3, 4.1, 0.04, 1.15, "cells", ro=False)
+        # Fixed wings, the cells facing along the axis (as Soyuz MS's; 2026-10-21: they were edge-on to it).
+        b.radial_box("solar_wing", 90.0 + 180.0 * k, 1.36 + 0.4, z + 1.3, 4.1, 1.15, 0.04, "cells", ro=False)
         b.radial_box("wing_yoke", 90.0 + 180.0 * k, 1.36, z + 1.3, 0.45, 0.12, 0.3, "grey")
     z += 2.6
     b.profile("refuelling_module", [[z, 1.05], [z + 1.2, 1.05], [z + 1.6, 0.7]], "grey", caps=True)
@@ -152,8 +158,12 @@ def tianzhou(b):
     b.profile("propulsion_module", [[z, 1.4], [z + 3.3, 1.4], [z + 3.9, 1.675]], "white", caps=True)
     b.engines("pm_engines", [(4, 0.7)], 0.18, 0.5, z - 0.3, mat="nozzle")
     for k in range(2):
-        b.radial_box("solar_wing", 90.0 + 180.0 * k, 1.4 + 0.6, z + 1.6, 5.6, 0.04, 2.0, "cells", ro=False)
+        # The wings turn about their span to the Sun (a solar array drive; 2026-10-21: they were fixed edge-on to
+        # the axis, a thin line seen from behind): rest pose facing along the axis, group "wings".
+        b.radial_box("solar_wing", 90.0 + 180.0 * k, 1.4 + 0.6, z + 1.6, 5.6, 2.0, 0.04, "cells", ro=False)
         b.radial_box("wing_yoke", 90.0 + 180.0 * k, 1.4, z + 1.6, 0.65, 0.12, 0.3, "grey")
+        b.c[-2]["_wing"] = z + 1.6
+        b.c[-1]["_wing"] = z + 1.6
     z += 3.9
     b.profile("cargo_module", [[z, 1.675], [z + 5.6, 1.675], [z + 6.3, 0.85]], "white", caps=True)
     z += 6.3
@@ -265,10 +275,25 @@ def build(kind, variant):
     if variant == "chute":
         chutes(b, top, kind)
     shift(b.c, -full)
+    # Sun-tracking wings (2026-10-21): a child group turning about the span axis (body Y) through the wings' centre;
+    # its parts' positions are relative to the hinge.
+    for c in b.c:
+        zw = c.pop("_wing", None)
+        if zw is not None:
+            c["group"] = "wings"
+            c["position"] = rm.r4([c["position"][0], c["position"][1], c["position"][2] - (zw - full)])
+            c["_hinge_z"] = zw - full
     return b.c
 
 
 def model(kind, variant, comps):
+    groups = [{"name": "body", "primary": {"axis": [0, 0, 1], "target": "velocity"},
+               "secondary": {"axis": [0, -1, 0], "target": "nadir"}}]
+    hz = [c.pop("_hinge_z") for c in comps if "_hinge_z" in c]
+    if hz:
+        groups.append({"name": "wings", "parent": "body",
+                       "hinge": {"position": [0.0, 0.0, round(hz[0], 4)], "axis": [0, 1, 0]},
+                       "joint": {"mode": "track", "vector": [0, 0, 1], "target": "sun"}})
     phot = [c["name"] for c in comps if not c.get("render_only")]
     used = sorted({c["material"] for c in comps} | {c.get("arc_material") for c in comps if c.get("arc_material")} |
                   {c.get("inner_material") for c in comps if c.get("inner_material")})
@@ -281,15 +306,18 @@ def model(kind, variant, comps):
         "note": ("%s render model (tools/make_crew_models.py), %s. %s Body frame: +Z out of the docking "
                  "port, origin at the port's contact point." % (what, part, NOTES[kind])),
         "materials": mats,
-        "attitude_groups": [{"name": "body", "primary": {"axis": [0, 0, 1], "target": "velocity"},
-                             "secondary": {"axis": [0, -1, 0], "target": "nadir"}}],
+        "attitude_groups": groups,
         "components": comps,
         "sources": [
             {"subject": "attitude", "status": "estimate",
              "value": "the sim hands in a full attitude (approach, docked, entry); this law is only its fallback",
-             "source": "SatelliteSimLaunches.cpp crew vehicles."},
-            {"subject": "body", "status": "estimate", "value": "one rigid group",
-             "source": "Render model; no moving parts."},
+             "source": "SatelliteSimLaunches.cpp crew vehicles."}] + ([
+            {"subject": "wings", "status": "estimate",
+             "value": "the wings turn about their span to face the Sun (a solar array drive), rest facing along +Z",
+             "source": "Photographs of Tianzhou / Shenzhou in flight: their wings are steered; the law is estimated."}]
+            if hz else []) + [
+            {"subject": "body", "status": "estimate", "value": "the rigid body",
+             "source": "Render model."},
             {"subjects": phot, "status": "sourced",
              "value": "diameters and lengths rounded from the references; shapes estimated from photographs",
              "source": " | ".join(REFS[kind])},

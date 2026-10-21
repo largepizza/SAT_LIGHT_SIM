@@ -2951,7 +2951,14 @@ private:
     void meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double rs,
                       const glm::dvec3 *aimEci = nullptr, double beamHalfDeg = 180.0);
     static double flameIntensitySunsM2(double mag100km);
-    int launchAfterStorm = 0;        // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
+    // (2026-10-21, cost) Fills frame.lightInfo / lightPos / lightCol / lightDir with last frame's mesh lights, the
+    // positions relative to `originEcef` (the frame's world origin, ECEF axes): the scene pass (the camera) and the
+    // info window's 3D view (the viewed object). meshLightMask: which of those lights can reach a bounding sphere
+    // (centre in the same frame) with more than a hair of displayed light at `exposure` — GpuMeshInstance::trans[1].w
+    // (bits), so sat_mesh.frag loops only over lights that matter to that instance.
+    void fillMeshLocalLights(struct GpuMeshFrame &frame, const glm::dvec3 &originEcef) const;
+    static uint32_t meshLightMask(const struct GpuMeshFrame &frame, const glm::dvec3 &centre, double radius, double exposure);
+    int launchAfterStorm = 0;       // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
     // The deployment era (2026-10-20, launches.deployment_era; launches.json "deployment" / "roster_history" / site and
     // vehicle "online" dates): the constellations are BUILT UP by launches from the late 2010s to 2036 instead of
     // standing complete at any date. Each roster satellite's born / gone second (rosterLife, 2 per satellite, seconds
