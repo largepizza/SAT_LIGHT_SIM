@@ -285,7 +285,8 @@ pass will find, and the 0.5% slack covers only float error. Each pass's descript
 image (binding 7), so neither is read in the layout it is being written in.
 
 `sceneDepthImg` is R32F, linear metres along the view ray, `kNoSurfaceT` (1e30) for sky. Its size is half the
-swap extent regardless of render scale, so `cloud_march.comp` can read it 1:1 with `texelFetch`. Knockout bit
+swap extent (half the render-scaled extent when "Clouds follow render scale" is on), always matching the cloud
+march targets, so `cloud_march.comp` can read it 1:1 with `texelFetch`. Knockout bit
 1024 fills it with "nothing" (meshes only) and skips both passes. See
 [GPU conventions](../development/gpu-conventions.md) for the shared-depth contract.
 
@@ -399,7 +400,7 @@ The array is binding 27 of the sky pass, a `sampler2DArray`: the stage's 16th an
 | Direct sun | `albedo x sunSpecTint x (sunLit x mix(0.15, 1, terrainShadow) + bounce) x cloudShadow x dayFrac x sunDiscVis`. `sunLit` is 1.5 x Lambert reaching a 0.05 floor smoothly (a hard clamp draws contour rims around facets). |
 | Ground bounce | `0.3 x "Terrain materials" x day-map luminance x the Sun's local height`: light off the sunlit ground around a face. Snow (about 0.8) lifts its shaded faces; forest barely moves. |
 | Cloud shadow | `cloudMarchTargetB.a`, read through a [1 2 1] x [1 2 1] tent at one half-res texel, which averages the cloud march's 2 x 2 ordered shadow jitter exactly. Direct sun only. |
-| Sky light | `albedo x skyAmbientTerrain x 0.4 x "Terrain sky light" x skyView x twilightFrac`. `skyAmbientTerrain` is a 4-step single-scatter integral up the local zenith (2 steps in `SKY_LITE`), times the eclipse sky light; `skyView = 0.5 + 0.5 n.up` (1 flat, 1/2 vertical). |
+| Sky light | `albedo x skyAmbientTerrain x 0.4 x "Terrain sky light" x skyView x twilightFrac`. `skyAmbientTerrain` is a 4-step single-scatter integral up the local zenith (2 steps in `SKY_LITE`), each step taking its exact sunlit share outside the Earth's shadow (`earthShadowLit()`, as the sky loop does; a midpoint test draws contour lines on the ground at twilight), times the eclipse sky light; `skyView = 0.5 + 0.5 n.up` (1 flat, 1/2 vertical). At the default "Terrain sky light" of 8, twilight terrain follows the sky's glow as the naked eye sees it. |
 | Moon | `albedo x max(n.moon, 0) x horizon gate x the Moon's phase-law brightness x moon gain` |
 | Night sky | `albedo x (moonlit sky + "Night sky light") x moon gain x skyView`, slightly cool. The moonlit sky is 0.15 of the direct Moon; "Night sky light" is the moonless sky (starlight and airglow) as a fraction of the full Moon overhead. |
 | City lights | emission from the night map, see below |
@@ -422,8 +423,9 @@ A plain subtraction in linear light, with no knee: it is linear above the base, 
 texture filter equals subtracting before it, while a knee on the filtered value would draw every 5 km texel
 as a hard square from orbit. The lights are limited to a terrain contour above the regional ground
 (`cityTerrainLimit()`), multiplied by the procedural pattern, joined by the street lamps' pools on the final
-albedo, scaled by 0.12 and faded in as twilight closes. Under cloud the finished light is blurred toward the
-map's mean by the cloud's opacity. All of this is described on [Cities](cities.md).
+albedo, scaled by 0.12 and faded in as twilight closes. Under thick cloud the procedural points give way to their
+own local mean (the same total light), and the cloud composite then attenuates it. All of this is described on
+[Cities](cities.md).
 
 Other consumers of the night map (the light-pollution dome, ambience, the clouds' city glow) read it with their
 own response curves; only the terrain emission subtracts the base. The aurora puts no light on the ground: its
@@ -434,6 +436,83 @@ light reaches the terrain through the sky ambient.
 The surface is not lit through a separate fog. The atmosphere loop integrates from the atmosphere entry up to
 the surface distance and attenuates the surface by the camera-side optical depth; see
 [Atmosphere and sky](atmosphere-and-sky.md).
+
+## Launch sites on the ground
+
+Each distinct launch pad in `data/launches.json` that stands at the current date is drawn into the terrain:
+graded ground, its apron and roads, and the real coastline around coastal sites. The towers and tanks standing on
+it are meshes, and its lights are point sprites; both are on [Launch visuals](launch-visuals.md), and the schedule
+that uses the pads is on [Launches](../simulation/launches.md). All of it is off with "Launch site graphics".
+
+The CPU (`launchFillPadParams()`) puts the nearest 12 pads within 2500 km (`PAD_MAX`) into the `CloudParams` UBO
+as `padQ` (centre in the observer's ENU from its sea-level point, the `q` frame, plus the city exclusion radius),
+`padU` (the layout's heading and the pad's kind: 2 a Starship catch tower, 1 a Falcon pad with a service structure,
+0 any other) and `padAux` (plateau height from the DEM, seed, graded radius, landing-zone angle). Each pad's
+heading is the middle of its launch azimuths, turned so its back (the access road and tanks) faces the most land.
+
+### Grading
+
+`tdPadFlat()`, inside `tdDemAt()`, grades the ground under each of the pads within 300 km (`padInfo.w`) flat to
+the plateau height: fully within the graded radius (450 m for a Starship pad, 350 m otherwise), blending back to
+the terrain over the same distance again. The detail relief is off there (`tdAmp0()` × (1 − k)), so the tower, the
+mount and a rocket on it stand on the same height every pass marches. Water, and land at the sea's level (marsh,
+sand bars, which draw as sea), are left alone except the apron itself (within about 0.35 of the graded radius),
+which is always land: grading the whole disc would turn every coastal pad into a round island and fill lagoons.
+
+### Coasts around launch sites
+
+The water map's ~5 km texels cannot hold the narrow land and water around most coastal pads (Boca Chica's strip
+between the Gulf and its bay, the Cape's barrier island), and the DEM reads 0 m on that land. `tools/make_pad_coasts.py`
+bakes the Natural Earth 10 m coastline around each group of coastal sites (sites within 6 km merged) into a
+48 × 48 signed distance grid over 12-20 km (250-420 m cells, bytes of ±3000 m), with every pad's graded disc forced
+to land, plus a ground colour per patch from a hand table (Boca Chica's sand flats, the Cape's scrub, the Louisiana
+marsh), into `data/launch_coasts.json`. The nearest four patches within 400 km (`COAST_MAX`) go into the UBO whole
+(`coastC/E/N/Col/G`).
+
+Inside a patch (`tdCoastPatch()`, C1 bilinear so the shore is not drawn as straight chords):
+
+- the water map's shore distance is the patch's (`tdCoastWm()`), blended back over the patch's outer quarter, at the
+  sea's level, and the coves' noise is cut to 0.3 of its amplitude, so the march, the depth passes, the beaches
+  (`shoreSignedDist()`) and the sea all see one coast;
+- its land is never lower than the patch's floor (2.5 m): land at 0 m would be drawn like the sea;
+- `sat_sky.frag` draws its land in the patch's ground colour, varied by value noise at about 420 m and 90 m, where
+  the 5 km day map is blue over its luminance (and at least 75 % elsewhere in the patch, since the map is a guess
+  there).
+
+The CPU side mixes the same patches into the pads' heading and landing-zone choice and the Go to land test. The
+coastlines are Natural Earth's, accurate to about 1 km. Re-run the tool after editing the sites.
+
+### The ground pattern
+
+`padGroundAt()` (`sat_sky.frag`) draws each pad's flat parts over the day map, in the pad's own (u, v) frame:
+
+- a graded patch (an irregular, squarish outline, a 55 % tint of compacted sand and gravel rather than paint);
+- the concrete apron with 10 m expansion joints, each slab with its own shade (±8 %) and a weathered mottle at
+  about 7 m, both fading to their mean once the footprint passes them;
+- a Starship pad's water-cooled steel deflector with soot around it and the tower's base; on other pads the flame
+  trench (a dark channel along −u), the service structure's base;
+- tank slabs with their roads, and the access road out along −u to the exclusion edge with sodium lamps every
+  40 m and their lit band;
+- a Falcon pad's landing zone 2.3 km out on the driest land: a graded patch, an 86 m concrete disc with a painted
+  ring and cross, and its road;
+- the shadows of the tower (a lattice, so half) and of the mount, along the Sun.
+
+Every element is an exact box filter of the pixel footprint (`cityBoxCover()`, `solarPulseCover()`, and
+`padDisk()`, which keeps a disc's area past the footprint), so from orbit a pad is a pale speck. It is drawn only on
+dry ground (a terrain hit above 0.5 m), and the graded core turns off the close-up materials, micro relief and
+beaches there (`padCoreAt()`). It is lit like the rest of the ground; at night the pad's lamps and its **floodlit
+apron** are added to the night term. The apron is lit by the pad's floods (`padFlood()`: the masts' and the tower's
+floods, each aimed at the centre in a cos⁶ lobe, Lambert on the ground, \(1/(d^2 + 30^2)\), normalised to 1 at the
+centre and capped at 2.2), at 0.2 of the albedo, so it is brightest toward the mount and under the masts' aim and
+falls off to its corners.
+
+Inside a pad's exclusion radius (3 km, 3.2 km for a Falcon pad) the night map is cut to its base, so there is no
+city grid, glitter, detail texture or farm; see [Cities](cities.md#launch-sites). Debug view 28 (`debugview pads`):
+R the pattern's cover, G the exclusion, B the lamps and floods. None of this is in `SKY_LITE` or `SKY_ENV` (the
+pads are in the main observer's frame).
+
+Cost (RTX 3070 Ti, 1600 × 900, Starbase from 900 m): the sky pass within noise, the scene depth passes about
++0.18 ms.
 
 ## Variants
 
@@ -481,10 +560,13 @@ All on the Terrain tab, stored in `settings.json` under `clouds`. "Night sky lig
 | Terrain materials | `terrain_material_strength` | 1 | rock, snow, mottle, AO, ground bounce |
 | Close-up textures | `terrain_texture_strength` | 1 | the six texture sets |
 | Terrain shadows | `terrain_shadow_strength` | 1 | the terrain sun shadow |
-| Terrain sky light | `terrain_sky_light` | 1 | x the sky ambient on the ground |
+| Terrain sky light | `terrain_sky_light` | 8 | x the sky ambient on the ground (0-20) |
 | Night sky light | `terrain_night_sky_light` | 0.2 | moonless night sky on the albedo, fraction of the full Moon |
 
-The presets override the four strengths and the fade distances.
+The presets override the four strengths and the fade distances. "Launch site graphics"
+(`launches.pad_graphics`, on; the launch controls in the [Missions window](../using/missions.md), independent of
+launches being on) switches
+the pads' grading, ground pattern and coast patches, with their meshes and lights.
 
 !!! question "Unverified"
     "Terrain fade start (m)" (`terrain_dist_fade_start_m`) is persisted and sent to the GPU, but no shader in
@@ -521,4 +603,7 @@ and hit. Note that it does not run the fragment shader's classification step.
 | `shaders/sat_sky.frag` | the seeded full-res march, hit classification, `tmSample()`, land shading |
 | `shaders/terrain_probe.comp` | the harness probe |
 | `src/simulations/SatelliteSim.cpp` | texture loading (`readRawR8()`), the anchor cell and observer texel in the CloudParams fill |
-| `tools/make_raw_textures.py`, `tools/make_water_map.py`, `tools/make_terrain_materials.py` | the offline bakes |
+| `shaders/include/terrain_detail.glsl` (again) | `tdPadFlat()` (pad grading), `tdCoastPatch()`, `tdCoastWm()` (coast patches) |
+| `shaders/sat_sky.frag` (again) | `padGroundAt()`, `padFlood()`, `padCoreAt()`, the coast patches' ground colour |
+| `src/simulations/SatelliteSimLaunches.cpp` | `launchFillPadParams()`: the pads and coast patches into the UBO |
+| `tools/make_raw_textures.py`, `tools/make_water_map.py`, `tools/make_terrain_materials.py`, `tools/make_pad_coasts.py` | the offline bakes |

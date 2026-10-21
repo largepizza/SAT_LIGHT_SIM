@@ -314,6 +314,13 @@ bool Catalog::load(const std::string &path, std::string &err)
                     pg.stayDays[0] = cr["stay_days"][0].get<double>();
                     pg.stayDays[1] = cr["stay_days"][1].get<double>();
                 }
+                pg.berth = cr.value("berth", false);
+                if (cr.contains("grapple"))
+                {
+                    pg.grappleR = cr["grapple"][0].get<double>();
+                    pg.grappleZ = cr["grapple"][1].get<double>();
+                }
+                pg.captureM = cr.value("capture_m", pg.captureM);
             }
             if (p.contains("stack"))
             {
@@ -381,6 +388,30 @@ bool Catalog::load(const std::string &path, std::string &err)
         }
         referenceT = dateToJ2000(j.value("deployment_reference", std::string("2026-10-20")));
         minFirstLifeFrac = std::clamp(j.value("min_first_life", minFirstLifeFrac), 0.0, 2.0);
+        if (j.contains("station_arms"))
+            for (const auto &a : j["station_arms"])
+            {
+                StationArm sa;
+                for (const auto &m : a.at("match"))
+                    sa.match.push_back(m.get<std::string>());
+                sa.model = a.value("model", sa.model);
+                auto v3 = [&](const char *k, glm::dvec3 &o) {
+                    if (a.contains(k))
+                        o = glm::dvec3(a[k][0].get<double>(), a[k][1].get<double>(), a[k][2].get<double>());
+                };
+                v3("base", sa.base);
+                v3("base_normal", sa.baseN);
+                v3("park_wrist", sa.parkW);
+                v3("park_dir", sa.parkN);
+                v3("pole", sa.pole);
+                sa.baseN = glm::normalize(sa.baseN);
+                sa.parkN = glm::normalize(sa.parkN);
+                sa.pole = glm::normalize(sa.pole);
+                sa.shoulderM = a.value("shoulder_m", sa.shoulderM);
+                sa.boomM = a.value("boom_m", sa.boomM);
+                sa.wristM = a.value("wrist_m", sa.wristM);
+                arms.push_back(sa);
+            }
         if (j.contains("roster_history"))
             for (const auto &h : j["roster_history"])
             {

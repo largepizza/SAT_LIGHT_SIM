@@ -4779,6 +4779,30 @@ launches follow per-program cadences (no real manifest).
   the dark barely dims the sky, a sooty trail silhouettes (as pure absorbers they were dark smudges at night).
   Each Gaussian carries a view cone (80-B `GpuDustCloud`): the shader skips it with one dot product. At night the
   plumes' sunlight is raised up to 10x as the eye's sky darkens (the night exposure is not physical: see the dust).
+- **What the Gaussian list costs, and the three culls (2026-10-21).** `dustCloudsCS` costs every texel the work of
+  every Gaussian whose cone covers it; old, wide or Earth-shadowed exhaust (bells hundreds of km across, trails in the
+  night) covers the whole sky while adding nothing: in the droneship bench view 160 of 390 Gaussians were in every
+  texel, ~1.5 ms of their lighting alone. (1) **Per-tile cull** (`cullDustForTile`, cloud_march.comp, before main's
+  early return like `cullBeamsForTile`): each 16x16-texel workgroup tests every cone once against the tile's cone
+  into a 1024-bit LIST-ORDER mask (so the sums keep their order: the same image as the full scan), plus per Gaussian
+  the engine lights whose reach can touch it (`sDustLM`: reach + 8 sigma_max, sigma_max^2 <= the covariance's trace
+  from the inverse scaled to O(1) — entries reach 1e-12 for a 1000-km bell). (2) **Per-texel faint skip**: a plume
+  whose optical depth here is < 1e-5 and whose light (Sun / sky colour x 2.6, + each reaching engine light at that
+  point) is < 2e-7 of white at the frame's exposure (DustBuf header word 2 = `skyExposure()`, written by
+  `kesslerFillDust`) is skipped before its lighting; summed over 1024 that is <= 1% dimming and 2e-4 of white,
+  worst case. (3) **CPU significance cull** (`dustCullInsignificant`, at the plumes' emission, on a CPU copy — never
+  read the mapped list back): a worst-case bound per Gaussian (its largest column along any ray from the eye, in
+  whitened coordinates: K sqrt(2 pi) (s0 + sMax / (Y sqrt(e))); x the billows' 2.5; light from the colour and every
+  listed engine light), the faintest dropped while the SUMMED bounds stay < 2e-4 of white and 1% dimming (~60 in the
+  droneship view: the dimming budget binds, an eye inside a long Gaussian can look down its length). Knockouts
+  16777216 (tile cull + faint skip off) and 33554432 (CPU cull off) are the A/Bs. Measured interleaved in one live
+  app, scenes paused (RTX 3070 Ti, 1600x900, cloud_march): droneship 8.1 -> 6.6 ms, era 2032 6.0 -> 5.0, day lift-off
+  4.3 -> 3.4, night follow 3.3 -> 3.0; captures within the base-vs-base noise floor; composite at 128 registers,
+  8.8 KB shared. Also cheaper in the loop: `eM` = e + tc^2 q (no extra matrix product), the Earth-shadow test only
+  where used. **The bench's "+22 ms" for era / droneship was GPU contention** (another agent's app on the GPU: the
+  same scenes measured +3.7 / +3.6 before this pass) — time the launch bench only with no other app running, and
+  trust interleaved live A/Bs over single bench runs. `launch state` -> `dust_list` (counts by kind and cone width,
+  `culled`).
 - **Flames** (2026-10-19, issue 20261019_175126 shots 5-6): out of the model's engines (`engineGeomOf`: the exit plane
   and the radius the `engines` / `upper_nozzle` / `side_nozzle` cones span, cached per type in `LaunchState::engineGeom`),
   along -nose, a chain of three emissive Gaussians (core / flame / tail: 1.2 / 3.5 / 9 exit diameters x (1 + 2.5 x the
@@ -4887,6 +4911,16 @@ launches follow per-program cadences (no real manifest).
   `GpuMeshFrame::lightPos / lightCol / lightDir` (528 -> 656 B). Diffuse + the material's specular, no shadow rays, not
   photometric (no bloom). The lightning pass's mode-2 ground term now skips mesh pixels (binding 6 = the mesh distance
   target, `writeLightningMeshDescriptor`): it lit them by the local up. Cost ~0.2 ms with the lights on (issue view).
+  **Cheaper and in the info window (2026-10-21):** `fillMeshLocalLights(frame, originEcef)` picks the lights (the scene:
+  the camera; the info window's 3D view: the viewed object, so a rocket on its pad at night is lit there as in the main
+  view — Live light and a tracked subject only), and `meshLightMask` gives each instance the bits of the lights that
+  can reach its bounding sphere above ~1/1000 of white at its exposure, an aimed flood only if the sphere is in its
+  beam (`GpuMeshInstance::trans[1].w`, a float of the bits; 0 = none). sat_mesh.frag loops over those bits only and skips
+  a light under ~1e-4 of white at the pixel before its specular lobe. Measured (launch_bench night_close: following a
+  night Starship at 300 m, 1600x900): GPU 16.21 -> 15.46 ms, the launches' share 2.24 -> 1.60 ms (single runs while no
+  other app ran — repeat before trusting the 0.1-ms digits). Harness `launch state` -> `mesh_local_lights`,
+  `mesh_lights_scene`, `mesh_lights_viewer`. Still no shadow rays: the shadow accel bins occluders across the SUN, a
+  point light would need the full occluder loop (the ISS: tens of ms), so local-light shadows are not built.
 - **The landing halo (issue 20261020_213739, 2026-10-21)** was the PLUME, not the haze: a droneship landing laid down sea
   spray (6x the exhaust's mass at kappa 14, growing 7 m/s) as a dome ~50 m round the booster, lit white by the burn and the
   floods. A ship's deck now gets a thin exhaust skirt (`landingCloud` surf 3: 1.2x the mass, kappa 9, sigma0 6 m, growth
@@ -5229,6 +5263,54 @@ launches follow per-program cadences (no real manifest).
     `crew_fast_track_count` / `_hours`, `crew_cargo_count`. Measured: burns <= 13 m/s^2 (the entry interface's
     hand-over), the entry <= 25 m/s^2, turns <= 1.5 deg/s. The mission-ops suite judges every cached visiting
     vehicle around each epoch (`VISIT_THRESHOLDS`, `launch_check_<epoch>.json`), not only the traced flights.
+  - **Wings (2026-10-21)**: Progress's and Soyuz MS's fixed wings face ALONG the vehicle's axis (the cells seen face-on
+    from in front / behind, as in photographs of an approaching Soyuz; the first cut had them edge-on to it: a thin
+    line from behind); Tianzhou's and Shenzhou's turn about their span to the Sun (a child group "wings", joint
+    `track` toward the Sun, rest pose facing +Z: `make_crew_models.py`, `_wing` marks). Photometric parts: the four
+    models were selftested.
+- **Berthing with the station's arm (2026-10-21; Canadarm2 on the ISS: Cygnus, HTV-X).** A program whose crew block has
+  `"berth": true` (`Program::berth`, `grapple` [radius, z below the port] = the vehicle's grapple fixture, `capture_m`)
+  does not dock: after the arc onto the port's axis (a NADIR port: the R-bar, from below) it closes to 250 m (hold
+  20 min), 30 m (hold 15 min, go for capture), to the capture point `capture_m` (9 m) out, and free-drifts there; the
+  arm grapples it 5 min later (`tGrapple`), moves it to 1.5 m (50 min) and onto the port (20 min, the CBM's bolts;
+  `tDock`, phase `berthed`). At departure the arm takes it again (`armD0`), lifts it off the port (`tUndock`), moves it
+  back to the release point, holds and opens (`tRelease`); it drifts off, a departure burn 2 min into the departure
+  (`LCrew::tDepBurn`, now every visiting vehicle's), then the usual deorbit (both burn up). Legs `kBerthLegs`
+  (buildCrew); new phases CP_TO_250 .. CP_ARM_INSTALL, CP_BERTHED, CP_UNBERTH, CP_RELEASE.
+  - **The arm** (`launches.json` `"station_arms"`, `launch::StationArm`: the station by `match`, `model`, `base` +
+    `base_normal` in the station body frame, `shoulder_m`, `boom_m`, `wrist_m`, the park `park_wrist` / `park_dir`, the
+    elbow's `pole`): `LaunchImpl::stationArmPose(arm, t, visits)` is a pure function of t over the berthing visits to
+    that station: the end effector's tip G and its approach direction follow a target — the park, a 0.6-m stand-off
+    from the vehicle's fixture (its pose at the capture hold, berthed, or the release hold: fixed in the station's
+    frame), or the fixture itself while it holds (`berthFixture`: crewPos + crewAttitude, in the station's frame) —
+    blended by smootherstep (30 min park <-> stand-off, 2 min stand-off <-> fixture, an hour holding on after the
+    bolts); the wrist point is the tip less `wrist_m` along it, and the two equal booms solve to it with the elbow
+    toward `pole` (`armSolve`). The arm works with the first visit whose window holds t (`armA0` .. `armA3` on arrival,
+    `armD0` .. `armD3` at departure). Drawn by `launchArmJobs` as three meshes in one reserved chunk below the ships'
+    (`kArmMeshSlots`): `rocket_arm_canadarm2_boom` twice (shoulder -> elbow, elbow -> wrist) and `_wrist` (+Z toward
+    the next joint, +Y the bending plane's normal; `make_crew_models.py write_arm`, lengths from launches.json); the
+    shoulder base is the ISS model's render-only `gb_canadarm_pdgf` / `_shoulder` on Destiny's nadir side (the old
+    static boom greebles are gone). The ISS's `docking_ports` gain `unity_nadir` (use `berth_unity`: Cygnus) and
+    `harmony_nadir` (`berth_harmony`: HTV-X) — CBM rings 0.35 m proud.
+  - **A station near a visiting vehicle is drawn by the CPU** (`launchArmJobs`: the arm's station whenever the arm is,
+    and any station within ~3 px of size with a crew-list vehicle): the GPU lists no satellite in the Earth's shadow,
+    so at night a docked or approaching vehicle (and the arm) floated beside a station that was not drawn.
+    recordMeshScene skips a GPU candidate already among those jobs.
+  - **Programs** (launches.json, appended: no other batch key moves): Cygnus resupply (`falcon9_cygnus`, SLC-40, every
+    0.75 y, 60-100 days berthed at Unity nadir; NG-20 .. 23 flew on Falcon 9 while Antares 330 was built), HTV-X
+    resupply (`h3_htvx`, H3-24W from Tanegashima, yearly, 120-170 days at Harmony nadir). Models: `rocket_capsule_cygnus`
+    (UltraFlex discs) / `_htvx` (`make_crew_models.py`: CBM ring on top, grapple fixtures on both sides), the rockets
+    (`make_rocket_models.py`: `capsule` "cygnus" / "htvx" under the fairing). Not built: Dream Chaser (Vulcan, a runway
+    landing at KSC), Antares 330, the arm walking between grapple fixtures, the SSRMS's seven joints as separate parts,
+    a free-flyer's capture dynamics (the vehicle holds still in the station's frame at the capture point).
+  - Harness: `launch crew craft=cygnus|htv event=capture_point|capture|berth|unberth|release|arm|arm_depart`;
+    `launch state` -> `station_arms[]` (`with`, `attached`, `reach_short_m`, shoulder / elbow / wrist / tip in the
+    station frame) and `arm_parts_drawn`; `launch check` -> `crew[].berth` (`capture_point_err_m`, `grip_tip_err_m`,
+    `release_tip_err_m`, `arm_attached_err_m`, `arm_step_max_m_s`, `arm_turn_max_deg_s`, `arm_reach_short_m`) and the
+    `berth_*` maxima; `launch trace` docking adds `hold250_range_m`, `hold30_range_m`, `capture_range_m`,
+    `grip_tip_err_m`, `berthed_tip_err_m`, `release_tip_err_m` (mission_ops.py thresholds). Measured (4 cached
+    visits): every tip error 0.000 m, capture-point error 0, arm joints <= 0.012 m/s, booms <= 0.12 deg/s, nothing out
+    of reach; the vehicles' turns <= 0.9 deg/s. `scripts/berthing.satcmd`.
 - **Missions window** (2026-10-19, `SatelliteSimMissions.cpp`; window id 8, `msChrome`; the rocket button
   `TimeMissionsBtn` on the right HUD panel, `pixel--missions.png`; key M, `KB_MISSIONS`; harness `ui open missions
   [tab=upcoming|ongoing|controls]`, `missions state|go|tab`). Three tabs. **Upcoming**: the next 5 launches (vehicle,
@@ -5623,7 +5705,7 @@ launches follow per-program cadences (no real manifest).
   at its end so a moved stage shows.
 - Not built: the booster's legs deploying,
   the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
-  (trains launch into it), berthing with Canadarm (HTV-X, Cygnus, Dream Chaser), the stations' own phasing manoeuvres
+  (trains launch into it), Dream Chaser's berthing and runway landing, the stations' own phasing manoeuvres
   (a fast track waits for the right pass instead), hole-punching through cloud decks, sonic booms.
 
 ## Subsystem: Reflect-Orbital Beam Cloud Occlusion
@@ -6481,6 +6563,8 @@ knockout — an optimization A/B; see "Beam pointing-ray tile culling" below), 1
 part occlusion (`sat_orbit.comp`, geometry-model types; via `GpuSatTypeHeader::occlusionOn`),
 4194304=the water map in the shared height function (terrain v2 P2, `tdDemAt`; also the cost A/B),
 8388608=**mesh shadow accel OFF** (an optimization A/B like 131072: `sat_mesh.frag`'s per-pixel occluder loop),
+16777216=**plume tile cull + faint skip OFF**, 33554432=**plume significance cull OFF** (both optimization A/Bs:
+cloud_march.comp's dust / plume Gaussian list, see Launches "What the Gaussian list costs"),
 262144=**Potato sky** (swap `skyBgPipeline` → `skyBgMinimalPipeline`), 524288=**SKY_LITE sky**
 (swap → `skyBgLitePipeline`) — see "Subsystem: Weak-Hardware Sky Tiers". These last two are
 pipeline swaps, not in-shader branches; they're set by the Potato / Planetarium presets and are

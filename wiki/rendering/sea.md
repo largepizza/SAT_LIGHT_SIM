@@ -79,6 +79,11 @@ against the land.
 with \( g \) = "Sea state from weather" (0 gives a constant sea). The amplitude scales by `seaState`, and the
 choppiness rises with it (`clamp((seaState - 1) x 1.2, -1.2, 2)`).
 
+The CPU keeps a mirror of this rule, `shipSeaState()`, for the swell the landing ships ride (heave, pitch and
+roll from three sinusoids of 6-14 s scaled by the sea state at the ship; see
+[Launch visuals](launch-visuals.md)). The CPU has no weather cube, so its storm term comes from the cloud map's
+coverage at that point.
+
 ## The shore
 
 With the detail on and the water within 20 km, `shoreSignedDist()` gives the distance to the waterline in
@@ -126,7 +131,7 @@ into crawling glitter: the sharp glint and below-horizon reflection amplify any 
 ### Far-sea ripple
 
 Where every wave octave is filtered out, the far band would be a mirror. A ripple normal fills it:
-two levels of periodic noise (`seaRippleLevel()`), with cells of about "Far sea ripple size" (5) along-view
+two levels of periodic noise (`seaRippleLevel()`), with cells of about "Far sea ripple size" (1.5) along-view
 footprints, so they are always resolvable, plus a component on the 45-degree lattice. Each level is one
 function of its index, and the blend between adjacent levels is renormalised for contrast, so no rings form
 around the observer. The ripple tilts the normal mostly along the view: long, thin bands on screen, like the
@@ -157,7 +162,44 @@ direction's projection (not in environment probes):
   (`mix(0.35, 1, cloudShadow)`), so the sea is not brighter than the cloud deck over it. It reads the
   filtered shadow (the [1 2 1] tent over the half-res cloud target): the raw tap carries the cloud march's
   2 × 2 ordered shadow offsets, which under broken cloud would print a grid of white dots on the reflection
-  that shimmers as the waves move.
+  that shimmers as the waves move;
+- **texels lit only by a nearby light are dropped where they cannot lie on the reflected ray.** The lookup at
+  the mirrored direction assumes what it finds is at infinity. A texel holding only emissive or plume light
+  (a flame, a rocket's lit exhaust, a re-entry trail) is flagged and carries that light's distance; it is
+  dropped when the reflected ray, seen from this sea point, misses the light's position by more than 2-6 deg.
+  A flame composited in front of a real cloud sits in that cloud's unflagged texel, so the same test is also
+  run against the engine-light list: where the mirrored direction falls within a light's flame and glow on
+  screen (at least 3 deg, about 600 m) and the flame dominates the texel against the cloud just outside it,
+  the texels there are dropped too. The lights themselves are reflected from where they really are (next
+  section). Real clouds are not tested: their screen-space reflection stays an approximation.
+
+### Engine lights and floodlights
+
+The sea mirrors every engine, floodlight and ship light in the engine-light list (the list that also lights
+clouds and haze; see [Launch visuals](launch-visuals.md)) from the light's real position. After the Sun glint,
+each light is evaluated with the same Beckmann lobe, its direction taken from the sea point and its irradiance
+\( I / (d^2 + r_0^2) \) there, dimmed by the on-screen clouds in front of the light (`cloudPointVisibilityAt()`).
+A light whose lobe peak could not reach \(10^{-5}\) is skipped before the lobe is evaluated.
+
+A light near the eye therefore mirrors at its true specular point. For a source at height \(H\) and horizontal
+distance \(D\), seen from an eye at height \(h\), the mirror point lies \( D h / (h + H) \) from the eye, at a
+depression of \( \arctan((H + h)/D) \): always deeper below the horizon than the source is above it. Satellite
+glints keep the infinite-distance geometry, which is under 1 deg off at hundreds of km. Not in SKY_LITE or the
+environment probes. Cost is within run-to-run noise.
+
+### Storm sea trails
+
+On a rough sea the [sky TAA](atmosphere-and-sky.md) deliberately keeps more history: the crests smear into
+streaks, which reads as wind-driven spray. `sat_sky.frag` marks sea pixels with a trail share
+
+\[
+\text{trail} = g \cdot \text{ss}(1.3, 1.9, \text{seaState}) \cdot \text{ss}(0.1, 0.4, \text{rain}) \cdot \text{altFade}
+\]
+
+where *rain* is the weather map's rain over that point of the sea (`gSeaRain`, the march's own rule) and \(g\) is
+"Storm sea trails". `sky_taa.comp` blends the history toward unclipped by that share and holds the still weight,
+but only while the view moves little: the share fades out over 1-4 px of parallax a frame. Without the rain gate
+and the parallax fade, every stormy sea would drag the clouds above it across the water whenever the eye moved.
 
 The Milky Way and the aurora are reflected too ([Aurora and airglow](aurora-airglow.md)): the Milky Way at
 mip \( 3 + 4\,\text{seaRough} \), scaled by "Ocean MW refl" (Atmosphere tab); the aurora by a 6-step march along
@@ -207,9 +249,10 @@ Stored in `settings.json` under `clouds`. Ocean tab unless noted.
 | Whitecaps | `ocean_whitecaps` | 1 | foam amount |
 | Sea wave range (km) | `ocean_wave_range_km` | 100 | where the wave normal ends |
 | Sea wave range fade | `ocean_wave_range_fade` | 0.4 | share of the range it fades over |
-| Sea wave sharpness | `ocean_wave_sharpness` | 0.5 | x the footprint the octaves are filtered at; higher = softer |
-| Far sea ripple | `ocean_far_ripple` | 1.5 | ripple strength in the far band |
-| Far sea ripple size (px) | `ocean_far_ripple_size` | 5 | ripple cell in along-view footprints; lower = finer, more shimmer |
+| Sea wave sharpness | `ocean_wave_sharpness` | 0.1 | x the footprint the octaves are filtered at (0.1-1); higher = softer |
+| Far sea ripple | `ocean_far_ripple` | 1.7 | ripple strength in the far band |
+| Far sea ripple size (px) | `ocean_far_ripple_size` | 1.5 | ripple cell in along-view footprints (1.5-16); lower = finer, more shimmer |
+| Storm sea trails | `ocean_storm_trails` | 1 | how much history the sky TAA keeps on a raining, rough sea |
 | Sea warp | `ocean_warp` | 3.5 | the 430 m warp |
 | Sea warp detail | `ocean_warp_detail` | 1.2 | the 140 m warp |
 | Ocean flare refl | `ocean_glint_gain` | 0.02 | satellite glints on the water |
@@ -239,4 +282,6 @@ Harness `debugview`:
 |---|---|
 | `shaders/sat_sky.frag` | `seaHeight()`, `seaMap()`, `seaMapDetail()`, `seaRippleLevel()`, `oceanSeaState()`, `shoreSignedDist()`, the ocean branch of `main()` |
 | `shaders/sat_flare.comp` | the satellite ocean-glint list |
+| `shaders/sky_taa.comp` | the storm sea trails in the history blend |
 | `src/simulations/SatelliteSim.cpp` | the world offset and its wrap into `oceanState` |
+| `src/simulations/SatelliteSimLaunches.cpp` | `engineLightAdd()` (the light list the sea mirrors); `shipSeaState()`, the CPU mirror of the sea-state rule for the landing ships' swell |

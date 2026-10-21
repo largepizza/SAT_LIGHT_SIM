@@ -19,16 +19,17 @@ flowchart LR
   SF --> C[UI clicks and rollovers]
   AM --> L[layer voices: samples and synths]
   AM --> O[one-shots: gulls]
+  AM --> R[thunder and rockets]
 ```
 
 | Bus | What plays on it | User volume (Sound tab) | Automatic multiplier |
 |---|---|---|---|
-| Music | the playing track and its upwell stem | Music vol (default 0.6) | the altitude fade |
-| SFX | UI button clicks and rollovers (`assets/sound/ui/`) | SFX vol (default 1.0) | none |
-| Ambience | every ambience layer and one-shot | Ambience (default 0.8) | half during the intro |
+| Music | the playing track and its upwell stem | Music (`audio.music_vol`, default 0.7) | the altitude fade |
+| SFX | UI button clicks and rollovers (`assets/sound/ui/`) | Effects (`audio.sfx_vol`, default 1.0) | none |
+| Ambience | every ambience layer and one-shot, thunder and the rockets' roar | Ambience (`audio.ambience_vol`, default 0.7) | half during the intro |
 
-The master volume defaults to 0.8. The automatic multipliers sit under the user's volume and are not
-persisted.
+The master volume (Master, `audio.master_vol`) defaults to 0.4. The automatic multipliers sit under the user's
+volume and are not persisted.
 
 ## How music and ambience share the space
 
@@ -66,11 +67,25 @@ stateDiagram-v2
 During the intro cinematic, which is cut to the first track, the whole ambience bus sits at half volume and
 the upwell stem stays silent. Both return over about two seconds when the intro ends or is skipped.
 
+## Sound follows the place, the moment and the events
+
+The ambience is the camera's: what it hears depends on where the camera is, not where the parked observer stands.
+It also follows the date and the events of the sky:
+
+- **The satellites present.** The hum of the satellite shells counts only the satellites in orbit at the current
+  date, so with the deployment era on, an early sky sounds sparser than the full roster of 2036.
+- **Thunder** is heard from the lightning drawn on screen, arriving at the speed of sound from where each flash
+  happened, as it would at the listener's position now.
+- **Rockets** roar from the pad and along their climb, heard as they were a few seconds earlier (the sound's
+  travel time), and the boosters coming back too.
+
+Both thunder and rockets are on the ambience bus. Details are on [Ambience](ambience.md#rain-and-thunder).
+
 ## Where to go next
 
 | Page | Covers |
 |---|---|
-| [Ambience](ambience.md) | the layer table (`assets/sound/ambience/ambience.json`) and its format, every context driver, the procedural synth voices, the samples, levels, the beam sounds, rain and thunder, offline rendering for the harness, `SoundTool` |
+| [Ambience](ambience.md) | the layer table (`assets/sound/ambience/ambience.json`) and its format, every context driver, the procedural synth voices, the samples, levels, the beam sounds, rain, thunder and rockets, offline rendering for the harness, `SoundTool` |
 | [Music and tonality](music.md) | the playlist and its controls, upwell stems, the soundtrack analysis (`MusicAnalysis`), how the ambience's key follows the music, the Sound tab |
 
 How a change *sounds* is for a person to judge. The [automation harness](../development/harness.md) can
@@ -85,6 +100,6 @@ layers are playing at the right levels, but it cannot say whether they sound goo
 | `src/AmbientSynth.h/.cpp` | the procedural synth voices |
 | `src/MusicAnalysis.h/.cpp` | the soundtrack analysis and its cache |
 | `src/simulations/Ambience.h/.cpp` | the layer table: loading, evaluation, fades, events |
-| `src/simulations/SatelliteSimAmbience.cpp` | the sim's side: context drivers, tonality, thunder, the upwell and altitude fades |
+| `src/simulations/SatelliteSimAmbience.cpp` | the sim's side: context drivers, tonality, thunder and rocket voices, the upwell and altitude fades |
 | `SatelliteSim::setAudio()` in `src/simulations/SatelliteSim.cpp` | builds the playlist and pairs each track with its stem |
 | `assets/sound/` | `music/`, `ambience/` (the table, the samples, `CREDITS.txt`), `ui/` |

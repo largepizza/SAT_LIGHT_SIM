@@ -855,6 +855,9 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     swap(cloudMarchPipeline, pick(compositeSpv, "shaders/cloud_march.comp.spv"), cloudMarchPipeLayout, nullptr);   // the composite
     cv2HistoryValid = false;
     stats = pipelineStatsLine(ctx, cv2MarchPipeline);
+    // The composite's too (2026-10-21: its plume / dust pass is timed with composite= variants).
+    if (const std::string cs = pipelineStatsLine(ctx, cloudMarchPipeline); !cs.empty())
+        stats += "; composite: " + cs;
     return err;
 }
 

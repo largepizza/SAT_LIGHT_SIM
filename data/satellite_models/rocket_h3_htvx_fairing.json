@@ -1,0 +1,222 @@
+{
+ "name": "h3_htvx fairing",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), h3_htvx: fairing. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Core / upper split, SRB nose and fairing lengths estimated from photographs. One fairing half (the other is it turned 180 deg about +Z), in the stage's frame: separated, it falls away tumbling.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "fairing_half_0",
+   "type": "profile",
+   "profile": [
+    [
+     -8.24,
+     2.6
+    ],
+    [
+     2.24,
+     2.6
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_1",
+   "type": "profile",
+   "profile": [
+    [
+     2.24,
+     2.6
+    ],
+    [
+     2.8556,
+     2.5769
+    ],
+    [
+     3.4546,
+     2.5098
+    ],
+    [
+     4.0358,
+     2.4015
+    ],
+    [
+     4.598,
+     2.2547
+    ],
+    [
+     4.94,
+     2.1392
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  },
+  {
+   "name": "fairing_half_2",
+   "type": "profile",
+   "profile": [
+    [
+     4.94,
+     2.1392
+    ],
+    [
+     5.1394,
+     2.0719
+    ],
+    [
+     5.6581,
+     1.8559
+    ],
+    [
+     6.1513,
+     1.6102
+    ],
+    [
+     6.6157,
+     1.3391
+    ],
+    [
+     7.0462,
+     1.0492
+    ],
+    [
+     7.4352,
+     0.751
+    ],
+    [
+     7.768,
+     0.4647
+    ],
+    [
+     7.9955,
+     0.25
+    ],
+    [
+     8.0321,
+     0.208
+    ],
+    [
+     8.0614,
+     0.1608
+    ],
+    [
+     8.083,
+     0.1095
+    ],
+    [
+     8.0961,
+     0.0555
+    ],
+    [
+     8.1006,
+     0.0
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "sweep_deg": [
+    -90.0,
+    90.0
+   ],
+   "inner_material": "grey"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "fairing_half_0",
+    "fairing_half_1",
+    "fairing_half_2"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "JAXA H3 Launch Vehicle pages / Wikipedia 'H3 (rocket)': 5.2 m core, 2 LE-9 on the '24' configuration, four SRB-3 (2.5 m x 14.6 m), LE-5B-3 second stage, 5.2 m 'W' fairing (long), ~63 m | JAXA HTV-X: launched on H3-24W from Tanegashima (HTV-X1, 2025-10-26)"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

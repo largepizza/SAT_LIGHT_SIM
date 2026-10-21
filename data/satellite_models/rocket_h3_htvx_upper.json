@@ -1,0 +1,332 @@
+{
+ "name": "h3_htvx upper",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), h3_htvx: upper. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Core / upper split, SRB nose and fairing lengths estimated from photographs.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "upper_nozzle_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.75
+    ],
+    [
+     0.2947,
+     0.6221
+    ],
+    [
+     0.5893,
+     0.5109
+    ],
+    [
+     0.884,
+     0.4177
+    ],
+    [
+     1.1787,
+     0.3442
+    ],
+    [
+     1.4733,
+     0.2928
+    ],
+    [
+     1.768,
+     0.27
+    ],
+    [
+     1.976,
+     0.4185
+    ],
+    [
+     2.4336,
+     0.4185
+    ],
+    [
+     2.6,
+     0.2511
+    ],
+    [
+     2.65,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_1",
+   "type": "profile",
+   "profile": [
+    [
+     2.0,
+     2.6
+    ],
+    [
+     13.8,
+     2.6
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_2",
+   "type": "profile",
+   "profile": [
+    [
+     1.95,
+     2.548
+    ],
+    [
+     1.99,
+     2.548
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "fairing_3",
+   "type": "profile",
+   "profile": [
+    [
+     13.82,
+     2.6
+    ],
+    [
+     24.3,
+     2.6
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_4",
+   "type": "profile",
+   "profile": [
+    [
+     24.3,
+     2.6
+    ],
+    [
+     24.9156,
+     2.5769
+    ],
+    [
+     25.5146,
+     2.5098
+    ],
+    [
+     26.0958,
+     2.4015
+    ],
+    [
+     26.658,
+     2.2547
+    ],
+    [
+     27.0,
+     2.1392
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_5",
+   "type": "profile",
+   "profile": [
+    [
+     27.0,
+     2.1392
+    ],
+    [
+     27.1994,
+     2.0719
+    ],
+    [
+     27.7181,
+     1.8559
+    ],
+    [
+     28.2113,
+     1.6102
+    ],
+    [
+     28.6757,
+     1.3391
+    ],
+    [
+     29.1062,
+     1.0492
+    ],
+    [
+     29.4952,
+     0.751
+    ],
+    [
+     29.828,
+     0.4647
+    ],
+    [
+     30.0555,
+     0.25
+    ],
+    [
+     30.0921,
+     0.208
+    ],
+    [
+     30.1214,
+     0.1608
+    ],
+    [
+     30.143,
+     0.1095
+    ],
+    [
+     30.1561,
+     0.0555
+    ],
+    [
+     30.1606,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "upper_tank_1",
+    "fairing_3",
+    "fairing_4",
+    "fairing_5"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "JAXA H3 Launch Vehicle pages / Wikipedia 'H3 (rocket)': 5.2 m core, 2 LE-9 on the '24' configuration, four SRB-3 (2.5 m x 14.6 m), LE-5B-3 second stage, 5.2 m 'W' fairing (long), ~63 m | JAXA HTV-X: launched on H3-24W from Tanegashima (HTV-X1, 2025-10-26)"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey",
+    "nozzle",
+    "soot"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

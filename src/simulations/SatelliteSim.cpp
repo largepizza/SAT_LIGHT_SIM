@@ -4484,6 +4484,14 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     frame.earthCenter = glm::vec4(glm::vec3(-P), (float)std::fmod(theta, glm::two_pi<double>()));
     frame.params = glm::vec4(viewerShadows ? 1.0f : 0.0f, viewerReflections ? 1.0f : 0.0f,
                              viewerDetail ? 1.0f : 0.0f, 0.0f);
+    // (2026-10-21) The main view's local lights (a burning engine, a pad's or a ship's floods at night): a rocket on
+    // its pad at night is lit here as in the scene. Live light on a tracked object only (Studio has its own sun).
+    if (tracked && !viewerStudioLight)
+    {
+        fillMeshLocalLights(frame, P);
+        meshLightsViewer_ = (int)(frame.lightInfo.x + 0.5f);
+        inst.trans[1].w = (float)meshLightMask(frame, centre, radius, (double)viewerExposureNow);
+    }
 
     // ── Full-renderer environment (Live light): probe slot 0 + the background ─
     // Studio light keeps the analytic Earth (its sun is not the sky's).
@@ -4996,10 +5004,17 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         // Rockets up close (launches: their stages as meshes; they are not in the GPU's list).
         for (int s : launchMeshJobs(pixAngle, obsEci))
             jobs.push_back({s, -1.0f, -1.0f, true});
+        const size_t nFixedJobs = jobs.size();
         for (const GpuSatListHeader::MeshCandidate &c : cands)
         {
             if ((int)jobs.size() >= kMaxMeshInstances || c.meshPx < fadeIn * 0.9) // sorted: the rest are smaller
                 break;
+            // (2026-10-21) a station the launch jobs drew (its arm, visiting vehicles: drawn in its shadow too)
+            bool dup = false;
+            for (size_t q = 0; q < nFixedJobs && !dup; ++q)
+                dup = jobs[q].sat == (int)c.sat;
+            if (dup)
+                continue;
             if (!(followActive && (int)c.sat == followSatIndex))
             {
                 const glm::vec2 sk = glm::unpackHalf2x16(c.sizeKept);
@@ -5392,35 +5407,16 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     // Local lights (2026-10-21, sat_mesh.frag): last frame's engine / flood lights (SatelliteSim::MeshLocalLight, made
     // by the launch visuals after this pass), with the eye's adaptation to them; the most important to what is near
     // the camera first.
+    fillMeshLocalLights(frame, obsEcef);
+    meshLightsScene_ = (int)(frame.lightInfo.x + 0.5f);
+    for (size_t i = 0; i < insts.size(); ++i)
     {
-        struct Ml
-        {
-            double w;
-            glm::dvec3 p;
-            const MeshLocalLight *m;
-        };
-        std::vector<Ml> ml;
-        ml.reserve(meshLightsPrev_.size());
-        const double adapt = (double)meshLightAdapt_;
-        for (const MeshLocalLight &m : meshLightsPrev_)
-        {
-            const glm::dvec3 p = m.ecef - obsEcef;
-            const double I = m.I * adapt;
-            // (where the light no longer matters: ~1e-4 sun of irradiance at its distance from the camera + 20 m)
-            const double d2 = glm::dot(p, p);
-            if (I < 1e-4 * (d2 + 400.0) * 1e-2)
-                continue;
-            ml.push_back({I / (d2 + 2500.0), p, &m});
-        }
-        const size_t nL = std::min<size_t>(ml.size(), (size_t)GpuMeshFrame::kLocalLights);
-        std::partial_sort(ml.begin(), ml.begin() + nL, ml.end(), [](const Ml &a, const Ml &b) { return a.w > b.w; });
-        frame.lightInfo = glm::vec4((float)nL, 0.0f, 0.0f, 0.0f);
-        for (size_t i = 0; i < nL; ++i)
-        {
-            frame.lightPos[i] = glm::vec4(glm::vec3(ml[i].p), (float)(ml[i].m->I * adapt));
-            frame.lightCol[i] = glm::vec4(ml[i].m->col, ml[i].m->rs);
-            frame.lightDir[i] = glm::vec4(glm::vec3(ml[i].m->aimEcef), ml[i].m->cosCut);
-        }
+        GpuMeshInstance &in = insts[i];
+        const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(types[i]);
+        const glm::dmat3 R0(glm::dvec3(in.rot[0]), glm::dvec3(in.rot[1]), glm::dvec3(in.rot[2]));
+        const glm::dvec3 c = glm::dvec3(in.origin) + glm::dvec3(in.trans[0]) +
+                             (tm ? R0 * glm::dvec3(tm->boundsCenter) : glm::dvec3(0.0));
+        in.trans[1].w = (float)meshLightMask(frame, c, tm ? (double)tm->boundsRadius : 50.0, (double)frame.camPos.w);
     }
 
     // ── Sharp reflections: the largest instances with a mirror-smooth material ──────────────────

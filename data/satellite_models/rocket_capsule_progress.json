@@ -157,8 +157,8 @@
    "type": "box",
    "size": [
     4.1,
-    0.04,
-    1.15
+    1.15,
+    0.04
    ],
    "position": [
     0.0,
@@ -202,8 +202,8 @@
    "type": "box",
    "size": [
     4.1,
-    0.04,
-    1.15
+    1.15,
+    0.04
    ],
    "position": [
     -0.0,
@@ -332,8 +332,8 @@
   {
    "subject": "body",
    "status": "estimate",
-   "value": "one rigid group",
-   "source": "Render model; no moving parts."
+   "value": "the rigid body",
+   "source": "Render model."
   },
   {
    "subjects": [

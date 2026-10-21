@@ -2,7 +2,7 @@
 
 How to trade picture quality for frame rate: the graphics presets and exactly what each one turns down, the
 render scale and the automatic render scale, temporal anti-aliasing (which doubles as an upscaler), the frame
-limiter, and the handful of advanced sliders that matter most. How the effects themselves work is in
+limiter, the window and interface options, and the handful of advanced sliders that matter most. How the effects themselves work is in
 [Rendering](../rendering/index.md); how to measure costs precisely is on [Profiling](../development/profiling.md).
 
 ## Presets
@@ -23,16 +23,18 @@ Pick a mode with the mouse, the arrow keys (or Tab, or the number keys) and Ente
 
 | Mode | Preset it starts on |
 |---|---|
-| Full graphics | The saved preset when it is already a full tier (Low and up, or a Custom set that draws the full sky). Otherwise the device's recommendation: Medium on a discrete GPU, Low (every effect at a 50% render scale) on hardware recommended a lighter mode |
+| Full graphics | The saved preset when it is already a full tier (Low and up, or a Custom set that draws the full sky). Otherwise the device's recommendation: High on a discrete GPU with about 6 GB of memory or more, Medium on a smaller one, Low (every effect at a 50% render scale) on hardware recommended a lighter mode |
 | Planetarium | Planetarium |
 | Potato (very old hardware) | Potato |
 
 Which mode is pre-selected:
 
 - **First run:** the device's recommendation, also marked *Recommended for this computer*. A discrete GPU with
-  more than about 2 GB of memory gets Full graphics; a smaller discrete GPU, integrated graphics, or a software
-  or virtual device gets Planetarium; a non-Apple GPU running through MoltenVK on macOS gets Potato. The
-  recommendation comes from the device type and memory size only, never from a list of GPU names.
+  more than about 2 GB of memory gets Full graphics (High from about 6 GB, 5.5 GiB of device memory, otherwise
+  Medium); a smaller discrete GPU, integrated graphics, or a software or virtual device gets Planetarium; a
+  non-Apple GPU running through MoltenVK on macOS gets Potato. The recommendation comes from the device type and
+  memory size only, never from a list of GPU names. The same rule seeds the preset when the question is switched
+  off and there is no `settings.json` yet.
 - **Later launches:** the mode of the preset saved last time.
 - **After a session that did not close cleanly:** one tier lighter than that, with a note saying so. The screen
   appears in this case even when the question is switched off.
@@ -71,6 +73,8 @@ that way.
 | Fog, dust and ice fog | off | off | on | on | on | on |
 | Shared scene depth (terrain occlusion for clouds and beams) | off | on | on | on | on | on |
 | Temporal anti-aliasing / upscaling | off | off | on | on | on | on |
+| Cloud march rate | (no clouds) | (no clouds) | adaptive while moving, sparse when still | adaptive while moving, sparse when still | every pixel every frame | every pixel every frame |
+| Clouds follow render scale | on | on | on | on | off | off |
 | Render scale | 100% | 100% | 50% | 67% | 100% | 100% |
 
 - **Potato** draws the sky with a separate, much smaller shader: an analytic atmosphere, the day and night Earth
@@ -84,7 +88,8 @@ that way.
 - **Low** is Medium's picture at a 50% render scale: every effect is on, and the clouds, the depth pass and the
   temporal upscaler all follow the lower resolution, so it costs roughly half of Medium's GPU frame.
 - **Medium** turns nothing off; it uses smaller cloud and atmosphere budgets than High and a 67% render scale.
-- **High** is the tuned default, at full resolution.
+- **High** is the program's built-in defaults: the tuned look, at full resolution, with the clouds marched in full
+  every frame. It is what a discrete GPU with about 6 GB or more starts on.
 - **Ultra** raises every budget to its slider's ceiling and reaches much farther for terrain and clouds. It is
   meant for screenshots and films.
 
@@ -95,9 +100,12 @@ frame and Medium at about 14 to 18 ms.
 
 | Slider (tab) | `settings.json` key | Potato | Planetarium | Low | Medium | High | Ultra |
 |---|---|---|---|---|---|---|---|
-| March budget (Clouds) | `clouds_v2.max_iters` | 160 | 160 | 300 | 300 | 400 | 640 |
-| Light steps (Clouds) | `clouds_v2.light_steps` | 3 | 3 | 6 | 6 | 6 | 8 |
-| Step growth (Clouds) | `clouds_v2.step_growth` | 0.025 | 0.025 | 0.015 | 0.015 | 0.01 | 0.008 |
+| March budget (Clouds) | `clouds_v2.max_iters` | 160 | 160 | 300 | 300 | 430 | 640 |
+| Light steps (Clouds) | `clouds_v2.light_steps` | 3 | 3 | 6 | 6 | 7 | 8 |
+| Step growth (Clouds) | `clouds_v2.step_growth` | 0.025 | 0.025 | 0.015 | 0.015 | 0.014 | 0.008 |
+| Adaptive rate while moving (Clouds) | `clouds_v2.adaptive_rate` | 1 | 1 | 1 | 1 | 0 | 0 |
+| Sparse when still (Clouds) | `clouds_v2.sparse_when_still` | 1 | 1 | 1 | 1 | 0 | 0 |
+| Clouds follow render scale (Display) | `display.clouds_follow_render_scale` | on | on | on | on | off | off |
 | View samples (min) (Atmosphere) | `clouds.view_samples_min` | 6 | 4 | 6 | 6 | 6.5 | 16 |
 | View samples (max) (Atmosphere) | `clouds.view_samples_max` | 20 | 10 | 96 | 96 | 160 | 256 |
 | Light samples (Atmosphere) | `clouds.light_samples` | 2 | 2 | 2 | 2 | 2.4 | 4 |
@@ -109,11 +117,10 @@ frame and Medium at about 14 to 18 ms.
 
 The sea's wave octaves stay at full quality on every tier: they are cheap and the sea looks wrong without them.
 
-!!! warning "A named preset is re-applied at every launch"
-    When the saved preset is anything but Custom, its values are applied again on the next start. Settings that
-    do not switch the preset to Custom are then overwritten, most visibly the **Render scale**: on Medium, a
-    render scale raised to 100% comes back as 67% after a restart. To keep a hand-picked render scale, change any
-    advanced slider (which makes the preset Custom) or pick High or Ultra, which already run at 100%.
+!!! note "A named preset is re-applied at every launch"
+    When the saved preset is anything but Custom, its values are applied again on the next start. Every value the
+    preset table owns therefore switches the preset to Custom when you change it by hand: any advanced slider, the
+    **Render scale** and **Clouds follow render scale**. So a hand-picked value always survives a restart.
 
 ## Render scale
 
@@ -130,13 +137,13 @@ With temporal anti-aliasing on (the default), a reduced render scale is **upscal
 so 50% keeps most of the detail of 100%. With temporal anti-aliasing off, the background is simply stretched to
 the window, and terrain edges hide satellites and stars less exactly.
 
-**Clouds follow render scale** (`display.clouds_follow_render_scale`, on by default) can be turned off to keep the
-clouds and the depth pass at half the window's resolution whatever the render scale; they then cost the same at
-every scale.
+**Clouds follow render scale** (`display.clouds_follow_render_scale`; on for Potato to Medium, off for High and
+Ultra) can be turned off to keep the clouds and the depth pass at half the window's resolution whatever the render
+scale; they then cost the same at every scale.
 
 ### Automatic render scale
 
-**Automatic render scale** (Display tab, on by default) changes the render scale by itself to hold a frame rate.
+**Automatic render scale** (Display tab, off by default) changes the render scale by itself to hold a frame rate.
 It lowers the scale in 5% steps when the GPU frame runs over 90% of the target frame time, and raises it one step
 at a time when there is clearly room, never below **Lowest render scale**. A step does not restart the clouds:
 their history is resampled to the new size.
@@ -147,8 +154,8 @@ the lost detail only when the view is still, so at a lower scale the picture loo
 | Setting | `settings.json` key | Default |
 |---|---|---|
 | Render scale | `display.render_scale` | 100% (or the preset's) |
-| Clouds follow render scale | `display.clouds_follow_render_scale` | on |
-| Automatic render scale | `display.dynamic_resolution` | on |
+| Clouds follow render scale | `display.clouds_follow_render_scale` | off (the preset's) |
+| Automatic render scale | `display.dynamic_resolution` | off |
 | Target frame rate | `display.dynamic_target_fps` | 60 (30 to 144) |
 | Lowest render scale | `display.dynamic_min_scale` | 50% |
 
@@ -180,18 +187,42 @@ It needs the full sky shader, so it is off on Potato and Planetarium.
 The two weights are the share of each new frame in the blend; they have no sliders and are set in
 `settings.json` (range 0.02 to 1).
 
-## Frame limiter and window
+## Frame limiter, window and interface
 
-| Setting (Display tab) | Choices | Default |
-|---|---|---|
-| Frame limiter (`display.fps_cap_mode`) | Off (uncapped, tearing allowed), 30, 60, 120, V-Sync | V-Sync |
-| Window mode | Windowed, Fullscreen (F11 toggles) | Windowed (maximised) |
-| Text scale (`display.ui_scale`) | 0.75 to 2 | 1.5 |
-| Units | Metric, Imperial | Metric |
+| Setting (Display tab) | `settings.json` key | Choices | Default |
+|---|---|---|---|
+| Frame limiter | `display.fps_cap_mode` | Off (uncapped, tearing allowed), 30, 60, 120, V-Sync | V-Sync |
+| Window mode | (not saved) | Windowed, Fullscreen (F11 toggles) | Windowed (maximised) |
+| Text scale | `display.ui_scale` | 0.75 to 2 | 1.5 |
+| Units | `display.unit_system` | Metric, Imperial | Metric |
+| UI theme | `display.ui_theme` | Classic, Navy, Night red, Midnight (`classic`, `navy`, `night`, `midnight`) | Midnight |
+| Window opacity | `display.window_opacity` | 60% to 100% | 100% |
 
 With V-Sync, a frame that misses the display's refresh waits for the next one, so on a 60 Hz display a GPU frame
 just over 16.7 ms shows as 30 frames per second. If the frame rate halves suddenly, lowering the cost slightly
 often doubles it back; the automatic render scale is built for exactly this.
+
+**UI theme** colours the interface only, never the sky. Midnight is near-black, mostly opaque panels with a red
+accent; Classic is the same accent and text on lighter, more translucent panels; Navy has blue-black panels and an
+azure accent. **Night red** keeps the whole interface dim red, icons, thumbnails and the 3D views included, so
+looking at the screen does not spoil dark adaptation outdoors. The theme also applies to the startup graphics
+screen.
+
+**Window opacity** is the windows' background. At 100% a window over another hides it completely; lower values let
+what is behind show through.
+
+### Dev mode: unbounded values
+
+With **Show advanced settings** on, the Display tab's *Settings* section has **Dev mode: unbounded values**
+(`display.dev_unbounded_values`, default off). With it on, a number typed into a slider's value box on the advanced
+tabs, the Photometry tab or the Sound tab's advanced rows is applied as typed, instead of being held to the
+slider's range. An out-of-range value shows in amber; **-** and **+** step it without snapping it back, and dragging
+the slider returns it to the range. Nothing guarantees that the renderer handles such a value well.
+
+It does not cover the Display tab's own steppers (render scale and the like), the volumes or the Cinematics fields.
+A few keys are also held to their range when `settings.json` is loaded (the cloud history weights, god rays, the
+haze near clouds, the far sea's wave settings, the aurora's manual Kp, the temporal anti-aliasing weights): typed
+past it, they keep the value for the session and are clamped again at the next launch.
 
 ## The sliders that cost the most
 
@@ -204,7 +235,10 @@ tab (turn on *Show advanced settings* in Display).
 | Light steps | Clouds | Steps toward the Sun from each cloud sample. The main per-sample cost; below about 4 storm tops shimmer |
 | Step growth | Clouds | How fast the cloud steps lengthen with distance. Larger is cheaper and coarser far away |
 | Full rate above (km) | Clouds | Above this altitude every cloud pixel is recomputed every frame (sharper from orbit, costlier) |
-| Adaptive rate while moving (0/1) | Clouds | While moving, only screen tiles with visible cloud parallax are marched at full rate. On by default; worth keeping |
+| Adaptive rate while moving (0/1), Sparse when still (0/1) | Clouds | Below *Full rate above*, march only a quarter of the cloud pixels each frame while still, and only the screen tiles with visible cloud parallax at full rate while moving. Off on High and Ultra, on below: turning both on is the largest single saving in cloudy views, at the cost of grain while the history fills in |
+| Light march (m) | Clouds | How far each cloud sample looks toward the Sun for its shadow; longer is costlier |
+| Accumulation (samples, 0 = off) | Clouds | How many frames a cloud pixel averages; higher cleans up a still view faster after it changes. Free |
+| Far cloud shadows (0/1), Layer shadows (mid / high) | Weather | The shadows of distant clouds and of the higher cloud layers; together a few tenths of a millisecond |
 | View samples (min / max) | Atmosphere | Samples along each sky ray |
 | Terrain detail, Terrain shadows | Terrain | The procedural relief on top of the elevation map and its sun shadows: several milliseconds on the ground in mountains, little from aircraft height, nothing from orbit |
 | Terrain fade start / end (m) | Terrain | How far the detailed terrain march reaches |
@@ -236,7 +270,9 @@ Some photometry options are expensive at the scale of a million satellites:
 ## Where in the code
 
 - `src/simulations/SatelliteSimUI.cpp`: `applyGraphicsPreset()` (the preset table),
-  `recommendedPresetForDevice()`, `seedGraphicsPresetFromDevice()`, `buildSettingsDisplayTab()`.
+  `recommendedPresetForDevice()`, `seedGraphicsPresetFromDevice()`, `buildSettingsDisplayTab()`,
+  `numberField()` (the dev-mode unbounded values).
+- `src/simulations/UIPalette.h`: the UI themes (`UI_PALETTE`, `applyUiTheme()`).
 - `src/App.cpp`: `runBootChooser()` and `buildBootChooserUI()` (the startup screen and its input).
 - `src/simulations/SatelliteSimBootChooser.cpp`: `prepareBootChooser()` (what is offered and pre-selected),
   `applyBootChoice()`, `ensureFullSkyPipelines()` (the deferred full sky shader), `updateBootSafetyNet()`.

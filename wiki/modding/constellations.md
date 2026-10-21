@@ -37,8 +37,8 @@ A constellation refers to a type by its `name`, exactly and case-sensitively. A 
 ways:
 
 - **A geometry model** (`"model"`): a separate file with the satellite's parts, materials and moving joints. Its
-  brightness is a physical apparent magnitude computed from that geometry. Every type in the shipped roster but
-  one is a model type.
+  brightness is a physical apparent magnitude computed from that geometry. Every type in the shipped roster is a
+  model type.
 - **The legacy two-surface form**: one or two reflecting surfaces with a Phong lobe each, an area, a diffuse floor
   and a mirror fraction. Brightness is in tuned display units rather than a physical magnitude, and features that
   need geometry (the 3D view, Go to, magnitude traces and exports, part shadowing) are not available.
@@ -58,6 +58,7 @@ ways:
 | `name` | string | required | Unique name; shells refer to it |
 | `model` | string | none | Model id: loads `satellite_models/<id>.json` next to the executable |
 | `base_color` | `[r, g, b]`, 0 to 1 | `[0.95, 0.95, 1.0]` | Tint of the satellite's point of light. Cosmetic; it does not change the brightness |
+| `mass_kg` | number > 0 | a default by model | The satellite's mass, used by [The Sun's Fury](../simulation/kessler.md) for collisions, breakups and drag |
 
 With `model` set, every legacy field (`cross_section_m2`, `primary`, `secondary`, `diffuse`, `mirror_frac`,
 `attitude_groups`) is ignored: the model file owns the geometry and the attitude. If the model file cannot be
@@ -169,8 +170,10 @@ used by model files, which add parent-child trees; see
 | `joint.angle_deg` | number | 0 | The rotation for `fixed` |
 
 Joint modes: `none`; `track` (turn so `vector` points as close as possible at `target`, like a solar-array
-gimbal); `edge_on` (turn so `vector` is perpendicular to `target`, the smaller of the two solutions); `fixed` (a
-constant `angle_deg`); `flare_mitigation_tilt` (the angle of the global *Flare mitigate tilt* setting).
+gimbal); `edge_on` (turn so `vector` is perpendicular to `target`, the smaller of the two solutions);
+`edge_on_continuous` (edge-on on one fixed solution, so the joint turns smoothly once per orbit instead of swapping
+solutions twice an orbit: a thermal radiator); `fixed` (a constant `angle_deg`); `flare_mitigation_tilt` (the
+angle of the global *Flare mitigate tilt* setting).
 
 Targets:
 
@@ -190,7 +193,7 @@ group) is logged and the type falls back to a single nadir-pointing group.
 ## Constellations
 
 Each entry is one constellation of one type. Most entries are one shell (one altitude, one pattern); a `Shells`
-entry carries a whole filed table of shells (below).
+entry carries a whole filed table of shells, and a `List` entry a set of named satellites (below).
 
 ```json
 {
@@ -209,18 +212,20 @@ entry carries a whole filed table of shells (below).
 |---|---|---|---|
 | `name` | string | required | Shown in the Constellations tab; also the key under which its on/off state is saved |
 | `type` | string | required | A `satellite_types` name, exactly. An unknown name skips the shell |
-| `alt_km` | number > 0 | required (not for Shells) | Altitude above the Earth's mean radius (6371 km) |
-| `num_planes` | integer ≥ 1 | required (not for Shells) | Walker: number of planes. Other distributions: only a factor of the total |
-| `per_plane` | integer ≥ 1 | required (not for Shells) | Satellites per plane. **Total = `num_planes` × `per_plane`** for Walker, RandomShell and Disk |
+| `alt_km` | number > 0 | required (not for Shells or List) | Altitude above the Earth's mean radius (6371 km) |
+| `num_planes` | integer ≥ 1 | required (not for Shells or List) | Walker: number of planes. Other distributions: only a factor of the total |
+| `per_plane` | integer ≥ 1 | required (not for Shells or List) | Satellites per plane. **Total = `num_planes` × `per_plane`** for Walker, RandomShell and Disk |
 | `incl_deg` | 0 to 180 | 0 | Inclination. Above 90 is retrograde. RandomShell: the maximum |
 | `enabled` | boolean | true | Whether the shell is shown (see the note on saved settings below) |
-| `distribution` | `Walker`, `RandomShell`, `Disk`, `Shells` | `Walker` | How the orbits are generated. Any other value is treated as `Walker` |
+| `distribution` | `Walker`, `RandomShell`, `Disk`, `Shells`, `List` | `Walker` | How the orbits are generated. Any other value is treated as `Walker` |
+| `category` | string | inferred from the name | The group the Constellations tab lists the entry under (see [Categories](#categories)) |
 | `alt_jitter_km` | number ≥ 0 | 0 | RandomShell and Disk: each satellite's altitude is offset by a uniform random amount within ±this |
 | `raan_deg` | number | 0 | Disk: the plane's right ascension of the ascending node |
 | `align_terminator` | boolean | false | Disk: put the plane on the day-night terminator, sun-synchronous (overrides `incl_deg` and `raan_deg`) |
 | `num_rings` | integer ≥ 1 | 1 | Disk: number of concentric rings |
 | `ring_spacing_km` | number ≥ 0 | 0 | Disk: altitude step between rings |
 | `groups` | list of shell groups | none | Shells: the shell table (see [Shells](#shells)). Required for Shells |
+| `members` / `members_file` / `class_types` | | none | List: the named satellites (see [Named satellites](#named-satellites-list)). One of the first two is required for List |
 | `cluster_size` | integer ≥ 1 | 1 | Walker, Disk and Shells: satellites per formation cluster. 1 = no clusters |
 | `cluster_shape` | `line` or `ring` | `line` | How a cluster's members are arranged (see [Formation clusters](#formation-clusters)) |
 | `cluster_spacing_km` | number > 0 | 1 | `line`: along-track distance between neighbouring members |
@@ -258,6 +263,9 @@ Within a ring the satellites are evenly spaced. With `align_terminator: true`:
 **Shells.** A table of shell groups, such as the Table 1 of a filing with the US Federal Communications
 Commission (FCC). Each group puts `shells` shells evenly over an altitude range, each with `planes_per_shell`
 planes of `per_plane` satellites; a group is either sun-synchronous or a Walker set. See [Shells](#shells).
+
+**List.** Named satellites, each its own orbit and possibly its own type: the geostationary belt. See
+[Named satellites](#named-satellites-list).
 
 !!! warning "Tumbling types need RandomShell"
     Only RandomShell gives each satellite a tumble axis and rate. A type whose attitude is `tumble` (or the legacy
@@ -303,10 +311,50 @@ The derived values the rest of the program needs are filled in from the table: t
 whose groups hold no satellites is skipped, with a line in `satlight_log.txt`.
 
 !!! tip "Keep one filed table in one entry"
-    The enable and highlight switches reach the GPU as two 32-bit masks, one bit per entry. An entry at position
-    33 or later in the file has no bit of its own and cannot be switched on and off or highlighted reliably. A
-    filing with dozens of shells therefore goes in one `Shells` entry rather than one entry per shell; the shipped
-    roster has 29 entries.
+    Each entry is one Show and one Highlight switch, and one row in the Constellations tab. The switches cover the
+    first 256 entries; a filing with dozens of shells reads better as one `Shells` entry than as one entry per
+    shell. The shipped roster has 30 entries.
+
+### Named satellites (List) {#named-satellites-list}
+
+A `List` entry flies a set of individually named satellites, each with its own orbit and, if it says so, its own
+type. It has no `alt_km`, `num_planes` or `per_plane`. The members are given inline in `members`, or in a separate
+file next to the executable named by `members_file` (its `"members"` array is appended to the inline ones), or
+both. The shipped GEO belt is a `List` entry reading `geo_satellites.json`: 398 real geostationary satellites at
+their slots, written by `tools/make_geo_belt.py` (edit the table there, not the JSON).
+
+```json
+{
+  "name": "GEO belt",
+  "type": "GEO comsat (medium)",
+  "distribution": "List",
+  "category": "GEO",
+  "members_file": "geo_satellites.json",
+  "class_types": { "large": "GEO comsat (large)", "weather": "GEO weather satellite" },
+  "members": [
+    { "name": "My relay", "operator": "Example", "lon_deg": -71.5, "class": "large", "purpose": "comsat" },
+    { "name": "My LEO probe", "alt_km": 700.0, "incl_deg": 98.0, "raan_deg": 40.0, "u0_deg": 0.0 }
+  ]
+}
+```
+
+| Member field | Default | Meaning |
+|---|---|---|
+| `name` | `Satellite` | Shown in the selection panel, the info window and the member list |
+| `operator`, `purpose` | none | Shown with the name; searched by the member list |
+| `type` | none | A `satellite_types` name. An unknown name is logged and the entry's `type` is used |
+| `class` | none | Picks the type through the entry's `class_types` map when `type` is absent |
+| `lon_deg` | none | With no `alt_km`: a geostationary satellite over this longitude (degrees east) |
+| `alt_km` | 0 | Otherwise: the altitude of a circular orbit |
+| `incl_deg` | geostationary: 0.02 to 0.08 (hashed); else 0 | Inclination |
+| `raan_deg` | geostationary: hashed; else 0 | Node |
+| `u0_deg` | 0 | Non-geostationary: the argument of latitude at J2000 |
+
+A member's type is its `type`, else `class_types[class]`, else the entry's own `type`, so one entry can fly
+several models. A geostationary member sits at the radius whose mean motion, as the GPU holds it, equals the
+Earth's rotation rate, phased so that it is over its longitude at the start of the simulation; it drifts by less
+than 0.01° a year. Members that share a slot are spread ±0.06° in longitude across the slot's box. An entry with no
+members is skipped, with a line in `satlight_log.txt`.
 
 ### Formation clusters
 
@@ -336,11 +384,36 @@ every platform, whatever else is in the roster. A ring's members share their clu
 formation stays whole. Keep the altitude scatter below the spacing of the shells if their clusters should not
 interleave.
 
+### Categories
+
+The Constellations tab groups its rows by `category`, in this order: `Broadband`, `Stations`,
+`Orbital data centers`, `Reflectors`, `GEO`, `Science`, `Benchmarks`, `Debris`, `Other`. Any other name makes a new
+group after those. Without `category`, the group is inferred from the name (for example "starlink" or "oneweb" is
+Broadband, a `List` entry is GEO, an entry of at most three satellites is Stations). Each group folds and has ON and
+HLT switches for all its entries; an entry of one satellite (a station) gets Select and Go to buttons, and a `List`
+entry a searchable list of its members.
+
+### Constellations and launches
+
+Satellites in the roster are positions, kept filled by launches: each program in `launches.json` keeps flying the
+entries whose `name` contains one of its `match` strings (see [the launch catalogue](index.md#the-launch-catalogue-launchesjson)
+and [Launches](../simulation/launches.md)). Renaming an entry can therefore take it out of a program, and a new
+entry is launched only if a program matches it. With the deployment era on, an entry a program matches is filled
+over the years by its launches, and a satellite whose slot has not been filled yet is not in the sky.
+
+### Determinism
+
+Every random number in the roster (phases, nodes, inclinations, cluster scatter) comes from a stream of its own per
+entry, seeded the same way on every platform. The same file gives the same sky on Windows, Linux and macOS, and an
+entry keeps exactly the same satellites when other entries are added, removed or reordered; only satellite indices
+move.
+
 ### Saved on/off state
 
 The Constellations tab's ON/OFF and highlight switches are saved in `settings.json` under each shell's `name`, and
 they win over `"enabled"` in this file at the next start. To make a change to `"enabled"` take effect, toggle the
-shell in the tab, or give the shell a new name.
+shell in the tab, or give the shell a new name. Which groups are unfolded, the open member list and its search are
+saved too.
 
 ## Worked examples
 
@@ -454,19 +527,20 @@ model type with parts and materials, start from a shipped model; see [Satellite 
 
 ## The shipped roster
 
-`data/constellations.json` carries 24 types (23 geometry models and one legacy comparison type) flown by 29
-entries, about 1.37 million satellites. All entries are enabled except the legacy comparison shell. The largest
-are SpaceX's Starmind orbital data centres: two `Shells` entries transcribed from SpaceX's filing with the FCC,
-988 672 satellites in rings of eight (the sun-synchronous X-ring 499 072, the 30° shells 489 600); see
-[Orbits](../simulation/orbits.md#the-starmind-roster) for how the table was derived.
+`data/constellations.json` carries 28 types, all geometry models, flown by 30 entries: about 1.38 million
+satellites, every entry enabled. The largest are SpaceX's Starmind orbital data centres: two `Shells` entries
+transcribed from SpaceX's filing with the FCC, 988 672 satellites in rings of eight (the sun-synchronous X-ring
+499 072, the 30° shells 489 600); see [Orbits](../simulation/orbits.md#the-starmind-roster) for how the table was
+derived. The roster also holds the broadband constellations (Starlink, OneWeb, Amazon Leo, Guowang, Qianfan), nine
+stations and a depot group, Reflect Orbital, a 300 000-object debris field, Hubble, the two 2020 Starlink benchmark
+shells and the 398-satellite GEO belt.
 
 ## Limits
 
 | Limit | Value | Notes |
 |---|---|---|
 | Satellites in all shells | 10 000 000 | Beyond this the roster is cut. GPU memory is about 100 bytes per satellite actually loaded |
-| Entries with a button in the Constellations tab | 256 | Every entry loads and renders; only the first 256 have a button |
-| Entries that can be switched and highlighted | 32 | The enable and highlight masks are 32 bits; put a large filed table in one `Shells` entry |
+| Entries in the Constellations tab | 256 | Every entry loads and renders; only the first 256 have a row and their own Show and Highlight switches |
 | Attitude groups | 4 per type | Parents before children in model files |
 | Lobes per model type | 48, or 256 for types flown by at most 10 000 satellites | |
 
@@ -481,7 +555,9 @@ are SpaceX's Starmind orbital data centres: two `Shells` entries transcribed fro
 | Editing `cross_section_m2` or `primary` changes nothing | Correct for a model type: those fields are ignored. Edit the model file |
 | A tumbling type does not tumble | It is in a Walker, Disk or Shells entry; use RandomShell |
 | A `Shells` entry is missing, with a log line | Its groups hold no satellites (`per_plane` 0 or missing) |
-| A shell's ON/OFF switch does nothing, or switches another one | The entry is 33rd or later in the file; merge shells into a `Shells` entry |
+| A shell has no row in the Constellations tab | The entry is 257th or later in the file; merge shells into a `Shells` entry |
+| A `List` member shows a different model than intended | Its `type` or `class` did not resolve (logged); the entry's `type` was used |
+| A new shell is never refreshed by launches | No program in `launches.json` matches its name |
 | Clusters in neighbouring shells pass through each other | Sun-synchronous shells share their planes; set `raan_spread_deg` |
 | A mirror never casts beams | The model has no face along its site-aimed axis, or `reflector_targets.json` has no reachable site |
 | An edit has no effect at all | The copy trap: see [Modding](index.md#how-changes-are-picked-up) |
@@ -489,7 +565,10 @@ are SpaceX's Starmind orbital data centres: two `Shells` entries transcribed fro
 ## Where in the code
 
 - `src/simulations/SatelliteSim.cpp`: `loadDefinitions()` (this file), `parseSurfaceSpec()`,
-  `legacyAttitudeGroup()` and `resolveAttitude()` (legacy conversion), `buildOrbits()` (the distributions and the formation clusters),
-  `computeSSOInclination()`, `writeResolvedSatTypes()`, `loadHardcoded()` (the built-in roster).
+  `legacyAttitudeGroup()` and `resolveAttitude()` (legacy conversion), `buildOrbits()` (the distributions, the
+  formation clusters and the List members), `computeSSOInclination()`, `constCategoryOf()`,
+  `writeResolvedSatTypes()`, `loadHardcoded()` (the built-in roster), `rebuildRoster()`.
+- `src/simulations/SatelliteSimUI.cpp`: `buildSettingsConstellationsTab()`.
+- `tools/make_geo_belt.py`: writes `data/geo_satellites.json`.
 - `src/simulations/SatModel.cpp`: `parseAttitudeGroupJson()`, `validateAttitudeGroups()`.
 - `data/constellations.schema.json`: the schema.

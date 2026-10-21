@@ -191,6 +191,12 @@ struct Program
     std::string portUse = "crew";
     bool sharePorts = false;
     double stayDays[2] = {-1.0, -1.0};
+    // Berthing (2026-10-21, "berth": true): the vehicle does not dock; it stops at a capture point capture_m below its
+    // port (an R-bar approach, holds at 250 and 30 m), the station's arm (Catalog::arms) grapples it by its fixture
+    // (grapple: [radius, z below the port] in its model) and moves it onto the berthing port (CBM), and at departure
+    // unberths it to the same point and releases it (Cygnus, HTV-X, Dream Chaser).
+    bool berth = false;
+    double grappleR = 1.5, grappleZ = 2.5, captureM = 9.0;
     // How much earlier than its lift-off a batch's nominal arrival may lie (days): a fast track takes the first pass
     // with the right phase within 30 days of the nominal one, so windows listing launches by their nominal arrival
     // (the pad rivals, Upcoming, `launch list`, `launch trace`) reach this much further back.
@@ -201,8 +207,21 @@ struct Program
     double payloadMassKg = -1.0;
 };
 
+// A station's robotic arm (2026-10-21, "station_arms": Canadarm2 on the ISS): a shoulder housing from `base` along
+// `baseN` (station body frame: +X velocity, +Z nadir), two booms of boomM, a wrist + end effector of wristM to its tip.
+// Parked: the wrist point at parkW, the end effector pointing along parkN (from the wrist toward its tip); the
+// elbow bends toward `pole`. Rendered as three meshes rocket_arm_<model>_{boom,wrist}.json (the boom twice).
+struct StationArm
+{
+    std::vector<std::string> match; // the station (constellation name substrings)
+    std::string model = "canadarm2";
+    glm::dvec3 base{0.0}, baseN{0.0, 0.0, 1.0}, parkW{0.0}, parkN{0.0, 0.0, 1.0}, pole{0.0, 1.0, 0.0};
+    double shoulderM = 1.4, boomM = 7.1, wristM = 1.6;
+};
+
 struct Catalog
 {
+    std::vector<StationArm> arms;
     std::vector<Site> sites;
     std::vector<Vehicle> vehicles;
     std::vector<Program> programs;

@@ -2940,6 +2940,12 @@ private:
                         const glm::dvec3 &noseEci, double hullLen, double hullR, bool noGround,
                         double meshK = 1.0, const glm::dvec3 *meshPosEci = nullptr);
     void engineLightsFlush();
+    // (2026-10-21) Drops the plume Gaussians that cannot show (SatelliteSimLaunches.cpp): their summed worst case, as
+    // if all of them overlapped one pixel, stays under 2e-4 of white on screen and 1% of dimming.
+    void dustCullInsignificant(const GpuDustCloud *list, uint32_t n, std::vector<uint8_t> &drop);
+    // Knockout bit 33554432 = off (the A/B).
+    uint32_t plumesCulled = 0;       // this frame's (launch state: dust_list.culled)
+    glm::vec4 plumeCullStop{0.0f};   // the summed bounds where it stopped, and the next one's (light, dimming)
     // The same lights on the MESHES (2026-10-21, sat_mesh.frag: a landing booster, a pad's tower, a droneship's deck
     // lit by the floods and the burn): Earth-fixed positions, intensity (suns x m^2, lifted at night like the engine lights,
     // before the eye's adaptation), colour and the source's soft radius. engineLightAdd adds a light here too
@@ -2957,10 +2963,18 @@ private:
     };
     std::vector<MeshLocalLight> meshLights_, meshLightsPrev_;
     float meshLightAdapt_ = 1.0f; // engineAdaptEased at the flush that made meshLightsPrev_
+    int meshLightsScene_ = 0, meshLightsViewer_ = 0; // lights in the last scene / info-window view frame (harness)
     void meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double rs,
                       const glm::dvec3 *aimEci = nullptr, double beamHalfDeg = 180.0);
     static double flameIntensitySunsM2(double mag100km);
-    int launchAfterStorm = 0;        // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
+    // (2026-10-21, cost) Fills frame.lightInfo / lightPos / lightCol / lightDir with last frame's mesh lights, the
+    // positions relative to `originEcef` (the frame's world origin, ECEF axes): the scene pass (the camera) and the
+    // info window's 3D view (the viewed object). meshLightMask: which of those lights can reach a bounding sphere
+    // (centre in the same frame) with more than a hair of displayed light at `exposure` — GpuMeshInstance::trans[1].w
+    // (bits), so sat_mesh.frag loops only over lights that matter to that instance.
+    void fillMeshLocalLights(struct GpuMeshFrame &frame, const glm::dvec3 &originEcef) const;
+    static uint32_t meshLightMask(const struct GpuMeshFrame &frame, const glm::dvec3 &centre, double radius, double exposure);
+    int launchAfterStorm = 0;       // launches.after_storm: 0 stand down for good at the CME, 1 resume after 3 weeks
     // The deployment era (2026-10-20, launches.deployment_era; launches.json "deployment" / "roster_history" / site and
     // vehicle "online" dates): the constellations are BUILT UP by launches from the late 2010s to 2036 instead of
     // standing complete at any date. Each roster satellite's born / gone second (rosterLife, 2 per satellite, seconds
@@ -3005,8 +3019,11 @@ private:
     // Booster landing ships (2026-10-20, droneships): one reserved chunk below the stacks' (launchMeshJobs). Scenery,
     // not selectable (the booster on the deck is).
     static constexpr int kShipMeshSlots = 8;
+    // A station arm (2026-10-21, Canadarm2: two booms + the wrist): one reserved chunk below the ships'. Not selectable.
+    static constexpr int kArmMeshSlots = 8;
     nlohmann::json launchShipsJson() const; // harness `launch ships`: the ships on station / heading home
     void launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // their meshes
+    void launchArmJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // the station arms (Canadarm2)
     double shipSeaState(const glm::dvec3 &ecefUnit) const; // the sea state at a ship (its swell; 1 = default)
     void launchFillShipLights();            // their lights at night (kFireBuf)
     void launchFillShipGlow(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // their lit decks
@@ -3715,7 +3732,7 @@ private:
     //
     // kDebugToggleSlots sizes hovDebugToggle[] and the accumulators below; the static_assert in
     // startKnockoutSweep() keeps it honest.
-    static constexpr int kDebugToggleSlots = 22;
+    static constexpr int kDebugToggleSlots = 24;
     static constexpr int kSweepSettleFrames = 6;  // discard after a mask change — covers the
                                                   // one-frame-stale timestamp readback plus a
                                                   // little driver/clock hysteresis

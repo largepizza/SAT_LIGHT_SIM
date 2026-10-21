@@ -4590,8 +4590,8 @@
   {
    "subject": "body",
    "status": "estimate",
-   "value": "one rigid group",
-   "source": "Render model; no moving parts."
+   "value": "the rigid body",
+   "source": "Render model."
   },
   {
    "subjects": [

@@ -1,0 +1,194 @@
+{
+ "name": "canadarm2 wrist",
+ "note": "Station arm render model (tools/make_crew_models.py): the wrist joints and the latching end effector (1.6 m to its tip). Body frame: +Z toward the next joint, +Y the bending plane's normal; posed per frame by the sim (launches.json station_arms).",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "joint_housing_0",
+   "type": "profile",
+   "profile": [
+    [
+     -0.42,
+     0.34
+    ],
+    [
+     0.42,
+     0.34
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "rotation_quat": [
+    0.707107,
+    -0.707107,
+    0.0,
+    0.0
+   ],
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "wrist_roll_1",
+   "type": "profile",
+   "profile": [
+    [
+     0.3,
+     0.28
+    ],
+    [
+     0.75,
+     0.28
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "end_effector_2",
+   "type": "profile",
+   "profile": [
+    [
+     0.75,
+     0.45
+    ],
+    [
+     1.55,
+     0.45
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "snare_3",
+   "type": "profile",
+   "profile": [
+    [
+     1.55,
+     0.3
+    ],
+    [
+     1.6,
+     0.3
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "camera_4",
+   "type": "box",
+   "size": [
+    0.3,
+    0.25,
+    0.35
+   ],
+   "position": [
+    0.55,
+    0.0,
+    1.0
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "the sim hands in the pose (the arm's kinematics)",
+   "source": "SatelliteSimLaunches.cpp stationArmPose."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid part of the arm",
+   "source": "Render model."
+  },
+  {
+   "subjects": [
+    "end_effector_2"
+   ],
+   "status": "sourced",
+   "value": "lengths and diameters rounded from the reference",
+   "source": "CSA / Wikipedia 'Mobile Servicing System' (Canadarm2): 17.6 m long, two booms ~7.1 m, 35 cm across, seven joints (shoulder roll / yaw / pitch, elbow pitch, wrist pitch / yaw / roll), a latching end effector (LEE) at each end, 1.8 t"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail)",
+   "source": "White thermal blankets and booms from photographs."
+  }
+ ]
+}

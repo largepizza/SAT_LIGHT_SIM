@@ -1,7 +1,7 @@
 # Tools
 
-Everything in `tools/` besides the harness drivers: the two offline C++ tools, the scripts that bake assets,
-the consistency checkers and the analysis scripts. The harness and its image, motion and audio analysis tools
+Everything in `tools/` besides the harness drivers: the offline C++ tools, the scripts that bake assets and
+generate satellite, rocket, pad and station models, the consistency checkers and the analysis scripts. The harness and its image, motion and audio analysis tools
 are on [Automation harness](harness.md).
 
 Python tools that need third-party packages use one of two virtual environments: `tools/harness/.venv`
@@ -86,6 +86,27 @@ rebuild afterwards so the runtime-file sync copies the result next to the execut
 | `tools/make_terrain_materials.py [--size 1024]` | `assets/textures/terrain_materials.rgba8` | CC0 ambientCG texture sets, cached in `build/terrain_material_cache/` | two layers per material: albedo ratio and height; normal, roughness and occlusion |
 | `tools/make_cloud_morph.py [--size 1024] [--preview out.png]` | `assets/textures/cloud_morph.rgba8` | four public-domain MODIS scenes (NASA GIBS), one per channel | the cloud morphology texture ([The cloud field](../rendering/clouds/field.md)); `make_cloud_morph_procedural.py` is a procedural alternative |
 | `tools/parse_bsc.py` | C++ initialisers for `src/simulations/star_catalog.h` | the Yale Bright Star Catalogue (BSC5) from CDS | stars to the script's magnitude limit, brightest first, with B-V colour |
+| `tools/make_pad_coasts.py` | `data/launch_coasts.json` | Natural Earth 10 m land and lakes (the same cache as the water map) | a small signed-distance grid of the coastline around each group of coastal launch sites, with every pad's graded disc forced to land, and each patch's ground colour. Needs numpy and pyshp. Re-run after editing the sites in `data/launches.json` ([Terrain](../rendering/terrain.md)) |
+
+## Model generators
+
+Most models in `data/satellite_models/` that are not hand-made satellites are written by Python scripts (standard
+library only, except where noted). Edit the script, never its JSON output: the next run overwrites it. Each script's
+header describes its body frame and where its dimensions come from; each model's `sources` block cites them. Detail
+parts are `render_only`, so they cost render triangles but no photometric lobes. After regenerating, rebuild so the
+runtime-file sync copies the models next to the executable, and run the model through
+[SatModelTool](#satmodeltool) (the accuracy gate loads and validates the rocket, pad and ship models with the
+satellites). The model format is on [Satellite models](../modding/satellite-models.md).
+
+| Script | Writes | Notes |
+|---|---|---|
+| `tools/make_rocket_models.py [--check]` | `rocket_<vehicle>_{stack,booster,upper,upper_bare,upper_empty,fairing}.json`, `rocket_dispenser_<name>.json` | the launch vehicles: bodies and bells as profiles, fins and flaps as fins; the origin at the aft end of the body, where the sim's track point is. It also measures each payload model stowed, derives the stack numbers (pitch, offset, member centre, column radius), checks that a program's stack fits every fairing it flies in (and Starship's payload bay), and writes the dispensers. `--check` fails when `data/launches.json` disagrees with what it derived |
+| `tools/make_crew_models.py` | `rocket_capsule_<kind>[_cm\|_chute].json` | crew and cargo spacecraft (in orbit, the descent module, under parachutes); the origin at the docking port's contact point |
+| `tools/make_pad_models.py` | `pad_{starship,falcon,generic}.json` | the launch pads' tall parts (towers, mounts, masts, tanks); +Z up, +X the pad's heading, the origin at the pad's centre on its graded ground |
+| `tools/make_ship_models.py` | `ship_droneship.json`, `ship_jacklyn.json` | the booster landing ships; the origin at the landing target's centre on the waterline. The deck height it prints must equal the vehicle's `deck_m` in `data/launches.json` |
+| `tools/make_station_models.py` | `haven1`, `haven2`, `axiom_station`, `orbital_reef`, `ross`, `bharatiya_station`, `starlab`; render-only `gb_*` detail appended to the hand-made `iss.json` and `tiangong.json` | re-running replaces the earlier `gb_*` parts, so it is idempotent. Stamps parts with the date their module arrives (`since`) |
+| `tools/make_debris_models.py` | `debris_{panel,radiator,chunk}_{s,m,l}.json` | the debris kit the Sun's Fury draws large fragments with |
+| `tools/make_geo_models.py`, `tools/make_geo_belt.py` | the geostationary satellite classes; `data/geo_satellites.json` (the GEO belt's members) | generic stand-ins per class, and a curated list of real geostationary satellites |
 
 Raw files written by these scripts start with a small magic header (`SLR8`, `SLRD`, `SLTA`) followed by
 little-endian dimensions, so the app reads them without an image decoder.
@@ -105,6 +126,7 @@ little-endian dimensions, so the app reads them without an image decoder.
 | `tools/perf_analysis/analyze_profile.py [profile_log.jsonl]` | reads perf snapshots and knockout sweeps: GPU cost by resolution and per megapixel, a matched-altitude resolution ratio, knockout costs, correlations with scene variables, plots under `analysis_output/`, and a ranked table per sweep ([Profiling](profiling.md#perf-snapshots-and-analyze_profilepy)) |
 | `tools/perf_analysis/live_perf_table.py <outbox.json\|results.jsonl> [baseline]` | tabulates harness `perf name=` results, optionally against a baseline |
 | `tools/cloud_stats.py image.png [...] [--km-per-px] [--crop] [--mask]` | cloud-field statistics for comparing renders from space with satellite imagery: cover, perimeter-area fractal dimension, object-size exponent, the mask's spectral slope, holes per 1000 km² (numpy, scipy, Pillow) |
+| `tools/run_latest.py [--no-gate] [-- app args]` | starts the newest `build/Release` executable interactively (a person's normal launch, the shared `user_data/` settings), through the harness's launch gate, and records its exit |
 | `tools/make_capture_bundle.sh` | macOS: wraps the built executable in a minimal `.app` that declares `MetalCaptureEnabled`, so MoltenVK's auto-capture or Xcode can capture a GPU frame for occupancy analysis (reading the trace needs full Xcode) |
 
 ## Where in the code
@@ -114,6 +136,6 @@ little-endian dimensions, so the app reads them without an image decoder.
 | `tools/sat_model_tool/main.cpp`, `bench_run.cpp` | SatModelTool |
 | `tools/sound_tool/main.cpp` | SoundTool |
 | `tools/upload_stress/main.cpp` | UploadStress |
-| `tools/*.py` | bakers and checkers |
+| `tools/*.py` | bakers, model generators and checkers |
 | `tools/benchmarks/`, `tools/perf_analysis/` | analysis scripts |
 | `cmake/AccuracyGate.cmake` | the accuracy gate's list of checks |
