@@ -89,7 +89,7 @@ wait settle 20
 wait 10
 capture st_haven2_2033 ui=on
 time set 2029-06-01T12:00:00Z
-select const "Bharatiya"
+select const "Bharatiya Antariksh Station"
 ui open info
 viewer light=studio aim=free dist=3
 wait settle 20
