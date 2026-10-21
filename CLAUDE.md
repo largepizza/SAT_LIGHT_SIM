@@ -4802,6 +4802,23 @@ launches follow per-program cadences (no real manifest).
     (SLC-37 at night: `drift phase=2.86` broken cumulus, `5.2` overcast, `clouds_v2.coverage 1.6`; air, orbit,
     `launch landing booster=1`). Open: no cloud-surface orientation, no in-cloud diffusion for a light inside a cloud
     (lightning's boltGlow does that), no terrain shadowing, the half-res outline can still show where the light is strong.
+  - **The sea mirrors them from where they are** (2026-10-20, issue 20261020_181339 "Rocket Ocean Flare"; sky set binding
+    32 = `kDustBuf`, written by `writeCloudsV2ConsumerDescriptors`): sat_sky.frag, after the Sun glint, takes each engine
+    / floodlight / ship light through the same Beckmann lobe with its direction FROM THE SEA POINT and its irradiance
+    I / (d^2 + r0^2) there (suns), hidden by the eye's cloud composite in front of the light when it is on screen. Until
+    then the only reflection of a rocket was the reflected cloud composite (the flames, the exhaust glow and the lit
+    plume are its emissive texels), looked up at the mirrored DIRECTION, i.e. as if at infinity: from 4.9 km up, 3 km
+    from a Starship 0.9 km above the eye (T+46 s), a glitter path ran from the horizon down under the flame, where the
+    real mirror point is 74 deg below the horizon (horizontal distance D h / (h + H) = 1.35 km; a source at infinity at
+    the rocket's 17 deg elevation would mirror at 17 deg). That lookup now drops an EMISSIVE-flagged texel (no cloud,
+    `cloudAlphaIsEmit`) whose light, at its stored distance, misses the sea point's reflected ray by more than 2-6 deg
+    (`rEmitBad`); real cloud texels are unchanged. Far rockets (40-100 km) keep a glitter path from the horizon down,
+    now from the light glint. Satellites' `OceanGlintBuf` glints are unchanged (at hundreds of km the infinite-distance
+    geometry is off by < 1 deg). Cost within run-to-run noise (sky pass 11.9-12.8 ms with the lights vs 13.0 without,
+    1920x1009). The bloom ellipse under the flame (the flame's tail Gaussian + the exhaust glow, 2 of its lengths behind
+    the engines) and the faint column to the pad (the low trail lit by the engine light; gone with "Rocket light on
+    clouds" Off) are the exhaust, not reflections. Open: lightning.frag's ground term lights the sea as a 0.15-albedo
+    diffuser (water's body reflectance is ~0.02-0.05).
 - **Sound**: each burning rocket within 150 km on a thunder voice (`launchSounds`, called from `thunderStep`): the
   retarded time, Earth-fixed (the air carries it), level ~ sqrt(flow) / distance, thinning with the air at the rocket.
   The retarded time is the LATEST emission tau with (T - tau) = |P(tau) - eye| / 343, found by a scan back over 440 s
@@ -6557,7 +6574,7 @@ Read it at the start of any terrain-related session before making changes.
   under "Subsystem: GPU Orbital Pipeline → Push constants" and the "Push-constant relief" block in
   `GpuCloudParams`. Both point pipeline layouts (`drawPipeLayout`, `starPipeLayout`) use
   `sizeof(PointDrawPC)`; `skyBgPipeLayout` uses `sizeof(SatDrawPC)`.
-- Sky descriptor set has 32 bindings (0-31; 30 = the clouds' flash buffer and 31 = the clouds v2 UBO, for the clouds' shadows on the air, 2026-10-10; 29 = the far cloud layer `cloudFarImg`, a storage image read with imageLoad, review 18; 28 = the major-roads storage buffer for the city lights; 27 = the terrain material array, terrain v2 P3; 26 = terrainFrameBuf, the observer's detailed ground height
+- Sky descriptor set has 33 bindings (0-32; 32 = the dust list `kDustBuf`, whose tail holds the engine lights the sea mirrors, 2026-10-20; 30 = the clouds' flash buffer and 31 = the clouds v2 UBO, for the clouds' shadows on the air, 2026-10-10; 29 = the far cloud layer `cloudFarImg`, a storage image read with imageLoad, review 18; 28 = the major-roads storage buffer for the city lights; 27 = the terrain material array, terrain v2 P3; 26 = terrainFrameBuf, the observer's detailed ground height
   from scene_depth.comp, 2026-09-25). Before that it had 26 (0-25; 22/23 the mesh targets, 24 the env star grid, 25 the
   sharp-reflection G-buffer — the last two read only by the SKY_ENV / SKY_REFL variants). The original 22 (0-21): GlowBuf, noise, moon, earthDay, earthNight, earthElev, earthSpec (the R8G8 water map since terrain v2 P2), earthClouds (since 2026-09-29 the v2 weather CUBE), cloudNoiseTex (sampler3D), CloudParams UBO, half-res cloud march targets A/B, lightDomeBuf, milkyWayTex, cityDayDetail, cityNightDetail, auroraNoiseTex (sampler3D), reflectBeamsBuf, beamGlowDomeBuf, sceneDepthTex, oceanGlintBuf, groundBeamsBuf. Binding 18 was `cloudShadowTex` until that pass was deleted; 19/20 were compacted down into 18/19 rather than leaving a hole, since the C++ side fills its binding array contiguously. groundBeamsBuf (21, perf follow-up) is the CPU-compacted, observer-range-culled subset of reflectBeamsBuf that sat_sky.frag's ground-spot loop reads instead of the raw (up to 2048-entry) buffer — see GpuGroundBeams in SatelliteSim.h. **As of 2026-08-10 its entries are `GpuGroundBeam` (32 bytes), not raw `GpuReflectBeam`** — a pre-solved record, see "Beam ground-spot CPU hoist" below
 - GPU-side observer ground height lookup added; CPU observer height also corrected (see elevation encoding below)
