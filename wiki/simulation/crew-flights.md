@@ -36,7 +36,9 @@ others so no other plane's index (and so no batch key or pad priority) moves.
 |---|---|
 | `spacecraft`, `people` | name and crew size (none for cargo) |
 | `model` | render model `rocket_<model>[_cm\|_chute].json` (whole, crew module only, under parachutes) |
-| `heat_shield_m` | the heat shield's distance below the docking port, where the entry glow sits |
+| `heat_shield_m` | the heat shield's distance below the docking port, where the entry plasma sits |
+| `heat_shield_r_m` | the heat shield's radius: the width of the plasma's shock layer |
+| `belly_half_len_m` | a spaceplane's belly half-length: the length of its shock layer (Dream Chaser 4.5) |
 | `lands` | comes home on land (Soyuz, Shenzhou); otherwise splashes down |
 | `cargo` | no people |
 | `return: "burns"` | destroyed on re-entry (Progress, Tianzhou) |
@@ -195,7 +197,8 @@ Dream Chaser comes home to the Shuttle Landing Facility at Kennedy. Its deorbit 
 from 3 h after the departure, for up to six days, refined at 3 s) so the entry ends 60 to 160 km short of the
 runway and heading for it. Fifteen minutes before the entry interface its Shooting Star cargo module is
 jettisoned; the module re-enters a little behind the spaceplane and burns up as a fireball. The spaceplane flies
-the entry down to 10 km, then glides: a cubic path in the runway's tangent plane from the entry's end, at its
+the entry 40 deg nose-high, belly into the flow (eased in over the 10 min before the entry interface and out over
+the 3 min before the glide), down to 10 km, then glides: a cubic path in the runway's tangent plane from the entry's end, at its
 speed over the ground, to the touchdown point, landing along the runway from the end the glide arrives at. It
 touches down on the centreline at about 95 m/s, rolls about 2.4 km to a stop (never more than the runway's length
 less 900 m) and stays on the runway for 40 minutes before it is towed off. It is selectable and followable

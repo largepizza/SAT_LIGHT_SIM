@@ -261,14 +261,17 @@ lip to white-hot up toward the throat, passed as `SatOrbitElems::engineGlow` in 
 the frame's exposure, so the glow keeps its colour at night. The bells are render-only, so they seed no bloom or
 glare.
 
-**A returning ship's entry glow.** Starship's ship glows where the entry heating is: in the shock layer on the
-windward side, its heat-shield belly, along the middle of the body, standing a few metres off the belly (the model's
-origin, the track point, is the aft end at the engines, which is not where the plasma is). Unresolved it is a point
-there, coloured from orange to a violet-pink as the speed rises toward 7.5 km/s; as the mesh resolves (2 to 8 px)
-the point gives way to an emissive sheath along the belly, elongated along the body, the same rule the crew
-capsules' glow follows (a point that bright on a resolved hull draws a white disc with glare spikes). Its glowing
-wake (the last 6 s of path) trails behind the body, and its light on the clouds below is placed at the belly.
-Booster entry burns are engine burns and stay at the engines.
+**Entry plasma.** Starship's ship, the crew capsules and Dream Chaser glow where the entry heating is, through one
+emitter: a thin **shock layer** on the windward face (a capsule's heat shield, of radius `heat_shield_r_m`; the
+belly of the ship and of Dream Chaser, along the middle of the body), a short hot wake just behind the body (0.12 of
+the layer's brightness) and the glowing path wake of the last seconds (0.15). It is never at the model's origin,
+which for the ship is the aft end at the engines. Its colour runs from orange to a violet-pink as the speed rises
+toward 7.5 km/s. Unresolved, each Gaussian carries the on-screen energy of the point it stands for; as it resolves
+(1.5 to 8 px) it becomes a surface brightness, about 4 times a sunlit white face at peak heating, held at its
+face-on value from any view and capped at 2.0 of displayed light (times the sky exposure, so the same cap holds by
+night). The plasma lights its own hull through physical [mesh local lights](satellite-meshes.md), neither lifted at
+night nor adapted: three under the ship's belly, two under Dream Chaser's, one ahead of a capsule's shield. Its
+light on the clouds below is placed at the layer too. Booster entry burns are engine burns and stay at the engines.
 
 **A coasting stage.** A sunlit stage that is not burning is a point at the middle of the stage (magnitude 3 at
 1000 km for a booster, 3.8 for an upper stage) that fades out as its mesh grows from 2 to 8 px. A landed booster

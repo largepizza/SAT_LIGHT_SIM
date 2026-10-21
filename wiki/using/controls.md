@@ -148,7 +148,7 @@ While following:
 | Button | Key | What it does |
 |---|---|---|
 | **Aim: locked** / **Aim: free** | | Locked keeps the object centred while you move; looking around with the right mouse button switches to free |
-| **Return** | `H` | Flies back to the default view of the object, behind and above it |
+| **Return** | `H` | Flies back to the default view of the object: behind it along its motion over the ground (for a slow rocket, its engine end) and above it |
 | `<` and **Next: ... >** | `[` / `]` | For a launch object, the previous and next [mission milestone](missions.md#mission-milestones) |
 | **Stay here** | `G` | Leaves Go to without flying home: you become a free observer exactly where the camera is, with its view and zoom. Paused, the object stays beside you; with time running it flies on |
 | **Exit** | | Flies you back to where you were on the ground |
