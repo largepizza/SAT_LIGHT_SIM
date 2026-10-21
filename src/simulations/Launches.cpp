@@ -142,6 +142,20 @@ bool Catalog::load(const std::string &path, std::string &err)
                     }
                     st.onlineFor.push_back({it.key(), tv});
                 }
+            if (s.contains("pad_history"))
+            {
+                for (const auto &e : s["pad_history"])
+                {
+                    const double tv = dateToJ2000(e.at(0).get<std::string>());
+                    if (std::isnan(tv))
+                    {
+                        err = "site " + st.id + ": bad pad_history date";
+                        return false;
+                    }
+                    st.padHistory.push_back({tv, std::clamp(e.at(1).get<int>(), -1, 2)});
+                }
+                std::sort(st.padHistory.begin(), st.padHistory.end());
+            }
             if (s.contains("pad_heading_deg"))
                 st.padHeadingDeg = s["pad_heading_deg"].get<double>();
             const double la = glm::radians(st.latDeg), lo = glm::radians(st.lonDeg);
@@ -353,6 +367,7 @@ bool Catalog::load(const std::string &path, std::string &err)
                 for (const auto &m : h.at("match"))
                     rh.match.push_back(m.get<std::string>());
                 rh.fraction = h.value("fraction", false);
+                rh.benchmark = h.value("benchmark", false);
                 if (h.contains("born"))
                 {
                     // A single object (a station): there from this date.
