@@ -2,204 +2,261 @@
 
 ## 1.2.0 (release date TBD)
 
-The biggest update yet: a new weather system, a living Earth from the ground to orbit, satellites you can fly up
-to and inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photometric error is listed in
+The biggest update yet. The constellations now have a life cycle: rockets launch them, trains of new satellites
+climb to their slots, crews and cargo fly to the stations, old satellites re-enter, and from the late 2010s to
+2036 the sky fills up launch by launch. A scripted solar superstorm in July 2037 can set off a Kessler cascade.
+Around them: a new weather system, a living Earth from the ground to orbit, satellites you can fly up to and
+inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photometric error is listed in
 `data/benchmarks/KNOWN_RESIDUALS.md`; the full reference is the project wiki (`wiki/`).
 
-### New in the sky
+### Launches and rockets
+
+- **Launches keep the constellations flying.** Each orbital plane is refreshed once per design life: a rocket
+  lifts off from a real pad the plane passes over, deploys a train of satellites low, the train climbs over
+  weeks to its slots, and the satellites it replaces deorbit and re-enter as fireballs. Everything is a function
+  of sim time, so time warp, reverse playback and bookmarks show the same launches.
+- **Real vehicles and pads.** Falcon 9, Starship (including Starbase Louisiana's ten pads), New Glenn, Vulcan,
+  Ariane 6, Long March 2F / 5B / 6A / 7 / 8A / 12, Zhuque-3, Tianlong-3, Pallas-1, Soyuz-2, LVM3 / HLVM3 and H3, each with its own 3D model
+  (ogive noses, fins and flaps, Starship's tiled heat shield, every engine bell), from the launch sites they fly
+  from. Pads are drawn on the ground: graded concrete, flame trenches, catch towers and service structures, tank
+  farms, landing zones, floodlights and beacons at night, with no city grid around them.
+- **Full flights.** Staging, max-Q, fairing halves that tumble away, payload stacks released one by one (Starship
+  releases its satellites through its payload door), satellites that unfold their arrays and radiators after
+  release, and raising trains flying "open book" (bright, as real fresh trains are). Every upper stage deorbits.
+- **Recovery.** Boosters fly back to their pad or landing zone, land on droneships (A Shortfall of Gravitas, Just
+  Read the Instructions, Of Course I Still Love You, Jacklyn) that then steam home, or are caught by the tower.
+  Starship's ship re-enters as an eight-minute plasma glow, belly-flops, flips and is caught by a tower.
+- **Exhaust and light.** Trails that billow, twist in the winds aloft and spread at twilight into huge sunlit
+  bells high above a dark ground; steam and exhaust clouds rolling off the pad at lift-off; dust or spray at
+  landing; engine-sized flames; fuel-dump spirals. At night the engines light the clouds, haze, exhaust, sea and
+  ground around them. The rockets' roar arrives at the speed of sound.
+- **Selectable rockets and fireballs.** Rocket stages, a ship coming home and every re-entry fireball can be
+  selected, tracked and followed (Go to rides a rocket through staging, deployment and re-entry).
+- **Mission milestones.** Every launch has a timeline (lift-off, max-Q, staging, fairing, SECO, deployment,
+  deorbit, landing, docking ...): the Info window's MISSION section, the follow HUD and the `]` / `[` keys skip
+  to the next or previous one.
+- New programs: **Qianfan (Spacesail)** in the roster (11,664 satellites), Chinese commercial launchers for
+  Guowang and Qianfan.
+
+### Crew and cargo flights
+
+- **Every station is visited.** Crews rotate twice a year: Crew Dragon (ISS and the commercial stations),
+  Shenzhou (Tiangong), Soyuz MS (the Russian station), Gaganyaan (Bharatiya Antariksh Station).
+- **Cargo ships.** Progress, Tianzhou and Cargo Dragon resupply the stations; Cygnus and HTV-X are captured by
+  the ISS's Canadarm2 and berthed, then released.
+- **The flights are flown.** Spacecraft are their own objects: phasing burns, approach and docking at real ports
+  (fast-track rendezvous of a few hours for Soyuz, Progress, Shenzhou and Tianzhou), time docked, undocking, entry
+  glow, parachutes and landing or splashdown; Progress and Tianzhou burn up.
+- A destroyed station gets no more flights; a flight on its way calls off its rendezvous.
+
+### The deployment era (2019-2036)
+
+- **The constellations are built up over time** (on by default). Each fills by launches from its program's start
+  (Starlink from 2019) along an S-curve through its 2026 count to its 2036 size. Go back in time and only the
+  satellites launched by then are in the sky.
+- Stations appear on their launch dates and are built module by module; launch sites come online on their own
+  dates and the pads show the towers they had at the time; early Starlink flies on Falcon 9 before Starship.
+- The Missions window's BUILD-OUT rows show each constellation's progress and launches a day (the build-up peaks
+  around 2032 at roughly a hundred launches a day). Off: the full 2036 roster at every date.
+
+### The Sun's Fury (Kessler syndrome)
+
+- **A scripted Carrington-class solar storm** arrives on 15 July 2037 at 03:00 UTC, two days after the Great
+  Australian Eclipse. Its aurora reaches the mid-latitudes, it kills a share of the satellites, and the dead
+  tumble, drift out of their formations and collide. Each collision is a cloud of debris feeding the next: a
+  Kessler cascade computed at physical rates with the NASA Standard Breakup Model, up to 50 years ahead, in the
+  background and cached. Before the storm nothing differs from the plain sky.
+- **What you see:** dead satellites tumbling and glinting; debris pieces drawn close up as torn solar arrays,
+  radiator sections and pieces of bus; a glowing dust cloud along each breakup's orbit; re-entry fireballs with a
+  breakup flash, fragment trains and material colours (aluminium white, copper green, sodium yellow, lithium
+  crimson); and once the cascade runs, many small meteor-like streaks.
+- **Explode** (Info window) breaks any satellite or debris piece up with one click, at any date; the debris is
+  there the same frame. A breakup before the storm starts the cascade then; going back in time undoes it.
+- Settings: collision rate, collision avoidance, horizon, dust and small re-entry brightness, fireball colours;
+  "Watch the next re-entry". Launches stand down after the storm (or resume three weeks later).
+
+### GEO belt
+
+- **398 real geostationary satellites** by name at their slots (mid-2020s positions), with operator, mission
+  and slot in the selection panel, on four new GEO models. The Constellations tab's LIST finds them by name.
+- The Constellations tab is grouped by kind (broadband, stations, data centers, reflectors, GEO, science,
+  benchmark shells, debris), folding, with group-wide ON / HLT.
+
+### Clouds and weather
 
 - **Volumetric clouds, rebuilt (clouds v2).** One 3D cloud field from the ground to orbit, driven by a weather
   map: cumulus with lobed, cauliflower sides and flatter bases, stratus decks with textured undersides,
   altocumulus and altostratus, cirrus streaks, veils and cirrocumulus, all lit by the Sun or the Moon through
   the clouds above them, with sunset colours, silver linings and soft cloud shadows on the ground (long streaks
-  at sunset).
+  at sunset), far cloud shadows and god rays, and mid / high layer shadows at any distance.
 - **Storms.** Cumulonimbus towers grouped into storm cells (a dominant tower and a flanking line), flared anvil
   heads under the tropopause, overshooting domes, rain shafts under the towers, cumulus that rises around storms.
 - **The weather moves and evolves.** The cloud map drifts, is advected by a slow wind, and storms grow and decay
   over hours; over land, afternoon convection builds storms that die back after dark.
-- **Rain, snow, sleet and diamond dust.** Precipitation at your eye is drawn as real particles: drops sized and
-  falling like real rain, flakes that flutter, blown by the wind, gusts and a storm's outflow, lit by the sky
-  around you, by lightning and by the Reflect Orbital beams you stand in. The precipitation type follows the air
-  temperature.
+- **Rain, snow, sleet and diamond dust** drawn as real particles at your eye: drops sized and falling like real
+  rain, flakes that flutter, blown by the wind, gusts and a storm's outflow, lit by the sky, by lightning and by
+  the Reflect Orbital beams. The precipitation type follows the air temperature.
 - **Lightning and thunder.** Whole storms flash: cloud-to-ground strokes with branches and tendrils, in-cloud
-  flashes, spider lightning under the cloud base and rare red sprites high above. Clouds glow around each flash,
-  and thunder rolls in from the channel's own shape, delayed by distance (a crack when it's close).
-- **Rainbows, halos and ice optics.** Rainbows at storms with the Sun behind you, 22-degree halos, sundogs, the
-  circumzenithal arc, sun pillars and glints off ice crystals, for the Sun or the Moon.
-- **Fog, dust and ice fog.** Radiation fog pooling in valleys at night and burning off in the morning, sea fog
-  on the coast, dust plumes over dry land, diamond-dust ice fog over Antarctica and Greenland.
-- **Clouds from orbit.** Real satellite-imagery morphology (closed and open convective cells, cloud streets,
-  popcorn cumulus from MODIS scenes) shapes clouds seen from space, and from high orbit the low clouds become a
-  full-resolution far layer: sharper, steadier and several times cheaper. The clouds stay the same clouds as
-  you climb.
-- **Aurora driven by space weather.** The auroral oval is a ring fixed to the Sun, widest near local midnight,
-  dark inside. Its size and brightness follow a Kp index from a space-weather model of the solar cycle,
-  recurrent solar-wind streams, CME storms and substorms; a big storm brings the aurora to mid-latitudes. The
-  curtains are thin folded sheets with sharp lower borders, rays and red tops. An "AURORA NOW" readout shows
-  the current activity; Kp can also be set by hand.
-- **Real time, real eclipses.** The sim clock is real UTC (the Earth turns by Greenwich sidereal time), and the
-  Moon follows the standard lunar series: its true position, size, phase and orientation (tidally locked).
-  Solar and lunar eclipses happen when and where they really do (total lunar eclipse 31 Jan 2037, total solar
-  eclipse 13 Jul 2037 over Australia). At totality the Moon's shadow darkens the air, ground, clouds and dust
-  point by point, leaving an orange ring around the horizon, the stars come out, and a fibrous corona with
-  pink prominences appears. Moonlight follows the phase law.
+  flashes, spider lightning and rare red sprites. Clouds glow around each flash; thunder rolls in from the
+  channel's shape, delayed by distance.
+- **Rainbows, halos and ice optics** for the Sun or the Moon: rainbows at storms, 22-degree halos, sundogs, the
+  circumzenithal arc, sun pillars.
+- **Fog, dust and ice fog.** Radiation fog in valleys at night, sea fog on coasts, dust plumes over dry land,
+  diamond-dust ice fog over Antarctica and Greenland.
+- **Clouds from orbit.** Satellite-imagery morphology (closed and open cells, cloud streets, popcorn cumulus from
+  MODIS scenes) shapes clouds seen from space; from high orbit a full-resolution far layer takes over. The clouds
+  stay the same clouds as you climb.
 
-### New on the ground and sea
+### Sky, sea, terrain and cities
 
+- **Aurora driven by space weather.** The auroral oval is a ring fixed to the Sun; its size and brightness follow
+  a Kp index from a model of the solar cycle, recurrent streams, CME storms and substorms. Curtains are thin
+  folded sheets with sharp lower borders, rays and red tops; big storms add arc systems, red glow, magenta borders
+  and rare blue rays. The aurora now dims under real skyglow (it vanished near towns before). "AURORA NOW" shows
+  the activity; Kp can be set by hand.
+- **Real time, real eclipses.** The sim clock is real UTC and the Moon follows the standard lunar series (true
+  position, size, phase, tidally locked). Eclipses happen when and where they really do (total lunar eclipse
+  31 Jan 2037, total solar eclipse 13 Jul 2037 over Australia); at totality the Moon's shadow darkens air, ground
+  and clouds point by point, the horizon turns orange and a fibrous corona with prominences appears.
 - **Terrain detail.** A true 3D surface with metre-scale relief and branching erosion gullies, soft terrain
-  shadows, snow, rock and close-up ground textures (grass, forest floor, rock, snow, sand, dirt).
-- **Lakes and coasts.** Lakes sit at their own level (Titicaca, Baikal, the Great Lakes), shorelines come from
-  Natural Earth's 10 m coastlines, beaches have dry and wet sand.
-- **Night lighting.** The night side is lit by the Moon and the night sky; only real city lights glow.
-- **The sea.** Waves that stay seamless however far you travel, a sea state that follows the weather (calm
-  seas to storm swell), whitecaps and foam, breaking surf and shoaling on the shore, a physically based Sun
-  glitter path, sharp sky and cloud reflections close up and a rougher, darker sea toward the horizon.
-- **Procedural cities.** Street grids, lamp posts in sodium and LED colours, signs and traffic lights, real
-  major roads from Natural Earth, rooftops, yards and tree crowns by day, and nine regional styles (North
-  American grids, European courtyard blocks, Soviet slab rows, East Asian plans and more). From altitude and
-  the horizon, distant cities glitter as fields of crisp points instead of blurred blobs. Cities stop at the
-  foot of the mountains.
-- **Farmland.** Rectangular fields that follow regional styles: mile sections and centre pivots, strip fields,
-  rice paddies that reflect the sky.
-- **Solar parks.** Reflector target sites are drawn as solar PV parks sized by their capacity, with single-axis
-  trackers or fixed-tilt tables; the glass glints the Sun and, at night, the Reflect Orbital beams. Rooftop
-  solar appears where a park overlaps a city. Mirrors only beam while they are in sunlight.
+  shadows, snow and rock, close-up ground textures; lakes at their own level and 10 m coastlines, beaches; the
+  night side lit by the Moon and the night sky.
+- **The sea.** Seamless waves however far you travel, a sea state that follows the weather, whitecaps, breaking
+  surf, a physical Sun glitter path, sky and cloud reflections, a rougher, darker sea toward the horizon.
+- **Procedural cities.** Street grids, lamp posts in sodium and LED colours, signs and traffic lights, real major
+  roads, rooftops, yards and tree crowns by day, nine regional styles; distant cities glitter as fields of crisp
+  points; cities stop at the foot of the mountains. **Farmland** in regional styles and **solar parks** at the
+  Reflect Orbital target sites (glinting the Sun and the beams).
 
-### Satellites
+### Satellites and photometry
 
-- **Satellites as real 3D models.** Every satellite type has a geometry model (ISS, Tiangong, Hubble, Starlink
-  v1.0 / VisorSat / v1.5 / v2 Mini / Direct-to-Cell / v3, OneWeb, Amazon LEO, Guowang, Starmind AI1, Reflect
-  Orbital mirrors, the Starship depot, commercial stations, debris). Any satellite big enough on screen is drawn
-  as a mesh in the scene, reflecting the full sky and Earth, with a seamless hand-off from its point of light.
-- **Physical brightness.** Magnitudes come from the models: microfacet reflection per surface, earthshine from
-  the whole lit Earth, backlit translucent arrays, optional shadowing between parts, and validated against
-  published observation campaigns.
-- **Info window and 3D view.** Select a satellite for its orbit, brightness, sky position and a live 3D view
-  (free, from you or toward you; live or studio light), which pops out into its own window. A photometric
-  check compares the render with the model.
-- **Trace pass.** Plot a satellite's magnitude over its current or next pass, with peak, length and live values,
-  and export it as CSV.
-- **Go to, Follow and Track.** Fly to a satellite along your line of sight to it and ride with it; Track locks
-  the camera onto a satellite as it crosses your sky while you stay on the ground.
-- **SpaceX Starmind orbital data centers.** The roster follows SpaceX's May 2026 FCC filing: sun-synchronous
-  shells whose planes cross at the equator (the "X-ring") and 30-degree shells, about 990,000 satellites flying
-  in formation rings of eight, 350 m in radius. Each ring is a real passive formation (a Clohessy-Wiltshire
-  relative orbit about its centre): the lower members run ahead, the higher fall behind, and the ring turns once
-  per orbit. Clusters are scattered a little in altitude, phase, node and inclination, so the constellation does
-  not draw perfect lattices.
-- **Bulk export** of simulated observations for a satellite or a whole constellation (Settings > Photometry).
-- **Satellite glints on the sea** have their own gain and floor (Ocean tab).
+- **Satellites as real 3D models.** Every type has a geometry model (ISS, Tiangong, Hubble, Starlink v1.0 /
+  VisorSat / v1.5 / v2 Mini / Direct-to-Cell / v3, OneWeb, Amazon LEO, Guowang, Qianfan, Starmind AI1, Reflect
+  Orbital mirrors, the Starship depot, the GEO satellites, debris). The commercial and national stations (Haven-1/2,
+  Axiom, Orbital Reef, ROS, Bharatiya Antariksh Station, Starlab) were redrawn from their operators' concept art,
+  and the ISS and Tiangong gained visiting vehicles, arms and detail. Any satellite big enough on screen is drawn
+  as a mesh reflecting the sky and Earth, with a seamless hand-off from its point of light.
+- **Physical brightness.** Magnitudes come from the models (microfacet reflection, earthshine from the whole lit
+  Earth, backlit translucent arrays, optional shadowing between parts) and are validated against published
+  observation campaigns. Resolved satellites fade from a point into their surface brightness, formations merge
+  into one point, and glares clustered together share a soft glow instead of a sea-urchin of spikes.
+- **Info window and 3D view** (live or studio light, pops out into its own window), **Trace pass** with CSV
+  export, **Go to** (with Stay here, Return and follow again), **Track**, and **bulk export** of simulated
+  observations.
+- **SpaceX Starmind orbital data centers** per SpaceX's May 2026 FCC filing: about 990,000 satellites in
+  sun-synchronous and 30-degree shells, flying in passive formation rings of eight that turn once per orbit.
 
-### Camera, capture and UI
+### UI
 
-- **Bookmarks.** Save a view (place, camera, time and the weather) with a thumbnail and jump back to it.
-- **Six default bookmarks** ship with the sim (the 2037 total solar eclipse over Australia, the 2037 blood moon
-  from Anchorage, a solar storm's aurora from orbit, snow glittering in the Reflect Orbital beams at McMurdo, a
-  rainbow over Venezuela, a Starmind formation ring); "Restore defaults" brings back any you deleted.
-- **Cinematics.** A camera-path editor: shots of keyframes on smooth splines, follow shots that ride with a
-  satellite, a timeline, saved files, and frame-by-frame export (quick preview or supersampled HQ frames with
-  motion blur), with a progress display.
-- **HQ photo** (F8 or the camera-sparkle button): a settled, supersampled screenshot at up to 4x the window.
-- **First-run tutorial** for looking, moving, climbing, boosting and selecting (keyboard, mouse or gamepad),
-  then the HUD's buttons. Replay it from Settings > Display.
-- **Loading screen** with progress instead of a white window; much faster startup on repeat launches.
-- **Type instead of drag.** Slider values, the clock, latitude, longitude and altitude are text fields.
-- **A cleaner UI.** Every window and settings tab shares one style; settings tabs are grouped (General, Sky,
-  Rendering behind "Show advanced settings", About); a Performance tab holds the frame timings and knockouts;
-  new filled pixel icons; the bottom-right panel ends in the Bookmarks, Cinematics and Settings buttons.
-- **Gamepad layout 2.** D-pad left/right move between a selected satellite's buttons, A presses, B steps back;
-  time on D-pad up/down, pause on X, reverse on Y. Saved pad bindings are reset to this layout once.
-- **Movement scales with height**, so walking near the ground is walking pace and orbit is still fast.
+- **Missions window** (the rocket button, or M): the next launches with Go to / Watch, pinned twilight and crewed
+  launches, the Sun's Fury countdown; what is flying now (crew transfers, stations, launches, trains, retirees,
+  build-out); and the launch and Sun's Fury settings.
+- **Issue reports.** F9 adds a shot (frame, place, camera, time, weather, settings, frame times, the last 12 s
+  of camera motion) to an issue, F7 starts a new one; the Issue reports window adds notes, pins and areas, and
+  exports a zip to send.
+- **Bookmarks** with thumbnails; **nine default bookmarks** (the Great Australian Eclipse, the Anchorage blood
+  moon, a solar storm from orbit, beam-lit snow at McMurdo, a rainbow over Venezuela, Starmind formation rings,
+  The Sun's Fury, a twilight Starship launch, a Starmind deployment).
+- **Cinematics.** A camera-path editor with shots, follow shots, a timeline, saved files and frame export
+  (preview, or supersampled HQ frames with motion blur).
+- **HQ photo** (F8), screenshots with or without the UI (F10 always with), star trails.
+- **UI themes** (Classic, Navy, Night red, Midnight by default) and window opacity; one shared style for every
+  window and settings tab; grouped settings tabs with advanced ones behind "Show advanced settings".
+- **First-run tutorial** (keyboard, mouse or gamepad), **loading screen** with progress, and a **startup graphics
+  chooser** (Full graphics, Planetarium or Potato) before anything heavy loads, stepping down a tier on its own if
+  the first frames are very slow.
+- **Type instead of drag** for slider values, the clock, latitude, longitude and altitude; **gamepad layout 2**;
+  movement that scales with height.
 
 ### Sound
 
-- **Ambient sound.** Location-aware ambience under the music: winds, surf and gulls, crickets and birds,
-  jungle day and night, city traffic, rain, thunder, and drones and pads in orbit, all in the music's key.
-- **Music.** A player with previous / pause / next and a gap between tracks; new tracks LEO Motif and BIOS.
-  Each track has an "upwell" stem that rises over it when Reflect Orbital flares fill the screen. The music
-  fades out toward geostationary altitude.
+- **Ambient sound.** Location-aware ambience under the music: winds, surf and gulls, crickets and birds, jungle
+  day and night, city traffic, rain, thunder, rocket roar, and drones and pads in orbit, all in the music's key.
+- **Music.** A player with previous / pause / next and a gap between tracks; new tracks LEO Motif and BIOS, each
+  with an "upwell" stem that rises when Reflect Orbital flares fill the screen. The music fades out toward
+  geostationary altitude.
 
-### Graphics and performance
+### Performance
 
-- **Temporal anti-aliasing** of the terrain, sky and sea, which becomes a **temporal upscaler** below 100%
-  render scale, keeping most of full-resolution detail.
-- **Render scale now scales the clouds too**, so lower scales give real frame-rate gains ("Clouds follow
-  render scale"), and an optional **automatic render scale** holds a target frame rate.
-- **Presets reshuffled.** Potato and Planetarium for weak hardware (Planetarium has no volumetric clouds),
-  Low (50% render scale, every effect on), Medium (67%), High and Ultra. Integrated GPUs start on Planetarium, with a
-  tutorial card pointing at the presets.
-- **Startup graphics chooser.** Before anything heavy loads, the loading screen asks for Full graphics,
-  Planetarium (no clouds) or Potato (very old hardware), pre-selecting the last choice, the device's recommendation
-  on a first run, or one tier lighter after a crash. If the first frames are very slow it steps down one tier once.
-  "Ask for graphics mode on startup" (Display tab) turns the question off.
-- **Planetarium and Potato are the light v1.1 skies again**: the 1.2 ground features (terrain detail, the
-  procedural city, sea reflections, satellite meshes) are compiled out of them and nothing of the volumetric
-  clouds runs, so they start fast and run on the hardware they were made for. After a crash the preset steps
-  down one tier instead of always to Planetarium.
-- Large performance work across the cloud march (adaptive sampling, tile culling, LODs), the sky pass, terrain
-  depth pyramid and the satellite pipeline (about 1.37 million satellites in the default roster).
+- **Temporal anti-aliasing** of the terrain, sky and sea, which is also a **temporal upscaler** below 100%
+  render scale; render scale can scale the clouds too; optional automatic render scale.
+- **Presets:** Potato and Planetarium (the light v1.1 skies, with the 1.2 ground features compiled out and no
+  volumetric clouds), Low, Medium, High and Ultra. First runs start on High for discrete GPUs with 6 GB or more,
+  Planetarium on integrated GPUs, Potato on old Macs.
+- Large performance work across the cloud march, the sky pass, the terrain depth pyramid, the satellite pipeline
+  (about 1.4 million satellites in the default roster), the launch system (plume builds and batch builds off the
+  main thread, culled exhaust), close-up station shadows (from 30-60 ms to about 1 ms) and frame hitches after
+  loading and at high time rates.
+
+### Tools
+
+- **Automation harness** (`tools/harness/`, `docs/HARNESS.md`): scripted and live runs, captures with state
+  sidecars, perf and knockout sweeps, frame-hitch reports, UI layout dumps, camera paths, temporal-stability and
+  climb benchmarks, offline audio rendering, issue-report triage (`reports.py`).
+- **Mission-operations suite** (`mission_ops.py`): every launch vehicle and program traced phase by phase
+  (accelerations, staging, insertion, release, arrival, docking, landing) with PASS / FAIL thresholds, and a
+  launch-system cost benchmark (`launch_bench.py`).
+- **SatModelTool** (bake, validate, OBJ export, self-tests, SatBench benchmark runs, trace replay) with nine
+  published photometry datasets and a photometric accuracy gate in CI.
+- Generators for rocket, crew vehicle, ship, pad, station, GEO and debris models, the launch-site coasts, the
+  GEO belt, icons, ambience, water map, roads, terrain materials and cloud morphology.
+- **Project wiki** (`wiki/`, MkDocs) as the maintained reference.
 
 ### Changed defaults and behaviour
 
-- Defaults are the author's tuned settings (volumes, rain and lightning, brightness, automatic render scale on,
-  HQ photos at 1x the window). Rain amount 3, rain fall speed 5x (the slider reaches 10x).
+- Defaults are the author's tuned look (clouds, sea, aurora, extinction 0.18); automatic render scale is off by
+  default; HQ photos at 1x the window; rain amount 3, rain fall speed 5x.
 - Saved times now show a different local time of day (the clock is real UTC; about 5 h 15 min earlier for the
   same timestamp). The start time moved so the intro is unchanged.
 - "Storm strength" for the aurora is replaced by Kp (automatic by default).
 - Glare defaults are the distance-tuned values; glare grows when the camera is close to a satellite.
-- The cinematics, bookmarks and settings buttons moved from the time bar to the bottom-right panel; the
-  Camera settings tab is now the Controls tab's Mouse section.
+- The menu buttons (Issue reports, Missions, Bookmarks, Cinematics, Settings) are on the bottom-right panel; the
+  Camera settings tab is now the Controls tab's Mouse section; launch and Sun's Fury settings are in the Missions
+  window.
 - Exposure, auto exposure, highlight roll-off, white balance and the Moon's size are in a new **Exposure and
   Moon** section of the Photometry tab (settings keys unchanged). The "City light blur LOD" slider is gone.
+- The disabled legacy-lighting Starlink Gen2 comparison shell was removed from the roster.
 
 ### Fixed
 
 - Far city lights no longer blink at low angles under temporal AA; the sea no longer shows a fine white static
-  under broken cloud; waves no longer leave trails in cinematic playback.
-- Climbing or descending over a city at night no longer smears the lights (temporal AA under slow vertical
-  motion).
-- Cities on the night side seen from orbit are no longer grey, cloud-shaped blobs: the lights under cloud are
-  not blurred any more, the air's city glow from high orbit follows each town's shape, and dust fades out from
-  orbit.
-- The glare on a mirror's glint follows the Sun's image in it smoothly (sub-texel placement) instead of moving in
-  4-pixel jumps.
-- Render-only satellite parts (fittings, trusses) no longer seed bloom or glare.
-- Beam-lit snow shafts no longer show a rainbow (the beams lit every precipitation shaft as rain); snowflakes no
-  longer fall at the rain's speed.
-- A mirror in the Earth's shadow no longer beams; stale bloom, lightning and depth no longer show after
-  switching satellites, clouds or the depth pass off; the sky's exposure follows a total eclipse.
-- The Attributions tab lists every bundled asset (terrain textures, Natural Earth data, ambience recordings).
+  under broken cloud; waves no longer leave trails in cinematic playback; climbing over a city at night no longer
+  smears the lights.
+- Night-side cities seen from orbit are no longer grey, cloud-shaped blobs.
+- The aurora is no longer invisible from rural sites near towns, nor cut off along a hard line toward a town.
+- The glare on a mirror's glint follows the Sun's image smoothly; render-only satellite parts no longer seed
+  bloom or glare; rough metal edges no longer glare.
+- Beam-lit snow shafts no longer show a rainbow; snowflakes no longer fall at the rain's speed; a mirror in the
+  Earth's shadow no longer beams.
+- The weather bookmarks (Venezuela rainbow, Antarctic snow) frame their storms again with the new cloud defaults.
+- The sky glow around satellites sums bright flares, so one tumbling piece of debris no longer lights half the sky.
+- Many fixes from QA of launches and missions: no plume pulsing, no train jitter in time warp, smooth handovers
+  in the Info window, no "?" under a selection, the camera never goes underground following a rocket.
+- The Attributions tab lists every bundled asset.
 
 ### Technical and modding
 
-- **Satellite types as data.** Rigid attitude groups (`attitude_groups`) replace the attitude enum (legacy
-  modes are converted at load); geometry models (`satellite_models/<id>.json`) with primitives, materials,
-  kinematic trees with hinges and pivots, render-only parts, open lattices, provenance blocks. See
+- **Satellite types as data.** Rigid attitude groups (`attitude_groups`) replace the attitude enum; geometry
+  models (`satellite_models/<id>.json`) with primitives (including profiles and fins), materials, kinematic trees,
+  stowed and folding parts, docking ports, render-only parts, open lattices and provenance blocks. See
   `docs/CONSTELLATION_MODDING.md`.
-- **New roster features.** `"distribution": "Shells"` with a `groups` table (Walker or sun-synchronous groups),
-  formation clusters (`cluster_size`, `cluster_shape` line or ring, `cluster_relative_orbit` for rings), per-cluster
-  scatter (`cluster_alt_jitter_km`, `cluster_phase_jitter`, `cluster_raan_jitter_deg`, `cluster_incl_jitter_deg`),
-  and per-plane node spread (`raan_spread_deg`, `raan_spread`).
+- **New roster features.** `"distribution": "Shells"` with a `groups` table, `List` constellations of named
+  satellites, formation clusters (line or ring, `cluster_relative_orbit`), per-cluster scatter and per-plane node
+  spread.
+- **`data/launches.json`**: sites, vehicles, programs, stacks, crew and cargo blocks, station arms, deployment
+  history. **`data/geo_satellites.json`**, **`data/launch_coasts.json`**.
 - **Reflector targets** carry a `"kind"` (`solar`, `agriculture`, `daylight`); solar sites become parks.
-- **SatModelTool** (`tools/sat_model_tool/`): bake, validate, OBJ export, self-tests, benchmark runs
-  (SatBench), trace replay, material overrides. Nine published photometry datasets in `data/benchmarks/`,
-  and a photometric accuracy gate in CI (`cmake --build <dir> --target accuracy-gate`).
-- **Automation harness** (`tools/harness/`, `docs/HARNESS.md`): scripted and live runs, captures with state
-  sidecars, perf and knockout sweeps, UI layout dumps, camera paths, temporal-stability and climb benchmarks,
-  offline audio rendering. Launches are spaced and capped machine-wide.
-- **Project wiki** (`wiki/`, MkDocs) as the maintained reference; `docs/rendering/` describes the rendering
-  architecture.
-- Unified log-distance scene depth written by every surface; one magnitude-to-sprite model for satellites,
-  stars and planets; line-of-sight Chapman extinction at any altitude; exact GPU orbit phase.
+- Unified log-distance scene depth written by every surface; one magnitude-to-sprite model for satellites, stars
+  and planets; line-of-sight Chapman extinction at any altitude; exact GPU orbit phase; the orbit rebake runs on
+  the GPU; the roster can be rebuilt at runtime.
 - Large textures ship pre-decoded (`.r8`, `tools/make_raw_textures.py`); the app keeps its own pipeline cache.
-- Tools: `make_icons.py`, `make_ambience.py`, `make_water_map.py`, `make_city_roads.py`,
-  `make_terrain_materials.py`, `make_cloud_morph.py`, `SoundTool`, `cloud_stats.py`.
 
 ### Build / packaging
 
 - `SatModelTool` target, the `linux-accuracy-gate` preset and the accuracy gate in CI; `PackageRelease.cmake`
-  ships `satellite_models/`. Runtime files re-sync next to the exe when they change, and user screenshots live
-  outside the build tree.
+  ships `satellite_models/`, `launches.json`, `geo_satellites.json`, `launch_coasts.json` and the default
+  bookmarks. Runtime files re-sync next to the exe when they change; user screenshots and user data (settings,
+  reports, bookmarks) live outside the build tree in a development checkout.
 
 ## v1.1.1 — 2026-09-08
 
