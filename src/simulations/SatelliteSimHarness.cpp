@@ -28,6 +28,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
@@ -1782,6 +1783,72 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             stopFollow(fly);
             r["message"] = fly ? "follow off (flying home)" : "follow off";
+            return Status::Done;
+        }
+        if (lower(pos(0)) == "log")
+        {
+            // follow log on | off [name=followlog] [top=12]: per-frame camera vs object (offset, view and camera in
+            // the object's frame, the frame's axis turn), written to captures/<name>.followlog.json; the result
+            // ranks the largest per-frame changes of each, with the object's kind before / after.
+            const std::string w = lower(pos(1));
+            if (w == "on")
+            {
+                followLog_.clear();
+                followLogOn_ = true;
+                r["message"] = "follow log on";
+                return Status::Done;
+            }
+            followLogOn_ = false;
+            const std::string name = c.has("name") ? c.str("name") : std::string("followlog");
+            const int top = (int)c.num("top", 12.0);
+            nlohmann::json rows = nlohmann::json::array();
+            auto v3 = [](const glm::dvec3 &v) { return nlohmann::json::array({v.x, v.y, v.z}); };
+            for (const FollowLogRow &w2 : followLog_)
+                rows.push_back({{"t", w2.t}, {"dt", w2.dt}, {"sat", w2.sat}, {"kind", w2.kind}, {"stage", w2.stage},
+                                {"key", w2.key}, {"off", v3(w2.off)}, {"cam", v3(w2.camRel)}, {"view", v3(w2.view)},
+                                {"view_obj_deg", w2.viewObjDeg}, {"dist", w2.dist}, {"hand_m", w2.handM}, {"flight", w2.flight}, {"T", v3(w2.T)}, {"Traw", v3(w2.Traw)}});
+            if (harnessRunner_)
+            {
+                std::ofstream f(harnessRunner_->runDir() + "/captures/" + name + ".followlog.json");
+                f << rows.dump();
+            }
+            struct Ev { double v; size_t i; };
+            std::vector<Ev> eOff, eCam, eView, eVO, eDist, eT;
+            for (size_t i = 1; i < followLog_.size(); ++i)
+            {
+                const FollowLogRow &a2 = followLog_[i - 1], &b2 = followLog_[i];
+                if (b2.flight != 0 || a2.flight != 0)
+                    continue;
+                const double L = std::max(glm::length(a2.off), 1.0);
+                eOff.push_back({glm::length(b2.off - a2.off) / L, i});
+                eCam.push_back({glm::length(b2.camRel - a2.camRel) / std::max(glm::length(a2.camRel), 1.0), i});
+                eView.push_back({glm::degrees(std::acos(std::clamp(glm::dot(a2.view, b2.view), -1.0, 1.0))), i});
+                eVO.push_back({std::abs(b2.viewObjDeg - a2.viewObjDeg), i});
+                eDist.push_back({std::abs(b2.dist - a2.dist) / std::max(a2.dist, 1.0), i});
+                eT.push_back({glm::degrees(std::acos(std::clamp(glm::dot(a2.T, b2.T), -1.0, 1.0))), i});
+            }
+            auto rank = [&](std::vector<Ev> &e) {
+                std::sort(e.begin(), e.end(), [](const Ev &x, const Ev &y) { return x.v > y.v; });
+                nlohmann::json o = nlohmann::json::array();
+                for (int k = 0; k < top && k < (int)e.size(); ++k)
+                {
+                    const FollowLogRow &a2 = followLog_[e[k].i - 1], &b2 = followLog_[e[k].i];
+                    o.push_back({{"v", e[k].v}, {"frame", e[k].i}, {"t", b2.t}, {"kind", {a2.kind, b2.kind}},
+                                 {"stage", {a2.stage, b2.stage}}, {"key_changed", a2.key != b2.key}, {"sat_changed", a2.sat != b2.sat},
+                                 {"dist", b2.dist}, {"hand_m", b2.handM}});
+                }
+                return o;
+            };
+            r["rows"] = followLog_.size();
+            r["file"] = name + ".followlog.json";
+            r["offset_rel"] = rank(eOff);
+            r["cam_rel"] = rank(eCam);
+            r["view_deg"] = rank(eView);
+            r["view_obj_deg"] = rank(eVO);
+            r["dist_rel"] = rank(eDist);
+            r["frame_turn_deg"] = rank(eT);
+            r["message"] = "follow log: " + std::to_string(followLog_.size()) + " rows";
+            followLog_.clear();
             return Status::Done;
         }
         if (lower(pos(0)) == "stay")

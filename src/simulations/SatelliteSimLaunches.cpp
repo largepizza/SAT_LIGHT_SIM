@@ -6553,9 +6553,37 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 shipIdx = selTransients.size();
                 addSelTransient(st);
             }
+            // (2026-10-21) Where the plasma is: the shock layer on the WINDWARD side, the heat-shield belly, along the
+            // body's middle, not the track point (the model's origin = the aft end, at the engines: the glow and its
+            // glare sat on the engine bells of a followed ship). The belly faces down and forward, perpendicular to the
+            // body axis in the plane of the axis and the velocity.
+            glm::dvec3 Pg = P, ax(0.0), nb(0.0);
+            double bodyHalf = 25.0, bodyR = 4.5, meshPx = 0.0;
+            {
+                const glm::dvec3 vh1 = glm::normalize(P - Pp), up = glm::normalize(P);
+                glm::dvec3 upp = up - glm::dot(up, vh1) * vh1;
+                upp = glm::length(upp) > 1e-6 ? glm::normalize(upp) : up;
+                ax = glm::normalize(0.5 * vh1 + 0.866 * upp);
+                nb = vh1 - glm::dot(vh1, ax) * ax;
+                nb = glm::length(nb) > 1e-6 ? glm::normalize(nb) : -upp;
+                auto ti = rocketTypes.find("rocket_" + vh.id + "_upper");
+                const SatMeshRenderer::TypeMesh *tm = ti != rocketTypes.end() ? meshRenderer.typeMesh(ti->second) : nullptr;
+                double zc = 25.0;
+                if (tm && tm->boundsRadius > 1.0f)
+                {
+                    zc = (double)tm->boundsCenter.z;
+                    bodyHalf = std::max(2.0, (double)tm->boundsRadius - 2.0);
+                }
+                bodyR = std::clamp(0.17 * bodyHalf, 1.5, 6.0);
+                Pg = P + ax * zc + nb * (bodyR + 1.5);
+                if (shipIdx < selTransients.size())
+                    meshPx = rocketMeshPx(selTransients[shipIdx], pixA, eye);
+            }
+            const glm::dvec3 relG = Pg - eye;
+            const double rangeG = std::max(glm::length(relG), 1.0);
             // The plasma's light on the cloud tops below (faint: it is 45-100 km up).
             if (I > 1e-3)
-                engineLightAdd(P, flameIntensitySunsM2(-4.0 - 2.5 * std::log10(I)),
+                engineLightAdd(Pg, flameIntensitySunsM2(-4.0 - 2.5 * std::log10(I)),
                                glm::mix(glm::vec3(1.0f, 0.62f, 0.38f), glm::vec3(1.0f, 0.55f, 0.75f),
                                         (float)glm::clamp(v / 7500.0, 0.0, 1.0)),
                                400.0, glm::normalize(P), 0.0, 0.0, false);
@@ -6566,10 +6594,30 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 const double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
                 const glm::vec3 col = glm::mix(glm::vec3(1.0f, 0.62f, 0.38f), glm::vec3(1.0f, 0.55f, 0.75f),
                                                (float)glm::clamp(v / 7500.0, 0.0, 1.0));
-                if (flare > 2e-4 && kFireCount < kFireballMax)
-                    fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(rel) / range), (float)flare), glm::vec4(col, (float)range)};
+                // The point gives way, as the ship's mesh resolves, to a sheath of glow along its belly (a point of
+                // this brightness on a resolved hull was a white disc with glare spikes): the capsule's rule.
+                const double keep = 1.0 - glm::smoothstep(2.0, 8.0, meshPx);
+                if (flare * keep > 2e-4 && kFireCount < kFireballMax)
+                    fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(relG) / rangeG), (float)(flare * keep)), glm::vec4(col, (float)rangeG)};
                 if (flare > 2e-4 && shipIdx < selTransients.size())
                     selTransients[shipIdx].flare = (float)flare;
+                if (keep < 1.0 && n < kMaxDustClouds)
+                {
+                    // Elongated along the body, a few metres thick, standing off the belly.
+                    const glm::dvec3 a = toEnu(ax), b2 = toEnu(nb), c2 = glm::cross(a, b2);
+                    const double sMin = 0.6 * rangeG * 2.0 * pixFull;
+                    const double sA = std::max(0.38 * bodyHalf, sMin), sB = std::max(0.6 * bodyR, sMin), sC = std::max(1.1 * bodyR, sMin);
+                    const double iA = 1.0 / (sA * sA), iB = 1.0 / (sB * sB), iC = 1.0 / (sC * sC);
+                    auto Mx = [&](int p2, int q2) { return iA * a[p2] * a[q2] + iB * b2[p2] * b2[q2] + iC * c2[p2] * c2[q2]; };
+                    const double J = 0.0006 * flare * (1.0 - keep) * rangeG * rangeG / K; // (x0.03 as the capsule's blew a ~4x-wide white ellipse)
+                    const glm::dvec3 ce = toEnu(relG);
+                    GpuDustCloud &d = out[n++];
+                    d.c = glm::vec4(glm::vec3(ce), (float)(J * toSky));
+                    d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2), (float)(1.0 / (kTwoPi1p5 * sA * sB * sC)));
+                    d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), 0.0f);
+                    d.col = glm::vec4(col, 1.0f);
+                    d.cone = coneOf(ce, 5.5 * sA);
+                }
                 // Its glowing wake: the last 6 s of path, an emissive Gaussian.
                 if (flare > 5e-3 && n < kMaxDustClouds)
                 {
@@ -6584,7 +6632,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
                     auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
                     const double J = 0.7 * flare * range * range / K;
-                    const glm::dvec3 ce = toEnu(P - 0.55 * axis - eye);
+                    const glm::dvec3 ce = toEnu(Pg - 0.55 * axis - eye); // behind the body, from its belly
                     GpuDustCloud &d = out[n++];
                     d.c = glm::vec4(glm::vec3(ce), (float)(J * toSky));
                     d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2),
@@ -9560,11 +9608,14 @@ bool SatelliteSim::transientExactState(SelTransient &s, double t) const
     if (te < 0.0 || te > 480.0)
         return false;
     const glm::dvec3 P = LaunchImpl::shipEntry(B, te, nullptr, nullptr);
-    const glm::dvec3 Pp = LaunchImpl::shipEntry(B, te - 6.0, nullptr, nullptr);
-    const glm::dvec3 P2 = LaunchImpl::shipEntry(B, te - 12.0, nullptr, nullptr);
+    // Differences over +-1 s inside the entry (2026-10-21): the 6-s backward ones read before the entry began for its
+    // first 12 s, a velocity ~4 deg off its track that Go to's frame turned toward and back.
+    const double ta = std::clamp(te - 1.0, 0.0, 478.0), tb = ta + 2.0;
+    const glm::dvec3 Pa = LaunchImpl::shipEntry(B, ta, nullptr, nullptr), Pb = LaunchImpl::shipEntry(B, tb, nullptr, nullptr);
+    const glm::dvec3 Pm = LaunchImpl::shipEntry(B, ta + 1.0, nullptr, nullptr);
     s.pos = P;
-    s.vel = (P - Pp) / 6.0;
-    s.acc = (P - 2.0 * Pp + P2) / 36.0;
+    s.vel = (Pb - Pa) / 2.0;
+    s.acc = Pb - 2.0 * Pm + Pa;
     s.tau = te;
     return true;
 }
@@ -9576,7 +9627,27 @@ bool SatelliteSim::transientExactState(SelTransient &s, double t) const
 glm::dvec3 SatelliteSim::transientPosAt(const SelTransient &s, double t) const
 {
     SelTransient p = s;
-    return transientExactState(p, t) ? p.pos : s.pos;
+    if (transientExactState(p, t))
+        return p.pos;
+    // (2026-10-21) Past its own model's end (a returning stage at its entry interface, the ship's entry at its descent:
+    // rocketPos / shipEntry refuse those times): carried on from its last state, at that state's own time. Returning
+    // s.pos itself (a frame old) made the jump eased out by updateFollow one frame of motion: 1.3 km at 10x at the
+    // entry interface (7.5 km/s), 190 m at the descent, the camera and its view thrown off the ship each time.
+    double ts = 0.0;
+    bool known = false;
+    if (launchState && (s.kind == 1 || s.kind == 2))
+    {
+        auto it = launchState->batches.find(s.a);
+        if (it != launchState->batches.end())
+        {
+            ts = (s.kind == 1 ? it->second.tL : it->second.tStageGone) + s.tau;
+            known = true;
+        }
+    }
+    if (!known || std::abs(t - ts) > 30.0)
+        return s.pos;
+    const double dt = t - ts;
+    return s.pos + s.vel * dt + 0.5 * s.acc * dt * dt;
 }
 
 bool SatelliteSim::transientContinue(SelTransient &cur, double t, uint8_t &wantKind) const

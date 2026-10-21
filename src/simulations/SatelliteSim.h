@@ -2652,6 +2652,20 @@ private:
     // member to its roster slot): the jump between them (ECEF), eased out over ~2 s so the camera glides.
     glm::dvec3 followHandD{0.0};
     glm::dvec3 followHandViewA{0.0}, followHandViewB{0.0}; // the free view's turn with the eased handover (updateFollow)
+    double followBasisSimT = 0.0; // the sim time followBasis* was made at (updateFollow: the frame's heading turn rate)
+    // Harness `follow log on|off`: one row per updateFollow (t, the object's kind/key, offset, the camera and its view
+    // in the object's frame, the frame's axes) to find discontinuities through a mission's handovers.
+    struct FollowLogRow
+    {
+        double t, dt;
+        int sat, kind, stage;
+        uint64_t key;
+        glm::dvec3 off, camRel, view, T, Traw, R, P;
+        double viewObjDeg, dist, handM;
+        int flight;
+    };
+    bool followLogOn_ = false;
+    std::vector<FollowLogRow> followLog_;
     // Following a launch record (a train member raising, a retiree deorbiting): its slot's owner and member when
     // follow began (a slot changes hands when its batch ends).
     uint64_t followLaunchOwner = 0;

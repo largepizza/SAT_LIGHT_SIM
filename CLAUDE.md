@@ -3465,6 +3465,18 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     follow rides a coasting copy for a few seconds until the list has it); a destroyed one, a reused debris slot
     (`followPoolGen`) or a fireball that burns out ends in place (`stopFollowHere` with a toast). `isFollowing(i)`
     is the one "is this followed" test (the selected transient and the followed one are one object in two slots).
+  - **The camera holds its offset and aim through a mission (2026-10-21, user: "camera resets when mission objectives
+    occur"; harness `follow log on|off`, docs/HARNESS.md).** (1) A transient's frame heading (rocket, ship, capsule,
+    fireball) is LAST frame's carried to this point (parallel transport in the local horizontal), turned toward the
+    inertial velocity's heading at <= max(1.5 deg per sim s, 20 deg per real s); a velocity that reverses (a
+    booster's boostback, a stage slowing to its catch) keeps the side (`Tv = -Tv`); a jump in time (dt_sim > 3x the
+    warp's step + 2 s) takes the velocity's heading again (`followBasisSimT`). Roster satellites and launch records
+    keep the plain velocity frame. (2) `transientPosAt` (a handover's "from") carries the predecessor on from its last
+    state at that state's own time when its model refuses the time (rocketPos past tStageGone, shipEntry past 480 s):
+    returning its frame-old `pos` made the eased jump one frame of motion (1.28 km at 10x at the entry interface,
+    190 m at the descent). (3) At a handover the view stays put in the object's frame and the camera glides across
+    `followHandD`: the view used to be turned at once onto the new object (`followHandViewA/B`, now unused) and back
+    as the jump eased out — 6.2 deg at Crew Dragon's separation from 68 m, 21.7 deg at the ship's entry.
   - **Reflections in the scene** come from the environment probes above (4c part 2, 2026-09-24).
 - A model that fails to load logs why and falls back to the type's legacy fields. Examples:
   `starlink_v2_mini.json`, `hubble.json`, `iss.json` (the first parity model: 50 components; station
@@ -4732,7 +4744,13 @@ launches follow per-program cadences (no real manifest).
   by 45 km, magnitude ~-4 at 100 km near 70 km up; then it lands: see the catch below; harness `launch ship`). Until then only
   expendable stages burned (40 s, while sinking 30 km on their circle) and Starship's ship jumped from its 350-km orbit
   to 100 km at the entry interface without turning or burning. The ship's entry is listed under the upper stage's own
-  key, so a selected or followed ship stays selected into its entry. A stage may vent what is left, spinning
+  key, so a selected or followed ship stays selected into its entry. **Its glow is on the belly** (2026-10-21, user: "re-entry emits from the rocket
+  engine"): the point, its light on clouds and the wake start at the body's middle (the upper model's bounds centre
+  along the nose) standing off the windward side (perpendicular to the axis, toward the velocity) by the body radius
+  + 1.5 m, not the track point (the model origin = the aft end, the engine bells); as the mesh resolves (2 -> 8 px) the
+  point gives way to an emissive sheath along the belly (sigma 0.38 x the half-length along, 0.6 / 1.1 x the radius
+  across), the capsules' rule. Booster entry burns stay at the engines (they are burns). Dream Chaser's glow is still
+  on its body axis (`heat_shield_m` along -Z), not on its belly. A stage may vent what is left, spinning
   (`vent_chance`; after its deorbit burn, or 10 min after deploying for a returning stage): ~10 t over two minutes as
   slowly spreading ice (30 m/s, 2000 m^2/kg), each parcel a stretch of the 700 m/s jet, never decimated: seen from
   below, a dump spiral like the 2009 Norway one (harness `launch vent`). Boosters land on droneships (below). Harness `launch deorbit` frames

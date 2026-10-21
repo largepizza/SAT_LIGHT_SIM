@@ -6004,6 +6004,71 @@ void SatelliteSim::updateFollow(float dt)
     glm::dvec3 Th = eciToEcef(glm::length(s.velEci) > 1e-3 ? s.velEci : s.velocity);
     if (glm::length(glm::cross(Rh, Th)) < 1e-6 * std::max(glm::length(Th), 1e-9))
         Th = followBasisValid ? followBasisT : glm::dvec3(-Rh.y, Rh.x, 0.0) + glm::dvec3(1e-9, 0.0, 0.0);
+    // (2026-10-21) A rocket, a ship coming home, a capsule or a fireball: the frame's heading is the last frame's
+    // carried to this point (parallel transport in the local horizontal) and TURNED toward the heading of its motion
+    // over the ground at a bounded rate; a motion that reverses (a booster's boostback) keeps the side. Taken straight
+    // from the inertial velocity, the heading swung ~140 deg through a boostback (up to 42 deg/s) and a frame's handover
+    // between two objects' velocities turned it at once: the camera, held in this frame, swung round the object at
+    // those milestones (the user's "camera resets"). Roster satellites and launch records keep the velocity frame.
+    const double dtSimF = followBasisValid ? std::abs(tNow - followBasisSimT) : 0.0;
+    const glm::dvec3 ThRaw = glm::normalize(Th - glm::dot(Th, Rh) * Rh + 1e-12 * Rh); // (follow log: the unsmoothed heading)
+    // A jump in time (a milestone skip, a bookmark) or a fast warp's long step: the heading is the goal's again.
+    const double dtSimExpect = (double)std::max(dt, 0.0f) * (double)kTimeScales[std::clamp(timeScaleIdx, 0, kNumTimeScales - 1)];
+    if (followIsTransient())
+    {
+        // The goal: the heading of the motion OVER THE GROUND (the Earth's rotation taken out), a rocket's flight
+        // azimuth. The inertial one starts east on the pad and, at a booster's boostback, swings ~140 deg through
+        // the Earth's rotation (42 deg/s at its fastest) where the ground-relative velocity simply reverses. Slower
+        // than 30 m/s over the ground (on the pad, a stage hanging at its catch) a rocket's heading is where its
+        // own model takes it in the next 90 s.
+        const glm::dvec3 vG = Th - glm::cross(glm::dvec3(0.0, 0.0, satphot::kOmegaEarth), P);
+        glm::dvec3 G = vG - glm::dot(vG, Rh) * Rh;
+        double gw = glm::length(G);
+        if (gw < 30.0 && followTrCur.kind == 1)
+        {
+            const double tF = tNow + 90.0, thF = earthRotationAngle(tF);
+            const glm::dvec3 q = transientPosAt(followTrCur, tF);
+            const glm::dvec3 qE(std::cos(thF) * q.x + std::sin(thF) * q.y, -std::sin(thF) * q.x + std::cos(thF) * q.y, q.z);
+            const glm::dvec3 d = qE - (P - followHandD);
+            const glm::dvec3 dh = d - glm::dot(d, Rh) * Rh;
+            if (glm::length(dh) > 100.0)
+            {
+                G = glm::normalize(dh) * 30.0;
+                gw = 30.0;
+            }
+        }
+        const bool haveG = gw > 0.5;
+        if (haveG)
+            G /= gw;
+        glm::dvec3 Tp = followBasisValid ? followBasisT - glm::dot(followBasisT, Rh) * Rh : glm::dvec3(0.0);
+        const bool carry = followBasisValid && glm::length(Tp) > 1e-6 && dtSimF < 3.0 * dtSimExpect + 2.0;
+        if (!carry)
+        {
+            if (haveG)
+                Th = G;
+        }
+        else
+        {
+            Tp = glm::normalize(Tp);
+            if (haveG)
+            {
+                // A reversal keeps the side. The turn: up to 1.5 deg per second of sim time (a gravity turn's
+                // heading barely moves; a dogleg is slower) or 20 deg per second of real time (a warp's turns).
+                if (glm::dot(G, Tp) < 0.0)
+                    G = -G;
+                const double maxStep = glm::radians(std::max(1.5 * dtSimF, 20.0 * (double)std::max(dt, 0.0f)));
+                const double ang = std::acos(std::clamp(glm::dot(Tp, G), -1.0, 1.0));
+                if (ang > 1e-9)
+                {
+                    const double a = std::min(ang, maxStep);
+                    const glm::dvec3 k = glm::normalize(glm::cross(Tp, G));
+                    Tp = Tp * std::cos(a) + glm::cross(k, Tp) * std::sin(a) + k * glm::dot(k, Tp) * (1.0 - std::cos(a));
+                }
+            }
+            Th = Tp;
+        }
+    }
+    followBasisSimT = tNow;
     const glm::dvec3 Nh = glm::normalize(glm::cross(Rh, Th));
     Th = glm::cross(Nh, Rh);
 
@@ -6280,33 +6345,12 @@ void SatelliteSim::updateFollow(float dt)
     }
     else if (freeView && glm::length(viewSat) > 1e-6)
     {
-        glm::dvec3 v = glm::normalize(viewSat.x * Th + viewSat.y * Nh + viewSat.z * Rh);
-        // A handover's jump (staging, the ship's entry, a train member reaching its slot) is eased out of the camera's
-        // place over ~2 s; the free view turns with the object meanwhile, so it stays where it was on screen instead of
-        // swinging off by the jump's angle (hundreds of metres seen from 260 m: off the frame) and gliding back.
-        // The turn is the rotation taking the eased point's direction to the object's, re-applied as a delta each
-        // frame (the view read back above already holds last frame's).
-        auto rotAB = [](const glm::dvec3 &x, const glm::dvec3 &a, const glm::dvec3 &b) {
-            const glm::dvec3 k = glm::cross(a, b);
-            const double sn = glm::length(k), cs = glm::dot(a, b);
-            if (sn < 1e-12)
-                return x;
-            const glm::dvec3 u = k / sn;
-            return x * cs + glm::cross(u, x) * sn + u * glm::dot(u, x) * (1.0 - cs);
-        };
-        glm::dvec3 hA(0.0), hB(0.0);
-        if (glm::length(followHandD) > 0.01 && glm::length(P - followObsEcef) > 0.01 &&
-            glm::length(P - followHandD - followObsEcef) > 0.01)
-        {
-            hA = glm::normalize(P - followObsEcef);
-            hB = glm::normalize(P - followHandD - followObsEcef);
-        }
-        if (glm::length(followHandViewA) > 0.5)
-            v = rotAB(v, followHandViewB, followHandViewA); // undo last frame's turn
-        if (glm::length(hA) > 0.5)
-            v = rotAB(v, hA, hB);
-        followHandViewA = hA;
-        followHandViewB = hB;
+        const glm::dvec3 v = glm::normalize(viewSat.x * Th + viewSat.y * Nh + viewSat.z * Rh);
+        // (2026-10-21) The view stays where it is in the object's frame through a handover too: the camera glides
+        // across the eased jump (followHandD) and the new object slides into the place the old one had on screen.
+        // Until then the view was turned at once onto the new object and turned back as the jump eased out: a snap
+        // of the jump's angle at every staging, capsule separation, entry interface and descent (6 deg at Crew
+        // Dragon's separation from 68 m; 22-37 deg at a ship's entry, whose jump also carried a frame of stale motion).
         setView(glm::vec3(glm::normalize(v)));
     }
     if (!freeView)
@@ -6325,6 +6369,31 @@ void SatelliteSim::updateFollow(float dt)
         const glm::vec3 eastEF = {-sLn, cLn, 0.0f};
         const glm::vec3 northEF = {-sL * cLn, -sL * sLn, cLH};
         camera.azDeg = glm::degrees(atan2f(glm::dot(obsFacing, eastEF), glm::dot(obsFacing, northEF)));
+    }
+    if (followLogOn_ && followLog_.size() < 2000000)
+    {
+        const double el = glm::radians((double)camera.elDeg);
+        const glm::dvec3 v = std::cos(el) * glm::dvec3(obsFacing) + std::sin(el) * glm::dvec3(obsDir);
+        const glm::dvec3 c = followObsEcef - (P - followHandD); // from the object itself (the eased jump included)
+        FollowLogRow w{};
+        w.t = tNow;
+        w.dt = dt;
+        w.sat = followSatIndex;
+        w.kind = followIsTransient() ? (int)followTrCur.kind : -1;
+        w.stage = followIsTransient() ? (int)followTrCur.stage : -1;
+        w.key = followIsTransient() ? followTrKey : 0;
+        w.off = followOffset;
+        w.camRel = glm::dvec3(glm::dot(c, Th), glm::dot(c, Nh), glm::dot(c, Rh));
+        w.view = glm::dvec3(glm::dot(v, Th), glm::dot(v, Nh), glm::dot(v, Rh));
+        w.T = Th;
+        w.Traw = ThRaw;
+        w.R = Rh;
+        w.P = P;
+        w.dist = glm::length(c);
+        w.viewObjDeg = w.dist > 1e-6 ? glm::degrees(std::acos(std::clamp(glm::dot(v, -c / w.dist), -1.0, 1.0))) : 0.0;
+        w.handM = glm::length(followHandD);
+        w.flight = followFlight;
+        followLog_.push_back(w);
     }
 }
 
