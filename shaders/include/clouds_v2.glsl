@@ -171,6 +171,11 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // their extinction their shadow takes; layBake x the bake round, y the running mean's least weight, z the anchor's
     // epoch, w "Cirrus self-shadow".
     vec4  layA, layE, layN, layEye, layRef, layBake;
+    // 2026-10-21 (issue 20261021_002345): the Sun shadow cascade's knots ride with the clouds along the Sun. x / y = how
+    // far (m, along the Sun) the window's knots of ray half 0 / 1 (rows 0-15 / 16-31) stand from where they stood when
+    // that half was last baked (the eye's motion relative to the clouds since then): cv2SunCascT adds it, so a ray baked
+    // a few frames ago is read at the knots it was baked for. zw spare.
+    vec4  sunCasc8;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

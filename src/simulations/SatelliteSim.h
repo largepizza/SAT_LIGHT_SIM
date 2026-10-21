@@ -862,6 +862,7 @@ struct GpuCloudV2Params
     glm::vec4 sunCasc6, sunCasc7;       // 2026-10-12: the shaft lattice's second ring + both rings' cells
     glm::vec4 cu, cu2;                  // 2026-10-13: the cumulus shape (clouds_v2.glsl)
     glm::vec4 layA, layE, layN, layEye, layRef, layBake;   // 2026-10-14: the layer shadow map (clouds_v2.glsl)
+    glm::vec4 sunCasc8;                 // 2026-10-21: the cascade's knot shift per ray half since its bake (clouds_v2.glsl)
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -880,7 +881,8 @@ static_assert(offsetof(GpuCloudV2Params, sunCasc0) == 288 + 48 * kCloudV2Types +
 static_assert(offsetof(GpuCloudV2Params, sunCasc6) == 288 + 48 * kCloudV2Types + 896, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, cu) == 288 + 48 * kCloudV2Types + 928, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, layA) == 288 + 48 * kCloudV2Types + 960, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1056, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, sunCasc8) == 288 + 48 * kCloudV2Types + 1056, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1072, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -4133,6 +4135,9 @@ private:
     float cv2HalfRateMoving = 0.0f;       // 1 = where the march would run at full rate, half (a checkerboard)
     float cv2SunCascade = 1.0f;           // "Far cloud shadows": the Sun shadow cascade (0 = only near the eye's line to the Sun)
     double cv2CascLatA = 0.0, cv2CascLatB = 0.0;   // the eye's coordinate on the cascade's lattice (cells), integrated
+    // ...and along the Sun (m, integrated the same way; 2026-10-21): with the window centre's own offset from the eye
+    // (sunCasc0.w), where each ray half's knots stood when it was last baked (sunCasc8.xy = the shift since).
+    double cv2CascS = 0.0, cv2CascBakeS[2] = {0.0, 0.0};
     double cv2GridLatA = 0.0, cv2GridLatB = 0.0;   // ... and on the fine grid's (cells of 250 m)
     int    cv2CascFrames = 0;                      // frames since the cascade was reset (it fills over 32)
     int    cv2GridFrames = 0;                      // ... since the fine grid's history was

@@ -166,15 +166,21 @@ float cv2SunCascT(vec3 rl, float sAlong)
              * (1.0 - smoothstep(0.5 * float(kCv2CascNB) - 3.5, 0.5 * float(kCv2CascNB) - 1.5, cc.y))
              * cv2.sunCasc2.x;
     if (wC <= 0.0) return 1.0;
-    float uu = cv2CascKnotAt(sAlong - cv2.sunCasc0.w + cv2.sunCasc1.z, cv2.sunCasc1.zw);
-    int   k0 = min(int(uu), kCv2CascK - 1);
+    // Each ray half (rows 0-15 / 16-31) is read at the knots it was baked for (cv2.sunCasc8.xy, 2026-10-21): the knots
+    // stand along the Sun relative to the EYE, so while the eye moves a bake a few frames old is shifted along its rays
+    // — from orbit (~330 km/s at the height-scaled speed) by several knots, and the window read the cloud's own shadow
+    // (a dark, ray-streaked rectangle under the eye while flying).
+    float sK = sAlong - cv2.sunCasc0.w + cv2.sunCasc1.z;
+    vec2  uh = vec2(cv2CascKnotAt(sK + cv2.sunCasc8.x, cv2.sunCasc1.zw), cv2CascKnotAt(sK + cv2.sunCasc8.y, cv2.sunCasc1.zw));
     vec2  gg = ce + cv2.sunCasc0.xy + vec2(float(kCv2CascNA), float(kCv2CascNB)) * 8.0;
     ivec2 g0 = ivec2(gg);
     vec2  gf = gg - vec2(g0);
     float Tb = 0.0;
     [[dont_unroll]] for (int c = 0; c < 4; ++c) {
-        int ri = ((((g0.y + (c >> 1)) & (kCv2CascNB - 1)) * kCv2CascNA + ((g0.x + (c & 1)) & (kCv2CascNA - 1)))
-                  * (kCv2CascK + 1)) + k0;
+        int   row = (g0.y + (c >> 1)) & (kCv2CascNB - 1);
+        float uu  = (row < kCv2CascNB / 2) ? uh.x : uh.y;
+        int   k0  = min(int(uu), kCv2CascK - 1);
+        int ri = ((row * kCv2CascNA + ((g0.x + (c & 1)) & (kCv2CascNA - 1))) * (kCv2CascK + 1)) + k0;
         Tb += mix(cv2SunCasc[ri], cv2SunCasc[ri + 1], uu - float(k0))
             * ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
     }

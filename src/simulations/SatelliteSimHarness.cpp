@@ -643,6 +643,27 @@ json SatelliteSim::harnessStateJson()
                       {"still_frames", cv2StillFrames}, {"history_valid", cv2HistoryValid},
                       {"sun_cloud_t", sunCloudTEased}, {"fast_lod", cv2FastLodNow},
                       {"shape_frame", cv2ShapeFrame}};   // review 22: the Sun disc's cloud transmittance
+    // The Sun shadow cascade (2026-10-21, issue 20261021_002345): its fill count and the stored transmittances
+    // (every ray, knots 0..47; the last knot is the stamp), as the GPU left them last frame.
+    if (cv2FlashMapped)
+    {
+        const float *cs = (const float *)((const char *)cv2FlashMapped + kCv2SunShaftOffset - 200704 * 4);
+        double sum = 0.0, mn = 1e9;
+        int n = 0, dark = 0;
+        for (int r = 0; r < 4096; ++r)
+            for (int k = 0; k < 48; ++k)
+            {
+                const double v = cs[r * 49 + k];
+                sum += v; mn = std::min(mn, v); ++n;
+                if (v < 0.5) ++dark;
+            }
+        const GpuCloudV2Params *pp = (const GpuCloudV2Params *)cv2ParamsMapped;
+        auto v4 = [](const glm::vec4 &v) { return json::array({v.x, v.y, v.z, v.w}); };
+        if (pp)
+            j["clouds_v2"]["sun_cascade_ubo"] = {v4(pp->sunCasc0), v4(pp->sunCasc1), v4(pp->sunCasc2), v4(pp->sunCasc3), v4(pp->sunCasc8)};
+        j["clouds_v2"]["sun_cascade"] = {{"frames", cv2CascFrames}, {"terrain_frame_x", terrainFrameMapped ? terrainFrameMapped[0] : -1.0f}, {"lat", {cv2CascLatA, cv2CascLatB}},
+                                         {"t_mean", sum / n}, {"t_min", mn}, {"dark_share", (double)dark / n}};
+    }
     // Rain at the eye (2026-10-04, the particles): what was drawn last frame, and the light and rain map the lightning
     // pass wrote (the previous frame's).
     {

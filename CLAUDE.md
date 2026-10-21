@@ -1032,6 +1032,26 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
         at 10 / 40 / 160 frames 0.60 / 0.02 / 0% (off 0.35 / 0.03 / 0%). Cost +0.2 ms GPU. Settings "Layer shadows (mid / high)"
         `clouds_v2.layer_shadows` 1, "Cirrus self-shadow" `cirrus_self_shadow` 0 (slots 296-297). Harness `state` ->
         `clouds_v2.layer_map` (the probe at 1.5 km under the eye: columns, slant T and tau where its Sun ray crosses).
+    - **The cascade from orbit (2026-10-21, issue 20261021_002345 "Odd shadows from space": a sharp-edged trapezoid of black,
+      ray-streaked cloud under the eye at 333 km).** Two bugs, both only above the shell:
+      (1) **The lattices' axes (`cv2SunProf[2..7]`) were written only with the eye inside the shell** (lightning thread 1's
+      Sun-profile branch). The cascade stays on from orbit, so every lookup used the axes of the LAST place the eye had been low
+      (another ENU frame, another Sun): each cloud sample mapped to a wrong ray and knot and the window drew its rays' total
+      optical depth. After a fresh load at altitude the axes were 0 and the cascade silently did nothing (which is why a
+      `report load` could not reproduce it: visit a low point first, `harness_runs/` r13 in the fix's worktree). Now written
+      every frame.
+      (2) **The knots ride with the eye along the Sun, not with the clouds**: a and b are integrated (above), but a ray's knots
+      stand at fixed distances from the window's centre under the eye, so a bake read a few frames later (or a running mean)
+      was shifted along its rays by the eye's motion since — at the height-scaled speed from orbit (~330 km/s) by several knots:
+      a dark rectangle under the eye while flying. The CPU integrates the eye's motion along the Sun (`cv2CascS`), keeps each
+      ray half's knot origin at its last bake (`cv2CascBakeS`; half (frame >> 1) & 1 bakes on odd frames) and passes the shift
+      since (`cv2.sunCasc8.xy`, UBO 1056 -> 1072 B past the types); `cv2SunCascT` reads each corner's row half at its own knot,
+      and a bake taken while the eye moved replaces the slot's running mean (`sunCasc3.w` = 1). 128 registers; the ground storm
+      view 38.4-38.8 ms old vs new interleaved, the shot's view 11.0 vs 11.7 ms cascade on / off. Harness `state` ->
+      `clouds_v2.sun_cascade` / `sun_cascade_ubo`.
+      The same shot's faint circle round the nadir was the terrain march's range ("Terrain fade end", 600 km there): only terrain
+      hits took the ground bounce (`bounceK`), so snow inside the range was ~15% brighter than the same snow past it. Land past
+      the range takes it too now (`cityLand && tdEnabled()`).
 
   - The user's settings.json was lost to release.bat's wipe on 2026-10-13; a copy from that morning is
     `harness_runs/perf13/user_settings.json`.
