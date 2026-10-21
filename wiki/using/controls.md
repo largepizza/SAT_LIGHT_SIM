@@ -60,7 +60,7 @@ second.
 | Tab | Hide / show the interface |
 | `C` | Gamepad virtual cursor on / off (no effect with a mouse) |
 | F11 | Fullscreen / windowed (fixed key, works during the intro) |
-| Esc | Quit. While a cinematic plays or exports, Esc stops it instead; while a text field is being edited, Esc cancels the edit; while the issue note bar is open, Esc closes it |
+| Esc | Quit. While a cinematic plays or exports, Esc stops it instead; while a text field is being edited, Esc cancels the edit; while a key or button rebind is waiting, Esc cancels it; while the issue note bar is open, Esc closes it |
 | `` ` `` | Developer console (see [Automation harness](../development/harness.md)) |
 
 **Scrolling over the position readout.** Hover the latitude, longitude or altitude at the bottom right and scroll
@@ -161,10 +161,11 @@ ship, its return. A satellite in a train hands over to its slot in the constella
 satellite or a debris piece to its re-entry fireball. The camera eases across each hand-over and the object keeps its
 place on screen. When nothing continues the object, Go to ends where the camera is, with a notice.
 
-**Following again.** For 30 seconds after you leave Go to, a chip at the top of the screen, **Go to** *name* **again**,
-follows the same object again, flying from where the camera is; the `H` key does the same for the rest of the
-session. A rocket is carried along its mission to the present first; an object that has since ended is reported
-gone. The chip disappears when time jumps by more than ten minutes.
+**Following again.** For 30 seconds after you leave Go to, a chip at the top of the screen, **Go to** *name* **again**
+(the name alone, without the object's status), follows the same object again, flying from where the camera is; the
+`H` key does the same for the rest of the session. A rocket is carried along its mission to the present first, and a
+visiting spacecraft (a Progress, a Dragon) that is still flying is followed again too; an object that has since ended
+is reported gone. The chip disappears when time jumps by more than ten minutes.
 
 As with any observer, only the latitude and longitude of a free observer are saved: after a restart you start on the
 ground below.
@@ -178,16 +179,12 @@ the camera. Press **Track** again, select something else, or press **Go to** to 
 Settings → **Controls** → *Bindings* lists every rebindable action in three columns: the action, its keyboard key
 and its gamepad button.
 
-- **Rebind**, then press the new key. Esc cancels.
+- **Rebind**, then press the new key. Esc cancels (it does not quit while a rebind is waiting).
 - **Bind**, then press the new controller button. A button already held when you click is ignored until
-  released.
+  released. Esc cancels this too.
 
 Climb and descend on the gamepad are the analog triggers and are not part of the button bindings; binding a button
 to *Raise* or *Lower Elevation* adds it as a full-speed alternative. Bindings are saved in `settings.json`.
-
-!!! warning
-    Esc also quits the program, and cancelling a rebind with Esc currently does both. Cancel a rebind by pressing
-    the key you want instead, or by pressing the old key again.
 
 The rest of the Controls tab holds *Movement* (the move speed below), *Mouse* (a reminder that the right button
 drag looks around, the wheel zooms and a left click selects), *Invert look* (mouse and controller, each axis) and

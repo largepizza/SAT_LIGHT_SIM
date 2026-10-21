@@ -67,8 +67,10 @@ what it is:
 | A fireball | `Re-entry fireball` |
 | A satellite in a train or deorbiting | Its type and phase with its height: `raising to slot, 412/565 km`, `parking orbit`, `in the dispenser`, `deorbiting` |
 
-Then its brightness as an apparent magnitude (for a planet: magnitude, distance and phase). A rocket's magnitude is
-that of its flame as seen from the camera.
+Then its brightness as an apparent magnitude (for a planet: magnitude, distance and phase). The magnitude is always
+what you see from your position on the ground, also while you are following the object: *below your horizon*,
+*dark* (in the Earth's shadow, or a rocket that is not burning), or the magnitude after the atmosphere's
+extinction. For a burning rocket it is its flame's.
 
 A satellite's panel has a row of icon buttons. Hover one to see its name.
 
@@ -80,13 +82,17 @@ A satellite's panel has a row of icon buttons. Hover one to see its name.
 | **Track** (a sight) | Keeps the camera pointed at the object while you stay where you are. Works for everything selectable |
 
 A lit button means the action is active (the eye while following, the reticle while tracking). When the selected
-object is off screen, a chip at the edge of the screen points to it and carries the same buttons.
+object is off screen, a chip at the top left of the screen, *Selected: name (out of view)*, carries the same
+buttons. It shows the name alone (up to its first comma, colon or bracket, so a rocket's T+ or a spacecraft's phase
+is left off), and while you are following something it sits below the follow bar.
 
 ## The satellite window and the 3D view
 
 **Info** opens a window on the right side of the screen, as tall as the space above the bottom-right panel. At its
 top is a rendered view of the real object, where it is right now, lit by the real Sun and the light of the Earth
-below it. Drag inside the picture to orbit the camera around it, scroll to zoom.
+below it. Drag inside the picture to orbit the camera around it, scroll to zoom. A burning rocket stage is drawn
+with its flame and glowing nozzles. A satellite that has been destroyed or has re-entered shows no model: the view
+shows the sky where it was, with *Destroyed* or *Re-entered* and the date.
 
 Four icons sit over the picture:
 
@@ -98,6 +104,7 @@ Four icons sit over the picture:
 | **Maximize** | Pop the view out into its own large, resizable window (the small view keeps running) |
 
 The window title shows the object's name and, in its title bar, **Select** (select it in the sky) and **Go to**.
+A title too long for the title bar is cut with "..." before those icons.
 Under the picture four tiles show its **magnitude** as you see it, its **elevation**, its **range** and the
 **phase** angle. For a burning rocket stage the magnitude is its flame's, as you see it from the ground.
 
@@ -110,11 +117,12 @@ Under the picture four tiles show its **magnitude** as you see it, its **elevati
 | Track | Keeps the camera on it as it crosses the sky |
 | **Explode** (danger colour) | Breaks it up with one click; see [Breaking a satellite up](#breaking-a-satellite-up) |
 
-Below them are collapsible sections, each a list of labels and values. Only the sections scroll.
+Below them are collapsible sections, each a list of labels and values; a long value wraps onto more lines. Only
+the sections scroll.
 
 | Section | Contents |
 |---|---|
-| STATUS *(open)* | What it is: constellation, satellite type, and its state (operational, dead and tumbling, destroyed, re-entered, in a launch, a debris piece). For a rocket or a re-entry: the stage and its burn, T+, altitude and speed (over the ground below 80 km, inertial from 150 km) |
+| STATUS *(open)* | What it is: constellation, satellite type, and its state (operational, dead and tumbling, destroyed, re-entered, in a launch, a debris piece). For a rocket, a visiting spacecraft, a fairing half or a re-entry: what it is doing, altitude, speed (over the ground below 80 km, inertial from 150 km) and a time row (below) |
 | MISSION *(open)* | For a launch object: its timeline and milestones, with buttons to skip between them; see [Missions](missions.md#the-mission-section-in-the-info-window) |
 | BRIGHTNESS *(open)* | Magnitude as seen, above the air, the extinction, the magnitude at 1000 km, the phase angle, and for a formation satellite the formation's combined magnitude |
 | SKY POSITION *(open)* | Visibility, elevation, azimuth and range from your position |
@@ -123,7 +131,13 @@ Below them are collapsible sections, each a list of labels and values. Only the 
 | 3D VIEW | Camera (Free, From you, Toward you), light (Live, Studio), pose (Sunlit, Rest), and switches for Spin, Shadows, Reflections, Surface detail, Glare and Markers (a cyan dot and line toward you; for a mirror, an orange line to the ground site it is aiming at); **Reset view** |
 | PHOTOMETRY CHECK | A photometric check: the rendered picture integrated into a magnitude (Render), the brightness model's value (Model) and the difference; **Run check** |
 
-The readouts always refer to your parked position on the ground, even while you are following the object.
+The STATUS time row depends on the object: *Lift-off in* / *Since lift-off* for a rocket, *Glowing for* for a
+re-entry, and for a visiting spacecraft its phase: *Since separation*, *Docked since* (or *Berthed since*) with the
+UTC time and the number of days, *Since undocking* (or *Since unberthing*), *Since entry interface*. Durations read
+`42 s`, `12 m 03 s`, `4 h 12 m` or `116 d 17 h`.
+
+The readouts always refer to your parked position on the ground, even while you are following the object. An
+object that the Earth hides from you reads *Below horizon* in SKY POSITION and BRIGHTNESS.
 When the object changes into what continues it (a rocket stack into its upper stage at staging, a stage into its
 re-entry fireball, a satellite in a train into its slot on arrival), the window and its 3D view follow it, keeping
 the camera's direction. How the brightness is computed is on [Satellite photometry](../simulation/photometry.md).
@@ -225,8 +239,10 @@ folder (`kessler/`), so a second visit is quick. How it all works is on [The Sun
 ### Breaking a satellite up
 
 **Explode** in the [satellite window](#the-satellite-window-and-the-3d-view) breaks the viewed satellite or debris
-piece up with one click, at any date. The debris is there the same frame and time keeps running; the result shows
-as a notice. A breakup before the storm starts the cascade at that moment (and switches the scenario on if it was
+piece up with one click, at any date. The debris is usually there the same frame and time keeps running; the result
+shows as a notice. When the cascade's history has to be rebuilt instead (always before the storm, or after time has
+been played back a long way), it is rebuilt in the background while the clock holds for a moment under the banner
+"Computing the debris cascade: the breakup". A breakup before the storm starts the cascade at that moment (and switches the scenario on if it was
 off). Until the storm arrives, working satellites dodge everything, so only the debris, the dead satellites and the
 passive junk collide; after it, the **Collision avoidance** setting applies. Going back in time before the breakup
 undoes it. A destroyed satellite is gone everywhere: it cannot be selected, and a destroyed station gets no more crew
@@ -422,15 +438,15 @@ mid-2020s, approximate for 2036). Which groups are open and the list's search ar
 
 ### Brightness of satellites on screen
 
-Four values on the Photometry side change how satellites are drawn, not how bright they are physically. They have
-no slider; set them in `settings.json`.
+Four sliders on the Photometry tab change how satellites are drawn, not how bright they are physically. The first
+three are under *Point sources*, the last under *Bloom and glare*.
 
-| `settings.json` key | Default | Effect |
-|---|---|---|
-| `photometry.sat_resolved` | 1 | A modelled satellite a few pixels across fades from a point into its model's real surface brightness, so the point does not blaze beside a dim model |
-| `photometry.sat_adaptation` | 1 | Bright satellite models filling the view, or a bright Earth seen from orbit, dim the faint points, as an eye adapts (up to 8 magnitudes) |
-| `photometry.formation_merge` | 1 | A formation too small to resolve is drawn as one point with the members' combined light |
-| `photometry.glare_cluster_merge` | 1 | Lights glaring close together give up their spikes to a soft shared glow: the brightest keeps most of its star. 0 gives every light its own star |
+| UI label | `settings.json` key | Default | Effect |
+|---|---|---|---|
+| Resolved satellites | `photometry.sat_resolved` | 1 (0 to 1) | A modelled satellite a few pixels across fades from a point into its model's real surface brightness, so the point does not blaze beside a dim model |
+| Satellite adaptation | `photometry.sat_adaptation` | 1 (0 to 2) | Bright satellite models filling the view, or a bright Earth seen from orbit, dim the faint points, as an eye adapts (up to 8 magnitudes) |
+| Merge formations | `photometry.formation_merge` | 1 (0 to 1) | A formation too small to resolve is drawn as one point with the members' combined light |
+| Glare cluster merge | `photometry.glare_cluster_merge` | 1 (0 to 1) | Lights glaring close together give up their spikes to a soft shared glow: the brightest keeps most of its star. 0 gives every light its own star |
 
 ## Where in the code
 

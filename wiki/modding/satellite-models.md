@@ -340,7 +340,7 @@ only: they have no geometry and no effect on the brightness (draw the port hardw
 | `name` | `port` | For reports |
 | `position` | `[0, 0, 0]` | The contact point |
 | `axis` | `[1, 0, 0]` | The port's outward axis (normalised) |
-| `use` | `crew` | Which visiting vehicles take it: `crew` or `cargo` |
+| `use` | `crew` | The port's class: a program's `crew.ports` takes only ports of its class. `crew`, `cargo`, or any name (the ISS's berthing ports are `berth_unity` and `berth_harmony`) |
 | `since` | none | The date the port's module arrives; a vehicle docks only at ports already there (a malformed date counts as always) |
 
 Spacecraft are not drawn on the station models: the program flies real crew and cargo vehicles to these ports;
@@ -429,7 +429,7 @@ silently drops the change. Each generated file says so in its `note`.
 |---|---|
 | `tools/make_station_models.py` | `haven1`, `haven2`, `axiom_station`, `orbital_reef`, `ross`, `bharatiya_station`, `starlab`; and the render-only `gb_*` detail of the hand-made `iss` and `tiangong` (re-running replaces it) |
 | `tools/make_rocket_models.py` | `rocket_<vehicle>_{stack,booster,upper,upper_bare,upper_empty,fairing}` and the payload dispensers `rocket_dispenser_<name>`; `--check` fails when `launches.json` disagrees with the models |
-| `tools/make_crew_models.py` | `rocket_capsule_<kind>` (in orbit), `_cm` (the returning capsule) and `_chute` (under parachutes) |
+| `tools/make_crew_models.py` | `rocket_capsule_<kind>` (in orbit), `_cm` (the returning capsule) and `_chute` (under parachutes); the cargo ships, Cygnus and HTV-X with grapple fixtures on both sides; Canadarm2's `rocket_arm_canadarm2_boom` and `_wrist` |
 | `tools/make_pad_models.py` | `pad_starship`, `pad_falcon`, `pad_generic` |
 | `tools/make_ship_models.py` | `ship_droneship`, `ship_jacklyn`, `ship_robot` |
 | `tools/make_geo_models.py` | `geo_comsat_large`, `geo_comsat_medium`, `geo_weather`, `geo_spinner` |
@@ -446,7 +446,10 @@ render-only bell named `engines_*`, `upper_nozzle_*` or `side_nozzle_*`: the fla
 the exit plane those parts span. No surface may cut a bell: each throat sits at or below the cap or heat shield
 over it.
 
-**Capsules** have their origin at the docking port, +Z out of it.
+**Capsules** have their origin at the docking port, +Z out of it. Wings that turn to the Sun (Shenzhou,
+Tianzhou) are a child group `wings` hinged about the span (body Y) with a `track` joint; wings that do not turn (Soyuz MS,
+Progress) face along the axis. A berthed cargo ship's grapple fixtures sit where its program's `crew.grapple`
+says ([radius, depth below the port]): the flight code places the arm's tip there without reading the model.
 
 ## Models loaded by name
 

@@ -71,6 +71,7 @@ constellations still fly, all present at every date.
 | `sites` | Launch sites |
 | `vehicles` | Launch vehicles and their flight figures |
 | `programs` | Each keeps some constellations flying, or flies crew or cargo to stations |
+| `station_arms` | Robotic arms on stations that berth cargo ships (Canadarm2 on the ISS) |
 | `deployment_reference` | The date the programs' `present_2026` counts refer to |
 | `min_first_life` | A first-filled slot's first refresh comes at least this share of the design life later (0.25) |
 | `roster_history` | Constellations with no launches (stations, the 2020 benchmark shells, the debris field): when they are there |
@@ -100,7 +101,22 @@ over `deorbit_days`. `sat_mass_kg` or `payload_mass_kg` picks the booster's reco
 |---|---|
 | `deployment` | How the program's constellations are built up: `start`, `complete`, `present_2026`, `shell_stagger`, `steepness`, `early_vehicles` / `early_until`, `match` (one block per subset). See [Launches](../simulation/launches.md) |
 | `stack` | How the satellites ride in the launcher: `layout` (`pez`, `flat` or `column`), `per_tier`, `side_axis`, `pitch_m`, `offset_m`, `base_m`, `column_radius_m`, `member_center`, `dispenser`, and per-program `deploy_interval_s` / `sep_speed_mps` / `sep_spread_mps`. Without it the satellites appear stowed at the dispenser point |
-| `crew` | A crew or cargo flight to a station (a constellation of one): `spacecraft`, `people`, `model`, `heat_shield_m`, `lands`, `fast_dock_h`, `cargo`, `return`, `ports`, `share_crew_ports`, `stay_days`. `life_years` is then a fixed cadence, not scaled by the design-life setting, and `raise_days` is lift-off to docking. See [Crew flights](../simulation/crew-flights.md) |
+| `crew` | A crew or cargo flight to a station (a constellation of one): `spacecraft`, `people`, `model`, `heat_shield_m`, `lands`, `fast_dock_h`, `cargo`, `return`, `ports` (a port class matched against the station model's port `use`), `share_crew_ports`, `stay_days`, and for a vehicle the station's arm captures, `berth`, `grapple` ([radius, depth below the port] of its grapple fixture) and `capture_m`. `life_years` is then a fixed cadence, not scaled by the design-life setting, and `raise_days` is lift-off to docking. See [Crew flights](../simulation/crew-flights.md) |
+
+**Station arms** each match one station (`match`, constellation-name substrings) and describe an arm in the
+station's body frame (+X along the velocity, +Z to nadir), all lengths in metres:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `model` | `canadarm2` | Its meshes: `rocket_arm_<model>_boom.json` (drawn twice) and `rocket_arm_<model>_wrist.json` |
+| `base`, `base_normal` | `[0, 0, 0]`, `[0, 0, 1]` | Where the arm is mounted and the direction its shoulder housing stands out |
+| `shoulder_m`, `boom_m`, `wrist_m` | 1.4, 7.1, 1.6 | The shoulder housing, each of the two equal booms, the wrist and end effector |
+| `park_wrist`, `park_dir` | `[0, 0, 0]`, `[0, 0, 1]` | The parked wrist point and the direction the end effector points from it |
+| `pole` | `[0, 1, 0]` | The side the elbow bends toward |
+
+A berthing vehicle's capture and release points must lie within the arm's reach (two booms from the shoulder, plus
+the wrist); `launch check` reports any shortfall as `berth_arm_reach_short_m`. See
+[Crew flights](../simulation/crew-flights.md#berthing).
 
 !!! warning "The stack numbers follow the models"
     `tools/make_rocket_models.py` measures each satellite model stowed (its `stow` and `fold`), derives the stack

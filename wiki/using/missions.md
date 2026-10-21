@@ -13,7 +13,8 @@ The rocket button on the right of the bottom-right panel (between the Issue repo
 ("Missions" in the key bindings). The window opens at the right edge of the screen and can be moved and resized.
 Its top row holds three tabs, **Upcoming**, **Ongoing** and **Controls**, and the current sim time in UTC. A line
 under the tabs (amber) reports the result of the last button you pressed, for example where a Go to took you or why
-nothing was found.
+nothing was found; it disappears after 12 s. A docking port is named as words (*IDA-2 Harmony forward*,
+*node port nadir*) here, in the follow bar and in the milestones.
 
 The rows are refreshed twice a second, and at once after a jump in time; only the countdowns change every frame.
 
@@ -68,15 +69,15 @@ many were catastrophic.
 
 ## Ongoing
 
-The Ongoing tab lists what is happening now, in sections.
+The Ongoing tab lists what is happening now, in sections, in this order.
 
 | Section | Rows | Buttons |
 |---|---|---|
-| BUILD-OUT (DEPLOYMENT ERA) | One row per constellation still being built up (deployment era only): satellites in place out of the target, the share, launches a day, the date it completes, with a progress bar | none |
 | CREW TRANSFERS | Crew and cargo flights between lift-off and docking: their phase (ascent, phasing, approach, docking in ...) | **Select**, **Go to**, **Next >** |
 | CREWED STATIONS | Every station: altitude, and when the next crew flies (or that a new crew is on its way) | **Select**, **Go to** |
 | SATELLITE LAUNCHES | Rockets in flight: phase (first stage, upper stage, parking orbit, deployment) | **Select**, **Go to**, **Next >** |
 | SATELLITE OPERATIONS | Per program, the trains of new satellites climbing to their slots (count, progress, next arrival) and the retired satellites coming down (next re-entry) | **Select** and **Go to** the nearest one; for retirees also **Watch** |
+| BUILD-OUT (DEPLOYMENT ERA) | Deployment era only. A summary line, *n of N constellations complete*, with **Show** / **Hide**, then one row per constellation: satellites in place out of the target, the share, launches a day, the date it completes (or completed), with a progress bar. The rows start hidden once every constellation is complete | **Show** / **Hide** |
 
 - **Select** selects the object even when it is not drawn from where you are (below your horizon, or too faint):
   the selection panel then points to it from the edge of the screen.
@@ -181,7 +182,8 @@ section right after STATUS, open by default:
 - facts: what it is doing now, the climb's progress and arrival, its re-entry; for a satellite in operations, its
   time in its slot, the share of its design life used and when its replacement arrives (or that none is scheduled,
   because launches stand down at the Sun's Fury);
-- a progress bar through the timeline, with the count of milestones passed;
+- a progress bar through the milestone list, with the count of milestones passed: each milestone is an equal step,
+  and between two milestones the bar moves on in proportion to the time, so the bar and the count agree;
 - **< Previous** and **Next: ... >**;
 - the milestones, each with its time as T+ from lift-off (for a satellite in operations: "in ..." or "... ago") and
   in UTC. The last one passed is highlighted and marked `>`.

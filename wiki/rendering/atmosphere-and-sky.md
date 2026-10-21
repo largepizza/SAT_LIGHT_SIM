@@ -341,7 +341,15 @@ the visible share of the Sun, and at totality the solar corona is drawn. See
 
 `lensFlare()` draws ghosts and a starburst for the **Sun only**, in screen space. Its visibility is tested at
 the Sun's own screen position, not the pixel's: the cloud transmittance there, `cloud.sunCloudT`, the half-res
-scene depth (a ridge hides it), and the share of the Sun seen past the Moon. Satellites have no lens flare;
+scene depth (a ridge hides it), and the share of the Sun seen past the Moon.
+
+The large bokeh ghost is a disc reflected through the screen centre, drawn as three offset colour copies (the
+chromatic fringe), each with the profile
+\( \left(1/(1 + 32 r^2)\right)^3 \), the cube of a Lorentzian in the distance \( r \) from the ghost's centre. A
+plain Lorentzian is still at half brightness 0.18 of the screen height out, so with the Sun in view from orbit its
+tail lays a brown wash of about 0.05 (linear) over half the frame, enough to hide a dim earthlit station in front of
+it; cubed, a ghost is a disc with an edge. Ghosts fade out as the Sun nears the screen centre
+(`smoothstep(0.03, 0.12, |pos|)`). Satellites have no lens flare;
 their glow is the bloom and glare of [Points, bloom and glare](points-bloom-glare.md).
 
 ## Depth output

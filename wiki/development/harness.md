@@ -237,7 +237,7 @@ tonemapping, so `tools/harness/lightscan.py` can decode a pixel back to a number
 | `photo <name> [scale=1-4] [frames=N]` | the HQ photo: rendered at `scale` x the window offscreen, clouds at full rate, time paused, settled over `frames` frames; no UI, no sidecar |
 | `state [name]` | the full state as the result, and a file if named: time, observer and follow, camera, selection (with the CPU photometry by lobe, the formation's combined magnitude, the mesh glare data), clouds, satellites, Moon, aurora, the light-pollution dome, exposure and point adaptation, launches, Kessler, ambience |
 | `perf [frames=60] [name=]` | average raw GPU timestamp buckets and CPU buckets over N frames, with GPU total and wall frame-time distributions; `name=` also appends to the run's perf log |
-| `hitches [top=8] [list=25]`, `hitches clear`, `hitches threshold <ms>` | the frame-time distribution since the last clear and every frame over the threshold with its largest main-thread sections ([Profiling](profiling.md#frame-profile-and-hitches)) |
+| `hitches [top=8] [list=25]`, `hitches clear`, `hitches threshold <ms>` | the frame-time distribution since the last clear and every frame over the threshold with its largest main-thread sections ([Profiling](profiling.md#frame-profile-and-hitches)); frame times are net of the harness's own work (the `harnessTick` section), so a command's result write never reads as a hitch |
 | `sweep` | the automated knockout sweep (about 15 s); returns the whole record |
 
 ### UI and input
@@ -379,6 +379,10 @@ formation trains' ring shape with `launch formation`, judges every cached crew a
 `--captures` it adds a contact sheet per pair (a tile per milestone). `mission_ops.py report <run>` re-judges stored
 traces without the app; `selftest.py -k mission_ops` runs the numeric half.
 
+The visit checks include when a crew or cargo flight reaches its station: `docking.hours_after_launch` must fall
+between 2 and 120 hours after lift-off (phasing takes hours to days, and a berthed cargo ship such as HTV-X is
+captured by the station's arm about four days after launch).
+
 `tools/harness/launch_bench.py run | compare <a.json> <b.json>` times fixed launch scenes (the Twilight Starship
 Launch bookmark at 1x, 1 h/s and 1 d/s, a busy deployment-era day, a night launch followed from close, a droneship
 landing), each with launches on and off, so the difference is the system's cost. `compare` flags a metric more than
@@ -399,7 +403,11 @@ sweep
 ```
 
 **Hitches across time rates:** `tools/harness/scripts/hitch_ladder.satcmd` steps through every time rate from 1x
-to 1 yr/s right after load, `time scale X; hitches clear; wait 180; hitches` per rate.
+to 1 yr/s right after load, `time scale X; hitches clear; wait 180; hitches` per rate. `python
+tools/harness/hitch_check.py` runs that ladder in four scenarios (after load, with a user's settings, in 2031, after
+the Sun's Fury) and fails when a rate's p99 or max, the first frame or the boot time exceeds
+`tools/harness/hitch_thresholds.json`; it waits to have the GPU to itself and reports CONTENDED (exit code 3) when
+another app shared it ([Profiling](profiling.md#the-hitch-check)).
 
 **Shader A/B at fixed views:** capture a baseline, change the code or a setting, capture again, then
 `imgtools.py diff before.png after.png -o heat.png`. Within one run, toggle with `set` or `knockout` and
@@ -513,6 +521,7 @@ minutes with launch spacing. `-k <name>` runs one test.
 | `tools/harness/run.py`, `live.py`, `launchgate.py` | drivers and launch spacing |
 | `tools/harness/imgtools.py`, `tstab.py`, `flicker.py`, `climb.py`, `glare_track.py`, `lightscan.py`, `frames2video.py`, `gc.py`, `selftest.py` | analysis and maintenance |
 | `tools/harness/mission_ops.py`, `launch_bench.py` | launch and mission checks, launch cost benchmark |
+| `tools/harness/hitch_check.py`, `hitch_thresholds.json` | the hitch regression check |
 | `tools/harness/reports.py` | issue report triage ([Issue reports](issue-reports.md)) |
-| `tools/harness/scripts/` | worked scripts (`smoke`, `determinism`, `terrain_views`, `ambience_tour`, `tour`, `track`, `text_fields`, `ui_windows`, `tutorial`, `boot_chooser`, `boot_safety`, `low_tiers`, `default_bookmarks`, `hitch_ladder`, the launch scripts above, ...) |
+| `tools/harness/scripts/` | worked scripts (`smoke`, `determinism`, `terrain_views`, `ambience_tour`, `tour`, `track`, `text_fields`, `ui_windows`, `tutorial`, `boot_chooser`, `boot_safety`, `low_tiers`, `default_bookmarks`, `hitch_ladder` (and `_2031`, `_cme`), the launch scripts above, ...) |
 | `docs/HARNESS.md` | the complete command reference |

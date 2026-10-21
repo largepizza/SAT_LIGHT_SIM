@@ -74,6 +74,11 @@ The settings display, rebinding, hover arrays (sized by `KB_COUNT`), the key-nam
 Bindings are saved under `controls.keybindings` as a list of `{action, key, gp_button}`, matched by action
 name on load. An action missing from the file keeps its default.
 
+While a row is listening (`listening` or `listeningPad`), `onKey()` consumes the next key before any dispatch: Esc
+cancels either kind of rebind, any other key becomes the binding of a keyboard row. Esc quits the app only when
+`capturesKeyboard()` is false, and that returns true while any row is listening (as it does for the console, a
+focused text field, a playing cinematic and the issue note bar).
+
 ## The gamepad
 
 `pollGamepad()` runs once per frame from `recordCompute()`. It finds a connected gamepad, edge-detects button
@@ -185,7 +190,13 @@ struct CloudSlider { const char *label; float *val; float vmin, vmax, step; cons
 
 A slider's slot and its settings key are independent of which tab shows it, so a slider can move between tabs
 without touching anything else. The Photometry tab has its own smaller set of arrays (`hovPhotoMinus`,
-`hovPhotoPlus`, `draggingPhoto`), sized for its rows. Editing a slider on any tab except Sound switches the
+`hovPhotoPlus`, `draggingPhoto`), sized for its rows. Its rows are listed in `photoParams` but drawn by display
+group (`kGroups` in the Photometry tab: BRIGHTNESS, SKY DIMMING, POINT SOURCES, BLOOM AND GLARE, DARK SKY, STAR
+TRAILS), each group naming its rows' `idx` values.
+
+!!! warning "Invariant"
+    A new Photometry row must be added to a display group as well as to `photoParams`; a row in no group is never
+    drawn, and its setting is reachable only through `settings.json`. Editing a slider on any tab except Sound switches the
 graphics preset label to Custom unless the row passes `marksPreset = false` (the Sound, Controls and Display
 rows do).
 
@@ -232,7 +243,7 @@ so every window looks and behaves the same:
 | Function | Draws |
 |---|---|
 | `uiSection(key, idx, title)` | a section heading in small capitals over a 1-px rule |
-| `uiKV(key, idx, label, value, labelW)` | a readout: a fixed-width label column and a value column |
+| `uiKV(key, idx, label, value, labelW)` | a readout: a fixed-width label column and a value column; a long value wraps onto more lines |
 | `uiStatTile(key, idx, label, value, colour)` | a label over a large value in a dark inset (the info and trace windows' tiles) |
 | `uiButton(inp, ui, key, idx, label, tip, on, enabled, grow)` | a 20-px pill button; returns true on click |
 | `uiToggleRow(inp, ui, key, idx, label, v, tip, onWord, offWord)` | a label and an On / Off pill (the knockouts use the words Skip / On) |

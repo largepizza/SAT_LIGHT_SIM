@@ -77,8 +77,8 @@ details are on [Building and releasing](../development/building.md).
    virtual device, and Potato for a non-Apple GPU on macOS. Later launches pre-select the mode you ran last. Pick one with the mouse, the arrow keys
    and Enter, or the d-pad and **A**; the screen waits until you do.
 2. **Loading screen.** A list of start-up steps appears while textures, noise volumes, satellite models and the
-   roster are prepared. A cold start compiles every shader; later launches reuse a pipeline cache and start in a
-   few seconds. If the first frames after loading are very slow (over 250 ms each), the program drops one tier
+   roster are prepared. A cold start compiles every shader; later launches reuse a pipeline cache and reach the
+   sky in about ten seconds on a recent desktop GPU. If the first frames after loading are very slow (over 250 ms each), the program drops one tier
    (Full to Planetarium, Planetarium to Potato) and says so.
 3. **The intro.** A short cinematic plays, set to the first music track, from the California coast at dusk
    looking at the orbital data-centre satellites and the mirrors aimed at a nearby solar farm. Press **Space** (or

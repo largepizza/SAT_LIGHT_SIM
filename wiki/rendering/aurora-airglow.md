@@ -54,8 +54,21 @@ auroral zones.
   from below the shell, inside it, or above it (the ray direction and the eye's position select the near or far
   root, so the march works with the observer flying through the band).
 
-**Variants.** `SKY_LITE` compiles out the green and sodium terms; Planetarium and Potato knock out the red march
-(bit 16); environment probes keep green and sodium but have no red airglow.
+**Variants.** Planetarium and Potato knock out the red march (bit 16); environment probes keep green and sodium
+but have no red airglow. `SKY_LITE` (Planetarium) compiles out the noise-based green and sodium terms and draws the
+green band in closed form instead, with no patchiness: the band's column along the ray, without a march.
+
+- A ray that grazes the shell at tangent height \( h_T \) holds \( 1.813\sqrt{2 r_0 w}\,
+  \exp(-((h_T - 96\,\text{km})/w)^2) \) of it, \( r_0 \) the shell's radius and \( w \) its half-width (1.813 is
+  the integral of \( e^{-u^4} \)).
+- A ray that crosses the shell at local zenith angle \( Z \) holds \( w\sqrt{\pi}/\cos Z \) per crossing: two
+  crossings if it passes under the shell and out again, one if it starts inside the shell.
+- A ray from above the shell that ends on the Earth keeps its crossing only near the limb (faded out as
+  \( \cos Z \) rises from 0.18 to 0.32), so the night disc seen from orbit is not tinted green.
+- The column is capped at the grazing peak and gated by the night at the ray's point nearest the Earth.
+
+From orbit at night this draws the faint green line that marks the Earth's limb; from the ground, a glow low in
+the sky. It costs about 3 KB of SPIR-V in the Planetarium variant.
 
 ## Aurora
 
@@ -112,8 +125,7 @@ therefore mostly the soft volume.
 
 **Coverage** (`auroraCoverage()`): a warped Perlin over azimuth and colatitude, thresholded from 0.2 (quiet)
 toward a storm value, so a quiet night shows patches and a storm fills in. The storm value is -0.6 with arc
-systems off (the oval fills completely) and moves toward -0.35 with "Arc systems" (the shader mixes by the setting
-unclamped, so at the default of 2 the storm threshold is -0.1): with [arc systems](#arc-systems) carrying the
+systems off (the oval fills completely) and rises to -0.1 as "Arc systems" goes to 1: with [arc systems](#arc-systems) carrying the
 storm's structure, coverage alone must not fill the oval into a uniform ring. Its frequencies and drift are the
 "Coverage" sliders. The storm level it reads is derived from Kp (below), plus 0.6 x a substorm's local
 intensity.
@@ -293,8 +305,8 @@ groups the sheets five at a time (`kAurArcGroup`). About 70% of groups are arc s
 long stretches of the oval (a sinusoid in azimuth with 1-2 cycles per turn, thousands of km), with a per-group
 strength; inside a stretch a sheet is about six times the mean. Adjacent groups blend smoothly across their
 boundary. The diffuse volume follows the arc systems at 0.6 of their contrast, since the diffuse aurora is the glow
-around them. "Arc systems" mixes from all sheets alike (0) to the full grouping (1 and above; the weight itself is
-clamped at 1). With arc systems on, a storm's coverage stops short of filling the oval ([Coverage](#the-oval)).
+around them. "Arc systems" mixes from all sheets alike (0) to the full grouping (1); a saved value outside 0-1 is
+clamped on load. With arc systems on, a storm's coverage stops short of filling the oval ([Coverage](#the-oval)).
 
 ### Storm aurora
 
@@ -384,7 +396,7 @@ Atmosphere tab ("Airglow & zodiacal light" and "Aurora" sections); all under `cl
 | Sheet spacing (deg) | `aurora_sheet_spacing_deg` | 0.34 |
 | Crisp sheets (share) | `aurora_sheet_crisp` | 0.77 |
 | Sheet folds | `aurora_sheet_fold` | 1.1 |
-| Arc systems | `aurora_arc_systems` | 2 (slider 0-1; 0 = all sheets alike) |
+| Arc systems | `aurora_arc_systems` | 1 (range 0-1; 0 = all sheets alike) |
 | Storm features (red / magenta) | `aurora_storm_features` | 1.2 |
 | Storm red glow | `aurora_storm_red` | 1.1 |
 | Blue rays (chance) | `aurora_blue_rays` | 0.004 |

@@ -91,7 +91,7 @@ none of its code is in the variant at all.
 | the 64-bin satellite sky-glow loop | 64 iterations with an `acos` on every pixel |
 | flat cloud layers 2-3 (cirrus and high decks); only layers 0-1 | |
 | the cloud target's joint-bilateral read | single bilinear tap |
-| green and sodium airglow in the atmosphere loop | two noise-based coverage masks per step: the dominant cost |
+| green and sodium airglow in the atmosphere loop | two noise-based coverage masks per step: the dominant cost. The green band is drawn instead in closed form, once per pixel: the limb line at night from orbit, a glow low in the sky from the ground ([Aurora and airglow](aurora-airglow.md#airglow)) |
 | city-glow upwelling past the first 3 atmosphere steps | the air density makes later steps negligible |
 | half of the terrain's zenith sky-ambient integration (`N_ZT` 4 → 2) | |
 
@@ -111,8 +111,8 @@ presets. `cmake/CheckSpvSize.cmake` runs after each of the two compiles and fail
 | `sat_sky_lite.frag.spv` (Planetarium) | `SKY_LITE_MAX_BYTES`, 225 KB |
 | `sat_sky_minimal.frag.spv` (Potato) | `SKY_MINIMAL_MAX_BYTES`, 46 KB |
 
-The budgets sit about 10 % above the variants' sizes (about 199 KB and 41 KB). Raise one only with a
-measurement on the target hardware.
+The variants measure about 212 KB and 41 KB, so the Planetarium budget has about 6 % of headroom left and the
+Potato one about 10 %. Raise one only with a measurement on the target hardware.
 
 ### The clouds on the light tiers
 

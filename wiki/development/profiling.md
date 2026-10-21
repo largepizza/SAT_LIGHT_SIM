@@ -82,24 +82,75 @@ FPROF_SCOPE("kessler.sync");   // adds this scope's wall time to the section "ke
 Sections are inclusive (a nested section also counts inside its parent), so read the names as a tree. A call from
 any thread other than the main one is ignored, which makes a scope safe in code a worker also runs.
 `App::drawFrame()` publishes each frame first thing (`fprof::beginFrame()`) and contributes the `app.*` sections
-(`app.wait_fence` is waiting for the GPU; `build_ui`, `record_compute`, `record_draw`, `submit`, `present`);
-`recordDraw()` adds the CPU buckets as `cpu.*`. The cost is a clock read per scope.
+(`app.wait_fence` is waiting for the GPU; `app.build_ui`, `app.record_compute`, `app.record_draw`, `app.submit`,
+`app.present` and the smaller phases between them); `recordDraw()` adds the CPU buckets as `cpu.*`. The cost is a
+clock read per scope.
+
+Two more kinds of section help narrow a slow frame down:
+
+- **`app.other`** is the frame's wall time outside every top-level `app.*` section. `App`'s phases are siblings, so
+  a hitch whose sections sum to far less than its wall time shows its unexplained part here: time spent somewhere
+  nothing is scoped yet.
+- **Splits.** `fprof::markReset()` starts a stopwatch and each `fprof::mark("name")` adds the time since the
+  previous mark to the section `name`. A long function can be cut into consecutive pieces without nesting scopes:
+  `recordCompute()` reports `rc.seg1_pre` through `rc.seg7_flare`, and the debris cascade's sync adds its own
+  `kru.*` splits.
+
+**The harness's own work does not count.** Each frame's statistics and the hitch test use its wall time less the
+section `harnessTick` (the harness writes and syncs a result line for every command, which can take 10 to 15 ms on
+a busy disk; no player pays that). When the two differ, the log line reads `wall N ms, M without the harness`.
 
 A frame longer than the threshold (50 ms; environment variable `SATLIGHTSIM_HITCH_MS`, 0 = off) is logged to
 `satlight_log.txt` as `hitch: wall N ms (frame, warp, sim t): <largest sections>` (at most 400 lines a run) and
-kept in a ring of the last 256 hitches; the last 4096 frames' wall times are kept for statistics. The very first
-frame after load is not reported, since its interval includes initialisation.
+kept in a ring of the last 256 hitches; the last 4096 frames' times are kept for statistics. The very first frame
+after load is not reported, since its interval includes initialisation.
 
-The harness reads them with `hitches` (the wall-time distribution since `hitches clear`: mean, p50, p90, p99, max,
-frames over 50, 100 and 250 ms, and every hitch frame with its largest sections, worst first) and
-`hitches threshold <ms>`. `tools/harness/scripts/hitch_ladder.satcmd` steps through every time rate from 1x to
-1 yr/s right after load.
+The harness reads them with `hitches` (the frame-time distribution since `hitches clear`: mean, p50, p90, p99, max,
+frames over 50, 100 and 250 ms, the sections summed over the hitch frames, and every hitch frame with its largest
+sections, worst first) and `hitches threshold <ms>`. `tools/harness/scripts/hitch_ladder.satcmd` steps through every
+time rate from 1x to 1 yr/s right after load.
+
+### The hitch check
+
+`tools/harness/hitch_check.py` turns the ladder into a pass/fail regression check. It runs the ladder (every rate
+for 180 frames, then `hitches`) in up to four scenarios, one harness launch each:
+
+| Scenario | Starts | Script |
+|---|---|---|
+| A | right after load | `hitch_ladder.satcmd` |
+| B | right after load with a user's `settings.json` (`--settings`, required) | `hitch_ladder.satcmd` |
+| C | in 2031, while the deployment era is still filling | `hitch_ladder_2031.satcmd` |
+| D | day 32 of the debris cascade after the Sun's Fury | `hitch_ladder_cme.satcmd` |
+
+The default is A, C and D. Each rate's p99 and max frame time are checked against
+`tools/harness/hitch_thresholds.json` (looked up as `default`, then the scenario's `all`, then the rate, then the
+scenario's rate), and so are the first frame after load (the max of A's or B's 1x step, `first_frame_max_ms`) and
+the time from launch to the first frame (the log's `boot: Starting` line, `boot_max_ms`).
+
+| Limit | Value |
+|---|---|
+| p99 / max, default | 50 / 75 ms |
+| p99 / max at 1 month/s | 65 / 95 ms |
+| p99 / max at 1 year/s | 75 / 100 ms |
+| p99 / max, scenario B (a user's settings) | 60 / 160 ms |
+| first frame after load | 90 ms |
+| launch to first frame | 18000 ms |
+
+The limits are for an RTX 3070 Ti class GPU at the harness's 1600 x 900; `--scale 1.5` loosens every one of them on
+a slower machine. `--run <folders>` judges finished runs without launching, and `--retries N` reruns a failing
+scenario and keeps the better result. The exit code is 1 when a check fails.
+
+The app must have the GPU to itself: another app on it (another agent's harness run) adds 20 to 100 ms to frames.
+Before each scenario the check waits (up to `--wait-alone`, 1800 s) until no other `SAT_LIGHT_SIM` process runs and
+polls while it runs. A scenario that shared the machine is rerun (`--alone-retries`, 2) and otherwise reported
+**CONTENDED** rather than judged, with exit code 3.
 
 !!! warning "Invariant"
     Put an `FPROF_SCOPE` on anything new that can take more than about a millisecond in a frame. Work that can
-    take longer than a frame's budget belongs on a worker thread or behind a per-frame budget (the launch batch
-    builds, the plume parcels and the debris cascade's mirror all work this way; see
-    [Code architecture](architecture.md#threads)).
+    take longer than a frame's budget belongs on a worker thread or behind a per-frame budget, and one-off work
+    belongs in the load, not the first frame. The launch batch builds (about 8 ms of wall time a frame), the plume
+    parcels, the debris cascade's mirror (3 ms a frame), its reuse-history prune (about 1 ms a frame), the GPU debris
+    pool's growth and the ambience voices all work this way; see [Code architecture](architecture.md#threads).
 
 ## Knockout bits
 
@@ -240,9 +291,10 @@ The first launch after shader changes recompiles pipelines and is slow; never re
 | File | What |
 |---|---|
 | `src/VulkanContext.h/.cpp` | the slot table, `resetTimestamps()`, `writeTimestamp()`, `resolveTimestamps()` |
-| `src/FrameProfile.h` | `FPROF_SCOPE`, `fprof::beginFrame()`, the hitch log and ring |
+| `src/FrameProfile.h` | `FPROF_SCOPE`, `fprof::mark()`, `fprof::beginFrame()`, the hitch log and ring |
 | `src/simulations/SatelliteSim.cpp` | `updateGpuTimingStats()`, `beginCpuFrameTiming()`, the timestamp writes |
 | `src/simulations/SatelliteSimUI.cpp` | `kDebugToggles[]`, the Performance tab (`buildSettingsPerformanceTab()`), `savePerfSnapshot()`, `buildPerfSnapshotJson()`, `startKnockoutSweep()`, `updateKnockoutSweep()` |
 | `src/simulations/SatelliteSimHarness.cpp` | `perf`, `hitches`, `sweep`, `shaders reload`, `knockout` |
 | `tools/perf_analysis/` | `analyze_profile.py`, `live_perf_table.py` |
-| `tools/harness/launch_bench.py`, `tools/harness/scripts/hitch_ladder.satcmd` | launch cost benchmark, hitch ladder |
+| `tools/harness/launch_bench.py`, `tools/harness/scripts/hitch_ladder*.satcmd` | launch cost benchmark, hitch ladders |
+| `tools/harness/hitch_check.py`, `tools/harness/hitch_thresholds.json` | the hitch regression check and its limits |

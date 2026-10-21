@@ -1,8 +1,8 @@
 # Crew and cargo flights
 
 Every station in the roster is visited: crews rotate twice a year and cargo ships resupply them. This page
-covers the visiting programs, how a launch is timed to the station, the spacecraft's rendezvous, docking,
-departure and return, and what happens when a station is lost. The launch scheduler these flights share with
+covers the visiting programs, how a launch is timed to the station, the spacecraft's rendezvous, docking or
+berthing by the station's arm, departure and return, and what happens when a station is lost. The launch scheduler these flights share with
 the constellations is on [Launches](launches.md); the rocket's own flight is on [Rockets](rockets.md); the
 Missions window that lists them is on [Missions](../using/missions.md).
 
@@ -22,6 +22,8 @@ cadence, not a design life: it is not scaled by the Satellite design life settin
 | Progress resupply | Progress MS (cargo) | Soyuz-2.1a, Baikonur | ISS, ROS | 3 |
 | Tianzhou resupply | Tianzhou (cargo) | Long March 7, Wenchang | Tiangong | 2 |
 | Cargo Dragon resupply | Cargo Dragon | Falcon 9 / Crew Dragon | ISS, Haven-2, Axiom, Starlab, Orbital Reef | 2 |
+| Cygnus resupply | Cygnus (cargo, berthed) | Falcon 9 / Cygnus, Cape Canaveral SLC-40 | ISS (Unity nadir) | 1.33 (every 0.75 y) |
+| HTV-X resupply | HTV-X (cargo, berthed) | H3-24W / HTV-X, Tanegashima | ISS (Harmony nadir) | 1 |
 
 A station served by several programs has one schedule plane per program. The first program to match it (its
 crew rotation) owns the station's main plane; every further one gets a plane of its own, appended after all
@@ -37,10 +39,13 @@ others so no other plane's index (and so no batch key or pad priority) moves.
 | `lands` | comes home on land (Soyuz, Shenzhou); otherwise splashes down |
 | `cargo` | no people |
 | `return: "burns"` | destroyed on re-entry (Progress, Tianzhou) |
-| `ports` | the docking-port class it uses: `crew` (default) or `cargo` |
+| `ports` | the port class it uses, matched against the station model's port `use`: `crew` (default), `cargo`, or any other name (`berth_unity`, `berth_harmony`) |
 | `share_crew_ports` | uses the crews' ports between rotations (Cargo Dragon) |
 | `stay_days` | [min, max] time docked |
 | `fast_dock_h` | windows (hours after lift-off) for a fast-track rendezvous, in order of preference |
+| `berth` | the vehicle does not dock: the station's arm captures it and berths it (see [Berthing](#berthing)) |
+| `grapple` | [radius, z]: where its grapple fixture is, radially out from the vehicle's axis and that far below its berthing port (m; default [1.5, 2.5]) |
+| `capture_m` | the capture point's distance from the port along the port's axis (m; default 9) |
 
 The program's `raise_days` is lift-off to docking, and `payload_mass_kg` (when given) sets the booster's
 recovery. Stations declare their ports in their model (`"docking_ports"`: name, position, axis, `use`,
@@ -68,6 +73,10 @@ Both are pure functions of the batch, like every launch.
 
 The spacecraft separates from its upper stage at deployment and from then on is its own selectable,
 followable object; its phases are closed forms of sim time (`crewPos()`).
+
+The spacecraft models' solar wings follow their real designs: Soyuz MS's and Progress's do not turn, their cells
+facing along the vehicle's axis; Shenzhou's and Tianzhou's turn about their span to face the Sun (a child
+attitude group `wings` with a `track` joint, see [Satellite models](../modding/satellite-models.md)).
 
 ```mermaid
 flowchart LR
@@ -125,6 +134,46 @@ Crews alternate between the station's two crew ports. Cargo Dragon's schedule si
 crews' and it takes the crew port the current crew is not using, leaving 3 days before the next crew
 arrives. Progress and Tianzhou take the aft cargo ports.
 
+### Berthing
+
+A vehicle with `"berth": true` (Cygnus, HTV-X) is captured by the station's robotic arm instead of docking. Its
+port is a nadir berthing port (a common berthing mechanism, CBM), so after the arc onto the port's axis it climbs
+the R-bar (the line from the Earth's centre through the station) with holds at 250 m and 30 m, stops at the
+capture point `capture_m` below the port, and free-drifts. The arm grapples it 5 min after it arrives there, moves
+it to 1.5 m from the port in 50 min, and pulls it onto the CBM in 20 min: it is then berthed.
+
+| Leg | Duration |
+|---|---|
+| to 250 m, hold | 25 min, 20 min |
+| to 30 m, hold | 30 min, 15 min |
+| to the capture point | 15 min |
+| free drift; grappled after 5 min | 25 min |
+| on the arm to 1.5 m | 50 min |
+| onto the CBM (the bolts drive) | 20 min |
+
+At departure the arm takes it again, lifts it off the port, carries it back to the release point (the capture
+point) and lets go 5 min after arriving there; the vehicle drifts away and about 7 min after the release burns onto the
+usual departure circle, and later deorbits. Both berthed cargo ships burn up on re-entry. A berthing approach and its
+departure are flown like the docking ones (closed forms of sim time, continuous through every leg).
+
+**The arm** is data: `launches.json` `"station_arms"` gives, per station, its base on the station, the base's
+normal, the shoulder, boom and wrist lengths, the park pose and the side the elbow bends toward (fields on
+[Modding](../modding/index.md#the-launch-catalogue-launchesjson)); the ISS carries Canadarm2 on Destiny's nadir
+side. Its pose is a pure function of sim time: the tip follows a target that is the park pose, a point 0.6 m out
+from the vehicle's fixture along the fixture's normal, or the fixture itself, blended between them by
+smootherstep, so the arm never jumps. The two equal booms solve exactly to the wrist point (a two-link solution,
+the elbow toward the pole). The arm leaves its park 30 min before the vehicle reaches the capture point, holds on
+for an hour after berthing while the bolts drive, then returns; for the departure it comes out 32 min before
+unberthing and parks again 32 min after the release.
+
+The fixture is placed on the vehicle at the program's `grapple` radius and depth, on the side facing the arm's
+base. It is drawn by the spacecraft's model (grapple fixtures on both sides), so the two must agree.
+
+The arm is drawn as three meshes, `rocket_arm_canadarm2_boom` twice and `rocket_arm_canadarm2_wrist`, whenever the
+station is near enough to resolve them. A station with a visiting vehicle near it, or with its arm resolved, is
+drawn even in the Earth's shadow (the GPU lists no satellite there; the CPU adds the station as it does the
+followed satellite), so a vehicle at its port never floats beside an undrawn station.
+
 ### Departure and return
 
 The spacecraft backs out along the axis to 20 m, then 200 m, and departs onto a circle 2 km below the
@@ -158,8 +207,10 @@ down at the Sun's Fury with every other launch (see [Launches](launches.md)).
 
 ## Checking it
 
-Harness: `launch crew [station=] [event=] [lead=] [follow=1]` frames a visit at a chosen event,
-`launch state` lists `crew_vehicles`, `launch check` reports `crew`, `missions state` gives each station's
+Harness: `launch crew [station=] [event=] [lead=] [follow=1]` frames a visit at a chosen event (for berthing
+vehicles also `capture_point`, `capture`, `berth`, `unberth`, `release`, `arm`, `arm_depart`),
+`launch state` lists `crew_vehicles`, `launch check` reports `crew` (and the `berth_*` checks: the arm's tip on
+the fixture at capture, berthed and release, its joint speeds and turn rates, and any reach shortfall), `missions state` gives each station's
 `fate`, and `tools/harness/mission_ops.py` judges every cached visiting flight around each epoch (docking
 times, burn accelerations, turn rates, port conflicts). See [Harness](../development/harness.md).
 
@@ -167,9 +218,9 @@ times, burn accelerations, turn rates, port conflicts). See [Harness](../develop
 
 | File | What |
 |---|---|
-| `data/launches.json` | the crew and cargo programs, crew vehicles (`spacecraft_dock_m`) |
-| `src/simulations/Launches.h/.cpp` | `Program`'s crew fields and their loading |
-| `src/simulations/SatelliteSimLaunches.cpp` | `candidate()` (fast-track pass search, `crewFastD()`), `buildCrew()` (phasing, ports, approach, stay, aborts, return), `crewPos()`, `crewFarPos()`, `crewAttitude()`, `crewFill()`, `crewSync()`, `launchOngoing()` |
+| `data/launches.json` | the crew and cargo programs, crew vehicles (`spacecraft_dock_m`), `station_arms` |
+| `src/simulations/Launches.h/.cpp` | `Program`'s crew fields (incl. `berth`, `grappleR/Z`, `captureM`), `StationArm`, and their loading |
+| `src/simulations/SatelliteSimLaunches.cpp` | `candidate()` (fast-track pass search, `crewFastD()`), `buildCrew()` (phasing, ports, approach, stay, aborts, return), `crewPos()`, `crewFarPos()`, `crewAttitude()`, `crewFill()`, `crewSync()`, `launchOngoing()`; the arm: `armSolve()`, `stationArmPose()`, `berthFixture()`, `berthVisits()`, `launchArmJobs()`, `viewerArmParts()` |
 | `src/simulations/SatModel.cpp` | `docking_ports` |
-| `tools/make_crew_models.py` | the spacecraft models |
+| `tools/make_crew_models.py` | the spacecraft models (incl. Cygnus and HTV-X with their grapple fixtures) and the arm's `rocket_arm_canadarm2_*` |
 | `tools/make_station_models.py` | the stations and their ports |

@@ -90,7 +90,11 @@ hashed priority; its **rank** is the number of rivals with a higher priority. Ra
 Otherwise the launch takes the (rank mod \( n \))-th of the vehicle's pads that reach the plane, counted
 from the pad after its own in the vehicle's site list, and then rank / \( n \) further passes there, each at
 least 90 min later. Because rivals are judged by their candidates rather than their final times there is no
-recursion, and the result is still a pure function of time. Fast-track visiting vehicles keep their pass,
+recursion, and the result is still a pure function of time. The rivals are looked up in per-site, per-day lists
+of candidates (`rivalBucket()`, cached in `LaunchState::rivalIdx`). The batches built in one frame first gather the
+day lists they will need and build each once, in parallel: one list per thread when there are many, a single list
+split over the threads when there are few (at 1 month/s to 1 year/s one list at a busy Starship pad covers about 2000
+planes). Either way a list holds the same entries in the same order. Fast-track visiting vehicles keep their pass,
 since their phasing to the station depends on it.
 
 !!! note

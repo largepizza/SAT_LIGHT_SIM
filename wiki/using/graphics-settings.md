@@ -82,7 +82,9 @@ that way.
   clouds, no aurora, airglow or real waves. It exists for very weak or translated GPUs (old integrated graphics,
   MoltenVK on a 2015 Mac) where the full sky shader is too large to run well.
 - **Planetarium** is the "everything off" tier. It keeps the full shader's look but compiles it without the Milky
-  Way, the satellite sky glow, the upper cloud layers, the aurora's glow on the ground and most of the airglow.
+  Way, the satellite sky glow, the upper cloud layers, the aurora's glow on the ground and the airglow's noisy bands;
+  the green airglow layer is drawn in a simple closed form instead, so the Earth's horizon still shows as a faint
+  green line at night from orbit, and the glow sits low in the sky from the ground.
   The Earth is flat (no relief), there are no volumetric clouds, and the atmosphere uses fewer samples. It is the
   starting tier on integrated GPUs.
 - **Low** is Medium's picture at a 50% render scale: every effect is on, and the clouds, the depth pass and the

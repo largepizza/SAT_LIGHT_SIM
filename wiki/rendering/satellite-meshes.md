@@ -51,7 +51,7 @@ Because the units and BRDF match, summing a render's pixels reproduces the lobe 
 | **Transmission** | light on the far side of a translucent blanket (ISS-style Kapton arrays) leaves this side diffusely, \(T \cdot E \cdot (-n\cdot s)_+\), tinted (amber for Kapton) and, with the solar-cell pattern, only through the gaps between cells |
 | **Earthshine** | diffuse light from the whole lit Earth cap: an order-4 spherical-harmonic fit of the cap's irradiance on a plane, floored by the exact vector value, \(E(n) = \max(\text{SH}(n),\ E\,(n\cdot d)_+)\), the same table the photometry uses; or, with an environment probe, the probe's SH irradiance |
 | **Moonlight** | diffuse, directional, × the Moon's light |
-| **Local lights** | up to 8 point lights per frame: a burning engine (just behind its nozzles), and at night each floodlight of a launch pad (about 2·10⁴ cd, a 40° beam aimed at the pad's centre) and of a landing ship (45° at the deck); diffuse and specular, \(E = I/(r^2 + r_s^2)\), a floodlight soft over its beam's outer 10°, no shadow rays |
+| **Local lights** | up to 8 point lights per frame: a burning engine (just behind its nozzles), and at night each floodlight of a launch pad (about 2·10⁴ cd, a 40° beam aimed at the pad's centre) and of a landing ship (45° at the deck); diffuse and specular, \(E = I/(r^2 + r_s^2)\), a floodlight soft over its beam's outer 10°, no shadow rays; each light is a sphere of radius \(r_s\), so faces turned up to its angular radius past it are still lit |
 | **Reflections** | the reflected ray into the sharp-reflection G-buffer, else an environment probe, else the analytic `earth_env.glsl` fallback (see below) |
 
 **Self-shadowing** follows the photometry's rule: **a primitive never shadows its own surface.** Every part is
@@ -63,7 +63,15 @@ fin as its bounding box. The ray test mirrors `rayHitsOccluder()` in `SatModel.c
 **Local lights.** The lights are chosen on the CPU from the previous frame's launch visuals, the most important to
 what is near the camera first (intensity over distance² + 50²), lifted at night and scaled by the eye's adaptation
 to the engine lights exactly as the light they shed on clouds is (see [Launch visuals](launch-visuals.md)). A
-landing booster, a pad's tower and a ship's deck are lit by them. They are not part of the photometric model, so
+landing booster, a pad's tower and a ship's deck are lit by them. An engine's light (about 10 m behind the
+nozzles) reaches the hull above it only at a grazing angle; as a point it would leave a burning rocket's hull
+black at night, so its diffuse term wraps by the light's angular radius \(\sin\alpha = r_s/\sqrt{r^2+r_s^2}\):
+\((n\cdot l + \sin\alpha)/(1+\sin\alpha)\), clamped to [0, 1].
+
+The lights are culled per instance on the CPU (`meshLightMask()`): a light counts for an instance only if its
+largest irradiance anywhere on the instance's bounding sphere, inside its beam, would display brighter than about
+1/1000 of white at the frame's exposure. The mask rides in the instance record (`trans[1].w`) and the shader loops
+only over its bits, skipping per pixel a light under about 10⁻⁴ of white before its specular lobe. They are not part of the photometric model, so
 they seed no bloom.
 
 **Engine bells.** Parts made of the material named `soot` (the inside of every engine bell in the rocket models)
@@ -169,7 +177,10 @@ Rockets, the payload stacks on an upper stage, fairing halves, launch pads and l
 candidate list. The CPU places them itself, each as a fixed state (position, velocity and body axis, from the
 launch model at the frame's time), in reserved instance slots: up to 6 rockets, 16 pads, 48 stacked satellites and
 8 ships, each drawn once it is about 1.4 px across, plus a slot for the followed transient and one for the
-selection. Rocket models' attitude comes from their body axis rather than an attitude law. See
+selection. A station's robotic arm (Canadarm2 on the ISS) takes 8 more slots: its two booms and wrist are posed in
+the station's frame by the berthing timeline (see [Crew flights](../simulation/crew-flights.md#berthing)) and drawn
+once a boom is about 1.4 px long. A station with its arm resolved, or with a visiting vehicle near it, is placed by
+the CPU as the followed satellite is, so it is drawn in the Earth's shadow too. Rocket models' attitude comes from their body axis rather than an attitude law. See
 [Rockets](../simulation/rockets.md) and [Launches](../simulation/launches.md).
 
 ### The hand-off from sprite to mesh
@@ -248,6 +259,12 @@ The mesh targets are read with `imageLoad`, because `sat_sky.frag` sits at the 1
 | `sat_sky.frag` | radiance and distance | a nearer mesh **is** the pixel's surface: the atmosphere loop stops there and attenuates it, disc gates hide behind it, the cloud composite is skipped where the cloud is farther, and the unified depth includes it |
 | `mesh_bloom.frag` (inside the flare-source pass) | radiance | each quarter-res texel sums its pixels' photometric light × `bloomScale` into the bloom seed, and their Sun-like light × `glareNorm` into the glint alpha |
 | hardware depth | via the sky pass | a sprite at 98 % of its range stays in front of its own mesh |
+
+**Veiling glare over a mesh.** The Sun's glare lobes and corona in `sat_sky.frag` are veiling light (scatter in
+the eye or lens), in front of whatever the Sun is seen past. Over a mesh pixel they are kept while the Sun itself
+is not hidden at its own screen position (the scene depth there is sky), so a backlit station keeps the halo over
+its earthlit side instead of standing out as a cut-out. Terrain and opaque cloud keep the per-pixel gate: a ridge
+or a deck in front of the Sun hides its halo.
 
 Meshes are not drawn under the Potato tier (`sat_sky_minimal.frag` has no composite for them) or with knockout
 bit 2097152.
@@ -353,6 +370,17 @@ rendered offscreen by `recordModelViewer()` (in `recordCompute()`, whenever eith
 - **Display-space terms** in the background and the slot-0 probe (stars, Milky Way, zodiacal light) are divided
   back by the viewer's exposure and gated by the viewer's Sun glare, so a mirror does not show a Milky Way the
   Sun has washed out.
+- **Local lights.** With Live light on a tracked object, the viewer takes the main view's local lights (a burning
+  engine, a pad's or a ship's floods) with the same per-instance mask, so a rocket on its pad at night is lit
+  there as in the scene.
+- **A burning stage** shows its flame: `sat_mesh_marker.frag` draws a glowing capsule from the model's engine exit
+  (`rocketEngineGeom()`) along the body axis, widening 2.2 × and fading toward its end, white-hot at the exit and
+  orange toward the tail, longer and wider in thin air (between 20 and 80 km up); the nozzles glow as in the main
+  view, and the camera's centre moves toward the flame so it is in the frame.
+- **A station's arm** is drawn beside the station in the pose the main view draws (`viewerArmParts()`).
+- **A destroyed or re-entered roster object** shows no model (every group rotation is zeroed, so nothing
+  rasterises): the view shows the sky where it was, labelled "Destroyed <date>" or "Re-entered <date>"
+  (`buildViewerGoneLabel()`); glare and the photometric check are skipped.
 - **Markers** (`sat_mesh_marker.frag`): a fullscreen pass after the model, depth-tested without depth writes.
   Each line pixel takes the line's own depth there, so the model hides the part of a line behind it; the dots
   are always visible unless the Earth hides them. Segments are clipped in clip space (w ≥ 10⁻³, |x|, |y| ≤ 1.5 w)
@@ -412,13 +440,15 @@ settings.
 
 - `src/simulations/SatMeshRenderer.h/.cpp`: the renderer (`recordScene()`, `recordBloom()`,
   `recordReflections()`, `recordViewer()`, `recordViewerGlare()`, `recordCheck()`, `writeShadowAccel()`),
-  `GpuMeshFrame` (with the local lights), `GpuMeshInstance`.
+  `GpuMeshFrame` (with the local lights and the viewer's flame), `GpuMeshInstance`.
 - `src/simulations/SatEnvProbes.h/.cpp`: probes and the viewer background.
 - `src/simulations/SatMesh.h/.cpp`: `buildSatRenderMesh()`.
 - `src/simulations/SatelliteSim.cpp`: `recordMeshScene()`, `renderScheduledEnvProbes()`,
   `nearestRenderedProbe()`, `envActive()`, `recordModelViewer()`, `viewerSyncModel()`;
-  `src/simulations/SatelliteSimLaunches.cpp`: the launch objects' mesh jobs and `meshLightAdd()`; `src/simulations/SatelliteSimUI.cpp`:
-  `updateViewerView()`, the info window and pop-out.
+  `src/simulations/SatelliteSimLaunches.cpp`: the launch objects' mesh jobs, `launchArmJobs()`, `viewerArmParts()`,
+  `meshLightAdd()`, `meshLightMask()`; `src/simulations/SatelliteSimUI.cpp`:
+  `updateViewerView()`, the info window and pop-out, `viewerGoneFate()`, `buildViewerGoneLabel()`;
+  `shaders/sat_sky.frag`: the veiling-glare gate over meshes.
 - `shaders/sat_mesh.vert/.frag`, `shaders/include/sat_mesh_common.glsl`, `shaders/include/earth_env.glsl`,
   `shaders/mesh_bloom.frag`, `shaders/mesh_refl_add.comp`, `shaders/env_probe_sh.comp`,
   `shaders/sat_mesh_bg.frag`, `shaders/sat_mesh_marker.frag`, `shaders/viewer_glare_find.comp`.
