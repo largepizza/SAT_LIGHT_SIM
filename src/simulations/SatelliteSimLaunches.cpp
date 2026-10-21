@@ -153,7 +153,9 @@ enum CrewPhase : int
     CP_TO_250, CP_HOLD_250, CP_TO_30, CP_HOLD_30, CP_TO_CAPTURE, CP_CAPTURE, CP_ARM_BERTH, CP_ARM_INSTALL,
     CP_DOCKED, CP_BERTHED, CP_UNBERTH, CP_RELEASE,
     CP_BACKOUT, CP_DEPART, CP_DRIFT, CP_DEORBIT, CP_ENTRY,
-    CP_DROGUES, CP_MAINS, CP_DOWN, CP_ABORT, CP_ESCAPE, CP_COUNT
+    CP_DROGUES, CP_MAINS, CP_DOWN,
+    CP_GLIDE, CP_FINAL_GLIDE, CP_ROLLOUT, // (2026-10-21c) a runway landing: Dream Chaser
+    CP_ABORT, CP_ESCAPE, CP_COUNT
 };
 const char *const kCrewPhaseNames[CP_COUNT] = {
     "none", "separated", "phasing burn: raising", "phasing orbit", "raising to the station's altitude",
@@ -166,6 +168,7 @@ const char *const kCrewPhaseNames[CP_COUNT] = {
     "docked", "berthed", "unberthed: on the arm to the release point", "released: free drift at the release point",
     "undocked: backing out", "departure", "drifting away, deorbit prep",
     "deorbit burn, falling", "entry (plasma)", "drogue parachutes", "main parachutes", "down",
+    "gliding to the runway", "final approach and flare", "rollout on the runway",
     "the station is lost: rendezvous called off", "the station is lost: emergency undocking"};
 struct LCrewSeg
 {
@@ -222,6 +225,16 @@ struct LCrew
     int abort = 0;
     double tDeath = 1e300;
     double massKg = 7000.0;
+    // A runway landing (2026-10-21c, Dream Chaser; crewRunwayEcef): the entry ends (tGlide, 10 km) over (x0, y0) of
+    // the runway's tangent plane (rwC its centre, unit Earth-fixed; rwE / rwN east / north), moving vx0; it glides
+    // to the touchdown point (pTD, along rwDir at vTD) at tTD, rolls out lRoll to rest at tStop. Heights above the
+    // runway (rwElev).
+    bool runway = false;
+    glm::dvec3 rwC{1, 0, 0}, rwE{0, 1, 0}, rwN{0, 0, 1};
+    glm::dvec2 rwDir{1, 0}, p0{0.0}, v0{0.0}, pTD{0.0};
+    glm::dvec3 rwDv{0.0};
+    bool rwDvOn = false;
+    double rwElev = 0.0, h0 = 10000.0, tGlide = 1e300, Tg = 600.0, tTD = 1e300, tStop = 1e300, vTD = 95.0, lRoll = 2400.0;
 };
 
 // A station arm's pose (2026-10-21; LaunchImpl::stationArmPose), station body frame.
@@ -1311,6 +1324,15 @@ static void buildPlanes(SatelliteSim::LaunchState &L, const std::vector<SatOrbit
             // Sharing the crews' ports: the visits come half a rotation after the crews' (the same cadence).
             if (pg.sharePorts && pl.crewPlane >= 0)
                 pl.phase = std::fmod(cp.phase + 0.5, 1.0);
+            // (2026-10-21c) "alternate_with": half a cadence after that program's visits here (one berthing port).
+            if (!pg.alternateWith.empty())
+                for (size_t q = 0; q < L.planes.size(); ++q)
+                    if (L.planes[q].extra && L.planes[q].constIdx == (uint32_t)c &&
+                        L.cat.programs[(size_t)L.planes[q].prog].name == pg.alternateWith)
+                    {
+                        pl.phase = std::fmod(L.planes[q].phase + 0.5, 1.0);
+                        break;
+                    }
             pl.nb = 1;
             pl.gap = progLifeS(pg, (double)lifeScale);
             pl.inclRad = cp.inclRad;
@@ -4029,7 +4051,13 @@ static glm::dvec3 crewEntryPos(const LCrew &C, double t)
     const double x = C.vEI * kCrewEntryS * (1.0 - std::pow(1.0 - s, 2.5)) / 2.5 + 60.0 * te * s;
     const double h = crewEntryH(C, s);
     const double th = C.thEI + x / (kR + 100000.0); // (the speed at the interface: no jump)
-    return (kR + h) * (std::cos(th) * C.Us + std::sin(th) * C.As);
+    const glm::dvec3 P = (kR + h) * (std::cos(th) * C.Us + std::sin(th) * C.As);
+    if (!C.rwDvOn)
+        return P;
+    // (2026-10-21c) A runway lander ends its entry flying on over the ground (rwDv, Earth-fixed: what its speed over
+    // the ground at the entry's end lacks): T rwDv (s^3 - s^2) is 0 at both ends, its rate 0 at the interface and
+    // rwDv at the end. The capsules' entry ends at ~120 m/s inertial, i.e. drifting west with the Earth's rotation.
+    return ecefToEci(eciToEcef(P, t) + C.rwDv * (kCrewEntryS * (s * s * s - s * s)), t);
 }
 // Under parachutes, dt s after the drogues open at 10 km (the entry ends there falling ~0 m/s): the fall eases up to
 // ~70 m/s, the mains (at 3 km over the ground, C.tMains) ease it down to ~6.5 m/s.
@@ -4043,6 +4071,35 @@ static double crewChuteH(const LCrew &C, double dt)
     const double hM = 10000.0 - vD * (dtM - tau1 * (1.0 - std::exp(-dtM / tau1)));
     const double u = dt - dtM;
     return hM - (vM * u + (vD - vM) * tau2 * (1.0 - std::exp(-u / tau2)));
+}
+// A runway landing (2026-10-21c): Earth-fixed position after the entry. The glide is a cubic Hermite in the runway's
+// tangent plane (from the entry's end, at its speed over the ground, to the touchdown point along the runway) and in
+// height (10 km falling at 0 to the wheels at -1.5 m/s); the rollout decelerates evenly to rest.
+static constexpr double kRunwayAxisH = 2.6; // the model's axis above the runway, on its wheels (m)
+static glm::dvec3 crewRunwayEcef(const LCrew &C, double t, int *phase)
+{
+    glm::dvec2 p;
+    double h;
+    int ph;
+    if (t < C.tTD)
+    {
+        const double s = glm::clamp((t - C.tGlide) / C.Tg, 0.0, 1.0), s2 = s * s, s3 = s2 * s;
+        const double a0 = 2.0 * s3 - 3.0 * s2 + 1.0, b0 = s3 - 2.0 * s2 + s, a1 = -2.0 * s3 + 3.0 * s2, b1 = s3 - s2;
+        p = a0 * C.p0 + b0 * C.Tg * C.v0 + a1 * C.pTD + b1 * C.Tg * (C.vTD * C.rwDir);
+        h = a0 * C.h0 + a1 * kRunwayAxisH + b1 * C.Tg * -1.5;
+        ph = t < C.tTD - 90.0 ? CP_GLIDE : CP_FINAL_GLIDE;
+    }
+    else
+    {
+        const double tau = std::min(t, C.tStop) - C.tTD, a = C.vTD * C.vTD / (2.0 * C.lRoll);
+        p = C.pTD + (C.vTD * tau - 0.5 * a * tau * tau) * C.rwDir;
+        h = kRunwayAxisH;
+        ph = t < C.tStop ? CP_ROLLOUT : CP_DOWN;
+    }
+    if (phase)
+        *phase = ph;
+    const glm::dvec3 u = glm::normalize(kR * C.rwC + p.x * C.rwE + p.y * C.rwN);
+    return u * (kR + C.rwElev + h);
 }
 // The capsule's position (ECI) at t, its phase and whether a burn (thrusters / the deorbit burn) is lit. False before
 // separation and after it is gone.
@@ -4088,6 +4145,10 @@ static bool crewPos(const LCrew &C, double t, glm::dvec3 &P, int *phase = nullpt
         P = crewReturnPos(C, t);
         ph = t < C.tDeorb ? ((C.abort == 1 || C.abort == 2) ? CP_ABORT : CP_DRIFT) : CP_DEORBIT;
         lit = burning(C.tDeorb, C.deorbDur);
+    }
+    else if (C.runway && t >= C.tGlide)
+    {
+        P = ecefToEci(crewRunwayEcef(C, t, &ph), t);
     }
     else if (t < C.tChute)
     {
@@ -4164,6 +4225,8 @@ static glm::dmat3 crewSlerp(const glm::dmat3 &A, const glm::dmat3 &Bm, double w,
 // docked, the heat shield into the flow from the deorbit burn on, upright under the parachutes.
 static glm::dmat3 crewAttitude(const LCrew &C, double t)
 {
+    if (C.runway && t > C.tStop - 2.0 && t < C.tGone)
+        t = C.tStop - 2.0; // (at rest on the runway: as it rolled to a stop)
     glm::dvec3 P, P0, P1;
     if (!crewPos(C, t, P))
         return glm::dmat3(1.0);
@@ -4739,6 +4802,98 @@ static bool buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
         const double lo = glm::degrees(std::atan2(C.chuteEcef.y, C.chuteEcef.x));
         return shoreDistCpu(la, lo); // > 0 at sea
     };
+    if (pg.runway && !C.burns)
+    {
+        // (2026-10-21c) A runway landing (Dream Chaser at the KSC Shuttle Landing Facility): the burn is timed (every
+        // 30 s from 3 h after the departure, for six days) so the entry ends 60-160 km short of the runway, then a
+        // glide to it (crewRunwayEcef). A pure function of the batch, like everything here.
+        C.runway = true;
+        const double la = glm::radians(pg.runwayLat), lo = glm::radians(pg.runwayLon);
+        C.rwC = glm::dvec3(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la));
+        C.rwE = glm::normalize(glm::dvec3(-std::sin(lo), std::cos(lo), 0.0));
+        C.rwN = glm::cross(C.rwC, C.rwE);
+        C.rwElev = pg.runwayElevM;
+        const double hd = glm::radians(pg.runwayHdgDeg);
+        const glm::dvec2 D(std::sin(hd), std::cos(hd));
+        auto plane = [&](const glm::dvec3 &u) {
+            const double c = std::max(glm::dot(u, C.rwC), 1e-3);
+            return glm::dvec2(kR * glm::dot(u, C.rwE) / c, kR * glm::dot(u, C.rwN) / c);
+        };
+        const double t0r = C.tDepEnd + 3.0 * 3600.0;
+        double tBestR = t0r, bestErr = 1e300;
+        bool found = false;
+        // err of a burn at tc: the entry's end 110 km short of the runway, heading for it (its speed over the ground
+        // pointing within 75 deg of it); far ones are skipped cheaply.
+        auto evalAt = [&](double tc, bool &hit) {
+            hit = false;
+            planReturn(tc);
+            const double d = kR * std::acos(glm::clamp(glm::dot(C.chuteEcef, C.rwC), -1.0, 1.0));
+            if (d > 1.0e6)
+                return 1e300;
+            const glm::dvec3 Pi1 = crewEntryPos(C, C.tChute), Pi0 = crewEntryPos(C, C.tChute - 1.0);
+            const glm::dvec3 E1 = eciToEcef(Pi1, C.tChute);
+            const glm::dvec2 q1 = plane(glm::normalize(E1));
+            // the direction it flies on over the ground: its inertial track, turned into the Earth's frame
+            const glm::dvec2 v = plane(glm::normalize(E1 + eciToEcef(Pi1 - Pi0, C.tChute) * 1000.0)) - q1;
+            const bool toward = glm::length(v) > 1.0 && glm::dot(v, -q1) > 0.25 * glm::length(v) * glm::length(q1);
+            hit = toward && d > 60000.0 && d < 160000.0;
+            return std::abs(d - 110000.0) + (toward ? 0.0 : 400000.0);
+        };
+        // Coarse steps of 30 s (the entry's end moves ~230 km a step), each pass near the runway refined at 3 s.
+        for (int j = 0; j < 17280 && !found; ++j)
+        {
+            const double tc = t0r + 30.0 * j;
+            bool hit = false;
+            const double err = evalAt(tc, hit);
+            if (err > 0.9e300)
+                continue;
+            for (int r = -10; r <= 10 && !found; ++r)
+            {
+                const double tr = tc + 3.0 * r;
+                const double er = evalAt(tr, hit);
+                if (er < bestErr)
+                {
+                    bestErr = er;
+                    tBestR = tr;
+                }
+                found = hit;
+            }
+        }
+        planReturn(tBestR);
+        C.tGlide = C.tChute; // (the entry's end, 10 km)
+        {
+            // Its speed over the ground at the entry's end: 180 m/s along its track (rwDv makes up the difference).
+            const glm::dvec3 Pi1 = crewEntryPos(C, C.tGlide), Pi0 = crewEntryPos(C, C.tGlide - 0.5);
+            const glm::dvec3 E1 = eciToEcef(Pi1, C.tGlide), E0 = eciToEcef(Pi0, C.tGlide - 0.5);
+            const glm::dvec3 up = glm::normalize(E1);
+            glm::dvec3 dir = eciToEcef(Pi1 - Pi0, C.tGlide);
+            dir = glm::normalize(dir - glm::dot(dir, up) * up);
+            const glm::dvec3 vNow = (E1 - E0) / 0.5;
+            C.rwDv = 180.0 * dir - (vNow - glm::dot(vNow, up) * up);
+            C.rwDvOn = true;
+        }
+        {
+            const glm::dvec3 E1 = eciToEcef(crewEntryPos(C, C.tGlide), C.tGlide);
+            const glm::dvec3 E0 = eciToEcef(crewEntryPos(C, C.tGlide - 0.5), C.tGlide - 0.5);
+            C.p0 = plane(glm::normalize(E1));
+            C.v0 = (C.p0 - plane(glm::normalize(E0))) / 0.5;
+            C.h0 = glm::length(E1) - kR - C.rwElev;
+        }
+        // Land along the runway the glide arrives from (its approach end nearer the entry's end).
+        C.rwDir = glm::dot(C.p0, D) < 0.0 ? D : -D;
+        C.pTD = -C.rwDir * (0.5 * pg.runwayLenM - 450.0);
+        const double dist = glm::length(C.pTD - C.p0);
+        C.Tg = std::max(300.0, dist / 115.0);
+        C.tTD = C.tGlide + C.Tg;
+        C.lRoll = std::min(2400.0, pg.runwayLenM - 900.0);
+        C.tStop = C.tTD + 2.0 * C.lRoll / C.vTD;
+        C.tChute = C.tMains = 1e300;
+        C.tSplash = C.tTD;
+        C.lands = true;
+        C.groundM = C.rwElev;
+        C.tGone = C.tStop + 2400.0; // towed off the runway
+        return true;
+    }
     const bool wantLand = pg.crewLands && !C.burns;
     const double t0 = C.tDepEnd + (C.abort ? 1.5 : 3.0) * 3600.0;
     double tBest = t0 + 7200.0 * h01(B.seed, 42, 1);
@@ -5172,9 +5327,11 @@ static void applyBuildJob(SatelliteSim &sim, SatelliteSim::LaunchState &L, doubl
     SatelliteSim::LaunchState::BuildJob &J = *L.job;
     const size_t d = J.done.load(std::memory_order_acquire);
     const auto a0 = std::chrono::steady_clock::now();
+    if (J.applied == 0 && d > 0)
+        L.batches.reserve(L.batches.size() + J.items.size()); // (one rehash for the job, not several mid-apply)
     while (J.applied < d)
     {
-        const size_t e = std::min(d, J.applied + 256);
+        const size_t e = std::min(d, J.applied + 16); // (2026-10-21c: 256 a look at the clock overran to 9-14 ms at 1 yr/s)
         for (; J.applied < e; ++J.applied)
         {
             const ToBuild &it = J.items[J.applied];
@@ -5662,14 +5819,23 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
     {
         FPROF_SCOPE("launch.fullFree");
         L.lastFullFreeT = t;
+        // (2026-10-21c) The batches dropped are freed on a detached thread (their vectors: members, chunks, the crew's
+        // legs): at 1 yr/s this pass runs every frame and the destructors were ~3-4 ms of it.
+        std::vector<std::remove_reference_t<decltype(L.batches)>::node_type> dead;
         for (auto it = L.batches.begin(); it != L.batches.end();)
         {
             const LBatch &B = it->second;
             if (B.touched + 600 < L.frame && B.inWalk != L.walkFrame && B.chunks[0].empty() && B.chunks[1].empty())
-                it = L.batches.erase(it);
+            {
+                auto nx = std::next(it);
+                dead.push_back(L.batches.extract(it));
+                it = nx;
+            }
             else
                 ++it;
         }
+        if (dead.size() > 64)
+            std::thread([d = std::move(dead)]() mutable { d.clear(); }).detach();
     }
     L.profAdd(2, pt);
     // Writes: members coming up first, then the stalest. A record is rewritten every ~20 s of sim time (the GPU
@@ -6159,6 +6325,23 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 ++L.nReentries;
             }
             continue;
+        }
+        // (2026-10-21c) A runway lander's jettisoned cargo module (Dream Chaser's Shooting Star) burns up a little
+        // behind it: its fireball from the entry interface (the same ellipse, 25 s later).
+        if (C.runway && C.abort != 4 && t >= C.tEI + 25.0 && t < C.tEI + 225.0)
+        {
+            const glm::dvec3 P1 = LaunchImpl::crewEntryPos(C, C.tEI), P0 = LaunchImpl::crewReturnPos(C, C.tEI - 2.0);
+            const glm::dvec3 U0 = glm::normalize(P1);
+            if (glm::length(kR * U0 - eye) < 3.0e6 || transientWanted(9, key))
+            {
+                glm::dvec3 A = (P1 - P0) - glm::dot(P1 - P0, U0) * U0;
+                A = glm::length(A) > 1.0 ? glm::normalize(A) : C.As;
+                const double mMod = 3500.0; // Shooting Star with its trash (~3.5 t)
+                const double m0 = -4.0 - 2.5 * std::log10(mMod / 100.0);
+                fbDrawReentry(U0, A, m0, (int)std::clamp(3.0 + 40.0 * std::sqrt(mMod / 2500.0), 3.0, 80.0),
+                              B.seed ^ 0x5C0071Aull, t - C.tEI - 25.0, out, n, toSky, pixFull, 9, key);
+                ++L.nReentries;
+            }
         }
         glm::dvec3 P;
         int ph = 0;
@@ -8215,7 +8398,8 @@ nlohmann::json SatelliteSim::launchCheckJson() const
                     bAccAt = kCrewPhaseNames[ph];
                 }
                 // (2026-10-21) in space (burns, the approach) apart from the entry and the parachutes
-                const bool inAir = ph == CP_ENTRY || ph == CP_DROGUES || ph == CP_MAINS || ph == CP_DOWN;
+                const bool inAir = ph == CP_ENTRY || ph == CP_DROGUES || ph == CP_MAINS || ph == CP_DOWN || ph == CP_GLIDE ||
+                                   ph == CP_FINAL_GLIDE || ph == CP_ROLLOUT;
                 if (!inAir)
                     bBurn = std::max(bBurn, acc);
                 if (!inAir && acc > burnAccMax)
@@ -8904,6 +9088,12 @@ bool SatelliteSim::launchGoToCrew(const std::string &station, const std::string 
         if (ev == "abort") return C.abort ? std::min(C.tDeath, C.tGone) : 1e300;
         if (ev == "chutes") return C.tChute;
         if (ev == "splash") return C.tSplash;
+        // (2026-10-21c) a runway landing: the cargo module's jettison, the glide, touchdown, wheels stop
+        if (ev == "jettison") return C.runway ? C.tCm : 1e300;
+        if (ev == "glide") return C.runway ? C.tGlide : 1e300;
+        if (ev == "final") return C.runway ? C.tTD - 90.0 : 1e300;
+        if (ev == "touchdown") return C.runway ? C.tTD : 1e300;
+        if (ev == "stop") return C.runway ? C.tStop : 1e300;
         ok = false;
         return 0.0;
     };
@@ -8937,7 +9127,7 @@ bool SatelliteSim::launchGoToCrew(const std::string &station, const std::string 
             if (!ok)
             {
                 msg = "unknown event '" + event + "' (launch sep phasing arrive axis hold400 hold200 hold20 dock undock capture_point capture berth unberth release arm arm_depart "
-                                                  "depart deorbit entry chutes splash abort)";
+                                                  "depart deorbit entry chutes splash abort jettison glide final touchdown stop)";
                 return false;
             }
             if (te < 1e299 && te - leadS >= t0 - 1.0 && te < bestT)
@@ -12578,6 +12768,15 @@ void SatelliteSim::missionBatchMilestones(const LBatch &B, std::vector<MissionMi
             {
                 add(C.tEI, P, "Entry interface (100 km): breaks up and burns");
             }
+            else if (C.runway)
+            {
+                add(C.tCm, P, "Cargo module jettisoned (it burns up)");
+                add(C.tEI, P, "Entry interface (100 km)");
+                add(C.tGlide, P, "Entry ends: gliding to the runway");
+                add(C.tTD - 90.0, P, "Final approach");
+                add(C.tTD, P, "Touchdown");
+                add(C.tStop, P, "Wheels stop");
+            }
             else
             {
                 add(C.tCm, P, pg.crewModel.find("dragon") != std::string::npos ? "Trunk jettison" : "Modules separate for the entry");
@@ -14412,6 +14611,29 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
             q["abort"] = C.abort;
             if (C.burns)
                 q["reentry_h_after_undock"] = (C.tEI - C.tUndock) / 3600.0;
+            if (C.runway)
+            {
+                // (2026-10-21c) the runway landing: the glide's start, the touchdown on the centreline and the rollout
+                nlohmann::json rw;
+                const glm::dvec3 Eg = LaunchImpl::crewRunwayEcef(C, C.tGlide, nullptr);
+                const glm::dvec3 Ee = eciToEcef(LaunchImpl::crewEntryPos(C, C.tGlide), C.tGlide);
+                rw["glide_start_jump_m"] = glm::length(Eg - Ee);
+                rw["glide_km"] = glm::length(C.pTD - C.p0) / 1000.0;
+                rw["glide_s"] = C.Tg;
+                const glm::dvec3 Ta = LaunchImpl::crewRunwayEcef(C, C.tTD - 0.5, nullptr),
+                                 Tb = LaunchImpl::crewRunwayEcef(C, C.tTD + 0.5, nullptr);
+                rw["touchdown_speed_mps"] = glm::length(Tb - Ta);
+                rw["touchdown_sink_mps"] = glm::length(Ta) - glm::length(Tb);
+                const glm::dvec3 Td = LaunchImpl::crewRunwayEcef(C, C.tTD, nullptr);
+                const glm::dvec3 u = glm::normalize(Td);
+                const glm::dvec2 pp(kR * glm::dot(u, C.rwE) / glm::dot(u, C.rwC), kR * glm::dot(u, C.rwN) / glm::dot(u, C.rwC));
+                rw["touchdown_off_centreline_m"] = std::abs(pp.x * C.rwDir.y - pp.y * C.rwDir.x);
+                rw["touchdown_height_m"] = glm::length(Td) - kR - C.rwElev;
+                rw["rollout_m"] = C.lRoll;
+                rw["landing_heading_deg"] = std::fmod(glm::degrees(std::atan2(C.rwDir.x, C.rwDir.y)) + 360.0, 360.0);
+                rw["deorbit_h_after_undock"] = (C.tDeorb - C.tUndock) / 3600.0;
+                q["runway"] = rw;
+            }
             if (C.fast)
                 q["fast_hours"] = (C.tDock - B.tL) / 3600.0;
             // The port it docks at is free for its stay: every other visit to the station (crews and cargo, each plane's
@@ -14459,7 +14681,8 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
                     int phx = 0;
                     glm::dvec3 tmp;
                     LaunchImpl::crewPos(C, e + d, tmp, &phx);
-                    if (!(phx == CP_ENTRY || phx == CP_DROGUES || phx == CP_MAINS || phx == CP_DOWN))
+                    if (!(phx == CP_ENTRY || phx == CP_DROGUES || phx == CP_MAINS || phx == CP_DOWN || phx == CP_GLIDE ||
+                          phx == CP_FINAL_GLIDE || phx == CP_ROLLOUT))
                         burnAcc = std::max(burnAcc, glm::length(a - 2.0 * b0 + c0));
                     const glm::dmat3 Dm = glm::transpose(LaunchImpl::crewAttitude(C, e + d)) * LaunchImpl::crewAttitude(C, e + d + 1.0);
                     turn = std::max(turn, glm::degrees(std::acos(std::clamp((Dm[0][0] + Dm[1][1] + Dm[2][2] - 1.0) * 0.5, -1.0, 1.0))));

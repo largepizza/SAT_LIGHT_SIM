@@ -538,6 +538,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     FPROF_SCOPE("kesslerRestart");
     launchJoinBuildJob(); // (the background launch build reads the roster: satOrbits is resized below)
     kesslerRestartPoll(true); // one still building: finished (and replaced) first
+    kRestartQueue.clear();    // (their events are in userEvents: this world has them)
     std::vector<kessler::Event> keptEngine;
     // The world starts at the CME, or at the step of the player's first breakup before it (2026-10-19).
     double startT = kFuryArriveT;
@@ -602,7 +603,9 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     }
     kPoolGpu = 0;
     kDirtyPool.clear();
+    kDirtyPoolHead = 0;
     kDirtyRoster.clear();
+    kDirtyRosterSorted = 0;
     kRosterFullUpload = true;
     kFrontier = startT;
     kWorldStart = startT;
@@ -771,6 +774,21 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
     }
     if (kesslerRestartPoll(false)) // a breakup's world still building on its thread (time holds meanwhile)
         return;
+    if (!kRestartQueue.empty())
+    {
+        // (2026-10-21c) Breakups clicked while that world was building (they waited ~150 ms on the main thread for it):
+        // now that it is in, each is applied as if clicked now - in place where it can be, else one more rebuild with
+        // every player event in it (kUserEvents holds them all).
+        FPROF_SCOPE("kessler.queuedBreakups");
+        std::vector<kessler::Event> q;
+        q.swap(kRestartQueue);
+        for (const kessler::Event &ev : q)
+            if (!kesslerBreakupInPlace(ev))
+            {
+                kesslerRestart(ctx, kUserEvents, ev.t, ev.t, true);
+                return;
+            }
+    }
     if (!kWorker)
         return;
     kWorker->simNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -823,6 +841,7 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
     {
         if (kShownSec != INT32_MIN)
         {
+            FPROF_SCOPE("kessler.showGens");
             const int32_t lo = std::min(kShownSec, nowSec), hi = std::max(kShownSec, nowSec);
             for (auto it = kGenBounds.upper_bound(lo); it != kGenBounds.end() && it->first <= hi; ++it)
                 kesslerShowGen(it->second, nowSec);
@@ -1241,7 +1260,9 @@ void SatelliteSim::kesslerUploadAllSync(VulkanContext &ctx)
 {
     kPoolGpu = 0;
     kDirtyPool.clear();
+    kDirtyPoolHead = 0;
     kDirtyRoster.clear();
+    kDirtyRosterSorted = 0;
     kRosterFullUpload = false;
     if (kRosterWords.size() < 2ull * activeSatCount)
         kRosterWords.resize(2ull * activeSatCount, kessler::kNever);
@@ -1325,17 +1346,36 @@ void SatelliteSim::kesslerPreallocDrop(VkDevice device, bool retire)
 // them) has finished, i.e. from the next frame on (one frame in flight; this runs after the frame's fence wait).
 void SatelliteSim::kesslerRetireTick(VkDevice device, bool all)
 {
+    FPROF_SCOPE("kessler.retire");
     ++kRetireFrame;
+    // (2026-10-21c) Freed on a thread: vkFreeMemory of the old pool's ~140-550 MB took 10-25 ms of the frame two frames
+    // after each growth (1 yr/s after the CME). The buffers are no longer used by any command buffer; freeing other
+    // objects from another thread is allowed (only the objects themselves need external synchronisation).
+    std::vector<KRetired> due;
     for (size_t i = 0; i < kRetired.size();)
         if (all || kRetired[i].frame + 1 < kRetireFrame)
         {
-            vkDestroyBuffer(device, kRetired[i].buf, nullptr);
-            vkFreeMemory(device, kRetired[i].mem, nullptr);
+            due.push_back(kRetired[i]);
             kRetired[i] = kRetired.back();
             kRetired.pop_back();
         }
         else
             ++i;
+    if (kRetireThread.joinable() && (all || !due.empty()))
+        kRetireThread.join();
+    if (due.empty())
+        return;
+    auto freeAll = [device, due = std::move(due)]() {
+        for (const KRetired &r : due)
+        {
+            vkDestroyBuffer(device, r.buf, nullptr);
+            vkFreeMemory(device, r.mem, nullptr);
+        }
+    };
+    if (all)
+        freeAll();
+    else
+        kRetireThread = std::thread(std::move(freeAll));
 }
 
 void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
@@ -1368,7 +1408,7 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
         kRosterFullUpload = false;
     }
     const size_t newRecs = kPool.size() > kPoolGpu ? kPool.size() - kPoolGpu : 0;
-    if (newRecs == 0 && kDirtyPool.empty() && kDirtyRoster.empty())
+    if (newRecs == 0 && kDirtyPoolHead >= kDirtyPool.size() && kDirtyRoster.empty())
         return;
     char *stage = static_cast<char *>(kStageMapped);
     VkDeviceSize off = 0;
@@ -1376,9 +1416,18 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
     fprof::mark("rc.seg2a_kessler_sync"); // (a split: since the previous mark, recordCompute)
     // Roster dead / end seconds: runs of consecutive satellites, a quarter of the staging a frame (a long run,
     // e.g. the whole roster after a restart, goes up in pieces over several frames).
-    if (!std::is_sorted(kDirtyRoster.begin(), kDirtyRoster.end()))
-        std::sort(kDirtyRoster.begin(), kDirtyRoster.end());
-    kDirtyRoster.erase(std::unique(kDirtyRoster.begin(), kDirtyRoster.end()), kDirtyRoster.end());
+    // (2026-10-21c) Only the entries added since the last frame are sorted, then merged into the sorted backlog (a
+    // full sort of a backlog of up to the whole roster every frame).
+    if (kDirtyRosterSorted > kDirtyRoster.size())
+        kDirtyRosterSorted = 0;
+    if (kDirtyRosterSorted < kDirtyRoster.size())
+    {
+        auto mid = kDirtyRoster.begin() + (ptrdiff_t)kDirtyRosterSorted;
+        if (!std::is_sorted(mid, kDirtyRoster.end()))
+            std::sort(mid, kDirtyRoster.end());
+        std::inplace_merge(kDirtyRoster.begin(), mid, kDirtyRoster.end());
+        kDirtyRoster.erase(std::unique(kDirtyRoster.begin(), kDirtyRoster.end()), kDirtyRoster.end());
+    }
     size_t takenRoster = 0;
     const VkDeviceSize rosterBudget = kStageBytes / 4;
     for (size_t k = 0; k < kDirtyRoster.size();)
@@ -1400,6 +1449,7 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
             break; // the budget ran out inside this run
     }
     kDirtyRoster.erase(kDirtyRoster.begin(), kDirtyRoster.begin() + (ptrdiff_t)takenRoster);
+    kDirtyRosterSorted = kDirtyRoster.size();
     // A record as the GPU reads it, its phases at the CURRENT orbit epoch (as sat_rebake.comp would make them).
     const double T = (double)orbitEpochDay * 86400.0 + orbitEpochSec;
     auto gpuRec = [&](uint32_t j) {
@@ -1428,19 +1478,39 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
         return g;
     };
     fprof::mark("kru.roster");
-    // Deaths of records already up.
-    std::sort(kDirtyPool.begin(), kDirtyPool.end());
-    kDirtyPool.erase(std::unique(kDirtyPool.begin(), kDirtyPool.end()), kDirtyPool.end());
-    size_t takenPool = 0;
-    for (; takenPool < kDirtyPool.size() && off + 64 <= kStageBytes / 2; ++takenPool)
+    // Deaths (and shown-generation changes) of records already up. (2026-10-21c) In arrival order from a head index,
+    // at most kDeathsPerFrame and ~2 ms a frame: it sorted the whole backlog and re-sent up to 131k records (each a
+    // few fmods and a sin / cos), 6-16 ms frames at 1 yr/s after the CME. Unsorted, a slot dirtied twice is sent twice
+    // (the same latest record): harmless. The GPU shows a death a few frames late at most; the CPU mirror (and so
+    // everything counted) is not affected.
     {
-        const uint32_t j = kDirtyPool[takenPool];
-        const GpuKepOrbit g = gpuRec(j);
-        memcpy(stage + off, &g, 64);
-        toK.push_back({off, 4ull * kPoolWord0 + 64ull * j, 64});
-        off += 64;
+        constexpr size_t kDeathsPerFrame = 24576;
+        const auto d0 = std::chrono::steady_clock::now();
+        size_t sent = 0;
+        while (kDirtyPoolHead < kDirtyPool.size() && sent < kDeathsPerFrame && off + 64 <= kStageBytes / 2)
+        {
+            const uint32_t j = kDirtyPool[kDirtyPoolHead++];
+            if (j >= kPoolGpu)
+                continue;
+            const GpuKepOrbit g = gpuRec(j);
+            memcpy(stage + off, &g, 64);
+            toK.push_back({off, 4ull * kPoolWord0 + 64ull * j, 64});
+            off += 64;
+            if ((++sent & 1023u) == 0u &&
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - d0).count() > 2.0)
+                break;
+        }
+        if (kDirtyPoolHead >= kDirtyPool.size())
+        {
+            kDirtyPool.clear();
+            kDirtyPoolHead = 0;
+        }
+        else if (kDirtyPoolHead > 65536 && kDirtyPoolHead * 2 > kDirtyPool.size())
+        {
+            kDirtyPool.erase(kDirtyPool.begin(), kDirtyPool.begin() + (ptrdiff_t)kDirtyPoolHead);
+            kDirtyPoolHead = 0;
+        }
     }
-    kDirtyPool.erase(kDirtyPool.begin(), kDirtyPool.begin() + (ptrdiff_t)takenPool);
     fprof::mark("kru.deaths");
     // New records (and their J2000 phases), as many as the staging holds.
     // At most 16k new records a frame (~1 ms): building one costs a few fmods and a sin / cos.
@@ -1467,8 +1537,8 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
         toB.push_back({baseOff, 16ull * kPoolGpu, 16ull * n});
         kPoolGpu += (uint32_t)n;
     }
-    if (!toK.empty())
     fprof::mark("kru.new");
+    if (!toK.empty())
         vkCmdCopyBuffer(cmd, kStageBuf, kesslerBuf, (uint32_t)toK.size(), toK.data());
     if (!toB.empty())
         vkCmdCopyBuffer(cmd, kStageBuf, kPoolBaseBuf, (uint32_t)toB.size(), toB.data());
@@ -1525,6 +1595,16 @@ bool SatelliteSim::kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, 
     if (ev.a == kessler::kNoRef || (kind == kessler::EV_COLLISION && ev.b == kessler::kNoRef))
         return no("no such satellite");
     kUserEvents.push_back(ev);
+    if (kRestartBusy)
+    {
+        // (2026-10-21c) A rebuild is still running on its thread: queued, applied when it is in (kesslerSync). Joining
+        // it here held the click frame ~150 ms.
+        kRestartQueue.push_back(ev);
+        kLastBreakupMs = 0.0;
+        kLastBreakupFast = false;
+        Log::line("kessler: player breakup queued behind the rebuild in progress");
+        return true;
+    }
     const auto c0 = std::chrono::steady_clock::now();
     const bool fast = !kForceRebuildOnce && kesslerBreakupInPlace(ev);
     kForceRebuildOnce = false;
@@ -2857,6 +2937,7 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
     j["last_breakup_ms"] = kLastBreakupMs;
     j["last_breakup_in_place"] = kLastBreakupFast;
     j["restart_building"] = kRestartBusy; // (2026-10-21) a breakup's world building on its own thread (time holds)
+    j["restart_queued"] = (int)kRestartQueue.size(); // (2026-10-21c) breakups waiting for that world
     j["time_held"] = !kesslerStatusLine().empty();
     j["records"] = kPool.size();
     j["records_gpu"] = kPoolGpu;

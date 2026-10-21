@@ -56,6 +56,7 @@ REFS = {
     "htvx": ["JAXA HTV-X: ~8 m long, 4.4 m across; pressurized module forward with the CBM, service module aft "
              "carrying deployable solar wings; berthed by Canadarm2 at Harmony nadir; ~16 t at launch, 4+ t cargo; "
              "destroyed on re-entry"],
+    "dreamchaser": rm.DREAMCHASER_REFS,
     "gaganyaan": ["ISRO / Wikipedia 'Gaganyaan': crew module ~3.1 m tall, ~3.5 m across; service module ~2.9 m, "
                   "3.9 m across, with deployable solar panels; parachutes: three mains"],
 }
@@ -72,6 +73,9 @@ NOTES = {
               "and its two round UltraFlex arrays.",
     "htvx": "HTV-X in orbit: the pressurized module (CBM forward, grapple fixtures on both sides), the service module "
             "and its two wings of three panels.",
+    "dreamchaser": "Dream Chaser in orbit: the spaceplane (nose -Z, belly tiles -Y, wings deployed) with the Shooting Star "
+                   "cargo module on its aft end (arrays out, grapple fixtures on both sides, the CBM on top: berthed by "
+                   "the station's arm). The _cm model is the spaceplane alone (the module jettisoned before the deorbit).",
     "gaganyaan": "Gaganyaan in orbit: a docking port on the crew module's apex (an estimate: Gaganyaan G1 has none; "
                  "the scenario's Bharatiya crews dock), service module and two wings.",
 }
@@ -231,6 +235,17 @@ def htvx(b):
 
 
 CARGO = ("progress", "tianzhou", "cygnus", "htvx")
+RUNWAY = ("dreamchaser",)  # (2026-10-21c) cargo, but it comes home on a runway: an in-orbit and a "_cm" model
+
+
+def dreamchaser(b, cm_only=False):
+    """Dream Chaser + Shooting Star from the spaceplane's nose at z = 0; returns the CBM's contact plane. cm_only: the
+    spaceplane alone (the same origin: the full vehicle's port)."""
+    if cm_only:
+        return rm.dreamchaser_body(b, 0.0, folded=False, module=False)
+    top = rm.dreamchaser_body(b, 0.0, folded=False, module=True)
+    grapple_fixtures(b, 1.55, top + 0.35 - 2.2)
+    return cbm(b, top)
 
 
 def body(b, kind, cm_only=False):
@@ -246,6 +261,8 @@ def body(b, kind, cm_only=False):
         return cygnus(b)
     if kind == "htvx":
         return htvx(b)
+    if kind == "dreamchaser":
+        return dreamchaser(b, cm_only=cm_only)
     return soyuz_like(b, kind, cm_only=cm_only)
 
 
@@ -361,9 +378,10 @@ def model(kind, variant, comps):
     used = sorted({c["material"] for c in comps} | {c.get("arc_material") for c in comps if c.get("arc_material")} |
                   {c.get("inner_material") for c in comps if c.get("inner_material")})
     mats = [m for m in rm.MATERIALS if m["name"] in used]
-    part = {"": "in orbit", "cm": "the crew / descent module alone (entry)",
+    part = {"": "in orbit", "cm": ("the spaceplane alone (entry, glide and landing)" if kind in RUNWAY
+                                   else "the crew / descent module alone (entry)"),
             "chute": "the descent module under its main parachutes"}[variant]
-    what = "Cargo ship" if kind in CARGO else "Crew spacecraft"
+    what = "Cargo ship" if kind in CARGO + RUNWAY else "Crew spacecraft"
     return {
         "name": "%s %s" % (kind, part),
         "note": ("%s render model (tools/make_crew_models.py), %s. %s Body frame: +Z out of the docking "
@@ -460,8 +478,8 @@ def write_arm():
 
 def main():
     n = 0
-    for kind in ("dragon", "shenzhou", "soyuz", "gaganyaan") + CARGO:
-        for variant in (("",) if kind in CARGO else ("", "cm", "chute")):
+    for kind in ("dragon", "shenzhou", "soyuz", "gaganyaan") + CARGO + RUNWAY:
+        for variant in (("",) if kind in CARGO else ("", "cm") if kind in RUNWAY else ("", "cm", "chute")):
             comps = build(kind, variant)
             name = "rocket_capsule_%s%s.json" % (kind, "_" + variant if variant else "")
             with open(os.path.join(OUT, name), "w", encoding="utf-8") as f:

@@ -33,6 +33,7 @@ capture cyg_7_release_point
 time add 900
 wait 30
 capture cyg_8_departing
+time set 2036-12-01T00:00:00Z  # (back before the HTV-X visit: the Cygnus part ends past it)
 launch crew craft=htv event=capture lead=200 follow=1
 follow offset=-30,-45,-12 aim=sat
 wait 40

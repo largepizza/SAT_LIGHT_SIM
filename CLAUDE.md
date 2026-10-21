@@ -4442,7 +4442,13 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
     (`launchInitBlock(keepPlanes)`: they read only the roster and the catalog; the batches go, freed on a detached
     thread); the worker's idle wait is a condition variable (`KesslerWorker::cv`: its 30-ms sleep made `stopThread`
     take up to ~50 ms). Click frame: 69-79 ms of `kesslerRestart` + the next frame's ~75 ms plane rebuild -> 13 ms;
-    the world is installed ~150 ms later. Harness `kessler state` -> `restart_building`.
+    the world is installed ~150 ms later. Harness `kessler state` -> `restart_building`. **A breakup clicked while that
+    world is building is QUEUED** (2026-10-21c, `kRestartQueue`): its event goes into `kUserEvents` at once (the seed
+    keeps its index), and when the world is in (`kesslerSync`, after `kesslerRestartPoll`) each queued breakup is
+    applied as if clicked then — in place (`kesslerBreakupInPlace`), else one more async rebuild with every player
+    event. It used to join the running build on the main thread (171 ms for the second of two clicks, now 0). Same
+    world: `kessler state` counts identical to the joining build (two breakups before the CME, counts at day 9).
+    `restart_queued` in `kessler state`.
   - **Time keeps running**: sim time may lead the frontier by ~2 s of the current warp (at most one step) before it
     holds (SatelliteSim.cpp; the banner only while actually held): events published a moment late appear then.
 - **Cache**: the engine's events + frontier in `<user data>/kessler/suns_fury_<hash>.bin` (the hash covers the
@@ -5397,6 +5403,36 @@ launches follow per-program cadences (no real manifest).
     `grip_tip_err_m`, `berthed_tip_err_m`, `release_tip_err_m` (mission_ops.py thresholds). Measured (4 cached
     visits): every tip error 0.000 m, capture-point error 0, arm joints <= 0.012 m/s, booms <= 0.12 deg/s, nothing out
     of reach; the vehicles' turns <= 0.9 deg/s. `scripts/berthing.satcmd`.
+- **Dream Chaser: a runway landing (2026-10-21c).** Program "Dream Chaser resupply" (Sierra Space, CRS-2) on the new
+  vehicle `vulcan_dreamchaser` (Vulcan VC4L: four solids, the long 5.4 m fairing; SLC-41), once a year, berthed by
+  Canadarm2 at Harmony nadir with the berth machinery above (`grapple` [1.55, 2.2], `capture_m` 11, 45-75 days).
+  **One port, two programs:** `"alternate_with": "HTV-X resupply"` (Program::alternateWith) puts its plane's phase half
+  a cadence after HTV-X's (both 1 / yr), so they never share Harmony nadir. **Coming home** (`"return": "runway"`,
+  `"runway": {lat, lon, heading_deg, length_m, elev_m}` = the KSC Shuttle Landing Facility 15/33, Program::runway):
+  the Shooting Star cargo module is jettisoned 15 min before the entry (`tCm`; the `_cm` model is the spaceplane
+  alone) and burns up 25 s behind it (a kind-9 fireball from the entry interface, the cargo ships' fbDrawReentry); the
+  spaceplane flies the capsules' entry (nose / belly forward, the plasma glow) to 10 km, ending at 180 m/s over the
+  ground along its track (`rwDv`, Earth-fixed: T rwDv (s^3 - s^2) added to the entry, zero at both ends; the capsules'
+  entry ends drifting west with the Earth at ~120 m/s inertial), then glides
+  (`crewRunwayEcef`, LCrew `runway`, `tGlide`, `Tg`, `tTD`, `tStop`): a cubic Hermite in the runway's tangent plane
+  from the entry's end (its speed over the ground) to the touchdown point 450 m in along the runway the glide arrives
+  from (at 95 m/s), and in height (10 km falling at 0 to its wheels, 2.6 m, sinking 1.5 m/s), then a rollout of
+  2.4 km decelerating evenly to rest, 40 min on the runway. Phases CP_GLIDE ("gliding to the runway"),
+  CP_FINAL_GLIDE (the last 90 s), CP_ROLLOUT, then CP_DOWN (inserted before CP_ABORT). **The deorbit is timed**
+  (buildCrew, every 30 s from 3 h after the departure for six days, refined at 3 s near each pass) so the entry ends 60-160 km short of the runway
+  heading for it, else the closest (measured 152-192 km at the three mission_ops epochs: a long subsonic glide from 10 km); the
+  attitude follows the velocity (nose forward, belly down) and holds the rollout's at rest. Milestones: cargo module
+  jettisoned, entry interface, glide, final approach, touchdown, wheels stop. Models: `tools/make_crew_models.py`
+  (`rocket_capsule_dreamchaser[_cm]`, sources: Sierra Space / Wikipedia; 9 m, 7 m span, Shooting Star 4.6 m, arrays,
+  grapple fixtures, the CBM on top) and `make_rocket_models.py` (`rocket_vulcan_dreamchaser_*`, the spaceplane nose
+  down under the fairing with folded wings: the sim's spacecraft convention puts the port on top). The wings must
+  sweep with fin `sweep` > 0 (toward the nose): a negative sweep failed the occlusion self-test (p95 0.41). Harness
+  `launch crew craft=dream event=jettison|glide|final|touchdown|stop` (and the berthing events), `launch trace` ->
+  `docking.runway` {glide_start_jump_m, glide_km, glide_s, touchdown_speed_mps, touchdown_sink_mps,
+  touchdown_off_centreline_m, touchdown_height_m, rollout_m, landing_heading_deg} (mission_ops.py thresholds);
+  `scripts/dream_chaser.satcmd` (2035: launches stand down after the Sun's Fury). Measured: glide start 0 m, touchdown
+  94.7 m/s, sink 0.75 m/s, on the centreline; mission_ops 0 FAIL / WARN. Open: no TAEM / heading-alignment circle (the glide is one curve), no
+  drag chute, no landing gear deploying, the module's fireball follows the spaceplane's entry track 25 s late.
 - **Missions window** (2026-10-19, `SatelliteSimMissions.cpp`; window id 8, `msChrome`; the rocket button
   `TimeMissionsBtn` on the right HUD panel, `pixel--missions.png`; key M, `KB_MISSIONS`; harness `ui open missions
   [tab=upcoming|ongoing|controls]`, `missions state|go|tab`). Three tabs. **Upcoming**: the next 5 launches (vehicle,
@@ -6757,7 +6793,7 @@ context's first evaluation (`rosterRangePresentFrac` sorts every constellation's
 now at load), the Kessler worker's publish (outside its mutex; `kesslerSync` try-locks). Still open (QA 2026-10-21):
 a player breakup BEFORE the CME restarts the world on the main thread (`kesslerRestart` ~220 ms: `buildWorld`, and
 its `launchInitBlock` makes the next walk rebuild the launch planes, ~75 ms); the first walk after a bookmark jump
-is ~25-35 ms (the window walk over ~3000 planes plus 8 ms of builds); at 1 yr/s a frame could take ~40 ms of batch building (one rival day bucket, `rivalBucket`, enumerating a site's planes; hitch_thresholds.json allows 1mo / 1yr p99 65 / 75 ms). Since 2026-10-21 a frame that needs fewer buckets than half the cores builds each split over the threads by plane (`rivalBucket(..., parallel)`, per-plane lists concatenated in plane order: same entries, same order); the worst 1-yr/s frames' `launch.buildBatches` is ~20 ms now (hitch_check A: p99 51, max 53 ms, of which ~25 ms GPU). **Since 2026-10-21b the builds after a jump and every build past 1 h/s of warp run on the background build** (CLAUDE.md "Launches" > The background build; the main thread builds none at a fast warp while it runs): hitch_check A / C / D all within limits, C 1yr p99 37.6 / max 38.7 (was 75.2 / 96.7 with main-thread builds of cold rival buckets, 62 ms in one frame), the 1-yr/s hitches left are the Kessler sync (`kesslerSync`, `kru.deaths`).
+is ~25-35 ms (the window walk over ~3000 planes plus 8 ms of builds); at 1 yr/s a frame could take ~40 ms of batch building (one rival day bucket, `rivalBucket`, enumerating a site's planes; hitch_thresholds.json allows 1mo / 1yr p99 65 / 75 ms). Since 2026-10-21 a frame that needs fewer buckets than half the cores builds each split over the threads by plane (`rivalBucket(..., parallel)`, per-plane lists concatenated in plane order: same entries, same order); the worst 1-yr/s frames' `launch.buildBatches` is ~20 ms now (hitch_check A: p99 51, max 53 ms, of which ~25 ms GPU). **Since 2026-10-21b the builds after a jump and every build past 1 h/s of warp run on the background build** (CLAUDE.md "Launches" > The background build; the main thread builds none at a fast warp while it runs): hitch_check A / C / D all within limits, C 1yr p99 37.6 / max 38.7 (was 75.2 / 96.7 with main-thread builds of cold rival buckets, 62 ms in one frame), the 1-yr/s hitches left are the Kessler sync (`kesslerSync`, `kru.deaths`). **Hitch pass 3 (2026-10-21c):** the Kessler upload's deaths go up in arrival order, at most 24k and ~2 ms a frame (`kDirtyPoolHead`; it sorted the whole backlog and sent up to 131k records, 6-16 ms), the roster's dirty list merges only what is new (`kDirtyRosterSorted`), the replaced pool buffers are freed on `kRetireThread`, `applyBuildJob` looks at the clock every 16 batches (256 overran its 2 ms to 9-14 ms) after reserving the map once, and the launch walk's full free hands the dropped batches to a detached thread. hitch_check (A / C / D, 1mo / 1yr p99): A 34.8 / 38.4 (was 39.8 / 48.2), C 31.5 / 36.0 (32.3 / 37.6), D 37.5 / 41.7 (35.3 / 62.2; max 91 -> 44); at 1 yr/s Kessler's sync is ~3-6 ms of a frame and the GPU (`app.wait_fence` 25-35 ms) is the rest. New scopes `kessler.retire`, `kessler.showGens`, `kessler.queuedBreakups`.
 **Regression check: `python tools/harness/hitch_check.py`** (scenarios A load, B a user's settings via `--settings`,
 C 2031, D day 32 after the CME; `--run <folders>` checks finished runs) against `tools/harness/hitch_thresholds.json`
 (p99 / max per rate, the first frame after load, launch to first frame); exit 1 on a regression. **It must run alone

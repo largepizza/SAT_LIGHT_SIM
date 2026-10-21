@@ -2724,6 +2724,7 @@ private:
     std::thread kDisposeThread; // the replaced world freed off the main thread
     std::atomic<bool> kRestartReady{false};
     bool kRestartBusy = false;
+    std::vector<kessler::Event> kRestartQueue; // (2026-10-21c) breakups clicked while a rebuild runs: applied when it is in
     RestartOut kRestartOut;
     std::chrono::steady_clock::time_point kRestartT0;
     void kesslerRestartInstall(RestartOut &out);
@@ -3267,6 +3268,8 @@ private:
     uint32_t kPoolGpu = 0;                // records uploaded (drawn)
     std::vector<uint32_t> kDirtyRoster;   // roster satellites whose two words to upload
     std::vector<uint32_t> kDirtyPool;     // uploaded records whose death changed
+    size_t kDirtyPoolHead = 0;            // (2026-10-21c) the next of kDirtyPool to upload (arrival order)
+    size_t kDirtyRosterSorted = 0;        // the sorted prefix of kDirtyRoster
     bool kRosterFullUpload = false;
     bool kRestartPending = false;
     bool kInitDone = false;               // kesslerInit has run (settings loaded before it apply directly)         // a kessler.* setting changed after launch: re-simulate next frame
@@ -3308,6 +3311,7 @@ private:
         uint64_t frame;
     };
     std::vector<KRetired> kRetired;
+    std::thread kRetireThread; // (2026-10-21c) frees the retired buffers off the main thread
     uint64_t kRetireFrame = 0;
     void kesslerRetireTick(VkDevice device, bool all = false);
     // (2026-10-21) The next growth's buffers, allocated on a worker thread once the pool passes 40% of its capacity:

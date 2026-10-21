@@ -1,0 +1,620 @@
+{
+ "name": "vulcan_dreamchaser upper_bare",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), vulcan_dreamchaser: upper_bare. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. As vulcan with four solids and the long fairing; Dream Chaser nose down under it (the sim's spacecraft convention puts the berthing port on top), wings folded. Shown after fairing separation.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  },
+  {
+   "name": "tiles",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.06,
+   "roughness": 0.6,
+   "color": [
+    0.1,
+    0.1,
+    0.11
+   ],
+   "pattern": "hex_tiles"
+  },
+  {
+   "name": "cells",
+   "preset": "solar_cell"
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "upper_nozzle_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.55
+    ],
+    [
+     0.2607,
+     0.4562
+    ],
+    [
+     0.5213,
+     0.3747
+    ],
+    [
+     0.782,
+     0.3063
+    ],
+    [
+     1.0427,
+     0.2524
+    ],
+    [
+     1.3033,
+     0.2147
+    ],
+    [
+     1.564,
+     0.198
+    ],
+    [
+     1.748,
+     0.3069
+    ],
+    [
+     2.1528,
+     0.3069
+    ],
+    [
+     2.3,
+     0.1841
+    ],
+    [
+     2.35,
+     0.0
+    ]
+   ],
+   "position": [
+    0.9,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_nozzle_1",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.55
+    ],
+    [
+     0.2607,
+     0.4562
+    ],
+    [
+     0.5213,
+     0.3747
+    ],
+    [
+     0.782,
+     0.3063
+    ],
+    [
+     1.0427,
+     0.2524
+    ],
+    [
+     1.3033,
+     0.2147
+    ],
+    [
+     1.564,
+     0.198
+    ],
+    [
+     1.748,
+     0.3069
+    ],
+    [
+     2.1528,
+     0.3069
+    ],
+    [
+     2.3,
+     0.1841
+    ],
+    [
+     2.35,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.9,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_2",
+   "type": "profile",
+   "profile": [
+    [
+     1.8,
+     2.7
+    ],
+    [
+     13.5,
+     2.7
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_3",
+   "type": "profile",
+   "profile": [
+    [
+     1.75,
+     2.646
+    ],
+    [
+     1.79,
+     2.646
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "payload_adapter_4",
+   "type": "profile",
+   "profile": [
+    [
+     13.51,
+     2.619
+    ],
+    [
+     14.05,
+     0.8
+    ],
+    [
+     14.1,
+     0.8
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "separation_ring_5",
+   "type": "profile",
+   "profile": [
+    [
+     14.0,
+     0.83
+    ],
+    [
+     14.12,
+     0.83
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "dc_fuselage_6",
+   "type": "profile",
+   "profile": [
+    [
+     14.12,
+     0.05
+    ],
+    [
+     14.37,
+     0.55
+    ],
+    [
+     14.92,
+     0.95
+    ],
+    [
+     16.12,
+     1.3
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "arc_material": "tiles",
+   "arc_deg": [
+    200.0,
+    340.0
+   ],
+   "group": "body"
+  },
+  {
+   "name": "dc_fuselage_7",
+   "type": "profile",
+   "profile": [
+    [
+     16.12,
+     1.3
+    ],
+    [
+     19.12,
+     1.5
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "arc_material": "tiles",
+   "arc_deg": [
+    200.0,
+    340.0
+   ],
+   "group": "body"
+  },
+  {
+   "name": "dc_fuselage_8",
+   "type": "profile",
+   "profile": [
+    [
+     19.12,
+     1.5
+    ],
+    [
+     22.82,
+     1.5
+    ],
+    [
+     23.12,
+     1.2
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "arc_material": "tiles",
+   "arc_deg": [
+    200.0,
+    340.0
+   ],
+   "group": "body"
+  },
+  {
+   "name": "dc_wing_9",
+   "type": "fin",
+   "root_chord": 4.2,
+   "tip_chord": 1.5,
+   "span": 0.9,
+   "sweep": 1.4,
+   "thickness": 0.25,
+   "bevel": 0.2,
+   "position": [
+    -1.4377,
+    -0.5233,
+    20.72
+   ],
+   "rotation_quat": [
+    -0.173648,
+    0.0,
+    0.0,
+    0.984808
+   ],
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "dc_winglet_10",
+   "type": "fin",
+   "root_chord": 1.8,
+   "tip_chord": 0.8,
+   "span": 1.3,
+   "sweep": -0.8,
+   "thickness": 0.12,
+   "bevel": 0.15,
+   "position": [
+    -0.8485,
+    0.8485,
+    21.92
+   ],
+   "rotation_quat": [
+    0.382683,
+    0.0,
+    0.0,
+    0.92388
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "dc_wing_11",
+   "type": "fin",
+   "root_chord": 4.2,
+   "tip_chord": 1.5,
+   "span": 0.9,
+   "sweep": 1.4,
+   "thickness": 0.25,
+   "bevel": 0.2,
+   "position": [
+    1.4377,
+    -0.5233,
+    20.72
+   ],
+   "rotation_quat": [
+    0.984808,
+    0.0,
+    -0.0,
+    -0.173648
+   ],
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "dc_winglet_12",
+   "type": "fin",
+   "root_chord": 1.8,
+   "tip_chord": 0.8,
+   "span": 1.3,
+   "sweep": -0.8,
+   "thickness": 0.12,
+   "bevel": 0.15,
+   "position": [
+    0.8485,
+    0.8485,
+    21.92
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    0.382683
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "dc_aft_ring_13",
+   "type": "profile",
+   "profile": [
+    [
+     23.12,
+     1.0
+    ],
+    [
+     23.32,
+     1.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "shooting_star_14",
+   "type": "profile",
+   "profile": [
+    [
+     23.32,
+     1.55
+    ],
+    [
+     27.52,
+     1.55
+    ],
+    [
+     27.92,
+     1.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "ss_array_folded_15",
+   "type": "box",
+   "size": [
+    0.2,
+    1.4,
+    3.0
+   ],
+   "position": [
+    1.65,
+    0.0,
+    25.32
+   ],
+   "rotation_quat": [
+    1.0,
+    0.0,
+    -0.0,
+    0.0
+   ],
+   "material": "cells",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "ss_array_folded_16",
+   "type": "box",
+   "size": [
+    0.2,
+    1.4,
+    3.0
+   ],
+   "position": [
+    -1.65,
+    0.0,
+    25.32
+   ],
+   "rotation_quat": [
+    0.0,
+    0.0,
+    0.0,
+    1.0
+   ],
+   "material": "cells",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "upper_tank_2",
+    "dc_fuselage_6",
+    "dc_fuselage_7",
+    "dc_fuselage_8",
+    "dc_wing_9",
+    "dc_wing_11",
+    "shooting_star_14"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "ULA Vulcan Centaur page / User's Guide (2023): 5.4 m booster 33.3 m, Centaur V 11.7 m, GEM 63XL 1.6 m x 22 m, 5.4 m long fairing 21.3 m | Sierra Space: Dream Chaser launches on Vulcan Centaur VC4L (four solids, long fairing) | Sierra Space / Wikipedia 'Dream Chaser': cargo spaceplane 9 m long, 7 m wingspan (the wings fold to fit a 5 m fairing), lands on a runway (the KSC Shuttle Landing Facility); flies on Vulcan Centaur (VC4L) for CRS-2 | Sierra Space 'Shooting Star': the expendable cargo module on Dream Chaser's aft end, ~4.6 m long, solar arrays, jettisoned before the deorbit and destroyed on re-entry; berthed to the ISS by Canadarm2 (CRS-2 plan)"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey",
+    "nozzle",
+    "soot",
+    "tiles",
+    "cells"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); nozzle: dark regeneratively cooled nozzle metal; soot: a nozzle's sooty inside; tiles: black silica heat-shield tiles (Starship), hexagonal pattern; cells: Crew Dragon trunk's body-mounted solar cells; a crewed spacecraft's folded arrays",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

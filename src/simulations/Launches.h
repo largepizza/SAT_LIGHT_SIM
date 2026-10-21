@@ -197,6 +197,16 @@ struct Program
     // unberths it to the same point and releases it (Cygnus, HTV-X, Dream Chaser).
     bool berth = false;
     double grappleR = 1.5, grappleZ = 2.5, captureM = 9.0;
+    // A runway landing (2026-10-21c, "return": "runway": Dream Chaser): after the entry it glides to the runway
+    // ("runway": {"lat", "lon", "heading_deg", "length_m", "elev_m"}: the KSC Shuttle Landing Facility), touches down
+    // and rolls out. Its cargo module (what its "_cm" model leaves out: Shooting Star) is jettisoned before the entry
+    // and burns up.
+    bool runway = false;
+    double runwayLat = 28.6150, runwayLon = -80.6945, runwayHdgDeg = 150.0, runwayLenM = 4572.0, runwayElevM = 3.0;
+    // Its visits come half a cadence after another program's at the same station ("alternate_with": that program's
+    // name, the same life_years): two programs sharing one berthing port never meet there (Dream Chaser and HTV-X at
+    // Harmony nadir).
+    std::string alternateWith;
     // How much earlier than its lift-off a batch's nominal arrival may lie (days): a fast track takes the first pass
     // with the right phase within 30 days of the nominal one, so windows listing launches by their nominal arrival
     // (the pad rivals, Upcoming, `launch list`, `launch trace`) reach this much further back.

@@ -1,0 +1,1312 @@
+{
+ "name": "vulcan_dreamchaser stack",
+ "note": "Launch vehicle render model (tools/make_rocket_models.py), vulcan_dreamchaser: stack. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. As vulcan with four solids and the long fairing; Dream Chaser nose down under it (the sim's spacecraft convention puts the berthing port on top), wings folded.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "tan",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.45,
+   "color": [
+    0.86,
+    0.56,
+    0.33
+   ]
+  },
+  {
+   "name": "nozzle",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.08,
+   "roughness": 0.3,
+   "color": [
+    0.4,
+    0.37,
+    0.35
+   ]
+  },
+  {
+   "name": "copper",
+   "preset": "aluminum",
+   "diffuse_albedo": 0.12,
+   "roughness": 0.35,
+   "color": [
+    0.62,
+    0.38,
+    0.24
+   ]
+  },
+  {
+   "name": "soot",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.03,
+   "roughness": 0.7
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "core_body_0",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     2.7
+    ],
+    [
+     33.3,
+     2.7
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "tan",
+   "group": "body"
+  },
+  {
+   "name": "interstage_1",
+   "type": "profile",
+   "profile": [
+    [
+     29.7,
+     2.7138
+    ],
+    [
+     33.3,
+     2.7138
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "aft_heat_shield_2",
+   "type": "profile",
+   "profile": [
+    [
+     -0.05,
+     2.673
+    ],
+    [
+     -0.01,
+     2.673
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "engines_3",
+   "type": "profile",
+   "profile": [
+    [
+     -1.9,
+     0.85
+    ],
+    [
+     -1.6053,
+     0.705
+    ],
+    [
+     -1.3107,
+     0.5791
+    ],
+    [
+     -1.016,
+     0.4734
+    ],
+    [
+     -0.7213,
+     0.39
+    ],
+    [
+     -0.4267,
+     0.3319
+    ],
+    [
+     -0.132,
+     0.306
+    ],
+    [
+     0.076,
+     0.4743
+    ],
+    [
+     0.5336,
+     0.4743
+    ],
+    [
+     0.7,
+     0.2846
+    ],
+    [
+     0.75,
+     0.0
+    ]
+   ],
+   "position": [
+    1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "engines_4",
+   "type": "profile",
+   "profile": [
+    [
+     -1.9,
+     0.85
+    ],
+    [
+     -1.6053,
+     0.705
+    ],
+    [
+     -1.3107,
+     0.5791
+    ],
+    [
+     -1.016,
+     0.4734
+    ],
+    [
+     -0.7213,
+     0.39
+    ],
+    [
+     -0.4267,
+     0.3319
+    ],
+    [
+     -0.132,
+     0.306
+    ],
+    [
+     0.076,
+     0.4743
+    ],
+    [
+     0.5336,
+     0.4743
+    ],
+    [
+     0.7,
+     0.2846
+    ],
+    [
+     0.75,
+     0.0
+    ]
+   ],
+   "position": [
+    -1.3,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "side_booster_5",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.8
+    ],
+    [
+     21.9,
+     0.8
+    ]
+   ],
+   "position": [
+    2.5809,
+    2.5809,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "side_booster_6",
+   "type": "profile",
+   "profile": [
+    [
+     21.9,
+     0.8
+    ],
+    [
+     22.2894,
+     0.7836
+    ],
+    [
+     22.6624,
+     0.7367
+    ],
+    [
+     23.0171,
+     0.6631
+    ],
+    [
+     23.3511,
+     0.5665
+    ],
+    [
+     23.6607,
+     0.4518
+    ],
+    [
+     23.9404,
+     0.3256
+    ],
+    [
+     24.1797,
+     0.1991
+    ],
+    [
+     24.3434,
+     0.1019
+    ],
+    [
+     24.3626,
+     0.087
+    ],
+    [
+     24.3785,
+     0.0686
+    ],
+    [
+     24.3903,
+     0.0474
+    ],
+    [
+     24.3975,
+     0.0242
+    ],
+    [
+     24.4,
+     0.0
+    ]
+   ],
+   "position": [
+    2.5809,
+    2.5809,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "side_aft_7",
+   "type": "profile",
+   "profile": [
+    [
+     -0.05,
+     0.784
+    ],
+    [
+     -0.01,
+     0.784
+    ]
+   ],
+   "position": [
+    2.5809,
+    2.5809,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "side_nozzle_8",
+   "type": "profile",
+   "profile": [
+    [
+     -1.425,
+     0.62
+    ],
+    [
+     -1.2097,
+     0.5142
+    ],
+    [
+     -0.9943,
+     0.4224
+    ],
+    [
+     -0.779,
+     0.3453
+    ],
+    [
+     -0.5637,
+     0.2845
+    ],
+    [
+     -0.3483,
+     0.2421
+    ],
+    [
+     -0.133,
+     0.2232
+    ],
+    [
+     0.019,
+     0.346
+    ],
+    [
+     0.3534,
+     0.346
+    ],
+    [
+     0.475,
+     0.2076
+    ],
+    [
+     0.525,
+     0.0
+    ]
+   ],
+   "position": [
+    2.5809,
+    2.5809,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "side_booster_9",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.8
+    ],
+    [
+     21.9,
+     0.8
+    ]
+   ],
+   "position": [
+    -2.5809,
+    2.5809,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "side_booster_10",
+   "type": "profile",
+   "profile": [
+    [
+     21.9,
+     0.8
+    ],
+    [
+     22.2894,
+     0.7836
+    ],
+    [
+     22.6624,
+     0.7367
+    ],
+    [
+     23.0171,
+     0.6631
+    ],
+    [
+     23.3511,
+     0.5665
+    ],
+    [
+     23.6607,
+     0.4518
+    ],
+    [
+     23.9404,
+     0.3256
+    ],
+    [
+     24.1797,
+     0.1991
+    ],
+    [
+     24.3434,
+     0.1019
+    ],
+    [
+     24.3626,
+     0.087
+    ],
+    [
+     24.3785,
+     0.0686
+    ],
+    [
+     24.3903,
+     0.0474
+    ],
+    [
+     24.3975,
+     0.0242
+    ],
+    [
+     24.4,
+     0.0
+    ]
+   ],
+   "position": [
+    -2.5809,
+    2.5809,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "side_aft_11",
+   "type": "profile",
+   "profile": [
+    [
+     -0.05,
+     0.784
+    ],
+    [
+     -0.01,
+     0.784
+    ]
+   ],
+   "position": [
+    -2.5809,
+    2.5809,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "side_nozzle_12",
+   "type": "profile",
+   "profile": [
+    [
+     -1.425,
+     0.62
+    ],
+    [
+     -1.2097,
+     0.5142
+    ],
+    [
+     -0.9943,
+     0.4224
+    ],
+    [
+     -0.779,
+     0.3453
+    ],
+    [
+     -0.5637,
+     0.2845
+    ],
+    [
+     -0.3483,
+     0.2421
+    ],
+    [
+     -0.133,
+     0.2232
+    ],
+    [
+     0.019,
+     0.346
+    ],
+    [
+     0.3534,
+     0.346
+    ],
+    [
+     0.475,
+     0.2076
+    ],
+    [
+     0.525,
+     0.0
+    ]
+   ],
+   "position": [
+    -2.5809,
+    2.5809,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "side_booster_13",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.8
+    ],
+    [
+     21.9,
+     0.8
+    ]
+   ],
+   "position": [
+    -2.5809,
+    -2.5809,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "side_booster_14",
+   "type": "profile",
+   "profile": [
+    [
+     21.9,
+     0.8
+    ],
+    [
+     22.2894,
+     0.7836
+    ],
+    [
+     22.6624,
+     0.7367
+    ],
+    [
+     23.0171,
+     0.6631
+    ],
+    [
+     23.3511,
+     0.5665
+    ],
+    [
+     23.6607,
+     0.4518
+    ],
+    [
+     23.9404,
+     0.3256
+    ],
+    [
+     24.1797,
+     0.1991
+    ],
+    [
+     24.3434,
+     0.1019
+    ],
+    [
+     24.3626,
+     0.087
+    ],
+    [
+     24.3785,
+     0.0686
+    ],
+    [
+     24.3903,
+     0.0474
+    ],
+    [
+     24.3975,
+     0.0242
+    ],
+    [
+     24.4,
+     0.0
+    ]
+   ],
+   "position": [
+    -2.5809,
+    -2.5809,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "side_aft_15",
+   "type": "profile",
+   "profile": [
+    [
+     -0.05,
+     0.784
+    ],
+    [
+     -0.01,
+     0.784
+    ]
+   ],
+   "position": [
+    -2.5809,
+    -2.5809,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "side_nozzle_16",
+   "type": "profile",
+   "profile": [
+    [
+     -1.425,
+     0.62
+    ],
+    [
+     -1.2097,
+     0.5142
+    ],
+    [
+     -0.9943,
+     0.4224
+    ],
+    [
+     -0.779,
+     0.3453
+    ],
+    [
+     -0.5637,
+     0.2845
+    ],
+    [
+     -0.3483,
+     0.2421
+    ],
+    [
+     -0.133,
+     0.2232
+    ],
+    [
+     0.019,
+     0.346
+    ],
+    [
+     0.3534,
+     0.346
+    ],
+    [
+     0.475,
+     0.2076
+    ],
+    [
+     0.525,
+     0.0
+    ]
+   ],
+   "position": [
+    -2.5809,
+    -2.5809,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "side_booster_17",
+   "type": "profile",
+   "profile": [
+    [
+     0.0,
+     0.8
+    ],
+    [
+     21.9,
+     0.8
+    ]
+   ],
+   "position": [
+    2.5809,
+    -2.5809,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "side_booster_18",
+   "type": "profile",
+   "profile": [
+    [
+     21.9,
+     0.8
+    ],
+    [
+     22.2894,
+     0.7836
+    ],
+    [
+     22.6624,
+     0.7367
+    ],
+    [
+     23.0171,
+     0.6631
+    ],
+    [
+     23.3511,
+     0.5665
+    ],
+    [
+     23.6607,
+     0.4518
+    ],
+    [
+     23.9404,
+     0.3256
+    ],
+    [
+     24.1797,
+     0.1991
+    ],
+    [
+     24.3434,
+     0.1019
+    ],
+    [
+     24.3626,
+     0.087
+    ],
+    [
+     24.3785,
+     0.0686
+    ],
+    [
+     24.3903,
+     0.0474
+    ],
+    [
+     24.3975,
+     0.0242
+    ],
+    [
+     24.4,
+     0.0
+    ]
+   ],
+   "position": [
+    2.5809,
+    -2.5809,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "side_aft_19",
+   "type": "profile",
+   "profile": [
+    [
+     -0.05,
+     0.784
+    ],
+    [
+     -0.01,
+     0.784
+    ]
+   ],
+   "position": [
+    2.5809,
+    -2.5809,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "side_nozzle_20",
+   "type": "profile",
+   "profile": [
+    [
+     -1.425,
+     0.62
+    ],
+    [
+     -1.2097,
+     0.5142
+    ],
+    [
+     -0.9943,
+     0.4224
+    ],
+    [
+     -0.779,
+     0.3453
+    ],
+    [
+     -0.5637,
+     0.2845
+    ],
+    [
+     -0.3483,
+     0.2421
+    ],
+    [
+     -0.133,
+     0.2232
+    ],
+    [
+     0.019,
+     0.346
+    ],
+    [
+     0.3534,
+     0.346
+    ],
+    [
+     0.475,
+     0.2076
+    ],
+    [
+     0.525,
+     0.0
+    ]
+   ],
+   "position": [
+    2.5809,
+    -2.5809,
+    0.0
+   ],
+   "caps": false,
+   "material": "copper",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_nozzle_21",
+   "type": "profile",
+   "profile": [
+    [
+     31.52,
+     0.55
+    ],
+    [
+     31.7807,
+     0.4562
+    ],
+    [
+     32.0413,
+     0.3747
+    ],
+    [
+     32.302,
+     0.3063
+    ],
+    [
+     32.5627,
+     0.2524
+    ],
+    [
+     32.8233,
+     0.2147
+    ],
+    [
+     33.084,
+     0.198
+    ],
+    [
+     33.268,
+     0.3069
+    ],
+    [
+     33.6728,
+     0.3069
+    ],
+    [
+     33.82,
+     0.1841
+    ],
+    [
+     33.87,
+     0.0
+    ]
+   ],
+   "position": [
+    0.9,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_nozzle_22",
+   "type": "profile",
+   "profile": [
+    [
+     31.52,
+     0.55
+    ],
+    [
+     31.7807,
+     0.4562
+    ],
+    [
+     32.0413,
+     0.3747
+    ],
+    [
+     32.302,
+     0.3063
+    ],
+    [
+     32.5627,
+     0.2524
+    ],
+    [
+     32.8233,
+     0.2147
+    ],
+    [
+     33.084,
+     0.198
+    ],
+    [
+     33.268,
+     0.3069
+    ],
+    [
+     33.6728,
+     0.3069
+    ],
+    [
+     33.82,
+     0.1841
+    ],
+    [
+     33.87,
+     0.0
+    ]
+   ],
+   "position": [
+    -0.9,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "nozzle",
+   "inner_material": "soot",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "upper_tank_23",
+   "type": "profile",
+   "profile": [
+    [
+     33.32,
+     2.7
+    ],
+    [
+     45.02,
+     2.7
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "upper_aft_24",
+   "type": "profile",
+   "profile": [
+    [
+     33.27,
+     2.646
+    ],
+    [
+     33.31,
+     2.646
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": true,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "fairing_25",
+   "type": "profile",
+   "profile": [
+    [
+     45.04,
+     2.7
+    ],
+    [
+     60.32,
+     2.7
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_26",
+   "type": "profile",
+   "profile": [
+    [
+     60.32,
+     2.7
+    ],
+    [
+     60.9377,
+     2.6762
+    ],
+    [
+     61.5388,
+     2.6068
+    ],
+    [
+     62.1221,
+     2.4948
+    ],
+    [
+     62.6863,
+     2.3428
+    ],
+    [
+     63.02,
+     2.2264
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "fairing_27",
+   "type": "profile",
+   "profile": [
+    [
+     63.02,
+     2.2264
+    ],
+    [
+     63.2296,
+     2.1533
+    ],
+    [
+     63.7501,
+     1.9291
+    ],
+    [
+     64.2451,
+     1.6734
+    ],
+    [
+     64.7111,
+     1.3904
+    ],
+    [
+     65.1432,
+     1.0868
+    ],
+    [
+     65.5335,
+     0.7732
+    ],
+    [
+     65.8674,
+     0.4706
+    ],
+    [
+     66.0958,
+     0.2427
+    ],
+    [
+     66.1299,
+     0.2014
+    ],
+    [
+     66.1573,
+     0.1553
+    ],
+    [
+     66.1773,
+     0.1056
+    ],
+    [
+     66.1896,
+     0.0534
+    ],
+    [
+     66.1937,
+     0.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "group": "body"
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "+Z along the thrust axis (the sim passes it as 'velocity'), -Y (the ship's heat shield) down",
+   "source": "A rocket flies along its thrust axis; a gravity turn and an entry fly belly down."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "one rigid group",
+   "source": "Render model; no moving parts."
+  },
+  {
+   "subjects": [
+    "core_body_0",
+    "side_booster_5",
+    "side_booster_6",
+    "side_booster_9",
+    "side_booster_10",
+    "side_booster_13",
+    "side_booster_14",
+    "side_booster_17",
+    "side_booster_18",
+    "upper_tank_23",
+    "fairing_25",
+    "fairing_26",
+    "fairing_27"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
+   "source": "ULA Vulcan Centaur page / User's Guide (2023): 5.4 m booster 33.3 m, Centaur V 11.7 m, GEM 63XL 1.6 m x 22 m, 5.4 m long fairing 21.3 m | Sierra Space: Dream Chaser launches on Vulcan Centaur VC4L (four solids, long fairing) | Sierra Space / Wikipedia 'Dream Chaser': cargo spaceplane 9 m long, 7 m wingspan (the wings fold to fit a 5 m fairing), lands on a runway (the KSC Shuttle Landing Facility); flies on Vulcan Centaur (VC4L) for CRS-2 | Sierra Space 'Shooting Star': the expendable cargo module on Dream Chaser's aft end, ~4.6 m long, solar arrays, jettisoned before the deorbit and destroyed on re-entry; berthed to the ISS by Canadarm2 (CRS-2 plan)"
+  },
+  {
+   "subjects": [
+    "white",
+    "grey",
+    "tan",
+    "nozzle",
+    "copper",
+    "soot"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); grey: grey paint (Soyuz, Long March detail); tan: orange-tan spray-on foam insulation (Vulcan's first stage); nozzle: dark regeneratively cooled nozzle metal; copper: copper-alloy chamber and bell (Raptor, Merlin), oxidised; soot: a nozzle's sooty inside",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

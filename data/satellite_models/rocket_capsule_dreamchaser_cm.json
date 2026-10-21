@@ -1,0 +1,307 @@
+{
+ "name": "dreamchaser the spaceplane alone (entry, glide and landing)",
+ "note": "Cargo ship render model (tools/make_crew_models.py), the spaceplane alone (entry, glide and landing). Dream Chaser in orbit: the spaceplane (nose -Z, belly tiles -Y, wings deployed) with the Shooting Star cargo module on its aft end (arrays out, grapple fixtures on both sides, the CBM on top: berthed by the station's arm). The _cm model is the spaceplane alone (the module jettisoned before the deorbit). Body frame: +Z out of the docking port, origin at the port's contact point.",
+ "materials": [
+  {
+   "name": "white",
+   "preset": "white_paint",
+   "pattern": "panel_seams"
+  },
+  {
+   "name": "black",
+   "preset": "black_paint"
+  },
+  {
+   "name": "grey",
+   "preset": "white_paint",
+   "diffuse_albedo": 0.3,
+   "color": [
+    0.45,
+    0.46,
+    0.48
+   ]
+  },
+  {
+   "name": "tiles",
+   "preset": "black_paint",
+   "diffuse_albedo": 0.06,
+   "roughness": 0.6,
+   "color": [
+    0.1,
+    0.1,
+    0.11
+   ],
+   "pattern": "hex_tiles"
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "body",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "velocity"
+   },
+   "secondary": {
+    "axis": [
+     0,
+     -1,
+     0
+    ],
+    "target": "nadir"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "dc_fuselage_0",
+   "type": "profile",
+   "profile": [
+    [
+     -14.15,
+     0.05
+    ],
+    [
+     -13.9,
+     0.55
+    ],
+    [
+     -13.35,
+     0.95
+    ],
+    [
+     -12.15,
+     1.3
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "bottom",
+   "material": "white",
+   "arc_material": "tiles",
+   "arc_deg": [
+    200.0,
+    340.0
+   ],
+   "group": "body"
+  },
+  {
+   "name": "dc_fuselage_1",
+   "type": "profile",
+   "profile": [
+    [
+     -12.15,
+     1.3
+    ],
+    [
+     -9.15,
+     1.5
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "white",
+   "arc_material": "tiles",
+   "arc_deg": [
+    200.0,
+    340.0
+   ],
+   "group": "body"
+  },
+  {
+   "name": "dc_fuselage_2",
+   "type": "profile",
+   "profile": [
+    [
+     -9.15,
+     1.5
+    ],
+    [
+     -5.45,
+     1.5
+    ],
+    [
+     -5.15,
+     1.2
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": "top",
+   "material": "white",
+   "arc_material": "tiles",
+   "arc_deg": [
+    200.0,
+    340.0
+   ],
+   "group": "body"
+  },
+  {
+   "name": "dc_wing_3",
+   "type": "fin",
+   "root_chord": 4.2,
+   "tip_chord": 1.5,
+   "span": 2.1,
+   "sweep": 1.4,
+   "thickness": 0.25,
+   "bevel": 0.2,
+   "position": [
+    -1.4377,
+    -0.5233,
+    -7.55
+   ],
+   "rotation_quat": [
+    -0.173648,
+    0.0,
+    0.0,
+    0.984808
+   ],
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "dc_winglet_4",
+   "type": "fin",
+   "root_chord": 1.8,
+   "tip_chord": 0.8,
+   "span": 1.3,
+   "sweep": -0.8,
+   "thickness": 0.12,
+   "bevel": 0.15,
+   "position": [
+    -0.8485,
+    0.8485,
+    -6.35
+   ],
+   "rotation_quat": [
+    0.382683,
+    0.0,
+    0.0,
+    0.92388
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "dc_wing_5",
+   "type": "fin",
+   "root_chord": 4.2,
+   "tip_chord": 1.5,
+   "span": 2.1,
+   "sweep": 1.4,
+   "thickness": 0.25,
+   "bevel": 0.2,
+   "position": [
+    1.4377,
+    -0.5233,
+    -7.55
+   ],
+   "rotation_quat": [
+    0.984808,
+    0.0,
+    -0.0,
+    -0.173648
+   ],
+   "material": "white",
+   "group": "body"
+  },
+  {
+   "name": "dc_winglet_6",
+   "type": "fin",
+   "root_chord": 1.8,
+   "tip_chord": 0.8,
+   "span": 1.3,
+   "sweep": -0.8,
+   "thickness": 0.12,
+   "bevel": 0.15,
+   "position": [
+    0.8485,
+    0.8485,
+    -6.35
+   ],
+   "rotation_quat": [
+    0.92388,
+    0.0,
+    -0.0,
+    0.382683
+   ],
+   "material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "dc_aft_ring_7",
+   "type": "profile",
+   "profile": [
+    [
+     -5.15,
+     1.0
+    ],
+    [
+     -4.95,
+     1.0
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "grey",
+   "group": "body",
+   "render_only": true
+  }
+ ],
+ "sources": [
+  {
+   "subject": "attitude",
+   "status": "estimate",
+   "value": "the sim hands in a full attitude (approach, docked, entry); this law is only its fallback",
+   "source": "SatelliteSimLaunches.cpp crew vehicles."
+  },
+  {
+   "subject": "body",
+   "status": "estimate",
+   "value": "the rigid body",
+   "source": "Render model."
+  },
+  {
+   "subjects": [
+    "dc_fuselage_0",
+    "dc_fuselage_1",
+    "dc_fuselage_2",
+    "dc_wing_3",
+    "dc_wing_5"
+   ],
+   "status": "sourced",
+   "value": "diameters and lengths rounded from the references; shapes estimated from photographs",
+   "source": "Sierra Space / Wikipedia 'Dream Chaser': cargo spaceplane 9 m long, 7 m wingspan (the wings fold to fit a 5 m fairing), lands on a runway (the KSC Shuttle Landing Facility); flies on Vulcan Centaur (VC4L) for CRS-2 | Sierra Space 'Shooting Star': the expendable cargo module on Dream Chaser's aft end, ~4.6 m long, solar arrays, jettisoned before the deorbit and destroyed on re-entry; berthed to the ISS by Canadarm2 (CRS-2 plan)"
+  },
+  {
+   "subjects": [
+    "white",
+    "black",
+    "grey",
+    "tiles"
+   ],
+   "status": "estimate",
+   "value": "white: white paint (operator liveries in launch photographs); black: black paint / carbon composite (interstages, legs); grey: grey paint (Soyuz, Long March detail); tiles: black silica heat-shield tiles (Starship), hexagonal pattern",
+   "source": "Liveries from photographs; reflectance from the presets."
+  }
+ ]
+}

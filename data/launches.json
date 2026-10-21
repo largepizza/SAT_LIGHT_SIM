@@ -99,6 +99,12 @@
      "flow1_kg_s": 3400, "flow2_kg_s": 50, "exhaust1_m_s": 3000, "exhaust2_m_s": 4500,
      "booster": "expendable", "flame1_mag_100km": -4.5, "flame2_mag_100km": 0.5,
      "upper_stage_deorbit": true, "upper_stage_mass_kg": 2500, "soot": 0.45, "vent_chance": 0.5},
+    {"id": "vulcan_dreamchaser", "name": "Vulcan Centaur VC4L / Dream Chaser", "online": "2026-12-01", "sites": ["ccsfs_slc41"],
+     "fairing_sep_km": 110, "payload_base_m": 14.12, "fairing_center_m": [1.35, 0.0, 24.16], "spacecraft_dock_m": 28.27,
+     "meco_s": 240, "meco_alt_km": 88, "meco_downrange_km": 150, "seco_s": 660, "deploy_after_seco_s": 120,
+     "flow1_kg_s": 4400, "flow2_kg_s": 50, "exhaust1_m_s": 2950, "exhaust2_m_s": 4500,
+     "booster": "expendable", "flame1_mag_100km": -5.0, "flame2_mag_100km": 0.5,
+     "upper_stage_deorbit": true, "upper_stage_mass_kg": 2500, "soot": 0.5, "vent_chance": 0.4},
     {"id": "ariane6", "name": "Ariane 64", "online": "2024-07-09", "sites": ["kourou"],
      "fairing_sep_km": 110, "payload_base_m": 14.82, "fairing_center_m": [1.35, 0.0, 24.21],
      "meco_s": 140, "meco_alt_km": 60, "meco_downrange_km": 60, "seco_s": 900, "deploy_after_seco_s": 1200, "deploy_interval_s": 30, "sep_spread_mps": 0.04,
@@ -271,7 +277,12 @@
      "crew": {"spacecraft": "Cygnus", "cargo": true, "model": "capsule_cygnus", "return": "burns", "heat_shield_m": 3.0, "ports": "berth_unity", "berth": true, "grapple": [1.8, 2.5], "capture_m": 9.0, "stay_days": [60, 100]}},
     {"name": "HTV-X resupply", "match": ["International Space Station"], "vehicles": ["h3_htvx"],
      "payload_mass_kg": 16000, "life_years": 1.0, "payload": 1, "park_km": 200, "raise_days": [3.5, 4.5],
-     "crew": {"spacecraft": "HTV-X", "cargo": true, "model": "capsule_htvx", "return": "burns", "heat_shield_m": 4.0, "ports": "berth_harmony", "berth": true, "grapple": [2.45, 2.0], "capture_m": 9.0, "stay_days": [120, 170]}}
+     "crew": {"spacecraft": "HTV-X", "cargo": true, "model": "capsule_htvx", "return": "burns", "heat_shield_m": 4.0, "ports": "berth_harmony", "berth": true, "grapple": [2.45, 2.0], "capture_m": 9.0, "stay_days": [120, 170]}},
+    {"name": "Dream Chaser resupply", "match": ["International Space Station"], "vehicles": ["vulcan_dreamchaser"],
+     "payload_mass_kg": 9000, "life_years": 1.0, "payload": 1, "park_km": 200, "raise_days": [2.0, 3.0],
+     "crew": {"spacecraft": "Dream Chaser", "cargo": true, "model": "capsule_dreamchaser", "return": "runway", "heat_shield_m": 10.0,
+              "runway": {"lat": 28.6150, "lon": -80.6945, "heading_deg": 150.0, "length_m": 4572.0, "elev_m": 3.0},
+              "ports": "berth_harmony", "alternate_with": "HTV-X resupply", "berth": true, "grapple": [1.55, 2.2], "capture_m": 11.0, "stay_days": [45, 75]}}
   ],
   "station_arms": [
     {"match": ["International Space Station"], "model": "canadarm2", "base": [2.0, 0.0, 7.15], "base_normal": [0, 0, 1],

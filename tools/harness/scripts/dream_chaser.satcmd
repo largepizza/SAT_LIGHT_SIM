@@ -1,0 +1,52 @@
+# Dream Chaser (2026-10-21c, CLAUDE.md "Launches" > Runway landing): berthed to the ISS by its arm like Cygnus /
+# HTV-X, then the cargo module jettisoned, the entry, the glide to the KSC Shuttle Landing Facility, touchdown, rollout.
+#   python tools/harness/run.py tools/harness/scripts/dream_chaser.satcmd --window 1600x900
+set clouds_v2.coverage 0
+time set 2035-03-01T00:00:00Z
+wait 5
+launch crew craft=dream event=launch lead=20 follow=1
+wait 40
+capture dc_0_liftoff
+launch crew craft=dream event=capture lead=300 follow=1
+follow offset=-30,45,-12 aim=sat
+wait 40
+launch state
+capture dc_1_pre_grapple
+time add 1500
+wait 30
+capture dc_2_on_arm
+launch crew craft=dream event=berth lead=-600 follow=1
+follow offset=-30,45,-12 aim=sat
+wait 40
+capture dc_3_berthed
+missions milestone list
+launch crew craft=dream event=release lead=60 follow=1
+follow offset=-30,45,-12 aim=sat
+wait 40
+capture dc_4_release
+launch crew craft=dream event=jettison lead=-20 follow=1
+follow offset=-40,30,-15 aim=sat
+wait 40
+capture dc_5_jettisoned
+launch crew craft=dream event=entry lead=-200 follow=1
+wait 40
+capture dc_6_entry
+launch crew craft=dream event=glide lead=-120 follow=1
+follow offset=-80,40,-20 aim=sat
+wait 40
+launch state
+capture dc_7_glide
+launch crew craft=dream event=final lead=-30 follow=1
+follow offset=-60,30,-10 aim=sat
+wait 40
+capture dc_8_final
+launch crew craft=dream event=touchdown lead=5 follow=1
+follow offset=-50,25,-6 aim=sat
+wait 40
+capture dc_9_touchdown
+launch crew craft=dream event=stop lead=-30 follow=1
+follow offset=-40,30,-6 aim=sat
+wait 40
+capture dc_10_stopped
+missions milestone list
+launch check

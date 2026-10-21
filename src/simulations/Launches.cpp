@@ -301,6 +301,17 @@ bool Catalog::load(const std::string &path, std::string &err)
                 if (ret == "lands")
                     pg.crewLands = true;
                 pg.burnsUp = ret == "burns";
+                pg.runway = ret == "runway";
+                if (cr.contains("runway"))
+                {
+                    const auto &rw = cr["runway"];
+                    pg.runwayLat = rw.value("lat", pg.runwayLat);
+                    pg.runwayLon = rw.value("lon", pg.runwayLon);
+                    pg.runwayHdgDeg = rw.value("heading_deg", pg.runwayHdgDeg);
+                    pg.runwayLenM = rw.value("length_m", pg.runwayLenM);
+                    pg.runwayElevM = rw.value("elev_m", pg.runwayElevM);
+                }
+                pg.alternateWith = cr.value("alternate_with", std::string());
                 pg.heatShieldM = cr.value("heat_shield_m", pg.heatShieldM);
                 pg.portUse = cr.value("ports", std::string(pg.cargo ? "cargo" : "crew"));
                 pg.sharePorts = cr.value("share_crew_ports", false);

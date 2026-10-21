@@ -251,6 +251,14 @@ class Builder:
 
 
 # ── Vehicles ─────────────────────────────────────────────────────────────────────────────────────────────────
+DREAMCHASER_REFS = [
+    "Sierra Space / Wikipedia 'Dream Chaser': cargo spaceplane 9 m long, 7 m wingspan (the wings fold to fit a 5 m "
+    "fairing), lands on a runway (the KSC Shuttle Landing Facility); flies on Vulcan Centaur (VC4L) for CRS-2",
+    "Sierra Space 'Shooting Star': the expendable cargo module on Dream Chaser's aft end, ~4.6 m long, solar arrays, "
+    "jettisoned before the deorbit and destroyed on re-entry; berthed to the ISS by Canadarm2 (CRS-2 plan)",
+]
+
+
 STARSHIP_REFS = [
     "Wikipedia 'SpaceX Starship' (Block 3): stack 124.4 m, Super Heavy 72.3 m, both stages 9 m across, 33 Raptors "
     "on the booster (13 gimballed in the centre and middle rings: 3 + 10, 20 fixed outside), the ship 3 sea-level "
@@ -512,6 +520,19 @@ VEHICLES = {
         refs=["Wikipedia 'Long March 7': 3.35 m core (2 YF-100) 26.7 m, four 2.25 m boosters (1 YF-100 each) 26.3 m, "
               "a 3.35 m second stage (4 YF-115), 4.2 m fairing, 53.1 m; Tianzhou flies from Wenchang LC-201"],
         notes="Booster nose and fairing lengths estimated from photographs (the fairing long enough for Tianzhou)."),
+    # Dream Chaser (2026-10-21c) on Vulcan VC4L: four solids, the long 5.4 m fairing (21.3 m).
+    "vulcan_dreamchaser": dict(
+        r=2.7, core=33.3, core_mat="tan", inter=(3.6, "white"),
+        eng=dict(rings=[(2, 1.3)], re=0.85, L=2.6, z=-1.9), aft="grey",
+        side=dict(n=4, r=0.8, len=21.9, mat="white", nose=2.6, nose_kind="ogive", re=0.62, eL=1.9, cant=5.0,
+                  phase=45.0),
+        upper=dict(len=11.7, mat="white", eng=dict(rings=[(2, 0.9)], re=0.55, L=2.3, protrude=1.8)),
+        fairing=dict(fr=2.7, cyl=15.3, nose=6.0, tip=0.35), capsule="dreamchaser",
+        refs=["ULA Vulcan Centaur page / User's Guide (2023): 5.4 m booster 33.3 m, Centaur V 11.7 m, GEM 63XL "
+              "1.6 m x 22 m, 5.4 m long fairing 21.3 m",
+              "Sierra Space: Dream Chaser launches on Vulcan Centaur VC4L (four solids, long fairing)"] + DREAMCHASER_REFS,
+        notes="As vulcan with four solids and the long fairing; Dream Chaser nose down under it (the sim's spacecraft "
+              "convention puts the berthing port on top), wings folded."),
     # Berthing cargo ships (2026-10-21, captured by the ISS's Canadarm2): Cygnus on Falcon 9, HTV-X on H3.
     "falcon9_cygnus": dict(
         r=1.83, core=41.2, core_mat="white", inter=(6.0, "black"),
@@ -769,6 +790,32 @@ def upper_parts(b, v, z0=0.0, mode="full", info=None):
     return top
 
 
+
+
+def dreamchaser_body(b, z, folded=False, module=True):
+    """Dream Chaser from its nose at z (pointing -Z) to the top of its Shooting Star cargo module (returned; the CBM
+    goes on top of it). The belly (tiles) faces -Y, the wings sit low on the body; folded: the wing tips folded up
+    (the fairing), else deployed."""
+    nose = [[z, 0.05], [z + 0.25, 0.55], [z + 0.8, 0.95], [z + 2.0, 1.3], [z + 5.0, 1.5], [z + 8.7, 1.5],
+            [z + 9.0, 1.2]]
+    b.pieces("dc_fuselage", nose, "white", [z + 2.0, z + 5.0], arc=("tiles", 200.0, 340.0))
+    span = 0.9 if folded else 2.1
+    for phi in (200.0, 340.0):
+        b.fin("dc_wing", phi, 1.53, z + 6.6, 4.2, 1.5, span, 1.4, 0.25, "white", bevel=0.2)
+        b.fin("dc_winglet", 135.0 if phi < 270.0 else 45.0, 1.2, z + 7.8, 1.8, 0.8, 1.3, -0.8, 0.12, "black", ro=True)
+    b.tube("dc_aft_ring", 1.0, z + 9.0, z + 9.2, "grey", ro=True)
+    if not module:
+        return z + 9.2
+    zm = z + 9.2
+    b.profile("shooting_star", [[zm, 1.55], [zm + 4.2, 1.55], [zm + 4.6, 1.0]], "white", caps=True)
+    for phi in (0.0, 180.0):
+        if folded:
+            b.radial_box("ss_array_folded", phi, 1.55, zm + 2.0, 0.2, 1.4, 3.0, "cells")
+        else:
+            b.radial_box("ss_array", phi, 1.65, zm + 2.0, 4.1, 0.04, 1.6, "cells", ro=False)
+    return zm + 4.6
+
+
 def capsule_parts(b, kind, z):
     """A crewed spacecraft on its adapter (shown once its shroud is gone): Shenzhou, Soyuz MS or Gaganyaan, stand-ins
     of public dimensions (service module, descent module, orbital module; the arrays folded). deployed: in orbit,
@@ -819,6 +866,10 @@ def capsule_parts(b, kind, z):
         z += 1.3
         b.profile("cargo_module", [[z, 1.535], [z + 4.6, 1.535], [z + 5.1, 1.0]], "white", caps=True)
         return z + 5.1
+    if kind == "dreamchaser":
+        # Dream Chaser (2026-10-21c): nose down on the adapter (the sim's spacecraft convention: its port, the cargo
+        # module's CBM, on top), wings folded for the 5.4 m fairing, the Shooting Star cargo module above it.
+        return dreamchaser_body(b, z, folded=True)
     if kind == "htvx":
         # HTV-X (2026-10-21): the service module aft (its wings folded against it), the pressurized module forward
         # ending in its CBM.

@@ -115,6 +115,13 @@ THRESHOLDS = [
     ("docking", "berthed_tip_err_m", "<", 0.05, "", "berthing: the arm still holds it while the bolts drive"),
     ("docking", "release_tip_err_m", "<", 0.05, "", "berthing: the arm holds it until its release"),
     ("docking", "reentry_h_after_undock", "range", [1.0, 30.0], "", "a cargo ship that burns up deorbits within a day of undocking"),
+    # A runway landing (2026-10-21c: Dream Chaser at the KSC Shuttle Landing Facility)
+    ("docking", "runway.glide_start_jump_m", "<", 1.0, "", "runway: the glide starts where the entry ends"),
+    ("docking", "runway.touchdown_off_centreline_m", "<", 1.0, "", "runway: touches down on the centreline"),
+    ("docking", "runway.touchdown_height_m", "range", [2.0, 3.2], "", "runway: on its wheels"),
+    ("docking", "runway.touchdown_speed_mps", "range", [80.0, 110.0], "", "runway: lands at ~95 m/s"),
+    ("docking", "runway.touchdown_sink_mps", "range", [0.2, 3.0], "", "runway: a gentle sink rate at touchdown"),
+    ("docking", "runway.glide_km", "range", [5.0, 250.0], "", "runway: the entry ends within gliding reach"),
     ("upper_deorbit", "nose_from_retrograde_deg", "<", 15.0, "", "burns retrograde"),
     ("upper_deorbit", "nose_max_deg_s", "<", 6.0, "", "turns smoothly before and after the burn"),
     ("upper_deorbit", "burn_max_proper_accel_m_s2", "<", 25.0, "", "the deorbit burn's thrust / mass (one engine throttled, a flat profile with 1-s ramps)"),
