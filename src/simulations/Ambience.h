@@ -103,8 +103,10 @@ public:
     const TonalityConfig &tonality() const { return tonalityCfg_; }
 
     // The table's "music_upwell" block: the gain of the playing track's upwell stem (AudioSystem),
-    // as a piecewise-linear map of one driver (the glare on screen), and how fast it moves.
-    // False when the table has no such block.
+    // and how fast it moves. Either one piecewise-linear map of a driver (the old form) or "sources": a
+    // list of such maps (glare on screen, burning rockets, re-entry fireballs, collision dust; 2026-10-21)
+    // combined by "combine": "max" (the loudest source) or "soft_sum" (1 - prod(1 - g)). False when the
+    // table has no such block.
     bool upwellTarget(float &gain) const;
     float upwellFadeInS() const { return upwellFadeInS_; }
     float upwellFadeOutS() const { return upwellFadeOutS_; }
@@ -188,7 +190,8 @@ private:
     uint16_t tonal_[3] = {0x5AD, 0x81, 0x42};
     TonalityConfig tonalityCfg_;
     bool hasUpwell_ = false;
-    Mod upwellMod_;
+    std::vector<Mod> upwellMods_;
+    bool upwellSoftSum_ = false;
     float upwellFadeInS_ = 2.0f, upwellFadeOutS_ = 6.0f;
     bool parseMod(const nlohmann::json &mj, Mod &m, std::string &err) const;
     std::vector<std::pair<std::string, float>> groupGains_;

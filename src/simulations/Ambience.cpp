@@ -112,7 +112,14 @@ bool Ambience::upwellTarget(float &gain) const
 {
     if (!loaded_ || !hasUpwell_)
         return false;
-    gain = std::clamp(upwellMod_.eval(values_[upwellMod_.driver]), 0.0f, 1.0f);
+    float g = 0.0f, rest = 1.0f;
+    for (const Mod &m : upwellMods_)
+    {
+        const float gi = std::clamp(m.eval(values_[m.driver]), 0.0f, 1.0f);
+        g = std::max(g, gi);
+        rest *= 1.0f - gi;
+    }
+    gain = upwellSoftSum_ ? 1.0f - rest : g;
     return true;
 }
 
@@ -229,8 +236,28 @@ bool Ambience::load(const std::string &path, std::string &err)
         {
             const json &u = j["music_upwell"];
             std::string me;
-            if (!parseMod(u, upwellMod_, me))
-                throw std::runtime_error("music_upwell: " + me);
+            upwellMods_.clear();
+            if (u.contains("sources"))
+            {
+                for (const json &sj : u.at("sources"))
+                {
+                    Mod m;
+                    if (!parseMod(sj, m, me))
+                        throw std::runtime_error("music_upwell.sources: " + me);
+                    upwellMods_.push_back(m);
+                }
+            }
+            else
+            {
+                Mod m;
+                if (!parseMod(u, m, me))
+                    throw std::runtime_error("music_upwell: " + me);
+                upwellMods_.push_back(m);
+            }
+            const std::string comb = u.value("combine", std::string("max"));
+            if (comb != "max" && comb != "soft_sum")
+                throw std::runtime_error("music_upwell: combine must be \"max\" or \"soft_sum\"");
+            upwellSoftSum_ = comb == "soft_sum";
             upwellFadeInS_ = std::max(0.05f, u.value("fade_in_s", upwellFadeInS_));
             upwellFadeOutS_ = std::max(0.05f, u.value("fade_out_s", upwellFadeOutS_));
             hasUpwell_ = true;
@@ -578,5 +605,16 @@ json Ambience::stateJson() const
     for (const auto &p : on)
         audible.push_back(p.second);
     j["audible"] = audible;
+    if (hasUpwell_)
+    {
+        // The upwell stem's target, per source (2026-10-21): which source asks for how much.
+        json us = json::array();
+        for (const Mod &m : upwellMods_)
+            us.push_back({{"driver", names_[m.driver]}, {"value", values_[m.driver]},
+                          {"gain", std::clamp(m.eval(values_[m.driver]), 0.0f, 1.0f)}});
+        float tg = 0.0f;
+        upwellTarget(tg);
+        j["upwell"] = {{"sources", us}, {"combine", upwellSoftSum_ ? "soft_sum" : "max"}, {"target", tg}};
+    }
     return j;
 }

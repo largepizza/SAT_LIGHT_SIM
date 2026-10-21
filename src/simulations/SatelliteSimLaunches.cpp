@@ -6376,6 +6376,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (I > 1e-3)
             {
                 const double m = -1.5 - 2.5 * std::log10(I) + 5.0 * std::log10(range / 1.0e5) + ext;
+                if (!earthBlocks(P))
+                    ambUpwellSource(2, toEnu(rel), range, m);
                 const double fl = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
                 col = glm::mix(glm::vec3(1.0f, 0.62f, 0.38f), glm::vec3(1.0f, 0.55f, 0.75f), (float)glm::clamp(v / 7500.0, 0.0, 1.0));
                 // (2026-10-21, the daylight review) The plasma is at the heat shield, not at the docking port (the
@@ -6563,6 +6565,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             {
                 const double m = -4.0 - 2.5 * std::log10(I) + 5.0 * std::log10(range / 1.0e5) +
                                  atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
+                ambUpwellSource(2, toEnu(rel), range, m);
                 const double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
                 const glm::vec3 col = glm::mix(glm::vec3(1.0f, 0.62f, 0.38f), glm::vec3(1.0f, 0.55f, 0.75f),
                                                (float)glm::clamp(v / 7500.0, 0.0, 1.0));
@@ -6643,6 +6646,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     // its mesh as that resolves.
                     double m = 4.3 + 5.0 * std::log10(range / 1.0e6) +
                                atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
+                    ambUpwellSource(1, toEnu(rel), range, m);
                     const double px = rocketMeshPx(selTransients[idx], pixA, eye);
                     const double keep = 1.0 - glm::smoothstep(2.0, 8.0, px);
                     if (keep <= 0.0)
@@ -6789,6 +6793,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     fm += 0.7;
                 m = fm + 5.0 * std::log10(range / 1.0e5) + ext - 2.5 * std::log10(std::max((double)launchRocketGain, 1e-3));
                 col = glm::mix(glm::vec3(1.0f, 0.82f, 0.62f), glm::vec3(1.0f, 0.6f, 0.3f), (float)vh.soot);
+                ambUpwellSource(0, toEnu(rel), range, m); // the music's upwell (SatelliteSimAmbience.cpp)
             }
             else
             {
@@ -6800,6 +6805,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     continue;
                 m = (stage == 0 ? 3.0 : 3.8) + 5.0 * std::log10(range / 1.0e6) + ext;
                 col = glm::vec3(0.95f, 0.95f, 0.98f);
+                ambUpwellSource(1, toEnu(rel), range, m); // before the mesh fade: the body, not its point
                 // The sunlit body gives way to its mesh as that resolves (a burning stage keeps its flame's point).
                 if (trIdx < selTransients.size())
                 {

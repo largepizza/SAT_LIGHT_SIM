@@ -2575,6 +2575,25 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   over 6 s by `updateAmbience` → `AudioSystem::setUpwellGain`, under the music bus (so the music
   volume and altitude fade apply). Verified in `ambience_beams.satcmd`: 1.0 facing the Reflect ring,
   0 looking away, and in the offline render the track and its stem sit at the same sample offset.
+  **The upwell has more sources than the glare (2026-10-21, issue 20261021_002542 "Upwells": launches, firing
+  engines, collision dust).** `"music_upwell"` takes `"sources"` (a list of driver maps) + `"combine"` (`max`, or
+  `soft_sum` = 1 - prod(1 - g)); the old single-map form still loads. The drivers are equivalent apparent
+  MAGNITUDES at the camera (30 = nothing) of what the visuals draw, listed each frame by the drawing code
+  (`ambUpwellSource`, SatelliteSim.h; read and cleared next frame in `computeAmbienceContext`): `rocket_mag` burning
+  engines (the flame's magnitude at 100 km + distance + extinction, no daylight suppression), `stage_mag` sunlit
+  coasting stages / fairing halves (the body before its mesh fade), `fireball_mag` every glowing re-entry fragment
+  (`fbDrawReentry`) + the ship / capsule entry glows, `dust_mag` each dust tube piece (K amp / r^2, lit and not behind
+  the Earth). Each source counts when on screen (the glare's soft frame edge) or NEAR (full within 8 / 1.5 / 15 / 20
+  km for rocket / stage / fireball / dust, none past 6x), so a watched or followed launch rises whichever way the
+  camera looks; summed per kind, eased up 0.15 s / down 0.8 s in log flux. Maps: rocket -10 → 1, -8 → 0.85, -5.5 →
+  0.4, -3 → 0; stage -13 → 1, -11 → 0.6, -8 → 0; fireball -7 → 1, -5 → 0.8, -3 → 0.4, -1 → 0; dust -8 → 1, -6 → 0.8,
+  -4 → 0.4, -2 → 0. Measured (harness_runs/upwell, `audio state` -> `upwell` {sources: driver/value/gain, target}):
+  Starship from 12 km beside the pad 0 before ignition, -9.5 → 0.97 at lift-off (gain 0.87 two s later), 1.0 by
+  T+40 and still 0.99 looking at the ground; gone ~6 s after T+290; from 150 km (below the horizon, then -1 mag) 0;
+  following a Falcon 9 -18 → 1.0; a retiree re-entry from 120 km -3 → -6.4: 0.4 → 0.94; a Starlink breakup seen
+  overhead from the ground -6.4 → 0.84 for minutes, followed -16 → 1; a day-21 cascade night sky -1 .. -2 → 0. The
+  intro rule and the 2 s / 6 s slews are unchanged. Open: dust and fireballs are not tested against cloud; a caught
+  ship in its tower reads stage_mag ~-5 from 12 km (harmless at that map).
 - **The beam layers speak only BETWEEN tracks**, under the `music_gap` driver: 0 while a track plays,
   a triangle over the silent gap (0 at its start, 1 halfway, 0 at its end — a generous swell, never a
   cut when the song ends), 1 when no music is audible (player off or paused, music volume or the

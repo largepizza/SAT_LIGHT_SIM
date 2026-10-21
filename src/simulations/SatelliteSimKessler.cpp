@@ -1842,6 +1842,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     FPROF_SCOPE("kesslerFillDust");
     kDustCount = 0;
     kDustDbg.clear();
+    ambUpSrc_.clear(); // refilled by everything drawn below (dust, fireballs, rockets); read by the next ambience update
     kesslerDropGoneSelection(); // (every frame; cheap)
     if (!kDustMapped)
         return;
@@ -1964,6 +1965,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     std::sort(cands.begin(), cands.end(), [](const Cand &a, const Cand &b) { return a.pri > b.pri; });
     const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
     auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
+    const glm::dvec3 sunDU = glm::normalize(glm::dvec3(sunDirECI));
     const uint32_t dustMax = kDustMax;
     // The cloud as a TUBE along its orbit (2026-10-20, issue 20261019_231126: a station's cloud was drawn as up to 12
     // straight Gaussians ~2000 km long, "beams" crossing the sky, and the count of them stepped with age (a ceil() of
@@ -2123,6 +2125,20 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
                          ? glm::vec4(glm::vec3(rel / dist), (float)std::sqrt(1.0 - (rad / dist) * (rad / dist)))
                          : glm::vec4(0.0f);
             d.c = glm::vec4(glm::vec3(rel), (float)(ampC * w * toSky));
+            // The music's upwell: this piece's light at the eye as a magnitude (effectFlare = K amp / r^2: the
+            // Gaussian's density integrates to 1), lit only where its centre is out of the Earth's shadow.
+            const glm::dvec3 toC = ctr - eye;
+            const double bE = glm::dot(eye, toC / rng), cE = glm::dot(eye, eye) - satphot::kEarthRadiusM * satphot::kEarthRadiusM;
+            const double dE = bE * bE - cE;
+            const bool behindEarth = dE > 0.0 && (-bE - std::sqrt(dE)) > 0.0 && (-bE - std::sqrt(dE)) < rng;
+            if (!behindEarth && (glm::dot(ctr, sunDU) > 0.0 ||
+                                           glm::length(ctr - glm::dot(ctr, sunDU) * sunDU) > satphot::kEarthRadiusM))
+            {
+                const double fl = satphot::kFluxToFlare * (double)brightnessScale * ampC * w / (rng * rng);
+                if (fl > 1e-6)
+                    ambUpwellSource(3, rel, std::max(dist - 2.0 * std::max({sR, sS, sW}), 1.0),
+                                    6.0 - 2.5 * std::log10(fl / 0.008));
+            }
             d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
                              (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sR * sS * sW)));
             d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
@@ -2353,6 +2369,8 @@ void SatelliteSim::fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, doub
         const glm::dvec3 dirE = toEnu(rel) / range;
         const double m = m0 - 2.5 * std::log10(f.I) + 5.0 * std::log10(range / 1.0e5) +
                          atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
+        if (!hidden && f.I > 1e-4)
+            ambUpwellSource(2, dirE * range, range, m); // the music's upwell (SatelliteSimAmbience.cpp)
         double flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
         if ((flare < 2e-4 || f.I <= 1e-4) && !(wanted && mainBody))
             continue;
