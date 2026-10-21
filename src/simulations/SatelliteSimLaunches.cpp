@@ -4864,11 +4864,15 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             const auto b0 = std::chrono::steady_clock::now();
             // Each piece sized by the measured cost of a build (L.buildMsEach, eased), so the last piece cannot overrun
             // the budget by much: a piece of 128 expensive builds alone took ~40 ms (1 yr/s, the user's settings).
+            // The frame's first piece is at most 16 (the cost of a build varies by an order of magnitude: the first
+            // builds of a day ask for the rivals' day buckets), then each piece takes this frame's measured cost.
+            double eachNow = -1.0;
             while (done < toBuild.size())
             {
                 const double spent = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count();
                 const size_t piece =
-                    (size_t)std::clamp((8.0 - spent) / std::max(L.buildMsEach, 0.005), 4.0, 256.0);
+                    eachNow < 0.0 ? (size_t)std::clamp(6.0 / std::max(L.buildMsEach, 0.005), 4.0, 16.0)
+                                  : (size_t)std::clamp((8.0 - spent) / std::max(eachNow, 0.005), 4.0, 256.0);
                 const size_t e = std::min(toBuild.size(), done + piece);
                 const auto p0 = std::chrono::steady_clock::now();
                 const std::vector<LaunchImpl::ToBuild> part(toBuild.begin() + (ptrdiff_t)done, toBuild.begin() + (ptrdiff_t)e);
@@ -4878,6 +4882,7 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
                 const double each =
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count() / (double)part.size();
                 L.buildMsEach = 0.5 * L.buildMsEach + 0.5 * each;
+                eachNow = eachNow < 0.0 ? each : std::max(each, 0.5 * (eachNow + each));
                 done = e;
                 if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count() > 8.0)
                     break;

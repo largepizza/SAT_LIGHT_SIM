@@ -1296,6 +1296,7 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
     char *stage = static_cast<char *>(kStageMapped);
     VkDeviceSize off = 0;
     std::vector<VkBufferCopy> toK, toB;
+    fprof::mark("rc.seg2a_kessler_sync"); // (a split: since the previous mark, recordCompute)
     // Roster dead / end seconds: runs of consecutive satellites, a quarter of the staging a frame (a long run,
     // e.g. the whole roster after a restart, goes up in pieces over several frames).
     if (!std::is_sorted(kDirtyRoster.begin(), kDirtyRoster.end()))
@@ -1349,6 +1350,7 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
         g.typeConst = (uint32_t)r.type | ((uint32_t)r.constIdx << 16) | ((uint32_t)(r.flags & kessler::kRecDead) << 24);
         return g;
     };
+    fprof::mark("kru.roster");
     // Deaths of records already up.
     std::sort(kDirtyPool.begin(), kDirtyPool.end());
     kDirtyPool.erase(std::unique(kDirtyPool.begin(), kDirtyPool.end()), kDirtyPool.end());
@@ -1362,6 +1364,7 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
         off += 64;
     }
     kDirtyPool.erase(kDirtyPool.begin(), kDirtyPool.begin() + (ptrdiff_t)takenPool);
+    fprof::mark("kru.deaths");
     // New records (and their J2000 phases), as many as the staging holds.
     // At most 16k new records a frame (~1 ms): building one costs a few fmods and a sin / cos.
     const size_t room = (size_t)((kStageBytes - off) / 80);
@@ -1388,6 +1391,7 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
         kPoolGpu += (uint32_t)n;
     }
     if (!toK.empty())
+    fprof::mark("kru.new");
         vkCmdCopyBuffer(cmd, kStageBuf, kesslerBuf, (uint32_t)toK.size(), toK.data());
     if (!toB.empty())
         vkCmdCopyBuffer(cmd, kStageBuf, kPoolBaseBuf, (uint32_t)toB.size(), toB.data());

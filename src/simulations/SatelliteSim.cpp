@@ -7555,6 +7555,13 @@ void SatelliteSim::setAudio(AudioSystem *audio)
             if (!rosterLifeUploaded)
                 rosterLifeUpload(*ctx_); // (the deployment era's born / gone words: a synchronous upload, ~6 ms)
         }
+        // The ambience's context once: its first evaluation sorts the deployment era's born / gone seconds of every
+        // constellation's range (rosterRangePresentFrac's cache, ~50 ms with Starmind's million).
+        if (ambience_ && ambience_->loaded())
+        {
+            computeAmbienceContext(0.0f);
+            ambPrevValid = false; // (its camera-speed state starts on the first frame)
+        }
         if (ctx_ && citySpritePipeline == VK_NULL_HANDLE)
             createCitySprites(*ctx_);
         if (ctx_ && kFirePipeline == VK_NULL_HANDLE)
