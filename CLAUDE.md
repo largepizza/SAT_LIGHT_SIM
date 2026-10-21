@@ -4779,6 +4779,30 @@ launches follow per-program cadences (no real manifest).
   the dark barely dims the sky, a sooty trail silhouettes (as pure absorbers they were dark smudges at night).
   Each Gaussian carries a view cone (80-B `GpuDustCloud`): the shader skips it with one dot product. At night the
   plumes' sunlight is raised up to 10x as the eye's sky darkens (the night exposure is not physical: see the dust).
+- **What the Gaussian list costs, and the three culls (2026-10-21).** `dustCloudsCS` costs every texel the work of
+  every Gaussian whose cone covers it; old, wide or Earth-shadowed exhaust (bells hundreds of km across, trails in the
+  night) covers the whole sky while adding nothing: in the droneship bench view 160 of 390 Gaussians were in every
+  texel, ~1.5 ms of their lighting alone. (1) **Per-tile cull** (`cullDustForTile`, cloud_march.comp, before main's
+  early return like `cullBeamsForTile`): each 16x16-texel workgroup tests every cone once against the tile's cone
+  into a 1024-bit LIST-ORDER mask (so the sums keep their order: the same image as the full scan), plus per Gaussian
+  the engine lights whose reach can touch it (`sDustLM`: reach + 8 sigma_max, sigma_max^2 <= the covariance's trace
+  from the inverse scaled to O(1) — entries reach 1e-12 for a 1000-km bell). (2) **Per-texel faint skip**: a plume
+  whose optical depth here is < 1e-5 and whose light (Sun / sky colour x 2.6, + each reaching engine light at that
+  point) is < 2e-7 of white at the frame's exposure (DustBuf header word 2 = `skyExposure()`, written by
+  `kesslerFillDust`) is skipped before its lighting; summed over 1024 that is <= 1% dimming and 2e-4 of white,
+  worst case. (3) **CPU significance cull** (`dustCullInsignificant`, at the plumes' emission, on a CPU copy — never
+  read the mapped list back): a worst-case bound per Gaussian (its largest column along any ray from the eye, in
+  whitened coordinates: K sqrt(2 pi) (s0 + sMax / (Y sqrt(e))); x the billows' 2.5; light from the colour and every
+  listed engine light), the faintest dropped while the SUMMED bounds stay < 2e-4 of white and 1% dimming (~60 in the
+  droneship view: the dimming budget binds, an eye inside a long Gaussian can look down its length). Knockouts
+  16777216 (tile cull + faint skip off) and 33554432 (CPU cull off) are the A/Bs. Measured interleaved in one live
+  app, scenes paused (RTX 3070 Ti, 1600x900, cloud_march): droneship 8.1 -> 6.6 ms, era 2032 6.0 -> 5.0, day lift-off
+  4.3 -> 3.4, night follow 3.3 -> 3.0; captures within the base-vs-base noise floor; composite at 128 registers,
+  8.8 KB shared. Also cheaper in the loop: `eM` = e + tc^2 q (no extra matrix product), the Earth-shadow test only
+  where used. **The bench's "+22 ms" for era / droneship was GPU contention** (another agent's app on the GPU: the
+  same scenes measured +3.7 / +3.6 before this pass) — time the launch bench only with no other app running, and
+  trust interleaved live A/Bs over single bench runs. `launch state` -> `dust_list` (counts by kind and cone width,
+  `culled`).
 - **Flames** (2026-10-19, issue 20261019_175126 shots 5-6): out of the model's engines (`engineGeomOf`: the exit plane
   and the radius the `engines` / `upper_nozzle` / `side_nozzle` cones span, cached per type in `LaunchState::engineGeom`),
   along -nose, a chain of three emissive Gaussians (core / flame / tail: 1.2 / 3.5 / 9 exit diameters x (1 + 2.5 x the
@@ -6481,6 +6505,8 @@ knockout — an optimization A/B; see "Beam pointing-ray tile culling" below), 1
 part occlusion (`sat_orbit.comp`, geometry-model types; via `GpuSatTypeHeader::occlusionOn`),
 4194304=the water map in the shared height function (terrain v2 P2, `tdDemAt`; also the cost A/B),
 8388608=**mesh shadow accel OFF** (an optimization A/B like 131072: `sat_mesh.frag`'s per-pixel occluder loop),
+16777216=**plume tile cull + faint skip OFF**, 33554432=**plume significance cull OFF** (both optimization A/Bs:
+cloud_march.comp's dust / plume Gaussian list, see Launches "What the Gaussian list costs"),
 262144=**Potato sky** (swap `skyBgPipeline` → `skyBgMinimalPipeline`), 524288=**SKY_LITE sky**
 (swap → `skyBgLitePipeline`) — see "Subsystem: Weak-Hardware Sky Tiers". These last two are
 pipeline swaps, not in-shader branches; they're set by the Potato / Planetarium presets and are

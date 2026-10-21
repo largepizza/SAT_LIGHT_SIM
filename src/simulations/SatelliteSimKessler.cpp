@@ -1450,6 +1450,11 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     uint32_t *hdr = static_cast<uint32_t *>(kDustMapped);
     hdr[0] = 0;
     hdr[1] = 0; // the engine lights (engineLightsFlush)
+    {
+        // the frame's sky exposure (cloud_march.comp: the faint plumes' skip is in display units)
+        const float ex = skyExposure();
+        std::memcpy(&hdr[2], &ex, 4);
+    }
     GpuDustCloud *out = reinterpret_cast<GpuDustCloud *>(static_cast<char *>(kDustMapped) + 16);
     uint32_t n = 0;
     // Physical radiance (per unit solar irradiance, 1/sr) -> the sky's units, through the point sources' scale: a
