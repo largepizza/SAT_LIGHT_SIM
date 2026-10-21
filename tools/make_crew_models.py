@@ -192,26 +192,58 @@ def gaganyaan(b, cm_only=False):
     return z + 0.3
 
 
+# Canopy liveries (2026-10-21, the daylight review): alternating gores, from photographs of the recoveries.
+CANOPY_COLORS = {"dragon": ("white", "chute_red"), "soyuz": ("chute_orange", "white"),
+                 "shenzhou": ("chute_red", "white"), "gaganyaan": ("chute_orange", "white")}
+
+
+def line(b, name, p0, p1, r):
+    """A thin render-only line (a suspension line, a riser) from p0 to p1."""
+    d = [p1[i] - p0[i] for i in range(3)]
+    L = math.sqrt(sum(v * v for v in d))
+    z = [v / L for v in d]
+    ref = (1.0, 0.0, 0.0) if abs(z[0]) < 0.9 else (0.0, 1.0, 0.0)
+    x = [ref[1] * z[2] - ref[2] * z[1], ref[2] * z[0] - ref[0] * z[2], ref[0] * z[1] - ref[1] * z[0]]
+    n = math.sqrt(sum(v * v for v in x))
+    x = [v / n for v in x]
+    y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]]
+    c = b.profile(name, [[0.0, r], [L, r]], "grey", ro=True, rot=rm.quat_from_basis(x, y, z))
+    c["position"] = rm.r4(p0)
+    c["_line"] = True
+
+
 def chutes(b, top, kind):
-    """Render-only main canopies over the module (+Z up in descent): hemispherical shells on their riser."""
+    """Render-only main canopies over the module (+Z up in descent): shells of alternating gores on their suspension
+    lines, which gather at a confluence above the module (a riser from there to the module's top)."""
     if kind == "dragon":
         cans = [(17.0, 18.0, 42.0, a) for a in (45.0, 135.0, 225.0, 315.0)]
     elif kind == "gaganyaan":
         cans = [(12.0, 13.0, 38.0, a) for a in (90.0, 210.0, 330.0)]
     else:
         cans = [(0.0, 18.0, 40.0, 0.0)]
+    c0, c1 = CANOPY_COLORS[kind]
+    ngore, nline = 12, 16
     for off, rad, hgt, az in cans:
         x, y = off * math.cos(math.radians(az)), off * math.sin(math.radians(az))
         pts = [[top + hgt + rad * math.sin(math.pi * 0.5 * k / 6) * 0.55, rad * math.cos(math.pi * 0.5 * k / 6)]
                for k in range(7)]
         pts[-1][1] = 0.0
-        b.profile("canopy", pts, "white", x=x, y=y, ro=True, inner="grey")
-        b.tube("riser", 0.05, top, top + hgt, "grey", ro=True, x=x * 0.5, y=y * 0.5)
+        for g in range(ngore):
+            c = b.profile("canopy", pts, c0 if g % 2 == 0 else c1, x=x, y=y, ro=True, inner="grey")
+            c["sweep_deg"] = [360.0 * g / ngore, 360.0 * (g + 1) / ngore]
+        conf = [x * 0.6, y * 0.6, top + 0.3 * hgt]
+        line(b, "riser", [0.0, 0.0, top], conf, 0.08)
+        for k in range(nline):
+            t = 2.0 * math.pi * k / nline
+            line(b, "suspension_line", conf, [x + rad * math.cos(t), y + rad * math.sin(t), top + hgt], 0.06)
 
 
 def shift(comps, dz):
     for c in comps:
-        if c["type"] == "profile":
+        if c.pop("_line", False):
+            # a line (its profile runs along its own rotated axis): only its start point moves
+            c["position"] = rm.r4([c["position"][0], c["position"][1], c["position"][2] + dz])
+        elif c["type"] == "profile":
             c["profile"] = [rm.r4([p[0] + dz, p[1]]) for p in c["profile"]]
             # A rotated profile's position carries its own z (the open nose cone).
             if c.get("rotation_quat"):

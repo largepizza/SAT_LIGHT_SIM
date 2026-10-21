@@ -41,6 +41,8 @@ MATERIALS = [
     {"name": "lattice", "preset": "truss", "coverage": 0.3, "truss_pitch": 0.7},
     {"name": "cells", "preset": "solar_cell"},
     {"name": "green", "preset": "white_paint", "diffuse_albedo": 0.3, "color": [0.36, 0.42, 0.30]},
+    {"name": "chute_orange", "preset": "white_paint", "diffuse_albedo": 0.55, "color": [0.96, 0.45, 0.10]},
+    {"name": "chute_red", "preset": "white_paint", "diffuse_albedo": 0.45, "color": [0.85, 0.12, 0.10]},
 ]
 MATERIAL_SOURCES = {
     "white": "white paint (operator liveries in launch photographs)",
@@ -56,6 +58,8 @@ MATERIAL_SOURCES = {
     "lattice": "an open truss interstage (Soyuz Block A / Block I)",
     "cells": "Crew Dragon trunk's body-mounted solar cells; a crewed spacecraft's folded arrays",
     "green": "Soyuz orbital module's green insulation blanket",
+    "chute_orange": "orange parachute nylon (Soyuz, Gaganyaan canopies)",
+    "chute_red": "red parachute nylon (Shenzhou, Dragon canopies)",
 }
 
 

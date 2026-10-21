@@ -300,6 +300,7 @@ bool Catalog::load(const std::string &path, std::string &err)
                 if (ret == "lands")
                     pg.crewLands = true;
                 pg.burnsUp = ret == "burns";
+                pg.heatShieldM = cr.value("heat_shield_m", pg.heatShieldM);
                 pg.portUse = cr.value("ports", std::string(pg.cargo ? "cargo" : "crew"));
                 pg.sharePorts = cr.value("share_crew_ports", false);
                 if (pg.sharePorts)

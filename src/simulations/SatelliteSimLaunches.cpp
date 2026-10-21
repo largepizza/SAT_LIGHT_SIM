@@ -1518,6 +1518,8 @@ static SatelliteSim::LaunchState::Cand candidate(const SatelliteSim &sim, Satell
         const double thCap = L.upperTrackFor(c.veh, pg.parkKm).at(t2).x / kR + launch::meanMotion(r0) * vh.deployAfter;
         const double appr = crewApproachS(true);
         double t = c.tL, a = c.az;
+        double best[4] = {-1.0, -1.0, -1.0, -1.0}, bestAz[4] = {0.0, 0.0, 0.0, 0.0}, bestDock[4] = {0.0, 0.0, 0.0, 0.0};
+        double firstAny = -1.0;
         for (int j = 0; j < 64 && t >= 0.0 && t < c.tL + 30.0 * kDay; ++j)
         {
             const glm::dvec3 N = normalAt(t);
@@ -1534,22 +1536,40 @@ static SatelliteSim::LaunchState::Cand candidate(const SatelliteSim &sim, Satell
             g.rPmax = std::max(r0, g.rS - 8000.0);
             const double thSt = std::atan2(glm::dot(so.posEci, A0), glm::dot(so.posEci, U0));
             const double lag0 = wrap2pi(thSt - thCap - 5000.0 / g.rS);
-            bool hit = false;
-            for (const auto &w : pg.fastDockH)
+            // The program's windows in order of preference (Soyuz / Progress: 2-orbit, then 4-orbit): the first pass that
+            // allows the first window is taken if it comes within 14 days of the first pass allowing any.
+            for (size_t wi = 0; wi < pg.fastDockH.size() && wi < 4; ++wi)
             {
+                const auto &w = pg.fastDockH[wi];
                 double D = 0.0;
-                if (crewFastD(g, lag0, w.first * 3600.0 - sepAfter - appr, w.second * 3600.0 - sepAfter - appr, D))
+                if (best[wi] < 0.0 &&
+                    crewFastD(g, lag0, w.first * 3600.0 - sepAfter - appr, w.second * 3600.0 - sepAfter - appr, D))
                 {
-                    c.tL = t;
-                    c.az = a;
-                    c.dockAfter = sepAfter + D + appr;
-                    hit = true;
-                    break;
+                    best[wi] = t;
+                    bestAz[wi] = a;
+                    bestDock[wi] = sepAfter + D + appr;
                 }
             }
-            if (hit)
+            if (firstAny < 0.0)
+                for (size_t wi = 0; wi < 4; ++wi)
+                    if (best[wi] >= 0.0)
+                        firstAny = t;
+            if (best[0] >= 0.0 || (firstAny >= 0.0 && t > firstAny + 14.0 * kDay))
                 break;
             t = nextCrossing(site, normalAt, t + 3600.0, a);
+        }
+        int pick = -1;
+        if (best[0] >= 0.0 && best[0] <= firstAny + 14.0 * kDay)
+            pick = 0;
+        else
+            for (int wi = 0; wi < 4; ++wi)
+                if (best[wi] >= 0.0 && (pick < 0 || best[wi] < best[pick]))
+                    pick = wi;
+        if (pick >= 0)
+        {
+            c.tL = best[pick];
+            c.az = bestAz[pick];
+            c.dockAfter = bestDock[pick];
         }
     }
     std::unique_lock<std::shared_mutex> lk(L.candsMx);
@@ -5167,6 +5187,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         const double ext = atmExtinctionMag(eye, rel / range, range, (double)extinctionCoeff);
         double flare = 0.0;
         glm::vec3 col(0.95f, 0.95f, 0.98f);
+        glm::dvec3 ptRel = rel; // where its point is drawn (the entry: the heat shield)
         if (ph == CP_ENTRY)
         {
             const double te = t - C.tEI, s = glm::clamp(te / LaunchImpl::kCrewEntryS, 0.0, 1.0);
@@ -5177,11 +5198,33 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (I > 1e-3)
             {
                 const double m = -1.5 - 2.5 * std::log10(I) + 5.0 * std::log10(range / 1.0e5) + ext;
-                flare = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
+                const double fl = 0.008 * std::pow(10.0, 0.4 * (6.0 - m)) * (1.0 - 0.95 * dayness);
                 col = glm::mix(glm::vec3(1.0f, 0.62f, 0.38f), glm::vec3(1.0f, 0.55f, 0.75f), (float)glm::clamp(v / 7500.0, 0.0, 1.0));
+                // (2026-10-21, the daylight review) The plasma is at the heat shield, not at the docking port (the
+                // model's origin): a few metres down the capsule. The point gives way, as the capsule's mesh resolves,
+                // to a sheath of glow the size of the capsule around the heat shield (it was a white disc with glare
+                // spikes beside a resolved capsule).
+                const glm::dmat3 Ra = LaunchImpl::crewAttitude(C, t);
+                const glm::dvec3 Ph = P - Ra[2] * L.cat.programs[B.prog].heatShieldM;
+                ptRel = Ph - eye;
+                const double keep = 1.0 - glm::smoothstep(2.0, 8.0, rocketMeshPx(selTransients[idx], pixA, eye));
+                flare = fl * keep;
+                if (keep < 1.0 && n < kMaxDustClouds)
+                {
+                    const double sMin = 0.6 * range * 2.0 * pixFull;
+                    const double sS = std::max(2.2, sMin), iS = 1.0 / (sS * sS);
+                    const double J = 0.5 * fl * (1.0 - keep) * range * range / K;
+                    const glm::dvec3 ce = toEnu(Ph - Ra[2] * 0.8 - eye);
+                    GpuDustCloud &d = out[n++];
+                    d.c = glm::vec4(glm::vec3(ce), (float)(J * toSky));
+                    d.ia = glm::vec4((float)iS, (float)iS, (float)iS, (float)(1.0 / (kTwoPi1p5 * sS * sS * sS)));
+                    d.ib = glm::vec4(0.0f);
+                    d.col = glm::vec4(col, 1.0f);
+                    d.cone = coneOf(ce, 5.5 * sS);
+                }
                 // Its glowing wake: the last 4 s of path, an emissive Gaussian.
                 glm::dvec3 Pp;
-                if (flare > 5e-3 && n < kMaxDustClouds && LaunchImpl::crewPos(C, t - 4.0, Pp))
+                if (fl > 5e-3 && n < kMaxDustClouds && LaunchImpl::crewPos(C, t - 4.0, Pp))
                 {
                     const glm::dvec3 axis = P - Pp;
                     const double Lw = glm::length(axis);
@@ -5193,8 +5236,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     const double sA = std::max(0.28 * Lw, sMin), sP = std::max(80.0, sMin);
                     const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
                     auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
-                    const double J = 0.6 * flare * range * range / K;
-                    const glm::dvec3 ce = toEnu(P - 0.55 * axis - eye);
+                    const double J = 0.6 * fl * range * range / K;
+                    const glm::dvec3 ce = toEnu(Ph - 0.55 * axis - eye);
                     GpuDustCloud &d = out[n++];
                     d.c = glm::vec4(glm::vec3(ce), (float)(J * toSky));
                     d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2), (float)(1.0 / (kTwoPi1p5 * sA * sP * sP)));
@@ -5225,8 +5268,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         if (flare > 2e-4)
         {
             selTransients[idx].flare = (float)flare;
+            const double pr = std::max(glm::length(ptRel), 1.0);
             if (kFireCount < kFireballMax)
-                fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(rel) / range), (float)flare), glm::vec4(col, (float)range)};
+                fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(ptRel) / pr), (float)flare), glm::vec4(col, (float)pr)};
         }
     }
     for (size_t li = 0; li < L.visList.size(); ++li)

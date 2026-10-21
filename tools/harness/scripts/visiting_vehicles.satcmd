@@ -1,0 +1,50 @@
+# Visiting vehicles (2026-10-21, CLAUDE.md "Launches" > Visiting vehicles): fast-track rendezvous, cargo ships
+# (Progress, Tianzhou, Cargo Dragon), a cargo ship's destructive re-entry, a crew's return under parachutes.
+# (Every jump starts from the default date: a search past the Sun's Fury (2037-07-15) finds no launches.)
+#   python tools/harness/run.py --script tools/harness/scripts/visiting_vehicles.satcmd
+set clouds_v2.coverage 0
+wait 20
+launch check
+# Progress MS on its fast track: holding 20 m off Zvezda aft, then docked.
+launch crew craft=progress station=international event=hold20 lead=-120 follow=1
+wait settle
+capture progress_hold20
+missions milestone list
+time set 2036-11-22T00:00:00Z
+launch crew craft=progress station=international event=dock lead=-1800 follow=1
+wait settle
+capture progress_docked
+# Tianzhou: its approach to Tianhe aft, then its re-entry (the fireball, kind 9), followed through it.
+time set 2036-11-22T00:00:00Z
+launch crew craft=tianzhou event=axis lead=-60 follow=1
+wait settle
+capture tianzhou_axis
+time set 2036-11-22T00:00:00Z
+launch crew craft=tianzhou event=entry lead=5 follow=1
+wait 10
+time add 60
+wait 30
+state
+capture tianzhou_fireball_60s
+time add 40
+wait 30
+state
+capture tianzhou_fireball_100s
+# Cargo Dragon docked at the ISS between the crews.
+time set 2036-11-22T00:00:00Z
+launch crew craft="cargo dragon" station=international event=dock lead=-3600 follow=1
+wait settle
+capture cargo_dragon_docked
+# Crews coming home under parachutes.
+time set 2036-11-22T00:00:00Z
+launch crew craft=crew station=international event=chutes lead=-150 follow=1
+wait settle
+capture dragon_mains
+time set 2036-11-22T00:00:00Z
+launch crew craft=crew station=tiangong event=chutes lead=-150 follow=1
+wait settle
+capture shenzhou_mains
+time set 2036-11-22T00:00:00Z
+launch crew craft=crew station=russian event=chutes lead=-150 follow=1
+wait settle
+capture soyuz_mains

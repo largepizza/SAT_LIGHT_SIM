@@ -184,6 +184,7 @@ struct Program
     // visit of the same program, as the crews).
     bool cargo = false;
     bool burnsUp = false;
+    double heatShieldM = 3.0; // its heat shield below the docking port (m, the entry glow sits there; "heat_shield_m")
     std::vector<std::pair<double, double>> fastDockH;
     std::string portUse = "crew";
     bool sharePorts = false;
