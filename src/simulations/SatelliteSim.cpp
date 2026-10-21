@@ -4559,6 +4559,9 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
         fillMeshLocalLights(frame, P);
         meshLightsViewer_ = (int)(frame.lightInfo.x + 0.5f);
         inst.trans[1].w = (float)meshLightMask(frame, centre, radius, (double)viewerExposureNow);
+        viewerLightMaskDbg_ = (uint32_t)inst.trans[1].w;
+        for (int i = 0; i < 8; ++i)
+            viewerLightDbg_[i] = frame.lightPos[i];
     }
 
     // ── Full-renderer environment (Live light): probe slot 0 + the background ─
@@ -4627,7 +4630,44 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
         viewerMarkerLabels[m] = {true, (c.x / c.w * 0.5f + 0.5f) * frame.bgParams.z,
                                  (c.y / c.w * 0.5f + 0.5f) * frame.bgParams.w};
     }
-    meshRenderer.recordViewer(cmd, frame, inst, viewerType, envProbes.probeSet(0));
+    // (2026-10-21) A station's arm (Canadarm2 on the ISS): its three parts beside the station, posed from the
+    // station's root group here as the main view poses them from its frame (launchArmJobs).
+    GpuMeshInstance armInst[SatMeshRenderer::kViewerExtra];
+    int armTypes[SatMeshRenderer::kViewerExtra];
+    int nArm = 0;
+    if (tracked && !viewerGone && !poses.empty() && viewerSatIndex < (int)activeSatCount)
+    {
+        glm::dmat3 Rb[3];
+        glm::dvec3 org[3];
+        int ty[3];
+        const int n = viewerArmParts(viewerSatIndex, tNow, poses[0].R, poses[0].t, ty, Rb, org);
+        for (int k = 0; k < n && nArm < SatMeshRenderer::kViewerExtra; ++k)
+        {
+            const SatMeshRenderer::TypeMesh *te = meshRenderer.typeMesh(ty[k]);
+            if (!te)
+                continue;
+            GpuMeshInstance a = inst;
+            for (int g = 0; g < 4; ++g)
+            {
+                const glm::dmat3 R = g == 0 ? Rb[k] : glm::dmat3(1.0);
+                for (int c = 0; c < 3; ++c)
+                    a.rot[g * 3 + c] = glm::vec4(glm::vec3(R[c]), 0.0f);
+                a.trans[g] = glm::vec4(g == 0 ? glm::vec3(org[k]) : glm::vec3(0.0f), 0.0f);
+            }
+            a.trans[1].w = inst.trans[1].w; // the local lights that reach the station
+            a.earthShC.z = 0.0f;
+            a.earthShC.w = 0.0f;
+            a.firstMaterial = te->firstMaterial;
+            a.firstOccluder = te->firstOccluder;
+            a.occluderCount = te->occluderCount;
+            a.firstComponent = te->firstComponent;
+            armInst[nArm] = a;
+            armTypes[nArm] = ty[k];
+            ++nArm;
+        }
+    }
+    viewerArmPartsDrawn_ = nArm;
+    meshRenderer.recordViewer(cmd, frame, inst, viewerType, envProbes.probeSet(0), armInst, armTypes, nArm);
 
     // ── Glare on its glints (2026-09-26) ───────────────────────────────────
     // The main view's glare, on the glints that make the flare the ground observer sees: each glint's

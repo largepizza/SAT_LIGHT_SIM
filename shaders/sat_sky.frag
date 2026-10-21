@@ -4356,8 +4356,9 @@ void main() {
         float col;
         if (b >= r0 || tc <= 0.0)                              // grazing above the shell, or heading away
             col = (ro < r0 ? perCross : 0.0) + colPeak * exp(-pow((hT - kAirglowGreenPeakM) / w, 2.0)) * step(0.0, tc);
-        else if (hitsEarth)
-            col = ro > r0 ? perCross : 0.0;                    // down through the shell onto the Earth
+        else if (hitsEarth)                                    // down through the shell onto the Earth: only near
+            col = ro > r0 ? perCross * (1.0 - smoothstep(0.18, 0.32, cosZ)) : 0.0; // the limb (2026-10-21: the whole
+                                                               // night disc read faintly green from orbit)
         else
             col = (ro > r0 ? 2.0 : 1.0) * perCross;            // under the shell and out again
         col = min(col, colPeak);

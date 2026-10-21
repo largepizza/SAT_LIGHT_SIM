@@ -101,7 +101,7 @@ void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth, const
                    sceneFrameMem, &sceneFrameMapped);
     makeHostBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, nullptr, glareFrameBuf,
                    glareFrameMem, &glareFrameMapped);
-    makeHostBuffer(ctx, sizeof(GpuMeshInstance) * kMaxInstances, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr,
+    makeHostBuffer(ctx, sizeof(GpuMeshInstance) * (kMaxInstances + kViewerExtra), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr,
                    instanceBuf, instanceMem, &instanceMapped);
     // Placeholders until setTypeModels() so the descriptor set is always complete.
     makeHostBuffer(ctx, sizeof(GpuSatMeshMaterial), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr, materialBuf,
@@ -649,12 +649,16 @@ bool SatMeshRenderer::ensureViewerTarget(VulkanContext &ctx, uint32_t w, uint32_
 }
 
 void SatMeshRenderer::recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst,
-                                   int typeIdx, VkDescriptorSet probeSet)
+                                   int typeIdx, VkDescriptorSet probeSet, const GpuMeshInstance *extra,
+                                   const int *extraTypes, int nExtra)
 {
     if (!viewerFb)
         return;
     memcpy(frameMapped, &frame, sizeof(frame));
     memcpy(instanceMapped, &inst, sizeof(inst)); // viewer = instance slot 0
+    nExtra = extra && extraTypes ? std::clamp(nExtra, 0, kViewerExtra) : 0;
+    if (nExtra > 0)
+        memcpy(static_cast<GpuMeshInstance *>(instanceMapped) + kMaxInstances, extra, sizeof(GpuMeshInstance) * nExtra);
     writeShadowAccel(0, static_cast<GpuMeshInstance *>(instanceMapped)[0], typeIdx);
 
     VkClearValue clears[3] = {};
@@ -684,6 +688,9 @@ void SatMeshRenderer::recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &fram
         vkCmdBindVertexBuffers(cmd, 0, 1, &vertexBuf, &off);
         vkCmdBindIndexBuffer(cmd, indexBuf, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, tm->indexCount, 1, tm->firstIndex, tm->vertexOffset, 0);
+        for (int i = 0; i < nExtra; ++i)
+            if (const TypeMesh *te = typeMesh(extraTypes[i]))
+                vkCmdDrawIndexed(cmd, te->indexCount, 1, te->firstIndex, te->vertexOffset, kMaxInstances + (uint32_t)i);
     }
     if (viewerMarkerPipe && (frame.marker0.w > 0.5f || frame.marker1.w > 0.5f || frame.flame1.w > 0.0f))
     {

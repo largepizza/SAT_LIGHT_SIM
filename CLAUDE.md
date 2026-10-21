@@ -3200,7 +3200,7 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
       headers, because the font atlas is ASCII-only), every body a label / value grid (`uiKV`), indexed by
       `InfoSect`: STATUS (`infoStatusValue`, formatted each frame: object, constellation, satellite type, status
       operational / dead / launch / debris; for a transient — a rocket, the ship's entry, a re-entry — its
-      `transientLabel()`, altitude, speed, seconds since lift-off / glow), BRIGHTNESS (`viewerPhotValue[6]` with
+      `transientLabel()`, altitude, speed, the time row from `transientTimeRow`: long durations as d/h/m, a visiting spacecraft by phase - "Since separation", "Docked / Berthed since <UTC> (n days)", "Since undocking / unberthing", "Since entry interface"; it read "Since separation 10086696 s" docked, 2026-10-21), BRIGHTNESS (`viewerPhotValue[6]` with
       `kViewerPhotLabels`), SKY POSITION (`viewerObsValue[4]`), ORBIT (`viewerOrbitValue[5]`; hidden for a
       transient) **open by default**; then MODEL (TECHNICAL) (`viewerSatValue[4]`: type, model id, size, mesh
       triangles and parts), 3D VIEW (camera / light / pose, spin, shadows, reflections, detail, glare, markers,
@@ -4428,6 +4428,16 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
     roster junk collide; the configured avoidance applies from the CME on. Seconds before the epoch are negative
     (`sat_orbit.comp` no longer gates the roster words on `scenNowSec >= 0`, and takes a floored modulo for the dead
     tumble; re-entries index by floored hours). Going back before the breakup undoes it (pure function of time).
+    **The rebuild runs on a thread of its own (2026-10-21):** with no rollback point (any breakup before the world's
+    start) `kesslerRestart(..., async = true)` resets the mirror on the main thread and builds the world (buildWorld,
+    the hash, the cache read, the breakup's step) on `kRestartThread`; sim time holds meanwhile (`kWorkerDone` false,
+    banner "Computing the debris cascade: the breakup"), and `kesslerSync` installs it when ready (`kesslerRestartPoll`;
+    every other restart, `kesslerShutdown` and a roster rebuild join it first). Same inputs, same world. The replaced
+    world is freed on `kDisposeThread`; the launch state keeps its planes, candidates and rival day index
+    (`launchInitBlock(keepPlanes)`: they read only the roster and the catalog; the batches go, freed on a detached
+    thread); the worker's idle wait is a condition variable (`KesslerWorker::cv`: its 30-ms sleep made `stopThread`
+    take up to ~50 ms). Click frame: 69-79 ms of `kesslerRestart` + the next frame's ~75 ms plane rebuild -> 13 ms;
+    the world is installed ~150 ms later. Harness `kessler state` -> `restart_building`.
   - **Time keeps running**: sim time may lead the frontier by ~2 s of the current warp (at most one step) before it
     holds (SatelliteSim.cpp; the banner only while actually held): events published a moment late appear then.
 - **Cache**: the engine's events + frontier in `<user data>/kessler/suns_fury_<hash>.bin` (the hash covers the
@@ -4959,6 +4969,12 @@ launches follow per-program cadences (no real manifest).
   other app ran — repeat before trusting the 0.1-ms digits). Harness `launch state` -> `mesh_local_lights`,
   `mesh_lights_scene`, `mesh_lights_viewer`. Still no shadow rays: the shadow accel bins occluders across the SUN, a
   point light would need the full occluder loop (the ISS: tens of ms), so local-light shadows are not built.
+  **A light is a sphere** (2026-10-21, sat_mesh.frag): its diffuse term takes the sphere-light wrap
+  `(n.l + sinA) / (1 + sinA)`, sinA = rs / sqrt(r^2 + rs^2) (specular still needs n.l > 0). An engine's light sits ~10 m
+  behind the nozzles with rs ~10 m, and a flying stage's hull above it is at a grazing angle: as a point it lit almost
+  nothing, so in the info window's 3D view a rocket at night was a black silhouette over its flame (main view too, close
+  up). Floods (rs 0.5 m) are unchanged. Harness `launch state` -> `mesh_lights_viewer_list` (each viewer light's offset
+  from the subject, I, and whether it is in the subject's mask).
 - **The landing halo (issue 20261020_213739, 2026-10-21)** was the PLUME, not the haze: a droneship landing laid down sea
   spray (6x the exhaust's mass at kappa 14, growing 7 m/s) as a dome ~50 m round the booster, lit white by the burn and the
   floods. A ship's deck now gets a thin exhaust skirt (`landingCloud` surf 3: 1.2x the mass, kappa 9, sigma0 6 m, growth
@@ -5341,6 +5357,10 @@ launches follow per-program cadences (no real manifest).
     (`make_rocket_models.py`: `capsule` "cygnus" / "htvx" under the fairing). Not built: Dream Chaser (Vulcan, a runway
     landing at KSC), Antares 330, the arm walking between grapple fixtures, the SSRMS's seven joints as separate parts,
     a free-flyer's capture dynamics (the vehicle holds still in the station's frame at the capture point).
+  - **The info window's 3D view draws the arm too** (2026-10-21, `viewerArmParts`): its three parts posed from the
+    station's root group in that view, as extra instances in the viewer pass (`SatMeshRenderer::recordViewer(...,
+    extra, extraTypes, n)`, instance slots `kMaxInstances` .. + `kViewerExtra` 4, past every scene slot). The visiting
+    vehicles at the ports are still not drawn there. Harness `launch state` -> `viewer_arm_parts`.
   - Harness: `launch crew craft=cygnus|htv event=capture_point|capture|berth|unberth|release|arm|arm_depart`;
     `launch state` -> `station_arms[]` (`with`, `attached`, `reach_short_m`, shoulder / elbow / wrist / tip in the
     station frame) and `arm_parts_drawn`; `launch check` -> `crew[].berth` (`capture_point_err_m`, `grip_tip_err_m`,
@@ -6709,7 +6729,7 @@ context's first evaluation (`rosterRangePresentFrac` sorts every constellation's
 now at load), the Kessler worker's publish (outside its mutex; `kesslerSync` try-locks). Still open (QA 2026-10-21):
 a player breakup BEFORE the CME restarts the world on the main thread (`kesslerRestart` ~220 ms: `buildWorld`, and
 its `launchInitBlock` makes the next walk rebuild the launch planes, ~75 ms); the first walk after a bookmark jump
-is ~25-35 ms (the window walk over ~3000 planes plus 8 ms of builds); at 1 yr/s a frame can still take ~40 ms of batch building (one rival day bucket, `rivalBucket`, enumerating a site's planes, cannot be split: hitch_thresholds.json allows 1mo / 1yr p99 65 / 75 ms).
+is ~25-35 ms (the window walk over ~3000 planes plus 8 ms of builds); at 1 yr/s a frame could take ~40 ms of batch building (one rival day bucket, `rivalBucket`, enumerating a site's planes; hitch_thresholds.json allows 1mo / 1yr p99 65 / 75 ms). Since 2026-10-21 a frame that needs fewer buckets than half the cores builds each split over the threads by plane (`rivalBucket(..., parallel)`, per-plane lists concatenated in plane order: same entries, same order); the worst 1-yr/s frames' `launch.buildBatches` is ~20 ms now (hitch_check A: p99 51, max 53 ms, of which ~25 ms GPU). Still open: building the buckets ahead on a worker.
 **Regression check: `python tools/harness/hitch_check.py`** (scenarios A load, B a user's settings via `--settings`,
 C 2031, D day 32 after the CME; `--run <folders>` checks finished runs) against `tools/harness/hitch_thresholds.json`
 (p99 / max per rate, the first frame after load, launch to first frame); exit 1 on a regression. **It must run alone
@@ -6937,7 +6957,7 @@ Two stand-in fragment shaders, both bound through **`skyBgPipeLayout` / `skyDesc
 | Tier | Bit | Pipeline | Shader | Notes |
 |---|---|---|---|---|
 | **Potato** | `262144` | `skyBgMinimalPipeline` | `shaders/sat_sky_minimal.frag` (own file, ~370 lines; the Sept-2026 shader + only what today's bindings and depth require: the weather cube at binding 7, the unified depth, and its own DEM-only eye height, `minimalEyeHeight`) | closed-form analytic atmosphere (Kasten-Young airmass, one 32-tap arithmetic loop — no raymarch), day/night + city-detail textures, one flat drifting cloud shell w/ terminator lighting, cheap ocean (1 noise-tap slope + Fresnel + Blinn glint), textured moon, verbatim `lensFlare()`. **~60 FPS.** No Milky Way / volumetric clouds / aurora / airglow / real ocean waves — those don't fit the GCN1 occupancy ceiling (~31–32 KB SPV; the Milky Way's `atan2`/`asin` + panorama fetch is the specific thing that broke it). |
-| **SKY_LITE** | `524288` | `skyBgLitePipeline` | `sat_sky.frag` **recompiled with `-DSKY_LITE`** → `sat_sky_lite.frag.spv` (2nd `add_custom_command` in CMakeLists) | `#ifdef SKY_LITE` cuts inside the real shader: (2026-10-06) every v1.2 ground feature — the terrain march (`dbgSkipTerrain()` is constant true), close-up materials and terrain debug views, the sea's sky-reflection march (`dbgSkipOceanRefl()` constant true) and shore, the beam ground spots, the whole procedural city (layout, glitter, roads, farms, beaches, roof PV, solar parks: the night map + the tiled city detail textures carry the cities, as in v1.1) and the mesh composite (the CPU draws no meshes or env probes there, `kNoMeshBits`); and since 2026-09: Milky Way block, 64-bin satellite sky-glow loop, cloud layer loop `3→0` becomes `1→0`, the 3×3 `cloudTargetA/B` rgb blur → single tap, aurora surface glow (`auroraGlowAt` on terrain+ocean), zenith-ambient `N_ZT` 4→2, and the per-atmosphere-step **green/sodium airglow** (two `warpPerlin3` masks/step — the dominant cost) — city-glow upwelling KEPT but only on the first 3 march steps (since 2026-10-21 the green band comes back in CLOSED FORM, after the loop: the column along the ray from the tangent height / zenith angle at the shell, no noise — the night limb's horizon line from orbit, +3 KB of SPIR-V). **2 FPS → ~55 FPS** on the target. |
+| **SKY_LITE** | `524288` | `skyBgLitePipeline` | `sat_sky.frag` **recompiled with `-DSKY_LITE`** → `sat_sky_lite.frag.spv` (2nd `add_custom_command` in CMakeLists) | `#ifdef SKY_LITE` cuts inside the real shader: (2026-10-06) every v1.2 ground feature — the terrain march (`dbgSkipTerrain()` is constant true), close-up materials and terrain debug views, the sea's sky-reflection march (`dbgSkipOceanRefl()` constant true) and shore, the beam ground spots, the whole procedural city (layout, glitter, roads, farms, beaches, roof PV, solar parks: the night map + the tiled city detail textures carry the cities, as in v1.1) and the mesh composite (the CPU draws no meshes or env probes there, `kNoMeshBits`); and since 2026-09: Milky Way block, 64-bin satellite sky-glow loop, cloud layer loop `3→0` becomes `1→0`, the 3×3 `cloudTargetA/B` rgb blur → single tap, aurora surface glow (`auroraGlowAt` on terrain+ocean), zenith-ambient `N_ZT` 4→2, and the per-atmosphere-step **green/sodium airglow** (two `warpPerlin3` masks/step — the dominant cost) — city-glow upwelling KEPT but only on the first 3 march steps (since 2026-10-21 the green band comes back in CLOSED FORM, after the loop: the column along the ray from the tangent height / zenith angle at the shell, no noise — the night limb's horizon line from orbit, +3 KB of SPIR-V; a ray down onto the Earth keeps its crossing only near the limb, cos Z at the shell 0.18-0.32: the whole night disc read faintly green from orbit). **2 FPS → ~55 FPS** on the target. |
 
 **Keep these tiers protected (2026-10-06).** `sat_sky_lite.frag.spv` had grown 142 KB (v1.1.0) → 567 KB and
 the minimal shader had taken on terrain v2's water code, unnoticed, because each new feature was gated by a

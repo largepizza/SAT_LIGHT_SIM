@@ -758,38 +758,66 @@ struct SatelliteSim::LaunchState
 void SatelliteSim::LaunchStateDelete::operator()(LaunchState *s) const { delete s; }
 
 // ── Setup ───────────────────────────────────────────────────────────────────────────────────────
-void SatelliteSim::launchInitBlock()
+void SatelliteSim::launchInitBlock(bool keepPlanes)
 {
     static_assert(kLaunchCap == kLaunchCapL, "the launch block's size");
     // Every launch-block entry empty (no constellation: the per-constellation scans skip it).
-    for (uint32_t s = 0; s < kLaunchCap && activeSatCount + s < satOrbits.size(); ++s)
     {
-        SatOrbit &o = satOrbits[activeSatCount + s];
-        o = SatOrbit{};
-        o.constIdx = UINT32_MAX;
-        o.launchSlot = (int32_t)s;
+        FPROF_SCOPE("launch.initBlock.orbits");
+        for (uint32_t s = 0; s < kLaunchCap && activeSatCount + s < satOrbits.size(); ++s)
+        {
+            SatOrbit &o = satOrbits[activeSatCount + s];
+            o = SatOrbit{};
+            o.constIdx = UINT32_MAX;
+            o.launchSlot = (int32_t)s;
+        }
     }
     if (!launchState)
         launchState.reset(new LaunchState());
     LaunchState &L = *launchState;
     // The catalog stays; the roster may have changed (planes, batches, slots go).
-    L.parcelJobs.clear(); // (waits for plume builds in flight: their batches go)
-    L.planesBuilt = false;
-    L.planes.clear();
-    L.batches.clear();
+    {
+        FPROF_SCOPE("launch.initBlock.parcelJobs");
+        L.parcelJobs.clear(); // (waits for plume builds in flight: their batches go)
+    }
+    // (2026-10-21) A Kessler restart keeps the planes, their sites and the candidates / rival day index: they are
+    // functions of the roster and the catalog alone (the batches read the Kessler state and go). Rebuilding them cost
+    // ~75 ms the frame after a player breakup before the CME.
+    keepPlanes = keepPlanes && L.planesBuilt;
+    if (!keepPlanes)
+    {
+        L.planesBuilt = false;
+        L.planes.clear();
+    }
+    if (keepPlanes)
+    {
+        // (2026-10-21) Thousands of batches (their members, crews, tracks) freed off the main thread: ~20 ms here.
+        FPROF_SCOPE("launch.initBlock.disposeBatches");
+        auto *old = new std::unordered_map<uint64_t, LBatch>(std::move(L.batches));
+        L.batches = std::unordered_map<uint64_t, LBatch>();
+        std::thread([old] { delete old; }).detach();
+    }
+    else
+        L.batches.clear();
     L.walkOk = false;
     L.walkList.clear();
     L.visList.clear();
     L.chunked.clear();
     ++L.batchEpoch;
-    L.cands.clear();
+    if (!keepPlanes)
     {
-        std::lock_guard<std::mutex> lk(L.rivalMx);
-        L.rivalIdx.clear();
+        L.cands.clear();
+        {
+            std::lock_guard<std::mutex> lk(L.rivalMx);
+            L.rivalIdx.clear();
+        }
+        L.planesBySite.clear();
     }
-    L.planesBySite.clear();
-    L.slots.assign(kLaunchCap, SlotInfo{});
-    L.elems.assign(kLaunchCap, SatOrbitElems{});
+    {
+        FPROF_SCOPE("launch.initBlock.slotsElems");
+        L.slots.assign(kLaunchCap, SlotInfo{});
+        L.elems.assign(kLaunchCap, SatOrbitElems{});
+    }
     L.freeChunks.clear();
     // The last chunk holds the rocket meshes and the transient selection's slots, the two before it the pads' meshes,
     // the six before those the payload stacks' (2026-10-20).
@@ -1687,7 +1715,7 @@ static SatelliteSim::LaunchState::Cand candidate(const SatelliteSim &sim, Satell
 // the site that day. Built once, shared (a race builds it twice, identically).
 static constexpr double kRivalBucketS = 86400.0;
 static std::shared_ptr<const std::vector<SatelliteSim::LaunchState::RivalEntry>>
-rivalBucket(const SatelliteSim &sim, SatelliteSim::LaunchState &L, int site, int64_t beta)
+rivalBucket(const SatelliteSim &sim, SatelliteSim::LaunchState &L, int site, int64_t beta, bool parallel = false)
 {
     const uint64_t ik = ((uint64_t)(uint32_t)site << 40) ^ ((uint64_t)beta & 0xFFFFFFFFFFull);
     {
@@ -1698,8 +1726,8 @@ rivalBucket(const SatelliteSim &sim, SatelliteSim::LaunchState &L, int site, int
     }
     auto v = std::make_shared<std::vector<SatelliteSim::LaunchState::RivalEntry>>();
     const double b0 = (double)beta * kRivalBucketS, b1 = b0 + kRivalBucketS;
-    for (int q : L.planesBySite[(size_t)site])
-    {
+    const std::vector<int> &sitePlanes = L.planesBySite[(size_t)site];
+    auto planeEntries = [&](int q, std::vector<SatelliteSim::LaunchState::RivalEntry> &out) {
         const LPlane &pq = L.planes[(size_t)q];
         const launch::Program &gq = L.cat.programs[pq.prog];
         const double lifeQ = progLifeS(gq, (double)sim.launchLifeScale);
@@ -1710,8 +1738,34 @@ rivalBucket(const SatelliteSim &sim, SatelliteSim::LaunchState &L, int site, int
             if (co.site != site || co.tL < b0 || co.tL >= b1)
                 return;
             const uint64_t key = batchKey(q, k, b);
-            v->push_back({co.tL, arrivalOf(pq, k, b, lifeQ), h01(key, 9, 9), key, q});
+            out.push_back({co.tL, arrivalOf(pq, k, b, lifeQ), h01(key, 9, 9), key, q});
         });
+    };
+    // (2026-10-21) A bucket wanted on its own (at 1 mo/s - 1 yr/s, one new day a frame) is split over the planes in
+    // parallel: ~40 ms on one thread at a Starship pad (~2000 planes). Same entries in the same (plane) order.
+    const size_t hw = std::max(1u, std::thread::hardware_concurrency());
+    const size_t workers = parallel ? std::min(hw, sitePlanes.size() / 64) : 1;
+    if (workers <= 1)
+    {
+        for (int q : sitePlanes)
+            planeEntries(q, *v);
+    }
+    else
+    {
+        std::vector<std::vector<SatelliteSim::LaunchState::RivalEntry>> per(sitePlanes.size());
+        std::atomic<size_t> next{0};
+        auto run = [&] {
+            for (size_t i = next.fetch_add(1); i < sitePlanes.size(); i = next.fetch_add(1))
+                planeEntries(sitePlanes[i], per[i]);
+        };
+        std::vector<std::thread> th;
+        for (size_t w = 1; w < workers; ++w)
+            th.emplace_back(run);
+        run();
+        for (std::thread &x : th)
+            x.join();
+        for (const auto &pv : per)
+            v->insert(v->end(), pv.begin(), pv.end());
     }
     std::lock_guard<std::mutex> lk(L.rivalMx);
     if (L.rivalIdx.size() > 20000)
@@ -4983,7 +5037,13 @@ static void buildMissing(SatelliteSim &sim, SatelliteSim::LaunchState &L, const 
                     need.push_back({c.site, be});
         std::sort(need.begin(), need.end());
         need.erase(std::unique(need.begin(), need.end()), need.end());
-        par(need.size(), [&](size_t i) { rivalBucket(sim, L, need[i].first, need[i].second); });
+        // Few buckets: each one split over the threads; many: one bucket a thread.
+        const size_t hwB = std::max(1u, std::thread::hardware_concurrency());
+        if (need.size() * 2 < hwB)
+            for (const auto &nd : need)
+                rivalBucket(sim, L, nd.first, nd.second, true);
+        else
+            par(need.size(), [&](size_t i) { rivalBucket(sim, L, need[i].first, need[i].second); });
     }
     built.assign(n, LBatch{});
     par(n, [&](size_t i) {
@@ -7055,6 +7115,12 @@ nlohmann::json SatelliteSim::launchStateJson() const
         j["mesh_local_lights"] = meshLightsPrev_.size();
         j["mesh_lights_scene"] = meshLightsScene_;
         j["mesh_lights_viewer"] = meshLightsViewer_;
+        nlohmann::json vl = nlohmann::json::array();
+        for (int i = 0; i < meshLightsViewer_ && i < 8; ++i)
+            vl.push_back({viewerLightDbg_[i].x, viewerLightDbg_[i].y, viewerLightDbg_[i].z, viewerLightDbg_[i].w,
+                          (viewerLightMaskDbg_ >> i) & 1u});
+        j["mesh_lights_viewer_list"] = vl; // (2026-10-21) each: offset from the subject (m, ECEF axes), I, in its mask
+        j["viewer_arm_parts"] = viewerArmPartsDrawn_;
     }
     j["stack_meshes"] = L.nStacked;          // satellites drawn on their upper stage (payload stacks)
     j["stack_stages"] = L.stackDraws.size();
@@ -9792,6 +9858,71 @@ void SatelliteSim::launchStackJobs(double pixAngle, const glm::dvec3 &obsEci, st
 
 std::string SatelliteSim::transientLabel() const { return transientLabelOf(selTransientCur); }
 
+// "42 s", "12 m 03 s", "4 h 12 m", "116 d 17 h" (2026-10-21: a docked Progress read "10086696 s").
+static std::string fmtDurationDHM(double s)
+{
+    s = std::max(0.0, s);
+    char b[48];
+    const long long n = (long long)std::floor(s);
+    if (n < 120)
+        snprintf(b, sizeof(b), "%lld s", n);
+    else if (n < 3600)
+        snprintf(b, sizeof(b), "%lld m %02lld s", n / 60, n % 60);
+    else if (n < 86400)
+        snprintf(b, sizeof(b), "%lld h %02lld m", n / 3600, (n % 3600) / 60);
+    else
+        snprintf(b, sizeof(b), "%lld d %02lld h", n / 86400, (n % 86400) / 3600);
+    return b;
+}
+
+void SatelliteSim::transientTimeRow(const SelTransient &s, std::string &label, std::string &value) const
+{
+    if (s.kind == 1)
+    {
+        label = s.tau < 0.0 ? "Lift-off in" : "Since lift-off";
+        value = fmtDurationDHM(std::abs(s.tau));
+        return;
+    }
+    if (s.kind == 8 && launchState)
+    {
+        const LaunchState &L = *launchState;
+        auto it = L.batches.find(s.a);
+        if (it != L.batches.end())
+        {
+            const LCrew &C = it->second.crew;
+            const double t = C.tSep + s.tau;
+            int ph = 0;
+            glm::dvec3 P;
+            LaunchImpl::crewPos(C, t, P, &ph);
+            if (ph == CP_DOCKED || ph == CP_BERTHED)
+            {
+                label = ph == CP_BERTHED ? "Berthed since" : "Docked since";
+                char b[96];
+                snprintf(b, sizeof(b), "%s (%.0f days)", fmtUtcReadable(C.tDock).c_str(), std::floor((t - C.tDock) / kDay));
+                value = b;
+            }
+            else if (ph >= CP_UNBERTH && ph < CP_ENTRY && t >= C.tUndock)
+            {
+                label = ph <= CP_RELEASE ? "Since unberthing" : "Since undocking";
+                value = fmtDurationDHM(t - C.tUndock);
+            }
+            else if (ph >= CP_ENTRY && ph < CP_ABORT && t >= C.tEI)
+            {
+                label = "Since entry interface";
+                value = fmtDurationDHM(t - C.tEI);
+            }
+            else
+            {
+                label = "Since separation";
+                value = fmtDurationDHM(s.tau);
+            }
+            return;
+        }
+    }
+    label = s.kind == 7 || s.kind == 8 ? "Since separation" : "Glowing for";
+    value = fmtDurationDHM(std::abs(s.tau));
+}
+
 std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
 {
     if (!launchState)
@@ -11410,6 +11541,39 @@ void shipLightsOf(const std::string &model, double deck, std::vector<ShipLight> 
 // The station arms (2026-10-21, Canadarm2): the two booms and the wrist as meshes in the arm's reserved chunk, posed by
 // LaunchImpl::stationArmPose in the station's frame (the station's own pose: the same law its mesh is posed by).
 // Drawn whenever the station is near enough to resolve them; parked when no berthing vehicle needs the arm.
+int SatelliteSim::viewerArmParts(int sat, double t, const glm::dmat3 &rootR, const glm::dvec3 &rootT, int *types,
+                                 glm::dmat3 *Rb, glm::dvec3 *org)
+{
+    if (!launchState || sat < 0)
+        return 0;
+    LaunchState &L = *launchState;
+    for (const auto &as : L.armSat)
+    {
+        if ((int)as.first != sat)
+            continue;
+        const launch::StationArm &A = L.cat.arms[(size_t)as.second];
+        auto tb = rocketTypes.find("rocket_arm_" + A.model + "_boom");
+        auto tw = rocketTypes.find("rocket_arm_" + A.model + "_wrist");
+        if (tb == rocketTypes.end() || tw == rocketTypes.end())
+            return 0;
+        ArmPose ap;
+        LaunchImpl::stationArmPose(A, t, LaunchImpl::berthVisits(L, (uint32_t)sat), ap);
+        const struct
+        {
+            int type;
+            glm::dvec3 o, z;
+        } parts[3] = {{tb->second, ap.S, ap.E - ap.S}, {tb->second, ap.E, ap.W - ap.E}, {tw->second, ap.W, ap.G - ap.W}};
+        for (int k = 0; k < 3; ++k)
+        {
+            types[k] = parts[k].type;
+            Rb[k] = rootR * LaunchImpl::crewFrame(glm::length(parts[k].z) > 1e-6 ? parts[k].z : A.baseN, ap.nrm);
+            org[k] = rootT + rootR * parts[k].o;
+        }
+        return 3;
+    }
+    return 0;
+}
+
 void SatelliteSim::launchArmJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs)
 {
     FPROF_SCOPE("launchArmJobs");

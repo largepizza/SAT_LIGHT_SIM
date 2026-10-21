@@ -612,12 +612,17 @@ void main()
             if (E * frame.camPos.w < 1e-4) continue;
             vec3  l  = dl * inversesqrt(max(r2, 1e-6));
             float nl = dot(N, l);
-            if (nl <= 0.0) continue;
+            // (2026-10-21) A light of radius rs is a sphere, not a point: faces turned past it still see part of it
+            // (the classic sphere-light wrap). An engine's light (rs ~10 m behind the nozzles) reaches the hull above
+            // at a grazing angle: as a point it left a flying rocket's hull black at night.
+            float sinA = rs * inversesqrt(r2 + rs * rs);
+            float nlw = clamp((nl + sinA) / (1.0 + sinA), 0.0, 1.0);
+            if (nlw <= 0.0) continue;
             // A floodlight lights its beam (soft over its outer 10 degrees), not what stands beside or behind it.
             vec4  ad = frame.lightDir[i];
             if (ad.w > -1.5)
                 E *= smoothstep(ad.w, min(ad.w + 0.17 * sqrt(max(1.0 - ad.w * ad.w, 0.0)) + 0.015, 1.0), dot(-l, ad.xyz));
-            L += frame.lightCol[i].rgb * E * (diffC * nl + specC * specCos(N, V, l, a2, mat.f0, beck));
+            L += frame.lightCol[i].rgb * E * (diffC * nlw + (nl > 0.0 ? specC * specCos(N, V, l, a2, mat.f0, beck) : vec3(0.0)));
         }
     }
 

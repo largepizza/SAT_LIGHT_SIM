@@ -142,8 +142,12 @@ public:
     VkSampler viewerSampler() const { return sampler; }
     bool viewerRendered() const { return viewerHasContent; }
     // Records the viewer pass (outside any render pass): background, then `inst` of type `typeIdx`.
+    // extra / extraTypes (2026-10-21): up to kViewerExtra more instances in the same frame (a station's arm), at
+    // instance slots kMaxInstances.. (past every scene slot).
     void recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &frame, const GpuMeshInstance &inst, int typeIdx,
-                      VkDescriptorSet probeSet);
+                      VkDescriptorSet probeSet, const GpuMeshInstance *extra = nullptr, const int *extraTypes = nullptr,
+                      int nExtra = 0);
+    static constexpr int kViewerExtra = 4;
 
     // ── Viewer glare (2026-09-26) ───────────────────────────────────────────────────
     // The glints that make the flare the ground observer sees, drawn as the main view's glare. A sun-only

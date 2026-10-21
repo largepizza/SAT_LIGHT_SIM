@@ -15,6 +15,7 @@
 #include "clay.h"
 
 #include <deque>
+#include <condition_variable>
 #include <nlohmann/json.hpp>
 
 #include <cstring>
@@ -94,6 +95,7 @@ struct SatelliteSim::KesslerWorker
     std::atomic<double> simNow{0.0};    // the player's sim time: checkpoints are kept from just before it (rollback)
     std::thread th;
     std::mutex mx;
+    std::condition_variable cv; // (2026-10-21) wakes an idle worker to stop (a 30-ms sleep cost a breakup ~50 ms)
     bool stop = false;
     std::atomic<bool> done{false};
     // The outbox (under mx): what the main thread has not taken yet.
@@ -183,7 +185,8 @@ struct SatelliteSim::KesslerWorker
             const double want = std::min(wantUntil.load(), tEnd);
             if (w.frontier >= want)
             {
-                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                std::unique_lock<std::mutex> lk(mx);
+                cv.wait_for(lk, std::chrono::milliseconds(30), [&] { return stop; });
                 continue;
             }
             const bool sampling = w.frontier >= replayUntil;
@@ -268,6 +271,7 @@ struct SatelliteSim::KesslerWorker
             std::lock_guard<std::mutex> lk(mx);
             stop = true;
         }
+        cv.notify_all();
         if (th.joinable())
             th.join();
         stop = false; // the main thread may step the world itself now (kesslerBreakupInPlace)
@@ -507,12 +511,16 @@ void SatelliteSim::kesslerInit(VulkanContext &ctx)
 
 void SatelliteSim::kesslerShutdown()
 {
+    kesslerRestartPoll(true); // a restart still building on its thread: joined (and installed) first
+    if (kDisposeThread.joinable())
+        kDisposeThread.join();
     if (!kWorker)
         return;
     {
         std::lock_guard<std::mutex> lk(kWorker->mx);
         kWorker->stop = true;
     }
+    kWorker->cv.notify_all();
     if (kWorker->th.joinable())
         kWorker->th.join();
     // Cache what was simulated (only while the player has caused nothing: their breakups are session state).
@@ -525,9 +533,10 @@ void SatelliteSim::kesslerShutdown()
 // (Re)starts the world from scratch: the storm's seeds, the user's events and the engine events before
 // keepEngineBefore (< 0: everything the cache holds) are replayed, then the engine simulates on.
 void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents,
-                                  double keepEngineBefore, double syncUntil)
+                                  double keepEngineBefore, double syncUntil, bool async)
 {
     FPROF_SCOPE("kesslerRestart");
+    kesslerRestartPoll(true); // one still building: finished (and replaced) first
     std::vector<kessler::Event> keptEngine;
     // The world starts at the CME, or at the step of the player's first breakup before it (2026-10-19).
     double startT = kFuryArriveT;
@@ -539,6 +548,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     double keptFrontier = startT;
     if (kWorker)
     {
+        FPROF_SCOPE("kr.stopWorker");
         kWorker->stopThread();
         if (keepEngineBefore >= 0.0)
         {
@@ -547,8 +557,17 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
                     keptEngine.push_back(e);
             keptFrontier = std::min(keepEngineBefore, kWorker->w.frontier);
         }
+        if (async)
+        {
+            // (2026-10-21) The old world (the 1.4M-satellite roster's arrays, its events and grids) freed off the
+            // main thread.
+            if (kDisposeThread.joinable())
+                kDisposeThread.join();
+            kDisposeThread = std::thread([old = std::move(kWorker)]() mutable { old.reset(); });
+        }
         kWorker.reset();
     }
+    FPROF_SCOPE("kr.mirrorReset");
     // The main thread's mirror starts empty; the pool tail of satOrbits goes with it.
     kPool.clear();
     kEvents.clear();
@@ -574,7 +593,12 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
         kPool.reserve(cap);
         kPoolGen.reserve(cap);
     }
-    launchInitBlock();            // the launch block's entries (empty) and the launch state
+    {
+        // The launch block's entries (empty) and the launch state (async: a player breakup; the roster and so the
+        // launch planes are unchanged and kept).
+        FPROF_SCOPE("kr.launchInitBlock");
+        launchInitBlock(async);
+    }
     kPoolGpu = 0;
     kDirtyPool.clear();
     kDirtyRoster.clear();
@@ -592,80 +616,130 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
         return;
     }
 
-    std::unique_ptr<KesslerWorker, KesslerWorkerDelete> wk(new KesslerWorker());
     const double raanAnchorT = (double)simInitDayJ2000 * 86400.0 + simInitSecInDay;
-    rosterLifeEnsure(); // the deployment era: who is there when (the world needs it)
-    kLifeHashKey = rosterLifeKey;
-    buildWorld(*this, wk->w, satOrbits, activeSatCount, constellations, satTypes, raanAnchorT, kFuryArriveT,
-               kesslerRateMult, kesslerAvoidance, kesslerHorizonYears, kDebrisType, kDebrisConst, kDebrisKit);
-    kHash = worldHash(wk->w);
-    wk->w.s.startT = startT;
-    wk->w.reset();
-    wk->tEnd = kFuryArriveT + wk->w.s.horizonS;
-
-    // The engine's events: those kept from the run being replaced, else the cache (user data, then the
-    // shipped copy next to the exe), else none.
-    double replayUntil = startT;
-    if (keepEngineBefore >= 0.0)
-        replayUntil = keptFrontier;
-    else if (startT >= kFuryArriveT) // a pre-CME breakup changes everything the cache holds
     {
-        const std::string name = cacheName(kHash);
-        std::vector<kessler::Event> cached;
-        double fr = 0.0;
-        if (readCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / name, kHash, cached, fr) ||
-            readCache(std::filesystem::path(Paths::exeDir()) / "kessler" / name, kHash, cached, fr))
-        {
-            keptEngine = std::move(cached);
-            replayUntil = fr;
-            Log::line("kessler: cache " + name + ": " + std::to_string(keptEngine.size()) + " engine events, " +
-                      std::to_string((int)((fr - kFuryArriveT) / 86400.0)) + " days");
-        }
-        else
-            Log::line("kessler: no cache " + name + " - simulating from the storm");
+        FPROF_SCOPE("kr.rosterLifeCapacity");
+        rosterLifeEnsure(); // the deployment era: who is there when (the world needs it)
+        kLifeHashKey = rosterLifeKey;
+        kesslerEnsureCapacity(ctx, std::max<size_t>(16384, kPoolCap));
     }
-    // Align the replay boundary to the engine's steps.
-    replayUntil = kFuryArriveT + std::floor((replayUntil - kFuryArriveT) / wk->w.s.stepS) * wk->w.s.stepS;
-    std::vector<kessler::Event> pend = kessler::stormSeedEvents(wk->w, kFuryArriveT, kStormSeed);
-    for (const kessler::Event &e : userEvents)
-        pend.push_back(e);
-    for (const kessler::Event &e : keptEngine)
-        if (e.t < replayUntil)
-            pend.push_back(e);
-    kessler::sortPending(pend, 0, wk->w);
-    wk->pending = std::move(pend);
-    wk->replayUntil = replayUntil;
-    kCacheFrontier = keepEngineBefore >= 0.0 ? kFuryArriveT : replayUntil;
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    wk->wantUntil = startT < kFuryArriveT ? tNow + 86400.0 : std::max(kFuryArriveT + 2.0 * 86400.0, tNow + 86400.0);
-    wk->simNow = tNow;
-    {
-        char msg[200];
-        snprintf(msg, sizeof(msg), "kessler: world %016llx: %u satellites, %zu pending events (replay to day %.1f)",
-                 (unsigned long long)kHash, activeSatCount, wk->pending.size(), (replayUntil - kFuryArriveT) / 86400.0);
-        Log::line(msg);
-    }
-    kesslerEnsureCapacity(ctx, std::max<size_t>(16384, kPoolCap));
-    kWorker = std::move(wk);
-    // A breakup in the world's first steps (one before the CME starts the world at its own step): computed here, so its
-    // debris is up this frame.
-    if (syncUntil > 0.0)
-    {
-        kessler::World &w = kWorker->w;
-        const double to = w.stepStart(syncUntil) + w.s.stepS;
-        if (to - w.frontier <= 2.0 * w.s.stepS)
+    // The world's build, its cache read and (a breakup before the CME) its first step: a pure function of these
+    // inputs. On the main thread (async false), or (2026-10-21, a player breakup with no rollback point: ~220 ms) on a
+    // thread of its own while sim time holds; kesslerRestartPoll installs the worker when it is done.
+    auto job = [this, userEvents, keepEngineBefore, keptEngine = std::move(keptEngine), keptFrontier, startT, syncUntil,
+                raanAnchorT, tNow]() mutable -> RestartOut {
+        RestartOut out;
+        std::unique_ptr<KesslerWorker, KesslerWorkerDelete> wk(new KesslerWorker());
+        buildWorld(*this, wk->w, satOrbits, activeSatCount, constellations, satTypes, raanAnchorT, kFuryArriveT,
+                   kesslerRateMult, kesslerAvoidance, kesslerHorizonYears, kDebrisType, kDebrisConst, kDebrisKit);
+        out.hash = worldHash(wk->w);
+        wk->w.s.startT = startT;
+        wk->w.reset();
+        wk->tEnd = kFuryArriveT + wk->w.s.horizonS;
+
+        // The engine's events: those kept from the run being replaced, else the cache (user data, then the
+        // shipped copy next to the exe), else none.
+        double replayUntil = startT;
+        if (keepEngineBefore >= 0.0)
+            replayUntil = keptFrontier;
+        else if (startT >= kFuryArriveT) // a pre-CME breakup changes everything the cache holds
         {
-            const auto c0 = std::chrono::steady_clock::now();
-            kWorker->keepCheckpoints();
-            kWorker->simulateChunk(to, w.frontier >= kWorker->replayUntil);
-            kWorker->publish();
-            char msg[160];
-            snprintf(msg, sizeof(msg), "kessler: breakup step computed in place (%.0f ms)",
-                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+            const std::string name = cacheName(out.hash);
+            std::vector<kessler::Event> cached;
+            double fr = 0.0;
+            if (readCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / name, out.hash, cached, fr) ||
+                readCache(std::filesystem::path(Paths::exeDir()) / "kessler" / name, out.hash, cached, fr))
+            {
+                keptEngine = std::move(cached);
+                replayUntil = fr;
+                Log::line("kessler: cache " + name + ": " + std::to_string(keptEngine.size()) + " engine events, " +
+                          std::to_string((int)((fr - kFuryArriveT) / 86400.0)) + " days");
+            }
+            else
+                Log::line("kessler: no cache " + name + " - simulating from the storm");
+        }
+        // Align the replay boundary to the engine's steps.
+        replayUntil = kFuryArriveT + std::floor((replayUntil - kFuryArriveT) / wk->w.s.stepS) * wk->w.s.stepS;
+        std::vector<kessler::Event> pend = kessler::stormSeedEvents(wk->w, kFuryArriveT, kStormSeed);
+        for (const kessler::Event &e : userEvents)
+            pend.push_back(e);
+        for (const kessler::Event &e : keptEngine)
+            if (e.t < replayUntil)
+                pend.push_back(e);
+        kessler::sortPending(pend, 0, wk->w);
+        wk->pending = std::move(pend);
+        wk->replayUntil = replayUntil;
+        out.cacheFrontier = keepEngineBefore >= 0.0 ? kFuryArriveT : replayUntil;
+        wk->wantUntil = startT < kFuryArriveT ? tNow + 86400.0 : std::max(kFuryArriveT + 2.0 * 86400.0, tNow + 86400.0);
+        wk->simNow = tNow;
+        {
+            char msg[200];
+            snprintf(msg, sizeof(msg), "kessler: world %016llx: %u satellites, %zu pending events (replay to day %.1f)",
+                     (unsigned long long)out.hash, activeSatCount, wk->pending.size(), (replayUntil - kFuryArriveT) / 86400.0);
             Log::line(msg);
         }
+        // A breakup in the world's first steps (one before the CME starts the world at its own step): computed here,
+        // so its debris is up as soon as the worker is.
+        if (syncUntil > 0.0)
+        {
+            kessler::World &w = wk->w;
+            const double to = w.stepStart(syncUntil) + w.s.stepS;
+            if (to - w.frontier <= 2.0 * w.s.stepS)
+            {
+                const auto c0 = std::chrono::steady_clock::now();
+                wk->keepCheckpoints();
+                wk->simulateChunk(to, w.frontier >= wk->replayUntil);
+                wk->publish();
+                char msg[160];
+                snprintf(msg, sizeof(msg), "kessler: breakup step computed in place (%.0f ms)",
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+                Log::line(msg);
+            }
+        }
+        out.wk = std::move(wk);
+        return out;
+    };
+    if (!async)
+    {
+        RestartOut out = job();
+        kesslerRestartInstall(out);
+        return;
     }
+    kRestartReady = false;
+    kRestartBusy = true;
+    kRestartT0 = std::chrono::steady_clock::now();
+    kRestartThread = std::thread([this, job = std::move(job)]() mutable {
+        kRestartOut = job();
+        kRestartReady = true;
+    });
+}
+
+void SatelliteSim::kesslerRestartInstall(RestartOut &out)
+{
+    kHash = out.hash;
+    kCacheFrontier = out.cacheFrontier;
+    kWorker = std::move(out.wk);
     kWorker->startThread();
+}
+
+// An asynchronous restart: wait = true joins it now (another restart, shutdown, a roster rebuild); else installs it
+// when it is done. True while one is still running.
+bool SatelliteSim::kesslerRestartPoll(bool wait)
+{
+    if (!kRestartBusy)
+        return false;
+    if (!wait && !kRestartReady.load())
+        return true;
+    kRestartThread.join();
+    kRestartBusy = false;
+    kesslerRestartInstall(kRestartOut);
+    kRestartOut = RestartOut{};
+    char msg[120];
+    snprintf(msg, sizeof(msg), "kessler: restart on its thread done in %.0f ms",
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - kRestartT0).count());
+    Log::line(msg);
+    return false;
 }
 
 // ── Per frame ───────────────────────────────────────────────────────────────────────────────────
@@ -694,6 +768,8 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
         Log::line("kessler: time went back past the kept history of reused slots: replaying the cascade");
         kesslerRestart(ctx, kUserEvents, kFrontier);
     }
+    if (kesslerRestartPoll(false)) // a breakup's world still building on its thread (time holds meanwhile)
+        return;
     if (!kWorker)
         return;
     kWorker->simNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -1455,8 +1531,9 @@ bool SatelliteSim::kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, 
     {
         // No rollback point (a breakup before the world's start, time played back past the kept checkpoints, the
         // journal over its cap, or no world yet): rebuild the history with this breakup in it.
-        kesslerRestart(*ctx_, kUserEvents, t, t);
-        kesslerSync(*ctx_); // what the restart computed in place is up this frame
+        // (2026-10-21) Built on a thread of its own (~220 ms that froze the click frame): sim time holds at the
+        // breakup's step until it is installed (kesslerSync), the banner says so. Same events, same world.
+        kesslerRestart(*ctx_, kUserEvents, t, t, true);
     }
     kLastBreakupMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count();
     kLastBreakupFast = fast;
@@ -1500,6 +1577,8 @@ bool SatelliteSim::kesslerBreakupInPlace(const kessler::Event &ev)
     if (!kWorker || !ctx_)
         return false;
     KesslerWorker &W = *kWorker;
+    if (ev.t < W.w.s.startT) // before the world's start: the caller rebuilds it (no need to stop and sync first)
+        return false;
     W.stopThread();
     // The mirror must hold everything taken from the outbox before it is rewound (the queue, all of it, now).
     kesslerSyncProcess((int32_t)std::clamp(std::floor((double)simDayJ2000 * 86400.0 + simSecInDay - kFuryArriveT),
@@ -2734,6 +2813,8 @@ std::string SatelliteSim::kesslerStatusLine() const
 {
     if (!kesslerEnabled || kWorkerDone)
         return {};
+    if (kRestartBusy)
+        return "Computing the debris cascade: the breakup";
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     // Only while time is actually held (SatelliteSim.cpp: it may lead the frontier by ~2 s of the warp).
     const double lead = std::clamp(2.0 * (double)kTimeScales[timeScaleIdx], 2.0, 6.0 * 3600.0);
@@ -2774,6 +2855,7 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
     j["world_start_days"] = (kWorldStart - kFuryArriveT) / 86400.0;
     j["last_breakup_ms"] = kLastBreakupMs;
     j["last_breakup_in_place"] = kLastBreakupFast;
+    j["restart_building"] = kRestartBusy; // (2026-10-21) a breakup's world building on its own thread (time holds)
     j["time_held"] = !kesslerStatusLine().empty();
     j["records"] = kPool.size();
     j["records_gpu"] = kPoolGpu;

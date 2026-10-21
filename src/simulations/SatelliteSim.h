@@ -2712,6 +2712,22 @@ private:
         void operator()(KesslerWorker *w) const;
     };
     std::unique_ptr<KesslerWorker, KesslerWorkerDelete> kWorker;
+    // (2026-10-21) A restart's world built on a thread of its own (a player breakup with no rollback point, e.g.
+    // before the CME: ~220 ms that froze the click frame). Sim time holds (kWorkerDone false) until it is installed.
+    struct RestartOut
+    {
+        std::unique_ptr<KesslerWorker, KesslerWorkerDelete> wk;
+        uint64_t hash = 0;
+        double cacheFrontier = 0.0;
+    };
+    std::thread kRestartThread;
+    std::thread kDisposeThread; // the replaced world freed off the main thread
+    std::atomic<bool> kRestartReady{false};
+    bool kRestartBusy = false;
+    RestartOut kRestartOut;
+    std::chrono::steady_clock::time_point kRestartT0;
+    void kesslerRestartInstall(RestartOut &out);
+    bool kesslerRestartPoll(bool wait); // true while one is still building (wait: join it now)
     std::vector<kessler::PoolRec> kPool;  // the main thread's mirror of the world's pool
     std::vector<int32_t> kRosterWords;    // ... of each roster satellite's dead and end seconds (2 per satellite)
     std::vector<int32_t> kRosterDecay;    // ... and its drag re-entry second (an end AT it is a re-entry)
@@ -2899,6 +2915,9 @@ private:
     void selTransientTake(const SelTransient &s); // make it the selection's object (the caller selects the index)
     std::string transientLabel() const;
     std::string transientLabelOf(const SelTransient &s) const;
+    // The Info window's time row for a transient (2026-10-21): its label and value, long durations as d/h/m, and a
+    // visiting spacecraft's by phase ("Docked since <date> (n days)", "Since undocking", ...).
+    void transientTimeRow(const SelTransient &s, std::string &label, std::string &value) const;
     double transientGraceS() const; // how long a listed transient may be missing before it counts as gone
     bool launchFocusListed() const; // the framed launch (launchFocusKey) has a stage in this frame's list
     bool selectTransient(int kind, std::string &msg, int stage = -1, bool nearest = false); // harness: the brightest (or
@@ -2970,6 +2989,9 @@ private:
     std::vector<MeshLocalLight> meshLights_, meshLightsPrev_;
     float meshLightAdapt_ = 1.0f; // engineAdaptEased at the flush that made meshLightsPrev_
     int meshLightsScene_ = 0, meshLightsViewer_ = 0; // lights in the last scene / info-window view frame (harness)
+    glm::vec4 viewerLightDbg_[8]{};                   // the info window's lights (xyz rel. to the subject, w I)
+    uint32_t viewerLightMaskDbg_ = 0;
+    int viewerArmPartsDrawn_ = 0; // a station's arm parts in the info window's 3D view (harness)
     void meshLightAdd(const glm::dvec3 &posEci, double intensitySunsM2, glm::vec3 col, double rs,
                       const glm::dvec3 *aimEci = nullptr, double beamHalfDeg = 180.0);
     static double flameIntensitySunsM2(double mag100km);
@@ -3030,7 +3052,11 @@ private:
     static constexpr int kArmMeshSlots = 8;
     nlohmann::json launchShipsJson() const; // harness `launch ships`: the ships on station / heading home
     void launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // their meshes
-    void launchArmJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // the station arms (Canadarm2)
+    void launchArmJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs);
+    // (2026-10-21) A station's arm in the info window's 3D view: its parts' types and poses (body -> the view's
+    // frame, origin) from the station root group's pose there. Returns how many (<= 3).
+    int viewerArmParts(int sat, double t, const glm::dmat3 &rootR, const glm::dvec3 &rootT, int *types,
+                       glm::dmat3 *Rb, glm::dvec3 *org); // the station arms (Canadarm2)
     double shipSeaState(const glm::dvec3 &ecefUnit) const; // the sea state at a ship (its swell; 1 = default)
     void launchFillShipLights();            // their lights at night (kFireBuf)
     void launchFillShipGlow(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // their lit decks
@@ -3045,7 +3071,7 @@ private:
     bool launchGoToPad(const std::string &site, double distM, double azDeg, double heightM, std::string &msg);
     // The next tower catch (0 a ship, 1 a booster; wantDay: the Sun above 10 deg at the pad): the clock leadS before it.
     bool launchGoToLanding(int which, double leadS, double distM, std::string &msg, bool wantDay = false);
-    void launchInitBlock();          // the launch block's satOrbits entries (empty) and the launch state (reset)
+    void launchInitBlock(bool keepPlanes = false); // keepPlanes: the roster is unchanged (a Kessler restart)          // the launch block's satOrbits entries (empty) and the launch state (reset)
     void launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd); // per frame: schedule, records, uploads
     void launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // rockets, plumes, re-entries
     SatOrbitElems launchOrbitElems(uint32_t slot) const;
@@ -3249,7 +3275,7 @@ private:
     // syncUntil > 0: when the world starts within two steps of it (a breakup before the CME starts the world at its own
     // step), that step is computed before this returns (its debris is up the same frame).
     void kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents, double keepEngineBefore,
-                        double syncUntil = -1.0);
+                        double syncUntil = -1.0, bool async = false);
     double kWorldStart = 0.0; // where the running world starts (the CME, or a step before it: a pre-CME breakup)
     // A player breakup without replaying the history (2026-10-19): the world rewinds to its last checkpoint at or
     // before the breakup (World::rollback), re-runs the breakup's step here, and the mirror is rewound to match.

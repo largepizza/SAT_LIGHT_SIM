@@ -2377,10 +2377,19 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
             const glm::dvec3 vRot = st.vel - glm::dvec3(-satphot::kOmegaEarth * st.pos.y, satphot::kOmegaEarth * st.pos.x, 0.0);
             statusRow("Speed", "%.2f km/s", glm::mix(glm::length(vRot), glm::length(st.vel), glm::smoothstep(80.0, 150.0, hKm)) / 1000.0);
         }
-        statusRow(st.kind == 1               ? (st.tau < 0.0 ? "Lift-off in" : "Since lift-off")
-                  : (st.kind == 7 || st.kind == 8) ? "Since separation"
-                                                   : "Glowing for",
-                  "%.0f s", std::abs(st.tau));
+        {
+            // The label must outlive the frame (Clay keeps the pointer): a fixed set of literals is chosen by text.
+            std::string tl2, tv2;
+            transientTimeRow(st, tl2, tv2);
+            static const char *kTimeLabels[] = {"Lift-off in", "Since lift-off", "Since separation", "Glowing for",
+                                                "Docked since", "Berthed since", "Since undocking", "Since unberthing",
+                                                "Since entry interface"};
+            const char *lab = "Time";
+            for (const char *k : kTimeLabels)
+                if (tl2 == k)
+                    lab = k;
+            statusRow(lab, "%s", tv2.c_str());
+        }
     }
     else if (tracked)
     {
