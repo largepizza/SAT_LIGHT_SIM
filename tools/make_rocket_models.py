@@ -276,7 +276,8 @@ def starship_booster(b, z0=0.0):
     b.radial_box("raceway", 90.0, r, z0 + 38.0, 0.35, 0.7, 64.0, "steel")
     # Aft: the heat shield, 33 Raptor 3 (3 centre / 10 middle / 20 outer), bells below the skirt.
     b.disc("aft_heat_shield", r - 0.02, z0 - 0.01, "black")
-    b.engines("engines", [(3, 0.85), (10, 2.3), (20, 3.85)], 0.62, 2.4, z0 - 1.5)
+    # (Exits 1.65 m below: each throat just under the heat shield, so the cap cuts no bell.)
+    b.engines("engines", [(3, 0.85), (10, 2.3), (20, 3.85)], 0.62, 2.4, z0 - 1.65)
     return top
 
 
@@ -285,9 +286,15 @@ def starship_ship(b, z0=0.0):
     nose_len = 13.5
     zb = z0 + L - nose_len
     tps = ("tiles", 176.0, 364.0)  # the windward half (-Y = 270 deg) and a little past the flap hinges
-    b.profile("ship_barrel", [[z0, r], [zb, r]], "steel", caps="bottom", arc=tps)
+    # The aft skirt (2026-10-20, issue 20261020_181510): the hull runs on below the aft heat shield as an open
+    # skirt round the engines, its bottom (z0, the track point) about flush with the RVac exits. The heat shield
+    # sits above every bell's throat, so no surface cuts through a bell (a cap at z0 sliced the bells at mid-length
+    # and their glowing interiors read as crescents). The photometric barrel starts at the heat shield.
+    hs = 3.3
+    b.profile("ship_barrel", [[z0 + hs, r], [zb, r]], "steel", caps="bottom", arc=tps)
     b.pieces("ship_nose", ogive(r, nose_len, zb, tip_r=1.0, n=16), "steel", [zb + 0.45 * nose_len], caps=False, arc=tps)
-    b.disc("aft_skirt_plate", r - 0.03, z0 - 0.01, "grey")
+    b.profile("aft_skirt", [[z0, r], [z0 + hs, r]], "steel", ro=True, arc=tps, inner="black")
+    b.disc("aft_heat_shield", r - 0.03, z0 + hs - 0.01, "black")
     # Aft flaps: straight trailing edge at the skirt, the leading edge swept; tiled underneath (windward).
     for phi, mat, back in ((-8.0, "steel", "tiles"), (188.0, "tiles", "steel")):
         b.fin("aft_flap", phi, r - 0.15, z0 + 6.4, 10.0, 4.8, 4.6, 5.2, 0.75, mat, back, tip_thick=0.35)
@@ -308,9 +315,10 @@ def starship_ship(b, z0=0.0):
     # (the widest stowed payload, Starlink V3 with its array packs, and the thickest, a folded Starmind).
     b.profile("payload_door", [[z0 + 29.8, r + 0.025], [z0 + 32.4, r + 0.025]], "soot", ro=True)
     b.c[-1]["sweep_deg"] = [43.0, 137.0]
-    # 3 sea-level Raptors in the middle, 3 RVacs outside them, 60 deg apart.
-    b.engines("engines", [(3, 1.05)], 0.62, 2.4, z0 - 0.9, phase=30.0)
-    b.engines("engines_rvac", [(3, 3.1)], 1.15, 4.4, z0 - 0.5, phase=90.0)
+    # 3 sea-level Raptors in the middle, 3 RVacs outside them, 60 deg apart: the RVac exits just inside the skirt's
+    # bottom, the sea-level bells recessed within it; every throat below the heat shield (hs).
+    b.engines("engines", [(3, 1.05)], 0.62, 2.4, z0 + 0.8, phase=30.0)
+    b.engines("engines_rvac", [(3, 3.1)], 1.15, 4.4, z0 + 0.15, phase=90.0)
     return z0 + L
 
 
@@ -319,7 +327,7 @@ VEHICLES = {
     # the interstage's share), upper = the upper stage's exposed tank, fairing = cyl + ogive, `fr` its radius.
     "falcon9": dict(
         r=1.83, core=41.2, core_mat="white", inter=(6.0, "black"),
-        eng=dict(rings=[(1, 0.0), (8, 1.32)], re=0.46, L=1.7, z=-1.1), aft="black",
+        eng=dict(rings=[(1, 0.0), (8, 1.32)], re=0.46, L=1.7, z=-1.2), aft="black",
         grid=(4, 1.25, 1.5, 0.18, "gridfin"), grid_stowed=True, legs=(4, 9.6, 0.75, "black"),
         upper=dict(len=9.4, mat="white", eng=dict(rings=[(1, 0.0)], re=1.6, L=4.4, protrude=3.7)),
         fairing=dict(fr=2.6, cyl=6.7, nose=6.4, tip=0.35),
@@ -330,7 +338,7 @@ VEHICLES = {
               "photographs."),
     "falcon9_dragon": dict(
         r=1.83, core=41.2, core_mat="white", inter=(6.0, "black"),
-        eng=dict(rings=[(1, 0.0), (8, 1.32)], re=0.46, L=1.7, z=-1.1), aft="black",
+        eng=dict(rings=[(1, 0.0), (8, 1.32)], re=0.46, L=1.7, z=-1.2), aft="black",
         grid=(4, 1.25, 1.5, 0.18, "gridfin"), grid_stowed=True, legs=(4, 9.6, 0.75, "black"),
         upper=dict(len=9.4, mat="white", eng=dict(rings=[(1, 0.0)], re=1.6, L=4.4, protrude=3.7)),
         dragon=True,

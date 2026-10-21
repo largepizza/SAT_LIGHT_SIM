@@ -950,11 +950,13 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
     // the weather cube, so every flat stand-in shows the same evolving map as the volumetric clouds.
     VkDescriptorImageInfo weatherCube{cv2RepeatSampler, cv2WeatherView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo farLayer{VK_NULL_HANDLE, cv2FarView, VK_IMAGE_LAYOUT_GENERAL};   // review 18
+    VkDescriptorBufferInfo engineLights{kDustBuf, 0, VK_WHOLE_SIZE};   // the dust list's tail: the sea's light glints
     VkWriteDescriptorSet w[] = {
         imageWrite(skyDescSet, 7, TEX, &weatherCube),
         imageWrite(skyDescSet, 29, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &farLayer),
         bufferWrite(skyDescSet, 30, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &flashes),   // the Sun shadow cascade
         bufferWrite(skyDescSet, 31, UBO, &v2Info),
+        bufferWrite(skyDescSet, 32, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &engineLights),
         bufferWrite(cloudMarchDescSet, 21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &flashes),
         bufferWrite(cloudMarchDescSet, 15, UBO, &v2Info),
         imageWrite(cloudMarchDescSet, 16, TEX, &weather),

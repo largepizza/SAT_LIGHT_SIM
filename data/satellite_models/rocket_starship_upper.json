@@ -3,14 +3,8 @@
  "note": "Launch vehicle render model (tools/make_rocket_models.py), starship: upper. Body frame: +Z toward the nose, origin at the aft end; engine bells below it. Ogive nose 13.5 m with a 1 m blunt tip, flap planforms, chines and engine heights are estimates from photographs of Block 2/3 vehicles.",
  "materials": [
   {
-   "name": "grey",
-   "preset": "white_paint",
-   "diffuse_albedo": 0.3,
-   "color": [
-    0.45,
-    0.46,
-    0.48
-   ]
+   "name": "black",
+   "preset": "black_paint"
   },
   {
    "name": "steel",
@@ -74,7 +68,7 @@
    "type": "profile",
    "profile": [
     [
-     0.0,
+     3.3,
      4.5
     ],
     [
@@ -231,15 +225,44 @@
    "group": "body"
   },
   {
-   "name": "aft_skirt_plate_3",
+   "name": "aft_skirt_3",
    "type": "profile",
    "profile": [
     [
-     -0.05,
+     0.0,
+     4.5
+    ],
+    [
+     3.3,
+     4.5
+    ]
+   ],
+   "position": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "caps": false,
+   "material": "steel",
+   "arc_material": "tiles",
+   "arc_deg": [
+    176.0,
+    364.0
+   ],
+   "inner_material": "black",
+   "group": "body",
+   "render_only": true
+  },
+  {
+   "name": "aft_heat_shield_4",
+   "type": "profile",
+   "profile": [
+    [
+     3.25,
      4.47
     ],
     [
-     -0.01,
+     3.29,
      4.47
     ]
    ],
@@ -249,12 +272,12 @@
     0.0
    ],
    "caps": true,
-   "material": "grey",
+   "material": "black",
    "group": "body",
    "render_only": true
   },
   {
-   "name": "aft_flap_4",
+   "name": "aft_flap_5",
    "type": "fin",
    "root_chord": 10.0,
    "tip_chord": 4.8,
@@ -279,7 +302,7 @@
    "group": "body"
   },
   {
-   "name": "aft_flap_5",
+   "name": "aft_flap_6",
    "type": "fin",
    "root_chord": 10.0,
    "tip_chord": 4.8,
@@ -304,7 +327,7 @@
    "group": "body"
   },
   {
-   "name": "fwd_flap_6",
+   "name": "fwd_flap_7",
    "type": "fin",
    "root_chord": 7.4,
    "tip_chord": 3.4,
@@ -329,7 +352,7 @@
    "group": "body"
   },
   {
-   "name": "fwd_flap_7",
+   "name": "fwd_flap_8",
    "type": "fin",
    "root_chord": 7.4,
    "tip_chord": 3.4,
@@ -354,7 +377,7 @@
    "group": "body"
   },
   {
-   "name": "chine_8",
+   "name": "chine_9",
    "type": "fin",
    "root_chord": 27.0,
    "tip_chord": 27.0,
@@ -378,7 +401,7 @@
    "render_only": true
   },
   {
-   "name": "chine_9",
+   "name": "chine_10",
    "type": "fin",
    "root_chord": 27.0,
    "tip_chord": 27.0,
@@ -402,7 +425,7 @@
    "render_only": true
   },
   {
-   "name": "raceway_10",
+   "name": "raceway_11",
    "type": "box",
    "size": [
     0.3,
@@ -425,7 +448,7 @@
    "render_only": true
   },
   {
-   "name": "raceway_11",
+   "name": "raceway_12",
    "type": "box",
    "size": [
     0.3,
@@ -448,7 +471,7 @@
    "render_only": true
   },
   {
-   "name": "payload_door_12",
+   "name": "payload_door_13",
    "type": "profile",
    "profile": [
     [
@@ -475,51 +498,51 @@
    ]
   },
   {
-   "name": "engines_13",
+   "name": "engines_14",
    "type": "profile",
    "profile": [
     [
-     -0.9,
+     0.8,
      0.62
     ],
     [
-     -0.628,
+     1.072,
      0.5142
     ],
     [
-     -0.356,
+     1.344,
      0.4224
     ],
     [
-     -0.084,
+     1.616,
      0.3453
     ],
     [
-     0.188,
+     1.888,
      0.2845
     ],
     [
-     0.46,
+     2.16,
      0.2421
     ],
     [
-     0.732,
+     2.432,
      0.2232
     ],
     [
-     0.924,
+     2.624,
      0.346
     ],
     [
-     1.3464,
+     3.0464,
      0.346
     ],
     [
-     1.5,
+     3.2,
      0.2076
     ],
     [
-     1.55,
+     3.25,
      0.0
     ]
    ],
@@ -535,51 +558,51 @@
    "render_only": true
   },
   {
-   "name": "engines_14",
+   "name": "engines_15",
    "type": "profile",
    "profile": [
     [
-     -0.9,
+     0.8,
      0.62
     ],
     [
-     -0.628,
+     1.072,
      0.5142
     ],
     [
-     -0.356,
+     1.344,
      0.4224
     ],
     [
-     -0.084,
+     1.616,
      0.3453
     ],
     [
-     0.188,
+     1.888,
      0.2845
     ],
     [
-     0.46,
+     2.16,
      0.2421
     ],
     [
-     0.732,
+     2.432,
      0.2232
     ],
     [
-     0.924,
+     2.624,
      0.346
     ],
     [
-     1.3464,
+     3.0464,
      0.346
     ],
     [
-     1.5,
+     3.2,
      0.2076
     ],
     [
-     1.55,
+     3.25,
      0.0
     ]
    ],
@@ -595,51 +618,51 @@
    "render_only": true
   },
   {
-   "name": "engines_15",
+   "name": "engines_16",
    "type": "profile",
    "profile": [
     [
-     -0.9,
+     0.8,
      0.62
     ],
     [
-     -0.628,
+     1.072,
      0.5142
     ],
     [
-     -0.356,
+     1.344,
      0.4224
     ],
     [
-     -0.084,
+     1.616,
      0.3453
     ],
     [
-     0.188,
+     1.888,
      0.2845
     ],
     [
-     0.46,
+     2.16,
      0.2421
     ],
     [
-     0.732,
+     2.432,
      0.2232
     ],
     [
-     0.924,
+     2.624,
      0.346
     ],
     [
-     1.3464,
+     3.0464,
      0.346
     ],
     [
-     1.5,
+     3.2,
      0.2076
     ],
     [
-     1.55,
+     3.25,
      0.0
     ]
    ],
@@ -655,51 +678,51 @@
    "render_only": true
   },
   {
-   "name": "engines_rvac_16",
+   "name": "engines_rvac_17",
    "type": "profile",
    "profile": [
     [
-     -0.5,
+     0.15,
      1.15
     ],
     [
-     -0.0013,
+     0.6487,
      0.9538
     ],
     [
-     0.4973,
+     1.1473,
      0.7834
     ],
     [
-     0.996,
+     1.646,
      0.6405
     ],
     [
-     1.4947,
+     2.1447,
      0.5277
     ],
     [
-     1.9933,
+     2.6433,
      0.449
     ],
     [
-     2.492,
+     3.142,
      0.414
     ],
     [
-     2.844,
+     3.494,
      0.6417
     ],
     [
-     3.6184,
+     4.2684,
      0.6417
     ],
     [
-     3.9,
+     4.55,
      0.385
     ],
     [
-     3.95,
+     4.6,
      0.0
     ]
    ],
@@ -715,51 +738,51 @@
    "render_only": true
   },
   {
-   "name": "engines_rvac_17",
+   "name": "engines_rvac_18",
    "type": "profile",
    "profile": [
     [
-     -0.5,
+     0.15,
      1.15
     ],
     [
-     -0.0013,
+     0.6487,
      0.9538
     ],
     [
-     0.4973,
+     1.1473,
      0.7834
     ],
     [
-     0.996,
+     1.646,
      0.6405
     ],
     [
-     1.4947,
+     2.1447,
      0.5277
     ],
     [
-     1.9933,
+     2.6433,
      0.449
     ],
     [
-     2.492,
+     3.142,
      0.414
     ],
     [
-     2.844,
+     3.494,
      0.6417
     ],
     [
-     3.6184,
+     4.2684,
      0.6417
     ],
     [
-     3.9,
+     4.55,
      0.385
     ],
     [
-     3.95,
+     4.6,
      0.0
     ]
    ],
@@ -775,51 +798,51 @@
    "render_only": true
   },
   {
-   "name": "engines_rvac_18",
+   "name": "engines_rvac_19",
    "type": "profile",
    "profile": [
     [
-     -0.5,
+     0.15,
      1.15
     ],
     [
-     -0.0013,
+     0.6487,
      0.9538
     ],
     [
-     0.4973,
+     1.1473,
      0.7834
     ],
     [
-     0.996,
+     1.646,
      0.6405
     ],
     [
-     1.4947,
+     2.1447,
      0.5277
     ],
     [
-     1.9933,
+     2.6433,
      0.449
     ],
     [
-     2.492,
+     3.142,
      0.414
     ],
     [
-     2.844,
+     3.494,
      0.6417
     ],
     [
-     3.6184,
+     4.2684,
      0.6417
     ],
     [
-     3.9,
+     4.55,
      0.385
     ],
     [
-     3.95,
+     4.6,
      0.0
     ]
    ],
@@ -853,10 +876,10 @@
     "ship_barrel_0",
     "ship_nose_1",
     "ship_nose_2",
-    "aft_flap_4",
     "aft_flap_5",
-    "fwd_flap_6",
-    "fwd_flap_7"
+    "aft_flap_6",
+    "fwd_flap_7",
+    "fwd_flap_8"
    ],
    "status": "sourced",
    "value": "diameters and lengths rounded from the references; shapes (ogives, flaps, tapers) estimated from photographs",
@@ -864,14 +887,14 @@
   },
   {
    "subjects": [
-    "grey",
+    "black",
     "steel",
     "copper",
     "soot",
     "tiles"
    ],
    "status": "estimate",
-   "value": "grey: grey paint (Soyuz, Long March detail); steel: bare 304L-class stainless (Starship, Zhuque-3); copper: copper-alloy chamber and bell (Raptor, Merlin), oxidised; soot: a nozzle's sooty inside; tiles: black silica heat-shield tiles (Starship), hexagonal pattern",
+   "value": "black: black paint / carbon composite (interstages, legs); steel: bare 304L-class stainless (Starship, Zhuque-3); copper: copper-alloy chamber and bell (Raptor, Merlin), oxidised; soot: a nozzle's sooty inside; tiles: black silica heat-shield tiles (Starship), hexagonal pattern",
    "source": "Liveries from photographs; reflectance from the presets."
   }
  ]

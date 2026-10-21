@@ -12239,7 +12239,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     }
 
     // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=beamGlowDomeBuf, 19=sceneDepthTex, 20=oceanGlintBuf, 21=groundBeamsBuf
-    VkDescriptorSetLayoutBinding bindings[32] = {};
+    VkDescriptorSetLayoutBinding bindings[33] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -12298,12 +12298,15 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // lattice), for the clouds' shadows on the air (sat_sky.frag SKY_SUN_SHADOW; writeCloudsV2ConsumerDescriptors).
     bindings[30] = {30, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[31] = {31, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-    li.bindingCount = 32;
+    // 32 (2026-10-20): the dust list (kDustBuf), whose tail holds the engine / floodlight lights: the sea mirrors them
+    // from where they are (sat_sky.frag; written by writeCloudsV2ConsumerDescriptors, once kDustBuf exists).
+    bindings[32] = {32, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    li.bindingCount = 33;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 10},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},
