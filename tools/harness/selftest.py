@@ -417,6 +417,32 @@ launch state
 
 
 @test
+def mission_ops_trace():
+    # The mission-operations suite's numeric half (2026-10-20, tools/harness/mission_ops.py): every vehicle / program
+    # pair at the default start traced through its phases, judged by mission_ops.THRESHOLDS (WARN = the booster
+    # landing physics, owned elsewhere; SKIP = docking, not modelled), and the Starmind rings of 8 holding together.
+    sys.path.insert(0, HERE)
+    import mission_ops
+    out, res, _ = run("mission_ops", """
+time set 2036-11-22T00:00:00Z
+time pause
+launch trace from=2036-11-22 days=400
+""")
+    tr = result(res, "launch trace")["result"]["trace"]
+    found = [c for c in tr["combos"] if c.get("found")]
+    assert len(found) >= 20, f"only {len(found)} vehicle / program pairs found"
+    fails = []
+    for c in found:
+        for ph, ev in mission_ops.evaluate_trace(c["trace"]).items():
+            fails += [f"{c['vehicle']}/{c['program']} {ph}.{k['metric']}={k['value']}" for k in ev["checks"] if k["status"] == "FAIL"]
+    assert not fails, fails[:10]
+    star = next(c for c in found if c["program"] == "Starmind")
+    out, res, _ = run("mission_ops_formation", f"launch trace key={star['key']}\nlaunch formation key={star['key']}")
+    f = result(res, "launch formation")["result"]["formation"]
+    assert mission_ops.evaluate_formation(f)["status"] == "PASS", f.get("ring_shape_err_after_2d_m_max")
+
+
+@test
 def probe_and_debugview():
     out, res, _ = run("probe", SCENE + """
 observer lat=46.55 lon=7.98 alt=6000

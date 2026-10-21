@@ -602,6 +602,12 @@ Track boosterTrack(const Vehicle &vh, int recovery, double hLand)
         else
             target = -1.0; // where it comes down
     }
+    // The MECO sample itself (2026-10-20, mission-ops suite): fly() records from t1 + dt on, so without it every
+    // post-MECO sample sat one index early: the whole flight after staging ran 0.5 s ahead, and the stack jumped
+    // ~800 m (twice its speed for one sample) at separation.
+    tr.p.push_back(p1);
+    tr.v.push_back(v1);
+    tr.burn.push_back(BURN_ASCENT);
     const size_t n0 = tr.p.size();
     fly(vBack, doBoost, &tr);
     // It lands exactly on its target: the residual is taken out smoothly after the boostback.
@@ -644,7 +650,10 @@ Track upperTrack(const Vehicle &vh, double hPark)
         const double h = h00 * h1 + h10 * vz1 * T + h01 * hPark;
         const double dh = ((6 * s * s - 6 * s) * h1 + (3 * s * s - 4 * s + 1) * vz1 * T + (-6 * s * s + 6 * s) * hPark) / T;
         const double e = s * s * (3.0 - 2.0 * s);
-        const double vx = vx1 + (vOrb - vx1) * e;
+        // x is the arc ALONG THE GROUND (the angle x kR: rocketPos turns it into the inertial plane at x / kR), so its
+        // rate is the speed x kR / (kR + h). (Until 2026-10-20 the speed itself: at SECO the stage ran 5-13% faster than
+        // its parking orbit and lost 250-950 m/s in one step; mission-ops suite, insertion.dv_seco_m_s.)
+        const double vx = vx1 + (vOrb * kR / (kR + h) - vx1) * e; // (vx1: the ascent's, already a ground rate)
         if (!tr.p.empty())
             x += 0.5 * (vx + tr.v.back().x) * tr.dt;
         tr.p.push_back({x, h});
@@ -675,13 +684,18 @@ void cwState(const glm::dvec3 &p0, const glm::dvec3 &v0, double n, double t, glm
                    -n * s * z0 + c * zd);
 }
 
-double rampPhase(double a0, double a1, double T, double tau)
+double rampPhase(double a0, double a1, double T, double tau, double f0, double f1)
 {
-    if (T <= 0.0 || std::abs(a1 - a0) < 1e-6)
-        return meanMotion(a0) * tau;
+    if (T <= 0.0)
+        return meanMotion(a0) * f0 * tau;
+    if (std::abs(a1 - a0) < 1e-6)
+        return meanMotion(a0) * (f0 * tau + 0.5 * (f1 - f0) * tau * tau / T);
     const double k = (a1 - a0) / T;
     const double a = a0 + k * tau;
-    return 2.0 * std::sqrt(kGM) / k * (1.0 / std::sqrt(a0) - 1.0 / std::sqrt(a));
+    // The integral of sqrt(GM) a^-3/2 (A + B a) over a from a0 (the factor f = A + B a is linear in tau, so in a).
+    const double Bf = (f1 - f0) / (k * T), Af = f0 - Bf * a0;
+    return std::sqrt(kGM) / k *
+           (2.0 * Af * (1.0 / std::sqrt(a0) - 1.0 / std::sqrt(a)) + 2.0 * Bf * (std::sqrt(a) - std::sqrt(a0)));
 }
 
 // ── Parcels ──────────────────────────────────────────────────────────────────────────────────────

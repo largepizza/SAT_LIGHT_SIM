@@ -64,7 +64,7 @@ Development: Earth / Terrain Rendering* (read **Elevation texture encoding** bef
 code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
-`imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
+`imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions), `mission_ops.py` (every launch vehicle traced phase by phase, PASS / FAIL), `launch_bench.py` (the launch system's CPU / GPU cost) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
 validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_geo_belt.py` + `tools/make_geo_models.py` (the GEO belt's members and models) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
@@ -5258,6 +5258,61 @@ launches follow per-program cadences (no real manifest).
   - Open: a station appears whole (no module-by-module build); a pad kind is fixed (39A shows its Starship tower in
     2019); the ambience's closed-form shell counts ignore the era; Starlink Gen1's first fills start 2019-05 while the 2020
     V1.0 / VisorSat benchmark shells cover the same satellites (~1.5k double-counted in 2020-2022).
+- **Mission-operations suite and launch benchmark (2026-10-20, `tools/harness/mission_ops.py`, `launch_bench.py`;
+  docs/HARNESS.md "Mission operations" / "Launch benchmark").** Harness `launch trace` (`launchTraceJson`,
+  `launchTraceBatchJson`, end of SatelliteSimLaunches.cpp) finds the next launch of every (vehicle, program) pair after a
+  date — the batches' CANDIDATES first (vehicle, time; cheap), then building those of the pair in time order until one
+  flies — and measures it phase by phase from the launch model itself (rocketPos, memberState, stageNose, the tracks;
+  no frames): pad, climb, max-Q, staging, booster recovery, fairing, insertion (parking altitude, circular speed,
+  flight-path angle, inclination and angle to the target plane), coast, deployment (release error vs the dispenser /
+  stack slot, separation speed, member gaps), raising (proper acceleration, spread, monotonic climb), arrival and
+  retiree start (position and velocity vs the slot, at the SAME instant), upper-stage deorbit / entry / a ship's catch,
+  docking. `launch formation` checks a formation train (Starmind) from release to arrival; `launch goto` jumps to a
+  launch's T+t. The thresholds are one Python table (`mission_ops.THRESHOLDS`, PASS / FAIL / WARN for the landing burn's
+  physics, which another agent owns / SKIP for docking). `selftest.py -k mission_ops` runs it at the default start.
+  **What it found and what was fixed:**
+  - **Staging**: `boosterTrack` never stored its MECO sample (fly() records from t1 + dt), so every post-MECO sample sat
+    one index early: the booster's whole flight after staging ran 0.5 s ahead and the stack's last half second moved
+    at twice its speed (an ~800 m jump at separation; velocity "jump" 1,200-3,450 m/s). The sample is pushed now.
+  - **SECO**: the upper track's x is the arc ALONG THE GROUND (rocketPos turns x / kR into the inertial plane) but its
+    rate was the inertial speed, so the stage ran 5-13% fast and dropped 250-940 m/s in one step into its parking orbit.
+    Its rate now eases from the ascent's ground rate to vOrb x kR / (kR + h). This moves where every upper stage is
+    after MECO (the parking orbit's phase, deployment): re-check bookmarks that frame a stage in orbit.
+  - **Fairings** separated at MECO + 30 s (~60-100 km) on every vehicle: the 110-km search ran before setDeorbit, while
+    tStageGone was still 0 and rocketPos returned nothing for the upper stage. It runs after the deorbit plan now.
+  - **Trains' arrival**: a slot's mean motion is the roster's (J2), not Kepler's at its radius, and the climb ended at
+    Kepler's rate (`launch::rampPhase` takes a rate factor f0 -> f1 now: the climb ends at the slot's rate, a retiree
+    starts at it). The phasing residual (`LMember::eps`) is spread as a smoothstep, not a constant drift that stopped dead
+    at the arrival (Starlink direct-to-cell's short raise: an 18 m/s jump onto the slot).
+  - **Formations raise as one group**: every member of a cluster takes its leader's schedule (wait, ramp, residual:
+    `buildBatch`, `gPerMemberRaise` = the old behaviour for `launch formation before=1`). Each member had its own hashed
+    ramp, so a Starmind ring's eight spread up to ~10,000 km along the orbit during the climb and met only at the
+    arrival, each from its own side. Now the pez string (45 s apart) eases into the ring over the release offset's two
+    days (spread ~3 km at most) and the eight climb as a ring (shape within metres, `ring_shape_err_after_2d_m_max`).
+  - **Trains left too close**: dispenser launches released a satellite every 2 s at ~0.45 m/s +- 0.12 (stacks 2-4 s at
+    0.3 m/s): ~1 m apart for minutes, bodies overlapping. launches.json: `deploy_interval_s` 30 and `sep_spread_mps` 0.04
+    on every dispenser vehicle (30 s apart, ~13 m at release; 12 s still met at ~1 m from the Clohessy-Wiltshire offsets),
+    and 30 s for the Starlink Gen1 and Qianfan stacks.
+  - **Milestones** (`missionBatchMilestones`) used the vehicle's own booster track and recovery for max-Q, the burns and
+    the landing label: an RTLS Falcon 9 listed a trim burn and "lands on the droneship"; a ground landing likewise. They
+    use this launch's track (`boosterTr`) and `B.landKind` now.
+  **Still open (reported, not fixed):** boosters arriving from far downrange are tilted 17-50 deg in their last 10 s and
+  touch down at a 25-35 m/s last-second mean (the landing burn's physics; WARN); a deorbit burn blended by smoothstep
+  peaks at ~4x dv / burn (up to ~90 m/s^2 for the 800-km Qianfan stages: no jump, but violent); late close passes
+  (~1 m, about an orbit after release) between train members, from the Clohessy-Wiltshire offsets taken about each
+  member's own plane; crew docking is not modelled (SKIP); Long March 12 flies no program.
+  **Measured:** (2026-10-20, RTX 3070 Ti shared with other agents' runs, so GPU numbers are noisy) `mission_ops.py run`: 69 launches over
+    three epochs (27 pairs each), 908 phase checks PASS, 2 FAIL (Falcon 9 Starlink Gen1 and OneWeb at 2026-11-05: a pair within ~1-1.6 m
+    in the first 10 min, from the random spread), 42 WARN (every recovered booster's landing tilt 17-50 deg), 13 SKIP
+    (docking); Starmind's ring shape error from day 2 ~0 m with the shared schedule vs 10,000 km before. `launch_bench.py`
+    (harness_runs/launch_bench/baseline.json, launches on - off): the Twilight Starship bookmark +2.8 ms GPU (cloud_march
+    +2.3: plumes) and 1.9 ms CPU; at 1 h/s 6.3 ms CPU (plume builds 4.6 ms); at 1 d/s 3.0 ms CPU (the window walk 0.9,
+    record writes 1.0); a 2032 Gulf dusk +21.6 ms GPU (cloud_march +14.4, scene_depth +5.8) and 4.7 ms CPU; following a
+    night Starship from 300 m +6.1 ms; a droneship landing +22.9 ms GPU, almost all cloud_march (the landing cloud /
+    plume Gaussians).
+  The "Starmind Deployment" default bookmark was re-shot (the SECO fix moved the ship ~90 km along its orbit;
+  harness_runs/bm9/bm9.satcmd = section 9 of default_bookmarks.satcmd); `launch_bench.py` captures both launch bookmarks
+  at its end so a moved stage shows.
 - Not built: the Octagrabber driving out to the booster, the ship rolling in the swell, the booster's legs deploying,
   the knife-edge roll SpaceX uses to dim raising trains, J2 drift into the target plane
   (trains launch into it), the crew capsule's rendezvous and cargo flights, hole-punching through cloud decks, sonic booms.
