@@ -576,7 +576,7 @@ json SatelliteSim::harnessStateJson()
                 const GpuSatLobe &L = type.lobes[li];
                 const glm::dvec3 n = satLobeNormalPosed(type.lobes, type.groups, poses, li);
                 const double a2 = L.alpha2Mat + (double)kSunAlpha * kSunAlpha;
-                const double I = satLobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, a2, L.distribution != 0, s, ob, L.transmission);
+                const double I = satLobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, a2, satLobeBeckmann(L), s, ob, L.transmission);
                 const double ns = glm::dot(n, s), no = glm::dot(n, ob);
                 const double Id = no <= 0.0 ? 0.0
                                   : ns > 0.0 ? L.albedoD / glm::pi<double>() * L.diffArea * ns * no

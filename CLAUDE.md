@@ -2632,7 +2632,10 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   hundreds of km from the inner ones at that radius. The code takes the plane of the ring nearest
   the camera (its first satellite, in `initConstellation()`'s ring order). The first cut used one
   plane and read "0 satellites" from inside the disk; a second bug clamped the ring spacing to ≥ 1 km
-  when the AI disk's is 0.7 km, which picked the wrong ring.
+  when the AI disk's is 0.7 km, which picked the wrong ring. **The deployment era (2026-10-21):** N is only the
+  satellites there now — `rosterRangePresentFrac(i0, i1, t)` (each range's sorted born / gone seconds from
+  rosterLife, cached until it changes; 1 with the era off) per constellation, and per filed group of a Shells entry
+  (Starmind fills its shells one after another): in 2020 the Starlink drone is Gen1's first fills, not the 2036 shell.
 - **Offline mode (harness).** A muted harness run initialises the engine with NO device
   (`App::run` → `AudioSystem::init(offline)`): nothing is audible and nothing is mixed until
   `audio record` pulls the graph synchronously (`renderWav`, with a 0.25 s discarded pre-roll and
@@ -3495,6 +3498,26 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   Soyuz, Progress, Canadarm2, ELCs, AMS, Ku dish, cupola glass, bands), Tiangong 2920 -> 4864 (wing masts, Shenzhou,
   Tianzhou, arm, radiators), Haven-1 200 -> 1996, Haven-2 584 -> 4880, Axiom 968 -> 4080, Orbital Reef 584 ->
   5804, ROS 584 -> 5292, BAS 584 -> 2392, Starlab 392 -> 4216. m1000 in KNOWN_RESIDUALS.md.
+  **Module by module (2026-10-21):** a component's `"since": "YYYY-MM-DD"` (and a docking port's) is the date its
+  module arrives; with the deployment era on a part is not there before it — not drawn (`sat_mesh.vert` collapses it to
+  one point outside the clip volume, `instCompAbsent`: the component buffer's [5c + 4].w = its build-date code
+  `satSinceCode`, the instance's `trans[0].w` = today's, `SatelliteSim::meshBuildCode`; 0 = every part), casting no
+  shadow (`rayBlocked`, the shadow accel) and carrying no light in the photometry: lobes never merge across dates
+  (`bakeSatLobes`: the date is in the exact-merge and budget-merge keys) and a lobe's code rides in
+  `GpuSatLobe::distribution` bits 8-31 (bits 0-7 the GGX / Beckmann flag: `satLobeBeckmann`), its share
+  `satLobePresence` on the CPU (`evalSatLobesPosed(..., buildDays)`, `SatOrbitElems::buildByDate` set by
+  `rosterElemsOf` with the era on) and `lobeBuilt` in sat_orbit.comp against `GpuSatTypeHeader::buildDays` (the
+  header is 128 B now; 1e9 = every part). Crew flights dock only at ports there at docking (`buildCrew`). Dates
+  (`Station.since()` in the generator; `patch(..., dates)` for the hand-made Tiangong): Tiangong Tianhe 2021-04-29,
+  Wentian 2022-07-24, Mengtian 2022-10-31 (real); Axiom PPTM 2027-06, Hab-1 2028-03, Airlock 2029-01, Hab-2 2029-09,
+  RMF 2030-06; Haven-2 the forward module 2028-06, the core 2029-06, a spoke a year to 2032-03; ROS the core (Nauka +
+  UUM + NEM) 2028-09, ShM 2029-06, the base module 2031-06, the target modules 2033-03 / 09; BAS-01 2028-12, -02
+  2031-06, -05 2032-06, -03 2033-12, -04 2035-06; Orbital Reef the core 2030-06, LIFE 2031-03, the science module
+  2031-09, LIFE 2032-06 (later dates the scenario's). The ISS, Haven-1 and Starlab (one launch) have none. Exact lobes
+  grow where modules no longer merge (Tiangong 396 -> 438); selftests pass. NOT done: the dated parts' OCCLUDERS still
+  block in the photometry's opt-in part occlusion (CPU and GPU alike, so parity holds); the mesh glint-share loop
+  (`glintShare`) counts absent lobes; module launches are not flown (another agent was turning crew spacecraft into
+  visiting vehicles: a module launch with a "module docked" milestone is the open item).
   **(2026-10-20, crew vehicles)** The visiting CREW vehicles are no longer greebles (the sim flies and docks real ones:
   Launches > "Crew spacecraft"); the generator writes each station's `docking_ports` instead (`dock()`, `port(...,
   dock=True)`; the ISS gained PMA-3 on Harmony's zenith port). Cargo ships stay. Photometric parts unchanged.
@@ -3595,7 +3618,8 @@ lives in `data/custom/constellations_attitude_example.json`. The v1.1 legacy ros
 exe relinks — which is why hand-pasted rosters there kept "reverting": edit the file in `data/`.
 
 **Settings > Constellations (2026-10-20, `buildSettingsConstellationsTab`)** lists the roster GROUPED by category,
-folded at first (`constGroupOpen_`, session state): a group header has ON / HLT for every entry in it (MIX when
+folded at first (`constGroupOpen_`; persisted since 2026-10-21 with the open member list and its search, settings.json
+`constellations_ui` {groups_open, list_open, list_filter}): a group header has ON / HLT for every entry in it (MIX when
 some are on) and the group's satellite count; an entry row has ON / HLT and its action — Select / Go to for a
 one-satellite entry (a station), LIST for a List entry (its members: a search field over name / operator /
 purpose, pages of 25 sorted west to east, Select / Go to each; destroyed members greyed), else VIEW (3D view of
@@ -4595,6 +4619,14 @@ launches follow per-program cadences (no real manifest).
     (5.2 m fairings: LM-5B, LM-8A, Zhuque-3; LM-8A's fairing lengthened to 8.5 + 5.5 m), Qianfan 18 (2 x 9; its bus
     2.6 x 1.3 m). NOT stacked (no fit as modelled): Amazon Leo (45 of a 2 x 2 x 1.2 m bus with a 3 m panel), OneWeb (36
     on a column ~12 m tall), Reflect Orbital (no stowed mirror): they still appear at the dispenser point (stowed).
+    **Checked again 2026-10-21 (no change made):** the column fit over 3-8 to a tier, with the models as they are and
+    with OneWeb's dishes stowed and wings folded tight (1.3 x 1.32 x 1.06 m) or Amazon's antenna-panel overhang folded
+    (2.0 x 2.0 x 1.35 m): no layout fits — OneWeb 36 misses Falcon 9's fairing by 0.08 m at best (6 a tier, 6 tiers),
+    LVM3's by 0.27 m; Amazon 45 misses every vehicle by 0.6-3 m (the best New Glenn, 7 a tier). The models' stowed
+    boxes are ~2x the real satellites' volume (OneWeb ~1 x 1 x 1.3 m, Kuiper sized for 45 in Vulcan's 5.4 m fairing),
+    so a fit needs smaller BUSES, which moves their benchmarks (mallama2020b_oneweb, mallama2026_amazon_leo):
+    re-calibrate when that is done. (Per-vehicle payloads — Atlas V 27, Ariane 64 ~35, Falcon 9 24 — would need a
+    payload per vehicle, which the plane's batch size does not support.)
   - **Cost**: Starmind's launch rate x5 makes ~5300 live batches (1300 before); launch CPU 1.0 -> 2.1 ms a frame at the
     Starship bookmark (2.4 before `L.livePtr` and the 8-frame full freeing pass); 1.24-1.28 ms after the 2026-10-20 CPU
     pass (see "CPU bucket `launches`"). Guowang's model (realism pass:
@@ -5356,9 +5388,10 @@ launches follow per-program cadences (no real manifest).
     later. Site `online` (+ `online_for: {vehicle: date}`, 39A's Starship tower 2027-03) and `fictional`; vehicle
     `online` (first flight). `roster_history`: groups without launches — stations' `born` dates (Tiangong 2021-04-29,
     Haven-1 2026-05-15, Axiom 2027-06, Haven-2 2028-06, ROS 2028-09, Bharatiya 2028-12, Starlab 2029-03, Orbital Reef
-    2030-06: a station appears WHOLE at its first module's date), the HLS depots, the 2020 benchmark shells (V1.0
+    2030-06: the first module's date; since 2026-10-21 the later modules follow their own "since" dates: Satellite Types > Station models), the HLS depots, the 2020 benchmark shells (V1.0
     2019-11 .. gone 2024-06, VisorSat 2020-08 .. 2025-01) and Space Junk (`count` over time: 9k 2000, 22k 2019, 30k at
-    2026-10-20, 80k 2031, 300k 2036-11; members appear in a hashed order). The ISS, Hubble and the GEO belt are always
+    2026-10-20, 80k 2031, 300k 2036-11; members appear in a hashed order; the benchmark shells only on opt-in since
+    2026-10-21, below). The ISS, Hubble and the GEO belt are always
     there (no entry). Dates are coarse real history before 2026, the scenario after.
   - **First fills** (buildPlanes, `LPlane::fillT`): per cohort every batch of its planes is put in fill order — shells
     one after another by altitude within each constellation (constellations side by side), overlapping by the stagger;
@@ -5414,9 +5447,29 @@ launches follow per-program cadences (no real manifest).
     `launch padstats` (docs/HARNESS.md); `missions state` -> `build_out`.
   - **Perf** (RTX 3070 Ti, 1600x900): launches CPU 0.97 ms at the 2036 default start (1.04 era off); 2.17 ms on the Gulf
     coast at a 2032 twilight (plumes 1.75 ms with ~1,700 candidates). 2032-09: ~9,700 live batches, 28k train satellites.
-  - Open: a station appears whole (no module-by-module build); a pad kind is fixed (39A shows its Starship tower in
-    2019); the ambience's closed-form shell counts ignore the era; Starlink Gen1's first fills start 2019-05 while the 2020
-    V1.0 / VisorSat benchmark shells cover the same satellites (~1.5k double-counted in 2020-2022).
+  - **Pads by date (2026-10-21):** a pad's kind has a history (`LPad::kindHist`, `padKindAt(pad, t, era)`,
+    `padAtTime` = a copy with that kind's exclusion / graded radii): a site's `pad_history` [[date, kind], ...] (kind -1 =
+    nothing there) or, without one, a generic pad from its `online` date raised to each of its vehicles' kinds from their
+    `online_for` dates there; the pad is the largest of its sites' kinds. 39A: the Shuttle-era pad (generic) from 1966,
+    Falcon 2017-02, its Starship tower 2027-03; SLC-37 a Delta IV pad 2002-11 .. 2025-06, nothing, Starship 2027-09;
+    SLC-6 Delta IV 1985 .. 2023-06, Starship 2028-06; LC-36 built for New Glenn from 2021; Starbase's tower from
+    2021-07; every other pad from its `online` date (Louisiana, the sea platforms: nothing before). Everything drawn
+    follows it: the mesh (`launchMeshJobs`, slots keyed by pad AND kind), the ground pattern, the graded terrain and the
+    city exclusion (`launchFillPadParams`: padU.w = the kind then, padQ.w / padAux.z its radii; a Falcon pad's landing zone
+    only while it is a Falcon pad), the lights, `launch pad`; and the ship catch picks a pad with a catch tower at the
+    catch (`padKindAt(...) == 2`: no catches at 39A before 2027-03), the lift-off deluge a Starship mount at lift-off.
+    `LPad::kind` stays the 2036 pad (the era off). Harness `launch pads` -> `kind_now`, `history`; `deploy` counts pads
+    by kind now. `tools/harness/scripts/era_build_up.satcmd`.
+  - **The 2020 benchmark shells are left out of the era's sky (2026-10-21, a decision):** V1.0 / VisorSat (roster_history
+    `"benchmark": true`) stand for satellites Starlink Gen1's own first fills already fly from 2019-05 (they were counted
+    twice in 2019-2024). With the era on they are never born unless the player opts in — Settings > Constellations >
+    BENCHMARK SHELLS (2020) "In the deployment era" (`launches.era_benchmark_shells`, default off; in rosterLifeKey). With
+    the era off they are always there, as before; the benchmarks and the accuracy gate read the models directly. The
+    alternative — Gen1's early slots flying the V1.0 / VisorSat models in their eras — needs a satellite's TYPE to change
+    with time (a roster record's typeIdx is fixed: a per-satellite type word on the GPU), so it was not taken.
+    kCacheVersion 16.
+  - Open: stations' module launches (the build-up is dated parts, not flights); the dated parts' occluders in the opt-in
+    part occlusion; OneWeb / Amazon Leo stacks (Launches > Payload fairings and stacks).
 - **Mission-operations suite and launch benchmark (2026-10-20, `tools/harness/mission_ops.py`, `launch_bench.py`;
   docs/HARNESS.md "Mission operations" / "Launch benchmark").** Harness `launch trace` (`launchTraceJson`,
   `launchTraceBatchJson`, end of SatelliteSimLaunches.cpp) finds the next launch of every (vehicle, program) pair after a

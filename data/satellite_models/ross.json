@@ -104,7 +104,8 @@
             "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
             "caps": true,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2031-06-01"
         },
         {
             "name": "ros_nem",
@@ -126,7 +127,8 @@
             "rotation_quat": [0.5, -0.5, 0.5, 0.5],
             "caps": true,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2029-06-01"
         },
         {
             "name": "ros_target_port",
@@ -137,7 +139,8 @@
             "rotation_quat": [-0.5, -0.5, -0.5, 0.5],
             "caps": true,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2033-03-01"
         },
         {
             "name": "ros_target_zenith",
@@ -148,7 +151,8 @@
             "rotation_quat": [0.0, 1.0, 0.0, 0.0],
             "caps": true,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2033-09-01"
         },
         {
             "name": "nem_array_s",
@@ -190,7 +194,8 @@
             "material": "cells",
             "back_material": "cells_back",
             "group": "arrays",
-            "pivot": [-11.4, 0.0, 0.0]
+            "pivot": [-11.4, 0.0, 0.0],
+            "since": "2031-06-01"
         },
         {
             "name": "base_array_s_yoke",
@@ -200,7 +205,8 @@
             "material": "metal",
             "group": "arrays",
             "render_only": true,
-            "pivot": [-11.4, 0.0, 0.0]
+            "pivot": [-11.4, 0.0, 0.0],
+            "since": "2031-06-01"
         },
         {
             "name": "base_array_s_spar",
@@ -210,7 +216,8 @@
             "material": "metal",
             "group": "arrays",
             "render_only": true,
-            "pivot": [-11.4, 0.0, 0.0]
+            "pivot": [-11.4, 0.0, 0.0],
+            "since": "2031-06-01"
         },
         {
             "name": "nem_array_p",
@@ -252,7 +259,8 @@
             "material": "cells",
             "back_material": "cells_back",
             "group": "arrays",
-            "pivot": [-11.4, 0.0, 0.0]
+            "pivot": [-11.4, 0.0, 0.0],
+            "since": "2031-06-01"
         },
         {
             "name": "base_array_p_yoke",
@@ -262,7 +270,8 @@
             "material": "metal",
             "group": "arrays",
             "render_only": true,
-            "pivot": [-11.4, 0.0, 0.0]
+            "pivot": [-11.4, 0.0, 0.0],
+            "since": "2031-06-01"
         },
         {
             "name": "base_array_p_spar",
@@ -272,7 +281,8 @@
             "material": "metal",
             "group": "arrays",
             "render_only": true,
-            "pivot": [-11.4, 0.0, 0.0]
+            "pivot": [-11.4, 0.0, 0.0],
+            "since": "2031-06-01"
         },
         {
             "name": "nem_radiator_f",
@@ -325,7 +335,8 @@
             "caps": "top",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-06-01"
         },
         {
             "name": "port_aft_ring",
@@ -336,7 +347,8 @@
             "caps": "both",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-06-01"
         },
         {
             "name": "progress_service",
@@ -347,7 +359,8 @@
             "caps": "bottom",
             "material": "cn_green",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-06-01"
         },
         {
             "name": "progress_descent",
@@ -358,7 +371,8 @@
             "caps": false,
             "material": "cn_green",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-06-01"
         },
         {
             "name": "progress_orbital",
@@ -369,7 +383,8 @@
             "caps": "top",
             "material": "cn_green",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-06-01"
         },
         {
             "name": "progress_wing_p",
@@ -380,7 +395,8 @@
             "material": "cells",
             "back_material": "cells_back",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-06-01"
         },
         {
             "name": "progress_wing_m",
@@ -391,7 +407,8 @@
             "material": "cells",
             "back_material": "cells_back",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-06-01"
         },
         {
             "name": "nauka_radiator",
@@ -430,7 +447,8 @@
             "caps": true,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-06-01"
         },
         {
             "name": "hga",
@@ -442,7 +460,8 @@
             "material": "metal",
             "inner_material": "dragon_white",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-06-01"
         },
         {
             "name": "nem_band",
@@ -464,7 +483,8 @@
             "caps": false,
             "material": "mli",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-06-01"
         }
     ],
     "sources": [

@@ -553,7 +553,10 @@ void SatelliteSim::computeAmbienceContext(float dt)
                 continue;
             if (followActive && followSatIndex >= (int)c.orbitStart && followSatIndex < (int)(c.orbitStart + c.orbitCount))
                 followedInGroup = true;
-            const double N = (double)c.orbitCount;
+            // The deployment era (2026-10-21): only the satellites there now count (rosterLife; 1 with the era off).
+            const double N = (double)c.orbitCount * rosterRangePresentFrac(c.orbitStart, c.orbitStart + c.orbitCount, t);
+            if (N <= 0.0)
+                continue;
             if (c.distribution == OrbitDistribution::Disk)
             {
                 // The rings are NOT one plane: an SSO ring's inclination follows its own altitude,
@@ -586,6 +589,13 @@ void SatelliteSim::computeAmbienceContext(float dt)
                         break;
                     const double R0 = kReM + sg.altMinM, R1 = kReM + sg.altMaxM;
                     const double gap = sg.shells > 1 ? (R1 - R0) / (sg.shells - 1) : 1000.0;
+                    // The group's own deployed share (Starmind fills its shells one after another).
+                    const double gFrac = rosterRangePresentFrac(gStart, gStart + gCount, t);
+                    if (gFrac <= 0.0)
+                    {
+                        gStart += gCount;
+                        continue;
+                    }
                     if (sg.sso)
                     {
                         const int k = std::clamp((int)std::lround((camR - R0) / std::max(gap, 1.0)), 0, sg.shells - 1);
@@ -594,11 +604,11 @@ void SatelliteSim::computeAmbienceContext(float dt)
                             const uint32_t first = gStart + (uint32_t)k * perShell + (uint32_t)p * (uint32_t)sg.perPlane;
                             const SatOrbitState st = satOrbitStateAt(orbitElemsOf(satOrbits[first]), t);
                             const glm::dvec3 nrm = glm::normalize(glm::cross(st.posEci, st.velocity));
-                            planeBand(nrm, R0 - 0.5 * gap, R1 + 0.5 * gap, (double)sg.shells * sg.perPlane);
+                            planeBand(nrm, R0 - 0.5 * gap, R1 + 0.5 * gap, (double)sg.shells * sg.perPlane * gFrac);
                         }
                     }
                     else
-                        inclinedShell(0.5 * (R0 + R1), 0.5 * (R1 - R0), 0.5 * ((double)sg.inclMin + sg.inclMax), (double)gCount, false);
+                        inclinedShell(0.5 * (R0 + R1), 0.5 * (R1 - R0), 0.5 * ((double)sg.inclMin + sg.inclMax), (double)gCount * gFrac, false);
                     gStart += gCount;
                 }
             }

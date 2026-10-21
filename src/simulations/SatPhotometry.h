@@ -135,6 +135,9 @@ struct SatOrbitElems
     // stowed to deployed as the progress clamp((t - unfoldT0) / unfoldDur, 0, 1) goes 0 -> 1 (satUnfoldAt).
     // unfoldDur 0 = deployed. sat_orbit.comp reads the same from a launch record's tumble words (flag bit 26).
     double unfoldT0 = 0.0, unfoldDur = 0.0;
+    // The deployment era (2026-10-21): a station's parts exist from their build dates (SatComponent::sinceDays);
+    // false = every part (the era off, or no dated parts). sat_orbit.comp reads the header's buildDays.
+    bool buildByDate = false;
     double areaScale = 1.0;   // flux multiplier (a fragment against its type's model)
     // A transient object picked on screen (a rocket stage, a re-entry fireball: SatelliteSim's selTransient):
     // position, velocity and acceleration at fixT0, extrapolated quadratically. Rewritten every frame.

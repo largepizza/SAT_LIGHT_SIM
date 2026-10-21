@@ -38,6 +38,10 @@ struct Site
     double onlineT = -1e300;
     bool fictional = false;
     std::vector<std::pair<std::string, double>> onlineFor; // per vehicle id: a later date (39A's Starship tower)
+    // The pad on the ground by date (2026-10-21, "pad_history": [[date, kind], ...], kind -1 = no pad): what is
+    // DRAWN there (ground pattern, mesh, lights, city exclusion), independent of which vehicles fly. Empty = derived
+    // from the vehicles at their onlineFor dates (SatelliteSimLaunches.cpp buildPads).
+    std::vector<std::pair<double, int>> padHistory;
     double onlineForVehicle(const std::string &veh) const
     {
         for (const auto &p : onlineFor)
@@ -141,6 +145,10 @@ struct RosterHistory
     std::vector<std::pair<double, double>> count; // (J2000 s, members present); a fraction of the group if <= 1 and
                                                   // "fraction" is set
     bool fraction = false;
+    // A photometric BENCHMARK shell (2026-10-21: the 2020 V1.0 / VisorSat shells, the same satellites Starlink Gen1's
+    // early first fills stand for): with the deployment era on it is not in the sky unless the player opts in
+    // (launches.era_benchmark_shells); the benchmarks / accuracy gate read the models directly and never need it.
+    bool benchmark = false;
 };
 
 double dateToJ2000(const std::string &s); // "YYYY-MM-DD[THH:MM[:SS]]" (UTC) -> s since J2000; NaN if malformed

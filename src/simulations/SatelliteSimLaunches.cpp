@@ -287,7 +287,39 @@ struct LPad
     std::string name;
     double onlineT = -1e300;       // the deployment era: built from this date (the earliest of its sites)
     bool fictional = false;
+    // What stands here by date (2026-10-21): (from J2000 s, kind; -1 = nothing), sorted; `kind` above is the last
+    // (the 2036 pad, drawn at every date with the deployment era off). Built by buildPads from the sites'
+    // pad_history or their vehicles' online dates (39A: Shuttle pad, Falcon from 2017, its Starship tower 2027-03).
+    std::vector<std::pair<double, int>> kindHist;
 };
+// The pad's kind at t (-1 = not there), with its time-dependent radii. era false: the 2036 pad always.
+static int padKindAt(const LPad &p, double t, bool era)
+{
+    if (!era)
+        return p.kind;
+    int k = -1;
+    for (const auto &h : p.kindHist)
+    {
+        if (h.first > t)
+            break;
+        k = h.second;
+    }
+    return k;
+}
+static double padExclRFor(int kind) { return kind == 1 ? 3200.0 : 3000.0; }
+static double padFlatRFor(int kind) { return kind == 2 ? 450.0 : 350.0; }
+// A copy of the pad as it stands at t (kind, exclusion and graded radii); kind -1 = not there.
+static LPad padAtTime(const LPad &p, double t, bool era)
+{
+    LPad q = p;
+    q.kind = padKindAt(p, t, era);
+    if (q.kind >= 0)
+    {
+        q.exclR = padExclRFor(q.kind);
+        q.flatR = padFlatRFor(q.kind);
+    }
+    return q;
+}
 // Where things stand on a pad, in its (u, v) frame (metres): shared by the ground pattern (sat_sky.frag padGround,
 // which must agree), the meshes and the lights.
 constexpr double kPadTowerV = -32.0;   // the tower's centre (u = 0); its arms reach +v over the mount at the centre
@@ -922,6 +954,76 @@ static void buildPads(SatelliteSim::LaunchState &L)
         L.pads[at].onlineT = std::min(L.pads[at].onlineT, st.onlineT);
         st.elevM = L.pads[at].elevM;
     }
+    // Each pad's history (2026-10-21): per site its pad_history, else a pad from its online date (kind 0) raised to
+    // each vehicle's kind from the date that vehicle flies there (onlineFor: 39A's Starship tower); the pad is the
+    // largest of its sites' kinds at each change point. The 2036 kind (`kind`) is unchanged.
+    auto siteKindAt = [&](size_t si, double t) {
+        const launch::Site &st = L.cat.sites[si];
+        if (!st.padHistory.empty())
+        {
+            int k = -1;
+            for (const auto &h : st.padHistory)
+                if (h.first <= t)
+                    k = h.second;
+            return k;
+        }
+        if (st.onlineT > t)
+            return -1;
+        int k = 0;
+        for (const launch::Vehicle &vh : L.cat.vehicles)
+            if (std::find(vh.sites.begin(), vh.sites.end(), (int)si) != vh.sites.end() && st.onlineForVehicle(vh.id) <= t)
+            {
+                if (vh.recovery == 1 && vh.mountM > 0.0)
+                    k = 2;
+                else if (vh.id.rfind("falcon9", 0) == 0)
+                    k = std::max(k, 1);
+            }
+        if (st.padKind >= 0)
+            k = std::min(st.padKind, 2);
+        return k;
+    };
+    for (size_t p = 0; p < L.pads.size(); ++p)
+    {
+        LPad &pd = L.pads[p];
+        std::vector<double> ts{-1e300};
+        for (size_t si = 0; si < L.cat.sites.size(); ++si)
+        {
+            if (L.sitePad[si] != (int)p)
+                continue;
+            const launch::Site &st = L.cat.sites[si];
+            for (const auto &h : st.padHistory)
+                ts.push_back(h.first);
+            ts.push_back(st.onlineT);
+            for (const auto &f : st.onlineFor)
+                ts.push_back(std::max(f.second, st.onlineT));
+        }
+        std::sort(ts.begin(), ts.end());
+        ts.erase(std::unique(ts.begin(), ts.end()), ts.end());
+        pd.kindHist.clear();
+        for (double t : ts)
+        {
+            int k = -1;
+            for (size_t si = 0; si < L.cat.sites.size(); ++si)
+                if (L.sitePad[si] == (int)p)
+                    k = std::max(k, siteKindAt(si, t));
+            if (pd.kindHist.empty() || pd.kindHist.back().second != k)
+                pd.kindHist.push_back({t, k});
+        }
+        // The 2036 pad keeps the kind buildPads gave it (and its landing zone); the era draws the history.
+        pd.onlineT = 1e300;
+        for (const auto &h : pd.kindHist)
+            if (h.second >= 0)
+            {
+                pd.onlineT = h.first;
+                break;
+            }
+        std::string hs;
+        for (const auto &h : pd.kindHist)
+            hs += " " + (h.first < -1e299 ? std::string("always") : std::to_string((int)std::lround(2000.0 + h.first / 31557600.0))) +
+                  ":" + std::to_string(h.second);
+        if (pd.kindHist.size() > 1 || (pd.kindHist.size() == 1 && pd.kindHist[0].second != pd.kind))
+            Log::line("launches: pad " + L.cat.sites[pd.site].id + " history" + hs);
+    }
 }
 
 // ── Mass of a satellite type (for its re-entry) ─────────────────────────────────────────────────
@@ -1382,7 +1484,7 @@ template <class F> static void planShipLanding(SatelliteSim &sim, SatelliteSim::
         for (int p : pads)
         {
             const glm::dvec3 g = L.pads[p].g;
-            if (glm::dot(g, e) < 0.98 || !onlineAt(L, L.pads[p].onlineT, Td))
+            if (glm::dot(g, e) < 0.98 || padKindAt(L.pads[p], Td, L.deployOn) != 2) // (a catch tower there by then)
                 continue;
             const double a = kR * glm::dot(g - e, dT), x = kR * glm::dot(g - e, c);
             if (a < 120e3 || a > 450e3 || std::abs(x) > 200e3)
@@ -3111,7 +3213,7 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     {
         const glm::dvec3 G = B.G0;
         const glm::dvec3 u = pad ? pad->u : north, v = pad ? pad->v : east;
-        const bool deluge = pad ? pad->kind == 2 : vh.mountM > 0.0;
+        const bool deluge = pad ? padKindAt(*pad, B.tL, L.deployOn) == 2 : vh.mountM > 0.0;
         const double hImp = 60.0 * std::pow(vh.flow1 / 1000.0, 0.4);
         const double dtG = 0.75;
         int k = 0;
@@ -3633,6 +3735,16 @@ static void buildCrew(const SatelliteSim &sim, SatelliteSim::LaunchState &L, LBa
         {
             C.nPorts = (int)m->dockPorts.size();
             C.port = (int)(((B.k % C.nPorts) + C.nPorts) % C.nPorts);
+            // A station built module by module (2026-10-21): only ports on modules there at docking (the era on).
+            if (L.deployOn)
+            {
+                std::vector<int> ok;
+                for (int p = 0; p < C.nPorts; ++p)
+                    if (m->dockPorts[(size_t)p].sinceDays * 86400.0 <= B.tA)
+                        ok.push_back(p);
+                if (!ok.empty() && (int)ok.size() < C.nPorts)
+                    C.port = ok[(size_t)(((B.k % (int64_t)ok.size()) + (int64_t)ok.size()) % (int64_t)ok.size())];
+            }
             C.portPos = m->dockPorts[(size_t)C.port].pos;
             C.portAx = m->dockPorts[(size_t)C.port].axis;
             C.portName = m->dockPorts[(size_t)C.port].name;
@@ -8167,14 +8279,20 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
             double px;
             int p;
             int type;
+            int kind;
         };
         std::vector<PC> pcs;
+        // A slot is keyed by pad AND kind, so a pad rebuilt as another kind (39A's tower) takes a fresh slot.
+        auto padKey = [](const PC &c) { return (uint64_t)c.p + 1 + ((uint64_t)(c.kind + 1) << 32); };
         for (size_t pi = 0; pi < L.pads.size(); ++pi)
         {
             const LPad &pd = L.pads[pi];
-            if (launchDeployEra && pd.onlineT > (double)simDayJ2000 * 86400.0 + simSecInDay)
-                continue; // the deployment era: not built yet
-            auto ti = rocketTypes.find(pd.kind == 2 ? "pad_starship" : pd.kind == 1 ? "pad_falcon" : "pad_generic");
+            // The deployment era: what stands there at this date (none before it is built; 39A a Falcon pad until
+            // its Starship tower, SLC-37 a Delta IV pad until it is cleared).
+            const int kindT = padKindAt(pd, t, launchDeployEra);
+            if (kindT < 0)
+                continue;
+            auto ti = rocketTypes.find(kindT == 2 ? "pad_starship" : kindT == 1 ? "pad_falcon" : "pad_generic");
             if (ti == rocketTypes.end())
                 continue;
             const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(ti->second);
@@ -8184,7 +8302,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
             const double px = 2.0 * std::max(1.0, (double)tm->boundsRadius) / std::max(glm::length(P - obsEci), 1.0) /
                               std::max(pixAngle, 1e-9);
             if (px > 1.4)
-                pcs.push_back({px, (int)pi, ti->second});
+                pcs.push_back({px, (int)pi, ti->second, kindT});
         }
         std::sort(pcs.begin(), pcs.end(), [](const PC &a, const PC &b) { return a.px > b.px || (a.px == b.px && a.p < b.p); });
         if (pcs.size() > (size_t)kPadMeshSlots)
@@ -8195,7 +8313,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
         {
             slotP[w] = -1;
             for (int k = 0; k < kPadMeshSlots; ++k)
-                if (!usedP[k] && L.padMeshKey[k] == (uint64_t)pcs[w].p + 1)
+                if (!usedP[k] && L.padMeshKey[k] == padKey(pcs[w]))
                 {
                     usedP[k] = true;
                     slotP[w] = k;
@@ -8219,7 +8337,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
         {
             const LPad &pd = L.pads[pcs[w].p];
             const int k = slotP[w];
-            L.padMeshKey[k] = (uint64_t)pcs[w].p + 1;
+            L.padMeshKey[k] = padKey(pcs[w]);
             const uint32_t slot = pbase + (uint32_t)k, idx = activeSatCount + slot;
             if (idx >= satOrbits.size() || slot >= L.elems.size())
                 continue;
@@ -9216,7 +9334,7 @@ void SatelliteSim::launchFillPadParams(GpuCloudParams &cp)
     const double tNowPad = (double)simDayJ2000 * 86400.0 + simSecInDay;
     for (size_t p = 0; p < L.pads.size(); ++p)
     {
-        if (launchDeployEra && L.pads[p].onlineT > tNowPad) // (the deployment era: not built yet)
+        if (padKindAt(L.pads[p], tNowPad, launchDeployEra) < 0) // (the deployment era: not built yet / cleared)
             continue;
         const double d2 = glm::dot(L.pads[p].g - up, L.pads[p].g - up) * R * R;
         if (d2 < 2500e3 * 2500e3)
@@ -9227,12 +9345,13 @@ void SatelliteSim::launchFillPadParams(GpuCloudParams &cp)
     int nFlat = 0;
     for (int k = 0; k < n; ++k)
     {
-        const LPad &pd = L.pads[cs[k].p];
+        // The pad as it stands at this date (its kind sets the pattern, the exclusion and the graded radius).
+        const LPad pd = padAtTime(L.pads[cs[k].p], tNowPad, launchDeployEra);
         const glm::dvec3 c = toEnu(pd.g) * R - glm::dvec3(0.0, 0.0, R);
         cp.padQ[k] = glm::vec4(glm::vec3(c), (float)pd.exclR);
         cp.padU[k] = glm::vec4(glm::vec3(toEnu(pd.u)), (float)pd.kind);
         cp.padAux[k] = glm::vec4((float)pd.elevM, (float)pd.seed, (float)pd.flatR,
-                                 pd.lz ? (float)(1.0 + pd.lzAng / glm::two_pi<double>()) : 0.0f);
+                                 pd.lz && pd.kind == 1 ? (float)(1.0 + pd.lzAng / glm::two_pi<double>()) : 0.0f);
         if (cs[k].d2 < 300e3 * 300e3)
             nFlat = k + 1;
     }
@@ -9324,9 +9443,9 @@ void SatelliteSim::launchFillPadLights()
     std::vector<PadLight> lights;
     for (size_t pi = 0; pi < L.pads.size(); ++pi)
     {
-        const LPad &pd = L.pads[pi];
-        if (launchDeployEra && pd.onlineT > t)
-            continue; // the deployment era: not built yet
+        const LPad pd = padAtTime(L.pads[pi], t, launchDeployEra); // (as it stands at this date)
+        if (pd.kind < 0)
+            continue; // the deployment era: not built yet / cleared
         // The floodlights' light on low cloud and fog over the pad (2026-10-20): one light per pad, mostly the floods'
         // spill and their light off the pad's concrete (~5e4 cd upward, a Starship pad's more), not on the ground
         // (sat_sky.frag's padGround draws the lit apron itself).
@@ -9504,6 +9623,15 @@ nlohmann::json SatelliteSim::launchPadsJson() const
         o["site"] = L.cat.sites[p.site].id;
         o["name"] = p.name;
         o["kind"] = p.kind == 2 ? "starship" : p.kind == 1 ? "falcon" : "generic";
+        {
+            // As drawn at this date (the deployment era), and the pad's history.
+            const int kt = padKindAt(p, t, launchDeployEra);
+            o["kind_now"] = kt == 2 ? "starship" : kt == 1 ? "falcon" : kt == 0 ? "generic" : "none";
+            nlohmann::json hj = nlohmann::json::array();
+            for (const auto &h : p.kindHist)
+                hj.push_back({h.first < -1e299 ? -1e9 : 2000.0 + h.first / 31557600.0, h.second});
+            o["history"] = hj;
+        }
         o["ground_m"] = p.elevM;
         o["lat"] = glm::degrees(std::asin(glm::clamp(p.g.z, -1.0, 1.0)));
         o["lon"] = glm::degrees(std::atan2(p.g.y, p.g.x));
@@ -9531,7 +9659,7 @@ bool SatelliteSim::launchGoToPad(const std::string &site, double distM, double a
         msg = "no site '" + site + "' (see `launch pads`)";
         return false;
     }
-    const LPad &pd = L.pads[pi];
+    const LPad pd = padAtTime(L.pads[pi], (double)simDayJ2000 * 86400.0 + simSecInDay, launchDeployEra);
     if (followActive)
         stopFollow();
     if (trackActive)
@@ -9552,7 +9680,7 @@ bool SatelliteSim::launchGoToPad(const std::string &site, double distM, double a
     updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay);
     char b[200];
     snprintf(b, sizeof(b), "at %s (%s pad, ground %.0f m), %.0f m out", pd.name.c_str(),
-             pd.kind == 2 ? "Starship" : pd.kind == 1 ? "Falcon" : "launch", pd.elevM, distM);
+             pd.kind == 2 ? "Starship" : pd.kind == 1 ? "Falcon" : pd.kind == 0 ? "launch" : "not built yet: empty", pd.elevM, distM);
     msg = b;
     return true;
 }
@@ -10965,7 +11093,8 @@ void SatelliteSim::rosterLifeEnsure()
         launchInitBlock();
     LaunchState &L = *launchState;
     LaunchImpl::ensureCatalog(L);
-    const uint64_t key = 1ull | (launchDeployEra ? 2ull : 0ull) | (L.loaded ? 4ull : 0ull) | ((uint64_t)activeSatCount << 8);
+    const uint64_t key = 1ull | (launchDeployEra ? 2ull : 0ull) | (L.loaded ? 4ull : 0ull) |
+                         (launchEraBenchmarkShells ? 8ull : 0ull) | ((uint64_t)activeSatCount << 8);
     if (key == rosterLifeKey && rosterLife.size() == 2ull * activeSatCount)
         return;
     const auto t0 = std::chrono::steady_clock::now();
@@ -11023,10 +11152,15 @@ void SatelliteSim::rosterLifeEnsure()
                 ord.push_back({h01(0x5EED0000ull + c, i, 3), i});
             std::sort(ord.begin(), ord.end());
             const double scale = rh->fraction ? (double)(i1 - i0) : 1.0;
+            // A benchmark shell stands for satellites Starlink Gen1's first fills already fly (2026-10-21): left out
+            // of the era's sky unless the player opts in (it would count them twice in 2019-2024).
+            const bool hideBench = rh->benchmark && !launchEraBenchmarkShells;
             for (size_t r = 0; r < ord.size(); ++r)
             {
                 double born, gone;
                 countCrossings(rh->count, scale, (double)r + 0.5, born, gone);
+                if (hideBench)
+                    born = gone = 1e300;
                 rosterLife[2ull * ord[r].second] = lifeSec(born, E);
                 rosterLife[2ull * ord[r].second + 1] = lifeSec(gone, E);
                 ++nHist;
@@ -11040,6 +11174,36 @@ void SatelliteSim::rosterLifeEnsure()
     // The Kessler world was built with another table: re-simulate (its cache key includes it).
     if (kWorker && kLifeHashKey != rosterLifeKey)
         kRestartPending = true;
+}
+
+// The share of roster satellites [i0, i1) there at t (a shell group, a disk's ring): sorted born / gone seconds per
+// range, built on first use and dropped when rosterLife is recomputed.
+double SatelliteSim::rosterRangePresentFrac(uint32_t i0, uint32_t i1, double t) const
+{
+    i1 = std::min(i1, activeSatCount);
+    if (i1 <= i0 || rosterLife.size() < 2ull * i1)
+        return 1.0;
+    if (rangeLifeKey_ != rosterLifeKey)
+    {
+        rangeLifeCache_.clear();
+        rangeLifeKey_ = rosterLifeKey;
+    }
+    auto &e = rangeLifeCache_[((uint64_t)i0 << 32) | i1];
+    if (e.first.empty())
+    {
+        for (uint32_t i = i0; i < i1; ++i)
+        {
+            e.first.push_back(rosterLife[2ull * i]);
+            if (rosterLife[2ull * i + 1] != kessler::kNever)
+                e.second.push_back(rosterLife[2ull * i + 1]);
+        }
+        std::sort(e.first.begin(), e.first.end());
+        std::sort(e.second.begin(), e.second.end());
+    }
+    const int32_t sec = (int32_t)std::clamp(std::floor(t - kesslerEpoch()), -2147483000.0, 2147483000.0);
+    const size_t born = (size_t)(std::upper_bound(e.first.begin(), e.first.end(), sec) - e.first.begin());
+    const size_t gone = (size_t)(std::upper_bound(e.second.begin(), e.second.end(), sec) - e.second.begin());
+    return born > gone ? (double)(born - gone) / (double)e.first.size() : 0.0;
 }
 
 void SatelliteSim::rosterLifeUpload(VulkanContext &ctx)
@@ -11136,9 +11300,9 @@ nlohmann::json SatelliteSim::deployStateJson() const
         int online = 0, onlineStarship = 0;
         for (const LPad &p : L.pads)
         {
-            const bool on = !launchDeployEra || p.onlineT <= t;
-            online += on;
-            onlineStarship += on && p.kind == 2;
+            const int k = padKindAt(p, t, launchDeployEra);
+            online += k >= 0;
+            onlineStarship += k == 2;
         }
         j["pads_online"] = online;
         j["starship_pads_online"] = onlineStarship;

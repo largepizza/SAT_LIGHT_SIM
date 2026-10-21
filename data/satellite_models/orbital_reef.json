@@ -159,7 +159,8 @@
             "rotation_quat": [0.707107, 0.0, 0.707107, 0.0],
             "caps": true,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2031-09-01"
         },
         {
             "name": "reef_life_s_seg0",
@@ -169,7 +170,8 @@
             "rotation_quat": [0.5, -0.5, 0.5, 0.5],
             "caps": "bottom",
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2031-03-01"
         },
         {
             "name": "reef_life_s_seg1",
@@ -179,7 +181,8 @@
             "rotation_quat": [0.5, -0.5, 0.5, 0.5],
             "caps": false,
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2031-03-01"
         },
         {
             "name": "reef_life_s",
@@ -189,7 +192,8 @@
             "rotation_quat": [0.5, -0.5, 0.5, 0.5],
             "caps": false,
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2031-03-01"
         },
         {
             "name": "reef_life_s_seg3",
@@ -199,7 +203,8 @@
             "rotation_quat": [0.5, -0.5, 0.5, 0.5],
             "caps": false,
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2031-03-01"
         },
         {
             "name": "reef_life_s_seg4",
@@ -209,7 +214,8 @@
             "rotation_quat": [0.5, -0.5, 0.5, 0.5],
             "caps": false,
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2031-03-01"
         },
         {
             "name": "reef_life_s_seg5",
@@ -219,7 +225,8 @@
             "rotation_quat": [0.5, -0.5, 0.5, 0.5],
             "caps": false,
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2031-03-01"
         },
         {
             "name": "life_neck_s",
@@ -230,7 +237,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-03-01"
         },
         {
             "name": "life_strap_s_0",
@@ -241,7 +249,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-03-01"
         },
         {
             "name": "life_strap_s_1",
@@ -252,7 +261,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-03-01"
         },
         {
             "name": "life_strap_s_2",
@@ -263,7 +273,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-03-01"
         },
         {
             "name": "reef_life_p_seg0",
@@ -273,7 +284,8 @@
             "rotation_quat": [-0.5, -0.5, -0.5, 0.5],
             "caps": "bottom",
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2032-06-01"
         },
         {
             "name": "reef_life_p_seg1",
@@ -283,7 +295,8 @@
             "rotation_quat": [-0.5, -0.5, -0.5, 0.5],
             "caps": false,
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2032-06-01"
         },
         {
             "name": "reef_life_p",
@@ -293,7 +306,8 @@
             "rotation_quat": [-0.5, -0.5, -0.5, 0.5],
             "caps": false,
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2032-06-01"
         },
         {
             "name": "reef_life_p_seg3",
@@ -303,7 +317,8 @@
             "rotation_quat": [-0.5, -0.5, -0.5, 0.5],
             "caps": false,
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2032-06-01"
         },
         {
             "name": "reef_life_p_seg4",
@@ -313,7 +328,8 @@
             "rotation_quat": [-0.5, -0.5, -0.5, 0.5],
             "caps": false,
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2032-06-01"
         },
         {
             "name": "reef_life_p_seg5",
@@ -323,7 +339,8 @@
             "rotation_quat": [-0.5, -0.5, -0.5, 0.5],
             "caps": false,
             "material": "soft_goods",
-            "group": "station"
+            "group": "station",
+            "since": "2032-06-01"
         },
         {
             "name": "life_neck_p",
@@ -334,7 +351,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2032-06-01"
         },
         {
             "name": "life_strap_p_0",
@@ -345,7 +363,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2032-06-01"
         },
         {
             "name": "life_strap_p_1",
@@ -356,7 +375,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2032-06-01"
         },
         {
             "name": "life_strap_p_2",
@@ -367,7 +387,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2032-06-01"
         },
         {
             "name": "aft_pylon",
@@ -516,7 +537,8 @@
             "caps": "top",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-09-01"
         },
         {
             "name": "port_fwd_ring",
@@ -527,7 +549,8 @@
             "caps": "both",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-09-01"
         },
         {
             "name": "port_aft",
@@ -582,7 +605,8 @@
             "caps": "top",
             "material": "glass",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-09-01"
         },
         {
             "name": "window_1",
@@ -593,7 +617,8 @@
             "caps": "top",
             "material": "glass",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-09-01"
         },
         {
             "name": "window_2",
@@ -604,7 +629,8 @@
             "caps": "top",
             "material": "glass",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-09-01"
         },
         {
             "name": "core_band_0",
@@ -755,7 +781,8 @@
         {
             "name": "port_fwd",
             "position": [24.0, 0.0, 0.0],
-            "axis": [1.0, 0.0, 0.0]
+            "axis": [1.0, 0.0, 0.0],
+            "since": "2031-09-01"
         },
         {
             "name": "port_nadir",
