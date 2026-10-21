@@ -11211,7 +11211,9 @@ glm::dvec3 shipPointEcef(const LBatch &B, double t, double u, double v, double h
     return LaunchImpl::shipDeckEcef(B, t, u, v, h); // riding the swell (2026-10-21)
 }
 // The ships whose time it is (t in [tShipOn, tShipGone]) among the live batches.
-template <typename F> void forEachShip(SatelliteSim::LaunchState &L, double t, F f)
+// LS is SatelliteSim::LaunchState, which is private: a namespace-scope function may not name it (GCC/Clang
+// enforce that; MSVC does not), so it is deduced from the member functions that call this.
+template <typename LS, typename F> void forEachShip(LS &L, double t, F f)
 {
     for (LBatch *pb : L.livePtr)
     {
