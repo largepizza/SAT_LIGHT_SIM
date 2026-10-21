@@ -5322,14 +5322,14 @@ launches follow per-program cadences (no real manifest).
   - **Milestones** (`missionBatchMilestones`) used the vehicle's own booster track and recovery for max-Q, the burns and
     the landing label: an RTLS Falcon 9 listed a trim burn and "lands on the droneship"; a ground landing likewise. They
     use this launch's track (`boosterTr`) and `B.landKind` now.
-  **Still open (reported, not fixed):** boosters arriving from far downrange are tilted 17-50 deg in their last 10 s and
-  touch down at a 25-35 m/s last-second mean (the landing burn's physics; WARN); a deorbit burn blended by smoothstep
+  **Still open (reported, not fixed):** New Glenn's booster peaks at ~92 m/s^2 after staging (the landing physics; WARN); a deorbit burn blended by smoothstep
   peaks at ~4x dv / burn (up to ~90 m/s^2 for the 800-km Qianfan stages: no jump, but violent); late close passes
   (~1 m, about an orbit after release) between train members, from the Clohessy-Wiltshire offsets taken about each
   member's own plane; crew docking is not modelled (SKIP); Long March 12 flies no program.
   **Measured:** (2026-10-20, RTX 3070 Ti shared with other agents' runs, so GPU numbers are noisy) `mission_ops.py run`: 69 launches over
-    three epochs (27 pairs each), 908 phase checks PASS, 2 FAIL (Falcon 9 Starlink Gen1 and OneWeb at 2026-11-05: a pair within ~1-1.6 m
-    in the first 10 min, from the random spread), 42 WARN (every recovered booster's landing tilt 17-50 deg), 13 SKIP
+    three epochs (27 pairs each), 947 phase checks PASS, 2 FAIL (Falcon 9 Starlink Gen1 and OneWeb at 2026-11-05: a pair within ~1-1.6 m
+    in the first 10 min, from the random spread), 3 WARN (New Glenn's booster peaks at 92 m/s^2 of proper acceleration
+    after staging; before the 7b729c7 landing rework 42: every recovered booster tilted 17-50 deg landing), 13 SKIP
     (docking); Starmind's ring shape error from day 2 ~0 m with the shared schedule vs 10,000 km before. `launch_bench.py`
     (harness_runs/launch_bench/baseline.json, launches on - off): the Twilight Starship bookmark +2.8 ms GPU (cloud_march
     +2.3: plumes) and 1.9 ms CPU; at 1 h/s 6.3 ms CPU (plume builds 4.6 ms); at 1 d/s 3.0 ms CPU (the window walk 0.9,
