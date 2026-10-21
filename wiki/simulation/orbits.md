@@ -1,9 +1,11 @@
 # Orbits and constellations
 
-The orbit model, the four ways a constellation is laid out, formation clusters, sun-synchronous precession,
-the shipped roster, and how the GPU
-evaluates millions of orbits per frame without losing precision. How a constellation is declared in
-`constellations.json` is on [Constellations](../modding/constellations.md).
+The orbit model, the five ways a constellation is laid out, formation clusters, sun-synchronous precession,
+the shipped roster, and how the GPU evaluates millions of orbits per frame without losing precision. How a
+constellation is declared in `constellations.json` is on [Constellations](../modding/constellations.md).
+The objects that are not roster satellites (launch trains, retiring satellites, rockets, debris) are on
+[Launches](launches.md), [Rockets](rockets.md) and [Kessler syndrome](kessler.md); how they share the
+orbit pass is at the end of this page.
 
 ## The orbit model
 
@@ -46,8 +48,8 @@ the inputs to every attitude law (see [Attitude](attitude.md)).
 | Eccentricity | operational shells are near-circular (\( e < 0.001 \), under 7 km) | not modelled |
 | J2 node regression for non-SSO shells | several deg/day | not modelled; only sun-synchronous orbits precess |
 | J2 apsidal and along-track effects | km per day | not modelled |
-| Drag, solar radiation pressure, third bodies | decay over months | not modelled |
-| Station-keeping, real phasing | n/a | phases are synthetic; formation rings fly passive relative orbits about their centres (below) |
+| Drag, solar radiation pressure, third bodies | decay over months | not modelled for roster satellites; Kessler debris has a drag lifetime ([Kessler syndrome](kessler.md)) |
+| Station-keeping, real phasing | n/a | phases are synthetic, except the named GEO belt; formation rings fly passive relative orbits about their centres (below) |
 
 The positions are therefore **statistically** right for a shell (the right altitudes, planes and
 density), not a prediction of where a particular real satellite is. For brightness statistics, which is
@@ -55,9 +57,9 @@ what the [benchmarks](../accuracy/benchmarks.md) compare, the shell geometry is 
 
 ## Constellation layouts
 
-A constellation entry produces its satellites in one of four distributions (`OrbitDistribution` in
+A constellation entry produces its satellites in one of five distributions (`OrbitDistribution` in
 `src/simulations/SatelliteSim.h`, built by `buildOrbits()`). Walker, RandomShell and Disk produce
-`numPlanes × perPlane`; Shells produces the sum over its table.
+`numPlanes × perPlane`; Shells produces the sum over its table; List produces one satellite per named member.
 
 ### Walker
 
@@ -180,12 +182,41 @@ The offsets come from an integer hash of the entry and cluster index, not from `
 constellations in the file does not move them. The members of a ring share their cluster's offsets: the
 formation stays intact. A Disk's ring formations take one `alt_jitter_km` draw per cluster for the same reason.
 
+### List: named satellites
+
+A List entry is a set of real, named **members**, each with its own type (directly, or through a class
+such as "large comsat" that the entry maps to a type) and its own elements. The shipped GEO belt is one:
+398 geostationary satellites by name, from `data/geo_satellites.json`, with slots at mid-2020s longitudes
+rounded to 0.1 deg (approximate for the 2030s).
+
+A member given by a longitude is **geostationary**. It sits at the radius whose mean motion, rounded to the
+float the GPU holds, equals the Earth's rotation rate, with a small inclination (0.02 to 0.08 deg, hashed,
+unless the member sets one) and a hashed node. Its phase at J2000 is solved so that at the sim time the
+roster is built, \( t_b \), its sub-satellite longitude is its slot:
+
+\[
+u_0 = \lambda + \theta(t_b) - \Omega - n_\text{float}\, t_b.
+\]
+
+What remains is the drift \( (n_\text{float} - \omega_\oplus)\,t \), under 0.01 deg a year. There is no
+station-keeping and no J2 for these records, and nothing else moves them. A member given by altitude,
+inclination, node and phase flies that circular orbit.
+
 ### Randomness
 
-Phases, shell elements and jitters come from the C library's `rand()` with its default seed, so a roster
-lays out identically on every launch on the same platform (MSVC and glibc produce different sequences).
-Satellite indices, and with them each satellite's random layout, follow the order of the constellations
-in the file.
+Each constellation draws its random numbers (phases, shell elements, jitters) from its own stream,
+`SatRng`, an emulation of the Microsoft C runtime's `rand()` linear congruential generator. The stream's
+starting state is recorded on the first build, and a constellation added later seeds from a hash of its
+name; the per-cluster scatter is a hash keyed by load order, and terminator planes are anchored to the Sun
+at the sim's start. So the layout is identical on every platform, and a constellation keeps exactly the
+same satellites when others are removed or re-added: only satellite indices move.
+
+### Rebuilding the roster at run time
+
+`rebuildRoster()` rebuilds every satellite and the per-satellite GPU buffers while the app runs. The harness
+drives it (`roster list`, `roster remove "<name>"`, `roster add "<name>"`); a removal lasts for the session
+only. A rebuild drops the selection, follow mode, Track and the model viewer, and restarts the
+[Kessler scenario](kessler.md), whose history refers to satellites by index.
 
 ## Sun-synchronous orbits and terminator alignment
 
@@ -264,9 +295,11 @@ without padding). Only genuinely per-satellite data lives here; anything constan
 | 32 | `tumbleRate`, `tumblePhase`, `tumbleAxisX`, `tumbleAxisY` |
 | 48 | `tumbleAxisZ`, `alignTerminator`, `typeIdx`, `constIdx` |
 
-`constIdx` lets the shader skip a satellite whose constellation is disabled (a 32-bit mask, so at most
-32 constellations can be toggled individually). Its top bit flags a formation-ring member, whose tumble slots
-then hold the relative orbit's \( P, Q, k \) ([Formation clusters](#formation-clusters)).
+`constIdx` packs the satellite's constellation index into its low byte. The shader reads that entry's
+Show and Highlight bits from two 256-bit arrays in the type buffer's header (`constEnabled`,
+`constHighlight`), so up to 256 constellations can be toggled individually. Bits 8 to 15 hold a formation
+member's cluster size and bits 16 to 23 its slot in the cluster. The top bit flags a formation-ring member,
+whose tumble slots then hold the relative orbit's \( P, Q, k \) ([Formation clusters](#formation-clusters)).
 
 ### Horizon cull and the compact list
 
@@ -333,38 +366,62 @@ rad/s, so the error is negligible), and the tumble angle the same.
 
 ## The weekly rebake
 
-The GPU's \( \Delta t \) is measured from an **orbit epoch**, not from J2000. `uploadSatOrbits()` bakes
-each record at the current sim time \( t_e \):
+The GPU's \( \Delta t \) is measured from an **orbit epoch** \( t_e \), not from J2000. Each record holds
+its phases baked to that epoch:
 
 \[
 u_0' = (u_0 + n\,t_e) \bmod 2\pi, \qquad
 \Omega_0' = \Omega_0 + \dot\Omega_\odot\,(t_e - t_\text{start}) \bmod 2\pi \ \ \text{(SSO only)},
 \]
 
-in double, and the shader adds \( n\,\Delta t \) with \( \Delta t = t - t_e \). `recordCompute()`
-rebakes whenever \( |\text{day}(t) - \text{day}(t_e)| \geq 7 \), in either direction of time, so
-\( |\Delta t| \) stays under 7 days (\( \Delta t_\text{hi} \) has a float ULP of 0.06 s there, and the
-low half carries the rest).
+and the tumble phase likewise. The shader adds \( n\,\Delta t \) with \( \Delta t = t - t_e \).
+`recordCompute()` moves the epoch whenever \( |\text{day}(t) - \text{day}(t_e)| \geq 7 \), in either
+direction of time, so \( |\Delta t| \) stays under 7 days (\( \Delta t_\text{hi} \) has a float ULP of
+0.06 s there, and the low half carries the rest). The epoch is always a whole second.
 
-The rebake streams the table through a 64 MB staging buffer (one million satellites at a time). At high
-time warps (1 week/s and above) it runs every few frames.
+**The rebake runs on the GPU** (`shaders/sat_rebake.comp`, one thread per satellite, no upload). It
+rewrites each satellite's \( u_0 \), tumble phase and SSO node from **epoch-free bases** kept on the GPU
+(`satPhaseBaseBuf`, 12 bytes per satellite), exactly:
+
+\[
+\text{phase}(T) = \operatorname{frac}\!\left(\frac{x + r\,T}{2\pi}\right)
+\]
+
+for a float phase \( x \), a float rate \( r \) and the integer epoch \( T \) in seconds. Each float is
+converted from its own bits to a 64-bit fixed-point number of **turns** (its 24-bit mantissa times
+\( \lfloor 2^{64}/2\pi \rfloor \), shifted by its exponent), and \( r\,T \) is taken modulo one turn as a
+64 × 64 to low-64-bit integer product. Only the fractional turns survive, so no magnitude is lost: the
+result is the double-precision \( (x + rT) \bmod 2\pi \) to the rounding of the output float, at any date.
+The SSO node precesses at one rate for every satellite, so its offset since the anchor comes from the CPU.
+The same dispatch re-bakes the Kessler debris pool's records (their mean anomaly, argument of perigee,
+node and tumble are all linear in time).
+
+At 1 yr/s the epoch moves every other frame. A CPU loop in double plus a full upload of 1.38 million records
+takes about 27 ms, which is why the rebake is a GPU dispatch. The Performance tab and
+the harness's `perf` report the CPU side as `orbit_rebake`. `uploadSatOrbits()` still writes the full table
+when the roster is built or rebuilt, streaming it through a 64 MB staging buffer.
 
 ## Rosters
 
-The shipped roster `data/constellations.json` has 29 entries and enables about 1.37 million satellites:
+The shipped roster `data/constellations.json` has 30 entries, all enabled, about 1.38 million satellites:
 
 | Group | Satellites | Notes |
 |---|---|---|
 | Starlink Gen1, Gen2, Gen3 Broadband, Gen3 Direct-to-Cell | 54 872 | Walker, 326 to 550 km |
 | OneWeb, Amazon Leo (3 shells), Guowang (3 shells) | 16 722 | Walker, 572 to 1200 km |
+| Qianfan (Spacesail) | 11 664 | Shells: phase 1 as flown (72 planes of 18 at about 1070 km, 89 deg) and two estimated later shells |
 | ISS, Tiangong, seven commercial stations, Starship depots | 12 | small Walker shells |
 | SpaceX Starmind, sun-synchronous X-ring | 499 072 | Shells, 54 shells at 565 to 1002 km, rings of 8 |
 | SpaceX Starmind, 30 deg shells | 489 600 | Shells, 60 shells at 550 to 978 km, rings of 8 |
 | Reflect Orbital | 5 000 | Disk, 3 rings about 500 km, terminator-aligned |
 | Space junk | 300 000 | RandomShell, 1000 ± 500 km, inclination 0 to 180 deg |
+| GEO belt | 398 | List, real geostationary satellites by name and slot |
 | Hubble, 2020 Starlink benchmark shells | 3 169 | Walker |
 
-The legacy Gen2 comparison shell (1584 satellites) is in the file but disabled.
+Each entry has a `category` (Broadband, Stations, Orbital data centers, Reflectors, Debris, GEO, Science,
+Benchmarks) that groups it in the Constellations settings tab. Not every satellite exists at every date:
+with the deployment era on, a slot is filled only once its first launch arrives, and the 2020 benchmark
+shells retire; see [Launches](launches.md).
 
 ### The Starmind roster
 
@@ -387,8 +444,8 @@ of 8 with \( \rho \) = 0.35 km (700 m across, neighbours 268 m apart; the format
 750 m), scattered by 0.25 km in altitude, 0.25 of the gap in phase, 0.15 deg in node and 0.03 deg in
 inclination. The X-ring's planes spread their nodes over ± 10 deg of the terminator ("even"), inside the
 ± 30 deg node tolerance in the filing; each plane keeps its offset from the terminator node. The
-sun-synchronous and the 30 deg groups are two entries, each a whole filed table: the enable and highlight
-masks have one bit per entry and only 32 bits, so a table is never split into one entry per shell.
+sun-synchronous and the 30 deg groups are two entries, each a whole filed table, so the constellation
+list shows one row per table rather than one per shell.
 
 !!! note "Modelling choice"
     The ring of 8 follows SpaceX's published visualization; the filing's text speaks of clusters of about
@@ -396,6 +453,40 @@ masks have one bit per entry and only 32 bits, so a table is never split into on
 
 The hard cap is `MAX_SATELLITES` = 10 000 000; GPU buffers are sized to the loaded roster, about
 100 bytes per satellite. Larger stress rosters live in `data/custom/`.
+
+## Records beyond the roster
+
+The orbit pass also evaluates objects that are not roster satellites. They share one index space:
+
+| Indices | What | Record |
+|---|---|---|
+| \([0, N)\) | the roster's \( N \) satellites | `GpuSatOrbit` in `satOrbitBuf` (circular, above) |
+| \([N, N + 131072)\) | launch records: trains climbing to their slots and retiring satellites coming down (`kLaunchCap`) | Keplerian, in `kesslerBuf` from `kLaunchWord0` |
+| \([N + 131072, \dots)\) | the Kessler debris pool: dead satellites' pieces and fragments (`poolIdx0()`) | Keplerian, in `kesslerBuf` from `poolWord0` |
+
+The last two slots of the launch block are reserved: one for the selected transient object (a rocket or a
+fireball) and one for the object Go to follows; see [Rockets](rockets.md).
+
+A Keplerian record is 16 words: mean anomaly, argument of perigee and node at the orbit epoch with their
+rates, the semi-major axis, eccentricity, the inclination's cosine and sine, a tumble rate and phase, a flux
+scale, its born and death seconds, and its type and flags. `sat_orbit.comp` forms the mean anomaly with the
+same two-float `orbitPhase()` as a roster satellite, solves Kepler's equation in five Newton steps, and
+skips the record outside its born-to-death interval (seconds counted from the
+[Kessler scenario](kessler.md)'s epoch, so a record that was never filled is invisible). The argument of
+perigee and the node advance linearly, so a debris piece can precess under J2 while the roster cannot.
+
+A roster satellite also has words in `kesslerBuf`: the second it died (from then on it tumbles) and the
+second it was destroyed or re-entered (from then on it is skipped), plus, with the deployment era, the
+seconds its slot is first filled and retired. Before any of these is set the words read "never", so the
+plain sky is unchanged.
+
+!!! warning "Invariant"
+    Never assume the satellite array is the roster plus the debris pool. Per-constellation loops run over
+    the roster's \( N \) only; launch-block entries that hold nothing have a constellation index of
+    `UINT32_MAX`. `LAUNCH_CAP` in `sat_orbit.comp` must equal `SatelliteSim::kLaunchCap`.
+
+How launch records are written (rewritten every 20 s of sim time as the osculating orbit of the member's
+path) is on [Launches](launches.md).
 
 ## Settings
 
@@ -407,7 +498,9 @@ The constellation list, each constellation's enabled flag and highlight flag are
 
 | File | Function / symbol |
 |---|---|
-| `src/simulations/SatelliteSim.cpp` | `loadDefinitions()` (the `Shells` groups and cluster fields), `buildOrbits()` (distributions, `clusterPhase`, `setFormation`, the per-cluster scatter, node spread), `computeSSOInclination()`, `uploadSatOrbits()`, the rebake check and `deltaT` split in `recordCompute()` |
-| `src/simulations/SatelliteSim.h` | `GpuSatOrbit`, `GpuSatTypeHeader`, `GpuSatListHeader`, `kOrbitRebakeDays` |
+| `src/simulations/SatelliteSim.cpp` | `loadDefinitions()` (the `Shells` groups, cluster fields, List members), `buildOrbits()` (distributions, `clusterPhase`, `setFormation`, the per-cluster scatter, node spread, geostationary members), `rebuildRoster()`, `computeSSOInclination()`, `uploadSatOrbits()`, `recordSatRebake()`, the rebake check and `deltaT` split in `recordCompute()` |
+| `src/simulations/SatelliteSim.h` | `GpuSatOrbit`, `GpuSatTypeHeader`, `GpuSatListHeader`, `kOrbitRebakeDays`, `SatRng`, `ConstMember`, `kLaunchCap`, `poolIdx0()` |
 | `src/simulations/SatPhotometry.cpp` | `satOrbitStateAt()` (CPU double mirror, formation offset included) |
-| `shaders/sat_orbit.comp` | `orbitPhase()`, `formationOffset()`, `satEciAt()`, `processSatellite()`, `main()` (workgroup append) |
+| `shaders/sat_orbit.comp` | `orbitPhase()`, `formationOffset()`, `satEciAt()`, `processSatellite()` (roster, launch and pool records), `main()` (workgroup append) |
+| `shaders/sat_rebake.comp` | the exact fixed-point epoch rebake |
+| `data/geo_satellites.json`, `tools/make_geo_belt.py` | the GEO belt's members |

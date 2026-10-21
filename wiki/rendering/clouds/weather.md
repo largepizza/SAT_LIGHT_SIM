@@ -1,28 +1,31 @@
 # Weather, rain, lightning, fog
 
 This page covers the weather effects built on the [cloud field](field.md): rain shafts and the precipitation an
-observer stands in (rain, sleet, snow and diamond dust as particles in the world), lightning and its hand-off to
-thunder, fog, dust and ice fog, the Sun hidden behind clouds, and the experimental god rays. The weather map
-itself (coverage, cloud types, precipitation, evolution over time) is described in
-[The cloud field](field.md#the-weather-cube).
+observer stands in (rain, sleet, snow and diamond dust as particles in the world), lightning and the thunder it
+makes, fog, dust and ice fog, the Sun hidden behind clouds, and the clouds' shadows on the air (god rays). The
+weather map itself (coverage, cloud types, precipitation, evolution over time) is described in
+[The cloud field](field.md#the-weather-cube); the clouds' shadows on each other are in
+[The cloud march](march.md#the-suns-shadow-beyond-the-light-march).
 
-Most of these effects are fed by one small compute pass, `cloud_v2_lightning.comp`, which runs before the march
-each frame and writes a host-visible buffer (`CV2FlashBuf`, `shaders/include/cloud_lightning.glsl`):
+Most of these effects are fed by one compute pass, `cloud_v2_lightning.comp`, which runs before the march each
+frame and writes a host-visible buffer (`CV2FlashBuf`, `shaders/include/cloud_lightning.glsl`):
 
 ```mermaid
 flowchart LR
-  subgraph LP[cloud_v2_lightning.comp, 5 workgroups]
+  subgraph LP[cloud_v2_lightning.comp, 19 workgroups]
     W0[workgroup 0:<br/>flash list, up to 128]
-    T1[thread 1 of workgroup 0:<br/>eye Sun march → profile,<br/>Sun transmittance, ice fog at eye,<br/>light on a drop at the eye]
+    T1[thread 1 of workgroup 0:<br/>eye Sun ray, ice fog at eye,<br/>light on a drop at the eye]
     W14[workgroups 1-4:<br/>32×32 rain map around the eye]
+    WS[workgroups 5-18:<br/>Sun shadow grid, cascade,<br/>shaft rings]
   end
-  W0 --> HB[host: channels, glow emitters, thunder]
+  W0 --> HB[host: channels, glow emitters,<br/>thunder sources]
   HB --> LD[lightning.vert/.frag]
-  T1 --> MA[cloud_v2_march.comp:<br/>key light near the Sun line]
-  T1 --> SC[host: sunCloudT →<br/>Sun disc, glare, bloom, near air]
+  T1 --> SC[host: sunCloudT →<br/>Sun disc, glare, bloom, rain key light]
   T1 --> DR[rain_particles.vert]
   W14 --> DR
   W14 --> RA[host: rain ambience, rain wind]
+  WS --> MA[cloud_v2_march.comp key light]
+  WS --> SK[sat_sky.frag: god rays]
 ```
 
 Lightning and the drops at the eye are drawn in the main render pass after the sky's temporal AA, at full
@@ -35,12 +38,13 @@ returns rain curtains instead of cloud ([field: rain shafts](field.md#rain-shaft
 under each dominant storm tower, stretched 2.5 times downwind under the anvil; lighter, intermittent rain falls
 wherever the map's precipitation says.
 
-In the march a rain sample is cheap (no fine steps, one sample standing for four coarse steps, a two-step light march) and uses the rain phase: a
-sub-degree diffraction spike plus a broad refracted lobe, with the primary and secondary rainbows
-([The cloud march: atmospheric optics](march.md#atmospheric-optics)). Lit through the cloud above, a shaft is dark
-under a Cb and bright at its sunlit edge, which is where rainbows show: at storms near the terminator, with a low
-Sun behind the observer. A clear bow needs dense shafts: below a "Rain" of about 1.5 it barely shows, so the
-default is 3.0. Where the shafts' air is below freezing they are snow, which shows faint ice optics and no bow.
+In the march a rain sample is cheap (no fine steps, one sample standing for four coarse steps, a two-step light
+march) and uses the rain phase: a sub-degree diffraction spike plus a broad refracted lobe, with the primary and
+secondary rainbows ([The cloud march: atmospheric optics](march.md#atmospheric-optics)). Lit through the cloud
+above, a shaft is dark under a Cb and bright at its sunlit edge, which is where rainbows show: at storms near the
+terminator, with a low Sun behind the observer. A clear bow needs dense shafts: below a "Rain" of about 1.5 it
+barely shows, so the default is 3.0. Where the shafts' air is below freezing they are snow, which shows faint
+ice optics and no bow.
 
 The Reflect beams light the shafts at night by the same rule (`beamFinish()`, see
 [The cloud march](march.md#night-city-light-and-reflect-beams)). Their phase follows the temperature of the
@@ -118,18 +122,18 @@ box exactly. Integrating rather than evaluating \( v\,t \) is what lets the spee
 with \( v\,t \) every change of v or of the wind would move every drop at once. Pausing stops the rain;
 reversing time runs it backwards.
 
-- **Fall.** "Rain fall speed (x)" (5.0) × each drop's terminal velocity, × up to 1.35 in heavy rain (rate 0.6
+- **Fall.** "Rain fall speed (x)" (10) × each drop's terminal velocity, × up to 1.35 in heavy rain (rate 0.6
   and up). Ice particles (snowflakes, diamond dust) fall on a phase of their own (`cv2.snowMotion`) at that factor
   capped at 1.5, and not faster in heavy precipitation, so snow still drifts down at about 1-2 m/s instead of
   streaking like rain.
-- **Wind.** "Rain wind (x ground wind)" (0.4) × 0.4 × the wind aloft ("Wind"), toward the east, plus a
-  shower's **outflow**: "Storm wind (m/s)" (11) at rain rate 0.6 and above, blowing away from the rain map's
+- **Wind.** "Rain wind (x ground wind)" (0.42) × 0.4 × the wind aloft ("Wind"), toward the east, plus a
+  shower's **outflow**: "Storm wind (m/s)" (9.5) at rain rate 0.6 and above, blowing away from the rain map's
   rain-weighted centre (the shower's core; when the core is within about 40 m of the eye the outflow takes the
   ambient wind's direction).
 - **Gusts.** "Wind gusts" (1.38) modulates the wind by a smooth noise over about 4 s and 1.5 s of sim time:
   ±20 percent in light rain to ±60 percent in heavy rain, turning it by up to ±15 deg. The wind and the rate are
   eased over about 0.6 s.
-- **Snow** drifts with the same wind × "Snow wind (blizzard)" (1.0), integrated separately; flakes flutter on
+- **Snow** drifts with the same wind × "Snow wind (blizzard)" (1.2), integrated separately; flakes flutter on
   two slow oscillations of their own.
 
 ### Coverage is conserved
@@ -150,15 +154,15 @@ Summed along a ray, the particles' coverage is the rain's optical depth. The sha
 Where one particle would carry so much coverage that it draws as a bright dot (far away, heavy rain: alpha 0.12
 to 0.35) it fades out, and the rain volume carries that distance alone; real rain there is a haze, not grains. A
 streak that would need more than 0.8 coverage widens instead of becoming opaque. "Drops at the eye
-(visibility)" (2.63, up to 10) multiplies the alpha: 1 is physical.
+(visibility)" (3.1, up to 10) multiplies the alpha: 1 is physical.
 
 ### Light
 
 A drop is lit the way the cloud march lights a rain sample at the eye, so the drops and the rain volume beyond
 them agree. Thread 1 of the lightning pass computes the terms once per frame:
 
-- `cv2RainKey`: the Sun through the clouds toward it (the 400 km Sun march, below) and the Earth's shadow, or at
-  night the Moon dimmed by the column above at its slant; an eclipse dims it.
+- `cv2RainKey`: the Sun through the clouds toward it (the eye's Sun ray, [below](#the-sun-behind-clouds)) and
+  the Earth's shadow, or at night the Moon dimmed by the column above at its slant; an eclipse dims it.
 - `cv2RainAmb`: the zenith sky through the cloud above (two-stream diffuse transmission of the column's optical
   depth, as the march's ambient), plus the ground and horizon, the key light's bounce off the ground, city light
   at night, and the light of every lightning flash at its distance, so a close strike in a downpour lights every
@@ -170,9 +174,9 @@ them agree. Thread 1 of the lightning pass computes the terms once per frame:
   irradiance and the cloud above the eye. Standing in a beam, the drops show the bow opposite the satellites and
   flakes and ice crystals glint around them, through the particles' own phase like the key light.
 
-Copies of the march's `sunTransmit`, `sunColorAt` and `skyZenithAt` live in `cloud_v2_lightning.comp` for this
-and must be kept in step. The terms are divided by the frame's white balance, because the particles are drawn
-after it.
+Copies of the Sun / sky table's `sunTransmit`, `sunColorAt` and `skyZenithAt` live in `cloud_v2_lightning.comp`
+for this and must be kept in step. The terms are divided by the frame's white balance, because the particles are
+drawn after it.
 
 Each drop scatters through the volume's own phase function (`shaders/include/cv2_optics.glsl`, shared with the
 march):
@@ -202,7 +206,8 @@ map held rain (or there is diamond dust in sunshine). It costs about 0.35 ms at 
 ### Hand-off to sound
 
 The host reads the rain map's central 6 × 6 cells (±120 m), times the liquid share of precipitation from the
-eye temperature, eased over 2 s, as the `rain` ambience driver. See [Ambience](../../sound/ambience.md).
+eye temperature, eased over 2 s, as the `rain` ambience driver. Rain and thunder are both procedural; there are
+no sample files for them. See [Ambience](../../sound/ambience.md).
 
 ## Lightning
 
@@ -214,9 +219,10 @@ after the sky TAA puts it on screen.
 flowchart LR
   LP[cloud_v2_lightning.comp<br/>workgroup 0: flash list] -->|host-visible,<br/>read next frame| UB[updateLightningBolts:<br/>channel tree per new flash]
   UB --> GPU[GpuBoltFlash + GpuBoltSeg buffers]
-  UB --> QT[queueThunder:<br/>roll envelope]
+  UB --> TS[addThunderSource:<br/>the channel as a sound source]
   GPU --> DR[lightning.vert/.frag:<br/>glow, then channels]
-  QT --> SY[thunder synth]
+  TS --> ST[thunderStep: sound shells<br/>reaching the listener]
+  ST --> SY[thunder synth]
   LP --> RA[thread 1: flash light<br/>on the drops at the eye]
 ```
 
@@ -226,13 +232,13 @@ Workgroup 0 of the lightning pass (256 threads) walks two lattices around the ob
 12 km cloud tops:
 
 - **Cb towers.** The same lattice, roles and fill as the field's towers (`cv2CbRole()`); only **dominant**,
-  anvil-reaching towers flash. Their rate is "Lightning rate: Cb towers (/min each)" (0.4) × the tower's
+  anvil-reaching towers flash. Their rate is "Lightning rate: Cb towers (/min each)" (2.1) × the tower's
   activity (its strength from 0.35 to 0.75), with up to three flashes per tower per slot.
 - **Storm regions.** A fixed equal-angle lattice of 64 × 64 regions on each of the six cube faces of the drifted
   sphere, about 156 km across, the same at any eye altitude (only how far out it is walked changes, so climbing
   or descending never reshuffles the flashes). Each region draws candidate flashes at the most active rate,
-  "Lightning rate: storms (/min per 20 km)" (0.31 flashes a minute per 20 × 20 km of full-strength storm, scaled by
-  the region's true area), at random points inside it. Each candidate reads the weather cube at its point (mip
+  "Lightning rate: storms (/min per 20 km)" (1.0 flashes a minute per 20 × 20 km of full-strength storm, scaled
+  by the region's true area), at random points inside it. Each candidate reads the weather cube at its point (mip
   2: the deep-convective type, the coverage and the rain) and is kept with probability equal to the storm's
   activity there. This thinning makes the rate per area follow the weather while only the few candidates alive
   this frame read it. Whole storms therefore flash, including map-typed storms without anvil towers.
@@ -254,7 +260,7 @@ the capped cumulus away from the towers.
 | cloud-to-ground (1) | up to 30 percent, where the storm is strong | origin at 25 to 45 percent of the cloud's depth; ground point 1.5 to 9 km aside |
 | spider lightning (3) | about 40 percent | 150 m under the cloud base, spreading near-level |
 | in cloud (0) | the remainder | 30 to 75 percent of the cloud's depth |
-| red sprite (2) | "Lightning sprites (chance)" (0.01) per ground stroke | about 75 km up, within about 15 km of the stroke |
+| red sprite (2) | "Lightning sprites (chance)" (0.013) per ground stroke | about 75 km up, within about 15 km of the stroke |
 
 **Timing** (`cv2FlashIntensity()`, `include/cloud_lightning.glsl`): a 50 ms stepped leader with no brightness of
 its own, then for a ground stroke 1 to 4 return strokes (sharp pulses decaying over 35 ms) over a fading
@@ -299,11 +305,14 @@ tonemap. For the tonemap \( 1 - e^{-x} \) this is exactly the tonemap of the sum
 **Glow.** One full-screen triangle loops over the flashes' emitters (the origin; a ground stroke's exit from the
 cloud; the advancing fronts of three spider arms). At each pixel it reads the four half-res cloud-composite
 texels around it, each with its own distance and opacity (one filtered distance would mix a cloud's with the
-no-cloud marker), and lights the cloud there by `boltGlow()`: a diffusion core about 4 km wide whose distance is
-floored at about 3.5 km (the light has crossed at least that much cloud wherever it leaves it, so no cloud surface
-shows a point-like lamp), and a faint tail with a 15 km scale, windowed to zero by 45 km. From orbit a flash is a
-soft patch 10 to 20 km across. × "Lightning glow" (0.088). A sprite's head is instead a flattened red glow about
-15 km across, seen through the air.
+no-cloud marker), skipping texels flagged as an emissive volume's distance
+([temporal](temporal.md#the-post-pass-cloud_marchcomp)), and lights the cloud there by `boltGlow()`: a
+diffusion core about 4 km wide whose distance is floored at about 3.5 km (the light has crossed at least that
+much cloud wherever it leaves it, so no cloud surface shows a point-like lamp), and a faint tail with a 15 km
+scale, windowed to zero by 45 km. From orbit a flash is a soft patch 10 to 20 km across. × "Lightning glow"
+(0.088). A sprite's head is instead a flattened red glow about 15 km across, seen through the air. The same
+pass, in another mode, lights clouds, haze and ground with burning rocket engines and pad floodlights at night
+([Launch visuals](../launch-visuals.md)).
 
 **Channels.** One antialiased quad per segment, at the channel's **true luminous width**: 3 m for a return
 stroke's main channel, 1.2 m for branches, 0.6 m for twigs, 0.35 m for tendrils; 380 m tapering to 120 m for a
@@ -321,15 +330,30 @@ The lightning draw costs about 0.3 ms.
 
 ### Thunder
 
-The same geometry schedules the thunder: for a flash within 35 km, `queueThunder()` builds the roll's envelope
-from each segment's arrival at its distance / 343 m/s. See
-[Ambience: rain and thunder](../../sound/ambience.md#rain-and-thunder).
+Thunder is **streamed from sound shells**. When a flash's channel is built, `addThunderSource()` keeps it as a
+sound source: the positions, directions and lengths of its main channel and branches in Earth-fixed axes (up to
+48 flashes, each for 150 s of sim time; sprites make none). Its sound leaves at the return stroke and travels at
+343 m/s in **sim time**. A piece at distance d is heard when \( g = d - 343\,(t - t_0) \) crosses zero, so each
+frame `thunderStep()` finds the pieces whose g changed sign between the last frame's listener and time and this
+frame's, whether time or the listener moved, and sends the synth one level per sounding flash:
+\( \sqrt{\text{length} \times \text{weight} / d^2} \) per second of arrivals, with the mean distance and the
+bearing (pan).
+
+So the roll is the channel's geometry as heard from where the listener is now. Standing still, near pieces arrive
+first: a clap for a channel seen broadside, a long rumble for one running away. Flying toward a storm the sound
+arrives sooner and compressed (at most 3×); outrunning it, it never arrives; paused, nothing arrives; time warp
+plays it faster; a teleport (more than 5 km) or a jump of more than 20 s of sim time arrives silently. The
+`thunder` ambience driver is 1 while a roll is arriving, about to (~2 s) or ended within 4 s, and the layer is
+gated on it, so the Sound tab lists thunder only when there is some. The synth's voices are described in
+[Ambience](../../sound/ambience.md).
 
 ### Harness
 
-`lightning` lists the flashes in progress, their built trees and drawn segments, and the thunder queue;
-`lightning spawn kind=cg|ic|spider|sprite dist_km= az= ...` places a flash by hand, which runs through the same
-channel, glow and thunder code (see [Automation harness](../../development/harness.md)).
+`lightning` lists the flashes in progress, their built trees and drawn segments, and the thunder sources (age,
+distance, extent, time to arrival, pieces, whether heard), pending rolls and level; `lightning spawn
+kind=cg|ic|spider|sprite dist_km= az= ...` places a flash by hand, which runs through the same channel, glow and
+thunder code. `audio record` carries the sound shells on its own clock. See
+[Automation harness](../../development/harness.md).
 
 ## Fog, dust and ice fog
 
@@ -365,7 +389,7 @@ the city-lit dust would otherwise draw a soft tan blob round every desert city.
 Over the ice sheets under a clear sky: Antarctica (everything south of about 72 to 80 deg S, the ice shelves
 included, and Antarctic land north of that), Greenland's interior above 800 to 1600 m, and the high Arctic's
 land. A thin haze of ice crystals with a 250 m scale height, patchy, with ground extinction "Ice fog density"
-(0.0002 /m) × "Ice fog amount" (1.0). It is lit with halo-rich ice optics (22 and 46 deg halos, sundogs,
+(0.000079 /m) × "Ice fog amount" (0.42). It is lit with halo-rich ice optics (22 and 46 deg halos, sundogs,
 parhelic circle, circumzenithal arc) and a **sun pillar**, for the Sun or the Moon; at the eye it sparkles as
 diamond dust ([particles](#precipitation-at-the-eye)) at a rate of the ice fog's density / 5e-5 per metre.
 
@@ -381,11 +405,13 @@ dropped; from above, the near end, keeping the dense part.
 - **Exact height integration.** Dust and ice fog are exponential in height, and each step integrates the profile
   exactly, \( H\,|e^{-a_0/H} - e^{-a_1/H}| / |a_1 - a_0| \); one height per step draws the step pattern as rings on
   the ground seen from altitude. Samples below the ground carry no dust or ice fog.
-- **Lighting**, once per ray at the band's middle: the Sun colour gated by the horizon, times the map's cover
-  overhead and the path to the fog's top; the zenith sky; the Moon; and at night city light (in proportion to
-  the lights) and the moonless sky. Phases: fog takes the cloud phase, dust a forward lobe with a tan albedo and a
-  diffuse multiple-scattering term (single scattering alone makes a dusty sky a grey veil), ice fog the ice
-  optics. An eclipse dims the Sun and sky terms.
+- **Lighting**, once per ray at the band's middle: the Sun colour (from the Sun / sky table) gated by the
+  horizon, times the path to the fog's top; the zenith sky; the Moon; and at night city light (in proportion to
+  the lights) and the moonless sky. Each step's sunlight is shadowed by the clouds through the Sun shadow cascade
+  at the sample (the diffuse share takes 70 percent of that shadow), so sunlight through a gap draws a lit shaft
+  in the haze; with the cascade off, the map's cover overhead dims it instead. Phases: fog takes the cloud phase,
+  dust a forward lobe with a tan albedo and a diffuse multiple-scattering term (single scattering alone makes a
+  dusty sky a grey veil), ice fog the ice optics. An eclipse dims the Sun and sky terms.
 - **Compositing.** Samples nearer than the clouds' mean depth go in front of them, the rest behind:
   \( L = L_\text{near} + T_\text{near}(L_\text{cloud} + T_\text{cloud} L_\text{far}) \).
 - **Skipped under opaque cloud.** When the eye is above the band and the ray's cloud transmittance has fallen
@@ -397,51 +423,59 @@ Knockout bit 2048 switches all three off; the Planetarium and Potato presets set
 ## The Sun behind clouds
 
 Thread 1 of the lightning pass marches from the eye toward the Sun, when the Sun is above −5.7 deg (sine −0.1)
-and the eye is below the cloud shell's top: 32 quadratically spaced steps over
-\( L = \min((h_\text{top} - h_\text{eye}) / \max(\sin e, 0.03),\ 400\ \text{km}) \), stopping early at optical
-depth 8. It writes:
+and the eye is below the cloud shell's top: 32 quadratically spaced steps over the Sun shadow lattices' ray
+length, \( L = \min(h_\text{top} / \max(\sin e, 0.03),\ 400\ \text{km}) \), stopping early at optical depth 8. It
+writes:
 
-- the **profile** `cv2SunProf`: L and the optical depth from the eye at \( L(k/16)^2 \), k = 0 … 16, which the
-  march uses to shadow clouds near the eye's line to the Sun
-  ([key light](march.md#key-light));
 - the Sun disc's cloud transmittance \( e^{-\tau} \), read back by the host and eased over 0.15 s into
   `CloudParams.sunCloudT` (1 when the march is not running);
-- the Sun's transmittance at the eye including the horizon and the ice fog density at the eye (whether diamond
-  dust can sparkle), and the key light and ambient on a drop at the eye
-  ([particles](#light)).
+- the Sun's transmittance at the eye including the horizon, and the ice fog density at the eye (whether diamond
+  dust can sparkle);
+- the ray length and the lattices' two axes across the Sun (`cv2SunProf`), which every shadow lattice lookup reads.
 
 `sunCloudT` multiplies the Sun disc, its corona, glare and lens flare (the minimum with the pixel's own cloud
-transmittance), the Sun's bloom seed, the key light of rain samples near the eye, and the direct in-scatter of
-air within about 3 km of the eye's line to the Sun, within 50 km and below 8 to 14 km. Without it a storm that
+transmittance), the Sun's bloom seed, and the key light of rain samples near the eye. Without it a storm that
 hides a low Sun still shows a Sun-shaped glow from the forward scattering of the haze and rain in front of it.
-Applied to the whole sky, one small cumulus over the Sun would darken everything, hence the narrow region.
+While the god rays are off it also dims the direct in-scatter of air within about 3 km of the eye's line to the
+Sun, within 50 km and below 8 to 14 km (applied to the whole sky, one small cumulus over the Sun would darken
+everything); with them on, the air is shadowed by the lattices instead.
 
-## God rays and the light volume
+Clouds near the eye's line to the Sun are shadowed through the Sun shadow lattices, not by this one ray: a single
+ray applied to every cloud near the line would darken all of them when the Sun slips behind one cloud's tip
+([The cloud march](march.md#the-suns-shadow-beyond-the-light-march)).
 
-!!! note "Experimental"
-    God rays are off by default ("God rays" 0) and their effect is subtle: a low Sun's air light comes mostly
-    from beyond the volume's reach.
+## God rays and haze near clouds
 
-`cloud_v2_lightvol.comp` bakes a camera-centred 128 × 128 × 32 R16F volume of Sun transmittance: gnomonic
-columns over ±"God ray range" (400 km) about the eye, from sea level to 16 km, 4 of its 32 levels per frame. Each
-voxel marches 16 steps toward the Sun, from 150 m growing by 1.45 (about 127 km in all), stopping above the shell
-or at optical depth 6.
+**God rays** are the clouds' shadows on the air, drawn by the sky pass (`sat_sky.frag`, under `SKY_SUN_SHADOW`:
+every variant but SKY_LITE and the environment probes, whose eye is a satellite). Each step of the sky's
+single-scattering loop multiplies its sunlight by the cloud transmittance from the same lattices the cloud march
+lights its samples by, so the clouds and the air between them share one Sun shadow:
 
-For **sky pixels only**, with the Sun above about −11.5 deg and the eye below 60 km, the march estimates the share
-of the ray's single-scattered air light that lies in cloud shadow (16 samples to 250 km plus a 4-sample tail to
-the atmosphere's exit) and scales the output transmittance by
-\( 1 - \min(0.9,\ k \cdot \text{shadowed}/\text{total}) \), so the composite takes that share of the sky behind away.
-Subtracting a radiance instead would use the march's own air model, which does not match the sky pass's.
-Surfaces are excluded because terrain and sea already carry their own cloud shadow.
+- the **cascade**, the mean of three reads along the step, half a knot sunward (one read per 10-km step draws a
+  shadow's edge as bands);
+- within shaft ring 1's reach (56 cells, about 14 km), the **shaft lattice**, read 24 times over the step's first
+  stretch and weighted as the haze thins with height, so the gaps between single clouds draw their own rays.
+
+The shadowed share is lit by the sky like the air in the Earth's shadow, or a storm's shadow would be a black
+wedge, and the air in front of a cloud (`airFront`) takes it too. Looking away from a low Sun the shadows
+converge on the antisolar point (anticrepuscular rays). "God rays" (1) is how much of the shadow the air takes,
+0 to 1; it is 0 while the cascade is off and above 60 km of eye altitude. Cost: about 0.7 to 1.0 ms of the sky
+pass at 1920 × 1009.
+
+**Haze near clouds** ("Haze near clouds", 1.9, 0 to 20) adds aerosol to the sky pass's Mie column below 12 km,
+with a 2.5 km scale height, at \( 0.25 + 0.75 \times \) the weather cube's cover (+ 0.6 × its rain) around each
+air sample: humid air under and around weather systems. Aerosol is what scatters forward, so with it a sunlit
+stretch between cloud shadows glows toward the Sun as a ray, where clean air shows the shadows only as darker
+bands.
 
 ## With the volumetric clouds off
 
 Everything on this page is driven by the volumetric clouds, so it all stops when their march is knocked out
 (bit 32768, set by the Planetarium and Potato presets). `recordCloudsV2()` then records nothing of the clouds
 except the weather cube's evolution, which the flat stand-in cloud layers still read: no march, resolve or far
-layer, and no lightning pass. Without the lightning pass there are no flashes, no rain particles, no thunder and
-no rain sound, since all of them key on that pass having run this frame. Fog, dust and ice fog are part of the
-march and go with it.
+layer, no lightning pass and no layer shadow map. Without the lightning pass there are no flashes, no rain
+particles, no thunder, no rain sound and no Sun shadow lattices (so no god rays), since all of them key on that
+pass having run this frame. Fog, dust and ice fog are part of the march and go with it.
 
 ## Settings
 
@@ -451,27 +485,27 @@ Weather tab (keys under `clouds_v2`):
 
 | Label | Key | Default |
 |---|---|---|
-| Lightning rate: storms (/min per 20 km) | `lightning_storm_rate_per_area` | 0.31 (0 = off) |
-| Lightning rate: Cb towers (/min each) | `lightning_rate` | 0.4 (0 = off) |
+| Lightning rate: storms (/min per 20 km) | `lightning_storm_rate_per_area` | 1.0 (0 = off) |
+| Lightning rate: Cb towers (/min each) | `lightning_rate` | 2.1 (0 = off) |
 | Lightning glow | `lightning_glow` | 0.088 |
 | Lightning bolts | `lightning_bolt` | 1.25 |
 | Lightning tendrils | `lightning_tendrils` | 1.23 |
-| Lightning sprites (chance) | `lightning_sprites` | 0.01 |
+| Lightning sprites (chance) | `lightning_sprites` | 0.013 |
 
 **Rain & snow**
 
 | Label | Key | Default |
 |---|---|---|
 | Rain | `rain_amount` | 3.0 (0 = no shafts, no drops) |
-| Drops at the eye (visibility) | `rain_streaks` | 2.63 (1 = physical, up to 10) |
+| Drops at the eye (visibility) | `rain_streaks` | 3.1 (1 = physical, up to 10) |
 | Drop reach (m) | `drop_reach_m` | 33 (4 to 64) |
 | Drop particles (x1000, nearest box) | `rain_particles_k` | 16 |
 | Drop shutter (ms) | `rain_shutter_ms` | 33 |
-| Rain fall speed (x) | `rain_fall_speed` | 5.0 (0.3 to 10; snow at most 1.5) |
-| Rain wind (x ground wind) | `rain_wind_gain` | 0.4 |
-| Storm wind (m/s) | `rain_storm_wind_mps` | 11 |
+| Rain fall speed (x) | `rain_fall_speed` | 10 (0.3 to 20; snow at most 1.5) |
+| Rain wind (x ground wind) | `rain_wind_gain` | 0.42 |
+| Storm wind (m/s) | `rain_storm_wind_mps` | 9.5 |
 | Wind gusts | `rain_gusts` | 1.38 |
-| Snow wind (blizzard) | `snow_wind` | 1.0 |
+| Snow wind (blizzard) | `snow_wind` | 1.2 |
 
 **Fog, dust & ice fog**
 
@@ -483,37 +517,45 @@ Weather tab (keys under `clouds_v2`):
 | Dust amount | `dust_amount` | 0.5 |
 | Dust height (m) | `dust_height_m` | 1500 |
 | Dust density (1/m) | `dust_density` | 0.00025 |
-| Ice fog amount | `ice_fog_amount` | 1.0 |
-| Ice fog density (1/m) | `ice_fog_density` | 0.0002 |
+| Ice fog amount | `ice_fog_amount` | 0.42 |
+| Ice fog density (1/m) | `ice_fog_density` | 0.000079 |
 
-**God rays (experimental)**
+**Cloud shadows & god rays** (the shadow-lattice rows are described on [the march page](march.md#settings))
 
 | Label | Key | Default |
 |---|---|---|
-| God rays | `godrays` | 0 |
-| God ray range (km) | `godray_range_km` | 400 |
+| Far cloud shadows (0/1) | `sun_cascade` | 1 |
+| Far cloud shadow range (km) | `sun_cascade_range_km` | 205 |
+| Cloud shadow ring 1 cell (m) | `shadow_ring1_cell_m` | 250 |
+| Cloud shadow ring 2 cell (m, 0 = off) | `shadow_ring2_cell_m` | 1000 |
+| Cloud shadow ring 2 depth (x) | `shadow_ring2_depth` | 0.5 |
+| Layer shadows (mid / high) | `layer_shadows` | 1 |
+| Cirrus self-shadow | `cirrus_self_shadow` | 0 |
+| God rays | `godrays` | 1 (0-1) |
+| Haze near clouds | `haze_aloft` | 1.9 (0-20) |
 
 The storm and weather-evolution sliders are listed on [the field page](field.md#settings). "Optics (halos,
 rainbows)" is on the Clouds tab ([march](march.md#settings)).
 
 ## Where in the code
 
-- `shaders/cloud_v2_lightning.comp`: the flash schedule and column probe, the eye rain map, the eye Sun march,
-  the light on a drop at the eye.
+- `shaders/cloud_v2_lightning.comp`: the flash schedule and column probe, the eye rain map, the eye Sun ray, the
+  light on a drop at the eye, the Sun shadow bakes.
 - `shaders/include/cloud_lightning.glsl`: `CV2FlashBuf` layout, `cv2FlashIntensity()`, `cv2RainMapAt()`,
-  `cv2RainBurst()`; mirrored on the host by `kCv2FlashMax`, `kCv2RainMapOffset` and `kCv2FlashBufBytes` in
-  `src/simulations/SatelliteSim.h`.
+  `cv2RainBurst()`, the shadow lattice lookups; mirrored on the host by `kCv2FlashMax`, `kCv2RainMapOffset`,
+  `kCv2SunShaftOffset` and `kCv2FlashBufBytes` in `src/simulations/SatelliteSim.h`.
 - `shaders/rain_particles.vert/.frag`, `shaders/include/rain_particles.glsl`: the drops;
   `src/simulations/SatelliteSimRain.cpp`: `recordRainParticles()`, `updateRainMotion()`.
 - `shaders/include/cv2_optics.glsl`: the rain, ice and pillar optics shared by the march and the drops.
 - `src/simulations/SatelliteSimLightning.cpp`: `updateLightningBolts()`, `buildBoltTree()`, `recordLightning()`,
-  `queueThunder()`; `shaders/lightning.vert/.frag`, `shaders/include/lightning_draw.glsl` (`boltGlow()`,
+  `addThunderSource()`; `shaders/lightning.vert/.frag`, `shaders/include/lightning_draw.glsl` (`boltGlow()`,
   `boltAir()`).
+- `src/simulations/SatelliteSimAmbience.cpp`: `updateThunder()`, `thunderStep()`, `thunderRecordTick()`, and the
+  rain driver.
 - `shaders/include/clouds_v2.glsl`: `cv2FogDust()`, `cv2DirNoise()`, `cv2PillarOptics()`, the rain branch of
   `cv2FieldLow()`, the rain core in `cv2ColumnSigma()`.
-- `shaders/cloud_v2_march.comp`: the fog march and the god-ray estimate.
-- `shaders/cloud_v2_lightvol.comp`: the light volume.
+- `shaders/cloud_v2_march.comp`: the fog march.
+- `shaders/sat_sky.frag`: the god rays (`SKY_SUN_SHADOW`) and the haze near clouds.
 - `src/simulations/SatelliteSimCloudsV2.cpp`: `fillCloudsV2Params()` (eye temperature, rain frame, fog
-  parameters).
-- `src/simulations/SatelliteSim.cpp`: `sunCloudT` easing; `src/simulations/SatelliteSimAmbience.cpp`:
-  `updateThunder()` (plays the queued rolls) and the rain driver.
+  parameters, the shadow lattices' coordinates).
+- `src/simulations/SatelliteSim.cpp`: `sunCloudT` easing.

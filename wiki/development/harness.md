@@ -1,28 +1,37 @@
 # Automation harness
 
 The harness is a small command language that drives the running app: put the observer anywhere, set the time
-by the Sun's elevation, change any setting or knockout bit, select or fly to satellites, then capture
-screenshots (each with a JSON record of the exact state), dump the UI layout, sample GPU and CPU timings,
-render the audio, or play camera paths. Scripts are deterministic: running one twice gives bit-identical
-images.
+by the Sun's elevation, change any setting or knockout bit, select or fly to satellites, jump to launches and
+re-entries, then capture screenshots (each with a JSON record of the exact state), dump the UI layout, sample GPU
+and CPU timings, render the audio, or play camera paths. Scripts are deterministic: running one twice gives
+bit-identical images.
 
 It is **the way to launch the app** during development, for people and agents alike. A harness run exits on its
 own, runs muted in its own user data folder (it never reads or writes your `settings.json` and cannot trigger
 crash recovery on your next launch), and leaves captures, state, layout dumps and timings to check. Use it for
 anything that needs the real renderer: shader and terrain changes, image A/B comparisons, performance, UI
-layout, camera shots. Work that does not need the renderer (photometry, orbits, benchmarks) belongs in
-[SatModelTool](tools.md#satmodeltool), which is faster and runs in CI.
+layout, camera shots, launch and debris behaviour. Work that does not need the renderer (photometry, orbits,
+benchmarks) belongs in [SatModelTool](tools.md#satmodeltool), which is faster and runs in CI.
 
 How a change *feels* (camera motion, input, audio, a menu's ergonomics) is still for a person to judge.
+
+This page explains the harness and summarises its commands by family. `docs/HARNESS.md` is the complete
+reference, with every argument and every `state` field; keep it and `kHelp` in step with `harnessExec()`.
 
 ## Launch spacing
 
 !!! warning "Invariant"
-    Never relaunch the app back-to-back. `run.py` and `live.py start` wait **30 s after the last app exit** before
-    launching (`tools/harness/launchgate.py`; `run.py --cooldown S` overrides it and should not be set to 0 by
-    habit). For many small batches, start **one** app with `live.py start` and `send` commands to it rather
-    than looping `run.py`. Batch checks into one script where possible: every launch costs startup time and
-    carries some risk to the development machine.
+    Never relaunch the app back-to-back. `run.py` and `live.py start` wait until **30 s have passed since the last
+    app launch and the last app exit**, and until fewer than **two** app processes are running on the machine
+    (`tools/harness/launchgate.py`). The gate's state is machine-wide (`%LOCALAPPDATA%/SatLightSimHarness`), so
+    agents in separate git worktrees share it, and the running count comes from the process list, so a person's own
+    app counts. `run.py --cooldown S` overrides the spacing and should not be set to 0 by habit;
+    `SATLIGHT_HARNESS_MAX_APPS` sets the cap. For many small batches, start **one** app with `live.py start` and
+    `send` commands to it rather than looping `run.py`. Every launch costs startup time and carries some risk to
+    the development machine (`docs/FREEZES.md`).
+
+`tools/run_latest.py` starts the existing `build/Release` executable interactively for a person (no script, the
+shared `user_data/` settings) through the same gate, and records its exit so harness runs space themselves after it.
 
 ## Quick start
 
@@ -42,7 +51,7 @@ py -3 -m venv tools/harness/.venv
 tools/harness/.venv/Scripts/python -m pip install -r tools/harness/requirements.txt
 ```
 
-`run.py` and `live.py` themselves use only the standard library.
+`run.py`, `live.py` and `reports.py` themselves use only the standard library.
 
 ## Ways in
 
@@ -59,10 +68,11 @@ normal user data folder instead of the run folder), `--fixed-dt <s>` (default 1/
 `--timeout <s>` (watchdog), `--stay` (keep running after the script), `--sound` (a real audio device). Unknown
 flags are an error, so a typo never silently runs the normal app.
 
-`run.py` adds `--exe`, `--config` (default Release), `--quiet`, `--cooldown`, `--boot-screen on|off`,
-`--boot-capture`, `--boot-chooser N` and `--boot-safety-ms MS` (the last three are described under
-[The loading screen in a run](#the-loading-screen-in-a-run)). It runs the **freshest** `build/<config>/SAT_LIGHT_SIM_V_*.exe`; a build in another tree
-(`build-win-release/`) is invisible to it unless passed with `--exe`.
+`run.py` adds `--exe`, `--config` (default Release), `--quiet`, `--cooldown`, `--forensics` (records GPU and
+CPU telemetry for freeze investigations), `--boot-screen on|off`, `--boot-capture`, `--boot-chooser N` and
+`--boot-safety-ms MS` (the last three are described under [The loading screen in a run](#the-loading-screen-in-a-run)).
+It runs the **freshest** `build/<config>/SAT_LIGHT_SIM_V_*.exe`; a build in another tree (`build-win-release/`)
+is invisible to it unless passed with `--exe`.
 
 Live mode: `live.py start` launches the app with `--live harness_live/`. Each `send` writes one file to
 `harness_live/inbox/`; the app polls the inbox and writes `outbox/<same name>.json` with one result per command.
@@ -81,9 +91,10 @@ harness_runs/<stamp>_<script>/
   captures/<name>.layout.json      `ui dump`
   captures/<name>.state.json       `state <name>`
   captures/<name>.wav              `audio record`
-  perf_profiles/profile_log.jsonl  `perf name=...` samples and `sweep` records
-  satlight_log.txt, settings.json, app_stdout.txt, <script>.satcmd (a copy of what ran)
   captures/boot_NN.png             `run.py --boot-capture`: the loading screen's frames
+  perf_profiles/profile_log.jsonl  `perf name=...` samples and `sweep` records
+  reports/                         issue reports taken with `report shot`
+  satlight_log.txt, settings.json, app_stdout.txt, <script>.satcmd (a copy of what ran)
 ```
 
 Each run starts from the built-in defaults unless `--settings` is given. A capture's sidecar state is taken in
@@ -97,7 +108,8 @@ the agent memory folder, or the live app's current folder. `--slim` thins old re
 ## Script syntax
 
 One command per line or separated by `;`. `#` starts a comment. Arguments are positional words or
-`key=value`. Double quotes group words with spaces (`select const "Starlink Gen1"`).
+`key=value`. Double quotes group words with spaces (`select const "Starlink Gen1"`). A backslash is an escape, so
+write paths with forward slashes.
 
 ```
 preset High
@@ -112,38 +124,86 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 
 A failing command is recorded with its reason and the script continues; the run's status is then `errors`.
 
-## Command reference
+## Commands by family
 
 ### Flow and time
 
 | Command | What it does |
 |---|---|
 | `wait <frames>`, `wait seconds <s>` | wait N frames, or wall-clock seconds |
-| `wait settle [frames]` (or `settle`) | hold sim time and run 40 (or N) frames at a 0.5 s step, so eased values converge (sky glare, the dark-sky dome, mesh fades, beam-light fades, environment probes); the sky's temporal anti-aliasing restarts with it. Use before every capture that follows a change. From orbit, add `wait 90` after it before a capture: a settled view from 400 km draws cloud edges blocky until about 90 ordinary frames have passed |
+| `wait settle [frames]` (or `settle`) | hold sim time and run 40 (or N) frames at a 0.5 s step, so eased values converge (sky glare, the dark-sky dome, mesh fades, beam-light fades, environment probes); the sky's temporal anti-aliasing restarts with it. Use before every capture that follows a change. From orbit, add `wait 90` after it: a settled view from 400 km draws cloud edges blocky until about 90 ordinary frames have passed |
 | `time set <ISO>` | e.g. `2036-06-21T04:00:00Z` (UTC) <!-- history-ok --> |
 | `time sun <el> [rising\|setting]`, `time sun noon\|midnight` | the time nearest now (within 12 h) when the Sun is at `<el>` degrees for this observer |
 | `time add <s>`, `time j2000 <s>` | relative, or absolute in seconds since J2000 |
 | `time pause`, `time play`, `time scale <1x\|10x\|1m\|5m\|1h\|1d\|1w\|1mo\|1yr>`, `time reverse on\|off` | |
 | `log <text>`, `help`, `quit` | `help` prints the command summary (`kHelp`) |
 
-### Observer, camera and targets
+### Observer, camera and places
 
 | Command | What it does |
 |---|---|
-| `observer lat= lon= [agl=\|alt=]` | move the observer, keeping the camera heading; ends follow mode. `alt` is metres above sea level (the eye sits at max(ground, alt) + 2 m); `agl` is above the ground, read back from the GPU's detailed terrain (one extra frame). With the depth pass knocked out it falls back to the CPU's coarse DEM, which is off by hundreds of metres on coasts and in valleys. `state` reports `alt_m`, `agl_m`, `ground_m`, `ground_source` and the raw height offset |
-| `camera az= el= fov=` | azimuth (0 north, 90 east), elevation, vertical field of view (0.5 to 120) in degrees |
-| `camera look <sun\|moon\|sel\|planet>` | aim once; `sel` is the selected satellite or planet |
-| `camera track <...\|off>` | re-aim every frame |
-| `select sat <index>`, `select const "<name>" [n=<k>]`, `select planet <name>`, `select none` | by roster index; a constellation's member highest in the sky (or its k-th member) |
+| `observer lat= lon= [agl=\|alt=]` | move the observer, keeping the camera heading; ends follow mode. `alt` is metres above sea level (the eye sits at max(ground, alt) + 2 m); `agl` is above the ground, read back from the GPU's detailed terrain (one extra frame). With the depth pass knocked out it falls back to the CPU's coarse DEM, which is off by hundreds of metres on coasts and in valleys |
+| `camera az= el= fov=`, `camera look <sun\|moon\|sel\|planet>`, `camera track <...\|off>` | aim (azimuth 0 north, 90 east; field of view 0.5 to 120 degrees), aim once at a target, or re-aim every frame |
+| `beams [list]`, `beams go [rank=1] [dist_km=0] [bearing=270] [agl=2\|alt=] [look=site\|up\|none]` | where the Reflect Orbital beams land now (only satellites above the observer's horizon make beams, so stand in the region first); `go` puts the observer near the rank-th busiest site. Frame beams this way rather than by a guessed time and place |
+| `eclipse <solar\|lunar>` | the next eclipse after the current time: greatest eclipse, the observer under the Moon or where the shadow axis meets the Earth, aimed at the Moon |
+| `aurora`, `aurora next [<kp>]`, `aurora substorm [min=]`, `aurora kp <v>`, `aurora auto` | the aurora's activity, a pure function of sim time; `next` jumps to the peak of the next storm reaching that Kp. Test from a dark site: a city's skyglow hides the aurora |
+| `drift [default] [phase=<rad>] [rate=<rad/s>]` | the cloud map's drift, the session state a bookmark or snapshot stores; `phase=` gives that phase at the current sim time (set the time first) |
+| `snapshot <profile_log.jsonl> [index=-1] [settings=on\|off] [clamp=on] [drift=intro\|default]` | reproduce a perf snapshot ([Snapshots and issue reports](#snapshots-and-issue-reports)) |
+| `report list\|info\|load\|shot\|mark\|export ...` | issue reports ([Issue reports](issue-reports.md#harness-commands)) |
+| `bookmark add [name] [id=] [scale=] [paused=]`, `bookmark go\|update\|delete <n>`, `bookmark rename <n> <name>`, `bookmark restore`, `bookmark list` | the Bookmarks window's actions, numbered from 1. `wait 3` after `add` or `update` for the thumbnail. `id=` replaces a bookmark with that id; `scale=` and `paused=` store the clock a Go sets. A run's list starts as the shipped defaults |
+
+### Satellites and selection
+
+| Command | What it does |
+|---|---|
+| `select sat <index>`, `select const "<name>" [n=<k>]`, `select planet <name>`, `select none` | by roster index, or a constellation's member highest in the sky (or its k-th member). A satellite destroyed or re-entered by now is an error |
+| `select at <x> <y>` | the click pick at a frame pixel: a drawn mesh's bounding circle first, else the nearest sprite |
 | `const list`, `const "<name>"\|all on\|off [highlight=on\|off]` | constellation visibility |
-| `follow [sat=<i>] [offset=along,cross,radial] [fly=on]`, `follow off [fly=on]` | ride with a satellite (types with a geometry model); offset in metres in its frame. `fly=on` uses the UI's animated Go to / return instead of a jump |
-| `track [on\|off]` | the selection panel's Track button: the camera stays locked on the selected satellite while the observer and zoom stay free. Released by `select none`, `select planet`, `follow` and any explicit aim |
-| `beams [list]`, `beams go [rank=1] [dist_km=0] [bearing=270] [agl=2\|alt=] [look=site\|up\|none]` | where the Reflect Orbital beams land now (from the last readback; only satellites above the observer's horizon make beams, so stand in the region first). `go` puts the observer near the rank-th busiest site and aims at it or up the beams. Frame beams this way rather than by a guessed time and place |
-| `eclipse <solar\|lunar>` | the next eclipse after the current time: sets greatest eclipse, puts the observer under the Moon or where the shadow axis meets the Earth, aims at the Moon |
-| `aurora`, `aurora next [<kp>] [days=1100]`, `aurora substorm [min=0.4]`, `aurora kp <v>`, `aurora auto` | the aurora's activity, which is a pure function of sim time. Bare: report it. `next` jumps sim time to the peak of the next storm reaching that Kp (default 7; automatic activity). `substorm` jumps to 10 minutes after the next substorm onset stronger than `min`. `kp <v>` fixes the activity by hand (substorms still run); `auto` returns to the computed space weather. Test from a dark site: a city's skyglow hides the aurora |
-| `bookmark add [name] [id=] [scale=] [paused=]`, `bookmark go\|update\|delete <n>`, `bookmark rename <n> <name>`, `bookmark restore`, `bookmark list` | the Bookmarks window's actions, numbered from 1 as listed. The thumbnail is captured a few frames later, so `wait 3` after `add` or `update` before looking at the window. `id=` fixes the bookmark's id and replaces any bookmark that already has it; `scale=` (a time-scale index, 0 = 1x) and `paused=` store the bookmark's optional look, the clock a Go sets. `restore` is the window's *Restore defaults*: it re-adds any shipped bookmark that is missing. A run's list starts as the shipped defaults, since its user data folder has no `bookmarks.json` |
-| `drift [default] [phase=<rad>] [rate=<rad/s>]` | the cloud map's drift, the session state a bookmark or snapshot stores. `phase=` sets the offset that gives that phase at the current sim time (set the time first); `default` restores the compiled-in offset of a fresh session; `rate=` sets the drift rate. Bare, it reports the phase and rate |
-| `snapshot <profile_log.jsonl> [index=-1] [settings=on\|off] [drift=intro\|default]` | reproduce a perf snapshot a user saved ([Snapshots](#snapshots)) |
+| `roster list`, `roster remove "<name>"`, `roster add "<name>"` | change the roster at runtime ([Architecture](architecture.md#runtime-roster-changes)). Satellite indices move, so the selection, follow, track and viewer are dropped |
+| `follow [sat=<i>] [offset=along,cross,radial] [fly=on]`, `follow off [fly=on]` | ride with a satellite (types with a geometry model); `fly=on` uses the UI's animated Go to and its return |
+| `follow stay`, `follow return` | the follow HUD's *Stay here* (a free observer where the camera is) and *Return* (back to the default offset; when not following, follow the last object again) |
+| `follow toward=observer\|sun [dist=300] [side=0] [lift=0] [look=observer]`, `follow aim=sat` | place the following camera on the satellite's line to the ground observer or to the Sun, aimed at it (the side and flare the observer sees) |
+| `track [on\|off]` | the selection panel's Track lock; released by `select none`, `select planet`, `follow` and any explicit aim |
+| `cluster [sat=<i>]` | a formation cluster's members' offsets from a satellite and their centroid, for framing a ring |
+| `flares "<constellation>" [window=600] ...` | the CPU photometry over every member in the next window: the brightest flare peaks with time, magnitude, direction and contrast, for framing a flare |
+| `joints [sat=<i>] [minutes=200] [step=20]` | each child attitude group's joint angle over time (a flip shows as about 180 deg in one step) |
+| `viewer [aim=free\|observer\|toward\|sun] [light=live\|studio] [glare=on\|off] [shadows=on\|off] [dist=<radii>]` | the satellite 3D view's controls, for a `ui open viewer` or `ui open info` capture |
+
+### Launches, missions and the deployment era
+
+These drive the systems on [Launches](../simulation/launches.md), [Rocket flight](../simulation/rockets.md) and
+[Crew flights](../simulation/crew-flights.md). The jumps set the clock to a moment, place the observer, and leave
+time running at 1x; a later `launch select kind=rocket|booster|upper` takes that launch's stage, drawn or not.
+
+| Command | What it does |
+|---|---|
+| `launch [state]` | planes, batches, rockets drawn, train and retiree satellites up, plume Gaussians, upper stages' timelines, boosters and ships, engine lights, ground clouds, the `launches` CPU bucket by part (`cpu_split_ms`) |
+| `launch list [hours=48]`, `launch why [hours=720]`, `launch padstats [hours=168]` | lift-offs ahead; cached batches by program and reason; launches sharing a pad within 90 min |
+| `launch next [when=any\|twilight\|day\|night] [vehicle=] [pad_dist_m=] [lead=30] [side=1]` | 30 s before the next lift-off, the observer 60 km behind the pad; `pad_dist_m=` instead on the ground beside the pad (the ground cloud, the low trail) |
+| `launch deploy [filter=]`, `launch fairing [filter=]`, `launch deorbit`, `launch reentry`, `launch vent`, `launch ship` | the next sunlit deployment, fairing separation, upper-stage deorbit turn, retiree re-entry, propellant vent, or returning ship's entry glow; `min_members=` skips small launches |
+| `launch landing [booster=1\|droneship=1] [lead=90] [dist_m=2500] [day=1]`, `launch droneship [vehicle=] [day=1\|night=1]`, `launch ships` | tower catches and landings at sea; the ships at sea |
+| `launch crew [station=] [craft=] [event=dock] [lead=60] [follow=1]` | an event of the next crew or cargo flight (separation, phasing, approach holds, docking, undocking, entry, splashdown) |
+| `launch pads`, `launch pad <site> [dist_m=600] [az=200] [h=2]` | launch sites and their pad kind at this date; stand by a pad looking at its tower |
+| `launch look [stage=0\|1]`, `launch select [kind=...] [nearest=1] [member=<i>]` | aim at a flying stage; select a train member, retiree, rocket, booster, upper stage, ship, fairing half, crew vehicle or re-entry (the selection is a transient: `state` reports `selection.transient`) |
+| `launch trace [from=] [days=400] [vehicle=] [program=]`, `launch trace key=`, `launch formation key=`, `launch goto key= [t=] [ground=1]` | the mission-operations traces ([below](#launch-and-mission-checks)) |
+| `launch check`, `launch jitter [batches=6]`, `launch legacy on\|off` | self-tests: phasing, release and arrival errors, nose turn rates, step continuity through burns and entry, landings, crew flights; how far a raising train member's record jumps at each rewrite |
+| `missions [state]`, `missions go <i\|twilight\|crew\|fury\|fury_night> [watch=1]`, `missions ongoing <row> [go=1]`, `missions tab <name>` | the Missions window's rows and buttons ([Missions](../using/missions.md)); `state` also reports each crewed station's fate |
+| `missions milestone [list\|next\|prev\|<i>] [row=]` | the mission timeline of Go to's object or the selection, and the milestone jumps (the keys `]` and `[`) |
+| `deploy [state]`, `deploy stats [from=] [to=] [step=30]` | the deployment era: each cohort's satellites deployed and launch rate now; launch counts per program and year from the schedule alone |
+
+`set launches.deployment_era false` shows the final roster at every date, the A/B for anything the era changes.
+
+### The Sun's Fury
+
+| Command | What it does |
+|---|---|
+| `kessler [state]` | counts now and at the worker's frontier, pieces by class, the dust clouds drawn, re-entries now and ahead |
+| `kessler wait [days=<d>] [done]` | hold the script until the background worker has simulated that far past the storm (sim time holds at the frontier, so do this before a `time set` past it) |
+| `kessler breakup <sat\|sel> [kind=explosion\|asat]`, `kessler collide <a> <b>` | a player breakup or collision at the current time; `asat` exists only for testing |
+| `kessler select [k=]`, `kessler select dead [k=] [formation=1]` | a piece of the newest player breakup; a satellite dead now |
+| `kessler reentry` | the settings' *Watch the next re-entry* |
+
+See [The Sun's Fury](../simulation/kessler.md).
 
 ### Settings and rendering
 
@@ -151,34 +211,33 @@ A failing command is recorded with its reason and the script continues; the run'
 |---|---|
 | `get [section[.key]]` | any persisted setting; `get` alone lists them all (the keys are `settings.json`'s) |
 | `set <section.key> <value>` (or several `key=value`) | change settings through the same code path `settings.json` loads through ([Controls and settings](controls-and-settings.md#one-read-path-one-write-path)); unknown keys and wrong types are errors; the preset label is unchanged |
-| `expect <key\|cine.<path>\|state.<path>> <value> [tol=1e-4]` | fail unless the value matches: a setting (`clouds_v2.coverage`), the open cinematic's JSON (`cine.shots.0.keys.1.t`) or the `state` JSON (`state.observer.lat_deg`, `state.time.utc`). Numbers compare within `tol` (relative above 1), booleans accept `true`/`1`/`on`, anything else compares as text |
+| `expect <key\|cine.<path>\|state.<path>> <value> [tol=1e-4]` | fail unless a setting, the open cinematic's JSON or the `state` JSON matches |
 | `preset <Planetarium\|Low\|Medium\|High\|Ultra\|Potato\|Custom>` | apply a graphics preset (overwrites knockouts and quality sliders) |
 | `knockout none\|<mask>\|+key\|-key\|key ...`, `knockout list` | knockout bits by stable key ([Profiling](profiling.md#knockout-bits)), plus `potato_sky` and `lite_sky`; sets the preset to Custom |
 | `debugview <name\|off>` | replace terrain, sea or cloud-composite pixels with a debug channel (below) |
-| `probe <x> <y>` | what the terrain march does for one pixel's ray, in the capture's pixel coordinates: the seed from the shared depth, the seeded march and a march from the eye (distance, steps), the heights at the hit, and a 64-sample profile along the ray |
-| `viewer [aim=free\|observer\|toward\|sun] [light=live\|studio] [glare=on\|off] [shadows=on\|off] [dist=<radii>]` | the satellite 3D view's controls, for a `ui open viewer` or `ui open info` capture; reports the observer's flare per unit intensity, the glints and the photometry lines |
-| `lightning` | the lightning flashes in progress (id, kind, intensity, age, distance, cloud base and top, segment count), the built channel trees, the drawn flash and segment counts, and the thunder queue. With time paused a flash stays frozen, so `time add 0.25` steps through one |
-| `lightning spawn kind=cg\|ic\|spider\|sprite dist_km=10 az=<camera az> [seed=] [base_m=1500] [top_m=10000] [ground_km=4] [ground_az=] [dur=]` | place a flash by hand: cloud-to-ground (default), in-cloud, spider or red sprite, at that distance and azimuth, with the cloud's base and top above the eye's ground and, for a ground stroke, its strike point `ground_km` aside. It runs through the same channel, glow and thunder code as the storms' own flashes. For thunder, `wait` a few frames, `time add` the sound's travel time (distance / 343 m/s), then `audio record` |
-| `shaders reload [march=<spv>] [wg=<X>x<Y>]` | rebuild the cloud pipelines from the SPIR-V on disk and report the driver's register count, binary size and spill memory ([Profiling](profiling.md#ab-testing-a-shader-change)) |
+| `probe <x> <y>` | what the terrain march does for one pixel's ray: the seed, the seeded march and a march from the eye, the heights at the hit, a 64-sample profile along the ray |
+| `lightning`, `lightning spawn kind=cg\|ic\|spider\|sprite dist_km= az= ...` | the flashes in progress and the thunder sources (distance, extent, `arrives_in_s`, heard); place a flash by hand through the same channel, glow and thunder code |
+| `shaders reload [march=] [resolve=] [lightning=] [composite=] [layers=] [wg=<X>x<Y>]` | rebuild the cloud pipelines from SPIR-V on disk and report the driver's register count, binary size and spill memory ([Profiling](profiling.md#ab-testing-a-shader-change)) |
 
 Debug views (`debugview`): `normals`, `detail`, `steps` (march steps, blue few to red the budget), `albedo`,
-`shadow`, `rough` (roughness, rock, snow as RGB), `elevzebra` and `distzebra` (stripes every 25 m of elevation
-and 100 m of distance: broken stripes mean height or convergence jitter), `erosion`; the terrain lighting term
-by term (`terms`, `direct`, `skyamb`, `night`, `moon`, `aurora`, `gates`, `factors`, `skyambraw`, `suntint`,
-`aofactors`, `day`, `nightmap`, `geodot`, `sunvis`, `nightsky`, `citylights`), `solar` (solar parks); the sea
-(`oceanrefl`, `oceanfresnel`, `oceanstate`, `oceansurf`, `oceannormal`, `oceanshore`, `oceanshadow`); and the
-cloud composite (`cloudairsplit`, `cloudtrans`, `cloudrad`, `cloudalpha`). They are not persisted. The lighting
-term views write linear radiance (x100) straight into the frame, bypassing exposure and tonemapping, so
-`tools/harness/lightscan.py` can decode a pixel back to a number and a hue.
+`shadow`, `rough`, `elevzebra` and `distzebra` (stripes every 25 m of elevation and 100 m of distance: broken
+stripes mean height or convergence jitter), `erosion`; the terrain lighting term by term (`terms`, `direct`,
+`skyamb`, `night`, `moon`, `aurora`, `gates`, `factors`, `skyambraw`, `suntint`, `aofactors`, `day`, `nightmap`,
+`geodot`, `sunvis`, `nightsky`, `citylights`), `solar` (solar parks), `pads` (launch pads: ground cover, city
+exclusion, lamps); the sea (`oceanrefl`, `oceanfresnel`, `oceanstate`, `oceansurf`, `oceannormal`, `oceanshore`,
+`oceanshadow`); and the cloud composite (`cloudairsplit`, `cloudtrans`, `cloudrad`, `cloudalpha`). They are not
+persisted. The lighting term views write linear radiance (x100) straight into the frame, bypassing exposure and
+tonemapping, so `tools/harness/lightscan.py` can decode a pixel back to a number and a hue.
 
 ### Captures, state and timing
 
 | Command | What it does |
 |---|---|
-| `capture <name> [ui=on] [crop=x,y,w,h] [scale=s]` | PNG of the frame (no UI unless `ui=on`), cropped then scaled: `scale<1` box-filters down, `scale>1` enlarges with nearest neighbour for pixel inspection. Writes the state sidecar |
+| `capture <name> [ui=on] [crop=x,y,w,h] [scale=s]` | PNG of the frame (no UI unless `ui=on`), cropped then scaled: `scale<1` box-filters down, `scale>1` enlarges with nearest neighbour for pixel inspection. Writes the state sidecar. The player's screenshot settings do not affect it |
 | `photo <name> [scale=1-4] [frames=N]` | the HQ photo: rendered at `scale` x the window offscreen, clouds at full rate, time paused, settled over `frames` frames; no UI, no sidecar |
-| `state [name]` | the full state (time, observer, camera, selection, clouds, satellites, Moon, aurora, exposure, ambience...) as the result, and a file if named. The `aurora` block has `kp`, `g_scale`, the drivers (`quiet`, `hss`, `cme`), the oval's edges (`oval_mlat_deg`), any `substorm`, and the observer's magnetic latitude, magnetic local time and the oval's brightness overhead |
+| `state [name]` | the full state as the result, and a file if named: time, observer and follow, camera, selection (with the CPU photometry by lobe, the formation's combined magnitude, the mesh glare data), clouds, satellites, Moon, aurora, the light-pollution dome, exposure and point adaptation, launches, Kessler, ambience |
 | `perf [frames=60] [name=]` | average raw GPU timestamp buckets and CPU buckets over N frames, with GPU total and wall frame-time distributions; `name=` also appends to the run's perf log |
+| `hitches [top=8] [list=25]`, `hitches clear`, `hitches threshold <ms>` | the frame-time distribution since the last clear and every frame over the threshold with its largest main-thread sections ([Profiling](profiling.md#frame-profile-and-hitches)) |
 | `sweep` | the automated knockout sweep (about 15 s); returns the whole record |
 
 ### UI and input
@@ -186,14 +245,14 @@ term views write linear radiance (x100) straight into the frame, bypassing expos
 | Command | What it does |
 |---|---|
 | `ui show\|hide`, `ui scale <0.75-2>` | HUD visibility and UI scale |
-| `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|bookmarks\|cine\|console>`, `ui close <name\|all>` | windows (`info`, `viewer` and `trace` need a selected satellite); an advanced tab (Performance included) turns on advanced settings |
-| `ui click <ElementId>[:index] [fx=0.5] [hold=N]` | move a scripted pointer onto the element's centre (last frame's layout) and click through the real hover and click path; fails if the element is scrolled out of view. A UI-kit element is addressed as `Key:index` (`ui click ReplayIntroBtn:0`, `ui click InfoSectHdr:2`). The click lands on the frame the pointer arrives, which the sky picker can also take as a click on empty sky: re-`select` before opening a window that needs the selection |
-| `ui type <text>`, `ui key <enter\|esc\|tab\|backspace\|delete\|left\|right\|home\|end\|w>` | keyboard input into the focused text field, else the game |
+| `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|bookmarks\|cine\|reports\|missions [tab=]\|console>`, `ui close <name\|all>` | windows (`info`, `viewer` and `trace` need a selected satellite); an advanced tab turns on advanced settings; `close all` includes the Issue reports and Missions windows |
+| `ui click <ElementId>[:index] [fx=0.5] [fy=0.5] [to_fx= to_fy=] [hold=N]` | move a scripted pointer onto the element (last frame's layout) and click through the real hover and click path; with `to_fx`/`to_fy` it is a drag. A UI-kit element is `Key:index`. The click can also reach the sky picker: re-`select` before opening a window that needs the selection |
+| `ui type <text>`, `ui key <enter\|esc\|tab\|backspace\|delete\|left\|right\|up\|down\|home\|end\|w\|]\|[\|f7\|f8\|f9\|f10\|f12>` | keyboard input into the focused text field, else the game; the F-keys take a player's shot (screenshot, screenshot with UI, issue shots, HQ photo) |
 | `ui dump [name]` | every drawn rectangle, text and image with its box and element id, plus checks for clipped, off-window and overlapping text |
 | `pad <a\|b\|x\|y\|lb\|rb\|start\|view\|ls\|rs\|up\|down\|left\|right>` | a gamepad press without a controller, through the context meaning first, else the binding |
-| `tutorial start [step] [pad=1]`, `tutorial step <n\|name>`, `tutorial next\|back\|skip\|state` | the first-run tutorial (never started on its own in a harness run) |
+| `tutorial start [step] [pad=1]`, `tutorial step <n\|name>`, `tutorial next\|back\|skip\|state` | the first-run tutorial (never started on its own in a run) |
 | `window <W>x<H>` | resize the window and wait for the new swapchain |
-| `overlay text <id> "<text>" [x=0.5 y=0.1 size=28 align=center\|left color=RRGGBB]`, `overlay label <id> "<text>" target=<sel\|sun\|moon\|planet>`, `overlay clear [id]` | screen text, drawn even with the HUD hidden |
+| `overlay text <id> "<text>" ...`, `overlay label <id> "<text>" target=<sel\|sun\|moon\|planet>`, `overlay clear [id]` | screen text, drawn even with the HUD hidden |
 
 ### Camera paths and cinematics
 
@@ -201,7 +260,7 @@ term views write linear radiance (x100) straight into the frame, bypassing expos
 |---|---|
 | `path clear`, `path key <t> [lat= lon= alt= az= el= fov= sim=<ISO>\|simadd=<s>]` | keyframes at path time `t` (seconds); channels left out inherit from the previous key |
 | `path goto <t>` | jump to the path's pose at `t` |
-| `path play [fps=30] [record=<name>] [ui=on] [scale=s]` | play the path at a fixed frame rate; `record` captures every frame as `captures/<name>_00000.png` ...; the result carries `gpu_ms_mean` (the cost while moving), `gpu_total_ms_p90`, `gpu_total_ms_max` and the worst frame's buckets |
+| `path play [fps=30] [record=<name>] [ui=on] [scale=s]` | play the path at a fixed frame rate; `record` captures every frame; the result carries `gpu_ms_mean` (the cost while moving), `gpu_total_ms_p90`, `gpu_total_ms_max` and the worst frame's buckets |
 | `cine new\|name\|shot\|key\|play\|export\|save\|load\|state\|stop ...` | the cinematic: shots, keys, looks, follow shots, playback and preview or HQ export |
 
 The harness's camera path **is** the current cinematic shot, so a path authored in a script appears in the
@@ -209,16 +268,15 @@ in-app Cinematics window and the reverse. Between keys each channel (latitude, l
 log altitude, log field of view) follows a cubic Hermite spline with Catmull-Rom tangents; azimuth and longitude
 are unwrapped so the path turns the short way. Playback is offline: every frame is exactly 1/fps of path time
 and of frame time whatever the real frame rate, and a recording renders exactly one app frame per recorded
-frame (it waits for the copy, not the PNG encode), so a recording shows the same temporal behaviour a player
-sees. `tools/harness/frames2video.py <dir>/<name> -o out.mp4 --fps 30` assembles frames with ffmpeg.
+frame, so a recording shows the temporal behaviour a player sees. With time paused, `path play` holds sim time
+too: `time play` first to measure a sky that moves. `tools/harness/frames2video.py <dir>/<name> -o out.mp4
+--fps 30` assembles frames with ffmpeg.
 
-`cine` subcommands: `new [name]`, `name <n>`; `shot add [name]`, `shot del`, `shot <n>`, `shot look [clear]`
-(store the current look with the shot), `shot follow <sel|index|off>`, `shot ease <0-1>`,
-`shot simrate <x>`, `shot simnow`; `key [t=]`; `play [shot]`;
-`export preview|hq [fps=] [scale=] [frames=] [blur=] [shot]` (frames to `captures/cine_<name>[_hq]/`, with a
-`cinematic.json` and a README; `blur=N` averages N subframes over a 180-degree shutter in linear light);
-`save [file]`, `load <file>` (`<user data>/cinematics/`); `state`, `stop`. A cut to the next shot resets the
-sky's and the clouds' temporal history. `tools/harness/scripts/tour.satcmd` is the worked example.
+`cine` subcommands: `new [name]`, `name <n>`; `shot add [name]`, `shot del`, `shot <n>`, `shot look [clear]`,
+`shot follow <sel|index|off>`, `shot ease <0-1>`, `shot simrate <x>`, `shot simnow`; `key [t=]`; `play [shot]`;
+`export preview|hq [fps=] [scale=] [frames=] [blur=] [shot]`; `save [file]`, `load <file>`; `state`, `stop`. A cut
+to the next shot resets the sky's and the clouds' temporal history. `tools/harness/scripts/tour.satcmd` is the
+worked example.
 
 ### Sound
 
@@ -232,15 +290,19 @@ sky's and the clouds' temporal history. `tools/harness/scripts/tour.satcmd` is t
 | `audio tonality [wait]` | the key the ambience is in; `wait` holds until every track is analysed |
 
 A muted run has an audio engine with no device; see [Ambience](../sound/ambience.md#offline-rendering-for-the-harness).
+`audio record` carries the thunder's sound shells on its own clock, so a thunder test is `audio force thunder 1`,
+`lightning spawn ...`, `wait 3`, then `audio record <name> seconds=<arrival + roll> solo=thunder`, with
+`time add 200` between tests to retire the previous source.
 
 ## Determinism
 
 What makes two runs identical:
 
-- **A fixed frame step.** The sim receives `--fixed-dt` (1/60 s) each frame, not wall time.
+- **A fixed frame step.** The sim receives `--fixed-dt` (1/60 s) each frame, not wall time. At a time warp the
+  sim time per frame is therefore the real one at 60 fps.
 - **`wait settle` before a capture.** Many values ease toward their targets over seconds; a settle holds sim time
   and steps 0.5 s per frame. The HUD's frame rate during a settle is meaningless.
-- **An explicit preset.** A fresh run folder seeds the preset from the device type; put `preset <name>` first.
+- **An explicit preset.** A fresh run folder seeds the preset from the device; put `preset <name>` first.
 - **`time pause`** unless the script is about motion.
 - The same window size and the same build.
 
@@ -249,15 +311,26 @@ splitting, reordering or inserting views silently moves the later ones in time, 
 different Moon). For an A/B across two runs keep the command sequence identical, and check that the sidecars
 agree on `state.time.utc`.
 
-## Snapshots
+The cloud map drifts with sim time, so a cloudy place is tied to a moment: `tools/harness/find_cloud_spots.py
+<ISO time>` lists cloudy benchmark locations for one. Weather-dependent views (the shipped storm bookmarks among
+them) also depend on the cloud defaults: a change of coverage, flow, weather evolution or storm shape can move or
+dissolve the storm a view frames. After such a change, re-check each default bookmark
+(`bookmark go N; wait settle; wait 30; capture`) and re-frame from `scripts/default_bookmarks.satcmd`.
 
-A user hands over a location by pressing *Save snapshot* (F9, or Settings → Performance) in the app, which appends
-a record to `perf_profiles/profile_log.jsonl` in their user data folder. `snapshot <file> [index=-1]` restores
-it: the record's settings, sim time (paused), the exact observer direction and height, the camera and the cloud
+## Snapshots and issue reports
+
+A player hands a problem over as an **issue report**: F7 starts an issue, F9 adds a shot. Each shot holds the
+view, the settings, the timings and the frame the player saw. [Issue reports](issue-reports.md) describes the
+format and the triage loop; `report load "<issue dir>" shot=N` stands in a shot's view.
+
+Every shot also appends a record to `perf_profiles/profile_log.jsonl`. `snapshot <file> [index=-1]` restores
+such a record: its settings, sim time (paused), the exact observer direction and height, the camera and the cloud
 map's drift phase (session state that latitude, longitude and time alone do not reproduce: the same place and
 time would frame other clouds). `index` counts snapshot records only, from the end when negative. Records
 without settings or a drift phase need `--settings` set to the user's `settings.json`; `drift=intro` (the
 default) reconstructs the phase as a session that played the intro, `drift=default` uses the compiled default.
+Both `snapshot` and `report load` apply the settings as saved, past the load-time range guards; `clamp=on`
+restores them.
 
 ## Analysis tools
 
@@ -280,21 +353,36 @@ Motion and consistency tools, each with `gen` (write a script), a run with `run.
 
 | Tool | Measures |
 |---|---|
-| `tools/harness/tstab.py` | **temporal stability**: how far the image seen while moving is from the image the same view settles to (ghosting, smears, blocks, grain). It generates player-speed scenarios from a snapshot's height above the ground (`walk`, `boost`, `strafe`, `pan90`, `pan240`, `walkpan`, `rise`, `boostrise`, `pitch`, `boostpan`, `flick`, `chaos`, 2.5 s each at 60 fps), records each, revisits five poses and settles them for reference, and reports mean, p95 and p99 luminance difference and the share past 16 levels, per scenario and per horizontal band. A `floor` scenario (two settles of one view) gives the noise floor. Yaw-only pans hide row-aligned errors; the `pitch` scenario catches them |
+| `tools/harness/tstab.py` | **temporal stability**: how far the image seen while moving is from the image the same view settles to (ghosting, smears, blocks, grain). It generates player-speed scenarios from a snapshot's height above the ground (`walk`, `boost`, `strafe`, `pan90`, `pan240`, `walkpan`, `rise`, `boostrise`, `pitch`, `boostpan`, `flick`, `chaos`, 2.5 s each at 60 fps), records each, revisits five poses and settles them for reference, and reports mean, p95 and p99 luminance difference and the share past 16 levels, per scenario and per horizontal band. A `floor` scenario gives the noise floor. Yaw-only pans hide row-aligned errors; `pitch` catches them. Run it over clouds, and only the scenarios that isolate the question (`--only rise,boostrise`) |
 | `tools/harness/flicker.py` | **still-view flicker**: per-pixel temporal statistics of a recorded still sequence (mean and p99 per-pixel standard deviation, the share of pixels past 8 levels, an optional heat map) |
 | `tools/harness/climb.py` | **climb consistency**: climbs straight up from a snapshot through 15 altitudes (8 to 2500 km) and correlates the cloud detail of each frame, reprojected and filtered, with the next and with fixed references. Every level of detail should be a filtered version of the one below it, not a different placement |
 
-`tools/harness/glare_track.py <captures dir> <prefix> [--plot out.png]` follows a mesh glare over a sequence of
-captures and compares it with where the CPU puts the Sun's image in the selected satellite's mirror. The glare's
-position comes from the sidecar's `selection.glints` (the main view's mesh glint list: each glint's position in
-pixels and its effectFlare) when present, else from the point the glare's spikes radiate from in the image; the
-Sun's image is `selection.mesh.sprite_px`. A glare that sits on its glint follows the predicted track. Its
-scenes are `scripts/mirror_glare.satcmd`, a Reflect mirror dollied in from 500 m, and
-`scripts/city_orbit_blobs.satcmd` checks the night side's cities from high orbit.
+Sample before committing to a benchmark: one launch that loads each candidate view, captures it still and records a
+few seconds of the motion in question, then keep only the candidates where the problem is on screen. The harness
+is bit-deterministic run to run, so one scored run per build is enough.
 
-`tools/harness/find_cloud_spots.py [ISO time]` lists cloudy benchmark locations for a fixed sim time (the cloud
-map drifts, so a spot is tied to a time). `tools/harness/lightscan.py` decodes the terrain lighting debug views.
-`tools/perf_analysis/live_perf_table.py` tabulates `perf name=` results.
+`tools/harness/glare_track.py <captures dir> <prefix> [--plot out.png]` follows a mesh glare over a sequence of
+captures and compares it with where the CPU puts the Sun's image in the selected satellite's mirror (from the
+sidecars' `selection.glints` and `selection.mesh.sprite_px`). `tools/harness/lightscan.py` decodes the terrain
+lighting debug views. `tools/perf_analysis/live_perf_table.py` tabulates `perf name=` results.
+
+### Launch and mission checks
+
+`tools/harness/mission_ops.py run [--captures] [--vehicle ...] [--epochs ...]` traces the next launch of every
+(vehicle, program) pair in `data/launches.json` at three epochs (the default start, a date in the deployment era's
+build-out and an early one) through its phases: pad, climb, max-Q, staging, booster recovery, fairing, insertion,
+coast, deployment, raising, arrival, retirees, the upper stage's deorbit and entry, the ship's catch, docking. It uses
+`launch trace` (no frames are rendered for the numbers), judges each phase against one threshold table
+(`THRESHOLDS`: PASS, FAIL, WARN for a part another owner's physics governs, INFO, SKIP, N/A, NOT FOUND), checks the
+formation trains' ring shape with `launch formation`, judges every cached crew and cargo flight with `launch check`
+(`VISIT_THRESHOLDS`), and writes `report.json`, `.md` and `.html` under `harness_runs/mission_ops/<stamp>/`. With
+`--captures` it adds a contact sheet per pair (a tile per milestone). `mission_ops.py report <run>` re-judges stored
+traces without the app; `selftest.py -k mission_ops` runs the numeric half.
+
+`tools/harness/launch_bench.py run | compare <a.json> <b.json>` times fixed launch scenes (the Twilight Starship
+Launch bookmark at 1x, 1 h/s and 1 d/s, a busy deployment-era day, a night launch followed from close, a droneship
+landing), each with launches on and off, so the difference is the system's cost. `compare` flags a metric more than
+10% and 0.25 ms slower. Make your own baseline on your own machine.
 
 ## Worked recipes
 
@@ -310,14 +398,23 @@ perf frames=120 name=anchorage_medium
 sweep
 ```
 
+**Hitches across time rates:** `tools/harness/scripts/hitch_ladder.satcmd` steps through every time rate from 1x
+to 1 yr/s right after load, `time scale X; hitches clear; wait 180; hitches` per rate.
+
 **Shader A/B at fixed views:** capture a baseline, change the code or a setting, capture again, then
 `imgtools.py diff before.png after.png -o heat.png`. Within one run, toggle with `set` or `knockout` and
-`wait settle` between captures.
+`wait settle` between captures. A `set` that touches the clouds resets the cloud history, so knock the volumetric
+clouds out first when A/B testing something else in one launch.
 
 **Debugging a rendering artefact:** capture it at a fixed view; make a `sheet` with each feature toggled to see
 which removes it; `debugview` the suspect channel; `probe` a pixel on the artefact and one beside it; rerun with
 the validation layer (`VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`, messages in `app_stdout.txt`) for a crash
 or device loss; `perf` with features toggled to attribute cost.
+
+**A launch:** `launch next when=twilight`, `wait 60`, `launch select kind=upper`, `follow offset=0,-300,50`,
+`capture stage`. Scripts in `tools/harness/scripts/` cover the main scenes: `pad_smoke`, `fairing_sep`,
+`starmind_deploy`, `deploy_jitter`, `droneship`, `crew_rendezvous`, `visiting_vehicles`, `station_loss`,
+`mission_milestones`, `era_build_up`, `engine_light_adapt`, `follow_visuals`.
 
 **UI check:** `ui scale 2.0; ui open settings tab=Controls; wait 3; ui dump controls; capture controls ui=on`,
 then read the dump's text-overlap checks before the picture. `tools/harness/scripts/ui_windows.satcmd` walks the
@@ -327,8 +424,8 @@ info, trace and Bookmarks windows and the HUD's typed fields this way, checking 
 executable as `default_bookmarks/`) are produced by `tools/harness/scripts/default_bookmarks.satcmd`. Each view is
 set up, settled and added with `bookmark add <name> id=<fixed id> scale= paused=`, which replaces the shipped
 bookmark of that id; storm views set the cloud map with `drift phase= rate=` first, the rest use `drift default`.
-Run it with `--out harness_runs/default_bookmarks`, then copy that run's `bookmarks/` folder (`bookmarks.json` and
-one `<id>.png` per bookmark) over `data/bookmarks/`.
+Run it with `--out harness_runs/default_bookmarks`, then copy that run's `bookmarks/` folder over `data/bookmarks/`.
+Adding launch sites or vehicles reshuffles every launch's pad, so the launch bookmarks need re-shooting then too.
 
 ## Gotchas
 
@@ -340,6 +437,8 @@ one `<id>.png` per bookmark) over `data/bookmarks/`.
 - `get` returns floats (`0.2` reads back as `0.20000000298`); a later `preset` overwrites `set` sliders.
 - `ambience.json`, samples and other runtime files reach the executable only through a build.
 - The commit stamp in the log's first line is written at configure time, not per build.
+- `report load` pauses time; with time paused `path play` holds sim time.
+- Jumps past the Sun's Fury find no launches: launches stand down after it by default.
 
 ## The loading screen in a run
 
@@ -348,17 +447,15 @@ before the script's first command, so scripts are unaffected. `run.py --boot-cap
 to `captures/boot_NN.png`, `--boot-screen off` launches without it, and `satlight_log.txt` has a
 `boot: <step> (<ms since launch>)` line per step.
 
-The **startup graphics chooser** (the loading screen's choice between Full graphics, Planetarium and Potato,
-described on [Controls and settings](controls-and-settings.md#first-run-and-startup)) is skipped in a harness
-run, because a run never waits for input. `run.py --boot-chooser N` shows it scripted (it sets
-`SATLIGHTSIM_BOOT_CHOOSER=pick=N`): two frames on the pre-selected option, two on option N (0 Full,
-1 Planetarium, 2 Potato), then it starts. With `--boot-capture` those frames are captured too. `state` reports
-the pick and whether the full sky pipelines were deferred (`render.boot_choice`, `full_sky_deferred`,
-`full_sky_pipeline`, `ask_graphics_mode`); `tools/harness/scripts/boot_chooser.satcmd` checks them.
+The **startup graphics chooser** (described on [Controls and settings](controls-and-settings.md#first-run-and-startup))
+is skipped in a harness run, because a run never waits for input. `run.py --boot-chooser N` shows it scripted (it
+sets `SATLIGHTSIM_BOOT_CHOOSER=pick=N`): two frames on the pre-selected option, two on option N (0 Full,
+1 Planetarium, 2 Potato), then it starts. `state` reports the pick and whether the full sky pipelines were deferred
+(`render.boot_choice`, `full_sky_deferred`, `full_sky_pipeline`, `ask_graphics_mode`);
+`tools/harness/scripts/boot_chooser.satcmd` checks them.
 
 The **boot safety net** (one tier down when the first frames after loading take over 250 ms each) is off in a
-harness run. `run.py --boot-safety-ms MS` arms it at that threshold, for example 1 ms to watch it fire
-(`tools/harness/scripts/boot_safety.satcmd`).
+harness run. `run.py --boot-safety-ms MS` arms it at that threshold (`tools/harness/scripts/boot_safety.satcmd`).
 
 ## Architecture
 
@@ -397,14 +494,15 @@ the preset seed notice are suppressed (the first two can be switched back on fro
 is started on a device-less engine, and the soundtrack analysis runs synchronously.
 
 **Adding a command:** match on `c.name` in `harnessExec()`, read `c.pos` and `c.kv` (`c.num()`, `c.flag()`,
-`c.str()`), put results in `a.result`, `fail()` on bad input. Update `kHelp` and this page's tables together.
+`c.str()`), put results in `a.result`, `fail()` on bad input. Update `kHelp`, `docs/HARNESS.md` and this page's
+tables together.
 
 **Testing the harness:** `python tools/harness/selftest.py` runs real scripts and checks capture sizes and
 sidecars, bit-identical determinism, knockouts changing and restoring the image, settings round trips, error
 reporting, parse errors, `wait settle` holding time, `time sun` accuracy, perf and sweep numbers, selection,
 follow and `ui dump`, `probe`, `debugview`, a recorded camera path, Track, the watchdog and live mode. Run it
 after changing `src/Harness.*` or `SatelliteSimHarness.cpp`; it launches the app many times, so it takes several
-minutes with launch spacing.
+minutes with launch spacing. `-k <name>` runs one test.
 
 ## Where in the code
 
@@ -413,6 +511,8 @@ minutes with launch spacing.
 | `src/Harness.h/.cpp` | options, parser, `Runner`, live inbox, watchdog |
 | `src/simulations/SatelliteSimHarness.cpp` | `harnessInit()`, `harnessTick()`, `harnessExec()`, `harnessStateJson()`, `kHelp` |
 | `tools/harness/run.py`, `live.py`, `launchgate.py` | drivers and launch spacing |
-| `tools/harness/imgtools.py`, `tstab.py`, `flicker.py`, `climb.py`, `lightscan.py`, `frames2video.py`, `gc.py`, `selftest.py` | analysis and maintenance |
-| `tools/harness/scripts/` | worked scripts (`smoke`, `determinism`, `terrain_views`, `ambience_tour`, `tour`, `track`, `text_fields`, `ui_windows`, `tutorial`, `boot_chooser`, `boot_safety`, `low_tiers`, `default_bookmarks`, ...) |
-| `docs/HARNESS.md` | the older reference this page restructures |
+| `tools/harness/imgtools.py`, `tstab.py`, `flicker.py`, `climb.py`, `glare_track.py`, `lightscan.py`, `frames2video.py`, `gc.py`, `selftest.py` | analysis and maintenance |
+| `tools/harness/mission_ops.py`, `launch_bench.py` | launch and mission checks, launch cost benchmark |
+| `tools/harness/reports.py` | issue report triage ([Issue reports](issue-reports.md)) |
+| `tools/harness/scripts/` | worked scripts (`smoke`, `determinism`, `terrain_views`, `ambience_tour`, `tour`, `track`, `text_fields`, `ui_windows`, `tutorial`, `boot_chooser`, `boot_safety`, `low_tiers`, `default_bookmarks`, `hitch_ladder`, the launch scripts above, ...) |
+| `docs/HARNESS.md` | the complete command reference |

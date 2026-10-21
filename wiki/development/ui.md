@@ -2,8 +2,8 @@
 
 The app's UI is built with [Clay](https://github.com/nicbarker/clay), a single-header immediate-mode layout
 library, and drawn by `UIRenderer` as Vulkan quads. This page lists the rules that Clay and this renderer
-impose, and describes the icon atlas, the bitmap font, embedded images and plots, text fields, hit-testing and
-the palette. Which windows and panels exist is player-facing and covered in [Using](../using/index.md).
+impose, and describes the icon atlas, the bitmap font, embedded images and plots, text fields and long text,
+hit-testing, window stacking and the colour themes. Which windows and panels exist is player-facing and covered in [Using](../using/index.md).
 
 ## How a frame of UI is built
 
@@ -65,6 +65,14 @@ test against the edges, with OS resize cursors) and keeps drags anchored to wher
 and the window edge do not drift apart after a clamp. The title bar's drag is armed by the caller when its
 title bar is pressed, and is skipped when the press is on a title-bar icon.
 
+**Stacking.** Every window is a floating root at `zIndex` 10, and Clay sorts roots stably, so the window declared
+later in `buildUI()` is drawn on top. A window's own floating children (chips over an image, plot tick labels,
+marker labels) must use the **same** `zIndex` as the window; a higher one draws them over any later window that
+covers their parent.
+
+**Opacity.** A window's panel alpha is *Window opacity* (Display tab, `display.window_opacity`, 60 to 100%,
+default 100% = opaque), applied in `buildResizableWindow()`.
+
 ## Hit-testing outside Clay
 
 Clay does not expose element positions while the layout is being declared. Two patterns are used:
@@ -123,7 +131,8 @@ Two Clay *custom elements* draw things Clay cannot:
 
 **`UIImage`** draws a texture the caller owns (an offscreen render, such as the satellite 3D view) over the
 element's box. `UIRenderer::registerImage(device, view, sampler)` returns an id (at most 4 images,
-`kMaxExternalImages`); `updateImage()` re-points it after the owner recreates the image. The image must be in
+`kMaxExternalImages`; the 3D view, the Bookmarks atlas and the Issue reports atlas take three, so a new window
+with many images packs them into one atlas and shows sub-rectangles); `updateImage()` re-points it after the owner recreates the image. The image must be in
 `SHADER_READ_ONLY_OPTIMAL` whenever the UI pass runs and hold display-ready values in the swapchain's format
 family. `u0, v0, u1, v1` select a sub-rectangle, so one render can be shown in two elements of different aspect
 without stretching. Point the element's `.custom.customData` at the `UIImage`.
@@ -153,8 +162,35 @@ use them.
   (`capturesKeyboard()`).
 - Display strings live in `textFieldBufs_`, because Clay keeps the pointers until `record()`.
 
+**Range.** A slider row's typed value is clamped to the slider's range, unless *Dev mode: unbounded values* is on
+and the row allows it ([Controls and settings](controls-and-settings.md#range-guards-and-unbounded-values)).
+
 The harness drives them with `ui click`, `ui type` and `ui key` (see
 `tools/harness/scripts/text_fields.satcmd`).
+
+### Long and user-edited text
+
+Anything long, or typed by the user, is drawn as a **`UITextBlock`**, not a `CLAY_TEXT`. Clay measures every text
+element through a word cache (`Clay_SetMaxMeasureTextCacheWordCount`, 65 536 words here); each distinct string is
+an entry holding one item per word, so text that changes with every key press fills it and Clay stops laying out
+text. A `UITextBlock` is a custom element holding runs of text at given positions and coloured quads under them;
+the caller wraps the text itself (`UIRenderer::textAdvance()` gives a run's width) and passes only the visible
+lines. The block, its arrays and its strings must stay alive until `record()`.
+
+`textArea()` is the multi-line box built on it (the issue reports' description and notes, the note bar). It
+grows from `minLines` to `maxLines`, then becomes a Clay scroll container with a scrollbar thumb, and follows the
+caret. A click places the caret (it never selects all), a drag or Shift with the arrows selects, a double click
+takes a word; Up and Down move by wrapped line, Ctrl+Left and Right by word; Ctrl+A, C, X and V work. Enter is a new
+line and Ctrl+Enter, Tab or a click elsewhere commits; `enterCommits` swaps Enter and Shift+Enter. With a
+`readOnlyColor` it shows a long text the same way without a frame. `maxLen` is enforced on typing, paste and Enter.
+
+!!! warning "Invariant"
+    A drag inside a scroll view (a text selection, a rubber band over an image) calls `ui.holdDragScroll()` every
+    frame of the drag. Clay's drag-scrolling is on, and without the hold the view under the pointer moves with the
+    drag.
+
+Clay's error handler prints each kind of error once, so a capacity error in the log appears a single time however
+often it recurs.
 
 ## Tooltips
 
@@ -162,12 +198,26 @@ The harness drives them with `ui click`, `ui type` and `ui key` (see
 the screen edges. Call it right after computing the element's hover bool. Icon-only buttons use the action's
 **name** as the tooltip, never a sentence.
 
-## The palette
+## The palette and themes
 
-`src/simulations/UIPalette.h` holds every UI colour as a `Clay_Color` constant in namespace `Pal`: panel and
-title-bar backgrounds, button states (idle, hover, the red accent for "on"), text tiers, the speed indicator,
-the amber selection reticle and the translucent chips drawn over the 3D view. Edit it to restyle the whole UI;
-every UI file (`SatelliteSimUI.cpp`, `SatelliteSimTutorial.cpp`) uses the same names.
+`src/simulations/UIPalette.h` holds every UI colour as one row of the `UI_PALETTE` X-macro, with one column per
+theme: **Classic** (near-black panels, the red accent), **Navy** (blue-black panels, a deep azure accent), **Night
+red** and **Midnight** (Classic's colours on darker, more opaque panels; the default). The `Pal::` names (panel and
+title-bar backgrounds, button states including the orange danger pills, text tiers, the speed indicator, the amber
+selection reticle, the translucent chips over the 3D view) are ordinary globals that `applyUiTheme()` rewrites, so
+call sites read `Pal::btnAccent` and follow the theme. `Style::borderColor` follows `Pal::windowBorder`.
+
+The theme is `display.ui_theme` (`classic`, `navy`, `night`, `midnight`; Display tab *UI theme*). `syncUiTheme()`,
+called in `buildUI()` after the harness, applies a change in the frame it was made; the startup graphics chooser
+reads the setting before `init()` so it is themed too. Night red also turns on `UIRenderer::setColorFilter()`, which
+maps every colour the renderer draws (icons, images, the 3D view, thumbnails, any literal colour) to red at its
+brightest channel, so that column only has to order colours by brightness. The theme colours the interface only,
+not the sky.
+
+!!! warning "Invariant"
+    A new UI colour goes in the `UI_PALETTE` table with a value for every theme, never as a `Clay_Color{...}`
+    literal at the call site, or it ignores the theme. The swapchain is sRGB: a palette value of 12 shows as about
+    61, so dark tints look much more saturated on screen than their numbers suggest.
 
 ## Inspecting a layout
 
@@ -180,8 +230,8 @@ id, and checks for text cut by its scissor, text off the window, and overlapping
 
 | File | What |
 |---|---|
-| `src/UIRenderer.h/.cpp` | Clay setup, `beginFrame()`, `record()`, `loadFont()`, `loadIcons()`, `registerImage()`, `updateWindowChrome()`, `tooltip()`, `scrollbar()`, layout dump |
-| `src/simulations/SatelliteSimUI.cpp` | every panel and window, `buildResizableWindow()`, the text fields, slider rows |
-| `src/simulations/UIPalette.h` | colours |
+| `src/UIRenderer.h/.cpp` | Clay setup, `beginFrame()`, `record()`, `loadFont()`, `loadIcons()`, `registerImage()`, `UITextBlock`, `textAdvance()`, `setColorFilter()`, `holdDragScroll()`, `updateWindowChrome()`, `tooltip()`, `scrollbar()`, layout dump |
+| `src/simulations/SatelliteSimUI.cpp` | every panel and window, `buildResizableWindow()`, the text fields and `textArea()`, slider rows, `syncUiTheme()` |
+| `src/simulations/UIPalette.h` | `UI_PALETTE`, `applyUiTheme()`, the theme names |
 | `tools/make_icons.py` | icon geometry |
 | `shaders/ui.vert`, `shaders/ui.frag` | the UI shaders |

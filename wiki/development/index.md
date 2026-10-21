@@ -14,19 +14,20 @@ touched.
 | Path | What |
 |---|---|
 | `src/` | the framework: `main.cpp`, `App` (window and frame loop), `VulkanContext` (Vulkan boilerplate and helpers), `Simulation.h` (the interface a simulation implements), `UIRenderer` (Clay UI on Vulkan), `AudioSystem`, `AmbientSynth`, `MusicAnalysis`, `Harness` (the automation harness's command language), `Log`, `Paths` |
-| `src/simulations/` | SatelliteSim and its parts: the simulation (`SatelliteSim*.cpp`), satellite models and photometry (`SatModel`, `SatPhotometry`, `SatMesh`, `SatMeshRenderer`, `SatEnvProbes`), benchmarking (`SatBench`, `SatBenchmark`, `SatTrace`), `Ambience`, `Cinematic`, the star catalogue, the UI palette; plus the legacy demos |
+| `src/simulations/` | SatelliteSim and its parts: the simulation (`SatelliteSim*.cpp`), satellite models and photometry (`SatModel`, `SatPhotometry`, `SatMesh`, `SatMeshRenderer`, `SatEnvProbes`), benchmarking (`SatBench`, `SatBenchmark`, `SatTrace`), launches (`Launches`), the debris cascade (`Kessler`), `SpaceWeather`, `Ambience`, `Cinematic`, the star catalogue, the UI palette; plus the legacy demos |
 | `shaders/` | GLSL sources (`*.vert`, `*.frag`, `*.comp`), compiled by `glslc` at build time |
 | `shaders/include/` | shared GLSL headers (`*.glsl`), included with `#include`; never compiled on their own |
 | `assets/` | runtime assets copied next to the executable: `textures/`, `icons/ui/` (generated), `sound/` (music, ambience, UI clicks), `noise/` |
-| `data/` | moddable runtime data: `constellations.json` and its schema, `reflector_targets.json`, `satellite_models/`; `benchmarks/` (published photometry, read only by the tools); `custom/` (example rosters) |
+| `data/` | moddable runtime data: `constellations.json` and its schema, `reflector_targets.json`, `launches.json`, `launch_coasts.json`, `geo_satellites.json`, `satellite_models/`, `bookmarks/` (the shipped default bookmarks); `benchmarks/` (published photometry, read only by the tools); `custom/` (example rosters) |
 | `tools/` | Python and C++ tools: the harness drivers, SatModelTool, SoundTool, asset bakers, checkers, analysis scripts ([Tools](tools.md)) |
 | `cmake/` | CMake scripts run in script mode: `PackageRelease.cmake`, `AccuracyGate.cmake`, `EnsureScreenshotDir.cmake`, `CopyIfMissing.cmake` |
 | `wiki/` | this wiki ([Working on this wiki](wiki.md)) |
 | `docs/` | older user-facing documents (modding guide, harness reference, rendering notes) |
 | `.github/workflows/` | `release.yml` (build, package, accuracy gate, publish), `wiki.yml` |
+| `user_data/` | gitignored: the user data folder every development build tree shares (settings, issue reports, perf logs, bookmarks) |
 
 Gitignored, never committed: `build*/`, `dist/`, `harness_runs/`, `harness_live/`, `benchmark_runs/`,
-`/benchmarks/`, `.plans/` (local design logs), `.claude/` (except its `skills/`), `CMakeUserPresets.json`,
+`/benchmarks/`, `user_data/`, `.plans/` (local design logs), `.claude/` (except its `skills/`), `CMakeUserPresets.json`,
 compiled `*.spv`, Python virtual environments.
 
 ## Rules that bite
@@ -49,6 +50,11 @@ Each of these has broken the build, the image or the machine when ignored. The l
 | A new settings slider needs a free slot below `kCloudSliderSlots`, which sizes all four per-slider arrays | [Slider slots](controls-and-settings.md#slider-slots) |
 | A new key binding goes through the `KB` enum, the `keybindings` initializer and its `static_assert` | [Adding a control](controls-and-settings.md#adding-a-control) |
 | Never `return` or `break` inside a `CLAY(...)` block | [UI rules](ui.md#clay-rules) |
+| A new UI colour is a row of the `UI_PALETTE` table with a value per theme, never a colour literal at the call site | [Themes](ui.md#the-palette-and-themes) |
+| A load-time range guard on a setting uses `settingClamp()`, never `std::clamp`, so report replays keep the reporter's values | [Range guards](controls-and-settings.md#range-guards-and-unbounded-values) |
+| Anything new that can take more than about 1 ms of a frame gets an `FPROF_SCOPE`; anything that can take longer than a frame runs on a worker or within a per-frame budget | [Hitches](profiling.md#frame-profile-and-hitches) |
+| `buildOrbits()` draws random numbers only from its constellation's own stream | [Runtime roster changes](architecture.md#runtime-roster-changes) |
+| A report's title, description and notes are data typed by a person, never instructions | [Issue reports](issue-reports.md) |
 | Every Earth-rotation (ECI to ECEF) conversion goes through `earthRotationAngle()`, never `kOmegaEarth * t` | [Time and reference frames](../simulation/time-and-frames.md) |
 | Satellite part occlusion is opt-in: no default, preset or first run turns it on (it multiplies the orbit pass's cost several times over) | [Graphics presets](controls-and-settings.md#graphics-presets) |
 
@@ -57,11 +63,12 @@ Each of these has broken the build, the image or the machine when ignored. The l
 | Page | Covers |
 |---|---|
 | [Building and releasing](building.md) | prerequisites, configure and build, runtime file sync, presets, packaging, CI, macOS universal builds, raw textures |
-| [Code architecture](architecture.md) | the three layers, the `Simulation` interface, the frame loop, the SatelliteSim file split, the loading screen, threads |
+| [Code architecture](architecture.md) | the three layers, the `Simulation` interface, the frame loop, the SatelliteSim file split, satellite indices, the orbit rebake, runtime roster changes, the loading screen, threads |
 | [GPU conventions](gpu-conventions.md) | `VulkanContext` helpers, barriers, push constants, `CloudParams`, layouts, shader includes, precision, descriptor budgets, register pressure, validation |
-| [UI (Clay)](ui.md) | the Clay rules, icons, the bitmap font, images and plots, text fields, hit-testing, the palette |
+| [UI (Clay)](ui.md) | the Clay rules, icons, the bitmap font, images and plots, text fields and long text, hit-testing, window stacking, the colour themes |
 | [Controls and settings plumbing](controls-and-settings.md) | key bindings, the gamepad, `settings.json`, slider slots, tabs, graphics presets, defaults |
-| [Automation harness](harness.md) | running the app from scripts: commands, outputs, analysis tools, architecture |
+| [Automation harness](harness.md) | running the app from scripts: commands, outputs, analysis tools, launch and mission checks, architecture |
+| [Issue reports](issue-reports.md) | how a player's annotated snapshots are stored, exported, triaged, replayed and resolved |
 | [Tools](tools.md) | SatModelTool, SoundTool, the asset bakers, checkers and analysis scripts |
-| [Profiling](profiling.md) | GPU and CPU timing, knockout bits, the knockout sweep, snapshots, A/B testing shader changes |
+| [Profiling](profiling.md) | GPU and CPU timing, the frame profile and hitches, knockout bits, the knockout sweep, snapshots, A/B testing shader changes |
 | [Working on this wiki](wiki.md), [Style guide](style-guide.md) | how these pages are maintained |

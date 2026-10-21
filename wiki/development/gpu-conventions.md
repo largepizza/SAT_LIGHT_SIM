@@ -140,6 +140,12 @@ compiled on their own, and every shader is rebuilt when any header changes
 | `eclipse.glsl` | the Moon's shadow per point during a solar eclipse |
 | `earth_env.glsl` | an analytic Earth and atmosphere along any ray (reflection fallback) |
 | `sat_mesh_common.glsl` | the satellite mesh pipelines' descriptor set |
+| `aurora_oval.glsl` | the auroral oval's geometry (a Sun-fixed ring whose edges follow the activity index) |
+| `cv2_sunlut.glsl` | reading the clouds' Sun-colour and zenith-sky table |
+| `cv2_layer_map.glsl` | the mid and high cloud layers' shadow map |
+| `cv2_optics.glsl` | bows, halos and phase lobes, shared by the cloud march and the rain particles |
+| `rain_particles.glsl`, `lightning_draw.glsl` | the rain particles' and the lightning draw's push constants and shared code |
+| `glare_mesh_vert.glsl` | the body of the mesh-glint glare vertex shaders |
 
 Headers whose GLSL cannot be shared because of different bindings or parameter types are duplicated by hand
 and must be kept in step; the comments at each copy say so.
@@ -182,21 +188,44 @@ function, `earthRotationAngle()`; see [Time and reference frames](../simulation/
 
 Vulkan guarantees 16 sampled images (and 16 samplers) per shader stage. `sat_sky.frag` uses all 16. A new
 texture for the sky pass must merge into an existing one (as two maps into an array, or as extra channels),
-or be read as a storage image with `imageLoad`, which has its own budget (4 guaranteed; the sky pass uses
-some). The sky descriptor set has about 30 bindings in total; most are storage buffers. On macOS, MoltenVK
+or be read as a storage image with `imageLoad`, which has its own budget (4 guaranteed; the sky pass and the
+cloud march each use all 4). The sky descriptor set has 32 bindings in total; most are storage buffers. A new
+small per-frame list for an existing pass can often ride at the end of a buffer the pass already binds (the
+launch engine lights travel at the tail of the dust-cloud buffer, for example) rather than take a binding.
+`sat_orbit.comp`'s set binds 12 storage buffers, above the guaranteed 4, and the device check asks for that. On macOS, MoltenVK
 maps storage buffers, uniform buffers and vertex buffers into Metal's 31 buffer slots per stage, which is
 where a storage-buffer limit is most likely to be hit.
 
 ## Register pressure in the cloud march
 
-The volumetric cloud march (`cloud_v2_march.comp`) is large, and its speed is governed by code size and
-register allocation more than by arithmetic:
+The volumetric cloud march (`cloud_v2_march.comp`) is large, and its speed is governed by how the GPU schedules
+it and by register allocation more than by arithmetic.
 
-- Every call site of the cloud field inlines the whole field, so the number of call sites sets the code size.
-  The light march, sky probe and other secondary samples share one call.
-- On NVIDIA the shader is compiled either to 128 registers (with a small spill) or to about 227 (no spill), and
-  the second is 20 to 60% slower. Trivial edits flip it: an extra per-sample loop bound, a few debug counters,
-  values cached in globals, an extra member in the field's result struct.
+**Lockstep.** A GPU runs a group of 32 rays together, so every iteration of a loop costs what its most expensive
+ray costs. In the march a lit cloud sample costs about ten evaluations of the cloud field (the view sample, seven
+light-march steps, a far sample and a sky probe) and an empty step one. With density and lighting in one loop,
+rays in empty air wait out their neighbours' light marches, and the time is the longest ray's step count times a
+lit sample's cost. The march therefore works in **two loops per batch of 32 samples**: the first walks the ray on
+the density field alone and keeps the samples that hold cloud, the second lights only those. The consequences
+run through every optimisation of this shader:
+
+- Ending an opaque ray early gains little: its group runs as long as its longest ray.
+- Skipping work on alternate samples gains nothing unless every ray in the group skips together.
+- Per-ray caches that one ray refreshes stall the whole group; a precomputed table (the clouds' Sun-colour and
+  zenith-sky table, `cv2_sunlut.glsl`) is cheaper than a cache recomputed as rays cross levels.
+- In the lighting loop, variables named like the density loop's are locals that shadow them: anything the
+  lighting needs from the density walk must be stored in the batch's buffers.
+
+**Code size.** Every call site of the cloud field inlines the whole field, so the number of call sites sets the
+code size. The light march, sky probe and other secondary samples share one call. Marking the field functions
+`DontInline` in the SPIR-V is honoured by the driver and runs several times slower.
+
+**The register cliff.** On NVIDIA the shader is compiled either to 128 registers (with a small spill) or to roughly
+220 to 230 (no spill), and the second is 20 to 60% slower. Trivial edits flip it: an extra per-sample loop bound, a
+few debug counters, values cached in globals, an extra member in the field's result struct, a value carried out of
+a loop. Edits inside the cloud field's functions flip it far more readily than edits in the march's own file.
+Reordering or folding code rarely brings it back; **removing code does**, so dead branches and relics of earlier
+designs are worth deleting from this shader even when they never run.
 
 Before timing a variant, check its register count: the harness's `shaders reload` rebuilds the cloud pipelines
 from the SPIR-V on disk and reports the driver's statistics (register count, binary size, spill memory) through

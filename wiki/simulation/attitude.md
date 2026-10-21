@@ -79,15 +79,22 @@ orthonormal pair perpendicular to the axis, body +X sweeps
 and the frame is \( [\mathbf{w}_1,\ \hat{\mathbf{a}} \times \mathbf{w}_1,\ \hat{\mathbf{a}}] \). The axis
 is fixed in inertial space (torque-free spin about a principal axis); there is no nutation.
 
+**Forced tumble.** A satellite that dies in the [Kessler scenario](kessler.md), and every debris piece it
+makes, is put on the tumble law whatever its type's own laws say: its root group tumbles, and its child groups
+are carried with it. A dead roster satellite's spin is an integer period of 40 to
+600 s and a phase, both hashed from its index, with a hashed axis. Its angle is taken modulo one period from
+the scenario's whole seconds, so it is exact at any date on the GPU as well as the CPU.
+
 ## One-axis joints
 
 Any group may carry one joint: a rotation by \( \theta \) about a body axis \( \hat{\mathbf{k}} \) (for a
-child, its hinge axis). Four modes:
+child, its hinge axis). Five modes:
 
 | Mode | Angle |
 |---|---|
 | `track` | turns a body vector \( \mathbf{j} \) (perpendicular to \( \hat{\mathbf{k}} \)) as close as possible to a target: a solar-array gimbal |
 | `edge_on` | turns \( \mathbf{j} \) perpendicular to the target, choosing the smaller of the two solutions: a knife-edge roll |
+| `edge_on_continuous` | turns \( \mathbf{j} \) perpendicular to the target, always on the same solution: a radiator that turns steadily, once per orbit |
 | `fixed` | a constant angle (`angle_deg`) |
 | `flare_mitigation_tilt` | the global "Flare mitigate tilt" setting |
 
@@ -100,7 +107,8 @@ a = \mathbf{j}\cdot\hat{\mathbf{t}},\quad b = (\hat{\mathbf{k}}\times\mathbf{j})
 
 `track` maximises it: \( \theta = \operatorname{atan2}(b, a) \). `edge_on` zeroes it:
 \( \theta_1 = \operatorname{atan2}(-a, b) \) and \( \theta_2 = \theta_1 \pm \pi \), the one of smaller
-magnitude. Both are then clamped to \( \pm \) the joint limit (`jointLimitDeg`, default 180). When an
+magnitude. `edge_on_continuous` always takes \( \theta_1 \), the solution that turns
+\( \hat{\mathbf{k}}\times\mathbf{j} \) toward the target. All are then clamped to \( \pm \) the joint limit (`jointLimitDeg`, default 180). When an
 authored \( \mathbf{j} \) is not exactly perpendicular to \( \hat{\mathbf{k}} \), its component along
 the axis is removed first.
 
@@ -112,6 +120,13 @@ R' = R_{\hat{\mathbf{k}}}(\theta)\,R, \qquad \mathbf{t}' = R_{\hat{\mathbf{k}}}(
 \]
 
 where \( \mathbf{p} \) is the hinge point in world coordinates.
+
+**Which edge-on mode.** As the target circles the joint axis once an orbit, the smaller of the two
+`edge_on` solutions changes side twice an orbit, and the part jumps by 180 deg between two instants. Both
+solutions are the same plane, so a lobe model does not notice, but a drawn mesh does. A part meant to turn
+steadily, such as the ISS's thermal radiators on their rotary joints, uses `edge_on_continuous`: its angle
+is continuous in time and advances by one turn per orbit. `edge_on` remains right for a roll that must stay
+small, such as the knife-edge mode below.
 
 ### Flare-mitigation tilt
 

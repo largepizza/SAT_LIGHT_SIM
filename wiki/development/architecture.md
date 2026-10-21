@@ -1,7 +1,8 @@
 # Code architecture
 
 How the C++ code is organised: the three layers, the interface a simulation implements, what happens in one
-frame, how SatelliteSim is split across files, the loading screen, and which work runs off the main thread.
+frame, how SatelliteSim is split across files, how satellite indices are laid out, the loading screen, and which
+work runs off the main thread.
 The rendering passes themselves (what each shader computes and in what order) are described in
 [Rendering](../rendering/index.md).
 
@@ -18,10 +19,15 @@ the working directory to the executable's directory (assets are loaded with rela
 `App` with one `Simulation`. Switching simulations is a one-line change there.
 
 `Paths::exeDir()` is where the read-only game data lives. `Paths::userDataDir()` is where settings, logs,
-snapshots, caches and exports are written: the executable's directory when it is writable (a portable,
-self-contained install), otherwise the per-user directory (`%APPDATA%\SatLightSim` on Windows,
-`$XDG_DATA_HOME/SatLightSim` or `~/.local/share/SatLightSim` on Linux,
-`~/Library/Application Support/SatLightSim` on macOS). A harness run overrides it with its own run folder.
+snapshots, issue reports, bookmarks, caches and exports are written. In order:
+
+1. A harness run's own run folder (`Paths::setUserDataDirOverride()`).
+2. The folder named in `<exe dir>/user_data_dir.txt`, when that file exists. Development build trees write it
+   (`cmake/EnsureUserDataDir.cmake`) to point at `<source>/user_data/`, so every tree shares one settings file
+   and nothing is lost when a build tree is wiped ([Building](building.md)). It is not in the release package.
+3. The executable's directory when it is writable (a portable, self-contained install).
+4. The per-user directory: `%APPDATA%\SatLightSim` on Windows, `$XDG_DATA_HOME/SatLightSim` or
+   `~/.local/share/SatLightSim` on Linux, `~/Library/Application Support/SatLightSim` on macOS.
 
 ## The `Simulation` interface
 
@@ -111,13 +117,64 @@ source files by subject:
 | `SatelliteSimAmbience.cpp` | the ambience's context drivers, tonality, thunder, the music fades ([Sound](../sound/index.md)) |
 | `SatelliteSimCinematic.cpp` | cinematic playback and export |
 | `SatelliteSimTutorial.cpp` | the first-run tutorial |
-| `UIPalette.h` | the UI colour palette shared by the UI files |
+| `SatelliteSimBootChooser.cpp` | the startup graphics chooser and the deferred full-sky pipelines |
+| `SatelliteSimBookmarks.cpp` | bookmarks and their thumbnail atlas |
+| `SatelliteSimReports.cpp`, `SatelliteSimReportsWindow.cpp` | issue reports: shots, the note bar, the window, the export ([Issue reports](issue-reports.md)) |
+| `SatelliteSimLightning.cpp`, `SatelliteSimRain.cpp` | lightning channels and the rain particles |
+| `SatelliteSimLaunches.cpp` | launches: the schedule, trains and retirees, rockets, plumes, pads, ships, crew flights, mission milestones |
+| `SatelliteSimMissions.cpp` | the Missions window |
+| `SatelliteSimKessler.cpp` | the Sun's Fury: the background worker, the main thread's mirror of its output, uploads, dust clouds and re-entry fireballs |
+| `UIPalette.h` | the UI colour palette and themes shared by the UI files |
 
 Helpers with their own classes: `SatModel` (geometry, materials, attitude, lobe bake), `SatPhotometry` (the CPU
 photometric evaluator), `SatMesh` / `SatMeshRenderer` / `SatEnvProbes` (satellite meshes, the model viewer,
 environment probes), `SatBench` / `SatBenchmark` / `SatTrace` (benchmarking and traces), `Ambience`,
-`Cinematic`. `SatModel`, `SatPhotometry`, `SatBenchmark`, `SatBench` and `SatTrace` have no Vulkan
-dependency, which is what lets `SatModelTool` compile them without the app.
+`Cinematic`, `SpaceWeather` (the aurora's activity as a function of time), `Launches` (the launch catalogue,
+booster and upper-stage tracks, orbit raising and exhaust parcels) and `Kessler` (the debris world: breakups, the
+collision engine, the event log). `SatModel`, `SatPhotometry`, `SatBenchmark`, `SatBench` and `SatTrace` have no
+Vulkan dependency, which is what lets `SatModelTool` compile them without the app.
+
+## Satellite indices
+
+Every per-satellite GPU record (`GpuSatOrbit` in the orbit buffer and the per-satellite words attached to it) is
+addressed by one index space, in three blocks:
+
+| Range | What |
+|---|---|
+| `[0, activeSatCount)` | the roster: every satellite of every enabled constellation, in load order |
+| `[activeSatCount, poolIdx0())` | `kLaunchCap` (131 072) launch records: raising trains, retiring satellites, and a few reserved slots for rockets drawn as meshes and the selected or followed transient ([Launches](../simulation/launches.md)) |
+| from `poolIdx0()` | the debris pool of the Sun's Fury ([The Sun's Fury](../simulation/kessler.md)) |
+
+The CPU mirror `satOrbits` holds the same layout. Code that loops over constellations must loop over
+`activeSatCount`, never `satOrbits.size()`, and must not assume that an index past the roster is debris; empty
+launch slots carry `constIdx = UINT32_MAX`. Rockets, ships and re-entry fireballs are not records at all: they are
+transients, listed each frame by the code that draws them.
+
+## The orbit epoch and its rebake
+
+Each orbit record stores its phase at an **orbit epoch**, and the shader adds the mean motion times the time since
+that epoch. The epoch moves every 7 sim-days so that the elapsed time stays small enough for a float. The rebake is
+a GPU dispatch, `sat_rebake.comp`: it rewrites every record's phase, tumble phase and (for sun-synchronous planes)
+node from epoch-free per-satellite bases (`satPhaseBaseBuf`, 12 bytes each) in exact fixed-point turns, so the
+result matches the CPU's double formula to float rounding at any date. Its CPU side is the `orbit_rebake` CPU
+bucket. See [Orbits](../simulation/orbits.md).
+
+## Runtime roster changes
+
+`rebuildRoster()` rebuilds every satellite and the per-satellite GPU buffers after the list of constellations
+changes (the harness's `roster remove` and `roster add`). It waits for the device to go idle, drops everything
+keyed by satellite index (the selection, follow, Track, the 3D view, environment probes, the beam light tracking,
+the mesh candidates) and restarts the Sun's Fury, whose world indexes the old roster.
+
+A constellation keeps exactly the same satellites when others are removed or added, because each draws its random
+numbers from its own stream (`SatRng`, an emulation of the MSVC C runtime's `rand()` generator, so the layout is
+also the same on every platform). The stream's start state is recorded on the first build; a constellation added
+later seeds from a hash of its name. Only the satellites' indices move.
+
+!!! warning "Invariant"
+    `buildOrbits()` must draw only from its constellation's `SatRng`, never from the global `rand()` or a shared
+    stream: a shared stream reshuffles every later constellation whenever an earlier one changes, and the cached
+    debris cascade (keyed by the roster) would not match the new layout.
 
 ## The loading screen
 
@@ -165,7 +222,9 @@ The renderer and the simulation run on the main thread. Work moved off it:
 | music analysis worker (`music::Library`) | analyses the soundtrack at startup, cache first; synchronous in a harness run so the key is deterministic |
 | bulk export worker | the photometry bulk export (Settings, Photometry tab), over snapshots of the type and orbit data |
 | screenshot encoder | PNG encoding of a screenshot or capture; the next `finalizeScreenshot()` joins the previous encode |
-| `parallelFor()` | short-lived threads that evaluate the satellite mesh instances' photometry and poses each frame |
+| `parallelFor()` | short-lived threads that evaluate the satellite mesh instances' photometry and poses each frame, and build new launch batches in parallel (at most about 8 ms of building a frame) |
+| plume parcel jobs (`std::async`) | a launch's exhaust parcels, integrated from 2 minutes before lift-off; at most four in flight |
+| the debris cascade worker (`KesslerWorker`) | the Sun's Fury collision engine, at below-normal priority, simulating a minute of the current time warp ahead of sim time; the main thread mirrors its output within a budget of a few milliseconds a frame, and sim time holds at the mirrored frontier |
 | harness watchdog | hard-exits a harness run past its `--timeout` |
 
 ## Where in the code
@@ -177,4 +236,7 @@ The renderer and the simulation run on the main thread. Work moved off it:
 | `src/Simulation.h` | the interface |
 | `src/VulkanContext.h/.cpp` | platform layer, timestamp slots, `beginPhotoTarget()`, pipeline cache |
 | `src/Paths.cpp` | `exeDir()`, `userDataDir()` |
-| `src/simulations/SatelliteSim.h` | the class, all members and GPU struct mirrors |
+| `src/simulations/SatelliteSim.h` | the class, all members and GPU struct mirrors, `kLaunchCap`, `poolIdx0()`, `SatRng` |
+| `src/simulations/SatelliteSim.cpp` | `buildOrbits()`, `uploadSatOrbits()`, `rebuildRoster()` |
+| `shaders/sat_rebake.comp` | the orbit epoch rebake |
+| `src/FrameProfile.h` | the per-frame section profile ([Profiling](profiling.md#frame-profile-and-hitches)) |

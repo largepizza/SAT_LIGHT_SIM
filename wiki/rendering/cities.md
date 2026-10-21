@@ -184,6 +184,19 @@ upwelling). Light that really diffuses through a deck spreads over about the dec
 less than one texel of the night map. Mixing the lights toward a coarse mip of the map by the cloud's opacity
 would turn every city under thin or broken cloud, seen from orbit, into a grey wash with the cloud's outline.
 
+What does change under cloud is the **point** structure. A glitter point carries a whole cell's light in one
+pixel, hundreds of times the map's value, so it would stay a crisp dot through a deck whose transmittance is well
+under 1 %. The procedural lights (glitter, street posts, road dots and the lamp pools) therefore give way to
+their own local mean as the cloud and fog in front of the ground thicken (`gCityFlat`):
+
+\[
+k_\text{flat} = 1 - \operatorname{ss}(0.02,\ 0.35,\ \bar T)
+\]
+
+with \(\bar T\) the mean transmittance of the cloud composite at the pixel: all points at 0.35 and above, all
+mean at 0.02 and below. The total light is unchanged; the composite then attenuates it. A cap on the points' peak
+instead would leave dots at the map's value on a dark ground, which still read as points.
+
 ## City light sprites
 
 Far city lights are drawn as satellite point sprites, so the horizon seen from the ground and from aircraft is
@@ -226,12 +239,22 @@ saturates, so sprites alone cannot carry a dense city's light per area.
     Point sources are occluded by the cloud composite, and radiation fog over a city counts as opaque to
     points while the ground glitter still shows through it. Test sprites with `clouds_v2.fog_amount 0`.
 
+## Launch sites
+
+Within a launch pad's exclusion radius (3 km, 3.2 km around a Falcon pad with its landing zone) there are no city
+lights: the sky pass cuts the night map to its blue base there before the city detail texture and pattern read it,
+so no street grid, glitter, detail texture or farm is drawn, and `city_sprites.comp` skips the cells inside it. The
+pad's own lamps and floodlit concrete stand in for its light ([Terrain](terrain.md#launch-sites-on-the-ground)).
+The exclusion fades in over the outer quarter of the radius. It follows "Launch site graphics" and the pads
+standing at the current date.
+
 ## Presets and temporal anti-aliasing
 
-The procedural city lights and the city day layout run in the full sky shader and in its `SKY_LITE` variant,
-so every preset except Potato draws them, independent of the procedural terrain detail switch. Potato's sky
-shader (`sat_sky_minimal.frag`) draws the night map and the legacy city detail textures, and the environment
-probes and mirror reflections (`SKY_ENV`) take the night map alone. Farms and beaches belong to the terrain
+The procedural city lights and the city day layout run in the full sky shader, so every preset with it (Low and
+up) draws them, independent of the procedural terrain detail switch. The `SKY_LITE` variant (Planetarium) compiles
+the whole procedural city out (layout, glitter, roads, farms, beaches, rooftop PV, solar parks) and draws the night
+map with the tiled city detail textures; Potato's sky shader (`sat_sky_minimal.frag`) does the same, and the
+environment probes and mirror reflections (`SKY_ENV`) take the night map alone. Farms and beaches belong to the terrain
 detail (`tdEnabled()`), so they need "Terrain detail" above 0 (Terrain tab) and the full sky shader. See
 [Weak-hardware tiers](hardware-tiers.md).
 
@@ -378,8 +401,7 @@ Night lights tab unless noted; all under `clouds` in `settings.json`.
 
 Measured on an RTX 3070 Ti with the harness, the city pattern costs about +1.1 ms over Los Angeles from 10 km by
 night (pattern 0.9 ms, roads 0.2 ms) and +0.8 ms by day; farmland about +0.35-0.5 ms; solar parks within noise;
-city sprites about 0. On the lighter presets the pattern costs about +0.7 ms on Low and +2.4 ms on
-Planetarium over Los Angeles from 1.5 km.
+city sprites about 0. On the Low preset the pattern costs about +0.7 ms over Los Angeles from 1.5 km.
 
 ## Where in the code
 
@@ -387,6 +409,7 @@ Planetarium over Los Angeles from 1.5 km.
 |---|---|
 | `shaders/sat_sky.frag` | `cityFrame()`, `cityLayout()`, `cityGridOf()`, `cityStyleWeights()`, `cityLightPattern()`, `cityNightGrid()`, `cityLightFar()`, `cityGlitter()`, `cityLampColor()`, `cityRoadLight()`, `cityDayAlbedo()`, `cityDayGrid()`, `cityDayFar()`, `farmDayAlbedo()`, `farmRects()`, `beachAt()`, `solarSiteAt()`, `solarGlint()` |
 | `shaders/include/terrain.glsl` | `cityTerrainLimit()` |
-| `shaders/city_sprites.comp` | the far city sprites |
+| `shaders/city_sprites.comp` | the far city sprites (and their launch-pad exclusion) |
+| `shaders/sat_sky.frag` (again) | `gCityFlat` (the points under cloud), `padGroundAt()`'s exclusion of the night map |
 | `src/simulations/SatelliteSim.cpp` | `fillSolarSites()`, the city sprite dispatch, `createCityRoads()` |
 | `tools/make_city_roads.py` | the roads bake |

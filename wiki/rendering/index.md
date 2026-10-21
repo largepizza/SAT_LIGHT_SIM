@@ -268,6 +268,7 @@ separate Potato shader `sat_sky_minimal.frag`. The variants are described on
 | [Moon and eclipses](moon-and-eclipses.md) | the Moon's disc and both kinds of eclipse |
 | [Points, bloom and glare](points-bloom-glare.md) | point sprites, the shared PSF, bloom, glare, trails |
 | [Satellite meshes](satellite-meshes.md) | the mesh renderer, environment probes, mirror reflections, the model viewer |
+| [Launch visuals](launch-visuals.md) | rocket plumes and flames, engine light on clouds and ground, pad smoke, pad and ship meshes and lights |
 | [Weak-hardware tiers](hardware-tiers.md) | Potato and Lite, the Vulkan limits the app needs |
 
 ## Where in the code
