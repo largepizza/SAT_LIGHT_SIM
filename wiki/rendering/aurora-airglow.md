@@ -110,13 +110,17 @@ volume: the poleward part of the oval (the first 30% of its width) gives the she
 the equatorward part (past 75% of the width) their share falls to a quarter. The diffuse equatorward aurora is
 therefore mostly the soft volume.
 
-**Coverage** (`auroraCoverage()`): a warped Perlin over azimuth and colatitude, thresholded from 0.2 (quiet) to
--0.6 (full storm), so a storm fills the oval with arcs and a quiet night shows patches. Its frequencies and drift
-are the "Coverage" sliders. The storm level it reads is derived from Kp (below), plus 0.6 x a substorm's local
+**Coverage** (`auroraCoverage()`): a warped Perlin over azimuth and colatitude, thresholded from 0.2 (quiet)
+toward a storm value, so a quiet night shows patches and a storm fills in. The storm value is -0.6 with arc
+systems off (the oval fills completely) and moves toward -0.35 with "Arc systems" (the shader mixes by the setting
+unclamped, so at the default of 2 the storm threshold is -0.1): with [arc systems](#arc-systems) carrying the
+storm's structure, coverage alone must not fill the oval into a uniform ring. Its frequencies and drift are the
+"Coverage" sliders. The storm level it reads is derived from Kp (below), plus 0.6 x a substorm's local
 intensity.
 
 **Early out.** The CPU also passes the largest colatitude the oval can light this frame (the midnight
-equatorward edge plus a substorm's equatorward shift, the soft edge, the ripple and 1 deg of margin, `cloud.auroraOval2.y`). Samples beyond it
+equatorward edge plus a substorm's equatorward shift, the larger of the soft edge with the ripple and the
+[storm red glow](#storm-aurora)'s reach plus 2 deg, and 1 deg of margin, `cloud.auroraOval2.y`). Samples beyond it
 return at once, and so do rays whose path stays more than 10 deg beyond it (see [The march](#the-march)).
 
 !!! warning "Invariant"
@@ -179,6 +183,12 @@ Inside the bulge (a Gaussian in MLT angle) the band brightens by \( 1 + 1.5\,b \
 
 In manual mode the index is the fixed "Aurora Kp (manual)" value; substorms still come and go, at that activity.
 
+**The scripted storm.** On top of the simulated history, one Carrington-class CME is scripted
+(`spaceWeatherSetScriptedStorm()`): the CME of [The Sun's Fury](../simulation/kessler.md), with a peak of about
+Kp 11. Its shape follows the procedural storms (a sudden commencement to 60 % within half an hour, a main phase of
+about 3 h, about 10 h near the peak, a 20 h recovery) and it enters as a CME driver, so the aurora follows with no
+code of its own.
+
 **Storm level.** The fold chaos and coverage fill read a storm level derived from Kp,
 \( \text{storm} = \text{clamp}((\text{Kp} - 1)/9, 0, 0.85) \) (`cloud.stormStrength`). It stops at 0.85
 because at 1 the coverage gate fills the whole oval and a storm reads as a featureless ring from orbit.
@@ -224,7 +234,11 @@ set. The only live noise call left per sample is the shimmer phase.
 
 ### The march
 
-`auroraMarchCS()` marches the padded shell 40-410 km:
+`auroraMarchCS()` marches the padded shell from 40 km to 410 km. In a storm (Kp past 5, with any storm feature
+switched on) the top rises with the storm level up to 700 km, so tall curtains, the red glow and giant rays fit;
+a quiet night marches exactly the quiet shell. Every sheet's emission fades out over the top 35% of the march's
+reach above 100 km (`gAurTopM`), so a tall curtain seen from orbit never ends on a hard ceiling where the lines of
+sight leave the shell.
 
 - **Legs.** The ray's path through the shell depends on where the eye is. From inside or above it, a ray that
   dips below the inner sphere has a **near leg** and a **far leg** (beyond the dip); both are marched
@@ -272,11 +286,55 @@ Over the diffuse volume, thin emissive curtains: the crisp, folded sheets of a r
   the poleward part of the oval, a quarter in the diffuse equatorward part).
 - The sheets' total is weighted by "Curtain sheets" and added to the volume's.
 
+### Arc systems
+
+A real display is not every sheet alike: a few bright arc systems carry most of the light. `auroraArcWeight()`
+groups the sheets five at a time (`kAurArcGroup`). About 70% of groups are arc systems, each bright over one or two
+long stretches of the oval (a sinusoid in azimuth with 1-2 cycles per turn, thousands of km), with a per-group
+strength; inside a stretch a sheet is about six times the mean. Adjacent groups blend smoothly across their
+boundary. The diffuse volume follows the arc systems at 0.6 of their contrast, since the diffuse aurora is the glow
+around them. "Arc systems" mixes from all sheets alike (0) to the full grouping (1 and above; the weight itself is
+clamped at 1). With arc systems on, a storm's coverage stops short of filling the oval ([Coverage](#the-oval)).
+
+### Storm aurora
+
+Above Kp 5 the display changes character, ramped by \( \text{ss}(5, 8.5, \text{Kp}) \) (`auroraStormHi()`) and
+scaled by "Storm features":
+
+- **Tall sheets.** A share of the sheets, growing with the storm, have a 190 km scale height above their lower
+  border (35-70 km otherwise), redden from about 35 km above it (80 km otherwise) and are more strongly rayed: the
+  red pillars of a great storm.
+- **Magenta borders.** Bright sheets get a deep magenta lower border about 9 km lower than usual (harder
+  electrons reach about 90 km: N2 first positive and N2+ first negative, red over violet), and magenta between their
+  green and their red top.
+- **Sunlit tops.** Above 150-300 km, a sheet out of the Earth's shadow adds N2+ resonant scattering of sunlight,
+  blue-violet. The shadow test is per crossing point, softened over 60-140 km of altitude.
+- **Storm red glow** (`auroraStormRed()`, "Storm red glow"). The 630 nm glow of soft electrons at 290-380 km
+  (higher toward its equatorward end), reaching up to 7 deg past the green aurora's equatorward edge, brightest
+  toward midnight and patchy along the oval (from the baked column noise). It is dim per unit length and shows
+  because a ray toward the horizon crosses hundreds of km of it: at Kp 9 a red glow across the northern sky from
+  about 41 deg magnetic latitude, a faint red skirt from orbit. It is accumulated apart from the arc-system
+  weighting.
+- **Giant blue rays** ("Blue rays (chance)", ramped in over Kp 4-7). In about 220 km cells along each sheet, a cell
+  with that chance becomes a stretch of the curtain about 100 km long whose own rays stand to 350-650 km, soft at
+  both ends and fading at the top: blue where sunlit, the sheet's dim red in the Earth's shadow. They are rare, like
+  red sprites.
+
 ### Visibility
 
 - **Brightness**: the march's sum x `kAuroraScale` (1e-6) x "Aurora gain".
-- **Light pollution**: the aurora is treated as an extended source of a magnitude per area and dimmed against
-  the sky background's (`darkSkySurfMag()`, `darkSkyVis()`), so a city's skyglow hides a faint aurora.
+- **Light pollution**: the aurora is treated as an extended source of a magnitude per square arcsecond and dimmed
+  against the sky background's (`darkSkySurfMag()`, `darkSkyVis()`). The background is **physical**
+  (`darkSkySkyMagLinear()`): skyglow is light added to the natural sky, so
+  \[ m_\text{sky} = 22 - 2.5\log_{10}\!\left(1 + \frac{d \cdot e(z)}{0.0241}\right) \]
+  combined with the twilight term, where \(d\) is the [light-pollution dome](atmosphere-and-sky.md)'s linear city
+  brightness in that direction (its \( d/(d + 0.08) \) compression and "Pollution gain" undone) and \(e(z)\) the
+  dome's elevation term. A downtown core reads about 18 mag/arcsec² (Bortle 8-9), rural Arizona or Iowa farmland
+  about 21.3, Fairbanks about 20. The aurora's own surface brightness runs at the physical 2.5 mag per decade, so
+  a storm's bright arcs survive a suburban sky while its faint diffuse parts fade, and the gate is exactly 1 under
+  a pristine sky. The Milky Way and zodiacal light keep their own, artistic gate (`darkSkySkyMag()`, a log ramp of
+  the dome toward 13 mag/arcsec²), which is right for a fade but not as a brightness: on it a faint glow reads
+  most of the way to a city.
 - **Moonlight**: dimmed by up to 85% under a high, full Moon.
 - **From orbit**: those two gates are for a sky seen through the air; they fade out between 40 and 100 km of eye
   altitude, so from space the aurora shows against the night side.
@@ -299,7 +357,8 @@ Moon does, and colourlessly to the eye; the sky's own light reaches the ground t
 
 The volume, the sheets and the red airglow run at half resolution. The noise bake and the bounding test keep the
 aurora's cost small where there is none in view; the sheets add about 0.5 ms of cloud march in a storm view
-(RTX 3070 Ti, harness). The red airglow march (16 fixed steps) would cost about 1 ms at full resolution, which is why it runs at half.
+(RTX 3070 Ti, harness); the storm features cost nothing measurable (a Kp 9 view over Coldfoot measures the same
+with them off). The red airglow march (16 fixed steps) would cost about 1 ms at full resolution, which is why it runs at half.
 
 ## Settings
 
@@ -317,14 +376,18 @@ Atmosphere tab ("Airglow & zodiacal light" and "Aurora" sections); all under `cl
 | Aurora Kp (manual) | `aurora_kp_manual` | 3 (range 0-11) |
 | Storm frequency (x) | `aurora_storm_rate` | 1 (range 0-5) |
 | Aurora gain | `aurora_gain` | 0.1 |
-| Coverage freq | `aurora_coverage_freq` | 0.43 |
-| Coverage az freq | `aurora_coverage_az_freq` | 4.3 |
+| Coverage freq | `aurora_coverage_freq` | 0.58 |
+| Coverage az freq | `aurora_coverage_az_freq` | 3.1 |
 | Coverage drift | `aurora_coverage_drift_rate` | 0.0012 |
-| Fold shimmer rate | `aurora_shimmer_rate` | 0.0018 |
-| Curtain sheets | `aurora_sheets` | 1 |
-| Sheet spacing (deg) | `aurora_sheet_spacing_deg` | 0.3 |
-| Crisp sheets (share) | `aurora_sheet_crisp` | 0.5 |
-| Sheet folds | `aurora_sheet_fold` | 1 |
+| Fold shimmer rate | `aurora_shimmer_rate` | 0 |
+| Curtain sheets | `aurora_sheets` | 1.4 |
+| Sheet spacing (deg) | `aurora_sheet_spacing_deg` | 0.34 |
+| Crisp sheets (share) | `aurora_sheet_crisp` | 0.77 |
+| Sheet folds | `aurora_sheet_fold` | 1.1 |
+| Arc systems | `aurora_arc_systems` | 2 (slider 0-1; 0 = all sheets alike) |
+| Storm features (red / magenta) | `aurora_storm_features` | 1.2 |
+| Storm red glow | `aurora_storm_red` | 1.1 |
+| Blue rays (chance) | `aurora_blue_rays` | 0.004 |
 
 "Space weather" switches between the simulated history (1) and a fixed index (0, "Aurora Kp (manual)").
 "Storm frequency" multiplies the CME arrival rate and the coronal holes' odds; 0 leaves only the background.
@@ -337,13 +400,15 @@ Potato turn off both.
     city's skyglow gates the aurora out, so a site such as Fairbanks shows little. The harness command
     `aurora [next <kp>|substorm|kp <v>|auto]` reports the activity, jumps sim time to the peak of the next storm or
     just after the next substorm onset, or fixes Kp; `state` carries an `aurora` block (Kp, G scale, drivers, the
-    oval's magnetic latitudes, the observer's MLAT and MLT). See `docs/HARNESS.md`.
+    oval's magnetic latitudes, the observer's MLAT and MLT) and a `light_dome` block (the 16 sectors, the gained
+    values and the dark-sky dome). See `docs/HARNESS.md`.
 
 ## Where in the code
 
 | File | What |
 |---|---|
-| `shaders/cloud_march.comp` | `auroraMarchCS()`, `auroraMarchSegment()`, `auroraCurtainSample()`, `auroraSheetIndex()`, `auroraSheetLight()`, `airglowRedMarchCS()` |
+| `shaders/cloud_march.comp` | `auroraMarchCS()`, `auroraMarchSegment()`, `auroraCurtainSample()`, `auroraSheetIndex()`, `auroraSheetLight()`, `auroraArcWeight()`, `auroraStormRed()`, `airglowRedMarchCS()` |
+| `shaders/include/darksky.glsl` | `darkSkySkyMagLinear()` (the aurora's physical sky background), `darkSkySurfMag()`, `darkSkyVis()` |
 | `shaders/include/aurora_oval.glsl` | the oval's geometry: `auroraOvalGeom()`, `auroraOvalBand()`, `auroraDiscreteShare()` |
 | `src/simulations/SpaceWeather.h/.cpp` | `spaceWeatherAt()`, `spaceWeatherKp()`, `auroraOvalBounds()`, `auroraGpuParams()` (the UBO block), `auroraOvalWeightCpu()` (the CPU mirror), `geomagStormScale()` |
 | `shaders/aurora_noise.comp` | the noise bake |

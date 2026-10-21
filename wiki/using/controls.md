@@ -41,20 +41,26 @@ Most controls can be rebound in Settings → **Controls**. The movement keys **W
 Time runs at one of nine speeds: 1x, 10x, 1 minute, 5 minutes, 1 hour, 1 day, 1 week, 1 month and 1 year per
 second.
 
-### Selecting, pictures and the rest
+### Selecting, pictures, windows and the rest
 
 | Input | Action |
 |---|---|
-| Left click | Select the satellite or planet under the cursor (a planet wins when both are under it) |
-| `T` | Select the satellite or planet nearest the centre of the screen |
+| Left click | Select the satellite, rocket, fireball or planet under the cursor (a planet wins when both are under it) |
+| `T` | Select the object nearest the centre of the screen |
 | `F` | Star trails (long exposure) on / off |
-| F12 | Screenshot, without the interface |
+| F12 | Screenshot, without the interface (unless *Screenshots include the UI* is on) |
+| F10 | Screenshot with the interface |
 | F8 | HQ photo: a supersampled, settled picture (see [Features](features.md#pictures)) |
-| F9 | Save a performance snapshot |
+| F9 | Save a shot into the active issue report (see [Reporting a problem](features.md#reporting-a-problem)) |
+| F7 | Start a new issue report with a shot of the current view |
+| `M` | Open or close the [Missions](missions.md) window |
+| `]` / `[` | Skip to the next / previous [mission milestone](missions.md#mission-milestones) of the followed or selected launch object |
+| `G` | Leave Go to and stay where the camera is (see [Follow mode](#follow-mode-go-to)) |
+| `H` | Go to: return to the followed object's default view, or follow the last object again |
 | Tab | Hide / show the interface |
 | `C` | Gamepad virtual cursor on / off (no effect with a mouse) |
 | F11 | Fullscreen / windowed (fixed key, works during the intro) |
-| Esc | Quit. While a cinematic plays or exports, Esc stops it instead; while a text field is being edited, Esc cancels the edit |
+| Esc | Quit. While a cinematic plays or exports, Esc stops it instead; while a text field is being edited, Esc cancels the edit; while the issue note bar is open, Esc closes it |
 | `` ` `` | Developer console (see [Automation harness](../development/harness.md)) |
 
 **Scrolling over the position readout.** Hover the latitude, longitude or altitude at the bottom right and scroll
@@ -124,23 +130,48 @@ height. You can climb to 100 000 km above sea level; `Z` puts you back on the gr
 
 ## Follow mode (Go to)
 
-**Go to** in a selected satellite's panel flies the camera out to the satellite and keeps it there, riding along
-in orbit (only for satellites with a [geometry model](../modding/satellite-models.md)). The flight takes 0.8 to 2.5 s and arrives on the line from your ground position to the satellite, so you see the same
-side of it, and the same flare, that you saw from the ground. Any movement key during the flight skips to its
-end.
+**Go to**, in a selected object's panel, its satellite window or a row of the Missions window, flies the camera out
+to it and keeps it there, riding along (only for objects with a [geometry model](../modding/satellite-models.md):
+modelled satellites, rockets and debris pieces). From the ground the flight takes 0.8 to 2.5 s and arrives on the
+line from your ground position to the object, so you see the same side of it, and the same flare, that you saw from
+below. When you are already following something, Go to on another object flies straight from where the camera is,
+keeping the camera's direction and closing the distance, so it does not pass through the new object. Any movement
+key during the flight skips to its end.
 
 While following:
 
-- `W A S D`, `Q` and `E` move the camera around the satellite, in your own horizontal frame. The speed is 0.6 ×
+- `W A S D`, `Q` and `E` move the camera around the object, in your own horizontal frame. The speed is 0.6 ×
   the distance per second (0.5 m/s to 20 km/s), times 10 with boost or 0.1 in fine mode.
-- A chip at the top of the screen shows the satellite, its distance and two buttons. **Aim: locked** keeps the
-  satellite centred while you move; looking around with the right mouse button switches it to **Aim: free**.
-  **Exit** flies you back to where you were on the ground.
-- Pressing **Go to** again, or B on a gamepad, also ends it.
+- The camera never goes below the ground or the sea: at the ground it slides along it.
+- A bar at the top of the screen shows the object, its distance and these buttons:
 
-**Track** is different: it leaves you where you are and only turns the camera to keep the satellite centred as
-it crosses the sky. You can still walk with `W A S D` and zoom freely; mouse and stick look are ignored while it
-holds the camera. Press **Track** again, select something else, or press **Go to** to release it.
+| Button | Key | What it does |
+|---|---|---|
+| **Aim: locked** / **Aim: free** | | Locked keeps the object centred while you move; looking around with the right mouse button switches to free |
+| **Return** | `H` | Flies back to the default view of the object, behind and above it |
+| `<` and **Next: ... >** | `[` / `]` | For a launch object, the previous and next [mission milestone](missions.md#mission-milestones) |
+| **Stay here** | `G` | Leaves Go to without flying home: you become a free observer exactly where the camera is, with its view and zoom. Paused, the object stays beside you; with time running it flies on |
+| **Exit** | | Flies you back to where you were on the ground |
+
+Pressing **Go to** again (it reads **Leave** in the satellite window), or B on a gamepad, also ends it.
+
+**Following through a mission.** A followed rocket carries on through its flight: at staging the camera stays with
+the upper stage, through its burn, coast, deployment and deorbit, and into its re-entry fireball or, for Starship's
+ship, its return. A satellite in a train hands over to its slot in the constellation on arrival, and a retiring
+satellite or a debris piece to its re-entry fireball. The camera eases across each hand-over and the object keeps its
+place on screen. When nothing continues the object, Go to ends where the camera is, with a notice.
+
+**Following again.** For 30 seconds after you leave Go to, a chip at the top of the screen, **Go to** *name* **again**,
+follows the same object again, flying from where the camera is; the `H` key does the same for the rest of the
+session. A rocket is carried along its mission to the present first; an object that has since ended is reported
+gone. The chip disappears when time jumps by more than ten minutes.
+
+As with any observer, only the latitude and longitude of a free observer are saved: after a restart you start on the
+ground below.
+
+**Track** is different: it leaves you where you are and only turns the camera to keep the object centred as it
+crosses the sky. You can still walk with `W A S D` and zoom freely; mouse and stick look are ignored while it holds
+the camera. Press **Track** again, select something else, or press **Go to** to release it.
 
 ## Rebinding
 
@@ -185,9 +216,10 @@ type `w` or `q` safely.
 ## Where in the code
 
 - `src/simulations/SatelliteSim.cpp`: the `keybindings` table in `init()`, `dispatchKeyAction()`, `onKey()`,
-  `pollGamepad()`, `padContextButton()`, ground movement in `recordCompute()`, follow movement in `updateFollow()`.
+  `pollGamepad()`, `padContextButton()`, ground movement in `recordCompute()`; follow mode in `startFollow()`,
+  `updateFollow()`, `stopFollowHere()` and `followReturn()`.
 - `src/simulations/SatelliteSim.h`: the `KB` enum.
-- `src/simulations/SatelliteSimUI.cpp`: the Controls tab (`buildSettingsControlsTab()`), mouse look and picking in
-  `buildUI()`, the text fields (`textField()`, `numberField()`, `inlineTextField()`, `textEditKey()`).
+- `src/simulations/SatelliteSimUI.cpp`: the Controls tab (`buildSettingsControlsTab()`), the follow bar
+  (`buildFollowHud()`), mouse look and picking in `buildUI()`, the text fields (`textField()`, `numberField()`, `inlineTextField()`, `textEditKey()`).
 - `src/App.cpp`: the Esc-to-quit handler.
 - The plumbing behind all of this is on [Controls and settings plumbing](../development/controls-and-settings.md).

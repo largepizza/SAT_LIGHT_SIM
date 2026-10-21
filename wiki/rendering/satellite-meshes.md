@@ -1,9 +1,10 @@
 # Satellite meshes
 
-How satellites with a geometry model are drawn as 3D meshes once they are large enough on screen: the mesh
-renderer and its lighting, how the frame decides which satellites get a mesh and hands each one over from its
-point sprite, the environment probes and sharp mirror reflections that give the meshes the full renderer's
-Earth to reflect, and the model viewer in the satellite info window. The models themselves (components,
+How satellites, rockets, launch pads and landing ships with a geometry model are drawn as 3D meshes once they
+are large enough on screen: the mesh renderer and its lighting, its shadow rays, how the frame decides which
+satellites get a mesh and hands each one over from its point sprite, the environment probes and sharp mirror
+reflections that give the meshes the full renderer's Earth to reflect, and the model viewer in the satellite info
+window. Flames, exhaust and the engine light on clouds are on [Launch visuals](launch-visuals.md). The models themselves (components,
 materials, attitude groups) are described in [Satellite models](../modding/satellite-models.md) and
 [Satellite photometry](../simulation/photometry.md).
 
@@ -13,15 +14,21 @@ Every geometry model is tessellated twice:
 
 | | Photometric | Render |
 |---|---|---|
-| Built by | `bakeSatLobes()` (`SatModel.cpp`) | `buildSatRenderMesh()` (`SatMesh.cpp`, 48 segments per revolved primitive by default) |
+| Built by | `bakeSatLobes()` (`SatModel.cpp`) | `buildSatRenderMesh()` (`SatMesh.cpp`, 48 segments per revolved primitive by default; profiles in facets of about 0.3 m) |
 | Purpose | merged facet lobes for millions of satellites in `sat_orbit.comp` | the pixels of one close-up satellite |
-| Normals | one per facet, merged | smooth normals on cylinders, cones and spheres |
-| Extras | none | UVs in metres (for the procedural patterns), the component index, the attitude group |
+| Normals | one per facet, merged | smooth normals on cylinders, cones, spheres and profiles (except across a crease of more than 35°) |
+| Extras | none | UVs in metres (for the procedural patterns), the component index, the attitude group, a profile's inside (`inner_material`) |
 
 Both share the rest pose and the body frame, so `evalGroupPoses()` poses the render mesh exactly as it poses the
 lobes, and the occluders `buildSatOcclusion()` makes for the photometry line up with the drawn geometry.
 `SatMeshRenderer` keeps every model's render mesh in one vertex and index buffer, with its materials, occluders
-and per-component pivots in storage buffers.
+and per-component data (pivots, stow and fold state, build dates) in storage buffers.
+
+**Stowed, folded and unbuilt parts** are handled in the vertex shader (`sat_mesh.vert`): a part with a `stow` is
+scaled toward its root plane by the instance's unfolding progress, a part with a `fold` is turned about its hinge
+line after that, and the normals follow by the inverse transpose. A part whose build date (`since`) is later than
+the sim time, with the deployment era on, is not drawn. Satellites in the roster's slots are always fully
+deployed; see [Satellite models](../modding/satellite-models.md#stowed-for-launch).
 
 ## Units and BRDF
 
@@ -44,12 +51,42 @@ Because the units and BRDF match, summing a render's pixels reproduces the lobe 
 | **Transmission** | light on the far side of a translucent blanket (ISS-style Kapton arrays) leaves this side diffusely, \(T \cdot E \cdot (-n\cdot s)_+\), tinted (amber for Kapton) and, with the solar-cell pattern, only through the gaps between cells |
 | **Earthshine** | diffuse light from the whole lit Earth cap: an order-4 spherical-harmonic fit of the cap's irradiance on a plane, floored by the exact vector value, \(E(n) = \max(\text{SH}(n),\ E\,(n\cdot d)_+)\), the same table the photometry uses; or, with an environment probe, the probe's SH irradiance |
 | **Moonlight** | diffuse, directional, × the Moon's light |
+| **Local lights** | up to 8 point lights per frame: a burning engine (just behind its nozzles), and at night each floodlight of a launch pad (about 2·10⁴ cd, a 40° beam aimed at the pad's centre) and of a landing ship (45° at the deck); diffuse and specular, \(E = I/(r^2 + r_s^2)\), a floodlight soft over its beam's outer 10°, no shadow rays |
 | **Reflections** | the reflected ray into the sharp-reflection G-buffer, else an environment probe, else the analytic `earth_env.glsl` fallback (see below) |
 
 **Self-shadowing** follows the photometry's rule: **a primitive never shadows its own surface.** Every part is
 convex or flat, so this is exact, and without it a faceted cylinder's surface would shadow itself. Open-lattice
-parts (trusses) never shadow (their occluder kind is 0xFF). The ray test in `rayBlocked()` mirrors
-`rayHitsOccluder()` in `SatModel.cpp` and `sat_orbit.comp`.
+parts (trusses) never shadow (their occluder kind is 0xFF), and neither does a part while it is stowed or folded,
+since it is not where its shadow shape says. A profile shadows as the exact cone frustum through its end radii, a
+fin as its bounding box. The ray test mirrors `rayHitsOccluder()` in `SatModel.cpp` and `sat_orbit.comp`.
+
+**Local lights.** The lights are chosen on the CPU from the previous frame's launch visuals, the most important to
+what is near the camera first (intensity over distance² + 50²), lifted at night and scaled by the eye's adaptation
+to the engine lights exactly as the light they shed on clouds is (see [Launch visuals](launch-visuals.md)). A
+landing booster, a pad's tower and a ship's deck are lit by them. They are not part of the photometric model, so
+they seed no bloom.
+
+**Engine bells.** Parts made of the material named `soot` (the inside of every engine bell in the rocket models)
+glow while their stage burns: orange at the lip to white-hot up the bell, toward the throat as the view looks
+into it. Each colour channel is capped at what displays as orange (the lip) to yellow-white (the throat) at the
+frame's exposure, so the glow keeps its colour under the night exposure. The bells are render-only parts, so the
+glow seeds no bloom or glare.
+
+### Shadow-ray acceleration
+
+Every shading pixel casts exact rays against the model's primitives: toward the Sun, toward the far side of a
+translucent blanket, and along the reflected direction. Testing every primitive of a station per pixel, with its
+pose composed per pixel, costs tens of milliseconds when a station fills the screen. So once a frame, per instance,
+the CPU (`SatMeshRenderer::writeShadowAccel()`) poses every blocking primitive in world space with a bounding
+sphere, and bins their shadows on a 16 × 16 grid on the plane across the Sun (64-bit masks, one bit per occluder:
+`kMaxOccluders` is 64). A pixel's Sun ray tests only its cell's primitives, and every ray first rejects a primitive
+by its sphere. The reflected ray also tests its facing first (a reflection that leaves below the surface is not
+drawn, blocked or not). The image is the same as the brute-force loop.
+
+The accelerated slots are the 64 scene instances largest on screen (radius over distance), the info window's
+viewer and the photometric check; the rest keep the per-pixel loop. Measured on an RTX 3070 Ti at 1920 × 1009, a
+close-up ISS costs about 1 ms of mesh pass; render-only detail adds only vertex work.
+Knockout bit 8388608 (`mesh_shadow_accel_disabled`) restores the per-pixel loop for comparison.
 
 **What the bloom counts.** Only sunlight, transmission and the photometric earthshine are part of the lobe
 model. The pixel's alpha carries that **photometric share** of its light alongside the instance slot, and the
@@ -62,15 +99,18 @@ arrays would otherwise seed a glow far brighter than the satellite itself.
 
 ### Procedural surface detail
 
-A material's `pattern` (`SatSurfacePattern`: none, solar cells, MLI, panel seams; by default chosen from the
-preset) adds visible structure that is **photometrically neutral**:
+A material's `pattern` (`SatSurfacePattern`: none, solar cells, MLI, panel seams, truss, heat-shield tiles; by
+default chosen from the preset) adds visible structure that is **photometrically neutral**:
 
 - each pattern scales the diffuse albedo by a factor whose **area-weighted mean is 1**, leaving the specular
   alone (the cover glass over cells is continuous);
 - each is an exact box filter (`lineCover()`, `gridCover()`), so it keeps its mean at any distance and fades to
   the plain material when its features drop below a pixel;
 - the features are large enough to see with the whole model in frame: 0.4 m array modules with gaps and a
-  0.25° tilt per module, cells within them, MLI quilting seams and 12 cm crinkle.
+  0.25° tilt per module, cells within them, MLI quilting seams and 12 cm crinkle;
+- heat-shield tiles are 0.31 m hexagons in staggered rows with 6 mm gaps showing the lighter felt, each tile a
+  little darker or lighter and about 0.6° off the surface, with 1.5 % pale replacement tiles; they fade to the
+  plain material once a tile is under about 3 pixels.
 
 The viewer's "Detail" button toggles the patterns.
 
@@ -78,9 +118,18 @@ The viewer's "Detail" button toggles the patterns.
 
 A material with `coverage` below 1 (the `truss` preset) is an open lattice. The photometry counts
 coverage × area; the renderer cuts the members out (`latticeCover()`: a bay grid plus alternating diagonals,
-member width solved on the CPU for the same area fraction). Each pixel is kept against a fixed per-pixel hash
-threshold, so sub-pixel members at a distance become the right fraction of pixels, with the far side's inner
-faces visible behind them. The cut-outs are real geometry: the Detail toggle does not remove them.
+member width solved on the CPU for the same area fraction) in the depth pre-pass. Each pixel is kept against a
+threshold, so sub-pixel members at a distance become the right fraction of pixels, with the far side's inner faces
+visible behind them:
+
+- in the main view with the sky's temporal anti-aliasing on, the threshold is interleaved gradient noise stepped
+  by the golden ratio every frame, so the TAA averages a sub-pixel lattice (a catch tower from a kilometre away) to
+  its mean coverage, a fine translucent lattice rather than a fixed speckle that swims as the view moves;
+- elsewhere (the viewer's MSAA, the TAA off) it is a fixed per-pixel hash.
+
+A material named `gridfin` is a rocket's grid fin: a square grid of plates with no diagonals. Once a cell is
+under 3 to 6 pixels it is drawn solid at the grid's mean look instead of cut out, since a sub-pixel grid of plates
+reads as noise. The cut-outs are real geometry: the Detail toggle does not remove them.
 
 ## Which satellites get a mesh
 
@@ -114,6 +163,15 @@ flowchart LR
 **The followed satellite** is always meshed, decided on the CPU, even in the Earth's shadow where the GPU never
 lists it.
 
+### Launch objects
+
+Rockets, the payload stacks on an upper stage, fairing halves, launch pads and landing ships are not in the GPU's
+candidate list. The CPU places them itself, each as a fixed state (position, velocity and body axis, from the
+launch model at the frame's time), in reserved instance slots: up to 6 rockets, 16 pads, 48 stacked satellites and
+8 ships, each drawn once it is about 1.4 px across, plus a slot for the followed transient and one for the
+selection. Rocket models' attitude comes from their body axis rather than an attitude law. See
+[Rockets](../simulation/rockets.md) and [Launches](../simulation/launches.md).
+
 ### The hand-off from sprite to mesh
 
 | | Range (× `meshFadePx`) | Default |
@@ -139,6 +197,14 @@ mirror seen a few degrees off its beam axis has the Sun's image about 35 m from 
 times the share the sprite has given up. Sprite bloom plus mesh bloom therefore stays constant as a satellite
 resolves, and on a large model the glow sits on the glint. `glareNorm` (the sprite's effectFlare per unit of
 seed) lets a mesh glint glare as the sprite did (see [Points, bloom and glare](points-bloom-glare.md#mesh-glints)).
+
+**Only a compact image of the Sun glares.** The pixel's alpha also carries whether its surface may glare,
+\(1 - \operatorname{smoothstep}(0.04, 0.10, \alpha)\) of its roughness (`meshGlareRoughK()`): mirrors, quartz
+radiators, dielectric film and solar glass glare; stainless steel (0.12) and paint do not. A rough lobe spreads
+the Sun over degrees, but at grazing incidence (Fresnel near 1, the masking term's \(1/2\alpha\)) it still reaches
+glare levels, and every edge and panel seam of a sunlit Starship would flare. The viewer's glare source applies
+the same gate. Mesh glints take part in the screen-space glare clustering like every other glare (see
+[Points, bloom and glare](points-bloom-glare.md)).
 
 **Picking.** Meshed satellites are hit-tested against their model's bounding circle (`meshDrawn`), ahead of
 sprites, since they have no sprite left to click.
@@ -212,7 +278,12 @@ A probe is:
   used as the diffuse Earth light in place of the photometric earthshine.
 
 Each probe has its own cube image and descriptor set (pipeline set 1, bound per draw), so no cube-array
-feature is needed. There are 8 slots: slot 0 belongs to the model viewer, slots 1-7 are shared by the scene
+feature is needed. A probe inside the atmosphere takes the observer's light-pollution dome for its Milky Way and
+zodiacal light. Near the ground the `SKY_ENV` render draws no procedural city, so its ground takes the city
+lights' close-up mean (a fraction of the night map until its own pixel footprint reaches the street layout's
+range, as the main view's procedural cities average), and it ignores the data that belongs to the main observer's
+frame (the exact elevation data near the observer, the launch sites' coast patches and pad grading), which
+describes another place. There are 8 slots: slot 0 belongs to the model viewer, slots 1-7 are shared by the scene
 instances.
 
 **Ownership.** A probe belongs to the satellite it was made for and **follows it**: its owner keeps it however
@@ -229,6 +300,10 @@ high time warp outrun the reuse radius every frame and flicker between probe lig
 | 1 | new | all six |
 | 2 | drifted past max(2 km, 0.2 % of altitude) from where it was made, the furthest first | two |
 | 3 | older than 3 s (clouds drift, the Earth turns, settings change) | two |
+
+A jump in sim time of more than max(30 min, 10 wall seconds of the current warp) since a probe was made puts it
+first among the rendered and re-renders all six faces: a probe made by day would otherwise light a pad's tanks
+pale blue-white for seconds after a jump to night.
 
 A refresh renders two faces at a time, so a satellite crossing the drift threshold every few frames does not
 pay for a whole cube each frame; its recorded position updates once all six faces are redone. The viewer's
@@ -256,14 +331,18 @@ This is exact for a flat mirror at any zoom, and costs a sky render of the mirro
 
 ## The model viewer
 
-The satellite info window and its pop-out 3D view show a real satellite where it is now, rendered offscreen by
-`recordModelViewer()` (in `recordCompute()`, whenever either window is open):
+The satellite info window and its pop-out 3D view show a real satellite (or a rocket stage) where it is now,
+rendered offscreen by `recordModelViewer()` (in `recordCompute()`, whenever either window is open):
 
 - **One target** serves both views, sized to whichever is larger; each view samples a centred sub-rectangle of
   its own aspect, so neither is stretched. 4 × MSAA where the format supports it, resolved into a
   swapchain-format image shown through a `UIImage` (a Clay custom element with its own descriptor set).
 - **Position and pose** come from the CPU evaluator in ECEF; the model sits at its real distance from the
   camera.
+- **Hand-overs.** When the viewed object hands over to what continues it (a stack to its upper stage at staging, an
+  upper stage to its entry, a train member to its roster slot), the view switches model in the same frame,
+  keeping the camera's direction and scaling its distance by the two models' sizes (`viewerSyncModel()`). A subject
+  with no model (a re-entry fireball) keeps the last model, posed at the fireball's position.
 - **Lighting.** "Live" uses the sim's Sun (including the Earth's shadow), the viewer's own probe (slot 0) for
   reflections and diffuse Earth light, and a background rendered by the same `SKY_ENV` pipeline at the viewer's
   camera (`SatEnvProbes::recordViewerBg()`, tonemapped by `sat_mesh_bg.frag`). "Studio" uses a fixed Sun at
@@ -326,16 +405,19 @@ reverse-Z keeps a mesh centimetres from the camera precise. The camera and fligh
 | Sharp mirror reflections (Photometry) | `photometry.sharp_mirror_reflections` | on |
 | Satellite part occlusion (Photometry) | `photometry.sat_part_occlusion` | off |
 
-The mesh pass's knockout bit (2097152) is a profiling switch, not a setting.
+The mesh pass's knockout bit (2097152) and the shadow acceleration's (8388608) are profiling switches, not
+settings.
 
 ## Where in the code
 
 - `src/simulations/SatMeshRenderer.h/.cpp`: the renderer (`recordScene()`, `recordBloom()`,
-  `recordReflections()`, `recordViewer()`, `recordViewerGlare()`, `recordCheck()`), `GpuMeshInstance`.
+  `recordReflections()`, `recordViewer()`, `recordViewerGlare()`, `recordCheck()`, `writeShadowAccel()`),
+  `GpuMeshFrame` (with the local lights), `GpuMeshInstance`.
 - `src/simulations/SatEnvProbes.h/.cpp`: probes and the viewer background.
 - `src/simulations/SatMesh.h/.cpp`: `buildSatRenderMesh()`.
 - `src/simulations/SatelliteSim.cpp`: `recordMeshScene()`, `renderScheduledEnvProbes()`,
-  `nearestRenderedProbe()`, `envActive()`, `recordModelViewer()`; `src/simulations/SatelliteSimUI.cpp`:
+  `nearestRenderedProbe()`, `envActive()`, `recordModelViewer()`, `viewerSyncModel()`;
+  `src/simulations/SatelliteSimLaunches.cpp`: the launch objects' mesh jobs and `meshLightAdd()`; `src/simulations/SatelliteSimUI.cpp`:
   `updateViewerView()`, the info window and pop-out.
 - `shaders/sat_mesh.vert/.frag`, `shaders/include/sat_mesh_common.glsl`, `shaders/include/earth_env.glsl`,
   `shaders/mesh_bloom.frag`, `shaders/mesh_refl_add.comp`, `shaders/env_probe_sh.comp`,

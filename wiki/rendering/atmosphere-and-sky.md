@@ -24,6 +24,9 @@ pages; here they appear only where the sky pass consumes them.
 | 22 / 23 | mesh scene pass | mesh radiance / distance, full res (`imageLoad`) |
 | 26 | `scene_depth.comp` | `terrainFrame.x`, the eye's detailed ground height |
 | 29 | `cloud_v2_far.comp` | the far cloud layer, full res (`imageLoad`) |
+| 30 | `cloud_v2_lightning.comp` | the clouds' flash buffer: the Sun shadow cascade and shaft rings (god rays) |
+| 31 | CPU | the clouds v2 UBO (`clouds_v2.glsl` with `CV2_PARAMS_ONLY`) |
+| 32 | CPU | the engine and floodlight list (the tail of the dust buffer), which the sea mirrors |
 
 "½ res" means half of the render-scaled extent (see [Resolution scaling](#resolution-scaling)). The
 sampled-image bindings sit exactly at the Vulkan per-stage minimum of 16 (see
@@ -108,16 +111,28 @@ Per step, with \(\tau_\text{cam}\) the column back to the eye:
       geographic Sun elevation. It is a deliberate tone-mapping correction rather than physics: the twilight
       tail of the scattering integral is correct but survives the tonemap far more visibly than in orbital
       photographs. Daylit samples are untouched.
+    - the **clouds' shadow** ([god rays](#god-rays-the-clouds-shadows-on-the-air)), when the Sun shadow cascade
+      is on;
     - the **cloud-hidden Sun**: `cloud.sunCloudT` (the eye's transmittance toward the Sun) for air below
       8-14 km, within about 50 km along the ray and about 3 km of the eye's line to the Sun. One cumulus in
       front of the Sun must not darken the whole sky, but under a storm the haze's forward peak must not draw
-      a bright Sun-shaped glow where the disc is hidden.
+      a bright Sun-shaped glow where the disc is hidden. This term gives way to the god rays as "God rays" rises
+      (× (1 − "God rays")), since the cascade shades the same air properly;
     - the **eclipse**: see [Moon and eclipses](moon-and-eclipses.md#the-sky-in-the-moons-shadow).
-- **Sample in the Earth's shadow**: accumulated as *shadowed air* instead. After the loop it is lit as
-  isotropic in-scatter of half the zenith sky's radiance at its density-weighted mean point
-  (`skyZenithSky()`), faded over the first few degrees of Sun depression there. Single scattering alone leaves
-  the air beyond the terminator black, and the horizon facing away from a just-set Sun would read as a dark
-  band. Off from orbit, where the terminator gate owns the twilight air.
+- **The Earth's shadow, exactly.** Once per pixel the shader solves the interval of the view ray that lies inside
+  the Earth's shadow cylinder (`tShA`, `tShB`, a quadratic), and each step takes the **sunlit share** of its
+  length. Its Sun path is taken from the middle of the lit part. A test at each step's midpoint would make a step
+  of 10-15 km lit or shadowed as a block, and near the horizon the first step holds almost all the haze, so at the
+  elevation where its midpoint left the shadow the sky would change brightness and colour in a hard band (a few
+  degrees above the horizon with the Sun just below it), and that band would be laid over every cloud in it
+  through the air split. The same exact share (`earthShadowSpan()`, `earthShadowLit()`) is used by every other
+  Earth-shadow integral in the shader: the zenith sky light (`skyZenithSky()`), the terrain's sky light, the flat
+  layers' twilight and the sea's sky reflection.
+- **The shadowed share** is accumulated as *shadowed air*. After the loop it is lit as isotropic in-scatter of
+  half the zenith sky's radiance at its density-weighted mean point (`skyZenithSky()`), faded over the first few
+  degrees of Sun depression there. Single scattering alone leaves the air beyond the terminator black, and the
+  horizon facing away from a just-set Sun would read as a dark band. Off from orbit, where the terminator gate owns
+  the twilight air.
 - **City glow**: the night map under the sample, attenuated toward the eye. From the ground and aircraft the
   map is read at mip 4 (about 80 km texels): a horizon glow gathers the light of a whole region. Air at height
   h is lit by the cities within a few h, so seen from high orbit (blended in over 800-3000 km of eye altitude)
@@ -139,14 +154,47 @@ cityGlowFront = (city glow in front of the nearest cloud) * smoothstep(40 km, 15
 
 `color` holds the air along the **whole** path to the surface, including the stretch in front of any cloud.
 
+### God rays: the clouds' shadows on the air
+
+The air between the clouds is shaded by the same Sun shadow the clouds themselves take, so clouds and the air
+around them share one light. The clouds' lightning pass bakes the shadow as lattices of parallel rays toward the
+Sun: a **cascade** reaching about 205 km from the eye ("Far cloud shadow range"), and near the eye **shaft rings**
+of 250 m cells (see [The cloud march](clouds/march.md)). They reach the sky pass through binding 30 (the flash
+buffer) and 31 (the clouds v2 UBO), compiled in under `SKY_SUN_SHADOW` (every variant except `SKY_LITE` and the
+`SKY_ENV` probes and mirrors).
+
+Per atmosphere step:
+
+1. The cascade's transmittance is read at three points along the step (half a knot sunward of each) and
+   averaged. A step is 10 km or more and a storm's shadow a slab a few km deep, so one read per step would draw
+   its edge as bands.
+2. Over the step's first ~14 km, while the shaft rings are live, 24 jittered reads of the inner ring replace it,
+   weighted by the haze thinning with height along the ray, so the gaps between single clouds draw their own rays.
+3. The step's sunlight is scaled by \( 1 - k\,(1 - T) \), with \(k\) = "God rays" (0 to 1, how much of the shadow
+   the air takes). The shadowed share is added to the shadowed air, lit by the sky as the air in the Earth's shadow
+   is, so a storm's shadow is a blue-grey wedge, not a black one. The air split (`airFront`) takes it too, so the
+   haze in front of a cloud is shadowed exactly like the sky beside it.
+
+**Haze near clouds.** Humid air under and around weather systems carries more aerosol. Below 12 km the Mie density
+of each step gets an extra term, "Haze near clouds" × (0.25 + 0.75 × the weather cube's cover + 0.6 × its rain),
+with a 2.5 km scale height. Aerosol is what scatters forward: with it a sunlit stretch between cloud shadows glows
+toward the Sun as a ray, where clean air would show only darker bands.
+
+Looking down-Sun at sunset the shadows converge on the antisolar point (anticrepuscular rays). Cost: about
+0.7-1.0 ms of the sky pass at 1920 × 1009, more with a strong haze.
+
 ## Surfaces and pre-tonemap terms
 
 In order of `main()`:
 
 - **The Moon's disc**, drawn at its true topocentric position and size and occluded by any surface or opaque
   cloud. See [Moon and eclipses](moon-and-eclipses.md).
-- **Satellite sky glow.** The 64 bins of `sat_flare.comp`'s histogram (8 azimuth sectors × 8 elevation bands,
-  each holding the brightest satellite in it) are drawn as wide Gaussians (σ = 0.9 rad). Each is weighted by
+- **Satellite sky glow.** The 64 bins of `sat_flare.comp`'s histogram (8 azimuth sectors × 8 elevation bands)
+  each hold the **summed** displayed effectFlare of the bin's flares brighter than 20 (about magnitude −0.8). A
+  bin's response is \( \operatorname{clamp}(\log_2(\max(F/300, 1))/4,\ 0,\ 1.5) \): it starts at a summed
+  magnitude of about −4.4 and saturates 64 times past it. A lit Reflect site (about 150 mirrors at magnitude −3
+  in one bin, summed about 6000) reaches about 1.1, while one tumbling piece of debris at −4 gives nothing.
+  The bins are drawn as wide Gaussians (σ = 0.9 rad). Each is weighted by
   the **smaller** of two air columns: along the pixel's ray, and between the eye and the bin's direction (from
   the eye's height, or the tangent height of a downward path, Chapman airmass capped at about 35). The glow is
   the satellite's light scattered by that air; weighting by the pixel's ray alone would light the whole limb
@@ -380,11 +428,13 @@ trails. In motion the resolve behaves as in the steps above.
 
 **The sea.** `sat_sky.frag` marks sea pixels in the colour target's alpha (0.5 × (1 − trail share); 1 elsewhere).
 The waves move while the camera is still, so the sea keeps its clip when nothing moved and drops it only when
-sim time has not changed since the last resolve (w = 3), when the waves are frozen too. On a stormy sea the **trail share** ("Storm sea
-trails" × a ramp on the sea state, × the share not covered by cloud in front) deliberately keeps an unclipped
-history: the clip is blended toward none, the weight is held at the still weight however the view moves, and in
-motion the flash rule leans toward the robust mean. The crests then smear into trails like blown spray. "Storm
-sea trails" at 0 turns this off.
+sim time has not changed since the last resolve (w = 3), when the waves are frozen too. On a rough sea where the
+weather map rains, the **trail share** ("Storm sea trails" × a ramp on the sea state × a ramp on the rain there,
+× the share not covered by cloud in front) deliberately keeps an unclipped history: the clip is blended toward
+none, the weight is held at the still weight, and the flash rule leans toward the robust mean. The crests then
+smear into trails like blown spray. The share fades out over 1-4 px of parallax a frame, so in flight the history
+does not drag the clouds above the sea across the water. "Storm sea trails" at 0 turns this off. See
+[The sea](sea.md#storm-sea-trails).
 
 **Unjittered city lights.** City lights are pixel-sized points that their inputs switch on and off (the night map
 near zero at a city's fringe, the terrain contour, the glitter pattern), so under the jitter a light could be lit
@@ -409,10 +459,11 @@ plain stretch.
 "Render scale" (50 %-100 %, Display tab) shrinks the background, not the point sources: satellites, stars,
 planets, city light sprites, satellite meshes and the UI always render at native resolution. What it scales,
 how the presets set it, the measured gains and the **automatic render scale** (`updateDynamicResolution()`,
-on by default: 5 % steps that keep the GPU frame under 0.9 × the target frame time) are on
+off by default: 5 % steps that keep the GPU frame under 0.9 × the target frame time) are on
 [Weak-hardware tiers](hardware-tiers.md#render-scale). For the sky pass:
 
-- **The compute passes follow it.** With "Clouds follow render scale" on (the default), `scene_depth.comp`,
+- **The compute passes can follow it.** With "Clouds follow render scale" on (off by default; the Low, Medium,
+  Planetarium and Potato presets turn it on), `scene_depth.comp`,
   the cloud march targets and the clouds' screen images are sized by `computeHalfExtent()`, half of the
   **scaled** extent, and rebuilt by `recreateComputeScaledTargets()` when it changes. The cloud march keeps
   filtering its noise at the 100 % pixel, so the clouds keep their texture, only softer. The sky pass reads these
@@ -473,11 +524,15 @@ mirror-smooth pixel of the current instance; its view direction is the reflected
 | Highlight roll-off (Photometry) | `clouds_v2.highlight_rolloff` | 0.5 |
 | Auto exposure (day) (Photometry) | `clouds_v2.auto_exposure` | 1.0 |
 | White balance (Photometry) | `clouds_v2.white_balance` | 0.6 |
-| Extinction (Photometry) | `photometry.extinction_coeff` | 0.079 |
+| Extinction (Photometry) | `photometry.extinction_coeff` | 0.18 |
+| God rays (Clouds) | `clouds_v2.godrays` | 1.0 (0-1) |
+| Haze near clouds (Clouds) | `clouds_v2.haze_aloft` | 1.9 |
+| Far cloud shadows (0/1) (Clouds) | `clouds_v2.sun_cascade` | 1 |
+| Far cloud shadow range (km) (Clouds) | `clouds_v2.sun_cascade_range_km` | 205 |
 | Temporal anti-aliasing (Display) | `display.sky_taa` | on |
 | (no UI) | `display.sky_taa_weight` / `display.sky_taa_weight_moving` | 0.1 / 0.35 |
 | Render scale (Display) | `display.render_scale` | 1.0 (the preset sets it) |
-| Clouds follow render scale (Display) | `display.clouds_follow_render_scale` | on |
+| Clouds follow render scale (Display) | `display.clouds_follow_render_scale` | off (the lighter presets turn it on) |
 | Storm sea trails (Ocean) | `clouds.ocean_storm_trails` | 1.0 |
 
 The graphics presets override the sample counts and render scale; see
@@ -486,8 +541,9 @@ The graphics presets override the sample counts and render scale; see
 
 ## Where in the code
 
-- `shaders/sat_sky.frag`: `main()`, `optDepth()`, `skyZenithSky()`, `evalCloudLayer()`, `lensFlare()`,
-  `solarCoronaAt()`.
+- `shaders/sat_sky.frag`: `main()`, `optDepth()`, `skyZenithSky()`, `earthShadowSpan()`, `earthShadowLit()`,
+  `evalCloudLayer()`, `lensFlare()`, `solarCoronaAt()`.
+- `shaders/include/cloud_lightning.glsl`: `cv2SunCascT()`, `cv2SunShaftT()` (the god rays' lattice reads).
 - `shaders/sky_taa.comp`, `shaders/taa_depth_restore.frag`, `shaders/taa_fullscreen.vert`.
 - `shaders/include/darksky.glsl`, `shaders/include/atmosphere.glsl`, `shaders/include/common.glsl`.
 - `src/simulations/SatelliteSim.cpp`: `buildSkyDrawPC()`, the `CloudParams` fill in `recordCompute()`,

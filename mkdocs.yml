@@ -80,6 +80,7 @@ nav:
       - Getting started: using/getting-started.md
       - Controls: using/controls.md
       - Features tour: using/features.md
+      - Missions and launches: using/missions.md
       - Graphics settings: using/graphics-settings.md
   - Modding:
       - modding/index.md
@@ -95,6 +96,10 @@ nav:
       - Seeing a satellite from the ground: simulation/visibility.md
       - Reflectors and beams: simulation/reflectors.md
       - Sun, Moon and planets: simulation/sun-moon-planets.md
+      - Launches and deployment: simulation/launches.md
+      - Rocket flight and recovery: simulation/rockets.md
+      - Crew flights: simulation/crew-flights.md
+      - Kessler syndrome (The Sun's Fury): simulation/kessler.md
   - Accuracy:
       - accuracy/index.md
       - Benchmark datasets: accuracy/benchmarks.md
@@ -116,6 +121,7 @@ nav:
       - Moon and eclipses: rendering/moon-and-eclipses.md
       - Points, bloom and glare: rendering/points-bloom-glare.md
       - Satellite meshes: rendering/satellite-meshes.md
+      - Launch visuals: rendering/launch-visuals.md
       - Weak-hardware tiers: rendering/hardware-tiers.md
   - Sound:
       - sound/index.md
@@ -129,6 +135,7 @@ nav:
       - UI (Clay): development/ui.md
       - Controls and settings plumbing: development/controls-and-settings.md
       - Automation harness: development/harness.md
+      - Issue reports: development/issue-reports.md
       - Tools: development/tools.md
       - Profiling: development/profiling.md
       - Working on this wiki: development/wiki.md

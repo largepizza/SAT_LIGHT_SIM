@@ -138,7 +138,15 @@ quality sliders. From the bottom up:
 | city light sprites | no | yes, on the sea-level sphere | yes | yes | yes | yes |
 | satellite meshes | no | no | yes | yes | yes | yes |
 | sky TAA | off | off | on, upscaling | on, upscaling | on | on |
+| cloud march rate | (no march) | (no march) | adaptive, sparse when still | adaptive, sparse when still | full rate | full rate |
+| clouds follow render scale | on | on | on | on | off | off |
 | atmosphere view samples (min / max) | 6 / 20 | 4 / 10 | 6 / 96 | 6 / 96 | 6.5 / 160 | 16 / 256 |
+
+High is the compiled-in defaults, the tuned look, at render scale 1.0: the volumetric clouds are marched at full
+rate every frame and sized to the window. The lighter presets turn on the cloud march's adaptive rate and its
+sparse grid when the view is still (see [Temporal resolve](clouds/temporal.md)) and let the cloud and depth passes
+follow the render scale. Changing the render scale or "Clouds follow render scale" by hand makes the preset Custom,
+since a named preset re-derives them on every load.
 
 Low is Medium's look at half resolution: every effect on, with Medium's step budgets, at render scale 0.5.
 Planetarium is the tier with everything off. Its knockout mask holds terrain relief (1), ocean reflection (8),
@@ -161,6 +169,7 @@ both tiers (`skyTaaWanted()` excludes them).
 |---|---|
 | MoltenVK on a non-Apple GPU (a Mac of the 2015 era: GCN 1.0 or Intel) | Potato |
 | a discrete GPU with at most about 2 GB of device-local memory (2.25 GiB) | Planetarium |
+| a discrete GPU with at least 5.5 GiB of device-local memory | High |
 | any other discrete GPU | Medium |
 | an integrated GPU, a CPU or a virtual device (Apple silicon included) | Planetarium |
 
@@ -207,7 +216,7 @@ storm views: Low 10-14 ms, Medium 14-18 ms.
 
 ### Automatic render scale
 
-"Automatic render scale" (`updateDynamicResolution()`, on by default) keeps the GPU frame under 90% of the
+"Automatic render scale" (`updateDynamicResolution()`, off by default) keeps the GPU frame under 90% of the
 target frame rate's frame time; the CPU's share comes on top. It models the frame as 30% fixed cost plus 70%
 that scales with the square of the render scale. When the smoothed GPU frame runs over budget it steps down as
 far as the model says in one go (to a 5% step, no lower than "Lowest render scale"), then waits 0.75 s. It
@@ -223,10 +232,10 @@ scale reads softer in motion than in a still frame.
 | UI label (Display tab) | `settings.json` key | Default |
 |---|---|---|
 | Render scale | `display.render_scale` | 1.0 (the preset sets it) |
-| Automatic render scale | `display.dynamic_resolution` | on |
+| Automatic render scale | `display.dynamic_resolution` | off |
 | Target frame rate | `display.dynamic_target_fps` | 60 |
 | Lowest render scale | `display.dynamic_min_scale` | 0.5 |
-| Clouds follow render scale | `display.clouds_follow_render_scale` | on |
+| Clouds follow render scale | `display.clouds_follow_render_scale` | off (the preset sets it) |
 | Temporal anti-aliasing | `display.sky_taa` | on |
 
 ## The hardware floor
@@ -243,7 +252,7 @@ short, so a report from a machine nobody has access to is answerable from its lo
 | `maxComputeWorkGroupInvocations` | 128 | **256** | `local_size 16 × 16` in the cloud, scene-depth and blur passes |
 | `maxComputeSharedMemorySize` | 16 KB | 6 KB (checked) | tile-cull lists |
 | `maxPerStageDescriptorSampledImages` / `Samplers` | 16 | **16** | `sat_sky.frag` binds 16 combined image samplers: at the floor |
-| `maxPerStageDescriptorStorageBuffers` | 4 | **11** | `sat_orbit.comp`'s set |
+| `maxPerStageDescriptorStorageBuffers` | 4 | **12** | `sat_orbit.comp`'s set (binding 11 is the Kessler buffer) |
 | `maxPerStageDescriptorStorageImages` | 4 | **4** | the sky set's four fragment storage images (mesh radiance, mesh distance, reflection G-buffer, far cloud layer), and `cloud_v2_march.comp`'s colour and depth outputs at sparse and full rate |
 | `pointSizeRange[1]` | 64 (with `largePoints`) | up to 1024 | glare sprites clamp to it, so they are smaller on hardware with a low limit |
 
@@ -260,8 +269,8 @@ buffers and vertex buffers into Metal's 31 per-stage buffer slots.
 ### The 128-byte push constant rule
 
 Old AMD integrated parts report exactly the guaranteed 128 bytes of push-constant space. `SatDrawPC`,
-`PointDrawPC`, `CloudMarchPC`, `SatOrbitPC`, `SatFlarePC` and `SkyTaaPC` each `static_assert` to exactly 128 bytes;
-smaller blocks (`GlarePC`, `FlareSourcePC`, 112 bytes) assert their own sizes.
+`PointDrawPC`, `CloudMarchPC`, `SatOrbitPC`, `SatFlarePC`, `SkyTaaPC` and `GlarePC` each `static_assert` to exactly
+128 bytes; smaller blocks (`FlareSourcePC`, 112 bytes) assert their own sizes.
 
 !!! warning "Invariant"
     No push-constant block may grow past 128 bytes. When one needs another field, move per-frame-uniform data

@@ -24,6 +24,21 @@ its resolution is about \( 2 \times 10^{-7} \) s at the sim's epoch.
 
 The sim starts at 2036-11-22 02:06:22 UTC, a California twilight chosen for the intro. <!-- history-ok -->
 
+### Scenario seconds
+
+The [Kessler scenario](kessler.md) and every record that lives and dies with it (debris, dead satellites,
+launch records, the deployment era's slot dates) count time as **whole seconds since the scenario's epoch**,
+the arrival of the storm, in a signed 32-bit integer (negative before it, about ±68 years of range). The
+GPU receives the current value as `scenNowSec`. Integer seconds let the shaders take a tumble angle or a
+drift modulo its period exactly at any date, and let born and death times compare without rounding.
+
+### When sim time holds
+
+Sim time advances freely except in one case: while the Kessler scenario's history has not been computed up
+to the current moment, sim time may run ahead of it by about two seconds of the current time warp (at most
+6 h), then holds there with a banner, "Computing the debris cascade", until the background computation
+catches up. See [Kessler syndrome](kessler.md).
+
 ### Approximations
 
 - **UTC = UT1 = TT.** The difference between UTC and UT1 (under 1 s) and between UT1 and TT (about
@@ -161,7 +176,8 @@ week. The simulation keeps every float quantity small or relative:
 | Quantity | Strategy | Residual |
 |---|---|---|
 | Absolute time | `int64` days + `double` seconds on the CPU | none |
-| Elapsed time on the GPU | orbits rebaked every 7 sim days; \( \Delta t \) sent as two floats | exact to the double |
+| Elapsed time on the GPU | orbit epoch moved every 7 sim days on whole seconds, phases re-baked on the GPU in 64-bit fixed-point turns ([details](orbits.md#the-weekly-rebake)); \( \Delta t \) sent as two floats | exact to the double |
+| Scenario time (debris, deaths, tumbles) | whole seconds since the scenario epoch, `int32`; periodic angles taken modulo their integer period | exact |
 | Orbital phase | two-float product in `orbitPhase()` | about 1 m median, 9 m max along-track ([details](orbits.md#position-error-budget)) |
 | GMST, window phases | reduced modulo \( 2\pi \) or the window length in double, then narrowed | \( < 10^{-6} \) rad |
 | Observer and satellite positions | ECI floats, observer-relative differences | about 0.5 m |
@@ -188,6 +204,7 @@ Observer latitude, longitude and height are persisted under `observer`.
 | File | Function / symbol |
 |---|---|
 | `src/simulations/SatPhotometry.cpp` | `earthRotationAngle()`, `observerEciAt()`, `sunDirEciAt()`, `moonGeoEciAt()` |
-| `src/simulations/SatelliteSim.cpp` | time advance in `recordCompute()`, `updatePositions()` (ENU basis, Sun, Moon, planets) |
+| `src/simulations/SatelliteSim.cpp` | time advance and the Kessler frontier hold in `recordCompute()`, `updatePositions()` (ENU basis, Sun, Moon, planets) |
+| `shaders/sat_rebake.comp` | the GPU epoch rebake |
 | `src/simulations/SatelliteSim.h` | `obsEyeRadiusM()`, `kMaxObsHeightM`, `kTimeScales` |
 | `shaders/include/terrain.glsl` | `enuBasis()`, `observerEffHeight()`, `observerPos()` |

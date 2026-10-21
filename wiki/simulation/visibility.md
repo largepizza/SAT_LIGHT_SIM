@@ -69,7 +69,7 @@ for every consumer (satellites, stars, planets, the Milky Way, zodiacal light, a
 ### The model
 
 Two exponential components share the **sea-level zenith extinction** \( k \) (the "Extinction" setting,
-default 0.079 mag):
+default 0.18 mag):
 
 | Component | Scale height | Share of \( k \) |
 |---|---|---|
@@ -122,16 +122,16 @@ Extinction in magnitudes for a source at infinity:
 
 | Eye height | \( k \) | Zenith | 30 deg | 10 deg | Horizon |
 |---|---|---|---|---|---|
-| sea level | 0.079 (default) | 0.08 | 0.16 | 0.44 | 4.6 |
-| 4 km | 0.079 | 0.03 | 0.06 | 0.17 | 1.1 |
-| 10 km | 0.079 | 0.01 | 0.03 | 0.08 | 0.48 |
+| sea level | 0.18 (default) | 0.18 | 0.36 | 1.02 | 10.4 |
+| 4 km | 0.18 | 0.06 | 0.14 | 0.38 | 2.5 |
+| 10 km | 0.18 | 0.03 | 0.06 | 0.17 | 1.1 |
 | sea level | 0.25 | 0.25 | 0.50 | 1.41 | 14.4 |
 | 4 km | 0.25 | 0.09 | 0.19 | 0.53 | 3.5 |
 | 10 km | 0.25 | 0.04 | 0.09 | 0.24 | 1.5 |
 
 The horizon value is larger than a classic airmass formula would give (Kasten and Young's airmass of
 about 38 times \( k \)) because the low aerosol layer stacks up along grazing paths. Real clear-sky V-band
-values of \( k \) are 0.2 to 0.3 at sea level; the default 0.079 is a tuned, very clear sky.
+values of \( k \) are 0.2 to 0.3 at sea level; the default 0.18 is a clear sky.
 
 ### Limits
 
@@ -267,7 +267,7 @@ mag 10.7) is dropped before drawing.
 | Day suppress | `photometry.day_suppression` | 570 |
 | Moon suppress | `photometry.moon_suppression` | 6.6 |
 | Pollution gain | `photometry.light_pollution_gain` | 25 |
-| Extinction | `photometry.extinction_coeff` | 0.079 |
+| Extinction | `photometry.extinction_coeff` | 0.18 |
 | Vis threshold | `photometry.vis_thresh` | 0.0001 |
 | Point peak mag | `photometry.point_ref_mag` | 1.5 |
 | Point contrast | `photometry.point_gamma` | 0.8 |
