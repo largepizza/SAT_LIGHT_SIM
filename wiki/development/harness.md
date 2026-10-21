@@ -161,6 +161,7 @@ A failing command is recorded with its reason and the script continues; the run'
 | `const list`, `const "<name>"\|all on\|off [highlight=on\|off]` | constellation visibility |
 | `roster list`, `roster remove "<name>"`, `roster add "<name>"` | change the roster at runtime ([Architecture](architecture.md#runtime-roster-changes)). Satellite indices move, so the selection, follow, track and viewer are dropped |
 | `follow [sat=<i>] [offset=along,cross,radial] [fly=on]`, `follow off [fly=on]` | ride with a satellite (types with a geometry model); `fly=on` uses the UI's animated Go to and its return |
+| `follow log on`, `follow log off [name=followlog] [top=12]` | record Go to's camera against the object every frame (offset, view and camera in the object's along / cross / radial frame, distance, the frame's axis); `off` writes `captures/<name>.followlog.json` and ranks the largest per-frame jumps of each with the object kind before and after. A smooth follow through a mission changes the view by under about 0.1 deg a frame; a handover snap or a frame flip reads degrees |
 | `follow stay`, `follow return` | the follow HUD's *Stay here* (a free observer where the camera is) and *Return* (back to the default offset; when not following, follow the last object again) |
 | `follow toward=observer\|sun [dist=300] [side=0] [lift=0] [look=observer]`, `follow aim=sat` | place the following camera on the satellite's line to the ground observer or to the Sun, aimed at it (the side and flare the observer sees) |
 | `track [on\|off]` | the selection panel's Track lock; released by `select none`, `select planet`, `follow` and any explicit aim |
@@ -244,7 +245,7 @@ tonemapping, so `tools/harness/lightscan.py` can decode a pixel back to a number
 
 | Command | What it does |
 |---|---|
-| `ui show\|hide`, `ui scale <0.75-2>` | HUD visibility and UI scale |
+| `ui show\|hide`, `ui scale <0.75-2> [auto=0\|1]`, `ui reset <window\|all>` | HUD visibility and the UI scale setting (`auto=` the window-height factor; `state` -> `render.ui_scale` is the effective value); `ui reset` forgets a window's position and size, so it opens next at its default for the current window size |
 | `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|bookmarks\|cine\|reports\|missions [tab=]\|console>`, `ui close <name\|all>` | windows (`info`, `viewer` and `trace` need a selected satellite); an advanced tab turns on advanced settings; `close all` includes the Issue reports and Missions windows |
 | `ui click <ElementId>[:index] [fx=0.5] [fy=0.5] [to_fx= to_fy=] [hold=N]` | move a scripted pointer onto the element (last frame's layout) and click through the real hover and click path; with `to_fx`/`to_fy` it is a drag. A UI-kit element is `Key:index`. The click can also reach the sky picker: re-`select` before opening a window that needs the selection |
 | `ui type <text>`, `ui key <enter\|esc\|tab\|backspace\|delete\|left\|right\|up\|down\|home\|end\|w\|]\|[\|f7\|f8\|f9\|f10\|f12>` | keyboard input into the focused text field, else the game; the F-keys take a player's shot (screenshot, screenshot with UI, issue shots, HQ photo) |
@@ -360,6 +361,12 @@ Motion and consistency tools, each with `gen` (write a script), a run with `run.
 Sample before committing to a benchmark: one launch that loads each candidate view, captures it still and records a
 few seconds of the motion in question, then keep only the candidates where the problem is on screen. The harness
 is bit-deterministic run to run, so one scored run per build is enough.
+
+`tools/harness/ui_lowres.py run [--sizes 1024x768,...]` is the **low-resolution UI check**: one app, `window WxH`
+per size, every window opened alone at its default (`ui reset all`), then `ui dump` and a capture. It fails when
+a window leaves the screen or covers too much of it, when text is cut sideways, off screen or overlapping, or when
+the HUD's panels and chips overlap. `check <run dir>` re-checks a finished run, `sheets <run dir>` makes contact
+sheets per size.
 
 `tools/harness/glare_track.py <captures dir> <prefix> [--plot out.png]` follows a mesh glare over a sequence of
 captures and compares it with where the CPU puts the Sun's image in the selected satellite's mirror (from the

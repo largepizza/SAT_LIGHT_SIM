@@ -289,6 +289,15 @@ By default this is permanent: no operator sends replacements into shells being g
 - a slot killed by the storm or the cascade before its batch's arrival gets no replacement and no retiree;
 - trains and retirees are not engine objects: they never collide, whatever the debris.
 
+With the default (stand down for good) the stand-down is also a boundary on the schedule walk. A batch's lift-off
+is never earlier than its arrival less the program's longest raise and the catalog's longest vehicle lead (the
+candidate search runs forward from there, and pad ranks only move a launch later), so every batch arriving after
+the CME plus that margin is stood down whatever its pad: the walk's window ends there, and such a batch is neither
+built nor walked. A batch built anyway (by the Missions window's searches, `launch why`) is stood down before its
+candidate pass is searched, and one whose candidate already lifts off after the CME is stood down before its rivals
+are looked up. The schedule before the CME is unchanged by this (`SATLIGHTSIM_LAUNCH_STANDDOWN_SKIP=0` turns the
+shortcut off for the A/B: `launch list`, `padstats` and `why` match).
+
 A roster satellite whose replacement would launch after the storm reads "Replacement: none scheduled" in
 its mission facts. Crew flights follow the same stand-down; their behaviour when a station itself is lost is
 on [Crew and cargo flights](crew-flights.md).

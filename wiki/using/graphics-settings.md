@@ -196,6 +196,7 @@ The two weights are the share of each new frame in the blend; they have no slide
 | Frame limiter | `display.fps_cap_mode` | Off (uncapped, tearing allowed), 30, 60, 120, V-Sync | V-Sync |
 | Window mode | (not saved) | Windowed, Fullscreen (F11 toggles) | Windowed (maximised) |
 | Text scale | `display.ui_scale` | 0.75 to 2 | 1.5 |
+| Scale with window | `display.ui_auto_scale` | on, off | on |
 | Units | `display.unit_system` | Metric, Imperial | Metric |
 | UI theme | `display.ui_theme` | Classic, Navy, Night red, Midnight (`classic`, `navy`, `night`, `midnight`) | Midnight |
 | Window opacity | `display.window_opacity` | 60% to 100% | 100% |
@@ -203,6 +204,18 @@ The two weights are the share of each new frame in the blend; they have no slide
 With V-Sync, a frame that misses the display's refresh waits for the next one, so on a 60 Hz display a GPU frame
 just over 16.7 ms shows as 30 frames per second. If the frame rate halves suddenly, lowering the cost slightly
 often doubles it back; the automatic render scale is built for exactly this.
+
+**Text scale and Scale with window.** The interface is drawn at *Text scale* times a factor from the window's
+height while *Scale with window* is on: clamp(height / 1000, 0.7, 1). At 1000 px and taller (a maximized window
+on a 1080p desktop) nothing changes; a 720 px window draws the interface at 72%. The automatic factor never takes
+text below 16 px, the smallest size the built-in bitmap font stays legible at. Turn it off to keep *Text scale*
+exactly at every window size.
+
+No window is ever larger than the screen: window sizes and minimums are capped at the screen less a small margin,
+and a window that a resolution change left partly off screen is moved back. Windows open at their 1080p size
+where it fits, else at a share of the screen (the Missions window at most 42% by 70%, docked right; Issue reports
+60% by 72%; Bookmarks 55% by 66%; Cinematics 45% wide; the Info window a third of the width, at least 350 px).
+Below about 1024 px of width the right HUD panel drops its FPS and version label rather than reach the left one.
 
 **UI theme** colours the interface only, never the sky. Midnight is near-black, mostly opaque panels with a red
 accent; Classic is the same accent and text on lighter, more translucent panels; Navy has blue-black panels and an

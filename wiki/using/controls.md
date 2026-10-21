@@ -158,8 +158,13 @@ Pressing **Go to** again (it reads **Leave** in the satellite window), or B on a
 **Following through a mission.** A followed rocket carries on through its flight: at staging the camera stays with
 the upper stage, through its burn, coast, deployment and deorbit, and into its re-entry fireball or, for Starship's
 ship, its return. A satellite in a train hands over to its slot in the constellation on arrival, and a retiring
-satellite or a debris piece to its re-entry fireball. The camera eases across each hand-over and the object keeps its
-place on screen. When nothing continues the object, Go to ends where the camera is, with a notice.
+satellite or a debris piece to its re-entry fireball. Through every milestone and hand-over (staging, a capsule's
+separation, the ship's entry and descent, a catch or a landing) the camera keeps your offset and view relative to the
+object: it glides across the hand-over's small jump with its view held in the object's frame, and the object keeps
+its place on screen. For a rocket, ship, capsule or fireball the frame's forward direction turns smoothly toward the
+direction of travel (at most 1.5 deg per sim second, or 20 deg per real second under time warp) instead of
+snapping to it, and a reversal such as a booster's boostback keeps the side you were on. When nothing continues the
+object, Go to ends where the camera is, with a notice.
 
 **Following again.** For 30 seconds after you leave Go to, a chip at the top of the screen, **Go to** *name* **again**
 (the name alone, without the object's status), follows the same object again, flying from where the camera is; the

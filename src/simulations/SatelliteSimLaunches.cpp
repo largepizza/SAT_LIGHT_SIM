@@ -28,6 +28,7 @@
 #include <array>
 #include <cctype>
 #include <atomic>
+#include <limits>
 #include <future>
 #include <thread>
 #include <mutex>
@@ -1539,6 +1540,38 @@ static bool batchExists(const SatelliteSim::LaunchState &L, const LPlane &pl, in
         return true;
     return arrivalOf(pl, k, b, life) >= pl.fillT[(size_t)b] + L.cat.minFirstLifeFrac * life;
 }
+// (2026-10-21d) The launches' stand-down at the Sun's Fury ("after the storm: stand down", the default) as an ARRIVAL
+// boundary: a batch arriving at or after it lifts off after the CME for certain, so it is stood down whatever its pad
+// and rivals. Its lift-off is never earlier than arrival - raiseDays[1] - its vehicle's lead (candidate() searches
+// forward from tA - raise - lead; pad ranks only move it later, the fast-docking pass search too). +inf when nothing
+// stands down for good (Kessler off, or "resume", whose end depends on the ranks). maxLeadS: the largest t2 +
+// deployAfter of the catalog's vehicles (maxVehicleLeadS).
+static double maxVehicleLeadS(const SatelliteSim::LaunchState &L)
+{
+    double lead = 0.0;
+    for (const launch::Vehicle &v : L.cat.vehicles)
+        lead = std::max(lead, v.t2 + v.deployAfter);
+    return lead;
+}
+// (SATLIGHTSIM_LAUNCH_STANDDOWN_SKIP=0 turns the shortcut off: the A/B for its cost and its schedule identity.)
+static bool standDownSkipOn()
+{
+    static const bool on = [] {
+        const char *e = std::getenv("SATLIGHTSIM_LAUNCH_STANDDOWN_SKIP");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+static double standDownArrival(const SatelliteSim &sim, const launch::Program &pg, double maxLeadS)
+{
+    if (!sim.kesslerEnabled || sim.launchAfterStorm != 0 || !standDownSkipOn())
+        return std::numeric_limits<double>::infinity();
+    return sim.kesslerEpoch() + pg.raiseDays[1] * kDay + maxLeadS + 1.0;
+}
+static bool standsDownAt(const SatelliteSim &sim, double tL)
+{
+    return sim.kesslerEnabled && sim.launchAfterStorm == 0 && tL >= sim.kesslerEpoch() && standDownSkipOn();
+}
 // Every batch of a plane whose arrival is in [lo, hi]: fn(k, b) — the lattice refreshes that exist, then the first
 // fills (a plane's first fills arrive in b order, fillT increasing).
 template <class F>
@@ -2034,6 +2067,13 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
         B.why = "empty";
         return;
     }
+    // Stood down at the Sun's Fury for certain (its lift-off is after the CME whatever its pad): no candidate, no rivals
+    // (2026-10-21d: after the CME, at 1 week/s, these were 4-8 ms of the walk's builds a frame, every one stood down).
+    if (B.tA >= standDownArrival(sim, pg, maxVehicleLeadS(L)))
+    {
+        B.why = "launches stand down at the Sun's Fury";
+        return;
+    }
     const SatOrbitElems e0 = sim.rosterElemsOf(sim.satOrbits[pl.sats[m0]]);
     auto normalAt = [&](double t) {
         const SatOrbitState st = satOrbitStateAt(e0, t);
@@ -2052,6 +2092,12 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
     B.veh = c0.veh;
     B.site = c0.site;
     double tL = c0.tL, az = c0.az;
+    // (2026-10-21d) A candidate after the CME stands down whatever its rank (ranks only move it later): skip the rivals.
+    if (standsDownAt(sim, c0.tL))
+    {
+        B.why = "launches stand down at the Sun's Fury";
+        return;
+    }
     {
         // The launches competing for this pad around this pass (their candidates): this one waits as many passes as
         // there are rivals of higher priority (a hash), so the cluster goes out on successive passes (~a day apart).
@@ -5259,7 +5305,7 @@ static void buildMissing(SatelliteSim &sim, SatelliteSim::LaunchState &L, const 
         par(n, [&](size_t i) { c0[i] = candidate(sim, L, toBuild[i].pi, toBuild[i].k, toBuild[i].b); });
         std::vector<std::pair<int, int64_t>> need;
         for (const SatelliteSim::LaunchState::Cand &c : c0)
-            if (c.tL >= 0.0 && c.site >= 0)
+            if (c.tL >= 0.0 && c.site >= 0 && !standsDownAt(sim, c.tL)) // (stood down: buildBatch asks no rivals)
                 for (int64_t be = (int64_t)std::floor((c.tL - 5400.0) / kRivalBucketS);
                      be <= (int64_t)std::floor((c.tL + 5400.0) / kRivalBucketS); ++be)
                     need.push_back({c.site, be});
@@ -5383,6 +5429,7 @@ void SatelliteSim::launchPrewarm()
     LaunchImpl::crewSync(*this, L);
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     std::vector<LaunchImpl::ToBuild> toBuild;
+    const double leadS = LaunchImpl::maxVehicleLeadS(L);
     for (size_t pi = 0; pi < L.planes.size(); ++pi)
     {
         const LPlane &pl = L.planes[pi];
@@ -5390,7 +5437,9 @@ void SatelliteSim::launchPrewarm()
         const double life = progLifeS(pg, (double)launchLifeScale);
         // (the walk's window, launchUpdate)
         const double lo = t - (pg.crew ? life / kDay + 14.0 : pg.deorbitDays[1] + 1.0) * kDay,
-                     hi = t + (pg.raiseDays[1] + 1.5) * kDay;
+                     hi = std::min(t + (pg.raiseDays[1] + 1.5) * kDay, LaunchImpl::standDownArrival(*this, pg, leadS));
+        if (hi < lo)
+            continue;
         LaunchImpl::forBatches(L, pl, life, lo, hi, [&](int64_t k, int b) {
             const uint64_t key = batchKey((int)pi, k, b);
             if (L.batches.find(key) == L.batches.end())
@@ -5506,6 +5555,11 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         std::vector<std::pair<uint64_t, LBatch *>> found; // in walk order; null = built below
         bool incomplete = false;
         L.walkList.clear();
+        // (2026-10-21d) The window ends where the launches stand down for good at the Sun's Fury (standDownArrival):
+        // the batches past it are all stood down (never valid, nothing to draw or write), so they are neither built nor
+        // walked. After the CME at 1 week/s they were the walk's 4-8 ms of builds every frame; once the window has passed
+        // the boundary a plane walks nothing (crew planes, whose window reaches back a refresh period, the longest).
+        const double leadS = LaunchImpl::maxVehicleLeadS(L);
         for (size_t pi = 0; pi < L.planes.size(); ++pi)
         {
             const LPlane &pl = L.planes[pi];
@@ -5513,7 +5567,9 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             const double life = progLifeS(pg, (double)launchLifeScale);
             // (a crew flight's spacecraft stays docked about a refresh period and then comes home: 2026-10-20)
             const double lo = t - (pg.crew ? life / kDay + 14.0 : pg.deorbitDays[1] + 1.0) * kDay,
-                         hi = t + (pg.raiseDays[1] + 1.5) * kDay;
+                         hi = std::min(t + (pg.raiseDays[1] + 1.5) * kDay, LaunchImpl::standDownArrival(*this, pg, leadS));
+            if (hi < lo)
+                continue;
             LaunchImpl::forBatches(L, pl, life, lo, hi, [&](int64_t k, int b) {
                 const uint64_t key = batchKey((int)pi, k, b);
                 auto it = L.batches.find(key);

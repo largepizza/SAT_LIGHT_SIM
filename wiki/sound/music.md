@@ -46,8 +46,8 @@ most a quarter of full scale per second. High orbits belong to two ambience beds
 
 ## Upwell stems
 
-While a track plays, a bright sky (many satellites glaring on screen at once) is answered by the **music**,
-not by a synth. A synth that tries to follow a recorded track in real time never fits its rhythm and harmony,
+While a track plays, spectacle in the sky (many satellites glaring on screen at once, a rocket launch, a
+re-entry fireball, a collision's dust cloud) is answered by the **music**, not by a synth. A synth that tries to follow a recorded track in real time never fits its rhythm and harmony,
 so each track has an **upwell stem**: `assets/sound/music/<track>_upwell.mp3` (or `.flac`, `.wav`), a separate
 layer the composer wrote to sit over that track. It is not a remix of the track.
 
@@ -60,23 +60,46 @@ How it is played:
   more than 50 ms apart, the stem is re-seeked (a seek can click, so it is reserved for real drift). Both are
   assumed to have the same sample rate, which is how the composer exports them.
 - **A tail.** A stem longer than its track rings out after the track ends, into the gap. Skipping cuts both.
-- **Gain from the glare.** The stem's gain is the table's `music_upwell` block, a piecewise-linear map of a
-  driver, clamped to 0..1:
+- **Gain from the spectacle.** The stem's gain is the table's `music_upwell` block: a list of `sources`,
+  each a piecewise-linear map of one driver clamped to 0..1, combined by `combine` (`max`, the loudest source,
+  or `soft_sum`, \( 1 - \prod (1 - g_i) \)):
 
 ```json
 "music_upwell": {
-  "driver": "glare_n",
-  "in":  [1, 4, 20, 100],
-  "out": [0, 0.4, 0.8, 1.0],
+  "combine": "max",
+  "sources": [
+    {"driver": "glare_n",      "in": [1, 4, 20, 100],      "out": [0, 0.4, 0.8, 1.0]},
+    {"driver": "rocket_mag",   "in": [-10, -8, -5.5, -3],  "out": [1.0, 0.85, 0.4, 0]},
+    {"driver": "stage_mag",    "in": [-13, -11, -8],       "out": [1.0, 0.6, 0]},
+    {"driver": "fireball_mag", "in": [-7, -5, -3, -1],     "out": [1.0, 0.8, 0.4, 0]},
+    {"driver": "dust_mag",     "in": [-8, -6, -4, -2],     "out": [1.0, 0.8, 0.4, 0]}
+  ],
   "fade_in_s": 2.0,
   "fade_out_s": 6.0
 }
 ```
 
-`glare_n` is the number of flares glaring on screen (see [Ambience](ambience.md#beams-and-glare)). The gain
-slides linearly toward its target: up to full in `fade_in_s`, down in `fade_out_s`. Between tracks it keeps
-its value, so a glare that outlasts a track carries into the next track's stem. The stem plays on the music
-bus, so the music volume and the altitude fade apply to it.
+A block with a single `driver` / `in` / `out` instead of `sources` is one source.
+
+| Source | What it measures |
+|---|---|
+| `glare_n` | the number of flares glaring on screen (see [Ambience](ambience.md#beams-and-glare)) |
+| `rocket_mag` | burning rocket engines |
+| `stage_mag` | sunlit rocket stages coasting close by |
+| `fireball_mag` | re-entry fireballs |
+| `dust_mag` | the dust clouds of collisions and breakups |
+
+The four `*_mag` drivers are an equivalent apparent magnitude at the camera: the summed flux of every source
+of that kind, as a magnitude (30 when there is none, more negative when brighter). A source counts when it is
+on screen (with a soft frame edge) or near the camera (fully within 8 km for a rocket, 1.5 km for a stage,
+15 km for a fireball, 20 km for a dust cloud, and not at all past six times that). So a launch watched from the
+pad or followed with Go to lifts the stem fully whichever way the camera looks, while a faint dot hundreds of
+kilometres away does nothing: a Starship seen from about 12 km is near magnitude -10.6, a small rocket near
+-8. The drivers ease up in 0.15 s and down in 0.8 s.
+
+The gain slides linearly toward its target: up to full in `fade_in_s`, down in `fade_out_s`. Between tracks
+it keeps its value, so a spectacle that outlasts a track carries into the next track's stem. The stem plays on
+the music bus, so the music volume and the altitude fade apply to it.
 
 During the intro the stem stays silent, and replaying the intro takes it away within a second. The ambience's
 own beam layers are gated on the `music_gap` driver and speak only while no track plays.

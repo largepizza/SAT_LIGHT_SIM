@@ -70,6 +70,16 @@ later in `buildUI()` is drawn on top. A window's own floating children (chips ov
 marker labels) must use the **same** `zIndex` as the window; a higher one draws them over any later window that
 covers their parent.
 
+**Low resolutions.** Every builder reads `uiScale`, the effective scale set once per frame at the top of
+`buildUI()` (`updateUiScale()`): the setting `uiScaleUser` (`display.ui_scale`) times `uiAutoScaleFactor()` =
+clamp(window height / 1000, 0.7, 1) while `uiScaleAuto` (`display.ui_auto_scale`) is on. `fs()` never lets the
+automatic factor take text below 16 px. Window sizes and minimums are capped at the screen less 8 px every frame
+(`buildResizableWindow()`), and windows are kept on screen after a resolution change. A window's default size is
+its 1080p size where it fits and a share of the screen otherwise, so give a new window a share-based default
+rather than a fixed pixel size. `tools/harness/ui_lowres.py run` opens every window alone at its default and
+checks it, and the HUD, at 1024 x 768, 1280 x 720, 1366 x 768, 1600 x 900 and 1920 x 1009
+([Harness](harness.md#analysis-tools)).
+
 **Opacity.** A window's panel alpha is *Window opacity* (Display tab, `display.window_opacity`, 60 to 100%,
 default 100% = opaque), applied in `buildResizableWindow()`.
 

@@ -38,7 +38,7 @@ The top level has five keys:
 |---|---|
 | `version` | 1 |
 | `tonality` | how the key is derived from the music ([Music and tonality](music.md#the-tonality-block)) |
-| `music_upwell` | the upwell stem's gain as a function of a driver ([Music and tonality](music.md#upwell-stems)) |
+| `music_upwell` | the upwell stem's gain from one or more driver maps ([Music and tonality](music.md#upwell-stems)) |
 | `shell_groups` | groups of constellations whose proximity becomes drivers ([below](#satellite-shell-drivers)) |
 | `layers` | the list of layers |
 
@@ -159,6 +159,7 @@ not ice" is the better test for open grassland.
 | `glare_n` | count | how many flares are glaring on screen; each counts fully once it is 0.4 past the glare threshold. Eased up in 0.1 s, down in 0.6 s |
 | `glare_sum` | arbitrary | their combined strength past the threshold, eased the same way |
 | `beam_site` | count | Reflect beams converged on ground sites near the listener: each counts 1 within 15 km, \( 1/(1 + (e/25\,\text{km})^2) \) beyond, where \(e\) is the distance past 15 km. Eased over 1.5 s |
+| `rocket_mag`, `stage_mag`, `fireball_mag`, `dust_mag` | mag | the upwell stem's other sources: burning engines, sunlit coasting stages close by, re-entry fireballs, collision dust clouds, each summed over the sources on screen or near the camera as an equivalent apparent magnitude (30 = none). Eased up in 0.15 s, down in 0.8 s ([Music and tonality](music.md#upwell-stems)) |
 | `music_gap` | 0..1 | 0 while a track plays; a triangle over the silent gap between tracks (0, 1 halfway, 0); 1 when no music is audible (player off or paused, music volume or the altitude fade below 3%). Moves at most 1/4 per second |
 
 `glare_n` and `glare_sum` apply the glare sprites' own test: a flare glares when the bloom's log response,

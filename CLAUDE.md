@@ -5292,6 +5292,21 @@ launches follow per-program cadences (no real manifest).
   (no colour, no rim); exact while this frame's cut stays above that margin, else the next frame skips nothing
   (`plumeCutPrev`): Twilight Starship 1.77 -> 1.47 ms at 1x (1801 candidates, ~1030 skipped; `launch state` ->
   `cpu_split_ms.plume_skipped`). The remaining plume cost is the per-parcel state (`Parcel::at`) of every parcel.
+  **The stand-down boundary (2026-10-21d, `standDownArrival` / `standsDownAt` / `maxVehicleLeadS`).** After the CME
+  (after_storm 0) every launch stands down, yet the walk kept building the batches entering its window: at 1 week/s
+  4-8 ms of `launch.buildBatches` a frame, plus the background build's apply, 11-27 ms in the worst frames (D,
+  `harness_runs/standdown/`). A lift-off is never earlier than arrival - raiseDays[1] - the catalog's largest
+  t2 + deployAfter (candidate() searches forward from tA - raise - lead; pad ranks and the fast-dock pass search only
+  move it later), so a batch arriving after epoch + that is stood down whatever its pad: the walk's (and
+  launchPrewarm's) window ends there (`hi = min(hi, standDownArrival)`), buildBatch stands such a batch down before
+  its candidate, a candidate past the epoch stands down before its rivals, and buildMissing asks no rival buckets for
+  one. Only `B.why` can differ (a post-CME batch reads "stand down" where it read "no site" / "pad taken"); every valid
+  batch is the same. `SATLIGHTSIM_LAUNCH_STANDDOWN_SKIP=0` turns it off: `launch list` / `padstats` / `why` across the
+  boundary (2037-05-01, 07-10) identical on and off (`harness_runs/standdown/ab.satcmd`, `parse.py`). Measured (D,
+  frames over 33 ms): worst `cpu.launches` off 6.8 / 17.5 / 23.1 ms at 1 h / 1 d / 1 w per s, on <= 4 ms;
+  `cpu_split_ms.window` 1 d 2.4 -> 0.65, 1 w 1.9 -> 0.2, 1 mo 0.6 -> 0.03; batches cached 7000 -> 4000. Still ~1.2 ms
+  of record writes from 1 min/s to 1 d/s (the retirees deorbiting after the CME). Resume (after_storm 1) is not
+  shortcut: its end depends on the ranks.
 - Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; Missions window > Controls (moved
   there from Settings > Constellations, which keeps a pointer + "Open the Missions window"); harness
   `launch ...` (docs/HARNESS.md: `launch next vehicle=`, `launch select kind=rocket|booster|upper|...`); default

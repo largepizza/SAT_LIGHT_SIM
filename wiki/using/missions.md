@@ -160,7 +160,7 @@ The milestones are, depending on the object:
 A skip moves the clock to a little before the milestone (10 s, less where milestones crowd together), sets time to
 1x and keeps a paused clock paused. The selection and Go to stay on the same object at the new time: the rocket, its
 booster, a train member, a retiree. A satellite still in its train before the jump is followed into its slot after
-it, and the reverse.
+it, and the reverse. While following, the camera keeps its offset and view relative to the object across the skip.
 
 | Control | Action |
 |---|---|

@@ -299,9 +299,18 @@ lattice coordinate in double precision, so a ray keeps its slot while the eye fl
 old is still in the right place. A change of axes or cell size pivots the lattice about the eye and moves no ray
 by more than metres between its refreshes.
 
+The cascade also rides **along** the Sun. Its knots stand at fixed distances along the Sun's direction from the
+window's centre, which sits under the eye, so a bake read a few frames later is shifted along its rays by the
+eye's motion since. The CPU integrates that motion too and keeps, for each half of the rays (each half is baked
+on alternate odd frames), the knot origin of its last bake; the lookup reads each ray at the knots it was baked
+for (`cv2.sunCasc8.xy`, the shift since that bake). This matters most from orbit, where the height-scaled flying
+speed is hundreds of km/s: without it the window would read each cloud's own shadow, a dark, ray-streaked
+rectangle under the eye.
+
 **Jittered running means.** Each bake places a ray's sub-rays at a new point of its cell and steps at a new
 phase; the stored transmittance is the mean of the bakes (a new bake weighs 1 / the bakes so far, at least 1/8
-for the grid and cascade; 1, 1/2, 1/3 then 1/4 for a ring slot). With fixed sub-rays a ray knows a cloud top's
+for the grid and cascade; 1, 1/2, 1/3 then 1/4 for a ring slot). While the eye moves along the Sun, a cascade
+bake replaces the ray's mean instead: bakes for different knot origins cannot be averaged. With fixed sub-rays a ray knows a cloud top's
 height only to a fraction of its cell, which at a 0.5 deg Sun is tens of km along the ground, and shadow edges
 come out as stairs.
 
@@ -328,7 +337,9 @@ fine grid's ray length. The rings' and grid's length is the shell's depth along 
 the cascade on, the bake costs what the fine grid alone costs: the two alternate frames.
 
 **When they run.** The cascade runs while "Far cloud shadows" is on, the Sun is above about −5.7 deg, and the
-far cloud layer has not taken over; it is weighted in once every ray has been baked (4 frames) over 8 frames.
+far cloud layer has not taken over, from orbit as near the ground: the lightning pass writes the lattice axes
+across the Sun every frame wherever the eye is. It is weighted in once every ray has been baked (4 frames) over
+8 frames.
 The rings run with the cascade while the eye is below 60 km, and fade in over 16 frames. A teleport, a time
 jump or a field setting resets them; recreating the screen images (an HQ photo, a render-scale step) does not,
 because they live in the clouds' space.
