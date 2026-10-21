@@ -582,8 +582,9 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
         return;
     if (bmChrome.w <= 0.0f)
     {
-        bmChrome.w = std::min(640.0f, inp.screenW - 40.0f);
-        bmChrome.h = std::max(360.0f, std::min(620.0f, inp.screenH - 240.0f));
+        // 640 x 620 where it fits; on a small screen ~55% of the width, ~66% of the height (2026-10-21)
+        bmChrome.w = winDefault(640.0f, 0.55f, inp.screenW, 340.0f);
+        bmChrome.h = winDefault(std::min(620.0f, inp.screenH - 240.0f), 0.66f, inp.screenH, 360.0f);
     }
     auto text = [&](const char *s, Clay_Color c, float size)
     {

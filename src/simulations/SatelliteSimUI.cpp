@@ -657,6 +657,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     cineTick(dt); // review 17: a playing / exporting cinematic owns the camera and the clock
     reportTick(ui.input().dt); // KB_SAVE_SNAPSHOT / KB_REPORT_NEW: a shot into an issue report (SatelliteSimReports.cpp)
     syncUiTheme(); // after the harness: a `set display.ui_theme` shows in the frame it ran in
+    updateUiScale(ui.input().screenH); // (2026-10-21) this frame's UI scale: the setting x the window's height
 
     // Track (the selection panel's toggle) re-aims at the selection here, before the look block below:
     // it reads obsFacing/obsDir, and that block is where this frame's look input is dropped while the
@@ -1251,6 +1252,28 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
 
     const int kGearSz = 28;
 
+    // Compact (2026-10-21, low resolutions): when the full right panel would reach the left one (1024 px wide), it
+    // drops the FPS readout and the version label. Decided from last frame's boxes, re-checked whenever the screen
+    // or the UI scale changes (a couple of full-width frames then).
+    {
+        const float key = inp.screenW * 4096.0f + inp.screenH + uiScale * 0.001f;
+        if (key != hudCompactKey_)
+        {
+            hudCompactKey_ = key;
+            hudCompact_ = false;
+            hudCompactSettle_ = 2;
+        }
+        else if (hudCompactSettle_ > 0)
+            --hudCompactSettle_;
+        else if (!hudCompact_)
+        {
+            const Clay_ElementData L = Clay_GetElementData(CLAY_ID("LeftPanel"));
+            const Clay_ElementData R = Clay_GetElementData(CLAY_ID("RightPanel"));
+            if (L.found && R.found && L.boundingBox.x + L.boundingBox.width + 8.0f > R.boundingBox.x)
+                hudCompact_ = true;
+        }
+    }
+
     CLAY(CLAY_ID("RightPanel"), {.layout = {
                                      .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(38)},
                                      .padding = {10, 10, 6, 6},
@@ -1347,30 +1370,33 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
                       CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(10)}));
         }
 
-        CLAY(CLAY_ID("SBDiv4"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
-                                 .backgroundColor = Pal::divider}) {}
-
-        // ── FPS ───────────────────────────────────────────────────────────
-        CLAY(CLAY_ID("SBFps"), {.layout = {
-                                    .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIT(0)},
-                                    .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+        if (!hudCompact_) // (no `return`/`break` in a CLAY block: a plain if)
         {
-            CLAY_TEXT(fpsStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
-        }
+            CLAY(CLAY_ID("SBDiv4"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
+                                     .backgroundColor = Pal::divider}) {}
 
-        CLAY(CLAY_ID("SBDivVersion"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
-                                       .backgroundColor = Pal::divider}) {}
+            // ── FPS ───────────────────────────────────────────────────────────
+            CLAY(CLAY_ID("SBFps"), {.layout = {
+                                        .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIT(0)},
+                                        .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+            {
+                CLAY_TEXT(fpsStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
+            }
 
-        // ── Version ───────────────────────────────────────────────────────
-        // Built from APP_VERSION (CMake → version.h) so it can't drift from the VERSION file.
-        static char versionBuf[48] = {};
-        if (!versionBuf[0])
-            snprintf(versionBuf, sizeof(versionBuf), "SAT LIGHT SIM v%s", APP_VERSION);
-        Clay_String versionStr{false, (int32_t)strlen(versionBuf), versionBuf};
-        CLAY(CLAY_ID("SBVersion"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}}})
-        {
-            CLAY_TEXT(versionStr,
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
+            CLAY(CLAY_ID("SBDivVersion"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
+                                           .backgroundColor = Pal::divider}) {}
+
+            // ── Version ───────────────────────────────────────────────────────
+            // Built from APP_VERSION (CMake → version.h) so it can't drift from the VERSION file.
+            static char versionBuf[48] = {};
+            if (!versionBuf[0])
+                snprintf(versionBuf, sizeof(versionBuf), "SAT LIGHT SIM v%s", APP_VERSION);
+            Clay_String versionStr{false, (int32_t)strlen(versionBuf), versionBuf};
+            CLAY(CLAY_ID("SBVersion"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}}})
+            {
+                CLAY_TEXT(versionStr,
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
+            }
         }
 
         CLAY(CLAY_ID("SBDiv5"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(20)}},
@@ -1818,8 +1844,10 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                 if (traceValid)
                 {
                     // Legend and axis titles on one line: mag on the left gutter, phase on the right.
+                    // (bottom padding 2026-10-21: the top tick labels are centred on the plot's top edge, and half of
+                    // each sat on the axis titles — "mag" over "0", "phase" over "180")
                     CLAY(CLAY_ID("TraceLegend"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                             .padding = {0, 0, 4, 0},
+                                                             .padding = {0, 0, 4, (uint16_t)(fs(11) * 0.6f)},
                                                              .childGap = 4,
                                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
@@ -1943,7 +1971,8 @@ void SatelliteSim::updateViewerView(const UIInput &inp, UIRenderer &ui)
     {
         // Right edge: the trace window lives above the time controls in the bottom-left corner, so the
         // satellite windows anchor right. Narrow, because its body is a scrolling list of sections.
-        infoChrome.w = std::min(470.0f, std::max(380.0f, inp.screenW * 0.34f));
+        // (2026-10-21) at most a third of a small screen, 350 at the least
+        infoChrome.w = winDefault(470.0f, 0.33f, inp.screenW, 350.0f);
         // Tall by default (2026-10-19): the readouts are open sections under the render, not hidden behind headers.
         // Stops above the bottom-right HUD panel (its menu buttons).
         infoChrome.h = std::min(1000.0f, std::max(560.0f, inp.screenH - 12.0f - 130.0f)); // 560 = its min height
@@ -2496,7 +2525,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
     // rows, and the sections need a usable slice under them — below that the window would be all render and no list.
     buildResizableWindow(
         inp, ui, infoChrome, 4, viewerTitle, true, hovInfoClose, inp.screenW - infoChrome.w - 12.0f, 12.0f,
-        380.0f, 560.0f, 1400.0f, 1600.0f,
+        350.0f, std::min(560.0f, inp.screenH * 0.72f), 1400.0f, 1600.0f,
         [&]()
         {
             CLAY(CLAY_ID("InfoBody"), {.layout = {
@@ -3093,12 +3122,20 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
         snprintf(againTip, sizeof(againTip), "Follow it again, flying from here (%s)",
                  keyDisplayName(keybindings[KB_FOLLOW_RETURN].key));
         bool clicked = false;
+        // (2026-10-21, low resolutions) Below the top-left selection chip when, on a narrow screen, the two would meet.
+        float againY = 12.0f;
+        {
+            const Clay_ElementData chip = Clay_GetElementData(CLAY_ID("SelSatChip"));
+            const Clay_ElementData me = Clay_GetElementData(CLAY_ID("FollowAgainBtn"));
+            if (chip.found && me.found && chip.boundingBox.x + chip.boundingBox.width + 8.0f > inp.screenW * 0.5f - me.boundingBox.width * 0.5f)
+                againY = chip.boundingBox.y + chip.boundingBox.height + 6.0f;
+        }
         CLAY(CLAY_ID("FollowAgainBtn"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED((float)fs(11) + 13.0f)},
                                                     .padding = {10, 10, 0, 0},
                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                          .backgroundColor = hovFollowAgain ? Pal::btnHover : Pal::panelBgFade,
                                          .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
-                                         .floating = {.offset = {0.0f, 12.0f}, .zIndex = 6, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
+                                         .floating = {.offset = {0.0f, againY}, .zIndex = 6, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
         {
             bool n = Clay_Hovered();
             sndRollover(n, hovFollowAgain);
@@ -3281,6 +3318,17 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
     if (!chrome.open)
         return false;
 
+    // No window is ever larger than the screen (2026-10-21, low resolutions): the maximum AND the minimum are capped at
+    // the screen less a margin, so a window opened, or kept open, on a smaller window / after a resolution change
+    // shrinks to fit (its content scrolls) and stays on screen.
+    if (inp.screenW > 64.0f && inp.screenH > 64.0f)
+    {
+        const float scrW = inp.screenW - 2.0f * kWinScreenMargin, scrH = inp.screenH - 2.0f * kWinScreenMargin;
+        maxW = std::min(maxW, scrW);
+        maxH = std::min(maxH, scrH);
+        minW = std::min(minW, maxW);
+        minH = std::min(minH, maxH);
+    }
     if (chrome.x < 0.0f)
     {
         chrome.x = defaultX;
@@ -3291,6 +3339,8 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
     // settings window's follows uiScale), so enforce the limits every frame.
     chrome.w = std::clamp(chrome.w, minW, std::max(minW, maxW));
     chrome.h = std::clamp(chrome.h, minH, std::max(minH, maxH));
+    chrome.x = std::clamp(chrome.x, 0.0f, std::max(0.0f, inp.screenW - chrome.w));
+    chrome.y = std::clamp(chrome.y, 0.0f, std::max(0.0f, inp.screenH - chrome.h));
 
     bool justClosed = false;
     // The title is ELLIPSIZED to the room left of the title-bar icons and the close button (2026-10-21 QA: a long
@@ -3416,6 +3466,12 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
 // ─── buildSettingsWindow ────────────────────────────────────────────────────
 void SatelliteSim::buildSettingsWindow(const UIInput &inp, UIRenderer &ui)
 {
+    if (settingsChrome.w <= 0.0f || settingsChrome.h <= 0.0f)
+    {
+        // 720 x 480 (its 1080p size), within the screen (2026-10-21; its minimum, 420 tall, still applies).
+        settingsChrome.w = winDefault(720.0f, 0.92f, inp.screenW);
+        settingsChrome.h = winDefault(480.0f, 0.75f, inp.screenH);
+    }
     float defaultX = (inp.screenW - settingsChrome.w) * 0.5f;
     float defaultY = (inp.screenH - settingsChrome.h) * 0.5f;
     // minW=680: the Photometry/Clouds sliders shrink responsively with the window
@@ -4433,10 +4489,15 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         }
     }
     {
-        float s = uiScale;
+        float s = uiScaleUser;
         if (stepper("UiScale", "Text scale", s, 0.75f, 2.0f, 0.125f, "%.2fx", 1.0f, nullptr))
-            uiScale = s;
+            uiScaleUser = s;
     }
+    // (2026-10-21) The automatic part of the UI scale: smaller on a short window (1 at 1000 px and up, 0.77 at 768, 0.72 at 720),
+    // times the Text scale above; text never shrinks below 16 px through it.
+    uiToggleRow(inp, ui, "UiAutoScale", 0, "Scale with window", uiScaleAuto,
+                "Shrink the interface on a short window (under 1000 px tall): 0.77x at 768 px, 0.72x at 720. Text stays at "
+                "least 16 px");
     {
         static const char *kUnits[2] = {"Metric", "Imperial"};
         if (int c = uiChoiceRow(inp, ui, "Units", 0, "Units", kUnits, 2, unitSystem == UnitSystem::Metric ? 0 : 1); c >= 0)
@@ -6913,6 +6974,12 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
 // settings window (was a hand-rolled near-duplicate before; now one window implementation).
 void SatelliteSim::buildViewControlsWindow(const UIInput &inp, UIRenderer &ui)
 {
+    if (viewControlsChrome.w <= 0.0f || viewControlsChrome.h <= 0.0f)
+    {
+        // 300 x 340, and on a short screen it stops above the bottom-left HUD panel (2026-10-21)
+        viewControlsChrome.w = winDefault(300.0f, 0.4f, inp.screenW);
+        viewControlsChrome.h = winDefault(340.0f, 1.0f, inp.screenH - 12.0f - 110.0f, 220.0f);
+    }
     buildResizableWindow(inp, ui, viewControlsChrome, 1, "Controls", true, hovViewControlsClose,
                          12.0f, 12.0f, 260.0f, 220.0f, 600.0f, 700.0f,
                          [&]()
@@ -7204,7 +7271,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
         return;
     if (cineChrome.w <= 0.0f)
     {
-        cineChrome.w = 560.0f;
+        cineChrome.w = winDefault(560.0f, 0.45f, inp.screenW, 420.0f); // (2026-10-21: <= 45% of a small screen)
         // Clear of the time bar at the bottom (a taller window ran under it).
         const float top = cineChrome.y > 0.0f ? cineChrome.y : 140.0f;
         cineChrome.h = std::max(380.0f, std::min(760.0f, inp.screenH - top - 80.0f));
@@ -8402,7 +8469,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         auto &d = j["display"];
         if (schemaMatches)
         {
-            uiScale = d.value("ui_scale", uiScale);
+            uiScaleUser = std::clamp(d.value("ui_scale", uiScaleUser), 0.75f, 2.0f);
+            uiScaleAuto = d.value("ui_auto_scale", uiScaleAuto);
             renderScale = d.value("render_scale", renderScale);
             computeFollowsRenderScale = d.value("clouds_follow_render_scale", computeFollowsRenderScale);
             dynResEnabled = d.value("dynamic_resolution", dynResEnabled);
@@ -9050,7 +9118,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sharp_mirror_reflections", sharpReflections}};
 
     j["display"] = {
-        {"ui_scale", uiScale},
+        {"ui_scale", uiScaleUser},
+        {"ui_auto_scale", uiScaleAuto},
         {"render_scale", renderScale},
         {"clouds_follow_render_scale", computeFollowsRenderScale},
         {"dynamic_resolution", dynResEnabled},

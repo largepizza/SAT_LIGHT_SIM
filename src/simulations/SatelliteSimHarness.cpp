@@ -475,7 +475,9 @@ json SatelliteSim::harnessStateJson()
                    {"width", ctx_ ? ctx_->swapExtent.width : 0},
                    {"height", ctx_ ? ctx_->swapExtent.height : 0},
                    {"ui_visible", uiVisible},
-                   {"ui_scale", uiScale}};
+                   {"ui_scale", uiScale},
+                   {"ui_scale_setting", uiScaleUser},
+                   {"ui_scale_auto", uiScaleAuto}};
 
     json sel = json::object();
     if (selectedSatIndex >= 0 && selectedSatIndex < (int)satOrbits.size())
@@ -3143,26 +3145,43 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const auto &items = harnessUi_->layoutDump();
             const float W = ctx_ ? (float)ctx_->swapExtent.width : 0.0f, H = ctx_ ? (float)ctx_->swapExtent.height : 0.0f;
             json list = json::array(), clipped = json::array(), offscreen = json::array(), overlaps = json::array();
+            json windows = json::array(), winOff = json::array();
             std::vector<size_t> texts;
             for (size_t i = 0; i < items.size(); ++i)
             {
                 const auto &it = items[i];
                 json e = {{"i", i}, {"kind", it.kind}, {"box", {it.x, it.y, it.w, it.h}}};
                 if (!it.id.empty())
+                {
                     e["id"] = it.id;
+                    e["index"] = it.idIndex; // CLAY_IDI's index: `GenWin` index = the window id (0 settings, 8 missions...)
+                    // (2026-10-21) every window's rect, and whether it lies inside the screen
+                    if (it.id == "GenWin" && it.kind == std::string("rect"))
+                    {
+                        const bool inside = it.x >= -0.5f && it.y >= -0.5f && it.x + it.w <= W + 0.5f && it.y + it.h <= H + 0.5f;
+                        windows.push_back({{"win", it.idIndex}, {"box", {it.x, it.y, it.w, it.h}}, {"inside", inside},
+                                           {"cover", W > 0 && H > 0 ? it.w * it.h / (W * H) : 0.0f}});
+                        if (!inside)
+                            winOff.push_back(it.idIndex);
+                    }
+                }
                 if (it.kind == std::string("text"))
                 {
                     e["text"] = it.text;
                     e["font"] = it.fontSize;
+                    e["clip"] = {it.clip[0], it.clip[1], it.clip[2], it.clip[3]};
                     texts.push_back(i);
                     const float tol = 0.5f;
                     const bool inClip = it.x >= it.clip[0] - tol && it.y >= it.clip[1] - tol &&
                                         it.x + it.w <= it.clip[0] + it.clip[2] + tol &&
                                         it.y + it.h <= it.clip[1] + it.clip[3] + tol;
+                    // (text wholly outside its scissor is not drawn: a scroll view's rows below its edge)
+                    const bool hidden = it.x >= it.clip[0] + it.clip[2] || it.y >= it.clip[1] + it.clip[3] ||
+                                        it.x + it.w <= it.clip[0] || it.y + it.h <= it.clip[1];
                     if (!inClip)
-                        clipped.push_back({{"i", i}, {"text", it.text}, {"box", e["box"]},
+                        clipped.push_back({{"i", i}, {"text", it.text}, {"box", e["box"]}, {"hidden", hidden},
                                            {"clip", {it.clip[0], it.clip[1], it.clip[2], it.clip[3]}}});
-                    if (it.x < -tol || it.y < -tol || it.x + it.w > W + tol || it.y + it.h > H + tol)
+                    if (!hidden && (it.x < -tol || it.y < -tol || it.x + it.w > W + tol || it.y + it.h > H + tol))
                         offscreen.push_back({{"i", i}, {"text", it.text}, {"box", e["box"]}});
                 }
                 list.push_back(e);
@@ -3181,8 +3200,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                         overlaps.push_back({{"a", A.text}, {"b", B.text}, {"a_box", {A.x, A.y, A.w, A.h}},
                                             {"b_box", {B.x, B.y, B.w, B.h}}});
                 }
-            json out = {{"width", W}, {"height", H}, {"ui_scale", uiScale}, {"items", list},
-                        {"text_clipped", clipped}, {"text_offscreen", offscreen}, {"text_overlaps", overlaps}};
+            json out = {{"width", W}, {"height", H}, {"ui_scale", uiScale}, {"ui_scale_setting", uiScaleUser}, {"items", list},
+                        {"text_clipped", clipped}, {"text_offscreen", offscreen}, {"text_overlaps", overlaps},
+                        {"windows", windows}, {"windows_offscreen", winOff}};
             const std::string name = safeName(pos(1).empty() ? "layout" : pos(1));
             const std::string path = harnessRunner_->capturePath(name, ".layout.json");
             std::ofstream(path) << out.dump(1) << '\n';
@@ -3191,6 +3211,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["text_clipped"] = clipped.size();
             r["text_offscreen"] = offscreen.size();
             r["text_overlaps"] = overlaps.size();
+            r["windows"] = windows;
+            r["windows_offscreen"] = winOff.size();
             if (!overlaps.empty())
                 r["overlaps"] = overlaps;
             r["message"] = name + ".layout.json: " + std::to_string(list.size()) + " items, " +
@@ -3302,7 +3324,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (sub == "show" || sub == "hide")
             uiVisible = sub == "show";
         else if (sub == "scale")
-            uiScale = glm::clamp((float)parseNum(pos(1), "ui scale"), 0.75f, 2.0f);
+        {
+            // the SETTING (display.ui_scale); `auto=0|1` the window-height factor (display.ui_auto_scale)
+            uiScaleUser = glm::clamp((float)parseNum(pos(1), "ui scale"), 0.75f, 2.0f);
+            if (c.has("auto"))
+                uiScaleAuto = c.num("auto", 1.0) != 0.0;
+            if (harnessUi_)
+                updateUiScale(harnessUi_->input().screenH);
+        }
         else if (sub == "open")
         {
             const std::string w = lower(pos(1));
@@ -3349,6 +3378,24 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     showAdvancedSettings = true;
             }
             uiVisible = true;
+        }
+        else if (sub == "reset")
+        {
+            // ui reset <name|all> (2026-10-21): forget a window's position and size, so it opens at its default for
+            // the current screen (the low-resolution check opens each window fresh at every size).
+            auto reset = [](WindowChrome &ch)
+            {
+                ch.x = ch.y = -1.0f;
+                ch.w = ch.h = 0.0f;
+            };
+            if (lower(pos(1)) == "all" || pos(1).empty())
+                for (WindowChrome *ch : {&settingsChrome, &viewControlsChrome, &traceChrome, &infoChrome, &viewerChrome,
+                                         &cineChrome, &bmChrome, &msChrome, &rpChrome})
+                    reset(*ch);
+            else if (WindowChrome *ch = chromeOf(pos(1)))
+                reset(*ch);
+            else
+                fail("ui reset: settings, viewcontrols, trace, info, viewer, cine, bookmarks, reports, missions, all");
         }
         else if (sub == "close")
         {

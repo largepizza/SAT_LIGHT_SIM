@@ -802,8 +802,9 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
         return;
     if (rpChrome.w <= 0.0f)
     {
-        rpChrome.w = std::min(720.0f, inp.screenW - 40.0f);
-        rpChrome.h = std::max(380.0f, std::min(700.0f, inp.screenH - 200.0f));
+        // 720 x 700 where it fits; on a small screen ~60% of the width, ~72% of the height (2026-10-21)
+        rpChrome.w = winDefault(720.0f, 0.60f, inp.screenW, 560.0f);
+        rpChrome.h = winDefault(std::min(700.0f, inp.screenH - 200.0f), 0.72f, inp.screenH, 380.0f);
     }
     reportThumbTick(ui);
     auto text = [&](const char *s, Clay_Color c, float size, bool wrap = false)
