@@ -26,6 +26,11 @@
 //                        beam counts 1 within 15 km of the camera, 1/(1 + (excess/25 km)^2) beyond
 //                        (~180 on the Topaz site, ~10 from 120 km away). Eased ~1.5 s. The site hum's
 //                        input.
+//   rocket_mag / stage_mag / fireball_mag / dust_mag   the upwell's other sources (2026-10-21): burning
+//                        engines, sunlit coasting stages, re-entry fireballs, collision dust — the summed apparent
+//                        flux of each kind, each source counted when on screen (soft frame edge) or near (rocket
+//                        8 km, stage 1.5 km, fireball 15 km, dust 20 km; nothing past 6x that), as an equivalent
+//                        magnitude (30 = none). Eased up 0.15 s, down 0.8 s. Mapped by "music_upwell".
 //   music_gap            where the beam sounds may speak: 0 while a track plays (the track's upwell
 //                        stem answers the glare instead), a triangle over the silent gap between
 //                        tracks (0 -> 1 halfway -> 0), 1 when no music is audible. Slewed 1/4 per s.
@@ -154,6 +159,10 @@ void SatelliteSim::initAmbience()
     ambD_.musicGap = a.registerDriver("music_gap");
     ambD_.rain = a.registerDriver("rain");
     ambD_.thunder = a.registerDriver("thunder");
+    ambD_.rocketMag = a.registerDriver("rocket_mag");
+    ambD_.stageMag = a.registerDriver("stage_mag");
+    ambD_.fireballMag = a.registerDriver("fireball_mag");
+    ambD_.dustMag = a.registerDriver("dust_mag");
 
     std::string err;
     if (!a.load(kAmbiencePath, err))
@@ -375,6 +384,54 @@ void SatelliteSim::computeAmbienceContext(float dt)
         ambGlareSum = ease(ambGlareSum, sum);
         a.set(ambD_.glareN, ambGlareN);
         a.set(ambD_.glareSum, ambGlareSum);
+    }
+
+    // The upwell's other sources (2026-10-21, issue 20261021_002542): burning rockets, sunlit stages, re-entry
+    // fireballs, collision dust — listed by the code that draws them (ambUpwellSource, last frame's). Each counts its
+    // apparent flux 10^(-0.4 m) (m at the camera, no daylight suppression: an engine is as present by day) x
+    // max(on screen with the glare's soft frame edge, near: full within the kind's near range, none past 6x it), so a
+    // launch watched from the pad or followed rises fully whichever way the camera looks, and a faint dot does
+    // nothing. Summed per kind, eased (up 0.15 s, down 0.8 s) and published as equivalent magnitudes (30 = none).
+    {
+        static const float kNearM[4] = {8000.0f, 1500.0f, 15000.0f, 20000.0f};
+        float flux[4] = {};
+        int cnt[4] = {};
+        if (ctx_)
+        {
+            const glm::mat3 view(camera.viewMatrix());
+            const float tanHalf = tanf(glm::radians(camera.fovYDeg) * 0.5f);
+            const float aspect = (float)ctx_->swapExtent.width / (float)std::max(1u, ctx_->swapExtent.height);
+            for (const AmbUpSrc &u : ambUpSrc_)
+            {
+                if (u.kind > 3)
+                    continue;
+                float w = 0.0f;
+                const glm::vec3 c = view * u.dir;
+                if (c.z < -1e-3f)
+                {
+                    const float nx = c.x / (-c.z) / (tanHalf * aspect), ny = c.y / (-c.z) / tanHalf;
+                    w = smoothstepf(1.15f, 0.95f, std::max(std::fabs(nx), std::fabs(ny)));
+                }
+                w = std::max(w, smoothstepf(6.0f * kNearM[u.kind], kNearM[u.kind], u.rangeM));
+                if (w <= 0.0f)
+                    continue;
+                flux[u.kind] += w * std::pow(10.0f, -0.4f * std::max(u.mag, -40.0f));
+                ++cnt[u.kind];
+            }
+        }
+        ambUpSrc_.clear(); // consumed: a frame whose visuals did not run reads nothing
+        const int drv[4] = {ambD_.rocketMag, ambD_.stageMag, ambD_.fireballMag, ambD_.dustMag};
+        for (int k = 0; k < 4; ++k)
+        {
+            ambUpFluxRaw_[k] = flux[k];
+            ambUpCount_[k] = cnt[k];
+            // Eased in log space (the flux spans tens of magnitudes): up in ~0.15 s, down in ~0.8 s.
+            const float cur = ambUpFlux_[k], raw = flux[k];
+            const float lc = log10f(std::max(cur, 1e-12f)), lr = log10f(std::max(raw, 1e-12f));
+            const float l = lc + (lr - lc) * (1.0f - expf(-std::max(dt, 0.0f) / (lr > lc ? 0.15f : 0.8f)));
+            ambUpFlux_[k] = dt > 0.0f ? (l <= -11.9f ? 0.0f : powf(10.0f, l)) : raw;
+            a.set(drv[k], ambUpFlux_[k] > 1e-12f ? std::min(-2.5f * log10f(ambUpFlux_[k]), 30.0f) : 30.0f);
+        }
     }
 
     // Beam-site hum (layer beam_site_hum, synth "bass"): converged beams on sites near the listener,
@@ -649,7 +706,7 @@ void SatelliteSim::updateAmbience(float dt)
     updateThunder(dt);
 
     // The playing track's upwell stem: its gain is the table's "music_upwell" map of the glare on
-    // screen, slewed linearly (up over fade_in_s, down over fade_out_s, full scale). Moving between
+    // screen, burning rockets, fireballs and collision dust (the loudest source), slewed linearly (up over fade_in_s, down over fade_out_s, full scale). Moving between
     // tracks it keeps its value, so a glare that outlasts a track carries into the next one's stem.
     if (audio_)
     {

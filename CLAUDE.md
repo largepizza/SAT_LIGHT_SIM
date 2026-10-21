@@ -64,7 +64,7 @@ Development: Earth / Terrain Rendering* (read **Elevation texture encoding** bef
 code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
-`imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `reports.py` (issue reports: triage, agent briefs, resolutions), `mission_ops.py` (every launch vehicle traced phase by phase, PASS / FAIL), `launch_bench.py` (the launch system's CPU / GPU cost), `hitch_check.py` (frame-hitch regression check over the time-scale ladder) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
+`imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `ui_lowres.py` (every window at low resolutions), `reports.py` (issue reports: triage, agent briefs, resolutions), `mission_ops.py` (every launch vehicle traced phase by phase, PASS / FAIL), `launch_bench.py` (the launch system's CPU / GPU cost), `hitch_check.py` (frame-hitch regression check over the time-scale ladder) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
 validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_geo_belt.py` + `tools/make_geo_models.py` (the GEO belt's members and models) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
@@ -1032,6 +1032,26 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
         at 10 / 40 / 160 frames 0.60 / 0.02 / 0% (off 0.35 / 0.03 / 0%). Cost +0.2 ms GPU. Settings "Layer shadows (mid / high)"
         `clouds_v2.layer_shadows` 1, "Cirrus self-shadow" `cirrus_self_shadow` 0 (slots 296-297). Harness `state` ->
         `clouds_v2.layer_map` (the probe at 1.5 km under the eye: columns, slant T and tau where its Sun ray crosses).
+    - **The cascade from orbit (2026-10-21, issue 20261021_002345 "Odd shadows from space": a sharp-edged trapezoid of black,
+      ray-streaked cloud under the eye at 333 km).** Two bugs, both only above the shell:
+      (1) **The lattices' axes (`cv2SunProf[2..7]`) were written only with the eye inside the shell** (lightning thread 1's
+      Sun-profile branch). The cascade stays on from orbit, so every lookup used the axes of the LAST place the eye had been low
+      (another ENU frame, another Sun): each cloud sample mapped to a wrong ray and knot and the window drew its rays' total
+      optical depth. After a fresh load at altitude the axes were 0 and the cascade silently did nothing (which is why a
+      `report load` could not reproduce it: visit a low point first, `harness_runs/` r13 in the fix's worktree). Now written
+      every frame.
+      (2) **The knots ride with the eye along the Sun, not with the clouds**: a and b are integrated (above), but a ray's knots
+      stand at fixed distances from the window's centre under the eye, so a bake read a few frames later (or a running mean)
+      was shifted along its rays by the eye's motion since — at the height-scaled speed from orbit (~330 km/s) by several knots:
+      a dark rectangle under the eye while flying. The CPU integrates the eye's motion along the Sun (`cv2CascS`), keeps each
+      ray half's knot origin at its last bake (`cv2CascBakeS`; half (frame >> 1) & 1 bakes on odd frames) and passes the shift
+      since (`cv2.sunCasc8.xy`, UBO 1056 -> 1072 B past the types); `cv2SunCascT` reads each corner's row half at its own knot,
+      and a bake taken while the eye moved replaces the slot's running mean (`sunCasc3.w` = 1). 128 registers; the ground storm
+      view 38.4-38.8 ms old vs new interleaved, the shot's view 11.0 vs 11.7 ms cascade on / off. Harness `state` ->
+      `clouds_v2.sun_cascade` / `sun_cascade_ubo`.
+      The same shot's faint circle round the nadir was the terrain march's range ("Terrain fade end", 600 km there): only terrain
+      hits took the ground bounce (`bounceK`), so snow inside the range was ~15% brighter than the same snow past it. Land past
+      the range takes it too now (`cityLand && tdEnabled()`).
 
   - The user's settings.json was lost to release.bat's wipe on 2026-10-13; a copy from that morning is
     `harness_runs/perf13/user_settings.json`.
@@ -2436,6 +2456,27 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   it). Every window is a floating root at zIndex 10 and Clay sorts roots stably, so the one declared later is on top;
   a window's own floating children (the info window's view chips, the trace plot's tick labels, the marker labels)
   must use the SAME zIndex as the window (they were 11 / 12, so they drew over any later window covering them).
+- **Low resolutions (2026-10-21; the user: "the Missions window occupies the entire screen basically"):**
+  - **The UI scale is the setting x the window's height.** `uiScaleUser` = "Text scale" (`display.ui_scale`, 1.5);
+    `uiScale`, which every builder reads, = it x `uiAutoScaleFactor(screenH)` = clamp(H / 1000, 0.7, 1) when "Scale
+    with window" (`display.ui_auto_scale`, on) — recomputed at the top of buildUI (`updateUiScale`). Nothing changes
+    at 1000 px and taller (a maximized window on a 1080p desktop is 1009). **`fs()` never lets the automatic factor take text below 16 px** (the baked font's floor;
+    or the player's own size where that is smaller), so on a short window the text stays ~16 px and the paddings,
+    titles and fixed-size boxes shrink. Never write `uiScale` itself: it is overwritten every frame.
+  - **No window is larger than the screen:** `buildResizableWindow` caps the maximum AND minimum size at the screen
+    less `kWinScreenMargin` (8 px) every frame and re-clamps the position, so a window survives a resolution change
+    (or a persisted size from a bigger desktop) on screen; its content scrolls.
+  - **Default sizes go through `winDefault(px, frac, screen, minPx)`**: the 1080p size where it fits, else a share
+    of the screen (Missions 600 x min(720, H - 200) docked right, at most 42% x 70%; Issue reports 60% x 72%;
+    Bookmarks 55% x 66%; Cinematics 45% wide; Info 470 or a third of the width, at least 350, its minimum height
+    72% of a short screen; Settings / Controls are sized on first build, not in init). New windows: size them the
+    same way, never with a bare pixel size.
+  - **The right HUD panel goes compact** (`hudCompact_`: no FPS or version label) when last frame's boxes show it
+    reaching the left panel (1024 px wide), re-decided whenever the screen or the UI scale changes.
+  - Tooltips measure their text and stay on screen on the left too (a 550-px tip started at x -190).
+  - **Check it:** `python tools/harness/ui_lowres.py run` (docs/HARNESS.md "Low-resolution UI check"): every window
+    and the HUD at 1024x768 / 1280x720 / 1366x768 / 1600x900 / 1920x1009, failing on a window off screen or over 62%
+    of it (Settings 80%), text cut sideways or off screen, overlapping text, or overlapping HUD panels.
 - **Clips nest (2026-10-03):** `UIRenderer::record` keeps a scissor stack — a clip inside a clipped scroll view is
   intersected with it and its end restores the parent's. SCISSOR_END used to reset to the full screen, so anything
   drawn after a nested clip (a text box, a horizontally clipped row) escaped its window's scroll view. `ui dump`'s
@@ -2575,6 +2616,25 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   over 6 s by `updateAmbience` → `AudioSystem::setUpwellGain`, under the music bus (so the music
   volume and altitude fade apply). Verified in `ambience_beams.satcmd`: 1.0 facing the Reflect ring,
   0 looking away, and in the offline render the track and its stem sit at the same sample offset.
+  **The upwell has more sources than the glare (2026-10-21, issue 20261021_002542 "Upwells": launches, firing
+  engines, collision dust).** `"music_upwell"` takes `"sources"` (a list of driver maps) + `"combine"` (`max`, or
+  `soft_sum` = 1 - prod(1 - g)); the old single-map form still loads. The drivers are equivalent apparent
+  MAGNITUDES at the camera (30 = nothing) of what the visuals draw, listed each frame by the drawing code
+  (`ambUpwellSource`, SatelliteSim.h; read and cleared next frame in `computeAmbienceContext`): `rocket_mag` burning
+  engines (the flame's magnitude at 100 km + distance + extinction, no daylight suppression), `stage_mag` sunlit
+  coasting stages / fairing halves (the body before its mesh fade), `fireball_mag` every glowing re-entry fragment
+  (`fbDrawReentry`) + the ship / capsule entry glows, `dust_mag` each dust tube piece (K amp / r^2, lit and not behind
+  the Earth). Each source counts when on screen (the glare's soft frame edge) or NEAR (full within 8 / 1.5 / 15 / 20
+  km for rocket / stage / fireball / dust, none past 6x), so a watched or followed launch rises whichever way the
+  camera looks; summed per kind, eased up 0.15 s / down 0.8 s in log flux. Maps: rocket -10 → 1, -8 → 0.85, -5.5 →
+  0.4, -3 → 0; stage -13 → 1, -11 → 0.6, -8 → 0; fireball -7 → 1, -5 → 0.8, -3 → 0.4, -1 → 0; dust -8 → 1, -6 → 0.8,
+  -4 → 0.4, -2 → 0. Measured (harness_runs/upwell, `audio state` -> `upwell` {sources: driver/value/gain, target}):
+  Starship from 12 km beside the pad 0 before ignition, -9.5 → 0.97 at lift-off (gain 0.87 two s later), 1.0 by
+  T+40 and still 0.99 looking at the ground; gone ~6 s after T+290; from 150 km (below the horizon, then -1 mag) 0;
+  following a Falcon 9 -18 → 1.0; a retiree re-entry from 120 km -3 → -6.4: 0.4 → 0.94; a Starlink breakup seen
+  overhead from the ground -6.4 → 0.84 for minutes, followed -16 → 1; a day-21 cascade night sky -1 .. -2 → 0. The
+  intro rule and the 2 s / 6 s slews are unchanged. Open: dust and fireballs are not tested against cloud; a caught
+  ship in its tower reads stage_mag ~-5 from 12 km (harmless at that map).
 - **The beam layers speak only BETWEEN tracks**, under the `music_gap` driver: 0 while a track plays,
   a triangle over the silent gap (0 at its start, 1 halfway, 0 at its end — a generous swell, never a
   cut when the song ends), 1 when no music is audible (player off or paused, music volume or the

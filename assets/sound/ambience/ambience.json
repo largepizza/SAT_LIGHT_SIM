@@ -29,10 +29,15 @@
     "follow_tuning_curve": true
   },
   "music_upwell": {
-    "_note": "While a track plays, the glare on screen is answered by the MUSIC, not the ambience: each track's <track>_upwell stem (the composer's, in assets/sound/music) plays sample-locked under it, at this gain (0..1, piecewise linear on the driver), rising over fade_in_s and falling over fade_out_s. The beam layers below are gated on music_gap, so they only speak between tracks.",
-    "driver": "glare_n",
-    "in": [1, 4, 20, 100],
-    "out": [0, 0.4, 0.8, 1.0],
+    "_note": "While a track plays, spectacle is answered by the MUSIC, not the ambience: each track's <track>_upwell stem (the composer's, in assets/sound/music) plays sample-locked under it, at this gain (0..1), rising over fade_in_s and falling over fade_out_s. Each source is a piecewise-linear map of one driver; the stem takes the loudest (combine max; soft_sum = 1 - prod(1 - g)). Sources: the glare on screen (glare_n), burning rocket engines (rocket_mag), sunlit rocket stages close by (stage_mag), re-entry fireballs (fireball_mag) and collision dust clouds (dust_mag) - each an equivalent apparent magnitude at the camera of what is on screen or near (30 = nothing; brighter = more negative). A launch watched from ~12 km (Starship -10.6, a small rocket ~-8) or followed rises fully; a burning stage 300+ km off does nothing. The beam layers below are gated on music_gap, so they only speak between tracks.",
+    "combine": "max",
+    "sources": [
+      {"driver": "glare_n", "in": [1, 4, 20, 100], "out": [0, 0.4, 0.8, 1.0]},
+      {"driver": "rocket_mag", "in": [-10, -8, -5.5, -3], "out": [1.0, 0.85, 0.4, 0]},
+      {"driver": "stage_mag", "in": [-13, -11, -8], "out": [1.0, 0.6, 0]},
+      {"driver": "fireball_mag", "in": [-7, -5, -3, -1], "out": [1.0, 0.8, 0.4, 0]},
+      {"driver": "dust_mag", "in": [-8, -6, -4, -2], "out": [1.0, 0.8, 0.4, 0]}
+    ],
     "fade_in_s": 2.0,
     "fade_out_s": 6.0
   },

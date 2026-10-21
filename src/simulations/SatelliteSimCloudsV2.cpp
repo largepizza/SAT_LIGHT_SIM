@@ -1327,8 +1327,28 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
             cv2CascLatA = std::fmod(cv2CascLatA + glm::dot(dEye, ga) / da, 128.0 * 1024.0);
             cv2CascLatB = std::fmod(cv2CascLatB + glm::dot(dEye, gb) / db, 32.0 * 1024.0);
+            cv2CascS += glm::dot(dEye, s);
             ++cv2CascFrames;
         }
+        // The knots along the Sun (2026-10-21, issue 20261021_002345): a and b ride with the clouds (above), but a ray's
+        // knots stand at fixed distances along the Sun from the window's centre, which sits under the EYE. A bake read a
+        // few frames later, or a running mean of bakes, was therefore shifted along its rays by the eye's motion since:
+        // from orbit (the height-scaled speed is ~330 km/s at 333 km) by several 9-km knots, and the window read each
+        // cloud's own shadow — a dark, ray-streaked rectangle under the eye while flying. Each ray half's knot origin at
+        // its last bake is kept (the half baked this frame: odd frames, half (frame >> 1) & 1, cloud_v2_lightning.comp)
+        // and the lookup adds the shift since (sunCasc8.xy); while the eye moves, a bake replaces the slot's running mean
+        // (bakes for other knot origins cannot be averaged).
+        const double knotOrigin = cv2CascS + (hMid - eyeH) * sinE;
+        bool cascMoved = false;
+        if (cv2CascFrames <= 1)
+            cv2CascBakeS[0] = cv2CascBakeS[1] = knotOrigin;
+        else if ((cv2Frame & 1u) != 0u)
+        {
+            const int hb = (int)((cv2Frame >> 1) & 1u);
+            cascMoved = std::abs(knotOrigin - cv2CascBakeS[hb]) > 0.02 * (2.0 * sHalf / 40.0);
+            cv2CascBakeS[hb] = knotOrigin;
+        }
+        p.sunCasc8 = glm::vec4((float)(knotOrigin - cv2CascBakeS[0]), (float)(knotOrigin - cv2CascBakeS[1]), 0.0f, 0.0f);
         auto modP = [](double v, double m) { v = std::fmod(v, m); return (float)(v < 0.0 ? v + m : v); };
         // xy mod 8 windows (1024 x 256 cells): each ray's last knot stamps which wrap of its slot it was baked for
         // (cloud_v2_lightning.comp), so a slot that changed hands as the eye moved is rebaked whole.
@@ -1339,7 +1359,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // baked every frame, or every other one with the cascade on; a cascade ray every fourth frame).
         const int nGrid = cv2GridFrames / (on ? 2 : 1), nCasc = std::max(cv2CascFrames - 1, 0) / 4;
         p.sunCasc3 = glm::vec4(modP(cv2GridLatA, 32.0), modP(cv2GridLatB, 32.0),
-                               std::max(1.0f / (float)(nGrid + 1), 0.125f), std::max(1.0f / (float)(nCasc + 1), 0.125f));
+                               std::max(1.0f / (float)(nGrid + 1), 0.125f),
+                               cascMoved ? 1.0f : std::max(1.0f / (float)(nCasc + 1), 0.125f));
         // x: nothing until every ray has been baked once (4 frames: 2048 of the 4096 rays on every other frame), then in
         // over 8 (it waited 33 frames, from when the comment's 32 was true; issue 20261013_220718).
         // The SHAFT lattice (cloud_lightning.glsl cv2SunShaft): 250-m cells across the Sun, knots along it spaced so

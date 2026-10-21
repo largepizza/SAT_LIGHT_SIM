@@ -862,6 +862,7 @@ struct GpuCloudV2Params
     glm::vec4 sunCasc6, sunCasc7;       // 2026-10-12: the shaft lattice's second ring + both rings' cells
     glm::vec4 cu, cu2;                  // 2026-10-13: the cumulus shape (clouds_v2.glsl)
     glm::vec4 layA, layE, layN, layEye, layRef, layBake;   // 2026-10-14: the layer shadow map (clouds_v2.glsl)
+    glm::vec4 sunCasc8;                 // 2026-10-21: the cascade's knot shift per ray half since its bake (clouds_v2.glsl)
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -880,7 +881,8 @@ static_assert(offsetof(GpuCloudV2Params, sunCasc0) == 288 + 48 * kCloudV2Types +
 static_assert(offsetof(GpuCloudV2Params, sunCasc6) == 288 + 48 * kCloudV2Types + 896, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, cu) == 288 + 48 * kCloudV2Types + 928, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, layA) == 288 + 48 * kCloudV2Types + 960, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1056, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, sunCasc8) == 288 + 48 * kCloudV2Types + 1056, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1072, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -4147,6 +4149,9 @@ private:
     float cv2HalfRateMoving = 0.0f;       // 1 = where the march would run at full rate, half (a checkerboard)
     float cv2SunCascade = 1.0f;           // "Far cloud shadows": the Sun shadow cascade (0 = only near the eye's line to the Sun)
     double cv2CascLatA = 0.0, cv2CascLatB = 0.0;   // the eye's coordinate on the cascade's lattice (cells), integrated
+    // ...and along the Sun (m, integrated the same way; 2026-10-21): with the window centre's own offset from the eye
+    // (sunCasc0.w), where each ray half's knots stood when it was last baked (sunCasc8.xy = the shift since).
+    double cv2CascS = 0.0, cv2CascBakeS[2] = {0.0, 0.0};
     double cv2GridLatA = 0.0, cv2GridLatB = 0.0;   // ... and on the fine grid's (cells of 250 m)
     int    cv2CascFrames = 0;                      // frames since the cascade was reset (it fills over 32)
     int    cv2GridFrames = 0;                      // ... since the fine grid's history was
@@ -4796,7 +4801,15 @@ private:
     bool showIntro = true;
     bool uiVisible = true;
     bool iconsLoaded = false;
-    float uiScale = 1.5f;    // text/UI size multiplier (0.75 – 2.0)
+    // UI scale (2026-10-21, low resolutions): `uiScaleUser` is the player's setting (display.ui_scale, "Text scale",
+    // 0.75-2.0); `uiScale` is what every builder reads = uiScaleUser x uiAutoScaleFactor(window height) when
+    // `uiScaleAuto` (display.ui_auto_scale, default on): 1 at 1000 px and taller (a maximized window on a 1080p desktop is ~1009), down to 0.7 at 700 px.
+    // Set once per frame at the top of buildUI (updateUiScale). fs() never lets the auto factor take text below 16 px.
+    float uiScale = 1.5f;     // effective (per frame)
+    float uiScaleUser = 1.5f; // the setting
+    bool uiScaleAuto = true;
+    static float uiAutoScaleFactor(float screenH) { return screenH > 0.0f ? std::clamp(screenH / 1000.0f, 0.7f, 1.0f) : 1.0f; }
+    void updateUiScale(float screenH) { uiScale = uiScaleUser * (uiScaleAuto ? uiAutoScaleFactor(screenH) : 1.0f); }
     // UI colour theme (UIPalette.h: 0 Default, 1 Navy, 2 Night red, 3 Midnight = the default), display.ui_theme. buildUI applies it
     // (applyUiTheme + the renderer's night filter) whenever it differs from what is applied.
     int uiTheme = 3; // Midnight (the default since 2026-10-15)
@@ -4855,8 +4868,34 @@ private:
         int altM = -1, aglM = -1, groundM = -1, latDeg = -1, lonDeg = -1, sunElDeg = -1, oceanNear = -1, oceanWide = -1,
             urban = -1, beam = -1, aurora = -1, wind = -1, cloud = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
             forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, glareN = -1, glareSum = -1, beamSite = -1, musicGap = -1, rain = -1,
-            thunder = -1;
+            thunder = -1, rocketMag = -1, stageMag = -1, fireballMag = -1, dustMag = -1;
     } ambD_;
+    // The upwell's other sources (2026-10-21, issue 20261021_002542 "Upwells": the stem should rise during launches,
+    // near firing engines, by collision dust and re-entries). The code that DRAWS each source lists it here every frame
+    // (ambUpwellSource: its direction from the eye in ENU, range, and apparent magnitude as seen from the camera, with
+    // no daylight suppression); computeAmbienceContext weights each by being on screen (the glare's soft frame edge)
+    // or near (a per-kind range), sums the fluxes per kind and publishes them as equivalent magnitudes:
+    //   rocket_mag    burning engines (ascent, boostback, entry and landing burns; the flame's magnitude at 100 km)
+    //   stage_mag     sunlit rocket stages and fairing halves coasting (the bodies' magnitudes, before the mesh fade)
+    //   fireball_mag  re-entry fireballs (every glowing fragment) and the ship / capsule entry glows
+    //   dust_mag      Kessler collision dust clouds (each tube piece's light, Earth-shadowed at its centre)
+    // 30 = nothing. The table's "music_upwell" maps each to a gain. Consumed (cleared) by the ambience each frame.
+    struct AmbUpSrc
+    {
+        glm::vec3 dir; // ENU unit vector from the eye
+        float rangeM;  // to the source (dust: to the piece's near edge)
+        float mag;     // apparent magnitude at the camera
+        uint8_t kind;  // 0 rocket, 1 stage, 2 fireball, 3 dust
+    };
+    std::vector<AmbUpSrc> ambUpSrc_;
+    void ambUpwellSource(uint8_t kind, const glm::dvec3 &relEnu, double rangeM, double mag)
+    {
+        if (ambUpSrc_.size() < 32768 && rangeM > 0.0 && mag < 25.0)
+            ambUpSrc_.push_back({glm::vec3(relEnu / std::max(glm::length(relEnu), 1e-9)), (float)rangeM, (float)mag, kind});
+    }
+    float ambUpFlux_[4] = {};    // eased weighted flux per kind (10^(-0.4 m) units)
+    float ambUpFluxRaw_[4] = {}; // this frame's
+    int ambUpCount_[4] = {};     // sources weighed in this frame
     glm::dvec3 ambPrevCamEcef{0.0}; // wind rush: the camera's last position (ECEF, m)
     bool ambPrevValid = false;
     float ambSpeedEased = 0.0f;     // m/s, eased over ~0.3 s
@@ -6724,7 +6763,13 @@ private:
     // ── Small UI helpers shared across every UI builder method ────────────────
     // (formerly local lambdas inside the single monolithic buildUI(); now member
     // functions since buildUI is split across buildLeftHudPanel/buildSettingsWindow/etc.)
-    uint16_t fs(int base) const { return (uint16_t)std::max(8, (int)(base * uiScale + 0.5f)); }
+    // The font is one baked 48-px bitmap that breaks up much under ~16 px: the automatic (window-height) factor may
+    // shrink text only down to 16 px, or to the player's own size where that is already smaller.
+    uint16_t fs(int base) const
+    {
+        const int eff = (int)(base * uiScale + 0.5f), user = (int)(base * uiScaleUser + 0.5f);
+        return (uint16_t)std::max(8, std::max(eff, std::min(user, 16)));
+    }
     // Defined in SatelliteSimUI.cpp — need AudioSystem's complete type (only forward-declared here).
     void sndRollover(bool nowHov, bool prevHov) const;
     void sndClick(bool nowHov, bool lmbPressed) const;
@@ -6751,6 +6796,18 @@ private:
                               const std::function<void()> &titleExtras = nullptr,
                               bool titleHighlight = false);
     std::string winTitleBuf_[32]; // buildResizableWindow's ellipsized titles, per winId (Clay keeps the pointers)
+    static constexpr float kWinScreenMargin = 8.0f; // a window keeps this far inside the screen (size caps)
+    // The right HUD panel's compact form (no FPS / version) when it would reach the left panel (buildRightHudPanel).
+    bool hudCompact_ = false;
+    float hudCompactKey_ = -1.0f; // screen size + UI scale it was decided for
+    int hudCompactSettle_ = 0;
+    // A window's DEFAULT extent (2026-10-21, low resolutions): `px` (its 1080p size, which it keeps on any screen
+    // that is big enough) but at most `frac` of the screen's extent `scr`, and never below `minPx` (unless the
+    // screen itself is smaller; buildResizableWindow caps every size at the screen).
+    static float winDefault(float px, float frac, float scr, float minPx = 0.0f)
+    {
+        return std::max(std::min(px, scr * frac), std::min(minPx, scr - 2.0f * kWinScreenMargin));
+    }
 
     void buildSettingsWindow(const UIInput &inp, UIRenderer &ui);
     void buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui);

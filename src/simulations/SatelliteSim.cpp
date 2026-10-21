@@ -628,10 +628,10 @@ void SatelliteSim::init(VulkanContext &ctx)
     // call (buildUI); loadSettings() below may override x/y/w/h with persisted values.
     // settingsChrome defaults above its own 680x420 min (buildSettingsWindow) so it
     // never opens already-clamped-smaller-than-its-own-content on a fresh install.
-    settingsChrome.w = 720.0f;
-    settingsChrome.h = 480.0f;
-    viewControlsChrome.w = 300.0f;
-    viewControlsChrome.h = 340.0f;
+    // (2026-10-21) 0 = sized for the screen the first time the window is built (buildSettingsWindow /
+    // buildViewControlsWindow): 720 x 480 and 300 x 340 where they fit.
+    settingsChrome.w = settingsChrome.h = 0.0f;
+    viewControlsChrome.w = viewControlsChrome.h = 0.0f;
 
     loadSettings(); // override defaults with any previously saved values
     kesslerInit(ctx); // the scenario's storm, world and cascade worker (needs kessler.* from the settings)

@@ -5219,8 +5219,11 @@ void main() {
         // luminance here — and the Sun's height over the local horizon. Snow reflects ~0.8 and lit
         // it strongly: without this a snowfield's faces turned from a low Sun went near-black
         // (harness flight into a glacier); forest (~0.1) barely changes.
+        // Land past the terrain march's range takes it too (2026-10-21, issue 20261021_002345): it is the albedo's
+        // light, not the relief's, and on terrain hits alone it drew the march's range ("Terrain fade end") from
+        // orbit as a brighter disc round the nadir over snow and ice (~+15% at a 33-degree Sun).
         float bounceK = 0.0;
-        if (tHit > 0.0 && cloud.terrainMaterialStrength > 0.0)
+        if ((tHit > 0.0 || (cityLand && tdEnabled())) && cloud.terrainMaterialStrength > 0.0)
             bounceK = 0.3 * cloud.terrainMaterialStrength * dot(dayColor, vec3(0.2126, 0.7152, 0.0722))
                     * max(dot(normalize(hitPt), sunDir), 0.0);
         // The terrain's own albedo IS the surface all through twilight — dimmed and reddened by
