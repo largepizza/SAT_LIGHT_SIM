@@ -83,6 +83,41 @@ vec4 groundMarker(vec4 m, vec3 color, vec2 frag)
     return vec4(mix(vec3(0.0), color, fill), rim);
 }
 
+// A burning stage's flame in the model viewer (2026-10-21; the main view's flame is the cloud pass's Gaussians, which
+// this offscreen view does not have): a glowing capsule from the engines' exit (flame0, its radius in w) along
+// flame1.xyz, widening 2.2x and fading to its end, white-hot at the exit, orange toward the tail. Depth-tested at
+// its own depth, so the hull in front of it hides it.
+vec4 flame(vec2 frag, out float depth)
+{
+    depth = 1.0;
+    if (frame.flame1.w <= 0.0) return vec4(0.0);
+    vec3 A = frame.flame0.xyz, B = A + frame.flame1.xyz;
+    vec3 ax = normalize(frame.flame1.xyz);
+    vec3 side = cross(ax, frame.camPos.xyz - A);
+    if (dot(side, side) < 1e-12) side = cross(ax, abs(ax.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0));
+    side = normalize(side);
+    float r0 = frame.flame0.w, r1 = r0 * 2.2;
+    vec4 cA = frame.viewProj * vec4(A, 1.0), cB = frame.viewProj * vec4(B, 1.0);
+    vec4 cAs = frame.viewProj * vec4(A + side * r0, 1.0), cBs = frame.viewProj * vec4(B + side * r1, 1.0);
+    if (cA.w < 1e-3 || cB.w < 1e-3 || cAs.w < 1e-3 || cBs.w < 1e-3) return vec4(0.0);
+    vec2 a = (cA.xy / cA.w * 0.5 + 0.5) * frame.bgParams.zw, b = (cB.xy / cB.w * 0.5 + 0.5) * frame.bgParams.zw;
+    float ra = length((cAs.xy / cAs.w * 0.5 + 0.5) * frame.bgParams.zw - a);
+    float rb = length((cBs.xy / cBs.w * 0.5 + 0.5) * frame.bgParams.zw - b);
+    vec2 ab = b - a;
+    float s = clamp(dot(frag - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+    float d = length(frag - (a + s * ab));
+    float hw = max(mix(ra, rb, s), 0.75);
+    float q = d / hw;
+    float core = exp(-2.2 * q * q);
+    float along = pow(1.0 - s, 1.3);
+    float a0 = clamp(core * along * 1.6 * frame.flame1.w, 0.0, 1.0);
+    if (a0 <= 0.003) return vec4(0.0);
+    vec3 hot = vec3(1.0, 0.96, 0.85), warm = vec3(1.0, 0.55, 0.18);
+    vec3 c = mix(hot, warm, clamp(0.25 + 0.9 * s + 0.6 * q, 0.0, 1.0));
+    depth = clamp(mix(cA.z / cA.w, cB.z / cB.w, s), 0.0, 1.0);
+    return vec4(c, a0);
+}
+
 void main()
 {
     vec2 frag = gl_FragCoord.xy;
@@ -108,6 +143,11 @@ void main()
         float depth, along;
         float cov = segment(vec3(0.0), frame.marker1.xyz, frag, 1.3, depth, along) * 0.85; // the beam
         if (cov > 0.0 && (bestA <= 0.0 || depth < bestD)) { bestA = cov; bestD = depth; bestC = kSiteColor; }
+    }
+    {
+        float fd;
+        vec4 fl = flame(frag, fd);
+        if (fl.a > 0.0 && (bestA <= 0.0 || fd < bestD)) { bestA = fl.a; bestD = fd; bestC = fl.rgb; }
     }
     if (bestA <= 0.0) discard;
     outColor = vec4(bestC, bestA);

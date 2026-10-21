@@ -2439,6 +2439,10 @@ private:
     };
     ViewerMarkerLabel viewerMarkerLabels[2];
     void buildViewerMarkerLabels(int view);
+    int viewerGoneFate(double *whenT = nullptr) const; // the viewed roster object destroyed (2) / re-entered (3), else 0
+    glm::dvec3 rocketEngineGeom(int typeIdx) const; // (exit plane z, exit radius, length) of a rocket model
+    void buildViewerGoneLabel(int view);
+    char viewerGoneBuf_[2][64] = {};
     // Select / Go to in a satellite window's title bar. `popout` = the popped-out 3D view (its own
     // hover pair), false = the info window.
     void buildViewTitleIcons(const UIInput &inp, UIRenderer &ui, bool popout);
@@ -3193,6 +3197,7 @@ private:
     WindowChrome msChrome;
     bool hovMsClose = false, hovTimeMissions = false;
     int msTab = 0;                       // 0 upcoming, 1 ongoing, 2 controls
+    int msBuildOutOpen = -1;             // Ongoing's BUILD-OUT list: -1 = auto (collapsed once every cohort is complete)
     double msNextWall = -1e300, msNextSim = -1e300; // when the next-launches rows were made (wall clock, sim time)
     double msPinWall = -1e300, msPinSim = -1e300;   // ... the pinned twilight / crewed rows
     std::vector<MissionLaunch> msNext;   // the next launches
@@ -6662,6 +6667,7 @@ private:
                               const std::function<void()> &buildBody,
                               const std::function<void()> &titleExtras = nullptr,
                               bool titleHighlight = false);
+    std::string winTitleBuf_[32]; // buildResizableWindow's ellipsized titles, per winId (Clay keeps the pointers)
 
     void buildSettingsWindow(const UIInput &inp, UIRenderer &ui);
     void buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui);

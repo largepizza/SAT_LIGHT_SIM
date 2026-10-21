@@ -14306,3 +14306,11 @@ nlohmann::json SatelliteSim::launchFormationJson(uint64_t key, int samples, bool
     j["spread_after_2d_m_max"] = spreadAfter2d;
     return j;
 }
+
+// A rocket model's engines for the Info window's 3D view (its flame; 2026-10-21): (exit plane z, exit radius, length).
+glm::dvec3 SatelliteSim::rocketEngineGeom(int typeIdx) const
+{
+    if (typeIdx < 0 || typeIdx >= (int)satTypes.size())
+        return glm::dvec3(0.0, 2.0, 40.0);
+    return LaunchImpl::engineGeomOf(satTypes[(size_t)typeIdx]);
+}

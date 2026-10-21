@@ -534,29 +534,6 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                     else if (msTab == 1)
                     {
                         // ── Ongoing ──────────────────────────────────────────────────────────────────
-                        // The deployment era (2026-10-20): each constellation's build-out to its 2036 size, first.
-                        if (launchDeployEra)
-                        {
-                            uiSection("MsOSec", 4, "BUILD-OUT (DEPLOYMENT ERA)");
-                            const std::vector<DeployRow> rows = deployRows(now);
-                            if (rows.empty())
-                                text("Nothing is being built up.", Pal::textDim, 11);
-                            for (size_t r = 0; r < rows.size(); ++r)
-                            {
-                                const DeployRow &d = rows[r];
-                                const double f = d.target > 0.0 ? d.deployed / d.target : 1.0;
-                                char uc[48], us[48];
-                                fmtUtcShort(d.completeT, uc, sizeof(uc));
-                                fmtUtcShort(d.startT, us, sizeof(us));
-                                const char *state = f >= 0.9999 ? msStr("complete since %.10s", uc)
-                                                    : f <= 0.0  ? msStr("first launch %.10s", us)
-                                                                : msStr("complete %.10s", uc);
-                                ongoingRow(1000 + (int)r, msStr("%s", d.name.c_str()),
-                                           msStr("%.0f of %.0f satellites (%.1f%%), %.1f launches a day; %s", d.deployed,
-                                                 d.target, 100.0 * f, d.perDay, state),
-                                           0.0, f, nullptr);
-                            }
-                        }
                         static const char *kCats[] = {"CREW TRANSFERS", "CREWED STATIONS", "SATELLITE LAUNCHES",
                                                       "SATELLITE OPERATIONS"};
                         int rid = 0;
@@ -694,6 +671,51 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                         }
                         if (!n3)
                             text(launchesEnabled ? "Nothing raising or deorbiting." : "Launches are off (Controls).", Pal::textDim, 11);
+                        // The deployment era (2026-10-20): each constellation's build-out to its 2036 size. LAST since
+                        // 2026-10-21 (QA: with ~20 cohort rows on top, the stations and rockets in flight were scrolled
+                        // out of view), and collapsed by default once every cohort is complete.
+                        if (launchDeployEra)
+                        {
+                            const std::vector<DeployRow> rows = deployRows(now);
+                            int nDone = 0;
+                            for (const DeployRow &d : rows)
+                                if (d.target <= 0.0 || d.deployed / d.target >= 0.9999)
+                                    ++nDone;
+                            const bool allDone = !rows.empty() && nDone == (int)rows.size();
+                            const bool open = msBuildOutOpen < 0 ? !allDone : msBuildOutOpen != 0;
+                            uiSection("MsOSec", 4, "BUILD-OUT (DEPLOYMENT ERA)");
+                            CLAY(CLAY_ID("MsBuildHead"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                     .childGap = 8,
+                                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                            {
+                                CLAY(CLAY_ID("MsBuildHeadT"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+                                {
+                                    text(rows.empty() ? "Nothing is being built up."
+                                                      : msStr("%d of %d constellations complete", nDone, (int)rows.size()),
+                                         Pal::textDim, 11);
+                                }
+                                if (!rows.empty() && uiButton(inp, ui, "MsBuildTgl", 0, open ? "Hide" : "Show",
+                                                              open ? "Hide the per-constellation build-out"
+                                                                   : "Show each constellation's build-out"))
+                                    msBuildOutOpen = open ? 0 : 1;
+                            }
+                            for (size_t r = 0; open && r < rows.size(); ++r)
+                            {
+                                const DeployRow &d = rows[r];
+                                const double f = d.target > 0.0 ? d.deployed / d.target : 1.0;
+                                char uc[48], us[48];
+                                fmtUtcShort(d.completeT, uc, sizeof(uc));
+                                fmtUtcShort(d.startT, us, sizeof(us));
+                                const char *state = f >= 0.9999 ? msStr("complete since %.10s", uc)
+                                                    : f <= 0.0  ? msStr("first launch %.10s", us)
+                                                                : msStr("complete %.10s", uc);
+                                ongoingRow(1000 + (int)r, msStr("%s", d.name.c_str()),
+                                           msStr("%.0f of %.0f satellites (%.1f%%), %.1f launches a day; %s", d.deployed,
+                                                 d.target, 100.0 * f, d.perDay, state),
+                                           0.0, f, nullptr);
+                            }
+                        }
                     }
                     else
                     {

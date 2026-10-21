@@ -4074,8 +4074,17 @@ void SatelliteSim::updateViewerObserverInfo()
         snprintf(viewerObsValue[2], sizeof(viewerObsValue[2]), "%.0f deg", azDeg);
         snprintf(viewerObsValue[3], sizeof(viewerObsValue[3]), "%.0f km", range / 1000.0);
         if ((uint32_t)viewerSatIndex == transientSatIdx() && selIsTransient() && selTransientCur.flare > 0.0f && !hidden)
-            snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "%.1f",
-                     6.0 - 2.5 * std::log10((double)selTransientCur.flare / 0.008));
+        {
+            // The drawn flare is the camera's; carried to the ground observer (the selection panel's rule too).
+            const double rCam = std::max(glm::length(selTransientCur.pos - glm::dvec3(obsECI)), 1.0);
+            const double fObs = (double)selTransientCur.flare * (rCam / range) * (rCam / range);
+            const double m = 6.0 - 2.5 * std::log10(std::max(fObs, 1e-30) / 0.008);
+            if (m > 20.0)
+                snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "Dark");
+            else
+                snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "%.1f",
+                         m + atmExtinctionMag(obs, d, range, (double)extinctionCoeff));
+        }
         else
             snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), hidden ? "Below horizon" : "-");
         return;
@@ -4180,7 +4189,8 @@ void SatelliteSim::updateViewerObserverInfo()
     }
     if (!std::isfinite(r.magnitude))
     {
-        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "In Earth's shadow");
+        // Below the horizon wins over dark (the selection panel's order too).
+        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), hidden ? "Below horizon" : "In Earth's shadow");
         return;
     }
     snprintf(viewerPhotValue[1], sizeof(viewerPhotValue[1]), "%.2f", r.magnitude);
@@ -4399,8 +4409,23 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     inst.sun = glm::vec4(glm::vec3(sun), (float)lit);
     inst.sunColor = glm::vec4(1.0f, 1.0f, 1.0f, (float)earthL.a2);
     setMeshInstanceEarth(inst, earthL, glm::dmat3(1.0));
+    // A destroyed / re-entered roster object (2026-10-21 QA): no model — the view shows the sky where it was and the
+    // info window's "Destroyed <date>" label (buildViewerGoneLabel). Every group's rotation is zeroed, so each
+    // triangle collapses to a point and nothing rasterises (the background still renders).
+    const bool viewerGone = tracked && viewerGoneFate() != 0;
+    if (viewerGone)
+        for (int k = 0; k < 12; ++k)
+            inst.rot[k] = glm::vec4(0.0f);
+    double engineGlowV = 0.0;
     if (tracked) // a launch record still unfolding: its stowed parts (sat_mesh.vert)
-        inst.earthShC.z = (float)(1.0 - satUnfoldAt(orbitElemsOf(satOrbits[viewerSatIndex]), tNow));
+    {
+        const SatOrbitElems eV = orbitElemsOf(satOrbits[viewerSatIndex]);
+        inst.earthShC.z = (float)(1.0 - satUnfoldAt(eV, tNow));
+        // A burning rocket stage: its nozzles' insides glow, as in the scene (sat_mesh.frag; 2026-10-21 QA: a rocket
+        // at night was black here).
+        engineGlowV = std::clamp((double)eV.engineGlow, 0.0, 1.0);
+        inst.earthShC.w = 0.49f * (float)engineGlowV;
+    }
     inst.firstMaterial = tm->firstMaterial;
     inst.firstOccluder = tm->firstOccluder;
     inst.occluderCount = tm->occluderCount;
@@ -4416,9 +4441,28 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     const glm::dvec3 obsEcef = glm::normalize(glm::dvec3(followActive ? followSavedObsDir : obsDir)) * obsRadius;
     const glm::dvec3 toObs = glm::normalize(obsEcef - P);
 
+    // A burning stage's flame (2026-10-21 QA: a rocket at night rendered black with no flame here). The model's
+    // engines (rocketEngineGeom: the exit plane on the body axis and the radius the exits span), the flame out of
+    // them along -nose, longer and wider in thin air (as the main view's, launchFillVisuals). sat_mesh_marker.frag.
+    // The camera's centre moves toward it so the flame is in the frame.
+    glm::vec4 flame0V(0.0f), flame1V(0.0f);
+    glm::dvec3 flameShift(0.0);
+    if (engineGlowV > 0.0 && !viewerGone && !poses.empty())
+    {
+        const glm::dvec3 eg = rocketEngineGeom(viewerType); // (zExit, rExit, length)
+        const double hAlt = glm::length(P) - satphot::kEarthRadiusM;
+        const double thin = glm::smoothstep(20000.0, 80000.0, hAlt);
+        const glm::dvec3 nose = glm::normalize(poses[0].R * glm::dvec3(0.0, 0.0, 1.0));
+        const glm::dvec3 exitC = poses[0].R * glm::dvec3(0.0, 0.0, eg.x) + poses[0].t;
+        const double rEx = std::max(eg.y, 0.3) * (1.0 + thin);
+        const double len = 2.0 * std::max(eg.y, 0.3) * (5.0 + 10.0 * thin);
+        flame0V = glm::vec4(glm::vec3(exitC), (float)rEx);
+        flame1V = glm::vec4(glm::vec3(-nose * len), (float)engineGlowV);
+        flameShift = -nose * (0.5 * len);
+    }
     // ── Camera: orbit the posed bounding sphere's centre (root group's pose) ─
     const GroupPose root = poses.empty() ? GroupPose{} : poses[0];
-    const glm::dvec3 centre = root.R * glm::dvec3(tm->boundsCenter) + root.t;
+    const glm::dvec3 centre = root.R * glm::dvec3(tm->boundsCenter) + root.t + flameShift;
     const double radius = std::max(0.1, (double)tm->boundsRadius);
     const double fovY = glm::radians(35.0);
     if (viewerDist <= 0.0f)
@@ -4484,6 +4528,8 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     frame.earthCenter = glm::vec4(glm::vec3(-P), (float)std::fmod(theta, glm::two_pi<double>()));
     frame.params = glm::vec4(viewerShadows ? 1.0f : 0.0f, viewerReflections ? 1.0f : 0.0f,
                              viewerDetail ? 1.0f : 0.0f, 0.0f);
+    frame.flame0 = flame0V;
+    frame.flame1 = flame1V;
     // (2026-10-21) The main view's local lights (a burning engine, a pad's or a ship's floods at night): a rocket on
     // its pad at night is lit here as in the scene. Live light on a tracked object only (Studio has its own sun).
     if (tracked && !viewerStudioLight)
@@ -4566,7 +4612,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     // effectFlare is its rendered intensity toward the camera × the observer's flare per unit intensity
     // (updateViewerObserverInfo), so with the "Observer" camera preset they add up to that flare. Needs a
     // tracked satellite (a range) and Live light (Studio's sun is not the one the observer sees).
-    if (viewerGlare && glareGain > 0.0f && tracked && !viewerStudioLight && viewerFlarePerI > 0.0)
+    if (viewerGlare && glareGain > 0.0f && tracked && !viewerGone && !viewerStudioLight && viewerFlarePerI > 0.0)
     {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(ctx_->physicalDevice, &props);
@@ -4598,7 +4644,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     // From the viewer's current direction, 60 model radii out (parallax across the model ~1 deg), sun
     // only at full sunlight: the render's Σ L·d²·Ω/π (buildInfoWindow) against the lobe model's
     // intensity for the same pose, sun and observer direction.
-    if (viewerCheckRequested)
+    if (viewerCheckRequested && !viewerGone)
     {
         viewerCheckRequested = false;
         const glm::dvec3 o = glm::normalize(camDir);
@@ -7073,11 +7119,39 @@ void SatelliteSim::updateSelectedPhotometry()
         --parityLogCooldown;
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
         return;
+    // The panel's magnitude follows the Info window's MAGNITUDE tile (2026-10-21 QA: a Progress in the Earth's shadow
+    // read "Mag 23.3" here, its tile "Below"): what the GROUND observer sees — below their horizon, dark, or the
+    // magnitude after extinction — never the camera's view in follow mode.
+    constexpr double kSelDarkMag = 20.0; // a transient fainter than this is unlit (its model in the shadow)
+    const double tNowSel = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const glm::dvec3 obsG = observerEciAt(
+        glm::dvec3(followActive ? followSavedObsDir : obsDir),
+        (double)kEarthRadius + (double)obsTerrainH + (double)(followActive ? followSavedHeight : obsHeightOffset), tNowSel);
+    auto hiddenFrom = [&](const glm::dvec3 &pos, glm::dvec3 &d, double &range) {
+        const glm::dvec3 rel = pos - obsG;
+        range = std::max(glm::length(rel), 1.0);
+        d = rel / range;
+        const double b = glm::dot(obsG, d), c = glm::dot(obsG, obsG) - (double)kEarthRadius * kEarthRadius;
+        const double disc = b * b - c;
+        return disc > 0.0 && -b + std::sqrt(disc) > 1.0 && -b - std::sqrt(disc) < range;
+    };
     if (selIsTransient())
     {
-        // A rocket or a fireball: its magnitude as drawn (no model to evaluate).
-        const double f = std::max((double)selTransientCur.flare, 1e-9);
-        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.1f", 6.0 - 2.5 * std::log10(f / 0.008));
+        // A rocket, a spacecraft or a fireball: its drawn flare (the camera's: 1 / r^2 from the eye) carried to the
+        // ground observer, as updateViewerObserverInfo does.
+        glm::dvec3 d;
+        double range = 1.0;
+        const bool hidden = hiddenFrom(selTransientCur.pos, d, range);
+        const double rCam = std::max(glm::length(selTransientCur.pos - glm::dvec3(obsECI)), 1.0);
+        const double fObs = (double)selTransientCur.flare * (rCam / range) * (rCam / range);
+        const double m = 6.0 - 2.5 * std::log10(std::max(fObs, 1e-30) / 0.008);
+        if (hidden)
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: below your horizon");
+        else if (!(selTransientCur.flare > 0.0f) || m > kSelDarkMag)
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: dark");
+        else
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.1f",
+                     m + atmExtinctionMag(obsG, d, range, (double)extinctionCoeff));
         return;
     }
     const ParityInputs &pin = parityPending;
@@ -7125,22 +7199,44 @@ void SatelliteSim::updateSelectedPhotometry()
         r.flareUnits * pin.brightnessScale >= occlusionFluxFloor(pin.brightnessScale))
         r = evalSatPhotometry(type.groups, type.lobes, e, pin.tAbs, in, &legacy, &type.occlusion);
 
-    // ── Readout line ─────────────────────────────────────────────────────────────────────
+    // ── Readout line: the ground observer's view (the Info window's rule; see above) ─────────────────────────
+    double formExt = 0.0;
+    bool shown = false;
+    SatPhotInputs inG = in;
+    inG.obsEci = obsG;
     if (!r.supported)
         snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: n/a (ground-site aim)");
     else if (r.legacy)
         snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: legacy type (not physical)");
-    else if (std::isfinite(r.magnitude))
-        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.2f  (1000 km %.2f)", r.magnitude, r.magnitude1000);
     else
-        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: dark (Earth's shadow)");
+    {
+        // Same instant as the parity check (the dispatch's); only the observer differs, and only in follow mode.
+        const SatPhotResult rg =
+            followActive ? evalSatPhotometry(type.groups, type.lobes, e, pin.tAbs, inG, &legacy,
+                                             (pin.occlusionOn && !type.occlusion.occluders.empty()) ? &type.occlusion : nullptr)
+                         : r;
+        glm::dvec3 d;
+        double range = 1.0;
+        const bool hidden = hiddenFrom(rg.orbit.posEci, d, range);
+        if (hidden)
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: below your horizon");
+        else if (!std::isfinite(rg.magnitude))
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: dark (Earth's shadow)");
+        else
+        {
+            formExt = atmExtinctionMag(obsG, d, range, (double)extinctionCoeff);
+            shown = true;
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.2f  (1000 km %.2f)", rg.magnitude + formExt,
+                     rg.magnitude1000);
+        }
+    }
     // A formation's members drawn as one point while it is unresolved (sat_orbit.comp): its combined magnitude.
-    if (r.supported && !r.legacy && orb.formation)
+    if (shown && orb.formation)
     {
         int n = 0;
-        const double fm = formationMagnitude(selectedSatIndex, in, pin.tAbs, n);
+        const double fm = formationMagnitude(selectedSatIndex, inG, pin.tAbs, n);
         if (std::isfinite(fm))
-            snprintf(selPhotLine[1], sizeof(selPhotLine[1]), "Formation of %d: mag %.2f", n, fm);
+            snprintf(selPhotLine[1], sizeof(selPhotLine[1]), "Formation of %d: mag %.2f", n, fm + formExt);
     }
 
     // ── GPU parity: check + log only, no readout line (the range/phase line this used to follow is the

@@ -45,8 +45,12 @@ struct GpuMeshFrame
     glm::vec4 lightPos[kLocalLights];
     glm::vec4 lightCol[kLocalLights];
     glm::vec4 lightDir[kLocalLights]; // xyz a floodlight's aim (unit), w the cosine of its beam's edge (-2 = all round)
+    // The model viewer's flame (2026-10-21, sat_mesh_marker.frag): flame0 xyz the engines' exit centre, w the exit
+    // radius (m); flame1 xyz the flame's axis x its length (m), w brightness (0 = none).
+    glm::vec4 flame0;
+    glm::vec4 flame1;
 };
-static_assert(sizeof(GpuMeshFrame) == 656, "GpuMeshFrame layout (sat_mesh_common.glsl)");
+static_assert(sizeof(GpuMeshFrame) == 688, "GpuMeshFrame layout (sat_mesh_common.glsl)");
 
 // std430 mirror of sat_mesh_common.glsl's MeshInstance.
 struct GpuMeshInstance

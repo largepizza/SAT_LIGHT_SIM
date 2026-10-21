@@ -24,6 +24,10 @@ layout(set = 0, binding = 0, std140) uniform MeshFrame {
     vec4 lightPos[8];
     vec4 lightCol[8];
     vec4 lightDir[8]; // xyz a floodlight's aim (unit), w the cosine of its beam's edge (-2 = all round)
+    // The model viewer's flame (2026-10-21, sat_mesh_marker.frag): xyz the engines' exit centre (world), w the exit
+    // radius (m); flame1 xyz = the flame's axis x its length (m), w = brightness (0 = none).
+    vec4 flame0;
+    vec4 flame1;
 } frame;
 
 struct MeshInstance {

@@ -2613,9 +2613,12 @@ vec3 lensFlare(vec2 uv, vec2 pos, float intens, float bokehMult) {
     // Lorentzian  1/(1 + 32*r^2)  matches wide, soft real ghost disc profiles.
     // Three slightly offset RGB positions produce chromatic aberration fringing.
 
-    float f2  = max(1.0/(1.0 + 32.0*pow(length(uvd + 0.80*pos), 2.0)), 0.0) * 0.25 * bokehMult;
-    float f22 = max(1.0/(1.0 + 32.0*pow(length(uvd + 0.85*pos), 2.0)), 0.0) * 0.23 * bokehMult;
-    float f23 = max(1.0/(1.0 + 32.0*pow(length(uvd + 0.90*pos), 2.0)), 0.0) * 0.21 * bokehMult;
+    // Cubed (2026-10-21 QA): the plain Lorentzian's tail (half brightness at 0.18 of the screen, a quarter at 0.3)
+    // laid a ~0.05 linear brown wash over half the frame whenever the Sun was in view from orbit, and a backlit
+    // station 150 m away (its earthlit side ~0.003) disappeared under it. A ghost is a disc with an edge, not a veil.
+    float f2  = pow(1.0/(1.0 + 32.0*pow(length(uvd + 0.80*pos), 2.0)), 3.0) * 0.25 * bokehMult;
+    float f22 = pow(1.0/(1.0 + 32.0*pow(length(uvd + 0.85*pos), 2.0)), 3.0) * 0.23 * bokehMult;
+    float f23 = pow(1.0/(1.0 + 32.0*pow(length(uvd + 0.90*pos), 2.0)), 3.0) * 0.21 * bokehMult;
 
     // ── Star-shaped secondary bokeh (between source and centre) ───────────────
     // uvx = 1.5*uv - 0.5*uvd.  The 2.4 exponent gives a slightly star-shaped
@@ -4333,6 +4336,36 @@ void main() {
 
     // ── Airglow (C15) ─────────────────────────────────────────────────────────
     // Green + sodium bands (accumAirglow) rode the N_VIEW loop above for free.
+#ifdef SKY_LITE
+    // Planetarium (2026-10-21 QA: at night over the ocean, from orbit, the Earth had no visible horizon): the green
+    // band's column along the ray in closed form, no noise — the limb's airglow line. The shell at r0 = R + 96 km,
+    // Gaussian half-width w: a ray grazing it at tangent height hT holds ~1.813 sqrt(2 r0 w) of it (the integral of
+    // exp(-u^4)); a ray crossing it at the local zenith angle Z holds w sqrt(pi) / cos Z per crossing (two if it
+    // passes below the shell and out again, one if it ends on the Earth or starts inside). Night at the point the
+    // ray is nearest the Earth (the tangent point, or the crossing).
+    {
+        const float r0 = R_EARTH + kAirglowGreenPeakM, w = kAirglowGreenHalfWidthM;
+        float tc = -dot(obsPos, dir);
+        float b = length(obsPos + dir * max(tc, 0.0));        // nearest distance to the Earth's centre on the ray
+        float hT = b - R_EARTH;
+        bool hitsEarth = tc > 0.0 && b < R_EARTH;
+        float colPeak = 1.813 * sqrt(2.0 * r0 * w);
+        float cosZ = sqrt(max(1.0 - (b / r0) * (b / r0), 0.0)); // at the shell, for the ray's impact parameter
+        float perCross = min(w * 1.7725 / max(cosZ, 1e-3), colPeak);
+        float ro = length(obsPos);
+        float col;
+        if (b >= r0 || tc <= 0.0)                              // grazing above the shell, or heading away
+            col = (ro < r0 ? perCross : 0.0) + colPeak * exp(-pow((hT - kAirglowGreenPeakM) / w, 2.0)) * step(0.0, tc);
+        else if (hitsEarth)
+            col = ro > r0 ? perCross : 0.0;                    // down through the shell onto the Earth
+        else
+            col = (ro > r0 ? 2.0 : 1.0) * perCross;            // under the shell and out again
+        col = min(col, colPeak);
+        vec3 pN = normalize(obsPos + dir * max(tc, 0.0));
+        float night = 1.0 - clamp((dot(pN, sunDir) + 0.15) / 0.3, 0.0, 1.0);
+        accumAirglow += kAirglowGreenColor * cloud.airglowGreenGain * col * night;
+    }
+#endif
     color += accumAirglow * kAirglowScale * cloud.airglowGain;
 
     // Red band (630nm) supplemental march: peaks at 275km, well past N_VIEW's ~100km ceiling
@@ -6744,6 +6777,25 @@ void main() {
         // attenuation either term got was `cloudBlock` (A_total's soft luminance dimming) below,
         // which fades but never reaches zero for real cloud, so it read as "doesn't occlude."
         float sunGate    = (tSurface > 0.0 || tCloudOcclude >= 0.0) ? 0.0 : 1.0;
+        // The glare lobes and corona are VEILING light (the eye's / lens's scatter of the Sun), in front of anything
+        // the Sun is seen past. Over a satellite mesh they are kept while the Sun itself is not hidden at its own
+        // screen position (2026-10-21 QA: Haven-2 backlit from 158 m was the same grey as the glare halo round it,
+        // because the halo stopped at its outline: the earthlit side was drawn, with no contrast left). Terrain and
+        // cloud keep the old per-pixel gate (a ridge or deck in front of a sunset Sun hides its halo).
+        float veilGate   = sunGate;
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+        if (meshHit && tCloudOcclude < 0.0) {
+            vec3 sc = mat3(pc.skyView) * normalize(pc.sunDirENU.xyz);
+            veilGate = 1.0;
+            if (sc.z < -0.01) {
+                float tHFv = tan(pc.fovYRad * 0.5);
+                vec2  su   = vec2(sc.x, -sc.y) / (-sc.z * tHFv * 2.0);
+                vec2  suv  = vec2(su.x / pc.aspect + 0.5, su.y + 0.5);
+                if (all(greaterThanEqual(suv, vec2(0.0))) && all(lessThanEqual(suv, vec2(1.0))))
+                    veilGate = texture(sceneDepthTex, suv).r >= kNoSurfaceT * 0.5 ? 1.0 : 0.0;
+            }
+        }
+#endif
         // Solar eclipse (2026-09-30): near the Moon the disc takes its TRUE radius (it is drawn ~2x large for
         // the glare) and is hidden where the Moon is; the glare and corona dim with the share of the Sun the
         // observer still sees, and at totality the solar corona shows round the Moon's black disc.
@@ -6757,7 +6809,7 @@ void main() {
         float sunsetT    = clamp(1.0 - (sunDirENU.w - limbZ) / 0.15, 0.0, 1.0);
         vec3  sunCol     = mix(vec3(1.5, 1.3, 1.0), vec3(1.8, 0.7, 0.2), sunsetT * 0.7);
         float coronaSig  = mix(0.035, 0.08, sunsetT * sunsetT);
-        float corona     = exp(-angle * angle / (2.0 * coronaSig * coronaSig)) * sunGate;
+        float corona     = exp(-angle * angle / (2.0 * coronaSig * coronaSig)) * veilGate;
         // Bright inner glare bridging the disc edge to the *0.12 wide corona. Without it the disc
         // (full `sunCol`) dropped straight to the dim corona at its edge — a hard brightness step
         // that reads, especially post-tonemap, as a dark ring / "cutout" around the sun. Three
@@ -6765,7 +6817,7 @@ void main() {
         // sat_sky_minimal.frag's Potato corona so the two tiers match. `g = max(cosA,0)`;
         // pow(g,N) ≈ exp(-N·angle²/2), so N = 1800/320/55 → σ ≈ 0.024/0.056/0.135 rad.
         float g          = max(cosA, 0.0);
-        float glare      = (pow(g, 1800.0) * 0.85 + pow(g, 320.0) * 0.13 + pow(g, 55.0) * 0.03) * sunGate;
+        float glare      = (pow(g, 1800.0) * 0.85 + pow(g, 320.0) * 0.13 + pow(g, 55.0) * 0.03) * veilGate;
         // Remaining soft dimming (cloudBlock, A_total's luminance) still applies on top for thin/
         // translucent cloud the hard gate above doesn't trip on — a hazy, dimmed disc through mist
         // is correct; sunGate only handles the "actually opaque" case that dimming alone can't.

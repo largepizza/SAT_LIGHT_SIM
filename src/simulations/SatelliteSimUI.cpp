@@ -2512,6 +2512,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                     {
                         buildViewChips(inp, ui, 0);
                     }
+                    buildViewerGoneLabel(0);
                     buildViewerMarkerLabels(0);
                 }
                 // ── The four numbers a player looks for first ─────────────────────────────────────
@@ -2708,9 +2709,25 @@ void SatelliteSim::buildMissionTimeline(const UIInput &inp, UIRenderer &ui, cons
     uiKV("InfoMsKV", 1, "Object", str("%s", s.what.c_str()), lw);
     for (size_t f = 0; f < s.facts.size() && f < 6; ++f)
         uiKV("InfoMsKV", 2 + (int)f, str("%s", s.facts[f].first.c_str()), str("%s", s.facts[f].second.c_str()), lw);
-    // Progress: through the subject's timeline (first to last milestone).
-    const double span = std::max(1.0, s.t1 - s.t0);
-    const float frac = (float)std::clamp((now - s.t0) / span, 0.0, 1.0);
+    // Progress: through the MILESTONE LIST, interpolated in time between the last milestone passed and the next one
+    // (2026-10-21 QA: it was the share of s.t0..s.t1 in time, so a Progress read "0% (15 of 20 milestones)" — its
+    // span runs to the undocking weeks later — and "100% (17 of 20)" past it). The bar and the count now agree.
+    float frac = 0.0f;
+    {
+        const int n = (int)s.ms.size();
+        if (n == 1)
+            frac = cur >= 0 ? 1.0f : 0.0f;
+        else if (n > 1 && cur >= 0)
+        {
+            double f = (double)cur;
+            if (cur < n - 1)
+            {
+                const double a = s.ms[cur].t, b = s.ms[cur + 1].t;
+                f += b > a ? std::clamp((now - a) / (b - a), 0.0, 1.0) : 0.0;
+            }
+            frac = (float)std::clamp(f / (double)(n - 1), 0.0, 1.0);
+        }
+    }
     uiKV("InfoMsKV", 9, "Progress", str("%.0f%%  (%d of %d milestones)", frac * 100.0f, cur + 1, (int)s.ms.size()), lw);
     CLAY(CLAY_SIDI(CLAY_STRING("InfoMsBar"), 0), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(3)}},
                                       .backgroundColor = Pal::trackBg})
@@ -2835,11 +2852,55 @@ void SatelliteSim::buildViewPopoutWindow(const UIInput &inp, UIRenderer &ui)
                 {
                     buildViewChips(inp, ui, 1);
                 }
+                buildViewerGoneLabel(1);
                 buildViewerMarkerLabels(1);
             }
         },
         [&]()
         { buildViewTitleIcons(inp, ui, true); }, isSelected);
+}
+
+// ─── viewerGone / buildViewerGoneLabel ───────────────────────────────────────
+// A roster object the 3D view shows that no longer exists (destroyed by a breakup, or re-entered: 2026-10-21 QA, a
+// destroyed station's view still showed the intact model). recordModelViewer draws no model then, and the view
+// carries this label instead. 0 = it exists; 2 destroyed, 3 re-entered (rosterFateAt), with when.
+int SatelliteSim::viewerGoneFate(double *whenT) const
+{
+    if (viewerSatIndex < 0 || (uint32_t)viewerSatIndex >= activeSatCount)
+        return 0;
+    const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    double when = 0.0;
+    const int f = rosterFateAt((uint32_t)viewerSatIndex, now, &when);
+    if (f != 2 && f != 3)
+        return 0;
+    if (whenT)
+        *whenT = when;
+    return f;
+}
+
+void SatelliteSim::buildViewerGoneLabel(int view)
+{
+    double when = 0.0;
+    const int f = viewerGoneFate(&when);
+    if (!f)
+        return;
+    snprintf(viewerGoneBuf_[view & 1], sizeof(viewerGoneBuf_[0]), "%s %s", f == 2 ? "Destroyed" : "Re-entered",
+             fmtUtcReadable(when).c_str());
+    const char *s = viewerGoneBuf_[view & 1];
+    CLAY(CLAY_SIDI(CLAY_STRING("ViewerGone"), (uint32_t)view),
+         {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}, .padding = {10, 10, 6, 6}},
+          .backgroundColor = Pal::panelSolid,
+          .cornerRadius = CLAY_CORNER_RADIUS(4),
+          .floating = {.offset = {0, 0},
+                       .parentId = view ? CLAY_ID("ViewerImagePop").id : CLAY_ID("ViewerImageMini").id,
+                       .zIndex = 10,
+                       .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_CENTER, .parent = CLAY_ATTACH_POINT_CENTER_CENTER},
+                       .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+                       .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID}})
+    {
+        CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}),
+                  CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(13), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+    }
 }
 
 // ─── viewTitleIconsHovered ───────────────────────────────────────────────────
@@ -3215,7 +3276,36 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
     chrome.h = std::clamp(chrome.h, minH, std::max(minH, maxH));
 
     bool justClosed = false;
-    Clay_String titleStr{false, (int32_t)strlen(title), title};
+    // The title is ELLIPSIZED to the room left of the title-bar icons and the close button (2026-10-21 QA: a long
+    // name such as "SpaceX Starmind - sun-synchronous X-ring #..." ran under the icons — the clipped GROW box still
+    // took the unwrapped text's width as its minimum). The extras' width is last frame's laid-out one.
+    const float closeSzT = closable ? std::max(24.0f, (float)fs(12) + 12.0f) : 0.0f;
+    float extrasW = 0.0f;
+    if (titleExtras)
+    {
+        const Clay_ElementData ed = Clay_GetElementData(CLAY_IDI("GenWinTitleExtras", winId));
+        if (ed.found)
+            extrasW = ed.boundingBox.width;
+    }
+    const float titleRoom = std::max(20.0f, chrome.w - 28.0f - closeSzT - extrasW - 8.0f);
+    const char *titleShown = title;
+    {
+        const float fpx = (float)fs(16);
+        const int len = (int)strlen(title);
+        if (ui.textAdvance(title, len, fpx) > titleRoom && winId >= 0 && winId < 32)
+        {
+            const float dotsW = ui.textAdvance("...", 3, fpx);
+            int n = len;
+            while (n > 0 && ui.textAdvance(title, n, fpx) + dotsW > titleRoom)
+                --n;
+            while (n > 0 && title[n - 1] == ' ')
+                --n;
+            winTitleBuf_[winId].assign(title, (size_t)n);
+            winTitleBuf_[winId] += "...";
+            titleShown = winTitleBuf_[winId].c_str();
+        }
+    }
+    Clay_String titleStr{false, (int32_t)strlen(titleShown), titleShown};
     // The panel's alpha is the "Window opacity" setting (2026-10-20): the themes' 245 let a window under another show
     // through it.
     Clay_Color winBg = Pal::panelSolid;
@@ -3261,7 +3351,14 @@ bool SatelliteSim::buildResizableWindow(const UIInput &inp, UIRenderer &ui, Wind
             }
 
             if (titleExtras)
-                titleExtras();
+            {
+                CLAY(CLAY_IDI("GenWinTitleExtras", winId), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                                                        .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                {
+                    titleExtras();
+                }
+            }
 
             if (closable)
             {

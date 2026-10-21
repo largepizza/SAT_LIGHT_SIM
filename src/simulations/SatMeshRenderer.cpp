@@ -685,7 +685,7 @@ void SatMeshRenderer::recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &fram
         vkCmdBindIndexBuffer(cmd, indexBuf, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, tm->indexCount, 1, tm->firstIndex, tm->vertexOffset, 0);
     }
-    if (viewerMarkerPipe && (frame.marker0.w > 0.5f || frame.marker1.w > 0.5f))
+    if (viewerMarkerPipe && (frame.marker0.w > 0.5f || frame.marker1.w > 0.5f || frame.flame1.w > 0.0f))
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, viewerMarkerPipe);
         vkCmdDraw(cmd, 3, 1, 0, 0);
