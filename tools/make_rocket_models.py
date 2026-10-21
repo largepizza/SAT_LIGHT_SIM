@@ -517,11 +517,29 @@ def core_parts(b, v, z0=0.0, stack=True):
                 b.radial_box("grid_fin_hinge", phi, r, top - 0.8, 0.15, 0.5, 0.6, "grey")
     legs = v.get("legs")
     if legs:
+        # Landing legs (2026-10-20): drawn DEPLOYED (the rest pose), hinged at the base and swung out and down so
+        # their feet stand level with the engine exits; a "fold" turns each back up flat against the body for the
+        # flight (the launch code sets the unfolding progress: deployed in the last seconds before touchdown).
         n, ll, w, lm = legs
+        zh = z0 + 0.25 * ll                             # the hinge (above the engine section), at the leg's lower end
+        z_foot = z0 + e["z"] - 0.25                     # the feet, a little below the engine exits
+        alpha = math.acos(max(-1.0, min(1.0, (z_foot - zh) / ll)))   # from straight up, outward
         for k in range(n):
             phi = 360.0 * k / n
-            b.radial_box("leg", phi, r, z0 + 0.4 + 0.5 * ll, 0.32, w, ll, lm)
-            b.radial_box("leg_foot", phi, r, z0 + 0.3, 0.5, w * 1.3, 0.6, lm)
+            p = math.radians(phi)
+            er = (math.cos(p), math.sin(p), 0.0)
+            et = (-math.sin(p), math.cos(p), 0.0)
+            ax = (math.sin(alpha) * er[0], math.sin(alpha) * er[1], math.cos(alpha))     # along the leg, to the foot
+            xr = (math.cos(alpha) * er[0], math.cos(alpha) * er[1], -math.sin(alpha))   # its outward face
+            hx = r + 0.16
+            hinge = (hx * er[0], hx * er[1], zh)
+            fold = {"point": r4(list(hinge)), "axis": r4(list(et)), "angle_deg": round(-math.degrees(alpha), 4),
+                    "phase": [0.0, 1.0]}
+            q = quat_from_basis(xr, et, ax)
+            for name, d0, sz, sr, st in (("leg", 0.5 * ll, ll, 0.32, w), ("leg_foot", ll - 0.3, 0.6, 0.5, w * 1.3)):
+                c = [hinge[i] + d0 * ax[i] for i in range(3)]
+                b.add({"name": name, "type": "box", "size": r4([sr, st, sz]), "position": r4(c),
+                       "rotation_quat": q, "material": lm, "fold": dict(fold)}, True)
     if v.get("strakes"):
         n, ln, sp = v["strakes"]
         for k in range(n):

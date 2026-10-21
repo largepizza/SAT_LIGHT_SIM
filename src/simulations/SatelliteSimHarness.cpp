@@ -2767,6 +2767,50 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = r["jitter"].dump();
             return Status::Done;
         }
+        if (sub == "trace")
+        {
+            // launch trace [from=YYYY-MM-DD[THH:MM]] [days=400] [vehicle=<id>] [program=<name part>] [key=<batch>]
+            // (2026-10-20, tools/harness/mission_ops.py): the next launch of every (vehicle, program) pair after `from`
+            // (default: now), traced through its phases from the launch model; key= traces one batch.
+            if (c.has("key"))
+            {
+                r["trace"] = launchTraceBatchJson(std::stoull(c.str("key", "0")));
+                r["message"] = r["trace"].value("vehicle", std::string("?"));
+                return Status::Done;
+            }
+            double from = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            if (c.has("from"))
+            {
+                from = launch::dateToJ2000(c.str("from", ""));
+                if (std::isnan(from))
+                    fail("launch trace: from= as YYYY-MM-DD[THH:MM]");
+            }
+            r["trace"] = launchTraceJson(from, c.num("days", 400.0), c.str("vehicle", ""), c.str("program", ""),
+                                         c.num("phases", 1.0) > 0.5);
+            int nf = 0;
+            for (const auto &x : r["trace"].value("combos", nlohmann::json::array()))
+                nf += x.value("found", false);
+            r["message"] = std::to_string(nf) + " of " + std::to_string(r["trace"].value("combos", nlohmann::json::array()).size()) +
+                           " vehicle / program pairs found";
+            return Status::Done;
+        }
+        if (sub == "formation")
+        {
+            // launch formation key=<batch> [samples=8]: a formation train's arrangement from release to arrival.
+            r["formation"] = launchFormationJson(std::stoull(c.str("key", "0")), (int)c.num("samples", 8.0), c.num("before", 0.0) > 0.5);
+            r["message"] = r["formation"].value("constellation", std::string("?"));
+            return Status::Done;
+        }
+        if (sub == "goto")
+        {
+            // launch goto key=<batch> [t=<s after lift-off>] [ground=0|1]: the clock at that moment of that launch (1x,
+            // running); ground=1 also puts the observer beside the pad. Then `launch select kind=...` takes its stages.
+            std::string msg;
+            if (!launchGoToKey(std::stoull(c.str("key", "0")), c.num("ground", 0.0) > 0.5, -c.num("t", 0.0), msg))
+                fail("launch goto: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
         if (sub == "check")
         {
             r["check"] = launchCheckJson();

@@ -2998,6 +2998,13 @@ private:
     std::vector<LaunchSound> launchSounds(double now, const glm::dvec3 &eye, float camAz) const;
     nlohmann::json launchCheckJson() const;
     nlohmann::json launchJitterJson(int maxBatches); // harness `launch jitter`
+    // Mission-operations suite (2026-10-20, harness `launch trace` / `launch formation`; tools/harness/mission_ops.py):
+    // the next launch of each (vehicle, program) pair after fromT and its phases measured from the launch model.
+    nlohmann::json launchTraceJson(double fromT, double days, const std::string &vehFilter, const std::string &progFilter,
+                                   bool trace);
+    nlohmann::json launchTraceBatchJson(uint64_t key);
+    const void *launchEnsureBatch(uint64_t key); // (an LBatch*: SatelliteSimLaunches.cpp)
+    nlohmann::json launchFormationJson(uint64_t key, int samples, bool before = false);
     void launchLegacyRecords(bool on);              // harness `launch legacy on|off`
     bool launchSelect(int kind, std::string &msg, int member = -1); // member >= 0: only that member of a batch
     bool launchGoToNextReentry(std::string &msg);
