@@ -98,7 +98,8 @@
             "rotation_quat": [0.0, 1.0, 0.0, 0.0],
             "caps": "bottom",
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2029-06-01"
         },
         {
             "name": "haven2_core_seg1",
@@ -108,7 +109,8 @@
             "rotation_quat": [0.0, 1.0, 0.0, 0.0],
             "caps": false,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2029-06-01"
         },
         {
             "name": "haven2_core",
@@ -118,7 +120,8 @@
             "rotation_quat": [0.0, 1.0, 0.0, 0.0],
             "caps": false,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2029-06-01"
         },
         {
             "name": "haven2_core_seg3",
@@ -128,7 +131,8 @@
             "rotation_quat": [0.0, 1.0, 0.0, 0.0],
             "caps": false,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2029-06-01"
         },
         {
             "name": "haven2_core_seg4",
@@ -138,7 +142,8 @@
             "rotation_quat": [0.0, 1.0, 0.0, 0.0],
             "caps": "top",
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2029-06-01"
         },
         {
             "name": "core_airlock",
@@ -149,7 +154,8 @@
             "rotation_quat": [0.0, 1.0, 0.0, 0.0],
             "caps": true,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2029-06-01"
         },
         {
             "name": "haven2_module_fwd",
@@ -299,7 +305,8 @@
             "rotation_quat": [0.0, -0.707107, 0.0, 0.707107],
             "caps": true,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2030-03-01"
         },
         {
             "name": "adapter_aft",
@@ -310,7 +317,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2030-03-01"
         },
         {
             "name": "port_aft",
@@ -321,7 +329,8 @@
             "caps": "top",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2030-03-01"
         },
         {
             "name": "port_aft_ring",
@@ -332,7 +341,8 @@
             "caps": "both",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2030-03-01"
         },
         {
             "name": "array_aft_s",
@@ -343,7 +353,8 @@
             "material": "cells",
             "back_material": "cells_back",
             "group": "arrays_y",
-            "pivot": [-17.1, 0.0, 0.0]
+            "pivot": [-17.1, 0.0, 0.0],
+            "since": "2030-03-01"
         },
         {
             "name": "array_aft_s_yoke",
@@ -353,7 +364,8 @@
             "material": "metal",
             "group": "arrays_y",
             "render_only": true,
-            "pivot": [-17.1, 0.0, 0.0]
+            "pivot": [-17.1, 0.0, 0.0],
+            "since": "2030-03-01"
         },
         {
             "name": "array_aft_s_spar",
@@ -363,7 +375,8 @@
             "material": "metal",
             "group": "arrays_y",
             "render_only": true,
-            "pivot": [-17.1, 0.0, 0.0]
+            "pivot": [-17.1, 0.0, 0.0],
+            "since": "2030-03-01"
         },
         {
             "name": "array_aft_p",
@@ -374,7 +387,8 @@
             "material": "cells",
             "back_material": "cells_back",
             "group": "arrays_y",
-            "pivot": [-17.1, 0.0, 0.0]
+            "pivot": [-17.1, 0.0, 0.0],
+            "since": "2030-03-01"
         },
         {
             "name": "array_aft_p_yoke",
@@ -384,7 +398,8 @@
             "material": "metal",
             "group": "arrays_y",
             "render_only": true,
-            "pivot": [-17.1, 0.0, 0.0]
+            "pivot": [-17.1, 0.0, 0.0],
+            "since": "2030-03-01"
         },
         {
             "name": "array_aft_p_spar",
@@ -394,7 +409,8 @@
             "material": "metal",
             "group": "arrays_y",
             "render_only": true,
-            "pivot": [-17.1, 0.0, 0.0]
+            "pivot": [-17.1, 0.0, 0.0],
+            "since": "2030-03-01"
         },
         {
             "name": "window_aft_0",
@@ -405,7 +421,8 @@
             "caps": "top",
             "material": "glass",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2030-03-01"
         },
         {
             "name": "window_aft_1",
@@ -416,7 +433,8 @@
             "caps": "top",
             "material": "glass",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2030-03-01"
         },
         {
             "name": "band_aft",
@@ -427,7 +445,8 @@
             "caps": false,
             "material": "mli",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2030-03-01"
         },
         {
             "name": "haven2_module_stbd",
@@ -438,7 +457,8 @@
             "rotation_quat": [0.5, -0.5, 0.5, 0.5],
             "caps": true,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2031-03-01"
         },
         {
             "name": "adapter_stbd",
@@ -449,7 +469,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-03-01"
         },
         {
             "name": "port_stbd",
@@ -460,7 +481,8 @@
             "caps": "top",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-03-01"
         },
         {
             "name": "port_stbd_ring",
@@ -471,7 +493,8 @@
             "caps": "both",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-03-01"
         },
         {
             "name": "array_stbd_f",
@@ -482,7 +505,8 @@
             "material": "cells",
             "back_material": "cells_back",
             "group": "arrays_x",
-            "pivot": [0.0, 17.1, 0.0]
+            "pivot": [0.0, 17.1, 0.0],
+            "since": "2031-03-01"
         },
         {
             "name": "array_stbd_f_yoke",
@@ -492,7 +516,8 @@
             "material": "metal",
             "group": "arrays_x",
             "render_only": true,
-            "pivot": [0.0, 17.1, 0.0]
+            "pivot": [0.0, 17.1, 0.0],
+            "since": "2031-03-01"
         },
         {
             "name": "array_stbd_f_spar",
@@ -502,7 +527,8 @@
             "material": "metal",
             "group": "arrays_x",
             "render_only": true,
-            "pivot": [0.0, 17.1, 0.0]
+            "pivot": [0.0, 17.1, 0.0],
+            "since": "2031-03-01"
         },
         {
             "name": "array_stbd_a",
@@ -513,7 +539,8 @@
             "material": "cells",
             "back_material": "cells_back",
             "group": "arrays_x",
-            "pivot": [0.0, 17.1, 0.0]
+            "pivot": [0.0, 17.1, 0.0],
+            "since": "2031-03-01"
         },
         {
             "name": "array_stbd_a_yoke",
@@ -523,7 +550,8 @@
             "material": "metal",
             "group": "arrays_x",
             "render_only": true,
-            "pivot": [0.0, 17.1, 0.0]
+            "pivot": [0.0, 17.1, 0.0],
+            "since": "2031-03-01"
         },
         {
             "name": "array_stbd_a_spar",
@@ -533,7 +561,8 @@
             "material": "metal",
             "group": "arrays_x",
             "render_only": true,
-            "pivot": [0.0, 17.1, 0.0]
+            "pivot": [0.0, 17.1, 0.0],
+            "since": "2031-03-01"
         },
         {
             "name": "window_stbd_0",
@@ -544,7 +573,8 @@
             "caps": "top",
             "material": "glass",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-03-01"
         },
         {
             "name": "window_stbd_1",
@@ -555,7 +585,8 @@
             "caps": "top",
             "material": "glass",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-03-01"
         },
         {
             "name": "band_stbd",
@@ -566,7 +597,8 @@
             "caps": false,
             "material": "mli",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2031-03-01"
         },
         {
             "name": "haven2_module_port",
@@ -577,7 +609,8 @@
             "rotation_quat": [-0.5, -0.5, -0.5, 0.5],
             "caps": true,
             "material": "module_skin",
-            "group": "station"
+            "group": "station",
+            "since": "2032-03-01"
         },
         {
             "name": "adapter_port",
@@ -588,7 +621,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2032-03-01"
         },
         {
             "name": "port_port",
@@ -599,7 +633,8 @@
             "caps": "top",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2032-03-01"
         },
         {
             "name": "port_port_ring",
@@ -610,7 +645,8 @@
             "caps": "both",
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2032-03-01"
         },
         {
             "name": "array_port_f",
@@ -621,7 +657,8 @@
             "material": "cells",
             "back_material": "cells_back",
             "group": "arrays_x",
-            "pivot": [0.0, -17.1, 0.0]
+            "pivot": [0.0, -17.1, 0.0],
+            "since": "2032-03-01"
         },
         {
             "name": "array_port_f_yoke",
@@ -631,7 +668,8 @@
             "material": "metal",
             "group": "arrays_x",
             "render_only": true,
-            "pivot": [0.0, -17.1, 0.0]
+            "pivot": [0.0, -17.1, 0.0],
+            "since": "2032-03-01"
         },
         {
             "name": "array_port_f_spar",
@@ -641,7 +679,8 @@
             "material": "metal",
             "group": "arrays_x",
             "render_only": true,
-            "pivot": [0.0, -17.1, 0.0]
+            "pivot": [0.0, -17.1, 0.0],
+            "since": "2032-03-01"
         },
         {
             "name": "array_port_a",
@@ -652,7 +691,8 @@
             "material": "cells",
             "back_material": "cells_back",
             "group": "arrays_x",
-            "pivot": [0.0, -17.1, 0.0]
+            "pivot": [0.0, -17.1, 0.0],
+            "since": "2032-03-01"
         },
         {
             "name": "array_port_a_yoke",
@@ -662,7 +702,8 @@
             "material": "metal",
             "group": "arrays_x",
             "render_only": true,
-            "pivot": [0.0, -17.1, 0.0]
+            "pivot": [0.0, -17.1, 0.0],
+            "since": "2032-03-01"
         },
         {
             "name": "array_port_a_spar",
@@ -672,7 +713,8 @@
             "material": "metal",
             "group": "arrays_x",
             "render_only": true,
-            "pivot": [0.0, -17.1, 0.0]
+            "pivot": [0.0, -17.1, 0.0],
+            "since": "2032-03-01"
         },
         {
             "name": "window_port_0",
@@ -683,7 +725,8 @@
             "caps": "top",
             "material": "glass",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2032-03-01"
         },
         {
             "name": "window_port_1",
@@ -694,7 +737,8 @@
             "caps": "top",
             "material": "glass",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2032-03-01"
         },
         {
             "name": "band_port",
@@ -705,7 +749,8 @@
             "caps": false,
             "material": "mli",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2032-03-01"
         },
         {
             "name": "core_radiator_0",
@@ -715,7 +760,8 @@
             "rotation_quat": [0.653281, -0.270598, -0.653281, -0.270598],
             "material": "radiator",
             "back_material": "radiator",
-            "group": "station"
+            "group": "station",
+            "since": "2029-06-01"
         },
         {
             "name": "core_radiator_0_manifold",
@@ -725,7 +771,8 @@
             "material": "metal",
             "rotation_quat": [0.92388, 0.0, 0.0, 0.382683],
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-06-01"
         },
         {
             "name": "core_radiator_1",
@@ -735,7 +782,8 @@
             "rotation_quat": [0.653281, 0.270598, -0.653281, 0.270598],
             "material": "radiator",
             "back_material": "radiator",
-            "group": "station"
+            "group": "station",
+            "since": "2029-06-01"
         },
         {
             "name": "core_radiator_1_manifold",
@@ -745,7 +793,8 @@
             "material": "metal",
             "rotation_quat": [0.382683, 0.0, 0.0, 0.92388],
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-06-01"
         },
         {
             "name": "core_radiator_2",
@@ -755,7 +804,8 @@
             "rotation_quat": [0.270598, 0.653281, -0.270598, 0.653281],
             "material": "radiator",
             "back_material": "radiator",
-            "group": "station"
+            "group": "station",
+            "since": "2029-06-01"
         },
         {
             "name": "core_radiator_2_manifold",
@@ -765,7 +815,8 @@
             "material": "metal",
             "rotation_quat": [-0.382683, 0.0, 0.0, 0.92388],
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-06-01"
         },
         {
             "name": "core_radiator_3",
@@ -775,7 +826,8 @@
             "rotation_quat": [-0.270598, 0.653281, 0.270598, 0.653281],
             "material": "radiator",
             "back_material": "radiator",
-            "group": "station"
+            "group": "station",
+            "since": "2029-06-01"
         },
         {
             "name": "core_radiator_3_manifold",
@@ -785,7 +837,8 @@
             "material": "metal",
             "rotation_quat": [0.92388, 0.0, 0.0, -0.382683],
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-06-01"
         },
         {
             "name": "hga_1_mast",
@@ -797,7 +850,8 @@
             "caps": true,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-06-01"
         },
         {
             "name": "hga_1",
@@ -809,7 +863,8 @@
             "material": "metal",
             "inner_material": "dragon_white",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-06-01"
         },
         {
             "name": "hga_2_mast",
@@ -821,7 +876,8 @@
             "caps": true,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-06-01"
         },
         {
             "name": "hga_2",
@@ -833,7 +889,8 @@
             "material": "metal",
             "inner_material": "dragon_white",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-06-01"
         },
         {
             "name": "airlock_hatch",
@@ -844,7 +901,8 @@
             "caps": false,
             "material": "metal",
             "group": "station",
-            "render_only": true
+            "render_only": true,
+            "since": "2029-06-01"
         }
     ],
     "sources": [
@@ -933,7 +991,8 @@
         {
             "name": "port_aft",
             "position": [-20.65, 0.0, 0.0],
-            "axis": [-1.0, 0.0, 0.0]
+            "axis": [-1.0, 0.0, 0.0],
+            "since": "2030-03-01"
         }
     ]
 }

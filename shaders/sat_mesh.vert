@@ -52,4 +52,8 @@ void main()
     vRest      = inPos;
     vGroup     = g;
     gl_Position = frame.viewProj * vec4(vWorld, 1.0);
+    // A station's module not launched yet (2026-10-21): every vertex of the part at one point outside the clip volume,
+    // so its triangles have no area and draw nothing (the same in the depth pre-pass and the shading pass).
+    if (instCompAbsent(inst, comp))
+        gl_Position = vec4(0.0, 0.0, -2.0, 1.0);
 }

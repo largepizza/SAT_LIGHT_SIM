@@ -1,0 +1,108 @@
+# The deployment era's dated pads and stations (2026-10-21, CLAUDE.md "Launches" > The deployment era): a pad as it
+# stood at a date (39A a Falcon pad until its Starship tower, SLC-37 a Delta IV pad, then nothing, then Starship;
+# Louisiana not there before 2029) and stations built module by module (Tiangong 2021 / 2022-07 / 2022-11, Axiom,
+# Haven-2, BAS); `launch pads` / `deploy` list the pads' kinds now and their history.
+#   python tools/harness/run.py tools/harness/scripts/era_build_up.satcmd --name era_build_up
+set clouds_v2.coverage 0
+set display.dynamic_resolution false
+time pause
+
+# ── Pads by date (daylight at the Cape: ~17:00 UTC) ──
+time set 2019-06-15T16:30:00Z
+launch pad ksc_39a dist_m=900 az=200 h=30
+camera fov=40
+wait settle
+wait 20
+capture pad_39a_2019
+state pad_39a_2019
+time set 2031-06-15T16:30:00Z
+wait settle
+wait 20
+capture pad_39a_2031
+time set 2020-06-15T16:30:00Z
+launch pad ccsfs_slc37 dist_m=900 az=200 h=30
+wait settle
+wait 20
+capture pad_slc37_2020
+time set 2026-06-15T16:30:00Z
+wait settle
+wait 20
+capture pad_slc37_2026
+time set 2030-06-15T16:30:00Z
+wait settle
+wait 20
+capture pad_slc37_2030
+time set 2028-06-15T17:30:00Z
+launch pad louisiana_a1 dist_m=900 az=200 h=30
+wait settle
+wait 20
+capture pad_lou_2028
+time set 2032-06-15T17:30:00Z
+wait settle
+wait 20
+capture pad_lou_2032
+launch pads
+deploy
+
+# ── Stations module by module (the info window's 3D view, studio light) ──
+observer lat=34.05 lon=-118.25 agl=10
+ui scale 1.25
+time set 2021-06-01T12:00:00Z
+select const "Tiangong"
+ui open info
+viewer light=studio aim=free dist=3
+wait settle 20
+wait 10
+capture st_tiangong_2021_06 ui=on
+state st_tiangong_2021_06
+time set 2022-08-15T12:00:00Z
+wait settle 20
+wait 10
+capture st_tiangong_2022_08 ui=on
+time set 2023-06-01T12:00:00Z
+wait settle 20
+wait 10
+capture st_tiangong_2023_06 ui=on
+state st_tiangong_2023_06
+time set 2027-08-01T12:00:00Z
+select const "Axiom Station"
+ui open info
+viewer light=studio aim=free dist=3
+wait settle 20
+wait 10
+capture st_axiom_2027 ui=on
+state st_axiom_2027
+time set 2031-01-01T12:00:00Z
+wait settle 20
+wait 10
+capture st_axiom_2031 ui=on
+state st_axiom_2031
+time set 2028-08-01T12:00:00Z
+select const "Haven-2"
+ui open info
+viewer light=studio aim=free dist=3
+wait settle 20
+wait 10
+capture st_haven2_2028 ui=on
+time set 2033-01-01T12:00:00Z
+wait settle 20
+wait 10
+capture st_haven2_2033 ui=on
+time set 2029-06-01T12:00:00Z
+select const "Bharatiya Antariksh Station"
+ui open info
+viewer light=studio aim=free dist=3
+wait settle 20
+wait 10
+capture st_bas_2029 ui=on
+time set 2036-01-01T12:00:00Z
+wait settle 20
+wait 10
+capture st_bas_2036 ui=on
+# The era off: the 2036 station at any date.
+set launches.deployment_era false
+time set 2029-06-01T12:00:00Z
+wait settle 20
+wait 10
+capture st_bas_2029_era_off ui=on
+set launches.deployment_era true

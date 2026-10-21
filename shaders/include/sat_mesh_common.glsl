@@ -92,7 +92,8 @@ layout(set = 0, binding = 3, std430) readonly buffer MeshOccluders { MeshOcclude
 // satPivotOffset(). [5c + 1] xyz = the stow axis x (1 - stowScale) (0 = never stowed), w = the stow root;
 // [5c + 2] xy = the stow window, zw = the fold window (SatComponent::stow* / fold*; the instance's earthShC.z =
 // 1 - unfolding progress); [5c + 3] xyz = the fold hinge point, w = the fold angle (radians, 0 = never folded);
-// [5c + 4] xyz = the fold axis.
+// [5c + 4] xyz = the fold axis, w = the part's build-date code (stations module by module, 2026-10-21: satSinceCode,
+// SatModel.h; 0 = always). The instance's trans[0].w = today's code (0 = every part: no date / the era off).
 layout(set = 0, binding = 7, std430) readonly buffer MeshComponents { vec4 components[]; };
 
 layout(set = 0, binding = 4) uniform sampler2D earthDayTex;
@@ -155,6 +156,15 @@ float instFoldAngle(MeshInstance inst, uint comp, out vec3 point, out vec3 axis)
     point = fp.xyz;
     axis = components[inst.firstComponent + 5u * comp + 4u].xyz;
     return fp.w * (1.0 - smoothstep(ph.z, ph.w, 1.0 - inst.earthShC.z));
+}
+
+// A part not built yet on the instance's date (a station built module by module, 2026-10-21): not drawn (sat_mesh.vert
+// collapses it) and casts no shadow.
+bool instCompAbsent(MeshInstance inst, uint comp)
+{
+    if (inst.trans[0].w <= 0.0) return false;
+    float code = components[inst.firstComponent + 5u * comp + 4u].w;
+    return code > 0.0 && code > inst.trans[0].w;
 }
 
 // Rodrigues: v turned by angle a about the unit axis k.
