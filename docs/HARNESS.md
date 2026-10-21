@@ -368,7 +368,7 @@ python tools/harness/mission_ops.py report harness_runs/mission_ops/<stamp>   # 
   flying Starlink and direct-to-cell from the dispenser point). For each, `launch trace from=<epoch>`.
 - Judging: `THRESHOLDS` in mission_ops.py (one row per check: phase, metric, limit, owner, why). FAIL = a real problem;
   WARN = outside the limit in a part another agent owns (the booster landing burn's physics: tilt, last-second speed,
-  burn accelerations); INFO = recorded only; SKIP = not modelled (crew docking); N/A = the phase does not exist for that
+  burn accelerations); INFO = recorded only; SKIP = a crew flight whose spacecraft has no model (the docking phase checks `LCrew`: holds, contact, docked, undocking, jumps, turns); N/A = the phase does not exist for that
   launch; NOT FOUND = no launch of the pair in the window (Long March 12 flies no program; LVM3 / OneWeb and Falcon 9 /
   Starlink after 2027-06 have none in 2036).
 - Formation: the first launch with clusters (Starmind) through `launch formation`, now and `before=1`: the ring's shape

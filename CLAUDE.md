@@ -5367,7 +5367,7 @@ launches follow per-program cadences (no real manifest).
   retiree start (position and velocity vs the slot, at the SAME instant), upper-stage deorbit / entry / a ship's catch,
   docking. `launch formation` checks a formation train (Starmind) from release to arrival; `launch goto` jumps to a
   launch's T+t. The thresholds are one Python table (`mission_ops.THRESHOLDS`, PASS / FAIL / WARN for the landing burn's
-  physics, which another agent owns / SKIP for docking). `selftest.py -k mission_ops` runs it at the default start.
+  physics, which another agent owns; the crew `docking` phase checks the spacecraft's flight). `selftest.py -k mission_ops` runs it at the default start.
   **What it found and what was fixed:**
   - **Staging**: `boosterTrack` never stored its MECO sample (fly() records from t1 + dt), so every post-MECO sample sat
     one index early: the booster's whole flight after staging ran 0.5 s ahead and the stack's last half second moved
@@ -5397,7 +5397,9 @@ launches follow per-program cadences (no real manifest).
   **Still open (reported, not fixed):** New Glenn's booster peaks at ~92 m/s^2 after staging (the landing physics; WARN); a deorbit burn blended by smoothstep
   peaks at ~4x dv / burn (up to ~90 m/s^2 for the 800-km Qianfan stages: no jump, but violent); late close passes
   (~1 m, about an orbit after release) between train members, from the Clohessy-Wiltshire offsets taken about each
-  member's own plane; crew docking is not modelled (SKIP); Long March 12 flies no program.
+  member's own plane; Long March 12 flies no program. (Crew docking was SKIP until the crew spacecraft landed the same
+  day: its `docking` phase now checks LCrew — separation and contact offsets, the 400 / 200 / 20 m holds, docked
+  after contact and mid-stay, undocking, jumps and turn rates: 13 crew flights PASS over the three epochs.)
   **Measured:** (2026-10-20, RTX 3070 Ti shared with other agents' runs, so GPU numbers are noisy) `mission_ops.py run`: 69 launches over
     three epochs (27 pairs each), 947 phase checks PASS, 2 FAIL (Falcon 9 Starlink Gen1 and OneWeb at 2026-11-05: a pair within ~1-1.6 m
     in the first 10 min, from the random spread), 3 WARN (New Glenn's booster peaks at 92 m/s^2 of proper acceleration
