@@ -549,7 +549,7 @@ void SatelliteSim::buildReportBar(const UIInput &inp, UIRenderer &ui)
         {
             CLAY(CLAY_ID("ReportBarL2"), {.layout = {.sizing = {CLAY_SIZING_FIXED(labelW), CLAY_SIZING_FIT(0)}, .padding = {0, 0, 5, 0}}}) { text("Note", Pal::textDim, 11); }
             // Two lines that grow to six, then scroll; Enter saves (Shift+Enter: a new line).
-            if (textArea(inp, ui, noteId, reportBarNote_, fieldW, 2, 12, "What this shot shows", kReportNoteMax, 6, true))
+            if (textArea(inp, ui, noteId, reportBarNote_, fieldW, 2, 12, "What this shot shows", kReportNoteMax, 6, true, nullptr, 44))
                 reportSetField(reportActiveId_, reportBarShot_, "note", reportBarNote_);
         }
         text(hintBuf, Pal::textHint, 11);

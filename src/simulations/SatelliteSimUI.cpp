@@ -5612,7 +5612,7 @@ void SatelliteSim::textEditEndFrame(const UIInput &inp)
 
 bool SatelliteSim::textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width,
                             int minLines, float fontPx, const char *placeholder, size_t maxLen, int maxLines,
-                            bool enterCommits, const Clay_Color *readOnlyColor)
+                            bool enterCommits, const Clay_Color *readOnlyColor, int16_t layerZ)
 {
     const bool ro = readOnlyColor != nullptr;
     bool committed = false;
@@ -5841,7 +5841,7 @@ bool SatelliteSim::textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId i
         CLAY(cid, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(contentH)}}, .custom = {.customData = &d.block}}) {}
     }
     if (overflow)
-        ui.scrollbar(id); // the thumb on the right edge: there is more than the box shows
+        ui.scrollbar(id, layerZ); // the thumb on the right edge: there is more than the box shows
     return committed;
 }
 
