@@ -4,7 +4,8 @@
 // Units: sat_sky.frag's pre-exposure radiance, "π × radiance per unit solar irradiance" — a sunlit
 // white Lambertian face reads its albedo × cos, as terrain does. The BRDF is the photometry's
 // (modelFlux / lobeIntensity): Lambert + GGX (or Beckmann) · Schlick · Smith, with the sun's disc
-// folded into α (SUN_ALPHA), so summing a render's pixels reproduces the lobe model's intensity.
+// folded into α (sunA2: anisotropic, as the photometry) and a material's haze lobe (specCosMat), so summing a
+// render's pixels reproduces the lobe model's intensity.
 //   sun          direct, × litFactor (Earth shadow) × tint, shadowed by the model's own primitives
 //   earthshine   diffuse from the whole lit Earth cap (SatEarthLight, the photometry's table) — or,
 //                with an environment probe, the probe's SH irradiance: the full renderer's Earth
@@ -75,10 +76,22 @@ vec3 probeIrradiance(uint slot, vec3 n)
     return max(e, vec3(0.0));
 }
 
-const float SUN_ALPHA2 = 0.0023 * 0.0023; // the sun's disc as a roughness (sat_orbit.comp SUN_ALPHA)
+// The Sun's disc (sat_orbit.comp sunA2 / SatModel.cpp sunDiscA2, 2026-10-21): an anisotropic α² pair, 1/(s·h) wider
+// across the plane of incidence, so the render's pixel sum stays the lobe model's intensity at any incidence.
+const float SUN_ALPHA = 0.00208;
+const float SUN_W_GGX = 1.125, SUN_K_GGX = 4.0, SUN_W_BECK = 0.5625, SUN_K_BECK = 3.0;
+void sunA2(float a2Mat, bool beck, float c, out float a2p, out float a2q)
+{
+    const float S = SUN_ALPHA * SUN_ALPHA;
+    float v = beck ? SUN_W_BECK : SUN_W_GGX, k = beck ? SUN_K_BECK : SUN_K_GGX;
+    float Sq = S / max(c * c, 0.0025);
+    a2p = a2Mat + S * (v + (1.0 - v) / (1.0 + k * a2Mat / S));
+    a2q = a2Mat + Sq * (v + (1.0 - v) / (1.0 + k * a2Mat / Sq));
+}
 
-// π·f_spec·(n·l) for unit N, V, L (both above the surface) — sat_orbit.comp's lobe formula per pixel.
-float specCos(vec3 N, vec3 V, vec3 L, float a2, float f0, bool beckmann)
+// π·f_spec·(n·l) for unit N, V, L (both above the surface) — sat_orbit.comp's lobe formula per pixel. `a2` is the
+// material's α² (plus an isotropic source's size); sunDisc folds the Sun's disc in as sat_orbit.comp does.
+float specCos(vec3 N, vec3 V, vec3 L, float a2, float f0, bool beckmann, bool sunDisc)
 {
     float nl = dot(N, L), nv = dot(N, V);
     if (nl <= 0.0 || nv <= 0.0) return 0.0;
@@ -86,11 +99,22 @@ float specCos(vec3 N, vec3 V, vec3 L, float a2, float f0, bool beckmann)
     float nh = max(dot(N, H), 0.0);
     vec3  cx = cross(N, H);
     float sin2 = dot(cx, cx); // exact near the peak, where 1 − nh² cancels
-    float F  = f0 + (1.0 - f0) * pow(1.0 - max(dot(L, H), 0.0), 5.0);
+    float lh = max(dot(L, H), 0.0);
+    float F  = f0 + (1.0 - f0) * pow(1.0 - lh, 5.0);
+    float a2q = a2, nq2 = 0.0;
+    if (sunDisc) {
+        float a2m = a2;
+        sunA2(a2m, beckmann, min(lh, 1.0), a2, a2q);
+        vec3  q   = cross(L, V);
+        float ql2 = dot(q, q);
+        if (ql2 > 1e-12) { float nq = dot(N, q); nq2 = min(sin2, nq * nq / ql2); }
+    }
+    float eps = sin2 / a2 - nq2 * (a2q - a2) / (a2 * a2q);
+    float aa  = sunDisc ? sqrt(a2 * a2q) : a2;
     if (beckmann) {
         if (nh <= 0.0) return 0.0;
         float nh2 = nh * nh;
-        float D = exp(-sin2 / (nh2 * a2)) / (PI * a2 * nh2 * nh2);
+        float D = sunDisc ? exp(-eps / nh2) / (PI * aa * nh2 * nh2) : exp(-sin2 / (nh2 * a2)) / (PI * a2 * nh2 * nh2);
         float alpha = sqrt(a2);
         float cL = nl / (alpha * sqrt(max(1e-12, 1.0 - nl * nl)));
         float cV = nv / (alpha * sqrt(max(1e-12, 1.0 - nv * nv)));
@@ -98,11 +122,33 @@ float specCos(vec3 N, vec3 V, vec3 L, float a2, float f0, bool beckmann)
         float gV = cV >= 1.6 ? 1.0 : (3.535 * cV + 2.181 * cV * cV) / (1.0 + 2.276 * cV + 2.577 * cV * cV);
         return PI * D * F * gL * gV / (4.0 * nv);
     }
-    float den = nh * nh * a2 + sin2;
-    float D = a2 / (PI * den * den);
+    float D;
+    if (sunDisc) {
+        float kap = eps + nh * nh;
+        D = 1.0 / (PI * aa * kap * kap);
+    } else {
+        float den = nh * nh * a2 + sin2;
+        D = a2 / (PI * den * den);
+    }
     float gL = 2.0 * nl / (nl + sqrt(a2 + (1.0 - a2) * nl * nl));
     float gV = 2.0 * nv / (nv + sqrt(a2 + (1.0 - a2) * nv * nv));
     return PI * D * F * gL * gV / (4.0 * nv);
+}
+
+// A material's specular with its haze (SatMaterial::hazeFraction, 2026-10-21): (1 − f)·core + f·haze, the haze
+// lobe at its own α (hazeA2), as the photometry's two lobes. f = 0: the core alone.
+// Minnaert diffuse (2026-10-22, SatMaterial::minnaertK): the factor on Lambert's albedo·cos i, (k+1)/2·(ci·cv)^(k−1) —
+// the photometry's (k+1)/(2π)·(cos i·cos e)^k per unit area. 1 at k = 1.
+float minnaertFac(float ci, float cv, float k)
+{
+    return k >= 0.9999 ? 1.0 : 0.5 * (k + 1.0) * pow(max(ci * cv, 1e-3), k - 1.0);
+}
+
+float specCosMat(vec3 N, vec3 V, vec3 L, float a2, float f0, bool beckmann, bool sunDisc, float hazeF, float hazeA2)
+{
+    float sc = specCos(N, V, L, a2, f0, beckmann, sunDisc);
+    if (hazeF <= 0.0) return sc;
+    return (1.0 - hazeF) * sc + hazeF * specCos(N, V, L, hazeA2, f0, beckmann, sunDisc);
 }
 
 // Mirror of rayHitsOccluder() in SatModel.cpp / sat_orbit.comp: the ray org + t·dir (t > tMin) in
@@ -466,6 +512,13 @@ void main()
 {
     MeshInstance inst = instances[vInstance];
     MeshMaterial mat  = materials[vMaterial];
+    // The haze (packSatMeshMaterial): its fraction in beckmann's high bits, its α in pattern's.
+    const float hazeF  = float(mat.beckmann >> 16u) * (1.0 / 65535.0);
+    const float hazeAl = float(mat.pattern >> 16u) * (1.0 / 65535.0);
+    const float hazeA2 = max(hazeAl * hazeAl, 1e-8);
+    const float minK   = 1.0 - float((mat.beckmann >> 1u) & 127u) * (1.0 / 127.0); // Minnaert k (1 = Lambert)
+    mat.beckmann &= 0xFFFFu;
+    mat.pattern  &= 0xFFFFu;
     // A grid fin's cells finer than a few pixels (2026-10-21: the plates were a speckle of kept / dropped pixels at
     // any normal distance, and swam as the view moved): drawn SOLID, at the grid's mean look (the plates plus the
     // shaded inner walls and back plates seen through the cells), fading in from 6 to 3 px a cell. (Derivatives taken
@@ -522,13 +575,14 @@ void main()
     nv = max(dot(N, V), 1e-3);
 
     const float a2    = max(sf.rough * sf.rough, 1e-8);
-    const bool  beck  = mat.beckmann != 0u;
+    const bool  beck  = (mat.beckmann & 1u) != 0u;
     const vec3  diffC = sf.tint * (mat.albedo * sf.albedoM);
     const vec3  specC = (mat.f0 >= 0.5 && !check) ? mat.color : vec3(1.0); // metals tint their reflection
     const bool  shadows = frame.params.x > 0.5;
 
     vec3 L = vec3(0.0);
     vec3 Lspec = vec3(0.0); // the sunlight's specular part (mode 3 writes it: the glints the viewer glares)
+    vec3 LspecHaze = vec3(0.0); // its haze lobe's share, unweighted (a broad haze never glares)
 
     // ── Sun ──────────────────────────────────────────────────────────────────
     vec3  S  = inst.sun.xyz;
@@ -537,8 +591,12 @@ void main()
         bool blocked = shadows && inst.occluderCount > 0u && shadowBlocked(inst, vWorld, S, true);
         if (!blocked) {
             vec3 E = inst.sunColor.rgb * inst.sun.w;
-            Lspec = E * specC * specCos(N, V, S, a2 + SUN_ALPHA2, mat.f0, beck);
-            L += E * diffC * ns + Lspec;
+            Lspec = E * specC * specCos(N, V, S, a2, mat.f0, beck, true);
+            if (hazeF > 0.0) { // the haze lobe (kept apart: a broad haze never glares)
+                LspecHaze = E * specC * specCos(N, V, S, hazeA2, mat.f0, beck, true);
+                Lspec = (1.0 - hazeF) * Lspec + hazeF * LspecHaze;
+            }
+            L += E * diffC * (ns * minnaertFac(ns, nv, minK)) + Lspec;
         }
     }
 
@@ -562,7 +620,8 @@ void main()
         // rough lobe (stainless steel 0.12, paint) spreads it over degrees, and at grazing incidence (Fresnel -> 1,
         // the 1/(2 alpha) of the masking term) such lobes still reached glare levels along every edge and panel
         // seam of a Starship in daylight: dozens of flares (the user's QA, 2026-10-19).
-        float Ls = dot(Lspec, kLum) * meshGlareRoughK(sf.rough);
+        float Ls = dot(Lspec - hazeF * LspecHaze, kLum) * meshGlareRoughK(sf.rough) +
+                   hazeF * dot(LspecHaze, kLum) * meshGlareRoughK(hazeAl);
         outColor = glareSrc ? vec4(Ls * dot(d, d), dot(L, kLum), 0.0, 1.0) : vec4(L.r * dot(d, d), 0.0, 0.0, 1.0);
         outDist  = 0.0;
         return;
@@ -574,12 +633,17 @@ void main()
     // the probe's irradiance instead (the real Earth below, lit and coloured as the sky draws it);
     // the photometric value still feeds the bloom normalisation below.
     const bool hasProbe = inst.probeSlot < kProbeCount;
-    vec3 earthPhot = diffC * instEarthDiffuse(inst, N);
+    const float eDif = instEarthDiffuse(inst, N);
+    // Minnaert under the broad cap: its irradiance as one source at cos i = eDif / E (satLobeEarthIntensity). The
+    // probe's irradiance below takes the same factor.
+    const float eMinn = (minK < 0.9999 && inst.earthshine.w > 0.0)
+                            ? minnaertFac(clamp(eDif / inst.earthshine.w, 1e-4, 1.0), nv, minK) : 1.0;
+    vec3 earthPhot = diffC * (eDif * eMinn);
     if (Tm > 0.0) // and through a translucent blanket from its far side (the lit Earth behind it)
         earthPhot += tC * instEarthDiffuse(inst, -Ngeo);
     vec3 earthDrawn = earthPhot;
     if (hasProbe && !check) {
-        earthDrawn = diffC * probeIrradiance(inst.probeSlot, N);
+        earthDrawn = diffC * eMinn * probeIrradiance(inst.probeSlot, N);
         if (Tm > 0.0)
             earthDrawn += tC * probeIrradiance(inst.probeSlot, -Ngeo);
     }
@@ -591,7 +655,10 @@ void main()
     L += earthDrawn;
 
     // ── Moonlight ────────────────────────────────────────────────────────────
-    L += frame.moonDir.w * diffC * max(dot(N, frame.moonDir.xyz), 0.0);
+    {
+        float nm = max(dot(N, frame.moonDir.xyz), 0.0);
+        L += frame.moonDir.w * diffC * (nm * minnaertFac(nm, nv, minK));
+    }
 
     // ── Local lights (2026-10-21): a burning engine, the floods of a pad or a ship at night ──
     // Irradiance I / (r^2 + rs^2) in suns (the lights are lifted at night as the moonlight is), diffuse + the
@@ -622,7 +689,7 @@ void main()
             vec4  ad = frame.lightDir[i];
             if (ad.w > -1.5)
                 E *= smoothstep(ad.w, min(ad.w + 0.17 * sqrt(max(1.0 - ad.w * ad.w, 0.0)) + 0.015, 1.0), dot(-l, ad.xyz));
-            L += frame.lightCol[i].rgb * E * (diffC * nlw + (nl > 0.0 ? specC * specCos(N, V, l, a2, mat.f0, beck) : vec3(0.0)));
+            L += frame.lightCol[i].rgb * E * (diffC * (nlw * minnaertFac(nlw, nv, minK)) + (nl > 0.0 ? specC * specCosMat(N, V, l, a2, mat.f0, beck, false, hazeF, hazeA2) : vec3(0.0)));
         }
     }
 
@@ -632,15 +699,19 @@ void main()
         // The facing test first: a reflection that leaves below the surface is not drawn, blocked or not.
         bool blocked = dot(Rd, N) <= 0.0 || (shadows && inst.occluderCount > 0u && shadowBlocked(inst, vWorld, Rd, false));
         if (!blocked) {
-            float Fr  = mat.f0 + (max(1.0 - sf.rough, mat.f0) - mat.f0) * pow(1.0 - nv, 5.0);
+            // The core lobe, then a hazy material's haze lobe at its own roughness (hazeF of the reflectance).
+            for (int lb = 0; lb < (hazeF > 0.0 ? 2 : 1); ++lb) {
+            const float rough = lb == 0 ? sf.rough : hazeAl;
+            const float wLb   = hazeF > 0.0 ? (lb == 0 ? 1.0 - hazeF : hazeF) : 1.0;
+            float Fr  = wLb * (mat.f0 + (max(1.0 - rough, mat.f0) - mat.f0) * pow(1.0 - nv, 5.0));
             // A mirror-smooth pixel (a membrane mirror; most of a quartz radiator) of an instance picked
             // for sharp reflections: that share goes to the G-buffer, the rest (a rougher lobe) to the
             // probe, which is right for it. A probe texel is 0.35 deg: a mirror filling the screen
             // magnified each one over dozens of pixels.
             float sharp = 0.0;
 #ifdef MESH_SCENE_PASS
-            if (inst.earthShC.y > 0.5)
-                sharp = 1.0 - smoothstep(0.004, 0.02, sf.rough);
+            if (inst.earthShC.y > 0.5 && lb == 0)
+                sharp = 1.0 - smoothstep(0.004, 0.02, rough);
             if (sharp > 0.0) {
                 vec3 w = specC * Fr * sharp * inst.origin.w; // the scene output is × the fade too
                 outRefl = uvec4(packUnorm2x16(octEncode(Rd) * 0.5 + 0.5), packHalf2x16(w.rg),
@@ -654,17 +725,18 @@ void main()
                 // The full renderer's view from this satellite: a mip whose texel spans the lobe (~2α).
                 float texelRad = 1.5707963 / float(textureSize(probeTex, 0).x);
                 float maxLod = float(textureQueryLevels(probeTex)) - 2.0;
-                float lod = clamp(log2(max(2.0 * sf.rough / texelRad, 1.0)), 0.0, maxLod);
+                float lod = clamp(log2(max(2.0 * rough / texelRad, 1.0)), 0.0, maxLod);
                 env = textureLod(probeTex, Rd, lod).rgb;
             } else {
                 vec3  ro = vWorld - frame.earthCenter.xyz;
                 // Texture lod from the reflected footprint on the ground: a lobe ~2α wide seen from the
                 // satellite's altitude, against a ~4.9 km texel at the base level (8K equirect).
                 float h   = max(length(ro) - R_EARTH, 1000.0);
-                float lod = log2(max(2.0 * sf.rough * h / 4900.0, 1.0));
+                float lod = log2(max(2.0 * rough * h / 4900.0, 1.0));
                 env = earthEnv(ro, Rd, frame.sunDir.xyz, lod, frame.earthCenter.w);
             }
             L += env * specC * Fr * (1.0 - sharp);
+            }
         }
     }
 

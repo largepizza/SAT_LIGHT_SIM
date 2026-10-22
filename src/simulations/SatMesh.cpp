@@ -352,8 +352,15 @@ GpuSatMeshMaterial packSatMeshMaterial(const SatMaterial &m)
     g.albedo = m.diffuseAlbedo;
     g.f0 = m.specularF0;
     g.roughness = m.roughness;
-    g.beckmann = m.beckmann ? 1u : 0u;
+    g.beckmann = (m.beckmann ? 1u : 0u) | (satMinnaertCode(m.minnaertK) << 1); // bits 1-7: Minnaert (0 = Lambert)
     g.pattern = (uint32_t)satMaterialPattern(m);
+    // The haze (2026-10-21, SatMaterial::hazeFraction): its fraction and α as unorm16 in the two words' high halves
+    // (sat_mesh.frag decodes them). 0 without haze, so the words are what they always were.
+    if (m.hazeFraction > 0.0f)
+    {
+        g.beckmann |= (uint32_t)std::lround(std::clamp(m.hazeFraction, 0.0f, 1.0f) * 65535.0f) << 16;
+        g.pattern |= (uint32_t)std::lround(std::clamp(m.hazeRoughness, 0.0f, 1.0f) * 65535.0f) << 16;
+    }
     // Phase 4f: rgb = transmission tint normalised to luminance 1 (so `a` is the V-band value the
     // photometry uses), a = transmission.
     const float lum = std::max(0.2126f * m.transmissionColor.r + 0.7152f * m.transmissionColor.g +

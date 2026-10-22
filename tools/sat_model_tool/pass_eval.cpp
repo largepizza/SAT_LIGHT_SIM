@@ -8,7 +8,8 @@
 //   budget         lobe budget (default 256: what the app uses for a type flown by few satellites)
 //   occlusion      part occlusion (default true)
 //   flare_tilt_deg the global flare-mitigation tilt (default 0)
-//   extinction_k   sea-level zenith extinction for the apparent magnitude (default 0.18, the app's default)
+//   extinction_k   sea-level zenith extinction for the apparent magnitude (default 0.18, the app's default), from the
+//                  observer's geodetic height (WGS84) above the extinction's sphere
 //   samples        [{t_j2000, pos_eci_m[3], vel_eci_mps[3], obs_eci_m[3]}]  — the sim's ECI (GMST-rotated, = TEME)
 // output (JSON, "sat-light-sim-pass/1"): per sample the magnitude above the atmosphere and apparent, range,
 // elevation, phase, Earth-shadow factor, sun / earthshine split, the dominant lobe, each lobe's posed normal and
@@ -33,6 +34,23 @@ namespace
 glm::dvec3 v3(const json &a) { return {a.at(0).get<double>(), a.at(1).get<double>(), a.at(2).get<double>()}; }
 json j3(const glm::dvec3 &v) { return json::array({v.x, v.y, v.z}); }
 json fin(double x) { return std::isfinite(x) ? json(x) : json(nullptr); }
+
+// Height above the WGS84 ellipsoid of an ECI (or ECEF) position: a turn about z changes neither the distance from
+// the axis nor z, so the frame does not matter. Bowring's start + three fixed-point steps (sub-mm in LEO / on the
+// ground).
+double geodeticHeightM(const glm::dvec3 &p)
+{
+    const double a = 6378137.0, f = 1.0 / 298.257223563, e2 = f * (2.0 - f);
+    const double rho = std::hypot(p.x, p.y);
+    double lat = std::atan2(p.z, rho * (1.0 - e2)), h = 0.0;
+    for (int i = 0; i < 4; ++i)
+    {
+        const double sl = std::sin(lat), N = a / std::sqrt(1.0 - e2 * sl * sl);
+        h = std::abs(std::cos(lat)) > 1e-9 ? rho / std::cos(lat) - N : std::abs(p.z) - N * (1.0 - e2);
+        lat = std::atan2(p.z, rho * (1.0 - e2 * N / (N + h)));
+    }
+    return h;
+}
 } // namespace
 
 bool runPassCommand(const std::string &specPath, const std::string &outPath)
@@ -73,7 +91,6 @@ bool runPassCommand(const std::string &specPath, const std::string &outPath)
     std::vector<std::vector<int>> lobeTris;
     std::vector<GpuSatLobe> lobes = bakeSatLobes(m, tris, budget, st, &lobeTris);
     SatOcclusion occ = buildSatOcclusion(m, tris, lobes, lobeTris);
-    const double a2Sun = (double)kSunAlpha * kSunAlpha;
     const int root = attRootOf(m.groups, 0);
 
     json out;
@@ -114,11 +131,17 @@ bool runPassCommand(const std::string &specPath, const std::string &outPath)
             const GpuSatLobe &L = lobes[li];
             const glm::dvec3 n = satLobeNormalPosed(lobes, m.groups, poses, (int)li);
             normals.push_back(j3(glm::transpose(R) * n)); // in the rest body frame of the root
-            perLobe.push_back(satLobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat + a2Sun,
-                                               satLobeBeckmann(L), geo.sun, o, L.transmission));
+            perLobe.push_back(satLobeIntensitySun(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat,
+                                                  satLobeBeckmann(L), geo.sun, o, L.transmission, satLobeMinnaert(L)));
         }
+        // The extinction's atmosphere is a sphere of satphot::kEarthRadiusM (atmosphere.glsl), but the observer stands
+        // on WGS84: |obs| - R is the ellipsoid's radius there less the sphere's (-7 km at 54 N, +7 at the equator) plus
+        // the site's height, i.e. tens of magnitudes of air at a high latitude (2026-10-21; it was evaluated at obs).
+        // Evaluate it from the observer's real geodetic height above the sphere.
         const glm::dvec3 rel = pos - obs;
-        const double ext = std::isfinite(r.magnitude) && k > 0.0 ? atmExtinctionMag(obs, glm::normalize(rel),
+        const double obsH = geodeticHeightM(obs);
+        const glm::dvec3 obsAtm = glm::normalize(obs) * (satphot::kEarthRadiusM + std::max(0.0, obsH));
+        const double ext = std::isfinite(r.magnitude) && k > 0.0 ? atmExtinctionMag(obsAtm, glm::normalize(rel),
                                                                                              r.rangeM, k) : 0.0;
         json R9 = json::array();
         for (int c = 0; c < 3; ++c)
@@ -127,6 +150,7 @@ bool runPassCommand(const std::string &specPath, const std::string &outPath)
                         {"mag", fin(r.magnitude)},
                         {"mag_apparent", fin(r.magnitude + ext)},
                         {"extinction_mag", ext},
+                        {"obs_height_m", obsH},
                         {"m1000", fin(r.magnitude1000)},
                         {"range_m", r.rangeM},
                         {"elevation_deg", std::asin(std::clamp(r.sinElevation, -1.0, 1.0)) * 57.29577951308232},

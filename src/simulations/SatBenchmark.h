@@ -34,6 +34,11 @@ struct BenchSite
     double latDeg = 0.0, lonDeg = 0.0; // east positive
     int count = -1;                    // observations from this site, if published
     std::string instrument;
+    // Optional per-site constraints (JSON beside lat/lon), overriding the file-level ones for this
+    // site's draws; NaN = not stated.
+    double sunAltMinDeg = std::numeric_limits<double>::quiet_NaN();
+    double sunAltMaxDeg = std::numeric_limits<double>::quiet_NaN();
+    double minElevationDeg = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct BenchObservation
@@ -52,6 +57,9 @@ struct Benchmark
     // false: reported (and logged in KNOWN_RESIDUALS.md) but a miss does not fail the run or the
     // accuracy gate - for datasets the model is known not to reproduce yet (JSON "gated": false).
     bool gated = true;
+    // Metrics reported (and logged in KNOWN_RESIDUALS.md) whose miss does not fail a gated file (JSON
+    // "ungated_metrics": ["phase_curve_rms", ...]) - narrower than "gated": false: the rest stays gated.
+    std::vector<std::string> ungatedMetrics;
     std::string path;
     std::string id, title, kind;
     std::string citationAuthors, citationTitle, citationUrl;
@@ -65,6 +73,11 @@ struct Benchmark
     int censoredCount = -1;             // published count of censored ("not seen") observations
     double censorLimitMag = std::numeric_limits<double>::quiet_NaN();   // apparent mag ASSIGNED when not seen
     double censorThresholdMag = std::numeric_limits<double>::quiet_NaN(); // limiting apparent mag of the observers
+    // sampling.constraints, when the paper (or its observations) state them; NaN = not stated, the
+    // runner's defaults apply. sun_altitude_deg is [min, max] at the observer, min_elevation_deg a number.
+    double sunAltMinDeg = std::numeric_limits<double>::quiet_NaN();
+    double sunAltMaxDeg = std::numeric_limits<double>::quiet_NaN();
+    double minElevationDeg = std::numeric_limits<double>::quiet_NaN();
     // Differential
     std::string refTest, refBaseline;
     std::vector<BenchObservation> observations;

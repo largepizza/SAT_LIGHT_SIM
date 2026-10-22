@@ -1,11 +1,11 @@
 {
     "name": "Starlink VisorSat",
-    "note": "Benchmarking M4 reference model for Mallama (2021). V1.x chassis in 'shark-fin' operational mode with the deployable visor. Body frame: +Z nadir, +X toward the Sun's azimuth (the bus yaws so the visor stays sunward), +Y = +Z x +X. Every number is covered by `sources`; the visor's scale is calibrated (see its source), the materials are presets.",
+    "note": "Benchmarking M4 reference model for Mallama (2021). V1.x chassis in 'shark-fin' operational mode with the deployable visor. Body frame: +Z nadir, +X toward the Sun's azimuth (the bus yaws so the visor stays sunward), +Y = +Z x +X. Every number is covered by `sources`; the visor's scale, bus_metal, antenna_white and visor_black are calibrated to MMT tracks (see their sources).",
     "materials": [
-        { "name": "bus_metal", "preset": "aluminum", "roughness": 0.23, "pattern": "panel_seams" },
-        { "name": "antenna_white", "preset": "white_paint" },
+        { "name": "bus_metal", "preset": "aluminum", "roughness": 0.08, "distribution": "beckmann", "specular_f0": 0.9, "diffuse_albedo": 0.11, "minnaert": 0.65, "pattern": "panel_seams" },
+        { "name": "antenna_white", "preset": "white_paint", "diffuse_albedo": 0.31, "minnaert": 0.65 },
         { "name": "bus_edge_black", "preset": "black_paint" },
-        { "name": "visor_black", "preset": "black_paint" },
+        { "name": "visor_black", "preset": "black_paint", "diffuse_albedo": 0.019, "minnaert": 0.65 },
         { "name": "array_back_dark", "preset": "black_paint" }
     ],
     "attitude_groups": [
@@ -32,7 +32,7 @@
         { "name": "bus_side_antisun", "type": "plane", "group": "bus", "size": [0.2, 2.8], "position": [-0.65, 0, 0], "rotation_deg": [0, -90, 0], "single_sided": true, "material": "bus_edge_black" },
         { "name": "bus_side_pos", "type": "plane", "group": "bus", "size": [1.3, 0.2], "position": [0, 1.4, 0], "rotation_deg": [-90, 0, 0], "single_sided": true, "material": "bus_edge_black" },
         { "name": "bus_side_neg", "type": "plane", "group": "bus", "size": [1.3, 0.2], "position": [0, -1.4, 0], "rotation_deg": [90, 0, 0], "single_sided": true, "material": "bus_edge_black" },
-        { "name": "visor", "type": "plane", "group": "bus", "size": [1.45, 2.2], "position": [0.275, 0, 0.3335], "material": "visor_black" },
+        { "name": "visor", "type": "plane", "group": "bus", "size": [1.29, 2.2], "position": [0.195, 0, 0.2655], "material": "visor_black" },
         { "name": "solar_array", "type": "plane", "group": "array", "size": [8.1, 2.8], "position": [0, 0, -4.05], "rotation_deg": [0, 90, 0], "material": "solar_cell", "back_material": "array_back_dark" }
     ],
     "sources": [
@@ -52,8 +52,8 @@
         {
             "subject": "visor",
             "status": "calibrated",
-            "value": "black sheet 1.45 x 2.2 m under the antenna region, reaching 0.55 m sunward of the antennas' edge (0.35 m past the bus side), 0.233 m below the base",
-            "source": "Radio-transparent foam that blocks sunlight from the antennas (SpaceX via Tesmanian 2020, SpaceNews 2020). Cole 2021 section 3.2: antennas fully shaded at 23 deg Sun depression, light leaks under at smaller angles - so gap = inset x tan 23 deg (derived). The scale is unpublished and was FITTED (benchmarking M8, 2026-09-23): inset scanned 0.2-0.9 m against the mallama2021_visorsat phase curve (10-deg bins with >= 10 observations), minimum RMS 0.14 mag at 0.55 m (0.42 at the earlier 0.2 m guess). That curve is therefore a fit residual for this model; the held-out checks are the mallama2020a V1.0 mean and the visorsat_vs_original differential."
+            "value": "black sheet 1.29 x 2.2 m under the antenna region, reaching 0.39 m sunward of the antennas' edge (0.19 m past the bus side), 0.166 m below the base",
+            "source": "Radio-transparent foam that blocks sunlight from the antennas (SpaceX via Tesmanian 2020, SpaceNews 2020). Cole 2021 section 3.2: antennas fully shaded at 23 deg Sun depression, light leaks under at smaller angles - so gap = inset x tan 23 deg (derived). The scale is unpublished and was FITTED: inset 0.39 m (gap 0.166 m), starlink_refit 2026-10-22: joint fit, both designs, to 42 Mini-MegaTORTORA tracks (STARLINK-1008 2020/22/24, STARLINK-1436; 1.5-s medians of MMT's magnitude above the atmosphere vs SatModelTool --pass), held out STARLINK-1538 (29 tracks) and STARLINK-1008 2021/23/25 (10); 13 VisorSat bright-attitude tracks excluded (unmodelled attitude). Until then 0.55 m (M8, 2026-09-23), fitted to the mallama2021_visorsat phase curve under SatBench's then-assumed Sun -18..-6 deg window."
         },
         {
             "subject": "solar_array",
@@ -75,20 +75,20 @@
         },
         {
             "subject": "bus_metal",
-            "status": "derived",
-            "value": "aluminium preset, GGX roughness 0.23",
-            "source": "Cole 2021 section 2: base is 'polished metal'. Table 3 specular beam exponents 24 and 52 -> GGX alpha = sqrt(2/(n+2)) = 0.28 and 0.19, geometric mean 0.23. That alpha is the Beckmann equivalence, but GGX is kept: with Beckmann tails the M8 phase curve came out 0.3-0.5 mag fainter at 70-110 deg (GGX's longer tail is the base light seen off the specular beam). F0 and diffuse albedo: preset estimates."
+            "status": "calibrated",
+            "value": "aluminium, F0 0.9 (preset), Beckmann alpha 0.08, diffuse albedo 0.11, Minnaert k 0.65",
+            "source": "Cole 2021 section 2: base is 'polished metal'. F0 0.9 = bare aluminium's normal-incidence reflectance at 550 nm (kept, not fitted). Lobe shape, diffuse floor and the Minnaert exponent are calibrated: starlink_refit 2026-10-22: joint fit, both designs, to 42 Mini-MegaTORTORA tracks (STARLINK-1008 2020/22/24, STARLINK-1436; 1.5-s medians of MMT's magnitude above the atmosphere vs SatModelTool --pass), held out STARLINK-1538 (29 tracks) and STARLINK-1008 2021/23/25 (10); 13 VisorSat bright-attitude tracks excluded (unmodelled attitude). With the GGX tail of the earlier alpha 0.23 (M8, fitted under SatBench's then-assumed Sun -18..-6 deg window, which MMT's -24..-11 does not match) every free fit drove F0 to its floor: MMT sees the base's off-specular tail at phase 75-110 deg ~2x fainter than GGX predicts. A sharp Beckmann lobe (alpha 0.08) reaches that loss with F0 0.9 (Beckmann 0.15: loss +23%). Cole Table 3's exponents 24/52 belong to a BRDF without Fresnel or masking and are not used. Diffuse 0.11: residual contamination / seams. Minnaert k 0.65 on the nadir face's diffuse terms (bus_metal, antenna_white, visor_black): Mallama 2020a's own flat-panel regression on 830 V1.0 passes gives 0.578 +- 0.084; the MMT residual's Sun-altitude trend (Lambert: -0.29 / -0.36 mag per 10 deg, V1.0 / VisorSat fit tracks) is flat at k ~0.55 for V1.0, and the free fit lands at 0.80 (loss 0.1412 vs 0.1426 at 0.65, 0.1439 Lambert): 0.65 is inside Mallama's 1 sigma and takes the trend to -0.07 / -0.22."
         },
         {
             "subject": "antenna_white",
-            "status": "estimate",
-            "value": "white paint preset (diffuse albedo 0.8)",
-            "source": "Cole 2021 section 2: 'white antenna panels'. Albedo not published (Phase 3c)."
+            "status": "calibrated",
+            "value": "white paint preset, diffuse albedo 0.31, Minnaert k 0.65",
+            "source": "Cole 2021 section 2: 'white antenna panels'. Albedo FITTED (the preset's 0.8 was an estimate): starlink_refit 2026-10-22: joint fit, both designs, to 42 Mini-MegaTORTORA tracks (STARLINK-1008 2020/22/24, STARLINK-1436; 1.5-s medians of MMT's magnitude above the atmosphere vs SatModelTool --pass), held out STARLINK-1538 (29 tracks) and STARLINK-1008 2021/23/25 (10); 13 VisorSat bright-attitude tracks excluded (unmodelled attitude). 0.31 x the 0.9 x 2.2 m region is degenerate with a smaller region at a higher albedo; the region size is unpublished, so the albedo carries it. Minnaert k 0.65 on the nadir face's diffuse terms (bus_metal, antenna_white, visor_black): Mallama 2020a's own flat-panel regression on 830 V1.0 passes gives 0.578 +- 0.084; the MMT residual's Sun-altitude trend (Lambert: -0.29 / -0.36 mag per 10 deg, V1.0 / VisorSat fit tracks) is flat at k ~0.55 for V1.0, and the free fit lands at 0.80 (loss 0.1412 vs 0.1426 at 0.65, 0.1439 Lambert): 0.65 is inside Mallama's 1 sigma and takes the trend to -0.07 / -0.22."
         },
         {
             "subjects": ["bus_edge_black", "visor_black"],
             "status": "sourced",
-            "value": "black paint preset (diffuse albedo 0.05)",
+            "value": "black paint preset (diffuse albedo 0.05); visor_black's albedo 0.019 and Minnaert k 0.65 are calibrated (the visor source)",
             "source": "Cole 2021 Figure 2 (black edges added on visorsats) and section 3.2 ('the visor is declared as being black')."
         },
         {

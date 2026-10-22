@@ -73,8 +73,9 @@ struct MeshMaterial {
     float albedo;
     float f0;
     float roughness;
-    uint  beckmann;
-    uint  pattern;
+    uint  beckmann; // bit 0: Beckmann (else GGX); bits 1-7: Minnaert code (1 - k) x 127 (SatMaterial::minnaertK);
+                    // bits 16-31: the haze fraction (unorm16, SatMaterial::hazeFraction)
+    uint  pattern;  // bits 0-15: the surface pattern; bits 16-31: the haze lobe's α (unorm16)
     vec4  extra;
     vec4  lattice; // open lattice (truss): x = coverage (1 = solid), y = bay pitch (m), z = member width (bays)
 };

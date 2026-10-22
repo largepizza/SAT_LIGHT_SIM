@@ -4727,8 +4727,7 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
         GpuMeshInstance ci = inst;
         ci.sun.w = 1.0f;
         meshRenderer.recordCheck(cmd, cf, ci, viewerType, envProbes.probeSet(0));
-        viewerCheckModelI = evalSatLobesPosed(type.lobes, type.groups, poses, sun, o,
-                                              (double)kSunAlpha * kSunAlpha, nullptr,
+        viewerCheckModelI = evalSatLobesPosed(type.lobes, type.groups, poses, sun, o, nullptr,
                                               viewerShadows ? &type.occlusion : nullptr, true, 1.0,
                                               launchDeployEra ? tNow / 86400.0 : 1e30); // (stations by date)
         viewerCheckTanHalf = tanHalf;
@@ -5286,8 +5285,8 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
                 const double no = glm::dot(n, o);
                 if (no <= 0.0 || glm::dot(n, s) <= 0.0)
                     continue;
-                const double I = satLobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0,
-                                                  L.alpha2Mat + (double)kSunAlpha * kSunAlpha, satLobeBeckmann(L), s, o, 0.0);
+                const double I = satLobeIntensitySun(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat,
+                                                     satLobeBeckmann(L), s, o, 0.0, satLobeMinnaert(L));
                 const double piL = glm::pi<double>() * I / std::max((double)L.area * no, 1e-9);
                 glint += I * glm::smoothstep(150.0, 1500.0, piL);
             }
@@ -5306,8 +5305,8 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
             const glm::dvec3 n = satLobeNormalPosed(type.lobes, type.groups, poses, r.dominantLobe);
             const glm::dvec3 s = geo.sun;
             const glm::dvec3 o = -rel / range;
-            const double spec = satLobeIntensity(n, L.area, L.diffArea, 0.0, L.f0,
-                                                 L.alpha2Mat + (double)kSunAlpha * kSunAlpha, satLobeBeckmann(L), s, o, 0.0);
+            const double spec = satLobeIntensitySun(n, L.area, L.diffArea, 0.0, L.f0, L.alpha2Mat, satLobeBeckmann(L),
+                                                    s, o, 0.0);
             const double w = glm::clamp(spec / r.intensitySun, 0.0, 1.0);
             const double sn = glm::dot(s, n);
             if (w > 0.01 && sn > 0.0)

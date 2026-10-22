@@ -1,0 +1,361 @@
+{
+ "name": "Iridium Block 1 (first generation, Motorola/Lockheed LM-700A, launched 1997-2002)",
+ "note": "Validation model for Iridium flares (the three silvered Main Mission Antennas). Not in the roster. Body frame: +Z nadir, +X the INERTIAL velocity (the front MMA faces it), +Y = Z x X (minus the orbit normal: the satellite's right). MMA normals: front (sin50, 0, cos50); right / left at azimuth +-120 deg. Same attitude as Randy John's SKYSAT and Wyant's Astro::Coord::ECI::TLE::Iridium (Z up, Y = orbit normal there).",
+ "materials": [
+  {
+   "name": "mma_silver_teflon",
+   "preset": "mirror",
+   "diffuse_albedo": 0.02,
+   "specular_f0": 0.88,
+   "roughness": 0.0005,
+   "color": [
+    0.92,
+    0.92,
+    0.94
+   ],
+   "haze": {
+    "fraction": 0.3,
+    "roughness": 0.04
+   }
+  },
+  {
+   "name": "mma_back",
+   "preset": "mli_foil"
+  },
+  {
+   "name": "bus_skin",
+   "preset": "mli_foil"
+  },
+  {
+   "name": "white_antenna",
+   "preset": "white_paint"
+  },
+  {
+   "name": "array_back",
+   "preset": "solar_array_back"
+  }
+ ],
+ "attitude_groups": [
+  {
+   "name": "bus",
+   "primary": {
+    "axis": [
+     0,
+     0,
+     1
+    ],
+    "target": "nadir"
+   },
+   "secondary": {
+    "axis": [
+     1,
+     0,
+     0
+    ],
+    "target": "velocity"
+   }
+  },
+  {
+   "name": "arrays",
+   "parent": "bus",
+   "hinge": {
+    "position": [
+     0,
+     0,
+     -2.35
+    ],
+    "axis": [
+     0,
+     1,
+     0
+    ]
+   },
+   "joint": {
+    "mode": "track",
+    "vector": [
+     0,
+     0,
+     -1
+    ],
+    "target": "sun"
+   }
+  }
+ ],
+ "components": [
+  {
+   "name": "bus_face_0",
+   "type": "plane",
+   "group": "bus",
+   "size": [
+    4.0,
+    0.9
+   ],
+   "position": [
+    0.2598,
+    0.0,
+    0.0
+   ],
+   "rotation_quat": [
+    0.707107,
+    0.0,
+    0.707107,
+    0.0
+   ],
+   "single_sided": true,
+   "material": "bus_skin"
+  },
+  {
+   "name": "mma_front",
+   "type": "plane",
+   "group": "bus",
+   "size": [
+    1.88,
+    0.86
+   ],
+   "position": [
+    0.914,
+    0.0,
+    0.9799
+   ],
+   "rotation_quat": [
+    0.906308,
+    0.0,
+    0.422618,
+    0.0
+   ],
+   "material": "mma_silver_teflon",
+   "back_material": "mma_back"
+  },
+  {
+   "name": "bus_face_1",
+   "type": "plane",
+   "group": "bus",
+   "size": [
+    4.0,
+    0.9
+   ],
+   "position": [
+    -0.1299,
+    0.225,
+    0.0
+   ],
+   "rotation_quat": [
+    0.353553,
+    -0.612372,
+    0.353553,
+    0.612372
+   ],
+   "single_sided": true,
+   "material": "bus_skin"
+  },
+  {
+   "name": "mma_right",
+   "type": "plane",
+   "group": "bus",
+   "size": [
+    1.88,
+    0.86
+   ],
+   "position": [
+    -0.457,
+    0.7916,
+    0.9799
+   ],
+   "rotation_quat": [
+    0.453154,
+    -0.365998,
+    0.211309,
+    0.784886
+   ],
+   "material": "mma_silver_teflon",
+   "back_material": "mma_back"
+  },
+  {
+   "name": "bus_face_2",
+   "type": "plane",
+   "group": "bus",
+   "size": [
+    4.0,
+    0.9
+   ],
+   "position": [
+    -0.1299,
+    -0.225,
+    0.0
+   ],
+   "rotation_quat": [
+    0.353553,
+    0.612372,
+    0.353553,
+    -0.612372
+   ],
+   "single_sided": true,
+   "material": "bus_skin"
+  },
+  {
+   "name": "mma_left",
+   "type": "plane",
+   "group": "bus",
+   "size": [
+    1.88,
+    0.86
+   ],
+   "position": [
+    -0.457,
+    -0.7916,
+    0.9799
+   ],
+   "rotation_quat": [
+    0.453154,
+    0.365998,
+    0.211309,
+    -0.784886
+   ],
+   "material": "mma_silver_teflon",
+   "back_material": "mma_back"
+  },
+  {
+   "name": "bus_top",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 0.286,
+   "height": 0.1,
+   "position": [
+    0,
+    0,
+    -2.1
+   ],
+   "material": "bus_skin"
+  },
+  {
+   "name": "gateway_antennas",
+   "type": "cylinder",
+   "group": "bus",
+   "radius": 0.25,
+   "height": 0.4,
+   "position": [
+    0,
+    0,
+    2.25
+   ],
+   "material": "white_antenna"
+  },
+  {
+   "name": "array_left",
+   "type": "plane",
+   "group": "arrays",
+   "size": [
+    1.0,
+    2.0
+   ],
+   "position": [
+    0,
+    -1.35,
+    0
+   ],
+   "rotation_deg": [
+    180,
+    0,
+    0
+   ],
+   "material": "solar_cell",
+   "back_material": "array_back"
+  },
+  {
+   "name": "array_right",
+   "type": "plane",
+   "group": "arrays",
+   "size": [
+    1.0,
+    2.0
+   ],
+   "position": [
+    0,
+    1.35,
+    0
+   ],
+   "rotation_deg": [
+    180,
+    0,
+    0
+   ],
+   "material": "solar_cell",
+   "back_material": "array_back"
+  }
+ ],
+ "sources": [
+  {
+   "subjects": [
+    "mma_front",
+    "mma_right",
+    "mma_left"
+   ],
+   "status": "sourced",
+   "value": "three flat MMAs 1.88 x 0.86 m, 120 deg apart, plane at 40 deg to the body axis (normal 50 deg from nadir), the front one toward the velocity; where each sits on the bus: estimate",
+   "source": "Size, spacing, 40 deg: Visual Satellite Observer's Home Page, satobs.org/iridium.html ('188 cm wide x 86 cm long x 4 cm thick', '120 degrees apart', 'angled 40 degrees away from the axis of the body'). Front MMA toward the velocity, the others at +-120 deg, the tilt as rotations (-40, 0 / +-120): R. John, SKYSAT algo.txt (home.comcast.net/~skysat, Wayback 2004-09-08) and T. Wyant, Astro::Coord::ECI::TLE::Iridium 0.133 (CPAN: MMAAREA 1.88*.86, MMAPHI -130 deg). Position on the bus (nadir-side edge hinged 0.3 m above the nadir end; the zenith-side edge 1.2 m out): estimate, it matters only for occlusion."
+  },
+  {
+   "subjects": [
+    "bus_face_0",
+    "bus_face_1",
+    "bus_face_2",
+    "bus_top"
+   ],
+   "status": "sourced",
+   "value": "triangular bus 4 m long, 0.9 m sides",
+   "source": "satobs.org/iridium.html: 'approximately 4 meters long and less than one meter in width', a three-sided body. Side 0.9 m: estimate within that bound."
+  },
+  {
+   "subject": "bus",
+   "status": "sourced",
+   "value": "body axis to nadir, front MMA along the inertial velocity, no yaw steering",
+   "source": "satobs.org/iridium.html ('The axis of the satellite body is maintained vertical'). Velocity alignment: SKYSAT algo.txt (x = ECI velocity, y = r x v, z = x x y) and Wyant's module (same); both predicted flares to seconds for two decades. Adopted from the predictors, not from Motorola."
+  },
+  {
+   "subjects": [
+    "array_left",
+    "array_right",
+    "arrays"
+   ],
+   "status": "estimate",
+   "value": "two 1.0 x 2.0 m wings at the zenith end, cross-track, one-axis Sun tracking about the cross-track axis",
+   "source": "Wikipedia (Iridium satellite constellation) infobox: '2 deployable solar panels'; KeepTrack LM-700 bus table: 'Box + 2 Pan', span 5 m. Size, mounting and tracking law are estimates; they matter only away from MMA flares."
+  },
+  {
+   "subject": "gateway_antennas",
+   "status": "estimate",
+   "value": "nadir-end feeder / crosslink antenna cluster as a 0.5 m white cylinder",
+   "source": "Wikipedia (Iridium satellite constellation): Ka-band crosslink and gateway antennas. Shape, finish: estimate."
+  },
+  {
+   "subject": "mma_silver_teflon",
+   "status": "derived",
+   "value": "second-surface silvered FEP mirror: F0 0.88, diffuse 0.02, GGX roughness 0.0005",
+   "source": "Coating: satobs.org/iridium.html ('aluminum flat plates ... treated with silver-coated Teflon'). Silvered FEP solar absorptance ~0.08-0.10 (Gilmore, Spacecraft Thermal Control Handbook vol. 1, thermal-control finishes; Sheldahl Red Book): total reflectance ~0.9, nearly all specular -> F0 0.88. Roughness: near-mirror; no measured value found, so the Sun's disc (SUN_ALPHA) sets the lobe width."
+  },
+  {
+   "subjects": [
+    "mma_back",
+    "bus_skin"
+   ],
+   "status": "estimate",
+   "value": "MLI foil preset",
+   "source": "Bus and MMA-back finish not published; photographs show a foil-covered body (estimate)."
+  },
+  {
+   "subjects": [
+    "white_antenna",
+    "array_back"
+   ],
+   "status": "estimate",
+   "value": "white paint / array back presets",
+   "source": "Not published (estimate)."
+  },
+  {
+   "subject": "mma_silver_teflon",
+   "status": "calibrated",
+   "value": "haze: 0.3 of the specular reflectance in a second GGX lobe of roughness 0.04",
+   "source": "Fitted to the off-axis tail of the Ron Lee / Randy John magnitude-vs-mirror-angle data (SKYSAT iridrpt.txt, 1997, Wayback) and Wyant's ln(8 - m) fit to it (fitted as an area split of the panel before materials had a haze lobe: the same reflectance). Held out: the MMT-9 IRIDIUM 13 flare wing (2015-06-05), the peak magnitude and the footprint."
+  }
+ ]
+}

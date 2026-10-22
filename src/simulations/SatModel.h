@@ -223,7 +223,30 @@ struct SatMaterial
     // renderer cuts the members out of the surface (the "truss" pattern) with the same area mean.
     float coverage = 1.0f;
     float trussPitch = 1.0f; // truss bay size, metres (members along the edges of every bay + one diagonal)
+    // A mirror's HAZE (2026-10-21, JSON "haze": {"fraction", "roughness"}): a share of the specular reflectance
+    // scattered into a second, broader lobe of its own roughness — a silvered film's sharp core plus the wide
+    // wings its surface finish puts around it (Iridium's Main Mission Antennas: one GGX lobe was 1.5-3 mag too faint
+    // 2-15 deg off the mirror direction). Specular = F·((1 − f)·D_core + f·D_haze)·G/4; diffuse and transmission
+    // are unchanged. bakeSatLobes emits each hazy facet group as two lobes with the same normal and area: the core
+    // (specular area × (1 − f), all of the diffuse / transmission) and the haze (specular area × f, nothing else).
+    float hazeFraction = 0.0f;   // 0 = no haze
+    float hazeRoughness = 0.04f; // the haze lobe's α (same distribution as the core)
+    // MINNAERT diffuse (2026-10-22, JSON "minnaert": k in [0.2, 1]): the diffuse radiance factor
+    // ρ(k+1)/(2π)·(cos i·cos e)^(k−1) instead of Lambert's ρ/π, i.e. intensity ρ(k+1)/(2π)·A·(cos i·cos e)^k. k = 1 is
+    // Lambert exactly (every material without the key). k < 1 is a rough or limb-flattened surface: brighter than
+    // Lambert at grazing light and view, the same reflected power at normal incidence. Starlink's nadir face
+    // (Mallama 2020a's regression on 830 V1.0 passes: k = 0.58 ± 0.08). Transmission stays Lambertian. Under the broad
+    // earthshine source the effective cos i is the face's irradiance / the cap's total (SatEarthLight). GPU form:
+    // GpuSatLobe::distribution bits 1-7, the mesh material's beckmann bits 1-7 (satMinnaertCode).
+    float minnaertK = 1.0f;
 };
+// Minnaert k <-> its 7-bit code (0 = k 1, Lambert): k = 1 − code/127, k >= 0.2.
+inline uint32_t satMinnaertCode(double k)
+{
+    const double c = std::round((1.0 - std::clamp(k, 0.2, 1.0)) * 127.0);
+    return (uint32_t)std::clamp(c, 0.0, 127.0);
+}
+inline double satMinnaertFromCode(uint32_t code) { return 1.0 - (double)(code & 127u) / 127.0; }
 enum SatSurfacePattern : int
 {
     kPatternNone = 0,
@@ -449,8 +472,9 @@ struct GpuSatLobe
     uint32_t sampleCount;  // 0 = never occluded
     uint32_t occluderMask; // bit i: the type's occluder i can block this lobe (occluders 0-31)
 
-    uint32_t distribution; // bits 0-7: 0 = GGX, 1 = Beckmann (the majority by area of the merged faces); bits 8-31: the
-                           // lobe's build-date code (satSinceCode; 0 = always: stations built module by module)
+    uint32_t distribution; // bit 0: 0 = GGX, 1 = Beckmann (the majority by area of the merged faces); bits 1-7: the
+                           // Minnaert code (satMinnaertCode, 0 = Lambert); bits 8-31: the lobe's build-date code
+                           // (satSinceCode; 0 = always: stations built module by module)
     float transmission;    // Phase 4f: diffuse transmission, V band (SatMaterial::transmission), 0 = opaque
     uint32_t occluderMaskHi; // occluders 32-63 (kMaxOccluders = 64 since the ISS model)
     // Stowed parts in this lobe (2026-10-19): bits 0-15 k = the area share lost when fully stowed (Σ share x (1 -
@@ -460,9 +484,22 @@ struct GpuSatLobe
 };
 static_assert(sizeof(GpuSatLobe) == 64, "GpuSatLobe layout mismatch");
 
-// Sun's angular radius mapped to a GGX half-vector α (the solar disk convolved into every lobe —
-// this is what gives a flat mirror its physically correct peak, replacing mirrorBoost).
-static constexpr float kSunAlpha = 0.0023f;
+// The Sun's disc as a source (2026-10-21; satLobeIntensitySun, sat_orbit.comp / sat_mesh.frag sunA2). A fixed disc
+// maps onto half vectors h = (s + o)/|s + o| as an ELLIPSE: semi-axis R/2 in the plane of incidence and R/(2 cos θd)
+// across it (θd = the angle between s and h; dω_o = 4 (o·h) dω_h), so the disc is folded into each lobe as an
+// anisotropic α² pair in the frame (p, q, h) — p in the plane of s and o, q = s × o across it:
+//   α_p² = α_m² + S·w(α_m²/S),   α_q² = α_m² + (S/c²)·w(α_m² c²/S),   c = s·h,   S = kSunAlpha²,
+//   w(x) = v + (1 − v)/(1 + k x): S·w is the disc's share of the convolution's peak — the disc's centre (S,
+//   kSunAlpha = (R/2)·sqrt(1 − u/3), limb darkening u = 0.6) for a material sharper than the disc, its variance (v)
+//   for a broad one (GGX's peak curvature is twice Beckmann's at one α: v 1.125 / 0.5625).
+// Measured against the material lobe convolved with a limb-darkened disc (brute force over the disc,
+// scratchpad photometry_fixes/scripts/sunref*.py): peak within 0.05 mag up to 75 deg of incidence for α 0..0.3, both
+// distributions; a circular reflected beam for a flat mirror. Until 2026-10-21 it was one isotropic α 0.0023 (the
+// uniform disc's peak at normal incidence): 1/cos θ too bright at oblique incidence (-0.26 mag at 50 deg, -0.95 at
+// 70) and cos θ too narrow across the plane of incidence (the Iridium flare validation).
+static constexpr float kSunAlpha = 0.00208f;
+static constexpr float kSunW_GGX = 1.125f, kSunK_GGX = 4.0f;   // w(x) for GGX lobes
+static constexpr float kSunW_Beck = 0.5625f, kSunK_Beck = 3.0f; // and Beckmann lobes
 
 struct SatLobeBakeStats
 {
@@ -591,11 +628,10 @@ void validateSatLobes(const SatModel &m, const std::vector<SatTri> &tris,
                       const std::vector<GpuSatLobe> &lobes, SatLobeBakeStats &stats);
 
 // Radiant intensity (per unit irradiance) of the lobes, with the model in its REST pose: `s` (toward
-// the light) and `o` (toward the observer) are rest-body-frame unit vectors. sourceAlpha2 is the
-// light source's size term (kSunAlpha² for the sun). Used by the validator and, in 3c, the
-// standard-magnitude report.
+// the light) and `o` (toward the observer) are rest-body-frame unit vectors. The light is the Sun's disc
+// (satLobeIntensitySun). Used by the validator and, in 3c, the standard-magnitude report.
 double evalSatLobes(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
-                    glm::dvec3 s, glm::dvec3 o, double sourceAlpha2);
+                    glm::dvec3 s, glm::dvec3 o);
 
 // Same, with every group POSED (evalGroupPoses): `s` and `o` are in the poses' world frame. This is
 // the lobe loop of sat_orbit.comp's modelIntensity() — lobe normal = R_group · B_root · normalT. When
@@ -611,20 +647,31 @@ inline double satLobePresence(const GpuSatLobe &L, double P, double buildDays)
 {
     return satSinceBuilt(L.distribution >> 8, buildDays) ? satLobeStowFactor(L.stowPack, P) : 0.0;
 }
-inline bool satLobeBeckmann(const GpuSatLobe &L) { return (L.distribution & 0xFFu) != 0u; }
+inline bool satLobeBeckmann(const GpuSatLobe &L) { return (L.distribution & 1u) != 0u; }
+inline double satLobeMinnaert(const GpuSatLobe &L) { return satMinnaertFromCode((L.distribution >> 1) & 127u); }
 // A component's fold angle (radians) at unfolding progress P (SatComponent::fold*): 0 deployed.
 double satComponentFoldAngle(const SatComponent &c, double P);
 // A component's stow scale at unfolding progress P (SatComponent::stow*): 1 deployed.
 double satComponentStowScale(const SatComponent &c, double P);
 double evalSatLobesPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
-                         const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o, double sourceAlpha2,
+                         const std::vector<GroupPose> &poses, glm::dvec3 s, glm::dvec3 o,
                          int *dominant = nullptr, const SatOcclusion *occ = nullptr, bool occludeSource = true,
                          double unfold = 1.0, double buildDays = 1e30);
 
 // Intensity of one flat facet or lobe per unit irradiance — the formula every evaluator above (and
-// sat_orbit.comp's lobeIntensity()) uses. `a2` includes the source-size term.
+// sat_orbit.comp's lobeIntensity()) uses, lit by a source whose size is folded into `a2` ISOTROPICALLY (the
+// Earth's cap; a point source with a2 = the material's α²).
 double satLobeIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2, bool beckmann,
-                        glm::dvec3 s, glm::dvec3 o, double transmission = 0.0);
+                        glm::dvec3 s, glm::dvec3 o, double transmission = 0.0, double minnaertK = 1.0);
+// The same lit by the SUN's disc (kSunAlpha above): `a2Mat` is the lobe's own α² (alpha2Mat), without the Sun.
+double satLobeIntensitySun(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2Mat,
+                           bool beckmann, glm::dvec3 s, glm::dvec3 o, double transmission = 0.0,
+                           double minnaertK = 1.0);
+// One facet of a material (the brute-force references): `area` serves as both the specular and the diffuse area,
+// a hazy material evaluates its core and haze lobes (SatMaterial::hazeFraction). spread2 = SatTri::spread2.
+double satMaterialIntensitySun(const SatMaterial &mat, glm::dvec3 n, double area, double spread2, glm::dvec3 s,
+                               glm::dvec3 o);
+
 
 // ── Earthshine as a light source (2026-09-24) ─────────────────────────────────────────────────
 // The lit cap of the Earth is a broad source: a face turned sideways to it still sees a large part
@@ -667,7 +714,11 @@ struct SatEarthLight
 // Intensity of one facet/lobe lit by the Earth (already × irradiance: an absolute intensity per unit
 // solar irradiance). `a2` is the material's (without the Earth's size, which `earth.a2` adds).
 double satLobeEarthIntensity(glm::dvec3 n, double area, double diffArea, double albedo, double f0, double a2,
-                             bool beckmann, const SatEarthLight &earth, glm::dvec3 o, double transmission = 0.0);
+                             bool beckmann, const SatEarthLight &earth, glm::dvec3 o, double transmission = 0.0,
+                             double minnaertK = 1.0);
+// satMaterialIntensitySun's earthshine twin (core + haze).
+double satMaterialEarthIntensity(const SatMaterial &mat, glm::dvec3 n, double area, double spread2,
+                                 const SatEarthLight &earth, glm::dvec3 o);
 // Σ over the posed lobes of satLobeEarthIntensity (occlusion: the observer ray only).
 double evalSatLobesEarthPosed(const std::vector<GpuSatLobe> &lobes, const std::vector<AttitudeGroup> &groups,
                               const std::vector<GroupPose> &poses, const SatEarthLight &earth, glm::dvec3 o,

@@ -11,12 +11,26 @@ from __future__ import annotations
 
 import numpy as np
 
-SUN_ALPHA = 0.0023  # the Sun's angular radius as a GGX alpha (SatModel.h kSunAlpha)
+# The Sun's disc (SatModel.h kSunAlpha / kSunW_* / kSunK_*, SatModel.cpp sunDiscA2): an anisotropic alpha^2 pair,
+# a2p in the plane of incidence and a2q stretched by 1/(s.h)^2 across it.
+SUN_ALPHA = 0.00208
+SUN_W = {False: 1.125, True: 0.5625}  # GGX, Beckmann
+SUN_K = {False: 4.0, True: 3.0}
 SUN_V = -26.74
 
 
-def lobe_intensity(n, area, diff_area, albedo, f0, a2, beckmann, transmission, s, O):
-    """One lobe. n, s: (3,) unit vectors; O: (..., 3) observer directions. a2 includes the source size."""
+def sun_a2(a2_mat, beckmann, c):
+    S = SUN_ALPHA ** 2
+    v, k = SUN_W[bool(beckmann)], SUN_K[bool(beckmann)]
+    Sq = S / np.maximum(c * c, 0.0025)
+    return (a2_mat + S * (v + (1 - v) / (1 + k * a2_mat / S)),
+            a2_mat + Sq * (v + (1 - v) / (1 + k * a2_mat / Sq)))
+
+
+def lobe_intensity(n, area, diff_area, albedo, f0, a2, beckmann, transmission, s, O, sun_disc=False, minnaert=1.0):
+    """One lobe. n, s: (3,) unit vectors; O: (..., 3) observer directions. a2 includes an isotropic source's size;
+    with sun_disc it is the lobe's own alpha^2 and the Sun's disc is folded in (sun_a2). minnaert = the diffuse
+    term's Minnaert k (1 = Lambert; SatMaterial::minnaertK)."""
     n = np.asarray(n, float)
     s = np.asarray(s, float)
     O = np.asarray(O, float)
@@ -28,7 +42,10 @@ def lobe_intensity(n, area, diff_area, albedo, f0, a2, beckmann, transmission, s
         if transmission > 0:
             out[vis] = transmission / np.pi * diff_area * (-ns) * no[vis]
         return out
-    diffuse = albedo / np.pi * diff_area * ns * no
+    if minnaert >= 0.9999:
+        diffuse = albedo / np.pi * diff_area * ns * no
+    else:
+        diffuse = albedo * diff_area * (minnaert + 1) / (2 * np.pi) * np.clip(ns * no, 0, None) ** minnaert
     hv = s + O
     hl = np.linalg.norm(hv, axis=-1)
     h = hv / np.maximum(hl, 1e-12)[..., None]
@@ -36,10 +53,18 @@ def lobe_intensity(n, area, diff_area, albedo, f0, a2, beckmann, transmission, s
     sin2 = np.clip(1 - nh * nh, 0, None)
     sh = np.clip(h @ s, 0, None)
     F = f0 + (1 - f0) * (1 - sh) ** 5
+    a2q, nq2 = a2, 0.0
+    if sun_disc:
+        a2, a2q = sun_a2(a2, beckmann, np.minimum(sh, 1.0))
+        q = np.cross(s, O)
+        ql2 = np.sum(q * q, -1)
+        nq2 = np.where(ql2 > 1e-12, np.minimum(sin2, (q @ n) ** 2 / np.maximum(ql2, 1e-30)), 0.0)
+    eps = sin2 / a2 - nq2 * (a2q - a2) / (a2 * a2q)
+    aa = np.sqrt(a2 * a2q)
     if beckmann:
         nh_ = np.maximum(nh, 1e-9)
         nh2 = nh_ * nh_
-        D = np.exp(-sin2 / (nh2 * a2)) / (np.pi * a2 * nh2 * nh2)
+        D = np.exp(-eps / nh2) / (np.pi * aa * nh2 * nh2)
         D = np.where(nh > 0, D, 0.0)
         alpha = np.sqrt(a2)
 
@@ -47,8 +72,8 @@ def lobe_intensity(n, area, diff_area, albedo, f0, a2, beckmann, transmission, s
             c = x / (alpha * np.sqrt(np.maximum(1e-30, 1 - x * x)))
             return np.where(c >= 1.6, 1.0, (3.535 * c + 2.181 * c * c) / (1 + 2.276 * c + 2.577 * c * c))
     else:
-        den = nh * nh * a2 + sin2
-        D = a2 / (np.pi * den * den)
+        kap = eps + nh * nh
+        D = 1.0 / (np.pi * aa * kap * kap)
 
         def G1(x):
             return 2 * x / (x + np.sqrt(a2 + (1 - a2) * x * x))
@@ -58,25 +83,29 @@ def lobe_intensity(n, area, diff_area, albedo, f0, a2, beckmann, transmission, s
     return out
 
 
-def lobe_terms(lobe: dict, s, O, src_a2=SUN_ALPHA ** 2):
-    """(diffuse, specular) of one lobe from a dump's lobe dict, split for explaining the formula."""
+def lobe_terms(lobe: dict, s, O, src_a2=None):
+    """(diffuse, specular) of one lobe from a dump's lobe dict, split for explaining the formula. src_a2 None = the
+    Sun's disc, else an isotropic source of that alpha^2."""
     n = np.asarray(lobe["n"], float)
-    a2 = lobe["alpha"] ** 2 + src_a2
+    sun = src_a2 is None
+    a2 = lobe["alpha"] ** 2 + (0.0 if sun else src_a2)
     full = lobe_intensity(n, lobe["area"], lobe["diff_area"], lobe["albedo"], lobe["f0"], a2, lobe["beckmann"],
-                          lobe.get("transmission", 0.0), s, O)
+                          lobe.get("transmission", 0.0), s, O, sun, lobe.get("minnaert", 1.0))
     diff = lobe_intensity(n, 0.0, lobe["diff_area"], lobe["albedo"], 0.0, a2, lobe["beckmann"],
-                          lobe.get("transmission", 0.0), s, O)
+                          lobe.get("transmission", 0.0), s, O, sun, lobe.get("minnaert", 1.0))
     return diff, full - diff
 
 
-def model_intensity(lobes: list[dict], s, O, src_a2=SUN_ALPHA ** 2, per_lobe=False):
-    """Sum over a level's lobes (dump format). per_lobe=True also returns (L, ...) contributions."""
+def model_intensity(lobes: list[dict], s, O, src_a2=None, per_lobe=False):
+    """Sum over a level's lobes (dump format). per_lobe=True also returns (L, ...) contributions. src_a2 None = the
+    Sun's disc."""
     O = np.asarray(O, float)
     parts = []
+    sun = src_a2 is None
     for L in lobes:
-        a2 = L["alpha"] ** 2 + src_a2
+        a2 = L["alpha"] ** 2 + (0.0 if sun else src_a2)
         parts.append(lobe_intensity(L["n"], L["area"], L["diff_area"], L["albedo"], L["f0"], a2, L["beckmann"],
-                                    L.get("transmission", 0.0), s, O))
+                                    L.get("transmission", 0.0), s, O, sun, L.get("minnaert", 1.0)))
     parts = np.array(parts) if parts else np.zeros((0,) + O.shape[:-1])
     tot = parts.sum(0)
     return (tot, parts) if per_lobe else tot

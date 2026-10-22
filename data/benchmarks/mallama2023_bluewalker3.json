@@ -1,0 +1,75 @@
+{
+  "format": "sat-light-sim-benchmark/1",
+  "id": "mallama2023_bluewalker3",
+  "title": "Brightness of the BlueWalker 3 satellite at its regular (nominal-attitude) luminosity",
+  "kind": "distribution",
+  "citation": {
+    "authors": "A. Mallama, R.E. Cole, S. Tilley, C. Bassa, S. Harrington",
+    "year": 2023,
+    "title": "BlueWalker 3 Satellite Brightness Characterized and Modeled",
+    "url": "https://arxiv.org/abs/2305.00831"
+  },
+  "satellite": {
+    "name": "AST SpaceMobile BlueWalker 3 (deployed, nominal zenith/nadir attitude)",
+    "model": "bluewalker3",
+    "notes": "'Regular' magnitudes only: after deployment (2022-11-11), outside the three faint periods (2022 Dec, 2023 Feb, 2023 Mar; cos(beta) < ~0.8, when the operator rolled the zenith solar face toward the Sun) and without the 'pseudo-specular' values (section 3). The model flies the nominal attitude only, which is what this subset measures."
+  },
+  "magnitudes": {
+    "band": "visual (most), CMOS / video for a few (section 2)",
+    "atmosphere": "above (differential against nearby catalogue stars)",
+    "reduction": "1000 km",
+    "locator": "section 2; section 3"
+  },
+  "published": {
+    "n": { "value": 298, "locator": "DERIVED: (SD / SDM)^2 = (0.69 / 0.04)^2 from section 3 (the apparent magnitudes give (1.11 / 0.07)^2 = 251; both SDMs are printed to one significant figure)" },
+    "mean_m1000": { "value": 3.09, "uncertainty": 0.04, "locator": "section 3: 'The corresponding values for magnitudes adjusted to a standard distance of 1000 km are 3.09, 0.69 and 0.04'" },
+    "sd_m1000": { "value": 0.69, "locator": "section 3" },
+    "mean_apparent": { "value": 2.75, "uncertainty": 0.07, "locator": "section 3: 'The average apparent magnitude is 2.75 with a standard deviation of 1.11'" },
+    "characteristic_magnitude": { "value": 1.4, "locator": "section 3 / Mallama et al. 2022 (arXiv:2211.09811) section 4: zenith, phase 72 deg, 510 km" },
+    "phase_fit_quadratic": {
+      "coefficients": [3.912, -0.02748, 0.0001831],
+      "variable": "phase_deg",
+      "locator": "Mallama, Cole, Harrington & Maley 2022 (arXiv:2211.09811) Table 2: 146 magnitudes, 2022-11-11..24 (a subset of this paper's data)"
+    }
+  },
+  "sampling": {
+    "shell": {
+      "alt_km": 516,
+      "incl_deg": 53.2,
+      "locator": "CelesTrak GP element sets for NORAD 53807 (2022-111AL), 2022-11-15 .. 2023-03-17: mean motion 15.186-15.199 rev/day (a = 6894 km), inclination 53.20 deg; the paper quotes 'approximately 510 km' (2211.09811 sec. 4)"
+    },
+    "period": {
+      "start": "2022-11-14",
+      "end": "2023-04-19",
+      "locator": "section 1: 'from its launch on 2022 September 11 through 2023 April 19'; start = AST's announcement of full deployment (section 4). The faint periods inside it are excluded by the paper but not by this sampler (see constraints)."
+    },
+    "sites": [
+      { "name": "S. Harrington", "lat_deg": 36.062, "lon_deg": -91.688, "instrument": "visual", "count": 62, "locator": "Appendix A; count = App. B rows with cos(beta) > 0.8 after 2022-11-11 (transcription)" },
+      { "name": "P. Maley", "lat_deg": 33.811, "lon_deg": -111.952, "instrument": "visual", "count": 58, "locator": "Appendix A, site 1" },
+      { "name": "A. Mallama", "lat_deg": 38.982, "lon_deg": -76.763, "instrument": "visual", "count": 42, "locator": "Appendix A, site 1" },
+      { "name": "A. Mallama (site 3)", "lat_deg": 39.122, "lon_deg": -77.891, "instrument": "visual", "count": 30, "locator": "Appendix A, site 3" },
+      { "name": "R. Cole", "lat_deg": 50.552, "lon_deg": -4.735, "instrument": "visual / video", "count": 37, "locator": "Appendix A" },
+      { "name": "R. McNaught", "lat_deg": -32.27, "lon_deg": 149.16, "instrument": "visual", "count": 35, "locator": "Appendix A" },
+      { "name": "R. Swaney", "lat_deg": 41.403, "lon_deg": -81.512, "instrument": "visual", "count": 4, "locator": "Appendix A" },
+      { "name": "J. Respler", "lat_deg": 40.330, "lon_deg": -74.445, "instrument": "visual", "count": 3, "locator": "Appendix A" },
+      { "name": "A. Worley", "lat_deg": 41.474, "lon_deg": -81.519, "instrument": "visual", "count": 1, "locator": "Appendix A" }
+    ],
+    "constraints": {
+      "operational_altitude_only": true,
+      "penumbra_excluded": null,
+      "sun_altitude_deg": [-24.0, -10.0],
+      "min_elevation_deg": 15.0,
+      "note": "The paper keeps only the nominal attitude (cos(beta) > ~0.8, Figs. 2-3); the sampler cannot filter on beta, but the model flies the nominal attitude at every beta, which is the attitude the subset measures. Sun window and minimum elevation are not stated by the paper; they are measured from its own Appendix B visual rows of 2022-11-11..12-07 (155 rows, SGP4 replay): Sun altitude at the observer 2.5-97.5 percentile -23.8 .. -9.8 deg (median -16.4; 44% below -18), elevation 2.5 percentile 14.7 deg."
+    }
+  },
+  "transcription": {
+    "source": "arXiv:2305.00831 section 3 and Appendices A-B; arXiv:2211.09811 Table 2",
+    "method": "pdftotext -layout / -raw",
+    "date": "2026-10-21",
+    "check": "Summary only in this file. Outside the tool, the Appendix B rows were replayed with SGP4 (archived CelesTrak and n2yo element sets, all within 4 days for 2022-11): the 147 rows of 2022-11-11..24 give a quadratic phase fit (4.041, -0.02911, 1.840e-4) against the published (3.912, -0.02748, 1.831e-4), characteristic magnitude 1.43 vs 1.4, mean m1000 3.09; the 272 rows after deployment with cos(beta) > 0.8 give apparent mean 2.79, SD 1.11, SDM 0.067 vs 2.75, 1.11, 0.07 (the paper also drops its pseudo-specular values, not flagged in the table). Appendix B typos found: Maley 2022-11-20 is marked site 3 (Cyprus) but BW3 was below that horizon - the pass was over Arizona; dates do not roll over at midnight inside a pass (Harrington 2022-Nov-21 0:00:30 .. 0:04:00 are Nov 22)."
+  },
+  "gated": true,
+  "gated_note": "Gated since 2026-10-22, when SatBench began reading sampling.constraints: with the Sun window and minimum elevation measured from the paper's own rows the model reads 3.16 vs 3.09 (5000 samples, seed 1); with the old fixed -18..-6 deg window it read 3.48. The antenna face's albedo was calibrated to these same 2022 visual magnitudes, so this is a regression guard, not an independent check (the timed replay: 2.97 vs 3.01 at the 135 observed geometries, KNOWN_RESIDUALS.md).",
+  "columns": ["sat", "phase_deg", "m1000"],
+  "observations": []
+}

@@ -45,8 +45,9 @@ struct GpuSatMeshMaterial
     float albedo;         // Lambertian ρd
     float f0;             // Schlick F0
     float roughness;      // microfacet α
-    uint32_t beckmann;    // 1 = Beckmann distribution, else GGX (as the photometry)
-    uint32_t pattern;     // procedural surface pattern (0 = none) — 4b procedural detail
+    uint32_t beckmann;    // bit 0: Beckmann distribution, else GGX (as the photometry); bits 1-7: Minnaert code
+                          // (satMinnaertCode, 0 = Lambert); bits 16-31: haze fraction (unorm16)
+    uint32_t pattern;     // bits 0-15: procedural surface pattern (0 = none); bits 16-31: the haze lobe's α (unorm16)
     glm::vec4 extra;      // rgb = transmission tint (luminance 1), a = transmission (Phase 4f)
     glm::vec4 lattice;    // open lattice: x = coverage (1 = solid), y = bay pitch (m), z = member width (bays)
 };

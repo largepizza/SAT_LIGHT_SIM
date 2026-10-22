@@ -54,14 +54,15 @@
       { "name": "A. Mallama", "lat_deg": 39.0, "lon_deg": -76.8, "count": 21, "locator": "Table 1" },
       { "name": "J. Respler", "lat_deg": 40.3, "lon_deg": -74.4, "count": 65, "locator": "Table 1" },
       { "name": "B. Young", "lat_deg": 36.1, "lon_deg": -96.0, "count": 98, "locator": "Table 1" },
-      { "name": "MMT-9", "lat_deg": 43.6, "lon_deg": 41.4, "count": 554, "locator": "Table 1" }
+      { "name": "MMT-9", "lat_deg": 43.6, "lon_deg": 41.4, "count": 554, "locator": "Table 1",
+        "sun_altitude_deg": [-33.0, -11.0], "min_elevation_deg": 45.0 }
     ],
     "constraints": {
       "operational_altitude_only": true,
       "penumbra_excluded": null,
-      "sun_altitude_deg": null,
-      "min_elevation_deg": null,
-      "note": "Selection limits are not stated. Magnitudes were reduced to 1000 km and phase angles computed by T. Molczan (section 3)."
+      "sun_altitude_deg": [-24.0, -10.0],
+      "min_elevation_deg": 30.0,
+      "note": "Selection limits are not stated. Magnitudes were reduced to 1000 km and phase angles computed by T. Molczan (section 3). The limits here are MEASURED (2026-10-22), not the paper's: the visual sites take the Sun window of Mallama et al. 2023b's own BlueWalker 3 visual rows (the same observers and method; Sun -24..-10 deg at the 2.5-97.5 percentiles) and the elevation limit measured for the VisorSat observers (>= 30 deg: mallama2021_visorsat.json's not-seen share). MMT-9 (its own entry) takes the 31 MMT tracks of STARLINK-1008 (V1.0, 2020-2025) replayed by SGP4: Sun 2.5-97.5 percentile -32.6..-10.7 deg; MMT follows high passes (median elevation of its 1.5-s bins 56 deg; track medians: median 61, 10th percentile 46), and >= 45 deg is the limit at which the sampler's median elevation (54) comes closest to MMT's while keeping its lower tail. A global window would not do: until 2026-10-22 SatBench assumed Sun -18..-6, elevation >= 20 for every site, and the 2020 Starlink models were fitted to that (M8); at MMT's real geometry they read ~0.9 mag too bright."
     }
   },
   "transcription": {

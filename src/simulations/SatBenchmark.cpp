@@ -27,6 +27,34 @@ std::vector<double> numArray(const nlohmann::json &j, const char *key)
             v.push_back(e.is_number() ? e.get<double>() : std::numeric_limits<double>::quiet_NaN());
     return v;
 }
+
+// `sun_altitude_deg` ([min, max] or null) and `min_elevation_deg` (number or null) of a constraints
+// object or a site; absent or null leaves the outputs as they are.
+bool parseConstraints(const nlohmann::json &c, double &sunMin, double &sunMax, double &minElev, const std::string &where,
+                      std::string &err)
+{
+    if (c.contains("sun_altitude_deg") && !c["sun_altitude_deg"].is_null())
+    {
+        const auto &w = c["sun_altitude_deg"];
+        if (!w.is_array() || w.size() != 2 || !w[0].is_number() || !w[1].is_number() || w[0] >= w[1])
+        {
+            err = where + ".sun_altitude_deg must be null or [min, max] with min < max";
+            return false;
+        }
+        sunMin = w[0].get<double>();
+        sunMax = w[1].get<double>();
+    }
+    if (c.contains("min_elevation_deg") && !c["min_elevation_deg"].is_null())
+    {
+        if (!c["min_elevation_deg"].is_number())
+        {
+            err = where + ".min_elevation_deg must be null or a number";
+            return false;
+        }
+        minElev = c["min_elevation_deg"].get<double>();
+    }
+    return true;
+}
 } // namespace
 
 bool loadBenchmark(const std::string &path, Benchmark &out, std::string &err)
@@ -58,6 +86,10 @@ bool loadBenchmark(const std::string &path, Benchmark &out, std::string &err)
     b.id = strOr(j, "id");
     b.title = strOr(j, "title");
     b.gated = j.value("gated", true);
+    if (j.contains("ungated_metrics") && j["ungated_metrics"].is_array())
+        for (const auto &m : j["ungated_metrics"])
+            if (m.is_string())
+                b.ungatedMetrics.push_back(m.get<std::string>());
     b.kind = strOr(j, "kind");
     if (b.id.empty() || (b.kind != "distribution" && b.kind != "differential"))
     {
@@ -121,6 +153,9 @@ bool loadBenchmark(const std::string &path, Benchmark &out, std::string &err)
                 site.lonDeg = numOr(e, "lon_deg", 0.0);
                 site.count = (int)numOr(e, "count", -1.0);
                 site.instrument = strOr(e, "instrument");
+                if (!parseConstraints(e, site.sunAltMinDeg, site.sunAltMaxDeg, site.minElevationDeg,
+                                      "sampling.sites[" + std::to_string(b.sites.size()) + "]", err))
+                    return false;
                 b.sites.push_back(site);
             }
         if (s.contains("censoring"))
@@ -129,6 +164,10 @@ bool loadBenchmark(const std::string &path, Benchmark &out, std::string &err)
             b.censorLimitMag = numOr(s["censoring"], "not_seen_assigned_apparent", b.censorLimitMag);
             b.censorThresholdMag = numOr(s["censoring"], "limiting_mag_apparent", b.censorThresholdMag);
         }
+        if (s.contains("constraints") && s["constraints"].is_object() &&
+            !parseConstraints(s["constraints"], b.sunAltMinDeg, b.sunAltMaxDeg, b.minElevationDeg,
+                              "sampling.constraints", err))
+            return false;
     }
     if (j.contains("references"))
     {

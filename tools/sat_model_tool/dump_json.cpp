@@ -36,15 +36,9 @@ json vec(const glm::dvec3 &v)
 
 double brute(const SatModel &m, const std::vector<SatTri> &tris, glm::dvec3 s, glm::dvec3 o)
 {
-    const double a2Sun = (double)kSunAlpha * kSunAlpha;
     double sum = 0.0;
     for (const SatTri &t : tris)
-    {
-        const SatMaterial &mat = m.materials[t.material];
-        const double a2 = (double)mat.roughness * mat.roughness + t.spread2 + a2Sun;
-        sum += satLobeIntensity(t.n, t.area, t.area, mat.diffuseAlbedo, mat.specularF0, a2, mat.beckmann, s, o,
-                                mat.transmission);
-    }
+        sum += satMaterialIntensitySun(m.materials[t.material], t.n, t.area, t.spread2, s, o);
     return sum;
 }
 
@@ -58,13 +52,12 @@ struct Level
 
 double lobesAt(const Level &L, glm::dvec3 s, glm::dvec3 o)
 {
-    const double a2Sun = (double)kSunAlpha * kSunAlpha;
     double sum = 0.0;
     for (size_t i = 0; i < L.lobes.size(); ++i)
     {
         const GpuSatLobe &b = L.lobes[i];
-        sum += satLobeIntensity(L.nBody[i], b.area, b.diffArea, b.albedoD, b.f0, b.alpha2Mat + a2Sun,
-                                satLobeBeckmann(b), s, o, b.transmission);
+        sum += satLobeIntensitySun(L.nBody[i], b.area, b.diffArea, b.albedoD, b.f0, b.alpha2Mat, satLobeBeckmann(b), s,
+                                   o, b.transmission, satLobeMinnaert(b));
     }
     return sum;
 }
@@ -92,6 +85,7 @@ bool dumpModelJson(const SatModel &m, const std::string &id, const std::vector<S
                         {"f0", mt.specularF0},
                         {"alpha", mt.roughness},
                         {"beckmann", mt.beckmann},
+                        {"minnaert", mt.minnaertK},
                         {"transmission", mt.transmission}});
     j["model"]["materials"] = mats;
 
@@ -138,6 +132,7 @@ bool dumpModelJson(const SatModel &m, const std::string &id, const std::vector<S
                              {"f0", b.f0},
                              {"alpha", std::sqrt(b.alpha2Mat)},
                              {"beckmann", satLobeBeckmann(b)},
+                             {"minnaert", satLobeMinnaert(b)},
                              {"transmission", b.transmission},
                              {"group", b.group},
                              {"tris", L.tris[i]}});

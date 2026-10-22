@@ -3,6 +3,8 @@
   "id": "mallama2021_visorsat",
   "title": "Brightness of VisorSat-design Starlink satellites at 550 km",
   "kind": "distribution",
+  "ungated_metrics": ["phase_curve_rms"],
+  "ungated_note": "phase_curve_rms is reported, not gated (2026-10-22): the bin MEANS carry the table's bright-attitude passes (MMT rows: mean 7.06, median 7.37), which a nominal attitude cannot make, and the model is fitted to MMT's own tracks of these satellites, which read it ~0.2 mag too BRIGHT (held out) while this table reads it ~0.2 too faint. Model 0.35 at the measured windows (KNOWN_RESIDUALS.md). Mean and median stay gated.",
   "citation": {
     "authors": "A. Mallama",
     "year": 2021,
@@ -87,15 +89,17 @@
         "lat_deg": 44.0,
         "lon_deg": 41.0,
         "instrument": "Mini-MegaTORTORA, unfiltered (within 0.1 mag of V)",
-        "locator": "section 4"
+        "locator": "section 4",
+        "sun_altitude_deg": [-24.0, -11.0],
+        "min_elevation_deg": 45.0
       }
     ],
     "constraints": {
       "operational_altitude_only": true,
       "penumbra_excluded": true,
-      "sun_altitude_deg": null,
-      "min_elevation_deg": null,
-      "note": "Sun-altitude and elevation limits are not stated; SatBench assumes values and reports sensitivity. MMT magnitudes and phase angles are per-track averages (section 7)."
+      "sun_altitude_deg": [-24.0, -10.0],
+      "min_elevation_deg": 30.0,
+      "note": "Sun-altitude and elevation limits are not stated by the paper; the ones here are MEASURED (2026-10-22). Visual sites: the Sun window from Mallama et al. 2023b's own BlueWalker 3 visual rows (the same observers, the same method: Sun -24..-10 deg at the 2.5-97.5 percentiles). Their elevation limit (>= 15 deg for the bright BlueWalker 3) does not carry over to a mag-7 object in binoculars: at >= 15 the sampler censors 40% of the visual samples as 'not seen' where the table has 7 of 290 (2.4%); >= 30 deg gives 1.0%, >= 25 8%. MMT (its own entry): the 63 MMT tracks of STARLINK-1436 / -1538 (VisorSat, 2020-2024) replayed by SGP4: Sun 2.5-97.5 percentile -23.8..-11.1 deg; MMT follows high passes (track-median elevation median 56 deg, 10th percentile 42), and >= 45 deg is the limit at which the sampler's median elevation (56) is MMT's. Until 2026-10-22 SatBench assumed Sun -18..-6, elevation >= 20 for every site, and the 2020 Starlink models were fitted to that (M8). MMT magnitudes and phase angles are per-track averages (section 7)."
     },
     "censoring": {
       "limiting_mag_apparent": 8.0,

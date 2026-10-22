@@ -333,21 +333,34 @@ bool runDistributionBenchmark(const Benchmark &b, const SatModel &m, const std::
     std::vector<double> m1000, phase;
     int notSeen = 0;
     const int maxTimeDraws = std::max(1000, cfg.samples * 400);
+    // The site is drawn once per SAMPLE and kept through the rejected time / satellite draws (2026-10-22), so each
+    // site's share of the samples is its weight. Redrawn after every rejection, a site with a narrower Sun window, a
+    // higher elevation limit or a shorter twilight was under-sampled by its acceptance rate.
+    size_t si = 0;
+    bool needSite = true;
     while ((int)out.samples.size() < cfg.samples && out.timeDraws < maxTimeDraws)
     {
         ++out.timeDraws;
         // Site, then a time in the period with the Sun inside the twilight window at that site.
-        double pick = rng.uniform() * wSum;
-        size_t si = 0;
-        while (si + 1 < w.size() && pick >= w[si])
-            pick -= w[si++];
+        if (needSite)
+        {
+            double pick = rng.uniform() * wSum;
+            si = 0;
+            while (si + 1 < w.size() && pick >= w[si])
+                pick -= w[si++];
+            needSite = false;
+        }
         const double t = t0 + rng.uniform() * (t1 - t0);
         const glm::dvec3 obs = observerEciAt(siteEcef(b.sites[si]), kEarthRadiusM, t);
         const glm::dvec3 up = glm::normalize(obs);
         const glm::dvec3 sun = sunDirEciAt(t);
         const double sunAltDeg = std::asin(std::clamp(glm::dot(sun, up), -1.0, 1.0)) * 180.0 / kPi;
-        if (sunAltDeg < cfg.sunAltMinDeg || sunAltDeg > cfg.sunAltMaxDeg)
+        const BenchSite &site = b.sites[si]; // a site's own constraints replace the run's
+        const bool siteSun = std::isfinite(site.sunAltMinDeg);
+        if (sunAltDeg < (siteSun ? site.sunAltMinDeg : cfg.sunAltMinDeg) ||
+            sunAltDeg > (siteSun ? site.sunAltMaxDeg : cfg.sunAltMaxDeg))
             continue;
+        const double minElevDeg = std::isfinite(site.minElevationDeg) ? site.minElevationDeg : cfg.minElevationDeg;
 
         // A random satellite of the shell (uniform RAAN and argument of latitude at time t) that is
         // above the elevation limit and fully sunlit (penumbra excluded, as in the papers).
@@ -363,7 +376,7 @@ bool runDistributionBenchmark(const Benchmark &b, const SatModel &m, const std::
             const double u = rng.uniform() * 2.0 * kPi;
             e.u0 = std::fmod(u - std::fmod(n * t, 2.0 * kPi) + 4.0 * kPi, 2.0 * kPi);
             BenchSample s;
-            if (!benchEvalSample(m.groups, lobes, occ, e, t, obs, sun, cfg.minElevationDeg, 0.0, s, nullptr, 0,
+            if (!benchEvalSample(m.groups, lobes, occ, e, t, obs, sun, minElevDeg, 0.0, s, nullptr, 0,
                                  cfg.flareTiltRad))
                 continue;
             s.site = (int)si;
@@ -377,6 +390,7 @@ bool runDistributionBenchmark(const Benchmark &b, const SatModel &m, const std::
             else if (!std::isfinite(s.m1000))
                 break; // not recorded (an instrument with no censoring rule saw nothing): new time
             out.samples.push_back(s);
+            needSite = true;
             m1000.push_back(s.m1000);
             phase.push_back(s.phaseDeg);
             break;

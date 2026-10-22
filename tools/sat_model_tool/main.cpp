@@ -361,7 +361,6 @@ bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budge
     std::uniform_real_distribution<double> ud(0.0, 1.0);
     std::normal_distribution<double> nd;
     auto randDir = [&]() { return glm::normalize(glm::dvec3(nd(rng), nd(rng), nd(rng))); };
-    const double a2Sun = (double)kSunAlpha * kSunAlpha;
 
     std::vector<double> errExact, errBudget;
     int unsupported = 0, dark = 0;
@@ -413,11 +412,8 @@ bool selfTestModel(const SatModel &m, const std::vector<SatTri> &tris, int budge
         {
             const SatMaterial &mat = m.materials[tr.material];
             glm::dvec3 n = poses[tr.group].R * tr.n;
-            double a2 = (double)mat.roughness * mat.roughness + tr.spread2;
-            Isun += satLobeIntensity(n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + a2Sun, mat.beckmann,
-                                     in.sunDirEci, o, mat.transmission);
-            Iearth += satLobeEarthIntensity(n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2, mat.beckmann,
-                                            r.earth, o, mat.transmission); // the evaluator's earthshine light
+            Isun += satMaterialIntensitySun(mat, n, tr.area, tr.spread2, in.sunDirEci, o);
+            Iearth += satMaterialEarthIntensity(mat, n, tr.area, tr.spread2, r.earth, o); // the evaluator's earthshine
         }
         double ref = Isun * r.litFactor + Iearth;
         // Significance floor: fainter than magnitude 20 is beyond any instrument this project
@@ -537,7 +533,6 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
     std::uniform_real_distribution<double> ud(0.0, 1.0);
     std::normal_distribution<double> nd;
     auto randDir = [&]() { return glm::normalize(glm::dvec3(nd(rng), nd(rng), nd(rng))); };
-    const double a2Sun = (double)kSunAlpha * kSunAlpha;
     // Reference points per triangle: 25, or one per ~0.5 m^2 on large flat triangles (up to 576) - a
     // 150 m^2 array blanket is two triangles, and 50 points left a partial shadow across it coarser
     // than the runtime sampling it is meant to judge.
@@ -624,11 +619,8 @@ bool selfTestOcclusion(const SatModel &m, const std::vector<SatTri> &tris, int s
         {
             const SatTri &tr = posed[i];
             const SatMaterial &mat = m.materials[tr.material];
-            const double a2 = (double)mat.roughness * mat.roughness + tr.spread2;
-            double is = satLobeIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0, a2 + a2Sun, mat.beckmann,
-                                         in.sunDirEci, o, mat.transmission);
-            double ie = satLobeEarthIntensity(tr.n, tr.area, tr.area, mat.diffuseAlbedo, mat.specularF0,
-                                         a2, mat.beckmann, open.earth, o, mat.transmission);
+            double is = satMaterialIntensitySun(mat, tr.n, tr.area, tr.spread2, in.sunDirEci, o);
+            double ie = satMaterialEarthIntensity(mat, tr.n, tr.area, tr.spread2, open.earth, o);
             if (is <= 0.0 && ie <= 0.0)
                 continue;
             double visSun = 0.0, visObs = 0.0;

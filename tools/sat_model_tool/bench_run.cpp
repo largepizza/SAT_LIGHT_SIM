@@ -147,9 +147,16 @@ bool loadModelFor(const Benchmark &b, const BenchRunOptions &opt, LoadedModel &o
             it->roughness = std::stof(value);
         else if (field == "distribution" && (value == "ggx" || value == "beckmann"))
             it->beckmann = value == "beckmann";
+        else if (field == "haze_fraction")
+            it->hazeFraction = std::clamp(std::stof(value), 0.0f, 1.0f);
+        else if (field == "haze_roughness")
+            it->hazeRoughness = std::clamp(std::stof(value), 1e-4f, 1.0f);
+        else if (field == "minnaert")
+            it->minnaertK = (float)satMinnaertFromCode(satMinnaertCode(std::stof(value)));
         else
         {
-            err = "bad --set '" + ov + "' (fields: diffuse_albedo, specular_f0, roughness, distribution=ggx|beckmann)";
+            err = "bad --set '" + ov + "' (fields: diffuse_albedo, specular_f0, roughness, distribution=ggx|beckmann, "
+                                       "haze_fraction, haze_roughness, minnaert)";
             return false;
         }
         out.appliedOverrides.push_back(ov);
@@ -300,6 +307,21 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
     cfg.samples = opt.samples;
     cfg.seed = opt.seed;
     cfg.flareTiltRad = opt.flareTiltDeg * 3.14159265358979323846 / 180.0;
+    if (std::isfinite(b.sunAltMinDeg)) // the file's stated constraints replace the runner's assumptions
+    {
+        cfg.sunAltMinDeg = b.sunAltMinDeg;
+        cfg.sunAltMaxDeg = b.sunAltMaxDeg;
+    }
+    if (std::isfinite(b.minElevationDeg))
+        cfg.minElevationDeg = b.minElevationDeg;
+    std::printf("  sampling: Sun %.1f..%.1f deg, elevation >= %.1f deg\n", cfg.sunAltMinDeg, cfg.sunAltMaxDeg,
+                cfg.minElevationDeg);
+    for (const BenchSite &s : b.sites) // sites with their own constraints
+        if (std::isfinite(s.sunAltMinDeg) || std::isfinite(s.minElevationDeg))
+            std::printf("    %s: Sun %.1f..%.1f deg, elevation >= %.1f deg\n", s.name.c_str(),
+                        std::isfinite(s.sunAltMinDeg) ? s.sunAltMinDeg : cfg.sunAltMinDeg,
+                        std::isfinite(s.sunAltMinDeg) ? s.sunAltMaxDeg : cfg.sunAltMaxDeg,
+                        std::isfinite(s.minElevationDeg) ? s.minElevationDeg : cfg.minElevationDeg);
     const SatOcclusion *occ = opt.occlusion ? &lm.occlusion : nullptr;
     const std::string occDesc =
         opt.occlusion ? "primitive ray tests, " + std::to_string(lm.occlusion.occluders.size()) + " occluders, <= " +
@@ -407,8 +429,14 @@ bool runDistribution(const Benchmark &b, const BenchRunOptions &opt, json &repor
         }
     }
     bool pass = true;
-    for (const json &r : cmp)
+    for (json &r : cmp)
+    {
+        // A metric the file lists in "ungated_metrics" is reported; its miss is a known residual.
+        if (r["verdict"] == "fail" && std::find(b.ungatedMetrics.begin(), b.ungatedMetrics.end(),
+                                                r["metric"].get<std::string>()) != b.ungatedMetrics.end())
+            r["verdict"] = "known";
         pass &= r["verdict"] != "fail";
+    }
 
     std::printf("  model %s (%zu lobes, budget %d; %d exact) — occlusion: %s\n", lm.model.name.c_str(),
                 lm.lobes.size(), opt.lobeBudget, lm.exactLobes, occDesc.c_str());

@@ -1,0 +1,273 @@
+{
+    "name": "AST SpaceMobile BlueWalker 3",
+    "note": "BlueWalker 3 (NORAD 53807, 2022-111AL), deployed 2022-11-10/14 at ~515 km, 53.2 deg. One 64.3 m2 flat phased-array panel: the antenna face toward nadir, the solar array on the zenith face. Body frame: +Z = nadir (the antenna face's normal), +X toward velocity. The panel is a 3 x 3 grid of facets, the outer eight tilted 3 deg outward: the deployed array is not optically flat, and a flat plate goes dark at grazing Sun where BW3 does not (see the sources). Nominal attitude only: the operator's sun-ward roll at high beta (13-16 deg in Dec 2022, more after 2023-02) is not modelled. No bus: none shows in AST's photos, and the launch vehicle adaptor separated before deployment (Nandakumar et al. 2023).",
+    "materials": [
+        {
+            "name": "antenna_face",
+            "preset": "antenna_panel",
+            "diffuse_albedo": 0.32,
+            "specular_f0": 0.04,
+            "roughness": 0.35,
+            "color": [
+                0.62,
+                0.62,
+                0.64
+            ]
+        },
+        {
+            "name": "solar_back",
+            "preset": "solar_cell"
+        }
+    ],
+    "attitude_groups": [
+        {
+            "name": "panel",
+            "primary": {
+                "axis": [
+                    0,
+                    0,
+                    1
+                ],
+                "target": "nadir"
+            },
+            "secondary": {
+                "axis": [
+                    1,
+                    0,
+                    0
+                ],
+                "target": "velocity"
+            }
+        }
+    ],
+    "components": [
+        {
+            "name": "array_mxmy",
+            "type": "plane",
+            "group": "panel",
+            "size": [
+                2.6733,
+                2.6733
+            ],
+            "position": [
+                -2.6733,
+                -2.6733,
+                0
+            ],
+            "material": "antenna_face",
+            "back_material": "solar_back",
+            "rotation_quat": [
+                0.99965732,
+                0.0185099,
+                -0.0185099,
+                0.0
+            ]
+        },
+        {
+            "name": "array_mx0y",
+            "type": "plane",
+            "group": "panel",
+            "size": [
+                2.6733,
+                2.6733
+            ],
+            "position": [
+                -2.6733,
+                0.0,
+                0
+            ],
+            "material": "antenna_face",
+            "back_material": "solar_back",
+            "rotation_quat": [
+                0.99965732,
+                -0.0,
+                -0.02617695,
+                0.0
+            ]
+        },
+        {
+            "name": "array_mxpy",
+            "type": "plane",
+            "group": "panel",
+            "size": [
+                2.6733,
+                2.6733
+            ],
+            "position": [
+                -2.6733,
+                2.6733,
+                0
+            ],
+            "material": "antenna_face",
+            "back_material": "solar_back",
+            "rotation_quat": [
+                0.99965732,
+                -0.0185099,
+                -0.0185099,
+                0.0
+            ]
+        },
+        {
+            "name": "array_0xmy",
+            "type": "plane",
+            "group": "panel",
+            "size": [
+                2.6733,
+                2.6733
+            ],
+            "position": [
+                0.0,
+                -2.6733,
+                0
+            ],
+            "material": "antenna_face",
+            "back_material": "solar_back",
+            "rotation_quat": [
+                0.99965732,
+                0.02617695,
+                0.0,
+                0.0
+            ]
+        },
+        {
+            "name": "array_centre",
+            "type": "plane",
+            "group": "panel",
+            "size": [
+                2.6733,
+                2.6733
+            ],
+            "position": [
+                0.0,
+                0.0,
+                0
+            ],
+            "material": "antenna_face",
+            "back_material": "solar_back"
+        },
+        {
+            "name": "array_0xpy",
+            "type": "plane",
+            "group": "panel",
+            "size": [
+                2.6733,
+                2.6733
+            ],
+            "position": [
+                0.0,
+                2.6733,
+                0
+            ],
+            "material": "antenna_face",
+            "back_material": "solar_back",
+            "rotation_quat": [
+                0.99965732,
+                -0.02617695,
+                0.0,
+                0.0
+            ]
+        },
+        {
+            "name": "array_pxmy",
+            "type": "plane",
+            "group": "panel",
+            "size": [
+                2.6733,
+                2.6733
+            ],
+            "position": [
+                2.6733,
+                -2.6733,
+                0
+            ],
+            "material": "antenna_face",
+            "back_material": "solar_back",
+            "rotation_quat": [
+                0.99965732,
+                0.0185099,
+                0.0185099,
+                0.0
+            ]
+        },
+        {
+            "name": "array_px0y",
+            "type": "plane",
+            "group": "panel",
+            "size": [
+                2.6733,
+                2.6733
+            ],
+            "position": [
+                2.6733,
+                0.0,
+                0
+            ],
+            "material": "antenna_face",
+            "back_material": "solar_back",
+            "rotation_quat": [
+                0.99965732,
+                -0.0,
+                0.02617695,
+                0.0
+            ]
+        },
+        {
+            "name": "array_pxpy",
+            "type": "plane",
+            "group": "panel",
+            "size": [
+                2.6733,
+                2.6733
+            ],
+            "position": [
+                2.6733,
+                2.6733,
+                0
+            ],
+            "material": "antenna_face",
+            "back_material": "solar_back",
+            "rotation_quat": [
+                0.99965732,
+                -0.0185099,
+                0.0185099,
+                0.0
+            ]
+        }
+    ],
+    "sources": [
+        {
+            "subject": "panel",
+            "status": "sourced",
+            "value": "nadir-pointing: the antenna face toward nadir, the solar array toward zenith; +X along velocity",
+            "source": "Mallama, Cole & Tilley 2023 (arXiv:2301.01601) sec. 2: 'The nominal spacecraft attitude ... has the two sides of the panel facing the zenith and nadir directions. The nadir side contains radio communication elements while the zenith side supports the solar power array.' The in-plane yaw is unpublished for BW3 (a square plate: photometrically irrelevant); +X along velocity follows AST's statement for BlueBird (Cole et al. 2025, arXiv:2505.05820 sec. 4.3). The high-beta roll toward the Sun (13-16 deg, Mallama et al. 2023a; larger after 2023-02-19, Mallama et al. 2024, arXiv:2407.04140) is NOT modelled."
+        },
+        {
+            "subjects": [
+                "array_mxmy",
+                "array_mx0y",
+                "array_mxpy",
+                "array_0xmy",
+                "array_centre",
+                "array_0xpy",
+                "array_pxmy",
+                "array_px0y",
+                "array_pxpy"
+            ],
+            "status": "derived",
+            "value": "a flat 8.02 x 8.02 m panel (64.3 m2) as 3 x 3 facets of 2.67 m; the outer eight tilted 3 deg outward",
+            "source": "Area 64.3 m2: Nandakumar et al. 2023 (Nature 623, 938); 693 sq ft = 64.4 m2: AST press release 2022-11-14. Outline: a square of that area (estimate; Gunter's Space Page quotes ~10 m across, about the diagonal of a 7-8 m square). Facet tilt CALIBRATED: with a flat plate the 24 timed observations at grazing Sun incidence (cos i < 0.08, incl. a Steward/Pomenis pass with the Sun up to 1.3 deg on the zenith side, Nandakumar et al. 2023 source data, 2022-11-24 00:58 UT) are 1.1 mag brighter than modelled; facets tilted 2-4 deg bring them to the Pomenis pass's own offset (3 deg: grazing residual sd 0.88 -> 0.33) and change nothing elsewhere. Physically: the array is ~100 hinged tiles ('microns'), not flat to a degree. The facet layout (which tiles tilt which way) is an estimate; only the tilt distribution enters the photometry."
+        },
+        {
+            "subject": "antenna_face",
+            "status": "calibrated",
+            "value": "diffuse albedo 0.32, dielectric F0 0.04, GGX roughness 0.35",
+            "source": "Appearance: 'a diffusely reflecting flat panel ... no significant areas of specularly reflecting materials' (Mallama et al. 2023b, arXiv:2305.00831 sec. 4, from AST's pre-flight photo), with a 'pseudo-specular' forward component (same, after Earp et al. 2007). Albedo calibrated to the 135 timed VISUAL magnitudes of the regular period 2022-11-14..12-07 (Mallama et al. 2023b App. B, replayed with SGP4 and archived CelesTrak / n2yo TLEs): per-pass mean residual 0. V-band CCD photometry (Steward 'Pomenis' astrograph, Nandakumar et al. 2023 source data, 251 points) reads 0.5 mag brighter than the visual estimates at the same geometry (albedo ~0.55 on that scale) - a calibration difference between the data sets, not geometry (the per-pass offsets agree to 0.14 mag). Roughness: the Pomenis light-curve shapes reject a broad lobe (alpha 0.6: within-pass residual MAD 0.30 vs 0.14 at 0.35); alpha 0.2-0.35 and F0 0.04-0.1 fit equally; GGX and Beckmann are indistinguishable."
+        },
+        {
+            "subject": "solar_back",
+            "status": "estimate",
+            "value": "the solar_cell preset",
+            "source": "The zenith face carries the solar array (Mallama et al. 2023a sec. 2); its cell type and cover are unpublished. Never seen from the ground in the nominal attitude."
+        }
+    ]
+}

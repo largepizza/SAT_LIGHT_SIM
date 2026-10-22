@@ -581,11 +581,12 @@ json SatelliteSim::harnessStateJson()
             {
                 const GpuSatLobe &L = type.lobes[li];
                 const glm::dvec3 n = satLobeNormalPosed(type.lobes, type.groups, poses, li);
-                const double a2 = L.alpha2Mat + (double)kSunAlpha * kSunAlpha;
-                const double I = satLobeIntensity(n, L.area, L.diffArea, L.albedoD, L.f0, a2, satLobeBeckmann(L), s, ob, L.transmission);
+                const double I = satLobeIntensitySun(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat, satLobeBeckmann(L), s,
+                                                     ob, L.transmission, satLobeMinnaert(L));
                 const double ns = glm::dot(n, s), no = glm::dot(n, ob);
                 const double Id = no <= 0.0 ? 0.0
-                                  : ns > 0.0 ? L.albedoD / glm::pi<double>() * L.diffArea * ns * no
+                                  : ns > 0.0 ? satLobeIntensitySun(n, 0.0, L.diffArea, L.albedoD, 0.0, L.alpha2Mat,
+                                                                   satLobeBeckmann(L), s, ob, 0.0, satLobeMinnaert(L))
                                              : L.transmission / glm::pi<double>() * L.diffArea * (-ns) * no;
                 if (I <= 0.0)
                     continue;
@@ -2230,6 +2231,36 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     fail("viewer aim=sun: open the viewer on a satellite first (`ui open viewer`)");
                 const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
                 const double th = earthRotationAngle(t), ct = std::cos(th), st = std::sin(th);
+    // bulkexport const=<name part> [window=24h|7d] [cadence=10|30|60] (2026-10-22): Settings > Photometry > BULK EXPORT
+    // from a script (startBulkExport, the same worker); waits until it finishes and reports its status line.
+    if (n == "bulkexport")
+    {
+        if (a.frame == 0)
+        {
+            if (bulkRunning.load())
+                fail("bulkexport: an export is already running");
+            const std::string want = lower(c.str("const"));
+            bulkSource = -1;
+            for (int i = 0; i < (int)constellations.size() && !want.empty(); ++i)
+                if (lower(constellations[i].name).find(want) != std::string::npos) { bulkSource = i; break; }
+            if (!want.empty() && bulkSource < 0)
+                fail("bulkexport: no constellation matches const=" + want);
+            const std::string w = lower(c.has("window") ? c.str("window") : std::string("24h"));
+            bulkWindowIdx = (w == "7d") ? 1 : 0;
+            const std::string cd = c.has("cadence") ? c.str("cadence") : std::string("60");
+            bulkCadenceIdx = cd == "10" ? 0 : cd == "30" ? 1 : 2;
+            bulkStatus[0] = 0;
+            startBulkExport();
+            if (!bulkRunning.load() && bulkStatus[0])
+                fail(std::string("bulkexport: ") + bulkStatus);
+            return Status::Pending;
+        }
+        if (bulkRunning.load())
+            return Status::Pending;
+        std::lock_guard<std::mutex> lk(bulkMutex);   // the worker's final message (the panel copies it only while drawn)
+        r["message"] = bulkResult;
+        return Status::Done;
+    }
                 auto toEcef = [&](glm::dvec3 v) { return glm::dvec3(ct * v.x + st * v.y, -st * v.x + ct * v.y, v.z); };
                 const glm::dvec3 P = toEcef(satOrbitStateAt(orbitElemsOf(satOrbits[viewerSatIndex]), t).posEci);
                 const glm::dvec3 up = glm::normalize(P);
@@ -2288,7 +2319,11 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (want)
         {
             if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+        if (c.has("check")) // the PHOTOMETRY CHECK's Run check (render vs lobes); its result shows a few frames later
+            viewerCheckRequested = true;
                 fail("track: select a satellite first (`select sat <i>` or `select const <name>`)");
+        r["check"] = {{"render", viewerCheckValue[0]}, {"model", viewerCheckValue[1]},
+                      {"difference", viewerCheckValue[2]}, {"note", viewerCheckNote}};
             startTrack();
         }
         else

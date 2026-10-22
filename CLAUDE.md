@@ -2936,9 +2936,29 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   `back_material` paints the faces toward local -Y (a flap's tiled windward side). Occluder: its bounding box.
 - **Reflectance** (`modelFlux()` in `sat_orbit.comp`): per lobe Lambert + GGX/Schlick/Smith (or
   Beckmann, per material: `"distribution": "beckmann"`, `GpuSatLobe::distribution`); the
-  sun's disk is folded into every lobe as `SUN_ALPHA` = 0.0023, which reproduces a flat mirror's
-  physical peak `F·A/Ω_sun` (verified: 1.50e4 vs 1.47e4 m² at normal incidence) — so model types
-  have no `mirrorBoost`/`crossSection`/`specExp` hacks.
+  Sun's disc is a SOURCE TERM folded into every lobe (2026-10-21, `sunDiscA2` / GLSL `sunA2`, constants in
+  SatModel.h): a fixed disc maps onto half vectors as an ellipse 1/(s·h) wider across the plane of incidence, so the
+  lobe takes an anisotropic α² pair in the frame (p, q = s × o, h), α_p² = α_m² + S·w, α_q² = α_m² + (S/c²)·w
+  (S = `kSunAlpha`² = 0.00208², the limb-darkened disc centre; w blends to the disc's variance for broad lobes).
+  Against a brute-force limb-darkened-disc convolution: peak within 0.006 (GGX) / 0.036 (Beckmann) mag to 75 deg of
+  incidence, a round reflected beam. Until then one isotropic `SUN_ALPHA` = 0.0023: 1/cos θ too bright at oblique
+  incidence (-0.95 mag at 70 deg) and cos θ too narrow across the plane of incidence (the Iridium flare validation).
+  Callers: `satLobeIntensitySun()` (a lobe's own α²) for sunlight, `satLobeIntensity()` (α² with an isotropic source
+  folded in) for the Earth; never add kSunAlpha² by hand. No `mirrorBoost`/`crossSection`/`specExp` hacks.
+  **A material's haze** (2026-10-21, JSON `"haze": {"fraction", "roughness"}`, `SatMaterial::hazeFraction`): a share
+  of the specular reflectance in a second, broader lobe — a silvered film's core and wings (Iridium). bakeSatLobes
+  emits a hazy facet group as TWO lobes with the same normal / area / samples: the core (specular area × (1 − f),
+  all the diffuse) and the haze (specular area × f, nothing else) — splitting the AREA keeps Schlick exact; a hazy
+  lobe counts twice against the budget. The brute-force references use `satMaterialIntensitySun()` /
+  `satMaterialEarthIntensity()`; the mesh renderer packs the haze into `GpuSatMeshMaterial`'s beckmann / pattern
+  high halves (`specCosMat`).
+  **A material's Minnaert diffuse** (2026-10-22, JSON `"minnaert": k` in [0.2, 1], `SatMaterial::minnaertK`, 1 = Lambert):
+  the diffuse intensity ρ(k+1)/(2π)·A·(cos i·cos e)^k (`minnaertDiffuse`, SatModel.cpp; `lobeDiffuse` in sat_orbit.comp;
+  `minnaertFac` in sat_mesh.frag on the Sun, the Moon, the local lights and the earthshine / probe irradiance). Under the
+  broad earthshine source the face's irradiance En is one source at cos i = En / E. k travels as a 7-bit code (1 − k)·127
+  (`satMinnaertCode`, snapped at load so the lobes and the brute-force references agree): GpuSatLobe::distribution bits
+  1-7 (bit 0 alone is Beckmann now: `satLobeBeckmann` and the shader test `& 1u`), GpuSatMeshMaterial::beckmann bits 1-7.
+  Every material without the key is bit-identical to before. The 2020 Starlink models use k 0.65 on the nadir face.
   **Earthshine** is the vector irradiance of the visible cap of a Lambertian Earth (albedo 0.3)
   whose every ground point carries its OWN Sun cosine (`earthshineExact()`, `SatPhotometry.cpp`:
   the ring integral is closed-form, one numerical integral over the cap radius), applied as a source
@@ -3022,12 +3042,21 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   shifts the count column one row - realigned by hand). Where a paper omits observers, split or
   period the file says so and assumes them. **`"gated": false`** (Guowang: orbit-raising satellites of
   unpublished hardware, model 1.6 mag faint) reports a miss without failing the run or the gate - a
-  known residual, logged in `KNOWN_RESIDUALS.md`, not a way to hide a regression.
+  known residual, logged in `KNOWN_RESIDUALS.md`, not a way to hide a regression. **`"ungated_metrics":
+  ["phase_curve_rms"]`** (2026-10-22, VisorSat) is the narrow form: that metric's miss prints `known` and the rest of the
+  file stays gated.
+  **Sampling windows** (`sampling.constraints` `sun_altitude_deg` [min, max] / `min_elevation_deg`, and the same two keys
+  on a site, which override the file's for that site's draws) are MEASURED from the observers' own data and say how in
+  the file's note: the 2020 Starlink files' visual sites Sun −24..−10°, elevation ≥ 30° (≥ 15° censored 40% of the
+  visual samples where the table has 2.4% not seen); MMT Sun −24..−11° (−33..−11° for V1.0), ≥ 45° (the sampler's
+  median elevation then matches MMT's 56°). Until 2026-10-22 every file but BlueWalker 3 sampled the runner's assumed
+  −18..−6° / ≥ 20°, and the M8 Starlink calibration was fitted to that: ~1 mag too bright at MMT's real geometry.
   Not copied next to the exe yet — only the tools read them.
 - **SatBench runner** (`SatBench.h/.cpp` + `tools/sat_model_tool/bench_run.cpp`, milestone M5):
   `SatModelTool --run-benchmark <file> [--samples N] [--seed S] [--sensitivity] [--report-dir D]`
   simulates a paper's campaign with the benchmark's model (`satellite.model`): site weighted by its
-  share of the observations, a time in the period with the Sun in the twilight window, then a
+  share of the observations (drawn ONCE per sample and kept through the rejected time / satellite draws, since
+  2026-10-22, so each site's share of the samples is its weight), a time in the period with the Sun in the twilight window, then a
   random shell satellite above the elevation limit and fully sunlit, evaluated by
   `evalSatPhotometry()`, censored by the paper's rule at visual sites. Unstated assumptions (Sun
   window -18..-6 deg, min elevation 20 deg, period-start fallback) are `BenchRunConfig` fields
@@ -3113,6 +3142,14 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   window is open, only when `traceStale()` says the result would change (observer moved, selection
   changed, pass over, extinction/tilt/occlusion changed). Tick
   labels are thinned to what fits the plot's pixel size (grid lines stay at every whole magnitude).
+  **Superseded 2026-10-22 (MMT replay refit, scratchpad `starlink_refit`; KNOWN_RESIDUALS.md):** the M8 fit was made under
+  SatBench's assumed Sun −18..−6° window; at MMT's real geometry both models read ~1 mag too bright against 94 MMT tracks
+  (`SatModelTool --pass`). Refit jointly on 42 tracks (39 held out): `bus_metal` Beckmann α 0.08 (F0 0.9, diffuse 0.11),
+  `antenna_white` 0.31, `visor_black` 0.019, visor inset 0.39 m, Minnaert k 0.65 on those diffuse terms (Mallama 2020a's
+  own regression: 0.578 ± 0.084). Held-out MMT medians −0.02 (V1.0) / +0.21 (VisorSat), Sun-altitude trend −0.29 →
+  −0.07 (V1.0) / −0.36 → −0.22 (VisorSat) mag per 10°. At the measured windows VisorSat 7.428 (+0.21), V1.0 5.904,
+  differential 1.52; VisorSat's curve RMS 0.35 is `ungated_metrics` (the table's bin means carry bright-attitude passes).
+  The flare-facet population (115 polished facets) was tested and not shipped.
   When a satellite can't be traced (legacy type, ground-site aim, no pass
   within two orbits) the window says why instead of plotting. The plot is `UIPlot`, a Clay custom
   element that `UIRenderer::pushPlot()` draws as thickness-wide axis-aligned quads (no line
@@ -3168,7 +3205,8 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   and `include/earth_env.glsl`.
   - **Units: "π × radiance per unit solar irradiance"**, terrain's convention (a sunlit white
     Lambertian face = albedo × cos). The BRDF is the photometry's GGX/Beckmann · Schlick · Smith
-    with `SUN_ALPHA` folded in, so a render's pixel sum reproduces the lobe model.
+    with the Sun's disc term (`sunA2`) and a material's haze (`specCosMat`), so a render's pixel sum reproduces the
+    lobe model.
   - **Lighting:** the sun × litFactor, shadowed per pixel by the model's own primitives (the
     photometry's rule: a primitive never shadows its own surface); earthshine diffuse from the whole
     lit cap (`SatEarthLight`, per instance on the CPU) — or, with an environment probe, the probe's
