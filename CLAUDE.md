@@ -2022,8 +2022,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   surface & lighting), **Night lights** (city lights, roads, sprites, city light on clouds, night sky light),
   Ocean, Beams (+ the beam light in clouds), Attributions. A tab's INDEX is persisted (`display.active_tab`)
   and indexes `hovTab[]`, so new tabs are APPENDED to `kSettingsTabNames` (Weather 12, Night lights 13,
-  **Performance 14**, **Launches & debris 15**) and the strip draws `kSettingsStrip`, grouped under headings (GENERAL: Display, Controls,
-  Sound; SKY: Constellations, Launches & debris, Photometry; RENDERING: the advanced tabs + Performance; ABOUT: Attributions — a
+  **Performance 14**, **Launches 15**) and the strip draws `kSettingsStrip`, grouped under headings (GENERAL: Display, Controls,
+  Sound; SKY: Constellations, Launches, Photometry; RENDERING: the advanced tabs + Performance; ABOUT: Attributions — a
   negative entry is a heading) in its own vertical scroll view (an unclipped strip taller than the window
   stretched the body and spilled the content below the window). **Camera (3) has no button** since 2026-10-03:
   its two lines are the Controls tab's MOUSE section, and index 3 still opens Controls. `settingsTabIsAdvanced()`
@@ -5328,7 +5328,7 @@ launches follow per-program cadences (no real manifest).
   `cpu_split_ms.window` 1 d 2.4 -> 0.65, 1 w 1.9 -> 0.2, 1 mo 0.6 -> 0.03; batches cached 7000 -> 4000. Still ~1.2 ms
   of record writes from 1 min/s to 1 d/s (the retirees deorbiting after the CME). Resume (after_storm 1) is not
   shortcut: its end depends on the ranks.
-- Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; **Settings > Launches & debris**
+- Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; **Settings > Launches**
   (2026-10-21, issue 20261021_175638: the Missions window's Controls tab moved there; `buildSettingsLaunchesTab` = GRAPHICS first:
   ROCKETS AND EXHAUST (`buildLaunchGraphicsSection`) and GRAPHICS: DEBRIS AND RE-ENTRIES
   (`buildKesslerGraphicsSection`), then LAUNCHES and THE SUN'S FURY; Constellations keeps a pointer). **The exhaust sliders** (slots 302-309, `marksPreset`
@@ -5670,7 +5670,7 @@ launches follow per-program cadences (no real manifest).
   ship entry start 7.9 m / 14 m/s (the 1-ms sampling step: was ~0.5 km), hand-over to the descent 3e-9 m / 7 m/s, the
   descent's largest acceleration 14 m/s^2, catch 0 m off centre at 55.0 m and 1.3 m/s, boosters 0 m off at 30.0 m;
   all 1124 ships caught (deorbit 20-62 h after deployment, descent 390-720 s from 250-330 km). Harness
-  `launch landing [booster=1] [lead=] [dist_m=] [day=1]`; Settings > Launches & debris > LAUNCHES "Watch a Starship catch".
+  `launch landing [booster=1] [lead=] [dist_m=] [day=1]`; Settings > Launches > LAUNCHES "Watch a Starship catch".
 - **Launch pads on the ground (2026-10-19, the user: "launchpads and landing pads should have specialized graphics /
   play well with the city lights; exclusion zones near launch sites for the city grids").** One pad per distinct place
   among the catalog's sites (`buildPads`; sites within 150 m share one: 35 pads), its kind from the vehicles there (2
@@ -5714,7 +5714,7 @@ launches follow per-program cadences (no real manifest).
     a cos^6 lobe, Lambert, 1 / (d^2 + 30^2), normalised to 1 at the centre, capped at 2.2): bright toward the mount and
     under the masts' aim, falling to the corners; each 10-m slab has its own shade (+-8%) and a weathered mottle at 7 m,
     both fading to their mean past the footprint.
-  - Setting `launches.pad_graphics` (Settings > Launches & debris > GRAPHICS "Launch site graphics"; independent of
+  - Setting `launches.pad_graphics` (Settings > Launches > GRAPHICS "Launch site graphics"; independent of
     launches being on). Harness `launch pads`, `launch pad <site> [dist_m=] [az=] [h=]`. Cost (RTX 3070 Ti, 1600x900,
     Starbase from 900 m): sky pass within noise (8.09 vs 8.09 ms), scene depth +0.18 ms, CPU ~0; SKY_LITE SPV +288 B
     (the UBO's declaration; 213384 of 230400), sat_sky_minimal unchanged.

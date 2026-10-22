@@ -3,9 +3,10 @@ pages: [using/ (the Missions window / settings pages), simulation/kessler.md, si
 code: [src/simulations/SatelliteSimKesslerTracker.cpp, src/simulations/SatelliteSimMissions.cpp, src/simulations/SatelliteSimLaunches.cpp, src/simulations/SatelliteSimKessler.cpp, src/simulations/SatelliteSimUI.cpp, shaders/cloud_march.comp]
 ---
 ## Now
-Settings has a **Launches & debris** tab (index 15, under SKY after Constellations): LAUNCHES (launches on, deployment
-era, design life, after the Sun's Fury, watch buttons, counts), THE SUN'S FURY (scenario, collision rate, avoidance,
-horizon, watch a re-entry, undo my breakups), then GRAPHICS: ROCKETS AND EXHAUST and GRAPHICS: DEBRIS AND RE-ENTRIES.
+Settings has a **Launches** tab (index 15, under SKY after Constellations): GRAPHICS: ROCKETS AND EXHAUST (launch site
+graphics + the exhaust sliders) and GRAPHICS: DEBRIS AND RE-ENTRIES (dust, fireball colours, small re-entries) first,
+then LAUNCHES (launches on, deployment era, design life, after the Sun's Fury, watch buttons, counts) and THE SUN'S FURY
+(scenario, collision rate, avoidance, horizon, watch a re-entry, undo my breakups, open the tracker).
 settings.json keys unchanged. The exhaust is tuned with eight sliders, 1 = the tuned look, "Reset exhaust to defaults":
 Plume opacity `launches.plume_gain` 0-5, Plume brightness `plume_brightness` 0-5, Plume width `plume_width` 0.25-4 (same
 cross-section, so a wider plume is thinner), Plume billows `plume_billows` 0-3 (contrast of the noise in cloud_march),

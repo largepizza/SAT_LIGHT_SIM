@@ -610,8 +610,8 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
     if (!kesslerEnabled)
     {
         uiSection("TrSec", 0, "THE SUN'S FURY");
-        text("The Kessler scenario is off: no storm, no cascade. Turn it on in Settings > Launches & debris.", Pal::textDim, 11, true);
-        if (uiButton(inp, ui, "TrOpenSettings", 0, "Open the settings", "Settings > Launches & debris"))
+        text("The Kessler scenario is off: no storm, no cascade. Turn it on in Settings > Launches.", Pal::textDim, 11, true);
+        if (uiButton(inp, ui, "TrOpenSettings", 0, "Open the settings", "Settings > Launches"))
         {
             settingsChrome.open = true;
             settingsActiveTab = 15;

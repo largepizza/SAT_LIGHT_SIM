@@ -161,13 +161,13 @@ bool debugToggleAt(int i, uint32_t &bit, const char *&label, const char *&jsonKe
 // 2026-10-03: the strip is grouped under headings (kSettingsStrip: a negative entry is a heading, -1 - its index in
 // kSettingsStripHeadings); "Performance" (14) took the profiling tools out of Display; "Camera" (3) is folded into
 // Controls and no longer has a button (its index still opens Controls).
-// 2026-10-21: "Launches & debris" (15, issue 20261021_175638): the Missions window's Controls tab moved here, the
+// 2026-10-21: "Launches" (15, issue 20261021_175638): the Missions window's Controls tab moved here, the
 // graphics grouped and the exhaust sliders added; under SKY after Constellations.
 static constexpr int kSettingsTabCount = 16;
 static constexpr const char *kSettingsTabNames[kSettingsTabCount] = {
     "Constellations", "Sound", "Controls", "Camera",
     "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Atmosphere", "Beams", "Attributions",
-    "Weather", "Night lights", "Performance", "Launches & debris"};
+    "Weather", "Night lights", "Performance", "Launches"};
 static constexpr const char *kSettingsStripHeadings[] = {"GENERAL", "SKY", "RENDERING", "ABOUT"};
 static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 15, 5, -3, 6, 12, 9, 8, 13, 7, 10, 14, -4, 11};
 bool settingsTabIsAdvanced(int i) { return (i >= 6 && i <= 10) || i == 12 || i == 13 || i == 14; }
@@ -3631,7 +3631,7 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
 }
 
 // ─── buildSettingsLaunchesTab ────────────────────────────────────────────────
-// "Launches & debris" (2026-10-21, issue 20261021_175638): the Missions window's Controls tab, given a place here. The
+// "Launches" (2026-10-21, issue 20261021_175638): the Missions window's Controls tab, given a place here. The
 // graphics first (rockets and exhaust with the exhaust
 // sliders, debris and re-entries: how it looks), then the simulation (LAUNCHES, THE SUN'S FURY: what happens).
 // settings.json keys unchanged (launches.*, kessler.*).
@@ -3984,11 +3984,11 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     }
     else if (actSel >= 0)
         selectSatellite(actSel);
-    // Launches and the Sun's Fury: their own tab since 2026-10-21 (Launches & debris); a pointer here.
+    // Launches and the Sun's Fury: their own tab since 2026-10-21 (Launches); a pointer here.
     uiSection("ConstSec", 8, "LAUNCHES AND THE SUN'S FURY");
-    uiKV("ConstMsKV", 0, "", "In the Launches & debris tab; the schedule and the Kessler tracker: the Missions window (M).", 4.0f,
+    uiKV("ConstMsKV", 0, "", "In the Launches tab; the schedule and the Kessler tracker: the Missions window (M).", 4.0f,
          &Pal::textDim);
-    if (uiButton(inp, ui, "ConstLdOpen", 0, "Launches & debris", "Launches, rockets and exhaust, the Sun's Fury"))
+    if (uiButton(inp, ui, "ConstLdOpen", 0, "Launches", "Launches, rockets and exhaust, the Sun's Fury"))
         settingsActiveTab = 15;
 
     // ── Planets ────────────────────────────────────────────────────────────

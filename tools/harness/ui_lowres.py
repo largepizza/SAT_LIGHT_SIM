@@ -40,7 +40,7 @@ WIN_NAMES = {0: "settings", 1: "controls", 2: "trace", 3: "viewer", 4: "info", 5
 HUD_IDS = ("LeftPanel", "RightPanel", "SelSatChip", "FollowAgainBtn", "FollowHud", "CineHud")
 
 SETTINGS_TABS = ["Display", "Controls", "Sound", "Constellations", "Photometry", "Clouds", "Weather",
-                 "Atmosphere", "Terrain", "Night lights", "Ocean", "Beams", "Performance", "Attributions", "Launches & debris"]
+                 "Atmosphere", "Terrain", "Night lights", "Ocean", "Beams", "Performance", "Attributions", "Launches"]
 ISS = 'select const "International Space Station"'
 
 

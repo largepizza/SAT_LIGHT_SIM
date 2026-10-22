@@ -9052,7 +9052,7 @@ bool SatelliteSim::launchGoToNextReentry(std::string &msg)
     return true;
 }
 
-// ── Settings > Launches & debris: LAUNCHES (the simulation; the graphics are buildLaunchGraphicsSection) ───────
+// ── Settings > Launches: LAUNCHES (the simulation; the graphics are buildLaunchGraphicsSection) ───────
 // (Settings > Constellations until 2026-10-19, the Missions window's Controls tab until 2026-10-21: issue
 // 20261021_175638 asked for a real place in the settings window, the graphics grouped.)
 void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui)
@@ -9147,7 +9147,7 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
     uiKV("LaunchKV", 3, "Retired, deorbiting", uiKitStr("%u satellites", L.nRetire), lw);
 }
 
-// ── Settings > Launches & debris: GRAPHICS (rockets, exhaust, launch sites) ─────────────────────────────────────
+// ── Settings > Launches: GRAPHICS (rockets, exhaust, launch sites) ─────────────────────────────────────
 // The exhaust sliders (2026-10-21, issue 20261021_175638: "sliders for exhaust plumes, I wanna test ranges"): every one
 // at 1 is the look before them. Slots 302-309 of the shared slider arrays (kCloudSliderSlots).
 void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui)

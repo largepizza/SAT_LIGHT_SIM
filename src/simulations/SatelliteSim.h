@@ -2972,7 +2972,7 @@ private:
     float launchPlumeGain = 1.0f;    // launches.plume_gain: the plumes' optical depth x
     float launchRocketGain = 1.0f;   // launches.rocket_gain: the flames' brightness x
     // Exhaust tuning (2026-10-21, issue 20261021_175638: "sliders for exhaust plumes, I wanna test ranges"; Settings >
-    // Launches & debris). 1 = the look before them, exactly. Drawn per frame (launchFillVisuals' addPlume, cloud_march
+    // Launches). 1 = the look before them, exactly. Drawn per frame (launchFillVisuals' addPlume, cloud_march
     // dustPad2) except the growth, which the parcels are built with (a change rebuilds every plume: B.plumeGrowJob).
     float launchPlumeBright = 1.0f;  // launches.plume_brightness: the light the exhaust scatters x
     float launchPlumeWidth = 1.0f;   // launches.plume_width: every plume Gaussian's radius x (same mass: thinner wide)
@@ -6501,7 +6501,7 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 310;   // 302-309 (2026-10-21): the exhaust sliders (Launches & debris)
+    static constexpr int kCloudSliderSlots = 310;   // 302-309 (2026-10-21): the exhaust sliders (Launches)
     // (was 302)   // 296-297 (2026-10-14): layer shadows, cirrus self-shadow; 298-301 aurora storms
     // was 296:   // 289-295 (2026-10-13): the cumulus shape
     // was 289:   // 286-288 (2026-10-12): cloud shadow rings; 270-282 (2026-10-11): small cumulus, erosion / lobe variation, mid layer x5, cirrus warp, sampler x3, far shadow range
@@ -6906,7 +6906,7 @@ private:
     void buildSettingsWindow(const UIInput &inp, UIRenderer &ui);
     void buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui);
     void buildSettingsConstellationsTab(const UIInput &inp, UIRenderer &ui);
-    void buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui); // "Launches & debris" (2026-10-21)
+    void buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui); // "Launches" (2026-10-21)
     void buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui);

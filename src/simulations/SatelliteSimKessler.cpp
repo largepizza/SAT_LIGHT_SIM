@@ -3372,7 +3372,7 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
         uiKV("KesslerKV", 7, "", kUiMsg, lw, &Pal::textDim);
 }
 
-// Settings > Launches & debris: the scenario's GRAPHICS (dust, fireballs, small re-entries; none re-simulates).
+// Settings > Launches: the scenario's GRAPHICS (dust, fireballs, small re-entries; none re-simulates).
 void SatelliteSim::buildKesslerGraphicsSection(const UIInput &inp, UIRenderer &ui)
 {
     uiSection("LdSec", 3, "GRAPHICS: DEBRIS AND RE-ENTRIES");
