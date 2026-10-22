@@ -3779,6 +3779,20 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 a.scratch["i"] = 0;
                 a.scratch["n"] = (int)std::floor((cineKeys().back().t - cineKeys().front().t) * fps + 1e-6) + 1;
                 a.scratch["record"] = c.str("record");
+                // frames=i,j,...: record only those frames (the rest render at full speed: a benchmark that scores a
+                // few sampled frames paid a PNG encode on every one).
+                {
+                    json only = json::array();
+                    std::string fl = c.str("frames");
+                    for (size_t p0 = 0; p0 < fl.size();)
+                    {
+                        size_t p1 = fl.find(',', p0);
+                        if (p1 == std::string::npos) p1 = fl.size();
+                        if (p1 > p0) only.push_back(std::stoi(fl.substr(p0, p1 - p0)));
+                        p0 = p1 + 1;
+                    }
+                    a.scratch["only"] = only;
+                }
                 a.scratch["simStart"] = (double)simDayJ2000 * 86400.0 + simSecInDay;
                 a.scratch["simRate"] = timePaused ? 0.0 : (double)kTimeScales[timeScaleIdx] * timeDir;
                 a.scratch["pausedBefore"] = timePaused;
@@ -3855,7 +3869,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             harnessApplyCam(k);
             obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
             updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, 0.0f);
-            if (!rec.empty())
+            bool recThis = !rec.empty();
+            if (recThis && !a.scratch["only"].empty())
+            {
+                recThis = false;
+                for (const auto &f : a.scratch["only"])
+                    recThis = recThis || f.get<int>() == i;
+            }
+            if (recThis)
             {
                 char nm[64];
                 snprintf(nm, sizeof(nm), "_%05d", i);
@@ -3867,7 +3888,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             a.scratch["i"] = i + 1;
             return Status::Pending;
         }
-        fail("path: clear | key <t> [lat= lon= alt= az= el= fov= sim=<iso>|simadd=<s>] | goto <t> | play [fps=30] [record=name] [ui=on] [scale=s]");
+        fail("path: clear | key <t> [lat= lon= alt= az= el= fov= sim=<iso>|simadd=<s>] | goto <t> | play [fps=30] [record=name] [frames=i,j,..] [ui=on] [scale=s]");
     }
 
     // ── overlays ────────────────────────────────────────────────────────────────

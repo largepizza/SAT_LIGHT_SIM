@@ -161,7 +161,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `window <W>x<H>` | resize the window and wait for the new swapchain |
 | `path clear`, `path key <t> [lat= lon= alt= az= el= fov= sim=<ISO>\|simadd=<s>]` | camera-path keyframes at path time `t` (seconds). Channels you leave out inherit from the previous key (from the current view for the first). See "Camera paths" |
 | `path goto <t>` | jump to the path's pose at `t` |
-| `path play [fps=30] [record=<name>] [ui=on] [scale=s]` | play the path at a fixed frame rate; with `record` every frame is captured as `captures/<name>_00000.png` ...; the result carries `gpu_ms_mean` (cloud_march and total, the GPU cost while moving — `perf` measures a still view), and (review 22) `gpu_total_ms_p90` / `gpu_total_ms_max` and `gpu_worst_frame_ms` (the worst frame's buckets): spikes hide in a mean |
+| `path play [fps=30] [record=<name>] [frames=i,j,...] [ui=on] [scale=s]` | play the path at a fixed frame rate; with `record` every frame is captured as `captures/<name>_00000.png` ... (`frames=` only those frames: the others render at full speed); the result carries `gpu_ms_mean` (cloud_march and total, the GPU cost while moving — `perf` measures a still view), and (review 22) `gpu_total_ms_p90` / `gpu_total_ms_max` and `gpu_worst_frame_ms` (the worst frame's buckets): spikes hide in a mean |
 | `overlay text <id> "<text>" [x=0.5 y=0.1 size=28 align=center\|left color=RRGGBB]` | screen text at fractional coordinates, drawn even with the HUD hidden |
 | `overlay label <id> "<text>" target=<sel\|sun\|moon\|planet> [size= dx= dy=]` | a label that follows a sky target |
 | `overlay clear [id]` | |
@@ -356,10 +356,11 @@ python tools/harness/cloud_suite.py compare run1 run2
 ```
 
 Daytime scenes at ordinary angles (the scene table is in the script: places and views, at 2036-11-22 02:06 UTC), each
-measured four ways: the settled view + `perf`; time PAUSED for 1200 frames (signed drift of the mean: anything that
+measured four ways: the settled view + `perf`; time PAUSED for 600 frames (signed drift of the mean: anything that
 changes while nothing moves); time running at 1x (frame-to-frame change, mostly real cloud motion and the sea's waves);
-and tstab's walk / strafe / pan90 / pitch / rise paths scored against settled references. ~70 min for all 11 scenes;
-captures are at half size.
+and tstab's walk / strafe / pan90 / pitch / rise paths scored against settled references. ~25 min for all 11 scenes (was ~50 before `path play frames=`: 58% of it was
+settling references, 19% encoding path frames nobody scored); captures are at half size. A reference settles to the
+noise floor in ~120 frames.
 
 ## Still-view flicker (`tools/harness/flicker.py`)
 

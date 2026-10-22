@@ -7,9 +7,9 @@ place, time and view (no snapshot file needed); for each one the suite measures:
   - the settled image (still_*.png) and its cost (perf),
   - motion: tstab's player-speed paths (walk, strafe, pan90, pitch, rise) vs the settled view at
     sampled poses (scored like tools/harness/tstab.py),
-  - still view, time PAUSED: captures after 40 / 300 / 1200 frames (does anything drift or vanish
+  - still view, time PAUSED: captures after 40 / 300 / 600 frames (does anything drift or vanish
     while nothing moves? e.g. cloud shadows fading in and out),
-  - still view, time RUNNING at 1x: a capture every 30 frames for 600 frames (flicker and how the
+  - still view, time RUNNING at 1x: a capture every 30 frames for 300 frames (flicker and how the
     clouds' and shadows' light changes frame to frame).
 
     python tools/harness/cloud_suite.py gen -o harness_runs/suite/suite.satcmd [--only a,b] [--no-motion]
@@ -47,8 +47,10 @@ SCENES = {
     "ovc_ground":   (36.0, 138.0, "alt=1360", 0.0, 12.0, "ground", None),     # central Japan: overcast, Sun 33 deg
 }
 MOTION = ["walk", "strafe", "pan90", "pitch", "rise"]
-PAUSED_T = [40, 300, 1200]
-RUN_EVERY, RUN_N = 30, 20
+PAUSED_T = [40, 300, 600]
+RUN_EVERY, RUN_N = 30, 10
+SETTLE = 120                        # a reference is within the noise floor by ~120 frames (harness_runs/suite/grain1)
+REF_T = [1.0, 1.75, 2.5]
 
 
 def place(name, sc):
@@ -70,7 +72,7 @@ def cmd_gen(a):
             continue
         lat, lon, h, az, el, kind, sun = sc
         L += place(name, sc)
-        L += ["wait settle 160", f"capture {name}_still scale=0.5", f"perf frames=60 name={name}"]
+        L += [f"wait settle {SETTLE}", f"capture {name}_still scale=0.5", f"perf frames=60 name={name}"]
         # Time paused: does anything drift while nothing moves?
         L += place(name, sc) + ["wait settle 40", f"capture {name}_p{PAUSED_T[0]:05d} scale=0.5"]
         prev = PAUSED_T[0]
@@ -78,7 +80,7 @@ def cmd_gen(a):
             L += [f"wait {t - prev}", f"capture {name}_p{t:05d} scale=0.5"]
             prev = t
         # Time running at 1x.
-        L += place(name, sc) + ["wait settle 160", "time play", "time scale 1x"]
+        L += place(name, sc) + [f"wait settle {SETTLE}", "time play", "time scale 1x"]
         for i in range(RUN_N):
             L += [f"wait {RUN_EVERY}", f"capture {name}_r{i:03d} scale=0.5"]
         L += ["time pause"]
@@ -94,9 +96,11 @@ def cmd_gen(a):
             for (t, la, lo, al, z, e) in keys:
                 altp = f" alt={al:.1f}" if sname == "rise" else ""
                 L.append(f"path key {t:.3f} lat={la:.7f} lon={lo:.7f}{altp} az={z:.3f} el={e:.3f}")
-            L += ["path goto 0", "wait settle 160", f"path play fps={tstab.FPS} record={name}-{sname} scale=0.5"]
-            for t in tstab.REF_T:
-                L += [f"path goto {t}", "wait settle 160",
+            fr = ",".join(str(int(round(t * tstab.FPS))) for t in REF_T)
+            L += ["path goto 0", f"wait settle {SETTLE}",
+                  f"path play fps={tstab.FPS} record={name}-{sname} frames={fr} scale=0.5"]
+            for t in REF_T:
+                L += [f"path goto {t}", f"wait settle {SETTLE}",
                       f"capture {name}-{sname}_ref_{int(round(t * tstab.FPS)):05d} scale=0.5"]
     L.append("quit")
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
