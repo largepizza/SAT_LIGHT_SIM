@@ -6427,15 +6427,9 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
     };
 
     CloudSlider secGod[] = {
-        {"Far cloud shadows (0/1)", &cv2SunCascade, 0.0f, 1.0f, 1.0f, "%.0f", 269},
-        {"Far cloud shadow range (km)", &cv2SunCascadeRangeKm, 100.0f, 800.0f, 5.0f, "%.0f", 282},
         // The 250-m shadow lattice's two rings: a ring reaches 56 x its cell from the eye (14 km at 250 m).
-        {"Cloud shadow ring 1 cell (m)", &cv2ShadowRing1CellM, 100.0f, 1000.0f, 10.0f, "%.0f", 286},
-        {"Cloud shadow ring 2 cell (m, 0 = off)", &cv2ShadowRing2CellM, 0.0f, 4000.0f, 50.0f, "%.0f", 287},
-        {"Cloud shadow ring 2 depth (x)", &cv2ShadowRing2KnotK, 0.1f, 2.0f, 0.05f, "%.2f", 288},
+        {"Sun shadow cell (m)", &cv2ShadowRing1CellM, 100.0f, 1000.0f, 10.0f, "%.0f", 286},
         // The mid / high layers' shadow on everything under them, at any distance (the layer shadow map, 2026-10-14).
-        {"Layer shadows (mid / high)", &cv2LayerShadows, 0.0f, 1.0f, 0.05f, "%.2f", 296},
-        {"Cirrus self-shadow", &cv2CirrusSelfShadow, 0.0f, 1.0f, 0.05f, "%.2f", 297},
         {"God rays", &cv2Godrays, 0.0f, 1.0f, 0.05f, "%.2f", 187},
         {"Haze near clouds", &cv2HazeAloft, 0.0f, 20.0f, 0.1f, "%.1f", 188},
     };
@@ -6450,7 +6444,6 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Light march from clipmap (0/1)", &cv2CdcLight, 0.0f, 1.0f, 1.0f, "%.0f", 308},
         // The S9 probe: the whole "half-res" chain at full resolution. Pair it with a sparse march ("Full rate above
         // (km)" high) for the half-res full-rate cost.
-        {"Sun shadow volume (0/1)", &cv2SunShadowVolume, 0.0f, 1.0f, 1.0f, "%.0f", 312},
         {"Full-resolution clouds (0/1)", &cv2FullRes, 0.0f, 1.0f, 1.0f, "%.0f", 309},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
@@ -8775,7 +8768,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2IceFogDensity = c.value("ice_fog_density", cv2IceFogDensity);
         cv2AdaptiveParallaxPx = c.value("adaptive_parallax_px", cv2AdaptiveParallaxPx);
         cv2Godrays = settingClamp(c.value("godrays", cv2Godrays), 0.0f, 1.0f);   // (it ran to 3 while it scaled the old light volume)
-        cv2SunCascade = c.value("sun_cascade", cv2SunCascade);
         cv2MiePhase = c.value("mie_phase", cv2MiePhase);
         cv2GodrayFroxels = c.value("godray_froxels", cv2GodrayFroxels);
         cv2MieOptics = c.value("mie_optics", cv2MieOptics);
@@ -8790,13 +8782,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CdcLightLevels = c.value("cdc_light_levels", cv2CdcLightLevels);
         cv2CdcNearM = c.value("cdc_near_m", cv2CdcNearM);
         cv2FullRes = c.value("full_res", cv2FullRes);
-        cv2SunShadowVolume = c.value("sun_shadow_volume", cv2SunShadowVolume);
-        cv2SunCascadeRangeKm = c.value("sun_cascade_range_km", cv2SunCascadeRangeKm);
         cv2ShadowRing1CellM = c.value("shadow_ring1_cell_m", cv2ShadowRing1CellM);
-        cv2ShadowRing2CellM = c.value("shadow_ring2_cell_m", cv2ShadowRing2CellM);
-        cv2ShadowRing2KnotK = c.value("shadow_ring2_depth", cv2ShadowRing2KnotK);
-        cv2LayerShadows = c.value("layer_shadows", cv2LayerShadows);
-        cv2CirrusSelfShadow = c.value("cirrus_self_shadow", cv2CirrusSelfShadow);
         cv2SmallCumulus = c.value("small_cumulus", cv2SmallCumulus);
         cv2ErosionVar = c.value("erosion_variation", cv2ErosionVar);
         cv2LobeVar = c.value("lobe_variation", cv2LobeVar);
@@ -9378,7 +9364,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ice_fog_density", cv2IceFogDensity},
         {"adaptive_parallax_px", cv2AdaptiveParallaxPx},
         {"godrays", cv2Godrays},
-        {"sun_cascade", cv2SunCascade},
         {"mie_phase", cv2MiePhase},
         {"godray_froxels", cv2GodrayFroxels},
         {"mie_optics", cv2MieOptics},
@@ -9393,13 +9378,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cdc_light_levels", cv2CdcLightLevels},
         {"cdc_near_m", cv2CdcNearM},
         {"full_res", cv2FullRes},
-        {"sun_shadow_volume", cv2SunShadowVolume},
-        {"sun_cascade_range_km", cv2SunCascadeRangeKm},
         {"shadow_ring1_cell_m", cv2ShadowRing1CellM},
-        {"shadow_ring2_cell_m", cv2ShadowRing2CellM},
-        {"shadow_ring2_depth", cv2ShadowRing2KnotK},
-        {"layer_shadows", cv2LayerShadows},
-        {"cirrus_self_shadow", cv2CirrusSelfShadow},
         {"small_cumulus", cv2SmallCumulus},
         {"erosion_variation", cv2ErosionVar},
         {"lobe_variation", cv2LobeVar},

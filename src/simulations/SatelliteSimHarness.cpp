@@ -661,34 +661,24 @@ json SatelliteSim::harnessStateJson()
                       {"still_frames", cv2StillFrames}, {"history_valid", cv2HistoryValid},
                       {"sun_cloud_t", sunCloudTEased}, {"fast_lod", cv2FastLodNow},
                       {"shape_frame", cv2ShapeFrame}};   // review 22: the Sun disc's cloud transmittance
-    // The Sun shadow cascade (2026-10-21, issue 20261021_002345): its fill count and the stored transmittances
-    // (every ray, knots 0..47; the last knot is the stamp), as the GPU left them last frame.
-    if (cv2FlashMapped)
+    // The Sun transmittance volume (S3, cloud_lightning.glsl cv2Stv): each level's fill frames, cell and lattice, the knots'
+    // height range, on / catch-up (the UBO as written for last frame's bake).
     {
-        const float *cs = (const float *)((const char *)cv2FlashMapped + kCv2SunShaftOffset - 200704 * 4);
-        double sum = 0.0, mn = 1e9;
-        int n = 0, dark = 0;
-        for (int r = 0; r < 4096; ++r)
-            for (int k = 0; k < 48; ++k)
-            {
-                const double v = cs[r * 49 + k];
-                sum += v; mn = std::min(mn, v); ++n;
-                if (v < 0.5) ++dark;
-            }
         const GpuCloudV2Params *pp = (const GpuCloudV2Params *)cv2ParamsMapped;
         auto v4 = [](const glm::vec4 &v) { return json::array({v.x, v.y, v.z, v.w}); };
+        json sv = {{"on", cv2StvOnNow}, {"frames", {cv2StvFrames[0], cv2StvFrames[1], cv2StvFrames[2], cv2StvFrames[3]}},
+                   {"boost", cv2StvBoost}, {"terrain_frame_x", terrainFrameMapped ? terrainFrameMapped[0] : -1.0f}};
         if (pp)
-            j["clouds_v2"]["sun_cascade_ubo"] = {v4(pp->sunCasc0), v4(pp->sunCasc1), v4(pp->sunCasc2), v4(pp->sunCasc3), v4(pp->sunCasc8)};
-        j["clouds_v2"]["sun_cascade"] = {{"frames", cv2CascFrames}, {"terrain_frame_x", terrainFrameMapped ? terrainFrameMapped[0] : -1.0f}, {"lat", {cv2CascLatA, cv2CascLatB}},
-                                         {"t_mean", sum / n}, {"t_min", mn}, {"dark_share", (double)dark / n}};
+            sv["ubo"] = {v4(pp->stvL0), v4(pp->stvL1), v4(pp->stvL2), v4(pp->stvL3), v4(pp->stvH), v4(pp->stvV)};
+        j["clouds_v2"]["sun_volume"] = sv;
     }
     // Field evaluations last frame by caller (only shaders built with -DCV2_EVAL_COUNT add to them; all 0 otherwise).
     if (cv2FlashMapped)
     {
         const uint32_t *ec = (const uint32_t *)((const char *)cv2FlashMapped + kCv2EvalCountOffset);
         static const char *kNames[31] = {"march_rays", "view_coarse", "view_fine", "light_steps", "light_far", "sky_probe",
-                                         "beam_occl", "lit_samples", "bake_shaft_rings", "bake_cascade", "bake_fine_grid",
-                                         "rain_map", "flash_probes", "eye_marches", "ground_shadow", "cdc_skipped",
+                                         "beam_occl", "lit_samples", "spare8", "spare9", "spare10",
+                                         "rain_map", "flash_probes", "eye_marches", "spare14", "cdc_skipped",
                                          "cdc_baked", "cdc_refused", "cdc_missed", "cdc_missed_od_x1e4",
                                          "miss_l0", "miss_l1", "miss_l2", "miss_l3", "miss_l4", "miss_l5", "miss_l6", "miss_l7",
                                          "miss_dense", "spare29", "spare30"};
@@ -745,19 +735,6 @@ json SatelliteSim::harnessStateJson()
         }
         j["clouds_v2"]["rain"] = rn;
     }
-    // The layer shadow map (cv2_layer_map.glsl), probed by cloud_v2_layers.comp at 1.5 km above sea level under the eye
-    // (the previous frame's): the lookup there, the columns over it, and the slant cells where its Sun ray crosses each
-    // layer's reference sphere (T, the mid layer's slant optical depth with its shadow share).
-    if (cv2FlashMapped)
-    {
-        const float *pr = (const float *)((const char *)cv2FlashMapped + kCv2RainMapOffset - 80) + 8;
-        j["clouds_v2"]["layer_map"] = {{"frames", cv2LayFrames}, {"epoch", cv2LayEpoch}, {"T_below_eye", pr[0]},
-                                       {"mid_tau", pr[1]}, {"mid_tau_var", pr[2]}, {"mid_band_km", {pr[3], pr[4]}},
-                                       {"high_tau", pr[5]}, {"high_band_km", {pr[6], pr[7]}},
-                                       {"mid_slant_T", pr[8]}, {"mid_slant_tau", pr[9]}, {"high_slant_T", pr[10]},
-                                       {"sun_sin_at_X", pr[11]}};
-    }
-
     static const char *kBucketKeys[8] = {"scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
                                          "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};
     json g;
@@ -4113,7 +4090,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             fail("shaders reload: wg=<X>x<Y>");
         ctx_->capturePipelineStats = true;   // the statistics below need it; startup does not ask for it
         const std::string err = reloadCloudsV2Shaders(*ctx_, c.str("march"), stats, wgX, wgY, c.str("resolve"), c.str("lightning"),
-                                                        c.str("composite"), c.str("layers"));
+                                                        c.str("composite"));
         ctx_->capturePipelineStats = false;
         if (!err.empty())
             fail("shaders reload: " + err);

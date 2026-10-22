@@ -59,14 +59,10 @@ layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
 layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define BEAM_CLOUD_LIGHTS_BINDING 9
 #include "beam_cloud_lights.glsl"
-// The Sun's shadow about the eye's line to it (cv2SunProf, cv2SunGrid), written by cloud_v2_lightning.comp before this pass.
+// The Sun transmittance volume (cv2Stv, S3) and the flash list, written by cloud_v2_lightning.comp before this pass.
 #define CV2_FLASH_BINDING 12
-#define CV2_SUN_CASC_FN       // cv2SunCascT (needs the cv2 UBO)
+#define CV2_SUN_CASC_FN       // the STV / froxel lookups (need the cv2 UBO)
 #include "cloud_lightning.glsl"
-// The mid / high layers' shadow at any distance (2026-10-14), baked by cloud_v2_layers.comp before this pass.
-#define CV2_LAYER_BINDING 22
-#define CV2_LAYER_LOOKUP
-#include "cv2_layer_map.glsl"
 // The cloud density clipmap (2026-10-21, EXPERIMENT): coarse steps skip the field where it is known empty.
 #define CV2_CDC_BINDING 23
 #include "cv2_cdc.glsl"
@@ -860,80 +856,16 @@ void main()
                     keyCol *= exp(-odR);
                 }
 #else
-                // The Sun's shadow about the eye's line to it (review 22b; reworked 2026-10-10): the light march
-                // (~2 x cv2.light.x) cannot see a storm between a low Sun and the clouds in front of it, whose forward
-                // lobe then glowed like the Sun through miles of cloud. The lightning pass marches a 32 x 32 grid of
-                // parallel rays toward the Sun about the eye (cv2SunGrid: the transmittance BEYOND each point); a
-                // sample takes the four rays around it, at the point where its own light march ENDS, fading out over
-                // 3-3.9 km from the eye's line. It was one ray applied within ~2 km of it, from the sample's own
-                // point: a cloud's tip in front of the Sun darkened every cloud near the eye (hard-edged shadows on
-                // clouds it could not shade), and the blocking cloud counted its own depth twice — the place the Sun
-                // stood behind was the darkest of it (user snapshots). Behind the eye the lateral offset is as
-                // continuous as in front of it (review 25's great-circle line).
-                float sunT0 = 1.0, sunW0 = 0.0;                    // the fine grid's shadow and its weight here
-                // S3 (2026-10-22): the Sun transmittance volume stands in for the fine grid, the rings, the cascade and the
-                // layer map, read where the sample's light march ends (half a knot up: the knot holds the sample's own cloud).
+                // The Sun's shadow beyond the light march (S3, 2026-10-22): the Sun transmittance volume (cv2Stv, baked by
+                // cloud_v2_lightning.comp), read where this sample's light march ENDS (~2 x cv2.light.x sunward) and half a
+                // knot up (the knot holds the sample's own cloud). Thin ice is read at the MIDDLE of its layer (at a jittered
+                // height in it a grazing Sun's shadow speckled). It replaced four structures that each covered part of the
+                // range (the fine grid, the shaft rings, the cascade, the layer map; .plans/CLOUD_REBUILD_PLAN.md).
                 if (cv2.stvH.z > 0.5) {
                     float hT = (f.thin > 0.5) ? (f.topH - p.h) * (1.0 - 0.5 / max(1.0 - f.hf, 0.15)) : 0.0;
                     float lL = 2.0 * cv2.light.x * (1.0 - f.thin);
                     keyCol *= cv2StvT(rel + up * hT + sunDir * lL,
                                       p.h + hT + dot(up, sunDir) * lL + 0.5 * (cv2.stvH.y - cv2.stvH.x) / float(kCv2StvK - 1));
-                } else {
-                if (cv2SunWgMax[0] + cv2SunWgMax[1] + cv2SunWgMax[2] + cv2SunWgMax[3] > 0.0) {
-                    vec2  gs = vec2(dot(rel, vec3(cv2SunProf[2], cv2SunProf[3], cv2SunProf[4])),
-                                    dot(rel, vec3(cv2SunProf[5], cv2SunProf[6], cv2SunProf[7]))) / kCv2SunGridM;
-                    float hN = 0.5 * float(kCv2SunGridN - 1);
-                    float w  = 1.0 - smoothstep(hN - 3.5, hN, length(gs));
-                    // With the cascade up, the fine grid is for the clouds NEAR the eye (3-6 km): as a tube along the
-                    // whole line to the Sun it drew its own answer through the cascade's, before and behind the eye
-                    // -- a disc of other shadow on whatever stood down-Sun, moving with the eye (user snaps).
-                    w *= mix(1.0, 1.0 - smoothstep(3000.0, 6000.0, t), cv2.sunCasc2.x);
-                    if (w > 0.0) {
-                        float uu = sqrt(clamp((t * cosSun + 2.0 * cv2.light.x * (1.0 - f.thin)) / cv2SunProf[0],
-                                              0.0, 1.0)) * 16.0;
-                        int   k0 = min(int(uu), 15);
-                        vec2  gg = gs + cv2.sunCasc3.xy + float(kCv2SunGridN) * 8.0;   // on the toroidal lattice
-                        ivec2 g0 = ivec2(gg);
-                        vec2  gf = gg - vec2(g0);
-                        float Tb = 0.0;
-                        [[dont_unroll]] for (int c = 0; c < 4; ++c) {
-                            int ri = (((g0.y + (c >> 1)) & (kCv2SunGridN - 1)) * kCv2SunGridN + ((g0.x + (c & 1)) & (kCv2SunGridN - 1))) * 17 + k0;
-                            Tb += mix(cv2SunGrid[ri], cv2SunGrid[ri + 1], uu - float(k0))
-                                * ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
-                        }
-                        sunT0 = Tb; sunW0 = w;
-                    }
-                }
-                // The CASCADE (2026-10-10, cv2SunCasc): the same shadow for a sample ANYWHERE in the window (+-205 km
-                // across the Sun's direction), on rays ~3 km x 0.8-10 km apart with knots ~10 km apart along the Sun.
-                // Until it, only clouds within 3.9 km of the eye's line to the Sun knew of a storm beyond their own
-                // light march: a tower 20 km off stood sunlit behind a storm that shaded it, and the shadow popped
-                // in on flying up to it (user snaps 1-2, 2026-10-10). Read one knot sunward of where the sample's
-                // light march ends (cv2.sunCasc2.y): a knot interval holds the sample's own cloud, and without the
-                // bias every sunlit face is shadowed by the body behind it.
-                float sunT1 = 1.0;
-                if (cv2.sunCasc2.x > 0.0 && sunW0 < 1.0) {
-                    // Thin ice (the high layer) is looked up at the MIDDLE of its layer over this point: at a grazing
-                    // Sun the shadow changes within the layer's depth, a ray takes one sample of it at a jittered
-                    // height, and the cirrus in a storm's shadow came out speckled (user snaps).
-                    float hT = (f.thin > 0.5) ? (f.topH - p.h) * (1.0 - 0.5 / max(1.0 - f.hf, 0.15)) : 0.0;
-                    vec3  rl = rel + up * hT;
-                    float sL = dot(rl, sunDir) + 2.0 * cv2.light.x * (1.0 - f.thin);
-                    sunT1 = cv2SunCascT(rl, sL + cv2.sunCasc2.y);
-                    // Within ~14 km of the eye across the Sun, the SHAFT lattice (cv2SunShaftT: 250-m rays, baked for
-                    // the god rays, the cascade's value at its sunward end x the cloud between) in the cascade's
-                    // place (2026-10-12). The cascade's rays are 3-12 km apart and read a knot (10-40 km) sunward, so
-                    // a cloud shaded by its neighbour was shadowed only by the fine grid, i.e. within 3-6 km of the
-                    // eye: the shadow's edge was an arc that followed the eye (user issue 20261012_202341).
-                    // Two rings of it (cv2SunShaftRings): 250-m cells to ~14 km, 1000-m cells to ~56 km (settings).
-                    vec2 sh = cv2SunShaftRings(rl, sL);
-                    sunT1 = mix(sunT1, sh.x, sh.y);
-                }
-                // The mid and high layers beyond where the light march ends (the layer shadow map, cv2_layer_map.glsl):
-                // the lattices above carry no layer shadow, so a sheet's shadow is the same at any distance from the eye.
-                float lL = 2.0 * cv2.light.x * (1.0 - f.thin);
-                keyCol *= mix(sunT1, sunT0, sunW0)
-                        * cv2LayerShadowT(rel + sunDir * lL, p.h + dot(up, sunDir) * lL, sunDir, eyeH, cv2.layBake.w);
                 }
 #endif
             } else if (nightK > 0.0) {
@@ -988,8 +920,8 @@ void main()
                 // hundred metres above a lumpy top's actual surface became kilometres of cloud under a low
                 // Sun (x 1 / sin 4 deg = 13.5): od ~15 where the march found ~1, every sunlit top grey-brown
                 // (issue 20261013_193122: "There is direct sunlight on these clouds. They should be white").
-                // (The mid layer's own sheet is the layer shadow map's while it is on: its share leaves the term.)
-                float deckK = f.deck * ((cv2.layN.w > 0.0) ? 1.0 - f.soft : 1.0);
+                // (The mid layer's own sheet is the Sun transmittance volume's: its share leaves the term.)
+                float deckK = f.deck * (1.0 - f.soft);
                 if (deckK > 0.0) {
                     float odDeck = f.sigma * max(max(f.topH - p.h, 0.0) / max(dot(up, keyDir), 0.03)
                                                  - 2.0 * cv2.light.x, 0.0);
@@ -1231,16 +1163,13 @@ void main()
                 vec3  alb  = mix(vec3(1.0), vec3(0.93, 0.76, 0.55), fd);
                 // Dust's own multiple scattering: a hazy sky stays pale even away from the Sun (single
                 // scattering alone drew a grey veil over the whole sky, 1/(4 pi) of the diffuse light).
-                // The clouds' shadows IN the fog and dust (2026-10-10): the Sun shadow cascade at the sample (as the
-                // sky's air, half a knot sunward), so sunlight through a gap draws a lit shaft in the haze (these are
-                // the forward scatterers: toward the Sun a lit stretch is many times the clean air's). It replaces the
-                // map-cover dimming while the cascade is up (both would count the cloud twice). The diffuse
-                // (multiple-scattering) share takes 70% of the shadow: it is lit from all around.
-                bool  stvOn = cv2.stvH.z > 0.5;   // S3: the Sun transmittance volume instead of the cascade
-                float cascK = stvOn ? 1.0 : cv2.sunCasc2.x * cv2.sunCasc2.z;
-                float sunC  = stvOn ? cv2StvT(dir * tS, pp.h)
-                            : (cascK > 0.0) ? cv2SunCascT(dir * tS, tS * cosSun + 0.5 * cv2.sunCasc2.y) : 1.0;
-                float covK  = 1.0 - 0.8 * covA * (1.0 - cascK);
+                // The clouds' shadows IN the fog and dust: the Sun transmittance volume at the sample, so sunlight through a
+                // gap draws a lit shaft in the haze (these are the forward scatterers). It replaces the map-cover dimming
+                // while it is up (both would count the cloud twice). The diffuse (multiple-scattering) share takes 70% of the
+                // shadow: it is lit from all around.
+                bool  stvOn = cv2.stvH.z > 0.5;
+                float sunC  = stvOn ? cv2StvT(dir * tS, pp.h) : 1.0;
+                float covK  = stvOn ? 1.0 : 1.0 - 0.8 * covA;
                 vec3  S    = sunF * covK * ((vec3(fd * phD + fs * phSS) + fi * phI) * exp(-od) * sunC
                                             + (phMS * msOctaves(od) * fs + 0.9 * fd + 0.3 * fi) * mix(1.0, sunC, 0.7))
                            + moonF * ((vec3(phMoonSS * (1.0 - fi)) + fi * phIM) * exp(-od) + phMoonMS * 0.5 * fs)

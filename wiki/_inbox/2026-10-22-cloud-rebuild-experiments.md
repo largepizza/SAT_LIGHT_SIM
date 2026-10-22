@@ -64,3 +64,10 @@ to ~900 km), each holding the Sun's transmittance at 48 heights on its sunward s
 two shaft rings, the cascade and the layer shadow map. Against a brute-force reference it is closer in every view tested
 (a cumulus field under a storm: 2.4 levels mean error against 32), costs about the same, and moves better (motion benchmark
 2.95 -> 2.21).
+
+## Now (update 5): the old Sun shadow structures are deleted
+The Sun transmittance volume is the only cloud Sun shadow; it has no switch any more. The fine grid, the shaft rings, the
+cascade, the layer shadow map and the ground-shadow march are removed, with the settings "Far cloud shadows", "Far cloud
+shadow range (km)", "Cloud shadow ring 2 cell / depth", "Layer shadows (mid / high)", "Cirrus self-shadow" and "Sun shadow
+volume". "Cloud shadow ring 1 cell (m)" is now "Sun shadow cell (m)" (same key `shadow_ring1_cell_m`, 250): the volume's
+finest cell. Harness `state` reports `clouds_v2.sun_volume` instead of `sun_cascade` / `layer_map`.

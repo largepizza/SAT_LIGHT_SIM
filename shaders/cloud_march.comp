@@ -507,78 +507,6 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
 // (lightning.vert/.frag, SatelliteSimLightning.cpp, 2026-10-05); it was lightningCS / spriteCS here, per pixel in
 // the half-res composite.
 
-// Sun transmittance through the v2 field from a ground point (ENU about the Earth's centre, as
-// obsPos). Same job and step count as cloudGroundShadow, on the field the clouds are drawn from.
-float cloudGroundShadowV2(vec3 groundENU, vec3 sunDir, vec3 obsPos, mat3 enuToEcef, float jitter)
-{
-    vec2 s0, s1;
-    // Start 10 m up: the ground point (obsPos + t dir, +-0.5 m of float rounding at R_EARTH) sits ON
-    // the shell floor over the sea (0 m while rain is on), so whether it was inside the shell flipped
-    // pixel to pixel in rounding patterns — rings and straight lines of shadow on the sea around the
-    // nadir (user snapshot from 7.7 km, pass 13).
-    groundENU += normalize(groundENU) * 10.0;
-    // Past the terminator (review 8b) the sun ray points into the Earth and met no cloud: the shadow jumped
-    // from a grazing path's full shadow to none, a hard straight line along the ground terminator while the
-    // sea's own twilight fade still lit it. March along the horizon there instead (the light is fading out
-    // through dayFrac anyway), so the shadow continues across the terminator.
-    {
-        vec3  upG = normalize(groundENU);
-        float su  = dot(upG, sunDir);
-        if (su < 0.002) sunDir = normalize(sunDir + upG * (0.002 - su));
-    }
-    if (cv2ShellSegments(groundENU, sunDir, s0, s1) == 0) return 1.0;
-    // Two stretches (review 3): 20 steps through the lowest 3.5 km above the ground, where decks and
-    // stratus live, then 12 through the rest of the shell. 24 even steps over the whole shell were
-    // ~600 m apart with a high Sun, so a 300-m deck was hit or missed by each pixel's jitter: the
-    // shadow under a thin overcast was a grain of full shadow and none (user snapshot 6).
-    float eyeH = obsPos.z - R_EARTH;
-    float sunUp = max(dot(normalize(groundENU), sunDir), 0.05);
-    // Review 17: where the ray is 3.5 km up, along the CURVED Earth: h(t) = t su + t^2 / 2R. It was
-    // 3.5 km / max(su, 0.05), so near sunset the dense stretch ended ~70 km out at ~400 m up, and a deck at
-    // 1-2 km fell to the upper stretch's ~30 km steps, hit or missed by each texel's offset — rows of
-    // unshadowed texels, a stair-stepped bright band on the far sea under an overcast (the "blocky
-    // reflections").
-    float su0 = dot(normalize(groundENU), sunDir);
-    float t35 = R_EARTH * (sqrt(su0 * su0 + 2.0 * 3500.0 / R_EARTH) - su0);
-    float tSplit = clamp(s0.x + t35, s0.x, s0.y);
-    float od = 0.0;
-    gCv2NoFar = true;              // the cells' average, not the far field (review 8, clouds_v2.glsl)
-    gCv2WxLod = 3.0 * (1.0 - smoothstep(0.03, 0.3, sunUp));   // review 17: a low Sun's long path reads the map blurred
-    // Review 21: the low stretch takes up to 60 steps as the Sun drops (20 while they are <= 2.5 km). Near sunset ~200 km
-    // long, and at 20 steps of ~10 km one small cumulus — whose height band the ray stays in for ~190 km at a 0.3 deg
-    // Sun — was hit once per step position: a chain of separate disc shadows, one every 10 km, where a real one is
-    // a single long streak ("segmented, unaligned", user snapshot from 8 km at sunset). With ~3 km steps read at about
-    // their own length the hits overlap into the streak. (Per-frame jitter would need the sky TAA, which is off below
-    // render scale 1; a footprint of the whole ~10 km step averaged the scattered cumulus away entirely.)
-    int nLow = int(clamp(ceil((tSplit - s0.x) / 2500.0), 20.0, 60.0));   // steps of <= 2.5 km: the 3 km reads overlap
-    [[dont_unroll]] for (int i = 0; i < nLow + 12; ++i) {
-        bool  low = i < nLow;
-        float a0  = low ? s0.x : tSplit, a1 = low ? tSplit : s0.y;
-        float ds  = (a1 - a0) / (low ? float(nLow) : 12.0);
-        if (ds <= 0.0) continue;
-        float fi  = low ? float(i) : float(i - nLow);
-        // Read at a footprint of the step, jittered: at a low Sun the path through the shell is 100+ km,
-        // and fixed midpoints reading 2 km cells at a 60 m footprint aliased into concentric rings of
-        // shadow on the sea around the nadir (user snapshot from 7.7 km at sunset, pass 13). At the step's
-        // footprint the cells average into their coverage (the field's sub-pixel haze), as the view does.
-        // At most 3 km (review 8b): near the terminator the upper 12 steps are tens of km long, and at half
-        // that footprint the weather map is a mip whose texels are squares hundreds of km across — shadows
-        // with straight, perpendicular edges over the sea at sunset (user snapshot).
-        float fpS = clamp(ds * (low ? 1.2 : 0.5), 60.0, 3000.0);
-        vec3  rel = groundENU + sunDir * (a0 + (fi + jitter) * ds) - obsPos;
-        // Rain curtains at 15% (review 8): at this footprint they are their mean (0.45) over the map's whole
-        // rain area, and a low Sun's path runs tens of km through them under the cloud bases — from 180 km
-        // the shadow was the map's rain regions, solid and stair-stepped on its texels, under scattered puffs.
-        CV2_CNT(14);
-        CV2Field fS = cv2Field(cv2Pos(rel, eyeH, enuToEcef), 0.0, fpS);
-        od += fS.sigma * mix(1.0, 0.15, clamp(fS.rain, 0.0, 1.0)) * ds;
-        if (od > 8.0) break;
-    }
-    gCv2NoFar = false;
-    gCv2WxLod = 0.0;
-    return exp(-od);
-}
-
 // Terrain height (m above sea level) at an ECEF-frame direction. Thin wrapper binding this
 // shader's own earthElevTex/earthSpecTex to the shared decode, so the caller below is unchanged.
 //
@@ -2461,16 +2389,9 @@ void main() {
         }
         if (shadowFade > 0.001) {
             vec3  hitENU  = obsPos + tScene * dir;
-            vec3  hitECEF = hitENU.x * enuX + hitENU.y * enuY + hitENU.z * enuZ;
-            // A 2x2 ORDERED offset (review 9), not white noise: sat_sky.frag's [1 2 1] tent averages the four
-            // offsets exactly, so the shadow is smooth; white noise left a grain of hit-or-miss cells on water
-            // under broken cloud (user snapshots), a 4x4 Bayer tile a faint grid.
-            ivec2 bq = ivec2(gl_GlobalInvocationID.xy) & 1;
-            float jitter  = (float(bq.x * 2 + (bq.x ^ bq.y)) + 0.5) * 0.25;
-            // S3: with the Sun transmittance volume on, its value at the ground point (one lookup: the same shadow the
-            // clouds and the air take) in place of the march through the field from every ground pixel.
-            float gs = (cv2.stvH.z > 0.5) ? cv2StvT(tScene * dir, length(hitENU) - R_EARTH)
-                                          : cloudGroundShadowV2(hitENU, sunDir, obsPos, mat3(enuX, enuY, enuZ), jitter);
+            // The Sun transmittance volume at the ground point (S3: the same shadow the clouds and the air take; it
+            // replaced a 32-72-sample march through the field from every ground pixel, cloudGroundShadowV2).
+            float gs = (cv2.stvH.z > 0.5) ? cv2StvT(tScene * dir, length(hitENU) - R_EARTH) : 1.0;
             terrainSunT = mix(1.0, gs, shadowFade);
         }
     }

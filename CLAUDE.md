@@ -933,12 +933,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     (`godray_froxels` 1) are ON; S2, Mie and cap lobes stay off. Default-settings totals at 1920x1009 (`harness_runs/s0/defs`,
     no validation errors): 58 km 26.3 ms (old defaults 34.0), anvils 29.0 (24.4), cumulus 32.0 (27.2), Pacific 27.7 (25.4):
     full-res clouds cost +2..+5 ms near the ground over the old half-res sparse march, the clipmap and froxels pay part back.
-  - **The Sun transmittance volume (S3, 2026-10-22, ON: "Sun shadow volume" `sun_shadow_volume` 1, slot 312;
-    `cloud_lightning.glsl` cv2Stv / cv2StvT, bake in `cloud_v2_lightning.comp` workgroups 19-31, UBO stvL0-3 / stvH / stvV):
-    ONE Sun shadow for the cloud key light, the god rays (froxels), the fog / dust and the GROUND (cloud_march.comp's
-    shadow march gives way to one lookup), in place of the fine grid, the two shaft rings, the cascade and the layer map
-    (none of them baked or read while it is on; the layer map pass skipped). 4 nested levels of 128 x 128 parallel rays
-    toward the Sun on the rings' axes, cells = "Cloud shadow ring 1 cell" x 1 / 4 / 16 / 64 (250 m .. 16 km, reach 56
+  - **The Sun transmittance volume (S3, 2026-10-22; `cloud_lightning.glsl` cv2Stv / cv2StvT, bake in
+    `cloud_v2_lightning.comp` workgroups 5-17 of its 18, UBO stvL0-3 / stvH / stvV):
+    THE Sun shadow for the cloud key light, the god rays (froxels or direct reads in sat_sky.frag), the fog / dust and the
+    GROUND (one lookup in cloud_march.comp). **The fine grid, the two shaft rings, the cascade and the layer shadow map are
+    DELETED** (2026-10-22, the user: "delete it"): their bakes, buffers, UBO fields (sunCasc0-8, layEye / layRef / layBake;
+    `layA/E/N` stay as the clipmap plane's axes, `cv2CdcAnchor`), `cloud_v2_layers.comp`, `cv2_layer_map.glsl`,
+    `cloudGroundShadowV2`, and the settings "Far cloud shadows", "Far cloud shadow range", ring 2 cell / depth, "Layer
+    shadows", "Cirrus self-shadow" and "Sun shadow volume" (slots 269, 282, 287, 288, 296, 297, 312 free); march set binding
+    22 is unused (bound to the blue-noise tile). "Haze near clouds" moved to `mid3.w`, the resolve's fill gate to `cu2.w`.
+    The flash buffer shrank ~5.5 MB. Sections below that describe those structures are history. 4 nested levels of
+    128 x 128 parallel rays toward the Sun, cells = "Sun shadow cell (m)" (key `shadow_ring1_cell_m`, slot 286) x 1 / 4 / 16 / 64 (250 m .. 16 km, reach 56
     cells: ~14 .. 900 km), riding with the clouds and toroidal with the rings' wrap stamps; each ray holds the
     transmittance BEYOND its point at 48 HEIGHTS (0 .. the shell top + 1 km) on its SUNWARD branch (s = sC + sqrt((R+h)^2 -
     cL^2), cancellation-free), so a level covers every point within its reach across the Sun at any distance along it (no

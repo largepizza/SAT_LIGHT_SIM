@@ -401,10 +401,10 @@ void main()
         // a jittered ray hits or misses: those pixels flipped between sky and cloud each frame (158 km: 0.085% -> 0.0002%
         // of pixels past 8 levels a frame; 20.8 km: 0.88% -> 0.000005%). Paused, the sky TAA's frozen mode had hidden it.
         // A reprojection this small has nothing to reject; the still weight follows the clouds' evolution in ~1 s.
-        // x mid3.w (CPU): 0 while the Sun shadow lattices fill after a reset (the shadows arriving are a real change the
+        // x cu2.w (CPU): 0 while the Sun shadow volume fills after a reset (the shadows arriving are a real change the
         // clamp must let through quickly), up to 1 from ~64-96 frames on.
         float uK = (1.0 - smoothstep(0.05, 0.15, max(motTrue, eyePx / min(min(min(dNear, dWide), ndR > 0.0 ? ndR : 1e30), capD))))
-                 * cv2.mid3.w;
+                 * cv2.cu2.w;
         vec4 hc = cv2FromMean(clamp(cv2ToMean(hist), bLo, bHi));
         hc = mix(hc, hist, uK);
         // Review 20b: and never brighter (or darker) than the new samples' own RADIANCE box. The mean colour divides

@@ -282,9 +282,8 @@ layout(location = 1) out float outDepthCopy;
 #include "atmosphere.glsl" // line-of-sight extinction (atmExtinctionMag)
 #include "darksky.glsl"   // dark-sky exposure gate (Milky Way / zodiacal)
 #include "depth.glsl"
-// The Sun shadow cascade (2026-10-10): the clouds' shadows on the AIR, from the same lattice the cloud march
-// lights its samples by (cloud_lightning.glsl cv2SunCasc, the cv2 UBO's sunCasc0-2). Not in the light tiers
-// or the probes (their eye is a satellite's).
+// The clouds' shadows on the AIR (god rays), from the same Sun transmittance volume the cloud march lights its samples
+// by (cloud_lightning.glsl cv2Stv, S3). Not in the light tiers or the probes (their eye is a satellite's).
 #if !defined(SKY_LITE) && !defined(SKY_ENV)
 #define SKY_SUN_SHADOW
 #define CV2_PARAMS_BINDING 31
@@ -3895,8 +3894,8 @@ void main() {
     float segLen = (tEnd - tStart) / float(N_VIEW);
     float cosA   = dot(dir, sunDir);
 #ifdef SKY_SUN_SHADOW
-    // "God rays" (cv2.lightVol.w, 0..1): how much of the clouds' shadow the air takes; 0 while the cascade is off.
-    float sunShK = (cv2.sunCasc2.x > 0.0) ? clamp(cv2.lightVol.w, 0.0, 1.0) : 0.0;
+    // "God rays" (cv2.lightVol.w, 0..1): how much of the clouds' shadow the air takes; 0 while the STV is off.
+    float sunShK = (cv2.stvH.z > 0.5) ? clamp(cv2.lightVol.w, 0.0, 1.0) : 0.0;
     // The shaft samples' phase along the ray: per pixel (interleaved gradient noise), and per frame with the sky TAA.
     float shaftJit = fract(52.9829189 * fract(dot(gl_FragCoord.xy + 5.588238 * cloud.taaJitter.xy * 16.0, vec2(0.06711056, 0.00583715))));
 #else
@@ -4046,16 +4045,16 @@ void main() {
         // densR/densM = density × step length = optical depth contribution of this step alone.
         float densR = exp(-h / H_R) * segLen;   // Rayleigh: peaks at sea level, scale height H_R
         float densM = exp(-h / H_M) * segLen;   // Mie: concentrated near surface, scale height H_M
-        // Haze near clouds (2026-10-10, "Haze near clouds" = cv2.sunCasc2.w): humid air under and around the weather
+        // Haze near clouds (2026-10-10, "Haze near clouds" = cv2.mid3.w): humid air under and around the weather
         // systems carries more aerosol (the weather cube over ~40 km: cover, + rain), 2.5-km scale height, added to
         // the Mie column of this step. Aerosol is what scatters FORWARD: with it a sunlit stretch between cloud
         // shadows glows toward the Sun (a ray), where clean air only shows the shadows as darker bands.
 #ifdef SKY_SUN_SHADOW
-        if (cv2.sunCasc2.w > 0.0 && h < 12000.0) {
+        if (cv2.mid3.w > 0.0 && h < 12000.0) {
             vec3  dS  = normalize(sp.x * enuX + sp.y * enuY + sp.z * enuZ);
             float dph = cloud.cloudPhase * cloud.layers[0].driftMult;
             vec4  wx  = textureLod(earthCloudsCube, vec3(dS.x * cos(dph) - dS.y * sin(dph), dS.x * sin(dph) + dS.y * cos(dph), dS.z), 3.0);
-            densM += cv2.sunCasc2.w * (0.25 + 0.75 * smoothstep(0.05, 0.4, wx.r) + 0.6 * wx.b) * exp(-h / 2500.0) * (1.0 - smoothstep(7000.0, 12000.0, h)) * segLen;
+            densM += cv2.mid3.w * (0.25 + 0.75 * smoothstep(0.05, 0.4, wx.r) + 0.6 * wx.b) * exp(-h / 2500.0) * (1.0 - smoothstep(7000.0, 12000.0, h)) * segLen;
         }
 #endif
         odR_cam += densR;
@@ -4220,53 +4219,23 @@ void main() {
         // the clouds and the air between them: the cloud march reads the same lattice for its key light.
 #ifdef SKY_SUN_SHADOW
         if (sunShK > 0.0) {
-            float Tc = 0.0;
-            if (cv2.frox.x > 0.5) {
-            // The froxel volume (2026-10-22, EXPERIMENT "godray_froxels", cloud_v2_froxel.comp): the same cascade + shaft
-            // transmittance, filled once a frame on a screen-tile x log-depth grid; 8 reads a step within 30 km (the shafts'
-            // reach), 4 beyond, weighted as the haze thins with height along the ray (the shaft block's weighting).
-                vec2  uvF = gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH);
-                float tA  = tStart + float(i) * segLen;
-                float zK  = dir.z / 3000.0;
-                int   nF  = (tA < 30000.0) ? 8 : 4;
-                float acc = 0.0, wS = 0.0;
-                [[dont_unroll]] for (int k = 0; k < nF; ++k) {
-                    float tr = segLen * (float(k) + shaftJit) / float(nF);
-                    // (Weighted by the haze's thinning with height only within the shafts' reach, as the lattice path:
-                    // beyond it that path averaged the cascade uniformly over the step.)
-                    float wk = (tA + tr < kCv2ShaftRangeCells * cv2.sunCasc7.z) ? exp(-clamp(zK * tr, -8.0, 30.0)) : 1.0;
-                    acc += wk * cv2GodFroxT(uvF, tA + tr);
-                    wS  += wk;
-                }
-                Tc = acc / wS;
-            } else {
-            [[dont_unroll]] for (int k = 0; k < 3; ++k) {
-                float tk = tStart + (float(i) + (float(k) + 0.5) / 3.0) * segLen;
-                Tc += cv2SunCascT(dir * tk, tk * cosA + 0.5 * cv2.sunCasc2.y);
+            // The Sun transmittance along the step: 8 reads within 30 km (single clouds' shafts), 4 beyond, weighted as
+            // the haze thins with height along the ray; from the froxel volume ("godray_froxels", cloud_v2_froxel.comp:
+            // the same transmittance filled once a frame on a screen-tile x log-depth grid) or the volume itself.
+            float tA  = tStart + float(i) * segLen;
+            float zK  = dir.z / 3000.0;
+            int   nF  = (tA < 30000.0) ? 8 : 4;
+            bool  frx = cv2.frox.x > 0.5;
+            vec2  uvF = gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH);
+            float acc = 0.0, wS = 0.0;
+            [[dont_unroll]] for (int k = 0; k < nF; ++k) {
+                float tr = segLen * (float(k) + shaftJit) / float(nF);
+                float tk = tA + tr;
+                float wk = (tk < 30000.0) ? exp(-clamp(zK * tr, -8.0, 30.0)) : 1.0;
+                acc += wk * (frx ? cv2GodFroxT(uvF, tk) : cv2StvT(dir * tk, length(obsPos + dir * tk) - R_EARTH));
+                wS  += wk;
             }
-            Tc *= 1.0 / 3.0;
-            // Near the eye, the SHAFT lattice's inner ring (cv2SunShaftT: 250-m cells): the step's first ~14 km sampled
-            // 24 times, so the gaps between single clouds draw their own rays (the cascade's 3-km cells and three
-            // reads a step blur them away). Reads are weighted as the haze thins with height along the ray, and the
-            // stretch's share of the step likewise.
-            float tA = tStart + float(i) * segLen;
-            float shaftR = kCv2ShaftRangeCells * cv2.sunCasc7.z;
-            if (cv2.sunCasc4.w > 0.0 && tA < shaftR) {
-                float tN  = min(segLen, shaftR - tA);
-                float zK  = dir.z / 3000.0;
-                float acc = 0.0, wS = 0.0;
-                [[dont_unroll]] for (int k = 0; k < 24; ++k) {
-                    float tr = tN * (float(k) + shaftJit) / 24.0;
-                    vec2  sh = cv2SunShaftT(dir * (tA + tr), (tA + tr) * cosA);
-                    float wk = exp(-clamp(zK * tr, -8.0, 30.0));
-                    acc += wk * mix(Tc, sh.x, sh.y);
-                    wS  += wk;
-                }
-                float eN = clamp(zK * tN, -8.0, 30.0), eS = clamp(zK * segLen, -8.0, 30.0);
-                float fN = (abs(eS) < 1e-3) ? tN / segLen : (1.0 - exp(-eN)) / (1.0 - exp(-eS));
-                Tc = mix(Tc, acc / wS, clamp(fN, 0.0, 1.0));
-            }
-            }   // (the froxel path's else)
+            float Tc = acc / wS;
             float shK = sunShK * (1.0 - Tc);
             if (shK > 0.001) {
                 vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));

@@ -33,7 +33,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define CV2_FLASH_BINDING 12
 #define CV2_FLASH_WRITE
-#define CV2_SUN_CASC_FN       // cv2SunCascT: the shaft lattice starts from the cascade
+#define CV2_SUN_CASC_FN       // cv2StvLat (the Sun transmittance volume's bake)
 #include "cloud_lightning.glsl"
 #include "atmosphere.glsl"
 layout(set = 0, binding = 7) uniform sampler2D earthNightTex;   // the march set's (city light on the rain at the eye)
@@ -96,33 +96,26 @@ void main()
     // cell, from the same field and the same formula as the march's rate at the eye, so the drops in each depth
     // layer (the rain particles, rain_particles.vert) follow the rain volume — walking toward a shaft, its drops appear in
     // the far layers first. They used to come from the rate at the eye alone: none until inside, then all.
-    // The Sun's shadow VOLUME about the eye's line to it (2026-10-10; cloud_lightning.glsl, cv2SunGrid): workgroups
-    // 5-8 march a 32 x 32 grid of parallel rays toward the Sun, 250 m apart across it, and store the Sun's
-    // transmittance BEYOND each of 17 points. The cloud march shadows a sample by the rays around it, so the shadow
-    // has the blocker's own outline. Each ray is the mean of four sub-rays over its cell: one ray per cell hits or
-    // misses a cloud top at a grazing Sun, and the shadows came out as straight-edged squares that flipped with
-    // 100 m of eye altitude (user snapshot, a sunset over a deck). It was ONE ray (thread 1's, below) applied within
-    // ~2 km of it: the Sun going behind a cloud's tip darkened every cloud near the eye.
     if (gl_WorkGroupID.x > 4u) {
         vec3  enuZ = normalize(pc.obsECEFDir.xyz);
         vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
         mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
         float eyeH = terrainFrame.x + 2.0;
         vec3  sunENU = transpose(enuToEcef) * cv2.sunE.xyz;
-        // The Sun transmittance VOLUME (S3, 2026-10-22; cloud_lightning.glsl cv2Stv): workgroups 19-20 bake level 0 (512
-        // rays a frame, all in 32 frames), 21-23 levels 1-3 (256 a frame, all in 64). A ray is marched from the top of the
+        // The Sun transmittance VOLUME (S3, 2026-10-22; cloud_lightning.glsl cv2Stv): workgroups 5-6 bake level 0 (512
+        // rays a frame, all in 32 frames), 7-9 levels 1-3 (256 a frame, all in 64). A ray is marched from the top of the
         // shell DOWN its sunward side (where the Sun is above the local horizon), recording the transmittance beyond the
         // point at each knot height; between knots the steps follow the cell and grow with the distance from the eye
         // (a far blocker's shadow is no sharper than the Sun's disc makes it). Thin layers count as in the light march.
-        if (gl_WorkGroupID.x >= 19u) {
+        {
             if (cv2.stvH.z < 0.5) return;
-            // Workgroups 24-31: levels 0 (24-27) and 1 (28-31) four times more while they catch up (cv2.stvV.z: after a fast
+            // Workgroups 10-17: levels 0 (10-13) and 1 (14-17) four times more while they catch up (cv2.stvV.z: after a fast
             // move or a refill), all of a level in 16 frames: after a 45-km hop their slots had all changed hands and took a
             // round (32 / 64 frames) to come back, slower than the rings and the cascade (harness_runs/s3/hop).
-            bool  boost = gl_WorkGroupID.x >= 24u;
+            bool  boost = gl_WorkGroupID.x >= 10u;
             if (boost && cv2.stvV.z <= 0.0) return;
-            int   lv    = boost ? int((gl_WorkGroupID.x - 24u) >> 2u) : (gl_WorkGroupID.x <= 20u) ? 0 : int(gl_WorkGroupID.x - 20u);
-            int   wg    = boost ? int(gl_WorkGroupID.x - 24u) & 3 : int(gl_WorkGroupID.x) - 19;   // 0 / 1 for level 0
+            int   lv    = boost ? int((gl_WorkGroupID.x - 10u) >> 2u) : (gl_WorkGroupID.x <= 6u) ? 0 : int(gl_WorkGroupID.x - 6u);
+            int   wg    = boost ? int(gl_WorkGroupID.x - 10u) & 3 : int(gl_WorkGroupID.x) - 5;   // 0 / 1 for level 0
             vec4  la    = cv2StvLat(lv);
             float cellM = la.z;
             if (la.w <= 0.0 && la.z <= 0.0) return;
@@ -217,246 +210,6 @@ void main()
             }
             return;
         }
-        // While the volume stands in for them, the fine grid, the rings and the cascade are not baked.
-        if (cv2.stvH.z > 0.5) return;
-        // The SHAFT lattice (2026-10-10; cloud_lightning.glsl cv2SunShaft): workgroups 13-14 bake 512 of ring 0's
-        // 16384 rays a frame, 15-16 of ring 1's (2026-10-12: the same lattice with coarser cells, further out). A
-        // ray steps down its knots toward the eye and beyond (one field read per interval, 2 sub-rays at their own
-        // place in the cell and phase of the step, a running mean of the bakes: as the cascade).
-        if (gl_WorkGroupID.x > 12u) {
-            // Workgroups 17-18 (2026-10-14, issue 20261013_220718: "move backwards: cloud shadows fade in") bake ring 0
-            // AGAIN while it catches up (cu2.w, CPU: moving > 0.5 of its cells a frame, the 128 frames after, and its
-            // first fill): 4 more leading-edge columns while moving, a second round half a round out of phase when
-            // still. After a 30-km/s hop the whole ring had changed hands and took two rounds (64 frames) and its
-            // running means two more to settle: the near shadows faded in over 1-2 s. Otherwise they return at once.
-            int   ring  = (gl_WorkGroupID.x > 14u && gl_WorkGroupID.x < 17u) ? 1 : 0;
-            int   wg    = gl_WorkGroupID.x > 16u ? int(gl_WorkGroupID.x - 15u) : int(gl_WorkGroupID.x - 13u) & 1;
-            if (wg >= 2 && cv2.cu2.w <= 0.0) return;
-            float cellM = (ring == 0) ? cv2.sunCasc7.z : cv2.sunCasc7.w;
-            vec4  la    = cv2ShaftLat(ring);
-            vec2  vel   = cv2ShaftVel() * ((ring == 0) ? 1.0 : cv2.sunCasc7.z / cv2.sunCasc7.w);
-            float bakeW = (ring == 0) ? cv2.sunCasc5.x : cv2.sunCasc7.x;
-            if (bakeW <= 0.0) return;
-            // Which rays this frame (round 5, issue 20261013_220718): still, both workgroups take the lattice in
-            // order (all 16384 rays in 32 frames). Moving, one of them bakes the two COLUMNS just inside the window's
-            // leading edge (61 and 60 cells ahead along the axis the eye moves along most), so a cell entering the
-            // ring is baked as it comes into reach, at up to 2 cells a frame (both workgroups, 4 columns, past that),
-            // and the other keeps the round (64 frames). The ring used to be baked only in order: at 11 km/s a ring
-            // of 159-m cells moved ~55 cells per 32-frame round, and its whole leading half was unbaked.
-            float sp   = max(abs(vel.x), abs(vel.y));
-            bool  mov  = sp > 0.02;
-            bool  fast = sp > 2.0;
-            int   r;
-            bool  lead = mov && (wg == 1 || fast || wg >= 2);
-            if (lead) {
-                int   ax  = (abs(vel.x) >= abs(vel.y)) ? 0 : 1;
-                float sg  = ((ax == 0) ? vel.x : vel.y) >= 0.0 ? 1.0 : -1.0;
-                int   jj  = ((fast || wg >= 2) ? 2 * wg : 0) + int(li >> 7u);
-                int   sAx = int(floor(((ax == 0) ? la.x : la.y) + sg * (61.0 - float(jj)) + 4096.0)) & (kCv2ShaftN - 1);
-                int   row = int(li & 127u);
-                r = (ax == 0) ? row * kCv2ShaftN + sAx : sAx * kCv2ShaftN + row;
-            } else {
-                r = mov ? int((uint(cv2.frame.x) & 63u) * 256u + li)
-                        : int((((uint(cv2.frame.x) + (wg >= 2 ? 16u : 0u)) & 31u) * 2u + uint(wg & 1)) * 256u + li);
-            }
-            vec3  ga, gb;
-            cv2SunGridAxes(sunENU, ga, gb);
-            vec2  gc = vec2(float(r % kCv2ShaftN), float(r / kCv2ShaftN)) - la.xy;
-            gc -= float(kCv2ShaftN) * round(gc / float(kCv2ShaftN));
-            ivec2 ia = ivec2(round(la.xy + gc)) + 4096;              // the slot's absolute cell (mod 1024)
-            float ds = (ring == 0) ? cv2.sunCasc5.y : cv2.sunCasc7.y;
-            float fpM = max(150.0, 0.25 * cellM);   // the field's footprint: a quarter of the cell the ray stands for
-            int   base = int(ceil(la.z - 0.5 * float(kCv2ShaftK)));   // the window's knots: base .. base + K - 1
-            float Tk[kCv2ShaftK];
-            for (int k = 0; k < kCv2ShaftK; ++k) Tk[k] = 0.0;
-            uvec3 jh = cv2Pcg3(uvec3(uint(r), 733u + uint(ring), 5u));
-            float jn = float(uint(cv2.frame.x) & 1023u);
-            vec2  jo = fract(vec2(jh.xy & 0xFFFFu) / 65536.0 + jn * vec2(0.7548777, 0.5698403));
-            float jp = fract(float(jh.z & 0xFFFFu) / 65536.0 + jn * 0.6180340);
-            int   nSr = lead ? 4 : 2;   // a leading-edge bake is a slot's FIRST: twice the sub-rays
-            float wSr = 1.0 / float(nSr);
-            [[dont_unroll]] for (int sr = 0; sr < nSr; ++sr) {
-                vec2  gp = (gc + fract(jo + vec2(wSr * float(sr), fract(0.6180340 * float(sr) + 0.5 * float(sr & 1)))) - 0.5) * cellM;
-                vec3  o  = ga * gp.x + gb * gp.y;
-                float sTop = (float(base + kCv2ShaftK - 1) - la.z) * ds;
-                // Beyond the window's sunward end the ray marches on to where the fine grid's rays end (kShaftFar
-                // steps, quadratic), in the same loop (ONE cv2Field call site). It took the CASCADE's value there
-                // (2026-10-12): at a grazing Sun a far cloud top's shadow is a layer a few hundred metres deep, the
-                // cascade's cells are 0.8-1.4 km in that direction, and it read lit where the fine grid (250 m,
-                // marched) read full shadow -- so a cloud was shadowed only inside the fine grid, within 3-6 km of
-                // the eye (user issues 20261012_195811 / _202341: "the user has to move too close to see them").
-                const int kShaftFar = 16;
-                float sFar = max(cv2SunGridLen(sunENU, cv2.shell.y), sTop);
-                float od = 0.0;
-                for (int m = kCv2ShaftK - 2 + kShaftFar; m >= 0; --m) {
-                    float sM, dsM;
-                    if (m >= kCv2ShaftK - 1) {
-                        float u0 = float(m - (kCv2ShaftK - 1)) / float(kShaftFar);
-                        float u1 = float(m - (kCv2ShaftK - 2)) / float(kShaftFar);
-                        float s0 = sTop + (sFar - sTop) * u0 * u0;
-                        dsM = (sFar - sTop) * (u1 * u1 - u0 * u0);
-                        sM  = s0 + dsM * fract(jp + wSr * float(sr) + 0.6180340 * float(m));
-                    } else {
-                        dsM = ds;
-                        sM  = (float(base + m) + fract(jp + wSr * float(sr)) - la.z) * ds;
-                    }
-                    CV2Pos q = cv2Pos(o + sunENU * sM, eyeH, enuToEcef);
-                    if (dsM > 1.0 && q.h > -300.0 && q.h < cv2.shell.y + 2500.0) {
-                        CV2_CNT(8);
-                        CV2Field gf = cv2Field(q, 0.0, fpM);
-                        od += gf.sigma * max(1.0 - gf.thin - gf.soft, 0.0) * dsM;   // no thin layers here: see the fine grid
-                    }
-                    if (m <= kCv2ShaftK - 1)
-                        Tk[(base + m + 8 * kCv2ShaftK) & (kCv2ShaftK - 1)] += wSr * exp(-od);
-                }
-            }
-            if (r < kCv2ShaftN * kCv2ShaftN) {
-                int rb = (ring * kCv2ShaftN * kCv2ShaftN + r) * kCv2ShaftK;
-                // Slot k holds absolute knot n = base + ((k - base) mod K); a slot whose stamp names another wrap (it
-                // changed hands as the eye moved) takes the new bake whole; otherwise the slot's own running mean.
-                for (int k = 0; k < kCv2ShaftK; ++k) {
-                    int   n    = base + ((k - base) & (kCv2ShaftK - 1)) + 1024;
-                    uint  want = cv2ShaftStampOf(ia.x, ia.y, n);
-                    uint  bits = floatBitsToUint(cv2SunShaft[rb + k]);
-                    bool  ok   = cv2ShaftStampOk(bits, want);
-                    uint  c    = cv2ShaftCount(bits);
-                    float T    = ok ? mix(cv2ShaftT(bits), Tk[k], 1.0 / float(min(c + 2u, 4u))) : Tk[k];
-                    cv2SunShaft[rb + k] = cv2ShaftPack(T, want, ok ? c + 1u : 0u);
-                }
-            }
-            return;
-        }
-        // The CASCADE (2026-10-10; cloud_lightning.glsl cv2SunCasc): on odd frames these workgroups (and four more)
-        // bake 2048 of its 4096 rays instead of the fine grid, which then refreshes every other frame: the same
-        // number of field reads per frame as the fine grid alone took. Each ray: two sub-rays a quarter cell either
-        // side, 48 steps (one per knot interval) at the sub-ray's own phase of the step.
-        if (cv2.sunCasc2.z > 0.5 && (int(cv2.frame.x) & 1) != 0) {
-            int   r  = int((((uint(cv2.frame.x) >> 1u) & 1u) * 8u + (gl_WorkGroupID.x - 5u)) * 256u + li);
-            vec3  ga, gb;
-            cv2SunGridAxes(sunENU, ga, gb);
-            vec2  nAB = vec2(float(kCv2CascNA), float(kCv2CascNB));
-            vec2  d   = vec2(float(r % kCv2CascNA), float(r / kCv2CascNA)) - cv2.sunCasc0.xy - vec2(0.0, cv2.sunCasc0.z);
-            d -= nAB * round(d / nAB);                                  // cells from the window's centre
-            float Tc[kCv2CascK + 1];
-            for (int k = 0; k <= kCv2CascK; ++k) Tc[k] = 0.0;
-            // Each bake's sub-rays stand somewhere else in the ray's cell (an R2 sequence from the ray's own hash)
-            // and step at another phase, and the stored value is a RUNNING MEAN of the bakes (cv2.sunCasc3.w):
-            // the mean transmittance over the cell, to a small fraction of it. With fixed sub-rays a ray knew a
-            // cloud top's height to half a cell (380 m), and at a 0.5-degree Sun that is 40 km along the ground:
-            // shadow edges on the cirrus layer and on towers came out as stairs kilometres long (user snaps).
-            uvec3 jh = cv2Pcg3(uvec3(uint(r), 911u, 3u));
-            float jn = float(uint(cv2.frame.x) & 255u);
-            vec2  jo = fract(vec2(jh.xy & 0xFFFFu) / 65536.0 + jn * vec2(0.7548777, 0.5698403));
-            float jp = fract(float(jh.z & 0xFFFFu) / 65536.0 + jn * 0.6180340);
-            [[dont_unroll]] for (int sr = 0; sr < 2; ++sr) {
-                vec2  gp = d + fract(jo + 0.5 * float(sr)) - 0.5;
-                vec3  o  = ga * (gp.x * cv2.sunCasc1.x) + gb * ((gp.y + cv2.sunCasc0.z) * cv2.sunCasc1.y)
-                         + sunENU * (cv2.sunCasc0.w - cv2.sunCasc1.z);
-                float odK[kCv2CascK + 1];
-                float od = 0.0;
-                odK[0] = 0.0;
-                for (int i = 0; i < kCv2CascK; ++i) {
-                    float s0 = cv2CascKnotS(float(i), cv2.sunCasc1.zw), s1 = cv2CascKnotS(float(i + 1), cv2.sunCasc1.zw);
-                    CV2Pos q = cv2Pos(o + sunENU * mix(s0, s1, fract(jp + 0.5 * float(sr))), eyeH, enuToEcef);
-                    // (The lattice's b range is padded and its far ends leave the shell: no field read there.)
-                    if (q.h > -300.0 && q.h < cv2.shell.y + 2500.0) {
-                        CV2_CNT(9);
-                        CV2Field gf = cv2Field(q, 0.0, clamp(0.5 * (s1 - s0), 60.0, 1500.0));
-                        od += gf.sigma * (1.0 - gf.thin - (cv2.layN.w > 0.0 ? 1.0 : cv2.mid2.z) * gf.soft) * (s1 - s0);   // (no thin ice; no mid layer while the layer map carries it)
-                    }
-                    odK[i + 1] = od;
-                }
-                for (int k = 0; k <= kCv2CascK; ++k) Tc[k] += 0.5 * exp(-(od - odK[k]));
-            }
-            if (r < kCv2CascNA * kCv2CascNB) {
-                // The ray's last knot is always 1 (nothing beyond it), so it carries a STAMP (2026-10-14, issue
-                // 20261013_220718): which of 8 wraps of the toroidal lattice this slot holds (the CPU passes the eye's
-                // coordinate mod 8 windows) and how many bakes its running mean has. A slot that changed hands as the
-                // eye moved takes the new bake whole; it used to keep the shadow from the far side of the window and
-                // blend it out at 1/8 a bake (~30 frames), so after a fast move the far shadows faded in over seconds.
-                ivec2 ia  = ivec2(round(cv2.sunCasc0.xy + vec2(0.0, cv2.sunCasc0.z) + d))
-                          & ivec2(8 * kCv2CascNA - 1, 8 * kCv2CascNB - 1);
-                uint  st  = uint(ia.x / kCv2CascNA) | (uint(ia.y / kCv2CascNB) << 3u);
-                int   rb  = r * (kCv2CascK + 1);
-                uint  sb  = floatBitsToUint(cv2SunCasc[rb + kCv2CascK]);
-                bool  ok  = (sb & 0xFFFFFE00u) == 0x3F800000u && (sb & 63u) == st;
-                uint  cnt = ok ? (sb >> 6u) & 7u : 0u;
-                float w   = ok ? max(cv2.sunCasc3.w, 1.0 / float(cnt + 2u)) : 1.0;
-                for (int k = 0; k < kCv2CascK; ++k)
-                    cv2SunCasc[rb + k] = mix(cv2SunCasc[rb + k], Tc[k], w);
-                cv2SunCasc[rb + kCv2CascK] = uintBitsToFloat(0x3F800000u | (min(cnt + 1u, 6u) << 6u) | st);
-            }
-            return;
-        }
-        if (gl_WorkGroupID.x > 8u) return;
-        int   ri = int((gl_WorkGroupID.x - 5u) * 256u + li);
-        float Tk[17];
-        float odMax = 0.0;
-        for (int k = 0; k <= 16; ++k) Tk[k] = 0.0;
-        if (sunENU.z > -0.1 && eyeH < cv2.shell.y) {
-            float L = cv2SunGridLen(sunENU, cv2.shell.y);
-            vec3  ga, gb;
-            cv2SunGridAxes(sunENU, ga, gb);
-            // The fine grid's lattice rides with the clouds too and is stored toroidally, like the cascade's
-            // (cv2.sunCasc3.xy = the eye on it): it refreshes every other frame while the cascade is on, and an
-            // eye-centred grid one frame old sat a cell off at the player's speed (its shadows shook at 30 Hz); it
-            // also resampled the clouds at a new phase with every metre of eye motion.
-            vec2  gc = vec2(float(ri % kCv2SunGridN), float(ri / kCv2SunGridN)) - cv2.sunCasc3.xy;
-            gc -= float(kCv2SunGridN) * round(gc / float(kCv2SunGridN));
-            // Sub-rays jittered per bake, and a running mean of the bakes, as the cascade's (see there).
-            uvec3 jh = cv2Pcg3(uvec3(uint(ri), 577u, 1u));
-            float jn = float(uint(cv2.frame.x) & 255u);
-            vec2  jo = fract(vec2(jh.xy & 0xFFFFu) / 65536.0 + jn * vec2(0.7548777, 0.5698403));
-            float jp = fract(float(jh.z & 0xFFFFu) / 65536.0 + jn * 0.6180340);
-            [[dont_unroll]] for (int sr = 0; sr < 4; ++sr) {
-                vec2  gp = (gc + (jo + vec2(float(sr & 1), float(sr >> 1))) * 0.5 - 0.5) * kCv2SunGridM;
-                vec3  o  = ga * gp.x + gb * gp.y;
-                float odK[17];
-                float od = 0.0;
-                odK[0] = 0.0;
-                // 48 steps, each sub-ray's samples at its own phase of the step (192 depths per cell): at the far
-                // end a step is ~15 km, and a ray grazing the cloud tops hit or missed them with 100 m of eye height.
-                for (int i = 0; i < 48; ++i) {
-                    float u0 = float(i) / 48.0, u1 = float(i + 1) / 48.0;
-                    float um = mix(u0, u1, fract(jp + 0.25 * float(sr)));
-                    float dt = L * (u1 * u1 - u0 * u0);
-                    CV2_CNT(10);
-                    CV2Field gf = cv2Field(cv2Pos(o + sunENU * (L * um * um), eyeH, enuToEcef), 0.0, max(60.0, dt * 0.5));
-                    // The thin ice (the high layer) casts no shadow here: along a grazing Sun's ray it shadowed
-                    // ITSELF over tens of km, and every sunset's cirrus went dark and speckled (user snaps).
-                    od += gf.sigma * max(1.0 - gf.thin - gf.soft, 0.0) * dt;
-                    if (i % 3 == 2) odK[(i + 1) / 3] = od;
-                }
-                for (int k = 0; k <= 16; ++k) Tk[k] += 0.25 * exp(-(od - odK[k]));
-                odMax = max(odMax, od);
-            }
-        } else {
-            for (int k = 0; k <= 16; ++k) Tk[k] = 1.0;
-        }
-        if (ri < kCv2SunGridN * kCv2SunGridN) {
-            // Knot 16 (the transmittance beyond the ray's end: always 1) carries a STAMP (round 5): the slot's offset
-            // from the eye when it was baked (cells, 5 bits an axis) in the low mantissa bits of a float in [1, 1.0002).
-            // The lattice is toroidal: a slot leaving the trailing edge comes back at the leading one, ~32 cells off,
-            // and its running mean (1/8 a bake) kept 7/8 of the other side's shadow; now such a slot takes the new
-            // bake whole. A slot that kept its cell has moved by the eye's motion since its last bake (2 frames).
-            vec2  gc0 = vec2(float(ri % kCv2SunGridN), float(ri / kCv2SunGridN)) - cv2.sunCasc3.xy;
-            gc0 -= float(kCv2SunGridN) * round(gc0 / float(kCv2SunGridN));
-            uvec2 gq  = uvec2(clamp(floor(gc0 + 16.0), 0.0, 31.0));
-            uint  sb  = floatBitsToUint(cv2SunGrid[ri * 17 + 16]);
-            bool  same = (sb & 0xFFFFFC00u) == 0x3F800000u
-                      && abs(int(sb & 31u) - int(gq.x)) < 8 && abs(int((sb >> 5u) & 31u) - int(gq.y)) < 8;
-            float wB  = same ? cv2.sunCasc3.z : 1.0;
-            for (int k = 0; k < 16; ++k) cv2SunGrid[ri * 17 + k] = mix(cv2SunGrid[ri * 17 + k], Tk[k], wB);
-            cv2SunGrid[ri * 17 + 16] = uintBitsToFloat(0x3F800000u | gq.x | (gq.y << 5u));
-        }
-        sRainMax[li] = odMax;
-        barrier();
-        for (uint s = 128u; s > 0u; s >>= 1u) {
-            if (li < s) sRainMax[li] = max(sRainMax[li], sRainMax[li + s]);
-            barrier();
-        }
-        if (li == 0u && gl_WorkGroupID.x <= 8u) cv2SunWgMax[gl_WorkGroupID.x - 5u] = sRainMax[0];
-        return;
     }
     if (gl_WorkGroupID.x > 0u) {
         uint  cell = (gl_WorkGroupID.x - 1u) * 256u + li;

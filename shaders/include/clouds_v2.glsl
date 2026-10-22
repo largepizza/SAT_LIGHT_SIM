@@ -136,46 +136,20 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  beamEye, beamEyeDir;
     // 2026-10-06: the snow's own fall: x its phase (as rainMotion.x), y its reference speed now (flakes are not "Rain fall speed").
     vec4  snowMotion;
-    // 2026-10-10: the Sun shadow CASCADE (cloud_lightning.glsl cv2SunCasc; CPU, SatelliteSimCloudsV2.cpp).
-    // sunCasc0: xy the eye's lattice coordinate (cells; a mod 1024, b mod 256 = 8 windows: the slots' wrap stamps), z the window centre's b offset from
-    //           the eye (cells), w its offset along the Sun (m). sunCasc1: x, y the cell (m) along a / b, z the half
-    //           depth of the uniform knots (m), w the stretch beyond them toward the Sun (m).
-    // sunCasc2: x the cascade's weight (0 while it fills after a reset), y the lookup's bias toward the Sun (m),
-    //           z 1 = the cascade is baked (the fine grid then refreshes every other frame), w spare.
-    // sunCasc3: xy the eye's coordinate on the FINE grid's lattice (cells of kCv2SunGridM, mod kCv2SunGridN); z, w the
-    //           weight of a new bake in the fine grid's / the cascade's running mean (1 on the first after a reset).
-    vec4  sunCasc0, sunCasc1, sunCasc2, sunCasc3;
-    // The SHAFT lattice (cloud_lightning.glsl cv2SunShaft). sunCasc4: xyz the eye's coordinate on it (a, b cells mod
-    // 8 kCv2ShaftN = 1024; knots along the Sun mod 8 kCv2ShaftK = 256: the stamps hold which of 8 wraps a slot holds),
-    // w its weight (0 while it fills). sunCasc5: x > 0 = baked, y the knot spacing along the Sun (m), zw the eye's
-    // motion across the Sun this frame in ring 1's cells (a, b; the bake follows it to the window's leading edge).
-    vec4  sunCasc4, sunCasc5;
     // 2026-10-11. tune: x "Small cumulus" (the near field's threshold bias, field units), y "Erosion variation",
     // z "Lobe variation", w "Cirrus direction warp" (the streaks' slope). mid2: x altostratus density (x),
     // y the mid layer's thickness (x), z the share of its extinction left OUT of the shadow it casts
     // (1 - "Mid layer shadow"), w its regime bias (noise units). mid3: x 1 / its field size (m^-1; 0 = the cluster
-    // field), y the multiple-scattering octaves (march), z "Lobe occlusion", w spare. samp (cloud_v2_resolve.comp): x the accumulation's cap (samples; 0 = off), y new-pixel
+    // field), y the multiple-scattering octaves (march), z "Lobe occlusion", w "Haze near clouds" (the sky pass's humid air). samp (cloud_v2_resolve.comp): x the accumulation's cap (samples; 0 = off), y new-pixel
     // smoothing, z the motion clamp (sd), w spare.
     vec4  tune, mid2, mid3, samp;
-    // 2026-10-12: the shaft lattice's SECOND ring (coarser cells, the same rays x knots; cloud_lightning.glsl).
-    // sunCasc6: as sunCasc4 for it. sunCasc7: x > 0 = baked (0 = off),
-    // y its knot spacing along the Sun (m), z ring 1's cell (m), w ring 2's cell (m).
-    vec4  sunCasc6, sunCasc7;
     // 2026-10-13 (issue 20261012_235712), the cumulus shape. cu: x "Cumulus height variation", y "Cumulus break-up"
     // (the lobes' strength at the base), z "Cumulus top headroom", w "Storm cumulus fine lobes". cu2: x "Cb tower fine
     // lobes", y "Cumulus wisps", z "Silver lining" (march), w spare.
     vec4  cu, cu2;
-    // 2026-10-14, the LAYER SHADOW MAP (include/cv2_layer_map.glsl): layA / layE / layN the anchor's axes (observer ENU),
-    // layA.w level 0's cell (m), layE.w level 1's, layN.w the map's weight (0 = off: no bake, no lookup); layEye the eye's
-    // cell coordinate on level 0 (xy) and 1 (zw); layRef x / y the mid / high layer's reference height (m), z / w the share of
-    // their extinction their shadow takes; layBake x the bake round, y the running mean's least weight, z the anchor's
-    // epoch, w "Cirrus self-shadow".
-    vec4  layA, layE, layN, layEye, layRef, layBake;
-    // 2026-10-21 (issue 20261021_002345): the Sun shadow cascade's knots ride with the clouds along the Sun. x / y = how
-    // far (m, along the Sun) the window's knots of ray half 0 / 1 (rows 0-15 / 16-31) stand from where they stood when
-    // that half was last baked (the eye's motion relative to the clouds since then): cv2SunCascT adds it, so a ray baked
-    // a few frames ago is read at the knots it was baked for. zw spare.
-    vec4  sunCasc8;
+    // The cloud density clipmap's plane (include/cv2_cdc.glsl): layA / layE / layN the anchor's axes (observer ENU; it was the
+    // layer shadow map's anchor, 2026-10-14, deleted 2026-10-22 with the other Sun shadow structures for the STV). w spare.
+    vec4  layA, layE, layN;
     // 2026-10-21, the cloud density clipmap (EXPERIMENT, include/cv2_cdc.glsl): cdcA xy the eye on the layer map's plane (m),
     // z level 0's cell (m), w 1 = baked and used by the march's coarse steps ("cdc_skip"); cdcB x the epoch, y the bake's read footprint
     // (x the cell), z the bake budget (cells a frame), w the levels the march may use; cdcP0 / cdcP1 each level's sim-time phase (sim time / its period, mod 4096).
@@ -201,7 +175,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  anvil3;
     // 2026-10-22, S3: the Sun transmittance volume (cloud_lightning.glsl cv2Stv). stvL0..3: xy the eye on level n's lattice
     // (cells, mod 1024), z its cell (m), w its fill weight; stvH: x / y the knots' lowest / highest height (m), z 1 = on (the
-    // march's key light, the god rays and the fog read it instead of the fine grid, rings, cascade and layer map), w spare;
+    // march's key light, the god rays, the fog and the ground shadow read it), w spare;
     // stvV: xy the eye's motion this frame across the Sun in level 0's cells (the bake takes the leading edge), zw spare.
     vec4  stvL0, stvL1, stvL2, stvL3, stvH, stvV;
 } cv2;

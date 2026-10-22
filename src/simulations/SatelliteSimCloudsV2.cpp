@@ -492,11 +492,6 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     }
     vkMapMemory(dev, cv2FlashMem, 0, kCv2FlashBufBytes, 0, &cv2FlashMapped);
     std::memset(cv2FlashMapped, 0, kCv2FlashBufBytes);
-    // The layer shadow map (cv2_layer_map.glsl): device-local, read per lit sample by the march. Cleared on its first
-    // use and on every reset (recordCloudsV2: a 0 stamp reads as invalid).
-    ctx.createBuffer(kCv2LayerBufBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, cv2LayerBuf, cv2LayerMem);
-    cv2LayFrames = 0;
     ctx.createBuffer(kCv2CdcHeadBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, cv2CdcBuf, cv2CdcMem);   // grown on first use
     cv2CdcBufFull = false;
@@ -573,7 +568,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // tile (the ray jitter in fast flight); the adaptive rate: 16 last frame's resolved depth, 17/18 pass B's full-rate
     // targets, 19 the tile list
     // 20 the cloud morphology texture (review 17), 21 the far cloud layer (review 18, cloud_v2_far.comp)
-    // 22 the layer shadow map (2026-10-14, cv2_layer_map.glsl; cloud_v2_layers.comp writes it)
+    // 22 unused (was the layer shadow map, deleted 2026-10-22; bound to the blue-noise tile)
     // 23 the cloud density clipmap (2026-10-21, EXPERIMENT, cv2_cdc.glsl; cloud_v2_cdc.comp writes it)
     // 24 the droplets' Mie phase table (2026-10-22)
     cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX, SSBO,
@@ -620,11 +615,6 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     cv2SunLutPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout);
     cv2FroxPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_froxel.comp.spv", cv2MarchPipeLayout);
     cv2FarPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout);
-    {   // The layer shadow map's two passes: specialization constant 2 = 0 columns, 1 slant.
-        const uint32_t spec0[3] = {0u, 0u, 0u}, spec1[3] = {0u, 0u, 1u};
-        cv2LayerColPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_layers.comp.spv", cv2MarchPipeLayout, spec0, 3);
-        cv2LayerSlantPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_layers.comp.spv", cv2MarchPipeLayout, spec1, 3);
-    }
     {   // The clipmap's two passes: specialization constant 2 = 0 check, 1 bake.
         const uint32_t spec0[3] = {0u, 0u, 0u}, spec1[3] = {0u, 0u, 1u};
         cv2CdcPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_cdc.comp.spv", cv2MarchPipeLayout, spec0, 3);
@@ -648,7 +638,6 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkDescriptorBufferInfo flashes{cv2FlashBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo blueNoise{cv2BlueNoiseBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo tiles{cv2TileBuf, 0, VK_WHOLE_SIZE};
-        VkDescriptorBufferInfo layers{cv2LayerBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo cdc{cv2CdcBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorImageInfo mieI{cv2ClampSampler, cv2MieView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo lvOut{VK_NULL_HANDLE, cv2SunLutView, VK_IMAGE_LAYOUT_GENERAL};
@@ -656,7 +645,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkWriteDescriptorSet w[] = {
             bufferWrite(cv2MarchDescSet, 15, SSBO, &blueNoise),
             bufferWrite(cv2MarchDescSet, 19, SSBO, &tiles),
-            bufferWrite(cv2MarchDescSet, 22, SSBO, &layers),
+            bufferWrite(cv2MarchDescSet, 22, SSBO, &blueNoise),
             bufferWrite(cv2MarchDescSet, 23, SSBO, &cdc),
             imageWrite(cv2MarchDescSet, 24, TEX, &mieI),
             bufferWrite(cv2ResolveDescSet, 8, SSBO, &tiles),
@@ -844,8 +833,7 @@ static std::string pipelineStatsLine(VulkanContext &ctx, VkPipeline p)
 // driver's statistics for the new march pipeline.
 std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
                                                 uint32_t wgX, uint32_t wgY, const std::string &resolveSpv,
-                                                const std::string &lightningSpv, const std::string &compositeSpv,
-                                                const std::string &layersSpv)
+                                                const std::string &lightningSpv, const std::string &compositeSpv)
 {
     // Each override (harness `shaders reload march= resolve= lightning= composite=`) loads another SPV, so several
     // experiments can share one live app without overwriting the shipped SPVs; an empty one loads the shipped file.
@@ -893,22 +881,6 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     for (int m = 0; m < 2; ++m)
     {
         const uint32_t spec[3] = {0u, 0u, (uint32_t)m};
-        VkPipeline &lp = m == 0 ? cv2LayerColPipeline : cv2LayerSlantPipeline;
-        try
-        {
-            VkPipeline np = makeComputePipeline(ctx, pick(layersSpv, "shaders/cloud_v2_layers.comp.spv"), cv2MarchPipeLayout, spec, 3);
-            if (lp) vkDestroyPipeline(ctx.device, lp, nullptr);
-            lp = np;
-        }
-        catch (const std::exception &e)
-        {
-            err += std::string(e.what()) + "; ";
-        }
-    }
-    cv2LayFrames = 0;   // rebake the layer shadow map with the new shader
-    for (int m = 0; m < 2; ++m)
-    {
-        const uint32_t spec[3] = {0u, 0u, (uint32_t)m};
         VkPipeline &cp = m == 0 ? cv2CdcPipeline : cv2CdcBakePipeline;
         try
         {
@@ -950,18 +922,12 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2FroxPipeline = VK_NULL_HANDLE;
     if (cv2FarPipeline) vkDestroyPipeline(device, cv2FarPipeline, nullptr);
     cv2FarPipeline = VK_NULL_HANDLE;
-    if (cv2LayerColPipeline) vkDestroyPipeline(device, cv2LayerColPipeline, nullptr);
-    if (cv2LayerSlantPipeline) vkDestroyPipeline(device, cv2LayerSlantPipeline, nullptr);
-    cv2LayerColPipeline = cv2LayerSlantPipeline = VK_NULL_HANDLE;
     if (cv2CdcPipeline) vkDestroyPipeline(device, cv2CdcPipeline, nullptr);
     if (cv2CdcBakePipeline) vkDestroyPipeline(device, cv2CdcBakePipeline, nullptr);
     cv2CdcPipeline = cv2CdcBakePipeline = VK_NULL_HANDLE;
     if (cv2CdcBuf) vkDestroyBuffer(device, cv2CdcBuf, nullptr);
     if (cv2CdcMem) vkFreeMemory(device, cv2CdcMem, nullptr);
     cv2CdcBuf = VK_NULL_HANDLE; cv2CdcMem = VK_NULL_HANDLE;
-    if (cv2LayerBuf) vkDestroyBuffer(device, cv2LayerBuf, nullptr);
-    if (cv2LayerMem) vkFreeMemory(device, cv2LayerMem, nullptr);
-    cv2LayerBuf = VK_NULL_HANDLE; cv2LayerMem = VK_NULL_HANDLE;
     if (cv2SunLutView) vkDestroyImageView(device, cv2SunLutView, nullptr);
     if (cv2SunLutImg) vkDestroyImage(device, cv2SunLutImg, nullptr);
     if (cv2SunLutMem) vkFreeMemory(device, cv2SunLutMem, nullptr);
@@ -1135,7 +1101,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CbHeadDriftKm, cv2CbLobes, cv2CbHeadLobes, cv2AnvilPuff, cv2AnvilLiftM, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
                     cv2DustHeightM, cv2DustDensity, (float)(debugDisableMask & 2048u),
                     cv2LightFootprint, cv2SmallCumulus, cv2ErosionVar, cv2LobeVar, cv2CirrusDirWarp, cv2AsDensity, cv2MidThick, cv2MidShadow,
-                    cv2MidFieldKm, cv2MidCover, cv2SunCascadeRangeKm, cv2MsOctaves, cv2LobeOcclusion,
+                    cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
@@ -1407,191 +1373,35 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                            std::max(cv2IceFogDensity, 0.0f));   // w: the ice fog's extinction
     }
     {
-        // The Sun shadow cascade's lattice (2026-10-10; cloud_lightning.glsl cv2SunCasc): axes a (horizontal) and b
-        // across the Sun's direction, as the fine grid's. The eye's lattice coordinate is INTEGRATED from its motion
-        // relative to the clouds (the drift turned out, as the resolve's obsDelta), so a ray baked up to 32 frames
-        // ago still stands where its clouds are while the eye flies (7 km/s at 7 km up) and under time warp; a
-        // change of the axes or of the cells (the Sun moving, the eye's vertical turning) pivots the lattice
-        // about the eye, which moves no ray by more than metres between its refreshes.
-        // The window: +-kRh across (128 cells of 3.2 km); in b, the same disc and the shell's height seen along
-        // the Sun (0.8 km cells at sunset, ~10 km at 45 deg); centred at mid-shell under (or over) the eye.
-        const double kRh = 1000.0 * std::clamp((double)cv2SunCascadeRangeKm, 50.0, 1500.0);
+        // The Sun's axes across its direction: a (horizontal) and b (cloud_lightning.glsl cv2SunGridAxes).
         const glm::dvec3 s = glm::normalize(glm::dvec3(p.sunE));
-        const double sinE = glm::dot(s, up), cosE = std::sqrt(std::max(1.0 - sinE * sinE, 0.0));
+        const double sinE = glm::dot(s, up);
         const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), up));
         const glm::dvec3 ga = glm::normalize(glm::cross(s, std::abs(sinE) > 0.99 ? east : up));   // = cv2SunGridAxes
         const glm::dvec3 gb = glm::cross(s, ga);
-        const double hMid = 0.5 * (double)hi, hPad = hMid + 2000.0;
-        const double da = 2.0 * kRh / 128.0;
-        const double db = 2.0 * (kRh * std::abs(sinE) + hPad * cosE) / 32.0;
-        const double sHalf = kRh * cosE + hPad * std::abs(sinE);
-        const double sExt = std::min((double)hi / std::max(std::abs(sinE), 0.03), 500000.0);
-        // On while the march draws clouds (until the far cloud layer has taken over: the bake runs in the lightning
-        // pass, which stops there too). It stopped at 60 km of eye altitude, and the far shadows of a storm seen from
-        // 52 km (9% of the frame) vanished at 60 km; above it they cost +0.3-0.45 ms (100-600 km, round 5). Its window
-        // and rays do not depend on the eye's height (mid-shell under the eye), the rings do: they stay below 60 km.
-        const bool on = cv2SunCascade > 0.5f && sinE > -0.1 && cloudFarBlend() < 0.999f;
-        cv2GridFrames = lightValid ? std::min(cv2GridFrames + 1, 100000) : 0;
-        if (lightValid)
-        {
-            // The fine grid's lattice (250 m cells, 32 x 32) rides the same way, cascade or not.
-            const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
-            cv2GridLatA = std::fmod(cv2GridLatA + glm::dot(dEye, ga) / 250.0, 32.0 * 1024.0);
-            cv2GridLatB = std::fmod(cv2GridLatB + glm::dot(dEye, gb) / 250.0, 32.0 * 1024.0);
-        }
-        if (!on || !lightValid)
-        {
-            cv2CascFrames = 0;
-        }
-        else
-        {
-            const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
-            cv2CascLatA = std::fmod(cv2CascLatA + glm::dot(dEye, ga) / da, 128.0 * 1024.0);
-            cv2CascLatB = std::fmod(cv2CascLatB + glm::dot(dEye, gb) / db, 32.0 * 1024.0);
-            cv2CascS += glm::dot(dEye, s);
-            ++cv2CascFrames;
-        }
-        // The knots along the Sun (2026-10-21, issue 20261021_002345): a and b ride with the clouds (above), but a ray's
-        // knots stand at fixed distances along the Sun from the window's centre, which sits under the EYE. A bake read a
-        // few frames later, or a running mean of bakes, was therefore shifted along its rays by the eye's motion since:
-        // from orbit (the height-scaled speed is ~330 km/s at 333 km) by several 9-km knots, and the window read each
-        // cloud's own shadow — a dark, ray-streaked rectangle under the eye while flying. Each ray half's knot origin at
-        // its last bake is kept (the half baked this frame: odd frames, half (frame >> 1) & 1, cloud_v2_lightning.comp)
-        // and the lookup adds the shift since (sunCasc8.xy); while the eye moves, a bake replaces the slot's running mean
-        // (bakes for other knot origins cannot be averaged).
-        const double knotOrigin = cv2CascS + (hMid - eyeH) * sinE;
-        bool cascMoved = false;
-        if (cv2CascFrames <= 1)
-            cv2CascBakeS[0] = cv2CascBakeS[1] = knotOrigin;
-        else if ((cv2Frame & 1u) != 0u)
-        {
-            const int hb = (int)((cv2Frame >> 1) & 1u);
-            cascMoved = std::abs(knotOrigin - cv2CascBakeS[hb]) > 0.02 * (2.0 * sHalf / 40.0);
-            cv2CascBakeS[hb] = knotOrigin;
-        }
-        p.sunCasc8 = glm::vec4((float)(knotOrigin - cv2CascBakeS[0]), (float)(knotOrigin - cv2CascBakeS[1]), 0.0f, 0.0f);
         auto modP = [](double v, double m) { v = std::fmod(v, m); return (float)(v < 0.0 ? v + m : v); };
-        // xy mod 8 windows (1024 x 256 cells): each ray's last knot stamps which wrap of its slot it was baked for
-        // (cloud_v2_lightning.comp), so a slot that changed hands as the eye moved is rebaked whole.
-        p.sunCasc0 = glm::vec4(modP(cv2CascLatA, 1024.0), modP(cv2CascLatB, 256.0),
-                               (float)((hMid - eyeH) * glm::dot(up, gb) / db), (float)((hMid - eyeH) * sinE));
-        p.sunCasc1 = glm::vec4((float)da, (float)db, (float)sHalf, (float)sExt);
-        // zw: the weight of a new bake in each ray's running mean: 1 / (bakes so far), at least 1/8 (the fine grid is
-        // baked every frame, or every other one with the cascade on; a cascade ray every fourth frame).
-        const int nGrid = cv2GridFrames / (on ? 2 : 1), nCasc = std::max(cv2CascFrames - 1, 0) / 4;
-        p.sunCasc3 = glm::vec4(modP(cv2GridLatA, 32.0), modP(cv2GridLatB, 32.0),
-                               std::max(1.0f / (float)(nGrid + 1), 0.125f),
-                               cascMoved ? 1.0f : std::max(1.0f / (float)(nCasc + 1), 0.125f));
-        // x: nothing until every ray has been baked once (4 frames: 2048 of the 4096 rays on every other frame), then in
-        // over 8 (it waited 33 frames, from when the comment's 32 was true; issue 20261013_220718).
-        // The SHAFT lattice (cloud_lightning.glsl cv2SunShaft): 250-m cells across the Sun, knots along it spaced so
-        // its +-16 knots reach ~5 km above and below the eye's level whatever the Sun's height (1-3 km); the eye's
-        // coordinate integrated in all three, as above. Baked with the cascade: the cloud samples within ~14 km read
-        // it too (2026-10-12; it was baked only for the god rays).
-        const double dsS = std::clamp(5000.0 / std::max(std::abs(sinE), 0.02), 16000.0, 48000.0) / 16.0;
-        const bool shaftOn = on && eyeH < 60000.0;   // eye-centred: from higher up the cloud layer is outside them
-        // ...and the sky's air keeps no cloud shadow up there (the god rays read the cascade: not measured from orbit).
+        // From orbit the sky's air keeps no cloud shadow (the god rays: not measured above 60 km).
         if (eyeH >= 60000.0) p.lightVol.w = 0.0f;
-        // The rings' cells ("Cloud shadow ring 1 / 2 cell"): a ring reaches 56 cells from the eye. Ring 2's knots
-        // along the Sun are ring 1's x the cells' ratio x "ring 2 depth", so its window along the Sun covers its
-        // reach across it. A changed cell refills that ring (its lattice coordinate is in cells).
-        const double cell1 = std::clamp((double)cv2ShadowRing1CellM, 50.0, 2000.0);
-        const double cell2 = std::clamp((double)cv2ShadowRing2CellM, cell1, 8000.0);
-        const bool ring2On = shaftOn && cv2ShadowRing2CellM > 0.0f;
-        const double dsS2 = dsS * std::max(cell2 / cell1 * std::clamp((double)cv2ShadowRing2KnotK, 0.1, 4.0), 1.0);
-        if (cv2ShaftCellUsed[0] != (float)cell1) { cv2ShaftCellUsed[0] = (float)cell1; cv2ShaftFrames = 0; cv2Shaft2Frames = 0; }
-        // Ring 2 refills on a new cell, or when its knot spacing along the Sun has moved > 10% since its last refill. It
-        // compared dsS2 + cell2 EXACTLY, and dsS2 follows the Sun's elevation (5000 m / sin el, between 6 and 18 deg): with
-        // time running ring 2 was cleared every frame and never drew a shadow there (2026-10-14, issue 20261013_214939
-        // shot 5 at a ~10 deg Sun: the clamp gate below never opened). A ray is rebaked at the current spacing every
-        // round, so a slowly changing spacing needs no refill.
-        if (cv2ShaftCellUsed[1] != (float)cell2 || std::abs(dsS2 / std::max(cv2Shaft2KnotUsed, 1e-3) - 1.0) > 0.1)
-        {
-            cv2ShaftCellUsed[1] = (float)cell2;
-            cv2Shaft2KnotUsed = dsS2;
-            cv2Shaft2Frames = 0;
-        }
-        // A ring starting to fill (a reset, a new cell size, the cascade switched on) is cleared to 0 first: every
-        // slot then reads as INVALID (cloud_lightning.glsl cv2ShaftStampOk) until it is baked, so the lookup falls back
-        // to the next ring / the cascade there instead of showing what the slot held before (another place, another
-        // setting). That is what lets the ring come in as its slots are baked instead of after a 33-frame wait.
-        // Host-visible and coherent, and the previous frame's work is complete here (single frame in flight).
-        auto clearRing = [&](int ring)
-        {
-            std::memset(static_cast<char *>(cv2FlashMapped) + kCv2SunShaftOffset + (VkDeviceSize)ring * kCv2SunShaftRingBytes, 0,
-                        kCv2SunShaftRingBytes);
-        };
-        glm::vec2 shaftVel(0.0f);   // the eye's motion this frame across the Sun, in ring 1's cells
-        if (!shaftOn || !lightValid)
-            cv2ShaftFrames = 0;
-        else
-        {
-            if (cv2ShaftFrames == 0) clearRing(0);
-            const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
-            shaftVel = glm::vec2((float)(glm::dot(dEye, ga) / cell1), (float)(glm::dot(dEye, gb) / cell1));
-            cv2ShaftLatA = std::fmod(cv2ShaftLatA + glm::dot(dEye, ga) / cell1, 128.0 * 1024.0);
-            cv2ShaftLatB = std::fmod(cv2ShaftLatB + glm::dot(dEye, gb) / cell1, 128.0 * 1024.0);
-            cv2ShaftLatS = std::fmod(cv2ShaftLatS + glm::dot(dEye, s) / dsS, 32.0 * 1024.0);
-            ++cv2ShaftFrames;
-        }
-        if (!ring2On || !lightValid)
-            cv2Shaft2Frames = 0;
-        else
-        {
-            if (cv2Shaft2Frames == 0) clearRing(1);
-            const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
-            cv2Shaft2LatA = std::fmod(cv2Shaft2LatA + glm::dot(dEye, ga) / cell2, 128.0 * 1024.0);
-            cv2Shaft2LatB = std::fmod(cv2Shaft2LatB + glm::dot(dEye, gb) / cell2, 128.0 * 1024.0);
-            cv2Shaft2LatS = std::fmod(cv2Shaft2LatS + glm::dot(dEye, s) / dsS2, 32.0 * 1024.0);
-            ++cv2Shaft2Frames;
-        }
-        // The rings' coordinates go to the GPU modulo 8 windows (1024 cells, 256 knots): a ring value records which of
-        // the 8 wraps of its slot it was baked for (cloud_lightning.glsl cv2ShaftStampOf), so a slot that changed hands
-        // reads as invalid until it is baked again at any speed short of 8 windows between two bakes of it (round 5,
-        // issue 20261013_220718; the offset stamp it replaced was exact to ~half a window: ~12 km/s at 40 fps for
-        // 159-m cells). Each ray keeps its own running mean (2 bits of bake count in its values); x only says "baked".
-        p.sunCasc6 = glm::vec4(modP(cv2Shaft2LatA, 1024.0), modP(cv2Shaft2LatB, 1024.0), modP(cv2Shaft2LatS, 256.0),
-                               ring2On ? std::clamp((float)cv2Shaft2Frames / 16.0f, 0.0f, 1.0f) : 0.0f);
-        p.sunCasc7 = glm::vec4(ring2On ? 1.0f : 0.0f, (float)dsS2, (float)cell1, (float)cell2);
-        p.sunCasc4 = glm::vec4(modP(cv2ShaftLatA, 1024.0), modP(cv2ShaftLatB, 1024.0), modP(cv2ShaftLatS, 256.0),
-                               shaftOn ? std::clamp((float)cv2ShaftFrames / 16.0f, 0.0f, 1.0f) : 0.0f);
-        // zw: the eye's motion this frame (ring 1's cells): moving, the bake takes the window's leading edge first.
-        p.sunCasc5 = glm::vec4(shaftOn ? 1.0f : 0.0f, (float)dsS, shaftVel.x, shaftVel.y);
+        const double cell1 = std::clamp((double)cv2ShadowRing1CellM, 50.0, 2000.0);   // "Sun shadow cell (m)"
         p.tune = glm::vec4(std::clamp(cv2SmallCumulus, 0.0f, 0.5f), std::max(cv2ErosionVar, 0.0f), std::max(cv2LobeVar, 0.0f),
                            std::clamp(cv2CirrusDirWarp, 0.0f, 1.3f));
         p.mid2 = glm::vec4(std::max(cv2AsDensity, 0.0f), std::clamp(cv2MidThick, 0.1f, 4.0f),
                            1.0f - std::clamp(cv2MidShadow, 0.0f, 1.0f), 0.057f * cv2MidCover);
-        // w: how far the resolve may take a still view's history unclamped (cloud_v2_resolve.comp `uK`). Not while the
-        // Sun shadow lattices are filling after a reset: their shadows arrive over ~40 frames, and unclamped at the still
-        // weight the clouds took seconds to darken under them (load: 18% of pixels past 16 levels at frame 20, was 0.7%).
-        int lightFill = cv2GridFrames;
-        if (on) lightFill = std::min(lightFill, cv2CascFrames);
-        if (shaftOn) lightFill = std::min(lightFill, cv2ShaftFrames);
-        if (ring2On) lightFill = std::min(lightFill, cv2Shaft2Frames);
-        if (cv2SunShadowVolume > 0.5f) lightFill = std::min(lightFill, cv2StvFrames[1] * 2);   // (S3: level 1's round is 64 frames)
-        p.mid3 = glm::vec4(cv2MidFieldKm > 1.0f ? 1.0f / (1000.0f * cv2MidFieldKm) : 0.0f,
-                       std::round(std::clamp(cv2MsOctaves, 1.0f, 8.0f)), std::clamp(cv2LobeOcclusion, 0.0f, 1.0f),
-                       std::clamp(((float)lightFill - 64.0f) / 32.0f, 0.0f, 1.0f));
         p.cu  = glm::vec4(std::clamp(cv2CuHeightVar, 0.0f, 1.0f), std::clamp(cv2CuBreakup, 0.0f, 1.0f),
                           std::clamp(cv2CuHeadroom, 0.0f, 2.0f), std::clamp(cv2CuFineLobes, 0.0f, 2.0f));
-        // w: ring 0 is catching up (cloud_v2_lightning.comp workgroups 17-18 bake it a second time): moving more than
-        // half a cell a frame, the 128 frames after that, and its first 64 frames after a refill.
-        cv2ShaftBoost = (glm::length(shaftVel) > 0.5f || (shaftOn && cv2ShaftFrames < 64)) ? 128 : std::max(cv2ShaftBoost - 1, 0);
-        p.cu2 = glm::vec4(std::clamp(cv2CbFineLobes, 0.0f, 2.0f), std::clamp(cv2CuWisps, 0.0f, 1.0f),
-                          std::clamp(cv2SilverLining, 0.0f, 4.0f), (shaftOn && cv2ShaftBoost > 0) ? 1.0f : 0.0f);
         // An HQ export's running mean must not be floored at 1 / (the accumulation cap): the cap goes to 256 there.
         p.samp = glm::vec4(cv2HqHistWeight > 0.0f && cv2SampAccum > 0.0f ? 256.0f : std::clamp(cv2SampAccum, 0.0f, 256.0f),
                            std::clamp(cv2SampNewSmooth, 0.0f, 1.0f),
                            std::clamp(cv2SampClampSd, 0.25f, 8.0f), std::clamp(cv2LightFootprint, 0.0f, 0.5f));
-        p.sunCasc2 = glm::vec4(on ? std::clamp(((float)cv2CascFrames - 4.0f) / 8.0f, 0.0f, 1.0f) : 0.0f,   // every ray baked by frame 4
-                               (float)(2.0 * sHalf / 40.0), on ? 1.0f : 0.0f, std::max(cv2HazeAloft, 0.0f));
 
-        // The Sun transmittance VOLUME (S3, 2026-10-22; cloud_lightning.glsl cv2Stv, "Sun shadow volume"): 4 levels of the
-        // shaft lattice's kind (cells = ring 1's x 1, 4, 16, 64), knots by HEIGHT (0 .. the shell top + 1 km). Each level's
-        // lattice coordinate is integrated like the rings'; a level starting to fill (or a new cell / knot range) is
-        // cleared first, so its slots read invalid until baked and the next level out stands in.
+        // The Sun transmittance VOLUME (S3, 2026-10-22; cloud_lightning.glsl cv2Stv): the clouds' one Sun shadow. 4 levels
+        // of 128 x 128 rays across the Sun (cells "Sun shadow cell" x 1, 4, 16, 64), knots by HEIGHT (0 .. the shell top +
+        // 1 km). Each level's lattice coordinate is INTEGRATED from the eye's motion relative to the clouds (the drift turned
+        // out, as the resolve's obsDelta), so a ray baked rounds ago still stands where its clouds are while the eye flies
+        // and under time warp. A level starting to fill (or a new cell / knot range) is cleared first, so its slots read
+        // invalid until baked and the next level out stands in. On while the march draws clouds.
         {
-            const bool stvOn = cv2SunShadowVolume > 0.5f && sinE > -0.1 && cloudFarBlend() < 0.999f;
+            const bool stvOn = sinE > -0.1 && cloudFarBlend() < 0.999f;
             const double hHi = (double)hi + 1000.0;
             const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
             glm::vec4 lat[4];
@@ -1614,7 +1424,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2StvLatB[lv] = std::fmod(cv2StvLatB[lv] + glm::dot(dEye, gb) / cellL, 128.0 * 1024.0);
                     ++cv2StvFrames[lv];
                 }
-                // In over its first round (level 0: 32 frames, the others 64), as the rings come in.
+                // In over its first round (level 0: 32 frames, the others 64).
                 const float fill = stvOn ? std::clamp((float)cv2StvFrames[lv] / (lv == 0 ? 16.0f : 32.0f), 0.0f, 1.0f) : 0.0f;
                 lat[lv] = glm::vec4(modP(cv2StvLatA[lv], 1024.0), modP(cv2StvLatB[lv], 1024.0), (float)cellL, fill);
             }
@@ -1624,39 +1434,39 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             const double hC = std::min(eyeH, 0.5 * hHi);
             const float wcA = (float)((hC - eyeH) * glm::dot(up, ga)), wcB = (float)((hC - eyeH) * glm::dot(up, gb));
             p.stvH = glm::vec4(0.0f, (float)hHi, stvOn ? 1.0f : 0.0f, wcA);
-            // z: levels 0-1 baked twice (workgroups 24-27) while they catch up: moving over half a level-0 cell a frame,
-            // the 128 frames after, and the first 64 frames of a fill.
+            // z: levels 0-1 baked twice (lightning workgroups 10-17) while they catch up: moving over half a level-0 cell a
+            // frame, the 128 frames after, and the first 64 frames of a fill.
             const glm::vec2 v0((float)(glm::dot(dEye, ga) / cell1), (float)(glm::dot(dEye, gb) / cell1));
             cv2StvBoost = (stvOn && (glm::length(v0) > 0.5f || cv2StvFrames[0] < 64 || cv2StvFrames[1] < 64))
                               ? 128 : std::max(cv2StvBoost - 1, 0);
             p.stvV = glm::vec4(v0.x, v0.y, cv2StvBoost > 0 ? 1.0f : 0.0f, wcB);
             cv2StvOnNow = stvOn;
         }
+        // mid3.w: "Haze near clouds" (the sky pass). cu2.w: how far the resolve may take a still view's history unclamped
+        // (cloud_v2_resolve.comp `uK`): not while the Sun shadow fills after a reset, its shadows arriving over ~40 frames
+        // darkened the clouds over seconds at the still weight (load: 18% of pixels past 16 levels at frame 20, was 0.7%).
+        // (S3: level 1's round is 64 frames.)
+        const int lightFill = cv2StvOnNow ? cv2StvFrames[1] * 2 : 1000;
+        p.mid3 = glm::vec4(cv2MidFieldKm > 1.0f ? 1.0f / (1000.0f * cv2MidFieldKm) : 0.0f,
+                           std::round(std::clamp(cv2MsOctaves, 1.0f, 8.0f)), std::clamp(cv2LobeOcclusion, 0.0f, 1.0f),
+                           std::max(cv2HazeAloft, 0.0f));
+        p.cu2 = glm::vec4(std::clamp(cv2CbFineLobes, 0.0f, 2.0f), std::clamp(cv2CuWisps, 0.0f, 1.0f),
+                          std::clamp(cv2SilverLining, 0.0f, 4.0f),
+                          std::clamp(((float)lightFill - 64.0f) / 32.0f, 0.0f, 1.0f));
 
-        // The LAYER SHADOW MAP (2026-10-14, include/cv2_layer_map.glsl): the mid and high layers' shadow at any distance.
-        // Its lattice is a gnomonic plane tangent at an anchor fixed in the DRIFTED frame (the clouds stand still in it), so
-        // nothing is integrated: the eye's coordinate is a projection. A new anchor (> 1500 km away, or a reset) clears it.
-        const bool layOn = cv2LayerShadows > 0.0f && sinE > -0.1 && cloudFarBlend() < 0.999f && (cv2MidAmount > 0.0f || cv2HighAmount > 0.0f);
+        // The cloud density clipmap's plane (cv2_cdc.glsl): a gnomonic plane tangent at an anchor fixed in the DRIFTED
+        // frame (the clouds stand still in it), so nothing is integrated: the eye's coordinate is a projection. A new
+        // anchor (> 1500 km away) starts a new epoch. (It was the layer shadow map's plane, deleted 2026-10-22.)
         const glm::dvec3 eyeD = rotD(up, cD, sD);
-        if (!cv2LayAnchorSet || glm::dot(eyeD, cv2LayAnchor) < std::cos(1500000.0 / R))
+        bool cdcNewAnchor = false;
+        if (!cv2CdcAnchorSet || glm::dot(eyeD, cv2CdcAnchor) < std::cos(1500000.0 / R))
         {
-            cv2LayAnchor = eyeD;
-            cv2LayAnchorSet = true;
-            cv2LayEpoch = (cv2LayEpoch + 1) & 15;
-            cv2LayFrames = 0;
+            cv2CdcAnchor = eyeD;
+            cv2CdcAnchorSet = true;
+            cdcNewAnchor = true;
         }
-        // Level 1's cells cover what the eye can see of the cloud tops (+ 300 km for a grazing Sun's offset) in its
-        // 124-cell reach: 6 km near the ground, doubling up to 48 km from orbit (a change refills the map).
-        const double reachM = std::sqrt(2.0 * R * std::max(eyeH, 0.0)) + std::sqrt(2.0 * R * 14000.0) + 300000.0;
-        double cellF = 6000.0;
-        while (cellF * 124.0 < reachM && cellF < 48000.0) cellF *= 2.0;
-        if (cellF != cv2LayFarCell) { cv2LayFarCell = cellF; cv2LayFrames = 0; }
-        if (!lightValid || !layOn)
-            cv2LayFrames = 0;
-        ++cv2LayFrames;   // 1 on a reset frame: recordCloudsV2 clears the map then
-        ++cv2LayRound;
         {
-            const glm::dvec3 A = cv2LayAnchor;
+            const glm::dvec3 A = cv2CdcAnchor;
             const glm::dvec3 Ed = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), std::abs(A.z) > 0.999 ? glm::dvec3(1.0, 0.0, 0.0) : A));
             const glm::dvec3 Nd = glm::cross(A, Ed);
             // ... into the observer's ENU frame: undrift (Earth-fixed ECEF), then onto east / north / up.
@@ -1666,25 +1476,14 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                 const glm::dvec3 v = rotD(vd, cD, -sD);
                 return glm::vec3((float)glm::dot(v, ex), (float)glm::dot(v, ey), (float)glm::dot(v, up));
             };
-            const double cellN = 1000.0;
             const double ue = R * glm::dot(eyeD, Ed) / glm::dot(eyeD, A), ve = R * glm::dot(eyeD, Nd) / glm::dot(eyeD, A);
-            p.layA = glm::vec4(toEnu(A), (float)cellN);
-            p.layE = glm::vec4(toEnu(Ed), (float)cellF);
-            // w: in once the columns have all been baked (16 frames) and the slant cells twice (8 more), over 16.
-            p.layN = glm::vec4(toEnu(Nd), layOn ? std::clamp(cv2LayerShadows, 0.0f, 1.0f)
-                                                    * std::clamp(((float)cv2LayFrames - 24.0f) / 16.0f, 0.0f, 1.0f) : 0.0f);
-            p.layEye = glm::vec4((float)(ue / cellN), (float)(ve / cellN), (float)(ue / cellF), (float)(ve / cellF));
-            // The reference heights the slant cells lie at; the share of each layer's extinction its shadow takes: the mid
-            // layer's "Mid layer shadow" (as the light march), cirrus 0.2 (delta-scaled ice, as the light march).
-            p.layRef = glm::vec4(5000.0f, 9500.0f, std::clamp(cv2MidShadow, 0.0f, 1.0f), 0.2f);
-            // y: a bake's least weight in a column's running mean: the sim time between two bakes of a cell (16 frames) over
-            // the ~60 s the layers take to change at a cell's scale (cloudlets slide ~30 m/s); 0 while paused.
-            p.layBake = glm::vec4((float)(cv2LayRound & 0xFFFFFu), (float)std::clamp(std::abs(dSimT) * 16.0 / 60.0, 0.0, 1.0),
-                                  (float)cv2LayEpoch, std::clamp(cv2CirrusSelfShadow, 0.0f, 1.0f));
+            p.layA = glm::vec4(toEnu(A), 0.0f);
+            p.layE = glm::vec4(toEnu(Ed), 0.0f);
+            p.layN = glm::vec4(toEnu(Nd), 0.0f);
             // The cloud density clipmap (EXPERIMENT, cv2_cdc.glsl), on the same plane. A new epoch (the anchor, the field,
             // a time jump or a reset) invalidates every cell. Each level's cells expire after half a cell of wind slide at
             // 40 m/s of sim time (staggered per cell); paused, nothing expires.
-            if (!lightValid || cv2LayFrames <= 1 || cv2CdcFpUsed != cv2CdcFp || cv2CdcSkipUsed != cv2CdcSkip
+            if (!lightValid || cdcNewAnchor || cv2CdcFpUsed != cv2CdcFp || cv2CdcSkipUsed != cv2CdcSkip
                 || cv2CdcLightUsed != cv2CdcLight || cv2CdcLightLevelsUsed != cv2CdcLightLevels || cv2CdcMaxLevelUsed != cv2CdcMaxLevel)
                 ++cv2CdcEpoch;
             cv2CdcFpUsed = cv2CdcFp;
@@ -2048,8 +1847,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     if (cv2LightningPipeline)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightningPipeline);
-        vkCmdDispatch(cmd, 32, 1, 1);   // (+ 13 for the Sun transmittance volume, S3: 19-20 level 0, 21-23 levels 1-3, 24-31 catch-up)   // (+ 2 for ring 0's catch-up bake, 2026-10-14) + 4 workgroups for the rain map (review 22), + 4 for the Sun shadow grid, + 4 more
-                                        // on the frames that bake the cascade (returning at once on the others)
+        vkCmdDispatch(cmd, 18, 1, 1);   // 0 the flash list, 1-4 the rain map, 5-17 the Sun transmittance volume (S3: 5-6 level 0, 7-9 levels 1-3, 10-17 catch-up)
         // The rain particles (main pass, vertex stage) read the rain map and the light at the eye it just wrote.
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
@@ -2068,25 +1866,6 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
     cv2PassStampTo(cmd, 2);   // lightning + the Sun shadow bakes (+ the froxel volume)
-    // The layer shadow map (cv2_layer_map.glsl): cleared on a reset (stamps 0 read as invalid), then this frame's columns,
-    // then a quarter of the slant cells from them; the march reads the slant cells.
-    if (cv2LayerColPipeline && cv2LayerSlantPipeline && cv2LayerBuf && !cv2StvOnNow)   // (S3: the volume carries the layers)
-    {
-        if (cv2LayFrames <= 1)
-        {
-            vkCmdFillBuffer(cmd, cv2LayerBuf, 0, VK_WHOLE_SIZE, 0);
-            memoryBarrier(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-                          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-        }
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LayerColPipeline);
-        vkCmdDispatch(cmd, 32, 1, 1);
-        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LayerSlantPipeline);
-        vkCmdDispatch(cmd, 128, 1, 1);
-        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-    }
     // The cloud density clipmap (EXPERIMENT, cv2_cdc.glsl): stale cells re-baked within the budget; the march reads it.
     if (cv2CdcPipeline && cv2CdcBakePipeline && cv2CdcActive)
     {
