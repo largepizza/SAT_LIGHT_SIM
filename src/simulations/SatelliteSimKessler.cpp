@@ -3188,7 +3188,10 @@ bool SatelliteSim::kesslerCountsWalk(KCountsWalk &w, size_t budget) const
         }
         // The latest significant breakups (catastrophic collisions, explosions, ASAT strikes, the player's): the 8
         // latest by time (the log is in index order, not quite time order).
-        const bool sig = (e.kind == kessler::EV_COLLISION && e.catastrophic) || e.kind == kessler::EV_EXPLOSION ||
+        // (a catastrophic collision with a 10-cm fragment is every other event late in the cascade: "significant"
+        // is two tracked objects meeting)
+        const bool sig = (e.kind == kessler::EV_COLLISION && e.catastrophic && e.b != kessler::kSmallRef) ||
+                         e.kind == kessler::EV_EXPLOSION ||
                          e.kind == kessler::EV_ASAT || (e.origin == kessler::ORIGIN_USER && e.kind != kessler::EV_KILL);
         if (sig && (e.pos[0] != 0.0f || e.pos[1] != 0.0f || e.pos[2] != 0.0f))
         {

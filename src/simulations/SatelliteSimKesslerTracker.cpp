@@ -481,18 +481,18 @@ void SatelliteSim::kesslerTrackerRenderGlobe()
                                         glm::mix(at(v, a0 + 1, l0), at(v, a0 + 1, l0 + 1), tl), ta);
                     };
                     const float dd = bil(trDebDen), wd = bil(trWorkDen);
-                    // Working satellites: blue, by density (1e-9 .. 1e-4 per km^3).
+                    // Working satellites: blue, by density (1e-8 .. 1e-4 per km^3; a mega-shell's core is the top).
                     if (wd > 0.0f)
                     {
-                        const float w = std::clamp(((float)std::log10(std::max(wd, 1e-12f)) + 9.0f) / 5.0f, 0.0f, 1.0f);
-                        sc = glm::vec3(0.06f, 0.2f, 0.62f) * (0.5f + 0.8f * w);
-                        sa = 0.75f * glm::smoothstep(0.0f, 0.35f, w);
+                        const float w = std::clamp(((float)std::log10(std::max(wd, 1e-12f)) + 8.0f) / 4.0f, 0.0f, 1.0f);
+                        sc = glm::vec3(0.05f, 0.16f, 0.55f) * (0.35f + 0.9f * w);
+                        sa = 0.6f * glm::smoothstep(0.0f, 0.5f, w);
                     }
-                    // The danger: the chance a year a 10 m^2 satellite is hit (1e-5 .. 1).
+                    // The danger: the chance a year a 10 m^2 satellite is hit (1 in 10,000 .. 1 in 10 and up).
                     if (dd > 0.0f)
                     {
                         const float ch = 1.0f - std::exp(-dd * (float)kTrHitK);
-                        const float h = std::clamp(((float)std::log10(std::max(ch, 1e-12f)) + 5.0f) / 5.0f, 0.0f, 1.0f);
+                        const float h = std::clamp(((float)std::log10(std::max(ch, 1e-12f)) + 4.0f) / 3.0f, 0.0f, 1.0f);
                         const float ha = glm::smoothstep(0.0f, 0.12f, h) * (0.55f + 0.45f * h);
                         sc = glm::mix(sc, heat(h) * 1.6f, ha);
                         sa = sa + (1.0f - sa) * ha;
@@ -792,6 +792,8 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
         };
         for (const TrMarker &m : trMarkers)
         {
+            if (m.ev >= kEvents.size())
+                continue; // (the world restarted since the raster)
             const kessler::Event &e = kEvents[m.ev];
             const bool user = e.origin == kessler::ORIGIN_USER;
             glm::vec4 col = palV(user ? Pal::trkMarkerUser : Pal::trkMarker, m.front ? 1.0f : 0.35f);
@@ -823,7 +825,7 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
             const float y = (float)(0.5 - 0.5 * (1.0 + kTrAltK * alts[k]) / kTrExtent) * G;
             char nb[16];
             snprintf(nb, sizeof(nb), "%d km", alts[k]);
-            if (k % 2 == 1 || G > 240.0f)
+            if (k % 2 == 1) // (500 / 1500 crowd them at this size)
                 label(cx + 3.0f, y - (float)fs(9) - 1.0f, nb, glm::vec4(0.7f));
         }
     }
@@ -853,7 +855,7 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
         };
         text("Round the globe: the shells, altitude outward (x1.6), latitude by angle. Drag to turn.", Pal::textDim, 10, true);
         swatch(0, Pal::trkWork, "Working satellites");
-        swatch(1, Pal::trkHot, "Danger: the chance a year that a 10 m^2 satellite there is hit (1 in 100,000 .. certain)");
+        swatch(1, Pal::trkHot, "Danger: the chance a year that a 10 m^2 satellite there is hit (dim: 1 in 10,000; white: 1 in 10 or more)");
         swatch(2, Pal::trkMarker, "The latest breakups (1 = newest)");
         swatch(3, Pal::trkMarkerUser, "Your breakups");
         swatch(4, Pal::trkYou, "You");
@@ -892,7 +894,7 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
             legend();
         }
     }
-    if (trHoverMarker >= 0 && trHoverMarker < (int)trMarkers.size())
+    if (trHoverMarker >= 0 && trHoverMarker < (int)trMarkers.size() && trMarkers[(size_t)trHoverMarker].ev < kEvents.size())
     {
         const kessler::Event &e = kEvents[trMarkers[(size_t)trHoverMarker].ev];
         ui.tooltip(inp, true, msStr("%d. %s", trMarkers[(size_t)trHoverMarker].rank, kesslerEventTitle(e).c_str()), fs(11));

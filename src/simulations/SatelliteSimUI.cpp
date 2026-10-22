@@ -3632,8 +3632,9 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
 
 // ─── buildSettingsLaunchesTab ────────────────────────────────────────────────
 // "Launches & debris" (2026-10-21, issue 20261021_175638): the Missions window's Controls tab, given a place here. The
-// simulation first (LAUNCHES, THE SUN'S FURY: what happens), then the graphics (rockets and exhaust with the exhaust
-// sliders, debris and re-entries: how it looks). settings.json keys unchanged (launches.*, kessler.*).
+// graphics first (rockets and exhaust with the exhaust
+// sliders, debris and re-entries: how it looks), then the simulation (LAUNCHES, THE SUN'S FURY: what happens).
+// settings.json keys unchanged (launches.*, kessler.*).
 void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
 {
     uiKV("LdKV", 0, "", "The schedule, what is flying and the Kessler tracker: the Missions window (rocket button, M).", 4.0f,
@@ -3643,10 +3644,12 @@ void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
         msChrome.open = true;
         msNextWall = msPinWall = -1e300;
     }
-    buildLaunchSettingsSection(inp, ui);
-    buildKesslerSettingsSection(inp, ui);
+    // The graphics first (the issue: "primarily the graphics related settings"; the exhaust sliders are what gets
+    // tuned), then what happens.
     buildLaunchGraphicsSection(inp, ui);
     buildKesslerGraphicsSection(inp, ui);
+    buildLaunchSettingsSection(inp, ui);
+    buildKesslerSettingsSection(inp, ui);
 }
 
 // ─── buildSettingsConstellationsTab ─────────────────────────────────────────

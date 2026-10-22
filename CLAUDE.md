@@ -5329,9 +5329,9 @@ launches follow per-program cadences (no real manifest).
   of record writes from 1 min/s to 1 d/s (the retirees deorbiting after the CME). Resume (after_storm 1) is not
   shortcut: its end depends on the ranks.
 - Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; **Settings > Launches & debris**
-  (2026-10-21, issue 20261021_175638: the Missions window's Controls tab moved there; `buildSettingsLaunchesTab` = LAUNCHES,
-  THE SUN'S FURY, then GRAPHICS: ROCKETS AND EXHAUST (`buildLaunchGraphicsSection`) and GRAPHICS: DEBRIS AND RE-ENTRIES
-  (`buildKesslerGraphicsSection`); Constellations keeps a pointer). **The exhaust sliders** (slots 302-309, `marksPreset`
+  (2026-10-21, issue 20261021_175638: the Missions window's Controls tab moved there; `buildSettingsLaunchesTab` = GRAPHICS first:
+  ROCKETS AND EXHAUST (`buildLaunchGraphicsSection`) and GRAPHICS: DEBRIS AND RE-ENTRIES
+  (`buildKesslerGraphicsSection`), then LAUNCHES and THE SUN'S FURY; Constellations keeps a pointer). **The exhaust sliders** (slots 302-309, `marksPreset`
   false, all 1 = the look before them; "Reset exhaust to defaults"): "Plume opacity" `plume_gain` 0-5, "Plume brightness"
   `plume_brightness` 0-5 (x the scattered colour, addPlume), "Plume width" `plume_width` 0.25-4 (x every Gaussian's radius,
   same cross-section), "Plume billows" `plume_billows` 0-3 (cloud_march.comp's modulation contrast via DustBuf `dustPad2`;
