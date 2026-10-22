@@ -5,5 +5,6 @@
 // stars, planets and satellites that follow are occluded by terrain, sea, cloud and meshes as before.
 layout(set = 0, binding = 0) uniform sampler2D skyDepth;
 void main() {
-    gl_FragDepth = texelFetch(skyDepth, ivec2(gl_FragCoord.xy), 0).r;
+    // abs: sky_taa.comp negates the depth of things that move on their own (a marker for its next frame).
+    gl_FragDepth = abs(texelFetch(skyDepth, ivec2(gl_FragCoord.xy), 0).r);
 }

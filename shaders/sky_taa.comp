@@ -85,16 +85,23 @@ void main() {
     float seaA = 1.0;                  // sat_sky.frag's sea marker: 1 not sea, else 0.5 x (1 - storm trail share)
     vec3 m1 = vec3(0.0), m2 = vec3(0.0);
     float dLo3 = 1.0, dHi3 = 0.0;      // this frame's 3x3 depth range (the still-view disocclusion test)
+    // Something in the 3x3 that moves on its own (sat_sky.frag's alpha marker 0.875: a mesh, or plume / flame light):
+    // reprojection assumes a static world, so there the still view's exemptions (no clip, the widened depth test)
+    // would keep a moving rocket's history where it was — trails behind every model (issue 20261021_174219 shot 3).
+    bool dynNb = false, dynC = false;
     if (!up) {
         vec4 c4 = texelFetch(curColor, p, 0);
         cur  = fin(c4.rgb);
         seaA = c4.a;
+        dynC = c4.a > 0.8 && c4.a < 0.95;
         d    = texelFetch(curDepth, p, 0).r;
         // The neighbourhood of this frame's samples (YCoCg mean and deviation).
         for (int k = 0; k < 9; ++k) {
             ivec2 q = clamp(p + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), sz - 1);
-            vec3  y = toYCoCg(fin(texelFetch(curColor, q, 0).rgb));
+            vec4  cq4 = texelFetch(curColor, q, 0);
+            vec3  y = toYCoCg(fin(cq4.rgb));
             m1 += y; m2 += y * y; yMax = max(yMax, y.x);
+            dynNb = dynNb || (cq4.a > 0.8 && cq4.a < 0.95);
             float dq = texelFetch(curDepth, q, 0).r;
             dLo3 = min(dLo3, dq); dHi3 = max(dHi3, dq);
         }
@@ -107,7 +114,9 @@ void main() {
         float ws  = 0.0, wMax = 0.0;
         for (int k = 0; k < 9; ++k) {
             ivec2 q  = clamp(c + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), isz - 1);
-            vec3  cq = fin(texelFetch(curColor, q, 0).rgb);
+            vec4  cq4 = texelFetch(curColor, q, 0);
+            vec3  cq = fin(cq4.rgb);
+            dynNb = dynNb || (cq4.a > 0.8 && cq4.a < 0.95);
             vec2  dO = (vec2(q) + 0.5 + jit - ip) * k2o;      // sample -> pixel, OUTPUT px
             float w  = exp(-dot(dO, dO) * (1.0 / (2.0 * 0.6 * 0.6)));
             acc += cq * w; ws += w; wMax = max(wMax, w);
@@ -119,6 +128,7 @@ void main() {
         cur  = acc / max(ws, 1e-6);
         conf = wMax;
         seaA = texelFetch(curColor, c, 0).a;
+        dynC = seaA > 0.8 && seaA < 0.95;
         d    = texelFetch(curDepth, c, 0).r;
     }
     // The neighbourhood's mean luma WITHOUT its brightest sample, for the flash rule: lightning raises all nine,
@@ -149,7 +159,10 @@ void main() {
             // 2x2 texels around where it was. At a silhouette the jittered samples alternate sky and ground, so
             // a test against one texel rejected every edge pixel every frame (no anti-aliasing at all); a
             // surface newly uncovered fits none of them.
-            vec4  dH  = textureGather(histDepth, uvP, 0);
+            // The history's depth is NEGATIVE where it was a moving thing (written below): abs for the test.
+            vec4  dHr = textureGather(histDepth, uvP, 0);
+            dynNb = dynNb || any(lessThan(dHr, vec4(0.0)));
+            vec4  dH  = abs(dHr);
             float dE  = sky ? 1.0 : depthFromDistance(length(P));
             float lo4 = min(min(dH.x, dH.y), min(dH.z, dH.w)), hi4 = max(max(dH.x, dH.y), max(dH.z, dH.w));
             // Nothing moved this frame (eyeDelta.w >= 2): no surface can have been uncovered, and the 2x2 of LAST
@@ -160,7 +173,7 @@ void main() {
             // (user report, 2026-10-06; Irvine horizon r35: the worst pixels' series). Still, the range also takes
             // this frame's 3x3 depths, which hold both surfaces of an edge. ONLY when still: widening it by the 3x3
             // spread in motion (2026-10-04) let history ghost through cloud edges while climbing.
-            if (pc.eyeDelta.w > 1.5) { lo4 = min(lo4, dLo3); hi4 = max(hi4, dHi3); }
+            if (pc.eyeDelta.w > 1.5 && !dynNb) { lo4 = min(lo4, dLo3); hi4 = max(hi4, dHi3); }
             if (dE < lo4 - 0.004 || dE > hi4 + 0.004) ok = false;
         }
         if (ok) {
@@ -199,7 +212,7 @@ void main() {
             // (issue 20261012_235712 shot 7, boosting at 22 km/s over a storm).
             const bool  sea    = seaA < 0.75;
             const float trail  = sea ? clamp(1.0 - 2.0 * seaA, 0.0, 1.0) * (1.0 - smoothstep(1.0, 4.0, par)) : 0.0;
-            const bool  still  = pc.eyeDelta.w > 1.5;
+            const bool  still  = pc.eyeDelta.w > 1.5 && !dynNb;
             const bool  noClip = still && (!sea || pc.eyeDelta.w > 2.5);   // paused: the waves are frozen too
             if (mx > 1.0 && !noClip) h = mix(c + v / mx, h, trail);
             const float ramp = max(smoothstep(0.5, 4.0, mv), smoothstep(0.1, 1.0, par));
@@ -215,5 +228,6 @@ void main() {
         }
     }
     imageStore(outColor, p, vec4(max(fin(res), vec3(0.0)), 1.0));
-    imageStore(outDepth, p, vec4(d, 0.0, 0.0, 0.0));
+    // A moving thing's depth is stored negated (the next frame's dynNb); taa_depth_restore.frag takes abs().
+    imageStore(outDepth, p, vec4(dynC ? -max(d, 1e-7) : d, 0.0, 0.0, 0.0));
 }

@@ -2011,6 +2011,16 @@ void main() {
         }
         if (wS > 1e-4) rd.x = dS / wS;
     }
+    // Resolved cloud BEHIND this texel's surface (2026-10-21, issue 20261021_174219 shot 2): the v2 march clamps its
+    // new samples to the scene depth, but the resolve's history does not know about a surface that moved in front of
+    // it — flying past a landing Starship at 86 m/s, the far cumulus behind the hull stayed in the hull's texels as
+    // blocky dark patches (the sparse grid refreshes a texel every 4th frame). A cloud whose distance is past the
+    // surface cannot be seen here: dropped, over a margin (a cloud meeting a slope keeps its soft contact).
+    if (tScene < kNoSurfaceT && rd.x > 1.0) {
+        float kBehind = smoothstep(tScene * 1.05 + 20.0, tScene * 1.25 + 60.0, rd.x);
+        rc = mix(rc, vec4(0.0, 0.0, 0.0, 1.0), kBehind);
+        if (kBehind > 0.5) rd = vec2(0.0, -1.0);
+    }
     // Review 18: the far cloud layer (cloud_v2_far.comp, composited by sat_sky.frag) takes over the volumetric
     // clouds by its share (CloudParams.farBlend); at 1 the march is not even dispatched (stale image).
     rc.rgb *= 1.0 - cloud.farBlend;
