@@ -113,7 +113,7 @@ void main()
             // move or a refill), all of a level in 16 frames: after a 45-km hop their slots had all changed hands and took a
             // round (32 / 64 frames) to come back, slower than the rings and the cascade (harness_runs/s3/hop).
             bool  boost = gl_WorkGroupID.x >= 10u;
-            if (boost && cv2.stvV.z <= 0.0) return;
+            if (boost && cv2.stvV.z < 1.0) return;   // z = boost (1 or 0) + the running mean's floor (< 1)
             int   lv    = boost ? int((gl_WorkGroupID.x - 10u) >> 2u) : (gl_WorkGroupID.x <= 6u) ? 0 : int(gl_WorkGroupID.x - 6u);
             int   wg    = boost ? int(gl_WorkGroupID.x - 10u) & 3 : int(gl_WorkGroupID.x) - 5;   // 0 / 1 for level 0
             vec4  la    = cv2StvLat(lv);
@@ -198,13 +198,18 @@ void main()
                 }
             }
             if (r < kCv2StvN * kCv2StvN) {
+                float wMean = cv2.stvV.z - floor(cv2.stvV.z);
                 int  rb   = ((lv * kCv2StvN * kCv2StvN) + r) * kCv2StvK;
                 uint want = cv2ShaftStampOf(ia.x, ia.y, 0);
                 for (int k = 0; k < kCv2StvK; ++k) {
                     uint  bits = floatBitsToUint(cv2Stv[rb + k]);
                     bool  ok   = cv2ShaftStampOk(bits, want);
                     uint  c    = cv2ShaftCount(bits);
-                    float T    = ok ? mix(cv2ShaftT(bits), Tk[k], 1.0 / float(min(c + 2u, 4u))) : Tk[k];
+                    float T    = ok ? mix(cv2ShaftT(bits), Tk[k], c < 2u ? 1.0 / float(c + 2u) : wMean) : Tk[k];
+                    // Rounded to the 10-bit value stochastically: a running mean at 1/32 a bake moves less than half a
+                    // step for most bakes, and plain rounding would leave it stuck up to 16 steps off its mean.
+                    float dq = float(cv2Pcg3(uvec3(uint(r), uint(k) + 31u * uint(lv), uint(cv2.frame.x))).x & 0xFFFFu) / 65536.0;
+                    T = (floor(clamp(T, 0.0, 1.0) * 1023.0 + dq) + 0.25) / 1023.0;
                     cv2Stv[rb + k] = cv2ShaftPack(T, want, ok ? c + 1u : 0u);
                 }
             }

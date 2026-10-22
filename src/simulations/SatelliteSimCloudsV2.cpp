@@ -1439,7 +1439,14 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             const glm::vec2 v0((float)(glm::dot(dEye, ga) / cell1), (float)(glm::dot(dEye, gb) / cell1));
             cv2StvBoost = (stvOn && (glm::length(v0) > 0.5f || cv2StvFrames[0] < 64 || cv2StvFrames[1] < 64))
                               ? 128 : std::max(cv2StvBoost - 1, 0);
-            p.stvV = glm::vec4(v0.x, v0.y, cv2StvBoost > 0 ? 1.0f : 0.0f, wcB);
+            // z's fraction: the smallest weight a ray's running mean gives a new bake once it has three. The bakes are
+            // jittered, and at a fixed 1/4 the stored shadow kept swinging by a bake's noise forever: with time PAUSED the
+            // ground under an overcast wandered +-2-3 levels over tens of frames, cumulus shadows' edges shimmered
+            // (harness_runs/suite/ovc_trace). It falls to 1/32 as far as the clouds stand still: their change over one
+            // level-0 round (32 frames) taken as ~20 m/s of wind and evolution x the sim time, against the cell.
+            const double roundShift = 20.0 * std::abs(dSimT) * 32.0;
+            const float wMin = (float)std::clamp(1.0 / 32.0 + 2.0 * roundShift / cell1, 1.0 / 32.0, 0.25);
+            p.stvV = glm::vec4(v0.x, v0.y, (cv2StvBoost > 0 ? 1.0f : 0.0f) + std::min(wMin, 0.25f), wcB);
             cv2StvOnNow = stvOn;
         }
         // mid3.w: "Haze near clouds" (the sky pass). cu2.w: how far the resolve may take a still view's history unclamped

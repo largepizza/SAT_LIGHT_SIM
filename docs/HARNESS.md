@@ -346,6 +346,21 @@ Dallas from 3.5 km), 61 frames each, scored with `flicker.py` (below). Any chang
 runs all four: a fix measured on one view (the orbit one) doubled the flicker at the low horizon (2026-10-04).
 Local files (harness_runs/ is gitignored; the snapshots are profile_log_1004i 35-36, 1004h 33, 1004f 30).
 
+## Cloud regression suite (`tools/harness/cloud_suite.py`)
+
+```
+python tools/harness/cloud_suite.py gen -o harness_runs/suite/suite.satcmd [--only a,b] [--no-motion] [--set "k v"]
+python tools/harness/run.py harness_runs/suite/suite.satcmd --window 1920x1009 --out harness_runs/suite/run1
+python tools/harness/cloud_suite.py score harness_runs/suite/run1
+python tools/harness/cloud_suite.py compare run1 run2
+```
+
+Daytime scenes at ordinary angles (the scene table is in the script: places and views, at 2036-11-22 02:06 UTC), each
+measured four ways: the settled view + `perf`; time PAUSED for 1200 frames (signed drift of the mean: anything that
+changes while nothing moves); time running at 1x (frame-to-frame change, mostly real cloud motion and the sea's waves);
+and tstab's walk / strafe / pan90 / pitch / rise paths scored against settled references. ~70 min for all 11 scenes;
+captures are at half size.
+
 ## Still-view flicker (`tools/harness/flicker.py`)
 
 Per-pixel temporal statistics of a recorded sequence with the camera still (review 18, the MEO cloud flicker):

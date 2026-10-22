@@ -964,6 +964,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     (walk 4.60 -> 1.90, walkpan 6.63 -> 1.95; boost 2.28 -> 3.22). Hop settle (45 km, `harness_runs/s3/hop*`): pixels past 16
     levels at frame 10 / 40: old 1.0 / 0.5%, volume 1.4-1.75 / 0.7-0.8%, equal by 160. 128 registers, no validation errors.
     The old structures remain behind the toggle; deleting them is the plan's next step.
+    **Running mean floor (2026-10-22):** a ray's value is a running mean of its jittered bakes, 1, 1/2, 1/3, then a
+    floor the CPU sets from how far sim time moves the clouds over one level-0 round (`stvV.z`'s fraction: 1/32 still or
+    at 1x, 1/4 under warp; the integer part is the catch-up flag), stored with stochastic rounding (10-bit T). At a fixed
+    1/4 the stored shadow kept the bakes' noise for ever: with time PAUSED the ground under an overcast wandered +-2-3
+    levels over tens of frames and cumulus shadows shimmered (user: "shadows fade in, then go away"). Ground std under an
+    overcast 1.17 -> 0.40; cloud_suite motion: overcast ground 1.29 -> 0.70, under a cumulus base 1.36 -> 0.77; cost 0.
+  - **Cloud regression suite** (`tools/harness/cloud_suite.py`, docs/HARNESS.md): 11 daytime scenes at ordinary angles
+    (cumulus from the ground / 3 km / cloud height, broken and overcast decks, sea, tropical towers, cumulus shadows on
+    land at a 34 deg Sun from 3 km / 800 m / the ground, an overcast at 33 deg), each settled, time paused for 1200
+    frames, time running at 1x, and five player-speed motion paths. Use it beside the sunset anvil views.
   - **Anvil puffiness** ("Anvil puffiness" `anvil_puffiness` 1, "Anvil top lift (m)" `anvil_lift_m` 800, slots 310-311, UBO
     `anvil3`; `cv2ColumnSigma`): the anvils are the anvil-reaching towers' flared heads, and their lobes and erosion were faded
     out over the head's last 1.5 km for the map-fed shield's thin lid (off by default): smooth plates with knife edges, "an
