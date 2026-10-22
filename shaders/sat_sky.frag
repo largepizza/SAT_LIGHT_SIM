@@ -3792,7 +3792,9 @@ void main() {
     // marched to the sky, and the cloud's edge along the ridge came out in half-res stair-steps.
     // Joint-bilateral: each of the four texels is weighted by how well its depth (the shared
     // half-res scene depth) matches this full-resolution pixel's surface.
-    {
+    // S9: with full-resolution clouds (cloud_v2_combine.comp) the targets are finer than the half-res scene depth this
+    // weighting reads by the same texel index; their silhouettes are already at the pixel, and it is skipped.
+    if (textureSize(cloudTargetA, 0) == textureSize(sceneDepthTex, 0)) {
         ivec2 hs = textureSize(cloudTargetA, 0);
         vec2  hp = cloudUV * vec2(hs) - 0.5;
         ivec2 i0 = ivec2(floor(hp));
@@ -4219,6 +4221,25 @@ void main() {
 #ifdef SKY_SUN_SHADOW
         if (sunShK > 0.0) {
             float Tc = 0.0;
+            if (cv2.frox.x > 0.5) {
+            // The froxel volume (2026-10-22, EXPERIMENT "godray_froxels", cloud_v2_froxel.comp): the same cascade + shaft
+            // transmittance, filled once a frame on a screen-tile x log-depth grid; 8 reads a step within 30 km (the shafts'
+            // reach), 4 beyond, weighted as the haze thins with height along the ray (the shaft block's weighting).
+                vec2  uvF = gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH);
+                float tA  = tStart + float(i) * segLen;
+                float zK  = dir.z / 3000.0;
+                int   nF  = (tA < 30000.0) ? 8 : 4;
+                float acc = 0.0, wS = 0.0;
+                [[dont_unroll]] for (int k = 0; k < nF; ++k) {
+                    float tr = segLen * (float(k) + shaftJit) / float(nF);
+                    // (Weighted by the haze's thinning with height only within the shafts' reach, as the lattice path:
+                    // beyond it that path averaged the cascade uniformly over the step.)
+                    float wk = (tA + tr < kCv2ShaftRangeCells * cv2.sunCasc7.z) ? exp(-clamp(zK * tr, -8.0, 30.0)) : 1.0;
+                    acc += wk * cv2GodFroxT(uvF, tA + tr);
+                    wS  += wk;
+                }
+                Tc = acc / wS;
+            } else {
             [[dont_unroll]] for (int k = 0; k < 3; ++k) {
                 float tk = tStart + (float(i) + (float(k) + 0.5) / 3.0) * segLen;
                 Tc += cv2SunCascT(dir * tk, tk * cosA + 0.5 * cv2.sunCasc2.y);
@@ -4245,6 +4266,7 @@ void main() {
                 float fN = (abs(eS) < 1e-3) ? tN / segLen : (1.0 - exp(-eN)) / (1.0 - exp(-eS));
                 Tc = mix(Tc, acc / wS, clamp(fN, 0.0, 1.0));
             }
+            }   // (the froxel path's else)
             float shK = sunShK * (1.0 - Tc);
             if (shK > 0.001) {
                 vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));

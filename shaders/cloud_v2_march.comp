@@ -67,6 +67,16 @@ layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define CV2_LAYER_BINDING 22
 #define CV2_LAYER_LOOKUP
 #include "cv2_layer_map.glsl"
+// The cloud density clipmap (2026-10-21, EXPERIMENT): coarse steps skip the field where it is known empty.
+#define CV2_CDC_BINDING 23
+#include "cv2_cdc.glsl"
+// The cloud droplets' Mie phase (2026-10-22, tools/make_mie_lut.py): 4 pi p(theta) / 8 per angle (x) and effective radius
+// (y, cv2.mie.y), linear sRGB. A texel per 0.088 deg: the corona's rings, the cloudbow, the glory.
+layout(set = 0, binding = 24) uniform sampler2D cv2MieTex;
+vec3 cv2MiePhaseAt(float cosT)
+{
+    return 8.0 * textureLod(cv2MieTex, vec2(acos(clamp(cosT, -1.0, 1.0)) * (1.0 / PI), cv2.mie.y), 0.0).rgb;
+}
 layout(set = 0, binding = 10, rgba16f) uniform writeonly image2D outColor;
 // Adaptive rate (misc.z = 3): pass A (this shader, kPassB = 0) marches the sparse grid, skipping the
 // 32x32 tiles cloud_v2_tiles.comp listed in TileBuf (parallax past misc2.w px a frame, or history from off
@@ -133,6 +143,7 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
                 bool wantBeam, vec3 bdir, out float odBeam, bool lod)
 {
     od = 0.0; sigUp = 0.0; odBeam = 0.0;
+    CV2_CNT(7);
     float s = 0.0, lSeg = lSeg0, sb = 0.0, sg = 150.0;
     // The light samples read the field at a footprint of samp.w x the march's length ("Light march footprint",
     // 0.04 = 320 m of an 8-km march): a POINT sample standing for kilometres of path is in a cloud or in a gap, so
@@ -164,7 +175,18 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
                   : (k == nL + 1) ? up * 250.0 : bdir * (sb + sg * 0.5);
         // The view sample's footprint, not the step's: a longer footprint would turn the gaps
         // between cells into haze and shadow everything.
-        CV2Field lf = cv2Field(cv2Pos(rel + off, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fpFar);
+        // S2 ("cdc_light"): beyond the first two steps (which keep the detail: the lobes' self-shadow) and for the far
+        // sample, the clipmap's mean light extinction over the cell where it is valid: optical depth conserved, no point
+        // sample standing for hundreds of metres (the lit / shadowed grain).
+        CV2Field lf;
+        float mC;
+        if (cv2.cdcC.x > 0.5 && k >= 2 && k <= nL
+            && cv2CdcMeanAt(rel + off, R_EARTH + eyeH,
+                            (k < nL) ? ((lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg) : cv2.light.x * 0.8, mC)) {
+            lf.sigma = mC; lf.thin = 0.0; lf.soft = 0.0;
+        } else
+            lf = cv2Field(cv2Pos(rel + off, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fpFar);
+        CV2_CNT(k < nL ? 3 : k == nL ? 4 : k == nL + 1 ? 5 : 6);
         if (k < nL) {
             // Ice delta-scaled, and harder for the SHADOW (2026-09-30): what reaches a cloud below through a
             // cirrus veil includes the light its ice scatters within a few degrees (g ~0.8), so the direct
@@ -390,7 +412,7 @@ void main()
     bool  passB    = kPassB != 0;
     bool  full     = rate == 1 || passB;
     bool  halfR    = rate == 2 && !passB;
-    ivec2 halfSize = textureSize(sceneDepthTex, 0);
+    ivec2 halfSize = ivec2(cv2.grid.xy);   // the cloud grid (S9: may be twice the scene depth's)
     ivec2 qSize    = full ? halfSize : halfR ? ivec2((halfSize.x + 1) / 2, halfSize.y) : (halfSize + 1) / 2;
     ivec2 q        = ivec2(gl_GlobalInvocationID.xy);
     ivec2 tileO    = ivec2(0);
@@ -436,6 +458,7 @@ void main()
     // (The rain rate at the eye for the host's rain ambience was written here into terrainFrame.w until review 22:
     // the host now reads the rain map around the eye, cloud_v2_lightning.comp, from the flash buffer.)
     if (q.x >= qSize.x || q.y >= qSize.y) return;
+    CV2_CNT(0);
 
     // Review 13: the ray goes through a different point of its texel each visit (an R2 sequence,
     // offset per pixel), so the history integrates the texel's footprint: a ray fixed at the centre
@@ -448,7 +471,7 @@ void main()
         subPx = h;
     }
     vec3  dir    = rayDirAt(vec2(pix) + subPx, halfSize, tanHalfFov, camToENU);
-    float tScene = texelFetch(sceneDepthTex, pix, 0).r;
+    float tScene = texelFetch(sceneDepthTex, pix >> int(cv2.grid.z), 0).r;
 
     vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
     float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
@@ -633,9 +656,26 @@ void main()
             float fp = t * pixAng * cv2.motion.w; // LOD at the 100%-scale pixel (motion.w)
             float detailAmt = 1.0 - smoothstep(cv2.shell.w, cv2.shell.w * 4.0, t);
             // One call for the coarse (no erosion, the upper bound) and the fine sample.
+            // Known-empty air (the clipmap, EXPERIMENT): the coarse step's stride without the field.
+            if (!fine && cv2.cdcA.w > 0.5 && t > cv2.cdcC.z && cv2CdcEmpty(rel, R_EARTH + eyeH)) {
+                CV2_CNT(15);
+#ifdef CV2_EVAL_COUNT
+                // Conservativeness check: what the skipped step would have read ([18] misses, [19] their optical depth x 1e4).
+                CV2Field fm = cv2Field(p, -1.0, fp);
+                if (fm.sigma > 0.0) {
+                    CV2_CNT(18); atomicAdd(cv2EvalCount[19], uint(fm.sigma * stepF * 1e4 + 0.5));
+                    CV2_CNT(20 + min(cv2CdcLevel(rel, R_EARTH + eyeH), 7));   // [20..27] misses by level
+                    if (fm.sigma * stepF > 0.1) CV2_CNT(28);                 // [28] misses with od > 0.1 over the step
+                }
+#endif
+                float cj = 2.0 * stepF * (0.75 + 0.5 * fract(jitter + 0.6180340 * float(iters)));
+                t += cj; pathLen += cj;
+                continue;
+            }
             gCv2DbgWant = dbgLayers && fine;
             gCv2Stretch = 1.0 / max(dz, 0.25);
             CV2Field f = cv2Field(p, fine ? detailAmt : -1.0, fp);
+            CV2_CNT(fine ? 2 : 1);
             gCv2DbgWant = false;
             // The thin ice's bounce light (below) reads the map where the field did. Its flow is still in
             // gCv2FlowD (cv2Field sets it; cv2FlowWeatherDirAt ignores its second argument): recomputing the
@@ -926,6 +966,14 @@ void main()
                 }
                 float powder = 1.0 - cv2.look2.z * exp(-f.sigma * 300.0) * (0.5 - 0.5 * cosK);
                 vec3 pSSv = vec3(pSS);
+                // The droplets' Mie phase ("Mie phase", 2026-10-22): water cloud's single scattering from the Lorenz-Mie
+                // table (forward diffraction peak, cloudbow, glory) in place of the two Henyey-Greenstein lobes.
+                if (cv2.mie.x > 0.0) pSSv = mix(pSSv, cv2MiePhaseAt(cosK), cv2.mie.x);
+                // "Mie optics" (mie.z): the tuned phase x the table's structure (its corona rings, cloudbow and glory
+                // relative to its own smoothed shape), keeping the tuned energy.
+                if (cv2.mie.z > 0.0)
+                    pSSv *= mix(vec3(1.0), textureLod(cv2MieTex, vec2(acos(clamp(cosK, -1.0, 1.0)) * (1.0 / PI), cv2.mie.w), 0.0).rgb,
+                                cv2.mie.z);
                 if (f.thin > 0.0 || f.rain > 0.0) {
                     pSSv = mix(pSSv, moonIsKey ? phIceMoon : phIceSun, f.thin);
                     pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);

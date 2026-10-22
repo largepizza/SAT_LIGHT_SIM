@@ -192,6 +192,7 @@ void main()
                     }
                     CV2Pos q = cv2Pos(o + sunENU * sM, eyeH, enuToEcef);
                     if (dsM > 1.0 && q.h > -300.0 && q.h < cv2.shell.y + 2500.0) {
+                        CV2_CNT(8);
                         CV2Field gf = cv2Field(q, 0.0, fpM);
                         od += gf.sigma * max(1.0 - gf.thin - gf.soft, 0.0) * dsM;   // no thin layers here: see the fine grid
                     }
@@ -249,6 +250,7 @@ void main()
                     CV2Pos q = cv2Pos(o + sunENU * mix(s0, s1, fract(jp + 0.5 * float(sr))), eyeH, enuToEcef);
                     // (The lattice's b range is padded and its far ends leave the shell: no field read there.)
                     if (q.h > -300.0 && q.h < cv2.shell.y + 2500.0) {
+                        CV2_CNT(9);
                         CV2Field gf = cv2Field(q, 0.0, clamp(0.5 * (s1 - s0), 60.0, 1500.0));
                         od += gf.sigma * (1.0 - gf.thin - (cv2.layN.w > 0.0 ? 1.0 : cv2.mid2.z) * gf.soft) * (s1 - s0);   // (no thin ice; no mid layer while the layer map carries it)
                     }
@@ -308,6 +310,7 @@ void main()
                     float u0 = float(i) / 48.0, u1 = float(i + 1) / 48.0;
                     float um = mix(u0, u1, fract(jp + 0.25 * float(sr)));
                     float dt = L * (u1 * u1 - u0 * u0);
+                    CV2_CNT(10);
                     CV2Field gf = cv2Field(cv2Pos(o + sunENU * (L * um * um), eyeH, enuToEcef), 0.0, max(60.0, dt * 0.5));
                     // The thin ice (the high layer) casts no shadow here: along a grazing Sun's ray it shadowed
                     // ITSELF over tens of km, and every sunset's cirrus went dark and speckled (user snaps).
@@ -356,6 +359,7 @@ void main()
             if (eyeH < 6000.0) {
                 vec2 en = (vec2(float(cell % uint(kCv2RainMapN)), float(cell / uint(kCv2RainMapN)))
                            - 0.5 * float(kCv2RainMapN) + 0.5) * kCv2RainCellM;
+                CV2_CNT(11);
                 CV2Field fe = cv2Field(cv2Pos(vec3(en, 0.0), eyeH, mat3(enuX, enuY, enuZ)), -1.0, kCv2RainCellM);
                 rr = fe.rain * clamp(fe.sigma / 0.0012, 0.0, 1.0);
             }
@@ -521,6 +525,7 @@ void main()
                     float base = -1.0, topC = -1.0;
                     [[dont_unroll]] for (int k = 0; k < 16; ++k) {
                         float h  = mix(gnd + 150.0, hHi, (float(k) + 0.5) / 16.0);
+                        CV2_CNT(12);
                         CV2Field cf = cv2Field(cv2Pos(oE * (R_EARTH + h) - eye, eyeH, enuToEcef), -1.0, 400.0);
                         if (cf.sigma * max(1.0 - cf.thin - cf.rain, 0.0) > 4e-4) {
                             if (base < 0.0) base = h;
@@ -610,6 +615,7 @@ void main()
                 float u0 = float(i) / 32.0, u1 = float(i + 1) / 32.0;
                 float t  = L * (0.5 * (u0 + u1)) * (0.5 * (u0 + u1));
                 float dt = L * (u1 * u1 - u0 * u0);
+                CV2_CNT(13);
                 od += cv2Field(cv2Pos(sunENU * t, eyeH, enuToEcef), 0.0, max(30.0, dt * 0.5)).sigma * dt;
             }
             discT = exp(-od);
@@ -643,6 +649,7 @@ void main()
                     float u0 = float(i) / 12.0, u1 = float(i + 1) / 12.0;
                     float t  = Lu * (0.5 * (u0 + u1)) * (0.5 * (u0 + u1));
                     float dt = Lu * (u1 * u1 - u0 * u0);
+                    CV2_CNT(13);
                     tauUp += cv2Field(cv2Pos(vec3(0.0, 0.0, t), eyeH, enuToEcef), 0.0, max(30.0, dt * 0.5)).sigma * dt;
                 }
             }

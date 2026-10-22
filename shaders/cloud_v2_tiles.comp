@@ -37,7 +37,7 @@ void main()
     if (gl_LocalInvocationIndex == 0u) sVote = 0u;
     barrier();
 
-    ivec2 halfSize = textureSize(sceneDepthTex, 0);
+    ivec2 halfSize = ivec2(cv2.grid.xy);   // the cloud grid (S9)
     ivec2 qSize    = (halfSize + 1) / 2;
     ivec2 q        = ivec2(gl_GlobalInvocationID.xy);
     ivec2 pix      = min(q * 2 + ivec2(cv2.frame.zw), halfSize - 1);
@@ -64,7 +64,7 @@ void main()
     // runs only then), the tiles within that radius of the screen's centre (in units of the half height) are
     // marched at full rate whatever their parallax.
     if (gl_LocalInvocationIndex == 0u && cv2.morph.z > 0.0) {
-        ivec2 hs = textureSize(sceneDepthTex, 0);
+        ivec2 hs = ivec2(cv2.grid.xy);
         vec2  tc = ((vec2(gl_WorkGroupID.xy) + 0.5) * 32.0 / vec2(hs)) * 2.0 - 1.0;
         tc.x *= float(hs.x) / float(hs.y);
         if (length(tc) < cv2.morph.z) sVote = 1u;

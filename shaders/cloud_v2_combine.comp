@@ -1,0 +1,129 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+
+// ── Clouds v2: the full-resolution combine (S9, 2026-10-22, .plans/CLOUD_REBUILD_PLAN.md 4e) ──────────
+// With "Full-resolution clouds" (clouds_v2.full_res) the v2 march and resolve run on the full render grid, while
+// cloud_march.comp keeps compositing at half res: aurora, airglow, beam lines, plumes and dust, the ground shadow
+// and the cirrus stand-in cost what they cost at half res. It took the cloud there as the 2x2 box of the full-res
+// image (the bilinear tap at the half texel's centre) and wrote, besides the composite (A_h, B_h), its derivatives
+// with respect to that cloud's transmittance a and radiance b (targetDB, targetDA). This pass, per full-res pixel:
+//   B = B_h + dB/db (b_f - b_h) + dB/da (a_f - a_h),   A = A_h + dA/da (a_f - a_h)
+// with every half-res term bilinear at this pixel and (a_h, b_h) the same bilinear mix of the box taps cloud_march
+// used. Where nothing but the cloud is in the composite (dB/db = 1, dB/da = dA/da = 0 up to the cirrus) that is the
+// full-res cloud exactly; the affine steps (plumes in front of / behind it, cirrus) are exact; the pow() suppressions
+// (aurora and dust behind cloud, beam lines) are first order. Its outputs are the cloud targets A/B every consumer
+// reads (the sky pass's bindings 10/11, the point passes, lightning), at full res.
+// The isolated-texel tent, the edge lean and the missing-distance fill cloud_march applied at half res are done
+// here, at full res, and the alpha's signed distance (include/cloud_occlusion.glsl) is rebuilt from the full-res
+// distances and the half-res emissive distance.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+#include "common.glsl"
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "cloud_occlusion.glsl"
+
+layout(set = 0, binding = 1) uniform sampler2D halfATex;   // cloud_march: rgb B_total, a the signed distance (km)
+layout(set = 0, binding = 2) uniform sampler2D halfBTex;   // rgb A_total, a the ground's cloud shadow
+layout(set = 0, binding = 3) uniform sampler2D halfDBTex;  // rgb dB/da, a dB/db
+layout(set = 0, binding = 4) uniform sampler2D halfDATex;  // rgb dA/da, a the emissive distance (km, -1 none)
+layout(set = 0, binding = 5) uniform sampler2D resolvedTex;       // full res: rgb radiance, a transmittance
+layout(set = 0, binding = 6) uniform sampler2D resolvedDepthTex;  // full res: x mean distance, y occlusion distance
+layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D outA;
+layout(set = 0, binding = 8, rgba16f) uniform writeonly image2D outB;
+
+// The far cloud layer's share (cloud_march.comp applies the same map before it composites).
+vec4 farMap(vec4 rc)
+{
+    rc.rgb *= 1.0 - cloud.farBlend;
+    rc.a    = mix(rc.a, 1.0, cloud.farBlend);
+    return rc;
+}
+
+void main()
+{
+    ivec2 F = imageSize(outA);
+    ivec2 H = textureSize(halfATex, 0);
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= F.x || p.y >= F.y) return;
+    const bool cv2Off = (cloud.dbgDisableMask & 32768u) != 0u;
+
+    // ── This pixel's cloud, with cloud_march.comp's half-res fix-ups (reviews 9 and 10) at full res ──
+    vec4 rc = cv2Off ? vec4(0.0, 0.0, 0.0, 1.0) : texelFetch(resolvedTex, p, 0);
+    vec2 rd = cv2Off ? vec2(0.0, -1.0) : texelFetch(resolvedDepthTex, p, 0).xy;
+    if (!cv2Off) {
+        float oc = 1.0 - rc.a;
+        if (oc > 0.02) {
+            vec4  tent = rc * 4.0;
+            float cnt = 0.0, oLo = oc;
+            for (int k = 0; k < 9; ++k) {
+                ivec2 o = ivec2(k % 3 - 1, k / 3 - 1);
+                if (o == ivec2(0)) continue;
+                vec4 nb = texelFetch(resolvedTex, clamp(p + o, ivec2(0), F - 1), 0);
+                tent += float((2 - abs(o.x)) * (2 - abs(o.y))) * nb;
+                cnt  += step(0.5 * oc, 1.0 - nb.a);
+                oLo   = min(oLo, 1.0 - nb.a);
+            }
+            float kE = max(1.0 - smoothstep(1.0, 3.0, cnt), 0.6 * smoothstep(0.3, 0.8, oc - oLo));
+            rc = mix(rc, tent * (1.0 / 16.0), kE);
+        }
+        if (1.0 - rc.a > 0.02 && rd.x <= 1.0) {
+            float dS = 0.0, wS = 0.0;
+            for (int k = 0; k < 9; ++k) {
+                ivec2 o = ivec2(k % 3 - 1, k / 3 - 1);
+                if (o == ivec2(0)) continue;
+                ivec2 q  = clamp(p + o, ivec2(0), F - 1);
+                float dn = texelFetch(resolvedDepthTex, q, 0).x;
+                float on = 1.0 - texelFetch(resolvedTex, q, 0).a;
+                if (dn > 1.0) { dS += on * dn; wS += on; }
+            }
+            if (wS > 1e-4) rd.x = dS / wS;
+        }
+    }
+    rc = farMap(rc);
+    if (cloud.farBlend >= 0.999) rd = vec2(0.0, -1.0);
+    else if (rc.a >= 0.1) rd.y = -1.0;
+
+    // ── The half-res terms, bilinear at this pixel; (a_h, b_h) the same mix of cloud_march's box taps ──
+    vec2  hp = (vec2(p) + 0.5) * (vec2(H) / vec2(F)) - 0.5;
+    ivec2 i0 = ivec2(floor(hp));
+    vec2  fr = hp - vec2(i0);
+    vec3  Bh = vec3(0.0), Ah = vec3(0.0), gBA = vec3(0.0), gAA = vec3(0.0), bH = vec3(0.0);
+    float gBB = 0.0, aH = 0.0;
+    [[unroll]] for (int k = 0; k < 4; ++k) {
+        ivec2 o = ivec2(k & 1, k >> 1);
+        ivec2 c = clamp(i0 + o, ivec2(0), H - 1);
+        float w = (o.x == 1 ? fr.x : 1.0 - fr.x) * (o.y == 1 ? fr.y : 1.0 - fr.y);
+        Bh  += w * texelFetch(halfATex, c, 0).rgb;
+        Ah  += w * texelFetch(halfBTex, c, 0).rgb;
+        vec4 db = texelFetch(halfDBTex, c, 0);
+        gBA += w * db.rgb;
+        gBB += w * db.a;
+        gAA += w * texelFetch(halfDATex, c, 0).rgb;
+        vec4 ch = cv2Off ? vec4(0.0, 0.0, 0.0, 1.0) : farMap(textureLod(resolvedTex, (vec2(c) + 0.5) / vec2(H), 0.0));
+        bH  += w * ch.rgb;
+        aH  += w * ch.a;
+    }
+    float dA = rc.a - aH;
+    vec3  B  = max(Bh + gBB * (rc.rgb - bH) + gBA * dA, vec3(0.0));
+    vec3  A  = clamp(Ah + gAA * dA, vec3(0.0), vec3(1.0));
+
+    // ── The alpha: cloud_march.comp's signed distance, from the full-res distances ──
+    float tOcc  = rd.y;
+    float tMean = (rd.x > 0.0) ? rd.x : kNoSurfaceT;
+    float tEmit = texelFetch(halfDATex, clamp(p * H / F, ivec2(0), H - 1), 0).a;   // km, < 0 = none
+    float occKm = (tOcc >= 0.0) ? ((tMean < kNoSurfaceT && tMean > 0.0) ? tMean : tOcc) * 0.001
+                : -((tMean < kNoSurfaceT) ? tMean * 0.001 : (tEmit >= 0.0 ? tEmit : 60000.0));
+    occKm = cloudAlphaFlag(occKm, tMean >= kNoSurfaceT && tOcc < 0.0 && tEmit >= 0.0);
+
+    // ── The ground's cloud shadow: a [1 2 1] tent of the half-res texels (four bilinear taps half a texel out) —
+    // the march's 2x2 ordered offsets average out exactly, as sat_sky.frag's tent does at half res. ──
+    vec2  uv = (vec2(p) + 0.5) / vec2(F);
+    vec2  ht = 0.5 / vec2(H);
+    float sh = 0.25 * (texture(halfBTex, uv + vec2(-ht.x, -ht.y)).a + texture(halfBTex, uv + vec2(ht.x, -ht.y)).a +
+                       texture(halfBTex, uv + vec2(-ht.x,  ht.y)).a + texture(halfBTex, uv + ht).a);
+
+    imageStore(outA, p, vec4(B, occKm));
+    imageStore(outB, p, vec4(A, sh));
+}

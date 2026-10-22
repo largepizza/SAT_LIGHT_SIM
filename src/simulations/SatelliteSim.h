@@ -863,6 +863,11 @@ struct GpuCloudV2Params
     glm::vec4 cu, cu2;                  // 2026-10-13: the cumulus shape (clouds_v2.glsl)
     glm::vec4 layA, layE, layN, layEye, layRef, layBake;   // 2026-10-14: the layer shadow map (clouds_v2.glsl)
     glm::vec4 sunCasc8;                 // 2026-10-21: the cascade's knot shift per ray half since its bake (clouds_v2.glsl)
+    glm::vec4 cdcA, cdcB, cdcP0, cdcP1; // 2026-10-21: the cloud density clipmap (EXPERIMENT, clouds_v2.glsl / cv2_cdc.glsl)
+    glm::vec4 mie;                      // 2026-10-22: the Mie phase table's share and row (clouds_v2.glsl)
+    glm::vec4 frox;                     // 2026-10-22: the god rays' froxel volume (clouds_v2.glsl)
+    glm::vec4 cdcC;                     // 2026-10-22: S2, the light march from the clipmap (clouds_v2.glsl)
+    glm::vec4 grid;                     // 2026-10-22: S9, the cloud grid and full-res mode (clouds_v2.glsl)
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -882,7 +887,12 @@ static_assert(offsetof(GpuCloudV2Params, sunCasc6) == 288 + 48 * kCloudV2Types +
 static_assert(offsetof(GpuCloudV2Params, cu) == 288 + 48 * kCloudV2Types + 928, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, layA) == 288 + 48 * kCloudV2Types + 960, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, sunCasc8) == 288 + 48 * kCloudV2Types + 1056, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1072, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, cdcA) == 288 + 48 * kCloudV2Types + 1072, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, mie) == 288 + 48 * kCloudV2Types + 1136, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, frox) == 288 + 48 * kCloudV2Types + 1152, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, cdcC) == 288 + 48 * kCloudV2Types + 1168, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, grid) == 288 + 48 * kCloudV2Types + 1184, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1200, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -3556,6 +3566,26 @@ private:
     bool computeFollowsRenderScale = false;
     VkExtent2D computeHalfExtent(const VulkanContext &ctx) const;
     VkExtent2D computeHalfExtentBuilt{0, 0}; // what the targets were last created at
+    // S9 (2026-10-22, "Full-resolution clouds", clouds_v2.full_res): the CLOUD grid — the v2 march / resolve images
+    // and the final cloud targets A/B the sky pass reads. Half the render extent (= computeHalfExtent), or all of it
+    // with full-res clouds on: then cloud_march.comp still composites at half res into cmHalf* and
+    // cloud_v2_combine.comp writes the full-res targets (SatelliteSimCloudsV2.cpp, "Full-resolution combine").
+    bool cv2FullResActive() const { return cv2FullRes > 0.5f && (debugDisableMask & 32768u) == 0u; }
+    VkExtent2D computeCloudExtent(const VulkanContext &ctx) const;
+    VkExtent2D computeCloudExtentBuilt{0, 0};
+    VkImage cmHalfImg[4] = {};                 // cloud_march.comp's half-res outputs in full-res mode: A, B, dB, dA
+    VkDeviceMemory cmHalfMem[4] = {};
+    VkImageView cmHalfView[4] = {};
+    VkDescriptorSetLayout cv2CombineDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool cv2CombineDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet cv2CombineDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout cv2CombinePipeLayout = VK_NULL_HANDLE;
+    VkPipeline cv2CombinePipeline = VK_NULL_HANDLE;
+    void createCloudCombine(VulkanContext &ctx);              // pipeline + set (once)
+    void createCloudCombineTargets(VulkanContext &ctx);       // the half images (1x1 while off) + every set that points at them
+    void destroyCloudCombineTargets(VkDevice device);
+    void destroyCloudCombine(VkDevice device);
+    void recordCloudCombine(VkCommandBuffer cmd, VulkanContext &ctx);
     void recreateComputeScaledTargets(VulkanContext &ctx);
     // Automatic render scale (2026-10-04, Settings > Display "Automatic render scale"): moves renderScale
     // in 5% steps between dynResMinScale and 1 to keep the GPU frame under the target frame rate's budget
@@ -4158,6 +4188,24 @@ private:
     float cv2AdaptiveRate = 0.0f;         // 1 = while moving, full rate only in tiles whose clouds show parallax (dynamic sampling)
     float cv2AdaptiveParallaxPx = 1.6f;   // ... past this many half-res pixels a frame (or history from off screen)
     float cv2HalfRateMoving = 0.0f;       // 1 = where the march would run at full rate, half (a checkerboard)
+    // EXPERIMENT (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S1): the cloud density clipmap. Coarse march steps skip the field
+    // in known-empty cells. 0 off, 1 = 9-point bake, 2 = 36-point bake (the measured choice: -4..-9 ms below orbit at full
+    // rate, harness_runs/s0). Off until judged in motion.
+    float cv2CdcSkip = 0.0f;
+    float cv2CdcBudget = 65536.0f;        // ... cells baked a frame at most
+    float cv2CdcFp = -1.0f;               // ... the bake's read footprint: > 0 x the cell, < 0 x the march's own footprint there
+    float cv2CdcMaxLevel = 6.0f;          // ... levels the march may use (0-8)
+    float cv2CdcFpUsed = -1.0f, cv2CdcMaxLevelUsed = -1.0f, cv2CdcSkipUsed = -1.0f;
+    float cv2CdcMaxRate = 4.0f;           // ... used only up to this time rate (x real time)
+    float cv2CdcLight = 0.0f;             // S2 (2026-10-22): the light march reads the clipmap's mean beyond its first 2 steps
+    float cv2CdcLightUsed = -1.0f;
+    float cv2CdcLightLevels = 3.0f, cv2CdcLightLevelsUsed = -1.0f;   // ... on levels below this (cells to 400 m)
+    float cv2CdcNearM = 0.0f;             // coarse steps skip only beyond this distance (m)
+    float cv2FullRes = 1.0f;              // S9: full-resolution clouds (computeCloudExtent; on for High / Ultra, the compiled defaults)
+    bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
+    float cv2MiePhase = 0.0f;             // "Mie phase" (2026-10-22): the droplets' Mie phase's share of single scattering
+    float cv2MieOptics = 0.0f;            // "Mie optics": the tuned phase x the Mie table's structure (corona, cloudbow, glory)
+    float cv2DropletReffUm = 10.0f;       // ... their effective radius (um): 4 continental .. 15+ maritime / rain-forming
     float cv2SunCascade = 1.0f;           // "Far cloud shadows": the Sun shadow cascade (0 = only near the eye's line to the Sun)
     double cv2CascLatA = 0.0, cv2CascLatB = 0.0;   // the eye's coordinate on the cascade's lattice (cells), integrated
     // ...and along the Sun (m, integrated the same way; 2026-10-21): with the window centre's own offset from the eye
@@ -4399,6 +4447,21 @@ private:
     VkDeviceMemory cv2ShapeMem = VK_NULL_HANDLE, cv2DetailMem = VK_NULL_HANDLE, cv2MesoMem = VK_NULL_HANDLE;
     VkImageView cv2ShapeView = VK_NULL_HANDLE, cv2DetailView = VK_NULL_HANDLE, cv2MesoView = VK_NULL_HANDLE;
     // Review 17: cloud morphology (closed / open cells, streets, cumulus fields), assets/textures/cloud_morph.rgba8.
+    // The cloud droplets' Mie phase (2026-10-22, tools/make_mie_lut.py -> assets/textures/cloud_mie.rgba16f): NA angles x
+    // one row per effective radius, march binding 24. cv2MieReff: the rows' radii (um).
+    // The shape volume with cap-profile lobes (2026-10-22, noise mode 3, "shape_caps"): baked beside cv2ShapeImg with
+    // the same seed; cv2SyncShapeVolume (top of recordCompute, before anything binds the sets) swaps the descriptors.
+    VkImage cv2ShapeCapsImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2ShapeCapsMem = VK_NULL_HANDLE;
+    VkImageView cv2ShapeCapsView = VK_NULL_HANDLE;
+    float cv2ShapeCaps = 0.0f, cv2ShapeCapsUsed = 0.0f;
+    VkImageView cv2ShapeActiveView() const { return (cv2ShapeCaps > 0.5f && cv2ShapeCapsView) ? cv2ShapeCapsView : cv2ShapeView; }
+    void cv2SyncShapeVolume(VulkanContext &ctx);
+    VkImage cv2MieImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2MieMem = VK_NULL_HANDLE;
+    VkImageView cv2MieView = VK_NULL_HANDLE;
+    std::vector<float> cv2MieReff;
+    void createCloudMie(VulkanContext &ctx);
     VkImage cv2MorphImg = VK_NULL_HANDLE;
     VkDeviceMemory cv2MorphMem = VK_NULL_HANDLE;
     VkImageView cv2MorphView = VK_NULL_HANDLE;
@@ -4481,6 +4544,17 @@ private:
     // into cv2FlashBuf (host-visible: the host reads them back next frame for thunder), bound as
     // binding 12 of the march set and 21 of cloud_march's.
     VkPipeline cv2LightningPipeline = VK_NULL_HANDLE;
+    VkPipeline cv2FroxPipeline = VK_NULL_HANDLE;   // the god rays' froxel volume (2026-10-22, cloud_v2_froxel.comp)
+    float cv2GodrayFroxels = 0.0f;                 // EXPERIMENT "godray_froxels": the sky pass reads the volume
+    // Per-pass GPU time inside the cloud bucket (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S0): kCv2PassStamps timestamps
+    // at fixed points of recordCloudsV2 + one after cloud_march.comp; a pass skipped this frame is a zero interval.
+    // Harness `state` -> clouds_v2.pass_ms (eased over ~30 frames) / pass_ms_raw.
+    static constexpr uint32_t kCv2PassStamps = 9;
+    VkQueryPool cv2PassQuery = VK_NULL_HANDLE;
+    uint32_t cv2PassStampNext = kCv2PassStamps;   // the next stamp this frame writes (cv2PassStampTo)
+    bool  cv2PassStampsWritten = false;           // last frame wrote all of them
+    float cv2PassMsRaw[kCv2PassStamps - 1] = {}, cv2PassMsEased[kCv2PassStamps - 1] = {};
+    void cv2PassStampTo(VkCommandBuffer cmd, uint32_t id);   // writes stamps cv2PassStampNext .. id
     // The Sun / sky colour table (cloud_v2_sunlut.comp, include/cv2_sunlut.glsl): the Sun's colour and the zenith
     // sky's radiance by height and Sun cosine, a 2-layer array baked when the scattering gains change
     // (cv2SunLutKey); march set bindings 13 (storage, the bake) and 14 (sampled, the march). It took the
@@ -4495,6 +4569,21 @@ private:
     VkBuffer cv2FlashBuf = VK_NULL_HANDLE;
     // The layer shadow map (cv2_layer_map.glsl, march set binding 22): device-local, columns then slant cells.
     VkBuffer cv2LayerBuf = VK_NULL_HANDLE;
+    // The cloud density clipmap (2026-10-21, EXPERIMENT, include/cv2_cdc.glsl): device-local, march set binding 23,
+    // baked by cloud_v2_cdc.comp. 8 levels x 128 x 128 x 64 uints.
+    VkBuffer cv2CdcBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cv2CdcMem = VK_NULL_HANDLE;
+    VkPipeline cv2CdcPipeline = VK_NULL_HANDLE;
+    static constexpr uint32_t kCv2CdcCells = 8u * 128u * 128u * 64u;
+    static constexpr uint32_t kCv2CdcListCap = 65536u;   // == kCv2CdcListCap (cv2_cdc.glsl)
+    // The list header + list, then cells, S2's sums and sums of squares (cv2_cdc.glsl's cv2CdcData). Only the head is
+    // allocated until the clipmap is first switched on (cv2EnsureCdcBuffer): ~100 MB of VRAM for an experiment that is off.
+    static constexpr VkDeviceSize kCv2CdcHeadBytes = 16 + (VkDeviceSize)kCv2CdcListCap * 4;
+    static constexpr VkDeviceSize kCv2CdcBufBytes = kCv2CdcHeadBytes + (VkDeviceSize)kCv2CdcCells * 12;
+    bool cv2CdcBufFull = false;
+    void cv2EnsureCdcBuffer(VulkanContext &ctx);
+    VkPipeline cv2CdcBakePipeline = VK_NULL_HANDLE;   // pass 1 (cv2CdcPipeline is pass 0, the check)
+    uint32_t cv2CdcEpoch = 0;
     VkDeviceMemory cv2LayerMem = VK_NULL_HANDLE;
     VkPipeline cv2LayerColPipeline = VK_NULL_HANDLE, cv2LayerSlantPipeline = VK_NULL_HANDLE;
     static constexpr VkDeviceSize kCv2LayerBufBytes = 2ull * 65536 * 2 * 16 + 2ull * 65536 * 16;
@@ -4509,7 +4598,9 @@ private:
     static constexpr VkDeviceSize kCv2SunShaftOffset = kCv2RainLightOffset + 4 * 16 + 16 + 17408 * 4   // + cv2SunWgMax, cv2SunGrid (32 x 32 rays x 17)
                                                        + 200704 * 4;                              // + cv2SunCasc (128 x 32 rays x 49)
     static constexpr VkDeviceSize kCv2SunShaftRingBytes = 524288 * 4;                             // one ring: 128 x 128 rays x 32 knots
-    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2SunShaftOffset + 2 * kCv2SunShaftRingBytes;  // + cv2SunShaft (2 rings)
+    static constexpr VkDeviceSize kCv2EvalCountOffset = kCv2SunShaftOffset + 2 * kCv2SunShaftRingBytes;  // + cv2SunShaft (2 rings)
+    static constexpr VkDeviceSize kCv2FroxBytes = 160ull * 90 * 64 * 4;   // cv2GodFrox (cloud_lightning.glsl)
+    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2EvalCountOffset + 32 * 4 + kCv2FroxBytes;   // + cv2EvalCount, cv2GodFrox
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;
@@ -6421,7 +6512,8 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 302;   // 296-297 (2026-10-14): layer shadows, cirrus self-shadow; 298-301 aurora storms
+    static constexpr int kCloudSliderSlots = 310;   // 302-309 (2026-10-22): the cloud rebuild's experiments (Weather tab)
+    // was 302: 296-297 (2026-10-14): layer shadows, cirrus self-shadow; 298-301 aurora storms
     // was 296:   // 289-295 (2026-10-13): the cumulus shape
     // was 289:   // 286-288 (2026-10-12): cloud shadow rings; 270-282 (2026-10-11): small cumulus, erosion / lobe variation, mid layer x5, cirrus warp, sampler x3, far shadow range
     // (was 270:)   // 261-266 rain particles (count, shutter, fall speed, wind, storm wind, gusts)

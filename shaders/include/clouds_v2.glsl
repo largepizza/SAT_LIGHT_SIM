@@ -176,6 +176,26 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // that half was last baked (the eye's motion relative to the clouds since then): cv2SunCascT adds it, so a ray baked
     // a few frames ago is read at the knots it was baked for. zw spare.
     vec4  sunCasc8;
+    // 2026-10-21, the cloud density clipmap (EXPERIMENT, include/cv2_cdc.glsl): cdcA xy the eye on the layer map's plane (m),
+    // z level 0's cell (m), w 1 = baked and used by the march's coarse steps ("cdc_skip"); cdcB x the epoch, y the bake's read footprint
+    // (x the cell), z the bake budget (cells a frame), w the levels the march may use; cdcP0 / cdcP1 each level's sim-time phase (sim time / its period, mod 4096).
+    vec4  cdcA, cdcB, cdcP0, cdcP1;
+    // 2026-10-22, the Mie phase (tools/make_mie_lut.py, march binding 24): x its share of the single scattering ("Mie
+    // phase", 0 = the two-lobe Henyey-Greenstein), y the table row for the droplets' effective radius (v coordinate),
+    // z "Mie optics" (the tuned phase x the table's structure), w that radius's structure row.
+    vec4  mie;
+    // 2026-10-22, the god rays' froxel volume (cloud_v2_froxel.comp, EXPERIMENT "godray_froxels"): x 1 = filled and read by
+    // the sky pass, y the first slice's distance (m), z the log ratio per slice.
+    vec4  frox;
+    // 2026-10-22, S2: x 1 = the light march reads the clipmap's mean light extinction beyond its first two steps, y on the
+    // levels below this ("cdc_light_levels": a cell-mean is unbiased only where cells are smaller than the cloud structure);
+    // z: coarse steps skip only beyond this distance from the eye (m, "cdc_near_m": the coarse field's ~100-m lobes near the
+    // eye are finer than level 0's cells).
+    vec4  cdcC;
+    // 2026-10-22, S9 (full-resolution clouds): xy the cloud grid (the v2 march / resolve images; half the render extent,
+    // or all of it with "Full-resolution clouds"), z log2(cloud grid / scene depth) (0 or 1), w 1 = full-res clouds on
+    // (cloud_march.comp composites at half res and writes the derivatives cloud_v2_combine.comp needs).
+    vec4  grid;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

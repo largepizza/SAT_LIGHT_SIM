@@ -56,6 +56,12 @@ layout(set = 0, binding = 3) uniform sampler2D noiseTex;
 layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D targetA;
 // Target B: rgb = combined multiplicative attenuation (A_total), a = cloudBlock (sun-dimming scalar)
 layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D targetB;
+// S9 (2026-10-22, "Full-resolution clouds"): the composite's derivatives with respect to the volumetric cloud
+// (cloud_v2_combine.comp puts the full-res clouds back in to first order). Written only in that mode; 1x1 otherwise.
+// dB: rgb dB/dA_cloud, a dB/dB_cloud (a scalar times the identity); dA: rgb dA/dA_cloud, a the nearest emissive /
+// plume distance in km (-1 = none: the combine rebuilds the alpha's signed distance at full res).
+layout(set = 0, binding = 24, rgba16f) uniform writeonly image2D targetDB;
+layout(set = 0, binding = 25, rgba16f) uniform writeonly image2D targetDA;
 
 // Perf (this session): the aurora sky curtain march moved here from sat_sky.frag, alongside
 // clouds/cirrus, so it runs at this pass's half resolution instead of full-res — one of the two
@@ -562,6 +568,7 @@ float cloudGroundShadowV2(vec3 groundENU, vec3 sunDir, vec3 obsPos, mat3 enuToEc
         // Rain curtains at 15% (review 8): at this footprint they are their mean (0.45) over the map's whole
         // rain area, and a low Sun's path runs tens of km through them under the cloud bases — from 180 km
         // the shadow was the map's rain regions, solid and stair-stepped on its texels, under scattered puffs.
+        CV2_CNT(14);
         CV2Field fS = cv2Field(cv2Pos(rel, eyeH, enuToEcef), 0.0, fpS);
         od += fS.sigma * mix(1.0, 0.15, clamp(fS.rain, 0.0, 1.0)) * ds;
         if (od > 8.0) break;
@@ -1967,13 +1974,30 @@ void main() {
     // grid (radiance, transmittance; mean distance, occlusion distance).
     // Knockout 32768 (Planetarium, Potato): the v2 passes are not dispatched and their images are stale.
     const bool cv2Off = (cloud.dbgDisableMask & 32768u) != 0u;
-    vec4  rc = cv2Off ? vec4(0.0, 0.0, 0.0, 1.0) : texelFetch(cv2ResolvedTex, coord, 0);
+    // S9: with full-res clouds the resolved images are twice this grid; this texel composites their 2x2 box (the
+    // bilinear tap at its centre, exactly what cloud_v2_combine.comp subtracts again) with the effects at half res.
+    const bool fullRes = cv2.grid.w > 0.5 && !cv2Off && textureSize(cv2ResolvedTex, 0) == size * 2;
+    vec4  rc = cv2Off ? vec4(0.0, 0.0, 0.0, 1.0)
+             : fullRes ? textureLod(cv2ResolvedTex, (vec2(coord) + 0.5) / vec2(size), 0.0)
+                       : texelFetch(cv2ResolvedTex, coord, 0);
     vec2  rd = cv2Off ? vec2(0.0, -1.0) : texelFetch(cv2ResolvedDepthTex, coord, 0).xy;
+    if (fullRes) {
+        // The box's distances: the mean of the four opacity-weighted, the occlusion distance the nearest.
+        float dS = 0.0, wS = 0.0, dOcc = kNoSurfaceT;
+        for (int k = 0; k < 4; ++k) {
+            ivec2 q  = min(coord * 2 + ivec2(k & 1, k >> 1), size * 2 - 1);
+            vec2  dk = texelFetch(cv2ResolvedDepthTex, q, 0).xy;
+            float ok = 1.0 - texelFetch(cv2ResolvedTex, q, 0).a + 1e-3;
+            if (dk.x > 0.0) { dS += ok * dk.x; wS += ok; }
+            if (dk.y >= 0.0) dOcc = min(dOcc, dk.y);
+        }
+        rd = vec2(wS > 0.0 ? dS / wS : 0.0, dOcc < kNoSurfaceT ? dOcc : -1.0);
+    }
     // Review 9: an ISOLATED cloud texel (at most one of its 8 neighbours holds comparable cloud) is a
     // sub-pixel wisp or a shaded cloud side the sparse march catches on some frames: along far cloud edges
     // over the sea they were dark 2x2 specks that flickered (user snapshot). Replaced by its 3x3 tent — a
     // soft, faint dot. Cloud bodies and continuous edges have neighbours and are untouched.
-    {
+    if (!fullRes) {   // S9: done at full res by cloud_v2_combine.comp
         float oc = 1.0 - rc.a;
         if (oc > 0.02) {
             ivec2 rs = textureSize(cv2ResolvedTex, 0);
@@ -1998,7 +2022,7 @@ void main() {
     // The sky pass skipped it and split the air at the gap texels' distance beside it (the thin cirrus, a
     // few km): the cloud edge got a fraction of the haze in front of it and drew as a dark speck. Seen from
     // inside the cirrus at 9 km (user snapshot, 62 N): specks all along the cumulus edges, flickering.
-    if (1.0 - rc.a > 0.02 && rd.x <= 1.0) {
+    if (!fullRes && 1.0 - rc.a > 0.02 && rd.x <= 1.0) {
         ivec2 rs = textureSize(cv2ResolvedDepthTex, 0);
         float dS = 0.0, wS = 0.0;
         for (int k = 0; k < 9; ++k) {
@@ -2024,6 +2048,11 @@ void main() {
 
     vec3  A_total = A_cirrus * A_cloud;
     vec3  B_total = B_cirrus * A_cloud + B_cloud;
+    // S9: the composite's derivatives with respect to the cloud's transmittance a (A_cloud = vec3(a)) and radiance b,
+    // carried through every step below (exact for the affine steps, first order for the pow() suppressions).
+    vec3  gAA = A_cirrus;      // dA_total / da
+    vec3  gBA = B_cirrus;      // dB_total / da
+    float gBB = 1.0;           // dB_total / db (times the identity)
 
     // Debug view 6: red = the rain rate at the eye (the rain map, bursts included), green = any rain within the map.
     if (int(cv2.shell.z + 0.5) == 6 && cv2.rain.x > 0.0) {
@@ -2053,6 +2082,8 @@ void main() {
             ? pow(clamp(cloudBlockLocal, 0.0, 1.0), kAuroraCloudSuppressPower)
             : 1.0;
         B_total += auroraContrib * auroraCloudSuppress;
+        if (auroraBehindClouds && cloudBlockLocal > 0.0 && cloudBlockLocal < 1.0)
+            gBA += auroraContrib * (3.0 * cloudBlockLocal * cloudBlockLocal * dot(gAA, vec3(1.0 / 3.0)));
     }
 
     // Kessler dust clouds: above the weather, so seen from below the clouds hide them as they hide the aurora.
@@ -2077,10 +2108,14 @@ void main() {
             float pTr  = exp(-pTau) + 0.85 * pA * (1.0 - exp(-pTau));
             if (pT < tCloudMeanT) {
                 B_total = B_total * pTr + pL * pExt;
+                gBA *= pTr;
+                gBB *= pTr;
             } else {
                 B_total += pL * pExt * A_total;
+                gBA += pL * pExt * gAA;
             }
             A_total *= pTr;
+            gAA *= pTr;
         }
         if (dot(dc, dc) + dot(dLe, dLe) > 0.0) {
             float ext = dot(dc, dc) > 0.0 ? pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, max(dT, 1.0), cloud.extinctionCoeff)) : 0.0;
@@ -2090,8 +2125,12 @@ void main() {
             // The emissive light (a rocket's flame and its lit exhaust, a fireball's trail) only where the clouds are
             // NOT behind it (2026-10-20, issue 20261019_222829): a launch's glow seen from 3.7 km over a cumulus far
             // below it was cut out by that cloud, a black hole in the glow.
-            float supE = (dot(dLe, dLe) > 0.0 && eT < tCloudMeanT) ? 1.0 : sup;
+            bool  eFront = dot(dLe, dLe) > 0.0 && eT < tCloudMeanT;
+            float supE = eFront ? 1.0 : sup;
             B_total += dc * ext * sup + dLe * supE;
+            float mA = dot(A_total, vec3(1.0 / 3.0));
+            if (obsEffH < 20000.0 && mA > 0.0 && mA < 1.0)
+                gBA += (dc * ext + (eFront ? vec3(0.0) : dLe)) * (3.0 * mA * mA * dot(gAA, vec3(1.0 / 3.0)));
         }
     }
 
@@ -2359,8 +2398,10 @@ void main() {
             float intensityScale = beams[bi].intensity * kDebugRayIntensityScale;
             // preFade is aimFade * rangeFade, both computed once per workgroup in cullBeamsForTile
             // (2026-08-10) — same product, same order of multiplication as before.
-            B_total += lineColor * (lineGain * kDebugRayScale * intensityScale * proximity * fade * cloudGate
-                                        * beamPhysicsFade * preFade * beamRayExtinction);
+            vec3  lineAdd = lineColor * (lineGain * kDebugRayScale * intensityScale * proximity * fade
+                                         * beamPhysicsFade * preFade * beamRayExtinction);
+            B_total += lineAdd * cloudGate;
+            gBA += lineAdd * (gateBlend * dot(gAA, vec3(1.0 / 3.0)));
         }
     }
 
@@ -2411,7 +2452,9 @@ void main() {
             float tMaxN = 0.0;
             [[dont_unroll]] for (int k = 0; k < 9; ++k) {
                 if (k == 4) continue;
-                tMaxN = max(tMaxN, texelFetch(cv2ResolvedTex, clamp(coord + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), rsz - 1), 0).a);
+                ivec2 qn = coord + ivec2(k % 3 - 1, k / 3 - 1);
+                tMaxN = max(tMaxN, fullRes ? textureLod(cv2ResolvedTex, (vec2(qn) + 0.5) / vec2(size), 0.0).a
+                                           : texelFetch(cv2ResolvedTex, clamp(qn, ivec2(0), rsz - 1), 0).a);
             }
             if (tMaxN < 0.01) shadowFade = 0.0;
         }
@@ -2445,4 +2488,8 @@ void main() {
     occKm = cloudAlphaFlag(occKm, tCloudMeanT >= kNoSurfaceT && tCloudOcclude < 0.0 && tEmitNear < kNoSurfaceT);
     imageStore(targetA, coord, vec4(B_total, occKm));
     imageStore(targetB, coord, vec4(A_total, terrainSunT));
+    if (fullRes) {
+        imageStore(targetDB, coord, vec4(gBA, gBB));
+        imageStore(targetDA, coord, vec4(gAA, tEmitNear < kNoSurfaceT ? tEmitNear * 0.001 : -1.0));
+    }
 }

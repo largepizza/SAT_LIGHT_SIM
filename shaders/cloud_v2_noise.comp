@@ -107,6 +107,21 @@ float worleyFbmSmooth(vec3 uvw, int n0)
          + (1.0 - clamp(worleySmoothF1(uvw, n0 * 4, k), 0.0, 1.0)) * 0.125;
 }
 
+// CAP-profile Worley fBm (2026-10-22, mode 3, "shape_caps"; .plans/CLOUD_REBUILD_PLAN.md S6): each feature point a
+// rounded dome x / sqrt(x + 0.04), x = 1 - (F1 / 0.7)^2 (the "puffy cumulus" prototypes' hemispherical caps) instead of
+// the cone 1 - F1, with flat valleys between domes instead of creases. Each octave remapped (a x + b, measured over
+// 400k points of this lattice in numpy) to 1 - F1's mean 0.480 and spread 0.172, so the field's calibration holds.
+float worleyCap(vec3 uvw, int n)
+{
+    float f = worleyTile(uvw, n).x;
+    float x = max(1.0 - f * f / 0.49, 0.0);
+    return clamp(0.5487 * (x * inversesqrt(x + 0.04) * 1.0198) + 0.1725, 0.0, 1.0);
+}
+float worleyCapFbm(vec3 uvw, int n0)
+{
+    return worleyCap(uvw, n0) * 0.625 + worleyCap(uvw, n0 * 2) * 0.25 + worleyCap(uvw, n0 * 4) * 0.125;
+}
+
 // Inverted Worley fBm: high AT the feature points (blobs), weights 0.625/0.25/0.125.
 float worleyFbm(vec3 uvw, int n0)
 {
@@ -153,12 +168,14 @@ void main()
     vec3 uvw = (vec3(coord) + 0.5) / vec3(size);
 
     vec4 o;
-    if (pc.mode == 0) {
+    if (pc.mode == 0 || pc.mode == 3) {
         float pln = perlinFbm(uvw, 4, 4);
         float wlo = worleyFbm(uvw, 4);
         // Perlin lifted by Worley: the Nubis Perlin-Worley. Output spans [wlo, 1] (billowy floor).
         float pw  = mix(wlo, 1.0, pln);
-        o = vec4(pw, wlo, worleyFbm(uvw, 8), perlinFbm(uvw + vec3(0.37, 0.11, 0.73), 4, 4));
+        // Mode 3: the same presence (R, so the clouds stand where they did) with cap-profile lobes in G / B.
+        o = vec4(pw, pc.mode == 3 ? worleyCapFbm(uvw, 4) : wlo, pc.mode == 3 ? worleyCapFbm(uvw, 8) : worleyFbm(uvw, 8),
+                 perlinFbm(uvw + vec3(0.37, 0.11, 0.73), 4, 4));
     } else if (pc.mode == 1) {
         // The erosion detail: smooth F1 (the cracks it carves are rounded, not creased).
         o = vec4(worleyFbmSmooth(uvw, 4), worleyFbmSmooth(uvw, 16),

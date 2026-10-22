@@ -682,6 +682,34 @@ json SatelliteSim::harnessStateJson()
         j["clouds_v2"]["sun_cascade"] = {{"frames", cv2CascFrames}, {"terrain_frame_x", terrainFrameMapped ? terrainFrameMapped[0] : -1.0f}, {"lat", {cv2CascLatA, cv2CascLatB}},
                                          {"t_mean", sum / n}, {"t_min", mn}, {"dark_share", (double)dark / n}};
     }
+    // Field evaluations last frame by caller (only shaders built with -DCV2_EVAL_COUNT add to them; all 0 otherwise).
+    if (cv2FlashMapped)
+    {
+        const uint32_t *ec = (const uint32_t *)((const char *)cv2FlashMapped + kCv2EvalCountOffset);
+        static const char *kNames[31] = {"march_rays", "view_coarse", "view_fine", "light_steps", "light_far", "sky_probe",
+                                         "beam_occl", "lit_samples", "bake_shaft_rings", "bake_cascade", "bake_fine_grid",
+                                         "rain_map", "flash_probes", "eye_marches", "ground_shadow", "cdc_skipped",
+                                         "cdc_baked", "cdc_refused", "cdc_missed", "cdc_missed_od_x1e4",
+                                         "miss_l0", "miss_l1", "miss_l2", "miss_l3", "miss_l4", "miss_l5", "miss_l6", "miss_l7",
+                                         "miss_dense", "spare29", "spare30"};
+        json ej;
+        uint64_t total = 0;
+        for (int i = 0; i < 31; ++i) {
+            ej[kNames[i]] = ec[i];
+            if (i != 0 && i != 7 && i < 15) total += ec[i];
+        }
+        ej["cdc_bake_field_evals"] = (uint64_t)std::min(ec[16], (uint32_t)std::max(cv2CdcBudget, 0.0f)) * 9u;
+        ej["field_evals_total"] = total;
+        j["clouds_v2"]["eval_count"] = ej;
+    }
+    {
+        static const char *kPass[kCv2PassStamps - 1] = {"lut_far", "lightning_bakes", "layer_map", "tiles", "march_a",
+                                                        "march_b", "resolve_copy", "composite"};
+        json pm, pr;
+        for (uint32_t i = 0; i + 1 < kCv2PassStamps; ++i) { pm[kPass[i]] = cv2PassMsEased[i]; pr[kPass[i]] = cv2PassMsRaw[i]; }
+        j["clouds_v2"]["pass_ms"] = pm;
+        j["clouds_v2"]["pass_ms_raw"] = pr;
+    }
     // Rain at the eye (2026-10-04, the particles): what was drawn last frame, and the light and rain map the lightning
     // pass wrote (the previous frame's).
     {
@@ -2203,34 +2231,6 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                        (peaks.empty() ? std::string("-") : std::to_string(peaks[0].mag));
         return Status::Done;
     }
-    if (n == "viewer")
-    {
-        auto onOff =[&](const char *key, bool &v) {
-            if (!c.has(key))
-                return;
-            const std::string s = lower(c.str(key));
-            if (s != "on" && s != "off")
-                fail(std::string("viewer: ") + key + "=on|off");
-            v = s == "on";
-        };
-        if (c.has("aim"))
-        {
-            const std::string a = lower(c.str("aim"));
-            if (a == "free")
-                viewerAim = 0;
-            else if (a == "observer" || a == "from")
-                viewerAim = 1;
-            else if (a == "toward")
-                viewerAim = 2;
-            else if (a == "sun")
-            {
-                // Harness only: a free camera on the Sun's side of the satellite (the backscatter
-                // direction) — where a Sun-facing array's own glint is, whatever the observer sees. The
-                // same yaw/pitch frame recordModelViewer's presets use (ECEF, the satellite's east/north/up).
-                if (viewerSatIndex < 0 || viewerSatIndex >= (int)satOrbits.size())
-                    fail("viewer aim=sun: open the viewer on a satellite first (`ui open viewer`)");
-                const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-                const double th = earthRotationAngle(t), ct = std::cos(th), st = std::sin(th);
     // bulkexport const=<name part> [window=24h|7d] [cadence=10|30|60] (2026-10-22): Settings > Photometry > BULK EXPORT
     // from a script (startBulkExport, the same worker); waits until it finishes and reports its status line.
     if (n == "bulkexport")
@@ -2261,6 +2261,34 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["message"] = bulkResult;
         return Status::Done;
     }
+    if (n == "viewer")
+    {
+        auto onOff =[&](const char *key, bool &v) {
+            if (!c.has(key))
+                return;
+            const std::string s = lower(c.str(key));
+            if (s != "on" && s != "off")
+                fail(std::string("viewer: ") + key + "=on|off");
+            v = s == "on";
+        };
+        if (c.has("aim"))
+        {
+            const std::string a = lower(c.str("aim"));
+            if (a == "free")
+                viewerAim = 0;
+            else if (a == "observer" || a == "from")
+                viewerAim = 1;
+            else if (a == "toward")
+                viewerAim = 2;
+            else if (a == "sun")
+            {
+                // Harness only: a free camera on the Sun's side of the satellite (the backscatter
+                // direction) — where a Sun-facing array's own glint is, whatever the observer sees. The
+                // same yaw/pitch frame recordModelViewer's presets use (ECEF, the satellite's east/north/up).
+                if (viewerSatIndex < 0 || viewerSatIndex >= (int)satOrbits.size())
+                    fail("viewer aim=sun: open the viewer on a satellite first (`ui open viewer`)");
+                const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+                const double th = earthRotationAngle(t), ct = std::cos(th), st = std::sin(th);
                 auto toEcef = [&](glm::dvec3 v) { return glm::dvec3(ct * v.x + st * v.y, -st * v.x + ct * v.y, v.z); };
                 const glm::dvec3 P = toEcef(satOrbitStateAt(orbitElemsOf(satOrbits[viewerSatIndex]), t).posEci);
                 const glm::dvec3 up = glm::normalize(P);
@@ -2291,7 +2319,11 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 fail("viewer dist=: open the viewer on a model satellite first (`ui open viewer`)");
             viewerDist = (float)(parseNum(c.str("dist"), "viewer dist") * std::max(0.1f, tm->boundsRadius));
         }
+        if (c.has("check")) // the PHOTOMETRY CHECK's Run check (render vs lobes); its result shows a few frames later
+            viewerCheckRequested = true;
         updateViewerObserverInfo();
+        r["check"] = {{"render", viewerCheckValue[0]}, {"model", viewerCheckValue[1]},
+                      {"difference", viewerCheckValue[2]}, {"note", viewerCheckNote}};
         r["aim"] = viewerAim;
         r["studio_light"] = viewerStudioLight;
         r["glare"] = viewerGlare;
@@ -2319,11 +2351,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (want)
         {
             if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
-        if (c.has("check")) // the PHOTOMETRY CHECK's Run check (render vs lobes); its result shows a few frames later
-            viewerCheckRequested = true;
                 fail("track: select a satellite first (`select sat <i>` or `select const <name>`)");
-        r["check"] = {{"render", viewerCheckValue[0]}, {"model", viewerCheckValue[1]},
-                      {"difference", viewerCheckValue[2]}, {"note", viewerCheckNote}};
             startTrack();
         }
         else

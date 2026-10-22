@@ -571,6 +571,9 @@ void SatelliteSim::init(VulkanContext &ctx)
                                          // (createGlowResources above) and reflectBeamsBuf (createBuffers)
     createBeamSelfMarchPipeline(ctx);
     writeCloudsV2ConsumerDescriptors(ctx); // cloud_march 15-20 + beam_self_march 5-8, both sets exist now
+    createCloudCombine(ctx);               // S9 full-res combine (its pipeline + set) ...
+    createCloudCombineTargets(ctx);        // ... and its half images, cloud_march 5/6/24/25
+    computeCloudExtentBuilt = computeCloudExtent(ctx);
     createRainParticles(ctx);              // rain at the eye (SatelliteSimRain.cpp): needs the cloud UBOs, flash buffer, depth
     createLightningResources(ctx);         // lightning channels and glow (SatelliteSimLightning.cpp): the cloud targets
     createSkyBgPipeline(ctx);
@@ -719,6 +722,14 @@ VkExtent2D SatelliteSim::computeHalfExtent(const VulkanContext &ctx) const
     const uint32_t w = std::max(1u, (uint32_t)std::ceil(ctx.swapExtent.width * s * 0.5f));
     const uint32_t h = std::max(1u, (uint32_t)std::ceil(ctx.swapExtent.height * s * 0.5f));
     return {w, h};
+}
+
+// S9 (2026-10-22): the clouds' own grid. With "Full-resolution clouds" twice the half extent in each axis (exactly, so a
+// cloud texel 2i, 2i+1 lies inside half texel i), else the half extent itself.
+VkExtent2D SatelliteSim::computeCloudExtent(const VulkanContext &ctx) const
+{
+    const VkExtent2D h = computeHalfExtent(ctx);
+    return cv2FullResActive() ? VkExtent2D{h.width * 2, h.height * 2} : h;
 }
 
 void SatelliteSim::recreateComputeScaledTargets(VulkanContext &ctx)
@@ -873,9 +884,12 @@ void SatelliteSim::recreateComputeScaledTargets(VulkanContext &ctx)
         cv2HistoryValid = true;
     }
     writeCloudsV2ConsumerDescriptors(ctx);
+    destroyCloudCombineTargets(ctx.device);
+    createCloudCombineTargets(ctx);   // after the v2 targets and cloud targets: it points at both
     writeRainDescriptors(ctx);   // the scene depth image was recreated
     writeLightningDescriptors(ctx);
     computeHalfExtentBuilt = computeHalfExtent(ctx);
+    computeCloudExtentBuilt = computeCloudExtent(ctx);
 }
 
 void SatelliteSim::onResize(VulkanContext &ctx)
@@ -1442,6 +1456,8 @@ struct TopK
 void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
 {
     fprof::markReset();
+    cv2SyncShapeVolume(ctx);   // before anything below binds a set that reads the shape volume
+    cv2EnsureCdcBuffer(ctx);   // ... or the clipmap
     skyTaaFrameDt = dt;
     {
         FPROF_SCOPE("rc.updateGpuTimingStats");
@@ -1470,8 +1486,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // images. The low-res sky target too, when the plain (non-TAA) scaled path will use it.
     {
         FPROF_SCOPE("rc.scaledTargets");
-        const VkExtent2D e = computeHalfExtent(ctx);
-        if (e.width != computeHalfExtentBuilt.width || e.height != computeHalfExtentBuilt.height)
+        const VkExtent2D e = computeHalfExtent(ctx), ec = computeCloudExtent(ctx);
+        if (e.width != computeHalfExtentBuilt.width || e.height != computeHalfExtentBuilt.height ||
+            ec.width != computeCloudExtentBuilt.width || ec.height != computeCloudExtentBuilt.height)
             recreateComputeScaledTargets(ctx);
         const VkExtent2D lo{std::max(1u, (uint32_t)(ctx.swapExtent.width * renderScale)),
                             std::max(1u, (uint32_t)(ctx.swapExtent.height * renderScale))};
@@ -3385,6 +3402,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         vkCmdPushConstants(cmd, cloudMarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(cpc), &cpc);
         vkCmdDispatch(cmd, (halfW + 15) / 16, (halfH + 15) / 16, 1);
+        recordCloudCombine(cmd, ctx);   // S9 full-res clouds: the final targets at full res (else nothing)
+        if (cv2PassStampNext < kCv2PassStamps)
+            cv2PassStampTo(cmd, kCv2PassStamps - 1);   // cloud_march.comp (the half-res composite) + the combine
 
         // Post-dispatch: transition both targets back to SHADER_READ_ONLY_OPTIMAL for
         // sat_sky.frag to sample. Explicit layout-transition barriers — the render pass's
@@ -7819,8 +7839,9 @@ void SatelliteSim::setAudio(AudioSystem *audio)
         // The half-res compute targets at the loaded render scale (recordCompute recreated them on the first frame).
         if (ctx_)
         {
-            const VkExtent2D e = computeHalfExtent(*ctx_);
-            if (e.width != computeHalfExtentBuilt.width || e.height != computeHalfExtentBuilt.height)
+            const VkExtent2D e = computeHalfExtent(*ctx_), ec = computeCloudExtent(*ctx_);
+            if (e.width != computeHalfExtentBuilt.width || e.height != computeHalfExtentBuilt.height ||
+                ec.width != computeCloudExtentBuilt.width || ec.height != computeCloudExtentBuilt.height)
                 recreateComputeScaledTargets(*ctx_);
         }
         char msg[96];
@@ -7976,6 +7997,8 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyDescriptorPool(device, orbitDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, orbitDescLayout, nullptr);
     // ── Cloud march pipeline (C15-perf) ────────────────────────────────────────
+    destroyCloudCombineTargets(device);
+    destroyCloudCombine(device);
     destroyCloudsV2(device);
     vkDestroyPipeline(device, cloudMarchPipeline, nullptr);
     vkDestroyPipelineLayout(device, cloudMarchPipeLayout, nullptr);
@@ -10790,7 +10813,7 @@ void SatelliteSim::createAuroraNoisePipeline(VulkanContext &ctx)
 // onResize (see there for the matching descriptor-set patch).
 void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
 {
-    const VkExtent2D halfE = computeHalfExtent(ctx);
+    const VkExtent2D halfE = computeCloudExtent(ctx);   // the FINAL cloud targets: full res with S9 on
     uint32_t w = halfE.width;
     uint32_t h = halfE.height;
 
@@ -10862,7 +10885,7 @@ void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
 // textures) — see init() ordering.
 void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[24] = {};
+    VkDescriptorSetLayoutBinding bindings[26] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -10893,16 +10916,21 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     bindings[22] = {22, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     // 23: the Kessler dust clouds (kesslerFillDust, host-visible, rewritten every frame).
     bindings[23] = {23, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    // 24/25 (S9, 2026-10-22): the composite's derivatives with respect to the cloud, written in full-res mode for
+    // cloud_v2_combine.comp (createCloudCombineTargets: 1x1 images while it is off, never written then). With them
+    // this shader has 4 storage images, the guaranteed per-stage minimum.
+    bindings[24] = {24, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[25] = {25, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 24;
+    li.bindingCount = 26;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &cloudMarchDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 15},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 4;

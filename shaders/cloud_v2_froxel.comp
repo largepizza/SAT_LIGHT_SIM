@@ -1,0 +1,64 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── Clouds v2: the god rays' froxel volume (2026-10-22, .plans/CLOUD_REBUILD_PLAN.md S-G) ─────────────────────────────
+// EXPERIMENT ("godray_froxels"). The clouds' Sun shadow along the view, once per frame on a kCv2FroxX x kCv2FroxY x
+// kCv2FroxZ frustum grid (screen tiles x log-spaced depths, cv2.frox), into cv2GodFrox at the end of the flash buffer
+// (sat_sky.frag already binds it: the sky set is at its sampled- and storage-image floors). Each froxel = the mean over
+// 4 stratified depths of its slice of what the sky pass took per point: the cascade's transmittance, overridden by the
+// shaft rings where they cover (mix(cascade, shaft.x, shaft.y)). The sky pass then reads a few trilinear values per
+// atmosphere step instead of 3 cascade lookups + 24 shaft lookups (S0: god rays + haze were 3-8 ms of the sky pass).
+// Same descriptor set and push constants as cloud_v2_march.comp; run after the lightning pass (the bakes).
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 4) in;
+
+layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
+    mat4  skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING  1
+#define CV2_MORPH_BINDING   20
+#define CV2_WEATHER_BINDING 2
+#define CV2_SHAPE_BINDING   3
+#define CV2_MESO_BINDING    5
+#include "clouds_v2.glsl"
+#define CV2_FLASH_BINDING 12
+#define CV2_FLASH_WRITE
+#define CV2_SUN_CASC_FN
+#include "cloud_lightning.glsl"
+
+void main()
+{
+    ivec3 g = ivec3(gl_GlobalInvocationID);
+    if (g.x >= kCv2FroxX || g.y >= kCv2FroxY || g.z >= kCv2FroxZ) return;
+    int idx = (g.z * kCv2FroxY + g.y) * kCv2FroxX + g.x;
+    if (cv2.frox.x <= 0.5 || cv2.sunCasc2.x <= 0.0) { cv2GodFrox[idx] = 1.0; return; }
+
+    // The view ray through the tile's centre (cloud_v2_march.comp's rayDirAt, in screen fractions).
+    vec2  ndc = (vec2(g.xy) + 0.5) / vec2(kCv2FroxX, kCv2FroxY) * 2.0 - 1.0;
+    float th  = tan(pc.fovYRad * 0.5);
+    vec3  dir = normalize(mat3(transpose(pc.skyView)) * vec3(ndc.x * th * pc.aspect, -ndc.y * th, -1.0));
+    float cosA = dot(dir, normalize(pc.sunDirENU.xyz));
+    float T = 0.0;
+    [[dont_unroll]] for (int k = 0; k < 4; ++k) {
+        float t = cv2FroxDepth(float(g.z) + (float(k) + 0.5) * 0.25);
+        float c = cv2SunCascT(dir * t, t * cosA + 0.5 * cv2.sunCasc2.y);
+        // The shaft rings only within their reach ALONG THE VIEW, as the lattice path (sat_sky.frag: its first
+        // kCv2ShaftRangeCells x cell of the ray): looking down they also cover points far along the ray, which that path
+        // read from the cascade alone (night3: 1-2.5 levels darker there).
+        if (cv2.sunCasc4.w > 0.0 && t < kCv2ShaftRangeCells * cv2.sunCasc7.z) {
+            vec2 sh = cv2SunShaftT(dir * t, t * cosA);
+            c = mix(c, sh.x, sh.y);
+        }
+        T += c;
+    }
+    cv2GodFrox[idx] = 0.25 * T;
+}

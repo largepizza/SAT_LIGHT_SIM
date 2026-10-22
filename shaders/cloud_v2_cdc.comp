@@ -1,0 +1,146 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── Clouds v2: the cloud density clipmap's bake (2026-10-21, include/cv2_cdc.glsl, .plans/CLOUD_REBUILD_PLAN.md S1) ──
+// EXPERIMENT. Same descriptor set and push constants as cloud_v2_march.comp; run before the march. Two passes
+// (specialization constant 2):
+//   0  CHECK: one thread per slot of every level. A slot whose stamp matches the cell it holds now returns; a cell
+//      entirely outside the cloud shell is written empty without a field read; any other stale cell is set to
+//      "empty, this stamp" and appended to the bake list while it has room (cdcB.z cells; the rest stay unknown and the
+//      march evaluates the field there, as before).
+//   1  BAKE: kCdcLanes threads per listed cell, each a share of its sample points; the cell takes their max by
+//      atomicMax (the stamp is in the high bits and the same for all; a positive half float orders as its bits).
+// The bake was one pass at first: a stale cell's thread baked alone in a warp of returning ones, and with time running
+// (~21k cells a frame) that serialisation cost 5-12 ms (harness_runs/s0/run12).
+layout(local_size_x = 256) in;
+layout(constant_id = 2) const uint kMode = 0u;
+const uint kCdcLanes = 4u;
+
+layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
+    mat4  skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING  1
+#define CV2_MORPH_BINDING   20
+#define CV2_WEATHER_BINDING 2
+#define CV2_SHAPE_BINDING   3
+#define CV2_DETAIL_BINDING  4
+#define CV2_MESO_BINDING    5
+#include "clouds_v2.glsl"
+layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
+layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // (its size: the march's pixel)
+#define CV2_FLASH_BINDING 12
+#define CV2_FLASH_WRITE
+#include "cloud_lightning.glsl"   // cv2EvalCount[16..17]: the bake's counters
+#define CV2_CDC_BINDING 23
+#define CV2_CDC_WRITE
+#include "cv2_cdc.glsl"
+
+// The absolute cell slot gi holds now (its residue inside the window centred on the eye's cell) and its level.
+ivec3 cellOf(uint gi, out int lv)
+{
+    lv = int(gi / uint(kCv2CdcLevelCells));
+    int   r  = int(gi % uint(kCv2CdcLevelCells));
+    ivec2 s  = ivec2(r & (kCv2CdcN - 1), (r / kCv2CdcN) & (kCv2CdcN - 1));
+    ivec2 c0 = ivec2(floor(cv2.cdcA.xy / cv2CdcCell(lv))) - kCv2CdcN / 2;
+    return ivec3(c0 + ((s - c0) & (kCv2CdcN - 1)), r / (kCv2CdcN * kCv2CdcN));
+}
+
+void checkPass(uint gi)
+{
+    if (gi >= uint(kCv2CdcTotal)) return;
+    int   lv;
+    ivec3 c  = cellOf(gi, lv);
+    uint  st = cv2CdcStamp(c, lv);
+    if ((cv2CdcData[gi] >> 16u) == st) return;
+    // Outside the shell (with the sample pattern's reach): empty, no field read.
+    float z0 = float(c.z) * kCv2CdcDZ, z1 = z0 + kCv2CdcDZ;
+    if (z1 + kCv2CdcDZ < cv2.shell.x || z0 - kCv2CdcDZ > cv2.shell.y) {
+        cv2CdcData[gi] = st << 16u;
+        return;
+    }
+    uint slot = atomicAdd(cv2CdcListCount, 1u);
+    if (slot >= uint(cv2.cdcB.z) || slot >= uint(kCv2CdcListCap)) {
+        atomicAdd(cv2EvalCount[17], 1u);
+        return;
+    }
+    cv2CdcData[gi] = st << 16u;   // the bake pass (later this frame, before the march) raises it
+    cv2CdcData[kCv2CdcTotal + gi] = 0u;      // ... and sums the mean light extinction (S2)
+    cv2CdcData[2 * kCv2CdcTotal + gi] = 0u;
+    cv2CdcList[slot] = gi;
+}
+
+void bakePass(uint ti)
+{
+    uint slot = ti / kCdcLanes, lane = ti % kCdcLanes;
+    if (slot >= min(cv2CdcListCount, min(uint(cv2.cdcB.z), uint(kCv2CdcListCap)))) return;
+    if (lane == 0u) atomicAdd(cv2EvalCount[16], 1u);
+    uint  gi = cv2CdcList[slot];
+    int   lv;
+    ivec3 c  = cellOf(gi, lv);
+    uint  st = cv2CdcStamp(c, lv);
+    float cell = cv2CdcCell(lv);
+
+    vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+    vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+    mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
+    float eyeH = terrainFrame.x + 2.0;               // == cloud_v2_march.comp's
+    vec3  eyeP = vec3(0.0, 0.0, R_EARTH + eyeH);
+    vec2  uc   = (vec2(c.xy) + 0.5) * cell;          // the cell centre on the plane (m)
+    float zc   = (float(c.z) + 0.5) * kCv2CdcDZ;
+    // The read footprint: cdcB.y x the cell, or (cdcB.y < 0) |cdcB.y| x the MARCH's own footprint at the sample's distance
+    // (what its coarse step reads there). A coarse footprint is not conservative: misses grew with it (run 7).
+    float pixA = 2.0 * tan(pc.fovYRad * 0.5) / cv2.grid.y * cv2.motion.w;   // the march's pixel (the cloud grid, S9)
+    // Pattern (cdcA.w): 1 = the centre + the 8 corners of a box twice the cell (9 points); 2 = a 3 x 3 horizontal grid
+    // one cell apart x 4 heights a quarter-cell apart over the cell's own height +- a quarter (36 points): with only the
+    // centre inside its own height range, pattern 1 missed flat bases and thin decks ~10x as often (run 11).
+    int   nS = cv2.cdcA.w > 1.5 ? 36 : 9;
+    float mx = 0.0;
+    [[dont_unroll]] for (int k = int(lane); k < nS; k += int(kCdcLanes)) {
+        int   kk = k - 1;
+        vec3  o  = (nS == 36) ? vec3(float(k % 3) - 1.0, float((k / 3) % 3) - 1.0, (float(k / 9) - 1.5) * 0.5)
+                 : (k == 0) ? vec3(0.0) : vec3(float(kk & 1), float((kk >> 1) & 1), float((kk >> 2) & 1)) * 2.0 - 1.0;
+        vec2  u  = uc + o.xy * cell;
+        float h  = max(zc + o.z * kCv2CdcDZ, 0.0);
+        vec3  d  = normalize(cv2.layA.xyz * kCv2CdcR + cv2.layE.xyz * u.x + cv2.layN.xyz * u.y);
+        vec3  rel = d * (R_EARTH + h) - eyeP;
+        // The stretch the view march sets for a ray from the eye through this point (made no measurable difference,
+        // run 10; kept so the bake reads exactly what the march would).
+        gCv2Stretch = 1.0 / max(abs(dot(normalize(rel), normalize(rel + eyeP))), 0.25);
+        float fpS = cv2.cdcB.y < 0.0 ? -cv2.cdcB.y * length(rel) * pixA : cv2.cdcB.y * cell;
+        CV2Field f = cv2Field(cv2Pos(rel, eyeH, enuToEcef), -1.0, fpS);
+        mx = max(mx, f.sigma);
+        // S2 ("cdc_light"): the light march's own read (mean erosion), its effective extinction summed in fixed point,
+        // at the pattern's points pulled in to the cell itself (+-0.5 cell): a mean over the dilated 2-cell box blurred
+        // gaps into cloud, and exp(-mean od) of a broken field is darker than the mean of exp(-od) (s2 run: -18 levels).
+        if (cv2.cdcC.x > 0.5 && lv < int(cv2.cdcC.y)) {
+            vec2  uM = uc + o.xy * 0.5 * cell;
+            float hM = max(zc + o.z * kCv2CdcDZ * 0.5, 0.0);
+            vec3  rM = normalize(cv2.layA.xyz * kCv2CdcR + cv2.layE.xyz * uM.x + cv2.layN.xyz * uM.y) * (R_EARTH + hM) - eyeP;
+            CV2Field fl = cv2Field(cv2Pos(rM, eyeH, enuToEcef), 0.0, fpS);
+            float e = fl.sigma * max(1.0 - 0.8 * fl.thin - cv2.mid2.z * fl.soft, 0.0);
+            e = min(e, 4.0);
+            atomicAdd(cv2CdcData[kCv2CdcTotal + gi], uint(e * kCv2CdcMeanQ + 0.5));
+            atomicAdd(cv2CdcData[2 * kCv2CdcTotal + gi], uint(e * e * kCv2CdcMeanQ + 0.5));
+        }
+    }
+    uint hb = packHalf2x16(vec2(mx, 0.0)) & 0xFFFFu;
+    if (mx > 0.0 && hb == 0u) hb = 1u;   // a trace of cloud must not round to "empty"
+    if (hb != 0u) atomicMax(cv2CdcData[gi], (st << 16u) | hb);
+}
+
+void main()
+{
+    if (cv2.cdcA.w <= 0.0) return;
+    if (kMode == 0u) checkPass(gl_GlobalInvocationID.x);
+    else             bakePass(gl_GlobalInvocationID.x);
+}

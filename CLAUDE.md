@@ -878,6 +878,60 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     atmosphere loop ~9.5, the god rays 2-4 of that). From orbit: full rate vs sparse 38 vs 14 ms, Cb columns
     -30% (content as much as search), step base 120 m -15%, light steps 2 -14%, high layer -13%. The user's
     `shadow_ring1_cell_m` 100 (default 250) costs ~0.5 ms; `fovea_radius` does nothing with the adaptive rate off.
+- **Cloud rebuild experiments (2026-10-21/22, `.plans/CLOUD_REBUILD_PLAN.md`, runs and `summary.txt` in
+  `harness_runs/s0/`).** All OFF by default (Weather tab "Rebuild experiments", slots 302-308) except the flash buffer's
+  placement. Measuring tools kept: `-DCV2_EVAL_COUNT` variants count field evaluations per caller (`cv2EvalCount` at the
+  flash buffer's end, `state` -> `clouds_v2.eval_count`; compile by hand, load with `shaders reload march=`), and a 9-stamp
+  per-pass GPU timer in the cloud bucket (`state` -> `clouds_v2.pass_ms`). Coarse view steps are 70-94% of field
+  evaluations but **evaluation count is not cost**: empty-air evaluations are cheap (early-outs).
+  - **Occupancy clipmap** (`cdc_skip` 2, `cv2_cdc.glsl`, `cloud_v2_cdc.comp`, march binding 23): 8 levels x 128 x 128 x
+    64 cells (100 m doubling, 320 m tall) on the layer map's anchored plane, toroidal, stamped (wrap, epoch, a staggered
+    sim-time quantum); each cell = the max coarse extinction over 36 points (3 x 3 x 4) of a 2-cell box at the march's
+    own footprint; a coarse step in a known-empty cell takes its stride without the field, unknown cells evaluate it.
+    Two passes (check + list, then a 4-lane bake: a one-pass bake serialised one lane per warp, 5-12 ms). 6 levels used;
+    off above 4x time. -4..-9 ms below orbit at full rate, ~0 from orbit, images at the noise floor, motion (tstab) equal.
+    Coarse-footprint bakes are NOT conservative (more misses); jumping to cell exits gained nothing.
+  - **S2** (`cdc_light`, `cdc_light_levels` 3): light steps 3+ read the cell's mean + variance of the light extinction
+    through the gamma model E[exp(-L e)] (a cell MEAN alone darkened broken cloud by up to 18 levels: Jensen). Modest.
+  - **God-ray froxels** (`godray_froxels`, `cloud_v2_froxel.comp`, `cv2GodFrox` in the flash buffer: 160 x 90 x 64,
+    log depths 50 m - 400 km): the sky pass reads it instead of 3 cascade + 24 shaft lookups a step; sky -0.2..-2.9 ms,
+    images at the floor (the shafts only within their reach along the view, as the old path).
+  - **Flash buffer in device-local host-visible memory** (ON; `SATLIGHTSIM_FLASH_HOSTMEM=1` restores system RAM): the
+    Sun shadow lattices were read across PCIe by every lit sample and sky pixel; sky -0.9..-2.3 ms.
+  - **Mie** (`tools/make_mie_lut.py` -> `assets/textures/cloud_mie.rgba16f`, march binding 24): `mie_phase` = the physical
+    droplet phase (flatter clouds: ~20x less side scattering than the tuned HG pair, the MS term was tuned with the HG),
+    `mie_optics` = the tuned phase x the table's structure (corona, cloudbow, glory), `droplet_reff_um`.
+  - **Cap lobes** (`shape_caps`, noise mode 3): the shape volume's lobe channels as rounded caps, remapped to 1 - F1's
+    mean / spread; a second volume, descriptors swapped at the top of recordCompute.
+  - **Full-resolution clouds** (`full_res`, "Full-resolution clouds", S9, `cloud_v2_combine.comp`): the CLOUD grid
+    (`computeCloudExtent()`: the v2 march / resolve images and the final cloud targets A/B) is twice the half extent;
+    `computeHalfExtent()` stays half (scene depth, `cloud_march.comp`'s dispatch). The march always runs sparse there
+    (1 full-res pixel in 4 = the half-res full rate's rays; full / half / adaptive rates off) and reads its grid from
+    `cv2.grid` (no longer the scene depth's size) and the depth at `pix >> grid.z`. `cloud_march.comp` composites at half
+    res into `cmHalf*` (bindings 5/6 rewritten, + 24/25: its storage images are at the 4 floor), taking the cloud as the
+    full-res image's 2x2 box (the bilinear tap at the half texel's centre) and carrying the composite's DERIVATIVES with
+    respect to the cloud's transmittance and radiance through every step (aurora / dust suppression, plumes in front /
+    behind, beam lines, cirrus); the combine pass writes B = B_h + dB/db (b_f - b_h) + dB/da (a_f - a_h) and
+    A = A_h + dA/da (a_f - a_h) per full-res pixel, all half terms bilinear: exact for the cloud alone and the affine
+    steps, first order for the pow() suppressions. The half-res fix-ups (isolated texel tent, edge lean, missing distance)
+    and the alpha's signed distance move into the combine at full res; the ground shadow is a [1 2 1] tent of the half
+    texels. The sky pass skips its joint-bilateral upsample when the targets are finer than the scene depth. The resolve
+    uses a [1 2 1] tent of the quarter grid (widened under 6-24 px of parallax) where it has no usable history — on EVERY
+    sparse grid (half-res too: tstab "chaos" there 7.85 -> 4.91). **ON for High / Ultra** (the compiled default,
+    `applyGraphicsPreset`: off with the cheap-cloud presets), 2026-10-22 (the user). The noise LOD stays the HALF-res
+    pixel's (`motion.w` = 2): at the full-res pixel it cost +2 ms at 58 km and the sub-pixel noise flickered from orbit.
+    Measured (1920x1009, clipmap on, vs half-res full rate, `harness_runs/s0/s9b`, `lodviews`): cloud bucket 58 km 12.5 ->
+    14.9 ms, anvils 10.6 -> 12.1, cumulus 13.9 -> 15.7, Pacific 9.0 -> 10.9; resolve +1.0, composite + combine +0.2..+0.4
+    (the probe that ran the composite at full res: +0.6..+5.3); 128 registers. Cloud edges full-res sharp
+    (`harness_runs/s0/lod_crops.png`). Motion: tstab cumulus 2.91 -> 3.13, equal but "chaos" (fast flight inside cloud)
+    2.1 -> 4.3. Edge flicker (issue 20261021_173131's three shots, `zig.py`, `harness_runs/s0/flk`, share of reversals
+    > 12 levels): the user's settings 0.053 / 0.171 / 0.310%, half-res full rate 0.004 / 0.022 / 0.019%, full res 0.014 /
+    0.063 / 0.065%. No validation errors. Not done: the lightning pass's engine-light ground term gathers the half-res
+    depth with the cloud grid's weights. A user settings.json saved with `full_res` 0 (the key existed off since
+    2026-10-21) keeps it off.
+  - All of it compiled in costs +0.6 ms of march from orbit with everything off (binary 309 -> 315 KB, 128 registers).
+  - The agent's own build tree for this work is `build-clouds` (gitignored), launched through `harness_runs/s0/runx.sh`
+    (waits until no app instance runs: another session shares the machine).
 - **Issue round (2026-10-13b, issues 20261013_184710 / _181252, `harness_runs/fb14`):**
   - **Edge trails in motion** (cloud_v2_resolve.comp, `dWide` / `eyePx`): a clear pixel with no cloud in its 3x3 new
     samples but cloud in the 7x7 takes that cloud's distance for its eye-parallax floor. It was floored at 50 km
@@ -3088,6 +3142,14 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   VisorSat phase-matched mean 7.220 vs 7.218, curve RMS 0.13, mean 6.97 vs 7.22; V1.0 (HELD OUT —
   its antennas are an untouched estimate) 5.926 vs 5.93; differential 1.04 vs 1.29. Remaining: the
   110-120° bin is 0.37 too bright (25 obs); model scatter 0.72 vs 0.85 observed (fixed attitude).
+  **Superseded 2026-10-22 (MMT replay refit, scratchpad `starlink_refit`; KNOWN_RESIDUALS.md):** the M8 fit was made under
+  SatBench's assumed Sun −18..−6° window; at MMT's real geometry both models read ~1 mag too bright against 94 MMT tracks
+  (`SatModelTool --pass`). Refit jointly on 42 tracks (39 held out): `bus_metal` Beckmann α 0.08 (F0 0.9, diffuse 0.11),
+  `antenna_white` 0.31, `visor_black` 0.019, visor inset 0.39 m, Minnaert k 0.65 on those diffuse terms (Mallama 2020a's
+  own regression: 0.578 ± 0.084). Held-out MMT medians −0.02 (V1.0) / +0.21 (VisorSat), Sun-altitude trend −0.29 →
+  −0.07 (V1.0) / −0.36 → −0.22 (VisorSat) mag per 10°. At the measured windows VisorSat 7.428 (+0.21), V1.0 5.904,
+  differential 1.52; VisorSat's curve RMS 0.35 is `ungated_metrics` (the table's bin means carry bright-attitude passes).
+  The flare-facet population (115 polished facets) was tested and not shipped.
 - **Selection panel (buildSelectedSatPanel) + the icon atlas (2026-09-24 UI pass).** The floating
   panel that tracks the selected satellite carries its name, its type and the magnitude readout, then
   one row of **icon-only** action buttons, all drawn by the single helper `buildSelActionButton`
@@ -3142,14 +3204,6 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   window is open, only when `traceStale()` says the result would change (observer moved, selection
   changed, pass over, extinction/tilt/occlusion changed). Tick
   labels are thinned to what fits the plot's pixel size (grid lines stay at every whole magnitude).
-  **Superseded 2026-10-22 (MMT replay refit, scratchpad `starlink_refit`; KNOWN_RESIDUALS.md):** the M8 fit was made under
-  SatBench's assumed Sun −18..−6° window; at MMT's real geometry both models read ~1 mag too bright against 94 MMT tracks
-  (`SatModelTool --pass`). Refit jointly on 42 tracks (39 held out): `bus_metal` Beckmann α 0.08 (F0 0.9, diffuse 0.11),
-  `antenna_white` 0.31, `visor_black` 0.019, visor inset 0.39 m, Minnaert k 0.65 on those diffuse terms (Mallama 2020a's
-  own regression: 0.578 ± 0.084). Held-out MMT medians −0.02 (V1.0) / +0.21 (VisorSat), Sun-altitude trend −0.29 →
-  −0.07 (V1.0) / −0.36 → −0.22 (VisorSat) mag per 10°. At the measured windows VisorSat 7.428 (+0.21), V1.0 5.904,
-  differential 1.52; VisorSat's curve RMS 0.35 is `ungated_metrics` (the table's bin means carry bright-attitude passes).
-  The flare-facet population (115 polished facets) was tested and not shipped.
   When a satellite can't be traced (legacy type, ground-site aim, no pass
   within two orbits) the window says why instead of plotting. The plot is `UIPlot`, a Clay custom
   element that `UIRenderer::pushPlot()` draws as thickness-wide axis-aligned quads (no line

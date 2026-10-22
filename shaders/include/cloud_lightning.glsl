@@ -37,8 +37,12 @@ float cv2FlashIntensity(float age, float dur, uvec3 fh, bool cg)
     }
     return I + 0.3 * smoothstep(0.0, 0.02, a) * exp(-a / (0.4 * dur + 0.05));
 }
+// The god rays' froxel volume (2026-10-22, cloud_v2_froxel.comp): screen tiles x log-spaced depths (cv2.frox).
+const int   kCv2FroxX = 160;
+const int   kCv2FroxY = 90;
+const int   kCv2FroxZ = 64;
 layout(std430, set = 0, binding = CV2_FLASH_BINDING)
-#ifndef CV2_FLASH_WRITE
+#if !defined(CV2_FLASH_WRITE) && !defined(CV2_EVAL_COUNT)
 readonly
 #endif
 buffer CV2FlashBuf {
@@ -87,7 +91,17 @@ buffer CV2FlashBuf {
     // Two RINGS of it (2026-10-12), ring r at [r * kCv2ShaftN^2 * kCv2ShaftK + ...]: ring 0 with cells of
     // cv2.sunCasc7.z (250 m), ring 1 of cv2.sunCasc7.w (1000 m; lattice cv2.sunCasc6, knots cv2.sunCasc7.y apart).
     float    cv2SunShaft[1048576];
+    // Field-evaluation counters (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S0): zeroed by the host each frame, added to
+    // only by shaders built with -DCV2_EVAL_COUNT (CV2_CNT below); harness `state` -> clouds_v2.eval_count.
+    uint     cv2EvalCount[32];   // [16] cdc cells baked / [17] refused by the budget (cloud_v2_cdc.comp, always)
+    // The clouds' Sun transmittance along the view on the froxel grid ([(z * Y + y) * X + x]; cloud_v2_froxel.comp).
+    float    cv2GodFrox[kCv2FroxX * kCv2FroxY * kCv2FroxZ];
 };
+#ifdef CV2_EVAL_COUNT
+#define CV2_CNT(i) atomicAdd(cv2EvalCount[i], 1u)
+#else
+#define CV2_CNT(i)
+#endif
 const int   kCv2ShaftN      = 128;
 const int   kCv2ShaftK      = 32;
 const float kCv2ShaftRangeCells = 56.0;  // a ring's reach from the eye across the Sun, in its cells (inside its +-64)
@@ -238,6 +252,25 @@ vec2 cv2SunShaftRings(vec3 rl, float sAlong)
         keep *= 1.0 - s.y;
     }
     return vec2(acc / max(1.0 - keep, 1e-5), 1.0 - keep);
+}
+// The god rays' froxel volume: slice s (0..kCv2FroxZ) <-> distance along the view ray, log-spaced from cv2.frox.y (m) by
+// cv2.frox.z (the log ratio per slice).
+float cv2FroxDepth(float s) { return cv2.frox.y * exp(s * cv2.frox.z); }
+// The Sun transmittance at screen fraction uv (0..1, top-left origin as gl_FragCoord / screen) and distance t: trilinear
+// over the froxels' centres.
+float cv2GodFroxT(vec2 uv, float t)
+{
+    vec3 f = vec3(uv * vec2(kCv2FroxX, kCv2FroxY) - 0.5, log(max(t, cv2.frox.y) / cv2.frox.y) / cv2.frox.z - 0.5);
+    f = clamp(f, vec3(0.0), vec3(kCv2FroxX - 1, kCv2FroxY - 1, kCv2FroxZ - 1) - 1e-3);
+    ivec3 i = ivec3(f);
+    vec3  w = f - vec3(i);
+    int   b = (i.z * kCv2FroxY + i.y) * kCv2FroxX + i.x;
+    const int sy = kCv2FroxX, sz = kCv2FroxX * kCv2FroxY;
+    float c00 = mix(cv2GodFrox[b],           cv2GodFrox[b + 1],           w.x);
+    float c10 = mix(cv2GodFrox[b + sy],      cv2GodFrox[b + sy + 1],      w.x);
+    float c01 = mix(cv2GodFrox[b + sz],      cv2GodFrox[b + sz + 1],      w.x);
+    float c11 = mix(cv2GodFrox[b + sz + sy], cv2GodFrox[b + sz + sy + 1], w.x);
+    return mix(mix(c00, c10, w.y), mix(c01, c11, w.y), w.z);
 }
 #endif
 const int   kCv2RainMapN  = 32;

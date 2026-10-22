@@ -6437,6 +6437,19 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"God rays", &cv2Godrays, 0.0f, 1.0f, 0.05f, "%.2f", 187},
         {"Haze near clouds", &cv2HazeAloft, 0.0f, 20.0f, 0.1f, "%.1f", 188},
     };
+    // The cloud rebuild's experiments (2026-10-22, .plans/CLOUD_REBUILD_PLAN.md): each off by default, for judging.
+    CloudSlider secRebuild[] = {
+        {"Occupancy clipmap (0 off, 2 on)", &cv2CdcSkip, 0.0f, 2.0f, 1.0f, "%.0f", 302},
+        {"God-ray froxels (0/1)", &cv2GodrayFroxels, 0.0f, 1.0f, 1.0f, "%.0f", 303},
+        {"Mie phase (physical share)", &cv2MiePhase, 0.0f, 1.0f, 0.05f, "%.2f", 304},
+        {"Mie optics (bows, glory, corona)", &cv2MieOptics, 0.0f, 2.0f, 0.05f, "%.2f", 305},
+        {"Droplet radius (um)", &cv2DropletReffUm, 4.0f, 30.0f, 0.5f, "%.1f", 306},
+        {"Cap lobes (0/1)", &cv2ShapeCaps, 0.0f, 1.0f, 1.0f, "%.0f", 307},
+        {"Light march from clipmap (0/1)", &cv2CdcLight, 0.0f, 1.0f, 1.0f, "%.0f", 308},
+        // The S9 probe: the whole "half-res" chain at full resolution. Pair it with a sparse march ("Full rate above
+        // (km)" high) for the half-res full-rate cost.
+        {"Full-resolution clouds (0/1)", &cv2FullRes, 0.0f, 1.0f, 1.0f, "%.0f", 309},
+    };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
         CLOUD_SEC("Storms (cumulonimbus)", secStorms),
@@ -6445,6 +6458,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         CLOUD_SEC("Weather evolution", secEvo),
         CLOUD_SEC("Fog, dust & ice fog", secFog),
         CLOUD_SEC("Cloud shadows & god rays", secGod),
+        CLOUD_SEC("Rebuild experiments", secRebuild),
     };
 #undef CLOUD_SEC
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 12);
@@ -8324,6 +8338,7 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
     cv2AdaptiveRate = cheapClouds ? 1.0f : 0.0f;
     cv2SparseWhenStill = cheapClouds ? 1.0f : 0.0f;
     computeFollowsRenderScale = cheapClouds;
+    cv2FullRes = cheapClouds ? 0.0f : 1.0f;   // full-resolution clouds on High / Ultra (2026-10-22, S9)
     // Procedural terrain detail (terrain_detail.glsl). Measured with the harness on an RTX 3070 Ti:
     // +3 ms at Medium in the Anchorage worst case (10.0 vs 6.9 ms), +5-8 ms at High on the ground in
     // mountains, ~+1 ms from aircraft altitude. Off on the integrated-GPU tiers — and on Planetarium /
@@ -8758,6 +8773,20 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2AdaptiveParallaxPx = c.value("adaptive_parallax_px", cv2AdaptiveParallaxPx);
         cv2Godrays = settingClamp(c.value("godrays", cv2Godrays), 0.0f, 1.0f);   // (it ran to 3 while it scaled the old light volume)
         cv2SunCascade = c.value("sun_cascade", cv2SunCascade);
+        cv2MiePhase = c.value("mie_phase", cv2MiePhase);
+        cv2GodrayFroxels = c.value("godray_froxels", cv2GodrayFroxels);
+        cv2MieOptics = c.value("mie_optics", cv2MieOptics);
+        cv2ShapeCaps = c.value("shape_caps", cv2ShapeCaps);
+        cv2DropletReffUm = c.value("droplet_reff_um", cv2DropletReffUm);
+        cv2CdcSkip = c.value("cdc_skip", cv2CdcSkip);
+        cv2CdcBudget = c.value("cdc_budget", cv2CdcBudget);
+        cv2CdcFp = c.value("cdc_fp", cv2CdcFp);
+        cv2CdcMaxLevel = c.value("cdc_max_level", cv2CdcMaxLevel);
+        cv2CdcMaxRate = c.value("cdc_max_rate", cv2CdcMaxRate);
+        cv2CdcLight = c.value("cdc_light", cv2CdcLight);
+        cv2CdcLightLevels = c.value("cdc_light_levels", cv2CdcLightLevels);
+        cv2CdcNearM = c.value("cdc_near_m", cv2CdcNearM);
+        cv2FullRes = c.value("full_res", cv2FullRes);
         cv2SunCascadeRangeKm = c.value("sun_cascade_range_km", cv2SunCascadeRangeKm);
         cv2ShadowRing1CellM = c.value("shadow_ring1_cell_m", cv2ShadowRing1CellM);
         cv2ShadowRing2CellM = c.value("shadow_ring2_cell_m", cv2ShadowRing2CellM);
@@ -9344,6 +9373,20 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"adaptive_parallax_px", cv2AdaptiveParallaxPx},
         {"godrays", cv2Godrays},
         {"sun_cascade", cv2SunCascade},
+        {"mie_phase", cv2MiePhase},
+        {"godray_froxels", cv2GodrayFroxels},
+        {"mie_optics", cv2MieOptics},
+        {"shape_caps", cv2ShapeCaps},
+        {"droplet_reff_um", cv2DropletReffUm},
+        {"cdc_skip", cv2CdcSkip},
+        {"cdc_budget", cv2CdcBudget},
+        {"cdc_fp", cv2CdcFp},
+        {"cdc_max_level", cv2CdcMaxLevel},
+        {"cdc_max_rate", cv2CdcMaxRate},
+        {"cdc_light", cv2CdcLight},
+        {"cdc_light_levels", cv2CdcLightLevels},
+        {"cdc_near_m", cv2CdcNearM},
+        {"full_res", cv2FullRes},
         {"sun_cascade_range_km", cv2SunCascadeRangeKm},
         {"shadow_ring1_cell_m", cv2ShadowRing1CellM},
         {"shadow_ring2_cell_m", cv2ShadowRing2CellM},
