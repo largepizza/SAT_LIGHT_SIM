@@ -607,6 +607,17 @@ json SatelliteSim::harnessStateJson()
             sel["parity"] = {{"dmag", selParityDmag},
                              {"range_gpu_m", selParityRangeGpuM},
                              {"range_cpu_m", selParityRangeCpuM}};
+        // (2026-10-22) The selection's FINAL visible record as sat_flare.comp wrote it (last frame): the displayed
+        // effectFlare its point, bloom and glare read, its sprite size, the point-like glare value, and the raw flux.
+        if (pickedVisibleMapped)
+        {
+            const auto *h = static_cast<const GpuSatListHeader *>(pickedVisibleMapped);
+            if (h->selectedFound)
+                sel["gpu_record"] = {{"display_flare", h->selected.flareIntensity},
+                                     {"sprite_px", h->selected.angularSize},
+                                     {"glare_flare", h->selected.meshPx},
+                                     {"raw_flux", h->selectedRawFlux}};
+        }
         // Its screen position (px, top-left origin) and, when its mesh is drawn, the hand-off: the mesh fade, the
         // sprite's keep (1 - spriteGone), the glare keep, its size in px, and where the sprite (point, bloom,
         // point-like glare) is placed — the Sun's image in its dominant lobe, weighted by the lobe's specular share.
@@ -1451,8 +1462,58 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                            (order.empty() ? std::string() : ", busiest " + list[0].dump());
             return Status::Done;
         }
+        if (sub == "sats")
+        {
+            // (2026-10-22, tools/video) Each beam this frame: its satellite, target site, how far the mirror still
+            // has to turn (aim error) and how far the beam points from the observer (miss). A mirror easing toward
+            // the observer's site shows a shrinking aim error; its beam reaches the observer as the miss passes ~0.
+            const auto *rb = static_cast<const GpuReflectBeams *>(reflectBeamsMapped);
+            if (!rb)
+                fail("beams sats: no beam readback");
+            const int site = (int)c.num("site", -1.0), nMax = (int)c.num("n", 30.0);
+            struct Row { int sat, target; double aimDeg, missDeg, intensity, spotLat, spotLon; };
+            std::vector<Row> rows;
+            const uint32_t n = std::min<uint32_t>(rb->beamCount, (uint32_t)kMaxActiveBeams);
+            // The beam's ground spot: the eye's ENU frame (the frame the readback was written in) to ECEF, then the
+            // reflected ray from the satellite to the sea-level sphere.
+            const glm::dvec3 upE = glm::normalize(glm::dvec3(lastBeamObsDir));
+            const glm::dvec3 eastE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), upE));
+            const glm::dvec3 northE = glm::cross(upE, eastE);
+            const glm::dvec3 eye = upE * lastBeamObsRadius;
+            auto toEcef = [&](const glm::vec3 &v) { return eastE * (double)v.x + northE * (double)v.y + upE * (double)v.z; };
+            for (uint32_t k = 0; k < n; ++k)
+            {
+                const GpuReflectBeam &b = rb->entries[k];
+                if (site >= 0 && (int)b.targetIdx != site)
+                    continue;
+                const glm::dvec3 toObs = -glm::normalize(glm::dvec3(b.satENU));
+                const double miss = glm::degrees(std::acos(std::clamp(glm::dot(glm::normalize(glm::dvec3(b.reflectDirENU)),
+                                                                               toObs), -1.0, 1.0)));
+                const glm::dvec3 sat = eye + toEcef(b.satENU), d = glm::normalize(toEcef(b.reflectDirENU));
+                const double R = 6371000.0, bq = glm::dot(sat, d), cq = glm::dot(sat, sat) - R * R, disc = bq * bq - cq;
+                double la = 0.0, lo = 0.0;
+                if (disc > 0.0)
+                {
+                    const glm::dvec3 g = glm::normalize(sat + d * (-bq - std::sqrt(disc)));
+                    la = glm::degrees(std::asin(std::clamp(g.z, -1.0, 1.0)));
+                    lo = glm::degrees(std::atan2(g.y, g.x));
+                }
+                rows.push_back({(int)b.debugPad, (int)b.targetIdx, glm::degrees((double)b.aimErrorRad), miss,
+                                (double)b.intensity, la, lo});
+            }
+            std::sort(rows.begin(), rows.end(), [](const Row &x, const Row &y) { return x.missDeg < y.missDeg; });
+            nlohmann::json sats = nlohmann::json::array();
+            for (size_t k = 0; k < rows.size() && (int)k < nMax; ++k)
+                sats.push_back({{"sat", rows[k].sat}, {"target", rows[k].target}, {"aim_error_deg", rows[k].aimDeg},
+                                {"miss_deg", rows[k].missDeg}, {"intensity", rows[k].intensity},
+                                {"spot_lat", rows[k].spotLat}, {"spot_lon", rows[k].spotLon}});
+            r["beams"] = sats;
+            r["message"] = std::to_string(rows.size()) + " beams" + (site >= 0 ? " on site " + std::to_string(site) : "") +
+                           ", nearest to the observer first";
+            return Status::Done;
+        }
         if (sub != "go")
-            fail("beams: unknown subcommand '" + sub + "' (list, go)");
+            fail("beams: unknown subcommand '" + sub + "' (list, go, sats)");
         const int rank = std::max(1, (int)c.num("rank", 1.0));
         if ((int)order.size() < rank)
             fail("beams go: only " + std::to_string(order.size()) + " sites have converged beams now");

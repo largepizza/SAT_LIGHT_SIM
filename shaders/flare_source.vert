@@ -25,7 +25,7 @@ layout(push_constant) uniform PC {
     mat4  skyView;
     float fovYRad;
     float aspect;
-    uint  satCount;      // unused since Phase 1b — the satellite draw is indirect (GPU-side count)
+    uint  satCeilingBits; // floatBitsToUint: the satellites' bloom ceiling (sunFlareRefIntensity, undimmed; was satCount)
     float sunRefIntensity;
     vec4  sunDirENU;     // xyz = dir, w = sin(elevation)
     vec2  screenSizePx;  // this pass's own target size — unused here, read by the fragment stage
@@ -75,7 +75,10 @@ void main() {
     } else {
         SatVisible sat = satellites[gl_VertexIndex];
         skyDir    = sat.skyDir;
-        intensity = sat.flareIntensity;
+        // The S3 soft ceiling (2026-10-22, moved here from sat_flare.comp): a satellite's bloom never outshines the
+        // Sun's virtual point; its point and glare (other passes) keep the true value.
+        float ceil = uintBitsToFloat(pc.satCeilingBits);
+        intensity = ceil > 0.0 ? ceil * sat.flareIntensity / (sat.flareIntensity + ceil) : sat.flareIntensity;
         baseColor = unpackUnorm4x8(sat.color).rgb;
         angSize   = sat.angularSize;
         rangeM    = sat.rangeM > 0.0 ? sat.rangeM : 5.0e29;

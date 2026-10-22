@@ -345,7 +345,9 @@ void main() {
     // rolloff: nothing can ever render brighter than the sun, ordering between satellites is fully
     // preserved (monotonic in effectFlare), and the low end is untouched — at effectFlare ≪
     // sunRefIntensity, effectFlare' ≈ effectFlare, so ordinary Starlink-class flares are unaffected.
-    effectFlare = pc.sunRefIntensity * effectFlare / (effectFlare + pc.sunRefIntensity);
+    // 2026-10-22: the ceiling now applies to the BLOOM seed only (flare_source.vert). On the record it flattened every
+    // flare brighter than ~magnitude -3 to the same value: a -8 and a -15 flare drew the same clipped disc with the
+    // same weak glare. The point and glare read the true value; the bloom still never outshines the Sun's point.
     if (highlighted)
         effectFlare = max(effectFlare, pc.highlightFlare * (hlDebris ? 8.0 : 1.0));
 
@@ -434,7 +436,9 @@ void main() {
     }
 
     // The sky glow and the ocean glints: the members' own light (not merged).
-    float glowFlare = dispFlare;
+    // ...through the S3 ceiling: both were tuned on the capped record (a site's ~150 mirrors summing to ~6000 in a bin),
+    // and the true values of -10..-15 flares saturated the glow over the whole sky (2026-10-22).
+    float glowFlare = pc.sunRefIntensity * dispFlare / (dispFlare + pc.sunRefIntensity);
     effectFlare = dispFlare * mergeF;
     glareFlare *= mergeF;
     vec2  psf     = pointPsf(satFlareToMag(effectFlare) + pointStyle.satGainMag);

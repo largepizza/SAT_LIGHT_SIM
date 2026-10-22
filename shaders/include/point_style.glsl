@@ -7,7 +7,7 @@
 // Model: displayed flux D = 10^(-0.4 gamma (m - refMag)) minus its value at limitMag (so a point
 // fades to exactly nothing there), drawn as a Gaussian PSF of sigma sigmaPx and peak D while D <= 1.
 // Brighter points saturate: the peak stays at 1 and the PSF widens (sigma = sigmaPx sqrt(D)) so the
-// drawn flux keeps growing as D, up to sigmaMaxPx, past which the core brightens instead.
+// drawn flux keeps growing as D, up to sigmaMaxPx; past it the peak stays at 1 (2026-10-22) and the glare carries the rest.
 //
 // #define POINT_STYLE_BINDING before including (it is a uniform block in the includer's set 0).
 #ifndef POINT_STYLE_GLSL
@@ -43,7 +43,9 @@ vec2 pointPsf(float mag)
     if (d <= 1.0)
         return vec2(d, s0);
     float s = min(s0 * sqrt(d), pointStyle.sigmaMaxPx);
-    return vec2(d * s0 * s0 / (s * s), s);
+    // Past the widest PSF the peak stops at white (2026-10-22): it used to keep growing, and the display clipped the
+    // Gaussian into a hard-edged disc ~30 px wide. Brighter sources show it in their glare instead.
+    return vec2(min(d * s0 * s0 / (s * s), 1.0), s);
 }
 
 // The resolved-object factor (sat_flare.comp): the displayed effectFlare whose point, spread over a Gaussian of

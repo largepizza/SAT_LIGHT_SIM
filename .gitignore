@@ -75,3 +75,11 @@ satlight_log.txt
 
 # SatModelTool / app debug OBJ output when run from the repo root
 satellite_models_debug/
+
+# ── Technical videos (tools/video): renders, clips, Manim's cache and the venv are generated ────────────
+/tools/video/out/
+/tools/video/media/
+/tools/video/.venv/
+/tools/video/**/*.mp4
+/tools/video/**/*.mov
+/tools/video/**/*.wav

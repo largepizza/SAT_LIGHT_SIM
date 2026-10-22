@@ -1,0 +1,248 @@
+{
+  "title": "Why do satellites flash? The simulator's lighting model, benchmarked",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "scenes_file": "scenes.py",
+  "xfade": 0.5,
+  "music": "{repo}/assets/sound/music/leo_motif.mp3",
+  "music_gain_db": -9,
+  "data": [
+    {
+      "name": "SatModelTool (Release)",
+      "cmd": [
+        "cmake",
+        "--build",
+        "{repo}/build",
+        "--config",
+        "Release",
+        "--target",
+        "SatModelTool"
+      ],
+      "outputs": [
+        "{repo}/build/Release/SatModelTool.exe"
+      ]
+    },
+    {
+      "name": "lobe dumps: Reflect mirror, V2 Mini, Hubble, ISS, VisorSat",
+      "cmd": [
+        "{repo}/build/Release/SatModelTool",
+        "{repo}/data/satellite_models/reflect_orbital.json",
+        "{repo}/data/satellite_models/starlink_v2_mini.json",
+        "{repo}/data/satellite_models/hubble.json",
+        "{repo}/data/satellite_models/iss.json",
+        "{repo}/data/satellite_models/starlink_visorsat.json",
+        "--out",
+        "{data}/obj",
+        "--dump-json",
+        "{data}/lobes/MODEL.lobes.json"
+      ],
+      "outputs": [
+        "{data}/lobes/reflect_orbital.lobes.json",
+        "{data}/lobes/starlink_v2_mini.lobes.json",
+        "{data}/lobes/hubble.lobes.json",
+        "{data}/lobes/iss.lobes.json",
+        "{data}/lobes/starlink_visorsat.lobes.json"
+      ]
+    },
+    {
+      "name": "benchmark runs (every published dataset, 5000 samples, seed 1)",
+      "cmd": [
+        "{repo}/build/Release/SatModelTool",
+        "--run-benchmark",
+        "{repo}/data/benchmarks/mallama2021_visorsat.json",
+        "--run-benchmark",
+        "{repo}/data/benchmarks/mallama2020a_original.json",
+        "--run-benchmark",
+        "{repo}/data/benchmarks/visorsat_vs_original.json",
+        "--run-benchmark",
+        "{repo}/data/benchmarks/mallama2023_v2mini.json",
+        "--run-benchmark",
+        "{repo}/data/benchmarks/mallama2025_dtc.json",
+        "--run-benchmark",
+        "{repo}/data/benchmarks/mallama2025_starlink_v15.json",
+        "--run-benchmark",
+        "{repo}/data/benchmarks/mallama2020b_oneweb.json",
+        "--run-benchmark",
+        "{repo}/data/benchmarks/mallama2026_amazon_leo.json",
+        "--run-benchmark",
+        "{repo}/data/benchmarks/mallama2025_guowang.json",
+        "--samples",
+        "5000",
+        "--seed",
+        "1",
+        "--models-dir",
+        "{repo}/data/satellite_models",
+        "--report-dir",
+        "{data}/bench"
+      ],
+      "outputs": [
+        "{data}/bench/mallama2021_visorsat__starlink_visorsat__seed1.json"
+      ],
+      "allow_fail": true
+    },
+    {
+      "name": "observed passes replayed + clip scripts",
+      "cmd": [
+        "{project_dir}/make_pass.py"
+      ],
+      "outputs": [
+        "{data}/passes/mmt_46071_19195344.out.json",
+        "{data}/clips/replica_pass.satcmd",
+        "{data}/clips/mirror_flare.satcmd",
+        "{data}/clips/mirror_sweep.satcmd"
+      ]
+    }
+  ],
+  "clips": {
+    "train": {
+      "file": "{repo}/screenshots/cinematics/broll_hq_20261015/short1_2036_v2/shot_02_train.mp4"
+    },
+    "flare_tele": {
+      "file": "{repo}/screenshots/cinematics/broll_hq_20261015/broll_starlink/shot_02_flare_tele.mp4"
+    },
+    "flare_close": {
+      "file": "{repo}/screenshots/cinematics/broll_hq_20261015/broll_starlink/shot_03_flare_close.mp4"
+    },
+    "silhouette": {
+      "file": "{repo}/screenshots/cinematics/broll_hq_20261015/broll_starlink/shot_04_silhouette.mp4"
+    },
+    "shells": {
+      "file": "{repo}/screenshots/cinematics/broll_hq_20261015/broll_starmind/shot_02_shells_converge.mp4"
+    },
+    "mirror_turn_on": {
+      "file": "{repo}/screenshots/cinematics/broll_hq_20261015/broll_reflect/shot_01_turn_on.mp4"
+    },
+    "iss_limb": {
+      "file": "{repo}/screenshots/cinematics/broll_hq_20261015/broll_earth/shot_06_iss_limb.mp4"
+    },
+    "replica_pass": {
+      "harness": "{data}/clips/replica_pass.satcmd",
+      "args": [
+        "--window",
+        "1920x1080",
+        "--fixed-dt",
+        "0.0666667",
+        "--timeout",
+        "2400"
+      ],
+      "env": {
+        "SATLIGHTSIM_EXTRA_CONSTELLATIONS": "{data}/passes/replica_roster.json"
+      },
+      "frames": "captures/f",
+      "fps": 30
+    },
+    "mirror_flare": {
+      "harness": "{data}/clips/mirror_flare.satcmd",
+      "args": [
+        "--window",
+        "1920x1080",
+        "--fixed-dt",
+        "0.0333333",
+        "--timeout",
+        "2400"
+      ],
+      "frames": "captures/f",
+      "fps": 30
+    },
+    "mirror_sweep": {
+      "harness": "{data}/clips/mirror_sweep.satcmd",
+      "args": [
+        "--window",
+        "1920x1080",
+        "--fixed-dt",
+        "0.0333333",
+        "--timeout",
+        "2400"
+      ],
+      "frames": "captures/f",
+      "fps": 30
+    }
+  },
+  "timeline": [
+    {
+      "scene": "Title"
+    },
+    {
+      "clip": "mirror_flare",
+      "start": 16,
+      "end": 44,
+      "mark": "one mirror",
+      "caption": "A mirror in orbit turning its reflected sunlight onto you: half a minute from dim point to dazzling"
+    },
+    {
+      "scene": "TwoReflections"
+    },
+    {
+      "clip": "mirror_sweep",
+      "start": 7,
+      "end": 21,
+      "mark": "",
+      "caption": "Standing 18 km away, the same mirror's beam sweeps over you in a few seconds"
+    },
+    {
+      "scene": "MirrorMap"
+    },
+    {
+      "scene": "MirrorLobes"
+    },
+    {
+      "scene": "LobeFormula"
+    },
+    {
+      "scene": "Starlink"
+    },
+    {
+      "clip": "flare_close",
+      "start": 2,
+      "end": 12,
+      "caption": "A Starlink close up: its arrays catch the Sun as they turn"
+    },
+    {
+      "scene": "FacetsToLobes"
+    },
+    {
+      "clip": "iss_limb",
+      "start": 0,
+      "end": 6,
+      "caption": "The ISS: 2,456 facets, simulated as 48 lobes"
+    },
+    {
+      "scene": "BudgetKnee"
+    },
+    {
+      "scene": "GpuPipeline"
+    },
+    {
+      "clip": "shells",
+      "start": 1,
+      "end": 8,
+      "caption": "A million satellites, each one lit by its own lobes, every frame"
+    },
+    {
+      "scene": "PassIntro"
+    },
+    {
+      "clip": "replica_pass",
+      "start": 0,
+      "end": 26,
+      "mark": "STARLINK-1538",
+      "caption": "The replayed pass in the simulator, at twice real speed: a steady point, no flare"
+    },
+    {
+      "scene": "PassCompare"
+    },
+    {
+      "scene": "PassMap"
+    },
+    {
+      "scene": "PassOthers"
+    },
+    {
+      "scene": "BenchmarkTable"
+    },
+    {
+      "scene": "Outro"
+    }
+  ]
+}

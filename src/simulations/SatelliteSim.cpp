@@ -3604,7 +3604,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         fpc.skyView = camera.viewMatrix();
         fpc.fovYRad = glm::radians(camera.fovYDeg);
         fpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
-        fpc.satCount = activeSatCount; // unused since Phase 1b (indirect draw) — see flare_source.vert
+        // The satellites' bloom ceiling (the S3 "never brighter than the Sun" rolloff), undimmed by cloud or eclipse.
+        const float satCeiling = sunFlareRefIntensity;
+        std::memcpy(&fpc.satCeilingBits, &satCeiling, sizeof(float));
         // x the share of the Sun the observer sees past the Moon: the Sun's bloom stayed on at totality.
         // (Not sat_flare.comp's copy: there it is every satellite's soft ceiling, and 0 would zero them.)
         fpc.sunRefIntensity = sunFlareRefIntensity * sunCloudTEased * moonEclipseSolarObs;
@@ -15886,6 +15888,34 @@ void SatelliteSim::loadDefinitions()
                 e.what());
         loadHardcoded();
         return;
+    }
+    // An extra roster for a scripted run (tools/video replays a real satellite's pass, 2026-10-21):
+    // SATLIGHTSIM_EXTRA_CONSTELLATIONS names a JSON file whose "satellite_types" and "constellations" are APPENDED
+    // after the shipped ones, so no shipped entry's index (cluster jitter, Kessler history, launches) moves.
+    if (const char *extra = std::getenv("SATLIGHTSIM_EXTRA_CONSTELLATIONS"); extra && extra[0])
+    {
+        std::ifstream xf(extra);
+        nlohmann::json x;
+        try
+        {
+            if (xf.is_open())
+                xf >> x;
+        }
+        catch (const nlohmann::json::exception &e)
+        {
+            Log::line(std::string("SATLIGHTSIM_EXTRA_CONSTELLATIONS: cannot parse '") + extra + "': " + e.what());
+            x = nlohmann::json();
+        }
+        int added = 0;
+        for (const char *key : {"satellite_types", "constellations"})
+            if (x.is_object() && x.contains(key) && x[key].is_array())
+                for (const auto &e : x[key])
+                {
+                    j[key].push_back(e);
+                    ++added;
+                }
+        Log::line(std::string("SATLIGHTSIM_EXTRA_CONSTELLATIONS: '") + extra + "': " + std::to_string(added) +
+                  " entries appended");
     }
 
     // ── Satellite types ───────────────────────────────────────────────────────

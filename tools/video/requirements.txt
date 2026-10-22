@@ -1,0 +1,5 @@
+# tools/video (vidkit) — Python 3.10-3.12 (Manim 0.19 has no wheels for 3.14 yet). setup.ps1 installs these.
+manim==0.19.1
+numpy==2.2.6
+scipy==1.15.3
+pillow==12.3.0

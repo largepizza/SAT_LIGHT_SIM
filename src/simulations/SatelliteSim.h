@@ -1179,7 +1179,8 @@ struct FlareSourcePC
     glm::mat4 skyView;        // offset 0
     float fovYRad;            // offset 64
     float aspect;             // offset 68
-    uint32_t satCount;        // offset 72 — gl_VertexIndex >= satCount means "this is the sun"
+    uint32_t satCeilingBits;  // offset 72 — floatBitsToUint(the satellites' bloom ceiling) (2026-10-22; was satCount,
+                              //              unused since the draw became indirect)
     float sunRefIntensity;    // offset 76 — fixed reference brightness for the sun's virtual point
     glm::vec4 sunDirENU;      // offset 80 — xyz=dir, w=sin(elevation)
     glm::vec2 screenSizePx;   // offset 96 — THIS pass's own (small) target size, for the fragment
@@ -5043,7 +5044,7 @@ private:
         if (d <= 1.0f)
             return {d, pointSigmaPx};
         float s = std::min(pointSigmaPx * sqrtf(d), pointSigmaMaxPx);
-        return {d * pointSigmaPx * pointSigmaPx / (s * s), s};
+        return {std::min(d * pointSigmaPx * pointSigmaPx / (s * s), 1.0f), s}; // point_style.glsl: stops at white
     }
     static float pointSpriteSizePx(float sigma) { return 2.0f * (3.0f * sigma + 1.0f); }
     void uploadPointStyle(); // → pointStyleBuf (every frame, and once at creation)

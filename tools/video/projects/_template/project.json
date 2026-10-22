@@ -1,0 +1,30 @@
+{
+  "title": "Template: copy this folder to projects/<name> and edit",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "scenes_file": "scenes.py",
+  "xfade": 0.5,
+  "music": null,
+
+  "data": [
+    {
+      "name": "example: a lobe dump of one model",
+      "cmd": ["{repo}/build/Release/SatModelTool", "{repo}/data/satellite_models/starlink_v2_mini.json",
+              "--out", "{data}/obj", "--dump-json", "{data}/lobes/MODEL.lobes.json"],
+      "outputs": ["{data}/lobes/starlink_v2_mini.lobes.json"]
+    }
+  ],
+
+  "clips": {
+    "existing": {"file": "{repo}/screenshots/cinematics/broll_hq_20261015/broll_starlink/shot_04_silhouette.mp4"},
+    "recorded": {"harness": "clips/example.satcmd", "args": ["--window", "1920x1080", "--timeout", "1800"],
+                 "frames": "captures/cine_template_example"}
+  },
+
+  "timeline": [
+    {"scene": "Hello"},
+    {"clip": "existing", "start": 0, "end": 5, "caption": "A caption burned onto the clip"},
+    {"clip": "recorded", "skip": true}
+  ]
+}

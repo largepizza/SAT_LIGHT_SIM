@@ -700,10 +700,15 @@ int findWinner(uint satIdx, vec3 satEciEval, float gmstEval)
 // beam-worthy right now, but don't do anything jarring" pre-aim fallback. Evaluated at an
 // arbitrary (satellite position, gmst) instant so it can serve both a live lookup and a
 // window-start lookup with the same function.
-vec3 nearFallbackIdeal(vec3 satEciEval, float gmstEval)
+//
+// 2026-10-22: the fallback's SITE is chosen once per lock window (nearFallbackIndex at the window's start, like
+// findWinner) and only its position is followed live (nearFallbackIdealFor). It used to re-pick the nearest site at
+// every frame, so when the nearest site switched mid-window the mirror snapped there in one frame (~8 degrees),
+// bypassing the rate-limited ease every other target change goes through: a mirror "turned on" instantly over the
+// new site.
+int nearFallbackIndex(vec3 satEciEval, float gmstEval)
 {
-    vec3  nadirEval  = -normalize(satEciEval);
-    vec3  zenithEval = -nadirEval;
+    vec3  zenithEval = normalize(satEciEval);
     int   nearIdx = -1;
     float nearCos = -2.0;
     for (uint k = 0u; k < pc.targetCount; ++k) {
@@ -713,6 +718,11 @@ vec3 nearFallbackIdeal(vec3 satEciEval, float gmstEval)
         float c = dot(zenithEval, tDir);
         if (c > nearCos) { nearCos = c; nearIdx = int(k); }
     }
+    return nearIdx;
+}
+vec3 nearFallbackIdealFor(int nearIdx, vec3 satEciEval, float gmstEval)
+{
+    vec3 nadirEval = -normalize(satEciEval);
     if (nearIdx >= 0)
         return idealTowards(satEciEval, targetPosAt(nearIdx, gmstEval), nadirEval);
     vec3  n   = pc.sunDirECI + nadirEval;
@@ -1487,15 +1497,18 @@ bool processSatellite(uint i, out SatVisible rec)
         // THIS window's start instant) — and where it needs to end up, both at window start (to
         // size the ease duration off a stable, per-window angle) and live right now (the actual
         // blend target, so the mirror keeps tracking exactly once the ease completes).
+        // Fallback sites (no beam-worthy target): each window's nearest site, chosen at that window's start.
+        int fbCur  = (bestIdx < 0)     ? nearFallbackIndex(satEciCur, gmstEvalCur)   : -1;
+        int fbPrev = (bestIdxPrev < 0) ? nearFallbackIndex(satEciPrev, gmstEvalPrev) : -1;
         vec3 startAim = (bestIdxPrev >= 0)
             ? idealTowards(satEciCur, targetPosAt(bestIdxPrev, gmstEvalCur), -normalize(satEciCur))
-            : nearFallbackIdeal(satEciCur, gmstEvalCur);
+            : nearFallbackIdealFor(fbPrev, satEciCur, gmstEvalCur);
         vec3 destAtStart = (bestIdx >= 0)
             ? idealTowards(satEciCur, targetPosAt(bestIdx, gmstEvalCur), -normalize(satEciCur))
-            : nearFallbackIdeal(satEciCur, gmstEvalCur);
+            : nearFallbackIdealFor(fbCur, satEciCur, gmstEvalCur);
         vec3 liveIdeal = (bestIdx >= 0)
             ? idealTowards(satECI, targetLivePos(bestIdx), satNadir)
-            : nearFallbackIdeal(satECI, pc.gmstNow);
+            : nearFallbackIdealFor(fbCur, satECI, pc.gmstNow);
 
         float angle0       = acos(clamp(dot(startAim, destAtStart), -1.0, 1.0));
         float slewDuration = clamp(angle0 / radians(max(0.01, pc.mirrorMaxRateDegPerSec)),

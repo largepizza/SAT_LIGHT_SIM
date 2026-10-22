@@ -28,6 +28,8 @@
 #include "SatPhotometry.h"
 #include "SatTrace.h"
 #include "bench_run.h"
+#include "dump_json.h"
+#include "pass_eval.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -1282,6 +1284,9 @@ int main(int argc, char **argv)
     int budget = 48; // SatelliteSim::kSatLobeBudget (the app uses 256 for types flown by <= 10k satellites)
     int shadowSamples = 0; // --shadow-study N
     int selfTestSamples = 0; // --selftest N
+    std::vector<std::string> passSpecs; // --pass <spec.json>, repeatable (tools/video)
+    std::string passOut;                 // --pass-out <file> (one --pass only)
+    std::string dumpPath;    // --dump-json <file> (tools/video; "MODEL" in it = the model id)
     std::vector<std::string> benchmarks; // --benchmark <file>, repeatable
     std::vector<std::string> runs;       // --run-benchmark <file>, repeatable
     std::vector<std::string> replays;    // --replay-trace <file.csv>, repeatable
@@ -1326,10 +1331,16 @@ int main(int argc, char **argv)
             shadowSamples = std::atoi(argv[++i]);
         else if (a == "--selftest" && i + 1 < argc)
             selfTestSamples = std::atoi(argv[++i]);
+        else if (a == "--pass" && i + 1 < argc)
+            passSpecs.push_back(argv[++i]);
+        else if (a == "--pass-out" && i + 1 < argc)
+            passOut = argv[++i];
+        else if (a == "--dump-json" && i + 1 < argc)
+            dumpPath = argv[++i];
         else
             paths.push_back(a);
     }
-    if (paths.empty() && selfTestSamples <= 0 && benchmarks.empty() && runs.empty() && replays.empty() && summaries.empty())
+    if (paths.empty() && selfTestSamples <= 0 && benchmarks.empty() && runs.empty() && replays.empty() && summaries.empty() && passSpecs.empty())
     {
         std::printf("usage: SatModelTool <model.json> [...] [--out <dir>] [--budget <lobes>] [--shadow-study <N>]\n"
                     "                    [--selftest <N>] [--benchmark <file.json>]...\n"
@@ -1351,6 +1362,9 @@ int main(int argc, char **argv)
     int runFailures = 0;
     for (const std::string &rp : runs)
         runFailures += runBenchmarkCommand(rp, runOpt) ? 0 : 1;
+    int passFailures = 0;
+    for (const std::string &ps : passSpecs)
+        passFailures += runPassCommand(ps, passSpecs.size() == 1 ? passOut : std::string()) ? 0 : 1;
     int replayFailures = 0;
     for (const std::string &tp : replays)
         replayFailures += replayTrace(tp, runOpt.modelsDir) ? 0 : 1;
@@ -1387,6 +1401,18 @@ int main(int argc, char **argv)
         std::vector<GpuSatLobe> lobes = bakeSatLobes(m, tris, budget, stats);
         validateSatLobes(m, tris, lobes, stats);
         bool objOk = writeSatModelObj(m, tris, outDir);
+        if (!dumpPath.empty())
+        {
+            // "MODEL" in the path is replaced by the model id, so several models can be dumped in one run.
+            std::string dp = dumpPath;
+            if (const size_t at = dp.find("MODEL"); at != std::string::npos)
+                dp.replace(at, 5, id);
+            if (!dumpModelJson(m, id, tris, {256, 128, 64, budget, 24, 12, 6}, dp))
+            {
+                std::printf("[%s] dump FAILED: %s\n", id.c_str(), dp.c_str());
+                ++failures;
+            }
+        }
 
         double totalArea = 0.0;
         for (const SatTri &t : tris)
@@ -1467,5 +1493,5 @@ int main(int argc, char **argv)
         std::printf("[benchmark runs] %d of %zu within tolerance\n", (int)runs.size() - runFailures, runs.size());
     if (!replays.empty())
         std::printf("[trace replays] %d of %zu identical\n", (int)replays.size() - replayFailures, replays.size());
-    return (failures || selfTestFailures || benchFailures || runFailures || replayFailures) ? 1 : 0;
+    return (failures || passFailures || selfTestFailures || benchFailures || runFailures || replayFailures) ? 1 : 0;
 }

@@ -20,6 +20,7 @@ Design decisions and their dates live next to the code they constrain, not in a 
 | `docs/CONSTELLATION_MODDING.md` | User-facing modding guide (`constellations.json`, `satellite_models/*.json`) |
 | `docs/rendering/` | **As-is rendering architecture**: frame graph, cloud field / march / lighting / temporal, terrain + depth, sky composite, points + meshes; `FINDINGS.md` lists suspected bugs and doc drift |
 | `docs/HARNESS.md` | **Automation harness**: scripted runs, captures, perf, UI dumps — how an agent runs and sees the app |
+| `tools/video/README.md` | **Technical videos (vidkit)**: Manim scenes driven by the tools' exports (`SatModelTool --dump-json`, benchmark reports) + engine clips + an ffmpeg edit; one folder per video under `tools/video/projects/`, output in the gitignored `tools/video/out/` |
 | `docs/FREEZES.md` | The 2026-09 machine freezes (unresolved; mitigated by launch spacing) and the forensics tools built for them |
 | `CHANGELOG.md` | What changed per release |
 | `data/benchmarks/KNOWN_RESIDUALS.md` | Accepted photometric error, with the measurement behind it |
@@ -65,7 +66,7 @@ code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
 `imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `ui_lowres.py` (every window at low resolutions), `reports.py` (issue reports: triage, agent briefs, resolutions), `mission_ops.py` (every launch vehicle traced phase by phase, PASS / FAIL), `launch_bench.py` (the launch system's CPU / GPU cost), `hitch_check.py` (frame-hitch regression check over the time-scale ladder) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
-validate, benchmark, trace replay) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_geo_belt.py` + `tools/make_geo_models.py` (the GEO belt's members and models) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_icons.py` (regenerates the
+validate, benchmark, trace replay, `--dump-json` for visualisation) · `tools/video/` (vidkit: technical videos) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_geo_belt.py` + `tools/make_geo_models.py` (the GEO belt's members and models) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
 offline synth renders) · `tools/benchmarks/` ·

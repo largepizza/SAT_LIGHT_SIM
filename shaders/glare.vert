@@ -50,7 +50,9 @@ void main()
     // The bloom's own response (flare_source.frag): 0 below effectFlare 1 (~ mag 0.8), up to 4.
     // A satellite handing over to its mesh keeps its glare here, at its centre, while the mesh is
     // still point-like (the record's last field), after its point and bloom have gone.
-    float b = clamp(log2(max(max(sat.flareIntensity, sat.glareFlare), 1.0)) * 0.5, 0.0, 4.0);
+    // Up to 8 (effectFlare 65536, ~magnitude -10; it was 4, ~-4.5, while sat_flare.comp's ceiling capped the record
+    // at ~-3 anyway): a far brighter flare glares wider and stronger instead of looking the same.
+    float b = clamp(log2(max(max(sat.flareIntensity, sat.glareFlare), 1.0)) * 0.5, 0.0, 8.0);
     float s = b - gpc.threshold;
     vec3 cam = (gpc.skyView * vec4(sat.skyDir, 0.0)).xyz;
     if (s <= 0.0 || cam.z >= -0.001 || gpc.gain <= 0.0) { cull(); return; }

@@ -507,9 +507,12 @@ int findWinner(const SatGroundSiteAim &aim, uint32_t satIndex, const glm::dvec3 
     }
     return best;
 }
-glm::dvec3 nearFallbackIdeal(const SatGroundSiteAim &aim, const glm::dvec3 &sat, double gmst, const glm::dvec3 &sun)
+// The fallback's site is chosen once per lock window, at the window's start (sat_orbit.comp nearFallbackIndex);
+// only its position is followed live. Re-picking the nearest site every frame snapped the mirror to a new site in one
+// frame mid-window (2026-10-22).
+int nearFallbackIndex(const SatGroundSiteAim &aim, const glm::dvec3 &sat, double gmst, const glm::dvec3 &sun)
 {
-    const glm::dvec3 nadir = -glm::normalize(sat);
+    const glm::dvec3 zenith = glm::normalize(sat);
     int nearIdx = -1;
     double nearCos = -2.0;
     for (size_t k = 0; k < aim.targetsEcef.size(); ++k)
@@ -517,13 +520,19 @@ glm::dvec3 nearFallbackIdeal(const SatGroundSiteAim &aim, const glm::dvec3 &sat,
         const glm::dvec3 dir = ecefToEci(glm::dvec3(aim.targetsEcef[k]), gmst);
         if (glm::dot(dir, sun) >= 0.0)
             continue;
-        const double c = glm::dot(-nadir, dir);
+        const double c = glm::dot(zenith, dir);
         if (c > nearCos)
         {
             nearCos = c;
             nearIdx = (int)k;
         }
     }
+    return nearIdx;
+}
+glm::dvec3 nearFallbackIdealFor(const SatGroundSiteAim &aim, int nearIdx, const glm::dvec3 &sat, double gmst,
+                                const glm::dvec3 &sun)
+{
+    const glm::dvec3 nadir = -glm::normalize(sat);
     if (nearIdx >= 0)
         return idealTowards(sat, aim.targetsEcef[nearIdx].w * ecefToEci(glm::dvec3(aim.targetsEcef[nearIdx]), gmst),
                             sun, nadir);
@@ -557,12 +566,14 @@ SatGroundSiteResult satGroundSiteIdeal(const SatGroundSiteAim &aim, const SatOrb
     const int bestPrev = findWinner(aim, satIndex, satPrev, gmstPrev, sun);
     auto site = [&](int k, double gmst) { return aim.targetsEcef[k].w * ecefToEci(glm::dvec3(aim.targetsEcef[k]), gmst); };
     const glm::dvec3 nadirCur = -glm::normalize(satCur);
+    const int fbCur = best < 0 ? nearFallbackIndex(aim, satCur, gmstCur, sun) : -1;
+    const int fbPrev = bestPrev < 0 ? nearFallbackIndex(aim, satPrev, gmstPrev, sun) : -1;
     const glm::dvec3 startAim = bestPrev >= 0 ? idealTowards(satCur, site(bestPrev, gmstCur), sun, nadirCur)
-                                              : nearFallbackIdeal(aim, satCur, gmstCur, sun);
+                                              : nearFallbackIdealFor(aim, fbPrev, satCur, gmstCur, sun);
     const glm::dvec3 destAtStart = best >= 0 ? idealTowards(satCur, site(best, gmstCur), sun, nadirCur)
-                                             : nearFallbackIdeal(aim, satCur, gmstCur, sun);
+                                             : nearFallbackIdealFor(aim, fbCur, satCur, gmstCur, sun);
     const glm::dvec3 live = best >= 0 ? idealTowards(satNow, site(best, gmstNow), sun, -glm::normalize(satNow))
-                                      : nearFallbackIdeal(aim, satNow, gmstNow, sun);
+                                      : nearFallbackIdealFor(aim, fbCur, satNow, gmstNow, sun);
     const double angle0 = std::acos(std::clamp(glm::dot(startAim, destAtStart), -1.0, 1.0));
     const double rate = std::max(0.01, aim.maxRateDegPerSec) * kPi / 180.0;
     const double slew = std::clamp(angle0 / rate, 0.001, W);

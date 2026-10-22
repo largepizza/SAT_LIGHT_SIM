@@ -1,0 +1,27 @@
+# An engine clip recorded by `python -m vidkit clips _template recorded` (docs/HARNESS.md "Cinematics").
+# The cinematic's export folder (captures/cine_<name>) is what project.json's "frames" points at.
+time pause
+follow off
+cine new template_example
+cine shot add orbit
+set clouds_v2.auto_exposure 1
+observer lat=46.62 lon=8.03 agl=40
+time set 2036-11-22T17:09:15Z
+select const "ISS"
+cine shot simnow
+cine shot simrate 1
+cine shot ease 0.4
+cine shot follow sel
+cine shot look
+follow offset=-120,40,60 aimat=0,0,0
+camera fov=55
+cine key t=0
+follow offset=-60,80,40 aimat=0,0,0
+camera fov=50
+cine key t=6
+follow off
+cine shot 1
+cine shot del
+cine shot 1
+cine export preview fps=30
+quit
