@@ -132,6 +132,7 @@ layout(set = 0, binding = 19) uniform sampler2D cv2ResolvedTex;       // rgb rad
 layout(set = 0, binding = 20) uniform sampler2D cv2ResolvedDepthTex;  // x mean distance, y occlusion distance
 // Lightning: this frame's flashes (cloud_v2_lightning.comp), drawn here, after the temporal resolve.
 #define CV2_FLASH_BINDING 21
+#define CV2_SUN_CASC_FN        // cv2StvT: the ground's cloud shadow from the Sun transmittance volume (S3)
 #include "cloud_lightning.glsl"
 
 // ── Kessler dust clouds (round 2, 2026-10-16) ───────────────────────────────────────────────────────
@@ -2466,7 +2467,10 @@ void main() {
             // under broken cloud (user snapshots), a 4x4 Bayer tile a faint grid.
             ivec2 bq = ivec2(gl_GlobalInvocationID.xy) & 1;
             float jitter  = (float(bq.x * 2 + (bq.x ^ bq.y)) + 0.5) * 0.25;
-            float gs = cloudGroundShadowV2(hitENU, sunDir, obsPos, mat3(enuX, enuY, enuZ), jitter);
+            // S3: with the Sun transmittance volume on, its value at the ground point (one lookup: the same shadow the
+            // clouds and the air take) in place of the march through the field from every ground pixel.
+            float gs = (cv2.stvH.z > 0.5) ? cv2StvT(tScene * dir, length(hitENU) - R_EARTH)
+                                          : cloudGroundShadowV2(hitENU, sunDir, obsPos, mat3(enuX, enuY, enuZ), jitter);
             terrainSunT = mix(1.0, gs, shadowFade);
         }
     }

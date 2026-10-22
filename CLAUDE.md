@@ -929,7 +929,46 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     0.063 / 0.065%. No validation errors. Not done: the lightning pass's engine-light ground term gathers the half-res
     depth with the cloud grid's weights. A user settings.json saved with `full_res` 0 (the key existed off since
     2026-10-21) keeps it off.
-  - All of it compiled in costs +0.6 ms of march from orbit with everything off (binary 309 -> 315 KB, 128 registers).
+  - **Defaults (2026-10-22, the user: "continue forward"):** the occupancy clipmap (`cdc_skip` 2) and the god-ray froxels
+    (`godray_froxels` 1) are ON; S2, Mie and cap lobes stay off. Default-settings totals at 1920x1009 (`harness_runs/s0/defs`,
+    no validation errors): 58 km 26.3 ms (old defaults 34.0), anvils 29.0 (24.4), cumulus 32.0 (27.2), Pacific 27.7 (25.4):
+    full-res clouds cost +2..+5 ms near the ground over the old half-res sparse march, the clipmap and froxels pay part back.
+  - **The Sun transmittance volume (S3, 2026-10-22, ON: "Sun shadow volume" `sun_shadow_volume` 1, slot 312;
+    `cloud_lightning.glsl` cv2Stv / cv2StvT, bake in `cloud_v2_lightning.comp` workgroups 19-31, UBO stvL0-3 / stvH / stvV):
+    ONE Sun shadow for the cloud key light, the god rays (froxels), the fog / dust and the GROUND (cloud_march.comp's
+    shadow march gives way to one lookup), in place of the fine grid, the two shaft rings, the cascade and the layer map
+    (none of them baked or read while it is on; the layer map pass skipped). 4 nested levels of 128 x 128 parallel rays
+    toward the Sun on the rings' axes, cells = "Cloud shadow ring 1 cell" x 1 / 4 / 16 / 64 (250 m .. 16 km, reach 56
+    cells: ~14 .. 900 km), riding with the clouds and toroidal with the rings' wrap stamps; each ray holds the
+    transmittance BEYOND its point at 48 HEIGHTS (0 .. the shell top + 1 km) on its SUNWARD branch (s = sC + sqrt((R+h)^2 -
+    cL^2), cancellation-free), so a level covers every point within its reach across the Sun at any distance along it (no
+    along-Sun window, knot shift or one-knot bias); a sample on the far side of its ray's lowest point reads the lowest knot.
+    Windows centred on the eye, or from above mid-shell at mid-shell under it (the cascade's rule: from orbit the clouds
+    below sat hundreds of km off across a low Sun). Bake: from the top of the shell DOWN each ray, steps ~2 cells growing
+    1.2% with distance (<= 4 an interval), the field at a quarter cell (>= 150 m), 2 sub-rays (4 on a leading edge),
+    running mean of 4; thin layers as the light march counts them (1 - 0.8 thin - mid2.z soft), rain at 15% (as the old
+    ground shadow; full rain blacked out the sea under curtains at a low Sun). Level 0: 512 rays a frame (32-frame
+    round), levels 1-3: 256 (64); levels 0-1 four times more while catching up (`stvV.z`: > 0.5 level-0 cells a frame,
+    the 128 frames after, a fill's first 64). The lookup takes the finest level reaching the point, blended over 48-56
+    cells; the key light reads it where the light march ends, half a knot up. **Measured against a brute-force reference**
+    (the march compiled with `-DCV2_SUN_REF`: the field to the shell top in 100 m + 1% steps; `harness_runs/s3/ref1-3`,
+    `orb2`, `orbtw`), mean |diff| old -> volume: cumulus under a storm 32.4 -> 2.4 (the old lattices missed the storm's
+    shadow: the foreground lit), orbit 388 km 21.8 -> 15.9, anvil from above 4.3 -> 3.4, 58 km and twilight equal (both
+    soft at ~100 km: an eye-centred lattice of 128 rays cannot resolve a far shadow's edge). Cost (bakes +0.3..1.0 ms,
+    composite -0.3..-3 ms, march sometimes cheaper): defaults totals within +-1 ms. Motion: tstab cumulus 2.95 -> 2.21
+    (walk 4.60 -> 1.90, walkpan 6.63 -> 1.95; boost 2.28 -> 3.22). Hop settle (45 km, `harness_runs/s3/hop*`): pixels past 16
+    levels at frame 10 / 40: old 1.0 / 0.5%, volume 1.4-1.75 / 0.7-0.8%, equal by 160. 128 registers, no validation errors.
+    The old structures remain behind the toggle; deleting them is the plan's next step.
+  - **Anvil puffiness** ("Anvil puffiness" `anvil_puffiness` 1, "Anvil top lift (m)" `anvil_lift_m` 800, slots 310-311, UBO
+    `anvil3`; `cv2ColumnSigma`): the anvils are the anvil-reaching towers' flared heads, and their lobes and erosion were faded
+    out over the head's last 1.5 km for the map-fed shield's thin lid (off by default): smooth plates with knife edges, "an
+    entirely different material", and the light march's grain on the smooth tops. Now, without a shield: the head keeps its
+    lobes (x (1 + 1.5 puff) "Cb head lobes"), its top is LIFTED by them (`bestLiftG`, the margin's rate of change with a
+    vertical lift of the rounded top, carried out of the tower loop as one float; upward only, `max(lobes + 0.4 lobF + 0.12,
+    0)`: troughs dug into the top read as holes) and its edge ramps in over up to 800 m (was 300). The erosion stays faded
+    on the head's top (`headTopE`: its cracks read as rock). 128 registers, cost within noise (`harness_runs/anv2`: ab1-ab3,
+    views at 25 N 134 W at sunset placed from snaps2 index 18). Still-view noise on the lit anvil from above 1.07 -> 1.29
+    levels (std): it moves from grain over the smooth top to the billows' lit edges (`anv2/noisemap.png`).
   - The agent's own build tree for this work is `build-clouds` (gitignored), launched through `harness_runs/s0/runx.sh`
     (waits until no app instance runs: another session shares the machine).
 - **Issue round (2026-10-13b, issues 20261013_184710 / _181252, `harness_runs/fb14`):**

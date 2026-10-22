@@ -839,6 +839,27 @@ void main()
                 // A solar eclipse: the Moon's shadow on THIS sample's sunlight (eclipse.glsl; 2026-10-03). It was the
                 // Sun the eye saw, on every cloud in view: no lit clouds beyond the umbra, no orange horizon.
                 if (cloud.moonMisc.y > 0.5) keyCol *= eclipseSunVis((eye + rel) * 1e-3, sunDir, 0.0);
+#ifdef CV2_SUN_REF
+                // REFERENCE (S3 validation, compiled by hand with -DCV2_SUN_REF): the Sun's transmittance beyond where the
+                // light march ends, marched through the field to the shell's top in fine growing steps (100 m + 1% of
+                // the distance, a 50-m footprint), thin layers weighted as the bakes weight them. Slow; stills only.
+                {
+                    float lLr = 2.0 * cv2.light.x * (1.0 - f.thin);
+                    float hTr = (f.thin > 0.5) ? (f.topH - p.h) * (1.0 - 0.5 / max(1.0 - f.hf, 0.15)) : 0.0;
+                    vec3  oR  = rel + up * hTr + sunDir * lLr;
+                    float odR = 0.0, sR = 0.0;
+                    for (int i = 0; i < 600; ++i) {
+                        float dsR = 100.0 + 0.01 * sR;
+                        CV2Pos qR = cv2Pos(oR + sunDir * (sR + 0.5 * dsR), eyeH, enuToEcef);
+                        if (qR.h > cv2.shell.y + 2500.0) break;
+                        if (qR.h < -300.0) { odR = 1e4; break; }
+                        CV2Field fR = cv2Field(qR, 0.0, 50.0);
+                        odR += fR.sigma * max(1.0 - 0.8 * fR.thin - cv2.mid2.z * fR.soft, 0.0) * mix(1.0, 0.15, clamp(fR.rain, 0.0, 1.0)) * dsR;
+                        sR += dsR;
+                    }
+                    keyCol *= exp(-odR);
+                }
+#else
                 // The Sun's shadow about the eye's line to it (review 22b; reworked 2026-10-10): the light march
                 // (~2 x cv2.light.x) cannot see a storm between a low Sun and the clouds in front of it, whose forward
                 // lobe then glowed like the Sun through miles of cloud. The lightning pass marches a 32 x 32 grid of
@@ -850,6 +871,14 @@ void main()
                 // stood behind was the darkest of it (user snapshots). Behind the eye the lateral offset is as
                 // continuous as in front of it (review 25's great-circle line).
                 float sunT0 = 1.0, sunW0 = 0.0;                    // the fine grid's shadow and its weight here
+                // S3 (2026-10-22): the Sun transmittance volume stands in for the fine grid, the rings, the cascade and the
+                // layer map, read where the sample's light march ends (half a knot up: the knot holds the sample's own cloud).
+                if (cv2.stvH.z > 0.5) {
+                    float hT = (f.thin > 0.5) ? (f.topH - p.h) * (1.0 - 0.5 / max(1.0 - f.hf, 0.15)) : 0.0;
+                    float lL = 2.0 * cv2.light.x * (1.0 - f.thin);
+                    keyCol *= cv2StvT(rel + up * hT + sunDir * lL,
+                                      p.h + hT + dot(up, sunDir) * lL + 0.5 * (cv2.stvH.y - cv2.stvH.x) / float(kCv2StvK - 1));
+                } else {
                 if (cv2SunWgMax[0] + cv2SunWgMax[1] + cv2SunWgMax[2] + cv2SunWgMax[3] > 0.0) {
                     vec2  gs = vec2(dot(rel, vec3(cv2SunProf[2], cv2SunProf[3], cv2SunProf[4])),
                                     dot(rel, vec3(cv2SunProf[5], cv2SunProf[6], cv2SunProf[7]))) / kCv2SunGridM;
@@ -905,6 +934,8 @@ void main()
                 float lL = 2.0 * cv2.light.x * (1.0 - f.thin);
                 keyCol *= mix(sunT1, sunT0, sunW0)
                         * cv2LayerShadowT(rel + sunDir * lL, p.h + dot(up, sunDir) * lL, sunDir, eyeH, cv2.layBake.w);
+                }
+#endif
             } else if (nightK > 0.0) {
                 float moonUp = dot(up, moonDir);
                 keyCol = moonKey * nightK * smoothstep(-0.05, 0.1, moonUp);
@@ -1205,8 +1236,10 @@ void main()
                 // the forward scatterers: toward the Sun a lit stretch is many times the clean air's). It replaces the
                 // map-cover dimming while the cascade is up (both would count the cloud twice). The diffuse
                 // (multiple-scattering) share takes 70% of the shadow: it is lit from all around.
-                float cascK = cv2.sunCasc2.x * cv2.sunCasc2.z;
-                float sunC  = (cascK > 0.0) ? cv2SunCascT(dir * tS, tS * cosSun + 0.5 * cv2.sunCasc2.y) : 1.0;
+                bool  stvOn = cv2.stvH.z > 0.5;   // S3: the Sun transmittance volume instead of the cascade
+                float cascK = stvOn ? 1.0 : cv2.sunCasc2.x * cv2.sunCasc2.z;
+                float sunC  = stvOn ? cv2StvT(dir * tS, pp.h)
+                            : (cascK > 0.0) ? cv2SunCascT(dir * tS, tS * cosSun + 0.5 * cv2.sunCasc2.y) : 1.0;
                 float covK  = 1.0 - 0.8 * covA * (1.0 - cascK);
                 vec3  S    = sunF * covK * ((vec3(fd * phD + fs * phSS) + fi * phI) * exp(-od) * sunC
                                             + (phMS * msOctaves(od) * fs + 0.9 * fd + 0.3 * fi) * mix(1.0, sunC, 0.7))

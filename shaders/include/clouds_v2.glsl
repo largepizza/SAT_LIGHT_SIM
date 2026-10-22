@@ -196,6 +196,14 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // or all of it with "Full-resolution clouds"), z log2(cloud grid / scene depth) (0 or 1), w 1 = full-res clouds on
     // (cloud_march.comp composites at half res and writes the derivatives cloud_v2_combine.comp needs).
     vec4  grid;
+    // 2026-10-22, the anvils' look: x "Anvil puffiness" (0 = the smooth heads of before: lobes and erosion kept on the head,
+    // its lobes stronger, a lift of its top, a softer edge), y the lift (m), zw spare.
+    vec4  anvil3;
+    // 2026-10-22, S3: the Sun transmittance volume (cloud_lightning.glsl cv2Stv). stvL0..3: xy the eye on level n's lattice
+    // (cells, mod 1024), z its cell (m), w its fill weight; stvH: x / y the knots' lowest / highest height (m), z 1 = on (the
+    // march's key light, the god rays and the fog read it instead of the fine grid, rings, cascade and layer map), w spare;
+    // stvV: xy the eye's motion this frame across the Sun in level 0's cells (the bake takes the leading edge), zw spare.
+    vec4  stvL0, stvL1, stvL2, stvL3, stvH, stvV;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -1459,7 +1467,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     bool  inAnvil = q.h > lid - cv2.anvil2.x * 1.2 - 600.0 - cv2.anvil2.y;   // where the hang can reach
     float best = -1e9, bestZeta = 0.0, bestTop = 0.0, bestCap = 0.0, bestRc = 1.0;
     float bestAng = 0.0;                                 // the point's bearing about its tower's axis (from downwind)
-    float near = 0.0, prox = 0.0, bestFull = 0.0;
+    float near = 0.0, prox = 0.0, bestFull = 0.0, bestLiftG = 0.0;
     float cuReach = cv2.column3.x;                       // "Storm cumulus reach" beyond a tower's edge (m)
     for (int k = 0; k < nK; ++k) {
         ivec2 off = wide ? ivec2(k % 3 - 1, k / 3 - 1)
@@ -1529,6 +1537,9 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // (Up to 3 km, half the tower: over 1.5 km a flanking tower's top read as a flat box, review 4.)
         float rnd  = min(full > 0.5 ? 1500.0 : 3000.0, 0.5 * max(topC - base, 1.0));   // the top rounds off over this
         float zh   = (q.h - (topC - rnd)) / rnd;
+        // How fast the margin changes as the head's top surface is raised (per metre): the lift below moves the top
+        // vertically (a margin moves the flat top of a 20-km head by metres, as the cumulus domes, liftK).
+        float liftG = r / Rc * min(max(zh, 0.0) * inversesqrt(max(1.0 - cv2SqC(max(zh, 0.0)), 0.1)), 3.0) / rnd;
         r *= sqrt(max(1.0 - cv2SqC(max(zh, 0.0)), 0.0));
         // Only the stronger cores overshoot (about a third), each to its own height: with every tower
         // doming through, the shield from orbit was an even grid of dots (user snap 4, pass 16).
@@ -1557,7 +1568,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // anvil sample in a dome's footprint was shaded as if under the whole dome (dark craters with
         // bright rims from orbit, user snap 3, pass 17; lid + osM for every tower made dark pits).
         float topL = max(topC, (full > 0.0) ? (apex - 1000.0) + 1000.0 * sqrt(max(1.0 - cv2SqC(d / max(0.35 * Rc, 1.0)), 0.0)) : 0.0);
-        if (mC > best) { best = mC; bestZeta = zeta; bestTop = topL; bestCap = cap; bestRc = Rc; bestFull = full; bestAng = ang; }   // ITS top: lid + osM shaded every tower's patch of anvil as if under 800 m more cloud (dark pits)
+        if (mC > best) { best = mC; bestZeta = zeta; bestTop = topL; bestCap = cap; bestRc = Rc; bestFull = full; bestAng = ang; bestLiftG = liftG; }   // ITS top: lid + osM shaded every tower's patch of anvil as if under 800 m more cloud (dark pits)
         // Under the head: the anvil thickens toward the column (a wide, downwind-stretched footprint),
         // tapered to zero before the search's limit (or it too would be cut along the lattice).
         if (inAnvil) {
@@ -1582,10 +1593,17 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // the anvil's thin lid (300 m) the lumps and the cracks between them showed through as a cell
     // pattern over the whole shield (user snap 3, pass 17). Sinking the heads 900 m hid them too, but
     // rays then crossed 600 m more anvil before stopping: +15 ms from above.
-    float headTop = smoothstep(lid - 1500.0, lid - 500.0, q.h) * (1.0 - bestCap);
-    // The head has its own lobes ("Cb head lobes", motion.z; review 5): a smooth head reads as the anvil.
-    float A  = mix(cv2.column2.w, cv2.motion.z, smoothstep(0.5, 0.75, bestZeta) * bestFull) * fpFade * mix(0.25, 1.0, smoothstep(0.0, 0.12, bestZeta)) * (1.0 - 0.75 * bestCap)
+    // "Anvil puffiness" (anvil3.x, 2026-10-22): that fade was for the map-fed shield's lid, which is off by default; with
+    // the heads as the anvils it left them smooth plates of another material (the user: "very sharp, an entirely
+    // different material", pixel noise on the smooth tops). The fade now applies only under a shield.
+    float puff    = clamp(cv2.anvil3.x, 0.0, 2.0);
+    float headK   = smoothstep(0.5, 0.75, bestZeta) * bestFull;                    // in an anvil-reaching tower's head
+    float headTopE = smoothstep(lid - 1500.0, lid - 500.0, q.h) * (1.0 - bestCap);   // the erosion keeps it: cracks on the top read as rock
+    float headTop  = headTopE * ((cv2.storm.z > 0.0) ? 1.0 : clamp(1.0 - puff, 0.0, 1.0));
+    // The head has its own lobes ("Cb head lobes", motion.z; review 5), x (1 + 1.5 puff).
+    float A  = mix(cv2.column2.w, cv2.motion.z * (1.0 + 1.5 * puff), headK) * fpFade * mix(0.25, 1.0, smoothstep(0.0, 0.12, bestZeta)) * (1.0 - 0.75 * bestCap)
              * (1.0 - 0.85 * headTop);
+    float liftA = puff * cv2.anvil3.y * headK * bestLiftG * fpFade;              // the top's lift, in margin units per unit lobe
     // Before the fetches: the lobes add at most ~0.75 x 2A in practice (the low layer's bound). A fixed
     // -0.6 fetched the storm noise through a shell 0.6 radii deep around every tower (7 km at 12 km).
     // "Cb tower fine lobes" (cu2.x): the cumulus-scale lobes ON the storm-scale ones, as a displacement in metres
@@ -1594,7 +1612,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // surface, "a different material" from the cumulus around it (issue 20261012_235712 shots 4, 6, 8).
     float Af = cv2.cu2.x * (kCv2ColFineM / bestRc) * mix(1.0, 0.3, smoothstep(100.0, 800.0, fpM))
              * mix(0.25, 1.0, smoothstep(0.0, 0.12, bestZeta)) * (1.0 - 0.85 * headTop);
-    if (best + A * 1.5 + Af * 0.8 <= 0.0) return o;
+    if (best + A * 1.5 + Af * 0.8 + liftA * 0.4 <= 0.0) return o;
     // The lobes FLOW with the tower (2026-10-10): up its stalk and, in an anvil-reaching tower's head, outward
     // from its axis -- the updraft spreading under the lid. The noise is read displaced against the flow by
     // up to kCv2ColFlowSpan of its period, at two phases half a cycle apart, cross-faded (the flow-map trick
@@ -1622,11 +1640,14 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // (Leaning on the finer Worley set, B: lobes of 1.3-5 km at 12x, the turrets a tower is built of.)
     float lobes = ((s.g * 0.3 + s.b * 0.55 + s.a * 0.15) - 0.47) * inversesqrt(colW * colW + (1.0 - colW) * (1.0 - colW));
     float lobF  = (sF.g * 0.6 + sF.b * 0.25 + sF.a * 0.15) - 0.47;
-    float m  = best + A * lobes * 2.0 + Af * lobF * 2.0 * (0.5 + 1.3 * clamp(lobes + 0.12, 0.0, 0.5));
+    float m  = best + A * lobes * 2.0 + Af * lobF * 2.0 * (0.5 + 1.3 * clamp(lobes + 0.12, 0.0, 0.5))
+             + liftA * max(lobes + 0.4 * lobF + 0.12, 0.0);   // billows rise from the top; troughs dug into it read as holes
     // The surface ramps in over ~300 m whatever the tower's size (x the radius, 0.2 of it: 2.4 km of
     // thin fog around a 12 km tower, which every ray marched through lit sample by sample before it
     // turned opaque — the towers cost ~20 ms inside a storm, and at any density).
-    float Ph = clamp(m * bestRc / 300.0, 0.0, 1.0) * smoothstep(0.0, 120.0, hb + 150.0 * lobes);
+    // (A head's edge ramps in over up to ~800 m with puffiness: its ice thins out over a few hundred metres, the knife
+    // edge read as another material.)
+    float Ph = clamp(m * bestRc / (300.0 + 500.0 * puff * headK), 0.0, 1.0) * smoothstep(0.0, 120.0, hb + 150.0 * lobes);
     if (Ph <= 0.0) return o;
     float d  = Ph * mix(0.75, 1.0, s.r);
     if (detailAmt >= 0.0) {
@@ -1641,7 +1662,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
 #endif
         // Bite the cracks between the lumps, on the surface (deep inside, form.z of it).
         float erode = (1.0 - df) * 0.5 * cv2.look.z * cv2.storm.y * mix(1.0, cv2.form.z, smoothstep(0.35, 0.85, d))
-                    * (1.0 - headTop);
+                    * (1.0 - headTopE);
         d = clamp((d - erode) / max(1.0 - erode, 1e-3), 0.0, 1.0);
         if (d <= 0.0) return o;
     }

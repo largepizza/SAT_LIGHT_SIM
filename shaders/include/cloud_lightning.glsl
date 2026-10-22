@@ -41,6 +41,14 @@ float cv2FlashIntensity(float age, float dur, uvec3 fh, bool cg)
 const int   kCv2FroxX = 160;
 const int   kCv2FroxY = 90;
 const int   kCv2FroxZ = 64;
+// The Sun transmittance volume (S3, 2026-10-22, .plans/CLOUD_REBUILD_PLAN.md): kCv2StvL nested levels of kCv2StvN^2
+// parallel rays toward the Sun on the shaft lattice's axes, each level's cells 4x the last (cv2.stvL0..3.z), riding
+// with the clouds and toroidal like the rings; each ray holds the Sun's transmittance BEYOND its point at kCv2StvK
+// HEIGHTS (cv2.stvH.xy, evenly) on its sunward side, so a level covers every point within its reach across the Sun at
+// any distance along it. [((level * N + J mod N) * N + I mod N) * K + k], packed as the rings' values (wrap stamp only).
+const int   kCv2StvL = 4;
+const int   kCv2StvN = 128;
+const int   kCv2StvK = 48;
 layout(std430, set = 0, binding = CV2_FLASH_BINDING)
 #if !defined(CV2_FLASH_WRITE) && !defined(CV2_EVAL_COUNT)
 readonly
@@ -96,6 +104,7 @@ buffer CV2FlashBuf {
     uint     cv2EvalCount[32];   // [16] cdc cells baked / [17] refused by the budget (cloud_v2_cdc.comp, always)
     // The clouds' Sun transmittance along the view on the froxel grid ([(z * Y + y) * X + x]; cloud_v2_froxel.comp).
     float    cv2GodFrox[kCv2FroxX * kCv2FroxY * kCv2FroxZ];
+    float    cv2Stv[kCv2StvL * kCv2StvN * kCv2StvN * kCv2StvK];
 };
 #ifdef CV2_EVAL_COUNT
 #define CV2_CNT(i) atomicAdd(cv2EvalCount[i], 1u)
@@ -238,6 +247,54 @@ vec2 cv2SunShaftT(vec3 rl, float sAlong, int ring)
     // Slots not baked since they changed hands (the toroidal window's leading edge after a move) are left out: the
     // next ring out / the cascade stands in for them until they are baked.
     return vec2(Tb / max(wv, 1e-4), w * wv);
+}
+// ── The Sun transmittance volume (S3) ──
+vec4 cv2StvLat(int lv) { return (lv == 0) ? cv2.stvL0 : (lv == 1) ? cv2.stvL1 : (lv == 2) ? cv2.stvL2 : cv2.stvL3; }
+// A level's value at a point rl (from the eye, observer ENU) at height h: x the transmittance, y the level's weight there
+// (0 outside its reach, while it fills, or where its slots changed hands since their bake).
+vec2 cv2StvLevelT(vec3 rl, float h, int lv)
+{
+    vec4  la = cv2StvLat(lv);
+    if (la.w <= 0.0) return vec2(1.0, 0.0);
+    vec3  ga = vec3(cv2SunProf[2], cv2SunProf[3], cv2SunProf[4]);
+    vec3  gb = vec3(cv2SunProf[5], cv2SunProf[6], cv2SunProf[7]);
+    vec2  ce = vec2(dot(rl, ga), dot(rl, gb)) / la.z;
+    // The window's centre: the eye, or from above mid-shell the point under it at mid-shell (cv2.stvH.w / stvV.w, m), as
+    // the cascade's: centred on the eye in orbit, the clouds below sat hundreds of km off across a low Sun.
+    vec2  cc = ce - vec2(cv2.stvH.w, cv2.stvV.w) / la.z;
+    float w  = (1.0 - smoothstep(48.0, 56.0, max(abs(cc.x), abs(cc.y)))) * la.w;
+    if (w <= 0.0) return vec2(1.0, 0.0);
+    vec2  gg = ce + la.xy + 4096.0;
+    ivec2 g0 = ivec2(gg);
+    vec2  gf = gg - vec2(g0);
+    float kk = clamp((h - cv2.stvH.x) / max(cv2.stvH.y - cv2.stvH.x, 1.0) * float(kCv2StvK - 1), 0.0, float(kCv2StvK - 1) - 1e-3);
+    int   k0 = int(kk);
+    float kf = kk - float(k0);
+    float Tb = 0.0, wv = 0.0;
+    int   lb = lv * kCv2StvN * kCv2StvN;
+    [[dont_unroll]] for (int c = 0; c < 4; ++c) {
+        ivec2 sc = ivec2(g0.x + (c & 1), g0.y + (c >> 1));
+        int ri = ((lb + (sc.y & (kCv2StvN - 1)) * kCv2StvN + (sc.x & (kCv2StvN - 1))) * kCv2StvK) + k0;
+        uint b0 = floatBitsToUint(cv2Stv[ri]), b1 = floatBitsToUint(cv2Stv[ri + 1]);
+        uint st = cv2ShaftStampOf(sc.x, sc.y, 0);
+        float bw = ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
+        bw *= (cv2ShaftStampOk(b0, st) && cv2ShaftStampOk(b1, st)) ? 1.0 : 0.0;
+        Tb += mix(cv2ShaftT(b0), cv2ShaftT(b1), kf) * bw;
+        wv += bw;
+    }
+    return vec2(Tb / max(wv, 1e-4), w * wv);
+}
+// The volume's transmittance at rl, height h: the finest level that reaches the point, blended into the next one out
+// over its edge; 1 (lit) beyond the coarsest. ONE call site of the level lookup (a loop).
+float cv2StvT(vec3 rl, float h)
+{
+    float acc = 0.0, keep = 1.0;
+    [[dont_unroll]] for (int lv = kCv2StvL - 1; lv >= 0; --lv) {
+        vec2 s = cv2StvLevelT(rl, h, lv);
+        acc  = acc * (1.0 - s.y) + s.x * s.y;
+        keep *= 1.0 - s.y;
+    }
+    return acc + keep;
 }
 // Ring 0 alone (the sky's god rays, within kCv2ShaftRangeCells x its cell of the eye).
 vec2 cv2SunShaftT(vec3 rl, float sAlong) { return cv2SunShaftT(rl, sAlong, 0); }

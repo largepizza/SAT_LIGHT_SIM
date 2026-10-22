@@ -868,6 +868,8 @@ struct GpuCloudV2Params
     glm::vec4 frox;                     // 2026-10-22: the god rays' froxel volume (clouds_v2.glsl)
     glm::vec4 cdcC;                     // 2026-10-22: S2, the light march from the clipmap (clouds_v2.glsl)
     glm::vec4 grid;                     // 2026-10-22: S9, the cloud grid and full-res mode (clouds_v2.glsl)
+    glm::vec4 anvil3;                   // 2026-10-22: anvil puffiness, the head top's lift (clouds_v2.glsl)
+    glm::vec4 stvL0, stvL1, stvL2, stvL3, stvH, stvV;   // 2026-10-22: S3, the Sun transmittance volume (clouds_v2.glsl)
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -892,7 +894,9 @@ static_assert(offsetof(GpuCloudV2Params, mie) == 288 + 48 * kCloudV2Types + 1136
 static_assert(offsetof(GpuCloudV2Params, frox) == 288 + 48 * kCloudV2Types + 1152, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, cdcC) == 288 + 48 * kCloudV2Types + 1168, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, grid) == 288 + 48 * kCloudV2Types + 1184, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1200, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, anvil3) == 288 + 48 * kCloudV2Types + 1200, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, stvL0) == 288 + 48 * kCloudV2Types + 1216, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -4191,7 +4195,7 @@ private:
     // EXPERIMENT (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S1): the cloud density clipmap. Coarse march steps skip the field
     // in known-empty cells. 0 off, 1 = 9-point bake, 2 = 36-point bake (the measured choice: -4..-9 ms below orbit at full
     // rate, harness_runs/s0). Off until judged in motion.
-    float cv2CdcSkip = 0.0f;
+    float cv2CdcSkip = 2.0f;   // the occupancy clipmap, on by default since 2026-10-22 (36-point bake)
     float cv2CdcBudget = 65536.0f;        // ... cells baked a frame at most
     float cv2CdcFp = -1.0f;               // ... the bake's read footprint: > 0 x the cell, < 0 x the march's own footprint there
     float cv2CdcMaxLevel = 6.0f;          // ... levels the march may use (0-8)
@@ -4371,6 +4375,17 @@ private:
     float cv2CbHeadDriftKm = 6.0f;     // how far downwind the head is blown
     float cv2CbLobes = 0.18f;          // cauliflower lobes on the tower (fraction of its radius)
     float cv2CbHeadLobes = 0.086f;      // ... and on its flared head (the anvil): smoother reads as the anvil
+    float cv2AnvilPuff = 1.0f;          // "Anvil puffiness" (2026-10-22): relief kept on the heads, x(1 + 1.5 it) head lobes, softer edge; 0 = before
+    // S3 (2026-10-22, "Sun shadow volume" sun_shadow_volume): the Sun transmittance volume (cloud_lightning.glsl cv2Stv)
+    // in place of the fine grid, the shaft rings, the cascade and the layer map.
+    float cv2SunShadowVolume = 1.0f;   // on by default since 2026-10-22
+    double cv2StvLatA[4] = {}, cv2StvLatB[4] = {};   // the eye on each level's lattice (cells)
+    int    cv2StvFrames[4] = {};
+    float  cv2StvCellUsed[4] = {};
+    double cv2StvHUsed = 0.0;
+    bool   cv2StvOnNow = false;
+    int    cv2StvBoost = 0;                        // frames left of levels 0-1's second bake (catching up)
+    float cv2AnvilLiftM = 800.0f;       // "Anvil top lift (m)": how far the head lobes raise / lower its top
     float cv2CbSparsity = 0.35f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
     float cv2CbFill = 0.48f;            // share of 3x3 lattice blocks holding a storm cell (a dominant tower + a flanking line)
     float cv2CbCumulusVar = 0.8f;      // the storm cumulus top's regional variation (+- fraction of it)
@@ -4545,7 +4560,7 @@ private:
     // binding 12 of the march set and 21 of cloud_march's.
     VkPipeline cv2LightningPipeline = VK_NULL_HANDLE;
     VkPipeline cv2FroxPipeline = VK_NULL_HANDLE;   // the god rays' froxel volume (2026-10-22, cloud_v2_froxel.comp)
-    float cv2GodrayFroxels = 0.0f;                 // EXPERIMENT "godray_froxels": the sky pass reads the volume
+    float cv2GodrayFroxels = 1.0f;                 // on by default since 2026-10-22: "godray_froxels": the sky pass reads the volume
     // Per-pass GPU time inside the cloud bucket (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S0): kCv2PassStamps timestamps
     // at fixed points of recordCloudsV2 + one after cloud_march.comp; a pass skipped this frame is a zero interval.
     // Harness `state` -> clouds_v2.pass_ms (eased over ~30 frames) / pass_ms_raw.
@@ -4600,7 +4615,9 @@ private:
     static constexpr VkDeviceSize kCv2SunShaftRingBytes = 524288 * 4;                             // one ring: 128 x 128 rays x 32 knots
     static constexpr VkDeviceSize kCv2EvalCountOffset = kCv2SunShaftOffset + 2 * kCv2SunShaftRingBytes;  // + cv2SunShaft (2 rings)
     static constexpr VkDeviceSize kCv2FroxBytes = 160ull * 90 * 64 * 4;   // cv2GodFrox (cloud_lightning.glsl)
-    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2EvalCountOffset + 32 * 4 + kCv2FroxBytes;   // + cv2EvalCount, cv2GodFrox
+    static constexpr VkDeviceSize kCv2StvOffset = kCv2EvalCountOffset + 32 * 4 + kCv2FroxBytes;      // cv2Stv (S3)
+    static constexpr VkDeviceSize kCv2StvLevelBytes = 128ull * 128 * 48 * 4;                          // one level: 128^2 rays x 48 knots
+    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2StvOffset + 4 * kCv2StvLevelBytes;           // + cv2EvalCount, cv2GodFrox, cv2Stv
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;
@@ -6512,7 +6529,8 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 310;   // 302-309 (2026-10-22): the cloud rebuild's experiments (Weather tab)
+    static constexpr int kCloudSliderSlots = 313;   // 312 (2026-10-22): Sun shadow volume (S3); 310-311: anvil puffiness, anvil top lift;
+    // was 310: 302-309 (2026-10-22): the cloud rebuild's experiments (Weather tab)
     // was 302: 296-297 (2026-10-14): layer shadows, cirrus self-shadow; 298-301 aurora storms
     // was 296:   // 289-295 (2026-10-13): the cumulus shape
     // was 289:   // 286-288 (2026-10-12): cloud shadow rings; 270-282 (2026-10-11): small cumulus, erosion / lobe variation, mid layer x5, cirrus warp, sampler x3, far shadow range

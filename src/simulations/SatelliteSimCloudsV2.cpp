@@ -1132,7 +1132,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CloudSunRayleigh, cv2TwilightSky, cv2FlowWarp, cv2FlowPeriodKm, cv2LayerSpread,
                     cv2TopHeavy, cv2TowerTop, cv2CirrusFieldKm, cv2CirrusFlow, cv2BaseFlatness, cv2CuLobesBottom, cv2CuLobesTop,
                     cv2CbColumns, cv2CbSpacingKm, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbWaist, cv2CbFlare,
-                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbHeadLobes, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
+                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbHeadLobes, cv2AnvilPuff, cv2AnvilLiftM, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
                     cv2DustHeightM, cv2DustDensity, (float)(debugDisableMask & 2048u),
                     cv2LightFootprint, cv2SmallCumulus, cv2ErosionVar, cv2LobeVar, cv2CirrusDirWarp, cv2AsDensity, cv2MidThick, cv2MidShadow,
                     cv2MidFieldKm, cv2MidCover, cv2SunCascadeRangeKm, cv2MsOctaves, cv2LobeOcclusion,
@@ -1568,6 +1568,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         if (on) lightFill = std::min(lightFill, cv2CascFrames);
         if (shaftOn) lightFill = std::min(lightFill, cv2ShaftFrames);
         if (ring2On) lightFill = std::min(lightFill, cv2Shaft2Frames);
+        if (cv2SunShadowVolume > 0.5f) lightFill = std::min(lightFill, cv2StvFrames[1] * 2);   // (S3: level 1's round is 64 frames)
         p.mid3 = glm::vec4(cv2MidFieldKm > 1.0f ? 1.0f / (1000.0f * cv2MidFieldKm) : 0.0f,
                        std::round(std::clamp(cv2MsOctaves, 1.0f, 8.0f)), std::clamp(cv2LobeOcclusion, 0.0f, 1.0f),
                        std::clamp(((float)lightFill - 64.0f) / 32.0f, 0.0f, 1.0f));
@@ -1584,6 +1585,53 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                            std::clamp(cv2SampClampSd, 0.25f, 8.0f), std::clamp(cv2LightFootprint, 0.0f, 0.5f));
         p.sunCasc2 = glm::vec4(on ? std::clamp(((float)cv2CascFrames - 4.0f) / 8.0f, 0.0f, 1.0f) : 0.0f,   // every ray baked by frame 4
                                (float)(2.0 * sHalf / 40.0), on ? 1.0f : 0.0f, std::max(cv2HazeAloft, 0.0f));
+
+        // The Sun transmittance VOLUME (S3, 2026-10-22; cloud_lightning.glsl cv2Stv, "Sun shadow volume"): 4 levels of the
+        // shaft lattice's kind (cells = ring 1's x 1, 4, 16, 64), knots by HEIGHT (0 .. the shell top + 1 km). Each level's
+        // lattice coordinate is integrated like the rings'; a level starting to fill (or a new cell / knot range) is
+        // cleared first, so its slots read invalid until baked and the next level out stands in.
+        {
+            const bool stvOn = cv2SunShadowVolume > 0.5f && sinE > -0.1 && cloudFarBlend() < 0.999f;
+            const double hHi = (double)hi + 1000.0;
+            const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
+            glm::vec4 lat[4];
+            for (int lv = 0; lv < 4; ++lv)
+            {
+                const double cellL = cell1 * std::pow(4.0, lv);
+                if (cv2StvCellUsed[lv] != (float)cellL || std::abs(hHi - cv2StvHUsed) > 0.01 * hHi)
+                    cv2StvFrames[lv] = 0;
+                if (!stvOn || !lightValid)
+                    cv2StvFrames[lv] = 0;
+                else
+                {
+                    if (cv2StvFrames[lv] == 0)
+                    {
+                        std::memset(static_cast<char *>(cv2FlashMapped) + kCv2StvOffset + (VkDeviceSize)lv * kCv2StvLevelBytes, 0,
+                                    kCv2StvLevelBytes);
+                        cv2StvCellUsed[lv] = (float)cellL;
+                    }
+                    cv2StvLatA[lv] = std::fmod(cv2StvLatA[lv] + glm::dot(dEye, ga) / cellL, 128.0 * 1024.0);
+                    cv2StvLatB[lv] = std::fmod(cv2StvLatB[lv] + glm::dot(dEye, gb) / cellL, 128.0 * 1024.0);
+                    ++cv2StvFrames[lv];
+                }
+                // In over its first round (level 0: 32 frames, the others 64), as the rings come in.
+                const float fill = stvOn ? std::clamp((float)cv2StvFrames[lv] / (lv == 0 ? 16.0f : 32.0f), 0.0f, 1.0f) : 0.0f;
+                lat[lv] = glm::vec4(modP(cv2StvLatA[lv], 1024.0), modP(cv2StvLatB[lv], 1024.0), (float)cellL, fill);
+            }
+            if (stvOn) cv2StvHUsed = hHi;
+            p.stvL0 = lat[0]; p.stvL1 = lat[1]; p.stvL2 = lat[2]; p.stvL3 = lat[3];
+            // The windows' centre (m across the Sun from the eye): the eye, or from above mid-shell the point under it there.
+            const double hC = std::min(eyeH, 0.5 * hHi);
+            const float wcA = (float)((hC - eyeH) * glm::dot(up, ga)), wcB = (float)((hC - eyeH) * glm::dot(up, gb));
+            p.stvH = glm::vec4(0.0f, (float)hHi, stvOn ? 1.0f : 0.0f, wcA);
+            // z: levels 0-1 baked twice (workgroups 24-27) while they catch up: moving over half a level-0 cell a frame,
+            // the 128 frames after, and the first 64 frames of a fill.
+            const glm::vec2 v0((float)(glm::dot(dEye, ga) / cell1), (float)(glm::dot(dEye, gb) / cell1));
+            cv2StvBoost = (stvOn && (glm::length(v0) > 0.5f || cv2StvFrames[0] < 64 || cv2StvFrames[1] < 64))
+                              ? 128 : std::max(cv2StvBoost - 1, 0);
+            p.stvV = glm::vec4(v0.x, v0.y, cv2StvBoost > 0 ? 1.0f : 0.0f, wcB);
+            cv2StvOnNow = stvOn;
+        }
 
         // The LAYER SHADOW MAP (2026-10-14, include/cv2_layer_map.glsl): the mid and high layers' shadow at any distance.
         // Its lattice is a gnomonic plane tangent at an anchor fixed in the DRIFTED frame (the clouds stand still in it), so
@@ -1784,6 +1832,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.misc = glm::vec4(std::round(std::clamp(cv2MaxIters * (cv2FastLodNow ? 0.6f : 1.0f), 32.0f, 1024.0f)), cv2MoonGain,
                        cv2AdaptiveNow ? 3.0f : cv2HalfRateNow ? 2.0f : (cv2FullRateNow ? 1.0f : 0.0f), cv2MidAmount);
     // S9: the cloud grid (the march no longer takes it from the scene depth's size, which stays half res).
+    p.anvil3 = glm::vec4(std::clamp(cv2AnvilPuff, 0.0f, 2.0f), std::clamp(cv2AnvilLiftM, 0.0f, 3000.0f), 0.0f, 0.0f);
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     std::memcpy(cv2ParamsMapped, &p, sizeof(p));
 
@@ -1999,7 +2048,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     if (cv2LightningPipeline)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightningPipeline);
-        vkCmdDispatch(cmd, 19, 1, 1);   // (+ 2 for ring 0's catch-up bake, 2026-10-14) + 4 workgroups for the rain map (review 22), + 4 for the Sun shadow grid, + 4 more
+        vkCmdDispatch(cmd, 32, 1, 1);   // (+ 13 for the Sun transmittance volume, S3: 19-20 level 0, 21-23 levels 1-3, 24-31 catch-up)   // (+ 2 for ring 0's catch-up bake, 2026-10-14) + 4 workgroups for the rain map (review 22), + 4 for the Sun shadow grid, + 4 more
                                         // on the frames that bake the cascade (returning at once on the others)
         // The rain particles (main pass, vertex stage) read the rain map and the light at the eye it just wrote.
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -2021,7 +2070,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     cv2PassStampTo(cmd, 2);   // lightning + the Sun shadow bakes (+ the froxel volume)
     // The layer shadow map (cv2_layer_map.glsl): cleared on a reset (stamps 0 read as invalid), then this frame's columns,
     // then a quarter of the slant cells from them; the march reads the slant cells.
-    if (cv2LayerColPipeline && cv2LayerSlantPipeline && cv2LayerBuf)
+    if (cv2LayerColPipeline && cv2LayerSlantPipeline && cv2LayerBuf && !cv2StvOnNow)   // (S3: the volume carries the layers)
     {
         if (cv2LayFrames <= 1)
         {

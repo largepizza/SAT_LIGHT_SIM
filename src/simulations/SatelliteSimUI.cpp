@@ -6371,6 +6371,8 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Cb head drift (km)", &cv2CbHeadDriftKm, 0.0f, 30.0f, 0.5f, "%.1f", 170},
         {"Cb lobes", &cv2CbLobes, 0.0f, 1.5f, 0.05f, "%.2f", 171},
         {"Cb head lobes", &cv2CbHeadLobes, 0.0f, 1.5f, 0.02f, "%.2f", 207},
+        {"Anvil puffiness", &cv2AnvilPuff, 0.0f, 2.0f, 0.05f, "%.2f", 310},
+        {"Anvil top lift (m)", &cv2AnvilLiftM, 0.0f, 3000.0f, 50.0f, "%.0f", 311},
         {"Cb sparsity", &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
         {"Cb overshoot (km)", &cv2CbOvershootKm, 0.0f, 3.0f, 0.05f, "%.2f", 173},
         {"Storm cumulus top (km)", &cv2CbCumulusTopKm, 2.0f, 12.0f, 0.25f, "%.2f", 167},
@@ -6448,6 +6450,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Light march from clipmap (0/1)", &cv2CdcLight, 0.0f, 1.0f, 1.0f, "%.0f", 308},
         // The S9 probe: the whole "half-res" chain at full resolution. Pair it with a sparse march ("Full rate above
         // (km)" high) for the half-res full-rate cost.
+        {"Sun shadow volume (0/1)", &cv2SunShadowVolume, 0.0f, 1.0f, 1.0f, "%.0f", 312},
         {"Full-resolution clouds (0/1)", &cv2FullRes, 0.0f, 1.0f, 1.0f, "%.0f", 309},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
@@ -8787,6 +8790,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CdcLightLevels = c.value("cdc_light_levels", cv2CdcLightLevels);
         cv2CdcNearM = c.value("cdc_near_m", cv2CdcNearM);
         cv2FullRes = c.value("full_res", cv2FullRes);
+        cv2SunShadowVolume = c.value("sun_shadow_volume", cv2SunShadowVolume);
         cv2SunCascadeRangeKm = c.value("sun_cascade_range_km", cv2SunCascadeRangeKm);
         cv2ShadowRing1CellM = c.value("shadow_ring1_cell_m", cv2ShadowRing1CellM);
         cv2ShadowRing2CellM = c.value("shadow_ring2_cell_m", cv2ShadowRing2CellM);
@@ -8913,6 +8917,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CbHeadDriftKm = c.value("cb_head_drift_km", cv2CbHeadDriftKm);
         cv2CbLobes = c.value("cb_lobes", cv2CbLobes);
         cv2CbHeadLobes = c.value("cb_head_lobes", cv2CbHeadLobes);
+        cv2AnvilPuff = c.value("anvil_puffiness", cv2AnvilPuff);
+        cv2AnvilLiftM = c.value("anvil_lift_m", cv2AnvilLiftM);
         cv2CbSparsity = c.value("cb_sparsity", cv2CbSparsity);
         cv2CbOvershootKm = c.value("cb_overshoot_km", cv2CbOvershootKm);
         cv2CbCumulusReachKm = c.value("cb_cumulus_reach_km", cv2CbCumulusReachKm);
@@ -9387,6 +9393,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cdc_light_levels", cv2CdcLightLevels},
         {"cdc_near_m", cv2CdcNearM},
         {"full_res", cv2FullRes},
+        {"sun_shadow_volume", cv2SunShadowVolume},
         {"sun_cascade_range_km", cv2SunCascadeRangeKm},
         {"shadow_ring1_cell_m", cv2ShadowRing1CellM},
         {"shadow_ring2_cell_m", cv2ShadowRing2CellM},
@@ -9511,6 +9518,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cb_head_drift_km", cv2CbHeadDriftKm},
         {"cb_lobes", cv2CbLobes},
         {"cb_head_lobes", cv2CbHeadLobes},
+        {"anvil_puffiness", cv2AnvilPuff},
+        {"anvil_lift_m", cv2AnvilLiftM},
         {"cb_sparsity", cv2CbSparsity},
         {"cb_overshoot_km", cv2CbOvershootKm},
         {"cb_cumulus_reach_km", cv2CbCumulusReachKm},

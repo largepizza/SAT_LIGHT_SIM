@@ -34,13 +34,15 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 #define CV2_FLASH_WRITE
 #define CV2_SUN_CASC_FN
 #include "cloud_lightning.glsl"
+layout(std430, set = 0, binding = 8) readonly buffer TerrainFrame { vec4 terrainFrame; };   // x the eye's ground height
 
 void main()
 {
     ivec3 g = ivec3(gl_GlobalInvocationID);
     if (g.x >= kCv2FroxX || g.y >= kCv2FroxY || g.z >= kCv2FroxZ) return;
     int idx = (g.z * kCv2FroxY + g.y) * kCv2FroxX + g.x;
-    if (cv2.frox.x <= 0.5 || cv2.sunCasc2.x <= 0.0) { cv2GodFrox[idx] = 1.0; return; }
+    const bool stvOn = cv2.stvH.z > 0.5;   // S3: the Sun transmittance volume instead of the cascade + shaft rings
+    if (cv2.frox.x <= 0.5 || (!stvOn && cv2.sunCasc2.x <= 0.0)) { cv2GodFrox[idx] = 1.0; return; }
 
     // The view ray through the tile's centre (cloud_v2_march.comp's rayDirAt, in screen fractions).
     vec2  ndc = (vec2(g.xy) + 0.5) / vec2(kCv2FroxX, kCv2FroxY) * 2.0 - 1.0;
@@ -50,6 +52,11 @@ void main()
     float T = 0.0;
     [[dont_unroll]] for (int k = 0; k < 4; ++k) {
         float t = cv2FroxDepth(float(g.z) + (float(k) + 0.5) * 0.25);
+        if (stvOn) {
+            vec3 pE = dir * t + vec3(0.0, 0.0, R_EARTH + terrainFrame.x + 2.0);
+            T += cv2StvT(dir * t, length(pE) - R_EARTH);
+            continue;
+        }
         float c = cv2SunCascT(dir * t, t * cosA + 0.5 * cv2.sunCasc2.y);
         // The shaft rings only within their reach ALONG THE VIEW, as the lattice path (sat_sky.frag: its first
         // kCv2ShaftRangeCells x cell of the ray): looking down they also cover points far along the ray, which that path

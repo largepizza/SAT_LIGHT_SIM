@@ -51,3 +51,16 @@ Full-resolution clouds are ON by default on High and Ultra (off on Low, Medium, 
 read at the half-res pixel's level of detail in this mode (the full-res pixel flickered from orbit). The temporal
 resolve smooths the sparse grid's samples with a [1 2 1] tent wherever it has no usable history, at any resolution
 (fast flight inside cloud: 7.9 -> 4.9 on the motion benchmark at half res).
+
+## Now (update 3): clipmap and froxels on; anvil puffiness
+The occupancy clipmap and the god-ray froxels are on by default. "Anvil puffiness" (Clouds tab, storms, `anvil_puffiness` 1;
+"Anvil top lift (m)" `anvil_lift_m` 800): an anvil (a tower's flared head) keeps its lobes and has its top raised in billows
+by them, with an edge that thins over up to 800 m; 0 is the old smooth head. Its erosion stays faded on the top.
+
+## Now (update 4): one Sun shadow (the Sun transmittance volume)
+"Sun shadow volume" (`sun_shadow_volume` 1, on): the clouds' shadow on the clouds, the air (god rays), the fog and dust and
+the ground comes from one structure: 4 nested levels of 128 x 128 rays toward the Sun (250 m to 16 km apart, reaching ~14
+to ~900 km), each holding the Sun's transmittance at 48 heights on its sunward side. It replaces the fine shadow grid, the
+two shaft rings, the cascade and the layer shadow map. Against a brute-force reference it is closer in every view tested
+(a cumulus field under a storm: 2.4 levels mean error against 32), costs about the same, and moves better (motion benchmark
+2.95 -> 2.21).
