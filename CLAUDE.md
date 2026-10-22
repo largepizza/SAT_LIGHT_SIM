@@ -1678,6 +1678,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   lands looking at it (turning back to the start's view swung the camera up to 55 deg while zooming out); 0.0 deg
   both ways. **The sea's waves fade with altitude over 20-60 km** (`altFadeW`; was 3-8 km, a pop of the wave texture
   and glitter path descending through ~7 km); the footprint filter does the rest. Mirrored features keep 3-8 km.
+- **The far layer's edge is the march's ERODED edge (2026-10-21, issue 20261021_173412: "2D and volumetric clouds do
+  not match", climbing 980 -> 6656 km over 7.9 N 131.8 E).** At the shipped "Detail" 0.77 the march draws cloud only
+  where a column's density at the cloud's widest point survives the mean erosion; the coverage it draws moves a lot
+  with "Detail" (from 980 km: 94% of the frame at 0, 37% at 0.77, 17% at 1.5). `cv2FarColumn` thresholded the plain
+  field at `1 - covT - bias`, i.e. ignored the erosion and the convective profile, and the review-24 bias (+0.12, tuned
+  against a march with less erosion) pushed it further: the far layer had 90% cloud where the march had 45%
+  (r 0.59 at 980 km). Now it finds the margin xeMin at which cv2FieldLow's eroded density is positive (10-step
+  bisection on the same terms: small-cumulus lift, eS / capS, reqMin from eB, flatK / convW, phK / phP, subPix /
+  presFar, the mean erosion with billow and wisps; lobes left out) and the pixel share ramps up from there over
+  1.25 sigU (+ a lobe width while the cells resolve). "Far cloud layer coverage bias" defaults to 0 (was 0.12; a saved
+  settings.json keeps its own). Kept in step with cv2FieldLow BY HAND. Measured (`harness_runs/iss173412`, march alone
+  vs far layer alone at the same altitudes, red > 0.6 cloud fraction / 3-px-blurred r): 980 km 0.44 / 0.36 r 0.93,
+  2200 km 0.31 / 0.28 r 0.96, 5000 km 0.19 / 0.18 r 0.97, 9000 km 0.13 / 0.13 r 0.99 (before: 0.45 / 0.90 r 0.59, 0.32 /
+  0.86 r 0.55, 0.19 / 0.61 r 0.59, 0.14 / 0.37 r 0.86). A diagnostic far shader that integrates cv2FieldLow down each
+  ray (`harness_runs/iss173412/mkdiag.py`) checks the edge against the march at any "Detail" (mask IoU 0.78 / 0.95 / 0.69-0.75
+  at 0.77 / 0 / 1.5).
 - **Review 25 (2026-10-02, records 10-12):** **a straight line across the sky in the clouds** (from under / inside a deck
   at 65 S) was review 22b's Sun-path darkening, applied only for cosSun > 0: with samples within ~2 km it was full on one
   side of the great circle 90 deg from the Sun and off on the other (debug view cloudrad stepped; transmittance and the

@@ -4420,7 +4420,9 @@ private:
     float cv2FarLayerFromKm = 600.0f;
     // Review 24 (slots 251-254): the far layer's apparent coverage at a slant (the cells' sides fill the gaps), a bias
     // on its coverage (field units), its optical depth and the softness of its sub-pixel edges.
-    float cv2FarSlant = 0.91f, cv2FarCoverBias = 0.12f, cv2FarDensity = 1.2f, cv2FarSoftness = 1.0f;   // review 24b: the user's tuning
+    // The bias is 0 since issue 20261021_173412: cv2FarColumn finds the march's own (eroded) cloud edge, and the old
+    // +0.12 doubled the far layer's cloud against the march's.
+    float cv2FarSlant = 0.91f, cv2FarCoverBias = 0.0f, cv2FarDensity = 1.2f, cv2FarSoftness = 1.0f;   // review 24b: the user's tuning
     float cv2FarLowSun = 0.38f;   // slot 255: the far layer's key light goes as mu0^(1 / (1 + this)) (0 = a flat slab)
     float cv2FarKeyGain = 4.1f, cv2FarSkyGain = 0.6f;   // review 24b: the user's tuning (was 10 / 0.3)   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 8900.0f;   // review 24b: the user's tuning (was 1500)
