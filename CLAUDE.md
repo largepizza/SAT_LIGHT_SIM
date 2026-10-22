@@ -2022,8 +2022,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   surface & lighting), **Night lights** (city lights, roads, sprites, city light on clouds, night sky light),
   Ocean, Beams (+ the beam light in clouds), Attributions. A tab's INDEX is persisted (`display.active_tab`)
   and indexes `hovTab[]`, so new tabs are APPENDED to `kSettingsTabNames` (Weather 12, Night lights 13,
-  **Performance 14**) and the strip draws `kSettingsStrip`, grouped under headings (GENERAL: Display, Controls,
-  Sound; SKY: Constellations, Photometry; RENDERING: the advanced tabs + Performance; ABOUT: Attributions — a
+  **Performance 14**, **Launches & debris 15**) and the strip draws `kSettingsStrip`, grouped under headings (GENERAL: Display, Controls,
+  Sound; SKY: Constellations, Launches & debris, Photometry; RENDERING: the advanced tabs + Performance; ABOUT: Attributions — a
   negative entry is a heading) in its own vertical scroll view (an unclipped strip taller than the window
   stretched the body and spilled the content below the window). **Camera (3) has no button** since 2026-10-03:
   its two lines are the Controls tab's MOUSE section, and index 3 still opens Controls. `settingsTabIsAdvanced()`
@@ -4322,8 +4322,8 @@ satellites), `shaders/sat_rebake.comp`, `SpaceWeather.cpp` (the scripted storm).
 follows with no other code) kills a share of the satellites (by altitude and inclination, crewed stations 10x
 less; hash-chosen, `stormSeedEvents`); dead formation members bump their neighbours (lognormal median 4 days,
 each bump kills with p 1/2 and may chain); then the cube-method engine carries the collisions forward. **Before
-the epoch nothing differs from the plain sky** (every term is gated on the scenario's seconds). Settings >
-Constellations > THE SUN'S FURY: the toggle (`kessler.enabled`, default on), collision rate (`rate_multiplier`,
+the epoch nothing differs from the plain sky** (every term is gated on the scenario's seconds). Settings > Launches &
+debris > THE SUN'S FURY: the toggle (`kessler.enabled`, default on), collision rate (`rate_multiplier`,
 x1 = physical), avoidance (`avoidance`, 0.9), horizon (`horizon_years`, 20), dust cloud brightness
 (`dust_gain`, x100), "Watch the next re-entry", live counts.
 Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night, 1x).
@@ -5328,8 +5328,17 @@ launches follow per-program cadences (no real manifest).
   `cpu_split_ms.window` 1 d 2.4 -> 0.65, 1 w 1.9 -> 0.2, 1 mo 0.6 -> 0.03; batches cached 7000 -> 4000. Still ~1.2 ms
   of record writes from 1 min/s to 1 d/s (the retirees deorbiting after the CME). Resume (after_storm 1) is not
   shortcut: its end depends on the ranks.
-- Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; Missions window > Controls (moved
-  there from Settings > Constellations, which keeps a pointer + "Open the Missions window"); harness
+- Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; **Settings > Launches & debris**
+  (2026-10-21, issue 20261021_175638: the Missions window's Controls tab moved there; `buildSettingsLaunchesTab` = LAUNCHES,
+  THE SUN'S FURY, then GRAPHICS: ROCKETS AND EXHAUST (`buildLaunchGraphicsSection`) and GRAPHICS: DEBRIS AND RE-ENTRIES
+  (`buildKesslerGraphicsSection`); Constellations keeps a pointer). **The exhaust sliders** (slots 302-309, `marksPreset`
+  false, all 1 = the look before them; "Reset exhaust to defaults"): "Plume opacity" `plume_gain` 0-5, "Plume brightness"
+  `plume_brightness` 0-5 (x the scattered colour, addPlume), "Plume width" `plume_width` 0.25-4 (x every Gaussian's radius,
+  same cross-section), "Plume billows" `plume_billows` 0-3 (cloud_march.comp's modulation contrast via DustBuf `dustPad2`;
+  the CPU significance cull's billow bound scales with it), "Plume growth" `plume_growth` 0-5 (x the turbulent growth the
+  parcels are BUILT with: `LBatch::plumeGrow`, a change rebuilds the plumes in view), "Ground clouds" `ground_cloud_gain` 0-5
+  (x the lift-off / landing clouds' cross-section), "Flame brightness" `rocket_gain` 0-10, "Rocket light on clouds"
+  `engine_light_gain` 0-10 (the choice rows they replace are gone); harness
   `launch ...` (docs/HARNESS.md: `launch next vehicle=`, `launch select kind=rocket|booster|upper|...`); default
   bookmark "Twilight Starship Launch"
   (`tools/harness/scripts/default_bookmarks.satcmd` #8).
@@ -5568,7 +5577,20 @@ launches follow per-program cadences (no real manifest).
   "docking in"), the crewed stations (altitude, next crew flight; Select / Go to = follow), satellite launches in
   flight (phase, Select = the drawn rocket stage, `launchSelectRocketOf`), and per program the trains raising (count,
   mean progress, next arrival) and the retirees deorbiting (next re-entry; Select the nearest, Watch a re-entry).
-  **Controls**: `buildLaunchSettingsSection` + `buildKesslerSettingsSection`, unchanged. The rows are cached
+  **Kessler** (2026-10-21, replaced Controls; `SatelliteSimKesslerTracker.cpp`, `buildKesslerTrackerTab`): THE SUN'S FURY
+  strip (countdown / DAY n / "computing"), big counts (collisions, catastrophic, pieces >= 1 m, 10-cm fragments made,
+  dead, destroyed, re-entered, still working), a GLOBE (a CPU raster, `kTrN` 256^2, R8G8B8A8_SRGB, the UI's 4th
+  external image — `kMaxExternalImages` is 6 now — uploaded by `kesslerTrackerRecordUpload` in recordCompute, re-rastered
+  only when the counts publish, it is dragged or the Sun moves ~1 deg, at most 4 / s): seen from the equator, the shells
+  drawn round it as a POLAR PLOT (radius = altitude x1.6, angle = latitude: the limb of an equatorial view is a meridian),
+  blue = working satellites, heat = the chance a year a 10 m^2 satellite there is hit by a tracked object (density x
+  10 km/s x 10 m^2 x a year; dead satellites + pieces >= 1 m, NOT the small-fragment grid, which lives on the worker);
+  numbered markers for the 8 latest significant breakups (catastrophic collisions, explosions, ASAT, the player's) at
+  their exaggerated place, a cyan dot for you; collisions per day (UIPlot, <= 120 bins); the breakups listed with Watch
+  (`kesslerWatchEvent`: 8 s before at 1x, 80 km beside the orbit, 15 km above). ALL of it comes from the counts walk
+  (`kesslerCountsWalk`, ~150k records a frame while the tab reads `kesslerStateCached`): `KCounts` gained the alt x
+  inclination histograms (`deb`, `work`), `colDay` / `catDay`, `recent[8]`, `working`, `reentered`, `explosions`;
+  `kCountsLiveGen` bumps on each publish. The rows are cached
   (`missionsRefresh`: the next launches and the ongoing list every 0.5 s or on a 6-h sim jump; the pinned searches
   every 3 s or when sim time passes them) and rebuilt only while the window is open; `launchUpcoming` keeps the
   batches it lists alive (`touched`), so they are not rebuilt every ~600 frames. Strings handed to Clay are copied
@@ -5648,7 +5670,7 @@ launches follow per-program cadences (no real manifest).
   ship entry start 7.9 m / 14 m/s (the 1-ms sampling step: was ~0.5 km), hand-over to the descent 3e-9 m / 7 m/s, the
   descent's largest acceleration 14 m/s^2, catch 0 m off centre at 55.0 m and 1.3 m/s, boosters 0 m off at 30.0 m;
   all 1124 ships caught (deorbit 20-62 h after deployment, descent 390-720 s from 250-330 km). Harness
-  `launch landing [booster=1] [lead=] [dist_m=] [day=1]`; Settings > Constellations > LAUNCHES "Watch a Starship catch".
+  `launch landing [booster=1] [lead=] [dist_m=] [day=1]`; Settings > Launches & debris > LAUNCHES "Watch a Starship catch".
 - **Launch pads on the ground (2026-10-19, the user: "launchpads and landing pads should have specialized graphics /
   play well with the city lights; exclusion zones near launch sites for the city grids").** One pad per distinct place
   among the catalog's sites (`buildPads`; sites within 150 m share one: 35 pads), its kind from the vehicles there (2
@@ -5692,7 +5714,7 @@ launches follow per-program cadences (no real manifest).
     a cos^6 lobe, Lambert, 1 / (d^2 + 30^2), normalised to 1 at the centre, capped at 2.2): bright toward the mount and
     under the masts' aim, falling to the corners; each 10-m slab has its own shade (+-8%) and a weathered mottle at 7 m,
     both fading to their mean past the footprint.
-  - Setting `launches.pad_graphics` (Settings > Constellations > LAUNCHES "Launch site graphics"; independent of
+  - Setting `launches.pad_graphics` (Settings > Launches & debris > GRAPHICS "Launch site graphics"; independent of
     launches being on). Harness `launch pads`, `launch pad <site> [dist_m=] [az=] [h=]`. Cost (RTX 3070 Ti, 1600x900,
     Starbase from 900 m): sky pass within noise (8.09 vs 8.09 ms), scene depth +0.18 ms, CPU ~0; SKY_LITE SPV +288 B
     (the UBO's declaration; 213384 of 230400), sat_sky_minimal unchanged.

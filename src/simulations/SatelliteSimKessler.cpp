@@ -1853,6 +1853,9 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         // the frame's sky exposure (cloud_march.comp: the faint plumes' skip is in display units)
         const float ex = skyExposure();
         std::memcpy(&hdr[2], &ex, 4);
+        // the plumes' billow contrast ("Plume billows", launches.plume_billows; cloud_march.comp dustPad2)
+        const float bl = launchPlumeBillows;
+        std::memcpy(&hdr[3], &bl, 4);
     }
     GpuDustCloud *out = reinterpret_cast<GpuDustCloud *>(static_cast<char *>(kDustMapped) + 16);
     uint32_t n = 0;
@@ -3099,6 +3102,17 @@ bool SatelliteSim::kesslerCountsWalk(KCountsWalk &w, size_t budget) const
     }
     KCounts &a = w.acc;
     const int32_t sec = w.sec;
+    // The tracker's altitude x inclination cell of an orbit (altitude in m, inclination in radians; -1 outside).
+    auto trCell = [](double altM, double incl) -> int {
+        const int ia = (int)std::floor((altM - 150000.0) / 50000.0);
+        if (ia < 0 || ia >= KCounts::kAlt)
+            return -1;
+        double id = std::abs(glm::degrees(incl));
+        if (id > 90.0)
+            id = 180.0 - id;
+        const int ii = std::clamp((int)(id / 5.0), 0, KCounts::kInc - 1);
+        return ia * KCounts::kInc + ii;
+    };
     for (const size_t end = std::min(kPool.size(), w.pool + budget); w.pool < end; ++w.pool)
     {
         const kessler::PoolRec &r = kPool[w.pool];
@@ -3108,16 +3122,37 @@ bool SatelliteSim::kesslerCountsWalk(KCountsWalk &w, size_t budget) const
             a.fragReal += (size_t)std::llround(r.weight);
             if (r.type < kTypeClass.size() && kTypeClass[r.type] >= 0)
                 ++a.byClass[kTypeClass[r.type]];
+            const int c = trCell(r.a - satphot::kEarthRadiusM, r.incl);
+            if (c >= 0)
+                a.deb[c] += r.weight;
         }
     }
     const size_t nRoster = kRosterWords.size() / 2;
     for (const size_t end = std::min(nRoster, w.roster + budget); w.roster < end; ++w.roster)
     {
         const size_t i = w.roster;
+        // (the deployment era: not launched yet, or retired with its group, is not there)
+        if (2 * i + 1 < rosterLife.size() && (sec < rosterLife[2 * i] || sec >= rosterLife[2 * i + 1]))
+            continue;
+        const int c = i < satOrbits.size() ? trCell(satOrbits[i].altM, satOrbits[i].incl) : -1;
         if (sec >= kRosterWords[2 * i + 1])
+        {
             ++a.rosterGone;
+            if (i < kRosterDecay.size() && kRosterWords[2 * i + 1] == kRosterDecay[i])
+                ++a.reentered;
+        }
         else if (sec >= kRosterWords[2 * i])
+        {
             ++a.dead;
+            if (c >= 0)
+                a.deb[c] += 1.0f;
+        }
+        else
+        {
+            ++a.working;
+            if (c >= 0)
+                a.work[c] += 1.0f;
+        }
     }
     for (const size_t end = std::min(kEvents.size(), w.ev + 4 * budget); w.ev < end; ++w.ev)
     {
@@ -3132,7 +3167,49 @@ bool SatelliteSim::kesslerCountsWalk(KCountsWalk &w, size_t budget) const
         case kessler::EV_KILL: ++a.kills; break;
         case kessler::EV_BUMP: ++a.bumps; break;
         case kessler::EV_COLLISION: ++a.col; a.cat += e.catastrophic; break;
+        case kessler::EV_EXPLOSION:
+        case kessler::EV_ASAT: ++a.explosions; break;
         default: break;
+        }
+        if (e.kind == kessler::EV_COLLISION)
+        {
+            // Collisions per day since the CME (before it: day 0).
+            const size_t d = (size_t)std::max(0.0, std::floor((e.t - kFuryArriveT) / 86400.0));
+            if (d < 200000)
+            {
+                if (a.colDay.size() <= d)
+                {
+                    a.colDay.resize(d + 1, 0u);
+                    a.catDay.resize(d + 1, 0u);
+                }
+                ++a.colDay[d];
+                a.catDay[d] += e.catastrophic;
+            }
+        }
+        // The latest significant breakups (catastrophic collisions, explosions, ASAT strikes, the player's): the 8
+        // latest by time (the log is in index order, not quite time order).
+        const bool sig = (e.kind == kessler::EV_COLLISION && e.catastrophic) || e.kind == kessler::EV_EXPLOSION ||
+                         e.kind == kessler::EV_ASAT || (e.origin == kessler::ORIGIN_USER && e.kind != kessler::EV_KILL);
+        if (sig && (e.pos[0] != 0.0f || e.pos[1] != 0.0f || e.pos[2] != 0.0f))
+        {
+            int k = a.nRecent;
+            if (k == 8 && e.t <= a.recentT[7])
+                k = -1;
+            if (k >= 0)
+            {
+                if (k == 8)
+                    k = 7;
+                else
+                    ++a.nRecent;
+                while (k > 0 && a.recentT[k - 1] < e.t)
+                {
+                    a.recentT[k] = a.recentT[k - 1];
+                    a.recent[k] = a.recent[k - 1];
+                    --k;
+                }
+                a.recentT[k] = e.t;
+                a.recent[k] = (uint32_t)w.ev;
+            }
         }
     }
     return w.pool >= kPool.size() && w.roster >= nRoster && w.ev >= kEvents.size();
@@ -3169,6 +3246,7 @@ void SatelliteSim::kesslerCountsTick()
     {
         kCountsLive = w.acc;
         kCountsLiveValid = true;
+        ++kCountsLiveGen;
         w.active = false;
         kStateCacheWall = -1.0; // publish with the next read
     }
@@ -3204,7 +3282,7 @@ void SatelliteSim::buildKesslerBanner(UIRenderer &ui)
 // it has done by the current sim time.
 void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &ui)
 {
-    uiSection("ConstSec", 2, "THE SUN'S FURY");
+    uiSection("LdSec", 1, "THE SUN'S FURY");
     bool on = kesslerEnabled;
     if (uiToggleRow(inp, ui, "KesslerOn", 0, "Scenario (a storm on 2037-07-15)", on,
                     "A Carrington-class solar storm arrives two days after the Great Australian Eclipse. Satellites it "
@@ -3253,6 +3331,48 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
         if (ctx_)
             kesslerRestart(*ctx_, kUserEvents, -1.0);
     }
+    if (kesslerEnabled && uiButton(inp, ui, "KesslerReentry", 0, "Watch the next re-entry",
+                                   "Jumps to the next satellite or large piece coming down over a dark sky: 25 s before it "
+                                   "breaks up, from beside its track."))
+    {
+        std::string why;
+        kesslerGoToNextReentry(why);
+        snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
+    }
+    if (!kesslerEnabled)
+        return;
+    const nlohmann::json &j = kesslerStateCached();
+    const nlohmann::json &n = j["now"];
+    const float lw = (float)fs(170);
+    const double days = j["days_since_cme"].get<double>();
+    uiKV("KesslerKV", 0, "Since the storm", days < 0.0 ? uiKitStr("in %.1f days", -days) : uiKitStr("%.1f days", days), lw);
+    uiKV("KesslerKV", 1, "Simulated to", uiKitStr("day %.1f%s", j["frontier_days"].get<double>(), kWorkerDone ? " (done)" : ""), lw);
+    uiKV("KesslerKV", 5, "Collisions", uiKitStr("%d (%d catastrophic)", n["collisions"].get<int>(), n["catastrophic"].get<int>()), lw);
+    if (uiButton(inp, ui, "KesslerTracker", 0, "Open the Kessler tracker",
+                 "The Missions window's Kessler tab: the counts, a globe of the debris shells, the latest breakups"))
+    {
+        msChrome.open = true;
+        msTab = 2;
+        msNextWall = msPinWall = -1e300;
+    }
+    if (!kUserEvents.empty())
+    {
+        uiKV("KesslerKV", 6, "Your breakups", uiKitStr("%d", (int)kUserEvents.size()), lw);
+        if (uiButton(inp, ui, "KesslerClear", 0, "Undo my breakups", "Re-simulate without them"))
+        {
+            kUserEvents.clear();
+            if (ctx_)
+                kesslerRestart(*ctx_, kUserEvents, -1.0);
+        }
+    }
+    if (kUiMsg[0])
+        uiKV("KesslerKV", 7, "", kUiMsg, lw, &Pal::textDim);
+}
+
+// Settings > Launches & debris: the scenario's GRAPHICS (dust, fireballs, small re-entries; none re-simulates).
+void SatelliteSim::buildKesslerGraphicsSection(const UIInput &inp, UIRenderer &ui)
+{
+    uiSection("LdSec", 3, "GRAPHICS: DEBRIS AND RE-ENTRIES");
     static const char *kDust[] = {"x1", "x10", "x30", "x100", "x1000"};
     static const float kDustV[] = {1.0f, 10.0f, 30.0f, 100.0f, 1000.0f};
     int dSel = 3;
@@ -3288,39 +3408,6 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
                                "faint from orbit. Higher makes them easier to spot.");
     if (sg >= 0 && sg != sSel)
         kesslerSmallReGain = kSmallReV[sg];
-    if (kesslerEnabled && uiButton(inp, ui, "KesslerReentry", 0, "Watch the next re-entry",
-                                   "Jumps to the next satellite or large piece coming down over a dark sky: 25 s before it "
-                                   "breaks up, from beside its track."))
-    {
-        std::string why;
-        kesslerGoToNextReentry(why);
-        snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
-    }
-    if (!kesslerEnabled)
-        return;
-    const nlohmann::json &j = kesslerStateCached();
-    const nlohmann::json &n = j["now"];
-    const float lw = (float)fs(170);
-    const double days = j["days_since_cme"].get<double>();
-    uiKV("KesslerKV", 0, "Since the storm", days < 0.0 ? uiKitStr("in %.1f days", -days) : uiKitStr("%.1f days", days), lw);
-    uiKV("KesslerKV", 1, "Simulated to", uiKitStr("day %.1f%s", j["frontier_days"].get<double>(), kWorkerDone ? " (done)" : ""), lw);
-    uiKV("KesslerKV", 2, "Dead satellites (tumbling)", uiKitStr("%d", n["dead_satellites"].get<int>()), lw);
-    uiKV("KesslerKV", 3, "Destroyed / re-entered", uiKitStr("%d", n["roster_gone"].get<int>()), lw);
-    uiKV("KesslerKV", 4, "Large pieces (>= 1 m)", uiKitStr("%d drawn of ~%d", n["fragments"].get<int>(), n["fragments_real"].get<int>()), lw);
-    uiKV("KesslerKV", 8, "Fragments 10 cm - 1 m made", uiKitStr("~%.0f (a density field)", n["small_fragments_made"].get<double>()), lw);
-    uiKV("KesslerKV", 5, "Collisions", uiKitStr("%d (%d catastrophic)", n["collisions"].get<int>(), n["catastrophic"].get<int>()), lw);
-    if (!kUserEvents.empty())
-    {
-        uiKV("KesslerKV", 6, "Your breakups", uiKitStr("%d", (int)kUserEvents.size()), lw);
-        if (uiButton(inp, ui, "KesslerClear", 0, "Undo my breakups", "Re-simulate without them"))
-        {
-            kUserEvents.clear();
-            if (ctx_)
-                kesslerRestart(*ctx_, kUserEvents, -1.0);
-        }
-    }
-    if (kUiMsg[0])
-        uiKV("KesslerKV", 7, "", kUiMsg, lw, &Pal::textDim);
 }
 
 // A player breakup from the info window (the viewed satellite).

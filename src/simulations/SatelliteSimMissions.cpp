@@ -9,7 +9,9 @@
 //              last, always, THE SUN'S FURY (the CME's arrival, its countdown, Go to).
 //   Ongoing  — crew transfers in flight, the crewed stations (next crew flight; Select / Go to), satellite launches
 //              in flight, and per program the trains raising and the retirees deorbiting.
-//   Controls — the LAUNCHES and THE SUN'S FURY settings (moved here from Settings > Constellations).
+//   Kessler  — the Kessler tracker (2026-10-21, issue 20261021_175638; SatelliteSimKesslerTracker.cpp): the cascade's
+//              counts, a globe of the debris shells, the collisions per day, the latest breakups. It replaced
+//              "Controls", whose LAUNCHES / THE SUN'S FURY settings moved to Settings > Launches & debris.
 //
 // The schedule is a pure function of sim time (SatelliteSimLaunches.cpp); the rows are rebuilt at most twice a second
 // (the pinned twilight / crewed searches every few seconds, or when sim time passes them), never per frame. Only the
@@ -179,7 +181,7 @@ bool SatelliteSim::missionsGoToFury(int which, std::string &msg)
 {
     if (!kesslerEnabled)
     {
-        msg = "The Sun's Fury is off (Missions > Controls)";
+        msg = "The Sun's Fury is off (Settings > Launches & debris)";
         return false;
     }
     if (followActive)
@@ -333,6 +335,7 @@ nlohmann::json SatelliteSim::missionsStateJson()
         bo.push_back({{"name", d.name}, {"deployed", std::lround(d.deployed)}, {"target", std::lround(d.target)},
                       {"launches_per_day", d.perDay}});
     j["build_out"] = bo;
+    j["tracker"] = kesslerTrackerJson();
     return j;
 }
 
@@ -381,7 +384,7 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
     int furyGo = -1, selRocket = -1, selTrain = -1, selRetiree = -1, stationSel = -1, stationGo = -1;
     int ongoingGo = -1; // an Ongoing row's Go to (missionsOngoingAct)
     int ongoingNext = -1; // an Ongoing row's next milestone (missionsMilestone)
-    bool watchReentry = false, toControls = false;
+    bool watchReentry = false, toSettings = false;
 
     // A launch row. id: a stable index; pin: a label shown first ("NEXT TWILIGHT").
     auto launchRow = [&](int id, const MissionLaunch &m) {
@@ -503,11 +506,12 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    static const char *kTabs[] = {"Upcoming", "Ongoing", "Controls"};
+                    static const char *kTabs[] = {"Upcoming", "Ongoing", "Kessler"};
                     static const char *kTips[] = {"The next launches, the next twilight and crewed launches, the Sun's Fury",
                                                   "The constellations' build-out, crew flights, stations, rockets in flight, "
                                                   "trains and retirements",
-                                                  "Launches and the Sun's Fury: settings and live counts"};
+                                                  "The Kessler tracker: the cascade's counts, the debris shells, the "
+                                                  "latest breakups (the settings: Settings > Launches & debris)"};
                     for (int i = 0; i < 3; ++i)
                         if (uiButton(inp, ui, "MsTab", i, kTabs[i], kTips[i], msTab == i))
                             msTab = i;
@@ -542,13 +546,13 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                         const bool standDown = kesslerEnabled && launchAfterStorm == 0;
                         auto noneWhy = [&](double horizonDays, const char *plain) -> const char * {
                             if (standDown && now >= kesslerEpoch())
-                                return "None: launches stood down at the Sun's Fury (Controls: After the Sun's Fury).";
+                                return "None: launches stood down at the Sun's Fury (Settings > Launches & debris: After the Sun's Fury).";
                             if (standDown && kesslerEpoch() - now < horizonDays * kDay)
                                 return "None before the Sun's Fury: launches stand down when it arrives.";
                             return plain;
                         };
                         if (!launchesEnabled)
-                            text("Launches are off (Controls).", Pal::textDim, 11);
+                            text("Launches are off (Settings > Launches & debris).", Pal::textDim, 11);
                         else if (msNext.empty())
                             text(noneWhy(14.0, "None in the next two weeks."), Pal::textDim, 11, true);
                         for (int i = 0; i < (int)msNext.size(); ++i)
@@ -704,7 +708,7 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             });
                         }
                         if (!n3)
-                            text(launchesEnabled ? "Nothing raising or deorbiting." : "Launches are off (Controls).", Pal::textDim, 11);
+                            text(launchesEnabled ? "Nothing raising or deorbiting." : "Launches are off (Settings > Launches & debris).", Pal::textDim, 11);
                         // The deployment era (2026-10-20): each constellation's build-out to its 2036 size. LAST since
                         // 2026-10-21 (QA: with ~20 cohort rows on top, the stations and rockets in flight were scrolled
                         // out of view), and collapsed by default once every cohort is complete.
@@ -753,9 +757,8 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                     }
                     else
                     {
-                        // ── Controls (moved from Settings > Constellations) ──────────────────────────
-                        buildLaunchSettingsSection(inp, ui);
-                        buildKesslerSettingsSection(inp, ui);
+                        // ── The Kessler tracker (2026-10-21; the Controls tab's settings: Settings > Launches & debris) ──
+                        buildKesslerTrackerTab(inp, ui, std::max(200.0f, msChrome.w - 24.0f - 8.0f - 10.0f));
                     }
                 }
                 ui.scrollbar(CLAY_ID("MsList"));
@@ -801,7 +804,7 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                     // its paragraph took half of a 720-px screen's list
                     const bool furyShort = msChrome.h < 620.0f;
                     if (!kesslerEnabled)
-                        text("The scenario is off. Turn it on in Controls.", Pal::textDim, 11, true);
+                        text("The scenario is off. Turn it on in Settings > Launches & debris.", Pal::textDim, 11, true);
                     else if (!furyShort && dt > 0.0)
                         text(msStr("%s: an X-class flare. %s: its coronal mass ejection arrives. Satellites die in "
                                    "the storm, the dead tumble and collide, and every collision is a cloud of "
@@ -831,8 +834,8 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                          "3.5 hours in: the aurora overhead (the bookmark \"The Sun's Fury\")"))
                                 furyGo = 1;
                         }
-                        else if (uiButton(inp, ui, "MsFuryCtl", 0, "Controls", "The scenario's switch"))
-                            toControls = true;
+                        else if (uiButton(inp, ui, "MsFuryCtl", 0, "Settings", "The scenario's switch (Settings > Launches & debris)"))
+                            toSettings = true;
                     }
                 }
                 }
@@ -864,8 +867,11 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
         msStatus = msg;
         msNextWall = msPinWall = -1e300; // rebuilt next frame (Clay still holds this frame's strings)
     }
-    if (toControls)
-        msTab = 2;
+    if (toSettings)
+    {
+        settingsChrome.open = true;
+        settingsActiveTab = 15;
+    }
     if (selRocket >= 0 || ongoingNext >= 0 || ongoingGo >= 0 || selTrain >= 0 || selRetiree >= 0 || watchReentry ||
         stationSel >= 0 || stationGo >= 0)
         ++msOngoingActs_; // the tutorial's Ongoing step

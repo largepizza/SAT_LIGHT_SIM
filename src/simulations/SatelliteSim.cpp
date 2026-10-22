@@ -1648,6 +1648,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
     }
     kesslerRecordUploads(cmd);
+    kesslerTrackerRecordUpload(cmd); // the Kessler tracker's globe (SatelliteSimKesslerTracker.cpp), when re-rastered
     fprof::mark("rc.seg2_kessler");
     }
     if (std::abs(simDayJ2000 - orbitEpochDay) >= kOrbitRebakeDays)
@@ -8014,6 +8015,7 @@ void SatelliteSim::cleanup(VkDevice device)
     destroySkyLowResResources(device);
     destroySkyTaaResources(device);
     bookmarksDestroy(device); // the bookmark thumbnails' atlas (SatelliteSimBookmarks.cpp)
+    kesslerTrackerDestroy(device); // the Kessler tracker's globe image
     reportsDestroy(device);   // the issue reports window's atlas (SatelliteSimReportsWindow.cpp)
     vkDestroyPipeline(device, drawPipeline, nullptr);
     vkDestroyPipelineLayout(device, compPipeLayout, nullptr);
