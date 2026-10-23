@@ -4270,7 +4270,7 @@ private:
                                           // at a long light march its second step is one sample for kilometres - the main source of grain)
     float cv2ShaftTempC = 15.0f;          // the air 500 m over the ground under the eye (deg C): the shafts' rain / snow
     float cv2EyeTempC = 15.0f;            // the air temperature at the eye (deg C; rain / sleet / snow), per frame
-    float cv2LightningRate = 2.1f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
+    float cv2LightningRate = 1.1f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
     float cv2LightningGlow = 0.088f;      // the flash's light in the cloud
     float cv2LightningBolt = 1.25f;        // the cloud-to-ground channels
     float cv2LightningSprites = 0.013f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
@@ -4362,9 +4362,11 @@ private:
     int   cv2EyeStillFrames = 0;       // consecutive frames whose EYE motion showed under 1/4 half-res px of parallax (no time warp, history kept)
     float cv2MidAmount = 1.1f;         // the mid-level layer (altocumulus / altostratus), 0 = off
     float cv2StormScale = 12.0f;        // deep convection's lobes and erosion are this much larger
-    float cv2StormDetail = 0.0f;       // share of the erosion kept on deep convection
-    float cv2Anvil = 0.0f;             // the map-fed anvil shield, 0 = off (review 5: the towers' flared heads are
-                                       // the anvils; the map-fed shield read as a lumpy grey sheet)
+    float cv2StormDetail = 0.072f;       // share of the erosion kept on deep convection
+    float cv2Anvil = 0.47f;             // the map-fed anvil shield, 0 = off (review 5: the towers' flared heads are
+                                       // the anvils; the map-fed shield read as a lumpy grey sheet). 0.47 since
+                                       // 2026-10-23 with the user's storm tune (head drift, lobes, puffiness, lift,
+                                       // storm erosion, lightning rates)
     float cv2BaseRoughness = 0.38f;     // bumps on cloud bases (decks most), x the default amplitude
     float cv2HighAmount = 1.3f;        // the high layer (cirrus / cirrostratus / cirrocumulus), 0 = off
     float cv2HighDensity = 0.32f;       // x its extinction
@@ -4381,7 +4383,7 @@ private:
     float cv2DropDistM = 33.0f;        // the rain particles' reach (m; each doubling is one more level, at most 64)
     float cv2RainParticlesK = 16.0f;   // drops in the nearest box, thousands (each farther level holds twice as many)
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
-    float cv2LightningStormRate = 1.0f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
+    float cv2LightningStormRate = 0.53f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
     float cv2LightningTendrils = 1.23f;    // the channels' branching (x the branch and tendril counts)
     float cv2RainFallSpeed = 10.0f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
     float cv2RainWindGain = 0.42f;      // x the ground wind on the drops (0.4 x the wind aloft)
@@ -4455,10 +4457,10 @@ private:
     float cv2CbCumulusTopKm = 2.6f;    // the low (cumulus/congestus) field's top in storm regions
     float cv2CbWaist = 0.7f;           // a tower's waist, x its base radius (1 = none: <1 read as smokestacks)
     float cv2CbFlare = 1.4f;           // its head under the anvil, x its base radius
-    float cv2CbHeadDriftKm = 6.0f;     // how far downwind the head is blown
-    float cv2CbLobes = 0.18f;          // cauliflower lobes on the tower (fraction of its radius)
+    float cv2CbHeadDriftKm = 15.0f;     // how far downwind the head is blown
+    float cv2CbLobes = 0.42f;          // cauliflower lobes on the tower (fraction of its radius)
     float cv2CbHeadLobes = 0.086f;      // ... and on its flared head (the anvil): smoother reads as the anvil
-    float cv2AnvilPuff = 1.0f;          // "Anvil puffiness" (2026-10-22): relief kept on the heads, x(1 + 1.5 it) head lobes, softer edge; 0 = before
+    float cv2AnvilPuff = 0.26f;          // "Anvil puffiness" (2026-10-22): relief kept on the heads, x(1 + 1.5 it) head lobes, softer edge; 0 = before
     // S3 (2026-10-22): the Sun transmittance volume (cloud_lightning.glsl cv2Stv), the clouds' one Sun shadow. It replaced the
     // fine grid, the shaft rings, the cascade and the layer map (deleted 2026-10-22).
     double cv2StvLatA[4] = {}, cv2StvLatB[4] = {};   // the eye on each level's lattice (cells)
@@ -4469,7 +4471,7 @@ private:
     glm::dvec3 cv2CdcAnchor{0.0, 0.0, 1.0};        // the clipmap plane's anchor (a unit vector in the DRIFTED frame)
     bool   cv2CdcAnchorSet = false;
     int    cv2StvBoost = 0;                        // frames left of levels 0-1's second bake (catching up)
-    float cv2AnvilLiftM = 800.0f;       // "Anvil top lift (m)": how far the head lobes raise / lower its top
+    float cv2AnvilLiftM = 410.0f;       // "Anvil top lift (m)": how far the head lobes raise / lower its top
     float cv2CbSparsity = 0.35f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
     float cv2CbFill = 0.48f;            // share of 3x3 lattice blocks holding a storm cell (a dominant tower + a flanking line)
     float cv2CbCumulusVar = 0.8f;      // the storm cumulus top's regional variation (+- fraction of it)
@@ -4529,9 +4531,13 @@ private:
         glm::vec4 evo2;        // xyz the Sun three hours ago (map frame), w afternoon land convection
         glm::vec4 remap;       // x Coverage, y clear, z full (coarse levels store the true mean coverage), w mip
         glm::vec4 wx;          // xy cos / sin of the map's drift (cv2Drift), zw unused
+        glm::vec4 storm;       // the storms' own cloud (stormStamp): x tower radius (m), y storm cumulus reach (m),
+                               // z head drift (m), w Cb flare
+        glm::vec4 storm2;      // x "Storm cloud field" (0 = off), y its clear moat's strength
     };
-    static_assert(sizeof(GpuWeatherPC) == 96, "GpuWeatherPC == cloud_v2_weather.comp's PC");
+    static_assert(sizeof(GpuWeatherPC) == 128, "GpuWeatherPC == cloud_v2_weather.comp's PC");
     GpuWeatherPC weatherEvoPC(int face, uint32_t mip) const;
+    uint64_t weatherBakeHash() const;  // the settings the weather cube was baked with (a change re-bakes every face)
     void recordWeatherEvolution(VkCommandBuffer cmd);
     VkDescriptorSetLayout cv2WxSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout cv2WxPipeLayout = VK_NULL_HANDLE;
@@ -4550,7 +4556,15 @@ private:
     static constexpr VkDeviceSize kStormTowersOffset = 16;
     static constexpr VkDeviceSize kStormTableOffset = kStormTowersOffset + 48ull * kStormMaxTowers;
     static constexpr VkDeviceSize kStormListOffset = kStormTableOffset + 8ull * kStormTableSize;
-    static constexpr VkDeviceSize kStormBufBytes = kStormListOffset + 4ull * kStormListSize;
+    // The ENVELOPE index (2026-10-22): the same towers, each listed out to its envelope (cv2_storms.glsl
+    // cv2StormEnvRadius: ~1.8x its reach), read only by the weather bake (its storm cloud field, stormStamp).
+    static constexpr uint32_t kStormEnvTableSize = 131072, kStormEnvListSize = 393216;
+    static constexpr VkDeviceSize kStormEnvTableOffset = kStormListOffset + 4ull * kStormListSize;
+    static constexpr VkDeviceSize kStormEnvListOffset = kStormEnvTableOffset + 8ull * kStormEnvTableSize;
+    // The envelope index's own copy of the towers, a.xyz where the low cloud's weather lookup sees each (the flowed map,
+    // cv2FlowDisp): the bake stamps there (buildStormEnvIndex).
+    static constexpr VkDeviceSize kStormEnvTowersOffset = kStormEnvListOffset + 4ull * kStormEnvListSize;
+    static constexpr VkDeviceSize kStormBufBytes = kStormEnvTowersOffset + 48ull * kStormMaxTowers;
     VkBuffer stormBuf = VK_NULL_HANDLE;
     VkDeviceMemory stormMem = VK_NULL_HANDLE;
     void *stormMapped = nullptr;
@@ -4560,16 +4574,25 @@ private:
     struct StormEntry { uint32_t key, tower; };
     std::vector<StormEntry> stormEntries;
     std::vector<glm::uvec2> stormTable;
+    std::vector<StormEntry> stormEnvEntries;     // the envelope index's (key, tower) pairs
+    std::vector<GpuStormTower> stormGpuTowers;   // this frame's towers as uploaded (the envelope index copies them)
+    std::vector<glm::uvec2> stormEnvTable;
     std::vector<uint32_t> stormCounts;
     double stormUploadedT = -1e300;
     uint64_t stormEnvKey = 0;
     bool  stormObjects = true;                   // weather.storm_objects (off = no towers at all)
     float stormFrequency = 1.0f;                 // weather.storm_frequency: x the calibrated spawn rate
     float stormLifeScale = 1.0f;                 // weather.storm_life: x every storm's lifetime
-    struct StormStats { int towers = 0, bins = 0, entries = 0, truncated = 0, lost = 0, dropped = 0; double cpuMs = 0; } stormStats;
+    float stormCloudField = 1.0f;                // clouds_v2.storm_field: each storm's own cloud in the weather cube
+                                                 // (cloud_v2_weather.comp stormStamp; 0 = the map alone)
+    float stormMoat = 1.0f;                      // clouds_v2.storm_moat: the clear moat round a storm (x the field)
+    double stormPrevUploadT = -1e300;            // the previous upload's sim time (a jump re-bakes the weather cube)
+    struct StormStats { int towers = 0, bins = 0, entries = 0, truncated = 0, lost = 0, dropped = 0; double cpuMs = 0;
+                        int envBins = 0, envEntries = 0, envTruncated = 0, envLost = 0; } stormStats;
     void createStormBuffer(VulkanContext &ctx);
     void destroyStormBuffer(VkDevice device);
     void updateStorms();                         // per frame, before the clouds are recorded
+    void buildStormEnvIndex();                   // on a frame the weather bake runs (its storm cloud field)
     uint64_t stormEnvHash() const;
     // The towers nearest the observer (Earth-fixed lat / lon, distance, bearing, strength ...); dominantOnly: role 1.
     nlohmann::json stormNearestJson(int n, float minStrength = 0.0f, float rangeKm = 1e9f, bool dominantOnly = false) const;
@@ -6651,7 +6674,8 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 321;   // 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
+    static constexpr int kCloudSliderSlots = 325;   // 321-324 (2026-10-23): storm objects (frequency, life, cloud field, moat);
+    // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
     // was 313: 312 (2026-10-22): Sun shadow volume (S3); 310-311: anvil puffiness, anvil top lift;
     // was 310: 302-309 (2026-10-22): the cloud rebuild's experiments (Weather tab)
     // was 302: 296-297 (2026-10-14): layer shadows, cirrus self-shadow; 298-301 aurora storms

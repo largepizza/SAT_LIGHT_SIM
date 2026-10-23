@@ -19,6 +19,10 @@ const uint kCv2StormTableSize   = 65536u;   // power of two
 const uint kCv2StormListSize    = 196608u;
 const uint kCv2StormBinsPerFace = 256u;     // ~39 km bins at a face's centre
 const uint kCv2StormMaxPerBin   = 12u;      // the CPU truncates a bin's list (strongest first) past this
+// The ENVELOPE index (the weather bake's storm cloud field only, CV2_STORM_ENV): the same towers and bins, each tower
+// listed out to cv2StormEnvRadius(its reach) instead of its reach.
+const uint kCv2StormEnvTableSize = 131072u;
+const uint kCv2StormEnvListSize  = 393216u;
 
 struct CV2Tower {
     vec4 a;   // xyz the tower's axis (map-frame unit vector), w strength 0..1 (its lifecycle x peak)
@@ -34,8 +38,19 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
     CV2Tower cv2Towers[kCv2StormMaxTowers];
     uvec2    cv2StormTable[kCv2StormTableSize];     // x key (0 = empty), y (list start << 4) | count
     uint     cv2StormList[kCv2StormListSize];       // tower indices
+#ifdef CV2_STORM_ENV
+    uvec2    cv2StormEnvTable[kCv2StormEnvTableSize];
+    uint     cv2StormEnvList[kCv2StormEnvListSize];
+    // The envelope index's own copy of the towers (built when the bake runs), a.xyz where the low cloud reads the
+    // weather cube for each (wd + cv2FlowDisp): the cube is read through the flow, so a storm's own cloud is stamped
+    // there, or it lands up to hundreds of km beside the tower.
+    CV2Tower cv2EnvTowers[kCv2StormMaxTowers];
+#endif
 };
 #endif
+
+// How far a tower's storm cloud field reaches (m) from its reach (= SatelliteSimWeather.cpp stormEnvRadius).
+float cv2StormEnvRadius(float reach) { return reach + max(40000.0, 0.8 * reach); }
 
 // The bin key of a map-frame unit vector (0 is never a key).
 uint cv2StormBinKey(vec3 wd)
@@ -73,5 +88,22 @@ uvec2 cv2StormBin(vec3 wd)
 #endif
     return uvec2(0u);
 }
+
+#if defined(CV2_STORM_BINDING) && defined(CV2_STORM_ENV)
+// The towers whose ENVELOPE (cv2StormEnvRadius) touches this map-frame direction: start and count in cv2StormEnvList.
+uvec2 cv2StormEnvBin(vec3 wd)
+{
+    if (cv2StormHead.x == 0u) return uvec2(0u);
+    uint key = cv2StormBinKey(wd);
+    uint h   = cv2StormHash(key) & (kCv2StormEnvTableSize - 1u);
+    [[dont_unroll]] for (int p = 0; p < 32; ++p) {
+        uvec2 e = cv2StormEnvTable[h];
+        if (e.x == key) return uvec2(e.y >> 4u, e.y & 15u);
+        if (e.x == 0u) break;
+        h = (h + 1u) & (kCv2StormEnvTableSize - 1u);
+    }
+    return uvec2(0u);
+}
+#endif
 
 #endif

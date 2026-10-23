@@ -49,6 +49,12 @@ uint32_t stormHash(uint32_t k)
 }
 
 // A face's equal-angle coordinates of a direction (for the bin rectangle around a tower on that face).
+// = cv2_storms.glsl cv2StormEnvRadius: how far a tower's storm cloud field reaches (the weather bake's stormStamp).
+float stormEnvRadius(float reach)
+{
+    return reach + std::max(40000.0f, 0.8f * reach);
+}
+
 bool faceAngles(const glm::dvec3 &d, int face, double &ax, double &ay)
 {
     const int fc = face >> 1;
@@ -59,6 +65,106 @@ bool faceAngles(const glm::dvec3 &d, int face, double &ax, double &ay)
     ax = std::atan(ux / mj);
     ay = std::atan(uy / mj);
     return true;
+}
+
+struct BinEntry { uint32_t key, tower; };   // = SatelliteSim::StormEntry
+
+// Every bin within `radius` of d: on every face the rim touches, the rectangle of bins spanned by 16 points on the
+// rim and the centre (equal-angle bins: the rectangle bounds the disc's image).
+template <class E>
+void listStormBins(const glm::dvec3 &d, double radius, uint32_t tower, uint32_t nB, std::vector<E> &out)
+{
+    const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), d) + glm::dvec3(1e-12, 0, 0));
+    const glm::dvec3 north = glm::cross(d, east);
+    const double binA = 1.5707963267948966 / nB;
+    const double ang = radius / kReW;
+    int faces[17];
+    int nf = 0;
+    glm::dvec3 rim[17];
+    rim[0] = d;
+    for (int k = 0; k < 16; ++k)
+    {
+        const double b = k * (glm::two_pi<double>() / 16.0);
+        rim[k + 1] = glm::normalize(d * std::cos(ang) + (east * std::cos(b) + north * std::sin(b)) * std::sin(ang));
+    }
+    for (int k = 0; k < 17; ++k)
+    {
+        int f;
+        stormBinKey(rim[k], nB, &f);
+        bool seen = false;
+        for (int q = 0; q < nf; ++q) seen |= faces[q] == f;
+        if (!seen) faces[nf++] = f;
+    }
+    for (int q = 0; q < nf; ++q)
+    {
+        double lo[2] = {1e9, 1e9}, hi[2] = {-1e9, -1e9};
+        for (int k = 0; k < 17; ++k)
+        {
+            double ax, ay;
+            if (!faceAngles(rim[k], faces[q], ax, ay)) continue;
+            lo[0] = std::min(lo[0], ax); hi[0] = std::max(hi[0], ax);
+            lo[1] = std::min(lo[1], ay); hi[1] = std::max(hi[1], ay);
+        }
+        if (lo[0] > hi[0]) continue;
+        auto idx = [&](double a) {
+            return (int)std::clamp(std::floor((a + 0.7853981633974483) / binA), 0.0, (double)(nB - 1));
+        };
+        const int i0 = idx(lo[0]), i1 = idx(hi[0]), j0 = idx(lo[1]), j1 = idx(hi[1]);
+        for (int jj = j0; jj <= j1; ++jj)
+            for (int ii = i0; ii <= i1; ++ii)
+                out.push_back({1u + (uint32_t)faces[q] * nB * nB + (uint32_t)jj * nB + (uint32_t)ii, tower});
+    }
+}
+
+// Counting pass into the open-addressed table, then each bin's start, then the fill (tower order kept: strongest
+// first, a bin past maxPerBin keeps its strongest). Load factor <= 0.5: the GPU's probes stay short.
+struct StormIndexStats { uint32_t bins = 0, entries = 0, truncated = 0, lost = 0, used = 0; };
+template <class E>
+StormIndexStats fillStormIndex(const std::vector<E> &ents, std::vector<glm::uvec2> &table, std::vector<uint32_t> &counts,
+                               uint32_t tableSize, uint32_t listSize, uint32_t maxPerBin, uint32_t *list)
+{
+    StormIndexStats st;
+    table.assign(tableSize, glm::uvec2(0u));
+    auto slotOf = [&](uint32_t k) -> uint32_t {
+        uint32_t h = stormHash(k) & (tableSize - 1u);
+        for (uint32_t p = 0; p < 32u; ++p)
+        {
+            if (table[h].x == k || table[h].x == 0u) return h;
+            h = (h + 1u) & (tableSize - 1u);
+        }
+        return 0xFFFFFFFFu;
+    };
+    counts.assign(tableSize, 0u);
+    for (const E &e : ents)
+    {
+        if (st.bins * 2u >= tableSize) { ++st.lost; continue; }
+        const uint32_t sl = slotOf(e.key);
+        if (sl == 0xFFFFFFFFu) { ++st.lost; continue; }
+        if (table[sl].x == 0u) { table[sl].x = e.key; ++st.bins; }
+        ++counts[sl];
+    }
+    uint32_t start = 0;
+    for (uint32_t sl = 0; sl < tableSize; ++sl)
+    {
+        if (table[sl].x == 0u) continue;
+        const uint32_t c = std::min(counts[sl], maxPerBin);
+        st.truncated += counts[sl] - c;
+        if (start + c > listSize) { table[sl] = glm::uvec2(0u); st.lost += c; continue; }
+        table[sl].y = (start << 4u) | 0u;   // count filled below
+        start += c;
+    }
+    for (const E &e : ents)
+    {
+        const uint32_t sl = slotOf(e.key);
+        if (sl == 0xFFFFFFFFu || table[sl].x != e.key) continue;
+        const uint32_t c = table[sl].y & 15u;
+        if (c >= maxPerBin) continue;
+        list[(table[sl].y >> 4u) + c] = e.tower;
+        table[sl].y += 1u;
+        ++st.entries;
+    }
+    st.used = start;
+    return st;
 }
 } // namespace
 
@@ -85,6 +191,7 @@ void SatelliteSim::createStormBuffer(VulkanContext &ctx)
     vkMapMemory(ctx.device, stormMem, 0, kStormBufBytes, 0, &stormMapped);
     std::memset(stormMapped, 0, kStormBufBytes);   // no towers until the first update
     stormTable.assign(kStormTableSize, glm::uvec2(0u));
+    stormEnvTable.assign(kStormEnvTableSize, glm::uvec2(0u));
     Log::line(std::string("weather: storm buffer (") + std::to_string(kStormBufBytes >> 10) + " KB) in "
               + (done ? "device-local host-visible memory" : "host memory"));
 }
@@ -180,6 +287,12 @@ void SatelliteSim::updateStorms()
     }
     if (t == stormUploadedT)
         return;   // paused: nothing moved
+    // The weather cube carries each storm's own cloud (cloud_v2_weather.comp stormStamp) and re-bakes a face at a time
+    // as time runs; after a jump (or the first upload: the load-time bake had no towers) every face is stale at once.
+    if (std::fabs(t - stormPrevUploadT) > 900.0)
+        for (double &b : cv2WxBakedT)
+            b = -1e30;
+    stormPrevUploadT = t;
     stormUploadedT = t;
     stormCatalog->towersAt(t, stormTowers);
 
@@ -189,7 +302,14 @@ void SatelliteSim::updateStorms()
                                         : (a.stormId != b.stormId ? a.stormId < b.stormId : a.towerIndex < b.towerIndex);
     });
     const uint32_t nT = (uint32_t)std::min<size_t>(stormTowers.size(), kStormMaxTowers);
-    stormStats = {};
+    {
+        const StormStats prev = stormStats;
+        stormStats = {};
+        stormStats.envBins = prev.envBins;
+        stormStats.envEntries = prev.envEntries;
+        stormStats.envTruncated = prev.envTruncated;
+        stormStats.envLost = prev.envLost;
+    }
     stormStats.dropped = (int)(stormTowers.size() - nT);
 
     // The reach of a tower (cv2ColumnSigma): its widest head (flare), blown downwind, the lean over the full span,
@@ -202,10 +322,8 @@ void SatelliteSim::updateStorms()
 
     auto *head = static_cast<uint32_t *>(stormMapped);
     auto *dst = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormTowersOffset);
-    std::fill(stormTable.begin(), stormTable.end(), glm::uvec2(0u));
-    stormEntries.clear();   // (key, tower) pairs, towers strongest first
-    const uint32_t nB = kStormBinsPerFace;
-    const double binA = 1.5707963267948966 / nB;
+    stormEntries.clear();      // (key, tower) pairs, towers strongest first
+    stormGpuTowers.resize(nT);
     for (uint32_t i = 0; i < nT; ++i)
     {
         const wx::Tower &tw = stormTowers[i];
@@ -233,91 +351,14 @@ void SatelliteSim::updateStorms()
         std::memcpy(&seedF, &seedBits, 4);
         g.c = glm::vec4((float)reach, seedF, (float)anvilK, (float)driftK);
         dst[i] = g;
-
-        // The bins: on every face the reach's rim touches, the rectangle of bins spanned by 16 points on the rim and
-        // the centre (equal-angle bins: the rectangle bounds the disc's image).
-        const double ang = reach / kReW;
-        int faces[17];
-        int nf = 0;
-        glm::dvec3 rim[17];
-        rim[0] = d;
-        for (int k = 0; k < 16; ++k)
-        {
-            const double b = k * (glm::two_pi<double>() / 16.0);
-            rim[k + 1] = glm::normalize(d * std::cos(ang) + (east * std::cos(b) + north * std::sin(b)) * std::sin(ang));
-        }
-        for (int k = 0; k < 17; ++k)
-        {
-            int f;
-            stormBinKey(rim[k], nB, &f);
-            bool seen = false;
-            for (int q = 0; q < nf; ++q) seen |= faces[q] == f;
-            if (!seen) faces[nf++] = f;
-        }
-        for (int q = 0; q < nf; ++q)
-        {
-            double lo[2] = {1e9, 1e9}, hi[2] = {-1e9, -1e9};
-            for (int k = 0; k < 17; ++k)
-            {
-                double ax, ay;
-                if (!faceAngles(rim[k], faces[q], ax, ay)) continue;
-                lo[0] = std::min(lo[0], ax); hi[0] = std::max(hi[0], ax);
-                lo[1] = std::min(lo[1], ay); hi[1] = std::max(hi[1], ay);
-            }
-            if (lo[0] > hi[0]) continue;
-            auto idx = [&](double a) {
-                return (int)std::clamp(std::floor((a + 0.7853981633974483) / binA), 0.0, (double)(nB - 1));
-            };
-            const int i0 = idx(lo[0]), i1 = idx(hi[0]), j0 = idx(lo[1]), j1 = idx(hi[1]);
-            for (int jj = j0; jj <= j1; ++jj)
-                for (int ii = i0; ii <= i1; ++ii)
-                    stormEntries.push_back({1u + (uint32_t)faces[q] * nB * nB + (uint32_t)jj * nB + (uint32_t)ii, i});
-        }
-    }
-
-    // Counting pass into the open-addressed table, then each bin's start, then the fill (tower order kept: strongest
-    // first, a bin past kStormMaxPerBin keeps its strongest).
-    auto slotOf = [&](uint32_t k) -> uint32_t {
-        uint32_t h = stormHash(k) & (kStormTableSize - 1u);
-        for (uint32_t p = 0; p < 32u; ++p)
-        {
-            if (stormTable[h].x == k || stormTable[h].x == 0u) return h;
-            h = (h + 1u) & (kStormTableSize - 1u);
-        }
-        return 0xFFFFFFFFu;
-    };
-    uint32_t bins = 0, entries = 0, truncated = 0, lost = 0;
-    stormCounts.assign(kStormTableSize, 0u);
-    for (const StormEntry &e : stormEntries)
-    {
-        if (bins * 2u >= kStormTableSize) { ++lost; continue; }   // load factor 0.5: the probes stay short
-        const uint32_t s = slotOf(e.key);
-        if (s == 0xFFFFFFFFu) { ++lost; continue; }
-        if (stormTable[s].x == 0u) { stormTable[s].x = e.key; ++bins; }
-        ++stormCounts[s];
-    }
-    uint32_t start = 0;
-    for (uint32_t s = 0; s < kStormTableSize; ++s)
-    {
-        if (stormTable[s].x == 0u) continue;
-        const uint32_t c = std::min(stormCounts[s], kStormMaxPerBin);
-        truncated += stormCounts[s] - c;
-        if (start + c > kStormListSize) { stormTable[s] = glm::uvec2(0u); lost += c; continue; }
-        stormTable[s].y = (start << 4u) | 0u;   // count filled below
-        start += c;
+        stormGpuTowers[i] = g;   // the envelope index's copy is made from these (buildStormEnvIndex)
+        listStormBins(d, reach, i, kStormBinsPerFace, stormEntries);
     }
     auto *list = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kStormListOffset);
-    for (const StormEntry &e : stormEntries)
-    {
-        const uint32_t s = slotOf(e.key);
-        if (s == 0xFFFFFFFFu || stormTable[s].x != e.key) continue;
-        const uint32_t c = stormTable[s].y & 15u;
-        if (c >= kStormMaxPerBin) continue;
-        list[(stormTable[s].y >> 4u) + c] = e.tower;
-        stormTable[s].y += 1u;
-        ++entries;
-    }
+    const StormIndexStats ix = fillStormIndex(stormEntries, stormTable, stormCounts, kStormTableSize, kStormListSize,
+                                              kStormMaxPerBin, list);
     std::memcpy(static_cast<char *>(stormMapped) + kStormTableOffset, stormTable.data(), sizeof(glm::uvec2) * kStormTableSize);
+    const uint32_t bins = ix.bins, entries = ix.entries, truncated = ix.truncated, lost = ix.lost, start = ix.used;
     head[0] = nT;
     head[1] = bins;
     head[2] = start;
@@ -329,6 +370,60 @@ void SatelliteSim::updateStorms()
     stormStats.truncated = (int)truncated;
     stormStats.lost = (int)lost;
     stormStats.cpuMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// The ENVELOPE index for the weather bake's storm cloud field (cloud_v2_weather.comp stormStamp): every tower stronger
+// than 0.05 listed out to cv2StormEnvRadius round where the low cloud reads the weather cube for it (the flowed map,
+// clouds_v2.glsl cv2FlowDisp: the same constants, in double), with its own copy of the towers (a.xyz = that flowed
+// axis), so the march's per-frame order cannot make its indices stale. Built only on a frame the bake runs (at most
+// every ~45 s of sim time at 1x): ~1-2 ms.
+void SatelliteSim::buildStormEnvIndex()
+{
+    FPROF_SCOPE("buildStormEnvIndex");
+    if (!stormMapped)
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double flowP = std::clamp((double)cv2FlowPeriodKm, 200.0, 20000.0) * 1000.0;
+    const double flowX = std::clamp((double)cv2FlowWarp, 0.0, 0.1) * flowP;
+    const double flowPh = (double)cv2WindMps * 0.3 * t / flowP;
+    auto flowed = [&](const glm::dvec3 &wd) -> glm::dvec3 {
+        if (flowX <= 0.0) return wd;
+        static const double kd[8][3] = {{0.62, 0.48, 0.62}, {-0.71, 0.30, 0.64}, {0.18, -0.93, 0.32}, {0.85, 0.21, -0.48},
+                                        {-0.34, -0.55, -0.76}, {0.05, 0.77, -0.64}, {-0.90, -0.40, 0.17}, {0.44, -0.29, 0.85}};
+        static const double ks[8] = {1.0, 1.13, 0.87, 1.31, 0.74, 1.52, 0.93, 1.21};
+        static const double ph[8] = {0.3, 2.1, 4.4, 1.7, 5.6, 3.2, 0.9, 2.7};
+        const double k0 = glm::two_pi<double>() * kReW / flowP;
+        const double phase = (flowPh - std::floor(flowPh)) * glm::two_pi<double>();
+        glm::dvec3 g(0.0);
+        for (int i = 0; i < 8; ++i)
+        {
+            const glm::dvec3 kv = glm::normalize(glm::dvec3(kd[i][0], kd[i][1], kd[i][2])) * (k0 * ks[i]);
+            g += kv * std::cos(glm::dot(kv, wd) + ph[i] + phase) / ks[i];
+        }
+        const glm::dvec3 v = glm::cross(wd, g) / (k0 * 2.0) * flowX;
+        return glm::normalize(wd + v / kReW);
+    };
+    auto *envTowers = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormEnvTowersOffset);
+    stormEnvEntries.clear();
+    const uint32_t n = (uint32_t)std::min<size_t>(stormGpuTowers.size(), kStormMaxTowers);
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        GpuStormTower g = stormGpuTowers[i];
+        const glm::dvec3 df = flowed(glm::normalize(glm::dvec3(glm::vec3(g.a))));
+        g.a = glm::vec4(glm::vec3(df), g.a.w);
+        envTowers[i] = g;
+        if (g.a.w > 0.05f)
+            listStormBins(df, 1.04 * (double)stormEnvRadius(g.c.x), i, kStormBinsPerFace, stormEnvEntries);
+    }
+    auto *envList = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kStormEnvListOffset);
+    const StormIndexStats ex = fillStormIndex(stormEnvEntries, stormEnvTable, stormCounts, kStormEnvTableSize,
+                                              kStormEnvListSize, kStormMaxPerBin, envList);
+    std::memcpy(static_cast<char *>(stormMapped) + kStormEnvTableOffset, stormEnvTable.data(),
+                sizeof(glm::uvec2) * kStormEnvTableSize);
+    stormStats.envBins = (int)ex.bins;
+    stormStats.envEntries = (int)ex.entries;
+    stormStats.envTruncated = (int)ex.truncated;
+    stormStats.envLost = (int)ex.lost;
 }
 
 nlohmann::json SatelliteSim::stormNearestJson(int n, float minStrength, float rangeKm, bool dominantOnly) const

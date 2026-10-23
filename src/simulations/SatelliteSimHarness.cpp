@@ -744,6 +744,10 @@ json SatelliteSim::harnessStateJson()
         w["truncated"] = stormStats.truncated;
         w["lost"] = stormStats.lost;
         w["dropped"] = stormStats.dropped;
+        w["env_bins"] = stormStats.envBins;
+        w["env_entries"] = stormStats.envEntries;
+        w["env_truncated"] = stormStats.envTruncated;
+        w["env_lost"] = stormStats.envLost;
         w["cpu_ms"] = stormStats.cpuMs;
         if (stormCatalog)
         {

@@ -795,6 +795,31 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   own lobe strength. (4) The map-fed shield (`cv2AnvilSigmaP`, still available) is smooth: fray 0.15
   (was 0.45), a soft edge (presence 0-0.6, squared), a gentler underside — it was lumpy and grey
   (snapshot 5). A separate storm layer not rooted in the map (hurricanes) is a possible later step.
+- **Storm OBJECTS (2026-10-22/23, branch `weather`, `.plans/WEATHER_EVENTS_PLAN.md`):** the towers are no longer a
+  lattice over the map's Cb regions (continent-sized alleys of anvils) but storms spawned by `wx::Catalog`
+  (`Weather.h/.cpp`): hashed per (equal-area cell, 30-min bin) at a flash-density climatology (`StormClimatology`,
+  analytic until the LIS/OTD table is baked) x the map's moisture, x5 per flash at sea; kinds air-mass / multicell /
+  supercell with their whole lifecycle fixed at birth, so every storm is a pure function of sim time (warp, reverse,
+  bookmarks). They live in the MAP frame (cv2Drift) and ride with it. Each frame `updateStorms` (SatelliteSimWeather.cpp)
+  uploads the towers alive (`GpuStormTower` = `CV2Tower`, 48 B; strength = the lifecycle, a weaker tower is SHORTER)
+  and an open-addressed hash of 256-per-face cube bins (each tower listed in every bin its reach touches) into
+  `stormBuf` (device-local host-visible): march binding 26, beam occlusion 10, lightning, cdc. `cv2ColumnSigma` loops
+  over its point's bin; lightning flashes only from them. Settings `clouds_v2.storm_objects / storm_frequency /
+  storm_life` (Weather tab "Storm objects"); harness `storms`, `storms go`, `state` -> `weather`; `tools/weather_tool`.
+  **A storm brings its own cloud into the weather cube** (2026-10-23, issue 20261022_233857: a supercell in near-clear
+  map air rained from nothing under its anvil; from above, anvils on bare ground). `cloud_v2_weather.comp`
+  `stormStamp` (binding 4 = `stormBuf`): within each tower's ENVELOPE (`cv2StormEnvRadius` = reach + max(40 km, 0.8
+  reach)) a broken cumulus field thickening toward the tower (congestus within "Storm cumulus reach"), a stratiform
+  raining deck under the anvil's forward flank (type ~0.15: the low layer thickens it), rain there, and a clear moat
+  at the envelope's edge; "Storm cloud field" `storm_field` 1 / "Storm clear moat" `storm_moat` 1 (slots 323-324).
+  Invariants: (1) the bake reads a SECOND index (envelope bins + its own tower copy, `kStormEnv*`, declared only under
+  `CV2_STORM_ENV`) that the march never reads: listing towers to their envelope in the march's index would multiply
+  the column search. Built only on a frame the bake runs (`buildStormEnvIndex`, ~1-2 ms; every frame it cost +2 ms).
+  (2) The low cloud reads the cube through the FLOW (`cv2FlowDisp`, up to hundreds of km), so the envelope copy's axis
+  is the tower's FLOWED position (a double CPU replica of cv2FlowDisp: keep it in step), or the field lands beside the
+  storm. (3) The cube re-bakes a face at most 45 s behind with storms stamped, and every face after a jump of > 15 min.
+  The rain core under a dominant tower is its body (it was an ellipse 2.5x longer downwind, under the anvil, where
+  there is no cloud below). Cost: within noise at 1 h/s (bake), 128 registers.
 - **Pass 20 (2026-09-29):** "Storm cumulus top" reaches the cloud AROUND a storm: the weather map
   types only a storm's core as Cb (which the towers cover) and the cloud around it as stratocumulus,
   so keyed on the Cb class the slider changed 0.2% of a storm view. Low cloud now takes it by storm

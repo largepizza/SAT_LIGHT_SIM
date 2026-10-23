@@ -369,7 +369,8 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkDescriptorSetLayout bl = makeSetLayout(dev, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                                        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});
+                                                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER});   // 4: the storms
         VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GpuWeatherPC)};
         VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pli.setLayoutCount = 1;
@@ -380,11 +381,12 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         vkCreatePipelineLayout(dev, &pli, nullptr, &pl);
         VkPipeline pipe = makeComputePipeline(ctx, "shaders/cloud_v2_weather.comp.spv", pl);
 
-        VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * kCv2WeatherMips},
-                                      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kCv2WeatherMips}};
+        VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * kCv2WeatherMips},
+                                      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kCv2WeatherMips},
+                                      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kCv2WeatherMips}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = kCv2WeatherMips;
-        pi.poolSizeCount = 2;
+        pi.poolSizeCount = 3;
         pi.pPoolSizes = ps;
         VkDescriptorPool pool = VK_NULL_HANDLE;
         vkCreateDescriptorPool(dev, &pi, nullptr, &pool);
@@ -421,12 +423,14 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             ai.pSetLayouts = &bl;
             vkAllocateDescriptorSets(dev, &ai, &set);
             VkDescriptorImageInfo outInfo{VK_NULL_HANDLE, mipViews[m], VK_IMAGE_LAYOUT_GENERAL};
-            VkWriteDescriptorSet w[4] = {
+            VkDescriptorBufferInfo stormInfo{stormBuf, 0, VK_WHOLE_SIZE};   // created at the top of createCloudsV2
+            VkWriteDescriptorSet w[5] = {
                 imageWrite(set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsInfo),
                 imageWrite(set, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specInfo),
                 imageWrite(set, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outInfo),
-                imageWrite(set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo)};
-            vkUpdateDescriptorSets(dev, 4, w, 0, nullptr);
+                imageWrite(set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo),
+                bufferWrite(set, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &stormInfo)};
+            vkUpdateDescriptorSets(dev, 5, w, 0, nullptr);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &set, 0, nullptr);
             cv2WxSets.push_back(set);
             GpuWeatherPC pcv = weatherEvoPC(-1, m);
@@ -449,10 +453,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         const double t0 = (double)simDayJ2000 * 86400.0 + simSecInDay;
         for (double &b : cv2WxBakedT)
             b = t0;
-        cv2WxHash = std::hash<float>{}(cv2EvoWindMps) ^ (std::hash<float>{}(cv2EvoGrowth) * 31u)
-                  ^ (std::hash<float>{}(cv2EvoWindowH) * 131u) ^ (std::hash<float>{}(cv2EvoDiurnal) * 1031u)
-                     ^ (std::hash<float>{}(cv2Coverage) * 10007u) ^ (std::hash<float>{}(cv2CoverClear) * 100003u)
-                     ^ (std::hash<float>{}(cv2CoverFull) * 1000003u);   // the coarse levels' coverage (review 18)
+        cv2WxHash = weatherBakeHash();
     }
 
     // ── UBO ──
@@ -1779,7 +1780,23 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
     // The drift itself: the land / sea mask is Earth-fixed, the map is not (cloud_v2_weather.comp).
     pc.wx = glm::vec4((float)std::cos(dr), (float)std::sin(dr), 0.0f, 0.0f);
     pc.remap = glm::vec4(cv2Coverage, cv2CoverClear, std::max(cv2CoverFull, cv2CoverClear + 0.01f), (float)mip);
+    // The storms' own cloud (cloud_v2_weather.comp stormStamp): the tower geometry cv2ColumnSigma draws with.
+    pc.storm = glm::vec4(std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f, cv2CbCumulusReachKm * 1000.0f,
+                         std::clamp(cv2CbHeadDriftKm, 0.0f, 30.0f) * 1000.0f, std::clamp(cv2CbFlare, 0.5f, 3.0f));
+    pc.storm2 = glm::vec4(stormObjects && cv2CbColumns > 0.0f ? std::max(stormCloudField, 0.0f) : 0.0f,
+                          std::max(stormMoat, 0.0f), 0.0f, 0.0f);
     return pc;
+}
+
+uint64_t SatelliteSim::weatherBakeHash() const
+{
+    uint64_t h = 1469598103934665603ull;
+    for (float v : {cv2EvoWindMps, cv2EvoGrowth, cv2EvoWindowH, cv2EvoDiurnal,
+                    cv2Coverage, cv2CoverClear, cv2CoverFull,   // the coarse levels' coverage (review 18)
+                    stormObjects ? 1.0f : 0.0f, stormCloudField, stormMoat, cv2CbColumns,   // the storms' stamp
+                    cv2CbRadiusKm, cv2CbCumulusReachKm, cv2CbHeadDriftKm, cv2CbFlare})
+        h = (h ^ std::hash<float>{}(v)) * 1099511628211ull;
+    return h;
 }
 
 // One face of the weather cube per frame, all its mips, re-baked when sim time has moved on enough to
@@ -1791,11 +1808,10 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
     if (!cv2WxPipeline || cv2WxSets.size() != kCv2WeatherMips)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    const uint64_t h = std::hash<float>{}(cv2EvoWindMps) ^ (std::hash<float>{}(cv2EvoGrowth) * 31u)
-                     ^ (std::hash<float>{}(cv2EvoWindowH) * 131u) ^ (std::hash<float>{}(cv2EvoDiurnal) * 1031u)
-                     ^ (std::hash<float>{}(cv2Coverage) * 10007u) ^ (std::hash<float>{}(cv2CoverClear) * 100003u)
-                     ^ (std::hash<float>{}(cv2CoverFull) * 1000003u);   // the coarse levels' coverage (review 18)
+    const uint64_t h = weatherBakeHash();
     const bool evolving = cv2EvoWindMps > 0.0f || cv2EvoGrowth > 0.0f || cv2EvoDiurnal > 0.0f;
+    // The storms' stamp (stormStamp) follows the towers' lifecycles (tens of minutes): a face at most ~45 s behind.
+    const bool stormsStamped = stormObjects && cv2CbColumns > 0.0f && stormCloudField > 0.0f;
     if (h != cv2WxHash)
     {
         for (double &b : cv2WxBakedT)
@@ -1803,7 +1819,9 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
         cv2WxHash = h;
     }
     // A face is due once it is this much sim time behind (a few km of wind drift at most).
-    const double due = evolving ? std::clamp(300.0 / std::max((double)cv2EvoWindMps, 1.0), 5.0, 120.0) : 1e30;
+    double due = evolving ? std::clamp(300.0 / std::max((double)cv2EvoWindMps, 1.0), 5.0, 120.0) : 1e30;
+    if (stormsStamped)
+        due = std::min(due, 45.0);
     int face = -1;
     double worst = 0.0;
     for (int f = 0; f < 6; ++f)
@@ -1817,6 +1835,8 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
     }
     if (face < 0)
         return;
+    if (stormsStamped)
+        buildStormEnvIndex();   // the storms' cloud field: the towers as they are now, where the cube is read for them
     cv2WxBakedT[face] = t;
     ++cv2WxRebakes;
 

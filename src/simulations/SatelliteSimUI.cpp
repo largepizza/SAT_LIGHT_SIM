@@ -6385,6 +6385,15 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
 // snow, the weather map's evolution, fog / dust / ice fog, and the experimental god rays.
 void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
 {
+    // The storm objects (2026-10-22, .plans/WEATHER_EVENTS_PLAN.md): how many, how long they live, and the cloud each
+    // brings into the weather map round it (cloud_v2_weather.comp stormStamp). "Storm objects" (on / off) is the
+    // settings key clouds_v2.storm_objects.
+    CloudSlider secStormObjects[] = {
+        {"Storm frequency (x)", &stormFrequency, 0.0f, 10.0f, 0.05f, "%.2f", 321},
+        {"Storm lifetime (x)", &stormLifeScale, 0.1f, 5.0f, 0.05f, "%.2f", 322},
+        {"Storm cloud field", &stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f", 323},
+        {"Storm clear moat", &stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", 324},
+    };
     CloudSlider secStorms[] = {
         {"Cb fill (share of cells)", &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
         {"Cb columns (0 = none)", &cv2CbColumns, 0.0f, 4.0f, 0.05f, "%.2f", 164},
@@ -6474,6 +6483,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
+        CLOUD_SEC("Storm objects", secStormObjects),
         CLOUD_SEC("Storms (cumulonimbus)", secStorms),
         CLOUD_SEC("Lightning", secLightning),
         CLOUD_SEC("Rain & snow", secRain),
@@ -8792,6 +8802,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormObjects = c.value("storm_objects", stormObjects);
         stormFrequency = settingClamp(c.value("storm_frequency", stormFrequency), 0.0f, 10.0f);
         stormLifeScale = settingClamp(c.value("storm_life", stormLifeScale), 0.1f, 5.0f);
+        stormCloudField = settingClamp(c.value("storm_field", stormCloudField), 0.0f, 3.0f);
+        stormMoat = settingClamp(c.value("storm_moat", stormMoat), 0.0f, 3.0f);
         cv2EvoGrowth = c.value("evo_growth", cv2EvoGrowth);
         cv2EvoWindowH = c.value("evo_window_h", cv2EvoWindowH);
         cv2EvoDiurnal = c.value("evo_diurnal", cv2EvoDiurnal);
@@ -9401,6 +9413,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_objects", stormObjects},
         {"storm_frequency", stormFrequency},
         {"storm_life", stormLifeScale},
+        {"storm_field", stormCloudField},
+        {"storm_moat", stormMoat},
         {"evo_growth", cv2EvoGrowth},
         {"evo_window_h", cv2EvoWindowH},
         {"evo_diurnal", cv2EvoDiurnal},

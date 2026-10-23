@@ -1492,12 +1492,15 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // The storm cumulus around it (review 5), tapered to zero before the tower's reach.
         prox = max(prox, smoothstep(0.05, 0.3, str) * (1.0 - smoothstep(1.1 * Rc, 1.1 * Rc + cuReach, dhL))
                          * (1.0 - smoothstep(0.7 * limM, limM, dhL)));
-        // The rain core (review 22): under the dominant tower, an ellipse 2.5x longer downwind (the anvil's side).
+        // The rain core (review 22): under the dominant tower's BODY, a little longer downwind (it leans that way).
+        // It was an ellipse 2.5x longer downwind, out under the anvil where no cloud stood below it: a sheet of rain
+        // hanging from nothing (issue 20261022_233857). The forward flank's rain now falls from the deck the weather
+        // cube puts there (cloud_v2_weather.comp stormStamp).
         if (cv2.rain.x > 0.0 && hb < 0.0) {
             float dom = smoothstep(0.8, 1.0, smoothstep(0.02, 0.6, str) * role) * smoothstep(0.1, 0.5, str);
             float al  = dot(dh, eastW);
-            float dR  = length(vec2(length(dh - eastW * al), al > 0.0 ? al * 0.4 : al));
-            gCv2RainCore = max(gCv2RainCore, dom * (1.0 - smoothstep(0.25 * Rc, 1.1 * Rc, dR)));
+            float dR  = length(vec2(length(dh - eastW * al), al > 0.0 ? al * 0.8 : al));
+            gCv2RainCore = max(gCv2RainCore, dom * (1.0 - smoothstep(0.2 * Rc, 0.9 * Rc, dR)));
         }
         if (!colH) continue;
         // A weaker tower is SHORTER, not thinner: its top sinks from under the anvil (full strength)
