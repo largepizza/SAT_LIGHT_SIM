@@ -350,8 +350,32 @@ SatelliteSim::SurfaceWind SatelliteSim::surfaceWindAt(double simT, float rN)
         w.storm = std::min(w.storm, 1.5f);
     }
 
+    // Tropical cyclones (2026-10-23): their wind field, a Holland-like profile (rising linearly to the radius of maximum
+    // wind, falling as (rmw / r)^0.6 beyond, gone past 1.4 x the outer bands), cyclonic and turned 20 deg inward, the eye
+    // calm; x0.7 at the eye's height (the 1-min 10-m wind is the cyclone's vmax). It sets the gusts' storm share too.
+    if (stormObjects)
+        for (const wx::CycloneState &S : stormCyclonesNow)
+        {
+            const double kR = 6371000.0, ce = glm::dot(S.earth, up);
+            const double dist = std::acos(std::clamp(ce, -1.0, 1.0)) * kR;
+            if (dist > 1.4 * (double)S.outerR || S.vmax < 10.0f) continue;
+            const glm::dvec3 to = S.earth - up * ce;
+            glm::dvec2 toEN(glm::dot(to, E), glm::dot(to, N));
+            const double l = glm::length(toEN);
+            if (l < 1e-12) continue;
+            const glm::dvec2 rad = -toEN / l;                                    // outward
+            const glm::dvec2 tan = glm::dvec2(-rad.y, rad.x) * (double)S.c->hemi; // counter-clockwise in the north
+            const double rmw = std::max((double)S.rmw, 5000.0);
+            const double prof = dist < rmw ? dist / rmw : std::pow(rmw / dist, 0.6);
+            const double sp = 0.7 * (double)S.vmax * prof * (1.0 - (double)rnSmooth(S.outerR, 1.4f * S.outerR, (float)dist));
+            const double inflow = glm::radians(20.0);
+            w.cyclone += glm::vec2((tan * std::cos(inflow) - rad * std::sin(inflow)) * sp);
+            w.cycloneVmax = std::max(w.cycloneVmax, S.vmax);
+            w.storm = std::max(w.storm, (float)std::min(1.5, sp / 25.0));
+        }
+
     // Gust fronts.
-    const glm::vec2 mean = w.base + w.outflow;
+    const glm::vec2 mean = w.base + w.outflow + w.cyclone;
     const float meanL = glm::length(mean);
     const glm::vec2 dirRef = meanL > 0.3f ? mean / meanL : glm::vec2(std::cos(ang), std::sin(ang));
     glm::vec2 gustV(0.0f);

@@ -6988,6 +6988,8 @@ private:
         glm::vec2 v{0.0f};        // the wind now (rain frame E/N, m/s), gusts and outflow included, before easing
         glm::vec2 base{0.0f};     // the mean surface wind (m/s)
         glm::vec2 outflow{0.0f};  // the storms' and the shower's outflow (m/s)
+        glm::vec2 cyclone{0.0f};  // a tropical cyclone's wind field (m/s; Weather.h CycloneState)
+        float cycloneVmax = 0.0f; // that cyclone's own maximum wind (0 none within its reach)
         float gust = 0.0f;        // the gust fronts' envelope now (0 calm .. ~1.5 a strong front), for the ambience
         float storm = 0.0f;       // storm proximity (0 .. 1.5): towers within a few tens of km
         int gustsActive = 0;      // gust fronts contributing now

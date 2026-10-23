@@ -739,7 +739,9 @@ json SatelliteSim::harnessStateJson()
                                   {"base_mps", {surfaceWindNow_.base.x, surfaceWindNow_.base.y}},
                                   {"outflow_mps", {surfaceWindNow_.outflow.x, surfaceWindNow_.outflow.y}},
                                   {"gust", surfaceWindNow_.gust}, {"gusts_active", surfaceWindNow_.gustsActive},
-                                  {"storm", surfaceWindNow_.storm}};
+                                  {"storm", surfaceWindNow_.storm},
+                                  {"cyclone_mps", {surfaceWindNow_.cyclone.x, surfaceWindNow_.cyclone.y}},
+                                  {"cyclone_vmax_mps", surfaceWindNow_.cycloneVmax}};
             rn["drop_persistence_ms"] = cv2DropPersistMs;
         }
         j["clouds_v2"]["rain"] = rn;
@@ -762,6 +764,7 @@ json SatelliteSim::harnessStateJson()
         w["shield_entries"] = stormStats.shieldEntries;
         w["shield_truncated"] = stormStats.shieldTruncated;
         w["line_systems"] = stormStats.lineSystems;
+        w["cyclones"] = stormStats.cyclones;
         w["cpu_ms"] = stormStats.cpuMs;
         w["cpu_ms_split"] = {{"catalog", stormStats.msCatalog}, {"tower_index", stormStats.msTowerIndex},
                              {"shields", stormStats.msShields}};
