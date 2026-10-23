@@ -841,7 +841,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   frame (`weatherRadarReadback`, single frame in flight) and coloured on the CPU into an R8G8B8A8_SRGB image uploaded like
   the Kessler tracker's globe (`weatherRadarRecordUpload`; the UI's 5th external image slot of 6). Agreement, checked by
   standing at radar cells (`tools/harness/radar_agree.py`: the radar's 4 centre cells x "Rain" vs `state` ->
-  `clouds_v2.rain.rate_eye`). **Storms**: near you (1200 km, nearest first, up to 12) and the strongest worldwide
+  `clouds_v2.rain.rate_eye`): at 10 points round a supercell from 120 m, 0 / 0, 1 / 1 (both saturated), 0.69 / 0.61, 0.67 / 0.60, 0.33 / 0.23, 0.12 / 0.16, 0.05 / 0.02; the rest is the radar's 0.8-km box and footprint-averaged shaft against the eye's 80 m). Cost (RTX 3070 Ti, 1600x900): 0.09-0.11 ms GPU a dispatch; the read back + raster 1.8-2.8 ms on the frame after one (<= 4 a second); `build_ui` +0.11 ms averaged with the radar running at 1x; closed, nothing. **Storms**: near you (1200 km, nearest first, up to 12) and the strongest worldwide
   (organised only unless "Include single cells"), from `wx::Catalog::stormsAt` (rows copied: its pointers die on the next
   call; at most twice a second): kind (an unknown `StormKind` is "Storm"; every loop goes to `towerCount`), stage from
   the strongest tower's lifecycle (forming / growing / mature / decaying), age, time left, distance / bearing, strength,
