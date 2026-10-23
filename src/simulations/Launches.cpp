@@ -820,9 +820,23 @@ double rampPhase(double a0, double a1, double T, double tau, double f0, double f
 // ── Parcels ──────────────────────────────────────────────────────────────────────────────────────
 bool Parcel::at(double a, glm::dvec3 &cOut, double &sOut, double &condOut, double *sweepOut) const
 {
-    if (age.empty() || a < 0.0 || a > (double)age.back())
+    if (age.empty() || a < 0.0 || a > (double)(ageEnd >= 0.0f ? ageEnd : age.back()))
         return false;
-    size_t i = (size_t)(std::upper_bound(age.begin(), age.end(), (float)a) - age.begin());
+    // The first sample past a (std::upper_bound), scanned forward from last time's when that is still at or before a.
+    const float af = (float)a;
+    const size_t n = age.size();
+    size_t i = std::min<size_t>(std::max<uint32_t>(hint, 1u), n);
+    if (n >= 2 && i < n && age[i - 1] <= af)
+    {
+        size_t steps = 0;
+        while (i < n && age[i] <= af && ++steps < 16)
+            ++i;
+        if (i < n && age[i] <= af)
+            i = (size_t)(std::upper_bound(age.begin() + i, age.end(), af) - age.begin());
+    }
+    else
+        i = (size_t)(std::upper_bound(age.begin(), age.end(), af) - age.begin());
+    hint = (uint32_t)std::min(i, n - 1 > 0 ? n - 1 : (size_t)1);
     if (i == 0)
         i = 1;
     if (i >= age.size())
@@ -944,6 +958,7 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
             nextRec = std::max(nextRec * 1.3, nextRec + 0.25);
         }
     }
+    pc.ageEnd = pc.age.empty() ? -1.0f : pc.age.back();
     return pc;
 }
 } // namespace launch

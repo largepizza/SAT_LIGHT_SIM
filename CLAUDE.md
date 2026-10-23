@@ -7348,14 +7348,26 @@ same frames: mean |diff| 0.3-1.4 levels, within run-to-run noise (`screenshots/o
   across / along the Sun + 60 km) and no land within 60 km (`terrainInSunBox`, `landWithin`; 0.3 ms over open ocean).
 - **What is left** (knockouts / settings A/B'd in one live app): the cloud march 3.6-8 ms (Cb towers ~1.1 ms at
   `cb_columns` 2; from inside the high layer at 11 km the cirrus ~4 ms; mid layer 0.7-0.9); the god rays ~1.7-2.5 ms of
-  the sky pass + the froxel fill 0.5 ms (a measured gate — steps wholly above the Sun volume's top under a Sun above the
-  local horizon read nothing — saved 0.6-0.8 ms; not committed, the froxel code had another owner that night);
+  the sky pass + the froxel fill 0.5 ms, less since a follow-up: an atmosphere step whose lowest point is over 3 km above
+  the Sun volume's top (or the terrain ceiling, 9.4 km), under a Sun above the sample's horizon (sin > 0.05), takes no
+  god-ray reads (they all return 1 there): sky -0.6..-1.2 ms (a1 0.6, b3 0.7, d1 1.15), captures and the HQ photo
+  within the gate-on vs gate-on noise;
   full-resolution clouds at Medium +1.5..+4.7 ms (the user's choice, issue 20261022_180607); the atmosphere loop's rest
   ~2 ms (Sun optical depth 0.3-0.5); `view_samples_max` 96 -> 64 only -0.3 ms after the airglow fix (left). CPU: the
   launch visuals 0.35-0.6 ms (far built plumes' per-parcel states), the storm update 0.76 ms a frame while sim time runs
   and `buildStormEnvIndex` 0.9 ms each frame the weather bake runs (every frame at 5 min/s), `thunderStep` 0.22 ms (the
   rockets' retarded-time scan), stars 0.5 ms at dusk / night. The structural item: overlapping the CPU with the GPU
   (two frames in flight, or the CPU-only work before the fence) would hide the whole 1.2-4 ms CPU part.
+- **The storm content (follow-up, Medium, defaults / the user's settings, `harness_runs/perfmed/storm_def3`,
+  `storm_user2`; `mkstorm2.py`).** Frame / GPU / cloud bucket, and the towers' share (`cb_columns` 2 vs 0, the search and
+  their cloud together): squall line from 5 km 15.0 / 13.3 / 7.2 ms, towers 0.1-0.2 ms; MCS from 8 km 13.5-16.9 / 11.9-14.9
+  / 5.7-9.4, towers 1.1-2.0 ms (~20%); hurricane eye at sea level looking at the eyewall 18.2-20.3 / 15.7-17.7 / 9.4-11.0,
+  towers 4.5-6.0 ms (~55%); the same eye from 12 km 28-31 / 25-28.5 / 20-22.7, towers 16-19 ms (~82%: every sample of the
+  eyewall's canopy walks a bin of up to `kCv2StormMaxPerBin` 12 towers). Levers measured there: light steps 6 -> 3 -0.8
+  ms, `cdc_light` (S2, the user has it on) -1.6..-2.0 ms, `max_iters` 300 -> 200 nothing. CPU near the cyclone: the storm
+  update 1.18 ms a frame with time running, ~20-27 ms once at a time jump (`weather.cpu_ms`); launch visuals ~1 ms there
+  (plumes in view), of which the parcels' states 0.62 -> 0.36 ms with `Parcel::at` scanning from last frame's sample
+  (`hint`) and rejecting an expired parcel from `ageEnd` (same answer as the binary search).
 
 ---
 

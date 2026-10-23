@@ -7261,6 +7261,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         } plumeTimer{plumeMs};
         if (!B.parcelsBuilt)
         {
+            FPROF_SCOPE("launch.plumeUnbuilt");
             const bool fast = !timePaused && kTimeScales[timeScaleIdx] > 3600.0f;
             const glm::dvec3 padNow = ecefToEci(B.G0, t) * kR;
             const double eyeAlt = glm::length(eye) - kR;
@@ -7489,11 +7490,15 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         };
         static std::vector<PState> ps;
         ps.assign(B.parcels.size(), PState{});
-        for (size_t pi = 0; pi < B.parcels.size(); ++pi)
         {
-            const double age = tau - B.parcels[pi].t0;
-            ps[pi].ok = age >= 0.0 && B.parcels[pi].at(age, ps[pi].cE, ps[pi].sig, ps[pi].cond, &ps[pi].sweep);
+            FPROF_SCOPE("launch.plumeAt");
+            for (size_t pi = 0; pi < B.parcels.size(); ++pi)
+            {
+                const double age = tau - B.parcels[pi].t0;
+                ps[pi].ok = age >= 0.0 && B.parcels[pi].at(age, ps[pi].cE, ps[pi].sig, ps[pi].cond, &ps[pi].sweep);
+            }
         }
+        FPROF_SCOPE("launch.plumeEmit");
         const double gain = (double)launchPlumeGain;
         // A burn's parcels are the knots of a polyline: each draws the stretch of trail since the knot before it
         // (centre the midpoint, axis and length the chord between the two as they are NOW, so the trail bends and

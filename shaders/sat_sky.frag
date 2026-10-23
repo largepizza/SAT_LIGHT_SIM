@@ -4276,7 +4276,18 @@ void main() {
         // the air in the Earth's shadow (shR / shM below), or a storm's shadow would be a black wedge. One light for
         // the clouds and the air between them: the cloud march reads the same lattice for its key light.
 #ifdef SKY_SUN_SHADOW
-        if (sunShK > 0.0) {
+        // A step wholly above the Sun shadow volume's top (+3 km: a froxel's tile and slice, the terrain map's coarse
+        // lines) under a Sun above the local horizon is in no cloud's or terrain's shadow: its reads all return 1
+        // (2026-10-23, perf: most of a horizon ray's steps run up there; -0.6..-0.8 ms of the sky pass in the user's
+        // storm views). The lowest point of the step: the ray's closest approach to the Earth's centre, clamped to it.
+        bool shAbove = false;
+        if (sunShK > 0.0 && sampleSunDotGeo > 0.05) {
+            float tS0g = tStart + float(i) * segLen;
+            float tCl  = clamp(-dot(obsPos, dir), tS0g, tS0g + segLen);
+            float hMin = length(obsPos + dir * tCl) - R_EARTH;
+            shAbove = hMin > ((cv2.stvH.z > 0.5) ? max(cv2.stvH.y, 9400.0) : 9400.0) + 3000.0;
+        }
+        if (sunShK > 0.0 && !shAbove) {
             // The Sun transmittance along the step: 8 reads within 30 km (single clouds' shafts), 4 beyond, weighted as
             // the haze thins with height along the ray; from the froxel volume ("godray_froxels", cloud_v2_froxel.comp:
             // the same transmittance filled once a frame on a screen-tile x log-depth grid) or the volume itself.
