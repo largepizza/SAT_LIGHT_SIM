@@ -33,7 +33,7 @@ DEFAULT_SIZES = ["1024x768", "1280x720", "1366x768", "1600x900", "1920x1009"]
 MAX_COVER = 0.62      # a window at its default may cover at most this share of the screen
 MAX_COVER_BIG = 0.80  # the Settings window (a centred, modal-ish panel)
 WIN_NAMES = {0: "settings", 1: "controls", 2: "trace", 3: "viewer", 4: "info", 5: "cine", 6: "bookmarks", 7: "reports",
-             8: "missions"}
+             8: "missions", 12: "weather"}
 
 # HUD elements that must not overlap each other (the bottom panels, the out-of-view selection chip, follow mode's bar,
 # the "Go to ... again" chip, the cinematic bar)
@@ -51,6 +51,8 @@ def views():
         v.append(("set_" + t.lower().replace(" ", "").replace("&", "and"), [f'ui open settings tab="{t}"', "wait 4"], ["ui close settings"]))
     for t in ("upcoming", "ongoing", "kessler"):
         v.append(("ms_" + t, [f"ui open missions tab={t}", "wait 12"], ["ui close missions"]))
+    for t in ("radar", "storms", "controls"):
+        v.append(("wx_" + t, [f"ui open weather tab={t}", "wait 12"], ["ui close weather"]))
     v += [
         ("info", [ISS, "ui open info", "wait 12"], ["ui close info"]),
         ("viewer", [ISS, "ui open viewer", "wait 12"], ["ui close viewer"]),

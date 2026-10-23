@@ -255,7 +255,20 @@ def build_missions():
     return [cut(lambda px, py: body(px, py) or nose(px, py), window), fin_l, fin_r, flame]
 
 
+def build_weather():
+    """Weather: a solid storm cloud (three puffs on a flat base), a lightning bolt under it and two rain streaks
+    beside the bolt — the Weather window: the radar, the storms (2026-10-23)."""
+    puffs = [disc(15.0, 19.0, 8.0), disc(26.0, 13.0, 10.0), disc(36.0, 20.0, 7.5)]
+    base = rect(7.0, 19.0, 43.0, 28.0)
+    cloud = lambda px, py: (any(d(px, py) for d in puffs) or base(px, py)) and py <= 28.0
+    bolt = [tri((22.0, 30.0), (31.0, 30.0), (19.0, 40.0)), tri((19.0, 38.0), (29.0, 38.0), (21.0, 47.0)),
+            rect(19.0, 37.0, 27.0, 40.0)]
+    rain = [seg(12.5, 32.0, 9.5, 42.0, 2.0), seg(37.5, 32.0, 34.5, 42.0, 2.0)]
+    return [cloud] + bolt + rain
+
+
 ICONS = {
+    "weather": build_weather,
     "missions": build_missions,
     "report": build_report,
     "bookmark": build_bookmark,
@@ -271,7 +284,7 @@ ICONS = {
 # Drawn in the HUD's "pixel" style: solid silhouettes with hard edges on a 24-px grid, doubled to 48 —
 # the look of the gear, the camera, play / pause, the crosshair and the eye. Soft-edged thin strokes
 # beside them read as another icon family (the user, 2026-10-03).
-PIXEL_STYLE = {"missions", "report", "bookmark", "film", "photo", "maximize", "observer", "spin", "studio"}
+PIXEL_STYLE = {"weather", "missions", "report", "bookmark", "film", "photo", "maximize", "observer", "spin", "studio"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

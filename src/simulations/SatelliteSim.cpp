@@ -491,8 +491,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Go To: Return", GLFW_KEY_H, -1, false, false},                                     // KB_FOLLOW_RETURN (event) — back to the followed object / follow the last one again
         {"Next Mission Milestone", GLFW_KEY_RIGHT_BRACKET, -1, false, false},                // KB_MILESTONE_NEXT (event) — missionJumpNow(+1)
         {"Previous Mission Milestone", GLFW_KEY_LEFT_BRACKET, -1, false, false},             // KB_MILESTONE_PREV (event) — missionJumpNow(-1)
+        {"Weather", GLFW_KEY_N, -1, false, false},                                           // KB_WEATHER (event) — the Weather window (radar, storms)
     };
-    static_assert(KB_COUNT == 27, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 28, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -1666,6 +1667,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     }
     kesslerRecordUploads(cmd);
     kesslerTrackerRecordUpload(cmd); // the Kessler tracker's globe (SatelliteSimKesslerTracker.cpp), when re-rastered
+    weatherRadarRecordUpload(cmd);   // the Weather window's radar image (SatelliteSimWeatherWindow.cpp), when re-rastered
     fprof::mark("rc.seg2_kessler");
     }
     if (std::abs(simDayJ2000 - orbitEpochDay) >= kOrbitRebakeDays)
@@ -3409,6 +3411,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             kesslerFillDust(glm::radians(camera.fovYDeg) / (float)std::max<uint32_t>(halfH, 1)); // the breakups' dust clouds (binding 23)
         }
         recordCloudsV2(cmd, ctx, cpc);
+        weatherRadarRecord(cmd);   // the Weather window's radar, a few times a second while it is shown
 
         // Pre-dispatch: both targets are left in SHADER_READ_ONLY_OPTIMAL after the previous
         // frame's post-dispatch barrier below (or by createCloudMarchResources on the first frame
@@ -8067,6 +8070,7 @@ void SatelliteSim::cleanup(VkDevice device)
     destroySkyTaaResources(device);
     bookmarksDestroy(device); // the bookmark thumbnails' atlas (SatelliteSimBookmarks.cpp)
     kesslerTrackerDestroy(device); // the Kessler tracker's globe image
+    weatherRadarDestroy(device);   // the Weather window's radar (SatelliteSimWeatherWindow.cpp)
     reportsDestroy(device);   // the issue reports window's atlas (SatelliteSimReportsWindow.cpp)
     vkDestroyPipeline(device, drawPipeline, nullptr);
     vkDestroyPipelineLayout(device, compPipeLayout, nullptr);
@@ -9336,6 +9340,14 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         {
             uiVisible = true;
             msNextWall = msPinWall = -1e300;
+        }
+        break;
+    case KB_WEATHER:
+        wxChrome.open = !wxChrome.open;
+        if (wxChrome.open)
+        {
+            uiVisible = true;
+            wxRowsWall = -1e300;
         }
         break;
     case KB_FOLLOW_STAY:
