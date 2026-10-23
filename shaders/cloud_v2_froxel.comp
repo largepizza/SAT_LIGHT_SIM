@@ -3,8 +3,8 @@
 // ── Clouds v2: the god rays' froxel volume (2026-10-22, .plans/CLOUD_REBUILD_PLAN.md S-G) ─────────────────────────────
 // EXPERIMENT ("godray_froxels"). The clouds' Sun shadow along the view, once per frame on a kCv2FroxX x kCv2FroxY x
 // kCv2FroxZ frustum grid (screen tiles x log-spaced depths, cv2.frox), into cv2GodFrox at the end of the flash buffer
-// (sat_sky.frag already binds it: the sky set is at its sampled- and storage-image floors). Each froxel = the mean over
-// 4 stratified depths of its slice of what the sky pass took per point: the cascade's transmittance, overridden by the
+// (sat_sky.frag already binds it: the sky set is at its sampled- and storage-image floors). Each froxel = what the sky
+// pass took per point, at a point of its cell that moves each frame (cv2FroxJitter, 2026-10-23: the sky TAA averages it): the cascade's transmittance, overridden by the
 // shaft rings where they cover (mix(cascade, shaft.x, shaft.y)). The sky pass then reads a few trilinear values per
 // atmosphere step instead of 3 cascade lookups + 24 shaft lookups (S0: god rays + haze were 3-8 ms of the sky pass).
 // Same descriptor set and push constants as cloud_v2_march.comp; run after the lightning pass (the bakes).
@@ -43,16 +43,20 @@ void main()
     int idx = (g.z * kCv2FroxY + g.y) * kCv2FroxX + g.x;
     if (cv2.frox.x <= 0.5 || (cv2.stvH.z <= 0.5 && cv2.tsh0.w <= 0.5)) { cv2GodFrox[idx] = 1.0; return; }
 
-    // The view ray through the tile's centre (cloud_v2_march.comp's rayDirAt, in screen fractions), the Sun
-    // transmittance volume at four depths through the froxel.
-    vec2  ndc = (vec2(g.xy) + 0.5) / vec2(kCv2FroxX, kCv2FroxY) * 2.0 - 1.0;
+    // The view ray through the froxel's sample point (cv2FroxJitter: it moves within the tile and the slice each frame
+    // and the sky pass reconstructs from the same points; cloud_v2_march.comp's rayDirAt, in screen fractions), the Sun
+    // transmittance volume at nSub depths through the slice from there: two when the samples move from frame to frame
+    // (the sky TAA averages them; one read as grain in motion), four at fixed depths without it.
+    vec3  jit = cv2FroxJitter();
+    vec2  ndc = (vec2(g.xy) + jit.xy) / vec2(kCv2FroxX, kCv2FroxY) * 2.0 - 1.0;
     float th  = tan(pc.fovYRad * 0.5);
     vec3  dir = normalize(mat3(transpose(pc.skyView)) * vec3(ndc.x * th * pc.aspect, -ndc.y * th, -1.0));
+    int nSub = (cv2.frox.w < 0.0) ? 4 : 2;
     float T = 0.0;
-    [[dont_unroll]] for (int k = 0; k < 4; ++k) {
-        float t  = cv2FroxDepth(float(g.z) + (float(k) + 0.5) * 0.25);
+    [[dont_unroll]] for (int k = 0; k < nSub; ++k) {
+        float t  = cv2FroxDepth(float(g.z) + jit.z + (float(k) + 0.5) / float(nSub) - 0.5);
         vec3  pE = dir * t + vec3(0.0, 0.0, R_EARTH + terrainFrame.x + 2.0);
-        T += cv2StvT(dir * t, length(pE) - R_EARTH) * cv2TerrSunT(dir * t);   // the clouds' and the terrain's shadows
+        T += cv2StvTFine(dir * t, length(pE) - R_EARTH) * cv2TerrSunTFine(dir * t);   // the clouds' and the terrain's shadows
     }
-    cv2GodFrox[idx] = 0.25 * T;
+    cv2GodFrox[idx] = T / float(nSub);
 }

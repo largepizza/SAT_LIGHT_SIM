@@ -2099,6 +2099,7 @@ public:
     bool  photoSavedPaused = false;
     float photoSavedFullRateKm = 0.0f, photoSavedSparse = 0.0f;
     float photoSavedPointSigma = 0.0f, photoSavedPointMax = 0.0f, photoSavedGlareSize = 0.0f;
+    float photoSavedGodrayFroxels = 1.0f;   // the photo traces the god rays per pixel (the froxels' direct path)
     void cleanup(VkDevice device) override;
     void onKey(GLFWwindow *w, int key, int action) override;
     void onCursorPos(GLFWwindow *w, double x, double y) override;
@@ -4742,6 +4743,7 @@ private:
     float cv2TerrainGodrays = 1.0f;                // "Terrain god rays" (clouds_v2.terrain_godrays): the terrain shadows the air,
                                                    // the fog / dust through the Sun-horizon map (not the ground: it has its own)
     bool  cv2TshOnNow = false;                     // the map is baked this frame (fillCloudsV2Params)
+    uint32_t cv2FroxFrame = 0;                     // the froxels' sample sequence index (cv2FroxJitter, cloud_lightning.glsl)
     float cv2GodrayFroxels = 1.0f;                 // on by default since 2026-10-22: "godray_froxels": the sky pass reads the volume
     // Per-pass GPU time inside the cloud bucket (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S0): kCv2PassStamps timestamps
     // at fixed points of recordCloudsV2 + one after cloud_march.comp; a pass skipped this frame is a zero interval.
@@ -4788,7 +4790,8 @@ private:
     static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * 64 + 16 + 80;   // + review 22b's Sun profile
     static constexpr VkDeviceSize kCv2RainLightOffset = kCv2RainMapOffset + 1024 * 4;   // cv2RainKey .. cv2RainMisc
     static constexpr VkDeviceSize kCv2EvalCountOffset = kCv2RainLightOffset + 4 * 16;                 // cv2EvalCount
-    static constexpr VkDeviceSize kCv2FroxBytes = 160ull * 90 * 64 * 4;   // cv2GodFrox (cloud_lightning.glsl)
+    static constexpr uint32_t kCv2FroxX = 320, kCv2FroxY = 180, kCv2FroxZ = 64;   // == cloud_lightning.glsl (the god rays' froxels)
+    static constexpr VkDeviceSize kCv2FroxBytes = (VkDeviceSize)kCv2FroxX * kCv2FroxY * kCv2FroxZ * 4;   // cv2GodFrox
     static constexpr VkDeviceSize kCv2StvOffset = kCv2EvalCountOffset + 32 * 4 + kCv2FroxBytes;      // cv2Stv (S3)
     static constexpr VkDeviceSize kCv2StvLevelBytes = 128ull * 128 * 48 * 4;                          // one level: 128^2 rays x 48 knots
     static constexpr VkDeviceSize kCv2TshOffset = kCv2StvOffset + 4 * kCv2StvLevelBytes;               // cv2TerrSun (terrain Sun horizon)

@@ -9193,12 +9193,16 @@ void SatelliteSim::requestPhoto()
     photoSavedPointSigma = pointSigmaPx;
     photoSavedPointMax = pointSigmaMaxPx;
     photoSavedGlareSize = glareSizePx;
+    photoSavedGodrayFroxels = cv2GodrayFroxels;
     timePaused = true;              // one instant, so the clouds' history and the sky TAA converge on it
     cv2FullRateAboveKm = 0.0f;      // every half-res cloud pixel marched every frame
     cv2SparseWhenStill = 0.0f;
     pointSigmaPx *= s;              // the same on-screen look at s x the pixels
     pointSigmaMaxPx *= s;
     glareSizePx *= s;
+    // The god rays' exact path for the photo: each pixel reads the Sun transmittance volume itself instead of the
+    // froxels' screen tiles (sharper shafts; ~25 ms more a frame at 1920x1009, paid only while the photo settles).
+    cv2GodrayFroxels = 0.0f;
     photoScaleActive = (uint32_t)s;
     photoState = 1;
     photoFrame = 0;
@@ -9238,6 +9242,7 @@ void SatelliteSim::endPhoto()
     pointSigmaPx = photoSavedPointSigma;
     pointSigmaMaxPx = photoSavedPointMax;
     glareSizePx = photoSavedGlareSize;
+    cv2GodrayFroxels = photoSavedGodrayFroxels;
     photoScaleActive = 0;
     photoState = 0;
 }
