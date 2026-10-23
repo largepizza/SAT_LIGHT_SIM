@@ -353,6 +353,17 @@ not shrink, so its relative cost rises sharply (at 50% it marches terrain at the
 as the sky pass itself). Knockout bit 1024 disables it — the buffer fills with `kNoSurfaceT`, which
 reproduces pre-unification occlusion behaviour, making the whole architecture one A/B checkbox.
 
+**Meshes in it, and what the half-res composite means over them (2026-10-21, issue 20261021_174219, a Starship
+caught at its tower at night in fog).** A texel takes the nearest mesh distance over its full-res pixels AND a one-pixel
+ring round them (`meshDistAt`: an open lattice left whole texels in its holes, marched past the tower beside texels
+marched to it — the truss was a field of odd squares). So a mesh texel's composite holds only what is in FRONT of
+the mesh, its neighbours what is behind as well, and every full-res consumer must test per texel: `sat_sky.frag`'s
+joint-bilateral upsample always runs on a mesh pixel and drops each texel whose composite distance is past the mesh
+(one filtered alpha averaged a near fog texel with a far cloud bank, called both "behind" and drew a dark half-res
+staircase along every mesh edge); `lightning.frag` mode 2 lights cloud / fog on a mesh pixel only in front of the
+mesh and ends its haze there; `cloud_march.comp` drops a RESOLVED v2 cloud whose distance is past the texel's surface
+(the resolve's history kept the cumulus behind a moving hull as dark blocky patches; the march clamps only new samples).
+
 **Never store a distance in a half-float.** `tEnterCombined` lived in an `RGBA16F` alpha, whose
 65504 ceiling every near-horizon cloud entry overflowed to `+inf` — silently suppressing the entire
 composite on any ray that also hit the sea-level sphere. That bug is why `sceneDepthImg` is R32.
@@ -921,6 +932,28 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     `applyGraphicsPreset`: off on Low / Planetarium / Potato), 2026-10-22 (the user; Medium too, issue 20261022_180607: half res
     flickered badly at Medium's 67% render scale). The noise LOD stays the HALF-res
     pixel's (`motion.w` = 2): at the full-res pixel it cost +2 ms at 58 km and the sub-pixel noise flickered from orbit.
+    **The march's scene depth is parallax-corrected on the full-res grid** (2026-10-22, issues 20261022_210358 "Tremendous
+    flicker when moving above clouds", 1278 km at ~700 km/s, and _220214; `cloud_v2_march.comp` after the `tScene` fetch):
+    the depth is the half-res texel's, traced through its centre, half a full-res pixel off the march's ray. Near the limb
+    from orbit the ground's distance changes by tens of km over that half pixel, so every ray of the even (higher) rows
+    stopped at the lower ray's ground, short of the cloud: on the frames whose sparse offset sampled even rows (the y
+    offset alternates each frame) whole cloud systems vanished — a period-2 flicker in motion and "lost far masses"
+    (`harness_runs/rc1022c-e`: debugview cloudtrans alternated 187 / 243 frame to frame; the sample held at an even row
+    never showed the mass, at an odd row always did; a still view's sub-pixel jitter hid it). Fix: + the difference
+    between the two rays' hits on the sphere through the depth's own hit (exact for flat ground at any height), bounded
+    to +-25% of the depth (a ridge silhouette bleeds at most that on the half pixel it straddles); 128 registers. Before
+    finding it, two workarounds went in and stay as A/Bs (`clouds_v2.full_res_moving_mode`, default 0 = the sparse
+    rotation): 1 holds the sample at one pixel (no flicker; masses lost, since it held an even row), 2 marches every pixel
+    while the EYE moves from altitude (`cv2EyeStillFrames`; +1-6 ms). After the fix, mode 0 vs 2 (`harness_runs/rc1022g`,
+    the four issue paths): flicker (pixels reversing > 12 levels a frame) 0.48 / 0.39 / 2.69 / 0.79% vs 0.47 / 0.39 /
+    2.69 / 0.93%, far band within ~1 level of settled, GPU 11.7 vs 18.0 ms on the 1278-km flight (before: 3.92% and
+    -17.9 levels in mode 0). **The adaptive rate and the half-rate checkerboard never run on the full-res grid** (their
+    tile targets are half-res sized: with mode 2, decelerating under 150 m a frame turned it adaptive and drew tile-sized
+    squares, and a 165 deg/s pan at 455 km a stair-stepped frame of misplaced cloud — issue 20261022_220214). Also fixed: the
+    clipmap motion guard counted a frame as slow when the cloud history was invalid (> 20 km a frame), so the fastest
+    flight switched the clipmap back ON with stale cells. **Harness trap:** `report load` restores only the keys saved in
+    the report: a `set` of a newer key persists into later variants; and a long `wait settle` at a pose leaves state that
+    makes the next run's moving frame at that pose look right — A/B in separate runs or in a fixed order.
     Measured (1920x1009, clipmap on, vs half-res full rate, `harness_runs/s0/s9b`, `lodviews`): cloud bucket 58 km 12.5 ->
     14.9 ms, anvils 10.6 -> 12.1, cumulus 13.9 -> 15.7, Pacific 9.0 -> 10.9; resolve +1.0, composite + combine +0.2..+0.4
     (the probe that ran the composite at full res: +0.6..+5.3); 128 registers. Cloud edges full-res sharp
@@ -1793,6 +1826,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   lands looking at it (turning back to the start's view swung the camera up to 55 deg while zooming out); 0.0 deg
   both ways. **The sea's waves fade with altitude over 20-60 km** (`altFadeW`; was 3-8 km, a pop of the wave texture
   and glitter path descending through ~7 km); the footprint filter does the rest. Mirrored features keep 3-8 km.
+- **The far layer's edge is the march's ERODED edge (2026-10-21, issue 20261021_173412: "2D and volumetric clouds do
+  not match", climbing 980 -> 6656 km over 7.9 N 131.8 E).** At the shipped "Detail" 0.77 the march draws cloud only
+  where a column's density at the cloud's widest point survives the mean erosion; the coverage it draws moves a lot
+  with "Detail" (from 980 km: 94% of the frame at 0, 37% at 0.77, 17% at 1.5). `cv2FarColumn` thresholded the plain
+  field at `1 - covT - bias`, i.e. ignored the erosion and the convective profile, and the review-24 bias (+0.12, tuned
+  against a march with less erosion) pushed it further: the far layer had 90% cloud where the march had 45%
+  (r 0.59 at 980 km). Now it finds the margin xeMin at which cv2FieldLow's eroded density is positive (10-step
+  bisection on the same terms: small-cumulus lift, eS / capS, reqMin from eB, flatK / convW, phK / phP, subPix /
+  presFar, the mean erosion with billow and wisps; lobes left out) and the pixel share ramps up from there over
+  1.25 sigU (+ a lobe width while the cells resolve). "Far cloud layer coverage bias" defaults to 0 (was 0.12; a saved
+  settings.json keeps its own). Kept in step with cv2FieldLow BY HAND. Measured (`harness_runs/iss173412`, march alone
+  vs far layer alone at the same altitudes, red > 0.6 cloud fraction / 3-px-blurred r): 980 km 0.44 / 0.36 r 0.93,
+  2200 km 0.31 / 0.28 r 0.96, 5000 km 0.19 / 0.18 r 0.97, 9000 km 0.13 / 0.13 r 0.99 (before: 0.45 / 0.90 r 0.59, 0.32 /
+  0.86 r 0.55, 0.19 / 0.61 r 0.59, 0.14 / 0.37 r 0.86). A diagnostic far shader that integrates cv2FieldLow down each
+  ray (`harness_runs/iss173412/mkdiag.py`) checks the edge against the march at any "Detail" (mask IoU 0.78 / 0.95 / 0.69-0.75
+  at 0.77 / 0 / 1.5).
 - **Review 25 (2026-10-02, records 10-12):** **a straight line across the sky in the clouds** (from under / inside a deck
   at 65 S) was review 22b's Sun-path darkening, applied only for cosSun > 0: with samples within ~2 km it was full on one
   side of the great circle 90 deg from the Sun and off on the other (debug view cloudrad stepped; transmittance and the
@@ -2137,8 +2186,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   surface & lighting), **Night lights** (city lights, roads, sprites, city light on clouds, night sky light),
   Ocean, Beams (+ the beam light in clouds), Attributions. A tab's INDEX is persisted (`display.active_tab`)
   and indexes `hovTab[]`, so new tabs are APPENDED to `kSettingsTabNames` (Weather 12, Night lights 13,
-  **Performance 14**) and the strip draws `kSettingsStrip`, grouped under headings (GENERAL: Display, Controls,
-  Sound; SKY: Constellations, Photometry; RENDERING: the advanced tabs + Performance; ABOUT: Attributions — a
+  **Performance 14**, **Launches 15**) and the strip draws `kSettingsStrip`, grouped under headings (GENERAL: Display, Controls,
+  Sound; SKY: Constellations, Launches, Photometry; RENDERING: the advanced tabs + Performance; ABOUT: Attributions — a
   negative entry is a heading) in its own vertical scroll view (an unclipped strip taller than the window
   stretched the body and spilled the content below the window). **Camera (3) has no button** since 2026-10-03:
   its two lines are the Controls tab's MOUSE section, and index 3 still opens Controls. `settingsTabIsAdvanced()`
@@ -2572,6 +2621,9 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   it). Every window is a floating root at zIndex 10 and Clay sorts roots stably, so the one declared later is on top;
   a window's own floating children (the info window's view chips, the trace plot's tick labels, the marker labels)
   must use the SAME zIndex as the window (they were 11 / 12, so they drew over any later window covering them).
+  So does `ui.scrollbar(id, zIndex = 10)`'s thumb (2026-10-21, issue 20261021_175415: at 20 every window's thumb drew
+  over every window); a scroll container in another root passes that root's z (the note bar's `textArea(...,
+  layerZ = 44)`). Tooltips (100) and root overlays (toasts, banners, tutorial outlines) are above windows on purpose.
 - **Low resolutions (2026-10-21; the user: "the Missions window occupies the entire screen basically"):**
   - **The UI scale is the setting x the window's height.** `uiScaleUser` = "Text scale" (`display.ui_scale`, 1.5);
     `uiScale`, which every builder reads, = it x `uiAutoScaleFactor(screenH)` = clamp(H / 1000, 0.7, 1) when "Scale
@@ -4475,8 +4527,8 @@ satellites), `shaders/sat_rebake.comp`, `SpaceWeather.cpp` (the scripted storm).
 follows with no other code) kills a share of the satellites (by altitude and inclination, crewed stations 10x
 less; hash-chosen, `stormSeedEvents`); dead formation members bump their neighbours (lognormal median 4 days,
 each bump kills with p 1/2 and may chain); then the cube-method engine carries the collisions forward. **Before
-the epoch nothing differs from the plain sky** (every term is gated on the scenario's seconds). Settings >
-Constellations > THE SUN'S FURY: the toggle (`kessler.enabled`, default on), collision rate (`rate_multiplier`,
+the epoch nothing differs from the plain sky** (every term is gated on the scenario's seconds). Settings > Launches &
+debris > THE SUN'S FURY: the toggle (`kessler.enabled`, default on), collision rate (`rate_multiplier`,
 x1 = physical), avoidance (`avoidance`, 0.9), horizon (`horizon_years`, 20), dust cloud brightness
 (`dust_gain`, x100), "Watch the next re-entry", live counts.
 Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night, 1x).
@@ -4884,7 +4936,10 @@ launches follow per-program cadences (no real manifest).
   - **Stacks** (launches.json program `"stack"`, `launch::Stack`; `stackSlot` places member i of n in the upper stage's
     body frame `upperFrame` = the rocket models' law: +Z the nose, -Y toward nadir): `pez` (Starship: every member from
     the door at `door_m` 31.1 on the leeward +Y side, flat across the ship: its X = ship +Y (out of the door), Z = ship
-    -Z; the ship model has a dark slot there, `payload_door`), `flat` (nadir face down, 1-2 a tier side by side along
+    -Z; the ship model has a black slot there, `payload_door_slot`, under a steel `payload_door` that is closed in the
+    rest pose and slides up as it "stows": `transientLegs` sets the upper stage's progress to 0 (open) from 90 s before
+    the first release to 60 s after the last, over 20 s each way — 2026-10-21, issue 20261021_174219: the slot was
+    always open and in the bells' "soot" material, which glows white-hot while the engines burn), `flat` (nadir face down, 1-2 a tier side by side along
     `side_axis`, leaving along the stage's +Z), `column` (around a dispenser column, nadir face out, X along the stage,
     tiers alternately rotated, leaving radially). Top tier first. A member leaves FROM ITS SLOT (`depOff` is the slot
     less its path) with `sep_speed_mps` along the exit direction (`sepDir`, its own LVLH axes), the stack's per-program
@@ -5481,8 +5536,17 @@ launches follow per-program cadences (no real manifest).
   `cpu_split_ms.window` 1 d 2.4 -> 0.65, 1 w 1.9 -> 0.2, 1 mo 0.6 -> 0.03; batches cached 7000 -> 4000. Still ~1.2 ms
   of record writes from 1 min/s to 1 d/s (the retirees deorbiting after the CME). Resume (after_storm 1) is not
   shortcut: its end depends on the ranks.
-- Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; Missions window > Controls (moved
-  there from Settings > Constellations, which keeps a pointer + "Open the Missions window"); harness
+- Settings `launches.enabled / life_scale / plume_gain / rocket_gain / after_storm`; **Settings > Launches**
+  (2026-10-21, issue 20261021_175638: the Missions window's Controls tab moved there; `buildSettingsLaunchesTab` = GRAPHICS first:
+  ROCKETS AND EXHAUST (`buildLaunchGraphicsSection`) and GRAPHICS: DEBRIS AND RE-ENTRIES
+  (`buildKesslerGraphicsSection`), then LAUNCHES and THE SUN'S FURY; Constellations keeps a pointer). **The exhaust sliders** (slots 313-320, `marksPreset`
+  false, all 1 = the look before them; "Reset exhaust to defaults"): "Plume opacity" `plume_gain` 0-5, "Plume brightness"
+  `plume_brightness` 0-5 (x the scattered colour, addPlume), "Plume width" `plume_width` 0.25-4 (x every Gaussian's radius,
+  same cross-section), "Plume billows" `plume_billows` 0-3 (cloud_march.comp's modulation contrast via DustBuf `dustPad2`;
+  the CPU significance cull's billow bound scales with it), "Plume growth" `plume_growth` 0-5 (x the turbulent growth the
+  parcels are BUILT with: `LBatch::plumeGrow`, a change rebuilds the plumes in view), "Ground clouds" `ground_cloud_gain` 0-5
+  (x the lift-off / landing clouds' cross-section), "Flame brightness" `rocket_gain` 0-10, "Rocket light on clouds"
+  `engine_light_gain` 0-10 (the choice rows they replace are gone); harness
   `launch ...` (docs/HARNESS.md: `launch next vehicle=`, `launch select kind=rocket|booster|upper|...`); default
   bookmark "Twilight Starship Launch"
   (`tools/harness/scripts/default_bookmarks.satcmd` #8).
@@ -5721,7 +5785,20 @@ launches follow per-program cadences (no real manifest).
   "docking in"), the crewed stations (altitude, next crew flight; Select / Go to = follow), satellite launches in
   flight (phase, Select = the drawn rocket stage, `launchSelectRocketOf`), and per program the trains raising (count,
   mean progress, next arrival) and the retirees deorbiting (next re-entry; Select the nearest, Watch a re-entry).
-  **Controls**: `buildLaunchSettingsSection` + `buildKesslerSettingsSection`, unchanged. The rows are cached
+  **Kessler** (2026-10-21, replaced Controls; `SatelliteSimKesslerTracker.cpp`, `buildKesslerTrackerTab`): THE SUN'S FURY
+  strip (countdown / DAY n / "computing"), big counts (collisions, catastrophic, pieces >= 1 m, 10-cm fragments made,
+  dead, destroyed, re-entered, still working), a GLOBE (a CPU raster, `kTrN` 256^2, R8G8B8A8_SRGB, the UI's 4th
+  external image — `kMaxExternalImages` is 6 now — uploaded by `kesslerTrackerRecordUpload` in recordCompute, re-rastered
+  only when the counts publish, it is dragged or the Sun moves ~1 deg, at most 4 / s): seen from the equator, the shells
+  drawn round it as a POLAR PLOT (radius = altitude x1.6, angle = latitude: the limb of an equatorial view is a meridian),
+  blue = working satellites, heat = the chance a year a 10 m^2 satellite there is hit by a tracked object (density x
+  10 km/s x 10 m^2 x a year; dead satellites + pieces >= 1 m, NOT the small-fragment grid, which lives on the worker);
+  numbered markers for the 8 latest significant breakups (catastrophic collisions, explosions, ASAT, the player's) at
+  their exaggerated place, a cyan dot for you; collisions per day (UIPlot, <= 120 bins); the breakups listed with Watch
+  (`kesslerWatchEvent`: 8 s before at 1x, 80 km beside the orbit, 15 km above). ALL of it comes from the counts walk
+  (`kesslerCountsWalk`, ~150k records a frame while the tab reads `kesslerStateCached`): `KCounts` gained the alt x
+  inclination histograms (`deb`, `work`), `colDay` / `catDay`, `recent[8]`, `working`, `reentered`, `explosions`;
+  `kCountsLiveGen` bumps on each publish. The rows are cached
   (`missionsRefresh`: the next launches and the ongoing list every 0.5 s or on a 6-h sim jump; the pinned searches
   every 3 s or when sim time passes them) and rebuilt only while the window is open; `launchUpcoming` keeps the
   batches it lists alive (`touched`), so they are not rebuilt every ~600 frames. Strings handed to Clay are copied
@@ -5801,7 +5878,7 @@ launches follow per-program cadences (no real manifest).
   ship entry start 7.9 m / 14 m/s (the 1-ms sampling step: was ~0.5 km), hand-over to the descent 3e-9 m / 7 m/s, the
   descent's largest acceleration 14 m/s^2, catch 0 m off centre at 55.0 m and 1.3 m/s, boosters 0 m off at 30.0 m;
   all 1124 ships caught (deorbit 20-62 h after deployment, descent 390-720 s from 250-330 km). Harness
-  `launch landing [booster=1] [lead=] [dist_m=] [day=1]`; Settings > Constellations > LAUNCHES "Watch a Starship catch".
+  `launch landing [booster=1] [lead=] [dist_m=] [day=1]`; Settings > Launches > LAUNCHES "Watch a Starship catch".
 - **Launch pads on the ground (2026-10-19, the user: "launchpads and landing pads should have specialized graphics /
   play well with the city lights; exclusion zones near launch sites for the city grids").** One pad per distinct place
   among the catalog's sites (`buildPads`; sites within 150 m share one: 35 pads), its kind from the vehicles there (2
@@ -5845,7 +5922,7 @@ launches follow per-program cadences (no real manifest).
     a cos^6 lobe, Lambert, 1 / (d^2 + 30^2), normalised to 1 at the centre, capped at 2.2): bright toward the mount and
     under the masts' aim, falling to the corners; each 10-m slab has its own shade (+-8%) and a weathered mottle at 7 m,
     both fading to their mean past the footprint.
-  - Setting `launches.pad_graphics` (Settings > Constellations > LAUNCHES "Launch site graphics"; independent of
+  - Setting `launches.pad_graphics` (Settings > Launches > GRAPHICS "Launch site graphics"; independent of
     launches being on). Harness `launch pads`, `launch pad <site> [dist_m=] [az=] [h=]`. Cost (RTX 3070 Ti, 1600x900,
     Starbase from 900 m): sky pass within noise (8.09 vs 8.09 ms), scene depth +0.18 ms, CPU ~0; SKY_LITE SPV +288 B
     (the UBO's declaration; 213384 of 230400), sat_sky_minimal unchanged.
@@ -6276,7 +6353,9 @@ shorter fixed `kTrackedLightGeomEaseS`.
    speed from 116 km, and the ground spots visibly swung while strafing.
 5. **One eye for satellites and shaders:** `obsECI` (and every CPU evaluator: trace, selection
    readout, harness Sun search) uses `obsEyeRadiusM()` = R + max(ground, height offset) + 2 m, the
-   shaders' `observerEffHeight`. It was R + ground + offset: over the Sierra a ~3 km different eye, so
+   shaders' `observerEffHeight`. The ground is the GPU's detailed ground (`obsGroundM()`: terrainFrameBuf .y, last frame's),
+   the CPU DEM only before the first readback or while following (2026-10-22: the 18-km DEM read 450 m above the real
+   ground in issue 20261022_174155, which pinned the eye there during a climb and ghosted the sky TAA). It was R + ground + offset: over the Sierra a ~3 km different eye, so
    beams landed km off the drawn scene and jumped as the CPU ground under the observer changed. The `std::sort` by `debugPad`
    that used to enforce determinism is deleted — the partition is order-independent now (sums and a
    max), `groundTopK` ranks on intensity, and `nearest`/the opacity diagnostics are commutative.
@@ -7218,6 +7297,13 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
   under 0.9 x 1000 / fps by 5% steps (down as far as a 30% fixed + 70% x scale^2 model says, after 0.75 s; up one step
   when predicted under 85% of the budget, after 1.5 s). The clouds' history is BLITTED across a resize
   (`recreateComputeScaledTargets`), so a step does not restart them. The orbit storm snapshot settled at 55% (13.8 ms).
+- **Things that move on their own (2026-10-21, issue 20261021_174219: "crazy trails on all models" with TAA on).** The
+  resolve reprojects a static world; meshes (satellites, rockets, pads) and the plume / flame light have no motion
+  vectors. `sat_sky.frag -DSKY_TAA` marks them in the colour's alpha (0.875: a mesh pixel, or a composite texel with
+  the emissive flag, gathered), the resolve stores their depth NEGATED (`taa_depth_restore.frag` takes abs) so the next
+  frame knows where they were, and wherever the 3x3 or the history's 2x2 holds one (`dynNb`) the still view's
+  exemptions are off: no unclipped history, no widened depth test. A descending ship from below was a translucent,
+  dotted ghost: its history (the sky) passed the widened test and was kept unclipped at the still weight.
 - Run with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` after touching any of this; the harness run's
   `app_stdout.txt` holds the messages. `scripts/sky_taa.satcmd` (set `display.sky_taa` with `true`/`false`).
 

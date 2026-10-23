@@ -1084,10 +1084,66 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     float zMs   = mix(fz, cv2MorphZ(wd, mpF, fpF, strat, seaM, cl.r), cv2.morph.x);
     field += 0.3 * cv2.morph.y * clamp(zMs, -2.5, 2.5);
     float thr   = 1.0 - covT - cv2.farTune.y;   // review 24: "Far cloud layer coverage bias"
-    r.eRaw  = (field - thr) / 0.55;
-    r.e     = clamp(r.eRaw, 0.0, 1.0);
     float sigU = mix(0.03, 0.03 + 0.2 * smoothstep(0.0, 3.0, lodCell), ty.look.z) * max(cv2.farTune.w, 0.05);
-    r.frac  = clamp(0.5 + (field - thr) / (2.5 * sigU), 0.0, 1.0);
+    // WHERE THE MARCH DRAWS CLOUD (issue 20261021_173412). The march does not draw cloud wherever the field passes the
+    // coverage threshold: a column is cloud where its density at the cloud's widest point survives the EROSION. That
+    // density is the convective profile's margin (e capped by the cell, less the profile's narrowest requirement
+    // reqMin), steepened about the erosion level (phK / phP), or for cells below the pixel the sub-pixel share
+    // (presFar), x the macro noise's mean (0.875); the mean erosion takes "Detail" (look.z) x the type's strength. At the
+    // shipped "Detail" 0.77 that moves the edge well inside the field's: the layer had ~2x the march's cloud from
+    // 1000-2000 km (frames 72% against 45% at bias 0; at the review-24 bias +0.12, 90%, r 0.59), and with "Detail" 0
+    // the march covers far MORE than the field (94%). So the edge here is found the way cv2FieldLow draws it: the
+    // smallest margin xe = field - thr at which that eroded density is positive (bisection on the same terms). Kept in
+    // step with cv2FieldLow BY HAND (small-cumulus lift, eS / capS, reqMin, flatK, convW, phK / phP, subPix / presFar,
+    // erosion with billow at the cloud's middle and the edge wisps; the lobes average out).
+    float xe0  = field - thr;
+    float xeMin = 0.0;
+    float eLift;
+    {
+        float thr0   = 1.0 - covT;
+        float deepE  = smoothstep(0.45, 0.85, w.g);
+        float cellsC = cv2MesoSmoothG(cv2.anchorCell.xyz + mp * cv2.anchorCell.w, max(lodCell, 2.0));
+        float cellsB = deepE > 0.02
+                     ? mix(cellsC, cv2MesoSmoothG(cv2.anchorCell.xyz + mp * cv2.anchorCell.w, max(lodCell, 4.0)), deepE)
+                     : cellsC;
+        float fieldB = 0.15 + 0.85 * sqrt(min(cellsB * 1.8, 1.0)) * mix(0.6, 1.0, cl.r) + 0.08 * clamp(fz, -2.5, 2.5);
+        float eB     = clamp((fieldB - thr0) / 0.55, 0.0, 1.0);
+        float reqMin = 0.2 * smoothstep(0.1, 0.6, eB);
+        float capS   = 0.3 + 0.7 * mix(ce.g, min(cellsC * 1.8, 1.0), deepE);
+        float lowCov = (1.0 - smoothstep(0.25, 0.65, covT)) * cv2.cu.y * smoothstep(0.1, 0.5, ty.look.z);
+        float flatK  = ty.alt.z * (1.0 - lowCov);
+        float convW  = mix(ty.look.z, 1.0, lowCov) * (1.0 - flatK);
+        float subPix = smoothstep(1.0, 3.0, lodCell) * ty.look.z;
+        float tE     = cv2.tune.x;
+        float tP     = cv2.tune.x * (1.0 - smoothstep(0.0, 3.0, lodCell));
+        float sigM   = 0.03 + 0.2 * smoothstep(0.0, 3.0, lodCell);           // the march's own presFar spread
+        float rVE    = clamp((cl4.a - 0.5) * 9.0, -1.0, 1.0);
+        float billE  = ty.shape.z * (1.0 - 0.7 * deepE);
+        float erK    = ty.shape.y * cv2.look.z * mix(1.0, cv2.storm.y, deepE) * max(1.0 - 0.6 * cv2.tune.y * rVE, 0.1);
+        float lo = -0.6, hi = 0.6;
+        [[dont_unroll]] for (int it = 0; it < 10; ++it) {
+            float x   = 0.5 * (lo + hi);
+            float eM  = clamp(max(x, min(x + tE, tE + 0.6667 * x)) / 0.55, 0.0, 1.0);
+            float eS  = min(eM, capS);
+            float m   = mix(eS - reqMin, eM, flatK);
+            float phK = cv2.form.w / mix(1.0, clamp(eS, 0.3, 1.0), convW);
+            float phP = 0.5 * erK * (1.0 - phK / cv2.form.w);
+            float Ph  = clamp(m * phK + phP, 0.0, 1.0);
+            float pS  = clamp(0.5 + (x + tP) / (2.5 * sigM), 0.0, 1.0) * 0.8;
+            float d   = mix(Ph, pS, subPix) * 0.875;
+            float wz  = max(cv2.cu2.y * (1.0 - smoothstep(0.05, 0.3, eM)) * (1.0 - deepE), cv2.cu2.y * 0.2 * (1.0 - 0.6 * billE));
+            float er  = min(mix(0.45, 0.55, billE) * erK * (1.0 + 0.7 * wz), 0.92) * mix(1.0, cv2.form.z, smoothstep(0.35, 0.85, d));
+            if (d > er && d > 0.0) hi = x; else lo = x;
+        }
+        xeMin = hi;
+        eLift = max(xe0, min(xe0 + tE, tE + 0.6667 * xe0));
+    }
+    r.eRaw  = eLift / 0.55;
+    r.e     = clamp(r.eRaw, 0.0, 1.0);
+    // The share of the pixel: the march's eroded density grows from its edge over ~half the cells' spread (1.25 sigU);
+    // while the cells resolve, its 3D lobes (zero mean, ~+-0.05 field units) move the edge both ways (lobeW).
+    float lobeW = 0.1 * (1.0 - smoothstep(1.0, 3.0, lodCell));
+    r.frac  = clamp((xe0 - xeMin + 0.5 * lobeW) / (1.25 * sigU + lobeW), 0.0, 1.0);
     r.covE  = covT;
     float tropo  = cv2Tropo(wd);
     float lift   = cv2Ground(q.dirE) * mix(0.6, 0.9, ty.look.z);
@@ -1109,10 +1165,7 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
 // Perlin channel, 8-64 km) says so. Altocumulus — rounded cloudlets from the shape volume's 3D
 // Worley octaves (220-875 m) in a thin lens-shaped sheet — where the low cloud is broken;
 // altostratus — a smooth translucent sheet the sun shows through — where it is stratiform.
-// stormK (2026-10-22, issue 20261022_180823): 0..1, the regional storm strength (cv2ColumnSigma's CV2Col.storm). Storms
-// are wrapped in mid-level cloud (outflow and the stratiform region's altostratus / altocumulus): the regime is lifted
-// there and the "thins over a low overcast" factor does not apply. cv2Field keeps it out of the towers themselves.
-float cv2MidSigmaS(CV2Pos q, float fpM, float stormK, out float hfMid, out float topMid, out float deckMid)
+float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out float deckMid)
 {
     hfMid = 0.0; topMid = 0.0; deckMid = 0.0;
     if (q.h < 2800.0 || q.h > 12000.0) return 0.0;
@@ -1134,7 +1187,7 @@ float cv2MidSigmaS(CV2Pos q, float fpM, float stormK, out float hfMid, out float
     // the low coverage was high: every layer stacked on the same spot.
     float covW   = clamp((textureLod(cv2WeatherTex, wF, 4.0).r * cv2.look.x - cv2.cover.x)
                          / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
-    float covM   = max(mix(cov, max(cov, covW * 0.85), cv2.flow.y), 0.6 * stormK);
+    float covM   = mix(cov, max(cov, covW * 0.85), cv2.flow.y);
     float clA    = cl.a, uMid = -1.0;
 #ifdef CV2_MORPH_BINDING
     // Review 17: altocumulus organises in cells too — the closed-cell morphology (one read, the cube face the
@@ -1158,8 +1211,8 @@ float cv2MidSigmaS(CV2Pos q, float fpM, float stormK, out float hfMid, out float
         clA = 0.5 + (textureLod(cv2MesoTex, rgm + vec3(0.47, 0.19, 0.83), cv2Lod(fpM, cv2.mid3.x)).a - 0.5) * 0.85
             + (clA - 0.5) * 0.4;
     }
-    float regime = smoothstep(0.5 - cv2.mid2.w, 0.68 - cv2.mid2.w, clA + 0.15 * (covM - 0.5) + 0.07 * stormK) * cv2.misc.w * smoothstep(0.0, 0.35, covM)
-                 * mix(1.0, 0.55, cv2.flow.y * smoothstep(0.75, 1.0, cov) * (1.0 - 0.5 * stormK));
+    float regime = smoothstep(0.5 - cv2.mid2.w, 0.68 - cv2.mid2.w, clA + 0.15 * (covM - 0.5)) * cv2.misc.w * smoothstep(0.0, 0.35, covM)
+                 * mix(1.0, 0.55, cv2.flow.y * smoothstep(0.75, 1.0, cov));
     if (regime <= 0.0) return 0.0;
     // The baked Perlin is 0.50 +- 0.057: read raw, the base spanned ~300 m, and the layer was one flat
     // sheet at ~4.5 km around the planet — seen edge-on from near its height, a dead-straight line
@@ -1170,7 +1223,7 @@ float cv2MidSigmaS(CV2Pos q, float fpM, float stormK, out float hfMid, out float
     float thick = mix(1200.0, 450.0, cr) * cv2.mid2.y;
     float zm    = (q.h - base) / thick;
     if (zm <= 0.0 || zm >= 1.0) return 0.0;
-    float strat = max(1.0 - smoothstep(0.3, 0.55, w.g), 0.25 * stormK);  // stratiform below -> As (around storms: As + Ac)
+    float strat = 1.0 - smoothstep(0.3, 0.55, w.g);                 // stratiform below -> As
     // Its own period (anchorMid): on the cumulus shape period, enlarging the cumulus lobes made the
     // altocumulus cloudlets huge too.
     vec4  sh    = textureLod(cv2ShapeTex, cv2.anchorMid.xyz + cv2Drift(q.rSeaE) * cv2.anchorMid.w,
@@ -1191,11 +1244,6 @@ float cv2MidSigmaS(CV2Pos q, float fpM, float stormK, out float hfMid, out float
     topMid      = base + thick;
     deckMid     = strat;
     return lens * mix(ac * 0.035, as_ * 0.004 * cv2.mid2.x, strat) * cv2.atmo.z;
-}
-
-float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out float deckMid)
-{
-    return cv2MidSigmaS(q, fpM, 0.0, hfMid, topMid, deckMid);
 }
 
 // ── The high layer: cirrus / cirrostratus / cirrocumulus (0.7-0.9 of the tropopause) ─────────────
@@ -1818,19 +1866,12 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     CV2Field f = cv2FieldLow(q, detailAmt, fpM, col.prox);
     float dbgLow = f.sigma;
     float hfX, topX, deckX;
-    // The mid layer (a thin Ac/As lens) gives way at the TOWERS: drawn through them, it sliced every tower with a flat
-    // plate at ~6 km, seen edge-on as a hard line across the storm (user snap 1, pass 17), weak storm-edge towers
-    // included (pass 20). 2026-10-22 (issue 20261022_180823, "stormy areas should have more mid cloud"): it gave way
-    // over the whole storm REGION (col.storm, ~40 km), and storms stood in clear air at mid levels. Now the storm
-    // region lifts the mid layer (cv2MidSigmaS) and only the towers' footprint clears it: col.prox is 1 within 1.1
-    // tower radii and falls off over "Storm cumulus reach"; dividing out its storm-strength factor counts weak towers
-    // in full.
-    float stK = (cv2.column.x > 0.0) ? col.storm : 0.0;
-    float sm = cv2MidSigmaS(q, fpM, stK, hfX, topX, deckX);
-    if (cv2.column.x > 0.0) {
-        float foot = clamp(col.prox / max(smoothstep(0.05, 0.3, col.storm), 0.05), 0.0, 1.0);
-        sm *= 1.0 - smoothstep(0.3, 0.9, foot);
-    }
+    float sm = cv2MidSigma(q, fpM, hfX, topX, deckX);
+    // The mid layer (a thin Ac/As lens) gives way over a storm: drawn through it, it sliced every
+    // tower with a flat plate at ~6 km, seen edge-on as a hard line across the storm (user snap 1,
+    // pass 17). Only where the towers are drawn (the storm's strength is read for them).
+    // Wherever towers can stand (a weak storm-edge tower cut by a mid-layer belt, pass 20).
+    if (cv2.column.x > 0.0) sm *= 1.0 - smoothstep(0.0, 0.15, col.storm);
     if (sm > 0.0) cv2Add(f, sm, hfX, topX, deckX);
     float hfH, topHh;
     float sh = cv2HighSigma(q, fpM, hfH, topHh);

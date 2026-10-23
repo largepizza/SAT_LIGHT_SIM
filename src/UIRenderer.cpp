@@ -1092,7 +1092,7 @@ void UIRenderer::tooltip(const UIInput& inp, bool show, const char* text, uint16
 // sized/positioned from Clay_GetScrollContainerData (viewport vs content height,
 // current scroll offset). No-op if the container isn't found or doesn't overflow.
 // ─────────────────────────────────────────────────────────────────────────────
-void UIRenderer::scrollbar(Clay_ElementId containerId) {
+void UIRenderer::scrollbar(Clay_ElementId containerId, int16_t zIndex) {
     Clay_ScrollContainerData data = Clay_GetScrollContainerData(containerId);
     if (!data.found) return;
 
@@ -1116,7 +1116,7 @@ void UIRenderer::scrollbar(Clay_ElementId containerId) {
         .floating = {
             .offset = { -3.0f, thumbY },
             .parentId = containerId.id,
-            .zIndex = 20,
+            .zIndex = zIndex, // = its window's: a window over this one hides the thumb
             .attachPoints = { .element = CLAY_ATTACH_POINT_RIGHT_TOP, .parent = CLAY_ATTACH_POINT_RIGHT_TOP },
             .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
             .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID } }) {}

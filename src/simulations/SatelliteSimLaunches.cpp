@@ -279,6 +279,7 @@ struct LBatch
     double burnDur = 0.0, aE = 0.0, eE = 0.0, nE = 0.0, thApo = 0.0, thEI = 0.0, vEI = 7800.0, vrEI = 0.0;
     bool vents = false;
     bool parcelsBuilt = false;
+    float plumeGrow = 1.0f; // "Plume growth" (launches.plume_growth) the parcels were / are being built with
     std::vector<launch::Parcel> parcels;
     double tVisEnd = 0.0;
     int shifts = 0, rivals = 0; // pad deconfliction: passes skipped, candidates checked
@@ -3542,6 +3543,29 @@ static void transientAtt(SatOrbitElems &e, const SatelliteSim::SelTransient &s)
 // its mesh slot, satUnfoldAt). Every other rocket transient keeps the default (deployed: nothing of theirs folds).
 static void transientLegs(const SatelliteSim::LaunchState &L, SatOrbitElems &e, const SatelliteSim::SelTransient &s)
 {
+    // Starship's payload door (2026-10-21, issue 20261021_174219: "the hatch is always open"): the upper stage's
+    // "payload_door" panel is a stowable part (tools/make_rocket_models.py) that slides up off its dark slot as it
+    // stows. Closed (unfolding progress 1, the rest pose) except from kDoorLeadS before the first release to
+    // kDoorLagS after the last, opening / closing over kDoorMoveS. The progress here is not a ramp in time, so it is
+    // written as a frame-constant value: unfoldT0 = now - P x a duration far longer than any frame. Upper stages
+    // without stowable parts (every other vehicle) are unaffected.
+    if (s.kind == 1 && s.stage == 1)
+    {
+        auto it = L.batches.find(s.a);
+        if (it == L.batches.end() || it->second.mem.empty())
+            return;
+        const LBatch &B = it->second;
+        constexpr double kDoorLeadS = 90.0, kDoorLagS = 60.0, kDoorMoveS = 20.0, kHold = 1.0e9;
+        const double t = B.tL + s.tau;
+        const double tOpen = B.tD - kDoorLeadS;
+        const double tShut = B.tD + B.deployInterval * (double)(B.mem.size() - 1) + kDoorLagS;
+        const double open = std::min(glm::clamp((t - tOpen) / kDoorMoveS, 0.0, 1.0),
+                                     glm::clamp((tShut + kDoorMoveS - t) / kDoorMoveS, 0.0, 1.0));
+        const double P = 1.0 - open * open * (3.0 - 2.0 * open);
+        e.unfoldT0 = t - P * kHold;
+        e.unfoldDur = kHold;
+        return;
+    }
     if (s.kind != 1 || s.stage != 0)
         return;
     auto it = L.batches.find(s.a);
@@ -3702,7 +3726,7 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         // The low trail (2026-10-20): a turbulent column that billows and thickens as it entrains the air (it grows
         // ~0.05x its speed through the air, fading out by 6 km), resting on the pad's ground near the pad.
         launch::ParcelOpts O;
-        O.growK = vent ? 0.0 : 0.05 * (1.0 - glm::smoothstep(1500.0, 6000.0, h - padGround));
+        O.growK = vent ? 0.0 : 0.05 * (double)B.plumeGrow * (1.0 - glm::smoothstep(1500.0, 6000.0, h - padGround));
         O.groundM = glm::length(glm::normalize(p) - B.G0) * kR < 30000.0 ? padGround : 3.0;
         B.parcels.push_back(launch::makeParcel(tau, p, vel + vex * ex, m, vent ? 2000.0 : kappaAt(h) * kappaMul, albedoAt(h),
                                                vent ? ex : (spd > 5.0 ? vel / spd : up), vent ? vex * dtE : len,
@@ -3729,7 +3753,7 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         launch::ParcelOpts O;
         O.groundM = gnd;
         O.evapS = evap;
-        O.growK = growK;
+        O.growK = growK * (double)B.plumeGrow;
         O.buoy = buoy;
         O.buoyS = 90.0;
         O.sig0 = sig0;
@@ -7221,6 +7245,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // about an hour: building one costs a few ms, and at a day a second a dozen launches pass each second).
         // (2026-10-20) Built on a worker thread (LaunchState::parcelJobs), from up to 2 min before lift-off, so it is
         // ready when the rocket lifts off; a plume asked for later appears a few frames after it is first wanted.
+        // "Plume growth" changed since these parcels were built (2026-10-21): build them again.
+        if (B.parcelsBuilt && B.plumeGrow != launchPlumeGrowth)
+        {
+            B.parcelsBuilt = false;
+            B.parcels.clear();
+        }
         if (launchPlumeGain <= 0.0f || tau < -120.0 || (tau < 0.0 && B.parcelsBuilt))
             continue;
         struct PlumeTimer
@@ -7248,6 +7278,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 if (L.parcelJobs.size() < 4)
                 {
                     const LaunchState *Lc = &L;
+                    B.plumeGrow = launchPlumeGrowth; // (the copy below carries it to the worker)
                     L.parcelJobs.emplace(jobKey, std::async(std::launch::async, [Lc, Bc = B]() mutable {
                                              LaunchImpl::buildParcels(*Lc, Bc);
                                              return std::move(Bc.parcels);
@@ -7274,6 +7305,11 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         auto addPlume = [&](const glm::dvec3 &CE, const glm::dvec3 &axE, double hl, double sig, double Sigma,
                             double sweep, double albedo, double age, uint64_t rimSeed, bool trail,
                             const glm::vec3 &tint) {
+            // The exhaust tuning sliders (2026-10-21; all 1 = the look before them): the ground clouds' density,
+            // every Gaussian's radius (the same cross-section: a wider plume is thinner).
+            if (curGround != 0)
+                Sigma *= (double)launchGroundCloudGain;
+            sig *= (double)launchPlumeWidth;
             if (Sigma < 1.0)
                 return;
             const glm::dvec3 C = rotE(CE);
@@ -7373,6 +7409,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             }
             d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2),
                              (float)(4.0 * std::floor(seedK) + (flameShare >= 0.0 ? 2.0 + flameShare : amb)));
+            colOut *= (double)launchPlumeBright; // "Plume brightness" (the iso share in ib.w is a ratio: unchanged)
             d.col = glm::vec4(glm::vec3(colOut), (float)(2.0 + albedo));
             d.cone = coneOf(toEnu(rel), 5.5 * std::max(sA, sP));
             plumes.push_back(c);
@@ -9038,21 +9075,18 @@ bool SatelliteSim::launchGoToNextReentry(std::string &msg)
     return true;
 }
 
-// ── Settings: Constellations tab, LAUNCHES ──────────────────────────────────────────────────────
+// ── Settings > Launches: LAUNCHES (the simulation; the graphics are buildLaunchGraphicsSection) ───────
+// (Settings > Constellations until 2026-10-19, the Missions window's Controls tab until 2026-10-21: issue
+// 20261021_175638 asked for a real place in the settings window, the graphics grouped.)
 void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui)
 {
-    uiSection("ConstSec", 3, "LAUNCHES");
+    uiSection("LdSec", 0, "LAUNCHES");
     bool on = launchesEnabled;
     if (uiToggleRow(inp, ui, "LaunchOn", 0, "Launches and retirements", on,
                     "Every constellation is kept flying: each orbital plane is refreshed once per design life by a "
                     "launch from a site under it. The train climbs to its slots, the satellites it replaces deorbit "
                     "and re-enter. Sites, rockets and programs: launches.json next to the exe."))
         launchesEnabled = on;
-    bool padOn = launchPadGraphics;
-    if (uiToggleRow(inp, ui, "LaunchPads", 0, "Launch site graphics", padOn,
-                    "The pads on the ground: graded flat, concrete, flame trenches, tank farms, the towers (Starship's "
-                    "catch tower), landing zones, their floodlights and beacons at night; no city lights within ~3 km."))
-        launchPadGraphics = padOn;
     bool eraOn = launchDeployEra;
     if (uiToggleRow(inp, ui, "LaunchEra", 0, "Deployment era (2019-2036)", eraOn,
                     "The constellations are built up by launches: before 2036 a constellation has only the satellites "
@@ -9072,31 +9106,6 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
                               "x1 is already ~50 Starship launches a day in 2036). Reshuffles the schedule.");
     if (l >= 0 && l != lSel)
         launchLifeScale = kLifeV[l];
-    static const char *kPlume[] = {"Off", "x0.3", "x1", "x3"};
-    static const float kPlumeV[] = {0.0f, 0.3f, 1.0f, 3.0f};
-    int pSel = 2;
-    for (int i = 0; i < 4; ++i)
-        if (std::abs(launchPlumeGain - kPlumeV[i]) < 1e-3f)
-            pSel = i;
-    const int pg = uiChoiceRow(inp, ui, "LaunchPlume", 0, "Exhaust plumes", kPlume, 4, pSel,
-                               "The rockets' exhaust: the trail near the ground, and at twilight the sunlit bell high up "
-                               "(the 'jellyfish'), lit while the ground below is dark.");
-    if (pg >= 0 && pg != pSel)
-        launchPlumeGain = kPlumeV[pg];
-    {
-        static const char *kEl[] = {"Off", "x0.3", "x1", "x3"};
-        static const float kElV[] = {0.0f, 0.3f, 1.0f, 3.0f};
-        int eSel = 2;
-        for (int i = 0; i < 4; ++i)
-            if (std::abs(engineLightGain - kElV[i]) < 1e-3f)
-                eSel = i;
-        const int eg = uiChoiceRow(inp, ui, "LaunchEngLight", 0, "Rocket light on clouds", kEl, 4, eSel,
-                                   "At night the burning engines light the clouds, fog, haze, exhaust and ground around "
-                                   "them orange (and the pads' floodlights the low cloud over them). x1: each flame's "
-                                   "light from its magnitude, lifted at night as the moonlight is.");
-        if (eg >= 0 && eg != eSel)
-            engineLightGain = kElV[eg];
-    }
     if (kesslerEnabled)
     {
         static const char *kAfter[] = {"Stand down", "Resume"};
@@ -9159,6 +9168,39 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
     uiKV("LaunchKV", 1, "Launches in the next 24 h", uiKitStr("%d", L.uiCount24), lw);
     uiKV("LaunchKV", 2, "Trains climbing", uiKitStr("%u satellites", L.nTrain), lw);
     uiKV("LaunchKV", 3, "Retired, deorbiting", uiKitStr("%u satellites", L.nRetire), lw);
+}
+
+// ── Settings > Launches: GRAPHICS (rockets, exhaust, launch sites) ─────────────────────────────────────
+// The exhaust sliders (2026-10-21, issue 20261021_175638: "sliders for exhaust plumes, I wanna test ranges"): every one
+// at 1 is the look before them. Slots 313-320 of the shared slider arrays (kCloudSliderSlots).
+void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui)
+{
+    uiSection("LdSec", 2, "GRAPHICS: ROCKETS AND EXHAUST");
+    bool padOn = launchPadGraphics;
+    if (uiToggleRow(inp, ui, "LaunchPads", 0, "Launch site graphics", padOn,
+                    "The pads on the ground: graded flat, concrete, flame trenches, tank farms, the towers (Starship's "
+                    "catch tower), landing zones, their floodlights and beacons at night; no city lights within ~3 km."))
+        launchPadGraphics = padOn;
+    uiKV("LdGfxKV", 0, "",
+         "Exhaust: 1 everywhere is the tuned look. Opacity, width and brightness act at once; growth rebuilds the "
+         "plumes in view (a moment).",
+         4.0f, &Pal::textDim);
+    CloudSlider rows[] = {
+        {"Plume opacity (x)", &launchPlumeGain, 0.0f, 5.0f, 0.05f, "%.2f", 313},
+        {"Plume brightness (x)", &launchPlumeBright, 0.0f, 5.0f, 0.05f, "%.2f", 314},
+        {"Plume width (x)", &launchPlumeWidth, 0.25f, 4.0f, 0.05f, "%.2f", 315},
+        {"Plume billows (x)", &launchPlumeBillows, 0.0f, 3.0f, 0.05f, "%.2f", 316},
+        {"Plume growth (x)", &launchPlumeGrowth, 0.0f, 5.0f, 0.1f, "%.1f", 317},
+        {"Ground clouds (x)", &launchGroundCloudGain, 0.0f, 5.0f, 0.05f, "%.2f", 318},
+        {"Flame brightness (x)", &launchRocketGain, 0.0f, 10.0f, 0.1f, "%.1f", 319},
+        {"Rocket light on clouds (x)", &engineLightGain, 0.0f, 10.0f, 0.1f, "%.1f", 320},
+    };
+    buildCloudSliderRows(inp, ui, rows, (int)(sizeof(rows) / sizeof(rows[0])), false);
+    if (uiButton(inp, ui, "LdGfxReset", 0, "Reset exhaust to defaults", "Every slider above back to 1"))
+    {
+        launchPlumeGain = launchPlumeBright = launchPlumeWidth = launchPlumeBillows = 1.0f;
+        launchPlumeGrowth = launchGroundCloudGain = launchRocketGain = engineLightGain = 1.0f;
+    }
 }
 
 // The rockets' roar at the listener (eye: ECI-like Earth-centred position the thunder uses, Earth-fixed axes): for
@@ -11893,7 +11935,7 @@ void SatelliteSim::dustCullInsignificant(const GpuDustCloud *out, uint32_t n, st
             // <= s0 + sMax max_u u exp(-Y^2 u^2 / 2) (u = sin th) = s0 + sMax / (Y sqrt(e)) for Y >= 1, else s0 + sMax.
             const double Y = std::sqrt(Y2);
             const double best = s0 + sMax * (Y > 1.0 ? 1.0 / (Y * std::sqrt(glm::e<double>())) : 1.0);
-            tauMax = (double)g.c.w * (double)g.ia.w * std::sqrt(2.0 * glm::pi<double>()) * best * 2.5;
+            tauMax = (double)g.c.w * (double)g.ia.w * std::sqrt(2.0 * glm::pi<double>()) * best * 2.5 * std::max(1.0, (double)launchPlumeBillows);
         }
         // Light per unit optical depth: the Sun / sky colour at the phase's peak + multiple scattering (<= 1.9),
         // x the self-shadow's and the lumps' largest gain (1.35); each engine light at its nearest approach to the

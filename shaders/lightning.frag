@@ -92,15 +92,26 @@ void main()
         float trBar = dot(tr4, w4);
         // The haze is lit up to the ground, and in the cloud's share of the pixel only up to the cloud (a threshold on
         // the opacity drew the cloud's half-res outline into the haze as a staircase).
-        float tEndC = min(tGround, 4.0e5);
-        float tEndK = min(tEndC, tCbar > 0.0 ? tCbar : tEndC);
-        bool onMesh;
+        bool  onMesh;
+        float md;
         {
             ivec2 ms = imageSize(meshDistImg);
             ivec2 mp = clamp(ivec2(gl_FragCoord.xy * vec2(ms) / vec2(pc.screenW, pc.screenH)), ivec2(0), ms - 1);
-            float md = imageLoad(meshDistImg, mp).r;
+            md = imageLoad(meshDistImg, mp).r;
             onMesh = md > 0.0 && md < tGround * 1.05 + 2.0;
         }
+        // A mesh pixel sees only the cloud / fog / haze IN FRONT of the mesh (2026-10-21, issue 20261021_174219): the
+        // half-res texel a silhouette or an open lattice covers in part carries what lies behind it too (scene_depth.comp
+        // clamps only texels the mesh covers whole), and sat_sky.frag keeps that out of the mesh pixel by its own test
+        // (kM). Lit here regardless, the fog behind a catch tower lit its members and the lattice's half-res texels drew
+        // as blocks. Same test as sat_sky.frag's on the cloud's distance; the haze ends at the mesh.
+        float kMesh = 1.0;
+        if (md > 0.0) {
+            tGround = min(tGround, md);
+            kMesh = 1.0 - smoothstep(md, md * 1.25 + 20.0, tLs);
+        }
+        float tEndC = min(tGround, 4.0e5);
+        float tEndK = min(tEndC, tCbar > 0.0 ? tCbar : tEndC);
         x = vec3(0.0);
         uint n = min(uint(pc.params2.z + 0.5), 32u);
         for (uint i = 0u; i < n; ++i) {
@@ -120,7 +131,7 @@ void main()
                 if (r2 <= reach2) {
                     float hC  = length(C + ctr) - RE;
                     float far = (hL - hC) * (hE - hC) < 0.0 ? smoothstep(150.0, 800.0, min(abs(hL - hC), abs(hE - hC))) : 0.0;
-                    g += opK * airLs * 0.85 * mix(1.0, 0.35, far) * reachWin(r2, reach2) / (r2 + r02);
+                    g += kMesh * opK * airLs * 0.85 * mix(1.0, 0.35, far) * reachWin(r2, reach2) / (r2 + r02);
                 }
             }
             // The ground (and the sea), behind the clouds' transmittance. Not on a mesh (the pad's, a ship's, a

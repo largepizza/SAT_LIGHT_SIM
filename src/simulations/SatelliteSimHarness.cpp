@@ -657,8 +657,8 @@ json SatelliteSim::harnessStateJson()
         sel["planet"] = kPlanetNames[selectedPlanetIndex];
     j["selection"] = sel;
     // The v2 march's rate this frame: sparse (1 pixel in 4), full, half (checkerboard) or adaptive.
-    j["clouds_v2"] = {{"rate", cv2AdaptiveNow ? "adaptive" : cv2HalfRateNow ? "half" : cv2FullRateNow ? "full" : "sparse"},
-                      {"still_frames", cv2StillFrames}, {"history_valid", cv2HistoryValid},
+    j["clouds_v2"] = {{"rate", cv2AdaptiveNow ? "adaptive" : cv2HalfRateNow ? "half" : cv2FullRateNow ? "full" : cv2FullResHeldNow ? "sparse held" : "sparse"},
+                      {"still_frames", cv2StillFrames}, {"eye_still_frames", cv2EyeStillFrames}, {"history_valid", cv2HistoryValid}, {"cdc_active", cv2CdcActive}, {"cdc_slow_frames", cv2CdcSlowFrames}, {"cdc_epoch", cv2CdcEpoch},
                       {"sun_cloud_t", sunCloudTEased}, {"fast_lod", cv2FastLodNow},
                       {"shape_frame", cv2ShapeFrame}};   // review 22: the Sun disc's cloud transmittance
     // The Sun transmittance volume (S3, cloud_lightning.glsl cv2Stv): each level's fill frames, cell and lattice, the knots'
@@ -2669,7 +2669,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
 
     if (n == "missions")
     {
-        // missions [state] | go <index|twilight|crew|fury|fury_night> [watch=1] | tab upcoming|ongoing|controls
+        // missions [state] | go <index|twilight|crew|fury|fury_night> [watch=1] | tab upcoming|ongoing|kessler
         // (2026-10-19, SatelliteSimMissions.cpp): the Missions window's rows and actions.
         const std::string sub = lower(pos(0));
         if (sub.empty() || sub == "state")
@@ -2739,16 +2739,32 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = isList ? s.title : msg;
             return Status::Done;
         }
+        if (sub == "watch")
+        {
+            // The Kessler tracker's k-th latest breakup (0 = the newest): its Watch button.
+            kesslerStateCached();
+            const int k = std::atoi(pos(1).c_str());
+            if (k < 0 || k >= kCountsLive.nRecent)
+            {
+                fail("missions watch: no such breakup (the tracker lists " + std::to_string(kCountsLive.nRecent) +
+                     "; open it and wait for the counts)");
+            }
+            std::string msg;
+            if (!kesslerWatchEvent(kCountsLive.recent[k], msg))
+                fail("missions watch: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
         if (sub == "tab")
         {
             const std::string t = lower(pos(1));
-            msTab = t == "ongoing" ? 1 : t == "controls" ? 2 : 0;
+            msTab = t == "ongoing" ? 1 : (t == "kessler" || t == "tracker" || t == "controls") ? 2 : 0;
             msChrome.open = true;
             uiVisible = true;
             return Status::Done;
         }
         fail("missions: state | go <index|twilight|crew|fury|fury_night> [watch=1] | ongoing <row> [go=1] | "
-             "milestone [list|next|prev|<i>] [row=<ongoing row>] | tab upcoming|ongoing|controls");
+             "milestone [list|next|prev|<i>] [row=<ongoing row>] | tab upcoming|ongoing|kessler");
     }
     if (n == "deploy")
     {
@@ -3614,7 +3630,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     if (c.has("tab"))
                     {
                         const std::string t = lower(c.str("tab"));
-                        msTab = t == "ongoing" ? 1 : t == "controls" ? 2 : 0;
+                        msTab = t == "ongoing" ? 1 : (t == "kessler" || t == "tracker" || t == "controls") ? 2 : 0;
                     }
                 }
             }

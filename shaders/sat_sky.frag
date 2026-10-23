@@ -3773,6 +3773,7 @@ void main() {
     // neighbors.
     vec3  cloudARgb = vec3(0.0);
     vec3  cloudBRgb = vec3(0.0);
+    bool  meshTexelTested = false;   // the mesh's depth test already applied per texel (the joint-bilateral below)
 #ifdef SKY_LITE
     // The 3x3 rgb blur below exists only to de-jag a beam's glow riding inside cloudA.rgb where a
     // cloud silhouette crosses it — and SKY_LITE cuts beams. Single tap: −16 texture samples on
@@ -3810,7 +3811,15 @@ void main() {
             float lDk = log(max(texelFetch(sceneDepthTex, clamp(i0 + ivec2(k & 1, k >> 1), ivec2(0), ds - 1), 0).r, 1.0));
             dMin = min(dMin, lDk); dMax = max(dMax, lDk);
         }
-        if (dMax - dMin > 0.1 || lF - dMax > 0.1) {
+        // A mesh pixel always takes this path, and tests each texel's composite against the mesh on its own
+        // (2026-10-21, issue 20261021_174219: "artifacting on trusses"). The test used to be ONE filtered alpha after
+        // the blend (kM below): at a silhouette it averaged a texel marched to the mesh (the fog in front, near) with
+        // one marched past it (a cloud bank tens of km out), called the result "behind" and dropped the fog in front
+        // too, so every mesh edge against cloud was a dark half-res staircase (a catch tower's edge, the mount).
+        // (Merged 2026-10-22 into the 5x5 depth-texel weighting: on a cloud grid finer than the depth's, the test takes
+        // the four cloud texels round the depth texel's centre, never a filtered alpha.)
+        if (dMax - dMin > 0.1 || lF - dMax > 0.1 || meshHit) {
+            ivec2 cs = textureSize(cloudTargetA, 0);
             vec3  sa = vec3(0.0), sb = vec3(0.0);
             float sw = 0.0;
             [[dont_unroll]] for (int k = 0; k < 25; ++k) {
@@ -3821,13 +3830,25 @@ void main() {
                 w *= exp(-abs(log(max(texelFetch(sceneDepthTex, tq, 0).r, 1.0)) - lF) * 6.0) + 1e-5;
                 if (w < 1e-6) continue;
                 vec2  uq = (vec2(tq) + 0.5) / vec2(ds);
-                sa += w * textureLod(cloudTargetA, uq, 0.0).rgb;
-                sb += w * textureLod(cloudTargetB, uq, 0.0).rgb;
+                vec3  ak = textureLod(cloudTargetA, uq, 0.0).rgb;
+                vec3  bk = textureLod(cloudTargetB, uq, 0.0).rgb;
+                if (meshHit) {   // (same test as kM below, per texel; the no-cloud marker is far past any mesh)
+                    vec4 ga = (cs == ds) ? vec4(texelFetch(cloudTargetA, tq, 0).a)
+                                         : textureGather(cloudTargetA, uq, 3);
+                    float kMk = 0.0;
+                    for (int g = 0; g < 4; ++g)
+                        kMk += 0.25 * (1.0 - smoothstep(tMesh, tMesh * 1.25 + 20.0, abs(ga[g]) * 1000.0));
+                    ak *= kMk;
+                    bk = mix(vec3(1.0), bk, kMk);
+                }
+                sa += w * ak;
+                sb += w * bk;
                 sw += w;
             }
             if (sw > 0.0) {
                 cloudARgb = sa / sw;
                 cloudBRgb = sb / sw;
+                meshTexelTested = meshHit;
             }
         }
     }
@@ -6399,7 +6420,7 @@ void main() {
     // distance (the alpha of a texel with no cloud, cloud_march.comp tEmitNear) is about the hull's own, so a hard
     // test drew the hull as black blotches through the lit exhaust wherever the billows moved that distance a few
     // metres behind it. Clouds km in front or behind are unchanged.
-    if (meshHit) {
+    if (meshHit && !meshTexelTested) {
         float kM = 1.0 - smoothstep(tMesh, tMesh * 1.25 + 20.0, abs(cloudA.a) * 1000.0);
         cloudB.rgb = mix(vec3(1.0), cloudB.rgb, kM);
         cloudA.rgb *= kM;
@@ -6948,6 +6969,15 @@ void main() {
     // Alpha 1 = not sea; [0, 0.5] = sea, 0.5 x (1 - trail). Cloud in front keeps its own clip (it would ghost).
     if (gTaaSeaTrail >= 0.0 && !meshHit && !terrainDebugActive)
         outColor.a = 0.5 * (1.0 - clamp(gTaaSeaTrail * (1.0 - localCloudOpacity), 0.0, 1.0));
+    // 0.875 = something that moves on its own the resolve cannot reproject (2026-10-21, issue 20261021_174219: "crazy
+    // trails on all models" with TAA on): a satellite / rocket / pad mesh, or a texel lit only by the plume and flame
+    // Gaussians (the composite's emissive flag, read gathered: a filtered alpha is no flag). sky_taa.comp clips and
+    // depth-tests them even when the view is still.
+    {
+        vec4 gE = textureGather(cloudTargetA, cloudUV, 3);
+        if (meshHit || cloudAlphaIsEmit(gE.x) || cloudAlphaIsEmit(gE.y) || cloudAlphaIsEmit(gE.z) || cloudAlphaIsEmit(gE.w))
+            outColor.a = 0.875;
+    }
 #endif
 
     // Unified scene depth (include/depth.glsl) for the passes that follow: the TRUE distance to the
@@ -6967,7 +6997,8 @@ void main() {
     // Alpha 0.8 = the depth is an opaque CLOUD's (its light's mean distance, not a surface): sky_taa.comp takes the
     // eye's parallax for its weight / clip there (issue 20261022_174155, run 2: the stacked edge copies climbing
     // under a deck were on these pixels, not on sky-depth ones).
-    if (tHit < 0.0 && tSeaLvl < 0.0 && !meshHit && tCloudOcclude >= 0.0 && !terrainDebugActive) outColor.a = 0.8;
+    // (0.875, the moving-object marker above, wins: sky_taa.comp's ranges are 0.77-0.83 and 0.85-0.95.)
+    if (tHit < 0.0 && tSeaLvl < 0.0 && !meshHit && tCloudOcclude >= 0.0 && !terrainDebugActive && outColor.a != 0.875) outColor.a = 0.8;
 #endif
 #endif
 }

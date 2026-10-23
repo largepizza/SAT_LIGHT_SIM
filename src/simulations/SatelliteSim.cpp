@@ -1665,6 +1665,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
     }
     kesslerRecordUploads(cmd);
+    kesslerTrackerRecordUpload(cmd); // the Kessler tracker's globe (SatelliteSimKesslerTracker.cpp), when re-rastered
     fprof::mark("rc.seg2_kessler");
     }
     if (std::abs(simDayJ2000 - orbitEpochDay) >= kOrbitRebakeDays)
@@ -2621,7 +2622,33 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.ambientGain = cloudAmbientGain;
         cp.farBlend = cloudFarBlend();
         cp.oceanWaveRangeM = oceanWaveRangeKm * 1000.0f;
-        cp.oceanWaveFootK = oceanWaveSharpness;
+        // The sea's motion filter (2026-10-22, the matrix's alt3km-fast: a white grain over the whole sea while moving).
+        // "Sea wave sharpness" < 1 filters the wave octaves FINER than the pixel (0.1: aliased on purpose, the sky TAA's
+        // jittered history averages it when still). Moving, the history is reprojected and clipped away, and the raw
+        // frames' aliasing shows as grain: run A, raw high-pass std 7.1 at 0.1, 5.1 at 0.5, 2.4 at 1.0, the same still
+        // and moving. So while the EYE translates (not turns: a turn reprojects exactly) by more than ~1-4 px a frame at
+        // the nearest sea (the eye's height above sea level), the octaves are filtered at the pixel (1.0), eased back
+        // over ~0.4 s when it stops. "Sea motion filter" (clouds.ocean_motion_filter, 1; 0 = off).
+        {
+            const double gEye = (terrainFrameMapped && (debugDisableMask & 1024u) == 0 && std::isfinite(terrainFrameMapped[1]))
+                                    ? (double)terrainFrameMapped[1] : (double)obsTerrainH;
+            const double asl = followActive ? followRadiusM - satphot::kEarthRadiusM : std::max(gEye, (double)obsHeightOffset);
+            const glm::dvec3 eyeP = glm::normalize(glm::dvec3(obsDir)) * (satphot::kEarthRadiusM + asl);
+            float target = 0.0f;
+            if (seaMotionPrevValid && dt > 0.0f) {
+                const double move = glm::length(eyeP - seaMotionPrevEye);
+                const double pxPerRad = (double)ctx.swapExtent.height / (2.0 * std::tan(glm::radians((double)camera.fovYDeg) * 0.5));
+                const double px = move / std::max(asl, 10.0) * pxPerRad;
+                // Run B (matrix): 1-4 px filtered the sea_20m WALK (14 px at the nearest sea from 20 m; > 16 levels 1.33% ->
+                // 2.69%), where the TAA's history is still good. Only fast flight, where it is not (alt3km fast ~90 px).
+                target = (move < 50000.0) ? glm::smoothstep(20.0f, 60.0f, (float)px) : 0.0f;   // a jump is not motion
+            }
+            seaMotionPrevEye = eyeP; seaMotionPrevValid = true;
+            const float tau = target > seaMotionK ? 0.05f : 0.4f;
+            seaMotionK += (target - seaMotionK) * (1.0f - std::exp(-std::max(dt, 0.0f) / tau));
+            const float k = seaMotionK * std::clamp(oceanMotionFilter, 0.0f, 1.0f);
+            cp.oceanWaveFootK = glm::mix(oceanWaveSharpness, std::max(oceanWaveSharpness, 1.0f), k);
+        }
         cp.seaTune = glm::vec4(std::clamp(oceanFarRipple, 0.0f, 15.0f), std::clamp(oceanWarp, 0.0f, 6.0f),
                                std::clamp(oceanWarpDetail, 0.0f, 3.0f), std::clamp(oceanFarRippleSize, 1.5f, 16.0f));
         cp.extinctionCoeff = extinctionCoeff;
@@ -8039,6 +8066,7 @@ void SatelliteSim::cleanup(VkDevice device)
     destroySkyLowResResources(device);
     destroySkyTaaResources(device);
     bookmarksDestroy(device); // the bookmark thumbnails' atlas (SatelliteSimBookmarks.cpp)
+    kesslerTrackerDestroy(device); // the Kessler tracker's globe image
     reportsDestroy(device);   // the issue reports window's atlas (SatelliteSimReportsWindow.cpp)
     vkDestroyPipeline(device, drawPipeline, nullptr);
     vkDestroyPipelineLayout(device, compPipeLayout, nullptr);
@@ -13582,7 +13610,15 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     glm::dvec3 eC, nC, eP, nP;
     enuOf(up, eC, nC);
     enuOf(skyTaaPrevObsDir, eP, nP);
-    const double eyeR = followActive ? followRadiusM : (double)obsEyeRadiusM();
+    // The eye the sky pass rendered from: the GPU's detailed ground under it (terrainFrameBuf, last frame's reading),
+    // not obsEyeRadiusM()'s CPU DEM. Issue 20261022_174155: at 62.5 N 139.9 E the 18-km DEM reads 2324 m where the real
+    // ground is 1872 m, so a climb from the ground to 2250 m kept max(DEM, offset) at 2324: eyeDelta 0, the climb was
+    // reprojected as a still view (run A, sky_taa_debug 2: zero parallax everywhere), and every cloud edge left a copy
+    // per frame while the ground blurred.
+    double eyeR = followActive ? followRadiusM : (double)obsEyeRadiusM();
+    if (!followActive && terrainFrameMapped && (debugDisableMask & 1024u) == 0 && std::isfinite(terrainFrameMapped[1]) &&
+        skyTaaEyeFromGpuGround)
+        eyeR = (double)satphot::kEarthRadiusM + std::max((double)terrainFrameMapped[1], (double)obsHeightOffset) + 2.0;
     const glm::dvec3 dE = up * eyeR - skyTaaPrevObsDir * skyTaaPrevEyeR;           // ECEF, m
     const glm::dvec3 dEnu(glm::dot(dE, eC), glm::dot(dE, nC), glm::dot(dE, up));
     // This frame's ENU -> ECEF -> last frame's ENU.
@@ -13623,7 +13659,13 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     tp.c2e[1].w = skyTaaJitterNow.y;
     tp.c2e[2].w = (float)inE.width;
     tp.e2p[0].w = (float)inE.height;
-    tp.e2p[1].w = skyTaaParallaxFloorM;   // the eye-parallax stand-in distance (m; 0 = off), issue 20261022_174155
+    tp.e2p[2].w = (float)skyTaaDebug;   // diagnostic mode (sky_taa.comp), 0 = off
+    // The eye-parallax stand-in distance (m; 0 = off), issue 20261022_174155: never nearer than twice the eye's height
+    // above the ground (run B, matrix alt5000km walk > 16 levels 0.16% -> 0.79%: from orbit 1500 m made every sky / cloud
+    // pixel "moving" and took raw jittered frames there; nothing the eye sees is that near).
+    tp.e2p[1].w = skyTaaParallaxFloorM > 0.0f
+                      ? (float)std::max((double)skyTaaParallaxFloorM, 2.0 * (eyeR - satphot::kEarthRadiusM - (double)obsGroundM()))
+                      : 0.0f;
     // Clouds move on their own under time warp (the map's drift + the shape wind), and the resolve reprojects only the
     // CAMERA: with the eye still the history of a moving cloud stays where it was, held at the still weight (0.1), and
     // the 3x3 colour clip cannot remove it over the sea (its glitter and reflected-cloud specks make the box wide) —

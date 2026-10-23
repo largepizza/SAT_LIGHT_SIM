@@ -161,13 +161,15 @@ bool debugToggleAt(int i, uint32_t &bit, const char *&label, const char *&jsonKe
 // 2026-10-03: the strip is grouped under headings (kSettingsStrip: a negative entry is a heading, -1 - its index in
 // kSettingsStripHeadings); "Performance" (14) took the profiling tools out of Display; "Camera" (3) is folded into
 // Controls and no longer has a button (its index still opens Controls).
-static constexpr int kSettingsTabCount = 15;
+// 2026-10-21: "Launches" (15, issue 20261021_175638): the Missions window's Controls tab moved here, the
+// graphics grouped and the exhaust sliders added; under SKY after Constellations.
+static constexpr int kSettingsTabCount = 16;
 static constexpr const char *kSettingsTabNames[kSettingsTabCount] = {
     "Constellations", "Sound", "Controls", "Camera",
     "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Atmosphere", "Beams", "Attributions",
-    "Weather", "Night lights", "Performance"};
+    "Weather", "Night lights", "Performance", "Launches"};
 static constexpr const char *kSettingsStripHeadings[] = {"GENERAL", "SKY", "RENDERING", "ABOUT"};
-static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 5, -3, 6, 12, 9, 8, 13, 7, 10, 14, -4, 11};
+static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 15, 5, -3, 6, 12, 9, 8, 13, 7, 10, 14, -4, 11};
 bool settingsTabIsAdvanced(int i) { return (i >= 6 && i <= 10) || i == 12 || i == 13 || i == 14; }
 int settingsTabIndexByName(const std::string &name)
 {
@@ -3620,9 +3622,34 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
         case 14:
             buildSettingsPerformanceTab(inp, ui);
             break;
+        case 15:
+            buildSettingsLaunchesTab(inp, ui);
+            break;
         }
     }
     ui.scrollbar(CLAY_ID("SettingsContent"));
+}
+
+// ─── buildSettingsLaunchesTab ────────────────────────────────────────────────
+// "Launches" (2026-10-21, issue 20261021_175638): the Missions window's Controls tab, given a place here. The
+// graphics first (rockets and exhaust with the exhaust
+// sliders, debris and re-entries: how it looks), then the simulation (LAUNCHES, THE SUN'S FURY: what happens).
+// settings.json keys unchanged (launches.*, kessler.*).
+void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
+{
+    uiKV("LdKV", 0, "", "The schedule, what is flying and the Kessler tracker: the Missions window (rocket button, M).", 4.0f,
+         &Pal::textDim);
+    if (uiButton(inp, ui, "LdOpenMs", 0, "Open the Missions window", "Upcoming launches, what is flying now, the Kessler tracker"))
+    {
+        msChrome.open = true;
+        msNextWall = msPinWall = -1e300;
+    }
+    // The graphics first (the issue: "primarily the graphics related settings"; the exhaust sliders are what gets
+    // tuned), then what happens.
+    buildLaunchGraphicsSection(inp, ui);
+    buildKesslerGraphicsSection(inp, ui);
+    buildLaunchSettingsSection(inp, ui);
+    buildKesslerSettingsSection(inp, ui);
 }
 
 // ─── buildSettingsConstellationsTab ─────────────────────────────────────────
@@ -3957,15 +3984,12 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     }
     else if (actSel >= 0)
         selectSatellite(actSel);
-    // Launches and the Sun's Fury moved to the Missions window (2026-10-19): a pointer here.
+    // Launches and the Sun's Fury: their own tab since 2026-10-21 (Launches); a pointer here.
     uiSection("ConstSec", 8, "LAUNCHES AND THE SUN'S FURY");
-    uiKV("ConstMsKV", 0, "", "Now in the Missions window (rocket button, M).", 4.0f, &Pal::textDim);
-    if (uiButton(inp, ui, "ConstMsOpen", 0, "Open the Missions window", "The schedule, what is flying, and these settings (Controls)"))
-    {
-        msChrome.open = true;
-        msTab = 2;
-        msNextWall = msPinWall = -1e300;
-    }
+    uiKV("ConstMsKV", 0, "", "In the Launches tab; the schedule and the Kessler tracker: the Missions window (M).", 4.0f,
+         &Pal::textDim);
+    if (uiButton(inp, ui, "ConstLdOpen", 0, "Launches", "Launches, rockets and exhaust, the Sun's Fury"))
+        settingsActiveTab = 15;
 
     // ── Planets ────────────────────────────────────────────────────────────
     // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern
@@ -5612,7 +5636,7 @@ void SatelliteSim::textEditEndFrame(const UIInput &inp)
 
 bool SatelliteSim::textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width,
                             int minLines, float fontPx, const char *placeholder, size_t maxLen, int maxLines,
-                            bool enterCommits, const Clay_Color *readOnlyColor)
+                            bool enterCommits, const Clay_Color *readOnlyColor, int16_t layerZ)
 {
     const bool ro = readOnlyColor != nullptr;
     bool committed = false;
@@ -5841,7 +5865,7 @@ bool SatelliteSim::textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId i
         CLAY(cid, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(contentH)}}, .custom = {.customData = &d.block}}) {}
     }
     if (overflow)
-        ui.scrollbar(id); // the thumb on the right edge: there is more than the box shows
+        ui.scrollbar(id, layerZ); // the thumb on the right edge: there is more than the box shows
     return committed;
 }
 
@@ -8496,6 +8520,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             skyTaaWeightStill = settingClamp(d.value("sky_taa_weight", skyTaaWeightStill), 0.02f, 1.0f);
             skyTaaWeightMoving = settingClamp(d.value("sky_taa_weight_moving", skyTaaWeightMoving), 0.02f, 1.0f);
             skyTaaParallaxFloorM = settingClamp(d.value("sky_taa_parallax_floor_m", skyTaaParallaxFloorM), 0.0f, 100000.0f);
+            skyTaaDebug = std::clamp(d.value("sky_taa_debug", skyTaaDebug), 0, 4);
+            skyTaaEyeFromGpuGround = d.value("sky_taa_gpu_eye", skyTaaEyeFromGpuGround);
             int fpsCapVal = d.value("fps_cap_mode", (int)fpsCapMode);
             fpsCapMode = (fpsCapVal >= 0 && fpsCapVal <= 4) ? (FpsCapMode)fpsCapVal : FpsCapMode::VSync;
             // UC1: default to Custom (NOT a device-seeded preset) when the key is simply absent —
@@ -8707,6 +8733,11 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         launchPlumeGain = settingClamp(lj.value("plume_gain", launchPlumeGain), 0.0f, 100.0f);
         launchRocketGain = settingClamp(lj.value("rocket_gain", launchRocketGain), 0.0f, 100.0f);
         engineLightGain = settingClamp(lj.value("engine_light_gain", engineLightGain), 0.0f, 100.0f);
+        launchPlumeBright = settingClamp(lj.value("plume_brightness", launchPlumeBright), 0.0f, 100.0f);
+        launchPlumeWidth = settingClamp(lj.value("plume_width", launchPlumeWidth), 0.05f, 20.0f);
+        launchPlumeBillows = settingClamp(lj.value("plume_billows", launchPlumeBillows), 0.0f, 10.0f);
+        launchPlumeGrowth = settingClamp(lj.value("plume_growth", launchPlumeGrowth), 0.0f, 20.0f);
+        launchGroundCloudGain = settingClamp(lj.value("ground_cloud_gain", launchGroundCloudGain), 0.0f, 100.0f);
         launchAfterStorm = settingClamp(lj.value("after_storm", launchAfterStorm), 0, 1);
         launchPadGraphics = lj.value("pad_graphics", launchPadGraphics);
         launchDeployEra = lj.value("deployment_era", launchDeployEra);
@@ -8788,10 +8819,13 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CdcMaxLevel = c.value("cdc_max_level", cv2CdcMaxLevel);
         cv2CdcMaxRate = c.value("cdc_max_rate", cv2CdcMaxRate);
         cv2CdcMotionGuard = c.value("cdc_motion_guard", cv2CdcMotionGuard);
+        cv2EyeHeightNow = c.value("eye_height_now", cv2EyeHeightNow);
+        cv2SunVolumeOn = c.value("sun_volume", cv2SunVolumeOn);
         cv2CdcLight = c.value("cdc_light", cv2CdcLight);
         cv2CdcLightLevels = c.value("cdc_light_levels", cv2CdcLightLevels);
         cv2CdcNearM = c.value("cdc_near_m", cv2CdcNearM);
         cv2FullRes = c.value("full_res", cv2FullRes);
+        cv2FullResMovingMode = std::clamp(c.value("full_res_moving_mode", cv2FullResMovingMode), 0.0f, 2.0f);
         cv2ShadowRing1CellM = c.value("shadow_ring1_cell_m", cv2ShadowRing1CellM);
         cv2SmallCumulus = c.value("small_cumulus", cv2SmallCumulus);
         cv2ErosionVar = c.value("erosion_variation", cv2ErosionVar);
@@ -8991,6 +9025,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         oceanWhitecapGain = c.value("ocean_whitecaps", oceanWhitecapGain);
         oceanWaveRangeKm = settingClamp(c.value("ocean_wave_range_km", oceanWaveRangeKm), 5.0f, 200.0f);
         oceanWaveSharpness = settingClamp(c.value("ocean_wave_sharpness", oceanWaveSharpness), 0.1f, 1.0f);
+        oceanMotionFilter = settingClamp(c.value("ocean_motion_filter", oceanMotionFilter), 0.0f, 1.0f);
         oceanFarRipple = c.value("ocean_far_ripple", oceanFarRipple);
         oceanFarRippleSize = c.value("ocean_far_ripple_size", oceanFarRippleSize);
         oceanWaveRangeFade = settingClamp(c.value("ocean_wave_range_fade", oceanWaveRangeFade), 0.05f, 1.0f);
@@ -9161,6 +9196,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sky_taa_weight", skyTaaWeightStill},
         {"sky_taa_weight_moving", skyTaaWeightMoving},
         {"sky_taa_parallax_floor_m", skyTaaParallaxFloorM},
+        {"sky_taa_debug", skyTaaDebug},
+        {"sky_taa_gpu_eye", skyTaaEyeFromGpuGround},
         {"fps_cap_mode", (int)fpsCapMode},
         {"graphics_preset", (int)graphicsPreset},
         {"show_advanced_settings", showAdvancedSettings},
@@ -9291,6 +9328,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ocean_whitecaps", oceanWhitecapGain},
         {"ocean_wave_range_km", oceanWaveRangeKm},
         {"ocean_wave_sharpness", oceanWaveSharpness},
+        {"ocean_motion_filter", oceanMotionFilter},
         {"ocean_far_ripple", oceanFarRipple},
         {"ocean_far_ripple_size", oceanFarRippleSize},
         {"ocean_wave_range_fade", oceanWaveRangeFade},
@@ -9390,10 +9428,13 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cdc_max_level", cv2CdcMaxLevel},
         {"cdc_max_rate", cv2CdcMaxRate},
         {"cdc_motion_guard", cv2CdcMotionGuard},
+        {"eye_height_now", cv2EyeHeightNow},
+        {"sun_volume", cv2SunVolumeOn},
         {"cdc_light", cv2CdcLight},
         {"cdc_light_levels", cv2CdcLightLevels},
         {"cdc_near_m", cv2CdcNearM},
         {"full_res", cv2FullRes},
+        {"full_res_moving_mode", cv2FullResMovingMode},
         {"shadow_ring1_cell_m", cv2ShadowRing1CellM},
         {"small_cumulus", cv2SmallCumulus},
         {"erosion_variation", cv2ErosionVar},
@@ -9568,6 +9609,11 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                      {"plume_gain", launchPlumeGain},
                      {"rocket_gain", launchRocketGain},
                      {"engine_light_gain", engineLightGain},
+                     {"plume_brightness", launchPlumeBright},
+                     {"plume_width", launchPlumeWidth},
+                     {"plume_billows", launchPlumeBillows},
+                     {"plume_growth", launchPlumeGrowth},
+                     {"ground_cloud_gain", launchGroundCloudGain},
                      {"after_storm", launchAfterStorm},
                      {"pad_graphics", launchPadGraphics},
                      {"deployment_era", launchDeployEra},

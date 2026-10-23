@@ -2983,6 +2983,14 @@ private:
     float launchLifeScale = 1.0f;    // launches.life_scale: x every program's design life (fewer launches above 1)
     float launchPlumeGain = 1.0f;    // launches.plume_gain: the plumes' optical depth x
     float launchRocketGain = 1.0f;   // launches.rocket_gain: the flames' brightness x
+    // Exhaust tuning (2026-10-21, issue 20261021_175638: "sliders for exhaust plumes, I wanna test ranges"; Settings >
+    // Launches). 1 = the look before them, exactly. Drawn per frame (launchFillVisuals' addPlume, cloud_march
+    // dustPad2) except the growth, which the parcels are built with (a change rebuilds every plume: B.plumeGrowJob).
+    float launchPlumeBright = 1.0f;  // launches.plume_brightness: the light the exhaust scatters x
+    float launchPlumeWidth = 1.0f;   // launches.plume_width: every plume Gaussian's radius x (same mass: thinner wide)
+    float launchPlumeBillows = 1.0f; // launches.plume_billows: the billows' contrast x (cloud_march.comp)
+    float launchPlumeGrowth = 1.0f;  // launches.plume_growth: the low trail's / ground clouds' turbulent growth x
+    float launchGroundCloudGain = 1.0f; // launches.ground_cloud_gain: lift-off steam / landing dust & spray density x
     // Rocket light on clouds, haze, plumes and the ground (2026-10-20, launches.engine_light_gain): the burning
     // engines (ascent, boostback, entry and landing burns), a ship's entry glow and the pads' floodlights as point
     // lights. Physical intensity from each flame's magnitude, lifted at night by the moonlight's own lift (moonGain /
@@ -3156,6 +3164,7 @@ private:
     bool launchGoToCrew(const std::string &station, const std::string &event, double leadS, bool follow, std::string &msg,
                         const std::string &craft = std::string());
     void buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui);
+    void buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui); // pads, exhaust sliders, flames, engine light
     void launchDestroy(VkDevice device);
 
     // ── Missions window (2026-10-19, SatelliteSimMissions.cpp; queries in SatelliteSimLaunches.cpp) ───────────
@@ -3267,7 +3276,7 @@ private:
 
     WindowChrome msChrome;
     bool hovMsClose = false, hovTimeMissions = false;
-    int msTab = 0;                       // 0 upcoming, 1 ongoing, 2 controls
+    int msTab = 0;                       // 0 upcoming, 1 ongoing, 2 the Kessler tracker (was Controls until 2026-10-21)
     int msUpcomingActs_ = 0, msOngoingActs_ = 0; // Go to / Watch / Fury on Upcoming, any button on Ongoing (the tutorial)
     int msBuildOutOpen = -1;             // Ongoing's BUILD-OUT list: -1 = auto (collapsed once every cohort is complete)
     double msNextWall = -1e300, msNextSim = -1e300; // when the next-launches rows were made (wall clock, sim time)
@@ -3375,6 +3384,17 @@ private:
         size_t dead = 0, frag = 0, fragReal = 0, rosterGone = 0, kills = 0, bumps = 0, col = 0, cat = 0, user = 0;
         size_t byClass[3] = {0, 0, 0};
         double smallMade = 0.0;
+        // The Kessler tracker's (2026-10-21): re-entered roster satellites, explosions / ASAT strikes, working
+        // satellites, the objects by altitude x inclination (50-km shells from 150 km, 5-deg bands folded to
+        // 0-90), the collisions per day since the CME and the latest significant breakups (event indices).
+        static constexpr int kAlt = 40, kInc = 18;
+        size_t reentered = 0, explosions = 0, working = 0;
+        float deb[kAlt * kInc] = {};
+        float work[kAlt * kInc] = {};
+        std::vector<uint32_t> colDay, catDay;
+        uint32_t recent[8] = {};
+        double recentT[8] = {};
+        int nRecent = 0;
     };
     struct KCountsWalk
     {
@@ -3399,6 +3419,7 @@ private:
     KCountsWalk kCountsWalkState;
     KCounts kCountsLive;
     bool kCountsLiveValid = false;
+    uint64_t kCountsLiveGen = 0; // bumped at every published walk (the tracker's tables follow it)
     mutable std::vector<int8_t> kTypeClass; // satellite type -> debris kit class (0 S, 1 M, 2 L) or -1
     std::string kesslerStatusLine() const; // the HUD line while the frontier holds time back
     // A satellite's display name: "<constellation> #<n>"; a dead one "... #<n> (dead)" (its roster number),
@@ -3411,7 +3432,67 @@ private:
     void kesslerDropGoneSelection(); // a selected roster satellite that is gone now (destroyed, re-entered) is dropped
     void buildKesslerBanner(UIRenderer &ui);
     void buildKesslerSettingsSection(const UIInput &inp, UIRenderer &ui);
+    void buildKesslerGraphicsSection(const UIInput &inp, UIRenderer &ui); // dust, fireball colours, small re-entries
     void kesslerBreakupFromUi(int sat, uint8_t kind);
+
+    // ── Kessler tracker (2026-10-21, issue 20261021_175638; SatelliteSimKesslerTracker.cpp) ───────────────────────
+    // The Missions window's "Kessler" tab (it replaced "Controls", whose settings moved to Settings > Launches &
+    // debris): big counts, a small globe seen from the equator with the debris shells drawn round it as a polar plot
+    // (radius = altitude, angle = latitude: the limb of an equatorial view IS a meridian), coloured by the chance a
+    // year that a 10 m^2 satellite there is hit, markers for the latest breakups (click a row to watch one), and the
+    // collisions per day. Everything comes from the counts walk (kesslerCountsWalk, spread over frames while the tab
+    // reads kesslerStateCached): nothing walks the event log or the pool per frame. The globe is a CPU raster (256^2,
+    // only when something changed: the counts, a drag, the Sun moving ~1 deg) uploaded in recordCompute.
+    static constexpr int kTrN = 256;      // the globe image (texels a side)
+    static constexpr int kTrRecent = 8;   // breakups listed / marked
+    void buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, float bodyW);
+    bool kesslerTrackerEnsureImage(UIRenderer &ui);
+    void kesslerTrackerRenderGlobe();
+    void kesslerTrackerRecordUpload(VkCommandBuffer cmd);
+    void kesslerTrackerDestroy(VkDevice device);
+    void kesslerTrackerTables(); // the density tables from the last complete counts walk (kCountsLive)
+    bool kesslerWatchEvent(uint32_t ev, std::string &msg); // the clock 8 s before it, 80 km beside it, looking at it
+    std::string kesslerEventTitle(const kessler::Event &e) const;
+    nlohmann::json kesslerTrackerJson(); // harness `missions state` -> tracker
+    VkImage trImg = VK_NULL_HANDLE;
+    VkDeviceMemory trMem = VK_NULL_HANDLE;
+    VkImageView trView = VK_NULL_HANDLE;
+    VkSampler trSampler = VK_NULL_HANDLE;
+    VkBuffer trStage = VK_NULL_HANDLE;
+    VkDeviceMemory trStageMem = VK_NULL_HANDLE;
+    void *trStageMapped = nullptr;
+    uint32_t trUiId = 0;
+    bool trUploadPending = false;
+    bool trImageFailed = false;
+    UIImage trImgEl;
+    std::vector<UITextQuad> trQuads;
+    std::vector<UITextRun> trRuns;
+    std::deque<std::string> trRunText;
+    UITextBlock trMarks;
+    double trViewLonDeg = 1e9;       // the globe's central meridian (1e9: the observer's on first show)
+    double trRenderedLon = 1e9, trRenderedSunLon = 1e9, trRenderWall = -1.0;
+    uint64_t trRenderedGen = ~0ull, trTablesGen = ~0ull;
+    bool trDrag = false;
+    float trDragX = 0.0f;
+    float trGlobePx = 0.0f;          // the globe element's size on screen (last frame)
+    int trHoverMarker = -1, trSelEvent = -1;
+    // Density tables (alt x lat band): objects per km^3, debris (pieces + dead) and working satellites.
+    static constexpr int kTrLat = 36;
+    std::vector<float> trDebDen, trWorkDen;
+    float trWorstChance = 0.0f, trWorstAltKm = 0.0f, trWorstLatDeg = 0.0f;
+    struct TrMarker
+    {
+        float x = 0.0f, y = 0.0f; // in the globe's image (0..1)
+        bool front = true;
+        uint32_t ev = 0;
+        int rank = 0; // 1 = the latest
+    };
+    std::vector<TrMarker> trMarkers;
+    std::vector<float> trPlotX, trPlotY, trPlotY2;
+    UIPlotSeries trSeries[2];
+    UIPlot trPlot;
+    uint32_t trPlotPeak = 0;
+    int trPlotPeakDay = 0, trPlotBin = 1;
 
 public:
     // ── Explode (2026-10-19): the one call the UI makes to break a satellite up ─────────────────────────
@@ -3678,7 +3759,17 @@ private:
     // + 2 m (observerEffHeight). The satellites' ENU frame (obsECI) and every CPU evaluator use this;
     // until review 7 they used R + ground + offset, a different eye by the ground height, so over
     // mountains the beams and satellites sat ~km off the drawn scene and jumped as the ground changed.
-    float obsEyeRadiusM(float heightOffset) const { return (float)satphot::kEarthRadiusM + std::max(obsTerrainH, heightOffset) + 2.0f; }
+    // The ground is the GPU's detailed ground under the eye (terrainFrameBuf .y, last frame's) when there is one, the 18-km
+    // CPU DEM (obsTerrainH) only before the first readback: 2026-10-22 (issue 20261022_174155), at 62.5 N 139.9 E the DEM
+    // read 2324 m over real ground at 1872 m, so a climb from 1872 to 2250 m left this eye pinned at 2324 m (the sky TAA saw
+    // no motion and ghosted every edge; satellites, beams and lights sat 450 m off the drawn scene).
+    float obsGroundM() const
+    {
+        // (Following: the GPU's ground is under the camera, not the parked observer this may be asked about.)
+        return (!followActive && terrainFrameMapped && std::isfinite(terrainFrameMapped[1]) && terrainFrameMapped[1] > -500.0f)
+                   ? terrainFrameMapped[1] : obsTerrainH;
+    }
+    float obsEyeRadiusM(float heightOffset) const { return (float)satphot::kEarthRadiusM + std::max(obsGroundM(), heightOffset) + 2.0f; }
     float obsEyeRadiusM() const { return obsEyeRadiusM(obsHeightOffset); }
     // 2026-08-09 (in-app finding: beam/cloud-glow ground spots visibly "drag" behind the observer
     // while moving): satENU/reflectDirENU/targetENU read back from reflectBeamsBuf each frame are
@@ -4008,7 +4099,12 @@ private:
     // Issue 20261022_174155 (2026-10-22): sky-depth pixels (translucent cloud, haze) and far surfaces take the eye's
     // parallax at this stand-in distance for their history weight / clip while the EYE moves (sky_taa.comp, e2p[1].w).
     // 0 = off (the old behaviour). display.sky_taa_parallax_floor_m.
-    float skyTaaParallaxFloorM = 1500.0f;
+    float skyTaaParallaxFloorM = 0.0f;   // 0 = off (2026-10-22 run B: the 1500-m floor doubled the climb error vs TAA-off; the eye-height fix is what fixed 174155)
+    // Diagnostic (sky_taa.comp's debug modes 1-4; 0 = off). display.sky_taa_debug. Not for users.
+    int skyTaaDebug = 0;
+    // The sky TAA's eye height from the GPU's detailed ground (issue 20261022_174155; false = the CPU DEM's, the old
+    // behaviour, for A/B). display.sky_taa_gpu_eye.
+    bool skyTaaEyeFromGpuGround = true;
     bool skyTaaUsedThisFrame = false;
     bool skyTaaHistValid = false;
     int skyTaaHist = 0;
@@ -4207,6 +4303,7 @@ private:
     float cv2CdcLightLevels = 3.0f, cv2CdcLightLevelsUsed = -1.0f;   // ... on levels below this (cells to 400 m)
     float cv2CdcNearM = 0.0f;             // coarse steps skip only beyond this distance (m)
     float cv2FullRes = 1.0f;              // S9: full-resolution clouds (computeCloudExtent; on for High / Ultra, the compiled defaults)
+    float cv2FullResMovingMode = 0.0f;    // full-res clouds while the eye moves from altitude (issues 20261022_210358 / _220214): 0 sparse, rotating (default); 1 sparse, held pixel; 2 full rate (every pixel, +1-6 ms; an A/B since the march's depth fix)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
     // 2026-10-22 (r1022 orbit, the matrix's "clouds thin out climbing from orbit"): the clipmap's bake reads the field at the
     // march's footprint FROM THE EYE AT BAKE TIME, and its cells never expire with time paused: climbing, cells baked lower
@@ -4214,6 +4311,8 @@ private:
     // skipped whole cloud masses. The guard drops the clipmap while the eye moves fast for its height and starts a new epoch
     // when it comes back or after the eye has moved a quarter of its distance scale. 0 = the old behaviour.
     float cv2CdcMotionGuard = 1.0f;
+    float cv2SunVolumeOn = 1.0f;           // diagnostic (r1022): 0 = no Sun transmittance volume (clouds lit by the light march alone)
+    float cv2EyeHeightNow = 1.0f;          // the v2 eye from this frame's height offset, not last frame's GPU readback (0 = old)
     glm::dvec3 cv2CdcRefEye{0.0};          // the eye when the clipmap's current epoch began
     double cv2CdcRefS = 0.0;               // ... and its distance scale then
     bool  cv2CdcWasActive = false;
@@ -4260,6 +4359,7 @@ private:
     float cv2FullRateAboveKm = 30.0f;  // above this eye altitude every pixel is marched every frame
     float cv2SparseWhenStill = 0.0f;   // > 0.5: while the view is still, march 1 pixel in 4 (history fills in)
     int   cv2StillFrames = 0;          // consecutive frames with no camera / eye / time-warp motion
+    int   cv2EyeStillFrames = 0;       // consecutive frames whose EYE motion showed under 1/4 half-res px of parallax (no time warp, history kept)
     float cv2MidAmount = 1.1f;         // the mid-level layer (altocumulus / altostratus), 0 = off
     float cv2StormScale = 12.0f;        // deep convection's lobes and erosion are this much larger
     float cv2StormDetail = 0.0f;       // share of the erosion kept on deep convection
@@ -4397,6 +4497,7 @@ private:
     // Frame-to-frame state for the temporal resolve.
     uint32_t cv2Frame = 0;
     bool cv2FullRateNow = false;       // this frame's march covers every half-res pixel
+    bool cv2FullResHeldNow = false;    // this frame's full-res sparse sample is held at one pixel of each block (cv2FullResMovingMode 1)
     bool cv2HalfRateNow = false;       // ... or, "Half rate while moving", half of them (a checkerboard)
     bool cv2AdaptiveNow = false;       // ... or the adaptive rate: sparse, with full-rate tiles where the parallax is large
     bool cv2HistoryValid = false;
@@ -4516,7 +4617,9 @@ private:
     float cv2FarLayerFromKm = 600.0f;
     // Review 24 (slots 251-254): the far layer's apparent coverage at a slant (the cells' sides fill the gaps), a bias
     // on its coverage (field units), its optical depth and the softness of its sub-pixel edges.
-    float cv2FarSlant = 0.91f, cv2FarCoverBias = 0.12f, cv2FarDensity = 1.2f, cv2FarSoftness = 1.0f;   // review 24b: the user's tuning
+    // The bias is 0 since issue 20261021_173412: cv2FarColumn finds the march's own (eroded) cloud edge, and the old
+    // +0.12 doubled the far layer's cloud against the march's.
+    float cv2FarSlant = 0.91f, cv2FarCoverBias = 0.0f, cv2FarDensity = 1.2f, cv2FarSoftness = 1.0f;   // review 24b: the user's tuning
     float cv2FarLowSun = 0.38f;   // slot 255: the far layer's key light goes as mu0^(1 / (1 + this)) (0 = a flat slab)
     float cv2FarKeyGain = 4.1f, cv2FarSkyGain = 0.6f;   // review 24b: the user's tuning (was 10 / 0.3)   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 8900.0f;   // review 24b: the user's tuning (was 1500)
@@ -5643,6 +5746,10 @@ private:
     float oceanStormTrails = 1.0f;     // 2026-10-04 (slot 260): "Storm sea trails", the sky TAA keeps a stormy sea's history
                                        // unclipped (crests smear like spray and chop); 0 = off, x the sea state's storm share
     float oceanWaveRangeFade = 0.4f;   // review 28 (slot 257): the share of the wave range the waves fade over (0.4 = from 0.6x)
+    float oceanMotionFilter = 1.0f;          // 2026-10-22: the wave octaves at the pixel footprint while the eye moves (cp.oceanWaveFootK)
+    float seaMotionK = 0.0f;                 // its eased share (SatelliteSim.cpp, the CloudParams fill)
+    glm::dvec3 seaMotionPrevEye{0.0};
+    bool seaMotionPrevValid = false;
     float oceanWaveSharpness = 0.1f;         // review 21: x the footprint the wave octaves are filtered at (1 = review 14; slot 243)
     float oceanReflSamples = 6.0f;           // ocean sky-reflection loop sample count (N_REFL)
     float moonGain = 0.0053f;                // shared moonlight brightness: terrain direct term + cloud
@@ -6034,7 +6141,7 @@ private:
     // ("Clay ran out of capacity while attempting to measure text elements").
     bool textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width, int minLines,
                   float fontPx, const char *placeholder, size_t maxLen = 4000, int maxLines = 10, bool enterCommits = false,
-                  const Clay_Color *readOnlyColor = nullptr);
+                  const Clay_Color *readOnlyColor = nullptr, int16_t layerZ = 10); // layerZ: its root's z (scroll thumb)
     struct TextAreaDraw
     {
         UITextBlock block;
@@ -6496,7 +6603,7 @@ private:
     bool hovOpenControlsWindow = false; // Controls tab's "Open Controls Reference" button
     bool hovInvertMouseX = false, hovInvertMouseY = false; // Controls tab look-invert toggles
     bool hovInvertPadX = false, hovInvertPadY = false;
-    bool hovTab[15] = {}; // one per settings-window tab (kSettingsTabNames: kSettingsTabCount)
+    bool hovTab[16] = {}; // one per settings-window tab (kSettingsTabNames: kSettingsTabCount)
     bool hovScaleMinus = false;
     bool hovScalePlus = false;
     bool hovRenderScaleMinus = false;
@@ -6544,7 +6651,8 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 313;   // 312 (2026-10-22): Sun shadow volume (S3); 310-311: anvil puffiness, anvil top lift;
+    static constexpr int kCloudSliderSlots = 321;   // 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
+    // was 313: 312 (2026-10-22): Sun shadow volume (S3); 310-311: anvil puffiness, anvil top lift;
     // was 310: 302-309 (2026-10-22): the cloud rebuild's experiments (Weather tab)
     // was 302: 296-297 (2026-10-14): layer shadows, cirrus self-shadow; 298-301 aurora storms
     // was 296:   // 289-295 (2026-10-13): the cumulus shape
@@ -6949,6 +7057,7 @@ private:
     void buildSettingsWindow(const UIInput &inp, UIRenderer &ui);
     void buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui);
     void buildSettingsConstellationsTab(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui); // "Launches" (2026-10-21)
     void buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui);

@@ -205,7 +205,7 @@ public:
     // kMaxExternalImages slots are taken. updateImage() re-points an id (e.g. after the owner
     // recreated the image on resize); the caller must not update an id while a recorded frame
     // that samples it is still pending (single frame in flight: update before recording).
-    static constexpr int kMaxExternalImages = 4;
+    static constexpr int kMaxExternalImages = 6; // viewer, bookmarks, reports, the Kessler tracker's globe (+2 spare)
     uint32_t registerImage(VkDevice device, VkImageView view, VkSampler sampler);
     void     updateImage(VkDevice device, uint32_t id, VkImageView view, VkSampler sampler);
 
@@ -243,7 +243,10 @@ public:
     // after that container has been declared (floating elements aren't scoped to
     // their lexical position). Makes scrollable panels visibly scrollable instead
     // of relying on the user discovering they can scroll by trial and error.
-    void scrollbar(Clay_ElementId containerId);
+    // `zIndex` must be the z of the floating root the container lives in (every window is 10):
+    // Clay sorts roots stably by z, so at the window's own z the thumb draws right after its
+    // window and under any window declared later. A higher z put every thumb over every window.
+    void scrollbar(Clay_ElementId containerId, int16_t zIndex = 10);
 
     // ── Layout dump (harness `ui dump`, docs/HARNESS.md) ─────────────────────
     // The next record() keeps a copy of every render command: kind, box, element id (when it has a
