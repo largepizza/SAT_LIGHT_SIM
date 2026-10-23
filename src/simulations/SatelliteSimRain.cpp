@@ -13,6 +13,7 @@
 #include "../Log.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <stdexcept>
 
 void SatelliteSim::createRainParticles(VulkanContext &ctx)
@@ -268,7 +269,11 @@ void SatelliteSim::updateRainMotion(GpuCloudV2Params &p)
     glm::vec2 centre(0.0f);
     if (cv2FlashMapped && cloudsV2LightningActive())
     {
-        const float *map = (const float *)((const char *)cv2FlashMapped + kCv2RainMapOffset);
+        // One bulk copy first (2026-10-23, perf): the flash buffer is device-local host-visible memory, uncached for
+        // the CPU, and 1028 single-float reads over PCIe were ~0.7 ms of every frame. Same values.
+        static thread_local float mapCopy[32 * 32];
+        std::memcpy(mapCopy, (const char *)cv2FlashMapped + kCv2RainMapOffset, sizeof(mapCopy));
+        const float *map = mapCopy;
         const int n = 32, c = n / 2;
         rate = 0.25f * (map[(c - 1) * n + c - 1] + map[(c - 1) * n + c] + map[c * n + c - 1] + map[c * n + c]);
         double sw = 0.0, sx = 0.0, sy = 0.0;
