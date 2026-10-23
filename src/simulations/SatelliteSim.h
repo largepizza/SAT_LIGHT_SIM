@@ -1847,8 +1847,11 @@ struct GpuCloudParams
     glm::vec4 coastN[kMaxCoastPatchesGpu];           // xyz north axis
     glm::vec4 coastCol[kMaxCoastPatchesGpu];         // rgb land colour, w land floor (m)
     glm::uvec4 coastG[kMaxCoastPatchesGpu * kCoastGridN * kCoastGridN / 16]; // the grids' bytes
+    // Tropical cyclones at sea (11040 -> 11104, 2026-10-23, SatelliteSim::weatherFillSeaParams): the two nearest.
+    glm::vec4 seaCycA[2];   // xyz Earth-fixed centre, w radius of maximum wind (m; 0 = none)
+    glm::vec4 seaCycB[2];   // x vmax (m/s), y the wind field's reach (m)
 };
-static_assert(sizeof(GpuCloudParams) == 11040, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 11104, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -3113,6 +3116,7 @@ private:
     bool launchGoToShipLanding(double leadS, double distM, double azDeg, double heightM, int dayNight,
                                const std::string &vehicle, std::string &msg);
     void launchFillPadParams(GpuCloudParams &cp); // the UBO's pad block (nearest kMaxPadsGpu)
+    void weatherFillSeaParams(GpuCloudParams &cp); // the UBO's cyclones-at-sea block (SatelliteSimWeather.cpp)
     void launchFillPadLights(); // their floodlights / beacons as point sprites (kFireBuf)
     nlohmann::json launchPadsJson() const;
     bool launchGoToPad(const std::string &site, double distM, double azDeg, double heightM, std::string &msg);

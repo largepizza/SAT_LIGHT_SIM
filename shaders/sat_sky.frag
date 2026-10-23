@@ -2828,6 +2828,20 @@ float oceanSeaState(vec3 dE) {
     float belt  = smoothstep(0.5, 0.71, latA) * (1.0 - smoothstep(0.87, 0.94, latA));   // ~30-45 .. 60-70 deg
     float wind  = 0.5 + 0.28 * sin(3.1 * dE.x + 5.0 * dE.y + 1.3) + 0.22 * sin(4.7 * dE.z - 2.3 * dE.x + 0.4);
     float s     = (0.3 + 0.35 * wind + 0.35 * belt + 0.9 * storm) / 0.65;
+    // A tropical cyclone's wind (2026-10-23, cloud.seaCyc*: the two nearest): rising to vmax at the radius of maximum
+    // wind, (rmw / r)^0.6 beyond (surfaceWindAt's profile), calm in the eye. The sea state ~ (U / 9 m/s)^1.3 (a wind sea's
+    // height goes with U^2, its slopes less), up to 5x (~10 m waves by a Category 3 eyewall): the waves, whitecaps and the surf on a coast it makes landfall on.
+    for (int k = 0; k < 2; ++k) {
+        float rmw = cloud.seaCycA[k].w;
+        if (rmw <= 0.0) continue;
+        float r = acos(clamp(dot(dE, cloud.seaCycA[k].xyz), -1.0, 1.0)) * R_EARTH;
+        float reach = cloud.seaCycB[k].y;
+        if (r >= reach) continue;
+        float U = cloud.seaCycB[k].x * (r < rmw ? smoothstep(0.2, 1.0, r / rmw) : pow(rmw / r, 0.6))
+                * (1.0 - smoothstep(0.6 * reach, reach, r));
+        s = max(s, min(pow(U / 9.0, 1.3), 5.0));
+        gSeaRain = max(gSeaRain, 0.6 * smoothstep(20.0, 40.0, U));
+    }
     return max(0.25, 1.0 + (s - 1.0) * g);
 }
 

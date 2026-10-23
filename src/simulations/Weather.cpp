@@ -1459,6 +1459,16 @@ void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, st
         Sh.stormId = S.c->id;
         Sh.kind = StormKind::Tropical;
         if (Sh.strength > 0.0f) out.push_back(Sh);
+        // The OUTFLOW cirrus (2026-10-23): a thin, frayed ice sheet spreading past the CDO toward the outer bands — the
+        // shield shader's aged (orphan-anvil) look: thinner, half the density, frayed at both noise scales. Weak, so the
+        // arms show through it; the CDO wins where they overlap (cv2ShieldAt takes the strongest).
+        Shield O = Sh;
+        O.rA = O.rB = std::max(1.6f * S.cdoR, 0.6f * S.outerR);
+        O.strength = 0.25f * (float)smooth01(25.0, 50.0, S.vmax);   // (0.4: grey hard-edged blotches between the arms)
+        O.thick = 0.35f;
+        O.age01 = 0.85f;
+        O.stormId = S.c->id ^ 0x0F10ull;
+        if (O.strength > 0.0f) out.push_back(O);
     }
 }
 

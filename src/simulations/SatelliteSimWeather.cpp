@@ -871,3 +871,27 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
         }
     }
 }
+
+// The two tropical cyclones nearest the observer, for the sea state (sat_sky.frag oceanSeaState: the waves, whitecaps and
+// surf follow the storm's wind field, as the rain and the ambience do through surfaceWindAt).
+void SatelliteSim::weatherFillSeaParams(GpuCloudParams &cp)
+{
+    for (int k = 0; k < 2; ++k) { cp.seaCycA[k] = glm::vec4(0.0f); cp.seaCycB[k] = glm::vec4(0.0f); }
+    if (!stormObjects) return;
+    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    std::vector<std::pair<double, size_t>> near;
+    for (size_t i = 0; i < stormCyclonesNow.size(); ++i)
+    {
+        const wx::CycloneState &c = stormCyclonesNow[i];
+        const double reach = (double)c.outerR * 1.5;
+        const double d = std::acos(std::clamp(glm::dot(up, c.earth), -1.0, 1.0)) * kReW;
+        if (d < reach + 3.0e6) near.push_back({d - reach, i});   // (anything the eye can see the sea of)
+    }
+    std::sort(near.begin(), near.end());
+    for (size_t k = 0; k < near.size() && k < 2; ++k)
+    {
+        const wx::CycloneState &c = stormCyclonesNow[near[k].second];
+        cp.seaCycA[k] = glm::vec4(glm::vec3(c.earth), std::max(c.rmw, 5000.0f));
+        cp.seaCycB[k] = glm::vec4(c.vmax, (float)c.outerR * 1.5f, 0.0f, 0.0f);
+    }
+}

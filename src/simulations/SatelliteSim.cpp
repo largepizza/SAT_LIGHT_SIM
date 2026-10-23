@@ -2738,6 +2738,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.auroraStorm = glm::vec4(auroraStormFeatures, auroraBlueRayChance, auroraArcSystems, auroraStormRedGain);
         cp.auroraSky = glm::vec4(1.0f / std::max(lightPollutionGain, 1e-4f), 0.0f, 0.0f, 0.0f);
         launchFillPadParams(cp); // the launch pads on the ground (SatelliteSimLaunches.cpp)
+        weatherFillSeaParams(cp); // tropical cyclones' winds on the sea (SatelliteSimWeather.cpp)
         cp.moonCenter = glm::vec4(moonCenterENUkm, moonAngR);
         // y: 0 = no solar eclipse possible, else 1 + the observer's eclipse sky light (0..1), which sat_sky.frag's
         // exposure applies exactly as skyExposure() does (every `y > 0.5` test still reads it as the flag).

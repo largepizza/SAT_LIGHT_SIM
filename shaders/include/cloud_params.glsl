@@ -502,4 +502,9 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     vec4  coastN[COAST_MAX];
     vec4  coastCol[COAST_MAX];
     uvec4 coastG[COAST_MAX * COAST_GRID_N * COAST_GRID_N / 16];
+    // -- Tropical cyclones at sea (11040 -> 11104, 2026-10-23; SatelliteSim::weatherFillSeaParams): the two nearest the
+    // observer, for the sea state (sat_sky.frag oceanSeaState). seaCycA xyz the Earth-fixed centre (unit), w the radius of
+    // maximum wind (m, 0 = none); seaCycB x vmax (m/s), y the wind field's reach (m), zw unused.
+    vec4  seaCycA[2];
+    vec4  seaCycB[2];
 } cloud;

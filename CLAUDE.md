@@ -896,10 +896,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   reads the MAP through a static differential rotation about each cyclone (`cycloneSwirl`: cyclonic, 0.6-1.5 rad near the
   CDO, none past the outer bands), so the map's own cloud near a storm trails round it in spirals, the CDO deck,
   eyewall rain and the eye cleared outright (the moat at x4). Its wind drives the surface wind (`surfaceWindAt`: rising to
-  the rmw, (rmw / r)^0.6 beyond, 20 deg inflow, x0.7 at the eye's height, calm eye) and so the rain, snow and ambience.
-  Harness `storms cyclones`, `storms season basin=<0-5> year=`, `storms go cyclone=<name|id|strongest>`. Not yet: the
-  Weather window's named-storm list and tracks, landfall surge / sea state from its wind, extratropical transition's
-  look, outflow cirrus beyond the CDO, the eyewall's lightning share.
+  the rmw, (rmw / r)^0.6 beyond, 20 deg inflow, x0.7 at the eye's height, calm eye) and so the rain, snow and ambience
+  (the open-sea surf `sea_open` louder, fizzier and quicker with `surface_wind`), and the SEA (2026-10-23: the two nearest
+  in CloudParams `seaCycA/B`, 11040 -> 11104, `weatherFillSeaParams`; `oceanSeaState` takes max(its state, (U / 9 m/s)^1.3,
+  at most 5) on the same profile: whitecapped seas, surf on a landfall coast). OUTFLOW cirrus: a second, weak (0.25), aged
+  (0.85) shield per cyclone to max(1.6 CDO, 0.6 outer) — the orphan-anvil look; at 0.4 it drew grey blotches between the arms.
+  Harness `storms cyclones`, `storms season basin=<0-5> year=`, `storms go cyclone=<name|id|strongest>`. Not yet:
+  storm surge, extratropical transition's look, the eyewall's lightning share.
   **Tornadoes and waterspouts (2026-10-23, `SatelliteSim::tornadoOf` / `weatherFillTornadoes`, SatelliteSimWeather.cpp):**
   fixed by their storm's id: ~35% of supercells put one down for 5-25 min of their mature phase (between `anvOn` + 20 min
   and `anvOff` - 10 min), ~12% of strong single / multicell storms over the sea a waterspout (4-14 min); on the rear

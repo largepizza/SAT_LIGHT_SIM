@@ -41,3 +41,8 @@ rear-flank rain-free base where the tornado stands (just past the tower's rain c
 The tracks were one west-northwest-then-recurve rule for every basin; bands were two 18-deg arms that read as rings when
 more were added at tight pitch; tornadoes had static billows and a hard in-front/behind composite that cut a cloud-shaped hole
 round the funnel top; the map's own rain (30-45 dBZ over ~100 km round a supercell) hid tornadoes.
+
+## Now (storm seas, outflow)
+A tropical cyclone's wind raises the sea state on its own profile (the two nearest cyclones; up to 5x, ~10 m waves by a
+Category 3 eyewall), with whitecaps and surf on a coast it makes landfall on; the open-sea surf ambience grows louder and
+quicker with the surface wind. A thin, frayed outflow cirrus sheet spreads past the central dense overcast.
