@@ -7348,8 +7348,10 @@ same frames: mean |diff| 0.3-1.4 levels, within run-to-run noise (`screenshots/o
   across / along the Sun + 60 km) and no land within 60 km (`terrainInSunBox`, `landWithin`; 0.3 ms over open ocean).
 - **What is left** (knockouts / settings A/B'd in one live app): the cloud march 3.6-8 ms (Cb towers ~1.1 ms at
   `cb_columns` 2; from inside the high layer at 11 km the cirrus ~4 ms; mid layer 0.7-0.9); the god rays ~1.7-2.5 ms of
-  the sky pass + the froxel fill 0.5 ms (a measured gate — steps wholly above the Sun volume's top under a Sun above the
-  local horizon read nothing — saved 0.6-0.8 ms; not committed, the froxel code had another owner that night);
+  the sky pass + the froxel fill 0.5 ms, less since a follow-up: an atmosphere step whose lowest point is over 3 km above
+  the Sun volume's top (or the terrain ceiling, 9.4 km), under a Sun above the sample's horizon (sin > 0.05), takes no
+  god-ray reads (they all return 1 there): sky -0.6..-1.2 ms (a1 0.6, b3 0.7, d1 1.15), captures and the HQ photo
+  within the gate-on vs gate-on noise;
   full-resolution clouds at Medium +1.5..+4.7 ms (the user's choice, issue 20261022_180607); the atmosphere loop's rest
   ~2 ms (Sun optical depth 0.3-0.5); `view_samples_max` 96 -> 64 only -0.3 ms after the airglow fix (left). CPU: the
   launch visuals 0.35-0.6 ms (far built plumes' per-parcel states), the storm update 0.76 ms a frame while sim time runs
