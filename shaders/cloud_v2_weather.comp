@@ -37,7 +37,8 @@ layout(set = 0, binding = 3) uniform sampler2D earthElevTex;     // equirect R8 
 // evo2: xyz the Sun's direction three hours ago in the map's frame, w "Afternoon land convection".
 // remap (review 18): x "Coverage" (the map brightness multiplier, look.x), y the clear and z the full threshold
 // (cover.xy), w this level's mip.
-layout(push_constant) uniform PC { int faceSize; float srcLod; int face; float pad; vec4 evo0; vec4 evo1; vec4 evo2; vec4 remap; } pc;
+// wx (2026-10-22): xy cos / sin of the map's drift: d is in the MAP frame, and the land / sea mask is Earth-fixed.
+layout(push_constant) uniform PC { int faceSize; float srcLod; int face; float pad; vec4 evo0; vec4 evo1; vec4 evo2; vec4 remap; vec4 wx; } pc;
 
 const float PI = 3.14159265359;
 const float R_EARTH_W = 6371000.0;
@@ -143,7 +144,11 @@ void main()
     if (pc.evo1.y > 0.0) cov = clamp(cov + pc.evo1.y * evoGrowth(d), 0.0, 1.0);
 
     float latAbs  = abs(asin(clamp(d.z, -1.0, 1.0))) * (180.0 / PI);
-    float ocean   = textureLod(earthSpecTex, equirectUV(d), pc.srcLod + 2.0).r;
+    // The sea under this part of the map NOW (the map drifts over the Earth: cv2Drift turns Earth-fixed e by +phase).
+    // It was read at the map-frame d, so the afternoon land convection and the cold-sea stratus followed a land mask
+    // displaced by the whole drift (thousands of km by the start date).
+    vec3  dE      = vec3(d.x * pc.wx.x + d.y * pc.wx.y, -d.x * pc.wx.y + d.y * pc.wx.x, d.z);
+    float ocean   = textureLod(earthSpecTex, equirectUV(dE), pc.srcLod + 2.0).r;
     float tropics = 1.0 - smoothstep(18.0, 32.0, latAbs);
     float polar   = smoothstep(50.0, 70.0, latAbs);
 

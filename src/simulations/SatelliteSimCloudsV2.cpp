@@ -252,6 +252,7 @@ static std::vector<uint8_t> makeBlueNoise64()
 
 void SatelliteSim::createCloudsV2(VulkanContext &ctx)
 {
+    createStormBuffer(ctx);   // the storm objects' towers (SatelliteSimWeather.cpp): march set binding 26
     VkDevice dev = ctx.device;
 
     // ── Samplers ──
@@ -572,14 +573,15 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // 23 the cloud density clipmap (2026-10-21, EXPERIMENT, cv2_cdc.glsl; cloud_v2_cdc.comp writes it)
     // 24 the droplets' Mie phase table (2026-10-22)
     // 25 the elevation map (2026-10-22: the terrain Sun-horizon map's bake, cloud_v2_terrsun.comp, alone reads it)
+    // 26 the storm objects' towers + their bins (cv2_storms.glsl, SatelliteSimWeather.cpp)
     cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX, SSBO,
-                                             TEX, IMG, IMG, SSBO, TEX, IMG, SSBO, SSBO, TEX, TEX});
+                                             TEX, IMG, IMG, SSBO, TEX, IMG, SSBO, SSBO, TEX, TEX, SSBO});
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
     // 6/7 the full-rate tiles' color/depth, 8 the tile list
     // 9 / 10 the sample ages (out, history)
     cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO, IMG, TEX});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 17}, {SSBO, 8}, {IMG, 9}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 17}, {SSBO, 9}, {IMG, 9}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -641,6 +643,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkDescriptorBufferInfo blueNoise{cv2BlueNoiseBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo tiles{cv2TileBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo cdc{cv2CdcBuf, 0, VK_WHOLE_SIZE};
+        VkDescriptorBufferInfo storms{stormBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorImageInfo mieI{cv2ClampSampler, cv2MieView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo lvOut{VK_NULL_HANDLE, cv2SunLutView, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo lvIn{cv2ClampSampler, cv2SunLutView, VK_IMAGE_LAYOUT_GENERAL};
@@ -652,6 +655,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             bufferWrite(cv2MarchDescSet, 19, SSBO, &tiles),
             bufferWrite(cv2MarchDescSet, 22, SSBO, &blueNoise),
             bufferWrite(cv2MarchDescSet, 23, SSBO, &cdc),
+            bufferWrite(cv2MarchDescSet, 26, SSBO, &storms),
             imageWrite(cv2MarchDescSet, 24, TEX, &mieI),
             bufferWrite(cv2ResolveDescSet, 8, SSBO, &tiles),
             imageWrite(cv2MarchDescSet, 13, IMG, &lvOut),
@@ -960,6 +964,7 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     if (cv2BlueNoiseBuf) vkDestroyBuffer(device, cv2BlueNoiseBuf, nullptr);
     if (cv2BlueNoiseMem) vkFreeMemory(device, cv2BlueNoiseMem, nullptr);
     cv2BlueNoiseBuf = VK_NULL_HANDLE; cv2BlueNoiseMem = VK_NULL_HANDLE;
+    destroyStormBuffer(device);
     if (cv2MarchPipeLayout) vkDestroyPipelineLayout(device, cv2MarchPipeLayout, nullptr);
     if (cv2ResolvePipeLayout) vkDestroyPipelineLayout(device, cv2ResolvePipeLayout, nullptr);
     if (cv2DescPool) vkDestroyDescriptorPool(device, cv2DescPool, nullptr);
@@ -1041,6 +1046,7 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo res{cv2ClampSampler, cv2ResolvedView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo resDepth{cv2ClampSampler, cv2ResolvedDepthView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorBufferInfo flashes{cv2FlashBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo storms{stormBuf, 0, VK_WHOLE_SIZE};
     // The sky set's binding 7 (sat_sky.frag's flat layers, its SKY_ENV / SKY_LITE variants and Potato):
     // the weather cube, so every flat stand-in shows the same evolving map as the volumetric clouds.
     VkDescriptorImageInfo weatherCube{cv2RepeatSampler, cv2WeatherView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -1064,7 +1070,8 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
         imageWrite(beamSelfMarchDescSet, 6, TEX, &weather),
         imageWrite(beamSelfMarchDescSet, 7, TEX, &shape),
         imageWrite(beamSelfMarchDescSet, 8, TEX, &meso),
-        imageWrite(beamSelfMarchDescSet, 9, TEX, &morph)};
+        imageWrite(beamSelfMarchDescSet, 9, TEX, &morph),
+        bufferWrite(beamSelfMarchDescSet, 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &storms)};
     vkUpdateDescriptorSets(ctx.device, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
 }
 
@@ -1737,6 +1744,8 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
     const double dr = cloudDriftPhase();
     const glm::dvec3 sm(se.x * std::cos(dr) - se.y * std::sin(dr), se.x * std::sin(dr) + se.y * std::cos(dr), se.z);
     pc.evo2 = glm::vec4(glm::vec3(glm::normalize(sm)), std::max(cv2EvoDiurnal, 0.0f));
+    // The drift itself: the land / sea mask is Earth-fixed, the map is not (cloud_v2_weather.comp).
+    pc.wx = glm::vec4((float)std::cos(dr), (float)std::sin(dr), 0.0f, 0.0f);
     pc.remap = glm::vec4(cv2Coverage, cv2CoverClear, std::max(cv2CoverFull, cv2CoverClear + 0.01f), (float)mip);
     return pc;
 }
@@ -1838,6 +1847,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
             cv2PassQuery = VK_NULL_HANDLE;
     }
     fillCloudsV2Params(ctx, cpc);   // cloud_march.comp reads the v2 UBO (beams, debug views) either way
+    updateStorms();                 // the storm objects' towers at this sim time (march, lightning, beams, clipmap)
     // The weather cube keeps evolving with the clouds off: the flat stand-ins (sat_sky.frag's flat layers,
     // SKY_LITE, Potato's deck, reflections and probes) read it.
     recordWeatherEvolution(cmd);

@@ -35,6 +35,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 #define CV2_SHAPE_BINDING   3
 #define CV2_DETAIL_BINDING  4
 #define CV2_MESO_BINDING    5
+#define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #include "clouds_v2.glsl"
 layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // (its size: the march's pixel)

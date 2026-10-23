@@ -17,6 +17,8 @@
 #include "SatTrace.h"      // magnitude trace + CSV export (benchmarking M9)
 #include "SpaceWeather.h"  // aurora activity over sim time + the oval (2026-10-03)
 #include "Kessler.h"       // Kessler syndrome: breakups, the debris pool, the cascade (2026-10-16)
+#include "Weather.h"       // weather events: storm objects (2026-10-22, .plans/WEATHER_EVENTS_PLAN.md)
+#include "StormClimatology.h"
 #include "SegVec.h"        // kEvents: a segmented vector (no reallocation hitches, 2026-10-21)
 #include "SatBench.h"      // shared sample schema + bulk export (benchmarking M10)
 #include "SatMeshRenderer.h"
@@ -4425,8 +4427,9 @@ private:
         glm::vec4 evo1;        // x wind (m/s), y growth, z sim time (s, wrapped), w unused
         glm::vec4 evo2;        // xyz the Sun three hours ago (map frame), w afternoon land convection
         glm::vec4 remap;       // x Coverage, y clear, z full (coarse levels store the true mean coverage), w mip
+        glm::vec4 wx;          // xy cos / sin of the map's drift (cv2Drift), zw unused
     };
-    static_assert(sizeof(GpuWeatherPC) == 80, "GpuWeatherPC == cloud_v2_weather.comp's PC");
+    static_assert(sizeof(GpuWeatherPC) == 96, "GpuWeatherPC == cloud_v2_weather.comp's PC");
     GpuWeatherPC weatherEvoPC(int face, uint32_t mip) const;
     void recordWeatherEvolution(VkCommandBuffer cmd);
     VkDescriptorSetLayout cv2WxSetLayout = VK_NULL_HANDLE;
@@ -4437,6 +4440,38 @@ private:
     std::vector<VkImageView> cv2WxMipViews;
     double cv2WxBakedT[6] = {};        // sim time each face was last baked at
     uint64_t cv2WxHash = 0;            // the evolution settings the faces were baked with
+    // ── Weather events: storm objects (SatelliteSimWeather.cpp, shaders/include/cv2_storms.glsl) ──
+    // The towers alive this frame, uploaded with a spatial index; the cloud shaders draw towers only from it.
+    struct GpuStormTower { glm::vec4 a, b, c; };   // = cv2_storms.glsl CV2Tower
+    static_assert(sizeof(GpuStormTower) == 48, "GpuStormTower == cv2_storms.glsl's CV2Tower");
+    static constexpr uint32_t kStormMaxTowers = 8192, kStormTableSize = 65536, kStormListSize = 196608,
+                              kStormBinsPerFace = 256, kStormMaxPerBin = 12;   // = cv2_storms.glsl's constants
+    static constexpr VkDeviceSize kStormTowersOffset = 16;
+    static constexpr VkDeviceSize kStormTableOffset = kStormTowersOffset + 48ull * kStormMaxTowers;
+    static constexpr VkDeviceSize kStormListOffset = kStormTableOffset + 8ull * kStormTableSize;
+    static constexpr VkDeviceSize kStormBufBytes = kStormListOffset + 4ull * kStormListSize;
+    VkBuffer stormBuf = VK_NULL_HANDLE;
+    VkDeviceMemory stormMem = VK_NULL_HANDLE;
+    void *stormMapped = nullptr;
+    std::unique_ptr<wx::Catalog> stormCatalog;
+    std::unique_ptr<wx::StormClimatology> stormClim;
+    std::vector<wx::Tower> stormTowers;          // this frame's, strongest first
+    struct StormEntry { uint32_t key, tower; };
+    std::vector<StormEntry> stormEntries;
+    std::vector<glm::uvec2> stormTable;
+    std::vector<uint32_t> stormCounts;
+    double stormUploadedT = -1e300;
+    uint64_t stormEnvKey = 0;
+    bool  stormObjects = true;                   // weather.storm_objects (off = no towers at all)
+    float stormFrequency = 1.0f;                 // weather.storm_frequency: x the calibrated spawn rate
+    float stormLifeScale = 1.0f;                 // weather.storm_life: x every storm's lifetime
+    struct StormStats { int towers = 0, bins = 0, entries = 0, truncated = 0, lost = 0, dropped = 0; double cpuMs = 0; } stormStats;
+    void createStormBuffer(VulkanContext &ctx);
+    void destroyStormBuffer(VkDevice device);
+    void updateStorms();                         // per frame, before the clouds are recorded
+    uint64_t stormEnvHash() const;
+    // The towers nearest the observer (Earth-fixed lat / lon, distance, bearing, strength ...); dominantOnly: role 1.
+    nlohmann::json stormNearestJson(int n, float minStrength = 0.0f, float rangeKm = 1e9f, bool dominantOnly = false) const;
     uint32_t cv2WxRebakes = 0;         // faces re-baked so far (harness state)
     VkDeviceMemory cv2WeatherMem = VK_NULL_HANDLE;
     VkImageView cv2WeatherView = VK_NULL_HANDLE;

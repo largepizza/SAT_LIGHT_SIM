@@ -47,6 +47,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_SHAPE_BINDING   3
 #define CV2_DETAIL_BINDING  4
 #define CV2_MESO_BINDING    5
+#define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #include "clouds_v2.glsl"
 #include "atmosphere.glsl"
 #include "eclipse.glsl"

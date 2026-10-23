@@ -8758,6 +8758,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CbFill = c.value("cb_fill", cv2CbFill);
         cv2CbCumulusVar = c.value("cb_cumulus_variation", cv2CbCumulusVar);
         cv2EvoWindMps = c.value("evo_wind_mps", cv2EvoWindMps);
+        stormObjects = c.value("storm_objects", stormObjects);
+        stormFrequency = settingClamp(c.value("storm_frequency", stormFrequency), 0.0f, 10.0f);
+        stormLifeScale = settingClamp(c.value("storm_life", stormLifeScale), 0.1f, 5.0f);
         cv2EvoGrowth = c.value("evo_growth", cv2EvoGrowth);
         cv2EvoWindowH = c.value("evo_window_h", cv2EvoWindowH);
         cv2EvoDiurnal = c.value("evo_diurnal", cv2EvoDiurnal);
@@ -9357,6 +9360,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cb_fill", cv2CbFill},
         {"cb_cumulus_variation", cv2CbCumulusVar},
         {"evo_wind_mps", cv2EvoWindMps},
+        {"storm_objects", stormObjects},
+        {"storm_frequency", stormFrequency},
+        {"storm_life", stormLifeScale},
         {"evo_growth", cv2EvoGrowth},
         {"evo_window_h", cv2EvoWindowH},
         {"evo_diurnal", cv2EvoDiurnal},

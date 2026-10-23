@@ -735,6 +735,26 @@ json SatelliteSim::harnessStateJson()
         }
         j["clouds_v2"]["rain"] = rn;
     }
+    {   // Weather events (SatelliteSimWeather.cpp): the storm objects' towers this frame.
+        json w;
+        w["storm_objects"] = stormObjects;
+        w["towers"] = stormStats.towers;
+        w["bins"] = stormStats.bins;
+        w["entries"] = stormStats.entries;
+        w["truncated"] = stormStats.truncated;
+        w["lost"] = stormStats.lost;
+        w["dropped"] = stormStats.dropped;
+        w["cpu_ms"] = stormStats.cpuMs;
+        if (stormCatalog)
+        {
+            const wx::Catalog::Stats cs = stormCatalog->stats();
+            w["storms_alive"] = cs.stormsAlive;
+            w["bins_cached"] = cs.binsCached;
+            w["bin_build_ms_last"] = cs.buildMsLastCall;
+        }
+        w["nearest"] = stormNearestJson(8);
+        j["weather"] = w;
+    }
     static const char *kBucketKeys[8] = {"scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
                                          "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};
     json g;
@@ -3996,6 +4016,55 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         snprintf(buf, sizeof(buf), "seed %s, hit %.0f m (%d steps) / from eye %.0f m (%d steps)",
                  v[0].w > 0.5f ? "SKY" : std::to_string((int)v[0].z).c_str(), v[1].x, (int)v[1].y, v[1].z, (int)v[1].w);
         r["message"] = buf;
+        return Status::Done;
+    }
+
+    // ── storms: the storm objects (SatelliteSimWeather.cpp). `storms` lists the nearest towers; `storms go [k=0]
+    // [dist_km=60] [alt=1500] [el=6] [min_strength=0.6] [range_km=6000]` stands the observer dist_km from the k-th nearest
+    // anvil-reaching tower, upwind of it, looking at it (time is left as it is: pause first to hold the storm). ──
+    if (n == "storms")
+    {
+        if (lower(pos(0)) == "go")
+        {
+            const json near = stormNearestJson(64, (float)c.num("min_strength", 0.6), (float)c.num("range_km", 6000.0), true);
+            const int k = (int)c.num("k", 0.0);
+            if (!near.is_array() || k < 0 || k >= (int)near.size())
+                fail("storms go: no anvil-reaching tower in range (" + std::to_string(near.is_array() ? near.size() : 0) + " found)");
+            const json &t = near[(size_t)k];
+            const double tl = glm::radians(t.at("lat_deg").get<double>()), to = glm::radians(t.at("lon_deg").get<double>());
+            const glm::dvec3 te(std::cos(tl) * std::cos(to), std::cos(tl) * std::sin(to), std::sin(tl));
+            const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), te));
+            const glm::dvec3 north = glm::cross(te, east);
+            // Upwind of it (the anvil blows away from the observer), unless az_from= gives the bearing to stand at.
+            const double b = c.has("az_from") ? glm::radians(c.num("az_from", 0.0))
+                                              : glm::radians(t.at("shear_bearing_deg").get<double>()) + glm::pi<double>();
+            const double ang = c.num("dist_km", 60.0) * 1000.0 / 6371000.0;
+            const glm::dvec3 oe = glm::normalize(te * std::cos(ang) + (east * std::sin(b) + north * std::cos(b)) * std::sin(ang));
+            if (followActive)
+                stopFollow();
+            obsDir = glm::vec3(oe);
+            obsLatDeg = (float)glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0)));
+            obsLonDeg = (float)glm::degrees(std::atan2(oe.y, oe.x));
+            obsHeightOffset = std::max(0.0f, (float)c.num("alt", 1500.0));
+            obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+            // Bearing from the observer to the tower (degrees from north, east positive).
+            const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe)), oNorth = glm::cross(oe, oEast);
+            const glm::dvec3 to3 = te - oe * glm::dot(te, oe);
+            const double az = glm::degrees(std::atan2(glm::dot(to3, oEast), glm::dot(to3, oNorth)));
+            aimCameraAzEl((float)az, (float)c.num("el", 6.0));
+            trailClearPending = true;
+            cv2HistoryValid = false;
+            r["tower"] = t;
+            r["observer"] = {{"lat_deg", obsLatDeg}, {"lon_deg", obsLonDeg}, {"alt_m", obsHeightOffset}, {"az_deg", az}};
+            char buf[200];
+            snprintf(buf, sizeof(buf), "tower %d: %.1f km off, strength %.2f; observer %.3f, %.3f at %.0f m looking %.0f deg",
+                     k, c.num("dist_km", 60.0), t.at("strength").get<double>(), obsLatDeg, obsLonDeg, obsHeightOffset, az);
+            r["message"] = buf;
+            return Status::Done;
+        }
+        r = harnessStateJson()["weather"];
+        r["message"] = std::to_string(stormStats.towers) + " towers, " + std::to_string(stormStats.bins) + " bins, "
+                     + std::to_string(stormStats.cpuMs).substr(0, 5) + " ms";
         return Status::Done;
     }
 

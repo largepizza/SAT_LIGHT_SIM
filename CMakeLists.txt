@@ -199,6 +199,16 @@ target_include_directories(UploadStress PRIVATE ${stb_SOURCE_DIR})
 target_link_libraries(UploadStress PRIVATE Vulkan::Vulkan)
 sat_strict_warnings(UploadStress)
 
+# WeatherTool (weather events, .plans/WEATHER_EVENTS_PLAN.md): the storm catalog (Weather.cpp) and its
+# thunderstorm climatology on a synthetic map, no Vulkan: counts, distributions, build costs, determinism:
+#   cmake --build build --config Release --target WeatherTool
+#   build/Release/WeatherTool.exe            (run from the repository root)
+add_executable(WeatherTool EXCLUDE_FROM_ALL tools/weather_tool/main.cpp src/simulations/Weather.cpp
+               src/simulations/StormClimatology.cpp)
+target_include_directories(WeatherTool PRIVATE src/simulations)
+target_link_libraries(WeatherTool PRIVATE glm::glm Threads::Threads)
+sat_strict_warnings(WeatherTool)
+
 # Photometric accuracy gate (benchmarking milestone M11):
 #   cmake --build <build-dir> [--config Release] --target accuracy-gate
 # Builds SatModelTool and runs cmake/AccuracyGate.cmake — the one list of model selftests and

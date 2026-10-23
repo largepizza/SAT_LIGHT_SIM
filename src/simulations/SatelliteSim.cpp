@@ -7818,6 +7818,7 @@ void SatelliteSim::setAudio(AudioSystem *audio)
     {
         const auto t0 = std::chrono::steady_clock::now();
         launchPrewarm();
+        updateStorms();   // the storm catalog: its climatology table, calibration and first bins (~150 ms)
         glfwJoystickPresent(GLFW_JOYSTICK_1); // (the first joystick query initialises the platform's joystick input)
         if (ctx_ && kesslerBuf != VK_NULL_HANDLE)
         {
@@ -11307,7 +11308,7 @@ void SatelliteSim::createSceneDepthPipeline(VulkanContext &ctx)
 // set — see that shader's header, still applicable, for why this isn't built on any shared grid).
 void SatelliteSim::createBeamSelfMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[10] = {};
+    VkDescriptorSetLayoutBinding bindings[11] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -11320,14 +11321,15 @@ void SatelliteSim::createBeamSelfMarchDescriptors(VulkanContext &ctx)
     bindings[7] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[8] = {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[9] = {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};   // morphology (review 19)
+    bindings[10] = {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};       // storm objects' towers
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 10;
+    li.bindingCount = 11;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &beamSelfMarchDescLayout);
 
     VkDescriptorPoolSize ps[3] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
