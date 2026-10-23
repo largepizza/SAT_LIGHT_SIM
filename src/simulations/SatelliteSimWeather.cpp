@@ -150,7 +150,7 @@ rim:
 // The list is built in host memory and copied over in one sequential run, the table likewise: both live in
 // device-local, host-visible (write-combined) memory, where every scattered 4-byte store is its own bus write (the
 // entries' scattered stores were most of the index's cost). `used` lists the slots the last call filled: only those
-// are cleared, and the start pass walks them sorted instead of the whole table. The result is the same as a full
+// are cleared, and the start pass walks the occupied slots in slot order. The result is the same as a full
 // build: the slots are taken in the same probe order from an all-empty table, and the list starts handed out in slot
 // order (an occupancy bitmap, not a sort). `counts` is all zero between calls.
 struct StormIndexStats { uint32_t bins = 0, entries = 0, truncated = 0, lost = 0, used = 0; };
@@ -359,6 +359,10 @@ void SatelliteSim::updateStorms()
         env.land = [this](const glm::dvec3 &e) -> float {
             if (oceanMaskCpu.empty()) return 0.3f;
             const double lat = std::asin(std::clamp(e.z, -1.0, 1.0)), lon = std::atan2(e.y, e.x);
+            return 1.0f - oceanFraction(lat, lon, 30000.0, 1);
+        };
+        env.landAt = [this](double lat, double lon) -> float {   // = env.land at (asin(z), atan2(y, x))
+            if (oceanMaskCpu.empty()) return 0.3f;
             return 1.0f - oceanFraction(lat, lon, 30000.0, 1);
         };
         env.sunEarth = [](double tt) -> glm::dvec3 {

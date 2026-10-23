@@ -166,6 +166,9 @@ struct Env {
     std::function<glm::dvec3(const glm::dvec3 &mapDir, double t)> mapToEarth;
     // Land share at an Earth-fixed direction: 0 sea .. 1 land.
     std::function<float(const glm::dvec3 &earthDir)> land;
+    // Optional, the same at a latitude and longitude (radians, = asin(z) and atan2(y, x) of the Earth-fixed direction):
+    // it must equal land() there exactly. The spawn cells' pass uses it (their latitude is cached).
+    std::function<float(double latRad, double lonRad)> landAt;
     // The Sun's Earth-fixed unit direction at time t (local solar time comes from it).
     std::function<glm::dvec3(double t)> sunEarth;
 };

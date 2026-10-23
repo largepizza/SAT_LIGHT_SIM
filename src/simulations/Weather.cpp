@@ -145,6 +145,7 @@ struct Cell {
     double lat0, lat1, lon0, lon1;   // radians, map frame
     double sin0, sin1;
     glm::dvec3 centre;
+    double latR;                     // asin(centre.z): a rotation about the pole keeps it
     double areaKm2;
 };
 
@@ -343,6 +344,7 @@ struct Catalog::Impl {
                 const double sMid = 0.5 * (c.sin0 + c.sin1), cMid = std::sqrt(std::max(0.0, 1.0 - sMid * sMid));
                 const double lonMid = 0.5 * (c.lon0 + c.lon1);
                 c.centre = glm::dvec3(cMid * std::cos(lonMid), cMid * std::sin(lonMid), sMid);
+                c.latR = std::asin(std::clamp(c.centre.z, -1.0, 1.0));
                 c.areaKm2 = kREarthKm * kREarthKm * dLon * (c.sin1 - c.sin0);
                 cells.push_back(c);
             }
@@ -365,6 +367,7 @@ struct Catalog::Impl {
                 const double sMid = 0.5 * (c.sin0 + c.sin1), cMid = std::sqrt(std::max(0.0, 1.0 - sMid * sMid));
                 const double lonMid = 0.5 * (c.lon0 + c.lon1);
                 c.centre = glm::dvec3(cMid * std::cos(lonMid), cMid * std::sin(lonMid), sMid);
+                c.latR = std::asin(std::clamp(c.centre.z, -1.0, 1.0));
                 c.areaKm2 = kREarthKm * kREarthKm * dLon * (c.sin1 - c.sin0);
                 lineCells.push_back(c);
             }
@@ -647,16 +650,25 @@ struct Catalog::Impl {
     }
 
     // One time bin's storms: a pure function of (bin, Env, Settings, K).
+    // rot (optional): Env::mapToEarth at tMid as a rotation about the pole, its images of x and y (rotX, rotY), when the
+    // caller has checked that it IS one (mapToEarthRotZ). Applied as ex * d.x + ey * d.y + z * d.z it is the same
+    // arithmetic as the sim's own Env (bit-identical) without a call and a cosine and sine per cell. With Env::landAt
+    // the land share takes the cell's latitude (cached: a rotation about the pole keeps it) and the longitude computed
+    // here, instead of recomputing both from e.
     void buildCellRange(int64_t bin, size_t c0, size_t c1, double tMid, double sunLonDeg, double doy,
-                        std::vector<Storm> &out) const {
+                        std::vector<Storm> &out, const glm::dvec3 *rot = nullptr) const {
         const double binT0 = (double)bin * kBinS;
         const double freq = std::max(0.0, (double)set.frequency);
         for (size_t ci = c0; ci < c1; ++ci) {
             const Cell &c = cells[ci];
-            const glm::dvec3 e = env.mapToEarth(c.centre, tMid);
-            const double latE = std::asin(std::clamp(e.z, -1.0, 1.0)) / kDeg;
-            const double lonE = std::atan2(e.y, e.x) / kDeg;
-            const float land = env.land ? env.land(e) : 0.0f;
+            const glm::dvec3 e = rot ? glm::dvec3(rot[0].x * c.centre.x + rot[1].x * c.centre.y,
+                                                  rot[0].y * c.centre.x + rot[1].y * c.centre.y, c.centre.z)
+                                     : env.mapToEarth(c.centre, tMid);
+            const double latR = rot ? c.latR : std::asin(std::clamp(e.z, -1.0, 1.0));
+            const double lonR = std::atan2(e.y, e.x);
+            const double latE = latR / kDeg;
+            const double lonE = lonR / kDeg;
+            const float land = (rot && env.landAt) ? env.landAt(latR, lonR) : env.land ? env.land(e) : 0.0f;
             double hour = 12.0 + wrapDeg(lonE - sunLonDeg) / 15.0;
             hour = std::fmod(hour + 24.0, 24.0);
             const double fd = flash(latE, lonE, doy, hour, land);
@@ -856,12 +868,25 @@ void Catalog::stormsAt(double t, std::vector<const Storm *> &out) {
         // range appends its cells' storms in cell order, so a bin's ranges joined in order are the bin built whole.
         constexpr size_t kCellsPerTask = 512;
         const size_t nCh = std::max<size_t>(1, (I.cells.size() + kCellsPerTask - 1) / kCellsPerTask);
-        struct BinT { double tMid, sunLon, doy; };
+        struct BinT { double tMid, sunLon, doy; glm::dvec3 rot[2]; bool rotOk; };
         std::vector<BinT> bt(missing.size());
         for (size_t j = 0; j < missing.size(); ++j) {
             const double tMid = ((double)missing[j] + 0.5) * kBinS;
             const glm::dvec3 sun = I.env.sunEarth ? I.env.sunEarth(tMid) : glm::dvec3(1, 0, 0);
-            bt[j] = {tMid, std::atan2(sun.y, sun.x) / kDeg, dayOfYear(tMid)};
+            bt[j] = {tMid, std::atan2(sun.y, sun.x) / kDeg, dayOfYear(tMid), {}, false};
+            // Map -> Earth at tMid as a rotation about the pole (the sim's drift), checked bit for bit on a few cells.
+            if (I.env.mapToEarth && !I.cells.empty()) {
+                BinT &b = bt[j];
+                b.rot[0] = I.env.mapToEarth(glm::dvec3(1, 0, 0), tMid);
+                b.rot[1] = I.env.mapToEarth(glm::dvec3(0, 1, 0), tMid);
+                b.rotOk = b.rot[0].z == 0.0 && b.rot[1].z == 0.0;
+                for (size_t ci : {(size_t)0, I.cells.size() / 3, I.cells.size() / 2, I.cells.size() - 1}) {
+                    const glm::dvec3 &d = I.cells[ci].centre;
+                    const glm::dvec3 e = I.env.mapToEarth(d, tMid);
+                    const glm::dvec3 r(b.rot[0].x * d.x + b.rot[1].x * d.y, b.rot[0].y * d.x + b.rot[1].y * d.y, d.z);
+                    b.rotOk &= e.x == r.x && e.y == r.y && e.z == r.z;
+                }
+            }
         }
         // The tasks' lists are kept between calls for their capacity: growing ~400 fresh vectors of 1.3-KB storms from
         // 12 threads at once serialised on the heap (in a jump the storm records' allocation cost more than the
@@ -878,7 +903,8 @@ void Catalog::stormsAt(double t, std::vector<const Storm *> &out) {
             if (k < nSpawn) {
                 const size_t j = k / nCh, c = k % nCh;
                 const size_t ca = std::min(I.cells.size(), c * kCellsPerTask), cb = std::min(I.cells.size(), ca + kCellsPerTask);
-                I.buildCellRange(missing[j], ca, cb, bt[j].tMid, bt[j].sunLon, bt[j].doy, parts[k]);
+                I.buildCellRange(missing[j], ca, cb, bt[j].tMid, bt[j].sunLon, bt[j].doy, parts[k],
+                                 bt[j].rotOk ? bt[j].rot : nullptr);
             } else {
                 I.buildLineBin(missingL[k - nSpawn], builtL[k - nSpawn]);
             }
