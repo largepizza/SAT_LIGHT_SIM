@@ -712,7 +712,7 @@ static_assert(sizeof(PointDrawPC) == 128, "PointDrawPC layout mismatch");
 struct RainDrawPC
 {
     glm::mat4 skyView;
-    float fovYRad, aspect, screenW, screenH;
+    float fovYRad, dropLambda, screenW, screenH;   // dropLambda: the drops' Marshall-Palmer slope at the eye (1/mm)
     glm::vec4 eyeVel;      // xyz the eye's velocity (ENU, m/s), w the shutter (s)
     glm::vec4 params;      // x drops in level 0, y levels, z visibility gain, w the sky's exposure
     glm::vec4 obsECEFDir;  // xyz the observer's direction, w mode bits (1 diamond dust, 2 manual depth test)
@@ -4385,11 +4385,15 @@ private:
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
     float cv2LightningStormRate = 0.53f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
     float cv2LightningTendrils = 1.23f;    // the channels' branching (x the branch and tendril counts)
-    float cv2RainFallSpeed = 10.0f;     // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
-    float cv2RainWindGain = 0.42f;      // x the ground wind on the drops (0.4 x the wind aloft)
-    float cv2RainStormWind = 9.5f;    // the outflow from a heavy shower (m/s at rain rate 1), away from its core
-    float cv2RainGusts = 1.38f;         // the wind's gustiness (x; stronger in heavy rain)
-    float cv2SnowWind = 1.2f;          // snow's drift x this (blizzards: flakes driven sideways, streaking)
+    // The rain / snow particles' motion (2026-10-23 rework, SatelliteSimRain.cpp): new keys, so a settings file tuned
+    // against the old model (fall x10 to hide the lumped far drops' slow drift) does not carry over.
+    float cv2RainFallSpeed = 1.0f;      // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
+    float cv2RainWindGain = 1.0f;       // x the surface wind at the eye (a few m/s, from place and time: surfaceWindAt)
+    float cv2RainStormWind = 8.0f;      // a storm tower's outflow (m/s at full strength, a few km out), away from it
+    float cv2RainGusts = 1.0f;          // the wind's turbulence (x; small continuous swings)
+    float cv2GustFronts = 1.0f;         // gust fronts: sudden gusts (1-2 s onset, 5-20 s decay), more near storms
+    float cv2DropPersistMs = 60.0f;     // how long one rain particle is drawn before it is redrawn elsewhere (0 = never)
+    float cv2SnowWind = 0.7f;          // the flakes' drift x the surface wind ("snow_drift", 2026-10-23; was "snow_wind")
     float cv2ExposureEV = 0.0f;        // exposure compensation (stops) on the sky's auto exposure
     float cv2HighlightRolloff = 1.0f;  // 0 = the old tonemap; 1 = a long highlight shoulder
     float cv2WhiteBalance = 0.6f;      // 0..1: adapt to the sunlight's colour at the observer
@@ -5159,7 +5163,8 @@ private:
         int altM = -1, aglM = -1, groundM = -1, latDeg = -1, lonDeg = -1, sunElDeg = -1, oceanNear = -1, oceanWide = -1,
             urban = -1, beam = -1, aurora = -1, wind = -1, cloud = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
             forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, glareN = -1, glareSum = -1, beamSite = -1, musicGap = -1, rain = -1,
-            thunder = -1, rocketMag = -1, stageMag = -1, fireballMag = -1, dustMag = -1;
+            thunder = -1, rocketMag = -1, stageMag = -1, fireballMag = -1, dustMag = -1, gust = -1, surfaceWind = -1,
+            rainDriven = -1;
     } ambD_;
     // The upwell's other sources (2026-10-21, issue 20261021_002542 "Upwells": the stem should rise during launches,
     // near firing engines, by collision dust and re-entries). The code that DRAWS each source lists it here every frame
@@ -6705,7 +6710,9 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 327;   // 326 (2026-10-23): "Tropical cyclones (x)";   // 325 (2026-10-23): "Storm complexes";   // 321-324 (2026-10-23): storm objects (frequency, life, cloud field, moat);
+    static constexpr int kCloudSliderSlots = 340;   // 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
+    // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
     // was 313: 312 (2026-10-22): Sun shadow volume (S3); 310-311: anvil puffiness, anvil top lift;
     // was 310: 302-309 (2026-10-22): the cloud rebuild's experiments (Weather tab)
@@ -6971,6 +6978,21 @@ private:
     glm::dvec2 rainDrift{0.0}, snowDrift{0.0};   // integral of the wind (m, rain frame E/N)
     double snowFallPhase = 0.0;                 // the snow's fall phase (integral of its reference speed, m)
     glm::vec2 rainWindNow{0.0f};                 // eased wind (m/s)
+    // The surface wind at the eye (2026-10-23, SatelliteSimRain.cpp surfaceWindAt): a pure function of place and sim
+    // time (+ the storm towers and the rain map's last frame), shared by the rain / snow particles and the ambience.
+    struct SurfaceWind
+    {
+        glm::vec2 v{0.0f};        // the wind now (rain frame E/N, m/s), gusts and outflow included, before easing
+        glm::vec2 base{0.0f};     // the mean surface wind (m/s)
+        glm::vec2 outflow{0.0f};  // the storms' and the shower's outflow (m/s)
+        float gust = 0.0f;        // the gust fronts' envelope now (0 calm .. ~1.5 a strong front), for the ambience
+        float storm = 0.0f;       // storm proximity (0 .. 1.5): towers within a few tens of km
+        int gustsActive = 0;      // gust fronts contributing now
+    };
+    SurfaceWind surfaceWindAt(double simT, float rainRateN);
+    SurfaceWind surfaceWindForAmbience();
+    SurfaceWind surfaceWindNow_;
+    double surfaceWindSimT_ = -1e300;
     float rainRateEased = 0.0f;
     float rainFallRefNow = 1.0f;
     bool rainPrevEyeValid = false;

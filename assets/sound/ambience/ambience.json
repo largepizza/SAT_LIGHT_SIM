@@ -59,6 +59,21 @@
       "when": { "agl_m": [1500, 150], "ocean_near": [0.7, 0.3], "ground_m": [3200, 1800], "desert": [0.8, 0.4] }
     },
     {
+      "id": "wind_gust",
+      "group": "wind",
+      "synth": "wind",
+      "gain": 0.25,
+      "fade_in_s": 0.4,
+      "fade_out_s": 3.0,
+      "params": { "color": 0.45, "center_hz": 420, "q": 0.8, "body": 0.3, "body_hz": 120, "gust": 0.25, "gust_rate": 0.6, "hiss": 0.35, "width": 0.8, "flutter": 0.4 },
+      "_note": "Gust fronts (2026-10-23): driver `gust` is the envelope of the gust fronts the rain and snow particles are blown by (SatelliteSimRain.cpp surfaceWindAt: a 1-2 s onset to +50-100% of the wind, 5-20 s of decay, more often near storms and in heavy rain), so the roar rises as the rain leans over. Its band slides up with the gust.",
+      "mod": {
+        "level": { "driver": "gust", "in": [0, 0.3, 1, 1.6], "out": [0.0, 0.45, 0.9, 1.0] },
+        "center_hz": { "driver": "gust", "in": [0, 1.5], "out": [340, 620] }
+      },
+      "when": { "gust": [0.01, 0.06], "agl_m": [1500, 150] }
+    },
+    {
       "id": "rain",
       "group": "water",
       "synth": "rain",
@@ -68,7 +83,7 @@
       "params": { "hiss_hz": 3500, "drops": 1.0, "rumble": 1.0, "width": 0.8 },
       "_note": "Rain where it falls on the listener: driver `rain` is the cloud field's rain rate at the eye (cloud_v2_march.comp, the value the streaks use). Its intensity follows the rate - a drizzle is a thin hiss with a few ticks, a cumulonimbus core a roar.",
       "mod": {
-        "intensity": { "driver": "rain", "in": [0, 1], "out": [0.1, 1.0] },
+        "intensity": { "driver": "rain_driven", "in": [0, 1], "out": [0.1, 1.0] },
         "level": { "driver": "rain", "in": [0.02, 0.3, 1], "out": [0.35, 0.8, 1.0] }
       },
       "when": { "rain": [0.01, 0.08], "agl_m": [1500, 150] }
