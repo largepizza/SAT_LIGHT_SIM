@@ -995,6 +995,104 @@ const BasinDef kBasins[Catalog::kCycloneBasins] = {
     {"Australian region / South Pacific", -14.0, 4.0, 152.0, 30.0, 50.0, 45.0, 11.0, 0.0, 0.0, 28.0, 20.0, 30.0},
 };
 
+// Climatological ROUTES (2026-10-23, the user: "Atlantic hurricanes move westwards and up, Pacific hurricanes track up
+// through Baja California"): per basin a few polylines (lat, lon deg) after the best-track climatology's main track
+// families, with a weight. A storm picks one, weighted by how near its genesis lies to it, and is steered along it by
+// pure pursuit (aiming 500 km ahead on the route, keeping a share of its starting lateral offset), so storms of one
+// family run roughly parallel and the families differ: Cape Verde recurvers, Caribbean straight runners, Gulf landfalls,
+// East Pacific storms out to sea, up the Baja coast or recurving into Sinaloa, typhoons into the Philippines / China or
+// recurving to Japan, Bay of Bengal storms north, Southern Hemisphere storms west then poleward.
+struct RoutePt { double lat, lon; };
+struct RouteDef { double w; int n; RoutePt p[8]; };
+const RouteDef kRoutesNA[] = {
+    {0.30, 8, {{12, -28}, {14, -40}, {17, -52}, {22, -60}, {28, -64}, {34, -62}, {40, -55}, {46, -42}}},   // Cape Verde, recurving
+    {0.17, 7, {{13, -45}, {14.5, -58}, {15.5, -70}, {16.5, -80}, {18, -87}, {19.5, -94}, {21, -99}}},       // Caribbean -> Mexico
+    {0.20, 8, {{14, -52}, {17, -64}, {20.5, -75}, {23.5, -83}, {26.5, -88}, {30, -90}, {34, -87}, {38, -82}}},  // Gulf coast
+    {0.18, 8, {{16, -48}, {20, -60}, {24, -70}, {27.5, -77}, {31, -80}, {35, -77}, {39, -72}, {44, -65}}},  // Florida / East Coast
+    {0.15, 6, {{15, -35}, {19, -44}, {24, -50}, {30, -52}, {36, -48}, {42, -38}}},                          // early recurve
+};
+const RouteDef kRoutesEP[] = {
+    {0.50, 6, {{12, -97}, {14, -105}, {16, -114}, {17.5, -124}, {18.5, -134}, {19, -145}}},                 // out to sea
+    {0.18, 7, {{12, -100}, {15, -105}, {18, -109}, {21, -111.5}, {24, -113}, {27, -114}, {30, -115}}},      // up the Baja coast
+    {0.12, 6, {{12, -102}, {15, -106}, {18, -108}, {21, -107.5}, {23.5, -106}, {26, -104}}},                // recurving into Sinaloa
+    {0.20, 6, {{12, -112}, {13.5, -125}, {15, -138}, {17, -150}, {18.5, -158}, {19.5, -168}}},              // toward Hawaii
+};
+const RouteDef kRoutesWP[] = {
+    {0.33, 7, {{10, 155}, {12, 145}, {14, 135}, {15.5, 126}, {17, 118}, {19.5, 111}, {21.5, 106}}},         // Philippines -> S China
+    {0.20, 7, {{12, 150}, {15, 140}, {19, 130}, {22.5, 123}, {26, 120}, {30, 119}, {34, 121}}},             // Taiwan -> E China
+    {0.32, 8, {{11, 152}, {15, 142}, {20, 134}, {25, 129}, {30, 129.5}, {35, 134}, {40, 141}, {45, 150}}},  // recurving to Japan
+    {0.15, 6, {{13, 160}, {18, 152}, {24, 147}, {30, 147}, {36, 152}, {42, 161}}},                          // early recurve
+};
+const RouteDef kRoutesNI[] = {
+    {0.35, 5, {{10, 90}, {13, 88}, {16, 86}, {19, 85.3}, {21.5, 85}}},                                      // Odisha / Andhra
+    {0.30, 5, {{11, 88}, {14, 88.5}, {18, 89.5}, {21, 90.5}, {23, 91.5}}},                                  // Bangladesh / Myanmar
+    {0.35, 4, {{9, 90}, {10.5, 86}, {12, 82}, {12.5, 79}}},                                                  // Tamil Nadu
+};
+const RouteDef kRoutesSI[] = {
+    {0.25, 7, {{-11, 72}, {-13, 62}, {-15, 54}, {-17, 49}, {-19, 44}, {-22, 40}, {-26, 38}}},                // Madagascar, Mozambique
+    {0.40, 6, {{-11, 78}, {-13, 68}, {-16, 60}, {-20, 56}, {-25, 55}, {-31, 59}}},                           // Mascarenes, recurving
+    {0.35, 5, {{-12, 88}, {-15, 82}, {-19, 77}, {-24, 75}, {-30, 77}}},                                      // mid-ocean
+};
+const RouteDef kRoutesAU[] = {
+    {0.25, 7, {{-11, 128}, {-13, 122}, {-16, 117}, {-19, 114}, {-22, 113.5}, {-26, 115}, {-30, 119}}},       // Pilbara
+    {0.20, 6, {{-12, 160}, {-14, 156}, {-16, 152}, {-17.5, 148}, {-19, 144}, {-21, 141}}},                   // onto Queensland
+    {0.25, 6, {{-13, 155}, {-16, 156}, {-20, 157}, {-25, 159}, {-30, 162}, {-35, 166}}},                     // Coral Sea, south
+    {0.30, 6, {{-12, 172}, {-15, 174}, {-18, 176}, {-22, 179}, {-26, 182}, {-31, 186}}},                     // Fiji / Tonga, SE
+};
+struct RouteSet { const RouteDef *r; int n; };
+const RouteSet kRoutes[Catalog::kCycloneBasins] = {
+    {kRoutesNA, (int)std::size(kRoutesNA)}, {kRoutesEP, (int)std::size(kRoutesEP)}, {kRoutesWP, (int)std::size(kRoutesWP)},
+    {kRoutesNI, (int)std::size(kRoutesNI)}, {kRoutesSI, (int)std::size(kRoutesSI)}, {kRoutesAU, (int)std::size(kRoutesAU)},
+};
+
+// A route in the tangent plane at (lat0, lon0): km east / north (good to a few % over the routes' spans).
+struct RoutePlane {
+    double x[8], y[8], s[8];   // vertices and arc length (km)
+    int n = 0;
+};
+RoutePlane routeInPlane(const RouteDef &R, double lat0, double lon0) {
+    RoutePlane P;
+    P.n = R.n;
+    const double c = std::cos(lat0 * kDeg);
+    for (int i = 0; i < R.n; ++i) {
+        double dl = R.p[i].lon - lon0;
+        dl -= 360.0 * std::floor((dl + 180.0) / 360.0);
+        P.x[i] = dl * c * 111.2;
+        P.y[i] = (R.p[i].lat - lat0) * 111.2;
+        P.s[i] = i == 0 ? 0.0 : P.s[i - 1] + std::hypot(P.x[i] - P.x[i - 1], P.y[i] - P.y[i - 1]);
+    }
+    return P;
+}
+// The nearest point of the polyline to the origin: its arc length, signed distance (left of the route > 0) and tangent.
+void routeNearest(const RoutePlane &P, double &sOut, double &offOut, double &tx, double &ty) {
+    double best = 1e30;
+    sOut = 0.0; offOut = 0.0; tx = 1.0; ty = 0.0;
+    for (int i = 0; i + 1 < P.n; ++i) {
+        const double ax = P.x[i], ay = P.y[i], bx = P.x[i + 1] - ax, by = P.y[i + 1] - ay;
+        const double L2 = std::max(bx * bx + by * by, 1e-9);
+        const double u = std::clamp(-(ax * bx + ay * by) / L2, 0.0, 1.0);
+        const double px = ax + u * bx, py = ay + u * by, d2 = px * px + py * py;
+        if (d2 < best) {
+            best = d2;
+            const double L = std::sqrt(L2);
+            tx = bx / L; ty = by / L;
+            sOut = P.s[i] + u * L;
+            offOut = tx * (-py) - ty * (-px);   // the origin's side: tangent x (origin - p), left > 0
+        }
+    }
+}
+// The point at arc length s (extrapolated along the last segment past the end).
+void routeAt(const RoutePlane &P, double s, double &x, double &y, double &tx, double &ty) {
+    int i = 0;
+    while (i + 2 < P.n && s > P.s[i + 1]) ++i;
+    const double bx = P.x[i + 1] - P.x[i], by = P.y[i + 1] - P.y[i];
+    const double L = std::max(std::hypot(bx, by), 1e-9);
+    tx = bx / L; ty = by / L;
+    const double u = s - P.s[i];
+    x = P.x[i] + tx * u;
+    y = P.y[i] + ty * u;
+}
+
 // WMO name lists (public; the 2036 Atlantic and Eastern Pacific lists are 2024's six-year rotation with the 2025
 // retirements replaced; the others run on sequentially, a slice here).
 const char *const kNamesNA[] = {"Alberto", "Brianna", "Chris", "Debby", "Ernesto", "Francine", "Gordon", "Holly", "Isaac",
@@ -1066,6 +1164,19 @@ float Cyclone::vmaxAt(double t) const {
     return (float)(vmax[i] * (1.0 - f) + vmax[j] * f);
 }
 
+double Cyclone::turnAt(double t) const {
+    if (turn.empty()) return 0.0;
+    const double x = std::clamp((t - t0) / kStepS, 0.0, (double)(turn.size() - 1));
+    const size_t i = std::min((size_t)x, turn.size() - 1), j = std::min(i + 1, turn.size() - 1);
+    const double f = x - (double)i;
+    return turn[i] * (1.0 - f) + turn[j] * f;
+}
+
+namespace {
+// The radius of maximum wind: it contracts as the storm intensifies.
+double cycloneRmw(double rmw0, double v) { return rmw0 * (1.0 - 0.5 * smooth01(30.0, 70.0, v)); }
+} // namespace
+
 void Catalog::Impl::buildSeason(int basin, int year, std::vector<Cyclone> &out) const {
     out.clear();
     const BasinDef &B = kBasins[basin];
@@ -1084,8 +1195,20 @@ void Catalog::Impl::buildSeason(int basin, int year, std::vector<Cyclone> &out) 
         double doy = (second ? B.peak2 : B.peak) + (second ? 25.0 : B.sigma) * gaussOf(q);
         doy = std::fmod(doy + 3.0 * 365.2422, 365.2422);
         C.t0 = y0 + doy * kDay;
-        const double lat = B.latC + B.latW * (2.0 * q.u() - 1.0);
-        const double lon = B.lonC + B.lonW * (2.0 * q.u() - 1.0);
+        double lat = B.latC + B.latW * (2.0 * q.u() - 1.0);
+        double lon = B.lonC + B.lonW * (2.0 * q.u() - 1.0);
+        // Not over land (the boxes take in Cape York, the Top End, Madagascar's coast...): redrawn from a stream of its
+        // own, so the draws below (and every other storm's) are unchanged.
+        if (env.land) {
+            Rng g(key3((uint64_t)basin, (uint64_t)(year + 10000), (uint64_t)k, 0x6E1A2Dull));
+            for (int tries = 0; tries < 12; ++tries) {
+                const glm::dvec3 pg(std::cos(lat * kDeg) * std::cos(lon * kDeg), std::cos(lat * kDeg) * std::sin(lon * kDeg),
+                                    std::sin(lat * kDeg));
+                if (env.land(pg) <= 0.5f) break;
+                lat = B.latC + B.latW * (2.0 * g.u() - 1.0);
+                lon = B.lonC + B.lonW * (2.0 * g.u() - 1.0);
+            }
+        }
         C.hemi = lat >= 0.0 ? 1.0f : -1.0f;
         C.rmw0 = (float)(1000.0 * q.range(35.0, 70.0));
         C.size = (float)q.u();
@@ -1095,11 +1218,40 @@ void Catalog::Impl::buildSeason(int basin, int year, std::vector<Cyclone> &out) 
         const double recurve = q.range(B.recurveLo, B.recurveHi);
         const double sp0 = q.range(4.5, 7.0), sp1 = q.range(8.0, 14.0);
         const double wobPh = q.range(0.0, 2.0 * kPi), wobP = q.range(1.2, 2.4) * kDay;
+        // (Drawn after the draws above, so dates, genesis points and intensities are as before the routes.)
+        // Its route: weighted by the family's share x how near its genesis lies to the route.
+        const RouteSet &RS = kRoutes[basin];
+        int route = 0;
+        double off0 = 0.0;
+        {
+            double wSum = 0.0, wr[8] = {}, offs[8] = {};
+            for (int i = 0; i < RS.n; ++i) {
+                const RoutePlane P = routeInPlane(RS.r[i], lat, lon);
+                double s, off, tx, ty;
+                routeNearest(P, s, off, tx, ty);
+                offs[i] = off;
+                wr[i] = RS.r[i].w * std::exp(-(off * off) / (1200.0 * 1200.0)) + 1e-9;
+                wSum += wr[i];
+            }
+            double u = q.u() * wSum;
+            for (int i = 0; i < RS.n; ++i) {
+                route = i;
+                if ((u -= wr[i]) <= 0.0) break;
+            }
+            off0 = offs[route];
+        }
+        const double offKeep = q.range(0.35, 0.75);                   // the share of its lateral offset it keeps
+        const double hA1 = q.range(4.0, 9.0) * kDeg, hP1 = q.range(1.5, 3.5) * kDay, hF1 = q.range(0.0, 2.0 * kPi);
+        const double hA2 = q.range(3.0, 8.0) * kDeg, hP2 = q.range(3.0, 6.5) * kDay, hF2 = q.range(0.0, 2.0 * kPi);
+        const bool   stall = q.u() < 0.1;                             // a stall (Harvey, Dorian): a day or two at ~1 m/s
+        const double stallT = q.range(1.5, 6.0) * kDay, stallD = q.range(0.8, 2.0) * kDay;
+        const double spPh = q.range(0.0, 2.0 * kPi), spP = q.range(2.0, 5.0) * kDay;
         glm::dvec3 p(std::cos(lat * kDeg) * std::cos(lon * kDeg), std::cos(lat * kDeg) * std::sin(lon * kDeg),
                      std::sin(lat * kDeg));
         double v = 12.0;
         const int maxSteps = (int)(18.0 * kDay / Cyclone::kStepS);
         bool peaked = false;
+        int landH = 0;
         for (int s = 0; s < maxSteps; ++s) {
             const double phi = std::asin(std::clamp(p.z, -1.0, 1.0)) / kDeg;
             const double ap = std::fabs(phi);
@@ -1109,23 +1261,47 @@ void Catalog::Impl::buildSeason(int basin, int year, std::vector<Cyclone> &out) 
             C.overLand.push_back(land > 0.5f ? 1 : 0);
             if (v > C.vPeak) { C.vPeak = (float)v; C.tPeak = C.t0 + s * Cyclone::kStepS; }
             peaked |= v > 0.9 * vPot || s > 72;
-            if ((peaked && v < 11.0) || ap > 50.0) break;
+            landH = land > 0.5f ? landH + 1 : 0;
+            if ((peaked && v < 11.0) || ap > 50.0 || landH > 48) break;   // (a remnant low two days inland is gone)
             // Intensity: toward the potential over warm water (slower up than down), collapsing over land.
-            const double sst = 1.0 - smooth01(B.coldLat - 4.0, B.coldLat + 8.0, ap);
+            double sst = 1.0 - smooth01(B.coldLat - 4.0, B.coldLat + 8.0, ap);
+            // The Eastern Pacific's water cools westward too (the storms that run out to sea die before Hawaii).
+            if (basin == 1) sst *= 1.0 - 0.8 * smooth01(122.0, 142.0, -std::atan2(p.y, p.x) / kDeg);
             const double target = land > 0.5f ? 8.0 : vPot * sst;
             const double tau = (target > v ? 30.0 : (land > 0.5f ? 9.0 : 20.0)) * 3600.0;
             v += (target - v) * (Cyclone::kStepS / tau);
-            // Steering: west-northwest in the trades, recurving poleward and east beyond its latitude.
-            const double sRec = smooth01(recurve - 6.0, recurve + 6.0, ap);
-            double az = (162.0 * (1.0 - sRec) + 40.0 * sRec) * kDeg;   // from local east toward the pole's side
-            az += 9.0 * kDeg * std::sin(2.0 * kPi * s * Cyclone::kStepS / wobP + wobPh);
+            // Steering: along its route (pure pursuit 500 km ahead, keeping offKeep of its starting lateral offset),
+            // turning slowly off it and back (two slow heading waves) with a small trochoidal wobble; slow in the trades,
+            // faster once recurving into the westerlies; an occasional stall.
+            const double tS = s * Cyclone::kStepS;
+            const double lam = std::atan2(p.y, p.x) / kDeg;
+            const RoutePlane P = routeInPlane(RS.r[route], phi, lam);
+            double sN, offN, tx, ty, ax, ay, atx, aty;
+            routeNearest(P, sN, offN, tx, ty);
+            routeAt(P, sN + 500.0, ax, ay, atx, aty);
+            const double offT = off0 * offKeep;
+            ax += -aty * offT;
+            ay += atx * offT;
+            double az = std::atan2(ay, ax);   // from local east toward local north
+            az += hA1 * std::sin(2.0 * kPi * tS / hP1 + hF1) + hA2 * std::sin(2.0 * kPi * tS / hP2 + hF2);
+            az += 4.0 * kDeg * std::sin(2.0 * kPi * tS / wobP + wobPh);
             glm::dvec3 e, nn;
             eastNorth(p, e, nn);
-            const glm::dvec3 dir = e * std::cos(az) + nn * (std::sin(az) * (double)C.hemi);
-            const double speed = sp0 * (1.0 - sRec) + sp1 * sRec;
+            const glm::dvec3 dir = e * std::cos(az) + nn * std::sin(az);
+            const double sRec = smooth01(recurve - 6.0, recurve + 8.0, ap);
+            double speed = (sp0 * (1.0 - sRec) + sp1 * sRec) * (1.0 + 0.18 * std::sin(2.0 * kPi * tS / spP + spPh));
+            if (stall) speed *= 1.0 - 0.8 * smooth01(stallT, stallT + 0.3 * kDay, tS) * (1.0 - smooth01(stallT + stallD, stallT + stallD + 0.3 * kDay, tS));
             p = moveAlong(p, dir, speed * Cyclone::kStepS);
         }
         C.life = (float)((C.track.size() - 1) * Cyclone::kStepS);
+        // The circulation's turn: the trapezoid integral of vmax / rmw, hour by hour (an angle that only grows, at the
+        // rate the storm turns now: a rate x age jumped back and forth as the storm strengthened and weakened).
+        C.turn.resize(C.vmax.size());
+        for (size_t i = 0; i < C.vmax.size(); ++i) {
+            const double w = (double)C.vmax[i] / cycloneRmw((double)C.rmw0, (double)C.vmax[i]);
+            const double wp = i ? (double)C.vmax[i - 1] / cycloneRmw((double)C.rmw0, (double)C.vmax[i - 1]) : w;
+            C.turn[i] = i ? C.turn[i - 1] + 0.5 * (w + wp) * Cyclone::kStepS : 0.0;
+        }
         out.push_back(std::move(C));
     }
     std::sort(out.begin(), out.end(), [](const Cyclone &a, const Cyclone &b) { return a.t0 < b.t0; });
@@ -1194,7 +1370,12 @@ void Catalog::cyclonesAt(double t, std::vector<CycloneState> &out) {
                 S.pressureHpa = (float)(1010.0 - std::pow(vkt / 6.7, 1.0 / 0.644));
                 S.category = cycloneCategory(S.vmax);
                 S.intensity01 = (float)smooth01(17.5, 75.0, S.vmax);
-                S.rmw = C.rmw0 * (float)(1.0 - 0.5 * smooth01(30.0, 70.0, S.vmax));
+                S.rmw = (float)cycloneRmw((double)C.rmw0, (double)S.vmax);
+                S.turn = C.turnAt(t);
+                S.arms = (float)std::clamp(2.0 + 3.0 * smooth01(28.0, 65.0, (double)S.vmax)
+                                           + 0.7 * (u53(mix64((uint64_t)C.seed ^ 0xA2u)) - 0.5), 2.0, 5.4);
+                S.tanPitch = (float)std::tan((30.0 - 8.0 * (double)S.intensity01) * kDeg);
+                S.bandRot = std::fmod(0.04 * S.turn, 2.0 * kPi);
                 S.eyeR = S.vmax > 33.0f ? 0.45f * S.rmw * (float)smooth01(33.0, 45.0, S.vmax) : 0.0f;
                 S.cdoR = (float)(1000.0 * (120.0 + 180.0 * C.size) * smooth01(14.0, 40.0, S.vmax));
                 S.outerR = (float)(1000.0 * (350.0 + 450.0 * C.size) * (0.4 + 0.6 * smooth01(12.0, 30.0, S.vmax)));
@@ -1214,7 +1395,7 @@ void Catalog::cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std
         const double tau = t - C.t0;
         // The eyewall: a ring of regenerating towers at the radius of maximum wind, turning cyclonically.
         const int nEye = 18;   // (12 drew the eyewall's rain as a ring of separate cores on the radar)
-        const double rot = (double)C.hemi * 0.25 * (double)S.vmax / std::max((double)S.rmw, 5000.0) * tau;
+        const double rot = (double)C.hemi * 0.25 * std::fmod(S.turn, 8.0 * 2.0 * kPi);   // (a quarter of the air's turn)
         for (int k = 0; k < nEye + 6; ++k) {
             const uint64_t h = mix64((uint64_t)C.seed * 0x9E37ull + (uint64_t)k);
             const bool wall = k < nEye;
@@ -1223,10 +1404,16 @@ void Catalog::cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std
                 ang = 2.0 * kPi * k / nEye + 0.25 * (u53(h) - 0.5) + rot;
                 rad = (double)S.rmw * (0.85 + 0.3 * u53(mix64(h ^ 1)));
             } else {
-                // Inner rainbands: along a logarithmic spiral (pitch ~18 deg) from 2 to 5 radii of maximum wind.
-                const double rr = (2.0 + 3.0 * (double)(k - nEye) / 5.0) * (double)S.rmw;
-                ang = (double)C.hemi * std::log(rr / (double)S.rmw) / std::tan(18.0 * kDeg) + 2.0 * kPi * u53(h) * 0.25
-                    + 0.5 * rot;
+                // Inner rainbands: on the crests of the bake's spiral bands (CycloneState::arms / tanPitch / bandRot),
+                // trailing the rotation, 2 to 5 radii of maximum wind out, spread over the arms. (They spiralled the
+                // other way, leading, until 2026-10-23.)
+                const int j = k - nEye;
+                const double nA = std::floor((double)S.arms + 0.15);   // the bake's count (it crossfades at .85)
+                const int nArm = std::max(2, std::min(3, (int)nA));
+                const double rr = (2.0 + 3.0 * (double)(j / nArm) / 2.0 + 0.6 * u53(h)) * (double)S.rmw;
+                const double m = (double)(j % nArm) * nA / (double)nArm;
+                ang = (double)C.hemi * (2.0 * kPi * std::round(m) / nA
+                                        - std::log(rr / (double)S.rmw) / (double)S.tanPitch - S.bandRot);
                 rad = rr;
             }
             const glm::dvec3 dirT = e * std::cos(ang) + n * std::sin(ang);

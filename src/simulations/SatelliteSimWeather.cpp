@@ -482,12 +482,11 @@ void SatelliteSim::updateStorms()
         {
             const wx::CycloneState &c = stormCyclonesNow[i];
             const glm::dvec3 f = stormFlowedDir(c.map, t);
-            const double rot = std::fmod(2.4e-5 * (t - c.c->t0), glm::two_pi<double>());
             GpuStormCyclone g;
             g.a = glm::vec4(glm::vec3(c.map), c.intensity01);
             g.b = glm::vec4(glm::vec3(f), c.c->hemi);
-            g.c = glm::vec4(c.eyeR, c.cdoR, c.outerR, (float)(-rot));
-            g.d = glm::vec4(c.rmw, c.vmax, c.overLand ? 1.0f : 0.0f, 0.0f);
+            g.c = glm::vec4(c.eyeR, c.cdoR, c.outerR, (float)c.bandRot);
+            g.d = glm::vec4(c.rmw, c.vmax, c.overLand ? 1.0f : 0.0f, c.arms);
             cdst[i] = g;
         }
         reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kCycHeadOffset)[0] = nC;
@@ -727,9 +726,11 @@ bool SatelliteSim::tornadoOf(const wx::Storm &S, double t, TornadoNow &out) cons
     glm::dvec3 sh = glm::dvec3(S.shear) - axis * glm::dot(glm::dvec3(S.shear), axis);
     sh = glm::length(sh) > 1e-12 ? glm::normalize(sh) : e;
     const glm::dvec3 perp = glm::cross(axis, sh) * (axis.z >= 0.0 ? -1.0 : 1.0);
-    const double Rc = std::clamp((double)cv2CbRadiusKm, 1.0, 20.0) * 1000.0 * 0.8;
-    // (At the updraft's edge, ~a tower radius out: the rain-free base. Inside 0.6 of it the rain core hid it.)
-    const glm::dvec3 off = (-0.65 * sh + 0.7 * perp) * Rc * (out.spout ? 0.3 : 1.0);
+    // The tower's own radius at maturity, as cv2ColumnSigma sizes it (x mix(0.7, 1.3, size)): its rain core reaches 0.9
+    // of it (gCv2RainCore). At a fixed 0.8 x "Cb tower radius" a big tower's core (to 1.17 of that) hid the tornado.
+    const double Rc = std::clamp((double)cv2CbRadiusKm, 1.0, 20.0) * 1000.0 * (0.7 + 0.6 * (double)ts.size);
+    // (Just past the core, ~1.05 tower radii out: the rain-free base under the updraft's rear edge.)
+    const glm::dvec3 off = (-0.65 * sh + 0.7 * perp) * (1.1 * Rc) * (out.spout ? 0.3 : 1.0);
     out.upwindMap = -sh;
     const double offL = glm::length(off);
     out.mapDir = offL > 0.0 ? tnMove(axis, off / offL, offL) : axis;
@@ -800,8 +801,17 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
         const double sinE = glm::dot(T.earthDir, sunE);
         const double amb = glm::smoothstep(-0.1, 0.25, sinE);
         if (amb <= 0.0) continue;                        // (night: unlit; lightning lights it in the shader's flash pass)
+        // The spin (2026-10-23): each part turns cyclonically (counter-clockwise from above in the north) as a rigid
+        // body at its own rate: the funnel ~35 m/s at its radius, the debris a little slower, the wall cloud a turn in
+        // ~5 min. cloud_march.comp reads the billows in cylindrical coordinates turned by this phase (seedK >= 256).
+        const double hemi = T.earthDir.z >= 0.0 ? 1.0 : -1.0;
+        const double wFun = std::clamp(35.0 / std::max((double)T.r0, 1.0), 0.12, 0.6);
+        auto spinK = [&](double omega) {
+            const double turns = hemi * omega * tau / (2.0 * glm::pi<double>());
+            return 256.0 + std::floor((turns - std::floor(turns)) * 3840.0);
+        };
         auto emit = [&](const glm::dvec3 &C, const glm::dvec3 &axis, double sA, double sP, double tau0, double albedo,
-                        const glm::dvec3 &tint, double sunShare) {
+                        const glm::dvec3 &tint, double sunShare, double omega) {
             if (n >= kMaxDustClouds) return;
             const glm::dvec3 rel = C - eye;
             const double range = std::max(glm::length(rel), 1.0);
@@ -822,7 +832,7 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
             const glm::dvec3 sun = 4.0 * glm::pi<double>() * amb * sunShare * albedo * tint;
             const double lI = iso.x + iso.y + iso.z, lS = sun.x + sun.y + sun.z;
             const double share = std::min(lI / std::max(lI + lS, 1e-9), 0.999);
-            const double seedK = std::floor(tnU(tnMix((uint64_t)T.seed ^ (uint64_t)n)) * 255.0);
+            const double seedK = spinK(omega);
             d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), (float)(4.0 * seedK + 2.0 + share));
             d.col = glm::vec4(glm::vec3(iso + sun), (float)(2.0 + albedo));
             const double R = 5.5 * std::max(sA, sP);
@@ -846,18 +856,18 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
                                                     std::cos(3.14159 * q) * (z1 - z0)));
             // (Dense and narrow: a Gaussian's visible edge sharpens with its peak optical depth; this puts the edge,
             // tau ~ 1, at ~rr, as a condensation funnel's defined outline. At tau 3.5 and sigma rr it was a soft cone.)
-            emit(p, axis, 0.6 * (z1 - z0), rr / 2.6, 40.0, 0.45, glm::dvec3(grey), 0.06);
+            emit(p, axis, 0.6 * (z1 - z0), rr / 2.6, 40.0, 0.45, glm::dvec3(grey), 0.06, wFun);
         }
         // The wall cloud: a lowered, rotating disc under the base, 1.5-3 km across.
         emit(T.earthDir * (kReW + ground + Hb - 120.0), T.earthDir, 160.0, (T.spout ? 450.0 : 1500.0), 1.0, 0.4,
-             glm::dvec3(0.6, 0.62, 0.66), 0.02);
+             glm::dvec3(0.6, 0.62, 0.66), 0.02, 0.021);
         // The debris cloud (land) or the spray ring (sea) once it touches down.
         if (zBot < 30.0)
         {
             const bool spray = T.sea;
             emit(T.earthDir * (kReW + ground + (spray ? 40.0 : 90.0)), T.earthDir, spray ? 50.0 : 110.0,
                  r0 * (spray ? 2.2 : 2.8), spray ? 1.2 : 2.0, spray ? 0.8 : 0.45,
-                 spray ? glm::dvec3(0.95, 0.97, 1.0) : glm::dvec3(0.62, 0.52, 0.42), 0.15);
+                 spray ? glm::dvec3(0.95, 0.97, 1.0) : glm::dvec3(0.62, 0.52, 0.42), 0.15, 0.7 * wFun);
         }
     }
 }

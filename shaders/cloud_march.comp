@@ -227,6 +227,18 @@ vec3 dustMul(DustCloud d, vec3 v)
                 d.ib.y * v.x + d.ib.z * v.y + d.ia.z * v.z);
 }
 
+// A tornado's billow coordinates (dustCloudsCS): r0 from its Gaussian's centre, LOG-POLAR about up (6 cells round, the
+// radial cells as long as they are wide at every radius: plain radius cells drew the wide wall cloud as fine concentric
+// rings), sheared into a gentle inflow spiral, turned by ph; height in 400-m cells with a slight helix.
+vec3 tornadoCyl(vec3 r0, vec3 up, vec3 e1, vec3 e2, float ph)
+{
+    float z  = dot(r0, up);
+    vec3  hv = r0 - up * z;
+    float th = atan(dot(hv, e2), dot(hv, e1));
+    float lr = log(max(length(hv), 20.0) * (1.0 / 20.0)) * (6.0 / (2.0 * PI));
+    return vec3((th - ph + z * 0.0015) * (6.0 / (2.0 * PI)) + 0.6 * lr, lr, z * (1.0 / 400.0));
+}
+
 // Returns the scattered light (extinguished by the caller to tScat, its brightness-weighted distance) and, in Le,
 // the emissive trails' light (already extinguished on the CPU, along the eye-to-fireball path).
 // Rocket plumes (launches, 2026-10-18: SatelliteSimLaunches.cpp) are real clouds: their optical depth is summed
@@ -374,7 +386,26 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
                     float nz = textureLod(cloudNoiseTex, rl * 0.25 + sd, 0.0).r;
                     mN += (1.0 - lowK) * 1.3 * (nz - kPlumeNoiseMean);
                 }
-                if (lowK > 0.0) {
+                if (lowK > 0.0 && sk >= 256.0) {
+                    // A TORNADO's Gaussian (2026-10-23, SatelliteSim::weatherFillTornadoes: seedK = 256 + its spin phase
+                    // in 3840ths of a turn, advanced with sim time, cyclonic): the same field read in LOG-POLAR
+                    // coordinates about the vertical through its centre (tornadoCyl), turned by the phase: the funnel, wall cloud and debris rotate as rigid bodies
+                    // (no winding up), and the angle's wrap is seamless (a whole number of texture periods round).
+                    float ph  = (sk - 256.0) * (2.0 * PI / 3840.0);
+                    vec3  upT = normalize(obsPos + d.c.xyz);
+                    vec3  nE  = vec3(plEnuX.z, plEnuY.z, plEnuZ.z);   // the Earth's axis in the eye's ENU
+                    vec3  e2  = normalize(nE - upT * dot(nE, upT) + vec3(1e-6, 0.0, 0.0));
+                    vec3  e1  = cross(e2, upT);
+                    vec3  r0  = clamp(tc, 0.0, T) * dir - d.c.xyz;
+                    vec3  uv1 = tornadoCyl(r0, upT, e1, e2, ph);
+                    vec3  uvS = tornadoCyl(r0 + sunDir * 70.0, upT, e1, e2, ph);
+                    float nW  = textureLod(cloudNoiseTex, uv1, 0.0).r;
+                    float nW2 = textureLod(cloudNoiseTex, uv1 * vec3(3.0, 3.0, 3.0) + vec3(0.37, 0.71, 0.13), 0.0).r;
+                    mN += lowK * (2.4 * (nW - kPlumeNoiseMean) + 1.1 * (nW2 - kPlumeNoiseMean));
+                    float nWs = textureLod(cloudNoiseTex, uvS, 0.0).r;
+                    lumpL = mix(1.0, clamp(1.0 - 3.5 * (nWs - nW), 0.3, 1.35), lowK);
+                    lumpA = mix(1.0, clamp(1.0 - 2.2 * (nW - kPlumeNoiseMean) - 1.0 * (nW2 - kPlumeNoiseMean), 0.3, 1.3), lowK);
+                } else if (lowK > 0.0) {
                     // EARTH-FIXED (2026-10-20, issue 20261020_214200 "noise evolves with position"): the point in ECEF
                     // relative to the terrain detail's integer-anchored 2048-m cell (CPU double: terrainAnchorRel), so
                     // the field stays with the air. It was P itself, Earth-centred in the EYE's ENU axes: those axes
@@ -2052,14 +2083,14 @@ void main() {
             // What it hides behind it, less the sky's light it scatters back toward the eye (lit by the same sky as
             // the background: a bright plume barely dims the sky, a sooty one silhouettes against it).
             float pTr  = exp(-pTau) + 0.85 * pA * (1.0 - exp(-pTau));
-            if (pT < tCloudMeanT) {
-                B_total = B_total * pTr + pL * pExt;
-                gBA *= pTr;
-                gBB *= pTr;
-            } else {
-                B_total += pL * pExt * A_total;
-                gBA += pL * pExt * gAA;
-            }
+            // In front of / behind the cloud by a BLEND over +-(15% + 150 m) of the distance (2026-10-23): a tornado's
+            // funnel top and wall cloud sit at the cloud base's own distance, and a hard switch on the cloud's noisy
+            // mean distance cut a cloud-shaped hole round the funnel's top.
+            float fF   = (tCloudMeanT >= kNoSurfaceT) ? 1.0
+                       : smoothstep(-1.0, 1.0, (tCloudMeanT - pT) / (0.15 * pT + 150.0));
+            B_total = mix(B_total + pL * pExt * A_total, B_total * pTr + pL * pExt, fF);
+            gBB = mix(gBB, gBB * pTr, fF);
+            gBA = mix(gBA + pL * pExt * gAA, gBA * pTr, fF);
             A_total *= pTr;
             gAA *= pTr;
         }

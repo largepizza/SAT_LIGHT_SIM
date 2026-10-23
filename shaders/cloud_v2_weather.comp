@@ -116,6 +116,7 @@ vec2 equirectUV(vec3 d)
 //   w  a clear MOAT at the envelope's edge (the subsiding air round a storm), so its region's cloud is partly moved,
 //      not only added
 // The envelope index lists every tower whose envelope reaches d (the march's own index stops at the reach).
+float gRainFree = 0.0;   // stormStamp: 0..1, a rear-flank rain-free base (the map's rain is cleared there)
 vec4 stormStamp(vec3 d)
 {
     vec4 o = vec4(0.0);
@@ -151,6 +152,16 @@ vec4 stormStamp(vec3 d)
         float gF  = 1.0 - smoothstep(0.55, 1.0, qe);
         o.y = max(o.y, gF * dom);
         o.z = max(o.z, gF * dom * (1.0 - smoothstep(0.15 * L, 0.9 * L, al)) * smoothstep(-0.5 * Rc, 0.2 * Rc, al));
+        // The REAR-FLANK rain-free base (2026-10-23): where the rear-flank downdraft clears the rain, behind and to
+        // the right of the motion (left in the south), at SatelliteSim::tornadoOf's place for a tornado (-0.65 x the
+        // shear + 0.7 x across it, x 1.1 the mature tower's radius: just past its rain core). Not under a cyclone's
+        // towers (their anvil factor is exactly 1 / flare: they do not flare). The map's own rain there hid tornadoes.
+        if (dom > 0.0 && tw.c.z * flare > 1.05) {
+            vec3  perp = cross(d, eastW) * (d.z >= 0.0 ? -1.0 : 1.0);
+            float RcM  = Rb * mix(0.7, 1.3, tw.b.y);
+            vec3  rf   = dh - (-0.65 * eastW + 0.7 * perp) * (1.1 * RcM);
+            gRainFree  = max(gRainFree, dom * (1.0 - smoothstep(0.35 * RcM, 0.7 * RcM, length(rf))));
+        }
         // The moat at the envelope's edge (none in line with the anvil).
         float ring = smoothstep(0.7 * E, 0.85 * E, dhL) * (1.0 - smoothstep(0.9 * E, E, dhL));
         o.w = max(o.w, ring * s1 * mix(1.0, smoothstep(1.0, 1.5, qe), dom));
@@ -184,9 +195,9 @@ vec4 stormStamp(vec3 d)
         float ahead = (1.0 - smoothstep(-40000.0, -25000.0, sb2)) * smoothstep(-90000.0, -60000.0, sb2);
         o.w = max(o.w, ahead * (1.0 - smoothstep(0.8, 1.0, abs(2.0 * t - 1.0))) * s.a.w * 0.8);
     }
-    // Tropical cyclones (2026-10-23): spiral rainbands (two arms, a logarithmic spiral of ~18 deg pitch, trailing the
-    // cyclonic rotation) beyond the central dense overcast, the eyewall's ring of convection, the CDO's deck, heavy rain
-    // in the eyewall and bands, subsidence between the bands, and the eye cleared outright.
+    // Tropical cyclones (2026-10-23): spiral rainbands (logarithmic spirals trailing the cyclonic rotation) beyond the
+    // central dense overcast, the eyewall's ring of convection, the CDO's deck, heavy rain in the eyewall and bands,
+    // subsidence between the bands, and the eye cleared outright.
     float eyeAcc = 0.0;
     for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
         CV2Cyclone cy = cv2Cyclones[i];
@@ -197,19 +208,38 @@ vec4 stormStamp(vec3 d)
         float rmw = max(cy.d.x, 2000.0), cdo = max(cy.c.y, 1000.0), outer = cy.c.z, I = cy.a.w, hemi = cy.b.w;
         float th  = atan(dot(off, northW0), dot(off, eastW0));
         float lr  = log(max(r, 1000.0) / rmw);
-        float ph  = hemi * th + lr / 0.3249;                  // tan(18 deg)
+        // The main arms: d.w of them (wx::CycloneState::arms: 2 for a tropical storm, up to ~5 for a Category 5),
+        // crossfaded between whole counts (a fractional count is not periodic in theta) just before the next, the pitch tighter as it
+        // intensifies (30 -> 22 deg, the CPU's tanPitch: the inner band towers stand on these crests), turning by c.w.
+        // They leave the central dense overcast (attached, wide near it) and taper and break up outward: spokes, not
+        // rings (at 13-20 deg, detached from the CDO, they read as nested circles round a blob).
+        float nA  = max(cy.d.w, 2.0);
+        float n0  = floor(nA), fA = nA - n0;
+        float ph  = hemi * th + lr / tan(radians(30.0 - 8.0 * I)) + cy.c.w;
+        float bA  = 0.5 + 0.5 * cos(n0 * ph);
+        float bB  = 0.5 + 0.5 * cos((n0 + 1.0) * ph);
+        // (Over the last 15% only: two counts mixed half and half interfere into rings.)
+        float b2  = mix(bA, bB, smoothstep(0.85, 1.0, fA));
         float rf  = clamp(r / max(outer, 1.0), 0.0, 1.0);
-        // Two main arms and three finer ones (pitch ~14 deg), thinning and breaking up outward (the breaks: two slow
-        // waves along each arm).
-        float b2  = 0.5 + 0.5 * cos(2.0 * ph + cy.c.w);
-        float b3  = 0.5 + 0.5 * cos(3.0 * (hemi * th + lr / 0.2493) + 1.7 + 0.7 * cy.c.w);
-        float brk = 0.8 + 0.2 * sin(3.1 * lr + 1.3 * th + 2.0) * sin(5.3 * lr - 2.1 * th);
-        float band = max(smoothstep(mix(0.35, 0.65, rf), 0.92, b2), 0.7 * smoothstep(mix(0.55, 0.8, rf), 0.95, b3)) * brk;
+        // ...and three finer ones (pitch ~22 deg) between them, weaker; both thinning and breaking up outward (the
+        // breaks: two slow waves along each arm, deeper outward).
+        float b3  = 0.5 + 0.5 * cos(3.0 * (hemi * th + lr / 0.40) + 1.7 + 0.7 * cy.c.w);
+        // (The crests stay at full strength: below ~0.8 the stamp's coverage falls under the clear threshold and an
+        // arm vanishes; the breaks are gaps (brk ~0), the thinning outward is the threshold.)
+        float brk = smoothstep(-0.2 - 0.5 * rf, 0.1, sin(3.1 * lr + 1.3 * th + 2.0) * sin(5.3 * lr - 2.1 * th) + 0.6 - 0.6 * rf);
+        // Ragged, cellular edges: the threshold moved by real cloud texture (the map read at a permuted direction:
+        // unrelated cloud structure, ~5-40 km), so an arm's outline is a broken line of cells, not a painted arc.
+        float tex = textureLod(earthCloudsTex, equirectUV(normalize(vec3(d.y, d.z, d.x))), pc.srcLod).r;
+        float thr = mix(0.32, 0.72, rf) + 0.04 * (nA - 2.0) + 0.45 * (tex - 0.35);
+        float band = max(smoothstep(thr, min(thr + 0.25, 0.97), b2), 0.6 * smoothstep(mix(0.6, 0.85, rf), 0.97, b3)) * brk;
         float inner  = 1.0 - smoothstep(0.75 * cdo, 1.1 * cdo, r);
-        float bandsK = smoothstep(0.5 * cdo, cdo, r) * (1.0 - smoothstep(0.65 * outer, outer, r));
+        float bandsK = smoothstep(0.35 * cdo, 0.8 * cdo, r) * (1.0 - smoothstep(0.6 * outer, outer, r));
         float wall   = exp(-((r - rmw) * (r - rmw)) / (0.16 * rmw * rmw));
-        o.y = max(o.y, max(inner * mix(0.55, 1.0, I), band * bandsK * mix(0.45, 0.9, I)));
-        o.x = max(o.x, max(wall * smoothstep(0.05, 0.4, I), band * bandsK * 0.55));
+        // (An arm's coverage: at 0.45 x a weak storm's band it added ~0.3 of coverage, which the low cloud draws as
+        // scattered cumulus, not a band: weak storms showed no arms at all.)
+        o.y = max(o.y, max(inner * mix(0.55, 1.0, I), band * bandsK * mix(0.8, 1.0, I)));
+        // (Typed convective: rainbands are lines of cumulonimbus; half-stratiform they drew as smooth painted arcs.)
+        o.x = max(o.x, max(wall * smoothstep(0.05, 0.4, I), band * bandsK));
         o.z = max(o.z, max(wall * mix(0.6, 1.0, I), max(inner * 0.55, band * bandsK * 0.7)));
         o.w = max(o.w, (1.0 - band) * bandsK * 0.7);
         if (cy.c.x > 0.0) eyeAcc = max(eyeAcc, (1.0 - smoothstep(0.7 * cy.c.x, 1.15 * cy.c.x, r)) * smoothstep(0.15, 0.4, I));
@@ -316,7 +346,13 @@ void main()
     t  = clamp(t, 0.0, 1.0);
 
     float precip = clamp(deep * smoothstep(0.55, 0.9, t) + deep * (1.0 - conv) * 0.35, 0.0, 1.0);
-    precip = max(precip, 0.85 * sst.z);
+    // Inside a storm's envelope only the storm's own rain falls (its forward flank / trailing stratiform region here,
+    // its core in the march): the map's precipitation there (its stratiform rule, and the congestus the storm field
+    // types) rained 30-45 dBZ over ~100 km round a supercell, whose inflow is rain-free, and hid its tornado; the
+    // rear flank's rain-free base clears it further (2026-10-23).
+    // (Nearly all of it: "Rain" 3 multiplies what is left, and half the map's rain still saturated the eye's rate.)
+    float envK = smoothstep(0.02, 0.2, sst.x);
+    precip = max(precip * (1.0 - 0.95 * envK) * (1.0 - 0.9 * gRainFree), 0.85 * sst.z);
 
     // Review 18: the COARSE levels hold the brightness whose coverage is the true mean coverage of the fine
     // texels under them. Every consumer reads coverage as clamp((r x Coverage - clear) / (full - clear)), and a

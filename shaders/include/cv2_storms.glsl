@@ -55,7 +55,7 @@ struct CV2Cyclone {
     vec4 a;   // xyz the centre (map frame), w intensity 0..1 (17.5 .. 75 m/s)
     vec4 b;   // xyz the centre where the low cloud reads the cube (flowed), w hemisphere (+1 north, -1 south)
     vec4 c;   // x the eye's radius (m, 0 none), y the CDO's radius, z the outer bands' reach, w the bands' phase (rad)
-    vec4 d;   // x the radius of maximum wind (m), y vmax (m/s), z 1 over land, w unused
+    vec4 d;   // x the radius of maximum wind (m), y vmax (m/s), z 1 over land, w the spiral arms (2 .. ~5, continuous)
 };
 
 #ifdef CV2_STORM_BINDING

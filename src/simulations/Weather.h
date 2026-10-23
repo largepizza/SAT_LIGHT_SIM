@@ -118,9 +118,11 @@ struct Cyclone {
     std::vector<glm::dvec3> track;      // Earth-fixed unit vectors, hourly from t0
     std::vector<float> vmax;            // m/s, hourly
     std::vector<uint8_t> overLand;      // hourly
+    std::vector<double> turn;           // hourly: the integral of vmax / rmw since genesis (rad): the circulation's turn
     static constexpr double kStepS = 3600.0;
     glm::dvec3 earthAt(double t) const;
     float vmaxAt(double t) const;
+    double turnAt(double t) const;
 };
 
 // A cyclone's state at one moment.
@@ -132,6 +134,12 @@ struct CycloneState {
     int category = -1;                          // -1 depression, 0 tropical storm, 1-5 Saffir-Simpson
     float rmw = 40000, eyeR = 20000, cdoR = 200000, outerR = 600000;   // m
     float intensity01 = 0;                      // vmax mapped 17.5 .. 75 m/s -> 0..1
+    double turn = 0;                            // the circulation's turn since genesis, int vmax / rmw dt (rad)
+    // The spiral rainbands (the weather bake draws them, the inner band towers stand on their crests): how many arms
+    // (continuous: 2 for a tropical storm, up to ~5 for a Category 5), tan of their pitch (30 deg, 22 when intense), and
+    // their rotation (rad, in [0, 2 pi): crest at theta = hemi (2 pi m / n - ln(r / rmw) / tanPitch - bandRot)).
+    float arms = 2, tanPitch = 0.36f;
+    double bandRot = 0;
     bool overLand = false;
 };
 const char *cycloneBasinName(int basin);        // "North Atlantic" ...

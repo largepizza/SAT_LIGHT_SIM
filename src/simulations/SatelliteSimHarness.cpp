@@ -4383,6 +4383,18 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                                     {"genesis_day", secs / 86400.0}, {"life_h", C->life / 3600.0},
                                     {"peak_mps", C->vPeak}, {"peak_category", C->vPeak >= 70 ? 5 : C->vPeak >= 58 ? 4
                                         : C->vPeak >= 50 ? 3 : C->vPeak >= 43 ? 2 : C->vPeak >= 33 ? 1 : C->vPeak >= 17.5 ? 0 : -1}});
+                    if (c.num("track", 0.0) > 0.5)
+                    {   // every 6 h: [lat, lon, vmax m/s, over land]
+                        json tr = json::array();
+                        for (size_t i = 0; i < C->track.size(); i += 6)
+                        {
+                            const glm::dvec3 &p = C->track[i];
+                            tr.push_back({std::round(glm::degrees(std::asin(std::clamp(p.z, -1.0, 1.0))) * 100.0) / 100.0,
+                                          std::round(glm::degrees(std::atan2(p.y, p.x)) * 100.0) / 100.0,
+                                          std::round(C->vmax[i] * 10.0f) / 10.0f, (int)C->overLand[i]});
+                        }
+                        rows.back()["track"] = tr;
+                    }
                 }
             }
             r["season"] = rows;
@@ -4429,6 +4441,26 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                         break;
                     }
                 if (near.is_null()) fail("storms go: no tropical cyclone '" + c.str("cyclone") + "' alive now");
+                // day=1: first move the clock (within +-12 h) to its local noon; the caller then `wait`s a few frames
+                // and goes to it again (it moved meanwhile).
+                if (c.num("day", 0.0) > 0.5)
+                    for (const wx::CycloneState &S : stormCyclonesNow)
+                        if (std::to_string(S.c->id) == near[0]["cyclone_id"].get<std::string>())
+                        {
+                            const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+                            const glm::dvec3 si = sunDirEciAt(t);
+                            const double g = earthRotationAngle(t);
+                            const double lonS = std::atan2(-si.x * std::sin(g) + si.y * std::cos(g), si.x * std::cos(g) + si.y * std::sin(g));
+                            const glm::dvec3 e = S.c->earthAt(t);
+                            double dl = lonS - std::atan2(e.y, e.x);
+                            dl -= 2.0 * glm::pi<double>() * std::floor((dl + glm::pi<double>()) / (2.0 * glm::pi<double>()));
+                            const double tn = t + dl / 7.2921159e-5;
+                            simDayJ2000 = (int64_t)std::floor(tn / 86400.0);
+                            simSecInDay = tn - (double)simDayJ2000 * 86400.0;
+                            cv2HistoryValid = false;
+                            r["message"] = "clock moved " + std::to_string(dl / 7.2921159e-5 / 3600.0) + " h to its local noon";
+                            return Status::Done;
+                        }
             }
             else if (c.has("storm"))
             {
