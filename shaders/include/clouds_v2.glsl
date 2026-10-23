@@ -1083,10 +1083,66 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     float zMs   = mix(fz, cv2MorphZ(wd, mpF, fpF, strat, seaM, cl.r), cv2.morph.x);
     field += 0.3 * cv2.morph.y * clamp(zMs, -2.5, 2.5);
     float thr   = 1.0 - covT - cv2.farTune.y;   // review 24: "Far cloud layer coverage bias"
-    r.eRaw  = (field - thr) / 0.55;
-    r.e     = clamp(r.eRaw, 0.0, 1.0);
     float sigU = mix(0.03, 0.03 + 0.2 * smoothstep(0.0, 3.0, lodCell), ty.look.z) * max(cv2.farTune.w, 0.05);
-    r.frac  = clamp(0.5 + (field - thr) / (2.5 * sigU), 0.0, 1.0);
+    // WHERE THE MARCH DRAWS CLOUD (issue 20261021_173412). The march does not draw cloud wherever the field passes the
+    // coverage threshold: a column is cloud where its density at the cloud's widest point survives the EROSION. That
+    // density is the convective profile's margin (e capped by the cell, less the profile's narrowest requirement
+    // reqMin), steepened about the erosion level (phK / phP), or for cells below the pixel the sub-pixel share
+    // (presFar), x the macro noise's mean (0.875); the mean erosion takes "Detail" (look.z) x the type's strength. At the
+    // shipped "Detail" 0.77 that moves the edge well inside the field's: the layer had ~2x the march's cloud from
+    // 1000-2000 km (frames 72% against 45% at bias 0; at the review-24 bias +0.12, 90%, r 0.59), and with "Detail" 0
+    // the march covers far MORE than the field (94%). So the edge here is found the way cv2FieldLow draws it: the
+    // smallest margin xe = field - thr at which that eroded density is positive (bisection on the same terms). Kept in
+    // step with cv2FieldLow BY HAND (small-cumulus lift, eS / capS, reqMin, flatK, convW, phK / phP, subPix / presFar,
+    // erosion with billow at the cloud's middle and the edge wisps; the lobes average out).
+    float xe0  = field - thr;
+    float xeMin = 0.0;
+    float eLift;
+    {
+        float thr0   = 1.0 - covT;
+        float deepE  = smoothstep(0.45, 0.85, w.g);
+        float cellsC = cv2MesoSmoothG(cv2.anchorCell.xyz + mp * cv2.anchorCell.w, max(lodCell, 2.0));
+        float cellsB = deepE > 0.02
+                     ? mix(cellsC, cv2MesoSmoothG(cv2.anchorCell.xyz + mp * cv2.anchorCell.w, max(lodCell, 4.0)), deepE)
+                     : cellsC;
+        float fieldB = 0.15 + 0.85 * sqrt(min(cellsB * 1.8, 1.0)) * mix(0.6, 1.0, cl.r) + 0.08 * clamp(fz, -2.5, 2.5);
+        float eB     = clamp((fieldB - thr0) / 0.55, 0.0, 1.0);
+        float reqMin = 0.2 * smoothstep(0.1, 0.6, eB);
+        float capS   = 0.3 + 0.7 * mix(ce.g, min(cellsC * 1.8, 1.0), deepE);
+        float lowCov = (1.0 - smoothstep(0.25, 0.65, covT)) * cv2.cu.y * smoothstep(0.1, 0.5, ty.look.z);
+        float flatK  = ty.alt.z * (1.0 - lowCov);
+        float convW  = mix(ty.look.z, 1.0, lowCov) * (1.0 - flatK);
+        float subPix = smoothstep(1.0, 3.0, lodCell) * ty.look.z;
+        float tE     = cv2.tune.x;
+        float tP     = cv2.tune.x * (1.0 - smoothstep(0.0, 3.0, lodCell));
+        float sigM   = 0.03 + 0.2 * smoothstep(0.0, 3.0, lodCell);           // the march's own presFar spread
+        float rVE    = clamp((cl4.a - 0.5) * 9.0, -1.0, 1.0);
+        float billE  = ty.shape.z * (1.0 - 0.7 * deepE);
+        float erK    = ty.shape.y * cv2.look.z * mix(1.0, cv2.storm.y, deepE) * max(1.0 - 0.6 * cv2.tune.y * rVE, 0.1);
+        float lo = -0.6, hi = 0.6;
+        [[dont_unroll]] for (int it = 0; it < 10; ++it) {
+            float x   = 0.5 * (lo + hi);
+            float eM  = clamp(max(x, min(x + tE, tE + 0.6667 * x)) / 0.55, 0.0, 1.0);
+            float eS  = min(eM, capS);
+            float m   = mix(eS - reqMin, eM, flatK);
+            float phK = cv2.form.w / mix(1.0, clamp(eS, 0.3, 1.0), convW);
+            float phP = 0.5 * erK * (1.0 - phK / cv2.form.w);
+            float Ph  = clamp(m * phK + phP, 0.0, 1.0);
+            float pS  = clamp(0.5 + (x + tP) / (2.5 * sigM), 0.0, 1.0) * 0.8;
+            float d   = mix(Ph, pS, subPix) * 0.875;
+            float wz  = max(cv2.cu2.y * (1.0 - smoothstep(0.05, 0.3, eM)) * (1.0 - deepE), cv2.cu2.y * 0.2 * (1.0 - 0.6 * billE));
+            float er  = min(mix(0.45, 0.55, billE) * erK * (1.0 + 0.7 * wz), 0.92) * mix(1.0, cv2.form.z, smoothstep(0.35, 0.85, d));
+            if (d > er && d > 0.0) hi = x; else lo = x;
+        }
+        xeMin = hi;
+        eLift = max(xe0, min(xe0 + tE, tE + 0.6667 * xe0));
+    }
+    r.eRaw  = eLift / 0.55;
+    r.e     = clamp(r.eRaw, 0.0, 1.0);
+    // The share of the pixel: the march's eroded density grows from its edge over ~half the cells' spread (1.25 sigU);
+    // while the cells resolve, its 3D lobes (zero mean, ~+-0.05 field units) move the edge both ways (lobeW).
+    float lobeW = 0.1 * (1.0 - smoothstep(1.0, 3.0, lodCell));
+    r.frac  = clamp((xe0 - xeMin + 0.5 * lobeW) / (1.25 * sigU + lobeW), 0.0, 1.0);
     r.covE  = covT;
     float tropo  = cv2Tropo(wd);
     float lift   = cv2Ground(q.dirE) * mix(0.6, 0.9, ty.look.z);
