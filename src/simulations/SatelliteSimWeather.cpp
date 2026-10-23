@@ -315,6 +315,28 @@ void SatelliteSim::updateStorms()
         stormEnvKey = key;
         stormUploadedT = -1e300;
     }
+    // Time running faster than ~2 h a frame (1 week/s and up): each frame is a new set of storms (dozens of new spawn
+    // bins a frame, 17-45 ms of this function in hitch_check's ladder), random from frame to frame at that pace. Hidden
+    // while it lasts; a single jump (one big step) still computes them.
+    {
+        const double step = std::fabs(t - stormLastFrameT);
+        stormLastFrameT = t;
+        stormFastFrames = step > 7200.0 ? stormFastFrames + 1 : 0;
+        if (stormFastFrames >= 2)
+        {
+            static_cast<uint32_t *>(stormMapped)[0] = 0u;
+            reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldHeadOffset)[0] = 0u;
+            reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kCycHeadOffset)[0] = 0u;
+            stormTowers.clear();
+            stormShields.clear();
+            stormCyclonesNow.clear();
+            stormGpuTowers.clear();
+            stormGpuShields.clear();
+            stormStats.towers = stormStats.shields = stormStats.cyclones = 0;
+            stormUploadedT = -1e300;
+            return;
+        }
+    }
     if (t == stormUploadedT)
         return;   // paused: nothing moved
     // The weather cube carries each storm's own cloud (cloud_v2_weather.comp stormStamp) and re-bakes a face at a time

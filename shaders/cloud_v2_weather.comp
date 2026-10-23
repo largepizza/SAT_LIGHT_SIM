@@ -303,6 +303,11 @@ void main()
     t += deep * tropics * 0.12 * (1.0 - ocean * 0.5);        // tropical land convection
     t -= (1.0 - conv) * ocean * (0.12 + 0.12 * polar);       // smooth cloud over cold sea -> stratus
     t += 0.3 * aft * (0.5 + 0.5 * tropics);                  // afternoon: towering cumulus, storms
+    // With storm objects (2026-10-23, the plan's "the map's own Cb typing goes away"): the map's bright broken regions
+    // stop at congestus; cumulonimbus, and its convective rain, come only from the storms' own stamp below. Typed by the
+    // map, whole tropical regions rained at full rate under no tower (the radar's saturated 45-50 dBZ sheets, tornadoes
+    // hidden in the map's rain round their storm).
+    if (pc.storm2.x > 0.0) t = min(t, 0.62);
     // A storm's field: congestus round its towers (a convective field the column layer's storm cumulus rises
     // from), a stratiform deck under its forward flank (between stratus and stratocumulus: the low layer thickens a
     // raining stratiform deck into nimbostratus).

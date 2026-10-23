@@ -4800,6 +4800,8 @@ private:
                                                  // (cloud_v2_weather.comp stormStamp; 0 = the map alone)
     float stormMoat = 1.0f;                      // clouds_v2.storm_moat: the clear moat round a storm (x the field)
     double stormPrevUploadT = -1e300;            // the previous upload's sim time (a jump re-bakes the weather cube)
+    double stormLastFrameT = -1e300;             // last frame's sim time, and how many frames in a row moved > 2 h:
+    int    stormFastFrames = 0;                  // past one, the storms are hidden (time warp of ~1 week/s and up)
     struct StormStats { int towers = 0, bins = 0, entries = 0, truncated = 0, lost = 0, dropped = 0; double cpuMs = 0;
                         int envBins = 0, envEntries = 0, envTruncated = 0, envLost = 0;
                         int shields = 0, shieldBins = 0, shieldEntries = 0, shieldTruncated = 0, lineSystems = 0;
