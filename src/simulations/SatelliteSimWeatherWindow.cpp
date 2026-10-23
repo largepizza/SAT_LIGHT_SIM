@@ -1683,6 +1683,8 @@ void SatelliteSim::buildWeatherControlsTab(const UIInput &inp, UIRenderer &ui)
     num(3, "Storm clear moat", stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", "The clear moat round a storm (clouds_v2.storm_moat)");
     num(6, "Hurricane arm cirrus", stormArmCirrus, 0.0f, 3.0f, 0.05f, "%.2f",
         "The ice streaming along a tropical cyclone's spiral arms (clouds_v2.storm_arm_cirrus; 0 = none)");
+    num(10, "Storm surge (x)", stormSurge, 0.0f, 2.0f, 0.05f, "%.2f",
+        "x a tropical cyclone's storm surge: the sea raised on the coast right of its track (clouds_v2.storm_surge)");
     uiSection("WxCSec", 2, "WILDFIRES");
     num(7, "Wildfires (x)", wildfireRate, 0.0f, 10.0f, 0.05f, "%.2f",
         "x the calibrated fire rate: fuel (the biome map) x the season's dryness (clouds_v2.wildfires; 0 = none)");
