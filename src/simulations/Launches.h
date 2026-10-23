@@ -328,6 +328,11 @@ struct Parcel
     std::vector<float> sweep;    // air taken in / exhaust mass: past ~1 the gas piles up at its rim (a shell)
     bool at(double a, glm::dvec3 &cOut, double &sOut, double &condOut, double *sweepOut = nullptr) const;
     float maxAge() const { return age.empty() ? 0.0f : age.back(); }
+    // (2026-10-23, perf) age.back(), kept beside the parcel so an expired one is rejected without touching its samples,
+    // and the sample interval the last at() found (a frame's ages move on by a sample or so: a short scan from it
+    // instead of a binary search; same answer). Main thread only (launchFillVisuals).
+    float ageEnd = -1.0f;
+    mutable uint32_t hint = 1;
 };
 
 double airDensity(double hM); // kg/m^3
