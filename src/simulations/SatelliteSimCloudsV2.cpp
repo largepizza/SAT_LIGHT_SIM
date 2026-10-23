@@ -1967,7 +1967,11 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     if (cv2LightningPipeline)
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2LightningPipeline);
-        vkCmdDispatch(cmd, 18, 1, 1);   // 0 the flash list, 1-4 the rain map, 5-17 the Sun transmittance volume (S3: 5-6 level 0, 7-9 levels 1-3, 10-17 catch-up)
+        // 0 the flash list, 1-4 the rain map, then the Sun transmittance volume (S3: logical workgroups 5-6 level 0, 7-9
+        // levels 1-3, 10-17 catch-up), each split over kCv2StvG = 8 physical workgroups of 32 rays x 8 threads
+        // (cloud_v2_lightning.comp, 2026-10-23: keep the two in step).
+        constexpr uint32_t kCv2StvG = 8;
+        vkCmdDispatch(cmd, 5 + 13 * kCv2StvG, 1, 1);
         // The rain particles (main pass, vertex stage) read the rain map and the light at the eye it just wrote.
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
