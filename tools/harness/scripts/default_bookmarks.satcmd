@@ -154,5 +154,21 @@ bookmark add Starmind Deployment id=default_starmind_deploy scale=0 paused=1
 wait 5
 follow off
 
+# 10. Super Typhoon Yun-yeung over Luzon (2026-10-23, weather): a Category 4 (65 m/s, 914 hPa) two hours before it comes
+#     ashore at 17.3 N 122.2 E around local noon, seen from orbit over its eye (its spiral arms, the eye, the swirl of the
+#     cloud round it). Its landfall milestone sets the moment, then the Cyclones tab's Orbit view. Paused: press play.
+#     The storm depends on the cyclone catalog (tracks, routes, settings): re-check after any change to them.
+time set 2036-06-30T12:00:00Z
+wait 200
+drift default
+weather cyclone Yun-yeung basin=2 milestone=6
+weather cyclone Yun-yeung basin=2 go=orbit
+ui close weather
+time pause
+wait settle
+wait 60
+bookmark add Super Typhoon over Luzon id=default_typhoon_luzon scale=0 paused=1
+wait 5
+
 bookmark list
 quit

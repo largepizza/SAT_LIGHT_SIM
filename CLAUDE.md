@@ -979,7 +979,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   term (`cycloneCategoryName`), vmax (m/s, kt), pressure (the catalog's Atkinson-Holliday), motion, formed when, over
   land, distance; Go to (0 near: 60 km behind its motion at 1.5 km, as `storms go cyclone=`; 1 Orbit: over the eye at
   1.6 x its outer radius, 0.7-2.5 Mm, looking down; 2 Eye: 2.5 km up at the centre; 3 Landfall: its next (else first)
-  landfall point on the coast, looking at it) and Watch (its peak, or genesis + 1 h while upcoming, at 1x, from orbit).
+  landfall, standing just OFF the coast there — stepped out toward the storm until open sea, 20 m up — looking at it; the
+  message says when it comes ashore at night) and Watch (its peak, or genesis + 1 h while upcoming, at 1x, from orbit).
   MILESTONES (`weatherCycloneMilestones`, from the hourly vmax / overLand): genesis, named (17.5 m/s), hurricane / typhoon
   / cyclone strength (33), rapid intensification's onset (+15.4 m/s in 24 h), Category 3 (50), peak, every landfall
   (`overLand` 0 -> 1), dissipation; Skip / Back jumps the clock there at 1x with the camera over the storm from orbit (a
@@ -2674,7 +2675,7 @@ follow mode is a free camera at the camera's place.
   McMurdo: the bow was the beams lighting snow as rain, fixed the same day), Rainbow over Venezuela, Starmind
   Formation Rings.** Removed: Reflect Orbital over Anchorage, AI Satellites at Twilight, Los Angeles by Night,
   Sunset from Orbit, Blood Moon over Alice Springs (Restore no longer re-adds them; a user list that has them keeps
-  them). Since: The Sun's Fury (2026-10-16), Twilight Starship Launch (10-19), Starmind Deployment (10-20) — nine.
+  them). Since: The Sun's Fury (2026-10-16), Twilight Starship Launch (10-19), Starmind Deployment (10-20), Super Typhoon over Luzon (10-23: Yun-yeung, Category 4, from orbit 2 h before its landfall, paused; depends on the cyclone catalog) — ten.
 - **The weather bookmarks depend on the CLOUD DEFAULTS, not just their drift phase (2026-10-20 audit).** The
   2026-10-11 tuning (coverage remap `cover_clear` 0.12 -> 0.0026 / `cover_full` 0.54 -> 1.0 / `coverage`, `flow_warp`,
   `evo_window_h` 3 -> 0.1, the storm shapes) left both the Venezuela rainbow and the Antarctic snow on a clear sky

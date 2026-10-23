@@ -179,6 +179,26 @@
         -0.8959461886534302
       ],
       "sim_t_j2000": 1164207418.3382256
+    },
+    {
+      "az_deg": 0.0,
+      "cloud_drift_phase": 3.6173871994275952,
+      "cloud_drift_rate": 6.499999926745659e-06,
+      "el_deg": -89.5,
+      "fov_y_deg": 60.0,
+      "height_m": 884968.1875,
+      "id": "default_typhoon_luzon",
+      "look": {
+        "paused": true,
+        "time_scale_idx": 0
+      },
+      "name": "Super Typhoon over Luzon",
+      "obs_dir": [
+        -0.514197344943389,
+        0.8053330110906691,
+        0.2950251374049433
+      ],
+      "sim_t_j2000": 1151848312.1425877
     }
   ],
   "format": "sat-light-sim-bookmarks/1"

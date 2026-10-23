@@ -373,23 +373,48 @@ bool SatelliteSim::weatherCycloneMilestone(uint64_t id, int index, std::string &
     timeDir = 1.0f;
     std::string g;
     bool ok;
+    bool landNight = false;
     if (land)
     {
-        // Stand at THIS landfall's point (the track there), looking at the storm 2 h out.
+        // Stand just OFF the coast at THIS landfall's point (2026-10-23): from the track's landfall point toward the storm
+        // 2 h out, until the open sea (up to 20 km), 20 m up, looking at it across the surf. On the landfall point itself
+        // the view was often a hillside in the rain.
         const wx::Cyclone c = *cp;
         const glm::dvec3 at = c.earthAt(m.t), now = c.earthAt(t);
+        glm::dvec3 stand = at;
+        {
+            glm::dvec3 dir = now - at * glm::dot(now, at);
+            if (glm::length(dir) > 1e-12)
+            {
+                dir = glm::normalize(dir);
+                for (double d = 0.0; d <= 20000.0; d += 1000.0)
+                {
+                    const double a = d / kRe;
+                    const glm::dvec3 p = glm::normalize(at * std::cos(a) + dir * std::sin(a));
+                    stand = p;
+                    if (oceanFraction(glm::radians(latOf(p)), glm::radians(lonOf(p)), 800.0, 1) > 0.9f) break;
+                }
+            }
+        }
         if (followActive) stopFollow();
         stopTrack();
-        setObserverLatLon(latOf(at), lonOf(at));
-        obsHeightOffset = 150.0f;
+        setObserverLatLon(latOf(stand), lonOf(stand));
+        obsHeightOffset = std::max(0.0f, cpuTerrainHeightM((float)latOf(stand), (float)lonOf(stand))) + 20.0f;
         camera.fovYDeg = std::max(camera.fovYDeg, 70.0f);
-        aimCameraAzEl((float)bearingTo(at, now), 8.0f);
+        aimCameraAzEl((float)bearingTo(stand, now), 6.0f);
+        {   // (It is what it is if the landfall comes at night: say so.)
+            const glm::dvec3 si = sunDirEciAt(t);
+            const double gg = earthRotationAngle(t);
+            const glm::dvec3 se(si.x * std::cos(gg) + si.y * std::sin(gg), -si.x * std::sin(gg) + si.y * std::cos(gg), si.z);
+            if (glm::dot(glm::normalize(se), stand) < std::sin(glm::radians(-4.0)))
+                landNight = true;
+        }
         updatePositions(t);
         trailClearPending = true;
         skyTaaHistValid = false;
         cv2HistoryValid = false;
         wxSelCyclone = c.id;
-        g = "on the coast, 2 h before";
+        g = landNight ? "off the coast, 2 h before (it comes ashore at night)" : "off the coast, 2 h before";
         ok = true;
     }
     else
