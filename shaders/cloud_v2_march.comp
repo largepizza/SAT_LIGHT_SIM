@@ -127,6 +127,7 @@ float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00
 // visible loss at the high-Sun view (bias vs the reference +0.4 levels).
 const float kLightRatio = 1.0;
 const vec3  kMoonColor  = vec3(0.92, 0.95, 1.0);
+const float kCv2MoonMieCap = 40.0;   // the Mie table's 8 P past ~3 deg; see the key light's single scattering
 
 // Optical depth from a cloud sample toward a light: the light march (the first two samples with
 // detail — the lumps that make cauliflower) plus one long coarse sample, the far side of a tower;
@@ -929,14 +930,20 @@ void main()
                 }
                 float powder = 1.0 - cv2.look2.z * exp(-f.sigma * 300.0) * (0.5 - 0.5 * cosK);
                 vec3 pSSv = vec3(pSS);
-                // The droplets' Mie phase ("Mie phase", 2026-10-22): water cloud's single scattering from the Lorenz-Mie
-                // table (forward diffraction peak, cloudbow, glory) in place of the two Henyey-Greenstein lobes.
-                if (cv2.mie.x > 0.0) pSSv = mix(pSSv, cv2MiePhaseAt(cosK), cv2.mie.x);
                 // "Mie optics" (mie.z): the tuned phase x the table's structure (its corona rings, cloudbow and glory
-                // relative to its own smoothed shape), keeping the tuned energy.
+                // relative to its own smoothed shape), keeping the tuned energy. Applied to the TUNED share only
+                // (issue round 2026-10-22): it multiplied the mix below, so the physical share's corona / bow / glory took
+                // the structure a second time (x3.3 on the forward peak at 0.33).
                 if (cv2.mie.z > 0.0)
                     pSSv *= mix(vec3(1.0), textureLod(cv2MieTex, vec2(acos(clamp(cosK, -1.0, 1.0)) * (1.0 / PI), cv2.mie.w), 0.0).rgb,
                                 cv2.mie.z);
+                // The droplets' Mie phase ("Mie phase", 2026-10-22): water cloud's single scattering from the Lorenz-Mie
+                // table (forward diffraction peak, cloudbow, glory) in place of the two Henyey-Greenstein lobes.
+                // For the MOON its diffraction peak is capped (kCv2MoonMieCap, the table's value ~3 deg out): moonlit cloud
+                // carries the night view's ~2600x lift and the drawn Moon disc does not, so the aureole (physically a few %
+                // of the disc's surface brightness) drew a bright blue disc over a crescent (issue 20261022_180130).
+                if (cv2.mie.x > 0.0)
+                    pSSv = mix(pSSv, min(cv2MiePhaseAt(cosK), vec3(moonIsKey ? kCv2MoonMieCap : 1e9)), cv2.mie.x);
                 if (f.thin > 0.0 || f.rain > 0.0) {
                     pSSv = mix(pSSv, moonIsKey ? phIceMoon : phIceSun, f.thin);
                     pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);
@@ -1168,7 +1175,7 @@ void main()
                 // while it is up (both would count the cloud twice). The diffuse (multiple-scattering) share takes 70% of the
                 // shadow: it is lit from all around.
                 bool  stvOn = cv2.stvH.z > 0.5;
-                float sunC  = stvOn ? cv2StvT(dir * tS, pp.h) : 1.0;
+                float sunC  = (stvOn ? cv2StvT(dir * tS, pp.h) : 1.0) * cv2TerrSunT(dir * tS);   // + the terrain's shadow
                 float covK  = stvOn ? 1.0 : 1.0 - 0.8 * covA;
                 vec3  S    = sunF * covK * ((vec3(fd * phD + fs * phSS) + fi * phI) * exp(-od) * sunC
                                             + (phMS * msOctaves(od) * fs + 0.9 * fd + 0.3 * fi) * mix(1.0, sunC, 0.7))

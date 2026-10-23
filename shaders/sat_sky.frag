@@ -3791,35 +3791,44 @@ void main() {
     // marched to the sky, and the cloud's edge along the ridge came out in half-res stair-steps.
     // Joint-bilateral: each of the four texels is weighted by how well its depth (the shared
     // half-res scene depth) matches this full-resolution pixel's surface.
-    // S9: with full-resolution clouds (cloud_v2_combine.comp) the targets are finer than the half-res scene depth this
-    // weighting reads by the same texel index; their silhouettes are already at the pixel, and it is skipped.
-    if (textureSize(cloudTargetA, 0) == textureSize(sceneDepthTex, 0)) {
-        ivec2 hs = textureSize(cloudTargetA, 0);
-        vec2  hp = cloudUV * vec2(hs) - 0.5;
+    // 2026-10-22 (issue 20261022_180225, a bright twilight line along every ridge against cloud): the weighting runs in
+    // DEPTH texels at any cloud grid, and also where this pixel's surface is FARTHER than all four depth texels'. The
+    // depth passes count a near miss of a crest as a hit (conservative), so the half-res depth stands a texel or so proud
+    // of the full-res silhouette: the cloud texels there were marched only to the ridge (no cloud behind it), every one
+    // of the 2x2 said "terrain" (no edge seen), and the sky pixels just above the ridge showed the clear horizon through
+    // the missing cloud — with full-res clouds (the weighting was skipped) and half-res alike. Now a 5x5 of depth
+    // texels, each weighted by distance and by how well its depth matches this pixel's surface, and the cloud read at
+    // that depth texel's centre (the full-res grid's 2x2 that shares it: cloud_v2_march.comp reads `pix >> grid.z`).
+    {
+        ivec2 ds = textureSize(sceneDepthTex, 0);
+        vec2  hp = cloudUV * vec2(ds) - 0.5;
         ivec2 i0 = ivec2(floor(hp));
         vec2  fr = hp - vec2(i0);
         float lF = log(max(tSurface > 0.0 ? tSurface : kNoSurfaceT, 1.0));
-        ivec2 tp[4] = ivec2[4](i0, i0 + ivec2(1, 0), i0 + ivec2(0, 1), i0 + ivec2(1, 1));
-        float lD[4];
         float dMin = 1e9, dMax = -1e9;
         for (int k = 0; k < 4; ++k) {
-            tp[k] = clamp(tp[k], ivec2(0), hs - 1);
-            lD[k] = log(max(texelFetch(sceneDepthTex, tp[k], 0).r, 1.0));
-            dMin = min(dMin, lD[k]); dMax = max(dMax, lD[k]);
+            float lDk = log(max(texelFetch(sceneDepthTex, clamp(i0 + ivec2(k & 1, k >> 1), ivec2(0), ds - 1), 0).r, 1.0));
+            dMin = min(dMin, lDk); dMax = max(dMax, lDk);
         }
-        if (dMax - dMin > 0.1) {
-            float bw[4] = float[4]((1.0 - fr.x) * (1.0 - fr.y), fr.x * (1.0 - fr.y),
-                                   (1.0 - fr.x) * fr.y, fr.x * fr.y);
+        if (dMax - dMin > 0.1 || lF - dMax > 0.1) {
             vec3  sa = vec3(0.0), sb = vec3(0.0);
             float sw = 0.0;
-            for (int k = 0; k < 4; ++k) {
-                float w = bw[k] * exp(-abs(lD[k] - lF) * 6.0) + 1e-5;
-                sa += w * texelFetch(cloudTargetA, tp[k], 0).rgb;
-                sb += w * texelFetch(cloudTargetB, tp[k], 0).rgb;
+            [[dont_unroll]] for (int k = 0; k < 25; ++k) {
+                ivec2 o  = ivec2(k % 5, k / 5) - 2;
+                ivec2 tq = clamp(i0 + o, ivec2(0), ds - 1);
+                vec2  dd = vec2(o) - fr;
+                float w  = exp(-0.9 * dot(dd, dd));
+                w *= exp(-abs(log(max(texelFetch(sceneDepthTex, tq, 0).r, 1.0)) - lF) * 6.0) + 1e-5;
+                if (w < 1e-6) continue;
+                vec2  uq = (vec2(tq) + 0.5) / vec2(ds);
+                sa += w * textureLod(cloudTargetA, uq, 0.0).rgb;
+                sb += w * textureLod(cloudTargetB, uq, 0.0).rgb;
                 sw += w;
             }
-            cloudARgb = sa / sw;
-            cloudBRgb = sb / sw;
+            if (sw > 0.0) {
+                cloudARgb = sa / sw;
+                cloudBRgb = sb / sw;
+            }
         }
     }
 #endif
@@ -3895,7 +3904,7 @@ void main() {
     float cosA   = dot(dir, sunDir);
 #ifdef SKY_SUN_SHADOW
     // "God rays" (cv2.lightVol.w, 0..1): how much of the clouds' shadow the air takes; 0 while the STV is off.
-    float sunShK = (cv2.stvH.z > 0.5) ? clamp(cv2.lightVol.w, 0.0, 1.0) : 0.0;
+    float sunShK = (cv2.stvH.z > 0.5 || cv2.tsh0.w > 0.5) ? clamp(cv2.lightVol.w, 0.0, 1.0) : 0.0;   // clouds' or terrain's shadow
     // The shaft samples' phase along the ray: per pixel (interleaved gradient noise), and per frame with the sky TAA.
     float shaftJit = fract(52.9829189 * fract(dot(gl_FragCoord.xy + 5.588238 * cloud.taaJitter.xy * 16.0, vec2(0.06711056, 0.00583715))));
 #else
@@ -4150,13 +4159,29 @@ void main() {
         float tS0  = tStart + float(i) * segLen;
         float ovSh = max(0.0, min(tS0 + segLen, tShB) - max(tS0, tShA));
         float litF = clamp(1.0 - ovSh / segLen, 0.0, 1.0);
+        // The air IN FRONT of the clouds (airFront: accumRF / MF, shRF / MF) takes the share fwC of the step the split
+        // falls in, with that PIECE's own density, Earth shadow and (below) cloud shadow (2026-10-22, issues
+        // 20261022_180506 / _175844: a band or line at the horizon's elevation across the clouds). It took the whole
+        // step's: the steps are ~16 km below the horizon (the ray ends at the sea) and up to ~24 km just above it (it
+        // runs to the atmosphere's exit), and the air a few km in front of a cloud in the clouds' shade took the mean
+        // light of a step reaching far past them into lit air: lighter above the horizon, a step (view samples 48) or a
+        // band (6) there. The full steps in front are unchanged (fPart false: every factor is the step's).
+        float fwC   = clamp((tAirFrontM - tS0) / segLen, 0.0, 1.0);
+        bool  fPart = fwC > 0.0 && fwC < 1.0;
+        float lenF  = fwC * segLen;
+        float densR0 = densR, densM0 = densM, fRK = 1.0, fMK = 1.0, litFF = litF;
+        if (fPart) {
+            float hF = max(0.0, length(obsPos + dir * (tS0 + 0.5 * lenF)) - R_EARTH);
+            fRK = min(exp((h - hF) / H_R), 50.0);
+            fMK = min(exp((h - hF) / H_M), 50.0);
+            litFF = clamp(1.0 - max(0.0, min(tS0 + lenF, tShB) - max(tS0, tShA)) / lenF, 0.0, 1.0);
+        }
         if (litF < 1.0) {
             // Review 7: shadowed air, lit by the twilight sky below (see shadowSky after the loop).
             float shF = 1.0 - litF;
             vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             shR += aC * densR * shF; shM += dot(aC, vec3(1.0 / 3.0)) * densM * shF;
-            float fwS = clamp((tAirFrontM - tS0) / segLen, 0.0, 1.0);   // share of the step in front
-            shRF += aC * densR * shF * fwS; shMF += dot(aC, vec3(1.0 / 3.0)) * densM * shF * fwS;
+            shRF += aC * densR0 * fRK * (1.0 - litFF) * fwC; shMF += dot(aC, vec3(1.0 / 3.0)) * densM0 * fMK * (1.0 - litFF) * fwC;
             shT += densR * shF * (tS0 + 0.5 * segLen);
             shD += densR * shF;
             if (litF <= 0.0) continue;
@@ -4212,6 +4237,8 @@ void main() {
             atmTermW8 *= mix(1.0, cloud.sunCloudT, (1.0 - smoothstep(8000.0, 14000.0, h))
                                                   * exp(-tS / 50000.0 - dPerp / 3000.0) * (1.0 - sunShK));
         }
+        vec3  attnPre = attn;   // before the clouds' shadow: the piece in front takes its own (shKF)
+        float shKF    = 0.0;
         // The clouds' shadows on the air (2026-10-10, "God rays" = sunShK): this step's sunlight x the Sun shadow
         // cascade's transmittance, the mean of three points along the step (a step is 10+ km and a storm's shadow a
         // slab a few km deep: one read per step drew its edge as bands). The shadowed share is lit by the sky like
@@ -4232,16 +4259,32 @@ void main() {
                 float tr = segLen * (float(k) + shaftJit) / float(nF);
                 float tk = tA + tr;
                 float wk = (tk < 30000.0) ? exp(-clamp(zK * tr, -8.0, 30.0)) : 1.0;
-                acc += wk * (frx ? cv2GodFroxT(uvF, tk) : cv2StvT(dir * tk, length(obsPos + dir * tk) - R_EARTH));
+                acc += wk * (frx ? cv2GodFroxT(uvF, tk)
+                                 : cv2StvT(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunT(dir * tk));
                 wS  += wk;
             }
             float Tc = acc / wS;
             float shK = sunShK * (1.0 - Tc);
+            // The piece in front of the clouds: its own shadow, 4 reads over it (see fwC above).
+            shKF = shK;
+            if (fPart) {
+                float accF = 0.0, wF = 0.0;
+                [[dont_unroll]] for (int k = 0; k < 4; ++k) {
+                    float tr = lenF * (float(k) + shaftJit) * 0.25;
+                    float tk = tA + tr;
+                    float wk = (tk < 30000.0) ? exp(-clamp(zK * tr, -8.0, 30.0)) : 1.0;
+                    accF += wk * (frx ? cv2GodFroxT(uvF, tk)
+                                      : cv2StvT(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunT(dir * tk));
+                    wF   += wk;
+                }
+                shKF = sunShK * (1.0 - accF / wF);
+            }
+            vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+            if (shKF > 0.001) {
+                shRF += aC * densR0 * fRK * litFF * shKF * fwC; shMF += dot(aC, vec3(1.0 / 3.0)) * densM0 * fMK * litFF * shKF * fwC;
+            }
             if (shK > 0.001) {
-                vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
                 shR += aC * densR * shK; shM += dot(aC, vec3(1.0 / 3.0)) * densM * shK;
-                float fwS = clamp((tAirFrontM - tStart - float(i) * segLen) / segLen, 0.0, 1.0);
-                shRF += aC * densR * shK * fwS; shMF += dot(aC, vec3(1.0 / 3.0)) * densM * shK * fwS;
                 shT += densR * shK * (tStart + (float(i) + 0.5) * segLen);
                 shD += densR * shK;
                 attn *= 1.0 - shK;
@@ -4255,7 +4298,8 @@ void main() {
         if (cloud.moonMisc.y > 0.5) {
             vec3  spK = sp * 1e-3;
             float vD  = eclipseSunVis(spK, sunDir, 0.0);
-            attn *= vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(spK, sunDir, h);
+            vec3  eclK = vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(spK, sunDir, h);
+            attn *= eclK; attnPre *= eclK;
         }
 
         // Accumulate in-scattered radiance for each particle type.
@@ -4265,9 +4309,10 @@ void main() {
         // the exact opposite of what they exist to do.
         accumR += attn * densR * atmTermW8;                  // Rayleigh: wavelength-dependent (blue sky)
         accumM += dot(attn, vec3(1.0 / 3.0)) * densM * atmTermW8; // Mie: wavelength-neutral (white haze/corona)
-        float fwC = clamp((tAirFrontM - tStart - float(i) * segLen) / segLen, 0.0, 1.0);   // share of the step in front
-        accumRF += attn * densR * atmTermW8 * fwC;
-        accumMF += dot(attn, vec3(1.0 / 3.0)) * densM * atmTermW8 * fwC;
+        // The piece in front (fwC, above): its own density, Earth shadow and clouds' shadow; the step's own when whole.
+        vec3 attnF = attnPre * (1.0 - shKF);
+        accumRF += attnF * densR0 * fRK * litFF * atmTermW8 * fwC;
+        accumMF += dot(attnF, vec3(1.0 / 3.0)) * densM0 * fMK * litFF * atmTermW8 * fwC;
     }
 
     vec3 color = SUN_INTENSITY * (pR * BETA_R * accumR + vec3(pM * BETA_M * accumM));
@@ -6919,6 +6964,10 @@ void main() {
     gl_FragDepth = (tOcclude >= 0.0) ? sceneDepthFromDistance(tOcclude) : 1.0;
 #ifdef SKY_TAA
     outDepthCopy = (tOcclude >= 0.0) ? sceneDepthFromDistance(tOcclude) : 1.0;
+    // Alpha 0.8 = the depth is an opaque CLOUD's (its light's mean distance, not a surface): sky_taa.comp takes the
+    // eye's parallax for its weight / clip there (issue 20261022_174155, run 2: the stacked edge copies climbing
+    // under a deck were on these pixels, not on sky-depth ones).
+    if (tHit < 0.0 && tSeaLvl < 0.0 && !meshHit && tCloudOcclude >= 0.0 && !terrainDebugActive) outColor.a = 0.8;
 #endif
 #endif
 }

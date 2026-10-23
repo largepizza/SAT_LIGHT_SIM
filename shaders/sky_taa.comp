@@ -28,7 +28,7 @@ layout(set = 0, binding = 5, r32f)    uniform writeonly image2D outDepth;
 
 layout(push_constant) uniform PC {
     vec4 c2e0, c2e1, c2e2;   // camera -> ENU (this frame), rows; w: jitter x, jitter y (input px), input width
-    vec4 e2p0, e2p1, e2p2;   // this frame's ENU -> last frame's camera, rows; e2p0.w input height
+    vec4 e2p0, e2p1, e2p2;   // this frame's ENU -> last frame's camera, rows; e2p0.w input height, e2p1.w the eye-parallax floor's distance (m, 0 off)
     vec4 eyeDelta;           // xyz: this eye - last eye, in this frame's ENU (m); w: 0 none, 1 history, 2 history + nothing moved, 3 + time paused
     vec4 cam;                // x tan(fovY/2), y aspect, z new-sample weight when still, w weight in motion
 } pc;
@@ -81,7 +81,7 @@ void main() {
     vec3  cur;
     float d;
     float conf = 1.0;                  // how close this frame's nearest sample landed (upscaling)
-    float yMax = 0.0;
+    float yMax = 0.0, y2nd = 0.0;      // the 3x3's largest and second-largest luma
     float seaA = 1.0;                  // sat_sky.frag's sea marker: 1 not sea, else 0.5 x (1 - storm trail share)
     vec3 m1 = vec3(0.0), m2 = vec3(0.0);
     float dLo3 = 1.0, dHi3 = 0.0;      // this frame's 3x3 depth range (the still-view disocclusion test)
@@ -94,7 +94,7 @@ void main() {
         for (int k = 0; k < 9; ++k) {
             ivec2 q = clamp(p + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), sz - 1);
             vec3  y = toYCoCg(fin(texelFetch(curColor, q, 0).rgb));
-            m1 += y; m2 += y * y; yMax = max(yMax, y.x);
+            m1 += y; m2 += y * y; y2nd = max(y2nd, min(yMax, y.x)); yMax = max(yMax, y.x);
             float dq = texelFetch(curDepth, q, 0).r;
             dLo3 = min(dLo3, dq); dHi3 = max(dHi3, dq);
         }
@@ -112,7 +112,7 @@ void main() {
             float w  = exp(-dot(dO, dO) * (1.0 / (2.0 * 0.6 * 0.6)));
             acc += cq * w; ws += w; wMax = max(wMax, w);
             vec3  y = toYCoCg(cq);
-            m1 += y; m2 += y * y; yMax = max(yMax, y.x);
+            m1 += y; m2 += y * y; y2nd = max(y2nd, min(yMax, y.x)); yMax = max(yMax, y.x);
             float dq = texelFetch(curDepth, q, 0).r;
             dLo3 = min(dLo3, dq); dHi3 = max(dHi3, dq);
         }
@@ -128,6 +128,15 @@ void main() {
     m1 /= 9.0; m2 /= 9.0;
     vec3 sd = sqrt(max(m2 - m1 * m1, vec3(0.0)));
 
+    // A lone spark on the SEA while the eye moves (2026-10-22, the matrix suite: alt3km-fast, a white speckle over the
+    // whole sea while moving, the settled sea smooth): a glint on a sub-pixel wave facet caught by one jitter phase is a
+    // single bright sample, and in motion the history (clipped, at the moving weight) no longer averages it away. Where
+    // this pixel is the 3x3's strict maximum it is capped at the second-largest luma (an isolated spark only: a glitter
+    // path or a lit crest spans neighbours). Not in a still view (the history averages the phases there).
+    if (seaA < 0.75 && pc.eyeDelta.w < 1.5) {
+        float yc = toYCoCg(cur).x;
+        if (yc > y2nd && yc > 1e-6) cur *= y2nd / yc;
+    }
     vec3 res = cur;
     if (pc.eyeDelta.w > 0.5) {
         // This pixel's (unjittered) ray in ENU.
@@ -197,19 +206,45 @@ void main() {
             // The trails are for a view that moves little: flying (parallax past ~1-4 px a frame) the unclipped history
             // was whatever stood over this water a frame ago, and clouds were dragged across the sea in stepped copies
             // (issue 20261012_235712 shot 7, boosting at 22 km/s over a storm).
+            // Issue 20261022_174155 (climbing ~300-500 m/s under a cumulus deck, time paused): translucent cloud and haze
+            // carry SKY depth (the unified depth holds a cloud only where it is >= 90% opaque), so they reproject by
+            // rotation alone, with no parallax, and an opaque cloud's depth is its light's MEAN distance, often far
+            // past its surface. Both kept the still weight (0.1) while the deck moved 2-10 px a frame, and the 3x3
+            // clip, spanning the edge's gradient, let each frame's edge through: stacked serrated copies of every cloud
+            // edge and vertical smears below the deck (run 1: gone with the sky TAA off, the cloud resolve's own output
+            // clean). So while the EYE moves, every pixel takes at least the eye's parallax at a stand-in distance
+            // (e2p1.w, CPU "display.sky_taa_parallax_floor_m", 1500 m; 0 = off) for its WEIGHT and clip only (the
+            // reprojection is unchanged): nearer surfaces keep their own parallax, a still eye changes nothing.
+            // Run 2 (2026-10-22): the floor on sky-depth pixels alone changed 0.4% of the climb's pixels; the copies were
+            // on OPAQUE-CLOUD pixels (sat_sky.frag alpha 0.8), whose depth is the cloud light's mean distance. Those take
+            // the eye's parallax at min(their distance, the floor) and the sky-depth treatment below (UNVERIFIED).
+            const bool cloudPx = seaA > 0.77 && seaA < 0.9;
+            float parF = 0.0;
+            if (pc.e2p1.w > 0.0 && (sky || cloudPx || distanceFromDepth(d) > pc.e2p1.w)) {
+                vec3  ed   = pc.eyeDelta.xyz;
+                float perp = length(ed - dir * dot(ed, dir));
+                float dF   = sky ? pc.e2p1.w : min(distanceFromDepth(d), pc.e2p1.w);
+                parF = perp / dF * (size.y / (2.0 * pc.cam.x));   // px (fovY: 2 tan(fovY/2) spans size.y)
+            }
+            // SKY-depth pixels past a few px of it also take most of this frame and a tighter clip: nothing at sky depth
+            // can be reprojected along the eye's move. A far surface (true depth) only takes the moving weight from it.
+            const float floorK = (sky || cloudPx) ? smoothstep(1.0, 6.0, parF) : 0.0;
             const bool  sea    = seaA < 0.75;
             const float trail  = sea ? clamp(1.0 - 2.0 * seaA, 0.0, 1.0) * (1.0 - smoothstep(1.0, 4.0, par)) : 0.0;
             const bool  still  = pc.eyeDelta.w > 1.5;
             const bool  noClip = still && (!sea || pc.eyeDelta.w > 2.5);   // paused: the waves are frozen too
-            if (mx > 1.0 && !noClip) h = mix(c + v / mx, h, trail);
-            const float ramp = max(smoothstep(0.5, 4.0, mv), smoothstep(0.1, 1.0, par));
+            // The floor's clip is tighter (1.25 -> 0.75 sd as it ramps): a ghost on a smooth gradient sits inside 1.25.
+            const float mxF = mx / mix(1.0, 0.6, floorK);
+            if (mxF > 1.0 && !noClip) h = mix(c + v / mxF, h, trail);
+            const float ramp = max(max(smoothstep(0.5, 4.0, mv), smoothstep(0.1, 1.0, par)), smoothstep(0.1, 1.0, parF));
             float w  = mix(pc.cam.z, pc.cam.w, ramp * (1.0 - trail));
+            w = mix(w, max(w, 0.8), floorK * (1.0 - trail));
             // A flash (lightning, a sprite, a glint): when the whole NEIGHBOURHOOD brightens past the history,
             // take the new frame at once — at weight 0.1 a flash lasting a few frames came out ~10x dimmer.
             // Jitter alternating across an edge leaves the 3x3 mean where it was, so edges still accumulate.
             // The spark-proof mean only when nothing moved: in motion it fired less often and the history lagged
             // (+3% on the climb benchmark), and the specks it removes are a still-view problem.
-            w = max(w, smoothstep(0.3, 1.2, ((still ? mRob : mix(m1.x, mRob, trail)) - h.x) / max(h.x, 0.02)));
+            w = max(w, smoothstep(0.3, 1.2, (((still || sea) ? mRob : m1.x) - h.x) / max(h.x, 0.02)));   // sea: spark-proof in motion too (glints took their frame raw)
             w *= conf;   // upscaling: a sample far from this pixel moves it less (1 at 100%)
             res = fromYCoCg(mix(h, toYCoCg(cur), w));
         }

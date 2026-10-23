@@ -865,6 +865,7 @@ struct GpuCloudV2Params
     glm::vec4 grid;                     // 2026-10-22: S9, the cloud grid and full-res mode (clouds_v2.glsl)
     glm::vec4 anvil3;                   // 2026-10-22: anvil puffiness, the head top's lift (clouds_v2.glsl)
     glm::vec4 stvL0, stvL1, stvL2, stvL3, stvH, stvV;   // 2026-10-22: S3, the Sun transmittance volume (clouds_v2.glsl)
+    glm::vec4 tsh0, tsh1, tsh2, tsh3;   // 2026-10-22: the terrain Sun-horizon map (clouds_v2.glsl)
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -889,7 +890,8 @@ static_assert(offsetof(GpuCloudV2Params, cdcC) == 288 + 48 * kCloudV2Types + 976
 static_assert(offsetof(GpuCloudV2Params, grid) == 288 + 48 * kCloudV2Types + 992, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, anvil3) == 288 + 48 * kCloudV2Types + 1008, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, stvL0) == 288 + 48 * kCloudV2Types + 1024, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1120, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, tsh0) == 288 + 48 * kCloudV2Types + 1120, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1184, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -4001,6 +4003,10 @@ private:
     bool skyTaaEnabled = true;
     float skyTaaWeightStill = 0.1f;
     float skyTaaWeightMoving = 0.35f;
+    // Issue 20261022_174155 (2026-10-22): sky-depth pixels (translucent cloud, haze) and far surfaces take the eye's
+    // parallax at this stand-in distance for their history weight / clip while the EYE moves (sky_taa.comp, e2p[1].w).
+    // 0 = off (the old behaviour). display.sky_taa_parallax_floor_m.
+    float skyTaaParallaxFloorM = 1500.0f;
     bool skyTaaUsedThisFrame = false;
     bool skyTaaHistValid = false;
     int skyTaaHist = 0;
@@ -4200,6 +4206,16 @@ private:
     float cv2CdcNearM = 0.0f;             // coarse steps skip only beyond this distance (m)
     float cv2FullRes = 1.0f;              // S9: full-resolution clouds (computeCloudExtent; on for High / Ultra, the compiled defaults)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
+    // 2026-10-22 (r1022 orbit, the matrix's "clouds thin out climbing from orbit"): the clipmap's bake reads the field at the
+    // march's footprint FROM THE EYE AT BAKE TIME, and its cells never expire with time paused: climbing, cells baked lower
+    // (finer footprint: gaps between resolved puffs) read "empty" where the coarser footprint now has cloud, and the march
+    // skipped whole cloud masses. The guard drops the clipmap while the eye moves fast for its height and starts a new epoch
+    // when it comes back or after the eye has moved a quarter of its distance scale. 0 = the old behaviour.
+    float cv2CdcMotionGuard = 1.0f;
+    glm::dvec3 cv2CdcRefEye{0.0};          // the eye when the clipmap's current epoch began
+    double cv2CdcRefS = 0.0;               // ... and its distance scale then
+    bool  cv2CdcWasActive = false;
+    int   cv2CdcSlowFrames = 0;
     float cv2MiePhase = 0.0f;             // "Mie phase" (2026-10-22): the droplets' Mie phase's share of single scattering
     float cv2MieOptics = 0.0f;            // "Mie optics": the tuned phase x the Mie table's structure (corona, cloudbow, glory)
     float cv2DropletReffUm = 10.0f;       // ... their effective radius (um): 4 continental .. 15+ maritime / rain-forming
@@ -4526,6 +4542,10 @@ private:
     // binding 12 of the march set and 21 of cloud_march's.
     VkPipeline cv2LightningPipeline = VK_NULL_HANDLE;
     VkPipeline cv2FroxPipeline = VK_NULL_HANDLE;   // the god rays' froxel volume (2026-10-22, cloud_v2_froxel.comp)
+    VkPipeline cv2TshPipeline = VK_NULL_HANDLE;    // the terrain Sun-horizon map (2026-10-22, cloud_v2_terrsun.comp)
+    float cv2TerrainGodrays = 1.0f;                // "Terrain god rays" (clouds_v2.terrain_godrays): the terrain shadows the air,
+                                                   // the fog / dust through the Sun-horizon map (not the ground: it has its own)
+    bool  cv2TshOnNow = false;                     // the map is baked this frame (fillCloudsV2Params)
     float cv2GodrayFroxels = 1.0f;                 // on by default since 2026-10-22: "godray_froxels": the sky pass reads the volume
     // Per-pass GPU time inside the cloud bucket (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S0): kCv2PassStamps timestamps
     // at fixed points of recordCloudsV2 + one after cloud_march.comp; a pass skipped this frame is a zero interval.
@@ -4575,7 +4595,9 @@ private:
     static constexpr VkDeviceSize kCv2FroxBytes = 160ull * 90 * 64 * 4;   // cv2GodFrox (cloud_lightning.glsl)
     static constexpr VkDeviceSize kCv2StvOffset = kCv2EvalCountOffset + 32 * 4 + kCv2FroxBytes;      // cv2Stv (S3)
     static constexpr VkDeviceSize kCv2StvLevelBytes = 128ull * 128 * 48 * 4;                          // one level: 128^2 rays x 48 knots
-    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2StvOffset + 4 * kCv2StvLevelBytes;           // + cv2EvalCount, cv2GodFrox, cv2Stv
+    static constexpr VkDeviceSize kCv2TshOffset = kCv2StvOffset + 4 * kCv2StvLevelBytes;               // cv2TerrSun (terrain Sun horizon)
+    static constexpr VkDeviceSize kCv2TshBytes = 4ull * 128 * 128 * 4;                                 // 4 levels of 128^2 rays, one float
+    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2TshOffset + kCv2TshBytes;                    // + cv2EvalCount, cv2GodFrox, cv2Stv, cv2TerrSun
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;

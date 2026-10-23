@@ -41,7 +41,7 @@ void main()
     ivec3 g = ivec3(gl_GlobalInvocationID);
     if (g.x >= kCv2FroxX || g.y >= kCv2FroxY || g.z >= kCv2FroxZ) return;
     int idx = (g.z * kCv2FroxY + g.y) * kCv2FroxX + g.x;
-    if (cv2.frox.x <= 0.5 || cv2.stvH.z <= 0.5) { cv2GodFrox[idx] = 1.0; return; }
+    if (cv2.frox.x <= 0.5 || (cv2.stvH.z <= 0.5 && cv2.tsh0.w <= 0.5)) { cv2GodFrox[idx] = 1.0; return; }
 
     // The view ray through the tile's centre (cloud_v2_march.comp's rayDirAt, in screen fractions), the Sun
     // transmittance volume at four depths through the froxel.
@@ -52,7 +52,7 @@ void main()
     [[dont_unroll]] for (int k = 0; k < 4; ++k) {
         float t  = cv2FroxDepth(float(g.z) + (float(k) + 0.5) * 0.25);
         vec3  pE = dir * t + vec3(0.0, 0.0, R_EARTH + terrainFrame.x + 2.0);
-        T += cv2StvT(dir * t, length(pE) - R_EARTH);
+        T += cv2StvT(dir * t, length(pE) - R_EARTH) * cv2TerrSunT(dir * t);   // the clouds' and the terrain's shadows
     }
     cv2GodFrox[idx] = 0.25 * T;
 }

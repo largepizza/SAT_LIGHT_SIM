@@ -49,6 +49,12 @@ const int   kCv2FroxZ = 64;
 const int   kCv2StvL = 4;
 const int   kCv2StvN = 128;
 const int   kCv2StvK = 48;
+// The terrain Sun-horizon map (2026-10-22, cloud_v2_terrsun.comp): 4 nested levels of kCv2TshN^2 parallel lines toward
+// the Sun on the volume's axes (cells cv2.tsh0..3.z, Earth-fixed: the lattice is snapped to whole cells of an ECEF
+// coordinate, cv2.tsh*.xy the eye's fraction), each holding s_e = the distance along the Sun (from the plane through the
+// eye) where its line, coming from the Sun, first enters the terrain (DEM); -1e30 = never. A point on the line further
+// from the Sun than s_e is in the terrain's shadow. Rebaked whole every frame. [(level * N + j) * N + i].
+const int   kCv2TshN = 128;
 layout(std430, set = 0, binding = CV2_FLASH_BINDING)
 #if !defined(CV2_FLASH_WRITE) && !defined(CV2_EVAL_COUNT)
 readonly
@@ -83,6 +89,7 @@ buffer CV2FlashBuf {
     // The clouds' Sun transmittance along the view on the froxel grid ([(z * Y + y) * X + x]; cloud_v2_froxel.comp).
     float    cv2GodFrox[kCv2FroxX * kCv2FroxY * kCv2FroxZ];
     float    cv2Stv[kCv2StvL * kCv2StvN * kCv2StvN * kCv2StvK];
+    float    cv2TerrSun[4 * kCv2TshN * kCv2TshN];
 };
 #ifdef CV2_EVAL_COUNT
 #define CV2_CNT(i) atomicAdd(cv2EvalCount[i], 1u)
@@ -168,6 +175,40 @@ float cv2StvT(vec3 rl, float h)
         vec2 s = cv2StvLevelT(rl, h, lv);
         acc  = acc * (1.0 - s.y) + s.x * s.y;
         keep *= 1.0 - s.y;
+    }
+    return acc + keep;
+}
+// ── The terrain Sun-horizon map: the terrain's shadow at rl (from the eye, observer ENU). 1 = lit. Not for the ground
+// itself (sat_sky.frag's terrainSunShadow draws that sharply): a point within about a cell of a sunlit slope may read a
+// neighbouring line's entry, so the shadow starts a cell + 30 m past the entry and softens over another cell.
+vec4 cv2TshLat(int lv) { return (lv == 0) ? cv2.tsh0 : (lv == 1) ? cv2.tsh1 : (lv == 2) ? cv2.tsh2 : cv2.tsh3; }
+float cv2TerrSunT(vec3 rl)
+{
+    if (cv2.tsh0.w < 0.5) return 1.0;
+    vec3  ga = vec3(cv2SunProf[2], cv2SunProf[3], cv2SunProf[4]);
+    vec3  gb = vec3(cv2SunProf[5], cv2SunProf[6], cv2SunProf[7]);
+    float sP = dot(rl, cross(ga, gb));                       // along the Sun (ga x gb = S)
+    vec2  ab = vec2(dot(rl, ga), dot(rl, gb));
+    float acc = 0.0, keep = 1.0;
+    [[dont_unroll]] for (int lv = 3; lv >= 0; --lv) {
+        vec4  la = cv2TshLat(lv);
+        vec2  gg = ab / la.z + la.xy + float(kCv2TshN / 2);   // line (i, j) sits at (i, j) - N/2 - frac cells from the eye
+        float w  = 1.0 - smoothstep(float(kCv2TshN / 2) - 14.0, float(kCv2TshN / 2) - 3.0,
+                                    max(abs(gg.x - float(kCv2TshN / 2)), abs(gg.y - float(kCv2TshN / 2))));
+        if (w <= 0.0) continue;
+        ivec2 g0 = ivec2(floor(gg));
+        vec2  gf = gg - vec2(g0);
+        float m  = la.z + 30.0;
+        float T  = 0.0;
+        [[dont_unroll]] for (int c = 0; c < 4; ++c) {
+            ivec2 sc = clamp(ivec2(g0.x + (c & 1), g0.y + (c >> 1)), ivec2(0), ivec2(kCv2TshN - 1));
+            float se = cv2TerrSun[(lv * kCv2TshN + sc.y) * kCv2TshN + sc.x];
+            float bw = ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
+            float x  = clamp((sP - se + m + la.z) / la.z, 0.0, 1.0);   // (smoothstep with se = -1e30 has equal edges)
+            T += bw * x * x * (3.0 - 2.0 * x);
+        }
+        acc  = acc * (1.0 - w) + T * w;
+        keep *= 1.0 - w;
     }
     return acc + keep;
 }

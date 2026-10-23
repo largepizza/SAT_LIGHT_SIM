@@ -13621,6 +13621,7 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     tp.c2e[1].w = skyTaaJitterNow.y;
     tp.c2e[2].w = (float)inE.width;
     tp.e2p[0].w = (float)inE.height;
+    tp.e2p[1].w = skyTaaParallaxFloorM;   // the eye-parallax stand-in distance (m; 0 = off), issue 20261022_174155
     // Clouds move on their own under time warp (the map's drift + the shape wind), and the resolve reprojects only the
     // CAMERA: with the eye still the history of a moving cloud stays where it was, held at the still weight (0.1), and
     // the 3x3 colour clip cannot remove it over the sea (its glitter and reflected-cloud specks make the box wide) —

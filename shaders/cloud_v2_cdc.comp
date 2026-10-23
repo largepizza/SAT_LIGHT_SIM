@@ -66,6 +66,8 @@ void checkPass(uint gi)
     float z0 = float(c.z) * kCv2CdcDZ, z1 = z0 + kCv2CdcDZ;
     if (z1 + kCv2CdcDZ < cv2.shell.x || z0 - kCv2CdcDZ > cv2.shell.y) {
         cv2CdcData[gi] = st << 16u;
+        cv2CdcData[kCv2CdcTotal + gi] = 0u;       // S2's sums too: the light lookup is trilinear and reads these
+        cv2CdcData[2 * kCv2CdcTotal + gi] = 0u;   // cells as corners (they kept a former shell's values)
         return;
     }
     uint slot = atomicAdd(cv2CdcListCount, 1u);

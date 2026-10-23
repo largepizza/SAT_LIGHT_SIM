@@ -229,7 +229,15 @@ void main()
                            - 0.5 * float(kCv2RainMapN) + 0.5) * kCv2RainCellM;
                 CV2_CNT(11);
                 CV2Field fe = cv2Field(cv2Pos(vec3(en, 0.0), eyeH, mat3(enuX, enuY, enuZ)), -1.0, kCv2RainCellM);
-                rr = fe.rain * clamp(fe.sigma / 0.0012, 0.0, 1.0);
+                // The rain's own extinction (2026-10-22: inside a cloud's base the sample is cloud + a rain share).
+                rr = clamp(fe.rain * fe.sigma / 0.0012, 0.0, 1.0);
+                // Deeper in a raining cloud than its rain floor reaches (cv2FieldLow's kCv2RainIntoM): the rain
+                // there is the column's rain under it (issue 20261022_174757: drops up to and into the cloud).
+                if (fe.rain < 0.99 && fe.sigma > 0.0 && eyeH > 700.0) {
+                    CV2_CNT(11);
+                    CV2Field fb = cv2Field(cv2Pos(vec3(en, 0.0), eyeH - 600.0, mat3(enuX, enuY, enuZ)), -1.0, kCv2RainCellM);
+                    rr = max(rr, 0.7 * clamp(fb.rain * fb.sigma / 0.0012, 0.0, 1.0));
+                }
             }
         }
         if (cell < 1024u) cv2RainMap[cell] = rr;

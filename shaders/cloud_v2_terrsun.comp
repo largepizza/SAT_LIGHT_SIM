@@ -1,0 +1,106 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── The terrain Sun-horizon map (2026-10-22, issue 20261022_174531 "Terrain God Rays") ───────────────────────────────────
+// The terrain did not shadow the air: the god rays (sat_sky.frag SKY_SUN_SHADOW, the froxels), the fog and the dust read
+// only the clouds' Sun transmittance volume. This bakes, for 4 nested levels of 128 x 128 parallel lines toward the Sun
+// (the volume's axes and cells, but EARTH-fixed: snapped to whole cells of the eye's ECEF position across the Sun,
+// cv2.tsh0..3), the distance along the Sun (from the plane through the eye) where each line, coming from the Sun, first
+// enters the terrain (the DEM, no detail octaves): cv2TerrSun, read by cloud_lightning.glsl cv2TerrSunT. One thread a
+// line, sphere-traced from where it drops below the terrain's ceiling to 450 km past the eye (or out of the ceiling).
+// Rebaked whole every frame: no history, nothing to drift with the clouds. Kept out of the terrain's own sun shadow on
+// the ground (sat_sky.frag terrainSunShadow is sharper there). Same descriptor set and push constants as the march.
+layout(local_size_x = 64) in;
+
+layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
+    mat4  skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING  1
+#define CV2_MORPH_BINDING   20
+#define CV2_WEATHER_BINDING 2
+#define CV2_SHAPE_BINDING   3
+#define CV2_MESO_BINDING    5
+#include "clouds_v2.glsl"
+#define CV2_FLASH_BINDING 12
+#define CV2_FLASH_WRITE
+#define CV2_SUN_CASC_FN
+#include "cloud_lightning.glsl"
+#include "terrain.glsl"
+layout(std430, set = 0, binding = 8) readonly buffer TerrainFrame { vec4 terrainFrame; };   // x the eye's ground height
+layout(set = 0, binding = 25) uniform sampler2D earthElevTex;
+
+const float kTshCeilM  = kMaxTerrain + 600.0;   // no terrain above this
+const float kTshReachM = 450000.0;              // the farthest lookups (the froxels' 400 km) past the eye along -S
+
+float tshGround(vec3 P, float rP, mat3 enuToEcef, float lod)
+{
+    vec3 d = enuToEcef * (P / rP);
+    return max(0.0, textureLod(earthElevTex, dirToUV(d), lod).r * kElevRange - kElevOffset);
+}
+
+void main()
+{
+    uint id = gl_GlobalInvocationID.x;
+    if (id >= uint(4 * kCv2TshN * kCv2TshN)) return;
+    int  lv = int(id) / (kCv2TshN * kCv2TshN);
+    int  r  = int(id) - lv * kCv2TshN * kCv2TshN;
+    int  i  = r % kCv2TshN, j = r / kCv2TshN;
+    vec4 la = cv2TshLat(lv);
+    float se = -1e30;
+    if (cv2.tsh0.w > 0.5) {
+        vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+        vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+        mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
+        vec3  ga = vec3(cv2SunProf[2], cv2SunProf[3], cv2SunProf[4]);
+        vec3  gb = vec3(cv2SunProf[5], cv2SunProf[6], cv2SunProf[7]);
+        vec3  S  = cross(ga, gb);
+        // Line (i, j): (i, j) - N/2 - the eye's fraction, in cells across the Sun from the eye (the lookup's convention).
+        vec2  gp = (vec2(float(i), float(j)) - float(kCv2TshN / 2) - la.xy) * la.z;
+        vec3  P0 = ga * gp.x + gb * gp.y + vec3(0.0, 0.0, R_EARTH + terrainFrame.x + 2.0);   // from the Earth's centre
+        float sC = -dot(P0, S);                 // the line's closest point to the Earth's centre
+        vec3  Pc = P0 + S * sC;
+        float cL = length(Pc);
+        float rT = R_EARTH + kTshCeilM;
+        if (cL < rT) {
+            float hw   = sqrt((rT - cL) * (rT + cL));
+            float s    = sC + hw;                                // where the line comes down through the ceiling
+            float sEnd = max(sC - hw, -kTshReachM);              // out of the ceiling again, or past the farthest lookup
+            float lod  = max(float(lv) - 1.0, 0.0);              // DEM texels 2.7 km: levels 2-3 (4 / 16 km cells) coarser
+            float minS = max(0.4 * la.z, 200.0);
+            float maxS = max(5000.0, 2.0 * la.z);
+            float sPrev = s;
+            [[dont_unroll]] for (int n = 0; n < 256 && s > sEnd; ++n) {
+                vec3  P   = Pc + S * (s - sC);
+                float rP  = length(P);
+                float gap = (rP - R_EARTH) - tshGround(P, rP, enuToEcef, lod);
+                if (gap < 0.0) {
+                    // Inside: the entry lies between the last point above (sPrev) and this one. Bisect.
+                    float lo = s, hi = sPrev;
+                    [[dont_unroll]] for (int b = 0; b < 5; ++b) {
+                        float sm = 0.5 * (lo + hi);
+                        vec3  Pm = Pc + S * (sm - sC);
+                        float rm = length(Pm);
+                        if ((rm - R_EARTH) < tshGround(Pm, rm, enuToEcef, lod)) lo = sm; else hi = sm;
+                    }
+                    se = hi;
+                    break;
+                }
+                // Marching toward -S the line drops by dot(up, S) per metre; the ground may rise ~0.6 per metre.
+                float drop = max(dot(P / rP, S), 0.0);
+                sPrev = s;
+                s -= clamp(gap / (drop + 0.6), minS, maxS);
+            }
+        }
+    }
+    cv2TerrSun[(lv * kCv2TshN + j) * kCv2TshN + i] = se;
+}

@@ -88,12 +88,28 @@ bool cv2CdcMeanAt(vec3 rel, float eyeR, float L, out float m)
     int   lv = int(ceil(log2(max(max(du.x, du.y) / (cv2.cdcA.z * float(kCv2CdcN / 2 - 2)), 1.0))));
     if (lv >= min(kCv2CdcL, int(cv2.cdcB.w))) return false;
     if (lv >= int(cv2.cdcC.y)) return false;   // only the finest levels (cdc_light_levels): see the bake
-    ivec3 c  = ivec3(ivec2(floor(uv / cv2CdcCell(lv))), iz);
-    int   ci = cv2CdcIndex(c, lv);
-    if ((cv2CdcData[ci] >> 16u) != cv2CdcStamp(c, lv)) return false;
+    // TRILINEAR between the 8 nearest cell centres (2026-10-22, issue 20261022_175215 "blend the voxels"): the moments
+    // (mean and mean square) are linear, so they interpolate exactly and the gamma model takes the result. One cell read
+    // drew a caster's shadow with the cells' faces: a flat-topped, vertical-sided grey box on a cumulus, its edges the
+    // projection of 100-400 m x 320 m cell boundaries along the Sun. Any corner unknown: the field, as before.
+    vec3  g  = vec3(uv / cv2CdcCell(lv), h / kCv2CdcDZ) - 0.5;
+    ivec3 c0 = ivec3(floor(g));
+    vec3  fr = g - vec3(c0);
+    float s1 = 0.0, s2 = 0.0;
+    [[dont_unroll]] for (int k = 0; k < 8; ++k) {
+        ivec3 o  = ivec3(k & 1, (k >> 1) & 1, k >> 2);
+        ivec3 c  = c0 + o;
+        c.z = clamp(c.z, 0, kCv2CdcNZ - 1);
+        int   ci = cv2CdcIndex(c, lv);
+        if ((cv2CdcData[ci] >> 16u) != cv2CdcStamp(c, lv)) return false;
+        vec3  wv = mix(1.0 - fr, fr, vec3(o));
+        float w  = wv.x * wv.y * wv.z;
+        s1 += w * float(cv2CdcData[kCv2CdcTotal + ci]);
+        s2 += w * float(cv2CdcData[2 * kCv2CdcTotal + ci]);
+    }
     float n  = cv2.cdcA.w > 1.5 ? 36.0 : 9.0;
-    float mu = float(cv2CdcData[kCv2CdcTotal + ci]) / (kCv2CdcMeanQ * n);
-    float m2 = float(cv2CdcData[2 * kCv2CdcTotal + ci]) / (kCv2CdcMeanQ * n);
+    float mu = s1 / (kCv2CdcMeanQ * n);
+    float m2 = s2 / (kCv2CdcMeanQ * n);
     float va = max(m2 - mu * mu, 0.0);
     if (mu <= 1e-9) return true;
     m = (va <= 1e-6 * mu * mu) ? mu : (mu * mu / va) * log(1.0 + L * va / mu) / L;

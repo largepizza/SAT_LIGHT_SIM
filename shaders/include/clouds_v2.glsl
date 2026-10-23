@@ -178,6 +178,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // march's key light, the god rays, the fog and the ground shadow read it), w spare;
     // stvV: xy the eye's motion this frame across the Sun in level 0's cells (the bake takes the leading edge), zw spare.
     vec4  stvL0, stvL1, stvL2, stvL3, stvH, stvV;
+    // 2026-10-22, the terrain Sun-horizon map (cloud_lightning.glsl cv2TerrSun, cloud_v2_terrsun.comp): tsh0..3 = level n:
+    // xy the eye's fractional position on the level's Earth-fixed lattice across the Sun (cells, 0..1), z its cell (m),
+    // w 1 = on (the god rays' froxels, the sky pass's direct path and the fog/dust march read it; not the ground).
+    vec4  tsh0, tsh1, tsh2, tsh3;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -704,12 +708,21 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // fall), slanted downwind with depth below the base. ~0.3-1.5 /km: a few km of visibility in a
     // heavy shower. Lit through the cloud above by the light march: dark under a Cb, bright at its
     // sunlit edge — which is where rainbows show (the march's rain phase). ──
-    if (below) {
+    // 2026-10-22 (issue 20261022_174757): rain falls from INSIDE the cloud. Above the shafts' old top
+    // (base - 2.2 baseAmp) the body path carried no rain at all, so the shafts ended a few hundred metres under a
+    // visible base and the drops at the eye vanished as it rose into that band. Up to kCv2RainIntoM above the base
+    // the same shaft is a RAIN FLOOR the body's samples start from (its early returns return it; inside the cloud
+    // the rain is added to the body's extinction as its rain share), thickening toward the base and fading out
+    // inside the cloud. One shaft fetch, as before.
+    const float kCv2RainIntoM = 400.0;
+    float rainLo = base - 2.2 * baseAmp;
+    if (below || (q.h <= base + kCv2RainIntoM && (rainAmt >= 0.02 || gCv2RainCore > 0.0))) {
         // Review 22: the map's rain is the light, intermittent background; the heavy rain is under the dominant
         // towers' cores (gCv2RainCore), denser (to ~2x) and more uniform there.
         float core = gCv2RainCore * cv2.rain.x;
         float rate = max(rainAmt * smoothstep(0.3, 0.8, e) * mix(0.4, 1.0, ty.look.z), core);
-        if (rate <= 0.0) return f;
+        if (rate <= 0.0 && below) return f;
+        if (rate > 0.0) {
         vec3  rr = rS + eastW * ((base - q.h) * 0.25);
         rr -= wd * (dot(rr, wd) * 0.85);
         // The curtains read 1.5 mips coarser with a softer threshold (review 22): at the shape period's finest
@@ -719,12 +732,15 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
         float shaft = clamp((sr.g * 0.6 + sr.a * 0.4 - 0.42) * 2.2 + 0.42, 0.0, 1.0);
         shaft = mix(shaft, max(shaft, 0.75), core);
         shaft = mix(shaft, 0.45, smoothstep(300.0, 2000.0, fpM));   // sub-pixel curtains: their mean
-        f.sigma    = rate * shaft * 0.0012 * (1.0 + core);
+        // Above the old top: denser toward the base (the shaft gathering under it), gone kCv2RainIntoM into the cloud.
+        float into = (1.0 + 1.5 * smoothstep(rainLo, base, q.h)) * (1.0 - smoothstep(base, base + kCv2RainIntoM, q.h));
+        f.sigma    = rate * shaft * 0.0012 * (1.0 + core) * (below ? 1.0 : into);
         f.msBright = 0.6;
         f.ambient  = 0.8;
         f.rain     = 1.0;
         f.topH     = base;
-        return f;
+        if (below) return f;
+        }
     }
 
     // THE SHAPE IS A 3D MARGIN, not a heightfield. v1 and the first v2 cuts made cloud a column:
@@ -1007,7 +1023,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     d = min(d * mix(cv2.extra.x * (1.0 + 2.0 * (1.0 - smoothstep(8.0, 80.0, fpM))), 1.0,
                     max(smoothstep(150.0, 1500.0, fpM), 0.8 * wispE)), 1.0);
 
-    f.sigma    = d * sigK;
+    // (+ the rain floor above, if any: its share of the extinction is rain.)
+    float sigR = f.sigma;
+    f.sigma    = d * sigK + sigR;
+    f.rain     = sigR / max(f.sigma, 1e-9);
     // "Lobe occlusion" (mid3.z): the sky light by where the sample sits in the lobe noise: the creases between
     // lobes (low) see a narrow cone of sky, the tips (high) most of it; mean ~1. The probe 250 m up and the depth
     // under the column's top cannot tell a crease from a tip.
@@ -1089,7 +1108,10 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
 // Perlin channel, 8-64 km) says so. Altocumulus — rounded cloudlets from the shape volume's 3D
 // Worley octaves (220-875 m) in a thin lens-shaped sheet — where the low cloud is broken;
 // altostratus — a smooth translucent sheet the sun shows through — where it is stratiform.
-float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out float deckMid)
+// stormK (2026-10-22, issue 20261022_180823): 0..1, the regional storm strength (cv2ColumnSigma's CV2Col.storm). Storms
+// are wrapped in mid-level cloud (outflow and the stratiform region's altostratus / altocumulus): the regime is lifted
+// there and the "thins over a low overcast" factor does not apply. cv2Field keeps it out of the towers themselves.
+float cv2MidSigmaS(CV2Pos q, float fpM, float stormK, out float hfMid, out float topMid, out float deckMid)
 {
     hfMid = 0.0; topMid = 0.0; deckMid = 0.0;
     if (q.h < 2800.0 || q.h > 12000.0) return 0.0;
@@ -1111,7 +1133,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     // the low coverage was high: every layer stacked on the same spot.
     float covW   = clamp((textureLod(cv2WeatherTex, wF, 4.0).r * cv2.look.x - cv2.cover.x)
                          / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
-    float covM   = mix(cov, max(cov, covW * 0.85), cv2.flow.y);
+    float covM   = max(mix(cov, max(cov, covW * 0.85), cv2.flow.y), 0.6 * stormK);
     float clA    = cl.a, uMid = -1.0;
 #ifdef CV2_MORPH_BINDING
     // Review 17: altocumulus organises in cells too — the closed-cell morphology (one read, the cube face the
@@ -1135,8 +1157,8 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
         clA = 0.5 + (textureLod(cv2MesoTex, rgm + vec3(0.47, 0.19, 0.83), cv2Lod(fpM, cv2.mid3.x)).a - 0.5) * 0.85
             + (clA - 0.5) * 0.4;
     }
-    float regime = smoothstep(0.5 - cv2.mid2.w, 0.68 - cv2.mid2.w, clA + 0.15 * (covM - 0.5)) * cv2.misc.w * smoothstep(0.0, 0.35, covM)
-                 * mix(1.0, 0.55, cv2.flow.y * smoothstep(0.75, 1.0, cov));
+    float regime = smoothstep(0.5 - cv2.mid2.w, 0.68 - cv2.mid2.w, clA + 0.15 * (covM - 0.5) + 0.07 * stormK) * cv2.misc.w * smoothstep(0.0, 0.35, covM)
+                 * mix(1.0, 0.55, cv2.flow.y * smoothstep(0.75, 1.0, cov) * (1.0 - 0.5 * stormK));
     if (regime <= 0.0) return 0.0;
     // The baked Perlin is 0.50 +- 0.057: read raw, the base spanned ~300 m, and the layer was one flat
     // sheet at ~4.5 km around the planet — seen edge-on from near its height, a dead-straight line
@@ -1147,7 +1169,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float thick = mix(1200.0, 450.0, cr) * cv2.mid2.y;
     float zm    = (q.h - base) / thick;
     if (zm <= 0.0 || zm >= 1.0) return 0.0;
-    float strat = 1.0 - smoothstep(0.3, 0.55, w.g);                 // stratiform below -> As
+    float strat = max(1.0 - smoothstep(0.3, 0.55, w.g), 0.25 * stormK);  // stratiform below -> As (around storms: As + Ac)
     // Its own period (anchorMid): on the cumulus shape period, enlarging the cumulus lobes made the
     // altocumulus cloudlets huge too.
     vec4  sh    = textureLod(cv2ShapeTex, cv2.anchorMid.xyz + cv2Drift(q.rSeaE) * cv2.anchorMid.w,
@@ -1168,6 +1190,11 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     topMid      = base + thick;
     deckMid     = strat;
     return lens * mix(ac * 0.035, as_ * 0.004 * cv2.mid2.x, strat) * cv2.atmo.z;
+}
+
+float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out float deckMid)
+{
+    return cv2MidSigmaS(q, fpM, 0.0, hfMid, topMid, deckMid);
 }
 
 // ── The high layer: cirrus / cirrostratus / cirrocumulus (0.7-0.9 of the tropopause) ─────────────
@@ -1842,12 +1869,19 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     CV2Field f = cv2FieldLow(q, detailAmt, fpM, col.prox);
     float dbgLow = f.sigma;
     float hfX, topX, deckX;
-    float sm = cv2MidSigma(q, fpM, hfX, topX, deckX);
-    // The mid layer (a thin Ac/As lens) gives way over a storm: drawn through it, it sliced every
-    // tower with a flat plate at ~6 km, seen edge-on as a hard line across the storm (user snap 1,
-    // pass 17). Only where the towers are drawn (the storm's strength is read for them).
-    // Wherever towers can stand (a weak storm-edge tower cut by a mid-layer belt, pass 20).
-    if (cv2.column.x > 0.0) sm *= 1.0 - smoothstep(0.0, 0.15, col.storm);
+    // The mid layer (a thin Ac/As lens) gives way at the TOWERS: drawn through them, it sliced every tower with a flat
+    // plate at ~6 km, seen edge-on as a hard line across the storm (user snap 1, pass 17), weak storm-edge towers
+    // included (pass 20). 2026-10-22 (issue 20261022_180823, "stormy areas should have more mid cloud"): it gave way
+    // over the whole storm REGION (col.storm, ~40 km), and storms stood in clear air at mid levels. Now the storm
+    // region lifts the mid layer (cv2MidSigmaS) and only the towers' footprint clears it: col.prox is 1 within 1.1
+    // tower radii and falls off over "Storm cumulus reach"; dividing out its storm-strength factor counts weak towers
+    // in full.
+    float stK = (cv2.column.x > 0.0) ? col.storm : 0.0;
+    float sm = cv2MidSigmaS(q, fpM, stK, hfX, topX, deckX);
+    if (cv2.column.x > 0.0) {
+        float foot = clamp(col.prox / max(smoothstep(0.05, 0.3, col.storm), 0.05), 0.0, 1.0);
+        sm *= 1.0 - smoothstep(0.3, 0.9, foot);
+    }
     if (sm > 0.0) cv2Add(f, sm, hfX, topX, deckX);
     float hfH, topHh;
     float sh = cv2HighSigma(q, fpM, hfH, topHh);

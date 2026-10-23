@@ -917,8 +917,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     and the alpha's signed distance move into the combine at full res; the ground shadow is a [1 2 1] tent of the half
     texels. The sky pass skips its joint-bilateral upsample when the targets are finer than the scene depth. The resolve
     uses a [1 2 1] tent of the quarter grid (widened under 6-24 px of parallax) where it has no usable history — on EVERY
-    sparse grid (half-res too: tstab "chaos" there 7.85 -> 4.91). **ON for High / Ultra** (the compiled default,
-    `applyGraphicsPreset`: off with the cheap-cloud presets), 2026-10-22 (the user). The noise LOD stays the HALF-res
+    sparse grid (half-res too: tstab "chaos" there 7.85 -> 4.91). **ON for Medium / High / Ultra** (the compiled default,
+    `applyGraphicsPreset`: off on Low / Planetarium / Potato), 2026-10-22 (the user; Medium too, issue 20261022_180607: half res
+    flickered badly at Medium's 67% render scale). The noise LOD stays the HALF-res
     pixel's (`motion.w` = 2): at the full-res pixel it cost +2 ms at 58 km and the sub-pixel noise flickered from orbit.
     Measured (1920x1009, clipmap on, vs half-res full rate, `harness_runs/s0/s9b`, `lodviews`): cloud bucket 58 km 12.5 ->
     14.9 ms, anvils 10.6 -> 12.1, cumulus 13.9 -> 15.7, Pacific 9.0 -> 10.9; resolve +1.0, composite + combine +0.2..+0.4
@@ -974,6 +975,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     (cumulus from the ground / 3 km / cloud height, broken and overcast decks, sea, tropical towers, cumulus shadows on
     land at a 34 deg Sun from 3 km / 800 m / the ground, an overcast at 33 deg), each settled, time paused for 1200
     frames, time running at 1x, and five player-speed motion paths. Use it beside the sunset anvil views.
+    **For anything that moves or changes altitude, run the MATRIX suite first** (`tools/harness/matrix_suite.py`,
+    2026-10-22, docs/HARNESS.md "Matrix suite"): altitude rows 0 m .. 5000 km over one place x motion columns (still noise,
+    walk, strafe, boost, look, rise, descend at the player's speeds for that height) + context rows (storm, sea, night,
+    Reflect beams, aurora ground / orbit, ISS and Starmind in follow mode, a launch plume, the 2037 eclipse), one launch
+    (~13 min `--quick`, ~22 full); `--fragment` pastes into a larger batch (captures `mx_*`), `compare` flags regressions.
   - **Anvil puffiness** ("Anvil puffiness" `anvil_puffiness` 1, "Anvil top lift (m)" `anvil_lift_m` 800, slots 310-311, UBO
     `anvil3`; `cv2ColumnSigma`): the anvils are the anvil-reaching towers' flared heads, and their lobes and erosion were faded
     out over the head's last 1.5 km for the map-fed shield's thin lid (off by default): smooth plates with knife edges, "an

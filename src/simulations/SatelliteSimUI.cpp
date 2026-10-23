@@ -6431,6 +6431,8 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Sun shadow cell (m)", &cv2ShadowRing1CellM, 100.0f, 1000.0f, 10.0f, "%.0f", 286},
         // The mid / high layers' shadow on everything under them, at any distance (the layer shadow map, 2026-10-14).
         {"God rays", &cv2Godrays, 0.0f, 1.0f, 0.05f, "%.2f", 187},
+        // 2026-10-22: the terrain shadows the air and the fog too (the terrain Sun-horizon map, cloud_v2_terrsun.comp).
+        {"Terrain god rays (0/1)", &cv2TerrainGodrays, 0.0f, 1.0f, 1.0f, "%.0f", 297},
         {"Haze near clouds", &cv2HazeAloft, 0.0f, 20.0f, 0.1f, "%.1f", 188},
     };
     // The cloud rebuild's experiments (2026-10-22, .plans/CLOUD_REBUILD_PLAN.md): each off by default, for judging.
@@ -8334,7 +8336,9 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
     cv2AdaptiveRate = cheapClouds ? 1.0f : 0.0f;
     cv2SparseWhenStill = cheapClouds ? 1.0f : 0.0f;
     computeFollowsRenderScale = cheapClouds;
-    cv2FullRes = cheapClouds ? 0.0f : 1.0f;   // full-resolution clouds on High / Ultra (2026-10-22, S9)
+    // Full-resolution clouds on Medium, High and Ultra (2026-10-22, S9; Medium added the same day by the user, issue
+    // 20261022_180607: at Medium's 67% render scale the half-res clouds flickered badly and Medium + full res ran ~60 fps).
+    cv2FullRes = (p == GraphicsPreset::Medium || !cheapClouds) ? 1.0f : 0.0f;
     // Procedural terrain detail (terrain_detail.glsl). Measured with the harness on an RTX 3070 Ti:
     // +3 ms at Medium in the Anchorage worst case (10.0 vs 6.9 ms), +5-8 ms at High on the ground in
     // mountains, ~+1 ms from aircraft altitude. Off on the integrated-GPU tiers — and on Planetarium /
@@ -8491,6 +8495,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             skyTaaEnabled = d.value("sky_taa", skyTaaEnabled);
             skyTaaWeightStill = settingClamp(d.value("sky_taa_weight", skyTaaWeightStill), 0.02f, 1.0f);
             skyTaaWeightMoving = settingClamp(d.value("sky_taa_weight_moving", skyTaaWeightMoving), 0.02f, 1.0f);
+            skyTaaParallaxFloorM = settingClamp(d.value("sky_taa_parallax_floor_m", skyTaaParallaxFloorM), 0.0f, 100000.0f);
             int fpsCapVal = d.value("fps_cap_mode", (int)fpsCapMode);
             fpsCapMode = (fpsCapVal >= 0 && fpsCapVal <= 4) ? (FpsCapMode)fpsCapVal : FpsCapMode::VSync;
             // UC1: default to Custom (NOT a device-seeded preset) when the key is simply absent —
@@ -8770,6 +8775,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2Godrays = settingClamp(c.value("godrays", cv2Godrays), 0.0f, 1.0f);   // (it ran to 3 while it scaled the old light volume)
         cv2MiePhase = c.value("mie_phase", cv2MiePhase);
         cv2GodrayFroxels = c.value("godray_froxels", cv2GodrayFroxels);
+        cv2TerrainGodrays = settingClamp(c.value("terrain_godrays", cv2TerrainGodrays), 0.0f, 1.0f);
         cv2MieOptics = c.value("mie_optics", cv2MieOptics);
         cv2ShapeCaps = c.value("shape_caps", cv2ShapeCaps);
         cv2DropletReffUm = c.value("droplet_reff_um", cv2DropletReffUm);
@@ -8778,6 +8784,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CdcFp = c.value("cdc_fp", cv2CdcFp);
         cv2CdcMaxLevel = c.value("cdc_max_level", cv2CdcMaxLevel);
         cv2CdcMaxRate = c.value("cdc_max_rate", cv2CdcMaxRate);
+        cv2CdcMotionGuard = c.value("cdc_motion_guard", cv2CdcMotionGuard);
         cv2CdcLight = c.value("cdc_light", cv2CdcLight);
         cv2CdcLightLevels = c.value("cdc_light_levels", cv2CdcLightLevels);
         cv2CdcNearM = c.value("cdc_near_m", cv2CdcNearM);
@@ -9150,6 +9157,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sky_taa", skyTaaEnabled},
         {"sky_taa_weight", skyTaaWeightStill},
         {"sky_taa_weight_moving", skyTaaWeightMoving},
+        {"sky_taa_parallax_floor_m", skyTaaParallaxFloorM},
         {"fps_cap_mode", (int)fpsCapMode},
         {"graphics_preset", (int)graphicsPreset},
         {"show_advanced_settings", showAdvancedSettings},
@@ -9366,6 +9374,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"godrays", cv2Godrays},
         {"mie_phase", cv2MiePhase},
         {"godray_froxels", cv2GodrayFroxels},
+        {"terrain_godrays", cv2TerrainGodrays},
         {"mie_optics", cv2MieOptics},
         {"shape_caps", cv2ShapeCaps},
         {"droplet_reff_um", cv2DropletReffUm},
@@ -9374,6 +9383,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cdc_fp", cv2CdcFp},
         {"cdc_max_level", cv2CdcMaxLevel},
         {"cdc_max_rate", cv2CdcMaxRate},
+        {"cdc_motion_guard", cv2CdcMotionGuard},
         {"cdc_light", cv2CdcLight},
         {"cdc_light_levels", cv2CdcLightLevels},
         {"cdc_near_m", cv2CdcNearM},

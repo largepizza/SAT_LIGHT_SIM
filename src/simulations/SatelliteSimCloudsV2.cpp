@@ -571,14 +571,15 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // 22 unused (was the layer shadow map, deleted 2026-10-22; bound to the blue-noise tile)
     // 23 the cloud density clipmap (2026-10-21, EXPERIMENT, cv2_cdc.glsl; cloud_v2_cdc.comp writes it)
     // 24 the droplets' Mie phase table (2026-10-22)
+    // 25 the elevation map (2026-10-22: the terrain Sun-horizon map's bake, cloud_v2_terrsun.comp, alone reads it)
     cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX, SSBO,
-                                             TEX, IMG, IMG, SSBO, TEX, IMG, SSBO, SSBO, TEX});
+                                             TEX, IMG, IMG, SSBO, TEX, IMG, SSBO, SSBO, TEX, TEX});
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
     // 6/7 the full-rate tiles' color/depth, 8 the tile list
     // 9 / 10 the sample ages (out, history)
     cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO, IMG, TEX});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 16}, {SSBO, 8}, {IMG, 9}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 17}, {SSBO, 8}, {IMG, 9}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -614,6 +615,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     cv2LightningPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout);
     cv2SunLutPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout);
     cv2FroxPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_froxel.comp.spv", cv2MarchPipeLayout);
+    cv2TshPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_terrsun.comp.spv", cv2MarchPipeLayout);
     cv2FarPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout);
     {   // The clipmap's two passes: specialization constant 2 = 0 check, 1 bake.
         const uint32_t spec0[3] = {0u, 0u, 0u}, spec1[3] = {0u, 0u, 1u};
@@ -642,7 +644,10 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkDescriptorImageInfo mieI{cv2ClampSampler, cv2MieView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo lvOut{VK_NULL_HANDLE, cv2SunLutView, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo lvIn{cv2ClampSampler, cv2SunLutView, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo elevI{earthElevSampler ? earthElevSampler : noiseSampler,
+                                    earthElevView ? earthElevView : noiseTexView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkWriteDescriptorSet w[] = {
+            imageWrite(cv2MarchDescSet, 25, TEX, &elevI),
             bufferWrite(cv2MarchDescSet, 15, SSBO, &blueNoise),
             bufferWrite(cv2MarchDescSet, 19, SSBO, &tiles),
             bufferWrite(cv2MarchDescSet, 22, SSBO, &blueNoise),
@@ -874,6 +879,7 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     swap(cv2LightningPipeline, pick(lightningSpv, "shaders/cloud_v2_lightning.comp.spv"), cv2MarchPipeLayout, nullptr);
     swap(cv2SunLutPipeline, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cv2FroxPipeline, "shaders/cloud_v2_froxel.comp.spv", cv2MarchPipeLayout, nullptr);
+    swap(cv2TshPipeline, "shaders/cloud_v2_terrsun.comp.spv", cv2MarchPipeLayout, nullptr);
     cv2SunLutKey[0] = -1.0f;   // bake it again with the new shader
     swap(cv2FarPipeline, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout, nullptr);
     if (cv2CombinePipeline)
@@ -920,6 +926,8 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2SunLutPipeline = VK_NULL_HANDLE;
     if (cv2FroxPipeline) vkDestroyPipeline(device, cv2FroxPipeline, nullptr);
     cv2FroxPipeline = VK_NULL_HANDLE;
+    if (cv2TshPipeline) vkDestroyPipeline(device, cv2TshPipeline, nullptr);
+    cv2TshPipeline = VK_NULL_HANDLE;
     if (cv2FarPipeline) vkDestroyPipeline(device, cv2FarPipeline, nullptr);
     cv2FarPipeline = VK_NULL_HANDLE;
     if (cv2CdcPipeline) vkDestroyPipeline(device, cv2CdcPipeline, nullptr);
@@ -1449,6 +1457,25 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             p.stvV = glm::vec4(v0.x, v0.y, (cv2StvBoost > 0 ? 1.0f : 0.0f) + std::min(wMin, 0.25f), wcB);
             cv2StvOnNow = stvOn;
         }
+        {
+            // The terrain Sun-horizon map (cloud_v2_terrsun.comp, cloud_lightning.glsl cv2TerrSunT): 4 levels of 128 x 128
+            // lines toward the Sun at the volume's cells, snapped to whole cells of the eye's ECEF position across the Sun
+            // (so a line stays on the same ground while the eye moves; rebaked whole every frame). Only while the bake is
+            // dispatched (recordCloudsV2: not with the clouds off or at full far-layer blend), the Sun is up at the eye,
+            // below 60 km, and the terrain is drawn.
+            const bool tshOn = cv2TerrainGodrays > 0.5f && cv2TshPipeline && !cloudsV2Off() && cloudFarBlend() < 0.999f
+                               && sinE > -0.05 && eyeH < 60000.0 && (debugDisableMask & 1u) == 0u;
+            const double eA = glm::dot(eye, ga), eB = glm::dot(eye, gb);
+            glm::vec4 t[4];
+            for (int lv = 0; lv < 4; ++lv)
+            {
+                const double cellL = cell1 * std::pow(4.0, lv);
+                const double fa = eA / cellL - std::floor(eA / cellL), fb = eB / cellL - std::floor(eB / cellL);
+                t[lv] = glm::vec4((float)fa, (float)fb, (float)cellL, tshOn ? 1.0f : 0.0f);
+            }
+            p.tsh0 = t[0]; p.tsh1 = t[1]; p.tsh2 = t[2]; p.tsh3 = t[3];
+            cv2TshOnNow = tshOn;
+        }
         // mid3.w: "Haze near clouds" (the sky pass). cu2.w: how far the resolve may take a still view's history unclamped
         // (cloud_v2_resolve.comp `uK`): not while the Sun shadow fills after a reset, its shadows arriving over ~40 frames
         // darkened the clouds over seconds at the still weight (load: 18% of pixels past 16 levels at frame 20, was 0.7%).
@@ -1490,6 +1517,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             // The cloud density clipmap (EXPERIMENT, cv2_cdc.glsl), on the same plane. A new epoch (the anchor, the field,
             // a time jump or a reset) invalidates every cell. Each level's cells expire after half a cell of wind slide at
             // 40 m/s of sim time (staggered per cell); paused, nothing expires.
+            const uint32_t cdcEpoch0 = cv2CdcEpoch;
             if (!lightValid || cdcNewAnchor || cv2CdcFpUsed != cv2CdcFp || cv2CdcSkipUsed != cv2CdcSkip
                 || cv2CdcLightUsed != cv2CdcLight || cv2CdcLightLevelsUsed != cv2CdcLightLevels || cv2CdcMaxLevelUsed != cv2CdcMaxLevel)
                 ++cv2CdcEpoch;
@@ -1503,6 +1531,29 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             // read unknown, and the bake + lookups cost more than they save (+2 ms at 58 km, harness_runs/s0/run13).
             const float rate = timePaused ? 0.0f : kTimeScales[std::clamp(timeScaleIdx, 0, (int)(sizeof(kTimeScales) / sizeof(kTimeScales[0])) - 1)];
             cv2CdcActive = cv2CdcSkip > 0.5f && rate <= cv2CdcMaxRate && cv2CdcBufFull;
+            // The motion guard (SatelliteSim.h cv2CdcMotionGuard): a cell's bake read the field at the footprint seen from
+            // where the eye WAS, and paused it never expires. Its distance scale: the nearest cloud is at least this far
+            // (from orbit the height above the shell; near the ground 20 km, so normal and boosted low flight keep it).
+            // Off while the eye moves > 0.4% of it a frame (back after 60 slow frames, in a new epoch), and a new epoch
+            // once it has moved a quarter of it (>= ~60 frames apart, so the 3-bit epoch never wraps onto unbaked cells).
+            // Matrix run 1 (r1022): climbing 500 -> 1745 km the march skipped every cloud mass the 500-km bake had seen as
+            // gaps between puffs (mx_alt500km-rise, -1.0 signed, 2.5% px past 16 levels).
+            if (cv2CdcMotionGuard > 0.5f)
+            {
+                const double cdcS = std::max(eyeH - (double)hi, 0.0) + 20000.0;
+                const double cdcStep = glm::length(eye - cv2PrevEye);
+                cv2CdcSlowFrames = (cv2HistoryValid && cdcStep > 0.004 * cdcS) ? 0 : std::min(cv2CdcSlowFrames + 1, 1000);
+                if (cv2CdcSlowFrames < 60)
+                    cv2CdcActive = false;
+                if (cv2CdcActive && (!cv2CdcWasActive || glm::length(eye - cv2CdcRefEye) > 0.25 * cv2CdcRefS))
+                    ++cv2CdcEpoch;
+                if (cv2CdcEpoch != cdcEpoch0 || !cv2CdcActive)
+                {
+                    cv2CdcRefEye = eye;
+                    cv2CdcRefS = cdcS;
+                }
+            }
+            cv2CdcWasActive = cv2CdcActive;
             p.cdcA = glm::vec4((float)ue, (float)ve, (float)cdcCell0, cv2CdcActive ? std::round(cv2CdcSkip) : 0.0f);
             p.cdcB = glm::vec4((float)(cv2CdcEpoch & 7u), (cv2CdcFp < 0.0f ? std::clamp(cv2CdcFp, -8.0f, -0.05f) : std::clamp(cv2CdcFp, 0.05f, 8.0f)), std::max(cv2CdcBudget, 0.0f),
                                std::clamp(cv2CdcMaxLevel, 0.0f, 8.0f));
@@ -1861,6 +1912,16 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         cv2LightningRanThisFrame = true;
         cv2LightningObsDir = glm::dvec3(cpc.obsECEFDir);   // the frame its flash list is in (updateLightningBolts)
         cv2LightningObsDirValid = true;
+    }
+    // The terrain Sun-horizon map (2026-10-22): one thread per line, 4 x 128 x 128; after the lightning pass (it reads the
+    // volume's axes, cv2SunProf), before the froxels, the sky pass and the fog march, which read it.
+    if (cv2TshPipeline && cv2TshOnNow)
+    {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2TshPipeline);
+        vkCmdDispatch(cmd, 4 * 128 * 128 / 64, 1, 1);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
     // The god rays' froxel volume (EXPERIMENT): from this frame's Sun shadow bakes, for the sky pass (fragment).
     if (cv2FroxPipeline && cv2GodrayFroxels > 0.5f)

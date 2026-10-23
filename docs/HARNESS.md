@@ -362,6 +362,49 @@ and tstab's walk / strafe / pan90 / pitch / rise paths scored against settled re
 settling references, 19% encoding path frames nobody scored); captures are at half size. A reference settles to the
 noise floor in ~120 frames.
 
+## Matrix suite (`tools/harness/matrix_suite.py`)
+
+Most regressions show up with MOVEMENT (regular, fast, the camera), at an ALTITUDE (the ground .. 5000 km) or in a
+CONTEXT (beams, aurora, 3D models, launches, the sea) — not in a biome. The matrix crosses them in one launch:
+
+```
+python tools/harness/matrix_suite.py gen harness_runs/mx/mx.satcmd [--quick] [--only altitude=1km+3km,context=beams+aurora,cell=iss]
+python tools/harness/run.py harness_runs/mx/mx.satcmd --window 1920x1009 --out harness_runs/mx/run1
+python tools/harness/matrix_suite.py score harness_runs/mx/run1          # -> run1/matrix_suite.json + a table
+python tools/harness/matrix_suite.py compare harness_runs/mx/run1 harness_runs/mx/run2 [--all]   # exit 1 on a regression
+python tools/harness/matrix_suite.py gen frag.satcmd --quick --fragment  # commands only, to paste into a larger batch
+```
+
+- **Rows (altitude):** Shanghai's flat delta (31 N 121 E, ground ~4 m, broken cumulus and their shadows, Sun 34 deg at
+  2036-11-22 02:06:22 UTC) at 0 m (on the ground), 100 m, 1 km (at the cloud base), 3 km, 15 km, 100, 500, 1000 and 5000 km.
+- **Rows (context):** `storm_gnd` / `storm_15km` (tropical towers from the sea, the anvils from above), `sea_20m` (trade
+  cumulus), `night_3km` (Shanghai at 22 h), `beams_site` / `beams_up` (Topaz at the intro's moment, standing where
+  `beams go` put the observer: 20 km west looking at the site, and under it looking up the beams), `aur_gnd` (Kp 8 at
+  Coldfoot) / `aur_orbit` (the Solar Storm bookmark's G2 from 420 km), `iss` (follow mode during a sunlit NYC pass) /
+  `starmind` (the Starmind Deployment bookmark) — `path play` would end follow mode, so frame sequences with time at
+  1x / 10x plus a `perf` while running — `launch` (the twilight Starship bookmark's moment, camera set absolutely
+  after `launch look`), `eclipse` (2037-07-13 at greatest eclipse, 20 deg field on the Sun).
+- **Columns (motion), at the player's speeds for that height (CLAUDE.md "Controls"):** `still` = the settled view +
+  `perf`, `noise` = 16 consecutive frames with time paused (flicker.py's per-pixel temporal std over pixels brighter than
+  6), `live` = the same at 1x; `walk` / `strafe` = max(agl, 3) m/s over the ground capped at 0.08 rad/s, `fast` = boost
+  (6.25x, capped at 0.5 rad/s), `look` = 90 deg/s pan + a +-20 deg pitch, `rise` / `descend` = Q / E, (h + 20) e^(+-t/2).
+  2.5 s paths at 60 fps, only the scored frames encoded (`frames=`), each scored against a settled reference at the same
+  pose; the path's `gpu_ms_mean` / `gpu_total_ms_max` are the cost while moving. The table's motion cell is
+  `mean / % > 16 / signed`: |diff| after a 3x3 median on both images (point sources — satellites, stars, city glitter —
+  removed; `raw_*` keep them), and the signed mean over content pixels: negative = content LOST in motion (clouds
+  thinning while climbing from orbit), positive = blur / bloat / an eased quantity lagging. `score --sheet N` writes
+  the N worst moving | settled | |diff| rows to `<run>/matrix_worst.png`. Run 1 (2026-10-22) checked the method:
+  frame and reference agree on sim time and pose (sidecars), and the median changed scores by < 0.2, so the
+  differences are the renderer's, not points re-drawn.
+- **Absolute cells:** each cell (and each path in it) starts with follow / selection / aurora / debugview reset, time
+  paused at its own moment, `drift default rate=0.0000065`, the observer and camera; the settings the suite sets
+  (`display.dynamic_resolution false`, `clouds_v2.auto_exposure 0`, `clouds.drift_rate`) are set back at the end from
+  `--restore` (default `user_data/settings.json`). App-aimed cells (`beams go`, `launch look`, `camera look sun`) use
+  paths whose keys leave the camera channels out, so they inherit the aim.
+- **Cost:** `gen` prints an estimate calibrated on cloud_suite's run (a settle frame ~30 ms at 1920x1009, a capture
+  ~150 ms): ~13 min `--quick` (4 motions per altitude, one reference each), ~22 min full. Settling references is most of it.
+- A cell's failed command (no converged beam site, a satellite without a model) is listed under `errors` by `score`.
+
 ## Still-view flicker (`tools/harness/flicker.py`)
 
 Per-pixel temporal statistics of a recorded sequence with the camera still (review 18, the MEO cloud flicker):
