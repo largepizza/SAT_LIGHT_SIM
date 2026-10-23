@@ -4126,16 +4126,29 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                            std::to_string(r["radar"]["gpu_ms"].get<float>()).substr(0, 5) + " ms GPU";
             return Status::Done;
         }
-        if (sub == "go" || sub == "watch")
+        if (sub == "go" || sub == "watch" || sub == "tornado" || sub == "passage")
         {
             weatherRefreshRows(true);
             const std::vector<WxStormRow> &rows = rowsOf(lower(c.str("list")));
-            const int k = std::atoi(pos(1).c_str());
-            if (k < 0 || k >= (int)rows.size())
-                fail("weather " + sub + ": no storm " + std::to_string(k) + " (" + std::to_string(rows.size()) + " listed)");
-            const uint64_t id = rows[(size_t)k].id;
+            uint64_t id = 0;
+            if (pos(1).empty() && (sub == "tornado" || sub == "passage"))
+            {   // the first listed storm (near, then worldwide) with that milestone ahead
+                const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+                for (const auto *lst : {&wxNear, &wxWorld})
+                    for (const WxStormRow &w : *lst)
+                        if (!id && (sub == "tornado" ? w.tTorn0 > now - 60.0 : w.tPass > now)) id = w.id;
+                if (!id) fail("weather " + sub + ": no listed storm has one ahead");
+            }
+            else
+            {
+                const int k = std::atoi(pos(1).c_str());
+                if (k < 0 || k >= (int)rows.size())
+                    fail("weather " + sub + ": no storm " + std::to_string(k) + " (" + std::to_string(rows.size()) + " listed)");
+                id = rows[(size_t)k].id;
+            }
             std::string msg;
-            const bool ok = sub == "go" ? weatherGoToStorm(id, msg) : weatherWatchStorm(id, msg);
+            const bool ok = sub == "go" ? weatherGoToStorm(id, msg) : sub == "tornado" ? weatherWatchTornado(id, msg)
+                          : sub == "passage" ? weatherWatchPassage(id, msg) : weatherWatchStorm(id, msg);
             if (!ok)
                 fail("weather " + sub + ": " + msg);
             wxSelStorm = id;

@@ -959,6 +959,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   anvil's shear, looking at it 8 deg up); Watch = its mature moment (dominant tower grown + 30 min, before it decays) at
   1x, then Go to ("Replay" once it is past). **Controls**: storm objects, frequency, lifetime, cloud field, moat, both
   lightning rates (own rows: the settings' slider rows are tied to the settings window) + "All weather settings".
+  **Storm milestones (2026-10-23):** a Storms-tab row shows a supercell's tornado (touchdown in / on the ground / ago, from
+  `tornadoOf`) and when a line system's convective line reaches the observer where they stand (`weatherLinePassage`: the
+  observer's distance ahead of the line less the towers' bow, through zero within the line's length; 5-min steps over its
+  convective life, bisected), with buttons Tornado (a minute before touchdown at 1x, 6 km on its inflow side, looking at
+  it: `weatherWatchTornado`) and Passage (20 min before the line arrives, at 1x, looking into its motion). Harness
+  `weather tornado|passage [k] [list=world]` (no k: the first listed storm with one ahead); `weather state` rows carry
+  `tornado_in_min`, `tornado_min`, `passage_in_min`.
   **Named storms (2026-10-23, `SatelliteSimWeatherCyclones.cpp`; the Cyclones tab, `wxTab` 3, drawn third):** the
   tropical cyclones as copies of `wx::Cyclone` (`wxCycActive` from `stormCyclonesNow`, `wxCycSeason` = one basin's
   systems from `cycloneSeason` for last / this / next year within ~200 days of now, `wxCycNext` = the next genesis per

@@ -3341,6 +3341,10 @@ private:
         int stage = 0;                   // 0 forming, 1 growing, 2 mature, 3 decaying
         float flashesPerMin = 0.0f;      // estimate: lightning rate x the dominant towers' activity (cloud_v2_lightning.comp)
         float score = 0.0f;
+        // Milestones (2026-10-23): its tornado's touchdown / lift (0 none: SatelliteSim::tornadoOf), and when a line
+        // system's convective line passes over the observer where they stand now (0 none within its life).
+        double tTorn0 = 0.0, tTorn1 = 0.0;
+        double tPass = 0.0;
     };
     std::vector<WxStormRow> wxNear, wxWorld;  // within kWxNearKm, nearest first; the strongest worldwide
     int wxStormsAlive = 0;
@@ -3357,6 +3361,10 @@ private:
     bool weatherStormNow(uint64_t id, double t, WxStormRow &out);       // a storm's row at time t (false: not alive)
     bool weatherGoToStorm(uint64_t id, std::string &msg);               // stand ~50 km upwind of its strongest tower
     bool weatherWatchStorm(uint64_t id, std::string &msg);              // its mature stage at 1x, then Go to
+    bool weatherWatchTornado(uint64_t id, std::string &msg);            // a minute before its touchdown, 6 km on its inflow side
+    bool weatherWatchPassage(uint64_t id, std::string &msg);            // 20 min before its line reaches you, looking at it
+    void weatherStormMilestones(WxStormRow &r);                         // tTorn0/1, tPass for a row
+    double weatherLinePassage(const wx::Storm &st, double from) const;  // when its line passes over the observer (0 none)
     glm::dvec3 weatherMapToEarth(const glm::dvec3 &mapDir, double t) const;
     nlohmann::json weatherWindowJson();                                 // harness `weather state`
     // The radar: GPU pass (set 0 = the cloud march's, set 1 = the output), read back the next frame.

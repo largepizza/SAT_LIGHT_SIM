@@ -305,6 +305,161 @@ void SatelliteSim::weatherRefreshRows(bool force)
     std::partial_sort(wxWorld.begin(), wxWorld.begin() + (long)k, wxWorld.end(),
                       [](const WxStormRow &a, const WxStormRow &b) { return a.score != b.score ? a.score > b.score : a.id < b.id; });
     wxWorld.resize(k);
+    for (WxStormRow &r : wxNear)
+        weatherStormMilestones(r);
+    for (WxStormRow &r : wxWorld)
+        weatherStormMilestones(r);
+}
+
+// ── Storm milestones (2026-10-23): a supercell's tornado, a line's passage over you ──────────────────────────────────
+void SatelliteSim::weatherStormMilestones(WxStormRow &r)
+{
+    r.tTorn0 = r.tTorn1 = r.tPass = 0.0;
+    const wx::Storm *st = stormCatalog ? stormCatalog->find(r.id) : nullptr;
+    if (!st)
+        return;
+    const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    TornadoNow T;
+    if (st->kind == wx::StormKind::Supercell && tornadoOf(*st, now, T) && !T.spout)
+    {
+        r.tTorn0 = T.t0;
+        r.tTorn1 = T.t1;
+    }
+    if (st->kind == wx::StormKind::SquallLine || st->kind == wx::StormKind::Mcs)
+        r.tPass = weatherLinePassage(*st, now);
+}
+
+// When the line's convective edge reaches the observer (where they stand now, Earth-fixed): the observer's distance ahead
+// of the line — across it along the motion, less the towers' bow at its place along the line (bow x (1 - x^2)) — falls
+// through zero while it is within the line's length. 5-min steps over the convective life, then bisected. 0: none.
+double SatelliteSim::weatherLinePassage(const wx::Storm &st, double from) const
+{
+    const glm::dvec3 oe = glm::normalize(glm::dvec3(obsDir));
+    const double t1 = st.t0 + (double)st.sysLife;
+    const double ramp = (double)st.towers[0].sysRamp;
+    double t = std::max(from, st.t0 + 0.5 * ramp);
+    if (t >= t1)
+        return 0.0;
+    auto ahead = [&](double tt, double &alongN) {
+        const double ph = (double)cloudDriftRate * (tt - kCloudDriftEpochS) + cloudDriftPhaseOffset;
+        const double c = std::cos(ph), s = std::sin(ph);
+        const glm::dvec3 m(oe.x * c - oe.y * s, oe.x * s + oe.y * c, oe.z);   // the observer in the map frame
+        const glm::dvec3 ctr = st.centreAt(tt);
+        glm::dvec3 v = st.centreAt(tt + 60.0) - ctr;
+        v -= ctr * glm::dot(v, ctr);
+        if (glm::length(v) < 1e-15) { alongN = 9.0; return 1e9; }
+        v = glm::normalize(v);
+        const glm::dvec3 e = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), ctr) + glm::dvec3(1e-12, 0, 0));
+        const glm::dvec3 n = glm::cross(ctr, e);
+        const glm::dvec3 L = e * std::cos((double)st.lineAz) + n * std::sin((double)st.lineAz);
+        const glm::dvec3 d = (m - ctr) * kRe;
+        alongN = glm::dot(d, L) / std::max((double)st.lineHalfM, 1.0);
+        const double x = std::clamp(alongN, -1.0, 1.0);
+        return glm::dot(d, v) - (double)st.bow * (1.0 - x * x);
+    };
+    double alongN = 0.0;
+    double g0 = ahead(t, alongN);
+    if (g0 <= 0.0)
+        return 0.0;   // already behind it (or passed)
+    for (double tt = t + 300.0; tt <= t1; tt += 300.0)
+    {
+        const double g = ahead(tt, alongN);
+        if (g <= 0.0)
+        {
+            double lo = tt - 300.0, hi = tt;
+            for (int i = 0; i < 12; ++i)
+            {
+                const double mid = 0.5 * (lo + hi);
+                (ahead(mid, alongN) > 0.0 ? lo : hi) = mid;
+            }
+            ahead(hi, alongN);
+            return std::abs(alongN) <= 1.0 ? hi : 0.0;
+        }
+        g0 = g;
+    }
+    return 0.0;
+}
+
+// A minute before its touchdown at 1x, on the ground 6 km on its inflow side, looking at it.
+bool SatelliteSim::weatherWatchTornado(uint64_t id, std::string &msg)
+{
+    const wx::Storm *st = stormCatalog ? stormCatalog->find(id) : nullptr;
+    const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    TornadoNow T;
+    if (!st || !tornadoOf(*st, now, T) || T.spout)
+    {
+        msg = "That storm puts down no tornado";
+        return false;
+    }
+    const double t = T.t0 - 60.0;
+    simDayJ2000 = (int64_t)std::floor(t / 86400.0);
+    simSecInDay = t - (double)simDayJ2000 * 86400.0;
+    timePaused = false;
+    timeScaleIdx = 0;
+    timeDir = 1.0f;
+    tornadoOf(*st, T.t0 + 30.0, T);   // where it touches down
+    const glm::dvec3 te = weatherMapToEarth(T.mapDir, T.t0 + 30.0);
+    glm::dvec3 up = weatherMapToEarth(T.upwindMap, T.t0 + 30.0);
+    up = glm::normalize(up - te * glm::dot(up, te));
+    const double ang = 6000.0 / kRe;
+    const glm::dvec3 oe = glm::normalize(te * std::cos(ang) + up * std::sin(ang));
+    if (followActive)
+        stopFollow();
+    stopTrack();
+    setObserverLatLon(glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0))), glm::degrees(std::atan2(oe.y, oe.x)));
+    obsHeightOffset = std::max(0.0f, cpuTerrainHeightM(obsLatDeg, obsLonDeg)) + 60.0f;
+    const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe) + glm::dvec3(1e-12, 0, 0)), oNorth = glm::cross(oe, oEast);
+    const glm::dvec3 to3 = te - oe * glm::dot(te, oe);
+    const double az = glm::degrees(std::atan2(glm::dot(to3, oEast), glm::dot(to3, oNorth)));
+    camera.fovYDeg = std::max(camera.fovYDeg, 60.0f);
+    aimCameraAzEl((float)az, 10.0f);
+    updatePositions(t);
+    trailClearPending = true;
+    skyTaaHistValid = false;
+    cv2HistoryValid = false;
+    wxRowsWall = -1e300;
+    char sb[160];
+    snprintf(sb, sizeof(sb), "A minute before its tornado touches down (%.0f min on the ground), 6 km %s of it",
+             (T.t1 - T.t0) / 60.0, compass(glm::degrees(std::atan2(glm::dot(up, oEast), glm::dot(up, oNorth)))));
+    msg = sb;
+    return true;
+}
+
+// 20 minutes before the line reaches you, where you stand, at 1x, looking at it (into its motion).
+bool SatelliteSim::weatherWatchPassage(uint64_t id, std::string &msg)
+{
+    const wx::Storm *st = stormCatalog ? stormCatalog->find(id) : nullptr;
+    const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double tp = st ? weatherLinePassage(*st, now) : 0.0;
+    if (tp <= 0.0)
+    {
+        msg = "Its line does not pass over you";
+        return false;
+    }
+    const double t = std::max(now, tp - 1200.0);
+    simDayJ2000 = (int64_t)std::floor(t / 86400.0);
+    simSecInDay = t - (double)simDayJ2000 * 86400.0;
+    timePaused = false;
+    timeScaleIdx = 0;
+    timeDir = 1.0f;
+    // Look along the line's motion, backwards: toward it as it comes.
+    const glm::dvec3 c0 = weatherMapToEarth(st->centreAt(t), t), c1 = weatherMapToEarth(st->centreAt(t + 600.0), t + 600.0);
+    const glm::dvec3 oe = glm::normalize(glm::dvec3(obsDir));
+    const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe) + glm::dvec3(1e-12, 0, 0)), oNorth = glm::cross(oe, oEast);
+    const glm::dvec3 mv = c1 - c0;
+    const double az = glm::degrees(std::atan2(-glm::dot(mv, oEast), -glm::dot(mv, oNorth)));
+    if (followActive)
+        stopFollow();
+    stopTrack();
+    camera.fovYDeg = std::max(camera.fovYDeg, 60.0f);
+    aimCameraAzEl((float)az, 6.0f);
+    updatePositions(t);
+    trailClearPending = true;
+    skyTaaHistValid = false;
+    cv2HistoryValid = false;
+    wxRowsWall = -1e300;
+    msg = std::string("20 minutes before the line reaches you; looking ") + compass(az) + ", into it";
+    return true;
 }
 
 // Go to: as the harness's `storms go` — on the ground (1.5 km above sea level, floored at the ground) ~50 km upwind of
@@ -924,6 +1079,10 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
         std::string msg;
         if (wxPendingAct == 1)
             weatherGoToStorm(wxPendingId, msg);
+        else if (wxPendingAct == 3)
+            weatherWatchTornado(wxPendingId, msg);
+        else if (wxPendingAct == 4)
+            weatherWatchPassage(wxPendingId, msg);
         else
             weatherWatchStorm(wxPendingId, msg);
         wxStatus = msg;
@@ -1392,6 +1551,22 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
                      Pal::textDim, 11, true);
                 text(wxStr("%s old, %s left; strength %.0f%%; ~%.1f flashes/min", a, l, 100.0f * r.strength, r.flashesPerMin),
                      Pal::textDim, 11, true);
+                if (r.tTorn0 > 0.0)
+                {
+                    char w[32];
+                    const bool on = now >= r.tTorn0 && now < r.tTorn1;
+                    fmtDur(std::abs((on ? r.tTorn1 : r.tTorn0) - now), w, sizeof(w));
+                    text(on ? wxStr("TORNADO on the ground now, %s more", w)
+                            : r.tTorn0 > now ? wxStr("Tornado: touches down in %s, for %.0f min", w, (r.tTorn1 - r.tTorn0) / 60.0)
+                                             : wxStr("Tornado: touched down %s ago", w),
+                         on ? Pal::textBright : Pal::textPrimary, 11, true);
+                }
+                if (r.tPass > 0.0)
+                {
+                    char w[32];
+                    fmtDur(r.tPass - now, w, sizeof(w));
+                    text(wxStr("Its line reaches you in %s", w), Pal::textPrimary, 11, true);
+                }
             }
             CLAY(CLAY_IDI("WxSBtns", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                                 .childGap = 4,
@@ -1409,6 +1584,20 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
                                   : "Ahead to its mature stage at 1x, then Go to"))
                 {
                     wxPendingAct = 2;
+                    wxPendingId = r.id;
+                    wxSelStorm = r.id;
+                }
+                if (r.tTorn0 > 0.0 &&
+                    uiButton(inp, ui, "WxSTorn", id, "Tornado", "A minute before its tornado touches down, 6 km away on its inflow side, at 1x"))
+                {
+                    wxPendingAct = 3;
+                    wxPendingId = r.id;
+                    wxSelStorm = r.id;
+                }
+                if (r.tPass > 0.0 &&
+                    uiButton(inp, ui, "WxSPass", id, "Passage", "20 minutes before its line reaches you, looking into it, at 1x"))
+                {
+                    wxPendingAct = 4;
                     wxPendingId = r.id;
                     wxSelStorm = r.id;
                 }
@@ -1524,7 +1713,10 @@ nlohmann::json SatelliteSim::weatherWindowJson()
                               {"mature_in_min", (r.tMature - now) / 60.0}, {"dist_km", r.distKm}, {"bearing_deg", r.bearingDeg},
                               {"lat_deg", glm::degrees(std::asin(std::clamp(r.e.z, -1.0, 1.0)))},
                               {"lon_deg", glm::degrees(std::atan2(r.e.y, r.e.x))}, {"strength", r.strength},
-                              {"towers_alive", r.towersAlive}, {"towers", r.towerCount}, {"flashes_per_min", r.flashesPerMin}};
+                              {"towers_alive", r.towersAlive}, {"towers", r.towerCount}, {"flashes_per_min", r.flashesPerMin},
+                              {"tornado_in_min", r.tTorn0 > 0.0 ? nlohmann::json((r.tTorn0 - now) / 60.0) : nlohmann::json()},
+                              {"tornado_min", r.tTorn0 > 0.0 ? nlohmann::json((r.tTorn1 - r.tTorn0) / 60.0) : nlohmann::json()},
+                              {"passage_in_min", r.tPass > 0.0 ? nlohmann::json((r.tPass - now) / 60.0) : nlohmann::json()}};
     };
     nlohmann::json n = nlohmann::json::array(), w = nlohmann::json::array();
     for (const WxStormRow &r : wxNear)
