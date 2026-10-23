@@ -213,7 +213,8 @@ uint64_t SatelliteSim::stormEnvHash() const
     uint64_t h = 1469598103934665603ull;
     auto mixD = [&](double v) { uint64_t b; std::memcpy(&b, &v, 8); h = (h ^ b) * 1099511628211ull; };
     for (double v : {(double)cloudDriftRate, cloudDriftPhaseOffset, (double)cv2Coverage, (double)cv2CoverClear,
-                     (double)cv2CoverFull, (double)stormFrequency, (double)cv2CbRadiusKm, (double)stormLifeScale})
+                     (double)cv2CoverFull, (double)stormFrequency, (double)cv2CbRadiusKm, (double)stormLifeScale,
+                     (double)stormComplexes})
         mixD(v);
     return h;
 }
@@ -281,6 +282,7 @@ void SatelliteSim::updateStorms()
         s.frequency = stormObjects ? std::max(stormFrequency, 0.0f) : 0.0f;
         s.towerRadiusM = std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f;
         s.lifeScale = std::max(stormLifeScale, 0.05f);
+        s.lineFrequency = std::max(stormComplexes, 0.0f);
         stormCatalog->configure(env, s, stormClim.get(), key);
         stormEnvKey = key;
         stormUploadedT = -1e300;
@@ -294,7 +296,9 @@ void SatelliteSim::updateStorms()
             b = -1e30;
     stormPrevUploadT = t;
     stormUploadedT = t;
-    stormCatalog->towersAt(t, stormTowers);
+    std::vector<const wx::Storm *> stormsNow;
+    stormCatalog->stormsAt(t, stormsNow);
+    stormCatalog->towersAt(t, stormsNow, stormTowers);
 
     // Strongest first: past the buffer's capacity the weakest go, and a crowded bin keeps its strongest.
     std::sort(stormTowers.begin(), stormTowers.end(), [](const wx::Tower &a, const wx::Tower &b) {
@@ -309,6 +313,7 @@ void SatelliteSim::updateStorms()
         stormStats.envEntries = prev.envEntries;
         stormStats.envTruncated = prev.envTruncated;
         stormStats.envLost = prev.envLost;
+        stormStats.lineSystems = stormCatalog->stats().lineSystemsAlive;
     }
     stormStats.dropped = (int)(stormTowers.size() - nT);
 
@@ -337,7 +342,8 @@ void SatelliteSim::updateStorms()
         // ~45 minutes after the tower has grown it spreads and is blown downwind, an organised storm's (multicell,
         // supercell) furthest. The flared head IS the anvil (cv2ColumnSigma), so this is its size.
         const double mature = glm::smoothstep(0.0, 2700.0, (double)tw.age - (double)tw.growS);
-        const double kindK = tw.kind == wx::StormKind::Supercell ? 1.35 : tw.kind == wx::StormKind::Multicell ? 1.1 : 0.85;
+        const double kindK = tw.kind == wx::StormKind::Supercell ? 1.35
+                           : (tw.kind == wx::StormKind::Multicell || wx::isLineSystem(tw.kind)) ? 1.1 : 0.85;
         const double hs = (double)(stormHash(tw.seed ^ 0xA5A5A5A5u) & 0xFFFFu) / 65535.0;   // this storm's own spread
         const double anvilK = std::max(1.0 / flare, (0.65 + (0.55 + 0.5 * hs) * mature) * kindK);
         const double driftK = (0.25 + (0.9 + 0.8 * hs) * mature) * kindK;
@@ -363,6 +369,54 @@ void SatelliteSim::updateStorms()
     head[1] = bins;
     head[2] = start;
     head[3] = (uint32_t)cv2Frame;
+
+    // The anvil shields (2026-10-23): one per storm, alive or lingering. Listed in every coarse bin their capsule
+    // touches (the disc round the spine's middle that holds it).
+    {
+        wx::ShieldParams sp;
+        sp.headRadiusM = (float)(Rb * flare * 1.15);
+        sp.headDriftM = (float)drift;
+        stormCatalog->shieldsAt(t, stormsNow, sp, stormShields);
+        std::sort(stormShields.begin(), stormShields.end(), [](const wx::Shield &a, const wx::Shield &b) {
+            return a.strength != b.strength ? a.strength > b.strength : a.stormId < b.stormId;
+        });
+        const uint32_t nS = (uint32_t)std::min<size_t>(stormShields.size(), kShieldMax);
+        auto *sdst = reinterpret_cast<GpuStormShield *>(static_cast<char *>(stormMapped) + kShieldsOffset);
+        stormGpuShields.resize(nS);
+        shieldEntries.clear();
+        for (uint32_t i = 0; i < nS; ++i)
+        {
+            const wx::Shield &s = stormShields[i];
+            GpuStormShield g;
+            g.a = glm::vec4(glm::vec3(s.a), s.strength);
+            g.b = glm::vec4(glm::vec3(s.b), s.rB);
+            g.c = glm::vec4(s.rA, s.thick, s.age01, s.rain);
+            // The convective line's distance ahead of the spine (line systems: the spine sits 45% of the trail behind
+            // it; rA = 0.55 trail + the tower radius).
+            const float front = s.lineK > 0.0f ? 0.45f / 0.55f * std::max(s.rA - (float)Rb, 0.0f) : 0.0f;
+            g.d = glm::vec4(s.rear, front);
+            sdst[i] = g;
+            stormGpuShields[i] = g;
+            const glm::dvec3 mid = glm::normalize(s.a + s.b);
+            const double half = 0.5 * std::acos(std::clamp(glm::dot(s.a, s.b), -1.0, 1.0)) * kReW;
+            // (The shader frays the outline out to 1.6 radii: cv2ShieldAt.)
+            listStormBins(mid, 1.03 * (half + 1.6 * std::max(s.rA, s.rB)) + 2000.0, i, kShieldBinsPerFace, shieldEntries);
+        }
+        auto *slist = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldListOffset);
+        const StormIndexStats sx = fillStormIndex(shieldEntries, shieldTable, stormCounts, kShieldTableSize,
+                                                  kShieldListSize, kShieldMaxPerBin, slist);
+        std::memcpy(static_cast<char *>(stormMapped) + kShieldTableOffset, shieldTable.data(),
+                    sizeof(glm::uvec2) * kShieldTableSize);
+        auto *shead = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldHeadOffset);
+        shead[0] = nS;
+        shead[1] = stormObjects ? 1u : 0u;
+        shead[2] = sx.bins;
+        shead[3] = sx.used;
+        stormStats.shields = (int)nS;
+        stormStats.shieldBins = (int)sx.bins;
+        stormStats.shieldEntries = (int)sx.entries;
+        stormStats.shieldTruncated = (int)sx.truncated;
+    }
 
     stormStats.towers = (int)nT;
     stormStats.bins = (int)bins;
@@ -424,6 +478,30 @@ void SatelliteSim::buildStormEnvIndex()
     stormStats.envEntries = (int)ex.entries;
     stormStats.envTruncated = (int)ex.truncated;
     stormStats.envLost = (int)ex.lost;
+
+    // The shields' flowed copy (the line systems' stratiform rain is stamped where the low cloud reads it).
+    auto *envShields = reinterpret_cast<GpuStormShield *>(static_cast<char *>(stormMapped) + kShieldEnvOffset);
+    shieldEnvEntries.clear();
+    const uint32_t nS = (uint32_t)std::min<size_t>(stormGpuShields.size(), kShieldMax);
+    for (uint32_t i = 0; i < nS; ++i)
+    {
+        GpuStormShield g = stormGpuShields[i];
+        const glm::dvec3 a = flowed(glm::normalize(glm::dvec3(glm::vec3(g.a))));
+        const glm::dvec3 b = flowed(glm::normalize(glm::dvec3(glm::vec3(g.b))));
+        g.a = glm::vec4(glm::vec3(a), g.a.w);
+        g.b = glm::vec4(glm::vec3(b), g.b.w);
+        envShields[i] = g;
+        if (g.c.w <= 0.0f) continue;   // only the raining (line-system) shields are stamped
+        const glm::dvec3 mid = glm::normalize(a + b);
+        const double half = 0.5 * std::acos(std::clamp(glm::dot(a, b), -1.0, 1.0)) * kReW;
+        // + the clear air ahead of the line (100 km past the capsule, stormStamp).
+        listStormBins(mid, 1.03 * (half + std::max(g.c.x, g.b.w)) + 100000.0, i, kShieldBinsPerFace, shieldEnvEntries);
+    }
+    auto *senv = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldEnvListOffset);
+    fillStormIndex(shieldEnvEntries, shieldEnvTable, stormCounts, kShieldTableSize, kShieldListSize, kShieldMaxPerBin,
+                   senv);
+    std::memcpy(static_cast<char *>(stormMapped) + kShieldEnvTableOffset, shieldEnvTable.data(),
+                sizeof(glm::uvec2) * kShieldTableSize);
 }
 
 nlohmann::json SatelliteSim::stormNearestJson(int n, float minStrength, float rangeKm, bool dominantOnly) const
@@ -466,12 +544,20 @@ nlohmann::json SatelliteSim::stormNearestJson(int n, float minStrength, float ra
         r["size"] = tw.size;
         r["shear_bearing_deg"] = glm::degrees(std::atan2(glm::dot(sh, east), glm::dot(sh, north)));   // from north
         r["storm_id"] = tw.stormId;
+        {   // The Sun's elevation there (harness `storms go day=1`).
+            const double tt = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const glm::dvec3 si = sunDirEciAt(tt);
+            const double g = earthRotationAngle(tt);
+            const glm::dvec3 se = glm::normalize(glm::dvec3(si.x * std::cos(g) + si.y * std::sin(g),
+                                                            -si.x * std::sin(g) + si.y * std::cos(g), si.z));
+            r["sun_el_deg"] = glm::degrees(std::asin(std::clamp(glm::dot(se, e), -1.0, 1.0)));
+        }
         r["tower"] = tw.towerIndex;
         if (stormCatalog)
             if (const wx::Storm *st = stormCatalog->find(tw.stormId))
             {
                 const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-                r["kind"] = st->kind == wx::StormKind::Supercell ? "supercell" : st->kind == wx::StormKind::Multicell ? "multicell" : "airmass";
+                r["kind"] = wx::stormKindName(st->kind);
                 r["age_min"] = (t - st->t0) / 60.0;
                 r["life_min"] = st->life / 60.0;
                 r["moisture"] = st->moisture;

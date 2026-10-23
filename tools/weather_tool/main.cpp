@@ -88,7 +88,7 @@ glm::dvec3 sunEarthAt(double t) {
 }
 
 const char *kindName(wx::StormKind k) {
-    return k == wx::StormKind::Supercell ? "supercell" : k == wx::StormKind::Multicell ? "multicell" : "air-mass";
+    return wx::stormKindName(k);
 }
 
 bool sameStorm(const wx::Storm &a, const wx::Storm &b) {

@@ -6393,6 +6393,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Storm lifetime (x)", &stormLifeScale, 0.1f, 5.0f, 0.05f, "%.2f", 322},
         {"Storm cloud field", &stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f", 323},
         {"Storm clear moat", &stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", 324},
+        {"Storm complexes (x)", &stormComplexes, 0.0f, 10.0f, 0.05f, "%.2f", 325},
     };
     CloudSlider secStorms[] = {
         {"Cb fill (share of cells)", &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
@@ -8804,6 +8805,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormLifeScale = settingClamp(c.value("storm_life", stormLifeScale), 0.1f, 5.0f);
         stormCloudField = settingClamp(c.value("storm_field", stormCloudField), 0.0f, 3.0f);
         stormMoat = settingClamp(c.value("storm_moat", stormMoat), 0.0f, 3.0f);
+        stormComplexes = settingClamp(c.value("storm_complexes", stormComplexes), 0.0f, 10.0f);
         cv2EvoGrowth = c.value("evo_growth", cv2EvoGrowth);
         cv2EvoWindowH = c.value("evo_window_h", cv2EvoWindowH);
         cv2EvoDiurnal = c.value("evo_diurnal", cv2EvoDiurnal);
@@ -9415,6 +9417,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_life", stormLifeScale},
         {"storm_field", stormCloudField},
         {"storm_moat", stormMoat},
+        {"storm_complexes", stormComplexes},
         {"evo_growth", cv2EvoGrowth},
         {"evo_window_h", cv2EvoWindowH},
         {"evo_diurnal", cv2EvoDiurnal},

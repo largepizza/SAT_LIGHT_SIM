@@ -26,7 +26,15 @@ enum class StormKind : uint8_t {
     AirMass   = 0,   // ordinary single cell: one tower, 30-90 min; many never reach the anvil
     Multicell = 1,   // a cluster: new towers form on one flank every ~15-30 min, each living ~45-60 min
     Supercell = 2,   // one long-lived dominant tower (2-4 h), overshooting top, 0-2 flanking towers
+    // Organised systems (2026-10-23), spawned by their own long-lived pass (Catalog's line bins):
+    SquallLine = 3,  // a line of 4-16 regenerating towers 100-350 km long, moving fast, trailing stratiform rain
+                     // under one shared shield blown rearward; often bowed
+    Mcs = 4,         // a mesoscale convective complex: a broad arc / cluster of regenerating towers under one
+                     // round shield 200-500 km across, long-lived (night over continents)
 };
+constexpr int kStormKinds = 5;
+inline bool isLineSystem(StormKind k) { return k == StormKind::SquallLine || k == StormKind::Mcs; }
+const char *stormKindName(StormKind k);   // "air-mass", "multicell", "supercell", "squall line", "MCS" 
 
 // One convective tower of a storm, fixed at the storm's birth.
 struct TowerSpec {
@@ -39,6 +47,13 @@ struct TowerSpec {
     float size = 0.5;           // 0..1 -> radius x mix(0.7, 1.3, size) of the tower-radius setting
     float overshoot = 0.5;      // 0..1 hash (only ~the top third overshoot, cv2ColumnSigma)
     uint32_t seed = 0;
+    // A REGENERATING slot (line systems): a new tower every `period` s from t0 while the system supports it
+    // ([sysOn, sysOff] s after the storm's birth, ramped over sysRamp), each cycle with its own seed, peak and a
+    // small shift along the line. period 0 = one tower (the single-cell kinds).
+    float period = 0, sysOn = 0, sysOff = 0, sysRamp = 1;
+    // When it reaches the anvil and when it falls back below it (s after the storm's birth; anvOff <= anvOn = never):
+    // the shield's feed (precomputed at birth, single-cell kinds).
+    float anvOn = 0, anvOff = 0;
 };
 
 struct Storm {
@@ -52,9 +67,40 @@ struct Storm {
     float     potential = 0;    // diagnostics: the spawn rate's climatology part at birth
     float     moisture = 0;     // diagnostics: the map's cover at birth
     uint8_t   towerCount = 0;
-    TowerSpec towers[4];
+    TowerSpec towers[16];
+    // The anvil SHIELD (2026-10-23): spread out by the anvil-reaching towers, outliving them by `linger` s while it
+    // drifts downwind at `upperWind` m/s (storm-relative) and thins into cirrus. Line systems: their shared
+    // shield, along the line (lineHalfM either side of the centre, across `lineAz`) and trailing rearward.
+    float     linger = 0;       // s
+    float     upperWind = 10;   // m/s, along shear
+    float     lineHalfM = 0;    // line systems: half the line's length (m)
+    float     lineAz = 0;       // line systems: the line's axis, rad from local east toward north at pos0
+    float     trailM = 0;       // line systems: how far the stratiform region / shield trails behind the line (m)
+    float     bow = 0;          // line systems: the line's forward bulge at its middle (m)
+    float     sysLife = 0;      // line systems: the convective life (s), the shield lingers past it
     // The storm centre at time t (map frame): pos0 moved along the great circle of vel.
     glm::dvec3 centreAt(double t) const;
+};
+
+// The anvil shield of one storm at one moment (map frame): a capsule from a to b (the spine, great-circle chord),
+// radius rA at a growing to rB at b. What cv2AnvilSigmaP draws (cv2_storms.glsl CV2Shield).
+struct Shield {
+    glm::dvec3 a{0, 0, 1}, b{0, 0, 1};
+    float rA = 0, rB = 0;       // m
+    float strength = 0;         // 0..1
+    float thick = 1;            // 0..1, x the anvil thickness (thins as it lingers)
+    float age01 = 0;            // 0 fed by its towers .. 1 gone (the shader frays and thins it)
+    float rain = 0;             // 0..1: a precipitating stratiform region under it (line systems' trailing rain)
+    float lineK = 0;            // 0..1: share of its spine that is a convective line (the leading edge at a)
+    glm::vec3 rear{0, 0, 0};    // line systems: map-frame tangent toward the trailing side at the spine's middle
+    uint32_t seed = 0;
+    uint64_t stormId = 0;
+    StormKind kind = StormKind::AirMass;
+};
+
+struct ShieldParams {
+    float headRadiusM = 20000.0f;   // a mature anvil-reaching head's radius (the tower radius x flare)
+    float headDriftM = 15000.0f;    // how far the head is blown downwind ("Cb head drift")
 };
 
 // A tower's state at one moment: what the GPU draws.
@@ -95,6 +141,10 @@ struct Settings {
     // Storms per flash over the sea vs land: a maritime storm makes ~an order of magnitude fewer flashes than a
     // continental one of the same size (weaker updrafts), so lightning density alone under-counts ocean storms.
     float seaFactor = 5.0f;
+    // Line systems (squall lines, MCSs): the mean number alive worldwide at frequency 1 if moisture were 1
+    // everywhere (x "Storm complexes" setting).
+    float lineFrequency = 1.0f;
+    float targetLineActive = 160.0f;
 };
 
 class Catalog {
@@ -109,6 +159,15 @@ public:
     void stormsAt(double t, std::vector<const Storm *> &out);
     // Every tower alive at t with strength > 0.
     void towersAt(double t, std::vector<Tower> &out);
+    // Every anvil shield at t (storms alive or lingering), from the storms stormsAt(t) returns.
+    void shieldsAt(double t, const ShieldParams &p, std::vector<Shield> &out);
+    // The same from a list stormsAt(t) already returned (one scan of the bins a frame).
+    void towersAt(double t, const std::vector<const Storm *> &storms, std::vector<Tower> &out);
+    void shieldsAt(double t, const std::vector<const Storm *> &storms, const ShieldParams &p, std::vector<Shield> &out);
+    // The tower specs of one storm at the cycle running at tau (s since its birth): the dominant spec's cycle state
+    // for a regenerating slot (age in the cycle, its life). False if the slot has no tower at tau.
+    static bool towerCycleAt(const TowerSpec &ts, double tau, float &strength, float &age, float &life,
+                             uint32_t &seed, float &shift);
     // The storm with this id if it is cached (a selection), else nullptr.
     const Storm *find(uint64_t id) const;
     // Every storm born in one time bin (index floor(t / kBinS)), building it if needed (tools, the births view).
@@ -118,19 +177,23 @@ public:
     void setBuildThreads(int n);
     // Diagnostics: the spawn rate's calibration constant and each kind's mean lifetime (s).
     double calibrationK() const;
+    double calibrationKLine() const;
     double meanLifeS(StormKind k) const;
 
     struct Stats {
         int binsCached = 0;
         int binsBuiltLastCall = 0;
         double buildMsLastCall = 0;
-        int stormsAlive = 0, towersAlive = 0;
+        int stormsAlive = 0, towersAlive = 0, lineSystemsAlive = 0, shieldsAlive = 0;
     };
     Stats stats() const;
 
     // Seconds per spawn time bin, and the longest a storm can live (the window a query looks back over).
     static constexpr double kBinS = 1800.0;
-    static constexpr double kMaxLifeS = 6.0 * 3600.0;
+    static constexpr double kMaxLifeS = 8.0 * 3600.0;      // incl. the anvil's linger
+    // The line systems' own spawn bins (rarer, much longer-lived).
+    static constexpr double kLineBinS = 3.0 * 3600.0;
+    static constexpr double kLineMaxLifeS = 22.0 * 3600.0;
 
 private:
     struct Impl;

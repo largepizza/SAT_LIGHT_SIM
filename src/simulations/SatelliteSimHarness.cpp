@@ -748,6 +748,11 @@ json SatelliteSim::harnessStateJson()
         w["env_entries"] = stormStats.envEntries;
         w["env_truncated"] = stormStats.envTruncated;
         w["env_lost"] = stormStats.envLost;
+        w["shields"] = stormStats.shields;
+        w["shield_bins"] = stormStats.shieldBins;
+        w["shield_entries"] = stormStats.shieldEntries;
+        w["shield_truncated"] = stormStats.shieldTruncated;
+        w["line_systems"] = stormStats.lineSystems;
         w["cpu_ms"] = stormStats.cpuMs;
         if (stormCatalog)
         {
@@ -4044,9 +4049,84 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     // anvil-reaching tower, upwind of it, looking at it (time is left as it is: pause first to hold the storm). ──
     if (n == "storms")
     {
+        // A storm's centre now (map frame -> Earth-fixed), as a row like stormNearestJson's (for `go storm=`, `list`).
+        auto stormRow = [&](const wx::Storm &S) -> json {
+            const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const double ph = cloudDriftPhase(), cph = std::cos(ph), sph = std::sin(ph);
+            const glm::dvec3 d = S.centreAt(tNow);
+            const glm::dvec3 e(d.x * cph + d.y * sph, -d.x * sph + d.y * cph, d.z);
+            const glm::dvec3 oe = glm::normalize(glm::dvec3(obsDir));
+            const glm::dvec3 dE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), d) + glm::dvec3(1e-12, 0, 0));
+            const glm::dvec3 dN = glm::cross(d, dE);
+            const glm::dvec3 sh(S.shear);
+            json row;
+            row["storm_id"] = std::to_string(S.id);
+            row["kind"] = wx::stormKindName(S.kind);
+            row["lat_deg"] = glm::degrees(std::asin(std::clamp(e.z, -1.0, 1.0)));
+            row["lon_deg"] = glm::degrees(std::atan2(e.y, e.x));
+            row["dist_km"] = std::acos(std::clamp(glm::dot(e, oe), -1.0, 1.0)) * 6371.0;
+            row["age_min"] = (tNow - S.t0) / 60.0;
+            row["life_min"] = S.life / 60.0;
+            row["linger_min"] = S.linger / 60.0;
+            row["towers"] = S.towerCount;
+            row["shear_bearing_deg"] = glm::degrees(std::atan2(glm::dot(sh, dE), glm::dot(sh, dN)));
+            row["strength"] = 1.0;
+            return row;
+        };
+        // `storms list [kind=] [n=20] [range_km=]`: the storms (not towers) alive or lingering, nearest first.
+        if (lower(pos(0)) == "list")
+        {
+            json rows = json::array();
+            if (stormCatalog)
+            {
+                std::vector<const wx::Storm *> v;
+                stormCatalog->stormsAt((double)simDayJ2000 * 86400.0 + simSecInDay, v);
+                const std::string want = lower(c.str("kind"));
+                std::vector<json> all;
+                for (const wx::Storm *S : v)
+                {
+                    json row = stormRow(*S);
+                    if (!want.empty() && lower(row["kind"].get<std::string>()).find(want) == std::string::npos) continue;
+                    if (row["dist_km"].get<double>() > c.num("range_km", 1e9)) continue;
+                    all.push_back(row);
+                }
+                std::sort(all.begin(), all.end(), [](const json &a, const json &b) {
+                    return a["dist_km"].get<double>() < b["dist_km"].get<double>();
+                });
+                for (size_t i = 0; i < all.size() && (int)i < (int)c.num("n", 20.0); ++i) rows.push_back(all[i]);
+            }
+            r["storms"] = rows;
+            r["message"] = std::to_string(rows.size()) + " storms";
+            return Status::Done;
+        }
         if (lower(pos(0)) == "go")
         {
-            const json near = stormNearestJson(64, (float)c.num("min_strength", 0.6), (float)c.num("range_km", 6000.0), true);
+            json near;
+            if (c.has("storm"))
+            {
+                // `storms go storm=<id>`: that storm's centre (alive or lingering), whatever its towers are doing.
+                const wx::Storm *S = stormCatalog ? stormCatalog->find(std::stoull(c.str("storm"))) : nullptr;
+                if (!S) fail("storms go: storm " + c.str("storm") + " not cached");
+                near = json::array({stormRow(*S)});
+            }
+            else
+            near = stormNearestJson((c.has("kind") || c.has("day")) ? 4000 : 64, (float)c.num("min_strength", 0.6),
+                                         (float)c.num("range_km", 6000.0), true);
+            // kind=squall|mcs|supercell|multicell|air: only towers of storms of that kind; day=1: in sunlight (Sun > 20 deg).
+            if ((c.has("kind") || c.has("day")) && near.is_array() && !c.has("storm"))
+            {
+                const std::string want = lower(c.str("kind"));
+                const double minSun = c.num("day", 0.0) > 0.0 ? 20.0 : -90.0;
+                json keep = json::array();
+                for (const json &row : near)
+                {
+                    const std::string kd = lower(row.value("kind", std::string()));
+                    if (!want.empty() && kd.find(want) == std::string::npos) continue;
+                    if (row.value("sun_el_deg", 0.0) < minSun) continue;
+                    keep.push_back(row);
+                }
+                near = keep;
+            }
             const int k = (int)c.num("k", 0.0);
             if (!near.is_array() || k < 0 || k >= (int)near.size())
                 fail("storms go: no anvil-reaching tower in range (" + std::to_string(near.is_array() ? near.size() : 0) + " found)");

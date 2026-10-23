@@ -1693,32 +1693,55 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     // here and 12 / 25 / 40 km upwind (the outflow is blown downwind, so a point downwind of a core is
     // under its anvil). The first cut read one 30 km-blurred texel 25 km upwind: only a storm region
     // hundreds of km across got an anvil (typically one on Earth), and it did not sit on its towers.
-    vec3  eastW  = vec3(-wd.y, wd.x, 0.0) * inversesqrt(max(dot(wd.xy, wd.xy), 1e-6));
-    float span   = max(cv2.cover.y - cv2.cover.x, 1e-3);
-    float stormA = 0.0;
-    vec3  wF     = cv2FlowWeatherDirAt(q);                    // the towers' (flowed) map
-    [[dont_unroll]] for (int k = 0; k < 4; ++k) {
-        float off  = (k == 0) ? 0.0 : (k == 1) ? 12000.0 : (k == 2) ? 25000.0 : 40000.0;
-        float fall = (k == 0) ? 1.0 : (k == 1) ? 0.95 : (k == 2) ? 0.85 : 0.65;
-        vec4  wk   = textureLod(cv2WeatherTex, wF - eastW * (off / R_EARTH), max(1.0, gCv2WxLod));
-        float ck   = clamp((wk.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
-        stormA = max(stormA, smoothstep(0.72, 0.9, wk.g) * smoothstep(0.3, 0.7, ck) * fall);
+    // With storm objects the shield is the STORMS' (cv2ShieldAt, 2026-10-23): one per storm, spread downwind by its
+    // anvil-reaching towers and outliving them as it drifts and thins. Fed by the map's cumulonimbus typing, shields
+    // stood over map regions with no tower under them (issue 20261023_002905 shot 3: "stranded anvils").
+    float stormA = 0.0, shThick = 1.0, shAge = 0.0, shU = 9.0, shS = 0.0;
+    bool  shOn   = cv2ShieldsOn();
+    if (shOn) {
+        shS = cv2ShieldAt(wd, shThick, shAge, shU);
+        stormA = shS;                                   // (for the early out: the outline is drawn below)
+    } else {
+        vec3  eastW  = vec3(-wd.y, wd.x, 0.0) * inversesqrt(max(dot(wd.xy, wd.xy), 1e-6));
+        float span   = max(cv2.cover.y - cv2.cover.x, 1e-3);
+        vec3  wF     = cv2FlowWeatherDirAt(q);                    // the towers' (flowed) map
+        [[dont_unroll]] for (int k = 0; k < 4; ++k) {
+            float off  = (k == 0) ? 0.0 : (k == 1) ? 12000.0 : (k == 2) ? 25000.0 : 40000.0;
+            float fall = (k == 0) ? 1.0 : (k == 1) ? 0.95 : (k == 2) ? 0.85 : 0.65;
+            vec4  wk   = textureLod(cv2WeatherTex, wF - eastW * (off / R_EARTH), max(1.0, gCv2WxLod));
+            float ck   = clamp((wk.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
+            stormA = max(stormA, smoothstep(0.72, 0.9, wk.g) * smoothstep(0.3, 0.7, ck) * fall);
+        }
+    }
+    if (max(stormA, colNear) <= 0.0) return 0.0;
+    vec4  cl     = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
+                              cv2Lod(fpM, cv2.anchorCluster.w));
+    vec4  sh     = cv2ShapeSmooth(cv2.anchorStorm.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w,
+                                  cv2Lod(fpM, cv2.anchorStorm.w));
+    // A storm shield's outline, frayed at two scales (the cluster field, the storm lobes; more as it ages into cirrus):
+    // its capsule's clean profile drew smooth white pills from orbit.
+    // (+ an octave three times finer of the storm lobes; never below 0.8, or the noise would reach past the radius the
+    // shield is binned to, 1.6.)
+    if (shOn) {
+        vec4 sh3 = cv2ShapeSmooth((cv2.anchorStorm.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w) * 3.0,
+                                  cv2Lod(fpM, 3.0 * cv2.anchorStorm.w));
+        float fray = 1.0 + mix(6.0, 7.5, shAge) * (cl.a - 0.5) + 2.4 * (sh.b - 0.45) + 1.8 * (sh3.b - 0.45);   // (the cluster fBm spreads only +-0.06)
+        stormA = shS * (1.0 - smoothstep(0.25, 1.25, shU * max(fray, 0.8)));
     }
     stormA = max(stormA, colNear);
     if (stormA <= 0.0) return 0.0;
-    vec4  cl     = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
-                              cv2Lod(fpM, cv2.anchorCluster.w));
-    float a0     = stormA + (cl.a - 0.5) * 0.7;
+    // (The cluster field's fray at +-0.35 broke a storm's shield into fragments away from it: gentler for shields.)
+    float a0     = stormA + (cl.a - 0.5) * (shOn ? 0.15 : 0.7);
     if (a0 <= -0.15) return 0.0;                        // the finer fray below adds at most ~0.2
-    vec4  sh     = cv2ShapeSmooth(cv2.anchorStorm.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w,
-                                  cv2Lod(fpM, cv2.anchorStorm.w));
     // The outline frayed at the storm-lobe scale too: on the cluster Perlin alone it was a smooth
     // ellipse, one weather texel's blur. Gently (review 5): an anvil is spreading ice, smooth and
     // diffuse, thinning out at its edge; frayed at 0.45 and cut over 0.05-0.35 it was a lumpy sheet.
     float a      = a0 + (sh.b - 0.45) * 0.15;
-    presA = smoothstep(0.0, 0.6, a);
+    // (From 0 at the cutoff: from 0.0, the outline at a = 0.05 kept ~2% of the density, and at "Anvils" 8 a view along
+    // the shield's edge crossed tens of km of it: a hard arc, issue 20261023_002905 shot 1.)
+    presA = smoothstep(0.05, 0.6, a);
     if (a <= 0.05 || !inBand) return 0.0;
-    float thick  = cv2.anvil2.x * clamp(a, 0.0, 1.0) + hang; // thickest over the storm, thin at its edge
+    float thick  = cv2.anvil2.x * clamp(a, 0.0, 1.0) * shThick + hang; // thickest over the storm, thin at its edge
     float za     = (q.h - (top - thick)) / thick;
     if (za <= -0.2) return 0.0;
     float under  = smoothstep(0.0, 0.5, za + (sh.g - 0.45) * 0.3);
@@ -1728,7 +1751,8 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     float edge   = presA;
     hfA  = clamp(za, 0.0, 1.0);
     topA = top;
-    return edge * edge * under * lid * mix(0.85, 1.0, sh.r) * 0.01 * cv2.storm.z;   // "Anvils" is its density
+    // An aged (orphan) shield is thinner ice.
+    return edge * edge * under * lid * mix(0.85, 1.0, sh.r) * 0.01 * cv2.storm.z * mix(1.0, 0.5, shAge);   // "Anvils" is its density
 }
 
 float cv2AnvilSigma(CV2Pos q, float fpM, float colNear, out float hfA, out float topA)
@@ -1879,9 +1903,10 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     float hfH, topHh;
     float sh = cv2HighSigma(q, fpM, hfH, topHh);
     float presA;
-    float sa = cv2AnvilSigmaP(q, fpM, col.near, false, hfX, topX, presA);
+    // (With the storms' shields its presence below the band comes from the same lookup: wantPres.)
+    float sa = cv2AnvilSigmaP(q, fpM, col.near, sh > 0.0 && cv2ShieldsOn(), hfX, topX, presA);
     if (col.sigma > 0.0) cv2Add(f, col.sigma, col.hf, col.topH, 0.0);
-    if (sh > 0.0 && cv2.storm.z > 0.0) {
+    if (sh > 0.0 && cv2.storm.z > 0.0 && !cv2ShieldsOn()) {
         // Where the storms that feed anvils are (the anvil's own test, one ~20 km read): running the
         // anvil's evaluation through the whole cirrus band cost ~10 ms from orbit.
         vec4  wa = textureLod(cv2WeatherTex, cv2FlowWeatherDirAt(q), 2.0);
