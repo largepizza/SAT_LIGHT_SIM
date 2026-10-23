@@ -892,7 +892,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   crossfaded only over the last 15% before the next whole count: half-and-half mixes interfered into rings), pitch 30 -> 22
   deg with intensity (CPU `tanPitch`), turning by `bandRot` = 0.04 x turn — attached to the CDO, typed convective, their
   coverage near solid (at 0.45 a weak storm's arms drew as scattered cumulus), edges ragged by the map read at a permuted
-  direction; + three finer arms (22 deg), breaking up outward (13-20 deg detached arms read as nested rings), the CDO deck,
+  direction; + three finer arms (22 deg), breaking up outward (13-20 deg detached arms read as nested rings); the bake also
+  reads the MAP through a static differential rotation about each cyclone (`cycloneSwirl`: cyclonic, 0.6-1.5 rad near the
+  CDO, none past the outer bands), so the map's own cloud near a storm trails round it in spirals, the CDO deck,
   eyewall rain and the eye cleared outright (the moat at x4). Its wind drives the surface wind (`surfaceWindAt`: rising to
   the rmw, (rmw / r)^0.6 beyond, 20 deg inflow, x0.7 at the eye's height, calm eye) and so the rain, snow and ambience.
   Harness `storms cyclones`, `storms season basin=<0-5> year=`, `storms go cyclone=<name|id|strongest>`. Not yet: the

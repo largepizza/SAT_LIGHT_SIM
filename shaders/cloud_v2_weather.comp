@@ -116,6 +116,27 @@ vec2 equirectUV(vec3 d)
 //   w  a clear MOAT at the envelope's edge (the subsiding air round a storm), so its region's cloud is partly moved,
 //      not only added
 // The envelope index lists every tower whose envelope reaches d (the march's own index stops at the reach).
+// The map's own cloud round a tropical cyclone, wound into its spiral (2026-10-23): the bake reads the map through a
+// DIFFERENTIAL rotation about each cyclone's centre (cyclonic, up to ~0.6-1.5 rad near the CDO by intensity, none past the
+// outer bands), so cloud masses that happen to lie near a hurricane trail round it as spiral streaks instead of sitting
+// there as unrelated blobs. Static in the storm's frame (it moves with the storm): a rotation growing with time would wind
+// up without end. Read only here: the noise the march textures the clouds with does not swirl.
+vec3 cycloneSwirl(vec3 d)
+{
+    vec3 o = d;
+    for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
+        CV2Cyclone cy = cv2Cyclones[i];
+        vec3  a   = cy.b.xyz;
+        float r   = acos(clamp(dot(o, a), -1.0, 1.0)) * R_EARTH_W;
+        float outer = max(cy.c.z, 1000.0);
+        if (r > outer) continue;
+        float th  = -cy.b.w * mix(0.6, 1.5, cy.a.w) * smoothstep(12.0, 25.0, cy.d.y)
+                  * (1.0 - smoothstep(0.3 * max(cy.c.y, 1000.0), outer, r));
+        o = o * cos(th) + cross(a, o) * sin(th) + a * dot(a, o) * (1.0 - cos(th));
+    }
+    return normalize(o);
+}
+
 float gRainFree = 0.0;   // stormStamp: 0..1, a rear-flank rain-free base (the map's rain is cleared there)
 vec4 stormStamp(vec3 d)
 {
@@ -274,10 +295,11 @@ void main()
     float cov = 0.0, m1 = 0.0, m2 = 0.0;
     const int kRing = 12;
     vec3 wv = (pc.evo1.x > 0.0) ? evoWind(d) * (pc.evo1.x / R_EARTH_W) : vec3(0.0);
+    vec3 dS = cycloneSwirl(d);   // where the map is read (wound round any cyclone)
     for (int c = 0; c < 2; ++c) {
         float w = (c == 0) ? pc.evo0.z : pc.evo0.w;
         if (w < 1e-3) continue;
-        vec3  dc = normalize(d - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));   // back along the wind
+        vec3  dc = normalize(dS - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));   // back along the wind
         float cc = 0.0;
         for (int k = 0; k < 4; ++k) {
             vec2 o = (vec2(k & 1, k >> 1) - 0.5) * 0.5 * texel;
@@ -371,7 +393,7 @@ void main()
         for (int c = 0; c < 2; ++c) {
             float wc = (c == 0) ? pc.evo0.z : pc.evo0.w;
             if (wc < 1e-3) continue;
-            vec3  dc  = normalize(d - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));
+            vec3  dc  = normalize(dS - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));
             float acc = 0.0;
             for (int j = 0; j < N; ++j)
                 for (int i = 0; i < N; ++i) {
