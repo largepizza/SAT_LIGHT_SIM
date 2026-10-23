@@ -765,6 +765,7 @@ json SatelliteSim::harnessStateJson()
         w["shield_truncated"] = stormStats.shieldTruncated;
         w["line_systems"] = stormStats.lineSystems;
         w["cyclones"] = stormStats.cyclones;
+        w["tornadoes"] = (int)tornadoesNow.size();
         w["cpu_ms"] = stormStats.cpuMs;
         w["cpu_ms_split"] = {{"catalog", stormStats.msCatalog}, {"tower_index", stormStats.msTowerIndex},
                              {"shields", stormStats.msShields}};
@@ -4187,6 +4188,80 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             row["strength"] = S.intensity01;
             return row;
         };
+        // `storms tornado [spout=1] [dist_km=10] [alt=300] [el=8]`: the next tornado (waterspout) of the storms alive now
+        // whose spot is in daylight, time set to 35% through it, the observer dist_km away looking at it.
+        if (lower(pos(0)) == "tornado")
+        {
+            if (!stormCatalog) fail("storms tornado: no catalog");
+            const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            // (The storms alive now and over the next 12 h: a supercell is a few percent of storms. Each step's list is
+            // used at once: the next stormsAt call evicts bins outside its own window.)
+            const bool wantSpout = c.num("spout", 0.0) > 0.0;
+            const glm::dvec3 si0 = sunDirEciAt(tNow);
+            TornadoNow best;
+            double bestT = 1e300;
+            for (int k = 0; k <= 24 && bestT > 1e299; ++k)
+            {
+                std::vector<const wx::Storm *> v;
+                stormCatalog->stormsAt(tNow + 1800.0 * k, v);
+                for (const wx::Storm *S : v)
+                {
+                    TornadoNow T;
+                    if (!tornadoOf(*S, tNow, T) || T.spout != wantSpout || T.t1 < tNow) continue;
+                    const double tm = std::max(tNow, T.t0 + 0.35 * (T.t1 - T.t0));
+                    tornadoOf(*S, tm, T);
+                    const double phm = cloudDriftRate * (tm - kCloudDriftEpochS) + cloudDriftPhaseOffset;
+                    const glm::dvec3 md = T.mapDir;
+                    const glm::dvec3 te(md.x * std::cos(phm) + md.y * std::sin(phm), -md.x * std::sin(phm) + md.y * std::cos(phm), md.z);
+                    const glm::dvec3 si = sunDirEciAt(tm);
+                    const double g = earthRotationAngle(tm);
+                    const glm::dvec3 se(si.x * std::cos(g) + si.y * std::sin(g), -si.x * std::sin(g) + si.y * std::cos(g), si.z);
+                    if (glm::dot(glm::normalize(se), te) < std::sin(glm::radians(15.0))) continue;
+                    if (wantSpout && oceanFraction(std::asin(std::clamp(te.z, -1.0, 1.0)), std::atan2(te.y, te.x), 3000.0, 1) < 0.5f) continue;
+                    if (tm < bestT) { bestT = tm; best = T; best.earthDir = te; }
+                }
+            }
+            (void)si0;
+            if (bestT > 1e299) fail("storms tornado: none in daylight in the next 12 h");
+            {
+                const double days = std::floor(bestT / 86400.0);
+                simDayJ2000 = (int64_t)days;
+                simSecInDay = bestT - days * 86400.0;
+            }
+            const glm::dvec3 te = best.earthDir;
+            const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), te)), north = glm::cross(te, east);
+            // Default: from the inflow side (away from the forward flank's rain), else az_from.
+            double bDef;
+            {
+                const double tB = (double)simDayJ2000 * 86400.0 + simSecInDay;
+                const double phb = cloudDriftRate * (tB - kCloudDriftEpochS) + cloudDriftPhaseOffset;
+                const glm::dvec3 u = best.upwindMap;
+                const glm::dvec3 ue(u.x * std::cos(phb) + u.y * std::sin(phb), -u.x * std::sin(phb) + u.y * std::cos(phb), u.z);
+                bDef = std::atan2(glm::dot(ue, east), glm::dot(ue, north));
+            }
+            const double b = c.has("az_from") ? glm::radians(c.num("az_from", 0.0)) : bDef;
+            const double ang = c.num("dist_km", 10.0) * 1000.0 / 6371000.0;
+            const glm::dvec3 oe = glm::normalize(te * std::cos(ang) + (east * std::sin(b) + north * std::cos(b)) * std::sin(ang));
+            if (followActive) stopFollow();
+            obsDir = glm::vec3(oe);
+            obsLatDeg = (float)glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0)));
+            obsLonDeg = (float)glm::degrees(std::atan2(oe.y, oe.x));
+            obsHeightOffset = std::max(0.0f, (float)c.num("alt", 300.0));
+            obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+            const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe)), oNorth = glm::cross(oe, oEast);
+            const glm::dvec3 to3 = te - oe * glm::dot(te, oe);
+            const double az = glm::degrees(std::atan2(glm::dot(to3, oEast), glm::dot(to3, oNorth)));
+            aimCameraAzEl((float)az, (float)c.num("el", 8.0));
+            trailClearPending = true;
+            cv2HistoryValid = false;
+            for (double &bb : cv2WxBakedT) bb = -1e30;
+            r["tornado"] = {{"storm_id", std::to_string(best.stormId)}, {"spout", best.spout}, {"radius_m", best.r0},
+                            {"start_j2000", best.t0}, {"dur_s", best.t1 - best.t0},
+                            {"lat_deg", glm::degrees(std::asin(std::clamp(te.z, -1.0, 1.0)))},
+                            {"lon_deg", glm::degrees(std::atan2(te.y, te.x))}};
+            r["message"] = std::string(best.spout ? "waterspout" : "tornado") + " in view, az " + std::to_string((int)az);
+            return Status::Done;
+        }
         // `storms cyclones`: every tropical cyclone alive now; `storms season basin=<0-5> year=<y>`: a basin's season.
         if (lower(pos(0)) == "cyclones")
         {

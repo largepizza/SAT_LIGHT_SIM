@@ -4729,6 +4729,21 @@ private:
     float stormCyclones = 1.0f;                  // clouds_v2.storm_cyclones: x each basin's tropical cyclones a season
     std::vector<wx::CycloneState> stormCyclonesNow;   // this frame's, strongest first
     glm::dvec3 stormFlowedDir(const glm::dvec3 &wd, double t) const;   // where the low cloud reads the cube for wd
+    // Tornadoes and waterspouts (2026-10-23, SatelliteSimWeather.cpp): fixed by their storm's id; drawn as plume
+    // Gaussians (the dust list after the launches').
+    struct TornadoNow
+    {
+        bool active = false, spout = false, sea = false;
+        double t0 = 0.0, t1 = 0.0;          // J2000 s
+        uint32_t seed = 0;
+        uint64_t stormId = 0;
+        float r0 = 100.0f;                  // its width at the ground (m, radius)
+        glm::dvec3 mapDir{0, 0, 1}, earthDir{0, 0, 1};
+        glm::dvec3 upwindMap{1, 0, 0};      // map-frame tangent away from the forward flank (the inflow side)
+    };
+    std::vector<TornadoNow> tornadoesNow;   // drawn this frame
+    bool tornadoOf(const wx::Storm &S, double t, TornadoNow &out) const;   // its tornado (if any) and where at t
+    void weatherFillTornadoes(GpuDustCloud *out, uint32_t &n);
     double stormUploadedT = -1e300;
     uint64_t stormEnvKey = 0;
     bool  stormObjects = true;                   // weather.storm_objects (off = no towers at all)

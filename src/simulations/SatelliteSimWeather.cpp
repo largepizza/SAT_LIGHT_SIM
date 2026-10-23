@@ -633,3 +633,202 @@ nlohmann::json SatelliteSim::stormNearestJson(int n, float minStrength, float ra
     }
     return out;
 }
+
+// ── Tornadoes and waterspouts (2026-10-23) ──────────────────────────────────────────────────────────────────────────
+// A storm's tornado is fixed by its id like everything else about it: ~35% of supercells put one down for 5-25 min in
+// their mature phase, on the rear flank of the dominant tower; a strong cell over the sea may put down a waterspout.
+// Drawn with the plume Gaussians cloud_march.comp already composites (its billows below ~10 km are an Earth-fixed
+// field: the funnel's texture): a funnel of stacked Gaussians from the cloud base, lowering to touch down and roping
+// out at its end, a lowered wall cloud above it and a debris cloud (spray over water) at its foot. Lit mostly by the sky
+// (it stands under the storm's base).
+namespace
+{
+uint64_t tnMix(uint64_t x)
+{
+    x += 0x9E3779B97F4A7C15ull;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+    return x ^ (x >> 31);
+}
+double tnU(uint64_t h) { return (double)(h >> 11) * (1.0 / 9007199254740992.0); }
+glm::dvec3 tnMove(const glm::dvec3 &p, const glm::dvec3 &t, double distM)
+{
+    if (distM <= 0.0) return p;
+    const double a = distM / kReW;
+    return glm::normalize(p * std::cos(a) + t * std::sin(a));
+}
+} // namespace
+
+bool SatelliteSim::tornadoOf(const wx::Storm &S, double t, TornadoNow &out) const
+{
+    out = TornadoNow{};
+    if (S.kind != wx::StormKind::Supercell && S.kind != wx::StormKind::AirMass && S.kind != wx::StormKind::Multicell)
+        return false;
+    const uint64_t h = tnMix(S.id ^ 0x70A2AD0ull);
+    const bool super = S.kind == wx::StormKind::Supercell;
+    const wx::TowerSpec &ts = S.towers[0];
+    double w0, w1;
+    if (super)
+    {
+        if (tnU(h) > 0.35 || ts.anvOff <= ts.anvOn) return false;
+        w0 = (double)ts.anvOn + 1200.0;
+        w1 = (double)ts.anvOff - 600.0;
+    }
+    else
+    {
+        // Waterspouts: strong cells over the sea (the caller checks the sea), ~12%.
+        if (tnU(h) > 0.12 || ts.peak < 0.6f) return false;
+        w0 = (double)ts.t0 + (double)ts.growS;
+        w1 = (double)ts.t0 + 0.75 * (double)ts.life;
+        out.spout = true;
+    }
+    const double dur = (super ? 300.0 + 1200.0 * tnU(tnMix(h ^ 1)) : 240.0 + 600.0 * tnU(tnMix(h ^ 1)));
+    if (w1 - w0 < dur) return false;
+    out.t0 = S.t0 + w0 + (w1 - w0 - dur) * tnU(tnMix(h ^ 2));
+    out.t1 = out.t0 + dur;
+    out.seed = (uint32_t)(tnMix(h ^ 3) >> 32);
+    out.stormId = S.id;
+    out.r0 = (float)(out.spout ? 25.0 + 40.0 * tnU(tnMix(h ^ 4)) : 60.0 + 160.0 * std::pow(tnU(tnMix(h ^ 4)), 1.5));
+    // Where: the tower's axis at t (as Catalog::towersAt), then the rear flank (behind and to the right of the motion
+    // in the north: across the shear from the forward flank).
+    const glm::dvec3 c = S.centreAt(t);
+    const glm::dvec3 e = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), c) + glm::dvec3(1e-12, 0, 0));
+    const glm::dvec3 n = glm::cross(c, e);
+    const glm::dvec3 o = e * (double)ts.offE + n * (double)ts.offN;
+    const double ol = glm::length(o);
+    const glm::dvec3 axis = ol > 0.0 ? tnMove(c, o / ol, ol) : c;
+    glm::dvec3 sh = glm::dvec3(S.shear) - axis * glm::dot(glm::dvec3(S.shear), axis);
+    sh = glm::length(sh) > 1e-12 ? glm::normalize(sh) : e;
+    const glm::dvec3 perp = glm::cross(axis, sh) * (axis.z >= 0.0 ? -1.0 : 1.0);
+    const double Rc = std::clamp((double)cv2CbRadiusKm, 1.0, 20.0) * 1000.0 * 0.8;
+    // (At the updraft's edge, ~a tower radius out: the rain-free base. Inside 0.6 of it the rain core hid it.)
+    const glm::dvec3 off = (-0.65 * sh + 0.7 * perp) * Rc * (out.spout ? 0.3 : 1.0);
+    out.upwindMap = -sh;
+    const double offL = glm::length(off);
+    out.mapDir = offL > 0.0 ? tnMove(axis, off / offL, offL) : axis;
+    out.active = t >= out.t0 && t < out.t1;
+    return true;
+}
+
+void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
+{
+    FPROF_SCOPE("weatherFillTornadoes");
+    tornadoesNow.clear();
+    if (!stormObjects || !stormCatalog || !out) return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double ph = cloudDriftPhase(), cph = std::cos(ph), sph = std::sin(ph);
+    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    const glm::dvec3 eye = up * (double)obsEyeRadiusM();
+    const glm::dvec3 E = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), up) + glm::dvec3(1e-12, 0, 0));
+    const glm::dvec3 N = glm::cross(up, E);
+    auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, E), glm::dot(v, N), glm::dot(v, up)); };
+    const glm::dvec3 si = sunDirEciAt(t);
+    const double g = earthRotationAngle(t);
+    const glm::dvec3 sunE = glm::normalize(glm::dvec3(si.x * std::cos(g) + si.y * std::sin(g),
+                                                      -si.x * std::sin(g) + si.y * std::cos(g), si.z));
+    // The storms whose dominant tower stands within ~200 km (the tower list: this frame's, map frame).
+    std::vector<uint64_t> seen;
+    for (const wx::Tower &tw : stormTowers)
+    {
+        if (tw.towerIndex != 0 || tw.kind == wx::StormKind::Tropical) continue;
+        const glm::dvec3 d = glm::normalize(tw.dir);
+        const glm::dvec3 ed(d.x * cph + d.y * sph, -d.x * sph + d.y * cph, d.z);
+        if (glm::dot(ed, up) < std::cos(200000.0 / kReW)) continue;
+        if (std::find(seen.begin(), seen.end(), tw.stormId) != seen.end()) continue;
+        seen.push_back(tw.stormId);
+        const wx::Storm *S = stormCatalog->find(tw.stormId);
+        if (!S) continue;
+        TornadoNow T;
+        if (!tornadoOf(*S, t, T) || !T.active) continue;
+        const glm::dvec3 md = T.mapDir;
+        const glm::dvec3 te(md.x * cph + md.y * sph, -md.x * sph + md.y * cph, md.z);   // Earth-fixed
+        const float lat = (float)glm::degrees(std::asin(std::clamp(te.z, -1.0, 1.0)));
+        const float lon = (float)glm::degrees(std::atan2(te.y, te.x));
+        const bool sea = oceanFraction(glm::radians((double)lat), glm::radians((double)lon), 3000.0, 1) > 0.5f;
+        if (T.spout && !sea) continue;   // waterspouts only over water
+        T.earthDir = te;
+        T.sea = sea;
+        tornadoesNow.push_back(T);
+    }
+    const double kTwoPi15 = 15.749609945722419;
+    for (const TornadoNow &T : tornadoesNow)
+    {
+        const double ground = T.sea ? 0.0 : std::max(0.0, (double)cpuTerrainHeightM(
+            (float)glm::degrees(std::asin(std::clamp(T.earthDir.z, -1.0, 1.0))), (float)glm::degrees(std::atan2(T.earthDir.y, T.earthDir.x))));
+        const double Hb = std::max(800.0, (double)cv2Types[4].alt.x) * (T.spout ? 0.8 : 1.0);
+        const glm::dvec3 base = T.earthDir * (kReW + ground);
+        const glm::dvec3 rel0 = base - eye;
+        if (glm::length(rel0) > 250000.0) continue;
+        // The lifecycle: the funnel lowers over the first ~90 s, roping out (thinner, bent) over the last third.
+        const double life = T.t1 - T.t0, tau = t - T.t0;
+        const double lower = glm::smoothstep(0.0, std::min(90.0, 0.2 * life), tau);
+        const double rope = glm::smoothstep(0.66, 1.0, tau / life);
+        const double fade = 1.0 - glm::smoothstep(0.92, 1.0, tau / life);
+        const double zBot = (1.0 - lower) * 0.65 * Hb;
+        const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), T.earthDir) + glm::dvec3(1e-12, 0, 0));
+        const glm::dvec3 nE = glm::cross(T.earthDir, eE);
+        const double bendAz = 6.2831853 * tnU(tnMix((uint64_t)T.seed ^ 9));
+        const glm::dvec3 bendDir = eE * std::cos(bendAz) + nE * std::sin(bendAz);
+        const double bend = (0.15 + 0.6 * rope) * Hb;
+        const double sinE = glm::dot(T.earthDir, sunE);
+        const double amb = glm::smoothstep(-0.1, 0.25, sinE);
+        if (amb <= 0.0) continue;                        // (night: unlit; lightning lights it in the shader's flash pass)
+        auto emit = [&](const glm::dvec3 &C, const glm::dvec3 &axis, double sA, double sP, double tau0, double albedo,
+                        const glm::dvec3 &tint, double sunShare) {
+            if (n >= kMaxDustClouds) return;
+            const glm::dvec3 rel = C - eye;
+            const double range = std::max(glm::length(rel), 1.0);
+            const double Sigma = tau0 * 2.0 * glm::pi<double>() * sP * sA * fade;
+            if (Sigma < 1.0) return;
+            const glm::dvec3 a = toEnu(axis);
+            glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
+            b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
+            const glm::dvec3 c2 = glm::cross(a, b2);
+            const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
+            auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
+            GpuDustCloud &d = out[n++];
+            const glm::dvec3 re = toEnu(rel);
+            d.c = glm::vec4(glm::vec3(re), (float)Sigma);
+            d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2), (float)(1.0 / (kTwoPi15 * sA * sP * sP)));
+            // Under the storm's base: mostly the sky's light (isotropic), a little direct Sun (the shader shadows it).
+            const glm::dvec3 iso = 4.0 * glm::pi<double>() * amb * 0.14 * glm::dvec3(0.66, 0.72, 0.82) * albedo * tint;
+            const glm::dvec3 sun = 4.0 * glm::pi<double>() * amb * sunShare * albedo * tint;
+            const double lI = iso.x + iso.y + iso.z, lS = sun.x + sun.y + sun.z;
+            const double share = std::min(lI / std::max(lI + lS, 1e-9), 0.999);
+            const double seedK = std::floor(tnU(tnMix((uint64_t)T.seed ^ (uint64_t)n)) * 255.0);
+            d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), (float)(4.0 * seedK + 2.0 + share));
+            d.col = glm::vec4(glm::vec3(iso + sun), (float)(2.0 + albedo));
+            const double R = 5.5 * std::max(sA, sP);
+            d.cone = R >= 0.95 * range ? glm::vec4(0.0f, 0.0f, 0.0f, -2.0f)
+                                       : glm::vec4(glm::vec3(re / range), (float)std::sqrt(1.0 - (R / range) * (R / range)));
+        };
+        // The funnel: 10 Gaussians from its bottom to the base, wider upward (r0 at the ground to ~5 x), thinner as it
+        // ropes out, bent.
+        const int kSeg = 10;
+        const double r0 = (double)T.r0 * (1.0 - 0.6 * rope);
+        const glm::vec3 grey(0.78f, 0.78f, 0.80f);
+        for (int k = 0; k < kSeg; ++k)
+        {
+            const double f0 = (double)k / kSeg, f1 = (double)(k + 1) / kSeg;
+            const double z0 = zBot + (Hb - zBot) * f0, z1 = zBot + (Hb - zBot) * f1, zm = 0.5 * (z0 + z1);
+            const double q = zm / Hb;
+            const double rr = r0 * (1.0 + 4.0 * std::pow(q, 2.2));
+            const double lat0 = bend * std::sin(3.14159 * q) * (1.0 - q * 0.3);
+            const glm::dvec3 p = T.earthDir * (kReW + ground + zm) + bendDir * lat0;
+            const glm::dvec3 axis = glm::normalize(T.earthDir * (z1 - z0) + bendDir * (bend * 3.14159 / Hb *
+                                                    std::cos(3.14159 * q) * (z1 - z0)));
+            emit(p, axis, 0.6 * (z1 - z0), rr, 3.5, 0.55, glm::dvec3(grey), 0.12);
+        }
+        // The wall cloud: a lowered, rotating disc under the base, 1.5-3 km across.
+        emit(T.earthDir * (kReW + ground + Hb - 150.0), T.earthDir, 220.0, (T.spout ? 900.0 : 1800.0), 3.0, 0.4,
+             glm::dvec3(0.7, 0.7, 0.74), 0.05);
+        // The debris cloud (land) or the spray ring (sea) once it touches down.
+        if (zBot < 30.0)
+        {
+            const bool spray = T.sea;
+            emit(T.earthDir * (kReW + ground + (spray ? 40.0 : 90.0)), T.earthDir, spray ? 50.0 : 110.0,
+                 r0 * (spray ? 2.2 : 2.8), spray ? 1.2 : 2.0, spray ? 0.8 : 0.45,
+                 spray ? glm::dvec3(0.95, 0.97, 1.0) : glm::dvec3(0.62, 0.52, 0.42), 0.15);
+        }
+    }
+}
