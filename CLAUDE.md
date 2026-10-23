@@ -877,8 +877,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the basin's WMO list in order of reaching 17.5 m/s (2036's Atlantic / Eastern Pacific lists = 2024's rotation with the
   2025 retirements replaced; the others a slice run on sequentially). `cyclonesAt` gives each one's state now (map frame
   from the inverse of `mapToEarth`; category, pressure from Atkinson-Holliday, radius of maximum wind contracting with
-  intensity, eye 0.45 rmw past 33 m/s, CDO 120-300 km, bands to 350-800 km). Drawn as: an eyewall of 12 regenerating
-  towers at the rmw turning cyclonically + 6 inner-rainband towers on the spiral (`cycloneTowersAt`, heads blown outward);
+  intensity, eye 0.45 rmw past 33 m/s, CDO 120-300 km, bands to 350-800 km). Drawn as: an eyewall of 18 regenerating
+  towers at the rmw (12 drew its rain as separate cores on the radar) turning cyclonically + 6 inner-rainband towers on the spiral (`cycloneTowersAt`, heads blown outward);
   the CDO as a shield with an eye (`CV2Shield.d.w` < 0 = -eye radius, `cv2ShieldAt`); and in the weather bake
   (`CV2Cyclone` x 8 in `stormBuf`, at the flowed centre: `stormFlowedDir`, the one CPU replica of `cv2FlowDisp`) two main
   log-spiral arms (18 deg) + three finer (14 deg) trailing the rotation, thinning and breaking outward, the CDO deck,

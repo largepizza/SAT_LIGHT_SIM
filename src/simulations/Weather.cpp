@@ -1213,7 +1213,7 @@ void Catalog::cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std
         eastNorth(S.map, e, n);
         const double tau = t - C.t0;
         // The eyewall: a ring of regenerating towers at the radius of maximum wind, turning cyclonically.
-        const int nEye = 12;
+        const int nEye = 18;   // (12 drew the eyewall's rain as a ring of separate cores on the radar)
         const double rot = (double)C.hemi * 0.25 * (double)S.vmax / std::max((double)S.rmw, 5000.0) * tau;
         for (int k = 0; k < nEye + 6; ++k) {
             const uint64_t h = mix64((uint64_t)C.seed * 0x9E37ull + (uint64_t)k);
@@ -1237,7 +1237,7 @@ void Catalog::cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std
             const double peak = wall ? (0.55 + 0.45 * (double)S.intensity01) : (0.35 + 0.35 * (double)S.intensity01);
             T.strength = (float)(peak * (0.7 + 0.3 * cyc) * smooth01(20.0, 30.0, S.vmax));
             T.role = wall ? 1.0f : 0.7f;
-            T.size = (float)(0.3 + 0.4 * u53(mix64(h ^ 4)));
+            T.size = wall ? (float)(0.15 + 0.25 * u53(mix64(h ^ 4))) : (float)(0.3 + 0.4 * u53(mix64(h ^ 4)));
             T.overshoot = (float)u53(mix64(h ^ 5));
             // The outflow aloft is outward: the heads blow away from the centre.
             glm::dvec3 sh = T.dir - S.map;
