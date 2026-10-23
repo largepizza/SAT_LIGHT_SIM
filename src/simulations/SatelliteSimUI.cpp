@@ -8496,6 +8496,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             skyTaaWeightStill = settingClamp(d.value("sky_taa_weight", skyTaaWeightStill), 0.02f, 1.0f);
             skyTaaWeightMoving = settingClamp(d.value("sky_taa_weight_moving", skyTaaWeightMoving), 0.02f, 1.0f);
             skyTaaParallaxFloorM = settingClamp(d.value("sky_taa_parallax_floor_m", skyTaaParallaxFloorM), 0.0f, 100000.0f);
+            skyTaaDebug = std::clamp(d.value("sky_taa_debug", skyTaaDebug), 0, 4);
+            skyTaaEyeFromGpuGround = d.value("sky_taa_gpu_eye", skyTaaEyeFromGpuGround);
             int fpsCapVal = d.value("fps_cap_mode", (int)fpsCapMode);
             fpsCapMode = (fpsCapVal >= 0 && fpsCapVal <= 4) ? (FpsCapMode)fpsCapVal : FpsCapMode::VSync;
             // UC1: default to Custom (NOT a device-seeded preset) when the key is simply absent —
@@ -8785,10 +8787,13 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CdcMaxLevel = c.value("cdc_max_level", cv2CdcMaxLevel);
         cv2CdcMaxRate = c.value("cdc_max_rate", cv2CdcMaxRate);
         cv2CdcMotionGuard = c.value("cdc_motion_guard", cv2CdcMotionGuard);
+        cv2EyeHeightNow = c.value("eye_height_now", cv2EyeHeightNow);
+        cv2SunVolumeOn = c.value("sun_volume", cv2SunVolumeOn);
         cv2CdcLight = c.value("cdc_light", cv2CdcLight);
         cv2CdcLightLevels = c.value("cdc_light_levels", cv2CdcLightLevels);
         cv2CdcNearM = c.value("cdc_near_m", cv2CdcNearM);
         cv2FullRes = c.value("full_res", cv2FullRes);
+        cv2FullResMovingMode = std::clamp(c.value("full_res_moving_mode", cv2FullResMovingMode), 0.0f, 2.0f);
         cv2ShadowRing1CellM = c.value("shadow_ring1_cell_m", cv2ShadowRing1CellM);
         cv2SmallCumulus = c.value("small_cumulus", cv2SmallCumulus);
         cv2ErosionVar = c.value("erosion_variation", cv2ErosionVar);
@@ -8988,6 +8993,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         oceanWhitecapGain = c.value("ocean_whitecaps", oceanWhitecapGain);
         oceanWaveRangeKm = settingClamp(c.value("ocean_wave_range_km", oceanWaveRangeKm), 5.0f, 200.0f);
         oceanWaveSharpness = settingClamp(c.value("ocean_wave_sharpness", oceanWaveSharpness), 0.1f, 1.0f);
+        oceanMotionFilter = settingClamp(c.value("ocean_motion_filter", oceanMotionFilter), 0.0f, 1.0f);
         oceanFarRipple = c.value("ocean_far_ripple", oceanFarRipple);
         oceanFarRippleSize = c.value("ocean_far_ripple_size", oceanFarRippleSize);
         oceanWaveRangeFade = settingClamp(c.value("ocean_wave_range_fade", oceanWaveRangeFade), 0.05f, 1.0f);
@@ -9158,6 +9164,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sky_taa_weight", skyTaaWeightStill},
         {"sky_taa_weight_moving", skyTaaWeightMoving},
         {"sky_taa_parallax_floor_m", skyTaaParallaxFloorM},
+        {"sky_taa_debug", skyTaaDebug},
+        {"sky_taa_gpu_eye", skyTaaEyeFromGpuGround},
         {"fps_cap_mode", (int)fpsCapMode},
         {"graphics_preset", (int)graphicsPreset},
         {"show_advanced_settings", showAdvancedSettings},
@@ -9288,6 +9296,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ocean_whitecaps", oceanWhitecapGain},
         {"ocean_wave_range_km", oceanWaveRangeKm},
         {"ocean_wave_sharpness", oceanWaveSharpness},
+        {"ocean_motion_filter", oceanMotionFilter},
         {"ocean_far_ripple", oceanFarRipple},
         {"ocean_far_ripple_size", oceanFarRippleSize},
         {"ocean_wave_range_fade", oceanWaveRangeFade},
@@ -9384,10 +9393,13 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cdc_max_level", cv2CdcMaxLevel},
         {"cdc_max_rate", cv2CdcMaxRate},
         {"cdc_motion_guard", cv2CdcMotionGuard},
+        {"eye_height_now", cv2EyeHeightNow},
+        {"sun_volume", cv2SunVolumeOn},
         {"cdc_light", cv2CdcLight},
         {"cdc_light_levels", cv2CdcLightLevels},
         {"cdc_near_m", cv2CdcNearM},
         {"full_res", cv2FullRes},
+        {"full_res_moving_mode", cv2FullResMovingMode},
         {"shadow_ring1_cell_m", cv2ShadowRing1CellM},
         {"small_cumulus", cv2SmallCumulus},
         {"erosion_variation", cv2ErosionVar},

@@ -469,6 +469,21 @@ void main()
     }
     vec3  dir    = rayDirAt(vec2(pix) + subPx, halfSize, tanHalfFov, camToENU);
     float tScene = texelFetch(sceneDepthTex, pix >> int(cv2.grid.z), 0).r;
+    // S9: on the full-res grid the depth is the half-res texel's, traced through its centre, half a full-res pixel
+    // off this ray. Near the limb from orbit the ground's distance changes by tens of km over that half pixel, so
+    // every ray of one row parity (the even rows: higher) stopped at the lower ray's ground, short of the cloud: whole
+    // cloud systems vanished on the frames sampling those rows (period-2 flicker in motion, the "lost far masses";
+    // issue 20261022_210358, harness_runs/rc1022e: held at an even row the mass never showed). Corrected by the
+    // parallax between the two rays on the sphere through the depth's own hit (exact for flat ground at any height),
+    // bounded so a ridge silhouette bleeds at most a quarter of its distance on the half pixel it straddles.
+    if (cv2.grid.z > 0.5 && tScene < 0.5 * kNoSurfaceT) {
+        vec3  dD = rayDirAt((vec2(pix >> int(cv2.grid.z)) + 0.5) * exp2(cv2.grid.z), halfSize, tanHalfFov, camToENU);
+        float rS = length(eye + dD * tScene);
+        if (rS < eye.z - 1.0) {
+            float sD = raySphere(eye, dD, rS).x, sO = raySphere(eye, dir, rS).x;
+            if (sD > 0.0) tScene += sO > 0.0 ? clamp(sO - sD, -0.25 * tScene, 0.25 * tScene) : 0.25 * tScene;
+        }
+    }
 
     vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
     float BETA_M = BETA_M_BASE * cloud.atmosMieGain;

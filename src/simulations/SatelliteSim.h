@@ -3676,7 +3676,17 @@ private:
     // + 2 m (observerEffHeight). The satellites' ENU frame (obsECI) and every CPU evaluator use this;
     // until review 7 they used R + ground + offset, a different eye by the ground height, so over
     // mountains the beams and satellites sat ~km off the drawn scene and jumped as the ground changed.
-    float obsEyeRadiusM(float heightOffset) const { return (float)satphot::kEarthRadiusM + std::max(obsTerrainH, heightOffset) + 2.0f; }
+    // The ground is the GPU's detailed ground under the eye (terrainFrameBuf .y, last frame's) when there is one, the 18-km
+    // CPU DEM (obsTerrainH) only before the first readback: 2026-10-22 (issue 20261022_174155), at 62.5 N 139.9 E the DEM
+    // read 2324 m over real ground at 1872 m, so a climb from 1872 to 2250 m left this eye pinned at 2324 m (the sky TAA saw
+    // no motion and ghosted every edge; satellites, beams and lights sat 450 m off the drawn scene).
+    float obsGroundM() const
+    {
+        // (Following: the GPU's ground is under the camera, not the parked observer this may be asked about.)
+        return (!followActive && terrainFrameMapped && std::isfinite(terrainFrameMapped[1]) && terrainFrameMapped[1] > -500.0f)
+                   ? terrainFrameMapped[1] : obsTerrainH;
+    }
+    float obsEyeRadiusM(float heightOffset) const { return (float)satphot::kEarthRadiusM + std::max(obsGroundM(), heightOffset) + 2.0f; }
     float obsEyeRadiusM() const { return obsEyeRadiusM(obsHeightOffset); }
     // 2026-08-09 (in-app finding: beam/cloud-glow ground spots visibly "drag" behind the observer
     // while moving): satENU/reflectDirENU/targetENU read back from reflectBeamsBuf each frame are
@@ -4006,7 +4016,12 @@ private:
     // Issue 20261022_174155 (2026-10-22): sky-depth pixels (translucent cloud, haze) and far surfaces take the eye's
     // parallax at this stand-in distance for their history weight / clip while the EYE moves (sky_taa.comp, e2p[1].w).
     // 0 = off (the old behaviour). display.sky_taa_parallax_floor_m.
-    float skyTaaParallaxFloorM = 1500.0f;
+    float skyTaaParallaxFloorM = 0.0f;   // 0 = off (2026-10-22 run B: the 1500-m floor doubled the climb error vs TAA-off; the eye-height fix is what fixed 174155)
+    // Diagnostic (sky_taa.comp's debug modes 1-4; 0 = off). display.sky_taa_debug. Not for users.
+    int skyTaaDebug = 0;
+    // The sky TAA's eye height from the GPU's detailed ground (issue 20261022_174155; false = the CPU DEM's, the old
+    // behaviour, for A/B). display.sky_taa_gpu_eye.
+    bool skyTaaEyeFromGpuGround = true;
     bool skyTaaUsedThisFrame = false;
     bool skyTaaHistValid = false;
     int skyTaaHist = 0;
@@ -4205,6 +4220,7 @@ private:
     float cv2CdcLightLevels = 3.0f, cv2CdcLightLevelsUsed = -1.0f;   // ... on levels below this (cells to 400 m)
     float cv2CdcNearM = 0.0f;             // coarse steps skip only beyond this distance (m)
     float cv2FullRes = 1.0f;              // S9: full-resolution clouds (computeCloudExtent; on for High / Ultra, the compiled defaults)
+    float cv2FullResMovingMode = 0.0f;    // full-res clouds while the eye moves from altitude (issues 20261022_210358 / _220214): 0 sparse, rotating (default); 1 sparse, held pixel; 2 full rate (every pixel, +1-6 ms; an A/B since the march's depth fix)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
     // 2026-10-22 (r1022 orbit, the matrix's "clouds thin out climbing from orbit"): the clipmap's bake reads the field at the
     // march's footprint FROM THE EYE AT BAKE TIME, and its cells never expire with time paused: climbing, cells baked lower
@@ -4212,6 +4228,8 @@ private:
     // skipped whole cloud masses. The guard drops the clipmap while the eye moves fast for its height and starts a new epoch
     // when it comes back or after the eye has moved a quarter of its distance scale. 0 = the old behaviour.
     float cv2CdcMotionGuard = 1.0f;
+    float cv2SunVolumeOn = 1.0f;           // diagnostic (r1022): 0 = no Sun transmittance volume (clouds lit by the light march alone)
+    float cv2EyeHeightNow = 1.0f;          // the v2 eye from this frame's height offset, not last frame's GPU readback (0 = old)
     glm::dvec3 cv2CdcRefEye{0.0};          // the eye when the clipmap's current epoch began
     double cv2CdcRefS = 0.0;               // ... and its distance scale then
     bool  cv2CdcWasActive = false;
@@ -4258,6 +4276,7 @@ private:
     float cv2FullRateAboveKm = 30.0f;  // above this eye altitude every pixel is marched every frame
     float cv2SparseWhenStill = 0.0f;   // > 0.5: while the view is still, march 1 pixel in 4 (history fills in)
     int   cv2StillFrames = 0;          // consecutive frames with no camera / eye / time-warp motion
+    int   cv2EyeStillFrames = 0;       // consecutive frames whose EYE motion showed under 1/4 half-res px of parallax (no time warp, history kept)
     float cv2MidAmount = 1.1f;         // the mid-level layer (altocumulus / altostratus), 0 = off
     float cv2StormScale = 12.0f;        // deep convection's lobes and erosion are this much larger
     float cv2StormDetail = 0.0f;       // share of the erosion kept on deep convection
@@ -4395,6 +4414,7 @@ private:
     // Frame-to-frame state for the temporal resolve.
     uint32_t cv2Frame = 0;
     bool cv2FullRateNow = false;       // this frame's march covers every half-res pixel
+    bool cv2FullResHeldNow = false;    // this frame's full-res sparse sample is held at one pixel of each block (cv2FullResMovingMode 1)
     bool cv2HalfRateNow = false;       // ... or, "Half rate while moving", half of them (a checkerboard)
     bool cv2AdaptiveNow = false;       // ... or the adaptive rate: sparse, with full-rate tiles where the parallax is large
     bool cv2HistoryValid = false;
@@ -5608,6 +5628,10 @@ private:
     float oceanStormTrails = 1.0f;     // 2026-10-04 (slot 260): "Storm sea trails", the sky TAA keeps a stormy sea's history
                                        // unclipped (crests smear like spray and chop); 0 = off, x the sea state's storm share
     float oceanWaveRangeFade = 0.4f;   // review 28 (slot 257): the share of the wave range the waves fade over (0.4 = from 0.6x)
+    float oceanMotionFilter = 1.0f;          // 2026-10-22: the wave octaves at the pixel footprint while the eye moves (cp.oceanWaveFootK)
+    float seaMotionK = 0.0f;                 // its eased share (SatelliteSim.cpp, the CloudParams fill)
+    glm::dvec3 seaMotionPrevEye{0.0};
+    bool seaMotionPrevValid = false;
     float oceanWaveSharpness = 0.1f;         // review 21: x the footprint the wave octaves are filtered at (1 = review 14; slot 243)
     float oceanReflSamples = 6.0f;           // ocean sky-reflection loop sample count (N_REFL)
     float moonGain = 0.0053f;                // shared moonlight brightness: terrain direct term + cloud

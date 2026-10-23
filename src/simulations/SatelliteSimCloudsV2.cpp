@@ -1081,7 +1081,14 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     const glm::dvec3 up = glm::normalize(glm::dvec3(cpc.obsECEFDir));
     // The GPU's own ground under the observer (terrainFrameBuf, one frame old) when it has one —
     // the eye every v2 pass builds its rays from is terrainFrame.x + 2.
-    const double groundGpu = terrainFrameMapped ? (double)terrainFrameMapped[0] : 0.0;
+    double groundGpu = terrainFrameMapped ? (double)terrainFrameMapped[0] : 0.0;
+    // 2026-10-22 (r1022 orbit, "eye_height_now"): terrainFrame.x is max(ground, height offset) of LAST frame, while every
+    // v2 pass builds its rays from THIS frame's (scene_depth.comp writes it before them). Climbing with Q from orbit
+    // (4-15 km a frame) the CPU's eye, and everything integrated from it (the resolve's obsDelta, the Sun volume's lattice
+    // and window centre), lagged the GPU's by one frame's climb. Last frame's GROUND (.y, no offset: it moves only with
+    // the ground under the observer) with this frame's offset is the GPU's value up to the ground's own change.
+    if (cv2EyeHeightNow > 0.5f && terrainFrameMapped)   // (over the sea the ground reads 0: the offset alone)
+        groundGpu = std::max((double)terrainFrameMapped[1], std::max(0.0, (double)obsHeightOffset));
     const double eyeH = (groundGpu > 0.0 ? groundGpu : (double)cpc.obsEffH) + 2.0;
     const glm::dvec3 eye = up * (R + eyeH);
     const double simT = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -1409,7 +1416,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // and under time warp. A level starting to fill (or a new cell / knot range) is cleared first, so its slots read
         // invalid until baked and the next level out stands in. On while the march draws clouds.
         {
-            const bool stvOn = sinE > -0.1 && cloudFarBlend() < 0.999f;
+            const bool stvOn = sinE > -0.1 && cloudFarBlend() < 0.999f && cv2SunVolumeOn > 0.5f;   // (sun_volume 0: a diagnostic)
             const double hHi = (double)hi + 1000.0;
             const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
             glm::vec4 lat[4];
@@ -1542,7 +1549,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             {
                 const double cdcS = std::max(eyeH - (double)hi, 0.0) + 20000.0;
                 const double cdcStep = glm::length(eye - cv2PrevEye);
-                cv2CdcSlowFrames = (cv2HistoryValid && cdcStep > 0.004 * cdcS) ? 0 : std::min(cv2CdcSlowFrames + 1, 1000);
+                // Any step counts, history or not (2026-10-22, issue 20261022_210358): past 20 km a frame the cloud history
+                // is invalid (nearPrev), and gated on it the fastest flight counted as SLOW: after 60 such frames the
+                // clipmap came back on mid-flight with cells baked from far behind, and skipped the distant cloud masses
+                // (far band -30% of cloud while moving at ~700 km/s from 1278 km, harness_runs/fl1022c).
+                cv2CdcSlowFrames = (cdcStep > 0.004 * cdcS) ? 0 : std::min(cv2CdcSlowFrames + 1, 1000);
                 if (cv2CdcSlowFrames < 60)
                     cv2CdcActive = false;
                 if (cv2CdcActive && (!cv2CdcWasActive || glm::length(eye - cv2CdcRefEye) > 0.25 * cv2CdcRefS))
@@ -1651,24 +1662,36 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const bool moving = !valid || dRot > 0.3f * pixAng || glm::length(eye - cv2PrevEye) > 1.0 ||
                             std::abs(simT - cv2PrevSimT) > 0.5 || std::abs(tanHalf - cv2PrevTanHalf) > 1e-5f;
         cv2StillFrames = moving ? 0 : std::min(cv2StillFrames + 1, 1000);
+        // The eye's own motion as PARALLAX (full-res moving mode 2): its step over the nearest a cloud can be (from orbit
+        // the height above the shell, else 20 km) in half-res pixels, + history loss and time warp. A turn or a zoom
+        // reprojects exactly and keeps the sparse grid's history (full rate there blurred a 165 deg/s pan at 455 km,
+        // issue 20261022_220214 shot 3).
+        const double nearM = std::max(eyeH - (double)hi, 0.0) + 20000.0;
+        const bool eyeMoving = !valid || glm::length(eye - cv2PrevEye) / nearM > 0.25 * pixAng ||
+                               std::abs(simT - cv2PrevSimT) > 0.5;
+        cv2EyeStillFrames = eyeMoving ? 0 : std::min(cv2EyeStillFrames + 1, 1000);
     }
     cv2FullRateNow = eyeH > (double)cv2FullRateAboveKm * 1000.0 &&
                      !(cv2SparseWhenStill > 0.5f && cv2StillFrames >= 8);
     // S9: full-res clouds march sparse always: 1 pixel in 4 of the full-res grid is the ray count of the half-res full
-    // rate, which is what the rates below exist to buy.
+    // rate, which is what the rates below exist to buy. full_res_moving_mode 2 (an A/B, not the default) marches every
+    // pixel where the half-res path would march at full rate (the EYE moving from altitude).
     if (cv2FullResActive())
-        cv2FullRateNow = false;
+        cv2FullRateNow = cv2FullResMovingMode > 1.5f && eyeH > (double)cv2FullRateAboveKm * 1000.0 && cv2EyeStillFrames < 8;
     // "Half rate while moving": where it would run at full rate the march takes a checkerboard of the
     // half-res pixels, alternating each frame (every stale pixel's four neighbours are fresh: the
     // resolve's estimate for it), at about half the cost.
-    cv2HalfRateNow = cv2FullRateNow && cv2HalfRateMoving > 0.5f;
+    // (Never on the full-res grid: neither the checkerboard nor the adaptive tiles were built for it — the tiles' full-rate
+    // targets are half-res sized, and a pan at 455 km drew a stair-stepped frame of misplaced cloud, issue 20261022_220214
+    // shot 3, once full_res_moving_mode 2 let the full-res grid reach full rate.)
+    cv2HalfRateNow = cv2FullRateNow && cv2HalfRateMoving > 0.5f && !cv2FullResActive();
     // The adaptive rate ("dynamic sampling"): where the march would run at full rate because the view
     // moves, it runs the sparse grid (pass A) and only the tiles whose clouds show parallax, or whose
     // history comes from off screen, at full rate (pass B). A pan reprojects exactly: only the uncovered
     // edge goes full. Not with no history or in fast flight (> 150 m a frame: everything has parallax).
     {
         const uint32_t tiles = ((cv2HalfW + 31) / 32) * ((cv2HalfH + 31) / 32);
-        cv2AdaptiveNow = cv2FullRateNow && !cv2HalfRateNow && cv2AdaptiveRate > 0.5f && valid &&
+        cv2AdaptiveNow = cv2FullRateNow && !cv2HalfRateNow && cv2AdaptiveRate > 0.5f && valid && !cv2FullResActive() &&
                          glm::length(eye - cv2PrevEye) <= 150.0 && cv2MarchWg[0] == 16 && cv2MarchWg[1] == 16 &&
                          tiles <= kCv2MaxTiles && cv2MarchPassBPipeline != VK_NULL_HANDLE && cv2TilesPipeline != VK_NULL_HANDLE;
         if (cv2AdaptiveNow)
@@ -1691,6 +1714,15 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // S9: the cloud grid (the march no longer takes it from the scene depth's size, which stays half res).
     p.anvil3 = glm::vec4(std::clamp(cv2AnvilPuff, 0.0f, 2.0f), std::clamp(cv2AnvilLiftM, 0.0f, 3000.0f), 0.0f, 0.0f);
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
+    // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the
+    // sparse rotation (default), 1 the sample held at one pixel of each 2x2 block, 2 full rate (above). Modes 1-2 were the
+    // workaround for flicker and lost far cloud masses in motion whose cause was the march's half-res scene depth (one row
+    // parity of rays clipped short near the limb, fixed in cloud_v2_march.comp); since that fix mode 0 matches mode 2
+    // (flicker 0.79 vs 0.93%, far band within ~1 level of settled) at 1-6 ms less (harness_runs/rc1022g). Kept for A/B.
+    cv2FullResHeldNow = cv2FullResActive() && cv2FullResMovingMode > 0.5f && cv2FullResMovingMode < 1.5f && !cv2FullRateNow && eyeH > (double)cv2FullRateAboveKm * 1000.0 &&
+                        cv2StillFrames < 8;
+    if (cv2FullResHeldNow)
+        p.frame.z = p.frame.w = 0.0f;
     std::memcpy(cv2ParamsMapped, &p, sizeof(p));
 
     // This frame becomes the next frame's "previous".

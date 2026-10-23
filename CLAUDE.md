@@ -921,6 +921,28 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     `applyGraphicsPreset`: off on Low / Planetarium / Potato), 2026-10-22 (the user; Medium too, issue 20261022_180607: half res
     flickered badly at Medium's 67% render scale). The noise LOD stays the HALF-res
     pixel's (`motion.w` = 2): at the full-res pixel it cost +2 ms at 58 km and the sub-pixel noise flickered from orbit.
+    **The march's scene depth is parallax-corrected on the full-res grid** (2026-10-22, issues 20261022_210358 "Tremendous
+    flicker when moving above clouds", 1278 km at ~700 km/s, and _220214; `cloud_v2_march.comp` after the `tScene` fetch):
+    the depth is the half-res texel's, traced through its centre, half a full-res pixel off the march's ray. Near the limb
+    from orbit the ground's distance changes by tens of km over that half pixel, so every ray of the even (higher) rows
+    stopped at the lower ray's ground, short of the cloud: on the frames whose sparse offset sampled even rows (the y
+    offset alternates each frame) whole cloud systems vanished — a period-2 flicker in motion and "lost far masses"
+    (`harness_runs/rc1022c-e`: debugview cloudtrans alternated 187 / 243 frame to frame; the sample held at an even row
+    never showed the mass, at an odd row always did; a still view's sub-pixel jitter hid it). Fix: + the difference
+    between the two rays' hits on the sphere through the depth's own hit (exact for flat ground at any height), bounded
+    to +-25% of the depth (a ridge silhouette bleeds at most that on the half pixel it straddles); 128 registers. Before
+    finding it, two workarounds went in and stay as A/Bs (`clouds_v2.full_res_moving_mode`, default 0 = the sparse
+    rotation): 1 holds the sample at one pixel (no flicker; masses lost, since it held an even row), 2 marches every pixel
+    while the EYE moves from altitude (`cv2EyeStillFrames`; +1-6 ms). After the fix, mode 0 vs 2 (`harness_runs/rc1022g`,
+    the four issue paths): flicker (pixels reversing > 12 levels a frame) 0.48 / 0.39 / 2.69 / 0.79% vs 0.47 / 0.39 /
+    2.69 / 0.93%, far band within ~1 level of settled, GPU 11.7 vs 18.0 ms on the 1278-km flight (before: 3.92% and
+    -17.9 levels in mode 0). **The adaptive rate and the half-rate checkerboard never run on the full-res grid** (their
+    tile targets are half-res sized: with mode 2, decelerating under 150 m a frame turned it adaptive and drew tile-sized
+    squares, and a 165 deg/s pan at 455 km a stair-stepped frame of misplaced cloud — issue 20261022_220214). Also fixed: the
+    clipmap motion guard counted a frame as slow when the cloud history was invalid (> 20 km a frame), so the fastest
+    flight switched the clipmap back ON with stale cells. **Harness trap:** `report load` restores only the keys saved in
+    the report: a `set` of a newer key persists into later variants; and a long `wait settle` at a pose leaves state that
+    makes the next run's moving frame at that pose look right — A/B in separate runs or in a fixed order.
     Measured (1920x1009, clipmap on, vs half-res full rate, `harness_runs/s0/s9b`, `lodviews`): cloud bucket 58 km 12.5 ->
     14.9 ms, anvils 10.6 -> 12.1, cumulus 13.9 -> 15.7, Pacific 9.0 -> 10.9; resolve +1.0, composite + combine +0.2..+0.4
     (the probe that ran the composite at full res: +0.6..+5.3); 128 registers. Cloud edges full-res sharp
@@ -6276,7 +6298,9 @@ shorter fixed `kTrackedLightGeomEaseS`.
    speed from 116 km, and the ground spots visibly swung while strafing.
 5. **One eye for satellites and shaders:** `obsECI` (and every CPU evaluator: trace, selection
    readout, harness Sun search) uses `obsEyeRadiusM()` = R + max(ground, height offset) + 2 m, the
-   shaders' `observerEffHeight`. It was R + ground + offset: over the Sierra a ~3 km different eye, so
+   shaders' `observerEffHeight`. The ground is the GPU's detailed ground (`obsGroundM()`: terrainFrameBuf .y, last frame's),
+   the CPU DEM only before the first readback or while following (2026-10-22: the 18-km DEM read 450 m above the real
+   ground in issue 20261022_174155, which pinned the eye there during a climb and ghosted the sky TAA). It was R + ground + offset: over the Sierra a ~3 km different eye, so
    beams landed km off the drawn scene and jumped as the CPU ground under the observer changed. The `std::sort` by `debugPad`
    that used to enforce determinism is deleted — the partition is order-independent now (sums and a
    max), `groundTopK` ranks on intensity, and `nearest`/the opacity diagnostics are commutative.
