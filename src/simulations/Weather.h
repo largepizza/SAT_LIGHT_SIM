@@ -226,6 +226,9 @@ public:
     // Threads for building bins (default 1). Above 1 the Env callbacks are called from worker threads at once,
     // so they must be thread-safe; the result is identical for any count.
     void setBuildThreads(int n);
+    // fn(0 .. n-1) on the catalog's build threads (the caller is one of them); returns when all are done. Main thread
+    // only, never from inside fn.
+    void parallelFor(size_t n, const std::function<void(size_t)> &fn);
     // Diagnostics: the spawn rate's calibration constant and each kind's mean lifetime (s).
     double calibrationK() const;
     double calibrationKLine() const;

@@ -212,6 +212,23 @@ bool SatelliteSim::oceanAt(double latRad, double lonRad) const
 // Centre + `rings` rings of 8 samples out to radiusM (tangent-plane offsets; fine at these radii).
 float SatelliteSim::oceanFraction(double latRad, double lonRad, double radiusM, int rings) const
 {
+    // The ring directions' cosines and sines, computed once by the same expressions (bit-identical; the storm
+    // catalog calls this for every spawn cell of every time bin, and these 16 calls were most of its cost).
+    struct RingDirs
+    {
+        double c[2][8], s[2][8];
+        RingDirs()
+        {
+            for (int odd = 0; odd < 2; ++odd)
+                for (int k = 0; k < 8; ++k)
+                {
+                    const double b = (k + 0.5 * odd) * (glm::pi<double>() / 4.0);
+                    c[odd][k] = std::cos(b);
+                    s[odd][k] = std::sin(b);
+                }
+        }
+    };
+    static const RingDirs kRing;
     int hits = oceanAt(latRad, lonRad) ? 1 : 0, n = 1;
     const double cosLat = std::max(0.05, std::cos(latRad));
     for (int r = 1; r <= rings; ++r)
@@ -219,8 +236,7 @@ float SatelliteSim::oceanFraction(double latRad, double lonRad, double radiusM, 
         const double d = radiusM * r / rings / kReM;
         for (int k = 0; k < 8; ++k)
         {
-            const double b = (k + 0.5 * (r & 1)) * (glm::pi<double>() / 4.0);
-            hits += oceanAt(latRad + d * std::cos(b), lonRad + d * std::sin(b) / cosLat) ? 1 : 0;
+            hits += oceanAt(latRad + d * kRing.c[r & 1][k], lonRad + d * kRing.s[r & 1][k] / cosLat) ? 1 : 0;
             ++n;
         }
     }
