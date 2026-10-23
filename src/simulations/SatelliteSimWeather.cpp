@@ -966,11 +966,72 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
     }
 }
 
+// Storm surge (2026-10-23): a cyclone's per-storm parameters for terrain_detail.glsl tdSurgeAt (the GPU's cloud.surge*)
+// and its CPU mirror surgeAtDir. The peak rise at the coast follows the wind of the last ~6 h (the sea needs hours to pile
+// up and to drain): ~0.5 m for a tropical storm, 1.2 m at Category 1 (33 m/s), 3.3 m at Category 3 (50), 6.4 m at 70 m/s,
+// at most 9 m; x (rmw / 40 km)^0.3 (a wide storm pushes more water: Katrina); x "Storm surge" (clouds_v2.storm_surge).
+struct SurgeParams
+{
+    glm::dvec3 centre{0, 0, 1}, motion{1, 0, 0}, side{0, 1, 0};
+    double rmw = 40000.0, peak = 0.0, cosReach = 1.0;
+};
+static SurgeParams surgeParamsOf(const wx::CycloneState &c, double t, float gain)
+{
+    SurgeParams p;
+    p.centre = glm::normalize(c.earth);
+    p.rmw = std::max((double)c.rmw, 5000.0);
+    const glm::dvec3 up = p.centre;
+    glm::dvec3 m = c.motionEarth - up * glm::dot(c.motionEarth, up);
+    if (glm::length(m) < 0.5 && c.c)   // a stalled storm: its motion over the last 6 h
+    {
+        const glm::dvec3 d = c.earth - c.c->earthAt(t - 21600.0);
+        m = d - up * glm::dot(d, up);
+    }
+    if (glm::length(m) < 1e-12) m = glm::cross(glm::dvec3(0, 0, 1), up);   // (no motion at all: toward the east)
+    if (glm::length(m) < 1e-12) m = glm::dvec3(1, 0, 0);
+    p.motion = glm::normalize(m);
+    const double hemi = c.c ? (double)c.c->hemi : (c.earth.z >= 0.0 ? 1.0 : -1.0);
+    p.side = hemi * glm::normalize(glm::cross(p.motion, up));   // right of the motion in the north, left in the south
+    double v = c.vmax;
+    if (c.c) v = std::max({v, 0.85 * (double)c.c->vmaxAt(t - 10800.0), 0.7 * (double)c.c->vmaxAt(t - 21600.0)});
+    double H = v > 17.0 ? 1.2 * std::pow((v - 17.0) / 16.0, 1.4) : 0.0;
+    H *= std::pow(std::clamp(p.rmw / 40000.0, 0.5, 2.0), 0.3);
+    p.peak = std::min(H, 9.0) * std::max(gain, 0.0f);
+    p.cosReach = std::cos(std::min(10.0 * p.rmw / kReW, 3.0));
+    return p;
+}
+// The field's value at an Earth-fixed unit direction (tdSurgeAt before its shelf factor, which reads the DEM's mip 5).
+static double surgeFieldAt(const SurgeParams &p, const glm::dvec3 &e)
+{
+    if (p.peak <= 0.0 || glm::dot(e, p.centre) < p.cosReach) return 0.0;
+    const glm::dvec3 rel = (e - p.centre) * (kReW / p.rmw);
+    const double a = glm::dot(rel, p.motion), x = glm::dot(rel, p.side);
+    const double sx = x > 1.0 ? 1.8 : 0.9, sa = a > 0.0 ? 4.0 : 2.5;
+    return p.peak * std::exp(-0.5 * ((x - 1.0) * (x - 1.0) / (sx * sx) + a * a / (sa * sa)));
+}
+double SatelliteSim::surgeAtDir(const glm::dvec3 &earthDir, double *peakOut) const
+{
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const glm::dvec3 e = glm::normalize(earthDir);
+    double S = 0.0, peak = 0.0;
+    if (stormObjects && stormSurge > 0.0f)
+        for (const wx::CycloneState &c : stormCyclonesNow)
+        {
+            const SurgeParams p = surgeParamsOf(c, t, stormSurge);
+            const double s = surgeFieldAt(p, e);
+            if (s > S) { S = s; peak = p.peak; }
+        }
+    if (peakOut) *peakOut = peak;
+    return S;
+}
+
 // The two tropical cyclones nearest the observer, for the sea state (sat_sky.frag oceanSeaState: the waves, whitecaps and
-// surf follow the storm's wind field, as the rain and the ambience do through surfaceWindAt).
+// surf follow the storm's wind field, as the rain and the ambience do through surfaceWindAt) and the storm surge.
 void SatelliteSim::weatherFillSeaParams(GpuCloudParams &cp)
 {
     for (int k = 0; k < 2; ++k) { cp.seaCycA[k] = glm::vec4(0.0f); cp.seaCycB[k] = glm::vec4(0.0f); }
+    for (int k = 0; k < 2; ++k) { cp.surgeA[k] = glm::vec4(0.0f); cp.surgeB[k] = glm::vec4(0.0f, 0.0f, 0.0f, 2.0f); }
+    cp.surgeInfo = glm::vec4(0.0f);
     if (!stormObjects) return;
     const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
     std::vector<std::pair<double, size_t>> near;
@@ -987,6 +1048,14 @@ void SatelliteSim::weatherFillSeaParams(GpuCloudParams &cp)
         const wx::CycloneState &c = stormCyclonesNow[near[k].second];
         cp.seaCycA[k] = glm::vec4(glm::vec3(c.earth), std::max(c.rmw, 5000.0f));
         cp.seaCycB[k] = glm::vec4(c.vmax, (float)c.outerR * 1.5f, 0.0f, 0.0f);
+        const SurgeParams sp = surgeParamsOf(c, (double)simDayJ2000 * 86400.0 + simSecInDay, stormSurge);
+        if (sp.peak >= 0.05)
+        {
+            cp.surgeA[k] = glm::vec4(glm::vec3(sp.motion), (float)sp.peak);
+            cp.surgeB[k] = glm::vec4(glm::vec3(sp.side), (float)sp.cosReach);
+            cp.surgeInfo.x = 1.0f;
+            cp.surgeInfo.y = std::max(cp.surgeInfo.y, (float)sp.peak);
+        }
     }
 }
 

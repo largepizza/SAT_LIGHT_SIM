@@ -38,6 +38,7 @@ using harness::Status;
 using nlohmann::json;
 
 void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate); // SatelliteSim.cpp
+namespace launchsim { double demElevCpu(double latDeg, double lonDeg); double shoreDistCpu(double latDeg, double lonDeg); }   // (the storm surge's state)
 
 namespace
 {
@@ -793,6 +794,27 @@ json SatelliteSim::harnessStateJson()
         w["line_systems"] = stormStats.lineSystems;
         w["cyclones"] = stormStats.cyclones;
         w["tornadoes"] = (int)tornadoesNow.size();
+        {   // Storm surge at the eye (CPU mirror of terrain_detail.glsl tdSurgeAt; the shelf from a 9-point ~85 km DEM mean).
+            double peak = 0.0;
+            const glm::dvec3 e = glm::normalize(glm::dvec3(obsDir));
+            const double field = surgeAtDir(e, &peak);
+            const double lat = glm::degrees(std::asin(std::clamp(e.z, -1.0, 1.0))), lon = glm::degrees(std::atan2(e.y, e.x));
+            double hM = 0.0;
+            for (int iy = -1; iy <= 1; ++iy)
+                for (int ix = -1; ix <= 1; ++ix)
+                    hM += launchsim::demElevCpu(lat + iy * 0.35, lon + ix * 0.35 / std::max(std::cos(glm::radians(lat)), 0.05)) / 9.0;
+            const double shelf = 1.0 + (0.45 - 1.0) * glm::smoothstep(40.0, 500.0, hM);
+            const double S = field * shelf;
+            const double slope = std::clamp(hM / 40000.0, 2.5e-4, 0.02);
+            const double kSdfMax = 4.0 * glm::pi<double>() * 6371000.0 / 4096.0;
+            const double hDem = launchsim::demElevCpu(lat, lon);
+            const double shift = std::min(S / slope, 0.7 * kSdfMax) * (1.0 - glm::smoothstep(30.0, 60.0, hDem));
+            const double shore = launchsim::shoreDistCpu(lat, lon);
+            w["surge_m"] = S;
+            w["surge"] = {{"field_m", field}, {"shelf", shelf}, {"peak_m", peak}, {"plain_mean_m", hM},
+                          {"flood_reach_m", shift}, {"shore_dist_m", shore}, {"dem_m", hDem},
+                          {"flooded", S > 0.0 && shore + shift > 0.0 && shore < 0.0}, {"gain", stormSurge}};
+        }
         w["cpu_ms"] = stormStats.cpuMs;
         w["cpu_ms_split"] = {{"catalog", stormStats.msCatalog}, {"tower_index", stormStats.msTowerIndex},
                              {"shields", stormStats.msShields}};
