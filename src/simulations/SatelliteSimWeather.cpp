@@ -791,7 +791,7 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
             d.c = glm::vec4(glm::vec3(re), (float)Sigma);
             d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2), (float)(1.0 / (kTwoPi15 * sA * sP * sP)));
             // Under the storm's base: mostly the sky's light (isotropic), a little direct Sun (the shader shadows it).
-            const glm::dvec3 iso = 4.0 * glm::pi<double>() * amb * 0.14 * glm::dvec3(0.66, 0.72, 0.82) * albedo * tint;
+            const glm::dvec3 iso = 4.0 * glm::pi<double>() * amb * 0.06 * glm::dvec3(0.66, 0.72, 0.82) * albedo * tint;
             const glm::dvec3 sun = 4.0 * glm::pi<double>() * amb * sunShare * albedo * tint;
             const double lI = iso.x + iso.y + iso.z, lS = sun.x + sun.y + sun.z;
             const double share = std::min(lI / std::max(lI + lS, 1e-9), 0.999);
@@ -812,16 +812,18 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
             const double f0 = (double)k / kSeg, f1 = (double)(k + 1) / kSeg;
             const double z0 = zBot + (Hb - zBot) * f0, z1 = zBot + (Hb - zBot) * f1, zm = 0.5 * (z0 + z1);
             const double q = zm / Hb;
-            const double rr = r0 * (1.0 + 4.0 * std::pow(q, 2.2));
+            const double rr = r0 * (1.0 + (T.spout ? 3.0 : 2.2) * std::pow(q, 2.2));
             const double lat0 = bend * std::sin(3.14159 * q) * (1.0 - q * 0.3);
             const glm::dvec3 p = T.earthDir * (kReW + ground + zm) + bendDir * lat0;
             const glm::dvec3 axis = glm::normalize(T.earthDir * (z1 - z0) + bendDir * (bend * 3.14159 / Hb *
                                                     std::cos(3.14159 * q) * (z1 - z0)));
-            emit(p, axis, 0.6 * (z1 - z0), rr, 3.5, 0.55, glm::dvec3(grey), 0.12);
+            // (Dense and narrow: a Gaussian's visible edge sharpens with its peak optical depth; this puts the edge,
+            // tau ~ 1, at ~rr, as a condensation funnel's defined outline. At tau 3.5 and sigma rr it was a soft cone.)
+            emit(p, axis, 0.6 * (z1 - z0), rr / 2.6, 40.0, 0.45, glm::dvec3(grey), 0.06);
         }
         // The wall cloud: a lowered, rotating disc under the base, 1.5-3 km across.
-        emit(T.earthDir * (kReW + ground + Hb - 150.0), T.earthDir, 220.0, (T.spout ? 900.0 : 1800.0), 3.0, 0.4,
-             glm::dvec3(0.7, 0.7, 0.74), 0.05);
+        emit(T.earthDir * (kReW + ground + Hb - 120.0), T.earthDir, 160.0, (T.spout ? 450.0 : 1500.0), 1.0, 0.4,
+             glm::dvec3(0.6, 0.62, 0.66), 0.02);
         // The debris cloud (land) or the spray ring (sea) once it touches down.
         if (zBot < 30.0)
         {
