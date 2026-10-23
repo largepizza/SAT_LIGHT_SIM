@@ -1236,9 +1236,9 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
     auto stageCol = [](int s) -> Clay_Color {
         switch (s)
         {
-        case 1: return Pal::progressFill;
-        case 2: return Pal::btnDanger;
-        case 3: return Pal::tagTwilight;
+        case 1: return Pal::btnDanger;      // (orange)
+        case 2: return Pal::progressFill;   // (red)
+        case 3: return Pal::tagTwilight;    // (purple)
         default: return Pal::trackBg;
         }
     };

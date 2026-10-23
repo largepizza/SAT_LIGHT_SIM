@@ -289,7 +289,7 @@ Every window and HUD element at 1024x768, 1280x720, 1366x768 and the references 
 (2026-10-21, after "the Missions window occupies the entire screen" at a low resolution):
 
 ```
-python tools/harness/ui_lowres.py run [--sizes 1280x720,...] [--out harness_runs/ui_lowres] [--ui-scale 2] [--no-auto]
+python tools/harness/ui_lowres.py run [--sizes 1280x720,...] [--out harness_runs/ui_lowres] [--ui-scale 2] [--no-auto] [--only wx_,ms_]
 python tools/harness/ui_lowres.py check <out>/run      # re-check without launching
 python tools/harness/ui_lowres.py sheets <out>/run     # one contact sheet per size (sheet_<W>x<H>.png)
 ```
