@@ -65,13 +65,17 @@ layout(set = 0, binding = 7) uniform sampler2D seedDepthTex;
 #include "terrain_detail.glsl"
 
 
-// Nearest mesh distance over the full-resolution texels this half-resolution texel covers.
+// Nearest mesh distance over the full-resolution texels this half-resolution texel covers, and the ring of one pixel
+// round them (2026-10-21, issue 20261021_174219). An open lattice (a catch tower's truss, dithered without the sky TAA)
+// left some half-res texels wholly in its holes: those were marched past the tower, their neighbours only to it, and
+// the truss drew as a field of odd squares. Ringed, every texel a member touches is marched to the mesh; sat_sky.frag
+// tests each texel's composite against a mesh pixel's own distance (its joint-bilateral upsample).
 float meshDistAt(ivec2 halfCoord, ivec2 halfSize)
 {
     ivec2 full = imageSize(meshDistImg);
     vec2  k    = vec2(full) / vec2(halfSize);
-    ivec2 a    = ivec2(vec2(halfCoord) * k);
-    ivec2 b    = min(ivec2(vec2(halfCoord + 1) * k), full) - 1;
+    ivec2 a    = max(ivec2(vec2(halfCoord) * k) - 1, ivec2(0));
+    ivec2 b    = min(ivec2(vec2(halfCoord + 1) * k) + 1, full) - 1;
     float t    = kNoSurfaceT;
     for (int y = a.y; y <= max(b.y, a.y); ++y)
         for (int x = a.x; x <= max(b.x, a.x); ++x) {

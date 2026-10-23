@@ -325,8 +325,15 @@ def starship_ship(b, z0=0.0):
     # The payload door (2026-10-20, issue 20261019_223922): the "PEZ" slot on the leeward side the satellites leave
     # through one at a time, 31.1 m up (launches.json door_m), open: a dark slot 6.6 m across and 2.6 m tall
     # (the widest stowed payload, Starlink V3 with its array packs, and the thickest, a folded Starmind).
-    b.profile("payload_door", [[z0 + 29.8, r + 0.025], [z0 + 32.4, r + 0.025]], "soot", ro=True)
+    # The slot itself is plain black (2026-10-21, issue 20261021_174219: it was "soot", the bells' inner material,
+    # which sat_mesh.frag lights white-hot while the engines burn: a glowing band on every landing ship). The door
+    # (steel, just proud of the slot) is CLOSED in the rest pose and slides up into the hull as it "stows": the launch
+    # code (transientLegs) sets its progress to 0 only around the deployment.
+    b.profile("payload_door_slot", [[z0 + 29.8, r + 0.025], [z0 + 32.4, r + 0.025]], "black", ro=True)
     b.c[-1]["sweep_deg"] = [43.0, 137.0]
+    b.profile("payload_door", [[z0 + 29.8, r + 0.05], [z0 + 32.4, r + 0.05]], "steel", ro=True)
+    b.c[-1]["sweep_deg"] = [43.0, 137.0]
+    b.c[-1]["stow"] = {"axis": [0.0, 0.0, 1.0], "root": r4([z0 + 32.4])[0], "scale": 0.03, "phase": [0.0, 1.0]}
     # 3 sea-level Raptors in the middle, 3 RVacs outside them, 60 deg apart: the RVac exits just inside the skirt's
     # bottom, the sea-level bells recessed within it; every throat below the heat shield (hs).
     b.engines("engines", [(3, 1.05)], 0.62, 2.4, z0 + 0.8, phase=30.0)

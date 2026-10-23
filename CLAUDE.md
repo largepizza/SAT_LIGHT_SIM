@@ -353,6 +353,17 @@ not shrink, so its relative cost rises sharply (at 50% it marches terrain at the
 as the sky pass itself). Knockout bit 1024 disables it — the buffer fills with `kNoSurfaceT`, which
 reproduces pre-unification occlusion behaviour, making the whole architecture one A/B checkbox.
 
+**Meshes in it, and what the half-res composite means over them (2026-10-21, issue 20261021_174219, a Starship
+caught at its tower at night in fog).** A texel takes the nearest mesh distance over its full-res pixels AND a one-pixel
+ring round them (`meshDistAt`: an open lattice left whole texels in its holes, marched past the tower beside texels
+marched to it — the truss was a field of odd squares). So a mesh texel's composite holds only what is in FRONT of
+the mesh, its neighbours what is behind as well, and every full-res consumer must test per texel: `sat_sky.frag`'s
+joint-bilateral upsample always runs on a mesh pixel and drops each texel whose composite distance is past the mesh
+(one filtered alpha averaged a near fog texel with a far cloud bank, called both "behind" and drew a dark half-res
+staircase along every mesh edge); `lightning.frag` mode 2 lights cloud / fog on a mesh pixel only in front of the
+mesh and ends its haze there; `cloud_march.comp` drops a RESOLVED v2 cloud whose distance is past the texel's surface
+(the resolve's history kept the cumulus behind a moving hull as dark blocky patches; the march clamps only new samples).
+
 **Never store a distance in a half-float.** `tEnterCombined` lived in an `RGBA16F` alpha, whose
 65504 ceiling every near-horizon cloud entry overflowed to `+inf` — silently suppressing the entire
 composite on any ray that also hit the sea-level sphere. That bug is why `sceneDepthImg` is R32.
@@ -4906,7 +4917,10 @@ launches follow per-program cadences (no real manifest).
   - **Stacks** (launches.json program `"stack"`, `launch::Stack`; `stackSlot` places member i of n in the upper stage's
     body frame `upperFrame` = the rocket models' law: +Z the nose, -Y toward nadir): `pez` (Starship: every member from
     the door at `door_m` 31.1 on the leeward +Y side, flat across the ship: its X = ship +Y (out of the door), Z = ship
-    -Z; the ship model has a dark slot there, `payload_door`), `flat` (nadir face down, 1-2 a tier side by side along
+    -Z; the ship model has a black slot there, `payload_door_slot`, under a steel `payload_door` that is closed in the
+    rest pose and slides up as it "stows": `transientLegs` sets the upper stage's progress to 0 (open) from 90 s before
+    the first release to 60 s after the last, over 20 s each way — 2026-10-21, issue 20261021_174219: the slot was
+    always open and in the bells' "soot" material, which glows white-hot while the engines burn), `flat` (nadir face down, 1-2 a tier side by side along
     `side_axis`, leaving along the stage's +Z), `column` (around a dispenser column, nadir face out, X along the stage,
     tiers alternately rotated, leaving radially). Top tier first. A member leaves FROM ITS SLOT (`depOff` is the slot
     less its path) with `sep_speed_mps` along the exit direction (`sepDir`, its own LVLH axes), the stack's per-program
@@ -7264,6 +7278,13 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
   under 0.9 x 1000 / fps by 5% steps (down as far as a 30% fixed + 70% x scale^2 model says, after 0.75 s; up one step
   when predicted under 85% of the budget, after 1.5 s). The clouds' history is BLITTED across a resize
   (`recreateComputeScaledTargets`), so a step does not restart them. The orbit storm snapshot settled at 55% (13.8 ms).
+- **Things that move on their own (2026-10-21, issue 20261021_174219: "crazy trails on all models" with TAA on).** The
+  resolve reprojects a static world; meshes (satellites, rockets, pads) and the plume / flame light have no motion
+  vectors. `sat_sky.frag -DSKY_TAA` marks them in the colour's alpha (0.875: a mesh pixel, or a composite texel with
+  the emissive flag, gathered), the resolve stores their depth NEGATED (`taa_depth_restore.frag` takes abs) so the next
+  frame knows where they were, and wherever the 3x3 or the history's 2x2 holds one (`dynNb`) the still view's
+  exemptions are off: no unclipped history, no widened depth test. A descending ship from below was a translucent,
+  dotted ghost: its history (the sky) passed the widened test and was kept unclipped at the still weight.
 - Run with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` after touching any of this; the harness run's
   `app_stdout.txt` holds the messages. `scripts/sky_taa.satcmd` (set `display.sky_taa` with `true`/`false`).
 

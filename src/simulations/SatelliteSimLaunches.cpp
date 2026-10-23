@@ -3543,6 +3543,29 @@ static void transientAtt(SatOrbitElems &e, const SatelliteSim::SelTransient &s)
 // its mesh slot, satUnfoldAt). Every other rocket transient keeps the default (deployed: nothing of theirs folds).
 static void transientLegs(const SatelliteSim::LaunchState &L, SatOrbitElems &e, const SatelliteSim::SelTransient &s)
 {
+    // Starship's payload door (2026-10-21, issue 20261021_174219: "the hatch is always open"): the upper stage's
+    // "payload_door" panel is a stowable part (tools/make_rocket_models.py) that slides up off its dark slot as it
+    // stows. Closed (unfolding progress 1, the rest pose) except from kDoorLeadS before the first release to
+    // kDoorLagS after the last, opening / closing over kDoorMoveS. The progress here is not a ramp in time, so it is
+    // written as a frame-constant value: unfoldT0 = now - P x a duration far longer than any frame. Upper stages
+    // without stowable parts (every other vehicle) are unaffected.
+    if (s.kind == 1 && s.stage == 1)
+    {
+        auto it = L.batches.find(s.a);
+        if (it == L.batches.end() || it->second.mem.empty())
+            return;
+        const LBatch &B = it->second;
+        constexpr double kDoorLeadS = 90.0, kDoorLagS = 60.0, kDoorMoveS = 20.0, kHold = 1.0e9;
+        const double t = B.tL + s.tau;
+        const double tOpen = B.tD - kDoorLeadS;
+        const double tShut = B.tD + B.deployInterval * (double)(B.mem.size() - 1) + kDoorLagS;
+        const double open = std::min(glm::clamp((t - tOpen) / kDoorMoveS, 0.0, 1.0),
+                                     glm::clamp((tShut + kDoorMoveS - t) / kDoorMoveS, 0.0, 1.0));
+        const double P = 1.0 - open * open * (3.0 - 2.0 * open);
+        e.unfoldT0 = t - P * kHold;
+        e.unfoldDur = kHold;
+        return;
+    }
     if (s.kind != 1 || s.stage != 0)
         return;
     auto it = L.batches.find(s.a);
