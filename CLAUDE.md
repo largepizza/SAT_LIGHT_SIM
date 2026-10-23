@@ -896,8 +896,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   log-spiral arms trailing the rotation — `CycloneState::arms` of them (d.w: 2 for a tropical storm, up to ~5 at Category 5,
   crossfaded only over the last 15% before the next whole count: half-and-half mixes interfered into rings), pitch 30 -> 22
   deg with intensity (CPU `tanPitch`), turning by `bandRot` = 0.04 x turn — attached to the CDO, typed convective, their
-  coverage near solid (at 0.45 a weak storm's arms drew as scattered cumulus), edges ragged by the map read at a permuted
-  direction; + three finer arms (22 deg), breaking up outward (13-20 deg detached arms read as nested rings); the bake also
+  coverage near solid at the core (at 0.45 a weak storm's arms drew as scattered cumulus) fading to 0.5 outward (wisps),
+  THIN (2026-10-23, the user: "pudgy": an arm covers the share of its period where cos > 2 thr - 1; thr 0.8 -> 0.93
+  outward, ~23% -> 15%, was 0.32-0.72, ~44%), pinching along the arm, feathered by fine parallel streaks at the edge, edges
+  ragged by the map read at a permuted direction; + three finer arms (22 deg), breaking up outward (13-20 deg detached arms read as nested rings); the bake also
   reads the MAP through a static differential rotation about each cyclone (`cycloneSwirl`: cyclonic, 0.6-1.5 rad near the
   CDO, none past the outer bands), so the map's own cloud near a storm trails round it in spirals, the CDO deck,
   eyewall rain and the eye cleared outright (the moat at x4). Its wind drives the surface wind (`surfaceWindAt`: rising to
