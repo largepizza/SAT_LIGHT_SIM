@@ -732,6 +732,15 @@ json SatelliteSim::harnessStateJson()
             rn["wind_mps"] = {rainWindNow.x, rainWindNow.y};
             rn["fall_speed_ref"] = rainFallRefNow;
             rn["rate_eased"] = rainRateEased;
+            // The surface wind (2026-10-23, SatelliteSimRain.cpp surfaceWindAt): the target before easing, its parts,
+            // the gust fronts' envelope and the storm proximity.
+            rn["surface_wind"] = {{"v_mps", {surfaceWindNow_.v.x, surfaceWindNow_.v.y}},
+                                  {"speed_mps", glm::length(surfaceWindNow_.v)},
+                                  {"base_mps", {surfaceWindNow_.base.x, surfaceWindNow_.base.y}},
+                                  {"outflow_mps", {surfaceWindNow_.outflow.x, surfaceWindNow_.outflow.y}},
+                                  {"gust", surfaceWindNow_.gust}, {"gusts_active", surfaceWindNow_.gustsActive},
+                                  {"storm", surfaceWindNow_.storm}};
+            rn["drop_persistence_ms"] = cv2DropPersistMs;
         }
         j["clouds_v2"]["rain"] = rn;
     }

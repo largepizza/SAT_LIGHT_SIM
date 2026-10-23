@@ -4,7 +4,7 @@
 // Set 0: 0 CloudParams, 1 CloudV2Params, 2 the flash buffer (rain map + the light at the eye), 3 the scene depth.
 layout(push_constant) uniform RainPC {
     mat4  skyView;
-    float fovYRad, aspect, screenW, screenH;
+    float fovYRad, dropLambda, screenW, screenH;   // dropLambda: the drops' Marshall-Palmer slope at the eye (1/mm)
     vec4  eyeVel;       // xyz the eye's velocity (ENU, m/s; capped), w the shutter time (s)
     vec4  params;       // x drops in level 0, y levels, z visibility gain ("Drops at the eye"), w the sky's exposure
     vec4  obsECEFDir;   // xyz the observer's direction (ECEF), w mode bits: 1 diamond dust, 2 manual depth test

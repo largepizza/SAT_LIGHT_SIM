@@ -547,7 +547,15 @@ void main()
                           + moonKey * nightK * 0.03 * max(moonENU.z, 0.0)
                           + kMoonCol * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z);
             if (cloud.moonMisc.y > 0.5) skyAmb *= cloud.moonMisc.x;
-            vec3  amb = skyAmb * (0.7 / (1.0 + 0.11 * tauUp) + 0.35)
+            // The sky light's HUE (2026-10-23; as the march's ambHue, cloud_v2_march.comp): light that came down
+            // through thick cloud arrives white (mixed with the sunlight that entered the cloud), keeping the zenith's
+            // hue only by the diffuse transmission, and the ground's share (the 0.35) is mostly neutral. A drop also
+            // refracts the whole sky round it, not the zenith alone: even in the open it keeps 60% of the zenith's
+            // hue. With the zenith's blue all the way down, the drops under a Cb were sky-blue (ambient B/R 1.58 under
+            // tau 275, the Venezuela bookmark). The luminance is unchanged.
+            float ambHue = 1.0 / (1.0 + 0.11 * tauUp);
+            float skyLum = dot(skyAmb, vec3(0.2126, 0.7152, 0.0722));
+            vec3  amb = mix(vec3(skyLum), skyAmb, 0.6 * ambHue) * (0.7 * ambHue + 0.35)
                       + key * max(kDir.z, 0.0) * 0.15 * cv2.look2.x;
             // City light at night, as the march's nightS on a rain sample (kCityUpwellStrength, cityBrightness: keep
             // in step with cloud_v2_march.comp): the street lights under a shower light its drops.

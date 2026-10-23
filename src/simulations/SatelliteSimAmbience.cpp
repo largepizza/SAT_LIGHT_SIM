@@ -163,6 +163,9 @@ void SatelliteSim::initAmbience()
     ambD_.stageMag = a.registerDriver("stage_mag");
     ambD_.fireballMag = a.registerDriver("fireball_mag");
     ambD_.dustMag = a.registerDriver("dust_mag");
+    ambD_.gust = a.registerDriver("gust");
+    ambD_.surfaceWind = a.registerDriver("surface_wind");
+    ambD_.rainDriven = a.registerDriver("rain_driven");
 
     std::string err;
     if (!a.load(kAmbiencePath, err))
@@ -536,6 +539,17 @@ void SatelliteSim::computeAmbienceContext(float dt)
         }
         ambRainEased += (raw - ambRainEased) * (dt > 0.0f ? 1.0f - expf(-dt / 2.0f) : 1.0f);
         a.set(ambD_.rain, ambRainEased);
+
+        // The surface wind at the eye (2026-10-23, SatelliteSimRain.cpp surfaceWindAt) — the wind the drops and flakes
+        // are drawn in: `gust` the gust fronts' envelope (0 calm .. ~1.5; a 1-2 s onset, so the wind_gust layer
+        // swells with the gust the rain is seen to lean in), `surface_wind` its speed / 15 m/s, `rain_driven` the rain
+        // rate pushed up to +60% by a gust (wind-driven rain lands harder: the rain layer's intensity).
+        const SurfaceWind sw = surfaceWindForAmbience();
+        const float gust = std::isfinite(sw.gust) ? std::clamp(sw.gust, 0.0f, 2.0f) : 0.0f;
+        const float spd = glm::length(sw.v);
+        a.set(ambD_.gust, gust);
+        a.set(ambD_.surfaceWind, std::isfinite(spd) ? std::clamp(spd / 15.0f, 0.0f, 2.0f) : 0.0f);
+        a.set(ambD_.rainDriven, std::min(ambRainEased * (1.0f + 0.6f * std::min(gust, 1.0f)), 1.2f));
     }
 
     // ── Satellite shells ─────────────────────────────────────────────────────────────────────

@@ -549,19 +549,37 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   rain frame (`cv2.rainE/N/U`, the nearest 0.25-degree point, eye position from double wrapped to 1024 m), box k
   = 4 m x 2^k holding N0 x 2^k drops ("Drop particles (x1000, nearest box)" `rain_particles_k` 16, slot 261),
   drawn over [L/4, L/2] and cross-faded with the next over [0.4, 0.5] L, out to "Drop reach (m)" (`drop_reach_m`
-  32, slot 208, at most 64 = 6 levels; the old `drop_distance_m` was the lattice's and is not read). Rain drops
-  take a Marshall-Palmer size (0.5-5 mm) and its terminal velocity, FIXED per drop (an offset is v x t with t up
-  to 600 s); flakes 2-8 mm at ~1 m/s, fluttering. **Motion is integrated over sim time on the CPU**
-  (`updateRainMotion`, 2026-10-05; `cv2.rainMotion` / `rainWind`, wrapped to 1024 m): the fall phase (a drop's
-  offset = its terminal speed, quantised to 1/64 m/s, x the phase) and the wind drift of rain and of snow, so speed
-  and wind change smoothly (the first cut used v x t with t up to 600 s: both had to be constants). Fall = "Rain
-  fall speed (x)" (`rain_fall_speed` 5, 0.3-10, slot 263) x 1.35 at rain rate 0.6+; ICE (flakes, diamond dust) has
-  its own phase (`cv2.snowMotion`, 2026-10-06) at that factor capped at 1.5 (at 5x the flakes streaked like rain).
-  Wind = "Rain wind (x ground wind)"
-  (`rain_wind_gain` 1.5, slot 264) x 0.4 x the wind aloft, toward the east, + a shower's OUTFLOW "Storm wind (m/s)"
-  (`rain_storm_wind_mps` 14, slot 265, full at rate 0.6) away from the rain map's rain-weighted centre, in gusts
-  ("Wind gusts" `rain_gusts` 1, slot 266: ~4 s noise, +-20-60%, +-15 deg). The user's storm snapshot (profile_log
-  43): 19 m/s. Which drops exist follows the rain map at each drop (`cv2RainMapAt` x
+  32, slot 208, at most 64 = 6 levels; the old `drop_distance_m` was the lattice's and is not read). **Rain drops
+  (2026-10-23 rework, the user: "extremely floaty and blowing straight sideways", even at fall x10)**: a particle
+  carries a fixed share of the rain's cross-section, so its size is drawn from the AREA-weighted Marshall-Palmer
+  distribution Gamma(3, Lambda) with Lambda from the rate round the eye (`RainDrawPC::dropLambda`, the old unused
+  `aspect`: 2.5 / mm at 10 mm/h, 1.7 at 60) and falls at its terminal velocity (Atlas, ~4-7 m/s). It was the NUMBER
+  distribution above 0.5 mm at a fixed 5 mm/h: median 0.74 mm, 2.9 m/s — the drawn rain fell at drizzle speed and
+  any wind of a few m/s blew it sideways. And each particle is REDRAWN elsewhere every "Drop persistence (ms)"
+  (`drop_persistence_ms` 60, slot 334, 0 = never; `cv2.snowMotion.zw` = sim time / it and on, each particle at its
+  own phase, faded over the epoch's ends): it stands for ~12 (level 0) to ~3000 (level 4) real drops, and kept as one
+  body the far levels (which hold most of the particles) crept across the screen as lumps at 2-3 px a frame — the
+  "floaty" look; raising the fall speed only turned them into long faint lines. Now every frame holds unrelated
+  streaks, as a camera sees rain. Flakes (2-8 mm at ~1 m/s, fluttering) and diamond dust are kept for good and take
+  0.35 of the shutter (a flake is seen, not a dash). **Motion is integrated over sim time on the CPU**
+  (`updateRainMotion`; `cv2.rainMotion` / `rainWind`, wrapped to 1024 m): the fall phase (a drop's offset = its
+  terminal speed, quantised to 1/64 m/s, x the phase) and the wind drift of rain and of snow, so speed and wind change
+  smoothly. Fall = "Drop fall speed (x physical)" (`drop_fall_speed` 1, slot 330; heavier rain falls faster through
+  its sizes); ICE has its own phase (`cv2.snowMotion.xy`) at that factor capped at 1.5. **Wind = the surface wind at
+  the eye** (`surfaceWindAt`, a pure function of place and sim time; harness `state` -> `clouds_v2.rain.surface_wind`):
+  a mean wind from a slow noise over place and hours at eye height (median ~1.4 m/s, up to ~6, any direction; "Surface
+  wind (x)" `surface_wind_gain` 1, slot 331); the storm towers' OUTFLOW (wx::Catalog's towers, read only, within 60 km,
+  away from each, strongest a few km out; "Storm outflow (m/s)" `storm_outflow_mps` 8, slot 332); the shower's outflow
+  from the rain map's rain-weighted centre (0.25 x that x the rate, 0.3 of it for snow); **GUST FRONTS** ("Gust
+  fronts" `gust_fronts` 1, slot 333): events hashed per 15-s bin of sim time and 2-degree cell, a 1-2 s rise to +50-100%
+  of the wind + up to ~5 m/s more by storms, at most +10 m/s, turned 15-40 deg, decaying over 5-20 s; a bin's chance
+  ~0.1 in calm air to ~0.45 in a downpour by a storm, faded in with it (no pop when conditions change); small
+  turbulence ("Wind turbulence" `wind_turbulence` 1, slot 266); eased over 0.25 s. Snow drifts at "Snow drift (x surface
+  wind)" (`snow_drift` 0.7, slot 209). It was 0.4 x the cloud wind aloft toward the east + a 9.5-14 m/s outflow from
+  ANY shower (snow too, x 1.2 for flakes): ~5 m/s on flakes falling ~1.5 m/s. The old keys (`rain_fall_speed`,
+  `rain_wind_gain`, `rain_storm_wind_mps`, `rain_gusts`, `snow_wind`) are not read: they were tuned against the lumped
+  drift. Measured (Venezuela bookmark, shower 0.3): wind 2.5-4.5 m/s, the visible drops slant ~25-35 deg; 8 km from a
+  Cb tower in its core (rate 1): 7-12 m/s in gusts, ~50-60 deg. The `gust` envelope drives the ambience (below). Which drops exist follows the rain map at each drop (`cv2RainMapAt` x
   `cv2RainBurst`, now in cloud_lightning.glsl): a shaft's drops appear in the far levels first. **Coverage is
   conserved:** a drop is the streak it sweeps over "Drop shutter (ms)" (`rain_shutter_ms` 33, slot 262; + the
   eye's velocity, capped at 30 m/s), each pixel's alpha the share of the exposure it spent there, and each
@@ -572,7 +590,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   alpha: 1 = physical. **Light = the march's rain sample at the eye**: cloud_v2_lightning.comp thread 1 writes
   `cv2RainKey` (Sun x its cloud transmittance x the Earth's shadow, or the Moon), `cv2RainKeyDir` (w the liquid
   share), `cv2RainAmb` (zenith sky through the column above as the march's ambVis, + the ground bounce + city
-  light at night), already / the white balance (`kCv2RainLightOffset`); copies of the march's `sunColorAt` /
+  light at night; its HUE kept only by the column's diffuse transmission and at most 60% of the zenith's, as the
+  march's `ambHue`, 2026-10-23: under a Cb the drops were sky-blue, ambient B/R 1.58 at tau 275 -> 0.97, same
+  luminance), already / the white balance (`kCv2RainLightOffset`); copies of the march's `sunColorAt` /
   `skyZenithAt` there (keep in step). The phase is the volume's own (`include/cv2_optics.glsl`, moved out of
   clouds_v2.glsl unchanged — the march's SPIR-V is identical): drops 42 degrees from the antisolar point flash
   the bow's colours, drops toward the Sun glow in its diffraction lobe; flakes add a fluttering plate glint;
@@ -2796,6 +2816,11 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   `rain` (group water) plays synth `rain`: a band-passed hiss, a low rumble for heavy rain and a Poisson
   stream of drop ticks (each its own resonance, level and pan), all scaled by `intensity`. Not yet
   loudness-calibrated against the -24 LUFS convention.
+  **Gusts (2026-10-23):** drivers `gust` (the gust fronts' envelope the rain and snow particles are blown by,
+  SatelliteSimRain.cpp `surfaceWindAt`: 0 calm .. ~1.5), `surface_wind` (its speed / 15 m/s) and `rain_driven` (the
+  rain rate pushed up to +60% by a gust; the rain layer's `intensity` reads it). Layer `wind_gust` (synth `wind`,
+  gain 0.25, near the ground) swells with `gust` (level, and its band 340 -> 620 Hz), so the roar rises with the gust
+  the rain is seen to lean in. Solo ~-47 dBFS against a ~-32 dBFS ambience mix in a storm (measured at gain 0.16: -51): modest, the user's to judge.
 - **Glare is answered by the MUSIC while a track plays (2026-09-27, the user's design).** Tuning a
   synth to the soundtrack in real time never fit its rhythm and harmony, so the composer wrote an
   **upwell stem** per track (`assets/sound/music/<track>_upwell.mp3` — a separate layer, not a remix:

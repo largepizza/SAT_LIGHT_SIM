@@ -6433,11 +6433,13 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Drop reach (m)", &cv2DropDistM, 4.0f, 64.0f, 4.0f, "%.0f", 208},
         {"Drop particles (x1000, nearest box)", &cv2RainParticlesK, 0.5f, 64.0f, 0.5f, "%.1f", 261},
         {"Drop shutter (ms)", &cv2RainShutterMs, 1.0f, 100.0f, 1.0f, "%.0f", 262},
-        {"Rain fall speed (x)", &cv2RainFallSpeed, 0.3f, 20.0f, 0.05f, "%.2f", 263},
-        {"Rain wind (x ground wind)", &cv2RainWindGain, 0.0f, 5.0f, 0.1f, "%.1f", 264},
-        {"Storm wind (m/s)", &cv2RainStormWind, 0.0f, 40.0f, 0.5f, "%.1f", 265},
-        {"Wind gusts", &cv2RainGusts, 0.0f, 3.0f, 0.05f, "%.2f", 266},
-        {"Snow wind (blizzard)", &cv2SnowWind, 0.0f, 8.0f, 0.1f, "%.1f", 209},
+        {"Drop fall speed (x physical)", &cv2RainFallSpeed, 0.3f, 5.0f, 0.05f, "%.2f", 330},
+        {"Drop persistence (ms, 0 = never redrawn)", &cv2DropPersistMs, 0.0f, 500.0f, 5.0f, "%.0f", 334},
+        {"Surface wind (x)", &cv2RainWindGain, 0.0f, 4.0f, 0.05f, "%.2f", 331},
+        {"Storm outflow (m/s)", &cv2RainStormWind, 0.0f, 40.0f, 0.5f, "%.1f", 332},
+        {"Gust fronts", &cv2GustFronts, 0.0f, 3.0f, 0.05f, "%.2f", 333},
+        {"Wind turbulence", &cv2RainGusts, 0.0f, 3.0f, 0.05f, "%.2f", 266},
+        {"Snow drift (x surface wind)", &cv2SnowWind, 0.0f, 4.0f, 0.05f, "%.2f", 209},
     };
 
     CloudSlider secEvo[] = {
@@ -8919,13 +8921,17 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2DropDistM = settingClamp(c.value("drop_reach_m", cv2DropDistM), 4.0f, 64.0f);
         cv2RainParticlesK = c.value("rain_particles_k", cv2RainParticlesK);
         cv2RainShutterMs = c.value("rain_shutter_ms", cv2RainShutterMs);
-        cv2RainFallSpeed = c.value("rain_fall_speed", cv2RainFallSpeed);
+        // The rain / snow motion's keys changed with the model (2026-10-23): "rain_fall_speed", "rain_wind_gain",
+        // "rain_storm_wind_mps" and "rain_gusts" are not read (tuned against the lumped drops' drift: fall x10).
+        cv2RainFallSpeed = c.value("drop_fall_speed", cv2RainFallSpeed);
+        cv2DropPersistMs = c.value("drop_persistence_ms", cv2DropPersistMs);
+        cv2GustFronts = c.value("gust_fronts", cv2GustFronts);
         cv2LightningStormRate = c.value("lightning_storm_rate_per_area", cv2LightningStormRate);
         cv2LightningTendrils = c.value("lightning_tendrils", cv2LightningTendrils);
-        cv2RainWindGain = c.value("rain_wind_gain", cv2RainWindGain);
-        cv2RainStormWind = c.value("rain_storm_wind_mps", cv2RainStormWind);
-        cv2RainGusts = c.value("rain_gusts", cv2RainGusts);
-        cv2SnowWind = c.value("snow_wind", cv2SnowWind);
+        cv2RainWindGain = c.value("surface_wind_gain", cv2RainWindGain);
+        cv2RainStormWind = c.value("storm_outflow_mps", cv2RainStormWind);
+        cv2RainGusts = c.value("wind_turbulence", cv2RainGusts);
+        cv2SnowWind = c.value("snow_drift", cv2SnowWind);   // "snow_wind" (x the old, stronger wind) is not read
         cv2ExposureEV = c.value("exposure_ev", cv2ExposureEV);
         cv2HighlightRolloff = c.value("highlight_rolloff", cv2HighlightRolloff);
         cv2WhiteBalance = c.value("white_balance", cv2WhiteBalance);
@@ -9528,13 +9534,15 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"drop_reach_m", cv2DropDistM},
         {"rain_particles_k", cv2RainParticlesK},
         {"rain_shutter_ms", cv2RainShutterMs},
-        {"rain_fall_speed", cv2RainFallSpeed},
+        {"drop_fall_speed", cv2RainFallSpeed},
+        {"drop_persistence_ms", cv2DropPersistMs},
+        {"gust_fronts", cv2GustFronts},
         {"lightning_storm_rate_per_area", cv2LightningStormRate},
         {"lightning_tendrils", cv2LightningTendrils},
-        {"rain_wind_gain", cv2RainWindGain},
-        {"rain_storm_wind_mps", cv2RainStormWind},
-        {"rain_gusts", cv2RainGusts},
-        {"snow_wind", cv2SnowWind},
+        {"surface_wind_gain", cv2RainWindGain},
+        {"storm_outflow_mps", cv2RainStormWind},
+        {"wind_turbulence", cv2RainGusts},
+        {"snow_drift", cv2SnowWind},
         {"exposure_ev", cv2ExposureEV},
         {"highlight_rolloff", cv2HighlightRolloff},
         {"white_balance", cv2WhiteBalance},

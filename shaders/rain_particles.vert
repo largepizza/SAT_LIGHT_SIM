@@ -10,9 +10,11 @@
 // within its box as it falls, so the eye walks through the rain. The fall and the wind are integrated over sim
 // time on the CPU (cv2.rainMotion / rainWind, SatelliteSimRain.cpp updateRainMotion), so both can change smoothly.
 //
-// WHAT: a drop's size from the Marshall-Palmer distribution (0.5-5 mm), its fall speed the terminal velocity
-// of that size (Atlas: 2.3 m/s at 0.5 mm .. 8.8 at 4 mm); a snowflake an aggregate of 2-8 mm falling ~1 m/s,
-// fluttering; diamond dust a tumbling ice plate, seen only by its glint. Which drops exist follows the rain
+// WHAT: a drop's size from the AREA-weighted Marshall-Palmer distribution at the rate round the eye (0.5-6 mm;
+// each particle carries a share of the rain's cross-section), its fall speed the terminal velocity of that size
+// (Atlas: 2.3 m/s at 0.5 mm .. 8.8 at 4 mm); a rain particle is redrawn elsewhere every "Drop persistence" (it
+// stands for many drops: kept as one body it drifted as a lump); a snowflake an aggregate of 2-8 mm falling
+// ~1 m/s, fluttering, followed for good; diamond dust a tumbling ice plate, seen only by its glint. Which drops exist follows the rain
 // map around the eye (cv2RainMapAt), so walking toward a shaft its drops appear in the far levels first.
 //
 // HOW BRIGHT: a drop is drawn as the streak it sweeps over the shutter time (pc.eyeVel.w), and its COVERAGE
@@ -91,13 +93,29 @@ void main()
     if (k >= int(pc.params.y)) { cullDrop(); return; }
     uint j  = id - N0 * ((1u << uint(k)) - 1u);
     float L = kRpL0 * float(1 << k);
-    vec3 h0 = rpRnd(j, uint(k), 0x51u);
-    vec3 h1 = rpRnd(j, uint(k), 0xA7u);
-    vec3 h2 = rpRnd(j, uint(k), 0x3Cu);
 
     uint mode  = uint(pc.obsECEFDir.w + 0.5);
     bool dust  = (mode & 1u) != 0u;
-    bool flake = dust || h1.x > cv2RainKeyDir.w;    // the snow share (sleet: some of each)
+    vec3 hK    = rpRnd(j, uint(k), 0x91u);              // fixed per particle: its kind and its redraw phase
+    bool flake = dust || hK.x > cv2RainKeyDir.w;    // the snow share (sleet: some of each)
+
+    // Rain drops are REDRAWN every "Drop persistence" (cv2.snowMotion.z = sim time / it, w = on; 2026-10-23): a
+    // particle stands for tens (level 0) to thousands (level 4) of real drops, and kept as one body it crossed the
+    // screen as a lump at a few px a frame — the "floaty" rain. Each epoch it is a new drop at a new place (its own
+    // phase, so the field never pulses), fading in and out over the epoch's ends. Flakes and diamond dust are kept
+    // (a real flake is followed by the eye).
+    uint  ep  = 0u;
+    float wEp = 1.0;
+    if (!flake && cv2.snowMotion.w > 0.5) {
+        float e  = cv2.snowMotion.z + hK.y;
+        ep = uint(floor(e)) + 1u;
+        float ph = fract(e);
+        wEp = smoothstep(0.0, 0.2, ph) * (1.0 - smoothstep(0.8, 1.0, ph)) * 1.25;   // mean 1
+    }
+    uint kE = uint(k) | (ep << 3u);
+    vec3 h0 = rpRnd(j, kE, 0x51u);
+    vec3 h1 = rpRnd(j, kE, 0xA7u);
+    vec3 h2 = rpRnd(j, kE, 0x3Cu);
     float t    = cv2.precip.y;
 
     // ── Where it is (in the rain frame, metres from the eye) ──
@@ -105,10 +123,15 @@ void main()
     if (dust)       { Dmm = 0.15; v = 0.25 + 0.2 * h1.y; }
     else if (flake) { Dmm = 2.0 + 6.0 * h1.y; v = 0.8 + 0.6 * h1.z; }
     else {
-        // Marshall-Palmer above 0.5 mm at ~5 mm/h (Lambda 2.9 / mm), fixed per drop; the whole shower's speed follows
-        // the rate through the reference speed (cv2.rainMotion.y).
-        Dmm = clamp(0.5 - log(1.0 - 0.995 * h1.y) / 2.9, 0.5, 5.0);
-        v   = 9.65 - 10.3 * exp(-0.6 * Dmm);
+        // The size a unit of the rain's CROSS-SECTION comes in (2026-10-23): every particle carries the same share of
+        // the rain's geometric cross-section (Aeff below), so its size is drawn from the AREA-weighted Marshall-Palmer
+        // distribution, D^2 exp(-Lambda D) = Gamma(3, Lambda), with Lambda from the rate at the eye (pc.dropLambda:
+        // 2.5 / mm at 10 mm/h, 1.7 at 60). It was the NUMBER distribution above 0.5 mm at a fixed 5 mm/h (median
+        // 0.74 mm, 2.9 m/s): the drawn rain fell at the speed of drizzle whatever the shower, and in a few m/s of wind
+        // it went sideways ("floaty"). Now the drops seen fall ~4-7 m/s (Atlas), redrawn each epoch at the rate now.
+        float lam = max(pc.dropLambda, 0.5);
+        Dmm = clamp(-(log(max(1.0 - h1.y, 1e-6)) + log(max(1.0 - h1.z, 1e-6)) + log(max(1.0 - h2.x, 1e-6))) / lam, 0.5, 6.0);
+        v   = max(9.65 - 10.3 * exp(-0.6 * Dmm), 1.0);
     }
     // The fall and the wind are integrated over sim time on the CPU (updateRainMotion): a drop's fall offset is its
     // terminal speed x the fall phase, quantised to 1/64 m/s so the phase can be handed over wrapped (q x (G mod L)).
@@ -166,15 +189,19 @@ void main()
     vec3 Vw   = rainToEnu(vec3(windNow + flutV, -vq), eX, eY, eZ);
     vec3 Vrel = Vw - pc.eyeVel.xyz;
     vec3 c1 = (pc.skyView * vec4(p, 0.0)).xyz;                        // now
-    vec3 c0 = (pc.skyView * vec4(p - Vrel * pc.eyeVel.w, 0.0)).xyz;  // the shutter's opening
+    // Flakes take a third of the shutter (2026-10-23): the eye follows a flake and sees a flake, not a streak; at the
+    // full shutter a flake in a few m/s of wind drew as a horizontal dash, the "rain blowing sideways" look.
+    float shut = pc.eyeVel.w * (snowW ? 0.35 : 1.0);
+    vec3 c0 = (pc.skyView * vec4(p - Vrel * shut, 0.0)).xyz;  // the shutter's opening
     const float zN = 0.05;
     if (c0.z > -zN && c1.z > -zN) { cullDrop(); return; }
     if (c0.z > -zN) c0 = mix(c1, c0, (c1.z + zN) / (c1.z - c0.z));
     if (c1.z > -zN) c1 = mix(c0, c1, (c0.z + zN) / (c0.z - c1.z));
     float tanH = tan(pc.fovYRad * 0.5);
     vec2  scr  = vec2(pc.screenW, pc.screenH);
-    vec2  P0 = vec2(c0.x / (-c0.z) / (tanH * pc.aspect), -c0.y / (-c0.z) / tanH) * 0.5 * scr + 0.5 * scr;
-    vec2  P1 = vec2(c1.x / (-c1.z) / (tanH * pc.aspect), -c1.y / (-c1.z) / tanH) * 0.5 * scr + 0.5 * scr;
+    float aspect = pc.screenW / pc.screenH;
+    vec2  P0 = vec2(c0.x / (-c0.z) / (tanH * aspect), -c0.y / (-c0.z) / tanH) * 0.5 * scr + 0.5 * scr;
+    vec2  P1 = vec2(c1.x / (-c1.z) / (tanH * aspect), -c1.y / (-c1.z) / tanH) * 0.5 * scr + 0.5 * scr;
     float pixAng = 2.0 * tanH / pc.screenH;
     float mpp  = r * pixAng;                                          // metres per pixel at the drop
     float dpx  = Dmm * 1e-3 / mpp;                                    // its real width on screen
@@ -186,7 +213,7 @@ void main()
     // fades out and the rain volume carries that distance alone: real rain there is a haze, not grains.
     float grain = 1.0 - smoothstep(0.12, 0.35, a);
     if (a > 0.8) { wD *= a / 0.8; a = 0.8; }                          // more than a line can hold: wider, not opaque
-    a *= wS * pres * grain * pc.params.z;
+    a *= wS * pres * grain * pc.params.z * wEp;
     a  = min(a, 1.0);
     if (a < 2e-4) { cullDrop(); return; }
 
