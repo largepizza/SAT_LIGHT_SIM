@@ -1583,7 +1583,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             p.cdcC = glm::vec4(cv2CdcActive && cv2CdcLight > 0.5f ? 1.0f : 0.0f, std::clamp(cv2CdcLightLevels, 0.0f, 8.0f),
                                std::max(cv2CdcNearM, 0.0f), 0.0f);
             // The god rays' froxel volume: 64 slices from 50 m to 400 km.
-            p.frox = glm::vec4(cv2GodrayFroxels > 0.5f ? 1.0f : 0.0f, 50.0f, (float)(std::log(400000.0 / 50.0) / 64.0), 0.0f);
+            // w: the frame's index in the froxels' sample sequence (cv2FroxJitter), -1 = fixed at the cells' centres when nothing
+            // averages frames (no sky TAA: it would flicker).
+            p.frox = glm::vec4(cv2GodrayFroxels > 0.5f ? 1.0f : 0.0f, 50.0f, (float)(std::log(400000.0 / 50.0) / kCv2FroxZ),
+                               skyTaaWanted() ? (float)(cv2FroxFrame++ % 4096u) : -1.0f);
             {   // The Mie table's row for the droplets' effective radius, between the tabulated radii.
                 float row = 0.0f;
                 const int nr = (int)cv2MieReff.size();
@@ -1991,7 +1994,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2FroxPipeline);
-        vkCmdDispatch(cmd, 160 / 8, (90 + 7) / 8, 64 / 4);
+        vkCmdDispatch(cmd, (kCv2FroxX + 7) / 8, (kCv2FroxY + 7) / 8, kCv2FroxZ / 4);
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }

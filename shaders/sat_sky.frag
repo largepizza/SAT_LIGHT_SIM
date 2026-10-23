@@ -4275,13 +4275,14 @@ void main() {
             int   nF  = (tA < 30000.0) ? 8 : 4;
             bool  frx = cv2.frox.x > 0.5;
             vec2  uvF = gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH);
+            vec3  jitF = cv2FroxJitter();
             float acc = 0.0, wS = 0.0;
             [[dont_unroll]] for (int k = 0; k < nF; ++k) {
                 float tr = segLen * (float(k) + shaftJit) / float(nF);
                 float tk = tA + tr;
                 float wk = (tk < 30000.0) ? exp(-clamp(zK * tr, -8.0, 30.0)) : 1.0;
-                acc += wk * (frx ? cv2GodFroxT(uvF, tk)
-                                 : cv2StvT(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunT(dir * tk));
+                acc += wk * (frx ? cv2GodFroxT(uvF, tk, jitF)
+                                 : cv2StvTFine(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunTFine(dir * tk));
                 wS  += wk;
             }
             float Tc = acc / wS;
@@ -4294,8 +4295,8 @@ void main() {
                     float tr = lenF * (float(k) + shaftJit) * 0.25;
                     float tk = tA + tr;
                     float wk = (tk < 30000.0) ? exp(-clamp(zK * tr, -8.0, 30.0)) : 1.0;
-                    accF += wk * (frx ? cv2GodFroxT(uvF, tk)
-                                      : cv2StvT(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunT(dir * tk));
+                    accF += wk * (frx ? cv2GodFroxT(uvF, tk, jitF)
+                                      : cv2StvTFine(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunTFine(dir * tk));
                     wF   += wk;
                 }
                 shKF = sunShK * (1.0 - accF / wF);

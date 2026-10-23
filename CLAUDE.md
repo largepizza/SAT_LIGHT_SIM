@@ -929,9 +929,20 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     Coarse-footprint bakes are NOT conservative (more misses); jumping to cell exits gained nothing.
   - **S2** (`cdc_light`, `cdc_light_levels` 3): light steps 3+ read the cell's mean + variance of the light extinction
     through the gamma model E[exp(-L e)] (a cell MEAN alone darkened broken cloud by up to 18 levels: Jensen). Modest.
-  - **God-ray froxels** (`godray_froxels`, `cloud_v2_froxel.comp`, `cv2GodFrox` in the flash buffer: 160 x 90 x 64,
+  - **God-ray froxels** (`godray_froxels`, `cloud_v2_froxel.comp`, `cv2GodFrox` in the flash buffer: 320 x 180 x 64,
     log depths 50 m - 400 km): the sky pass reads it instead of 3 cascade + 24 shaft lookups a step; sky -0.2..-2.9 ms,
-    images at the floor (the shafts only within their reach along the view, as the old path).
+    images at the floor (the shafts only within their reach along the view, as the old path). **Sampling (2026-10-23,
+    issue 20261023_003455 "pixelation on edges"):** the shafts were a 160 x 90 bilinear upscale (12-px tiles, one ray
+    through each tile's centre): thin shafts aliased and every edge was a 12-px staircase, at any resolution (the HQ
+    photo too). Now each froxel's ray + depth sit at a per-frame R-sequence point in its cell (`cv2FroxJitter`, `frox.w` =
+    the frame index, -1 = fixed centres without the sky TAA) and the lookup reconstructs from the same points, so the
+    sky TAA averages a tent over the tile; 2 depth samples a froxel (4 at fixed depths without the TAA; 1 was grain in
+    motion: tstab walk 1.17 -> 1.54), read with `cv2StvTFine` / `cv2TerrSunTFine` (finest level out, stopping once
+    covered: the froxel pass got CHEAPER at 8x the reads; the march keeps `cv2StvT`). Report view (1920x1009, 0.67):
+    error vs the exact direct path in the crop 2.37 -> 1.51 levels, GPU +0.1 ms (sky +0.2, froxels -0.15), flash buffer
+    +11 MB, tstab walk 1.17 -> 1.20 / pitch 0.65 -> 0.71. **The HQ photo uses the direct path** (`requestPhoto` sets
+    `cv2GodrayFroxels` 0 for its duration): per-pixel shafts, photo 3.9 -> 6.3 s at scale 2 (the direct path is +22 ms
+    a frame at 1920x1009 0.67: never for play). The cinematic HQ export keeps the froxels.
   - **Flash buffer in device-local host-visible memory** (ON; `SATLIGHTSIM_FLASH_HOSTMEM=1` restores system RAM): the
     Sun shadow lattices were read across PCIe by every lit sample and sky pixel; sky -0.9..-2.3 ms.
   - **Mie** (`tools/make_mie_lut.py` -> `assets/textures/cloud_mie.rgba16f`, march binding 24): `mie_phase` = the physical

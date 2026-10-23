@@ -38,8 +38,8 @@ float cv2FlashIntensity(float age, float dur, uvec3 fh, bool cg)
     return I + 0.3 * smoothstep(0.0, 0.02, a) * exp(-a / (0.4 * dur + 0.05));
 }
 // The god rays' froxel volume (2026-10-22, cloud_v2_froxel.comp): screen tiles x log-spaced depths (cv2.frox).
-const int   kCv2FroxX = 160;
-const int   kCv2FroxY = 90;
+const int   kCv2FroxX = 320;
+const int   kCv2FroxY = 180;
 const int   kCv2FroxZ = 64;
 // The Sun transmittance volume (S3, 2026-10-22, .plans/CLOUD_REBUILD_PLAN.md): kCv2StvL nested levels of kCv2StvN^2
 // parallel rays toward the Sun on the shaft lattice's axes, each level's cells 4x the last (cv2.stvL0..3.z), riding
@@ -178,6 +178,20 @@ float cv2StvT(vec3 rl, float h)
     }
     return acc + keep;
 }
+// The same value, from the finest level out, stopping once the finer levels cover the point (within 1e-3): a point
+// inside level 0's window reads one level instead of four. For the god rays (the froxels and the sky pass's direct
+// path); the cloud march keeps cv2StvT (its register count, CLAUDE.md "Perf sprint").
+float cv2StvTFine(vec3 rl, float h)
+{
+    float acc = 0.0, rem = 1.0;
+    [[dont_unroll]] for (int lv = 0; lv < kCv2StvL; ++lv) {
+        vec2 s = cv2StvLevelT(rl, h, lv);
+        acc += rem * s.x * s.y;
+        rem *= 1.0 - s.y;
+        if (rem < 1e-3) break;
+    }
+    return acc + rem;
+}
 // ── The terrain Sun-horizon map: the terrain's shadow at rl (from the eye, observer ENU). 1 = lit. Not for the ground
 // itself (sat_sky.frag's terrainSunShadow draws that sharply): a point within about a cell of a sunlit slope may read a
 // neighbouring line's entry, so the shadow starts a cell + 30 m past the entry and softens over another cell.
@@ -212,14 +226,54 @@ float cv2TerrSunT(vec3 rl)
     }
     return acc + keep;
 }
+// cv2TerrSunT from the finest level out (as cv2StvTFine), for the god rays.
+float cv2TerrSunTFine(vec3 rl)
+{
+    if (cv2.tsh0.w < 0.5) return 1.0;
+    vec3  ga = vec3(cv2SunProf[2], cv2SunProf[3], cv2SunProf[4]);
+    vec3  gb = vec3(cv2SunProf[5], cv2SunProf[6], cv2SunProf[7]);
+    float sP = dot(rl, cross(ga, gb));                       // along the Sun (ga x gb = S)
+    vec2  ab = vec2(dot(rl, ga), dot(rl, gb));
+    float acc = 0.0, rem = 1.0;
+    [[dont_unroll]] for (int lv = 0; lv < 4; ++lv) {
+        vec4  la = cv2TshLat(lv);
+        vec2  gg = ab / la.z + la.xy + float(kCv2TshN / 2);   // line (i, j) sits at (i, j) - N/2 - frac cells from the eye
+        float w  = 1.0 - smoothstep(float(kCv2TshN / 2) - 14.0, float(kCv2TshN / 2) - 3.0,
+                                    max(abs(gg.x - float(kCv2TshN / 2)), abs(gg.y - float(kCv2TshN / 2))));
+        if (w <= 0.0) continue;
+        ivec2 g0 = ivec2(floor(gg));
+        vec2  gf = gg - vec2(g0);
+        float m  = la.z + 30.0;
+        float T  = 0.0;
+        [[dont_unroll]] for (int c = 0; c < 4; ++c) {
+            ivec2 sc = clamp(ivec2(g0.x + (c & 1), g0.y + (c >> 1)), ivec2(0), ivec2(kCv2TshN - 1));
+            float se = cv2TerrSun[(lv * kCv2TshN + sc.y) * kCv2TshN + sc.x];
+            float bw = ((c & 1) != 0 ? gf.x : 1.0 - gf.x) * ((c >> 1) != 0 ? gf.y : 1.0 - gf.y);
+            float x  = clamp((sP - se + m + la.z) / la.z, 0.0, 1.0);   // (smoothstep with se = -1e30 has equal edges)
+            T += bw * x * x * (3.0 - 2.0 * x);
+        }
+        acc += rem * T * w;
+        rem *= 1.0 - w;
+        if (rem < 1e-3) break;
+    }
+    return acc + rem;
+}
 // The god rays' froxel volume: slice s (0..kCv2FroxZ) <-> distance along the view ray, log-spaced from cv2.frox.y (m) by
 // cv2.frox.z (the log ratio per slice).
 float cv2FroxDepth(float s) { return cv2.frox.y * exp(s * cv2.frox.z); }
-// The Sun transmittance at screen fraction uv (0..1, top-left origin as gl_FragCoord / screen) and distance t: trilinear
-// over the froxels' centres.
-float cv2GodFroxT(vec2 uv, float t)
+// The froxels' sample offset this frame, in froxels (cv2.frox.w = the frame's sequence index, < 0 = none: the tile and
+// slice centres). The grid moves by a 3D R-sequence each frame and the sky TAA averages the frames' reconstructions:
+// the volume's samples cover the tile instead of one point (thin shafts no longer alias), and the bilinear kinks at the
+// tile edges (the god rays' "pixelation") average into a smooth tent. Without the sky TAA nothing would average it.
+vec3 cv2FroxJitter()
 {
-    vec3 f = vec3(uv * vec2(kCv2FroxX, kCv2FroxY) - 0.5, log(max(t, cv2.frox.y) / cv2.frox.y) / cv2.frox.z - 0.5);
+    return (cv2.frox.w < 0.0) ? vec3(0.5) : fract(vec3(0.5) + cv2.frox.w * vec3(0.8191725, 0.6710436, 0.5497005));
+}
+// The Sun transmittance at screen fraction uv (0..1, top-left origin as gl_FragCoord / screen) and distance t: trilinear
+// over the froxels' samples (at their cells' corners + cv2FroxJitter()).
+float cv2GodFroxT(vec2 uv, float t, vec3 jit)
+{
+    vec3 f = vec3(uv * vec2(kCv2FroxX, kCv2FroxY), log(max(t, cv2.frox.y) / cv2.frox.y) / cv2.frox.z) - jit;
     f = clamp(f, vec3(0.0), vec3(kCv2FroxX - 1, kCv2FroxY - 1, kCv2FroxZ - 1) - 1e-3);
     ivec3 i = ivec3(f);
     vec3  w = f - vec3(i);
