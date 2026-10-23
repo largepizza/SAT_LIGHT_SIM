@@ -1,5 +1,6 @@
 #include "Weather.h"
 #include "StormClimatology.h"
+#include "../FrameProfile.h"
 
 #include <algorithm>
 #include <chrono>
@@ -7,6 +8,9 @@
 #include <iterator>
 #include <map>
 #include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 
 namespace wx {
 
@@ -141,6 +145,7 @@ struct Cell {
     double lat0, lat1, lon0, lon1;   // radians, map frame
     double sin0, sin1;
     glm::dvec3 centre;
+    double latR;                     // asin(centre.z): a rotation about the pole keeps it
     double areaKm2;
 };
 
@@ -232,6 +237,7 @@ struct Catalog::Impl {
         const int64_t k = (int64_t)basin * 100000 + year;
         auto it = seasons.find(k);
         if (it == seasons.end()) {
+            FPROF_SCOPE("wx.buildSeason");
             std::vector<Cyclone> v;
             buildSeason(basin, year, v);
             it = seasons.emplace(k, std::move(v)).first;
@@ -249,6 +255,74 @@ struct Catalog::Impl {
     }
     Stats st;
     int threads = 1;
+    std::vector<std::vector<Storm>> taskParts;   // stormsAt's per-task lists (kept for their capacity)
+    // A persistent pool of threads - 1 workers (the caller is the last). A jump needs ~17 spawn bins, ~8 line bins and
+    // up to 18 cyclone seasons at once; spawning threads per call cost a few hundred microseconds and kept whole bins as
+    // the unit of work (17 bins on 6 threads: 18-21 ms on the frame after a jump). Every task writes its own output, and
+    // the outputs are joined in task order, so the result is the same for any thread count.
+    struct Pool {
+        std::vector<std::thread> th;
+        std::mutex m;
+        std::condition_variable cvWork, cvDone;
+        const std::function<void(size_t)> *job = nullptr;
+        size_t nJobs = 0;
+        std::atomic<size_t> next{0};
+        int busy = 0;
+        uint64_t gen = 0;
+        bool quit = false;
+        void start(int workers) {
+            stop();
+            quit = false;
+            for (int i = 0; i < workers; ++i)
+                th.emplace_back([this] {
+                    uint64_t seen = 0;
+                    for (;;) {
+                        const std::function<void(size_t)> *f;
+                        size_t n;
+                        {
+                            std::unique_lock<std::mutex> lk(m);
+                            cvWork.wait(lk, [&] { return quit || gen != seen; });
+                            if (quit) return;
+                            seen = gen;
+                            f = job;
+                            n = nJobs;
+                        }
+                        for (size_t i; (i = next.fetch_add(1)) < n;) (*f)(i);
+                        std::lock_guard<std::mutex> lk(m);
+                        if (--busy == 0) cvDone.notify_all();
+                    }
+                });
+        }
+        void stop() {
+            {
+                std::lock_guard<std::mutex> lk(m);
+                quit = true;
+            }
+            cvWork.notify_all();
+            for (auto &t : th) t.join();
+            th.clear();
+        }
+        void run(size_t n, const std::function<void(size_t)> &f) {
+            if (n == 0) return;
+            if (th.empty() || n == 1) {
+                for (size_t i = 0; i < n; ++i) f(i);
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lk(m);
+                job = &f;
+                nJobs = n;
+                next = 0;
+                busy = (int)th.size();
+                ++gen;
+            }
+            cvWork.notify_all();
+            for (size_t i; (i = next.fetch_add(1)) < n;) f(i);
+            std::unique_lock<std::mutex> lk(m);
+            cvDone.wait(lk, [&] { return busy == 0; });
+        }
+        ~Pool() { stop(); }
+    } pool;
 
     double flash(double latDeg, double lonDeg, double doy, double hour, float land) const {
         if (!clim) return 1.0;
@@ -270,6 +344,7 @@ struct Catalog::Impl {
                 const double sMid = 0.5 * (c.sin0 + c.sin1), cMid = std::sqrt(std::max(0.0, 1.0 - sMid * sMid));
                 const double lonMid = 0.5 * (c.lon0 + c.lon1);
                 c.centre = glm::dvec3(cMid * std::cos(lonMid), cMid * std::sin(lonMid), sMid);
+                c.latR = std::asin(std::clamp(c.centre.z, -1.0, 1.0));
                 c.areaKm2 = kREarthKm * kREarthKm * dLon * (c.sin1 - c.sin0);
                 cells.push_back(c);
             }
@@ -292,6 +367,7 @@ struct Catalog::Impl {
                 const double sMid = 0.5 * (c.sin0 + c.sin1), cMid = std::sqrt(std::max(0.0, 1.0 - sMid * sMid));
                 const double lonMid = 0.5 * (c.lon0 + c.lon1);
                 c.centre = glm::dvec3(cMid * std::cos(lonMid), cMid * std::sin(lonMid), sMid);
+                c.latR = std::asin(std::clamp(c.centre.z, -1.0, 1.0));
                 c.areaKm2 = kREarthKm * kREarthKm * dLon * (c.sin1 - c.sin0);
                 lineCells.push_back(c);
             }
@@ -574,16 +650,25 @@ struct Catalog::Impl {
     }
 
     // One time bin's storms: a pure function of (bin, Env, Settings, K).
+    // rot (optional): Env::mapToEarth at tMid as a rotation about the pole, its images of x and y (rotX, rotY), when the
+    // caller has checked that it IS one (mapToEarthRotZ). Applied as ex * d.x + ey * d.y + z * d.z it is the same
+    // arithmetic as the sim's own Env (bit-identical) without a call and a cosine and sine per cell. With Env::landAt
+    // the land share takes the cell's latitude (cached: a rotation about the pole keeps it) and the longitude computed
+    // here, instead of recomputing both from e.
     void buildCellRange(int64_t bin, size_t c0, size_t c1, double tMid, double sunLonDeg, double doy,
-                        std::vector<Storm> &out) const {
+                        std::vector<Storm> &out, const glm::dvec3 *rot = nullptr) const {
         const double binT0 = (double)bin * kBinS;
         const double freq = std::max(0.0, (double)set.frequency);
         for (size_t ci = c0; ci < c1; ++ci) {
             const Cell &c = cells[ci];
-            const glm::dvec3 e = env.mapToEarth(c.centre, tMid);
-            const double latE = std::asin(std::clamp(e.z, -1.0, 1.0)) / kDeg;
-            const double lonE = std::atan2(e.y, e.x) / kDeg;
-            const float land = env.land ? env.land(e) : 0.0f;
+            const glm::dvec3 e = rot ? glm::dvec3(rot[0].x * c.centre.x + rot[1].x * c.centre.y,
+                                                  rot[0].y * c.centre.x + rot[1].y * c.centre.y, c.centre.z)
+                                     : env.mapToEarth(c.centre, tMid);
+            const double latR = rot ? c.latR : std::asin(std::clamp(e.z, -1.0, 1.0));
+            const double lonR = std::atan2(e.y, e.x);
+            const double latE = latR / kDeg;
+            const double lonE = lonR / kDeg;
+            const float land = (rot && env.landAt) ? env.landAt(latR, lonR) : env.land ? env.land(e) : 0.0f;
             double hour = 12.0 + wrapDeg(lonE - sunLonDeg) / 15.0;
             hour = std::fmod(hour + 24.0, 24.0);
             const double fd = flash(latE, lonE, doy, hour, land);
@@ -604,12 +689,11 @@ struct Catalog::Impl {
                 if (uKeep >= f) continue;
                 const glm::dvec3 pe = env.mapToEarth(p, tb);
                 const double landP = env.land ? (double)env.land(pe) : 0.0;
-                Storm S;
+                Storm &S = out.emplace_back();   // (built in place: a Storm is ~1.3 KB)
                 const uint64_t id = key3((uint64_t)ci, (uint64_t)bin, (uint64_t)k, 0x570A3ull);
                 makeStorm(S, id, p, tb, std::asin(std::clamp(sLat, -1.0, 1.0)) / kDeg, landP, dayOfYear(tb));
                 S.potential = (float)fd;
                 S.moisture = (float)m;
-                out.push_back(S);
             }
         }
     }
@@ -727,7 +811,13 @@ void Catalog::configure(const Env &env, const Settings &s, const StormClimatolog
     I.configured = true;
 }
 
-void Catalog::setBuildThreads(int n) { impl_->threads = std::max(1, n); }
+void Catalog::setBuildThreads(int n) {
+    n = std::max(1, n);
+    if (n == impl_->threads && (int)impl_->pool.th.size() == n - 1) return;
+    impl_->threads = n;
+    impl_->pool.start(n - 1);
+}
+void Catalog::parallelFor(size_t n, const std::function<void(size_t)> &fn) { impl_->pool.run(n, fn); }
 double Catalog::calibrationK() const { return impl_->K; }
 double Catalog::calibrationKLine() const { return impl_->KLine; }
 double Catalog::meanLifeS(StormKind k) const { return impl_->meanLife[(int)k]; }
@@ -746,6 +836,7 @@ void Catalog::stormsInBin(int64_t bin, std::vector<const Storm *> &out) {
 }
 
 void Catalog::stormsAt(double t, std::vector<const Storm *> &out) {
+    FPROF_SCOPE("wx.stormsAt");
     Impl &I = *impl_;
     out.clear();
     I.st.binsBuiltLastCall = 0;
@@ -758,26 +849,80 @@ void Catalog::stormsAt(double t, std::vector<const Storm *> &out) {
         if (it->first < keepLo || it->first > keepHi) { I.binT.erase(it->first); it = I.bins.erase(it); }
         else ++it;
 
-    std::vector<int64_t> missing;
+    // The line systems' own bins (3 h, looking back kLineMaxLifeS).
+    const int64_t l1 = (int64_t)std::floor(t / kLineBinS);
+    const int64_t l0 = (int64_t)std::floor((t - kLineMaxLifeS) / kLineBinS);
+    for (auto it = I.lineBins.begin(); it != I.lineBins.end();)
+        if (it->first < l0 - 2 || it->first > l1 + 2) { I.lineBinT.erase(it->first); it = I.lineBins.erase(it); }
+        else ++it;
+
+    std::vector<int64_t> missing, missingL;
     for (int64_t b = b0; b <= b1; ++b)
         if (I.bins.find(b) == I.bins.end()) missing.push_back(b);
-    if (!missing.empty()) {
+    for (int64_t b = l0; b <= l1; ++b)
+        if (I.lineBins.find(b) == I.lineBins.end()) missingL.push_back(b);
+    if (!missing.empty() || !missingL.empty()) {
+        FPROF_SCOPE("wx.buildBins");
         const auto c0 = std::chrono::steady_clock::now();
-        std::vector<std::vector<Storm>> built(missing.size());
-        if (I.threads > 1 && missing.size() > 1) {
-            // A jump: one bin per thread (each a pure function of its index).
-            std::vector<std::thread> th;
-            const size_t nT = std::min(missing.size(), (size_t)I.threads);
-            for (size_t w = 0; w < nT; ++w)
-                th.emplace_back([&, w] {
-                    for (size_t j = w; j < missing.size(); j += nT) I.buildBin(missing[j], built[j], 1);
-                });
-            for (auto &x : th) x.join();
-        } else {
-            for (size_t j = 0; j < missing.size(); ++j) I.buildBin(missing[j], built[j], I.threads);
+        // Every missing spawn bin cut into ranges of cells, and every missing line bin, as tasks on the pool. Each
+        // range appends its cells' storms in cell order, so a bin's ranges joined in order are the bin built whole.
+        constexpr size_t kCellsPerTask = 512;
+        const size_t nCh = std::max<size_t>(1, (I.cells.size() + kCellsPerTask - 1) / kCellsPerTask);
+        struct BinT { double tMid, sunLon, doy; glm::dvec3 rot[2]; bool rotOk; };
+        std::vector<BinT> bt(missing.size());
+        for (size_t j = 0; j < missing.size(); ++j) {
+            const double tMid = ((double)missing[j] + 0.5) * kBinS;
+            const glm::dvec3 sun = I.env.sunEarth ? I.env.sunEarth(tMid) : glm::dvec3(1, 0, 0);
+            bt[j] = {tMid, std::atan2(sun.y, sun.x) / kDeg, dayOfYear(tMid), {}, false};
+            // Map -> Earth at tMid as a rotation about the pole (the sim's drift), checked bit for bit on a few cells.
+            if (I.env.mapToEarth && !I.cells.empty()) {
+                BinT &b = bt[j];
+                b.rot[0] = I.env.mapToEarth(glm::dvec3(1, 0, 0), tMid);
+                b.rot[1] = I.env.mapToEarth(glm::dvec3(0, 1, 0), tMid);
+                b.rotOk = b.rot[0].z == 0.0 && b.rot[1].z == 0.0;
+                for (size_t ci : {(size_t)0, I.cells.size() / 3, I.cells.size() / 2, I.cells.size() - 1}) {
+                    const glm::dvec3 &d = I.cells[ci].centre;
+                    const glm::dvec3 e = I.env.mapToEarth(d, tMid);
+                    const glm::dvec3 r(b.rot[0].x * d.x + b.rot[1].x * d.y, b.rot[0].y * d.x + b.rot[1].y * d.y, d.z);
+                    b.rotOk &= e.x == r.x && e.y == r.y && e.z == r.z;
+                }
+            }
         }
-        for (size_t j = 0; j < missing.size(); ++j) I.bins.emplace(missing[j], std::move(built[j]));
-        I.st.binsBuiltLastCall = (int)missing.size();
+        // The tasks' lists are kept between calls for their capacity: growing ~400 fresh vectors of 1.3-KB storms from
+        // 12 threads at once serialised on the heap (in a jump the storm records' allocation cost more than the
+        // spawning).
+        std::vector<std::vector<Storm>> &parts = I.taskParts;
+        if (parts.size() < missing.size() * nCh) parts.resize(missing.size() * nCh);
+        for (auto &pp : parts) {
+            pp.clear();
+            if (pp.capacity() < 32) pp.reserve(32);
+        }
+        std::vector<std::vector<Storm>> builtL(missingL.size());
+        const size_t nSpawn = missing.size() * nCh;
+        I.pool.run(nSpawn + missingL.size(), [&](size_t k) {
+            if (k < nSpawn) {
+                const size_t j = k / nCh, c = k % nCh;
+                const size_t ca = std::min(I.cells.size(), c * kCellsPerTask), cb = std::min(I.cells.size(), ca + kCellsPerTask);
+                I.buildCellRange(missing[j], ca, cb, bt[j].tMid, bt[j].sunLon, bt[j].doy, parts[k],
+                                 bt[j].rotOk ? bt[j].rot : nullptr);
+            } else {
+                I.buildLineBin(missingL[k - nSpawn], builtL[k - nSpawn]);
+            }
+        });
+        for (size_t j = 0; j < missing.size(); ++j) {
+            std::vector<Storm> v;
+            size_t n = 0;
+            for (size_t c = 0; c < nCh; ++c) n += parts[j * nCh + c].size();
+            v.reserve(n);
+            for (size_t c = 0; c < nCh; ++c) {
+                std::vector<Storm> &pp = parts[j * nCh + c];
+                v.insert(v.end(), pp.begin(), pp.end());
+                pp.clear();
+            }
+            I.bins.emplace(missing[j], std::move(v));
+        }
+        for (size_t j = 0; j < missingL.size(); ++j) I.lineBins.emplace(missingL[j], std::move(builtL[j]));
+        I.st.binsBuiltLastCall = (int)(missing.size() + missingL.size());
         I.st.buildMsLastCall =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count();
     }
@@ -788,25 +933,11 @@ void Catalog::stormsAt(double t, std::vector<const Storm *> &out) {
         for (size_t i = 0; i < T.size(); ++i)
             if (t >= T[i].x && t < T[i].y) out.push_back(&it->second[i]);
     }
-    // The line systems' own bins (3 h, looking back kLineMaxLifeS).
     {
-        const int64_t l1 = (int64_t)std::floor(t / kLineBinS);
-        const int64_t l0 = (int64_t)std::floor((t - kLineMaxLifeS) / kLineBinS);
-        for (auto it = I.lineBins.begin(); it != I.lineBins.end();)
-            if (it->first < l0 - 2 || it->first > l1 + 2) { I.lineBinT.erase(it->first); it = I.lineBins.erase(it); }
-            else ++it;
         int nLine = 0;
         for (int64_t b = l0; b <= l1; ++b) {
             auto it = I.lineBins.find(b);
-            if (it == I.lineBins.end()) {
-                const auto c0 = std::chrono::steady_clock::now();
-                std::vector<Storm> v;
-                I.buildLineBin(b, v);
-                it = I.lineBins.emplace(b, std::move(v)).first;
-                ++I.st.binsBuiltLastCall;
-                I.st.buildMsLastCall +=
-                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count();
-            }
+            if (it == I.lineBins.end()) continue;
             const std::vector<glm::dvec2> &T = Impl::timesOf(I.lineBinT, b, it->second);
             for (size_t i = 0; i < T.size(); ++i)
                 if (t >= T[i].x && t < T[i].y) { out.push_back(&it->second[i]); ++nLine; }
@@ -824,6 +955,7 @@ void Catalog::towersAt(double t, std::vector<Tower> &out) {
 }
 
 void Catalog::towersAt(double t, const std::vector<const Storm *> &storms, std::vector<Tower> &out) {
+    FPROF_SCOPE("wx.towersAt");
     out.clear();
     for (const Storm *S : storms) {
         const glm::dvec3 c = S->centreAt(t);
@@ -882,6 +1014,7 @@ void Catalog::shieldsAt(double t, const ShieldParams &p, std::vector<Shield> &ou
 
 void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, const ShieldParams &p,
                         std::vector<Shield> &out) {
+    FPROF_SCOPE("wx.shieldsAt");
     out.clear();
     const double R = (double)impl_->set.towerRadiusM;
     for (const Storm *S : storms) {
@@ -1343,6 +1476,7 @@ const Cyclone *Catalog::findCyclone(uint64_t id) const {
 }
 
 void Catalog::cyclonesAt(double t, std::vector<CycloneState> &out) {
+    FPROF_SCOPE("wx.cyclonesAt");
     out.clear();
     Impl &I = *impl_;
     if (!I.configured) return;
@@ -1352,6 +1486,22 @@ void Catalog::cyclonesAt(double t, std::vector<CycloneState> &out) {
     for (auto it = I.seasons.begin(); it != I.seasons.end();) {
         const int yy = (int)(it->first % 100000);
         it = (yy < y - 2 || yy > y + 2) ? I.seasons.erase(it) : std::next(it);
+    }
+    {   // The seasons not cached yet, built on the pool (a new year after a jump: up to 18 at once).
+        std::vector<int64_t> miss;
+        for (int b = 0; b < kCycloneBasins; ++b)
+            for (int yy = y - 1; yy <= y + 1; ++yy) {
+                const int64_t k = (int64_t)b * 100000 + yy;
+                if (I.seasons.find(k) == I.seasons.end()) miss.push_back(k);
+            }
+        if (!miss.empty()) {
+            FPROF_SCOPE("wx.buildSeasons");
+            std::vector<std::vector<Cyclone>> built(miss.size());
+            I.pool.run(miss.size(), [&](size_t j) {
+                I.buildSeason((int)(miss[j] / 100000), (int)(miss[j] % 100000), built[j]);
+            });
+            for (size_t j = 0; j < miss.size(); ++j) I.seasons.emplace(miss[j], std::move(built[j]));
+        }
     }
     // Map frame from Earth-fixed: the inverse of Env::mapToEarth (a rotation about the pole), from its basis images.
     const glm::dvec3 ex = I.env.mapToEarth ? I.env.mapToEarth(glm::dvec3(1, 0, 0), t) : glm::dvec3(1, 0, 0);

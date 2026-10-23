@@ -176,6 +176,9 @@ struct Env {
     std::function<glm::dvec3(const glm::dvec3 &mapDir, double t)> mapToEarth;
     // Land share at an Earth-fixed direction: 0 sea .. 1 land.
     std::function<float(const glm::dvec3 &earthDir)> land;
+    // Optional, the same at a latitude and longitude (radians, = asin(z) and atan2(y, x) of the Earth-fixed direction):
+    // it must equal land() there exactly. The spawn cells' pass uses it (their latitude is cached).
+    std::function<float(double latRad, double lonRad)> landAt;
     // The Sun's Earth-fixed unit direction at time t (local solar time comes from it).
     std::function<glm::dvec3(double t)> sunEarth;
 };
@@ -236,6 +239,9 @@ public:
     // Threads for building bins (default 1). Above 1 the Env callbacks are called from worker threads at once,
     // so they must be thread-safe; the result is identical for any count.
     void setBuildThreads(int n);
+    // fn(0 .. n-1) on the catalog's build threads (the caller is one of them); returns when all are done. Main thread
+    // only, never from inside fn.
+    void parallelFor(size_t n, const std::function<void(size_t)> &fn);
     // Diagnostics: the spawn rate's calibration constant and each kind's mean lifetime (s).
     double calibrationK() const;
     double calibrationKLine() const;
