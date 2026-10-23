@@ -1,5 +1,6 @@
 #include "Weather.h"
 #include "StormClimatology.h"
+#include "../FrameProfile.h"
 
 #include <algorithm>
 #include <chrono>
@@ -232,6 +233,7 @@ struct Catalog::Impl {
         const int64_t k = (int64_t)basin * 100000 + year;
         auto it = seasons.find(k);
         if (it == seasons.end()) {
+            FPROF_SCOPE("wx.buildSeason");
             std::vector<Cyclone> v;
             buildSeason(basin, year, v);
             it = seasons.emplace(k, std::move(v)).first;
@@ -746,6 +748,7 @@ void Catalog::stormsInBin(int64_t bin, std::vector<const Storm *> &out) {
 }
 
 void Catalog::stormsAt(double t, std::vector<const Storm *> &out) {
+    FPROF_SCOPE("wx.stormsAt");
     Impl &I = *impl_;
     out.clear();
     I.st.binsBuiltLastCall = 0;
@@ -762,6 +765,7 @@ void Catalog::stormsAt(double t, std::vector<const Storm *> &out) {
     for (int64_t b = b0; b <= b1; ++b)
         if (I.bins.find(b) == I.bins.end()) missing.push_back(b);
     if (!missing.empty()) {
+        FPROF_SCOPE("wx.buildBins");
         const auto c0 = std::chrono::steady_clock::now();
         std::vector<std::vector<Storm>> built(missing.size());
         if (I.threads > 1 && missing.size() > 1) {
@@ -799,6 +803,7 @@ void Catalog::stormsAt(double t, std::vector<const Storm *> &out) {
         for (int64_t b = l0; b <= l1; ++b) {
             auto it = I.lineBins.find(b);
             if (it == I.lineBins.end()) {
+                FPROF_SCOPE("wx.buildLineBin");
                 const auto c0 = std::chrono::steady_clock::now();
                 std::vector<Storm> v;
                 I.buildLineBin(b, v);
@@ -824,6 +829,7 @@ void Catalog::towersAt(double t, std::vector<Tower> &out) {
 }
 
 void Catalog::towersAt(double t, const std::vector<const Storm *> &storms, std::vector<Tower> &out) {
+    FPROF_SCOPE("wx.towersAt");
     out.clear();
     for (const Storm *S : storms) {
         const glm::dvec3 c = S->centreAt(t);
@@ -882,6 +888,7 @@ void Catalog::shieldsAt(double t, const ShieldParams &p, std::vector<Shield> &ou
 
 void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, const ShieldParams &p,
                         std::vector<Shield> &out) {
+    FPROF_SCOPE("wx.shieldsAt");
     out.clear();
     const double R = (double)impl_->set.towerRadiusM;
     for (const Storm *S : storms) {
@@ -1166,6 +1173,7 @@ const Cyclone *Catalog::findCyclone(uint64_t id) const {
 }
 
 void Catalog::cyclonesAt(double t, std::vector<CycloneState> &out) {
+    FPROF_SCOPE("wx.cyclonesAt");
     out.clear();
     Impl &I = *impl_;
     if (!I.configured) return;

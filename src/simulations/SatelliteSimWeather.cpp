@@ -346,6 +346,13 @@ void SatelliteSim::updateStorms()
             b = -1e30;
     stormPrevUploadT = t;
     stormUploadedT = t;
+    // Sections of this function (local splits: fprof::mark would move recordCompute's own rc.seg splits).
+    auto splitT = std::chrono::steady_clock::now();
+    auto split = [&splitT](const char *name) {
+        const auto now = std::chrono::steady_clock::now();
+        fprof::add(name, std::chrono::duration<float, std::milli>(now - splitT).count());
+        splitT = now;
+    };
     std::vector<const wx::Storm *> stormsNow;
     stormCatalog->stormsAt(t, stormsNow);
     stormCatalog->towersAt(t, stormsNow, stormTowers);
@@ -353,6 +360,7 @@ void SatelliteSim::updateStorms()
     stormCatalog->cyclonesAt(t, stormCyclonesNow);
     stormCatalog->cycloneTowersAt(t, stormCyclonesNow, stormTowers);
     const auto tCat = std::chrono::steady_clock::now();
+    split("storms.catalog");
 
     // Strongest first: past the buffer's capacity the weakest go, and a crowded bin keeps its strongest.
     std::sort(stormTowers.begin(), stormTowers.end(), [](const wx::Tower &a, const wx::Tower &b) {
@@ -360,6 +368,7 @@ void SatelliteSim::updateStorms()
                                         : (a.stormId != b.stormId ? a.stormId < b.stormId : a.towerIndex < b.towerIndex);
     });
     const uint32_t nT = (uint32_t)std::min<size_t>(stormTowers.size(), kStormMaxTowers);
+    split("storms.sort");
     {
         const StormStats prev = stormStats;
         stormStats = {};
@@ -420,6 +429,7 @@ void SatelliteSim::updateStorms()
         stormGpuTowers[i] = g;   // the envelope index's copy is made from these (buildStormEnvIndex)
         listStormBins(d, reach, i, kStormBinsPerFace, stormEntries);
     }
+    split("storms.towerBins");
     auto *list = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kStormListOffset);
     const StormIndexStats ix = fillStormIndex(stormEntries, stormTable, stormCounts, kStormTableSize, kStormListSize,
                                               kStormMaxPerBin, list);
@@ -430,6 +440,7 @@ void SatelliteSim::updateStorms()
     head[2] = start;
     head[3] = (uint32_t)cv2Frame;
     const auto tIdx = std::chrono::steady_clock::now();
+    split("storms.towerIndex");
 
     // The anvil shields (2026-10-23): one per storm, alive or lingering. Listed in every coarse bin their capsule
     // touches (the disc round the spine's middle that holds it).
@@ -497,6 +508,7 @@ void SatelliteSim::updateStorms()
         stormStats.shieldTruncated = (int)sx.truncated;
     }
 
+    split("storms.shields");
     stormStats.towers = (int)nT;
     stormStats.bins = (int)bins;
     stormStats.entries = (int)entries;
