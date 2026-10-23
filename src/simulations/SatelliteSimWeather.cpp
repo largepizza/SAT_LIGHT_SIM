@@ -202,7 +202,7 @@ StormIndexStats fillStormIndex(const std::vector<E> &ents, std::vector<glm::uvec
         const uint32_t c = std::min(counts[sl], maxPerBin);
         st.truncated += counts[sl] - c;
         if (start + c > listSize) { table[sl] = glm::uvec2(0u); st.lost += c; continue; }
-        table[sl].y = (start << 4u) | 0u;   // count filled below
+        table[sl].y = (start << 5u) | 0u;   // count filled below (5 bits: cv2_storms.glsl's bins decode y >> 5, y & 31)
         start += c;
     }
     if (hostList.size() < start) hostList.resize(start);
@@ -210,9 +210,9 @@ StormIndexStats fillStormIndex(const std::vector<E> &ents, std::vector<glm::uvec
     {
         const uint32_t sl = slotOf(e.key);
         if (sl == 0xFFFFFFFFu || table[sl].x != e.key) continue;
-        const uint32_t c = table[sl].y & 15u;
+        const uint32_t c = table[sl].y & 31u;
         if (c >= maxPerBin) continue;
-        hostList[(table[sl].y >> 4u) + c] = e.tower;
+        hostList[(table[sl].y >> 5u) + c] = e.tower;
         table[sl].y += 1u;
         ++st.entries;
     }

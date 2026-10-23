@@ -908,6 +908,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   in CloudParams `seaCycA/B`, 11040 -> 11104, `weatherFillSeaParams`; `oceanSeaState` takes max(its state, (U / 9 m/s)^1.3,
   at most 5) on the same profile: whitecapped seas, surf on a landfall coast). OUTFLOW cirrus: a second, weak (0.25), aged
   (0.85) shield per cyclone to max(1.6 CDO, 0.6 outer) — the orphan-anvil look; at 0.4 it drew grey blotches between the arms.
+  ARM CIRRUS (2026-10-23, the user: "wispier"): per arm a chain of 4 thin, aged (0.9) capsule shields along its crest (the
+  bake's spiral), 0.75 CDO .. 0.95 outer, a quarter of the arms' spacing wide, strength 0.32 falling 55% outward: frayed ice
+  veils feathering the bands. Up to ~22 shields a cyclone, so a bin entry's count is 5 bits now (`y >> 5`, `& 31`, every
+  storm index; kShieldMaxPerBin 31; the march stays at 128 registers).
   Harness `storms cyclones`, `storms season basin=<0-5> year=`, `storms go cyclone=<name|id|strongest>`. Not yet:
   storm surge, extratropical transition's look, the eyewall's lightning share.
   **Tornadoes and waterspouts (2026-10-23, `SatelliteSim::tornadoOf` / `weatherFillTornadoes`, SatelliteSimWeather.cpp):**

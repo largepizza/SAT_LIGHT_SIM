@@ -1620,6 +1620,42 @@ void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, st
         O.age01 = 0.85f;
         O.stormId = S.c->id ^ 0x0F10ull;
         if (O.strength > 0.0f) out.push_back(O);
+        // CIRRUS along the spiral arms (2026-10-23, the user: "wispier still"): each arm's crest (the bake's spiral:
+        // CycloneState::arms / tanPitch / bandRot) as a chain of 4 thin capsules from inside the CDO's edge out to the
+        // outer bands, ~a quarter of the spacing between arms wide (frayed out to 1.6 of it by the shader), aged and thin,
+        // weaker outward: ice streaming off the bands' tops, feathering their outlines.
+        const double ds = smooth01(25.0, 45.0, (double)S.vmax);
+        if (ds > 0.0 && S.cdoR > 0.0f)
+        {
+            glm::dvec3 e, n;
+            eastNorth(S.map, e, n);
+            const int nA = std::max(2, (int)std::floor((double)S.arms + 0.15));
+            const double rmw = std::max((double)S.rmw, 5000.0), r0 = 0.75 * (double)S.cdoR,
+                         r1 = std::max(0.95 * (double)S.outerR, 1.3 * r0);
+            constexpr int kSeg = 4;
+            auto armPt = [&](int m, double r) {
+                const double th = (double)S.c->hemi * (2.0 * kPi * m / nA - std::log(r / rmw) / (double)S.tanPitch - S.bandRot);
+                return moveAlong(S.map, e * std::cos(th) + n * std::sin(th), r);
+            };
+            for (int m = 0; m < nA; ++m)
+                for (int k = 0; k < kSeg; ++k)
+                {
+                    const double fa = (double)k / kSeg, fb = (double)(k + 1) / kSeg;
+                    const double ra = r0 * std::pow(r1 / r0, fa), rb = r0 * std::pow(r1 / r0, fb);
+                    Shield A = Sh;
+                    A.a = armPt(m, ra);
+                    A.b = armPt(m, rb);
+                    const double gap = 2.0 * kPi / nA * (double)S.tanPitch;   // the arms' radial spacing / r
+                    A.rA = (float)(0.25 * gap * ra);
+                    A.rB = (float)(0.25 * gap * rb);
+                    A.strength = (float)(0.32 * (1.0 - 0.55 * fa) * ds);
+                    A.thick = 0.25f;
+                    A.age01 = 0.9f;
+                    A.eyeR = 0.0f;
+                    A.stormId = S.c->id ^ (0xA000ull + 16ull * (uint64_t)m + (uint64_t)k);
+                    out.push_back(A);
+                }
+        }
     }
 }
 

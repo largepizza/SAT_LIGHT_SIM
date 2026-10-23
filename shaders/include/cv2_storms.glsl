@@ -28,7 +28,7 @@ const uint kCv2ShieldMax          = 4096u;
 const uint kCv2ShieldTableSize    = 16384u;
 const uint kCv2ShieldListSize     = 65536u;
 const uint kCv2ShieldBinsPerFace  = 64u;
-const uint kCv2ShieldMaxPerBin    = 15u;
+const uint kCv2ShieldMaxPerBin    = 31u;      // (5 bits of a bin entry: 2026-10-23, a cyclone's arm cirrus)
 const uint kCv2CycloneMax         = 8u;   // tropical cyclones (the weather bake stamps their bands, eyewall and eye)
 
 struct CV2Tower {
@@ -131,7 +131,7 @@ uvec2 cv2StormBin(vec3 wd)
     uint h   = cv2StormHash(key) & (kCv2StormTableSize - 1u);
     [[dont_unroll]] for (int p = 0; p < 32; ++p) {
         uvec2 e = cv2StormTable[h];
-        if (e.x == key) return uvec2(e.y >> 4u, e.y & 15u);
+        if (e.x == key) return uvec2(e.y >> 5u, e.y & 31u);
         if (e.x == 0u) break;
         h = (h + 1u) & (kCv2StormTableSize - 1u);
     }
@@ -163,7 +163,7 @@ float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
     uvec2 bin = uvec2(0u);
     [[dont_unroll]] for (int p = 0; p < 32; ++p) {
         uvec2 e = cv2ShieldTable[h];
-        if (e.x == key) { bin = uvec2(e.y >> 4u, e.y & 15u); break; }
+        if (e.x == key) { bin = uvec2(e.y >> 5u, e.y & 31u); break; }
         if (e.x == 0u) break;
         h = (h + 1u) & (kCv2ShieldTableSize - 1u);
     }
@@ -192,7 +192,7 @@ uvec2 cv2ShieldEnvBin(vec3 wd)
     uint h   = cv2StormHash(key) & (kCv2ShieldTableSize - 1u);
     [[dont_unroll]] for (int p = 0; p < 32; ++p) {
         uvec2 e = cv2ShieldEnvTable[h];
-        if (e.x == key) return uvec2(e.y >> 4u, e.y & 15u);
+        if (e.x == key) return uvec2(e.y >> 5u, e.y & 31u);
         if (e.x == 0u) break;
         h = (h + 1u) & (kCv2ShieldTableSize - 1u);
     }
@@ -207,7 +207,7 @@ uvec2 cv2StormEnvBin(vec3 wd)
     uint h   = cv2StormHash(key) & (kCv2StormEnvTableSize - 1u);
     [[dont_unroll]] for (int p = 0; p < 32; ++p) {
         uvec2 e = cv2StormEnvTable[h];
-        if (e.x == key) return uvec2(e.y >> 4u, e.y & 15u);
+        if (e.x == key) return uvec2(e.y >> 5u, e.y & 31u);
         if (e.x == 0u) break;
         h = (h + 1u) & (kCv2StormEnvTableSize - 1u);
     }

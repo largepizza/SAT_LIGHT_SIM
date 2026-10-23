@@ -4741,7 +4741,7 @@ private:
     struct GpuStormShield { glm::vec4 a, b, c, d; };
     static_assert(sizeof(GpuStormShield) == 64, "GpuStormShield == cv2_storms.glsl's CV2Shield");
     static constexpr uint32_t kShieldMax = 4096, kShieldTableSize = 16384, kShieldListSize = 65536,
-                              kShieldBinsPerFace = 64, kShieldMaxPerBin = 15;
+                              kShieldBinsPerFace = 64, kShieldMaxPerBin = 31;   // (31: a cyclone's arm cirrus)
     static constexpr VkDeviceSize kShieldHeadOffset = kStormListOffset + 4ull * kStormListSize;
     static constexpr VkDeviceSize kShieldsOffset = kShieldHeadOffset + 16;
     static constexpr VkDeviceSize kShieldTableOffset = kShieldsOffset + 64ull * kShieldMax;
