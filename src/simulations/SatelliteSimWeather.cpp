@@ -78,6 +78,33 @@ void listStormBins(const glm::dvec3 &d, double radius, uint32_t tower, uint32_t 
     const glm::dvec3 north = glm::cross(d, east);
     const double binA = 1.5707963267948966 / nB;
     const double ang = radius / kReW;
+    // Fast path: a small disc well inside its centre's face. A face's equal-angle coordinate ax = atan(u / mj) changes at
+    // 1 / sqrt(mj^2 + u^2) per unit of arc (at most sqrt(2) on a face), so with that rate at the centre (+5%, the rate
+    // varies little over < 0.05 rad) the rectangle about the centre's coordinates bounds the disc as the rim's sampled
+    // one does (4 atans instead of ~68).
+    {
+        int f0;
+        stormBinKey(d, nB, &f0);
+        double cx, cy;
+        if (ang < 0.05 && faceAngles(d, f0, cx, cy))
+        {
+            const int fc = f0 >> 1;
+            const double mj = std::abs((fc == 0) ? d.x : ((fc == 1) ? d.y : d.z));
+            const double ux = (fc == 0) ? d.y : d.x, uy = (fc == 2) ? d.y : d.z;
+            const double dAx = 1.05 * ang / std::sqrt(mj * mj + ux * ux) + 1e-5;
+            const double dAy = 1.05 * ang / std::sqrt(mj * mj + uy * uy) + 1e-5;
+            if (std::abs(cx) + dAx >= 0.785 || std::abs(cy) + dAy >= 0.785) goto rim;
+            auto idx = [&](double a) {
+                return (int)std::clamp(std::floor((a + 0.7853981633974483) / binA), 0.0, (double)(nB - 1));
+            };
+            const int i0 = idx(cx - dAx), i1 = idx(cx + dAx), j0 = idx(cy - dAy), j1 = idx(cy + dAy);
+            for (int jj = j0; jj <= j1; ++jj)
+                for (int ii = i0; ii <= i1; ++ii)
+                    out.push_back({1u + (uint32_t)f0 * nB * nB + (uint32_t)jj * nB + (uint32_t)ii, tower});
+            return;
+        }
+    }
+rim:
     int faces[17];
     int nf = 0;
     glm::dvec3 rim[17];
@@ -299,6 +326,7 @@ void SatelliteSim::updateStorms()
     std::vector<const wx::Storm *> stormsNow;
     stormCatalog->stormsAt(t, stormsNow);
     stormCatalog->towersAt(t, stormsNow, stormTowers);
+    const auto tCat = std::chrono::steady_clock::now();
 
     // Strongest first: past the buffer's capacity the weakest go, and a crowded bin keeps its strongest.
     std::sort(stormTowers.begin(), stormTowers.end(), [](const wx::Tower &a, const wx::Tower &b) {
@@ -369,6 +397,7 @@ void SatelliteSim::updateStorms()
     head[1] = bins;
     head[2] = start;
     head[3] = (uint32_t)cv2Frame;
+    const auto tIdx = std::chrono::steady_clock::now();
 
     // The anvil shields (2026-10-23): one per storm, alive or lingering. Listed in every coarse bin their capsule
     // touches (the disc round the spine's middle that holds it).
@@ -423,7 +452,11 @@ void SatelliteSim::updateStorms()
     stormStats.entries = (int)entries;
     stormStats.truncated = (int)truncated;
     stormStats.lost = (int)lost;
-    stormStats.cpuMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    const auto tEnd = std::chrono::steady_clock::now();
+    stormStats.cpuMs = std::chrono::duration<double, std::milli>(tEnd - t0).count();
+    stormStats.msCatalog = std::chrono::duration<double, std::milli>(tCat - t0).count();
+    stormStats.msTowerIndex = std::chrono::duration<double, std::milli>(tIdx - tCat).count();
+    stormStats.msShields = std::chrono::duration<double, std::milli>(tEnd - tIdx).count();
 }
 
 // The ENVELOPE index for the weather bake's storm cloud field (cloud_v2_weather.comp stormStamp): every tower stronger

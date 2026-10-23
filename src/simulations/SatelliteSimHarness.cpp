@@ -754,6 +754,8 @@ json SatelliteSim::harnessStateJson()
         w["shield_truncated"] = stormStats.shieldTruncated;
         w["line_systems"] = stormStats.lineSystems;
         w["cpu_ms"] = stormStats.cpuMs;
+        w["cpu_ms_split"] = {{"catalog", stormStats.msCatalog}, {"tower_index", stormStats.msTowerIndex},
+                             {"shields", stormStats.msShields}};
         if (stormCatalog)
         {
             const wx::Catalog::Stats cs = stormCatalog->stats();

@@ -820,6 +820,34 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   storm. (3) The cube re-bakes a face at most 45 s behind with storms stamped, and every face after a jump of > 15 min.
   The rain core under a dominant tower is its body (it was an ellipse 2.5x longer downwind, under the anvil, where
   there is no cloud below). Cost: within noise at 1 h/s (bake), 128 registers.
+  **Anvil SHIELDS (2026-10-23, issues 20261023_002905 / _001522):** every storm has one (`wx::Shield`, `Catalog::shieldsAt`;
+  `CV2Shield` 64 B + its own index of 64-per-face bins, `cv2ShieldAt`, between the tower list and the env block of
+  `stormBuf`): a capsule from 0.3 rA upwind of the anvil-reaching towers' heads (strength-weighted) to L downwind (L grows
+  at 0.6 x the storm's `upperWind` to 45 / 90 / 160 km by kind), radius rA (the head) growing to 1.15 rA + 0.25 L. Its
+  strength rises over 15 min after a tower first passes 0.42 (`TowerSpec::anvOn`, precomputed at birth) and LINGERS
+  `Storm::linger` (35-240 min by kind, drawn after the towers' Rng draws so every storm's towers stayed as they were) after
+  the last falls below it, drifting at 0.8 x upperWind, thinning (thick x 0.4, density x 0.5) and fraying (`age01`): orphan
+  anvils turning into cirrus. `Storm::life` includes the linger (`kMaxLifeS` 8 h); the spawn rate is calibrated on the
+  towers' life alone, so storm counts are unchanged. `cv2AnvilSigmaP` reads the shields instead of the map's cumulonimbus
+  typing when storm objects are on (`cv2ShieldsOn`: `cv2ShieldHead.y`): fed by the map, shields stood over regions with no
+  tower ("stranded anvils"). Its outline is frayed by the cluster fBm (x6-7.5: that field only spreads +-0.06) and the
+  storm lobes at 1x and 3x, the factor floored at 0.8 so the outline never passes the 1.6 radii the shield is binned to (the
+  capsule's clean profile drew white pills from orbit), and `presA` is 0 at its 0.05 cutoff (it kept 2% there: at Anvils 8
+  a view along the edge drew a hard arc). The user's anvil tune is the default (Anvils 8, thickness 3.7 km, hang 0.87 km,
+  puffiness 0.45, lift 230 m, head lobes 0.12, lobes 0.37, waist 0.89, overshoot 0.14 km, storm erosion 0.24).
+  **Squall lines and MCSs (2026-10-23):** `StormKind::SquallLine` / `Mcs`, spawned by their own pass (`buildLineBin`: 3-h
+  bins looking back `kLineMaxLifeS` 22 h, 6-degree cells, the flash climatology's monthly mean x `lineSystemFactor`
+  (warm-season mid-latitude continents, the Sahel / monsoon band, tropical oceans) x an evening peak over land; mean
+  `targetLineActive` 160 worldwide at moisture 1, ~15 at the reports' dates; "Storm complexes (x)" `storm_complexes`, slot
+  325). A line of 3-16 REGENERATING tower slots (`TowerSpec::period`, `towerCycleAt`: a new cell every 45-75 min while the
+  system's envelope [sysOn, sysOff] allows, each its own seed and a shift along the line) across the motion (9-17 m/s;
+  an MCS's slower arc with cells straggling behind), the middle forming first and the ends dying first; squall lines
+  180-520 km long. Their shield is a capsule along the line behind it (45% of the trail), radius 0.55 trail + the tower
+  radius. The weather bake (`stormStamp`, from the shields' flowed copy `cv2EnvShields` and their env index) stamps the
+  TRAILING STRATIFORM region (deck + rain, the weaker transition zone 12-55 km behind), a SHELF-cloud band 1-22 km ahead
+  (stratiform type: low and smooth-based) and clear air 25-90 km ahead. Not yet: a real shelf / arcus volume, bow echoes'
+  rear-inflow notch, MCS remnant vortices. Harness `storms list [kind=] [n=]`, `storms go storm=<id> | kind=squall|mcs|super
+  [day=1]` (day: the Sun > 20 deg there), `state` -> `weather.shields / line_systems / cpu_ms_split`.
 - **Pass 20 (2026-09-29):** "Storm cumulus top" reaches the cloud AROUND a storm: the weather map
   types only a storm's core as Cb (which the towers cover) and the cloud around it as stratocumulus,
   so keyed on the Cb class the slider changed 0.2% of a storm view. Low cloud now takes it by storm

@@ -4609,7 +4609,8 @@ private:
     double stormPrevUploadT = -1e300;            // the previous upload's sim time (a jump re-bakes the weather cube)
     struct StormStats { int towers = 0, bins = 0, entries = 0, truncated = 0, lost = 0, dropped = 0; double cpuMs = 0;
                         int envBins = 0, envEntries = 0, envTruncated = 0, envLost = 0;
-                        int shields = 0, shieldBins = 0, shieldEntries = 0, shieldTruncated = 0, lineSystems = 0; } stormStats;
+                        int shields = 0, shieldBins = 0, shieldEntries = 0, shieldTruncated = 0, lineSystems = 0;
+                        double msCatalog = 0, msTowerIndex = 0, msShields = 0; } stormStats;
     void createStormBuffer(VulkanContext &ctx);
     void destroyStormBuffer(VkDevice device);
     void updateStorms();                         // per frame, before the clouds are recorded
