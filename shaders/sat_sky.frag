@@ -3945,6 +3945,8 @@ void main() {
     // halo the shape of the city). Only from 800-3000 km up: lower, a 10-20 km texel spans tens of pixels and
     // bilinear filtering draws it as squares (tried from 30 km: blocky halos round every town from 400 km).
     float cityGlowOrbitK = smoothstep(800000.0, 3000000.0, obsEffH);
+    // The same gate the composite applies below (nightFactor): no city glow is drawn while it is 0.
+    bool cityGlowOn = smoothstep(-0.05, 0.1, sunDirENU.w) < 1.0;
     // The city glow's share IN FRONT of the clouds (review 5): the composite multiplies the whole
     // sky by the cloud's transmittance, and the cloud march's own airlight has no city glow, so at
     // night every cloud erased the glowing air between it and the eye — the clouds along the horizon
@@ -4132,15 +4134,20 @@ void main() {
             vec3  spECEF    = sp.x * enuX + sp.y * enuY + sp.z * enuZ;
             float spLen     = length(spECEF);
             vec3  spDirECEF = spECEF / spLen;
-            float spLat     = asin(clamp(spDirECEF.z, -1.0, 1.0));
-            float spLon     = atan(spDirECEF.y, spDirECEF.x);
-            vec2  spUV      = vec2((spLon + PI) / (2.0*PI), (0.5*PI - spLat) / PI);
-            float spLod     = mix(4.0, clamp(log2(max(length(sp) - R_EARTH, 1500.0) * (3.0 / 4900.0)), 0.0, 4.0), cityGlowOrbitK);
-            float spLum     = dot(textureLod(earthNightTex, spUV, spLod).rgb, vec3(0.2126, 0.7152, 0.0722));
-            vec3  attnCam   = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
-            accumCity += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0));
-            accumCityFront += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0))
-                            * (1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + 0.5) * segLen));
+            // The city glow is composited x nightFactor (below the loop: 0 once the observer's Sun is ~5.7 deg up),
+            // so by day its night-map fetch, asin, atan and exp per step were pure waste (2026-10-23, perf). The
+            // gate is uniform (the observer's Sun), the result identical.
+            if (cityGlowOn) {
+                float spLat     = asin(clamp(spDirECEF.z, -1.0, 1.0));
+                float spLon     = atan(spDirECEF.y, spDirECEF.x);
+                vec2  spUV      = vec2((spLon + PI) / (2.0*PI), (0.5*PI - spLat) / PI);
+                float spLod     = mix(4.0, clamp(log2(max(length(sp) - R_EARTH, 1500.0) * (3.0 / 4900.0)), 0.0, 4.0), cityGlowOrbitK);
+                float spLum     = dot(textureLod(earthNightTex, spUV, spLod).rgb, vec3(0.2126, 0.7152, 0.0722));
+                vec3  attnCam   = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+                accumCity += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0));
+                accumCityFront += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0))
+                                * (1.0 - smoothstep(0.9 * tCloudFrontM, 1.1 * tCloudFrontM, tStart + (float(i) + 0.5) * segLen));
+            }
 
             // Airglow (C15): green (96km) + sodium (90km) bands both fall inside this loop's
             // own altitude range (h spans 0..~100km along an open-sky ray), so they ride these
