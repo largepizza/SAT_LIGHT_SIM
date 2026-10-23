@@ -919,6 +919,7 @@ void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, cons
             Sh.rain = (float)(act * (1.0 - 0.8 * age01));
             Sh.lineK = 1.0f;
             Sh.rear = glm::vec3(rear);
+            Sh.bowM = S->bow;
             out.push_back(Sh);
             continue;
         }

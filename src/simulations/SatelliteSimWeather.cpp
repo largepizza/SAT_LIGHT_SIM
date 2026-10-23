@@ -452,7 +452,9 @@ void SatelliteSim::updateStorms()
             GpuStormShield g;
             g.a = glm::vec4(glm::vec3(s.a), s.strength);
             g.b = glm::vec4(glm::vec3(s.b), s.rB);
-            g.c = glm::vec4(s.rA, s.thick, s.age01, s.rain);
+            // (c.w: a line system's rain share + 2 x its bow in whole km: cloud_v2_weather.comp stormStamp unpacks it.)
+            g.c = glm::vec4(s.rA, s.thick, s.age01,
+                            s.lineK > 0.0f ? std::min(s.rain, 0.999f) + 2.0f * std::round(s.bowM / 1000.0f) : s.rain);
             // The convective line's distance ahead of the spine (line systems: the spine sits 45% of the trail behind
             // it; rA = 0.55 trail + the tower radius).
             const float front = s.lineK > 0.0f ? 0.45f / 0.55f * std::max(s.rA - (float)Rb, 0.0f) : 0.0f;
@@ -582,7 +584,8 @@ void SatelliteSim::buildStormEnvIndex()
         const glm::dvec3 mid = glm::normalize(a + b);
         const double half = 0.5 * std::acos(std::clamp(glm::dot(a, b), -1.0, 1.0)) * kReW;
         // + the clear air ahead of the line (100 km past the capsule, stormStamp).
-        listStormBins(mid, 1.03 * (half + std::max(g.c.x, g.b.w)) + 100000.0, i, kShieldBinsPerFace, shieldEnvEntries);
+        listStormBins(mid, 1.03 * (half + std::max(g.c.x, g.b.w)) + 100000.0 + 1000.0 * std::floor(0.5 * g.c.w), i,
+                      kShieldBinsPerFace, shieldEnvEntries);   // (+ the line's bow)
     }
     auto *senv = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldEnvListOffset);
     fillStormIndex(shieldEnvEntries, shieldEnvTable, stormCounts, kShieldTableSize, kShieldListSize, kShieldMaxPerBin,
@@ -895,3 +898,4 @@ void SatelliteSim::weatherFillSeaParams(GpuCloudParams &cp)
         cp.seaCycB[k] = glm::vec4(c.vmax, (float)c.outerR * 1.5f, 0.0f, 0.0f);
     }
 }
+

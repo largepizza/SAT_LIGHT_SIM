@@ -865,7 +865,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   180-520 km long. Their shield is a capsule along the line behind it (45% of the trail), radius 0.55 trail + the tower
   radius. The weather bake (`stormStamp`, from the shields' flowed copy `cv2EnvShields` and their env index) stamps the
   TRAILING STRATIFORM region (deck + rain, the weaker transition zone 12-55 km behind), a SHELF-cloud band 1-22 km ahead
-  (stratiform type: low and smooth-based) and clear air 25-90 km ahead. Not yet: a real shelf / arcus volume, bow echoes'
+  (stratiform type: low and smooth-based) and clear air 25-90 km ahead — all measured from the spine moved forward by
+  the line's BOW (2026-10-23: `Shield::bowM`, packed into the GPU shield's c.w as 2 x whole km over the rain share; the
+  middle towers stand up to ~90 km ahead of a straight spine, which put the band, the clear air and the trailing rain tens of
+  km behind them, the shelf band inside the trailing rain), and no rain falls ahead of the line (`gRainFree`). Tried and
+  dropped: a 3D shelf as tiered plume Gaussians along the gust front (invisible at the overcast's base height, ~150
+  Gaussians). Not yet: a real shelf / arcus volume, bow echoes'
   rear-inflow notch, MCS remnant vortices. Harness `storms list [kind=] [n=]`, `storms go storm=<id> | kind=squall|mcs|super
   [day=1]` (day: the Sun > 20 deg there), `state` -> `weather.shields / line_systems / cpu_ms_split`.
   **Tropical cyclones (v1, 2026-10-23):** `wx::Cyclone`, not Storm records: one per (basin, season year, index), built and

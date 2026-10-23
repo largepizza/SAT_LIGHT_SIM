@@ -94,6 +94,8 @@ struct Shield {
     float rain = 0;             // 0..1: a precipitating stratiform region under it (line systems' trailing rain)
     float lineK = 0;            // 0..1: share of its spine that is a convective line (the leading edge at a)
     glm::vec3 rear{0, 0, 0};    // line systems: map-frame tangent toward the trailing side at the spine's middle
+    float bowM = 0;             // line systems: how far the line's middle stands ahead of its ends (m; the towers'
+                                // bow x (1 - x^2) along the spine, x = -1 .. 1)
     float eyeR = 0;             // tropical cyclones' central dense overcast: the eye's radius (m; 0 none)
     uint32_t seed = 0;
     uint64_t stormId = 0;
