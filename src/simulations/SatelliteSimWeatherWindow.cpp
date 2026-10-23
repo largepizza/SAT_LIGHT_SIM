@@ -1692,6 +1692,8 @@ void SatelliteSim::buildWeatherControlsTab(const UIInput &inp, UIRenderer &ui)
         "x the smoke's optical depth: the columns and the regional pall (clouds_v2.wildfire_smoke)");
     num(9, "Wildfire light", wildfireLight, 0.0f, 5.0f, 0.05f, "%.2f",
         "x the fire front's light: the flickering points and their glow at night (clouds_v2.wildfire_light)");
+    num(11, "Haboobs (x)", haboobGain, 0.0f, 5.0f, 0.05f, "%.2f",
+        "x the dust walls storms' gust fronts raise over deserts (the biome map's dust; clouds_v2.haboobs)");
     uiSection("WxCSec", 1, "LIGHTNING");
     num(4, "Lightning rate: Cb towers (/min each)", cv2LightningRate, 0.0f, 30.0f, 0.1f, "%.1f",
         "Flashes a minute of a full-strength, anvil-reaching tower (clouds_v2.lightning_rate)");

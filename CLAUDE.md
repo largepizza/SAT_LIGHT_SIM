@@ -976,7 +976,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   list header's word 1 (bits 8-17 first, 18-27 count; bits 0-7 the engine lights' count: every reader masks `& 255`).
   `cloud_march.comp` composites smoke SPECTRALLY (`kSmokeSpec`, Angstrom ~1.6: blue extinguished most, no sky light
   given back), reddens the sunlight inside it by its own path to the Sun and the light leaving it by half its view-path
-  depth (thick cores orange-brown, thin edges grey-blue), and gives it per-Gaussian billows at any height (the shared
+  depth (thick cores orange-brown, thin edges grey-blue; both capped: Sun path 3, view 1.2), and gives it per-Gaussian billows at any height (the shared
   ~700 m low field aliased from orbit). `sat_sky.frag` (`smokeSunTransmit`) dims and reddens the Sun's light on land and
   sea under the smoke (the first 96 smoke Gaussians). So the Sun seen through a plume, and the land under it, go
   yellow-orange. **Fire light**: the head and flanks as flickering point sprites in kFireBuf (~-9 mag at 1 km per 50 m of
@@ -987,6 +987,23 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   plume between the eye and the Sun). Cost: ~+1 ms GPU with a big fire near, cloud_march at 128 registers. Not yet: burn
   scars on the ground, pyrocumulus caps, smoke in the far cloud layer / weather bake, a Fires list in the Weather window,
   fire ambience.
+- **Haboobs (2026-10-23, `SatelliteSimHaboob.cpp`).** A storm's gust front lifting dust: `haboobFrontOf` makes the
+  front from this frame's towers (map frame -> Earth-fixed by the drift phase): line systems along their line of towers,
+  dG ahead of the motion (5 km + 14 km x smoothstep(0.5 h, 3 h) of the storm's age), curving back round both ends;
+  multicells / supercells a semicircle round the dominant tower. Where the biome map's DUST x the tower's strength x
+  "Haboobs (x)" (`clouds_v2.haboobs` 1, Weather window > Controls) passes 0.08, a wall Gaussian (1.5-3 km tall, 1.5 km
+  deep, optical depth ~25 through it), a forward-bulging HEAD (the gust front's nose) and every other piece a pall
+  behind. Storms with a dominant / line tower within 350 km (2000 km from orbit), at most 200 Gaussians. They are drawn
+  just before the wildfire smoke and share its range of the dust list (`aerosolFirst`): no sky light given back (the
+  plumes' 0.85 x albedo x background term made a tau-25 wall the grey of the sky whatever its tint), spectral extinction
+  (the Sun through it goes orange, the ground under it is shadowed), the view-path reddening capped (`min(0.5 tau, 1.2)`,
+  the Sun path's at 3: uncapped, a thick wall was saturated orange). Haboob seeds are < 128 (smoke 128-255): walls keep
+  the Earth-fixed low billow field and its lit lumps (cloud_march.comp `isWall`), smoke has its own per-Gaussian billows.
+  Ochre (0.78, 0.55, 0.34) x 0.55 of the plume scale, albedo 0.62. Harness `haboob [hours=48] [dist_km=28] [alt=20]
+  [el=4] [kind=squall|mcs|super|multi] [k=]`: the k-th storm (organised by default) over dust > 0.4 by day, >= 2 h old,
+  the observer ahead of it looking back; `fires` reports `haboobs_now` / `haboob_nearest_km`. Test: `time set
+  2036-07-20T00:00:00Z; haboob` = a Gobi MCS. Cost ~+0.5-1.5 ms where one is drawn. Not yet: dust at the eye inside the
+  wall (brown-out), the wall's motion of its own (it rides with the towers), dust in the far cloud layer.
 - **The Weather window (2026-10-23, `SatelliteSimWeatherWindow.cpp`, `shaders/weather_radar.comp`; the weather-cloud
   button beside Missions on the right HUD panel (`TimeWeatherBtn`, `pixel--weather.png` from `tools/make_icons.py`), key N
   `KB_WEATHER`, window id 12, `wxChrome`; harness `ui open weather [tab=radar|storms|controls]`, `weather ...`).** Missions-

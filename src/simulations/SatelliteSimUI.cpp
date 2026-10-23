@@ -8823,6 +8823,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         wildfireRate = settingClamp(c.value("wildfires", wildfireRate), 0.0f, 10.0f);
         wildfireSmoke = settingClamp(c.value("wildfire_smoke", wildfireSmoke), 0.0f, 5.0f);
         wildfireLight = settingClamp(c.value("wildfire_light", wildfireLight), 0.0f, 5.0f);
+        haboobGain = settingClamp(c.value("haboobs", haboobGain), 0.0f, 5.0f);
         stormComplexes = settingClamp(c.value("storm_complexes", stormComplexes), 0.0f, 10.0f);
         stormCyclones = settingClamp(c.value("storm_cyclones", stormCyclones), 0.0f, 10.0f);
         stormSurge = settingClamp(c.value("storm_surge", stormSurge), 0.0f, 2.0f);
@@ -9464,6 +9465,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"wildfires", wildfireRate},
         {"wildfire_smoke", wildfireSmoke},
         {"wildfire_light", wildfireLight},
+        {"haboobs", haboobGain},
         {"storm_complexes", stormComplexes},
         {"storm_cyclones", stormCyclones},
         {"storm_surge", stormSurge},

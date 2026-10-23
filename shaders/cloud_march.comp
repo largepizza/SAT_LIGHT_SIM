@@ -361,12 +361,13 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
             float lumpL = 1.0;
             float lumpA = 1.0;   // the billows' occlusion of light from inside the mass (the engine lights)
             float tLit  = -1.0;  // where its light comes from along the ray (>= 0: self-shadow the engine lights from there)
-            bool  isSm  = (i - smF) < smN;   // wildfire smoke (smoke.glsl)
+            bool  isSm  = (i - smF) < smN;   // wildfire smoke / haboob dust: the aerosol range (smoke.glsl)
+            bool  isWall = isSm && floor(d.ib.w * 0.25) < 128.0;   // (haboob walls: seeds < 128; smoke 128-255)
             vec3  redd  = vec3(1.0);         // smoke: the sunlight inside it reddened by its own path to the Sun
             if (tau <= 0.01) {
                 // (the faint tails of the low puffs are cut as below: left whole here they drew a thin halo outside a
                 // dark gap round every flame-lit ground cloud at night, rings)
-                float lowK0 = isSm ? 0.0 : 1.0 - smoothstep(3000.0, 12000.0, length(P) - R_EARTH);
+                float lowK0 = (isSm && !isWall) ? 0.0 : 1.0 - smoothstep(3000.0, 12000.0, length(P) - R_EARTH);
                 tau *= 1.0 - lowK0;
             }
             if (tau > 0.01) {   // (fainter: unmodulated; on every faint tail it cost up to 7 ms)
@@ -378,7 +379,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
                 float hP  = length(P) - R_EARTH;
                 // (wildfire smoke keeps its own billows in its own sigma units at any height: its Gaussians are km
                 // wide, and the shared ~700 m field aliased into grain from orbit)
-                float lowK = isSm ? 0.0 : 1.0 - smoothstep(3000.0, 12000.0, hP);
+                float lowK = (isSm && !isWall) ? 0.0 : 1.0 - smoothstep(3000.0, 12000.0, hP);
                 float mN = 1.0;
                 if (lowK < 1.0) {
                     // In the parcel's own frame (2026-10-21): the offset from its centre in Earth-fixed axes, in units of
@@ -460,7 +461,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
                     float IS  = exp(-0.5 * eS) * sqrt(PI / (2.0 * qS)) * (1.0 - dustErf(sqrt(0.5 * qS) * (-tcS)));
                     float tauS = d.ia.w * d.c.w * max(IS, 0.0) * max(mN, 0.2);
                     shade = mix(exp(-tauS), 1.0, mix(0.4, 0.25, lowK));
-                    if (isSm) redd = exp(-tauS * (kSmokeSpec - kSmokeSpec.r));
+                    if (isSm) redd = exp(-min(tauS, 3.0) * (kSmokeSpec - kSmokeSpec.r));   // (light deeper in is multiply scattered: capped)
                 }
                 shade *= lumpL;
             }
@@ -472,7 +473,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
             }
             // Smoke: the light that comes out of a thick column has crossed some of it on the way out (blue lost
             // first): thick cores orange-brown, thin edges grey-blue.
-            if (isSm) redd *= exp(-0.5 * tau * (kSmokeSpec - kSmokeSpec.r));
+            if (isSm) redd *= exp(-min(0.5 * tau, 1.2) * (kSmokeSpec - kSmokeSpec.r));
             Lp   += tau * d.col.rgb * redd * (litP * shade * (1.0 - flS));   // the sunlight it scatters (phase below)
             Lf   += tau * d.col.rgb * redd * (flS * mix(shade, 1.0, 0.5));   // the sky's light
             // (2026-10-20, QA: a burning stage seen from 300 m sat in a white ball hundreds of metres across: its

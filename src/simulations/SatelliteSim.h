@@ -4839,8 +4839,20 @@ private:
         int gauss = 0, points = 0;
     };
     std::vector<FireNow> firesNow;             // alive and in reach this frame, nearest first
-    uint32_t smokeHdrBits = 0;                 // the dust list header word 1's smoke range (smoke.glsl), this frame's
+    uint32_t smokeHdrBits = 0;
+    uint32_t aerosolFirst = 0xFFFFFFFFu;       // this frame's first haboob Gaussian (weatherFillHaboobs; one range with the smoke)                 // the dust list header word 1's smoke range (smoke.glsl), this frame's
     void weatherFillWildfires(GpuDustCloud *out, uint32_t &n);
+    // Haboobs (2026-10-23, SatelliteSimHaboob.cpp): the dust walls on storms' gust fronts over the biome map's dust.
+    struct HaboobPoint
+    {
+        glm::dvec3 dir{0, 0, 1}, out{1, 0, 0}, tan{0, 1, 0};   // Earth-fixed: position, outward (the front's motion), along
+        double strength = 0.0;
+    };
+    float haboobGain = 1.0f;          // clouds_v2.haboobs: x the dust walls (0 = none)
+    int haboobsNow = 0;               // storms drawing one this frame
+    double haboobNearestKm = -1.0;
+    void haboobFrontOf(const wx::Storm &S, double t, std::vector<HaboobPoint> &pts) const;
+    void weatherFillHaboobs(GpuDustCloud *out, uint32_t &n);
     nlohmann::json wildfiresJson(bool world);
     double stormPrevUploadT = -1e300;            // the previous upload's sim time (a jump re-bakes the weather cube)
     double stormLastFrameT = -1e300;             // last frame's sim time, and how many frames in a row moved > 2 h:

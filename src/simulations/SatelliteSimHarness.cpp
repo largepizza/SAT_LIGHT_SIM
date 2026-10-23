@@ -4276,8 +4276,91 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             return Status::Done;
         }
         r = wildfiresJson(c.num("world", 0.0) > 0.0);
+        r["haboobs_now"] = haboobsNow;
+        r["haboob_nearest_km"] = haboobNearestKm;
         r["message"] = std::to_string(firesNow.size()) + " fires in reach" +
                        (r.contains("world_count") ? ", " + std::to_string(r["world_count"].get<size_t>()) + " worldwide" : std::string());
+        return Status::Done;
+    }
+    // `haboob [hours=48] [dist_km=40] [alt=] [kind=squall|mcs|super|multi] [k=0]`: the k-th storm (an organised one by
+    // default) over the biome map's dust (> 0.4 at its centre) with the Sun > 10 deg there and >= 2 h old in the next
+    // `hours`; the clock set to it, the observer dist_km ahead of its motion on the ground, looking back at it.
+    if (n == "haboob")
+    {
+        if (!stormCatalog || !biomeMap.ready()) fail("haboob: no storm catalog / biome map");
+        const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const std::string kind = lower(c.str("kind"));
+        const int want = (int)c.num("k", 0.0);
+        int seen = 0;
+        const wx::Storm *pick = nullptr;
+        double tPick = 0.0;
+        std::vector<uint64_t> tried;
+        for (int step = 0; step <= (int)(c.num("hours", 48.0) * 2.0) && !pick; ++step)
+        {
+            const double tt = tNow + 1800.0 * step;
+            std::vector<const wx::Storm *> v;
+            stormCatalog->stormsAt(tt, v);
+            for (const wx::Storm *S : v)
+            {
+                if (pick) break;
+                if (S->kind == wx::StormKind::AirMass || S->kind == wx::StormKind::Tropical) continue;
+                if (kind == "squall" && S->kind != wx::StormKind::SquallLine) continue;
+                if (kind == "mcs" && S->kind != wx::StormKind::Mcs) continue;
+                if (kind == "super" && S->kind != wx::StormKind::Supercell) continue;
+                if (kind == "multi" && S->kind != wx::StormKind::Multicell) continue;
+                if (kind.empty() && !wx::isLineSystem(S->kind)) continue;
+                if (tt - S->t0 < 7200.0 || tt > S->t0 + S->life * 0.7) continue;
+                if (std::find(tried.begin(), tried.end(), S->id) != tried.end()) continue;
+                const double phh = cloudDriftRate * (tt - kCloudDriftEpochS) + cloudDriftPhaseOffset;
+                const glm::dvec3 m = glm::normalize(S->centreAt(tt));
+                const glm::dvec3 e(m.x * std::cos(phh) + m.y * std::sin(phh), -m.x * std::sin(phh) + m.y * std::cos(phh), m.z);
+                const double lat = glm::degrees(std::asin(std::clamp(e.z, -1.0, 1.0))), lon = glm::degrees(std::atan2(e.y, e.x));
+                if (biomeMap.dustAt(lat, lon) < 0.4f) continue;
+                const glm::dvec3 si = sunDirEciAt(tt);
+                const double g = earthRotationAngle(tt);
+                const glm::dvec3 se(si.x * std::cos(g) + si.y * std::sin(g), -si.x * std::sin(g) + si.y * std::cos(g), si.z);
+                if (glm::dot(glm::normalize(se), e) < std::sin(glm::radians(10.0))) continue;
+                tried.push_back(S->id);
+                if (seen++ == want) { pick = S; tPick = tt; }
+            }
+        }
+        if (!pick) fail("haboob: no organised storm over dust by day in that window");
+        {
+            const double days = std::floor(tPick / 86400.0);
+            simDayJ2000 = (int64_t)days;
+            simSecInDay = tPick - days * 86400.0;
+        }
+        const wx::Storm S = *pick;   // (a copy: the catalog may evict)
+        const double phh = cloudDriftRate * (tPick - kCloudDriftEpochS) + cloudDriftPhaseOffset;
+        auto toE = [&](const glm::dvec3 &m) {
+            return glm::dvec3(m.x * std::cos(phh) + m.y * std::sin(phh), -m.x * std::sin(phh) + m.y * std::cos(phh), m.z);
+        };
+        const glm::dvec3 cm = glm::normalize(S.centreAt(tPick));
+        const glm::dvec3 ce = glm::normalize(toE(cm));
+        glm::dvec3 mv = glm::length(S.vel) > 0.5 ? glm::normalize(glm::cross(glm::normalize(glm::cross(S.pos0, S.vel)), cm))
+                                                 : glm::normalize(glm::dvec3(S.shear));
+        glm::dvec3 me = toE(mv);
+        me = glm::normalize(me - ce * glm::dot(me, ce));
+        const glm::dvec3 oe = glm::normalize(ce + me * (c.num("dist_km", 28.0) * 1000.0 / 6371000.0));
+        if (followActive) stopFollow();
+        obsDir = glm::vec3(oe);
+        obsLatDeg = (float)glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0)));
+        obsLonDeg = (float)glm::degrees(std::atan2(oe.y, oe.x));
+        obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+        obsHeightOffset = std::max(0.0f, std::max(obsTerrainH, 0.0f) + (float)c.num("alt", 20.0));
+        const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe)), oNorth = glm::cross(oe, oEast);
+        const glm::dvec3 to3 = ce - oe * glm::dot(ce, oe);
+        const double az = glm::degrees(std::atan2(glm::dot(to3, oEast), glm::dot(to3, oNorth)));
+        aimCameraAzEl((float)az, (float)c.num("el", 4.0));
+        trailClearPending = true;
+        cv2HistoryValid = false;
+        skyTaaHistValid = false;
+        for (double &bb : cv2WxBakedT) bb = -1e30;
+        r["storm"] = {{"id", std::to_string(S.id)}, {"kind", wx::stormKindName(S.kind)}, {"age_h", (tPick - S.t0) / 3600.0},
+                      {"lat", glm::degrees(std::asin(std::clamp(ce.z, -1.0, 1.0)))}, {"lon", glm::degrees(std::atan2(ce.y, ce.x))},
+                      {"speed_mps", glm::length(S.vel)}};
+        r["message"] = std::string(wx::stormKindName(S.kind)) + " over dust, " +
+                       std::to_string((tPick - tNow) / 3600.0).substr(0, 5) + " h ahead";
         return Status::Done;
     }
     // `biome [<lat> <lon>] [export=<png>]`: the land-cover map (Biome.h) at a point (class, fuel, dust, the season's

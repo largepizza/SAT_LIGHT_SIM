@@ -45,7 +45,12 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n)
     FPROF_SCOPE("weatherFillWildfires");
     smokeHdrBits = 0;
     firesNow.clear();
-    if (!out || wildfireRate <= 0.0f || !biomeMap.ready()) return;
+    if (!out) return;
+    if (wildfireRate <= 0.0f || !biomeMap.ready())
+    {
+        if (n > aerosolFirst) smokeHdrBits = (aerosolFirst << 8u) | ((n - aerosolFirst) << 18u);
+        return;
+    }
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
     const double eyeR = (double)obsEyeRadiusM();
@@ -136,7 +141,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n)
         d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2), (float)(1.0 / (kTwoPi15 * sA * sB * sC)));
         const double lS = sunL.x + sunL.y + sunL.z, lI = skyL.x + skyL.y + skyL.z;
         const double share = std::min(lI / std::max(lI + lS, 1e-9), 0.999);
-        const double seedK = (double)(fwMix(seed) & 255u);
+        const double seedK = 128.0 + (double)(fwMix(seed) & 127u);   // (smoke: seeds 128-255; < 128 = haboob walls)
         d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), (float)(4.0 * seedK + 2.0 + share));
         d.col = glm::vec4(glm::vec3(sunL + skyL), (float)(2.0 + albedo));
         const double R = 5.5 * std::max(sA, std::max(sB, sC));
@@ -316,8 +321,10 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n)
             }
         }
     }
-    const uint32_t cnt = n - first;
-    if (cnt > 0) smokeHdrBits = (first << 8u) | (cnt << 18u);
+    // (one range with the haboobs drawn just before: weatherFillHaboobs sets aerosolFirst)
+    const uint32_t f0 = std::min(first, aerosolFirst);
+    const uint32_t cnt = n - f0;
+    if (cnt > 0) smokeHdrBits = (f0 << 8u) | (cnt << 18u);
 }
 
 nlohmann::json SatelliteSim::wildfiresJson(bool world)
