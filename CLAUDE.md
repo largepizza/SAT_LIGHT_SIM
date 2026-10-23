@@ -1101,7 +1101,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     no validation errors): 58 km 26.3 ms (old defaults 34.0), anvils 29.0 (24.4), cumulus 32.0 (27.2), Pacific 27.7 (25.4):
     full-res clouds cost +2..+5 ms near the ground over the old half-res sparse march, the clipmap and froxels pay part back.
   - **The Sun transmittance volume (S3, 2026-10-22; `cloud_lightning.glsl` cv2Stv / cv2StvT, bake in
-    `cloud_v2_lightning.comp` workgroups 5-17 of its 18, UBO stvL0-3 / stvH / stvV):
+    `cloud_v2_lightning.comp` logical workgroups 5-17, each split over 8 physical ones of 32 rays x 8 threads (a ray's 48
+    knots, 6 a thread, joined by a prefix of their optical depths; dispatch 5 + 13 x 8 — 2026-10-23: one thread a ray on 13
+    workgroups was ~0.9 ms of latency with the GPU idle), UBO stvL0-3 / stvH / stvV):
     THE Sun shadow for the cloud key light, the god rays (froxels or direct reads in sat_sky.frag), the fog / dust and the
     GROUND (one lookup in cloud_march.comp). **The fine grid, the two shaft rings, the cascade and the layer shadow map are
     DELETED** (2026-10-22, the user: "delete it"): their bakes, buffers, UBO fields (sunCasc0-8, layEye / layRef / layBake;
@@ -7291,6 +7293,35 @@ C 2031, D day 32 after the CME; `--run <folders>` checks finished runs) against 
 (p99 / max per rate, the first frame after load, launch to first frame); exit 1 on a regression. **It must run alone
 on the GPU**: other agents' harness apps add 20-100 ms to frames, so it waits for other SAT_LIGHT_SIM processes to
 exit, polls during the run, reruns a scenario that shared the machine and reports it CONTENDED (exit 3) otherwise.
+**Medium storm-view pass (2026-10-23, the user's issue reports 20261023_001522 / _002905 / _003611 / _003455 — tropical
+Pacific storms at sunrise from 0.5-11 km, Medium-like settings, render scale 0.67, 1920x1009; `harness_runs/perfmed/`:
+`base.satcmd` + `parse.py`, `final.satcmd`).** The frame is GPU + the CPU's serial part: with ONE frame in flight
+(`App::drawFrame` waits on the fence first) every ms of `app.record_compute` is a frame ms. Before -> after, uncapped
+(`set display.fps_cap_mode 0`, VSync caps the harness at 16.7): frame 17.6-21.5 -> 14.0-18.2 ms, GPU 13.9-17.6 ->
+12.2-16.4, cloud bucket 6.1-10.7 -> 5.2-9.6, sky 4.7-8.6 -> 4.5-6.5, `record_compute` 2.4-2.9 -> 1.2-1.8. Captures at the
+same frames: mean |diff| 0.3-1.4 levels, within run-to-run noise (`screenshots/overnight_20261023/perf/`).
+- **Never loop over mapped GPU memory on the CPU: memcpy it out first.** HOST_VISIBLE | HOST_COHERENT memory without
+  HOST_CACHED is uncached (each scalar read a bus transaction, ~70 ns), device-local host-visible memory (the flash
+  buffer) is across PCIe (~0.7 us a read): `readExposureMeter`'s 9216 byte reads were 0.67 ms of every frame,
+  `updateRainMotion`'s 1028 float reads of the rain map 0.73 ms (now 0.03 / 0.11).
+- `updateStars` skips the dome / extinction / sizing of a star below the limb or under a shut day gate (all 9000 drew
+  nothing by day: 0.79 -> 0.12 ms) and tabulates the extinction over sin(elevation) (1024 knots, < 0.001 mag).
+- Sky pass: the green / sodium airglow's noise only at 62-130 km (the profiles are < 1e-6 of their peak outside; every
+  step of every ray paid three noise reads wherever the Sun is under ~8.6 deg: 1.4-2.8 ms); the city glow's per-step
+  night-map work skipped while it is composited x 0 (`nightFactor`, the Sun ~5.7 deg up: 0.3-0.4 ms).
+- Clouds: the Sun transmittance volume bake on 8 threads a ray (above: lightning pass 1.9-2.2 -> 0.75-0.8 ms with the
+  next item); the terrain Sun-horizon map not baked with no terrain of 100 m in its reach (CPU DEM, the lines' box
+  across / along the Sun + 60 km) and no land within 60 km (`terrainInSunBox`, `landWithin`; 0.3 ms over open ocean).
+- **What is left** (knockouts / settings A/B'd in one live app): the cloud march 3.6-8 ms (Cb towers ~1.1 ms at
+  `cb_columns` 2; from inside the high layer at 11 km the cirrus ~4 ms; mid layer 0.7-0.9); the god rays ~1.7-2.5 ms of
+  the sky pass + the froxel fill 0.5 ms (a measured gate — steps wholly above the Sun volume's top under a Sun above the
+  local horizon read nothing — saved 0.6-0.8 ms; not committed, the froxel code had another owner that night);
+  full-resolution clouds at Medium +1.5..+4.7 ms (the user's choice, issue 20261022_180607); the atmosphere loop's rest
+  ~2 ms (Sun optical depth 0.3-0.5); `view_samples_max` 96 -> 64 only -0.3 ms after the airglow fix (left). CPU: the
+  launch visuals 0.35-0.6 ms (far built plumes' per-parcel states), the storm update 0.76 ms a frame while sim time runs
+  and `buildStormEnvIndex` 0.9 ms each frame the weather bake runs (every frame at 5 min/s), `thunderStep` 0.22 ms (the
+  rockets' retarded-time scan), stars 0.5 ms at dusk / night. The structural item: overlapping the CPU with the GPU
+  (two frames in flight, or the CPU-only work before the fence) would hide the whole 1.2-4 ms CPU part.
 
 ---
 

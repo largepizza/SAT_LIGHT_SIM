@@ -5384,6 +5384,18 @@ private:
     void updateAmbience(float dt);
     void computeAmbienceContext(float dt);
     bool oceanAt(double latRad, double lonRad) const;
+    // Whether the DEM has any land (oceanMaskCpu: a texel above the sea baseline) within radiusM of a point (2026-10-23:
+    // the terrain Sun-horizon map is not baked over open ocean). A box in lat / lon around the circle, word-wise.
+    bool landWithin(double latRad, double lonRad, double radiusM) const;
+    // Whether earthElevCpu (18 km/px, nearest-sampled: a peak narrower than a texel can be missed) has terrain of minM
+    // or more in the terrain Sun-horizon map's reach: +-acrossM across the Sun (axis ga), from backM away from the Sun
+    // to aheadM toward it (axis s), about the eye's ground point up (all ECEF unit vectors).
+    bool terrainInSunBox(const glm::dvec3 &up, const glm::dvec3 &s, const glm::dvec3 &ga, double acrossM, double backM,
+                         double aheadM, float minM) const;
+    glm::dvec3 tshLandCheckSun_{0.0};
+    glm::dvec3 tshPrevUp_{0.0};
+    bool tshLandNear_ = true;                 // landWithin around the eye, re-checked past ~25 km of motion
+    glm::dvec3 tshLandCheckUp_{0.0};
     float oceanFraction(double latRad, double lonRad, double radiusM, int rings) const;
     std::string ambienceNowPlaying() const; // Sound tab readout
     // ── Photometry tuning (synced to SatFlarePC each frame) ───────────────────
@@ -7138,6 +7150,10 @@ private:
     uint32_t rainInstancesLastFrame = 0;
     int rainLevelsLastFrame = 0;
     void updateStars();
+    // updateStars()'s extinction table over sin(elevation), rebuilt when the observer radius or k changes.
+    std::unique_ptr<float[]> starExtTab_;
+    double starExtTabR_ = -1.0;
+    float starExtTabK_ = -1.0f;
     void initPlanets(VulkanContext &ctx);                                       // planetBuf + planetDescSet, reusing starDescLayout
     void updatePlanets();                                                       // mirrors updateStars(); called right after it
     int pickPlanetAt(float clickX, float clickY, float screenW, float screenH); // mirrors

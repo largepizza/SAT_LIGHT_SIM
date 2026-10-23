@@ -667,9 +667,36 @@ json SatelliteSim::harnessStateJson()
         const GpuCloudV2Params *pp = (const GpuCloudV2Params *)cv2ParamsMapped;
         auto v4 = [](const glm::vec4 &v) { return json::array({v.x, v.y, v.z, v.w}); };
         json sv = {{"on", cv2StvOnNow}, {"frames", {cv2StvFrames[0], cv2StvFrames[1], cv2StvFrames[2], cv2StvFrames[3]}},
-                   {"boost", cv2StvBoost}, {"terrain_frame_x", terrainFrameMapped ? terrainFrameMapped[0] : -1.0f}};
+                   {"boost", cv2StvBoost}, {"terrain_frame_x", terrainFrameMapped ? terrainFrameMapped[0] : -1.0f},
+                   {"terrain_sun_map", cv2TshOnNow}, {"land_near", tshLandNear_}};
         if (pp)
             sv["ubo"] = {v4(pp->stvL0), v4(pp->stvL1), v4(pp->stvL2), v4(pp->stvL3), v4(pp->stvH), v4(pp->stvV)};
+        // Its contents per level (2026-10-23): the share of stamped values and their mean transmittance, overall and in
+        // the lower / upper half of the knots (one bulk copy out of the uncached mapped buffer).
+        if (cv2FlashMapped)
+        {
+            std::vector<uint32_t> buf((size_t)(4 * kCv2StvLevelBytes / 4));
+            std::memcpy(buf.data(), (const char *)cv2FlashMapped + kCv2StvOffset, (size_t)(4 * kCv2StvLevelBytes));
+            json lvls = json::array();
+            const size_t perLv = (size_t)(kCv2StvLevelBytes / 4);
+            for (int lv = 0; lv < 4; ++lv)
+            {
+                double sum = 0.0, lo = 0.0, hi = 0.0;
+                size_t n = 0, nLo = 0, nHi = 0;
+                for (size_t i = 0; i < perLv; ++i)
+                {
+                    const uint32_t b = buf[lv * perLv + i];
+                    if ((b & 0xFFE00000u) != 0x3F800000u)
+                        continue;
+                    const double T = (double)(b & 1023u) / 1023.0;
+                    sum += T; ++n;
+                    if ((i % 48) < 24) { lo += T; ++nLo; } else { hi += T; ++nHi; }
+                }
+                lvls.push_back({{"valid", (double)n / (double)perLv}, {"t_mean", n ? sum / n : -1.0},
+                                {"t_low_knots", nLo ? lo / nLo : -1.0}, {"t_high_knots", nHi ? hi / nHi : -1.0}});
+            }
+            sv["levels"] = lvls;
+        }
         j["clouds_v2"]["sun_volume"] = sv;
     }
     // Field evaluations last frame by caller (only shaders built with -DCV2_EVAL_COUNT add to them; all 0 otherwise).
@@ -5136,9 +5163,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 x.second = std::max(x.second, (double)e.ms);
             }
         std::vector<std::pair<std::string, std::pair<double, double>>> av(agg.begin(), agg.end());
-        std::sort(av.begin(), av.end(), [](const auto &x, const auto &y) { return x.second.second > y.second.second; });
+        // `bysum=1`: every section, by summed time (with hitches threshold 1 that is the mean frame's breakdown).
+        const bool bySum = c.num("bysum", 0.0) > 0.5;
+        if (bySum)
+            std::sort(av.begin(), av.end(), [](const auto &x, const auto &y) { return x.second.first > y.second.first; });
+        else
+            std::sort(av.begin(), av.end(), [](const auto &x, const auto &y) { return x.second.second > y.second.second; });
         json secs = json::array();
-        for (size_t i = 0; i < av.size() && i < 30; ++i)
+        for (size_t i = 0; i < av.size() && (bySum || i < 30); ++i)
             secs.push_back({{"name", av[i].first}, {"max_ms", av[i].second.second}, {"sum_ms", av[i].second.first}});
         r["sections_in_hitches"] = secs;
         std::vector<const fprof::Frame *> hv;

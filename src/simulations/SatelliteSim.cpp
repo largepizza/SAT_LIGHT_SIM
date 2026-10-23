@@ -8911,7 +8911,13 @@ void SatelliteSim::readExposureMeter()
     void *mapped = nullptr;
     if (vkMapMemory(ctx_->device, meterBufMem, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS || !mapped)
         return;
-    const uint8_t *px = (const uint8_t *)mapped;
+    // One bulk copy out of the mapped memory first (2026-10-23): it is HOST_VISIBLE | HOST_COHERENT without
+    // HOST_CACHED, i.e. uncached, and the loop's 9216 single-byte reads were one bus read each — 0.67 ms of every
+    // frame's CPU time (FrameProfile `finalizeScreenshot`). The memcpy's wide loads take ~0.03 ms.
+    static thread_local uint8_t meterCopy[kMeterW * kMeterH * 4];
+    std::memcpy(meterCopy, mapped, sizeof(meterCopy));
+    vkUnmapMemory(ctx_->device, meterBufMem);
+    const uint8_t *px = meterCopy;
     double sum = 0.0, sumLit = 0.0;
     int clipped = 0, lit = 0;
     const int n = (int)(kMeterW * kMeterH);
@@ -8924,7 +8930,6 @@ void SatelliteSim::readExposureMeter()
         if (std::max(r, std::max(g, b)) > 0.96f)
             ++clipped;
     }
-    vkUnmapMemory(ctx_->device, meterBufMem);
     meterMeanLum = (float)(sum / n);
     meterClipFrac = (float)clipped / (float)n;
 
@@ -15505,6 +15510,35 @@ void SatelliteSim::updateStars()
     float moonBrightStar = tmStar * tmStar * moonDirENU.w;
     const float kStarMoonMaxDim = 0.9f; // full moon dims naked-eye stars but never Venus/Jupiter/Sirius
 
+    // The extinction along a star's line of sight depends only on the observer's radius and the star's elevation
+    // (a spherical atmosphere), so it is tabulated over sin(elevation) once per observer radius (2026-10-23; the
+    // double Chapman columns per star were most of this loop's ~0.7 ms at night). 1024 knots, quadratic toward the
+    // limb where it is steep: within 0.001 mag of atmExtinctionMag for every star brighter than 6 mag of extinction
+    // in the atmosphere, 0.003 from 400 km.
+    constexpr int kExtN = 1024;
+    if (!starExtTab_ || starExtTabR_ != (double)obsR || starExtTabK_ != extinctionCoeff)
+    {
+        if (!starExtTab_)
+            starExtTab_.reset(new float[kExtN]);
+        starExtTabR_ = (double)obsR;
+        starExtTabK_ = extinctionCoeff;
+        const glm::dvec3 o(0.0, 0.0, (double)obsR);
+        for (int k = 0; k < kExtN; ++k)
+        {
+            const double u = (double)k / (kExtN - 1);
+            const double mu = (double)limbSin + (1.0 - (double)limbSin) * u * u;
+            const glm::dvec3 d(std::sqrt(std::max(0.0, 1.0 - mu * mu)), 0.0, mu);
+            starExtTab_[k] = (float)atmExtinctionMag(o, d, 0.0, extinctionCoeff);
+        }
+    }
+    auto starExtMag = [&](float mu) {
+        const float span = std::max(1.0f - limbSin, 1e-6f);
+        const float u = std::sqrt(std::clamp((mu - limbSin) / span, 0.0f, 1.0f)) * (float)(kExtN - 1);
+        const int k = std::min((int)u, kExtN - 2);
+        const float f = u - (float)k;
+        return starExtTab_[k] + (starExtTab_[k + 1] - starExtTab_[k]) * f;
+    };
+
     auto *dst = static_cast<GpuSatVisible *>(starMapped);
     for (uint32_t i = 0; i < starCount; ++i)
     {
@@ -15514,6 +15548,19 @@ void SatelliteSim::updateStars()
         glm::vec3 enu{glm::dot(rec.eciDir, glm::vec3(eci2enuX)),
                       glm::dot(rec.eciDir, glm::vec3(eci2enuY)),
                       glm::dot(rec.eciDir, glm::vec3(eci2enuZ))};
+
+        // A star below the limb, or any star while the sky's day gate is shut, has intensity 0 whatever the rest
+        // says (2026-10-23): skip the dome, extinction (a double Chapman column) and sizing for it. They were
+        // ~0.8 ms of every DAYTIME frame for 9000 stars that all drew nothing. Same output.
+        if (enu.z < limbSin || nightFactorEff <= 0.0f)
+        {
+            dst[i].skyDir = enu;
+            dst[i].flareIntensity = 0.0f;
+            dst[i].color = packVisibleColor(rec.color);
+            dst[i].rangeM = 0.0f;
+            dst[i].angularSize = rec.angSize;
+            continue;
+        }
 
         // Directional light pollution: same interpolated-dome/elevFalloff formula as
         // sat_flare.comp, so stars and satellites read the same dome consistently in a given
@@ -15557,7 +15604,8 @@ void SatelliteSim::updateStars()
         // direction dim by the same amount, from sea level, a mountain, an aircraft or orbit. Also
         // the smooth baseline the pollution dome's directional variation sits on. Deliberately not
         // the observer-height atmFrac above: that is the bright sky AROUND the observer.
-        float extinctMag = (float)atmExtinctionMag(glm::dvec3(obsECI), glm::dvec3(rec.eciDir), 0.0, extinctionCoeff);
+        // sin(elevation) from the observer's own up (the ENU z the limb test uses is the same quantity).
+        float extinctMag = starExtMag(glm::dot(rec.eciDir, obsECI) / obsR);
         float extinction = powf(10.0f, -0.4f * extinctMag);
 
         // Above the Earth limb: visible. Below: culled.

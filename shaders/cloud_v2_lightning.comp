@@ -84,6 +84,12 @@ vec3 rlSkyZenithAt(vec3 p, vec3 sunDir, vec3 betaR, float betaM) {
 
 shared uint sFlashN;
 shared float sRainMax[256];
+// The Sun transmittance volume's bake (workgroups >= 5): kCv2StvG threads per ray, each marching kCv2StvK / kCv2StvG
+// consecutive knots of it, their optical depths joined by a prefix over the ray's threads (sStvOd). It was one thread
+// per ray, 2-4 sub-rays x 48 knots x up to 4 field reads one after another on 13 workgroups: ~0.9 ms of latency with
+// most of the GPU idle (2026-10-23, perf). The dispatch is 5 + 13 x kCv2StvG (SatelliteSimCloudsV2.cpp: keep in step).
+const uint kCv2StvG = 8u;
+shared float sStvOd[256];
 
 vec3 cv2UndriftL(vec3 v)
 {
@@ -110,13 +116,19 @@ void main()
         // (a far blocker's shadow is no sharper than the Sun's disc makes it). Thin layers count as in the light march.
         {
             if (cv2.stvH.z < 0.5) return;
+            // The logical bake workgroup (5..17) and ray (0..255) this thread works on, and its share of the ray's knots.
+            uint wgL = 5u + (gl_WorkGroupID.x - 5u) / kCv2StvG;
+            uint liR = ((gl_WorkGroupID.x - 5u) % kCv2StvG) * (256u / kCv2StvG) + li / kCv2StvG;
+            uint gK  = li % kCv2StvG;
+            const int  kPer = kCv2StvK / int(kCv2StvG);
+            int  kHi = kCv2StvK - 1 - int(gK) * kPer;   // its knots kHi .. kHi - kPer + 1 (from the top down)
             // Workgroups 10-17: levels 0 (10-13) and 1 (14-17) four times more while they catch up (cv2.stvV.z: after a fast
             // move or a refill), all of a level in 16 frames: after a 45-km hop their slots had all changed hands and took a
             // round (32 / 64 frames) to come back, slower than the rings and the cascade (harness_runs/s3/hop).
-            bool  boost = gl_WorkGroupID.x >= 10u;
+            bool  boost = wgL >= 10u;
             if (boost && cv2.stvV.z < 1.0) return;   // z = boost (1 or 0) + the running mean's floor (< 1)
-            int   lv    = boost ? int((gl_WorkGroupID.x - 10u) >> 2u) : (gl_WorkGroupID.x <= 6u) ? 0 : int(gl_WorkGroupID.x - 6u);
-            int   wg    = boost ? int(gl_WorkGroupID.x - 10u) & 3 : int(gl_WorkGroupID.x) - 5;   // 0 / 1 for level 0
+            int   lv    = boost ? int((wgL - 10u) >> 2u) : (wgL <= 6u) ? 0 : int(wgL - 6u);
+            int   wg    = boost ? int(wgL - 10u) & 3 : int(wgL) - 5;   // 0 / 1 for level 0
             vec4  la    = cv2StvLat(lv);
             float cellM = la.z;
             if (la.w <= 0.0 && la.z <= 0.0) return;
@@ -128,17 +140,17 @@ void main()
             if (lead) {
                 int   ax  = (abs(vel.x) >= abs(vel.y)) ? 0 : 1;
                 float sg  = ((ax == 0) ? vel.x : vel.y) >= 0.0 ? 1.0 : -1.0;
-                int   jj  = int(li >> 7u);
+                int   jj  = int(liR >> 7u);
                 int   sAx = int(floor(((ax == 0) ? la.x + wc0.x : la.y + wc0.y) + sg * (55.0 - float(jj)) + 4096.0)) & (kCv2StvN - 1);
-                int   row = int(li & 127u);
+                int   row = int(liR & 127u);
                 r = (ax == 0) ? row * kCv2StvN + sAx : sAx * kCv2StvN + row;
             } else if (boost) {
-                r = int(((uint(cv2.frame.x) * 4u + uint(wg) + 32u) & 63u) * 256u + li);
+                r = int(((uint(cv2.frame.x) * 4u + uint(wg) + 32u) & 63u) * 256u + liR);
             } else if (lv == 0) {
-                r = (sp > 0.02) ? int((uint(cv2.frame.x) & 63u) * 256u + li)
-                                : int((((uint(cv2.frame.x) & 31u) * 2u) + uint(wg)) * 256u + li);
+                r = (sp > 0.02) ? int((uint(cv2.frame.x) & 63u) * 256u + liR)
+                                : int((((uint(cv2.frame.x) & 31u) * 2u) + uint(wg)) * 256u + liR);
             } else {
-                r = int(((uint(cv2.frame.x) + uint(lv) * 21u) & 63u) * 256u + li);
+                r = int(((uint(cv2.frame.x) + uint(lv) * 21u) & 63u) * 256u + liR);
             }
             vec3  ga, gb;
             cv2SunGridAxes(sunENU, ga, gb);
@@ -151,8 +163,8 @@ void main()
             // depth: the storm's shadow came out light and patchy against a brute-force reference, harness_runs/s3/ref1).
             float fpM = max(150.0, 0.25 * cellM);
             float hLo = cv2.stvH.x, dH = (cv2.stvH.y - cv2.stvH.x) / float(kCv2StvK - 1);
-            float Tk[kCv2StvK];
-            for (int k = 0; k < kCv2StvK; ++k) Tk[k] = 0.0;
+            float Tk[kCv2StvK / int(kCv2StvG)];   // this thread's knots: Tk[j] = knot kHi - j
+            for (int j = 0; j < kPer; ++j) Tk[j] = 0.0;
             uvec3 jh = cv2Pcg3(uvec3(uint(r), 977u + uint(lv), 11u));
             float jn = float(uint(cv2.frame.x) & 1023u);
             vec2  jo = fract(vec2(jh.xy & 0xFFFFu) / 65536.0 + jn * vec2(0.7548777, 0.5698403));
@@ -168,9 +180,16 @@ void main()
                 vec3  P  = o + E;
                 float sC = -dot(P, sunENU);
                 float cL = length(P + sunENU * sC);
-                float od = 0.0;
+                float od = 0.0;   // from this thread's first knot down (the prefix below adds the knots above)
+                float odK[kCv2StvK / int(kCv2StvG)];
+                // The knot above this thread's first one: where its first interval starts.
                 float sPrev = 0.0;
-                [[dont_unroll]] for (int k = kCv2StvK - 1; k >= 0; --k) {
+                if (kHi < kCv2StvK - 1) {
+                    float rk = R_EARTH + max(hLo + float(kHi + 1) * dH, cL - R_EARTH + 1.0);
+                    sPrev = sC + sqrt(max((rk - cL) * (rk + cL), 0.0));
+                }
+                [[dont_unroll]] for (int j = 0; j < kPer; ++j) {
+                    int   k  = kHi - j;
                     float rk = R_EARTH + max(hLo + float(k) * dH, cL - R_EARTH + 1.0);
                     float sk = sC + sqrt(max((rk - cL) * (rk + cL), 0.0));
                     if (k < kCv2StvK - 1) {
@@ -194,19 +213,28 @@ void main()
                             }
                         }
                     }
-                    Tk[k] += wSr * exp(-od);
+                    odK[j] = od;
                     sPrev = sk;
                 }
+                // The prefix: the optical depth of the knots above this thread's (the ray's lower-numbered threads).
+                // (lead / nSr are uniform in the workgroup: every thread reaches both barriers.)
+                sStvOd[li] = od;
+                barrier();
+                float odAbove = 0.0;
+                for (uint g2 = 0u; g2 < gK; ++g2) odAbove += sStvOd[li - gK + g2];
+                barrier();
+                for (int j = 0; j < kPer; ++j) Tk[j] += wSr * exp(-(odAbove + odK[j]));
             }
             if (r < kCv2StvN * kCv2StvN) {
                 float wMean = cv2.stvV.z - floor(cv2.stvV.z);
                 int  rb   = ((lv * kCv2StvN * kCv2StvN) + r) * kCv2StvK;
                 uint want = cv2ShaftStampOf(ia.x, ia.y, 0);
-                for (int k = 0; k < kCv2StvK; ++k) {
+                for (int j = 0; j < kPer; ++j) {
+                    int   k    = kHi - j;
                     uint  bits = floatBitsToUint(cv2Stv[rb + k]);
                     bool  ok   = cv2ShaftStampOk(bits, want);
                     uint  c    = cv2ShaftCount(bits);
-                    float T    = ok ? mix(cv2ShaftT(bits), Tk[k], c < 2u ? 1.0 / float(c + 2u) : wMean) : Tk[k];
+                    float T    = ok ? mix(cv2ShaftT(bits), Tk[j], c < 2u ? 1.0 / float(c + 2u) : wMean) : Tk[j];
                     // Rounded to the 10-bit value stochastically: a running mean at 1/32 a bake moves less than half a
                     // step for most bakes, and plain rounding would leave it stuck up to 16 steps off its mean.
                     float dq = float(cv2Pcg3(uvec3(uint(r), uint(k) + 31u * uint(lv), uint(cv2.frame.x))).x & 0xFFFFu) / 65536.0;
