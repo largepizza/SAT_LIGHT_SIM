@@ -5216,9 +5216,13 @@ private:
     // Whether the DEM has any land (oceanMaskCpu: a texel above the sea baseline) within radiusM of a point (2026-10-23:
     // the terrain Sun-horizon map is not baked over open ocean). A box in lat / lon around the circle, word-wise.
     bool landWithin(double latRad, double lonRad, double radiusM) const;
-    // The highest DEM height (m) in earthElevCpu (18 km/px, nearest-sampled: a peak narrower than a texel can be
-    // missed) within radiusM of a point, over the same lat / lon box.
-    float maxTerrainWithin(double latRad, double lonRad, double radiusM) const;
+    // Whether earthElevCpu (18 km/px, nearest-sampled: a peak narrower than a texel can be missed) has terrain of minM
+    // or more in the terrain Sun-horizon map's reach: +-acrossM across the Sun (axis ga), from backM away from the Sun
+    // to aheadM toward it (axis s), about the eye's ground point up (all ECEF unit vectors).
+    bool terrainInSunBox(const glm::dvec3 &up, const glm::dvec3 &s, const glm::dvec3 &ga, double acrossM, double backM,
+                         double aheadM, float minM) const;
+    glm::dvec3 tshLandCheckSun_{0.0};
+    glm::dvec3 tshPrevUp_{0.0};
     bool tshLandNear_ = true;                 // landWithin around the eye, re-checked past ~25 km of motion
     glm::dvec3 tshLandCheckUp_{0.0};
     float oceanFraction(double latRad, double lonRad, double radiusM, int rings) const;

@@ -1478,15 +1478,27 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             // (so a line stays on the same ground while the eye moves; rebaked whole every frame). Only while the bake is
             // dispatched (recordCloudsV2: not with the clouds off or at full far-layer blend), the Sun is up at the eye,
             // below 60 km, and the terrain is drawn.
-            // Nor over open ocean (2026-10-23, perf): with no terrain within the lines' reach (+-1024 km across, 450 km past
-            // the eye along the Sun) every line meets only the sea, i.e. the Earth's own shadow, which the sky and the clouds
-            // already take: the bake (~0.3 ms) changed nothing there. "Terrain" = 100 m or more in the CPU DEM within 1600
-            // km, or any land at all within 60 km (the user's tropical storm views had atolls of a few metres in reach).
-            if (glm::length(up - tshLandCheckUp_) * 6371000.0 > 25000.0)
+            // Nor over open ocean (2026-10-23, perf): with no terrain in the lines' reach (+-1024 km across the Sun, from
+            // 450 km past the eye to where a line toward the Sun rises above the terrain's ceiling) every line meets only
+            // the sea, i.e. the Earth's own shadow, which the sky and the clouds already take: the bake (~0.3 ms) changed
+            // nothing there. "Terrain" = 100 m or more in the CPU DEM in that box (+ 60 km), or any land within 60 km (the
+            // user's tropical storm views had atolls of a few metres in reach). Re-checked every 25 km or 1 deg of Sun.
+            // A jump or fast flight (> 200 km since last frame): baked, and searched again on the first slow frame after it.
+            const double tshStep = glm::length(up - tshPrevUp_) * 6371000.0;
+            tshPrevUp_ = up;
+            if (tshStep > 200000.0)
+            {
+                tshLandNear_ = true;
+                tshLandCheckUp_ = glm::dvec3(0.0);
+            }
+            else if (glm::length(up - tshLandCheckUp_) * 6371000.0 > 25000.0 || glm::dot(s, tshLandCheckSun_) < 0.99985)
             {
                 tshLandCheckUp_ = up;
-                const double la = std::asin(std::clamp(up.z, -1.0, 1.0)), lo = std::atan2(up.y, up.x);
-                tshLandNear_ = maxTerrainWithin(la, lo, 1600000.0) >= 100.0f || landWithin(la, lo, 60000.0);
+                tshLandCheckSun_ = s;
+                const double ceilM = 9400.0, R = 6371000.0, se = std::max(sinE, 0.0);
+                const double ahead = std::min(R * (-se + std::sqrt(se * se + 2.0 * ceilM / R)), 2500000.0);
+                tshLandNear_ = terrainInSunBox(up, s, ga, 1024000.0 + 60000.0, 450000.0 + 60000.0, ahead + 60000.0, 100.0f) ||
+                               landWithin(std::asin(std::clamp(up.z, -1.0, 1.0)), std::atan2(up.y, up.x), 60000.0);
             }
             const bool tshOn = cv2TerrainGodrays > 0.5f && cv2TshPipeline && !cloudsV2Off() && cloudFarBlend() < 0.999f
                                && sinE > -0.05 && eyeH < 60000.0 && (debugDisableMask & 1u) == 0u && tshLandNear_;
@@ -2424,29 +2436,42 @@ bool SatelliteSim::landWithin(double latRad, double lonRad, double radiusM) cons
     return false;
 }
 
-float SatelliteSim::maxTerrainWithin(double latRad, double lonRad, double radiusM) const
+bool SatelliteSim::terrainInSunBox(const glm::dvec3 &up, const glm::dvec3 &s, const glm::dvec3 &ga, double acrossM,
+                                   double backM, double aheadM, float minM) const
 {
     if (earthElevCpu.empty() || earthElevCpuW <= 0 || earthElevCpuH <= 0)
-        return 1e9f;
-    const double pi = glm::pi<double>();
-    const double dLat = radiusM / 6371000.0;
+        return true;
+    const double pi = glm::pi<double>(), R = 6371000.0;
+    // The texel value at or above which the CPU DEM reads minM (cpuTerrainHeightM's decode).
+    const int vMin = (int)std::ceil((15.0 / 255.0 + minM / 8848.0) * 255.0);
+    const double radiusM = std::sqrt(acrossM * acrossM + std::max(backM, aheadM) * std::max(backM, aheadM));
+    const double latRad = std::asin(std::clamp(up.z, -1.0, 1.0)), lonRad = std::atan2(up.y, up.x);
+    const double dLat = radiusM / R;
     const double lat0 = std::max(latRad - dLat, -0.5 * pi), lat1 = std::min(latRad + dLat, 0.5 * pi);
     const int y0 = std::clamp((int)std::floor((0.5 * pi - lat1) / pi * earthElevCpuH), 0, earthElevCpuH - 1);
     const int y1 = std::clamp((int)std::floor((0.5 * pi - lat0) / pi * earthElevCpuH), 0, earthElevCpuH - 1);
     const double cMin = std::cos(std::max(std::abs(lat0), std::abs(lat1)));
-    const double dLon = (cMin * 6371000.0 > radiusM) ? std::asin(std::min(1.0, radiusM / (cMin * 6371000.0))) * 1.2 : pi;
+    const double dLon = (cMin * R > radiusM) ? std::asin(std::min(1.0, radiusM / (cMin * R))) * 1.2 : pi;
     const int span = (dLon >= pi) ? earthElevCpuW
                                   : std::min(earthElevCpuW, (int)std::ceil(2.0 * dLon / (2.0 * pi) * earthElevCpuW) + 2);
     const int xc = (int)std::floor((lonRad + pi) / (2.0 * pi) * earthElevCpuW);
     const int xs = (span >= earthElevCpuW) ? 0 : xc - span / 2;
-    uint8_t mx = 0;
     for (int y = y0; y <= y1; ++y)
+    {
+        const double lat = 0.5 * pi - (y + 0.5) / earthElevCpuH * pi;
         for (int k = 0; k < span; ++k)
         {
             const int x = (((xs + k) % earthElevCpuW) + earthElevCpuW) % earthElevCpuW;
-            mx = std::max(mx, earthElevCpu[(size_t)y * earthElevCpuW + x]);
+            if ((int)earthElevCpu[(size_t)y * earthElevCpuW + x] < vMin)
+                continue;
+            const double lon = (x + 0.5) / earthElevCpuW * 2.0 * pi - pi;
+            const glm::dvec3 d(std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon), std::sin(lat));
+            // Chord offsets (the texel's own size, ~18 km, is inside the 60-km margins the caller adds).
+            const glm::dvec3 rel = (d - up) * R;
+            const double a = glm::dot(rel, ga), al = glm::dot(rel, s);
+            if (std::abs(a) <= acrossM && al >= -backM && al <= aheadM && glm::dot(d, up) > 0.0)
+                return true;
         }
-    const float kSeaLevel = 15.0f / 255.0f;
-    const float v = mx / 255.0f;
-    return v <= kSeaLevel ? 0.0f : (v - kSeaLevel) * 8848.0f;
+    }
+    return false;
 }
