@@ -161,13 +161,15 @@ bool debugToggleAt(int i, uint32_t &bit, const char *&label, const char *&jsonKe
 // 2026-10-03: the strip is grouped under headings (kSettingsStrip: a negative entry is a heading, -1 - its index in
 // kSettingsStripHeadings); "Performance" (14) took the profiling tools out of Display; "Camera" (3) is folded into
 // Controls and no longer has a button (its index still opens Controls).
-static constexpr int kSettingsTabCount = 15;
+// 2026-10-21: "Launches" (15, issue 20261021_175638): the Missions window's Controls tab moved here, the
+// graphics grouped and the exhaust sliders added; under SKY after Constellations.
+static constexpr int kSettingsTabCount = 16;
 static constexpr const char *kSettingsTabNames[kSettingsTabCount] = {
     "Constellations", "Sound", "Controls", "Camera",
     "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Atmosphere", "Beams", "Attributions",
-    "Weather", "Night lights", "Performance"};
+    "Weather", "Night lights", "Performance", "Launches"};
 static constexpr const char *kSettingsStripHeadings[] = {"GENERAL", "SKY", "RENDERING", "ABOUT"};
-static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 5, -3, 6, 12, 9, 8, 13, 7, 10, 14, -4, 11};
+static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 15, 5, -3, 6, 12, 9, 8, 13, 7, 10, 14, -4, 11};
 bool settingsTabIsAdvanced(int i) { return (i >= 6 && i <= 10) || i == 12 || i == 13 || i == 14; }
 int settingsTabIndexByName(const std::string &name)
 {
@@ -3620,9 +3622,34 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
         case 14:
             buildSettingsPerformanceTab(inp, ui);
             break;
+        case 15:
+            buildSettingsLaunchesTab(inp, ui);
+            break;
         }
     }
     ui.scrollbar(CLAY_ID("SettingsContent"));
+}
+
+// ─── buildSettingsLaunchesTab ────────────────────────────────────────────────
+// "Launches" (2026-10-21, issue 20261021_175638): the Missions window's Controls tab, given a place here. The
+// graphics first (rockets and exhaust with the exhaust
+// sliders, debris and re-entries: how it looks), then the simulation (LAUNCHES, THE SUN'S FURY: what happens).
+// settings.json keys unchanged (launches.*, kessler.*).
+void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
+{
+    uiKV("LdKV", 0, "", "The schedule, what is flying and the Kessler tracker: the Missions window (rocket button, M).", 4.0f,
+         &Pal::textDim);
+    if (uiButton(inp, ui, "LdOpenMs", 0, "Open the Missions window", "Upcoming launches, what is flying now, the Kessler tracker"))
+    {
+        msChrome.open = true;
+        msNextWall = msPinWall = -1e300;
+    }
+    // The graphics first (the issue: "primarily the graphics related settings"; the exhaust sliders are what gets
+    // tuned), then what happens.
+    buildLaunchGraphicsSection(inp, ui);
+    buildKesslerGraphicsSection(inp, ui);
+    buildLaunchSettingsSection(inp, ui);
+    buildKesslerSettingsSection(inp, ui);
 }
 
 // ─── buildSettingsConstellationsTab ─────────────────────────────────────────
@@ -3957,15 +3984,12 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     }
     else if (actSel >= 0)
         selectSatellite(actSel);
-    // Launches and the Sun's Fury moved to the Missions window (2026-10-19): a pointer here.
+    // Launches and the Sun's Fury: their own tab since 2026-10-21 (Launches); a pointer here.
     uiSection("ConstSec", 8, "LAUNCHES AND THE SUN'S FURY");
-    uiKV("ConstMsKV", 0, "", "Now in the Missions window (rocket button, M).", 4.0f, &Pal::textDim);
-    if (uiButton(inp, ui, "ConstMsOpen", 0, "Open the Missions window", "The schedule, what is flying, and these settings (Controls)"))
-    {
-        msChrome.open = true;
-        msTab = 2;
-        msNextWall = msPinWall = -1e300;
-    }
+    uiKV("ConstMsKV", 0, "", "In the Launches tab; the schedule and the Kessler tracker: the Missions window (M).", 4.0f,
+         &Pal::textDim);
+    if (uiButton(inp, ui, "ConstLdOpen", 0, "Launches", "Launches, rockets and exhaust, the Sun's Fury"))
+        settingsActiveTab = 15;
 
     // ── Planets ────────────────────────────────────────────────────────────
     // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern
@@ -8709,6 +8733,11 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         launchPlumeGain = settingClamp(lj.value("plume_gain", launchPlumeGain), 0.0f, 100.0f);
         launchRocketGain = settingClamp(lj.value("rocket_gain", launchRocketGain), 0.0f, 100.0f);
         engineLightGain = settingClamp(lj.value("engine_light_gain", engineLightGain), 0.0f, 100.0f);
+        launchPlumeBright = settingClamp(lj.value("plume_brightness", launchPlumeBright), 0.0f, 100.0f);
+        launchPlumeWidth = settingClamp(lj.value("plume_width", launchPlumeWidth), 0.05f, 20.0f);
+        launchPlumeBillows = settingClamp(lj.value("plume_billows", launchPlumeBillows), 0.0f, 10.0f);
+        launchPlumeGrowth = settingClamp(lj.value("plume_growth", launchPlumeGrowth), 0.0f, 20.0f);
+        launchGroundCloudGain = settingClamp(lj.value("ground_cloud_gain", launchGroundCloudGain), 0.0f, 100.0f);
         launchAfterStorm = settingClamp(lj.value("after_storm", launchAfterStorm), 0, 1);
         launchPadGraphics = lj.value("pad_graphics", launchPadGraphics);
         launchDeployEra = lj.value("deployment_era", launchDeployEra);
@@ -9574,6 +9603,11 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                      {"plume_gain", launchPlumeGain},
                      {"rocket_gain", launchRocketGain},
                      {"engine_light_gain", engineLightGain},
+                     {"plume_brightness", launchPlumeBright},
+                     {"plume_width", launchPlumeWidth},
+                     {"plume_billows", launchPlumeBillows},
+                     {"plume_growth", launchPlumeGrowth},
+                     {"ground_cloud_gain", launchGroundCloudGain},
                      {"after_storm", launchAfterStorm},
                      {"pad_graphics", launchPadGraphics},
                      {"deployment_era", launchDeployEra},

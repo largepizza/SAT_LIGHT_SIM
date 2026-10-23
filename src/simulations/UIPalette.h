@@ -100,6 +100,15 @@ inline constexpr const char *kUiThemeKeys[] = {"classic", "navy", "night", "midn
     X(tagTwilight, UIC(62, 46, 128, 235), UIC(62, 46, 128, 235), UIC(42, 0, 0, 235), UIC(62, 46, 128, 235))                          \
     X(tagCrew, UIC(132, 96, 12, 235), UIC(132, 96, 12, 235), UIC(56, 0, 0, 235), UIC(132, 96, 12, 235))                              \
     X(progressFill, UIC(150, 20, 20, 220), UIC(30, 90, 200, 220), UIC(60, 0, 0, 220), UIC(150, 20, 20, 220))                         \
+    /* The Kessler tracker (2026-10-21): collisions / catastrophic lines, the breakup markers, "you", the working */ \
+    /* satellites' and the danger's legend swatches (the globe's own raster uses the same hues) */             \
+    X(trkLine, UIC(240, 140, 40, 255), UIC(240, 150, 60, 255), UIC(200, 0, 0, 255), UIC(240, 140, 40, 255))                          \
+    X(trkLineCat, UIC(230, 40, 30, 255), UIC(230, 50, 50, 255), UIC(120, 0, 0, 255), UIC(230, 40, 30, 255))                          \
+    X(trkMarker, UIC(255, 236, 170, 255), UIC(255, 236, 170, 255), UIC(255, 0, 0, 255), UIC(255, 236, 170, 255))                     \
+    X(trkMarkerUser, UIC(235, 110, 255, 255), UIC(235, 110, 255, 255), UIC(170, 0, 0, 255), UIC(235, 110, 255, 255))                 \
+    X(trkYou, UIC(90, 220, 255, 255), UIC(90, 220, 255, 255), UIC(140, 0, 0, 255), UIC(90, 220, 255, 255))                           \
+    X(trkWork, UIC(64, 128, 230, 255), UIC(64, 128, 230, 255), UIC(70, 0, 0, 255), UIC(64, 128, 230, 255))                           \
+    X(trkHot, UIC(255, 120, 20, 255), UIC(255, 120, 20, 255), UIC(220, 0, 0, 255), UIC(255, 120, 20, 255))                           \
     /* Speed indicator */                                                                                      \
     X(speedFwd, UIC(200, 55, 55, 220), UIC(50, 120, 230, 220), UIC(200, 0, 0, 220), UIC(200, 55, 55, 220))                          \
     X(speedRev, UIC(155, 155, 165, 220), UIC(150, 160, 185, 220), UIC(130, 0, 0, 220), UIC(155, 155, 165, 220))                        \

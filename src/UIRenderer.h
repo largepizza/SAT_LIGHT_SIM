@@ -205,7 +205,7 @@ public:
     // kMaxExternalImages slots are taken. updateImage() re-points an id (e.g. after the owner
     // recreated the image on resize); the caller must not update an id while a recorded frame
     // that samples it is still pending (single frame in flight: update before recording).
-    static constexpr int kMaxExternalImages = 4;
+    static constexpr int kMaxExternalImages = 6; // viewer, bookmarks, reports, the Kessler tracker's globe (+2 spare)
     uint32_t registerImage(VkDevice device, VkImageView view, VkSampler sampler);
     void     updateImage(VkDevice device, uint32_t id, VkImageView view, VkSampler sampler);
 

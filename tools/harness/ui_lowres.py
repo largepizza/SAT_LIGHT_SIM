@@ -40,7 +40,7 @@ WIN_NAMES = {0: "settings", 1: "controls", 2: "trace", 3: "viewer", 4: "info", 5
 HUD_IDS = ("LeftPanel", "RightPanel", "SelSatChip", "FollowAgainBtn", "FollowHud", "CineHud")
 
 SETTINGS_TABS = ["Display", "Controls", "Sound", "Constellations", "Photometry", "Clouds", "Weather",
-                 "Atmosphere", "Terrain", "Night lights", "Ocean", "Beams", "Performance", "Attributions"]
+                 "Atmosphere", "Terrain", "Night lights", "Ocean", "Beams", "Performance", "Attributions", "Launches"]
 ISS = 'select const "International Space Station"'
 
 
@@ -48,8 +48,8 @@ def views():
     """(name, commands before the dump, commands after) for each view, in order."""
     v = [("hud", [], []), ("hud_sel", [ISS, "wait 5"], [])]
     for t in SETTINGS_TABS:
-        v.append(("set_" + t.lower().replace(" ", ""), [f'ui open settings tab="{t}"', "wait 4"], ["ui close settings"]))
-    for t in ("upcoming", "ongoing", "controls"):
+        v.append(("set_" + t.lower().replace(" ", "").replace("&", "and"), [f'ui open settings tab="{t}"', "wait 4"], ["ui close settings"]))
+    for t in ("upcoming", "ongoing", "kessler"):
         v.append(("ms_" + t, [f"ui open missions tab={t}", "wait 12"], ["ui close missions"]))
     v += [
         ("info", [ISS, "ui open info", "wait 12"], ["ui close info"]),
