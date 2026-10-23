@@ -92,6 +92,9 @@ struct Settings {
     float moistureFull = 0.6f;    // full rate from this cover
     float towerRadiusM = 15000.0f;// the tower-radius setting (cv2.column.z): flanking offsets scale with it
     float lifeScale = 1.0f;       // x every lifetime
+    // Storms per flash over the sea vs land: a maritime storm makes ~an order of magnitude fewer flashes than a
+    // continental one of the same size (weaker updrafts), so lightning density alone under-counts ocean storms.
+    float seaFactor = 5.0f;
 };
 
 class Catalog {

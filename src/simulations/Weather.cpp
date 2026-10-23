@@ -310,7 +310,7 @@ struct Catalog::Impl {
             double hour = 12.0 + wrapDeg(lonE - sunLonDeg) / 15.0;
             hour = std::fmod(hour + 24.0, 24.0);
             const double fd = flash(latE, lonE, doy, hour, land);
-            const double lambda = K * freq * fd * c.areaKm2 * kBinS;
+            const double lambda = K * freq * fd * (1.0 + ((double)set.seaFactor - 1.0) * (1.0 - (double)land)) * c.areaKm2 * kBinS;
             if (!(lambda > 0.0)) continue;
             const int nc = poisson(u53(key3((uint64_t)ci, (uint64_t)bin, 0xFFFFull, 0x9015501ull)), lambda);
             for (int k = 0; k < nc; ++k) {
@@ -391,7 +391,7 @@ struct Catalog::Impl {
                 double pS, pM;
                 kindMix(latD, land[i], doy, pS, pM);
                 const double ml = pS * meanLife[2] + pM * meanLife[1] + (1.0 - pS - pM) * meanLife[0];
-                acc += fd * c.areaKm2 * ml;
+                acc += fd * (1.0 + ((double)set.seaFactor - 1.0) * (1.0 - (double)land[i])) * c.areaKm2 * ml;
             }
         }
         acc /= 12.0;
