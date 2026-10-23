@@ -1,6 +1,6 @@
 ---
 pages: [rendering/clouds/weather.md, rendering/clouds/field.md, "new: rendering/clouds/storms.md", development/harness.md]
-code: [src/simulations/Weather.h, src/simulations/Weather.cpp, src/simulations/SatelliteSimWeather.cpp, shaders/include/cv2_storms.glsl, shaders/include/clouds_v2.glsl, shaders/cloud_v2_weather.comp, src/simulations/SatelliteSimWeatherCyclones.cpp, src/simulations/Weather.cpp, shaders/cloud_v2_weather.comp, shaders/cloud_march.comp]
+code: [src/simulations/Weather.h, src/simulations/Weather.cpp, src/simulations/SatelliteSimWeather.cpp, shaders/include/cv2_storms.glsl, shaders/include/clouds_v2.glsl, shaders/cloud_v2_weather.comp, src/simulations/SatelliteSimWeatherCyclones.cpp, shaders/cloud_march.comp]
 ---
 ## Now
 Every storm object carries an anvil SHIELD: a capsule spread downwind by its anvil-reaching towers that lingers 35-240 min
