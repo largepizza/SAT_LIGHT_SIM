@@ -887,6 +887,19 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   Harness `storms cyclones`, `storms season basin=<0-5> year=`, `storms go cyclone=<name|id|strongest>`. Not yet: the
   Weather window's named-storm list and tracks, landfall surge / sea state from its wind, extratropical transition's
   look, outflow cirrus beyond the CDO, the eyewall's lightning share.
+  **Tornadoes and waterspouts (2026-10-23, `SatelliteSim::tornadoOf` / `weatherFillTornadoes`, SatelliteSimWeather.cpp):**
+  fixed by their storm's id: ~35% of supercells put one down for 5-25 min of their mature phase (between `anvOn` + 20 min
+  and `anvOff` - 10 min), ~12% of strong single / multicell storms over the sea a waterspout (4-14 min); on the rear
+  flank's rain-free base, ~a tower radius behind and across the shear from the tower's axis (inside 0.6 of it the rain
+  core hid it). NOT in the cloud field: drawn as plume Gaussians in the dust list after the launches' (`col.w` = 2 +
+  albedo, cloud_march.comp composites them with the Earth-fixed billow field below ~10 km): a funnel of 10 dense, narrow
+  Gaussians (peak tau 40 at sigma rr / 2.6, so the edge, tau ~1, sits at the radius rr: at tau 3.5 and sigma rr it was a
+  soft cone) widening 2.2-3x to the base, lowering over its first ~90 s and roping out (thinner, bent) over its last
+  third, a faint wall cloud and a debris cloud (spray at sea). Lit by the sky (~0.06 of the plumes' clear-sky unit) and a
+  little Sun: it stands under the storm's base. Only within ~250 km, by day. Harness `storms tornado [spout=1]
+  [dist_km=] [alt=] [el=] [az_from=]`: the next daylit one among the storms alive over the next 12 h, time set into it,
+  the observer on its inflow side; `state` -> `weather.tornadoes`. Known: where the weather map itself rains hard round
+  the storm (its own Cb typing), the rain hides the tornado; no rotation / debris motion yet (the billows are static).
 - **The Weather window (2026-10-23, `SatelliteSimWeatherWindow.cpp`, `shaders/weather_radar.comp`; the weather-cloud
   button beside Missions on the right HUD panel (`TimeWeatherBtn`, `pixel--weather.png` from `tools/make_icons.py`), key N
   `KB_WEATHER`, window id 12, `wxChrome`; harness `ui open weather [tab=radar|storms|controls]`, `weather ...`).** Missions-
