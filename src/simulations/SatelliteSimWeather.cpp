@@ -400,8 +400,13 @@ void SatelliteSim::updateStorms()
                            : (tw.kind == wx::StormKind::Multicell || wx::isLineSystem(tw.kind)) ? 1.1
                            : tw.kind == wx::StormKind::Tropical ? 1.0 : 0.85;
         const double hs = (double)(stormHash(tw.seed ^ 0xA5A5A5A5u) & 0xFFFFu) / 65535.0;   // this storm's own spread
-        const double anvilK = std::max(1.0 / flare, (0.65 + (0.55 + 0.5 * hs) * mature) * kindK);
-        const double driftK = (0.25 + (0.9 + 0.8 * hs) * mature) * kindK;
+        double anvilK = std::max(1.0 / flare, (0.65 + (0.55 + 0.5 * hs) * mature) * kindK);
+        double driftK = (0.25 + (0.9 + 0.8 * hs) * mature) * kindK;
+        // A cyclone's towers do not flare: its anvil is the central dense overcast (a shield, cycloneShieldsAt). With
+        // flared ~40-km heads every eyewall tower reached across the whole eye and eyewall (reach ~60 km), so every
+        // sample there walked a full bin of towers: 16-19 ms of the cloud march from 12 km in the eye at Medium.
+        // Measured (Medium, Rosa 2036-09-10, cloud bucket): 12 km in the eye 15.2 -> 12.5 ms, sea level 8.0 -> 6.5.
+        if (tw.kind == wx::StormKind::Tropical) { anvilK = 1.0 / flare; driftK = 0.25; }
         const double reach = 1.06 * std::max(Rc * 1.3 * flare * anvilK + drift * driftK + Rc * 0.6 + 0.25 * (double)cv2Lean * span,
                                              1.1 * Rc + cuReach) + 1000.0;
         GpuStormTower g;
