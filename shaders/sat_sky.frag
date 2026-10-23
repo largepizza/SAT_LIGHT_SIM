@@ -4160,7 +4160,10 @@ void main() {
             sampleSunDotGeo  = dot(spDirECEF, sunDirECEF);
             float airDayness = clamp((sampleSunDotGeo + 0.15) / 0.3, 0.0, 1.0);
             float airNight   = 1.0 - airDayness;
-            if (airNight > 0.001) {
+            // Only near the bands (2026-10-23, perf): outside 62-130 km both profiles are below 1e-6 of their peak
+            // (green 96 +- 9 km, sodium 90 +- 6.5 km), and their three noise reads per step were 1.4-2.8 ms of the sky
+            // pass in the daytime storm views (every step of every ray took them wherever the Sun is under ~8.6 deg).
+            if (airNight > 0.001 && h > 62000.0 && h < 130000.0) {
                 float airPatch = 0.6 + 0.4 * warpPerlin3(spDirECEF * kAirglowNoiseFreq
                                     + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
                 // Coverage patchiness — independent noise samples per band so green and sodium
