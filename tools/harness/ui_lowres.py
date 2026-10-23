@@ -51,7 +51,7 @@ def views():
         v.append(("set_" + t.lower().replace(" ", "").replace("&", "and"), [f'ui open settings tab="{t}"', "wait 4"], ["ui close settings"]))
     for t in ("upcoming", "ongoing", "kessler"):
         v.append(("ms_" + t, [f"ui open missions tab={t}", "wait 12"], ["ui close missions"]))
-    for t in ("radar", "storms", "controls"):
+    for t in ("radar", "storms", "cyclones", "controls"):
         v.append(("wx_" + t, [f"ui open weather tab={t}", "wait 12"], ["ui close weather"]))
     v += [
         ("info", [ISS, "ui open info", "wait 12"], ["ui close info"]),

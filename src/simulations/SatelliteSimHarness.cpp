@@ -209,7 +209,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -3664,7 +3664,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     if (c.has("tab"))
                     {
                         const std::string t = lower(c.str("tab"));
-                        wxTab = t == "storms" ? 1 : t == "controls" ? 2 : 0;
+                        wxTab = t == "storms" ? 1 : t == "controls" ? 2 : (t == "cyclones" || t == "cyclone" || t == "named") ? 3 : 0;
                     }
                 }
             }
@@ -4114,17 +4114,88 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = msg;
             return Status::Done;
         }
+        // `weather cyclones`: the Cyclones tab's lists (active, the season, the next per basin, the selected one's
+        // milestones). `weather cyclone <name|id|k (active index)> [basin=0-5] [go=near|orbit|eye|landfall] [watch=1]
+        // [milestone=<i>]`: select one (from the active list, then the season, then the next per basin) and act.
+        if (sub == "cyclones")
+        {
+            wxChrome.open = true;
+            uiVisible = true;
+            wxTab = 3;
+            if (c.has("basin")) { wxCycBasin = std::clamp((int)c.num("basin", 0.0), 0, 5); wxCycWall = -1e300; }
+            r = weatherCyclonesJson();
+            r["message"] = std::to_string(r["active"].size()) + " active, " + std::to_string(r["season"].size()) +
+                           " in the season list";
+            return Status::Done;
+        }
+        if (sub == "cyclone")
+        {
+            wxChrome.open = true;
+            uiVisible = true;
+            wxTab = 3;
+            if (c.has("basin")) wxCycBasin = std::clamp((int)c.num("basin", 0.0), 0, 5);
+            weatherRefreshCyclones(true);
+            const std::string want = lower(pos(1));
+            uint64_t id = 0;
+            for (const auto *lst : {&wxCycActive, &wxCycSeason, &wxCycNext})
+            {
+                for (const wx::Cyclone &cy : *lst)
+                    if (lower(cy.name) == want || std::to_string(cy.id) == want) { id = cy.id; break; }
+                if (id) break;
+            }
+            if (!id && !want.empty() && std::all_of(want.begin(), want.end(), ::isdigit) && std::stoul(want) < wxCycActive.size())
+                id = wxCycActive[std::stoul(want)].id;
+            if (!id && want == "strongest" && !wxCycActive.empty())
+                id = wxCycActive.front().id;
+            if (!id)
+                fail("weather cyclone: no cyclone '" + pos(1) + "' listed (active, the season of basin " +
+                     std::to_string(wxCycBasin) + ", the next per basin)");
+            wxSelCyclone = id;
+            std::string msg = "selected";
+            bool ok = true;
+            if (c.has("go"))
+            {
+                const std::string g = lower(c.str("go"));
+                ok = weatherGoToCyclone(id, g == "orbit" ? 1 : g == "eye" ? 2 : g == "landfall" ? 3 : 0, msg);
+            }
+            else if (c.num("watch", 0.0) != 0.0)
+                ok = weatherWatchCyclone(id, msg);
+            else if (c.has("milestone"))
+            {
+                // milestone=<index> or a word of its label (landfall, peak, genesis, named, rapid, dissipation...)
+                const std::string m = lower(c.str("milestone"));
+                int idx = -1;
+                if (!m.empty() && std::all_of(m.begin(), m.end(), ::isdigit))
+                    idx = std::atoi(m.c_str());
+                else if (const wx::Cyclone *cy = weatherCycloneById(id))
+                {
+                    std::vector<WxMilestone> ms;
+                    weatherCycloneMilestones(*cy, ms);
+                    for (int i = 0; i < (int)ms.size() && idx < 0; ++i)
+                        if (lower(ms[(size_t)i].label).find(m) != std::string::npos)
+                            idx = i;
+                }
+                ok = weatherCycloneMilestone(id, idx, msg);
+            }
+            if (!ok)
+                fail("weather cyclone: " + msg);
+            wxCycWall = -1e300;
+            r = weatherCyclonesJson();
+            r["message"] = msg;
+            return Status::Done;
+        }
         if (sub == "tab")
         {
             const std::string t = lower(pos(1));
-            wxTab = t == "storms" ? 1 : t == "controls" ? 2 : 0;
+            wxTab = t == "storms" ? 1 : t == "controls" ? 2 : (t == "cyclones" || t == "cyclone" || t == "named") ? 3 : 0;
             wxChrome.open = true;
             uiVisible = true;
             return Status::Done;
         }
         if (!sub.empty() && sub != "state")
             fail("weather: state | radar [range=50|150|400] [clouds=] [labels=] [loop=] | go <k> [list=near|world] | "
-                 "watch <k> [list=] | tab radar|storms|controls");
+                 "watch <k> [list=] | cyclones [basin=] | cyclone <name|id|k> [go=near|orbit|eye|landfall] [watch=1] "
+                 "[milestone=<i>] | tab radar|storms|cyclones|controls");
         r = weatherWindowJson();
         r["message"] = std::to_string(wxStormsAlive) + " storms alive, " + std::to_string(wxNear.size()) + " near";
         return Status::Done;

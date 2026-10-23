@@ -3311,7 +3311,7 @@ private:
     // (KB_WEATHER), harness `ui open weather` / `weather ...`. Nothing runs while it is closed.
     WindowChrome wxChrome;
     bool hovWxClose = false, hovTimeWeather = false;
-    int wxTab = 0;                       // 0 radar, 1 storms, 2 controls
+    int wxTab = 0;                       // 0 radar, 1 storms, 2 controls, 3 cyclones (drawn third)
     int wxRangeIdx = 1;                  // the radar's radius: kWxRangesKm[idx]
     static constexpr float kWxRangesKm[3] = {50.0f, 150.0f, 400.0f};
     bool wxShowClouds = true, wxShowLabels = true, wxLoop = false;
@@ -3419,6 +3419,53 @@ private:
     int wxHoverStorm = -1;               // the storm marker under the pointer (index into wxMapStorms)
     struct WxMapStorm { float x, y; uint64_t id; int kind; int rank; float strength; };
     std::vector<WxMapStorm> wxMapStorms;
+    // ── Named storms (2026-10-23, SatelliteSimWeatherCyclones.cpp): the tropical cyclones (wx::Cyclone) ────────────
+    // Copies (the catalog's seasons can be rebuilt under a pointer): the active ones, the selected basin's season (this
+    // year and the next, within ~200 days of now), the next genesis in every basin. Rebuilt every 2 s or after a jump.
+    std::vector<wx::Cyclone> wxCycActive, wxCycSeason, wxCycNext;
+    int wxCycBasin = -1;                 // the season list's basin (-1: the strongest active one's, else North Atlantic)
+    uint64_t wxSelCyclone = 0;           // the cyclone shown with its milestones (and drawn highlighted)
+    bool wxCycZoom = true;               // the map: the selected cyclone's region (true) or the tropics
+    double wxCycWall = -1e300, wxCycSim = -1e300;
+    uint64_t wxCycEnvKey = 0;
+    void weatherRefreshCyclones(bool force);
+    const wx::Cyclone *weatherCycloneById(uint64_t id) const;           // from the copies above
+    struct WxMilestone { double t; std::string label; int kind; };       // kind: 0 genesis .. 7 dissipation, 6 landfall
+    void weatherCycloneMilestones(const wx::Cyclone &c, std::vector<WxMilestone> &out) const;
+    // Go to a cyclone now: 0 near (60 km behind its motion, 1.5 km up, as `storms go cyclone=`), 1 from orbit over the
+    // eye, 2 in the eye, 3 its (next, else first) landfall point; Watch: its peak (genesis while upcoming) from orbit;
+    // a milestone: the clock there at 1x, the camera on the storm (a landfall from the coast, 2 h before).
+    bool weatherGoToCyclone(uint64_t id, int mode, std::string &msg);
+    bool weatherWatchCyclone(uint64_t id, std::string &msg);
+    bool weatherCycloneMilestone(uint64_t id, int index, std::string &msg);
+    void buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, float bodyW);
+    nlohmann::json weatherCyclonesJson();
+    int wxCycPendingAct = 0, wxCycPendingArg = 0;   // 1 go (arg = mode), 2 watch, 3 milestone (arg = index)
+    uint64_t wxCycPendingId = 0;
+    // The track map: an equirect land / sea raster (re-made only when its box changes), the tracks as overlay quads.
+    static constexpr int kWxMapW = 512, kWxMapH = 256;
+    double wxMapBox[4] = {-180.0, -60.0, 180.0, 60.0};   // lon0, lat0, lon1, lat1 shown
+    double wxMapRastered[4] = {0, 0, 0, 0};
+    VkImage wxMapImg = VK_NULL_HANDLE;
+    VkDeviceMemory wxMapImgMem = VK_NULL_HANDLE;
+    VkImageView wxMapView = VK_NULL_HANDLE;
+    VkSampler wxMapSampler = VK_NULL_HANDLE;
+    VkBuffer wxMapStage = VK_NULL_HANDLE;
+    VkDeviceMemory wxMapStageMem = VK_NULL_HANDLE;
+    void *wxMapStageMapped = nullptr;
+    uint32_t wxMapUiId = 0;
+    bool wxMapUploadPending = false, wxMapFailed = false;
+    float wxMapCpuMs = 0.0f;
+    bool weatherMapEnsureImage(UIRenderer &ui);
+    void weatherMapRaster();
+    UIImage wxMapEl;
+    std::vector<UITextQuad> wxMapQuads;
+    std::vector<UITextRun> wxMapRuns;
+    std::deque<std::string> wxMapRunText;
+    UITextBlock wxMapMarks;
+    struct WxMapCyc { float x, y; uint64_t id; };
+    std::vector<WxMapCyc> wxMapCycs;
+    int wxMapHover = -1;
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
     uint32_t kPoolCap = 16384;            // records the GPU buffers hold
     // Satellite indices: [0, activeSatCount) the roster, then kLaunchCap launch records (trains raising, retirees
