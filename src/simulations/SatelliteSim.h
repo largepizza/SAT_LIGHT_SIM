@@ -6106,7 +6106,7 @@ private:
     // ("Clay ran out of capacity while attempting to measure text elements").
     bool textArea(const UIInput &inp, UIRenderer &ui, Clay_ElementId id, std::string &value, float width, int minLines,
                   float fontPx, const char *placeholder, size_t maxLen = 4000, int maxLines = 10, bool enterCommits = false,
-                  const Clay_Color *readOnlyColor = nullptr);
+                  const Clay_Color *readOnlyColor = nullptr, int16_t layerZ = 10); // layerZ: its root's z (scroll thumb)
     struct TextAreaDraw
     {
         UITextBlock block;

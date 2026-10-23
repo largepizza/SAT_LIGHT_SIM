@@ -2621,6 +2621,9 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   it). Every window is a floating root at zIndex 10 and Clay sorts roots stably, so the one declared later is on top;
   a window's own floating children (the info window's view chips, the trace plot's tick labels, the marker labels)
   must use the SAME zIndex as the window (they were 11 / 12, so they drew over any later window covering them).
+  So does `ui.scrollbar(id, zIndex = 10)`'s thumb (2026-10-21, issue 20261021_175415: at 20 every window's thumb drew
+  over every window); a scroll container in another root passes that root's z (the note bar's `textArea(...,
+  layerZ = 44)`). Tooltips (100) and root overlays (toasts, banners, tutorial outlines) are above windows on purpose.
 - **Low resolutions (2026-10-21; the user: "the Missions window occupies the entire screen basically"):**
   - **The UI scale is the setting x the window's height.** `uiScaleUser` = "Text scale" (`display.ui_scale`, 1.5);
     `uiScale`, which every builder reads, = it x `uiAutoScaleFactor(screenH)` = clamp(H / 1000, 0.7, 1) when "Scale
