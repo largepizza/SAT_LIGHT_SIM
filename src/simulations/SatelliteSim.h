@@ -4768,6 +4768,8 @@ private:
     std::vector<GpuStormTower> stormGpuTowers;   // this frame's towers as uploaded (the envelope index copies them)
     std::vector<glm::uvec2> stormEnvTable;
     std::vector<uint32_t> stormCounts;
+    // The slots each table filled last (fillStormIndex clears and re-uploads only those).
+    std::vector<uint32_t> stormTableUsed, stormEnvTableUsed, shieldTableUsed, shieldEnvTableUsed;
     std::vector<wx::Shield> stormShields;        // this frame's anvil shields
     std::vector<GpuStormShield> stormGpuShields; // as uploaded (the bake's flowed copy is made from these)
     std::vector<StormEntry> shieldEntries, shieldEnvEntries;

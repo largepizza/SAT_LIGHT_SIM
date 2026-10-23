@@ -18,6 +18,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <bit>
+#include <cstdlib>
 #include <cstring>
 
 namespace
@@ -145,13 +147,32 @@ rim:
 
 // Counting pass into the open-addressed table, then each bin's start, then the fill (tower order kept: strongest
 // first, a bin past maxPerBin keeps its strongest). Load factor <= 0.5: the GPU's probes stay short.
+// The list is built in host memory and copied over in one sequential run, the table likewise: both live in
+// device-local, host-visible (write-combined) memory, where every scattered 4-byte store is its own bus write (the
+// entries' scattered stores were most of the index's cost). `used` lists the slots the last call filled: only those
+// are cleared, and the start pass walks them sorted instead of the whole table. The result is the same as a full
+// build: the slots are taken in the same probe order from an all-empty table, and the list starts handed out in slot
+// order (an occupancy bitmap, not a sort). `counts` is all zero between calls.
 struct StormIndexStats { uint32_t bins = 0, entries = 0, truncated = 0, lost = 0, used = 0; };
 template <class E>
-StormIndexStats fillStormIndex(const std::vector<E> &ents, std::vector<glm::uvec2> &table, std::vector<uint32_t> &counts,
-                               uint32_t tableSize, uint32_t listSize, uint32_t maxPerBin, uint32_t *list)
+StormIndexStats fillStormIndex(const std::vector<E> &ents, std::vector<glm::uvec2> &table, std::vector<uint32_t> &used,
+                               std::vector<uint32_t> &counts, uint32_t tableSize, uint32_t listSize, uint32_t maxPerBin,
+                               uint32_t *list, glm::uvec2 *gpuTable)
 {
     StormIndexStats st;
-    table.assign(tableSize, glm::uvec2(0u));
+    static std::vector<uint32_t> old, hostList;   // main thread only
+    if (table.size() != tableSize)
+    {
+        table.assign(tableSize, glm::uvec2(0u));
+        used.clear();
+    }
+    if (counts.size() < tableSize) counts.resize(tableSize, 0u);
+    static std::vector<uint64_t> occ;   // occupied slots; all zero between calls
+    const uint32_t nWords = (tableSize + 63u) / 64u;
+    if (occ.size() < nWords) occ.resize(nWords, 0ull);
+    old.swap(used);
+    used.clear();
+    for (uint32_t sl : old) table[sl] = glm::uvec2(0u);
     auto slotOf = [&](uint32_t k) -> uint32_t {
         uint32_t h = stormHash(k) & (tableSize - 1u);
         for (uint32_t p = 0; p < 32u; ++p)
@@ -161,37 +182,74 @@ StormIndexStats fillStormIndex(const std::vector<E> &ents, std::vector<glm::uvec
         }
         return 0xFFFFFFFFu;
     };
-    counts.assign(tableSize, 0u);
     for (const E &e : ents)
     {
         if (st.bins * 2u >= tableSize) { ++st.lost; continue; }
         const uint32_t sl = slotOf(e.key);
         if (sl == 0xFFFFFFFFu) { ++st.lost; continue; }
-        if (table[sl].x == 0u) { table[sl].x = e.key; ++st.bins; }
+        if (table[sl].x == 0u) { table[sl].x = e.key; ++st.bins; used.push_back(sl); occ[sl >> 6] |= 1ull << (sl & 63u); }
         ++counts[sl];
     }
+    // The occupied slots in slot order from the bitmap (std::sort of ~10-40k slots was 0.4-1.3 ms a call).
+    used.clear();
+    for (uint32_t w = 0; w < nWords; ++w)
+        for (uint64_t b = occ[w]; b; b &= b - 1ull)
+            used.push_back(w * 64u + (uint32_t)std::countr_zero(b));
+    std::fill(occ.begin(), occ.begin() + nWords, 0ull);
     uint32_t start = 0;
-    for (uint32_t sl = 0; sl < tableSize; ++sl)
+    for (uint32_t sl : used)
     {
-        if (table[sl].x == 0u) continue;
         const uint32_t c = std::min(counts[sl], maxPerBin);
         st.truncated += counts[sl] - c;
         if (start + c > listSize) { table[sl] = glm::uvec2(0u); st.lost += c; continue; }
         table[sl].y = (start << 4u) | 0u;   // count filled below
         start += c;
     }
+    if (hostList.size() < start) hostList.resize(start);
     for (const E &e : ents)
     {
         const uint32_t sl = slotOf(e.key);
         if (sl == 0xFFFFFFFFu || table[sl].x != e.key) continue;
         const uint32_t c = table[sl].y & 15u;
         if (c >= maxPerBin) continue;
-        list[(table[sl].y >> 4u) + c] = e.tower;
+        hostList[(table[sl].y >> 4u) + c] = e.tower;
         table[sl].y += 1u;
         ++st.entries;
     }
+    for (uint32_t sl : used) counts[sl] = 0u;
+    std::memcpy(list, hostList.data(), sizeof(uint32_t) * start);
+    std::memcpy(gpuTable, table.data(), sizeof(glm::uvec2) * tableSize);
     st.used = start;
     return st;
+}
+
+// body(i, list) for i in [0, n) on the storm catalog's thread pool, in chunks that each append to their own list, the
+// lists then joined in chunk order: `out` ends up exactly as a serial loop appending in i order would leave it (the
+// envelope index's flowed copies). Main thread only.
+// Below minN it runs serially (waking the pool costs more than ~1000 cheap iterations: the per-frame tower and shield
+// lists stay serial, the envelope index's flowed copies go parallel).
+template <class E, class F>
+void parallelEntries(wx::Catalog *cat, uint32_t n, uint32_t minN, std::vector<E> &out, F &&body)
+{
+    constexpr uint32_t kChunk = 96;
+    const uint32_t nc = (n + kChunk - 1) / kChunk;
+    if (!cat || nc <= 1 || n < minN)
+    {
+        for (uint32_t i = 0; i < n; ++i) body(i, out);
+        return;
+    }
+    static std::vector<std::vector<E>> parts;   // kept for their capacity (one instance per entry type)
+    if (parts.size() < nc) parts.resize(nc);
+    cat->parallelFor(nc, [&](size_t c) {
+        std::vector<E> &pc = parts[c];
+        pc.clear();
+        const uint32_t i1 = std::min<uint32_t>(n, (uint32_t)(c + 1) * kChunk);
+        for (uint32_t i = (uint32_t)c * kChunk; i < i1; ++i) body(i, pc);
+    });
+    size_t tot = out.size();
+    for (uint32_t c = 0; c < nc; ++c) tot += parts[c].size();
+    out.reserve(tot);
+    for (uint32_t c = 0; c < nc; ++c) out.insert(out.end(), parts[c].begin(), parts[c].end());
 }
 } // namespace
 
@@ -261,7 +319,11 @@ void SatelliteSim::updateStorms()
         else
             Log::line("weather: no storm climatology table; using the analytic model");
         stormCatalog = std::make_unique<wx::Catalog>();
-        stormCatalog->setBuildThreads(std::clamp((int)std::thread::hardware_concurrency() / 2, 1, 6));
+        // A persistent pool (the bins after a jump, the per-frame tower index): three quarters of the threads, at most 12.
+        // (SATLIGHTSIM_STORM_THREADS overrides it: an A/B of the build cost.)
+        int nThreads = std::clamp((int)std::thread::hardware_concurrency() * 3 / 4, 1, 12);
+        if (const char *e = std::getenv("SATLIGHTSIM_STORM_THREADS")) nThreads = std::clamp(std::atoi(e), 1, 64);
+        stormCatalog->setBuildThreads(nThreads);
     }
     const uint64_t key = stormEnvHash() ^ (stormObjects ? 0x9E3779B97F4A7C15ull : 0ull);
     if (key != stormEnvKey)
@@ -392,8 +454,7 @@ void SatelliteSim::updateStorms()
     auto *dst = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormTowersOffset);
     stormEntries.clear();      // (key, tower) pairs, towers strongest first
     stormGpuTowers.resize(nT);
-    for (uint32_t i = 0; i < nT; ++i)
-    {
+    parallelEntries(stormCatalog.get(), nT, 4096u, stormEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
         const wx::Tower &tw = stormTowers[i];
         const glm::dvec3 d = glm::normalize(tw.dir);
         const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), d) + glm::dvec3(1e-12, 0, 0));
@@ -427,13 +488,13 @@ void SatelliteSim::updateStorms()
         g.c = glm::vec4((float)reach, seedF, (float)anvilK, (float)driftK);
         dst[i] = g;
         stormGpuTowers[i] = g;   // the envelope index's copy is made from these (buildStormEnvIndex)
-        listStormBins(d, reach, i, kStormBinsPerFace, stormEntries);
-    }
+        listStormBins(d, reach, i, kStormBinsPerFace, ents);
+    });
     split("storms.towerBins");
     auto *list = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kStormListOffset);
-    const StormIndexStats ix = fillStormIndex(stormEntries, stormTable, stormCounts, kStormTableSize, kStormListSize,
-                                              kStormMaxPerBin, list);
-    std::memcpy(static_cast<char *>(stormMapped) + kStormTableOffset, stormTable.data(), sizeof(glm::uvec2) * kStormTableSize);
+    const StormIndexStats ix = fillStormIndex(stormEntries, stormTable, stormTableUsed, stormCounts, kStormTableSize,
+                                              kStormListSize, kStormMaxPerBin, list,
+                                              reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kStormTableOffset));
     const uint32_t bins = ix.bins, entries = ix.entries, truncated = ix.truncated, lost = ix.lost, start = ix.used;
     head[0] = nT;
     head[1] = bins;
@@ -457,8 +518,7 @@ void SatelliteSim::updateStorms()
         auto *sdst = reinterpret_cast<GpuStormShield *>(static_cast<char *>(stormMapped) + kShieldsOffset);
         stormGpuShields.resize(nS);
         shieldEntries.clear();
-        for (uint32_t i = 0; i < nS; ++i)
-        {
+        parallelEntries(stormCatalog.get(), nS, 4096u, shieldEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
             const wx::Shield &s = stormShields[i];
             GpuStormShield g;
             g.a = glm::vec4(glm::vec3(s.a), s.strength);
@@ -473,13 +533,12 @@ void SatelliteSim::updateStorms()
             const glm::dvec3 mid = glm::normalize(s.a + s.b);
             const double half = 0.5 * std::acos(std::clamp(glm::dot(s.a, s.b), -1.0, 1.0)) * kReW;
             // (The shader frays the outline out to 1.6 radii: cv2ShieldAt.)
-            listStormBins(mid, 1.03 * (half + 1.6 * std::max(s.rA, s.rB)) + 2000.0, i, kShieldBinsPerFace, shieldEntries);
-        }
+            listStormBins(mid, 1.03 * (half + 1.6 * std::max(s.rA, s.rB)) + 2000.0, i, kShieldBinsPerFace, ents);
+        });
         auto *slist = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldListOffset);
-        const StormIndexStats sx = fillStormIndex(shieldEntries, shieldTable, stormCounts, kShieldTableSize,
-                                                  kShieldListSize, kShieldMaxPerBin, slist);
-        std::memcpy(static_cast<char *>(stormMapped) + kShieldTableOffset, shieldTable.data(),
-                    sizeof(glm::uvec2) * kShieldTableSize);
+        const StormIndexStats sx = fillStormIndex(shieldEntries, shieldTable, shieldTableUsed, stormCounts, kShieldTableSize,
+                                                  kShieldListSize, kShieldMaxPerBin, slist,
+                                                  reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kShieldTableOffset));
         auto *shead = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldHeadOffset);
         shead[0] = nS;
         shead[1] = stormObjects ? 1u : 0u;
@@ -538,12 +597,23 @@ glm::dvec3 SatelliteSim::stormFlowedDir(const glm::dvec3 &wd, double t) const
                                     {-0.34, -0.55, -0.76}, {0.05, 0.77, -0.64}, {-0.90, -0.40, 0.17}, {0.44, -0.29, 0.85}};
     static const double ks[8] = {1.0, 1.13, 0.87, 1.31, 0.74, 1.52, 0.93, 1.21};
     static const double ph[8] = {0.3, 2.1, 4.4, 1.7, 5.6, 3.2, 0.9, 2.7};
+    // The wave directions normalised once (the same expression: bit-identical; this runs for every tower and shield
+    // end on each frame the envelope index is built).
+    struct KDir
+    {
+        glm::dvec3 v[8];
+        KDir()
+        {
+            for (int i = 0; i < 8; ++i) v[i] = glm::normalize(glm::dvec3(kd[i][0], kd[i][1], kd[i][2]));
+        }
+    };
+    static const KDir kDir;
     const double k0 = glm::two_pi<double>() * kReW / flowP;
     const double phase = (flowPh - std::floor(flowPh)) * glm::two_pi<double>();
     glm::dvec3 g(0.0);
     for (int i = 0; i < 8; ++i)
     {
-        const glm::dvec3 kv = glm::normalize(glm::dvec3(kd[i][0], kd[i][1], kd[i][2])) * (k0 * ks[i]);
+        const glm::dvec3 kv = kDir.v[i] * (k0 * ks[i]);
         g += kv * std::cos(glm::dot(kv, wd) + ph[i] + phase) / ks[i];
     }
     const glm::dvec3 v = glm::cross(wd, g) / (k0 * 2.0) * flowX;
@@ -557,51 +627,56 @@ void SatelliteSim::buildStormEnvIndex()
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     auto flowed = [&](const glm::dvec3 &wd) -> glm::dvec3 { return stormFlowedDir(wd, t); };
+    auto splitT = std::chrono::steady_clock::now();
+    auto split = [&splitT](const char *name) {
+        const auto now = std::chrono::steady_clock::now();
+        fprof::add(name, std::chrono::duration<float, std::milli>(now - splitT).count());
+        splitT = now;
+    };
     auto *envTowers = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormEnvTowersOffset);
     stormEnvEntries.clear();
     const uint32_t n = (uint32_t)std::min<size_t>(stormGpuTowers.size(), kStormMaxTowers);
-    for (uint32_t i = 0; i < n; ++i)
-    {
+    parallelEntries(stormCatalog.get(), n, 256u, stormEnvEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
         GpuStormTower g = stormGpuTowers[i];
         const glm::dvec3 df = flowed(glm::normalize(glm::dvec3(glm::vec3(g.a))));
         g.a = glm::vec4(glm::vec3(df), g.a.w);
         envTowers[i] = g;
         if (g.a.w > 0.05f)
-            listStormBins(df, 1.04 * (double)stormEnvRadius(g.c.x), i, kStormBinsPerFace, stormEnvEntries);
-    }
+            listStormBins(df, 1.04 * (double)stormEnvRadius(g.c.x), i, kStormBinsPerFace, ents);
+    });
+    split("env.towerBins");
     auto *envList = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kStormEnvListOffset);
-    const StormIndexStats ex = fillStormIndex(stormEnvEntries, stormEnvTable, stormCounts, kStormEnvTableSize,
-                                              kStormEnvListSize, kStormMaxPerBin, envList);
-    std::memcpy(static_cast<char *>(stormMapped) + kStormEnvTableOffset, stormEnvTable.data(),
-                sizeof(glm::uvec2) * kStormEnvTableSize);
+    const StormIndexStats ex = fillStormIndex(stormEnvEntries, stormEnvTable, stormEnvTableUsed, stormCounts,
+                                              kStormEnvTableSize, kStormEnvListSize, kStormMaxPerBin, envList,
+                                              reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kStormEnvTableOffset));
     stormStats.envBins = (int)ex.bins;
     stormStats.envEntries = (int)ex.entries;
     stormStats.envTruncated = (int)ex.truncated;
     stormStats.envLost = (int)ex.lost;
 
+    split("env.towerIndex");
     // The shields' flowed copy (the line systems' stratiform rain is stamped where the low cloud reads it).
     auto *envShields = reinterpret_cast<GpuStormShield *>(static_cast<char *>(stormMapped) + kShieldEnvOffset);
     shieldEnvEntries.clear();
     const uint32_t nS = (uint32_t)std::min<size_t>(stormGpuShields.size(), kShieldMax);
-    for (uint32_t i = 0; i < nS; ++i)
-    {
+    parallelEntries(stormCatalog.get(), nS, 256u, shieldEnvEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
         GpuStormShield g = stormGpuShields[i];
         const glm::dvec3 a = flowed(glm::normalize(glm::dvec3(glm::vec3(g.a))));
         const glm::dvec3 b = flowed(glm::normalize(glm::dvec3(glm::vec3(g.b))));
         g.a = glm::vec4(glm::vec3(a), g.a.w);
         g.b = glm::vec4(glm::vec3(b), g.b.w);
         envShields[i] = g;
-        if (g.c.w <= 0.0f) continue;   // only the raining (line-system) shields are stamped
+        if (g.c.w <= 0.0f) return;   // only the raining (line-system) shields are stamped
         const glm::dvec3 mid = glm::normalize(a + b);
         const double half = 0.5 * std::acos(std::clamp(glm::dot(a, b), -1.0, 1.0)) * kReW;
         // + the clear air ahead of the line (100 km past the capsule, stormStamp).
-        listStormBins(mid, 1.03 * (half + std::max(g.c.x, g.b.w)) + 100000.0, i, kShieldBinsPerFace, shieldEnvEntries);
-    }
+        listStormBins(mid, 1.03 * (half + std::max(g.c.x, g.b.w)) + 100000.0, i, kShieldBinsPerFace, ents);
+    });
     auto *senv = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldEnvListOffset);
-    fillStormIndex(shieldEnvEntries, shieldEnvTable, stormCounts, kShieldTableSize, kShieldListSize, kShieldMaxPerBin,
-                   senv);
-    std::memcpy(static_cast<char *>(stormMapped) + kShieldEnvTableOffset, shieldEnvTable.data(),
-                sizeof(glm::uvec2) * kShieldTableSize);
+    fillStormIndex(shieldEnvEntries, shieldEnvTable, shieldEnvTableUsed, stormCounts, kShieldTableSize, kShieldListSize,
+                   kShieldMaxPerBin, senv,
+                   reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kShieldEnvTableOffset));
+    split("env.shields");
 }
 
 nlohmann::json SatelliteSim::stormNearestJson(int n, float minStrength, float rangeKm, bool dominantOnly) const
