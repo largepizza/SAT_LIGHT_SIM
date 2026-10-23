@@ -796,6 +796,36 @@ json SatelliteSim::harnessStateJson()
         w["cpu_ms"] = stormStats.cpuMs;
         w["cpu_ms_split"] = {{"catalog", stormStats.msCatalog}, {"tower_index", stormStats.msTowerIndex},
                              {"shields", stormStats.msShields}};
+        {   // A checksum of what the GPU reads (towers, shields, both bin tables, the tower list, the cyclones): an
+            // optimisation of the storm update must leave it unchanged at every sim time.
+            uint64_t h = 1469598103934665603ull;
+            auto mixB = [&h](const void *p, size_t n) {
+                const unsigned char *b = static_cast<const unsigned char *>(p);
+                for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 1099511628211ull;
+            };
+            mixB(stormGpuTowers.data(), stormGpuTowers.size() * sizeof(GpuStormTower));
+            mixB(stormGpuShields.data(), stormGpuShields.size() * sizeof(GpuStormShield));
+            mixB(stormTable.data(), stormTable.size() * sizeof(glm::uvec2));
+            mixB(shieldTable.data(), shieldTable.size() * sizeof(glm::uvec2));
+            if (stormMapped)
+            {
+                const uint32_t used = static_cast<const uint32_t *>(stormMapped)[2];
+                std::vector<uint32_t> lst(std::min<uint32_t>(used, kStormListSize));
+                std::memcpy(lst.data(), static_cast<const char *>(stormMapped) + kStormListOffset, lst.size() * 4);
+                mixB(lst.data(), lst.size() * 4);
+                std::vector<GpuStormCyclone> cy(kCycloneMax);
+                std::memcpy(cy.data(), static_cast<const char *>(stormMapped) + kCyclonesOffset, cy.size() * sizeof(GpuStormCyclone));
+                mixB(cy.data(), std::min<size_t>(stormCyclonesNow.size(), kCycloneMax) * sizeof(GpuStormCyclone));
+            }
+            char hx[24];
+            std::snprintf(hx, sizeof hx, "%016llx", (unsigned long long)h);
+            w["gpu_hash"] = hx;
+            uint64_t he = 1469598103934665603ull;
+            std::swap(h, he);
+            mixB(stormEnvTable.data(), stormEnvTable.size() * sizeof(glm::uvec2));
+            std::snprintf(hx, sizeof hx, "%016llx", (unsigned long long)h);
+            w["env_hash"] = hx;
+        }
         if (stormCatalog)
         {
             const wx::Catalog::Stats cs = stormCatalog->stats();
