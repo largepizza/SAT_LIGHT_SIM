@@ -209,7 +209,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -3376,6 +3376,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 return &cineChrome;
             if (l == "missions" || l == "mission")
                 return &msChrome;
+            if (l == "weather")
+                return &wxChrome;
             return nullptr;
         };
         if (sub == "dump")
@@ -3656,8 +3658,17 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                         msTab = t == "ongoing" ? 1 : (t == "kessler" || t == "tracker" || t == "controls") ? 2 : 0;
                     }
                 }
+                if (ch == &wxChrome)
+                {
+                    wxRowsWall = -1e300;
+                    if (c.has("tab"))
+                    {
+                        const std::string t = lower(c.str("tab"));
+                        wxTab = t == "storms" ? 1 : t == "controls" ? 2 : 0;
+                    }
+                }
             }
-            if (c.has("tab") && lower(pos(1)) != "missions" && lower(pos(1)) != "mission")
+            if (c.has("tab") && lower(pos(1)) != "missions" && lower(pos(1)) != "mission" && lower(pos(1)) != "weather")
             {
                 const int t = settingsTabIndexByName(c.str("tab"));
                 if (t < 0)
@@ -3679,7 +3690,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             };
             if (lower(pos(1)) == "all" || pos(1).empty())
                 for (WindowChrome *ch : {&settingsChrome, &viewControlsChrome, &traceChrome, &infoChrome, &viewerChrome,
-                                         &cineChrome, &bmChrome, &msChrome, &rpChrome})
+                                         &cineChrome, &bmChrome, &msChrome, &rpChrome, &wxChrome})
                     reset(*ch);
             else if (WindowChrome *ch = chromeOf(pos(1)))
                 reset(*ch);
@@ -3690,7 +3701,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             if (lower(pos(1)) == "all")
                 consoleOpen_ = settingsChrome.open = viewControlsChrome.open = traceChrome.open = infoChrome.open =
-                    viewerChrome.open = cineChrome.open = bmChrome.open = msChrome.open = rpChrome.open = false;
+                    viewerChrome.open = cineChrome.open = bmChrome.open = msChrome.open = rpChrome.open = wxChrome.open = false;
             else if (lower(pos(1)) == "console")
                 consoleOpen_ = false;
             else if (WindowChrome *ch = chromeOf(pos(1)))
@@ -4061,6 +4072,63 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     // ── storms: the storm objects (SatelliteSimWeather.cpp). `storms` lists the nearest towers; `storms go [k=0]
     // [dist_km=60] [alt=1500] [el=6] [min_strength=0.6] [range_km=6000]` stands the observer dist_km from the k-th nearest
     // anvil-reaching tower, upwind of it, looking at it (time is left as it is: pause first to hold the storm). ──
+    // ── weather: the Weather window (SatelliteSimWeatherWindow.cpp) ──
+    // weather [state] | radar [range=50|150|400] [clouds=0|1] [labels=0|1] [loop=0|1] | go <k> [list=near|world] |
+    // watch <k> [list=near|world] | tab radar|storms|controls
+    if (n == "weather")
+    {
+        const std::string sub = lower(pos(0));
+        auto rowsOf = [&](const std::string &l) -> const std::vector<WxStormRow> & { return l == "world" ? wxWorld : wxNear; };
+        if (sub == "radar")
+        {
+            wxChrome.open = true;
+            uiVisible = true;
+            wxTab = 0;
+            if (c.has("range"))
+            {
+                const double km = c.num("range", 150.0);
+                wxRangeIdx = km <= 90.0 ? 0 : km <= 250.0 ? 1 : 2;
+            }
+            if (c.has("clouds")) wxShowClouds = c.num("clouds", 1.0) != 0.0;
+            if (c.has("labels")) wxShowLabels = c.num("labels", 1.0) != 0.0;
+            if (c.has("loop")) wxLoop = c.num("loop", 0.0) != 0.0;
+            r = weatherWindowJson();
+            r["message"] = "radar: " + std::to_string(r["radar"]["raining_cells"].get<int>()) + " raining cells, max " +
+                           std::to_string((int)std::lround(r["radar"]["max_dbz"].get<float>())) + " dBZ, " +
+                           std::to_string(r["radar"]["gpu_ms"].get<float>()).substr(0, 5) + " ms GPU";
+            return Status::Done;
+        }
+        if (sub == "go" || sub == "watch")
+        {
+            weatherRefreshRows(true);
+            const std::vector<WxStormRow> &rows = rowsOf(lower(c.str("list")));
+            const int k = std::atoi(pos(1).c_str());
+            if (k < 0 || k >= (int)rows.size())
+                fail("weather " + sub + ": no storm " + std::to_string(k) + " (" + std::to_string(rows.size()) + " listed)");
+            const uint64_t id = rows[(size_t)k].id;
+            std::string msg;
+            const bool ok = sub == "go" ? weatherGoToStorm(id, msg) : weatherWatchStorm(id, msg);
+            if (!ok)
+                fail("weather " + sub + ": " + msg);
+            wxSelStorm = id;
+            r["message"] = msg;
+            return Status::Done;
+        }
+        if (sub == "tab")
+        {
+            const std::string t = lower(pos(1));
+            wxTab = t == "storms" ? 1 : t == "controls" ? 2 : 0;
+            wxChrome.open = true;
+            uiVisible = true;
+            return Status::Done;
+        }
+        if (!sub.empty() && sub != "state")
+            fail("weather: state | radar [range=50|150|400] [clouds=] [labels=] [loop=] | go <k> [list=near|world] | "
+                 "watch <k> [list=] | tab radar|storms|controls");
+        r = weatherWindowJson();
+        r["message"] = std::to_string(wxStormsAlive) + " storms alive, " + std::to_string(wxNear.size()) + " near";
+        return Status::Done;
+    }
     if (n == "storms")
     {
         // A storm's centre now (map frame -> Earth-fixed), as a row like stormNearestJson's (for `go storm=`, `list`).

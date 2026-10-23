@@ -1,0 +1,85 @@
+# The Weather window (SatelliteSimWeatherWindow.cpp): radar agreement, then screenshots, cost, the loop.
+# python tools/harness/run.py tools/harness/scripts/weather_window.satcmd; python tools/harness/radar_agree.py <run>
+# Agreement: stand at radar cells (120 m over the ground, from the default start: the supercell east of `storms go`,
+# -48.9 S 72.7 W, rainy and dry) and compare the radar centre with the lightning pass's rain map at the eye.
+storms go dist_km=60
+wait settle
+weather radar range=50
+wait 30
+observer lat=-48.891 lon=-72.6482 agl=120
+wait settle
+wait 30
+weather radar
+observer lat=-49.0385 lon=-72.6455 agl=120
+wait settle
+wait 30
+weather radar
+observer lat=-48.8893 lon=-72.4559 agl=120
+wait settle
+wait 30
+weather radar
+observer lat=-48.9777 lon=-73.032 agl=120
+wait settle
+wait 30
+weather radar
+observer lat=-48.9035 lon=-72.9526 agl=120
+wait settle
+wait 30
+weather radar
+observer lat=-48.96 lon=-73.0054 agl=120
+wait settle
+wait 30
+weather radar
+observer lat=-49.0371 lon=-72.9617 agl=120
+wait settle
+wait 30
+weather radar
+observer lat=-48.70 lon=-72.30 agl=120
+wait settle
+wait 30
+weather radar
+observer lat=-49.20 lon=-73.30 agl=120
+wait settle
+wait 30
+weather radar
+observer lat=-48.92 lon=-72.70 agl=120
+wait settle
+wait 30
+weather radar
+capture wx_in_storm ui=on
+# Daytime: the strongest storms worldwide, from 50 km upwind.
+weather state
+weather go 2 list=world
+wait settle
+weather radar range=150
+wait 40
+weather radar
+capture wx_day_a ui=on
+weather radar range=400
+wait 40
+weather radar
+capture wx_day_a400 ui=on
+weather go 3 list=world
+wait settle
+weather radar range=150
+wait 40
+weather radar
+capture wx_day_b ui=on
+perf frames=120 name=wx_open
+ui close weather
+wait 10
+perf frames=120 name=wx_closed
+ui open weather tab=radar
+wait 30
+# The loop: 5 min of sim time a second, ~12 frames
+time scale 5m
+time play
+wait 800
+weather radar loop=1
+wait 45
+weather radar
+capture wx_loop ui=on
+time pause
+weather tab storms
+wait 10
+capture wx_day_storms ui=on

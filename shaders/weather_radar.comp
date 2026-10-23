@@ -1,0 +1,89 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── The Weather window's radar (2026-10-23, SatelliteSimWeatherWindow.cpp) ────────────────────────────────────────
+// A local precipitation radar centred on the observer: N x N cells of an azimuthal-equidistant map, north up,
+// `cellM` metres a cell. Each cell asks THE FIELD the march draws (cv2Field, clouds_v2.glsl) for its rain a few
+// hundred metres over the ground — the weather cube's precipitation channel read through the flow-warped, drifted
+// lookup in cv2FieldLow's rain branch, and the storms' rain cores under their dominant towers (gCv2RainCore, set by
+// cv2ColumnSigma inside cv2Field) — exactly as the lightning pass's rain map at the eye does. So the radar shows the
+// rain shafts the renderer draws, nothing modelled apart from it.
+// Output (host-visible, read back next frame): per cell x = the rain's extinction / (0.0012 x "Rain") — cv2FieldLow's
+// map rate x shaft x (1 + core), the global "Rain" density (cv2.rain.x, 3 by default, a look) divided out: ~1 = heavy
+// rain, ~2 under a storm's core — y = the map's low-cloud cover there (the flowed weather lookup, remapped), z = the
+// ground height (m), w = the storm rain core alone (0..1).
+// Same descriptor set (set 0) as the cloud march; set 1 binding 0 = the output. Run a few times a second at most, and
+// only while the window's radar is shown.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform PC {
+    vec4 obs;      // xyz the observer's ECEF unit direction, w metres per cell
+    vec4 grid;     // x N, y the first row this dispatch fills, z rows, w heights above the ground of the 1st sample (m)
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING  1
+#define CV2_WEATHER_BINDING 2
+#define CV2_SHAPE_BINDING   3
+#define CV2_MESO_BINDING    5
+#define CV2_MORPH_BINDING   20   // the march set's (every consumer places clouds alike)
+#define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
+#include "clouds_v2.glsl"
+
+layout(std430, set = 1, binding = 0) writeonly buffer RadarOut { vec4 radar[]; };
+
+// The rain at one point: the rain's own extinction over the rate unit (as cloud_v2_lightning.comp's rain map).
+float rainAt(vec2 en, float hAgl, float ground, mat3 enu, float fp, out float coreOut)
+{
+    // The point at ground distance |en| along the sphere of radius R + h (azimuthal equidistant), relative to the
+    // observer's sea-level point: (R + h) (sin a e, cos a) - (0, 0, R), cos a - 1 = -2 sin^2(a / 2) (no cancellation).
+    float d  = length(en);
+    float a  = d / R_EARTH;
+    vec2  u  = d > 0.0 ? en / d : vec2(0.0);
+    float h  = ground + hAgl;
+    float s2 = sin(0.5 * a);
+    vec3  s  = vec3(u * ((R_EARTH + h) * sin(a)), h - (R_EARTH + h) * 2.0 * s2 * s2);
+    CV2Field f = cv2Field(cv2Pos(s, 0.0, enu), -1.0, fp);
+    coreOut = gCv2RainCore;
+    return clamp(f.rain * f.sigma / (0.0012 * max(cv2.rain.x, 1e-3)), 0.0, 4.0);
+}
+
+void main()
+{
+    uint N = uint(pc.grid.x);
+    uvec2 c = gl_GlobalInvocationID.xy;
+    c.y += uint(pc.grid.y);
+    if (c.x >= N || c.y >= N || gl_GlobalInvocationID.y >= uint(pc.grid.z)) return;
+    vec3  enuZ = normalize(pc.obs.xyz);
+    vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ) + vec3(1e-7, 0.0, 0.0));
+    vec3  enuY = cross(enuZ, enuX);
+    mat3  enu  = mat3(enuX, enuY, enuZ);
+    float cellM = pc.obs.w;
+    // East / north of the cell's centre (row 0 = north).
+    vec2  en = vec2((float(c.x) + 0.5) - 0.5 * float(N), 0.5 * float(N) - (float(c.y) + 0.5)) * cellM;
+    float d  = length(en);
+    float a  = d / R_EARTH;
+    vec2  u  = d > 0.0 ? en / d : vec2(0.0);
+    float s2 = sin(0.5 * a);
+    CV2Pos q0  = cv2Pos(vec3(u * (R_EARTH * sin(a)), -R_EARTH * 2.0 * s2 * s2), 0.0, enu);   // on the sea-level sphere
+    vec3  dirE = q0.dirE;
+    float ground = cv2Ground(dirE);
+
+    // One sample low over the ground (pc.grid.w, 120 m: below nearly every base, so the plain shaft, not the rain floor
+    // that thickens toward the base inside it; where a base is lower the sample is in the cloud and its rain share is
+    // that floor). A second, higher sample was tried (as the lightning pass does) and drew rain the ground never gets.
+    float core0 = 0.0, core1 = 0.0;
+    float fp = max(cellM, 100.0);
+    float rr = cv2.rain.x > 0.0 ? rainAt(en, pc.grid.w, ground, enu, fp, core0) : 0.0;
+
+    // The low cloud's cover there (the flowed weather lookup, as cv2FieldLow places the map; mip 1, ~10 km).
+    vec3  wd   = cv2Drift(dirE);
+    vec3  sP   = cv2Drift(q0.seaProjE);
+    vec3  flowD = cv2FlowDisp(wd, sP);
+    vec3  wdF  = cv2FlowWeatherDir(wd, flowD);
+    float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
+    float cov  = clamp((textureLod(cv2WeatherTex, wdF, 1.0).r * cv2.look.x - cv2.cover.x) / covSpan, 0.0, 1.0);
+
+    radar[c.y * N + c.x] = vec4(rr, cov, ground, max(core0, core1));
+}

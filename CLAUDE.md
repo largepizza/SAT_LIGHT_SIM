@@ -887,6 +887,36 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   Harness `storms cyclones`, `storms season basin=<0-5> year=`, `storms go cyclone=<name|id|strongest>`. Not yet: the
   Weather window's named-storm list and tracks, landfall surge / sea state from its wind, extratropical transition's
   look, outflow cirrus beyond the CDO, the eyewall's lightning share.
+- **The Weather window (2026-10-23, `SatelliteSimWeatherWindow.cpp`, `shaders/weather_radar.comp`; the weather-cloud
+  button beside Missions on the right HUD panel (`TimeWeatherBtn`, `pixel--weather.png` from `tools/make_icons.py`), key N
+  `KB_WEATHER`, window id 12, `wxChrome`; harness `ui open weather [tab=radar|storms|controls]`, `weather ...`).** Missions-
+  like, for the storm objects. **Radar**: a local precipitation radar centred on the observer (azimuthal equidistant, north
+  up, radius 50 / 150 / 400 km, 256 x 256 cells), NWS reflectivity colours (rain green .. yellow .. red .. magenta, snow
+  blues and mixed pinks by the rain particles' air temperature 500 m over each cell's ground), range rings, you, storm
+  markers (strongest tower of each storm; the label's number is its place in the Storms list; click = its row with Go to /
+  Watch), the low cloud's cover faintly, and a Loop over the frames taken while it was open (one per 5 min of sim time,
+  10 kept; a move or a range change starts it again). **The rain is the renderer's**: the pass binds the cloud march's
+  descriptor set (set 0, so it sees exactly the weather cube, flow, drift, morphology and `stormBuf` the march does; set 1
+  = its host-visible output) and calls `cv2Field` at 120 m over `cv2Ground` in every cell, like the lightning pass's rain
+  map at the eye: the map's precipitation through cv2FieldLow's flowed lookup and the storms' rain cores (`gCv2RainCore`,
+  set by cv2ColumnSigma inside cv2Field). Its unit is the rain's extinction / (0.0012 x "Rain" `cv2.rain.x`), so ~1 = the
+  map's heavy rain, ~2 under a dominant tower's core; dBZ = 23 + 16 log10(60 rr^1.5) (Marshall-Palmer on the particles'
+  rate). A sample HIGHER over the ground (the lightning pass takes one 600 m below an in-cloud eye) was tried and drew rain
+  the ground never gets; at 250 m the rain floor thickening toward a low base (`kCv2RainIntoM`) saturated whole tropical
+  regions at 50 dBZ. Dispatched only while the radar is shown, after `recordCloudsV2` (not on Potato: no cloud pass), at
+  most 4 times a second and only when the time, the place (> a quarter cell) or the range changed; read back the next
+  frame (`weatherRadarReadback`, single frame in flight) and coloured on the CPU into an R8G8B8A8_SRGB image uploaded like
+  the Kessler tracker's globe (`weatherRadarRecordUpload`; the UI's 5th external image slot of 6). Agreement, checked by
+  standing at radar cells (`tools/harness/radar_agree.py`: the radar's 4 centre cells x "Rain" vs `state` ->
+  `clouds_v2.rain.rate_eye`): at 10 points round a supercell from 120 m, 0 / 0, 1 / 1 (both saturated), 0.69 / 0.61, 0.67 / 0.60, 0.33 / 0.23, 0.12 / 0.16, 0.05 / 0.02; the rest is the radar's 0.8-km box and footprint-averaged shaft against the eye's 80 m). Cost (RTX 3070 Ti, 1600x900): 0.09-0.11 ms GPU a dispatch; the read back + raster 1.8-2.8 ms on the frame after one (<= 4 a second); `build_ui` +0.11 ms averaged with the radar running at 1x; closed, nothing. **Storms**: near you (1200 km, nearest first, up to 12) and the strongest worldwide
+  (organised only unless "Include single cells"), from `wx::Catalog::stormsAt` (rows copied: its pointers die on the next
+  call; at most twice a second): kind (an unknown `StormKind` is "Storm"; every loop goes to `towerCount`), stage from
+  the strongest tower's lifecycle (forming / growing / mature / decaying), age, time left, distance / bearing, strength,
+  flashes a minute ESTIMATED as the lightning pass does (rate x smoothstep(0.35, 0.75, strength) of each dominant
+  tower). Go to = the harness `storms go`'s placement (1.5 km ASL, 50 km upwind of its strongest tower against the
+  anvil's shear, looking at it 8 deg up); Watch = its mature moment (dominant tower grown + 30 min, before it decays) at
+  1x, then Go to ("Replay" once it is past). **Controls**: storm objects, frequency, lifetime, cloud field, moat, both
+  lightning rates (own rows: the settings' slider rows are tied to the settings window) + "All weather settings".
 - **Pass 20 (2026-09-29):** "Storm cumulus top" reaches the cloud AROUND a storm: the weather map
   types only a storm's core as Cb (which the towers cover) and the cloud around it as stratocumulus,
   so keyed on the Cb class the slider changed 0.2% of a storm view. Low cloud now takes it by storm

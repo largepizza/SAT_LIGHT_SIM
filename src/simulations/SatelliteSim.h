@@ -3302,6 +3302,123 @@ private:
     bool missionsMilestone(int row, int dir, int index, std::string &msg); // an Ongoing row's next / previous milestone
     nlohmann::json missionsStateJson();
     void buildMissionsWindow(const UIInput &inp, UIRenderer &ui);
+
+    // ── The Weather window (2026-10-23, SatelliteSimWeatherWindow.cpp) ──────────────────────────────────────
+    // Like Missions, for the storm objects (Weather.h): Radar (a local precipitation radar centred on the observer,
+    // computed on the GPU from the same field the cloud march draws: shaders/weather_radar.comp), Storms (the storms
+    // near the observer and the strongest worldwide: kind, stage, age, time left, distance, lightning; Go to /
+    // Watch) and Controls (the storm-object settings). The weather-cloud button on the right HUD panel, key N
+    // (KB_WEATHER), harness `ui open weather` / `weather ...`. Nothing runs while it is closed.
+    WindowChrome wxChrome;
+    bool hovWxClose = false, hovTimeWeather = false;
+    int wxTab = 0;                       // 0 radar, 1 storms, 2 controls
+    int wxRangeIdx = 1;                  // the radar's radius: kWxRangesKm[idx]
+    static constexpr float kWxRangesKm[3] = {50.0f, 150.0f, 400.0f};
+    bool wxShowClouds = true, wxShowLabels = true, wxLoop = false;
+    std::string wxStatus, wxStatusShown;
+    double wxStatusWall = 0.0;
+    std::deque<std::string> wxText_;     // this frame's formatted strings (Clay keeps the pointers)
+    const char *wxStr(const char *fmt, ...);
+    void buildWeatherWindow(const UIInput &inp, UIRenderer &ui);
+    void buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, float bodyW, float bodyH);
+    void buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui);
+    void buildWeatherControlsTab(const UIInput &inp, UIRenderer &ui);
+    // The storms (rows rebuilt at most twice a second, or after a jump in sim time).
+    struct WxStormRow
+    {
+        uint64_t id = 0;
+        int kind = 0;                    // wx::StormKind (an unknown value is named generically)
+        double t0 = 0.0, tEnd = 0.0;     // birth, end (J2000 s)
+        double tMature = 0.0;            // the moment worth watching: the dominant tower grown, its anvil spread
+        glm::dvec3 e{0.0, 0.0, 1.0};     // Earth-fixed centre now
+        double distKm = 0.0, bearingDeg = 0.0;
+        float strength = 0.0f;           // the strongest tower now
+        int towersAlive = 0, towerCount = 0;
+        int stage = 0;                   // 0 forming, 1 growing, 2 mature, 3 decaying
+        float flashesPerMin = 0.0f;      // estimate: lightning rate x the dominant towers' activity (cloud_v2_lightning.comp)
+        float score = 0.0f;
+    };
+    std::vector<WxStormRow> wxNear, wxWorld;  // within kWxNearKm, nearest first; the strongest worldwide
+    int wxStormsAlive = 0;
+    double wxRowsWall = -1e300, wxRowsSim = -1e300;
+    void weatherRefreshRows(bool force);
+    static void weatherStormState(const wx::Storm &st, double t, float lightningRate, WxStormRow &r);
+    bool weatherStormRowCached(uint64_t id, WxStormRow &out);           // this refresh's row, else computed now
+    bool wxWorldAllKinds = false;        // the worldwide list: organised storms only (off) or every cell
+    uint64_t wxSelStorm = 0;             // the storm picked on the radar / in the list (highlighted)
+    int wxPendingAct = 0;                // 1 Go to, 2 Watch: applied after the layout
+    uint64_t wxPendingId = 0;
+    bool wxRadarRanCapable = false;      // the clouds' pass ran (the radar can be dispatched)
+    int wxLoopShownPos = -1;
+    bool weatherStormNow(uint64_t id, double t, WxStormRow &out);       // a storm's row at time t (false: not alive)
+    bool weatherGoToStorm(uint64_t id, std::string &msg);               // stand ~50 km upwind of its strongest tower
+    bool weatherWatchStorm(uint64_t id, std::string &msg);              // its mature stage at 1x, then Go to
+    glm::dvec3 weatherMapToEarth(const glm::dvec3 &mapDir, double t) const;
+    nlohmann::json weatherWindowJson();                                 // harness `weather state`
+    // The radar: GPU pass (set 0 = the cloud march's, set 1 = the output), read back the next frame.
+    static constexpr int kWxN = 256;     // cells a side
+    VkPipeline wxRadarPipe = VK_NULL_HANDLE;
+    VkPipelineLayout wxRadarPipeLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout wxRadarSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool wxRadarPool = VK_NULL_HANDLE;
+    VkDescriptorSet wxRadarSet = VK_NULL_HANDLE;
+    VkBuffer wxRadarBuf = VK_NULL_HANDLE;
+    VkDeviceMemory wxRadarMem = VK_NULL_HANDLE;
+    void *wxRadarMapped = nullptr;
+    VkQueryPool wxRadarQuery = VK_NULL_HANDLE;
+    bool wxRadarFailed = false;
+    bool wxRadarWanted = false;          // buildUI asks, recordCompute dispatches
+    bool wxRadarInFlight = false;        // dispatched last frame: read back now
+    double wxRadarDispWall = -1e300;     // when the last one was dispatched (wall)
+    double wxRadarDispSim = -1e300;      // ... at this sim time
+    glm::dvec3 wxRadarDispObs{0.0};      // ... centred here
+    float wxRadarDispCellM = 0.0f;
+    float wxRadarGpuMs = 0.0f, wxRadarCpuMs = 0.0f;
+    int wxRadarDispatches = 0;
+    void weatherRadarEnsure(VulkanContext &ctx);
+    void weatherRadarRecord(VkCommandBuffer cmd);                       // recordCompute, after the clouds' pass
+    void weatherRadarDestroy(VkDevice device);
+    // The last frame read back (what is shown), and the loop's history (rain only).
+    struct WxRadarFrame
+    {
+        std::vector<float> rain, cover, ground, core;
+        double simT = 0.0;
+        glm::dvec3 obs{0.0, 0.0, 1.0};
+        float cellM = 0.0f;
+        bool valid = false;
+    };
+    WxRadarFrame wxShown;
+    std::deque<WxRadarFrame> wxLoopFrames;
+    int wxLoopPos = -1;                  // the loop frame shown (-1 = the latest)
+    double wxLoopWall = 0.0;
+    void weatherRadarReadback();
+    void weatherRadarRaster(const WxRadarFrame &f);
+    // The image (a CPU raster uploaded in recordCompute, as the Kessler tracker's globe).
+    VkImage wxImg = VK_NULL_HANDLE;
+    VkDeviceMemory wxImgMem = VK_NULL_HANDLE;
+    VkImageView wxImgView = VK_NULL_HANDLE;
+    VkSampler wxImgSampler = VK_NULL_HANDLE;
+    VkBuffer wxStage = VK_NULL_HANDLE;
+    VkDeviceMemory wxStageMem = VK_NULL_HANDLE;
+    void *wxStageMapped = nullptr;
+    uint32_t wxUiId = 0;
+    bool wxUploadPending = false, wxImageFailed = false;
+    bool weatherRadarEnsureImage(UIRenderer &ui);
+    void weatherRadarRecordUpload(VkCommandBuffer cmd);
+    UIImage wxImgEl;
+    std::vector<UITextQuad> wxQuads;
+    std::vector<UITextRun> wxRuns;
+    std::deque<std::string> wxRunText;
+    UITextBlock wxMarks;
+    struct WxRadarStats
+    {
+        float maxRain = 0.0f, maxDbz = 0.0f, rainShare = 0.0f, coreShare = 0.0f;
+        int raining = 0, snowing = 0, stormsOnMap = 0;
+        float centreRain = 0.0f, eyeTempC = 0.0f;
+    } wxStats;
+    int wxHoverStorm = -1;               // the storm marker under the pointer (index into wxMapStorms)
+    struct WxMapStorm { float x, y; uint64_t id; int kind; int rank; float strength; };
+    std::vector<WxMapStorm> wxMapStorms;
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
     uint32_t kPoolCap = 16384;            // records the GPU buffers hold
     // Satellite indices: [0, activeSatCount) the roster, then kLaunchCap launch records (trains raising, retirees
@@ -6117,7 +6234,8 @@ private:
         KB_FOLLOW_RETURN = 24, // event — Go to: back to the followed object, or follow the last one again; H
         KB_MILESTONE_NEXT = 25, // event — the selected / followed launch object's next mission milestone; ]
         KB_MILESTONE_PREV = 26, // event — ... its previous one; [
-        KB_COUNT = 27,
+        KB_WEATHER = 27,       // event — the Weather window (radar, storms) open / closed; N
+        KB_COUNT = 28,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()

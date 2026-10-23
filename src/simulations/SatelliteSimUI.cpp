@@ -53,6 +53,7 @@ static constexpr int kIconFilm = 18;     // pixel--film.png — the Cinematics w
 static constexpr int kIconReport = 20;   // pixel--report.png — the Issue reports window (2026-10-12)
 static constexpr int kIconBookmark = 19; // pixel--bookmark.png — the Bookmarks window (2026-10-03)
 static constexpr int kIconMissions = 21; // pixel--missions.png — the Missions window (2026-10-19)
+static constexpr int kIconWeather = 22;  // pixel--weather.png — the Weather window (2026-10-23)
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
 // are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
@@ -621,6 +622,7 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--bookmark.png",
             "assets/icons/ui/pixel--report.png",
             "assets/icons/ui/pixel--missions.png",
+            "assets/icons/ui/pixel--weather.png",
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -886,6 +888,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     if (!hideShotChrome)
         buildReportsWindow(inp, ui);
     buildMissionsWindow(inp, ui);
+    buildWeatherWindow(inp, ui);
     updateViewerView(inp, ui); // the satellite windows' shared prologue (target, drag, readouts)
     buildInfoWindow(inp, ui);
     buildViewPopoutWindow(inp, ui);
@@ -1436,6 +1439,14 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             msChrome.open = !msChrome.open;
             if (msChrome.open)
                 msNextWall = msPinWall = -1e300;
+        }
+        menuBtn(CLAY_ID("TimeWeatherBtn"), CLAY_ID("TimeWeatherIcon"), kIconWeather, hovTimeWeather, Pal::btnAccent,
+                wxChrome.open, "Weather", toggled);
+        if (toggled)
+        {
+            wxChrome.open = !wxChrome.open;
+            if (wxChrome.open)
+                wxRowsWall = -1e300;
         }
         menuBtn(CLAY_ID("TimeBookmarkBtn"), CLAY_ID("TimeBookmarkIcon"), kIconBookmark, hovTimeBookmark, Pal::btnAccent,
                 bmChrome.open, "Bookmarks", toggled);
