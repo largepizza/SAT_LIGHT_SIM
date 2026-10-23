@@ -1851,8 +1851,12 @@ struct GpuCloudParams
     // Tropical cyclones at sea (11040 -> 11104, 2026-10-23, SatelliteSim::weatherFillSeaParams): the two nearest.
     glm::vec4 seaCycA[2];   // xyz Earth-fixed centre, w radius of maximum wind (m; 0 = none)
     glm::vec4 seaCycB[2];   // x vmax (m/s), y the wind field's reach (m)
+    // Storm surge (11104 -> 11184, 2026-10-23, weatherFillSeaParams; terrain_detail.glsl tdSurgeAt), per seaCyc* entry.
+    glm::vec4 surgeA[2];    // xyz the motion (Earth-fixed unit tangent), w the peak rise at the coast (m; 0 = none)
+    glm::vec4 surgeB[2];    // xyz the surge side (right of the motion in the north, left in the south), w cos(reach)
+    glm::vec4 surgeInfo;    // x 1 = any surge, y the largest peak (m)
 };
-static_assert(sizeof(GpuCloudParams) == 11104, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 11184, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -4790,6 +4794,8 @@ private:
     float stormComplexes = 1.0f;                 // clouds_v2.storm_complexes: x the squall lines' / MCSs' spawn rate
     float stormCyclones = 1.0f;                  // clouds_v2.storm_cyclones: x each basin's tropical cyclones a season
     std::vector<wx::CycloneState> stormCyclonesNow;   // this frame's, strongest first
+    float stormSurge = 1.0f;                     // clouds_v2.storm_surge: x the cyclones' storm surge (0 = none, 0..2)
+    double surgeAtDir(const glm::dvec3 &earthDir, double *peakOut = nullptr) const;   // the rise at the coast (m), CPU
     glm::dvec3 stormFlowedDir(const glm::dvec3 &wd, double t) const;   // where the low cloud reads the cube for wd
     // Tornadoes and waterspouts (2026-10-23, SatelliteSimWeather.cpp): fixed by their storm's id; drawn as plume
     // Gaussians (the dust list after the launches').

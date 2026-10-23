@@ -1326,6 +1326,9 @@ vec3 cityDayAlbedo(CityLayout L, float foot, float grey) {
 // height (DEM part), nUp = its up-facing. out dLand = metres inland from the waterline.
 // Signed distance to the height function's own shoreline (m, > 0 in water), 1e9 = not near a baked shore.
 // The water map filtered by hand near the observer (as tdDemAt does) plus tdShoreOffset's coves.
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+float gShoreSurgeShift = 0.0;   // how far the last shoreSignedDist's shore was moved inland by a storm surge (m)
+#endif
 float shoreSignedDist(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, out vec2 wm) {
     if (tdExactNear(q)) {
         ivec2 wsz = textureSize(earthSpecTex, 0);
@@ -1349,6 +1352,17 @@ float shoreSignedDist(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, out vec2
 #endif
     if (wm.g < 14.5 / 255.0) return 1e9;
     float d = (wm.r - 0.5) * 2.0 * kShoreSdfMaxM;
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+    gShoreSurgeShift = 0.0;
+    if (cloud.surgeInfo.x > 0.5 && wm.g < 15.5 / 255.0) {   // a storm surge moved the sea's shore (tdDemAt's rule)
+        float sDs, hD = max(0.0, textureLod(earthElevTex, uv, 0.0).r * kElevRange - kElevOffset);
+        if (tdSurgeAt(earthElevTex, q, enuX, enuY, enuZ, uv, hD, sDs) > 0.0) {
+            d  += sDs;
+            wm.r += sDs * (0.5 / kShoreSdfMaxM);
+            gShoreSurgeShift = sDs;
+        }
+    }
+#endif
     if (d < -1500.0 || d > 1500.0) return 1e9;
     return d + tdShoreOffset(q, enuX, enuY, enuZ, wm) * (1.0 - 0.7 * cK);
 }
@@ -1370,6 +1384,9 @@ float beachAt(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, float h, float n
     float b = 1.0 - smoothstep(0.6 * width, width, dLand);
     b *= 1.0 - smoothstep(3.0, 9.0, h - level);       // low: a beach, not a cliff top
     b *= smoothstep(0.93, 0.985, nUp);                  // gentle
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+    b *= 1.0 - smoothstep(30.0, 150.0, gShoreSurgeShift);  // a storm surge's flood line is not a beach
+#endif
     return b;
 }
 
@@ -2718,6 +2735,10 @@ const float kSeaOctA[8]    = float[8](1.0, 2.0, 3.0, 5.0, 8.0, 14.0, 24.0, 41.0)
 // Sea state (set per pixel before the wave calls): amplitude and choppiness scale from the weather.
 float gSeaAmp    = 1.0;
 float gSeaChoppy = 0.0;
+#ifndef SKY_LITE
+// Storm surge (2026-10-23): 0..1 = how much of this water is the surge over flooded land (shallow, muddy).
+float gSeaFlood  = 0.0;
+#endif
 // Sky TAA (2026-10-04): -1 off the sea; on it the share of the history sky_taa.comp keeps UNCLIPPED ("Storm sea
 // trails" x the sea state's storm share), written to the TAA colour's alpha. Any sea pixel also opts out of the
 // resolve's still-camera no-clip rule: the waves move while the camera does not, and the crests smeared.
@@ -3724,6 +3745,14 @@ void main() {
                 float hs0, hs3;
                 tdDemAt(earthElevTex, earthSpecTex, qs, enuX, enuY, enuZ, hs0, hs3);
                 waterPx = (hs3 <= kTdWaterMark) ? 1 : 0;
+#ifndef SKY_ENV
+                // Storm surge (tdSurgeAt): the sea here stands hs0 above the sea sphere, which the march stepped over
+                // (a few metres; the level varies over tens of km): the sphere at that level, one fixed-point step.
+                if (waterPx == 1 && hs0 > 0.0 && cloud.surgeInfo.x > 0.5) {
+                    vec2 tS = raySphere(obsPos, dir, R_EARTH + hs0);
+                    if (tS.x > 0.0) { tSeaLvl = tS.x; waterLevelM = hs0; }
+                }
+#endif
             }
         }
     }
@@ -5598,6 +5627,23 @@ void main() {
                 dShore = shoreSignedDist(vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir, enuX, enuY, enuZ, uvSurf, wmS);
                 if (dShore < 1e8) gSeaAmp *= mix(0.4, 1.0, smoothstep(0.0, 150.0, dShore));
             }
+#ifndef SKY_ENV
+            // Storm surge (tdSurgeAt): over the flooded land the water is shallow, so its waves are depth-limited (the
+            // depth falls from the surge's level at the old coast to 0 at the moved shore), and it is muddy, the mud
+            // thinning out a few km offshore (a hard tint at the old coast drew it as an outline from orbit).
+            if (cloud.surgeInfo.x > 0.5 && waterLevelM > 0.0) {
+                vec2 wmF = textureLod(earthSpecTex, uvSurf, 0.0).rg;
+                float dO = (wmF.r - 0.5) * 2.0 * kShoreSdfMaxM;   // < 0: land before the surge
+                if (wmF.g > 14.5 / 255.0 && wmF.g < 15.5 / 255.0 && dO < 8000.0) {
+                    float sDsF, hDF = max(0.0, textureLod(earthElevTex, uvSurf, 0.0).r * kElevRange - kElevOffset);
+                    float sF = tdSurgeAt(earthElevTex, vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir, enuX, enuY, enuZ,
+                                         uvSurf, hDF, sDsF);
+                    float depthF = clamp(1.0 + dO / max(sDsF, 1.0), 0.0, 1.0);
+                    if (dO < 0.0) gSeaAmp = min(gSeaAmp, 0.08 + 0.2 * sF * depthF);
+                    gSeaFlood = (1.0 - smoothstep(-3000.0, 8000.0, dO)) * smoothstep(0.1, 1.0, sF);
+                }
+            }
+#endif
 #endif
 
             // ── heightMapTracing (low altitude only) ──────────────────────────
@@ -6101,7 +6147,11 @@ void main() {
             // sea at sunset read cyan (user snap 1).
             vec3 seaE = (sunSpecTint * sunTransMax * directSun * max(dot(surfUp, sunDir), 0.0)
                        + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * twilightFrac) * (1.0 / 1.1);
+#ifndef SKY_LITE
+            vec3 refracted = mix(kSeaBase, vec3(0.055, 0.045, 0.03), gSeaFlood) * seaE + diff * kSeaWaterColor * 0.12 * seaE;
+#else
             vec3 refracted = kSeaBase * seaE + diff * kSeaWaterColor * 0.12 * seaE;
+#endif
 
             // Fresnel blend (distance-attenuated to prevent orbit-scale glowing ring)
             surfColor = mix(refracted, reflColor, reflStr);

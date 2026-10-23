@@ -84,7 +84,16 @@ const float kTdWaterMark   = -1.0e4;                        // hMip3 on water (t
 
 // Height of the ground (or water surface) given the DEM height and the water map texel(s) wm.
 // dOff (metres) moves the shoreline: terrain_detail.glsl's coves and headlands (tdShoreOffset).
+// Storm surge (2026-10-23, terrain_detail.glsl tdSurgeAt): surge = the sea's rise at the coast here (m), dShift = how far
+// inland (m) the sea's shoreline moves. Only the SEA (and sea-level water) rises: the sea takes the surge's level, tapered
+// to 0 from ~9 to ~19 km offshore (a coastal rise: the open ocean beyond is drawn exactly as before), and the shore moves
+// inland by dShift, so the land between becomes water at that level; the bank and the ramp follow the new shore.
+// (Not in the Planetarium tier's SKY_LITE shader: its compiled size is budgeted, and it draws no relief.)
+#ifndef SKY_LITE
+float waterAdjustHeightSurge(float hDem, vec2 wm, float dOff, float surge, float dShift, out bool water) {
+#else
 float waterAdjustHeight(float hDem, vec2 wm, float dOff, out bool water) {
+#endif
     if (wm.g < 14.5 / 255.0) {                     // not baked: the old mask rule
         water = hDem < kWaterMaskMaxM && wm.r > 0.5;
         return water ? 0.0 : hDem;
@@ -95,11 +104,22 @@ float waterAdjustHeight(float hDem, vec2 wm, float dOff, out bool water) {
     // nadir from 8 km, drawn without the sea's reflections). Levels come in DEM steps of ~35 m.
     level = level < 1.0 ? 0.0 : level;
     float d     = (wm.r - 0.5) * 2.0 * kShoreSdfMaxM + dOff;   // metres, > 0 in water
+#ifndef SKY_LITE
+    if (surge > 0.0 && level == 0.0) {
+        level = surge * (1.0 - smoothstep(0.45 * kShoreSdfMaxM, 0.95 * kShoreSdfMaxM, d));
+        d    += dShift;
+    }
+#endif
     water = d > 0.0;
     if (water) return level;
     float land = mix(max(hDem, level), hDem, smoothstep(0.0, kShoreBankM, -d));
     return min(land, level - kShoreSlope * d + 1.0e4 * smoothstep(kShoreRampM, 2.0 * kShoreRampM, -d));
 }
+#ifndef SKY_LITE
+float waterAdjustHeight(float hDem, vec2 wm, float dOff, out bool water) {
+    return waterAdjustHeightSurge(hDem, wm, dOff, 0.0, 0.0, water);
+}
+#endif
 
 // Where city lights may stand (2026-09-30, the user: lights should follow the terrain's contours, with
 // altitudes and slopes they never reach). hLoc = the ground (DEM + water, tdDemAt's h0), dens01 = the

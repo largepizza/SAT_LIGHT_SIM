@@ -912,8 +912,30 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   bake's spiral), 0.75 CDO .. 0.95 outer, a quarter of the arms' spacing wide, strength 0.32 falling 55% outward: frayed ice
   veils feathering the bands. Up to ~22 shields a cyclone, so a bin entry's count is 5 bits now (`y >> 5`, `& 31`, every
   storm index; kShieldMaxPerBin 31; the march stays at 128 registers).
+  **STORM SURGE** (2026-10-23, terrain_detail.glsl `tdSurgeAt`, terrain.glsl `waterAdjustHeightSurge`, CPU
+  `weatherFillSeaParams` + mirror `surgeAtDir`; UBO `surgeA/B[2]` + `surgeInfo` appended, 11104 -> 11184): per seaCyc
+  cyclone a peak rise at the coast from the wind of the last ~6 h (max(vmax, 0.85 vmax 3 h ago, 0.7 vmax 6 h ago): 1.2 m
+  at 33 m/s, 3.3 at 50, 6.4 at 70, at most 9; x (rmw / 40 km)^0.3; x "Storm surge" `clouds_v2.storm_surge` 0-2, default 1,
+  no UI row yet) x a field in the storm's frame in rmw units: across the track a Gaussian about 1 rmw on the right of the
+  motion (left in the south: `surgeB` = hemi x motion x up), sigma 1.8 outward / 0.9 inward; along it sigma 4 ahead /
+  2.5 behind (Nadine 2036 at 29.4 N 90.3 W: 0.3 m 12 h before the peak, 1.6 at 8 h, 4.3 at landfall, 0.9 8 h after) x
+  the shelf (the DEM's mip-5 mean: flat = 1, high land 0.45). Only the SEA rises (`level == 0`: the sea and sea-level
+  water): it takes the rise, tapered to 0 from 0.45 to 0.95 of the water map's reach offshore (the open ocean is drawn as
+  before), and its shore moves inland by rise / the plain's slope (that mean / 40 km, 0.25-20 m/km), at most 0.7 of the
+  water map's reach (~14 km), only through the DEM's lowest land class (30-60 m: the 8-bit DEM cannot tell 2 m from
+  30 m). `tdDemAt` (so the march, both depth passes, the observer's ground) and `shoreSignedDist` (surf, beaches: none on
+  a flood line) take the moved shore; the coves follow it. The sea at the surge's level is a lake hit for the march; a
+  ray that steps over it re-intersects the sphere at that level (`waterLevelM`). Over flooded land the waves are
+  depth-limited and the water muddy (`gSeaFlood`, fading out ~8 km offshore). Gated by `surgeInfo.x` (uniform) then
+  each storm's reach (10 rmw); not in SKY_LITE / SKY_ENV (Planetarium's SPIR-V +200 B: the UBO's declaration). Cost
+  (Medium, 1600x900, RTX 3070 Ti): 8 km over the flood scene depth +0.2 ms, total within noise; at the flooded coast the
+  sky pass 0.7 ms CHEAPER (water instead of land shading); far from a cyclone 0. Harness `state` -> `weather.surge_m` (at
+  the eye: the field x the shelf from a 9-point DEM mean) and `weather.surge` {field_m, shelf, peak_m, flood_reach_m,
+  shore_dist_m, dem_m, flooded}; scripts in `harness_runs/surge/` (untracked). Not yet: no bathymetry (the shelf is the
+  land's flatness), the flood drains with the storm field (no water left behind), no drawdown on the left side, no
+  Bangladesh-scale delta check, sea-level lakes behind levees (Pontchartrain) flood as sea.
   Harness `storms cyclones`, `storms season basin=<0-5> year=`, `storms go cyclone=<name|id|strongest>`. Not yet:
-  storm surge, extratropical transition's look, the eyewall's lightning share.
+  extratropical transition's look, the eyewall's lightning share.
   **Tornadoes and waterspouts (2026-10-23, `SatelliteSim::tornadoOf` / `weatherFillTornadoes`, SatelliteSimWeather.cpp):**
   fixed by their storm's id: ~35% of supercells put one down for 5-25 min of their mature phase (between `anvOn` + 20 min
   and `anvOff` - 10 min), ~12% of strong single / multicell storms over the sea a waterspout (4-14 min); on the rear

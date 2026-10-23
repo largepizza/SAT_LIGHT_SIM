@@ -311,6 +311,39 @@ float tdPadFlatK(vec3 q) { float h, l; return cloud.padInfo.w > 0.5 ? tdPadFlat(
 #define TD_PAD_K(q) 1.0
 #define TD_PAD_LAST 1.0
 #endif
+// Storm surge (2026-10-23; SatelliteSim::weatherFillSeaParams fills cloud.surge*, CPU mirror SatelliteSim::surgeAtDir).
+// A tropical cyclone's onshore winds pile the sea up on the coast to the RIGHT of its track (left in the south): the rise
+// at the coast is surgeA.w (the peak, from vmax and size) x a field in the storm's frame, in units of its radius of
+// maximum wind: across the track a Gaussian about 1 rmw on the surge side (sigma 1.8 rmw outward, 0.9 toward the other
+// side), along it about the centre (sigma 4 rmw ahead: the sea rises over the ~12 h before landfall; 2.5 rmw behind:
+// it drains as the storm moves on and weakens). x the shelf: flat land around (the DEM's ~85 km mean, mip 5) stands for a
+// shallow shelf (full), high land for deep water (0.45). Returns the rise (m); dShift = how far inland (m) the shore
+// moves: the rise over the coastal plain's slope (the same mean / 40 km, 0.25-20 m per km), to 0.7 of the water map's
+// reach, only through the DEM's lowest land class (hDem below ~30-60 m: the 8-bit DEM cannot tell 2 m from 30 m).
+// Only near a cyclone (the uniform gate first, then each storm's reach): nothing is paid elsewhere.
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+float tdSurgeAt(sampler2D elevTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2 uv, float hDem, out float dShift) {
+    dShift = 0.0;
+    vec3  pE = normalize(q.x * enuX + q.y * enuY + (R_EARTH + q.z) * enuZ);
+    float S  = 0.0;
+    [[dont_unroll]] for (int k = 0; k < 2; ++k) {
+        float H = cloud.surgeA[k].w;
+        if (H <= 0.0 || dot(pE, cloud.seaCycA[k].xyz) < cloud.surgeB[k].w) continue;
+        vec3  rel = (pE - cloud.seaCycA[k].xyz) * (R_EARTH / cloud.seaCycA[k].w);
+        float a   = dot(rel, cloud.surgeA[k].xyz);   // along the motion (rmw)
+        float x   = dot(rel, cloud.surgeB[k].xyz);   // toward the surge side (rmw)
+        float sx  = (x > 1.0) ? 1.8 : 0.9;
+        float sa  = (a > 0.0) ? 4.0 : 2.5;
+        S = max(S, H * exp(-0.5 * ((x - 1.0) * (x - 1.0) / (sx * sx) + a * a / (sa * sa))));
+    }
+    if (S < 0.02) return 0.0;
+    float hM    = max(0.0, textureLod(elevTex, uv, 5.0).r * kElevRange - kElevOffset);
+    S          *= mix(1.0, 0.45, smoothstep(40.0, 500.0, hM));
+    float slope = clamp(hM / 40000.0, 2.5e-4, 0.02);
+    dShift      = min(S / slope, 0.7 * kShoreSdfMaxM) * (1.0 - smoothstep(30.0, 60.0, hDem));
+    return S;
+}
+#endif
 void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
              out float h0, out float hMip3) {
     ivec2 sz = textureSize(elevTex, 0);
@@ -343,9 +376,14 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
     // map on every height evaluation cost up to ~1.7 ms at ground level in the Alps.
     if ((cloud.dbgDisableMask & 4194304u) == 0u && (textureLod(specTex, uv, 2.0).r > 0.0 || cK > 0.0)) {   // knockout "water_map"
         vec2 wm = textureLod(specTex, uv, 0.0).rg;
-        // Near the observer AND the shore, filtered by hand like the DEM: hardware filtering's 8-bit
-        // weights step the shoreline every ~20 m.
-        if (abs(wm.r - 0.5) * 2.0 * kShoreSdfMaxM < kShoreBankM && tdExactNear(q)) {
+        // Storm surge: the sea's level and how far its shore moves inland near a cyclone (tdSurgeAt).
+        float sDs = 0.0, sS = 0.0;
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+        if (cloud.surgeInfo.x > 0.5) sS = tdSurgeAt(elevTex, q, enuX, enuY, enuZ, uv, h0, sDs);
+#endif
+        // Near the observer AND the shore (the moved one too), filtered by hand like the DEM: hardware
+        // filtering's 8-bit weights step the shoreline every ~20 m.
+        if (abs((wm.r - 0.5) * 2.0 * kShoreSdfMaxM + sDs) < kShoreBankM && tdExactNear(q)) {
             ivec2 wsz = textureSize(specTex, 0);
             vec2  tw  = uv * vec2(wsz) - 0.5;
             vec2  fl  = floor(tw), f = tw - fl;
@@ -359,7 +397,13 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
         wm = tdCoastWm(wm, cK, cD);
 #endif
         bool water;
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+        // The coves follow the moved shore.
+        vec2 wmS = vec2(wm.r + sDs * (0.5 / kShoreSdfMaxM), wm.g);
+        h0 = waterAdjustHeightSurge(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wmS) * (1.0 - 0.7 * cK), sS, sDs, water);
+#else
         h0 = waterAdjustHeight(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wm) * (1.0 - 0.7 * cK), water);
+#endif
         if (water) hMip3 = kTdWaterMark;
     }
 #if !defined(SKY_LITE) && !defined(SKY_ENV)

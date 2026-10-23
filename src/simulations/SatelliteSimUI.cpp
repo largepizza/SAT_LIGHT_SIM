@@ -8825,6 +8825,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         wildfireLight = settingClamp(c.value("wildfire_light", wildfireLight), 0.0f, 5.0f);
         stormComplexes = settingClamp(c.value("storm_complexes", stormComplexes), 0.0f, 10.0f);
         stormCyclones = settingClamp(c.value("storm_cyclones", stormCyclones), 0.0f, 10.0f);
+        stormSurge = settingClamp(c.value("storm_surge", stormSurge), 0.0f, 2.0f);
         cv2EvoGrowth = c.value("evo_growth", cv2EvoGrowth);
         cv2EvoWindowH = c.value("evo_window_h", cv2EvoWindowH);
         cv2EvoDiurnal = c.value("evo_diurnal", cv2EvoDiurnal);
@@ -9465,6 +9466,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"wildfire_light", wildfireLight},
         {"storm_complexes", stormComplexes},
         {"storm_cyclones", stormCyclones},
+        {"storm_surge", stormSurge},
         {"evo_growth", cv2EvoGrowth},
         {"evo_window_h", cv2EvoWindowH},
         {"evo_diurnal", cv2EvoDiurnal},
