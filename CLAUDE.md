@@ -868,6 +868,25 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (stratiform type: low and smooth-based) and clear air 25-90 km ahead. Not yet: a real shelf / arcus volume, bow echoes'
   rear-inflow notch, MCS remnant vortices. Harness `storms list [kind=] [n=]`, `storms go storm=<id> | kind=squall|mcs|super
   [day=1]` (day: the Sun > 20 deg there), `state` -> `weather.shields / line_systems / cpu_ms_split`.
+  **Tropical cyclones (v1, 2026-10-23):** `wx::Cyclone`, not Storm records: one per (basin, season year, index), built and
+  cached per season (`Impl::buildSeason`, six basins in `kBasins`: genesis box, seasonal peak / spread, mean count ~82 a
+  year in all; "Tropical cyclones (x)" `storm_cyclones`, slot 326). A track is integrated HOURLY at genesis in the
+  EARTH-FIXED frame (the cloud map drifts east everywhere; a cyclone tracks west in the trades): west-northwest at 4.5-7
+  m/s, recurving poleward and east (8-14 m/s) about its own latitude; vmax relaxes toward a per-storm potential (22-82
+  m/s, median ~35) x a cold-water fade at the basin's latitude, collapsing over land (`Env::land`, tau 9 h). Named from
+  the basin's WMO list in order of reaching 17.5 m/s (2036's Atlantic / Eastern Pacific lists = 2024's rotation with the
+  2025 retirements replaced; the others a slice run on sequentially). `cyclonesAt` gives each one's state now (map frame
+  from the inverse of `mapToEarth`; category, pressure from Atkinson-Holliday, radius of maximum wind contracting with
+  intensity, eye 0.45 rmw past 33 m/s, CDO 120-300 km, bands to 350-800 km). Drawn as: an eyewall of 12 regenerating
+  towers at the rmw turning cyclonically + 6 inner-rainband towers on the spiral (`cycloneTowersAt`, heads blown outward);
+  the CDO as a shield with an eye (`CV2Shield.d.w` < 0 = -eye radius, `cv2ShieldAt`); and in the weather bake
+  (`CV2Cyclone` x 8 in `stormBuf`, at the flowed centre: `stormFlowedDir`, the one CPU replica of `cv2FlowDisp`) two main
+  log-spiral arms (18 deg) + three finer (14 deg) trailing the rotation, thinning and breaking outward, the CDO deck,
+  eyewall rain and the eye cleared outright (the moat at x4). Its wind drives the surface wind (`surfaceWindAt`: rising to
+  the rmw, (rmw / r)^0.6 beyond, 20 deg inflow, x0.7 at the eye's height, calm eye) and so the rain, snow and ambience.
+  Harness `storms cyclones`, `storms season basin=<0-5> year=`, `storms go cyclone=<name|id|strongest>`. Not yet: the
+  Weather window's named-storm list and tracks, landfall surge / sea state from its wind, extratropical transition's
+  look, outflow cirrus beyond the CDO, the eyewall's lightning share.
 - **Pass 20 (2026-09-29):** "Storm cumulus top" reaches the cloud AROUND a storm: the weather map
   types only a storm's core as Cb (which the towers cover) and the cloud around it as stratocumulus,
   so keyed on the Cb class the slider changed 0.2% of a storm view. Low cloud now takes it by storm
