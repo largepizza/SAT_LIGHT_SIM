@@ -871,17 +871,28 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   **Tropical cyclones (v1, 2026-10-23):** `wx::Cyclone`, not Storm records: one per (basin, season year, index), built and
   cached per season (`Impl::buildSeason`, six basins in `kBasins`: genesis box, seasonal peak / spread, mean count ~82 a
   year in all; "Tropical cyclones (x)" `storm_cyclones`, slot 326). A track is integrated HOURLY at genesis in the
-  EARTH-FIXED frame (the cloud map drifts east everywhere; a cyclone tracks west in the trades): west-northwest at 4.5-7
-  m/s, recurving poleward and east (8-14 m/s) about its own latitude; vmax relaxes toward a per-storm potential (22-82
+  EARTH-FIXED frame (the cloud map drifts east everywhere; a cyclone tracks west in the trades) along a ROUTE (2026-10-23:
+  `kRoutes*` in Weather.cpp, 3-5 climatological track families per basin — Cape Verde recurvers, Caribbean -> Mexico, Gulf
+  coast, Florida / East Coast; East Pacific out to sea, up the Baja coast, into Sinaloa, toward Hawaii; typhoons into the
+  Philippines / China or recurving to Japan; Bay of Bengal; Southern Hemisphere west then poleward), picked weighted by
+  nearness to genesis, followed by pure pursuit 500 km ahead keeping 35-75% of its starting lateral offset, two slow heading
+  waves (+-3-9 deg, 1.5-6.5 days), a 4-deg wobble, 10% stall a day or two; 4.5-7 m/s in the trades, 8-14 past its recurve
+  latitude. Genesis is redrawn off land (its own Rng stream: other storms' draws unchanged); the Eastern Pacific's potential
+  falls westward of 122 W; a remnant ends 48 h inland. Harness `storms season ... track=1` (6-hourly [lat, lon, vmax, land]); vmax relaxes toward a per-storm potential (22-82
   m/s, median ~35) x a cold-water fade at the basin's latitude, collapsing over land (`Env::land`, tau 9 h). Named from
   the basin's WMO list in order of reaching 17.5 m/s (2036's Atlantic / Eastern Pacific lists = 2024's rotation with the
   2025 retirements replaced; the others a slice run on sequentially). `cyclonesAt` gives each one's state now (map frame
   from the inverse of `mapToEarth`; category, pressure from Atkinson-Holliday, radius of maximum wind contracting with
   intensity, eye 0.45 rmw past 33 m/s, CDO 120-300 km, bands to 350-800 km). Drawn as: an eyewall of 18 regenerating
-  towers at the rmw (12 drew its rain as separate cores on the radar) turning cyclonically + 6 inner-rainband towers on the spiral (`cycloneTowersAt`, heads blown outward; they do not flare, the CDO is the anvil: `updateStorms` gives Tropical towers anvilK 1/flare, driftK 0.25, so their reach drops from ~60 to ~28 km — cloud bucket at Medium 12 km in the eye 15.2 -> 12.5 ms, sea level 8.0 -> 6.5);
+  towers at the rmw (12 drew its rain as separate cores on the radar) turning cyclonically (a quarter of `Cyclone::turn`, the
+  hourly integral of vmax / rmw: rate x age jumped as the storm strengthened) + 6 inner-rainband towers on the bake's band crests (`cycloneTowersAt`, heads blown outward; they do not flare, the CDO is the anvil: `updateStorms` gives Tropical towers anvilK 1/flare, driftK 0.25, so their reach drops from ~60 to ~28 km — cloud bucket at Medium 12 km in the eye 15.2 -> 12.5 ms, sea level 8.0 -> 6.5);
   the CDO as a shield with an eye (`CV2Shield.d.w` < 0 = -eye radius, `cv2ShieldAt`); and in the weather bake
-  (`CV2Cyclone` x 8 in `stormBuf`, at the flowed centre: `stormFlowedDir`, the one CPU replica of `cv2FlowDisp`) two main
-  log-spiral arms (18 deg) + three finer (14 deg) trailing the rotation, thinning and breaking outward, the CDO deck,
+  (`CV2Cyclone` x 8 in `stormBuf`, at the flowed centre: `stormFlowedDir`, the one CPU replica of `cv2FlowDisp`) main
+  log-spiral arms trailing the rotation — `CycloneState::arms` of them (d.w: 2 for a tropical storm, up to ~5 at Category 5,
+  crossfaded only over the last 15% before the next whole count: half-and-half mixes interfered into rings), pitch 30 -> 22
+  deg with intensity (CPU `tanPitch`), turning by `bandRot` = 0.04 x turn — attached to the CDO, typed convective, their
+  coverage near solid (at 0.45 a weak storm's arms drew as scattered cumulus), edges ragged by the map read at a permuted
+  direction; + three finer arms (22 deg), breaking up outward (13-20 deg detached arms read as nested rings), the CDO deck,
   eyewall rain and the eye cleared outright (the moat at x4). Its wind drives the surface wind (`surfaceWindAt`: rising to
   the rmw, (rmw / r)^0.6 beyond, 20 deg inflow, x0.7 at the eye's height, calm eye) and so the rain, snow and ambience.
   Harness `storms cyclones`, `storms season basin=<0-5> year=`, `storms go cyclone=<name|id|strongest>`. Not yet: the
@@ -896,10 +907,18 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   Gaussians (peak tau 40 at sigma rr / 2.6, so the edge, tau ~1, sits at the radius rr: at tau 3.5 and sigma rr it was a
   soft cone) widening 2.2-3x to the base, lowering over its first ~90 s and roping out (thinner, bent) over its last
   third, a faint wall cloud and a debris cloud (spray at sea). Lit by the sky (~0.06 of the plumes' clear-sky unit) and a
-  little Sun: it stands under the storm's base. Only within ~250 km, by day. Harness `storms tornado [spout=1]
+  little Sun: it stands under the storm's base. It SPINS (2026-10-23): seedK >= 256 marks a tornado Gaussian whose
+  seed carries a spin phase (3840ths of a turn: the funnel ~35 m/s at its radius, debris 0.7 x, wall cloud a turn in ~5 min,
+  cyclonic), and cloud_march.comp reads the low billow field in LOG-POLAR coordinates about its centre turned by it
+  (`tornadoCyl`: radius cells would draw the wall cloud as rings). The plume composite blends in front of / behind the cloud
+  over +-(15% + 150 m) of distance (a hard switch cut a cloud-shaped hole round the funnel top). Placed 1.1 x the mature
+  tower's own radius (0.7-1.3 x "Cb tower radius" by size) out, past its rain core (0.9 of it); the bake clears a rear-flank
+  rain-free base there and suppresses the map's rain inside every storm envelope (x 0.05: "Rain" 3 saturated what was left).
+  Only within ~250 km, by day. Harness `storms tornado [spout=1]
   [dist_km=] [alt=] [el=] [az_from=]`: the next daylit one among the storms alive over the next 12 h, time set into it,
-  the observer on its inflow side; `state` -> `weather.tornadoes`. Known: where the weather map itself rains hard round
-  the storm (its own Cb typing), the rain hides the tornado; no rotation / debris motion yet (the billows are static).
+  the observer on its inflow side; `state` -> `weather.tornadoes`. Known: a neighbouring storm's forward flank can still
+  rain over the view (harness_runs/wx4: 2036-11-22 14:00); the cloud field inside a hurricane does not swirl (its noise is
+  map-fixed; the flow is one global curl field).
 - **The Weather window (2026-10-23, `SatelliteSimWeatherWindow.cpp`, `shaders/weather_radar.comp`; the weather-cloud
   button beside Missions on the right HUD panel (`TimeWeatherBtn`, `pixel--weather.png` from `tools/make_icons.py`), key N
   `KB_WEATHER`, window id 12, `wxChrome`; harness `ui open weather [tab=radar|storms|controls]`, `weather ...`).** Missions-

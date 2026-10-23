@@ -1,6 +1,6 @@
 ---
 pages: [rendering/clouds/weather.md, rendering/clouds/field.md, "new: rendering/clouds/storms.md", development/harness.md]
-code: [src/simulations/Weather.h, src/simulations/Weather.cpp, src/simulations/SatelliteSimWeather.cpp, shaders/include/cv2_storms.glsl, shaders/include/clouds_v2.glsl, shaders/cloud_v2_weather.comp, src/simulations/SatelliteSimWeatherCyclones.cpp]
+code: [src/simulations/Weather.h, src/simulations/Weather.cpp, src/simulations/SatelliteSimWeather.cpp, shaders/include/cv2_storms.glsl, shaders/include/clouds_v2.glsl, shaders/cloud_v2_weather.comp, src/simulations/SatelliteSimWeatherCyclones.cpp, src/simulations/Weather.cpp, shaders/cloud_v2_weather.comp, shaders/cloud_march.comp]
 ---
 ## Now
 Every storm object carries an anvil SHIELD: a capsule spread downwind by its anvil-reaching towers that lingers 35-240 min
@@ -26,3 +26,18 @@ cluster fBm spreads only +-0.06, so its fray needed x6). Storm update 1.8 -> 0.8
 a frame (cache misses) and ~68 atan per binned object.
 
 Eyewall: 18 regenerating towers at the radius of maximum wind; they do not flare (the CDO shield is the anvil), which cut the 12 km eye view's cloud cost at Medium from 15.2 to 12.5 ms.
+
+## Now (follow-up, 2026-10-23 afternoon)
+Cyclone tracks follow climatological route families per basin (Weather.cpp `kRoutes*`: e.g. Atlantic Cape Verde recurvers,
+Caribbean -> Mexico, Gulf coast, Florida / East Coast; East Pacific out to sea, up the Baja coast, into Sinaloa, toward
+Hawaii; typhoons to the Philippines / China or recurving to Japan), chosen by nearness to genesis and followed with kept
+lateral offset, slow heading waves and occasional stalls; genesis never over land. Spiral arms grow with intensity, 2 for a
+tropical storm to ~5 at Category 5, pitch 30 -> 22 deg, attached to the central dense overcast, convective with ragged
+edges. The circulation's turn is the integral of vmax / rmw. Tornadoes spin (funnel, wall cloud, debris; log-polar billows
+turned by sim time) and blend smoothly into the cloud base. Inside a storm's envelope only the storm's own rain falls, with a
+rear-flank rain-free base where the tornado stands (just past the tower's rain core).
+
+## History
+The tracks were one west-northwest-then-recurve rule for every basin; bands were two 18-deg arms that read as rings when
+more were added at tight pitch; tornadoes had static billows and a hard in-front/behind composite that cut a cloud-shaped hole
+round the funnel top; the map's own rain (30-45 dBZ over ~100 km round a supercell) hid tornadoes.
