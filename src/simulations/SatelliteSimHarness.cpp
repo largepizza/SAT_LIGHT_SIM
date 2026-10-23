@@ -4826,9 +4826,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 x.second = std::max(x.second, (double)e.ms);
             }
         std::vector<std::pair<std::string, std::pair<double, double>>> av(agg.begin(), agg.end());
-        std::sort(av.begin(), av.end(), [](const auto &x, const auto &y) { return x.second.second > y.second.second; });
+        // `bysum=1`: every section, by summed time (with hitches threshold 1 that is the mean frame's breakdown).
+        const bool bySum = c.num("bysum", 0.0) > 0.5;
+        if (bySum)
+            std::sort(av.begin(), av.end(), [](const auto &x, const auto &y) { return x.second.first > y.second.first; });
+        else
+            std::sort(av.begin(), av.end(), [](const auto &x, const auto &y) { return x.second.second > y.second.second; });
         json secs = json::array();
-        for (size_t i = 0; i < av.size() && i < 30; ++i)
+        for (size_t i = 0; i < av.size() && (bySum || i < 30); ++i)
             secs.push_back({{"name", av[i].first}, {"max_ms", av[i].second.second}, {"sum_ms", av[i].second.first}});
         r["sections_in_hitches"] = secs;
         std::vector<const fprof::Frame *> hv;

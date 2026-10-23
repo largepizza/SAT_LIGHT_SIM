@@ -6947,6 +6947,10 @@ private:
     uint32_t rainInstancesLastFrame = 0;
     int rainLevelsLastFrame = 0;
     void updateStars();
+    // updateStars()'s extinction table over sin(elevation), rebuilt when the observer radius or k changes.
+    std::unique_ptr<float[]> starExtTab_;
+    double starExtTabR_ = -1.0;
+    float starExtTabK_ = -1.0f;
     void initPlanets(VulkanContext &ctx);                                       // planetBuf + planetDescSet, reusing starDescLayout
     void updatePlanets();                                                       // mirrors updateStars(); called right after it
     int pickPlanetAt(float clickX, float clickY, float screenW, float screenH); // mirrors
