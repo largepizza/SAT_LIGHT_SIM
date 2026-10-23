@@ -71,7 +71,10 @@ const char *kindName(int k)
     case (int)wx::StormKind::AirMass: return "Air-mass cell";
     case (int)wx::StormKind::Multicell: return "Multicell";
     case (int)wx::StormKind::Supercell: return "Supercell";
-    default: return "Storm"; // a kind this window does not know yet (squall lines, MCS, ...)
+    case (int)wx::StormKind::SquallLine: return "Squall line";
+    case (int)wx::StormKind::Mcs: return "Mesoscale convective system";
+    case (int)wx::StormKind::Tropical: return "Tropical cyclone";
+    default: return "Storm"; // a kind this window does not know yet
     }
 }
 const char *kindShort(int k)
@@ -81,6 +84,9 @@ const char *kindShort(int k)
     case (int)wx::StormKind::AirMass: return "Cell";
     case (int)wx::StormKind::Multicell: return "Multi";
     case (int)wx::StormKind::Supercell: return "Super";
+    case (int)wx::StormKind::SquallLine: return "Line";
+    case (int)wx::StormKind::Mcs: return "MCS";
+    case (int)wx::StormKind::Tropical: return "TC";
     default: return "Storm";
     }
 }
@@ -163,16 +169,21 @@ void SatelliteSim::weatherStormState(const wx::Storm &st, double t, float lightn
     r.towersAlive = 0;
     r.flashesPerMin = 0.0f;
     const double age = t - st.t0;
-    for (int k = 0; k < (int)st.towerCount; ++k)   // (towerCount: the catalog may hold more than four towers one day)
+    float bestAge = 0.0f, bestLife = 0.0f;
+    for (int k = 0; k < (int)st.towerCount; ++k)   // (towerCount: up to 16 since the line systems)
     {
         const wx::TowerSpec &ts = st.towers[k];
-        const float s = wx::towerStrength(ts, age);
+        float s = 0.0f, cAge = 0.0f, cLife = 0.0f, shift = 0.0f;
+        uint32_t sd = 0;
+        wx::Catalog::towerCycleAt(ts, age, s, cAge, cLife, sd, shift);   // (a plain tower: its own strength and age)
         if (s > 0.0f)
             ++r.towersAlive;
         if (s > best)
         {
             best = s;
             bestK = k;
+            bestAge = cAge;
+            bestLife = cLife;
         }
         if (ts.role >= 1.0f)
         {
@@ -187,19 +198,31 @@ void SatelliteSim::weatherStormState(const wx::Storm &st, double t, float lightn
         }
     }
     r.strength = best;
-    if (bestK < 0)
+    const bool line = wx::isLineSystem(st.kind);
+    if (line && domK >= 0)
+    {
+        // A line system's stage is its envelope's (the cells regenerate): organising, mature, weakening.
+        const wx::TowerSpec &ts = st.towers[domK];
+        r.stage = age < ts.sysOn ? 0 : age < ts.sysOn + ts.sysRamp ? 1 : age < ts.sysOff - ts.sysRamp ? 2 : 3;
+    }
+    else if (bestK < 0)
         r.stage = age < 0.0 || (domK >= 0 && age < st.towers[domK].t0) ? 0 : 3;
     else
     {
         const wx::TowerSpec &ts = st.towers[bestK];
-        const double ta = age - ts.t0;
-        r.stage = ta < ts.growS ? 1 : (ta > ts.life - ts.decayS ? 3 : 2);
+        r.stage = bestAge < ts.growS ? 1 : (bestAge > bestLife - ts.decayS ? 3 : 2);
     }
     // Worth watching: the dominant tower grown and its anvil spread (~45 min after it has grown: SatelliteSimWeather.cpp
     // updateStorms' "mature"), but before it decays.
     if (domK < 0)
         domK = std::max(bestK, 0);
-    if (st.towerCount > 0)
+    if (line && st.towerCount > 0)
+    {
+        const wx::TowerSpec &ts = st.towers[domK];
+        const double a = ts.sysOn + ts.sysRamp, b = std::max(a, (double)ts.sysOff - ts.sysRamp);
+        r.tMature = st.t0 + 0.5 * (a + b);
+    }
+    else if (st.towerCount > 0)
     {
         const wx::TowerSpec &ts = st.towers[domK];
         const double grown = ts.t0 + ts.growS;
@@ -208,7 +231,7 @@ void SatelliteSim::weatherStormState(const wx::Storm &st, double t, float lightn
     }
     else
         r.tMature = st.t0;
-    r.score = best * (r.kind == (int)wx::StormKind::Supercell ? 1.6f : r.kind == (int)wx::StormKind::AirMass ? 1.0f : 1.3f)
+    r.score = best * (line ? 2.0f : r.kind == (int)wx::StormKind::Supercell ? 1.6f : r.kind == (int)wx::StormKind::AirMass ? 1.0f : 1.3f)
             + 0.05f * (float)r.towersAlive;
 }
 
@@ -526,6 +549,21 @@ void SatelliteSim::weatherRadarDestroy(VkDevice device)
     wxImgView = VK_NULL_HANDLE;
     wxImg = VK_NULL_HANDLE;
     wxImgMem = VK_NULL_HANDLE;
+    if (wxMapStageMapped)
+        vkUnmapMemory(device, wxMapStageMem);
+    wxMapStageMapped = nullptr;
+    if (wxMapStage) vkDestroyBuffer(device, wxMapStage, nullptr);
+    if (wxMapStageMem) vkFreeMemory(device, wxMapStageMem, nullptr);
+    if (wxMapSampler) vkDestroySampler(device, wxMapSampler, nullptr);
+    if (wxMapView) vkDestroyImageView(device, wxMapView, nullptr);
+    if (wxMapImg) vkDestroyImage(device, wxMapImg, nullptr);
+    if (wxMapImgMem) vkFreeMemory(device, wxMapImgMem, nullptr);
+    wxMapStage = VK_NULL_HANDLE;
+    wxMapStageMem = VK_NULL_HANDLE;
+    wxMapSampler = VK_NULL_HANDLE;
+    wxMapView = VK_NULL_HANDLE;
+    wxMapImg = VK_NULL_HANDLE;
+    wxMapImgMem = VK_NULL_HANDLE;
 }
 
 // Last frame's dispatch, read back (the fence has been waited on: single frame in flight).
@@ -670,6 +708,20 @@ bool SatelliteSim::weatherRadarEnsureImage(UIRenderer &ui)
 
 void SatelliteSim::weatherRadarRecordUpload(VkCommandBuffer cmd)
 {
+    if (wxMapUploadPending && wxMapImg != VK_NULL_HANDLE && ctx_)
+    {
+        // The cyclone map (SatelliteSimWeatherCyclones.cpp), when re-rastered.
+        wxMapUploadPending = false;
+        VulkanContext &c = *ctx_;
+        c.imageBarrier(cmd, wxMapImg, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy rg{};
+        rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        rg.imageExtent = {(uint32_t)kWxMapW, (uint32_t)kWxMapH, 1};
+        vkCmdCopyBufferToImage(cmd, wxMapStage, wxMapImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rg);
+        c.imageBarrier(cmd, wxMapImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    }
     if (!wxUploadPending || wxImg == VK_NULL_HANDLE || !ctx_)
         return;
     wxUploadPending = false;
@@ -800,6 +852,7 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
     }
     weatherRadarReadback();
     weatherRefreshRows(false);
+    weatherRefreshCyclones(false);   // (every 2 s: the cyclone lists, for the Cyclones tab and the radar's tracks)
     const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
     auto text = [&](const char *s, Clay_Color c, int size, bool wrap = false) {
         CLAY_TEXT(cs(s), CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size),
@@ -824,11 +877,14 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    static const char *kTabs[] = {"Radar", "Storms", "Controls"};
+                    // Drawn Radar, Storms, Cyclones, Controls; wxTab keeps its values (3 = Cyclones, appended).
+                    static const char *kTabs[] = {"Radar", "Storms", "Controls", "Cyclones"};
                     static const char *kTips[] = {"A local precipitation radar centred on you: the rain the clouds draw",
                                                   "The storms near you and the strongest worldwide (Go to, Watch)",
-                                                  "The storm objects' settings (also Settings > Weather)"};
-                    for (int i = 0; i < 3; ++i)
+                                                  "The storm objects' settings (also Settings > Weather)",
+                                                  "Named storms: the tropical cyclones, their tracks and milestones"};
+                    static const int kOrder[] = {0, 1, 3, 2};
+                    for (int i : kOrder)
                         if (uiButton(inp, ui, "WxTab", i, kTabs[i], kTips[i], wxTab == i))
                             wxTab = i;
                     CLAY(CLAY_ID("WxTabsGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}}) {}
@@ -853,6 +909,8 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
                         buildWeatherRadarTab(inp, ui, bodyW, bodyH);
                     else if (wxTab == 1)
                         buildWeatherStormsTab(inp, ui);
+                    else if (wxTab == 3)
+                        buildWeatherCyclonesTab(inp, ui, bodyW);
                     else
                         buildWeatherControlsTab(inp, ui);
                 }
@@ -872,6 +930,20 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
         wxRowsWall = -1e300;
     }
     wxPendingAct = 0;
+    if (wxCycPendingAct != 0 && wxCycPendingId != 0)
+    {
+        std::string msg;
+        if (wxCycPendingAct == 1)
+            weatherGoToCyclone(wxCycPendingId, wxCycPendingArg, msg);
+        else if (wxCycPendingAct == 2)
+            weatherWatchCyclone(wxCycPendingId, msg);
+        else
+            weatherCycloneMilestone(wxCycPendingId, wxCycPendingArg, msg);
+        wxStatus = msg;
+        wxCycWall = wxRowsWall = -1e300;
+    }
+    wxCycPendingAct = 0;
+    wxCycPendingId = 0;
     wxPendingId = 0;
 }
 
@@ -928,8 +1000,8 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
         const double halfM = showF->cellM * kWxN * 0.5;
         for (const wx::Tower &tw : stormTowers)
         {
-            if (tw.strength < 0.15f)
-                continue;
+            if (tw.strength < 0.15f || tw.kind == wx::StormKind::Tropical)
+                continue;   // (a cyclone's eyewall towers: the cyclone is drawn at its centre, below)
             bool dup = false;
             for (WxMapStorm &m : wxMapStorms)
                 if (m.id == tw.stormId)
@@ -1013,6 +1085,46 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
                 else
                     snprintf(nb, sizeof(nb), "%s", kindShort(m.kind));
                 label(x + r + 2.0f, y - r - (float)fs(9) * 0.5f, nb);
+            }
+        }
+        // Tropical cyclones in range: the track (hourly dots in Saffir-Simpson colours, faint ahead) and the centre.
+        if (showF->valid && !looping)
+        {
+            const glm::dvec3 up = showF->obs;
+            const glm::dvec3 E = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), up) + glm::dvec3(1e-12, 0, 0));
+            const glm::dvec3 Nn = glm::cross(up, E);
+            const double halfM = showF->cellM * kWxN * 0.5;
+            auto proj = [&](const glm::dvec3 &e, float &x, float &y) -> bool {
+                const double d = std::acos(std::clamp(glm::dot(e, up), -1.0, 1.0)) * kRe;
+                if (d > halfM * 1.5) return false;
+                const glm::dvec3 to = e - up * glm::dot(e, up);
+                const double b = glm::length(to) > 0.0 ? std::atan2(glm::dot(to, E), glm::dot(to, Nn)) : 0.0;
+                x = (float)(0.5 + 0.5 * d * std::sin(b) / halfM) * G;
+                y = (float)(0.5 - 0.5 * d * std::cos(b) / halfM) * G;
+                return x >= 0.0f && x <= G && y >= 0.0f && y <= G;
+            };
+            static const float kSS[7][3] = {{94, 186, 255}, {0, 250, 244}, {255, 255, 204}, {255, 231, 117},
+                                            {255, 193, 64}, {255, 143, 32}, {255, 96, 96}};
+            for (const wx::Cyclone &c : wxCycActive)
+            {
+                const size_t step = radiusKm <= 60.0f ? 1 : radiusKm <= 200.0f ? 1 : 3;
+                for (size_t k = 0; k < c.track.size(); k += step)
+                {
+                    float x, y;
+                    if (!proj(c.track[k], x, y)) continue;
+                    const float v = c.vmax[k];
+                    const int cat = v < 17.5f ? -1 : v < 33.0f ? 0 : v < 43.0f ? 1 : v < 50.0f ? 2 : v < 58.0f ? 3 : v < 70.0f ? 4 : 5;
+                    const float *q = kSS[cat + 1];
+                    const bool past = c.t0 + (double)k * wx::Cyclone::kStepS <= now;
+                    const float r = past ? 1.5f : 1.0f;
+                    wxQuads.push_back({x - r, y - r, 2.0f * r, 2.0f * r, glm::vec4(q[0] / 255.0f, q[1] / 255.0f, q[2] / 255.0f, past ? 1.0f : 0.55f)});
+                }
+                float x, y;
+                if (now >= c.t0 && now <= c.t0 + c.life && proj(c.earthAt(now), x, y))
+                {
+                    ring(x, y, 7.0f, 2.0f, glm::vec4(1.0f, 1.0f, 1.0f, 0.95f));
+                    label(x + 9.0f, y - (float)fs(9) * 0.5f, c.name.empty() ? "TD" : c.name.c_str());
+                }
             }
         }
         // You: a cyan cross at the centre.

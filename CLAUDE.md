@@ -917,6 +917,27 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   anvil's shear, looking at it 8 deg up); Watch = its mature moment (dominant tower grown + 30 min, before it decays) at
   1x, then Go to ("Replay" once it is past). **Controls**: storm objects, frequency, lifetime, cloud field, moat, both
   lightning rates (own rows: the settings' slider rows are tied to the settings window) + "All weather settings".
+  **Named storms (2026-10-23, `SatelliteSimWeatherCyclones.cpp`; the Cyclones tab, `wxTab` 3, drawn third):** the
+  tropical cyclones as copies of `wx::Cyclone` (`wxCycActive` from `stormCyclonesNow`, `wxCycSeason` = one basin's
+  systems from `cycloneSeason` for last / this / next year within ~200 days of now, `wxCycNext` = the next genesis per
+  basin; copies because the catalog's seasons can be rebuilt under a pointer; refreshed every 2 s, after an hour's jump or
+  a new `stormEnvKey`, only while the window is open). A TRACK MAP: an equirect land / sea raster (512 x 256, the UI's
+  6th external image; `kMaxExternalImages` is 8 now), the selected storm's track box (2:1, >= 40 deg) or the world,
+  re-rastered only when the box changes (~2-3 ms), with every active track and the selected one as overlay dots in the
+  NHC Saffir-Simpson colours (bright so far, faint ahead: the whole track is known) and the centres as rings (click
+  selects). The radar draws the active tracks in range the same way and each centre with its name (the eyewall towers
+  are no storm markers); the eyewall ring, bands and eye come out of cv2Field on their own. Rows: category in the basin's
+  term (`cycloneCategoryName`), vmax (m/s, kt), pressure (the catalog's Atkinson-Holliday), motion, formed when, over
+  land, distance; Go to (0 near: 60 km behind its motion at 1.5 km, as `storms go cyclone=`; 1 Orbit: over the eye at
+  1.6 x its outer radius, 0.7-2.5 Mm, looking down; 2 Eye: 2.5 km up at the centre; 3 Landfall: its next (else first)
+  landfall point on the coast, looking at it) and Watch (its peak, or genesis + 1 h while upcoming, at 1x, from orbit).
+  MILESTONES (`weatherCycloneMilestones`, from the hourly vmax / overLand): genesis, named (17.5 m/s), hurricane / typhoon
+  / cyclone strength (33), rapid intensification's onset (+15.4 m/s in 24 h), Category 3 (50), peak, every landfall
+  (`overLand` 0 -> 1), dissipation; Skip / Back jumps the clock there at 1x with the camera over the storm from orbit (a
+  landfall: 2 h before, on the coast at that point looking at it). Squall lines / MCSs are listed in the Storms tab with
+  their kind names; their stage is the regenerating envelope's (`sysOn` / `sysOff`), each slot's strength from
+  `towerCycleAt`. Cost: closed nothing; open on the Cyclones tab `build_ui` +0.17 ms (layout of the rows), the map raster
+  only on a box change.
 - **Pass 20 (2026-09-29):** "Storm cumulus top" reaches the cloud AROUND a storm: the weather map
   types only a storm's core as Cb (which the towers cover) and the cloud around it as stratocumulus,
   so keyed on the Cb class the slider changed 0.2% of a storm view. Low cloud now takes it by storm
