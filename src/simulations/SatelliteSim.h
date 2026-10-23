@@ -4565,10 +4565,16 @@ private:
     static constexpr VkDeviceSize kShieldsOffset = kShieldHeadOffset + 16;
     static constexpr VkDeviceSize kShieldTableOffset = kShieldsOffset + 64ull * kShieldMax;
     static constexpr VkDeviceSize kShieldListOffset = kShieldTableOffset + 8ull * kShieldTableSize;
+    // Tropical cyclones (2026-10-23, = cv2_storms.glsl CV2Cyclone): the bake stamps their bands, eyewall and eye.
+    struct GpuStormCyclone { glm::vec4 a, b, c, d; };
+    static_assert(sizeof(GpuStormCyclone) == 64, "GpuStormCyclone == cv2_storms.glsl's CV2Cyclone");
+    static constexpr uint32_t kCycloneMax = 8;
+    static constexpr VkDeviceSize kCycHeadOffset = kShieldListOffset + 4ull * kShieldListSize;
+    static constexpr VkDeviceSize kCyclonesOffset = kCycHeadOffset + 16;
     // The ENVELOPE index (2026-10-22): the same towers, each listed out to its envelope (cv2_storms.glsl
     // cv2StormEnvRadius: ~1.8x its reach), read only by the weather bake (its storm cloud field, stormStamp).
     static constexpr uint32_t kStormEnvTableSize = 131072, kStormEnvListSize = 393216;
-    static constexpr VkDeviceSize kStormEnvTableOffset = kShieldListOffset + 4ull * kShieldListSize;
+    static constexpr VkDeviceSize kStormEnvTableOffset = kCyclonesOffset + 64ull * kCycloneMax;
     static constexpr VkDeviceSize kStormEnvListOffset = kStormEnvTableOffset + 8ull * kStormEnvTableSize;
     // The envelope index's own copy of the towers, a.xyz where the low cloud's weather lookup sees each (the flowed map,
     // cv2FlowDisp): the bake stamps there (buildStormEnvIndex).
@@ -4598,6 +4604,9 @@ private:
     std::vector<StormEntry> shieldEntries, shieldEnvEntries;
     std::vector<glm::uvec2> shieldTable, shieldEnvTable;
     float stormComplexes = 1.0f;                 // clouds_v2.storm_complexes: x the squall lines' / MCSs' spawn rate
+    float stormCyclones = 1.0f;                  // clouds_v2.storm_cyclones: x each basin's tropical cyclones a season
+    std::vector<wx::CycloneState> stormCyclonesNow;   // this frame's, strongest first
+    glm::dvec3 stormFlowedDir(const glm::dvec3 &wd, double t) const;   // where the low cloud reads the cube for wd
     double stormUploadedT = -1e300;
     uint64_t stormEnvKey = 0;
     bool  stormObjects = true;                   // weather.storm_objects (off = no towers at all)
@@ -4610,7 +4619,7 @@ private:
     struct StormStats { int towers = 0, bins = 0, entries = 0, truncated = 0, lost = 0, dropped = 0; double cpuMs = 0;
                         int envBins = 0, envEntries = 0, envTruncated = 0, envLost = 0;
                         int shields = 0, shieldBins = 0, shieldEntries = 0, shieldTruncated = 0, lineSystems = 0;
-                        double msCatalog = 0, msTowerIndex = 0, msShields = 0; } stormStats;
+                        double msCatalog = 0, msTowerIndex = 0, msShields = 0; int cyclones = 0; } stormStats;
     void createStormBuffer(VulkanContext &ctx);
     void destroyStormBuffer(VkDevice device);
     void updateStorms();                         // per frame, before the clouds are recorded
@@ -6696,7 +6705,7 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 326;   // 325 (2026-10-23): "Storm complexes";   // 321-324 (2026-10-23): storm objects (frequency, life, cloud field, moat);
+    static constexpr int kCloudSliderSlots = 327;   // 326 (2026-10-23): "Tropical cyclones (x)";   // 325 (2026-10-23): "Storm complexes";   // 321-324 (2026-10-23): storm objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
     // was 313: 312 (2026-10-22): Sun shadow volume (S3); 310-311: anvil puffiness, anvil top lift;
     // was 310: 302-309 (2026-10-22): the cloud rebuild's experiments (Weather tab)

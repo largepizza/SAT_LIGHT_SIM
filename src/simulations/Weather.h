@@ -31,8 +31,9 @@ enum class StormKind : uint8_t {
                      // under one shared shield blown rearward; often bowed
     Mcs = 4,         // a mesoscale convective complex: a broad arc / cluster of regenerating towers under one
                      // round shield 200-500 km across, long-lived (night over continents)
+    Tropical = 5,    // a tropical cyclone's eyewall / inner-band towers (wx::Cyclone; not a Storm record)
 };
-constexpr int kStormKinds = 5;
+constexpr int kStormKinds = 5;   // the Storm kinds (Tropical has its own records)
 inline bool isLineSystem(StormKind k) { return k == StormKind::SquallLine || k == StormKind::Mcs; }
 const char *stormKindName(StormKind k);   // "air-mass", "multicell", "supercell", "squall line", "MCS" 
 
@@ -93,10 +94,49 @@ struct Shield {
     float rain = 0;             // 0..1: a precipitating stratiform region under it (line systems' trailing rain)
     float lineK = 0;            // 0..1: share of its spine that is a convective line (the leading edge at a)
     glm::vec3 rear{0, 0, 0};    // line systems: map-frame tangent toward the trailing side at the spine's middle
+    float eyeR = 0;             // tropical cyclones' central dense overcast: the eye's radius (m; 0 none)
     uint32_t seed = 0;
     uint64_t stormId = 0;
     StormKind kind = StormKind::AirMass;
 };
+
+// A TROPICAL CYCLONE (2026-10-23): one per (basin, season, index), its whole life fixed at genesis like every storm.
+// Unlike storms it lives in the EARTH-fixed frame (its track: westward in the trades, recurving poleward and east; the
+// cloud map's rigid drift is eastward everywhere), converted to the map frame for the GPU each frame.
+struct Cyclone {
+    uint64_t id = 0;
+    int basin = 0, year = 0, seq = 0;   // seq: its order among the season's storms that reached tropical-storm strength
+    std::string name;                   // WMO list name ("" until named: a depression that never reached 17.5 m/s)
+    double t0 = 0;                      // genesis (J2000 s)
+    float life = 0;                     // s
+    float hemi = 1;                     // +1 north (counter-clockwise), -1 south
+    float rmw0 = 40000.0f;              // radius of maximum wind at genesis (m); it contracts as it intensifies
+    float size = 0.5f;                  // 0..1: the cloud shield's and bands' extent
+    float vPeak = 0;                    // its peak 1-min sustained wind (m/s)
+    double tPeak = 0;                   // when (J2000 s)
+    uint32_t seed = 0;
+    std::vector<glm::dvec3> track;      // Earth-fixed unit vectors, hourly from t0
+    std::vector<float> vmax;            // m/s, hourly
+    std::vector<uint8_t> overLand;      // hourly
+    static constexpr double kStepS = 3600.0;
+    glm::dvec3 earthAt(double t) const;
+    float vmaxAt(double t) const;
+};
+
+// A cyclone's state at one moment.
+struct CycloneState {
+    const Cyclone *c = nullptr;
+    glm::dvec3 earth{0, 0, 1}, map{0, 0, 1};   // centre
+    glm::dvec3 motionEarth{0};                  // m/s, Earth-fixed tangent
+    float vmax = 0, pressureHpa = 1010;
+    int category = -1;                          // -1 depression, 0 tropical storm, 1-5 Saffir-Simpson
+    float rmw = 40000, eyeR = 20000, cdoR = 200000, outerR = 600000;   // m
+    float intensity01 = 0;                      // vmax mapped 17.5 .. 75 m/s -> 0..1
+    bool overLand = false;
+};
+const char *cycloneBasinName(int basin);        // "North Atlantic" ...
+const char *cycloneCategoryName(int cat, int basin);   // "Tropical depression", "Tropical storm", "Category 3 hurricane" /
+                                                       // "typhoon" / "severe cyclonic storm" ... by basin
 
 struct ShieldParams {
     float headRadiusM = 20000.0f;   // a mature anvil-reaching head's radius (the tower radius x flare)
@@ -145,6 +185,8 @@ struct Settings {
     // everywhere (x "Storm complexes" setting).
     float lineFrequency = 1.0f;
     float targetLineActive = 160.0f;
+    // Tropical cyclones: x each basin's climatological count per season (~85 a year worldwide at 1).
+    float cycloneFrequency = 1.0f;
 };
 
 class Catalog {
@@ -164,6 +206,15 @@ public:
     // The same from a list stormsAt(t) already returned (one scan of the bins a frame).
     void towersAt(double t, const std::vector<const Storm *> &storms, std::vector<Tower> &out);
     void shieldsAt(double t, const std::vector<const Storm *> &storms, const ShieldParams &p, std::vector<Shield> &out);
+    // Tropical cyclones alive at t (their seasons built and cached by year), strongest first; and their towers (the
+    // eyewall and inner rainbands) and their central dense overcast (a shield with an eye) APPENDED to the lists.
+    void cyclonesAt(double t, std::vector<CycloneState> &out);
+    void cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std::vector<Tower> &out) const;
+    void cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out) const;
+    // Every cyclone of a basin's season (built if needed), in genesis order; and one by id (cached seasons only).
+    void cycloneSeason(int basin, int year, std::vector<const Cyclone *> &out);
+    const Cyclone *findCyclone(uint64_t id) const;
+    static constexpr int kCycloneBasins = 6;
     // The tower specs of one storm at the cycle running at tau (s since its birth): the dominant spec's cycle state
     // for a regenerating slot (age in the cycle, its life). False if the slot has no tower at tau.
     static bool towerCycleAt(const TowerSpec &ts, double tau, float &strength, float &age, float &life,

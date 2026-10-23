@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 #include <map>
 #include <thread>
 
@@ -225,6 +226,18 @@ struct Catalog::Impl {
     std::map<int64_t, std::vector<Storm>> lineBins;
     // Each bin's storms' (birth, end) packed: stormsAt scans these, not the ~1.3 KB Storm records (a cache miss each).
     std::map<int64_t, std::vector<glm::dvec2>> binT, lineBinT;
+    std::map<int64_t, std::vector<Cyclone>> seasons;   // key basin * 100000 + year
+    void buildSeason(int basin, int year, std::vector<Cyclone> &out) const;   // Weather.cpp, tropical cyclones
+    const std::vector<Cyclone> &season(int basin, int year) {
+        const int64_t k = (int64_t)basin * 100000 + year;
+        auto it = seasons.find(k);
+        if (it == seasons.end()) {
+            std::vector<Cyclone> v;
+            buildSeason(basin, year, v);
+            it = seasons.emplace(k, std::move(v)).first;
+        }
+        return it->second;
+    }
     static const std::vector<glm::dvec2> &timesOf(std::map<int64_t, std::vector<glm::dvec2>> &tm, int64_t b,
                                                  const std::vector<Storm> &v) {
         std::vector<glm::dvec2> &T = tm[b];
@@ -697,7 +710,7 @@ void Catalog::configure(const Env &env, const Settings &s, const StormClimatolog
                       s.targetActive == I.set.targetActive && s.moistureMin == I.set.moistureMin &&
                       s.moistureFull == I.set.moistureFull && s.towerRadiusM == I.set.towerRadiusM &&
                       s.lifeScale == I.set.lifeScale && s.lineFrequency == I.set.lineFrequency &&
-                      s.targetLineActive == I.set.targetLineActive;
+                      s.targetLineActive == I.set.targetLineActive && s.cycloneFrequency == I.set.cycloneFrequency;
     I.env = env;
     if (same) return;
     I.set = s;
@@ -707,6 +720,7 @@ void Catalog::configure(const Env &env, const Settings &s, const StormClimatolog
     I.lineBins.clear();
     I.binT.clear();
     I.lineBinT.clear();
+    I.seasons.clear();
     if (I.cells.empty()) I.buildCells();
     if (I.lineCells.empty()) I.buildLineCells();
     I.calibrate();
@@ -954,5 +968,311 @@ void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, cons
 }
 
 Catalog::Stats Catalog::stats() const { return impl_->st; }
+
+// ── Tropical cyclones (2026-10-23) ─────────────────────────────────────────────────────────────────────────────
+// Seasons per basin and year, a pure function of (basin, year, settings): genesis dates from the basin's seasonal
+// curve, genesis points in its box, then each track integrated hourly in the EARTH-fixed frame (steering: westward and
+// a little poleward in the trades, recurving poleward and east past a latitude of its own; intensity relaxing toward a
+// potential that falls over cold water and collapses over land), then named in order of reaching tropical-storm
+// strength from the basin's WMO list. Counts and seasons: climatology (~85 a year worldwide).
+
+namespace {
+
+struct BasinDef {
+    const char *name;
+    double latC, latW, lonC, lonW;  // genesis box (deg)
+    double peak, sigma, count;      // the season's peak (day of year), spread (days), mean count
+    double peak2, frac2;            // a second peak (the North Indian Ocean's two seasons)
+    double coldLat;                 // where its potential falls away (deg poleward)
+    double recurveLo, recurveHi;    // recurvature latitude range
+};
+const BasinDef kBasins[Catalog::kCycloneBasins] = {
+    {"North Atlantic", 15.0, 7.0, -52.0, 26.0, 250.0, 33.0, 14.0, 0.0, 0.0, 30.0, 24.0, 33.0},
+    {"Eastern Pacific", 13.0, 4.0, -106.0, 12.0, 222.0, 38.0, 16.0, 0.0, 0.0, 22.0, 30.0, 40.0},
+    {"Western Pacific", 14.0, 6.0, 140.0, 18.0, 240.0, 55.0, 25.0, 0.0, 0.0, 30.0, 22.0, 32.0},
+    {"North Indian Ocean", 13.0, 4.0, 87.0, 9.0, 140.0, 22.0, 5.0, 315.0, 0.6, 24.0, 18.0, 26.0},
+    {"South-West Indian Ocean", -13.0, 5.0, 68.0, 20.0, 45.0, 42.0, 10.0, 0.0, 0.0, 28.0, 20.0, 28.0},
+    {"Australian region / South Pacific", -14.0, 4.0, 152.0, 30.0, 50.0, 45.0, 11.0, 0.0, 0.0, 28.0, 20.0, 30.0},
+};
+
+// WMO name lists (public; the 2036 Atlantic and Eastern Pacific lists are 2024's six-year rotation with the 2025
+// retirements replaced; the others run on sequentially, a slice here).
+const char *const kNamesNA[] = {"Alberto", "Brianna", "Chris", "Debby", "Ernesto", "Francine", "Gordon", "Holly", "Isaac",
+                                "Joyce", "Kirk", "Leslie", "Miguel", "Nadine", "Oscar", "Patty", "Rafael", "Sara", "Tony",
+                                "Valerie", "William"};
+const char *const kNamesEP[] = {"Aletta", "Bud", "Carlotta", "Daniel", "Emilia", "Fabio", "Gilma", "Hector", "Ileana",
+                                "John", "Kristy", "Lane", "Miriam", "Norman", "Olivia", "Paul", "Rosa", "Sergio", "Tara",
+                                "Vicente", "Willa", "Xavier", "Yolanda", "Zeke"};
+const char *const kNamesWP[] = {"Damrey", "Haikui", "Kirogi", "Yun-yeung", "Koinu", "Bolaven", "Sanba", "Jelawat",
+                                "Ewiniar", "Maliksi", "Gaemi", "Prapiroon", "Maria", "Son-Tinh", "Ampil", "Wukong",
+                                "Jongdari", "Shanshan", "Yagi", "Leepi", "Bebinca", "Pulasan", "Soulik", "Cimaron", "Jebi",
+                                "Krathon", "Barijat", "Trami", "Kong-rey", "Yinxing", "Toraji", "Man-yi", "Usagi", "Pabuk",
+                                "Wutip", "Sepat", "Mun", "Danas", "Nari", "Wipha", "Francisco", "Co-may", "Krosa", "Bailu",
+                                "Podul", "Lingling", "Kajiki", "Nongfa", "Peipah", "Tapah"};
+const char *const kNamesNI[] = {"Shakhti", "Montha", "Senyar", "Ditwah", "Arnab", "Murasu", "Akvan", "Kaani", "Ngamann",
+                                "Sail", "Sahab", "Lulu", "Ghazeer", "Afoor", "Kyarthit", "Rohit"};
+const char *const kNamesSI[] = {"Ancha", "Bheki", "Chido", "Dikeledi", "Elvis", "Faida", "Garance", "Honde", "Ivone",
+                                "Jude", "Kanto", "Lira", "Maipelo", "Njazi", "Oscar", "Pamela", "Quentin", "Rajab",
+                                "Savana", "Themba", "Uyapo", "Viviane", "Walter", "Xangy", "Yemurai", "Zanele"};
+const char *const kNamesAU[] = {"Anika", "Billy", "Charlotte", "Dominic", "Ellie", "Freddy", "Gabrielle", "Herman",
+                                "Ilsa", "Jasper", "Kirrily", "Lincoln", "Megan", "Neville", "Olga", "Paul", "Robyn",
+                                "Sean", "Tasha", "Vince", "Zelia", "Alfred", "Bianca", "Courtney", "Dianne", "Errol"};
+
+double yearStartJ2000(int year) {   // consistent with dayOfYear above (years of 365.2422 days from J2000 noon)
+    return ((double)(year - 2000) * 365.2422 - 0.5) * kDay;
+}
+
+double gaussOf(Rng &r) {
+    const double u1 = std::max(r.u(), 1e-12), u2 = r.u();
+    return std::sqrt(-2.0 * std::log(u1)) * std::cos(2.0 * kPi * u2);
+}
+
+int cycloneCategory(float v) {
+    return v < 17.5f ? -1 : v < 33.0f ? 0 : v < 43.0f ? 1 : v < 50.0f ? 2 : v < 58.0f ? 3 : v < 70.0f ? 4 : 5;
+}
+
+} // namespace
+
+const char *cycloneBasinName(int basin) {
+    return (basin >= 0 && basin < Catalog::kCycloneBasins) ? kBasins[basin].name : "?";
+}
+
+const char *cycloneCategoryName(int cat, int basin) {
+    if (cat < 0) return "Tropical depression";
+    if (cat == 0) return basin == 3 ? "Cyclonic storm" : "Tropical storm";
+    static const char *hur[] = {"", "Category 1 hurricane", "Category 2 hurricane", "Category 3 major hurricane",
+                                "Category 4 major hurricane", "Category 5 major hurricane"};
+    static const char *typ[] = {"", "Category 1 typhoon", "Category 2 typhoon", "Category 3 typhoon",
+                                "Category 4 super typhoon", "Category 5 super typhoon"};
+    static const char *cyc[] = {"", "Category 1 cyclone", "Category 2 cyclone", "Category 3 severe cyclone",
+                                "Category 4 severe cyclone", "Category 5 severe cyclone"};
+    cat = std::min(cat, 5);
+    return (basin <= 1) ? hur[cat] : (basin == 2) ? typ[cat] : cyc[cat];
+}
+
+glm::dvec3 Cyclone::earthAt(double t) const {
+    if (track.empty()) return glm::dvec3(0, 0, 1);
+    const double x = std::clamp((t - t0) / kStepS, 0.0, (double)(track.size() - 1));
+    const size_t i = std::min((size_t)x, track.size() - 1), j = std::min(i + 1, track.size() - 1);
+    const double f = x - (double)i;
+    return glm::normalize(track[i] * (1.0 - f) + track[j] * f);
+}
+
+float Cyclone::vmaxAt(double t) const {
+    if (vmax.empty()) return 0.0f;
+    const double x = std::clamp((t - t0) / kStepS, 0.0, (double)(vmax.size() - 1));
+    const size_t i = std::min((size_t)x, vmax.size() - 1), j = std::min(i + 1, vmax.size() - 1);
+    const double f = x - (double)i;
+    return (float)(vmax[i] * (1.0 - f) + vmax[j] * f);
+}
+
+void Catalog::Impl::buildSeason(int basin, int year, std::vector<Cyclone> &out) const {
+    out.clear();
+    const BasinDef &B = kBasins[basin];
+    Rng r(key3((uint64_t)basin, (uint64_t)(year + 10000), 0xC1C10ull, 0x7C5EA5ull));
+    const double lambda = B.count * std::max(0.0, (double)set.cycloneFrequency);
+    const int n = poisson(r.u(), lambda);
+    const double y0 = yearStartJ2000(year);
+    for (int k = 0; k < n; ++k) {
+        Cyclone C;
+        Rng q(key3((uint64_t)basin, (uint64_t)(year + 10000), (uint64_t)k, 0xC1C1DEull));
+        C.id = key3((uint64_t)basin, (uint64_t)(year + 10000), (uint64_t)k, 0x7C1Dull) | 3ull;
+        C.basin = basin;
+        C.year = year;
+        C.seed = (uint32_t)(q.nextU64() >> 32);
+        const bool second = B.frac2 > 0.0 && q.u() < B.frac2;
+        double doy = (second ? B.peak2 : B.peak) + (second ? 25.0 : B.sigma) * gaussOf(q);
+        doy = std::fmod(doy + 3.0 * 365.2422, 365.2422);
+        C.t0 = y0 + doy * kDay;
+        const double lat = B.latC + B.latW * (2.0 * q.u() - 1.0);
+        const double lon = B.lonC + B.lonW * (2.0 * q.u() - 1.0);
+        C.hemi = lat >= 0.0 ? 1.0f : -1.0f;
+        C.rmw0 = (float)(1000.0 * q.range(35.0, 70.0));
+        C.size = (float)q.u();
+        // Its own potential: most storms stay weak, a few become intense (a skewed draw, 22-82 m/s: median ~35, about a
+        // quarter major hurricanes, as the North Atlantic's named storms).
+        const double vPot = 22.0 + 60.0 * std::pow(q.u(), 2.2);
+        const double recurve = q.range(B.recurveLo, B.recurveHi);
+        const double sp0 = q.range(4.5, 7.0), sp1 = q.range(8.0, 14.0);
+        const double wobPh = q.range(0.0, 2.0 * kPi), wobP = q.range(1.2, 2.4) * kDay;
+        glm::dvec3 p(std::cos(lat * kDeg) * std::cos(lon * kDeg), std::cos(lat * kDeg) * std::sin(lon * kDeg),
+                     std::sin(lat * kDeg));
+        double v = 12.0;
+        const int maxSteps = (int)(18.0 * kDay / Cyclone::kStepS);
+        bool peaked = false;
+        for (int s = 0; s < maxSteps; ++s) {
+            const double phi = std::asin(std::clamp(p.z, -1.0, 1.0)) / kDeg;
+            const double ap = std::fabs(phi);
+            const float land = env.land ? env.land(p) : 0.0f;
+            C.track.push_back(p);
+            C.vmax.push_back((float)v);
+            C.overLand.push_back(land > 0.5f ? 1 : 0);
+            if (v > C.vPeak) { C.vPeak = (float)v; C.tPeak = C.t0 + s * Cyclone::kStepS; }
+            peaked |= v > 0.9 * vPot || s > 72;
+            if ((peaked && v < 11.0) || ap > 50.0) break;
+            // Intensity: toward the potential over warm water (slower up than down), collapsing over land.
+            const double sst = 1.0 - smooth01(B.coldLat - 4.0, B.coldLat + 8.0, ap);
+            const double target = land > 0.5f ? 8.0 : vPot * sst;
+            const double tau = (target > v ? 30.0 : (land > 0.5f ? 9.0 : 20.0)) * 3600.0;
+            v += (target - v) * (Cyclone::kStepS / tau);
+            // Steering: west-northwest in the trades, recurving poleward and east beyond its latitude.
+            const double sRec = smooth01(recurve - 6.0, recurve + 6.0, ap);
+            double az = (162.0 * (1.0 - sRec) + 40.0 * sRec) * kDeg;   // from local east toward the pole's side
+            az += 9.0 * kDeg * std::sin(2.0 * kPi * s * Cyclone::kStepS / wobP + wobPh);
+            glm::dvec3 e, nn;
+            eastNorth(p, e, nn);
+            const glm::dvec3 dir = e * std::cos(az) + nn * (std::sin(az) * (double)C.hemi);
+            const double speed = sp0 * (1.0 - sRec) + sp1 * sRec;
+            p = moveAlong(p, dir, speed * Cyclone::kStepS);
+        }
+        C.life = (float)((C.track.size() - 1) * Cyclone::kStepS);
+        out.push_back(std::move(C));
+    }
+    std::sort(out.begin(), out.end(), [](const Cyclone &a, const Cyclone &b) { return a.t0 < b.t0; });
+    // Names in order of genesis among those that reached tropical-storm strength.
+    const char *const *names = nullptr;
+    size_t nn = 0;
+    switch (basin) {
+    case 0: names = kNamesNA; nn = std::size(kNamesNA); break;
+    case 1: names = kNamesEP; nn = std::size(kNamesEP); break;
+    case 2: names = kNamesWP; nn = std::size(kNamesWP); break;
+    case 3: names = kNamesNI; nn = std::size(kNamesNI); break;
+    case 4: names = kNamesSI; nn = std::size(kNamesSI); break;
+    default: names = kNamesAU; nn = std::size(kNamesAU); break;
+    }
+    // Sequential lists continue from year to year (an approximate offset: ~the basin's mean count a year).
+    const size_t base = (basin >= 2) ? (size_t)((int64_t)(year - 2000) * (int64_t)std::lround(B.count) % (int64_t)nn) : 0;
+    int named = 0;
+    for (Cyclone &C : out) {
+        C.seq = -1;
+        if (C.vPeak < 17.5f) continue;
+        C.seq = named;
+        C.name = names[(base + (size_t)named) % nn];
+        ++named;
+    }
+}
+
+void Catalog::cycloneSeason(int basin, int year, std::vector<const Cyclone *> &out) {
+    out.clear();
+    if (!impl_->configured || basin < 0 || basin >= kCycloneBasins) return;
+    for (const Cyclone &C : impl_->season(basin, year)) out.push_back(&C);
+}
+
+const Cyclone *Catalog::findCyclone(uint64_t id) const {
+    for (const auto &kv : impl_->seasons)
+        for (const Cyclone &C : kv.second)
+            if (C.id == id) return &C;
+    return nullptr;
+}
+
+void Catalog::cyclonesAt(double t, std::vector<CycloneState> &out) {
+    out.clear();
+    Impl &I = *impl_;
+    if (!I.configured) return;
+    // The seasons that can hold a storm alive at t: this year's and the last (genesis up to 18 days before).
+    const double yf = t / (365.2422 * kDay) + 2000.0;
+    const int y = (int)std::floor(yf);
+    for (auto it = I.seasons.begin(); it != I.seasons.end();) {
+        const int yy = (int)(it->first % 100000);
+        it = (yy < y - 2 || yy > y + 2) ? I.seasons.erase(it) : std::next(it);
+    }
+    // Map frame from Earth-fixed: the inverse of Env::mapToEarth (a rotation about the pole), from its basis images.
+    const glm::dvec3 ex = I.env.mapToEarth ? I.env.mapToEarth(glm::dvec3(1, 0, 0), t) : glm::dvec3(1, 0, 0);
+    const glm::dvec3 ey = I.env.mapToEarth ? I.env.mapToEarth(glm::dvec3(0, 1, 0), t) : glm::dvec3(0, 1, 0);
+    for (int b = 0; b < kCycloneBasins; ++b)
+        for (int yy = y - 1; yy <= y + 1; ++yy)
+            for (const Cyclone &C : I.season(b, yy)) {
+                if (t < C.t0 || t > C.t0 + (double)C.life) continue;
+                CycloneState S;
+                S.c = &C;
+                S.earth = C.earthAt(t);
+                S.map = glm::dvec3(glm::dot(S.earth, ex), glm::dot(S.earth, ey), S.earth.z);
+                const glm::dvec3 e2 = C.earthAt(t + 1800.0);
+                S.motionEarth = (e2 - S.earth) * (kREarthM / 1800.0);
+                S.vmax = C.vmaxAt(t);
+                const double vkt = std::max(0.0, (double)S.vmax * 1.944);
+                S.pressureHpa = (float)(1010.0 - std::pow(vkt / 6.7, 1.0 / 0.644));
+                S.category = cycloneCategory(S.vmax);
+                S.intensity01 = (float)smooth01(17.5, 75.0, S.vmax);
+                S.rmw = C.rmw0 * (float)(1.0 - 0.5 * smooth01(30.0, 70.0, S.vmax));
+                S.eyeR = S.vmax > 33.0f ? 0.45f * S.rmw * (float)smooth01(33.0, 45.0, S.vmax) : 0.0f;
+                S.cdoR = (float)(1000.0 * (120.0 + 180.0 * C.size) * smooth01(14.0, 40.0, S.vmax));
+                S.outerR = (float)(1000.0 * (350.0 + 450.0 * C.size) * (0.4 + 0.6 * smooth01(12.0, 30.0, S.vmax)));
+                const size_t i = std::min((size_t)std::max(0.0, (t - C.t0) / Cyclone::kStepS), C.overLand.size() - 1);
+                S.overLand = !C.overLand.empty() && C.overLand[i] != 0;
+                out.push_back(S);
+            }
+    std::sort(out.begin(), out.end(), [](const CycloneState &a, const CycloneState &b) { return a.vmax > b.vmax; });
+}
+
+void Catalog::cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std::vector<Tower> &out) const {
+    for (const CycloneState &S : cs) {
+        if (S.vmax < 20.0f) continue;
+        const Cyclone &C = *S.c;
+        glm::dvec3 e, n;
+        eastNorth(S.map, e, n);
+        const double tau = t - C.t0;
+        // The eyewall: a ring of regenerating towers at the radius of maximum wind, turning cyclonically.
+        const int nEye = 12;
+        const double rot = (double)C.hemi * 0.25 * (double)S.vmax / std::max((double)S.rmw, 5000.0) * tau;
+        for (int k = 0; k < nEye + 6; ++k) {
+            const uint64_t h = mix64((uint64_t)C.seed * 0x9E37ull + (uint64_t)k);
+            const bool wall = k < nEye;
+            double ang, rad;
+            if (wall) {
+                ang = 2.0 * kPi * k / nEye + 0.25 * (u53(h) - 0.5) + rot;
+                rad = (double)S.rmw * (0.85 + 0.3 * u53(mix64(h ^ 1)));
+            } else {
+                // Inner rainbands: along a logarithmic spiral (pitch ~18 deg) from 2 to 5 radii of maximum wind.
+                const double rr = (2.0 + 3.0 * (double)(k - nEye) / 5.0) * (double)S.rmw;
+                ang = (double)C.hemi * std::log(rr / (double)S.rmw) / std::tan(18.0 * kDeg) + 2.0 * kPi * u53(h) * 0.25
+                    + 0.5 * rot;
+                rad = rr;
+            }
+            const glm::dvec3 dirT = e * std::cos(ang) + n * std::sin(ang);
+            Tower T;
+            T.dir = moveAlong(S.map, dirT, rad);
+            const double per = (40.0 + 25.0 * u53(mix64(h ^ 2))) * 60.0;
+            const double cyc = 0.5 + 0.5 * std::sin(2.0 * kPi * (tau / per + u53(mix64(h ^ 3))));
+            const double peak = wall ? (0.55 + 0.45 * (double)S.intensity01) : (0.35 + 0.35 * (double)S.intensity01);
+            T.strength = (float)(peak * (0.7 + 0.3 * cyc) * smooth01(20.0, 30.0, S.vmax));
+            T.role = wall ? 1.0f : 0.7f;
+            T.size = (float)(0.3 + 0.4 * u53(mix64(h ^ 4)));
+            T.overshoot = (float)u53(mix64(h ^ 5));
+            // The outflow aloft is outward: the heads blow away from the centre.
+            glm::dvec3 sh = T.dir - S.map;
+            sh -= T.dir * glm::dot(sh, T.dir);
+            T.shear = glm::vec3(glm::length(sh) > 1e-12 ? glm::normalize(sh) : e);
+            T.seed = (uint32_t)(mix64(h ^ 6) >> 32);
+            T.stormId = C.id;
+            T.towerIndex = (uint8_t)k;
+            T.kind = StormKind::Tropical;
+            T.age = 7200.0f;
+            T.growS = 1200.0f;
+            T.life = 1e6f;
+            out.push_back(T);
+        }
+    }
+}
+
+void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out) const {
+    (void)t;
+    for (const CycloneState &S : cs) {
+        if (S.cdoR <= 0.0f) continue;
+        Shield Sh;
+        Sh.a = Sh.b = S.map;
+        Sh.rA = Sh.rB = S.cdoR;
+        Sh.strength = (float)smooth01(15.0, 35.0, S.vmax);
+        Sh.thick = 1.0f;
+        Sh.age01 = 0.0f;
+        Sh.rain = 0.0f;
+        Sh.lineK = 0.0f;
+        Sh.eyeR = S.eyeR;
+        Sh.seed = S.c->seed;
+        Sh.stormId = S.c->id;
+        Sh.kind = StormKind::Tropical;
+        if (Sh.strength > 0.0f) out.push_back(Sh);
+    }
+}
 
 } // namespace wx

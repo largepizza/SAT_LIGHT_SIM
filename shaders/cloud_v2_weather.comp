@@ -184,8 +184,41 @@ vec4 stormStamp(vec3 d)
         float ahead = (1.0 - smoothstep(-40000.0, -25000.0, sb2)) * smoothstep(-90000.0, -60000.0, sb2);
         o.w = max(o.w, ahead * (1.0 - smoothstep(0.8, 1.0, abs(2.0 * t - 1.0))) * s.a.w * 0.8);
     }
+    // Tropical cyclones (2026-10-23): spiral rainbands (two arms, a logarithmic spiral of ~18 deg pitch, trailing the
+    // cyclonic rotation) beyond the central dense overcast, the eyewall's ring of convection, the CDO's deck, heavy rain
+    // in the eyewall and bands, subsidence between the bands, and the eye cleared outright.
+    float eyeAcc = 0.0;
+    for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
+        CV2Cyclone cy = cv2Cyclones[i];
+        vec3  off = (d - cy.b.xyz) * R_EARTH_W;
+        off -= d * dot(off, d);
+        float r = length(off);
+        if (r > cy.c.z * 1.2) continue;
+        float rmw = max(cy.d.x, 2000.0), cdo = max(cy.c.y, 1000.0), outer = cy.c.z, I = cy.a.w, hemi = cy.b.w;
+        float th  = atan(dot(off, northW0), dot(off, eastW0));
+        float lr  = log(max(r, 1000.0) / rmw);
+        float ph  = hemi * th + lr / 0.3249;                  // tan(18 deg)
+        float rf  = clamp(r / max(outer, 1.0), 0.0, 1.0);
+        // Two main arms and three finer ones (pitch ~14 deg), thinning and breaking up outward (the breaks: two slow
+        // waves along each arm).
+        float b2  = 0.5 + 0.5 * cos(2.0 * ph + cy.c.w);
+        float b3  = 0.5 + 0.5 * cos(3.0 * (hemi * th + lr / 0.2493) + 1.7 + 0.7 * cy.c.w);
+        float brk = 0.8 + 0.2 * sin(3.1 * lr + 1.3 * th + 2.0) * sin(5.3 * lr - 2.1 * th);
+        float band = max(smoothstep(mix(0.35, 0.65, rf), 0.92, b2), 0.7 * smoothstep(mix(0.55, 0.8, rf), 0.95, b3)) * brk;
+        float inner  = 1.0 - smoothstep(0.75 * cdo, 1.1 * cdo, r);
+        float bandsK = smoothstep(0.5 * cdo, cdo, r) * (1.0 - smoothstep(0.65 * outer, outer, r));
+        float wall   = exp(-((r - rmw) * (r - rmw)) / (0.16 * rmw * rmw));
+        o.y = max(o.y, max(inner * mix(0.55, 1.0, I), band * bandsK * mix(0.45, 0.9, I)));
+        o.x = max(o.x, max(wall * smoothstep(0.05, 0.4, I), band * bandsK * 0.55));
+        o.z = max(o.z, max(wall * mix(0.6, 1.0, I), max(inner * 0.55, band * bandsK * 0.7)));
+        o.w = max(o.w, (1.0 - band) * bandsK * 0.7);
+        if (cy.c.x > 0.0) eyeAcc = max(eyeAcc, (1.0 - smoothstep(0.7 * cy.c.x, 1.15 * cy.c.x, r)) * smoothstep(0.15, 0.4, I));
+    }
     o.xyz *= pc.storm2.x;
     o.w   *= pc.storm2.x * pc.storm2.y * (1.0 - max(o.x, o.y));
+    // The eye: clear (x4 the moat's weight: the full coverage span).
+    o.xyz *= 1.0 - eyeAcc;
+    o.w    = max(o.w, 4.0 * eyeAcc);
     return o;
 }
 

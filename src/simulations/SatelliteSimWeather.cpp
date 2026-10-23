@@ -241,7 +241,7 @@ uint64_t SatelliteSim::stormEnvHash() const
     auto mixD = [&](double v) { uint64_t b; std::memcpy(&b, &v, 8); h = (h ^ b) * 1099511628211ull; };
     for (double v : {(double)cloudDriftRate, cloudDriftPhaseOffset, (double)cv2Coverage, (double)cv2CoverClear,
                      (double)cv2CoverFull, (double)stormFrequency, (double)cv2CbRadiusKm, (double)stormLifeScale,
-                     (double)stormComplexes})
+                     (double)stormComplexes, (double)stormCyclones})
         mixD(v);
     return h;
 }
@@ -310,6 +310,7 @@ void SatelliteSim::updateStorms()
         s.towerRadiusM = std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f;
         s.lifeScale = std::max(stormLifeScale, 0.05f);
         s.lineFrequency = std::max(stormComplexes, 0.0f);
+        s.cycloneFrequency = stormObjects ? std::max(stormCyclones, 0.0f) : 0.0f;
         stormCatalog->configure(env, s, stormClim.get(), key);
         stormEnvKey = key;
         stormUploadedT = -1e300;
@@ -326,6 +327,9 @@ void SatelliteSim::updateStorms()
     std::vector<const wx::Storm *> stormsNow;
     stormCatalog->stormsAt(t, stormsNow);
     stormCatalog->towersAt(t, stormsNow, stormTowers);
+    // Tropical cyclones: their eyewall and inner-band towers join the list (Earth-fixed tracks, in the map frame now).
+    stormCatalog->cyclonesAt(t, stormCyclonesNow);
+    stormCatalog->cycloneTowersAt(t, stormCyclonesNow, stormTowers);
     const auto tCat = std::chrono::steady_clock::now();
 
     // Strongest first: past the buffer's capacity the weakest go, and a crowded bin keeps its strongest.
@@ -371,7 +375,8 @@ void SatelliteSim::updateStorms()
         // supercell) furthest. The flared head IS the anvil (cv2ColumnSigma), so this is its size.
         const double mature = glm::smoothstep(0.0, 2700.0, (double)tw.age - (double)tw.growS);
         const double kindK = tw.kind == wx::StormKind::Supercell ? 1.35
-                           : (tw.kind == wx::StormKind::Multicell || wx::isLineSystem(tw.kind)) ? 1.1 : 0.85;
+                           : (tw.kind == wx::StormKind::Multicell || wx::isLineSystem(tw.kind)) ? 1.1
+                           : tw.kind == wx::StormKind::Tropical ? 1.0 : 0.85;
         const double hs = (double)(stormHash(tw.seed ^ 0xA5A5A5A5u) & 0xFFFFu) / 65535.0;   // this storm's own spread
         const double anvilK = std::max(1.0 / flare, (0.65 + (0.55 + 0.5 * hs) * mature) * kindK);
         const double driftK = (0.25 + (0.9 + 0.8 * hs) * mature) * kindK;
@@ -406,6 +411,7 @@ void SatelliteSim::updateStorms()
         sp.headRadiusM = (float)(Rb * flare * 1.15);
         sp.headDriftM = (float)drift;
         stormCatalog->shieldsAt(t, stormsNow, sp, stormShields);
+        stormCatalog->cycloneShieldsAt(t, stormCyclonesNow, stormShields);   // their central dense overcast
         std::sort(stormShields.begin(), stormShields.end(), [](const wx::Shield &a, const wx::Shield &b) {
             return a.strength != b.strength ? a.strength > b.strength : a.stormId < b.stormId;
         });
@@ -423,7 +429,7 @@ void SatelliteSim::updateStorms()
             // The convective line's distance ahead of the spine (line systems: the spine sits 45% of the trail behind
             // it; rA = 0.55 trail + the tower radius).
             const float front = s.lineK > 0.0f ? 0.45f / 0.55f * std::max(s.rA - (float)Rb, 0.0f) : 0.0f;
-            g.d = glm::vec4(s.rear, front);
+            g.d = glm::vec4(s.rear, s.kind == wx::StormKind::Tropical ? -std::max(s.eyeR, 1.0f) : front);
             sdst[i] = g;
             stormGpuShields[i] = g;
             const glm::dvec3 mid = glm::normalize(s.a + s.b);
@@ -442,6 +448,23 @@ void SatelliteSim::updateStorms()
         shead[2] = sx.bins;
         shead[3] = sx.used;
         stormStats.shields = (int)nS;
+        // The cyclones' records for the bake (centre where the low cloud reads the cube; the bands turn slowly).
+        const uint32_t nC = (uint32_t)std::min<size_t>(stormCyclonesNow.size(), kCycloneMax);
+        auto *cdst = reinterpret_cast<GpuStormCyclone *>(static_cast<char *>(stormMapped) + kCyclonesOffset);
+        for (uint32_t i = 0; i < nC; ++i)
+        {
+            const wx::CycloneState &c = stormCyclonesNow[i];
+            const glm::dvec3 f = stormFlowedDir(c.map, t);
+            const double rot = std::fmod(2.4e-5 * (t - c.c->t0), glm::two_pi<double>());
+            GpuStormCyclone g;
+            g.a = glm::vec4(glm::vec3(c.map), c.intensity01);
+            g.b = glm::vec4(glm::vec3(f), c.c->hemi);
+            g.c = glm::vec4(c.eyeR, c.cdoR, c.outerR, (float)(-rot));
+            g.d = glm::vec4(c.rmw, c.vmax, c.overLand ? 1.0f : 0.0f, 0.0f);
+            cdst[i] = g;
+        }
+        reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kCycHeadOffset)[0] = nC;
+        stormStats.cyclones = (int)nC;
         stormStats.shieldBins = (int)sx.bins;
         stormStats.shieldEntries = (int)sx.entries;
         stormStats.shieldTruncated = (int)sx.truncated;
@@ -464,32 +487,37 @@ void SatelliteSim::updateStorms()
 // clouds_v2.glsl cv2FlowDisp: the same constants, in double), with its own copy of the towers (a.xyz = that flowed
 // axis), so the march's per-frame order cannot make its indices stale. Built only on a frame the bake runs (at most
 // every ~45 s of sim time at 1x): ~1-2 ms.
+// Where the low cloud reads the weather cube for a map-frame direction (clouds_v2.glsl cv2FlowDisp, the same constants,
+// in double): the bake stamps a storm's own cloud there.
+glm::dvec3 SatelliteSim::stormFlowedDir(const glm::dvec3 &wd, double t) const
+{
+    const double flowP = std::clamp((double)cv2FlowPeriodKm, 200.0, 20000.0) * 1000.0;
+    const double flowX = std::clamp((double)cv2FlowWarp, 0.0, 0.1) * flowP;
+    const double flowPh = (double)cv2WindMps * 0.3 * t / flowP;
+    if (flowX <= 0.0) return wd;
+    static const double kd[8][3] = {{0.62, 0.48, 0.62}, {-0.71, 0.30, 0.64}, {0.18, -0.93, 0.32}, {0.85, 0.21, -0.48},
+                                    {-0.34, -0.55, -0.76}, {0.05, 0.77, -0.64}, {-0.90, -0.40, 0.17}, {0.44, -0.29, 0.85}};
+    static const double ks[8] = {1.0, 1.13, 0.87, 1.31, 0.74, 1.52, 0.93, 1.21};
+    static const double ph[8] = {0.3, 2.1, 4.4, 1.7, 5.6, 3.2, 0.9, 2.7};
+    const double k0 = glm::two_pi<double>() * kReW / flowP;
+    const double phase = (flowPh - std::floor(flowPh)) * glm::two_pi<double>();
+    glm::dvec3 g(0.0);
+    for (int i = 0; i < 8; ++i)
+    {
+        const glm::dvec3 kv = glm::normalize(glm::dvec3(kd[i][0], kd[i][1], kd[i][2])) * (k0 * ks[i]);
+        g += kv * std::cos(glm::dot(kv, wd) + ph[i] + phase) / ks[i];
+    }
+    const glm::dvec3 v = glm::cross(wd, g) / (k0 * 2.0) * flowX;
+    return glm::normalize(wd + v / kReW);
+}
+
 void SatelliteSim::buildStormEnvIndex()
 {
     FPROF_SCOPE("buildStormEnvIndex");
     if (!stormMapped)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    const double flowP = std::clamp((double)cv2FlowPeriodKm, 200.0, 20000.0) * 1000.0;
-    const double flowX = std::clamp((double)cv2FlowWarp, 0.0, 0.1) * flowP;
-    const double flowPh = (double)cv2WindMps * 0.3 * t / flowP;
-    auto flowed = [&](const glm::dvec3 &wd) -> glm::dvec3 {
-        if (flowX <= 0.0) return wd;
-        static const double kd[8][3] = {{0.62, 0.48, 0.62}, {-0.71, 0.30, 0.64}, {0.18, -0.93, 0.32}, {0.85, 0.21, -0.48},
-                                        {-0.34, -0.55, -0.76}, {0.05, 0.77, -0.64}, {-0.90, -0.40, 0.17}, {0.44, -0.29, 0.85}};
-        static const double ks[8] = {1.0, 1.13, 0.87, 1.31, 0.74, 1.52, 0.93, 1.21};
-        static const double ph[8] = {0.3, 2.1, 4.4, 1.7, 5.6, 3.2, 0.9, 2.7};
-        const double k0 = glm::two_pi<double>() * kReW / flowP;
-        const double phase = (flowPh - std::floor(flowPh)) * glm::two_pi<double>();
-        glm::dvec3 g(0.0);
-        for (int i = 0; i < 8; ++i)
-        {
-            const glm::dvec3 kv = glm::normalize(glm::dvec3(kd[i][0], kd[i][1], kd[i][2])) * (k0 * ks[i]);
-            g += kv * std::cos(glm::dot(kv, wd) + ph[i] + phase) / ks[i];
-        }
-        const glm::dvec3 v = glm::cross(wd, g) / (k0 * 2.0) * flowX;
-        return glm::normalize(wd + v / kReW);
-    };
+    auto flowed = [&](const glm::dvec3 &wd) -> glm::dvec3 { return stormFlowedDir(wd, t); };
     auto *envTowers = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormEnvTowersOffset);
     stormEnvEntries.clear();
     const uint32_t n = (uint32_t)std::min<size_t>(stormGpuTowers.size(), kStormMaxTowers);
@@ -586,7 +614,13 @@ nlohmann::json SatelliteSim::stormNearestJson(int n, float minStrength, float ra
             r["sun_el_deg"] = glm::degrees(std::asin(std::clamp(glm::dot(se, e), -1.0, 1.0)));
         }
         r["tower"] = tw.towerIndex;
-        if (stormCatalog)
+        if (stormCatalog && tw.kind == wx::StormKind::Tropical)
+            if (const wx::Cyclone *cy = stormCatalog->findCyclone(tw.stormId))
+            {
+                r["kind"] = "tropical cyclone";
+                r["name"] = cy->name;
+            }
+        if (stormCatalog && tw.kind != wx::StormKind::Tropical)
             if (const wx::Storm *st = stormCatalog->find(tw.stormId))
             {
                 const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;

@@ -4075,6 +4075,67 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             row["strength"] = 1.0;
             return row;
         };
+        // A cyclone's row (Earth-fixed centre, like stormRow's).
+        auto cycloneRow = [&](const wx::CycloneState &S) -> json {
+            const glm::dvec3 e = S.earth;
+            const glm::dvec3 oe = glm::normalize(glm::dvec3(obsDir));
+            const glm::dvec3 dE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), e) + glm::dvec3(1e-12, 0, 0));
+            const glm::dvec3 dN = glm::cross(e, dE);
+            const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            json row;
+            row["cyclone_id"] = std::to_string(S.c->id);
+            row["name"] = S.c->name;
+            row["basin"] = wx::cycloneBasinName(S.c->basin);
+            row["kind"] = "tropical cyclone";
+            row["category"] = S.category;
+            row["category_name"] = wx::cycloneCategoryName(S.category, S.c->basin);
+            row["vmax_mps"] = S.vmax;
+            row["pressure_hpa"] = S.pressureHpa;
+            row["lat_deg"] = glm::degrees(std::asin(std::clamp(e.z, -1.0, 1.0)));
+            row["lon_deg"] = glm::degrees(std::atan2(e.y, e.x));
+            row["dist_km"] = std::acos(std::clamp(glm::dot(e, oe), -1.0, 1.0)) * 6371.0;
+            row["age_h"] = (tNow - S.c->t0) / 3600.0;
+            row["life_h"] = S.c->life / 3600.0;
+            row["peak_mps"] = S.c->vPeak;
+            row["rmw_km"] = S.rmw / 1000.0;
+            row["eye_km"] = S.eyeR / 1000.0;
+            row["cdo_km"] = S.cdoR / 1000.0;
+            row["over_land"] = S.overLand;
+            row["motion_mps"] = glm::length(S.motionEarth);
+            row["motion_bearing_deg"] = glm::degrees(std::atan2(glm::dot(S.motionEarth, dE), glm::dot(S.motionEarth, dN)));
+            row["shear_bearing_deg"] = row["motion_bearing_deg"];
+            row["strength"] = S.intensity01;
+            return row;
+        };
+        // `storms cyclones`: every tropical cyclone alive now; `storms season basin=<0-5> year=<y>`: a basin's season.
+        if (lower(pos(0)) == "cyclones")
+        {
+            json rows = json::array();
+            for (const wx::CycloneState &S : stormCyclonesNow) rows.push_back(cycloneRow(S));
+            r["cyclones"] = rows;
+            r["message"] = std::to_string(rows.size()) + " tropical cyclones";
+            return Status::Done;
+        }
+        if (lower(pos(0)) == "season")
+        {
+            json rows = json::array();
+            if (stormCatalog)
+            {
+                std::vector<const wx::Cyclone *> v;
+                stormCatalog->cycloneSeason((int)c.num("basin", 0.0), (int)c.num("year", 2036.0), v);
+                for (const wx::Cyclone *C : v)
+                {
+                    const double secs = C->t0 + 0.5 * 86400.0 - 2000.0 * 0.0;
+                    rows.push_back({{"id", std::to_string(C->id)}, {"name", C->name}, {"genesis_j2000_s", C->t0},
+                                    {"genesis_day", secs / 86400.0}, {"life_h", C->life / 3600.0},
+                                    {"peak_mps", C->vPeak}, {"peak_category", C->vPeak >= 70 ? 5 : C->vPeak >= 58 ? 4
+                                        : C->vPeak >= 50 ? 3 : C->vPeak >= 43 ? 2 : C->vPeak >= 33 ? 1 : C->vPeak >= 17.5 ? 0 : -1}});
+                }
+            }
+            r["season"] = rows;
+            r["message"] = std::to_string(rows.size()) + " systems";
+            return Status::Done;
+        }
         // `storms list [kind=] [n=20] [range_km=]`: the storms (not towers) alive or lingering, nearest first.
         if (lower(pos(0)) == "list")
         {
@@ -4104,7 +4165,19 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (lower(pos(0)) == "go")
         {
             json near;
-            if (c.has("storm"))
+            if (c.has("cyclone"))
+            {
+                // `storms go cyclone=<name|id|strongest>`: that tropical cyclone's centre (az_from= the bearing to stand).
+                const std::string want = lower(c.str("cyclone"));
+                for (const wx::CycloneState &S : stormCyclonesNow)
+                    if (want == "strongest" || lower(S.c->name) == want || std::to_string(S.c->id) == want)
+                    {
+                        near = json::array({cycloneRow(S)});
+                        break;
+                    }
+                if (near.is_null()) fail("storms go: no tropical cyclone '" + c.str("cyclone") + "' alive now");
+            }
+            else if (c.has("storm"))
             {
                 // `storms go storm=<id>`: that storm's centre (alive or lingering), whatever its towers are doing.
                 const wx::Storm *S = stormCatalog ? stormCatalog->find(std::stoull(c.str("storm"))) : nullptr;

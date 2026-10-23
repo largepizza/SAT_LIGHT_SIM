@@ -29,6 +29,7 @@ const uint kCv2ShieldTableSize    = 16384u;
 const uint kCv2ShieldListSize     = 65536u;
 const uint kCv2ShieldBinsPerFace  = 64u;
 const uint kCv2ShieldMaxPerBin    = 15u;
+const uint kCv2CycloneMax         = 8u;   // tropical cyclones (the weather bake stamps their bands, eyewall and eye)
 
 struct CV2Tower {
     vec4 a;   // xyz the tower's axis (map-frame unit vector), w strength 0..1 (its lifecycle x peak)
@@ -45,7 +46,16 @@ struct CV2Shield {
     vec4 a;   // xyz the spine's start (map-frame unit vector), w strength 0..1
     vec4 b;   // xyz the spine's end, w the radius there (m)
     vec4 c;   // x the radius at a (m), y thickness factor 0..1, z age 0 (fed) .. 1 (gone), w stratiform rain 0..1
-    vec4 d;   // xyz the rearward tangent (line systems; 0 otherwise), w the line's distance ahead of the spine (m)
+    vec4 d;   // xyz the rearward tangent (line systems; 0 otherwise), w the line's distance ahead of the spine (m);
+              // w < 0: a tropical cyclone's central dense overcast, -w its eye's radius (m)
+};
+
+// A tropical cyclone (wx::CycloneState), for the weather bake's stamp (spiral bands, the eyewall, the CDO, the eye).
+struct CV2Cyclone {
+    vec4 a;   // xyz the centre (map frame), w intensity 0..1 (17.5 .. 75 m/s)
+    vec4 b;   // xyz the centre where the low cloud reads the cube (flowed), w hemisphere (+1 north, -1 south)
+    vec4 c;   // x the eye's radius (m, 0 none), y the CDO's radius, z the outer bands' reach, w the bands' phase (rad)
+    vec4 d;   // x the radius of maximum wind (m), y vmax (m/s), z 1 over land, w unused
 };
 
 #ifdef CV2_STORM_BINDING
@@ -59,6 +69,8 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
     CV2Shield cv2Shields[kCv2ShieldMax];
     uvec2    cv2ShieldTable[kCv2ShieldTableSize];   // as cv2StormTable, kCv2ShieldBinsPerFace bins
     uint     cv2ShieldList[kCv2ShieldListSize];
+    uvec4    cv2CycHead;                            // x cyclones
+    CV2Cyclone cv2Cyclones[kCv2CycloneMax];
 #ifdef CV2_STORM_ENV
     uvec2    cv2StormEnvTable[kCv2StormEnvTableSize];
     uint     cv2StormEnvList[kCv2StormEnvListSize];
@@ -163,6 +175,7 @@ float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
         float u  = length(wd - (s.a.xyz + ab * t)) * (6371000.0 / max(r, 1.0));
         if (u >= 1.6) continue;
         float sT = s.a.w * mix(1.0, 0.3, smoothstep(0.35, 1.0, t));   // thinning out toward its far (downwind) end
+        if (s.d.w < 0.0) sT *= smoothstep(0.9, 1.6, u * r / -s.d.w);   // a cyclone's eye, open to the sea
         float p  = sT * (1.0 - smoothstep(0.3, 1.6, u));
         if (p > best) { best = p; bestS = sT; uOut = u; thickK = s.c.y * mix(1.0, 0.65, t); ageK = s.c.z; }
     }
