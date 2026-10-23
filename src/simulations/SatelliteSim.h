@@ -5213,6 +5213,14 @@ private:
     void updateAmbience(float dt);
     void computeAmbienceContext(float dt);
     bool oceanAt(double latRad, double lonRad) const;
+    // Whether the DEM has any land (oceanMaskCpu: a texel above the sea baseline) within radiusM of a point (2026-10-23:
+    // the terrain Sun-horizon map is not baked over open ocean). A box in lat / lon around the circle, word-wise.
+    bool landWithin(double latRad, double lonRad, double radiusM) const;
+    // The highest DEM height (m) in earthElevCpu (18 km/px, nearest-sampled: a peak narrower than a texel can be
+    // missed) within radiusM of a point, over the same lat / lon box.
+    float maxTerrainWithin(double latRad, double lonRad, double radiusM) const;
+    bool tshLandNear_ = true;                 // landWithin around the eye, re-checked past ~25 km of motion
+    glm::dvec3 tshLandCheckUp_{0.0};
     float oceanFraction(double latRad, double lonRad, double radiusM, int rings) const;
     std::string ambienceNowPlaying() const; // Sound tab readout
     // ── Photometry tuning (synced to SatFlarePC each frame) ───────────────────

@@ -1478,8 +1478,18 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             // (so a line stays on the same ground while the eye moves; rebaked whole every frame). Only while the bake is
             // dispatched (recordCloudsV2: not with the clouds off or at full far-layer blend), the Sun is up at the eye,
             // below 60 km, and the terrain is drawn.
+            // Nor over open ocean (2026-10-23, perf): with no terrain within the lines' reach (+-1024 km across, 450 km past
+            // the eye along the Sun) every line meets only the sea, i.e. the Earth's own shadow, which the sky and the clouds
+            // already take: the bake (~0.3 ms) changed nothing there. "Terrain" = 100 m or more in the CPU DEM within 1600
+            // km, or any land at all within 60 km (the user's tropical storm views had atolls of a few metres in reach).
+            if (glm::length(up - tshLandCheckUp_) * 6371000.0 > 25000.0)
+            {
+                tshLandCheckUp_ = up;
+                const double la = std::asin(std::clamp(up.z, -1.0, 1.0)), lo = std::atan2(up.y, up.x);
+                tshLandNear_ = maxTerrainWithin(la, lo, 1600000.0) >= 100.0f || landWithin(la, lo, 60000.0);
+            }
             const bool tshOn = cv2TerrainGodrays > 0.5f && cv2TshPipeline && !cloudsV2Off() && cloudFarBlend() < 0.999f
-                               && sinE > -0.05 && eyeH < 60000.0 && (debugDisableMask & 1u) == 0u;
+                               && sinE > -0.05 && eyeH < 60000.0 && (debugDisableMask & 1u) == 0u && tshLandNear_;
             const double eA = glm::dot(eye, ga), eB = glm::dot(eye, gb);
             glm::vec4 t[4];
             for (int lv = 0; lv < 4; ++lv)
@@ -2364,4 +2374,79 @@ void SatelliteSim::recordCloudCombine(VkCommandBuffer cmd, VulkanContext &ctx)
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2CombinePipeLayout, 0, 1, &cv2CombineDescSet, 0, nullptr);
     vkCmdDispatch(cmd, (computeCloudExtentBuilt.width + 15) / 16, (computeCloudExtentBuilt.height + 15) / 16, 1);
     (void)ctx;
+}
+
+bool SatelliteSim::landWithin(double latRad, double lonRad, double radiusM) const
+{
+    if (oceanMaskCpu.empty() || oceanMaskW <= 0 || oceanMaskH <= 0)
+        return true;
+    const double pi = glm::pi<double>();
+    const double dLat = radiusM / 6371000.0;
+    const double lat0 = std::max(latRad - dLat, -0.5 * pi), lat1 = std::min(latRad + dLat, 0.5 * pi);
+    const int y0 = std::clamp((int)std::floor((0.5 * pi - lat1) / pi * oceanMaskH), 0, oceanMaskH - 1);
+    const int y1 = std::clamp((int)std::floor((0.5 * pi - lat0) / pi * oceanMaskH), 0, oceanMaskH - 1);
+    // The longitude half-span at the box's most poleward latitude (the whole circle if it reaches a pole).
+    const double cMin = std::cos(std::max(std::abs(lat0), std::abs(lat1)));
+    const double dLon = (cMin * 6371000.0 > radiusM) ? std::asin(std::min(1.0, radiusM / (cMin * 6371000.0))) * 1.2 : pi;
+    const int span = (dLon >= pi) ? oceanMaskW : std::min(oceanMaskW, (int)std::ceil(2.0 * dLon / (2.0 * pi) * oceanMaskW) + 2);
+    const int xc = (int)std::floor((lonRad + pi) / (2.0 * pi) * oceanMaskW);
+    const int xs = (span >= oceanMaskW) ? 0 : xc - span / 2;
+    // Every texel of [i0, i1) an ocean bit (1)?
+    auto allOcean = [&](size_t i0, size_t i1) {
+        while (i0 < i1 && (i0 & 63))
+        {
+            if (!((oceanMaskCpu[i0 >> 6] >> (i0 & 63)) & 1ull))
+                return false;
+            ++i0;
+        }
+        for (; i0 + 64 <= i1; i0 += 64)
+            if (oceanMaskCpu[i0 >> 6] != ~0ull)
+                return false;
+        for (; i0 < i1; ++i0)
+            if (!((oceanMaskCpu[i0 >> 6] >> (i0 & 63)) & 1ull))
+                return false;
+        return true;
+    };
+    for (int y = y0; y <= y1; ++y)
+    {
+        const size_t row = (size_t)y * (size_t)oceanMaskW;
+        int a = ((xs % oceanMaskW) + oceanMaskW) % oceanMaskW;
+        int n = std::min(span, oceanMaskW);
+        while (n > 0)
+        {
+            const int run = std::min(n, oceanMaskW - a);
+            if (!allOcean(row + (size_t)a, row + (size_t)(a + run)))
+                return true;
+            n -= run;
+            a = 0;
+        }
+    }
+    return false;
+}
+
+float SatelliteSim::maxTerrainWithin(double latRad, double lonRad, double radiusM) const
+{
+    if (earthElevCpu.empty() || earthElevCpuW <= 0 || earthElevCpuH <= 0)
+        return 1e9f;
+    const double pi = glm::pi<double>();
+    const double dLat = radiusM / 6371000.0;
+    const double lat0 = std::max(latRad - dLat, -0.5 * pi), lat1 = std::min(latRad + dLat, 0.5 * pi);
+    const int y0 = std::clamp((int)std::floor((0.5 * pi - lat1) / pi * earthElevCpuH), 0, earthElevCpuH - 1);
+    const int y1 = std::clamp((int)std::floor((0.5 * pi - lat0) / pi * earthElevCpuH), 0, earthElevCpuH - 1);
+    const double cMin = std::cos(std::max(std::abs(lat0), std::abs(lat1)));
+    const double dLon = (cMin * 6371000.0 > radiusM) ? std::asin(std::min(1.0, radiusM / (cMin * 6371000.0))) * 1.2 : pi;
+    const int span = (dLon >= pi) ? earthElevCpuW
+                                  : std::min(earthElevCpuW, (int)std::ceil(2.0 * dLon / (2.0 * pi) * earthElevCpuW) + 2);
+    const int xc = (int)std::floor((lonRad + pi) / (2.0 * pi) * earthElevCpuW);
+    const int xs = (span >= earthElevCpuW) ? 0 : xc - span / 2;
+    uint8_t mx = 0;
+    for (int y = y0; y <= y1; ++y)
+        for (int k = 0; k < span; ++k)
+        {
+            const int x = (((xs + k) % earthElevCpuW) + earthElevCpuW) % earthElevCpuW;
+            mx = std::max(mx, earthElevCpu[(size_t)y * earthElevCpuW + x]);
+        }
+    const float kSeaLevel = 15.0f / 255.0f;
+    const float v = mx / 255.0f;
+    return v <= kSeaLevel ? 0.0f : (v - kSeaLevel) * 8848.0f;
 }

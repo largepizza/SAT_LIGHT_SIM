@@ -993,7 +993,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     no validation errors): 58 km 26.3 ms (old defaults 34.0), anvils 29.0 (24.4), cumulus 32.0 (27.2), Pacific 27.7 (25.4):
     full-res clouds cost +2..+5 ms near the ground over the old half-res sparse march, the clipmap and froxels pay part back.
   - **The Sun transmittance volume (S3, 2026-10-22; `cloud_lightning.glsl` cv2Stv / cv2StvT, bake in
-    `cloud_v2_lightning.comp` workgroups 5-17 of its 18, UBO stvL0-3 / stvH / stvV):
+    `cloud_v2_lightning.comp` logical workgroups 5-17, each split over 8 physical ones of 32 rays x 8 threads (a ray's 48
+    knots, 6 a thread, joined by a prefix of their optical depths; dispatch 5 + 13 x 8 — 2026-10-23: one thread a ray on 13
+    workgroups was ~0.9 ms of latency with the GPU idle), UBO stvL0-3 / stvH / stvV):
     THE Sun shadow for the cloud key light, the god rays (froxels or direct reads in sat_sky.frag), the fog / dust and the
     GROUND (one lookup in cloud_march.comp). **The fine grid, the two shaft rings, the cascade and the layer shadow map are
     DELETED** (2026-10-22, the user: "delete it"): their bakes, buffers, UBO fields (sunCasc0-8, layEye / layRef / layBake;
