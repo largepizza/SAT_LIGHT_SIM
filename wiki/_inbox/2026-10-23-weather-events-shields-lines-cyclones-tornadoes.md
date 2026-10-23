@@ -24,3 +24,5 @@ at their cutoff, which at Anvils 8 drew a hard arc along a view grazing the edge
 flared head and died with it (issue 20261023_001522). The first shields were clean capsules: white pills from orbit (the
 cluster fBm spreads only +-0.06, so its fray needed x6). Storm update 1.8 -> 0.8 ms: two scans of ~1.3-KB storm records
 a frame (cache misses) and ~68 atan per binned object.
+
+Eyewall: 18 regenerating towers at the radius of maximum wind; they do not flare (the CDO shield is the anvil), which cut the 12 km eye view's cloud cost at Medium from 15.2 to 12.5 ms.
