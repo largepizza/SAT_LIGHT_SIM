@@ -298,6 +298,26 @@ layout(location = 1) out float outDepthCopy;
 struct SkyEngineLight { vec4 c; vec4 ia; vec4 ib; vec4 col; vec4 cone; };
 layout(std430, set = 0, binding = 32) readonly buffer SkyEngineLightBuf {
     uint selDustCount; uint selCount; uint selPad0, selPad1; SkyEngineLight selList[]; };
+#include "smoke.glsl"
+// The Sun's light at a point under wildfire smoke (2026-10-23): the smoke Gaussians' columns toward the Sun, spectral.
+// p and the Gaussians' centres are relative to the eye (the list's frame). The first 96 of the range (the CPU lists the
+// nearest fires first).
+vec3 smokeSunTransmit(vec3 pRel, vec3 sunDir)
+{
+    uint f = smokeFirst(selCount), n = min(smokeCount(selCount), 96u);
+    float tau = 0.0;
+    for (uint i = f; i < f + n; ++i) {
+        SkyEngineLight d = selList[i];
+        vec3 x = pRel - d.c.xyz;
+        // a cheap reject: the Sun ray's closest approach farther than ~5 of its largest sigma (from the trace bound)
+        float tcl = -dot(x, sunDir);
+        vec3  cx  = x + max(tcl, 0.0) * sunDir;
+        float s2  = 2.0 / max(min(d.ia.x, min(d.ia.y, d.ia.z)), 1e-30);
+        if (dot(cx, cx) > 12.5 * s2) continue;
+        tau += smokeColumn(x, sunDir, d.ia, d.ib, d.ia.w * d.c.w);
+    }
+    return exp(-tau * kSmokeSpec);
+}
 const uint kSkyEngineLightBase = 1024u;   // == SatelliteSim::kMaxDustClouds
 const uint kSkyEngineLightMax  = 32u;     // == SatelliteSim::kMaxEngineLights
 #include "cloud_occlusion.glsl"           // cloudAlphaIsEmit, cloudPointVisibilityAt
@@ -5220,6 +5240,13 @@ void main() {
                 sunTransMax  = maxAttn;
             }
         }
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+        // Wildfire smoke between this point and the Sun (2026-10-23): dims and reddens its direct light, land and sea.
+        if (smokeCount(selCount) > 0u) {
+            vec3 smT = smokeSunTransmit(hitPt - obsPos, sunDirLocal);
+            sunSpecTint *= smT;
+        }
+#endif
 
         // ── Sky ambient at terrain hit ─────────────────────────────────────────
         // 4-step zenith integration gives the scattered sky color illuminating terrain
@@ -5917,7 +5944,7 @@ void main() {
                         // while the reflected ray misses the light's real position seen from this sea point, the
                         // texels there are dropped too. Real clouds right round a flame lose their reflection there.
                         {
-                            uint nELr = min(selCount, kSkyEngineLightMax);
+                            uint nELr = min(selCount & 255u, kSkyEngineLightMax);
                             vec3 Pr = dir * dist;
                             [[dont_unroll]] for (uint li = 0u; li < nELr; ++li) {
                                 vec3  Lc  = selList[kSkyEngineLightBase + li].c.xyz;
@@ -6122,7 +6149,7 @@ void main() {
                 // Below ~1e-5 (x the night exposure, ~10: 1e-4 of white) a light's glint does not show; the cloud
                 // visibility lookup runs only for the pixels where one does.
                 const float kSeaLightMin = 1e-5;
-                uint  nEL  = min(selCount, kSkyEngineLightMax);
+                uint  nEL  = min(selCount & 255u, kSkyEngineLightMax);
                 vec3  Pe   = dir * dist;                                   // the sea point, about the eye
                 float wndL = 7.0 * clamp(seaState, 0.2, 2.5);
                 float s2L  = 0.003 + 0.00512 * wndL + 0.06 * seaRoughFoot + 2e-5;

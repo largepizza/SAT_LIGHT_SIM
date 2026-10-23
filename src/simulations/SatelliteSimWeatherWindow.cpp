@@ -1681,6 +1681,15 @@ void SatelliteSim::buildWeatherControlsTab(const UIInput &inp, UIRenderer &ui)
     num(2, "Storm cloud field", stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f",
         "Each storm's own cloud in the weather map round it (clouds_v2.storm_field)");
     num(3, "Storm clear moat", stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", "The clear moat round a storm (clouds_v2.storm_moat)");
+    num(6, "Hurricane arm cirrus", stormArmCirrus, 0.0f, 3.0f, 0.05f, "%.2f",
+        "The ice streaming along a tropical cyclone's spiral arms (clouds_v2.storm_arm_cirrus; 0 = none)");
+    uiSection("WxCSec", 2, "WILDFIRES");
+    num(7, "Wildfires (x)", wildfireRate, 0.0f, 10.0f, 0.05f, "%.2f",
+        "x the calibrated fire rate: fuel (the biome map) x the season's dryness (clouds_v2.wildfires; 0 = none)");
+    num(8, "Wildfire smoke", wildfireSmoke, 0.0f, 5.0f, 0.05f, "%.2f",
+        "x the smoke's optical depth: the columns and the regional pall (clouds_v2.wildfire_smoke)");
+    num(9, "Wildfire light", wildfireLight, 0.0f, 5.0f, 0.05f, "%.2f",
+        "x the fire front's light: the flickering points and their glow at night (clouds_v2.wildfire_light)");
     uiSection("WxCSec", 1, "LIGHTNING");
     num(4, "Lightning rate: Cb towers (/min each)", cv2LightningRate, 0.0f, 30.0f, 0.1f, "%.1f",
         "Flashes a minute of a full-strength, anvil-reaching tower (clouds_v2.lightning_rate)");

@@ -517,6 +517,15 @@ void SatelliteSim::init(VulkanContext &ctx)
     Log::line("init: Earth textures (decode + upload)");
     createGlowResources(ctx);
     Log::line("init: Earth textures done");
+    {   // The land-cover map (Biome.h) from the day map, the elevation and the ocean mask, in parallel.
+        const auto b0 = std::chrono::steady_clock::now();
+        biomeMap.build(earthDayCpu, earthDayCpuW, earthDayCpuH,
+                       [this](float lat, float lon) { return std::max(0.0f, cpuTerrainHeightM(lat, lon)); },
+                       [this](float lat, float lon) { return oceanAt(glm::radians((double)lat), glm::radians((double)lon)); },
+                       (int)std::clamp(std::thread::hardware_concurrency(), 1u, 12u));
+        Log::line("init: biome map " + std::to_string(biomeMap.width()) + "x" + std::to_string(biomeMap.height()) + " in " +
+                  std::to_string(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count()) + " ms");
+    }
     Log::line("init: clouds v2 bakes");
     bootStatus("Clouds v2");
     createCloudsV2(ctx); // needs the Earth textures, cloudParamsBuf, sceneDepth, terrainFrameBuf

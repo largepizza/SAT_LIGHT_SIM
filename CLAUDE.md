@@ -935,6 +935,36 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the observer on its inflow side; `state` -> `weather.tornadoes`. Known: a neighbouring storm's forward flank can still
   rain over the view (harness_runs/wx4: 2036-11-22 14:00); the cloud field inside a hurricane does not swirl (its noise is
   map-fixed; the flow is one global curl field).
+- **Biome map + wildfires (2026-10-23, `Biome.h/.cpp`, `Wildfire.h/.cpp`, `SatelliteSimWildfire.cpp`,
+  `shaders/include/smoke.glsl`; plan `.plans/WEATHER_HAZARDS_PLAN.md`).** `wx::BiomeMap` (2048 x 1024 equirect,
+  built at load in ~17 ms on 12 threads from the day map's 3x3 colour, latitude, the CPU DEM and the ocean mask): water,
+  ice, tundra, boreal / temperate / tropical forest, grassland, savanna, shrubland, desert, + FUEL and DUST bytes;
+  `seasonalDryness(lat, doy)` (extratropical summer, tropical dry season: north peak ~day 15, south ~220). Harness
+  `biome [<lat> <lon>] [export=<png>]`. Kansas reads shrubland (the day map's tan prairie). **Fires** are a pure function
+  of sim time: hashed per (1-degree cell, 1-day bin), rate 0.045 x fuel x dryness^2 x cos(lat) x "Wildfires (x)", ignited
+  mostly in the local afternoon, log-normal life (median 2.5 d x size, 0.4-30 d), a burnt ellipse growing downwind
+  (`fireStateAt`: activity = growth x decay x a diurnal cycle peaking ~15:30 local; head / back / half width; plume top
+  0.8-3 km, x2.6 for the rare pyroCb). Measured: ~84 burning worldwide on 2036-11-22, ~283 on 2036-08-12. The sim caches
+  the fires born round the eye (`firesBorn`, per day bin; rescan on a move > 15% of the reach) and each frame
+  (`weatherFillWildfires`, after the tornadoes in the dust fill) draws, nearest first, within 600 km (to 3000 km from
+  orbit), at most 320 Gaussians: **smoke** = a polyline column from 300 m behind the head (rises steeply over
+  ~1-1.5 km downwind, then flattens at its top: width 0.12 x the distance, vertical thickness capped) + one flat,
+  MASS-CONSERVING **pall** per fire (the plume's flux x its age, ~4-day removal, spread 20-350 km: ~0.01-0.05 from above
+  each, so a fire season's palls overlap into regional haze); a contiguous range of the dust list, its bounds in the
+  list header's word 1 (bits 8-17 first, 18-27 count; bits 0-7 the engine lights' count: every reader masks `& 255`).
+  `cloud_march.comp` composites smoke SPECTRALLY (`kSmokeSpec`, Angstrom ~1.6: blue extinguished most, no sky light
+  given back), reddens the sunlight inside it by its own path to the Sun and the light leaving it by half its view-path
+  depth (thick cores orange-brown, thin edges grey-blue), and gives it per-Gaussian billows at any height (the shared
+  ~700 m low field aliased from orbit). `sat_sky.frag` (`smokeSunTransmit`) dims and reddens the Sun's light on land and
+  sea under the smoke (the first 96 smoke Gaussians). So the Sun seen through a plume, and the land under it, go
+  yellow-orange. **Fire light**: the head and flanks as flickering point sprites in kFireBuf (~-9 mag at 1 km per 50 m of
+  full head, spacing grows with range), and the nearest 6 within 200 km as engine lights at night (40 suns m^2 x activity
+  x front km): they light their own smoke, the cloud and the ground. Settings `clouds_v2.wildfires` / `wildfire_smoke`
+  / `wildfire_light` (Weather window > Controls > WILDFIRES). Harness `fires [world=1]`, `fires go [k] [view=side|under|
+  orbit] [local_h=] [dist_km=] [alt=] [pyro=1]` (the k-th largest fire burning at local_h; under = on the ground with the
+  plume between the eye and the Sun). Cost: ~+1 ms GPU with a big fire near, cloud_march at 128 registers. Not yet: burn
+  scars on the ground, pyrocumulus caps, smoke in the far cloud layer / weather bake, a Fires list in the Weather window,
+  fire ambience.
 - **The Weather window (2026-10-23, `SatelliteSimWeatherWindow.cpp`, `shaders/weather_radar.comp`; the weather-cloud
   button beside Missions on the right HUD panel (`TimeWeatherBtn`, `pixel--weather.png` from `tools/make_icons.py`), key N
   `KB_WEATHER`, window id 12, `wxChrome`; harness `ui open weather [tab=radar|storms|controls]`, `weather ...`).** Missions-

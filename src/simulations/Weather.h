@@ -223,7 +223,8 @@ public:
     // eyewall and inner rainbands) and their central dense overcast (a shield with an eye) APPENDED to the lists.
     void cyclonesAt(double t, std::vector<CycloneState> &out);
     void cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std::vector<Tower> &out) const;
-    void cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out) const;
+    void cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out,
+                          float armCirrus = 1.0f) const;   // armCirrus: x the arms' cirrus (0 none)
     // Every cyclone of a basin's season (built if needed), in genesis order; and one by id (cached seasons only).
     void cycloneSeason(int basin, int year, std::vector<const Cyclone *> &out);
     const Cyclone *findCyclone(uint64_t id) const;

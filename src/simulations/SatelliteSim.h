@@ -18,6 +18,7 @@
 #include "SpaceWeather.h"  // aurora activity over sim time + the oval (2026-10-03)
 #include "Kessler.h"       // Kessler syndrome: breakups, the debris pool, the cascade (2026-10-16)
 #include "Weather.h"       // weather events: storm objects (2026-10-22, .plans/WEATHER_EVENTS_PLAN.md)
+#include "Wildfire.h"   // (and Biome.h)         // the land-cover map for the weather hazards (2026-10-23)
 #include "StormClimatology.h"
 #include "SegVec.h"        // kEvents: a segmented vector (no reallocation hitches, 2026-10-21)
 #include "SatBench.h"      // shared sample schema + bulk export (benchmarking M10)
@@ -4813,6 +4814,28 @@ private:
     float stormCloudField = 1.0f;                // clouds_v2.storm_field: each storm's own cloud in the weather cube
                                                  // (cloud_v2_weather.comp stormStamp; 0 = the map alone)
     float stormMoat = 1.0f;                      // clouds_v2.storm_moat: the clear moat round a storm (x the field)
+    float stormArmCirrus = 1.0f;                 // clouds_v2.storm_arm_cirrus: the cirrus along a cyclone's arms (x, 0 = none)
+    // Wildfires (2026-10-23, Wildfire.h, SatelliteSimWildfire.cpp): hashed on the biome map's fuel x the season's
+    // dryness; smoke as plume Gaussians (a contiguous range of the dust list, spectral: smoke.glsl), the front as point
+    // sprites (kFireBuf) and its light as engine lights.
+    float wildfireRate = 1.0f;     // clouds_v2.wildfires: x the calibrated fire rate (0 = none)
+    float wildfireSmoke = 1.0f;    // clouds_v2.wildfire_smoke: x the smoke's optical depth
+    float wildfireLight = 1.0f;    // clouds_v2.wildfire_light: x the fire front's light (points and the glow)
+    std::vector<wx::Fire> fireCache;           // born in [fireCacheB0, fireCacheB1] round (fireCacheLat, fireCacheLon)
+    double fireCacheLat = 1e9, fireCacheLon = 1e9, fireCacheR = 0.0;
+    int64_t fireCacheB0 = 0, fireCacheB1 = -1;
+    float fireCacheRate = -1.0f;
+    struct FireNow
+    {
+        wx::Fire f;
+        wx::FireState s;
+        double rangeKm = 0.0;
+        int gauss = 0, points = 0;
+    };
+    std::vector<FireNow> firesNow;             // alive and in reach this frame, nearest first
+    uint32_t smokeHdrBits = 0;                 // the dust list header word 1's smoke range (smoke.glsl), this frame's
+    void weatherFillWildfires(GpuDustCloud *out, uint32_t &n);
+    nlohmann::json wildfiresJson(bool world);
     double stormPrevUploadT = -1e300;            // the previous upload's sim time (a jump re-bakes the weather cube)
     double stormLastFrameT = -1e300;             // last frame's sim time, and how many frames in a row moved > 2 h:
     int    stormFastFrames = 0;                  // past one, the storms are hidden (time warp of ~1 week/s and up)
@@ -5276,6 +5299,9 @@ private:
     // desert / ice drivers), classified from the same colours the ground is drawn with.
     std::vector<uint8_t> earthDayCpu;
     int earthDayCpuW = 0, earthDayCpuH = 0;
+    // The land-cover map for the weather hazards (Biome.h: wildfires' fuel, haboobs' dust), built at load from the
+    // day map, the elevation and the ocean mask.
+    wx::BiomeMap biomeMap;
     // Box-filtered 1024x512 byte copy of the CLOUD MAP (~39 km/px), the 2D coverage the clouds are
     // drawn from: the ambience's `cloud` driver, i.e. how cloudy the sky is over the listener. The
     // ground wind bed follows it, so it is windy in some places and a light breeze in others — the

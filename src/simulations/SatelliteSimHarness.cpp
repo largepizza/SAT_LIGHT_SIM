@@ -4133,6 +4133,157 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     // ── weather: the Weather window (SatelliteSimWeatherWindow.cpp) ──
     // weather [state] | radar [range=50|150|400] [clouds=0|1] [labels=0|1] [loop=0|1] | go <k> [list=near|world] |
     // watch <k> [list=near|world] | tab radar|storms|controls
+    // `fires [world=1]`: the wildfires in reach (and the worldwide count); `fires go [k] [view=side|under|orbit]
+    // [local_h=16] [dist_km=] [alt=] [pyro=1]`: the k-th largest fire burning worldwide (by size), the clock moved to
+    // local_h that day (if it burns then), the observer beside its column (side), under its plume looking at the Sun
+    // (under) or above it (orbit, alt km).
+    if (n == "fires")
+    {
+        const std::string sub = lower(pos(0));
+        if (sub == "go")
+        {
+            const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            std::vector<wx::Fire> all;
+            wx::firesWorld(tNow, biomeMap, wildfireRate, all);
+            if (c.num("pyro", 0.0) > 0.0)
+                all.erase(std::remove_if(all.begin(), all.end(), [](const wx::Fire &f) { return f.pyro < 0.5f; }), all.end());
+            if (all.empty()) fail("fires go: none burning");
+            const std::string view = c.has("view") ? lower(c.str("view")) : std::string("side");
+            // The clock: the moment at local_h (local solar time) nearest now while the fire burns (>= 3 h old). The
+            // k-th largest of the fires that burn at such a moment.
+            const double lh = c.num("local_h", view == "under" ? 17.0 : 16.0);
+            auto momentOf = [&](const wx::Fire &g) {
+                double best = -1.0, bestD = 1e300;
+                const double day0 = std::floor((tNow / 3600.0 + 12.0 + g.lonDeg / 15.0) / 24.0) * 24.0;
+                for (int dd = -32; dd <= 32; ++dd)
+                {
+                    const double tT = (day0 + 24.0 * dd + lh - 12.0 - g.lonDeg / 15.0) * 3600.0;
+                    if (tT < g.t0 + 3.0 * 3600.0 || tT > g.t0 + g.life - 1800.0) continue;
+                    if (std::fabs(tT - tNow) < bestD) { bestD = std::fabs(tT - tNow); best = tT; }
+                }
+                return best;
+            };
+            std::sort(all.begin(), all.end(), [](const wx::Fire &a, const wx::Fire &b) { return a.size > b.size; });
+            const int want = std::max(0, std::atoi(pos(1).c_str()));
+            int seen = 0;
+            wx::Fire f;
+            double tPick = -1.0;
+            for (const wx::Fire &g : all)
+            {
+                const double m = momentOf(g);
+                if (m < 0.0) continue;
+                if (seen++ == want) { f = g; tPick = m; break; }
+            }
+            if (tPick < 0.0) fail("fires go: no fire burns at that local time");
+            {
+                const double days = std::floor(tPick / 86400.0);
+                simDayJ2000 = (int64_t)days;
+                simSecInDay = tPick - days * 86400.0;
+            }
+            const double tT = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const wx::FireState fs = wx::fireStateAt(f, tT);
+            const double la = glm::radians(f.latDeg), lo = glm::radians(f.lonDeg);
+            const glm::dvec3 G(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la));
+            const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), G)), north = glm::cross(G, east);
+            const glm::dvec2 head = wx::fireEdgeAt(fs, 0.0);
+            const glm::dvec3 Hd = glm::normalize(G + (east * head.x + north * head.y) / 6371000.0);
+            const glm::dvec3 wv = east * std::sin(fs.windAz) + north * std::cos(fs.windAz);
+            const glm::dvec3 cv = glm::cross(G, wv);
+            glm::dvec3 oe;
+            double altM;
+            if (view == "under")
+            {
+                // A point of the plume dist_km downwind at ~0.85 of its top; the eye on the ground on the far side of it
+                // from the Sun, so the Sun is seen through the smoke.
+                const double d = c.num("dist_km", 25.0) * 1000.0;
+                const glm::dvec3 si = sunDirEciAt(tT);
+                const double g = earthRotationAngle(tT);
+                const glm::dvec3 se(si.x * std::cos(g) + si.y * std::sin(g), -si.x * std::sin(g) + si.y * std::cos(g), si.z);
+                const glm::dvec3 Tp = glm::normalize(Hd + wv * (d / 6371000.0));
+                const double sel = std::max(std::asin(std::clamp(glm::dot(se, Tp), -1.0, 1.0)), glm::radians(3.0));
+                glm::dvec3 sh = se - Tp * glm::dot(se, Tp);
+                sh = glm::length(sh) > 1e-9 ? glm::normalize(sh) : wv;
+                const double back = std::min(0.85 * fs.plumeTopM / std::tan(sel), 60000.0);
+                oe = glm::normalize(Tp - sh * (back / 6371000.0));
+                altM = c.num("alt", 30.0);
+            }
+            else if (view == "orbit")
+            {
+                oe = glm::normalize(Hd - cv * (c.num("dist_km", 300.0) * 1000.0 / 6371000.0));
+                altM = c.num("alt", 400.0) * 1000.0;
+            }
+            else
+            {
+                oe = glm::normalize(Hd - cv * (c.num("dist_km", 30.0) * 1000.0 / 6371000.0) - wv * (8000.0 / 6371000.0));
+                altM = c.num("alt", 700.0);
+            }
+            if (followActive) stopFollow();
+            obsDir = glm::vec3(oe);
+            obsLatDeg = (float)glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0)));
+            obsLonDeg = (float)glm::degrees(std::atan2(oe.y, oe.x));
+            obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+            obsHeightOffset = std::max(0.0f, std::max(obsTerrainH, 0.0f) + (float)altM);
+            const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe)), oNorth = glm::cross(oe, oEast);
+            double az, el;
+            if (view == "under")
+            {
+                const glm::dvec3 si = sunDirEciAt(tT);
+                const double g = earthRotationAngle(tT);
+                const glm::dvec3 se(si.x * std::cos(g) + si.y * std::sin(g), -si.x * std::sin(g) + si.y * std::cos(g), si.z);
+                az = glm::degrees(std::atan2(glm::dot(se, oEast), glm::dot(se, oNorth)));
+                el = glm::degrees(std::asin(std::clamp(glm::dot(se, oe), -1.0, 1.0)));
+            }
+            else
+            {
+                const glm::dvec3 to3 = Hd - oe * glm::dot(Hd, oe);
+                az = glm::degrees(std::atan2(glm::dot(to3, oEast), glm::dot(to3, oNorth)));
+                const double dist = std::acos(std::clamp(glm::dot(Hd, oe), -1.0, 1.0)) * 6371000.0;
+                el = view == "orbit" ? -glm::degrees(std::atan2(altM, dist)) : glm::degrees(std::atan2(0.4 * fs.plumeTopM - altM, dist));
+            }
+            aimCameraAzEl((float)az, (float)c.num("el", el));
+            trailClearPending = true;
+            cv2HistoryValid = false;
+            skyTaaHistValid = false;
+            fireCacheRate = -1.0f;   // rescan
+            r["fire"] = {{"id", std::to_string(f.id)}, {"lat", f.latDeg}, {"lon", f.lonDeg}, {"size", f.size},
+                         {"pyro", f.pyro > 0.5f}, {"biome", wx::biomeName(biomeMap.at(f.latDeg, f.lonDeg))},
+                         {"activity", fs.activity}, {"head_km", fs.headM / 1000.0}, {"plume_top_m", fs.plumeTopM},
+                         {"age_h", fs.ageS / 3600.0}, {"life_d", f.life / 86400.0}};
+            r["message"] = std::string("fire in ") + wx::biomeName(biomeMap.at(f.latDeg, f.lonDeg)) + ", size " +
+                           std::to_string(f.size).substr(0, 4) + ", view " + view;
+            return Status::Done;
+        }
+        r = wildfiresJson(c.num("world", 0.0) > 0.0);
+        r["message"] = std::to_string(firesNow.size()) + " fires in reach" +
+                       (r.contains("world_count") ? ", " + std::to_string(r["world_count"].get<size_t>()) + " worldwide" : std::string());
+        return Status::Done;
+    }
+    // `biome [<lat> <lon>] [export=<png>]`: the land-cover map (Biome.h) at a point (class, fuel, dust, the season's
+    // dryness now), or at the observer; export= writes the class map as a colour PNG (in the run folder).
+    if (n == "biome")
+    {
+        if (!biomeMap.ready()) fail("biome: no map");
+        if (c.has("export"))
+        {
+            const std::string path = harnessRunner_ ? harnessRunner_->capturePath(c.str("export"), ".png") : c.str("export") + ".png";
+            if (!biomeMap.exportPng(path)) fail("biome: could not write " + path);
+            r["path"] = path;
+        }
+        const double lat = pos(0).empty() ? (double)obsLatDeg : std::atof(pos(0).c_str());
+        const double lon = pos(1).empty() ? (double)obsLonDeg : std::atof(pos(1).c_str());
+        const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const double doy = std::fmod(t / 86400.0 + 0.5, 365.2422);
+        const wx::Biome b = biomeMap.at(lat, lon);
+        r["lat_deg"] = lat;
+        r["lon_deg"] = lon;
+        r["biome"] = wx::biomeName(b);
+        r["fuel"] = biomeMap.fuelAt(lat, lon);
+        r["dust"] = biomeMap.dustAt(lat, lon);
+        r["dryness_now"] = wx::BiomeMap::seasonalDryness(lat, doy);
+        r["message"] = std::string(wx::biomeName(b)) + ", fuel " + std::to_string(biomeMap.fuelAt(lat, lon)).substr(0, 4) +
+                       ", dust " + std::to_string(biomeMap.dustAt(lat, lon)).substr(0, 4);
+        return Status::Done;
+    }
     if (n == "weather")
     {
         const std::string sub = lower(pos(0));

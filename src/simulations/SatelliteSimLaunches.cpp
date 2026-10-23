@@ -11860,7 +11860,7 @@ void SatelliteSim::engineLightsFlush()
         tail[i] = engineLights_[i];
         tail[i].cone = glm::vec4(0.0f);
     }
-    static_cast<uint32_t *>(kDustMapped)[1] = n;
+    static_cast<uint32_t *>(kDustMapped)[1] = n | smokeHdrBits;   // bits 8-27: the wildfire smoke's range (smoke.glsl)
     engineLightCount = n;
     engineLights_.clear();
 }

@@ -8819,6 +8819,10 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormLifeScale = settingClamp(c.value("storm_life", stormLifeScale), 0.1f, 5.0f);
         stormCloudField = settingClamp(c.value("storm_field", stormCloudField), 0.0f, 3.0f);
         stormMoat = settingClamp(c.value("storm_moat", stormMoat), 0.0f, 3.0f);
+        stormArmCirrus = settingClamp(c.value("storm_arm_cirrus", stormArmCirrus), 0.0f, 3.0f);
+        wildfireRate = settingClamp(c.value("wildfires", wildfireRate), 0.0f, 10.0f);
+        wildfireSmoke = settingClamp(c.value("wildfire_smoke", wildfireSmoke), 0.0f, 5.0f);
+        wildfireLight = settingClamp(c.value("wildfire_light", wildfireLight), 0.0f, 5.0f);
         stormComplexes = settingClamp(c.value("storm_complexes", stormComplexes), 0.0f, 10.0f);
         stormCyclones = settingClamp(c.value("storm_cyclones", stormCyclones), 0.0f, 10.0f);
         cv2EvoGrowth = c.value("evo_growth", cv2EvoGrowth);
@@ -8947,6 +8951,25 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2RainStormWind = c.value("storm_outflow_mps", cv2RainStormWind);
         cv2RainGusts = c.value("wind_turbulence", cv2RainGusts);
         cv2SnowWind = c.value("snow_drift", cv2SnowWind);   // "snow_wind" (x the old, stronger wind) is not read
+        // A settings file from before the rework (old keys, no new ones): a value the player had CHANGED from the old
+        // default carries the same ratio onto the new default (the old values were tuned against the lumped drift, so a
+        // plain copy would be wrong: the old defaults were 0.42 / 9.5 m/s / 1.38 / 1.2). The fall speed is not carried:
+        // it was x10 to fight the floatiness the physical drop speed fixes. Saving writes only the new keys.
+        if (!isPatch)
+        {
+            auto carry = [&](const char *oldKey, float oldDef, const char *newKey, float &v, float lo, float hi) {
+                if (!c.contains(oldKey) || c.contains(newKey) || !c[oldKey].is_number()) return;
+                const float o = c[oldKey].get<float>();
+                if (std::abs(o - oldDef) <= 1e-3f * std::max(1.0f, std::abs(oldDef))) return;   // untouched: the new default
+                v = std::clamp(v * o / oldDef, lo, hi);
+                Log::line(std::string("settings: carried clouds_v2.") + oldKey + " " + std::to_string(o) + " -> " + newKey + " " +
+                          std::to_string(v));
+            };
+            carry("rain_wind_gain", 0.42f, "surface_wind_gain", cv2RainWindGain, 0.0f, 4.0f);
+            carry("rain_storm_wind_mps", 9.5f, "storm_outflow_mps", cv2RainStormWind, 0.0f, 40.0f);
+            carry("rain_gusts", 1.38f, "wind_turbulence", cv2RainGusts, 0.0f, 3.0f);
+            carry("snow_wind", 1.2f, "snow_drift", cv2SnowWind, 0.0f, 4.0f);
+        }
         cv2ExposureEV = c.value("exposure_ev", cv2ExposureEV);
         cv2HighlightRolloff = c.value("highlight_rolloff", cv2HighlightRolloff);
         cv2WhiteBalance = c.value("white_balance", cv2WhiteBalance);
@@ -9436,6 +9459,10 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_life", stormLifeScale},
         {"storm_field", stormCloudField},
         {"storm_moat", stormMoat},
+        {"storm_arm_cirrus", stormArmCirrus},
+        {"wildfires", wildfireRate},
+        {"wildfire_smoke", wildfireSmoke},
+        {"wildfire_light", wildfireLight},
         {"storm_complexes", stormComplexes},
         {"storm_cyclones", stormCyclones},
         {"evo_growth", cv2EvoGrowth},

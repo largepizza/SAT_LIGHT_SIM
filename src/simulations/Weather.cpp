@@ -1593,7 +1593,7 @@ void Catalog::cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std
     }
 }
 
-void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out) const {
+void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out, float armCirrus) const {
     (void)t;
     for (const CycloneState &S : cs) {
         if (S.cdoR <= 0.0f) continue;
@@ -1624,7 +1624,7 @@ void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, st
         // CycloneState::arms / tanPitch / bandRot) as a chain of 4 thin capsules from inside the CDO's edge out to the
         // outer bands, ~a quarter of the spacing between arms wide (frayed out to 1.6 of it by the shader), aged and thin,
         // weaker outward: ice streaming off the bands' tops, feathering their outlines.
-        const double ds = smooth01(25.0, 45.0, (double)S.vmax);
+        const double ds = smooth01(25.0, 45.0, (double)S.vmax) * std::clamp((double)armCirrus, 0.0, 3.0);
         if (ds > 0.0 && S.cdoR > 0.0f)
         {
             glm::dvec3 e, n;

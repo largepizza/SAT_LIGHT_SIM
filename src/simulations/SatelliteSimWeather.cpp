@@ -514,7 +514,7 @@ void SatelliteSim::updateStorms()
         sp.headRadiusM = (float)(Rb * flare * 1.15);
         sp.headDriftM = (float)drift;
         stormCatalog->shieldsAt(t, stormsNow, sp, stormShields);
-        stormCatalog->cycloneShieldsAt(t, stormCyclonesNow, stormShields);   // their central dense overcast
+        stormCatalog->cycloneShieldsAt(t, stormCyclonesNow, stormShields, stormArmCirrus);   // their central dense overcast
         std::sort(stormShields.begin(), stormShields.end(), [](const wx::Shield &a, const wx::Shield &b) {
             return a.strength != b.strength ? a.strength > b.strength : a.stormId < b.stormId;
         });
