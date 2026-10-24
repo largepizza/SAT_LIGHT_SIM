@@ -7663,8 +7663,11 @@ same shader reloaded twice).**
 - **The density clipmap checks and bakes only the levels the march reads** (b9a6e71): cdc_max_level 6 (default and the
   user's), and levels 6-7 were never read (cv2_cdc.glsl returns unknown past it) but checked and baked every frame — they
   never stay fresh (at max level 8: 65536 cells baked and ~1M refused EVERY frame with time paused; not investigated why,
-  since nothing reads them at 6). The 'layer_map' pass 0.55-1.31 ms -> 0.07-0.12 ms at every view and preset (it does not
-  scale with the render scale: Medium's cloud bucket 13-28% lighter).
+  since nothing reads them at 6). Settled, the gain is small (~0.03 ms of the 'layer_map' pass); it is the REFILL that
+  shrinks: every `shaders reload`, `report load`, time jump or field change bumps the clipmap's epoch and all cells re-bake
+  at 65536 a frame for ~75-100 frames (that pass 0.55-1.3 ms meanwhile), and with levels 6-7 out a refill is ~25% shorter
+  and cheaper. (The first measurement compared refill frames against settled ones and claimed 0.55-1.3 -> 0.1 ms
+  everywhere: wrong. Measure the clipmap only after ~150 frames of no reload / load.)
 - **No terrain sun-shadow march under the clouds' shadow** (cloudShadowT < 1e-3: every use is x cloudShadowT):
   the 1.7-km tornado view sky 12.85 -> 10.81 ms. The terrain shadow march is ~1.9-2.2 ms of a clear ground view
   (`terrain_shadow_strength` 0 A/B); cutting it to 10 steps / a 14% floor was -0.5..-0.75 ms with visible differences
@@ -7687,7 +7690,19 @@ same shader reloaded twice).**
   cloud passes'; `sky_stats` gives the TAA pipeline's register count and binary size (168 registers, ~805 KB).
 - Tools (untracked): the scratch generators that built these batches (variant SPVs by text substitution under
   `build/Release/shaders/v/`, interleaved batches over mx cells and report views, per-pass tables) are described here
-  only; `tools/harness/matrix_suite.py` and `hitch_check.py` results below.
+  only.
+- **Matrix suite** (`--quick`, 1920x1009, `harness_runs/mx3/run` vs `harness_runs/mx_integ/merged` and `/base`): summed over the 21
+  cells GPU / cloud bucket / sky pass base 508.1 / 243.1 / 210.0 ms, merged 515.4 / 236.9 / 223.8, perf 3 492.7 / 224.5 /
+  213.4 (-22.7 ms, -4.4% vs merged; every cell 0.3-1.6 ms lower). `compare`: alt3km and alt1km walk worst frames
+  64.7 -> 31.2 and 43 -> 25 ms; one flag, alt1km fast's worst frame 30.9 -> 74.1 ms (path mean 27.3 -> 29.1, a single
+  spike in the sequence: the cell rerun alone three times, mean 25.9-26.1 ms, worst 29.2-29.4).
+- **hitch_check** (`harness_runs/hitch_perf3`, alone on the GPU): fails at the fast rates as the earlier runs did (10-23:
+  A 1w, D 1d / 1w; 10-24 03:00: A 1w, D 1d / 1w / 1yr), now A 1h / 1d / 1w (p99 54.6 / 57.6 / 57.3, limit 50), C 1d / 1w
+  (53.3 / 54.6) and D 1d / 1w (76.4 / 71.9). The worst frames are `app.wait_fence` 43-54 ms, i.e. the GPU. Not this pass's
+  shaders: at 1 h/s and 1 d/s the merged build's SPVs and these, interleaved 3x in one app, read the same (GPU 37.1 vs 38.8
+  and 34.1 vs 32.3 ms, scene noise +-5 ms while time runs). What it is: at 1 h/s `march_a` is ~18 ms against 5.4 at 1x and
+  at 5 min/s (the clipmap is off past 4x in both, so not that alone); not attributed. D's 1d worst frame also carries
+  `kesslerEnsureCapacity` 11.8 ms (a pool growth on the main thread).
 
 ---
 
