@@ -5425,7 +5425,10 @@ void main() {
         // DEM + detail. Only where the Sun is up at this point and the face can see it.
         float terrainShadow = 1.0;
 #if !defined(SKY_LITE) && !defined(SKY_ENV)
-        if (tHit > 0.0 && cloud.terrainShadowStrength > 0.0 && dayFrac > 0.0 && sunDot > -0.05) {
+        // (Not where the clouds' shadow already takes the direct sun: every use of terrainShadow below is x cloudShadowT,
+        // so under ~0.1% of it the march changes the pixel by under a thousandth of the sunlit ground's light. Under an
+        // overcast the shadow march was ~2 ms of the sky pass for nothing, 2026-10-24.)
+        if (tHit > 0.0 && cloud.terrainShadowStrength > 0.0 && dayFrac > 0.0 && sunDot > -0.05 && cloudShadowT > 1e-3) {
             float sh = terrainSunShadow(earthElevTex, earthSpecTex, terrainQ, terrainNorm, sunDir, enuX, enuY, enuZ,
                                         tdGeomLodM(tHit, pixAngle), terrainH0 + terrainDet.hC3);
             terrainShadow = mix(1.0, sh, cloud.terrainShadowStrength);
