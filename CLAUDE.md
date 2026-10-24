@@ -7522,7 +7522,10 @@ run-to-run floor (same shader reloaded twice: mean |diff| 0.7 at 12.4 km, 0.6 at
 - Matrix suite (`--quick`, old shaders reloaded into the new build as the baseline: `harness_runs/perf2/mx_base` vs
   `mx_new`): every motion and noise cell identical to the printed precision; `compare` flagged alt3km's GPU (27.4 -> 31.3
   ms) while another agent's app shared the GPU, and the same cell interleaved in one app alone reads 9.9 -> 9.6 ms of
-  cloud march (no regression).
+  cloud march (no regression). `hitch_check.py` fails A 1h / 1d / 1w (p99 51-54 ms) and D 1d / 1w (69-73) with the new
+  shaders and A 1w, D 1d / 1w / 1yr with the OLD ones reloaded into the same build: the default views' GPU frame is now
+  ~35-50 ms on this branch (storms), so the 50-ms p99 limits sit at the noise; the default view at five sim times,
+  interleaved, is 0.5-0.9 ms cheaper with the new shaders (one 4.7-ms outlier did not repeat: 22.5 -> 21.6 on rerun).
 
 ---
 
