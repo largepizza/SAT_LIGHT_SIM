@@ -1777,6 +1777,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         }
     }
     p.anvil3 = glm::vec4(std::clamp(cv2AnvilPuff, 0.0f, 2.0f), std::clamp(cv2AnvilLiftM, 0.0f, 3000.0f), lowTopB[0], lowTopB[1]);
+    p.perf = glm::vec4(std::clamp(std::round(cv2NearCirrusStride), 1.0f, 4.0f), 12.0f, 0.0f, 0.0f);   // "Near cirrus stride"
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the
     // sparse rotation (default), 1 the sample held at one pixel of each 2x2 block, 2 full rate (above). Modes 1-2 were the

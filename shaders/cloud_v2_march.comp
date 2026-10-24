@@ -788,6 +788,11 @@ void main()
             // 62 N), two-step samples caught its fibres on some frames and missed them on others: crisp
             // flickering specks over the low clouds' edges.
             float stepW = ((f.thin > 0.9 && fp > 60.0) || (f.rain > 0.9 && !fine)) ? rK * stepF : stepF;
+            // "Near cirrus stride" (perf.x, 2026-10-24; 1 = off): with the eye inside the high layer every ray runs through
+            // its soft haze (cv2HighSigma's nearK) in ~60-120 m steps, each a field evaluation and a lit sample: two thirds
+            // of the cloud march under an anvil at 12.4 km (issue 20261023_230322). There a pure thin-ice sample stands for
+            // perf.x steps. Opt-in: a dense cloud starting inside the stride is entered up to ~2 steps late.
+            if (f.thin > 0.9 && !fine && fp < cv2.perf.y) stepW = max(stepW, cv2.perf.x * stepF);
             float Tstep = exp(-f.sigma * stepW);
             float w     = T * (1.0 - Tstep);
             // Its light is added in the batch's second half, below.
