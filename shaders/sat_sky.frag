@@ -2043,20 +2043,16 @@ const float kCloud3DFadeEnd   = 3000000.0;
 // cost anywhere satellites actually orbit — the reported "LEO cloud perf is awful" case sits
 // entirely inside the always-full-3D zone below kCloud3DFadeStart. This band supplies the
 // actual LEO-perf lever: steps ramp from full ground quality down to a floor well before 800 km.
-// The mean of exp(-h / H) over an atmosphere step whose height runs a -> m -> b (its start, middle, end), exact for a
-// height linear over each half (2026-10-23): the N_VIEW loop's densities. A midpoint sample of a 1-3 km scale height
-// over a ~15-km step was off by tens of times and changed with the step count (rings round the zenith).
-float atmHalfAvg(float a, float b, float H)
+// The mean of exp(-h / H) over a stretch of an atmosphere step whose height runs linearly from a to b (2026-10-23): the
+// N_VIEW loop's densities, integrated over each step. A midpoint sample of a 1-3 km scale height over a ~15-km step was
+// off by tens of times and changed with the step count (rings round the zenith). Three scale heights at once (Rayleigh,
+// Mie, the haze aloft) from the exponentials already taken (ea, eb: the loop carries each step's end to the next step's
+// start), dh = b - a: (ea - eb) H / dh, one reciprocal for the three (2026-10-24, perf: three divisions a step before).
+// Below 8 m of height change the trapezoid, within 4e-6 of the exact mean for every H here.
+const vec3 kAtmH = vec3(H_R, H_M, 2500.0);
+vec3 atmHalfAvg3(vec3 ea, vec3 eb, float dh)
 {
-    float ea = exp(-a / H), eb = exp(-b / H), d = (b - a) / H;
-    return abs(d) > 1e-3 ? (ea - eb) / d : 0.5 * (ea + eb);
-}
-float atmStepAvg(float a, float m, float b, float H) { return 0.5 * (atmHalfAvg(a, m, H) + atmHalfAvg(m, b, H)); }
-// The same for three scale heights at once from the exponentials already taken (the loop carries each step's end to the
-// next step's start: two vec3 exps a step).
-vec3 atmHalfAvg3(vec3 ea, vec3 eb, vec3 d)
-{
-    return mix(0.5 * (ea + eb), (ea - eb) / max(abs(d), vec3(1e-3)) * sign(d), step(vec3(1e-3), abs(d)));
+    return abs(dh) > 8.0 ? (ea - eb) * (kAtmH / dh) : 0.5 * (ea + eb);
 }
 const vec3 kAtmInvH = vec3(1.0 / H_R, 1.0 / H_M, 1.0 / 2500.0);   // Rayleigh, Mie, the haze aloft
 
@@ -4149,13 +4145,28 @@ void main() {
     //   - Phase functions pR/pM: angular weighting of how much scatter points toward the camera.
     // (The step's start height and its exponentials, carried from the last step's end: atmStepAvg below.)
     float atmHPrev = max(0.0, length(obsPos + dir * tStart) - R_EARTH);
+#ifdef SKY_SUN_SHADOW
+    // The god rays' geometric weights (below), constant along the ray for each of their two sample counts (8 reads a
+    // step within 30 km, 4 beyond): out of the loop (2026-10-24, perf: four exps a step).
+    vec2 gw8, gq8, gw4, gq4;
+    {
+        vec2 zRM = vec2(dir.z / 7994.0, dir.z / 1500.0);
+        vec2 d8 = zRM * (segLen / 8.0), d4 = zRM * (segLen / 4.0);
+        gw8 = exp(-clamp(d8 * shaftJit, -8.0, 30.0)); gq8 = exp(-clamp(d8, -2.0, 8.0));
+        gw4 = exp(-clamp(d4 * shaftJit, -8.0, 30.0)); gq4 = exp(-clamp(d4, -2.0, 8.0));
+    }
+#endif
     float atmTCl   = -dot(obsPos, dir);   // the ray's closest approach to the Earth's centre
+    // The ray's radius from its closed form r^2 = |o|^2 + t (2 o.d + t) (a step's end height), and the height of its
+    // closest approach (the god rays' "lowest point of the step" test): 2026-10-24, perf.
+    float atmOO    = dot(obsPos, obsPos), atmB2 = -2.0 * atmTCl;
+    float atmHCl   = sqrt(max(atmOO - atmTCl * atmTCl, 0.0)) - R_EARTH;   // its height
     vec3  atmEPrev = exp(-atmHPrev * kAtmInvH);
     for (int i = 0; i < N_VIEW; ++i) {
         vec3  sp  = obsPos + dir * (tStart + (float(i) + 0.5) * segLen);  // midpoint of this atmosphere step
         float len = length(sp);
         if (len < R_EARTH) sp *= R_EARTH / len;  // clamp underground samples to Earth surface
-        float h = max(0.0, length(sp) - R_EARTH);  // altitude above sea level (metres)
+        float h = max(0.0, len - R_EARTH);  // altitude above sea level (metres) (|sp| = max(len, R_EARTH))
         // The step's two ends (2026-10-23, issue 20261023_230542 "Rings in the sky"): the densities are integrated
         // over the step (atmStepAvg: exact for a height linear over each half), not taken at its midpoint. With the
         // default ~15-km steps a midpoint sample of the Mie (1.2 km scale height) and the haze aloft (2.5 km) was off
@@ -4163,7 +4174,8 @@ void main() {
         // stepped (every few degrees away from the zenith) the haze's share jumped — rings round the zenith.
         float tSe0 = tStart + float(i) * segLen;
         float hA   = atmHPrev;
-        float hB   = max(0.0, length(obsPos + dir * (tSe0 + segLen)) - R_EARTH);
+        float tSe1 = tSe0 + segLen;
+        float hB   = max(0.0, sqrt(max(atmOO + tSe1 * (atmB2 + tSe1), 0.0)) - R_EARTH);
         vec3  eA   = atmEPrev;
         vec3  eB   = exp(-hB * kAtmInvH);
         // Linear in height from end to end (a ray's height is nearly linear over a step), except across the ray's lowest
@@ -4171,9 +4183,9 @@ void main() {
         vec3  stepAvg;
         if (atmTCl > tSe0 && atmTCl < tSe0 + segLen) {
             vec3 eM = exp(-h * kAtmInvH);
-            stepAvg = 0.5 * (atmHalfAvg3(eA, eM, (h - hA) * kAtmInvH) + atmHalfAvg3(eM, eB, (hB - h) * kAtmInvH));
+            stepAvg = 0.5 * (atmHalfAvg3(eA, eM, h - hA) + atmHalfAvg3(eM, eB, hB - h));
         } else {
-            stepAvg = atmHalfAvg3(eA, eB, (hB - hA) * kAtmInvH);
+            stepAvg = atmHalfAvg3(eA, eB, hB - hA);
         }
         atmHPrev = hB;
         atmEPrev = eB;
@@ -4238,13 +4250,15 @@ void main() {
         }
 #else
         {
-            vec3  spECEF    = sp.x * enuX + sp.y * enuY + sp.z * enuZ;
-            float spLen     = length(spECEF);
-            vec3  spDirECEF = spECEF / spLen;
+            // The Sun's height at the sample from its ENU direction (the ENU -> ECEF turn is a rotation: the same dot);
+            // the ECEF direction only inside the two blocks that read the maps with it (2026-10-24, perf).
+            vec3  spDirENU  = sp * (1.0 / max(len, R_EARTH));
+            sampleSunDotGeo = dot(spDirENU, sunDir);
             // The city glow is composited x nightFactor (below the loop: 0 once the observer's Sun is ~5.7 deg up),
             // so by day its night-map fetch, asin, atan and exp per step were pure waste (2026-10-23, perf). The
             // gate is uniform (the observer's Sun), the result identical.
             if (cityGlowOn) {
+                vec3  spDirECEF = spDirENU.x * enuX + spDirENU.y * enuY + spDirENU.z * enuZ;
                 float spLat     = asin(clamp(spDirECEF.z, -1.0, 1.0));
                 float spLon     = atan(spDirECEF.y, spDirECEF.x);
                 vec2  spUV      = vec2((spLon + PI) / (2.0*PI), (0.5*PI - spLat) / PI);
@@ -4264,13 +4278,13 @@ void main() {
             // physically correct since the glow originates at that geographic point, not at the
             // observer. Horizontal patchiness from a slow analytic domain warp avoids a flat,
             // featureless ring (a pure function of altitude alone has none).
-            sampleSunDotGeo  = dot(spDirECEF, sunDirECEF);
             float airDayness = clamp((sampleSunDotGeo + 0.15) / 0.3, 0.0, 1.0);
             float airNight   = 1.0 - airDayness;
             // Only near the bands (2026-10-23, perf): outside 62-130 km both profiles are below 1e-6 of their peak
             // (green 96 +- 9 km, sodium 90 +- 6.5 km), and their three noise reads per step were 1.4-2.8 ms of the sky
             // pass in the daytime storm views (every step of every ray took them wherever the Sun is under ~8.6 deg).
             if (airNight > 0.001 && h > 62000.0 && h < 130000.0) {
+                vec3  spDirECEF = spDirENU.x * enuX + spDirENU.y * enuY + spDirENU.z * enuZ;
                 float airPatch = 0.6 + 0.4 * warpPerlin3(spDirECEF * kAirglowNoiseFreq
                                     + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
                 // Coverage patchiness — independent noise samples per band so green and sodium
@@ -4312,8 +4326,10 @@ void main() {
             // The piece's own density per metre over the step's (both integrated as the step's, atmStepAvg).
             float hF  = max(0.0, length(obsPos + dir * (tS0 + 0.5 * lenF)) - R_EARTH);
             float hFe = max(0.0, length(obsPos + dir * (tS0 + lenF)) - R_EARTH);
-            fRK = min(atmStepAvg(hA, hF, hFe, H_R) / max(stepAvg.x, 1e-30), 50.0);
-            fMK = min(atmStepAvg(hA, hF, hFe, H_M) / max(stepAvg.y, 1e-30), 50.0);
+            vec3  eF  = exp(-hF * kAtmInvH), eFe = exp(-hFe * kAtmInvH);
+            vec3  avF = 0.5 * (atmHalfAvg3(eA, eF, hF - hA) + atmHalfAvg3(eF, eFe, hFe - hF));
+            fRK = min(avF.x / max(stepAvg.x, 1e-30), 50.0);
+            fMK = min(avF.y / max(stepAvg.y, 1e-30), 50.0);
             litFF = clamp(1.0 - max(0.0, min(tS0 + lenF, tShB) - max(tS0, tShA)) / lenF, 0.0, 1.0);
         }
         if (litF < 1.0) {
@@ -4374,7 +4390,9 @@ void main() {
         // sample's distance from that line (~3 km: a cloud's size — one cumulus over the Sun must not darken the
         // whole sky), out by ~50 km along the ray and above 8-14 km. Under a storm the haze's forward peak drew a
         // bright Sun-shaped glow where the disc was hidden (user snap 2). 1 in clear sky and from above the shell.
-        {
+        // (A no-op while the god rays own the clouds' shade, sunShK 1, or the eye's Sun is clear, sunCloudT 1: both
+        // uniform, so its exp and sqrt a step are skipped then, 2026-10-24.)
+        if (sunShK < 1.0 && cloud.sunCloudT < 1.0) {
             float tS = tStart + (float(i) + 0.5) * segLen;
             float dPerp = cosA < 0.0 ? tS : tS * sqrt(max(1.0 - cosA * cosA, 0.0));   // review 25: continuous at 90 deg (it doubled there)
             atmTermW8 *= mix(1.0, cloud.sunCloudT, (1.0 - smoothstep(8000.0, 14000.0, h))
@@ -4395,9 +4413,7 @@ void main() {
         // storm views). The lowest point of the step: the ray's closest approach to the Earth's centre, clamped to it.
         bool shAbove = false;
         if (sunShK > 0.0 && sampleSunDotGeo > 0.05) {
-            float tS0g = tStart + float(i) * segLen;
-            float tCl  = clamp(-dot(obsPos, dir), tS0g, tS0g + segLen);
-            float hMin = length(obsPos + dir * tCl) - R_EARTH;
+            float hMin = (atmTCl > tSe0 && atmTCl < tSe0 + segLen) ? atmHCl : min(hA, hB);
             shAbove = hMin > ((cv2.stvH.z > 0.5) ? max(cv2.stvH.y, 9400.0) : 9400.0) + 3000.0;
         }
         if (sunShK > 0.0 && !shAbove) {
@@ -4413,36 +4429,34 @@ void main() {
             // Each sample weighted as the Rayleigh and as the Mie + haze column thin along the step (scale heights ~8 and
             // ~1.5 km), one shadow each (2026-10-24): one 3-km weighting for both, switched off past 30 km, put a step's
             // shadow where its air was not, by a share that changed with the step count (rings round the zenith).
-            float zR = dir.z / 7994.0, zM = dir.z / 1500.0;
             float accR = 0.0, wSR = 0.0, accMie = 0.0, wSM = 0.0;
-            // (geometric weights: two exps a step, not two a sample)
-            float dq = segLen / float(nF);
-            float wR = exp(-clamp(zR * dq * shaftJit, -8.0, 30.0)), qR = exp(-clamp(zR * dq, -2.0, 8.0));
-            float wM = exp(-clamp(zM * dq * shaftJit, -8.0, 30.0)), qM = exp(-clamp(zM * dq, -2.0, 8.0));
-            [[dont_unroll]] for (int k = 0; k < nF; ++k) {
-                float tr = segLen * (float(k) + shaftJit) / float(nF);
+            // (geometric weights, from the ray's constants above)
+            bool  g8 = nF == 8;
+            float wR = g8 ? gw8.x : gw4.x, qR = g8 ? gq8.x : gq4.x;
+            float wM = g8 ? gw8.y : gw4.y, qM = g8 ? gq8.y : gq4.y;
+            // The piece in front of the clouds: its own shadow, 4 reads over it (see fwC above), in the SAME loop (k >= nF):
+            // one inlined copy of the froxel and volume lookups instead of two. The sky pass is a ~800-KB fragment
+            // shader whose speed follows the size of the code a step runs, not only its instructions: this (and the
+            // piece's densities through atmHalfAvg3) took ~14 KB off the binary and ~0.3 ms off the pass (2026-10-24).
+            float accF = 0.0, wF = 0.0;
+            int   nT = nF + (fPart ? 4 : 0);
+            [[dont_unroll]] for (int k = 0; k < nT; ++k) {
+                bool  pc = k >= nF;
+                float tr = pc ? lenF * (float(k - nF) + shaftJit) * 0.25 : segLen * (float(k) + shaftJit) / float(nF);
                 float tk = tA + tr;
                 float Tk = frx ? cv2GodFroxT(uvF, tk, jitF)
                                : cv2StvTFine(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunTFine(dir * tk);
-                accR += wR * Tk; wSR += wR; wR *= qR;
-                accMie += wM * Tk; wSM += wM; wM *= qM;
+                if (pc) {
+                    float wk = exp(-clamp(zK * tr, -8.0, 30.0));
+                    accF += wk * Tk; wF += wk;
+                } else {
+                    accR += wR * Tk; wSR += wR; wR *= qR;
+                    accMie += wM * Tk; wSM += wM; wM *= qM;
+                }
             }
             float shK = sunShK * (1.0 - accR / wSR);
             shKMie = sunShK * (1.0 - accMie / wSM);
-            // The piece in front of the clouds: its own shadow, 4 reads over it (see fwC above).
-            shKF = shK;
-            if (fPart) {
-                float accF = 0.0, wF = 0.0;
-                [[dont_unroll]] for (int k = 0; k < 4; ++k) {
-                    float tr = lenF * (float(k) + shaftJit) * 0.25;
-                    float tk = tA + tr;
-                    float wk = exp(-clamp(zK * tr, -8.0, 30.0));
-                    accF += wk * (frx ? cv2GodFroxT(uvF, tk, jitF)
-                                      : cv2StvTFine(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunTFine(dir * tk));
-                    wF   += wk;
-                }
-                shKF = sunShK * (1.0 - accF / wF);
-            }
+            shKF = fPart ? sunShK * (1.0 - accF / wF) : shK;
             vec3 aC = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
             if (shKF > 0.001) {
                 shRF += aC * densR0 * fRK * litFF * shKF * fwC; shMF += dot(aC, vec3(1.0 / 3.0)) * densM0 * fMK * litFF * shKF * fwC;

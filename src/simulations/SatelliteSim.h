@@ -7209,6 +7209,12 @@ private:
     std::string reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
                                       uint32_t wgX = 0, uint32_t wgY = 0, const std::string &resolveSpv = {},
                                       const std::string &lightningSpv = {}, const std::string &compositeSpv = {});
+    // harness `shaders reload sky=<spv> sky_taa=<spv>`: the full sky pass's fragment SPVs (the plain one, used at 100% with
+    // the sky TAA off and by the low-res prepass, and the SKY_TAA one); "" = the shipped files. Rebuilds the full sky
+    // pipelines from them (the same destroy + create as ensureFullSkyPipelines); stats = the TAA pipeline's (else the plain
+    // one's) driver statistics.
+    std::string skyFragSpvOverride, skyTaaFragSpvOverride;
+    std::string reloadSkyShaders(VulkanContext &ctx, const std::string &skySpv, const std::string &skyTaaSpv, std::string &stats);
     // The march's workgroup size (specialization constants): it bounds the driver's registers per
     // thread (65536 / the group's threads), i.e. the march's occupancy. Harness `shaders reload wg=`.
     uint32_t cv2MarchWg[2] = {16, 16};

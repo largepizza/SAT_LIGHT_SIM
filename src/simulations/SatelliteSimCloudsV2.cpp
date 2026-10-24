@@ -914,6 +914,39 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     return err;
 }
 
+// Harness `shaders reload sky=<spv> sky_taa=<spv>` (2026-10-24): the full sky pass from other fragment SPVs, so sky
+// variants interleave in one live app like the cloud passes'. Same layouts and descriptor sets; the TAA images are
+// recreated (history dropped). Not on a light tier (the full sky pipelines are deferred there).
+std::string SatelliteSim::reloadSkyShaders(VulkanContext &ctx, const std::string &skySpv, const std::string &skyTaaSpv,
+                                           std::string &stats)
+{
+    skyFragSpvOverride = skySpv;
+    skyTaaFragSpvOverride = skyTaaSpv;
+    if (fullSkyDeferred)
+        return "the full sky pipelines are deferred (light tier)";
+    vkDeviceWaitIdle(ctx.device);
+    try
+    {
+        vkDestroyPipeline(ctx.device, skyBgPipeline, nullptr);
+        skyBgPipeline = VK_NULL_HANDLE;
+        vkDestroyPipeline(ctx.device, skyBgMinimalPipeline, nullptr);
+        skyBgMinimalPipeline = VK_NULL_HANDLE;
+        vkDestroyPipeline(ctx.device, skyBgLitePipeline, nullptr);
+        skyBgLitePipeline = VK_NULL_HANDLE;
+        createSkyBgPipeline(ctx);
+        destroySkyLowResResources(ctx.device);
+        createSkyLowResResources(ctx);
+        destroySkyTaaResources(ctx.device);
+        createSkyTaaResources(ctx);
+    }
+    catch (const std::exception &e)
+    {
+        return std::string(e.what());
+    }
+    stats = pipelineStatsLine(ctx, skyTaaPipeline ? skyTaaPipeline : skyBgPipeline);
+    return "";
+}
+
 void SatelliteSim::destroyCloudsV2(VkDevice device)
 {
     destroyCloudsV2Targets(device);

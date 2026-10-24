@@ -12984,7 +12984,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
 {
     VkShaderModule vert = ctx.loadShader("shaders/sat_sky.vert.spv");
-    VkShaderModule frag = ctx.loadShader("shaders/sat_sky.frag.spv");
+    VkShaderModule frag = ctx.loadShader(skyFragSpvOverride.empty() ? "shaders/sat_sky.frag.spv" : skyFragSpvOverride.c_str());
 
     VkPipelineShaderStageCreateInfo stages[2] = {};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
@@ -13054,6 +13054,7 @@ void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
     ci.layout = skyBgPipeLayout;
     ci.renderPass = ctx.renderPass;
     ci.subpass = 0;
+    if (ctx.pipelineStatsSupported && ctx.capturePipelineStats) ci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
 
     // On a light tier (startup graphics chooser) the FULL sky is deferred: ensureFullSkyPipelines.
     if (!fullSkyDeferred &&
@@ -13147,7 +13148,7 @@ void SatelliteSim::createSkyLowResResources(VulkanContext &ctx)
 
     // ── Pipeline: same shaders/layout as skyBgPipeline, low-res viewport, no depth ────────────
     VkShaderModule vert = ctx.loadShader("shaders/sat_sky.vert.spv");
-    VkShaderModule frag = ctx.loadShader("shaders/sat_sky.frag.spv");
+    VkShaderModule frag = ctx.loadShader(skyFragSpvOverride.empty() ? "shaders/sat_sky.frag.spv" : skyFragSpvOverride.c_str());
     VkPipelineShaderStageCreateInfo stages[2] = {};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
                  VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
@@ -13377,7 +13378,7 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
     if (!fullSkyDeferred)
     {
         VkShaderModule vert = ctx.loadShader("shaders/sat_sky.vert.spv");
-        VkShaderModule frag = ctx.loadShader("shaders/sat_sky_taa.frag.spv");
+        VkShaderModule frag = ctx.loadShader(skyTaaFragSpvOverride.empty() ? "shaders/sat_sky_taa.frag.spv" : skyTaaFragSpvOverride.c_str());
         VkPipelineShaderStageCreateInfo stages[2] = {};
         stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
         stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main", nullptr};
@@ -13400,6 +13401,7 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
         ci.pColorBlendState = &cb;
         ci.layout = skyBgPipeLayout;
         ci.renderPass = skyTaaRenderPass;
+        if (ctx.pipelineStatsSupported && ctx.capturePipelineStats) ci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
         // Dynamic: the render scale picks the sub-rectangle each frame (temporal upscaling).
         const VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
         VkPipelineDynamicStateCreateInfo dsi{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
