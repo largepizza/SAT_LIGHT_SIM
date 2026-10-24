@@ -175,7 +175,7 @@ void SatelliteSim::weatherRefreshCyclones(bool force)
 
 const wx::Cyclone *SatelliteSim::weatherCycloneById(uint64_t id) const
 {
-    for (const auto *lst : {&wxCycActive, &wxCycSeason, &wxCycNext})
+    for (const auto *lst : {&wxCycActive, &wxCycSeason, &wxCycNext, &wxCycFeatured})
         for (const wx::Cyclone &c : *lst)
             if (c.id == id)
                 return &c;

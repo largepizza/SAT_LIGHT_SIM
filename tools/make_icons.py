@@ -267,7 +267,96 @@ def build_weather():
     return [cloud] + bolt + rain
 
 
+def build_storm_tornado():
+    """The Weather window's tornado events: a funnel of stacked bars narrowing to the ground, leaning (2026-10-23)."""
+    bars = [(6.0, 40.0, 0.0), (13.0, 31.0, 2.5), (20.0, 23.0, 4.5), (27.0, 16.0, 5.5), (34.0, 10.0, 4.5), (41.0, 6.0, 2.0)]
+    return [rect(24.0 + off - w / 2.0, y, 24.0 + off + w / 2.0, y + 4.5) for (y, w, off) in bars]
+
+
+def build_storm_hurricane():
+    """Hurricanes / typhoons: the weather map's tropical-cyclone symbol, a ring with two spiral arms (2026-10-23)."""
+    cx, cy = 24.0, 24.0
+    shapes = [ring(cx, cy, 7.0, 3.6)]
+    for a0 in (math.radians(-90.0), math.radians(90.0)):
+        pts = []
+        for i in range(13):
+            th = i / 12.0 * math.pi * 0.95
+            r = 8.0 + 13.0 * th / math.pi
+            pts.append((cx + r * math.cos(a0 + th), cy + r * math.sin(a0 + th), 4.0 - 2.2 * i / 12.0))
+        for (p, q) in zip(pts, pts[1:]):
+            shapes.append(seg(p[0], p[1], q[0], q[1], p[2]))
+    return shapes
+
+
+def build_storm_haboob():
+    """Haboobs: a billowing dust wall rolling in, with wind streaks ahead of it (2026-10-23)."""
+    puffs = [disc(13.0, 28.0, 10.0), disc(22.0, 17.0, 10.0), disc(30.0, 27.0, 9.0), disc(12.0, 13.0, 7.0), disc(31.0, 12.0, 6.0)]
+    base = rect(3.0, 28.0, 39.0, 42.0)
+    wall = lambda px, py: (any(d(px, py) for d in puffs) or base(px, py)) and py <= 42.0
+    return [wall, seg(38.0, 33.0, 46.0, 33.0, 1.8), seg(41.0, 21.0, 46.0, 21.0, 1.8), seg(40.0, 40.0, 46.0, 40.0, 1.8)]
+
+
+def build_storm_supercell():
+    """Supercells: an anvil cloud — a flat spreading top over a tower and a wide base — with a bolt under it (2026-10-23)."""
+    anvil = tri((3.0, 5.0), (45.0, 5.0), (24.0, 22.0))
+    lid = rect(3.0, 5.0, 45.0, 10.0)
+    tower = rect(17.0, 10.0, 31.0, 31.0)
+    base = rect(9.0, 26.0, 39.0, 33.0)
+    bolt = [tri((24.0, 33.0), (31.0, 33.0), (21.0, 41.0)), tri((21.0, 39.0), (29.0, 39.0), (22.0, 47.0)), rect(21.0, 38.0, 27.0, 41.0)]
+    return [anvil, lid, tower, base] + bolt
+
+
+def build_storm_squall():
+    """Squall lines / MCSs: a long shelf cloud, its sloping leading edge to the right, rain shafts slanting under it (2026-10-23)."""
+    shelf = tri((2.0, 12.0), (46.0, 12.0), (2.0, 26.0))
+    top = rect(2.0, 6.0, 40.0, 13.0)
+    rain = [seg(8.0 + 10.0 * k, 28.0, 4.0 + 10.0 * k, 43.0, 2.4) for k in range(3)]
+    return [shelf, top] + rain
+
+
+def build_storm_waterspout():
+    """Waterspouts: a thin funnel from a cloud base down to a spray ring on the waves (2026-10-23)."""
+    cloud = rect(3.0, 4.0, 45.0, 11.0)
+    funnel = tri((19.0, 11.0), (31.0, 11.0), (24.0, 37.0))
+    neck = rect(22.0, 30.0, 26.0, 38.0)
+    spray = tri((16.0, 41.0), (32.0, 41.0), (24.0, 35.0))
+    waves = [parabola(12.0, 46.0, 9.0, -3.0, 1.6), parabola(36.0, 46.0, 9.0, -3.0, 1.6)]
+    return [cloud, funnel, neck, spray] + waves
+
+
+def build_storm_fire():
+    """Wildfires: a flame (a teardrop with its tongue to one side) with an inner flame punched out (2026-10-23)."""
+    def drop(cx, cy, r, tip_y, lean):
+        def hit(px, py):
+            if math.hypot(px - cx, py - cy) <= r:
+                return True
+            if py > cy or py < tip_y:
+                return False
+            t = (cy - py) / (cy - tip_y)
+            x0 = cx + lean * t * t
+            return abs(px - x0) <= r * (1.0 - t) ** 1.2
+        return hit
+    outer = drop(24.0, 32.0, 13.0, 2.0, 6.0)
+    inner = drop(24.0, 37.0, 4.5, 26.0, -2.0)
+    return [cut(outer, inner)]
+
+
+def build_storm_cell():
+    """Ordinary storms (air-mass cells, multicells): a cumulus cloud — three puffs on a flat base (2026-10-23)."""
+    puffs = [disc(15.0, 27.0, 9.0), disc(26.0, 19.0, 12.0), disc(36.0, 28.0, 8.5)]
+    base = rect(6.0, 27.0, 44.0, 37.0)
+    return [lambda px, py: (any(d(px, py) for d in puffs) or base(px, py)) and py <= 37.0]
+
+
 ICONS = {
+    "storm-tornado": build_storm_tornado,
+    "storm-hurricane": build_storm_hurricane,
+    "storm-haboob": build_storm_haboob,
+    "storm-supercell": build_storm_supercell,
+    "storm-squall": build_storm_squall,
+    "storm-waterspout": build_storm_waterspout,
+    "storm-fire": build_storm_fire,
+    "storm-cell": build_storm_cell,
     "weather": build_weather,
     "missions": build_missions,
     "report": build_report,
@@ -284,7 +373,8 @@ ICONS = {
 # Drawn in the HUD's "pixel" style: solid silhouettes with hard edges on a 24-px grid, doubled to 48 —
 # the look of the gear, the camera, play / pause, the crosshair and the eye. Soft-edged thin strokes
 # beside them read as another icon family (the user, 2026-10-03).
-PIXEL_STYLE = {"weather", "missions", "report", "bookmark", "film", "photo", "maximize", "observer", "spin", "studio"}
+PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
+               "storm-waterspout", "storm-fire", "storm-cell", "weather", "missions", "report", "bookmark", "film", "photo", "maximize", "observer", "spin", "studio"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

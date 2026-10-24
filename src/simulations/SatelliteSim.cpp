@@ -8081,6 +8081,8 @@ void SatelliteSim::cleanup(VkDevice device)
     bookmarksDestroy(device); // the bookmark thumbnails' atlas (SatelliteSimBookmarks.cpp)
     kesslerTrackerDestroy(device); // the Kessler tracker's globe image
     weatherRadarDestroy(device);   // the Weather window's radar (SatelliteSimWeatherWindow.cpp)
+    if (wxFireJob.valid())          // (its worker reads biomeMap, which is destroyed before the future)
+        wxFireJob.wait();
     reportsDestroy(device);   // the issue reports window's atlas (SatelliteSimReportsWindow.cpp)
     vkDestroyPipeline(device, drawPipeline, nullptr);
     vkDestroyPipelineLayout(device, compPipeLayout, nullptr);

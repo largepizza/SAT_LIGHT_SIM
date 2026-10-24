@@ -59,6 +59,7 @@ bool settingsTabIsAdvanced(int i);   // behind Display > "Show advanced settings
 #include <deque>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 #include <cstdint>
 #include <cstddef> // offsetof — GpuSatListHeader's layout asserts
 #include <cmath>
@@ -3440,6 +3441,7 @@ private:
     // Copies (the catalog's seasons can be rebuilt under a pointer): the active ones, the selected basin's season (this
     // year and the next, within ~200 days of now), the next genesis in every basin. Rebuilt every 2 s or after a jump.
     std::vector<wx::Cyclone> wxCycActive, wxCycSeason, wxCycNext;
+    std::vector<wx::Cyclone> wxCycFeatured;   // the Storms tab's featured hurricane slot's copies (its Go to)
     int wxCycBasin = -1;                 // the season list's basin (-1: the strongest active one's, else North Atlantic)
     uint64_t wxSelCyclone = 0;           // the cyclone shown with its milestones (and drawn highlighted)
     bool wxCycZoom = true;               // the map: the selected cyclone's region (true) or the tropics
@@ -4811,6 +4813,58 @@ private:
     };
     std::vector<TornadoNow> tornadoesNow;   // drawn this frame
     bool tornadoOf(const wx::Storm &S, double t, TornadoNow &out) const;   // its tornado (if any) and where at t
+
+    // ── The Weather window's FEATURED events (2026-10-23, SatelliteSimWeatherFeatured.cpp) ─────────────────────
+    // Reserved slots, always in the same order and the same size (the user: "anytime a new storm appears the window's
+    // extents change"; "we should always have a tornado, haboob ready to go to"; cool events over storms near you): the
+    // next tornado, the strongest hurricane / typhoon, the next haboob, the strongest supercell, the strongest squall
+    // line / MCS, the next waterspout, the biggest wildfire. Tornadoes, waterspouts and haboobs are searched FORWARD in
+    // sim time (up to 24 / 24 / 48 h) on a second storm catalog (`wxScout`, same configuration: asking the main one for
+    // another time evicts the bins the renderer needs), a few steps a frame while the window is open; the rest come from
+    // the storms / cyclones alive now and the fires burning now (worker thread: firesWorld scans the globe).
+    enum WxFeatKind { kFeatTornado = 0, kFeatHurricane, kFeatHaboob, kFeatSupercell, kFeatLine, kFeatSpout, kFeatFire, kFeatCount };
+    struct WxFeatured
+    {
+        bool found = false;           // something to show
+        bool searching = true;        // the forward search has not reached it yet
+        double tEvent = 0.0, tEnd = 0.0;   // J2000 s: the moment to watch, and when it is over
+        bool day = true;              // the Sun up there at tEvent
+        glm::dvec3 earth{0.0, 0.0, 1.0};   // Earth-fixed, at tEvent
+        bool hasStorm = false;
+        wx::Storm storm;              // a copy (the catalogs evict)
+        TornadoNow torn;              // tornado / waterspout slots
+        bool spout = false, landOk = false;   // (its rank: a tornado over land beats one over water)
+        int rank = -1;                // tornado / waterspout: day 8 + land 4 + drier region 2 + outside the tropics 1
+        WxStormRow row;               // supercell / line slots (alive now)
+        wx::Cyclone cyc, cycNext;     // hurricane slot: the strongest active one, and the next major one
+        bool hasCyc = false, hasCycNext = false;
+        wx::Fire fire;
+        wx::FireState fireState;
+    };
+    WxFeatured wxFeat[kFeatCount];
+    std::unique_ptr<wx::Catalog> wxScout;
+    wx::Env wxScoutEnv;               // the main catalog's configuration (SatelliteSimWeather.cpp keeps a copy)
+    wx::Settings wxScoutSettings;
+    uint64_t wxScoutKey = 0;
+    double wxScanBase = -1e300;       // the forward search's start (sim s)
+    int wxScanStep = 0;               // the next 30-min step
+    bool wxScanDone = true;
+    std::unordered_set<uint64_t> wxScanSeen;   // tornado / waterspout candidates already looked at
+    double wxFeatNowWall = -1e300, wxFeatNowSim = -1e300;
+    double wxFireSim = -1e300;
+    std::future<std::vector<wx::Fire>> wxFireJob;
+    double wxFireJobT = 0.0;
+    int wxFeatPendingSlot = -1, wxFeatPendingAct = 0;   // applied after the layout
+    std::vector<uint64_t> wxNearSlotIds;                // the Storms tab's sticky "near you" slots
+    std::vector<WxStormRow> wxNearSlots;
+    void weatherFeaturedUpdate();                       // per frame while the window is open (bounded)
+    void weatherFeaturedNow(const std::vector<WxStormRow> &alive);   // the supercell / line slots (rows refresh)
+    void weatherFeaturedRestart(double now);
+    bool weatherFeaturedAct(int slot, int act, std::string &msg);
+    bool weatherWatchTornadoOf(const wx::Storm &st, int mode, std::string &msg);   // 0 a minute before, 1 close, mid-way
+    double weatherSunSin(const glm::dvec3 &earth, double t) const;
+    void buildWeatherFeatured(const UIInput &inp, UIRenderer &ui);
+    nlohmann::json weatherFeaturedJson();
     void weatherFillTornadoes(GpuDustCloud *out, uint32_t &n);
     double stormUploadedT = -1e300;
     uint64_t stormEnvKey = 0;

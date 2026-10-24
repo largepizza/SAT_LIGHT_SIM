@@ -623,6 +623,15 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--report.png",
             "assets/icons/ui/pixel--missions.png",
             "assets/icons/ui/pixel--weather.png",
+            // 23-30: the Weather window's storm icons (SatelliteSimWeatherFeatured.cpp kIconStorm*, tools/make_icons.py)
+            "assets/icons/ui/pixel--storm-tornado.png",
+            "assets/icons/ui/pixel--storm-hurricane.png",
+            "assets/icons/ui/pixel--storm-haboob.png",
+            "assets/icons/ui/pixel--storm-supercell.png",
+            "assets/icons/ui/pixel--storm-squall.png",
+            "assets/icons/ui/pixel--storm-waterspout.png",
+            "assets/icons/ui/pixel--storm-fire.png",
+            "assets/icons/ui/pixel--storm-cell.png",
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.

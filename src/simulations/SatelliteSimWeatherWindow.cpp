@@ -42,6 +42,7 @@ namespace
 constexpr double kRe = 6371000.0;
 constexpr double kWxNearKm = 1200.0;   // the Storms tab's "near you"
 constexpr int kWxNearMax = 12, kWxWorldMax = 10;
+constexpr int kWxNearSlots = 4;        // the Storms tab's sticky "near you" slots
 constexpr int kWxLoopMax = 10;         // the loop's frames
 constexpr double kWxLoopStepS = 300.0; // sim seconds between loop frames
 constexpr float kWxSampleAglM = 120.0f; // the radar's sample over the (smoothed) ground
@@ -291,6 +292,44 @@ void SatelliteSim::weatherRefreshRows(bool force)
         all.push_back(r);
     }
     wxStormsAlive = (int)all.size();
+    weatherFeaturedNow(all);
+    // The Storms tab's "near you": kWxNearSlots STICKY slots of organised storms (a storm keeps its slot while it is
+    // near and alive; a free slot takes the strongest one not shown), so rows do not jump about as storms come and go.
+    // Air-mass cells only when nothing organised is near.
+    {
+        std::vector<const WxStormRow *> cand;
+        bool organised = false;
+        for (const WxStormRow &r : all)
+            if (r.distKm <= kWxNearKm && r.kind != (int)wx::StormKind::AirMass)
+                organised = true;
+        for (const WxStormRow &r : all)
+            if (r.distKm <= kWxNearKm && (!organised || r.kind != (int)wx::StormKind::AirMass))
+                cand.push_back(&r);
+        std::sort(cand.begin(), cand.end(), [](const WxStormRow *a, const WxStormRow *b) {
+            return a->score != b->score ? a->score > b->score : a->id < b->id;
+        });
+        auto findCand = [&](uint64_t id) -> const WxStormRow * {
+            for (const WxStormRow *r : cand)
+                if (r->id == id) return r;
+            return nullptr;
+        };
+        std::vector<uint64_t> ids;
+        for (uint64_t id : wxNearSlotIds)
+            ids.push_back(findCand(id) ? id : 0);   // kept in place, or freed
+        ids.resize(kWxNearSlots, 0);
+        for (const WxStormRow *r : cand)
+        {
+            if (std::find(ids.begin(), ids.end(), r->id) != ids.end()) continue;
+            auto it = std::find(ids.begin(), ids.end(), (uint64_t)0);
+            if (it == ids.end()) break;
+            *it = r->id;
+        }
+        wxNearSlotIds = ids;
+        wxNearSlots.assign(kWxNearSlots, WxStormRow{});
+        for (int i = 0; i < kWxNearSlots; ++i)
+            if (const WxStormRow *r = ids[(size_t)i] ? findCand(ids[(size_t)i]) : nullptr)
+                wxNearSlots[(size_t)i] = *r;
+    }
     for (const WxStormRow &r : all)
         if (r.distKm <= kWxNearKm)
             wxNear.push_back(r);
@@ -309,6 +348,9 @@ void SatelliteSim::weatherRefreshRows(bool force)
         weatherStormMilestones(r);
     for (WxStormRow &r : wxWorld)
         weatherStormMilestones(r);
+    for (WxStormRow &r : wxNearSlots)
+        if (r.id != 0)
+            weatherStormMilestones(r);
 }
 
 // ── Storm milestones (2026-10-23): a supercell's tornado, a line's passage over you ──────────────────────────────────
@@ -391,36 +433,62 @@ bool SatelliteSim::weatherWatchTornado(uint64_t id, std::string &msg)
         msg = "That storm puts down no tornado";
         return false;
     }
-    const double t = T.t0 - 60.0;
+    return weatherWatchTornadoOf(*st, 0, msg);
+}
+
+// A storm's tornado (or waterspout), from a copy of the storm (the Weather window's featured slots find them ahead on
+// their own catalog): mode 0 a minute before touchdown, 6 km on its inflow side on the ground; mode 1 a third of the way
+// into it, 8 km away and 300 m up, 8 deg up (the harness `storms tornado` framing).
+bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::string &msg)
+{
+    const wx::Storm stCopy = stIn;
+    const wx::Storm *st = &stCopy;
+    const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    TornadoNow T;
+    if (!tornadoOf(*st, now, T))
+    {
+        msg = "That storm puts down no tornado";
+        return false;
+    }
+    const bool close = mode == 1;
+    const double t = close ? T.t0 + 0.35 * (T.t1 - T.t0) : T.t0 - 60.0;
     simDayJ2000 = (int64_t)std::floor(t / 86400.0);
     simSecInDay = t - (double)simDayJ2000 * 86400.0;
     timePaused = false;
     timeScaleIdx = 0;
     timeDir = 1.0f;
-    tornadoOf(*st, T.t0 + 30.0, T);   // where it touches down
-    const glm::dvec3 te = weatherMapToEarth(T.mapDir, T.t0 + 30.0);
-    glm::dvec3 up = weatherMapToEarth(T.upwindMap, T.t0 + 30.0);
+    const double tw = close ? t : T.t0 + 30.0;
+    tornadoOf(*st, tw, T);   // where it is (touches down)
+    const glm::dvec3 te = weatherMapToEarth(T.mapDir, tw);
+    glm::dvec3 up = weatherMapToEarth(T.upwindMap, tw);
     up = glm::normalize(up - te * glm::dot(up, te));
-    const double ang = 6000.0 / kRe;
+    const double ang = (close ? 8000.0 : 6000.0) / kRe;
     const glm::dvec3 oe = glm::normalize(te * std::cos(ang) + up * std::sin(ang));
     if (followActive)
         stopFollow();
     stopTrack();
     setObserverLatLon(glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0))), glm::degrees(std::atan2(oe.y, oe.x)));
-    obsHeightOffset = std::max(0.0f, cpuTerrainHeightM(obsLatDeg, obsLonDeg)) + 60.0f;
+    obsHeightOffset = std::max(0.0f, cpuTerrainHeightM(obsLatDeg, obsLonDeg)) + (close ? 300.0f : 60.0f);
     const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe) + glm::dvec3(1e-12, 0, 0)), oNorth = glm::cross(oe, oEast);
     const glm::dvec3 to3 = te - oe * glm::dot(te, oe);
     const double az = glm::degrees(std::atan2(glm::dot(to3, oEast), glm::dot(to3, oNorth)));
     camera.fovYDeg = std::max(camera.fovYDeg, 60.0f);
-    aimCameraAzEl((float)az, 10.0f);
+    aimCameraAzEl((float)az, close ? 8.0f : 10.0f);
+    for (double &bb : cv2WxBakedT) bb = -1e30;   // (the weather cube re-bakes with the storm stamped)
     updatePositions(t);
     trailClearPending = true;
     skyTaaHistValid = false;
     cv2HistoryValid = false;
     wxRowsWall = -1e300;
-    char sb[160];
-    snprintf(sb, sizeof(sb), "A minute before its tornado touches down (%.0f min on the ground), 6 km %s of it",
-             (T.t1 - T.t0) / 60.0, compass(glm::degrees(std::atan2(glm::dot(up, oEast), glm::dot(up, oNorth)))));
+    char sb[200];
+    const char *what = T.spout ? "waterspout" : "tornado";
+    const char *side = compass(glm::degrees(std::atan2(glm::dot(up, oEast), glm::dot(up, oNorth))));
+    if (close)
+        snprintf(sb, sizeof(sb), "A third of the way through its %s (%.0f min on the ground), 8 km %s of it, 300 m up", what,
+                 (T.t1 - T.t0) / 60.0, side);
+    else
+        snprintf(sb, sizeof(sb), "A minute before its %s touches down (%.0f min on the ground), 6 km %s of it", what,
+                 (T.t1 - T.t0) / 60.0, side);
     msg = sb;
     return true;
 }
@@ -1002,12 +1070,13 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
     wxText_.clear(); // last frame's strings: recorded by now
     if (wxChrome.w <= 0.0f)
     {
-        wxChrome.w = winDefault(520.0f, 0.40f, inp.screenW, 400.0f);
+        wxChrome.w = winDefault(600.0f, 0.42f, inp.screenW, 400.0f);
         wxChrome.h = winDefault(std::min(780.0f, inp.screenH - 160.0f), 0.74f, inp.screenH, 380.0f);
     }
     weatherRadarReadback();
     weatherRefreshRows(false);
     weatherRefreshCyclones(false);   // (every 2 s: the cyclone lists, for the Cyclones tab and the radar's tracks)
+    weatherFeaturedUpdate();         // (the Storms tab's featured events: a bounded forward search a frame)
     const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
     auto text = [&](const char *s, Clay_Color c, int size, bool wrap = false) {
         CLAY_TEXT(cs(s), CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size),
@@ -1089,6 +1158,14 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
         wxRowsWall = -1e300;
     }
     wxPendingAct = 0;
+    if (wxFeatPendingSlot >= 0)
+    {
+        std::string msg;
+        weatherFeaturedAct(wxFeatPendingSlot, wxFeatPendingAct, msg);
+        wxStatus = msg;
+        wxRowsWall = wxFeatNowWall = -1e300;
+        wxFeatPendingSlot = -1;
+    }
     if (wxCycPendingAct != 0 && wxCycPendingId != 0)
     {
         std::string msg;
@@ -1514,11 +1591,15 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
         }
     };
     auto row = [&](int id, const WxStormRow &r, int rank) {
+        // A fixed height (four single lines, a 2 x 2 button grid), so the tab never changes size as storms come and go.
         char a[32], l[32];
         fmtDur(now - r.t0, a, sizeof(a));
         fmtDur(r.tEnd - now, l, sizeof(l));
         const bool sel = r.id == wxSelStorm;
-        CLAY(CLAY_IDI("WxSRow", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+        const float lineH = (float)fs(12) * 1.35f;
+        static const int kIcons[] = {30, 30, 26, 27, 27, 24};   // (SatelliteSimWeatherFeatured.cpp's storm icons by kind)
+        const int icon = kIcons[std::clamp(r.kind, 0, 5)];
+        CLAY(CLAY_IDI("WxSRow", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(4.0f * lineH + 16.0f)},
                                                            .padding = {8, 8, 6, 6},
                                                            .childGap = 8,
                                                            .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
@@ -1527,9 +1608,13 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
                                                 .cornerRadius = CLAY_CORNER_RADIUS(4),
                                                 .border = {.color = Pal::cardBorder, .width = CLAY_BORDER_ALL(1)}})
         {
-            CLAY(CLAY_IDI("WxSText", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                .childGap = 3,
-                                                                .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+            CLAY(CLAY_IDI("WxSIcon", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_FIXED(26), CLAY_SIZING_FIXED(26)}},
+                                                     .image = {.imageData = (void *)(intptr_t)(icon + 1)}}) {}
+            CLAY(CLAY_IDI("WxSText", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                                                .childGap = 2,
+                                                                .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                                     .clip = {.horizontal = true}})
             {
                 CLAY(CLAY_IDI("WxSTitle", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                                      .childGap = 6,
@@ -1538,9 +1623,9 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
                 {
                     tag((uint32_t)id, wxStr("%s", stageName(r.stage)), stageCol(r.stage));
                     if (rank > 0)
-                        text(wxStr("%d. %s", rank, kindName(r.kind)), Pal::textPrimary, 12, true);
+                        text(wxStr("%d. %s", rank, kindName(r.kind)), Pal::textPrimary, 12);
                     else
-                        text(wxStr("%s", kindName(r.kind)), Pal::textPrimary, 12, true);
+                        text(wxStr("%s", kindName(r.kind)), Pal::textPrimary, 12);
                     if (r.towerCount > 1)
                         text(wxStr("(%d of %d towers)", r.towersAlive, r.towerCount), Pal::textDim, 11);
                 }
@@ -1548,9 +1633,9 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
                 const double lat = glm::degrees(std::asin(std::clamp(e.z, -1.0, 1.0))), lon = glm::degrees(std::atan2(e.y, e.x));
                 text(wxStr("%.0f km %s (%.0f deg), %.1f %s %.1f %s", r.distKm, compass(r.bearingDeg), r.bearingDeg, std::abs(lat),
                            lat >= 0.0 ? "N" : "S", std::abs(lon), lon >= 0.0 ? "E" : "W"),
-                     Pal::textDim, 11, true);
+                     Pal::textDim, 11);
                 text(wxStr("%s old, %s left; strength %.0f%%; ~%.1f flashes/min", a, l, 100.0f * r.strength, r.flashesPerMin),
-                     Pal::textDim, 11, true);
+                     Pal::textDim, 11);
                 if (r.tTorn0 > 0.0)
                 {
                     char w[32];
@@ -1559,45 +1644,48 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
                     text(on ? wxStr("TORNADO on the ground now, %s more", w)
                             : r.tTorn0 > now ? wxStr("Tornado: touches down in %s, for %.0f min", w, (r.tTorn1 - r.tTorn0) / 60.0)
                                              : wxStr("Tornado: touched down %s ago", w),
-                         on ? Pal::textBright : Pal::textPrimary, 11, true);
+                         on ? Pal::textBright : Pal::textPrimary, 11);
                 }
-                if (r.tPass > 0.0)
+                else if (r.tPass > 0.0)
                 {
                     char w[32];
                     fmtDur(r.tPass - now, w, sizeof(w));
-                    text(wxStr("Its line reaches you in %s", w), Pal::textPrimary, 11, true);
+                    text(wxStr("Its line reaches you in %s", w), Pal::textPrimary, 11);
                 }
+                else
+                    text(" ", Pal::textDim, 11);
             }
-            CLAY(CLAY_IDI("WxSBtns", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+            CLAY(CLAY_IDI("WxSBtns", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(11) * 10.0f), CLAY_SIZING_FIT(0)},
                                                                 .childGap = 4,
                                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
-                if (uiButton(inp, ui, "WxSGo", id, "Go to", "On the ground 50 km upwind of its strongest tower, looking at it"))
+                CLAY(CLAY_IDI("WxSBRow0", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                     .childGap = 4,
+                                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    wxPendingAct = 1;
-                    wxPendingId = r.id;
-                    wxSelStorm = r.id;
+                    if (uiButton(inp, ui, "WxSGo", id, "Go to", "On the ground 50 km upwind of its strongest tower, looking at it", false, true, true))
+                    {
+                        wxPendingAct = 1;
+                        wxPendingId = r.id;
+                        wxSelStorm = r.id;
+                    }
+                    const bool past = r.tMature < now - 60.0;
+                    if (uiButton(inp, ui, "WxSWatch", id, past ? "Replay" : "Watch",
+                                 past ? "Back to its mature stage at 1x (it has passed it), then Go to"
+                                      : "Ahead to its mature stage at 1x, then Go to", false, true, true))
+                    {
+                        wxPendingAct = 2;
+                        wxPendingId = r.id;
+                        wxSelStorm = r.id;
+                    }
                 }
-                const bool past = r.tMature < now - 60.0;
-                if (uiButton(inp, ui, "WxSWatch", id, past ? "Replay" : "Watch",
-                             past ? "Back to its mature stage at 1x (it has passed it), then Go to"
-                                  : "Ahead to its mature stage at 1x, then Go to"))
+                const bool torn = r.tTorn0 > 0.0, pass = !torn && r.tPass > 0.0;
+                if (uiButton(inp, ui, "WxSTorn", id, pass ? "Passage" : "Tornado",
+                             pass ? "20 minutes before its line reaches you, looking into it, at 1x"
+                                  : "A minute before its tornado touches down, 6 km away on its inflow side, at 1x",
+                             false, torn || pass, true))
                 {
-                    wxPendingAct = 2;
-                    wxPendingId = r.id;
-                    wxSelStorm = r.id;
-                }
-                if (r.tTorn0 > 0.0 &&
-                    uiButton(inp, ui, "WxSTorn", id, "Tornado", "A minute before its tornado touches down, 6 km away on its inflow side, at 1x"))
-                {
-                    wxPendingAct = 3;
-                    wxPendingId = r.id;
-                    wxSelStorm = r.id;
-                }
-                if (r.tPass > 0.0 &&
-                    uiButton(inp, ui, "WxSPass", id, "Passage", "20 minutes before its line reaches you, looking into it, at 1x"))
-                {
-                    wxPendingAct = 4;
+                    wxPendingAct = pass ? 4 : 3;
                     wxPendingId = r.id;
                     wxSelStorm = r.id;
                 }
@@ -1609,25 +1697,25 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
         text("Storm objects are off (Controls, or Settings > Weather).", Pal::textDim, 11, true);
         return;
     }
+    // (2026-10-23, the user: reserved spots, the cool events first, storms near you after them, nothing moving about.)
+    uiSection("WxSec", 2, "EVENTS");
+    buildWeatherFeatured(inp, ui);
     uiSection("WxSec", 0, wxStr("NEAR YOU (WITHIN %.0f KM)", kWxNearKm));
-    if (wxNear.empty())
-        text("No storms near you now.", Pal::textDim, 11);
-    for (int i = 0; i < (int)wxNear.size(); ++i)
-        row(i, wxNear[(size_t)i], i + 1);
-    uiSection("WxSec", 1, "STRONGEST WORLDWIDE");
+    for (int i = 0; i < kWxNearSlots; ++i)
     {
-        bool all = wxWorldAllKinds;
-        if (uiToggleRow(inp, ui, "WxAllKinds", 0, "Include single cells", all,
-                        "Off: organised storms only (multicells, supercells); on: every air-mass cell too"))
-        {
-            wxWorldAllKinds = all;
-            wxRowsWall = -1e300;
-        }
+        const WxStormRow &r = i < (int)wxNearSlots.size() ? wxNearSlots[(size_t)i] : WxStormRow{};
+        if (r.id != 0)
+            row(i, r, 0);
+        else
+            CLAY(CLAY_IDI("WxSEmpty", (uint32_t)i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
+                                                              .padding = {8, 8, 6, 6},
+                                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}},
+                                                   .backgroundColor = Pal::cardBg,
+                                                   .cornerRadius = CLAY_CORNER_RADIUS(4)})
+            {
+                text(i == 0 ? "No organised storm near you" : "-", Pal::textHint, 11);
+            }
     }
-    if (wxWorld.empty())
-        text("None alive.", Pal::textDim, 11);
-    for (int i = 0; i < (int)wxWorld.size(); ++i)
-        row(100 + i, wxWorld[(size_t)i], 0);
     text("Storms live in the cloud map's frame and move with it; each is fixed at its birth, so time warp, reverse and "
          "bookmarks see the same storms. The lightning is an estimate (the lightning pass's rate x its dominant towers).",
          Pal::textHint, 10, true);
@@ -1738,6 +1826,11 @@ nlohmann::json SatelliteSim::weatherWindowJson()
         w.push_back(rowJ(r));
     j["near"] = n;
     j["world"] = w;
+    nlohmann::json ns = nlohmann::json::array();
+    for (const WxStormRow &r : wxNearSlots)
+        ns.push_back(r.id != 0 ? rowJ(r) : nlohmann::json());
+    j["near_slots"] = ns;
+    j["events"] = weatherFeaturedJson();
     nlohmann::json rd;
     rd["valid"] = wxShown.valid;
     rd["dispatches"] = wxRadarDispatches;

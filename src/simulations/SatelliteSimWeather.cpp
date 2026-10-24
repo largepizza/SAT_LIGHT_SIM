@@ -378,6 +378,8 @@ void SatelliteSim::updateStorms()
         s.lineFrequency = std::max(stormComplexes, 0.0f);
         s.cycloneFrequency = stormObjects ? std::max(stormCyclones, 0.0f) : 0.0f;
         stormCatalog->configure(env, s, stormClim.get(), key);
+        wxScoutEnv = env;          // (the Weather window's forward search runs a second catalog configured alike)
+        wxScoutSettings = s;
         stormEnvKey = key;
         stormUploadedT = -1e300;
     }

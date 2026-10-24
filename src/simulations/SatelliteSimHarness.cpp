@@ -4412,6 +4412,34 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                            std::to_string(r["radar"]["gpu_ms"].get<float>()).substr(0, 5) + " ms GPU";
             return Status::Done;
         }
+        // `weather events` — the Storms tab's featured events (the forward search run to its end first);
+        // `weather event <tornado|hurricane|haboob|supercell|line|waterspout|wildfire> [act=0-3]` — press that card's
+        // button (act: 0 / 1 the first row, 2 / 3 the second).
+        if (sub == "events" || sub == "event")
+        {
+            weatherRefreshRows(true);
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < 400 && !wxScanDone && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(20); ++i)
+                weatherFeaturedUpdate();
+            weatherFeaturedUpdate();
+            if (wxFireJob.valid()) { wxFireJob.wait(); weatherFeaturedUpdate(); }
+            if (sub == "events")
+            {
+                r["events"] = weatherFeaturedJson();
+                r["message"] = std::string("events, search ") + (wxScanDone ? "done" : "not done");
+                return Status::Done;
+            }
+            static const char *kNames[kFeatCount] = {"tornado", "hurricane", "haboob", "supercell", "line", "waterspout", "wildfire"};
+            int slot = -1;
+            for (int s = 0; s < kFeatCount; ++s)
+                if (lower(pos(1)) == kNames[s]) slot = s;
+            if (slot < 0) fail("weather event: name one of tornado hurricane haboob supercell line waterspout wildfire");
+            std::string msg;
+            if (!weatherFeaturedAct(slot, (int)c.num("act", 0.0), msg))
+                fail("weather event: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
         if (sub == "go" || sub == "watch" || sub == "tornado" || sub == "passage")
         {
             weatherRefreshRows(true);

@@ -1041,6 +1041,32 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   it: `weatherWatchTornado`) and Passage (20 min before the line arrives, at 1x, looking into its motion). Harness
   `weather tornado|passage [k] [list=world]` (no k: the first listed storm with one ahead); `weather state` rows carry
   `tornado_in_min`, `tornado_min`, `passage_in_min`.
+  **Featured events (2026-10-23, `SatelliteSimWeatherFeatured.cpp`; the user: "anytime a new storm appears the window's
+  extents change ... reserved spots, like the twilight one in the Missions tab; always a tornado, haboob ready to go to;
+  cool events over storms near you"):** the Storms tab opens with EVENTS, one fixed-height card per kind, always in this
+  order: Tornado (the next touchdown anywhere, 24 h ahead, ranked daylight 8 + over land 4 + a drier region 2 (the
+  map's cover < 0.45 round it) + outside the deep tropics 1, then the earliest — the first cut stood in a downpour over
+  Lake Victoria: Watch = a minute before, 6 km on its inflow
+  side; Mature = a third of the way in, 8 km away, 300 m up), Hurricane (the strongest cyclone now: Eye / Orbit / Landfall,
+  and Next major = the next one peaking at Category 3+, any basin, to its peak from orbit), Haboob (the next line system
+  at full strength by day whose LEADING EDGE (9 points along the line, dG ahead as haboobFrontOf) is mostly over the
+  biome map's dust (>= 6 at >= 0.3, mean >= 0.4), 48 h ahead — the centre's dust alone picked storms whose front ran over
+  farmland, and no wall was drawn; Watch 22 km ahead of the gust front (bow + dG ahead of the centre) on the ground,
+  Aloft 60 km ahead 3 km up), Supercell and Squall line (the strongest alive now, mature and daylit preferred: Go
+  to, Watch, Tornado / Passage), Waterspout (as the tornado, at sea), Wildfire (the biggest fire burning now, by size x
+  activity: Go to beside its column, Orbit). Each card is an icon, three unwrapped lines clipped at its edge and a 2 x 2
+  button grid (disabled when they do not apply), so nothing moves as storms come and go; NEAR YOU below is 4 STICKY slots
+  of organised storms (a storm keeps its slot while it is near; air-mass cells only when nothing organised is near), the
+  rows fixed-height too. **Never search ahead on the main catalog:** `stormsAt(t)` evicts every bin outside [t - 9 h,
+  t + 2 h], i.e. the bins the renderer needs this frame. The forward search runs on a SECOND catalog (`wxScout`, the main
+  one's Env / Settings / climatology, copied where it is configured in updateStorms; reconfigured on a new
+  `stormEnvKey`), 30-min steps, at most ~2.5 ms a frame while the window is open; it restarts when sim time goes back
+  before its start, moves 12 h on, or a found event is over. A storm born after step k cannot touch down before step k's
+  time, so a daylit tornado found before the step reached ends that slot's search. The fires come from `firesWorld` on a
+  worker (std::async; cleanup waits for it: biomeMap is destroyed before the future). Storm icons (`tools/make_icons.py`
+  `storm-*`, icon indices 23-30): tornado, hurricane, haboob, supercell, squall, waterspout, fire, cell. Harness `weather
+  events` (the search run to its end), `weather event <tornado|hurricane|haboob|supercell|line|waterspout|wildfire>
+  [act=0-3]`, `weather state` -> `events`, `near_slots`.
   **Named storms (2026-10-23, `SatelliteSimWeatherCyclones.cpp`; the Cyclones tab, `wxTab` 3, drawn third):** the
   tropical cyclones as copies of `wx::Cyclone` (`wxCycActive` from `stormCyclonesNow`, `wxCycSeason` = one basin's
   systems from `cycloneSeason` for last / this / next year within ~200 days of now, `wxCycNext` = the next genesis per
