@@ -4184,6 +4184,39 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     if (n == "fires")
     {
         const std::string sub = lower(pos(0));
+        if (sub == "look")
+        {
+            // `fires look [k] [what=head|plume]`: aim the camera at the k-th nearest fire in reach (its head, or its
+            // smoke 1.5 km up and 10 km downwind).
+            const int k = std::max(0, std::atoi(pos(1).c_str()));
+            if (k >= (int)firesNow.size()) fail("fires look: no such fire in reach");
+            const FireNow &fn = firesNow[k];
+            const double tT = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const double la = glm::radians(fn.f.latDeg), lo = glm::radians(fn.f.lonDeg);
+            const glm::dvec3 G(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la));
+            const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), G)), north = glm::cross(G, east);
+            glm::dvec2 q = wx::fireFrontAt(fn.f, fn.s, 0.0);
+            double z = 0.0;
+            if (lower(c.str("what")) == "plume")
+            {
+                // (the smoke an hour old, where the streak has carried it)
+                const glm::dvec3 sm = wx::fireSmokeAt(fn.f, fn.s, tT, c.num("age_h", 1.0) * 3600.0,
+                                                      wx::fireInjectionHeightM(fn.f, fn.s, tT));
+                q = glm::dvec2(sm.x, sm.y);
+                z = sm.z;
+            }
+            const glm::dvec3 P = glm::normalize(G + (east * q.x + north * q.y) / 6371000.0) * (6371000.0 + fn.groundM + z);
+            const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+            const glm::dvec3 eye = up * (double)obsEyeRadiusM();
+            const glm::dvec3 oE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), up) + glm::dvec3(1e-12, 0, 0));
+            const glm::dvec3 oN = glm::cross(up, oE);
+            const glm::dvec3 d = glm::normalize(P - eye);
+            aimCameraAzEl((float)glm::degrees(std::atan2(glm::dot(d, oE), glm::dot(d, oN))),
+                          (float)glm::degrees(std::asin(std::clamp(glm::dot(d, up), -1.0, 1.0))));
+            r["range_km"] = fn.rangeKm;
+            r["message"] = "looking at fire " + std::to_string(k) + " (" + std::to_string((int)fn.rangeKm) + " km)";
+            return Status::Done;
+        }
         if (sub == "go")
         {
             const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -4231,7 +4264,12 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), G)), north = glm::cross(G, east);
             const glm::dvec2 head = wx::fireEdgeAt(fs, 0.0);
             const glm::dvec3 Hd = glm::normalize(G + (east * head.x + north * head.y) / 6371000.0);
-            const glm::dvec3 wv = east * std::sin(fs.windAz) + north * std::cos(fs.windAz);
+            // (the smoke's direction: the wind at ~0.85 of its top, Wildfire.h windAt, so the side view sees the column from
+            // the side; the burnt ellipse's axis from orbit)
+            const glm::dvec2 wSm = wx::windAt(G, 0.85 * fs.plumeTopM, tT);
+            const glm::dvec3 wv = view != "orbit" && glm::length(wSm) > 0.1
+                                      ? glm::normalize(east * wSm.x + north * wSm.y)
+                                      : east * std::sin(fs.windAz) + north * std::cos(fs.windAz);
             const glm::dvec3 cv = glm::cross(G, wv);
             glm::dvec3 oe;
             double altM;
@@ -4239,15 +4277,16 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             {
                 // A point of the plume dist_km downwind at ~0.85 of its top; the eye on the ground on the far side of it
                 // from the Sun, so the Sun is seen through the smoke.
-                const double d = c.num("dist_km", 25.0) * 1000.0;
+                // (the smoke age_h old, where the streak has carried it: wx::fireSmokeAt)
+                const glm::dvec3 sm = wx::fireSmokeAt(f, fs, tT, c.num("age_h", 1.5) * 3600.0, wx::fireInjectionHeightM(f, fs, tT));
                 const glm::dvec3 si = sunDirEciAt(tT);
                 const double g = earthRotationAngle(tT);
                 const glm::dvec3 se(si.x * std::cos(g) + si.y * std::sin(g), -si.x * std::sin(g) + si.y * std::cos(g), si.z);
-                const glm::dvec3 Tp = glm::normalize(Hd + wv * (d / 6371000.0));
+                const glm::dvec3 Tp = glm::normalize(G + (east * sm.x + north * sm.y) / 6371000.0);
                 const double sel = std::max(std::asin(std::clamp(glm::dot(se, Tp), -1.0, 1.0)), glm::radians(3.0));
                 glm::dvec3 sh = se - Tp * glm::dot(se, Tp);
                 sh = glm::length(sh) > 1e-9 ? glm::normalize(sh) : wv;
-                const double back = std::min(0.85 * fs.plumeTopM / std::tan(sel), 60000.0);
+                const double back = std::min(sm.z / std::tan(sel), 60000.0);
                 oe = glm::normalize(Tp - sh * (back / 6371000.0));
                 altM = c.num("alt", 30.0);
             }

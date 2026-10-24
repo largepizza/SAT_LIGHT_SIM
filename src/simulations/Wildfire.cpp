@@ -21,6 +21,71 @@ double sstep(double a, double b, double x)
     const double t = std::clamp((x - a) / (b - a), 0.0, 1.0);
     return t * t * (3.0 - 2.0 * t);
 }
+// Periodic value noise on the circle (N cells round, smooth), drawn anew every T seconds and cross-faded between
+// draws: 0..1.
+double circNoise(double a, int N, uint64_t seed, double t, double T)
+{
+    const double x = a / (2.0 * kPi) * N;
+    const double fx = std::floor(x), u = x - fx;
+    const double su = u * u * (3.0 - 2.0 * u);
+    const int i0 = (int)((((int64_t)fx % N) + N) % N), i1 = (i0 + 1) % N;
+    const double e = std::floor(t / T), w = t / T - e;
+    const double sw = w * w * (3.0 - 2.0 * w);
+    auto v = [&](int i, double ep) {
+        return u01(mix64(seed ^ ((uint64_t)i * 0x9E3779B97F4A7C15ull) ^ mix64((uint64_t)(int64_t)ep + 77)));
+    };
+    const double a0 = v(i0, e) + (v(i1, e) - v(i0, e)) * su;
+    const double a1 = v(i0, e + 1) + (v(i1, e + 1) - v(i0, e + 1)) * su;
+    return a0 + (a1 - a0) * sw;
+}
+
+// The wind's travelling waves: k (rad/m), the streamfunction amplitude (m^2/s), angular frequency, phase, and the phase
+// per metre of height (the field changes with height: a plume's layers drift apart).
+struct WindWave
+{
+    glm::dvec3 k;
+    double amp, omega, phase, hPhase;
+};
+constexpr int kWavesSyn = 6, kWavesMeso = 6, kWavesSmall = 6;
+struct WindWaves
+{
+    WindWave w[kWavesSyn + kWavesMeso + kWavesSmall + 1];
+    WindWaves()
+    {
+        uint64_t h = 0x57A11D5EEDull;
+        auto next = [&]() {
+            h = mix64(h + 0x632BE59BD9B4E019ull);
+            return u01(h);
+        };
+        auto make = [&](WindWave &o, double lamKm0, double lamKm1, double speed, double per0, double per1, double hLam0,
+                        double hLam1) {
+            const double z = 2.0 * next() - 1.0, ph = 2.0 * kPi * next();
+            const double r = std::sqrt(std::max(1.0 - z * z, 0.0));
+            const double lam = (lamKm0 + (lamKm1 - lamKm0) * next()) * 1000.0;
+            const double kk = 2.0 * kPi / lam;
+            o.k = glm::dvec3(r * std::cos(ph), r * std::sin(ph), z) * kk;
+            o.amp = speed / kk;
+            const double per = per0 + (per1 - per0) * next();
+            o.omega = (next() < 0.5 ? -1.0 : 1.0) * 2.0 * kPi / per;
+            o.phase = 2.0 * kPi * next();
+            o.hPhase = hLam1 > 0.0 ? (next() < 0.5 ? -1.0 : 1.0) * 2.0 * kPi / (hLam0 + (hLam1 - hLam0) * next()) : 0.0;
+        };
+        int j = 0;
+        for (int i = 0; i < kWavesSyn; ++i)
+            make(w[j++], 2500.0, 4500.0, 3.6, 3.0 * 86400.0, 7.0 * 86400.0, 0.0, 0.0);
+        for (int i = 0; i < kWavesMeso; ++i)
+            make(w[j++], 250.0, 600.0, 1.3, 6.0 * 3600.0, 18.0 * 3600.0, 3000.0, 6000.0);
+        for (int i = 0; i < kWavesSmall; ++i)
+            make(w[j++], 15.0, 45.0, 0.75, 1500.0, 4200.0, 800.0, 2000.0);
+        make(w[j++], 3000.0, 4000.0, 1.0, 4.0 * 86400.0, 6.0 * 86400.0, 0.0, 0.0); // the thermal-wind turning angle
+    }
+};
+const WindWaves &windWaves()
+{
+    static const WindWaves ww;
+    return ww;
+}
+
 // The calibrated birth rate per 1-degree cell per day at fuel 1, dryness 1, at the equator's cell area: ~50 fires born
 // a day worldwide at the dry season (mean life ~6 days: ~300 burning at once, the order of the large fires MODIS sees on a given day).
 constexpr double kBirthRate = 0.045;
@@ -52,9 +117,14 @@ bool fireInCell(int ilat, int ilon, int64_t db, const BiomeMap &bio, float rateS
                      std::cos(2.0 * kPi * u01(mix64(h0 ^ 7)));
     f.life = 86400.0 * std::clamp(2.5 * std::exp(0.8 * z) * (0.4 + 1.6 * f.size), 0.4, 30.0);
     f.spreadMps = (0.02 + 0.12 * std::pow((double)f.size, 1.5)) * (0.6 + 0.8 * u01(mix64(h0 ^ 8)));
-    // The wind it spreads with: the trades (toward the west) in the tropics, the westerlies (toward the east) beyond.
-    const double base = std::fabs(lat) < 30.0 ? -0.5 * kPi : 0.5 * kPi;
-    f.windAz = base + 1.3 * (u01(mix64(h0 ^ 9)) - 0.5) * 2.0;
+    // The wind it spreads with: the wind field near the ground a third of the way through its life (windAt: the same
+    // field its smoke follows, so neighbouring fires agree).
+    {
+        const double la = lat * kPi / 180.0, lo = lon * kPi / 180.0;
+        const glm::dvec2 w = windAt(glm::dvec3(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la)),
+                                    10.0, f.t0 + 0.3 * f.life);
+        f.windAz = std::atan2(w.x, w.y);
+    }
     const Biome b = bio.at(lat, lon);
     f.pyro = (f.size > 0.7f && (b == Biome::Boreal || b == Biome::TemperateForest || b == Biome::Shrubland) &&
               u01(mix64(h0 ^ 10)) < 0.35) ? 1.0f : 0.0f;
@@ -116,7 +186,7 @@ FireState fireStateAt(const Fire &f, double t)
     s.headM = 40.0 + f.spreadMps * s.ageS * 0.7;
     s.backM = 0.12 * s.headM;
     s.halfWidthM = 0.28 * s.headM + 30.0;
-    s.windAz = f.windAz + 0.35 * std::sin(2.0 * kPi * s.ageS / (1.7 * 86400.0) + (f.seed & 1023) * 0.006);
+    s.windAz = f.windAz;
     s.plumeTopM = std::min((800.0 + 2200.0 * f.size) * (0.4 + 0.6 * s.activity) * (f.pyro > 0.5f ? 2.6 : 1.0), 8000.0);
     return s;
 }
@@ -132,6 +202,129 @@ double fireFrontIntensity(double a)
 {
     const double h = 0.5 * (1.0 + std::cos(a));
     return 0.1 + 0.9 * std::pow(h, 2.5);
+}
+
+glm::dvec2 fireFrontAt(const Fire &f, const FireState &s, double a, double *dsda)
+{
+    const glm::dvec2 w(std::sin(s.windAz), std::cos(s.windAz)), c(std::cos(s.windAz), -std::sin(s.windAz));
+    const double semi = 0.5 * (s.headM + s.backM), off = 0.5 * (s.headM - s.backM);
+    // Fingers: two scales of a radial perturbation, stronger toward the head (where the front runs); they change as the
+    // fire grows.
+    const double head = 0.5 * (1.0 + std::cos(a));
+    const double n1 = circNoise(a, 9, f.id ^ 0xF1A9ull, s.ageS, 20.0 * 3600.0) - 0.5;
+    const double n2 = circNoise(a, 31, f.id ^ 0xF2A9ull, s.ageS, 7.0 * 3600.0) - 0.5;
+    const double k = 1.0 + (0.10 + 0.14 * head) * n1 + 0.06 * n2;
+    if (dsda)
+        *dsda = k * std::sqrt(semi * semi * std::sin(a) * std::sin(a) +
+                              s.halfWidthM * s.halfWidthM * std::cos(a) * std::cos(a));
+    return w * (off + k * semi * std::cos(a)) + c * (k * s.halfWidthM * std::sin(a));
+}
+
+double fireFrontHeat(const Fire &f, const FireState &s, double a, double t)
+{
+    // Runs of flame and gaps along the front (~48 cells round, re-drawn over ~2 h), and a finer variation.
+    const double n = circNoise(a, 48, f.id ^ 0xB0A1ull, t, 2.0 * 3600.0);
+    const double n2 = circNoise(a, 160, f.id ^ 0xB0A2ull, t, 0.7 * 3600.0);
+    // (the flanks and the back burn in shorter runs with longer gaps, and the back goes out as the fire ages)
+    const double hd = 0.5 * (1.0 + std::cos(a)), back = 1.0 - hd;
+    const double run = 0.12 + 0.88 * sstep(0.28 + 0.22 * back, 0.62 + 0.2 * back, n);
+    const double out = 1.0 - 0.7 * back * back * sstep(6.0 * 3600.0, 36.0 * 3600.0, s.ageS);
+    return fireFrontIntensity(a) * run * out * (0.6 + 0.8 * n2);
+}
+
+double fireFlameHeightM(const Fire &f, const FireState &s)
+{
+    // A grass fire's flames ~1.5 m, a shrub or surface forest fire's 3-8 m, a crown fire's 20-40 m: by the fire's size
+    // and its activity now (lower at night).
+    return (1.5 + 26.0 * std::pow((double)f.size, 1.5) * (0.4 + 0.6 * (double)f.fuel)) * (0.35 + 0.65 * s.activity);
+}
+
+double fireFlameDepthM(const Fire &f) { return 6.0 + 34.0 * (double)f.size; }
+
+glm::dvec2 windAt(const glm::dvec3 &dirEcef, double hM, double t)
+{
+    const WindWaves &ww = windWaves();
+    const glm::dvec3 up = glm::normalize(dirEcef);
+    const glm::dvec3 E = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), up) + glm::dvec3(1e-12, 0, 0));
+    const glm::dvec3 N = glm::cross(up, E);
+    const double lat = std::asin(std::clamp(up.z, -1.0, 1.0)) * 180.0 / kPi, alat = std::fabs(lat);
+    const double sgn = lat >= 0.0 ? 1.0 : -1.0;
+    const double h = std::max(hM, 0.0);
+    const glm::dvec3 X = up * 6371000.0;
+    // The zonal climatology (m/s east, north): trades toward the west and the equator, westerlies, polar easterlies.
+    auto g = [](double x, double m, double sd) { return std::exp(-((x - m) / sd) * ((x - m) / sd)); };
+    const double trade = g(alat, 13.0, 10.0), west = g(alat, 46.0, 13.0), polar = g(alat, 75.0, 9.0);
+    glm::dvec2 base(-6.5 * trade * std::max(1.0 - h / 7000.0, 0.2) + 8.5 * west * (1.0 + h / 4000.0) - 3.0 * polar,
+                    -2.5 * sgn * trade);
+    // The eddies: the curl of the streamfunction (up x grad psi).
+    auto curl = [&](int i0, int i1) {
+        glm::dvec3 gr(0.0);
+        for (int i = i0; i < i1; ++i)
+        {
+            const WindWave &w = ww.w[i];
+            gr += w.k * (w.amp * std::cos(glm::dot(w.k, X) + w.omega * t + w.phase + w.hPhase * h));
+        }
+        const glm::dvec3 v = glm::cross(up, gr);
+        return glm::dvec2(glm::dot(v, E), glm::dot(v, N));
+    };
+    glm::dvec2 large = base + curl(0, kWavesSyn) + curl(kWavesSyn, kWavesSyn + kWavesMeso);
+    // Near the ground slower and turned toward low pressure (backed: counterclockwise in the north); above, the
+    // thermal-wind turning grows with height.
+    const double fr = sstep(0.0, 1000.0, h);
+    const double speedK = 0.55 + 0.45 * fr + 0.1 * h / 1000.0;
+    const WindWave &tw = ww.w[kWavesSyn + kWavesMeso + kWavesSmall];
+    const double gam = 0.6 * std::sin(glm::dot(tw.k, X) + tw.omega * t + tw.phase);
+    const double beta = sgn * 0.42 * (1.0 - fr) + gam * std::min(h, 6000.0) / 3000.0;
+    const double cb = std::cos(beta), sb = std::sin(beta);
+    large = glm::dvec2(cb * large.x - sb * large.y, sb * large.x + cb * large.y) * speedK;
+    return large + curl(kWavesSyn + kWavesMeso, kWavesSyn + kWavesMeso + kWavesSmall);
+}
+
+double fireInjectionHeightM(const Fire &f, const FireState &s, double t)
+{
+    const double la = f.latDeg * kPi / 180.0, lo = f.lonDeg * kPi / 180.0;
+    const glm::dvec3 G(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la));
+    const glm::dvec2 u = windAt(G, 0.5 * s.plumeTopM, t);
+    return s.plumeTopM * std::clamp(std::cbrt(6.0 / (glm::length(u) + 2.0)), 0.65, 1.25);
+}
+
+double fireUpdraftMps(const Fire &f) { return 5.0 + 9.0 * (double)f.size + 5.0 * (double)f.pyro; }
+
+double fireSmokeRiseM(double ageS, double Hb, double w0)
+{
+    const double e = std::exp(-ageS * w0 / std::max(Hb, 1.0));
+    return Hb * (1.0 - e) + (30.0 + 0.08 * Hb) * e;
+}
+
+glm::dvec2 fireSmokeSource(const Fire &f, const FireState &s, double t)
+{
+    const double la = f.latDeg * kPi / 180.0, lo = f.lonDeg * kPi / 180.0;
+    const glm::dvec3 G(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la));
+    const glm::dvec2 u = windAt(G, 10.0, t);
+    const glm::dvec2 w = glm::length(u) > 0.05 ? u / glm::length(u) : glm::dvec2(std::sin(s.windAz), std::cos(s.windAz));
+    return fireFrontAt(f, s, 0.0) + w * (250.0 + 0.1 * s.halfWidthM);
+}
+
+glm::dvec3 fireSmokeAt(const Fire &f, const FireState &s, double t, double ageS, double Hb, int steps)
+{
+    const double la = f.latDeg * kPi / 180.0, lo = f.lonDeg * kPi / 180.0;
+    const glm::dvec3 G(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la));
+    const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), G) + glm::dvec3(1e-12, 0, 0));
+    const glm::dvec3 nE = glm::cross(G, eE);
+    const double w0 = fireUpdraftMps(f);
+    glm::dvec2 xy = fireSmokeSource(f, s, t);
+    double z0 = fireSmokeRiseM(0.0, Hb, w0), ta = 0.0;
+    const double t1 = std::max(ageS, 1.0), tA = std::min(60.0, t1);
+    for (int j = 0; j <= steps; ++j)
+    {
+        const double tb = j == 0 ? tA : tA * std::pow(t1 / tA, (double)j / steps);
+        const double zb = fireSmokeRiseM(tb, Hb, w0);
+        const glm::dvec3 d = glm::normalize(G + (eE * xy.x + nE * xy.y) / 6371000.0);
+        xy += windAt(d, 0.5 * (z0 + zb), t - 0.5 * (ta + tb)) * (tb - ta);
+        z0 = zb;
+        ta = tb;
+    }
+    return glm::dvec3(xy, z0);
 }
 
 void firesNear(double t, double latDeg, double lonDeg, double radiusKm, const BiomeMap &bio, float rateScale,
