@@ -3885,6 +3885,7 @@ private:
         float angSize;      // point sprite size in pixels
     };
     std::vector<StarRecord> starRecords;
+    std::vector<uint32_t> starPackedColor_;   // packVisibleColor(starRecords[i].color), packed once (updateStars)
     VkBuffer starBuf = VK_NULL_HANDLE;
     VkDeviceMemory starMem = VK_NULL_HANDLE;
     void *starMapped = nullptr;

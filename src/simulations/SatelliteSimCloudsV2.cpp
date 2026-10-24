@@ -2120,7 +2120,12 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                       VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2CdcPipeline);
-        vkCmdDispatch(cmd, kCv2CdcCells / 256, 1, 1);
+        // Only the levels the march reads (cdcB.w, "cdc max level", 6 by default; cv2_cdc.glsl returns "unknown" past it):
+        // the check walked all 8 (8.4M cells a frame, ~0.5-1 ms whatever the view) and baked stale cells of levels no
+        // lookup ever reads (2026-10-24, perf). A slot's index is level-major, so the first levels' workgroups are theirs.
+        const uint32_t cdcLevels = (uint32_t)std::clamp((int)cv2CdcMaxLevel, 0, 8);
+        if (cdcLevels > 0)
+            vkCmdDispatch(cmd, kCv2CdcCells / 8u * cdcLevels / 256u, 1, 1);
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2CdcBakePipeline);
