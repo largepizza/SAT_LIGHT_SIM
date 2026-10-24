@@ -4732,6 +4732,9 @@ private:
     std::vector<VkDescriptorSet> cv2WxSets;
     std::vector<VkImageView> cv2WxMipViews;
     double cv2WxBakedT[6] = {};        // sim time each face was last baked at
+    double cv2WxPrevT = -1e300;        // sim time of the last frame's recordWeatherEvolution (its step: time warp)
+    bool cv2WxOneFace = false;         // A/B (clouds_v2.weather_one_face): never bake all six faces together
+    uint32_t cv2WxAllSixBakes = 0;     // frames that baked all six faces at once (harness state)
     uint64_t cv2WxHash = 0;            // the evolution settings the faces were baked with
     // ── Weather events: storm objects (SatelliteSimWeather.cpp, shaders/include/cv2_storms.glsl) ──
     // The towers alive this frame, uploaded with a spatial index; the cloud shaders draw towers only from it.
@@ -4808,8 +4811,18 @@ private:
         float r0 = 100.0f;                  // its width at the ground (m, radius)
         glm::dvec3 mapDir{0, 0, 1}, earthDir{0, 0, 1};
         glm::dvec3 upwindMap{1, 0, 0};      // map-frame tangent away from the forward flank (the inflow side)
+        // Drawn (weatherFillTornadoes, 2026-10-23): the DRAWN cloud's base over it (the GPU probe, eased; else the Cb
+        // type's base), the optical depth of the cloud above, and the light on the funnel relative to clear sky.
+        float baseAglM = 0.0f, tauAbove = 0.0f, lightK = 1.0f;
+        bool  baseProbed = false;
     };
     std::vector<TornadoNow> tornadoesNow;   // drawn this frame
+    // The tornado probes (cloud_v2_lightning.comp threads 2-5): the columns asked for this frame (storm ids, 0 = none) and
+    // what came back, per storm, eased (base altitude m ASL, optical depth above).
+    uint64_t tornadoProbeIds[4] = {};
+    bool tornadoProbeRan = false;   // the lightning pass ran since the columns were asked for (set with its dispatch)
+    struct TornadoProbe { float baseAsl = 0.0f, tau = 0.0f; bool valid = false; double wall = 0.0; };
+    std::unordered_map<uint64_t, TornadoProbe> tornadoProbes;
     bool tornadoOf(const wx::Storm &S, double t, TornadoNow &out) const;   // its tornado (if any) and where at t
     void weatherFillTornadoes(GpuDustCloud *out, uint32_t &n);
     double stormUploadedT = -1e300;
@@ -5406,7 +5419,7 @@ private:
             urban = -1, beam = -1, aurora = -1, wind = -1, cloud = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
             forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, glareN = -1, glareSum = -1, beamSite = -1, musicGap = -1, rain = -1,
             thunder = -1, rocketMag = -1, stageMag = -1, fireballMag = -1, dustMag = -1, gust = -1, surfaceWind = -1,
-            rainDriven = -1;
+            rainDriven = -1, tornado = -1;
     } ambD_;
     // The upwell's other sources (2026-10-21, issue 20261021_002542 "Upwells": the stem should rise during launches,
     // near firing engines, by collision dust and re-entries). The code that DRAWS each source lists it here every frame

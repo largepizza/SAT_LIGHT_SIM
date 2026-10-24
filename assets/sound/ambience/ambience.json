@@ -74,6 +74,23 @@
       "when": { "gust": [0.01, 0.06], "agl_m": [1500, 150] }
     },
     {
+      "id": "tornado_roar",
+      "group": "wind",
+      "synth": "wind",
+      "gain": 0.5,
+      "fade_in_s": 2.0,
+      "fade_out_s": 4.0,
+      "params": { "color": 0.9, "center_hz": 140, "q": 0.55, "body": 0.9, "body_hz": 60, "gust": 0.3, "gust_rate": 2.2, "hiss": 0.05, "hiss_hz": 2200, "width": 0.55, "flutter": 0.8 },
+      "_note": "A tornado's roar (2026-10-23, issue 20261023_223907): the low, steady freight-train rumble of a funnel on the ground. Driver `tornado` (SatelliteSimAmbience.cpp) sums the funnels near the listener, 1 / (1 + (d / 2 km)^2) each (d to the nearest point of the funnel), x the funnel's size and lifecycle. Close up it is louder, broader and brighter (the band rises and widens, debris hiss joins); fast gusts and flutter keep it churning rather than a steady hiss.",
+      "mod": {
+        "level": { "driver": "tornado", "in": [0, 0.02, 0.1, 0.4, 1.0], "out": [0.0, 0.2, 0.45, 0.8, 1.0] },
+        "center_hz": { "driver": "tornado", "in": [0.05, 1.0], "out": [130, 360] },
+        "q": { "driver": "tornado", "in": [0.05, 1.0], "out": [0.65, 0.35] },
+        "hiss": { "driver": "tornado", "in": [0.2, 1.0], "out": [0.05, 0.55] }
+      },
+      "when": { "tornado": [0.003, 0.02], "agl_m": [6000, 3000] }
+    },
+    {
       "id": "rain",
       "group": "water",
       "synth": "rain",

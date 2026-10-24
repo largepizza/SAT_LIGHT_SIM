@@ -872,12 +872,91 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
         T.sea = sea;
         tornadoesNow.push_back(T);
     }
+    // Nearest first (the four probed columns below).
+    std::sort(tornadoesNow.begin(), tornadoesNow.end(), [&](const TornadoNow &a, const TornadoNow &b) {
+        return glm::dot(a.earthDir, up) > glm::dot(b.earthDir, up);
+    });
+    // ── The cloud base over each funnel (2026-10-23, issue 20261023_223907): the funnel hung from the Cb TYPE's base, while
+    // the cloud drawn over a tornado (the storm's stamped field, the map's own deck, the terrain-relative bases) stood
+    // hundreds of metres higher or lower: its top ended in clear air under the cloud. cloud_v2_lightning.comp (threads
+    // 2-5) finds the DRAWN cloud's base and the optical depth above it in the columns asked for here (cv2SunProf[8..19]);
+    // the answers (cv2RainMisc) are last frame's, eased per storm over ~0.4 s.
+    {
+        const double wallNow = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (cv2FlashMapped && tornadoProbeRan)
+        {
+            uint32_t res[4];
+            std::memcpy(res, static_cast<const char *>(cv2FlashMapped) + kCv2RainLightOffset + 48, sizeof res);
+            for (int k = 0; k < 4; ++k)
+            {
+                if (!tornadoProbeIds[k]) continue;
+                TornadoProbe &P = tornadoProbes[tornadoProbeIds[k]];
+                const double dtW = std::clamp(wallNow - P.wall, 0.0, 1.0);
+                P.wall = wallNow;
+                const uint32_t b = res[k] & 0xFFFFu;
+                if (b == 0xFFFFu) continue;   // no cloud found over it: keep what it had (or the type's base)
+                const float baseAsl = (float)b, tauA = (float)(res[k] >> 16) * (1.0f / 64.0f);
+                if (!P.valid)
+                {
+                    P.baseAsl = baseAsl;
+                    P.tau = tauA;
+                    P.valid = true;
+                }
+                else
+                {
+                    const float a = (float)(1.0 - std::exp(-dtW / 0.4));
+                    P.baseAsl += (baseAsl - P.baseAsl) * a;
+                    P.tau += (tauA - P.tau) * a;
+                }
+            }
+        }
+        tornadoProbeRan = false;
+        for (auto it = tornadoProbes.begin(); it != tornadoProbes.end();)
+            it = (wallNow - it->second.wall > 30.0) ? tornadoProbes.erase(it) : std::next(it);
+        float req[12] = {};
+        for (int k = 0; k < 4; ++k)
+        {
+            tornadoProbeIds[k] = 0;
+            if (k < (int)tornadoesNow.size())
+            {
+                const TornadoNow &T = tornadoesNow[k];
+                tornadoProbeIds[k] = T.stormId;
+                req[3 * k] = (float)T.earthDir.x;
+                req[3 * k + 1] = (float)T.earthDir.y;
+                req[3 * k + 2] = (float)T.earthDir.z;
+                TornadoProbe &P = tornadoProbes[T.stormId];
+                if (P.wall == 0.0) P.wall = wallNow;
+            }
+        }
+        if (cv2FlashMapped)
+            std::memcpy(static_cast<char *>(cv2FlashMapped) + kCv2RainMapOffset - 80 + 8 * 4, req, sizeof req);
+    }
     const double kTwoPi15 = 15.749609945722419;
-    for (const TornadoNow &T : tornadoesNow)
+    for (TornadoNow &T : tornadoesNow)
     {
         const double ground = T.sea ? 0.0 : std::max(0.0, (double)cpuTerrainHeightM(
             (float)glm::degrees(std::asin(std::clamp(T.earthDir.z, -1.0, 1.0))), (float)glm::degrees(std::atan2(T.earthDir.y, T.earthDir.x))));
-        const double Hb = std::max(800.0, (double)cv2Types[4].alt.x) * (T.spout ? 0.8 : 1.0);
+        // The funnel's top: the drawn base over it (the probe), else the Cb type's.
+        double Hb = std::max(800.0, (double)cv2Types[4].alt.x) * (T.spout ? 0.8 : 1.0);
+        double tauAbove = 0.0;
+        {
+            const auto it = tornadoProbes.find(T.stormId);
+            if (it != tornadoProbes.end() && it->second.valid)
+            {
+                Hb = std::clamp((double)it->second.baseAsl - ground, 250.0, 5000.0);
+                tauAbove = it->second.tau;
+                T.baseProbed = true;
+            }
+        }
+        // The light under the storm, as the cloud march lights the base it hangs from (cloud_v2_march.comp: the sky's
+        // light from above x the column's DIFFUSE transmission 1 / (1 + 0.11 tau), plus the ground's and the horizon's
+        // from below, 0.35 x (0.3 + 0.7 x it)), relative to clear sky. It was lit as under a clear sky: a white funnel
+        // under a dark grey storm base ("Tornados themselves do not seem to abide by lighting").
+        const double tdA = 1.0 / (1.0 + 0.11 * tauAbove);
+        const double lightK = (tdA + 0.35 * (0.3 + 0.7 * tdA)) / 1.35;
+        T.baseAglM = (float)Hb;
+        T.tauAbove = (float)tauAbove;
+        T.lightK = (float)lightK;
         const glm::dvec3 base = T.earthDir * (kReW + ground);
         const glm::dvec3 rel0 = base - eye;
         if (glm::length(rel0) > 250000.0) continue;
@@ -922,8 +1001,11 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
             d.c = glm::vec4(glm::vec3(re), (float)Sigma);
             d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2), (float)(1.0 / (kTwoPi15 * sA * sP * sP)));
             // Under the storm's base: mostly the sky's light (isotropic), a little direct Sun (the shader shadows it).
-            const glm::dvec3 iso = 4.0 * glm::pi<double>() * amb * 0.06 * glm::dvec3(0.66, 0.72, 0.82) * albedo * tint;
-            const glm::dvec3 sun = 4.0 * glm::pi<double>() * amb * sunShare * albedo * tint;
+            // (x lightK: the storm's column over it, above)
+            // (the sky's blue kept only by the diffuse transmission, as the march's ambHue: under a storm grey-white)
+            const glm::dvec3 skyTint = glm::mix(glm::dvec3(0.712), glm::dvec3(0.66, 0.72, 0.82), tdA);
+            const glm::dvec3 iso = 4.0 * glm::pi<double>() * amb * 0.06 * lightK * skyTint * albedo * tint;
+            const glm::dvec3 sun = 4.0 * glm::pi<double>() * amb * sunShare * lightK * albedo * tint;
             const double lI = iso.x + iso.y + iso.z, lS = sun.x + sun.y + sun.z;
             const double share = std::min(lI / std::max(lI + lS, 1e-9), 0.999);
             const double seedK = spinK(omega);
@@ -933,16 +1015,18 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
             d.cone = R >= 0.95 * range ? glm::vec4(0.0f, 0.0f, 0.0f, -2.0f)
                                        : glm::vec4(glm::vec3(re / range), (float)std::sqrt(1.0 - (R / range) * (R / range)));
         };
-        // The funnel: 10 Gaussians from its bottom to the base, wider upward (r0 at the ground to ~5 x), thinner as it
-        // ropes out, bent.
+        // The funnel: 10 Gaussians from its bottom up INTO the base (kInto: the cloud in front of its top hides the join,
+        // cloud_march.comp's plume composite), wider upward (r0 at the ground to ~5 x), thinner as it ropes out, bent.
         const int kSeg = 10;
+        const double kInto = 250.0;
+        const double zTop = Hb + kInto;
         const double r0 = (double)T.r0 * (1.0 - 0.6 * rope);
         const glm::vec3 grey(0.78f, 0.78f, 0.80f);
         for (int k = 0; k < kSeg; ++k)
         {
             const double f0 = (double)k / kSeg, f1 = (double)(k + 1) / kSeg;
-            const double z0 = zBot + (Hb - zBot) * f0, z1 = zBot + (Hb - zBot) * f1, zm = 0.5 * (z0 + z1);
-            const double q = zm / Hb;
+            const double z0 = zBot + (zTop - zBot) * f0, z1 = zBot + (zTop - zBot) * f1, zm = 0.5 * (z0 + z1);
+            const double q = std::min(zm / Hb, 1.0);
             const double rr = r0 * (1.0 + (T.spout ? 3.0 : 2.2) * std::pow(q, 2.2));
             const double lat0 = bend * std::sin(3.14159 * q) * (1.0 - q * 0.3);
             const glm::dvec3 p = T.earthDir * (kReW + ground + zm) + bendDir * lat0;
@@ -953,7 +1037,7 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
             emit(p, axis, 0.6 * (z1 - z0), rr / 2.6, 40.0, 0.45, glm::dvec3(grey), 0.06, wFun);
         }
         // The wall cloud: a lowered, rotating disc under the base, 1.5-3 km across.
-        emit(T.earthDir * (kReW + ground + Hb - 120.0), T.earthDir, 160.0, (T.spout ? 450.0 : 1500.0), 1.0, 0.4,
+        emit(T.earthDir * (kReW + ground + Hb - 60.0), T.earthDir, 160.0, (T.spout ? 450.0 : 1500.0), 1.0, 0.4,
              glm::dvec3(0.6, 0.62, 0.66), 0.02, 0.021);
         // The debris cloud (land) or the spray ring (sea) once it touches down.
         if (zBot < 30.0)
