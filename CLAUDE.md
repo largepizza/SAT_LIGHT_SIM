@@ -945,7 +945,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   Gaussians (peak tau 40 at sigma rr / 2.6, so the edge, tau ~1, sits at the radius rr: at tau 3.5 and sigma rr it was a
   soft cone) widening 2.2-3x to the base, lowering over its first ~90 s and roping out (thinner, bent) over its last
   third, a faint wall cloud and a debris cloud (spray at sea). Lit by the sky (~0.06 of the plumes' clear-sky unit) and a
-  little Sun: it stands under the storm's base. It SPINS (2026-10-23): seedK >= 256 marks a tornado Gaussian whose
+  little Sun: it stands under the storm's base. **It hangs from the DRAWN cloud base and is lit through the storm's column**
+  (2026-10-23, issue 20261023_223907 "tornado tops do not connect to clouds ... do not abide by lighting"): it hung from the
+  Cb TYPE's base (`cv2Types[4].alt.x` above the CPU ground), hundreds of metres under the cloud drawn there, and was lit as
+  under a clear sky (a white funnel under a dark grey base). `weatherFillTornadoes` asks cloud_v2_lightning.comp for up to
+  four columns (the nearest funnels: Earth-fixed directions in `cv2SunProf[8..19]`, written by the HOST); threads 2-5 find
+  the first height from the ground where the field (rain and thin ice left out) passes 1e-3 /m (24 x 250 m, 5 bisections)
+  and the optical depth above it (12 steps to the shell top), packed into `cv2RainMisc` (uvec4: base m ASL | tau x 64 << 16;
+  0xFFFF none); the host reads them the next frame, eases them per storm over 0.4 s (`tornadoProbes`), runs the funnel 250 m
+  INTO that base (the cloud in front hides the join) with the wall cloud 60 m under it, and lights it as the march lights
+  that base: x lightK = (Td + 0.35 (0.3 + 0.7 Td)) / 1.35, Td = 1 / (1 + 0.11 tau), its sky hue kept by Td (grey under a
+  storm). No probe (clouds v2 off, from orbit): the type's base. ~40 field evaluations per probed funnel on one thread of the
+  lightning pass; GPU within noise. Harness `state` -> `weather.tornado_list` (base_agl_m, base_probed, tau_above, light_k).
+  **Its roar** (layer `tornado_roar`, synth wind: low brown rumble 130-360 Hz, broad, fast churning gusts and flutter, debris
+  hiss close; driver `tornado` = sum over the funnels within ~200 km of sqrt(width / 150 m) x lifecycle / (1 + (d / 2 km)^2),
+  d to the nearest point of the funnel; heard below ~3-6 km AGL). Offline (`audio record ... solo=tornado_roar`): -36 dBFS
+  RMS 1 km away (the whole ambience -35), -39 at 3 km, -48 at 12 km. It SPINS (2026-10-23): seedK >= 256 marks a tornado Gaussian whose
   seed carries a spin phase (3840ths of a turn: the funnel ~35 m/s at its radius, debris 0.7 x, wall cloud a turn in ~5 min,
   cyclonic), and cloud_march.comp reads the low billow field in LOG-POLAR coordinates about its centre turned by it
   (`tornadoCyl`: radius cells would draw the wall cloud as rings). The plume composite blends in front of / behind the cloud
@@ -1294,6 +1309,19 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     walk, strafe, boost, look, rise, descend at the player's speeds for that height) + context rows (storm, sea, night,
     Reflect beams, aurora ground / orbit, ISS and Starmind in follow mode, a launch plume, the 2037 eclipse), one launch
     (~13 min `--quick`, ~22 full); `--fragment` pastes into a larger batch (captures `mx_*`), `compare` flags regressions.
+  - **Anvil undersides are lit from below** (2026-10-24, issue 20261023_230636 "Anvil darkness", 6.6 km under a Cb at
+    0.3 S 98.9 E): seen from below an anvil was near black navy (0.02 linear against 0.10 for the shadowed tower walls
+    beside it, 0.74 for its sunlit top). Two causes, found with a march variant writing one pixel's terms to the eval
+    counters (harness_runs/sl in the storm-look worktree): (1) the ground BOUNCE used `keyCol`, which carries the clouds'
+    shadow AT THE SAMPLE (the Sun transmittance volume): every sample of an anvil's underside is in the anvil's own
+    shadow, so its light from below was exactly 0. A HIGH sheet's underside sees the ground and the cloud tops far out
+    round it, mostly outside its shadow (which falls h / tan(Sun elevation) away): from 4 to 9 km up the bounce takes
+    `kBounceOpen` (0.6) of the UNSHADOWED Sun over an albedo rising from 0.15 to `kBounceAlbHigh` (0.3, cloud tops);
+    low decks unchanged (their ground is the one they shade). (2) an anvil-reaching tower's flared head took the tower's
+    whole zeta as `hf` (0.75-0.9 at its overhang), so `(1 - hf)` / `(1 - hf)^2` gave its underside no light from below:
+    black blotches between the shield's lit underside. cv2ColumnSigma's `hf` is now (zeta - 0.7) / 0.3 in the head
+    (`bestFull`), its density still by zeta. Underside 0.02 -> 0.14 linear (tower walls 0.10), grey with darker (not black) mammatus-like blotches;
+    storm views elsewhere within ~1 level; cost within noise; 128 registers.
   - **Anvil puffiness** ("Anvil puffiness" `anvil_puffiness` 1, "Anvil top lift (m)" `anvil_lift_m` 800, slots 310-311, UBO
     `anvil3`; `cv2ColumnSigma`): the anvils are the anvil-reaching towers' flared heads, and their lobes and erosion were faded
     out over the head's last 1.5 km for the map-fed shield's thin lid (off by default): smooth plates with knife edges, "an
@@ -1538,7 +1566,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   width = pudgy), and only dominant towers flashed (a map-typed storm without anvil towers had none: user snapshot 43).
 - **Weather evolution (2026-09-29, decision A):** the weather cube is re-baked as sim time moves
   (`SatelliteSim::recordWeatherEvolution`, one face per frame with all its mips, once it lags by ~300 m of
-  wind drift or the settings change; the bake's pipeline and per-mip sets are kept, `cv2Wx*`). The bake
+  wind drift or the settings change; the bake's pipeline and per-mip sets are kept, `cv2Wx*`). **In time warp all six
+  faces are baked together** (2026-10-23, issue 20261023_224032 "Weather system updates choppy", 1 h/s from 3300 km): once
+  six frames of sim time pass the face's `due` (45 s with storms stamped), or every face is stale, one dispatch with z = 6
+  bakes the whole cube at ONE sim time every frame. One face a frame left each face up to six frames (~13 min at 1 h/s)
+  behind, every face at its own moment: the storms' stamped cloud stepped face by face; and past a 15-min step
+  updateStorms makes every face stale each frame and the worst-first pick took face 0 every time, freezing the other five
+  until the warp stopped. GPU within noise at 1 h/s from orbit (29.95 vs 29.88 ms). `clouds_v2.weather_one_face` (no UI)
+  restores the old schedule (A/B); harness `state` -> `weather.cube` (rebakes, all_six_bakes, face_lag_s). The bake
   (`cloud_v2_weather.comp`) reads the map through TWO copies advected by a slow curl wind (`evoWind`,
   ~4000 km, turning over a day), each over its own window P offset by P/2 and weighted sin^2 of its phase
   (0 at its reset): the flow-map double-phase trick, so the map moves locally and never drifts from itself
@@ -8033,6 +8068,21 @@ Read it at the start of any terrain-related session before making changes.
   fallback; satellites/stars depth-tested against terrain (gl_FragDepth — since Phase 4 the unified log-distance
   encoding, see "Unified scene depth"; originally close terrain → [0, 0.5),
   sky → 1.0)
+- **The atmosphere loop's densities are INTEGRATED over each step** (2026-10-24, issue 20261023_230542 "Rings in the
+  sky"): exp(-h / H) averaged exactly for a height linear from the step's start to its end (`atmHalfAvg3`, the start's
+  exponentials carried from the last step's end: one vec3 exp a step, as before), split at the middle only for the step
+  holding the ray's lowest point (a ray dipping toward the horizon from altitude), for the Rayleigh, the Mie and the "Haze
+  near clouds" columns. With the default "View samples (min)" 6.5 (~15-km steps looking up) the midpoint sample of the Mie
+  (1.2 km scale height) and the haze (2.5 km) was off by up to ~50x, and N_VIEW is a whole number that grows with the
+  path's length: each time it stepped, every few degrees from the zenith, the haze's share jumped — concentric rings round
+  the zenith, gone at 32 samples (the A/B that found it). Smaller N-dependent terms went with it: a step's in-scatter is
+  attenuated to the step's MIDDLE (`odR_cam - 0.5 densR0`; by the whole step, the first ~15-km step looking up lost ~13%
+  of its blue to its own Rayleigh column), and the god rays' shadow is weighted along the step by the Rayleigh (8 km) and
+  the Mie + haze (1.5 km) profiles separately (`shK` / `shKMie`, geometric weights: two exps a step; it was one 3-km
+  weighting, switched off past 30 km). Ring strength (high-pass of the zenith's radial profile, issue view): 0.158 ->
+  0.069, the 32-sample reference 0.057 (0.047 without god rays); a faint step remains with god rays on (open). The zenith
+  now carries its real Mie column (a little hazier overhead, mean +1-3 levels in the matrix stills; the horizon,
+  already finely sampled, unchanged). Sky pass cost as before (matrix cells within 0.4 ms); SKY_LITE 226.8 of 230.4 KB.
 - **The atmosphere loop starts where the ray ENTERS the atmosphere** (`tStart`, 2026-09-29), not at the eye:
   from orbit nearly every N_VIEW step fell in the vacuum above R_ATMOS (zero density, but each still paid the
   city-glow fetch, the trig and the airglow noise) while the few left in the air undersampled it. Knockout
