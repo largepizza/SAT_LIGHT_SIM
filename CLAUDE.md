@@ -7542,6 +7542,52 @@ same frames: mean |diff| 0.3-1.4 levels, within run-to-run noise (`screenshots/o
   (plumes in view), of which the parcels' states 0.62 -> 0.36 ms with `Parcel::at` scanning from last frame's sample
   (`hint`) and rejecting an expired parcel from `ageEnd` (same answer as the binary search).
 
+**Storm-view pass 2 (2026-10-24, issue 20261023_230322 "Storm performance": 12.4 km under an anvil at -0.26, 111.68, the
+user's High settings, 1920x1009, RTX 3070 Ti; also 224032 from 3293 km, 223907 from 1.7 km, 230636 from 6.6 km; scripts,
+variant generator and tables in `harness_runs/perf2/` — `mkv.py <parts>` builds text-substituted march variants from
+`variants.py`, `gen_ab.py` interleaves them per view, `tab.py` tabulates; captures in `screenshots/overnight_20261023/perf2/`).**
+Cloud march before -> after (interleaved in one app): 12.4 km 38.3-40.0 -> 34.6-35.1 ms; 6.6 km 14.0 -> 13.3; 1.7 km 11.8 ->
+11.1-11.3; 3293 km 23.5 unchanged; Medium 12.4 km 21.1 -> 18.6. 128 registers (march and composite); captures within the
+run-to-run floor (same shader reloaded twice: mean |diff| 0.7 at 12.4 km, 0.6 at 6.6 km).
+- **What the 12.4-km view costs** (attribution by settings and cost probes): the eye is INSIDE the high layer, so every ray
+  runs through its near haze in 60-120 m steps — `high_amount 0` takes the march 39 -> 16 ms; the thin-ice samples'
+  lighting ~7 ms; the anvil shields' loop ~8 ms (`cv2ShieldAt`, ~13 candidates a lookup over the Maritime Continent's
+  storm cluster, ~4 within reach; nearly every field evaluation does one) and the tower loop ~4 ms (both by running the loop
+  twice, `x2shloop` / `x2towloop`); full-resolution clouds 24 ms (`full_res 0`: a look change). Sky pass ~12 ms: atmosphere
+  loop ~6.5, god rays ~3, terrain ~0 (6 ms at the 1.7-km view).
+- **Kept:** (1) the low field's EXACT top bound (`cv2FieldLow`, CPU `anvil3.zw`: the largest topMax over every weather-type
+  mix at the tropopause factor's two ends; the bound is convex in the factor, so the shader interpolates) + the ground + the
+  storm cumulus target only near a tower, then with its real value after the cluster read. The old test took the target's
+  largest value, column.w x (1 + "Storm cumulus variation") = 21.6 km at the user's 12 km x 1.8, so every sample in the
+  cirrus / anvil band paid the cell, smooth-weather and ground reads before topMax returned nothing (the old test is kept, so
+  nothing it cut comes back). (2) `cv2StvT` from the finest level out, stopping at rem < 1e-5 (the same sum: it read all four
+  levels, 32 flash-buffer reads, for every lit sample, thin ice included). (3) The tower search's height test before its bin
+  lookup. (4) **"Near cirrus stride"** (opt-in, Rebuild experiments, slot 335, `clouds_v2.near_cirrus_stride`, 1 = off; UBO
+  `cv2.perf` appended): a pure thin-ice coarse sample within a 12-m footprint stands for N steps: 12.4 km 34.2 -> 27.3 ms at 2,
+  25.5 at 4 (Medium 18.6 -> 15.5 / 14.2), captures within the floor, still-view noise unchanged; off because a dense cloud
+  starting inside a stride is entered up to ~2 steps late, and motion was not judged.
+- **Tried and dropped (measured):** the clouds' shield index at 128 bins a face + a capsule filter (13 -> 11 candidates, no
+  measurable gain, shield CPU 0.33 -> 1.5-1.8 ms a frame) or listed by discs along the spine (more entries); a bounding-sphere
+  reject per shield (half the full tests, no gain); the shield loop two candidates at a time (+60%: the loop is neither ALU nor
+  load-issue bound); lazy loads of tower / shield records; a strength-ordered break in the shield loop; the towers'
+  trig / turret skips; height pre-tests before the high layer's weather reads and the anvil outline's reads; skipping the
+  profile of towers far from their body (probe); `glslc -O` (+1 ms); the sky pass's god-ray froxels read a slice at a time
+  along the ray (4 reads instead of 8 a lookup: no change). **Cost probes that duplicate a function call are superlinear**
+  (a second `cv2ColumnSigma` +63 ms, a second `cv2FieldLow` +13 / +40 ms) while a duplicate in a branch never taken costs
+  nothing: the executed code's size is part of the cost (Clouds v2 "Perf sprint": the instruction cache) — measure a loop by
+  running it twice inside the function, not by calling the function twice.
+- **Open:** the shields' and towers' loops (~12 ms here) want fewer candidates per sample, not cheaper ones (a 2D storm
+  field cached per frame would be a look change); the near-cirrus haze (the option above); the thin-ice lighting (~5 ms);
+  the sky's atmosphere loop (6.5 ms) and god rays (3 ms). CPU serial share ~2.5 ms a frame (record_compute 2.2: the dust
+  list fill 0.8 incl. launch visuals 0.7, stars 0.5).
+- Matrix suite (`--quick`, old shaders reloaded into the new build as the baseline: `harness_runs/perf2/mx_base` vs
+  `mx_new`): every motion and noise cell identical to the printed precision; `compare` flagged alt3km's GPU (27.4 -> 31.3
+  ms) while another agent's app shared the GPU, and the same cell interleaved in one app alone reads 9.9 -> 9.6 ms of
+  cloud march (no regression). `hitch_check.py` fails A 1h / 1d / 1w (p99 51-54 ms) and D 1d / 1w (69-73) with the new
+  shaders and A 1w, D 1d / 1w / 1yr with the OLD ones reloaded into the same build: the default views' GPU frame is now
+  ~35-50 ms on this branch (storms), so the 50-ms p99 limits sit at the noise; the default view at five sim times,
+  interleaved, is 0.5-0.9 ms cheaper with the new shaders (one 4.7-ms outlier did not repeat: 22.5 -> 21.6 on rerun).
+
 ---
 
 ## Subsystem: Cloud Shadows

@@ -870,6 +870,7 @@ struct GpuCloudV2Params
     glm::vec4 anvil3;                   // 2026-10-22: anvil puffiness, the head top's lift (clouds_v2.glsl)
     glm::vec4 stvL0, stvL1, stvL2, stvL3, stvH, stvV;   // 2026-10-22: S3, the Sun transmittance volume (clouds_v2.glsl)
     glm::vec4 tsh0, tsh1, tsh2, tsh3;   // 2026-10-22: the terrain Sun-horizon map (clouds_v2.glsl)
+    glm::vec4 perf;                     // 2026-10-24: x "Near cirrus stride" (1 = off), y its footprint (m), zw spare
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -895,7 +896,8 @@ static_assert(offsetof(GpuCloudV2Params, grid) == 288 + 48 * kCloudV2Types + 992
 static_assert(offsetof(GpuCloudV2Params, anvil3) == 288 + 48 * kCloudV2Types + 1008, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, stvL0) == 288 + 48 * kCloudV2Types + 1024, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, tsh0) == 288 + 48 * kCloudV2Types + 1120, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1184, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, perf) == 288 + 48 * kCloudV2Types + 1184, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1200, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -5047,6 +5049,10 @@ private:
                                                    // the fog / dust through the Sun-horizon map (not the ground: it has its own)
     bool  cv2TshOnNow = false;                     // the map is baked this frame (fillCloudsV2Params)
     uint32_t cv2FroxFrame = 0;                     // the froxels' sample sequence index (cv2FroxJitter, cloud_lightning.glsl)
+    // "Near cirrus stride" (2026-10-24, the perf pass; key near_cirrus_stride, slot 335): a pure thin-ice sample within a
+    // 12-m footprint (the eye inside the high layer, where it is a soft haze) stands for this many view steps. 1 = off (the
+    // look). From 12.4 km under an anvil (issue 20261023_230322): cloud march 34.6 -> 27.8 ms at 2, 25.0 at 4.
+    float cv2NearCirrusStride = 1.0f;
     float cv2GodrayFroxels = 1.0f;                 // on by default since 2026-10-22: "godray_froxels": the sky pass reads the volume
     // Per-pass GPU time inside the cloud bucket (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S0): kCv2PassStamps timestamps
     // at fixed points of recordCloudsV2 + one after cloud_march.comp; a pass skipped this frame is a zero interval.
