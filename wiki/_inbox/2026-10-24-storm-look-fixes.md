@@ -4,7 +4,9 @@ code: [shaders/sat_sky.frag, shaders/cloud_v2_march.comp, src/simulations/Satell
 ---
 ## Now
 The sky's single-scattering loop integrates each step's Rayleigh, Mie and "Haze near clouds" density exactly for a
-height linear over each half step (start, middle, end), so the sky has no step-count structure: the step count still
+height linear over the step (split at its middle only across the ray's lowest point), attenuates the step's light to its
+middle, and weights the god rays' shadow along the step by the Rayleigh and Mie + haze profiles, so the sky has almost no
+step-count structure: the step count still
 grows with the path's length ("View samples (min)" 6.5 ~ 15-km steps looking up), but the result no longer changes when
 it does.
 
