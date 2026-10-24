@@ -4836,12 +4836,19 @@ private:
         wx::Fire f;
         wx::FireState s;
         double rangeKm = 0.0;
+        double reachK = 1.0;                   // faded out over the last 20% of the reach (no pop)
+        float groundM = 0.0f;                  // the ground under its ignition point (the full DEM, cached per fire)
         int gauss = 0, points = 0;
+        std::vector<glm::vec4> knots;          // the upper smoke layer's knots (x, y m east / north of ignition, z, age s)
     };
     std::vector<FireNow> firesNow;             // alive and in reach this frame, nearest first
+    std::unordered_map<uint64_t, float> fireGroundCache;   // fire id -> the full DEM's height there (a file read each)
+    float fireLodScale = 1.0f;                 // x the front points' spacing: widened when a crowd of fires overflows
+                                               // the frame's point budget, relaxed back slowly (the levels cross-fade)
+    uint32_t firePointsLast = 0, fireFlamesLast = 0, fireLightsLast = 0;   // this frame (harness `fires`)
     uint32_t smokeHdrBits = 0;
     uint32_t aerosolFirst = 0xFFFFFFFFu;       // this frame's first haboob Gaussian (weatherFillHaboobs; one range with the smoke)                 // the dust list header word 1's smoke range (smoke.glsl), this frame's
-    void weatherFillWildfires(GpuDustCloud *out, uint32_t &n);
+    void weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double pixFull);
     // Haboobs (2026-10-23, SatelliteSimHaboob.cpp): the dust walls on storms' gust fronts over the biome map's dust.
     struct HaboobPoint
     {

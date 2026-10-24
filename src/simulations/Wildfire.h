@@ -15,7 +15,8 @@ struct Fire {
     uint64_t id = 0;
     double latDeg = 0, lonDeg = 0;   // ignition point
     double t0 = 0, life = 0;         // ignition (s since J2000), lifetime (s)
-    double windAz = 0;               // the mean wind it spreads and blows its smoke toward (rad from north, toward)
+    double windAz = 0;               // the wind it spreads with (rad from north, toward): windAt() near the ground over its
+                                     // life (its smoke follows the wind of each moment and height, windAt())
     double spreadMps = 0.05;         // the head's day-averaged spread rate
     float size = 0.5f;               // 0..1: how big it gets (life, plume height, smoke)
     float fuel = 0.5f;               // the biome fuel at the ignition point
@@ -29,7 +30,8 @@ struct FireState {
     double headM = 0;        // head distance downwind of the ignition point (m)
     double backM = 0;        // backing distance upwind
     double halfWidthM = 0;   // the burnt ellipse's half width
-    double windAz = 0;       // the wind now (rad from north, toward): the mean +- a slow wander
+    double windAz = 0;       // the direction it spreads (rad from north, toward): the burnt ellipse's axis (fixed: a
+                             // burnt area does not turn with the wind; the smoke follows windAt())
     double plumeTopM = 0;    // smoke injection height above the ground (m)
     double ageS = 0;
 };
@@ -39,6 +41,38 @@ FireState fireStateAt(const Fire &f, double t);
 glm::dvec2 fireEdgeAt(const FireState &s, double a);
 // How hot the front is at edge angle a: the head 1, the flanks ~0.35, the back ~0.1.
 double fireFrontIntensity(double a);
+// The real front (2026-10-23 b): the ellipse with FINGERS (a radial perturbation from its centre, ~10% at the head,
+// growing slowly with the fire) at edge angle a, metres east / north of the ignition point; and ds/da there (m/rad).
+glm::dvec2 fireFrontAt(const Fire &f, const FireState &s, double a, double *dsda = nullptr);
+// How much of the front at angle a is burning now: fireFrontIntensity x a broken pattern along it (runs of flame and
+// gaps, re-drawn over ~2 h), 0..~1.2.
+double fireFrontHeat(const Fire &f, const FireState &s, double a, double t);
+// The flames: their height (m) and the depth of the flaming zone (m) at a front heat of 1.
+double fireFlameHeightM(const Fire &f, const FireState &s);
+double fireFlameDepthM(const Fire &f);
+
+// The wind (2026-10-23 b): a pure function of place, height above the ground and time, coherent in space, so
+// neighbouring fires' smoke agrees. m/s east / north. A zonal climatology (trades, westerlies, polar easterlies; the
+// trades weaken and the westerlies strengthen with height) + synoptic eddies (~3000 km, days) + mesoscale (~400 km,
+// hours) + small eddies (~30 km, an hour: the plumes' wiggle), each the curl of a sum of travelling waves on the
+// sphere (divergence free). Near the ground it is slower and backed by friction (turned ~25 deg toward low pressure),
+// and above it turns with height by a slowly varying thermal-wind angle (up to ~+-35 deg by 3 km), so a plume's layers
+// go different ways.
+glm::dvec2 windAt(const glm::dvec3 &dirEcef, double hM, double t);
+
+// The smoke: its injection height now (m above the ground: the fire's plume top, lower in a strong wind, the column
+// bending over) and the updraft that lifts it (m/s).
+double fireInjectionHeightM(const Fire &f, const FireState &s, double t);
+double fireUpdraftMps(const Fire &f);
+// The height (m above the ground) of smoke emitted ageS ago, rising from its source toward its layer Hb.
+double fireSmokeRiseM(double ageS, double Hb, double w0);
+// Where the column starts (m east / north of the ignition point): a little downwind of the head, so the flames stand
+// upwind of their smoke and are seen from the side (the near-ground smoke is the flames' own, carried off downwind).
+glm::dvec2 fireSmokeSource(const Fire &f, const FireState &s, double t);
+// Where the smoke emitted ageS ago into the layer Hb is now (x, y metres east / north of the ignition point, z its
+// height): walked from the head through the wind of each height at the moment it travelled (the sim's streak walks the
+// same steps at its own knots).
+glm::dvec3 fireSmokeAt(const Fire &f, const FireState &s, double t, double ageS, double Hb, int steps = 16);
 
 // Every fire born in the 1-degree cells within radiusKm of (lat, lon) over the last kMaxLife, alive at time t.
 // rateScale x the calibrated rate (0 = none).
