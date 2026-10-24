@@ -2043,6 +2043,16 @@ const float kCloud3DFadeEnd   = 3000000.0;
 // cost anywhere satellites actually orbit — the reported "LEO cloud perf is awful" case sits
 // entirely inside the always-full-3D zone below kCloud3DFadeStart. This band supplies the
 // actual LEO-perf lever: steps ramp from full ground quality down to a floor well before 800 km.
+// The mean of exp(-h / H) over an atmosphere step whose height runs a -> m -> b (its start, middle, end), exact for a
+// height linear over each half (2026-10-23): the N_VIEW loop's densities. A midpoint sample of a 1-3 km scale height
+// over a ~15-km step was off by tens of times and changed with the step count (rings round the zenith).
+float atmHalfAvg(float a, float b, float H)
+{
+    float ea = exp(-a / H), eb = exp(-b / H), d = (b - a) / H;
+    return abs(d) > 1e-3 ? (ea - eb) / d : 0.5 * (ea + eb);
+}
+float atmStepAvg(float a, float m, float b, float H) { return 0.5 * (atmHalfAvg(a, m, H) + atmHalfAvg(m, b, H)); }
+
 const float kMarchStepsAltStart = 2000.0;    // below this: full cloud.marchSteps (ground/aircraft)
 const float kMarchStepsAltEnd   = 200000.0;   // at/above this: kMarchStepsFloor (LEO and up)
 const float kMarchStepsFloor    = 12.0;       // minimum steps once the shell is angularly tiny
@@ -4135,21 +4145,31 @@ void main() {
         float len = length(sp);
         if (len < R_EARTH) sp *= R_EARTH / len;  // clamp underground samples to Earth surface
         float h = max(0.0, length(sp) - R_EARTH);  // altitude above sea level (metres)
+        // The step's two ends (2026-10-23, issue 20261023_230542 "Rings in the sky"): the densities are integrated
+        // over the step (atmStepAvg: exact for a height linear over each half), not taken at its midpoint. With the
+        // default ~15-km steps a midpoint sample of the Mie (1.2 km scale height) and the haze aloft (2.5 km) was off
+        // by up to ~50x looking up, and N_VIEW is a whole number that grows with the path's length: each time it
+        // stepped (every few degrees away from the zenith) the haze's share jumped — rings round the zenith.
+        float tSe0 = tStart + float(i) * segLen;
+        float hA   = max(0.0, length(obsPos + dir * tSe0) - R_EARTH);
+        float hB   = max(0.0, length(obsPos + dir * (tSe0 + segLen)) - R_EARTH);
 
         // Running camera-side optical depth: accumulated from step 0 to this step.
         // densR/densM = density × step length = optical depth contribution of this step alone.
-        float densR = exp(-h / H_R) * segLen;   // Rayleigh: peaks at sea level, scale height H_R
-        float densM = exp(-h / H_M) * segLen;   // Mie: concentrated near surface, scale height H_M
+        float densR = atmStepAvg(hA, h, hB, H_R) * segLen;   // Rayleigh: peaks at sea level, scale height H_R
+        float densM = atmStepAvg(hA, h, hB, H_M) * segLen;   // Mie: concentrated near surface, scale height H_M
         // Haze near clouds (2026-10-10, "Haze near clouds" = cv2.mid3.w): humid air under and around the weather
         // systems carries more aerosol (the weather cube over ~40 km: cover, + rain), 2.5-km scale height, added to
         // the Mie column of this step. Aerosol is what scatters FORWARD: with it a sunlit stretch between cloud
         // shadows glows toward the Sun (a ray), where clean air only shows the shadows as darker bands.
 #ifdef SKY_SUN_SHADOW
-        if (cv2.mid3.w > 0.0 && h < 12000.0) {
+        float hLo = min(min(hA, hB), h);
+        if (cv2.mid3.w > 0.0 && hLo < 12000.0) {
             vec3  dS  = normalize(sp.x * enuX + sp.y * enuY + sp.z * enuZ);
             float dph = cloud.cloudPhase * cloud.layers[0].driftMult;
             vec4  wx  = textureLod(earthCloudsCube, vec3(dS.x * cos(dph) - dS.y * sin(dph), dS.x * sin(dph) + dS.y * cos(dph), dS.z), 3.0);
-            densM += cv2.mid3.w * (0.25 + 0.75 * smoothstep(0.05, 0.4, wx.r) + 0.6 * wx.b) * exp(-h / 2500.0) * (1.0 - smoothstep(7000.0, 12000.0, h)) * segLen;
+            densM += cv2.mid3.w * (0.25 + 0.75 * smoothstep(0.05, 0.4, wx.r) + 0.6 * wx.b) * atmStepAvg(hA, h, hB, 2500.0)
+                   * (1.0 - smoothstep(7000.0, 12000.0, hLo)) * segLen;
         }
 #endif
         odR_cam += densR;
@@ -4265,9 +4285,11 @@ void main() {
         float lenF  = fwC * segLen;
         float densR0 = densR, densM0 = densM, fRK = 1.0, fMK = 1.0, litFF = litF;
         if (fPart) {
-            float hF = max(0.0, length(obsPos + dir * (tS0 + 0.5 * lenF)) - R_EARTH);
-            fRK = min(exp((h - hF) / H_R), 50.0);
-            fMK = min(exp((h - hF) / H_M), 50.0);
+            // The piece's own density per metre over the step's (both integrated as the step's, atmStepAvg).
+            float hF  = max(0.0, length(obsPos + dir * (tS0 + 0.5 * lenF)) - R_EARTH);
+            float hFe = max(0.0, length(obsPos + dir * (tS0 + lenF)) - R_EARTH);
+            fRK = min(atmStepAvg(hA, hF, hFe, H_R) / max(atmStepAvg(hA, h, hB, H_R), 1e-30), 50.0);
+            fMK = min(atmStepAvg(hA, hF, hFe, H_M) / max(atmStepAvg(hA, h, hB, H_M), 1e-30), 50.0);
             litFF = clamp(1.0 - max(0.0, min(tS0 + lenF, tShB) - max(tS0, tShA)) / lenF, 0.0, 1.0);
         }
         if (litF < 1.0) {
