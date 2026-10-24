@@ -2043,6 +2043,23 @@ const float kCloud3DFadeEnd   = 3000000.0;
 // cost anywhere satellites actually orbit — the reported "LEO cloud perf is awful" case sits
 // entirely inside the always-full-3D zone below kCloud3DFadeStart. This band supplies the
 // actual LEO-perf lever: steps ramp from full ground quality down to a floor well before 800 km.
+// The mean of exp(-h / H) over an atmosphere step whose height runs a -> m -> b (its start, middle, end), exact for a
+// height linear over each half (2026-10-23): the N_VIEW loop's densities. A midpoint sample of a 1-3 km scale height
+// over a ~15-km step was off by tens of times and changed with the step count (rings round the zenith).
+float atmHalfAvg(float a, float b, float H)
+{
+    float ea = exp(-a / H), eb = exp(-b / H), d = (b - a) / H;
+    return abs(d) > 1e-3 ? (ea - eb) / d : 0.5 * (ea + eb);
+}
+float atmStepAvg(float a, float m, float b, float H) { return 0.5 * (atmHalfAvg(a, m, H) + atmHalfAvg(m, b, H)); }
+// The same for three scale heights at once from the exponentials already taken (the loop carries each step's end to the
+// next step's start: two vec3 exps a step).
+vec3 atmHalfAvg3(vec3 ea, vec3 eb, vec3 d)
+{
+    return mix(0.5 * (ea + eb), (ea - eb) / max(abs(d), vec3(1e-3)) * sign(d), step(vec3(1e-3), abs(d)));
+}
+const vec3 kAtmInvH = vec3(1.0 / H_R, 1.0 / H_M, 1.0 / 2500.0);   // Rayleigh, Mie, the haze aloft
+
 const float kMarchStepsAltStart = 2000.0;    // below this: full cloud.marchSteps (ground/aircraft)
 const float kMarchStepsAltEnd   = 200000.0;   // at/above this: kMarchStepsFloor (LEO and up)
 const float kMarchStepsFloor    = 12.0;       // minimum steps once the shell is angularly tiny
@@ -4130,26 +4147,53 @@ void main() {
     //   - Per-step sun optical depth (sunOD): optical depth from THIS STEP to the SUN,
     //     computed by calling optDepth along the sun direction.
     //   - Phase functions pR/pM: angular weighting of how much scatter points toward the camera.
+    // (The step's start height and its exponentials, carried from the last step's end: atmStepAvg below.)
+    float atmHPrev = max(0.0, length(obsPos + dir * tStart) - R_EARTH);
+    float atmTCl   = -dot(obsPos, dir);   // the ray's closest approach to the Earth's centre
+    vec3  atmEPrev = exp(-atmHPrev * kAtmInvH);
     for (int i = 0; i < N_VIEW; ++i) {
         vec3  sp  = obsPos + dir * (tStart + (float(i) + 0.5) * segLen);  // midpoint of this atmosphere step
         float len = length(sp);
         if (len < R_EARTH) sp *= R_EARTH / len;  // clamp underground samples to Earth surface
         float h = max(0.0, length(sp) - R_EARTH);  // altitude above sea level (metres)
+        // The step's two ends (2026-10-23, issue 20261023_230542 "Rings in the sky"): the densities are integrated
+        // over the step (atmStepAvg: exact for a height linear over each half), not taken at its midpoint. With the
+        // default ~15-km steps a midpoint sample of the Mie (1.2 km scale height) and the haze aloft (2.5 km) was off
+        // by up to ~50x looking up, and N_VIEW is a whole number that grows with the path's length: each time it
+        // stepped (every few degrees away from the zenith) the haze's share jumped — rings round the zenith.
+        float tSe0 = tStart + float(i) * segLen;
+        float hA   = atmHPrev;
+        float hB   = max(0.0, length(obsPos + dir * (tSe0 + segLen)) - R_EARTH);
+        vec3  eA   = atmEPrev;
+        vec3  eB   = exp(-hB * kAtmInvH);
+        // Linear in height from end to end (a ray's height is nearly linear over a step), except across the ray's lowest
+        // point (a ray dipping toward the horizon from altitude), where the step is split at its middle.
+        vec3  stepAvg;
+        if (atmTCl > tSe0 && atmTCl < tSe0 + segLen) {
+            vec3 eM = exp(-h * kAtmInvH);
+            stepAvg = 0.5 * (atmHalfAvg3(eA, eM, (h - hA) * kAtmInvH) + atmHalfAvg3(eM, eB, (hB - h) * kAtmInvH));
+        } else {
+            stepAvg = atmHalfAvg3(eA, eB, (hB - hA) * kAtmInvH);
+        }
+        atmHPrev = hB;
+        atmEPrev = eB;
 
         // Running camera-side optical depth: accumulated from step 0 to this step.
         // densR/densM = density × step length = optical depth contribution of this step alone.
-        float densR = exp(-h / H_R) * segLen;   // Rayleigh: peaks at sea level, scale height H_R
-        float densM = exp(-h / H_M) * segLen;   // Mie: concentrated near surface, scale height H_M
+        float densR = stepAvg.x * segLen;   // Rayleigh: peaks at sea level, scale height H_R
+        float densM = stepAvg.y * segLen;   // Mie: concentrated near surface, scale height H_M
         // Haze near clouds (2026-10-10, "Haze near clouds" = cv2.mid3.w): humid air under and around the weather
         // systems carries more aerosol (the weather cube over ~40 km: cover, + rain), 2.5-km scale height, added to
         // the Mie column of this step. Aerosol is what scatters FORWARD: with it a sunlit stretch between cloud
         // shadows glows toward the Sun (a ray), where clean air only shows the shadows as darker bands.
 #ifdef SKY_SUN_SHADOW
-        if (cv2.mid3.w > 0.0 && h < 12000.0) {
+        float hLo = min(min(hA, hB), h);
+        if (cv2.mid3.w > 0.0 && hLo < 12000.0) {
             vec3  dS  = normalize(sp.x * enuX + sp.y * enuY + sp.z * enuZ);
             float dph = cloud.cloudPhase * cloud.layers[0].driftMult;
             vec4  wx  = textureLod(earthCloudsCube, vec3(dS.x * cos(dph) - dS.y * sin(dph), dS.x * sin(dph) + dS.y * cos(dph), dS.z), 3.0);
-            densM += cv2.mid3.w * (0.25 + 0.75 * smoothstep(0.05, 0.4, wx.r) + 0.6 * wx.b) * exp(-h / 2500.0) * (1.0 - smoothstep(7000.0, 12000.0, h)) * segLen;
+            densM += cv2.mid3.w * (0.25 + 0.75 * smoothstep(0.05, 0.4, wx.r) + 0.6 * wx.b) * stepAvg.z
+                   * (1.0 - smoothstep(7000.0, 12000.0, hLo)) * segLen;
         }
 #endif
         odR_cam += densR;
@@ -4265,15 +4309,17 @@ void main() {
         float lenF  = fwC * segLen;
         float densR0 = densR, densM0 = densM, fRK = 1.0, fMK = 1.0, litFF = litF;
         if (fPart) {
-            float hF = max(0.0, length(obsPos + dir * (tS0 + 0.5 * lenF)) - R_EARTH);
-            fRK = min(exp((h - hF) / H_R), 50.0);
-            fMK = min(exp((h - hF) / H_M), 50.0);
+            // The piece's own density per metre over the step's (both integrated as the step's, atmStepAvg).
+            float hF  = max(0.0, length(obsPos + dir * (tS0 + 0.5 * lenF)) - R_EARTH);
+            float hFe = max(0.0, length(obsPos + dir * (tS0 + lenF)) - R_EARTH);
+            fRK = min(atmStepAvg(hA, hF, hFe, H_R) / max(stepAvg.x, 1e-30), 50.0);
+            fMK = min(atmStepAvg(hA, hF, hFe, H_M) / max(stepAvg.y, 1e-30), 50.0);
             litFF = clamp(1.0 - max(0.0, min(tS0 + lenF, tShB) - max(tS0, tShA)) / lenF, 0.0, 1.0);
         }
         if (litF < 1.0) {
             // Review 7: shadowed air, lit by the twilight sky below (see shadowSky after the loop).
             float shF = 1.0 - litF;
-            vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+            vec3 aC = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
             shR += aC * densR * shF; shM += dot(aC, vec3(1.0 / 3.0)) * densM * shF;
             shRF += aC * densR0 * fRK * (1.0 - litFF) * fwC; shMF += dot(aC, vec3(1.0 / 3.0)) * densM0 * fMK * (1.0 - litFF) * fwC;
             shT += densR * shF * (tS0 + 0.5 * segLen);
@@ -4300,8 +4346,11 @@ void main() {
         //   cam_depth: how much atmosphere light must traverse from here to the camera.
         //   sun_depth: how much atmosphere sunlight must traverse from the sun to here.
         // Mie multiplied by 1.1 to account for aerosol absorption (σ_ext > σ_scat).
-        vec3 tau  = BETA_R       * (odR_cam + sunOD.x)
-                  + BETA_M * 1.1 * (odM_cam + sunOD.y);
+        // (To the step's MIDDLE: odR_cam / odM_cam already hold the whole step. Its light attenuated by all of it, the
+        // first ~15-km step looking up lost ~13% of its blue to its own Rayleigh column, a share that changed with the
+        // step count: the residual of the rings round the zenith, 2026-10-24.)
+        vec3 tau  = BETA_R       * (odR_cam - 0.5 * densR0 + sunOD.x)
+                  + BETA_M * 1.1 * (odM_cam - 0.5 * densM0 + sunOD.y);
         vec3 attn = exp(-tau);  // total transmittance: sun → this sample → camera
 
         // Orbital terminator gate. Deliberately NOT physical: the scattering integral itself was
@@ -4333,6 +4382,7 @@ void main() {
         }
         vec3  attnPre = attn;   // before the clouds' shadow: the piece in front takes its own (shKF)
         float shKF    = 0.0;
+        float shKMie  = 0.0;    // the Mie column's share of the clouds' shadow (its own weighting along the step)
         // The clouds' shadows on the air (2026-10-10, "God rays" = sunShK): this step's sunlight x the Sun shadow
         // cascade's transmittance, the mean of three points along the step (a step is 10+ km and a storm's shadow a
         // slab a few km deep: one read per step drew its edge as bands). The shadowed share is lit by the sky like
@@ -4360,17 +4410,25 @@ void main() {
             bool  frx = cv2.frox.x > 0.5;
             vec2  uvF = gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH);
             vec3  jitF = cv2FroxJitter();
-            float acc = 0.0, wS = 0.0;
+            // Each sample weighted as the Rayleigh and as the Mie + haze column thin along the step (scale heights ~8 and
+            // ~1.5 km), one shadow each (2026-10-24): one 3-km weighting for both, switched off past 30 km, put a step's
+            // shadow where its air was not, by a share that changed with the step count (rings round the zenith).
+            float zR = dir.z / 7994.0, zM = dir.z / 1500.0;
+            float accR = 0.0, wSR = 0.0, accMie = 0.0, wSM = 0.0;
+            // (geometric weights: two exps a step, not two a sample)
+            float dq = segLen / float(nF);
+            float wR = exp(-clamp(zR * dq * shaftJit, -8.0, 30.0)), qR = exp(-clamp(zR * dq, -2.0, 8.0));
+            float wM = exp(-clamp(zM * dq * shaftJit, -8.0, 30.0)), qM = exp(-clamp(zM * dq, -2.0, 8.0));
             [[dont_unroll]] for (int k = 0; k < nF; ++k) {
                 float tr = segLen * (float(k) + shaftJit) / float(nF);
                 float tk = tA + tr;
-                float wk = (tk < 30000.0) ? exp(-clamp(zK * tr, -8.0, 30.0)) : 1.0;
-                acc += wk * (frx ? cv2GodFroxT(uvF, tk, jitF)
-                                 : cv2StvTFine(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunTFine(dir * tk));
-                wS  += wk;
+                float Tk = frx ? cv2GodFroxT(uvF, tk, jitF)
+                               : cv2StvTFine(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunTFine(dir * tk);
+                accR += wR * Tk; wSR += wR; wR *= qR;
+                accMie += wM * Tk; wSM += wM; wM *= qM;
             }
-            float Tc = acc / wS;
-            float shK = sunShK * (1.0 - Tc);
+            float shK = sunShK * (1.0 - accR / wSR);
+            shKMie = sunShK * (1.0 - accMie / wSM);
             // The piece in front of the clouds: its own shadow, 4 reads over it (see fwC above).
             shKF = shK;
             if (fPart) {
@@ -4378,19 +4436,19 @@ void main() {
                 [[dont_unroll]] for (int k = 0; k < 4; ++k) {
                     float tr = lenF * (float(k) + shaftJit) * 0.25;
                     float tk = tA + tr;
-                    float wk = (tk < 30000.0) ? exp(-clamp(zK * tr, -8.0, 30.0)) : 1.0;
+                    float wk = exp(-clamp(zK * tr, -8.0, 30.0));
                     accF += wk * (frx ? cv2GodFroxT(uvF, tk, jitF)
                                       : cv2StvTFine(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunTFine(dir * tk));
                     wF   += wk;
                 }
                 shKF = sunShK * (1.0 - accF / wF);
             }
-            vec3 aC = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+            vec3 aC = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
             if (shKF > 0.001) {
                 shRF += aC * densR0 * fRK * litFF * shKF * fwC; shMF += dot(aC, vec3(1.0 / 3.0)) * densM0 * fMK * litFF * shKF * fwC;
             }
             if (shK > 0.001) {
-                shR += aC * densR * shK; shM += dot(aC, vec3(1.0 / 3.0)) * densM * shK;
+                shR += aC * densR * shK; shM += dot(aC, vec3(1.0 / 3.0)) * densM * shKMie;
                 shT += densR * shK * (tStart + (float(i) + 0.5) * segLen);
                 shD += densR * shK;
                 attn *= 1.0 - shK;
@@ -4414,7 +4472,7 @@ void main() {
         // emissive sources, not scattered sunlight, and suppressing them past the terminator is
         // the exact opposite of what they exist to do.
         accumR += attn * densR * atmTermW8;                  // Rayleigh: wavelength-dependent (blue sky)
-        accumM += dot(attn, vec3(1.0 / 3.0)) * densM * atmTermW8; // Mie: wavelength-neutral (white haze/corona)
+        accumM += dot(attnPre, vec3(1.0 / 3.0)) * (1.0 - shKMie) * densM * atmTermW8; // Mie: wavelength-neutral (white haze/corona)
         // The piece in front (fwC, above): its own density, Earth shadow and clouds' shadow; the step's own when whole.
         vec3 attnF = attnPre * (1.0 - shKF);
         accumRF += attnF * densR0 * fRK * litFF * atmTermW8 * fwC;

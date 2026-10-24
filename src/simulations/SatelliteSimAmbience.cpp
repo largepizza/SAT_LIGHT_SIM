@@ -166,6 +166,7 @@ void SatelliteSim::initAmbience()
     ambD_.gust = a.registerDriver("gust");
     ambD_.surfaceWind = a.registerDriver("surface_wind");
     ambD_.rainDriven = a.registerDriver("rain_driven");
+    ambD_.tornado = a.registerDriver("tornado");
 
     std::string err;
     if (!a.load(kAmbiencePath, err))
@@ -566,6 +567,28 @@ void SatelliteSim::computeAmbienceContext(float dt)
         a.set(ambD_.gust, gust);
         a.set(ambD_.surfaceWind, std::isfinite(spd) ? std::clamp(spd / 15.0f, 0.0f, 2.0f) : 0.0f);
         a.set(ambD_.rainDriven, std::min(ambRainEased * (1.0f + 0.6f * std::min(gust, 1.0f)), 1.2f));
+    }
+
+    // A tornado's roar (2026-10-23, issue 20261023_223907: "there isn't a train-like roar when tornados are in proximity"):
+    // driver `tornado` = the summed loudness of the funnels on the ground near the listener, 1 / (1 + (d / 2 km)^2) each
+    // (d to the nearest point of the funnel, from the ground to its cloud base), x sqrt(its width / 150 m) (a waterspout
+    // half), x its lifecycle (from touchdown, gone as it ropes out and dissipates). Layer tornado_roar.
+    {
+        const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        float loud = 0.0f;
+        for (const TornadoNow &T : tornadoesNow)
+        {
+            const double life = std::max(T.t1 - T.t0, 1.0), tau = tNow - T.t0;
+            if (tau < 0.0 || tau > life) continue;
+            const double lower = glm::smoothstep(0.0, std::min(90.0, 0.2 * life), tau);
+            const double fade = 1.0 - glm::smoothstep(0.85, 1.0, tau / life);
+            const double dh = std::acos(std::clamp(glm::dot(up, T.earthDir), -1.0, 1.0)) * kReM;
+            const double dz = std::max(0.0, (double)(eyeAsl - ground) - (double)std::max(T.baseAglM, 300.0f));
+            const double d = std::sqrt(dh * dh + dz * dz);
+            const double size = std::sqrt(std::max((double)T.r0, 10.0) / 150.0) * (T.spout ? 0.5 : 1.0);
+            loud += (float)(size * lower * lower * fade / (1.0 + (d / 2000.0) * (d / 2000.0)));
+        }
+        a.set(ambD_.tornado, std::min(loud, 2.0f));
     }
 
     // ── Satellite shells ─────────────────────────────────────────────────────────────────────

@@ -67,6 +67,16 @@ layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 // The cloud density clipmap (2026-10-21, EXPERIMENT): coarse steps skip the field where it is known empty.
 #define CV2_CDC_BINDING 23
 #include "cv2_cdc.glsl"
+// A high sheet's light from below (the ground bounce, 2026-10-24): the share of the UNSHADOWED Sun it takes, and the
+// albedo below it (cloud tops), from ~4 to 9 km up. (Macros: a variant is compiled with -D to A/B them.)
+#ifndef CV2_BOUNCE_OPEN
+#define CV2_BOUNCE_OPEN 0.6
+#endif
+#ifndef CV2_BOUNCE_ALB_HIGH
+#define CV2_BOUNCE_ALB_HIGH 0.3
+#endif
+const float kBounceOpen    = CV2_BOUNCE_OPEN;
+const float kBounceAlbHigh = CV2_BOUNCE_ALB_HIGH;
 // The cloud droplets' Mie phase (2026-10-22, tools/make_mie_lut.py): 4 pi p(theta) / 8 per angle (x) and effective radius
 // (y, cv2.mie.y), linear sRGB. A texel per 0.088 deg: the corona's rings, the cloudbow, the glory.
 layout(set = 0, binding = 24) uniform sampler2D cv2MieTex;
@@ -1027,7 +1037,18 @@ void main()
                          + skyNgt * (ambVis + ambLow)) * f.ambient;
 
             // ── Ground bounce from below: the key light, reflected by the ground under the cloud ──
-            vec3 bounceS = keyCol * max(dot(up, keyDir), 0.0) * 0.15 * cv2.look2.x
+            // The light on the ground is not the light at the sample (2026-10-24, issue 20261023_230636 "Anvil
+            // darkness"): keyCol carries the clouds' shadow at the SAMPLE (the Sun transmittance volume), and under an
+            // anvil the anvil itself shadows every sample of its underside, so the light reflected up to it was 0 and the
+            // underside took the zenith sky through ~3 km of ice alone: near black, far darker than the towers beside it.
+            // A HIGH sheet's underside sees the ground and the cloud tops far out round it, mostly outside its own shadow
+            // (which falls h / tan(Sun elevation) away, ~20 km at 12 km and 30 deg): from ~4 to 9 km up its bounce takes
+            // kBounceOpen of the UNSHADOWED Sun, over an albedo rising to kBounceAlbHigh (cloud tops below). A low deck's
+            // base sees only the ground it shades (unchanged).
+            float hiK  = smoothstep(4000.0, 9000.0, p.h);
+            vec3  keyB = keyCol;
+            if (!moonIsKey && cloud.moonMisc.y < 0.5) keyB += (sunCol * sunVis * cv2.look2.y - keyCol) * (kBounceOpen * hiK);
+            vec3 bounceS = keyB * max(dot(up, keyDir), 0.0) * mix(0.15, kBounceAlbHigh, hiK) * cv2.look2.x
                          * (1.0 - f.hf) * (1.0 - f.hf);
             // Ice high above other cloud is lit from below by it: the clouds under cirrus reflect
             // 60-80% of the light. Without it cirrus seen from orbit at a backscattering angle was lit

@@ -794,6 +794,28 @@ json SatelliteSim::harnessStateJson()
         w["line_systems"] = stormStats.lineSystems;
         w["cyclones"] = stormStats.cyclones;
         w["tornadoes"] = (int)tornadoesNow.size();
+        {   // The weather cube's re-bakes (2026-10-23): faces baked so far, frames that baked all six at once (time warp),
+            // and each face's lag behind sim time now.
+            const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            nlohmann::json lag = nlohmann::json::array();
+            for (double b : cv2WxBakedT) lag.push_back(b < -1e29 ? -1.0 : tNow - b);
+            w["cube"] = {{"rebakes", cv2WxRebakes}, {"all_six_bakes", cv2WxAllSixBakes}, {"face_lag_s", lag},
+                         {"one_face", cv2WxOneFace}};
+        }
+        {   // Each tornado drawn: its funnel's base (the drawn cloud's, probed on the GPU) and the light on it.
+            nlohmann::json tl = nlohmann::json::array();
+            for (const TornadoNow &T : tornadoesNow)
+            {
+                const double lat = glm::degrees(std::asin(std::clamp(T.earthDir.z, -1.0, 1.0)));
+                const double lon = glm::degrees(std::atan2(T.earthDir.y, T.earthDir.x));
+                const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+                const double distKm = std::acos(std::clamp(glm::dot(up, T.earthDir), -1.0, 1.0)) * 6371.0;
+                tl.push_back({{"storm", T.stormId}, {"lat", lat}, {"lon", lon}, {"dist_km", distKm}, {"spout", T.spout},
+                              {"radius_m", T.r0}, {"base_agl_m", T.baseAglM}, {"base_probed", T.baseProbed},
+                              {"tau_above", T.tauAbove}, {"light_k", T.lightK}});
+            }
+            w["tornado_list"] = tl;
+        }
         {   // Storm surge at the eye (CPU mirror of terrain_detail.glsl tdSurgeAt; the shelf from a 9-point ~85 km DEM mean).
             double peak = 0.0;
             const glm::dvec3 e = glm::normalize(glm::dvec3(obsDir));

@@ -73,7 +73,8 @@ buffer CV2FlashBuf {
     float    cv2RainWgMax[4];
     // The Sun's shadow about the eye's line to it (review 22b; a grid of rays since 2026-10-10): [0] the rays' length
     // L (0 = none), [2..4] / [5..7] the grid's
-    // two axes across the Sun's direction (observer ENU); the rest pad.
+    // two axes across the Sun's direction (observer ENU); [8..19] the tornado probes' columns (Earth-fixed directions,
+    // written by the HOST: SatelliteSim::weatherFillTornadoes); the rest pad.
     float    cv2SunProf[20];
     float    cv2RainMap[1024];
     // Rain particles (2026-10-04, rain_particles.vert): the light on a drop at the eye, written by the lightning
@@ -82,7 +83,7 @@ buffer CV2FlashBuf {
     vec4     cv2RainKey;      // xyz the key light (Sun, or the Moon at night) x its cloud and Earth shadow, w 1 = the Moon
     vec4     cv2RainKeyDir;   // xyz the direction TO the key light (ENU at the eye), w the liquid share (1 rain .. 0 snow)
     vec4     cv2RainAmb;      // xyz the ambient (the sky through the cloud above + the ground), w the column's optical depth
-    vec4     cv2RainMisc;     // spare
+    uvec4    cv2RainMisc;     // the tornado probes' results (cloud_v2_lightning.comp threads 2-5: base | optical depth)
     // Field-evaluation counters (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S0): zeroed by the host each frame, added to
     // only by shaders built with -DCV2_EVAL_COUNT (CV2_CNT below); harness `state` -> clouds_v2.eval_count.
     uint     cv2EvalCount[32];   // [16] cdc cells baked / [17] refused by the budget (cloud_v2_cdc.comp, always)

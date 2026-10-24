@@ -1849,21 +1849,43 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
         due = std::min(due, 45.0);
     int face = -1;
     double worst = 0.0;
+    int nDue = 0;
     for (int f = 0; f < 6; ++f)
     {
         const double lag = std::fabs(t - cv2WxBakedT[f]);
+        if (cv2WxBakedT[f] < -1e29 || lag > due)
+            ++nDue;
         if ((cv2WxBakedT[f] < -1e29 || lag > due) && lag > worst)
         {
             worst = lag;
             face = f;
         }
     }
+    // Time warp (2026-10-23, issue 20261023_224032 "Weather system updates choppy"): one face a frame covers the cube in
+    // six frames, and once six frames of sim time pass `due` each face's storms jumped by six frames at a time, every face
+    // at its own moment (from orbit: storm clouds stepping, a face at a time). Past a 15-min jump updateStorms makes every
+    // face stale each frame, and the worst-first pick then took face 0 every frame: the other five froze until the warp
+    // stopped. Then ALL SIX faces are baked together, every frame they are due, at one sim time (z = the faces).
+    const double frameDt = std::fabs(t - cv2WxPrevT);
+    cv2WxPrevT = t;
+    const bool allSix = face >= 0 && (nDue == 6 || 6.0 * frameDt > due) && !cv2WxOneFace;
     if (face < 0)
         return;
     if (stormsStamped)
         buildStormEnvIndex();   // the storms' cloud field: the towers as they are now, where the cube is read for them
-    cv2WxBakedT[face] = t;
-    ++cv2WxRebakes;
+    if (allSix)
+    {
+        for (double &b : cv2WxBakedT)
+            b = t;
+        cv2WxRebakes += 6;
+        ++cv2WxAllSixBakes;
+        face = -1;
+    }
+    else
+    {
+        cv2WxBakedT[face] = t;
+        ++cv2WxRebakes;
+    }
 
     auto faceBarrier = [&](VkImageLayout from, VkImageLayout to, VkAccessFlags sa, VkAccessFlags da) {
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -1889,7 +1911,7 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
         GpuWeatherPC pcv = weatherEvoPC(face, m);
         vkCmdPushConstants(cmd, cv2WxPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pcv), &pcv);
         uint32_t g = std::max(1u, ((kCv2WeatherFace >> m) + 7) / 8);
-        vkCmdDispatch(cmd, g, g, 1);
+        vkCmdDispatch(cmd, g, g, face < 0 ? 6u : 1u);
     }
     faceBarrier(VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_ACCESS_SHADER_READ_BIT);
@@ -2001,6 +2023,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
         cv2LightningRanThisFrame = true;
+        tornadoProbeRan = true;   // (its threads 2-5 answered the tornado columns asked for: weatherFillTornadoes)
         cv2LightningObsDir = glm::dvec3(cpc.obsECEFDir);   // the frame its flash list is in (updateLightningBolts)
         cv2LightningObsDirValid = true;
     }
