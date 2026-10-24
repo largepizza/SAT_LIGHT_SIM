@@ -460,7 +460,10 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
         const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), G) + glm::dvec3(1e-12, 0, 0)), north = glm::cross(G, east);
         const glm::dvec2 head = wx::fireEdgeAt(fs, 0.0);
         const glm::dvec3 Hd = glm::normalize(G + (east * head.x + north * head.y) / kRe);
-        const glm::dvec3 wv = east * std::sin(fs.windAz) + north * std::cos(fs.windAz);
+        // (the smoke's direction: the wind at ~0.85 of its top, as the harness `fires go`, so the column is seen side on)
+        const glm::dvec2 wSm = wx::windAt(G, 0.85 * fs.plumeTopM, t);
+        const glm::dvec3 wv = glm::length(wSm) > 0.1 ? glm::normalize(east * wSm.x + north * wSm.y)
+                                                      : east * std::sin(fs.windAz) + north * std::cos(fs.windAz);
         const glm::dvec3 cv = glm::cross(G, wv);
         const bool orbit = act == 1;
         // As the harness `fires go` (side / orbit) at the time it is now: beside the column, or 300 km off it from 400 km.
