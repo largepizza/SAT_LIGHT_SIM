@@ -1668,9 +1668,16 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         if (d <= 0.0) return o;
     }
     d = min(d * mix(cv2.extra.x, 1.0, smoothstep(150.0, 1500.0, fpM)), 1.0);
-    o.hf    = clamp(bestZeta, 0.0, 1.0);
+    float zC = clamp(bestZeta, 0.0, 1.0);
+    // The height share the LIGHTING reads (light from below x (1 - hf), the ground bounce x (1 - hf)^2): in an anvil-
+    // reaching tower's flared head it is measured in the head's own band (0 at zeta 0.7, where the overhang's underside
+    // is), so the head's underside is lit from below as a cloud's base is (2026-10-24, issue 20261023_230636 "Anvil
+    // darkness": with the whole tower's zeta, 0.75-0.9 there, it took ~0 of the light from below and read near black,
+    // in blotches between the shield's lit underside). Its top (zeta -> 1) is unchanged. ((zeta - 0.6) / 0.4 left the
+    // blotches; smoothstep(0.8, 1) lit the whole underside one flat grey.)
+    o.hf    = clamp(mix(zC, (zC - 0.7) * (1.0 / 0.3), smoothstep(0.5, 0.7, zC) * bestFull), 0.0, 1.0);
     o.topH  = bestTop;
-    o.sigma = d * mix(0.6, 1.0, smoothstep(0.0, 0.3, o.hf)) * cv2.types[4].shape.x * cv2.look.y * cv2.column.x;
+    o.sigma = d * mix(0.6, 1.0, smoothstep(0.0, 0.3, zC)) * cv2.types[4].shape.x * cv2.look.y * cv2.column.x;
     return o;
 }
 
