@@ -517,11 +517,20 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // (below: topMax, and the storm regions' mix toward column.w), plus the ground's lift: the cirrus
     // and anvil bands sit above that, and their samples paid the weather, cluster and cell reads before
     // the height test at the end (perf sprint 2026-09-29).
+    // The low field's EXACT top bound (2026-10-23): over every weather type mix (CPU, anvil3.zw at the tropopause factor's
+    // ends; see SatelliteSimCloudsV2.cpp), + the ground (the lift never exceeds it), + the storm cumulus target where a
+    // tower is near (stormProx; its value needs the cluster read, below). The test after it took the target's LARGEST
+    // value for every sample, and at the user's 12 km x (1 + 0.8) every sample up to ~22 km -- the whole cirrus and anvil
+    // band over a storm -- paid the cell, smooth-weather and ground reads before the topMax test at the end returned
+    // nothing. (The older test is kept as it was, so nothing it cuts comes back.)
+    float hTypB = 1e30;
     if (cv2.column.x > 0.0) {
         float trB = cv2Tropo(wd);
         float cgT = cv2.types[3].alt.x + (cv2.types[3].alt.y - cv2.types[3].alt.x) * trB;
         float stT = cv2.types[1].alt.x + (cv2.types[1].alt.y - cv2.types[1].alt.x) * trB + 3500.0;
         if (q.h > max(max(cgT, stT), cv2.column.w * (1.0 + cv2.column3.z)) + cv2Ground(q.dirE) * 0.9 + 50.0) return f;
+        hTypB = mix(cv2.anvil3.z, cv2.anvil3.w, (trB - 0.8) / 0.55) + cv2Ground(q.dirE) + 50.0;
+        if (stormProx <= 0.0 && q.h > hTypB) return f;
     }
     float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
 
@@ -552,6 +561,9 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     vec3 mpF   = mp + flowD;
     vec4 cl = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w,
                          cv2Lod(fpM, cv2.anchorCluster.w));
+    // ... and near a tower with the storm cumulus target's real value here (cwT below).
+    if (q.h > max(hTypB, cv2.column.w * (1.0 + cv2.column3.z * clamp((cl.a - 0.5) * 8.8, -1.0, 1.0))
+                         + cv2Ground(q.dirE) + 50.0)) return f;
     vec4 ce = textureLod(cv2MesoTex, cv2.anchorCell.xyz + mp * cv2.anchorCell.w,
                          cv2Lod(fpM, cv2.anchorCell.w));
 
@@ -1443,11 +1455,12 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // The towers are STORM OBJECTS (cv2_storms.glsl, 2026-10-22): the ones listed in this point's bin are every tower
     // whose reach touches it. They replaced a lattice over the weather map's cumulonimbus regions ("Cb fill" of its
     // cells held a tower), which made every bright broken stretch of the map one continent-sized alley of anvils.
-    uvec2 bin   = cv2StormBin(wd);
-    if (bin.y == 0u) return o;
+    // (The height test before the bin's lookup: two atans and a probe of the hash table for every sample above the towers.)
     float tropo = cv2Tropo(wd);
     float top   = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo;
     if (q.h > top - 50.0 + cv2.anvil2.w) return o;
+    uvec2 bin   = cv2StormBin(wd);
+    if (bin.y == 0u) return o;
 
     float Rb     = cv2.column.z;
     vec3  eastW0 = vec3(-wd.y, wd.x, 0.0) * inversesqrt(max(dot(wd.xy, wd.xy), 1e-6));

@@ -168,19 +168,24 @@ vec2 cv2StvLevelT(vec3 rl, float h, int lv)
 }
 // The volume's transmittance at rl, height h: the finest level that reaches the point, blended into the next one out
 // over its edge; 1 (lit) beyond the coarsest. ONE call site of the level lookup (a loop).
+// (From the finest level out since 2026-10-24, the perf pass: the same sum, sum_l T_l w_l prod_{finer} (1 - w), stopping
+// once the finer levels cover the point (rem < 1e-5: the rest can move T by less than that). Coarsest first it read all
+// four levels (32 reads of the flash buffer) for every lit sample, the thin ice's too: -2 ms of cloud march under an
+// anvil at 12 km, issue 20261023_230322.)
 float cv2StvT(vec3 rl, float h)
 {
-    float acc = 0.0, keep = 1.0;
-    [[dont_unroll]] for (int lv = kCv2StvL - 1; lv >= 0; --lv) {
+    float acc = 0.0, rem = 1.0;
+    [[dont_unroll]] for (int lv = 0; lv < kCv2StvL; ++lv) {
         vec2 s = cv2StvLevelT(rl, h, lv);
-        acc  = acc * (1.0 - s.y) + s.x * s.y;
-        keep *= 1.0 - s.y;
+        acc += rem * s.x * s.y;
+        rem *= 1.0 - s.y;
+        if (rem < 1e-5) break;
     }
-    return acc + keep;
+    return acc + rem;
 }
 // The same value, from the finest level out, stopping once the finer levels cover the point (within 1e-3): a point
 // inside level 0's window reads one level instead of four. For the god rays (the froxels and the sky pass's direct
-// path); the cloud march keeps cv2StvT (its register count, CLAUDE.md "Perf sprint").
+// path); the cloud march takes cv2StvT (the same order, to 1e-5: the key light's shadow is not god rays).
 float cv2StvTFine(vec3 rl, float h)
 {
     float acc = 0.0, rem = 1.0;

@@ -1745,7 +1745,38 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.misc = glm::vec4(std::round(std::clamp(cv2MaxIters * (cv2FastLodNow ? 0.6f : 1.0f), 32.0f, 1024.0f)), cv2MoonGain,
                        cv2AdaptiveNow ? 3.0f : cv2HalfRateNow ? 2.0f : (cv2FullRateNow ? 1.0f : 0.0f), cv2MidAmount);
     // S9: the cloud grid (the march no longer takes it from the scene depth's size, which stays half res).
-    p.anvil3 = glm::vec4(std::clamp(cv2AnvilPuff, 0.0f, 2.0f), std::clamp(cv2AnvilLiftM, 0.0f, 3000.0f), 0.0f, 0.0f);
+    // anvil3.zw (2026-10-23, the perf pass): an upper bound of the low field's top (cv2FieldLow's topMax, before the
+    // storm cumulus target and the ground's lift) over every weather type, at the tropopause factor's two ends (0.8 at
+    // the poles, 1.35 in the tropics; cv2Tropo). The bound per type mix is linear in the factor (the cumulus cap
+    // min(T, cuT) taken as cuT), so the maximum over types is convex in it and lies under the chord between the ends:
+    // the shader interpolates. + 100 m for the sampling of the type axis. Lets samples in the cirrus / anvil band skip
+    // the low field's reads (an early out), with the same result.
+    float lowTopB[2] = {0.0f, 0.0f};
+    {
+        const float trE[2] = {0.8f, 1.35f};
+        auto sstep = [](float a, float b, float x) { float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); };
+        for (int e = 0; e < 2; ++e)
+        {
+            const float tr = trE[e];
+            const GpuCloudV2Type &cu = cv2Types[2];
+            const float cuT = cu.alt.x + (cu.alt.y - cu.alt.x) * tr;
+            float m = 0.0f;
+            for (int k = 0; k <= 4096; ++k)
+            {
+                const float g = (float)k / 4096.0f;
+                const float fi = g * (float)(kCloudV2Types - 1);
+                const int i0 = std::min((int)fi, kCloudV2Types - 2);
+                const float fr = fi - (float)i0;
+                const glm::vec4 alt = glm::mix(cv2Types[i0].alt, cv2Types[i0 + 1].alt, fr);
+                const float lookZ = glm::mix(cv2Types[i0].look.z, cv2Types[i0 + 1].look.z, fr);
+                const float T = alt.x + (alt.y - alt.x) * tr + std::max(1.0f - lookZ, 0.0f) * 3500.0f;
+                const float wMap = sstep(0.8f, 0.95f, g);
+                m = std::max(m, T * (1.0f - wMap) + wMap * std::max(cuT, 0.0f));
+            }
+            lowTopB[e] = m + 100.0f;
+        }
+    }
+    p.anvil3 = glm::vec4(std::clamp(cv2AnvilPuff, 0.0f, 2.0f), std::clamp(cv2AnvilLiftM, 0.0f, 3000.0f), lowTopB[0], lowTopB[1]);
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the
     // sparse rotation (default), 1 the sample held at one pixel of each 2x2 block, 2 full rate (above). Modes 1-2 were the
