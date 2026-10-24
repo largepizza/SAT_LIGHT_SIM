@@ -1028,9 +1028,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     nearest's smoke knots), `fires go [k] [view=side|under|orbit] [local_h=] [dist_km=] [alt=] [pyro=1] [age_h=]` (side:
     across the SMOKE's wind; under: below the smoke age_h old, `wx::fireSmokeAt`), `fires look [k] [what=head|plume]
     [age_h=]` (aim at the k-th nearest; run a frame after a `fires go`). Cost (RTX 3070 Ti, Medium, 1920x1009, A/B in
-    one run): a big fire 5 km off at night GPU +0.7 ms (cloud_march +0.3, points +0.2, sky +0.2), CPU +0.6 ms; from
-    420 km over the August fire season +0.75 / +1.2 ms GPU by day / night before the night skip, CPU +0.35 ms;
-    cloud_march at 128 registers. Not yet: burn scars on the ground, pyrocumulus caps, smoke in the far cloud layer /
+    one run, on vs off): a big fire 5 km off at night GPU +0.55 ms (cloud_march +0.2, points +0.2, sky +0.2), CPU
+    (the launches bucket) +0.4 ms; from 420 km over the August fire season +0.8 / +1.1 ms GPU by day / night (mostly the
+    sky pass compositing the smoke's texels: +0.6-0.9; +0.5 in all with clouds at 0.5), CPU +0.35 ms. The old build's
+    on-off at the same views: +0.45 / +0.5 / +0.1 ms (it drew no points and half the smoke Gaussians). cloud_march at
+    128 registers (composite too). Not yet: burn scars on the ground, pyrocumulus caps, smoke in the far cloud layer /
     weather bake, a Fires list in the Weather window, fire ambience, fires in a snowy boreal November (the dryness
     curve leaves ~6% of the summer rate at 60 N in late November: the issue's Siberian fires).
 - **Haboobs (2026-10-23, `SatelliteSimHaboob.cpp`).** A storm's gust front lifting dust: `haboobFrontOf` makes the
