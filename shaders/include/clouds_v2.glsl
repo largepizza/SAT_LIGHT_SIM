@@ -183,7 +183,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // w 1 = on (the god rays' froxels, the sky pass's direct path and the fog/dust march read it; not the ground).
     vec4  tsh0, tsh1, tsh2, tsh3;
     // 2026-10-24, the perf pass: x "Near cirrus stride" (1 = off: a pure thin-ice sample within y of footprint stands for
-    // x steps; the high layer is a soft haze there), y that footprint (m), zw spare.
+    // x steps; the high layer is a soft haze there), y that footprint (m); z (perf pass 3) "God ray reads": the sky pass's
+    // Sun shadow reads a step within 30 km (half that beyond; 8 as built), w spare.
     vec4  perf;
 } cv2;
 

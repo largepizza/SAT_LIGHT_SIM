@@ -4146,12 +4146,13 @@ void main() {
     // (The step's start height and its exponentials, carried from the last step's end: atmStepAvg below.)
     float atmHPrev = max(0.0, length(obsPos + dir * tStart) - R_EARTH);
 #ifdef SKY_SUN_SHADOW
-    // The god rays' geometric weights (below), constant along the ray for each of their two sample counts (8 reads a
-    // step within 30 km, 4 beyond): out of the loop (2026-10-24, perf: four exps a step).
+    // The god rays' geometric weights (below), constant along the ray for each of their two sample counts (gNear reads a
+    // step within 30 km, half that beyond; "God ray reads", 8 as built): out of the loop (2026-10-24, perf: four exps a step).
+    int  gNear = clamp(int(cv2.perf.z + 0.5), 2, 8), gFar = max(gNear / 2, 1);
     vec2 gw8, gq8, gw4, gq4;
     {
         vec2 zRM = vec2(dir.z / 7994.0, dir.z / 1500.0);
-        vec2 d8 = zRM * (segLen / 8.0), d4 = zRM * (segLen / 4.0);
+        vec2 d8 = zRM * (segLen / float(gNear)), d4 = zRM * (segLen / float(gFar));
         gw8 = exp(-clamp(d8 * shaftJit, -8.0, 30.0)); gq8 = exp(-clamp(d8, -2.0, 8.0));
         gw4 = exp(-clamp(d4 * shaftJit, -8.0, 30.0)); gq4 = exp(-clamp(d4, -2.0, 8.0));
     }
@@ -4422,7 +4423,7 @@ void main() {
             // the same transmittance filled once a frame on a screen-tile x log-depth grid) or the volume itself.
             float tA  = tStart + float(i) * segLen;
             float zK  = dir.z / 3000.0;
-            int   nF  = (tA < 30000.0) ? 8 : 4;
+            int   nF  = (tA < 30000.0) ? gNear : gFar;
             bool  frx = cv2.frox.x > 0.5;
             vec2  uvF = gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH);
             vec3  jitF = cv2FroxJitter();
@@ -4431,7 +4432,7 @@ void main() {
             // shadow where its air was not, by a share that changed with the step count (rings round the zenith).
             float accR = 0.0, wSR = 0.0, accMie = 0.0, wSM = 0.0;
             // (geometric weights, from the ray's constants above)
-            bool  g8 = nF == 8;
+            bool  g8 = tA < 30000.0;
             float wR = g8 ? gw8.x : gw4.x, qR = g8 ? gq8.x : gq4.x;
             float wM = g8 ? gw8.y : gw4.y, qM = g8 ? gq8.y : gq4.y;
             // The piece in front of the clouds: its own shadow, 4 reads over it (see fwC above), in the SAME loop (k >= nF):
@@ -4717,7 +4718,8 @@ void main() {
         const float kSig = 0.90;
         for (int gi = 0; gi < 64; ++gi) {
             uint fluxBits = glowBuf.bins[gi];
-            if (fluxBits == 0u) continue;
+            // (A bin summing at most kGlowRef below has intens 0: no glow. Skipped before its acos and exps, 2026-10-24.)
+            if (fluxBits <= 300u) continue;
             float flux   = float(fluxBits);
             // Derive bin-centre ENU direction from bin index.
             // azBin=0 is North, increasing toward East (matches atan(x,y) convention).
