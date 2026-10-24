@@ -79,6 +79,7 @@ double SatelliteSim::weatherSunSin(const glm::dvec3 &e, double t) const
 
 void SatelliteSim::weatherFeaturedRestart(double now)
 {
+    ++wxScanRestarts;
     wxScanBase = now;
     wxScanStep = 0;
     wxScanDone = false;
@@ -750,6 +751,8 @@ nlohmann::json SatelliteSim::weatherFeaturedJson()
     }
     j["scan_step"] = wxScanStep;
     j["scan_done"] = wxScanDone;
+    j["scan_restarts"] = wxScanRestarts;
+    j["scan_base_min_ago"] = (now - wxScanBase) / 60.0;
     j["scan_ahead_h"] = (wxScanBase + kStepS * wxScanStep - now) / 3600.0;
     return j;
 }

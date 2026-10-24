@@ -4479,6 +4479,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (sub == "events" || sub == "event")
         {
             weatherRefreshRows(true);
+            weatherFeaturedUpdate();   // (first: a window opened this frame has not started its search yet)
             const auto t0 = std::chrono::steady_clock::now();
             for (int i = 0; i < 400 && !wxScanDone && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(20); ++i)
                 weatherFeaturedUpdate();

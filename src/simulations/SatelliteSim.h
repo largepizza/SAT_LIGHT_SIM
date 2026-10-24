@@ -4865,6 +4865,7 @@ private:
     double wxScanBase = -1e300;       // the forward search's start (sim s)
     int wxScanStep = 0;               // the next 30-min step
     bool wxScanDone = true;
+    int wxScanRestarts = 0;
     std::unordered_set<uint64_t> wxScanSeen;   // tornado / waterspout candidates already looked at
     double wxFeatNowWall = -1e300, wxFeatNowSim = -1e300;
     double wxFireSim = -1e300;
