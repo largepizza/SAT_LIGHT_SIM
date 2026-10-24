@@ -51,6 +51,17 @@ layout(set = 0, binding = 10) uniform sampler2D histAgeTex;
 layout(std430, set = 0, binding = 8) readonly buffer TileBuf { uint tPad, tDispX, tDispY, tDispZ; uint tList[4096]; uint tFlag[4096]; };
 
 ivec2 gHalf, gQs;
+// The still view's wide box and the motion colour box (the 7x7 ring of new samples round this pixel's block, below) are the
+// same for the four pixels of a 2x2 block on the sparse grid: they depend only on the block's sample b (its distance and
+// its 3x3 included). So each workgroup works them out once per block, the 40 ring samples split over 4 threads and the
+// 4 partial boxes reduced in shared memory, and a pixel reads its block's (2026-10-24, perf: the ring was ~0.95 ms of the
+// resolve's 1.5 at 1920x1009, every pixel reading and converting 40 samples). The same samples and the same min / max:
+// the same result. Sparse rate only (rate 0: every full-resolution grid); the other rates keep the per-pixel loop.
+const uint kRingF = 27u;                // floats a record: mnW 4, mxW 4, rMnW 3, rMxW 3, dWide 1, cMn 3, cMx 3, rMnC 3, rMxC 3
+shared float sRing[256 * 27];
+// ... and its 3x3 box (the loop in main, the same arithmetic in the same order: one thread a block, the fourth of its four).
+const uint kBoxF = 30u;                 // mn 4, mx 4, m1 4, m2 4, ax 4, nBox, dNear, rMn 3, rMx 3, dW, dWs
+shared float sBox[64 * 30];
 const int   kWideColorRadius   = 2;      // the motion colour box: 5x5 new samples ...
 const float kWideColorDepthTol = 0.25;   // ... at this pixel's distance +-25%
 const float kWideColorPx0      = 1.0;    // ... faded out over 1-3 px a frame of the neighbourhood's parallax
@@ -115,6 +126,92 @@ void main()
 {
     ivec2 halfSize = imageSize(outColor);
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    // The ring's boxes per block (see sRing): before the out-of-image return, so that every thread of the workgroup takes
+    // part and reaches the barriers (the rate is uniform).
+    bool sharedRing = int(cv2.misc.z + 0.5) == 0;
+    if (sharedRing) {
+        ivec2 qsS  = (halfSize + 1) / 2;
+        uint  lid  = gl_LocalInvocationIndex;
+        uint  blk  = lid >> 2u;
+        int   part = int(lid & 3u);
+        ivec2 bS   = min((ivec2(gl_WorkGroupID.xy) * 8) + ivec2(int(blk & 7u), int(blk >> 3u)), qsS - 1);
+        // The block's distance (main's ndR: its own sample's, else the nearest cloud of its 3x3).
+        float dRef = texelFetch(newDepthTex, bS, 0).x;
+        if (dRef <= 0.0) {
+            float dn = 1e30;
+            for (int k = 0; k < 9; ++k) {
+                float dq = texelFetch(newDepthTex, clamp(bS + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), qsS - 1), 0).x;
+                if (dq > 0.0) dn = min(dn, dq);
+            }
+            dRef = dn < 1e29 ? dn : -1.0;
+        }
+        vec4  wMn = vec4(1e30), wMx = vec4(-1e30);
+        vec3  wRMn = vec3(1e30), wRMx = vec3(-1e30), cMnS = vec3(1e30), cMxS = vec3(-1e30), rMnS = vec3(1e30), rMxS = vec3(-1e30);
+        float wD = 1e30;
+        [[dont_unroll]] for (int k = part; k < 49; k += 4) {
+            int dx = k % 7 - 3, dy = k / 7 - 3;
+            if (abs(dx) < 2 && abs(dy) < 2) continue;
+            ivec2 pq = clamp(bS + ivec2(dx, dy), ivec2(0), qsS - 1);
+            vec4  sv = texelFetch(newColorTex, pq, 0);
+            float dq = texelFetch(newDepthTex, pq, 0).x;
+            if (dq > 0.0) wD = min(wD, dq);
+            bool sameD = (dRef > 0.0) ? (dq > 0.0 && abs(dq - dRef) < kWideColorDepthTol * dRef) : (dq <= 0.0);
+            bool inC   = sameD && max(abs(dx), abs(dy)) <= kWideColorRadius;
+            if (inC) { rMnS = min(rMnS, sv.rgb); rMxS = max(rMxS, sv.rgb); }
+            wRMn = min(wRMn, sv.rgb); wRMx = max(wRMx, sv.rgb);
+            sv = cv2ToMean(sv);
+            if (inC) { cMnS = min(cMnS, sv.rgb); cMxS = max(cMxS, sv.rgb); }
+            wMn = min(wMn, sv); wMx = max(wMx, sv);
+        }
+        if (part == 3) {
+            // The block's 3x3 box (main's loop, rate 0: no half-rate parity, no full-rate tiles).
+            vec4 mnB = vec4(1e30), mxB = vec4(-1e30), m1B = vec4(0.0), m2B = vec4(0.0), axB = vec4(0.0);
+            float nB = 0.0, dNB = 1e30, dWB = 0.0, dWsB = 0.0;
+            vec3  rMnB = vec3(1e30), rMxB = vec3(-1e30);
+            for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                ivec2 pq = clamp(bS + ivec2(dx, dy), ivec2(0), qsS - 1);
+                vec4 sv = texelFetch(newColorTex, pq, 0);
+                float dq = texelFetch(newDepthTex, pq, 0).x;
+                if (dq > 0.0) { dNB = min(dNB, dq); float op = 1.0 - sv.a; dWB += op * dq; dWsB += op; }
+                if ((dx == 0) != (dy == 0)) axB += sv;
+                rMnB = min(rMnB, sv.rgb); rMxB = max(rMxB, sv.rgb);
+                sv = cv2ToMean(sv);
+                mnB = min(mnB, sv); mxB = max(mxB, sv);
+                m1B += sv; m2B += sv * sv; nB += 1.0;
+            }
+            uint ob = blk * kBoxF;
+            for (int j = 0; j < 4; ++j) {
+                sBox[ob + uint(j)] = mnB[j]; sBox[ob + 4u + uint(j)] = mxB[j]; sBox[ob + 8u + uint(j)] = m1B[j];
+                sBox[ob + 12u + uint(j)] = m2B[j]; sBox[ob + 16u + uint(j)] = axB[j];
+            }
+            sBox[ob + 20u] = nB; sBox[ob + 21u] = dNB;
+            for (int j = 0; j < 3; ++j) { sBox[ob + 22u + uint(j)] = rMnB[j]; sBox[ob + 25u + uint(j)] = rMxB[j]; }
+            sBox[ob + 28u] = dWB; sBox[ob + 29u] = dWsB;
+        }
+        uint o = lid * kRingF;
+        sRing[o +  0] = wMn.x;  sRing[o +  1] = wMn.y;  sRing[o +  2] = wMn.z;  sRing[o +  3] = wMn.w;
+        sRing[o +  4] = wMx.x;  sRing[o +  5] = wMx.y;  sRing[o +  6] = wMx.z;  sRing[o +  7] = wMx.w;
+        sRing[o +  8] = wRMn.x; sRing[o +  9] = wRMn.y; sRing[o + 10] = wRMn.z;
+        sRing[o + 11] = wRMx.x; sRing[o + 12] = wRMx.y; sRing[o + 13] = wRMx.z;
+        sRing[o + 14] = wD;
+        sRing[o + 15] = cMnS.x; sRing[o + 16] = cMnS.y; sRing[o + 17] = cMnS.z;
+        sRing[o + 18] = cMxS.x; sRing[o + 19] = cMxS.y; sRing[o + 20] = cMxS.z;
+        sRing[o + 21] = rMnS.x; sRing[o + 22] = rMnS.y; sRing[o + 23] = rMnS.z;
+        sRing[o + 24] = rMxS.x; sRing[o + 25] = rMxS.y; sRing[o + 26] = rMxS.z;
+        barrier();
+        // Each block's 4 partial records into its first (the min fields take the min, the max fields the max).
+        if (part == 0) {
+            for (uint q = 1u; q < 4u; ++q) {
+                uint p = o + q * kRingF;
+                for (uint j = 0u; j < kRingF; ++j) {
+                    bool isMax = (j >= 4u && j < 8u) || (j >= 11u && j < 14u) || (j >= 18u && j < 21u) || j >= 24u;
+                    sRing[o + j] = isMax ? max(sRing[o + j], sRing[p + j]) : min(sRing[o + j], sRing[p + j]);
+                }
+            }
+        }
+        barrier();
+    }
     if (c.x >= halfSize.x || c.y >= halfSize.y) return;
 
     // The new samples: a quarter grid in the targets' top-left (sparse, rate 0), every pixel (full,
@@ -146,8 +243,23 @@ void main()
     float dNear = 1e30;   // the nearest cloud distance among the new samples (review 19, below)
     vec3  rMn = vec3(1e30), rMx = vec3(-1e30);   // the same box in plain radiance (review 20b, below)
     float dW = 0.0, dWs = 0.0;                    // the box's opacity-weighted mean distance (review 20c, below)
-    for (int dy = -1; dy <= 1; ++dy)
-    for (int dx = -1; dx <= 1; ++dx) {
+    // (On the sparse grid the block's, from shared memory: see sBox.)
+    int r3 = 1;
+    if (sharedRing && !tFull) {
+        uint ob = ((uint((c.y & 15) >> 1) << 3u) + uint((c.x & 15) >> 1)) * kBoxF;
+        mn = vec4(sBox[ob], sBox[ob + 1u], sBox[ob + 2u], sBox[ob + 3u]);
+        mx = vec4(sBox[ob + 4u], sBox[ob + 5u], sBox[ob + 6u], sBox[ob + 7u]);
+        m1 = vec4(sBox[ob + 8u], sBox[ob + 9u], sBox[ob + 10u], sBox[ob + 11u]);
+        m2 = vec4(sBox[ob + 12u], sBox[ob + 13u], sBox[ob + 14u], sBox[ob + 15u]);
+        ax = vec4(sBox[ob + 16u], sBox[ob + 17u], sBox[ob + 18u], sBox[ob + 19u]);
+        nBox = sBox[ob + 20u]; dNear = sBox[ob + 21u];
+        rMn = vec3(sBox[ob + 22u], sBox[ob + 23u], sBox[ob + 24u]);
+        rMx = vec3(sBox[ob + 25u], sBox[ob + 26u], sBox[ob + 27u]);
+        dW = sBox[ob + 28u]; dWs = sBox[ob + 29u];
+        r3 = -1;   // (no per-pixel loop)
+    }
+    for (int dy = -r3; dy <= r3; ++dy)
+    for (int dx = -r3; dx <= r3; ++dx) {
         ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
         if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
         vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
@@ -346,8 +458,23 @@ void main()
         float dWide = 1e30;
         {
             vec4 mnW = mn, mxW = mx; vec3 rMnW = rMn, rMxW = rMx;
-            [[dont_unroll]] for (int dy = -3; dy <= 3; ++dy)
-            [[dont_unroll]] for (int dx = -3; dx <= 3; ++dx) {
+            // On the sparse grid the ring's boxes are the block's (shared, above); elsewhere the ring, per pixel.
+            int rR = 3;
+            if (sharedRing && !tFull) {
+                uint o = (((uint((c.y & 15) >> 1) << 3u) + uint((c.x & 15) >> 1)) << 2u) * kRingF;
+                mnW  = min(mnW, vec4(sRing[o], sRing[o + 1], sRing[o + 2], sRing[o + 3]));
+                mxW  = max(mxW, vec4(sRing[o + 4], sRing[o + 5], sRing[o + 6], sRing[o + 7]));
+                rMnW = min(rMnW, vec3(sRing[o + 8], sRing[o + 9], sRing[o + 10]));
+                rMxW = max(rMxW, vec3(sRing[o + 11], sRing[o + 12], sRing[o + 13]));
+                dWide = min(dWide, sRing[o + 14]);
+                cMn  = min(cMn, vec3(sRing[o + 15], sRing[o + 16], sRing[o + 17]));
+                cMx  = max(cMx, vec3(sRing[o + 18], sRing[o + 19], sRing[o + 20]));
+                rMnC = min(rMnC, vec3(sRing[o + 21], sRing[o + 22], sRing[o + 23]));
+                rMxC = max(rMxC, vec3(sRing[o + 24], sRing[o + 25], sRing[o + 26]));
+                rR = -1;   // (no per-pixel loop)
+            }
+            [[dont_unroll]] for (int dy = -rR; dy <= rR; ++dy)
+            [[dont_unroll]] for (int dx = -rR; dx <= rR; ++dx) {
                 if (abs(dx) < 2 && abs(dy) < 2) continue;
                 ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
                 if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
