@@ -3885,6 +3885,7 @@ private:
         float angSize;      // point sprite size in pixels
     };
     std::vector<StarRecord> starRecords;
+    std::vector<uint32_t> starPackedColor_;   // packVisibleColor(starRecords[i].color), packed once (updateStars)
     VkBuffer starBuf = VK_NULL_HANDLE;
     VkDeviceMemory starMem = VK_NULL_HANDLE;
     void *starMapped = nullptr;
@@ -5060,6 +5061,11 @@ private:
     // 12-m footprint (the eye inside the high layer, where it is a soft haze) stands for this many view steps. 1 = off (the
     // look). From 12.4 km under an anvil (issue 20261023_230322): cloud march 34.6 -> 27.8 ms at 2, 25.0 at 4.
     float cv2NearCirrusStride = 1.0f;
+    // "God ray reads (near)" (2026-10-24, perf pass 3; key godray_reads, slot 336): the sky pass's reads of the Sun shadow
+    // (froxels or volume) per atmosphere step within 30 km, half that beyond. 8 = the look as built; 4 is ~0.4-1 ms of the
+    // sky pass cheaper (1920x1009 High) with settled captures within noise: fewer reads per frame, so the sky TAA has more to
+    // average in motion (the user's to judge; opt-in).
+    float cv2GodrayReads = 8.0f;
     float cv2GodrayFroxels = 1.0f;                 // on by default since 2026-10-22: "godray_froxels": the sky pass reads the volume
     // Per-pass GPU time inside the cloud bucket (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S0): kCv2PassStamps timestamps
     // at fixed points of recordCloudsV2 + one after cloud_march.comp; a pass skipped this frame is a zero interval.
@@ -7209,6 +7215,12 @@ private:
     std::string reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
                                       uint32_t wgX = 0, uint32_t wgY = 0, const std::string &resolveSpv = {},
                                       const std::string &lightningSpv = {}, const std::string &compositeSpv = {});
+    // harness `shaders reload sky=<spv> sky_taa=<spv>`: the full sky pass's fragment SPVs (the plain one, used at 100% with
+    // the sky TAA off and by the low-res prepass, and the SKY_TAA one); "" = the shipped files. Rebuilds the full sky
+    // pipelines from them (the same destroy + create as ensureFullSkyPipelines); stats = the TAA pipeline's (else the plain
+    // one's) driver statistics.
+    std::string skyFragSpvOverride, skyTaaFragSpvOverride;
+    std::string reloadSkyShaders(VulkanContext &ctx, const std::string &skySpv, const std::string &skyTaaSpv, std::string &stats);
     // The march's workgroup size (specialization constants): it bounds the driver's registers per
     // thread (65536 / the group's threads), i.e. the march's occupancy. Harness `shaders reload wg=`.
     uint32_t cv2MarchWg[2] = {16, 16};

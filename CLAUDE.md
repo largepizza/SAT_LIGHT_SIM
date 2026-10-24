@@ -7636,6 +7636,74 @@ run-to-run floor (same shader reloaded twice: mean |diff| 0.7 at 12.4 km, 0.6 at
   ~35-50 ms on this branch (storms), so the 50-ms p99 limits sit at the noise; the default view at five sim times,
   interleaved, is 0.5-0.9 ms cheaper with the new shaders (one 4.7-ms outlier did not repeat: 22.5 -> 21.6 on rerun).
 
+**Perf pass 3 (2026-10-24, after the storm-look / perf 2 / wildfire merges; RTX 3070 Ti, 1920x1009, the matrix cells and the
+user's report views 230322 / 223907 / 230636 / 224032 / 230542 at their own settings and at Medium; every number an
+interleaved A/B in ONE live app (`shaders reload` variants or `set` variants, 3-4 reps), captures checked against the
+same shader reloaded twice).**
+- **The merged build's regressions.** (1) The SKY PASS +0.5..+0.9 ms in every cell was real and was the ring fix
+  (450523b / b4a8687: the exact per-step density integral and the god rays' two profile weightings): old vs new sky SPVs
+  in one app +0.55..+1.0 ms (the cloud SPVs swapped alone: 0). What it cost: three divisions and an extra vec3 exp a
+  step, four exps a step for the god rays' weights, and a second inlined copy of the froxel / volume lookups (the
+  piece-in-front loop). Recovered (5a012a8) without touching the result: one reciprocal for the three columns
+  (`atmHalfAvg3(ea, eb, dh)`), the weights hoisted (ray constants), the review-22 dimming skipped while it is a no-op
+  (uniform: god rays on or the eye's Sun clear), the step's height from the clamp's length and its end height from the
+  ray's closed form, the Sun dot from the ENU direction, and ONE lookup loop for the step's reads and the piece's.
+  SKY_TAA binary 820 -> 805 KB; sky pass vs the pre-merge shaders now +0.0..+0.4 ms (vs merged -0.3..-0.8); captures within
+  the floor (ring view 230542 included). (2) The CLOUD MARCH near the ground +0.3..+0.6 ms: refuted. Old vs new march +
+  lightning + composite SPVs interleaved: -0.2..+0.4 ms, within the noise (storm_gnd -0.2). (3) storm_gnd's still_grain
+  5.5 -> 7.0: not a shader effect (old and new cloud shaders give the same image and grain in this build): the cell frames
+  a different scene since the merges (the base run showed a heavy overhead deck, the merged build broken cumulus with the
+  storms elsewhere in view; the storm catalog round the cell is the same).
+- **Clouds resolve: the neighbourhood boxes once per 2x2 block** (d62c46f). On the sparse grid (every full-resolution
+  cloud grid) the four pixels of a block share their sample b, and every box the resolve takes depends on b alone (the
+  3x3 clamp box, the 7x7 still ring, the 5x5 motion colour box at the block's distance); each workgroup computes them
+  per block in shared memory (the ring over 4 threads, reduced; the 3x3 by one thread in the old order) and the pixels
+  read their block's. Resolve 1.52 -> 1.09 ms (High), 0.70 -> 0.51 (Medium). Tried first: the samples in a shared-memory
+  tile (0 gain: the 7x7 ring was ALU, ~0.95 of the 1.5 ms by a probe that dropped it; the Catmull-Rom history ~0.1).
+- **The density clipmap checks and bakes only the levels the march reads** (b9a6e71): cdc_max_level 6 (default and the
+  user's), and levels 6-7 were never read (cv2_cdc.glsl returns unknown past it) but checked and baked every frame — they
+  never stay fresh (at max level 8: 65536 cells baked and ~1M refused EVERY frame with time paused; not investigated why,
+  since nothing reads them at 6). Settled, the gain is small (~0.03 ms of the 'layer_map' pass); it is the REFILL that
+  shrinks: every `shaders reload`, `report load`, time jump or field change bumps the clipmap's epoch and all cells re-bake
+  at 65536 a frame for ~75-100 frames (that pass 0.55-1.3 ms meanwhile), and with levels 6-7 out a refill is ~25% shorter
+  and cheaper. (The first measurement compared refill frames against settled ones and claimed 0.55-1.3 -> 0.1 ms
+  everywhere: wrong. Measure the clipmap only after ~150 frames of no reload / load.)
+- **No terrain sun-shadow march under the clouds' shadow** (cloudShadowT < 1e-3: every use is x cloudShadowT):
+  the 1.7-km tornado view sky 12.85 -> 10.81 ms. The terrain shadow march is ~1.9-2.2 ms of a clear ground view
+  (`terrain_shadow_strength` 0 A/B); cutting it to 10 steps / a 14% floor was -0.5..-0.75 ms with visible differences
+  (not adopted, a candidate option).
+- **CPU:** updateStars 0.5 -> 0.26 ms at dusk / night (pointPsf's per-star log10s of the optics gain hoisted: the sprite
+  size from I^gamma x a frame constant; packed colours once). The serial CPU share of a frame is still ~1.8-2.3 ms
+  (record_compute: dome / stars / ambience ~0.55, dust + launch visuals ~0.45, thunderStep ~0.24 in a storm).
+- **Opt-in, measured:** "God ray reads (near, 8 = full)" (`clouds_v2.godray_reads`, slot 336, UBO `cv2.perf.z`): 4 =
+  sky -0.5..-1.1 ms (R1 -1.1, R3 -0.65, ground -0.7, R1 at Medium -0.5), settled captures within the floor, more for the
+  sky TAA to average in motion. "Near cirrus stride" (perf pass 2) stays the other one.
+- **Tried and dropped (measured):** the god-ray froxel reads with the last two depth slices kept (0-8 loads instead of 8:
+  slower, +0.0..+0.5 ms: the loop is not load-bound); the froxel fill skipping cells above the Sun volume (0); the sky
+  glow bins under the glow's floor skipped (kept: exact, no measurable gain); the terrain march's tail and bisection
+  through one evaluation site (-19 KB binary, timing mixed +-0.3); removing the knockout-only observer-height fallback
+  (-34 KB binary, no gain: dead code does not cost, the code a step RUNS does); gating the terrain materials / shadow /
+  city / sea reflection on the cloud composite's transmittance (< 1e-4: no gain); the camera transmittance carried along
+  the ray at night (one exp a step instead of two: slower); the Mie / haze exps skipped high up (0); a 16x16 shared tile
+  of the resolve's new samples (0).
+- **Harness:** `shaders reload sky=<spv> sky_taa=<spv>` (docs/HARNESS.md): sky variants interleave in one app like the
+  cloud passes'; `sky_stats` gives the TAA pipeline's register count and binary size (168 registers, ~805 KB).
+- Tools (untracked): the scratch generators that built these batches (variant SPVs by text substitution under
+  `build/Release/shaders/v/`, interleaved batches over mx cells and report views, per-pass tables) are described here
+  only.
+- **Matrix suite** (`--quick`, 1920x1009, `harness_runs/mx3/run` vs `harness_runs/mx_integ/merged` and `/base`): summed over the 21
+  cells GPU / cloud bucket / sky pass base 508.1 / 243.1 / 210.0 ms, merged 515.4 / 236.9 / 223.8, perf 3 492.7 / 224.5 /
+  213.4 (-22.7 ms, -4.4% vs merged; every cell 0.3-1.6 ms lower). `compare`: alt3km and alt1km walk worst frames
+  64.7 -> 31.2 and 43 -> 25 ms; one flag, alt1km fast's worst frame 30.9 -> 74.1 ms (path mean 27.3 -> 29.1, a single
+  spike in the sequence: the cell rerun alone three times, mean 25.9-26.1 ms, worst 29.2-29.4).
+- **hitch_check** (`harness_runs/hitch_perf3`, alone on the GPU): fails at the fast rates as the earlier runs did (10-23:
+  A 1w, D 1d / 1w; 10-24 03:00: A 1w, D 1d / 1w / 1yr), now A 1h / 1d / 1w (p99 54.6 / 57.6 / 57.3, limit 50), C 1d / 1w
+  (53.3 / 54.6) and D 1d / 1w (76.4 / 71.9). The worst frames are `app.wait_fence` 43-54 ms, i.e. the GPU. Not this pass's
+  shaders: at 1 h/s and 1 d/s the merged build's SPVs and these, interleaved 3x in one app, read the same (GPU 37.1 vs 38.8
+  and 34.1 vs 32.3 ms, scene noise +-5 ms while time runs). What it is: at 1 h/s `march_a` is ~18 ms against 5.4 at 1x and
+  at 5 min/s (the clipmap is off past 4x in both, so not that alone); not attributed. D's 1d worst frame also carries
+  `kesslerEnsureCapacity` 11.8 ms (a pool growth on the main thread).
+
 ---
 
 ## Subsystem: Cloud Shadows
@@ -8202,7 +8270,11 @@ Read it at the start of any terrain-related session before making changes.
   weighting, switched off past 30 km). Ring strength (high-pass of the zenith's radial profile, issue view): 0.158 ->
   0.069, the 32-sample reference 0.057 (0.047 without god rays); a faint step remains with god rays on (open). The zenith
   now carries its real Mie column (a little hazier overhead, mean +1-3 levels in the matrix stills; the horizon,
-  already finely sampled, unchanged). Sky pass cost as before (matrix cells within 0.4 ms); SKY_LITE 226.8 of 230.4 KB.
+  already finely sampled, unchanged). SKY_LITE 226.8 of 230.4 KB. Its cost was NOT as before: interleaved in one app the
+  sky pass was +0.5..+1.0 ms in every matrix cell (three divisions and an extra exp a step, four exps a step for the god
+  rays' weights, a second inlined copy of the froxel lookups); perf pass 3 (2026-10-24, "Clouds v2" above) took it back to
+  within +0.0..+0.4 ms of the midpoint version with the same image: `atmHalfAvg3(ea, eb, dh)` takes one reciprocal, the
+  god-ray weights are ray constants, and the step's reads and the piece-in-front's share one loop.
 - **The atmosphere loop starts where the ray ENTERS the atmosphere** (`tStart`, 2026-09-29), not at the eye:
   from orbit nearly every N_VIEW step fell in the vacuum above R_ATMOS (zero density, but each still paid the
   city-glow fetch, the trig and the airglow noise) while the few left in the air undersampled it. Knockout
@@ -8391,7 +8463,9 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   snow, rock on steep faces, darker where the map is snow); a latitude snowline painted Tibet white.
   All fade out by a ~400 m pixel footprint, so orbit views are the day map untouched. Soft terrain
   sun shadows (16 steps, 3 octaves, normal-offset start — starting on the surface gave texel-sized
-  acne, and lifted onto the coarse surface the ray is tested against) with a 15% bounce floor.
+  acne, and lifted onto the coarse surface the ray is tested against) with a 15% bounce floor. Not marched where the
+  clouds' shadow already takes the direct sun (cloudShadowT < 1e-3; every use is x cloudShadowT): ~2 ms of a clear
+  ground view's sky pass, nothing under an overcast (2026-10-24).
 - **Lighting of faces turned from the Sun** (found flying the harness into a glacier, where half
   the metre-scale facets of a snowfield went pure black under a 20-degree Sun):
   - `dayFrac` is the GEOGRAPHIC horizon gate only. It was also gated by the shading normal, which

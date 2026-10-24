@@ -12984,7 +12984,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
 {
     VkShaderModule vert = ctx.loadShader("shaders/sat_sky.vert.spv");
-    VkShaderModule frag = ctx.loadShader("shaders/sat_sky.frag.spv");
+    VkShaderModule frag = ctx.loadShader(skyFragSpvOverride.empty() ? "shaders/sat_sky.frag.spv" : skyFragSpvOverride.c_str());
 
     VkPipelineShaderStageCreateInfo stages[2] = {};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
@@ -13054,6 +13054,7 @@ void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
     ci.layout = skyBgPipeLayout;
     ci.renderPass = ctx.renderPass;
     ci.subpass = 0;
+    if (ctx.pipelineStatsSupported && ctx.capturePipelineStats) ci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
 
     // On a light tier (startup graphics chooser) the FULL sky is deferred: ensureFullSkyPipelines.
     if (!fullSkyDeferred &&
@@ -13147,7 +13148,7 @@ void SatelliteSim::createSkyLowResResources(VulkanContext &ctx)
 
     // ── Pipeline: same shaders/layout as skyBgPipeline, low-res viewport, no depth ────────────
     VkShaderModule vert = ctx.loadShader("shaders/sat_sky.vert.spv");
-    VkShaderModule frag = ctx.loadShader("shaders/sat_sky.frag.spv");
+    VkShaderModule frag = ctx.loadShader(skyFragSpvOverride.empty() ? "shaders/sat_sky.frag.spv" : skyFragSpvOverride.c_str());
     VkPipelineShaderStageCreateInfo stages[2] = {};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
                  VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
@@ -13377,7 +13378,7 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
     if (!fullSkyDeferred)
     {
         VkShaderModule vert = ctx.loadShader("shaders/sat_sky.vert.spv");
-        VkShaderModule frag = ctx.loadShader("shaders/sat_sky_taa.frag.spv");
+        VkShaderModule frag = ctx.loadShader(skyTaaFragSpvOverride.empty() ? "shaders/sat_sky_taa.frag.spv" : skyTaaFragSpvOverride.c_str());
         VkPipelineShaderStageCreateInfo stages[2] = {};
         stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
         stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main", nullptr};
@@ -13400,6 +13401,7 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
         ci.pColorBlendState = &cb;
         ci.layout = skyBgPipeLayout;
         ci.renderPass = skyTaaRenderPass;
+        if (ctx.pipelineStatsSupported && ctx.capturePipelineStats) ci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
         // Dynamic: the render scale picks the sub-rectangle each frame (temporal upscaling).
         const VkDynamicState dyn[2] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
         VkPipelineDynamicStateCreateInfo dsi{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
@@ -15028,6 +15030,7 @@ void SatelliteSim::initStars(VulkanContext &ctx)
         starRecords.push_back({eciDir, rawInt, col, angSize});
     }
     starCount = (uint32_t)starRecords.size();
+    starPackedColor_.clear();   // (re-packed by updateStars)
 
     // Host-visible buffer (tiny: ~8404 × 32 bytes = ~263 KB — negligible against 78,000 satellites).
     VkDeviceSize bufSize = starCount * sizeof(GpuSatVisible);
@@ -15551,6 +15554,25 @@ void SatelliteSim::updateStars()
         return starExtTab_[k] + (starExtTab_[k + 1] - starExtTab_[k]) * f;
     };
 
+    // Per-frame constants of the point model (pointPsf), hoisted (2026-10-24, perf: pointPsf re-derived the effective
+    // reference / limit magnitudes, two log10s of the optics gain, for every star): for intensity I = 10^(-0.4 m),
+    // pointPsf's d = 10^(-0.4 gamma (m - ref)) - dl = I^gamma 10^(0.4 gamma ref) - dl, and the sprite size needs only its
+    // sigma. The same values (to float rounding); the stars' packed colours are fixed, packed once.
+    const float kPsfK = 1.3287712f;   // 0.4 * log2(10)
+    const float psfRef = pointEffRefMag(), psfLim = pointEffLimitMag();
+    const float psfC  = exp2f(kPsfK * pointGamma * psfRef);
+    const float psfDl = exp2f(-kPsfK * pointGamma * (psfLim - psfRef));
+    auto starSigma = [&](float I) {
+        const float d = std::max(powf(I, pointGamma) * psfC - psfDl, 0.0f);
+        return d <= 1.0f ? pointSigmaPx : std::min(pointSigmaPx * sqrtf(d), pointSigmaMaxPx);
+    };
+    if (starPackedColor_.size() != starCount)
+    {
+        starPackedColor_.resize(starCount);
+        for (uint32_t i = 0; i < starCount; ++i)
+            starPackedColor_[i] = packVisibleColor(starRecords[i].color);
+    }
+
     auto *dst = static_cast<GpuSatVisible *>(starMapped);
     for (uint32_t i = 0; i < starCount; ++i)
     {
@@ -15568,7 +15590,7 @@ void SatelliteSim::updateStars()
         {
             dst[i].skyDir = enu;
             dst[i].flareIntensity = 0.0f;
-            dst[i].color = packVisibleColor(rec.color);
+            dst[i].color = starPackedColor_[i];
             dst[i].rangeM = 0.0f;
             dst[i].angularSize = rec.angSize;
             continue;
@@ -15618,7 +15640,7 @@ void SatelliteSim::updateStars()
         // the observer-height atmFrac above: that is the bright sky AROUND the observer.
         // sin(elevation) from the observer's own up (the ENU z the limb test uses is the same quantity).
         float extinctMag = starExtMag(glm::dot(rec.eciDir, obsECI) / obsR);
-        float extinction = powf(10.0f, -0.4f * extinctMag);
+        float extinction = exp2f(-kPsfK * extinctMag);   // 10^(-0.4 m)
 
         // Above the Earth limb: visible. Below: culled.
         float intensity = (enu.z >= limbSin)
@@ -15627,12 +15649,11 @@ void SatelliteSim::updateStars()
 
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
-        dst[i].color = packVisibleColor(rec.color);
+        dst[i].color = starPackedColor_[i];
         dst[i].rangeM = 0.0f; // at infinity
         // Sized every frame from the magnitude it is drawn at, by the shared point-source model
         // star_point.frag draws it with (point_style.glsl) — the same as satellites and planets.
-        dst[i].angularSize =
-            intensity > 0.0f ? pointSpriteSizePx(pointPsf(-2.5f * log10f(intensity)).y) : rec.angSize;
+        dst[i].angularSize = intensity > 0.0f ? pointSpriteSizePx(starSigma(intensity)) : rec.angSize;
     }
 }
 

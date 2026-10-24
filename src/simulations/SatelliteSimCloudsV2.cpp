@@ -914,6 +914,39 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     return err;
 }
 
+// Harness `shaders reload sky=<spv> sky_taa=<spv>` (2026-10-24): the full sky pass from other fragment SPVs, so sky
+// variants interleave in one live app like the cloud passes'. Same layouts and descriptor sets; the TAA images are
+// recreated (history dropped). Not on a light tier (the full sky pipelines are deferred there).
+std::string SatelliteSim::reloadSkyShaders(VulkanContext &ctx, const std::string &skySpv, const std::string &skyTaaSpv,
+                                           std::string &stats)
+{
+    skyFragSpvOverride = skySpv;
+    skyTaaFragSpvOverride = skyTaaSpv;
+    if (fullSkyDeferred)
+        return "the full sky pipelines are deferred (light tier)";
+    vkDeviceWaitIdle(ctx.device);
+    try
+    {
+        vkDestroyPipeline(ctx.device, skyBgPipeline, nullptr);
+        skyBgPipeline = VK_NULL_HANDLE;
+        vkDestroyPipeline(ctx.device, skyBgMinimalPipeline, nullptr);
+        skyBgMinimalPipeline = VK_NULL_HANDLE;
+        vkDestroyPipeline(ctx.device, skyBgLitePipeline, nullptr);
+        skyBgLitePipeline = VK_NULL_HANDLE;
+        createSkyBgPipeline(ctx);
+        destroySkyLowResResources(ctx.device);
+        createSkyLowResResources(ctx);
+        destroySkyTaaResources(ctx.device);
+        createSkyTaaResources(ctx);
+    }
+    catch (const std::exception &e)
+    {
+        return std::string(e.what());
+    }
+    stats = pipelineStatsLine(ctx, skyTaaPipeline ? skyTaaPipeline : skyBgPipeline);
+    return "";
+}
+
 void SatelliteSim::destroyCloudsV2(VkDevice device)
 {
     destroyCloudsV2Targets(device);
@@ -1777,7 +1810,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         }
     }
     p.anvil3 = glm::vec4(std::clamp(cv2AnvilPuff, 0.0f, 2.0f), std::clamp(cv2AnvilLiftM, 0.0f, 3000.0f), lowTopB[0], lowTopB[1]);
-    p.perf = glm::vec4(std::clamp(std::round(cv2NearCirrusStride), 1.0f, 4.0f), 12.0f, 0.0f, 0.0f);   // "Near cirrus stride"
+    p.perf = glm::vec4(std::clamp(std::round(cv2NearCirrusStride), 1.0f, 4.0f), 12.0f,
+                       std::clamp(std::round(cv2GodrayReads), 2.0f, 8.0f), 0.0f);   // "Near cirrus stride", "God ray reads"
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the
     // sparse rotation (default), 1 the sample held at one pixel of each 2x2 block, 2 full rate (above). Modes 1-2 were the
@@ -2087,7 +2121,12 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                       VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2CdcPipeline);
-        vkCmdDispatch(cmd, kCv2CdcCells / 256, 1, 1);
+        // Only the levels the march reads (cdcB.w, "cdc max level", 6 by default; cv2_cdc.glsl returns "unknown" past it):
+        // the check walked all 8 (8.4M cells a frame, ~0.5-1 ms whatever the view) and baked stale cells of levels no
+        // lookup ever reads (2026-10-24, perf). A slot's index is level-major, so the first levels' workgroups are theirs.
+        const uint32_t cdcLevels = (uint32_t)std::clamp((int)cv2CdcMaxLevel, 0, 8);
+        if (cdcLevels > 0)
+            vkCmdDispatch(cmd, kCv2CdcCells / 8u * cdcLevels / 256u, 1, 1);
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2CdcBakePipeline);
