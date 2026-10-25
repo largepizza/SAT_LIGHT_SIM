@@ -1323,7 +1323,6 @@ bool World::apply(Event ev)
 {
     const uint32_t idx = (uint32_t)events.size();
     const uint64_t added0 = recAdded;
-    ev.firstRec = 0;
     // Occupancy: live pieces (and the dead ones not yet released) over the capacity.
     const double fill = (double)(pool.size() - poolFree.size()) / std::max<double>(s.poolCapacity, 1.0);
     // Large-piece records: up to maxRecordsPerEvent, fewer as the pool fills (beyond: each stands for several).
@@ -1378,7 +1377,31 @@ bool World::apply(Event ev)
             mT = massOf(*this, tgt);
             mP = massOf(*this, prj);
             st = stateOf(tgt, ev.t);
-            sp = stateOf(prj, ev.t);
+            if (ev.sampleDt != 0.0f)
+            {
+                // The engine found the pair together at the step's sample time ts and spread the event's time through
+                // the step (no bursts). At ev.t the two are anywhere on their orbits (350-13000 km apart measured,
+                // 2026-10-24): the projectile's fragments (and the dust Watch) were built where IT was, far from the
+                // target's. The encounter is carried along the target's orbit instead: the relative velocity at ts in
+                // the target's local frame (radial, along, normal) is turned into its frame at ev.t, and the projectile
+                // is placed on the target. Same impact speed and geometry, one place.
+                const double ts = ev.t - (double)ev.sampleDt;
+                const State a0 = stateOf(tgt, ts), p0 = stateOf(prj, ts);
+                auto frame = [](const State &s, glm::dvec3 &R, glm::dvec3 &A, glm::dvec3 &N) {
+                    R = glm::normalize(s.r);
+                    N = glm::cross(s.r, s.v);
+                    N = glm::length(N) > 1e-9 ? glm::normalize(N) : glm::dvec3(0, 0, 1);
+                    A = glm::cross(N, R);
+                };
+                glm::dvec3 R0, A0, N0, R1, A1, N1;
+                frame(a0, R0, A0, N0);
+                frame(st, R1, A1, N1);
+                const glm::dvec3 vr = p0.v - a0.v;
+                sp.r = st.r;
+                sp.v = st.v + R1 * glm::dot(vr, R0) + A1 * glm::dot(vr, A0) + N1 * glm::dot(vr, N0);
+            }
+            else
+                sp = stateOf(prj, ev.t);
             v = glm::length(st.v - sp.v);
         }
         const double emr = 0.5 * std::min(mT, mP) * v * v / std::max(std::max(mT, mP), 1e-3);
@@ -1585,7 +1608,11 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
             // Each at its own time within the step (all at the midpoint, every collision of 6 h happened in the same
             // second: dust clouds and re-entries in bursts), applied in time order.
             for (Event &ev : evs)
+            {
                 ev.t = t0 + dt * hash01(ev.seed, 0x7135ull, 91);
+                if (ev.b != kSmallRef)
+                    ev.sampleDt = (float)(ev.t - ts);   // (apply carries the pair's encounter from ts to ev.t)
+            }
             std::sort(evs.begin(), evs.end(), [](const Event &x, const Event &y) {
                 return x.t != y.t ? x.t < y.t : (x.a != y.a ? x.a < y.a : x.b < y.b);
             });

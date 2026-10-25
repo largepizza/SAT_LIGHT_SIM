@@ -212,7 +212,9 @@ struct Event
     uint8_t kind = EV_KILL, origin = ORIGIN_ENGINE, catastrophic = 0, pad = 0;
     uint32_t seed = 0;
     float vRel = 0.0f, nReal = 0.0f;
-    uint32_t firstRec = 0, nRec = 0; // nRec: pool records it made (filled by apply); firstRec unused (slots recycle)
+    float sampleDt = 0.0f;           // an engine pair collision: its time less the step's sample time, when the engine
+                                     // found the pair together (the time is spread through the step; 0 otherwise)
+    uint32_t nRec = 0;               // pool records it made (filled by apply)
     float mProj = 0.0f;              // b == kSmallRef: the small fragment's mass (kg; set by the engine)
     float dustKg = 0.0f;             // fine dust it made: the drawn dust cloud (filled by apply)
     float nSmall = 0.0f;             // small fragments (LcMin .. LcRecord) it added to the density grid

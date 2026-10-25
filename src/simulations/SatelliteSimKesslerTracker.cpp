@@ -345,22 +345,17 @@ void SatelliteSim::kesslerWatchPieceTick()
         {
             const int idx = (int)poolIdx0() + (int)j;
             selectSatellite(idx);
-            // Re-place the eye beside the piece where it really is now (80 km across its motion, 25 km below it), in
-            // case the breakup's recorded place is off.
-            const glm::dvec3 P = satOrbitStateAt(orbitElemsOf(satOrbits[(size_t)idx]), t).posEci;
-            const glm::dvec3 P1 = satOrbitStateAt(orbitElemsOf(satOrbits[(size_t)idx]), t + 1.0).posEci;
-            const kessler::Event &e = kEvents[(size_t)kWatchPieceEv];
-            kWatchPieceOffKm = glm::length(P - glm::dvec3(e.pos[0], e.pos[1], e.pos[2])) / 1000.0;
-            const glm::dvec3 U = glm::normalize(P);
-            glm::dvec3 A = P1 - P;
-            A = glm::length(A) > 1.0 ? glm::normalize(A) : glm::dvec3(0, 0, 1);
-            glm::dvec3 C = glm::cross(A, U);
-            C = glm::length(C) > 1e-6 ? glm::normalize(C) : glm::dvec3(1, 0, 0);
-            const glm::dvec3 eye = eciToEcef(P + C * 80000.0 - U * 25000.0, t);
-            const glm::dvec3 g = glm::normalize(eye);
-            setObserverLatLon(glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), glm::degrees(std::atan2(g.y, g.x)));
-            obsHeightOffset = (float)(glm::length(eye) - kR);
-            updatePositions(t);
+            // (The eye stays where the Watch put it, beside the breakup's recorded place: since kCacheVersion 17 an
+            // engine collision's debris and dust start there. kWatchPieceOffKm: the piece's distance from that place
+            // carried to now on the breakup's orbit, harness `kessler state`.)
+            {
+                const glm::dvec3 P = satOrbitStateAt(orbitElemsOf(satOrbits[(size_t)idx]), t).posEci;
+                const kessler::Event &e = kEvents[(size_t)kWatchPieceEv];
+                kessler::State s0{{e.pos[0], e.pos[1], e.pos[2]}, {e.vel[0], e.vel[1], e.vel[2]}};
+                kessler::Elems el = kessler::elemsFromState(s0);
+                el.M += std::sqrt(kessler::kGM / (el.a * el.a * el.a)) * (t - e.t);
+                kWatchPieceOffKm = glm::length(P - kessler::stateFromElems(el).r) / 1000.0;
+            }
             startTrack();
             kWatchPieceEv = -1;
             return;

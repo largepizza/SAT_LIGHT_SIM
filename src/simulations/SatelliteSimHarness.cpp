@@ -2707,6 +2707,83 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["in_place"] = kLastBreakupFast;
             r["frontier_days"] = (kFrontier - kesslerEpoch()) / 86400.0;
         }
+        else if (sub == "poscheck")
+        {
+            // kessler poscheck [n=6] [ev=]: for the latest n breakups that made records (or event ev), the recorded
+            // place (Event::pos, ECI) against its parent and its pieces, at the event and now (2026-10-24: the
+            // tracker's Watch found a breakup's place ~8100 km from its debris).
+            const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const int want = (int)c.num("n", 6.0);
+            std::vector<uint32_t> evs;
+            if (c.has("ev"))
+                evs.push_back((uint32_t)c.num("ev", 0.0));
+            else
+                for (size_t i = kEvents.size(); i-- > 0 && (int)evs.size() < want;)
+                {
+                    const kessler::Event &e = kEvents[i];
+                    if (e.t > tNow || e.nRec == 0) continue;
+                    if (e.kind != kessler::EV_COLLISION && e.kind != kessler::EV_EXPLOSION && e.kind != kessler::EV_ASAT) continue;
+                    evs.push_back((uint32_t)i);
+                }
+            auto two = [](const kessler::Event &e, double t) {
+                kessler::State s0{{e.pos[0], e.pos[1], e.pos[2]}, {e.vel[0], e.vel[1], e.vel[2]}};
+                kessler::Elems el = kessler::elemsFromState(s0);
+                el.M += std::sqrt(kessler::kGM / (el.a * el.a * el.a)) * (t - e.t);
+                return kessler::stateFromElems(el).r;
+            };
+            nlohmann::json arr = nlohmann::json::array();
+            for (uint32_t ev : evs)
+            {
+                if (ev >= kEvents.size()) continue;
+                const kessler::Event &e = kEvents[ev];
+                const glm::dvec3 B(e.pos[0], e.pos[1], e.pos[2]);
+                nlohmann::json o;
+                o["ev"] = ev;
+                o["kind"] = (int)e.kind;
+                o["origin"] = (int)e.origin;
+                o["age_s"] = tNow - e.t;
+                o["n_rec"] = e.nRec;
+                o["pos_alt_km"] = (glm::length(B) - 6371000.0) / 1000.0;
+                // parent a (roster) at the event time
+                if (!(e.a & 0x80000000u) && e.a < activeSatCount)
+                {
+                    const glm::dvec3 P = satOrbitStateAt(orbitElemsOf(satOrbits[e.a]), e.t).posEci;
+                    o["parent_a_km_at_t"] = glm::length(P - B) / 1000.0;
+                }
+                if (!(e.b & 0x80000000u) && e.b < activeSatCount)
+                {
+                    const glm::dvec3 P = satOrbitStateAt(orbitElemsOf(satOrbits[e.b]), e.t).posEci;
+                    o["parent_b_km_at_t"] = glm::length(P - B) / 1000.0;
+                }
+                const glm::dvec3 Dn = two(e, tNow);
+                std::vector<double> dT, dN, dDust;
+                int found = 0;
+                for (size_t j = 0; j < kPool.size(); ++j)
+                {
+                    if (kPool[j].event != ev) continue;
+                    ++found;
+                    const SatOrbitElems pe = kessler::poolOrbitElems(kPool[j], (uint32_t)j);
+                    dT.push_back(glm::length(satOrbitStateAt(pe, e.t).posEci - B) / 1000.0);
+                    const glm::dvec3 Pn = satOrbitStateAt(pe, tNow).posEci;
+                    dN.push_back(glm::length(Pn - Dn) / 1000.0);
+                    if (found >= 400) break;
+                }
+                auto med = [](std::vector<double> v) {
+                    if (v.empty()) return -1.0;
+                    std::sort(v.begin(), v.end());
+                    return v[v.size() / 2];
+                };
+                auto mn = [](const std::vector<double> &v) { return v.empty() ? -1.0 : *std::min_element(v.begin(), v.end()); };
+                o["pieces_found"] = found;
+                o["piece_km_at_t_median"] = med(dT);
+                o["piece_km_at_t_min"] = mn(dT);
+                o["piece_vs_dust_now_km_median"] = med(dN);
+                o["piece_vs_dust_now_km_min"] = mn(dN);
+                arr.push_back(o);
+            }
+            r["events"] = arr;
+            r["t_now"] = tNow;
+        }
         else if (sub == "wait")
         {
             // Until the worker has simulated `days` past the CME (or finished, with `done`).
