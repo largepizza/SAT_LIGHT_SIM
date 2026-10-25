@@ -1185,27 +1185,39 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   **Storm milestones (2026-10-23):** a Storms-tab row shows a supercell's tornado (touchdown in / on the ground / ago, from
   `tornadoOf`) and when a line system's convective line reaches the observer where they stand (`weatherLinePassage`: the
   observer's distance ahead of the line less the towers' bow, through zero within the line's length; 5-min steps over its
-  convective life, bisected), with buttons Tornado (a minute before touchdown at 1x, 6 km on its inflow side, looking at
-  it: `weatherWatchTornado`) and Passage (20 min before the line arrives, at 1x, looking into its motion). Harness
+  convective life, bisected), as text (the row's buttons Tornado / Passage are gone: see ONE BUTTON below; `weatherWatchTornado`
+  and `weatherWatchPassage` remain for the harness). Harness
   `weather tornado|passage [k] [list=world]` (no k: the first listed storm with one ahead); `weather state` rows carry
   `tornado_in_min`, `tornado_min`, `passage_in_min`.
+  **ONE BUTTON, Watch (2026-10-24; the user: "people want to just see the event and thats it"; "1 minute before touchdown
+  type event calls ... confuse playtesters into teleporting to a place with nothing going on (yet)"; they could not tell
+  Go to from Watch, nor the other actions):** every card, NEAR YOU row, radar selection, cyclone row, season row and
+  milestone in the Weather window has exactly one button, Watch, which sets the clock so the event is ALREADY happening
+  (never before it starts; forward to it when it is still to come), 1x, unpaused, and puts it in frame; the toast says
+  what you are looking at. Tornado / waterspout (`weatherWatchTornadoOf` mode 0): the funnel on the ground now if it is,
+  else 30% into its life, from the ground ~4.5 km off (40 m up, 7 deg), then moved out of the rain by the radar probe
+  (`weatherTornadoFixTick`: rings 4-8.5 km). A storm (`weatherWatchStormNow`, the supercell / line cards, NEAR YOU,
+  the radar's selection, harness `weather watch`): its tornado if one is on the ground now, else the storm at its mature
+  moment (`tMature`, forward only), from the ground (300 m up) 35 km (lines 30 km) upwind of its strongest tower, 10 deg
+  up, then the radar probe at 150 km (rings 25-46 km, `WxTornFix::rangeIdx`). Hurricane: the strongest now from orbit
+  (Orbit framing). Haboob: 6 km ahead of the wall's dustiest front-lit stretch on the ground (was 9 km). Wildfire: beside
+  the column. Cyclone rows: from orbit now; season rows (a click on the row shows its track): now if alive, else at its
+  peak; milestones: that moment, a LANDFALL at it from just off the coast (was 2 h before; the offshore step goes toward
+  where it came from). The other views stay in the harness (`weather event <kind> act=1..3`, `weather go`, `weather
+  tornado|passage`, `storms ...`). Not judged: whether 35 km frames every storm well (a long squall line overflows the view).
   **Featured events (2026-10-23, `SatelliteSimWeatherFeatured.cpp`; the user: "anytime a new storm appears the window's
   extents change ... reserved spots, like the twilight one in the Missions tab; always a tornado, haboob ready to go to;
   cool events over storms near you"):** the Storms tab opens with EVENTS, one fixed-height card per kind, always in this
   order: Tornado (the next touchdown anywhere, 24 h ahead, ranked daylight 8 + over land 4 + a drier region 2 (the
   map's cover < 0.45 round it) + outside the deep tropics 1, then the earliest — the first cut stood in a downpour over
-  Lake Victoria: Watch = a minute before, 6 km on its inflow
-  side; Mature = a third of the way in, 8 km away, 300 m up), Hurricane (the strongest cyclone now: Eye / Orbit / Landfall,
-  and Next major = the next one peaking at Category 3+, any basin, to its peak from orbit), Haboob (the next line system
+  Lake Victoria), Hurricane (the strongest cyclone now; its text names the next one peaking at Category 3+, any basin), Haboob (the next line system
   at full strength by day whose LEADING EDGE (9 points along the line, dG ahead as haboobFrontOf) is mostly over the
   biome map's dust (>= 6 at >= 0.3, mean >= 0.4), 48 h ahead — the centre's dust alone picked storms whose front ran over
   farmland, and no wall was drawn; inland (150 km from the sea: the coast's fog); ranked by its light: the Sun on the
-  side it advances toward, clear of the anvil (`haboobSunOnFace`) and 18 deg up 2, the Sun 25-60 deg up 1; Watch / Aloft =
-  `haboobStrongestPoint`: the front's dustiest, best front-lit stretch at that moment, 9 km ahead of it on the ground or
-  2.5 km up, looking at it — they stood a fixed distance from the storm's centre, 40-80 km from the wall actually drawn), Supercell and Squall line (the strongest alive now, mature and daylit preferred: Go
-  to, Watch, Tornado / Passage), Waterspout (as the tornado, at sea), Wildfire (the biggest fire burning now, by size x
-  activity: Go to 10 km beside its column across the smoke's wind and 4 km upwind, 300 m up, on the side with the Sun behind you by day, Orbit). **Tornado views leave the rain by radar** (2026-10-24, `weatherTornadoFixTick`): ten frames after the jump (the weather cube re-baked) one radar dispatch at 50 km (`wxRadarProbe`, read into `wxProbeFrame`, not shown) scores 48 spots round the funnel (12 bearings x 4.5-12 km) by the rain there x 1.5 + along the line of sight, and moves the eye to the driest (log: `weather: tornado view moved out of the rain`); a CPU estimate from towers and shields stood in full rain (the map's rain and the envelope decks are only on the GPU). Each card is an icon, three unwrapped lines clipped at its edge and a 2 x 2
-  button grid (disabled when they do not apply), so nothing moves as storms come and go; NEAR YOU below is 4 STICKY slots
+  side it advances toward, clear of the anvil (`haboobSunOnFace`) and 18 deg up 2, the Sun 25-60 deg up 1; placed by
+  `haboobStrongestPoint`: the front's dustiest, best front-lit stretch at that moment, looking at it — they stood a fixed distance from the storm's centre, 40-80 km from the wall actually drawn), Supercell and Squall line (the strongest alive now, mature and daylit preferred), Waterspout (as the tornado, at sea), Wildfire (the biggest fire burning now, by size x
+  activity: 4 km beside its front across the smoke's wind and 1.5 km upwind, 150 m up, on the side with the Sun behind you by day). **Tornado views leave the rain by radar** (2026-10-24, `weatherTornadoFixTick`): ten frames after the jump (the weather cube re-baked) one radar dispatch at 50 km (`wxRadarProbe`, read into `wxProbeFrame`, not shown) scores 48 spots round the funnel (12 bearings x 4.5-12 km) by the rain there x 1.5 + along the line of sight, and moves the eye to the driest (log: `weather: tornado view moved out of the rain`); a CPU estimate from towers and shields stood in full rain (the map's rain and the envelope decks are only on the GPU). Each card is an icon, three unwrapped lines clipped at its edge and one Watch
+  button (disabled when there is nothing), so nothing moves as storms come and go; NEAR YOU below is 4 STICKY slots
   of organised storms (a storm keeps its slot while it is near; air-mass cells only when nothing organised is near), the
   rows fixed-height too. **Never search ahead on the main catalog:** `stormsAt(t)` evicts every bin outside [t - 9 h,
   t + 2 h], i.e. the bins the renderer needs this frame. The forward search runs on a SECOND catalog (`wxScout`, the main
@@ -1228,14 +1240,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   selects). The radar draws the active tracks in range the same way and each centre with its name (the eyewall towers
   are no storm markers); the eyewall ring, bands and eye come out of cv2Field on their own. Rows: category in the basin's
   term (`cycloneCategoryName`), vmax (m/s, kt), pressure (the catalog's Atkinson-Holliday), motion, formed when, over
-  land, distance; Go to (0 near: 60 km behind its motion at 1.5 km, as `storms go cyclone=`; 1 Orbit: over the eye at
-  1.6 x its outer radius, 0.7-2.5 Mm, looking down; 2 Eye: 2.5 km up at the centre; 3 Landfall: its next (else first)
-  landfall, standing just OFF the coast there — stepped out toward the storm until open sea, 20 m up — looking at it; the
-  message says when it comes ashore at night) and Watch (its peak, or genesis + 1 h while upcoming, at 1x, from orbit).
+  land, distance; Watch (from orbit: over the eye at 1.6 x its outer radius, 0.7-2.5 Mm, looking down). `weatherGoToCyclone`
+  keeps the other framings for the harness / featured acts (0 near: 60 km behind its motion at 1.5 km, as `storms go
+  cyclone=`; 2 Eye: 2.5 km up at the centre; 3 Landfall: its next (else first) landfall, standing just OFF the coast there
+  — stepped out until open sea, 20 m up — looking at it).
   MILESTONES (`weatherCycloneMilestones`, from the hourly vmax / overLand): genesis, named (17.5 m/s), hurricane / typhoon
   / cyclone strength (33), rapid intensification's onset (+15.4 m/s in 24 h), Category 3 (50), peak, every landfall
-  (`overLand` 0 -> 1), dissipation; Skip / Back jumps the clock there at 1x with the camera over the storm from orbit (a
-  landfall: 2 h before, on the coast at that point looking at it). Squall lines / MCSs are listed in the Storms tab with
+  (`overLand` 0 -> 1), dissipation; each milestone's Watch jumps the clock there at 1x with the camera over the storm from orbit (a
+  landfall: AT it, from just off the coast looking at it). Squall lines / MCSs are listed in the Storms tab with
   their kind names; their stage is the regenerating envelope's (`sysOn` / `sysOff`), each slot's strength from
   `towerCycleAt`. Cost: closed nothing; open on the Cyclones tab `build_ui` +0.17 ms (layout of the rows), the map raster
   only on a box change.

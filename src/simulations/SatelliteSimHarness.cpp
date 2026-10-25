@@ -4508,8 +4508,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             return Status::Done;
         }
         // `weather events` — the Storms tab's featured events (the forward search run to its end first);
-        // `weather event <tornado|hurricane|haboob|supercell|line|waterspout|wildfire> [act=0-3]` — press that card's
-        // button (act: 0 / 1 the first row, 2 / 3 the second).
+        // `weather event <tornado|hurricane|haboob|supercell|line|waterspout|wildfire> [act=0-3]` — act 0 (default) presses
+        // that card's one Watch button; the other acts are views the cards no longer offer (tornado / waterspout 1 aloft
+        // mid-life, 2 a minute before touchdown; hurricane 1 the eye, 2 its next landfall, 3 the next major at its peak;
+        // haboob 1 aloft; supercell / line 1 the old Go to now, 2 its tornado / passage; wildfire 1 from orbit).
         if (sub == "events" || sub == "event")
         {
             weatherRefreshRows(true);
@@ -4558,7 +4560,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             }
             std::string msg;
             const bool ok = sub == "go" ? weatherGoToStorm(id, msg) : sub == "tornado" ? weatherWatchTornado(id, msg)
-                          : sub == "passage" ? weatherWatchPassage(id, msg) : weatherWatchStorm(id, msg);
+                          : sub == "passage" ? weatherWatchPassage(id, msg) : weatherWatchStormNow(id, msg);
             if (!ok)
                 fail("weather " + sub + ": " + msg);
             wxSelStorm = id;

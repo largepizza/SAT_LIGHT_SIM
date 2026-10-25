@@ -335,16 +335,28 @@ bool SatelliteSim::weatherWatchCyclone(uint64_t id, std::string &msg)
         msg = "That cyclone is not listed";
         return false;
     }
+    // Watch (2026-10-24, one button): alive now -> now; else (upcoming or gone) its peak, where it is at its strongest.
     const double now = (double)simDayJ2000 * kDayS + simSecInDay;
-    const bool upcoming = now < cp->t0;
-    const double t = upcoming ? cp->t0 + 3600.0 : cp->tPeak;
+    const bool alive = now >= cp->t0 + 3600.0 && now <= cp->t0 + cp->life - 3600.0;
+    double t = alive ? now : cp->tPeak;
+    // From orbit a storm on the night side is invisible (2026-10-24: a row's Watch drew city lights): forward to its next
+    // daylight (the Sun 15 deg up over the centre) while it is still alive, up to 18 h.
+    bool dawn = false;
+    if (weatherSunSin(cp->earthAt(t), t) < 0.17)
+        for (double tt = t + 1800.0; tt <= t + 18.0 * 3600.0 && tt < cp->t0 + cp->life - 3600.0; tt += 1800.0)
+            if (weatherSunSin(cp->earthAt(tt), tt) > 0.26)
+            {
+                t = tt;
+                dawn = true;
+                break;
+            }
     setSimTime(*this, simDayJ2000, simSecInDay, t);
     timePaused = false;
     timeScaleIdx = 0;
     timeDir = 1.0f;
     std::string m;
     const bool ok = weatherGoToCyclone(id, 1, m);
-    msg = std::string(upcoming ? "Its genesis: " : "Its peak: ") + m;
+    msg = std::string(dawn ? "In daylight: " : alive ? "" : "At its peak: ") + m;
     return ok;
 }
 
@@ -365,8 +377,9 @@ bool SatelliteSim::weatherCycloneMilestone(uint64_t id, int index, std::string &
     }
     const WxMilestone m = ms[(size_t)index];
     const bool land = m.kind == 6;
-    // A landfall from the coast 2 h before it; dissipation 30 min before (it is still there); the rest at the moment.
-    const double t = land ? m.t - 2.0 * 3600.0 : m.kind == 7 ? m.t - 1800.0 : std::max(m.t, cp->t0 + 60.0);
+    // A landfall AT it (2026-10-24, one Watch: it was 2 h before, the eyewall still offshore), from just off the coast;
+    // dissipation 30 min before (it is still there); the rest at the moment.
+    const double t = land ? m.t : m.kind == 7 ? m.t - 1800.0 : std::max(m.t, cp->t0 + 60.0);
     setSimTime(*this, simDayJ2000, simSecInDay, t);
     timePaused = false;
     timeScaleIdx = 0;
@@ -380,10 +393,10 @@ bool SatelliteSim::weatherCycloneMilestone(uint64_t id, int index, std::string &
         // 2 h out, until the open sea (up to 20 km), 20 m up, looking at it across the surf. On the landfall point itself
         // the view was often a hillside in the rain.
         const wx::Cyclone c = *cp;
-        const glm::dvec3 at = c.earthAt(m.t), now = c.earthAt(t);
+        const glm::dvec3 at = c.earthAt(m.t), now = c.earthAt(t), from = c.earthAt(m.t - 7200.0);
         glm::dvec3 stand = at;
         {
-            glm::dvec3 dir = now - at * glm::dot(now, at);
+            glm::dvec3 dir = from - at * glm::dot(from, at);   // (seaward: where it came from)
             if (glm::length(dir) > 1e-12)
             {
                 dir = glm::normalize(dir);
@@ -414,7 +427,7 @@ bool SatelliteSim::weatherCycloneMilestone(uint64_t id, int index, std::string &
         skyTaaHistValid = false;
         cv2HistoryValid = false;
         wxSelCyclone = c.id;
-        g = landNight ? "off the coast, 2 h before (it comes ashore at night)" : "off the coast, 2 h before";
+        g = landNight ? "coming ashore, from just off the coast (at night)" : "coming ashore, from just off the coast";
         ok = true;
     }
     else
@@ -714,18 +727,8 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
                                                                .childGap = 4,
                                                                .layoutDirection = CLAY_LEFT_TO_RIGHT}})
             {
-                static const char *kModes[4] = {"Go to", "Orbit", "Eye", "Landfall"};
-                static const char *kTips[4] = {"60 km behind its motion, 1.5 km up, looking at the centre",
-                                               "Over the eye from orbit, looking down", "In the eye, 2.5 km up",
-                                               "At its next (else first) landfall point on the coast, looking at it"};
-                for (int m = 0; m < 4; ++m)
-                    if (uiButton(inp, ui, "WxCGo", i * 8 + m, kModes[m], kTips[m], false, m != 3 || anyLandfall))
-                    {
-                        wxCycPendingAct = 1;
-                        wxCycPendingArg = m;
-                        wxCycPendingId = c.id;
-                    }
-                if (uiButton(inp, ui, "WxCWatch", i, "Watch", "Its peak at 1x, from orbit"))
+                (void)anyLandfall;
+                if (uiButton(inp, ui, "WxCWatch", i, "Watch", "The whole storm now, from orbit"))
                 {
                     wxCycPendingAct = 2;
                     wxCycPendingId = c.id;
@@ -777,9 +780,8 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
                     text(wxStr("%s", m.label.c_str()), m.t <= now ? Pal::textDim : Pal::textPrimary, 11, true);
                     text(wxStr("%s (%s)", d, rel), Pal::textHint, 10);
                 }
-                if (uiButton(inp, ui, "WxMsSkip", i, m.t <= now ? "Back" : "Skip",
-                             m.kind == 6 ? "The clock 2 h before it at 1x, on the coast where it comes in"
-                                         : "The clock there at 1x, over the storm from orbit"))
+                if (uiButton(inp, ui, "WxMsSkip", i, "Watch",
+                             m.kind == 6 ? "It coming ashore, from just off the coast" : "That moment, the storm from orbit"))
                 {
                     wxCycPendingAct = 3;
                     wxCycPendingArg = i;
@@ -830,9 +832,9 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
                 text(wxStr("%s - %s %d, peak %.0f m/s; %s %s", d0, d1, c.year, c.vPeak, now < c.t0 ? "forms" : "formed", rel),
                      Pal::textHint, 10, true);
             }
-            if (uiButton(inp, ui, "WxSeasonShow", i, "Track", "Show its track and milestones", c.id == wxSelCyclone))
-                wxSelCyclone = c.id;
-            if (uiButton(inp, ui, "WxSeasonWatch", i, "Watch", now < c.t0 ? "Its genesis at 1x, from orbit" : "Its peak at 1x, from orbit"))
+            if (Clay_Hovered() && inp.lmbPressed)
+                wxSelCyclone = c.id;   // (a click on the row shows its track and milestones)
+            if (uiButton(inp, ui, "WxSeasonWatch", i, "Watch", alive ? "The whole storm now, from orbit" : "The storm at its peak, from orbit"))
             {
                 wxCycPendingAct = 2;
                 wxCycPendingId = c.id;

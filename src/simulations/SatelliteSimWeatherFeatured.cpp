@@ -436,8 +436,9 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
     {
         if (!F.hasStorm) break;
         // In front of the wall itself: the strongest stretch of the storm's gust front over dust at that moment (its towers
-        // built for it, haboobStrongestPoint), standing D ahead of it and looking back at it (act 0: 9 km on the ground,
-        // it reaches you in ~10 min; act 1: 9 km ahead, 2.5 km up, over its heads: from 3-4 km up the storm's own cumulus often stood in the way, from 1.2 km the regional dust haze). The first cut stood a fixed distance from the storm's
+        // built for it, haboobStrongestPoint), standing D ahead of it and looking back at it (act 0, Watch: 6 km on the
+        // ground, the wall filling the view's lower third and reaching you in ~6 min; act 1 (harness): 9 km ahead, 2.5 km
+        // up, over its heads: from 3-4 km up the storm's own cumulus often stood in the way, from 1.2 km the regional dust haze). The first cut stood a fixed distance from the storm's
         // CENTRE, measured to an estimate of the front (bow + the outflow's lead): its real front, built from the towers
         // standing then, was 40-80 km away and a haze on the horizon, and the aloft view showed none.
         const double t = std::max(F.tEvent, (double)simDayJ2000 * 86400.0 + simSecInDay);
@@ -451,31 +452,33 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
             msg = "Its gust front raises no dust at that moment";
             return false;
         }
-        const double D = 9000.0;
+        const double D = aloft ? 9000.0 : 6000.0;
         const glm::dvec3 oe = glm::normalize(q.dir + q.out * (D / kRe));
-        placeLooking(oe, aloft ? 2500.0 : 2.0, q.dir, aloft ? -6.0f : 5.0f);
+        placeLooking(oe, aloft ? 2500.0 : 2.0, q.dir, aloft ? -6.0f : 6.0f);
         camera.fovYDeg = 70.0f;
         updatePositions(t);
-        msg = std::string(S.kind == wx::StormKind::Mcs ? "An MCS" : "A squall line") + "'s haboob: " +
-              (aloft ? "9 km ahead of its wall, 2.5 km up" : "9 km ahead of its wall, on the ground") +
-              ", looking at it";
+        msg = std::string("A haboob's dust wall over ") + wx::biomeName(biomeMap.at(latOf(q.dir), lonOf(q.dir))) +
+              (aloft ? ", 9 km away, seen from 2.5 km up" : ", 6 km away and coming toward you");
         return true;
     }
     case kFeatSupercell:
     case kFeatLine:
-        if (act == 0) return weatherGoToStorm(F.row.id, msg);
-        if (act == 1) return weatherWatchStorm(F.row.id, msg);
+        if (act == 0) return weatherWatchStormNow(F.row.id, msg);
+        if (act == 1) return weatherGoToStorm(F.row.id, msg);
         if (act == 2 && F.row.tTorn0 > 0.0) return weatherWatchTornado(F.row.id, msg);
         if (act == 2 && F.row.tPass > 0.0) return weatherWatchPassage(F.row.id, msg);
         break;
     case kFeatHurricane:
     {
-        // act 0 the eye, 1 from orbit, 2 its next landfall (all: the strongest active one); 3 the next major one at its peak.
+        // act 0 (Watch) the strongest active one from orbit, the whole storm in frame; harness: 1 the eye, 2 its next
+        // landfall, 3 the next major one at its peak.
         if (act <= 2 && F.hasCyc)
         {
             wxCycFeatured = {F.cyc};
             if (F.hasCycNext) wxCycFeatured.push_back(F.cycNext);
-            return weatherGoToCyclone(F.cyc.id, act == 0 ? 2 : act == 1 ? 1 : 3, msg);
+            if (act == 0)
+                return weatherWatchCyclone(F.cyc.id, msg);   // (now from orbit; forward to its daylight if it is night there)
+            return weatherGoToCyclone(F.cyc.id, act == 1 ? 2 : 3, msg);
         }
         if (act == 3 && F.hasCycNext)
         {
@@ -516,12 +519,12 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
                 sgn = -1.0;   // the eye at -cv looks along +cv, toward the Sun: stand on the other side
         }
         const glm::dvec3 oe = orbit ? glm::normalize(Hd - cv * (300000.0 / kRe))
-                                    : glm::normalize(Hd - cv * (sgn * 10000.0 / kRe) - wv * (4000.0 / kRe));
-        placeLooking(oe, orbit ? 400000.0 : 300.0, Hd, orbit ? -45.0f : 3.0f);
+                                    : glm::normalize(Hd - cv * (sgn * 4000.0 / kRe) - wv * (1500.0 / kRe));
+        placeLooking(oe, orbit ? 400000.0 : 150.0, Hd, orbit ? -45.0f : 2.0f);   // (Watch: 4 km beside, the flames read)
         fireCacheRate = -1.0f;   // rescan the fires round the new eye
         updatePositions(t);
-        msg = std::string("A fire in ") + wx::biomeName(biomeMap.at(F.fire.latDeg, F.fire.lonDeg)) +
-              (orbit ? ", from orbit" : ", 10 km beside its smoke column");
+        msg = std::string("A wildfire in ") + wx::biomeName(biomeMap.at(F.fire.latDeg, F.fire.lonDeg)) +
+              (orbit ? ", from orbit" : ", 4 km beside its burning front");
         return true;
     }
     default: break;
@@ -532,7 +535,9 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
 
 // ── The cards ────────────────────────────────────────────────────────────────────────────────────────────────────
 // Every card has the same height whatever it holds: an icon, three single lines (never wrapped, clipped at the card's
-// edge), two rows of two buttons (disabled when they do not apply). Nothing appears or disappears as storms come and go.
+// edge) and ONE button, Watch (disabled when there is nothing to see). Nothing appears or disappears as storms come and
+// go. (2026-10-24: there were up to four — Go to / Watch / Mature / Aloft / Eye / Orbit / Landfall / Next major /
+// Passage — and playtesters could not tell them apart; Watch always lands on the event happening, in frame.)
 void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
 {
     const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -545,9 +550,9 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
         const double la = latOf(e), lo = lonOf(e);
         return wxStr("%.1f %s %.1f %s, %.0f km from you", std::abs(la), ns(la), std::abs(lo), ew(lo), distKm(e));
     };
-    struct Btn { const char *label, *tip; bool enabled; };
+    struct Btn { const char *tip; bool enabled; };
     auto card = [&](int slot, int icon, const char *title, Clay_Color accent, const char *status, const char *l1, const char *l2,
-                    const Btn (&b)[4]) {
+                    const Btn &b) {
         const float lineH = (float)fs(12) * 1.35f;
         CLAY(CLAY_IDI("WxFCard", (uint32_t)slot), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(std::max(3.0f * lineH + 18.0f, 64.0f))},
                                                               .padding = {8, 8, 6, 6},
@@ -583,32 +588,17 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
                 text(l1, Pal::textDim, 11);
                 text(l2, Pal::textDim, 11);
             }
-            // (A fixed width, each button growing to half of it: the text column is the same width on every card.)
-            const float bw = (float)fs(11) * 10.0f;
+            // (A fixed width: the text column is the same width on every card.)
+            const float bw = (float)fs(11) * 6.0f;
             CLAY(CLAY_IDI("WxFBtns", (uint32_t)slot), {.layout = {.sizing = {CLAY_SIZING_FIXED(bw), CLAY_SIZING_FIT(0)},
-                                                                  .childGap = 4,
+                                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                                   .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
-                for (int row = 0; row < 2; ++row)
-                    CLAY(CLAY_IDI("WxFBRow", (uint32_t)(slot * 2 + row)), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                                      .childGap = 4,
-                                                                                      .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-                    {
-                        for (int k = 0; k < 2; ++k)
-                        {
-                            const Btn &bb = b[row * 2 + k];
-                            if (!bb.label)
-                            {
-                                CLAY(CLAY_IDI("WxFBGap", (uint32_t)(slot * 4 + row * 2 + k)), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-                                continue;
-                            }
-                            if (uiButton(inp, ui, "WxFBtn", slot * 4 + row * 2 + k, bb.label, bb.tip, false, bb.enabled, true) && bb.enabled)
-                            {
-                                wxFeatPendingSlot = slot;
-                                wxFeatPendingAct = row * 2 + k;
-                            }
-                        }
-                    }
+                if (uiButton(inp, ui, "WxFBtn", slot, "Watch", b.tip, false, b.enabled, true) && b.enabled)
+                {
+                    wxFeatPendingSlot = slot;
+                    wxFeatPendingAct = 0;
+                }
             }
         }
     };
@@ -632,14 +622,12 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
             const bool on = now >= F.tEvent && now < F.tEnd;
             fmtIn(F.tEvent - now, w, sizeof(w));
             fmtIn(F.tEnd - now, w2, sizeof(w2));
-            st = on ? wxStr("ON THE GROUND NOW, %s more", w2) : wxStr("touches down in %s", w);
+            st = on ? wxStr("ON THE GROUND NOW, %s more", w2) : wxStr("the next one: touches down in %s", w);
             l1 = where(F.earth);
             l2 = wxStr("%s, %.0f min on the ground, ~%.0f m wide; %s", F.day ? "Daylight" : "At night", (F.tEnd - F.tEvent) / 60.0,
                        2.0 * F.torn.r0, spout ? "from a cell at sea" : "under a supercell");
         }
-        const Btn b[4] = {{"Watch", spout ? "A minute before it touches down, 6 km away, at 1x" : "A minute before it touches down, 6 km away on its inflow side, at 1x", F.found},
-                          {"Mature", "A third of the way through it, 8 km away and 300 m up, looking at it, at 1x", F.found},
-                          {nullptr, nullptr, false}, {nullptr, nullptr, false}};
+        const Btn b = {spout ? "The waterspout on the water, a few km away" : "The tornado on the ground, a few km away", F.found};
         card(slot, spout ? kIconStormSpout : kIconStormTornado, title, spout ? Pal::chipIdle : Pal::btnDanger, st, l1, l2, b);
         if (!spout)
         {
@@ -676,10 +664,8 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
                 for (size_t i = 1; i < H.cyc.overLand.size(); ++i)
                     if (H.cyc.overLand[i] && !H.cyc.overLand[i - 1] && (double)i >= k) landfall = true;
             }
-            const Btn hb[4] = {{"Eye", "2.5 km up at its centre, looking across the eye", H.hasCyc},
-                               {"Orbit", "Over the eye from orbit, looking down", H.hasCyc},
-                               {"Landfall", "Its next landfall: just off the coast there, looking at it", landfall},
-                               {"Next major", "Ahead to the next major one's peak, from orbit", H.hasCycNext}};
+            (void)landfall;
+            const Btn hb = {"The whole storm from orbit, its eye in the middle", H.hasCyc};
             card(kFeatHurricane, kIconStormHurricane, "HURRICANE", Pal::progressFill, hs, h1, h2, hb);
 
             const WxFeatured &B = wxFeat[kFeatHaboob];
@@ -698,9 +684,7 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
                 b2 = wxStr("%s's gust front over %s, by day", B.storm.kind == wx::StormKind::Mcs ? "An MCS" : "A squall line",
                            wx::biomeName(biomeMap.at(latOf(B.earth), lonOf(B.earth))));
             }
-            const Btn bb[4] = {{"Watch", "On the ground 9 km ahead of the wall's dustiest stretch, looking at it, at 1x (it reaches you in ~10 min)", B.found},
-                               {"Aloft", "9 km ahead of the wall and 2.5 km up, over its heads", B.found},
-                               {nullptr, nullptr, false}, {nullptr, nullptr, false}};
+            const Btn bb = {"The dust wall rolling toward you, on the ground in front of it", B.found};
             card(kFeatHaboob, kIconStormHaboob, "HABOOB", Pal::tagTwilight, bs, b1, b2, bb);
 
             for (int s : {(int)kFeatSupercell, (int)kFeatLine})
@@ -731,12 +715,7 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
                         s2 = wxStr("%s; strength %.0f%%, ~%.1f flashes/min; %s left", S.day ? "Daylight" : "At night", 100.0f * r.strength,
                                    r.flashesPerMin, w);
                 }
-                const bool third = S.found && (sup ? S.row.tTorn0 > now - 60.0 : S.row.tPass > now);
-                const Btn sb[4] = {{"Go to", "On the ground 50 km upwind of its strongest tower, looking at it", S.found},
-                                   {"Watch", "Its mature stage at 1x, then Go to", S.found},
-                                   {sup ? "Tornado" : "Passage", sup ? "A minute before its tornado touches down" : "20 minutes before its line reaches you",
-                                    third},
-                                   {nullptr, nullptr, false}};
+                const Btn sb = {sup ? "The supercell at its height, from the ground" : "The line of storms at its height, from the ground", S.found};
                 card(s, sup ? kIconStormSupercell : kIconStormSquall, sup ? "SUPERCELL" : "SQUALL LINE", Pal::btnAccent, ss, s1, s2, sb);
             }
         }
@@ -759,9 +738,7 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
             f2 = wxStr("%s, front %.0f km long, smoke to %.1f km; %s left", wx::biomeName(biomeMap.at(F.fire.latDeg, F.fire.lonDeg)),
                        (s.headM + s.backM) / 1000.0, s.plumeTopM / 1000.0, w);
         }
-        const Btn fb[4] = {{"Go to", "30 km beside its smoke column, 700 m up", F.found},
-                           {"Orbit", "Over it from 400 km", F.found},
-                           {nullptr, nullptr, false}, {nullptr, nullptr, false}};
+        const Btn fb = {"The fire and its smoke, from beside the column", F.found};
         card(kFeatFire, kIconStormFire, "WILDFIRE", Pal::btnDanger, fs0, f1, f2, fb);
     }
 }
