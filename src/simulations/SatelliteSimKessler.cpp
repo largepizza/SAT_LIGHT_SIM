@@ -1002,7 +1002,9 @@ void SatelliteSim::kesslerSyncProcess(int32_t nowSec, double budgetMs)
                         kDirtyPool.push_back(j);
                 }
             }
-            if ((sb.next & 1023u) == 0u && over())
+            // (every 128: a reused slot's change — its history, kGenBounds, the re-entry index — is several us, and 1024 of
+            // them overran the 3-ms budget to ~10 ms at 1 d/s after the CME; perf4-cpu 2026-10-24)
+            if ((sb.next & 127u) == 0u && over())
             {
                 stopped = true;
                 break;
