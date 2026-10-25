@@ -4826,6 +4826,7 @@ private:
     // what came back, per storm, eased (base altitude m ASL, optical depth above).
     uint64_t tornadoProbeIds[4] = {};
     bool tornadoProbeRan = false;   // the lightning pass ran since the columns were asked for (set with its dispatch)
+    bool harnessTornadoHidden_ = false;   // harness `storms tornado draw=0`: the funnels are listed but not drawn (A/B)
     struct TornadoProbe { float baseAsl = 0.0f, tau = 0.0f; bool valid = false; double wall = 0.0; };
     std::unordered_map<uint64_t, TornadoProbe> tornadoProbes;
     bool tornadoOf(const wx::Storm &S, double t, TornadoNow &out) const;   // its tornado (if any) and where at t
