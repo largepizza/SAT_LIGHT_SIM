@@ -3376,7 +3376,8 @@ private:
     bool wxRadarRanCapable = false;      // the clouds' pass ran (the radar can be dispatched)
     int wxLoopShownPos = -1;
     bool weatherStormNow(uint64_t id, double t, WxStormRow &out);       // a storm's row at time t (false: not alive)
-    bool weatherGoToStorm(uint64_t id, std::string &msg);               // stand ~50 km upwind of its strongest tower
+    bool weatherGoToStorm(uint64_t id, std::string &msg, double distM = 50000.0, float aglM = -1.0f, float elDeg = 8.0f); // stand upwind of its strongest tower
+    bool weatherWatchStormNow(uint64_t id, std::string &msg);          // the window's one button: the storm happening, in frame
     bool weatherWatchStorm(uint64_t id, std::string &msg);              // its mature stage at 1x, then Go to
     bool weatherWatchTornado(uint64_t id, std::string &msg);            // a minute before its touchdown, 6 km on its inflow side
     bool weatherWatchPassage(uint64_t id, std::string &msg);            // 20 min before its line reaches you, looking at it
@@ -3426,6 +3427,7 @@ private:
     // tornado views use it to stand where the renderer's own rain is not (a CPU estimate from towers and shields stood
     // in full rain: the map's rain and the envelope's decks are only on the GPU).
     bool wxRadarProbe = false, wxRadarDispProbe = false;
+    int wxRadarProbeRange = 0;
     WxRadarFrame wxProbeFrame;
     struct WxTornFix
     {
@@ -3434,8 +3436,13 @@ private:
         glm::dvec3 te{0, 0, 1}, up{0, 0, 1};
         bool close = false;
         float aglM = 60.0f, elDeg = 10.0f;
+        double d0 = 4500.0, dStep = 2000.0;   // the candidate rings' first distance and spacing (m)
+        double losMax = 0.8;                  // the line of sight's share scored for rain (the subject's own core left out)
+        int rangeIdx = 0;                     // the probe's radius: kWxRangesKm[rangeIdx]
+        const char *what = "tornado";
         double before = -1.0, after = -1.0, distKm = 0.0;   // (harness: rain at the first and the chosen spot)
     } wxTornFix;
+    glm::dvec3 wxStormLastTE{0, 0, 1}, wxStormLastUp{0, 0, 1};   // weatherGoToStorm's target and the side it stood on
     void weatherTornadoFixTick();
     float weatherProbeRainAt(const glm::dvec3 &e) const;
     // The image (a CPU raster uploaded in recordCompute, as the Kessler tracker's globe).

@@ -96,6 +96,8 @@ const char *stageName(int s)
     static const char *k[4] = {"forming", "growing", "mature", "decaying"};
     return k[std::clamp(s, 0, 3)];
 }
+double wwLat(const glm::dvec3 &e) { return glm::degrees(std::asin(std::clamp(e.z, -1.0, 1.0))); }
+double wwLon(const glm::dvec3 &e) { return glm::degrees(std::atan2(e.y, e.x)); }
 const char *compass(double bearingDeg)
 {
     static const char *k[16] = {"N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"};
@@ -450,14 +452,22 @@ bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::s
         msg = "That storm puts down no tornado";
         return false;
     }
-    const bool close = mode == 1;
-    const double t = close ? T.t0 + 0.35 * (T.t1 - T.t0) : T.t0 - 60.0;
+    // mode 0 WATCH (the Weather window's one button, 2026-10-24: the user, "a single button that takes them to a tornado in
+    // frame"; "1 minute before touchdown" put playtesters where nothing was happening yet): the funnel on the ground NOW
+    // if it is, else a third of the way into its life; on the ground ~4.5 km off, looking at it. mode 1 (harness): a third
+    // of the way in, 8 km away and 300 m up. mode 2 (harness `weather tornado ... act=2`): a minute before touchdown.
+    const bool close = mode == 1, before = mode == 2;
+    const bool onNow = now >= T.t0 + 30.0 && now <= T.t1 - 300.0;
+    const double t = before ? T.t0 - 60.0 : (mode == 0 && onNow) ? now : T.t0 + (close ? 0.35 : 0.3) * (T.t1 - T.t0);
+    const double dInit = close ? 8000.0 : before ? 6000.0 : T.spout ? 3000.0 : 3500.0;
+    const float aglInit = close ? 300.0f : before ? 60.0f : 40.0f;
+    const float elInit = close ? 8.0f : before ? 10.0f : 8.0f;
     simDayJ2000 = (int64_t)std::floor(t / 86400.0);
     simSecInDay = t - (double)simDayJ2000 * 86400.0;
     timePaused = false;
     timeScaleIdx = 0;
     timeDir = 1.0f;
-    const double tw = close ? t : T.t0 + 30.0;
+    const double tw = before ? T.t0 + 30.0 : t;
     tornadoOf(*st, tw, T);   // where it is (touches down)
     const glm::dvec3 te = weatherMapToEarth(T.mapDir, tw);
     glm::dvec3 up = weatherMapToEarth(T.upwindMap, tw);
@@ -467,7 +477,7 @@ bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::s
     // bearings x 3 distances round the funnel and take the driest, from this moment's towers and shields near it (CPU:
     // a tower's rain core ~1.2 radii, a shield's area x its strength; the map's own rain is suppressed in storm
     // envelopes), with a small preference for the inflow side.
-    glm::dvec3 oe = glm::normalize(te * std::cos((close ? 8000.0 : 6000.0) / kRe) + up * std::sin((close ? 8000.0 : 6000.0) / kRe));
+    glm::dvec3 oe = glm::normalize(te * std::cos(dInit / kRe) + up * std::sin(dInit / kRe));
     if (stormCatalog)
     {
         const double ph = (double)cloudDriftRate * (tw - kCloudDriftEpochS) + cloudDriftPhaseOffset;
@@ -516,7 +526,7 @@ bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::s
             const glm::dvec3 dir = up * std::cos(a) + side * std::sin(a);
             for (int j = 0; j < 3; ++j)
             {
-                const double dm = (close ? 8000.0 : 6000.0) + 2000.0 * j;
+                const double dm = dInit + (mode == 0 ? 800.0 : 2000.0) * j;
                 const glm::dvec3 E = glm::normalize(te * std::cos(dm / kRe) + dir * std::sin(dm / kRe));
                 const double sc = wet(E) + 0.08 * (1.0 - std::cos(a)) + 0.02 * j;
                 if (sc < bestS)
@@ -531,12 +541,12 @@ bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::s
         stopFollow();
     stopTrack();
     setObserverLatLon(glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0))), glm::degrees(std::atan2(oe.y, oe.x)));
-    obsHeightOffset = std::max(0.0f, cpuTerrainHeightM(obsLatDeg, obsLonDeg)) + (close ? 300.0f : 60.0f);
+    obsHeightOffset = std::max(0.0f, cpuTerrainHeightM(obsLatDeg, obsLonDeg)) + aglInit;
     const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe) + glm::dvec3(1e-12, 0, 0)), oNorth = glm::cross(oe, oEast);
     const glm::dvec3 to3 = te - oe * glm::dot(te, oe);
     const double az = glm::degrees(std::atan2(glm::dot(to3, oEast), glm::dot(to3, oNorth)));
-    camera.fovYDeg = std::max(camera.fovYDeg, 60.0f);
-    aimCameraAzEl((float)az, close ? 8.0f : 10.0f);
+    camera.fovYDeg = mode == 0 ? 50.0f : std::max(camera.fovYDeg, 60.0f);   // (Watch: the funnel larger in the frame)
+    aimCameraAzEl((float)az, elInit);
     for (double &bb : cv2WxBakedT) bb = -1e30;   // (the weather cube re-bakes with the storm stamped)
     updatePositions(t);
     trailClearPending = true;
@@ -548,13 +558,20 @@ bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::s
     wxTornFix.te = te;
     wxTornFix.up = up;
     wxTornFix.close = close;
-    wxTornFix.aglM = close ? 300.0f : 60.0f;
-    wxTornFix.elDeg = close ? 8.0f : 10.0f;
+    wxTornFix.aglM = aglInit;
+    wxTornFix.elDeg = elInit;
+    wxTornFix.d0 = close ? 6000.0 : T.spout ? 2500.0 : 3000.0;
+    wxTornFix.dStep = close ? 2000.0 : T.spout ? 800.0 : 1000.0;
+    wxTornFix.losMax = 0.8;
+    wxTornFix.rangeIdx = 0;
     char sb[200];
     const char *what = T.spout ? "waterspout" : "tornado";
     const char *side = compass(az + 180.0);
     const double dKm = std::acos(std::clamp(glm::dot(oe, te), -1.0, 1.0)) * kRe / 1000.0;
-    if (close)
+    if (mode == 0)
+        snprintf(sb, sizeof(sb), "A %s on the ground (%.0f min left), %.1f %s %.1f %s, a few km away", what, (T.t1 - t) / 60.0,
+                 std::abs(wwLat(te)), wwLat(te) >= 0.0 ? "N" : "S", std::abs(wwLon(te)), wwLon(te) >= 0.0 ? "E" : "W");
+    else if (close)
         snprintf(sb, sizeof(sb), "A third of the way through its %s (%.0f min on the ground), %.0f km %s of it, 300 m up", what,
                  (T.t1 - T.t0) / 60.0, dKm, side);
     else
@@ -613,6 +630,7 @@ void SatelliteSim::weatherTornadoFixTick()
         {
             wxProbeFrame.valid = false;
             wxRadarProbe = true;
+            wxRadarProbeRange = F.rangeIdx;
             wxRadarWanted = true;
             F.stage = 3;
         }
@@ -630,30 +648,33 @@ void SatelliteSim::weatherTornadoFixTick()
     F.stage = 0;
     const glm::dvec3 te = F.te, up = F.up;
     const glm::dvec3 side = glm::cross(te, up);
+    auto rainOr = [&](const glm::dvec3 &E) { const float r = weatherProbeRainAt(E); return r < 0.0f ? 2.0 : (double)r; };
     auto score = [&](const glm::dvec3 &E, double a) {
-        const double r = std::max(0.0f, weatherProbeRainAt(E));
+        const double r = rainOr(E);
         double los = 0.0;
         for (int k = 1; k <= 7; ++k)
         {
-            const double w = k / 8.0;
-            los += std::max(0.0f, weatherProbeRainAt(glm::normalize(E * (1.0 - w) + te * w)));
+            const double w = F.losMax * k / 7.0;
+            los += rainOr(glm::normalize(E * (1.0 - w) + te * w));
         }
-        return 1.5 * r + 1.0 * los / 7.0 + 0.04 * (1.0 - std::cos(a));
+        return 3.0 * r + 1.0 * los / 7.0 + 0.04 * (1.0 - std::cos(a));
     };
     const glm::dvec3 oe0 = glm::normalize(glm::dvec3(obsDir));
     F.before = std::max(0.0f, weatherProbeRainAt(oe0));
-    double bestS = 1e30;
+    // (the first guess is a candidate too: in a downpour everywhere, the rings moved a waterspout view INTO heavier rain)
+    const double j0 = std::max(0.0, (std::acos(std::clamp(glm::dot(oe0, te), -1.0, 1.0)) * kRe - F.d0) / std::max(F.dStep, 1.0));
+    double bestS = score(oe0, std::acos(std::clamp(glm::dot(glm::normalize(oe0 - te * glm::dot(oe0, te)), up), -1.0, 1.0))) + 0.05 * j0;
     glm::dvec3 best = oe0;
-    const double d0 = F.close ? 6000.0 : 4500.0;
+    const double d0 = F.d0;
     for (int k = 0; k < 12; ++k)
     {
         const double a = glm::radians(30.0 * k);
         const glm::dvec3 dir = up * std::cos(a) + side * std::sin(a);
         for (int j = 0; j < 4; ++j)
         {
-            const double dm = d0 + 2000.0 * j;
+            const double dm = d0 + F.dStep * j;
             const glm::dvec3 E = glm::normalize(te * std::cos(dm / kRe) + dir * std::sin(dm / kRe));
-            const double sc = score(E, a) + 0.01 * j;
+            const double sc = score(E, a) + 0.05 * j;
             if (sc < bestS)
             {
                 bestS = sc;
@@ -675,7 +696,7 @@ void SatelliteSim::weatherTornadoFixTick()
     skyTaaHistValid = false;
     cv2HistoryValid = false;
     char b[160];
-    snprintf(b, sizeof(b), "weather: tornado view moved out of the rain (%.2f -> %.2f), %.1f km from the funnel", F.before, F.after, F.distKm);
+    snprintf(b, sizeof(b), "weather: %s view moved out of the rain (%.2f -> %.2f), %.1f km from it", F.what, F.before, F.after, F.distKm);
     Log::line(b);
 }
 
@@ -718,7 +739,7 @@ bool SatelliteSim::weatherWatchPassage(uint64_t id, std::string &msg)
 
 // Go to: as the harness's `storms go` — on the ground (1.5 km above sea level, floored at the ground) ~50 km upwind of
 // the storm's strongest tower (the anvil blows away from you), looking at it a few degrees up.
-bool SatelliteSim::weatherGoToStorm(uint64_t id, std::string &msg)
+bool SatelliteSim::weatherGoToStorm(uint64_t id, std::string &msg, double distM, float aglM, float elDeg)
 {
     if (!stormCatalog)
     {
@@ -751,32 +772,83 @@ bool SatelliteSim::weatherGoToStorm(uint64_t id, std::string &msg)
         const glm::dvec3 sh(best->shear);
         b = std::atan2(glm::dot(sh, me), glm::dot(sh, mn)) + glm::pi<double>();
     }
-    const double distM = 50000.0;
     const double ang = distM / kRe;
     const glm::dvec3 oe = glm::normalize(te * std::cos(ang) + (east * std::sin(b) + north * std::cos(b)) * std::sin(ang));
     if (followActive)
         stopFollow();
     stopTrack();
     setObserverLatLon(glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0))), glm::degrees(std::atan2(oe.y, oe.x)));
-    obsHeightOffset = 1500.0f;
+    obsHeightOffset = aglM < 0.0f ? 1500.0f : std::max(0.0f, cpuTerrainHeightM(obsLatDeg, obsLonDeg)) + aglM;
     const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe) + glm::dvec3(1e-12, 0, 0)), oNorth = glm::cross(oe, oEast);
     const glm::dvec3 to3 = te - oe * glm::dot(te, oe);
     const double az = glm::degrees(std::atan2(glm::dot(to3, oEast), glm::dot(to3, oNorth)));
     camera.fovYDeg = std::max(camera.fovYDeg, 60.0f);
-    aimCameraAzEl((float)az, 8.0f);
+    aimCameraAzEl((float)az, elDeg);
+    wxStormLastTE = te;
+    wxStormLastUp = glm::normalize(oe - te * glm::dot(oe, te));
     updatePositions(t);
     trailClearPending = true;
     skyTaaHistValid = false;
     cv2HistoryValid = false;
     wxRowsWall = -1e300;
     char sb[200];
-    snprintf(sb, sizeof(sb), "%s, %s: you are 50 km %s of it, looking %s", kindName(alive ? row.kind : (int)best->kind),
-             alive ? stageName(row.stage) : "alive", compass(glm::degrees(b)), compass(az));
+    snprintf(sb, sizeof(sb), "%s, %s: you are %.0f km %s of it, looking %s", kindName(alive ? row.kind : (int)best->kind),
+             alive ? stageName(row.stage) : "alive", distM / 1000.0, compass(glm::degrees(b)), compass(az));
     msg = sb;
     return true;
 }
 
-// Watch: the clock to the storm's mature stage (its dominant tower grown, the anvil spread) at 1x, then Go to.
+// WATCH (2026-10-24, the Weather window's one button for a storm): its tornado if one is on the ground now; else the storm
+// at its mature moment (the clock moved forward to it while it is still growing, never back), from the ground ~35 km
+// upwind of its strongest tower, then moved out of the rain by the radar probe (weatherTornadoFixTick).
+bool SatelliteSim::weatherWatchStormNow(uint64_t id, std::string &msg)
+{
+    const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    WxStormRow row;
+    if (!weatherStormNow(id, now, row))
+    {
+        msg = "That storm has gone";
+        return false;
+    }
+    const wx::Storm *st = stormCatalog ? stormCatalog->find(id) : nullptr;
+    if (st && row.tTorn0 > 0.0 && now >= row.tTorn0 + 30.0 && now <= row.tTorn1 - 180.0)
+        return weatherWatchTornadoOf(*st, 0, msg);
+    const double t = (row.tMature > now && row.tMature < row.tEnd - 600.0) ? row.tMature : now;
+    const double days = std::floor(t / 86400.0);
+    simDayJ2000 = (int64_t)days;
+    simSecInDay = t - days * 86400.0;
+    timePaused = false;
+    timeScaleIdx = 0;
+    timeDir = 1.0f;
+    const bool line = row.kind == (int)wx::StormKind::SquallLine || row.kind == (int)wx::StormKind::Mcs;
+    const double dist = line ? 30000.0 : 35000.0;
+    std::string m2;
+    if (!weatherGoToStorm(id, m2, dist, 300.0f, 10.0f))
+    {
+        msg = m2;
+        return false;
+    }
+    for (double &bb : cv2WxBakedT) bb = -1e30;
+    wxTornFix = {};
+    wxTornFix.stage = 1;
+    wxTornFix.te = wxStormLastTE;
+    wxTornFix.up = wxStormLastUp;
+    wxTornFix.aglM = 300.0f;
+    wxTornFix.elDeg = 10.0f;
+    wxTornFix.d0 = dist - 10000.0;
+    wxTornFix.dStep = 7000.0;
+    wxTornFix.rangeIdx = 1;
+    wxTornFix.losMax = 0.6;
+    wxTornFix.what = kindName(row.kind);
+    char sb[220];
+    snprintf(sb, sizeof(sb), "%s%s, %.1f %s %.1f %s, seen from about %.0f km away", t > now + 60.0 ? "At its height: " : "",
+             kindName(row.kind), std::abs(wwLat(row.e)), wwLat(row.e) >= 0.0 ? "N" : "S", std::abs(wwLon(row.e)),
+             wwLon(row.e) >= 0.0 ? "E" : "W", dist / 1000.0);
+    msg = sb;
+    return true;
+}
+
+// Watch (harness `weather watch`): the clock to the storm's mature stage (its dominant tower grown, the anvil spread) at 1x, then Go to.
 bool SatelliteSim::weatherWatchStorm(uint64_t id, std::string &msg)
 {
     const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -900,7 +972,7 @@ void SatelliteSim::weatherRadarRecord(VkCommandBuffer cmd)
         vkCmdResetQueryPool(cmd, wxRadarQuery, 0, 2);
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, wxRadarQuery, 0);
     }
-    const float cellM = wxRadarProbe ? 2000.0f * kWxRangesKm[0] / (float)kWxN
+    const float cellM = wxRadarProbe ? 2000.0f * kWxRangesKm[std::clamp(wxRadarProbeRange, 0, 2)] / (float)kWxN
                                      : 2000.0f * kWxRangesKm[std::clamp(wxRangeIdx, 0, 2)] / (float)kWxN;
     wxRadarDispProbe = wxRadarProbe;
     wxRadarProbe = false;
@@ -1347,6 +1419,8 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
             weatherWatchTornado(wxPendingId, msg);
         else if (wxPendingAct == 4)
             weatherWatchPassage(wxPendingId, msg);
+        else if (wxPendingAct == 5)
+            weatherWatchStormNow(wxPendingId, msg);
         else
             weatherWatchStorm(wxPendingId, msg);
         wxStatus = msg;
@@ -1725,14 +1799,9 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
                            sel.flashesPerMin),
                      Pal::textDim, 11, true);
             }
-            if (uiButton(inp, ui, "WxSelGo", 0, "Go to", "50 km upwind of its strongest tower, looking at it"))
+            if (uiButton(inp, ui, "WxSelWatch", 0, "Watch", "The storm at its height, from the ground"))
             {
-                wxPendingAct = 1;
-                wxPendingId = sel.id;
-            }
-            if (uiButton(inp, ui, "WxSelWatch", 0, "Watch", "Its mature stage at 1x, then Go to"))
-            {
-                wxPendingAct = 2;
+                wxPendingAct = 5;
                 wxPendingId = sel.id;
             }
         }
@@ -1850,37 +1919,15 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
                 else
                     text(" ", Pal::textDim, 11);
             }
-            CLAY(CLAY_IDI("WxSBtns", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(11) * 10.0f), CLAY_SIZING_FIT(0)},
-                                                                .childGap = 4,
+            CLAY(CLAY_IDI("WxSBtns", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(11) * 6.0f), CLAY_SIZING_FIT(0)},
+                                                                .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
-                CLAY(CLAY_IDI("WxSBRow0", (uint32_t)id), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                     .childGap = 4,
-                                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                const bool tornNow = r.tTorn0 > 0.0 && now >= r.tTorn0 + 30.0 && now <= r.tTorn1 - 180.0;
+                if (uiButton(inp, ui, "WxSWatch", id, "Watch",
+                             tornNow ? "Its tornado on the ground, a few km away" : "The storm at its height, from the ground", false, true, true))
                 {
-                    if (uiButton(inp, ui, "WxSGo", id, "Go to", "On the ground 50 km upwind of its strongest tower, looking at it", false, true, true))
-                    {
-                        wxPendingAct = 1;
-                        wxPendingId = r.id;
-                        wxSelStorm = r.id;
-                    }
-                    const bool past = r.tMature < now - 60.0;
-                    if (uiButton(inp, ui, "WxSWatch", id, past ? "Replay" : "Watch",
-                                 past ? "Back to its mature stage at 1x (it has passed it), then Go to"
-                                      : "Ahead to its mature stage at 1x, then Go to", false, true, true))
-                    {
-                        wxPendingAct = 2;
-                        wxPendingId = r.id;
-                        wxSelStorm = r.id;
-                    }
-                }
-                const bool torn = r.tTorn0 > 0.0, pass = !torn && r.tPass > 0.0;
-                if (uiButton(inp, ui, "WxSTorn", id, pass ? "Passage" : "Tornado",
-                             pass ? "20 minutes before its line reaches you, looking into it, at 1x"
-                                  : "A minute before its tornado touches down, 6 km away on its inflow side, at 1x",
-                             false, torn || pass, true))
-                {
-                    wxPendingAct = pass ? 4 : 3;
+                    wxPendingAct = 5;
                     wxPendingId = r.id;
                     wxSelStorm = r.id;
                 }
