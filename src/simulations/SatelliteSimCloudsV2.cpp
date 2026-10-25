@@ -2013,6 +2013,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     }
     fillCloudsV2Params(ctx, cpc);   // cloud_march.comp reads the v2 UBO (beams, debug views) either way
     updateStorms();                 // the storm objects' towers at this sim time (march, lightning, beams, clipmap)
+    weatherFillDustGrid();          // the haboobs' dust walls round the observer (the march draws them as cloud)
     // The weather cube keeps evolving with the clouds off: the flat stand-ins (sat_sky.frag's flat layers,
     // SKY_LITE, Potato's deck, reflections and probes) read it.
     recordWeatherEvolution(cmd);

@@ -1050,23 +1050,47 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     128 registers (composite too). Not yet: burn scars on the ground, pyrocumulus caps, smoke in the far cloud layer /
     weather bake, a Fires list in the Weather window, fire ambience, fires in a snowy boreal November (the dryness
     curve leaves ~6% of the summer rate at 60 N in late November: the issue's Siberian fires).
-- **Haboobs (2026-10-23, `SatelliteSimHaboob.cpp`).** A storm's gust front lifting dust: `haboobFrontOf` makes the
-  front from this frame's towers (map frame -> Earth-fixed by the drift phase): line systems along their line of towers,
-  dG ahead of the motion (5 km + 14 km x smoothstep(0.5 h, 3 h) of the storm's age), curving back round both ends;
-  multicells / supercells a semicircle round the dominant tower. Where the biome map's DUST x the tower's strength x
-  "Haboobs (x)" (`clouds_v2.haboobs` 1, Weather window > Controls) passes 0.08, a wall Gaussian (1.5-3 km tall, 1.5 km
-  deep, optical depth ~25 through it), a forward-bulging HEAD (the gust front's nose) and every other piece a pall
-  behind. Storms with a dominant / line tower within 350 km (2000 km from orbit), at most 200 Gaussians. They are drawn
-  just before the wildfire smoke and share its range of the dust list (`aerosolFirst`): no sky light given back (the
-  plumes' 0.85 x albedo x background term made a tau-25 wall the grey of the sky whatever its tint), spectral extinction
-  (the Sun through it goes orange, the ground under it is shadowed), the view-path reddening capped (`min(0.5 tau, 1.2)`,
-  the Sun path's at 3: uncapped, a thick wall was saturated orange). Haboob seeds are < 128 (smoke 128-255): walls keep
-  the Earth-fixed low billow field and its lit lumps (cloud_march.comp `isWall`), smoke has its own per-Gaussian billows.
-  Ochre (0.78, 0.55, 0.34) x 0.55 of the plume scale, albedo 0.62. Harness `haboob [hours=48] [dist_km=28] [alt=20]
-  [el=4] [kind=squall|mcs|super|multi] [k=]`: the k-th storm (organised by default) over dust > 0.4 by day, >= 2 h old,
-  the observer ahead of it looking back; `fires` reports `haboobs_now` / `haboob_nearest_km`. Test: `time set
-  2036-07-20T00:00:00Z; haboob` = a Gobi MCS. Cost ~+0.5-1.5 ms where one is drawn. Not yet: dust at the eye inside the
-  wall (brown-out), the wall's motion of its own (it rides with the towers), dust in the far cloud layer.
+- **Haboobs (2026-10-23, reworked 2026-10-24 as CLOUD; `SatelliteSimHaboob.cpp`, `clouds_v2.glsl` `cv2DustWallSigma`,
+  `cv2_storms.glsl` `cv2DustWallAt`).** A storm's gust front lifting dust: `haboobFrontOf` makes the front from the storm's
+  towers (map frame -> Earth-fixed by the drift phase): line systems along their line of towers, dG ahead (5 km + 14 km x
+  smoothstep(0.5 h, 3 h) of the storm's age), curving back round both ends; multicells / supercells a semicircle round the
+  dominant tower. **"Ahead" is the storm's motion OVER THE GROUND** (its map-frame motion plus the map's drift): ahead of the
+  map-frame motion alone, a storm moving against the drift ran its wall AWAY from a viewer put "ahead" of it (~15 m/s in
+  the Gobi tests). Where the biome map's DUST x the front's strength x "Haboobs (x)" (`clouds_v2.haboobs` 1) passes 0.08:
+  - **The wall is cloud in the clouds v2 field** (the user: "I really just want the cumulus clouds but beige"). Each frame
+    `weatherFillDustGrid` (after `updateStorms`) rasterises the fronts into a 512 x 512 grid in the storm buffer
+    (`kDustHeadOffset`, between the cyclones and the envelope index; cells 400 m near the ground, + 0.6% of the eye's
+    altitude, to 6 km), on the tangent plane at the observer's sea-level point: per cell the wall's strength e (bits 0-15;
+    nothing 1.5 km ahead of the front, full 1 km behind it, the pall behind at half, gone 26 km back; x a smooth noise of
+    the distance along the front, 3.5-km knots: a row of HEADS of different sizes, not a slab), its top (bits 16-27, 2 m
+    units: 0.9-2.9 km x the heads' noise, 0.4 of it over the pall) and the CLEAR AIR ahead (28-31: from 2.5 km behind the
+    foot to ~12 km ahead). Each front point stamps a strip (+-1.2 of its spacing, max-combined), in 16 row bands on worker
+    threads; rebuilt when sim time moves 2 s or the eye a quarter cell (the grid's offset from the eye is passed, so a
+    stale grid stays in place). `cv2DustWallSigma` is the low layer's 3D margin, m = e + 1.6 lobes - g(z): g least at the
+    NOSE (0.35 of the top: the head runs ahead of its foot), the lobes the cumulus shape volume at a 4-km period read at an
+    anchor that MOVES WITH THE WALL (the nearest wall's motion over the ground, integrated, + a 2 m/s rise: the billows
+    churn up the face); 0.016 /m at the core (visibility ~200 m: from inside, a brown-out). The march lights it as cloud
+    (light march, the Sun transmittance volume: the anvil shades it), and tints it: its share of a sample rides as a
+    NEGATIVE `CV2Field.soft` (a member more risks the register cliff; every `soft` reader takes max(soft, 0)), and the
+    sample's light x `kCv2DustTint` (0.95, 0.70, 0.45), the sky light x its square (scattered many times in a thick wall).
+    In the clear air ahead the low cloud and rain go (x 0.05): the line's shelf band is stamped 1-22 km ahead of its towers
+    whatever the outflow's lead, and it and the weather map's rain hid the wall from every Go to. Debug view 7's red
+    includes the dust. Beyond the grid (from orbit) the plume Gaussians below still draw, faded in over its outer 15%.
+  - **The plume Gaussians** (the first cut, now the far field and `clouds_v2.haboob_field` false — "Haboobs as cloud",
+    Weather window > Controls): wall, head and pall Gaussians, 1.5-3 km tall, in the aerosol range of the dust list
+    (`aerosolFirst`, spectral extinction, no sky light given back), the Earth-fixed billow field (`isWall`). Up close they
+    read as 4-20 km flat slabs with an Earth-fixed noise the wall slid through at the storm's speed.
+  - **Measured** (RTX 3070 Ti, 1600x900, interleaved in one app): march 128 registers (binary 341 -> 351 KB). Medium, a
+    Mongolian MCS from the ground 9 km ahead: cloud march 9.3-9.6 ms; the wall's own cost (it drawn as nothing) 0.1-0.4;
+    without the clear air (the rain and shelf left in front of it) 5.2-5.4 — revealing the storm behind costs the other
+    ~4 ms. The Gobi card view: 12.1 vs 5.8 haboobs off (High, the rain-only first cut: 30.5 vs 19.4). CPU: the grid
+    1.3-1.9 ms a rebuild (every frame in time warp, every 2 s at 1x).
+  - Harness `haboob [aloft=1]` = the Weather window's Haboob card (its search on the scout catalog, then its Go to; the old
+    search on the MAIN catalog, kept for `kind=` / `k=`, evicted the renderer's bins and stood a fixed 28 km from the
+    storm's centre); `fires` -> `dust_grid` {on, walls, cells, cell_m, ms, nearest_wall_km (e > 0.3), e_max}. Scripts
+    `harness_runs/hb/` (untracked; `final.satcmd`). Not yet: the wall from orbit is still the Gaussians; the regional dust
+    haze (`cv2FogDust`) and the walls are separate; the Sun-lit test for a Go to knows the storm's anvil, not the weather
+    map's own overcast.
 - **The Weather window (2026-10-23, `SatelliteSimWeatherWindow.cpp`, `shaders/weather_radar.comp`; the weather-cloud
   button beside Missions on the right HUD panel (`TimeWeatherBtn`, `pixel--weather.png` from `tools/make_icons.py`), key N
   `KB_WEATHER`, window id 12, `wxChrome`; harness `ui open weather [tab=radar|storms|controls]`, `weather ...`).** Missions-
@@ -1114,8 +1138,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   and Next major = the next one peaking at Category 3+, any basin, to its peak from orbit), Haboob (the next line system
   at full strength by day whose LEADING EDGE (9 points along the line, dG ahead as haboobFrontOf) is mostly over the
   biome map's dust (>= 6 at >= 0.3, mean >= 0.4), 48 h ahead — the centre's dust alone picked storms whose front ran over
-  farmland, and no wall was drawn; Watch 22 km ahead of the gust front (bow + dG ahead of the centre) on the ground,
-  Aloft 60 km ahead 3 km up), Supercell and Squall line (the strongest alive now, mature and daylit preferred: Go
+  farmland, and no wall was drawn; inland (150 km from the sea: the coast's fog); ranked by its light: the Sun on the
+  side it advances toward, clear of the anvil (`haboobSunOnFace`) and 18 deg up 2, the Sun 25-60 deg up 1; Watch / Aloft =
+  `haboobStrongestPoint`: the front's dustiest, best front-lit stretch at that moment, 9 km ahead of it on the ground or
+  2.5 km up, looking at it — they stood a fixed distance from the storm's centre, 40-80 km from the wall actually drawn), Supercell and Squall line (the strongest alive now, mature and daylit preferred: Go
   to, Watch, Tornado / Passage), Waterspout (as the tornado, at sea), Wildfire (the biggest fire burning now, by size x
   activity: Go to beside its column, Orbit). Each card is an icon, three unwrapped lines clipped at its edge and a 2 x 2
   button grid (disabled when they do not apply), so nothing moves as storms come and go; NEAR YOU below is 4 STICKY slots

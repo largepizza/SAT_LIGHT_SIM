@@ -1782,6 +1782,13 @@ void SatelliteSim::buildWeatherControlsTab(const UIInput &inp, UIRenderer &ui)
         "x the fire front's light: the flickering points and their glow at night (clouds_v2.wildfire_light)");
     num(11, "Haboobs (x)", haboobGain, 0.0f, 5.0f, 0.05f, "%.2f",
         "x the dust walls storms' gust fronts raise over deserts (the biome map's dust; clouds_v2.haboobs)");
+    {
+        bool v = haboobField;
+        if (uiToggleRow(inp, ui, "WxCOn", 1, "Haboobs as cloud", v,
+                        "On: the dust walls are drawn by the volumetric clouds, lobed and lit like cumulus, within ~100 km "
+                        "(more from the air); Off: plume Gaussians everywhere (clouds_v2.haboob_field)"))
+            haboobField = v;
+    }
     uiSection("WxCSec", 1, "LIGHTNING");
     num(4, "Lightning rate: Cb towers (/min each)", cv2LightningRate, 0.0f, 30.0f, 0.1f, "%.1f",
         "Flashes a minute of a full-strength, anvil-reaching tower (clouds_v2.lightning_rate)");

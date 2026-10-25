@@ -130,7 +130,7 @@ void bakePass(uint ti)
             float hM = max(zc + o.z * kCv2CdcDZ * 0.5, 0.0);
             vec3  rM = normalize(cv2.layA.xyz * kCv2CdcR + cv2.layE.xyz * uM.x + cv2.layN.xyz * uM.y) * (R_EARTH + hM) - eyeP;
             CV2Field fl = cv2Field(cv2Pos(rM, eyeH, enuToEcef), 0.0, fpS);
-            float e = fl.sigma * max(1.0 - 0.8 * fl.thin - cv2.mid2.z * fl.soft, 0.0);
+            float e = fl.sigma * max(1.0 - 0.8 * fl.thin - cv2.mid2.z * max(fl.soft, 0.0), 0.0);
             e = min(e, 4.0);
             atomicAdd(cv2CdcData[kCv2CdcTotal + gi], uint(e * kCv2CdcMeanQ + 0.5));
             atomicAdd(cv2CdcData[2 * kCv2CdcTotal + gi], uint(e * e * kCv2CdcMeanQ + 0.5));

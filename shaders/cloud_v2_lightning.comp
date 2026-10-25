@@ -208,7 +208,7 @@ void main()
                                 CV2Field gf = cv2Field(q, 0.0, fpM);
                                 // Rain at 15%, as the ground's shadow march took it: a low Sun's path runs tens of km through
                                 // the curtains under the bases, and their coarse extinction blacked out the sea under them.
-                                od += gf.sigma * max(1.0 - 0.8 * gf.thin - cv2.mid2.z * gf.soft, 0.0)
+                                od += gf.sigma * max(1.0 - 0.8 * gf.thin - cv2.mid2.z * max(gf.soft, 0.0), 0.0)
                                     * mix(1.0, 0.15, clamp(gf.rain, 0.0, 1.0)) * st;
                             }
                         }

@@ -1905,6 +1905,44 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
     return sig;
 }
 
+// A HABOOB's dust wall (2026-10-24, the user: "I really just want the cumulus clouds but beige"). It is cloud in the field,
+// marched, light-marched and shadowed like any cumulus, and tinted in the lighting (its share of a sample is carried as a
+// NEGATIVE CV2Field.soft: a member more flips the march's registers). The CPU rasterises the storms' gust fronts into a grid
+// round the observer (cv2DustWallAt: the wall's strength e 0..1 across the front, and its top H); the shape is the low
+// layer's 3D margin, m = e + lobes - g(z), with g rising from 0.15 at the ground to 1 at H: the wall's face leans up from
+// the ground over the front's ~3 km ramp, its top a row of cauliflower heads, the pall behind it a low dense layer. The
+// lobes are the cumulus shape volume at the dust's own period, read at an anchor that MOVES WITH THE WALL (and rises
+// ~2 m/s: the billows churn up the face) -- the plume Gaussians it replaced near the eye were 4-20 km slabs with an
+// Earth-fixed noise the wall slid through at the storm's speed ("huge and flat with a fast moving noise texture").
+// Dense like a cumulus core (visibility ~100-200 m inside), ground-hugging, so the shell floor at 0 m and the march's
+// soft ground contact hold it.
+const float kCv2DustSigma = 0.016;   // extinction at the wall's core (1/m)
+const vec3  kCv2DustTint  = vec3(0.95, 0.70, 0.45);   // the light a dust sample gives back, x a cloud's (cloud_v2_march.comp)
+float cv2DustWallSigma(CV2Pos q, vec3 w, float fpM, out float hfD, out float topD)
+{
+    hfD = 0.0; topD = 0.0;
+#ifdef CV2_STORM_BINDING
+    float agl = q.h - gCv2Ground;
+    if (w.x <= 0.02 || w.y < 50.0 || agl > 1.25 * w.y + 300.0 || agl < -200.0) return 0.0;
+    float z = max(agl, 0.0) / w.y;
+    // The strength needed at height z: least at the NOSE (0.35 of the top: the gust front's head runs ahead of its foot,
+    // held back by the ground), rising to the top and, less, to the ground.
+    float zn = z - 0.35;
+    float g = 0.12 + ((zn < 0.0) ? 0.7 * zn * zn : 2.1 * zn * zn);
+    if (w.x + 0.6 <= g) return 0.0;                     // past what the lobes can reach
+    vec4  s = cv2ShapeSmooth(cv2DustFrame[2].xyz + q.rSeaE * cv2DustFrame[2].w, cv2Lod(fpM, cv2DustFrame[2].w));
+    float lobes = (s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47;
+    lobes *= mix(1.0, 0.3, smoothstep(150.0, 1200.0, fpM));   // sub-pixel lobes average away
+    float m = w.x + 1.6 * lobes - g;
+    if (m <= 0.0) return 0.0;
+    hfD  = clamp(z, 0.0, 1.0);
+    topD = gCv2Ground + w.y;
+    return kCv2DustSigma * clamp(m * 6.0, 0.0, 1.0) * mix(0.55, 1.0, s.r) * sqrt(min(w.x, 1.0));
+#else
+    return 0.0;
+#endif
+}
+
 CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
 {
     gCv2FlowSet = false;
@@ -1916,6 +1954,21 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     CV2Col col = cv2ColumnSigma(q, detailAmt, fpM);
     CV2Field f = cv2FieldLow(q, detailAmt, fpM, col.prox);
     float dbgLow = f.sigma;
+    float hfD, topD, sd = 0.0;
+#ifdef CV2_STORM_BINDING
+    vec3 dw = vec3(0.0);
+    if (cv2DustHead.x != 0u && q.h - gCv2Ground < cv2DustFrame[1].w) dw = cv2DustWallAt(q.seaProjE);
+    // The air ahead of a haboob's gust front sinks and is dry: the low cloud and rain there (the line's shelf band, drawn
+    // 1-22 km ahead of its towers whatever the outflow's lead, the weather map's own) give way, so the wall stands under
+    // open sky with the storm's anvil above (dw.z: from just behind the front's foot to ~12 km ahead of it).
+    f.sigma *= 1.0 - 0.95 * dw.z;
+    sd = cv2DustWallSigma(q, dw, fpM, hfD, topD);
+#endif
+    if (sd > 0.0) {
+        float s0 = f.sigma;
+        cv2Add(f, sd, hfD, topD, 0.0);
+        f.rain *= s0 / f.sigma;
+    }
     float hfX, topX, deckX;
     float sm = cv2MidSigma(q, fpM, hfX, topX, deckX);
     // The mid layer (a thin Ac/As lens) gives way over a storm: drawn through it, it sliced every
@@ -1948,8 +2001,9 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
         f.thin = sh / f.sigma;
     }
     if (sm > 0.0) f.soft = sm / f.sigma;
+    else if (sd > 0.0) f.soft = -sd / f.sigma;   // the dust's share, negative (cv2DustWallSigma)
     if (gCv2DbgWant)
-        gCv2Dbg = vec4(dbgLow, max(sm, 0.0), max(sa, 0.0) + max(col.sigma, 0.0), max(sh, 0.0));
+        gCv2Dbg = vec4(dbgLow + max(sd, 0.0), max(sm, 0.0), max(sa, 0.0) + max(col.sigma, 0.0), max(sh, 0.0));
     gCv2FlowSet = false;
     gCv2GroundSet = false;
     return f;

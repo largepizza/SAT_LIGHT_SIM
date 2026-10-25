@@ -4339,6 +4339,23 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r = wildfiresJson(c.num("world", 0.0) > 0.0);
         r["haboobs_now"] = haboobsNow;
         r["haboob_nearest_km"] = haboobNearestKm;
+        {
+            // The dust grid (the walls drawn as cloud): its cells with a wall, and the nearest one (e > 0.3) from the eye.
+            double nearKm = -1.0, eMax = 0.0;
+            const int G = (int)kDustGridN;
+            if (dustGridCellM > 0.0 && dustGridCpu.size() == (size_t)G * G)
+                for (int y = dustBox.y; y < dustBox.w; ++y)
+                    for (int x = dustBox.x; x < dustBox.z; ++x)
+                    {
+                        const double e = (dustGridCpu[(size_t)y * G + x] & 0xFFFFu) / 65535.0;
+                        eMax = std::max(eMax, e);
+                        if (e < 0.3) continue;
+                        const double d = std::hypot(x - 0.5 * G + 0.5, y - 0.5 * G + 0.5) * dustGridCellM / 1000.0;
+                        if (nearKm < 0.0 || d < nearKm) nearKm = d;
+                    }
+            r["dust_grid"] = {{"on", haboobField}, {"walls", dustWallsNow}, {"cells", dustCellsNow}, {"cell_m", dustGridCellM},
+                              {"ms", dustGridMs}, {"nearest_wall_km", nearKm}, {"e_max", eMax}};
+        }
         r["message"] = std::to_string(firesNow.size()) + " fires in reach" +
                        (r.contains("world_count") ? ", " + std::to_string(r["world_count"].get<size_t>()) + " worldwide" : std::string());
         return Status::Done;
@@ -4349,6 +4366,23 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     if (n == "haboob")
     {
         if (!stormCatalog || !biomeMap.ready()) fail("haboob: no storm catalog / biome map");
+        if (!c.has("kind") && !c.has("k"))
+        {
+            // The Weather window's Haboob card (its forward search on the scout catalog, run to its end; the main catalog
+            // must not be asked about other times: it evicts the bins the renderer needs), then its Go to: aloft= 1 = 30 km
+            // ahead and 3 km up, else 9 km ahead on the ground.
+            weatherFeaturedRestart((double)simDayJ2000 * 86400.0 + simSecInDay);
+            weatherFeaturedUpdate();
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < 400 && !wxScanDone && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(20); ++i)
+                weatherFeaturedUpdate();
+            if (!wxFeat[kFeatHaboob].found) fail("haboob: none found in the search's window (48 h)");
+            std::string msg;
+            r["in_min"] = (wxFeat[kFeatHaboob].tEvent - ((double)simDayJ2000 * 86400.0 + simSecInDay)) / 60.0;
+            if (!weatherFeaturedAct(kFeatHaboob, c.num("aloft", 0.0) > 0.0 ? 1 : 0, msg)) fail("haboob: " + msg);
+            r["message"] = msg;
+            return Status::Done;
+        }
         const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
         const std::string kind = lower(c.str("kind"));
         const int want = (int)c.num("k", 0.0);

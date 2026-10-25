@@ -30,6 +30,9 @@ const uint kCv2ShieldListSize     = 65536u;
 const uint kCv2ShieldBinsPerFace  = 64u;
 const uint kCv2ShieldMaxPerBin    = 31u;      // (5 bits of a bin entry: 2026-10-23, a cyclone's arm cirrus)
 const uint kCv2CycloneMax         = 8u;   // tropical cyclones (the weather bake stamps their bands, eyewall and eye)
+// The HABOOB dust walls (2026-10-24): a grid on the tangent plane at the observer's sea-level point, Earth-fixed axes,
+// rasterised by the CPU each frame from the storms' gust fronts (SatelliteSimHaboob.cpp weatherFillDustGrid).
+const uint kCv2DustGridN          = 512u;
 
 struct CV2Tower {
     vec4 a;   // xyz the tower's axis (map-frame unit vector), w strength 0..1 (its lifecycle x peak)
@@ -71,6 +74,13 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
     uint     cv2ShieldList[kCv2ShieldListSize];
     uvec4    cv2CycHead;                            // x cyclones
     CV2Cyclone cv2Cyclones[kCv2CycloneMax];
+    uvec4    cv2DustHead;                           // x 1 = a dust wall in the grid, y its bounding box (lo x | lo y << 16),
+                                                    // z (hi x | hi y << 16), w unused
+    vec4     cv2DustFrame[4];                       // [0] xyz the grid's x axis (ECEF), w 1 / cell (m)
+                                                    // [1] xyz its y axis, w the highest dust top in it (m above the ground)
+                                                    // [2] xyz the lobe noise's anchor (frac, moving with the wall), w 1 / period
+                                                    // [3] xy the observer's sea-level point in grid cells (- 0.5)
+    uint     cv2DustGrid[kCv2DustGridN * kCv2DustGridN];   // e x 65535 | (top / 2 m) << 16 (12 bits) | rain-free x 15 << 28
 #ifdef CV2_STORM_ENV
     uvec2    cv2StormEnvTable[kCv2StormEnvTableSize];
     uint     cv2StormEnvList[kCv2StormEnvListSize];
@@ -85,6 +95,31 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
 #endif
 };
 #endif
+
+// The dust wall at a point (its offset from the observer's sea-level point, ECEF axes, m): x the wall's strength 0..1
+// (the dust x the gust front's profile across it), y its top (m above the ground), z the rain-free air ahead of the
+// front 0..1. C1-smooth bilinear of four cells (linear facets of 0.4-3 km cells drew straight creases on the wall's face).
+vec3 cv2DustUnpack(uint c) { return vec3(float(c & 0xFFFFu) * (1.0 / 65535.0), float((c >> 16u) & 0xFFFu) * 2.0, float(c >> 28u) * (1.0 / 15.0)); }
+vec3 cv2DustWallAt(vec3 seaProjE)
+{
+#ifdef CV2_STORM_BINDING
+    if (cv2DustHead.x == 0u) return vec3(0.0);
+    vec2  g  = vec2(dot(seaProjE, cv2DustFrame[0].xyz), dot(seaProjE, cv2DustFrame[1].xyz)) * cv2DustFrame[0].w
+             + cv2DustFrame[3].xy;
+    vec2  lo = vec2(float(cv2DustHead.y & 0xFFFFu), float(cv2DustHead.y >> 16u));
+    vec2  hi = vec2(float(cv2DustHead.z & 0xFFFFu), float(cv2DustHead.z >> 16u));
+    if (any(lessThan(g, lo)) || any(greaterThanEqual(g, hi))) return vec3(0.0);
+    ivec2 i  = ivec2(floor(g));
+    vec2  f  = g - vec2(i);
+    f = f * f * (3.0 - 2.0 * f);
+    uint  N  = kCv2DustGridN;
+    uint  b  = uint(i.y) * N + uint(i.x);
+    return mix(mix(cv2DustUnpack(cv2DustGrid[b]), cv2DustUnpack(cv2DustGrid[b + 1u]), f.x),
+               mix(cv2DustUnpack(cv2DustGrid[b + N]), cv2DustUnpack(cv2DustGrid[b + N + 1u]), f.x), f.y);
+#else
+    return vec3(0.0);
+#endif
+}
 
 // How far a tower's storm cloud field reaches (m) from its reach (= SatelliteSimWeather.cpp stormEnvRadius).
 float cv2StormEnvRadius(float reach) { return reach + max(40000.0, 0.8 * reach); }
