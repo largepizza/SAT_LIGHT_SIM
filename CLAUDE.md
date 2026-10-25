@@ -1102,7 +1102,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     after a `fires go`). Views: `harness_runs/fr/views.satcmd` (untracked; captures in screenshots/rework_20261024/fires).
     Cost (RTX 3070 Ti, Medium, 1600x900, 2036-08-12's biggest fire, Madagascar savanna; on vs off interleaved in one run,
     `harness_runs/fr/perf.satcmd`): 600 m from the head at night GPU 12.9 vs 10.4-11.4 ms (+1.5-2.5: the sky pass's
-    smoke and scar, cloud_march +0.7-1.1, points +0.24), CPU (the launches bucket, where the fill runs) 1.8 vs 0.27 ms;
+    smoke and scar, cloud_march +0.7-1.1, points +0.24), CPU (the launches bucket, where the fill runs) 1.8 vs 0.27 ms (since perf4-cpu 2026-10-24 the front's 64 base segments are built in parallel on the storm catalog's thread pool, each into its own list, appended in order and cut at the budget — the same points in the same order: `fire.front` 1.7 -> 0.7 ms, the fill 1.95 -> 0.95 ms; a rescan of the fires near a new place, `firesBornRows` over row bands, ~4 -> <1 ms on the landing frame);
     5 km off, 600 m up GPU 8.0-8.2 vs 6.7 (+1.4), CPU 0.81 vs 0.26; from 400 km by day GPU 6.0 vs 5.9, CPU 0.64 vs 0.22.
     cloud_march and the composite at 128 registers. Displayed luminance (mean / p99.9 of the frame, 0-255) before -> after
     at night: 600 m 42 / 101 -> 16 / 130 (the glowing haze gone, the front visible), on the ground 9 km off 30 / 216 ->
@@ -1222,8 +1222,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   rows fixed-height too. **Never search ahead on the main catalog:** `stormsAt(t)` evicts every bin outside [t - 9 h,
   t + 2 h], i.e. the bins the renderer needs this frame. The forward search runs on a SECOND catalog (`wxScout`, the main
   one's Env / Settings / climatology, copied where it is configured in updateStorms; reconfigured on a new
-  `stormEnvKey`), 30-min steps, at most ~2.5 ms a frame while the window is open; it restarts when sim time goes back
-  before its start, moves 12 h on, or a found event is over. A storm born after step k cannot touch down before step k's
+  `stormEnvKey`), 30-min steps, ON A WORKER while the window is open (2026-10-24, `wxScanJob` / `weatherScanStep`: a job
+  takes a copy of the search's state, runs steps for up to 0.4 s or until done, and the main thread takes its result;
+  only that job touches the scout, so a reconfigure waits for it; on the main thread with a 2.5-ms budget a single step
+  was up to ~12 ms — the scout's new bins after a jump — and the harness `weather events` waits on it,
+  `weatherFeaturedFinish`); it restarts (cancelling a running job, its result dropped) when sim time goes back before
+  its start, moves 12 h on, or a found event is over. A storm born after step k cannot touch down before step k's
   time, so a daylit tornado found before the step reached ends that slot's search. The fires come from `firesWorld` on a
   worker (std::async; cleanup waits for it: biomeMap is destroyed before the future). Storm icons (`tools/make_icons.py`
   `storm-*`, icon indices 23-30): tornado, hurricane, haboob, supercell, squall, waterspout, fire, cell. Harness `weather
@@ -6017,6 +6021,15 @@ launches follow per-program cadences (no real manifest).
   (no colour, no rim); exact while this frame's cut stays above that margin, else the next frame skips nothing
   (`plumeCutPrev`): Twilight Starship 1.77 -> 1.47 ms at 1x (1801 candidates, ~1030 skipped; `launch state` ->
   `cpu_split_ms.plume_skipped`). The remaining plume cost is the per-parcel state (`Parcel::at`) of every parcel.
+  **After a jump, and in the Missions window (2026-10-24, perf4-cpu):** a walk whose time is an hour or more from the last
+  walk's (a Watch, a bookmark, a typed time) hands EVERY missing build to the job, however few (the first build of a day
+  asks for its rivals' buckets: up to ~7-25 ms each on the main thread; 16 synchronous builds were ~20-30 ms of the
+  landing frame); the rockets of that moment appear a few frames later. Otherwise a big set keeps 4 (was 16) for the
+  frame. The Missions window's own refresh (`launchUpcoming` with a budget) builds nothing on the main thread: its
+  missing batches go to a worker of their own (`LaunchState::UpJob`, joined by `joinJob`), the rows waiting for it
+  (after the Sun's Fury Watch its searches were 25-30 ms a frame for ~4 frames); a forced refresh (a click, the harness)
+  builds on the main thread in pieces sized by the measured cost of a build. A job's batches are marked touched as
+  they are applied (the 64-frame erase pass could drop them before they were asked for).
   **The stand-down boundary (2026-10-21d, `standDownArrival` / `standsDownAt` / `maxVehicleLeadS`).** After the CME
   (after_storm 0) every launch stands down, yet the walk kept building the batches entering its window: at 1 week/s
   4-8 ms of `launch.buildBatches` a frame, plus the background build's apply, 11-27 ms in the worst frames (D,
@@ -7665,6 +7678,24 @@ now at load), the Kessler worker's publish (outside its mutex; `kesslerSync` try
 a player breakup BEFORE the CME restarts the world on the main thread (`kesslerRestart` ~220 ms: `buildWorld`, and
 its `launchInitBlock` makes the next walk rebuild the launch planes, ~75 ms); the first walk after a bookmark jump
 is ~25-35 ms (the window walk over ~3000 planes plus 8 ms of builds); at 1 yr/s a frame could take ~40 ms of batch building (one rival day bucket, `rivalBucket`, enumerating a site's planes; hitch_thresholds.json allows 1mo / 1yr p99 65 / 75 ms). Since 2026-10-21 a frame that needs fewer buckets than half the cores builds each split over the threads by plane (`rivalBucket(..., parallel)`, per-plane lists concatenated in plane order: same entries, same order); the worst 1-yr/s frames' `launch.buildBatches` is ~20 ms now (hitch_check A: p99 51, max 53 ms, of which ~25 ms GPU). **Since 2026-10-21b the builds after a jump and every build past 1 h/s of warp run on the background build** (CLAUDE.md "Launches" > The background build; the main thread builds none at a fast warp while it runs): hitch_check A / C / D all within limits, C 1yr p99 37.6 / max 38.7 (was 75.2 / 96.7 with main-thread builds of cold rival buckets, 62 ms in one frame), the 1-yr/s hitches left are the Kessler sync (`kesslerSync`, `kru.deaths`). **Hitch pass 3 (2026-10-21c):** the Kessler upload's deaths go up in arrival order, at most 24k and ~2 ms a frame (`kDirtyPoolHead`; it sorted the whole backlog and sent up to 131k records, 6-16 ms), the roster's dirty list merges only what is new (`kDirtyRosterSorted`), the replaced pool buffers are freed on `kRetireThread`, `applyBuildJob` looks at the clock every 16 batches (256 overran its 2 ms to 9-14 ms) after reserving the map once, and the launch walk's full free hands the dropped batches to a detached thread. hitch_check (A / C / D, 1mo / 1yr p99): A 34.8 / 38.4 (was 39.8 / 48.2), C 31.5 / 36.0 (32.3 / 37.6), D 37.5 / 41.7 (35.3 / 62.2; max 91 -> 44); at 1 yr/s Kessler's sync is ~3-6 ms of a frame and the GPU (`app.wait_fence` 25-35 ms) is the rest. New scopes `kessler.retire`, `kessler.showGens`, `kessler.queuedBreakups`.
+**Hitch pass 4 (2026-10-24, perf4-cpu: the Watch buttons).** Every Watch clicked through the UI (`ui click`, the user's
+settings, `harness_runs/p4c/` in the perf4-cpu worktree: `w3.satcmd`, `parse.py`, `cmp.py`, `steady.py`), worst frame
+before -> after: tornado 319 -> 44 ms (the radar pipeline, built by the first radar probe: now in setAudio's prewarm),
+the Sun's Fury 101 -> 38 (`Catalog::configure` recalibrated, ~55 ms, though only the env key — the drift — changed: the
+calibration is kept when the settings are the same; and the launch builds after the jump: now all to the background
+job, and the Missions window's refresh on its own worker, `LaunchState::UpJob`), cyclone row 63 -> 41, hurricane 57 ->
+33, waterspout 50 -> 32, haboob 103 -> 71 (now all GPU: `app.wait_fence` 65 ms there); the rest within noise, GPU-bound.
+The Weather window's featured search runs on a worker (`wxScanJob`; one step on the main thread was up to ~12 ms
+whatever its 2.5-ms budget). The Weather and Cinematics windows capture the mouse (a click there also picked a satellite,
+~10 ms). **The hitch log itself was a hitch:** each line was fsynced on the frame thread (`Log::line`), so a run of slow
+frames paid ~5-10 ms each for its own line — the `app.other` in the hitch lines (hitch_check D 1d: 6.2 ms a hitch frame
+on average, max 22); hitch lines now go through `Log::lineDeferred` (a writer thread), and so do the launch job's and the
+tornado probe's log lines. Scopes added: `app.cmd_begin` / `app.cmd_end` / `app.pace`, `ui.seg1..6` (buildUI's splits),
+`wxf.*`, `fire.born` / `fire.state` / `fire.smoke` / `fire.front`, `wx.configure`, the Watch functions; `fprof::Scope::end()`
+ends a section early. **To profile steady frames:** `hitches threshold 1; hitches clear; wait 120; hitches top=1` records
+every frame, and `sections_in_hitches`' sums / frames are the per-frame means (`steady.py`). hitch_check (A / C / D) fails
+at 1 h/s - 1 mo/s before and after alike: the GPU (`app.wait_fence` 45-70 ms; the CPU part ~10 ms: Kessler's sync,
+the clouds' updates, the launch walk).
 **Regression check: `python tools/harness/hitch_check.py`** (scenarios A load, B a user's settings via `--settings`,
 C 2031, D day 32 after the CME; `--run <folders>` checks finished runs) against `tools/harness/hitch_thresholds.json`
 (p99 / max per rate, the first frame after load, launch to first frame); exit 1 on a regression. **It must run alone

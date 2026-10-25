@@ -790,11 +790,14 @@ Catalog::~Catalog() = default;
 
 void Catalog::configure(const Env &env, const Settings &s, const StormClimatology *clim, uint64_t envKey) {
     Impl &I = *impl_;
-    const bool same = I.configured && envKey == I.envKey && clim == I.clim && s.frequency == I.set.frequency &&
-                      s.targetActive == I.set.targetActive && s.moistureMin == I.set.moistureMin &&
-                      s.moistureFull == I.set.moistureFull && s.towerRadiusM == I.set.towerRadiusM &&
-                      s.lifeScale == I.set.lifeScale && s.lineFrequency == I.set.lineFrequency &&
-                      s.targetLineActive == I.set.targetLineActive && s.cycloneFrequency == I.set.cycloneFrequency;
+    FPROF_SCOPE("wx.configure");
+    const bool sameSet = I.configured && clim == I.clim && s.frequency == I.set.frequency &&
+                         s.targetActive == I.set.targetActive && s.moistureMin == I.set.moistureMin &&
+                         s.moistureFull == I.set.moistureFull && s.towerRadiusM == I.set.towerRadiusM &&
+                         s.lifeScale == I.set.lifeScale && s.lineFrequency == I.set.lineFrequency &&
+                         s.targetLineActive == I.set.targetLineActive && s.cycloneFrequency == I.set.cycloneFrequency &&
+                         s.seaFactor == I.set.seaFactor;
+    const bool same = sameSet && envKey == I.envKey;
     I.env = env;
     if (same) return;
     I.set = s;
@@ -807,7 +810,12 @@ void Catalog::configure(const Env &env, const Settings &s, const StormClimatolog
     I.seasons.clear();
     if (I.cells.empty()) I.buildCells();
     if (I.lineCells.empty()) I.buildLineCells();
-    I.calibrate();
+    // The calibration (mean lives, the spawn rate's Earth integral) is a function of the settings, the climatology and
+    // the land alone (env.land is Earth-fixed; the cells are an equal-area quadrature in any frame): a new env key with the
+    // same settings (the cloud map's drift or coverage: a bookmark, a Watch's jump) keeps it. Recomputing it was ~50 ms on
+    // the main thread at every such jump (perf4-cpu 2026-10-24).
+    if (!sameSet)
+        I.calibrate();
     I.configured = true;
 }
 

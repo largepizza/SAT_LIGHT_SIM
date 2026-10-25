@@ -443,6 +443,7 @@ bool SatelliteSim::weatherWatchTornado(uint64_t id, std::string &msg)
 // into it, 8 km away and 300 m up, 8 deg up (the harness `storms tornado` framing).
 bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::string &msg)
 {
+    FPROF_SCOPE("weatherWatchTornadoOf");
     const wx::Storm stCopy = stIn;
     const wx::Storm *st = &stCopy;
     const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -612,6 +613,7 @@ float SatelliteSim::weatherProbeRainAt(const glm::dvec3 &e) const
 // the funnel, which a rain-wrapped funnel hides behind), keeping the inflow side when it is as dry.
 void SatelliteSim::weatherTornadoFixTick()
 {
+    FPROF_SCOPE("weatherTornadoFixTick");
     WxTornFix &F = wxTornFix;
     if (F.stage == 0)
         return;
@@ -697,7 +699,7 @@ void SatelliteSim::weatherTornadoFixTick()
     cv2HistoryValid = false;
     char b[160];
     snprintf(b, sizeof(b), "weather: %s view moved out of the rain (%.2f -> %.2f), %.1f km from it", F.what, F.before, F.after, F.distKm);
-    Log::line(b);
+    Log::lineDeferred(b);
 }
 
 // 20 minutes before the line reaches you, where you stand, at 1x, looking at it (into its motion).
@@ -741,6 +743,7 @@ bool SatelliteSim::weatherWatchPassage(uint64_t id, std::string &msg)
 // the storm's strongest tower (the anvil blows away from you), looking at it a few degrees up.
 bool SatelliteSim::weatherGoToStorm(uint64_t id, std::string &msg, double distM, float aglM, float elDeg)
 {
+    FPROF_SCOPE("weatherGoToStorm");
     if (!stormCatalog)
     {
         msg = "No storm catalog yet";
@@ -803,6 +806,7 @@ bool SatelliteSim::weatherGoToStorm(uint64_t id, std::string &msg, double distM,
 // upwind of its strongest tower, then moved out of the rain by the radar probe (weatherTornadoFixTick).
 bool SatelliteSim::weatherWatchStormNow(uint64_t id, std::string &msg)
 {
+    FPROF_SCOPE("weatherWatchStormNow");
     const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
     WxStormRow row;
     if (!weatherStormNow(id, now, row))
@@ -956,11 +960,11 @@ void SatelliteSim::weatherRadarRecord(VkCommandBuffer cmd)
     if (!wxRadarWanted || !ctx_)
         return;
     wxRadarWanted = false;
+    FPROF_SCOPE("weatherRadarRecord");
     VulkanContext &ctx = *ctx_;
     weatherRadarEnsure(ctx);
     if (!wxRadarPipe)
         return;
-    FPROF_SCOPE("weatherRadarRecord");
     // The cloud passes' writes (the weather cube's bake, the storm stamp) before this read.
     VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;

@@ -22,18 +22,6 @@
 namespace {
 constexpr double kReH = 6371000.0;
 constexpr double kPiH = 3.14159265358979323846;
-template <typename F> void parallelForHaboob(size_t n, F &&fn)
-{
-    const size_t workers = std::min<size_t>(std::max(1u, std::thread::hardware_concurrency() / 2), n);
-    if (workers <= 1) { for (size_t i = 0; i < n; ++i) fn(i); return; }
-    std::atomic<size_t> next{0};
-    auto run = [&] { for (size_t i = next.fetch_add(1); i < n; i = next.fetch_add(1)) fn(i); };
-    std::vector<std::thread> th;
-    th.reserve(workers - 1);
-    for (size_t k = 1; k < workers; ++k) th.emplace_back(run);
-    run();
-    for (std::thread &x : th) x.join();
-}
 uint64_t hbMix(uint64_t x)
 {
     x += 0x9E3779B97F4A7C15ull;
@@ -529,7 +517,8 @@ void SatelliteSim::weatherFillDustGrid()
     {
         const int bands = 16;
         const int rows = box.w - box.y;
-        parallelForHaboob((size_t)bands, [&](size_t b) {
+        // (the storm catalog's persistent pool: a pool of new threads at every call was ~1 ms of the rebuild)
+        stormCatalog->parallelFor((size_t)bands, [&](size_t b) {
             const int y0 = box.y + (int)((int64_t)rows * (int64_t)b / bands);
             const int y1 = box.y + (int)((int64_t)rows * (int64_t)(b + 1) / bands);
             for (const Stamp &m : st)

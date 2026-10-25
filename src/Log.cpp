@@ -6,8 +6,11 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <sstream>
+#include <thread>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -115,6 +118,81 @@ namespace Log
     const std::string &path()
     {
         return g_path;
+    }
+
+    // lineDeferred: the same line, written (and flushed) on a writer thread. For per-frame diagnostics (the hitch log):
+    // with Log::line's fsync on the frame thread, a run of slow frames each paid ~5-10 ms more for its own hitch line
+    // ("app.other" in the hitch lines, perf4-cpu 2026-10-24).
+    namespace
+    {
+        struct Writer
+        {
+            std::mutex m;
+            std::condition_variable cv;
+            std::deque<std::string> q;
+            bool stop = false;
+            std::thread th;
+            void start()
+            {
+                th = std::thread([this] {
+                    std::unique_lock<std::mutex> lk(m);
+                    while (true)
+                    {
+                        cv.wait(lk, [this] { return stop || !q.empty(); });
+                        if (q.empty() && stop)
+                            return;
+                        std::deque<std::string> batch;
+                        batch.swap(q);
+                        lk.unlock();
+                        std::string all;
+                        for (const std::string &s : batch)
+                            all += s;
+                        {
+                            std::lock_guard<std::mutex> lock(g_mutex);
+                            writeAll(all.data(), all.size());
+                        }
+                        lk.lock();
+                    }
+                });
+            }
+            ~Writer()
+            {
+                if (!th.joinable())
+                    return;
+                {
+                    std::lock_guard<std::mutex> lk(m);
+                    stop = true;
+                }
+                cv.notify_one();
+                th.join();
+            }
+        };
+        Writer &writer()
+        {
+            static Writer w;
+            return w;
+        }
+    }
+
+    void lineDeferred(const std::string &msg)
+    {
+        if (g_path.empty())
+            return;
+        const auto sinceEpoch = std::chrono::system_clock::now().time_since_epoch();
+        const time_t now = (time_t)std::chrono::duration_cast<std::chrono::seconds>(sinceEpoch).count();
+        const int ms = (int)(std::chrono::duration_cast<std::chrono::milliseconds>(sinceEpoch).count() % 1000);
+        struct tm *utc = gmtime(&now);
+        char buf[24] = {};
+        if (utc)
+            snprintf(buf, sizeof(buf), "[%02d:%02d:%02d.%03d] ", utc->tm_hour, utc->tm_min, utc->tm_sec, ms);
+        Writer &w = writer();
+        {
+            std::lock_guard<std::mutex> lk(w.m);
+            if (!w.th.joinable())
+                w.start();
+            w.q.push_back(std::string(buf) + msg + '\n');
+        }
+        w.cv.notify_one();
     }
 }
 

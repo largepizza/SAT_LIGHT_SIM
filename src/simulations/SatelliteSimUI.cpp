@@ -667,6 +667,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // camera/observer/settings they change. A no-op outside a harness run.
     harnessUi_ = &ui;
     harnessTick();
+    fprof::markReset(); // (buildUI's own splits: ui.seg*; recordCompute resets the mark for its rc.seg*)
     cineTick(dt); // review 17: a playing / exporting cinematic owns the camera and the clock
     reportTick(ui.input().dt); // KB_SAVE_SNAPSHOT / KB_REPORT_NEW: a shot into an issue report (SatelliteSimReports.cpp)
     syncUiTheme(); // after the harness: a `set display.ui_theme` shows in the frame it ran in
@@ -675,7 +676,9 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // Track (the selection panel's toggle) re-aims at the selection here, before the look block below:
     // it reads obsFacing/obsDir, and that block is where this frame's look input is dropped while the
     // lock is on, so the aim ends up being the last word on the camera's direction.
+    fprof::mark("ui.seg1_ticks");
     updateTrack();
+    fprof::mark("ui.seg2_track");
 
     // Apply camera mouse look.
     // Yaw  (dmx): rotate obsFacing around obsDir via Rodrigues — no ENU frame, no pole issue.
@@ -829,7 +832,9 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     }
     // Before the click handling below: a click on the tutorial's card must not also pick a satellite,
     // and its completion test reads this frame's look (the block above) and keys.
+    fprof::mark("ui.seg3a_look");
     updateTutorial(dt);
+    fprof::mark("ui.seg3b_tutorial");
 
     // ── Lazy icon loading (first buildUI call after init) ─────────────────────
     loadUiIcons(ui); // (normally already done by prepareUI at load)
@@ -873,10 +878,13 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         }
     }
 
+    fprof::mark("ui.seg3c_icons_pick");
     buildHarnessConsole(inp, ui);  // the ~ console draws even with the HUD hidden
     buildHarnessOverlays(inp, ui); // harness `overlay` titles/labels, likewise (docs/HARNESS.md)
     buildCineHud(inp, ui);         // a playing / exporting cinematic's progress and Stop, likewise
+    fprof::mark("ui.seg3d_console_cine");
     bookmarkTick(ui);              // bookmarks: the list, thumbnail captures and uploads (window open or not)
+    fprof::mark("ui.seg3e_bookmarks");
     // A screenshot / issue shot WITH the UI is taken this frame: leave out what only exists because of the shot
     // (its toast, the note bar, the Issue reports window), so the image is what the player was looking at.
     const bool hideShotChrome = shotHidesOverlays();
@@ -887,6 +895,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     if (!uiVisible)
         return;
 
+    fprof::mark("ui.seg3_look_pick");
     buildLeftHudPanel(inp, ui);
     buildRightHudPanel(inp, ui);
     buildSettingsWindow(inp, ui);
@@ -896,9 +905,11 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildBookmarksWindow(inp, ui);
     if (!hideShotChrome)
         buildReportsWindow(inp, ui);
+    fprof::mark("ui.seg4_hud_settings");
     buildMissionsWindow(inp, ui);
     buildWeatherWindow(inp, ui);
     updateViewerView(inp, ui); // the satellite windows' shared prologue (target, drag, readouts)
+    fprof::mark("ui.seg5_missions_weather");
     buildInfoWindow(inp, ui);
     buildViewPopoutWindow(inp, ui);
     buildFollowHud(inp, ui);
@@ -933,6 +944,12 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         ui.addMouseCaptureRect(rpChrome.x, rpChrome.y, rpChrome.w, rpChrome.h);
     if (msChrome.open)
         ui.addMouseCaptureRect(msChrome.x, msChrome.y, msChrome.w, msChrome.h);
+    // (2026-10-24) The Weather and Cinematics windows had none: every click in them (a Watch) also picked the satellite
+    // behind it — a selection change and ~10 ms of picking on the click's frame.
+    if (wxChrome.open)
+        ui.addMouseCaptureRect(wxChrome.x, wxChrome.y, wxChrome.w, wxChrome.h);
+    if (cineChrome.open)
+        ui.addMouseCaptureRect(cineChrome.x, cineChrome.y, cineChrome.w, cineChrome.h);
     // The satellite windows: without these a drag on a render also clicked the sky behind the window
     // and re-selected (or deselected) whatever satellite was under it.
     if (infoChrome.open && meshRendererInit)
@@ -940,6 +957,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     if (viewerChrome.open && meshRendererInit)
         ui.addMouseCaptureRect(viewerChrome.x, viewerChrome.y, viewerChrome.w, viewerChrome.h);
 
+    fprof::mark("ui.seg6_info_sel");
     buildCrashRecoveryNotice(dt, inp, ui);
     buildGraphicsAutoNotice(dt, inp, ui);
     buildKesslerBanner(ui);

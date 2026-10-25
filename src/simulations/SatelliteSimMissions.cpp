@@ -184,6 +184,7 @@ void SatelliteSim::missionsRefresh(bool force)
 
 bool SatelliteSim::missionsGoToFury(int which, std::string &msg)
 {
+    FPROF_SCOPE("missionsGoToFury");
     if (!kesslerEnabled)
     {
         msg = "The Sun's Fury is off (Settings > Launches)";
@@ -248,6 +249,7 @@ bool SatelliteSim::missionsGo(const std::string &what, bool watchOnly, std::stri
 // The Missions window's Watch (harness `missions watch <i|twilight|crew|fury>`): the launch already under way, tracked.
 bool SatelliteSim::missionsWatch(const std::string &what, std::string &msg)
 {
+    FPROF_SCOPE("missionsWatch");
     missionsRefresh(true);
     if (what == "fury" || what == "fury_night")
         return missionsGoToFury(1, msg);
@@ -273,6 +275,7 @@ bool SatelliteSim::missionsWatch(const std::string &what, std::string &msg)
 
 bool SatelliteSim::missionsOngoingAct(int row, bool go, std::string &msg)
 {
+    FPROF_SCOPE("missionsOngoingAct");
     if (row < 0 || row >= (int)msOngoing.size())
     {
         msg = "no such row";

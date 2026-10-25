@@ -101,10 +101,14 @@ namespace fprof
         const char *name;
         std::chrono::steady_clock::time_point t0;
         explicit Scope(const char *n) : name(n), t0(std::chrono::steady_clock::now()) {}
-        ~Scope()
+        // Ends the section early (a function's stretch without a block of its own); the destructor then adds nothing.
+        void end()
         {
-            add(name, std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            if (name)
+                add(name, std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            name = nullptr;
         }
+        ~Scope() { end(); }
         Scope(const Scope &) = delete;
         Scope &operator=(const Scope &) = delete;
     };

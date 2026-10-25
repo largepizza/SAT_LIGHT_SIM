@@ -689,6 +689,20 @@ struct SatelliteSim::LaunchState
     uint32_t plumeSkipped = 0, plumeSkippedLast = 0;
     double lastJobMs = 0.0;
     size_t lastJobN = 0;
+    // (perf4-cpu 2026-10-24) The Missions window's own builds (launchUpcoming's non-forced refresh) on a worker of their
+    // own: after a jump its 2- and 14-day searches need tens to hundreds of batches whose days' rival buckets are cold
+    // (5-25 ms a build on the main thread: 25-30 ms a frame for seconds). The rows wait for it; a forced refresh (a
+    // click, the harness) still builds on the main thread.
+    struct UpJob
+    {
+        std::vector<BuildItem> items;
+        std::vector<LBatch> out;
+        std::atomic<bool> finished{false};
+        std::thread th;
+        uint64_t gen = 0;
+    };
+    std::unique_ptr<UpJob> upJob;
+    std::unordered_set<uint64_t> upKeys;
     void joinJob()
     {
         if (job)
@@ -698,7 +712,14 @@ struct SatelliteSim::LaunchState
                 job->th.join();
             job.reset();
         }
+        if (upJob)
+        {
+            if (upJob->th.joinable())
+                upJob->th.join();
+            upJob.reset();
+        }
         jobKeys.clear();
+        upKeys.clear();
         ++buildGen;
     }
     std::shared_mutex candsMx; // (2026-10-20) batches are built in parallel (launchUpdate's walk): candidate() is shared
@@ -5428,7 +5449,8 @@ static void applyBuildJob(SatelliteSim &sim, SatelliteSim::LaunchState &L, doubl
         for (; J.applied < e; ++J.applied)
         {
             const ToBuild &it = J.items[J.applied];
-            L.batches.emplace(it.key, std::move(J.out[J.applied]));
+            auto ins = L.batches.emplace(it.key, std::move(J.out[J.applied]));
+            ins.first->second.touched = std::max(ins.first->second.touched, L.frame); // (not erased before it is asked for)
             L.jobKeys.erase(it.key);
         }
         if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a0).count() > maxMs)
@@ -5442,7 +5464,7 @@ static void applyBuildJob(SatelliteSim &sim, SatelliteSim::LaunchState &L, doubl
         L.lastJobN = J.items.size();
         char msg[160];
         snprintf(msg, sizeof(msg), "launches: background build of %zu batches in %.0f ms", J.items.size(), L.lastJobMs);
-        Log::line(msg);
+        Log::lineDeferred(msg);
         L.job.reset();
         L.jobKeys.clear();
     }
@@ -5667,9 +5689,15 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             }();
             const size_t kBgMin = bgOn ? 48 : SIZE_MAX;
             const bool fastWarp = !timePaused && kTimeScales[timeScaleIdx] > 3600.0f;
-            if ((toBuild.size() > kBgMin || (bgOn && fastWarp && toBuild.size() > 4)) && !L.job)
+            // A jump (a Watch, a bookmark, a typed time: sim time an hour or more from the last walk) hands every build to
+            // the job: one build whose day's rival buckets are cold is up to ~7 ms, and a handful of them were 20-30 ms of
+            // the landing frame (perf4-cpu 2026-10-24). The rockets of the moment appear a few frames later.
+            const bool jumped = std::abs(t - L.walkT) > 3600.0 && L.walkT > -1e299;
+            if ((toBuild.size() > kBgMin || (bgOn && (fastWarp || jumped) && toBuild.size() > (jumped ? 0u : 4u))) && !L.job)
             {
-                const size_t syncN = fastWarp ? 0 : 16;
+                // (4 here: after a jump the first builds of a day ask for its rivals' buckets, and 16 of them were ~20 ms of
+                // the landing frame — a Watch's jump; perf4-cpu 2026-10-24. The rest arrive from the job a few frames on.)
+                const size_t syncN = (fastWarp || jumped) ? 0 : 4;
                 std::vector<ToBuild> rest(toBuild.begin() + (ptrdiff_t)syncN, toBuild.end());
                 LaunchImpl::startBuildJob(*this, L, std::move(rest));
                 toBuild.resize(syncN);
@@ -10960,17 +10988,76 @@ void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN,
         // With a budget (launchUpcomingBudgetMs, the Missions window: 8 ms), in pieces until it is spent; then `out` is
         // left as it was and launchUpcomingIncomplete set (the caller asks again next frame, the batches built so far
         // kept).
+        if (launchUpcomingBudgetMs > 0.0)
+        {
+            // The window's own refresh: its builds on their worker (LaunchState::UpJob), the rows when they are in.
+            if (L.upJob && L.upJob->finished.load(std::memory_order_acquire))
+            {
+                if (L.upJob->th.joinable())
+                    L.upJob->th.join();
+                if (L.upJob->gen == L.buildGen)
+                    for (size_t q = 0; q < L.upJob->items.size(); ++q)
+                    {
+                        auto ins = L.batches.emplace(L.upJob->items[q].key, std::move(L.upJob->out[q]));
+                        ins.first->second.touched = std::max(ins.first->second.touched, L.frame);
+                    }
+                L.upJob.reset();
+                L.upKeys.clear();
+            }
+            bool pending = false;
+            std::vector<LaunchImpl::ToBuild> rest;
+            for (const auto &tb : toBuild)
+            {
+                if (L.jobKeys.count(tb.key) || L.upKeys.count(tb.key))
+                    pending = true;
+                else if (L.batches.find(tb.key) == L.batches.end())
+                    rest.push_back(tb);
+            }
+            if (!rest.empty() && !L.upJob)
+            {
+                auto J = std::make_unique<LaunchState::UpJob>();
+                J->items = std::move(rest);
+                J->gen = L.buildGen;
+                for (const auto &it : J->items)
+                    L.upKeys.insert(it.key);
+                LaunchState::UpJob *jp = J.get();
+                LaunchState *Lp = &L;
+                J->th = std::thread([this, Lp, jp] {
+                    LaunchImpl::gBuildBg = true;   // (leaves two cores to the frame, as the walk's job)
+                    LaunchImpl::buildMissing(*this, *Lp, jp->items, jp->out);
+                    jp->finished.store(true, std::memory_order_release);
+                });
+                L.upJob = std::move(J);
+                pending = true;
+            }
+            else if (!rest.empty())
+                pending = true;
+            if (pending)
+            {
+                launchUpcomingIncomplete = true;
+                return;
+            }
+            toBuild.clear();
+        }
         const auto b0 = std::chrono::steady_clock::now();
         size_t done = 0;
         std::vector<LBatch> built;
+        double each = std::max(L.buildMsEach, 0.05);   // ms a build, as last measured
         while (done < toBuild.size())
         {
-            const size_t piece = launchUpcomingBudgetMs > 0.0 ? (size_t)16 : toBuild.size();
+            // Pieces sized to half the budget by the measured cost of a build (perf4-cpu 2026-10-24: pieces of 16 after a
+            // jump, the day's rival buckets cold at ~5-7 ms a build, were 14-30 ms a frame for several frames).
+            const size_t piece = launchUpcomingBudgetMs > 0.0
+                                     ? (size_t)std::clamp(0.5 * launchUpcomingBudgetMs / each, 1.0, done == 0 ? 2.0 : 16.0)
+                                     : toBuild.size();
             const size_t e = std::min(toBuild.size(), done + piece);
             const std::vector<LaunchImpl::ToBuild> part(toBuild.begin() + (ptrdiff_t)done, toBuild.begin() + (ptrdiff_t)e);
+            const auto p0 = std::chrono::steady_clock::now();
             LaunchImpl::buildMissing(*this, L, part, built);
             for (size_t q = 0; q < part.size(); ++q)
                 L.batches.emplace(part[q].key, std::move(built[q]));
+            each = std::max(0.05, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p0).count() /
+                                      (double)part.size());
             done = e;
             if (launchUpcomingBudgetMs > 0.0 && done < toBuild.size() &&
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count() > launchUpcomingBudgetMs)

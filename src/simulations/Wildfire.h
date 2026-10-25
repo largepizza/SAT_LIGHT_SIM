@@ -90,6 +90,11 @@ void firesNear(double t, double latDeg, double lonDeg, double radiusKm, const Bi
 // not (the sim caches them and adds each new day's bin). Appends.
 void firesBorn(int64_t binFrom, int64_t binTo, double latDeg, double lonDeg, double radiusKm, const BiomeMap &bio,
                float rateScale, std::vector<Fire> &out);
+// firesBorn over the 1-degree latitude rows [rowFrom, rowTo] only (the rows firesBorn scans are
+// floor(latDeg -+ (radiusKm / 111.2 + 1))): a caller can split the rows over threads and append the parts in row order —
+// the same fires in the same order as one firesBorn call.
+void firesBornRows(int64_t binFrom, int64_t binTo, int rowFrom, int rowTo, double latDeg, double lonDeg, double radiusKm,
+                   const BiomeMap &bio, float rateScale, std::vector<Fire> &out);
 // Every fire alive worldwide at t (for the harness: ~2M hashes, tens of ms).
 void firesWorld(double t, const BiomeMap &bio, float rateScale, std::vector<Fire> &out);
 

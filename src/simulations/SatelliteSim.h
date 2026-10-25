@@ -4922,6 +4922,20 @@ private:
     bool wxScanDone = true;
     int wxScanRestarts = 0;
     std::unordered_set<uint64_t> wxScanSeen;   // tornado / waterspout candidates already looked at
+    // The search's state on its worker (perf4-cpu 2026-10-24: the steps ran on the main thread, up to ~12 ms each).
+    struct WxScanState
+    {
+        double base = 0.0, now = 0.0;
+        int step = 0;
+        bool done = false;
+        std::unordered_set<uint64_t> seen;
+        WxFeatured ft, fs, fh;   // the tornado, waterspout and haboob slots as the search left them
+    };
+    std::future<WxScanState> wxScanJob;
+    std::atomic<bool> wxScanCancel{false};
+    bool wxScanJobStale = false;   // a restart while it ran: its result is dropped
+    void weatherScanStep(WxScanState &S) const;
+    void weatherFeaturedFinish(double maxS);   // harness: the search to its end
     double wxFeatNowWall = -1e300, wxFeatNowSim = -1e300;
     double wxFireSim = -1e300;
     std::future<std::vector<wx::Fire>> wxFireJob;
@@ -5000,6 +5014,12 @@ private:
     void destroyWildfireGround(VkDevice device);
     uint32_t smokeHdrBits = 0;
     uint32_t aerosolFirst = 0xFFFFFFFFu;       // this frame's first haboob Gaussian (weatherFillHaboobs; one range with the smoke)                 // the dust list header word 1's smoke range (smoke.glsl), this frame's
+    struct FirePtSeg   // a segment's points (weatherFillWildfires builds the segments in parallel)
+    {
+        std::vector<GpuFireball> pts;
+        std::vector<double> fl;
+    };
+    std::vector<FirePtSeg> firePtSeg;
     void weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double pixFull);
     // Haboobs (2026-10-23, SatelliteSimHaboob.cpp): the dust walls on storms' gust fronts over the biome map's dust.
     struct HaboobPoint
