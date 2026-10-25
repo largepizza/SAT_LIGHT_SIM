@@ -1134,9 +1134,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     (light march, the Sun transmittance volume: the anvil shades it), and tints it: its share of a sample rides as a
     NEGATIVE `CV2Field.soft` (a member more risks the register cliff; every `soft` reader takes max(soft, 0)), and the
     sample's light x `kCv2DustTint` (0.95, 0.70, 0.45), the sky light x its square (scattered many times in a thick wall).
-    In the clear air ahead the low cloud and rain go (x 0.05): the line's shelf band is stamped 1-22 km ahead of its towers
-    whatever the outflow's lead, and it and the weather map's rain hid the wall from every Go to. Debug view 7's red
-    includes the dust. Beyond the grid (from orbit) the plume Gaussians below still draw, faded in over its outer 15%.
+    In the clear air ahead the low cloud and rain go (x (1 - smoothstep(0, 0.8, z)): OUTRIGHT where it is clear; x 0.05 left
+    a thin milky veil over the whole view that every ray marched and lit, 7 ms of cloud march at the haboob Watch with the
+    user's settings, perf pass 4): the line's shelf band is stamped 1-22 km ahead of its towers whatever the outflow's lead,
+    and it and the weather map's rain hid the wall from every Go to. Debug view 7's red includes the dust. **The march
+    without the haboob code** (perf pass 4): its presence alone, never run, cost the march 0.5-1.2 ms in every view, so the
+    march (and pass B) is built twice, specialization constant 3 `kCv2DustOn` (clouds_v2.glsl under `CV2_DUST_SPEC`), and
+    the host binds the dust-free pair while the grid's head holds no wall (`dustGpuOn`, weatherFillDustGrid). Other shaders
+    that call cv2Field keep the code (the lightning pass's variant measured nothing). Beyond the grid (from orbit) the plume Gaussians below still draw, faded in over its outer 15%.
   - **The plume Gaussians** (the first cut, now the far field and `clouds_v2.haboob_field` false — "Haboobs as cloud",
     Weather window > Controls): wall, head and pall Gaussians, 1.5-3 km tall, in the aerosol range of the dust list
     (`aerosolFirst`, spectral extinction, no sky light given back), the Earth-fixed billow field (`isWall`). Up close they
@@ -7825,6 +7830,37 @@ same shader reloaded twice).**
   and 34.1 vs 32.3 ms, scene noise +-5 ms while time runs). What it is: at 1 h/s `march_a` is ~18 ms against 5.4 at 1x and
   at 5 min/s (the clipmap is off past 4x in both, so not that alone); not attributed. D's 1d worst frame also carries
   `kesslerEnsureCapacity` 11.8 ms (a pool growth on the main thread).
+
+**Perf pass 4 (2026-10-25, after the wildfire / haboob / tornado reworks and the one-button Watch; RTX 3070 Ti; the Watch
+landings with the user's settings at 1600x900 and at Medium, and the matrix cells at 1920x1009; A/Bs interleaved in one app
+with `shaders reload` variants, `hr/` scripts in the perf4 worktree, untracked).**
+- **The haboob's clear air was a veil.** x (1 - 0.95 z) left 5% of the shelf deck over the whole view ahead of the wall,
+  a thin milky layer every ray marched and lit for tens of km: the haboob Watch's cloud march 20.3 ms, 12.5 with the clear
+  air off, 13.0 with it clearing OUTRIGHT (`1 - smoothstep(0, 0.8, z)`), the wall's own cost ~0 (removing it made the view
+  slower: the wall hides what is behind it). A look change, the intended one (the wall under open sky with the storm
+  standing behind it; the veil hid both): `screenshots/rework_20261024/perf4/haboob_watch_before_veil.png` / `_after_clear`.
+  Haboob Watch 37.2 -> 30.0 ms (user, interleaved), 17.2 -> 14.8 at Medium.
+- **The haboob code cost every view.** The matrix against the pre-rework build (e1f3ee4, built separately) put the merges at
+  +0.3..+0.9 ms of cloud march in every cell (summed GPU 492.5 -> 501.6 ms over 21 cells). Variants: the dust-wall lookup's
+  code in cv2Field, never run (no wall in the grid), was it — 0.5-1.2 ms (binary 350.7 vs 341.9 KB); a uniform gate (UBO
+  instead of the storage-buffer head) changed nothing: code size, not the loads. So the march is built twice (spec constant
+  3, Haboobs above) and the dust-free pair is bound while no wall is near: cells -0.6..-1.2 ms, captures within the noise
+  floor (mean |diff| 0.13-0.38), both at 128 registers. Matrix after: 494.2 ms summed (cloud bucket 223.1 base / 232.9
+  merged / 224.6 now). The lightning pass's own copy of the code measured nothing (left as is). The matrix's storm_gnd flag
+  (11.9 -> 14.0 ms, new high streaks in the capture) is sequence history: fresh launches of both builds draw the same streaks
+  at 13.97 / 14.25 ms.
+- **Smoke's Sun transmittance** (sat_sky.frag `smokeSunTransmit`, up to 96 Gaussians a ground pixel by day) is skipped
+  under full cloud shadow: every use of `sunSpecTint` is x cloudShadowT (exact).
+- **Measured, not changed:** after a Watch jump the first ~20 frames cost ~2x the settled cloud time (the clipmap and the
+  Sun volume refilling: haboob 51 ms for ~0.3 s, tornado 33-37) — inherent to a teleport. The Watch views still over
+  16.7 ms at Medium are terrain-bound and old: the tornado Watch (Nepal foothills, 18.8 ms at 1600x900): terrain detail
+  ~6.6 ms and its erosion octaves ~2.8 ms (at 1920x1009; `terrain_detail_strength` / `terrain_erosion_strength` 0), terrain
+  shadows ~1.1. Today's other additions are small: wildfires ~1 ms where a big fire is near (cloud 0.4, sky 0.6), the
+  tornado composite ~0.1, launch plumes 1.5 ms at the crew Watch with the user's plume gain 0.3.
+- Watch landings after (user settings / Medium, ms GPU): tornado 26.2 / 18.8, waterspout 19.1 / 12.7, haboob 26.1 / 14.8,
+  supercell 17.3 / 13.7, squall line 19.1 / 14.1, wildfire 25.8 / 15.4, launch 12.6 / 7.5, twilight 16.2 / 10.1, crew 23.9 /
+  14.2, the Sun's Fury 21.7 / 13.3, re-entry 13.2 / 7.1 (separate launches: +-0.4 run to run; the hurricane card found no
+  storm at that moment).
 
 ---
 
