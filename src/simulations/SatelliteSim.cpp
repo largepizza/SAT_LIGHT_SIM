@@ -522,7 +522,8 @@ void SatelliteSim::init(VulkanContext &ctx)
         biomeMap.build(earthDayCpu, earthDayCpuW, earthDayCpuH,
                        [this](float lat, float lon) { return std::max(0.0f, cpuTerrainHeightM(lat, lon)); },
                        [this](float lat, float lon) { return oceanAt(glm::radians((double)lat), glm::radians((double)lon)); },
-                       (int)std::clamp(std::thread::hardware_concurrency(), 1u, 12u));
+                       (int)std::clamp(std::thread::hardware_concurrency(), 1u, 12u),
+                       [this](float lat, float lon) { return nightLumCpu(lat, lon); });
         Log::line("init: biome map " + std::to_string(biomeMap.width()) + "x" + std::to_string(biomeMap.height()) + " in " +
                   std::to_string(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count()) + " ms");
     }
@@ -2748,6 +2749,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.auroraSky = glm::vec4(1.0f / std::max(lightPollutionGain, 1e-4f), 0.0f, 0.0f, 0.0f);
         launchFillPadParams(cp); // the launch pads on the ground (SatelliteSimLaunches.cpp)
         weatherFillSeaParams(cp); // tropical cyclones' winds on the sea (SatelliteSimWeather.cpp)
+        weatherFillFireParams(cp); // the wildfires' burn scars on the ground (SatelliteSimWildfire.cpp)
         cp.moonCenter = glm::vec4(moonCenterENUkm, moonAngR);
         // y: 0 = no solar eclipse possible, else 1 + the observer's eclipse sky light (0..1), which sat_sky.frag's
         // exposure applies exactly as skyExposure() does (every `y > 0.5` test still reads it as the flag).
@@ -3420,6 +3422,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             CpuTimer kesslerDustTimer(cpuAccumMs[CPU_KESSLER]);
             kesslerFillDust(glm::radians(camera.fovYDeg) / (float)std::max<uint32_t>(halfH, 1)); // the breakups' dust clouds (binding 23)
         }
+        recordWildfireGround(cmd, ctx);   // the wildfires' points and flames onto the drawn ground (wildfire_ground.comp)
         recordCloudsV2(cmd, ctx, cpc);
         weatherRadarRecord(cmd);   // the Weather window's radar, a few times a second while it is shown
 
@@ -8008,6 +8011,7 @@ void SatelliteSim::cleanup(VkDevice device)
         terrainFrameMapped = nullptr;
     }
     destroyTerrainProbe(device);
+    destroyWildfireGround(device);
 
     // Harness: a --stay run closed by hand still leaves a summary (no-op if one was written).
     if (harnessRunner_)

@@ -972,19 +972,25 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the observer on its inflow side; `state` -> `weather.tornadoes`. Known: a neighbouring storm's forward flank can still
   rain over the view (harness_runs/wx4: 2036-11-22 14:00); the cloud field inside a hurricane does not swirl (its noise is
   map-fixed; the flow is one global curl field).
-- **Biome map + wildfires (2026-10-23, reworked 2026-10-24 from issue 20261023_225322; `Biome.h/.cpp`, `Wildfire.h/.cpp`,
-  `SatelliteSimWildfire.cpp`, `shaders/include/smoke.glsl`; plan `.plans/WEATHER_HAZARDS_PLAN.md`).** `wx::BiomeMap`
+- **Biome map + wildfires (2026-10-23, reworked 2026-10-24 from issue 20261023_225322 and again the same day from the
+  user's QA; `Biome.h/.cpp`, `Wildfire.h/.cpp`, `SatelliteSimWildfire.cpp`, `shaders/wildfire_ground.comp`,
+  `shaders/include/smoke.glsl`; plan `.plans/WEATHER_HAZARDS_PLAN.md`).** `wx::BiomeMap`
   (2048 x 1024 equirect, built at load in ~17 ms on 12 threads from the day map's 3x3 colour, latitude, the CPU DEM and
-  the ocean mask): water, ice, tundra, boreal / temperate / tropical forest, grassland, savanna, shrubland, desert, + FUEL
-  and DUST bytes; `seasonalDryness(lat, doy)` (extratropical summer, tropical dry season: north peak ~day 15, south
-  ~220). Harness `biome [<lat> <lon>] [export=<png>]`. Kansas reads shrubland (the day map's tan prairie). **Fires** are
-  a pure function of sim time: hashed per (1-degree cell, 1-day bin), rate 0.045 x fuel x dryness^2 x cos(lat) x
-  "Wildfires (x)", ignited mostly in the local afternoon, log-normal life (median 2.5 d x size, 0.4-30 d), a burnt
-  ellipse growing along the spread direction (`fireStateAt`: activity = growth x decay x a diurnal cycle peaking ~15:30
-  local; head / back / half width; plume top 0.8-3 km, x2.6 for the rare pyroCb). Measured: ~84 burning worldwide on
-  2036-11-22, ~283 on 2036-08-12. The sim caches the fires born round the eye (`firesBorn`, per day bin; rescan on a
-  move > 15% of the reach) and each frame (`weatherFillWildfires(out, n, pixFull)`, after the haboobs in the dust fill)
-  draws, nearest first, within 600 km (to 3000 km from orbit; faded over the reach's last 20%).
+  the ocean mask): water, ice, tundra, boreal / temperate / tropical forest, grassland, savanna, shrubland, desert, + FUEL,
+  DUST and URBAN bytes; `seasonalDryness(lat, doy)` (extratropical summer, tropical dry season: north peak ~day 15, south
+  ~220). **URBAN** = the night map's lights (`earthNightCpu`, ~18-km box means of sRGB luminance, the brightest of nine
+  reads over the texel and its edges; smoothstep 20 -> 34, the land's blue base ~14): `burnableAt` = fuel x (1 - urban),
+  and no fire starts or runs where it is 0 (the user: "they seem to generate over cities"). Harness `biome [<lat> <lon>]
+  [export=<png>]`. Kansas reads shrubland (the day map's tan prairie). **Fires** are a pure function of sim time: hashed
+  per (1-degree cell, 1-day bin), rate 0.045 x burnable x dryness^2 x cos(lat) x "Wildfires (x)", ignited mostly in the
+  local afternoon, log-normal life (median 2.5 d x size, 0.4-30 d), a burnt ellipse growing along the spread direction
+  (`fireStateAt`: activity = growth x decay x a diurnal cycle peaking ~15:30 local; head / back / half width; plume top
+  0.8-3 km, x2.6 for the rare pyroCb). Measured on 2036-08-12: 418 burning worldwide before the urban mask, 340 after
+  (the lit farmland of India, China and Europe lost most); `fires world=1` -> `world_front_on_lights`: of ~3600 burning
+  front samples, 1 on a texel of luminance >= 30 and 0 >= 60 (were 74 / 34 with the first, looser mask). The sim caches
+  the fires born round the eye (`firesBorn`, per day bin; rescan on a move > 15% of the reach) and each frame
+  (`weatherFillWildfires(out, n, pixFull)`, after the haboobs in the dust fill) draws, nearest first, within 600 km (to
+  3000 km from orbit; faded over the reach's last 20%).
   - **The wind** (`wx::windAt(dir, h, t)`, m/s east / north): a pure function of place, height and time, coherent in
     space (neighbouring fires' smoke agrees): a zonal climatology (trades, westerlies growing with height, polar
     easterlies) + the CURL of three sets of travelling waves on the sphere (synoptic ~3000 km / days, mesoscale ~400 km
@@ -993,19 +999,68 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     a third into its life (`Fire::windAz`, the burnt ellipse's fixed axis: it does not turn); its SMOKE follows the
     field. It replaced a per-fire hashed direction (trades or westerlies +-75 deg) with a slow wander that ROTATED the
     burnt ellipse — the user's "wind seems random, in only one direction".
-  - **Smoke = a STREAK per layer**: parcels from the column's source (`fireSmokeSource`: 250 m + 0.1 x half width
-    downwind of the head, so the flames stand upwind of their smoke) rise (`fireSmokeRiseM`, the updraft
-    `fireUpdraftMps` 5-19 m/s) toward the injection height (`fireInjectionHeightM`: the plume top, lower in a strong
-    wind), each stretch carried by `windAt` at its height at the moment it travelled (older smoke followed older
-    winds: the plume curves, wiggles and fans out); a lower layer (0.4 x, a quarter of the mass) goes its own way under
-    800 km. Knots by age (the rise finely, then geometric to 2-14 h; 14 / 7 / 4 / 2 knots by range); a stretch's mass
-    = the source rate (`tau0` 2.5-8 x the head front's width) x the fire's activity WHEN it was emitted (afternoon smoke
-    thicker); the column narrow along the wind (a curtain along the front), widening with age (`1.1 tau^0.85` m) and
-    height. `wx::fireSmokeAt` walks the same steps (harness `fires go view=under`, `fires look what=plume`). Plus one
-    flat, MASS-CONSERVING **pall** per fire (the smoke older than the streak, ~4-day removal, 20-350 km: ~0.01-0.05
-    from above each, a fire season's palls overlap into regional haze). A contiguous range of the dust list (with the
-    haboobs), its bounds in the list header's word 1 (bits 8-17 first, 18-27 count; bits 0-7 the engine lights' count:
-    every reader masks `& 255`).
+  - **The front is an ARC** (`fireFrontHeat(f, s, a, t, bio)`, 2026-10-24; the user: "fire generates as rings, at best
+    they should be arcs with scattered flames here and there"): the burnt ellipse with FINGERS (`fireFrontAt` =
+    the ellipse's point x `fireFrontRadiusK`, a radial perturbation ~10-24%) burns all round only while young; its
+    ACTIVE ARC narrows over 1-14 h to a half angle of the ellipse's parameter of 50-80 deg (the head and the upper flanks of
+    an ellipse ~3x as long as wide), turned off the axis by a slowly varying skew (one flank runs harder), x 0.25-1 toward
+    the head; broken into RUNS of flame and gaps by a coarse noise (18-32 cells round, re-drawn over 1.5 h) thresholded
+    so ~40% of the head and more of the flanks are out, NOTHING burning in a gap (the old pattern floored every gap and
+    the back at 10-12%: summed round the perimeter it drew a closed ring); a finer variation (120 cells, 0.6 h); a few
+    isolated flare-ups off the arc (fewer as it ages); x the biome map's burnable at the front's point (the front stops
+    at a lake, a town, bare ground). Behind the arc the ground is BURNT (below).
+  - **The front's points** (kFireBuf, `kessler_fireballs.comp` appends them; drawn like the city sprites): on a NESTED
+    hierarchy round the perimeter (finest 2^14; 64 base segments subdivided by their nearest range), each point's level
+    from its OWN range so they stay 3.5 px apart on screen near, 2 px from afar (50-300 km: a front then reads as a line
+    of light, not beads), x `fireLodScale` (widened past 3500 a frame, relaxed slowly); the next level's points fade in
+    carrying half their parents' light (energy kept, no pops). Per point: the flame (on the active arc, jittered across
+    the front by the flaming zone's depth), a burning-out zone just behind a burning stretch (45%, a few hundred metres
+    deep by the spread rate x 0.25-2.75 h, red, fading with the time since the front passed), the burn scar's sparse
+    SMOULDERING spots (6%, anywhere toward the centre, dimmer inward; not a second ring), spot fires ahead of the head
+    (8%, over burnable ground). **Brightness**: PHYSICAL (luminous intensity per metre of front = flame luminance 2e4
+    cd/m^2 x (flame height x cos + flaming-zone depth x sin of the view's elevation) x heat x activity, x the stretch of
+    front it stands for, / r^2, extinction -> a magnitude -> effectFlare, / (1 + 30 x the Sun at the fire) by day), then
+    `fireShoulder` = 0.9 (1 - exp(-(x / 1e4)^0.45)): a big head 5 km off at night ~0.8, from LEO ~0.4 (about mag 2.3),
+    the faint back and embers from orbit ~0.06. A flare of 0.5 is the point style's white peak (pointRefMag 1.5), so no
+    point swells past a star's core. Until 2026-10-24 it approached 8 (16x that white, each point a swollen disc; a big
+    head from LEO ~5.5): the user's "way too bright, overwhelming even from space". Flicker ~1 / sqrt of the front a
+    point stands for (0.07-0.55). **A light on the ground is dimmed by T, not T^2** (`sat_point.frag`: city lights and
+    fire points, `fragManualDepth`): the dust haze over a dry-season savanna (T ~0.3 along a grazing path 100 km long)
+    squared hid every front past ~50 km.
+  - **On the drawn ground** (`wildfire_ground.comp`, `recordWildfireGround`, right after the dust fill and before the
+    cloud composite and the points): the CPU places points and flames over the DEM it has (the full DEM at the ignition +
+    the 18-km copy's change across the fire); the ground drawn is the DEM + the procedural detail, tens to hundreds of
+    metres off in rough country, so close up most points sat UNDER the drawn surface and the depth test hid them (the
+    user: "they disappear when you are close": from a 600-m hill 5 km off none showed). Each point (a NEGATIVE range =
+    the CPU's mark; its height over the ground rides in its direction's length, 1 + h / 1000 m: the flame half its
+    height up, embers 1-1.5 m) and each flame Gaussian (its height in `ib.w`: emissive Gaussians read no ib.w) is moved
+    onto `terrainHeightDetailed` at the march's own LOD (`tdGeomLodM` of its range) and its direction / range / view cone
+    rewritten. One 64-thread dispatch over ~2000 points: GPU within noise. Without the snap pass (it failed, or terrain
+    detail is off) kessler_fireballs.comp takes |range| and the normalised direction.
+  - **Burn scars** (`sat_sky.frag` `fireScarAt`, UBO `fireInfo / fireC / fireU / fireV / fireAux / fireK`, 11184 ->
+    12224 B, `weatherFillFireParams` from last frame's `firesNow`): the nearest 8 fires' burnt ellipses with the same
+    fingers (64 radial factors a fire, packed in bytes) in the q frame: the day map goes to charcoal (0.028) with
+    grey-white ash patches (~110 m) and unburnt islands (~300 m), averaged to their means past 60-400 m a pixel, never on
+    lit land (the night map's lights there); faded over the last 15% of the fire's life (the scar ends with the fire:
+    not yet a scar that lasts months). Not in SKY_LITE / SKY_ENV. From orbit by day a fire is a dark scar with the smoke
+    leaving its active edge; at night the points carry it.
+  - **Smoke from the whole active front** (2026-10-24; the user: "smoke trails only generate from singular points, and
+    not the full fire circle / arc"): the front's heat (48 samples x their length) is cut into S sections of equal heat
+    starting at the arc's coldest point (5 within 150 km, 3 within 500, 2 within 1200, else 1); each section is a SOURCE
+    at its heat-weighted centre, 120 m + 0.4 x the flaming depth downwind, as wide as the section (1.2 x its rms extent /
+    sqrt S), carrying its share of the fire's smoke and rising to its own layer (`fireInjectionHeightM` x (0.7 + 0.3
+    sqrt(share x S)), 0.55-1.1: a weaker section injects lower); 20% of the strongest source's goes to the low layer (0.4
+    x, near fires). Each source is a STREAK: parcels rise (`fireSmokeRiseM`, the updraft `fireUpdraftMps` 5-19 m/s) from
+    0.12 of the rise time on (the hot gas right over the flames is clear: started at the ground, the first Gaussian's
+    tails hid the flames from the side) toward their layer, each stretch carried by `windAt` at its height at the moment
+    it travelled (older smoke followed older winds), knots the rise finely then geometric to 2-14 h (9 / 6 / 4 / 2 by
+    range). So the sources leave the front as a curtain along it and merge downwind into one plume. A stretch's mass =
+    the source rate (`tau0` 2.5-8 x the head front's width, as before: the total is unchanged) x its share x the fire's
+    activity WHEN it was emitted. `wx::fireSmokeAt` still walks one streak from the head (harness `fires go view=under`,
+    `fires look what=plume`). Plus one flat, MASS-CONSERVING **pall** per fire (the smoke older than the streaks, ~4-day
+    removal, 20-350 km: ~0.01-0.05 from above each). Up to 384 Gaussians a frame (~55 a near fire: was 29). A contiguous
+    range of the dust list (with the haboobs), its bounds in the list header's word 1 (bits 8-17 first, 18-27 count; bits
+    0-7 the engine lights' count: every reader masks `& 255`).
   - **Smoke light**: GREY — fresh (0.60, 0.58, 0.55) albedo 0.38 (black carbon) to aged / pall (0.74-0.76) 0.55, sky
     light on it brown-grey; the Sun's colour at each Gaussian's centre (`atmExtinctionMag` along its path, the rocket
     plumes' k), and in `cloud_march.comp` the Earth's shadow PER PIXEL for smoke (a 350-km pall lit as at its fire glowed
@@ -1015,41 +1070,35 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     haboob walls keep their stronger 1 / 3 and 0.5 / 1.2 (the first cut's orange-brown smoke). Billows per Gaussian, a
     second octave at ~4x for smoke. `sat_sky.frag` (`smokeSunTransmit`) dims and reddens the Sun on land and sea under
     it (the first 96 Gaussians; skipped where the Sun is down: it cost ~1 ms from orbit at night).
-  - **The front = a field of point sprites** (kFireBuf, `kessler_fireballs.comp` appends them; drawn like the city
-    sprites). The burnt ellipse with FINGERS (`fireFrontAt`, a radial perturbation ~10-24%) and its runs of flame and
-    gaps (`fireFrontHeat`: head 1, flanks ~0.35, back ~0.1 x a 48-cell broken pattern re-drawn over ~2 h). Points on a
-    NESTED hierarchy round the perimeter (finest 2^14; 64 base segments subdivided by their nearest range), each
-    point's level from its OWN range so they stay ~5 px apart on screen at any distance (x `fireLodScale`, widened when
-    more than 3500 a frame would be drawn, relaxed slowly); the next level's points fade in carrying half their
-    parents' light (energy kept, no pops). Embers behind the front (70% of points, red, slow pulse), spot fires ahead
-    of the head (14%). Brightness PHYSICAL then compressed: luminous intensity per metre of front = flame luminance
-    2e4 cd/m^2 x (flame height x cos + flaming-zone depth x sin of the view's elevation) x heat x activity
-    (`fireFlameHeightM` 1.5-30 m, `fireFlameDepthM` 6-40 m), x the stretch of front the point stands for, / r^2,
-    extinction -> a magnitude -> effectFlare, / (1 + 30 x the Sun at the fire) by day, then `fireShoulder`
-    (8 (1 - exp(-(x / 2000)^0.45)): a big head from LEO ~5.5, its back ~3, close saturates at 8 = the city sprites'
-    cap, no glare spikes) x flicker (amplitude ~1 / sqrt of the front a point stands for, 0.07-0.55). Before this the
-    points were never drawn: the fireball pass reads kFireBuf's count from its header, written BEFORE the wildfires
-    (`kFireMapped[0]` is now written after them) — the "singular source" was only the glow.
   - **Flames close up** (within 40 km, faded 25-40 km): emissive Gaussians (dust list `col.w` 1, AFTER the smoke's range
-    so `smokeSunTransmit` does not take them for smoke) standing on the front, tongues 0.66 x the flame height tall,
-    narrower than their spacing (>= 40 px), radiance = the flame's pi L / E_sun (~0.5 of a white sunlit surface) x
-    heat^1.5, flickering; at most 96 a frame. By day they and the points show the front ("flames are where?").
-  - **The glow** (the nearest 6 fires at night): engine lights at the head, intensity = the front's summed light (24
-    samples) x 0.06 (what escapes the trees, terrain and smoke; at 0.25 ~physical-open-ground the haze and ground were
-    lit brown across a whole view from 175 km: "too bright"), eye-adapted by `engineLightsFlush`, faded out 120-320 km
-    (they stopped dead at 200 km: "immediate fire vanish at altitude"; the points now carry the fire at any range).
+    so `smokeSunTransmit` does not take them for smoke) standing on the active arc, tongues 0.66 x the flame height tall
+    and 0.35 x it + 0.05 x their spacing wide (were 0.3 x the spacing: neighbours merged into one band), spaced >= 40 px,
+    radiance the flame's pi L / E_sun (~0.5 of a white sunlit surface) x heat^1.5 CAPPED in displayed light at 0.6 (x
+    1 / `skyExposure()`: at the night exposure the physical value was a white blob), flickering; at most 96 a frame.
+  - **The glow** (the nearest 6 fires at night, within 120 km, faded from 40): up to three engine lights a fire at the
+    heat-weighted thirds of the active arc, 30 m + half the flame height up, intensity = the front's summed light (24
+    samples) x 0.004, at most 3 suns m^2 a fire (a Falcon 9's flame is ~8, a Super Heavy's ~50), r0 >= 250 m. It was
+    0.06 of it at the head (~2000 suns m^2 for a big fire: x the night's ~2600x lift it lit the haze and the ground
+    orange over a whole view from 5-100 km: "light is overwhelming"). Now it lights the smoke column's base and the
+    ground round the fire, a few km.
   - Settings `clouds_v2.wildfires` / `wildfire_smoke` / `wildfire_light` (Weather window > Controls > WILDFIRES). Harness
-    `fires [world=1]` (points, flames, lights, point_lod_scale; per fire flame height, ground, wind at 10 m / 3 km; the
-    nearest's smoke knots), `fires go [k] [view=side|under|orbit] [local_h=] [dist_km=] [alt=] [pyro=1] [age_h=]` (side:
-    across the SMOKE's wind; under: below the smoke age_h old, `wx::fireSmokeAt`), `fires look [k] [what=head|plume]
-    [age_h=]` (aim at the k-th nearest; run a frame after a `fires go`). Cost (RTX 3070 Ti, Medium, 1920x1009, A/B in
-    one run, on vs off): a big fire 5 km off at night GPU +0.55 ms (cloud_march +0.2, points +0.2, sky +0.2), CPU
-    (the launches bucket) +0.4 ms; from 420 km over the August fire season +0.8 / +1.1 ms GPU by day / night (mostly the
-    sky pass compositing the smoke's texels: +0.6-0.9; +0.5 in all with clouds at 0.5), CPU +0.35 ms. The old build's
-    on-off at the same views: +0.45 / +0.5 / +0.1 ms (it drew no points and half the smoke Gaussians). cloud_march at
-    128 registers (composite too). Not yet: burn scars on the ground, pyrocumulus caps, smoke in the far cloud layer /
-    weather bake, a Fires list in the Weather window, fire ambience, fires in a snowy boreal November (the dryness
-    curve leaves ~6% of the summer rate at 60 N in late November: the issue's Siberian fires).
+    `fires [world=1]` (points, flames, lights, point_lod_scale, point_peak_flare / point_flare_sum, glow_suns_m2,
+    smoke_sources, ground_snap; per fire flame height, ground, wind at 10 m / 3 km; the nearest's smoke knots; world=1:
+    `world_ignition_on_lights` / `world_front_on_lights`), `fires go [k] [view=side|under|orbit] [local_h=] [dist_km=]
+    [back_km=8] [alt=] [pyro=1] [age_h=]` (side: across the SMOKE's wind, back_km upwind of the head; under: below the
+    smoke age_h old, `wx::fireSmokeAt`), `fires look [k] [what=head|plume] [age_h=]` (aim at the k-th nearest; run a frame
+    after a `fires go`). Views: `harness_runs/fr/views.satcmd` (untracked; captures in screenshots/rework_20261024/fires).
+    Cost (RTX 3070 Ti, Medium, 1600x900, 2036-08-12's biggest fire, Madagascar savanna; on vs off interleaved in one run,
+    `harness_runs/fr/perf.satcmd`): 600 m from the head at night GPU 12.9 vs 10.4-11.4 ms (+1.5-2.5: the sky pass's
+    smoke and scar, cloud_march +0.7-1.1, points +0.24), CPU (the launches bucket, where the fill runs) 1.8 vs 0.27 ms;
+    5 km off, 600 m up GPU 8.0-8.2 vs 6.7 (+1.4), CPU 0.81 vs 0.26; from 400 km by day GPU 6.0 vs 5.9, CPU 0.64 vs 0.22.
+    cloud_march and the composite at 128 registers. Displayed luminance (mean / p99.9 of the frame, 0-255) before -> after
+    at night: 600 m 42 / 101 -> 16 / 130 (the glowing haze gone, the front visible), on the ground 9 km off 30 / 216 ->
+    13 / 39, 5 km off 600 m up 33 / 197 -> 13 / 46, 20 km 22 / 127 -> 13 / 43; orbit and day views within 1-3%.
+    Not yet: burn scars that outlast the fire, pyrocumulus caps, smoke in the far cloud layer / weather bake, a Fires
+    list in the Weather window, fire ambience, fires in a snowy boreal November (the dryness curve leaves ~6% of the
+    summer rate at 60 N in late November: the issue's Siberian fires), the smoke's shape by day (a column that bends over
+    into a flat layer within a few km; no towering convective column).
 - **Haboobs (2026-10-23, `SatelliteSimHaboob.cpp`).** A storm's gust front lifting dust: `haboobFrontOf` makes the
   front from this frame's towers (map frame -> Earth-fixed by the drift phase): line systems along their line of towers,
   dG ahead of the motion (5 km + 14 km x smoothstep(0.5 h, 3 h) of the storm's age), curving back round both ends;

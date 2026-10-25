@@ -96,7 +96,8 @@ bool fireInCell(int ilat, int ilon, int64_t db, const BiomeMap &bio, float rateS
     const uint64_t key = (uint64_t)((ilat + 90) * 360 + (ilon + 180));
     const uint64_t h0 = mix64(key * 0x100000001B3ull ^ mix64((uint64_t)db + 0x5EED0F1Eull));
     const double lat = ilat + u01(mix64(h0 ^ 1)), lon = ilon + u01(mix64(h0 ^ 2));
-    const float fuel = bio.fuelAt(lat, lon);
+    // (the fuel less the built-up share: no fire starts in a town or city, 2026-10-24)
+    const float fuel = bio.burnableAt(lat, lon);
     if (fuel < 0.1f) return false;
     const double doy = std::fmod((double)db + 1.0, 365.2422);
     const double dry = BiomeMap::seasonalDryness(lat, doy < 0 ? doy + 365.2422 : doy);
@@ -204,32 +205,69 @@ double fireFrontIntensity(double a)
     return 0.1 + 0.9 * std::pow(h, 2.5);
 }
 
-glm::dvec2 fireFrontAt(const Fire &f, const FireState &s, double a, double *dsda)
+double fireFrontRadiusK(const Fire &f, const FireState &s, double a)
 {
-    const glm::dvec2 w(std::sin(s.windAz), std::cos(s.windAz)), c(std::cos(s.windAz), -std::sin(s.windAz));
-    const double semi = 0.5 * (s.headM + s.backM), off = 0.5 * (s.headM - s.backM);
     // Fingers: two scales of a radial perturbation, stronger toward the head (where the front runs); they change as the
     // fire grows.
     const double head = 0.5 * (1.0 + std::cos(a));
     const double n1 = circNoise(a, 9, f.id ^ 0xF1A9ull, s.ageS, 20.0 * 3600.0) - 0.5;
     const double n2 = circNoise(a, 31, f.id ^ 0xF2A9ull, s.ageS, 7.0 * 3600.0) - 0.5;
-    const double k = 1.0 + (0.10 + 0.14 * head) * n1 + 0.06 * n2;
+    return 1.0 + (0.10 + 0.14 * head) * n1 + 0.06 * n2;
+}
+
+glm::dvec2 fireFrontAt(const Fire &f, const FireState &s, double a, double *dsda)
+{
+    const glm::dvec2 w(std::sin(s.windAz), std::cos(s.windAz)), c(std::cos(s.windAz), -std::sin(s.windAz));
+    const double semi = 0.5 * (s.headM + s.backM), off = 0.5 * (s.headM - s.backM);
+    const double k = fireFrontRadiusK(f, s, a);
     if (dsda)
         *dsda = k * std::sqrt(semi * semi * std::sin(a) * std::sin(a) +
                               s.halfWidthM * s.halfWidthM * std::cos(a) * std::cos(a));
     return w * (off + k * semi * std::cos(a)) + c * (k * s.halfWidthM * std::sin(a));
 }
 
-double fireFrontHeat(const Fire &f, const FireState &s, double a, double t)
+void fireOffsetLatLon(const Fire &f, const glm::dvec2 &q, double &latDeg, double &lonDeg)
 {
-    // Runs of flame and gaps along the front (~48 cells round, re-drawn over ~2 h), and a finer variation.
-    const double n = circNoise(a, 48, f.id ^ 0xB0A1ull, t, 2.0 * 3600.0);
-    const double n2 = circNoise(a, 160, f.id ^ 0xB0A2ull, t, 0.7 * 3600.0);
-    // (the flanks and the back burn in shorter runs with longer gaps, and the back goes out as the fire ages)
-    const double hd = 0.5 * (1.0 + std::cos(a)), back = 1.0 - hd;
-    const double run = 0.12 + 0.88 * sstep(0.28 + 0.22 * back, 0.62 + 0.2 * back, n);
-    const double out = 1.0 - 0.7 * back * back * sstep(6.0 * 3600.0, 36.0 * 3600.0, s.ageS);
-    return fireFrontIntensity(a) * run * out * (0.6 + 0.8 * n2);
+    latDeg = f.latDeg + q.y / 111195.0;
+    lonDeg = f.lonDeg + q.x / (111195.0 * std::max(std::cos(f.latDeg * kPi / 180.0), 0.05));
+}
+
+double fireFrontHeat(const Fire &f, const FireState &s, double a, double t, const BiomeMap *bio)
+{
+    // The ACTIVE ARC (2026-10-24): a new fire burns all round; within ~half a day only the head and the upper flanks are
+    // still going (the back and the lower flanks have burnt out or crept to a stop against what has burnt). Its half
+    // angle A (of the ellipse's parameter) narrows from ~165 deg to 50-80 deg by the fire: the head and the upper flanks
+    // of an ellipse ~3x as long as it is wide. The arc is turned off the axis by a slowly changing angle (one flank
+    // usually runs harder). It replaced a ring at 0.1 (the back) .. 1 (the head) with 12% floors in every gap: summed
+    // along the whole perimeter, the points drew a closed bright ring.
+    const double hd = 0.5 * (1.0 + std::cos(a));
+    const double mature = sstep(1.0 * 3600.0, 14.0 * 3600.0, s.ageS);
+    const double A = 2.9 + (0.85 + 0.55 * u01(mix64(f.id ^ 0xA1C0ull)) - 2.9) * mature;
+    const double skew = (circNoise(0.0, 4, f.id ^ 0xA1C1ull, t, 9.0 * 3600.0) - 0.5) * 1.1 * mature;
+    const double cA = std::cos(a - skew) - std::cos(A);
+    const double env = sstep(-0.1, 0.22, cA);
+    const double shape = 0.25 + 0.75 * std::pow(hd, 1.5);
+    // Runs of flame and gaps along it: a coarse pattern (~18-32 runs round by the fire's size, re-drawn over ~1.5 h)
+    // thresholded so ~40% of the head and more of the flanks are out, nothing burning in a gap; a finer variation in
+    // each run.
+    const int N1 = 18 + (int)(14.0 * f.size);
+    const double n1 = circNoise(a, N1, f.id ^ 0xB0A1ull, t, 1.5 * 3600.0);
+    const double thr = 0.40 + 0.16 * (1.0 - hd);
+    const double run = sstep(thr, thr + 0.12, n1);
+    const double n2 = circNoise(a, 120, f.id ^ 0xB0A2ull, t, 0.6 * 3600.0);
+    const double fine = 0.45 + 1.1 * n2;
+    // Isolated flare-ups off the arc (a stump, a pocket of fuel), fewer as the fire ages.
+    const double n3 = circNoise(a, 44, f.id ^ 0xB0A3ull, t, 2.5 * 3600.0);
+    const double iso = (1.0 - env) * 0.3 * sstep(0.84, 0.92, n3) * (1.0 - 0.6 * sstep(12.0 * 3600.0, 48.0 * 3600.0, s.ageS));
+    double h = (env * shape * run + iso) * fine;
+    if (bio && h > 0.0)
+    {
+        // The front stops where nothing burns (a lake, a town, bare ground): the biome map at the front's point.
+        double la, lo;
+        fireOffsetLatLon(f, fireFrontAt(f, s, a), la, lo);
+        h *= sstep(0.08, 0.3, (double)bio->burnableAt(la, lo));
+    }
+    return h;
 }
 
 double fireFlameHeightM(const Fire &f, const FireState &s)

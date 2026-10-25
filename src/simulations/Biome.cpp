@@ -24,13 +24,15 @@ const char *biomeName(Biome b)
 }
 
 void BiomeMap::build(const std::vector<uint8_t> &dayRgb, int w, int h, const std::function<float(float, float)> &elevM,
-                     const std::function<bool(float, float)> &ocean, int threads)
+                     const std::function<bool(float, float)> &ocean, int threads,
+                     const std::function<float(float, float)> &nightLum)
 {
     if (w <= 0 || h <= 0 || dayRgb.size() < (size_t)w * h * 3)
         return;
     cls_.assign((size_t)w * h, 0);
     fuel_.assign((size_t)w * h, 0);
     dust_.assign((size_t)w * h, 0);
+    urban_.assign((size_t)w * h, 0);
     auto rows = [&](int y0, int y1) {
         for (int y = y0; y < y1; ++y)
         {
@@ -39,6 +41,18 @@ void BiomeMap::build(const std::vector<uint8_t> &dayRgb, int w, int h, const std
             {
                 const float lon = -180.0f + (x + 0.5f) * 360.0f / w;
                 const size_t i = (size_t)y * w + x;
+                // Built-up land from the night map's lights (an ~18-km box mean of sRGB luminance: the land's blue base
+                // ~14, farmland and roads 15-25, a town's texel ~30, a city's 60-255).
+                // (the brightest of nine reads over the texel and its edges: the night copy's grid is not this one)
+                if (nightLum)
+                {
+                    const float dLa = 0.5f * 180.0f / h, dLo = 0.5f * 360.0f / w;
+                    float L = 0.0f;
+                    for (int a = -1; a <= 1; ++a)
+                        for (int b = -1; b <= 1; ++b)
+                            L = std::max(L, nightLum(lat + a * dLa, lon + b * dLo));
+                    urban_[i] = (uint8_t)std::lround(255.0f * ss(20.0f, 34.0f, L));
+                }
                 if (ocean(lat, lon))
                 {
                     cls_[i] = (uint8_t)Biome::Water;
@@ -124,6 +138,16 @@ float BiomeMap::fuelAt(double latDeg, double lonDeg) const
 float BiomeMap::dustAt(double latDeg, double lonDeg) const
 {
     return ready() ? dust_[(size_t)idx(latDeg, lonDeg)] / 255.0f : 0.0f;
+}
+float BiomeMap::urbanAt(double latDeg, double lonDeg) const
+{
+    return ready() ? urban_[(size_t)idx(latDeg, lonDeg)] / 255.0f : 0.0f;
+}
+float BiomeMap::burnableAt(double latDeg, double lonDeg) const
+{
+    if (!ready()) return 0.0f;
+    const size_t i = (size_t)idx(latDeg, lonDeg);
+    return fuel_[i] / 255.0f * (1.0f - urban_[i] / 255.0f);
 }
 
 // The fire season: the extratropics dry out in their summer (peak ~day 210 north, ~day 25 south), the tropics in their

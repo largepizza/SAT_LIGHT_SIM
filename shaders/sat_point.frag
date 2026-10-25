@@ -86,7 +86,11 @@ void main() {
         // satellites join the same existing visual language instead of a new one.
         // Both only for cloud NEARER than the satellite (include/cloud_occlusion.glsl).
         const float kSatCloudSuppressPower = 2.0;
-        cloudVis = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, cloudUV, fragRangeM, kSatCloudSuppressPower);
+        // A light on the ground (a city light, a wildfire's front: fragManualDepth) is dimmed by the transmittance of
+        // what stands in front of it, T, not T^2 (2026-10-24): the dust haze over a dry-season savanna (T ~0.3 along a
+        // grazing path 100 km long) squared hid every fire front past ~50 km.
+        cloudVis = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, cloudUV, fragRangeM,
+                                          fragManualDepth > 0.5 ? 1.0 : kSatCloudSuppressPower);
     }
 
     // ── Terrain occlusion ─────────────────────────────────────────────────────

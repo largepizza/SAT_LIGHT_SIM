@@ -28,13 +28,18 @@ const char *biomeName(Biome b);
 class BiomeMap {
 public:
     // dayRgb: w x h x 3 bytes (equirect, north up, lon -180 at x 0); elevM(lat, lon deg) metres above sea level;
-    // ocean(lat, lon deg). Built in parallel on `threads` threads.
+    // ocean(lat, lon deg); nightLum(lat, lon deg) the night map's luminance (0..255 sRGB, the land's blue base ~14):
+    // its lights are the built-up mask (optional). Built in parallel on `threads` threads.
     void build(const std::vector<uint8_t> &dayRgb, int w, int h, const std::function<float(float, float)> &elevM,
-               const std::function<bool(float, float)> &ocean, int threads);
+               const std::function<bool(float, float)> &ocean, int threads,
+               const std::function<float(float, float)> &nightLum = nullptr);
     bool ready() const { return w_ > 0; }
     Biome at(double latDeg, double lonDeg) const;
     float fuelAt(double latDeg, double lonDeg) const;         // 0..1: what can burn (forest, savanna, scrub, grass)
     float dustAt(double latDeg, double lonDeg) const;         // 0..1: bare dry ground a gust front can lift
+    float urbanAt(double latDeg, double lonDeg) const;        // 0..1: built-up (the night map's lights)
+    // 0..1: what a wildfire can burn: the fuel less the built-up share (no fire starts or runs in a town or city).
+    float burnableAt(double latDeg, double lonDeg) const;
     // 0..1: how dry the season is there (the fire season): the extratropics' summer, the tropics' winter dry season.
     static float seasonalDryness(double latDeg, double dayOfYear);
     // A colour-coded PNG (rgba) of the classes, for checking against a land-cover map.
@@ -45,7 +50,7 @@ public:
 private:
     int idx(double latDeg, double lonDeg) const;
     int w_ = 0, h_ = 0;
-    std::vector<uint8_t> cls_, fuel_, dust_;
+    std::vector<uint8_t> cls_, fuel_, dust_, urban_;
 };
 
 } // namespace wx
