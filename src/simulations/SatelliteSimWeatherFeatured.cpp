@@ -207,8 +207,12 @@ void SatelliteSim::weatherFeaturedUpdate()
             // >= 2 h old, an hour left before 70% of its life) by day (Sun > 10 deg at its centre), whose LEADING EDGE is
             // over dust: of 9 points along the line, dG ahead of it (as haboobFrontOf: 5 + 14 km x the age ramp), at least
             // 6 on the biome map's dust >= 0.3 and their mean >= 0.4. (The centre's dust alone picked storms whose front ran
-            // over farmland: no wall was drawn.)
-            if (!Fh.found && tk <= wxScanBase + kHaboobAheadS && wx::isLineSystem(S->kind) && biomeMap.ready() &&
+            // over farmland: no wall was drawn.) Inland (the coast's fog hid it). Ranked by its LIGHT: 2 for the Sun on the
+            // side the wall advances toward, clear of the storm's anvil and 18 deg up at least (a Go to stands there, the wall
+            // front-lit; against the Sun it is a dark silhouette, under a lower Sun the light crossed tens of km of the
+            // storm's cloud and the wall stood in shade); 1 for a Sun 25-60 deg up (its heads cast shadows, the face lit).
+            // The earliest of the best; rank 3 ends the search.
+            if ((!Fh.found || Fh.rank < 3) && tk <= wxScanBase + kHaboobAheadS && wx::isLineSystem(S->kind) && biomeMap.ready() &&
                 tk - S->t0 >= 7200.0 && tk <= S->t0 + S->life * 0.7 - 3600.0)
             {
                 const wx::TowerSpec &ts = S->towers[0];
@@ -220,7 +224,16 @@ void SatelliteSim::weatherFeaturedUpdate()
                 {
                     glm::dvec3 v = S->centreAt(tk + 60.0) - c;
                     v -= c * glm::dot(v, c);
-                    const glm::dvec3 mv = glm::length(v) > 1e-15 ? glm::normalize(v) : glm::normalize(glm::dvec3(S->shear));
+                    double bowSgn = 1.0;   // (the towers' bow is toward the map-frame motion)
+                    glm::dvec3 mv = glm::length(v) > 1e-15 ? glm::normalize(v) : glm::normalize(glm::dvec3(S->shear));
+                    // (Ahead of its motion over the ground, as haboobFrontOf: the map frame drifts.)
+                    if (glm::dot(weatherMapToEarth(glm::normalize(S->centreAt(tk + 60.0)), tk + 60.0) -
+                                 weatherMapToEarth(glm::normalize(S->centreAt(tk - 60.0)), tk - 60.0),
+                                 weatherMapToEarth(glm::normalize(c + mv * 1e-3), tk) - ce) < 0.0)
+                    {
+                        mv = -mv;
+                        bowSgn = -1.0;
+                    }
                     const glm::dvec3 ea = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), c) + glm::dvec3(1e-12, 0, 0));
                     const glm::dvec3 no = glm::cross(c, ea);
                     const glm::dvec3 L = ea * std::cos((double)S->lineAz) + no * std::sin((double)S->lineAz);
@@ -230,17 +243,37 @@ void SatelliteSim::weatherFeaturedUpdate()
                     for (int q = -4; q <= 4; ++q)
                     {
                         const double x = (double)q / 4.0;
-                        const double fwd = dG + (double)S->bow * (1.0 - x * x);
+                        const double fwd = dG + bowSgn * (double)S->bow * (1.0 - x * x);
                         const glm::dvec3 p = glm::normalize(c + (L * (x * (double)S->lineHalfM) + mv * fwd) / kRe);
                         const glm::dvec3 pe = weatherMapToEarth(p, tk);
                         const double d = biomeMap.dustAt(latOf(pe), lonOf(pe));
                         sum += d;
                         on += d >= 0.3 ? 1 : 0;
                     }
-                    if (on >= 6 && sum / 9.0 >= 0.4)
+                    const glm::dvec3 me = weatherMapToEarth(glm::normalize(c + mv * 1e-3), tk) - ce;
+                    const glm::dvec3 si = sunDirEciAt(tk);
+                    const double gr = earthRotationAngle(tk);
+                    const glm::dvec3 se(si.x * std::cos(gr) + si.y * std::sin(gr), -si.x * std::sin(gr) + si.y * std::cos(gr), si.z);
+                    const glm::dvec3 sh = se - ce * glm::dot(se, ce);
+                    const double sunEl = std::asin(std::clamp(weatherSunSin(ce, tk), -1.0, 1.0)) * (180.0 / 3.14159265358979);
+                    // (the Sun must also reach the wall past the anvil: the middle of the leading edge)
+                    double lit = 0.0;
+                    if (glm::dot(sh, me) > 0.0)
+                    {
+                        std::vector<wx::Tower> tw;
+                        std::vector<wx::Shield> shl;
+                        haboobStormParts(*wxScout, *S, tk, tw, shl);
+                        const glm::dvec3 pm = weatherMapToEarth(glm::normalize(c + mv * ((dG + bowSgn * (double)S->bow) / kRe)), tk);
+                        lit = haboobSunOnFace(pm, tk, tw, shl);
+                    }
+                    const int rank = (lit > 0.5 && sunEl >= 18.0 ? 2 : 0) + (sunEl >= 25.0 && sunEl <= 60.0 ? 1 : 0);
+                    // Inland: within ~150 km of the sea the coast's fog and haze (cv2FogDust) hid the wall from a Go to.
+                    const bool inland = oceanFraction(std::asin(std::clamp(ce.z, -1.0, 1.0)), std::atan2(ce.y, ce.x), 150000.0, 2) < 0.05f;
+                    if (on >= 6 && sum / 9.0 >= 0.4 && inland && (!Fh.found || rank > Fh.rank))
                     {
                         Fh.found = true;
-                        Fh.searching = false;
+                        Fh.rank = rank;
+                        Fh.searching = rank < 3;
                         Fh.tEvent = std::max(tk, now);
                         Fh.tEnd = std::min(S->t0 + S->life * 0.7, S->t0 + (double)ts.sysOff - (double)ts.sysRamp);
                         Fh.day = true;
@@ -402,27 +435,30 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
     case kFeatHaboob:
     {
         if (!F.hasStorm) break;
-        // As the harness `haboob`: ahead of the storm's motion on the ground, looking back at it (act 0: 28 km, 20 m up;
-        // act 1: 70 km ahead, 3 km up, looking down at the wall).
+        // In front of the wall itself: the strongest stretch of the storm's gust front over dust at that moment (its towers
+        // built for it, haboobStrongestPoint), standing D ahead of it and looking back at it (act 0: 9 km on the ground,
+        // it reaches you in ~10 min; act 1: 9 km ahead, 2.5 km up, over its heads: from 3-4 km up the storm's own cumulus often stood in the way, from 1.2 km the regional dust haze). The first cut stood a fixed distance from the storm's
+        // CENTRE, measured to an estimate of the front (bow + the outflow's lead): its real front, built from the towers
+        // standing then, was 40-80 km away and a haze on the horizon, and the aloft view showed none.
         const double t = std::max(F.tEvent, (double)simDayJ2000 * 86400.0 + simSecInDay);
         setT(t);
         const wx::Storm &S = F.storm;
-        const glm::dvec3 cm = glm::normalize(S.centreAt(t));
-        const glm::dvec3 ce = weatherMapToEarth(cm, t);
-        glm::dvec3 mv = glm::length(S.vel) > 0.5 ? glm::normalize(glm::cross(glm::normalize(glm::cross(S.pos0, S.vel)), cm))
-                                                 : glm::normalize(glm::dvec3(S.shear));
-        glm::dvec3 me = weatherMapToEarth(mv, t);
-        me = glm::normalize(me - ce * glm::dot(me, ce));
-        // (Measured from the leading edge: its towers' line stands bow + dG ahead of the centre at the middle; 28 km from
-        // the centre of a 200-km MCS stood inside its rain.)
-        const double age = t - S.t0;
-        const double lead = 5000.0 + 14000.0 * glm::smoothstep(1800.0, 3.0 * 3600.0, age) + (double)S.bow;
         const bool aloft = act == 1;
-        const glm::dvec3 oe = glm::normalize(ce + me * ((lead + (aloft ? 60000.0 : 22000.0)) / kRe));
-        placeLooking(oe, aloft ? 3000.0 : 20.0, ce, aloft ? -1.0f : 4.0f);
+        HaboobPoint q;
+        double k = 0.0;
+        if (!haboobStrongestPoint(S, t, q, k))
+        {
+            msg = "Its gust front raises no dust at that moment";
+            return false;
+        }
+        const double D = 9000.0;
+        const glm::dvec3 oe = glm::normalize(q.dir + q.out * (D / kRe));
+        placeLooking(oe, aloft ? 2500.0 : 2.0, q.dir, aloft ? -6.0f : 5.0f);
+        camera.fovYDeg = 70.0f;
         updatePositions(t);
-        msg = std::string(S.kind == wx::StormKind::Mcs ? "An MCS" : "A squall line") + " over dust: " + (aloft ? "60 km ahead of its gust front, 3 km up" : "22 km ahead of its gust front on the ground") +
-              ", looking back at its gust front";
+        msg = std::string(S.kind == wx::StormKind::Mcs ? "An MCS" : "A squall line") + "'s haboob: " +
+              (aloft ? "9 km ahead of its wall, 2.5 km up" : "9 km ahead of its wall, on the ground") +
+              ", looking at it";
         return true;
     }
     case kFeatSupercell:
@@ -651,8 +687,8 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
                 b2 = wxStr("%s's gust front over %s, by day", B.storm.kind == wx::StormKind::Mcs ? "An MCS" : "A squall line",
                            wx::biomeName(biomeMap.at(latOf(B.earth), lonOf(B.earth))));
             }
-            const Btn bb[4] = {{"Watch", "On the ground 22 km ahead of its gust front, looking back at the dust wall, at 1x", B.found},
-                               {"Aloft", "60 km ahead of its gust front and 3 km up, looking back", B.found},
+            const Btn bb[4] = {{"Watch", "On the ground 9 km ahead of the wall's dustiest stretch, looking at it, at 1x (it reaches you in ~10 min)", B.found},
+                               {"Aloft", "9 km ahead of the wall and 2.5 km up, over its heads", B.found},
                                {nullptr, nullptr, false}, {nullptr, nullptr, false}};
             card(kFeatHaboob, kIconStormHaboob, "HABOOB", Pal::tagTwilight, bs, b1, b2, bb);
 

@@ -4777,7 +4777,12 @@ private:
     // The ENVELOPE index (2026-10-22): the same towers, each listed out to its envelope (cv2_storms.glsl
     // cv2StormEnvRadius: ~1.8x its reach), read only by the weather bake (its storm cloud field, stormStamp).
     static constexpr uint32_t kStormEnvTableSize = 131072, kStormEnvListSize = 393216;
-    static constexpr VkDeviceSize kStormEnvTableOffset = kCyclonesOffset + 64ull * kCycloneMax;
+    // The haboobs' DUST WALL grid (2026-10-24, = cv2_storms.glsl cv2DustHead / cv2DustFrame / cv2DustGrid): weatherFillDustGrid.
+    static constexpr uint32_t kDustGridN = 512;   // = kCv2DustGridN
+    static constexpr VkDeviceSize kDustHeadOffset = kCyclonesOffset + 64ull * kCycloneMax;
+    static constexpr VkDeviceSize kDustFrameOffset = kDustHeadOffset + 16;
+    static constexpr VkDeviceSize kDustGridOffset = kDustFrameOffset + 64;
+    static constexpr VkDeviceSize kStormEnvTableOffset = kDustGridOffset + 4ull * kDustGridN * kDustGridN;
     static constexpr VkDeviceSize kStormEnvListOffset = kStormEnvTableOffset + 8ull * kStormEnvTableSize;
     // The envelope index's own copy of the towers, a.xyz where the low cloud's weather lookup sees each (the flowed map,
     // cv2FlowDisp): the bake stamps there (buildStormEnvIndex).
@@ -4964,8 +4969,35 @@ private:
     float haboobGain = 1.0f;          // clouds_v2.haboobs: x the dust walls (0 = none)
     int haboobsNow = 0;               // storms drawing one this frame
     double haboobNearestKm = -1.0;
-    void haboobFrontOf(const wx::Storm &S, double t, std::vector<HaboobPoint> &pts) const;
+    // (towers: the towers to build it from; nullptr = this frame's, stormTowers)
+    void haboobFrontOf(const wx::Storm &S, double t, std::vector<HaboobPoint> &pts,
+                       const std::vector<wx::Tower> *towers = nullptr) const;
+    double haboobPointK(const HaboobPoint &q) const;   // the dust raised there: the biome map's dust x the front's strength x gain
+    // The haboob of storm S at t: the front point with the most dust (false: none drawn). Builds the storm's towers itself.
+    bool haboobStrongestPoint(const wx::Storm &S, double t, HaboobPoint &best, double &bestK) const;
+    // The Sun on a haboob's face at an Earth-fixed point, clear of its storm's anvil (0..1), and the storm's parts for it.
+    double haboobSunOnFace(const glm::dvec3 &pE, double t, const std::vector<wx::Tower> &tw,
+                           const std::vector<wx::Shield> &sh) const;
+    void haboobStormParts(wx::Catalog &cat, const wx::Storm &S, double t, std::vector<wx::Tower> &tw,
+                          std::vector<wx::Shield> &sh) const;
     void weatherFillHaboobs(GpuDustCloud *out, uint32_t &n);
+    // The haboobs as CLOUD (2026-10-24): their dust walls rasterised into the storm buffer's dust grid round the observer
+    // (cv2_storms.glsl cv2DustWallAt), drawn by the clouds v2 march (clouds_v2.glsl cv2DustWallSigma). Within the grid the
+    // plume Gaussians give way to it.
+    bool haboobField = true;          // clouds_v2.haboob_field (0 = the plume Gaussians everywhere, the old look)
+    void weatherFillDustGrid();
+    std::vector<uint32_t> dustGridCpu;           // the grid as written (kDustGridN^2)
+    glm::ivec4 dustBox{0, 0, 0, 0};              // the cells written last time (lo x, lo y, hi x, hi y; hi exclusive)
+    glm::dvec3 dustGridE{1, 0, 0}, dustGridN{0, 1, 0}, dustGridUp{0, 0, 1};
+    double dustGridCellM = 0.0;                  // 0 = no grid this frame
+    double dustGridT = -1e300;                   // the sim time the grid was built for
+    glm::dvec3 dustGridEye{0, 0, 0};
+    glm::dvec3 dustNoiseOff{0, 0, 0};            // the lobe noise's displacement (m, ECEF): the wall's motion + the rise
+    glm::dvec3 dustNoiseVel{0, 0, 0};            // the nearest wall's motion over the ground (m/s, ECEF)
+    static constexpr double kDustLobePeriodM = 4000.0;   // the walls' lobe noise period: lobes of ~1 km, 500 m, 250 m
+    double dustNoiseT = -1e300;
+    int dustWallsNow = 0, dustCellsNow = 0;      // storms in the grid, cells with dust (harness `fires`)
+    double dustGridMs = 0.0;
     nlohmann::json wildfiresJson(bool world);
     double stormPrevUploadT = -1e300;            // the previous upload's sim time (a jump re-bakes the weather cube)
     double stormLastFrameT = -1e300;             // last frame's sim time, and how many frames in a row moved > 2 h:

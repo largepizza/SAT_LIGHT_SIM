@@ -202,10 +202,10 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
             // (This sample's length, a pair's under lodN. Written out at both uses: hoisted into one variable above the
             // field call, the march went to 220 registers.)
             float lS = (lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg;
-            od += lf.sigma * (1.0 - 0.8 * lf.thin - cv2.mid2.z * lf.soft) * lS;
+            od += lf.sigma * (1.0 - 0.8 * lf.thin - cv2.mid2.z * max(lf.soft, 0.0)) * lS;
             s += lS; lSeg = (lod && k == 0) ? cv2.light.x - lSeg : lSeg * (lodN ? kLightRatio * kLightRatio : kLightRatio);
         } else if (k == nL) {
-            od += lf.sigma * (1.0 - cv2.mid2.z * lf.soft) * cv2.light.x * 0.8;
+            od += lf.sigma * (1.0 - cv2.mid2.z * max(lf.soft, 0.0)) * cv2.light.x * 0.8;
         } else if (k == nL + 1) {
             sigUp = lf.sigma;
         } else {
@@ -882,7 +882,7 @@ void main()
                         if (qR.h > cv2.shell.y + 2500.0) break;
                         if (qR.h < -300.0) { odR = 1e4; break; }
                         CV2Field fR = cv2Field(qR, 0.0, 50.0);
-                        odR += fR.sigma * max(1.0 - 0.8 * fR.thin - cv2.mid2.z * fR.soft, 0.0) * mix(1.0, 0.15, clamp(fR.rain, 0.0, 1.0)) * dsR;
+                        odR += fR.sigma * max(1.0 - 0.8 * fR.thin - cv2.mid2.z * max(fR.soft, 0.0), 0.0) * mix(1.0, 0.15, clamp(fR.rain, 0.0, 1.0)) * dsR;
                         sR += dsR;
                     }
                     keyCol *= exp(-odR);
@@ -953,7 +953,7 @@ void main()
                 // Sun (x 1 / sin 4 deg = 13.5): od ~15 where the march found ~1, every sunlit top grey-brown
                 // (issue 20261013_193122: "There is direct sunlight on these clouds. They should be white").
                 // (The mid layer's own sheet is the Sun transmittance volume's: its share leaves the term.)
-                float deckK = f.deck * (1.0 - f.soft);
+                float deckK = f.deck * (1.0 - max(f.soft, 0.0));
                 if (deckK > 0.0) {
                     float odDeck = f.sigma * max(max(f.topH - p.h, 0.0) / max(dot(up, keyDir), 0.03)
                                                  - 2.0 * cv2.light.x, 0.0);
@@ -979,7 +979,7 @@ void main()
                     pSSv = mix(pSSv, moonIsKey ? phIceMoon : phIceSun, f.thin);
                     pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);
                 }
-                float pSilv = (moonIsKey ? phSilvM : phSilvS) * (1.0 - f.thin) * (1.0 - f.rain) * (1.0 - f.soft);
+                float pSilv = (moonIsKey ? phSilvM : phSilvS) * (1.0 - f.thin) * (1.0 - f.rain) * (1.0 - abs(f.soft));
                 keyS = keyCol * powder * (pSSv * exp(-od) + pSilv * exp(-0.3 * od) + pMS * msOctaves(od) * f.msBright);
             }
 
@@ -1079,6 +1079,11 @@ void main()
             }
 
             vec3  S     = keyS + ambS + bounceS + nightS;
+            // A haboob's dust (cv2DustWallSigma: its share of the sample as a negative soft): mineral dust absorbs in the
+            // blue, so the light it scatters, multiply scattered as in a cloud, comes out beige.
+            // (The sky light, scattered many times in a thick wall, takes the tint twice.)
+            float dK = max(-f.soft, 0.0);
+            if (dK > 0.0) S = mix(S, (S - ambS) * kCv2DustTint + ambS * (kCv2DustTint * kCv2DustTint), dK);
             L += bW[bj] * S;
         }
         } while (nB >= kBatch);
