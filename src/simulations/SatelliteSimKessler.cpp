@@ -2763,7 +2763,7 @@ void SatelliteSim::kesslerDestroyFireballPass(VkDevice device)
     kFireMapped = nullptr;
 }
 
-bool SatelliteSim::kesslerGoToNextReentry(std::string &msg)
+bool SatelliteSim::kesslerGoToNextReentry(std::string &msg, bool watch)
 {
     uint32_t sat = 0;
     double td = 0.0;
@@ -2778,7 +2778,7 @@ bool SatelliteSim::kesslerGoToNextReentry(std::string &msg)
     if (trackActive)
         stopTrack();
     const double tb = td + fbBreakupT();
-    const double t0 = tb - 25.0;
+    const double t0 = watch ? td + 45.0 : tb - 25.0; // (a Watch: mid-glow, the breakup ~35 s on)
     const double days = std::floor(t0 / 86400.0);
     simDayJ2000 = (int64_t)days;
     simSecInDay = t0 - days * 86400.0;
@@ -2790,13 +2790,19 @@ bool SatelliteSim::kesslerGoToNextReentry(std::string &msg)
     const double R = satphot::kEarthRadiusM;
     const glm::dvec3 U = glm::normalize(B);
     const glm::dvec3 C = glm::normalize(glm::cross(A, U));
-    const glm::dvec3 G = glm::normalize(U * R + C * 120000.0 - A * 80000.0);
     auto toEcef = [](const glm::dvec3 &v, double t) {
         const double era = earthRotationAngle(t), c = std::cos(era), s = std::sin(era);
         return glm::dvec3(v.x * c + v.y * s, -v.x * s + v.y * c, v.z);
     };
+    // (a Watch: the side under the clearer sky)
+    double side = 1.0;
+    if (watch && cloudCoverAtEcef(toEcef(glm::normalize(U * R - C * 120000.0 - A * 80000.0), t0)) <
+                     cloudCoverAtEcef(toEcef(glm::normalize(U * R + C * 120000.0 - A * 80000.0), t0)))
+        side = -1.0;
+    const glm::dvec3 G = glm::normalize(U * R + C * (side * 120000.0) - A * 80000.0);
     const glm::dvec3 g = toEcef(G, t0);
     setObserverLatLon(glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), glm::degrees(std::atan2(g.y, g.x)));
+    obsHeightOffset = 0.0f; // on the ground (a jump from orbit kept the old height: it looked down from 1000 km)
     // Look at the breakup point (Earth-fixed at the breakup).
     const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
     const glm::dvec3 rel = toEcef(B, tb) - up * R;
@@ -2806,11 +2812,24 @@ bool SatelliteSim::kesslerGoToNextReentry(std::string &msg)
     const glm::dvec3 rn = glm::normalize(rel);
     aimCameraAzEl((float)glm::degrees(std::atan2(glm::dot(rn, east), glm::dot(rn, north))),
                   (float)glm::degrees(std::asin(glm::clamp(glm::dot(rn, up), -1.0, 1.0))));
-    camera.fovYDeg = 80.0f;
+    camera.fovYDeg = watch ? 35.0f : 80.0f;
     updatePositions(t0);
     char b[200];
-    snprintf(b, sizeof(b), "%s re-enters: breakup in 25 s, %.0f km away", satLabel((int)sat).c_str(),
-             glm::length(rel) / 1000.0);
+    if (watch)
+    {
+        selectedSatIndex = -1;
+        selectedPlanetIndex = -1;
+        selTransientKey = 0;
+        selWantKind = 5; // its fireball (fbDrawReentry's tag), selected and tracked once listed
+        selWantA = sat;
+        selWantUntil = tb + 120.0;
+        selWantViewer = false;
+        selWantTrack = true;
+        snprintf(b, sizeof(b), "%s burning up on re-entry, %.0f km away", satLabel((int)sat).c_str(), glm::length(rel) / 1000.0);
+    }
+    else
+        snprintf(b, sizeof(b), "%s re-enters: breakup in 25 s, %.0f km away", satLabel((int)sat).c_str(),
+                 glm::length(rel) / 1000.0);
     msg = b;
     return true;
 }
@@ -3338,11 +3357,10 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
             kesslerRestart(*ctx_, kUserEvents, -1.0);
     }
     if (kesslerEnabled && uiButton(inp, ui, "KesslerReentry", 0, "Watch the next re-entry",
-                                   "Jumps to the next satellite or large piece coming down over a dark sky: 25 s before it "
-                                   "breaks up, from beside its track."))
+                                   "A dead satellite or a large piece of debris burning up over a dark sky."))
     {
         std::string why;
-        kesslerGoToNextReentry(why);
+        kesslerGoToNextReentry(why, true);
         snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
     }
     if (!kesslerEnabled)

@@ -5277,8 +5277,10 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   lights: meshPx -1, slot index 0xFFFFFFFF; bloom and glare like any satellite); each bright fragment's trail (its
   last 1.5 s of path) and the main body's train (6 segments over ~18 s, fading over 8 s, spreading) are EMISSIVE
   Gaussians in the dust list (`col.w` = 1: no phase, no shadow; the dust keeps at most 3/4 of the 512). "Watch the
-  next re-entry" (settings, harness `kessler reentry`, `kesslerGoToNextReentry`): dead satellites over a dark sky
-  (Sun below -8 deg there) within 48 h, else the heaviest piece within 6 h; 25 s before breakup, 1x, from 120 km
+  next re-entry" (settings, harness `kessler reentry [watch=1]`, `kesslerGoToNextReentry`): dead satellites over a dark sky
+  (Sun below -8 deg there) within 48 h, else the heaviest piece within 6 h; the settings button (watch) at decay + 45 s
+  (mid-glow), the side of the track under the clearer sky, FOV 35, the fireball (kind 5) tracked; the harness default
+  25 s before breakup, 1x, from 120 km
   beside the track and 80 km back. State: `reentries_now`, `fireball_heads`, `fireball_trails`,
   `fireballs_az_el_mag_km`, `reentries_next_24h`, `piece_lifetimes`.
 - **Small-fragment re-entries** (round 4, 2026-10-16). Each breakup's small statistical orbits that re-enter inside
@@ -6268,17 +6270,30 @@ launches follow per-program cadences (no real manifest).
   drag chute, no landing gear deploying, the module's fireball follows the spaceplane's entry track 25 s late.
 - **Missions window** (2026-10-19, `SatelliteSimMissions.cpp`; window id 8, `msChrome`; the rocket button
   `TimeMissionsBtn` on the right HUD panel, `pixel--missions.png`; key M, `KB_MISSIONS`; harness `ui open missions
-  [tab=upcoming|ongoing|controls]`, `missions state|go|tab`). Three tabs. **Upcoming**: the next 5 launches (vehicle,
-  program / payload, pad, UTC, the Sun at the pad, a CREWED / TWILIGHT tag, the T- countdown; **Go to** = 45 s before
-  lift-off at 1x ON THE GROUND ~12 km beside the pad — the first of four candidate spots the DEM calls land — with the
-  camera on the pad, the pad low in a 60-deg frame; **Watch** = the time jump only), then pinned whatever their order
-  the next twilight ("jellyfish": Sun 5-16 deg below the pad, searched day by day up to a week) and the next crewed
-  launch, and last, always, THE SUN'S FURY card (`Pal::furyBg / furyBorder / furyText`): the CME's countdown, then
-  "DAY n" and the cascade's counts; Go to the arrival (2 min before, Monument Valley at dusk, looking north) or the
-  storm night (the default bookmark's moment and weather). **Ongoing**: crew transfers in flight (ascent phase, then
-  "docking in"), the crewed stations (altitude, next crew flight; Select / Go to = follow), satellite launches in
-  flight (phase, Select = the drawn rocket stage, `launchSelectRocketOf`), and per program the trains raising (count,
-  mean progress, next arrival) and the retirees deorbiting (next re-entry; Select the nearest, Watch a re-entry).
+  [tab=upcoming|ongoing|controls]`, `missions state|go|launch|catch|tab`). **ONE button per row, "Watch"** (2026-10-24,
+  the user: "When a use wants to watch a lanch, they should just get one button that takes them to a rocket launching
+  ... These '1 minute before touchdown' type event calls do a real diservice as they often confuse playtesters into
+  teleporting to a place with nothing going on (yet)"; Go to / Select / Next > and the time-only Watch are gone): it
+  lands on the event ALREADY HAPPENING, at 1x, the subject in frame and, when it moves, selected and tracked (the camera
+  lock) once the transient list has it (`launchWantSelKey` + `launchWantTrack`, `selWantKind` + `selWantTrack`,
+  selTransientUpdate; a want lapses ~2 min of sim time on). The toast says what you see ("Starship lifting off from
+  ..."), never "in N s". Three tabs. **Upcoming**: the next 5 launches (vehicle, program / payload, pad, UTC, the Sun at
+  the pad, a CREWED / TWILIGHT tag, the T- countdown); **Watch** = `launchWatchKey`: lift-off + `kWatchLiftoffS` (8 s:
+  clear of the tower, the ground cloud rising) on the ground 5 km from the pad (`launchGoToKey(..., distM)`: the first
+  land candidate), FOV 40, the stack tracked. Pinned whatever their order: the next twilight ("jellyfish": Sun 5-10 deg
+  below the pad, searched day by day up to a week; it was 5-16, and below ~-10 the bells stay in the Earth's shadow —
+  a Watch at -12 deg showed a black sky) and the next crewed launch; a twilight Watch is the first moment after T+150 s
+  the upper stage is out of the Earth's shadow + 40 s (else `kWatchTwilightS` 300 s, at most SECO), from 40 km, FOV 60,
+  the upper stage tracked (`state` -> `missions launch` `sunlit_from_s`). Last, always, THE SUN'S FURY card
+  (`Pal::furyBg / furyBorder / furyText`): the CME's countdown, then "DAY n" and the cascade's counts; Watch = the storm
+  night (the default bookmark's moment and weather, the aurora up; the "2 minutes before the arrival" button is gone:
+  harness `missions go fury` keeps it). **Ongoing**: crew transfers in flight (ascent phase, then "docking in"), the
+  crewed stations (altitude, next crew flight), satellite launches in flight, and per program the trains raising (count,
+  mean progress, next arrival) and the retirees deorbiting (next re-entry); Watch = Go to the object (follow:
+  `missionsOngoingAct(row, true)`), a station Go to, the retirees' Watch = one burning up
+  (`launchGoToNextReentry(msg, watch=true)`: decay + 45 s, mid-glow, the breakup ~35 s on, from the side of its track
+  under the clearer sky — a candidate whose both sides are > 0.35 cover on the CPU cloud map is skipped,
+  `cloudCoverAtEcef` — FOV 35, the fireball tracked).
   **Kessler** (2026-10-21, replaced Controls; `SatelliteSimKesslerTracker.cpp`, `buildKesslerTrackerTab`): THE SUN'S FURY
   strip (countdown / DAY n / "computing"), big counts (collisions, catastrophic, pieces >= 1 m, 10-cm fragments made,
   dead, destroyed, re-entered, still working), a GLOBE (a CPU raster, `kTrN` 256^2, R8G8B8A8_SRGB, the UI's 4th
@@ -6289,7 +6304,12 @@ launches follow per-program cadences (no real manifest).
   10 km/s x 10 m^2 x a year; dead satellites + pieces >= 1 m, NOT the small-fragment grid, which lives on the worker);
   numbered markers for the 8 latest significant breakups (catastrophic collisions, explosions, ASAT, the player's) at
   their exaggerated place, a cyan dot for you; collisions per day (UIPlot, <= 120 bins); the breakups listed with Watch
-  (`kesslerWatchEvent`: 8 s before at 1x, 80 km beside the orbit, 15 km above). ALL of it comes from the counts walk
+  (`kesslerWatchEvent`: 3 s AFTER it at 1x, 80 km beside the orbit and 25 km BELOW it so the debris is against space;
+  `kesslerWatchPieceTick`, after kesslerSync, then selects the first record of the breakup once the mirror has it — the
+  pool scanned 400k slots a frame — re-places the eye beside where that piece REALLY is and tracks it. The re-placement is
+  needed: the breakup's recorded place (`Event::pos`) was ~8100 km from its pieces for the newest catastrophic collision
+  at day 0.6 (`missions state` -> `tracker.watch_piece_off_km`): an engine event's place is probably taken at its 6-h
+  step's sample time while its `t` is spread through the step — not investigated; the dust clouds follow `Event::pos`). ALL of it comes from the counts walk
   (`kesslerCountsWalk`, ~150k records a frame while the tab reads `kesslerStateCached`): `KCounts` gained the alt x
   inclination histograms (`deb`, `work`), `colDay` / `catDay`, `recent[8]`, `working`, `reentered`, `explosions`;
   `kCountsLiveGen` bumps on each publish. The rows are cached
@@ -6372,7 +6392,10 @@ launches follow per-program cadences (no real manifest).
   ship entry start 7.9 m / 14 m/s (the 1-ms sampling step: was ~0.5 km), hand-over to the descent 3e-9 m / 7 m/s, the
   descent's largest acceleration 14 m/s^2, catch 0 m off centre at 55.0 m and 1.3 m/s, boosters 0 m off at 30.0 m;
   all 1124 ships caught (deorbit 20-62 h after deployment, descent 390-720 s from 250-330 km). Harness
-  `launch landing [booster=1] [lead=] [dist_m=] [day=1]`; Settings > Launches > LAUNCHES "Watch a Starship catch".
+  `launch landing [booster=1] [lead=] [dist_m=] [day=1]`; Settings > Launches > LAUNCHES "Watch a Starship catch"
+  (`launchWatchCatch`, harness `missions catch`: 25 s before the catch, in the flip and landing burn, 2.5 km from the
+  pad, the ship tracked; the other LAUNCHES buttons: the next launch / a twilight launch through `launchWatchKey`, a
+  retiree burning up).
 - **Launch pads on the ground (2026-10-19, the user: "launchpads and landing pads should have specialized graphics /
   play well with the city lights; exclusion zones near launch sites for the city grids").** One pad per distinct place
   among the catalog's sites (`buildPads`; sites within 150 m share one: 35 pads), its kind from the vehicles there (2
@@ -8224,7 +8247,7 @@ Settings or changing the preset; `tutStepCount()`):
    pad view (no cursor; A selects at the centre);
 9. time, 10. pictures — outlined HUD controls, finished by using one (a change from `tutBase*`) or Next;
 11. **Missions: what's next** — the rocket button (or M) outlined until the window opens, then Upcoming's first launch's
-   Go to / Watch and the Sun's Fury buttons (up to three outline boxes, `TutOutline:<g>`); finished by any of those
+   Watch and the Sun's Fury's (two outline boxes, `TutOutline:<g>`; one button each since 2026-10-24); finished by any of those
    (`msUpcomingActs_`, counted after a successful action in buildMissionsWindow);
 12. **Missions: under way** — the Ongoing tab outlined; 5 s on it (progress bar) or any of its buttons
    (`msOngoingActs_`) finish it;

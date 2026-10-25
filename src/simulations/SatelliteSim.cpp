@@ -1655,6 +1655,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     CpuTimer kesslerTimer(cpuAccumMs[CPU_KESSLER]);
     kesslerSync(ctx);
     kesslerCountsTick();
+    kesslerWatchPieceTick(); // a Kessler-tab Watch: lock on a piece of the breakup once mirrored
     {
         // Time may not run far past what the worker has simulated: it holds there (the banner). It is never moved
         // back (a restart pulls the frontier back to the world's start; a jump may land past it). Since 2026-10-19 it

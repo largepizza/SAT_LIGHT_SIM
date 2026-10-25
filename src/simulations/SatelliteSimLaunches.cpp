@@ -8052,11 +8052,11 @@ nlohmann::json SatelliteSim::launchWhyJson(double hours) const
     return j;
 }
 
-// Puts the observer near the next launch: twilight (the Sun 5-16 deg below the pad's horizon) within a week if asked,
+// Puts the observer near the next launch: twilight (the Sun 5-10 deg below the pad's horizon) within a week if asked,
 // else the next. Time 30 s before lift-off at 1x, the camera on the climb.
 bool SatelliteSim::launchGoToNext(std::string &msg, bool twilight) { return launchGoToNextWhen(msg, twilight ? 1 : 0); }
 
-// when: 0 the next, 1 twilight (the Sun 5-16 deg down at the pad), 2 day (above 15 deg), 3 night (below -20 deg).
+// when: 0 the next, 1 twilight (the Sun 5-10 deg down at the pad), 2 day (above 15 deg), 3 night (below -20 deg).
 bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when, const std::string &vehicle, double padDistM,
                                       double lead, double sideSign)
 {
@@ -8096,7 +8096,7 @@ bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when, const std::str
                 continue;
         }
         const double se = o["sun_elev_deg"].get<double>();
-        if (when == 0 || (when == 1 && se < -5.0 && se > -16.0) || (when == 2 && se > 15.0) || (when == 3 && se < -20.0))
+        if (when == 0 || (when == 1 && se < -5.0 && se > -10.0) || (when == 2 && se > 15.0) || (when == 3 && se < -20.0))
         {
             pick = &o;
             break;
@@ -9002,7 +9002,7 @@ bool SatelliteSim::launchSelect(int kind, std::string &msg, int member)
 
 // The next retiree re-entry over a dark sky (within 48 h; harness `launch reentry`): the observer beside its track,
 // 25 s before its breakup, at 1x.
-bool SatelliteSim::launchGoToNextReentry(std::string &msg)
+bool SatelliteSim::launchGoToNextReentry(std::string &msg, bool watch)
 {
     if (!launchState || !launchState->loaded)
     {
@@ -9030,6 +9030,18 @@ bool SatelliteSim::launchGoToNextReentry(std::string &msg)
             const glm::dvec3 sun = sunDirEciAt(mb.tEnd);
             if (glm::dot(glm::normalize(r), sun) > -0.14)
                 continue;
+            // A Watch: under a clear sky (the observer stands beside the track: either side). An overcast hid it.
+            if (watch)
+            {
+                const glm::dvec3 Uc = glm::normalize(r);
+                const glm::dvec3 Ac = glm::normalize(v - glm::dot(v, Uc) * Uc);
+                const glm::dvec3 Cc = glm::normalize(glm::cross(Ac, Uc));
+                const glm::dvec3 Bc = glm::normalize(Uc * kR + Ac * 600000.0);
+                const float c0 = cloudCoverAtEcef(eciToEcef(glm::normalize(Bc * kR + Cc * 120000.0 - Ac * 80000.0), mb.tEnd));
+                const float c1 = cloudCoverAtEcef(eciToEcef(glm::normalize(Bc * kR - Cc * 120000.0 - Ac * 80000.0), mb.tEnd));
+                if (std::min(c0, c1) > 0.35f)
+                    continue;
+            }
             bestT = mb.tEnd;
             bestR = r;
             bestV = v;
@@ -9046,7 +9058,7 @@ bool SatelliteSim::launchGoToNextReentry(std::string &msg)
     if (trackActive)
         stopTrack();
     const double tb = bestT + 81.0; // the breakup (fbBreakupT)
-    const double t0 = tb - 25.0;
+    const double t0 = watch ? bestT + 45.0 : tb - 25.0; // (a Watch: mid-glow, the breakup ~35 s on)
     const double days = std::floor(t0 / 86400.0);
     simDayJ2000 = (int64_t)days;
     simSecInDay = t0 - days * 86400.0;
@@ -9058,9 +9070,13 @@ bool SatelliteSim::launchGoToNextReentry(std::string &msg)
     glm::dvec3 A = bestV - glm::dot(bestV, U) * U;
     A = glm::normalize(A);
     const glm::dvec3 C = glm::normalize(glm::cross(A, U));
-    // The breakup is ~600 km downrange of the glow's start: watch from beside that point.
+    // The breakup is ~600 km downrange of the glow's start: watch from beside that point (a Watch: the clearer side).
     const glm::dvec3 Bp = glm::normalize(U * kR + A * 600000.0);
-    const glm::dvec3 G = glm::normalize(Bp * kR + C * 120000.0 - A * 80000.0);
+    double side = 1.0;
+    if (watch && cloudCoverAtEcef(eciToEcef(glm::normalize(Bp * kR - C * 120000.0 - A * 80000.0), bestT)) <
+                     cloudCoverAtEcef(eciToEcef(glm::normalize(Bp * kR + C * 120000.0 - A * 80000.0), bestT)))
+        side = -1.0;
+    const glm::dvec3 G = glm::normalize(Bp * kR + C * (side * 120000.0) - A * 80000.0);
     const glm::dvec3 g = eciToEcef(G, t0);
     setObserverLatLon(glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), glm::degrees(std::atan2(g.y, g.x)));
     obsHeightOffset = 0.0f; // on the ground
@@ -9072,10 +9088,23 @@ bool SatelliteSim::launchGoToNextReentry(std::string &msg)
     const glm::dvec3 rn = glm::normalize(rel);
     aimCameraAzEl((float)glm::degrees(std::atan2(glm::dot(rn, east), glm::dot(rn, north))),
                   (float)glm::degrees(std::asin(glm::clamp(glm::dot(rn, up), -1.0, 1.0))));
-    camera.fovYDeg = 80.0f;
+    camera.fovYDeg = watch ? 35.0f : 80.0f; // (a Watch tracks it: the fireball and its train fill more of the frame)
     updatePositions(t0);
     char b[240];
-    snprintf(b, sizeof(b), "%s (retired) re-enters: breakup in 25 s", satLabel((int)bestSat).c_str());
+    if (watch)
+    {
+        selectedSatIndex = -1;
+        selectedPlanetIndex = -1;
+        selTransientKey = 0;
+        selWantKind = 3; // the retiree's fireball (fbDrawReentry's tag), selected and tracked once listed
+        selWantA = bestSat;
+        selWantUntil = tb + 120.0;
+        selWantViewer = false;
+        selWantTrack = true;
+        snprintf(b, sizeof(b), "%s (retired) burning up on re-entry", satLabel((int)bestSat).c_str());
+    }
+    else
+        snprintf(b, sizeof(b), "%s (retired) re-enters: breakup in 25 s", satLabel((int)bestSat).c_str());
     msg = b;
     return true;
 }
@@ -9122,29 +9151,29 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
             launchAfterStorm = as;
     }
     std::string why;
-    if (uiButton(inp, ui, "LaunchNext", 0, "Watch the next launch", "Jumps to 30 s before the next lift-off, beside the pad."))
+    // (2026-10-24) Each lands on the event already happening, the subject tracked (launchWatchKey).
+    if (uiButton(inp, ui, "LaunchNext", 0, "Watch the next launch", "The next rocket lifting off, from beside the pad."))
     {
-        launchGoToNextWhen(why, 0);
+        if (launchGoToNextWhen(why, 0))
+            launchWatchKey(launchFocusKey, kWatchLiftoffS, why);
         snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
     }
     if (uiButton(inp, ui, "LaunchNext", 1, "Watch a twilight launch",
-                 "The next lift-off within a week with the Sun 5-16 degrees below the pad's horizon: its exhaust high up "
-                 "catches the sunlight."))
+                 "A rocket's exhaust high up, lit by the Sun over the dark ground after dusk."))
     {
-        launchGoToNextWhen(why, 1);
+        if (launchGoToNextWhen(why, 1))
+            launchWatchKey(launchFocusKey, kWatchTwilightS, why);
         snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
     }
-    if (uiButton(inp, ui, "LaunchCatch", 0, "Watch a Starship catch",
-                 "The next ship coming home to a tower: 90 s before the catch, 2.5 km from the pad (its descent, the "
-                 "flip and the landing burn)."))
+    if (uiButton(inp, ui, "LaunchCatch", 0, "Watch a Starship catch", "A Starship ship in its landing burn, caught by its tower."))
     {
-        launchGoToLanding(0, 90.0, 2500.0, why);
+        launchWatchCatch(why);
         snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
     }
     if (uiButton(inp, ui, "LaunchReentry", 0, "Watch a retired satellite re-enter",
-                 "The next retiree coming down over a dark sky (48 h): 25 s before it breaks up."))
+                 "A retired satellite burning up over a dark sky."))
     {
-        launchGoToNextReentry(why);
+        launchGoToNextReentry(why, true);
         snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
     }
     if (!launchState)
@@ -9620,7 +9649,8 @@ void SatelliteSim::selTransientUpdate()
     selTransientsT = (double)simDayJ2000 * 86400.0 + simSecInDay; // the time the list was made at
     if (launchWantSelKey)
     {
-        // (2026-10-20) the stage a `launch deploy` / `fairing` / `deorbit` jump framed: selected once it is listed.
+        // (2026-10-20) the stage a `launch deploy` / `fairing` / `deorbit` jump framed: selected once it is listed;
+        // (2026-10-24) a Watch also locks the camera on it.
         for (const SelTransient &s : selTransients)
             if (s.key == launchWantSelKey)
             {
@@ -9628,8 +9658,17 @@ void SatelliteSim::selTransientUpdate()
                 selectedSatIndex = (int)transientSatIdx();
                 selectedPlanetIndex = -1;
                 launchWantSelKey = 0;
+                formatSelectedSatInfo();
+                if (launchWantTrack)
+                    startTrack();
+                launchWantTrack = false;
                 break;
             }
+        if (launchWantSelKey && launchWantTrack && selTransientsT > launchWantSelUntil)
+        {
+            launchWantSelKey = 0;
+            launchWantTrack = false;
+        }
     }
     followTransientUpdate();
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -9653,8 +9692,13 @@ void SatelliteSim::selTransientUpdate()
                     }
                     selWantKind = 0;
                     formatSelectedSatInfo();
+                    if (selWantTrack)
+                        startTrack();
+                    selWantTrack = false;
                     break;
                 }
+        if (!selWantKind)
+            selWantTrack = false;
     }
     // Go to rides a transient that is also the selection: the selection IS the followed object, through every
     // handover follow makes (staging, the ship's entry, the fireball), even while the list does not show it.
@@ -10965,7 +11009,7 @@ void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN,
             if (filter == 2)
             {
                 const double se = sunElevAtPad(L.cat.sites[B.site], B.tL);
-                if (!(se < -5.0 && se > -16.0))
+                if (!(se < -5.0 && se > -10.0)) // (the jellyfish window: m.twilight below)
                     return;
             }
             items.push_back({B.tL, key});
@@ -10983,7 +11027,8 @@ void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN,
         m.tL = B.tL;
         m.tA = B.tA;
         m.sunElevDeg = sunElevAtPad(L.cat.sites[B.site], B.tL);
-        m.twilight = m.sunElevDeg < -5.0 && m.sunElevDeg > -16.0;
+        m.twilight = m.sunElevDeg < -5.0 && m.sunElevDeg > -10.0; // (2026-10-24: -16; below ~-10 the exhaust bells stay in the
+                                                                  // Earth's shadow up to ~150 km and a Watch showed a dark sky)
         m.crew = pg.crew && !pg.cargo;
         m.cargo = pg.cargo;
         m.people = pg.people;
@@ -10998,7 +11043,7 @@ void SatelliteSim::launchUpcoming(double t0, double t1, int filter, size_t maxN,
     }
 }
 
-bool SatelliteSim::launchGoToKey(uint64_t key, bool moveObserver, double leadS, std::string &msg)
+bool SatelliteSim::launchGoToKey(uint64_t key, bool moveObserver, double leadS, std::string &msg, double distM)
 {
     if (!launchState || !launchesEnabled)
     {
@@ -11057,11 +11102,13 @@ bool SatelliteSim::launchGoToKey(uint64_t key, bool moveObserver, double leadS, 
     const launch::Site &st = L.cat.sites[B.site];
     if (moveObserver)
     {
-        // On the ground ~12 km from the pad, beside the ground track and a little behind it (the climb crosses the sky
-        // sideways, and the staging stays in view). The first candidate on land (the DEM reads ~0 over the sea).
+        // On the ground distM (12 km) from the pad, beside the ground track and a little behind it (the climb crosses the
+        // sky sideways, and the staging stays in view). The first candidate on land (the DEM reads ~0 over the sea).
         const glm::dvec3 side = glm::normalize(glm::cross(B.G0, B.Eaz));
-        const glm::dvec3 cand[4] = {B.G0 * kR + side * 12000.0 - B.Eaz * 3000.0, B.G0 * kR - side * 12000.0 - B.Eaz * 3000.0,
-                                    B.G0 * kR - B.Eaz * 12000.0, B.G0 * kR + side * 6000.0 - B.Eaz * 1500.0};
+        const double dd = distM;
+        const glm::dvec3 cand[6] = {B.G0 * kR + side * dd - B.Eaz * (0.25 * dd), B.G0 * kR - side * dd - B.Eaz * (0.25 * dd),
+                                    B.G0 * kR - B.Eaz * dd, B.G0 * kR + side * (0.5 * dd) - B.Eaz * (0.125 * dd),
+                                    B.G0 * kR - side * (0.5 * dd) - B.Eaz * (0.125 * dd), B.G0 * kR - B.Eaz * (0.5 * dd)};
         glm::dvec3 g = glm::normalize(cand[0]);
         for (const glm::dvec3 &c : cand)
         {
@@ -11100,6 +11147,101 @@ bool SatelliteSim::launchGoToKey(uint64_t key, bool moveObserver, double leadS, 
         snprintf(b, sizeof(b), "%s (%s) from %s: lift-off in %.0f s", L.cat.vehicles[B.veh].name.c_str(),
                  L.cat.programs[B.prog].name.c_str(), st.name.c_str(), leadS);
     msg = b;
+    return true;
+}
+
+// WATCH a launch (2026-10-24, the user: "When a use wants to watch a lanch, they should just get one button that takes
+// them to a rocket launching" — "1 minute before" Go to's put playtesters at an empty pad). afterS after lift-off at 1x,
+// on the ground 5 km from the pad (40 km for a late moment: the twilight plume high up, its bell hundreds of km), the rocket's stage selected and
+// tracked once the transient list has it (selTransientUpdate: launchWantSelKey / launchWantTrack).
+// The cloud map's cover at an Earth-fixed direction (the CPU copy, drifted as drawn; 0 clear .. 1 overcast).
+float SatelliteSim::cloudCoverAtEcef(const glm::dvec3 &e) const
+{
+    if (earthCloudsCpu.empty())
+        return 0.0f;
+    const double lat = std::asin(glm::clamp(e.z, -1.0, 1.0)), lon = std::atan2(e.y, e.x);
+    double u = (lon + glm::pi<double>()) / glm::two_pi<double>() + cloudDriftPhase() / glm::two_pi<double>();
+    u -= std::floor(u);
+    const double v = (0.5 * glm::pi<double>() - lat) / glm::pi<double>();
+    const int x = std::clamp((int)(u * earthCloudsCpuW), 0, earthCloudsCpuW - 1);
+    const int y = std::clamp((int)(v * earthCloudsCpuH), 0, earthCloudsCpuH - 1);
+    const float b = earthCloudsCpu[(size_t)y * earthCloudsCpuW + x] / 255.0f;
+    const float span = std::max(cv2CoverFull - cv2CoverClear, 1e-3f);
+    return std::clamp((b * cv2Coverage - cv2CoverClear) / span, 0.0f, 1.0f);
+}
+
+bool SatelliteSim::launchWatchKey(uint64_t key, double afterS, std::string &msg)
+{
+    const bool late = afterS > 60.0;
+    // A twilight launch: the first moment its upper stage (and the exhaust round it) leaves the Earth's shadow, + 40 s
+    // for the bell to spread, between 2.5 min and SECO (at a fixed 3-5 min the stage was often still in the shadow:
+    // a dark sky with one dot).
+    if (late && launchState)
+    {
+        if (const LBatch *Bp = static_cast<const LBatch *>(launchEnsureBatch(key)))
+        {
+            const double tSeco = Bp->tL + launchState->cat.vehicles[Bp->veh].t2;
+            launchWatchLitT = -1.0;
+            launchWatchScanN = 0;
+            for (double t = Bp->tL + 150.0; t < tSeco; t += 10.0)
+            {
+                SelTransient st;
+                if (!launchRocketTransient(key, t, st))
+                    continue;
+                ++launchWatchScanN;
+                const glm::dvec3 s = sunDirEciAt(t);
+                const double along = glm::dot(st.pos, s);
+                if (along > 0.0 || glm::length(st.pos - along * s) > kR + 20000.0)
+                {
+                    afterS = std::min(t + 40.0, tSeco) - Bp->tL;
+                    launchWatchLitT = t - Bp->tL;
+                    break;
+                }
+            }
+        }
+    }
+    if (!launchGoToKey(key, true, -afterS, msg, late ? 40000.0 : 5000.0))
+        return false;
+    LaunchState &L = *launchState;
+    auto it = L.batches.find(key);
+    if (it == L.batches.end())
+        return true;
+    const LBatch &B = it->second;
+    const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+    const int stage = afterS < vh.t1 ? 0 : 1; // the stack, else the upper stage
+    selectedSatIndex = -1;
+    selectedPlanetIndex = -1;
+    selTransientKey = 0;
+    launchWantSelKey = (key << 3) ^ (uint64_t)(stage + 1);
+    launchWantTrack = true;
+    launchWantSelUntil = B.tL + afterS + 120.0;
+    camera.fovYDeg = late ? 60.0f : 40.0f;
+    const launch::Site &st = L.cat.sites[B.site];
+    const launch::Program &pr = L.cat.programs[B.prog];
+    char b[320];
+    const std::string what = pr.crew ? (std::string("to ") + constellations[L.planes[B.plane].constIdx].name) : pr.name;
+    if (late)
+        snprintf(b, sizeof(b), "%s (%s) %.0f min after lift-off from %s: its exhaust lit by the Sun high over the dark ground",
+                 vh.name.c_str(), what.c_str(), afterS / 60.0, st.name.c_str());
+    else
+        snprintf(b, sizeof(b), "%s lifting off from %s (%s)", vh.name.c_str(), st.name.c_str(), what.c_str());
+    msg = b;
+    return true;
+}
+
+// The next Starship ship caught by its tower, in its landing burn (25 s before the catch), 2.5 km from the pad, the
+// ship tracked.
+bool SatelliteSim::launchWatchCatch(std::string &msg)
+{
+    if (!launchGoToLanding(0, 25.0, 2500.0, msg))
+        return false;
+    selectedSatIndex = -1;
+    selectedPlanetIndex = -1;
+    selTransientKey = 0;
+    launchWantSelKey = (launchFocusKey << 3) ^ 2ull; // the ship: the upper stage's key
+    launchWantTrack = true;
+    launchWantSelUntil = (double)simDayJ2000 * 86400.0 + simSecInDay + 60.0;
+    msg = "A Starship ship coming home to its tower: the flip and landing burn, then the catch";
     return true;
 }
 

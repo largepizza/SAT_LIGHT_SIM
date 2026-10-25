@@ -138,7 +138,7 @@ void SatelliteSim::setTutorialStep(int step)
     tutOngoingS = 0.0f;
     tutPickMsg[0] = '\0';
     tutBasePreset = (int)graphicsPreset;
-    // The Missions step's Go to / Watch moves the clock (and Go to the place): remember where the player was, unless
+    // The Missions step's Watch moves the clock and the place: remember where the player was, unless
     // a jump already happened (Back to this step must not make the launch's moment the place to come back to).
     if (tutStep == TUT_MISSIONS && !tutRetValid)
         tutSaveReturn();
@@ -383,7 +383,7 @@ void SatelliteSim::updateTutorial(float dt)
             tutProgress = 1.0f;
         break;
     case TUT_MISSIONS:
-        // Go to / Watch on an Upcoming launch, or a Sun's Fury button: the clock (and place) moved.
+        // Watch on an Upcoming launch, or the Sun's Fury's: the clock and place moved.
         if (msUpcomingActs_ != tutBaseMsUpcoming)
         {
             tutRetValid = tutRetSaved;
@@ -632,8 +632,8 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
             addBox(0, CLAY_SIDI(CLAY_STRING("MsTab"), 0));
         else
         {
-            // The first launch row's Go to / Watch (the next launch, else the pinned twilight / crewed one), and the
-            // Sun's Fury card's buttons.
+            // The first launch row's Watch (the next launch, else the pinned twilight / crewed one), and the Sun's
+            // Fury card's.
             const int row = !msNext.empty() ? 0 : msHasTwilight ? 100 : !msCrewList.empty() ? 101 : -1;
             if (row >= 0)
                 addBox(0, CLAY_SIDI(CLAY_STRING("MsLBtns"), row));
@@ -779,7 +779,7 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         else if (msTab != 0)
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Open the Upcoming tab.");
         else
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Upcoming: the next launches. Go to puts you beside the pad 45 s before lift-off; Watch only moves the clock. "
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Upcoming: the next launches. Watch takes you to one lifting off, beside the pad, the camera on the rocket. "
                                                      "Pinned below: the next twilight and crewed launches, and the Sun's Fury storm. Try one.");
         break;
     case TUT_ONGOING:
@@ -789,7 +789,7 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Now open the Ongoing tab.");
         else
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Ongoing: rockets in flight, crews on their way, new satellites rising to their orbits, old ones coming down. "
-                                                     "Next > skips to a launch's next milestone.");
+                                                     "Watch rides along with any of them.");
         if (tutRetValid)
             snprintf(tutBodyBuf + strlen(tutBodyBuf), sizeof(tutBodyBuf) - strlen(tutBodyBuf), " The button below takes you back to where you were.");
         break;
