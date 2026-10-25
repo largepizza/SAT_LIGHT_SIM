@@ -3424,6 +3424,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         recordWildfireGround(cmd, ctx);   // the wildfires' points and flames onto the drawn ground (wildfire_ground.comp)
         recordCloudsV2(cmd, ctx, cpc);
+        weatherTornadoFixTick();   // a tornado Go to's radar probe: out of the rain (SatelliteSimWeatherWindow.cpp)
         weatherRadarRecord(cmd);   // the Weather window's radar, a few times a second while it is shown
 
         // Pre-dispatch: both targets are left in SHADER_READ_ONLY_OPTIMAL after the previous
@@ -7880,6 +7881,8 @@ void SatelliteSim::setAudio(AudioSystem *audio)
             createCitySprites(*ctx_);
         if (ctx_ && kFirePipeline == VK_NULL_HANDLE)
             kesslerCreateFireballPass(*ctx_);
+        if (ctx_)
+            createWildfireGround(*ctx_); // (the wildfires' ground snap, ~340 ms on first use from a cold cache)
         // The half-res compute targets at the loaded render scale (recordCompute recreated them on the first frame).
         if (ctx_)
         {

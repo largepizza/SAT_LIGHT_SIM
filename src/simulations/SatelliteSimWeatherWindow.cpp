@@ -462,8 +462,71 @@ bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::s
     const glm::dvec3 te = weatherMapToEarth(T.mapDir, tw);
     glm::dvec3 up = weatherMapToEarth(T.upwindMap, tw);
     up = glm::normalize(up - te * glm::dot(up, te));
-    const double ang = (close ? 8000.0 : 6000.0) / kRe;
-    const glm::dvec3 oe = glm::normalize(te * std::cos(ang) + up * std::sin(ang));
+    // Where to stand: the inflow side is the default, but a neighbouring tower's rain core or the forward flank's rain
+    // under an anvil often stood there (the mature view at 2037-07-13 was in a downpour, rain at the eye 1.0). Try 12
+    // bearings x 3 distances round the funnel and take the driest, from this moment's towers and shields near it (CPU:
+    // a tower's rain core ~1.2 radii, a shield's area x its strength; the map's own rain is suppressed in storm
+    // envelopes), with a small preference for the inflow side.
+    glm::dvec3 oe = glm::normalize(te * std::cos((close ? 8000.0 : 6000.0) / kRe) + up * std::sin((close ? 8000.0 : 6000.0) / kRe));
+    if (stormCatalog)
+    {
+        const double ph = (double)cloudDriftRate * (tw - kCloudDriftEpochS) + cloudDriftPhaseOffset;
+        const double cph = std::cos(ph), sph = std::sin(ph);
+        auto toMap = [&](const glm::dvec3 &E) { return glm::dvec3(E.x * cph - E.y * sph, E.x * sph + E.y * cph, E.z); };
+        const glm::dvec3 tm = toMap(te);
+        std::vector<const wx::Storm *> all, nearS;
+        stormCatalog->stormsAt(tw, all);
+        for (const wx::Storm *S : all)
+            if (glm::dot(S->centreAt(tw), tm) > std::cos(300000.0 / kRe))
+                nearS.push_back(S);
+        std::vector<wx::Tower> tw3;
+        std::vector<wx::Shield> sh3;
+        stormCatalog->towersAt(tw, nearS, tw3);
+        wx::ShieldParams sp;
+        sp.headRadiusM = (float)(std::clamp((double)cv2CbRadiusKm, 1.0, 20.0) * 1000.0 * std::max((double)cv2CbFlare, 1.0) * 1.15);
+        sp.headDriftM = (float)(std::clamp((double)cv2CbHeadDriftKm, 0.0, 30.0) * 1000.0);
+        stormCatalog->shieldsAt(tw, nearS, sp, sh3);
+        const double rTow = std::clamp((double)cv2CbRadiusKm, 1.0, 20.0) * 1000.0;
+        auto wet = [&](const glm::dvec3 &E) {
+            const glm::dvec3 P = toMap(E);
+            double w = 0.0;
+            for (const wx::Tower &T3 : tw3)
+            {
+                const double d = std::acos(std::clamp(glm::dot(P, T3.dir), -1.0, 1.0)) * kRe;
+                const double r = rTow * (0.7 + 0.6 * (double)T3.size) * 1.2;
+                w += (double)T3.strength * (0.4 + 0.6 * (double)T3.role) * std::exp(-(d * d) / (r * r));
+            }
+            for (const wx::Shield &S3 : sh3)
+            {
+                const glm::dvec3 ab = S3.b - S3.a;
+                const double L2 = glm::dot(ab, ab);
+                const double u = L2 > 1e-18 ? std::clamp(glm::dot(P - S3.a, ab) / L2, 0.0, 1.0) : 0.0;
+                const double d = glm::length(P - (S3.a + ab * u)) * kRe;
+                const double r = (double)S3.rA + ((double)S3.rB - (double)S3.rA) * u;
+                if (r > 0.0 && d < r)
+                    w += 0.5 * (double)S3.strength * (1.0 - (double)S3.age01) * (0.5 + (double)S3.rain) * (1.0 - d / r);
+            }
+            return w;
+        };
+        const glm::dvec3 side = glm::cross(te, up);
+        double bestS = 1e30;
+        for (int k = 0; k < 12; ++k)
+        {
+            const double a = glm::radians(30.0 * k);
+            const glm::dvec3 dir = up * std::cos(a) + side * std::sin(a);
+            for (int j = 0; j < 3; ++j)
+            {
+                const double dm = (close ? 8000.0 : 6000.0) + 2000.0 * j;
+                const glm::dvec3 E = glm::normalize(te * std::cos(dm / kRe) + dir * std::sin(dm / kRe));
+                const double sc = wet(E) + 0.08 * (1.0 - std::cos(a)) + 0.02 * j;
+                if (sc < bestS)
+                {
+                    bestS = sc;
+                    oe = E;
+                }
+            }
+        }
+    }
     if (followActive)
         stopFollow();
     stopTrack();
@@ -480,17 +543,140 @@ bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::s
     skyTaaHistValid = false;
     cv2HistoryValid = false;
     wxRowsWall = -1e300;
+    wxTornFix = {};
+    wxTornFix.stage = 1;
+    wxTornFix.te = te;
+    wxTornFix.up = up;
+    wxTornFix.close = close;
+    wxTornFix.aglM = close ? 300.0f : 60.0f;
+    wxTornFix.elDeg = close ? 8.0f : 10.0f;
     char sb[200];
     const char *what = T.spout ? "waterspout" : "tornado";
-    const char *side = compass(glm::degrees(std::atan2(glm::dot(up, oEast), glm::dot(up, oNorth))));
+    const char *side = compass(az + 180.0);
+    const double dKm = std::acos(std::clamp(glm::dot(oe, te), -1.0, 1.0)) * kRe / 1000.0;
     if (close)
-        snprintf(sb, sizeof(sb), "A third of the way through its %s (%.0f min on the ground), 8 km %s of it, 300 m up", what,
-                 (T.t1 - T.t0) / 60.0, side);
+        snprintf(sb, sizeof(sb), "A third of the way through its %s (%.0f min on the ground), %.0f km %s of it, 300 m up", what,
+                 (T.t1 - T.t0) / 60.0, dKm, side);
     else
-        snprintf(sb, sizeof(sb), "A minute before its %s touches down (%.0f min on the ground), 6 km %s of it", what,
-                 (T.t1 - T.t0) / 60.0, side);
+        snprintf(sb, sizeof(sb), "A minute before its %s touches down (%.0f min on the ground), %.0f km %s of it", what,
+                 (T.t1 - T.t0) / 60.0, dKm, side);
     msg = sb;
     return true;
+}
+
+// The probe frame's rain at an Earth-fixed direction (its 3x3 cells' mean; -1 off the frame).
+float SatelliteSim::weatherProbeRainAt(const glm::dvec3 &e) const
+{
+    const WxRadarFrame &f = wxProbeFrame;
+    if (!f.valid || f.cellM <= 0.0f)
+        return -1.0f;
+    const glm::dvec3 o = f.obs;
+    const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), o) + glm::dvec3(1e-12, 0, 0)), north = glm::cross(o, east);
+    const double a = std::acos(std::clamp(glm::dot(o, e), -1.0, 1.0)) * kRe;
+    glm::dvec2 u(glm::dot(e, east), glm::dot(e, north));
+    const double ul = glm::length(u);
+    u = ul > 1e-12 ? u / ul : glm::dvec2(0.0);
+    const double fx = u.x * a / f.cellM + 0.5 * kWxN - 0.5, fy = 0.5 * kWxN - u.y * a / f.cellM - 0.5;
+    const int ci = (int)std::lround(fx), cj = (int)std::lround(fy);
+    float acc = 0.0f;
+    int n = 0;
+    for (int j = cj - 1; j <= cj + 1; ++j)
+        for (int i = ci - 1; i <= ci + 1; ++i)
+            if (i >= 0 && j >= 0 && i < kWxN && j < kWxN)
+            {
+                acc += f.rain[(size_t)j * kWxN + i];
+                ++n;
+            }
+    return n ? acc / (float)n : -1.0f;
+}
+
+// After a tornado Go to (weatherWatchTornadoOf): wait for the weather cube to re-bake round the new place, take one radar
+// probe, and move the eye to the driest of 48 spots round the funnel (rain at the spot, and along the line of sight to
+// the funnel, which a rain-wrapped funnel hides behind), keeping the inflow side when it is as dry.
+void SatelliteSim::weatherTornadoFixTick()
+{
+    WxTornFix &F = wxTornFix;
+    if (F.stage == 0)
+        return;
+    if (F.stage == 1)
+    {
+        if (++F.frames >= 10)
+        {
+            F.stage = 2;
+            F.frames = 0;
+        }
+        return;
+    }
+    if (F.stage == 2)
+    {
+        if (!wxRadarInFlight)
+        {
+            wxProbeFrame.valid = false;
+            wxRadarProbe = true;
+            wxRadarWanted = true;
+            F.stage = 3;
+        }
+        return;
+    }
+    // stage 3: the probe dispatched this frame or earlier; read it back once it is in.
+    if (wxRadarInFlight && wxRadarDispProbe)
+        weatherRadarReadback();
+    if (!wxProbeFrame.valid)
+    {
+        if (++F.frames > 30)
+            F.stage = 0;   // (no clouds pass: give up)
+        return;
+    }
+    F.stage = 0;
+    const glm::dvec3 te = F.te, up = F.up;
+    const glm::dvec3 side = glm::cross(te, up);
+    auto score = [&](const glm::dvec3 &E, double a) {
+        const double r = std::max(0.0f, weatherProbeRainAt(E));
+        double los = 0.0;
+        for (int k = 1; k <= 7; ++k)
+        {
+            const double w = k / 8.0;
+            los += std::max(0.0f, weatherProbeRainAt(glm::normalize(E * (1.0 - w) + te * w)));
+        }
+        return 1.5 * r + 1.0 * los / 7.0 + 0.04 * (1.0 - std::cos(a));
+    };
+    const glm::dvec3 oe0 = glm::normalize(glm::dvec3(obsDir));
+    F.before = std::max(0.0f, weatherProbeRainAt(oe0));
+    double bestS = 1e30;
+    glm::dvec3 best = oe0;
+    const double d0 = F.close ? 6000.0 : 4500.0;
+    for (int k = 0; k < 12; ++k)
+    {
+        const double a = glm::radians(30.0 * k);
+        const glm::dvec3 dir = up * std::cos(a) + side * std::sin(a);
+        for (int j = 0; j < 4; ++j)
+        {
+            const double dm = d0 + 2000.0 * j;
+            const glm::dvec3 E = glm::normalize(te * std::cos(dm / kRe) + dir * std::sin(dm / kRe));
+            const double sc = score(E, a) + 0.01 * j;
+            if (sc < bestS)
+            {
+                bestS = sc;
+                best = E;
+            }
+        }
+    }
+    F.after = std::max(0.0f, weatherProbeRainAt(best));
+    F.distKm = std::acos(std::clamp(glm::dot(best, te), -1.0, 1.0)) * kRe / 1000.0;
+    if (std::acos(std::clamp(glm::dot(best, oe0), -1.0, 1.0)) * kRe < 300.0)
+        return;
+    setObserverLatLon(glm::degrees(std::asin(std::clamp(best.z, -1.0, 1.0))), glm::degrees(std::atan2(best.y, best.x)));
+    obsHeightOffset = std::max(0.0f, cpuTerrainHeightM(obsLatDeg, obsLonDeg)) + F.aglM;
+    const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), best) + glm::dvec3(1e-12, 0, 0)), oNorth = glm::cross(best, oEast);
+    const glm::dvec3 to3 = te - best * glm::dot(te, best);
+    aimCameraAzEl((float)glm::degrees(std::atan2(glm::dot(to3, oEast), glm::dot(to3, oNorth))), F.elDeg);
+    updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay);
+    trailClearPending = true;
+    skyTaaHistValid = false;
+    cv2HistoryValid = false;
+    char b[160];
+    snprintf(b, sizeof(b), "weather: tornado view moved out of the rain (%.2f -> %.2f), %.1f km from the funnel", F.before, F.after, F.distKm);
+    Log::line(b);
 }
 
 // 20 minutes before the line reaches you, where you stand, at 1x, looking at it (into its motion).
@@ -714,7 +900,10 @@ void SatelliteSim::weatherRadarRecord(VkCommandBuffer cmd)
         vkCmdResetQueryPool(cmd, wxRadarQuery, 0, 2);
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, wxRadarQuery, 0);
     }
-    const float cellM = 2000.0f * kWxRangesKm[std::clamp(wxRangeIdx, 0, 2)] / (float)kWxN;
+    const float cellM = wxRadarProbe ? 2000.0f * kWxRangesKm[0] / (float)kWxN
+                                     : 2000.0f * kWxRangesKm[std::clamp(wxRangeIdx, 0, 2)] / (float)kWxN;
+    wxRadarDispProbe = wxRadarProbe;
+    wxRadarProbe = false;
     struct
     {
         glm::vec4 obs, grid;
@@ -826,6 +1015,12 @@ void SatelliteSim::weatherRadarReadback()
     f.obs = wxRadarDispObs;
     f.cellM = wxRadarDispCellM;
     f.valid = true;
+    if (wxRadarDispProbe)
+    {
+        wxRadarDispProbe = false;
+        wxProbeFrame = std::move(f);
+        return;
+    }
     // The loop keeps a frame every kWxLoopStepS of sim time at one place and range (anything else starts it again).
     if (!wxLoopFrames.empty())
     {

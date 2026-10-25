@@ -948,11 +948,11 @@ nlohmann::json SatelliteSim::wildfiresJson(bool world)
 
 // The fire's points and flames onto the drawn ground (wildfire_ground.comp; see the members in SatelliteSim.h). Run
 // right after the dust list and kFireBuf are filled, before the cloud composite and the points read them.
-void SatelliteSim::recordWildfireGround(VkCommandBuffer cmd, VulkanContext &ctx)
+// Made during the load (setAudio's prewarm): on first use it was a ~340-ms hitch the first time a fire came near.
+void SatelliteSim::createWildfireGround(VulkanContext &ctx)
 {
-    if ((firePtCount == 0 && flameCount == 0) || fireGroundFailed || !kFireBuf || !kDustBuf)
+    if (fireGroundPipe || fireGroundFailed)
         return;
-    if (!fireGroundPipe)
     {
         VkDescriptorSetLayoutBinding b[5] = {};
         b[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -995,9 +995,16 @@ void SatelliteSim::recordWildfireGround(VkCommandBuffer cmd, VulkanContext &ctx)
             fireGroundFailed = true;
         }
         vkDestroyShaderModule(ctx.device, mod, nullptr);
-        if (fireGroundFailed)
-            return;
     }
+}
+
+void SatelliteSim::recordWildfireGround(VkCommandBuffer cmd, VulkanContext &ctx)
+{
+    if ((firePtCount == 0 && flameCount == 0) || fireGroundFailed || !kFireBuf || !kDustBuf)
+        return;
+    createWildfireGround(ctx);
+    if (!fireGroundPipe)
+        return;
     // Descriptors every frame (the buffers can be recreated; the set's last use has completed: one frame in flight).
     VkSampler elevS = earthElevSampler ? earthElevSampler : noiseSampler;
     VkImageView elevV = earthElevView ? earthElevView : noiseTexView;

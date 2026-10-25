@@ -3422,6 +3422,22 @@ private:
     double wxLoopWall = 0.0;
     void weatherRadarReadback();
     void weatherRadarRaster(const WxRadarFrame &f);
+    // A radar dispatch for the program itself (2026-10-24): 50-km radius, read back into wxProbeFrame (not shown). The
+    // tornado views use it to stand where the renderer's own rain is not (a CPU estimate from towers and shields stood
+    // in full rain: the map's rain and the envelope's decks are only on the GPU).
+    bool wxRadarProbe = false, wxRadarDispProbe = false;
+    WxRadarFrame wxProbeFrame;
+    struct WxTornFix
+    {
+        int stage = 0;          // 0 idle, 1 waiting for the weather cube, 2 probe asked, 3 probe dispatched
+        int frames = 0;
+        glm::dvec3 te{0, 0, 1}, up{0, 0, 1};
+        bool close = false;
+        float aglM = 60.0f, elDeg = 10.0f;
+        double before = -1.0, after = -1.0, distKm = 0.0;   // (harness: rain at the first and the chosen spot)
+    } wxTornFix;
+    void weatherTornadoFixTick();
+    float weatherProbeRainAt(const glm::dvec3 &e) const;
     // The image (a CPU raster uploaded in recordCompute, as the Kessler tracker's globe).
     VkImage wxImg = VK_NULL_HANDLE;
     VkDeviceMemory wxImgMem = VK_NULL_HANDLE;
@@ -4954,6 +4970,7 @@ private:
     VkPipelineLayout fireGroundPipeLayout = VK_NULL_HANDLE;
     VkPipeline fireGroundPipe = VK_NULL_HANDLE;
     bool fireGroundFailed = false;
+    void createWildfireGround(VulkanContext &ctx);
     void recordWildfireGround(VkCommandBuffer cmd, VulkanContext &ctx);
     void weatherFillFireParams(GpuCloudParams &cp);   // the burn scars (sat_sky.frag fireScarAt): last frame's firesNow
     void destroyWildfireGround(VkDevice device);

@@ -504,13 +504,24 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
         const glm::dvec3 cv = glm::cross(G, wv);
         const bool orbit = act == 1;
         // As the harness `fires go` (side / orbit) at the time it is now: beside the column, or 300 km off it from 400 km.
+        // Beside the column 10 km across the smoke's wind and 4 km upwind of the head, 300 m up (30 km off at 700 m the
+        // front and column were a speck behind the haze and the fire often hid behind terrain), on the side where the Sun
+        // stands behind the viewer by day (the smoke front-lit).
+        double sgn = 1.0;
+        {
+            const glm::dvec3 si = sunDirEciAt(t);
+            const double gr = earthRotationAngle(t);
+            const glm::dvec3 se(si.x * std::cos(gr) + si.y * std::sin(gr), -si.x * std::sin(gr) + si.y * std::cos(gr), si.z);
+            if (glm::dot(se, G) > 0.0 && glm::dot(se, cv) > 0.0)
+                sgn = -1.0;   // the eye at -cv looks along +cv, toward the Sun: stand on the other side
+        }
         const glm::dvec3 oe = orbit ? glm::normalize(Hd - cv * (300000.0 / kRe))
-                                    : glm::normalize(Hd - cv * (30000.0 / kRe) - wv * (8000.0 / kRe));
-        placeLooking(oe, orbit ? 400000.0 : 700.0, Hd, orbit ? -45.0f : 2.0f);
+                                    : glm::normalize(Hd - cv * (sgn * 10000.0 / kRe) - wv * (4000.0 / kRe));
+        placeLooking(oe, orbit ? 400000.0 : 300.0, Hd, orbit ? -45.0f : 3.0f);
         fireCacheRate = -1.0f;   // rescan the fires round the new eye
         updatePositions(t);
         msg = std::string("A fire in ") + wx::biomeName(biomeMap.at(F.fire.latDeg, F.fire.lonDeg)) +
-              (orbit ? ", from orbit" : ", 30 km beside its smoke column");
+              (orbit ? ", from orbit" : ", 10 km beside its smoke column");
         return true;
     }
     default: break;
