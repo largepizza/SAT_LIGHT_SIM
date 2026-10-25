@@ -209,7 +209,10 @@ void App::mainLoop()
             double budget = 1.0 / (double)capHz;
             double remaining = budget - (glfwGetTime() - frameStart);
             if (remaining > 0.0)
+            {
+                FPROF_SCOPE("app.pace");
                 std::this_thread::sleep_for(std::chrono::duration<double>(remaining));
+            }
         }
     }
 }
@@ -780,7 +783,7 @@ void App::drawFrame()
     {
         fprof::Frame hf;
         if (fprof::beginFrame(glfwGetTime(), &hf) && fprof::st().logged++ < 400)
-            Log::line("hitch: " + fprof::describe(hf));
+            Log::lineDeferred("hitch: " + fprof::describe(hf));
     }
 
     {
@@ -911,11 +914,13 @@ void App::drawFrame()
     ftMark("buildUI");
 
     // Record GPU commands
-    vkResetFences(ctx.device, 1, &ctx.fenceFrame);
-    vkResetCommandBuffer(ctx.commandBuffer, 0);
-
-    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    vkBeginCommandBuffer(ctx.commandBuffer, &bi);
+    {
+        FPROF_SCOPE("app.cmd_begin");
+        vkResetFences(ctx.device, 1, &ctx.fenceFrame);
+        vkResetCommandBuffer(ctx.commandBuffer, 0);
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        vkBeginCommandBuffer(ctx.commandBuffer, &bi);
+    }
 
     // GPU timestamp profiling: slot 0 marks frame start. Slots 1-5 are written inside
     // sim->recordCompute() (compute-pass breakdown: scene depth, beam cloud block, orbit compute,
@@ -978,6 +983,9 @@ void App::drawFrame()
     {
         FPROF_SCOPE("app.screenshot_copy");
         sim->recordScreenshotCopy(ctx.commandBuffer, ctx, ctx.swapImages[imgIdx]);
+    }
+    {
+        FPROF_SCOPE("app.cmd_end");
         vkEndCommandBuffer(ctx.commandBuffer);
     }
     ftMark("record rest");

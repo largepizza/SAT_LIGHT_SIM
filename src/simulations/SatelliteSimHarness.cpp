@@ -4472,10 +4472,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // must not be asked about other times: it evicts the bins the renderer needs), then its Go to: aloft= 1 = 30 km
             // ahead and 3 km up, else 9 km ahead on the ground.
             weatherFeaturedRestart((double)simDayJ2000 * 86400.0 + simSecInDay);
-            weatherFeaturedUpdate();
-            const auto t0 = std::chrono::steady_clock::now();
-            for (int i = 0; i < 400 && !wxScanDone && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(20); ++i)
-                weatherFeaturedUpdate();
+            weatherFeaturedFinish(20.0);
             if (!wxFeat[kFeatHaboob].found) fail("haboob: none found in the search's window (48 h)");
             std::string msg;
             r["in_min"] = (wxFeat[kFeatHaboob].tEvent - ((double)simDayJ2000 * 86400.0 + simSecInDay)) / 60.0;
@@ -4615,11 +4612,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (sub == "events" || sub == "event")
         {
             weatherRefreshRows(true);
-            weatherFeaturedUpdate();   // (first: a window opened this frame has not started its search yet)
-            const auto t0 = std::chrono::steady_clock::now();
-            for (int i = 0; i < 400 && !wxScanDone && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(20); ++i)
-                weatherFeaturedUpdate();
-            weatherFeaturedUpdate();
+            weatherFeaturedFinish(20.0);   // (the search to its end on its worker; a window opened this frame starts it here)
             if (wxFireJob.valid()) { wxFireJob.wait(); weatherFeaturedUpdate(); }
             if (sub == "events")
             {

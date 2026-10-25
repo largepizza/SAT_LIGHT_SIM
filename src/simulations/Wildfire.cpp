@@ -385,6 +385,14 @@ void firesBorn(int64_t binFrom, int64_t binTo, double latDeg, double lonDeg, dou
               (int)std::floor(latDeg + dLat), latDeg, lonDeg, radiusKm, false, bio, rateScale, out);
 }
 
+void firesBornRows(int64_t binFrom, int64_t binTo, int rowFrom, int rowTo, double latDeg, double lonDeg, double radiusKm,
+                   const BiomeMap &bio, float rateScale, std::vector<Fire> &out)
+{
+    if (!bio.ready() || rateScale <= 0.0f || binTo < binFrom || rowTo < rowFrom) return;
+    scanCells(std::numeric_limits<double>::quiet_NaN(), binFrom, binTo, rowFrom, rowTo, latDeg, lonDeg, radiusKm, false, bio,
+              rateScale, out);
+}
+
 void firesWorld(double t, const BiomeMap &bio, float rateScale, std::vector<Fire> &out)
 {
     out.clear();

@@ -7884,6 +7884,8 @@ void SatelliteSim::setAudio(AudioSystem *audio)
             kesslerCreateFireballPass(*ctx_);
         if (ctx_)
             createWildfireGround(*ctx_); // (the wildfires' ground snap, ~340 ms on first use from a cold cache)
+        if (ctx_ && cv2MarchDescLayout && cv2MarchDescSet)
+            weatherRadarEnsure(*ctx_);   // (the radar: the Weather window's and the tornado Watch's probe; ~280 ms on first use)
         // The half-res compute targets at the loaded render scale (recordCompute recreated them on the first frame).
         if (ctx_)
         {
@@ -8091,6 +8093,11 @@ void SatelliteSim::cleanup(VkDevice device)
     weatherRadarDestroy(device);   // the Weather window's radar (SatelliteSimWeatherWindow.cpp)
     if (wxFireJob.valid())          // (its worker reads biomeMap, which is destroyed before the future)
         wxFireJob.wait();
+    if (wxScanJob.valid())          // (the featured search's worker: the scout catalog, the maps)
+    {
+        wxScanCancel = true;
+        wxScanJob.wait();
+    }
     reportsDestroy(device);   // the issue reports window's atlas (SatelliteSimReportsWindow.cpp)
     vkDestroyPipeline(device, drawPipeline, nullptr);
     vkDestroyPipelineLayout(device, compPipeLayout, nullptr);

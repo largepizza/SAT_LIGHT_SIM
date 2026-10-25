@@ -237,6 +237,7 @@ void setSimTime(SatelliteSim &, int64_t &day, double &sec, double t)
 
 bool SatelliteSim::weatherGoToCyclone(uint64_t id, int mode, std::string &msg)
 {
+    FPROF_SCOPE("weatherGoToCyclone");
     const wx::Cyclone *cp = weatherCycloneById(id);
     if (!cp)
     {
@@ -329,6 +330,7 @@ bool SatelliteSim::weatherGoToCyclone(uint64_t id, int mode, std::string &msg)
 
 bool SatelliteSim::weatherWatchCyclone(uint64_t id, std::string &msg)
 {
+    FPROF_SCOPE("weatherWatchCyclone");
     const wx::Cyclone *cp = weatherCycloneById(id);
     if (!cp)
     {

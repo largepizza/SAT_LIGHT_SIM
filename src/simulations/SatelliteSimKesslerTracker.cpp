@@ -266,6 +266,7 @@ std::string SatelliteSim::kesslerEventTitle(const kessler::Event &e) const
 
 bool SatelliteSim::kesslerWatchEvent(uint32_t ev, std::string &msg)
 {
+    FPROF_SCOPE("kesslerWatchEvent");
     if (ev >= kEvents.size())
     {
         msg = "no such breakup";
@@ -330,6 +331,7 @@ bool SatelliteSim::kesslerWatchEvent(uint32_t ev, std::string &msg)
 // in 400k-slot pieces a frame (5M slots at once would be a hitch).
 void SatelliteSim::kesslerWatchPieceTick()
 {
+    FPROF_SCOPE("kesslerWatchPieceTick");
     if (kWatchPieceEv < 0)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;

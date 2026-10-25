@@ -111,6 +111,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     // The fires in reach: from the ground ~600 km (the smoke on the horizon), from orbit to ~3000 km.
     const double reachKm = std::clamp(600.0 + 3.0 * alt / 1000.0, 600.0, 3000.0);
     {
+        FPROF_SCOPE("fire.born");
         const int64_t b1 = (int64_t)std::floor(t / 86400.0), b0 = (int64_t)std::floor((t - wx::kFireMaxLifeS) / 86400.0);
         const double moved = std::acos(std::clamp(glm::dot(up, llDir(fireCacheLat, fireCacheLon)), -1.0, 1.0)) * 6371.0;
         const bool rescan = fireCacheRate != wildfireRate || moved > 0.15 * fireCacheR || reachKm > fireCacheR * 0.9 ||
@@ -122,7 +123,25 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             fireCacheLon = eyeLon;
             fireCacheR = reachKm * 1.3;
             fireCacheRate = wildfireRate;
-            wx::firesBorn(b0, b1, fireCacheLat, fireCacheLon, fireCacheR, biomeMap, wildfireRate, fireCache);
+            // The rows split over the storm catalog's thread pool, appended in row order: the same fires in the same
+            // order as one firesBorn (~4 ms on the main thread after every jump; perf4-cpu 2026-10-24).
+            const double dLat = fireCacheR / 111.2 + 1.0;
+            const int r0 = (int)std::floor(fireCacheLat - dLat), r1 = (int)std::floor(fireCacheLat + dLat);
+            const int nRows = r1 - r0 + 1;
+            if (stormCatalog && nRows >= 8)
+            {
+                const int parts = std::min(nRows, 16);
+                std::vector<std::vector<wx::Fire>> part((size_t)parts);
+                stormCatalog->parallelFor((size_t)parts, [&](size_t k) {
+                    const int a = r0 + (int)((int64_t)nRows * (int64_t)k / parts);
+                    const int b = r0 + (int)((int64_t)nRows * (int64_t)(k + 1) / parts) - 1;
+                    wx::firesBornRows(b0, b1, a, b, fireCacheLat, fireCacheLon, fireCacheR, biomeMap, wildfireRate, part[k]);
+                });
+                for (auto &v : part)
+                    fireCache.insert(fireCache.end(), v.begin(), v.end());
+            }
+            else
+                wx::firesBorn(b0, b1, fireCacheLat, fireCacheLon, fireCacheR, biomeMap, wildfireRate, fireCache);
             fireCacheB0 = b0;
             fireCacheB1 = b1;
         }
@@ -151,6 +170,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     }
     if (fireGroundCache.size() > 8192) fireGroundCache.clear();
     int groundLookups = 0;
+    fprof::Scope fireStateScope("fire.state");
     for (const wx::Fire &f : fireCache)
     {
         if (t < f.t0 || t > f.t0 + f.life) continue;
@@ -256,7 +276,9 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     // source at its heat-weighted centre, as wide as the section, carrying its share of the smoke, and rises to its own
     // layer (a weaker section injects lower). Each source's streak walks the same wind field, so they leave the front as a
     // curtain along it and merge downwind into one plume. It was one streak from a point 250 m downwind of the head.
+    fireStateScope.end();
     fireSmokeSources = 0;
+    fprof::Scope fireSmokeScope("fire.smoke");
     for (FireNow &fn : firesNow)
     {
         const wx::Fire &f = fn.f;
@@ -497,6 +519,8 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     // The display's exposure: the flames' Gaussians are capped in DISPLAYED light (they are emissive in the sky's units,
     // and the night exposure is ~5x the day's: at a physical 0.5 of a sunlit white they were white blobs at night).
     const double expo = std::max((double)skyExposure(), 1e-3);
+    fireSmokeScope.end();
+    fprof::Scope fireFrontScope("fire.front");
     for (FireNow &fn : firesNow)
     {
         const wx::Fire &f = fn.f;
@@ -564,8 +588,14 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             for (uint32_t sg = 0; sg <= kSeg; ++sg)
                 segP[sg] = wx::fireFrontAt(f, s, 2.0 * kPiF * sg / kSeg);
             const double coarseTerr = coarse0;
-            for (uint32_t sg = 0; sg < kSeg && kFireCount - ptStart < ptBudget; ++sg)
-            {
+            // The segments in parallel (perf4-cpu 2026-10-24: ~1.7 ms a frame close to a big fire on the main thread),
+            // each into its own list, appended in segment order and cut at the budget: the same points in the same order.
+            if (firePtSeg.size() < kSeg) firePtSeg.resize(kSeg);
+            auto runSeg = [&](size_t sgi) {
+                const uint32_t sg = (uint32_t)sgi;
+                FirePtSeg &so = firePtSeg[sg];
+                so.pts.clear();
+                so.fl.clear();
                 // (per segment: the coarse DEM's slope from the ignition point at its ends, the air along the view; the
                 // GPU puts each point on the drawn ground, wildfire_ground.comp)
                 auto dzAt = [&](const glm::dvec2 &q) {
@@ -580,13 +610,13 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 const glm::dvec3 relM = Cm - eye;
                 const double rM = std::max(glm::length(relM), 1.0);
                 // (a segment reaches inward too: the smouldering spots stand inside the burnt area)
-                if (!inView(toEnu(relM), rM, 0.6 * segLen + 0.5 * radiusM)) continue;
+                if (!inView(toEnu(relM), rM, 0.6 * segLen + 0.5 * radiusM)) return;
                 const double rMin = std::max(rM - 0.6 * segLen - 300.0, 5.0);
                 const double kMax = std::log2(std::max(perim, 1.0) / (pxs * rMin)) + 1.0;
                 const int lvMax = std::clamp((int)std::ceil(kMax), 0, kFireFineLevels);
                 const uint32_t step = 1u << (kFireFineLevels - lvMax);
                 const double ext = atmExtinctionMag(eye, relM / rM, rM, (double)extinctionCoeff);
-                for (uint32_t J = sg * kPerSeg; J < (sg + 1) * kPerSeg && kFireCount - ptStart < ptBudget; J += step)
+                for (uint32_t J = sg * kPerSeg; J < (sg + 1) * kPerSeg && so.pts.size() < ptBudget; J += step)
                 {
                     const int lv = fineLevelOf(J);
                     const uint64_t h = fwMix(f.id ^ ((uint64_t)J * 0x9E3779B97F4A7C15ull));
@@ -623,7 +653,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     // wildfire_ground.comp, which moves it hAb over the drawn ground under it (hAb rides in the
                     // direction's length: 1 + hAb / 1000; kessler_fireballs.comp normalises it) and writes the range.
                     auto put = [&](const glm::dvec3 &Pp, double I, const glm::vec3 &col, double fl, double hAb) {
-                        if (kFireCount >= kFireballMax || kFireCount - ptStart >= ptBudget) return;
+                        if (so.pts.size() >= ptBudget) return;
                         const glm::dvec3 rp = Pp - eye;
                         const double rr = std::max(glm::length(rp), 5.0);
                         if (glm::dot(toEnu(rp), fwd) / rr < cosView || overHorizon(Pp, rp, rr)) return;
@@ -633,10 +663,9 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                         const double phys = 0.008 * std::pow(10.0, 0.4 * (6.0 - mag)) / daySupp * lightK;
                         const double flare = fireShoulder(phys) * fl;
                         if (flare < 2e-4) return;
-                        firePeakFlare = std::max(firePeakFlare, flare);
-                        fireFlareSum += flare;
-                        fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(rp) / rr * (1.0 + hAb / 1000.0)), (float)flare),
-                                            glm::vec4(col, (float)-rr)};
+                        so.pts.push_back({glm::vec4(glm::vec3(toEnu(rp) / rr * (1.0 + hAb / 1000.0)), (float)flare),
+                                          glm::vec4(col, (float)-rr)});
+                        so.fl.push_back(flare);
                     };
                     // The flames on the active arc (a little in front of or behind the mean front: it is a ragged band
                     // tens of metres deep), yellower where hotter.
@@ -679,6 +708,21 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                         if (burnK(qs) > 0.0)
                             put(at(qs.x, qs.y, 10.0 + dz), Ipm * heat * ds * 0.35, glm::vec3(1.0f, 0.48f, 0.13f), flick(h ^ 0x5F, 1.3), 0.3 * hFl + 1.0);
                     }
+                }
+            };
+            if (stormCatalog)
+                stormCatalog->parallelFor((size_t)kSeg, runSeg);
+            else
+                for (uint32_t sg = 0; sg < kSeg; ++sg) runSeg(sg);
+            for (uint32_t sg = 0; sg < kSeg; ++sg)
+            {
+                const FirePtSeg &so = firePtSeg[sg];
+                for (size_t i = 0; i < so.pts.size(); ++i)
+                {
+                    if (kFireCount >= kFireballMax || kFireCount - ptStart >= ptBudget) break;
+                    firePeakFlare = std::max(firePeakFlare, so.fl[i]);
+                    fireFlareSum += so.fl[i];
+                    fo[kFireCount++] = so.pts[i];
                 }
             }
         }

@@ -16,6 +16,9 @@ namespace Log
     // after this call still leaves the line on disk.
     void line(const std::string &msg);
 
+    // The same line written (and flushed) on a writer thread: for diagnostics on the frame thread (the hitch log).
+    void lineDeferred(const std::string &msg);
+
     // Absolute path to the log file, for showing in a message box / toast. Empty if init()
     // hasn't been called or the file could not be created.
     const std::string &path();
