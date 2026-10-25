@@ -4765,12 +4765,12 @@ private:
         int32_t faceSize;
         float srcLod;
         int32_t face;          // -1 = all six
-        float pad;
+        float pad;             // the convective-variance ring's scale in texels (2 at the 2048 level, else 1)
         glm::vec4 evo0;        // the two advected copies' ages (s) and weights
-        glm::vec4 evo1;        // x wind (m/s), y growth, z sim time (s, wrapped), w unused
+        glm::vec4 evo1;        // x wind (m/s), y growth, z sim time (s, wrapped), w the faces to bake (bits; 0 = all six)
         glm::vec4 evo2;        // xyz the Sun three hours ago (map frame), w afternoon land convection
         glm::vec4 remap;       // x Coverage, y clear, z full (coarse levels store the true mean coverage), w mip
-        glm::vec4 wx;          // xy cos / sin of the map's drift (cv2Drift), zw unused
+        glm::vec4 wx;          // xy cos / sin of the map's drift (cv2Drift), z the first row to bake (a slice), w unused
         glm::vec4 storm;       // the storms' own cloud (stormStamp): x tower radius (m), y storm cumulus reach (m),
                                // z head drift (m), w Cb flare
         glm::vec4 storm2;      // x "Storm cloud field" (0 = off), y its clear moat's strength
@@ -4779,6 +4779,12 @@ private:
     GpuWeatherPC weatherEvoPC(int face, uint32_t mip) const;
     uint64_t weatherBakeHash() const;  // the settings the weather cube was baked with (a change re-bakes every face)
     void recordWeatherEvolution(VkCommandBuffer cmd);
+    void recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, uint32_t faceMask, int slice = -1);
+    // One face's re-bake outside time warp is spread over kCv2WxSlices frames of rows (a 2048 face is ~1.2 ms).
+    static constexpr int kCv2WxSlices = 4;
+    int cv2WxSliceFace = -1, cv2WxSliceNext = 0;
+    uint64_t cv2WxStormSig = 0;   // the storms uploaded (counts), last frame
+    VkImageView cv2WxL1View = VK_NULL_HANDLE;   // level 1 of the cube, read by the bake of level 0
     VkDescriptorSetLayout cv2WxSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout cv2WxPipeLayout = VK_NULL_HANDLE;
     VkPipeline cv2WxPipeline = VK_NULL_HANDLE;
@@ -4788,6 +4794,15 @@ private:
     double cv2WxBakedT[6] = {};        // sim time each face was last baked at
     double cv2WxPrevT = -1e300;        // sim time of the last frame's recordWeatherEvolution (its step: time warp)
     bool cv2WxOneFace = false;         // A/B (clouds_v2.weather_one_face): never bake all six faces together
+    // "Weather cube tick (s)" (clouds_v2.weather_tick_s, 2026-10-25): with storm objects stamped, a face is re-baked once
+    // it is this much sim time behind. It was 45 s: a hurricane moves ~45 m/s through the map's frame (the drift plus its
+    // track), so every re-bake stepped its arms ~2 km and its eyewall round, which read from orbit as cells jumping.
+    float cv2WxTickS = 10.0f;
+    VkQueryPool cv2WxQuery = VK_NULL_HANDLE;   // two timestamps round a bake (harness state: weather.cube.bake_ms)
+    bool cv2WxStamped = false;
+    float cv2WxStampedFaces = 0.0f, cv2WxLastBakeFaces = 0.0f;   // faces in the stamped bake (a slice: a quarter)
+    float cv2WxBakeMs = 0.0f;                  // the last bake's GPU time
+    float cv2WxBakeMsPerFace = 0.0f;           // eased
     uint32_t cv2WxAllSixBakes = 0;     // frames that baked all six faces at once (harness state)
     uint64_t cv2WxHash = 0;            // the evolution settings the faces were baked with
     // ── Weather events: storm objects (SatelliteSimWeather.cpp, shaders/include/cv2_storms.glsl) ──
@@ -7344,6 +7359,9 @@ private:
     void destroyCloudsV2Targets(VkDevice device);
     void destroyCloudsV2(VkDevice device);
     // harness `shaders reload [march=<spv>]`; "" = ok, stats = the driver's statistics for the march
+    // Harness `shaders reload weather=<spv>` (2026-10-25): the weather cube's bake from another SPV (an empty path = the
+    // shipped one); every face is re-baked. Returns an error or "".
+    std::string reloadWeatherBake(VulkanContext &ctx, const std::string &spv);
     std::string reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
                                       uint32_t wgX = 0, uint32_t wgY = 0, const std::string &resolveSpv = {},
                                       const std::string &lightningSpv = {}, const std::string &compositeSpv = {});

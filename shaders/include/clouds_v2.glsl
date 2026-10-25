@@ -190,6 +190,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
 layout(set = 0, binding = CV2_WEATHER_BINDING) uniform samplerCube cv2WeatherTex;
+// The cube's finest level is 2048 (~5 km, 2026-10-25); every other read names the LOGICAL mip of the 1024 cube it was
+// written against (1 = ~20 km ... ), which is one level up. Only cv2WeatherSmooth's own fine read uses the 2048 level.
+#define CV2_WX_LOD(l) ((l) + 1.0)
 layout(set = 0, binding = CV2_SHAPE_BINDING)   uniform sampler3D   cv2ShapeTex;
 layout(set = 0, binding = CV2_MESO_BINDING)    uniform sampler3D   cv2MesoTex;
 #ifdef CV2_DETAIL_BINDING
@@ -263,7 +266,7 @@ float gCv2Ground    = 0.0;
 float cv2Ground(vec3 dirE)
 {
     if (gCv2GroundSet) return gCv2Ground;
-    return textureLod(cv2WeatherTex, dirE, 1.5).a * 8000.0;
+    return textureLod(cv2WeatherTex, dirE, CV2_WX_LOD(1.5)).a * 8000.0;
 }
 
 struct CV2Field {
@@ -367,9 +370,9 @@ float gCv2Stretch = 1.0;
 vec4 cv2WeatherSmoothAt(vec3 d, int lod);
 vec4 cv2WeatherSmooth(vec3 d)
 {
-    if (gCv2WxLod > 0.0) {
+    if (gCv2WxLod > 0.0) {   // (logical mips: the shadow's coarse reads keep the scale they were tuned at)
         float l0 = floor(gCv2WxLod);
-        return mix(cv2WeatherSmoothAt(d, int(l0)), cv2WeatherSmoothAt(d, int(l0) + 1), gCv2WxLod - l0);
+        return mix(cv2WeatherSmoothAt(d, int(l0) + 1), cv2WeatherSmoothAt(d, int(l0) + 2), gCv2WxLod - l0);
     }
     return cv2WeatherSmoothAt(d, 0);
 }
@@ -384,12 +387,33 @@ vec4 cv2WeatherSmoothAt(vec3 d, int lod)
     else                               { uv = d.xy / a.z; axis = vec3(0.0, 0.0, sign(d.z)); }
     vec2 t = (uv * 0.5 + 0.5) * sz - 0.5;
     vec2 i = floor(t), f = t - i;
+#ifdef CV2_WX_BSPLINE
+    // Cubic B-spline (C2) from four bilinear fetches: the one-fetch smoothstep remap below flattens the field at every
+    // texel centre, and thresholded coverage then draws the 10-km texels as rounded squares and stair-stepped edges
+    // from orbit. (Hardware bilinear's 8-bit sub-texel weights step ~40 m here: harmless for coverage.)
+    vec2 f2 = f * f, f3 = f2 * f;
+    vec2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0, w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+    vec2 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0, w3 = f3 / 6.0;
+    vec2 g0 = w0 + w1, g1 = w2 + w3;
+    vec2 c0 = ((i - 0.5 + w1 / g0 + 0.5) / sz) * 2.0 - 1.0, c1 = ((i + 1.5 + w3 / g1 + 0.5) / sz) * 2.0 - 1.0;
+    vec4 acc = vec4(0.0);
+    [[dont_unroll]] for (int k = 0; k < 4; ++k) {
+        vec2 c = vec2((k & 1) == 0 ? c0.x : c1.x, (k >> 1) == 0 ? c0.y : c1.y);
+        float w = ((k & 1) == 0 ? g0.x : g1.x) * ((k >> 1) == 0 ? g0.y : g1.y);
+        vec3 ds = (axis.x != 0.0) ? vec3(axis.x, c.x, c.y)
+                : (axis.y != 0.0) ? vec3(c.x, axis.y, c.y)
+                                  : vec3(c.x, c.y, axis.z);
+        acc += w * textureLod(cv2WeatherTex, ds, float(lod));
+    }
+    return acc;
+#else
     f  = f * f * (3.0 - 2.0 * f);
     uv = ((i + f + 0.5) / sz) * 2.0 - 1.0;
     vec3 ds = (axis.x != 0.0) ? vec3(axis.x, uv.x, uv.y)
             : (axis.y != 0.0) ? vec3(uv.x, axis.y, uv.y)
                               : vec3(uv.x, uv.y, axis.z);
     return textureLod(cv2WeatherTex, ds, float(lod));
+#endif
 }
 
 // The shape volume at an integer mip, C1-smooth (the same remap as cv2WeatherSmooth, one fetch). At
@@ -410,8 +434,9 @@ vec4 cv2ShapeSmooth(vec3 uvw, float lod)
 // moves in ~150 m steps; a tower's 11 km radius scaled by it came out as vertical flutes every few
 // hundred metres up the whole wall (user snaps, pass 18). The four texels stay on this face (clamped):
 // towers already fade out near cube-face edges.
-vec4 cv2WeatherBilinear(vec3 d, float lod)
+vec4 cv2WeatherBilinear(vec3 d, float lodL)
 {
+    float lod = CV2_WX_LOD(lodL);   // (callers name the logical mip)
     vec3  a  = abs(d);
     float sz = float(textureSize(cv2WeatherTex, int(lod)).x);
     vec2 uv; int fc;
@@ -550,7 +575,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // (Pass 11 tested the UNflowed position at mip 4 while the lookup moved up to ~200 km: every
     // cloud displaced past an 80 km texel was cut off along that texel's straight edge — the
     // "discontinuities cutting the clouds up" at any flow setting.)
-    float wCoarse = textureLod(cv2WeatherTex, wdF, 2.0).r * cv2.look.x;   // also the far field's fraction (review 17)
+    float wCoarse = textureLod(cv2WeatherTex, wdF, CV2_WX_LOD(2.0)).r * cv2.look.x;   // also the far field's fraction (review 17)
     if (wCoarse < cv2.cover.x * 0.25) return f;
 
     // Towers lean downwind with height: the mesoscale fields are read that far upwind (east is the
@@ -613,7 +638,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // above it banks at 0.6-0.9. A plateau is the ground its boundary layer rides on: at 0.6-0.9 of its
     // 5 km the decks over Tibet sat inside the plateau and were cut away (a clear disc with a ring rim).
     float gF     = cv2Ground(q.dirE);
-    float gC     = min(gF, textureLod(cv2WeatherTex, q.dirE, 4.0).a * 8000.0);
+    float gC     = min(gF, textureLod(cv2WeatherTex, q.dirE, CV2_WX_LOD(4.0)).a * 8000.0);
     float lift   = gC + (gF - gC) * mix(0.6, 0.9, ty.look.z);
     float topCap = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo;
     topMax = min(topMax + lift, max(topCap, ty.alt.x + lift + 500.0));
@@ -1072,7 +1097,7 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     vec3  flowD = cv2FlowDisp(wd, vec3(0.0));   // as cv2Field evaluates it for every layer (gCv2FlowD)
     vec3  wdF   = cv2FlowWeatherDir(wd, flowD);
     float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
-    float wCoarse = textureLod(cv2WeatherTex, wdF, 2.0).r * cv2.look.x;
+    float wCoarse = textureLod(cv2WeatherTex, wdF, CV2_WX_LOD(2.0)).r * cv2.look.x;
     if (wCoarse < cv2.cover.x * 0.25) return r;
     vec3  mp  = sP;
     vec3  mpF = mp + flowD;
@@ -1188,7 +1213,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float gl  = cv2Ground(q.dirE) * 0.8;                                  // follows the terrain
     if (q.h < 2800.0 + gl || q.h > 5900.0 + gl + 1300.0 * max(cv2.mid2.y, 1.0)) return 0.0;
     vec3  wF  = cv2FlowWeatherDirAt(q);                                 // the low cloud's (flowed) map
-    vec4  w   = textureLod(cv2WeatherTex, wF, max(1.0, gCv2WxLod));                     // mid decks are broad
+    vec4  w   = textureLod(cv2WeatherTex, wF, CV2_WX_LOD(max(1.0, gCv2WxLod)));                     // mid decks are broad
     float cov = clamp((w.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
     // (The spread below can place mid cloud where the local low coverage is 0, so no early out on cov
     // alone when it is on.)
@@ -1201,7 +1226,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     // Layer spread (cv2.flow.y): mid-level cloud keys on the weather over ~80 km (mip 4), not only the
     // low cloud under it, and thins over a low overcast. It used to appear only where (and wherever)
     // the low coverage was high: every layer stacked on the same spot.
-    float covW   = clamp((textureLod(cv2WeatherTex, wF, 4.0).r * cv2.look.x - cv2.cover.x)
+    float covW   = clamp((textureLod(cv2WeatherTex, wF, CV2_WX_LOD(4.0)).r * cv2.look.x - cv2.cover.x)
                          / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
     float covM   = mix(cov, max(cov, covW * 0.85), cv2.flow.y);
     float clA    = cl.a, uMid = -1.0;
@@ -1288,12 +1313,12 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     // The high layer's own frame: the low flow x "Cirrus flow" (the jet bends the upper cloud more;
     // until pass 13 cirrus ignored the flow entirely).
     vec3  wdH    = normalize(wd + flowL * (cv2.high2.z / R_EARTH));
-    vec4  wc     = textureLod(cv2WeatherTex, wF, max(2.0, gCv2WxLod));
+    vec4  wc     = textureLod(cv2WeatherTex, wF, CV2_WX_LOD(max(2.0, gCv2WxLod)));
     // Cirrus lives with the weather systems: in the jet ahead of fronts and in the outflow of deep
     // convection; the subtropical highs are mostly free of it. The regime therefore follows the map's
     // coverage over the surrounding ~150 km (mip 4) as much as its own noise. On the noise alone the
     // high layer covered the globe uniformly, and from orbit it was an even field of splotches.
-    vec4  wb     = textureLod(cv2WeatherTex, wF, 4.0);
+    vec4  wb     = textureLod(cv2WeatherTex, wF, CV2_WX_LOD(4.0));
     float span   = max(cv2.cover.y - cv2.cover.x, 1e-3);
     float covL   = clamp((wc.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
     float covS   = clamp((wb.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
@@ -1732,7 +1757,7 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
         [[dont_unroll]] for (int k = 0; k < 4; ++k) {
             float off  = (k == 0) ? 0.0 : (k == 1) ? 12000.0 : (k == 2) ? 25000.0 : 40000.0;
             float fall = (k == 0) ? 1.0 : (k == 1) ? 0.95 : (k == 2) ? 0.85 : 0.65;
-            vec4  wk   = textureLod(cv2WeatherTex, wF - eastW * (off / R_EARTH), max(1.0, gCv2WxLod));
+            vec4  wk   = textureLod(cv2WeatherTex, wF - eastW * (off / R_EARTH), CV2_WX_LOD(max(1.0, gCv2WxLod)));
             float ck   = clamp((wk.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
             stormA = max(stormA, smoothstep(0.72, 0.9, wk.g) * smoothstep(0.3, 0.7, ck) * fall);
         }
@@ -1838,8 +1863,8 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
                        (cv2.fog2.w > 0.0) ? 6.0 * kIceFogH : 0.0);
     if (agl > topMax) return 0.0;
     vec3  wF   = cv2FlowWeatherDirAt(q);
-    vec4  w1   = textureLod(cv2WeatherTex, wF, max(1.0, gCv2WxLod));
-    vec4  w4   = textureLod(cv2WeatherTex, wF, 4.0);
+    vec4  w1   = textureLod(cv2WeatherTex, wF, CV2_WX_LOD(max(1.0, gCv2WxLod)));
+    vec4  w4   = textureLod(cv2WeatherTex, wF, CV2_WX_LOD(4.0));
     float span = max(cv2.cover.y - cv2.cover.x, 1e-3);
     float cov1 = clamp((w1.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
     float cov4 = clamp((w4.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
@@ -1850,7 +1875,7 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
                                  cv2Lod(fpM, cv2.anchorCluster.w));
         float sunS  = dot(q.dirE, cv2.sunE.xyz);                   // sin of the Sun's elevation here
         float night = 1.0 - smoothstep(0.0, 0.2, sunS);            // burns off by ~12 deg of Sun
-        float gC    = textureLod(cv2WeatherTex, q.dirE, 3.5).a * 8000.0;   // the ground over ~80 km
+        float gC    = textureLod(cv2WeatherTex, q.dirE, CV2_WX_LOD(3.5)).a * 8000.0;   // the ground over ~80 km
         float valley = smoothstep(20.0, 400.0, gC - gF);          // lower than its surroundings: cold air pools
         float strat = cov1 * (1.0 - smoothstep(0.35, 0.55, w1.g));  // an overcast, stratiform regime
         // Radiation fog: a clear or broken night sky cools the ground; it pools in valleys (and on low
@@ -1888,7 +1913,7 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
         // Antarctica: the ice shelves read ~0 m in the DEM, so "not the sea" cut the ice fog at every grounding
         // line (a hard arc from 180 km over the Ronne shelf, review 14). South of ~78 S everything is ice; north
         // of it the land test uses the regional (~80 km) ground, so a coast is a gradient, not an edge.
-        float seaR = 1.0 - smoothstep(5.0, 120.0, textureLod(cv2WeatherTex, q.dirE, 4.0).a * 8000.0);
+        float seaR = 1.0 - smoothstep(5.0, 120.0, textureLod(cv2WeatherTex, q.dirE, CV2_WX_LOD(4.0)).a * 8000.0);
         float antL = max(1.0 - seaR, 1.0 - smoothstep(-80.0, -72.0, latD));
         float ice  = max((1.0 - smoothstep(-72.0, -63.0, latD)) * antL,                          // Antarctica + shelves
                      max(smoothstep(62.0, 70.0, latD) * smoothstep(800.0, 1600.0, gF),          // Greenland
@@ -1997,7 +2022,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     if (sh > 0.0 && cv2.storm.z > 0.0 && !cv2ShieldsOn()) {
         // Where the storms that feed anvils are (the anvil's own test, one ~20 km read): running the
         // anvil's evaluation through the whole cirrus band cost ~10 ms from orbit.
-        vec4  wa = textureLod(cv2WeatherTex, cv2FlowWeatherDirAt(q), 2.0);
+        vec4  wa = textureLod(cv2WeatherTex, cv2FlowWeatherDirAt(q), CV2_WX_LOD(2.0));
         float ca = clamp((wa.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
         presA = max(presA, smoothstep(0.65, 0.85, wa.g) * smoothstep(0.25, 0.6, ca));
     }

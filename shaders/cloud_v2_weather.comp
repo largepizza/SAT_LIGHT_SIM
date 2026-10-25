@@ -27,6 +27,9 @@ layout(set = 0, binding = 0) uniform sampler2D earthCloudsTex;   // equirect, R8
 layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;     // equirect ocean mask (1 = water)
 layout(rgba8, set = 0, binding = 2) writeonly uniform image2DArray outWeather;
 layout(set = 0, binding = 3) uniform sampler2D earthElevTex;     // equirect R8 DEM (terrain.glsl encoding)
+// Binding 5 (2026-10-25): level 1 of this cube (10 km), baked before level 0 (2048, 5 km), which takes its type, rain and
+// ground from it and computes only the coverage at its own resolution (pc.pad 2 marks level 0).
+layout(set = 0, binding = 5) uniform sampler2DArray wxLevel1;
 // Binding 4: the storm objects' towers and their bins (cv2_storms.glsl, 2026-10-22): each storm brings its own cloud
 // field into the map (stormStamp below).
 #define CV2_STORM_BINDING 4
@@ -42,10 +45,11 @@ layout(set = 0, binding = 3) uniform sampler2D earthElevTex;     // equirect R8 
 // evo2: xyz the Sun's direction three hours ago in the map's frame, w "Afternoon land convection".
 // remap (review 18): x "Coverage" (the map brightness multiplier, look.x), y the clear and z the full threshold
 // (cover.xy), w this level's mip.
-// wx (2026-10-22): xy cos / sin of the map's drift: d is in the MAP frame, and the land / sea mask is Earth-fixed.
+// wx (2026-10-22): xy cos / sin of the map's drift: d is in the MAP frame, and the land / sea mask is Earth-fixed;
+// z the first row (2026-10-25: a face re-baked over several frames, a slice of rows each).
 // storm / storm2 (2026-10-22, stormStamp): storm x the tower radius (m, "Cb tower radius"), y "Storm cumulus reach" (m),
 // z "Cb head drift" (m), w "Cb flare"; storm2 x "Storm cloud field" (0 = the map alone), y its clear moat's strength.
-layout(push_constant) uniform PC { int faceSize; float srcLod; int face; float pad; vec4 evo0; vec4 evo1; vec4 evo2;
+layout(push_constant) uniform PC { int faceSize; float srcLod; int face; float pad /* ring scale */; vec4 evo0; vec4 evo1; vec4 evo2;
                                    vec4 remap; vec4 wx; vec4 storm; vec4 storm2; } pc;
 
 const float PI = 3.14159265359;
@@ -103,6 +107,18 @@ vec2 equirectUV(vec3 d)
     return vec2((lon + PI) / (2.0 * PI), (0.5 * PI - lat) / PI);
 }
 
+// The equirect UV of a tap dc + tx o.x + ty o.y, from dc's own UV and latitude (one exact conversion) and a first-order
+// step: exact in latitude, the longitude step / cos(lat) at the tap's latitude. Valid while tx / ty are the local east /
+// north and the offset small (gEqLin, set per texel). At 2048 an atan and an asin per tap (~37 a texel) were most of
+// the bake's cost: all six faces 16-20 ms a frame in time warp (2026-10-25).
+bool gEqLin = false;
+vec2 eqTap(vec3 dc, vec2 uvc, float latc, vec3 tx, vec3 ty, vec2 o)
+{
+    if (!gEqLin) return equirectUV(normalize(dc + tx * o.x + ty * o.y));
+    float lat = latc + o.y;
+    return uvc + vec2(o.x / (2.0 * PI * max(cos(lat), 1e-3)), -o.y / PI);
+}
+
 // A storm's own cloud field (2026-10-22, .plans/WEATHER_EVENTS_PLAN.md "the interface with the cloud distribution").
 // The storms are objects placed by a climatology x the map's moisture; the map knows nothing of them, so a storm could
 // stand in nearly clear air with its rain falling from nothing under its anvil (issue 20261022_233857), and seen from
@@ -138,7 +154,10 @@ vec3 cycloneSwirl(vec3 d)
 }
 
 float gRainFree = 0.0;   // stormStamp: 0..1, a rear-flank rain-free base (the map's rain is cleared there)
-vec4 stormStamp(vec3 d)
+// In two parts (2026-10-25): the towers' and lines' fields (smooth over tens of km: read once at a texel's centre), then
+// the cyclones' and the final scaling (stormStampFinish: a hurricane's arms are a few km sharp, so main() averages it
+// over the texel). stormStamp(d) = stormStampFinish(stormStampTowers(d), d).
+vec4 stormStampTowers(vec3 d)
 {
     vec4 o = vec4(0.0);
     if (pc.storm2.x <= 0.0) return o;
@@ -223,6 +242,13 @@ vec4 stormStamp(vec3 d)
         float ahead = (1.0 - smoothstep(-40000.0, -25000.0, sb2)) * smoothstep(-90000.0, -60000.0, sb2);
         o.w = max(o.w, ahead * (1.0 - smoothstep(0.8, 1.0, abs(2.0 * t - 1.0))) * s.a.w * 0.8);
     }
+    return o;
+}
+vec4 stormStampFinish(vec4 o, vec3 d)
+{
+    if (pc.storm2.x <= 0.0) return o;
+    vec3 eastW0  = vec3(-d.y, d.x, 0.0) * inversesqrt(max(dot(d.xy, d.xy), 1e-6));
+    vec3 northW0 = cross(d, eastW0);
     // Tropical cyclones (2026-10-23): spiral rainbands (logarithmic spirals trailing the cyclonic rotation) beyond the
     // central dense overcast, the eyewall's ring of convection, the CDO's deck, heavy rain in the eyewall and bands,
     // subsidence between the bands, and the eye cleared outright.
@@ -292,11 +318,31 @@ vec4 stormStamp(vec3 d)
     return o;
 }
 
+// Can a cyclone's stamp reach this texel (its size hw, rad)? (stormStampFinish's own early outs, without its work.)
+bool cycloneNear(vec3 d, float hw)
+{
+    if (pc.storm2.x <= 0.0) return false;
+    for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
+        CV2Cyclone cy = cv2Cyclones[i];
+        if (acos(clamp(dot(d, cy.b.xyz), -1.0, 1.0)) * R_EARTH_W < cy.c.z * 1.2 + 1.5 * hw * R_EARTH_W) return true;
+    }
+    return false;
+}
+
 void main()
 {
     ivec3 id = ivec3(gl_GlobalInvocationID);
     if (pc.face >= 0) id.z = pc.face;
+    else if (pc.evo1.w > 0.5) {   // a set of faces (bits of evo1.w): the dispatch's z is the n-th of them
+        uint m = uint(pc.evo1.w + 0.5);
+        int  n = id.z, f = 0;
+        for (; f < 6; ++f)
+            if (((m >> uint(f)) & 1u) != 0u) { if (n == 0) break; --n; }
+        id.z = f;
+    }
+    id.y += int(pc.wx.z);   // (a slice of rows: SatelliteSim::recordWeatherBakeDispatches)
     if (id.x >= pc.faceSize || id.y >= pc.faceSize || id.z >= 6) return;
+    const bool fine = pc.pad > 1.5;   // level 0
 
     vec2 st = (vec2(id.xy) + 0.5) / float(pc.faceSize);
     vec3 d  = faceDir(id.z, st);
@@ -306,6 +352,7 @@ void main()
     vec3  tx    = normalize(cross(up, d));
     vec3  ty    = cross(d, tx);
     float texel = 2.0 / float(pc.faceSize);   // angular size of one output texel (rad, ~at face centre)
+    gEqLin = abs(d.z) < 0.97 && texel * 16.0 * pc.pad < 0.04;   // (eqTap: the taps reach 8 x pad texels)
 
     // Coverage: a 2x2 supersample at the matching source mip.
     // The map's coverage and, over ~8 texels (~40 km at the full-resolution level), its standard
@@ -319,17 +366,23 @@ void main()
         float w = (c == 0) ? pc.evo0.z : pc.evo0.w;
         if (w < 1e-3) continue;
         vec3  dc = normalize(dS - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));   // back along the wind
+        vec2  uvc = equirectUV(dc);
+        float latc = asin(clamp(dc.z, -1.0, 1.0));
         float cc = 0.0;
         for (int k = 0; k < 4; ++k) {
             vec2 o = (vec2(k & 1, k >> 1) - 0.5) * 0.5 * texel;
-            cc += textureLod(earthCloudsTex, equirectUV(normalize(dc + tx * o.x + ty * o.y)), pc.srcLod).r;
+            cc += textureLod(earthCloudsTex, eqTap(dc, uvc, latc, tx, ty, o), pc.srcLod).r;
         }
         float a1 = 0.0, a2 = 0.0;
+        if (fine) {   // (level 0: no ring, its type is level 1's; the afternoon term's local mean from one ~40-km read)
+            float v = textureLod(earthCloudsTex, uvc, pc.srcLod + 3.0).r;
+            a1 = v * float(kRing); a2 = v * v * float(kRing);
+        } else
         for (int k = 0; k < kRing; ++k) {
             float ang = float(k) * (2.0 * PI / float(kRing));
-            float r   = (k & 1) == 0 ? 4.0 : 8.0;
-            vec3  q   = normalize(dc + (tx * cos(ang) + ty * sin(ang)) * r * texel);
-            float v   = textureLod(earthCloudsTex, equirectUV(q), pc.srcLod + 1.0).r;
+            float r   = ((k & 1) == 0 ? 4.0 : 8.0) * pc.pad;   // (pad 2 on the 2048 level: the 1024 scale it was tuned at)
+            float v   = textureLod(earthCloudsTex, eqTap(dc, uvc, latc, tx, ty, vec2(cos(ang), sin(ang)) * r * texel),
+                                   pc.srcLod + 1.0 + log2(pc.pad)).r;
             a1 += v; a2 += v * v;
         }
         cov += w * cc * 0.25;
@@ -339,7 +392,24 @@ void main()
     float sd = sqrt(max(m2 - m1 * m1, 0.0));
     // The storms' own cloud (stormStamp), as a brightness delta (coverage x (full - clear) / Coverage): cloud round
     // the towers and under the anvils, a clear moat round them.
-    vec4  sst  = stormStamp(d);
+    // A cyclone's part averaged over the texel (2026-10-25): sampled at the centre alone, a hurricane's arms, filaments and
+    // eye edge (a few km sharp) were point-sampled, and as the storm moved through the map's frame (~45 m/s: the map's
+    // drift plus its track) whole texels switched on and off — square cells popping from orbit. 3 x 3 points where a
+    // cyclone can reach; the towers' and lines' fields once (smooth over tens of km; 9 reads of them over the tropics'
+    // storm envelopes cost ~1 ms a 2048 face).
+    gRainFree = 0.0;
+    vec4  sT  = stormStampTowers(d);
+    vec4  sst = vec4(0.0);
+    if (cycloneNear(d, texel)) {
+        for (int j = 0; j < 3; ++j)
+            for (int i = 0; i < 3; ++i) {
+                vec2 o = ((vec2(i, j) + 0.5) / 3.0 - 0.5) * texel;
+                sst += stormStampFinish(sT, normalize(d + tx * o.x + ty * o.y));
+            }
+        sst /= 9.0;
+    } else {
+        sst = stormStampFinish(sT, d);
+    }
     float sSpan = max(pc.remap.z - pc.remap.y, 1e-3) / max(pc.remap.x, 1e-3);
     float stormAdd = (0.4 * sst.x + 0.5 * sst.y - 0.25 * sst.w) * sSpan;
     cov = clamp(cov + stormAdd, 0.0, 1.0);
@@ -364,6 +434,40 @@ void main()
     float heat = (pc.evo2.w > 0.0) ? smoothstep(0.15, 0.85, dot(d, pc.evo2.xyz)) : 0.0;
     float aft  = pc.evo2.w * heat * (1.0 - ocean) * smoothstep(0.05, 0.3, m1);
     cov = clamp(cov + 0.2 * aft, 0.0, 1.0);
+    if (fine) {
+        // Type and ground from level 1; the PRECIPITATION from this level's own coverage, as the full path below makes it
+        // (from level 1 it fell as rain over every texel the 10-km field touched: +4.5 ms of march in a storm view). Its
+        // convective share needs the variance ring, read only where the cloud is deep enough to rain.
+        vec4  l1   = textureLod(wxLevel1, vec3(st, float(id.z)), 0.0);
+        float deepF = smoothstep(0.55, 0.9, cov);
+        float pr = 0.0;
+        if (deepF > 0.0) {
+            float b1 = 0.0, b2 = 0.0;
+            for (int c = 0; c < 2; ++c) {
+                float w = (c == 0) ? pc.evo0.z : pc.evo0.w;
+                if (w < 1e-3) continue;
+                vec3  dc = normalize(dS - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));
+                vec2  uvc = equirectUV(dc);
+                float latc = asin(clamp(dc.z, -1.0, 1.0));
+                float a1 = 0.0, a2 = 0.0;
+                for (int k = 0; k < kRing; ++k) {
+                    float ang = float(k) * (2.0 * PI / float(kRing));
+                    float r   = ((k & 1) == 0 ? 4.0 : 8.0) * pc.pad;
+                    float v   = textureLod(earthCloudsTex, eqTap(dc, uvc, latc, tx, ty, vec2(cos(ang), sin(ang)) * r * texel),
+                                           pc.srcLod + 1.0 + log2(pc.pad)).r;
+                    a1 += v; a2 += v * v;
+                }
+                b1 += w * a1 / float(kRing);
+                b2 += w * a2 / float(kRing);
+            }
+            float sdF   = sqrt(max(b2 - b1 * b1, 0.0));
+            float convF = max(smoothstep(0.06, 0.2, sdF), 0.8 * aft);
+            pr = clamp(deepF * smoothstep(0.55, 0.9, l1.g) + deepF * (1.0 - convF) * 0.35, 0.0, 1.0);
+        }
+        pr = max(pr * (1.0 - 0.95 * smoothstep(0.02, 0.2, sst.x)) * (1.0 - 0.9 * gRainFree), 0.85 * sst.z);
+        imageStore(outWeather, id, vec4(cov, l1.g, pr, l1.a));
+        return;
+    }
 
     float conv = max(smoothstep(0.06, 0.2, sd), 0.8 * aft);  // broken field (afternoon convection is)
     float deep = smoothstep(0.55, 0.9, cov);                // bright = thick/tall
@@ -413,11 +517,14 @@ void main()
             float wc = (c == 0) ? pc.evo0.z : pc.evo0.w;
             if (wc < 1e-3) continue;
             vec3  dc  = normalize(dS - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));
+            vec2  uvc = equirectUV(dc);
+            float latc = asin(clamp(dc.z, -1.0, 1.0));
+            gEqLin = abs(d.z) < 0.97 && texel < 0.04;   // (offsets up to half a texel)
             float acc = 0.0;
             for (int j = 0; j < N; ++j)
                 for (int i = 0; i < N; ++i) {
                     vec2  o = ((vec2(i, j) + 0.5) / float(N) - 0.5) * texel;
-                    float b = textureLod(earthCloudsTex, equirectUV(normalize(dc + tx * o.x + ty * o.y)), lodT).r;
+                    float b = textureLod(earthCloudsTex, eqTap(dc, uvc, latc, tx, ty, o), lodT).r;
                     acc += clamp(((b + add) * pc.remap.x - pc.remap.y) / span, 0.0, 1.0);
                 }
             frac += wc * acc / float(N * N);
@@ -429,9 +536,11 @@ void main()
     // Ground height (terrain.glsl's encoding: 15/255 is sea level, 255/255 ~8.5 km above it), a 2x2
     // supersample at this mip's scale (the DEM's 2.7 km texels, ~2 mips finer than the source map's).
     float gnd = 0.0;
+    vec2  uvd = equirectUV(d);
+    float latd = asin(clamp(d.z, -1.0, 1.0));
     for (int k = 0; k < 4; ++k) {
         vec2 o = (vec2(k & 1, k >> 1) - 0.5) * 0.5 * texel;
-        float v = textureLod(earthElevTex, equirectUV(normalize(d + tx * o.x + ty * o.y)), pc.srcLod + 1.0).r;
+        float v = textureLod(earthElevTex, eqTap(d, uvd, latd, tx, ty, o), pc.srcLod + 1.0).r;
         gnd += max(0.0, v * 9000.0 - 15.0 / 255.0 * 9000.0);
     }
     gnd *= 0.25;
