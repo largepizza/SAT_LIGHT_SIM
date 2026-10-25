@@ -5318,7 +5318,7 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   rotation recurrence, equal-area latitude bands and octant heading bins (no trig per sample), 4-16 statistical
   orbits by fragment count; `World::stateOf` has a direct Kepler path for pool records (no attitude terms, Newton
   stops when converged); engine events are spread through their 6-h step (`hash01`) and applied in time order (all
-  at the midpoint, every collision of a step happened in the same second: dust clouds and re-entries in bursts).
+  at the midpoint, every collision of a step happened in the same second: dust clouds and re-entries in bursts). **A pair collision is carried to its spread time** (2026-10-24, `Event::sampleDt`, the old unused `firstRec`; kCacheVersion 17): the pair is together only at the sample time, and the projectile's fragments were built where IT was at the event's time, 350-13000 km from the target's (and from `Event::pos`, the dust cloud and the tracker's Watch); now its velocity relative to the target at the sample time, in the target's local frame (radial, along, normal), is turned into that frame at the event time and the projectile is placed on the target: same impact speed, one place (every piece at 0 km from `Event::pos` at the event; harness `kessler poscheck [n=] [ev=]`).
   **Measured** (RTX 3070 Ti, shipped roster, x1, `harness_runs/kessler2/b4`): one simulated year in 507 s (before
   these: 670 s and 13.3 GB); days 0-50 in 28 s, the busiest stretch (days 60-100: millions of collisions) ~3 s per
   sim-day, days 100-365 ~1.2 s per sim-day; working set 1.9 GB at day 50, 3.2 GB at 100, 4.3 GB at 351 (still growing
