@@ -364,6 +364,7 @@ void SatelliteSim::weatherFillDustGrid()
     if (!on)
     {
         head[0] = 0u;
+        dustGpuOn = false;
         dustGridCellM = 0.0;
         dustWallsNow = dustCellsNow = 0;
         dustGridT = -1e300;
@@ -589,5 +590,6 @@ void SatelliteSim::weatherFillDustGrid()
         dustBox = glm::ivec4(0, 0, 0, 0);
         head[0] = 0u;
     }
+    dustGpuOn = head[0] != 0u;
     dustGridMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }

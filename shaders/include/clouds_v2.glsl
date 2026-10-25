@@ -1943,6 +1943,14 @@ float cv2DustWallSigma(CV2Pos q, vec3 w, float fpM, out float hfD, out float top
 #endif
 }
 
+// The haboob code in the field on / off (perf pass 4, 2026-10-25). Its mere presence, never run, cost the march 0.5-1 ms in
+// every view (the field is inlined at two sites: code size), so the march is built twice, specialization constant 3, and the
+// host binds the dust-free one while the dust grid holds no wall (SatelliteSim::dustGpuOn). Other shaders keep it on.
+#ifdef CV2_DUST_SPEC
+layout(constant_id = 3) const int kCv2DustOn = 1;
+#else
+const int kCv2DustOn = 1;
+#endif
 CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
 {
     gCv2FlowSet = false;
@@ -1957,11 +1965,14 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     float hfD, topD, sd = 0.0;
 #ifdef CV2_STORM_BINDING
     vec3 dw = vec3(0.0);
-    if (cv2DustHead.x != 0u && q.h - gCv2Ground < cv2DustFrame[1].w) dw = cv2DustWallAt(q.seaProjE);
+    if (kCv2DustOn != 0 && cv2DustHead.x != 0u && q.h - gCv2Ground < cv2DustFrame[1].w) dw = cv2DustWallAt(q.seaProjE);
     // The air ahead of a haboob's gust front sinks and is dry: the low cloud and rain there (the line's shelf band, drawn
     // 1-22 km ahead of its towers whatever the outflow's lead, the weather map's own) give way, so the wall stands under
     // open sky with the storm's anvil above (dw.z: from just behind the front's foot to ~12 km ahead of it).
-    f.sigma *= 1.0 - 0.95 * dw.z;
+    // Cleared OUTRIGHT where the clear air is (perf pass 4, 2026-10-25): x (1 - 0.95 z) left 5% of the shelf deck as a
+    // thin milky veil over the whole view that every ray marched and lit for tens of km (haboob Watch, the user's
+    // settings: cloud march 20.3 -> 13.0 ms), and hid the storm behind it.
+    f.sigma *= 1.0 - smoothstep(0.0, 0.8, dw.z);
     sd = cv2DustWallSigma(q, dw, fpM, hfD, topD);
 #endif
     if (sd > 0.0) {
