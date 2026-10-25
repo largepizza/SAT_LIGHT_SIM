@@ -21,6 +21,7 @@
 #endif
 #define PAD_MAX 12   // launch pads in the block (SatelliteSim.h kMaxPadsGpu)
 #define COAST_MAX 4  // coast patches around launch sites (SatelliteSim.h kMaxCoastPatchesGpu)
+#define FIRE_MAX 8   // wildfire burn scars near the observer (SatelliteSim.h kMaxFiresGpu)
 #define COAST_GRID_N 48 // their signed distance grid's side (kCoastGridN; tools/make_pad_coasts.py GRID_N)
 
 struct CloudLayer {
@@ -514,4 +515,16 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     vec4  surgeA[2];
     vec4  surgeB[2];
     vec4  surgeInfo;
+    // -- Wildfire burn scars (11184 -> 12224, 2026-10-24; SatelliteSimWildfire.cpp weatherFillFireParams, sat_sky.frag
+    // fireScarAt): the burnt areas of the nearest FIRE_MAX fires, in the observer's ENU frame from its sea-level point
+    // (terrain_detail.glsl's q). fireInfo x count; fireC xyz the burnt ellipse's centre (on the sea-level sphere), w its
+    // semi-axis along the spread (m); fireU / fireV xyz the spread / across axes (horizontal at the fire), w of fireU its
+    // half width (m), w of fireV the fire's seed; fireAux x how fresh (1 burning .. 0 at its end), y 1 / the edge's
+    // softness (m), zw unused; fireK the fingers' radial factor at 64 angles round it (4 a uint, 0.6 + byte / 255 x 0.8).
+    vec4  fireInfo;
+    vec4  fireC[FIRE_MAX];
+    vec4  fireU[FIRE_MAX];
+    vec4  fireV[FIRE_MAX];
+    vec4  fireAux[FIRE_MAX];
+    uvec4 fireK[FIRE_MAX * 4];
 } cloud;

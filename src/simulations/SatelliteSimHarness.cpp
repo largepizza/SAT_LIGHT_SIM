@@ -4297,7 +4297,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             }
             else
             {
-                oe = glm::normalize(Hd - cv * (c.num("dist_km", 30.0) * 1000.0 / 6371000.0) - wv * (8000.0 / 6371000.0));
+                oe = glm::normalize(Hd - cv * (c.num("dist_km", 30.0) * 1000.0 / 6371000.0) - wv * (c.num("back_km", 8.0) * 1000.0 / 6371000.0));
                 altM = c.num("alt", 700.0);
             }
             if (followActive) stopFollow();

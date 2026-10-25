@@ -44,9 +44,16 @@ double fireFrontIntensity(double a);
 // The real front (2026-10-23 b): the ellipse with FINGERS (a radial perturbation from its centre, ~10% at the head,
 // growing slowly with the fire) at edge angle a, metres east / north of the ignition point; and ds/da there (m/rad).
 glm::dvec2 fireFrontAt(const Fire &f, const FireState &s, double a, double *dsda = nullptr);
-// How much of the front at angle a is burning now: fireFrontIntensity x a broken pattern along it (runs of flame and
-// gaps, re-drawn over ~2 h), 0..~1.2.
-double fireFrontHeat(const Fire &f, const FireState &s, double a, double t);
+// The fingers' radial factor at edge angle a (fireFrontAt = the ellipse's point at a scaled by it from the centre).
+double fireFrontRadiusK(const Fire &f, const FireState &s, double a);
+// How much of the front at angle a is burning now (2026-10-24 rework, the user: "fire generates as rings, at best they
+// should be arcs with scattered flames here and there"): an ACTIVE ARC round the head (the whole ring only while the
+// fire is young, narrowing to the head and the upper flanks, one flank often stronger), broken into runs of flame and
+// long gaps (re-drawn over ~1.5 h, nothing between runs), with a few isolated flare-ups off the arc; 0 where the
+// ground there cannot burn (bio: the biome map's fuel less its built-up mask: lakes, towns, bare desert). 0..~1.5.
+double fireFrontHeat(const Fire &f, const FireState &s, double a, double t, const BiomeMap *bio = nullptr);
+// The lat / lon of a point x, y metres east / north of the ignition point.
+void fireOffsetLatLon(const Fire &f, const glm::dvec2 &q, double &latDeg, double &lonDeg);
 // The flames: their height (m) and the depth of the flaming zone (m) at a front heat of 1.
 double fireFlameHeightM(const Fire &f, const FireState &s);
 double fireFlameDepthM(const Fire &f);

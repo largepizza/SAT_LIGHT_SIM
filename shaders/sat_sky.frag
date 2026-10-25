@@ -1651,6 +1651,46 @@ float padValueNoise(vec2 x) {
     return 0.5 + 0.5 * mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+// Wildfire burn scars (2026-10-24; SatelliteSimWildfire.cpp weatherFillFireParams, cloud.fire*): how burnt the ground at
+// q is (0..1) and its share of pale ash, over the nearest FIRE_MAX fires' burnt ellipses with their fingers (the same
+// radial factor the front's points stand on, 64 angles, Wildfire.cpp fireFrontRadiusK). The active arc burns at the
+// scar's edge; behind it the ground is black with grey-white ash and a few unburnt islands. footM: the pixel's
+// footprint (the edge never sharper than it, the islands averaged away past it).
+float fireScarAt(vec3 q, float footM, out float ash) {
+    ash = 0.0;
+    float scar = 0.0;
+    int n = min(int(cloud.fireInfo.x + 0.5), FIRE_MAX);
+    for (int i = 0; i < n; ++i) {
+        vec3  d  = q - cloud.fireC[i].xyz;
+        float sm = cloud.fireC[i].w, hw = cloud.fireU[i].w;
+        float u  = dot(d, cloud.fireU[i].xyz), v = dot(d, cloud.fireV[i].xyz);
+        if (abs(u) > 1.5 * sm + footM || abs(v) > 1.5 * hw + footM) continue;
+        vec2  e  = vec2(u / sm, v / hw);
+        float r  = length(e);
+        float a  = atan(e.y, e.x);
+        float x  = (a < 0.0 ? a + 6.2831853 : a) * (64.0 / 6.2831853);
+        int   j0 = int(floor(x)) & 63, j1 = (j0 + 1) & 63;
+        float k0 = float((cloud.fireK[i * 4 + (j0 >> 4)][(j0 >> 2) & 3] >> uint(8 * (j0 & 3))) & 255u);
+        float k1 = float((cloud.fireK[i * 4 + (j1 >> 4)][(j1 >> 2) & 3] >> uint(8 * (j1 & 3))) & 255u);
+        float k  = 0.6 + mix(k0, k1, fract(x)) * (0.8 / 255.0);
+        float rM = length(vec2(u, v)) / max(r, 1e-4);              // the ellipse's radius at this angle (m)
+        float wR = (1.0 / cloud.fireAux[i].y + footM) / max(rM, 1.0);
+        float in0 = 1.0 - smoothstep(k - wR, k + wR, r);
+        if (in0 <= 0.0) continue;
+        float sd = cloud.fireV[i].w;
+        float fine = 1.0 - smoothstep(60.0, 400.0, footM);
+        float isl  = mix(0.08, smoothstep(0.7, 0.8, padValueNoise(vec2(u, v) / 300.0 + sd)), fine);
+        float s    = in0 * cloud.fireAux[i].x * (1.0 - isl);
+        if (s > scar) {
+            scar = s;
+            ash  = mix(0.3, smoothstep(0.5, 0.8, padValueNoise(vec2(u, v) / 110.0 + 1.7 * sd)), fine);
+        }
+    }
+    return scar;
+}
+#endif
+
 // The floodlights' light on a pad's ground (2026-10-20), relative to the pad's centre: the masts' and the tower's
 // floods of SatelliteSimLaunches.cpp padLightsOf (keep in step), each aimed at the centre in a cos^6 lobe, Lambert on
 // the ground, 1 / d^2. A uniform floodlit apron read as a pale blank slab at night (the user); now bright under the
@@ -4915,6 +4955,18 @@ void main() {
                 float nz   = 0.65 * padValueNoise(cP / 420.0) + 0.35 * padValueNoise(cP / 90.0 + 17.3);
                 vec3  land = cloud.coastCol[cI].rgb * (0.7 + 0.6 * nz);
                 dayColor   = mix(dayColor, land, max(wet, 0.75) * cK);   // (the 5-km map is a guess here anyway)
+            }
+        }
+        // Wildfire burn scars (2026-10-24, fireScarAt): the burnt ground behind the fronts, black with grey-white ash,
+        // never in a lit town (the fires do not burn there: Biome.cpp's built-up mask). It makes a fire read as what it
+        // is from the air and from orbit by day: an arc of flame and smoke at the edge of a dark scar, not a ring.
+        if (cloud.fireInfo.x > 0.5 && tHit > 0.0) {
+            float ash;
+            float scar = fireScarAt(terrainQ, pixAngle * tHit, ash);
+            if (scar > 0.0) {
+                float lumN = dot(nightColor, vec3(0.2126, 0.7152, 0.0722));
+                scar *= 1.0 - smoothstep(0.004, 0.03, lumN - 0.0065);
+                dayColor = mix(dayColor, mix(vec3(0.028, 0.026, 0.024), vec3(0.2, 0.19, 0.18), 0.5 * ash), scar);
             }
         }
 #endif

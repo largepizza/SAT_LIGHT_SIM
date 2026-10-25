@@ -1,0 +1,89 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : require // [[dont_unroll]] in terrain_detail.glsl
+
+// ── wildfire_ground.comp — the wildfires' points and close-up flames put on the DRAWN ground (2026-10-24) ──────────
+// SatelliteSim::weatherFillWildfires places the front's points (kFireBuf) and flame Gaussians (the dust list) over the
+// DEM it has on the CPU (the full DEM at the ignition point + the 18-km copy's change across the fire). The ground the
+// sky pass draws is the DEM + the procedural detail (terrain_detail.glsl): tens to hundreds of metres off in rough
+// country, so close up most points sat under the drawn surface and the depth test hid them (the user: "they disappear
+// when you are close"). Each one is moved here, before the cloud composite and the points are drawn, to the same height
+// function the terrain march uses at the same LOD (a footprint of its range), and its direction and range rewritten.
+// A point: kFireBuf entry with a NEGATIVE range (the CPU's mark), lifted over the ground by the height the CPU packed
+// into its direction's length (1 + h / 1000 m; written back unit). A flame Gaussian: its
+// centre's height over the ground is in ib.w (emissive Gaussians read no ib.w in cloud_march.comp).
+layout(local_size_x = 64) in;
+
+layout(push_constant) uniform PC {
+    vec4  obsECEFDir;  // as everywhere (xyz the observer's direction, the frame the CPU's ENU offsets are in)
+    vec4  eye;         // x = the eye's height over the sea-level sphere (the CPU's, obsEyeRadiusM - R), y = the
+                       // full-res pixel angle, z = how far the snap reaches (m)
+    uvec4 rng;         // x, y = kFireBuf's wildfire points [first, count); z, w = the dust list's flames [first, count)
+} pc;
+
+layout(set = 0, binding = 0) uniform sampler2D earthElevTex;
+layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;
+#define CLOUD_PARAMS_BINDING 2
+#include "cloud_params.glsl"
+struct Fireball { vec4 dirFlare; vec4 colRange; };
+layout(set = 0, binding = 3) buffer FireBuf { uint fireCount; uint fp0, fp1, fp2; Fireball fire[]; };
+struct DustCloud { vec4 c; vec4 ia; vec4 ib; vec4 col; vec4 cone; };
+layout(set = 0, binding = 4) buffer DustBuf { uint dustCount; uint dp0, dp1, dp2; DustCloud dust[]; };
+
+#include "common.glsl"
+#include "terrain.glsl"
+#include "terrain_detail.glsl"
+
+// rel: the offset from the eye (ENU, m). Returns the offset of the point hAbove over the drawn ground under it.
+vec3 onGround(vec3 rel, float hAbove, vec3 enuX, vec3 enuY, vec3 enuZ)
+{
+    vec3  q   = vec3(0.0, 0.0, pc.eye.x) + rel;          // from the observer's sea-level point
+    vec3  qs  = tdSphereOffset(q);                        // the point on the sea-level sphere under it
+    float range = length(rel);
+    float h0;
+    float h = terrainHeightDetailed(earthElevTex, earthSpecTex, qs, enuX, enuY, enuZ,
+                                    tdGeomLodM(range, pc.eye.y), kTdOctaves, h0);
+    vec3  up  = normalize(vec3(qs.xy, R_EARTH + qs.z));
+    return qs + up * (max(h, 0.0) + hAbove) - vec3(0.0, 0.0, pc.eye.x);
+}
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    vec3 enuX, enuY, enuZ;
+    enuBasis(pc.obsECEFDir.xyz, enuX, enuY, enuZ);
+    if (i < pc.rng.y) {
+        uint k = pc.rng.x + i;
+        if (k >= fireCount) return;
+        Fireball f = fire[k];
+        if (f.colRange.w >= 0.0) return;
+        float r = -f.colRange.w;
+        if (r < pc.eye.z && tdEnabled()) {
+            // (its height over the ground rides in the direction's length: 1 + h / 1000 m)
+            float hAb = clamp((length(f.dirFlare.xyz) - 1.0) * 1000.0, 0.0, 200.0);
+            vec3 p = onGround(normalize(f.dirFlare.xyz) * r, hAb, enuX, enuY, enuZ);
+            float rn = max(length(p), 1.0);
+            fire[k].dirFlare.xyz = p / rn;
+            r = rn;
+        }
+        else
+            fire[k].dirFlare.xyz = normalize(f.dirFlare.xyz);
+        fire[k].colRange.w = r;
+        return;
+    }
+    uint j = i - pc.rng.y;
+    if (j < pc.rng.w) {
+        uint k = pc.rng.z + j;
+        if (k >= dustCount) return;
+        DustCloud d = dust[k];
+        float r = length(d.c.xyz);
+        if (r >= pc.eye.z || !tdEnabled()) return;
+        vec3 p = onGround(d.c.xyz, d.ib.w, enuX, enuY, enuZ);
+        float rn = max(length(p), 1.0);
+        dust[k].c.xyz = p;
+        // (its view cone: the same angular radius about its new direction)
+        if (d.cone.w > -1.5) {
+            float sinR = sqrt(max(1.0 - d.cone.w * d.cone.w, 0.0)) * r / rn;
+            dust[k].cone = sinR < 0.95 ? vec4(p / rn, sqrt(1.0 - sinR * sinR)) : vec4(0.0, 0.0, 0.0, -2.0);
+        }
+    }
+}

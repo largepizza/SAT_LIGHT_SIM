@@ -1534,6 +1534,7 @@ static_assert(sizeof(CitySpritePC) == 64, "CitySpritePC must match city_sprites.
 // Launch pads drawn on the ground (2026-10-19; cloud_params.glsl PAD_MAX must match).
 static constexpr int kMaxPadsGpu = 12;
 static constexpr int kMaxCoastPatchesGpu = 4;   // == COAST_MAX (cloud_params.glsl)
+static constexpr int kMaxFiresGpu = 8;          // == FIRE_MAX (cloud_params.glsl): wildfire burn scars
 static constexpr int kCoastGridN = 48;          // == COAST_GRID_N (tools/make_pad_coasts.py GRID_N)
 struct GpuCloudParams
 {
@@ -1858,8 +1859,16 @@ struct GpuCloudParams
     glm::vec4 surgeA[2];    // xyz the motion (Earth-fixed unit tangent), w the peak rise at the coast (m; 0 = none)
     glm::vec4 surgeB[2];    // xyz the surge side (right of the motion in the north, left in the south), w cos(reach)
     glm::vec4 surgeInfo;    // x 1 = any surge, y the largest peak (m)
+    // Wildfire burn scars (11184 -> 12224, 2026-10-24, SatelliteSimWildfire.cpp weatherFillFireParams): the nearest
+    // kMaxFiresGpu fires' burnt ellipses in the q frame (cloud_params.glsl for the fields).
+    glm::vec4 fireInfo;                    // x count
+    glm::vec4 fireC[kMaxFiresGpu];         // xyz centre (sea-level sphere), w semi-axis along the spread (m)
+    glm::vec4 fireU[kMaxFiresGpu];         // xyz spread axis, w half width (m)
+    glm::vec4 fireV[kMaxFiresGpu];         // xyz across axis, w seed
+    glm::vec4 fireAux[kMaxFiresGpu];       // x freshness, y 1 / edge softness (m)
+    glm::uvec4 fireK[kMaxFiresGpu * 4];    // fingers' radial factor at 64 angles, 4 bytes a uint
 };
-static_assert(sizeof(GpuCloudParams) == 11184, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 12224, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -4918,6 +4927,31 @@ private:
     float fireLodScale = 1.0f;                 // x the front points' spacing: widened when a crowd of fires overflows
                                                // the frame's point budget, relaxed back slowly (the levels cross-fade)
     uint32_t firePointsLast = 0, fireFlamesLast = 0, fireLightsLast = 0;   // this frame (harness `fires`)
+    double firePeakFlare = 0.0, fireFlareSum = 0.0, fireGlowSum = 0.0;     // this frame's points / glow (harness `fires`)
+    uint32_t fireSmokeSources = 0;                                          // this frame's smoke streaks (harness `fires`)
+    // The night map's luminance (earthNightCpu: ~18 km, 0..255 sRGB; the land's blue base ~14): the built-up mask.
+    float nightLumCpu(float latDeg, float lonDeg) const
+    {
+        if (earthNightCpu.empty()) return 0.0f;
+        const int x = std::clamp((int)((lonDeg + 180.0f) / 360.0f * earthNightCpuW), 0, earthNightCpuW - 1);
+        const int y = std::clamp((int)((90.0f - latDeg) / 180.0f * earthNightCpuH), 0, earthNightCpuH - 1);
+        return (float)earthNightCpu[(size_t)y * earthNightCpuW + x];
+    }
+    // The fire's points and close-up flames stand on the DRAWN ground (2026-10-24): wildfire_ground.comp moves each one
+    // to the detailed terrain (DEM + the procedural detail, terrain_detail.glsl) under it before they are drawn. The
+    // CPU only knows the DEM (and the 18-km copy between): close up most points sat under the drawn surface and the
+    // depth test hid them ("they disappear when you are close").
+    uint32_t firePtFirst = 0, firePtCount = 0;     // kFireBuf's wildfire points this frame
+    uint32_t flameFirst = 0, flameCount = 0;       // the dust list's flame Gaussians this frame
+    VkDescriptorSetLayout fireGroundDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool fireGroundDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet fireGroundDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout fireGroundPipeLayout = VK_NULL_HANDLE;
+    VkPipeline fireGroundPipe = VK_NULL_HANDLE;
+    bool fireGroundFailed = false;
+    void recordWildfireGround(VkCommandBuffer cmd, VulkanContext &ctx);
+    void weatherFillFireParams(GpuCloudParams &cp);   // the burn scars (sat_sky.frag fireScarAt): last frame's firesNow
+    void destroyWildfireGround(VkDevice device);
     uint32_t smokeHdrBits = 0;
     uint32_t aerosolFirst = 0xFFFFFFFFu;       // this frame's first haboob Gaussian (weatherFillHaboobs; one range with the smoke)                 // the dust list header word 1's smoke range (smoke.glsl), this frame's
     void weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double pixFull);

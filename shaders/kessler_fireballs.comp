@@ -47,7 +47,7 @@ void main()
     if (slot >= pc.capacity)
         return;
     satellites[slot] = SatVisible(normalize(f.dirFlare.xyz), flare, packUnorm4x8(vec4(f.colRange.rgb, 1.0)),
-                                  pointSpriteSizePx(psf.y), f.colRange.w * 0.995, -1.0);
+                                  pointSpriteSizePx(psf.y), abs(f.colRange.w) * 0.995, -1.0);
     visibleSatIdx[slot] = 0xFFFFFFFFu;
     atomicMax(drawVertexCount, slot + 1u);
 }
