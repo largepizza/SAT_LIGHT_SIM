@@ -444,7 +444,9 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
                     lumpL = mix(1.0, lumpL, bK);
                     lumpA = mix(1.0, lumpA, bK);
                 }
-                tau *= max(mN, mix(0.2, 0.05, lowK));
+                // (a tornado's funnel / debris / wall cloud keeps 0.3 of its optical depth in the billows' troughs: at 0.05
+                // the trough was a hole through the funnel's core, 2026-10-24; its edge is still lumpy, the cut below)
+                tau *= max(mN, sk >= 256.0 ? 0.3 : mix(0.2, 0.05, lowK));
                 // ...and its faint tails cut where the billows thin it (low down): each puff gets a crisp, lumpy edge
                 // (a Gaussian's tail is a soft halo hundreds of metres wide: the ground cloud read as a glowing ball).
                 tau *= mix(1.0, smoothstep(0.02, 0.35, tau), lowK);
@@ -523,7 +525,11 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
                 LpE += el.ia.rgb * (tau * lumpA * shL * (d.col.w - 2.0) * el.c.w / (r2 + sAl2 + el.ia.w * el.ia.w));
             }
             if (isSm) tauSm += tau;                   // (smoke dims what is behind it spectrally: the caller)
-            else      Ls += tau * (d.col.w - 2.0);    // its albedo (col.w = 2 + albedo)
+            // its albedo (col.w = 2 + albedo): the caller gives back 0.85 x albedo x (1 - exp(-tau)) of the BACKGROUND, the sky's
+            // light it scatters toward the eye. A tornado (seedK >= 256) carries its own sky light, the storm's (the CPU's
+            // iso term x lightK): with the give-back 0.85 x 0.45 = 38% of whatever stood behind the funnel showed through
+            // its opaque core ("Tornados are transparent", 2026-10-24), under a storm base far more than its own light.
+            else      Ls += tau * (sk >= 256.0 ? 0.0 : d.col.w - 2.0);
             tauP += tau;
             tP   += tau * clamp(tc, 0.0, T);
             // (2026-10-20, QA) where the plumes' LIGHT comes from: the caller puts it in front of or behind the

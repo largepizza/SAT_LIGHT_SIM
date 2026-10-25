@@ -4680,6 +4680,12 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (lower(pos(0)) == "tornado")
         {
             if (!stormCatalog) fail("storms tornado: no catalog");
+            if (c.has("draw"))   // `storms tornado draw=0|1`: hide / show the funnels (an A/B of what shows through them)
+            {
+                harnessTornadoHidden_ = c.num("draw", 1.0) <= 0.0;
+                r["message"] = harnessTornadoHidden_ ? "tornadoes hidden" : "tornadoes drawn";
+                return Status::Done;
+            }
             const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
             // (The storms alive now and over the next 12 h: a supercell is a few percent of storms. Each step's list is
             // used at once: the next stormsAt call evicts bins outside its own window.)

@@ -957,6 +957,18 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   that base: x lightK = (Td + 0.35 (0.3 + 0.7 Td)) / 1.35, Td = 1 / (1 + 0.11 tau), its sky hue kept by Td (grey under a
   storm). No probe (clouds v2 off, from orbit): the type's base. ~40 field evaluations per probed funnel on one thread of the
   lightning pass; GPU within noise. Harness `state` -> `weather.tornado_list` (base_agl_m, base_probed, tau_above, light_k).
+  **It is opaque** (2026-10-24, the user: "Tornados are transparent. We can see a lot through them"): the plume composite gives
+  back 0.85 x albedo x (1 - exp(-tau)) of the BACKGROUND (the sky light a plume scatters, for plumes without their own), and
+  a tornado carries its own (the iso term x lightK): 38% of whatever stood behind the funnel showed through its core, under a
+  storm base far more than its own light. Tornado Gaussians (seedK >= 256) now add no albedo to that give-back (`Ls`,
+  cloud_march.comp), keep 0.3 of their optical depth in the billows' troughs (0.05 punched holes), the debris cloud is 6
+  across (spray 3; was 2 / 1.2) and the wall cloud 8 across, sigma 700 m (300 at sea), 200 m thick (was 1 / 1500 m / 160 m:
+  translucent and ~9 km wide). Background blocked in the funnel's core (1 - on / off, linear, 1600x900): 0.40-0.41 -> 0.67-0.77
+  median, 0.84 p90 (the rest is its own dark-grey light); composite 128 registers, cloud_march within noise. Open: the
+  plume's front / behind blend keys on the cloud's MEAN distance, so mist near the eye (the report's view, 125 m under the
+  base) still veils a funnel the mean puts behind it; the opacity median (`tCloudOcclude`) instead drew the wall cloud as a
+  dark mushroom in front of the base (tried, dropped). The wall cloud's edges where the base's distance crosses it are hard.
+  Harness `storms tornado draw=0|1` hides / shows the funnels (an A/B of what shows through them).
   **Its roar** (layer `tornado_roar`, synth wind: low brown rumble 130-360 Hz, broad, fast churning gusts and flutter, debris
   hiss close; driver `tornado` = sum over the funnels within ~200 km of sqrt(width / 150 m) x lifecycle / (1 + (d / 2 km)^2),
   d to the nearest point of the funnel; heard below ~3-6 km AGL). Offline (`audio record ... solo=tornado_roar`): -36 dBFS

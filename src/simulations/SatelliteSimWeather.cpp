@@ -934,6 +934,7 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
             std::memcpy(static_cast<char *>(cv2FlashMapped) + kCv2RainMapOffset - 80 + 8 * 4, req, sizeof req);
     }
     const double kTwoPi15 = 15.749609945722419;
+    if (harnessTornadoHidden_) return;   // (harness A/B: listed and probed, not drawn)
     for (TornadoNow &T : tornadoesNow)
     {
         const double ground = T.sea ? 0.0 : std::max(0.0, (double)cpuTerrainHeightM(
@@ -1038,15 +1039,19 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
             // tau ~ 1, at ~rr, as a condensation funnel's defined outline. At tau 3.5 and sigma rr it was a soft cone.)
             emit(p, axis, 0.6 * (z1 - z0), rr / 2.6, 40.0, 0.45, glm::dvec3(grey), 0.06, wFun);
         }
-        // The wall cloud: a lowered, rotating disc under the base, 1.5-3 km across.
-        emit(T.earthDir * (kReW + ground + Hb - 60.0), T.earthDir, 160.0, (T.spout ? 450.0 : 1500.0), 1.0, 0.4,
+        // The wall cloud: a lowered, rotating disc under the base, ~3 km across (+-2 sigma). (tau0 is the optical depth
+        // ACROSS a Gaussian's axis: 8 seen from the side, ~2.3 looking straight up through it; a lowered cloud is opaque. At
+        // 1 / 160 m the storm's base showed through it from every side, and at sigma 1500 m it was ~9 km wide: from the
+        // ground beside the tornado a dark band across half the view, 2026-10-24.)
+        emit(T.earthDir * (kReW + ground + Hb - 60.0), T.earthDir, 200.0, (T.spout ? 300.0 : 700.0), 8.0, 0.4,
              glm::dvec3(0.6, 0.62, 0.66), 0.02, 0.021);
-        // The debris cloud (land) or the spray ring (sea) once it touches down.
+        // The debris cloud (land) or the spray ring (sea) once it touches down: dense at its core (optical depth 6 across
+        // it, spray 3; it was 2 / 1.2, and with the billows' troughs the ground behind showed through).
         if (zBot < 30.0)
         {
             const bool spray = T.sea;
             emit(T.earthDir * (kReW + ground + (spray ? 40.0 : 90.0)), T.earthDir, spray ? 50.0 : 110.0,
-                 r0 * (spray ? 2.2 : 2.8), spray ? 1.2 : 2.0, spray ? 0.8 : 0.45,
+                 r0 * (spray ? 2.2 : 2.8), spray ? 3.0 : 6.0, spray ? 0.8 : 0.45,
                  spray ? glm::dvec3(0.95, 0.97, 1.0) : glm::dvec3(0.62, 0.52, 0.42), 0.15, 0.7 * wFun);
         }
     }
