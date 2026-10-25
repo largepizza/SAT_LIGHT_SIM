@@ -1204,7 +1204,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   `haboobStrongestPoint`: the front's dustiest, best front-lit stretch at that moment, 9 km ahead of it on the ground or
   2.5 km up, looking at it — they stood a fixed distance from the storm's centre, 40-80 km from the wall actually drawn), Supercell and Squall line (the strongest alive now, mature and daylit preferred: Go
   to, Watch, Tornado / Passage), Waterspout (as the tornado, at sea), Wildfire (the biggest fire burning now, by size x
-  activity: Go to beside its column, Orbit). Each card is an icon, three unwrapped lines clipped at its edge and a 2 x 2
+  activity: Go to 10 km beside its column across the smoke's wind and 4 km upwind, 300 m up, on the side with the Sun behind you by day, Orbit). **Tornado views leave the rain by radar** (2026-10-24, `weatherTornadoFixTick`): ten frames after the jump (the weather cube re-baked) one radar dispatch at 50 km (`wxRadarProbe`, read into `wxProbeFrame`, not shown) scores 48 spots round the funnel (12 bearings x 4.5-12 km) by the rain there x 1.5 + along the line of sight, and moves the eye to the driest (log: `weather: tornado view moved out of the rain`); a CPU estimate from towers and shields stood in full rain (the map's rain and the envelope decks are only on the GPU). Each card is an icon, three unwrapped lines clipped at its edge and a 2 x 2
   button grid (disabled when they do not apply), so nothing moves as storms come and go; NEAR YOU below is 4 STICKY slots
   of organised storms (a storm keeps its slot while it is near; air-mass cells only when nothing organised is near), the
   rows fixed-height too. **Never search ahead on the main catalog:** `stormsAt(t)` evicts every bin outside [t - 9 h,
