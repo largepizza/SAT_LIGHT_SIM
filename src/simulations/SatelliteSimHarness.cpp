@@ -2721,7 +2721,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             // kessler reentry: the next re-entry over a dark sky (the settings' "Watch the next re-entry").
             std::string msg;
-            if (!kesslerGoToNextReentry(msg))
+            if (!kesslerGoToNextReentry(msg, c.num("watch", 0.0) > 0.5))
                 fail("kessler reentry: " + msg);
             r["reentry"] = msg;
         }
@@ -2794,7 +2794,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
 
     if (n == "missions")
     {
-        // missions [state] | go <index|twilight|crew|fury|fury_night> [watch=1] | tab upcoming|ongoing|kessler
+        // missions [state] | go <index|twilight|crew|fury|fury_night> [watch=1] | launch <index|twilight|crew|fury> | catch |
+        // tab upcoming|ongoing|kessler
         // (2026-10-19, SatelliteSimMissions.cpp): the Missions window's rows and actions.
         const std::string sub = lower(pos(0));
         if (sub.empty() || sub == "state")
@@ -2808,6 +2809,28 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             if (!missionsGo(lower(pos(1)), c.num("watch", 0.0) > 0.5, msg))
                 fail("missions go: " + msg);
             msStatus = msg;
+            r["message"] = msg;
+            return Status::Done;
+        }
+        if (sub == "launch")
+        {
+            // missions launch <index|twilight|crew|fury> (2026-10-24): the Upcoming rows' / the Sun's Fury's Watch (the
+            // launch under way, its stage tracked once listed; the storm night).
+            std::string msg;
+            if (!missionsWatch(lower(pos(1)), msg))
+                fail("missions launch: " + msg);
+            msStatus = msg;
+            r["message"] = msg;
+            r["sunlit_from_s"] = launchWatchLitT;
+            r["scan_samples"] = launchWatchScanN;
+            return Status::Done;
+        }
+        if (sub == "catch")
+        {
+            // missions catch: Settings > Launches "Watch a Starship catch" (the landing burn, the ship tracked).
+            std::string msg;
+            if (!launchWatchCatch(msg))
+                fail("missions catch: " + msg);
             r["message"] = msg;
             return Status::Done;
         }
@@ -3109,7 +3132,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (sub == "reentry")
         {
             std::string msg;
-            if (!launchGoToNextReentry(msg))
+            if (!launchGoToNextReentry(msg, c.num("watch", 0.0) > 0.5))
                 fail("launch reentry: " + msg);
             r["message"] = msg;
             return Status::Done;

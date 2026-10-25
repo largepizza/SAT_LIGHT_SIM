@@ -2850,7 +2850,8 @@ private:
     bool kesslerNextReentry(uint32_t &sat, double &tJ2000, glm::dvec3 &breakupEci, glm::dvec3 &velEci) const;
     // Sets the clock 25 s before that re-entry's breakup (1x, running) and the observer ~120 km to the side of its
     // track, looking at the breakup point. False (and why in msg) when none is due in the next 6 h.
-    bool kesslerGoToNextReentry(std::string &msg);
+    bool kesslerGoToNextReentry(std::string &msg, bool watch = false); // watch: mid-glow, the fireball tracked
+    bool selWantTrack = false;        // the selWant* fireball's camera lock (a Watch)
     SegVec<kessler::Event> kEvents;      // ... of the applied events (segmented: it never moves, 2026-10-21)
     double kFrontier = 0.0;               // simulated up to here (J2000 s)
     double kCacheFrontier = 0.0;          // the loaded cache's frontier: a cache is only ever rewritten longer
@@ -2930,6 +2931,8 @@ private:
     SelTransient selTransientCur;            // the selected one, as last seen
     uint64_t selTransientKey = 0;
     uint64_t launchWantSelKey = 0; // a harness jump's stage, selected once the list has it (selTransientUpdate)
+    bool launchWantTrack = false;  // ... and the camera locked on it (a Watch, 2026-10-24)
+    double launchWantSelUntil = 0.0; // (a Watch's want lapses past this sim time)
     uint64_t launchFocusKey = 0;   // the launch a jump last framed (launch next / deploy / missions go): `launch
                                    // select kind=rocket` prefers its stages (2026-10-20)
     double selTransientSeenT = 0.0;
@@ -3175,7 +3178,7 @@ private:
     nlohmann::json launchFormationJson(uint64_t key, int samples, bool before = false);
     void launchLegacyRecords(bool on);              // harness `launch legacy on|off`
     bool launchSelect(int kind, std::string &msg, int member = -1); // member >= 0: only that member of a batch
-    bool launchGoToNextReentry(std::string &msg);
+    bool launchGoToNextReentry(std::string &msg, bool watch = false); // watch: mid-glow, the fireball tracked
     bool launchGoToVent(std::string &msg);
     bool launchGoToShipEntry(std::string &msg);
     bool launchShipDay_ = false; // (harness `launch ship day=1`) the next ship entry over a SUNLIT ground
@@ -3213,7 +3216,15 @@ private:
     bool msNextPending = false, msPinPending = false; // the Missions rows' refresh to finish next frame
     // Jumps to leadS before the batch's lift-off at 1x. moveObserver: on the ground ~12 km beside the pad (on land
     // where one side is sea), the camera on the pad; else the time only.
-    bool launchGoToKey(uint64_t key, bool moveObserver, double leadS, std::string &msg);
+    bool launchGoToKey(uint64_t key, bool moveObserver, double leadS, std::string &msg, double distM = 12000.0);
+    // WATCH (2026-10-24, the user: "one button that takes them to a rocket launching"): the launch already under way —
+    // afterS after lift-off at 1x, on the ground beside the pad, the rocket selected and tracked once listed.
+    bool launchWatchKey(uint64_t key, double afterS, std::string &msg);
+    double launchWatchLitT = -1.0; int launchWatchScanN = 0; // (harness: a twilight Watch's sunlit search)
+    static constexpr double kWatchLiftoffS = 8.0;    // a launch's Watch: lift-off + this (clear of the tower)
+    static constexpr double kWatchTwilightS = 300.0; // a twilight launch's: the exhaust bell high up in sunlight
+    bool launchWatchCatch(std::string &msg); // the next Starship catch, in its landing burn, the ship tracked
+    float cloudCoverAtEcef(const glm::dvec3 &dirEcef) const; // the cloud map's cover there (0..1, CPU copy; a Watch's sky)
     struct MissionOngoing
     {
         int cat = 0;            // 0 crew transfer, 1 crewed station, 2 satellite launch in flight, 3 trains raising, 4 retiring
@@ -3317,6 +3328,7 @@ private:
     void missionsRefresh(bool force);
     bool missionsGoToFury(int which, std::string &msg); // 0 the CME's arrival (dusk over Monument Valley), 1 the storm night
     bool missionsGo(const std::string &what, bool watchOnly, std::string &msg); // harness: an index, twilight, crew, fury, fury_night
+    bool missionsWatch(const std::string &what, std::string &msg); // the window's Watch: the launch under way, tracked
     // An Ongoing row's object (msOngoing[row]): the rocket of a crew transfer / satellite launch, the nearest raising
     // train member, the nearest retiree. Selected by key / index whether drawn or not; go = also Go to it (2026-10-20).
     bool missionsOngoingAct(int row, bool go, std::string &msg);
@@ -3662,7 +3674,12 @@ private:
     void kesslerTrackerRecordUpload(VkCommandBuffer cmd);
     void kesslerTrackerDestroy(VkDevice device);
     void kesslerTrackerTables(); // the density tables from the last complete counts walk (kCountsLive)
-    bool kesslerWatchEvent(uint32_t ev, std::string &msg); // the clock 8 s before it, 80 km beside it, looking at it
+    bool kesslerWatchEvent(uint32_t ev, std::string &msg); // just after it (1.5 s), 80 km beside it, a piece tracked
+    int64_t kWatchPieceEv = -1;       // a Watch: select + track a record of this breakup once mirrored
+    double kWatchPieceUntil = 0.0;
+    uint32_t kWatchPieceScan = 0;     // (the pool scanned in pieces, a frame each)
+    double kWatchPieceOffKm = -1.0;   // (harness: the piece's distance from the breakup's recorded place)
+    void kesslerWatchPieceTick();
     std::string kesslerEventTitle(const kessler::Event &e) const;
     nlohmann::json kesslerTrackerJson(); // harness `missions state` -> tracker
     VkImage trImg = VK_NULL_HANDLE;

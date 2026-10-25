@@ -282,7 +282,9 @@ bool SatelliteSim::kesslerWatchEvent(uint32_t ev, std::string &msg)
         stopFollow();
     if (trackActive)
         stopTrack();
-    const double t0 = e.t - 8.0;
+    // (2026-10-24) Just after it: the objects already broken up, the debris and its dust spreading (it was 8 s before:
+    // an empty sky). A piece of it is selected and tracked once the mirror has it (kesslerWatchPieceTick).
+    const double t0 = e.t + 3.0;
     const double days = std::floor(t0 / 86400.0);
     simDayJ2000 = (int64_t)days;
     simSecInDay = t0 - days * 86400.0;
@@ -290,13 +292,13 @@ bool SatelliteSim::kesslerWatchEvent(uint32_t ev, std::string &msg)
     timePaused = false;
     timeScaleIdx = 0;
     timeDir = 1.0f;
-    // The eye: 80 km beside the orbit (across the velocity) and 15 km above it, Earth-fixed at the breakup's moment:
-    // the objects cross the view in ~10 s and the cloud spreads along the track.
+    // The eye: 80 km beside the orbit (across the velocity) and 25 km BELOW it, Earth-fixed at the breakup's moment, so
+    // the debris is seen against black space, not the bright Earth (15 km above: lost against the clouds below).
     const glm::dvec3 U = glm::normalize(B);
     glm::dvec3 A = glm::length(V) > 1.0 ? glm::normalize(V) : glm::dvec3(0, 0, 1);
     glm::dvec3 C = glm::cross(A, U);
     C = glm::length(C) > 1e-6 ? glm::normalize(C) : glm::dvec3(1, 0, 0);
-    const glm::dvec3 eyeEci = B + C * 80000.0 + U * 15000.0;
+    const glm::dvec3 eyeEci = B + C * 80000.0 - U * 25000.0;
     const glm::dvec3 eye = eciToEcef(eyeEci, e.t), tgt = eciToEcef(B, e.t);
     const glm::dvec3 g = glm::normalize(eye);
     setObserverLatLon(glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), glm::degrees(std::atan2(g.y, g.x)));
@@ -312,10 +314,58 @@ bool SatelliteSim::kesslerWatchEvent(uint32_t ev, std::string &msg)
     updatePositions(t0);
     skyTaaHistValid = false;
     cv2HistoryValid = false;
+    selectedSatIndex = -1;
+    selectedPlanetIndex = -1;
+    selTransientKey = 0;
+    kWatchPieceEv = (int64_t)ev;
+    kWatchPieceUntil = e.t + 120.0;
+    kWatchPieceScan = 0;
     char b[400];
-    snprintf(b, sizeof(b), "%s: in 8 s, 80 km away (%.0f km up)", kesslerEventTitle(e).c_str(), (glm::length(B) - kR) / 1000.0);
+    snprintf(b, sizeof(b), "%s: the debris 80 km away (%.0f km up)", kesslerEventTitle(e).c_str(), (glm::length(B) - kR) / 1000.0);
     msg = b;
     return true;
+}
+
+// A Watch's breakup: select its first record once the mirror shows it, and lock the camera on it. The pool is scanned
+// in 400k-slot pieces a frame (5M slots at once would be a hitch).
+void SatelliteSim::kesslerWatchPieceTick()
+{
+    if (kWatchPieceEv < 0)
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    if (t > kWatchPieceUntil || t < kWatchPieceUntil - 600.0 || selectedSatIndex >= 0)
+    {
+        kWatchPieceEv = -1;
+        return;
+    }
+    const uint32_t n = (uint32_t)kPool.size();
+    const uint32_t end = std::min<uint32_t>(n, kWatchPieceScan + 400000u);
+    for (uint32_t j = kWatchPieceScan; j < end; ++j)
+        if (kPool[j].event == (uint32_t)kWatchPieceEv)
+        {
+            const int idx = (int)poolIdx0() + (int)j;
+            selectSatellite(idx);
+            // Re-place the eye beside the piece where it really is now (80 km across its motion, 25 km below it), in
+            // case the breakup's recorded place is off.
+            const glm::dvec3 P = satOrbitStateAt(orbitElemsOf(satOrbits[(size_t)idx]), t).posEci;
+            const glm::dvec3 P1 = satOrbitStateAt(orbitElemsOf(satOrbits[(size_t)idx]), t + 1.0).posEci;
+            const kessler::Event &e = kEvents[(size_t)kWatchPieceEv];
+            kWatchPieceOffKm = glm::length(P - glm::dvec3(e.pos[0], e.pos[1], e.pos[2])) / 1000.0;
+            const glm::dvec3 U = glm::normalize(P);
+            glm::dvec3 A = P1 - P;
+            A = glm::length(A) > 1.0 ? glm::normalize(A) : glm::dvec3(0, 0, 1);
+            glm::dvec3 C = glm::cross(A, U);
+            C = glm::length(C) > 1e-6 ? glm::normalize(C) : glm::dvec3(1, 0, 0);
+            const glm::dvec3 eye = eciToEcef(P + C * 80000.0 - U * 25000.0, t);
+            const glm::dvec3 g = glm::normalize(eye);
+            setObserverLatLon(glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), glm::degrees(std::atan2(g.y, g.x)));
+            obsHeightOffset = (float)(glm::length(eye) - kR);
+            updatePositions(t);
+            startTrack();
+            kWatchPieceEv = -1;
+            return;
+        }
+    kWatchPieceScan = end >= n ? 0u : end;
 }
 
 // ── The globe ───────────────────────────────────────────────────────────────────────────────────
@@ -565,6 +615,7 @@ nlohmann::json SatelliteSim::kesslerTrackerJson()
     kesslerTrackerTables();
     nlohmann::json j;
     j["counts_gen"] = kCountsLiveGen;
+    j["watch_piece_off_km"] = kWatchPieceOffKm;
     j["counts_valid"] = kCountsLiveValid;
     j["working"] = kCountsLive.working;
     j["reentered"] = kCountsLive.reentered;
@@ -977,7 +1028,7 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
                            e.kind == kessler::EV_COLLISION ? msStr(", %.1f km/s", e.vRel / 1000.0) : ""),
                      Pal::textDim, 11, true);
             }
-            if (uiButton(inp, ui, "TrWatch", k, "Watch", "The clock 8 s before it at 1x, from 80 km beside its orbit, looking at it"))
+            if (uiButton(inp, ui, "TrWatch", k, "Watch", "The debris just after the breakup, from 80 km beside its orbit"))
                 watch = k;
         }
     }
