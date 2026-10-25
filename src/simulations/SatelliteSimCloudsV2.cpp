@@ -84,7 +84,7 @@ VkPipeline makeComputePipeline(VulkanContext &ctx, const char *spv, VkPipelineLa
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = mod;
     stage.pName = "main";
-    VkSpecializationMapEntry wgMap[3] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}};
+    VkSpecializationMapEntry wgMap[4] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}, {3, 12, 4}};
     VkSpecializationInfo wgSpec{nSpec, wgMap, nSpec * 4u, wg};
     if (wg)
         stage.pSpecializationInfo = &wgSpec;
@@ -612,6 +612,9 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     {
         const uint32_t specB[3] = {cv2MarchWg[0], cv2MarchWg[1], 1u};
         cv2MarchPassBPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, specB, 3);
+        const uint32_t specN[4] = {cv2MarchWg[0], cv2MarchWg[1], 0u, 0u}, specNB[4] = {cv2MarchWg[0], cv2MarchWg[1], 1u, 0u};
+        cv2MarchNoDustPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, specN, 4);
+        cv2MarchPassBNoDustPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, specNB, 4);
     }
     cv2TilesPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout);
     cv2ResolvePipeline = makeComputePipeline(ctx, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout);
@@ -869,10 +872,18 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
         const uint32_t specB[3] = {cv2MarchWg[0], cv2MarchWg[1], 1u};
         try
         {
-            VkPipeline np = makeComputePipeline(ctx, marchSpv.empty() ? "shaders/cloud_v2_march.comp.spv" : marchSpv.c_str(),
-                                                cv2MarchPipeLayout, specB, 3);
+            const char *ms = marchSpv.empty() ? "shaders/cloud_v2_march.comp.spv" : marchSpv.c_str();
+            VkPipeline np = makeComputePipeline(ctx, ms, cv2MarchPipeLayout, specB, 3);
             if (cv2MarchPassBPipeline) vkDestroyPipeline(ctx.device, cv2MarchPassBPipeline, nullptr);
             cv2MarchPassBPipeline = np;
+            // (the dust-free pair from the same SPV: a variant without the constant ignores it)
+            const uint32_t specN[4] = {cv2MarchWg[0], cv2MarchWg[1], 0u, 0u}, specNB[4] = {cv2MarchWg[0], cv2MarchWg[1], 1u, 0u};
+            VkPipeline n0 = makeComputePipeline(ctx, ms, cv2MarchPipeLayout, specN, 4);
+            VkPipeline n1 = makeComputePipeline(ctx, ms, cv2MarchPipeLayout, specNB, 4);
+            if (cv2MarchNoDustPipeline) vkDestroyPipeline(ctx.device, cv2MarchNoDustPipeline, nullptr);
+            if (cv2MarchPassBNoDustPipeline) vkDestroyPipeline(ctx.device, cv2MarchPassBNoDustPipeline, nullptr);
+            cv2MarchNoDustPipeline = n0;
+            cv2MarchPassBNoDustPipeline = n1;
         }
         catch (const std::exception &e)
         {
@@ -911,6 +922,8 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     // The composite's too (2026-10-21: its plume / dust pass is timed with composite= variants).
     if (const std::string cs = pipelineStatsLine(ctx, cloudMarchPipeline); !cs.empty())
         stats += "; composite: " + cs;
+    if (const std::string ns = pipelineStatsLine(ctx, cv2MarchNoDustPipeline); !ns.empty())
+        stats += "; march without the haboob code: " + ns;
     return err;
 }
 
@@ -955,6 +968,9 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     if (cv2LightningPipeline) vkDestroyPipeline(device, cv2LightningPipeline, nullptr);
     if (cv2MarchPassBPipeline) vkDestroyPipeline(device, cv2MarchPassBPipeline, nullptr);
     cv2MarchPassBPipeline = VK_NULL_HANDLE;
+    if (cv2MarchNoDustPipeline) vkDestroyPipeline(device, cv2MarchNoDustPipeline, nullptr);
+    if (cv2MarchPassBNoDustPipeline) vkDestroyPipeline(device, cv2MarchPassBNoDustPipeline, nullptr);
+    cv2MarchNoDustPipeline = cv2MarchPassBNoDustPipeline = VK_NULL_HANDLE;
     if (cv2TilesPipeline) vkDestroyPipeline(device, cv2TilesPipeline, nullptr);
     cv2TilesPipeline = VK_NULL_HANDLE;
     if (cv2TileBuf) vkDestroyBuffer(device, cv2TileBuf, nullptr);
@@ -2151,7 +2167,9 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     }
     cv2PassStampTo(cmd, 4);   // adaptive-rate tiles
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeline);
+    // (perf pass 4) the march without the haboob code while no dust wall is in the grid: its code alone cost 0.5-1 ms
+    const bool marchND = !dustGpuOn && cv2MarchNoDustPipeline != VK_NULL_HANDLE && cv2MarchPassBNoDustPipeline != VK_NULL_HANDLE;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchND ? cv2MarchNoDustPipeline : cv2MarchPipeline);
     const uint32_t gw = cv2HalfRateNow ? (cv2HalfW + 1) / 2 : cv2FullRateNow ? cv2HalfW : cv2QuarterW;
     const uint32_t gh = cv2FullRateNow ? cv2HalfH : cv2QuarterH;
     vkCmdDispatch(cmd, (gw + cv2MarchWg[0] - 1) / cv2MarchWg[0], (gh + cv2MarchWg[1] - 1) / cv2MarchWg[1], 1);
@@ -2162,7 +2180,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPassBPipeline);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchND ? cv2MarchPassBNoDustPipeline : cv2MarchPassBPipeline);
         vkCmdDispatchIndirect(cmd, cv2TileBuf, 4);
     }
     cv2PassStampTo(cmd, 6);   // march pass B

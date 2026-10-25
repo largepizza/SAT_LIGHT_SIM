@@ -48,6 +48,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_DETAIL_BINDING  4
 #define CV2_MESO_BINDING    5
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
+#define CV2_DUST_SPEC            // the haboob code is specialization constant 3 (clouds_v2.glsl kCv2DustOn)
 #include "clouds_v2.glsl"
 #include "atmosphere.glsl"
 #include "eclipse.glsl"
@@ -1083,7 +1084,7 @@ void main()
             // blue, so the light it scatters, multiply scattered as in a cloud, comes out beige.
             // (The sky light, scattered many times in a thick wall, takes the tint twice.)
             float dK = max(-f.soft, 0.0);
-            if (dK > 0.0) S = mix(S, (S - ambS) * kCv2DustTint + ambS * (kCv2DustTint * kCv2DustTint), dK);
+            if (kCv2DustOn != 0 && dK > 0.0) S = mix(S, (S - ambS) * kCv2DustTint + ambS * (kCv2DustTint * kCv2DustTint), dK);
             L += bW[bj] * S;
         }
         } while (nB >= kBatch);

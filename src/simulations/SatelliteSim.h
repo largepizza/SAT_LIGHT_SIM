@@ -5038,6 +5038,7 @@ private:
     static constexpr double kDustLobePeriodM = 4000.0;   // the walls' lobe noise period: lobes of ~1 km, 500 m, 250 m
     double dustNoiseT = -1e300;
     int dustWallsNow = 0, dustCellsNow = 0;      // storms in the grid, cells with dust (harness `fires`)
+    bool dustGpuOn = false;                      // the grid's head says a wall: the march with the haboob code (perf pass 4)
     double dustGridMs = 0.0;
     nlohmann::json wildfiresJson(bool world);
     double stormPrevUploadT = -1e300;            // the previous upload's sim time (a jump re-bakes the weather cube)
@@ -5141,6 +5142,8 @@ private:
     VkPipelineLayout cv2MarchPipeLayout = VK_NULL_HANDLE, cv2ResolvePipeLayout = VK_NULL_HANDLE;
     VkPipeline cv2MarchPipeline = VK_NULL_HANDLE, cv2ResolvePipeline = VK_NULL_HANDLE;
     VkPipeline cv2MarchPassBPipeline = VK_NULL_HANDLE;   // the adaptive rate's full-rate tiles (spec constant 2)
+    // The same two without the haboob code (spec constant 3 = 0, perf pass 4): bound while no dust wall is in the grid.
+    VkPipeline cv2MarchNoDustPipeline = VK_NULL_HANDLE, cv2MarchPassBNoDustPipeline = VK_NULL_HANDLE;
     VkPipeline cv2TilesPipeline = VK_NULL_HANDLE;        // ... and its tile classification (cloud_v2_tiles.comp)
     // Adaptive rate: the tiles pass A listed (header {pad, dispatch x, y, z}, 4096 tile ids, 4096 flags),
     // and pass B's full-rate targets.

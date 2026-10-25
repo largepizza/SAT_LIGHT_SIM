@@ -5397,7 +5397,8 @@ void main() {
         }
 #if !defined(SKY_LITE) && !defined(SKY_ENV)
         // Wildfire smoke between this point and the Sun (2026-10-23): dims and reddens its direct light, land and sea.
-        if (smokeCount(selCount) > 0u && dot(hitPt, sunDirLocal) > -0.05 * length(hitPt)) {   // (not at night: 1 ms from orbit)
+        // (not at night: 1 ms from orbit; not under full cloud shadow: every use of sunSpecTint is x cloudShadowT)
+        if (smokeCount(selCount) > 0u && cloudShadowT > 1e-4 && dot(hitPt, sunDirLocal) > -0.05 * length(hitPt)) {
             vec3 smT = smokeSunTransmit(hitPt - obsPos, sunDirLocal);
             sunSpecTint *= smT;
         }
