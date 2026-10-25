@@ -949,13 +949,8 @@ void SatelliteSim::launchDestroy(VkDevice device)
         return;
     LaunchState &L = *launchState;
     L.joinJob();
-    if (L.stage)
-    {
-        vkDestroyBuffer(device, L.stage, nullptr);
-        vkFreeMemory(device, L.stageMem, nullptr);
-        L.stage = VK_NULL_HANDLE;
-        L.stageMapped = nullptr;
-    }
+    if (L.stage && ctx_)
+        ctx_->slottedDestroy(&L.stage); // every slot's copy
 }
 
 struct LaunchImpl
@@ -5540,9 +5535,9 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
         return;
     if (L.stage == VK_NULL_HANDLE)
     {
-        ctx.createBuffer(64ull * LaunchState::kStageRecs, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, L.stage, L.stageMem);
-        vkMapMemory(ctx.device, L.stageMem, 0, VK_WHOLE_SIZE, 0, &L.stageMapped);
+        // One per frame slot (frames in flight): the frame's record copies read this slot's staging.
+        ctx.slotted(&L.stage, &L.stageMem, &L.stageMapped, 64ull * LaunchState::kStageRecs, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, "launchStage");
     }
     // kesslerBuf recreated: the GPU block is zero (all hidden); everything live must be sent again.
     if (L.gpuGen != kesslerBufGen)

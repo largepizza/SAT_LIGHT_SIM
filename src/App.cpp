@@ -786,16 +786,18 @@ void App::drawFrame()
             Log::lineDeferred("hitch: " + fprof::describe(hf));
     }
 
+    // Frames in flight (VulkanContext "Commands & sync"): wait for THIS slot's previous frame only; with two
+    // slots the GPU keeps running the frame recorded last while this one is built.
+    bool slotHadFrame = false;
     {
         FPROF_SCOPE("app.wait_fence");
-        vkWaitForFences(ctx.device, 1, &ctx.fenceFrame, VK_TRUE, UINT64_MAX);
+        slotHadFrame = ctx.beginFrameSlot();
     }
     ftMark("waitFences");
 
-    // Resolve last frame's GPU timestamp queries now that the fence proves the GPU
-    // is done with them. Skipped on the very first call: the fence starts pre-signaled
-    // so nothing has actually been submitted yet, and there'd be no query data to read.
-    if (submittedOnce)
+    // Resolve the slot's GPU timestamp queries now that its fence proves the GPU is done with them.
+    // Skipped until the slot has held a submitted frame (there'd be no query data to read).
+    if (slotHadFrame)
     {
         FPROF_SCOPE("app.resolve_finalize");
         ctx.resolveTimestamps();
@@ -920,6 +922,7 @@ void App::drawFrame()
         vkResetCommandBuffer(ctx.commandBuffer, 0);
         VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         vkBeginCommandBuffer(ctx.commandBuffer, &bi);
+        ctx.beginFrameGpu(ctx.commandBuffer);
     }
 
     // GPU timestamp profiling: slot 0 marks frame start. Slots 1-5 are written inside
@@ -996,7 +999,22 @@ void App::drawFrame()
     // scaling) — that write must also wait for the presentation engine to be done with this
     // image, the same guarantee the render pass itself already got from this semaphore.
     VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
-    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    // The frame's uploads (mirrored buffers, patches) go first, in a batch of their own: it must not wait for
+    // the swapchain image, and the main batch's commands read what it copies.
+    VkCommandBuffer uploadCmd = VK_NULL_HANDLE;
+    {
+        FPROF_SCOPE("app.uploads");
+        uploadCmd = ctx.recordFrameUploads();
+    }
+    VkSubmitInfo sis[2]{{VK_STRUCTURE_TYPE_SUBMIT_INFO}, {VK_STRUCTURE_TYPE_SUBMIT_INFO}};
+    uint32_t nSubmit = 0;
+    if (uploadCmd)
+    {
+        sis[0].commandBufferCount = 1;
+        sis[0].pCommandBuffers = &uploadCmd;
+        nSubmit = 1;
+    }
+    VkSubmitInfo &si = sis[nSubmit++];
     si.waitSemaphoreCount = photo ? 0 : 1;
     si.pWaitSemaphores = &ctx.semImageAvailable;
     si.pWaitDstStageMask = &waitStage;
@@ -1006,10 +1024,11 @@ void App::drawFrame()
     si.pSignalSemaphores = photo ? nullptr : &ctx.semRenderDone[imgIdx];
     {
         FPROF_SCOPE("app.submit");
-        if (vkQueueSubmit(ctx.graphicsQueue, 1, &si, ctx.fenceFrame) != VK_SUCCESS)
+        if (vkQueueSubmit(ctx.graphicsQueue, nSubmit, sis, ctx.fenceFrame) != VK_SUCCESS)
             throw std::runtime_error("vkQueueSubmit failed.");
     }
     submittedOnce = true;
+    ctx.markSlotSubmitted();
     ftMark("queueSubmit");
     // A photo frame is not presented; a resize waits for the photo to end (resized stays set). A few times a
     // second the window gets a progress frame instead (photoProgressFrame).

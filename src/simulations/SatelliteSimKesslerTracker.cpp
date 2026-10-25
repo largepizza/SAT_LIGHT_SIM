@@ -385,10 +385,8 @@ bool SatelliteSim::kesslerTrackerEnsureImage(UIRenderer &ui)
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     vkCreateSampler(ctx.device, &si, nullptr, &trSampler);
     const VkDeviceSize bytes = (VkDeviceSize)kTrN * kTrN * 4;
-    ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     trStage, trStageMem);
-    vkMapMemory(ctx.device, trStageMem, 0, bytes, 0, &trStageMapped);
-    std::memset(trStageMapped, 0, (size_t)bytes);
+    // The raster's CPU copy; each upload takes this frame's staging (ctx.stagingAlloc: frames in flight).
+    trStageMapped = std::calloc((size_t)bytes, 1);
     // Transparent until the first raster (sampled from the first frame the tab is drawn).
     VkCommandBuffer cmd = ctx.beginOneTimeCommands();
     ctx.imageBarrier(cmd, trImg, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -416,18 +414,21 @@ void SatelliteSim::kesslerTrackerRecordUpload(VkCommandBuffer cmd)
     VulkanContext &ctx = *ctx_;
     ctx.imageBarrier(cmd, trImg, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkDeviceSize bytes = (VkDeviceSize)kTrN * kTrN * 4;
+    const VulkanContext::StagingAlloc st = ctx.stagingAlloc(bytes);
+    std::memcpy(st.ptr, trStageMapped, (size_t)bytes);
     VkBufferImageCopy region{};
+    region.bufferOffset = st.off;
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageExtent = {(uint32_t)kTrN, (uint32_t)kTrN, 1};
-    vkCmdCopyBufferToImage(cmd, trStage, trImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vkCmdCopyBufferToImage(cmd, st.buf, trImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     ctx.imageBarrier(cmd, trImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 }
 
 void SatelliteSim::kesslerTrackerDestroy(VkDevice device)
 {
-    if (trStageMapped)
-        vkUnmapMemory(device, trStageMem);
+    std::free(trStageMapped);
     trStageMapped = nullptr;
     if (trStage)
         vkDestroyBuffer(device, trStage, nullptr);

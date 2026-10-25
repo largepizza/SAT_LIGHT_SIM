@@ -459,10 +459,8 @@ bool SatelliteSim::weatherMapEnsureImage(UIRenderer &ui)
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     vkCreateSampler(ctx.device, &si, nullptr, &wxMapSampler);
     const VkDeviceSize bytes = (VkDeviceSize)kWxMapW * kWxMapH * 4;
-    ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     wxMapStage, wxMapStageMem);
-    vkMapMemory(ctx.device, wxMapStageMem, 0, bytes, 0, &wxMapStageMapped);
-    std::memset(wxMapStageMapped, 0, (size_t)bytes);
+    // The raster's CPU copy; each upload takes this frame's staging (ctx.stagingAlloc: frames in flight).
+    wxMapStageMapped = std::calloc((size_t)bytes, 1);
     VkCommandBuffer cmd = ctx.beginOneTimeCommands();
     ctx.imageBarrier(cmd, wxMapImg, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);

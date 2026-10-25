@@ -255,12 +255,11 @@ void SatelliteSim::buildBoltTree(BoltTree &t, uint32_t seed, float distM)
 
 void SatelliteSim::createLightningResources(VulkanContext &ctx)
 {
-    ctx.createBuffer(sizeof(GpuBoltFlash) * kBoltMaxFlashes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, boltFlashBuf, boltFlashMem);
-    vkMapMemory(ctx.device, boltFlashMem, 0, VK_WHOLE_SIZE, 0, &boltFlashMapped);
-    ctx.createBuffer(sizeof(GpuBoltSeg) * kBoltMaxSegs, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, boltSegBuf, boltSegMem);
-    vkMapMemory(ctx.device, boltSegMem, 0, VK_WHOLE_SIZE, 0, &boltSegMapped);
+    // Mirrored (frames in flight): rebuilt every frame, only the used part reaches the GPU (recordLightning marks it).
+    boltFlashMapped = createMirrored(ctx, sizeof(GpuBoltFlash) * kBoltMaxFlashes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                     boltFlashBuf, boltFlashMem, false, "boltFlashes");
+    boltSegMapped = createMirrored(ctx, sizeof(GpuBoltSeg) * kBoltMaxSegs, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, boltSegBuf,
+                                   boltSegMem, false, "boltSegments");
 
     const VkShaderStageFlags st = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     VkDescriptorSetLayoutBinding b[7] = {
@@ -395,7 +394,7 @@ void SatelliteSim::writeLightningDescriptors(VulkanContext &ctx)
     w[4].pImageInfo = &sd;
     w[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     w[5].pBufferInfo = &du;
-    vkUpdateDescriptorSets(ctx.device, 6, w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, 6, w, 0, nullptr);
     if (meshRendererInit)
         writeLightningMeshDescriptor(ctx);
 }
@@ -413,7 +412,7 @@ void SatelliteSim::writeLightningMeshDescriptor(VulkanContext &ctx)
     w.descriptorCount = 1;
     w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     w.pImageInfo = &md;
-    vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
 }
 
 void SatelliteSim::destroyLightningResources(VkDevice device)
@@ -422,8 +421,8 @@ void SatelliteSim::destroyLightningResources(VkDevice device)
     if (boltPipeLayout) vkDestroyPipelineLayout(device, boltPipeLayout, nullptr);
     if (boltDescPool) vkDestroyDescriptorPool(device, boltDescPool, nullptr);
     if (boltDescLayout) vkDestroyDescriptorSetLayout(device, boltDescLayout, nullptr);
-    if (boltFlashMapped) vkUnmapMemory(device, boltFlashMem);
-    if (boltSegMapped) vkUnmapMemory(device, boltSegMem);
+    if (ctx_ && boltFlashMapped) ctx_->mirrorForget(boltFlashMapped);
+    if (ctx_ && boltSegMapped) ctx_->mirrorForget(boltSegMapped);
     if (boltFlashBuf) vkDestroyBuffer(device, boltFlashBuf, nullptr);
     if (boltFlashMem) vkFreeMemory(device, boltFlashMem, nullptr);
     if (boltSegBuf) vkDestroyBuffer(device, boltSegBuf, nullptr);
@@ -449,11 +448,12 @@ void SatelliteSim::updateLightningBolts()
     ++boltFrame;
     // Only a list the lightning pass wrote LAST frame: otherwise it is stale (clouds off, from far orbit) and its
     // flashes would hang on screen.
-    const bool fresh = cv2LightningObsDirValid;
-    cv2LightningObsDirValid = false;
+    // (Per frame slot: the slot's copy of the flash buffer's head holds the list of the frame that filled it.)
+    const bool fresh = cv2LightningObsDirValidS[ctx_->frameSlot];
+    cv2LightningObsDirValidS[ctx_->frameSlot] = false;
     if (!cv2FlashMapped || !boltFlashMapped || !boltSegMapped || (!fresh && boltInjected_.empty()))
         return;
-    const glm::dvec3 U0 = glm::normalize(cv2LightningObsDir);
+    const glm::dvec3 U0 = glm::normalize(cv2LightningObsDirS[ctx_->frameSlot]);
     const glm::dvec3 E0 = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), U0));
     const glm::dvec3 N0 = glm::cross(U0, E0);
     auto toEcef = [&](const float *v) { return E0 * (double)v[0] + N0 * (double)v[1] + U0 * (double)v[2]; };
@@ -622,6 +622,8 @@ void SatelliteSim::recordLightning(VkCommandBuffer cmd, VulkanContext &ctx)
 {
     if (!boltPipeline || (boltFlashCount == 0 && engineLightCount == 0))
         return;
+    ctx.mirrorDirty(boltFlashMapped, 0, sizeof(GpuBoltFlash) * boltFlashCount);
+    ctx.mirrorDirty(boltSegMapped, 0, sizeof(GpuBoltSeg) * boltSegCount);
     BoltDrawPC pc{};
     pc.skyView = camera.viewMatrix();
     pc.fovYRad = glm::radians(camera.fovYDeg);

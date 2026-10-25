@@ -359,6 +359,7 @@ void SatelliteSim::weatherFillDustGrid()
     FPROF_SCOPE("weatherFillDustGrid");
     if (!stormMapped) return;
     auto *head = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kDustHeadOffset);
+    ctx_->mirrorDirty(stormMapped, kDustHeadOffset, kDustGridOffset - kDustHeadOffset); // head + frame (frames in flight)
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const bool on = haboobField && haboobGain > 0.0f && stormObjects && stormCatalog && biomeMap.ready() && !stormTowers.empty();
     if (!on)
@@ -573,6 +574,8 @@ void SatelliteSim::weatherFillDustGrid()
     const int uy1 = pE ? box.w : bE ? prevBox.w : std::max(prevBox.w, box.w);
     for (int y = uy0; y < uy1; ++y)
         std::memcpy(grid + (size_t)y * G + ux0, dustGridCpu.data() + (size_t)y * G + ux0, sizeof(uint32_t) * (size_t)(ux1 - ux0));
+    if (uy1 > uy0)
+        ctx_->mirrorDirty(stormMapped, kDustGridOffset + 4ull * (size_t)uy0 * G, 4ull * (size_t)(uy1 - uy0) * G);
     dustWallsNow = walls;
     dustCellsNow = 0;
     if (box.z > box.x)

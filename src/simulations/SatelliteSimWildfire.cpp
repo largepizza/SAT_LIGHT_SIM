@@ -1049,7 +1049,8 @@ void SatelliteSim::recordWildfireGround(VkCommandBuffer cmd, VulkanContext &ctx)
     createWildfireGround(ctx);
     if (!fireGroundPipe)
         return;
-    // Descriptors every frame (the buffers can be recreated; the set's last use has completed: one frame in flight).
+    // Descriptors when what they point at changed (the buffers can be recreated). Rewriting them every frame was
+    // safe with one frame in flight; with two it would wait for the previous frame every frame.
     VkSampler elevS = earthElevSampler ? earthElevSampler : noiseSampler;
     VkImageView elevV = earthElevView ? earthElevView : noiseTexView;
     VkSampler specS = earthSpecSampler ? earthSpecSampler : noiseSampler;
@@ -1065,7 +1066,13 @@ void SatelliteSim::recordWildfireGround(VkCommandBuffer cmd, VulkanContext &ctx)
     w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, fireGroundDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &ubo, nullptr};
     w[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, fireGroundDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &fb, nullptr};
     w[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, fireGroundDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &db, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
+    const std::array<uint64_t, 6> bound = {(uint64_t)elevV, (uint64_t)specV, (uint64_t)cloudParamsBuf, (uint64_t)kFireBuf,
+                                           (uint64_t)kDustBuf, (uint64_t)fireGroundDescSet};
+    if (bound != fireGroundBound_)
+    {
+        frameSafeUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
+        fireGroundBound_ = bound;
+    }
     struct
     {
         glm::vec4 obs, eye;

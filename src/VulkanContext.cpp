@@ -32,8 +32,19 @@ static const std::vector<const char *> DEVICE_EXTENSIONS = {
 // ═════════════════════════════════════════════════════════════════════════════
 // Lifecycle
 // ═════════════════════════════════════════════════════════════════════════════
+VulkanContext *VulkanContext::sFrameCtx = nullptr;
+
+void frameSafeUpdateDescriptorSets(VkDevice device, uint32_t writeCount, const VkWriteDescriptorSet *writes,
+                                   uint32_t copyCount, const VkCopyDescriptorSet *copies)
+{
+    if (VulkanContext *ctx = VulkanContext::sFrameCtx)
+        ctx->beforeDescriptorWrite();
+    vkUpdateDescriptorSets(device, writeCount, writes, copyCount, copies);
+}
+
 void VulkanContext::init(GLFWwindow *window)
 {
+    sFrameCtx = this;
     createInstance();
     if (VALIDATION)
         setupDebugMessenger();
@@ -54,11 +65,15 @@ void VulkanContext::init(GLFWwindow *window)
 
 void VulkanContext::recreateSwapchain(GLFWwindow *window)
 {
+    // Wait only while the window has no area (minimised). The loop used to call glfwWaitEvents() once whatever
+    // the size, so every rebuild (a present-mode change, a resize) blocked until the next window event: in an
+    // unattended harness run, for minutes (2026-10-25: 28 and 16 minutes at `set display.fps_cap_mode 0`).
     int w = 0, h = 0;
+    glfwGetFramebufferSize(window, &w, &h);
     while (w == 0 || h == 0)
     {
-        glfwGetFramebufferSize(window, &w, &h);
         glfwWaitEvents();
+        glfwGetFramebufferSize(window, &w, &h);
     }
     vkDeviceWaitIdle(device);
     cleanupSwapchain();
@@ -160,8 +175,12 @@ void VulkanContext::cleanup()
     vkDestroyRenderPass(device, renderPassBoot, nullptr);
     vkDestroyRenderPass(device, renderPassLoad, nullptr);
     vkDestroyRenderPass(device, renderPass, nullptr);
-    vkDestroySemaphore(device, semImageAvailable, nullptr);
-    vkDestroyFence(device, fenceFrame, nullptr);
+    destroyFrameResources();
+    for (uint32_t s = 0; s < kMaxFramesInFlight; ++s)
+    {
+        vkDestroySemaphore(device, slotAcquire[s], nullptr);
+        vkDestroyFence(device, slotFence[s], nullptr);
+    }
     vkDestroyCommandPool(device, commandPool, nullptr);
     vkDestroyDevice(device, nullptr);
     if (VALIDATION)
@@ -1122,12 +1141,17 @@ void VulkanContext::createCommandPool()
 
 void VulkanContext::createCommandBuffer()
 {
+    if (const char *e = std::getenv("SATLIGHTSIM_FRAMES_IN_FLIGHT"); e && (e[0] == '1' || e[0] == '2') && e[1] == 0)
+        framesInFlight = (uint32_t)(e[0] - '0');
+    Log::line("frames in flight: " + std::to_string(framesInFlight));
     VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     ai.commandPool = commandPool;
     ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ai.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(device, &ai, &commandBuffer) != VK_SUCCESS)
+    ai.commandBufferCount = kMaxFramesInFlight;
+    if (vkAllocateCommandBuffers(device, &ai, slotCmd) != VK_SUCCESS ||
+        vkAllocateCommandBuffers(device, &ai, slotUploadCmd) != VK_SUCCESS)
         throw std::runtime_error("vkAllocateCommandBuffers failed.");
+    commandBuffer = slotCmd[0];
 }
 
 // ─── Sync objects ─────────────────────────────────────────────────────────────
@@ -1137,9 +1161,12 @@ void VulkanContext::createSyncObjects()
     VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     fi.flags = VK_FENCE_CREATE_SIGNALED_BIT; // start signaled so first frame doesn't hang
 
-    if (vkCreateSemaphore(device, &si, nullptr, &semImageAvailable) != VK_SUCCESS ||
-        vkCreateFence(device, &fi, nullptr, &fenceFrame) != VK_SUCCESS)
-        throw std::runtime_error("Failed to create sync objects.");
+    for (uint32_t s = 0; s < kMaxFramesInFlight; ++s)
+        if (vkCreateSemaphore(device, &si, nullptr, &slotAcquire[s]) != VK_SUCCESS ||
+            vkCreateFence(device, &fi, nullptr, &slotFence[s]) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create sync objects.");
+    semImageAvailable = slotAcquire[0];
+    fenceFrame = slotFence[0];
 
     // Create one render-done semaphore per swapchain image.
     semRenderDone.resize(swapImages.size());
@@ -1172,7 +1199,7 @@ void VulkanContext::createQueryPool()
 
     VkQueryPoolCreateInfo qpci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
-    qpci.queryCount = kTimestampCount;
+    qpci.queryCount = kTimestampCount * kMaxFramesInFlight; // one range per frame slot
     if (vkCreateQueryPool(device, &qpci, nullptr, &queryPool) != VK_SUCCESS)
         queryPool = VK_NULL_HANDLE; // profiling is best-effort; app must run without it
 }
@@ -1180,25 +1207,23 @@ void VulkanContext::createQueryPool()
 void VulkanContext::resetTimestamps(VkCommandBuffer cmd)
 {
     if (queryPool != VK_NULL_HANDLE)
-        vkCmdResetQueryPool(cmd, queryPool, 0, kTimestampCount);
+        vkCmdResetQueryPool(cmd, queryPool, frameSlot * kTimestampCount, kTimestampCount);
 }
 
 void VulkanContext::writeTimestamp(VkCommandBuffer cmd, VkPipelineStageFlagBits stage, uint32_t slot)
 {
     if (queryPool != VK_NULL_HANDLE)
-        vkCmdWriteTimestamp(cmd, stage, queryPool, slot);
+        vkCmdWriteTimestamp(cmd, stage, queryPool, frameSlot * kTimestampCount + slot);
 }
 
-// Called once per frame in App::drawFrame, right after the fence wait — with a
-// single frame in flight, the fence signaling guarantees the previous frame's
-// queries have already completed, so VK_QUERY_RESULT_WAIT_BIT never actually
-// blocks here (it's there for correctness, not as a stall).
+// Called once per frame in App::drawFrame, right after beginFrameSlot(): the slot's fence proves its last
+// frame (completedFrame()) has finished, so VK_QUERY_RESULT_WAIT_BIT never actually blocks here.
 void VulkanContext::resolveTimestamps()
 {
     if (queryPool == VK_NULL_HANDLE)
         return;
     uint64_t raw[kTimestampCount];
-    VkResult r = vkGetQueryPoolResults(device, queryPool, 0, kTimestampCount,
+    VkResult r = vkGetQueryPoolResults(device, queryPool, frameSlot * kTimestampCount, kTimestampCount,
                                        sizeof(raw), raw, sizeof(uint64_t),
                                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
     if (r != VK_SUCCESS)
@@ -1401,6 +1426,7 @@ VkCommandBuffer VulkanContext::beginOneTimeCommands()
 
 void VulkanContext::endOneTimeCommands(VkCommandBuffer cmd)
 {
+    ++frameStats.oneTimeSubmits;
     vkEndCommandBuffer(cmd);
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.commandBufferCount = 1;
@@ -1425,4 +1451,494 @@ void VulkanContext::imageBarrier(VkCommandBuffer cmd, VkImage image,
     b.image = image;
     b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &b);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Frames in flight (2026-10-25) — see the header's "Commands & sync" comment.
+// ═════════════════════════════════════════════════════════════════════════════
+bool VulkanContext::beginFrameSlot()
+{
+    ++frameIndex;
+    frameSlot = (uint32_t)((frameIndex - 1) % framesInFlight);
+    vkWaitForFences(device, 1, &slotFence[frameSlot], VK_TRUE, UINT64_MAX);
+    commandBuffer = slotCmd[frameSlot];
+    fenceFrame = slotFence[frameSlot];
+    semImageAvailable = slotAcquire[frameSlot];
+    // Buffers handed to deferDestroy while an older frame could still use them.
+    const uint64_t done = completedFrame();
+    for (size_t i = 0; i < deferred_.size();)
+    {
+        if (deferred_[i].frame <= done)
+        {
+            if (deferred_[i].buf)
+                vkDestroyBuffer(device, deferred_[i].buf, nullptr);
+            if (deferred_[i].mem)
+                vkFreeMemory(device, deferred_[i].mem, nullptr);
+            deferred_[i] = deferred_.back();
+            deferred_.pop_back();
+        }
+        else
+            ++i;
+    }
+    for (Readback &r : readbacks_)
+        if (r.live && r.user)
+            *r.user = r.map[frameSlot];
+    for (StageChunk &c : stage_[frameSlot])
+        c.used = 0;
+    pointSlotted();
+    frameStatsLast = frameStats;
+    frameStats = FrameStats{};
+    return slotSubmitted[frameSlot];
+}
+
+void VulkanContext::drainFrames()
+{
+    if (device == VK_NULL_HANDLE)
+        return;
+    ++frameStats.drains;
+    vkDeviceWaitIdle(device);
+}
+
+void VulkanContext::beforeDescriptorWrite()
+{
+    ++frameStats.descWrites;
+    if (framesInFlight > 1 && frameIndex > 0)
+        drainFrames();
+}
+
+void VulkanContext::beginFrameGpu(VkCommandBuffer cmd)
+{
+    if (framesInFlight <= 1)
+        return;
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0,
+                         nullptr, 0, nullptr);
+}
+
+void VulkanContext::ensureRing(uint32_t slot, VkDeviceSize bytes)
+{
+    Ring &r = ring_[slot];
+    if (r.cap >= bytes && r.buf)
+        return;
+    // The slot's last frame has finished (beginFrameSlot waited for it), so its ring can be replaced now.
+    if (r.buf)
+    {
+        vkUnmapMemory(device, r.mem);
+        vkDestroyBuffer(device, r.buf, nullptr);
+        vkFreeMemory(device, r.mem, nullptr);
+    }
+    r.cap = std::max<VkDeviceSize>(8u << 20, bytes + bytes / 2);
+    createBuffer(r.cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, r.buf, r.mem);
+    void *p = nullptr;
+    vkMapMemory(device, r.mem, 0, VK_WHOLE_SIZE, 0, &p);
+    r.map = static_cast<uint8_t *>(p);
+}
+
+VkCommandBuffer VulkanContext::recordFrameUploads()
+{
+    const bool shadows = framesInFlight > 1;
+    // Merge each mirror's dirty ranges (sorted, overlapping or touching joined) and size the ring.
+    VkDeviceSize total = 0;
+    for (const Patch &p : patches_)
+        if (p.data != SIZE_MAX)
+            total += (p.len + 15) & ~(VkDeviceSize)15;
+    if (shadows)
+        for (Mirror &m : mirrors_)
+        {
+            if (m.mapped)
+                continue;
+            if (m.whole)
+            {
+                m.dirty.assign(1, {0, m.size});
+            }
+            else if (m.dirty.size() > 1)
+            {
+                std::sort(m.dirty.begin(), m.dirty.end());
+                size_t o = 0;
+                for (size_t i = 1; i < m.dirty.size(); ++i)
+                {
+                    if (m.dirty[i].first <= m.dirty[o].second)
+                        m.dirty[o].second = std::max(m.dirty[o].second, m.dirty[i].second);
+                    else
+                        m.dirty[++o] = m.dirty[i];
+                }
+                m.dirty.resize(o + 1);
+            }
+            for (auto &d : m.dirty)
+                total += (d.second - d.first + 15) & ~(VkDeviceSize)15;
+        }
+    if (patches_.empty() && total == 0)
+        return VK_NULL_HANDLE;
+
+    ensureRing(frameSlot, total);
+    Ring &r = ring_[frameSlot];
+    VkCommandBuffer cmd = slotUploadCmd[frameSlot];
+    vkResetCommandBuffer(cmd, 0);
+    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &bi);
+    beginFrameGpu(cmd); // the copies may overwrite what the previous frame still reads
+    VkDeviceSize at = 0;
+    for (const Patch &p : patches_)
+    {
+        if (p.data == SIZE_MAX)
+        {
+            vkCmdFillBuffer(cmd, p.dst, p.off, p.len, p.fill);
+            continue;
+        }
+        std::memcpy(r.map + at, patchData_.data() + p.data, (size_t)p.len);
+        VkBufferCopy c{at, p.off, p.len};
+        vkCmdCopyBuffer(cmd, r.buf, p.dst, 1, &c);
+        at += (p.len + 15) & ~(VkDeviceSize)15;
+        frameStats.patchBytes += p.len;
+        ++frameStats.copies;
+    }
+    std::vector<VkBufferCopy> regions;
+    if (shadows)
+        for (Mirror &m : mirrors_)
+        {
+            if (m.mapped || m.dirty.empty())
+                continue;
+            regions.clear();
+            for (auto &d : m.dirty)
+            {
+                if (d.first >= m.size)
+                    continue;
+                const VkDeviceSize len = std::min(d.second, m.size) - d.first;
+                if (len == 0)
+                    continue;
+                std::memcpy(r.map + at, m.shadow + d.first, (size_t)len);
+                regions.push_back({at, d.first, len});
+                at += (len + 15) & ~(VkDeviceSize)15;
+                frameStats.uploadBytes += len;
+            }
+            if (!regions.empty())
+            {
+                vkCmdCopyBuffer(cmd, r.buf, m.dst, (uint32_t)regions.size(), regions.data());
+                frameStats.copies += regions.size();
+            }
+            m.dirty.clear();
+        }
+    patches_.clear();
+    patchData_.clear();
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, nullptr,
+                         0, nullptr);
+    vkEndCommandBuffer(cmd);
+    return cmd;
+}
+
+void *VulkanContext::mirrorUpload(VkBuffer dst, VkDeviceMemory mem, VkDeviceSize size, bool whole, const char *name)
+{
+    Mirror m;
+    m.dst = dst;
+    m.mem = mem;
+    m.size = size;
+    m.whole = whole;
+    m.name = name ? name : "";
+    void *p = nullptr;
+    if (framesInFlight <= 1)
+    {
+        // One frame in flight: the CPU writes the mapped memory itself, as before.
+        if (vkMapMemory(device, mem, 0, size, 0, &p) != VK_SUCCESS)
+            throw std::runtime_error("mirrorUpload: vkMapMemory failed (" + m.name + ")");
+        m.mapped = true;
+        m.shadow = static_cast<uint8_t *>(p);
+    }
+    else
+    {
+        m.shadow = static_cast<uint8_t *>(std::calloc((size_t)size, 1));
+        if (!m.shadow)
+            throw std::runtime_error("mirrorUpload: out of memory (" + m.name + ")");
+        p = m.shadow;
+    }
+    mirrors_.push_back(std::move(m));
+    return p;
+}
+
+void VulkanContext::mirrorDirty(const void *base, VkDeviceSize off, VkDeviceSize len)
+{
+    if (framesInFlight <= 1 || len == 0)
+        return;
+    for (Mirror &m : mirrors_)
+        if (m.shadow == base)
+        {
+            if (!m.whole)
+                m.dirty.push_back({off, off + len});
+            return;
+        }
+}
+
+void VulkanContext::mirrorDirtyAll(const void *base)
+{
+    for (Mirror &m : mirrors_)
+        if (m.shadow == base)
+        {
+            mirrorDirty(base, 0, m.size);
+            return;
+        }
+}
+
+void VulkanContext::mirrorForget(const void *base)
+{
+    for (size_t i = 0; i < mirrors_.size(); ++i)
+        if (mirrors_[i].shadow == base)
+        {
+            if (mirrors_[i].mapped)
+                vkUnmapMemory(device, mirrors_[i].mem);
+            else
+                std::free(mirrors_[i].shadow);
+            mirrors_.erase(mirrors_.begin() + (long)i);
+            return;
+        }
+}
+
+void VulkanContext::uploadPatch(VkBuffer dst, VkDeviceSize off, const void *data, VkDeviceSize len)
+{
+    if (!dst || len == 0)
+        return;
+    Patch p{dst, off, len, patchData_.size(), 0};
+    patchData_.insert(patchData_.end(), static_cast<const uint8_t *>(data), static_cast<const uint8_t *>(data) + len);
+    patches_.push_back(p);
+}
+
+VulkanContext::StagingAlloc VulkanContext::stagingAlloc(VkDeviceSize bytes)
+{
+    bytes = (bytes + 15) & ~(VkDeviceSize)15;
+    std::vector<StageChunk> &chunks = stage_[frameSlot];
+    for (StageChunk &c : chunks)
+        if (c.cap - c.used >= bytes)
+        {
+            StagingAlloc a{c.buf, c.used, c.map + c.used};
+            c.used += bytes;
+            return a;
+        }
+    // A new chunk (earlier ones may already be referenced by this frame's commands, so none is replaced).
+    StageChunk c;
+    c.cap = std::max<VkDeviceSize>(4u << 20, bytes);
+    createBuffer(c.cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, c.buf, c.mem);
+    void *p = nullptr;
+    vkMapMemory(device, c.mem, 0, VK_WHOLE_SIZE, 0, &p);
+    c.map = static_cast<uint8_t *>(p);
+    c.used = bytes;
+    chunks.push_back(c);
+    return StagingAlloc{c.buf, 0, c.map};
+}
+
+void VulkanContext::uploadFill(VkBuffer dst, VkDeviceSize off, VkDeviceSize len, uint32_t value)
+{
+    if (!dst || len == 0)
+        return;
+    patches_.push_back(Patch{dst, off, len, SIZE_MAX, value});
+}
+
+int VulkanContext::readbackCreate(VkDeviceSize size, void **userPtr, const char *name)
+{
+    if (hostReadMemType_ == UINT32_MAX)
+    {
+        // HOST_CACHED: the CPU's reads go through its caches (an uncached, write-combined mapping makes every
+        // read a bus transaction). Coherent too, so no invalidate is needed.
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &mp);
+        const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                           VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+        for (uint32_t i = 0; i < mp.memoryTypeCount && hostReadMemType_ == UINT32_MAX; ++i)
+            if ((mp.memoryTypes[i].propertyFlags & want) == want)
+                hostReadMemType_ = i;
+        if (hostReadMemType_ == UINT32_MAX)
+            hostReadMemType_ = UINT32_MAX - 1; // none: plain host-visible coherent
+    }
+    Readback r;
+    r.size = size;
+    r.user = userPtr;
+    r.live = true;
+    r.name = name ? name : "";
+    for (uint32_t s = 0; s < framesInFlight; ++s)
+    {
+        VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bci.size = size;
+        bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateBuffer(device, &bci, nullptr, &r.buf[s]) != VK_SUCCESS)
+            throw std::runtime_error("readbackCreate: vkCreateBuffer failed (" + r.name + ")");
+        VkMemoryRequirements req;
+        vkGetBufferMemoryRequirements(device, r.buf[s], &req);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.allocationSize = req.size;
+        ai.memoryTypeIndex = (hostReadMemType_ < UINT32_MAX - 1 && (req.memoryTypeBits & (1u << hostReadMemType_)))
+                                 ? hostReadMemType_
+                                 : findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(device, &ai, nullptr, &r.mem[s]) != VK_SUCCESS)
+            throw std::runtime_error("readbackCreate: vkAllocateMemory failed (" + r.name + ")");
+        vkBindBufferMemory(device, r.buf[s], r.mem[s], 0);
+        vkMapMemory(device, r.mem[s], 0, VK_WHOLE_SIZE, 0, &r.map[s]);
+        std::memset(r.map[s], 0, (size_t)size);
+    }
+    if (userPtr)
+        *userPtr = r.map[frameSlot < framesInFlight ? frameSlot : 0];
+    for (size_t i = 0; i < readbacks_.size(); ++i)
+        if (!readbacks_[i].live)
+        {
+            readbacks_[i] = std::move(r);
+            return (int)i;
+        }
+    readbacks_.push_back(std::move(r));
+    return (int)readbacks_.size() - 1;
+}
+
+VkBuffer VulkanContext::readbackBuffer(int id) const
+{
+    return (id >= 0 && id < (int)readbacks_.size()) ? readbacks_[(size_t)id].buf[frameSlot] : VK_NULL_HANDLE;
+}
+
+void *VulkanContext::readbackData(int id) const
+{
+    return (id >= 0 && id < (int)readbacks_.size()) ? readbacks_[(size_t)id].map[frameSlot] : nullptr;
+}
+
+void VulkanContext::readbackDestroy(int id)
+{
+    if (id < 0 || id >= (int)readbacks_.size() || !readbacks_[(size_t)id].live)
+        return;
+    Readback &r = readbacks_[(size_t)id];
+    for (uint32_t s = 0; s < kMaxFramesInFlight; ++s)
+        if (r.buf[s])
+        {
+            vkUnmapMemory(device, r.mem[s]);
+            deferDestroy(r.buf[s], r.mem[s]);
+        }
+    if (r.user)
+        *r.user = nullptr;
+    r = Readback{};
+}
+
+void VulkanContext::slotted(VkBuffer *bufVar, VkDeviceMemory *memVar, void **mapVar, VkDeviceSize size,
+                            VkBufferUsageFlags usage, VkMemoryPropertyFlags props, const char *name)
+{
+    Slotted s;
+    s.bufVar = bufVar;
+    s.memVar = memVar;
+    s.mapVar = mapVar;
+    if (props & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
+    {
+        // A host copy of GPU results: cached when the device has such memory, else plain host-visible.
+        VkPhysicalDeviceMemoryProperties mp;
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice, &mp);
+        bool have = false;
+        for (uint32_t i = 0; i < mp.memoryTypeCount; ++i)
+            have = have || (mp.memoryTypes[i].propertyFlags & props) == props;
+        if (!have)
+            props &= ~VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    }
+    for (uint32_t k = 0; k < framesInFlight; ++k)
+    {
+        createBuffer(size, usage, props, s.buf[k], s.mem[k]);
+        if (mapVar && (props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+        {
+            if (vkMapMemory(device, s.mem[k], 0, VK_WHOLE_SIZE, 0, &s.map[k]) != VK_SUCCESS)
+                throw std::runtime_error(std::string("slotted: vkMapMemory failed (") + (name ? name : "") + ")");
+            std::memset(s.map[k], 0, (size_t)size);
+        }
+    }
+    slotted_.push_back(s);
+    pointSlotted();
+}
+
+void VulkanContext::slottedDestroy(VkBuffer *bufVar)
+{
+    for (size_t i = 0; i < slotted_.size(); ++i)
+        if (slotted_[i].bufVar == bufVar)
+        {
+            Slotted &s = slotted_[i];
+            for (uint32_t k = 0; k < kMaxFramesInFlight; ++k)
+                if (s.buf[k])
+                {
+                    if (s.map[k])
+                        vkUnmapMemory(device, s.mem[k]);
+                    deferDestroy(s.buf[k], s.mem[k]);
+                }
+            *s.bufVar = VK_NULL_HANDLE;
+            if (s.memVar)
+                *s.memVar = VK_NULL_HANDLE;
+            if (s.mapVar)
+                *s.mapVar = nullptr;
+            slotted_.erase(slotted_.begin() + (long)i);
+            return;
+        }
+}
+
+void VulkanContext::pointSlotted()
+{
+    const uint32_t k = frameSlot < framesInFlight ? frameSlot : 0;
+    for (Slotted &s : slotted_)
+    {
+        *s.bufVar = s.buf[k];
+        if (s.memVar)
+            *s.memVar = s.mem[k];
+        if (s.mapVar)
+            *s.mapVar = s.map[k];
+    }
+}
+
+void VulkanContext::deferDestroy(VkBuffer buf, VkDeviceMemory mem)
+{
+    if (!buf && !mem)
+        return;
+    deferred_.push_back({buf, mem, frameIndex});
+}
+
+void VulkanContext::destroyFrameResources()
+{
+    for (Deferred &d : deferred_)
+    {
+        if (d.buf)
+            vkDestroyBuffer(device, d.buf, nullptr);
+        if (d.mem)
+            vkFreeMemory(device, d.mem, nullptr);
+    }
+    deferred_.clear();
+    for (Ring &r : ring_)
+        if (r.buf)
+        {
+            vkUnmapMemory(device, r.mem);
+            vkDestroyBuffer(device, r.buf, nullptr);
+            vkFreeMemory(device, r.mem, nullptr);
+            r = Ring{};
+        }
+    for (auto &chunks : stage_)
+    {
+        for (StageChunk &c : chunks)
+        {
+            vkDestroyBuffer(device, c.buf, nullptr);
+            vkFreeMemory(device, c.mem, nullptr);
+        }
+        chunks.clear();
+    }
+    for (Slotted &s : slotted_)
+        for (uint32_t k = 0; k < kMaxFramesInFlight; ++k)
+            if (s.buf[k])
+            {
+                vkDestroyBuffer(device, s.buf[k], nullptr);
+                vkFreeMemory(device, s.mem[k], nullptr);
+            }
+    slotted_.clear();
+    for (Readback &r : readbacks_)
+        for (uint32_t s = 0; s < kMaxFramesInFlight; ++s)
+            if (r.buf[s])
+            {
+                vkDestroyBuffer(device, r.buf[s], nullptr);
+                vkFreeMemory(device, r.mem[s], nullptr);
+            }
+    readbacks_.clear();
+    for (Mirror &m : mirrors_)
+        if (!m.mapped)
+            std::free(m.shadow);
+    mirrors_.clear();
 }

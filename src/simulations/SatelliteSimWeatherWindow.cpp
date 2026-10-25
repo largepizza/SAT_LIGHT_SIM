@@ -936,7 +936,7 @@ void SatelliteSim::weatherRadarEnsure(VulkanContext &ctx)
         w.descriptorCount = 1;
         w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         w.pBufferInfo = &bi;
-        vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
+        frameSafeUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
         if (ctx.timestampPeriodNs > 0.0)
         {
             VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -996,6 +996,7 @@ void SatelliteSim::weatherRadarRecord(VkCommandBuffer cmd)
     if (wxRadarQuery)
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, wxRadarQuery, 1);
     wxRadarInFlight = true;
+    wxRadarFrame = ctx_ ? ctx_->frameIndex : 0; // read back once this frame has finished (frames in flight)
     wxRadarDispWall = wallNow();
     wxRadarDispSim = (double)simDayJ2000 * 86400.0 + simSecInDay;
     wxRadarDispObs = glm::normalize(glm::dvec3(obsDir));
@@ -1022,8 +1023,7 @@ void SatelliteSim::weatherRadarDestroy(VkDevice device)
     wxRadarPool = VK_NULL_HANDLE;
     wxRadarSetLayout = VK_NULL_HANDLE;
     wxRadarQuery = VK_NULL_HANDLE;
-    if (wxStageMapped)
-        vkUnmapMemory(device, wxStageMem);
+    std::free(wxStageMapped);
     wxStageMapped = nullptr;
     if (wxStage) vkDestroyBuffer(device, wxStage, nullptr);
     if (wxStageMem) vkFreeMemory(device, wxStageMem, nullptr);
@@ -1037,8 +1037,7 @@ void SatelliteSim::weatherRadarDestroy(VkDevice device)
     wxImgView = VK_NULL_HANDLE;
     wxImg = VK_NULL_HANDLE;
     wxImgMem = VK_NULL_HANDLE;
-    if (wxMapStageMapped)
-        vkUnmapMemory(device, wxMapStageMem);
+    std::free(wxMapStageMapped);
     wxMapStageMapped = nullptr;
     if (wxMapStage) vkDestroyBuffer(device, wxMapStage, nullptr);
     if (wxMapStageMem) vkFreeMemory(device, wxMapStageMem, nullptr);
@@ -1057,7 +1056,7 @@ void SatelliteSim::weatherRadarDestroy(VkDevice device)
 // Last frame's dispatch, read back (the fence has been waited on: single frame in flight).
 void SatelliteSim::weatherRadarReadback()
 {
-    if (!wxRadarInFlight || !wxRadarMapped)
+    if (!wxRadarInFlight || !wxRadarMapped || (ctx_ && ctx_->completedFrame() < wxRadarFrame))
         return;
     wxRadarInFlight = false;
     FPROF_SCOPE("weatherRadarReadback");
@@ -1178,10 +1177,8 @@ bool SatelliteSim::weatherRadarEnsureImage(UIRenderer &ui)
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     vkCreateSampler(ctx.device, &si, nullptr, &wxImgSampler);
     const VkDeviceSize bytes = (VkDeviceSize)kWxN * kWxN * 4;
-    ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     wxStage, wxStageMem);
-    vkMapMemory(ctx.device, wxStageMem, 0, bytes, 0, &wxStageMapped);
-    std::memset(wxStageMapped, 0, (size_t)bytes);
+    // The raster's CPU copy; each upload takes this frame's staging (ctx.stagingAlloc: frames in flight).
+    wxStageMapped = std::calloc((size_t)bytes, 1);
     VkCommandBuffer cmd = ctx.beginOneTimeCommands();
     ctx.imageBarrier(cmd, wxImg, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -1209,10 +1206,14 @@ void SatelliteSim::weatherRadarRecordUpload(VkCommandBuffer cmd)
         VulkanContext &c = *ctx_;
         c.imageBarrier(cmd, wxMapImg, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        const VkDeviceSize mb = (VkDeviceSize)kWxMapW * kWxMapH * 4;
+        const VulkanContext::StagingAlloc ms = c.stagingAlloc(mb);
+        std::memcpy(ms.ptr, wxMapStageMapped, (size_t)mb);
         VkBufferImageCopy rg{};
+        rg.bufferOffset = ms.off;
         rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
         rg.imageExtent = {(uint32_t)kWxMapW, (uint32_t)kWxMapH, 1};
-        vkCmdCopyBufferToImage(cmd, wxMapStage, wxMapImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rg);
+        vkCmdCopyBufferToImage(cmd, ms.buf, wxMapImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rg);
         c.imageBarrier(cmd, wxMapImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
@@ -1222,10 +1223,14 @@ void SatelliteSim::weatherRadarRecordUpload(VkCommandBuffer cmd)
     VulkanContext &ctx = *ctx_;
     ctx.imageBarrier(cmd, wxImg, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkDeviceSize bytes = (VkDeviceSize)kWxN * kWxN * 4;
+    const VulkanContext::StagingAlloc st = ctx.stagingAlloc(bytes);
+    std::memcpy(st.ptr, wxStageMapped, (size_t)bytes);
     VkBufferImageCopy region{};
+    region.bufferOffset = st.off;
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageExtent = {(uint32_t)kWxN, (uint32_t)kWxN, 1};
-    vkCmdCopyBufferToImage(cmd, wxStage, wxImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vkCmdCopyBufferToImage(cmd, st.buf, wxImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     ctx.imageBarrier(cmd, wxImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 }

@@ -325,7 +325,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             bakeViews[i] = makeView(dev, *imgs[i], VK_IMAGE_VIEW_TYPE_3D, VK_FORMAT_R8G8B8A8_UNORM, 0, 1, 1);
             VkDescriptorImageInfo ii{VK_NULL_HANDLE, bakeViews[i], VK_IMAGE_LAYOUT_GENERAL};
             VkWriteDescriptorSet w = imageWrite(sets[i], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii);
-            vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
+            frameSafeUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &sets[i], 0, nullptr);
             int32_t pcv[2] = {i, i == 3 ? 17 : 17 + i * 31};   // the cap shape: the shape's seed (lobes in the same places)
             vkCmdPushConstants(cmd, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, pcv);
@@ -430,7 +430,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                 imageWrite(set, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outInfo),
                 imageWrite(set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo),
                 bufferWrite(set, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &stormInfo)};
-            vkUpdateDescriptorSets(dev, 5, w, 0, nullptr);
+            frameSafeUpdateDescriptorSets(dev, 5, w, 0, nullptr);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &set, 0, nullptr);
             cv2WxSets.push_back(set);
             GpuWeatherPC pcv = weatherEvoPC(-1, m);
@@ -457,23 +457,23 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     }
 
     // ── UBO ──
-    ctx.createBuffer(sizeof(GpuCloudV2Params), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     cv2ParamsBuf, cv2ParamsMem);
-    vkMapMemory(dev, cv2ParamsMem, 0, sizeof(GpuCloudV2Params), 0, &cv2ParamsMapped);
-    std::memset(cv2ParamsMapped, 0, sizeof(GpuCloudV2Params));
+    cv2ParamsMapped = createMirrored(ctx, sizeof(GpuCloudV2Params), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, cv2ParamsBuf,
+                                     cv2ParamsMem, true, "cloudsV2Params");
     // The flash buffer holds the Sun shadow lattices (fine grid, cascade, both shaft rings: ~5.5 MB) that every lit
     // cloud sample and every sky pixel's god rays read. As plain HOST_VISIBLE memory it is the first such type, which on
     // NVIDIA is system RAM: each of those reads crossed PCIe behind the L2. Device-local + host-visible (the BAR heap, or
     // all of VRAM with Resizable BAR) keeps the mapping. SATLIGHTSIM_FLASH_HOSTMEM=1 forces the old placement (A/B).
     {
+        // TRANSFER: the CPU's few writes arrive as patches / fills, and the host reads a per-slot copy of its head.
+        const VkBufferUsageFlags kFlashUsage =
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         const char *ev = std::getenv("SATLIGHTSIM_FLASH_HOSTMEM");
         bool done = false;
         if (!(ev && ev[0] == '1'))
         {
             try
             {
-                ctx.createBuffer(kCv2FlashBufBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                ctx.createBuffer(kCv2FlashBufBytes, kFlashUsage,
                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
                                      | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                  cv2FlashBuf, cv2FlashMem);
@@ -487,13 +487,19 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             }
         }
         if (!done)
-            ctx.createBuffer(kCv2FlashBufBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            ctx.createBuffer(kCv2FlashBufBytes, kFlashUsage,
                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                              cv2FlashBuf, cv2FlashMem);
         Log::line(std::string("clouds v2: flash buffer in ") + (done ? "device-local host-visible memory" : "host memory"));
     }
-    vkMapMemory(dev, cv2FlashMem, 0, kCv2FlashBufBytes, 0, &cv2FlashMapped);
-    std::memset(cv2FlashMapped, 0, kCv2FlashBufBytes);
+    vkMapMemory(dev, cv2FlashMem, 0, kCv2FlashBufBytes, 0, &cv2FlashRealMapped);
+    std::memset(cv2FlashRealMapped, 0, kCv2FlashBufBytes);
+    // Frames in flight (2026-10-25): what the host reads (the flash list, the rain map and light at the eye, the
+    // tornado columns, the eval counters) is a per-slot copy of the buffer's head, made at the end of each frame
+    // (recordFrameReadbacks): cv2FlashMapped is the slot's, the values of ctx.completedFrame(). The host writes go
+    // through ctx.uploadPatch / uploadFill.
+    ctx.slotted(&cv2FlashHeadBuf, &cv2FlashHeadMem, &cv2FlashMapped, kCv2FlashHeadBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VulkanContext::kHostReadProps, "cloudsV2FlashHead");
     ctx.createBuffer(kCv2CdcHeadBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, cv2CdcBuf, cv2CdcMem);   // grown on first use
     cv2CdcBufFull = false;
@@ -676,7 +682,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             bufferWrite(cv2MarchDescSet, 9, SSBO, &beams),
             bufferWrite(cv2MarchDescSet, 12, SSBO, &flashes),
             bufferWrite(cv2ResolveDescSet, 0, UBO, &v2Info)};
-        vkUpdateDescriptorSets(dev, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
+        frameSafeUpdateDescriptorSets(dev, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
     }
 
     createCloudsV2Targets(ctx);
@@ -775,7 +781,7 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
         imageWrite(cv2MarchDescSet, 21, IMG, &farOut),
         imageWrite(cv2ResolveDescSet, 9, IMG, &ageOut),
         imageWrite(cv2ResolveDescSet, 10, TEX, &ageIn)};
-    vkUpdateDescriptorSets(dev, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(dev, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
     cv2ScreenResetOnly = cv2ScreenResetOnly || cv2HistoryValid;   // the Sun shadow grids keep (recordCloudsV2 params)
     cv2HistoryValid = false;
 }
@@ -1007,7 +1013,10 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2LightningPipeline = VK_NULL_HANDLE;
     if (cv2PassQuery) vkDestroyQueryPool(device, cv2PassQuery, nullptr);
     cv2PassQuery = VK_NULL_HANDLE;
-    if (cv2FlashMem) { vkUnmapMemory(device, cv2FlashMem); cv2FlashMapped = nullptr; }
+    if (cv2FlashMem) { vkUnmapMemory(device, cv2FlashMem); cv2FlashRealMapped = nullptr; }
+    if (ctx_)
+        ctx_->slottedDestroy(&cv2FlashHeadBuf);
+    cv2FlashMapped = nullptr;
     if (cv2FlashBuf) vkDestroyBuffer(device, cv2FlashBuf, nullptr);
     if (cv2FlashMem) vkFreeMemory(device, cv2FlashMem, nullptr);
     cv2FlashBuf = VK_NULL_HANDLE; cv2FlashMem = VK_NULL_HANDLE;
@@ -1024,6 +1033,8 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2MarchPipeLayout = cv2ResolvePipeLayout = VK_NULL_HANDLE;
     cv2DescPool = VK_NULL_HANDLE;
     cv2MarchDescLayout = cv2ResolveDescLayout = VK_NULL_HANDLE;
+    if (ctx_ && cv2ParamsMapped)
+        ctx_->mirrorForget(cv2ParamsMapped);
     if (cv2ParamsBuf) vkDestroyBuffer(device, cv2ParamsBuf, nullptr);
     if (cv2ParamsMem) vkFreeMemory(device, cv2ParamsMem, nullptr);
     cv2ParamsBuf = VK_NULL_HANDLE;
@@ -1063,7 +1074,7 @@ void SatelliteSim::cv2EnsureCdcBuffer(VulkanContext &ctx)
     ctx.endOneTimeCommands(cmd);
     VkDescriptorBufferInfo cdc{cv2CdcBuf, 0, VK_WHOLE_SIZE};
     VkWriteDescriptorSet w = bufferWrite(cv2MarchDescSet, 23, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &cdc);
-    vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
     cv2CdcBufFull = true;
     ++cv2CdcEpoch;
     Log::line("clouds v2: cloud density clipmap allocated (" + std::to_string(kCv2CdcBufBytes >> 20) + " MB)");
@@ -1078,7 +1089,7 @@ void SatelliteSim::cv2SyncShapeVolume(VulkanContext &ctx)
     cv2ShapeCapsUsed = cv2ShapeCaps;
     VkDescriptorImageInfo shape{cv2RepeatSampler, cv2ShapeActiveView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet w = imageWrite(cv2MarchDescSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &shape);
-    vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
     writeCloudsV2ConsumerDescriptors(ctx);
     cv2HistoryValid = false;
 }
@@ -1122,7 +1133,7 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
         imageWrite(beamSelfMarchDescSet, 8, TEX, &meso),
         imageWrite(beamSelfMarchDescSet, 9, TEX, &morph),
         bufferWrite(beamSelfMarchDescSet, 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &storms)};
-    vkUpdateDescriptorSets(ctx.device, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
 }
 
 // ─── Per frame ────────────────────────────────────────────────────────────────────────────────────
@@ -1488,8 +1499,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                 {
                     if (cv2StvFrames[lv] == 0)
                     {
-                        std::memset(static_cast<char *>(cv2FlashMapped) + kCv2StvOffset + (VkDeviceSize)lv * kCv2StvLevelBytes, 0,
-                                    kCv2StvLevelBytes);
+                        ctx_->uploadFill(cv2FlashBuf, kCv2StvOffset + (VkDeviceSize)lv * kCv2StvLevelBytes,
+                                         kCv2StvLevelBytes, 0); // at the start of this frame's GPU work
                         cv2StvCellUsed[lv] = (float)cellL;
                     }
                     cv2StvLatA[lv] = std::fmod(cv2StvLatA[lv] + glm::dot(dEye, ga) / cellL, 128.0 * 1024.0);
@@ -2004,26 +2015,27 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     FPROF_SCOPE("recordCloudsV2");
     // The field-evaluation counters (cv2EvalCount, -DCV2_EVAL_COUNT shader variants): last frame's totals were read by
     // the harness in buildUI; this frame's passes (lightning, march, cloud_march.comp) add from zero.
-    if (cv2FlashMapped)
-        std::memset(static_cast<char *>(cv2FlashMapped) + kCv2EvalCountOffset, 0, 32 * 4);
-    // Last frame's pass times (its fence has been waited on), then this frame's stamps.
-    if (cv2PassQuery && cv2PassStampsWritten)
+    ctx.uploadFill(cv2FlashBuf, kCv2EvalCountOffset, 32 * 4, 0); // (at the start of this frame's GPU work)
+    // The pass times of the frame this slot last held (its fence has been waited on; one range of stamps per frame
+    // slot), then this frame's stamps.
+    const uint32_t passBase = ctx.frameSlot * kCv2PassStamps;
+    if (cv2PassQuery && cv2PassStampsWrittenS[ctx.frameSlot])
     {
         uint64_t ts[kCv2PassStamps];
-        if (vkGetQueryPoolResults(ctx.device, cv2PassQuery, 0, kCv2PassStamps, sizeof(ts), ts, sizeof(uint64_t),
+        if (vkGetQueryPoolResults(ctx.device, cv2PassQuery, passBase, kCv2PassStamps, sizeof(ts), ts, sizeof(uint64_t),
                                   VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
             for (uint32_t i = 0; i + 1 < kCv2PassStamps; ++i) {
                 cv2PassMsRaw[i] = (float)((double)(ts[i + 1] - ts[i]) * ctx.timestampPeriodNs * 1e-6);
                 cv2PassMsEased[i] += (cv2PassMsRaw[i] - cv2PassMsEased[i]) * 0.033f;
             }
     }
-    cv2PassStampsWritten = false;
+    cv2PassStampsWrittenS[ctx.frameSlot] = false;
     cv2PassStampNext = kCv2PassStamps;   // nothing is stamped unless the volumetric path runs (below)
     if (!cv2PassQuery && ctx.timestampPeriodNs > 0.0)
     {
         VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
         qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
-        qi.queryCount = kCv2PassStamps;
+        qi.queryCount = kCv2PassStamps * VulkanContext::kMaxFramesInFlight;
         if (vkCreateQueryPool(ctx.device, &qi, nullptr, &cv2PassQuery) != VK_SUCCESS)
             cv2PassQuery = VK_NULL_HANDLE;
     }
@@ -2047,7 +2059,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     }
     if (cv2PassQuery)
     {
-        vkCmdResetQueryPool(cmd, cv2PassQuery, 0, kCv2PassStamps);
+        vkCmdResetQueryPool(cmd, cv2PassQuery, passBase, kCv2PassStamps);
         cv2PassStampNext = 0;
         cv2PassStampTo(cmd, 0);   // start
     }
@@ -2106,9 +2118,10 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
         cv2LightningRanThisFrame = true;
-        tornadoProbeRan = true;   // (its threads 2-5 answered the tornado columns asked for: weatherFillTornadoes)
-        cv2LightningObsDir = glm::dvec3(cpc.obsECEFDir);   // the frame its flash list is in (updateLightningBolts)
-        cv2LightningObsDirValid = true;
+        // Per frame slot (frames in flight): the host reads this frame's answers from the slot's copy of the head.
+        tornadoProbeRanS[ctx.frameSlot] = true;   // (threads 2-5 answered the tornado columns: weatherFillTornadoes)
+        cv2LightningObsDirS[ctx.frameSlot] = glm::dvec3(cpc.obsECEFDir); // the frame its flash list is in
+        cv2LightningObsDirValidS[ctx.frameSlot] = true;
     }
     // The terrain Sun-horizon map (2026-10-22): one thread per line, 4 x 128 x 128; after the lightning pass (it reads the
     // volume's axes, cv2SunProf), before the froxels, the sky pass and the fog march, which read it.
@@ -2212,10 +2225,11 @@ void SatelliteSim::cv2PassStampTo(VkCommandBuffer cmd, uint32_t id)
 {
     if (!cv2PassQuery)
         return;
+    const uint32_t slot = ctx_ ? ctx_->frameSlot : 0u;
     for (; cv2PassStampNext <= id && cv2PassStampNext < kCv2PassStamps; ++cv2PassStampNext)
-        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, cv2PassQuery, cv2PassStampNext);
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, cv2PassQuery, slot * kCv2PassStamps + cv2PassStampNext);
     if (cv2PassStampNext == kCv2PassStamps)
-        cv2PassStampsWritten = true;
+        cv2PassStampsWrittenS[slot] = true;
 }
 
 // ─── The droplets' Mie phase (2026-10-22, tools/make_mie_lut.py) ───────────────────────────────────────────────────
@@ -2416,7 +2430,7 @@ void SatelliteSim::createCloudCombine(VulkanContext &ctx)
     cv2CombinePipeline = makeComputePipeline(ctx, "shaders/cloud_v2_combine.comp.spv", cv2CombinePipeLayout);
     VkDescriptorBufferInfo cp{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
     VkWriteDescriptorSet w = bufferWrite(cv2CombineDescSet, 0, UBO, &cp);
-    vkUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
 }
 
 void SatelliteSim::createCloudCombineTargets(VulkanContext &ctx)
@@ -2461,7 +2475,7 @@ void SatelliteSim::createCloudCombineTargets(VulkanContext &ctx)
         imageWrite(cloudMarchDescSet, 6, IMG, on ? &halfOut[1] : &finalB),
         imageWrite(cloudMarchDescSet, 24, IMG, &halfOut[2]),
         imageWrite(cloudMarchDescSet, 25, IMG, &halfOut[3])};
-    vkUpdateDescriptorSets(dev, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(dev, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
 }
 
 void SatelliteSim::destroyCloudCombineTargets(VkDevice device)

@@ -301,7 +301,7 @@ void SatEnvProbes::init(VulkanContext &ctx, VkPipelineLayout skyLayout)
                     VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ii, nullptr, nullptr};
             w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, shSets[i], 1, 0, 1,
                     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bi, nullptr};
-            vkUpdateDescriptorSets(ctx.device, 3, w, 0, nullptr);
+            frameSafeUpdateDescriptorSets(ctx.device, 3, w, 0, nullptr);
         }
     }
 

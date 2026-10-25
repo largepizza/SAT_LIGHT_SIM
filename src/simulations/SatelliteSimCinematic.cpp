@@ -401,6 +401,8 @@ void SatelliteSim::cineTick(float dt)
         return;
     }
     // Export: one frame per path frame; the copy of the last one must be done before the next pose.
+    if (screenshotCopyPending)
+        finalizeScreenshotCopy(true); // (frames in flight: no extra frame at the held pose)
     if (screenshotRequested || screenshotCopyPending)
         return;
     if (cineRun_ == CineRun::ExportHQ && (!ctx_ || !ctx_->photoActive))

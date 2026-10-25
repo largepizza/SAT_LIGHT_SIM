@@ -234,6 +234,7 @@ public:
 
 private:
     VkDevice device_ = VK_NULL_HANDLE;
+    VulkanContext *vctx_ = nullptr; // frames in flight: the per-frame buffers are mirrored (ctx.mirrorUpload)
     VkFormat colorFormat = VK_FORMAT_B8G8R8A8_SRGB;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     EarthTextures earth_;

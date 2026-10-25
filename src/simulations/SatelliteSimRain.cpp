@@ -150,7 +150,7 @@ void SatelliteSim::writeRainDescriptors(VulkanContext &ctx)
     w[2].pBufferInfo = &fl;
     w[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w[3].pImageInfo = &dp;
-    vkUpdateDescriptorSets(ctx.device, 4, w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, 4, w, 0, nullptr);
 }
 
 void SatelliteSim::destroyRainParticles(VkDevice device)

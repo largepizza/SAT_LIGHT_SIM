@@ -644,7 +644,7 @@ json SatelliteSim::harnessStateJson()
         // The main view's mesh glints (glare_find.comp's list, last frame's copy): where each mesh glare is drawn,
         // in px, with its light (effectFlare). The release cinematic's mirror shot checks the glare against
         // sprite_px (the Sun's image) above (tools/harness/glare_track.py).
-        if (ctx_ && glintReadValid && glintReadMapped)
+        if (ctx_ && glintReadValidSlot[ctx_->frameSlot] && glintReadMapped)
         {
             const float W = (float)ctx_->swapExtent.width, H = (float)ctx_->swapExtent.height;
             const GpuGlintList &gl = *static_cast<const GpuGlintList *>(glintReadMapped);
@@ -674,10 +674,11 @@ json SatelliteSim::harnessStateJson()
             sv["ubo"] = {v4(pp->stvL0), v4(pp->stvL1), v4(pp->stvL2), v4(pp->stvL3), v4(pp->stvH), v4(pp->stvV)};
         // Its contents per level (2026-10-23): the share of stamped values and their mean transmittance, overall and in
         // the lower / upper half of the knots (one bulk copy out of the uncached mapped buffer).
-        if (cv2FlashMapped)
+        if (cv2FlashRealMapped)
         {
+            ctx_->drainFrames(); // (the volume lives in the GPU's own buffer: no frame may be writing it)
             std::vector<uint32_t> buf((size_t)(4 * kCv2StvLevelBytes / 4));
-            std::memcpy(buf.data(), (const char *)cv2FlashMapped + kCv2StvOffset, (size_t)(4 * kCv2StvLevelBytes));
+            std::memcpy(buf.data(), (const char *)cv2FlashRealMapped + kCv2StvOffset, (size_t)(4 * kCv2StvLevelBytes));
             json lvls = json::array();
             const size_t perLv = (size_t)(kCv2StvLevelBytes / 4);
             for (int lv = 0; lv < 4; ++lv)
@@ -1627,10 +1628,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const uint32_t n = std::min<uint32_t>(rb->beamCount, (uint32_t)kMaxActiveBeams);
             // The beam's ground spot: the eye's ENU frame (the frame the readback was written in) to ECEF, then the
             // reflected ray from the satellite to the sea-level sphere.
-            const glm::dvec3 upE = glm::normalize(glm::dvec3(lastBeamObsDir));
+            const glm::dvec3 upE = glm::normalize(glm::dvec3(lastBeamObsDirS[ctx_->frameSlot]));
             const glm::dvec3 eastE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), upE));
             const glm::dvec3 northE = glm::cross(upE, eastE);
-            const glm::dvec3 eye = upE * lastBeamObsRadius;
+            const glm::dvec3 eye = upE * lastBeamObsRadiusS[ctx_->frameSlot];
             auto toEcef = [&](const glm::vec3 &v) { return eastE * (double)v.x + northE * (double)v.y + upE * (double)v.z; };
             for (uint32_t k = 0; k < n; ++k)
             {
@@ -4084,6 +4085,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // copy is read back at the start of the next frame (App::drawFrame, before buildUI); there
             // finalizeScreenshot joins the previous encode on the main thread, so the wait stalls the app
             // instead of rendering.
+            if (!rec.empty() && screenshotCopyPending)
+                finalizeScreenshotCopy(true); // (frames in flight: no extra still frame between recorded frames)
             if (!rec.empty() && (screenshotRequested || screenshotCopyPending))
                 return Status::Pending;
             const int i = a.scratch["i"], nF = a.scratch["n"];
@@ -4239,7 +4242,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             probeRequested = true;
             return Status::Pending;
         }
-        if (a.frame < 2)
+        if (a.frame < 1 + (int)(ctx_ ? ctx_->framesInFlight : 1u)) // (until its frame has finished: frames in flight)
             return Status::Pending;
         const glm::vec4 *v = static_cast<const glm::vec4 *>(probeMapped);
         auto v4 = [](const glm::vec4 &x) { return json::array({x.x, x.y, x.z, x.w}); };
@@ -5846,6 +5849,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             a.scratch["totals"] = json::array();
             a.scratch["walls"] = json::array();
             a.scratch["last"] = harness::nowS();
+            a.scratch["fif"] = std::vector<double>(6, 0.0);
             return Status::Pending;
         }
         const double now = harness::nowS();
@@ -5859,6 +5863,15 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 a.scratch["cpu"][k] = a.scratch["cpu"][k].get<double>() + cpuMsRaw[k];
             a.scratch["totals"].push_back(gpuMsRawTotal);
             a.scratch["walls"].push_back(wall);
+            if (ctx_)
+            {
+                // Frames in flight: what the previous frame uploaded and waited for (VulkanContext::FrameStats).
+                const auto &fs = ctx_->frameStatsLast;
+                const double v[6] = {(double)fs.uploadBytes, (double)fs.patchBytes, (double)fs.copies, (double)fs.drains,
+                                     (double)fs.descWrites, (double)fs.oneTimeSubmits};
+                for (int k = 0; k < 6; ++k)
+                    a.scratch["fif"][k] = a.scratch["fif"][k].get<double>() + v[k];
+            }
         }
         if (a.frame < kWarmup + frames)
             return Status::Pending;
@@ -5884,6 +5897,16 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["gpu_total_ms"] = stats(tot);
         r["cpu_ms"] = cpu;
         r["wall_frame_ms"] = stats(walls);
+        {
+            const std::vector<double> f = a.scratch["fif"].get<std::vector<double>>();
+            r["frames_in_flight"] = {{"frames_in_flight", ctx_ ? ctx_->framesInFlight : 1u},
+                                     {"upload_kb_per_frame", f[0] / frames / 1024.0},
+                                     {"patch_kb_per_frame", f[1] / frames / 1024.0},
+                                     {"copies_per_frame", f[2] / frames},
+                                     {"drains", f[3]},
+                                     {"descriptor_writes", f[4]},
+                                     {"one_time_submits", f[5]}};
+        }
         r["fixed_dt"] = harness::options().fixedDt;
         r["state"] = harnessStateJson();
         r["state"].erase("gpu_ms_last_frame");
@@ -6113,7 +6136,7 @@ void SatelliteSim::recordTerrainProbe(VkCommandBuffer cmd, VulkanContext &ctx)
     w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &ubo, nullptr};
     w[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depth, nullptr, nullptr};
     w[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, probeDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &out, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
 
     TerrainProbePC pc{};
     pc.skyView = camera.viewMatrix();

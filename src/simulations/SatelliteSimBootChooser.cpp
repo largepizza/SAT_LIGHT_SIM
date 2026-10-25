@@ -181,6 +181,7 @@ void SatelliteSim::ensureFullSkyPipelines(VulkanContext &ctx)
     if (!fullSkyDeferred || !fullSkyNeeded())
         return;
     fullSkyDeferred = false;
+    ctx.drainFrames(); // (frames in flight: the previous frame may still use the pipelines it replaces)
     const double t0 = steadyNowS();
     vkDestroyPipeline(ctx.device, skyBgPipeline, nullptr);
     skyBgPipeline = VK_NULL_HANDLE;

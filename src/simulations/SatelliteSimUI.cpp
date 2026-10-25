@@ -2149,7 +2149,7 @@ void SatelliteSim::updateViewerView(const UIInput &inp, UIRenderer &ui)
     // Photometric check result (recorded last frame, which has completed by now): integrate the
     // render's L·d² over each pixel's solid angle → radiant intensity toward the camera, per unit solar
     // irradiance, and compare with the lobe model's (both reduced to 1000 km).
-    if (viewerCheckAwaiting && meshRenderer.checkPixels())
+    if (viewerCheckAwaiting && meshRenderer.checkPixels() && ctx_ && ctx_->completedFrame() >= viewerCheckFrame)
     {
         viewerCheckAwaiting = false;
         const int n = (int)SatMeshRenderer::kCheckSize;

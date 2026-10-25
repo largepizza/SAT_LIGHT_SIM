@@ -28,6 +28,21 @@ void makeHostBuffer(VulkanContext &ctx, VkDeviceSize size, VkBufferUsageFlags us
         vkUnmapMemory(ctx.device, mem);
 }
 
+// A buffer the CPU rewrites each frame and the GPU reads (frames in flight, VulkanContext::mirrorUpload): mapped
+// with one frame in flight, else device-local with a shadow copied at the start of each frame's GPU work.
+void makeMirrorBuffer(VulkanContext &ctx, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer &buf, VkDeviceMemory &mem,
+                      void **mapped, bool whole, const char *name)
+{
+    size = std::max<VkDeviceSize>(size, 16);
+    ctx.createBuffer(size, usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                     ctx.framesInFlight > 1 ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                                            : (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT),
+                     buf, mem);
+    *mapped = ctx.mirrorUpload(buf, mem, size, whole, name);
+    memset(*mapped, 0, (size_t)size);
+    ctx.mirrorDirty(*mapped, 0, size);
+}
+
 void makeImage(VulkanContext &ctx, uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags usage,
                VkSampleCountFlagBits samples, VkImageAspectFlags aspect, VkImage &img, VkDeviceMemory &mem,
                VkImageView &view)
@@ -93,24 +108,27 @@ void SatMeshRenderer::init(VulkanContext &ctx, const EarthTextures &earth, const
         props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
     samples = (both & VK_SAMPLE_COUNT_4_BIT) ? VK_SAMPLE_COUNT_4_BIT : VK_SAMPLE_COUNT_1_BIT;
 
-    makeHostBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, nullptr, frameBuf, frameMem,
-                   &frameMapped);
-    makeHostBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, nullptr, checkFrameBuf,
-                   checkFrameMem, &checkFrameMapped);
-    makeHostBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, nullptr, sceneFrameBuf,
-                   sceneFrameMem, &sceneFrameMapped);
-    makeHostBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, nullptr, glareFrameBuf,
-                   glareFrameMem, &glareFrameMapped);
-    makeHostBuffer(ctx, sizeof(GpuMeshInstance) * (kMaxInstances + kViewerExtra), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr,
-                   instanceBuf, instanceMem, &instanceMapped);
+    vctx_ = &ctx;
+    makeMirrorBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, frameBuf, frameMem, &frameMapped, true,
+                     "meshFrameViewer");
+    makeMirrorBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, checkFrameBuf, checkFrameMem,
+                     &checkFrameMapped, true, "meshFrameCheck");
+    makeMirrorBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sceneFrameBuf, sceneFrameMem,
+                     &sceneFrameMapped, true, "meshFrameScene");
+    makeMirrorBuffer(ctx, sizeof(GpuMeshFrame), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, glareFrameBuf, glareFrameMem,
+                     &glareFrameMapped, true, "meshFrameGlare");
+    // By dirty range: 4100 slots, a frame writes a few (recordViewer / recordCheck / recordScene mark theirs).
+    makeMirrorBuffer(ctx, sizeof(GpuMeshInstance) * (kMaxInstances + kViewerExtra), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     instanceBuf, instanceMem, &instanceMapped, false, "meshInstances");
     // Placeholders until setTypeModels() so the descriptor set is always complete.
     makeHostBuffer(ctx, sizeof(GpuSatMeshMaterial), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr, materialBuf,
                    materialMem);
     makeHostBuffer(ctx, sizeof(GpuSatMeshOccluder), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr, occluderBuf,
                    occluderMem);
     makeHostBuffer(ctx, sizeof(glm::vec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nullptr, componentBuf, componentMem);
-    makeHostBuffer(ctx, (VkDeviceSize)kAccelSlots * kAccelStride * sizeof(glm::uvec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                   nullptr, accelBuf, accelMem, &accelMapped);
+    // By dirty range: writeShadowAccel marks the slot it writes.
+    makeMirrorBuffer(ctx, (VkDeviceSize)kAccelSlots * kAccelStride * sizeof(glm::uvec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                     accelBuf, accelMem, &accelMapped, false, "meshShadowAccel");
 
     VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sci.magFilter = VK_FILTER_LINEAR;
@@ -144,6 +162,10 @@ void SatMeshRenderer::cleanup(VkDevice d)
     destroy(d, checkReadBuf, vkDestroyBuffer);
     destroy(d, checkReadMem, vkFreeMemory);
     destroy(d, checkPass, vkDestroyRenderPass);
+    if (vctx_)
+        for (void *m : {checkFrameMapped, glareFrameMapped, sceneFrameMapped, frameMapped, instanceMapped, accelMapped})
+            if (m)
+                vctx_->mirrorForget(m); // (frames in flight: no more copies into these)
     destroy(d, checkFrameBuf, vkDestroyBuffer);
     destroy(d, checkFrameMem, vkFreeMemory);
     checkMapped = checkFrameMapped = nullptr;
@@ -282,7 +304,7 @@ void SatMeshRenderer::createDescriptors(VulkanContext &ctx)
             nullptr, &shInfo, nullptr};
     w[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 10, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             nullptr, &accelInfo, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 7, w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, 7, w, 0, nullptr);
     }
     writeGeometryDescriptors();
 }
@@ -295,7 +317,7 @@ void SatMeshRenderer::setViewerBackground(VkImageView view, VkSampler smp)
     VkDescriptorImageInfo ii{smp, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descSet, 9, 0, 1,
                            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ii, nullptr, nullptr};
-    vkUpdateDescriptorSets(device_, 1, &w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(device_, 1, &w, 0, nullptr);
 }
 
 void SatMeshRenderer::writeGeometryDescriptors()
@@ -312,7 +334,7 @@ void SatMeshRenderer::writeGeometryDescriptors()
                 nullptr, &occInfo, nullptr};
         w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 7, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                 nullptr, &compInfo, nullptr};
-        vkUpdateDescriptorSets(device_, 3, w, 0, nullptr);
+        frameSafeUpdateDescriptorSets(device_, 3, w, 0, nullptr);
     }
 }
 
@@ -656,9 +678,13 @@ void SatMeshRenderer::recordViewer(VkCommandBuffer cmd, const GpuMeshFrame &fram
         return;
     memcpy(frameMapped, &frame, sizeof(frame));
     memcpy(instanceMapped, &inst, sizeof(inst)); // viewer = instance slot 0
+    vctx_->mirrorDirty(instanceMapped, 0, sizeof(GpuMeshInstance));
     nExtra = extra && extraTypes ? std::clamp(nExtra, 0, kViewerExtra) : 0;
     if (nExtra > 0)
+    {
         memcpy(static_cast<GpuMeshInstance *>(instanceMapped) + kMaxInstances, extra, sizeof(GpuMeshInstance) * nExtra);
+        vctx_->mirrorDirty(instanceMapped, sizeof(GpuMeshInstance) * kMaxInstances, sizeof(GpuMeshInstance) * nExtra);
+    }
     writeShadowAccel(0, static_cast<GpuMeshInstance *>(instanceMapped)[0], typeIdx);
 
     VkClearValue clears[3] = {};
@@ -835,7 +861,7 @@ void SatMeshRenderer::createViewerGlare(VulkanContext &ctx)
             nullptr, &gi, nullptr};
     w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareDrawSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             nullptr, &gi, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 2, w, 0, nullptr); // binding 0 of the find set: createViewerGlareTargets
+    frameSafeUpdateDescriptorSets(ctx.device, 2, w, 0, nullptr); // binding 0 of the find set: createViewerGlareTargets
 
     // Find: compute, 32-byte push constants (viewer_glare_find.comp).
     VkPushConstantRange fpr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
@@ -963,7 +989,7 @@ void SatMeshRenderer::createViewerGlareTargets(VulkanContext &ctx)
     VkDescriptorImageInfo ii{VK_NULL_HANDLE, glareSrcView, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, glareFindSet, 0, 0, 1,
                            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii, nullptr, nullptr};
-    vkUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
 }
 
 void SatMeshRenderer::recordViewerGlare(VkCommandBuffer cmd, const GpuMeshFrame &frame, int typeIdx,
@@ -1120,6 +1146,7 @@ void SatMeshRenderer::recordCheck(VkCommandBuffer cmd, const GpuMeshFrame &frame
         return;
     memcpy(checkFrameMapped, &frame, sizeof(frame));
     memcpy(static_cast<char *>(instanceMapped) + sizeof(GpuMeshInstance), &inst, sizeof(inst)); // slot 1
+    vctx_->mirrorDirty(instanceMapped, sizeof(GpuMeshInstance), sizeof(GpuMeshInstance));
     writeShadowAccel(1, static_cast<GpuMeshInstance *>(instanceMapped)[1], typeIdx);
 
     VkClearValue clears[2] = {};
@@ -1337,7 +1364,7 @@ bool SatMeshRenderer::ensureSceneTarget(VulkanContext &ctx, uint32_t w, uint32_t
         VkDescriptorImageInfo ii{VK_NULL_HANDLE, sceneColorViewH, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w0{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, bloomDescSet, 0, 0, 1,
                                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii, nullptr, nullptr};
-        vkUpdateDescriptorSets(device_, 1, &w0, 0, nullptr);
+        frameSafeUpdateDescriptorSets(device_, 1, &w0, 0, nullptr);
     }
     writeReflAddDescriptors();
     return true;
@@ -1354,6 +1381,7 @@ void SatMeshRenderer::recordScene(VkCommandBuffer cmd, const GpuMeshFrame &frame
     if (n)
         memcpy(static_cast<char *>(instanceMapped) + 2 * sizeof(GpuMeshInstance), insts.data(),
                n * sizeof(GpuMeshInstance)); // slots 2.. (0 = viewer, 1 = check)
+    vctx_->mirrorDirty(instanceMapped, 2 * sizeof(GpuMeshInstance), n * sizeof(GpuMeshInstance));
     {
         // Shadow-ray accel for the instances largest on screen (bounding radius / distance: the scene's
         // instance origins are camera-relative); the rest keep the per-pixel loop (they are small).
@@ -1438,6 +1466,9 @@ void SatMeshRenderer::writeShadowAccel(uint32_t slot, GpuMeshInstance &inst, int
         tm->firstOccluder + tm->occluderCount > occsCpu.size())
         return;
     glm::uvec4 *A = static_cast<glm::uvec4 *>(accelMapped) + (size_t)slot * kAccelStride;
+    if (vctx_)
+        vctx_->mirrorDirty(accelMapped, (VkDeviceSize)slot * kAccelStride * sizeof(glm::uvec4),
+                           (VkDeviceSize)kAccelStride * sizeof(glm::uvec4));
     auto f2u = [](float x) { uint32_t u; memcpy(&u, &x, 4); return u; };
     auto put = [&](glm::uvec4 &d, glm::vec3 v, float w) { d = glm::uvec4(f2u(v.x), f2u(v.y), f2u(v.z), f2u(w)); };
     auto groupRot = [&](uint32_t g) {
@@ -1644,7 +1675,7 @@ void SatMeshRenderer::writeReflAddDescriptors()
     for (int i = 0; i < 2; ++i)
         w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, reflAddSet, (uint32_t)i, 0, 1,
                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii[i], nullptr, nullptr};
-    vkUpdateDescriptorSets(device_, 2, w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(device_, 2, w, 0, nullptr);
 }
 
 void SatMeshRenderer::recordReflections(VkCommandBuffer cmd, VkDescriptorSet skyDescSet,
@@ -1722,14 +1753,14 @@ void SatMeshRenderer::createBloomPipeline(VulkanContext &ctx, VkRenderPass flare
         VkDescriptorBufferInfo bi{instanceBuf, 0, VK_WHOLE_SIZE};
         VkWriteDescriptorSet w1{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, bloomDescSet, 1, 0, 1,
                                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bi, nullptr};
-        vkUpdateDescriptorSets(ctx.device, 1, &w1, 0, nullptr);
+        frameSafeUpdateDescriptorSets(ctx.device, 1, &w1, 0, nullptr);
     }
     if (sceneColorViewH)
     {
         VkDescriptorImageInfo ii{VK_NULL_HANDLE, sceneColorViewH, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w0{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, bloomDescSet, 0, 0, 1,
                                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii, nullptr, nullptr};
-        vkUpdateDescriptorSets(ctx.device, 1, &w0, 0, nullptr);
+        frameSafeUpdateDescriptorSets(ctx.device, 1, &w0, 0, nullptr);
     }
 
     VkPushConstantRange pcr{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshBloomPC)};

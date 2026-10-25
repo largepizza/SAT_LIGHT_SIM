@@ -2413,6 +2413,7 @@ private:
     // Photometric check: sun-only render integrated on the CPU vs evalSatLobesPosed() (see
     // recordModelViewer). Requested by the button, recorded in recordCompute, read the next buildUI.
     bool viewerCheckRequested = false, viewerCheckAwaiting = false;
+    uint64_t viewerCheckFrame = 0;
     double viewerCheckModelI = 0.0, viewerCheckTanHalf = 0.0, viewerCheckPhaseDeg = 0.0;
     // CHECK section: the render and the model at 1000 km (sun only) and their difference; a note when the
     // satellite is dark from that side.
@@ -3410,7 +3411,8 @@ private:
     VkQueryPool wxRadarQuery = VK_NULL_HANDLE;
     bool wxRadarFailed = false;
     bool wxRadarWanted = false;          // buildUI asks, recordCompute dispatches
-    bool wxRadarInFlight = false;        // dispatched last frame: read back now
+    bool wxRadarInFlight = false;
+    uint64_t wxRadarFrame = 0;           // the frame index that dispatched it        // dispatched last frame: read back now
     double wxRadarDispWall = -1e300;     // when the last one was dispatched (wall)
     double wxRadarDispSim = -1e300;      // ... at this sim time
     glm::dvec3 wxRadarDispObs{0.0};      // ... centred here
@@ -4016,9 +4018,12 @@ private:
     // exactly the obsDir/obsEffH that produced the data currently sitting in reflectBeamsMapped, so
     // recordCompute's readback loop can un-rotate it into the current frame's basis before use.
     // Defaulted to match obsDir/0 so the very first frame's correction is a no-op.
-    glm::vec3 lastBeamObsDir = {0.1527f, -0.3596f, -0.9205f};
-    float lastBeamObsEffH = 0.0f;
-    double lastBeamObsRadius = 0.0; // the obsECI radius the beams were measured from (0 = none yet)
+    // Frames in flight (2026-10-25): one per frame slot, the values of the frame whose beams the slot's
+    // readback holds (written when a frame is recorded, read at the top of the slot's next frame).
+    glm::vec3 lastBeamObsDirS[VulkanContext::kMaxFramesInFlight] = {{0.1527f, -0.3596f, -0.9205f},
+                                                                   {0.1527f, -0.3596f, -0.9205f}};
+    float lastBeamObsEffHS[VulkanContext::kMaxFramesInFlight] = {};
+    double lastBeamObsRadiusS[VulkanContext::kMaxFramesInFlight] = {}; // the obsECI radius (0 = none yet)
     // Persistent cloud-light pools (2026-08-12) — see TrackedBeamLight's own comment for the whole
     // design. Two pools with independently reserved eviction budgets, exactly as the previous
     // per-frame build had, so a busy target's summed intensity can never starve lone transiting
@@ -4249,6 +4254,9 @@ private:
     VkBuffer glowBuf = VK_NULL_HANDLE;
     VkDeviceMemory glowMem = VK_NULL_HANDLE;
     void *glowMapped = nullptr;
+    // Frames in flight: the readback ids (VulkanContext::readbackCreate) behind glowMapped / reflectBeamsMapped /
+    // beamGlowDomeMapped; recordFrameReadbacks records their copies.
+    int rbGlow = -1, rbReflectBeams = -1, rbBeamGlowDome = -1;
 
     // ── Light pollution dome SSBO ─────────────────────────────────────────────
     // Host-visible, updated each frame by updateLightPollutionDome() (CPU); read by
@@ -4651,9 +4659,10 @@ private:
     static constexpr uint32_t kMeterW = 64, kMeterH = 36;
     VkImage meterImg = VK_NULL_HANDLE;
     VkDeviceMemory meterImgMem = VK_NULL_HANDLE;
-    VkBuffer meterBuf = VK_NULL_HANDLE;
+    VkBuffer meterBuf = VK_NULL_HANDLE;   // slotted (one per frame slot): the slot's copy is read after its fence
     VkDeviceMemory meterBufMem = VK_NULL_HANDLE;
-    bool meterPending = false;
+    void *meterMapped = nullptr;
+    bool meterPendingS[VulkanContext::kMaxFramesInFlight] = {};
     double meterLastT = 0.0;
     float meterMeanLum = 0.0f, meterClipFrac = 0.0f;   // last reading (harness `state`)
     void readExposureMeter();
@@ -4878,8 +4887,10 @@ private:
     std::vector<TornadoNow> tornadoesNow;   // drawn this frame
     // The tornado probes (cloud_v2_lightning.comp threads 2-5): the columns asked for this frame (storm ids, 0 = none) and
     // what came back, per storm, eased (base altitude m ASL, optical depth above).
-    uint64_t tornadoProbeIds[4] = {};
-    bool tornadoProbeRan = false;   // the lightning pass ran since the columns were asked for (set with its dispatch)
+    // Per frame slot (frames in flight): the columns a frame asked for and whether its lightning pass answered
+    // them; the slot's copy of the flash buffer's head holds that frame's answers.
+    uint64_t tornadoProbeIdsS[VulkanContext::kMaxFramesInFlight][4] = {};
+    bool tornadoProbeRanS[VulkanContext::kMaxFramesInFlight] = {};
     bool harnessTornadoHidden_ = false;   // harness `storms tornado draw=0`: the funnels are listed but not drawn (A/B)
     struct TornadoProbe { float baseAsl = 0.0f, tau = 0.0f; bool valid = false; double wall = 0.0; };
     std::unordered_map<uint64_t, TornadoProbe> tornadoProbes;
@@ -5005,6 +5016,7 @@ private:
     VkDescriptorSetLayout fireGroundDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool fireGroundDescPool = VK_NULL_HANDLE;
     VkDescriptorSet fireGroundDescSet = VK_NULL_HANDLE;
+    std::array<uint64_t, 6> fireGroundBound_{}; // the handles its set was last written with
     VkPipelineLayout fireGroundPipeLayout = VK_NULL_HANDLE;
     VkPipeline fireGroundPipe = VK_NULL_HANDLE;
     bool fireGroundFailed = false;
@@ -5205,7 +5217,7 @@ private:
     static constexpr uint32_t kCv2PassStamps = 9;
     VkQueryPool cv2PassQuery = VK_NULL_HANDLE;
     uint32_t cv2PassStampNext = kCv2PassStamps;   // the next stamp this frame writes (cv2PassStampTo)
-    bool  cv2PassStampsWritten = false;           // last frame wrote all of them
+    bool  cv2PassStampsWrittenS[VulkanContext::kMaxFramesInFlight] = {}; // per slot: that frame wrote all of them
     float cv2PassMsRaw[kCv2PassStamps - 1] = {}, cv2PassMsEased[kCv2PassStamps - 1] = {};
     void cv2PassStampTo(VkCommandBuffer cmd, uint32_t id);   // writes stamps cv2PassStampNext .. id
     // The Sun / sky colour table (cloud_v2_sunlut.comp, include/cv2_sunlut.glsl): the Sun's colour and the zenith
@@ -5236,7 +5248,14 @@ private:
     VkPipeline cv2CdcBakePipeline = VK_NULL_HANDLE;   // pass 1 (cv2CdcPipeline is pass 0, the check)
     uint32_t cv2CdcEpoch = 0;
     VkDeviceMemory cv2FlashMem = VK_NULL_HANDLE;
+    // The host's view of the flash buffer: a per-slot copy of its first kCv2FlashHeadBytes (the flash list, rain map
+    // and light, tornado columns, eval counters), the values of ctx.completedFrame(); host writes go through
+    // ctx.uploadPatch / uploadFill. cv2FlashRealMapped maps the GPU's buffer itself (init, and the harness after
+    // draining the frames in flight).
     void *cv2FlashMapped = nullptr;
+    void *cv2FlashRealMapped = nullptr;
+    VkBuffer cv2FlashHeadBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cv2FlashHeadMem = VK_NULL_HANDLE;
     VkBuffer cv2BlueNoiseBuf = VK_NULL_HANDLE;   // 64x64 blue-noise tile (march binding 15)
     VkDeviceMemory cv2BlueNoiseMem = VK_NULL_HANDLE;
     static constexpr uint32_t kCv2FlashMax = 128;             // == kCv2FlashMax in cloud_lightning.glsl
@@ -5244,6 +5263,7 @@ private:
     static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * 64 + 16 + 80;   // + review 22b's Sun profile
     static constexpr VkDeviceSize kCv2RainLightOffset = kCv2RainMapOffset + 1024 * 4;   // cv2RainKey .. cv2RainMisc
     static constexpr VkDeviceSize kCv2EvalCountOffset = kCv2RainLightOffset + 4 * 16;                 // cv2EvalCount
+    static constexpr VkDeviceSize kCv2FlashHeadBytes = kCv2EvalCountOffset + 32 * 4;                  // what the host reads
     static constexpr uint32_t kCv2FroxX = 320, kCv2FroxY = 180, kCv2FroxZ = 64;   // == cloud_lightning.glsl (the god rays' froxels)
     static constexpr VkDeviceSize kCv2FroxBytes = (VkDeviceSize)kCv2FroxX * kCv2FroxY * kCv2FroxZ * 4;   // cv2GodFrox
     static constexpr VkDeviceSize kCv2StvOffset = kCv2EvalCountOffset + 32 * 4 + kCv2FroxBytes;      // cv2Stv (S3)
@@ -5348,7 +5368,8 @@ private:
     VkBuffer glintReadBuf = VK_NULL_HANDLE;
     VkDeviceMemory glintReadMem = VK_NULL_HANDLE;
     void *glintReadMapped = nullptr;
-    bool glintReadValid = false;
+    bool glintReadValid = false;     // the frame being recorded copies it
+    bool glintReadValidSlot[VulkanContext::kMaxFramesInFlight] = {}; // per slot: glintReadMapped holds a list
     VkDescriptorSetLayout glareFindDescLayout = VK_NULL_HANDLE, glareMeshDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool glintDescPool = VK_NULL_HANDLE;
     VkDescriptorSet glareFindDescSet = VK_NULL_HANDLE, glareMeshDescSet = VK_NULL_HANDLE;
@@ -6353,7 +6374,12 @@ private:
     // comments for the three-phase (request -> copy -> readback) protocol this drives.
     bool screenshotRequested = false;                     // set by dispatchKeyAction(KB_SCREENSHOT); consumed by
                                                           // recordScreenshotCopy (also gates wantsCleanScreenshot)
-    bool screenshotCopyPending = false;                   // true between "copy recorded" and "readback finalized"
+    bool screenshotCopyPending = false;
+    uint64_t screenshotCopyFrame = 0;   // the frame index whose command buffer holds the copy (frames in flight)
+    // The copy's readback (the part of finalizeScreenshot after the exposure meter). force: wait for the frames in
+    // flight first, so a recorded path or an export moves on in the same frame (one rendered frame per recorded frame,
+    // as with a single frame in flight).
+    void finalizeScreenshotCopy(bool force = false);                   // true between "copy recorded" and "readback finalized"
     VkBuffer screenshotStagingBuf = VK_NULL_HANDLE;       // host-visible; freed/recreated per capture —
     VkDeviceMemory screenshotStagingMem = VK_NULL_HANDLE; // screenshots are rare, not a hot path
     uint32_t screenshotW = 0, screenshotH = 0;
@@ -7313,6 +7339,16 @@ private:
             fpsCapSwapchainRebuildPending = true; // (only a change: 2026-10-21)
     }
     void createBuffers(VulkanContext &ctx);
+    // Frames in flight (VulkanContext "Commands & sync"): a buffer the CPU writes and the GPU reads. Returns the
+    // pointer to write (the mapped memory with one frame in flight; with two, a shadow copied into the buffer —
+    // then device-local — at the start of each frame's GPU work). `whole`: copied whole each frame, else only
+    // what ctx.mirrorDirty marks. Destroy with destroyMirrored.
+    void *createMirrored(VulkanContext &ctx, VkDeviceSize size, VkBufferUsageFlags usage, VkBuffer &buf,
+                         VkDeviceMemory &mem, bool whole, const char *name);
+    void destroyMirrored(VulkanContext &ctx, VkBuffer &buf, VkDeviceMemory &mem, void *&mapped);
+    // The GPU -> CPU copies of the frame (readbacks, VulkanContext::readbackCreate), recorded at the end of
+    // recordCompute: the buffers the GPU wrote this frame into this slot's host copies.
+    void recordFrameReadbacks(VkCommandBuffer cmd, VulkanContext &ctx);
     void createSatBuffers(VulkanContext &ctx); // per-satellite/per-type buffers; after initConstellation()
     void createDescriptors(VulkanContext &ctx);
     void createOrbitDescriptors(VulkanContext &ctx);
@@ -7430,9 +7466,9 @@ private:
     VkPipeline boltPipeline = VK_NULL_HANDLE;
     uint32_t boltFlashCount = 0, boltSegCount = 0;
     uint64_t boltFrame = 0;
-    glm::dvec3 cv2LightningObsDir{0.0, 0.0, 1.0};   // the observer direction the last lightning pass ran with
-    glm::dvec3 cv2LightningObsDirPending{0.0, 0.0, 1.0};
-    bool cv2LightningObsDirValid = false;
+    // Per frame slot: the observer direction the slot's frame ran the lightning pass with, and whether it ran.
+    glm::dvec3 cv2LightningObsDirS[VulkanContext::kMaxFramesInFlight] = {{0.0, 0.0, 1.0}, {0.0, 0.0, 1.0}};
+    bool cv2LightningObsDirValidS[VulkanContext::kMaxFramesInFlight] = {};
     // Harness `lightning spawn`: flashes placed by hand, run through the same channels, glow and thunder.
     struct InjectedFlash { uint32_t id, seed; int kind; glm::dvec3 origin, ground; float base, top, strength, dur; double startS; };
     std::vector<InjectedFlash> boltInjected_;

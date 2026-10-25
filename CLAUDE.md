@@ -1175,7 +1175,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the ground never gets; at 250 m the rain floor thickening toward a low base (`kCv2RainIntoM`) saturated whole tropical
   regions at 50 dBZ. Dispatched only while the radar is shown, after `recordCloudsV2` (not on Potato: no cloud pass), at
   most 4 times a second and only when the time, the place (> a quarter cell) or the range changed; read back the next
-  frame (`weatherRadarReadback`, single frame in flight) and coloured on the CPU into an R8G8B8A8_SRGB image uploaded like
+  frame it finishes (`weatherRadarReadback`, gated on `completedFrame()`) and coloured on the CPU into an R8G8B8A8_SRGB image uploaded like
   the Kessler tracker's globe (`weatherRadarRecordUpload`; the UI's 5th external image slot of 6). Agreement, checked by
   standing at radar cells (`tools/harness/radar_agree.py`: the radar's 4 centre cells x "Rain" vs `state` ->
   `clouds_v2.rain.rate_eye`): at 10 points round a supercell from 120 m, 0 / 0, 1 / 1 (both saturated), 0.69 / 0.61, 0.67 / 0.60, 0.33 / 0.23, 0.12 / 0.16, 0.05 / 0.02; the rest is the radar's 0.8-km box and footprint-averaged shaft against the eye's 80 m). Cost (RTX 3070 Ti, 1600x900): 0.09-0.11 ms GPU a dispatch; the read back + raster 1.8-2.8 ms on the frame after one (<= 4 a second); `build_ui` +0.11 ms averaged with the radar running at 1x; closed, nothing. **Storms**: near you (1200 km, nearest first, up to 12) and the strongest worldwide
@@ -7187,7 +7187,7 @@ largest at the horizon, fully exposing the noise). Result: `lightDomeAz[16]`, a 
 
 **Delivery:** `lightDomeAz` is memcpy'd into `lightDomeBuf` (host-visible/coherent, 16 floats,
 binding 3 in the sat_flare.comp descriptor set — same `reflectorTargetsBuf`-style "CPU writes,
-GPU reads this frame, single frame in flight" pattern, no barrier needed) for `sat_flare.comp`.
+GPU reads this frame" pattern; since frames in flight a whole-buffer `mirrorUpload`) for `sat_flare.comp`.
 `updateStars()` reads the `lightDomeAz` CPU array directly, no upload round-trip needed.
 
 **Per-consumer lookup** (both `sat_flare.comp` and `updateStars()` compute this the same way, GLSL
@@ -7484,11 +7484,70 @@ ctx.findMemoryType(filter, props)
 ```
 
 Key Vulkan design decisions:
-- Single command buffer, single frame in flight
+- **Two frames in flight** (2026-10-25, see "Frames in flight" below; `SATLIGHTSIM_FRAMES_IN_FLIGHT=1` = the old
+  single frame, the A/B): per-slot command buffers, fences and acquire semaphores; the GPU still runs the frames one
+  after another
 - `VK_ACCESS_SHADER_READ_BIT` + `VK_PIPELINE_STAGE_VERTEX_SHADER_BIT` for compute→vertex SSBO barriers (not `VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT`)
 - Compute→compute SSBO barriers use `VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT` on both sides
 - `onResize` must recreate graphics pipelines (viewport baked in); compute pipelines are viewport-independent
-- `glowBuf` is `HOST_COHERENT` so CPU can read back peak flare for magnitude UI without an explicit flush; previous frame's data is safe to read at the start of `recordCompute` (single frame in flight means queue is idle)
+- `glowBuf` is device-local; the peak flare for the magnitude UI comes from its per-slot readback copy
+  (`rbGlow`, `recordFrameReadbacks`), the frame from two frames ago
+
+### Frames in flight (2026-10-25, branch perf-frames)
+
+The CPU records frame f while the GPU runs frame f-1, so a frame costs max(CPU, GPU) instead of CPU + GPU.
+`kMaxFramesInFlight` = 2, `framesInFlight` from `SATLIGHTSIM_FRAMES_IN_FLIGHT` (1 or 2, default 2: one build A/Bs both).
+`App::drawFrame` starts with `ctx.beginFrameSlot()` (waits only for this slot's previous frame; returns whether there
+was one, gating its timestamps and screenshot), records, then `ctx.recordFrameUploads()` and submits the slot's upload
+command buffer and main command buffer as two `VkSubmitInfo`s (`markSlotSubmitted`).
+- **GPU frames stay serial.** Every frame's GPU work opens with a full memory barrier (ALL_COMMANDS -> ALL_COMMANDS,
+  MEMORY_WRITE -> MEMORY_READ | WRITE: the upload command buffer's first command, and `beginFrameGpu` in the main
+  one), so device-local resources (cloud histories, TAA, depth, every compute output) need nothing: frame f's GPU work
+  sees frame f-1's whole result, as before. **Only memory the HOST touches changed:**
+- **`mirrorUpload(dst, mem, size, whole, name)`**: a buffer the CPU rewrites each frame becomes a device buffer + a
+  CPU shadow (the returned pointer: code keeps writing it as it wrote the mapped memory); `recordFrameUploads` copies
+  the shadow through a per-slot ring into the device buffer at the start of the frame's GPU work. `whole` = the whole
+  buffer every frame (small UBOs: CloudParams, the cv2 UBO, light dome, point style, mesh frame UBOs); else only the
+  ranges the code marks with **`mirrorDirty(base, off, len)`** (merged; `mirrorDirtyAll`): the satellite type header
+  every frame, the LUT / types / lobes / occluders / samples in `uploadSatOrbits`, the storm buffer's sections, the
+  haboob grid rows that changed, bolt segments, the fireball list, mesh instances and the shadow accel per slot.
+  **A new CPU write into a mirrored, non-whole buffer must mark its range, or the GPU never sees it.**
+- **`uploadPatch(dst, off, data, len)` / `uploadFill`**: scattered writes into a GPU buffer (the tornado probe
+  request, the eval counter reset, the Sun-volume level clears) without a shadow.
+- **`slotted(&buf, &mem, &ptr, size, usage, props, name)`**: one copy per slot, the bound variables swapped at
+  `beginFrameSlot` — staging buffers (Kessler, launches), the UI's vertex / index buffers, host readback targets
+  (`terrainFrameRead`, `glareRead`, `pickedVisible`, `glintRead`, the exposure meter, the cv2 flash buffer's head).
+  A descriptor set must never bind a slotted buffer (it changes every frame): slotted buffers are copy sources /
+  destinations and vertex input only.
+- **`readbackCreate(size, &ptr, name)`**: a per-slot HOST_CACHED copy of a device buffer, filled by a copy recorded in
+  `recordFrameReadbacks` (glow, reflect beams, beam glow dome, the flash buffer's head); the pointer reads the slot's
+  copy, i.e. the result of the frame that last used this slot (two frames old, it was one).
+- **`stagingAlloc(bytes)`**: per-frame staging for image uploads recorded into the frame (the radar, the Kessler
+  tracker globe, the cyclone track map: their CPU images are plain memory now).
+- **`deferDestroy`**: a buffer the frames in flight may still use is destroyed once its slot comes round again.
+- **What remembers which frame it read is per slot**: the beams' observer basis (`lastBeamObsDirS/EffHS/RadiusS[slot]`,
+  rebasing the beam list into this frame), the lightning list's observer direction, the tornado probe ids, the glint
+  list's validity, the cloud pass timer's stamps, the exposure meter's pending flag. A readback with companion state
+  stored once would pair the result of frame f-2 with the state of frame f-1.
+- **One-shot readbacks wait for their frame**: `ctx.completedFrame()` = the newest frame known finished; the radar,
+  the harness probe, the photometric check and the screenshot copy record the frame index they were requested in and
+  read when `completedFrame() >= it`. `finalizeScreenshotCopy(true)` drains instead: `path play record=` and the
+  cinematic export need exactly one rendered frame per recorded frame.
+- **Descriptor writes and recreation drain**: every `vkUpdateDescriptorSets` outside init goes through
+  `frameSafeUpdateDescriptorSets` (drains the frames in flight when any are, counts it), and runtime resource
+  recreation (render-scale targets, the low-res sky, `ensureFullSkyPipelines`, swapchain) calls `drainFrames()`. In a
+  steady frame there are none: harness `perf` -> `frames_in_flight` {upload_kb_per_frame, patch_kb_per_frame,
+  copies_per_frame, drains, descriptor_writes, one_time_submits} shows it (steady: ~400 KB uploaded, 0 drains, 0
+  descriptor writes, 0 one-time submits). A drain or descriptor write every frame is a bug: it silently restores the
+  single frame.
+- **Timestamps**: the query pool holds `kTimestampCount x kMaxFramesInFlight`; a slot writes and resolves its own range.
+- **Measured** (RTX 3070 Ti, 1920x1009, uncapped present, `tools/harness/frame_bench.py`: the matrix suite's scenes,
+  stills, time running and every player-speed motion path; two runs a side, `harness_runs/fb/`): wall-clock frame
+  summed over the stills 839 -> 767 ms (-8.6%), over the motion paths 1404 -> 1330 ms (-5.3%); orbit -7..-16%, a
+  launch -13..-15%, 1 h/s -10..-15%, the eclipse -11%, ground views -2.5..-6%. Mode 1 of the new build matches the old
+  build (-0.9 / -0.6%). The GPU's own time is ~2% higher with two frames (it no longer idles between frames, so it
+  boosts less), outweighed by the overlap. Matrix suite mode 1 vs 2 in one build: every noise, motion and grain number
+  equal within 0.01-0.1 levels.
 
 ---
 
@@ -7524,8 +7583,8 @@ wins documented under "Active Development" above. Four pieces:
 count has changed several times as passes came and went — `VulkanContext::kTimestampCount` carries
 the authoritative slot table and is the only place that mapping is documented. `updateGpuTimingStats`,
 `kPerfLabels[]` and `savePerfSnapshot()`'s JSON keys all mirror it and must be updated together.
-Single frame in flight, so results are resolved in `App::drawFrame` right after the fence wait —
-no stall. Slot layout is a shared contract: App.cpp writes 0 (frame start), 5 (satellite+star draw
+Each frame slot has its own range of the pool; results are resolved in `App::drawFrame` after
+`beginFrameSlot()` waits for the slot's previous frame (two frames back) — no stall. Slot layout is a shared contract: App.cpp writes 0 (frame start), 5 (satellite+star draw
 done), 6 (UI overlay done); `SatelliteSim` writes 1-3 in `recordCompute` (cloud march / orbit
 compute / flare compute done) and 4 in `recordDraw` (sky background draw done — this is what
 isolates the fullscreen atmosphere/terrain/ocean shader's own cost from the satellite/star point
@@ -7736,7 +7795,7 @@ same frames: mean |diff| 0.3-1.4 levels, within run-to-run noise (`screenshots/o
   launch visuals 0.35-0.6 ms (far built plumes' per-parcel states), the storm update 0.76 ms a frame while sim time runs
   and `buildStormEnvIndex` 0.9 ms each frame the weather bake runs (every frame at 5 min/s), `thunderStep` 0.22 ms (the
   rockets' retarded-time scan), stars 0.5 ms at dusk / night. The structural item: overlapping the CPU with the GPU
-  (two frames in flight, or the CPU-only work before the fence) would hide the whole 1.2-4 ms CPU part.
+  would hide the whole 1.2-4 ms CPU part — done since 2026-10-25 (two frames in flight, VulkanContext Helpers).
 - **The storm content (follow-up, Medium, defaults / the user's settings, `harness_runs/perfmed/storm_def3`,
   `storm_user2`; `mkstorm2.py`).** Frame / GPU / cloud bucket, and the towers' share (`cb_columns` 2 vs 0, the search and
   their cloud together): squall line from 5 km 15.0 / 13.3 / 7.2 ms, towers 0.1-0.2 ms; MCS from 8 km 13.5-16.9 / 11.9-14.9

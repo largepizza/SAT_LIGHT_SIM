@@ -499,10 +499,9 @@ void SatelliteSim::kesslerInit(VulkanContext &ctx)
 {
     if (kFireBuf == VK_NULL_HANDLE)
     {
-        ctx.createBuffer(16 + sizeof(GpuFireball) * kFireballMax, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, kFireBuf, kFireMem);
-        vkMapMemory(ctx.device, kFireMem, 0, VK_WHOLE_SIZE, 0, &kFireMapped);
-        memset(kFireMapped, 0, 16);
+        // By dirty range (kesslerRecordFireballs: the header and the points filled this frame).
+        kFireMapped = createMirrored(ctx, 16 + sizeof(GpuFireball) * kFireballMax, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                     kFireBuf, kFireMem, false, "fireballs");
     }
     spaceWeatherSetScriptedStorm(kesslerEnabled, kFuryArriveT, kFuryPeakKp);
     kesslerRestart(ctx, kUserEvents, -1.0);
@@ -1291,9 +1290,9 @@ void SatelliteSim::kesslerUploadAllSync(VulkanContext &ctx)
     rosterLifeUpload(ctx); // the deployment era's born / gone words
     if (kStageBuf == VK_NULL_HANDLE)
     {
-        ctx.createBuffer(kStageBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, kStageBuf, kStageMem);
-        vkMapMemory(ctx.device, kStageMem, 0, kStageBytes, 0, &kStageMapped);
+        // One per frame slot (frames in flight): the frame's copies read this slot's staging.
+        ctx.slotted(&kStageBuf, &kStageMem, &kStageMapped, kStageBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, "kesslerStage");
     }
 }
 
@@ -1355,7 +1354,9 @@ void SatelliteSim::kesslerRetireTick(VkDevice device, bool all)
     // objects from another thread is allowed (only the objects themselves need external synchronisation).
     std::vector<KRetired> due;
     for (size_t i = 0; i < kRetired.size();)
-        if (all || kRetired[i].frame + 1 < kRetireFrame)
+        // Once every frame that could use them has finished (frames in flight: the frame that retired them and
+        // the one before it may still be on the GPU).
+        if (all || kRetired[i].frame + (ctx_ ? ctx_->framesInFlight : 1u) < kRetireFrame)
         {
             due.push_back(kRetired[i]);
             kRetired[i] = kRetired.back();
@@ -2696,7 +2697,7 @@ void SatelliteSim::kesslerCreateFireballPass(VulkanContext &ctx)
     for (uint32_t i = 0; i < 5; ++i)
         w[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, kFireDescSet, i, 0, 1,
                 i == 3 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, infos[i], nullptr};
-    vkUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
     VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
     VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pli.setLayoutCount = 1;
@@ -2716,6 +2717,7 @@ void SatelliteSim::kesslerCreateFireballPass(VulkanContext &ctx)
 void SatelliteSim::kesslerRecordFireballs(VkCommandBuffer cmd, VulkanContext &ctx)
 {
     FPROF_SCOPE("kesslerRecordFireballs");
+    ctx.mirrorDirty(kFireMapped, 0, 16 + sizeof(GpuFireball) * std::min<uint32_t>(kFireCount, kFireballMax));
     if (kFireCount == 0)
         return;
     if (kFirePipeline == VK_NULL_HANDLE)
@@ -2753,6 +2755,8 @@ void SatelliteSim::kesslerDestroyFireballPass(VkDevice device)
         vkDestroyDescriptorSetLayout(device, kFireDescLayout, nullptr);
     if (kFireBuf)
     {
+        if (ctx_ && kFireMapped)
+            ctx_->mirrorForget(kFireMapped);
         vkDestroyBuffer(device, kFireBuf, nullptr);
         vkFreeMemory(device, kFireMem, nullptr);
     }

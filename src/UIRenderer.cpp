@@ -106,17 +106,12 @@ void UIRenderer::init(VulkanContext& ctx, GLFWwindow* window, VkRenderPass pass)
     VkDeviceSize vertSize = sizeof(UIVertex)  * MAX_VERTS;
     VkDeviceSize idxSize  = sizeof(uint32_t)  * MAX_INDICES;
 
-    ctx.createBuffer(vertSize,
-        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        vertBuf, vertMem);
-    vkMapMemory(ctx.device, vertMem, 0, vertSize, 0, &vertMapped);
-
-    ctx.createBuffer(idxSize,
-        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        idxBuf, idxMem);
-    vkMapMemory(ctx.device, idxMem, 0, idxSize, 0, &idxMapped);
+    // One pair per frame slot (frames in flight): the frame records into the slot's while the GPU may still draw
+    // the previous frame from the other.
+    ctx.slotted(&vertBuf, &vertMem, &vertMapped, vertSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, "uiVertices");
+    ctx.slotted(&idxBuf, &idxMem, &idxMapped, idxSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, "uiIndices");
 
     // ── Icon placeholder (1×1 white RGBA) — must exist before descriptor writes ──
     createIconPlaceholder(ctx);
@@ -175,7 +170,7 @@ void UIRenderer::init(VulkanContext& ctx, GLFWwindow* window, VkRenderPass pass)
         writes[1].descriptorCount = 1;
         writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[1].pImageInfo      = &iconInfo;
-        vkUpdateDescriptorSets(ctx.device, 2, writes, 0, nullptr);
+        frameSafeUpdateDescriptorSets(ctx.device, 2, writes, 0, nullptr);
     }
 
     // ── Pipeline ─────────────────────────────────────────────────────────────
@@ -610,18 +605,11 @@ void UIRenderer::cleanup(VkDevice device) {
         vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
         descLayout = VK_NULL_HANDLE;
     }
-    if (idxBuf != VK_NULL_HANDLE) {
-        vkUnmapMemory(device, idxMem);
-        vkDestroyBuffer(device, idxBuf, nullptr);
-        vkFreeMemory(device, idxMem, nullptr);
-        idxBuf = VK_NULL_HANDLE;
-    }
-    if (vertBuf != VK_NULL_HANDLE) {
-        vkUnmapMemory(device, vertMem);
-        vkDestroyBuffer(device, vertBuf, nullptr);
-        vkFreeMemory(device, vertMem, nullptr);
-        vertBuf = VK_NULL_HANDLE;
-    }
+    // Slotted (every slot's copy is freed by the context).
+    if (idxBuf != VK_NULL_HANDLE && VulkanContext::sFrameCtx)
+        VulkanContext::sFrameCtx->slottedDestroy(&idxBuf);
+    if (vertBuf != VK_NULL_HANDLE && VulkanContext::sFrameCtx)
+        VulkanContext::sFrameCtx->slottedDestroy(&vertBuf);
     if (font.sampler != VK_NULL_HANDLE) {
         vkDestroySampler(device, font.sampler, nullptr);
         font.sampler = VK_NULL_HANDLE;
@@ -771,7 +759,7 @@ void UIRenderer::rebindIconDescriptor(VkDevice device) {
     w.descriptorCount = 1;
     w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w.pImageInfo      = &imgInfo;
-    vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(device, 1, &w, 0, nullptr);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1281,7 +1269,7 @@ void UIRenderer::updateImage(VkDevice device, uint32_t id, VkImageView view, VkS
         writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].pImageInfo      = i == 0 ? &fontInfo : &imgInfo;
     }
-    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+    frameSafeUpdateDescriptorSets(device, 2, writes, 0, nullptr);
 }
 
 void UIRenderer::flushBatch(VkCommandBuffer cmd, VkDescriptorSet set) {

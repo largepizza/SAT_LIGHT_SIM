@@ -114,11 +114,92 @@ struct VulkanContext {
     VkExtent2D     photoSavedExtent{};
 
     // ── Commands & sync ────────────────────────────────────────────────────
+    // Frames in flight (2026-10-25, branch perf-frames). With 2, the CPU records frame f while the GPU still
+    // runs frame f-1: a frame takes max(CPU, GPU) instead of CPU + GPU. The GPU itself still runs frames one
+    // after the other (every frame's GPU work opens with a full barrier, beginFrameGpu / recordFrameUploads), so
+    // device-local images and buffers need nothing. Only memory the CPU touches does:
+    //   - CPU -> GPU: mirrorUpload() (a buffer the CPU rewrites: it writes a shadow, copied at the frame's start),
+    //     uploadPatch() / uploadFill() (a few bytes into GPU memory), slotted() (staging the CPU fills and the
+    //     frame's own commands copy, or a vertex / index buffer: one copy per slot);
+    //   - GPU -> CPU: readbackCreate() (one host buffer per slot: the CPU reads the data of completedFrame()).
+    // SATLIGHTSIM_FRAMES_IN_FLIGHT=1 restores the serial frame: one slot, every mirror written in place.
+    static constexpr uint32_t kMaxFramesInFlight = 2;
+    // Memory for a host copy of GPU results (slotted readbacks): cached, coherent (slotted() drops CACHED when
+    // the device has no such type).
+    static constexpr VkMemoryPropertyFlags kHostReadProps =
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    uint32_t                 framesInFlight = 2;
+    uint32_t                 frameSlot = 0;   // the slot being recorded
+    uint64_t                 frameIndex = 0;  // the frame being recorded (1-based; 0 before the first)
     VkCommandPool            commandPool        = VK_NULL_HANDLE;
-    VkCommandBuffer          commandBuffer      = VK_NULL_HANDLE;
-    VkSemaphore              semImageAvailable  = VK_NULL_HANDLE;
+    VkCommandBuffer          commandBuffer      = VK_NULL_HANDLE; // this slot's (beginFrameSlot)
+    VkSemaphore              semImageAvailable  = VK_NULL_HANDLE; // this slot's
     std::vector<VkSemaphore> semRenderDone;   // one per swapchain image
-    VkFence                  fenceFrame         = VK_NULL_HANDLE;
+    VkFence                  fenceFrame         = VK_NULL_HANDLE; // this slot's
+    VkCommandBuffer          slotCmd[kMaxFramesInFlight] = {};
+    VkCommandBuffer          slotUploadCmd[kMaxFramesInFlight] = {};
+    VkSemaphore              slotAcquire[kMaxFramesInFlight] = {};
+    VkFence                  slotFence[kMaxFramesInFlight] = {};
+    bool                     slotSubmitted[kMaxFramesInFlight] = {};
+    // Waits for this slot's previous frame, then points commandBuffer / fenceFrame / semImageAvailable, every
+    // slotted buffer and every readback pointer at it. Returns true when the slot held a submitted frame (its
+    // readbacks and timestamps hold data).
+    bool beginFrameSlot();
+    void markSlotSubmitted() { slotSubmitted[frameSlot] = true; }
+    // The newest frame known complete: the readbacks hold its data (0 = none yet).
+    uint64_t completedFrame() const { return frameIndex > framesInFlight ? frameIndex - framesInFlight : 0; }
+    // Waits for every frame in flight (resize, a rare write into a buffer the GPU reads, a descriptor rewrite).
+    void drainFrames();
+    // Records this frame's uploads (mirrors, patches) into the slot's upload command buffer, opened with the full
+    // barrier against the previous frame. Returns it (submit it before commandBuffer), or VK_NULL_HANDLE when
+    // there is nothing to record.
+    VkCommandBuffer recordFrameUploads();
+    // Opens the frame's main command buffer: a full barrier against the previous frame's GPU work (only with
+    // more than one frame in flight; recordFrameUploads opens with the same barrier when it records anything).
+    void beginFrameGpu(VkCommandBuffer cmd);
+
+    // CPU -> GPU, a buffer the CPU rewrites (whole, or the ranges marked with mirrorDirty). Returns the pointer to
+    // write: the mapped memory itself with one frame in flight, else a shadow copied into `dst` at the start of
+    // the frame's GPU work. `dst` needs VK_BUFFER_USAGE_TRANSFER_DST_BIT. The caller must not map `mem` itself.
+    void *mirrorUpload(VkBuffer dst, VkDeviceMemory mem, VkDeviceSize size, bool whole, const char *name);
+    void mirrorDirty(const void *base, VkDeviceSize off, VkDeviceSize len);
+    void mirrorDirtyAll(const void *base);
+    void mirrorForget(const void *base); // before the buffer is destroyed (unmaps / frees the shadow)
+    // A few bytes into a GPU buffer, applied at the start of this frame's GPU work (in both modes).
+    void uploadPatch(VkBuffer dst, VkDeviceSize off, const void *data, VkDeviceSize len);
+    void uploadFill(VkBuffer dst, VkDeviceSize off, VkDeviceSize len, uint32_t value);
+    // Staging for a copy recorded into THIS frame's command buffer (an image upload): host memory of this slot,
+    // reused once the slot comes round again. Fill ptr, then copy from (buf, off).
+    struct StagingAlloc
+    {
+        VkBuffer buf = VK_NULL_HANDLE;
+        VkDeviceSize off = 0;
+        void *ptr = nullptr;
+    };
+    StagingAlloc stagingAlloc(VkDeviceSize bytes);
+    // GPU -> CPU. One host buffer per slot (HOST_CACHED when the device has it). Record copies into
+    // readbackBuffer(id) during the frame; after beginFrameSlot, *userPtr points at the slot's buffer: the data
+    // of frame completedFrame(). `userPtr` may be null (use readbackData).
+    int readbackCreate(VkDeviceSize size, void **userPtr, const char *name);
+    VkBuffer readbackBuffer(int id) const;
+    void *readbackData(int id) const;
+    void readbackDestroy(int id);
+    // A buffer the CPU fills and this frame's commands read (staging copied by the frame, a vertex / index
+    // buffer): one copy per slot; after beginFrameSlot *bufVar / *mapVar (and *memVar) are the slot's.
+    void slotted(VkBuffer *bufVar, VkDeviceMemory *memVar, void **mapVar, VkDeviceSize size, VkBufferUsageFlags usage,
+                 VkMemoryPropertyFlags props, const char *name);
+    void slottedDestroy(VkBuffer *bufVar);
+    // Destroys a buffer / frees memory once no frame in flight can use it.
+    void deferDestroy(VkBuffer buf, VkDeviceMemory mem);
+    // Per-frame counters (harness `frames`): bytes uploaded, copies, drains, one-time submits.
+    struct FrameStats
+    {
+        uint64_t uploadBytes = 0, patchBytes = 0, copies = 0, drains = 0, oneTimeSubmits = 0, descWrites = 0;
+    } frameStats, frameStatsLast;
+    // Counts a descriptor write made while frames may be in flight; drains first when one could be (a set
+    // bound by the previous frame may not be rewritten while it runs). Call before vkUpdateDescriptorSets
+    // outside init / resize.
+    void beforeDescriptorWrite();
 
     // ── GPU timestamp profiling ────────────────────────────────────────────
     // Single frame in flight, so it's safe to resolve the previous frame's
@@ -231,9 +312,88 @@ private:
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice pd);
     SwapchainDetails   querySwapchainDetails(VkPhysicalDevice pd);
 
+    // Frames in flight: the uploads' and readbacks' own storage.
+    struct Mirror
+    {
+        VkBuffer dst = VK_NULL_HANDLE;
+        VkDeviceMemory mem = VK_NULL_HANDLE;
+        VkDeviceSize size = 0;
+        uint8_t *shadow = nullptr;
+        bool whole = true, mapped = false;
+        std::vector<std::pair<VkDeviceSize, VkDeviceSize>> dirty; // [begin, end)
+        std::string name;
+    };
+    std::vector<Mirror> mirrors_;
+    struct Patch
+    {
+        VkBuffer dst;
+        VkDeviceSize off, len;
+        size_t data; // offset into patchData_, or SIZE_MAX for a fill
+        uint32_t fill;
+    };
+    std::vector<Patch> patches_;
+    std::vector<uint8_t> patchData_;
+    struct Ring
+    {
+        VkBuffer buf = VK_NULL_HANDLE;
+        VkDeviceMemory mem = VK_NULL_HANDLE;
+        uint8_t *map = nullptr;
+        VkDeviceSize cap = 0;
+    } ring_[kMaxFramesInFlight];
+    struct StageChunk
+    {
+        VkBuffer buf = VK_NULL_HANDLE;
+        VkDeviceMemory mem = VK_NULL_HANDLE;
+        uint8_t *map = nullptr;
+        VkDeviceSize cap = 0, used = 0;
+    };
+    std::vector<StageChunk> stage_[kMaxFramesInFlight];
+    struct Readback
+    {
+        VkDeviceSize size = 0;
+        VkBuffer buf[kMaxFramesInFlight] = {};
+        VkDeviceMemory mem[kMaxFramesInFlight] = {};
+        void *map[kMaxFramesInFlight] = {};
+        void **user = nullptr;
+        bool live = false;
+        std::string name;
+    };
+    std::vector<Readback> readbacks_;
+    struct Slotted
+    {
+        VkBuffer *bufVar = nullptr;
+        VkDeviceMemory *memVar = nullptr;
+        void **mapVar = nullptr;
+        VkBuffer buf[kMaxFramesInFlight] = {};
+        VkDeviceMemory mem[kMaxFramesInFlight] = {};
+        void *map[kMaxFramesInFlight] = {};
+    };
+    std::vector<Slotted> slotted_;
+    struct Deferred
+    {
+        VkBuffer buf;
+        VkDeviceMemory mem;
+        uint64_t frame; // destroy once completedFrame() >= frame
+    };
+    std::vector<Deferred> deferred_;
+    uint32_t hostReadMemType_ = UINT32_MAX;
+    void ensureRing(uint32_t slot, VkDeviceSize bytes);
+    void pointSlotted();
+    void destroyFrameResources();
+
     static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
         VkDebugUtilsMessageSeverityFlagBitsEXT severity,
         VkDebugUtilsMessageTypeFlagsEXT type,
         const VkDebugUtilsMessengerCallbackDataEXT* data,
         void* userData);
+
+public:
+    // The context frameSafeUpdateDescriptorSets consults (set by init).
+    static VulkanContext *sFrameCtx;
 };
+
+// vkUpdateDescriptorSets for the simulations, the UI and the mesh renderer (frames in flight, 2026-10-25): a set the
+// previous frame bound may not be rewritten while that frame runs, so once frames have started it waits for the frames
+// in flight first (VulkanContext::beforeDescriptorWrite; counted in frameStats.descWrites / drains). Main thread only.
+void frameSafeUpdateDescriptorSets(VkDevice device, uint32_t writeCount, const VkWriteDescriptorSet *writes,
+                                   uint32_t copyCount, const VkCopyDescriptorSet *copies);

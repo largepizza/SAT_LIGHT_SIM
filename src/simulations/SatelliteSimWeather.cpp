@@ -255,6 +255,17 @@ void parallelEntries(wx::Catalog *cat, uint32_t n, uint32_t minN, std::vector<E>
 
 void SatelliteSim::createStormBuffer(VulkanContext &ctx)
 {
+    if (ctx.framesInFlight > 1)
+    {
+        // Frames in flight: device-local, written from a shadow by the ranges its writers mark (ctx.mirrorDirty).
+        stormMapped = createMirrored(ctx, kStormBufBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, stormBuf, stormMem, false,
+                                     "storms");
+        stormTable.assign(kStormTableSize, glm::uvec2(0u));
+        stormEnvTable.assign(kStormEnvTableSize, glm::uvec2(0u));
+        Log::line(std::string("weather: storm buffer (") + std::to_string(kStormBufBytes >> 10) +
+                  " KB) device-local, mirrored");
+        return;
+    }
     bool done = false;
     try
     {
@@ -283,7 +294,10 @@ void SatelliteSim::createStormBuffer(VulkanContext &ctx)
 
 void SatelliteSim::destroyStormBuffer(VkDevice device)
 {
-    if (stormMapped) vkUnmapMemory(device, stormMem);
+    if (stormMapped && ctx_ && ctx_->framesInFlight > 1)
+        ctx_->mirrorForget(stormMapped);
+    else if (stormMapped)
+        vkUnmapMemory(device, stormMem);
     stormMapped = nullptr;
     if (stormBuf) vkDestroyBuffer(device, stormBuf, nullptr);
     if (stormMem) vkFreeMemory(device, stormMem, nullptr);
@@ -395,6 +409,9 @@ void SatelliteSim::updateStorms()
             static_cast<uint32_t *>(stormMapped)[0] = 0u;
             reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldHeadOffset)[0] = 0u;
             reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kCycHeadOffset)[0] = 0u;
+            ctx_->mirrorDirty(stormMapped, 0, 16);
+            ctx_->mirrorDirty(stormMapped, kShieldHeadOffset, 16);
+            ctx_->mirrorDirty(stormMapped, kCycHeadOffset, 16);
             stormTowers.clear();
             stormShields.clear();
             stormCyclonesNow.clear();
@@ -506,6 +523,10 @@ void SatelliteSim::updateStorms()
     head[1] = bins;
     head[2] = start;
     head[3] = (uint32_t)cv2Frame;
+    // (Frames in flight: what changed reaches the GPU at the start of the frame's work.)
+    ctx_->mirrorDirty(stormMapped, 0, kStormTowersOffset + 48ull * nT);
+    ctx_->mirrorDirty(stormMapped, kStormTableOffset, 8ull * kStormTableSize);
+    ctx_->mirrorDirty(stormMapped, kStormListOffset, 4ull * start);
     const auto tIdx = std::chrono::steady_clock::now();
     split("storms.towerIndex");
 
@@ -568,6 +589,10 @@ void SatelliteSim::updateStorms()
             cdst[i] = g;
         }
         reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kCycHeadOffset)[0] = nC;
+        ctx_->mirrorDirty(stormMapped, kShieldHeadOffset, 16 + 64ull * nS);
+        ctx_->mirrorDirty(stormMapped, kShieldTableOffset, 8ull * kShieldTableSize);
+        ctx_->mirrorDirty(stormMapped, kShieldListOffset, 4ull * sx.used);
+        ctx_->mirrorDirty(stormMapped, kCycHeadOffset, 16 + 64ull * nC);
         stormStats.cyclones = (int)nC;
         stormStats.shieldBins = (int)sx.bins;
         stormStats.shieldEntries = (int)sx.entries;
@@ -656,6 +681,9 @@ void SatelliteSim::buildStormEnvIndex()
     const StormIndexStats ex = fillStormIndex(stormEnvEntries, stormEnvTable, stormEnvTableUsed, stormCounts,
                                               kStormEnvTableSize, kStormEnvListSize, kStormMaxPerBin, envList,
                                               reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kStormEnvTableOffset));
+    ctx_->mirrorDirty(stormMapped, kStormEnvTowersOffset, 48ull * n);
+    ctx_->mirrorDirty(stormMapped, kStormEnvTableOffset, 8ull * kStormEnvTableSize);
+    ctx_->mirrorDirty(stormMapped, kStormEnvListOffset, 4ull * ex.used);
     stormStats.envBins = (int)ex.bins;
     stormStats.envEntries = (int)ex.entries;
     stormStats.envTruncated = (int)ex.truncated;
@@ -681,9 +709,12 @@ void SatelliteSim::buildStormEnvIndex()
                       kShieldBinsPerFace, ents);   // (+ the line's bow)
     });
     auto *senv = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldEnvListOffset);
-    fillStormIndex(shieldEnvEntries, shieldEnvTable, shieldEnvTableUsed, stormCounts, kShieldTableSize, kShieldListSize,
-                   kShieldMaxPerBin, senv,
-                   reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kShieldEnvTableOffset));
+    const StormIndexStats sx = fillStormIndex(shieldEnvEntries, shieldEnvTable, shieldEnvTableUsed, stormCounts,
+                                              kShieldTableSize, kShieldListSize, kShieldMaxPerBin, senv,
+                                              reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kShieldEnvTableOffset));
+    ctx_->mirrorDirty(stormMapped, kShieldEnvOffset, 64ull * nS);
+    ctx_->mirrorDirty(stormMapped, kShieldEnvTableOffset, 8ull * kShieldTableSize);
+    ctx_->mirrorDirty(stormMapped, kShieldEnvListOffset, 4ull * sx.used);
     split("env.shields");
 }
 
@@ -885,14 +916,15 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
     // the answers (cv2RainMisc) are last frame's, eased per storm over ~0.4 s.
     {
         const double wallNow = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        if (cv2FlashMapped && tornadoProbeRan)
+        uint64_t *probeIds = tornadoProbeIdsS[ctx_->frameSlot]; // the columns the slot's frame asked for
+        if (cv2FlashMapped && tornadoProbeRanS[ctx_->frameSlot])
         {
             uint32_t res[4];
             std::memcpy(res, static_cast<const char *>(cv2FlashMapped) + kCv2RainLightOffset + 48, sizeof res);
             for (int k = 0; k < 4; ++k)
             {
-                if (!tornadoProbeIds[k]) continue;
-                TornadoProbe &P = tornadoProbes[tornadoProbeIds[k]];
+                if (!probeIds[k]) continue;
+                TornadoProbe &P = tornadoProbes[probeIds[k]];
                 const double dtW = std::clamp(wallNow - P.wall, 0.0, 1.0);
                 P.wall = wallNow;
                 const uint32_t b = res[k] & 0xFFFFu;
@@ -912,17 +944,17 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
                 }
             }
         }
-        tornadoProbeRan = false;
+        tornadoProbeRanS[ctx_->frameSlot] = false;
         for (auto it = tornadoProbes.begin(); it != tornadoProbes.end();)
             it = (wallNow - it->second.wall > 30.0) ? tornadoProbes.erase(it) : std::next(it);
         float req[12] = {};
         for (int k = 0; k < 4; ++k)
         {
-            tornadoProbeIds[k] = 0;
+            probeIds[k] = 0;
             if (k < (int)tornadoesNow.size())
             {
                 const TornadoNow &T = tornadoesNow[k];
-                tornadoProbeIds[k] = T.stormId;
+                probeIds[k] = T.stormId;
                 req[3 * k] = (float)T.earthDir.x;
                 req[3 * k + 1] = (float)T.earthDir.y;
                 req[3 * k + 2] = (float)T.earthDir.z;
@@ -930,8 +962,8 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
                 if (P.wall == 0.0) P.wall = wallNow;
             }
         }
-        if (cv2FlashMapped)
-            std::memcpy(static_cast<char *>(cv2FlashMapped) + kCv2RainMapOffset - 80 + 8 * 4, req, sizeof req);
+        if (cv2FlashBuf)
+            ctx_->uploadPatch(cv2FlashBuf, kCv2RainMapOffset - 80 + 8 * 4, req, sizeof req); // (frame start)
     }
     const double kTwoPi15 = 15.749609945722419;
     if (harnessTornadoHidden_) return;   // (harness A/B: listed and probed, not drawn)
