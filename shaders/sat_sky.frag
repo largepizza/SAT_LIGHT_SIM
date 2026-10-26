@@ -267,6 +267,13 @@ layout(set = 0, binding = 25, rgba32ui) uniform readonly uimage2D reflGbuf; // S
 #endif
 
 layout(location = 0) out vec4 outColor;
+// The debug views (harness `debugview`, cloud.terrainDebugView) are compiled out of the sky TAA variant, the one players
+// run: kept live by the final `if (terrainDebugActive)`, their code held the shader at 168 registers and ~0.4 ms of a
+// 1920x1009 frame (2026-10-26, perf-storm). With a debug view on, SatelliteSim::skyTaaWanted() is false and the inline /
+// low-res variants, which keep them, draw the sky.
+#if defined(SKY_TAA)
+#define SKY_NO_DEBUG_VIEWS 1
+#endif
 #ifdef SKY_TAA
 // Sky TAA (sky_taa.comp): the unified depth as a colour, for the resolve's reprojection and the main
 // pass's depth restore (the offscreen pass has no depth attachment).
@@ -3922,6 +3929,7 @@ void main() {
     // Cloud composite debug views (harness `debugview 46..48`): 46 the air split distance (/100 km, red past
     // it), 47 the cloud transmittance, 48 the cloud radiance x20, 49 the raw alpha (r opaque tHalf, g
     // translucent mean distance, /100 km).
+#ifndef SKY_NO_DEBUG_VIEWS
     {
         int dvc = int(cloud.terrainDebugView + 0.5);
         if (dvc >= 46 && dvc <= 49) {
@@ -3934,6 +3942,7 @@ void main() {
             terrainDebugActive = true;
         }
     }
+#endif
 #endif
     vec3  accumAirglow = vec3(0.0); // green + sodium bands (C15) — ride these same samples
     // Review 8: the sunlit (and sky-lit, below) air IN FRONT of the clouds, like accumCityFront: the
@@ -5512,7 +5521,7 @@ void main() {
 #endif
 
         // Terrain debug views (harness `debugview`, cloud.terrainDebugView) — override the pixel.
-#ifndef SKY_LITE   // terrain debug views: no terrain hits there
+#if !defined(SKY_LITE) && !defined(SKY_NO_DEBUG_VIEWS)   // terrain debug views: no terrain hits there (SKY_LITE)
         if (cloud.terrainDebugView > 0.5 && cloud.terrainDebugView < 39.5 && tHit > 0.0) {
             int dv = int(cloud.terrainDebugView + 0.5);
             vec3 dbg = vec3(0.0);
@@ -6292,6 +6301,7 @@ void main() {
             // Ocean debug views (harness `debugview 40..45`): 40 the sky reflection (x fresnel off), 41 fresnel /
             // reflWaterK / reflStr, 42 sea state (/2) / crest / blend, 43 the whole surface before the moon and glints,
             // 44 the wave normal, 45 the shore distance (r < 0 land side .. g water, /100 m).
+#ifndef SKY_NO_DEBUG_VIEWS
             {
                 int dvo = int(cloud.terrainDebugView + 0.5);
                 if ((dvo >= 40 && dvo <= 45) || dvo == 50) {
@@ -6307,6 +6317,7 @@ void main() {
                     terrainDebugActive = true;
                 }
             }
+#endif
 
             // Moon glint on ocean — nighttime only, dims with phase (new moon = brightest Earth).
             if (moonDirENU.z > limbZ && moonDirENU.w > 0.01) {
@@ -6643,6 +6654,9 @@ void main() {
 #else
         float nightFactorEffSky = mix(cloud.skyGlareVisibility, nightFactorSky, atmFracSky);
 #endif
+        // Everything below is x these (visibility, starVis): skipped where one is 0 — by day on the ground, on terrain and
+        // sea, behind opaque cloud (2026-10-26: ~0.3-0.6 ms of a 1920x1009 daytime frame, computed to be multiplied by 0).
+        if (nightFactorEffSky > 0.0 && tSurface <= 0.0 && !moonDiscHit && cloudBlock > 0.0) {
 
         // Moonlight suppression — same shape as CPU's moonBrightStar.
         float tm = clamp(moonDirENU.z / 0.5, 0.0, 1.0);
@@ -6776,6 +6790,7 @@ void main() {
         if (starVis > 0.0)
             color += envStars(dir.x * enuX + dir.y * enuY + dir.z * enuZ, starPAng) * starVis;
 #endif
+        }
     }
 #endif
 
@@ -6802,7 +6817,14 @@ void main() {
     // ring, not glare). Locals below duplicate the Milky Way block's day/night/moon/extinction/
     // dome shapes rather than reaching across the closed `{}` above — same per-block-local
     // convention this file already uses everywhere else.
-    {
+    // (Skipped where its visibility is exactly 0, as the Milky Way: the same night factor, terrain / sea, the Moon's disc,
+    // opaque cloud, and the gain.)
+#ifdef SKY_ENV
+    float zodNightGate = mix(envGlareVis, clamp(-sunDirENU.w * 5.0, 0.0, 1.0), 1.0 - clamp((obsEffH - 40000.0) / 60000.0, 0.0, 1.0));
+#else
+    float zodNightGate = mix(cloud.skyGlareVisibility, clamp(-sunDirENU.w * 5.0, 0.0, 1.0), 1.0 - clamp((obsEffH - 40000.0) / 60000.0, 0.0, 1.0));
+#endif
+    if (zodNightGate > 0.0 && cloud.eclipticPoleENU.w > 0.0 && tSurface <= 0.0 && !moonDiscHit && cloudBlock > 0.0) {
         float theta = acos(clamp(dot(dir, sunDir), -1.0, 1.0));
 #ifdef SKY_ENV
         float beta  = asin(clamp(dot(envMainEnuDir(dir, enuX, enuY, enuZ), cloud.eclipticPoleENU.xyz), -1.0, 1.0));
@@ -7079,7 +7101,9 @@ void main() {
     }
 
     outColor = vec4(color, 1.0);
+#ifndef SKY_NO_DEBUG_VIEWS
     if (terrainDebugActive) outColor = vec4(terrainDebugColor, 1.0);
+#endif
 #ifdef SKY_TAA
     // Alpha 1 = not sea; [0, 0.5] = sea, 0.5 x (1 - trail). Cloud in front keeps its own clip (it would ghost).
     if (gTaaSeaTrail >= 0.0 && !meshHit && !terrainDebugActive)

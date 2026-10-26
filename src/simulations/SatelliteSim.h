@@ -5279,7 +5279,7 @@ private:
     // Per-pass GPU time inside the cloud bucket (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S0): kCv2PassStamps timestamps
     // at fixed points of recordCloudsV2 + one after cloud_march.comp; a pass skipped this frame is a zero interval.
     // Harness `state` -> clouds_v2.pass_ms (eased over ~30 frames) / pass_ms_raw.
-    static constexpr uint32_t kCv2PassStamps = 9;
+    static constexpr uint32_t kCv2PassStamps = 12;
     VkQueryPool cv2PassQuery = VK_NULL_HANDLE;
     uint32_t cv2PassStampNext = kCv2PassStamps;   // the next stamp this frame writes (cv2PassStampTo)
     bool  cv2PassStampsWrittenS[VulkanContext::kMaxFramesInFlight] = {}; // per slot: that frame wrote all of them

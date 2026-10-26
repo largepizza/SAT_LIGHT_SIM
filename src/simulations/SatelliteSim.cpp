@@ -13289,9 +13289,10 @@ VkExtent2D SatelliteSim::skyTaaInExtent(const VulkanContext &ctx) const
 
 bool SatelliteSim::skyTaaWanted() const
 {
+    // Not with a harness debug view on: they are compiled out of the TAA variant (sat_sky.frag SKY_NO_DEBUG_VIEWS).
     return skyTaaEnabled && skyTaaPipeline != VK_NULL_HANDLE &&
            ctx_ && ctx_->swapTransferDstSupported &&
-           (debugDisableMask & (262144u | 524288u)) == 0u;
+           (debugDisableMask & (262144u | 524288u)) == 0u && terrainDebugView == 0;
 }
 
 void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)

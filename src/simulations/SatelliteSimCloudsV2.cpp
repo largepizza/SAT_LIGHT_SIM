@@ -2394,7 +2394,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     // farBlend, so the stale resolved image is never seen). The history restarts on the way back down.
     if (farBlend >= 0.999f)
     {
-        cv2PassStampTo(cmd, 7);
+        cv2PassStampTo(cmd, 10);
         cv2HistoryValid = false;
         cv2ScreenResetOnly = false;   // the Sun shadow grids are not baked meanwhile
         return;
@@ -2417,6 +2417,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         cv2LightningObsDirS[ctx.frameSlot] = glm::dvec3(cpc.obsECEFDir); // the frame its flash list is in
         cv2LightningObsDirValidS[ctx.frameSlot] = true;
     }
+    cv2PassStampTo(cmd, 2);   // lightning: flashes, rain map, the Sun transmittance volume
     // The terrain Sun-horizon map (2026-10-22): one thread per line, 4 x 128 x 128; after the lightning pass (it reads the
     // volume's axes, cv2SunProf), before the froxels, the sky pass and the fog march, which read it.
     if (cv2TshPipeline && cv2TshOnNow)
@@ -2428,6 +2429,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
     // The god rays' froxel volume (EXPERIMENT): from this frame's Sun shadow bakes, for the sky pass (fragment).
+    cv2PassStampTo(cmd, 3);   // the terrain Sun-horizon map
     if (cv2FroxPipeline && cv2GodrayFroxels > 0.5f)
     {
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
@@ -2442,6 +2444,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     // shader (not SKY_LITE / Potato, nor the HQ photo: cv2SkyAp is 0 there). It reads the froxels when they ran. Not from
     // above 1000 km: the loop starts at the top of the atmosphere there and is cheap, and the volume's pass (~0.4 ms) cost
     // more than it saved (5000 km: +0.3 ms a frame; 420-500 km about even; 2026-10-25, harness_runs/ap/pt1).
+    cv2PassStampTo(cmd, 4);   // the god rays' froxels
     if (skyApPipeline && cv2SkyAp > 0.5f && !(debugDisableMask & (262144u | 524288u)) && cpc.obsEffH < 1.0e6f && ensureSkyAp(ctx))
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skyApPipeline);
@@ -2452,7 +2455,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         ((GpuCloudV2Params *)cv2ParamsMapped)->skyAp.x = 1.0f;   // the mirror is copied up after the frame is recorded
         skyApRanThisFrame = true;
     }
-    cv2PassStampTo(cmd, 2);   // lightning + the Sun shadow bakes (+ the froxel volume)
+    cv2PassStampTo(cmd, 5);   // the aerial-perspective volume
     // The cloud density clipmap (EXPERIMENT, cv2_cdc.glsl): stale cells re-baked within the budget; the march reads it.
     if (cv2CdcPipeline && cv2CdcBakePipeline && cv2CdcActive)
     {
@@ -2473,7 +2476,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     }
-    cv2PassStampTo(cmd, 3);   // layer shadow map + clipmap bake
+    cv2PassStampTo(cmd, 6);   // layer shadow map + clipmap bake
     if (cv2AdaptiveNow)
     {
         // Pass A lists its full-rate tiles: clear the flags and the indirect args {pad, 0, 1, 1}.
@@ -2503,7 +2506,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
     }
-    cv2PassStampTo(cmd, 4);   // adaptive-rate tiles
+    cv2PassStampTo(cmd, 7);   // adaptive-rate tiles
     // (perf pass 4) the march without the haboob code while no dust wall is in the grid: its code alone cost 0.5-1 ms
     const bool marchND = !dustGpuOn && cv2MarchNoDustPipeline != VK_NULL_HANDLE && cv2MarchPassBNoDustPipeline != VK_NULL_HANDLE;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchND ? cv2MarchNoDustPipeline : cv2MarchPipeline);
@@ -2518,7 +2521,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchND ? cv2MarchPassFNoDustPipeline : cv2MarchPassFPipeline);
         vkCmdDispatchIndirect(cmd, cv2TileBuf, 4);
     }
-    cv2PassStampTo(cmd, 5);   // march (pass A, and the smooth tiles' pass F)
+    cv2PassStampTo(cmd, 8);   // march (pass A, and the smooth tiles' pass F)
     if (cv2AdaptiveNow)
     {
         // Pass B: 4 workgroups (16x16) per listed 32x32 tile, dispatched from the args pass A counted.
@@ -2536,7 +2539,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2TilesFillPipeline);
         vkCmdDispatch(cmd, (cv2QuarterW + 15) / 16, (cv2QuarterH + 15) / 16, 1);
     }
-    cv2PassStampTo(cmd, 6);   // march pass B / the smooth tiles' fill
+    cv2PassStampTo(cmd, 9);   // march pass B / the smooth tiles' fill
 
     memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -2558,7 +2561,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     vkCmdCopyImage(cmd, cv2AgeImg, VK_IMAGE_LAYOUT_GENERAL, cv2AgeHistImg, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
     memoryBarrier(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-    cv2PassStampTo(cmd, 7);   // resolve + history copies
+    cv2PassStampTo(cmd, 10);   // resolve + history copies
 }
 
 void SatelliteSim::cv2PassStampTo(VkCommandBuffer cmd, uint32_t id)

@@ -729,8 +729,9 @@ json SatelliteSim::harnessStateJson()
         j["clouds_v2"]["eval_count"] = ej;
     }
     {
-        static const char *kPass[kCv2PassStamps - 1] = {"lut_far", "lightning_bakes", "layer_map", "tiles", "march_a",
-                                                        "march_b", "resolve_copy", "composite"};
+        static const char *kPass[kCv2PassStamps - 1] = {"lut_far", "lightning", "sun_horizon", "froxels", "sky_ap",
+                                                        "layer_map", "tiles", "march_a", "march_b", "resolve_copy",
+                                                        "composite"};
         json pm, pr;
         for (uint32_t i = 0; i + 1 < kCv2PassStamps; ++i) { pm[kPass[i]] = cv2PassMsEased[i]; pr[kPass[i]] = cv2PassMsRaw[i]; }
         j["clouds_v2"]["pass_ms"] = pm;
