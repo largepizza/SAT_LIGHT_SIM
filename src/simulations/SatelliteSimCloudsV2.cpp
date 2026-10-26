@@ -1956,6 +1956,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                      std::clamp(cv2MsDiffGain, 0.0f, 4.0f), std::clamp(cv2MsBackM, 50.0f, 4000.0f));
     p.amb = glm::vec4(cv2SkyLightModel > 0.5f ? 1.0f : 0.0f, std::clamp(cv2SkyLightGain, 0.0f, 4.0f),
                       std::clamp(cv2SkyGroundAlbedo, 0.0f, 1.0f), 0.0f);
+    p.tone = glm::vec4(cv2Tonemap > 0.5f ? 1.0f : 0.0f, std::clamp(cv2ToneSat, 0.0f, 2.0f),
+                       std::clamp(cv2ToneContrast, 0.5f, 2.0f), 0.0f);
     skyApRanThisFrame = false;
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the

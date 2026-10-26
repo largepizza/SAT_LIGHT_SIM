@@ -5004,6 +5004,9 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
             {"Auto exposure (day)", &cv2AutoExposure, 0.0f, 1.0f, 0.05f, "%.2f", 163},
             {"Highlight roll-off", &cv2HighlightRolloff, 0.0f, 1.0f, 0.05f, "%.2f", 159},
             {"White balance", &cv2WhiteBalance, 0.0f, 1.0f, 0.05f, "%.2f", 160},
+            {"Tonemap (0 exponential / 1 AgX)", &cv2Tonemap, 0.0f, 1.0f, 1.0f, "%.0f", 349},
+            {"AgX saturation", &cv2ToneSat, 0.0f, 2.0f, 0.05f, "%.2f", 350},
+            {"AgX contrast", &cv2ToneContrast, 0.5f, 2.0f, 0.05f, "%.2f", 351},
             // The Moon is a body at its true distance; 1 = its real size (within a few degrees of the Sun
             // it is always drawn at its true size, so eclipses are right).
             {"Moon size (x real)", &moonSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 220},
@@ -9099,6 +9102,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         }
         cv2ExposureEV = c.value("exposure_ev", cv2ExposureEV);
         cv2HighlightRolloff = c.value("highlight_rolloff", cv2HighlightRolloff);
+        cv2Tonemap      = settingClamp(c.value("tonemap", cv2Tonemap), 0.0f, 1.0f);
+        cv2ToneSat      = settingClamp(c.value("tonemap_saturation", cv2ToneSat), 0.0f, 2.0f);
+        cv2ToneContrast = settingClamp(c.value("tonemap_contrast", cv2ToneContrast), 0.5f, 2.0f);
         cv2WhiteBalance = c.value("white_balance", cv2WhiteBalance);
         cv2BeamShafts = c.value("beam_shafts", cv2BeamShafts);
         cv2BeamHaze = c.value("beam_haze", cv2BeamHaze);
@@ -9740,6 +9746,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"snow_drift", cv2SnowWind},
         {"exposure_ev", cv2ExposureEV},
         {"highlight_rolloff", cv2HighlightRolloff},
+        {"tonemap", cv2Tonemap},
+        {"tonemap_saturation", cv2ToneSat},
+        {"tonemap_contrast", cv2ToneContrast},
         {"white_balance", cv2WhiteBalance},
         {"beam_shafts", cv2BeamShafts},
         {"beam_haze", cv2BeamHaze},

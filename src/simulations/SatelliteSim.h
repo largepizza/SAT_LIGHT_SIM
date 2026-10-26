@@ -875,6 +875,7 @@ struct GpuCloudV2Params
     glm::vec4 skyAp;                    // 2026-10-25: the aerial-perspective volume: x ran this frame, y d0 (m), z band (sin)
     glm::vec4 ms;                       // 2026-10-26: multiple scattering: x model (0 octaves, 1 delta-Eddington), y g, z gain, w the reach away from the light (m)
     glm::vec4 amb;                      // 2026-10-26: the sky's light on the clouds: x model, y gain, z ground albedo
+    glm::vec4 tone;                     // 2026-10-26: the sky pass's tonemap: x AgX on, y saturation, z contrast
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -904,7 +905,8 @@ static_assert(offsetof(GpuCloudV2Params, perf) == 288 + 48 * kCloudV2Types + 118
 static_assert(offsetof(GpuCloudV2Params, skyAp) == 288 + 48 * kCloudV2Types + 1200, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, ms) == 288 + 48 * kCloudV2Types + 1216, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -4607,6 +4609,10 @@ private:
     float cv2SkyLightModel = 1.0f;        // 0 zenith, 1 hemispheres + multiple scattering
     float cv2SkyLightGain = 1.0f;         // x the hemispheres' light (1 = physical)
     float cv2SkyGroundAlbedo = 0.25f;     // the ground's albedo in the sky's multiple scattering and under the clouds
+    // The tonemap (2026-10-26, sat_sky.frag): AgX (Sobotka's; Wrensch's fit) in place of 1 - e^-x per channel.
+    float cv2Tonemap = 1.0f;              // 0 = 1 - e^-x (with "Highlight roll-off"), 1 = AgX
+    float cv2ToneSat = 1.15f;             // AgX look: saturation about the luminance
+    float cv2ToneContrast = 1.15f;        // AgX look: power on the curve's output (contrast about mid grey)
     float cv2LobeOcclusion = 0.0f;        // sky light darker in the creases between lobes, brighter on their tips
     float cv2LightFootprint = 0.0f;       // the light march's samples read the field at this x its length (0 = point samples). 0.08 hid grain but a cumulus lost its self-shadow: flat, glowing (issue 20261013_181252)
     float cv2SampClampSd = 1.25f;         // the history clamp in motion (sd of the new samples around)
@@ -7324,7 +7330,7 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 349;   // 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 352;   // 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

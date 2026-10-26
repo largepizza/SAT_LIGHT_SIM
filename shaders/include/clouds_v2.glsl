@@ -196,6 +196,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // hemispheres' mean radiance with multiple scattering, cloud_v2_sunlut.comp layers 2-3), y its gain (1 = physical),
     // z the ground albedo in the multiple scattering and under the lower hemisphere, w spare
     vec4  amb;
+    // 2026-10-26: the sky pass's tonemap: x 1 = AgX (0 = 1 - e^-x with "Highlight roll-off"), y its saturation, z its
+    // contrast (the look's power about mid grey), w spare
+    vec4  tone;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

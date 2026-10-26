@@ -1733,6 +1733,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   `sky_ground_albedo` 0.25 (slots 346-348, UBO `cv2.amb`). At physical gain the daytime look matches the user's
   zenith x 2 within a few %; twilight clouds a little darker (the old boost over-lit them); anvil undersides lighter
   (the lower sky). 128 registers, +2 texture reads per lit sample. The SKY PASS itself has no multiple scattering yet.
+- **AgX tonemap (2026-10-26, branch cloud-ms; sat_sky.frag `skyAgX`).** The sky pass tonemapped 1 - e^-x per channel
+  ("Highlight roll-off" blends a longer shoulder): each channel saturates alone, so bright orange skews yellow and sunlit
+  cloud flattens to paper white (where the physical multiple scattering puts it). AgX (Sobotka; Wrensch's polynomial
+  fit): an inset gamut, a log2 curve over -12.5..+4 EV about mid grey (0.18 -> ~0.18, the exposure means what it did),
+  then a look (power = contrast, saturation about the luminance) and display gamma back to linear for the sRGB
+  swapchain. Not in SKY_LITE / SKY_ENV (`SKY_SUN_SHADOW` guard; the probes are HDR). Settings (Photometry > EXPOSURE AND
+  MOON, slots 349-351, UBO `cv2.tone`): `clouds_v2.tonemap` 1 (0 = the old curve), `tonemap_saturation` 1.15,
+  `tonemap_contrast` 1.15. With it the multiple scattering's physical level (`ms_diffuse_gain` 1.6) no longer clips lit
+  cloud; a low Sun's disc stays a disc in its glow; a twilight band goes pinker (hue kept, not clipped to yellow).
+  Post-tonemap terms (Milky Way, stars, the orbit grade) are unchanged.
 - **Lightning + thunder (rebuilt 2026-10-05; `cloud_v2_lightning.comp`, `SatelliteSimLightning.cpp`,
   `lightning.vert/.frag`, `include/lightning_draw.glsl`):** WHICH flashes happen is the GPU's: one workgroup walks two
   lattices around the observer out to the cloud tops' horizon — the Cb TOWERS (dominant, anvil-reaching: "Lightning
