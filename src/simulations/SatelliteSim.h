@@ -873,7 +873,8 @@ struct GpuCloudV2Params
     glm::vec4 tsh0, tsh1, tsh2, tsh3;   // 2026-10-22: the terrain Sun-horizon map (clouds_v2.glsl)
     glm::vec4 perf;                     // 2026-10-24: x "Near cirrus stride" (1 = off), y its footprint (m), zw spare
     glm::vec4 skyAp;                    // 2026-10-25: the aerial-perspective volume: x ran this frame, y d0 (m), z band (sin)
-    glm::vec4 ms;                       // 2026-10-26: multiple scattering: x model (0 octaves, 1 x the build-up), y g, z gain, w the reach away from the light (m)
+    glm::vec4 ms;                       // 2026-10-26: multiple scattering: x model (0 octaves, 1 delta-Eddington), y g, z gain, w the reach away from the light (m)
+    glm::vec4 amb;                      // 2026-10-26: the sky's light on the clouds: x model, y gain, z ground albedo
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -902,7 +903,8 @@ static_assert(offsetof(GpuCloudV2Params, tsh0) == 288 + 48 * kCloudV2Types + 112
 static_assert(offsetof(GpuCloudV2Params, perf) == 288 + 48 * kCloudV2Types + 1184, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, skyAp) == 288 + 48 * kCloudV2Types + 1200, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, ms) == 288 + 48 * kCloudV2Types + 1216, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1232, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -4600,6 +4602,11 @@ private:
     float cv2MsDiffG = 0.85f;             // the droplets' asymmetry g (delta-scaled: f = g^2)
     float cv2MsDiffGain = 1.0f;           // x the diffuse field (1 ~ the octaves' energy in a thick cloud; ~1.6 = path traced)
     float cv2MsBackM = 1200.0f;           // how far the march away from the light reaches (m)
+    // The sky's light on the clouds (2026-10-26): the hemispheres' mean radiance with multiple scattering
+    // (cloud_v2_sunlut.comp layers 2-3); 0 = the zenith x "Sky ambient" with the twilight terms.
+    float cv2SkyLightModel = 1.0f;        // 0 zenith, 1 hemispheres + multiple scattering
+    float cv2SkyLightGain = 1.0f;         // x the hemispheres' light (1 = physical)
+    float cv2SkyGroundAlbedo = 0.25f;     // the ground's albedo in the sky's multiple scattering and under the clouds
     float cv2LobeOcclusion = 0.0f;        // sky light darker in the creases between lobes, brighter on their tips
     float cv2LightFootprint = 0.0f;       // the light march's samples read the field at this x its length (0 = point samples). 0.08 hid grain but a cumulus lost its self-shadow: flat, glowing (issue 20261013_181252)
     float cv2SampClampSd = 1.25f;         // the history clamp in motion (sd of the new samples around)
@@ -5303,7 +5310,7 @@ private:
     VkDeviceMemory cv2SunLutMem = VK_NULL_HANDLE;
     VkImageView cv2SunLutView = VK_NULL_HANDLE;
     static constexpr uint32_t kCv2SunLutW = 256, kCv2SunLutH = 76;   // == cv2_sunlut.glsl
-    float cv2SunLutKey[3] = {-1.0f, -1.0f, -1.0f};                    // the gains it was baked with
+    float cv2SunLutKey[4] = {-1.0f, -1.0f, -1.0f, -1.0f};                    // the gains it was baked with
     VkBuffer cv2FlashBuf = VK_NULL_HANDLE;
     // The cloud density clipmap (2026-10-21, EXPERIMENT, include/cv2_cdc.glsl): device-local, march set binding 23,
     // baked by cloud_v2_cdc.comp. 8 levels x 128 x 128 x 64 uints.
@@ -7317,7 +7324,7 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 346;   // 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 349;   // 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

@@ -10,7 +10,7 @@
 // rays runs in lockstep, so one ray crossing a level stalled all of them: 15% of an orbit storm view's
 // march (65 -> 55 ms at 388 km, 1920x1009), 9% from 58 km, ~3% near the ground.
 // Same descriptor set as the march (0 CloudParams, 1 CloudV2Params, 13 the table as a storage image).
-layout(local_size_x = 8, local_size_y = 4) in;
+layout(local_size_x = 8, local_size_y = 4) in;   // (z: the pass, see main)
 
 #define CLOUD_PARAMS_BINDING 0
 #include "cloud_params.glsl"
@@ -21,6 +21,7 @@ layout(local_size_x = 8, local_size_y = 4) in;
 #include "atmosphere.glsl"
 #include "cv2_sunlut.glsl"
 layout(rgba16f, set = 0, binding = 13) uniform writeonly image2DArray sunLutOut;
+layout(set = 0, binding = 14) uniform sampler2DArray cv2SunLutTex;   // (its layers 2 and 4, written by the passes before)
 
 // (Copies of these live in cloud_v2_far.comp and cloud_v2_lightning.comp: keep them in step.)
 // Transmittance of the sunlight reaching p along d (assumed not blocked by the Earth): Rayleigh and
@@ -82,18 +83,157 @@ vec3 skyZenithAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {
     return SUN_INTENSITY * (phaseR(cosUp) * BETA_R * accR + vec3(phaseM(cosUp) * BETA_M * accM));
 }
 
+// ── The sky's light on a cloud, with MULTIPLE scattering (2026-10-26; layers 2-4) ───────────────────────────────────
+// A cloud is lit by the whole sky, not the zenith: the mean radiance of the upper hemisphere (layer 2) and of the lower
+// one (layer 3: the air below the horizon and the sky-lit ground; the SUN-lit ground is the march's ground bounce).
+// Both include the light the air scattered more than once, by Hillaire's multiple-scattering function (EGSR 2020): at a
+// point, the radiance of all orders >= 2 reaching it, as if isotropic, Psi = L2 / (1 - f): L2 the light of the second
+// order, f the share of light an order passes on (the mean over all directions of the scattering optical depth seen from
+// the point), the series summed. Psi is layer 4's first 32 x 32 texels: x the Sun's zenith cosine -1..1, y the height
+// as (y / 32)^2 x the atmosphere. Units are the march's (radiance x 4 pi per unit solar irradiance: phase functions with
+// a mean of 1). Three passes of this shader, one dispatch each (the dispatch's z count is the pass: 1 Psi, 2 the Sun, the
+// zenith and the upper hemisphere, 3 the lower hemisphere, which reads the upper one at the ground).
+const int   kMsN    = 32;
+const float kMsHTop = R_ATMOS - R_EARTH;
+
+vec2 msUV(float mu, float h)   // a point of the Psi block, in the table's normalised coordinates
+{
+    float x = clamp((mu * 0.5 + 0.5) * float(kMsN), 0.5, float(kMsN) - 0.5);
+    float y = clamp(sqrt(clamp(h / kMsHTop, 0.0, 1.0)) * float(kMsN), 0.5, float(kMsN) - 0.5);
+    return vec2(x / kCv2SunLutW, y / kCv2SunLutH);
+}
+vec3 skyPsi(float mu, float h) { return textureLod(cv2SunLutTex, vec3(msUV(mu, h), 4.0), 0.0).rgb; }
+
+// The Sun's light at a point (0 in the Earth's shadow).
+vec3 sunAt(vec3 sp, vec3 sd, vec3 BR, float BM)
+{
+    vec2 tSE = raySphere(sp, sd, R_EARTH);
+    if (tSE.x > 0.0 && tSE.y > 0.0) return vec3(0.0);
+    return SUN_INTENSITY * sunTransmit(sp, sd, BR, BM);
+}
+
+// The sky's radiance reaching p from direction d (single + multiple scattering), steps crowded near p (quadratic). The
+// ground ends the ray: gndT = the ray's transmittance to it (0 = no ground), gndP = where; its radiance is the caller's.
+vec3 skyRadiance(vec3 p, vec3 d, vec3 sd, vec3 BR, float BM, out float gndT, out vec3 gndP)
+{
+    gndT = 0.0; gndP = vec3(0.0);
+    vec2 tA = raySphere(p, d, R_ATMOS);
+    float tEnd = tA.y;
+    vec2 tG = raySphere(p, d, R_EARTH);
+    bool hitG = tG.x > 0.0;
+    if (hitG) tEnd = tG.x;
+    if (tEnd <= 0.0) return vec3(0.0);
+    const int N = 20;
+    float cosA = dot(d, sd);
+    float pR = phaseR(cosA), pM = phaseM(cosA);
+    vec3  L = vec3(0.0);
+    float odR = 0.0, odM = 0.0, sPrev = 0.0;
+    [[dont_unroll]] for (int i = 0; i < N; ++i) {
+        float u1 = float(i + 1) / float(N), sNext = tEnd * u1 * u1;
+        float ds = sNext - sPrev, sm = 0.5 * (sPrev + sNext);
+        sPrev = sNext;
+        vec3  sp = p + d * sm;
+        float h  = max(length(sp) - R_EARTH, 0.0);
+        float dR = exp(-h / H_R) * ds, dM = exp(-h / H_M) * ds;
+        vec3  Tv = exp(-(BR * (odR + 0.5 * dR) + BM * 1.1 * (odM + 0.5 * dM)));
+        odR += dR; odM += dM;
+        L += Tv * ((BR * dR * pR + BM * dM * pM) * sunAt(sp, sd, BR, BM)
+                   + (BR * dR + BM * dM) * skyPsi(dot(normalize(sp), sd), h));
+    }
+    if (hitG) {
+        gndP = p + d * tEnd;
+        gndT = exp(-dot(BR * odR + BM * 1.1 * odM, vec3(1.0 / 3.0)));
+    }
+    return L;
+}
+
 void main()
 {
     ivec2 px = ivec2(gl_GlobalInvocationID.xy);
-    if (px.x >= int(kCv2SunLutW) || px.y >= int(kCv2SunLutH)) return;
-    float mu = cv2SunLutMu((float(px.x) + 0.5) / kCv2SunLutW);
-    vec3  p  = vec3(0.0, 0.0, R_EARTH + float(px.y) * kCv2SunLutStepM);
-    vec3  sd = vec3(sqrt(max(1.0 - mu * mu, 0.0)), 0.0, mu);
+    if (gl_WorkGroupID.z != 0u) return;
+    uint pass = gl_NumWorkGroups.z;
     vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
     float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
-    // The key light's own Rayleigh (cv2.atmo.x x physical), the sky's with the sky's gain: as the march had them.
-    vec3 sun = sunColorAt(p, sd, BETA_R_BASE * cv2.atmo.x, BETA_M);
-    vec3 sky = skyZenithAt(p, sd, BETA_R, BETA_M);
-    imageStore(sunLutOut, ivec3(px, 0), vec4(sun, 1.0));
-    imageStore(sunLutOut, ivec3(px, 1), vec4(sky, 1.0));
+    float albedo = cv2.amb.z;
+    if (pass == 1u) {
+        // Psi: the second order's light and the share passed on, over 64 directions round the point.
+        if (px.x >= kMsN || px.y >= kMsN) return;
+        float mu = -1.0 + 2.0 * (float(px.x) + 0.5) / float(kMsN);
+        float hy = (float(px.y) + 0.5) / float(kMsN);
+        vec3  p  = vec3(0.0, 0.0, R_EARTH + kMsHTop * hy * hy);
+        vec3  sd = vec3(sqrt(max(1.0 - mu * mu, 0.0)), 0.0, mu);
+        vec3  L2 = vec3(0.0), fms = vec3(0.0);
+        const int ND = 64;
+        [[dont_unroll]] for (int k = 0; k < ND; ++k) {
+            float z = 1.0 - 2.0 * (float(k) + 0.5) / float(ND), r = sqrt(max(1.0 - z * z, 0.0));
+            float a = 2.39996323 * float(k);
+            vec3  d = vec3(r * cos(a), r * sin(a), z);
+            vec2 tA = raySphere(p, d, R_ATMOS);
+            float tEnd = tA.y;
+            vec2 tG = raySphere(p, d, R_EARTH);
+            bool hitG = tG.x > 0.0;
+            if (hitG) tEnd = tG.x;
+            const int N = 20;
+            float odR = 0.0, odM = 0.0, sPrev = 0.0;
+            [[dont_unroll]] for (int i = 0; i < N; ++i) {
+                float u1 = float(i + 1) / float(N), sNext = tEnd * u1 * u1;
+                float ds = sNext - sPrev, sm = 0.5 * (sPrev + sNext);
+                sPrev = sNext;
+                vec3  sp = p + d * sm;
+                float hh = max(length(sp) - R_EARTH, 0.0);
+                float dR = exp(-hh / H_R) * ds, dM = exp(-hh / H_M) * ds;
+                vec3  Tv = exp(-(BETA_R * (odR + 0.5 * dR) + BETA_M * 1.1 * (odM + 0.5 * dM)));
+                odR += dR; odM += dM;
+                vec3 sc = BETA_R * dR + BETA_M * dM;
+                L2  += Tv * sc * sunAt(sp, sd, BETA_R, BETA_M);   // isotropic: the phase's mean, 1
+                fms += Tv * sc;
+            }
+            if (hitG) {   // the ground: Lambertian, lit by the Sun (radiance x 4 pi = 4 albedo E)
+                vec3 gp = p + d * tEnd;
+                vec3 Tg = exp(-(BETA_R * odR + BETA_M * 1.1 * odM));
+                L2 += Tg * 4.0 * albedo * max(dot(normalize(gp), sd), 0.0) * sunAt(gp + normalize(gp), sd, BETA_R, BETA_M);
+            }
+        }
+        L2 /= float(ND); fms /= float(ND);
+        imageStore(sunLutOut, ivec3(px, 4), vec4(L2 / max(vec3(1.0) - fms, vec3(0.05)), 1.0));
+        return;
+    }
+    if (px.x >= int(kCv2SunLutW) || px.y >= int(kCv2SunLutH)) return;
+    float mu = cv2SunLutMu((float(px.x) + 0.5) / kCv2SunLutW);
+    vec3  p  = vec3(0.0, 0.0, R_EARTH + float(px.y) * kCv2SunLutStepM + 1.0);
+    vec3  sd = vec3(sqrt(max(1.0 - mu * mu, 0.0)), 0.0, mu);
+    // The hemispheres: 8 rings of equal solid angle x 12 azimuths (offset per ring): the mean radiance.
+    const int NR = 8, NA = 12;
+    if (pass == 2u) {
+        // The key light's own Rayleigh (cv2.atmo.x x physical), the sky's with the sky's gain: as the march had them.
+        vec3 sun = sunColorAt(p, sd, BETA_R_BASE * cv2.atmo.x, BETA_M);
+        vec3 sky = skyZenithAt(p, sd, BETA_R, BETA_M);
+        imageStore(sunLutOut, ivec3(px, 0), vec4(sun, 1.0));
+        imageStore(sunLutOut, ivec3(px, 1), vec4(sky, 1.0));
+        vec3 up = vec3(0.0);
+        [[dont_unroll]] for (int i = 0; i < NR; ++i) {
+            float cz = (float(i) + 0.5) / float(NR), sz = sqrt(max(1.0 - cz * cz, 0.0));
+            [[dont_unroll]] for (int a = 0; a < NA; ++a) {
+                float ph = 6.2831853 * (float(a) + 0.5 * float(i & 1) + 0.25) / float(NA);
+                float gT; vec3 gP;
+                up += skyRadiance(p, vec3(sz * cos(ph), sz * sin(ph), cz), sd, BETA_R, BETA_M, gT, gP);
+            }
+        }
+        imageStore(sunLutOut, ivec3(px, 2), vec4(up / float(NR * NA), 1.0));
+        return;
+    }
+    // Pass 3: the lower hemisphere: the air below, and the ground lit by the sky (the upper hemisphere's mean radiance at
+    // the ground x the albedo; the Sun's light on it is the march's ground bounce).
+    vec3 dn = vec3(0.0);
+    [[dont_unroll]] for (int i = 0; i < NR; ++i) {
+        float cz = -(float(i) + 0.5) / float(NR), sz = sqrt(max(1.0 - cz * cz, 0.0));
+        [[dont_unroll]] for (int a = 0; a < NA; ++a) {
+            float ph = 6.2831853 * (float(a) + 0.5 * float(i & 1) + 0.25) / float(NA);
+            float gT; vec3 gP;
+            dn += skyRadiance(p, vec3(sz * cos(ph), sz * sin(ph), cz), sd, BETA_R, BETA_M, gT, gP);
+            if (gT > 0.0)
+                dn += gT * albedo * textureLod(cv2SunLutTex, vec3(cv2SunLutUV(dot(normalize(gP), sd), 0.0), 2.0), 0.0).rgb;
+        }
+    }
+    imageStore(sunLutOut, ivec3(px, 3), vec4(dn / float(NR * NA), 1.0));
 }

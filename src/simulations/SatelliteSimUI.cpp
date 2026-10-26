@@ -6358,6 +6358,9 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Multi-scatter droplet g", &cv2MsDiffG, 0.0f, 0.95f, 0.01f, "%.2f", 343},
         {"Multi-scatter diffuse strength", &cv2MsDiffGain, 0.0f, 4.0f, 0.05f, "%.2f", 344},
         {"Multi-scatter reach away from light (m)", &cv2MsBackM, 50.0f, 4000.0f, 50.0f, "%.0f", 345},
+        {"Sky light model (0 zenith / 1 hemispheres + multi-scatter)", &cv2SkyLightModel, 0.0f, 1.0f, 1.0f, "%.0f", 346},
+        {"Sky light on clouds (x physical)", &cv2SkyLightGain, 0.0f, 4.0f, 0.05f, "%.2f", 347},
+        {"Ground albedo (sky light)", &cv2SkyGroundAlbedo, 0.0f, 1.0f, 0.01f, "%.2f", 348},
         {"Lobe occlusion (sky light)", &cv2LobeOcclusion, 0.0f, 1.0f, 0.05f, "%.2f", 285},
         {"Silver lining", &cv2SilverLining, 0.0f, 4.0f, 0.05f, "%.2f", 295},
     };
@@ -8998,6 +9001,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2MsDiffG    = settingClamp(c.value("ms_diffusion_g", cv2MsDiffG), 0.0f, 0.95f);
         cv2MsDiffGain = settingClamp(c.value("ms_diffuse_gain", cv2MsDiffGain), 0.0f, 4.0f);
         cv2MsBackM    = settingClamp(c.value("ms_back_m", cv2MsBackM), 50.0f, 4000.0f);
+        cv2SkyLightModel   = settingClamp(c.value("sky_light_model", cv2SkyLightModel), 0.0f, 1.0f);
+        cv2SkyLightGain    = settingClamp(c.value("sky_light_gain", cv2SkyLightGain), 0.0f, 4.0f);
+        cv2SkyGroundAlbedo = settingClamp(c.value("sky_ground_albedo", cv2SkyGroundAlbedo), 0.0f, 1.0f);
         cv2LobeOcclusion = c.value("lobe_occlusion", cv2LobeOcclusion);
         cv2SampNewSmooth = c.value("sampler_new_smoothing", cv2SampNewSmooth);
         cv2SampClampSd = c.value("sampler_motion_clamp_sd", cv2SampClampSd);
@@ -9659,6 +9665,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ms_diffusion_g", cv2MsDiffG},
         {"ms_diffuse_gain", cv2MsDiffGain},
         {"ms_back_m", cv2MsBackM},
+        {"sky_light_model", cv2SkyLightModel},
+        {"sky_light_gain", cv2SkyLightGain},
+        {"sky_ground_albedo", cv2SkyGroundAlbedo},
         {"lobe_occlusion", cv2LobeOcclusion},
         {"sampler_new_smoothing", cv2SampNewSmooth},
         {"sampler_motion_clamp_sd", cv2SampClampSd},

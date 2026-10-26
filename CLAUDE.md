@@ -1719,6 +1719,20 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   within the current cloud (`bTr`), not from the eye. Tried and dropped: the slab alone at physical strength (3-7x the
   old energy, flat: a slab along the light assumes mu0 = 1 and holds the light in), the octaves x the slab's reflectance
   over the sample's neighbourhood (saturates in dense cumulus: no visible change).
+- **The sky's light on the clouds = the hemispheres with multiple scattering (2026-10-26, branch cloud-ms;
+  cloud_v2_sunlut.comp layers 2-4).** The march took the ZENITH's single-scattering radiance x "Sky ambient" (2 in the
+  user's settings) x the twilight boost ("Twilight sky light") and the dusk fade: the zenith is the darkest part of the
+  dome, by a different share at every Sun elevation. The Sun / sky table (now 5 layers) bakes in three passes (one
+  dispatch each, the dispatch's z count = the pass): Hillaire's multiple-scattering function Psi = L2 / (1 - f) (EGSR
+  2020; layer 4's 32 x 32 corner, mu_s x sqrt(height); 64 directions, the ground at "Ground albedo (sky light)"), then the
+  upper hemisphere's mean radiance (8 equal-solid-angle rings x 12 azimuths, 20 quadratic steps each, single + Psi
+  multiple scattering), then the lower one (the air below + the sky-lit ground: albedo x the upper hemisphere at the
+  ground; the SUN-lit ground stays the march's ground bounce). Baked when a gain or the albedo changes. The march: each
+  hemisphere x 0.5 (half the sphere a sample scatters from), the upper through `ambVis`, the lower x `ambLow / 0.35`; no
+  twilight terms. Settings `clouds_v2.sky_light_model` 1 (0 = the zenith), `sky_light_gain` 1 (physical),
+  `sky_ground_albedo` 0.25 (slots 346-348, UBO `cv2.amb`). At physical gain the daytime look matches the user's
+  zenith x 2 within a few %; twilight clouds a little darker (the old boost over-lit them); anvil undersides lighter
+  (the lower sky). 128 registers, +2 texture reads per lit sample. The SKY PASS itself has no multiple scattering yet.
 - **Lightning + thunder (rebuilt 2026-10-05; `cloud_v2_lightning.comp`, `SatelliteSimLightning.cpp`,
   `lightning.vert/.frag`, `include/lightning_draw.glsl`):** WHICH flashes happen is the GPU's: one workgroup walks two
   lattices around the observer out to the cloud tops' horizon — the Cb TOWERS (dominant, anvil-reaching: "Lightning

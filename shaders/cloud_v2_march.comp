@@ -671,7 +671,7 @@ void main()
     vec4  odLayer = vec4(0.0);                        // debug view 7: low, mid, anvil, high
     bool  dbgLayers = int(cv2.shell.z + 0.5) == 7;
 
-    vec3  sunCol = vec3(0.0), skyZen = vec3(0.0);
+    vec3  sunCol = vec3(0.0), skyZen = vec3(0.0), skyUpH = vec3(0.0), skyDnH = vec3(0.0);
 
     int   iters = 0;
     // The batch (below): each kept sample's field, distance, the transmittance in front of it, the map's cover
@@ -907,8 +907,16 @@ void main()
                 sunCol = textureLod(cv2SunLutTex, uvL, 0.0).rgb;
                 uvL.z  = 1.0;
                 skyZen = textureLod(cv2SunLutTex, uvL, 0.0).rgb;
+                // The hemispheres' mean radiance with multiple scattering (2026-10-26, cv2.amb.x; layers 2-3).
+                if (cv2.amb.x > 0.5) {
+                    uvL.z = 2.0; skyUpH = textureLod(cv2SunLutTex, uvL, 0.0).rgb;
+                    uvL.z = 3.0; skyDnH = textureLod(cv2SunLutTex, uvL, 0.0).rgb;
+                }
                 // A solar eclipse: the sky light here, from the sunlit air around the point (eclipse.glsl).
-                if (cloud.moonMisc.y > 0.5) skyZen *= eclipseSkyLight(pW * 1e-3, sunDir, p.h);
+                if (cloud.moonMisc.y > 0.5) {
+                    vec3 eC = eclipseSkyLight(pW * 1e-3, sunDir, p.h);
+                    skyZen *= eC; skyUpH *= eC; skyDnH *= eC;
+                }
             }
             // Earth's shadow at THIS sample.
             float rP     = R_EARTH + p.h;
@@ -1117,6 +1125,18 @@ void main()
             vec3  ambS   = (mix(vec3(skyLum), skyDay, ambHue) * ambVis + skyDay * (ambLow * 0.3 * ambHue)
                          + vec3(skyLum * ambLow * (1.0 - 0.3 * ambHue))
                          + skyNgt * (ambVis + ambLow)) * f.ambient;
+            // The hemispheres (2026-10-26, cv2.amb.x): the sky's light as it is, physical units. Each hemisphere is half the
+            // sphere a sample scatters from (the phase's mean, 1, so x 0.5); the upper reaches it through the cloud above
+            // (ambVis), the lower as far as the cloud below and the ground's shading let it (ambLow / 0.35). Twilight and
+            // dusk need no terms of their own ("Twilight sky light", the fade past the horizon): the whole dome's light,
+            // scattered once and many times, is in the table. With the zenith alone the dome was undercounted by day and
+            // by a different share at every Sun elevation.
+            if (cv2.amb.x > 0.5) {
+                vec3  hU = (0.5 * cv2.amb.y) * skyUpH, hD = (0.5 * cv2.amb.y) * skyDnH;
+                float lU = dot(hU, vec3(0.2126, 0.7152, 0.0722)), lD = dot(hD, vec3(0.2126, 0.7152, 0.0722));
+                ambS = (mix(vec3(lU), hU, ambHue) * ambVis + mix(vec3(lD), hD, ambHue) * (ambLow / 0.35)
+                        + skyNgt * (ambVis + ambLow)) * f.ambient;
+            }
 
             // ── Ground bounce from below: the key light, reflected by the ground under the cloud ──
             // The light on the ground is not the light at the sample (2026-10-24, issue 20261023_230636 "Anvil

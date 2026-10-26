@@ -192,6 +192,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // 2026-10-26: multiple scattering: x the model (0 = octaves + powder, 1 = delta-Eddington), y the slab's g,
     // z its gain, w how far the march away from the light reaches (m) (cloud_v2_march.comp cv2DiffuseField)
     vec4  ms;
+    // 2026-10-26: the sky's light on the clouds: x the model (0 = the zenith x "Sky ambient" + the twilight terms, 1 = the
+    // hemispheres' mean radiance with multiple scattering, cloud_v2_sunlut.comp layers 2-3), y its gain (1 = physical),
+    // z the ground albedo in the multiple scattering and under the lower hemisphere, w spare
+    vec4  amb;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

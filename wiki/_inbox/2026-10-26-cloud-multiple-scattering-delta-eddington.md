@@ -23,3 +23,10 @@ delta-Eddington 1D). The reference also showed the old crisp lobe shading was to
 real multiple scattering is smooth at lobe scale. Dropped on the way: the slab alone at physical strength (flat: a slab
 along the light ignores the surface's incidence angle and holds the light in), and the octaves x a neighbourhood
 build-up factor (saturated in dense cumulus).
+
+## Now (sky light, same day)
+The clouds' sky light is the mean radiance of the upper and lower hemispheres at the sample's height and Sun angle,
+single plus multiple scattering (Hillaire's Psi function), baked into the Sun / sky table (cloud_v2_sunlut.comp layers
+2-4) when the scattering gains change. Settings: "Sky light model (0 zenith / 1 hemispheres + multi-scatter)"
+`clouds_v2.sky_light_model` 1, "Sky light on clouds (x physical)" `sky_light_gain` 1, "Ground albedo (sky light)"
+`sky_ground_albedo` 0.25. It replaced the zenith radiance x "Sky ambient" with twilight terms.

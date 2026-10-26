@@ -528,12 +528,13 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     }
     {
         VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-        // The Sun / sky colour table (cloud_v2_sunlut.comp): layer 0 the Sun's colour, 1 the zenith sky's.
+        // The Sun / sky colour table (cloud_v2_sunlut.comp): layer 0 the Sun's colour, 1 the zenith sky's, 2 / 3 the upper /
+        // lower hemisphere's mean radiance with multiple scattering, 4 the multiple-scattering function (its corner).
         ci.imageType = VK_IMAGE_TYPE_2D;
         ci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
         ci.extent = {kCv2SunLutW, kCv2SunLutH, 1};
         ci.mipLevels = 1;
-        ci.arrayLayers = 2;
+        ci.arrayLayers = 5;
         ci.samples = VK_SAMPLE_COUNT_1_BIT;
         ci.tiling = VK_IMAGE_TILING_OPTIMAL;
         ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -547,7 +548,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         mai.memoryTypeIndex = ctx.findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         vkAllocateMemory(dev, &mai, nullptr, &cv2SunLutMem);
         vkBindImageMemory(dev, cv2SunLutImg, cv2SunLutMem, 0);
-        cv2SunLutView = makeView(dev, cv2SunLutImg, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R16G16B16A16_SFLOAT, 0, 1, 2);
+        cv2SunLutView = makeView(dev, cv2SunLutImg, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R16G16B16A16_SFLOAT, 0, 1, 5);
         // GENERAL for good (written by the bake, sampled by the march); cleared, and baked on the first frame
         // the clouds are recorded (cv2SunLutKey).
         VkCommandBuffer cmd = ctx.beginOneTimeCommands();
@@ -556,7 +557,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         b.image = cv2SunLutImg;
-        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 2};
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 5};
         b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
                              0, nullptr, 1, &b);
@@ -1281,7 +1282,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CbHeadDriftKm, cv2CbLobes, cv2CbHeadLobes, cv2AnvilPuff, cv2AnvilLiftM, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
                     cv2DustHeightM, cv2DustDensity, (float)(debugDisableMask & 2048u),
                     cv2LightFootprint, cv2SmallCumulus, cv2ErosionVar, cv2LobeVar, cv2CirrusDirWarp, cv2AsDensity, cv2MidThick, cv2MidShadow,
-                    cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM,
+                    cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM, cv2SkyLightModel, cv2SkyLightGain, cv2SkyGroundAlbedo,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
@@ -1953,6 +1954,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                         std::clamp(cv2SkyApBandSteps, 1.0f, 16.0f));
     p.ms = glm::vec4(cv2MsModel > 0.5f ? 1.0f : 0.0f, std::clamp(cv2MsDiffG, 0.0f, 0.95f),
                      std::clamp(cv2MsDiffGain, 0.0f, 4.0f), std::clamp(cv2MsBackM, 50.0f, 4000.0f));
+    p.amb = glm::vec4(cv2SkyLightModel > 0.5f ? 1.0f : 0.0f, std::clamp(cv2SkyLightGain, 0.0f, 4.0f),
+                      std::clamp(cv2SkyGroundAlbedo, 0.0f, 1.0f), 0.0f);
     skyApRanThisFrame = false;
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the
@@ -2369,12 +2372,22 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     // The Sun / sky colour table: a function of the scattering gains alone, baked when one changes (and on the
     // first frame). The march, below, samples it.
     if (cv2SunLutPipeline &&
-        (cv2SunLutKey[0] != cv2CloudSunRayleigh || cv2SunLutKey[1] != atmosRayleighGain || cv2SunLutKey[2] != atmosMieGain))
+        (cv2SunLutKey[0] != cv2CloudSunRayleigh || cv2SunLutKey[1] != atmosRayleighGain || cv2SunLutKey[2] != atmosMieGain
+         || cv2SunLutKey[3] != cv2SkyGroundAlbedo))
     {
+        // Three passes (the dispatch's z count is the pass, cloud_v2_sunlut.comp): the multiple-scattering function, then
+        // the Sun, the zenith and the upper hemisphere (which read it), then the lower hemisphere (which reads the upper).
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2SunLutPipeline);
-        vkCmdDispatch(cmd, (kCv2SunLutW + 7) / 8, (kCv2SunLutH + 3) / 4, 1);
+        vkCmdDispatch(cmd, 32 / 8, 32 / 4, 1);
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        vkCmdDispatch(cmd, (kCv2SunLutW + 7) / 8, (kCv2SunLutH + 3) / 4, 2);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        vkCmdDispatch(cmd, (kCv2SunLutW + 7) / 8, (kCv2SunLutH + 3) / 4, 3);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        cv2SunLutKey[3] = cv2SkyGroundAlbedo;
         cv2SunLutKey[0] = cv2CloudSunRayleigh;
         cv2SunLutKey[1] = atmosRayleighGain;
         cv2SunLutKey[2] = atmosMieGain;
