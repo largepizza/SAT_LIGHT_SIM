@@ -1281,7 +1281,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CbHeadDriftKm, cv2CbLobes, cv2CbHeadLobes, cv2AnvilPuff, cv2AnvilLiftM, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
                     cv2DustHeightM, cv2DustDensity, (float)(debugDisableMask & 2048u),
                     cv2LightFootprint, cv2SmallCumulus, cv2ErosionVar, cv2LobeVar, cv2CirrusDirWarp, cv2AsDensity, cv2MidThick, cv2MidShadow,
-                    cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion,
+                    cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
@@ -1951,6 +1951,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // The aerial-perspective volume: x is set to 1 in the mirrored copy by recordCloudsV2 once it is dispatched this frame.
     p.skyAp = glm::vec4(0.0f, 200.0f, std::sin(glm::radians(std::clamp(cv2SkyApBandDeg, 0.0f, 20.0f))),
                         std::clamp(cv2SkyApBandSteps, 1.0f, 16.0f));
+    p.ms = glm::vec4(cv2MsModel > 0.5f ? 1.0f : 0.0f, std::clamp(cv2MsDiffG, 0.0f, 0.95f),
+                     std::clamp(cv2MsDiffGain, 0.0f, 4.0f), std::clamp(cv2MsBackM, 50.0f, 4000.0f));
     skyApRanThisFrame = false;
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the

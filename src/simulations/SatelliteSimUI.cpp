@@ -6354,6 +6354,10 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Light LOD footprint (m)", &cv2LightLodFootprintM, 0.0f, 200.0f, 5.0f, "%.0f", 178},
         {"Light march footprint (x length)", &cv2LightFootprint, 0.0f, 0.2f, 0.005f, "%.3f", 283},
         {"Multi-scatter octaves", &cv2MsOctaves, 1.0f, 8.0f, 1.0f, "%.0f", 284},
+        {"Multi-scatter model (0 octaves / 1 delta-Eddington)", &cv2MsModel, 0.0f, 1.0f, 1.0f, "%.0f", 342},
+        {"Multi-scatter droplet g", &cv2MsDiffG, 0.0f, 0.95f, 0.01f, "%.2f", 343},
+        {"Multi-scatter diffuse strength", &cv2MsDiffGain, 0.0f, 4.0f, 0.05f, "%.2f", 344},
+        {"Multi-scatter reach away from light (m)", &cv2MsBackM, 50.0f, 4000.0f, 50.0f, "%.0f", 345},
         {"Lobe occlusion (sky light)", &cv2LobeOcclusion, 0.0f, 1.0f, 0.05f, "%.2f", 285},
         {"Silver lining", &cv2SilverLining, 0.0f, 4.0f, 0.05f, "%.2f", 295},
     };
@@ -8990,6 +8994,10 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SampAccum = c.value("sampler_accumulation", cv2SampAccum);
         cv2LightFootprint = c.value("light_sample_footprint", cv2LightFootprint);
         cv2MsOctaves = c.value("ms_octaves", cv2MsOctaves);
+        cv2MsModel    = settingClamp(c.value("ms_model", cv2MsModel), 0.0f, 1.0f);
+        cv2MsDiffG    = settingClamp(c.value("ms_diffusion_g", cv2MsDiffG), 0.0f, 0.95f);
+        cv2MsDiffGain = settingClamp(c.value("ms_diffuse_gain", cv2MsDiffGain), 0.0f, 4.0f);
+        cv2MsBackM    = settingClamp(c.value("ms_back_m", cv2MsBackM), 50.0f, 4000.0f);
         cv2LobeOcclusion = c.value("lobe_occlusion", cv2LobeOcclusion);
         cv2SampNewSmooth = c.value("sampler_new_smoothing", cv2SampNewSmooth);
         cv2SampClampSd = c.value("sampler_motion_clamp_sd", cv2SampClampSd);
@@ -9647,6 +9655,10 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sampler_accumulation", cv2SampAccum},
         {"light_sample_footprint", cv2LightFootprint},
         {"ms_octaves", cv2MsOctaves},
+        {"ms_model", cv2MsModel},
+        {"ms_diffusion_g", cv2MsDiffG},
+        {"ms_diffuse_gain", cv2MsDiffGain},
+        {"ms_back_m", cv2MsBackM},
         {"lobe_occlusion", cv2LobeOcclusion},
         {"sampler_new_smoothing", cv2SampNewSmooth},
         {"sampler_motion_clamp_sd", cv2SampClampSd},

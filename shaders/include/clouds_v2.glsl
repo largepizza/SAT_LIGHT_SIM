@@ -189,6 +189,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // 2026-10-25: the aerial-perspective volume (include/sky_ap.glsl, sky_ap.comp): x 1 = it ran this frame (the sky pass
     // reads it), y its first slice depth d0 (m), z the horizon band where the sky pass keeps its own loop (sin), w spare
     vec4  skyAp;
+    // 2026-10-26: multiple scattering: x the model (0 = octaves + powder, 1 = delta-Eddington), y the slab's g,
+    // z its gain, w how far the march away from the light reaches (m) (cloud_v2_march.comp cv2DiffuseField)
+    vec4  ms;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

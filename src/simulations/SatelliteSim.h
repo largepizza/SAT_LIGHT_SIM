@@ -873,6 +873,7 @@ struct GpuCloudV2Params
     glm::vec4 tsh0, tsh1, tsh2, tsh3;   // 2026-10-22: the terrain Sun-horizon map (clouds_v2.glsl)
     glm::vec4 perf;                     // 2026-10-24: x "Near cirrus stride" (1 = off), y its footprint (m), zw spare
     glm::vec4 skyAp;                    // 2026-10-25: the aerial-perspective volume: x ran this frame, y d0 (m), z band (sin)
+    glm::vec4 ms;                       // 2026-10-26: multiple scattering: x model (0 octaves, 1 x the build-up), y g, z gain, w the reach away from the light (m)
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -900,7 +901,8 @@ static_assert(offsetof(GpuCloudV2Params, stvL0) == 288 + 48 * kCloudV2Types + 10
 static_assert(offsetof(GpuCloudV2Params, tsh0) == 288 + 48 * kCloudV2Types + 1120, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, perf) == 288 + 48 * kCloudV2Types + 1184, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, skyAp) == 288 + 48 * kCloudV2Types + 1200, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1216, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, ms) == 288 + 48 * kCloudV2Types + 1216, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1232, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -4592,6 +4594,12 @@ private:
     float cv2SampAccum = 39.0f;           // the resolve's per-pixel accumulation: the sample count it caps at (0 = off)
     float cv2SampNewSmooth = 0.8f;        // how much a young pixel leans on its neighbourhood's estimate
     float cv2MsOctaves = 2.0f;            // multiple-scattering octaves (2-8): strength^k x exp(-od x extinction^k)
+    // Multiple scattering as a delta-Eddington diffuse field (2026-10-26, cloud_v2_march.comp cv2DiffuseField): dark
+    // wisps and edges, bright cores. 0 = the octaves above (with "Powder", which only that model uses).
+    float cv2MsModel = 1.0f;              // 0 octaves, 1 delta-Eddington
+    float cv2MsDiffG = 0.85f;             // the droplets' asymmetry g (delta-scaled: f = g^2)
+    float cv2MsDiffGain = 1.0f;           // x the diffuse field (1 ~ the octaves' energy in a thick cloud; ~1.6 = path traced)
+    float cv2MsBackM = 1200.0f;           // how far the march away from the light reaches (m)
     float cv2LobeOcclusion = 0.0f;        // sky light darker in the creases between lobes, brighter on their tips
     float cv2LightFootprint = 0.0f;       // the light march's samples read the field at this x its length (0 = point samples). 0.08 hid grain but a cumulus lost its self-shadow: flat, glowing (issue 20261013_181252)
     float cv2SampClampSd = 1.25f;         // the history clamp in motion (sd of the new samples around)
@@ -7309,7 +7317,7 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 342;   // 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 346;   // 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

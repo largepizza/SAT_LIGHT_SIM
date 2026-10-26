@@ -149,9 +149,9 @@ const float kCv2MoonMieCap = 40.0;   // the Mie table's 8 P past ~3 deg; see the
 // the probe alone.
 void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL, float lSeg0,
                 float jitter, float detailAmt, float fp, bool wantLight, out float od, out float sigUp,
-                bool wantBeam, vec3 bdir, out float odBeam, bool lod)
+                bool wantBeam, vec3 bdir, out float odBeam, bool lod, bool wantBack, out float odBack)
 {
-    od = 0.0; sigUp = 0.0; odBeam = 0.0;
+    od = 0.0; sigUp = 0.0; odBeam = 0.0; odBack = 0.0;
     CV2_CNT(7);
     float s = 0.0, lSeg = lSeg0, sb = 0.0, sg = 150.0;
     // The light samples read the field at a footprint of samp.w x the march's length ("Light march footprint",
@@ -171,7 +171,10 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
     // (The threshold is the old geometric series' first step, 2 x 186 m at 7 steps over 8 km: with equal steps, 2 x
     // lSeg0 would keep orbit views from merging at all.)
     bool  lodN  = !lod && fp > 2.0 * cv2.light.x * 0.6 / max(pow(1.6, float(nL)) - 1.0, 1e-4);
-    for (int k = wantLight ? 0 : nL + 1; k <= (wantBeam ? nL + 4 : nL + 1); ++k) {
+    // k: [0, nL) the light march, nL its far sample, nL + 1 the sky probe, nL + 2..4 the beams, nL + 5..6 the march AWAY
+    // from the light (the far side of the multiple-scattering slab, cv2DiffuseField: a quarter of cv2.ms.w, then the rest).
+    for (int k = wantLight ? 0 : nL + 1; k <= (wantBack ? nL + 6 : wantBeam ? nL + 4 : nL + 1); ++k) {
+        if (!wantBeam && k >= nL + 2 && k <= nL + 4) continue;
         // Jittered over the WHOLE segment: at +-25% of it the optical depth to the light came in
         // steps across a smooth surface, and the big smooth storm domes showed contour ripples (pass 13).
         // Light LOD: two steps spanning the same length (the loop's bounds stay uniform).
@@ -181,7 +184,9 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
         // moved every sample forward or back together, and their errors added (raw std 26.5 -> 18.8 levels alone).
         vec3  off = (k < nL) ? ldir * (s + ((lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg) * fract(jitter + 0.6180340 * float(k)))
                   : (k == nL) ? ldir * (cv2.light.x * 1.6)
-                  : (k == nL + 1) ? up * 250.0 : bdir * (sb + sg * 0.5);
+                  : (k == nL + 1) ? up * 250.0
+                  : (k <= nL + 4) ? bdir * (sb + sg * 0.5)
+                  : ldir * (-cv2.ms.w * ((k == nL + 5) ? 0.25 * fract(jitter + 0.3819660) : 0.25 + 0.75 * fract(jitter + 0.7639320)));
         // The view sample's footprint, not the step's: a longer footprint would turn the gaps
         // between cells into haze and shadow everything.
         // S2 ("cdc_light"): beyond the first two steps (which keep the detail: the lobes' self-shadow) and for the far
@@ -189,9 +194,11 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
         // sample standing for hundreds of metres (the lit / shadowed grain).
         CV2Field lf;
         float mC;
-        if (cv2.cdcC.x > 0.5 && k >= 2 && k <= nL
+        // (And the march away from the light, nL + 5..6: in a storm each field read there walks the towers and shields.)
+        if (cv2.cdcC.x > 0.5 && ((k >= 2 && k <= nL) || k >= nL + 5)
             && cv2CdcMeanAt(rel + off, R_EARTH + eyeH,
-                            (k < nL) ? ((lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg) : cv2.light.x * 0.8, mC)) {
+                            (k < nL) ? ((lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg)
+                            : (k == nL) ? cv2.light.x * 0.8 : cv2.ms.w * ((k == nL + 5) ? 0.25 : 0.75), mC)) {
             lf.sigma = mC; lf.thin = 0.0; lf.soft = 0.0;
         } else
             lf = cv2Field(cv2Pos(rel + off, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fpFar);
@@ -209,11 +216,41 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
             od += lf.sigma * (1.0 - cv2.mid2.z * max(lf.soft, 0.0)) * cv2.light.x * 0.8;
         } else if (k == nL + 1) {
             sigUp = lf.sigma;
-        } else {
+        } else if (k <= nL + 4) {
             odBeam += lf.sigma * (1.0 - 0.45 * lf.thin) * sg;
             sb += sg; sg *= 3.0;
+        } else {
+            odBack += lf.sigma * (1.0 - 0.8 * lf.thin - cv2.mid2.z * max(lf.soft, 0.0)) * cv2.ms.w * ((k == nL + 5) ? 0.25 : 0.75);
         }
     }
+}
+
+// Multiple scattering as the DIFFUSE FIELD of a conservative delta-Eddington slab (2026-10-26). Most of a cloud's light has
+// scattered many times, and that light builds up deep in a cloud and leaks out of every face: thick cores are bright, wisps
+// and the parts near a surface are dark. The octaves below know only the depth toward the light, so every sunlit sample, a
+// 50-m wisp or a 5-km tower, took the same multiple scattering: against a path-traced reference they lit thin cloud 4-13x too
+// brightly and drew a front-lit cloud as a flat disc out to its rim.
+//   The slab is the light's line through the sample: tauT the optical depth toward the light (the light march), tauB away
+// from it (a short march, cv2.ms.w); its normal is along the light (mu0 = 1). Delta scaling moves the droplets' forward peak
+// (f = g^2) into the beam: t = (1 - f) tau, g' = g / (1 + g). Eddington, I = I0 + mu I1, Marshak boundaries, in units of
+// F / 4 pi (the march's phase functions have a mean of 1):
+//   I1 = C1 - 3 e^-t,  I0 = 5 - (2/3) C1 - (1 - g') C1 t - 3 e^-t,  C1 = (5 - e^-t*) / ((1 - g') t* + 4/3).
+// Toward the eye: I0 + a g mu I1 (mu = cosK) + the light the forward peak carried past the unscattered beam, scattered once more.
+// Three corrections for a finite 3D cloud, fitted to the reference (a soft sphere, a hard one and a lumpy blob, lit from
+// above, the front and behind, one gain for all): a = 0.3 (the field is nearly isotropic); x e^(-0.05 t) (light escapes
+// sideways before it reaches the far side, which a slab holds in); x (1 - e^-(1 - f) tauV) (it leaks out of the face the eye
+// looks at, hV: the march's bH, averaged over the sample's step). x 1.6: ~ the octaves' energy over a thick cloud at the defaults;
+// the path-traced level is ~1.6x that (cv2.ms.z; tools/cloud_ms_reference.py).
+float cv2DiffuseField(float tauT, float tauB, float hV, float cosK)
+{
+    float g  = cv2.ms.y, f = g * g, gp = g / (1.0 + g);
+    float t  = (1.0 - f) * tauT, ts = t + (1.0 - f) * tauB;
+    float et = exp(-t);
+    float C1 = (5.0 - exp(-ts)) / ((1.0 - gp) * ts + 4.0 / 3.0);
+    float I1 = C1 - 3.0 * et;
+    float I0 = 5.0 - (2.0 / 3.0) * C1 - (1.0 - gp) * C1 * t - 3.0 * et;
+    float J  = max(I0 + 0.3 * g * cosK * I1, 0.0) + (1.0 - f) * max(1.0 + 3.0 * gp * cosK, 0.0) * max(et - exp(-tauT), 0.0);
+    return 1.6 * J * exp(-0.05 * t) * hV;
 }
 
 // Multiple scattering (Wrenninge octaves): each octave sees a fraction of the optical depth.
@@ -624,6 +661,11 @@ void main()
 
     vec3  L = vec3(0.0);
     float T = 1.0;
+    // T where the ray entered the cloud it is in now (-1 after an empty step): the lighting's view depth is measured from
+    // there (cv2DiffuseField's leak through the face the eye looks at). From the eye, a ray that crossed one lobe, a gap
+    // and then the next lobe's face took that face for the inside of a cloud: bright veins along every lobe's outline on
+    // cloud bases.
+    float Tent = -1.0;
     float dAcc = 0.0, wAcc = 0.0, tHalf = -1.0;
     float odRain = 0.0;                               // debug view 5
     vec4  odLayer = vec4(0.0);                        // debug view 7: low, mid, anvil, high
@@ -637,7 +679,7 @@ void main()
     const int kBatch = 32;
     int   nB = 0;
     CV2Field bF[kBatch];
-    float bT[kBatch], bTr[kBatch], bCov[kBatch], bW[kBatch];
+    float bT[kBatch], bTr[kBatch], bCov[kBatch], bW[kBatch], bH[kBatch];
     int   kMaxIters = int(cv2.misc.x);
     float pathLen = 0.0, odPath = 0.0, remLen = 0.0;   // for filling what the budget leaves
     // The distance limit is measured from where the ray enters the shell, not from the eye: from
@@ -753,6 +795,7 @@ void main()
                 // they got: evenly spaced contour rings on every anvil head and tower wall (the "wood grain", open
                 // since pass 14; user issue 20261012_235712 shot 6). A stride of its own length per step turns the
                 // lattice into a random walk within a few steps of the entry.
+                Tent = -1.0;
                 { float cj = 2.0 * stepF * (0.75 + 0.5 * fract(jitter + 0.6180340 * float(iters)));
                   t += cj; pathLen += cj; }
                 continue;
@@ -793,6 +836,7 @@ void main()
                 pathLen += stepF;
                 if (f.sigma <= 0.0) {
                     if (++empty > 5) fine = false;
+                    Tent = -1.0;
                     t += stepF;
                     continue;
                 }
@@ -822,7 +866,14 @@ void main()
             float Tstep = exp(-f.sigma * stepW);
             float w     = T * (1.0 - Tstep);
             // Its light is added in the batch's second half, below.
-            bF[nB] = f; bT[nB] = t; bTr[nB] = T; bCov[nB] = covB; bW[nB] = w; ++nB;
+            if (Tent < 0.0) Tent = T;
+            // The multiple scattering's leak through the face the eye looks at (cv2DiffuseField): 1 - e^(-a x), x the view's
+            // optical depth into this cloud, AVERAGED over the step as the step's light is (weight e^-x): a cloud's first
+            // sample is often several optical depths thick, and taken at the step's start (x = 0) it got none at all.
+            float aV = 1.0 - cv2.ms.y * cv2.ms.y, tS = f.sigma * stepW;
+            float hV = 1.0 - pow(max(T / Tent, 1e-6), aV)
+                       * (1.0 - exp(-(1.0 + aV) * tS)) / ((1.0 + aV) * max(1.0 - exp(-tS), 1e-6));
+            bF[nB] = f; bT[nB] = t; bTr[nB] = T / Tent; bCov[nB] = covB; bW[nB] = w; bH[nB] = hV; ++nB;
             wAcc += w;
             dAcc += w * t;
             T    *= Tstep;
@@ -836,7 +887,7 @@ void main()
         // The batch's light.
         [[dont_unroll]] for (int bj = 0; bj < nB; ++bj) {
             float t = bT[bj];                               // (these shadow the march's own: this sample's)
-            float T = bTr[bj];
+            float T = bTr[bj];                              // (within the cloud the ray is in: see Tent)
             CV2Field f = bF[bj];
             float covB = bCov[bj];
             vec3  rel = dir * t;
@@ -937,6 +988,11 @@ void main()
             float bE = 0.0, bPh = 0.0;
             vec3  bDir = vec3(0.0, 0.0, 1.0);
             bool  wantB = dayness < 0.9 && beamGather(pW, p.h, dir, eye, bE, bDir, bPh);
+            // The optical depth away from the light (the slab's far side): marched (lightAmbOD) near; past a 150-m pixel (from
+            // ~80 km up) the path to the column's base along the light (no field reads: the march cost 1.4 ms of an orbit view,
+            // where no wisp is resolved).
+            bool  wantBk = wantL && !thin && cv2.ms.x > 0.5 && fp < 150.0;
+            float odBk = 0.0;
             // Light LOD (cv2.column3.y, "Light LOD footprint", m; 0 = off): a sample the ray sees
             // through little of (T < 0.5), or whose pixel footprint is past the setting, gets a 2-step
             // light march over the same length, its first step kept (the surface's self-shadowing):
@@ -955,7 +1011,8 @@ void main()
             }
             if (!thin)
                 lightAmbOD(rel, keyDir, up, eyeH, enuToEcef, nL, lSeg0,
-                           jL, detailAmt, fp, wantL, odL, sigUp, wantB, bDir, odB, lodL);
+                           jL, detailAmt, fp, wantL, odL, sigUp, wantB, bDir, odB, lodL, wantBk, odBk);
+            if (!wantBk) odBk = f.sigma * f.hf * max(f.topH - p.h, 0.0) / max(1.0 - f.hf, 0.05) / max(dot(up, keyDir), 0.1);
             if (wantL) {
                 float od = thin ? f.sigma * 400.0 : odL;
                 // A deck lit at a grazing angle is shadowed by the rest of the deck, tens of km
@@ -975,7 +1032,8 @@ void main()
                                                  - 2.0 * cv2.light.x, 0.0);
                     od = max(od, odDeck * deckK * 0.5);
                 }
-                float powder = 1.0 - cv2.look2.z * exp(-f.sigma * 300.0) * (0.5 - 0.5 * cosK);
+                // ("Powder" darkened thin, sun-facing samples, a stand-in for the diffuse field's build-up: the old model's only.)
+                float powder = (cv2.ms.x > 0.5) ? 1.0 : 1.0 - cv2.look2.z * exp(-f.sigma * 300.0) * (0.5 - 0.5 * cosK);
                 vec3 pSSv = vec3(pSS);
                 // "Mie optics" (mie.z): the tuned phase x the table's structure (its corona rings, cloudbow and glory
                 // relative to its own smoothed shape), keeping the tuned energy. Applied to the TUNED share only
@@ -996,7 +1054,10 @@ void main()
                     pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);
                 }
                 float pSilv = (moonIsKey ? phSilvM : phSilvS) * (1.0 - f.thin) * (1.0 - f.rain) * (1.0 - abs(f.soft));
-                keyS = keyCol * powder * (pSSv * exp(-od) + pSilv * exp(-0.3 * od) + pMS * msOctaves(od) * f.msBright);
+                // (Thin ice keeps the octaves: it has no light march, and its sheet is lit as it was tuned.)
+                float msK = (cv2.ms.x > 0.5 && !thin)
+                          ? cv2.ms.z * cv2DiffuseField(od, odBk, bH[bj], cosK) : pMS * msOctaves(od);
+                keyS = keyCol * powder * (pSSv * exp(-od) + pSilv * exp(-0.3 * od) + msK * f.msBright);
             }
 
             // ── Sky light from above, through the cloud above the sample, plus light from below. ──

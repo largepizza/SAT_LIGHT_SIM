@@ -1694,6 +1694,31 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 
   - The user's settings.json was lost to release.bat's wipe on 2026-10-13; a copy from that morning is
     `harness_runs/perf13/user_settings.json`.
+- **Multiple scattering = a delta-Eddington diffuse field (2026-10-26, branch cloud-ms; `cv2DiffuseField`,
+  cloud_v2_march.comp; the user, after a cloud-plugin developer's notes: "edge darkening is not present in our march").**
+  The octaves (`msOctaves`) knew only the optical depth toward the light, so every sunlit sample (a 50-m wisp or a 5-km
+  tower) took the same multiple scattering: flat-shaded noise, no dark wisps, a front-lit cloud a flat disc to its rim.
+  Now each lit sample's multiple scattering is the diffuse field of a conservative delta-Eddington slab along the light
+  (f = g^2, t = (1 - f) tau, Eddington I0 + mu I1 with Marshak boundaries, closed form): tauT = the light march, tauB = a
+  march AWAY from the light (`lightAmbOD` k = nL + 5..6, a quarter of `ms_back_m` then the rest; the clipmap's mean
+  extinction where `cdc_light` bakes it, else the field; past a 150-m pixel the path to the column's base, no reads).
+  Toward the eye: I0 + 0.3 g mu I1 + the forward peak's extra beam scattered once more, x e^(-0.05 t) (light escaping
+  sideways), x the leak through the face the eye looks at, 1 - e^(-(1 - f) x), x = the view's optical depth INTO THE
+  CLOUD THE RAY IS IN (`Tent`, reset at every empty step: from the eye, the next lobe's face read as interior = bright
+  veins on cloud bases), AVERAGED over the sample's step (`bH`: a first sample is often several optical depths thick, and
+  at its start x = 0 it got none). The three corrections and the 1.6 are fitted to a path-traced reference
+  (`tools/cloud_ms_reference.py`: soft / hard / lumpy / cauliflower blobs lit from above, the front, behind, the side; one
+  gain for all): correlation old 0.78-0.92, new 0.89-0.96; level vs reference old 0.32-12.8x (thin cloud 4-13x too
+  bright), new 0.41-1.54x. The reference's multiple scattering is SMOOTH at lobe scale: the old crisp lobe shading was
+  too strong; lobe relief comes from the single scattering (unchanged). Thin ice keeps the octaves; "Powder" applies to
+  the old model only. Settings (Clouds tab, slots 342-345): `clouds_v2.ms_model` 1 (0 = the octaves, the A/B),
+  `ms_diffusion_g` 0.85, `ms_diffuse_gain` 1 (~ the octaves' energy in a thick cloud; ~1.6 = path traced),
+  `ms_back_m` 1200; UBO `cv2.ms` appended (+16 B). 128 registers. Cost (RTX 3070 Ti, 1920x1009, matrix `--quick`, user
+  settings): cloud march +0.1..+0.8 ms, storms +0.1 (15 km) / +0.8 ms (ground), orbit -0.3; still noise and every motion
+  column equal or better (3 km look 1.14 -> 0.79, noise p99 0.73 -> 0.46). The light-LOD gate now reads the transmittance
+  within the current cloud (`bTr`), not from the eye. Tried and dropped: the slab alone at physical strength (3-7x the
+  old energy, flat: a slab along the light assumes mu0 = 1 and holds the light in), the octaves x the slab's reflectance
+  over the sample's neighbourhood (saturates in dense cumulus: no visible change).
 - **Lightning + thunder (rebuilt 2026-10-05; `cloud_v2_lightning.comp`, `SatelliteSimLightning.cpp`,
   `lightning.vert/.frag`, `include/lightning_draw.glsl`):** WHICH flashes happen is the GPU's: one workgroup walks two
   lattices around the observer out to the cloud tops' horizon — the Cb TOWERS (dominant, anvil-reaching: "Lightning
