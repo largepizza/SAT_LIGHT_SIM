@@ -5363,7 +5363,7 @@ private:
     static constexpr VkDeviceSize kCv2SkyPsiOffset = kCv2TshOffset + kCv2TshBytes;                     // cv2SkyPsi (the sky's multiple scattering)
     static constexpr VkDeviceSize kCv2GroundSkyOffset = kCv2SkyPsiOffset + 32ull * 32 * 16;             // cv2GroundSky (the ground's sky light)
     static constexpr VkDeviceSize kCv2VtOffset = kCv2GroundSkyOffset + 64ull * 16 * 16;                // cv2VtHdr + cv2Vt (the cloud over the ground)
-    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2VtOffset + 5ull * 4 * 16 + 5ull * 32 * 32 * 16; // + ... cv2GroundSky, cv2VtHdr, cv2Vt
+    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2VtOffset + 5ull * 4 * 16 + 2ull * 5 * 32 * 32 * 16; // + ... cv2GroundSky, cv2VtHdr, cv2Vt
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;

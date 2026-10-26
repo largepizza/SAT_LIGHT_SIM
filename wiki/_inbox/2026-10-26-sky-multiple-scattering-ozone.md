@@ -1,5 +1,5 @@
 ---
-pages: [rendering/sky.md, rendering/clouds.md, rendering/terrain.md]
+pages: [rendering/sky.md, rendering/clouds.md, rendering/terrain.md, development/profiling.md]
 code: [shaders/sat_sky.frag, shaders/sky_ap.comp, shaders/cloud_v2_sunlut.comp, shaders/include/atmosphere.glsl, shaders/include/sky_atmos.glsl, shaders/include/cloud_lightning.glsl]
 ---
 ## Now
@@ -21,6 +21,13 @@ Under cloud the ground's sky light comes through the cloud: a map of the cloud o
 diffuse transmission and the sunlight the cloud scatters down; under a thick deck the shadowed ground is neutral grey
 instead of clear-sky blue. Setting "Ground light under cloud (0/1)", `clouds_v2.ground_overcast`, default 1 (needs the
 sky model). Cost ~0.1-0.15 ms.
+
+Clouds below a deck take the same map's cloud above their height: their sky light comes through the deck and the
+sunlight it scatters down lights them from above, so cumulus under an overcast are neutral grey instead of clear-sky
+navy. Cost ~0.3-0.4 ms of cloud march.
+
+Performance: faint cloud samples (optical depth under 0.02 over the light march) skip the light march, and the sky pass
+skips shading ground hidden behind opaque cloud; together -0.3 to -1.1 ms of cloud march, up to -0.9 ms of sky pass.
 
 ## History
 Before: single scattering plus a hand-made sky-lit term for air in the Earth's shadow, and no ozone on the sky's Sun

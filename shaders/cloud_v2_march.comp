@@ -1096,9 +1096,9 @@ void main()
             // surface went black and the bases of every large cloud were one flat dark grey, cut off
             // from the sky-lit tops by a hard line (worst near sunset, when the key light is gone from
             // the bases and the twilight boost lifts only the tops).
-            float ambVis = 1.0, ambLow = 0.0, ambHue = 1.0;
+            float ambVis = 1.0, ambLow = 0.0, ambHue = 1.0, tauUp = 0.0;
             if (!thin) {
-                float tauUp = max(sigUp * 250.0, 0.6 * f.sigma * max(f.topH - p.h, 0.0));
+                tauUp = max(sigUp * 250.0, 0.6 * f.sigma * max(f.topH - p.h, 0.0));
                 // Sky light that has diffused down through thick cloud arrives mixed with everything else that
                 // entered the cloud (the Sun on its top and sides, which this term does not carry): white, not the
                 // zenith's blue. Its hue is kept by the share that got through unscattered-ish (the diffuse
@@ -1151,6 +1151,23 @@ void main()
             // by a different share at every Sun elevation.
             if (cv2.amb.x > 0.5) {
                 vec3  hU = (0.5 * cv2.amb.y) * skyUpH, hD = (0.5 * cv2.amb.y) * skyDnH;
+                // Cloud ABOVE the sample beyond its own (2026-10-26, cv2.gnd.x; cloud_lightning.glsl cv2VtUpCell): the probe and
+                // the column estimate see the sample's own cloud, not a deck kilometres above it, so cumulus under an overcast
+                // took the clear sky's light (blue). The deck's share (the map's transmission over this height as a tau, less
+                // what the sample's own column holds) dims the sky by its diffuse transmission, and the Sun it scatters down
+                // comes from above instead ((1/2 + 3/4 mu) x that less the direct beam: 2 mu x it for the half sphere, in these
+                // units), the ground below lit by it too (x the albedo).
+                if (cv2.gnd.x > 0.5 && !thin) {
+                    // (Per sample: once per batch, or cached along the ray, cost the same, ~0.4 ms from orbit.)
+                    float tdM = cv2VtUpH(cv2VtUpCell(enuToEcef * vec3(rel.xy, rel.z + R_EARTH + eyeH)), p.h);
+                    float tauD = max((1.0 / max(tdM, 1e-3) - 1.0) / 0.11 - tauUp, 0.0);
+                    if (tauD > 0.01) {
+                        float tdD = 1.0 / (1.0 + 0.11 * tauD), muK = max(dot(up, sunDir), 0.0);
+                        vec3  sDn = 2.0 * muK * max(min((0.5 + 0.75 * muK) * tdD, 1.0) - exp(-tauD / max(muK, 0.05)), 0.0) * sunCol;
+                        hU = hU * tdD + sDn;
+                        hD = hD * tdD + cv2.amb.z * sDn;
+                    }
+                }
                 float lU = dot(hU, vec3(0.2126, 0.7152, 0.0722)), lD = dot(hD, vec3(0.2126, 0.7152, 0.0722));
                 ambS = (mix(vec3(lU), hU, ambHue) * ambVis + mix(vec3(lD), hD, ambHue) * (ambLow / 0.35)
                         + skyNgt * (ambVis + ambLow)) * f.ambient;

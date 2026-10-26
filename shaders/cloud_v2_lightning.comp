@@ -125,27 +125,33 @@ void main()
         if (cell >= uint(kCv2VtN * kCv2VtN)) return;
         vec3  sunL = transpose(E) * cv2.sunE.xyz;
         vec2  cc   = vec2(float(cell % uint(kCv2VtN)), float(cell / uint(kCv2VtN))) - 0.5 * float(kCv2VtN) + 0.5;
-        vec4  acc  = vec4(0.0);
+        vec4  acc  = vec4(0.0), accU = vec4(0.0);
+        const vec4 kKn = vec4(1000.0, 2500.0, 5000.0, 9000.0);   // cv2VtUp's knots
         [[dont_unroll]] for (int sc = 0; sc < 2; ++sc) {
             float n  = float(2u * (uint(cv2.frame.x) / uint(kCv2VtL)) + uint(sc));
             vec2  jt = fract(vec2(0.7548777, 0.5698403) * n + vec2(0.5)) - 0.5;   // R2 over the visits
             vec3  d  = normalize(vec3((cc + jt) * cellM, R_EARTH));
             float mu = max(dot(d, sunL), 0.0);
             float tau = 0.0, hP = 0.0;
+            vec4  tB  = vec4(0.0);   // tau below each knot
             const int kVt = 20;
             [[dont_unroll]] for (int k = 1; k <= kVt; ++k) {
                 float h1 = 14000.0 * pow(float(k) / float(kVt), 1.6);
                 float hm = 0.5 * (hP + h1), dz = h1 - hP;
-                hP = h1;
                 vec3  sp = d * (R_EARTH + hm);
                 CV2Field f = cv2Field(cv2Pos(vec3(sp.xy, sp.z - R_EARTH - eyeH), eyeH, E), -1.0, max(0.125 * cellM, 100.0));
-                tau += f.sigma * (1.0 - 0.8 * f.thin) * dz;
+                float dT = f.sigma * (1.0 - 0.8 * f.thin) * dz;
+                tB += dT * clamp((kKn - hP) / dz, 0.0, 1.0);
+                tau += dT;
+                hP = h1;
             }
+            accU += 0.5 / (1.0 + 0.11 * max(tau - tB, vec4(0.0)));
             float td = 1.0 / (1.0 + 0.11 * tau);
             acc += 0.5 * vec4(td, max(min((0.5 + 0.75 * mu) * td, 1.0) - exp(-tau / max(mu, 0.05)), 0.0), tau, 0.0);
         }
         int   ci  = lv * kCv2VtN * kCv2VtN + int(cell);
         cv2Vt[ci] = fresh ? acc : mix(cv2Vt[ci], acc, 0.15);
+        cv2VtUp[ci] = fresh ? accU : mix(cv2VtUp[ci], accU, 0.15);
         return;
     }
     // Review 22: workgroups 1-4 fill the rain map around the eye (cloud_lightning.glsl): the rain rate at each

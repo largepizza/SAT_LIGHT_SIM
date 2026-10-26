@@ -114,6 +114,9 @@ buffer CV2FlashBuf {
     // gaps and thick cloud, not a uniform tau-8 sheet that turns most of the Sun into diffuse light.
     vec4     cv2VtHdr[kCv2VtL * 4];
     vec4     cv2Vt[kCv2VtL * kCv2VtN * kCv2VtN];
+    // The same cells' cloud ABOVE four heights (1, 2.5, 5, 9 km above sea level): means over the columns of the sky light's
+    // diffuse transmission through the cloud above each (the clouds' ambient under a deck, cloud_v2_march.comp).
+    vec4     cv2VtUp[kCv2VtL * kCv2VtN * kCv2VtN];
 };
 // Psi at a point (bilinear): the radiance of the light the air scattered twice or more reaching it, as if isotropic,
 // in the sky's units; the in-scatter it gives is (sigma_R + sigma_M) x Psi (the phase's mean, 1).
@@ -160,6 +163,35 @@ vec3 cv2VtAt(vec3 pE)
         if (rem < 1e-3) break;
     }
     return res + rem * vec3(1.0, 0.0, 0.0);
+}
+#endif
+// The cloud above a point (pE as cv2VtAt): cv2VtUp's four knots (the sky light's diffuse transmission through the cloud
+// above 1, 2.5, 5 and 9 km) at the finest level holding it, bilinear; vec4(1) where there is no map. cv2VtUpH: at height h
+// (m above sea level), linear between the knots (the total below 1 km, to 1 at 14 km).
+#ifdef CV2_PARAMS_BINDING
+vec4 cv2VtUpCell(vec3 pE)
+{
+    for (int l = 0; l < kCv2VtL; ++l) {
+        vec4 hx = cv2VtHdr[4 * l], hy = cv2VtHdr[4 * l + 1], hz = cv2VtHdr[4 * l + 2];
+        float qz = dot(pE, hz.xyz);
+        if (mod(cv2.frame.x - cv2VtHdr[4 * l + 3].x + 65536.0, 65536.0) > 16.0 || hx.w <= 0.0 || qz <= 0.0) continue;
+        vec2 g = vec2(dot(pE, hx.xyz), dot(pE, hy.xyz)) / qz * (R_EARTH / hx.w) + 0.5 * float(kCv2VtN) - 0.5;
+        if (min(g.x, g.y) < 0.0 || max(g.x, g.y) > float(kCv2VtN - 1)) continue;
+        ivec2 i0 = ivec2(floor(g));
+        ivec2 i1 = min(i0 + 1, ivec2(kCv2VtN - 1));
+        vec2  f  = g - vec2(i0);
+        int   b  = l * kCv2VtN * kCv2VtN;
+        return mix(mix(cv2VtUp[b + i0.y * kCv2VtN + i0.x], cv2VtUp[b + i0.y * kCv2VtN + i1.x], f.x),
+                   mix(cv2VtUp[b + i1.y * kCv2VtN + i0.x], cv2VtUp[b + i1.y * kCv2VtN + i1.x], f.x), f.y);
+    }
+    return vec4(1.0);
+}
+float cv2VtUpH(vec4 v, float h)
+{
+    return (h < 2500.0) ? mix(v.x, v.y, clamp((h - 1000.0) / 1500.0, 0.0, 1.0))
+         : (h < 5000.0) ? mix(v.y, v.z, (h - 2500.0) / 2500.0)
+         : (h < 9000.0) ? mix(v.z, v.w, (h - 5000.0) / 4000.0)
+         : mix(v.w, 1.0, clamp((h - 9000.0) / 5000.0, 0.0, 1.0));
 }
 #endif
 #ifdef CV2_SUNLUT_GLSL

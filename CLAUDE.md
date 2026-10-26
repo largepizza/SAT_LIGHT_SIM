@@ -1773,6 +1773,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   direct term's units). Under a thick deck shadowed ground keeps ~its brightness but goes neutral grey (sky B/R ~1.5 ->
   ~1.3 on the ground, the diffuse Sun white). Cost +0.1..0.15 ms; still-view shimmer 0.07 -> 0.09 levels. Debug view 31
   `groundtau` (R log2(1 + tau) / 10, G sky transmission, B Sun scattered down). harness_runs/ms/ov3-ov5.
+  **Clouds under a deck take it too (2026-10-26):** the bake also stores `cv2VtUp` (the same cells: the means of the sky
+  light's diffuse transmission through the cloud ABOVE 1 / 2.5 / 5 / 9 km), and the march's new-model ambient
+  (`cv2.amb.x`) takes the deck over each lit non-thin sample beyond its own column (`cv2VtUpCell` + `cv2VtUpH`, per sample:
+  tau_deck = the map's equivalent tau less the sample's `tauUp`): both hemispheres x its diffuse transmission, plus the
+  Sun it scatters down, 2 mu ((1/2 + 3/4 mu) Td - e^(-tau / mu)) x sunCol above and x the albedo below. The probe (250 m
+  up) and the column estimate see only the sample's own cloud: cumulus under an overcast took the clear sky (navy, issue
+  view cuair: -37.8, 145.0 from 3 km at 02:06 UTC) and now read neutral grey. Cost ~+0.4 ms of march from orbit
+  (per-pass timers), ~0.3 near the ground; one lookup per batch or a per-ray cache cost the same (a group of rays runs it
+  when any one needs it). 128 registers. harness_runs/ms/cup1-5.
+- **Two perf skips (2026-10-26, reworked from the parked ee29203):** a FAINT cloud sample (sigma x the light march's length
+  < `CV2_FAINT_OD` 0.02, Sun-lit, no beam) takes no light march and no sky probe: its Sun shadow is the transmittance
+  volume at the sample, and it gets NONE of the delta-Eddington field (`CV2_FAINT_MODE` 0): with tau toward the light 0
+  it read as the lit face of a thick slab and haze under cumulus glowed beige (the column estimate as its far side). Mode 1
+  (a 2-step march) saved nothing. And the sky pass skips shading a surface whose cloud transmittance in front is under
+  `SKY_SURF_HIDDEN_T` 1e-3 (the sea's TAA flag kept). Interleaved (1920x1009): cloud march -0.3..-1.1 ms, sky up to
+  -0.9 ms from orbit, images within noise. harness_runs/ms/faint1-2.
 - **AgX tonemap (2026-10-26, branch cloud-ms; sat_sky.frag `skyAgX`).** The sky pass tonemapped 1 - e^-x per channel
   ("Highlight roll-off" blends a longer shoulder): each channel saturates alone, so bright orange skews yellow and sunlit
   cloud flattens to paper white (where the physical multiple scattering puts it). AgX (Sobotka; Wrensch's polynomial
