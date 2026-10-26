@@ -117,7 +117,10 @@ def cmd_gen(a):
             for (t, la, lo, al, z, e) in keys:
                 L.append(f"path key {t:.3f} lat={la:.7f} lon={lo:.7f} alt={al:.1f} az={z:.3f} el={e:.3f}"
                          + (f" simadd={t:.3f}" if a.live_time else ""))
-            L += ["path goto 0", f"wait settle {SETTLE}", f"path play fps={FPS} record={pre}{name}"]
+            # Only the frames `score` reads are written (frames=): every frame still plays at the fixed step, so the
+            # temporal passes see the same motion, but writing all 150 PNGs a path made one view ~11 GB and ~35 min.
+            sampled = ",".join(str(int(round(t * FPS))) for t in REF_T)
+            L += ["path goto 0", f"wait settle {SETTLE}", f"path play fps={FPS} record={pre}{name} frames={sampled}"]
             for t in REF_T:
                 L += [f"path goto {t}", f"wait settle {SETTLE}", f"capture {pre}{name}_ref_{int(round(t * FPS)):05d}"]
     L.append("quit")

@@ -659,7 +659,7 @@ json SatelliteSim::harnessStateJson()
     j["selection"] = sel;
     // The v2 march's rate this frame: sparse (1 pixel in 4), full, half (checkerboard) or adaptive.
     j["clouds_v2"] = {{"rate", cv2AdaptiveNow ? "adaptive" : cv2HalfRateNow ? "half" : cv2FullRateNow ? "full" : cv2FullResHeldNow ? "sparse held" : "sparse"},
-                      {"still_frames", cv2StillFrames}, {"eye_still_frames", cv2EyeStillFrames}, {"history_valid", cv2HistoryValid}, {"cdc_active", cv2CdcActive}, {"cdc_slow_frames", cv2CdcSlowFrames}, {"cdc_epoch", cv2CdcEpoch},
+                      {"still_frames", cv2StillFrames}, {"eye_still_frames", cv2EyeStillFrames}, {"history_valid", cv2HistoryValid}, {"cdc_active", cv2CdcActive}, {"smooth_tiles_now", cv2SmoothNow}, {"cdc_slow_frames", cv2CdcSlowFrames}, {"cdc_epoch", cv2CdcEpoch},
                       {"sun_cloud_t", sunCloudTEased}, {"fast_lod", cv2FastLodNow},
                       {"shape_frame", cv2ShapeFrame}};   // review 22: the Sun disc's cloud transmittance
     // The Sun transmittance volume (S3, cloud_lightning.glsl cv2Stv): each level's fill frames, cell and lattice, the knots'

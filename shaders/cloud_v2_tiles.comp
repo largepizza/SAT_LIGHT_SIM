@@ -7,7 +7,18 @@
 // TileBuf (indirect args for pass B: 4 workgroups each) and flagged for the march and the resolve.
 // This used to be a vote inside the march itself; that code, however small, flipped cloud_v2_march.comp
 // from 128 registers to ~224 (+19% at full rate). Same descriptor set and push constants as the march.
+// Smooth tiles (2026-10-25, perf-storm; kMode 1 and 2, the full-res cloud grid only, cv2.perf.w > 0): the full-res grid
+// marches one pixel per 2x2 block a frame, 4x the rays of the half-res sparse grid, and in the user's storm views that
+// cost 4-7 ms (cloud march 7.8 vs 2.4 ms at 1920x1009). Its resolution matters at cloud EDGES and fine structure, not
+// across a smooth cloud body or clear sky. kMode 1 classifies each 32x32 tile (one sparse-grid workgroup) from last
+// frame's resolved clouds: SMOOTH when no 4x4 window in it varies by more than the threshold (display levels of
+// radiance, or transmittance), else detailed. A smooth tile is skipped by the march's pass A and marched by pass F at a
+// quarter of the sparse grid's density (one 2x2 block of each 4x4, the four rotating every four frames: each pixel still
+// takes its own ray once in 16 frames); kMode 2 then fills the other blocks' samples from the marched ones, so the resolve
+// sees a complete sparse grid. Flags 2 in tFlag; the list in tList, tPad its count, tDispX pass F's workgroups (4 tiles
+// each).
 layout(local_size_x = 16, local_size_y = 16) in;
+layout(constant_id = 0) const int kMode = 0;   // 0 the adaptive rate's vote, 1 smooth-tile classification, 2 the fill
 
 layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
     mat4  skyView;
@@ -29,11 +40,85 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;       // for the half-res size
 layout(set = 0, binding = 16) uniform sampler2D prevResDepthTex;    // last frame's resolved depth (m)
 layout(std430, set = 0, binding = 19) buffer TileBuf { uint tPad, tDispX, tDispY, tDispZ; uint tList[4096]; uint tFlag[4096]; };
+layout(set = 0, binding = 27) uniform sampler2D prevResColorTex;    // last frame's resolved clouds (the history copy)
+layout(set = 0, binding = 10, rgba16f) uniform image2D newColor;    // the sparse grid (kMode 2 fills it)
+layout(set = 0, binding = 11, rg32f)   uniform image2D newDepth;
 
 shared uint sVote;
 
+// The smooth tiles' marched blocks this frame: (x, y) parity of the sparse-grid slot (cloud_v2_march.comp pass F,
+// the same order as the host's 2x2 offsets, stepped every four frames).
+ivec2 smoothPhase()
+{
+    int ph = (int(cv2.frame.x) >> 2) & 3;
+    return ivec2((ph == 1 || ph == 2) ? 1 : 0, (ph == 1 || ph == 3) ? 1 : 0);
+}
+
+void classifySmooth()
+{
+    if (gl_LocalInvocationIndex == 0u) sVote = 0u;
+    barrier();
+    ivec2 gridSz = ivec2(cv2.grid.xy);
+    ivec2 qSize  = (gridSz + 1) / 2;
+    ivec2 q      = ivec2(gl_GlobalInvocationID.xy);
+    if (q.x < qSize.x && q.y < qSize.y) {
+        // The block and a one-pixel ring (an edge just outside it, or one moving in, counts): the radiance in display
+        // terms (1 - exp(-x exposure), the sky's tonemap and exposure, sat_sky.frag) and the transmittance.
+        float dayness = clamp((pc.sunDirENU.w + 0.2) / 1.2, 0.0, 1.0);
+        float k  = mix(10.0, 1.8, pow(dayness, 0.4)) * cloud.exposureScale;
+        ivec2 p0 = q * 2 - 1;
+        float lmin = 1e9, lmax = -1e9, amin = 1e9, amax = -1e9;
+        for (int j = 0; j < 4; ++j)
+            for (int i = 0; i < 4; ++i) {
+                vec4  c = texelFetch(prevResColorTex, clamp(p0 + ivec2(i, j), ivec2(0), gridSz - 1), 0);
+                float l = 1.0 - exp(-dot(c.rgb, vec3(0.2126, 0.7152, 0.0722)) * k);
+                lmin = min(lmin, l); lmax = max(lmax, l); amin = min(amin, c.a); amax = max(amax, c.a);
+            }
+        if (lmax - lmin > cv2.perf.w || amax - amin > 2.0 * cv2.perf.w) atomicOr(sVote, 1u);
+    }
+    barrier();
+    if (gl_LocalInvocationIndex == 0u && sVote == 0u) {
+        uint tileId = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x;
+        uint i = atomicAdd(tPad, 1u);
+        tList[i] = tileId;
+        tFlag[tileId] = 2u;
+        atomicMax(tDispX, i / 4u + 1u);
+    }
+}
+
+void fillSmooth()
+{
+    ivec2 gridSz = ivec2(cv2.grid.xy);
+    ivec2 qSize  = (gridSz + 1) / 2;
+    uint  tileId = gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x;
+    if (tFlag[tileId] != 2u) return;
+    ivec2 s  = ivec2(gl_GlobalInvocationID.xy);
+    if (s.x >= qSize.x || s.y >= qSize.y) return;
+    ivec2 od = (s - smoothPhase()) & 1;         // 1 on an axis where this slot lies between marched ones
+    if (od.x == 0 && od.y == 0) return;         // marched by pass F
+    // Every slot of the marched parity was written this frame (pass F in smooth tiles, pass A in the others), and none
+    // of them is written here: the neighbours on that lattice, bilinear (two or four of them; one at the grid's edge).
+    vec4  c = vec4(0.0); vec2 dSum = vec2(0.0), dW = vec2(0.0); float w = 0.0;
+    for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 2; ++i) {
+            if ((i == 1 && od.x == 0) || (j == 1 && od.y == 0)) continue;
+            ivec2 n = s - od + ivec2(i, j) * 2 * od;
+            if (any(lessThan(n, ivec2(0))) || any(greaterThanEqual(n, qSize))) continue;
+            vec4 cn = imageLoad(newColor, n);
+            vec2 dn = imageLoad(newDepth, n).xy;
+            c += cn; w += 1.0;
+            if (dn.x > 0.0) { dSum.x += dn.x; dW.x += 1.0; }
+            if (dn.y > 0.0) { dSum.y += dn.y; dW.y += 1.0; }
+        }
+    if (w <= 0.0) return;
+    imageStore(newColor, s, c / w);
+    imageStore(newDepth, s, vec4(dW.x > 0.0 ? dSum.x / dW.x : 0.0, dW.y > 0.0 ? dSum.y / dW.y : -1.0, 0.0, 0.0));
+}
+
 void main()
 {
+    if (kMode == 1) { classifySmooth(); return; }
+    if (kMode == 2) { fillSmooth(); return; }
     if (gl_LocalInvocationIndex == 0u) sVote = 0u;
     barrier();
 

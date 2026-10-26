@@ -6529,6 +6529,9 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         // 2026-10-25: the sky's atmosphere once per screen tile (sky_ap.comp) instead of per pixel; 0 = per pixel (A/B).
         {"Aerial perspective volume (0/1)", &cv2SkyAp, 0.0f, 1.0f, 1.0f, "%.0f", 337},
         {"Aerial perspective horizon band (deg)", &cv2SkyApBandDeg, 0.0f, 10.0f, 0.25f, "%.2f", 338},
+        // 2026-10-25: with full-resolution clouds, smooth 32x32 tiles at half density (0 = every tile at full density).
+        {"Smooth tiles at half density (0/1)", &cv2SmoothTiles, 0.0f, 1.0f, 1.0f, "%.0f", 339},
+        {"Smooth tile threshold (levels)", &cv2SmoothTileThresh, 0.5f, 32.0f, 0.5f, "%.1f", 340},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
@@ -8884,6 +8887,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SkyAp = settingClamp(c.value("sky_ap", cv2SkyAp), 0.0f, 1.0f);
         cv2SkyApBandDeg = settingClamp(c.value("sky_ap_band_deg", cv2SkyApBandDeg), 0.0f, 10.0f);
         cv2SkyApBandSteps = settingClamp(c.value("sky_ap_band_steps", cv2SkyApBandSteps), 1.0f, 16.0f);
+        cv2SmoothTiles = settingClamp(c.value("smooth_tiles", cv2SmoothTiles), 0.0f, 1.0f);
+        cv2SmoothTileThresh = settingClamp(c.value("smooth_tile_threshold", cv2SmoothTileThresh), 0.5f, 32.0f);
         cv2TerrainGodrays = settingClamp(c.value("terrain_godrays", cv2TerrainGodrays), 0.0f, 1.0f);
         cv2MieOptics = c.value("mie_optics", cv2MieOptics);
         cv2ShapeCaps = c.value("shape_caps", cv2ShapeCaps);
@@ -9534,6 +9539,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sky_ap", cv2SkyAp},
         {"sky_ap_band_deg", cv2SkyApBandDeg},
         {"sky_ap_band_steps", cv2SkyApBandSteps},
+        {"smooth_tiles", cv2SmoothTiles},
+        {"smooth_tile_threshold", cv2SmoothTileThresh},
         {"terrain_godrays", cv2TerrainGodrays},
         {"mie_optics", cv2MieOptics},
         {"shape_caps", cv2ShapeCaps},

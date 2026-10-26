@@ -4753,6 +4753,7 @@ private:
     bool cv2FullResHeldNow = false;    // this frame's full-res sparse sample is held at one pixel of each block (cv2FullResMovingMode 1)
     bool cv2HalfRateNow = false;       // ... or, "Half rate while moving", half of them (a checkerboard)
     bool cv2AdaptiveNow = false;       // ... or the adaptive rate: sparse, with full-rate tiles where the parallax is large
+    bool cv2SmoothNow = false;         // ... or the full-res grid's smooth tiles at a quarter of its density (pass F)
     bool cv2HistoryValid = false;
     glm::mat4 cv2PrevSkyView{1.0f};
     glm::vec3 cv2PrevObsDir{0.0f, 0.0f, 1.0f};
@@ -5196,6 +5197,10 @@ private:
     // The same two without the haboob code (spec constant 3 = 0, perf pass 4): bound while no dust wall is in the grid.
     VkPipeline cv2MarchNoDustPipeline = VK_NULL_HANDLE, cv2MarchPassBNoDustPipeline = VK_NULL_HANDLE;
     VkPipeline cv2TilesPipeline = VK_NULL_HANDLE;        // ... and its tile classification (cloud_v2_tiles.comp)
+    // Smooth tiles (2026-10-25, the full-res grid): pass F (spec constant 2 = 2, with and without the haboob code), the
+    // tiles' classification (cloud_v2_tiles.comp kMode 1) and the sparse grid's fill (kMode 2).
+    VkPipeline cv2MarchPassFPipeline = VK_NULL_HANDLE, cv2MarchPassFNoDustPipeline = VK_NULL_HANDLE;
+    VkPipeline cv2TilesSmoothPipeline = VK_NULL_HANDLE, cv2TilesFillPipeline = VK_NULL_HANDLE;
     // Adaptive rate: the tiles pass A listed (header {pad, dispatch x, y, z}, 4096 tile ids, 4096 flags),
     // and pass B's full-rate targets.
     VkBuffer cv2TileBuf = VK_NULL_HANDLE;
@@ -5247,6 +5252,12 @@ private:
     // 12-m footprint (the eye inside the high layer, where it is a soft haze) stands for this many view steps. 1 = off (the
     // look). From 12.4 km under an anvil (issue 20261023_230322): cloud march 34.6 -> 27.8 ms at 2, 25.0 at 4.
     float cv2NearCirrusStride = 1.0f;
+    // "Smooth tiles at half density" (2026-10-25, perf-storm; keys smooth_tiles / smooth_tile_threshold, slots 339-340):
+    // with full-resolution clouds, the 32x32 tiles whose last resolved frame varies by less than the threshold (display
+    // levels / 255 over any 4x4 window; transmittance twice that) are marched at the half-res sparse grid's density and
+    // filled (cloud_v2_tiles.comp). Full res cost 4-7 ms over half res in the user's storm views (1920x1009).
+    float cv2SmoothTiles = 1.0f;
+    float cv2SmoothTileThresh = 30.0f;   // settled captures at the noise floor up to 40; motion +0.05 levels (tstab, 20-40)
     // "God ray reads (near)" (2026-10-24, perf pass 3; key godray_reads, slot 336): the sky pass's reads of the Sun shadow
     // (froxels or volume) per atmosphere step within 30 km, half that beyond. 8 = the look as built; 4 is ~0.4-1 ms of the
     // sky pass cheaper (1920x1009 High) with settled captures within noise: fewer reads per frame, so the sky TAA has more to
@@ -7251,7 +7262,7 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 340;   // 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 341;   // 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
@@ -7421,6 +7432,7 @@ private:
     void createCloudsV2Targets(VulkanContext &ctx); // swapchain-sized images + their descriptor writes
     void destroyCloudsV2Targets(VkDevice device);
     void destroyCloudsV2(VkDevice device);
+    void makeSmoothTilePipelines(VulkanContext &ctx, const char *marchSpv);
     // harness `shaders reload [march=<spv>]`; "" = ok, stats = the driver's statistics for the march
     // Harness `shaders reload weather=<spv>` (2026-10-25): the weather cube's bake from another SPV (an empty path = the
     // shipped one); every face is re-baked. Returns an error or "".

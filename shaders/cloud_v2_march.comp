@@ -418,7 +418,8 @@ void main()
     // the targets); 1 full (every half-res pixel, in place); 2 half (a checkerboard alternating each
     // frame, in place: "Half rate while moving").
     int   rate     = int(cv2.misc.z + 0.5);
-    bool  passB    = kPassB != 0;
+    bool  passB    = kPassB == 1;
+    bool  passF    = kPassB == 2;          // smooth tiles (cloud_v2_tiles.comp kMode 1): a quarter of the sparse grid
     bool  full     = rate == 1 || passB;
     bool  halfR    = rate == 2 && !passB;
     ivec2 halfSize = ivec2(cv2.grid.xy);   // the cloud grid (S9: may be twice the scene depth's)
@@ -430,6 +431,17 @@ void main()
         int   tilesX = (halfSize.x + 31) / 32;
         tileO = ivec2(int(tileId) % tilesX, int(tileId) / tilesX) * 32 + ivec2(int(sub & 1u), int(sub >> 1u)) * 16;
         q     = tileO + ivec2(gl_LocalInvocationID.xy);
+    }
+    // Pass F: four smooth tiles a workgroup, 64 threads each, one sparse-grid slot of each 2x2 (the phase steps every
+    // four frames; the same slot and ray pass A would have taken there). The rest is cloud_v2_tiles.comp's fill.
+    if (passF) {
+        uint  slot = gl_WorkGroupID.x * 4u + (gl_LocalInvocationIndex >> 6u), li = gl_LocalInvocationIndex & 63u;
+        int   ph   = (int(cv2.frame.x) >> 2) & 3;
+        int   tilesX = (qSize.x + 15) / 16;
+        uint  tileId = tList[min(slot, 4095u)];
+        q = (slot < tPad) ? ivec2(int(tileId) % tilesX, int(tileId) / tilesX) * 16 + ivec2(int(li & 7u), int(li >> 3u)) * 2
+                            + ivec2((ph == 1 || ph == 2) ? 1 : 0, (ph == 1 || ph == 3) ? 1 : 0)
+                          : qSize;
     }
     ivec2 pix      = full ? min(q, halfSize - 1)
                    : halfR ? min(ivec2(q.x * 2 + ((q.y + int(cv2.frame.x)) & 1), q.y), halfSize - 1)
@@ -449,11 +461,14 @@ void main()
     // Adaptive rate, pass A: a tile the classify pass (cloud_v2_tiles.comp) listed is pass B's. (The
     // vote used to be here: that code flipped this shader from 128 registers to ~224, +19%.)
     if (rate == 3 && !passB && tFlag[gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x] != 0u) return;
+    // Smooth tiles (cv2.perf.w > 0, the full-res grid): pass F's.
+    if (rate == 0 && cv2.perf.w > 0.0 && !passF && tFlag[gl_WorkGroupID.x + gl_WorkGroupID.y * gl_NumWorkGroups.x] == 2u) return;
     // Beam-light tile cull. This workgroup owns half-res pixels [wg*32, wg*32+32) (16 at full
     // rate); its cone is computed from those corners (the cull only needs an axis and a half-angle).
     {
         vec2 tile = vec2(gl_WorkGroupSize.xy) * (full ? vec2(1.0) : halfR ? vec2(2.0, 1.0) : vec2(2.0));
         vec2 tMin = passB ? vec2(tileO) : vec2(gl_WorkGroupID.xy) * tile, tMax = tMin + tile;
+        if (passF) { tMin = vec2(0.0); tMax = vec2(halfSize); }   // (four tiles anywhere on screen: the whole view's cone)
         vec3 d00 = rayDirAt(tMin, halfSize, tanHalfFov, camToENU);
         vec3 d10 = rayDirAt(vec2(tMax.x, tMin.y), halfSize, tanHalfFov, camToENU);
         vec3 d01 = rayDirAt(vec2(tMin.x, tMax.y), halfSize, tanHalfFov, camToENU);

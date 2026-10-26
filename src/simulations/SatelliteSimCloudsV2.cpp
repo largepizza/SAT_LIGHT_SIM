@@ -586,14 +586,15 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // 24 the droplets' Mie phase table (2026-10-22)
     // 25 the elevation map (2026-10-22: the terrain Sun-horizon map's bake, cloud_v2_terrsun.comp, alone reads it)
     // 26 the storm objects' towers + their bins (cv2_storms.glsl, SatelliteSimWeather.cpp)
+    // 27 last frame's resolved clouds (the history copy: the smooth tiles' classification, cloud_v2_tiles.comp)
     cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX, SSBO,
-                                             TEX, IMG, IMG, SSBO, TEX, IMG, SSBO, SSBO, TEX, TEX, SSBO});
+                                             TEX, IMG, IMG, SSBO, TEX, IMG, SSBO, SSBO, TEX, TEX, SSBO, TEX});
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
     // 6/7 the full-rate tiles' color/depth, 8 the tile list
     // 9 / 10 the sample ages (out, history)
     cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO, IMG, TEX});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 17}, {SSBO, 9}, {IMG, 9}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 18}, {SSBO, 9}, {IMG, 9}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -628,6 +629,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         cv2MarchPassBNoDustPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, specNB, 4);
     }
     cv2TilesPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout);
+    makeSmoothTilePipelines(ctx, "shaders/cloud_v2_march.comp.spv");
     cv2ResolvePipeline = makeComputePipeline(ctx, "shaders/cloud_v2_resolve.comp.spv", cv2ResolvePipeLayout);
     cv2LightningPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout);
     cv2SunLutPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout);
@@ -790,6 +792,7 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
         imageWrite(cv2ResolveDescSet, 4, IMG, &resOut),
         imageWrite(cv2ResolveDescSet, 5, IMG, &resDepthOut),
         imageWrite(cv2MarchDescSet, 16, TEX, &resDepthIn),
+        imageWrite(cv2MarchDescSet, 27, TEX, &histIn),
         imageWrite(cv2MarchDescSet, 17, IMG, &fullOut),
         imageWrite(cv2MarchDescSet, 18, IMG, &fullDepthOut),
         imageWrite(cv2ResolveDescSet, 6, TEX, &fullIn),
@@ -866,6 +869,24 @@ static std::string pipelineStatsLine(VulkanContext &ctx, VkPipeline p)
 // docs/FREEZES.md). Same layouts, so descriptors and push constants carry over. Returns what failed.
 // marchSpv overrides the march's file (an A/B against another build in one batch); stats receives the
 // driver's statistics for the new march pipeline.
+// Smooth tiles (cloud_v2_tiles.comp): pass F from the march's SPV (spec constant 2 = 2; with and without the haboob
+// code), the classification (kMode 1) and the fill (kMode 2). Replaces the four pipelines; throws on failure.
+void SatelliteSim::makeSmoothTilePipelines(VulkanContext &ctx, const char *marchSpv)
+{
+    const uint32_t specF[3] = {cv2MarchWg[0], cv2MarchWg[1], 2u}, specFN[4] = {cv2MarchWg[0], cv2MarchWg[1], 2u, 0u};
+    const uint32_t m1[1] = {1u}, m2[1] = {2u};
+    VkPipeline np[4] = {makeComputePipeline(ctx, marchSpv, cv2MarchPipeLayout, specF, 3),
+                        makeComputePipeline(ctx, marchSpv, cv2MarchPipeLayout, specFN, 4),
+                        makeComputePipeline(ctx, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout, m1, 1),
+                        makeComputePipeline(ctx, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout, m2, 1)};
+    VkPipeline *dst[4] = {&cv2MarchPassFPipeline, &cv2MarchPassFNoDustPipeline, &cv2TilesSmoothPipeline, &cv2TilesFillPipeline};
+    for (int i = 0; i < 4; ++i)
+    {
+        if (*dst[i]) vkDestroyPipeline(ctx.device, *dst[i], nullptr);
+        *dst[i] = np[i];
+    }
+}
+
 std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
                                                 uint32_t wgX, uint32_t wgY, const std::string &resolveSpv,
                                                 const std::string &lightningSpv, const std::string &compositeSpv)
@@ -914,6 +935,14 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     }
     swap(cv2ResolvePipeline, pick(resolveSpv, "shaders/cloud_v2_resolve.comp.spv"), cv2ResolvePipeLayout, nullptr);
     swap(cv2TilesPipeline, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout, nullptr);
+    try
+    {
+        makeSmoothTilePipelines(ctx, marchSpv.empty() ? "shaders/cloud_v2_march.comp.spv" : marchSpv.c_str());
+    }
+    catch (const std::exception &e)
+    {
+        err += std::string(e.what()) + "; ";
+    }
     swap(cv2LightningPipeline, pick(lightningSpv, "shaders/cloud_v2_lightning.comp.spv"), cv2MarchPipeLayout, nullptr);
     swap(cv2SunLutPipeline, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cv2FroxPipeline, "shaders/cloud_v2_froxel.comp.spv", cv2MarchPipeLayout, nullptr);
@@ -997,6 +1026,11 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2MarchNoDustPipeline = cv2MarchPassBNoDustPipeline = VK_NULL_HANDLE;
     if (cv2TilesPipeline) vkDestroyPipeline(device, cv2TilesPipeline, nullptr);
     cv2TilesPipeline = VK_NULL_HANDLE;
+    for (VkPipeline *pp : {&cv2MarchPassFPipeline, &cv2MarchPassFNoDustPipeline, &cv2TilesSmoothPipeline, &cv2TilesFillPipeline})
+    {
+        if (*pp) vkDestroyPipeline(device, *pp, nullptr);
+        *pp = VK_NULL_HANDLE;
+    }
     if (cv2TileBuf) vkDestroyBuffer(device, cv2TileBuf, nullptr);
     if (cv2TileMem) vkFreeMemory(device, cv2TileMem, nullptr);
     cv2TileBuf = VK_NULL_HANDLE; cv2TileMem = VK_NULL_HANDLE;
@@ -1853,6 +1887,17 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         if (cv2AdaptiveNow)
             cv2FullRateNow = false;
     }
+    // Smooth tiles (2026-10-25): with full-res clouds on the sparse grid, the tiles whose last resolved frame is smooth are
+    // marched at a quarter of its density (cloud_v2_tiles.comp). Needs a history (it is classified from it), the 16x16
+    // workgroups (a tile is one), and the tile list's capacity (4096 tiles: 2048x2048 of cloud grid).
+    {
+        const uint32_t qTiles = ((cv2QuarterW + 15) / 16) * ((cv2QuarterH + 15) / 16);
+        cv2SmoothNow = cv2SmoothTiles > 0.5f && cv2FullResActive() && !cv2FullRateNow && !cv2AdaptiveNow && !cv2HalfRateNow &&
+                       valid && cv2HistoryValid && glm::length(eye - cv2PrevEye) <= 150.0 && cv2MarchWg[0] == 16 &&
+                       cv2MarchWg[1] == 16 && qTiles <= kCv2MaxTiles && cv2MarchPassFPipeline != VK_NULL_HANDLE &&
+                       cv2MarchPassFNoDustPipeline != VK_NULL_HANDLE && cv2TilesSmoothPipeline != VK_NULL_HANDLE &&
+                       cv2TilesFillPipeline != VK_NULL_HANDLE;
+    }
     p.misc2.w = std::max(cv2AdaptiveParallaxPx, 0.05f);
     {
         const double move = glm::length(eye - cv2PrevEye);
@@ -1901,7 +1946,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     }
     p.anvil3 = glm::vec4(std::clamp(cv2AnvilPuff, 0.0f, 2.0f), std::clamp(cv2AnvilLiftM, 0.0f, 3000.0f), lowTopB[0], lowTopB[1]);
     p.perf = glm::vec4(std::clamp(std::round(cv2NearCirrusStride), 1.0f, 4.0f), 12.0f,
-                       std::clamp(std::round(cv2GodrayReads), 2.0f, 8.0f), 0.0f);   // "Near cirrus stride", "God ray reads"
+                       std::clamp(std::round(cv2GodrayReads), 2.0f, 8.0f),
+                       cv2SmoothNow ? std::clamp(cv2SmoothTileThresh, 0.5f, 64.0f) / 255.0f : 0.0f);   // "Near cirrus stride", "God ray reads", smooth tiles
     // The aerial-perspective volume: x is set to 1 in the mirrored copy by recordCloudsV2 once it is dispatched this frame.
     p.skyAp = glm::vec4(0.0f, 200.0f, std::sin(glm::radians(std::clamp(cv2SkyApBandDeg, 0.0f, 20.0f))),
                         std::clamp(cv2SkyApBandSteps, 1.0f, 16.0f));
@@ -2442,6 +2488,21 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     }
+    if (cv2SmoothNow)
+    {
+        // Smooth tiles: clear the flags and the list's header {count, dispatch x = 0, 1, 1}, then classify (one 16x16
+        // workgroup per 32x32 tile, the sparse grid's dispatch).
+        vkCmdFillBuffer(cmd, cv2TileBuf, 16, 8 * kCv2MaxTiles, 0);
+        const uint32_t hdr[4] = {0u, 0u, 1u, 1u};
+        vkCmdUpdateBuffer(cmd, cv2TileBuf, 0, sizeof(hdr), hdr);
+        memoryBarrier(cmd, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2TilesSmoothPipeline);
+        vkCmdDispatch(cmd, (cv2QuarterW + 15) / 16, (cv2QuarterH + 15) / 16, 1);
+        // (pass A reads the flags, pass F the list and its indirect args)
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
+    }
     cv2PassStampTo(cmd, 4);   // adaptive-rate tiles
     // (perf pass 4) the march without the haboob code while no dust wall is in the grid: its code alone cost 0.5-1 ms
     const bool marchND = !dustGpuOn && cv2MarchNoDustPipeline != VK_NULL_HANDLE && cv2MarchPassBNoDustPipeline != VK_NULL_HANDLE;
@@ -2449,7 +2510,15 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     const uint32_t gw = cv2HalfRateNow ? (cv2HalfW + 1) / 2 : cv2FullRateNow ? cv2HalfW : cv2QuarterW;
     const uint32_t gh = cv2FullRateNow ? cv2HalfH : cv2QuarterH;
     vkCmdDispatch(cmd, (gw + cv2MarchWg[0] - 1) / cv2MarchWg[0], (gh + cv2MarchWg[1] - 1) / cv2MarchWg[1], 1);
-    cv2PassStampTo(cmd, 5);   // march (pass A)
+    if (cv2SmoothNow)
+    {
+        // Pass F (four smooth tiles a workgroup, args from the classification), with no barrier after pass A: they write
+        // different slots of the sparse grid, so the GPU runs both together (with one between them, each dispatch's tail
+        // idled the GPU: pass F cost twice its share of rays).
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchND ? cv2MarchPassFNoDustPipeline : cv2MarchPassFPipeline);
+        vkCmdDispatchIndirect(cmd, cv2TileBuf, 4);
+    }
+    cv2PassStampTo(cmd, 5);   // march (pass A, and the smooth tiles' pass F)
     if (cv2AdaptiveNow)
     {
         // Pass B: 4 workgroups (16x16) per listed 32x32 tile, dispatched from the args pass A counted.
@@ -2459,7 +2528,15 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchND ? cv2MarchPassBNoDustPipeline : cv2MarchPassBPipeline);
         vkCmdDispatchIndirect(cmd, cv2TileBuf, 4);
     }
-    cv2PassStampTo(cmd, 6);   // march pass B
+    if (cv2SmoothNow)
+    {
+        // The fill of the smooth tiles' other slots, from what pass F and pass A wrote.
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2TilesFillPipeline);
+        vkCmdDispatch(cmd, (cv2QuarterW + 15) / 16, (cv2QuarterH + 15) / 16, 1);
+    }
+    cv2PassStampTo(cmd, 6);   // march pass B / the smooth tiles' fill
 
     memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
