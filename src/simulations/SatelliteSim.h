@@ -874,7 +874,7 @@ struct GpuCloudV2Params
     glm::vec4 perf;                     // 2026-10-24: x "Near cirrus stride" (1 = off), y its footprint (m), zw spare
     glm::vec4 skyAp;                    // 2026-10-25: the aerial-perspective volume: x ran this frame, y d0 (m), z band (sin)
     glm::vec4 ms;                       // 2026-10-26: multiple scattering: x model (0 octaves, 1 delta-Eddington), y g, z gain, w the reach away from the light (m)
-    glm::vec4 amb;                      // 2026-10-26: the sky's light on the clouds: x model, y gain, z ground albedo
+    glm::vec4 amb;                      // 2026-10-26: the sky's light on the clouds: x model, y gain, z ground albedo, w the sky pass's multiple scattering
     glm::vec4 tone;                     // 2026-10-26: the sky pass's tonemap: x AgX on, y saturation, z contrast
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
@@ -4609,6 +4609,7 @@ private:
     float cv2SkyLightModel = 1.0f;        // 0 zenith, 1 hemispheres + multiple scattering
     float cv2SkyLightGain = 1.0f;         // x the hemispheres' light (1 = physical)
     float cv2SkyGroundAlbedo = 0.25f;     // the ground's albedo in the sky's multiple scattering and under the clouds
+    float cv2SkyMs = 1.0f;                // the SKY PASS's multiple scattering (sat_sky.frag, sky_ap.comp; 0 = single + the shadowed-air term)
     // The tonemap (2026-10-26, sat_sky.frag): AgX (Sobotka's; Wrensch's fit) in place of 1 - e^-x per channel.
     float cv2Tonemap = 1.0f;              // 0 = 1 - e^-x (with "Highlight roll-off"), 1 = AgX
     float cv2ToneSat = 1.15f;             // AgX look: saturation about the luminance
@@ -5356,7 +5357,8 @@ private:
     static constexpr VkDeviceSize kCv2StvLevelBytes = 128ull * 128 * 48 * 4;                          // one level: 128^2 rays x 48 knots
     static constexpr VkDeviceSize kCv2TshOffset = kCv2StvOffset + 4 * kCv2StvLevelBytes;               // cv2TerrSun (terrain Sun horizon)
     static constexpr VkDeviceSize kCv2TshBytes = 4ull * 128 * 128 * 4;                                 // 4 levels of 128^2 rays, one float
-    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2TshOffset + kCv2TshBytes;                    // + cv2EvalCount, cv2GodFrox, cv2Stv, cv2TerrSun
+    static constexpr VkDeviceSize kCv2SkyPsiOffset = kCv2TshOffset + kCv2TshBytes;                     // cv2SkyPsi (the sky's multiple scattering)
+    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2SkyPsiOffset + 32ull * 32 * 16;              // + cv2EvalCount, cv2GodFrox, cv2Stv, cv2TerrSun, cv2SkyPsi
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;
@@ -7330,7 +7332,7 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 352;   // 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 353;   // 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

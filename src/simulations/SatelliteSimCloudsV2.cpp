@@ -1955,7 +1955,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.ms = glm::vec4(cv2MsModel > 0.5f ? 1.0f : 0.0f, std::clamp(cv2MsDiffG, 0.0f, 0.95f),
                      std::clamp(cv2MsDiffGain, 0.0f, 4.0f), std::clamp(cv2MsBackM, 50.0f, 4000.0f));
     p.amb = glm::vec4(cv2SkyLightModel > 0.5f ? 1.0f : 0.0f, std::clamp(cv2SkyLightGain, 0.0f, 4.0f),
-                      std::clamp(cv2SkyGroundAlbedo, 0.0f, 1.0f), 0.0f);
+                      std::clamp(cv2SkyGroundAlbedo, 0.0f, 1.0f), cv2SkyMs > 0.5f ? 1.0f : 0.0f);
     p.tone = glm::vec4(cv2Tonemap > 0.5f ? 1.0f : 0.0f, std::clamp(cv2ToneSat, 0.0f, 2.0f),
                        std::clamp(cv2ToneContrast, 0.5f, 2.0f), 0.0f);
     skyApRanThisFrame = false;

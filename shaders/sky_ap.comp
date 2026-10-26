@@ -56,6 +56,7 @@ void apWrite(int ci, vec3 accR, float accM, vec3 shadow, float city, float odR, 
     accR *= inv.x; city *= inv.x; shadow *= inv.x; odR *= inv.x;
     accM *= inv.y; odM *= inv.y;
     skyAp2[2 * ci]     = uvec2(packHalf2x16(vec2(accR.x, accR.y) * k), packHalf2x16(vec2(accR.z, accM) * k));
+    shadow *= kSkyApShScale;
     skyAp2[2 * ci + 1] = uvec2(packHalf2x16(shadow.xy), packHalf2x16(vec2(shadow.z, city * k)));
     skyAp2[2 * kSkyApCells + ci] = uvec2(packHalf2x16(vec2(odR, odM) * k), packHalf2x16(vec2(airG, airS) * k));
 }
@@ -130,6 +131,10 @@ void main()
     float odR_cam = 0.0, odM_cam = 0.0;
     vec3  skyShadow = vec3(0.0);
     float shDSky = 0.0;                 // shD when skyShadow's sky colour was last taken
+    // The air's multiple scattering (cv2.amb.w, 2026-10-26): (sigma_R + sigma_M) x Psi at each step, to the eye; written in
+    // the shadowed air's place (its sky light was a stand-in for this light: air in a shadow lit by the rest of the sky).
+    bool  skyMsOn = cv2.amb.w > 0.5;
+    vec3  msS = vec3(0.0);
 
     float atmHPrev = max(0.0, length(obsPos + dir * tStart) - R_EARTH);
     vec3  atmEPrev = exp(-atmHPrev * kAtmInvH);
@@ -204,6 +209,16 @@ void main()
             float ovSh = max(0.0, min(tSe1, tShB) - max(tSe0, tShA));
             float litF = clamp(1.0 - ovSh / segLen, 0.0, 1.0);
             float densR0 = densR, densM0 = densM;
+            if (skyMsOn) {
+                vec3 aM = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
+                vec3 ps = cv2SkyPsiAt(sampleSunDotGeo, h);
+                if (cloud.moonMisc.y > 0.5) {
+                    vec3  spK = sp * 1e-3;
+                    float vD  = eclipseSunVis(spK, sunDir, 0.0);
+                    ps *= vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(spK, sunDir, h);
+                }
+                msS += aM * (BETA_R * densR0 + BETA_M * densM0) * ps;
+            }
             if (litF < 1.0) {
                 float shF = 1.0 - litF;
                 vec3 aC = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
@@ -222,9 +237,9 @@ void main()
             densR *= litF;
             densM *= litF;
             vec2 tSun  = raySphere(spL, sunDir, R_ATMOS);
-            vec2 sunOD = (tSun.y > 0.0) ? optDepth(spL, sunDir, tSun.y) : vec2(0.0);
-            vec3 tau  = BETA_R       * (odR_cam - 0.5 * densR0 + sunOD.x)
-                      + BETA_M * 1.1 * (odM_cam - 0.5 * densM0 + sunOD.y);
+            vec2 sunOD = (tSun.y > 0.0 && !skyMsOn) ? optDepth(spL, sunDir, tSun.y) : vec2(0.0);
+            vec3 tau  = BETA_R       * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)
+                      + (skyMsOn ? sunPathTauExact(spL, sunDir, BETA_R, BETA_M) : BETA_R * sunOD.x + BETA_M * 1.1 * sunOD.y);
             vec3 attn = exp(-tau);
             float atmTermW8 = mix(1.0, smoothstep(-atmTermW, atmTermW, sampleSunDotGeo), atmTermSpace);
             if (sunShK < 1.0 && cloud.sunCloudT < 1.0) {
@@ -275,7 +290,7 @@ void main()
 
         // The shadowed air's sky light up to here (sat_sky.frag after its loop: the zenith sky over the shadowed
         // stretch's mean point, half of it, isotropic), re-taken only when the shadow grew.
-        if (shD > 0.0 && atmTermSpace < 1.0 && shD > shDSky * 1.002) {
+        if (!skyMsOn && shD > 0.0 && atmTermSpace < 1.0 && shD > shDSky * 1.002) {
             vec3  pm  = obsPos + dir * (shT / shD);
             float rm  = max(length(pm), R_EARTH);
             pm *= rm / length(pm);
@@ -286,12 +301,13 @@ void main()
             shDSky = shD;
         }
         vec2 nrm = skyApNorm(obsPos, dir, tSl);
-        apWrite(skyApCell(g.x, g.y, z), accumR, accumM, skyShadow * (BETA_R * shR + vec3(BETA_M * shM)), accumCity,
+        vec3 apAdd = skyMsOn ? msS : skyShadow * (BETA_R * shR + vec3(BETA_M * shM));
+        apWrite(skyApCell(g.x, g.y, z), accumR, accumM, apAdd, accumCity,
                 odR_cam, odM_cam, airG, airS, nrm);
         // Slice 0 (the ray's start, no air yet) takes slice 1's values per unit of air: a near surface multiplies them
         // by its own (small) column. The airglow columns start at 0 there.
         if (z == 1)
-            apWrite(skyApCell(g.x, g.y, 0), accumR, accumM, skyShadow * (BETA_R * shR + vec3(BETA_M * shM)), accumCity,
+            apWrite(skyApCell(g.x, g.y, 0), accumR, accumM, apAdd, accumCity,
                     odR_cam, odM_cam, 0.0, 0.0, nrm);
     }
 }

@@ -194,7 +194,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  ms;
     // 2026-10-26: the sky's light on the clouds: x the model (0 = the zenith x "Sky ambient" + the twilight terms, 1 = the
     // hemispheres' mean radiance with multiple scattering, cloud_v2_sunlut.comp layers 2-3), y its gain (1 = physical),
-    // z the ground albedo in the multiple scattering and under the lower hemisphere, w spare
+    // z the ground albedo in the multiple scattering and under the lower hemisphere, w 1 = the sky pass's own multiple
+    // scattering (sat_sky.frag, sky_ap.comp: (sigma_R + sigma_M) x Psi per step, in place of the shadowed air's sky light)
     vec4  amb;
     // 2026-10-26: the sky pass's tonemap: x 1 = AgX (0 = 1 - e^-x with "Highlight roll-off"), y its saturation, z its
     // contrast (the look's power about mid grey), w spare

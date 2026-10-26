@@ -55,6 +55,7 @@ const int   kCv2StvK = 48;
 // eye) where its line, coming from the Sun, first enters the terrain (DEM); -1e30 = never. A point on the line further
 // from the Sun than s_e is in the terrain's shadow. Rebaked whole every frame. [(level * N + j) * N + i].
 const int   kCv2TshN = 128;
+const int   kCv2SkyPsiN = 32;
 layout(std430, set = 0, binding = CV2_FLASH_BINDING)
 #if !defined(CV2_FLASH_WRITE) && !defined(CV2_EVAL_COUNT)
 readonly
@@ -91,7 +92,24 @@ buffer CV2FlashBuf {
     float    cv2GodFrox[kCv2FroxX * kCv2FroxY * kCv2FroxZ];
     float    cv2Stv[kCv2StvL * kCv2StvN * kCv2StvN * kCv2StvK];
     float    cv2TerrSun[4 * kCv2TshN * kCv2TshN];
+    // The atmosphere's multiple-scattering function Psi (2026-10-26; cloud_v2_sunlut.comp pass 1 writes it with the
+    // table's layer 4): [y * N + x], x the Sun's zenith cosine -1..1, y sqrt(height / the atmosphere's top). Here for
+    // the sky pass, which has no sampled image left (cv2SkyPsiAt).
+    vec4     cv2SkyPsi[kCv2SkyPsiN * kCv2SkyPsiN];
 };
+// Psi at a point (bilinear): the radiance of the light the air scattered twice or more reaching it, as if isotropic,
+// in the sky's units; the in-scatter it gives is (sigma_R + sigma_M) x Psi (the phase's mean, 1).
+vec3 cv2SkyPsiAt(float mu, float h)
+{
+    float x = clamp((mu * 0.5 + 0.5) * float(kCv2SkyPsiN) - 0.5, 0.0, float(kCv2SkyPsiN - 1));
+    float y = clamp(sqrt(clamp(h / (R_ATMOS - R_EARTH), 0.0, 1.0)) * float(kCv2SkyPsiN) - 0.5, 0.0, float(kCv2SkyPsiN - 1));
+    ivec2 i0 = ivec2(floor(vec2(x, y)));
+    ivec2 i1 = min(i0 + 1, ivec2(kCv2SkyPsiN - 1));
+    vec2  f  = vec2(x, y) - vec2(i0);
+    vec3 a = mix(cv2SkyPsi[i0.y * kCv2SkyPsiN + i0.x].rgb, cv2SkyPsi[i0.y * kCv2SkyPsiN + i1.x].rgb, f.x);
+    vec3 b = mix(cv2SkyPsi[i1.y * kCv2SkyPsiN + i0.x].rgb, cv2SkyPsi[i1.y * kCv2SkyPsiN + i1.x].rgb, f.x);
+    return mix(a, b, f.y);
+}
 #ifdef CV2_EVAL_COUNT
 #define CV2_CNT(i) atomicAdd(cv2EvalCount[i], 1u)
 #else

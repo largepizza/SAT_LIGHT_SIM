@@ -99,6 +99,23 @@ vec2 optDepth(vec3 p, vec3 d, float segTotal) {
     return vec2(odR, odM) * sLen;  // summed densities x step length -> optical depth units
 }
 
+// The Sun's path from p along d as an optical depth, EXACTLY (2026-10-26, with the sky's multiple scattering): the
+// Rayleigh and Mie columns by the Chapman function (atmosphere.glsl atmColumnInf: the tangent point of a grazing path
+// counted, which optDepth's few midpoints step over) plus ozone (atmosphere.glsl atmOzoneTau: the Chappuis band, a
+// layer from 15 to 35 km). Ozone takes the orange and
+// yellow out of the long twilight paths: it is why the twilight zenith is deep blue (without it, olive or grey). The
+// same model as the clouds' Sun (cloud_v2_sunlut.comp sunTransmit). The caller tests the Earth's shadow.
+#ifdef SKY_LITE
+vec3 sunPathTauExact(vec3 p, vec3 d, vec3 BR, float BM) { return vec3(0.0); }   // (never taken there)
+#else
+vec3 sunPathTauExact(vec3 p, vec3 d, vec3 BR, float BM)
+{
+    float r = length(p), cz = dot(p, d) / r;
+    float odR = atmColumnInf(r, cz, H_R) * H_R, odM = atmColumnInf(r, cz, H_M) * H_M;
+    return BR * odR + BM * 1.1 * odM + atmOzoneTau(p, d);
+}
+#endif
+
 // The Earth's shadow along a ray, EXACTLY (2026-10-13): the shadow of a sphere lit from infinity is the cylinder
 // |p - (p.s) s| < R_EARTH on the anti-Sun side (p.s < 0), so the ray ro + t rd is in it over one interval
 // [x, y] (x > y: never). The same test as raySphere(p, s, R_EARTH) having two positive roots, for points above the

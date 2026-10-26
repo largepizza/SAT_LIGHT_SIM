@@ -1732,7 +1732,26 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   twilight terms. Settings `clouds_v2.sky_light_model` 1 (0 = the zenith), `sky_light_gain` 1 (physical),
   `sky_ground_albedo` 0.25 (slots 346-348, UBO `cv2.amb`). At physical gain the daytime look matches the user's
   zenith x 2 within a few %; twilight clouds a little darker (the old boost over-lit them); anvil undersides lighter
-  (the lower sky). 128 registers, +2 texture reads per lit sample. The SKY PASS itself has no multiple scattering yet.
+  (the lower sky). 128 registers, +2 texture reads per lit sample.
+- **The sky pass's multiple scattering + ozone (2026-10-26, branch cloud-ms).** The sky (sat_sky.frag's atmosphere loop,
+  sky_ap.comp's volume, the sea's reflected-sky march) was single scattering: the air in the Earth's shadow was lit by a
+  hand-made "sky-lit shadowed air" term (review 7), and the Sun's path had no ozone, so the twilight sky read olive /
+  brown-grey. Now each step adds the Psi_ms of the clouds' bake (Hillaire 2020: the sunlit air's multiply scattered light
+  per unit of scattering, by height and Sun cosine) x (beta_R rho_R + beta_M rho_M) x the camera transmittance x the
+  eclipse factor, and the review-7 term is skipped. cloud_v2_sunlut.comp's pass 1 also writes Psi into the flash buffer
+  (`cv2SkyPsi`, 32 x 32 vec4 after the terrain sun horizon, `kCv2SkyPsiOffset`; cloud_lightning.glsl `cv2SkyPsiAt`, a
+  manual bilinear: the sky set's sampled images are at the 16 floor). The Sun's path to each sample is exact
+  (`sunPathTauExact`, sky_atmos.glsl: the Chapman R / M columns + ozone) instead of optDepth's midpoints. **Ozone**
+  (atmosphere.glsl `atmOzoneTau`, every copy: sunlut, far layer, lightning, sky) is a uniform layer from 15 to 35 km
+  crossed for the ray's exact chord: it was a thin shell at 25 km x the clamped secant, infinite at the tangent, so for
+  points above 25 km the ozone jumped 0 -> ~1.6 optical depths where their Sun ray grazed it (a hard-edged ghost in the
+  twilight sky once the sky used it). The volume's additive term (shadowed air / MS) is stored x `kSkyApShScale` 1e4
+  (sky_ap.glsl): ~1e-7..1e-5 per unit air is below a half float's normal range and drew contours. Setting
+  `clouds_v2.sky_multiple_scattering` 1 ("Sky model (0 single / 1 multi-scatter + ozone)", slot 352, UBO `cv2.amb.w`).
+  SKY_LITE / Potato / SKY_ENV keep the old model (`sunPathTauExact` is a stub in SKY_LITE: 222 of 225 KB). Look: twilight
+  blue-violet zenith, day sky slightly deeper blue, the sea's reflection follows. Cost (RTX 3070 Ti, 1920x1009): sky pass
+  -0.3..+0.2 ms (the exact column is about as cheap as the sampled path). Not yet: the terrain's sky ambient
+  (`skyAmbientTerrain`, `skyZenithSky`) and the fog/dust march still take the old zenith integrals.
 - **AgX tonemap (2026-10-26, branch cloud-ms; sat_sky.frag `skyAgX`).** The sky pass tonemapped 1 - e^-x per channel
   ("Highlight roll-off" blends a longer shoulder): each channel saturates alone, so bright orange skews yellow and sunlit
   cloud flattens to paper white (where the physical multiple scattering puts it). AgX (Sobotka; Wrensch's polynomial

@@ -3978,6 +3978,14 @@ void main() {
     float accumMF = 0.0, shMF = 0.0;
     vec3  shR = vec3(0.0);          // review 7: the in-shadow air, attenuated to the eye (Rayleigh, Mie,
     float shM = 0.0, shT = 0.0, shD = 0.0; //   and its density-weighted distance)
+    // The air's multiple scattering (2026-10-26, cv2.amb.w; cloud_lightning.glsl cv2SkyPsiAt): (sigma_R + sigma_M) x Psi
+    // per step, to the eye (msS) and for the air in front of the clouds (msSF). It replaces the shadowed air's sky light
+    // (review 7, below), which stood in for it: air in a shadow, lit by the rest of the sky, is multiple scattering.
+    vec3  msS = vec3(0.0), msSF = vec3(0.0);
+    bool  skyMsOn = false;
+#ifdef SKY_SUN_SHADOW
+    skyMsOn = cv2.amb.w > 0.5;
+#endif
     float odR_cam = 0.0;
     float odM_cam = 0.0;
 
@@ -4225,6 +4233,19 @@ void main() {
             fMK = min(avF.y / max(stepAvg.y, 1e-30), 50.0);
             litFF = clamp(1.0 - max(0.0, min(tS0 + lenF, tShB) - max(tS0, tShA)) / lenF, 0.0, 1.0);
         }
+#ifdef SKY_SUN_SHADOW
+        if (skyMsOn) {
+            vec3 aM = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
+            vec3 ps = cv2SkyPsiAt(dot(normalize(sp), sunDir), h);
+            if (cloud.moonMisc.y > 0.5) {
+                vec3  spK = sp * 1e-3;
+                float vD  = eclipseSunVis(spK, sunDir, 0.0);
+                ps *= vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(spK, sunDir, h);
+            }
+            msS  += aM * (BETA_R * densR0 + BETA_M * densM0) * ps;
+            msSF += aM * (BETA_R * (densR0 * fRK) + BETA_M * (densM0 * fMK)) * (fwC * ps);
+        }
+#endif
         if (litF < 1.0) {
             // Review 7: shadowed air, lit by the twilight sky below (see shadowSky after the loop).
             float shF = 1.0 - litF;
@@ -4249,7 +4270,7 @@ void main() {
 
         // Compute sun-side optical depth from this sample to the atmosphere boundary.
         vec2 tSun  = raySphere(spL, sunDir, R_ATMOS);
-        vec2 sunOD = (tSun.y > 0.0) ? optDepth(spL, sunDir, tSun.y) : vec2(0.0);
+        vec2 sunOD = (tSun.y > 0.0 && !skyMsOn) ? optDepth(spL, sunDir, tSun.y) : vec2(0.0);
 
         // Combined transmittance τ = BETA × (cam_depth + sun_depth):
         //   cam_depth: how much atmosphere light must traverse from here to the camera.
@@ -4258,8 +4279,9 @@ void main() {
         // (To the step's MIDDLE: odR_cam / odM_cam already hold the whole step. Its light attenuated by all of it, the
         // first ~15-km step looking up lost ~13% of its blue to its own Rayleigh column, a share that changed with the
         // step count: the residual of the rings round the zenith, 2026-10-24.)
-        vec3 tau  = BETA_R       * (odR_cam - 0.5 * densR0 + sunOD.x)
-                  + BETA_M * 1.1 * (odM_cam - 0.5 * densM0 + sunOD.y);
+        // (With the sky's multiple scattering, the Sun's path is exact and has its ozone: sunPathTauExact.)
+        vec3 tau  = BETA_R       * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)
+                  + (skyMsOn ? sunPathTauExact(spL, sunDir, BETA_R, BETA_M) : BETA_R * sunOD.x + BETA_M * 1.1 * sunOD.y);
         vec3 attn = exp(-tau);  // total transmittance: sun → this sample → camera
 
         // Orbital terminator gate. Deliberately NOT physical: the scattering integral itself was
@@ -4416,6 +4438,7 @@ void main() {
         float tC = min(tCloudFrontM, tEnd);
         accumCityFront = mix(accumCityFront, skyApReadA(uvAp, skyApSlice(tC, tStart, apL)).city * skyApNorm(obsPos, dir, tC).x, w);
         shR *= 1.0 - w; shM *= 1.0 - w; shRF *= 1.0 - w; shMF *= 1.0 - w;
+        msS *= 1.0 - w; msSF *= 1.0 - w;
     }
 #endif
     vec3 color = SUN_INTENSITY * (pR * BETA_R * accumR + vec3(pM * BETA_M * accumM)) + apShadow;
@@ -4426,8 +4449,9 @@ void main() {
     // dark), from the zenith sky over the shadowed stretch's mean point, faded like the clouds' sky ambient
     // over the first ~5 deg of the Sun's depression there. cloud_v2_march.comp adds the same to the air in
     // front of a cloud. Ground and aircraft only: from orbit the terminator gate owns the twilight air.
-    vec3 skyShadowF = apShadowF;
-    if (shD > 0.0 && atmTermSpace < 1.0) {
+    vec3 skyShadowF = apShadowF + msSF;
+    color += msS;
+    if (!skyMsOn && shD > 0.0 && atmTermSpace < 1.0) {
         vec3  pm  = obsPos + dir * (shT / shD);
         float rm  = max(length(pm), R_EARTH);
         pm *= rm / length(pm);
@@ -5882,6 +5906,7 @@ void main() {
                     vec3  rAccR  = vec3(0.0);
                     float rAccM  = 0.0;
                     float rodR   = 0.0, rodM = 0.0;
+                    vec3  rMs    = vec3(0.0);   // the reflected sky's multiple scattering (as the sky loop's msS)
                     // 2026-09-30: u^2 spacing, dense by the water. Uniform steps over a grazing path (~1000 km to
                     // the top of the air) let each of the 6 samples stand for ~170 km of sea-level air: the extinction
                     // was far too high and the reflected horizon came out tan (streaks on every steep wave face).
@@ -5896,6 +5921,17 @@ void main() {
                         float rdR  = exp(-rh / H_R) * rSegI;
                         float rdM  = exp(-rh / H_M) * rSegI;
                         rodR += rdR; rodM += rdM;
+#ifdef SKY_SUN_SHADOW
+                        if (skyMsOn) {
+                            vec3 ps = cv2SkyPsiAt(dot(normalize(rp), sunDir), rh);
+                            if (cloud.moonMisc.y > 0.5) {
+                                float vD = eclipseSunVis(rp * 1e-3, sunDir, 0.0);
+                                ps *= vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(rp * 1e-3, sunDir, rh);
+                            }
+                            rMs += exp(-(BETA_R * (rodR - 0.5 * rdR) + BETA_M * 1.1 * (rodM - 0.5 * rdM)))
+                                 * (BETA_R * rdR + BETA_M * rdM) * ps;
+                        }
+#endif
                         // The step's sunlit share (earthShadowLit; it was the sample's all-or-nothing test, which drew
                         // the sky loop's band above the sunset horizon into the sea's reflection as well).
                         vec2 lit = earthShadowLit(shR2, rStart + rLen * u0 * u0, rStart + rLen * u1 * u1);
@@ -5907,8 +5943,9 @@ void main() {
                             rdM = exp(-rh / H_M) * rSegI * lit.x;
                         }
                         vec2 tSun = raySphere(rp, sunDir, R_ATMOS);
-                        vec2 sOD  = (tSun.y > 0.0) ? optDepth(rp, sunDir, tSun.y) : vec2(0.0);
-                        vec3 rtau  = BETA_R * (rodR + sOD.x) + BETA_M * 1.1 * (rodM + sOD.y);
+                        vec2 sOD  = (tSun.y > 0.0 && !skyMsOn) ? optDepth(rp, sunDir, tSun.y) : vec2(0.0);
+                        vec3 rtau  = BETA_R * rodR + BETA_M * 1.1 * rodM
+                                   + (skyMsOn ? sunPathTauExact(rp, sunDir, BETA_R, BETA_M) : BETA_R * sOD.x + BETA_M * 1.1 * sOD.y);
                         vec3 rattn = exp(-rtau);
                         if (cloud.moonMisc.y > 0.5) {                // a solar eclipse, as in the sky loop
                             float vD = eclipseSunVis(rp * 1e-3, sunDir, 0.0);
@@ -5917,7 +5954,7 @@ void main() {
                         rAccR += rattn * rdR;
                         rAccM += dot(rattn, vec3(1.0 / 3.0)) * rdM;
                     }
-                    reflColor = SUN_INTENSITY * (rpR * BETA_R * rAccR + vec3(rpM * BETA_M * rAccM));
+                    reflColor = SUN_INTENSITY * (rpR * BETA_R * rAccR + vec3(rpM * BETA_M * rAccM)) + rMs;
                 }
 
                 // Screen-space occlusion lookup for the REFLECTED ray, shared by the aurora and

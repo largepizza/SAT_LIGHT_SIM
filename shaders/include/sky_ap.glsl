@@ -17,6 +17,9 @@
 const int   kSkyApX = 320, kSkyApY = 180, kSkyApZ = 48;   // == SatelliteSim.h kSkyApX/Y/Z (X, Y == the froxels')
 const int   kSkyApCells = kSkyApX * kSkyApY * kSkyApZ;
 const float kSkyApScale = 1e-4;
+// The sky-lit / multiply scattered light per unit of air column is ~1e-7 .. 1e-5 (radiance over tens of km of air):
+// below a half float's normal range (6e-5), quantised to visible contours. Stored x kSkyApShScale.
+const float kSkyApShScale = 1e4;
 
 #ifndef SKY_AP_SET
 #define SKY_AP_SET 0
@@ -115,7 +118,7 @@ SkyApSum skyApRead(vec2 uv, float s)
         uvec2 bb = skyApLoadB(ci);
         b += k * vec4(unpackHalf2x16(bb.x), unpackHalf2x16(bb.y));
     }
-    r.accR *= 1.0 / kSkyApScale; r.accM *= 1.0 / kSkyApScale; r.city *= 1.0 / kSkyApScale;
+    r.accR *= 1.0 / kSkyApScale; r.accM *= 1.0 / kSkyApScale; r.city *= 1.0 / kSkyApScale; r.shadow *= 1.0 / kSkyApShScale;
     r.odR = b.x / kSkyApScale; r.odM = b.y / kSkyApScale; r.airG = b.z / kSkyApScale; r.airS = b.w / kSkyApScale;
     return r;
 }
@@ -134,6 +137,6 @@ SkyApSum skyApReadA(vec2 uv, float s)
         float k  = (dx != 0 ? w.x : 1.0 - w.x) * (dy != 0 ? w.y : 1.0 - w.y) * (dz != 0 ? wz : 1.0 - wz);
         skyApAddA(r, skyApLoadA(skyApCell(i0.x + dx, i0.y + dy, z0 + dz)), k);
     }
-    r.accR *= 1.0 / kSkyApScale; r.accM *= 1.0 / kSkyApScale; r.city *= 1.0 / kSkyApScale;
+    r.accR *= 1.0 / kSkyApScale; r.accM *= 1.0 / kSkyApScale; r.city *= 1.0 / kSkyApScale; r.shadow *= 1.0 / kSkyApShScale;
     return r;
 }

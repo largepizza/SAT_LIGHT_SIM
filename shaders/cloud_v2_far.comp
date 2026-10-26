@@ -56,11 +56,7 @@ vec3 sunTransmit(vec3 p, vec3 d, vec3 BETA_R, float BETA_M) {
     float r = length(p), c = dot(p, d) / r;
     float odR = atmColumnInf(r, c, H_R) * H_R;
     float odM = atmColumnInf(r, c, H_M) * H_M;
-    const float rO = R_EARTH + 25000.0;
-    float sin2 = (r / rO) * (r / rO) * (1.0 - c * c);
-    float sec  = inversesqrt(max(1.0 - sin2, 1e-3));
-    float nX   = (r <= rO) ? 1.0 : ((c < 0.0 && sin2 < 1.0) ? 2.0 : 0.0);
-    vec3  odO  = vec3(0.019, 0.027, 0.0016) * min(sec, 30.0) * nX;
+    vec3  odO  = atmOzoneTau(p, d);   // (a layer from 15 to 35 km: atmosphere.glsl)
     return exp(-(BETA_R * odR + BETA_M * 1.1 * odM + odO));
 }
 vec3 sunColorAt(vec3 p, vec3 sunDir, vec3 BETA_R, float BETA_M) {

@@ -59,4 +59,22 @@ float atmExtinctionMag(vec3 p, vec3 d, float L, float k)
     return k * (ATM_F_RAY * atmColumn(p, d, L, ATM_H_RAY) + (1.0 - ATM_F_RAY) * atmColumn(p, d, L, ATM_H_AER));
 }
 
+// Ozone (the Chappuis band) along a ray from p along d (2026-10-26): a uniform layer from 15 to 35 km holding the
+// vertical optical depth 0.019 / 0.027 / 0.0016 (680 / 550 / 440 nm, ~300 DU), crossed for the ray's exact length in
+// it (the difference of two forward chords, cancellation-free as raySphere). It was a thin shell at 25 km x the secant
+// of the crossing, clamped at 30: infinite at the tangent, so for points above 25 km (the sky's samples) the ozone
+// jumped from 0 to ~1.6 optical depths where their Sun ray grazed the shell: a hard-edged ghost in the twilight sky.
+float atmForwardChord(vec3 p, vec3 d, float rS)
+{
+    float lp = length(p), b = dot(p, d);
+    float disc = b * b - (lp - rS) * (lp + rS);
+    if (disc <= 0.0) return 0.0;
+    float q = sqrt(disc);
+    return max(-b + q, 0.0) - max(-b - q, 0.0);
+}
+vec3 atmOzoneTau(vec3 p, vec3 d)
+{
+    float L = atmForwardChord(p, d, R_EARTH + 35000.0) - atmForwardChord(p, d, R_EARTH + 15000.0);
+    return vec3(0.019, 0.027, 0.0016) * (max(L, 0.0) / 20000.0);
+}
 #endif
