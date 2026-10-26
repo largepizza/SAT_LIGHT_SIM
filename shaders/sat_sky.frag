@@ -296,6 +296,7 @@ layout(location = 1) out float outDepthCopy;
 #define CV2_PARAMS_BINDING 31
 #define CV2_PARAMS_ONLY
 #include "clouds_v2.glsl"
+#include "cv2_sunlut.glsl"   // the Sun table's column mapping (cv2GroundSkyAt)
 #define CV2_FLASH_BINDING 30
 #define CV2_SUN_CASC_FN
 #include "cloud_lightning.glsl"
@@ -5299,8 +5300,10 @@ void main() {
         {
             vec2 tSAT = raySphere(hitPt, sunDirLocal, R_ATMOS);
             if (tSAT.y > 0.0) {
-                vec2 sODT    = optDepth(hitPt, sunDirLocal, tSAT.y);
-                vec3 attnT   = exp(-(BETA_R * sODT.x + BETA_M * 1.1 * sODT.y));
+                // (With the sky's multiple scattering: the exact path + ozone, the sky's own Sun. 2026-10-26.)
+                vec2 sODT    = skyMsOn ? vec2(0.0) : optDepth(hitPt, sunDirLocal, tSAT.y);
+                vec3 attnT   = exp(-(skyMsOn ? sunPathTauExact(hitPt, sunDirLocal, BETA_R, BETA_M)
+                                            : BETA_R * sODT.x + BETA_M * 1.1 * sODT.y));
                 float maxAttn = max(max(attnT.r, attnT.g), max(attnT.b, 0.001));
                 sunSpecTint  = attnT / maxAttn;  // hue-normalized: max channel → 1.0
                 sunTransMax  = maxAttn;
@@ -5319,6 +5322,23 @@ void main() {
         // 4-step zenith integration gives the scattered sky color illuminating terrain
         // faces: blue during day, warm-orange during twilight. Mirrors the cloud skyAmbientBase.
         vec3 skyAmbientTerrain = vec3(0.0);
+        // Its gate: the zenith integral below had no twilight of its own worth the name (one column, single scattering), so
+        // it faded out with civil twilight. The sky's table has it (skyAmbGate 1 there).
+        float skyAmbGate = twilightFrac;
+#ifdef SKY_SUN_SHADOW
+        // With the sky's multiple scattering (2026-10-26, cv2.amb.w): the sky's light on a horizontal face, the cosine-weighted
+        // mean radiance of the whole upper hemisphere, single + multiple scattering + ozone (cloud_v2_sunlut.comp pass 2,
+        // cv2GroundSkyAt): the sky the eye sees. The zenith alone was ~2.5x too blue by day (B/R 4.9 vs 3.4 at a 60-deg Sun:
+        // the horizon is whiter), olive-grey at twilight where the sky is blue-violet, and cut by a gate at -6 deg.
+        // Its level: every use takes x 0.4 x "Terrain sky light" (8 by default) = 3.2, so x 1 / 3.2 here puts the default on the
+        // physical irradiance (albedo x that mean, the sky's units) — which the old zenith x 3.2 matched within ~4% at a
+        // 60-deg Sun (harness_runs/ms/gs1c): the day's look is kept, the colour and the twilight are the sky's.
+        if (skyMsOn) {
+            skyAmbientTerrain = cv2GroundSkyAt(geoSunDot, max(length(hitPt) - R_EARTH, 0.0)) * (1.0 / 3.2);
+            if (cloud.moonMisc.y > 0.5) skyAmbientTerrain *= eclipseSkyLight(hitPt * 1e-3, sunDir, length(hitPt) - R_EARTH);
+            skyAmbGate = 1.0;
+        } else
+#endif
         {
             vec3  zenT = normalize(hitPt);  // terrain zenith (radially outward)
             vec2  tSAT = raySphere(hitPt, zenT, R_ATMOS);
@@ -5457,7 +5477,7 @@ void main() {
         // (cloud.terrainErosion.w) scales it toward the hemisphere's real irradiance — at 0.4 the
         // ground in cloud shadow was near-black by day.
         float skyView   = 0.5 + 0.5 * dot(shadingN, hitUp);
-        vec3 tSkyAmb    = dayColor * skyAmbientTerrain * (0.4 * cloud.terrainErosion.w * skyView) * twilightFrac;
+        vec3 tSkyAmb    = dayColor * skyAmbientTerrain * (0.4 * cloud.terrainErosion.w * skyView) * skyAmbGate;
         // City lights only (terrain v2 P1). The night map is a Black Marble composite with a BLUE
         // base under every texel (land sRGB ~(12,13,25), ocean ~(5,7,22)); x 0.12 that base out-shone
         // full-moon terrain, so the whole night ground was a flat blue 5 km texture. Subtracting the
@@ -5553,7 +5573,7 @@ void main() {
             float cV   = max(dot(-dir, hitUp), 0.0);
             float fres = 0.02 + 0.98 * pow(1.0 - cV, 5.0);
             float gl   = pow(max(dot(reflect(dir, hitUp), sunDir), 0.0), 300.0) * 38.5;
-            surfColor += farmWet * (fres * skyAmbientTerrain * 0.4 * cloud.terrainErosion.w * twilightFrac
+            surfColor += farmWet * (fres * skyAmbientTerrain * 0.4 * cloud.terrainErosion.w * skyAmbGate
                                   + fres * gl * sunSpecTint * cloudShadowT * dayFrac * sunDiscVis * terrainShadow);
         }
 
@@ -5562,7 +5582,7 @@ void main() {
         if (solarCov > 0.0 && !solarBack) {
             float cV   = max(dot(-dir, solarN), 0.0);
             float fres = 0.03 + 0.97 * pow(1.0 - cV, 5.0);
-            surfColor += solarCov * (fres * skyAmbientTerrain * 0.4 * cloud.terrainErosion.w * twilightFrac
+            surfColor += solarCov * (fres * skyAmbientTerrain * 0.4 * cloud.terrainErosion.w * skyAmbGate
                                    + sunSpecTint * sunTransMax * solarGlint(solarN, -dir, sunDir, solarS2)
                                      * cloudShadowT * dayFrac * sunDiscVis * terrainShadow);
         }
@@ -5603,7 +5623,7 @@ void main() {
             // puts the interesting range inside 0..1 with ~1e-4 resolution per 8-bit step.
             else if (dv == 10) dbg = surfColor * 100.0;        // total terrain light, x100
             else if (dv == 11) dbg = tDirectSun * 100.0;       // direct sun (Lambert x dayFrac x cloud shadow)
-            else if (dv == 12) dbg = tSkyAmb * 100.0;          // sky ambient x twilightFrac
+            else if (dv == 12) dbg = tSkyAmb * 100.0;          // sky ambient x its gate
             else if (dv == 13) dbg = tNight * 100.0;           // city-lights emissive add
             else if (dv == 14) dbg = moonContribTerrain * 100.0;
             else if (dv == 15) dbg = auroraContribTerrain * 100.0;
@@ -5618,6 +5638,10 @@ void main() {
             else if (dv == 26) dbg = cityLights * 20.0;          // the night map with its base removed
             else if (dv == 27) dbg = vec3(solarCov, solarBlockK, solarN.x * 0.5 + 0.5);   // solar parks
 #if !defined(SKY_ENV) && !defined(SKY_LITE)
+#ifdef SKY_SUN_SHADOW
+            else if (dv == 29) dbg = cv2GroundSkyAt(geoSunDot, max(length(hitPt) - R_EARTH, 0.0)) * 2.0;
+            else if (dv == 30) dbg = skyAmbientTerrain * 2.0;   // (skyambraw at x2: daylight fits; skyambhemi x2 likewise)
+#endif
             else if (dv == 28) dbg = vec3(padG.alb.a, padG.excl, clamp(dot(padG.glow, vec3(0.33)) + padG.pool, 0.0, 1.0));   // launch pads
 #endif
             else if (dv == 23) dbg = vec3(geoSunDot, sunDot, tHit / 4000.0);
@@ -6218,7 +6242,7 @@ void main() {
             // the water glowed at noon strength and colour up to the terminator, and with the twilight exposure the
             // sea at sunset read cyan (user snap 1).
             vec3 seaE = (sunSpecTint * sunTransMax * directSun * max(dot(surfUp, sunDir), 0.0)
-                       + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * twilightFrac) * (1.0 / 1.1);
+                       + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * skyAmbGate) * (1.0 / 1.1);
 #ifndef SKY_LITE
             vec3 refracted = mix(kSeaBase, vec3(0.055, 0.045, 0.03), gSeaFlood) * seaE + diff * kSeaWaterColor * 0.12 * seaE;
 #else
@@ -6318,7 +6342,7 @@ void main() {
                 float footS = pixAngle * dist / max(abs(dot(dir, surfUp)), 0.03);
                 // Diffuse surfaces (surf, sand) take the sky's irradiance, not the mirrored sky (review 22).
                 vec3  sunLitS = sunSpecTint * directSun * max(dot(surfUp, sunDir), 0.0)
-                              + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * twilightFrac;
+                              + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * skyAmbGate;
                 // Breakers: lines parallel to the shore rolling in, bunched by a slow noise along the coast.
                 float along = seaNoise(posM * 0.02) * 6.0;
                 float wave  = 0.5 + 0.5 * sin(dShore * 0.3 - seaTime * 0.9 + along);
@@ -6353,7 +6377,7 @@ void main() {
                 // direction, clouds and all — so whitewater showed a sharp reflected image ("mercury").
                 vec3  moonDirF = normalize(moonDirENU.xyz);
                 vec3  foamL = 0.8 * (sunSpecTint * directSun * max(dot(waveN, sunDir), 0.0)
-                                     + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * twilightFrac
+                                     + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * skyAmbGate
                                      + vec3(0.92, 0.95, 1.0) * max(dot(waveN, moonDirF), 0.0)
                                        * smoothstep(-0.03, 0.02, dot(surfUp, moonDirF)) * moonDirENU.w * cloud.moonGain);
                 surfColor = mix(surfColor, foamL, foam);

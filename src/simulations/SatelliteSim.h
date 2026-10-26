@@ -5358,7 +5358,8 @@ private:
     static constexpr VkDeviceSize kCv2TshOffset = kCv2StvOffset + 4 * kCv2StvLevelBytes;               // cv2TerrSun (terrain Sun horizon)
     static constexpr VkDeviceSize kCv2TshBytes = 4ull * 128 * 128 * 4;                                 // 4 levels of 128^2 rays, one float
     static constexpr VkDeviceSize kCv2SkyPsiOffset = kCv2TshOffset + kCv2TshBytes;                     // cv2SkyPsi (the sky's multiple scattering)
-    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2SkyPsiOffset + 32ull * 32 * 16;              // + cv2EvalCount, cv2GodFrox, cv2Stv, cv2TerrSun, cv2SkyPsi
+    static constexpr VkDeviceSize kCv2GroundSkyOffset = kCv2SkyPsiOffset + 32ull * 32 * 16;             // cv2GroundSky (the ground's sky light)
+    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2GroundSkyOffset + 64ull * 16 * 16;           // + cv2EvalCount, cv2GodFrox, cv2Stv, cv2TerrSun, cv2SkyPsi, cv2GroundSky
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;

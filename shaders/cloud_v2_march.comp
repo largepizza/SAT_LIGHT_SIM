@@ -1238,6 +1238,14 @@ void main()
             uvF.z = 1.0;
             vec3  skyF = textureLod(cv2SunLutTex, uvF, 0.0).rgb * cv2.look.w
                        * smoothstep(hzF - 0.09, hzF + 0.04, sUpF);
+            // The sky's light as the clouds take it (2026-10-26, cv2.amb.x): the mean of both hemispheres (the phase's mean, 1:
+            // the haze scatters from the whole sphere), single + multiple scattering, at the sky's own gain. It was the zenith x
+            // "Sky ambient" (2 at the user's), too blue by day and faded out past the horizon by a gate of its own.
+            if (cv2.amb.x > 0.5) {
+                uvF.z = 2.0; vec3 hUF = textureLod(cv2SunLutTex, uvF, 0.0).rgb;
+                uvF.z = 3.0; vec3 hDF = textureLod(cv2SunLutTex, uvF, 0.0).rgb;
+                skyF = 0.5 * cv2.amb.y * (hUF + hDF);
+            }
             // A solar eclipse: the fog and dust see the Sun and sky the eye does (2026-10-03: the desert dust
             // stayed sunlit at totality, a bright tan sky over central Australia).
             if (cloud.moonMisc.y > 0.5) {
@@ -1321,8 +1329,14 @@ void main()
                 bool  stvOn = cv2.stvH.z > 0.5;
                 float sunC  = (stvOn ? cv2StvT(dir * tS, pp.h) : 1.0) * cv2TerrSunT(dir * tS);   // + the terrain's shadow
                 float covK  = stvOn ? 1.0 : 1.0 - 0.8 * covA;
+                // The fog's multiple scattering as the clouds' (cv2.ms.x: the delta-Eddington slab along the light, the fog
+                // below the sample as the far side; no finite-cloud leak terms: a fog bank is a slab). The octaves lit thin
+                // fog like a thick cloud.
+                float msFog = (cv2.ms.x > 0.5)
+                            ? cv2.ms.z * cv2DiffuseField(od, sf * dAgl / max(sUpF, 0.04), 1.0, cosSun) * exp(0.05 * (1.0 - cv2.ms.y * cv2.ms.y) * od)
+                            : phMS * msOctaves(od);
                 vec3  S    = sunF * covK * ((vec3(fd * phD + fs * phSS) + fi * phI) * exp(-od) * sunC
-                                            + (phMS * msOctaves(od) * fs + 0.9 * fd + 0.3 * fi) * mix(1.0, sunC, 0.7))
+                                            + (msFog * fs + 0.9 * fd + 0.3 * fi) * mix(1.0, sunC, 0.7))
                            + moonF * ((vec3(phMoonSS * (1.0 - fi)) + fi * phIM) * exp(-od) + phMoonMS * 0.5 * fs)
                            + skyF * mix(0.9, 0.5, covA);
                 if (nightF > 0.0) {

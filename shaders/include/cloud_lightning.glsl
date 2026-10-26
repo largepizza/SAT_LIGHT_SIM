@@ -56,6 +56,7 @@ const int   kCv2StvK = 48;
 // from the Sun than s_e is in the terrain's shadow. Rebaked whole every frame. [(level * N + j) * N + i].
 const int   kCv2TshN = 128;
 const int   kCv2SkyPsiN = 32;
+const int   kCv2GroundSkyW = 64, kCv2GroundSkyH = 16;   // cv2GroundSky: every 4th column of the Sun table, rows 0..15
 layout(std430, set = 0, binding = CV2_FLASH_BINDING)
 #if !defined(CV2_FLASH_WRITE) && !defined(CV2_EVAL_COUNT)
 readonly
@@ -96,6 +97,10 @@ buffer CV2FlashBuf {
     // table's layer 4): [y * N + x], x the Sun's zenith cosine -1..1, y sqrt(height / the atmosphere's top). Here for
     // the sky pass, which has no sampled image left (cv2SkyPsiAt).
     vec4     cv2SkyPsi[kCv2SkyPsiN * kCv2SkyPsiN];
+    // The sky's light on a horizontal face (2026-10-26, cloud_v2_sunlut.comp pass 2): the COSINE-weighted mean radiance
+    // of the upper hemisphere (single + multiple scattering, the sky's units), i.e. the irradiance / pi. [y * W + x]:
+    // x the Sun table's column 4x (its cube-root cosine), y its row (800 m levels, 0 .. 12 km).
+    vec4     cv2GroundSky[kCv2GroundSkyW * kCv2GroundSkyH];
 };
 // Psi at a point (bilinear): the radiance of the light the air scattered twice or more reaching it, as if isotropic,
 // in the sky's units; the in-scatter it gives is (sigma_R + sigma_M) x Psi (the phase's mean, 1).
@@ -110,6 +115,21 @@ vec3 cv2SkyPsiAt(float mu, float h)
     vec3 b = mix(cv2SkyPsi[i1.y * kCv2SkyPsiN + i0.x].rgb, cv2SkyPsi[i1.y * kCv2SkyPsiN + i1.x].rgb, f.x);
     return mix(a, b, f.y);
 }
+// The sky's light on a horizontal face at height h with the Sun's zenith cosine mu (bilinear): the cosine-weighted mean
+// radiance of the sky above it (irradiance / pi), in the sky's units. Needs cv2_sunlut.glsl.
+#ifdef CV2_SUNLUT_GLSL
+vec3 cv2GroundSkyAt(float mu, float h)
+{
+    float x = clamp((cv2SunLutUV(mu, 0.0).x * kCv2SunLutW - 0.5) * 0.25, 0.0, float(kCv2GroundSkyW - 1));
+    float y = clamp(h / kCv2SunLutStepM, 0.0, float(kCv2GroundSkyH - 1));
+    ivec2 i0 = ivec2(floor(vec2(x, y)));
+    ivec2 i1 = min(i0 + 1, ivec2(kCv2GroundSkyW - 1, kCv2GroundSkyH - 1));
+    vec2  f  = vec2(x, y) - vec2(i0);
+    vec3 a = mix(cv2GroundSky[i0.y * kCv2GroundSkyW + i0.x].rgb, cv2GroundSky[i0.y * kCv2GroundSkyW + i1.x].rgb, f.x);
+    vec3 b = mix(cv2GroundSky[i1.y * kCv2GroundSkyW + i0.x].rgb, cv2GroundSky[i1.y * kCv2GroundSkyW + i1.x].rgb, f.x);
+    return mix(a, b, f.y);
+}
+#endif
 #ifdef CV2_EVAL_COUNT
 #define CV2_CNT(i) atomicAdd(cv2EvalCount[i], 1u)
 #else

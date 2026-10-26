@@ -1750,8 +1750,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   `clouds_v2.sky_multiple_scattering` 1 ("Sky model (0 single / 1 multi-scatter + ozone)", slot 352, UBO `cv2.amb.w`).
   SKY_LITE / Potato / SKY_ENV keep the old model (`sunPathTauExact` is a stub in SKY_LITE: 222 of 225 KB). Look: twilight
   blue-violet zenith, day sky slightly deeper blue, the sea's reflection follows. Cost (RTX 3070 Ti, 1920x1009): sky pass
-  -0.3..+0.2 ms (the exact column is about as cheap as the sampled path). Not yet: the terrain's sky ambient
-  (`skyAmbientTerrain`, `skyZenithSky`) and the fog/dust march still take the old zenith integrals.
+  -0.3..+0.2 ms (the exact column is about as cheap as the sampled path).
+  **The ground and the fog follow it (2026-10-26):** with the sky model on, `skyAmbientTerrain` is `cv2GroundSkyAt` (flash
+  buffer `cv2GroundSky`, 64 x 16 vec4 after `cv2SkyPsi`, `kCv2GroundSkyOffset`; sunlut pass 2's COSINE-weighted upper
+  hemisphere mean, every 4th column, rows 0-12 km) x 1/3.2, so the uses' x 0.4 x "Terrain sky light" (8) give the physical
+  irradiance; the civil-twilight gate is off there (`skyAmbGate`). The old zenith x 3.2 matched it within ~4% at a 60-deg
+  Sun (harness_runs/ms/gs1c: debug views 29 `skyambhemi`, 30 `skyambraw10`, both x2) but was ~1.5x too blue by day and
+  olive at twilight. The land's direct Sun takes `sunPathTauExact` (ozone). The fog/dust march's sky light is the
+  hemispheres' mean x `cv2.amb.y` (with `sky_light_model`), and the fog's multiple scattering the clouds' delta-Eddington
+  field (with `ms_model`; far side = the fog below the sample, no finite-cloud leak). Cost -0.1..-0.3 ms. Not yet: the
+  ground's sky light under an OVERCAST is still the clear sky's (blue, unreduced: only the direct Sun is shadowed); dust's
+  diffuse term (0.9) and ice fog's (0.3) are constants; SKY_LITE / SKY_ENV keep the zenith integral.
 - **AgX tonemap (2026-10-26, branch cloud-ms; sat_sky.frag `skyAgX`).** The sky pass tonemapped 1 - e^-x per channel
   ("Highlight roll-off" blends a longer shoulder): each channel saturates alone, so bright orange skews yellow and sunlit
   cloud flattens to paper white (where the physical multiple scattering puts it). AgX (Sobotka; Wrensch's polynomial

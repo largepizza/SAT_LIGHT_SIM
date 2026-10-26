@@ -5386,7 +5386,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                                        // solar parks (R panel coverage, G graded ground, B panel normal east)
                                        "solar",
                                        // launch pads (R the pad ground's cover, G the city exclusion, B lamps + floodlit share)
-                                       "pads"};
+                                       "pads",
+                                       // the sky's light on a horizontal face, cosine-weighted (x2), and skyambraw at x2: the table the ground reads
+                                       "skyambhemi", "skyambraw10"};
         const int viewCount = (int)(sizeof(kViews) / sizeof(kViews[0]));
         const std::string v = lower(pos(0) == "terrain" ? pos(1) : pos(0));
         int idx = -1;
