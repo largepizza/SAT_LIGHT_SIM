@@ -285,6 +285,10 @@ void SatelliteSim::cineStart(CineRun mode, bool oneShot)
     cinePrerollShot_ = -1;
     cineSub_ = 0;
     cineAccumSubs_ = mode == CineRun::Play ? 0 : std::clamp((int)std::lround(cineBlurSubs_), 1, 32);
+    if (mode != CineRun::ExportPreview)
+        cineVideoExport_ = false;
+    if (cineVideoExport_)
+        cineAccumSubs_ = 1; // (motion blur sums subframes on the CPU, in the PNG path only)
     cineAccumCount_ = 0;
     cineAccum_.clear();
     const double fps = std::clamp((double)cineExportFps_, 1.0, 240.0);
@@ -319,6 +323,21 @@ void SatelliteSim::cineStart(CineRun mode, bool oneShot)
                  << ".mp4 --fps " << fps << "\n";
             std::ofstream cj(dir / "cinematic.json");
             cj << cineToJson(cine_).dump(1);
+        }
+        if (cineVideoExport_)
+        {
+            // One .mp4 beside the frames' folder contents, every exported frame once (lossless: cineTick waits for a
+            // free readback buffer rather than drop one).
+            VideoRecordOptions o;
+            o.path = (dir / (cine_.name + ".mp4")).string();
+            o.fps = fps;
+            o.lossless = true;
+            std::string err;
+            if (!videoStart(o, harnessRunner_ != nullptr, err))
+            {
+                Log::line("cinematic: video export failed (" + err + "), writing PNG frames instead");
+                cineVideoExport_ = false;
+            }
         }
     }
     if (mode == CineRun::ExportHQ)
@@ -368,7 +387,14 @@ void SatelliteSim::cineStop(const char *why)
     cineAccum_.clear();
     cineFixedDt_ = 0.0f;
     timePaused = cineSavedPaused_;
-    if (exported)
+    if (cineVideoExport_)
+    {
+        videoStop(); // the file is finished in the background (videoAfterFence's toast names it)
+        cineVideoExport_ = false;
+        if (exported)
+            cineStatus_ = std::string(why) + ": " + std::to_string(cineFrame_) + " frames -> " + video_.options().path;
+    }
+    else if (exported)
         cineStatus_ = std::string(why) + ": " + std::to_string(cineFrame_) + " frames -> " + cineOutDir_;
     else
         cineStatus_ = why;
@@ -401,10 +427,18 @@ void SatelliteSim::cineTick(float dt)
         return;
     }
     // Export: one frame per path frame; the copy of the last one must be done before the next pose.
-    if (screenshotCopyPending)
-        finalizeScreenshotCopy(true); // (frames in flight: no extra frame at the held pose)
-    if (screenshotRequested || screenshotCopyPending)
-        return;
+    if (cineVideoExport_)
+    {
+        if (!video_.canCapture())
+            return; // the encoder is behind: hold the pose (lossless)
+    }
+    else
+    {
+        if (screenshotCopyPending)
+            finalizeScreenshotCopy(true); // (frames in flight: no extra frame at the held pose)
+        if (screenshotRequested || screenshotCopyPending)
+            return;
+    }
     if (cineRun_ == CineRun::ExportHQ && (!ctx_ || !ctx_->photoActive))
         return; // the photo target is not up yet (App switches it after the frame)
     if (cineFrame_ >= cineFrames_)
@@ -441,11 +475,16 @@ void SatelliteSim::cineTick(float dt)
         return;
     cinePrerollShot_ = cineLastShot_;
     cineSettle_ = 0;
-    char nm[32];
-    snprintf(nm, sizeof(nm), "frame_%05d.png", cineFrame_);
-    screenshotPath = (std::filesystem::path(cineOutDir_) / nm).string();
-    screenshotIncludeUI = false;
-    screenshotRequested = true;
+    if (cineVideoExport_)
+        video_.requestFrame(); // this frame into the .mp4
+    else
+    {
+        char nm[32];
+        snprintf(nm, sizeof(nm), "frame_%05d.png", cineFrame_);
+        screenshotPath = (std::filesystem::path(cineOutDir_) / nm).string();
+        screenshotIncludeUI = false;
+        screenshotRequested = true;
+    }
     if (++cineSub_ < subs)
         return;   // the next subframe of this frame
     cineSub_ = 0;

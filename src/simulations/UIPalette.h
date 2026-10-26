@@ -51,6 +51,7 @@ inline constexpr const char *kUiThemeKeys[] = {"classic", "navy", "night", "midn
     X(btnDanger, UIC(110, 42, 8, 235), UIC(110, 42, 8, 235), UIC(46, 0, 0, 235), UIC(110, 42, 8, 235)) /* destructive (Explode) */ \
     X(btnDangerHv, UIC(150, 60, 12, 240), UIC(150, 60, 12, 240), UIC(64, 0, 0, 240), UIC(150, 60, 12, 240))                      \
     X(btnDangerArmed, UIC(205, 80, 10, 250), UIC(205, 80, 10, 250), UIC(90, 0, 0, 250), UIC(205, 80, 10, 250)) /* click again */ \
+    X(recActive, UIC(170, 30, 30, 250), UIC(170, 30, 30, 250), UIC(90, 0, 0, 250), UIC(170, 30, 30, 250)) /* recording a video */ \
     X(closeBgIdle, UIC(50, 16, 16, 180), UIC(30, 8, 12, 180), UIC(22, 0, 0, 180), UIC(50, 16, 16, 180)) /* [X] */                   \
     X(closeBgHov, UIC(170, 30, 30, 220), UIC(170, 34, 40, 220), UIC(160, 12, 10, 220), UIC(170, 30, 30, 220))                         \
     X(pauseActive, UIC(140, 25, 25, 230), UIC(10, 36, 110, 230), UIC(45, 0, 0, 230), UIC(140, 25, 25, 230))                         \

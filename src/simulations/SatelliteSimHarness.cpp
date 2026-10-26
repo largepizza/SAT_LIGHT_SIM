@@ -204,14 +204,14 @@ json patchFor(const std::string &dotted, const json &value)
 }
 
 const char *kHelp =
-    "wait <frames> | wait seconds <s> | wait settle [frames]; "
+    "wait <frames> | wait seconds <s> | wait settle [frames] | wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
     "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
-    "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s]; photo <name> [scale=1-4] [frames=N]; "
+    "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
     "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
-    "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=]; overlay text|label|clear ...; "
+    "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
 } // namespace
@@ -364,6 +364,7 @@ void SatelliteSim::harnessApplyCam(const HarnessCamKey &k)
 // Everything needed to reproduce (and interpret) a frame. It is written beside every capture.
 json SatelliteSim::harnessStateJson()
 {
+    const double tS0 = harness::nowS();
     json j;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     j["time"] = {{"utc", isoFromJ2000(t)},
@@ -445,8 +446,12 @@ json SatelliteSim::harnessStateJson()
         ko.push_back("lite_sky");
     // The compact visible list's length (last frame's header): satellites + stars' share + city light
     // sprites (city_sprites.comp appends after sat_flare.comp).
+    const double tK0 = harness::nowS();
     j["kessler"] = kesslerStateJson();
+    const double tK1 = harness::nowS();
     j["launches"] = launchStateJson();
+    const double tK2 = harness::nowS();
+    j["state_ms"] = {{"kessler", (tK1 - tK0) * 1000.0}, {"launches", (tK2 - tK1) * 1000.0}};
     j["satellites"] = {{"visible_count", visibleCount}, {"active_count", activeSatCount},
                        // the mesh hand-off: the fade-in size (raised past the kMaxMeshInstances largest) and how many
                        // satellites were mesh-sized candidates last frame
@@ -674,7 +679,9 @@ json SatelliteSim::harnessStateJson()
             sv["ubo"] = {v4(pp->stvL0), v4(pp->stvL1), v4(pp->stvL2), v4(pp->stvL3), v4(pp->stvH), v4(pp->stvV)};
         // Its contents per level (2026-10-23): the share of stamped values and their mean transmittance, overall and in
         // the lower / upper half of the knots (one bulk copy out of the uncached mapped buffer).
-        if (cv2FlashRealMapped)
+        // Only on request (`state sun_volume=1`, 2026-10-25): the copy reads ~12 MB of device-local memory across the bus
+        // after a drain, ~0.5 s, and every `state` and `capture` sidecar paid it.
+        if (cv2FlashRealMapped && harnessStateStv_)
         {
             ctx_->drainFrames(); // (the volume lives in the GPU's own buffer: no frame may be writing it)
             std::vector<uint32_t> buf((size_t)(4 * kCv2StvLevelBytes / 4));
@@ -775,6 +782,7 @@ json SatelliteSim::harnessStateJson()
         }
         j["clouds_v2"]["rain"] = rn;
     }
+    const double tW0 = harness::nowS();
     {   // Weather events (SatelliteSimWeather.cpp): the storm objects' towers this frame.
         json w;
         w["storm_objects"] = stormObjects;
@@ -881,6 +889,7 @@ json SatelliteSim::harnessStateJson()
         w["nearest"] = stormNearestJson(8);
         j["weather"] = w;
     }
+    j["state_ms"]["weather"] = (harness::nowS() - tW0) * 1000.0;
     static const char *kBucketKeys[8] = {"scene_depth", "beam_cloud_block", "orbit_compute", "cloud_march",
                                          "flare_compute", "sky_background_draw", "satellite_star_draw", "ui_overlay"};
     json g;
@@ -922,6 +931,7 @@ json SatelliteSim::harnessStateJson()
     }
     j["build"] = {{"version", APP_VERSION}, {"commit", APP_GIT_COMMIT}, {"config", cfg}, {"gpu", gpu}};
     j["harness_frame"] = harnessRunner_ ? harnessRunner_->frame() : 0;
+    j["state_ms"]["total"] = (harness::nowS() - tS0) * 1000.0;
     return j;
 }
 
@@ -1048,9 +1058,16 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (mode == "settle")
         {
             const std::string arg = n == "settle" ? pos(0) : pos(1);
+            // `wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5]` (2026-10-25): stop once the image has stopped
+            // changing. A probe copies every settle frame at 1/4 size before the UI (SatelliteSimVideo.cpp) and
+            // compares it with the frames 8 and 32 before: mean |luminance difference| (0-255). Done when `hold` probes
+            // in a row are settled (see below) and at least `min` frames ran, else at `max`. `wait settle <N>` is the
+            // fixed form.
+            const bool autoMode = lower(arg) == "auto";
             if (a.frame == 0)
             {
-                const int frames = arg.empty() ? 40 : (int)parseNum(arg, "wait settle");
+                const int frames = autoMode ? (int)c.num("max", 160.0)
+                                            : (arg.empty() ? 40 : (int)parseNum(arg, "wait settle"));
                 harnessSettleSavedPaused_ = timePaused;
                 timePaused = true;
                 // The sky TAA restarts with the settle (history and jitter phase): a settled capture then
@@ -1059,13 +1076,69 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 skyTaaFrame = 0;
                 harnessSettleFrames_ = std::max(1, frames);
                 a.scratch["frames"] = harnessSettleFrames_;
+                a.scratch["auto"] = autoMode && ctx_ && ctx_->screenshotSupported;
+                if (a.scratch["auto"].get<bool>())
+                {
+                    settleProbeReset();
+                    settleProbeWanted_ = true;
+                    a.scratch["min"] = (int)c.num("min", 40.0);
+                    a.scratch["thr"] = c.num("thr", 0.1);
+                    a.scratch["hold"] = (int)c.num("hold", 4.0);
+                    a.scratch["noise"] = c.num("noise", 1.5); // 0 = off
+                }
                 return Status::Pending;
             }
-            if (--harnessSettleFrames_ > 0)
+            bool stop = --harnessSettleFrames_ <= 0;
+            const bool isAuto = a.scratch["auto"].get<bool>();
+            if (isAuto && !stop)
+            {
+                const int hold = a.scratch["hold"].get<int>();
+                const double thr = a.scratch["thr"].get<double>();
+                // A probe counts as settled when its 32-frame difference is under thr, or no bigger than noise: under
+                // `noise` x its 8-frame difference (a view's own flicker, e.g. from orbit, does not accumulate with the
+                // lag; a slow drift - shadows filling in, a running mean converging - does, and is waited out).
+                const double noise = a.scratch["noise"].get<double>();
+                auto settled = [&](int i)
+                {
+                    const float d32 = settleTrace32_[(size_t)i], d8 = settleTrace_[(size_t)i];
+                    if (d32 < 0.0f)
+                        return false;
+                    return d32 < thr || (noise > 0.0 && d32 < noise * d8);
+                };
+                int run = 0;
+                for (int i = (int)settleTrace_.size() - 1; i >= 0 && settled(i); --i)
+                    ++run;
+                if (run >= hold && a.frame >= a.scratch["min"].get<int>())
+                    stop = true;
+                else
+                    settleProbeWanted_ = true; // probe this frame too
+            }
+            if (!stop)
                 return Status::Pending;
             harnessSettleFrames_ = 0;
+            settleProbeWanted_ = false;
             timePaused = harnessSettleSavedPaused_;
-            r["message"] = "settled " + std::to_string(a.scratch["frames"].get<int>()) + " frames";
+            const int ran = isAuto ? a.frame : a.scratch["frames"].get<int>();
+            r["frames"] = ran;
+            if (isAuto)
+            {
+                r["auto"] = true;
+                r["max"] = a.scratch["frames"];
+                json tr = json::array();
+                for (float v : settleTrace_)
+                    tr.push_back(std::round(v * 100.0f) / 100.0f);
+                r["diff8_trace"] = tr; // per probed frame (2 frames behind the render)
+                json tr32 = json::array();
+                for (float v : settleTrace32_)
+                    tr32.push_back(std::round(v * 100.0f) / 100.0f);
+                r["diff32_trace"] = tr32;
+                if (!settleTrace_.empty())
+                {
+                    r["diff8_last"] = settleTrace_.back();
+                    r["diff32_last"] = settleTrace32_.back();
+                }
+            }
+            r["message"] = "settled " + std::to_string(ran) + " frames" + (isAuto ? " (auto)" : "");
             return Status::Done;
         }
         if (mode == "seconds" || mode == "s")
@@ -3799,7 +3872,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 {"right", GLFW_KEY_RIGHT}, {"home", GLFW_KEY_HOME}, {"end", GLFW_KEY_END}, {"w", GLFW_KEY_W},
                 {"up", GLFW_KEY_UP}, {"down", GLFW_KEY_DOWN},
                 // the screenshot / report keys (2026-10-19): f7 new issue shot, f9 shot, f10 screenshot with UI, f12 screenshot
-                {"f7", GLFW_KEY_F7}, {"f8", GLFW_KEY_F8}, {"f9", GLFW_KEY_F9}, {"f10", GLFW_KEY_F10}, {"f12", GLFW_KEY_F12},
+                {"f6", GLFW_KEY_F6}, {"f7", GLFW_KEY_F7}, {"f8", GLFW_KEY_F8}, {"f9", GLFW_KEY_F9}, {"f10", GLFW_KEY_F10}, {"f12", GLFW_KEY_F12},
                 // the mission milestone keys (2026-10-20)
                 {"]", GLFW_KEY_RIGHT_BRACKET}, {"[", GLFW_KEY_LEFT_BRACKET}};
             int code = -1;
@@ -3942,6 +4015,56 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
 
     // ── camera paths ────────────────────────────────────────────────────────────
+    // ── video (SatelliteSimVideo.cpp, 2026-10-25) ───────────────────────────────
+    if (n == "video")
+    {
+        const std::string sub = lower(pos(0));
+        if (sub == "start")
+        {
+            VideoRecordOptions o;
+            const std::string name = safeName(pos(1).empty() ? "video" : pos(1));
+            o.path = (std::filesystem::path(harnessRunner_->runDir()) / "videos" / (name + ".mp4")).string();
+            const float fdt = harness::options().fixedDt;
+            o.fps = c.num("fps", fdt > 0.0f ? std::round(1.0 / fdt) : 60.0);
+            o.scale = (float)c.num("scale", 1.0);
+            o.ui = c.flag("ui", false);
+            o.encoder = c.str("encoder", "auto");
+            o.bitrateKbps = (int)(c.num("bitrate", 0.0) * 1000.0);
+            std::string err;
+            if (!videoStart(o, true, err))
+                fail("video start: " + err);
+            r["file"] = o.path;
+            r["encoder"] = video_.stats().value("encoder", std::string());
+            r["width"] = video_.stats().value("width", 0);
+            r["height"] = video_.stats().value("height", 0);
+            r["message"] = "recording " + o.path;
+            return Status::Done;
+        }
+        if (sub == "stop")
+        {
+            if (a.frame == 0)
+            {
+                if (!video_.busy())
+                    fail("video stop: no video is recording");
+                video_.stop();
+            }
+            if (video_.busy())
+                return Status::Pending;
+            r = video_.lastResult();
+            r["message"] = "wrote " + r.value("file", std::string()) + " (" + std::to_string(r.value("frames", 0)) +
+                           " frames, " + std::to_string(r.value("dropped", 0)) + " dropped)";
+            return Status::Done;
+        }
+        if (sub.empty() || sub == "state")
+        {
+            r["state"] = video_.recording() ? "recording" : (video_.busy() ? "finishing" : "idle");
+            r["video"] = video_.busy() ? video_.stats() : video_.lastResult();
+            r["ffmpeg_on_path"] = ffmpegOnPath();
+            return Status::Done;
+        }
+        fail("video: start [name] [fps=] [scale=] [ui=on] [encoder=auto|mf|ffmpeg] [bitrate=<Mbps>] | stop | state");
+    }
+
     if (n == "path")
     {
         const std::string sub = lower(pos(0));
@@ -4077,8 +4200,32 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 harnessFixedDtOverride_ = (float)(1.0 / fps);
                 timePaused = true; // the path owns the clock
                 harnessTrack_ = 0;
+                // video=<name> (2026-10-25): every frame of the path into videos/<name>.mp4 at the path's rate, lossless
+                // (a frame is never dropped: the path waits for a free readback buffer). vscale= / ui= / encoder=.
+                a.scratch["video"] = c.str("video");
+                a.scratch["vStallMs"] = 0.0;
+                a.scratch["vHeld"] = 0;
+                if (!c.str("video").empty())
+                {
+                    VideoRecordOptions o;
+                    o.path = (std::filesystem::path(harnessRunner_->runDir()) / "videos" / (safeName(c.str("video")) + ".mp4")).string();
+                    o.fps = fps;
+                    o.scale = (float)c.num("vscale", 1.0);
+                    o.ui = c.flag("ui", false);
+                    o.lossless = true;
+                    o.encoder = c.str("encoder", "auto");
+                    o.bitrateKbps = (int)(c.num("bitrate", 0.0) * 1000.0);
+                    std::string err;
+                    if (!videoStart(o, true, err))
+                    {
+                        harnessFixedDtOverride_ = 0.0f;
+                        timePaused = a.scratch["pausedBefore"].get<bool>();
+                        fail("path play video: " + err);
+                    }
+                }
             }
             const std::string rec = a.scratch["record"];
+            const bool vid = !a.scratch["video"].get<std::string>().empty();
             // Wait for the last frame's COPY only, never its encode: every frame rendered while waiting runs
             // the temporal passes (clouds' history, sky TAA) at a still pose, so a recording took ~6 settle
             // frames between its frames and showed far less ghosting than a player sees (review 15). The
@@ -4090,6 +4237,28 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             if (!rec.empty() && (screenshotRequested || screenshotCopyPending))
                 return Status::Pending;
             const int i = a.scratch["i"], nF = a.scratch["n"];
+            if (vid && i < nF && !video_.canCapture())
+            {
+                // The encoder is behind (every readback buffer busy): wait briefly for the worker to free one rather
+                // than render an extra still frame (that would run the temporal passes at a still pose).
+                const double w0 = harness::nowS();
+                while (!video_.canCapture() && harness::nowS() - w0 < 0.2 && video_.recording())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                a.scratch["vStallMs"] = a.scratch["vStallMs"].get<double>() + (harness::nowS() - w0) * 1000.0;
+                if (!video_.canCapture())
+                {
+                    a.scratch["vHeld"] = a.scratch["vHeld"].get<int>() + 1;
+                    return Status::Pending;
+                }
+            }
+            if (vid && i >= nF)
+            {
+                // Finish the file (the app keeps rendering while the worker drains and closes it).
+                if (video_.recording())
+                    video_.stop();
+                if (video_.busy())
+                    return Status::Pending;
+            }
             if (i >= nF)
             {
                 harnessFixedDtOverride_ = 0.0f;
@@ -4111,6 +4280,12 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 }
                 if (!rec.empty())
                     r["pattern"] = harnessRunner_->capturePath(rec + "_%05d", ".png");
+                if (vid)
+                {
+                    r["video"] = video_.lastResult();
+                    r["video"]["stall_ms"] = a.scratch["vStallMs"];
+                    r["video"]["held_frames"] = a.scratch["vHeld"];
+                }
                 r["message"] = "played " + std::to_string(nF) + " frames" +
                                (rec.empty() ? std::string() : " -> captures/" + rec + "_#####.png");
                 return Status::Done;
@@ -4144,6 +4319,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             harnessApplyCam(k);
             obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
             updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, 0.0f);
+            if (vid)
+                video_.requestFrame();
             bool recThis = !rec.empty();
             if (recThis && !a.scratch["only"].empty())
             {
@@ -4163,7 +4340,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             a.scratch["i"] = i + 1;
             return Status::Pending;
         }
-        fail("path: clear | key <t> [lat= lon= alt= az= el= fov= sim=<iso>|simadd=<s>] | goto <t> | play [fps=30] [record=name] [frames=i,j,..] [ui=on] [scale=s]");
+        fail("path: clear | key <t> [lat= lon= alt= az= el= fov= sim=<iso>|simadd=<s>] | goto <t> | play [fps=30] [record=name] [frames=i,j,..] [ui=on] [scale=s] [video=name] [vscale=s]");
     }
 
     // ── overlays ────────────────────────────────────────────────────────────────
@@ -5388,19 +5565,24 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     cineStart(CineRun::Play, oneShot);
                 else if (mode == "hq")
                     cineStart(CineRun::ExportHQ, oneShot);
-                else if (mode == "preview")
+                else if (mode == "preview" || mode == "video")
+                {
+                    cineVideoExport_ = mode == "video";
                     cineStart(CineRun::ExportPreview, oneShot);
+                }
                 else
-                    fail("cine export: preview | hq [fps=] [scale=] [frames=] [blur=] [shot]");
+                    fail("cine export: preview | video | hq [fps=] [scale=] [frames=] [blur=] [shot]");
                 if (!cineActive())
                     fail("cine " + sub + ": " + cineStatus_);
                 a.scratch["t0"] = harness::nowS();
                 return Status::Pending;
             }
-            if (cineActive() || screenshotRequested || screenshotCopyPending || screenshotEncoding.load())
+            if (cineActive() || screenshotRequested || screenshotCopyPending || screenshotEncoding.load() || video_.busy())
                 return Status::Pending;
             r["frames"] = cineFrame_;
             r["dir"] = cineOutDir_;
+            if (lower(pos(1)) == "video")
+                r["video"] = video_.lastResult();
             r["wall_s"] = harness::nowS() - a.scratch["t0"].get<double>();
             r["message"] = cineStatus_;
             return Status::Done;
@@ -5476,16 +5658,31 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             a.scratch["requested"] = true;
             a.scratch["name"] = name;
             a.scratch["state"] = harnessStateJson();
+            a.scratch["serial"] = screenshotSerial_;
             screenshotRequested = true;
             return Status::Pending;
         }
-        if (busy)
+        // Done once the pixels are read back and handed to the encoder (2026-10-25): the PNG is written on its thread
+        // while the script goes on (the next capture waits for it; quitting joins it). It waited for the encode, ~0.7
+        // s a 1080p capture of the app showing a still frame. wait=1: the old behaviour (the PNG is on disk).
+        const bool waitEncode = c.flag("wait", false);
+        if (waitEncode ? busy : (screenshotRequested || screenshotCopyPending))
             return Status::Pending;
         const std::string name = a.scratch["name"];
         const std::string png = harnessRunner_->capturePath(name, ".png");
         uint32_t w = 0, h = 0;
-        if (!fs::exists(png) || !pngSize(png, w, h))
-            fail("capture: no image was written (see the log)");
+        if (waitEncode)
+        {
+            if (!fs::exists(png) || !pngSize(png, w, h))
+                fail("capture: no image was written (see the log)");
+        }
+        else
+        {
+            if (screenshotSerial_ == a.scratch["serial"].get<uint64_t>())
+                fail("capture: the frame was not read back (see the log)");
+            w = screenshotLastW_;
+            h = screenshotLastH_;
+        }
         json side = {{"name", name},
                      {"png", png},
                      {"width", w},
@@ -5506,7 +5703,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
     if (n == "state")
     {
+        harnessStateStv_ = c.flag("sun_volume", false);
         r = harnessStateJson();
+        harnessStateStv_ = false;
         if (!c.pos.empty())
         {
             const std::string path = harnessRunner_->capturePath(safeName(pos(0)), ".state.json");

@@ -54,6 +54,7 @@ static constexpr int kIconReport = 20;   // pixel--report.png — the Issue repo
 static constexpr int kIconBookmark = 19; // pixel--bookmark.png — the Bookmarks window (2026-10-03)
 static constexpr int kIconMissions = 21; // pixel--missions.png — the Missions window (2026-10-19)
 static constexpr int kIconWeather = 22;  // pixel--weather.png — the Weather window (2026-10-23)
+static constexpr int kIconRecord = 31;   // pixel--record.png — record a video (2026-10-25)
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
 // are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
@@ -632,6 +633,7 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--storm-waterspout.png",
             "assets/icons/ui/pixel--storm-fire.png",
             "assets/icons/ui/pixel--storm-cell.png",
+            "assets/icons/ui/pixel--record.png", // 31: kIconRecord
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -882,6 +884,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildHarnessConsole(inp, ui);  // the ~ console draws even with the HUD hidden
     buildHarnessOverlays(inp, ui); // harness `overlay` titles/labels, likewise (docs/HARNESS.md)
     buildCineHud(inp, ui);         // a playing / exporting cinematic's progress and Stop, likewise
+    buildVideoHud(inp, ui);        // the REC badge while recording a video, likewise
     fprof::mark("ui.seg3d_console_cine");
     bookmarkTick(ui);              // bookmarks: the list, thumbnail captures and uploads (window open or not)
     fprof::mark("ui.seg3e_bookmarks");
@@ -1232,6 +1235,30 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 CLAY(CLAY_ID("TrailsIcon"), {.layout = {
                                                  .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
                                              .image = {.imageData = (void *)(intptr_t)(kIconStarTrails + 1)}}) {}
+            }
+
+            // ── Record video (SatelliteSimVideo.cpp) ───────────────────────────────────────────────────
+            const bool vidOn = video_.busy() && !videoByHarness_;
+            Clay_Color vidBg = vidOn ? Pal::recActive : (hovVideoBtn ? Pal::btnHover : Pal::btnIdle);
+            CLAY(CLAY_ID("TimeVideoBtn"), {.layout = {
+                                               .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                               .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                           .backgroundColor = vidBg,
+                                           .cornerRadius = CLAY_CORNER_RADIUS(4)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hovVideoBtn);
+                sndClick(n, inp.lmbPressed);
+                if (n && inp.lmbPressed)
+                    videoToggle();
+                hovVideoBtn = n;
+                static char tip[48];
+                snprintf(tip, sizeof(tip), vidOn ? "Stop recording (%s)" : "Record video (%s)",
+                         keyDisplayName(keybindings[KB_VIDEO].key));
+                ui.tooltip(inp, n, tip, fs(11));
+                CLAY(CLAY_ID("TimeVideoIcon"), {.layout = {
+                                                    .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                                .image = {.imageData = (void *)(intptr_t)(kIconRecord + 1)}}) {}
             }
         }
     }
@@ -4589,6 +4616,28 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                     "The windows and panels you had open (the note bar and the Issue reports window are left out)");
     }
 
+    // ── VIDEO (SatelliteSimVideo.cpp): the key / the HUD's video button record to <user data>/videos/ ─────────────
+    uiSection("DispSec", 7, "VIDEO");
+    {
+        char k1[24];
+        snprintf(k1, sizeof(k1), "%s", keyDisplayName(keybindings[KB_VIDEO].key));
+        uiToggleRow(inp, ui, "VideoUi", 0, uiKitStr("Videos (%s) include the UI", k1), videoUiSetting,
+                    "Off: the scene alone (you still see the UI while recording)");
+        static const char *kFps[] = {"30", "60"};
+        const int fc = uiChoiceRow(inp, ui, "VideoFps", 0, "Frame rate", kFps, 2, videoFpsSetting > 45.0f ? 1 : 0,
+                                   "Frames per second of the video (a frame the app did not draw in time repeats the last one)");
+        if (fc >= 0)
+            videoFpsSetting = fc == 1 ? 60.0f : 30.0f;
+        static const char *kScale[] = {"100%", "75%", "50%"};
+        const int cur = videoScaleSetting > 0.87f ? 0 : (videoScaleSetting > 0.62f ? 1 : 2);
+        const int sc = uiChoiceRow(inp, ui, "VideoScale", 0, "Resolution (of the window)", kScale, 3, cur,
+                                   "Smaller files; the frame is scaled on the GPU");
+        if (sc >= 0)
+            videoScaleSetting = sc == 0 ? 1.0f : (sc == 1 ? 0.75f : 0.5f);
+        if (!videoLastFile_.empty())
+            uiKV("VideoLast", 0, "Last video", uiKitStr("%s", videoLastFile_.c_str()));
+    }
+
     // ── HQ PHOTO (requestPhoto) ────────────────────────────────────────────────────────────────────────────
     uiSection("DispSec", 2, "HQ PHOTO");
     {
@@ -7121,6 +7170,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {keybindings[KB_SCREENSHOT].action, KB_SCREENSHOT},
         {keybindings[KB_SCREENSHOT_UI].action, KB_SCREENSHOT_UI},
         {keybindings[KB_PHOTO].action, KB_PHOTO},
+        {keybindings[KB_VIDEO].action, KB_VIDEO},
         {keybindings[KB_SAVE_SNAPSHOT].action, KB_SAVE_SNAPSHOT},
         {keybindings[KB_REPORT_NEW].action, KB_REPORT_NEW},
         {keybindings[KB_MISSIONS].action, KB_MISSIONS},
@@ -7888,9 +7938,18 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                 }
                 row(3, [&]()
                     {
-                    if (btn(11, "Export preview", "Every frame as rendered in motion, at the fps above (fast)", cineRun_ == CineRun::ExportPreview,
-                            !cineActive()))
+                    if (btn(11, "Export preview", "Every frame as rendered in motion, at the fps above (fast)",
+                            cineRun_ == CineRun::ExportPreview && !cineVideoExport_, !cineActive()))
+                    {
+                        cineVideoExport_ = false;
                         cineStart(CineRun::ExportPreview, false);
+                    }
+                    if (btn(13, "Export video", "The preview as one .mp4 (H.264, no motion blur), at the fps above",
+                            cineRun_ == CineRun::ExportPreview && cineVideoExport_, !cineActive() && !video_.busy()))
+                    {
+                        cineVideoExport_ = true;
+                        cineStart(CineRun::ExportPreview, false);
+                    }
                     if (btn(12, "Export HQ", "Every frame a settled HQ photo (slow: see the estimate above). The window shows its progress; Esc stops",
                             cineRun_ == CineRun::ExportHQ, !cineActive()))
                         cineStart(CineRun::ExportHQ, false); });
@@ -8616,6 +8675,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         photoScaleSetting = std::clamp(d.value("photo_scale", photoScaleSetting), 1.0f, 4.0f);
         screenshotUiSetting = d.value("screenshot_ui", screenshotUiSetting);
         reportShotUiSetting = d.value("report_shot_ui", reportShotUiSetting);
+        videoUiSetting = d.value("video_ui", videoUiSetting);
+        videoFpsSetting = std::clamp(d.value("video_fps", videoFpsSetting), 10.0f, 120.0f);
+        videoScaleSetting = std::clamp(d.value("video_scale", videoScaleSetting), 0.25f, 1.0f);
         photoSettleFrames = std::clamp(d.value("photo_frames", photoSettleFrames), 4.0f, 240.0f);
         // UC3 follow-up: back to real persisted behavior now that the cinematic itself is settled
         // (the always-on-every-launch testing override is gone). "play_intro_on_startup" absent
@@ -9318,6 +9380,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"photo_scale", photoScaleSetting},
         {"screenshot_ui", screenshotUiSetting},
         {"report_shot_ui", reportShotUiSetting},
+        {"video_ui", videoUiSetting},
+        {"video_fps", videoFpsSetting},
+        {"video_scale", videoScaleSetting},
         {"photo_frames", photoSettleFrames},
         {"trail_enabled", trailEnabled}};
     if (settingsChrome.x >= 0.0f)
