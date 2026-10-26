@@ -112,7 +112,14 @@ void main()
     // ── The alpha: cloud_march.comp's signed distance, from the full-res distances ──
     float tOcc  = rd.y;
     float tMean = (rd.x > 0.0) ? rd.x : kNoSurfaceT;
-    float tEmit = texelFetch(halfDATex, clamp(p * H / F, ivec2(0), H - 1), 0).a;   // km, < 0 = none
+    // km, < 0 = none (-1); <= -2: -2 - the distance, not smoke (cloud_march.comp: no air pull)
+    float tEmitR = texelFetch(halfDATex, clamp(p * H / F, ivec2(0), H - 1), 0).a;
+    float tEmit  = (tEmitR <= -1.5) ? -2.0 - tEmitR : tEmitR;
+    // Smoke in front of the cloud pulls the distance toward the smoke's (cloud_march.comp, issue 20261025_185309)
+    if (tEmitR >= 0.0 && tMean < kNoSurfaceT && gBB < 0.999) {
+        float oP = 1.0 - gBB, oC = gBB * (1.0 - rc.a);
+        tMean = (oC * tMean + oP * tEmit * 1000.0) / max(oC + oP, 1e-4);
+    }
     float occKm = (tOcc >= 0.0) ? ((tMean < kNoSurfaceT && tMean > 0.0) ? tMean : tOcc) * 0.001
                 : -((tMean < kNoSurfaceT) ? tMean * 0.001 : (tEmit >= 0.0 ? tEmit : 60000.0));
     occKm = cloudAlphaFlag(occKm, tMean >= kNoSurfaceT && tOcc < 0.0 && tEmit >= 0.0);

@@ -308,6 +308,24 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
         float sq = sqrt(0.5 * q);
         float I  = exp(-0.5 * e) * sqrt(PI / (2.0 * q)) * (dustErf(sq * (T - tc)) - dustErf(-sq * tc));
         float tau = d.ia.w * d.c.w * max(I, 0.0);
+        // Smoke / dust sheets follow the Earth's curve (2026-10-25, issue 20261025_185309 "Odd line from space"): a
+        // wildfire's pall is a FLAT Gaussian up to ~500 km by 350 km sigma and ~1-2 km thick, tangent at its centre, and
+        // ~1000 km out a plane stands ~80 km above the ground: from orbit the far half of every big pall rose off the limb
+        // into space as a dark grey band. The density at the ray's closest approach is taken at its height above the
+        // GROUND relative to the centre's (hS) instead of above the centre's tangent plane (hP): the vertical term of the
+        // Mahalanobis distance swapped (upC.M.upC = the conditional vertical inverse variance). It only THINS: where the
+        // curved sheet would be denser than the flat one (a ray low down far from the centre) the flat column runs along
+        // hundreds of km of the plane, and raising it to the sheet's peak density drew a solid column of smoke (tried).
+        // A few flops for the aerosol range only.
+        if ((i - smF) < smN && tau > 0.0) {
+            vec3  Cw  = obsPos + d.c.xyz;
+            vec3  upC = normalize(Cw);
+            vec3  dP  = tc * dir - d.c.xyz;                       // closest approach - centre (no large cancellation)
+            float hP  = dot(dP, upC);
+            float hS  = length(Cw + dP) - length(Cw);
+            float kU  = dot(upC, dustMul(d, upC));
+            tau *= exp(min(-0.5 * (hS * hS - hP * hP) * kU, 0.0));
+        }
         // A plume that adds nothing to THIS texel is skipped before its lighting (2026-10-21): its optical depth here
         // under 1e-5 of dimming, and its light (the Sun / sky colour at the phase's peak with multiple scattering, x the
         // billows' and self-shadow's largest gains: 2.6 per unit optical depth, + the engine lights) under 2e-7 of
@@ -2094,6 +2112,7 @@ void main() {
 
     // Kessler dust clouds: above the weather, so seen from below the clouds hide them as they hide the aurora.
     float tEmitNear = kNoSurfaceT;
+    float pSmokeK   = 0.0;   // wildfire smoke's (and haboob dust's) share of the plumes' optical depth here
     if (dustCount > 0u) {
         // Extinction to the cloud, not to infinity: looking down from above the air, the path to infinity ends in
         // the ground through the whole atmosphere, and every cloud and fireball trail below the eye went dark.
@@ -2113,6 +2132,7 @@ void main() {
             // the background: a bright plume barely dims the sky, a sooty one silhouettes against it).
             // Wildfire smoke (2026-10-23) absorbs and scatters out of the line of sight SPECTRALLY and gives no sky light
             // back (its own sky light is in pL): the Sun through it is dimmed and red.
+            pSmokeK = pTauS / pTau;
             float pTauO = max(pTau - pTauS, 0.0);
             vec3  pTr  = vec3(exp(-pTauO) + 0.85 * pA * (1.0 - exp(-pTauO))) * exp(-pTauS * kSmokeSpec);
             // In front of / behind the cloud by a BLEND over +-(15% + 150 m) of the distance (2026-10-23): a tornado's
@@ -2482,8 +2502,23 @@ void main() {
     // through a cirrus veil the half point landed IN the veil (~20 km) in front of a cumulus at ~55 km, and the
     // sky pass split the air there: a dark speck in every such texel. Every point source is 100+ km away, so
     // their occlusion is unchanged.
-    float occKm = (tCloudOcclude >= 0.0) ? ((tCloudMeanT < kNoSurfaceT && tCloudMeanT > 0.0) ? tCloudMeanT : tCloudOcclude) * 0.001
-                : -((tCloudMeanT < kNoSurfaceT) ? tCloudMeanT * 0.001 : (tEmitNear < kNoSurfaceT ? tEmitNear * 0.001 : 60000.0));
+    // Smoke IN FRONT of a cloud pulls the distance toward the smoke's (2026-10-25, issue 20261025_185309): sat_sky.frag
+    // splits the air at this distance and adds the air in front x the composite's opacity, which includes the smoke's.
+    // At the cloud's distance alone, all the air between the smoke and a far cloud was added undimmed by the smoke:
+    // through a smoke pall, every thin far cloud showed as a light-blue hole in the pall's grey, outlined in the cloud
+    // distances' half-res blocks. Now the distance is the opacity-weighted mean of the smoke's (its share 1 - gBB, the
+    // composite's derivative with respect to the cloud's radiance = the smoke's transmittance in front) and the cloud's
+    // as seen through it. Smoke-dominated plumes only (pSmokeK): the engine-light pass lights unflagged distances as cloud,
+    // and a rocket's exhaust in front of a cloud would be lit twice (the "bright ball", 2026-10-20). cloud_v2_combine.comp
+    // does the same at full resolution (DA.a below carries whether it may).
+    bool  smokeAir = pSmokeK > 0.5 && tEmitNear < kNoSurfaceT;
+    float tAirM = tCloudMeanT;
+    if (smokeAir && tCloudMeanT < kNoSurfaceT && gBB < 0.999) {
+        float oP = 1.0 - gBB, oC = gBB * (1.0 - rc.a);
+        tAirM = (oC * tCloudMeanT + oP * tEmitNear) / max(oC + oP, 1e-4);
+    }
+    float occKm = (tCloudOcclude >= 0.0) ? ((tAirM < kNoSurfaceT && tAirM > 0.0) ? tAirM : tCloudOcclude) * 0.001
+                : -((tAirM < kNoSurfaceT) ? tAirM * 0.001 : (tEmitNear < kNoSurfaceT ? tEmitNear * 0.001 : 60000.0));
     // A texel whose distance is the emissive / plume distance (no cloud of its own) carries a FLAG: the lowest
     // mantissa bit of the half float (include/cloud_occlusion.glsl cloudAlphaIsEmit; 1/1024 of the distance). Its
     // opacity is the plume's, which cloud_march already lit by the engine lights: the engine-light pass
@@ -2495,6 +2530,8 @@ void main() {
     imageStore(targetB, coord, vec4(A_total, terrainSunT));
     if (fullRes) {
         imageStore(targetDB, coord, vec4(gBA, gBB));
-        imageStore(targetDA, coord, vec4(gAA, tEmitNear < kNoSurfaceT ? tEmitNear * 0.001 : -1.0));
+        // DA.a: the plume / emissive distance (km), negated - 2 when not smoke-dominated (no air pull); -1 = none.
+        imageStore(targetDA, coord, vec4(gAA, tEmitNear < kNoSurfaceT ? (smokeAir ? tEmitNear * 0.001 : -2.0 - tEmitNear * 0.001)
+                                                                      : -1.0));
     }
 }
