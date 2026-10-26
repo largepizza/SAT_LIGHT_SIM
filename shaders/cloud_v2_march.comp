@@ -77,6 +77,20 @@ layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define CV2_BOUNCE_ALB_HIGH 0.3
 #endif
 const float kBounceOpen    = CV2_BOUNCE_OPEN;
+// A FAINT sample (2026-10-26): its optical depth over the light march's length is under this. No light march and no sky
+// probe (as thin ice): the Sun's shadow is read at the sample itself from the Sun transmittance volume (which holds every
+// other cloud's shadow), the far side for the diffuse field is the column estimate, and the field is ~0 there anyway
+// (cv2DiffuseField -> 0 as tau -> 0). From 6 km over a stratocumulus field the mid layer's faint haze made ~27 lit samples
+// a ray (7M a frame, 9 field reads each): 20 of the cloud march's 26 ms, for a band at the horizon.
+#ifndef CV2_FAINT_OD
+#define CV2_FAINT_OD 0.02
+#endif
+// 0: a faint sample takes no light march at all (and no multiple scattering: with no optical depth toward the light it
+// read as the lit face of a thick slab, and haze under a cumulus glowed); 1: a 2-step light march (the light LOD's), no far
+// side, no sky probe saved.
+#ifndef CV2_FAINT_MODE
+#define CV2_FAINT_MODE 0
+#endif
 const float kBounceAlbHigh = CV2_BOUNCE_ALB_HIGH;
 // The cloud droplets' Mie phase (2026-10-22, tools/make_mie_lut.py): 4 pi p(theta) / 8 per angle (x) and effective radius
 // (y, cv2.mie.y), linear sRGB. A texel per 0.088 deg: the corona's rings, the cloudbow, the glory.
@@ -970,7 +984,7 @@ void main()
                 // range (the fine grid, the shaft rings, the cascade, the layer map; .plans/CLOUD_REBUILD_PLAN.md).
                 if (cv2.stvH.z > 0.5) {
                     float hT = (f.thin > 0.5) ? (f.topH - p.h) * (1.0 - 0.5 / max(1.0 - f.hf, 0.15)) : 0.0;
-                    float lL = 2.0 * cv2.light.x * (1.0 - f.thin);
+                    float lL = (CV2_FAINT_MODE == 0 && f.sigma * cv2.light.x < CV2_FAINT_OD) ? 0.0 : 2.0 * cv2.light.x * (1.0 - f.thin);
                     keyCol *= cv2StvT(rel + up * hT + sunDir * lL,
                                       p.h + hT + dot(up, sunDir) * lL + 0.5 * (cv2.stvH.y - cv2.stvH.x) / float(kCv2StvK - 1));
                 }
@@ -984,6 +998,8 @@ void main()
             // spans the whole sky, so every sample there paid seven field evaluations. Its
             // self-shadow is its own density over a few hundred metres; its sky light is unoccluded.
             bool thin = f.thin > 0.5;
+            // (Faint: see CV2_FAINT_OD. By the Sun only: the volume is the Sun's.)
+            bool faint = !thin && !moonIsKey && f.sigma * cv2.light.x < CV2_FAINT_OD;
             if (f.thin > 0.0 && !iceHabitSet) {
                 habRay = cv2IceHabit(p);
                 phIceSun  += og * cv2IceOptics(dir, sunDir, habRay) / 0.55;
@@ -1017,10 +1033,11 @@ void main()
                 jL = fract((float((cv2BlueNoise[bj >> 2u] >> (8u * (bj & 3u))) & 0xFFu) + 0.5) / 256.0
                            + 0.5385973 * (cv2.misc2.z > 0.5 ? cv2.frame.x : vL));
             }
-            if (!thin)
+            bool skipL = thin || (CV2_FAINT_MODE == 0 && faint && !wantB);
+            if (!skipL)
                 lightAmbOD(rel, keyDir, up, eyeH, enuToEcef, nL, lSeg0,
-                           jL, detailAmt, fp, wantL, odL, sigUp, wantB, bDir, odB, lodL, wantBk, odBk);
-            if (!wantBk) odBk = f.sigma * f.hf * max(f.topH - p.h, 0.0) / max(1.0 - f.hf, 0.05) / max(dot(up, keyDir), 0.1);
+                           jL, detailAmt, fp, wantL, odL, sigUp, wantB, bDir, odB, lodL || faint, wantBk && !faint, odBk);
+            if (!wantBk || skipL || faint) odBk = f.sigma * f.hf * max(f.topH - p.h, 0.0) / max(1.0 - f.hf, 0.05) / max(dot(up, keyDir), 0.1);
             if (wantL) {
                 float od = thin ? f.sigma * 400.0 : odL;
                 // A deck lit at a grazing angle is shadowed by the rest of the deck, tens of km
@@ -1063,8 +1080,9 @@ void main()
                 }
                 float pSilv = (moonIsKey ? phSilvM : phSilvS) * (1.0 - f.thin) * (1.0 - f.rain) * (1.0 - abs(f.soft));
                 // (Thin ice keeps the octaves: it has no light march, and its sheet is lit as it was tuned.)
+                // (A faint sample without its light march has no optical depth toward the light: none of the diffuse field.)
                 float msK = (cv2.ms.x > 0.5 && !thin)
-                          ? cv2.ms.z * cv2DiffuseField(od, odBk, bH[bj], cosK) : pMS * msOctaves(od);
+                          ? (skipL ? 0.0 : cv2.ms.z * cv2DiffuseField(od, odBk, bH[bj], cosK)) : pMS * msOctaves(od);
                 keyS = keyCol * powder * (pSSv * exp(-od) + pSilv * exp(-0.3 * od) + msK * f.msBright);
             }
 

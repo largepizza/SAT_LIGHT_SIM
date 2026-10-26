@@ -274,6 +274,10 @@ layout(location = 0) out vec4 outColor;
 #if defined(SKY_TAA)
 #define SKY_NO_DEBUG_VIEWS 1
 #endif
+// A surface whose cloud transmittance in front is under this is not shaded (the composite multiplies it by it).
+#ifndef SKY_SURF_HIDDEN_T
+#define SKY_SURF_HIDDEN_T 1e-3
+#endif
 #ifdef SKY_TAA
 // Sky TAA (sky_taa.comp): the unified depth as a colour, for the resolve's reprojection and the main
 // pass's depth restore (the offscreen pass has no depth attachment).
@@ -4711,6 +4715,14 @@ void main() {
         // Phase 4c: the mesh's own radiance, lit in sat_mesh.frag, through the air in front of it.
         vec3 meshAttn = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
         color += imageLoad(meshColorImg, meshPx).rgb * meshAttn;
+    } else if (tSurface > 0.0 && max(cloudB.r, max(cloudB.g, cloudB.b)) < SKY_SURF_HIDDEN_T) {
+        // The surface behind (nearly) opaque cloud (2026-10-26): the composite below multiplies it by cloudB.rgb, under
+        // SKY_SURF_HIDDEN_T here, so its shading is skipped — from above a cumulus field or a deck most of the terrain / sea
+        // was shaded to be multiplied by ~0. Only the sky TAA's sea flag is kept: a sea pixel under opaque cloud gives the
+        // resolve alpha 0.5 (sea, no trail), as the ocean branch below would.
+        if (tHit < 0.0 && (waterPx >= 0 ? waterPx == 1 : textureLod(earthSpecTex, dirToUV(normalize(
+                (obsPos + tSeaLvl * dir).x * enuX + (obsPos + tSeaLvl * dir).y * enuY + (obsPos + tSeaLvl * dir).z * enuZ)), 0.0).r > 0.5))
+            gTaaSeaTrail = 0.0;
     } else if (tSurface > 0.0) {
         vec3 surfAttn = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
 
