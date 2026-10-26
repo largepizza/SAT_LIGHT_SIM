@@ -4402,7 +4402,10 @@ void main() {
         float su  = dot(pm / rm, sunDir);
         vec3  sky = skyZenithSky(pm, sunDir, BETA_R, BETA_M) * smoothstep(hS - 0.09, hS + 0.04, su);
         color += (1.0 - atmTermSpace) * 0.5 * sky * (BETA_R * shR + vec3(BETA_M * shM));
-        skyShadowF = (1.0 - atmTermSpace) * 0.5 * sky * (BETA_R * shRF + vec3(BETA_M * shMF));
+        // ADDED to the volume's share (apShadowF is x apW, shRF / shMF x (1 - apW)): '=' dropped the volume's share over
+        // the band's cross-fade, so the air in front of the clouds lost up to all its shadowed-air sky light there: two
+        // dark lines along the horizon at the band's edges (issue 20261025_184550, "odd horizon band").
+        skyShadowF += (1.0 - atmTermSpace) * 0.5 * sky * (BETA_R * shRF + vec3(BETA_M * shMF));
     }
     // The air in front of the clouds, at every distance (the march has none of its own since review 8b).
     vec3 airFront = SUN_INTENSITY * (pR * BETA_R * accumRF + vec3(pM * BETA_M * accumMF)) + skyShadowF;
