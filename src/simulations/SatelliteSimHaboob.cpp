@@ -511,6 +511,22 @@ void SatelliteSim::weatherFillDustGrid()
             }
         }
     }
+    // The clear air never reaches over a TORNADO (2026-10-25, issue 20261025_184550): the funnel hangs from the storm's
+    // rain-free base, and the clear air (from 2.5 km behind the front's foot to 12 km ahead, the foot only 3-10 km from
+    // the dominant tower) swept the low cloud off it, so the funnel hung in open sky (its probe found no base). Held back
+    // within kTornHoldIn of each tornado on the ground (or about to be), fading out by kTornHoldOut.
+    const double kTornHoldIn = 3500.0, kTornHoldOut = 6500.0;
+    std::vector<glm::dvec2> tornHold;
+    for (const auto &sid : ids)
+    {
+        const wx::Storm *S = stormCatalog->find(sid.second);
+        TornadoNow T;
+        if (!S || !tornadoOf(*S, t, T) || t < T.t0 - 300.0 || t > T.t1 + 300.0) continue;
+        const glm::dvec3 d = glm::normalize(T.mapDir);
+        const glm::dvec3 ed(d.x * cph + d.y * sph, -d.x * sph + d.y * cph, d.z);
+        const glm::dvec3 sp = ed * kReH - sea;
+        tornHold.push_back(glm::dvec2(glm::dot(sp, E), glm::dot(sp, N)));
+    }
     // Rasterised in bands of rows on the worker threads (each band its own cells; ~1-1.5 ms in one thread).
     // A cell: bits 0-15 the wall's strength e (the strongest stamp's), 16-27 its top (2 m units, that stamp's),
     // 28-31 the clear air ahead of the front (any stamp's, max): the air ahead of the outflow sinks and is dry; the line's
@@ -537,7 +553,12 @@ void SatelliteSim::weatherFillDustGrid()
                         if (ac > cAhead || ac < cLo || std::abs(al) > aMax) continue;
                         const double wAl = 1.0 - glm::smoothstep(0.55 * m.spc, aMax, std::abs(al));
                         uint32_t &dst = dustGridCpu[(size_t)iy * G + ix];
-                        const double clr = wAl * (1.0 - glm::smoothstep(9000.0, cAhead, ac)) * glm::smoothstep(-2500.0, 0.0, ac);
+                        double clr = wAl * (1.0 - glm::smoothstep(9000.0, cAhead, ac)) * glm::smoothstep(-2500.0, 0.0, ac);
+                        for (const glm::dvec2 &h : tornHold)
+                        {
+                            const double hx = (ix - 0.5 * G + 0.5) * cell - h.x, hy = (iy - 0.5 * G + 0.5) * cell - h.y;
+                            clr *= glm::smoothstep(kTornHoldIn, kTornHoldOut, std::sqrt(hx * hx + hy * hy));
+                        }
                         const uint32_t cq = (uint32_t)std::lround(clr * 15.0);
                         if (cq > (dst >> 28)) dst = (dst & 0x0FFFFFFFu) | (cq << 28);
                         if (ac > cHi) continue;

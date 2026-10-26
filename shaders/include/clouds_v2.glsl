@@ -1946,7 +1946,8 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
 // soft ground contact hold it.
 const float kCv2DustSigma = 0.016;   // extinction at the wall's core (1/m)
 const vec3  kCv2DustTint  = vec3(0.95, 0.70, 0.45);   // the light a dust sample gives back, x a cloud's (cloud_v2_march.comp)
-float cv2DustWallSigma(CV2Pos q, vec3 w, float fpM, out float hfD, out float topD)
+const float kCv2DustClearFadeM = 400.0;   // the clear air ahead of a front fades out over this above the walls' tops (+- 720 m of lumps)
+float cv2DustWallSigma(CV2Pos q, vec3 w, float fpM, vec4 s, out float hfD, out float topD)
 {
     hfD = 0.0; topD = 0.0;
 #ifdef CV2_STORM_BINDING
@@ -1958,7 +1959,6 @@ float cv2DustWallSigma(CV2Pos q, vec3 w, float fpM, out float hfD, out float top
     float zn = z - 0.35;
     float g = 0.12 + ((zn < 0.0) ? 0.7 * zn * zn : 2.1 * zn * zn);
     if (w.x + 0.6 <= g) return 0.0;                     // past what the lobes can reach
-    vec4  s = cv2ShapeSmooth(cv2DustFrame[2].xyz + q.rSeaE * cv2DustFrame[2].w, cv2Lod(fpM, cv2DustFrame[2].w));
     float lobes = (s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47;
     lobes *= mix(1.0, 0.3, smoothstep(150.0, 1200.0, fpM));   // sub-pixel lobes average away
     float m = w.x + 1.6 * lobes - g;
@@ -1993,15 +1993,36 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     float hfD, topD, sd = 0.0;
 #ifdef CV2_STORM_BINDING
     vec3 dw = vec3(0.0);
-    if (kCv2DustOn != 0 && cv2DustHead.x != 0u && q.h - gCv2Ground < cv2DustFrame[1].w) dw = cv2DustWallAt(q.seaProjE);
     // The air ahead of a haboob's gust front sinks and is dry: the low cloud and rain there (the line's shelf band, drawn
     // 1-22 km ahead of its towers whatever the outflow's lead, the weather map's own) give way, so the wall stands under
     // open sky with the storm's anvil above (dw.z: from just behind the front's foot to ~12 km ahead of it).
     // Cleared OUTRIGHT where the clear air is (perf pass 4, 2026-10-25): x (1 - 0.95 z) left 5% of the shelf deck as a
     // thin milky veil over the whole view that every ray marched and lit for tens of km (haboob Watch, the user's
     // settings: cloud march 20.3 -> 13.0 ms), and hid the storm behind it.
-    f.sigma *= 1.0 - smoothstep(0.0, 0.8, dw.z);
-    sd = cv2DustWallSigma(q, dw, fpM, hfD, topD);
+    // Its EDGES are soft and lumpy (2026-10-25, issue 20261025_184550). The clear air was read only below the walls'
+    // highest top (cv2DustFrame[1].w, ~3-5 km) and cleared everything under it: a flat horizontal cut through every cloud
+    // straddling that height (the "odd horizon band" seen from 2 km; the tornado probe, which reads this field, hung the
+    // funnel from the cut, 3.5 km up, in open sky), and its ~2.5-km ramp across the grid was, on a dense cloud (any
+    // density factor acts as a threshold there), a flat vertical plane. Now the clearing fades out over
+    // kCv2DustClearFadeM above that height (subsidence raising the bases, not a slice), and both edges are displaced by
+    // the wall's own lobe volume (one fetch, shared with the wall): lumpy in 3D, like the cloud eroding. Read above the
+    // walls' tops only where there is low cloud to clear.
+    float aglD = q.h - gCv2Ground;
+    float hT   = cv2DustFrame[1].w;
+    if (kCv2DustOn != 0 && cv2DustHead.x != 0u && (aglD < hT || (f.sigma > 0.0 && aglD < hT + kCv2DustClearFadeM + 900.0)))
+        dw = cv2DustWallAt(q.seaProjE);
+    float clr = dw.z;
+    float lobD = 0.0, lobG = 0.0;   // the lobe volume about its mean (all octaves, the coarse one), 0 where not read
+    if (dw.x > 0.02 || (clr > 0.0 && (clr < 1.0 || aglD > hT - 900.0))) {
+        vec4 sl = cv2ShapeSmooth(cv2DustFrame[2].xyz + q.rSeaE * cv2DustFrame[2].w, cv2Lod(fpM, cv2DustFrame[2].w));
+        lobD = (sl.g * 0.6 + sl.b * 0.25 + sl.a * 0.15) - 0.47;
+        lobG = clamp(sl.g - 0.47, -0.3, 0.3);
+        sd = cv2DustWallSigma(q, dw, fpM, sl, hfD, topD);
+    }
+    // (the edge noise fades to nothing at both ends of the ramp: continuous where the grid reads 0 or 1 exactly)
+    clr += 1.3 * smoothstep(0.0, 0.12, clr) * (1.0 - smoothstep(0.88, 1.0, clr)) * lobD;
+    clr *= 1.0 - smoothstep(hT, hT + kCv2DustClearFadeM, aglD - 2400.0 * lobG);
+    f.sigma *= 1.0 - smoothstep(0.0, 0.8, clr);
 #endif
     if (sd > 0.0) {
         float s0 = f.sigma;
