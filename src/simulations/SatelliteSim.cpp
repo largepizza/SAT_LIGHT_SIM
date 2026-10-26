@@ -492,8 +492,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Next Mission Milestone", GLFW_KEY_RIGHT_BRACKET, -1, false, false},                // KB_MILESTONE_NEXT (event) — missionJumpNow(+1)
         {"Previous Mission Milestone", GLFW_KEY_LEFT_BRACKET, -1, false, false},             // KB_MILESTONE_PREV (event) — missionJumpNow(-1)
         {"Weather", GLFW_KEY_N, -1, false, false},                                           // KB_WEATHER (event) — the Weather window (radar, storms)
+        {"Record Video", GLFW_KEY_F6, -1, false, false},                                     // KB_VIDEO (event) — start / stop a video (videoToggle)
     };
-    static_assert(KB_COUNT == 28, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 29, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -1471,6 +1472,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     cv2SyncShapeVolume(ctx);   // before anything below binds a set that reads the shape volume
     cv2EnsureCdcBuffer(ctx);   // ... or the clipmap
     skyTaaFrameDt = dt;
+    videoFrameTick(dt); // the video recorder's clock (SatelliteSimVideo.cpp)
     {
         FPROF_SCOPE("rc.updateGpuTimingStats");
         updateGpuTimingStats(ctx);
@@ -7997,6 +7999,11 @@ void SatelliteSim::cleanup(VkDevice device)
     // UC6: join any in-flight screenshot encode thread before anything below (including this
     // object's own eventual destruction) can happen — it captures `this` for the result-handoff
     // members, so letting it outlive the object would be a use-after-free.
+    if (ctx_)
+    {
+        video_.shutdown(*ctx_); // a recording still running is finished, not lost
+        settleProbe_.destroy(*ctx_);
+    }
     if (screenshotThread.joinable())
         screenshotThread.join();
     // M10 bulk export: it reads only its own snapshot, but captures `this` for its result.
@@ -8831,6 +8838,8 @@ void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx,
         meterPendingS[ctx.frameSlot] = true;
     }
 
+    videoPostUiCopy(cmd, ctx, image); // a video recording WITH the UI (SatelliteSimVideo.cpp)
+
     if (!screenshotRequested)
         return;
     screenshotRequested = false; // consume — this is the one frame it's true for
@@ -8857,9 +8866,22 @@ void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx,
         vkDestroyBuffer(ctx.device, screenshotStagingBuf, nullptr);
         vkFreeMemory(ctx.device, screenshotStagingMem, nullptr);
     }
-    ctx.createBuffer(bufSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                     screenshotStagingBuf, screenshotStagingMem);
+    // Cached host memory (2026-10-25): the readback memcpy of a 1080p frame out of uncached memory took ~25 ms of the
+    // frame thread (every harness `capture` showed as a hitch in finalizeScreenshot).
+    try
+    {
+        ctx.createBuffer(bufSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VulkanContext::kHostReadProps, screenshotStagingBuf,
+                         screenshotStagingMem);
+    }
+    catch (const std::exception &)
+    {
+        if (screenshotStagingBuf != VK_NULL_HANDLE)
+            vkDestroyBuffer(ctx.device, screenshotStagingBuf, nullptr);
+        screenshotStagingBuf = VK_NULL_HANDLE;
+        ctx.createBuffer(bufSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         screenshotStagingBuf, screenshotStagingMem);
+    }
 
     // PRESENT_SRC_KHR -> TRANSFER_SRC_OPTIMAL, copy, then back — the presentation engine still
     // needs to consume this same image right after this command buffer's submission.
@@ -8871,6 +8893,12 @@ void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx,
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageExtent = {screenshotW, screenshotH, 1};
     vkCmdCopyImageToBuffer(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, screenshotStagingBuf, 1, &region);
+    {
+        VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+    }
 
     ctx.imageBarrier(cmd, image, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -8962,6 +8990,7 @@ void SatelliteSim::finalizeScreenshot()
     FPROF_SCOPE("finalizeScreenshot");
     readExposureMeter();
     finalizeScreenshotCopy(false);
+    videoAfterFence();
 }
 
 void SatelliteSim::finalizeScreenshotCopy(bool force)
@@ -9116,6 +9145,9 @@ void SatelliteSim::finalizeScreenshotCopy(bool force)
                                  // already finished (or about to), so this never blocks noticeably
     screenshotEncoding = true;
     uint32_t w = outW, h = outH;
+    screenshotLastW_ = w; // the harness's `capture` reports these without waiting for the encode
+    screenshotLastH_ = h;
+    ++screenshotSerial_;
     std::string path = screenshotPath;
     screenshotThread = std::thread([this, pixels = std::move(pixels), w, h, path]() mutable
                                    {
@@ -9339,6 +9371,9 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         break;
     case KB_PHOTO:
         requestPhoto();
+        break;
+    case KB_VIDEO:
+        videoToggle();
         break;
     case KB_SAVE_SNAPSHOT:
         snapshotKeyPending = true;

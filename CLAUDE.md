@@ -59,7 +59,7 @@ subsections of *Satellite Types* (Phases 4b–4f).
 samples, the tonality that follows the soundtrack (`MusicAnalysis`), the harness's offline audio
 mode and the mix rule).
 
-**State, profiling, cinematics, terrain** — *Persistent Settings* · *Fixed Simulation State* · *GPU
+**State, profiling, cinematics, terrain** — *Persistent Settings* · *Fixed Simulation State* · *Video export* · *GPU
 Performance Profiling* · *Intro Cinematic (UC3)* · *First-run tutorial* · *Bookmarks* · *Controls / Keybinding Pipeline* · *Active
 Development: Earth / Terrain Rendering* (read **Elevation texture encoding** before touching terrain
 code).
@@ -2787,6 +2787,32 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
   (`blackbox.py`, `crashes.py`, `overnight.py`) are opt-in: `run.py --forensics`.
 - **The loading screen runs in harness launches too** (its frames precede the script).
   `run.py --boot-capture` writes them to `captures/boot_NN.png`; see *Loading screen* below.
+
+## Video export (2026-10-25)
+
+`src/FrameCapture.h/.cpp` (asynchronous readback: a ring of cached host buffers the frame's own command buffer copies
+the image into, blitted to the output size when it differs; a slot is read only once `completedFrame()` passes its
+frame), `src/VideoEncoder.h/.cpp` (NV12 BT.709 limited range -> H.264 .mp4: Windows Media Foundation's sink writer
+(`mf-hw` = a hardware MFT, else the software one; nothing bundled, links mfplat / mfreadwrite / mfuuid), else an
+`ffmpeg` on PATH fed raw NV12), `src/VideoRecorder.h/.cpp` (the clock, the worker thread, stats),
+`src/simulations/SatelliteSimVideo.cpp` (player recording, the REC badge, the harness's settle probe).
+- **The frame thread never waits.** A frame with no free slot is dropped and its time given to the next capture
+  (written repeated), so a video keeps the clock it was recorded on (wall time live, the fixed step in a harness run;
+  settle frames count one video frame each). Lossless mode (`path play ... video=`) instead requests each path frame
+  (`VideoRecorder::requestFrame`) and the path holds back (<= 0.2 s) for a free slot.
+- **A clean video while the player sees the UI:** `Simulation::wantsPreUiCopy()` makes App end the main pass after
+  `recordDraw`, call `recordPreUiCopy` (the copy; leaves the image in TRANSFER_DST_OPTIMAL) and draw the UI in
+  `ctx.renderPassLoad` (the photo progress frame's precedent). With the UI in the video the copy is taken in
+  `recordScreenshotCopy` (`videoPostUiCopy`). The photo target is never recorded.
+- Player: `KB_VIDEO` (F6) / the HUD's `TimeVideoBtn` -> `<user data>/videos/`; Display tab VIDEO (`display.video_ui`,
+  `video_fps`, `video_scale`). Harness: `video start|stop|state`, `path play video=` (docs/HARNESS.md).
+- Measured (RTX 3070 Ti, 1920x1009, mf-hw): frame time / GPU within 0-0.5 ms of not recording; the worker's NV12
+  conversion ~3.7 ms and encode ~0.8 ms a 1920x1008 frame (one thread: ~200 fps); ~105 MB a minute of motion, ~40-50
+  of a still view; real time at ~40 fps into a 60-fps video: 0 drops, a third of the frames repeated.
+- **`wait settle auto`** (harness) reuses FrameCapture as a 1/4-size probe of every settle frame (before the UI),
+  compared 8 and 32 frames back. Do not stop on the 8-frame difference alone: Sun-shadow volumes and running means
+  drift ~0.1 level per 8 frames for 160+ frames in storm views (the first cut stopped at ~30 frames there with
+  reference errors of 2 levels mean, 30 p99); a drift grows with the lag, a view's own flicker much less.
 
 ## HQ photo (review 13, 2026-09-30)
 

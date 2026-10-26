@@ -16,7 +16,9 @@ it; pans of 90-240 deg/s), not the gentle paths earlier tests used.
 `gen` restores the user's snapshot (settings, view, cloud drift), pauses time (the clouds are then a
 fixed field, so a reference taken later at the same pose is the same scene), and for each scenario
 plays a camera path at 60 fps recording every frame, then returns to sampled poses with
-`path goto` and settles 160 frames for the reference. `score` compares each sampled moving frame
+`path goto` and settles for the reference (`wait settle auto`: until the image stops changing, at most
+160 frames; `--settle N` for the old fixed count). Only the scored frames are written as PNGs
+(`path play ... frames=`); `--video` also records every frame of each path to videos/<name>.mp4. `score` compares each sampled moving frame
 with its reference: mean |diff| of luminance (0-255), the 95th / 99th percentile, the share of
 pixels off by more than 16 levels, and the same per horizontal band (the horizon band is where the
 user's complaint lives). The settled reference of the first pose is also captured twice, as the
@@ -39,7 +41,7 @@ R_EARTH = 6371000.0
 FPS = 60
 DUR = 2.5
 REF_T = [0.5, 1.0, 1.5, 2.0, 2.5]
-SETTLE = 160
+SETTLE = 160          # the fixed form's frames, and the auto form's maximum
 
 
 def dest(lat, lon, bearing_deg, dist_m):
@@ -98,6 +100,8 @@ def cmd_gen(a):
     log = os.path.abspath(a.log).replace("\\", "/")
     only = set(a.only.split(",")) if a.only else None
     L = [f"# tstab: {os.path.basename(a.log)} index={a.index}  lat={lat:.4f} lon={lon:.4f} alt={alt:.0f} agl={agl:.0f}"]
+    settle = f"wait settle {a.settle}" if a.settle else f"wait settle auto max={SETTLE}"
+    scored = ",".join(str(int(round(t * FPS))) for t in REF_T)
     # Variants share one launch: "tag" or "tag:key value;key value" (settings applied after the snapshot).
     variants = a.variant or [""]
     for vi, v in enumerate(variants):
@@ -108,7 +112,7 @@ def cmd_gen(a):
         L += [f"set {kv}" for kv in (a.set or [])]
         L += [f"set {kv.strip()}" for kv in sets.split(";") if kv.strip()]
         if vi == 0:
-            L += [f"wait settle {SETTLE}", "capture floor_a", f"wait settle {SETTLE}", "capture floor_b"]
+            L += [settle, "capture floor_a", settle, "capture floor_b"]
         for name, keys in scenarios(lat, lon, alt, az, el, agl).items():
             if only and name not in only:
                 continue
@@ -117,9 +121,12 @@ def cmd_gen(a):
             for (t, la, lo, al, z, e) in keys:
                 L.append(f"path key {t:.3f} lat={la:.7f} lon={lo:.7f} alt={al:.1f} az={z:.3f} el={e:.3f}"
                          + (f" simadd={t:.3f}" if a.live_time else ""))
-            L += ["path goto 0", f"wait settle {SETTLE}", f"path play fps={FPS} record={pre}{name}"]
+            play = f"path play fps={FPS} record={pre}{name} frames={scored}"
+            if a.video:
+                play += f" video={pre}{name}"
+            L += ["path goto 0", settle, play]
             for t in REF_T:
-                L += [f"path goto {t}", f"wait settle {SETTLE}", f"capture {pre}{name}_ref_{int(round(t * FPS)):05d}"]
+                L += [f"path goto {t}", settle, f"capture {pre}{name}_ref_{int(round(t * FPS)):05d}"]
     L.append("quit")
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     open(a.out, "w", encoding="utf-8").write("\n".join(L) + "\n")
@@ -223,6 +230,8 @@ def main():
     g.add_argument("--set", action="append", help="extra 'key value' settings applied after the snapshot")
     g.add_argument("--live-time", action="store_true", help="sim time runs at 1x along the path (the references hold it)")
     g.add_argument("--variant", action="append", help="tag[:key value;key value] - several share one launch")
+    g.add_argument("--settle", type=int, default=0, help="fixed settle frames (default: wait settle auto, max 160)")
+    g.add_argument("--video", action="store_true", help="also record each path to videos/<scenario>.mp4")
     g.set_defaults(fn=cmd_gen)
     s = sp.add_parser("score")
     s.add_argument("run")

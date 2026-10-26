@@ -23,6 +23,7 @@
 #include "SegVec.h"        // kEvents: a segmented vector (no reallocation hitches, 2026-10-21)
 #include "SatBench.h"      // shared sample schema + bulk export (benchmarking M10)
 #include "SatMeshRenderer.h"
+#include "../VideoRecorder.h" // video export (SatelliteSimVideo.cpp, 2026-10-25)
 #include "SatEnvProbes.h" // Phase 4: satellite meshes (model viewer; scene pass in 4c)
 #include <memory>
 
@@ -2094,6 +2095,9 @@ public:
     bool wantsCleanScreenshot() const override { return screenshotRequested && !screenshotIncludeUI; }
     void recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image) override;
     void finalizeScreenshot() override;
+    // Video export (SatelliteSimVideo.cpp): the clean frame is copied before the UI while recording without it.
+    bool wantsPreUiCopy() const override;
+    void recordPreUiCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image) override;
     // UC6: shared by KB_SCREENSHOT (dispatchKeyAction) and the left HUD panel's camera button —
     // builds screenshotPath and sets screenshotRequested, or no-ops if a capture is already in
     // flight (copy pending or still encoding). withUi: the shot keeps the interface (the screenshot's own
@@ -6461,11 +6465,44 @@ private:
     bool reportShotUiSetting = false;
     int screenshotCrop[4] = {0, 0, 0, 0}; // x, y, w, h in frame pixels; w == 0 = the whole frame
     float screenshotScale = 1.0f;          // < 1 box-filtered down, > 1 nearest-neighbour up (pixel peeping)
+    uint32_t screenshotLastW_ = 0, screenshotLastH_ = 0; // the last copy's encoded size (finalizeScreenshotCopy)
+    uint64_t screenshotSerial_ = 0;                      // +1 per copy handed to the encoder
+
+    // ── Video export (SatelliteSimVideo.cpp, 2026-10-25) ────────────────────────────────────────────
+    // An .mp4 of the frames as they are shown: VideoRecorder copies a frame into a ring of host buffers (FrameCapture,
+    // read back two frames later) and encodes on a worker thread (Media Foundation's H.264 on Windows, else an
+    // ffmpeg on PATH). Nothing on the frame thread waits: a frame with no free buffer is dropped and the next one
+    // repeated for it. KB_VIDEO / the HUD's video button record to <user data>/videos/; the harness's `video` and
+    // `path play ... video=` to <run>/videos/.
+    VideoRecorder video_;
+    bool videoUiSetting = false;     // display.video_ui: the UI in the video (else the frame before the UI)
+    float videoFpsSetting = 60.0f;   // display.video_fps
+    float videoScaleSetting = 1.0f;  // display.video_scale (of the window)
+    bool videoByHarness_ = false;    // started by the harness: no REC badge, no toast
+    bool hovVideoBtn = false;
+    std::string videoLastFile_;
+    void videoToggle();                                    // KB_VIDEO / the HUD button
+    bool videoStart(const VideoRecordOptions &o, bool byHarness, std::string &err);
+    void videoStop();
+    void videoFrameTick(float dt);                         // recordCompute: the recorder's clock
+    void videoPostUiCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image); // recordScreenshotCopy (ui=on)
+    void videoAfterFence();                                // finalizeScreenshot: readbacks, a finished file
+    void buildVideoHud(const UIInput &inp, UIRenderer &ui); // the REC badge
+    // The harness's settle probe (`wait settle auto`): a small copy of every settle frame before the UI, compared with
+    // the frames 8 and 32 before (mean |luminance difference|, 0-255) to stop once the image has stopped changing.
+    FrameCapture settleProbe_;
+    bool settleProbeWanted_ = false;
+    std::deque<std::vector<float>> settleLum_;
+    std::vector<float> settleTrace_;                       // per probed frame: the 8-frame difference (-1 = no history)
+    std::vector<float> settleTrace32_;                     // ... and the 32-frame one (drift vs noise)
+    void settleProbeReset();
+    void settleProbeCollect();
 
     // ── Automation harness (docs/HARNESS.md; all code in SatelliteSimHarness.cpp) ──────────────
     // Null outside a harness run: every hook below is then a no-op.
     harness::Runner *harnessRunner_ = nullptr;
     bool harnessQuit_ = false;
+    bool harnessStateStv_ = false; // `state sun_volume=1`: harnessStateJson reads the Sun volume's levels back (slow)
     // `wait settle`: frames left. While > 0 the frame time is kHarnessSettleDt and sim time is held,
     // so every eased quantity (sky glare, dark-sky dome, mesh fades, beam-light fades, env probes)
     // converges without the scene moving.
@@ -6655,7 +6692,8 @@ private:
         KB_MILESTONE_NEXT = 25, // event — the selected / followed launch object's next mission milestone; ]
         KB_MILESTONE_PREV = 26, // event — ... its previous one; [
         KB_WEATHER = 27,       // event — the Weather window (radar, storms) open / closed; N
-        KB_COUNT = 28,
+        KB_VIDEO = 28,         // event — start / stop a video recording (videoToggle); F6
+        KB_COUNT = 29,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()

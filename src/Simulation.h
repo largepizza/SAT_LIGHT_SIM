@@ -165,6 +165,12 @@ public:
     // finishes any screenshot whose copy was recorded last frame: maps the staging buffer,
     // encodes, writes the file, clears pending state. Default: no-op.
     virtual void finalizeScreenshot() {}
+    // Video export / the harness's settle probe (2026-10-25): true on a frame whose image is to be copied BEFORE the
+    // UI is drawn (a clean recording while the player still sees the UI). App then ends the main pass after
+    // recordDraw, calls recordPreUiCopy (the image in PRESENT_SRC_KHR; it must leave it in TRANSFER_DST_OPTIMAL,
+    // the load pass's initial layout) and draws the UI in ctx.renderPassLoad. Default: never.
+    virtual bool wantsPreUiCopy() const { return false; }
+    virtual void recordPreUiCopy(VkCommandBuffer /*cmd*/, VulkanContext& /*ctx*/, VkImage /*image*/) {}
     // HQ photo (review 13): while this returns a factor > 0, App renders into an offscreen target of
     // that many times the window's size (VulkanContext::beginPhotoTarget, then onResize), without
     // acquiring, presenting or drawing the UI. Polled once per frame right after finalizeScreenshot;

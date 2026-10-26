@@ -165,6 +165,11 @@ sat_strict_warnings(SatLightSim)
 # pthread link or std::thread silently fails to link.
 find_package(Threads REQUIRED)
 target_link_libraries(SatLightSim PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json Threads::Threads)
+# Video export (src/VideoEncoder.cpp): Windows Media Foundation's H.264 encoder ships with Windows, so nothing is
+# bundled. Elsewhere the recorder pipes to an ffmpeg found on PATH.
+if(WIN32)
+    target_link_libraries(SatLightSim PRIVATE mfplat mfreadwrite mfuuid ole32)
+endif()
 
 # SatModelTool (lighting overhaul Phase 3): loads, bakes, validates and OBJ-exports satellite
 # models from the command line — the same SatModel.cpp the app uses, no Vulkan, no window. The
@@ -378,6 +383,9 @@ if(SAT_BUILD_FRESH_TARGET)
     sat_strict_warnings(SatLightSimFresh)
     target_include_directories(SatLightSimFresh PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(SatLightSimFresh PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json Threads::Threads)
+    if(WIN32)
+        target_link_libraries(SatLightSimFresh PRIVATE mfplat mfreadwrite mfuuid ole32)
+    endif()
     if(APPLE)
         target_link_libraries(SatLightSimFresh PRIVATE
             "-framework CoreFoundation" "-framework CoreAudio" "-framework AudioToolbox")

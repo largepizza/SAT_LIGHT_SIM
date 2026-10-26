@@ -221,6 +221,15 @@ def build_film():
     return [arm, cut(slate, play)]
 
 
+def build_record():
+    """Record video: a solid video camera (body + the lens hood flaring to the right) with a record dot punched
+    out of the body — the HUD's video button (2026-10-25)."""
+    body = rect(4.0, 13.0, 31.0, 35.0)
+    hood = tri((31.0, 24.0), (44.0, 14.0), (44.0, 34.0))
+    dot = disc(17.5, 24.0, 6.0)
+    return [cut(lambda px, py: body(px, py) or hood(px, py), dot)]
+
+
 def build_bookmark():
     """Bookmarks: a solid ribbon bookmark (notched tail) with a star punched out of it — a saved place
     at a moment, the Bookmarks window (2026-10-03)."""
@@ -363,6 +372,7 @@ ICONS = {
     "bookmark": build_bookmark,
     "film": build_film,
     "photo": build_photo,
+    "record": build_record,
     "maximize": build_maximize,
     "observer": build_observer,
     "spin": build_spin,
@@ -374,7 +384,7 @@ ICONS = {
 # the look of the gear, the camera, play / pause, the crosshair and the eye. Soft-edged thin strokes
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
-               "storm-waterspout", "storm-fire", "storm-cell", "weather", "missions", "report", "bookmark", "film", "photo", "maximize", "observer", "spin", "studio"}
+               "storm-waterspout", "storm-fire", "storm-cell", "weather", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -968,6 +968,19 @@ void App::drawFrame()
     }
     ctx.writeTimestamp(ctx.commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 7);
 
+    // 3b. A copy of the frame before the UI (a clean video recording, the harness's settle probe): end the pass,
+    // copy, and draw the UI in the load variant of the pass (the copy leaves the image in its TRANSFER_DST layout).
+    if (!photo && sim->wantsPreUiCopy())
+    {
+        vkCmdEndRenderPass(ctx.commandBuffer);
+        {
+            FPROF_SCOPE("app.preui_copy");
+            sim->recordPreUiCopy(ctx.commandBuffer, ctx, ctx.swapImages[imgIdx]);
+        }
+        rbi.renderPass = ctx.renderPassLoad;
+        vkCmdBeginRenderPass(ctx.commandBuffer, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+    }
+
     // 4. UI draws on top of the simulation — UC6 clean-shot mode skips this for a captured frame
     // (nobody shares a screenshot with a settings panel in it).
     if (!sim->wantsCleanScreenshot() && !photo)
