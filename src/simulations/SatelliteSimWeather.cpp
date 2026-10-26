@@ -22,6 +22,8 @@
 #include <cstdlib>
 #include <cstring>
 
+namespace launchsim { double demElevCpu(double latDeg, double lonDeg); }   // (SatelliteSimLaunches.cpp: the full DEM)
+
 namespace
 {
 constexpr double kReW = 6371000.0;
@@ -967,10 +969,22 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
     }
     const double kTwoPi15 = 15.749609945722419;
     if (harnessTornadoHidden_) return;   // (harness A/B: listed and probed, not drawn)
+    if (tornadoGround.size() > 64) tornadoGround.clear();
     for (TornadoNow &T : tornadoesNow)
     {
-        const double ground = T.sea ? 0.0 : std::max(0.0, (double)cpuTerrainHeightM(
-            (float)glm::degrees(std::asin(std::clamp(T.earthDir.z, -1.0, 1.0))), (float)glm::degrees(std::atan2(T.earthDir.y, T.earthDir.x))));
+        // The ground under it: the FULL DEM (the drawn ground is it + the procedural detail, tens of metres). It was the
+        // CPU's 18-km DEM copy (cpuTerrainHeightM): in issue 20261025_184550's view 105 m under the drawn ground, so the
+        // funnel's foot and half the debris cloud were buried, and the debris' top ended at the eye's height: the funnel
+        // read as cut off along the horizon.
+        double ground = 0.0;
+        if (!T.sea)
+        {
+            glm::dvec4 &G = tornadoGround[T.stormId];
+            if (G.w <= 0.0 || glm::dot(glm::dvec3(G), T.earthDir) < std::cos(500.0 / kReW))
+                G = glm::dvec4(T.earthDir, std::max(1.0, launchsim::demElevCpu(
+                        glm::degrees(std::asin(std::clamp(T.earthDir.z, -1.0, 1.0))), glm::degrees(std::atan2(T.earthDir.y, T.earthDir.x)))));
+            ground = G.w;
+        }
         // The funnel's top: the drawn base over it (the probe), else the Cb type's.
         double Hb = std::max(800.0, (double)cv2Types[4].alt.x) * (T.spout ? 0.8 : 1.0);
         double tauAbove = 0.0;

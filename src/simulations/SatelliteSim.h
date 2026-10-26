@@ -4913,6 +4913,9 @@ private:
     bool harnessTornadoHidden_ = false;   // harness `storms tornado draw=0`: the funnels are listed but not drawn (A/B)
     struct TornadoProbe { float baseAsl = 0.0f, tau = 0.0f; bool valid = false; double wall = 0.0; };
     std::unordered_map<uint64_t, TornadoProbe> tornadoProbes;
+    // Each funnel's ground (2026-10-25): the full DEM under it (launchsim::demElevCpu), xyz = the Earth-fixed direction it
+    // was read at, w = metres above sea level; re-read once the funnel has moved ~500 m. (weatherFillTornadoes)
+    std::unordered_map<uint64_t, glm::dvec4> tornadoGround;
     bool tornadoOf(const wx::Storm &S, double t, TornadoNow &out) const;   // its tornado (if any) and where at t
 
     // ── The Weather window's FEATURED events (2026-10-23, SatelliteSimWeatherFeatured.cpp) ─────────────────────
