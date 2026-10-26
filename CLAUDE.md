@@ -1783,12 +1783,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (per-pass timers), ~0.3 near the ground; one lookup per batch or a per-ray cache cost the same (a group of rays runs it
   when any one needs it). 128 registers. harness_runs/ms/cup1-5.
 - **Two perf skips (2026-10-26, reworked from the parked ee29203):** a FAINT cloud sample (sigma x the light march's length
-  < `CV2_FAINT_OD` 0.02, Sun-lit, no beam) takes no light march and no sky probe: its Sun shadow is the transmittance
+  < `CV2_FAINT_OD` 0.2, i.e. sigma < ~8e-5 /m: haze, Sun-lit, no beam) takes no light march and no sky probe: its Sun shadow is the transmittance
   volume at the sample, and it gets NONE of the delta-Eddington field (`CV2_FAINT_MODE` 0): with tau toward the light 0
   it read as the lit face of a thick slab and haze under cumulus glowed beige (the column estimate as its far side). Mode 1
   (a 2-step march) saved nothing. And the sky pass skips shading a surface whose cloud transmittance in front is under
   `SKY_SURF_HIDDEN_T` 1e-3 (the sea's TAA flag kept). Interleaved (1920x1009): cloud march -0.3..-1.1 ms, sky up to
-  -0.9 ms from orbit, images within noise. harness_runs/ms/faint1-2.
+  -0.9 ms from orbit, images within noise. harness_runs/ms/faint1-2. The threshold was 0.02, then 0.2 (harness_runs/ms/fo1-2:
+  base-vs-base floor at every view up to 1.0; 0.5 changed cumulus lobe rims seen from 3 km): from 6 km INSIDE the mid layer
+  (Brisbane, -27.5 153.0 at 02:06 UTC, az 60 el -4; its haze was 25 of 34 ms) 33 -> 25.5 ms; matrix suite total -4.2 ms,
+  every quality metric unchanged (harness_runs/mxc/on vs fo02).
 - **AgX tonemap (2026-10-26, branch cloud-ms; sat_sky.frag `skyAgX`).** The sky pass tonemapped 1 - e^-x per channel
   ("Highlight roll-off" blends a longer shoulder): each channel saturates alone, so bright orange skews yellow and sunlit
   cloud flattens to paper white (where the physical multiple scattering puts it). AgX (Sobotka; Wrensch's polynomial

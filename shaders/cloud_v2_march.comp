@@ -83,7 +83,7 @@ const float kBounceOpen    = CV2_BOUNCE_OPEN;
 // (cv2DiffuseField -> 0 as tau -> 0). From 6 km over a stratocumulus field the mid layer's faint haze made ~27 lit samples
 // a ray (7M a frame, 9 field reads each): 20 of the cloud march's 26 ms, for a band at the horizon.
 #ifndef CV2_FAINT_OD
-#define CV2_FAINT_OD 0.02
+#define CV2_FAINT_OD 0.2
 #endif
 // 0: a faint sample takes no light march at all (and no multiple scattering: with no optical depth toward the light it
 // read as the lit face of a thick slab, and haze under a cumulus glowed); 1: a 2-step light march (the light LOD's), no far
