@@ -6365,6 +6365,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {"Sky light on clouds (x physical)", &cv2SkyLightGain, 0.0f, 4.0f, 0.05f, "%.2f", 347},
         {"Ground albedo (sky light)", &cv2SkyGroundAlbedo, 0.0f, 1.0f, 0.01f, "%.2f", 348},
         {"Sky model (0 single / 1 multi-scatter + ozone)", &cv2SkyMs, 0.0f, 1.0f, 1.0f, "%.0f", 352},
+        {"Ground light under cloud (0/1)", &cv2GroundOvercast, 0.0f, 1.0f, 1.0f, "%.0f", 353},
         {"Lobe occlusion (sky light)", &cv2LobeOcclusion, 0.0f, 1.0f, 0.05f, "%.2f", 285},
         {"Silver lining", &cv2SilverLining, 0.0f, 4.0f, 0.05f, "%.2f", 295},
     };
@@ -9009,6 +9010,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SkyLightGain    = settingClamp(c.value("sky_light_gain", cv2SkyLightGain), 0.0f, 4.0f);
         cv2SkyGroundAlbedo = settingClamp(c.value("sky_ground_albedo", cv2SkyGroundAlbedo), 0.0f, 1.0f);
         cv2SkyMs           = settingClamp(c.value("sky_multiple_scattering", cv2SkyMs), 0.0f, 1.0f);
+        cv2GroundOvercast  = settingClamp(c.value("ground_overcast", cv2GroundOvercast), 0.0f, 1.0f);
         cv2LobeOcclusion = c.value("lobe_occlusion", cv2LobeOcclusion);
         cv2SampNewSmooth = c.value("sampler_new_smoothing", cv2SampNewSmooth);
         cv2SampClampSd = c.value("sampler_motion_clamp_sd", cv2SampClampSd);
@@ -9677,6 +9679,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sky_light_gain", cv2SkyLightGain},
         {"sky_ground_albedo", cv2SkyGroundAlbedo},
         {"sky_multiple_scattering", cv2SkyMs},
+        {"ground_overcast", cv2GroundOvercast},
         {"lobe_occlusion", cv2LobeOcclusion},
         {"sampler_new_smoothing", cv2SampNewSmooth},
         {"sampler_motion_clamp_sd", cv2SampClampSd},

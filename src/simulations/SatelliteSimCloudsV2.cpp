@@ -1958,6 +1958,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                       std::clamp(cv2SkyGroundAlbedo, 0.0f, 1.0f), cv2SkyMs > 0.5f ? 1.0f : 0.0f);
     p.tone = glm::vec4(cv2Tonemap > 0.5f ? 1.0f : 0.0f, std::clamp(cv2ToneSat, 0.0f, 2.0f),
                        std::clamp(cv2ToneContrast, 0.5f, 2.0f), 0.0f);
+    p.gnd = glm::vec4((cv2GroundOvercast > 0.5f && cv2SkyMs > 0.5f) ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
     skyApRanThisFrame = false;
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the
@@ -2424,7 +2425,8 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         // levels 1-3, 10-17 catch-up), each split over kCv2StvG = 8 physical workgroups of 32 rays x 8 threads
         // (cloud_v2_lightning.comp, 2026-10-23: keep the two in step).
         constexpr uint32_t kCv2StvG = 8;
-        vkCmdDispatch(cmd, 5 + 13 * kCv2StvG, 1, 1);
+        // + 4: the cloud over the ground (cv2Vt, one of its 5 levels a frame: 1024 columns).
+        vkCmdDispatch(cmd, 5 + 13 * kCv2StvG + 4, 1, 1);
         // The rain particles (main pass, vertex stage) read the rain map and the light at the eye it just wrote.
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);

@@ -5335,6 +5335,19 @@ void main() {
         // 60-deg Sun (harness_runs/ms/gs1c): the day's look is kept, the colour and the twilight are the sky's.
         if (skyMsOn) {
             skyAmbientTerrain = cv2GroundSkyAt(geoSunDot, max(length(hitPt) - R_EARTH, 0.0)) * (1.0 / 3.2);
+            // Under cloud (2026-10-26, cv2.gnd.x; cloud_lightning.glsl cv2VtAt, the cloud's vertical optical depth over this
+            // point): the sky's light comes through it by the cloud's diffuse transmission, 1 / (1 + 0.11 tau) (conservative
+            // two-stream, g 0.85: the clouds' own ambient), and the Sun's light that the cloud scattered down joins it: its
+            // total transmission (1/2 + 3/4 mu) / (1 + 0.11 tau) (Eddington) less the direct beam, which the direct term already
+            // carries (cloudShadowT), in the direct term's units (1.5 mu, its colour). Before, the ground under an overcast took
+            // the CLEAR sky's light, blue and undimmed, with the direct Sun shadowed: a blue, bright shadow. Now it is grey,
+            // ~20-30% of the sunlit ground under a thick deck.
+            // (The map holds the means over each cell's columns: under scattered cumulus most columns are clear.)
+            if (cv2.gnd.x > 0.5) {
+                vec3 vt = cv2VtAt(enuX * hitPt.x + enuY * hitPt.y + enuZ * hitPt.z);
+                skyAmbientTerrain = skyAmbientTerrain * vt.x
+                                  + sunSpecTint * (1.5 * max(geoSunDot, 0.0) * vt.y * sunDiscVis / 3.2);
+            }
             if (cloud.moonMisc.y > 0.5) skyAmbientTerrain *= eclipseSkyLight(hitPt * 1e-3, sunDir, length(hitPt) - R_EARTH);
             skyAmbGate = 1.0;
         } else
@@ -5640,6 +5653,7 @@ void main() {
 #if !defined(SKY_ENV) && !defined(SKY_LITE)
 #ifdef SKY_SUN_SHADOW
             else if (dv == 29) dbg = cv2GroundSkyAt(geoSunDot, max(length(hitPt) - R_EARTH, 0.0)) * 2.0;
+            else if (dv == 31) { vec3 vt = cv2VtAt(enuX * hitPt.x + enuY * hitPt.y + enuZ * hitPt.z); dbg = vec3(log2(1.0 + vt.z) / 10.0, vt.x, vt.y); }   // log2(1 + tau) / 10, sky transmission, Sun scattered down
             else if (dv == 30) dbg = skyAmbientTerrain * 2.0;   // (skyambraw at x2: daylight fits; skyambhemi x2 likewise)
 #endif
             else if (dv == 28) dbg = vec3(padG.alb.a, padG.excl, clamp(dot(padG.glow, vec3(0.33)) + padG.pool, 0.0, 1.0));   // launch pads

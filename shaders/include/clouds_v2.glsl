@@ -200,6 +200,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // 2026-10-26: the sky pass's tonemap: x 1 = AgX (0 = 1 - e^-x with "Highlight roll-off"), y its saturation, z its
     // contrast (the look's power about mid grey), w spare
     vec4  tone;
+    // 2026-10-26: the ground's light under cloud: x 1 = the cloud over the ground (cv2Vt) dims and greys the sky light and
+    // adds the sunlight it scatters down (sat_sky.frag); yzw spare
+    vec4  gnd;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

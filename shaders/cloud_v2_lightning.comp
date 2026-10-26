@@ -95,6 +95,59 @@ vec3 cv2UndriftL(vec3 v)
 void main()
 {
     uint li = gl_LocalInvocationIndex;
+    // The cloud over the ground (2026-10-26, cloud_lightning.glsl cv2Vt; the last 4 workgroups): one of the kCv2VtL levels a
+    // frame; per cell two columns a visit at jittered points (R2 by the frame), from the sea-level sphere to 14 km in 20
+    // steps crowded low ((k / 20)^1.6: ~380 m under 3 km), the field read at an eighth of the cell (>= 100 m); each column's
+    // transmissions averaged, then a running mean over visits (0.15; restart when the level's plane moved half a cell or it
+    // was stale). The sky pass's ground light reads it (sat_sky.frag, cv2.gnd.x).
+    if (gl_WorkGroupID.x >= 5u + 13u * kCv2StvG) {
+        if (cv2.gnd.x < 0.5) return;
+        uint  cell = (gl_WorkGroupID.x - (5u + 13u * kCv2StvG)) * 256u + li;
+        int   lv   = int(uint(cv2.frame.x) % uint(kCv2VtL));
+        vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+        vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+        vec3  enuY = cross(enuZ, enuX);
+        mat3  E    = mat3(enuX, enuY, enuZ);
+        float cellM = kCv2VtCell0 * exp2(2.0 * float(lv));
+        float eyeH = terrainFrame.x + 2.0;
+        // Restart the means: stale level, or its plane moved > half a cell since the last visit (the cells are the eye's).
+        vec4  hz0  = cv2VtHdr[4 * lv + 2];
+        float age  = mod(cv2.frame.x - cv2VtHdr[4 * lv + 3].x + 65536.0, 65536.0);
+        bool  fresh = age > 16.0 || cv2VtHdr[4 * lv].w != cellM
+                   || length(hz0.xyz - enuZ) * R_EARTH > 0.5 * cellM;
+        barrier();   // (every thread has read the old header before cell 0 rewrites it)
+        if (cell == 0u) {
+            cv2VtHdr[4 * lv]     = vec4(enuX, cellM);
+            cv2VtHdr[4 * lv + 1] = vec4(enuY, 0.0);
+            cv2VtHdr[4 * lv + 2] = vec4(enuZ, 0.0);
+            cv2VtHdr[4 * lv + 3] = vec4(cv2.frame.x, 0.0, 0.0, 0.0);
+        }
+        if (cell >= uint(kCv2VtN * kCv2VtN)) return;
+        vec3  sunL = transpose(E) * cv2.sunE.xyz;
+        vec2  cc   = vec2(float(cell % uint(kCv2VtN)), float(cell / uint(kCv2VtN))) - 0.5 * float(kCv2VtN) + 0.5;
+        vec4  acc  = vec4(0.0);
+        [[dont_unroll]] for (int sc = 0; sc < 2; ++sc) {
+            float n  = float(2u * (uint(cv2.frame.x) / uint(kCv2VtL)) + uint(sc));
+            vec2  jt = fract(vec2(0.7548777, 0.5698403) * n + vec2(0.5)) - 0.5;   // R2 over the visits
+            vec3  d  = normalize(vec3((cc + jt) * cellM, R_EARTH));
+            float mu = max(dot(d, sunL), 0.0);
+            float tau = 0.0, hP = 0.0;
+            const int kVt = 20;
+            [[dont_unroll]] for (int k = 1; k <= kVt; ++k) {
+                float h1 = 14000.0 * pow(float(k) / float(kVt), 1.6);
+                float hm = 0.5 * (hP + h1), dz = h1 - hP;
+                hP = h1;
+                vec3  sp = d * (R_EARTH + hm);
+                CV2Field f = cv2Field(cv2Pos(vec3(sp.xy, sp.z - R_EARTH - eyeH), eyeH, E), -1.0, max(0.125 * cellM, 100.0));
+                tau += f.sigma * (1.0 - 0.8 * f.thin) * dz;
+            }
+            float td = 1.0 / (1.0 + 0.11 * tau);
+            acc += 0.5 * vec4(td, max(min((0.5 + 0.75 * mu) * td, 1.0) - exp(-tau / max(mu, 0.05)), 0.0), tau, 0.0);
+        }
+        int   ci  = lv * kCv2VtN * kCv2VtN + int(cell);
+        cv2Vt[ci] = fresh ? acc : mix(cv2Vt[ci], acc, 0.15);
+        return;
+    }
     // Review 22: workgroups 1-4 fill the rain map around the eye (cloud_lightning.glsl): the rain rate at each
     // cell, from the same field and the same formula as the march's rate at the eye, so the drops in each depth
     // layer (the rain particles, rain_particles.vert) follow the rain volume — walking toward a shaft, its drops appear in

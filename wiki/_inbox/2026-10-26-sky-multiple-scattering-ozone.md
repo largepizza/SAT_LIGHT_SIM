@@ -16,6 +16,12 @@ irradiance / pi, single + multiple scattering + ozone), with no civil-twilight c
 default) is the physical irradiance. The land's direct Sun takes the same exact path with ozone. Fog and dust are lit by
 the mean of both sky hemispheres, and fog's multiple scattering is the clouds' delta-Eddington field (a slab).
 
+Under cloud the ground's sky light comes through the cloud: a map of the cloud over the ground round the eye (five nested
+32 x 32 levels, 1-256 km cells, one baked a frame from two vertical columns per cell, running means) gives the sky light's
+diffuse transmission and the sunlight the cloud scatters down; under a thick deck the shadowed ground is neutral grey
+instead of clear-sky blue. Setting "Ground light under cloud (0/1)", `clouds_v2.ground_overcast`, default 1 (needs the
+sky model). Cost ~0.1-0.15 ms.
+
 ## History
 Before: single scattering plus a hand-made sky-lit term for air in the Earth's shadow, and no ozone on the sky's Sun
 path: the twilight sky read olive / brown-grey. The first ozone model (a thin shell at 25 km x the clamped secant) was
@@ -23,4 +29,7 @@ infinite at its tangent and drew a hard-edged ghost in the twilight sky; replace
 additive term needed a x1e4 scale to stay out of half-float subnormals (it drew contours). The ground's old sky light was
 the zenith radiance (4-step single scattering) x 0.4 x 8: within ~4% of the physical irradiance at a 60-deg Sun, but
 ~1.5x too blue by day, olive at twilight and cut off at -6 deg. Fog and dust took the zenith x "Sky ambient" and the
-fog the octave multiple scattering (which lit thin cloud 4-13x too brightly).
+fog the octave multiple scattering (which lit thin cloud 4-13x too brightly). Under an overcast only the direct Sun was
+shadowed, so the ground took the clear sky's blue light. A first cut of the cloud map stored the cells' mean optical
+depth: it turned scattered cumulus into a uniform thin sheet and brightened the ground between clouds ~40%; it stores the
+means of the columns' transmissions instead.

@@ -1758,9 +1758,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   Sun (harness_runs/ms/gs1c: debug views 29 `skyambhemi`, 30 `skyambraw10`, both x2) but was ~1.5x too blue by day and
   olive at twilight. The land's direct Sun takes `sunPathTauExact` (ozone). The fog/dust march's sky light is the
   hemispheres' mean x `cv2.amb.y` (with `sky_light_model`), and the fog's multiple scattering the clouds' delta-Eddington
-  field (with `ms_model`; far side = the fog below the sample, no finite-cloud leak). Cost -0.1..-0.3 ms. Not yet: the
-  ground's sky light under an OVERCAST is still the clear sky's (blue, unreduced: only the direct Sun is shadowed); dust's
+  field (with `ms_model`; far side = the fog below the sample, no finite-cloud leak). Cost -0.1..-0.3 ms. Not yet: dust's
   diffuse term (0.9) and ice fog's (0.3) are constants; SKY_LITE / SKY_ENV keep the zenith integral.
+  **The ground under cloud (2026-10-26, `clouds_v2.ground_overcast` 1, slot 353, UBO `cv2.gnd.x`; needs the sky model).**
+  Before, only the direct Sun was shadowed: under an overcast the ground took the CLEAR sky's light, blue and undimmed.
+  The lightning pass's last 4 workgroups bake `cv2Vt` (cloud_lightning.glsl, flash buffer after `cv2GroundSky`,
+  `kCv2VtOffset`): 5 nested 32 x 32 levels on the gnomonic plane at the eye's sea-level point, cells 1 / 4 / 16 / 64 / 256
+  km, one level a frame; per cell 2 jittered vertical columns a visit (sea level to 14 km, 20 steps, field at cell / 8,
+  >= 100 m, thin ice x 0.2), running mean 0.15 (restart on a stale level or a half-cell move). Stored as MEANS over the
+  columns, not of tau: x the sky light's diffuse transmission 1 / (1 + 0.11 tau), y the Sun scattered down ((1/2 + 3/4 mu)
+  x that, Eddington, less the direct beam), z tau. A mean tau treated scattered cumulus (tau ~25 over a third of a cell)
+  as a uniform tau-8 sheet that turned the Sun diffuse: the ground between clouds +40%. `cv2VtAt` (finest level first,
+  3-cell edge blends, clear past the last / when stale): `skyAmbientTerrain` = the sky's x x + sunSpecTint x 1.5 mu y (the
+  direct term's units). Under a thick deck shadowed ground keeps ~its brightness but goes neutral grey (sky B/R ~1.5 ->
+  ~1.3 on the ground, the diffuse Sun white). Cost +0.1..0.15 ms; still-view shimmer 0.07 -> 0.09 levels. Debug view 31
+  `groundtau` (R log2(1 + tau) / 10, G sky transmission, B Sun scattered down). harness_runs/ms/ov3-ov5.
 - **AgX tonemap (2026-10-26, branch cloud-ms; sat_sky.frag `skyAgX`).** The sky pass tonemapped 1 - e^-x per channel
   ("Highlight roll-off" blends a longer shoulder): each channel saturates alone, so bright orange skews yellow and sunlit
   cloud flattens to paper white (where the physical multiple scattering puts it). AgX (Sobotka; Wrensch's polynomial

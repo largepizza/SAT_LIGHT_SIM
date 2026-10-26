@@ -56,7 +56,11 @@ const int   kCv2StvK = 48;
 // from the Sun than s_e is in the terrain's shadow. Rebaked whole every frame. [(level * N + j) * N + i].
 const int   kCv2TshN = 128;
 const int   kCv2SkyPsiN = 32;
-const int   kCv2GroundSkyW = 64, kCv2GroundSkyH = 16;   // cv2GroundSky: every 4th column of the Sun table, rows 0..15
+const int   kCv2GroundSkyW = 64, kCv2GroundSkyH = 16;
+// The cloud over the ground (cv2Vt): kCv2VtL nested levels of kCv2VtN^2 columns on the gnomonic plane at the eye's
+// sea-level point, cells kCv2VtCell0 x 4^level (1 km .. 256 km: +-16 .. +-4096 km).
+const int   kCv2VtL = 5, kCv2VtN = 32;
+const float kCv2VtCell0 = 1000.0;   // cv2GroundSky: every 4th column of the Sun table, rows 0..15
 layout(std430, set = 0, binding = CV2_FLASH_BINDING)
 #if !defined(CV2_FLASH_WRITE) && !defined(CV2_EVAL_COUNT)
 readonly
@@ -101,6 +105,15 @@ buffer CV2FlashBuf {
     // of the upper hemisphere (single + multiple scattering, the sky's units), i.e. the irradiance / pi. [y * W + x]:
     // x the Sun table's column 4x (its cube-root cosine), y its row (800 m levels, 0 .. 12 km).
     vec4     cv2GroundSky[kCv2GroundSkyW * kCv2GroundSkyH];
+    // The cloud over the ground (2026-10-26, cloud_v2_lightning.comp, one level a frame): per level [4 l] its plane's east
+    // axis (ECEF) + the cell (m), [4 l + 1] north, [4 l + 2] up, [4 l + 3].x the frame it was baked in.
+    // cv2Vt[l N^2 + y N + x], running means over the cell's columns (2 a visit, jittered): x the sky light's diffuse
+    // transmission 1 / (1 + 0.11 tau), y the Sun's light scattered down through the cloud (its total transmission less the
+    // direct beam, per unit of the direct beam's irradiance), z the vertical tau (thin ice delta-scaled, x 0.2), w spare.
+    // Means of the columns, not the transmission of a mean column: scattered cumulus (tau ~25 over a third of the cell) is
+    // gaps and thick cloud, not a uniform tau-8 sheet that turns most of the Sun into diffuse light.
+    vec4     cv2VtHdr[kCv2VtL * 4];
+    vec4     cv2Vt[kCv2VtL * kCv2VtN * kCv2VtN];
 };
 // Psi at a point (bilinear): the radiance of the light the air scattered twice or more reaching it, as if isotropic,
 // in the sky's units; the in-scatter it gives is (sigma_R + sigma_M) x Psi (the phase's mean, 1).
@@ -117,6 +130,38 @@ vec3 cv2SkyPsiAt(float mu, float h)
 }
 // The sky's light on a horizontal face at height h with the Sun's zenith cosine mu (bilinear): the cosine-weighted mean
 // radiance of the sky above it (irradiance / pi), in the sky's units. Needs cv2_sunlut.glsl.
+// The cloud over a ground point (pE: its ECEF position from the Earth's centre, any length): cv2Vt's (x, y, z) at it, the
+// finest level holding it, bilinear, blended into the next over its outer 3 cells; clear sky (1, 0, 0) past the last or
+// where a level is stale (> 16 frames: the lightning pass did not run). Needs the cv2 UBO (cv2.frame.x).
+#ifdef CV2_PARAMS_BINDING
+vec3 cv2VtAt(vec3 pE)
+{
+    // Finest level first; each takes the share of the weight its edge fade gives, the rest goes on to the next (the same
+    // as mixing coarse to fine), so a point well inside level 0 reads one level.
+    vec3  res = vec3(0.0);
+    float rem = 1.0;
+    for (int l = 0; l < kCv2VtL; ++l) {
+        vec4 hx = cv2VtHdr[4 * l], hy = cv2VtHdr[4 * l + 1], hz = cv2VtHdr[4 * l + 2];
+        float age = mod(cv2.frame.x - cv2VtHdr[4 * l + 3].x + 65536.0, 65536.0);
+        float qz = dot(pE, hz.xyz);
+        if (age > 16.0 || hx.w <= 0.0 || qz <= 0.0) continue;
+        vec2 g = vec2(dot(pE, hx.xyz), dot(pE, hy.xyz)) / qz * (R_EARTH / hx.w) + 0.5 * float(kCv2VtN) - 0.5;
+        float e = min(min(g.x, g.y), float(kCv2VtN - 1) - max(g.x, g.y));
+        if (e <= 0.0) continue;
+        ivec2 i0 = ivec2(floor(g));
+        ivec2 i1 = min(i0 + 1, ivec2(kCv2VtN - 1));
+        vec2  f  = g - vec2(i0);
+        int   b  = l * kCv2VtN * kCv2VtN;
+        vec3 v = mix(mix(cv2Vt[b + i0.y * kCv2VtN + i0.x].xyz, cv2Vt[b + i0.y * kCv2VtN + i1.x].xyz, f.x),
+                     mix(cv2Vt[b + i1.y * kCv2VtN + i0.x].xyz, cv2Vt[b + i1.y * kCv2VtN + i1.x].xyz, f.x), f.y);
+        float w = smoothstep(0.0, 3.0, e);
+        res += rem * w * v;
+        rem *= 1.0 - w;
+        if (rem < 1e-3) break;
+    }
+    return res + rem * vec3(1.0, 0.0, 0.0);
+}
+#endif
 #ifdef CV2_SUNLUT_GLSL
 vec3 cv2GroundSkyAt(float mu, float h)
 {
