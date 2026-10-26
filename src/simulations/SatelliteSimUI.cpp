@@ -8953,6 +8953,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2WeatherWarpKm = c.value("weather_warp_km", cv2WeatherWarpKm);
         cv2DebugView = c.value("debug_view", cv2DebugView);
         cv2WxOneFace = c.value("weather_one_face", cv2WxOneFace);
+        cv2WxTickS = settingClamp(c.value("weather_tick_s", cv2WxTickS), 0.5f, 120.0f);
         cv2CoverClear = c.value("cover_clear", cv2CoverClear);
         cv2CoverFull = c.value("cover_full", cv2CoverFull);
         cv2Wobble = c.value("wobble", cv2Wobble);
@@ -9602,6 +9603,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"weather_warp_km", cv2WeatherWarpKm},
         {"debug_view", cv2DebugView},
         {"weather_one_face", cv2WxOneFace},
+        {"weather_tick_s", cv2WxTickS},
         {"cover_clear", cv2CoverClear},
         {"cover_full", cv2CoverFull},
         {"wobble", cv2Wobble},

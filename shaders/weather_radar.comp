@@ -83,7 +83,7 @@ void main()
     vec3  flowD = cv2FlowDisp(wd, sP);
     vec3  wdF  = cv2FlowWeatherDir(wd, flowD);
     float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
-    float cov  = clamp((textureLod(cv2WeatherTex, wdF, 1.0).r * cv2.look.x - cv2.cover.x) / covSpan, 0.0, 1.0);
+    float cov  = clamp((textureLod(cv2WeatherTex, wdF, CV2_WX_LOD(1.0)).r * cv2.look.x - cv2.cover.x) / covSpan, 0.0, 1.0);
 
     radar[c.y * N + c.x] = vec4(rr, cov, ground, max(core0, core1));
 }

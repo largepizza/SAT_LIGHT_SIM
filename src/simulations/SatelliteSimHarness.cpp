@@ -801,7 +801,7 @@ json SatelliteSim::harnessStateJson()
             nlohmann::json lag = nlohmann::json::array();
             for (double b : cv2WxBakedT) lag.push_back(b < -1e29 ? -1.0 : tNow - b);
             w["cube"] = {{"rebakes", cv2WxRebakes}, {"all_six_bakes", cv2WxAllSixBakes}, {"face_lag_s", lag},
-                         {"one_face", cv2WxOneFace}};
+                         {"one_face", cv2WxOneFace}, {"tick_s", cv2WxTickS}, {"bake_ms", cv2WxBakeMs}, {"bake_faces", cv2WxLastBakeFaces}, {"bake_ms_per_face", cv2WxBakeMsPerFace}};
         }
         {   // Each tornado drawn: its funnel's base (the drawn cloud's, probed on the GPU) and the light on it.
             nlohmann::json tl = nlohmann::json::array();
@@ -5172,6 +5172,12 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (!err.empty())
             fail("shaders reload: " + err);
         r["stats"] = stats;
+        if (c.has("weather"))
+        {
+            const std::string werr = reloadWeatherBake(*ctx_, c.str("weather"));
+            if (!werr.empty())
+                fail("shaders reload: weather: " + werr);
+        }
         // The sky pass (sky= / sky_taa=), and back to the shipped SPVs on a bare reload after an override.
         if (!c.str("sky").empty() || !c.str("sky_taa").empty() || !skyFragSpvOverride.empty() || !skyTaaFragSpvOverride.empty())
         {

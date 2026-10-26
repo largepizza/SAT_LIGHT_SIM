@@ -1755,7 +1755,46 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   behind, every face at its own moment: the storms' stamped cloud stepped face by face; and past a 15-min step
   updateStorms makes every face stale each frame and the worst-first pick took face 0 every time, freezing the other five
   until the warp stopped. GPU within noise at 1 h/s from orbit (29.95 vs 29.88 ms). `clouds_v2.weather_one_face` (no UI)
-  restores the old schedule (A/B); harness `state` -> `weather.cube` (rebakes, all_six_bakes, face_lag_s). The bake
+  restores the old schedule (A/B); harness `state` -> `weather.cube` (rebakes, all_six_bakes, face_lag_s, tick_s, and
+  since 2026-10-25 the bake's own GPU timestamps: bake_ms, bake_faces, bake_ms_per_face).
+  **Resolution and tick (2026-10-25, the user: overlooking a hurricane from space, "the square cells update and move in a
+  blocky manner", clouds jumping):**
+  - **2048 faces, ~5 km** (`kCv2WeatherFace`, 9 mips): the finest level matches the 8K source map. Every OTHER read names
+    the LOGICAL mip of the 1024 cube it was written against, `CV2_WX_LOD(l)` = l + 1 (clouds_v2.glsl; also the march's two
+    mip-2 reads, the radar, sat_sky.frag's flat layers at +1, `cv2WeatherBilinear` and the ground shadow's `gCv2WxLod`),
+    so only `cv2WeatherSmooth`'s fine read (the low cloud's placement) gained resolution; types, rain, ground, the far
+    field's fraction and every coarse lookup keep their scale. The bake's push constants: `srcLod` = the mip (a 2048
+    texel is a source texel), `remap.w` = the logical mip (levels 0 and 1 untouched, the coarser ones true mean coverage),
+    `pad` = 2 at level 0 (the convective-variance ring at the radius it was tuned at). **Level 0 computes the COVERAGE and
+    the PRECIPITATION** (the map's 2x2 taps through both advected copies, the storm stamp, growth, the afternoon term with
+    a ~40-km read for its local mean; the precipitation from that coverage, the variance ring read only where the cloud is
+    deep enough to rain) and takes type and ground from level 1 (`wxLevel1`, bake binding 5, a sampled 2D-array view of
+    mip 1 in GENERAL: levels 1..8 are dispatched first, a barrier, then 0; `recordWeatherBakeDispatches`). The full
+    computation at 2048 was 1.85 ms a face; the precipitation from level 1 (upsampled) rained over every texel the 10-km
+    field touched: +4.5 ms of march in the matrix's storm cell (11.2 -> 15.5 ms), type and ground from it cost nothing.
+  - **The storm stamp is averaged over the texel where a cyclone reaches** (`stormStampTowers` once at the centre, the
+    cyclone part `stormStampFinish` at 3 x 3 points: a hurricane's arms, filaments and eye edge are a few km sharp, and
+    point-sampled at the texel centre they switched whole texels on and off as the storm moved ~45 m/s through the map's
+    frame — the drift plus its track). The towers' and lines' fields are smooth over tens of km: supersampling them over
+    the tropics' storm envelopes cost ~1 ms a 2048 face.
+  - **Tick**: with storms stamped a face is due once "Weather cube tick (s)" behind (`clouds_v2.weather_tick_s` 10, no UI;
+    was a fixed 45 s: every re-bake stepped a hurricane's arms ~2 km). 10 s is <= ~0.5 km of a hurricane's motion, a tenth
+    of a texel. Faces out of view (the cap the eye sees, acos(R / (R + h)), + 54.7 deg of a face's half-width + 6 deg) are
+    due at a quarter of the rate. Outside time warp a due face is baked over `kCv2WxSlices` (4) frames of rows (`wx.z` =
+    the first row; ~0.13-0.32 ms a slice). In time warp (`6 x frameDt > due`) the faces go in one dispatch with a FACE MASK
+    (`evo1.w`'s bits; the dispatch's z is the n-th set face) and a quota of ceil(faces in view x frameDt / tick) a frame,
+    the most behind first, in view first, one out of view when the quota leaves room; all six after a settings change or
+    a jump. With time held (paused, `wait settle`) every face is re-baked when the storms uploaded change
+    (`cv2WxStormSig`: tower / shield / cyclone counts): a cube baked on a jump's frame before the catalog had that moment's
+    storms kept a hurricane without its arms until time ran.
+  - Measured (RTX 3070 Ti, 1600x900, the user's settings, Hurricane Sara from 950 km): march 16.13 vs 16.22 ms (1024),
+    128 registers; bake ~0.7-1.3 ms a face (level 0 ~0.4 + stamp, level 1 ~0.27, coarser ~0.2); 1x: a 0.13-0.3 ms slice
+    on ~5% of frames; 1 min/s: slices, ~0.4 ms a frame; 5 min/s: 2 faces a frame (~2.6 ms); 1 h/s: 4 faces (~5 ms, was
+    all six at 1024 ~4.2 ms); GEO: 6. Frame-to-frame change at 10x (p99.9 of a capture pair's difference): the re-bake
+    spikes (11-15 levels every 45 s) gone (3-4 uniform, the rest lightning); 5 min/s median 32 -> 21. Tried: a cubic
+    B-spline read of the cube (`-DCV2_WX_BSPLINE`, four bilinear fetches: smooth outlines, +0.3 ms, but it thins the
+    narrow arms at 10 km; left as a compile-time option). The bake A/Bs in one app: harness `shaders reload weather=<spv>`.
+  The bake
   (`cloud_v2_weather.comp`) reads the map through TWO copies advected by a slow curl wind (`evoWind`,
   ~4000 km, turning over a day), each over its own window P offset by P/2 and weighted sin^2 of its phase
   (0 at its reset): the flow-map double-phase trick, so the map moves locally and never drifts from itself

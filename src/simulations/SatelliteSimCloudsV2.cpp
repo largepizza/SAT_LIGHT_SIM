@@ -21,6 +21,7 @@
 
 #include "Log.h"
 
+#include <bitset>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -30,8 +31,11 @@ namespace
 {
 constexpr uint32_t kCv2NoiseRes = 128;
 constexpr uint32_t kCv2NoiseMips = 8;     // 128 .. 1: the field reads them at the pixel footprint
-constexpr uint32_t kCv2WeatherFace = 1024;
-constexpr uint32_t kCv2WeatherMips = 8;   // 1024 .. 8
+// 2048 (2026-10-25): the finest level matches the 8K source map (~5 km); every other level keeps the scale it had at
+// 1024 one index up (the shaders read them through CV2_WX_LOD, logical mip + 1). From orbit the 10-km texels showed as
+// square cells and stair-stepped cloud edges round a hurricane.
+constexpr uint32_t kCv2WeatherFace = 2048;
+constexpr uint32_t kCv2WeatherMips = 9;   // 2048 .. 8
 
 VkImageView makeView(VkDevice dev, VkImage img, VkImageViewType type, VkFormat fmt,
                      uint32_t baseMip, uint32_t mips, uint32_t layers)
@@ -370,7 +374,8 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                                        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER});   // 4: the storms
+                                                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,     // 4: the storms
+                                                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});   // 5: level 1 (for level 0)
         VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GpuWeatherPC)};
         VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pli.setLayoutCount = 1;
@@ -381,7 +386,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         vkCreatePipelineLayout(dev, &pli, nullptr, &pl);
         VkPipeline pipe = makeComputePipeline(ctx, "shaders/cloud_v2_weather.comp.spv", pl);
 
-        VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 * kCv2WeatherMips},
+        VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * kCv2WeatherMips},
                                       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kCv2WeatherMips},
                                       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kCv2WeatherMips}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -405,13 +410,16 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
         std::vector<VkImageView> mipViews(kCv2WeatherMips);
+        // The 2048 level takes its type, rain and ground from level 1 (10 km): level 1 read through this, in GENERAL.
+        cv2WxL1View = makeView(dev, cv2WeatherImg, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 6);
+        VkDescriptorImageInfo l1Info{cv2ClampSampler, cv2WxL1View, VK_IMAGE_LAYOUT_GENERAL};
         VkCommandBuffer cmd = ctx.beginOneTimeCommands();
         transitionAll(cmd, cv2WeatherImg, kCv2WeatherMips, 6, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                       0, VK_ACCESS_SHADER_WRITE_BIT,
                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
-        // The source map is 8192 wide: ~0.044 deg/texel. A 1024 face texel is ~0.088 deg at its
-        // centre, one source mip up; each weather mip is one more.
+        // The source map is 8192 wide: ~0.044 deg/texel, a 2048 face texel at its centre; each weather mip is one more
+        // (weatherEvoPC's srcLod).
         const float srcLod0 = 1.0f;
         for (uint32_t m = 0; m < kCv2WeatherMips; ++m)
         {
@@ -424,20 +432,19 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             vkAllocateDescriptorSets(dev, &ai, &set);
             VkDescriptorImageInfo outInfo{VK_NULL_HANDLE, mipViews[m], VK_IMAGE_LAYOUT_GENERAL};
             VkDescriptorBufferInfo stormInfo{stormBuf, 0, VK_WHOLE_SIZE};   // created at the top of createCloudsV2
-            VkWriteDescriptorSet w[5] = {
+            VkWriteDescriptorSet w[6] = {
                 imageWrite(set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsInfo),
                 imageWrite(set, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specInfo),
                 imageWrite(set, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outInfo),
                 imageWrite(set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo),
-                bufferWrite(set, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &stormInfo)};
-            frameSafeUpdateDescriptorSets(dev, 5, w, 0, nullptr);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &set, 0, nullptr);
+                bufferWrite(set, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &stormInfo),
+                imageWrite(set, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &l1Info)};
+            frameSafeUpdateDescriptorSets(dev, 6, w, 0, nullptr);
             cv2WxSets.push_back(set);
-            GpuWeatherPC pcv = weatherEvoPC(-1, m);
-            vkCmdPushConstants(cmd, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pcv), &pcv);
-            uint32_t g = std::max(1u, ((kCv2WeatherFace >> m) + 7) / 8);
-            vkCmdDispatch(cmd, g, g, 6);
         }
+        cv2WxPipeline = pipe;
+        cv2WxPipeLayout = pl;
+        recordWeatherBakeDispatches(cmd, -1, 0u);
         (void)srcLod0;
         transitionAll(cmd, cv2WeatherImg, kCv2WeatherMips, 6, VK_IMAGE_LAYOUT_GENERAL,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -446,8 +453,6 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         ctx.endOneTimeCommands(cmd);
         // Kept for the evolution's re-bakes (recordWeatherEvolution); destroyed with the rest.
         cv2WxMipViews = mipViews;
-        cv2WxPipeline = pipe;
-        cv2WxPipeLayout = pl;
         cv2WxPool = pool;
         cv2WxSetLayout = bl;
         const double t0 = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -1021,6 +1026,8 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     if (cv2SunLutImg) vkDestroyImage(device, cv2SunLutImg, nullptr);
     if (cv2SunLutMem) vkFreeMemory(device, cv2SunLutMem, nullptr);
     cv2SunLutView = VK_NULL_HANDLE; cv2SunLutImg = VK_NULL_HANDLE; cv2SunLutMem = VK_NULL_HANDLE;
+    if (cv2WxL1View) vkDestroyImageView(device, cv2WxL1View, nullptr);
+    cv2WxL1View = VK_NULL_HANDLE;
     for (VkImageView v : cv2WxMipViews)
         vkDestroyImageView(device, v, nullptr);
     cv2WxMipViews.clear();
@@ -1034,6 +1041,8 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2LightningPipeline = VK_NULL_HANDLE;
     if (cv2PassQuery) vkDestroyQueryPool(device, cv2PassQuery, nullptr);
     cv2PassQuery = VK_NULL_HANDLE;
+    if (cv2WxQuery) vkDestroyQueryPool(device, cv2WxQuery, nullptr);
+    cv2WxQuery = VK_NULL_HANDLE;
     if (cv2FlashMem) { vkUnmapMemory(device, cv2FlashMem); cv2FlashRealMapped = nullptr; }
     if (ctx_)
         ctx_->slottedDestroy(&cv2FlashHeadBuf);
@@ -1933,8 +1942,9 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
 {
     GpuWeatherPC pc{};
     pc.faceSize = (int32_t)(kCv2WeatherFace >> mip);
-    pc.srcLod = 1.0f + (float)mip;   // the 8192-wide source's texels are ~half a face texel's at mip 0
+    pc.srcLod = (float)mip;   // the 8192-wide source's texel is ~a 2048 face texel
     pc.face = face;
+    pc.pad = mip == 0 ? 2.0f : 1.0f;   // the convective-variance ring's radius in texels x this: the 1024 scale it was tuned at
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const double P = std::max((double)cv2EvoWindowH, 0.1) * 3600.0;
     const double ph0 = t / P - std::floor(t / P), ph1 = ph0 + 0.5 - std::floor(ph0 + 0.5);
@@ -1955,13 +1965,75 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
     pc.evo2 = glm::vec4(glm::vec3(glm::normalize(sm)), std::max(cv2EvoDiurnal, 0.0f));
     // The drift itself: the land / sea mask is Earth-fixed, the map is not (cloud_v2_weather.comp).
     pc.wx = glm::vec4((float)std::cos(dr), (float)std::sin(dr), 0.0f, 0.0f);
-    pc.remap = glm::vec4(cv2Coverage, cv2CoverClear, std::max(cv2CoverFull, cv2CoverClear + 0.01f), (float)mip);
+    // w = the LOGICAL mip (the coarse levels' true mean coverage; levels 0 and 1, 5 and 10 km, are untouched).
+    pc.remap = glm::vec4(cv2Coverage, cv2CoverClear, std::max(cv2CoverFull, cv2CoverClear + 0.01f),
+                         (float)(mip > 0 ? mip - 1 : 0));
     // The storms' own cloud (cloud_v2_weather.comp stormStamp): the tower geometry cv2ColumnSigma draws with.
     pc.storm = glm::vec4(std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f, cv2CbCumulusReachKm * 1000.0f,
                          std::clamp(cv2CbHeadDriftKm, 0.0f, 30.0f) * 1000.0f, std::clamp(cv2CbFlare, 0.5f, 3.0f));
     pc.storm2 = glm::vec4(stormObjects && cv2CbColumns > 0.0f ? std::max(stormCloudField, 0.0f) : 0.0f,
                           std::max(stormMoat, 0.0f), 0.0f, 0.0f);
     return pc;
+}
+
+// The bake's dispatches for one face (face >= 0), all six (face -1, mask 0) or the faces in mask (face -1): levels 1..8,
+// then level 0 (2048), which reads level 1 (cloud_v2_weather.comp). The cube is in GENERAL throughout.
+void SatelliteSim::recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, uint32_t faceMask, int slice)
+{
+    uint32_t nFaces = face >= 0 ? 1u : 0u;
+    if (face < 0)
+        for (int f = 0; f < 6; ++f)
+            nFaces += (faceMask == 0u || (faceMask >> f) & 1u) ? 1u : 0u;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2WxPipeline);
+    for (uint32_t k = 1; k <= kCv2WeatherMips; ++k)
+    {
+        const uint32_t m = k % kCv2WeatherMips;
+        if (m == 0)
+        {
+            VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0,
+                                 nullptr, 0, nullptr);
+        }
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2WxPipeLayout, 0, 1, &cv2WxSets[m], 0, nullptr);
+        GpuWeatherPC pcv = weatherEvoPC(face, m);
+        pcv.evo1.w = (float)(face < 0 ? faceMask : 0u);
+        const uint32_t size = kCv2WeatherFace >> m;
+        uint32_t g = std::max(1u, (size + 7) / 8), gy = g;
+        if (slice >= 0)
+        {
+            // Rows [slice, slice + 1) / kCv2WxSlices of this level (levels under 64 rows: all of them with slice 0).
+            if (size < 64u)
+            {
+                if (slice != 0)
+                    continue;
+            }
+            else
+            {
+                gy = g / kCv2WxSlices;
+                pcv.wx.z = (float)(slice * gy * 8u);
+            }
+        }
+        vkCmdPushConstants(cmd, cv2WxPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pcv), &pcv);
+        vkCmdDispatch(cmd, g, gy, nFaces);
+    }
+}
+
+std::string SatelliteSim::reloadWeatherBake(VulkanContext &ctx, const std::string &spv)
+{
+    if (!cv2WxPipeLayout)
+        return "no weather bake";
+    VkPipeline pipe = makeComputePipeline(ctx, spv.empty() ? "shaders/cloud_v2_weather.comp.spv" : spv.c_str(), cv2WxPipeLayout);
+    if (!pipe)
+        return "could not build the weather bake from " + spv;
+    vkDeviceWaitIdle(ctx.device);
+    if (cv2WxPipeline)
+        vkDestroyPipeline(ctx.device, cv2WxPipeline, nullptr);
+    cv2WxPipeline = pipe;
+    for (double &b : cv2WxBakedT)
+        b = -1e30;   // every face re-baked with it
+    return "";
 }
 
 uint64_t SatelliteSim::weatherBakeHash() const
@@ -1986,7 +2058,8 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const uint64_t h = weatherBakeHash();
     const bool evolving = cv2EvoWindMps > 0.0f || cv2EvoGrowth > 0.0f || cv2EvoDiurnal > 0.0f;
-    // The storms' stamp (stormStamp) follows the towers' lifecycles (tens of minutes): a face at most ~45 s behind.
+    // The storms' stamp (stormStamp) moves with them (a hurricane ~45 m/s through the map's frame): a face at most
+    // "Weather cube tick" (10 s: <= ~0.5 km of a hurricane's motion, a tenth of a texel) behind.
     const bool stormsStamped = stormObjects && cv2CbColumns > 0.0f && stormCloudField > 0.0f;
     if (h != cv2WxHash)
     {
@@ -1994,19 +2067,47 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
             b = -1e30;   // every face stale: re-bake with the new settings (off: back to the static map)
         cv2WxHash = h;
     }
+    // With time held (paused, `wait settle`), nothing comes due: a cube baked on the frame of a jump, before the storm
+    // catalog had that moment's storms up, kept a hurricane without its arms until time ran again. Re-bake every face when
+    // the storms uploaded change while sim time stands still.
+    const uint64_t sig = ((uint64_t)stormStats.towers << 40) ^ ((uint64_t)stormStats.shields << 20) ^ (uint64_t)stormStats.cyclones;
+    if (t == cv2WxPrevT && sig != cv2WxStormSig)
+        for (double &b : cv2WxBakedT)
+            b = -1e30;
+    cv2WxStormSig = sig;
     // A face is due once it is this much sim time behind (a few km of wind drift at most).
     double due = evolving ? std::clamp(300.0 / std::max((double)cv2EvoWindMps, 1.0), 5.0, 120.0) : 1e30;
     if (stormsStamped)
-        due = std::min(due, 45.0);
+        due = std::min(due, (double)std::clamp(cv2WxTickS, 0.5f, 120.0f));
+    // The faces the eye can see (2026-10-25): a face's directions lie within 54.7 deg of its axis; the eye sees a cap of
+    // acos(R / (R + h)) about it, + 6 deg for the flow's and the evolution's displacements. Faces out of view are due at
+    // a quarter of the rate (a 2048 face is ~1 ms to bake), and are caught up the frame they come into view.
+    uint32_t viewMask = 0u;
+    {
+        const double dr = cloudDriftPhase();
+        const glm::dvec3 e = glm::normalize(glm::dvec3(obsDir));
+        const glm::dvec3 m(e.x * std::cos(dr) - e.y * std::sin(dr), e.x * std::sin(dr) + e.y * std::cos(dr), e.z);
+        const double h = std::max((double)obsHeightOffset, 0.0);
+        const double cap = std::acos(std::clamp(satphot::kEarthRadiusM / (satphot::kEarthRadiusM + h), -1.0, 1.0)) + glm::radians(6.0 + 54.74);
+        const double ax[6] = {m.x, -m.x, m.y, -m.y, m.z, -m.z};
+        for (int f = 0; f < 6; ++f)
+            if (std::acos(std::clamp(ax[f], -1.0, 1.0)) < cap)
+                viewMask |= 1u << f;
+    }
     int face = -1;
     double worst = 0.0;
     int nDue = 0;
+    uint32_t dueMask = 0u;
     for (int f = 0; f < 6; ++f)
     {
+        const bool inView = (viewMask >> f) & 1u;
         const double lag = std::fabs(t - cv2WxBakedT[f]);
-        if (cv2WxBakedT[f] < -1e29 || lag > due)
-            ++nDue;
-        if ((cv2WxBakedT[f] < -1e29 || lag > due) && lag > worst)
+        const bool isDue = cv2WxBakedT[f] < -1e29 || lag > (inView ? due : 4.0 * due);
+        if (!isDue)
+            continue;
+        ++nDue;
+        dueMask |= 1u << f;
+        if (lag > worst)
         {
             worst = lag;
             face = f;
@@ -2020,19 +2121,79 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
     const double frameDt = std::fabs(t - cv2WxPrevT);
     cv2WxPrevT = t;
     const bool allSix = face >= 0 && (nDue == 6 || 6.0 * frameDt > due) && !cv2WxOneFace;
+    // ...the due faces in view, and the most behind of those out of view (or all six after a jump / a settings change).
+    // (Every face after a settings change or a jump the cube must follow everywhere: cv2WxBakedT < -1e29.)
+    uint32_t faceMask = 0u;
+    bool anyInvalid = false;
+    for (double b : cv2WxBakedT)
+        anyInvalid = anyInvalid || b < -1e29;
+    if (allSix && !anyInvalid)
+    {
+        // A quota scaled by the warp, so faces come due on different frames: as many faces a frame as the faces in view
+        // x the frame's sim time / the tick (1 min/s: one a frame; 1 h/s: all in view), the most behind first, in view
+        // first; one out of view only when the quota leaves room.
+        int nVis = 0;
+        for (int f = 0; f < 6; ++f)
+            nVis += (viewMask >> f) & 1u ? 1 : 0;
+        int quota = std::clamp((int)std::ceil((double)std::max(nVis, 1) * frameDt / due), 1, 6);
+        for (int pass = 0; pass < 2 && quota > 0; ++pass)
+            for (int take = (pass == 0 ? quota : std::min(quota, 1)); take > 0; --take)
+            {
+                int best = -1;
+                double bl = -1.0;
+                for (int f = 0; f < 6; ++f)
+                {
+                    const bool inView = (viewMask >> f) & 1u;
+                    if (((dueMask >> f) & 1u) == 0u || ((faceMask >> f) & 1u) || inView != (pass == 0))
+                        continue;
+                    const double lag = std::fabs(t - cv2WxBakedT[f]);
+                    if (lag > bl)
+                    {
+                        bl = lag;
+                        best = f;
+                    }
+                }
+                if (best < 0)
+                    break;
+                faceMask |= 1u << best;
+                --quota;
+            }
+        if (faceMask == 63u || faceMask == 0u)
+            faceMask = 0u;   // (0: all six)
+    }
+    // Outside time warp a due face is re-baked over kCv2WxSlices frames of rows (one 2048 face is ~1.2 ms of GPU).
+    int slice = -1;
+    if (allSix)
+        cv2WxSliceFace = -1;
+    else if (cv2WxSliceFace >= 0)
+    {
+        face = cv2WxSliceFace;
+        slice = cv2WxSliceNext++;
+        if (cv2WxSliceNext >= kCv2WxSlices)
+            cv2WxSliceFace = -1;
+    }
+    else if (face >= 0)
+    {
+        cv2WxSliceFace = face;
+        cv2WxSliceNext = 1;
+        slice = 0;
+    }
     if (face < 0)
         return;
-    if (stormsStamped)
+    if (stormsStamped && slice <= 0)
         buildStormEnvIndex();   // the storms' cloud field: the towers as they are now, where the cube is read for them
     if (allSix)
     {
-        for (double &b : cv2WxBakedT)
-            b = t;
-        cv2WxRebakes += 6;
+        for (int f = 0; f < 6; ++f)
+            if (faceMask == 0u || (faceMask >> f) & 1u)
+            {
+                cv2WxBakedT[f] = t;
+                ++cv2WxRebakes;
+            }
         ++cv2WxAllSixBakes;
         face = -1;
     }
-    else
+    else if (slice == 0)
     {
         cv2WxBakedT[face] = t;
         ++cv2WxRebakes;
@@ -2053,19 +2214,25 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
                              0, nullptr, 0, nullptr, 1, &b);
     };
+    if (cv2WxQuery)
+    {
+        vkCmdResetQueryPool(cmd, cv2WxQuery, 2 * cv2WxSlot, 2);
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, cv2WxQuery, 2 * cv2WxSlot);
+    }
     faceBarrier(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT,
                 VK_ACCESS_SHADER_WRITE_BIT);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2WxPipeline);
-    for (uint32_t m = 0; m < kCv2WeatherMips; ++m)
-    {
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2WxPipeLayout, 0, 1, &cv2WxSets[m], 0, nullptr);
-        GpuWeatherPC pcv = weatherEvoPC(face, m);
-        vkCmdPushConstants(cmd, cv2WxPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pcv), &pcv);
-        uint32_t g = std::max(1u, ((kCv2WeatherFace >> m) + 7) / 8);
-        vkCmdDispatch(cmd, g, g, face < 0 ? 6u : 1u);
-    }
+    recordWeatherBakeDispatches(cmd, face, faceMask, slice);
     faceBarrier(VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_ACCESS_SHADER_READ_BIT);
+    if (cv2WxQuery)
+    {
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, cv2WxQuery, 2 * cv2WxSlot + 1);
+        cv2WxStamped[cv2WxSlot] = true;
+        int n = 0;
+        for (int f = 0; f < 6; ++f)
+            n += (face >= 0 ? f == face : (faceMask == 0u || (faceMask >> f) & 1u)) ? 1 : 0;
+        cv2WxStampedFaces[cv2WxSlot] = slice >= 0 ? (float)n / (float)kCv2WxSlices : (float)n;
+    }
 }
 
 void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc)
@@ -2096,6 +2263,29 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         qi.queryCount = kCv2PassStamps * VulkanContext::kMaxFramesInFlight;
         if (vkCreateQueryPool(ctx.device, &qi, nullptr, &cv2PassQuery) != VK_SUCCESS)
             cv2PassQuery = VK_NULL_HANDLE;
+    }
+    // The weather bake's own GPU time: the stamps of the frame this slot last held (its fence has been waited on).
+    cv2WxSlot = ctx.frameSlot;
+    if (cv2WxQuery && cv2WxStamped[cv2WxSlot])
+    {
+        uint64_t ts[2];
+        if (vkGetQueryPoolResults(ctx.device, cv2WxQuery, 2 * cv2WxSlot, 2, sizeof(ts), ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) ==
+            VK_SUCCESS)
+        {
+            cv2WxBakeMs = (float)((double)(ts[1] - ts[0]) * ctx.timestampPeriodNs * 1e-6);
+            cv2WxLastBakeFaces = cv2WxStampedFaces[cv2WxSlot];
+            const float per = cv2WxBakeMs / std::max(cv2WxLastBakeFaces, 0.25f);
+            cv2WxBakeMsPerFace += (per - cv2WxBakeMsPerFace) * 0.1f;
+        }
+    }
+    cv2WxStamped[cv2WxSlot] = false;
+    if (!cv2WxQuery && ctx.timestampPeriodNs > 0.0)
+    {
+        VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qi.queryCount = 2 * VulkanContext::kMaxFramesInFlight;
+        if (vkCreateQueryPool(ctx.device, &qi, nullptr, &cv2WxQuery) != VK_SUCCESS)
+            cv2WxQuery = VK_NULL_HANDLE;
     }
     fillCloudsV2Params(ctx, cpc);   // cloud_march.comp reads the v2 UBO (beams, debug views) either way
     updateStorms();                 // the storm objects' towers at this sim time (march, lightning, beams, clipmap)

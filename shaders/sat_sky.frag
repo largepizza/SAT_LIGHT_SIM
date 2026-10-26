@@ -2710,7 +2710,7 @@ float oceanSeaState(vec3 dE) {
     if (g <= 0.0) return 1.0;
     float dph  = cloud.cloudPhase * cloud.layers[0].driftMult;
     vec3  dMap = vec3(dE.x * cos(dph) - dE.y * sin(dph), dE.x * sin(dph) + dE.y * cos(dph), dE.z);
-    vec4  w    = textureLod(earthCloudsCube, dMap, 3.0);
+    vec4  w    = textureLod(earthCloudsCube, dMap, 4.0);
     float storm = smoothstep(0.45, 0.85, w.r) * (0.35 + 0.65 * smoothstep(0.35, 0.8, w.g)) + 0.6 * w.b;
     gSeaRain = max(w.b, smoothstep(0.75, 1.0, w.r) * (0.3 + 0.7 * smoothstep(0.55, 0.9, w.g)));
     float latA  = abs(dE.z);                                   // sin |lat|
@@ -2798,7 +2798,7 @@ void evalCloudLayer(
     float dph   = cloudPhase * driftMult;
     vec3  dE    = cECEF / cL;
     vec3  dMap  = vec3(dE.x * cos(dph) - dE.y * sin(dph), dE.x * sin(dph) + dE.y * cos(dph), dE.z);
-    float raw   = textureLod(earthCloudsCube, dMap, max(mipLod - 1.0, 0.0)).r;
+    float raw   = textureLod(earthCloudsCube, dMap, max(mipLod, 1.0)).r;   // (the cube's level 0 is 2048: one finer than this was written for)
     float alpha = clamp((raw - (1.0 - coverage)) * density, 0.0, alphaMax);
     if (alpha <= 0.0) return;
 
@@ -4063,7 +4063,7 @@ void main() {
         if (cv2.mid3.w > 0.0 && hLo < 12000.0) {
             vec3  dS  = normalize(sp.x * enuX + sp.y * enuY + sp.z * enuZ);
             float dph = cloud.cloudPhase * cloud.layers[0].driftMult;
-            vec4  wx  = textureLod(earthCloudsCube, vec3(dS.x * cos(dph) - dS.y * sin(dph), dS.x * sin(dph) + dS.y * cos(dph), dS.z), 3.0);
+            vec4  wx  = textureLod(earthCloudsCube, vec3(dS.x * cos(dph) - dS.y * sin(dph), dS.x * sin(dph) + dS.y * cos(dph), dS.z), 4.0);
             densM += cv2.mid3.w * (0.25 + 0.75 * smoothstep(0.05, 0.4, wx.r) + 0.6 * wx.b) * stepAvg.z
                    * (1.0 - smoothstep(7000.0, 12000.0, hLo)) * segLen;
         }
