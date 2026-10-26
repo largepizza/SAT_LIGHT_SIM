@@ -12,7 +12,8 @@ Windows the encoder is the one that ships with Windows (Media Foundation; a hard
 elsewhere an ffmpeg on PATH; nothing is bundled. Recording costs ~nothing on the frame (the copy is read back two frames
 later and encoded on a worker thread): at 1920x1009 the frame time and the GPU moved by 0-0.5 ms (within run-to-run
 noise). ~105 MB a minute of motion
-at 1080p60, ~40-50 MB of a still view, ~15 MB at 50% / 30 fps.
+at 1080p60, ~40-50 MB of a still view, ~15 MB at 50% / 30 fps. The Cinematics window's "Export video" writes the
+preview export as one .mp4 (every frame, no motion blur) instead of PNG frames.
 
 **Harness.** `video start <name> [fps=] [scale=] [ui=on]` / `video stop` (videos/<name>.mp4 in the run folder; frames,
 drops, repeats, encode cost, size) and `path play ... video=<name>` (every path frame, lossless, no PNGs: ~4 s for a

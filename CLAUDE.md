@@ -2806,6 +2806,8 @@ frame), `src/VideoEncoder.h/.cpp` (NV12 BT.709 limited range -> H.264 .mp4: Wind
   `recordScreenshotCopy` (`videoPostUiCopy`). The photo target is never recorded.
 - Player: `KB_VIDEO` (F6) / the HUD's `TimeVideoBtn` -> `<user data>/videos/`; Display tab VIDEO (`display.video_ui`,
   `video_fps`, `video_scale`). Harness: `video start|stop|state`, `path play video=` (docs/HARNESS.md).
+- The Cinematics window's "Export video" (`cineVideoExport_`, harness `cine export video`) is the preview export into
+  one lossless .mp4 (cineTick requests each frame and holds the pose while no readback buffer is free); no motion blur.
 - Measured (RTX 3070 Ti, 1920x1009, mf-hw): frame time / GPU within 0-0.5 ms of not recording; the worker's NV12
   conversion ~3.7 ms and encode ~0.8 ms a 1920x1008 frame (one thread: ~200 fps); ~105 MB a minute of motion, ~40-50
   of a still view; real time at ~40 fps into a 60-fps video: 0 drops, a third of the frames repeated.

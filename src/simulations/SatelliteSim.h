@@ -6536,6 +6536,7 @@ private:
     double cineShotSim_ = 0.0;            // the shot's sim time at its start (when no key sets it)
     float  cineFixedDt_ = 0.0f;           // > 0 while exporting: 1 / fps (frameDt)
     bool   cineSavedPaused_ = false;
+    bool   cineVideoExport_ = false; // the preview export writes one .mp4 (video_) instead of PNG frames (2026-10-25)
     float  cineSavedFullRateKm_ = 0.0f, cineSavedSparse_ = 0.0f;
     float  cineSavedPointSigma_ = 0.0f, cineSavedPointMax_ = 0.0f, cineSavedGlare_ = 0.0f;
     std::string cineOutDir_, cineStatus_;

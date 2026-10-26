@@ -5565,19 +5565,24 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     cineStart(CineRun::Play, oneShot);
                 else if (mode == "hq")
                     cineStart(CineRun::ExportHQ, oneShot);
-                else if (mode == "preview")
+                else if (mode == "preview" || mode == "video")
+                {
+                    cineVideoExport_ = mode == "video";
                     cineStart(CineRun::ExportPreview, oneShot);
+                }
                 else
-                    fail("cine export: preview | hq [fps=] [scale=] [frames=] [blur=] [shot]");
+                    fail("cine export: preview | video | hq [fps=] [scale=] [frames=] [blur=] [shot]");
                 if (!cineActive())
                     fail("cine " + sub + ": " + cineStatus_);
                 a.scratch["t0"] = harness::nowS();
                 return Status::Pending;
             }
-            if (cineActive() || screenshotRequested || screenshotCopyPending || screenshotEncoding.load())
+            if (cineActive() || screenshotRequested || screenshotCopyPending || screenshotEncoding.load() || video_.busy())
                 return Status::Pending;
             r["frames"] = cineFrame_;
             r["dir"] = cineOutDir_;
+            if (lower(pos(1)) == "video")
+                r["video"] = video_.lastResult();
             r["wall_s"] = harness::nowS() - a.scratch["t0"].get<double>();
             r["message"] = cineStatus_;
             return Status::Done;

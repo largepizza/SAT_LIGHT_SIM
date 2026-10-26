@@ -7935,9 +7935,18 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                 }
                 row(3, [&]()
                     {
-                    if (btn(11, "Export preview", "Every frame as rendered in motion, at the fps above (fast)", cineRun_ == CineRun::ExportPreview,
-                            !cineActive()))
+                    if (btn(11, "Export preview", "Every frame as rendered in motion, at the fps above (fast)",
+                            cineRun_ == CineRun::ExportPreview && !cineVideoExport_, !cineActive()))
+                    {
+                        cineVideoExport_ = false;
                         cineStart(CineRun::ExportPreview, false);
+                    }
+                    if (btn(13, "Export video", "The preview as one .mp4 (H.264, no motion blur), at the fps above",
+                            cineRun_ == CineRun::ExportPreview && cineVideoExport_, !cineActive() && !video_.busy()))
+                    {
+                        cineVideoExport_ = true;
+                        cineStart(CineRun::ExportPreview, false);
+                    }
                     if (btn(12, "Export HQ", "Every frame a settled HQ photo (slow: see the estimate above). The window shows its progress; Esc stops",
                             cineRun_ == CineRun::ExportHQ, !cineActive()))
                         cineStart(CineRun::ExportHQ, false); });
