@@ -3000,6 +3000,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         dpc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
         dpc.debugDisableMask = debugDisableMask;
         dpc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
+        // The terrain's sun shadow once per half-res texel ("Terrain shadows at half resolution", clouds.terrain_shadow_half_res).
+        dpc.sunDirENU = glm::vec4(glm::vec3(sunDirENU), terrainShadowHalfRes > 0.5f ? 1.0f : 0.0f);
 
         const VkExtent2D halfE = computeHalfExtent(ctx);
         uint32_t halfW = halfE.width;
@@ -11178,13 +11180,14 @@ void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
     uint32_t w = halfE.width;
     uint32_t h = halfE.height;
 
-    ctx.createImage(w, h, VK_FORMAT_R32_SFLOAT,
+    // RG32F (2026-10-25): .g is the terrain's sun shadow at the hit (scene_depth.comp), which sat_sky.frag reads.
+    ctx.createImage(w, h, VK_FORMAT_R32G32_SFLOAT,
                     VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                     sceneDepthImg, sceneDepthMem);
     VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vci.image = sceneDepthImg;
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vci.format = VK_FORMAT_R32_SFLOAT;
+    vci.format = VK_FORMAT_R32G32_SFLOAT;
     vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCreateImageView(ctx.device, &vci, nullptr, &sceneDepthView);
 
@@ -11215,13 +11218,13 @@ void SatelliteSim::createSceneDepthResources(VulkanContext &ctx)
     // The quarter-res pre-pass image (see sceneDepthQImg).
     {
         const uint32_t qw = (w + 1) / 2, qh = (h + 1) / 2;
-        ctx.createImage(qw, qh, VK_FORMAT_R32_SFLOAT,
+        ctx.createImage(qw, qh, VK_FORMAT_R32G32_SFLOAT,   // (the same shader writes both: its rg32f image)
                         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                         sceneDepthQImg, sceneDepthQMem);
         VkImageViewCreateInfo qv{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         qv.image = sceneDepthQImg;
         qv.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        qv.format = VK_FORMAT_R32_SFLOAT;
+        qv.format = VK_FORMAT_R32G32_SFLOAT;
         qv.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCreateImageView(ctx.device, &qv, nullptr, &sceneDepthQView);
     }

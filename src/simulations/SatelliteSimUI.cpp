@@ -6581,6 +6581,8 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         // 2026-10-25: with full-resolution clouds, smooth 32x32 tiles at half density (0 = every tile at full density).
         {"Smooth tiles at half density (0/1)", &cv2SmoothTiles, 0.0f, 1.0f, 1.0f, "%.0f", 339},
         {"Smooth tile threshold (levels)", &cv2SmoothTileThresh, 0.5f, 32.0f, 0.5f, "%.1f", 340},
+        // 2026-10-25: the terrain's sun shadow from the half-res depth pass (0 = marched per pixel).
+        {"Terrain shadows at half resolution (0/1)", &terrainShadowHalfRes, 0.0f, 1.0f, 1.0f, "%.0f", 341},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
@@ -9151,6 +9153,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         terrainDetailGain = c.value("terrain_detail_gain", terrainDetailGain);
         terrainDetailErode = c.value("terrain_detail_erode", terrainDetailErode);
         terrainShadowStrength = c.value("terrain_shadow_strength", terrainShadowStrength);
+        terrainShadowHalfRes = settingClamp(c.value("terrain_shadow_half_res", terrainShadowHalfRes), 0.0f, 1.0f);
         terrainMaterialStrength = c.value("terrain_material_strength", terrainMaterialStrength);
         terrainErosionStrength = c.value("terrain_erosion_strength", terrainErosionStrength);
         terrainErosionSize = c.value("terrain_erosion_size", terrainErosionSize);
@@ -9450,6 +9453,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"terrain_detail_gain", terrainDetailGain},
         {"terrain_detail_erode", terrainDetailErode},
         {"terrain_shadow_strength", terrainShadowStrength},
+        {"terrain_shadow_half_res", terrainShadowHalfRes},
         {"terrain_material_strength", terrainMaterialStrength},
         {"terrain_erosion_strength", terrainErosionStrength},
         {"terrain_erosion_size", terrainErosionSize},

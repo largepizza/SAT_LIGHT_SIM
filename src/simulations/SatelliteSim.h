@@ -1087,8 +1087,9 @@ struct SceneDepthPC
                                //             the entire architecture A/Bs from one checkbox)
     float quarterPass;         // offset 76 — 1 = the quarter-res pre-pass (was pad0)
     glm::vec4 obsECEFDir;      // offset 80 — xyz = observer ECEF unit vector, w = height offset
-}; // total: 96 bytes
-static_assert(sizeof(SceneDepthPC) == 96, "SceneDepthPC layout mismatch");
+    glm::vec4 sunDirENU;       // offset 96 — xyz = the Sun in ENU, w = 1: the terrain's sun shadow in .g (2026-10-25)
+}; // total: 112 bytes
+static_assert(sizeof(SceneDepthPC) == 112, "SceneDepthPC layout mismatch");
 
 // Per-frame sky glow data, written by sat_flare.comp each frame.
 //
@@ -5264,6 +5265,10 @@ private:
     // levels / 255 over any 4x4 window; transmittance twice that) are marched at the half-res sparse grid's density and
     // filled (cloud_v2_tiles.comp). Full res cost 4-7 ms over half res in the user's storm views (1920x1009).
     float cv2SmoothTiles = 1.0f;
+    // "Terrain shadows at half resolution" (2026-10-25, key clouds.terrain_shadow_half_res, slot 341): the terrain's soft sun
+    // shadow marched once per half-res texel by scene_depth.comp (.g of the depth) and read by sat_sky.frag at the texels
+    // matching its pixel's surface; 0 = marched per full-res pixel (1.7-2.5 ms of the sky pass on sunlit ground).
+    float terrainShadowHalfRes = 1.0f;
     float cv2SmoothTileThresh = 30.0f;   // settled captures at the noise floor up to 40; motion +0.05 levels (tstab, 20-40)
     // "God ray reads (near)" (2026-10-24, perf pass 3; key godray_reads, slot 336): the sky pass's reads of the Sun shadow
     // (froxels or volume) per atmosphere step within 30 km, half that beyond. 8 = the look as built; 4 is ~0.4-1 ms of the
@@ -7304,7 +7309,7 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 341;   // 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 342;   // 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

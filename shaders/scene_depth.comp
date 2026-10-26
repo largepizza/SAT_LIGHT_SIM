@@ -40,11 +40,15 @@ layout(push_constant) uniform PC {
     uint  debugDisableMask; // bit 1 = skip terrain, bit 1024 = skip pass — offset 72
     float quarterPass;      // 1 = the quarter-res pre-pass                — offset 76
     vec4  obsECEFDir;       // xyz = observer ECEF unit vec, w = height   — offset 80
+    vec4  sunDirENU;        // xyz = the Sun in ENU, w = 1: the terrain's sun shadow here — offset 96
 } pc;
 
 layout(set = 0, binding = 0) uniform sampler2D earthElevTex;
 layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;
-layout(set = 0, binding = 2, r32f) uniform writeonly image2D sceneDepth;
+// .r the distance; .g (2026-10-25, the half-res pass) the terrain's soft sun shadow at the hit (terrainSunShadow, 0 dark
+// .. 1 lit), or > 1.5 where it was not computed. sat_sky.frag reads it at the texels matching its pixel's surface instead
+// of marching toward the Sun per pixel (1.7-2.5 ms of the sky pass on sunlit ground at 1920x1009).
+layout(set = 0, binding = 2, rg32f) uniform writeonly image2D sceneDepth;
 // Phase 4c: satellite meshes (SatMeshRenderer's scene pass, full swap extent, 0 = no mesh). They are
 // surfaces like terrain, so the shared depth is the nearest of the two — every volumetric march
 // then stops at a satellite exactly as it stops at a mountain.
@@ -105,7 +109,7 @@ void main() {
     // so a uniform kNoSurfaceT reproduces the pre-unification behaviour (volumetrics and beams
     // unoccluded by terrain) — making the whole architecture a single A/B checkbox.
     if ((pc.debugDisableMask & 1024u) != 0u) {
-        imageStore(sceneDepth, coord, vec4(meshDistAt(coord, size)));
+        imageStore(sceneDepth, coord, vec4(meshDistAt(coord, size), 2.0, 0.0, 0.0));
         return;
     }
 
@@ -176,5 +180,19 @@ void main() {
     float tSurface = (tHit > 0.0) ? tHit : tSeaLvl;
     // The quarter pass only seeds the half-res one: no satellite meshes in it.
     float tOut = tSurface > 0.0 ? tSurface : kNoSurfaceT;
-    imageStore(sceneDepth, coord, vec4(quarter ? tOut : min(tOut, meshDistAt(coord, size))));
+    // The terrain's sun shadow at the hit, once per half-res texel (sat_sky.frag's terrainSunShadow call, with the local
+    // up for the start's offset where the sky pass has its shading normal, and the full-res pixel's geometry LOD).
+    float shadow = 2.0;
+    if (!quarter && tHit > 0.0 && pc.sunDirENU.w > 0.5 && cloud.terrainShadowStrength > 0.0) {
+        vec3  q   = vec3(0.0, 0.0, obsEffH + 2.0) + tHit * dir;
+        vec3  upQ = normalize(vec3(q.xy, R_EARTH + q.z));
+        vec3  sd  = normalize(pc.sunDirENU.xyz);
+        if (dot(upQ, sd) > -0.1) {
+            float lod = tdGeomLodM(tHit, pc.fovYRad / float(2 * size.y));
+            float h0;
+            float hC3 = terrainHeightCoarse(earthElevTex, earthSpecTex, q, enuX, enuY, enuZ, lod, kTdCoarseOctaves - 1, h0);
+            shadow = (h0 > 0.0) ? terrainSunShadow(earthElevTex, earthSpecTex, q, upQ, sd, enuX, enuY, enuZ, lod, hC3) : 2.0;
+        }
+    }
+    imageStore(sceneDepth, coord, vec4(quarter ? tOut : min(tOut, meshDistAt(coord, size)), shadow, 0.0, 0.0));
 }
