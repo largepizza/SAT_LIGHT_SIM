@@ -8060,6 +8060,10 @@ same shader reloaded twice).**
   at 65536 a frame for ~75-100 frames (that pass 0.55-1.3 ms meanwhile), and with levels 6-7 out a refill is ~25% shorter
   and cheaper. (The first measurement compared refill frames against settled ones and claimed 0.55-1.3 -> 0.1 ms
   everywhere: wrong. Measure the clipmap only after ~150 frames of no reload / load.)
+  (2026-10-26, the same trap again: eval counters taken ~100 frames after a jump read cdc_baked / cdc_refused 65536 /
+  2.13M in every view, as if every in-shell cell went stale each frame. It is the fill: the motion guard keeps the clipmap
+  off for 60 frames, then ~75 frames of 65536 bakes; by frame 250 both are 0, and from 6 km the coarse field evaluations
+  fall 11.7M -> 2.7M a frame (harness_runs/ms/cnt2).)
 - **No terrain sun-shadow march under the clouds' shadow** (cloudShadowT < 1e-3: every use is x cloudShadowT):
   the 1.7-km tornado view sky 12.85 -> 10.81 ms. The terrain shadow march is ~1.9-2.2 ms of a clear ground view
   (`terrain_shadow_strength` 0 A/B); cutting it to 10 steps / a 14% floor was -0.5..-0.75 ms with visible differences
